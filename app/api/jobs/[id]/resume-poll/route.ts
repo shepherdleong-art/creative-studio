@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from '@/lib/providers/geekai-json';
+import { pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from '@/lib/providers/geekai-json';
 import { writeLog } from '@/lib/logger';
+import { sanitizeFilenameBase, ensureUniqueFilename } from '@/lib/output-filenames';
+import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 
@@ -70,12 +72,12 @@ export async function POST(
               if (!fs.existsSync(outputsDir)) fs.mkdirSync(outputsDir, { recursive: true });
 
               const inputImage = db.prepare(`SELECT filename FROM image_assets WHERE id = ?`).get(job.inputImageId) as { filename: string } | undefined;
-              const inputBase = inputImage?.filename ? sanitizeBase(inputImage.filename) : job.id.slice(0, 8);
-              const outputFilename = `output-${inputBase}.png`;
+              const inputBase = inputImage?.filename ? sanitizeFilenameBase(inputImage.filename) : job.id.slice(0, 8);
+              const preferredOutputName = `output-${inputBase}.png`;
+              const outputFilename = ensureUniqueFilename(outputsDir, preferredOutputName, job.id.slice(0, 6));
               const outputPath = path.join(outputsDir, outputFilename);
 
               fs.writeFileSync(outputPath, imgBuffer);
-              const { v4: uuidv4 } = require('uuid');
               const outputImageId = uuidv4();
               db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, createdAt) VALUES (?, ?, 'output', ?, ?, 'image/png', datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath);
 
@@ -108,9 +110,4 @@ export async function POST(
 function safeJson(obj: unknown, ml = 4000): string {
   if (!obj) return '';
   try { const s = JSON.stringify(obj); return s.length > ml ? s.slice(0, ml) + '...[t]' : s; } catch { return '[?]'; }
-}
-
-function sanitizeBase(fn: string): string {
-  const p = require('path').parse(fn);
-  return p.name.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '_').slice(0, 80) || 'image';
 }

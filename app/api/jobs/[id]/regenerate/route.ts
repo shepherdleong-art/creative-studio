@@ -31,36 +31,40 @@ export async function POST(
       );
     }
 
-    // Calculate revision
-    const revision = db.prepare(
-      `SELECT COUNT(*) + 1 as rev FROM jobs WHERE projectId = ? AND inputImageId = ?`
-    ).get(originalJob.projectId, originalJob.inputImageId) as { rev: number };
-
-    // Insert new job (copying from original, replacing prompt)
+    // Atomic transaction: calculate revision, insert new job, mark original
     const newJobId = uuidv4();
-    db.prepare(`
-      INSERT INTO jobs (
-        id, projectId, inputImageId, referenceImageIds, providerId, model,
-        prompt, size, quality, status, attempt, maxAttempts,
-        parentJobId, revision
-      )
-      SELECT ?, projectId, inputImageId, referenceImageIds, providerId, model,
-             ?, size, quality, 'pending', 0, maxAttempts,
-             id, ?
-      FROM jobs
-      WHERE id = ?
-    `).run(newJobId, prompt.trim(), revision.rev, id);
+    const createRegeneration = db.transaction(() => {
+      const latest = db.prepare(
+        `SELECT COALESCE(MAX(revision), 0) + 1 as rev FROM jobs WHERE projectId = ? AND inputImageId = ?`
+      ).get(originalJob.projectId, originalJob.inputImageId) as { rev: number };
 
-    // Mark original as rework
-    if (markOriginal) {
-      db.prepare(`UPDATE jobs SET reviewMark = 'rework' WHERE id = ?`).run(id);
-    }
+      db.prepare(`
+        INSERT INTO jobs (
+          id, projectId, inputImageId, referenceImageIds, providerId, model,
+          prompt, size, quality, status, attempt, maxAttempts,
+          parentJobId, revision, referenceGuidanceMode
+        )
+        SELECT ?, projectId, inputImageId, referenceImageIds, providerId, model,
+               ?, size, quality, 'pending', 0, maxAttempts,
+               id, ?, referenceGuidanceMode
+        FROM jobs
+        WHERE id = ?
+      `).run(newJobId, prompt.trim(), latest.rev, id);
+
+      if (markOriginal) {
+        db.prepare(`UPDATE jobs SET reviewMark = 'rework' WHERE id = ?`).run(id);
+      }
+
+      return latest.rev;
+    });
+
+    const newRevision = createRegeneration();
 
     return NextResponse.json({
       success: true,
       projectId: originalJob.projectId,
       newJobId,
-      revision: revision.rev,
+      revision: newRevision,
     });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

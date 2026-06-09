@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import ProviderSettings from '@/components/ProviderSettings';
 import ImageUploader from '@/components/ImageUploader';
 import type { UploadedFile } from '@/components/ImageUploader';
@@ -44,6 +45,8 @@ interface Provider {
   id: string;
   name: string;
   model: string;
+  type: string;
+  hasApiKey?: boolean;
   defaultCostPerImage?: number;
 }
 
@@ -82,6 +85,9 @@ export default function NewProjectPage() {
 
   const [creating, setCreating] = useState(false);
 
+  // Reference guidance: auto-prepend subject preservation when reference images exist
+  const [referenceGuidanceMode, setReferenceGuidanceMode] = useState<'preserve_subject' | 'none'>('preserve_subject');
+
   // Preprocessing settings
   const [preprocessEnabled, setPreprocessEnabled] = useState(true);
   const [targetMaxSide, setTargetMaxSide] = useState(1536);
@@ -110,7 +116,10 @@ export default function NewProjectPage() {
       alert('请上传待处理图片');
       return;
     }
-
+    if (!provider.hasApiKey) {
+      alert('当前供应商未配置 API Key，请先到供应商配置里填写 Key');
+      return;
+    }
     setCreating(true);
 
     try {
@@ -134,6 +143,7 @@ export default function NewProjectPage() {
           quality,
           concurrency,
           maxAttempts,
+          referenceGuidanceMode,
           referenceImageIds: referenceIds,
           inputImageIds: inputIds,
         }),
@@ -204,6 +214,22 @@ export default function NewProjectPage() {
           targetMaxSide={targetMaxSide}
           jpegQuality={jpegQuality}
         />
+
+        {/* Reference guidance toggle */}
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={referenceGuidanceMode === 'preserve_subject'}
+            onChange={(e) => setReferenceGuidanceMode(e.target.checked ? 'preserve_subject' : 'none')}
+            className="w-4 h-4 mt-0.5 rounded border-gray-300"
+          />
+          <div>
+            <span className="text-sm font-medium text-gray-700">保持待处理图主体不变</span>
+            <p className="text-xs text-gray-400 mt-0.5">
+              有参考图时生效。开启后会自动提示模型保留待处理图的主体、比例和材质；关闭后只使用你写的提示词。
+            </p>
+          </div>
+        </label>
 
         <ImageUploader
           role="input"
@@ -391,9 +417,9 @@ export default function NewProjectPage() {
 
         {/* Submit */}
         <div className="flex gap-3 justify-end">
-          <a href="/" className="btn-secondary">
+          <Link href="/" className="btn-secondary">
             取消
-          </a>
+          </Link>
           <button
             type="submit"
             disabled={creating}

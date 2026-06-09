@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { runQueue, cancelQueue, pauseQueue, resumeQueue, getQueueStatus } from '@/lib/queue';
 import { writeLog } from '@/lib/logger';
+import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(
   request: NextRequest,
@@ -41,7 +42,7 @@ export async function POST(
         const timeoutMs = body.timeoutMs || 180000;
 
         // Generate runId for this run
-        const runId = require('uuid').v4().slice(0, 8);
+        const runId = uuidv4().slice(0, 8);
 
         writeLog({
           jobId: '',

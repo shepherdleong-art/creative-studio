@@ -1,0 +1,138 @@
+import fs from 'fs';
+import path from 'path';
+
+export interface PackyEditImageRequest {
+  model: string;
+  prompt: string;
+  inputImagePath: string;
+  inputMimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  referenceImagePaths: string[];
+  referenceMimeTypes: ('image/png' | 'image/jpeg' | 'image/webp')[];
+  size: string;
+  quality: string;
+  referenceGuidanceMode?: 'preserve_subject' | 'none';
+}
+
+export interface PackyEditImageResult {
+  imageBuffer: Buffer;
+  latencyMs: number;
+  rawResponse?: unknown;
+  remoteImageUrl?: string;
+}
+
+type PackyImageResponse = {
+  created?: number;
+  data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
+  error?: string | { message?: string; code?: string };
+};
+
+function extractPackyError(data: PackyImageResponse): string | undefined {
+  if (!data.error) return undefined;
+  if (typeof data.error === 'string') return data.error;
+  return data.error.message || data.error.code;
+}
+
+async function downloadImage(url: string, signal?: AbortSignal): Promise<Buffer> {
+  const res = await fetch(url, { signal });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Packy image download failed ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/**
+ * Call Packy GPT-Image-2 Images API.
+ *
+ * Packy uses multipart/form-data (not JSON), returns data[0].url or data[0].b64_json
+ * directly without task_id or polling.
+ *
+ * Docs: https://docs.packyapi.com/docs/paint/GPTImage.html
+ */
+export async function editImagePacky(
+  request: PackyEditImageRequest,
+  apiKey: string,
+  baseUrl: string,
+  signal?: AbortSignal
+): Promise<PackyEditImageResult> {
+  const startTime = Date.now();
+  const cleanBase = baseUrl.replace(/\/$/, '');
+  const url = `${cleanBase}/v1/images/edits`;
+
+  const hasReferences = request.referenceImagePaths.length > 0;
+  const shouldUseSubjectGuidance =
+    request.referenceGuidanceMode !== 'none' && hasReferences;
+  const prompt = shouldUseSubjectGuidance
+    ? `图1-${request.referenceImagePaths.length}是风格/场景参考图，图${request.referenceImagePaths.length + 1}是需要编辑的原图。保持最后一张图的产品主体、比例、材质不变，参考前面图片调整场景、光线和布置。\n${request.prompt}`
+    : request.prompt;
+
+  const form = new FormData();
+  form.append('model', request.model);
+  form.append('prompt', prompt);
+  form.append('size', request.size);
+  form.append('quality', request.quality || 'auto');
+  form.append('n', '1');
+  form.append('output_format', 'png');
+
+  // Experimental: Packy documents /v1/images/edits with image multipart.
+  // Try multiple image fields in the same order as GeekAI: references first,
+  // target image last, with the prompt describing that ordering.
+  for (let i = 0; i < request.referenceImagePaths.length; i++) {
+    const refPath = request.referenceImagePaths[i];
+    const refMime = request.referenceMimeTypes[i] || 'image/png';
+    const refBuf = fs.readFileSync(refPath);
+    form.append(
+      'image',
+      new Blob([refBuf], { type: refMime }),
+      `reference-${i + 1}-${path.basename(refPath)}`
+    );
+  }
+
+  // Input image, appended last so the prompt can refer to it as the target.
+  const inputBuf = fs.readFileSync(request.inputImagePath);
+  form.append(
+    'image',
+    new Blob([inputBuf], { type: request.inputMimeType }),
+    path.basename(request.inputImagePath)
+  );
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: '*/*',
+    },
+    body: form,
+    signal,
+  });
+
+  const latencyMs = Date.now() - startTime;
+  const text = await res.text();
+
+  let data: PackyImageResponse;
+  try {
+    data = JSON.parse(text) as PackyImageResponse;
+  } catch {
+    throw new Error(`Packy returned non-JSON response ${res.status}: ${text.slice(0, 500)}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(`Packy API error ${res.status}: ${extractPackyError(data) || text.slice(0, 500)}`);
+  }
+
+  const first = data.data?.[0];
+  if (!first) {
+    throw new Error(`Packy returned no image data: ${JSON.stringify(data).slice(0, 500)}`);
+  }
+
+  if (first.b64_json) {
+    return { imageBuffer: Buffer.from(first.b64_json, 'base64'), latencyMs, rawResponse: data };
+  }
+
+  if (first.url) {
+    const imageBuffer = await downloadImage(first.url, signal);
+    return { imageBuffer, latencyMs, rawResponse: data, remoteImageUrl: first.url };
+  }
+
+  throw new Error(`Packy response contains neither url nor b64_json: ${JSON.stringify(data).slice(0, 500)}`);
+}

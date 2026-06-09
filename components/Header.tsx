@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 
 export default function Header() {
   const [showStopConfirm, setShowStopConfirm] = useState(false);
@@ -22,13 +23,13 @@ export default function Header() {
 
   return (
     <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shrink-0">
-      <a href="/" className="text-lg font-bold text-gray-900 hover:text-blue-600 transition-colors">
+      <Link href="/" className="text-lg font-bold text-gray-900 hover:text-blue-600 transition-colors">
         🖼️ 批量图片编辑工作台
-      </a>
+      </Link>
       <nav className="flex gap-4 text-sm items-center">
-        <a href="/" className="text-gray-600 hover:text-gray-900">项目列表</a>
-        <a href="/settings" className="text-gray-600 hover:text-gray-900">供应商配置</a>
-        <a href="/projects/new" className="text-blue-600 hover:text-blue-800 font-medium">+ 新建项目</a>
+        <Link href="/" className="text-gray-600 hover:text-gray-900">项目列表</Link>
+        <Link href="/settings" className="text-gray-600 hover:text-gray-900">供应商配置</Link>
+        <Link href="/projects/new" className="text-blue-600 hover:text-blue-800 font-medium">+ 新建项目</Link>
         <span className="text-gray-300 mx-1">|</span>
         <button
           onClick={() => setShowStopConfirm(true)}

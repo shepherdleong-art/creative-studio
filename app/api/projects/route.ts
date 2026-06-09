@@ -43,6 +43,9 @@ export async function POST(request: NextRequest) {
       inputImageIds,
     } = body;
 
+    const referenceGuidanceMode =
+      body.referenceGuidanceMode === 'none' ? 'none' : 'preserve_subject';
+
     // Resolve size: prefer aspectRatio+resolution, fall back to raw size with validation.
     // Never silently default to 1024x1024.
     let resolvedSize: string;
@@ -64,12 +67,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate provider: must be enabled and have an API key
+    const provider = db.prepare(`SELECT id, enabled, apiKey, apiKeyEnv, type FROM providers WHERE id = ?`).get(providerId) as {
+      id: string; enabled: number; apiKey: string; apiKeyEnv: string; type: string;
+    } | undefined;
+
+    if (!provider) {
+      return NextResponse.json({ error: 'Provider not found' }, { status: 400 });
+    }
+    if (!provider.enabled) {
+      return NextResponse.json({ error: 'Provider is disabled. Enable it in Settings before creating a project.' }, { status: 400 });
+    }
+    if (!provider.apiKey && !process.env[provider.apiKeyEnv]) {
+      return NextResponse.json({ error: 'Provider API key is not configured.' }, { status: 400 });
+    }
+
     const projectId = uuidv4();
 
     // Create project
     db.prepare(`
-      INSERT INTO projects (id, name, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+      INSERT INTO projects (id, name, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)
     `).run(
       projectId,
       name,
@@ -80,7 +98,8 @@ export async function POST(request: NextRequest) {
       resolvedSize,
       quality || 'medium',
       concurrency || 3,
-      maxAttempts || 2
+      maxAttempts || 2,
+      referenceGuidanceMode
     );
 
     // Associate reference images (and any unassigned assets)
@@ -98,8 +117,8 @@ export async function POST(request: NextRequest) {
         `UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`
       );
       const insertJob = db.prepare(`
-        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
+        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
       `);
 
       for (const imageId of inputImageIds) {
@@ -114,7 +133,8 @@ export async function POST(request: NextRequest) {
           prompt,
           resolvedSize,
           quality || 'medium',
-          maxAttempts || 2
+          maxAttempts || 2,
+          referenceGuidanceMode
         );
       }
     }

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import JobQueueTable from '@/components/JobQueueTable';
 import ResultGallery from '@/components/ResultGallery';
 import LogViewer from '@/components/LogViewer';
@@ -51,6 +52,7 @@ const STATUS_LABELS: Record<string, string> = {
   completed: '已完成',
   partial_failed: '部分失败',
   canceled: '已取消',
+  needs_check: '待补抓',
 };
 
 export default function ProjectDetailPage() {
@@ -84,6 +86,7 @@ export default function ProjectDetailPage() {
   }, [id]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadProject();
   }, [loadProject]);
 
@@ -197,9 +200,9 @@ export default function ProjectDetailPage() {
     return (
       <div className="text-center py-16">
         <p className="text-gray-500">项目不存在</p>
-        <a href="/" className="text-blue-600 hover:underline mt-2 inline-block">
+        <Link href="/" className="text-blue-600 hover:underline mt-2 inline-block">
           返回列表
-        </a>
+        </Link>
       </div>
     );
   }
@@ -215,9 +218,9 @@ export default function ProjectDetailPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <div className="flex items-center gap-3">
-            <a href="/" className="text-gray-400 hover:text-gray-600">
+            <Link href="/" className="text-gray-400 hover:text-gray-600">
               ← 返回
-            </a>
+            </Link>
             <h1 className="text-2xl font-bold">{project.name}</h1>
             <span className={`status-badge status-${project.status === 'partial_failed' ? 'failed' : project.status}`}>
               {STATUS_LABELS[project.status] || project.status}

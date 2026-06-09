@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { seedProviders } from '@/lib/seed';
+import { v4 as uuidv4 } from 'uuid';
 
 export async function GET() {
   try {
@@ -26,7 +27,6 @@ export async function POST(request: Request) {
   try {
     const db = getDb();
     const body = await request.json();
-    const { v4: uuidv4 } = require('uuid');
 
     const id = uuidv4();
     db.prepare(
@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       body.baseUrl || '',
       body.apiKey || '',
       body.model || 'gpt-image-2',
-      body.type || 'geekai-json',
+      body.type || 'openai-compatible',
       body.defaultCostPerImage || null
     );
 

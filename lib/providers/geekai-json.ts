@@ -9,6 +9,7 @@ export interface EditImageRequest {
   referenceMimeTypes: ('image/png' | 'image/jpeg' | 'image/webp')[];
   size: string;
   quality: string;
+  referenceGuidanceMode?: 'preserve_subject' | 'none';
 }
 
 export interface GeekAISubmitResult {
@@ -142,7 +143,9 @@ export async function submitGeekAITask(
   imageUrls.push(fileToDataUrl(request.inputImagePath, request.inputMimeType));
 
   let prompt = request.prompt;
-  if (imageUrls.length > 1) {
+  const shouldUseSubjectGuidance =
+    request.referenceGuidanceMode !== 'none' && request.referenceImagePaths.length > 0;
+  if (shouldUseSubjectGuidance) {
     prompt = `图1-${request.referenceImagePaths.length}是风格/场景参考图，最后一张是需要编辑的原图。保持最后一张图的产品主体、比例、材质不变，参考前面图片调整场景、光线和布置。\n${request.prompt}`;
   }
 

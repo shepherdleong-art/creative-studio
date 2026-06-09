@@ -50,6 +50,7 @@ function initTables(db: Database.Database) {
       maxAttempts INTEGER NOT NULL DEFAULT 2,
       status TEXT NOT NULL DEFAULT 'draft',
       runId TEXT,
+      referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject',
       FOREIGN KEY (providerId) REFERENCES providers(id)
     );
 
@@ -105,6 +106,7 @@ function initTables(db: Database.Database) {
       postprocessTarget TEXT,
       parentJobId TEXT,
       revision INTEGER DEFAULT 0,
+      referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject',
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (inputImageId) REFERENCES image_assets(id),
       FOREIGN KEY (outputImageId) REFERENCES image_assets(id)
@@ -154,6 +156,8 @@ function initTables(db: Database.Database) {
     `ALTER TABLE jobs ADD COLUMN postprocessTarget TEXT`,
     `ALTER TABLE jobs ADD COLUMN parentJobId TEXT`,
     `ALTER TABLE jobs ADD COLUMN revision INTEGER DEFAULT 0`,
+    `ALTER TABLE projects ADD COLUMN referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject'`,
+    `ALTER TABLE jobs ADD COLUMN referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject'`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* Column already exists */ }

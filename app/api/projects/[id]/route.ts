@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import path from 'path';
 
 export async function GET(
   _request: NextRequest,
@@ -19,8 +20,9 @@ export async function GET(
       `SELECT * FROM image_assets WHERE projectId = ? ORDER BY role, createdAt`
     ).all(id) as Array<Record<string, unknown>>).map((img) => {
       const filePath = img.path as string;
-      const storageIdx = filePath.indexOf('storage/');
-      const relativePath = storageIdx >= 0 ? filePath.slice(storageIdx + 'storage/'.length) : filePath;
+      const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+      const resolvedFile = path.resolve(filePath);
+      const relativePath = path.relative(storageRoot, resolvedFile).split(path.sep).join('/');
       return {
         ...img,
         relativePath,

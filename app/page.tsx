@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 
 interface Project {
   id: string;
@@ -26,6 +27,7 @@ const STATUS_LABELS: Record<string, string> = {
   completed: '已完成',
   partial_failed: '部分失败',
   canceled: '已取消',
+  needs_check: '待补抓',
 };
 
 export default function HomePage() {
@@ -76,9 +78,9 @@ export default function HomePage() {
               使用 AI 图片模型批量编辑产品图。上传一批图片 + 一条提示词，自动并发处理、保存结果、统计成本。
             </p>
           </div>
-          <a href="/projects/new" className="btn-primary text-base px-6 py-2.5 shadow-sm">
+          <Link href="/projects/new" className="btn-primary text-base px-6 py-2.5 shadow-sm">
             + 新建项目
-          </a>
+          </Link>
         </div>
       </div>
 
@@ -94,7 +96,7 @@ export default function HomePage() {
               <div>
                 <div className="font-medium text-sm">配置供应商</div>
                 <div className="text-xs text-gray-500 mt-1">
-                  在「<a href="/settings" className="text-blue-600 hover:underline">供应商配置</a>」页面填入中转站 Base URL 和 API Key
+                  在「<Link href="/settings" className="text-blue-600 hover:underline">供应商配置</Link>」页面填入中转站 Base URL 和 API Key
                 </div>
               </div>
             </div>
@@ -148,7 +150,7 @@ export default function HomePage() {
               {providerStatus.configured}/{providerStatus.total}
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              <a href="/settings" className="hover:underline">供应商已配置</a>
+              <Link href="/settings" className="hover:underline">供应商已配置</Link>
             </div>
           </div>
         </div>
@@ -172,12 +174,12 @@ export default function HomePage() {
             <div className="text-5xl mb-4">📂</div>
             <h3 className="text-lg font-medium text-gray-600 mb-2">暂无项目</h3>
             <p className="text-sm text-gray-400 mb-4">创建第一个批量图片编辑项目</p>
-            <a href="/projects/new" className="btn-primary">新建项目</a>
+            <Link href="/projects/new" className="btn-primary">新建项目</Link>
           </div>
         ) : hasProjects ? (
           <div className="grid gap-4">
             {projects.map((p) => (
-              <a
+              <Link
                 key={p.id}
                 href={`/projects/${p.id}`}
                 className="card p-5 hover:shadow-md transition-shadow block"
@@ -235,7 +237,7 @@ export default function HomePage() {
                     </svg>
                   </button>
                 </div>
-              </a>
+              </Link>
             ))}
           </div>
         ) : null}
