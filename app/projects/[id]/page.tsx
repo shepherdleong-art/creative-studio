@@ -9,6 +9,7 @@ import LogViewer from '@/components/LogViewer';
 import SceneReferencePanel from '@/components/SceneReferencePanel';
 import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
+import ScriptPanel from '@/components/ScriptPanel';
 
 interface Project {
   id: string;
@@ -394,6 +395,9 @@ export default function ProjectDetailPage() {
               </button>
             </>
           )}
+          <a href={`/api/projects/${id}/creative-package`} className="btn-secondary">
+            📦 创意包
+          </a>
         </div>
       </div>
 
@@ -506,20 +510,8 @@ export default function ProjectDetailPage() {
               </div>
             )}
 
-            {/* Placeholder: Video + Script */}
-            <div className="card p-4 bg-gray-50 border-dashed">
-              <h2 className="font-semibold mb-2 text-gray-500">后续阶段（规划中）</h2>
-              <div className="grid grid-cols-2 gap-4 text-sm text-gray-400">
-                <div>
-                  <span className="font-medium">阶段 5：视频任务草稿</span>
-                  <p className="text-xs mt-1">分镜审核通过后可创建视频任务，未来接入即梦/可灵。</p>
-                </div>
-                <div>
-                  <span className="font-medium">阶段 6：15 秒口播文案</span>
-                  <p className="text-xs mt-1">分镜组 + 产品卖点 → LLM → 种草短视频口播。</p>
-                </div>
-              </div>
-            </div>
+            {/* Stage 5: Script Generation */}
+            <ScriptPanel projectId={project.id} />
           </>
         ) : (
           /* Legacy layout */

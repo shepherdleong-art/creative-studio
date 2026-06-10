@@ -290,6 +290,17 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_video_jobs_project ON video_jobs(projectId);
     CREATE INDEX IF NOT EXISTS idx_video_jobs_shot ON video_jobs(shotId);
     CREATE INDEX IF NOT EXISTS idx_video_jobs_status ON video_jobs(status);
+
+    CREATE TABLE IF NOT EXISTS script_drafts (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'gemini',
+      model TEXT NOT NULL,
+      inputSnapshot TEXT NOT NULL,
+      outputJson TEXT NOT NULL,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
+    );
   `);
 }
 
