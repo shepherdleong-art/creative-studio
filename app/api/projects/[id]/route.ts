@@ -72,3 +72,28 @@ export async function DELETE(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const db = getDb();
+    const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+    const shotPrompt = typeof body.shotPrompt === 'string' ? body.shotPrompt.trim() : '';
+
+    if (!shotPrompt) {
+      return NextResponse.json({ error: '分镜重做模板不能为空' }, { status: 400 });
+    }
+
+    const result = db.prepare(`UPDATE projects SET shotPrompt = ? WHERE id = ?`).run(shotPrompt, id);
+    if (result.changes !== 1) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+
+    return NextResponse.json({ success: true, shotPrompt });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
