@@ -51,6 +51,11 @@ export const jimengAdapter: VideoProviderAdapter = {
 
     const imageDataUrl = fileToBase64DataUrl(request.sourceImagePath, request.sourceMimeType);
 
+    // NOTE: Seedance 2.0 official docs specify public HTTPS URLs, TOS URLs, or asset:// URLs
+    // for reference media. Base64 data URLs may or may not be accepted depending on deployment.
+    // If Seedance returns 4xx on image_url, serve images via a public URL instead.
+    console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
+
     const body = {
       model: request.model,
       content: [

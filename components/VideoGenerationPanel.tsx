@@ -116,7 +116,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       });
       const data = await res.json();
       if (res.ok) {
-        setVideoJobs((prev) => [...prev, data as unknown as VideoJob]);
+        await loadData();
         // Reset form
         setSelectedTemplate('');
         setPrompt('');

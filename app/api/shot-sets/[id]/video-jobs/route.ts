@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
+import { runVideoQueue, getVideoQueueStatus } from '@/lib/video-queue';
 
 export async function POST(
   request: NextRequest,
@@ -34,17 +35,6 @@ export async function POST(
     } | undefined;
     if (!provider) return NextResponse.json({ error: 'Video provider not found or disabled' }, { status: 400 });
 
-    // Get template prompt if a template is selected
-    let finalPrompt = prompt;
-    if (templateId) {
-      const template = db.prepare(`SELECT prompt FROM video_prompt_templates WHERE id = ?`).get(templateId) as {
-        prompt: string;
-      } | undefined;
-      if (template) {
-        finalPrompt = `${template.prompt}\n\nAdditional instructions: ${prompt}`;
-      }
-    }
-
     // Use latest generated image, fallback to source image
     const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
 
@@ -58,7 +48,19 @@ export async function POST(
     db.prepare(`
       INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, templateId, prompt, durationSec)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, providerId, provider.defaultModel, templateId, finalPrompt, durationSec);
+    `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, providerId, provider.defaultModel, templateId, prompt, durationSec);
+
+    // Auto-start video queue if idle
+    const qStatus = getVideoQueueStatus(shotSet.projectId);
+    if (qStatus === 'idle') {
+      runVideoQueue({
+        projectId: shotSet.projectId,
+        concurrency: 1,
+        timeoutMs: 600000,
+      }).catch((err) => {
+        console.error(`[VideoQueue] Auto-start failed:`, err);
+      });
+    }
 
     return NextResponse.json({ success: true, videoJobId });
   } catch (err) {

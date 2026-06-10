@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { buildZipStream, ZipImageEntry } from '@/lib/zip-download';
+import { buildGenericZipStream, ZipImageEntry } from '@/lib/zip-download';
 import path from 'path';
 import fs from 'fs';
 
@@ -158,7 +158,7 @@ export async function GET(
       return NextResponse.json({ error: 'No content to export' }, { status: 404 });
     }
 
-    const stream = buildZipStream(entries);
+    const stream = buildGenericZipStream(entries);
     const zipName = encodeURIComponent(`${String(project.name || 'project')}-creative-package.zip`);
     return new NextResponse(stream, {
       headers: {

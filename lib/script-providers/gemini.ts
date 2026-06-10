@@ -6,10 +6,10 @@
  * - "openai-compatible": /v1/chat/completions proxy
  *
  * Configure via env:
- *   GEMINI_BASE_URL  — API base (default: https://generativelanguage.googleapis.com)
+ *   GEMINI_BASE_URL  — API base (default: https://geekai.co/api for GeekAI proxy)
  *   GEMINI_API_KEY   — API key
  *   GEMINI_MODEL     — Model name (default: gemini-3.5-flash)
- *   GEMINI_API_STYLE — "native" (default) or "openai-compatible"
+ *   GEMINI_API_STYLE — "native" or "openai-compatible" (default: openai-compatible)
  */
 export interface ScriptInput {
   projectName: string;
@@ -102,10 +102,10 @@ ${input.videoTemplates?.join('、') || '未指定'}
 export async function generateScript(
   input: ScriptInput
 ): Promise<{ script: ScriptOutput; provider: string; model: string }> {
-  const baseUrl = (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
+  const baseUrl = (process.env.GEMINI_BASE_URL || 'https://geekai.co/api').replace(/\/$/, '');
   const apiKey = process.env.GEMINI_API_KEY;
   const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-  const apiStyle = process.env.GEMINI_API_STYLE || 'native';
+  const apiStyle = process.env.GEMINI_API_STYLE || 'openai-compatible';
 
   if (!apiKey) {
     throw new Error('Gemini API Key 未配置。请在 .env.local 中设置 GEMINI_API_KEY。');
@@ -117,7 +117,13 @@ export async function generateScript(
 
   if (apiStyle === 'openai-compatible') {
     // OpenAI-compatible /v1/chat/completions
-    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const chatUrl = baseUrl.endsWith('/chat/completions')
+      ? baseUrl
+      : baseUrl.endsWith('/v1')
+        ? `${baseUrl}/chat/completions`
+        : `${baseUrl}/v1/chat/completions`;
+
+    const res = await fetch(chatUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

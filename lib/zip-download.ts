@@ -33,7 +33,34 @@ export function assertStorageImagePath(filePath: string): string {
   return resolved;
 }
 
+const STORAGE_EXTENSIONS_IMAGE = ['.png', '.jpg', '.jpeg', '.webp'];
+const STORAGE_EXTENSIONS_ALL = [...STORAGE_EXTENSIONS_IMAGE, '.mp4', '.mov', '.webm', '.txt', '.json'];
+
+export function assertStoragePath(filePath: string, allowedExts: string[]): string {
+  const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+  const resolved = path.resolve(filePath);
+  const ext = path.extname(resolved).toLowerCase();
+  if (!resolved.startsWith(storageRoot + path.sep)) {
+    throw new Error('Path is outside storage');
+  }
+  if (!allowedExts.includes(ext)) {
+    throw new Error(`Unsupported file extension: ${ext}`);
+  }
+  if (!fs.existsSync(resolved)) {
+    throw new Error('File not found');
+  }
+  return resolved;
+}
+
 export function buildZipStream(entries: ZipImageEntry[]): ReadableStream {
+  return buildZipStreamWithExts(entries, STORAGE_EXTENSIONS_IMAGE);
+}
+
+export function buildGenericZipStream(entries: ZipImageEntry[]): ReadableStream {
+  return buildZipStreamWithExts(entries, STORAGE_EXTENSIONS_ALL);
+}
+
+function buildZipStreamWithExts(entries: ZipImageEntry[], allowedExts: string[]): ReadableStream {
   const pass = new PassThrough();
   const archive = new ZipArchive({ zlib: { level: 9 } });
   const used = new Map<string, number>();
@@ -42,7 +69,7 @@ export function buildZipStream(entries: ZipImageEntry[]): ReadableStream {
   archive.pipe(pass);
 
   for (const entry of entries) {
-    const resolved = assertStorageImagePath(entry.filePath);
+    const resolved = assertStoragePath(entry.filePath, allowedExts);
     const clean = sanitizeZipFilename(entry.filename);
     const ext = path.extname(clean) || '.png';
     const base = path.basename(clean, ext);
