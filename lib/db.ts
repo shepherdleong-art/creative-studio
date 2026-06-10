@@ -170,6 +170,8 @@ function initTables(db: Database.Database) {
     `ALTER TABLE projects ADD COLUMN scenePrompt TEXT DEFAULT ''`,
     `ALTER TABLE projects ADD COLUMN shotPrompt TEXT DEFAULT ''`,
     `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND type = 'openai-compatible'`,
+    `UPDATE video_providers SET defaultModel = 'kling-v3.0-i2v' WHERE id = 'kling-3' AND defaultModel = 'kling-3.0'`,
+    `UPDATE video_providers SET defaultModel = 'doubao-seedance-2-0-260128' WHERE id = 'jimeng-2' AND defaultModel = 'jimeng-2.0'`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* Column already exists */ }

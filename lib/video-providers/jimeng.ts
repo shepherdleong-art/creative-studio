@@ -55,18 +55,18 @@ export const jimengAdapter: VideoProviderAdapter = {
       model: request.model,
       content: [
         {
-          type: 'image_url',
-          image_url: { url: imageDataUrl },
-          role: 'reference_image',
-        },
-        {
           type: 'text',
           text: request.prompt || 'gentle camera movement, stable product detail',
+        },
+        {
+          type: 'image_url',
+          image_url: { url: imageDataUrl },
+          role: 'first_frame',
         },
       ],
       duration: request.durationSec,
       resolution: '720p',
-      ratio: '16:9',
+      ratio: 'adaptive',
       watermark: false,
       generate_audio: false,
     };
