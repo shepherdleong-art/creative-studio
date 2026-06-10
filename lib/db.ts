@@ -18,9 +18,12 @@ export function getDb(): Database.Database {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initTables(db);
+    seedAllVideo();
   }
   return db;
 }
+
+import { seedAllVideo } from './seed';
 
 function initTables(db: Database.Database) {
   db.exec(`
@@ -228,6 +231,65 @@ function initTables(db: Database.Database) {
       FOREIGN KEY (latestGeneratedImageId) REFERENCES image_assets(id),
       FOREIGN KEY (latestJobId) REFERENCES jobs(id)
     );
+
+    CREATE TABLE IF NOT EXISTS video_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('kling','jimeng')),
+      baseUrlEnv TEXT NOT NULL,
+      apiKeyEnv TEXT NOT NULL,
+      modelEnv TEXT NOT NULL,
+      defaultModel TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      defaultDurationSec INTEGER NOT NULL DEFAULT 5,
+      defaultCostPerVideo REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS video_prompt_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      prompt TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'camera_motion',
+      isBuiltin INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS video_jobs (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      shotSetId TEXT,
+      shotId TEXT,
+      sourceImageId TEXT NOT NULL,
+      providerId TEXT NOT NULL,
+      model TEXT NOT NULL,
+      templateId TEXT,
+      prompt TEXT NOT NULL,
+      durationSec INTEGER NOT NULL DEFAULT 5,
+      status TEXT NOT NULL DEFAULT 'pending',
+      providerTaskId TEXT,
+      providerStatus TEXT,
+      providerRawResponse TEXT,
+      remoteVideoUrl TEXT,
+      localVideoPath TEXT,
+      filename TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      maxAttempts INTEGER NOT NULL DEFAULT 1,
+      errorMessage TEXT,
+      startedAt TEXT,
+      finishedAt TEXT,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE SET NULL,
+      FOREIGN KEY (shotId) REFERENCES shots(id) ON DELETE SET NULL,
+      FOREIGN KEY (sourceImageId) REFERENCES image_assets(id),
+      FOREIGN KEY (providerId) REFERENCES video_providers(id),
+      FOREIGN KEY (templateId) REFERENCES video_prompt_templates(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_project ON video_jobs(projectId);
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_shot ON video_jobs(shotId);
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_status ON video_jobs(status);
   `);
 }
 
