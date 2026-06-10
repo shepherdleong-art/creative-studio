@@ -20,6 +20,7 @@ interface ShotSet {
   productCode: string;
   category: string;
   shotCount: number;
+  generatedCount: number;
   approvedCount: number;
   status: string;
   sceneReferenceId?: string;
@@ -171,7 +172,16 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene }: 
                 <span className={`text-xs px-2 py-0.5 rounded ${set.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
                   {STATUS_LABELS[set.status] || set.status}
                 </span>
-                <span className="text-xs text-gray-400">{set.shotCount} 张 | {set.approvedCount} 可用</span>
+                <span className="text-xs text-gray-400">{set.shotCount} 张 | {set.generatedCount} 已生成 | {set.approvedCount} 可用</span>
+                {set.generatedCount > 0 && (
+                  <a
+                    href={`/api/shot-sets/${set.id}/download`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="btn-secondary btn-sm text-xs text-blue-600"
+                  >
+                    下载ZIP
+                  </a>
+                )}
                 {onApplyScene && (
                   <button onClick={(e) => { e.stopPropagation(); onApplyScene(set.id); }}
                     className="btn-secondary btn-sm text-xs text-purple-600">批量应用场景</button>

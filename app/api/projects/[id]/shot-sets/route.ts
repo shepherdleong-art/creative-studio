@@ -12,6 +12,7 @@ export async function GET(
     const sets = db.prepare(`
       SELECT ss.*,
         (SELECT COUNT(*) FROM shots WHERE shotSetId = ss.id) as shotCount,
+        (SELECT COUNT(*) FROM shots WHERE shotSetId = ss.id AND latestGeneratedImageId IS NOT NULL) as generatedCount,
         (SELECT COUNT(*) FROM shots WHERE shotSetId = ss.id AND reviewMark = 'available') as approvedCount
       FROM shot_sets ss
       WHERE ss.projectId = ?
