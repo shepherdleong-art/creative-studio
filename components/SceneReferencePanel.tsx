@@ -47,6 +47,16 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
     return () => { active = false; };
   }, [loadRefs]);
 
+  // Escape key to close creation modal
+  useEffect(() => {
+    if (!isCreating) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCreate();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isCreating]);
+
   const openCreate = () => { setIsCreating(true); setNewName(''); setNewImageId(''); };
   const closeCreate = () => { setIsCreating(false); setNewName(''); setNewImageId(''); };
 
@@ -82,31 +92,63 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
         <button onClick={openCreate} className="btn-secondary btn-sm text-xs">+ 新增</button>
       </div>
 
+      {/* Scene Reference creation modal */}
       {isCreating && (
-        <div className="mb-4 p-3 bg-gray-50 rounded-lg space-y-2">
-          <div>
-            <label className="text-xs text-gray-500">名称</label>
-            <input value={newName} onChange={(e) => setNewName(e.target.value)} className="input-field text-sm" placeholder="例如: 现代奶油风卧室" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 mb-2 block">选择图片</label>
-            <ImagePickerGrid
-              items={images
-                .filter((img) => img.role === 'output' || img.role === 'input')
-                .map((img) => ({
-                  id: img.id,
-                  label: img.filename,
-                  filename: img.filename,
-                  imageUrl: img.imageUrl,
-                }))}
-              selectedId={newImageId}
-              onSelect={setNewImageId}
-              emptyText="当前项目没有可选择的图片。"
-            />
-          </div>
-          <div className="flex gap-2">
-            <button onClick={handleCreate} disabled={!newName.trim() || !newImageId || saving} className="btn-primary btn-sm text-xs">{saving ? '创建中...' : '创建'}</button>
-            <button onClick={closeCreate} className="btn-secondary btn-sm text-xs">取消</button>
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+          onClick={closeCreate}
+        >
+          <div
+            className="flex max-h-[86vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b p-4">
+              <h3 className="font-semibold">新增场景参考图</h3>
+              <button onClick={closeCreate} className="text-xl text-gray-400 hover:text-gray-600">
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-4 overflow-y-auto p-4">
+              <div>
+                <label className="label">名称</label>
+                <input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  className="input-field"
+                  placeholder="例如：现代风客厅"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="label">选择图片</label>
+                <ImagePickerGrid
+                  items={images
+                    .filter((img) => img.role === 'output' || img.role === 'input')
+                    .map((img) => ({
+                      id: img.id,
+                      label: img.filename,
+                      filename: img.filename,
+                      imageUrl: img.imageUrl,
+                    }))}
+                  selectedId={newImageId}
+                  onSelect={setNewImageId}
+                  emptyText="当前项目没有可选择的图片。"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t bg-white p-4">
+              <button onClick={closeCreate} className="btn-secondary btn-sm">取消</button>
+              <button
+                onClick={handleCreate}
+                disabled={!newName.trim() || !newImageId || saving}
+                className="btn-primary btn-sm"
+              >
+                {saving ? '创建中...' : '创建'}
+              </button>
+            </div>
           </div>
         </div>
       )}
