@@ -65,7 +65,15 @@ export default function ScriptPanel({ projectId }: Props) {
       const data = await res.json();
       if (res.ok) {
         setScript(data.script);
-        await loadDrafts();
+        // Reload drafts list
+        const listRes = await fetch(`/api/projects/${projectId}/script`);
+        const listData = await listRes.json().catch(() => ({ drafts: [] }));
+        if (listData.drafts) {
+          setDrafts(listData.drafts);
+          if (listData.drafts.length > 0) {
+            setSelectedDraftId(listData.drafts[0].id);
+          }
+        }
       } else {
         alert('脚本生成失败: ' + (data.error || '未知错误'));
       }
