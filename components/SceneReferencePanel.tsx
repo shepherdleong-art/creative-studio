@@ -47,6 +47,9 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
     return () => { active = false; };
   }, [loadRefs]);
 
+  const openCreate = () => { setIsCreating(true); setNewName(''); setNewImageId(''); };
+  const closeCreate = () => { setIsCreating(false); setNewName(''); setNewImageId(''); };
+
   // Escape key to close creation modal
   useEffect(() => {
     if (!isCreating) return;
@@ -55,10 +58,7 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isCreating]);
-
-  const openCreate = () => { setIsCreating(true); setNewName(''); setNewImageId(''); };
-  const closeCreate = () => { setIsCreating(false); setNewName(''); setNewImageId(''); };
+  }, [isCreating, closeCreate]);
 
   const handleCreate = async () => {
     if (!newName.trim() || !newImageId) return;

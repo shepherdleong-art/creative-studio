@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface ScriptShot {
   shotIndex: number;
@@ -36,22 +36,27 @@ export default function ScriptPanel({ projectId }: Props) {
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const loadDrafts = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/projects/${projectId}/script`);
-      const data = await res.json().catch(() => ({ drafts: [] }));
-      if (data.drafts) {
-        setDrafts(data.drafts);
-        // Auto-select latest
-        if (data.drafts.length > 0 && !selectedDraftId) {
-          setSelectedDraftId(data.drafts[0].id);
-          setScript(JSON.parse(data.drafts[0].outputJson));
-        }
-      }
-    } catch { /* ignore */ }
-  }, [projectId, selectedDraftId]);
+  const initialLoadDone = useRef(false);
 
-  useEffect(() => { loadDrafts(); }, [loadDrafts]);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/script`);
+        const data = await res.json().catch(() => ({ drafts: [] }));
+        if (!active) return;
+        if (data.drafts) {
+          setDrafts(data.drafts);
+          if (!initialLoadDone.current && data.drafts.length > 0) {
+            initialLoadDone.current = true;
+            setSelectedDraftId(data.drafts[0].id);
+            setScript(JSON.parse(data.drafts[0].outputJson));
+          }
+        }
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, [projectId]);
 
   const handleGenerate = async () => {
     setGenerating(true);
