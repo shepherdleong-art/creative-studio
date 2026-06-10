@@ -72,6 +72,7 @@ export default function NewProjectPage() {
   const [quality, setQuality] = useState('medium');
   const [timeoutMs, setTimeoutMs] = useState(600000);
   const [generationCount, setGenerationCount] = useState(4);
+  const [sceneConcurrency, setSceneConcurrency] = useState(3);
 
   const size = useMemo(() => {
     try { return resolveGptImage2Size(aspectRatio, resolution); }
@@ -130,6 +131,7 @@ export default function NewProjectPage() {
           workflowType: 'complex_product',
           providerId: provider.id, model, size, quality, timeoutMs,
           generationCount, aspectRatio, resolution,
+          concurrency: sceneConcurrency,
           sceneSeedImageId: sceneAFiles[0].id,
           scenePrompt,
           shotImageIds: shotFiles.map((f) => f.id),
@@ -143,7 +145,7 @@ export default function NewProjectPage() {
       if (data.id) {
         await fetch(`/api/projects/${data.id}/run`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'start', concurrency: 1, maxAttempts: 1, timeoutMs }),
+          body: JSON.stringify({ action: 'start', concurrency: sceneConcurrency, maxAttempts: 1, timeoutMs }),
         });
         router.push(`/projects/${data.id}`);
       } else {
@@ -373,6 +375,11 @@ export default function NewProjectPage() {
                 <label className="label">生成数量</label>
                 <input type="number" min={1} max={9} value={generationCount}
                   onChange={(e) => setGenerationCount(Math.max(1, Math.min(9, Number(e.target.value))))} className="input-field w-20" />
+              </div>
+              <div>
+                <label className="label">并发数</label>
+                <input type="number" min={1} max={8} value={sceneConcurrency}
+                  onChange={(e) => setSceneConcurrency(Math.max(1, Math.min(8, Number(e.target.value) || 1)))} className="input-field w-20" />
               </div>
               <div>
                 <label className="label">预估成本</label>
