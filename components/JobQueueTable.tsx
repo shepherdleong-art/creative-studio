@@ -90,7 +90,7 @@ export default function JobQueueTable({
               {queueStatus === 'paused' ? '继续' : '开始'}
             </button>
           )}
-          {running && onCancel && (
+          {(running || queueStatus === 'paused') && onCancel && (
             <button onClick={onCancel} className="btn-danger btn-sm">
               取消
             </button>

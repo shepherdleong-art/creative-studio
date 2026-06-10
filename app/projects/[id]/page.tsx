@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import JobQueueTable from '@/components/JobQueueTable';
@@ -77,6 +77,7 @@ export default function ProjectDetailPage() {
   const [sceneRefModal, setSceneRefModal] = useState<{ jobId: string; imageAssetId: string } | null>(null);
   const [sceneRefName, setSceneRefName] = useState('');
   const [editingShotPrompt, setEditingShotPrompt] = useState(false);
+  const editingShotPromptRef = useRef(false);
   const [shotPromptDraft, setShotPromptDraft] = useState('');
   const [sceneRefs, setSceneRefs] = useState<Array<{
     id: string; name: string; imageAssetId: string; imageFilename: string; status: string;
@@ -91,7 +92,9 @@ export default function ProjectDetailPage() {
         return;
       }
       setProject(data);
-      setShotPromptDraft(data.shotPrompt || '');
+      if (!editingShotPromptRef.current) {
+        setShotPromptDraft(data.shotPrompt || '');
+      }
 
       // Check if queue is running
       const queueRes = await fetch(`/api/projects/${id}/run`);
@@ -108,6 +111,11 @@ export default function ProjectDetailPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadProject();
   }, [loadProject]);
+
+  // Keep ref in sync with editingShotPrompt state for use inside loadProject
+  useEffect(() => {
+    editingShotPromptRef.current = editingShotPrompt;
+  }, [editingShotPrompt]);
 
   // Poll for updates when running or paused
   useEffect(() => {
@@ -160,6 +168,35 @@ export default function ProjectDetailPage() {
     await loadProject();
   };
 
+  const ensureQueueRunning = async (): Promise<boolean> => {
+    const statusRes = await fetch(`/api/projects/${id}/run`);
+    const statusData = await statusRes.json().catch(() => ({}));
+    const currentStatus = (statusData.queueStatus || queueStatus || 'idle') as QueueStatus;
+
+    if (currentStatus === 'running') {
+      setQueueStatus('running');
+      return true;
+    }
+
+    const action = currentStatus === 'paused' ? 'resume' : 'start';
+    const res = await fetch(`/api/projects/${id}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, timeoutMs: project?.timeoutMs }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(data.error || `启动队列失败: ${res.status}`);
+      await loadProject();
+      return false;
+    }
+
+    setQueueStatus('running');
+    await loadProject();
+    return true;
+  };
+
   const handleRegenerate = async (jobId: string, payload: RegeneratePayload) => {
     const res = await fetch(`/api/jobs/${jobId}/regenerate`, {
       method: 'POST',
@@ -171,17 +208,7 @@ export default function ProjectDetailPage() {
       alert('重新生成失败: ' + (data.error || '未知错误'));
       return;
     }
-    // Start queue; ignore 409 if already running
-    const runRes = await fetch(`/api/projects/${id}/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'start' }),
-    });
-    if (!runRes.ok && runRes.status !== 409) {
-      const runData = await runRes.json().catch(() => ({}));
-      alert('任务已创建，但启动队列失败: ' + (runData.error || runRes.status));
-    }
-    await loadProject();
+    await ensureQueueRunning();
   };
 
   const handleBatchDownload = () => {
@@ -263,10 +290,7 @@ export default function ProjectDetailPage() {
     if (res.ok) {
       alert(`已创建 ${data.jobCount} 个任务`);
       setApplySceneModal(null);
-      // Auto-start queue
-      await fetch(`/api/projects/${id}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', timeoutMs: project?.timeoutMs }) });
-      setQueueStatus('running');
-      await loadProject();
+      await ensureQueueRunning();
     } else {
       alert('应用失败: ' + (data.error || '未知错误'));
     }
