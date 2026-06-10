@@ -33,10 +33,11 @@ export interface EditImageResult {
 /**
  * Call an OpenAI-compatible /v1/images/edits endpoint.
  *
- * @param request  - Edit parameters, image paths, and real MIME types.
- * @param apiKey   - The API key (from DB or env).
- * @param baseUrl  - The provider's base URL.
- * @param signal   - AbortSignal to cancel the fetch mid-flight.
+ * Uses `image[]` multi-image format (OpenAI standard) rather than `reference_images`
+ * which many compatible providers (including Packy) do not recognize.
+ *
+ * When reference images are present, a structural prefix is prepended to the prompt
+ * so the model knows which image is the base and which are references.
  */
 export async function editImage(
   request: EditImageRequest,
@@ -45,29 +46,42 @@ export async function editImage(
   signal?: AbortSignal
 ): Promise<EditImageResult> {
   const startTime = Date.now();
+  const hasRefs = request.referenceImagePaths.length > 0;
 
   const form = new FormData();
-  form.append('prompt', request.prompt);
   form.append('model', request.model);
   form.append('size', request.size);
   form.append('quality', request.quality);
   form.append('n', '1');
   form.append('response_format', 'b64_json');
 
-  // Append input image with its real MIME type
+  // ── Build prompt with structural prefix when refs present ──
+  let finalPrompt = request.prompt;
+  if (hasRefs) {
+    finalPrompt = [
+      '输入图片顺序如下：',
+      '图1 是待编辑底图，是本次修改的主要对象。',
+      `图2 到图${request.referenceImagePaths.length + 1} 是参考图，只用于参考场景、风格、光线、材质、构图、产品或人物一致性。`,
+      '不要把参考图当成最终画面的主体，不要把参考图整体复制进结果。',
+      '',
+      '用户修改要求：',
+      request.prompt,
+    ].join('\n');
+  }
+  form.append('prompt', finalPrompt);
+
+  // ── Append images as `image[]` array (OpenAI standard) ──
+  // 图1 = 底图, 图2-N = 参考图
   const inputBuffer = fs.readFileSync(request.inputImagePath);
   const inputFilename = path.basename(request.inputImagePath);
-  const inputBlob = new Blob([inputBuffer], { type: request.inputMimeType });
-  form.append('image', inputBlob, inputFilename);
+  form.append('image[]', new Blob([inputBuffer], { type: request.inputMimeType }), inputFilename);
 
-  // Append reference images with their real MIME types
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
     const refPath = request.referenceImagePaths[i];
     const refMime = request.referenceMimeTypes[i] || 'image/png';
     const refBuffer = fs.readFileSync(refPath);
     const refFilename = path.basename(refPath);
-    const refBlob = new Blob([refBuffer], { type: refMime });
-    form.append('reference_images', refBlob, refFilename);
+    form.append('image[]', new Blob([refBuffer], { type: refMime }), refFilename);
   }
 
   const url = `${baseUrl.replace(/\/$/, '')}/v1/images/edits`;
@@ -78,7 +92,7 @@ export async function editImage(
       Authorization: `Bearer ${apiKey}`,
     },
     body: form,
-    signal, // Pass AbortSignal so cancel/timeout truly interrupts the request
+    signal,
   });
 
   const latencyMs = Date.now() - startTime;

@@ -29,6 +29,7 @@ interface Props {
   preprocessEnabled?: boolean;
   targetMaxSide?: number;
   jpegQuality?: number;
+  projectId?: string;
 }
 
 const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
@@ -44,6 +45,7 @@ export default function ImageUploader({
   preprocessEnabled = true,
   targetMaxSide = 1536,
   jpegQuality = 85,
+  projectId,
 }: Props) {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -74,6 +76,7 @@ export default function ImageUploader({
         form.append('preprocessEnabled', String(preprocessEnabled));
         form.append('targetMaxSide', String(targetMaxSide));
         form.append('jpegQuality', String(jpegQuality));
+        if (projectId) form.append('projectId', projectId);
 
         const res = await fetch('/api/upload', {
           method: 'POST',
@@ -93,7 +96,7 @@ export default function ImageUploader({
         setUploading(false);
       }
     },
-    [role, files.length, maxFiles, onUploaded]
+    [role, files.length, maxFiles, onUploaded, preprocessEnabled, targetMaxSide, jpegQuality, projectId]
   );
 
   return (
@@ -144,7 +147,7 @@ export default function ImageUploader({
               <div className="text-2xl mb-1">📁</div>
               <div>拖拽图片到此处，或点击选择</div>
               <div className="text-xs text-gray-400 mt-1">
-                支持 PNG / JPEG / WebP，单文件最大 20MB
+                支持 PNG / JPEG / WebP，大图会在本地上传后自动压缩
               </div>
             </>
           )}

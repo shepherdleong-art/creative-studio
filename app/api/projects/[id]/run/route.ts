@@ -16,6 +16,7 @@ export async function POST(
       id: string;
       concurrency: number;
       maxAttempts: number;
+      timeoutMs: number;
       status: string;
     } | undefined;
 
@@ -39,7 +40,7 @@ export async function POST(
 
         const concurrency = body.concurrency || project.concurrency || 3;
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
-        const timeoutMs = body.timeoutMs || 180000;
+        const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;
 
         // Generate runId for this run
         const runId = uuidv4().slice(0, 8);
@@ -85,7 +86,7 @@ export async function POST(
 
         const concurrency = body.concurrency || project.concurrency || 3;
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
-        const timeoutMs = body.timeoutMs || 180000;
+        const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;
 
         resumeQueue(id, { projectId: id, concurrency, maxAttempts, timeoutMs });
         writeLog({ jobId: '', projectId: id, level: 'info', message: '队列已恢复' });

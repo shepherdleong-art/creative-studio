@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批量图片编辑工作台</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f0f13;
+    --card: #1a1a24;
+    --border: #2a2a3e;
+    --text: #e8e8f0;
+    --text-muted: #8888a0;
+    --accent: #6c5ce7;
+    --accent-glow: rgba(108, 92, 231, 0.3);
+    --green: #00d68f;
+    --green-glow: rgba(0, 214, 143, 0.25);
+    --red: #ff6b6b;
+    --yellow: #ffd93d;
+    --radius: 16px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    overflow-x: hidden;
+  }
+
+  .bg-mesh {
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(ellipse 80% 60% at 30% 20%, rgba(108,92,231,0.08) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 80% at 70% 70%, rgba(0,214,143,0.06) 0%, transparent 60%),
+      radial-gradient(ellipse 50% 50% at 50% 50%, rgba(255,217,61,0.03) 0%, transparent 60%);
+  }
+
+  .container {
+    position: relative; z-index: 1;
+    width: 100%; max-width: 480px; padding: 24px;
+  }
+
+  /* Logo */
+  .logo-area { text-align: center; margin-bottom: 40px; }
+  .logo-icon {
+    width: 72px; height: 72px; margin: 0 auto 16px;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    border-radius: 20px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 36px;
+    box-shadow: 0 8px 32px var(--accent-glow);
+  }
+  .logo-title {
+    font-size: 24px; font-weight: 700; letter-spacing: 0.02em;
+    background: linear-gradient(135deg, #e8e8f0, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .logo-sub { margin-top: 6px; font-size: 13px; color: var(--text-muted); }
+
+  /* Card */
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 32px 28px;
+    text-align: center; transition: all 0.3s ease;
+  }
+
+  .status-indicator {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 16px; border-radius: 20px;
+    font-size: 14px; font-weight: 600; margin-bottom: 20px;
+  }
+  .status-indicator.online { background: var(--green-glow); color: var(--green); }
+  .status-indicator.starting { background: rgba(255,217,61,0.15); color: var(--yellow); }
+  .status-indicator.offline { background: rgba(255,107,107,0.15); color: var(--red); }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+  }
+  .status-indicator.online .status-dot { background: var(--green); box-shadow: 0 0 8px var(--green-glow); animation: pulse-dot 2s ease-in-out infinite; }
+  .status-indicator.starting .status-dot { background: var(--yellow); animation: pulse-dot 1s ease-in-out infinite; }
+  .status-indicator.offline .status-dot { background: var(--red); }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .status-address {
+    font-size: 13px; color: var(--text-muted); margin-bottom: 8px;
+  }
+  .status-address code {
+    background: rgba(255,255,255,0.05); padding: 3px 8px; border-radius: 6px;
+    font-size: 13px; color: #a78bfa;
+  }
+
+  .elapsed {
+    font-size: 12px; color: #5a5a78; margin-bottom: 24px;
+    min-height: 20px;
+  }
+
+  /* Buttons */
+  .btn-primary {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 14px 40px; border-radius: 12px;
+    font-size: 16px; font-weight: 600; text-decoration: none;
+    border: none; cursor: pointer;
+    transition: all 0.25s ease;
+    background: linear-gradient(135deg, var(--accent), #8b7cf7);
+    color: #fff;
+    box-shadow: 0 4px 20px var(--accent-glow);
+    letter-spacing: 0.02em;
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(108,92,231,0.45); }
+  .btn-primary:active { transform: translateY(0); }
+  .btn-primary:disabled {
+    opacity: 0.5; cursor: not-allowed; transform: none;
+    box-shadow: 0 2px 10px var(--accent-glow);
+  }
+
+  .btn-secondary {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 18px; border-radius: 10px;
+    font-size: 12px; text-decoration: none;
+    border: 1px solid var(--border);
+    background: transparent; color: var(--text-muted);
+    cursor: pointer; transition: all 0.2s ease;
+  }
+  .btn-secondary:hover { border-color: #4a4a6a; color: var(--text); }
+
+  /* Progress bar */
+  .progress-track {
+    width: 100%; height: 3px; background: rgba(255,255,255,0.05);
+    border-radius: 2px; margin: 20px 0 0; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--green));
+    transition: width 0.6s ease;
+    width: 0%;
+  }
+
+  /* Tips */
+  .tips { margin-top: 32px; padding: 0 8px; }
+  .tip-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 12px; color: var(--text-muted); line-height: 1.6;
+  }
+  .tip-item:last-child { border-bottom: none; }
+  .tip-icon {
+    flex-shrink: 0; width: 22px; height: 22px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; background: rgba(255,255,255,0.04);
+  }
+
+  .footer {
+    text-align: center; margin-top: 32px;
+    font-size: 11px; color: #4a4a5e;
+  }
+
+  .fade-enter { animation: fadeIn 0.4s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  @media (max-width: 520px) {
+    .container { padding: 16px; }
+    .card { padding: 20px; }
+    .logo-title { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="bg-mesh"></div>
+
+<div class="container">
+  <div class="logo-area">
+    <div class="logo-icon">🖼️</div>
+    <h1 class="logo-title">批量图片编辑工作台</h1>
+    <p class="logo-sub">AI 驱动的批量图片生成与编辑</p>
+  </div>
+
+  <div class="card fade-enter" id="card">
+    <div class="status-indicator starting" id="indicator">
+      <span class="status-dot"></span>
+      <span id="statusText">正在启动服务…</span>
+    </div>
+
+    <div class="status-address">
+      服务地址 <code id="addrCode">http://127.0.0.1:3000</code>
+    </div>
+
+    <div class="elapsed" id="elapsed"></div>
+
+    <a class="btn-primary" id="mainBtn" href="#" target="_blank">
+      <span id="btnIcon">⏳</span>
+      <span id="btnText">等待服务启动…</span>
+    </a>
+
+    <div class="progress-track" id="progressTrack">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+  <div class="tips fade-enter" id="tips">
+    <div class="tip-item">
+      <span class="tip-icon">💡</span>
+      <span>双击 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">launcher.vbs</code> 即可一键启动并打开工作台，无需手动操作命令行。</span>
+    </div>
+    <div class="tip-item">
+      <span class="tip-icon">🔧</span>
+      <span>需要换端口？在 PowerShell 里先设 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">$env:BATCH_WORKBENCH_PORT=3001</code>，再运行 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">start-windows.cmd</code>。</span>
+    </div>
+    <div class="tip-item">
+      <span class="tip-icon">🛑</span>
+      <span>用完记得双击 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">stop-windows.cmd</code> 释放资源。</span>
+    </div>
+  </div>
+
+  <div class="footer">batch-image-workbench · 本地 AI 工作台</div>
+</div>
+
+<script>
+  const qs = new URLSearchParams(window.location.search);
+  const PORT = qs.get('port') || '3000';
+  const AUTO = qs.get('auto') !== '0'; // default: auto-redirect when ready
+  const BASE = `http://127.0.0.1:${PORT}`;
+
+  document.getElementById('addrCode').textContent = BASE;
+
+  const indicator = document.getElementById('indicator');
+  const statusText = document.getElementById('statusText');
+  const mainBtn = document.getElementById('mainBtn');
+  const btnIcon = document.getElementById('btnIcon');
+  const btnText = document.getElementById('btnText');
+  const elapsed = document.getElementById('elapsed');
+  const progressFill = document.getElementById('progressFill');
+  const progressTrack = document.getElementById('progressTrack');
+
+  let startTime = Date.now();
+  let wasEverOnline = false;
+  let autoRedirected = false;
+
+  function updateElapsed() {
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    if (m > 0) {
+      elapsed.textContent = `已等待 ${m} 分 ${sec} 秒`;
+    } else if (s > 0) {
+      elapsed.textContent = `已等待 ${s} 秒`;
+    }
+    // Progress bar: slowly fill, max out at ~90% until online
+    if (!wasEverOnline) {
+      const pct = Math.min(90, s * 2); // 2% per second, capped at 90%
+      progressFill.style.width = pct + '%';
+    }
+  }
+  setInterval(updateElapsed, 1000);
+
+  function setOnline() {
+    wasEverOnline = true;
+    indicator.className = 'status-indicator online';
+    statusText.textContent = '服务运行中';
+    mainBtn.href = BASE;
+    mainBtn.onclick = null;
+    mainBtn.style.pointerEvents = 'auto';
+    mainBtn.style.opacity = '1';
+    btnIcon.textContent = '🚀';
+    btnText.textContent = '进入工作台';
+    elapsed.textContent = '已就绪 ✓';
+    progressFill.style.width = '100%';
+    progressTrack.style.opacity = '0';
+
+    // Auto-redirect when ready (only once)
+    if (AUTO && !autoRedirected) {
+      autoRedirected = true;
+      // Small delay so user sees the "ready" state briefly
+      setTimeout(function() {
+        window.location.href = BASE;
+      }, 600);
+    }
+  }
+
+  function setStarting() {
+    indicator.className = 'status-indicator starting';
+    statusText.textContent = '正在启动服务…';
+    mainBtn.href = '#';
+    mainBtn.onclick = function(e) { e.preventDefault(); };
+    mainBtn.style.pointerEvents = 'none';
+    mainBtn.style.opacity = '0.5';
+    btnIcon.textContent = '⏳';
+    btnText.textContent = '等待服务启动…';
+  }
+
+  function setOffline() {
+    wasEverOnline = false;
+    indicator.className = 'status-indicator offline';
+    statusText.textContent = '服务未启动';
+    mainBtn.href = '#';
+    mainBtn.onclick = function(e) {
+      e.preventDefault();
+      alert('服务似乎没有正常启动。\n\n请尝试：\n1. 双击项目目录下的 start-windows.cmd 手动启动\n2. 检查 Node.js 是否已安装\n3. 检查 3000 端口是否被占用');
+    };
+    mainBtn.style.pointerEvents = 'auto';
+    mainBtn.style.opacity = '1';
+    btnIcon.textContent = '⚠️';
+    btnText.textContent = '启动失败？点此查看帮助';
+    elapsed.textContent = '等待超时，服务可能未正常启动';
+    progressFill.style.width = '100%';
+    progressFill.style.background = 'var(--red)';
+  }
+
+  async function check() {
+    try {
+      const ok = await new Promise(function(resolve) {
+        var img = new Image();
+        var ts = Date.now();
+        img.onload = function() { resolve(true); };
+        img.onerror = function() { resolve(false); };
+        img.src = BASE + '/favicon.ico?' + ts;
+        setTimeout(function() { resolve(false); }, 3000);
+      });
+
+      if (ok) {
+        setOnline();
+      } else if (!wasEverOnline && (Date.now() - startTime) > 120000) {
+        // 2 min timeout — server never came up
+        setOffline();
+      } else if (wasEverOnline) {
+        // Was online, now not — server stopped
+        setOffline();
+      } else {
+        setStarting();
+      }
+    } catch(e) {
+      if (!wasEverOnline && (Date.now() - startTime) > 120000) {
+        setOffline();
+      } else {
+        setStarting();
+      }
+    }
+  }
+
+  check();
+  setInterval(check, 2000);
+</script>
+</body>
+</html>

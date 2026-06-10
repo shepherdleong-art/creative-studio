@@ -11,6 +11,11 @@ interface Job {
   estimatedCost?: number;
   errorMessage?: string;
   outputImageId?: string;
+  providerTaskId?: string;
+  providerStatus?: string;
+  pollCount?: number;
+  lastPolledAt?: string;
+  remoteImageUrl?: string;
 }
 
 interface Props {
@@ -100,6 +105,7 @@ export default function JobQueueTable({
             <tr className="border-b border-gray-200 text-left text-gray-500">
               <th className="pb-2 font-medium">输入文件</th>
               <th className="pb-2 font-medium">状态</th>
+              <th className="pb-2 font-medium">远端进度</th>
               <th className="pb-2 font-medium">尝试</th>
               <th className="pb-2 font-medium">耗时</th>
               <th className="pb-2 font-medium">成本</th>
@@ -117,6 +123,21 @@ export default function JobQueueTable({
                   <span className={`status-badge status-${job.status}`}>
                     {STATUS_LABELS[job.status] || job.status}
                   </span>
+                </td>
+                <td className="py-2 text-xs text-gray-500">
+                  {job.providerTaskId ? (
+                    <div>
+                      <div>task: {job.providerTaskId.slice(0, 10)}</div>
+                      <div>{job.providerStatus || '-'} / 轮询 {job.pollCount || 0}</div>
+                      {job.lastPolledAt && (
+                        <div>上次: {new Date(job.lastPolledAt + 'Z').toLocaleTimeString('zh-CN')}</div>
+                      )}
+                    </div>
+                  ) : job.status === 'running' ? (
+                    <span>同步等待中</span>
+                  ) : (
+                    <span>-</span>
+                  )}
                 </td>
                 <td className="py-2 text-gray-500">
                   {job.attempt}/{job.maxAttempts}

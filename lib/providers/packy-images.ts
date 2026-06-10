@@ -59,12 +59,20 @@ export async function editImagePacky(
   const cleanBase = baseUrl.replace(/\/$/, '');
   const url = `${cleanBase}/v1/images/edits`;
 
-  const hasReferences = request.referenceImagePaths.length > 0;
-  const shouldUseSubjectGuidance =
-    request.referenceGuidanceMode !== 'none' && hasReferences;
-  const prompt = shouldUseSubjectGuidance
-    ? `图1-${request.referenceImagePaths.length}是风格/场景参考图，图${request.referenceImagePaths.length + 1}是需要编辑的原图。保持最后一张图的产品主体、比例、材质不变，参考前面图片调整场景、光线和布置。\n${request.prompt}`
-    : request.prompt;
+  const hasRefs = request.referenceImagePaths.length > 0;
+
+  let prompt = request.prompt;
+  if (hasRefs) {
+    prompt = [
+      '输入图片顺序如下：',
+      '图1 是待编辑底图，是本次修改的主要对象。',
+      `图2 到图${request.referenceImagePaths.length + 1} 是参考图，只用于参考场景、风格、光线、材质、构图、产品或人物一致性。`,
+      '不要把参考图当成最终画面的主体，不要把参考图整体复制进结果。',
+      '',
+      '用户修改要求：',
+      request.prompt,
+    ].join('\n');
+  }
 
   const form = new FormData();
   form.append('model', request.model);
@@ -74,9 +82,16 @@ export async function editImagePacky(
   form.append('n', '1');
   form.append('output_format', 'png');
 
-  // Experimental: Packy documents /v1/images/edits with image multipart.
-  // Try multiple image fields in the same order as GeekAI: references first,
-  // target image last, with the prompt describing that ordering.
+  // 图1 = 底图 (input), 图2-N = 参考图
+  // Base image first
+  const inputBuf = fs.readFileSync(request.inputImagePath);
+  form.append(
+    'image',
+    new Blob([inputBuf], { type: request.inputMimeType }),
+    `图1-底图-${path.basename(request.inputImagePath)}`
+  );
+
+  // Reference images after
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
     const refPath = request.referenceImagePaths[i];
     const refMime = request.referenceMimeTypes[i] || 'image/png';
@@ -84,17 +99,9 @@ export async function editImagePacky(
     form.append(
       'image',
       new Blob([refBuf], { type: refMime }),
-      `reference-${i + 1}-${path.basename(refPath)}`
+      `图${i + 2}-参考-${path.basename(refPath)}`
     );
   }
-
-  // Input image, appended last so the prompt can refer to it as the target.
-  const inputBuf = fs.readFileSync(request.inputImagePath);
-  form.append(
-    'image',
-    new Blob([inputBuf], { type: request.inputMimeType }),
-    path.basename(request.inputImagePath)
-  );
 
   const res = await fetch(url, {
     method: 'POST',

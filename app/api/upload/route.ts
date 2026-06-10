@@ -19,7 +19,6 @@ const MAGIC_BYTES: { bytes: number[]; mime: string }[] = [
   { bytes: [0x52, 0x49, 0x46, 0x46], mime: 'image/webp' },
 ];
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_INPUT_FILES = 50;
 const MAX_REFERENCE_FILES = 3;
 
@@ -47,6 +46,7 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
     const role = (formData.get('role') as string) || 'input';
+    const projectId = (formData.get('projectId') as string) || null;
     const preprocessEnabled = formData.get('preprocessEnabled') !== 'false'; // default true
     const targetMaxSide = parseInt(formData.get('targetMaxSide') as string) || DEFAULT_OPTIONS.targetMaxSide;
     const jpegQuality = parseInt(formData.get('jpegQuality') as string) || DEFAULT_OPTIONS.jpegQuality;
@@ -65,8 +65,9 @@ export async function POST(request: NextRequest) {
     }
 
     const dirName = role === 'reference' ? 'references' : 'inputs';
-    const originalsDir = path.join(process.cwd(), 'storage', 'originals', dirName);
-    const processedDir = path.join(process.cwd(), 'storage', 'processed', dirName);
+    const storageRoot = path.join(/* turbopackIgnore: true */ process.cwd(), 'storage');
+    const originalsDir = path.join(storageRoot, 'originals', dirName);
+    const processedDir = path.join(storageRoot, 'processed', dirName);
 
     for (const d of [originalsDir, processedDir]) {
       if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
@@ -78,7 +79,7 @@ export async function POST(request: NextRequest) {
         (id, projectId, role, filename, path, originalPath, processedPath, mimeType,
          originalWidth, originalHeight, processedWidth, processedHeight,
          originalSizeBytes, processedSizeBytes, preprocessingEnabled, createdAt)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
     const results: Array<{
@@ -102,14 +103,6 @@ export async function POST(request: NextRequest) {
       const browserMime = file.type.toLowerCase();
       if (!ALLOWED_MIME[browserMime] && browserMime !== '') {
         return NextResponse.json({ error: `不支持的文件类型: ${file.type}` }, { status: 400 });
-      }
-
-      // Validate size
-      if (file.size > MAX_FILE_SIZE) {
-        return NextResponse.json(
-          { error: `文件过大: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)` },
-          { status: 400 }
-        );
       }
 
       // Validate magic bytes
@@ -147,6 +140,7 @@ export async function POST(request: NextRequest) {
       // ── Insert into DB ──
       insertAsset.run(
         id,
+        projectId,
         role,
         file.name,
         previewPath,
@@ -163,7 +157,7 @@ export async function POST(request: NextRequest) {
       );
 
       // Relative path for the preview image (will be used for imageUrl)
-      const relToStorage = previewPath.replace(path.join(process.cwd(), 'storage') + path.sep, '');
+      const relToStorage = path.relative(storageRoot, previewPath);
       const normalizedRel = relToStorage.split(path.sep).join('/');
 
       results.push({

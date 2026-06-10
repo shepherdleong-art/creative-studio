@@ -15,6 +15,7 @@ interface Props {
   projectId: string;
   jobId?: string; // If provided, show only this job's logs
   autoRefresh?: boolean;
+  refreshMs?: number;
 }
 
 const LEVEL_CONFIG: Record<string, { bg: string; text: string; icon: string }> = {
@@ -31,7 +32,7 @@ const LEVEL_LABELS: Record<string, string> = {
   debug: 'DEBUG',
 };
 
-export default function LogViewer({ projectId, jobId, autoRefresh = false }: Props) {
+export default function LogViewer({ projectId, jobId, autoRefresh = false, refreshMs = 1000 }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('all');
@@ -44,7 +45,9 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false }: Pro
       if (jobId) params.set('jobId', jobId);
       params.set('limit', '300');
 
-      const res = await fetch(`/api/projects/${projectId}/logs?${params}`);
+      const res = await fetch(`/api/projects/${projectId}/logs?${params}`, {
+        cache: 'no-store',
+      });
       const data = await res.json();
       if (Array.isArray(data)) setLogs(data);
     } catch {
@@ -61,7 +64,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false }: Pro
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(loadLogs, 3000);
+    const interval = setInterval(loadLogs, refreshMs);
     return () => clearInterval(interval);
   }, [autoRefresh, projectId, jobId]);
 
@@ -132,6 +135,9 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false }: Pro
           ))}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {autoRefresh && (
+            <span className="text-xs text-green-500">实时刷新中</span>
+          )}
           <button
             onClick={() => copyLogs(logs)}
             className="text-xs text-gray-500 hover:text-gray-700"

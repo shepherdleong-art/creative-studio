@@ -1,4 +1,35 @@
+# 批量图片编辑工作台
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Windows 快速启动
+
+双击：
+
+```text
+start-windows.cmd
+```
+
+或手动运行：
+
+```powershell
+npm ci
+npm run dev -- --hostname 127.0.0.1 --port 3000
+```
+
+打开：
+
+```text
+http://127.0.0.1:3000
+```
+
+停止：
+
+```text
+stop-windows.cmd
+```
+
+详细说明见 [WINDOWS.md](./WINDOWS.md)。
 
 ## Getting Started
 

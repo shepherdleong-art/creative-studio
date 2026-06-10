@@ -14,6 +14,7 @@ interface Project {
   completedJobs: number;
   failedJobs: number;
   totalCost: number;
+  workflowType?: string;
 }
 
 interface ProviderStatus {
@@ -73,9 +74,9 @@ export default function HomePage() {
       <div className="card p-6 mb-6 bg-gradient-to-br from-blue-50 to-white border-blue-200">
         <div className="flex items-start justify-between flex-wrap gap-4">
           <div>
-            <h1 className="text-2xl font-bold mb-2">🖼️ 批量图片编辑工作台</h1>
+            <h1 className="text-2xl font-bold mb-2">🖼️ 产品素材工作台</h1>
             <p className="text-gray-600 max-w-lg">
-              使用 AI 图片模型批量编辑产品图。上传一批图片 + 一条提示词，自动并发处理、保存结果、统计成本。
+              复杂结构产品的图片生产 + 分镜管理 + 视频任务准备。默认新流程从场景图 A 出发，旧版批量编辑仍可用。
             </p>
           </div>
           <Link href="/projects/new" className="btn-primary text-base px-6 py-2.5 shadow-sm">
@@ -188,6 +189,9 @@ export default function HomePage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3 mb-2">
                       <h3 className="font-semibold text-lg truncate">{p.name}</h3>
+                      {p.workflowType === 'complex_product' && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">复杂产品</span>
+                      )}
                       <span className={`status-badge status-${p.status === 'partial_failed' ? 'failed' : p.status}`}>
                         {STATUS_LABELS[p.status] || p.status}
                       </span>

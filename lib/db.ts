@@ -54,6 +54,7 @@ function initTables(db: Database.Database) {
       FOREIGN KEY (providerId) REFERENCES providers(id)
     );
 
+
     CREATE TABLE IF NOT EXISTS image_assets (
       id TEXT PRIMARY KEY,
       projectId TEXT,
@@ -158,6 +159,14 @@ function initTables(db: Database.Database) {
     `ALTER TABLE jobs ADD COLUMN revision INTEGER DEFAULT 0`,
     `ALTER TABLE projects ADD COLUMN referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject'`,
     `ALTER TABLE jobs ADD COLUMN referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject'`,
+    `ALTER TABLE projects ADD COLUMN timeoutMs INTEGER NOT NULL DEFAULT 600000`,
+    `ALTER TABLE projects ADD COLUMN workflowType TEXT NOT NULL DEFAULT 'legacy_batch_edit'`,
+    `ALTER TABLE projects ADD COLUMN productName TEXT DEFAULT ''`,
+    `ALTER TABLE projects ADD COLUMN productCode TEXT DEFAULT ''`,
+    `ALTER TABLE projects ADD COLUMN productCategory TEXT DEFAULT ''`,
+    `ALTER TABLE projects ADD COLUMN scenePrompt TEXT DEFAULT ''`,
+    `ALTER TABLE projects ADD COLUMN shotPrompt TEXT DEFAULT ''`,
+    `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND type = 'openai-compatible'`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* Column already exists */ }
@@ -173,6 +182,51 @@ function initTables(db: Database.Database) {
       message TEXT NOT NULL,
       attempt INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Scene references, shot sets, and shots
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scene_references (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      imageAssetId TEXT NOT NULL,
+      sourceJobId TEXT,
+      name TEXT NOT NULL,
+      productCode TEXT DEFAULT '',
+      category TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived')),
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (imageAssetId) REFERENCES image_assets(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS shot_sets (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      name TEXT NOT NULL,
+      productCode TEXT DEFAULT '',
+      category TEXT DEFAULT '',
+      sceneReferenceId TEXT,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','generating','reviewing','approved','video_ready')),
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (sceneReferenceId) REFERENCES scene_references(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS shots (
+      id TEXT PRIMARY KEY,
+      shotSetId TEXT NOT NULL,
+      indexNum INTEGER NOT NULL,
+      sourceImageId TEXT NOT NULL,
+      latestGeneratedImageId TEXT,
+      latestJobId TEXT,
+      reviewMark TEXT DEFAULT '',
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE CASCADE,
+      FOREIGN KEY (sourceImageId) REFERENCES image_assets(id),
+      FOREIGN KEY (latestGeneratedImageId) REFERENCES image_assets(id),
+      FOREIGN KEY (latestJobId) REFERENCES jobs(id)
     );
   `);
 }

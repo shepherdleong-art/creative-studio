@@ -53,7 +53,7 @@ export default function Header() {
           <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6">
             <h3 className="text-lg font-semibold mb-2">关闭服务</h3>
             <p className="text-sm text-gray-600 mb-2">
-              确定要停止工作台服务吗？停止后需要重新运行 <code className="bg-gray-100 px-1 rounded text-xs">start.sh</code> 才能再次使用。
+              确定要停止工作台服务吗？停止后需要重新运行启动脚本（Windows: <code className="bg-gray-100 px-1 rounded text-xs">start-windows.cmd</code>；macOS: <code className="bg-gray-100 px-1 rounded text-xs">start.command</code>）才能再次使用。
             </p>
             <p className="text-xs text-gray-400 mb-4">
               或者直接在终端窗口按 <kbd className="bg-gray-100 px-1 rounded">Ctrl+C</kbd>

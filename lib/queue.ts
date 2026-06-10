@@ -244,6 +244,7 @@ async function runJob(
       apiKeyEnv: string;
       apiKey: string;
       model: string;
+      name: string;
       type: string;
       defaultCostPerImage?: number;
     } | undefined;
@@ -260,6 +261,11 @@ async function runJob(
     const providerType = provider.type || 'openai-compatible';
 
     logInfo(`Calling API: ${provider.baseUrl} (type=${providerType}, model=${job.model}, size=${job.size})`);
+    logInfo(`图片发送顺序: adapter=${providerType}, multipart=${providerType === 'openai-compatible' ? 'image[]' : 'image'}, refs=${refApiPaths.length}`);
+    logInfo(`  图1 底图: ${path.basename(inputApiPath)}`);
+    for (let ri = 0; ri < refApiPaths.length; ri++) {
+      logInfo(`  图${ri + 2} 参考: ${path.basename(refApiPaths[ri])}`);
+    }
 
     // Create a per-request AbortController linked to the queue's abort signal
     const reqAbort = new AbortController();
@@ -406,7 +412,7 @@ async function runJob(
               referenceMimeTypes: refMimeTypes,
               size: job.size,
               quality: job.quality || 'auto',
-              referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
+              referenceGuidanceMode: 'none',
             },
             apiKey,
             provider.baseUrl,
@@ -426,36 +432,45 @@ async function runJob(
         stopHeartbeat();
       }
     } else {
-      // OpenAI-compatible uses multipart/form-data
-      result = await withTimeout(
-        editImageOpenAI(
-          {
-            provider: {
-              id: provider.id,
-              name: '',
-              baseUrl: provider.baseUrl,
-              apiKeyEnv: provider.apiKeyEnv,
-              model: provider.model,
-              type: 'openai-compatible',
-              enabled: true,
-              defaultCostPerImage: provider.defaultCostPerImage,
+      // Do not normalize or overwrite Packy baseUrl here.
+      // Existing provider rows may contain the user-tested working URL.
+      const providerName = provider.name || 'provider';
+      const providerLabel = `${providerName} (openai-compatible)`;
+      logInfo(`${providerLabel} 同步请求已开始，等待服务端返回...`);
+      const stopHeartbeat = startRequestHeartbeat(`${providerLabel} 同步请求`, logInfo);
+      try {
+        result = await withTimeout(
+          editImageOpenAI(
+            {
+              provider: {
+                id: provider.id,
+                name: provider.name || '',
+                baseUrl: provider.baseUrl,
+                apiKeyEnv: provider.apiKeyEnv,
+                model: provider.model,
+                type: 'openai-compatible',
+                enabled: true,
+                defaultCostPerImage: provider.defaultCostPerImage,
+              },
+              model: job.model,
+              prompt: job.prompt,
+              inputImagePath: inputApiPath,
+              inputMimeType,
+              referenceImagePaths: refApiPaths,
+              referenceMimeTypes: refMimeTypes,
+              size: job.size,
+              quality: job.quality,
             },
-            model: job.model,
-            prompt: job.prompt,
-            inputImagePath: inputApiPath,
-            inputMimeType,
-            referenceImagePaths: refApiPaths,
-            referenceMimeTypes: refMimeTypes,
-            size: job.size,
-            quality: job.quality,
-          },
-          apiKey,
-          provider.baseUrl,
-          reqAbort.signal
-        ),
-        timeoutMs,
-        reqAbort
-      );
+            apiKey,
+            provider.baseUrl,
+            reqAbort.signal
+          ),
+          timeoutMs,
+          reqAbort
+        );
+      } finally {
+        stopHeartbeat();
+      }
     }
 
     // Clean up the abort listener
@@ -522,6 +537,8 @@ async function runJob(
 
     if (completeResult.changes === 1) {
       logInfo(`任务完成 (成本: ¥${estimatedCost.toFixed(4)})`);
+      // Sync shot: if this job belongs to a shot, write back the generated image
+      db.prepare(`UPDATE shots SET latestGeneratedImageId = ? WHERE latestJobId = ?`).run(outputImageId, job.id);
     } else {
       logWarn('Job was no longer running when trying to mark succeeded, discarding');
     }
@@ -612,17 +629,26 @@ function claimNextJob(projectId: string): (JobRecord & { attempt: number }) | nu
   return { ...job, status: 'running', attempt: nextAttempt };
 }
 
-function startPackyHeartbeat(logInfo: (msg: string) => void, intervalMs = 15000): () => void {
+function startRequestHeartbeat(
+  label: string,
+  logInfo: (msg: string) => void,
+  intervalMs = 10000
+): () => void {
   const startedAt = Date.now();
-  const timer = setInterval(() => {
+  const timer: ReturnType<typeof setInterval> = setInterval(() => {
     const elapsed = Math.round((Date.now() - startedAt) / 1000);
     if (elapsed >= 60) {
-      logInfo(`Packy 长连接等待中，已等待 ${elapsed}s；如果长时间无响应，可能是代理或网络限制了长连接`);
+      logInfo(`${label} 等待中，已等待 ${elapsed}s；如果长时间无响应，可能是代理、网络或上游长连接限制`);
     } else {
-      logInfo(`Packy 长连接等待中，已等待 ${elapsed}s`);
+      logInfo(`${label} 等待中，已等待 ${elapsed}s`);
     }
   }, intervalMs);
+
   return () => clearInterval(timer);
+}
+
+function startPackyHeartbeat(logInfo: (msg: string) => void, intervalMs = 10000): () => void {
+  return startRequestHeartbeat('Packy 长连接', logInfo, intervalMs);
 }
 
 function isTimeoutLikeError(message: string): boolean {

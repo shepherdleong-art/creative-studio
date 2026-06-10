@@ -13,11 +13,15 @@ export async function GET(
 
     if (jobId) {
       const logs = getJobLogs(jobId);
-      return NextResponse.json(logs);
+      return NextResponse.json(logs, {
+        headers: { 'Cache-Control': 'no-store' },
+      });
     }
 
     const logs = getProjectLogs(id, limit);
-    return NextResponse.json(logs);
+    return NextResponse.json(logs, {
+      headers: { 'Cache-Control': 'no-store' },
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
