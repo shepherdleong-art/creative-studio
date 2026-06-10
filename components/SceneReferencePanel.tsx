@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import ImagePickerGrid from '@/components/ImagePickerGrid';
 
 interface SceneReference {
   id: string;
@@ -88,13 +89,20 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
             <input value={newName} onChange={(e) => setNewName(e.target.value)} className="input-field text-sm" placeholder="例如: 现代奶油风卧室" />
           </div>
           <div>
-            <label className="text-xs text-gray-500">选择图片</label>
-            <select value={newImageId} onChange={(e) => setNewImageId(e.target.value)} className="input-field text-sm">
-              <option value="">-- 选择项目图片 --</option>
-              {images.filter((img) => img.role === 'output' || img.role === 'input').map((img) => (
-                <option key={img.id} value={img.id}>{img.filename}</option>
-              ))}
-            </select>
+            <label className="text-xs text-gray-500 mb-2 block">选择图片</label>
+            <ImagePickerGrid
+              items={images
+                .filter((img) => img.role === 'output' || img.role === 'input')
+                .map((img) => ({
+                  id: img.id,
+                  label: img.filename,
+                  filename: img.filename,
+                  imageUrl: img.imageUrl,
+                }))}
+              selectedId={newImageId}
+              onSelect={setNewImageId}
+              emptyText="当前项目没有可选择的图片。"
+            />
           </div>
           <div className="flex gap-2">
             <button onClick={handleCreate} disabled={!newName.trim() || !newImageId || saving} className="btn-primary btn-sm text-xs">{saving ? '创建中...' : '创建'}</button>
