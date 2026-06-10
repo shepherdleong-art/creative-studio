@@ -20,7 +20,7 @@ interface Job {
 
 interface Props {
   jobs: Job[];
-  queueStatus?: string;
+  queueStatus?: 'idle' | 'running' | 'paused';
   onRetry: (jobId: string) => void;
   onPause?: () => void;
   onResume?: () => void;
@@ -87,7 +87,7 @@ export default function JobQueueTable({
           )}
           {!running && counts.pending > 0 && onResume && (
             <button onClick={onResume} className="btn-primary btn-sm">
-              继续
+              {queueStatus === 'paused' ? '继续' : '开始'}
             </button>
           )}
           {running && onCancel && (

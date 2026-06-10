@@ -8,6 +8,7 @@ import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
 import LogViewer from '@/components/LogViewer';
 import SceneReferencePanel from '@/components/SceneReferencePanel';
 import ShotSetPanel from '@/components/ShotSetPanel';
+import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 
 interface Project {
   id: string;
@@ -66,13 +67,20 @@ export default function ProjectDetailPage() {
   const params = useParams();
   const id = params.id as string;
 
+  type QueueStatus = 'idle' | 'running' | 'paused';
+
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
+  const [queueStatus, setQueueStatus] = useState<QueueStatus>('idle');
+  const running = queueStatus === 'running';
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [sceneRefModal, setSceneRefModal] = useState<{ jobId: string; imageAssetId: string } | null>(null);
   const [sceneRefName, setSceneRefName] = useState('');
-  const [sceneRefs, setSceneRefs] = useState<Array<{ id: string; name: string; imageFilename: string; status: string }>>([]);
+  const [editingShotPrompt, setEditingShotPrompt] = useState(false);
+  const [shotPromptDraft, setShotPromptDraft] = useState('');
+  const [sceneRefs, setSceneRefs] = useState<Array<{
+    id: string; name: string; imageAssetId: string; imageFilename: string; status: string;
+  }>>([]);
 
   const loadProject = useCallback(async () => {
     try {
@@ -83,11 +91,12 @@ export default function ProjectDetailPage() {
         return;
       }
       setProject(data);
+      setShotPromptDraft(data.shotPrompt || '');
 
       // Check if queue is running
       const queueRes = await fetch(`/api/projects/${id}/run`);
       const queueData = await queueRes.json();
-      setRunning(queueData.queueStatus === 'running');
+      setQueueStatus((queueData.queueStatus || 'idle') as QueueStatus);
     } catch (err) {
       console.error(err);
     } finally {
@@ -100,31 +109,32 @@ export default function ProjectDetailPage() {
     loadProject();
   }, [loadProject]);
 
-  // Poll for updates when running
+  // Poll for updates when running or paused
   useEffect(() => {
-    if (!running) return;
+    if (queueStatus === 'idle') return;
     const interval = setInterval(loadProject, 2000);
     return () => clearInterval(interval);
-  }, [running, loadProject]);
+  }, [queueStatus, loadProject]);
 
   const handleAction = async (action: string) => {
     setActionLoading(action);
     try {
-      await fetch(`/api/projects/${id}/run`, {
+      const res = await fetch(`/api/projects/${id}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, timeoutMs: project?.timeoutMs }),
       });
-      if (action === 'start' || action === 'resume') {
-        setRunning(true);
-      } else if (action === 'pause') {
-        setRunning(false);
-      } else if (action === 'cancel') {
-        setRunning(false);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || `操作失败: ${res.status}`);
+        return;
       }
+      if (action === 'start' || action === 'resume') setQueueStatus('running');
+      if (action === 'pause') setQueueStatus('paused');
+      if (action === 'cancel') setQueueStatus('idle');
       await loadProject();
     } catch (err) {
-      console.error(err);
+      alert('操作失败: ' + String(err));
     } finally {
       setActionLoading(null);
     }
@@ -174,23 +184,13 @@ export default function ProjectDetailPage() {
     await loadProject();
   };
 
-  const handleBatchDownload = async () => {
+  const handleBatchDownload = () => {
     const succeededJobs = project?.jobs.filter((j) => j.status === 'succeeded' && j.outputFilename) || [];
     if (succeededJobs.length === 0) {
       alert('没有可下载的图片');
       return;
     }
-
-    // Download individually (browser limitation)
-    for (const job of succeededJobs) {
-      if (job.outputFilename) {
-        const a = document.createElement('a');
-        a.href = `/api/images/outputs/${job.outputFilename}`;
-        a.download = job.outputFilename;
-        a.click();
-        await new Promise((r) => setTimeout(r, 300));
-      }
-    }
+    window.location.href = `/api/projects/${id}/download`;
   };
 
   const handleExportCSV = () => {
@@ -224,11 +224,30 @@ export default function ProjectDetailPage() {
     } catch { /* ignore */ }
   }, [id]);
 
+  const handleSaveShotPrompt = async () => {
+    if (!shotPromptDraft.trim()) {
+      alert('分镜重做模板不能为空');
+      return;
+    }
+    const res = await fetch(`/api/projects/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shotPrompt: shotPromptDraft.trim() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert('保存失败: ' + (data.error || res.status));
+      return;
+    }
+    setProject((prev) => prev ? { ...prev, shotPrompt: data.shotPrompt } : prev);
+    setEditingShotPrompt(false);
+  };
+
   const openApplySceneModal = async (shotSetId: string) => {
     await loadSceneRefs();
     setApplySceneModal(shotSetId);
     setApplySceneRefId('');
-    setApplyScenePrompt('图1 是待编辑分镜图。图2 是场景参考图。请参考图2的空间风格、光线、墙面、软装和布置，重绘图1的场景。保持图1中的产品结构、模特姿态、主体位置和画面构图尽量一致。不要改变产品结构，不要添加文字。');
+    setApplyScenePrompt(project?.shotPrompt || '');
   };
 
   const handleApplySceneSubmit = async () => {
@@ -246,7 +265,7 @@ export default function ProjectDetailPage() {
       setApplySceneModal(null);
       // Auto-start queue
       await fetch(`/api/projects/${id}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', timeoutMs: project?.timeoutMs }) });
-      setRunning(true);
+      setQueueStatus('running');
       await loadProject();
     } else {
       alert('应用失败: ' + (data.error || '未知错误'));
@@ -305,13 +324,22 @@ export default function ProjectDetailPage() {
         </div>
 
         <div className="flex gap-2">
-          {!running && hasPendingJobs && (
+          {!running && hasPendingJobs && queueStatus !== 'paused' && (
             <button
               onClick={() => handleAction('start')}
               disabled={!!actionLoading}
               className="btn-primary"
             >
               {actionLoading === 'start' ? '...' : '▶ 开始运行'}
+            </button>
+          )}
+          {queueStatus === 'paused' && (
+            <button
+              onClick={() => handleAction('resume')}
+              disabled={!!actionLoading}
+              className="btn-primary"
+            >
+              {actionLoading === 'resume' ? '...' : '▶ 继续运行'}
             </button>
           )}
           {running && (
@@ -323,7 +351,7 @@ export default function ProjectDetailPage() {
               {actionLoading === 'pause' ? '...' : '⏸ 暂停'}
             </button>
           )}
-          {running && (
+          {(running || queueStatus === 'paused') && (
             <button
               onClick={() => handleAction('cancel')}
               disabled={!!actionLoading}
@@ -335,7 +363,7 @@ export default function ProjectDetailPage() {
           {succeededJobs.length > 0 && (
             <>
               <button onClick={handleBatchDownload} className="btn-secondary">
-                批量下载
+                导出 ZIP
               </button>
               <button onClick={handleExportCSV} className="btn-secondary">
                 导出 CSV
@@ -384,13 +412,47 @@ export default function ProjectDetailPage() {
             />
 
             {/* Stage 3: Shot Set & Batch Redo */}
-            {project.shotPrompt && (
-              <div className="card p-4">
-                <h2 className="font-semibold mb-2">分镜重做模板</h2>
-                <p className="text-xs text-gray-400 mb-2">确认场景参考图后，点击分镜组的「批量应用场景」使用此模板。</p>
-                <pre className="text-xs text-gray-600 whitespace-pre-wrap bg-gray-50 p-3 rounded">{project.shotPrompt}</pre>
-              </div>
-            )}
+            <div className="card p-4">
+              <h2 className="font-semibold mb-2">分镜重做模板</h2>
+              <p className="text-xs text-gray-400 mb-2">确认场景参考图后，点击分镜组的「批量应用场景」使用此模板。</p>
+              {editingShotPrompt ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={shotPromptDraft}
+                    onChange={(e) => setShotPromptDraft(e.target.value)}
+                    rows={6}
+                    className="input-field text-xs font-mono"
+                  />
+                  <div className="flex gap-2">
+                    <button onClick={handleSaveShotPrompt} className="btn-primary btn-sm">保存</button>
+                    <button
+                      onClick={() => {
+                        setShotPromptDraft(project.shotPrompt || '');
+                        setEditingShotPrompt(false);
+                      }}
+                      className="btn-secondary btn-sm"
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <pre className="text-xs text-gray-600 whitespace-pre-wrap bg-gray-50 p-3 rounded">
+                    {project.shotPrompt || '未设置'}
+                  </pre>
+                  <button
+                    onClick={() => {
+                      setShotPromptDraft(project.shotPrompt || '');
+                      setEditingShotPrompt(true);
+                    }}
+                    className="btn-secondary btn-sm mt-2"
+                  >
+                    编辑模板
+                  </button>
+                </div>
+              )}
+            </div>
             <ShotSetPanel
               projectId={project.id}
               images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role }))}
@@ -404,11 +466,17 @@ export default function ProjectDetailPage() {
                 <h2 className="font-semibold mb-4">任务队列</h2>
                 <JobQueueTable
                   jobs={project.jobs}
-                  queueStatus={running ? 'running' : 'idle'}
+                  queueStatus={queueStatus}
                   onRetry={handleRetry}
                   onPause={running ? () => handleAction('pause') : undefined}
-                  onResume={!running && hasPendingJobs ? () => handleAction('start') : undefined}
-                  onCancel={running ? () => handleAction('cancel') : undefined}
+                  onResume={
+                    queueStatus === 'paused'
+                      ? () => handleAction('resume')
+                      : !running && hasPendingJobs
+                        ? () => handleAction('start')
+                        : undefined
+                  }
+                  onCancel={(running || queueStatus === 'paused') ? () => handleAction('cancel') : undefined}
                   running={running}
                 />
               </div>
@@ -437,11 +505,17 @@ export default function ProjectDetailPage() {
                 <h2 className="font-semibold mb-4">任务队列</h2>
                 <JobQueueTable
                   jobs={project.jobs}
-                  queueStatus={running ? 'running' : 'idle'}
+                  queueStatus={queueStatus}
                   onRetry={handleRetry}
                   onPause={running ? () => handleAction('pause') : undefined}
-                  onResume={!running && hasPendingJobs ? () => handleAction('start') : undefined}
-                  onCancel={running ? () => handleAction('cancel') : undefined}
+                  onResume={
+                    queueStatus === 'paused'
+                      ? () => handleAction('resume')
+                      : !running && hasPendingJobs
+                        ? () => handleAction('start')
+                        : undefined
+                  }
+                  onCancel={(running || queueStatus === 'paused') ? () => handleAction('cancel') : undefined}
                   running={running}
                 />
               </div>
@@ -488,12 +562,25 @@ export default function ProjectDetailPage() {
             <div className="space-y-3">
               <div>
                 <label className="text-sm text-gray-600">选择场景参考图</label>
-                <select value={applySceneRefId} onChange={(e) => setApplySceneRefId(e.target.value)} className="input-field mt-1 text-sm">
-                  <option value="">-- 选择场景 --</option>
-                  {sceneRefs.map((ref) => (
-                    <option key={ref.id} value={ref.id}>{ref.name} ({ref.imageFilename})</option>
-                  ))}
-                </select>
+                {(() => {
+                  const applySceneItems: ImagePickerItem[] = sceneRefs.map((ref) => {
+                    const asset = project?.images.find((img) => img.id === ref.imageAssetId);
+                    return {
+                      id: ref.id,
+                      label: ref.name,
+                      filename: ref.imageFilename,
+                      imageUrl: asset?.imageUrl,
+                    };
+                  });
+                  return (
+                    <ImagePickerGrid
+                      items={applySceneItems}
+                      selectedId={applySceneRefId}
+                      onSelect={setApplySceneRefId}
+                      emptyText="当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。"
+                    />
+                  );
+                })()}
                 {sceneRefs.length === 0 && (
                   <p className="text-xs text-red-400 mt-1">当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。</p>
                 )}
