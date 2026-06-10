@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import VideoGenerationPanel from '@/components/VideoGenerationPanel';
 
 interface Shot {
   id: string;
@@ -226,6 +227,19 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene }: 
                       ))}
                     </div>
                   )}
+
+                  {/* Video generation for this shot set */}
+                  <VideoGenerationPanel
+                    projectId={projectId}
+                    shotSetId={set.id}
+                    shots={shots.map((s) => ({
+                      id: s.id,
+                      indexNum: s.indexNum,
+                      sourceImageId: s.sourceImageId,
+                      latestGeneratedImageId: s.latestGeneratedImageId,
+                      imageUrl: getImageUrl(s.latestGeneratedImageId || s.sourceImageId),
+                    }))}
+                  />
                 </div>
               )}
             </div>
