@@ -16,6 +16,7 @@ interface Props {
   jobId?: string; // If provided, show only this job's logs
   autoRefresh?: boolean;
   refreshMs?: number;
+  fill?: boolean; // When true, fill parent height instead of capping at max-h-96
 }
 
 const LEVEL_CONFIG: Record<string, { bg: string; text: string; icon: string }> = {
@@ -32,7 +33,7 @@ const LEVEL_LABELS: Record<string, string> = {
   debug: 'DEBUG',
 };
 
-export default function LogViewer({ projectId, jobId, autoRefresh = false, refreshMs = 1000 }: Props) {
+export default function LogViewer({ projectId, jobId, autoRefresh = false, refreshMs = 1000, fill = false }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('all');
@@ -111,9 +112,9 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
   }
 
   return (
-    <div>
+    <div className={fill ? 'flex h-full flex-col' : undefined}>
       {/* Filter bar */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
+      <div className="flex items-center gap-2 mb-3 flex-wrap shrink-0">
         <div className="flex gap-1">
           {(['all', 'info', 'warn', 'error'] as const).map((level) => (
             <button
@@ -172,13 +173,13 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
 
       {/* Log list */}
       {filteredLogs.length === 0 ? (
-        <div className="text-center py-6 text-gray-400 text-sm">
+        <div className={`text-center text-gray-400 text-sm ${fill ? 'flex flex-1 items-center justify-center' : 'py-6'}`}>
           {filter === 'all' ? '暂无日志' : `无 ${LEVEL_LABELS[filter]} 级别日志`}
         </div>
       ) : (
         <div
           ref={containerRef}
-          className="max-h-96 overflow-y-auto border border-gray-200 rounded-lg bg-gray-900 text-gray-100 font-mono text-xs"
+          className={`${fill ? 'min-h-0 flex-1' : 'max-h-96'} overflow-y-auto border border-gray-200 rounded-lg bg-gray-900 text-gray-100 font-mono text-xs`}
           onScroll={(e) => {
             const el = e.currentTarget;
             const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
@@ -221,7 +222,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
                       {!log.jobId ? '📋' : log.jobId.slice(0, 6)}
                     </td>
                   )}
-                  <td className="py-1 px-2 break-all">
+                  <td className="py-1 px-2 break-words whitespace-pre-wrap">
                     {log.attempt > 0 && !jobId && (
                       <span className="text-gray-600 mr-1">[#{log.attempt}]</span>
                     )}
@@ -234,7 +235,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
         </div>
       )}
 
-      <div className="text-xs text-gray-400 mt-1">
+      <div className="text-xs text-gray-400 mt-1 shrink-0">
         共 {filteredLogs.length} 条日志
         {filter !== 'all' && ` (过滤: ${LEVEL_LABELS[filter]})`}
       </div>

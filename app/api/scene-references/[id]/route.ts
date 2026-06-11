@@ -16,6 +16,9 @@ export async function PATCH(
     if (body.status === 'archived') {
       db.prepare(`UPDATE scene_references SET status = 'archived' WHERE id = ?`).run(id);
     }
+    if (body.status === 'active') {
+      db.prepare(`UPDATE scene_references SET status = 'active' WHERE id = ?`).run(id);
+    }
     if (typeof body.name === 'string' && body.name.trim()) {
       db.prepare(`UPDATE scene_references SET name = ? WHERE id = ?`).run(body.name.trim(), id);
     }

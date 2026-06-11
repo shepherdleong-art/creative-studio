@@ -28,6 +28,7 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState('');
   const [newImageId, setNewImageId] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
 
   const loadRefs = useCallback(async () => {
     try {
@@ -81,9 +82,24 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
     await loadRefs();
   };
 
+  const handleRestore = async (refId: string) => {
+    await fetch(`/api/scene-references/${refId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    await loadRefs();
+  };
+
+  const handleDelete = async (refId: string) => {
+    if (!confirm('确定永久删除该场景参考图？不影响已生成的图片文件。')) return;
+    await fetch(`/api/scene-references/${refId}`, { method: 'DELETE' });
+    await loadRefs();
+  };
+
   const getImageUrl = (assetId: string) => images.find((img) => img.id === assetId)?.imageUrl || '';
 
   const activeRefs = refs.filter((r) => r.status === 'active');
+  const archivedRefs = refs.filter((r) => r.status === 'archived');
 
   return (
     <div className="card p-4">
@@ -167,15 +183,46 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
               <div className="p-2">
                 <div className="text-xs font-medium truncate">{ref.name}</div>
                 <div className="text-[10px] text-gray-400 truncate">{ref.imageFilename}</div>
-                <div className="flex gap-1 mt-1">
+                <div className="flex items-center gap-2 mt-1">
                   {onApplyToShotSet && (
                     <button onClick={() => onApplyToShotSet(ref.id)} className="text-[10px] text-purple-600 hover:text-purple-800">应用到分镜组</button>
                   )}
                   <button onClick={() => handleArchive(ref.id)} className="text-[10px] text-gray-400 hover:text-gray-600 ml-auto">归档</button>
+                  <button onClick={() => handleDelete(ref.id)} className="text-[10px] text-red-500 hover:text-red-700">删除</button>
                 </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {!loading && archivedRefs.length > 0 && (
+        <div className="mt-4 border-t pt-3">
+          <button
+            onClick={() => setShowArchived((v) => !v)}
+            className="text-xs text-gray-500 hover:text-gray-700"
+          >
+            {showArchived ? '▾' : '▸'} 已归档 ({archivedRefs.length})
+          </button>
+          {showArchived && (
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 mt-2">
+              {archivedRefs.map((ref) => (
+                <div key={ref.id} className="border rounded-lg overflow-hidden opacity-70">
+                  <div className="aspect-square bg-gray-100">
+                    <img src={getImageUrl(ref.imageAssetId)} alt={ref.name} className="w-full h-full object-cover" />
+                  </div>
+                  <div className="p-2">
+                    <div className="text-xs font-medium truncate">{ref.name}</div>
+                    <div className="text-[10px] text-gray-400 truncate">{ref.imageFilename}</div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <button onClick={() => handleRestore(ref.id)} className="text-[10px] text-green-600 hover:text-green-800">恢复</button>
+                      <button onClick={() => handleDelete(ref.id)} className="text-[10px] text-red-500 hover:text-red-700 ml-auto">删除</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

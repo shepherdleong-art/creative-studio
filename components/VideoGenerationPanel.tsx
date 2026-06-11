@@ -58,13 +58,17 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [selectedSetId, setSelectedSetId] = useState<string>(shotSetId || '');
   const [selectedSetShots, setSelectedSetShots] = useState<typeof shots>(shots);
 
-  // Per-shot form state
+  // Per-shot form state (one active shot at a time)
   const [selectedShot, setSelectedShot] = useState<string | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<string>('');
-  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
-  const [prompt, setPrompt] = useState('');
-  const [duration, setDuration] = useState(5);
+  const [motionRows, setMotionRows] = useState<Array<{ prompt: string; templateId: string; providerId: string; durationSec: number }>>([]);
   const [creating, setCreating] = useState(false);
+
+  const defaultProviderId = providers.length > 0 ? providers[0].id : '';
+  const defaultDuration = 5;
+
+  const makeEmptyRow = (): { prompt: string; templateId: string; providerId: string; durationSec: number } => ({
+    prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
+  });
 
   // Load providers and templates once
   useEffect(() => {
@@ -136,39 +140,56 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     } catch { /* ignore */ }
   };
 
-  // Auto-fill template prompt on selection
-  const handleTemplateChange = (templateId: string) => {
-    setSelectedTemplate(templateId);
-    const tmpl = templates.find((t) => t.id === templateId);
-    if (tmpl && !prompt.trim()) {
-      setPrompt(tmpl.prompt);
+  // Switch the active shot, resetting its 运镜 rows
+  const activate = (shotId: string) => {
+    if (selectedShot !== shotId) {
+      setSelectedShot(shotId);
+      setMotionRows([makeEmptyRow()]);
     }
   };
 
-  const handleCreateVideo = async (shotId: string) => {
-    if (!selectedProvider || !prompt.trim()) {
-      alert('请选择供应商并填写提示词');
-      return;
-    }
+  const addMotionRow = () => setMotionRows((rows) => {
+    const last = rows[rows.length - 1];
+    return [...rows, last ? { ...last, prompt: '' } : makeEmptyRow()];
+  });
+  const removeMotionRow = (idx: number) =>
+    setMotionRows((rows) => (rows.length <= 1 ? rows : rows.filter((_, i) => i !== idx)));
+  const updateRowPrompt = (idx: number, value: string) =>
+    setMotionRows((rows) => rows.map((r, i) => (i === idx ? { ...r, prompt: value } : r)));
+  const updateRowTemplate = (idx: number, templateId: string) =>
+    setMotionRows((rows) => rows.map((r, i) => {
+      if (i !== idx) return r;
+      const tmpl = templates.find((t) => t.id === templateId);
+      const nextPrompt = !r.prompt.trim() && tmpl ? tmpl.prompt : r.prompt;
+      return { ...r, templateId, prompt: nextPrompt };
+    }));
+  const updateRowProvider = (idx: number, providerId: string) =>
+    setMotionRows((rows) => rows.map((r, i) => (i === idx ? { ...r, providerId } : r)));
+  const updateRowDuration = (idx: number, durationSec: number) =>
+    setMotionRows((rows) => rows.map((r, i) => (i === idx ? { ...r, durationSec } : r)));
+
+  const handleCreateVideos = async (shotId: string) => {
+    const items = motionRows
+      .map((r) => ({
+        prompt: r.prompt.trim(),
+        templateId: r.templateId || null,
+        providerId: r.providerId,
+        durationSec: r.durationSec,
+      }))
+      .filter((r) => r.prompt.length > 0);
+    if (items.some((r) => !r.providerId)) { alert('每行都需要选择供应商'); return; }
+    if (items.length === 0) { alert('请至少填写一条运镜提示词'); return; }
     setCreating(true);
     try {
-      const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs`, {
+      const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shotId,
-          providerId: selectedProvider,
-          templateId: selectedTemplate || undefined,
-          prompt: prompt.trim(),
-          durationSec: duration,
-        }),
+        body: JSON.stringify({ shotId, items }),
       });
       const data = await res.json();
       if (res.ok) {
         await refreshJobs();
-        setSelectedTemplate('');
-        setPrompt('');
-        setDuration(5);
+        setMotionRows([makeEmptyRow()]);
       } else {
         alert('创建视频任务失败: ' + (data.error || '未知错误'));
       }
@@ -223,53 +244,73 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               )}
             </div>
 
-            {/* Create video form */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
-              <select
-                value={selectedShot === shot.id ? selectedProvider : ''}
-                onChange={(e) => { setSelectedShot(shot.id); setSelectedProvider(e.target.value); }}
-                className="input-field text-xs"
-              >
-                <option value="">选择供应商</option>
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+            {/* Create video form — each row is independent */}
+            {selectedShot === shot.id ? (
+              <div className="space-y-2 mb-2">
+                {motionRows.map((row, idx) => (
+                  <div key={idx} className="rounded border bg-gray-50 p-2">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className="text-[10px] text-gray-400 whitespace-nowrap">运镜 {idx + 1}</span>
+                      <select
+                        value={row.providerId}
+                        onChange={(e) => updateRowProvider(idx, e.target.value)}
+                        className="input-field text-xs"
+                      >
+                        <option value="">供应商</option>
+                        {providers.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={row.templateId}
+                        onChange={(e) => updateRowTemplate(idx, e.target.value)}
+                        className="input-field text-xs"
+                      >
+                        <option value="">模板（可选）</option>
+                        {templates.map((t) => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        min={2}
+                        max={15}
+                        value={row.durationSec}
+                        onChange={(e) => updateRowDuration(idx, Math.max(2, Math.min(15, Number(e.target.value) || 5)))}
+                        className="input-field text-xs w-16"
+                        title="秒数"
+                      />
+                      <button
+                        onClick={() => removeMotionRow(idx)}
+                        disabled={motionRows.length <= 1}
+                        className="px-1 text-base leading-none text-gray-400 hover:text-red-500 disabled:opacity-30"
+                        title="删除该运镜"
+                      >−</button>
+                    </div>
+                    <textarea
+                      value={row.prompt}
+                      onChange={(e) => updateRowPrompt(idx, e.target.value)}
+                      rows={2}
+                      className="input-field text-xs font-mono"
+                      placeholder="视频生成提示词（运镜描述）"
+                    />
+                  </div>
                 ))}
-              </select>
-              <select
-                value={selectedShot === shot.id ? selectedTemplate : ''}
-                onChange={(e) => { setSelectedShot(shot.id); handleTemplateChange(e.target.value); }}
-                className="input-field text-xs"
-              >
-                <option value="">运镜模板（可选）</option>
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-              <input
-                type="number"
-                min={2}
-                max={15}
-                value={selectedShot === shot.id ? duration : 5}
-                onChange={(e) => { setSelectedShot(shot.id); setDuration(Math.max(2, Math.min(15, Number(e.target.value) || 5))); }}
-                className="input-field text-xs w-20"
-                placeholder="秒"
-              />
-              <button
-                onClick={() => handleCreateVideo(shot.id)}
-                disabled={creating}
-                className="btn-primary btn-sm text-xs"
-              >
-                {creating ? '创建中...' : `生成 ${duration} 秒视频`}
-              </button>
-            </div>
-            {(selectedShot === shot.id) && (
-              <textarea
-                value={selectedShot === shot.id ? prompt : ''}
-                onChange={(e) => { setSelectedShot(shot.id); setPrompt(e.target.value); }}
-                rows={2}
-                className="input-field text-xs font-mono mb-2"
-                placeholder="视频生成提示词（运镜描述）"
-              />
+                <div className="flex items-center gap-2">
+                  <button onClick={addMotionRow} className="btn-secondary btn-sm text-xs">+ 运镜</button>
+                  <button
+                    onClick={() => handleCreateVideos(shot.id)}
+                    disabled={creating || motionRows.every((r) => !r.prompt.trim())}
+                    className="btn-primary btn-sm text-xs"
+                  >
+                    {creating
+                      ? '创建中...'
+                      : `并发生成 ${motionRows.filter((r) => r.prompt.trim()).length} 条视频`}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => activate(shot.id)} className="btn-secondary btn-sm text-xs mb-2">+ 运镜</button>
             )}
 
             {/* Existing video jobs for this shot */}

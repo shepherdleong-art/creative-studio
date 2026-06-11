@@ -149,6 +149,21 @@ export default function ProjectDetailPage() {
     [project]
   );
 
+  const sceneJobs = useMemo(
+    () => (project?.jobs || []).filter((j) => {
+      const img = (project?.images || []).find((i) => i.id === j.inputImageId);
+      return img?.usage === 'scene_seed';
+    }),
+    [project]
+  );
+  const shotJobs = useMemo(
+    () => (project?.jobs || []).filter((j) => {
+      const img = (project?.images || []).find((i) => i.id === j.inputImageId);
+      return img?.usage === 'shot_source';
+    }),
+    [project]
+  );
+
 
   const validSelectedSceneSeedIds = useMemo(
     () => selectedSceneSeedIds.filter((assetId) => sceneSeedImages.some((img) => img.id === assetId)),
@@ -240,6 +255,13 @@ export default function ProjectDetailPage() {
       return;
     }
     await ensureQueueRunning();
+  };
+
+  // Per-shot redo: regenerate + repoint happen inside ShotSetPanel; here we just
+  // kick the queue and refresh project state.
+  const handleShotChanged = async () => {
+    await ensureQueueRunning();
+    await loadProject();
   };
 
   const handleBatchDownload = () => {
@@ -434,6 +456,7 @@ export default function ProjectDetailPage() {
                 onMark={handleMark}
                 onRegenerate={handleRegenerate}
                 onSetSceneRef={handleSetSceneRef}
+                jobs={sceneJobs}
               />
             )}
             {activeTab === 'storyboard' && (
@@ -445,13 +468,14 @@ export default function ProjectDetailPage() {
                 onUploaded={loadProject}
                 onShotSetCreated={handleShotSetCreated}
                 shotSetRefreshKey={shotSetRefreshKey}
-                jobs={project.jobs}
+                jobs={shotJobs}
                 onApplyScene={openApplySceneModal}
                 editingShotPrompt={editingShotPrompt}
                 setEditingShotPrompt={setEditingShotPrompt}
                 shotPromptDraft={shotPromptDraft}
                 setShotPromptDraft={setShotPromptDraft}
                 onSaveShotPrompt={handleSaveShotPrompt}
+                onShotChanged={handleShotChanged}
               />
             )}
             {activeTab === 'script' && <ScriptPanel projectId={project.id} />}
@@ -479,6 +503,7 @@ export default function ProjectDetailPage() {
             onAction={handleAction}
             onApplyScene={openApplySceneModal}
             onImagesUploaded={loadProject}
+            onShotChanged={handleShotChanged}
           />
         )}
       </div>
@@ -582,6 +607,7 @@ function SceneWorkspace({
   onMark,
   onRegenerate,
   onSetSceneRef,
+  jobs,
 }: {
   project: Project;
   sceneSeedImages: AssetGridItem[];
@@ -593,6 +619,7 @@ function SceneWorkspace({
   onMark: (jobId: string, mark: string) => void;
   onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
   onSetSceneRef: (jobId: string, imageAssetId: string) => void;
+  jobs: Job[];
 }) {
   return (
     <div className="space-y-6">
@@ -623,7 +650,7 @@ function SceneWorkspace({
           <h2 className="text-lg font-semibold">生成结果</h2>
           <p className="mt-1 text-sm text-gray-500">生成成功后，在这里挑选可用图并保存为场景参考图。</p>
         </div>
-        <ResultGallery jobs={project.jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
+        <ResultGallery jobs={jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
       </section>
 
       <SceneReferencePanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} />
@@ -702,6 +729,7 @@ function StoryboardWorkspace({
   shotPromptDraft,
   setShotPromptDraft,
   onSaveShotPrompt,
+  onShotChanged,
 }: {
   project: Project;
   shotSourceImages: AssetGridItem[];
@@ -717,12 +745,13 @@ function StoryboardWorkspace({
   shotPromptDraft: string;
   setShotPromptDraft: (value: string) => void;
   onSaveShotPrompt: () => void;
+  onShotChanged: () => void | Promise<void>;
 }) {
   return (
     <div className="space-y-6">
       <section className="card p-5">
         <div className="mb-4">
-          <h2 className="text-lg font-semibold">原始分镜图</h2>
+          <h2 className="text-lg font-semibold">新分镜图</h2>
           <p className="mt-1 text-sm text-gray-500">上传后在宫格里按顺序选择 1-9 张，再创建分镜组。</p>
         </div>
         <AssetUploadGrid
@@ -773,6 +802,7 @@ function StoryboardWorkspace({
         jobs={jobs}
         onApplyScene={onApplyScene}
         onImagesUploaded={onUploaded}
+        onShotChanged={onShotChanged}
         showUploader={false}
         showCreateControls={false}
       />
@@ -830,6 +860,7 @@ function LegacyProjectContent({
   onAction,
   onApplyScene,
   onImagesUploaded,
+  onShotChanged,
 }: {
   project: Project;
   queueStatus: 'idle' | 'running' | 'paused';
@@ -843,6 +874,7 @@ function LegacyProjectContent({
   onAction: (action: string) => void;
   onApplyScene: (shotSetId: string) => void;
   onImagesUploaded: () => void;
+  onShotChanged: () => void | Promise<void>;
 }) {
   return (
     <>
@@ -865,7 +897,7 @@ function LegacyProjectContent({
         <ResultGallery jobs={project.jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
       </div>
       <SceneReferencePanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} />
-      <ShotSetPanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} jobs={project.jobs} onApplyScene={onApplyScene} onImagesUploaded={onImagesUploaded} />
+      <ShotSetPanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} jobs={project.jobs} onApplyScene={onApplyScene} onImagesUploaded={onImagesUploaded} onShotChanged={onShotChanged} />
     </>
   );
 }

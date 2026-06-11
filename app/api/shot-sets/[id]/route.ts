@@ -19,7 +19,8 @@ export async function GET(
         sia.path as sourcePath,
         gia.filename as generatedFilename,
         j.status as jobStatus,
-        j.outputImageId
+        j.outputImageId,
+        j.prompt as jobPrompt
       FROM shots s
       LEFT JOIN image_assets sia ON s.sourceImageId = sia.id
       LEFT JOIN image_assets gia ON s.latestGeneratedImageId = gia.id
@@ -29,6 +30,24 @@ export async function GET(
     `).all(id);
 
     const storageRoot = path.resolve(process.cwd(), 'storage');
+
+    // Fetch attached scene reference image info
+    let sceneRefName: string | null = null;
+    let sceneRefImageUrl: string | null = null;
+    const shotSetRecord = set as { sceneReferenceId?: string };
+    if (shotSetRecord.sceneReferenceId) {
+      const sceneRef = db.prepare(`
+        SELECT sr.name, ia.path as imagePath
+        FROM scene_references sr
+        LEFT JOIN image_assets ia ON sr.imageAssetId = ia.id
+        WHERE sr.id = ?
+      `).get(shotSetRecord.sceneReferenceId) as { name?: string; imagePath?: string } | undefined;
+      if (sceneRef?.imagePath) {
+        sceneRefName = sceneRef?.name || null;
+        sceneRefImageUrl = `/api/images/${path.relative(storageRoot, path.resolve(sceneRef.imagePath)).split(path.sep).join('/')}`;
+      }
+    }
+
     const shotsWithUrls = (shots as Array<Record<string, unknown>>).map((s) => {
       const sourceUrl = s.sourcePath ? `/api/images/${path.relative(storageRoot, path.resolve(s.sourcePath as string)).split(path.sep).join('/')}` : '';
       const genAsset = db.prepare(`SELECT path FROM image_assets WHERE id = ?`).get(s.latestGeneratedImageId) as { path?: string } | undefined;
@@ -39,7 +58,7 @@ export async function GET(
       return { ...s, sourceImageUrl: sourceUrl, generatedImageUrl: generatedUrl };
     });
 
-    return NextResponse.json({ ...(set as object), shots: shotsWithUrls });
+    return NextResponse.json({ ...(set as object), shots: shotsWithUrls, sceneRefName, sceneRefImageUrl });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
@@ -62,6 +81,12 @@ export async function PATCH(
     if (body.shotId && body.reviewMark) {
       db.prepare(`UPDATE shots SET reviewMark = ? WHERE id = ? AND shotSetId = ?`)
         .run(body.reviewMark, body.shotId, id);
+    }
+
+    // Repoint a shot to a newly regenerated job (used by per-shot redo)
+    if (body.shotId && typeof body.latestJobId === 'string') {
+      db.prepare(`UPDATE shots SET latestJobId = ? WHERE id = ? AND shotSetId = ?`)
+        .run(body.latestJobId, body.shotId, id);
     }
 
     return NextResponse.json({ success: true });

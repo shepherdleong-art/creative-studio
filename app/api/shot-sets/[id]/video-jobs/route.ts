@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
-import { runVideoQueue, getVideoQueueStatus } from '@/lib/video-queue';
+import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY } from '@/lib/video-queue';
 
 export async function POST(
   request: NextRequest,
@@ -55,7 +55,7 @@ export async function POST(
     if (qStatus === 'idle') {
       runVideoQueue({
         projectId: shotSet.projectId,
-        concurrency: 1,
+        concurrency: DEFAULT_VIDEO_CONCURRENCY,
         timeoutMs: 600000,
       }).catch((err) => {
         console.error(`[VideoQueue] Auto-start failed:`, err);

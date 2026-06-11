@@ -11,6 +11,10 @@ export interface VideoQueueOptions {
   timeoutMs: number;
 }
 
+// Number of video jobs to run concurrently per project. Override with the
+// VIDEO_CONCURRENCY env var; clamped to 1–6 to respect provider rate limits.
+export const DEFAULT_VIDEO_CONCURRENCY = Math.max(1, Math.min(6, Number(process.env.VIDEO_CONCURRENCY) || 3));
+
 interface VideoJobRecord {
   id: string;
   projectId: string;

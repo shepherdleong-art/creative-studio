@@ -71,15 +71,21 @@ export async function POST(
               const outputsDir = path.join(process.cwd(), 'storage', 'outputs');
               if (!fs.existsSync(outputsDir)) fs.mkdirSync(outputsDir, { recursive: true });
 
-              const inputImage = db.prepare(`SELECT filename FROM image_assets WHERE id = ?`).get(job.inputImageId) as { filename: string } | undefined;
+              const inputImage = db.prepare(`SELECT filename, usage FROM image_assets WHERE id = ?`).get(job.inputImageId) as { filename: string; usage?: string } | undefined;
+              const inputUsage = inputImage?.usage || '';
+              let filePrefix = 'output-';
+              let outputUsage = '';
+              if (inputUsage === 'scene_seed') { filePrefix = '场景-'; outputUsage = 'scene_gen'; }
+              else if (inputUsage === 'shot_source') { filePrefix = '分镜-'; outputUsage = 'shot_gen'; }
+
               const inputBase = inputImage?.filename ? sanitizeFilenameBase(inputImage.filename) : job.id.slice(0, 8);
-              const preferredOutputName = `output-${inputBase}.png`;
+              const preferredOutputName = `${filePrefix}${inputBase}.png`;
               const outputFilename = ensureUniqueFilename(outputsDir, preferredOutputName, job.id.slice(0, 6));
               const outputPath = path.join(outputsDir, outputFilename);
 
               fs.writeFileSync(outputPath, imgBuffer);
               const outputImageId = uuidv4();
-              db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, createdAt) VALUES (?, ?, 'output', ?, ?, 'image/png', datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath);
+              db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, createdAt) VALUES (?, ?, 'output', ?, ?, 'image/png', ?, datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath, outputUsage);
 
               db.prepare(`UPDATE jobs SET status = 'succeeded', providerStatus = 'succeeded', remoteImageUrl = ?, outputImageId = ?, finishedAt = datetime('now'), latencyMs = ? WHERE id = ?`).run(pollResult.imageUrl, outputImageId, Date.now() - startedAt, job.id);
               writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message: '补抓成功，图片已保存' });

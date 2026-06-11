@@ -504,20 +504,26 @@ async function runJob(
       fs.mkdirSync(outputsDir, { recursive: true });
     }
 
-    // Output filename based on input image name + revision
+    // Output filename: use a meaningful prefix based on the input image's usage role
+    const inputUsage = (db.prepare(`SELECT usage FROM image_assets WHERE id = ?`).get(job.inputImageId) as { usage?: string } | undefined)?.usage || '';
+    let filePrefix = 'output-';
+    let outputUsage = '';
+    if (inputUsage === 'scene_seed') { filePrefix = '场景-'; outputUsage = 'scene_gen'; }
+    else if (inputUsage === 'shot_source') { filePrefix = '分镜-'; outputUsage = 'shot_gen'; }
+
     const inputBase = sanitizeFilenameBase(inputImage.filename || inputImage.path);
     const revSuffix = (job.revision && job.revision > 0) ? `-r${job.revision}` : '';
-    const preferredOutputName = `output-${inputBase}${revSuffix}.png`;
+    const preferredOutputName = `${filePrefix}${inputBase}${revSuffix}.png`;
     const outputFilename = ensureUniqueFilename(outputsDir, preferredOutputName, job.id.slice(0, 6));
     const outputPath = path.join(outputsDir, outputFilename);
     fs.writeFileSync(outputPath, result.imageBuffer);
 
-    // Save output image asset
+    // Save output image asset (tag with usage so tabs can filter)
     const outputImageId = uuidv4();
     db.prepare(
-      `INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, createdAt)
-       VALUES (?, ?, 'output', ?, ?, 'image/png', datetime('now'))`
-    ).run(outputImageId, job.projectId, outputFilename, outputPath);
+      `INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, createdAt)
+       VALUES (?, ?, 'output', ?, ?, 'image/png', ?, datetime('now'))`
+    ).run(outputImageId, job.projectId, outputFilename, outputPath, outputUsage);
 
     const finishedAt = new Date().toISOString();
     const estimatedCost = calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
