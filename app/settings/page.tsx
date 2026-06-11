@@ -161,21 +161,6 @@ export default function SettingsPage() {
     }
   };
 
-  const handleActivateOnly = async (id: string, name: string) => {
-    if (!confirm(`只启用「${name}」，并禁用其他供应商？API Key 会保留。`)) return;
-    try {
-      const res = await fetch(`/api/providers/${id}/activate-only`, { method: 'POST' });
-      const data = await res.json();
-      if (data.error) {
-        alert(data.error);
-        return;
-      }
-      await loadProviders();
-    } catch (err) {
-      alert('设置失败: ' + String(err));
-    }
-  };
-
   return (
     <div className="max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-6">
@@ -185,7 +170,7 @@ export default function SettingsPage() {
             管理 API 供应商的 Base URL、API Key 和默认参数
           </p>
           <p className="text-xs text-gray-400 mt-1">
-            可以保存多家供应商的 Key；只有启用的供应商会出现在新建项目里。「设为唯一启用」不会删除其他 Key。
+            可以保存多个供应商，只有启用且已配置 Key 的供应商会出现在新建项目中。允许多个供应商同时启用。
           </p>
         </div>
         <button
@@ -291,13 +276,6 @@ export default function SettingsPage() {
                         className={p.enabled ? 'btn-secondary btn-sm' : 'btn-primary btn-sm'}
                       >
                         {p.enabled ? '禁用' : '启用'}
-                      </button>
-                      <button
-                        onClick={() => handleActivateOnly(p.id, p.name)}
-                        disabled={saving || (!!p.enabled && providers.filter((x) => x.enabled).length === 1)}
-                        className="btn-secondary btn-sm"
-                      >
-                        设为唯一启用
                       </button>
                       <button
                         onClick={() => startEdit(p)}

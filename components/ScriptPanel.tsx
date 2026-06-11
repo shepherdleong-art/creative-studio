@@ -25,6 +25,11 @@ interface Props {
 
 export default function ScriptPanel({ projectId }: Props) {
   const [generating, setGenerating] = useState(false);
+  const [audience, setAudience] = useState('');
+  const [tone, setTone] = useState('种草');
+  const [platform, setPlatform] = useState('通用');
+  const [sellingPoints, setSellingPoints] = useState('');
+  const [briefLoaded, setBriefLoaded] = useState(false);
   const [script, setScript] = useState<{
     title: string;
     platform: string;
@@ -58,8 +63,41 @@ export default function ScriptPanel({ projectId }: Props) {
     return () => { active = false; };
   }, [projectId]);
 
+  // Load brief from project
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}`);
+        const data = await res.json();
+        if (!active || data.error) return;
+        setAudience(data.targetAudience || '');
+        setTone(data.scriptTone || '种草');
+        setPlatform(data.scriptPlatform || '通用');
+        try { setSellingPoints(JSON.parse(data.sellingPointsJson || '[]').map((s: { title: string }) => s.title).join('\n')); } catch { setSellingPoints(''); }
+        setBriefLoaded(true);
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, [projectId]);
+
+  const saveBrief = async () => {
+    const res = await fetch(`/api/projects/${projectId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetAudience: audience,
+        scriptTone: tone,
+        scriptPlatform: platform,
+        sellingPointsJson: JSON.stringify(sellingPoints.trim().split('\n').filter(Boolean).map((s) => ({ title: s.trim(), priority: 0 }))),
+      }),
+    });
+    if (!res.ok) throw new Error('保存卖点失败');
+  };
+
   const handleGenerate = async () => {
+    if (!briefLoaded) { alert('卖点信息加载中，请稍后再试'); return; }
     setGenerating(true);
+    try { await saveBrief(); } catch { alert('保存卖点失败'); setGenerating(false); return; }
     try {
       const res = await fetch(`/api/projects/${projectId}/script`, { method: 'POST' });
       const data = await res.json();
@@ -154,6 +192,31 @@ export default function ScriptPanel({ projectId }: Props) {
             {generating ? '生成中...' : '生成脚本'}
           </button>
         </div>
+      </div>
+
+      {/* Brief form */}
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div>
+          <label className="text-xs text-gray-500">目标人群</label>
+          <input value={audience} onChange={(e) => setAudience(e.target.value)} className="input-field text-sm" placeholder="25-35岁女性" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500">语气</label>
+          <select value={tone} onChange={(e) => setTone(e.target.value)} className="input-field text-sm">
+            {['种草','专业','温柔生活方式','促销'].map((t) => (<option key={t} value={t}>{t}</option>))}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-gray-500">平台</label>
+          <select value={platform} onChange={(e) => setPlatform(e.target.value)} className="input-field text-sm">
+            {['抖音','小红书','视频号','通用'].map((p) => (<option key={p} value={p}>{p}</option>))}
+          </select>
+        </div>
+      </div>
+      <div className="mb-4">
+        <label className="text-xs text-gray-500">卖点（每行一条）</label>
+        <textarea value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} rows={3}
+          className="input-field text-sm" placeholder={'1. 软包靠背，久靠舒服\n2. 奶油色百搭，适合小户型\n3. 床架稳固，视觉轻盈'} />
       </div>
 
       {!script && !generating && (

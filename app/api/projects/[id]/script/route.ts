@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { generateScript, ScriptOutput } from '@/lib/script-providers/gemini';
+import { generateScript } from '@/lib/script-providers/gemini';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(
@@ -39,14 +39,11 @@ export async function POST(
       WHERE vj.projectId = ? AND vj.templateId IS NOT NULL
     `).all(projectId) as Array<{ name: string }>;
 
-    // Parse product brief from shot_sets category (legacy storage)
+    // Read brief from project columns
     let sellingPoints: string[] = [];
     try {
-      const set = db.prepare(`SELECT category FROM shot_sets WHERE projectId = ? AND category LIKE '%sellingPoints%' LIMIT 1`).get(projectId) as { category?: string } | undefined;
-      if (set?.category) {
-        const brief = JSON.parse(set.category) as { sellingPoints?: Array<{ title: string }> };
-        sellingPoints = (brief.sellingPoints || []).map((s: { title: string }) => s.title);
-      }
+      const json = (project.sellingPointsJson as string) || '[]';
+      sellingPoints = (JSON.parse(json) as Array<{ title: string }>).map((s) => s.title);
     } catch { /* ignore */ }
 
     const result = await generateScript({
@@ -54,9 +51,9 @@ export async function POST(
       productName: (project.productName as string) || '',
       productCode: (project.productCode as string) || '',
       productCategory: (project.productCategory as string) || '',
-      targetAudience: '',
-      tone: '种草',
-      platform: '通用',
+      targetAudience: (project.targetAudience as string) || '',
+      tone: (project.scriptTone as string) || '种草',
+      platform: (project.scriptPlatform as string) || '通用',
       sellingPoints,
       shots: shots.map((s) => ({ index: s.indexNum, description: s.sourceFilename })),
       sceneReference: sceneRefs[0]?.name,
@@ -73,7 +70,7 @@ export async function POST(
       projectId,
       result.provider,
       result.model,
-      JSON.stringify({ projectName: project.name, shotCount: shots.length }),
+      JSON.stringify({ projectName: project.name, shotCount: shots.length, targetAudience: project.targetAudience, tone: project.scriptTone, platform: project.scriptPlatform, sellingPoints }),
       JSON.stringify(result.script)
     );
 

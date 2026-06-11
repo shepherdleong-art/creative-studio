@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import path from 'path';
 
 export async function GET(
   _request: NextRequest,
@@ -27,7 +28,18 @@ export async function GET(
       ORDER BY s.indexNum
     `).all(id);
 
-    return NextResponse.json({ ...(set as object), shots });
+    const storageRoot = path.resolve(process.cwd(), 'storage');
+    const shotsWithUrls = (shots as Array<Record<string, unknown>>).map((s) => {
+      const sourceUrl = s.sourcePath ? `/api/images/${path.relative(storageRoot, path.resolve(s.sourcePath as string)).split(path.sep).join('/')}` : '';
+      const genAsset = db.prepare(`SELECT path FROM image_assets WHERE id = ?`).get(s.latestGeneratedImageId) as { path?: string } | undefined;
+      let generatedUrl = '';
+      if (genAsset?.path) {
+        generatedUrl = `/api/images/${path.relative(storageRoot, path.resolve(genAsset.path)).split(path.sep).join('/')}`;
+      }
+      return { ...s, sourceImageUrl: sourceUrl, generatedImageUrl: generatedUrl };
+    });
+
+    return NextResponse.json({ ...(set as object), shots: shotsWithUrls });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

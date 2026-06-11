@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 
 interface VideoProvider {
   id: string;
@@ -37,8 +37,8 @@ interface VideoJob {
 
 interface Props {
   projectId: string;
-  shotSetId: string;
-  shots: Array<{
+  shotSetId?: string;
+  shots?: Array<{
     id: string;
     indexNum: number;
     sourceImageId: string;
@@ -53,6 +53,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [videoJobs, setVideoJobs] = useState<VideoJob[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Shot set selection (for top-level Panel 4)
+  const [availableSets, setAvailableSets] = useState<Array<{ id: string; name: string; shotCount: number }>>([]);
+  const [selectedSetId, setSelectedSetId] = useState<string>(shotSetId || '');
+  const [selectedSetShots, setSelectedSetShots] = useState<typeof shots>(shots);
+
   // Per-shot form state
   const [selectedShot, setSelectedShot] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string>('');
@@ -61,31 +66,75 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [duration, setDuration] = useState(5);
   const [creating, setCreating] = useState(false);
 
-  const loadData = useCallback(async () => {
+  // Load providers and templates once
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const [provRes, tmplRes] = await Promise.all([
+          fetch('/api/providers/video'), fetch('/api/video-prompt-templates'),
+        ]);
+        const provData = await provRes.json().catch(() => []);
+        const tmplData = await tmplRes.json().catch(() => []);
+        if (!active) return;
+        if (Array.isArray(provData)) setProviders(provData);
+        if (Array.isArray(tmplData)) setTemplates(tmplData);
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  // Load shot sets for selector
+  useEffect(() => {
+    if (shotSetId) return; // Already have a specific set
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/shot-sets`);
+        const data = await res.json();
+        if (active && Array.isArray(data)) setAvailableSets(data);
+      } catch { /* ignore */ }
+      finally { if (active) setLoading(false); }
+    })();
+    return () => { active = false; };
+  }, [projectId, shotSetId]);
+
+  // Load shots when set is selected
+  const loadShotsForSet = async (setId: string) => {
     try {
-      // Load video providers
-      const provRes = await fetch('/api/providers/video');
-      const provData = await provRes.json().catch(() => []);
-      if (Array.isArray(provData)) setProviders(provData);
-
-      // Load motion templates
-      const tmplRes = await fetch('/api/video-prompt-templates');
-      const tmplData = await tmplRes.json().catch(() => []);
-      if (Array.isArray(tmplData)) setTemplates(tmplData);
-
-      // Load existing video jobs for this shot set
-      const jobRes = await fetch(`/api/shot-sets/${shotSetId}/video-jobs`);
+      const res = await fetch(`/api/shot-sets/${setId}`);
+      const data = await res.json();
+      if (data.shots) {
+        setSelectedSetShots(data.shots.map((s: { id: string; indexNum: number; sourceImageId: string; latestGeneratedImageId?: string; sourceImageUrl?: string; generatedImageUrl?: string }) => ({
+          id: s.id, indexNum: s.indexNum, sourceImageId: s.sourceImageId,
+          latestGeneratedImageId: s.latestGeneratedImageId,
+          imageUrl: s.generatedImageUrl || s.sourceImageUrl || '',
+        })));
+      }
+      // Load video jobs
+      const jobRes = await fetch(`/api/shot-sets/${setId}/video-jobs`);
       const jobData = await jobRes.json().catch(() => ({ jobs: [] }));
       if (jobData.jobs) setVideoJobs(jobData.jobs);
     } catch { /* ignore */ }
-    return undefined;
-  }, [shotSetId]);
+  };
 
-  useEffect(() => {
-    let active = true;
-    (async () => { await loadData(); if (active) setLoading(false); })();
-    return () => { active = false; };
-  }, [loadData]);
+  const handleSelectSet = (setId: string) => {
+    setSelectedSetId(setId);
+    if (setId) loadShotsForSet(setId);
+  };
+
+  const effectiveSetId = shotSetId || selectedSetId;
+  const effectiveShots = shots || selectedSetShots;
+  const safeShots = effectiveShots || [];
+
+  const refreshJobs = async () => {
+    if (!effectiveSetId) return;
+    try {
+      const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs`);
+      const data = await res.json().catch(() => ({ jobs: [] }));
+      if (data.jobs) setVideoJobs(data.jobs);
+    } catch { /* ignore */ }
+  };
 
   // Auto-fill template prompt on selection
   const handleTemplateChange = (templateId: string) => {
@@ -103,7 +152,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
     setCreating(true);
     try {
-      const res = await fetch(`/api/shot-sets/${shotSetId}/video-jobs`, {
+      const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -116,8 +165,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       });
       const data = await res.json();
       if (res.ok) {
-        await loadData();
-        // Reset form
+        await refreshJobs();
         setSelectedTemplate('');
         setPrompt('');
         setDuration(5);
@@ -133,25 +181,38 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const handleRetry = async (jobId: string) => {
     await fetch(`/api/video-jobs/${jobId}/retry`, { method: 'POST' });
-    await loadData();
+    await refreshJobs();
   };
 
   const handleResumePoll = async (jobId: string) => {
     await fetch(`/api/video-jobs/${jobId}/resume-poll`, { method: 'POST' });
-    await loadData();
+    await refreshJobs();
   };
 
-  const getShotImageUrl = (shotId: string) =>
-    shots.find((s) => s.id === shotId)?.imageUrl || '';
-
   if (loading) return <p className="text-xs text-gray-400">加载视频功能...</p>;
+  if (!effectiveSetId && !shotSetId) {
+    // Top-level: show shot set selector
+    return (
+      <div>
+        <div className="mb-3">
+          <label className="text-xs text-gray-500">选择分镜组</label>
+          <select value={selectedSetId} onChange={(e) => handleSelectSet(e.target.value)} className="input-field text-sm">
+            <option value="">-- 选择分镜组 --</option>
+            {availableSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
+          </select>
+          {availableSets.length === 0 && <p className="text-xs text-gray-400 mt-1">暂无分镜组，请先在分镜生成中创建。</p>}
+        </div>
+        {!selectedSetId && <p className="text-xs text-gray-400">选择一个分镜组后可以创建视频任务。</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="mt-3 p-3 bg-gray-50 rounded-lg">
       <h4 className="text-sm font-medium mb-3 text-gray-700">🎬 视频生成</h4>
 
       {/* Per-shot panels */}
-      {shots.map((shot) => {
+      {safeShots.map((shot) => {
         const shotVideos = videoJobs.filter((j) => j.shotId === shot.id);
         return (
           <div key={shot.id} className="mb-3 p-3 bg-white rounded border">
@@ -198,7 +259,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 disabled={creating}
                 className="btn-primary btn-sm text-xs"
               >
-                {creating ? '创建中...' : '生成 5 秒视频'}
+                {creating ? '创建中...' : `生成 ${duration} 秒视频`}
               </button>
             </div>
             {(selectedShot === shot.id) && (
@@ -223,7 +284,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       {job.providerName || '-'} / {job.templateName || '自定义'} / {job.durationSec}s
                     </span>
                     {job.status === 'succeeded' && job.filename && (
-                      <a href={`/api/videos/${job.filename}`} download className="text-blue-600 hover:underline">下载</a>
+                      <a href={`/api/videos/videos/${encodeURIComponent(job.filename)}`} download className="text-blue-600 hover:underline">下载</a>
                     )}
                     {job.status === 'needs_check' && (
                       <button onClick={() => handleResumePoll(job.id)} className="text-purple-600 hover:underline">补抓结果</button>
@@ -242,7 +303,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         );
       })}
 
-      {shots.length === 0 && (
+      {safeShots.length === 0 && (
         <p className="text-xs text-gray-400">分镜组中没有分镜。</p>
       )}
     </div>

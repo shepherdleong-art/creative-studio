@@ -43,17 +43,6 @@ interface Provider {
   id: string; name: string; model: string; type: string; hasApiKey?: boolean; defaultCostPerImage?: number;
 }
 
-const DEFAULT_SCENE_PROMPT = '基于图1生成新的室内产品场景图。保留适合家居产品展示的空间关系，重构墙面、软装、灯光、窗帘、地面和整体氛围，使画面更适合电商生活方式图。不要添加文字，不要生成不真实的连接件。';
-
-const DEFAULT_SHOT_PROMPT = `图1 是待编辑分镜图，是本次修改的主要对象。
-图2 是场景参考图。
-请参考图2的空间风格、光线、墙面、软装和布置，重绘图1的场景。
-保持图1中的产品结构、模特姿态、主体位置和画面构图尽量一致。
-不要改变产品结构，不要让人物或产品变形，不要添加文字。`;
-
-const TONE_OPTIONS = ['种草', '专业', '温柔生活方式', '促销'] as const;
-const PLATFORM_OPTIONS = ['抖音', '小红书', '视频号', '通用'] as const;
-
 export default function NewProjectPage() {
   const router = useRouter();
 
@@ -71,31 +60,12 @@ export default function NewProjectPage() {
   const [resolution, setResolution] = useState('1k');
   const [quality, setQuality] = useState('medium');
   const [timeoutMs, setTimeoutMs] = useState(600000);
-  const [generationCount, setGenerationCount] = useState(4);
-  const [sceneConcurrency, setSceneConcurrency] = useState(3);
+  const [generationCount, setGenerationCount] = useState(1);
 
   const size = useMemo(() => {
     try { return resolveGptImage2Size(aspectRatio, resolution); }
     catch { return ''; }
   }, [aspectRatio, resolution]);
-
-  // ── Scene A (seed image) ──
-  const [sceneAFiles, setSceneAFiles] = useState<UploadedFile[]>([]);
-
-  // ── Scene B generation ──
-  const [scenePrompt, setScenePrompt] = useState(DEFAULT_SCENE_PROMPT);
-
-  // ── Shot images ──
-  const [shotFiles, setShotFiles] = useState<UploadedFile[]>([]);
-
-  // ── Shot redo template ──
-  const [shotPrompt, setShotPrompt] = useState(DEFAULT_SHOT_PROMPT);
-
-  // ── Product brief ──
-  const [targetAudience, setTargetAudience] = useState('');
-  const [tone, setTone] = useState<string>('种草');
-  const [platform, setPlatform] = useState<string>('通用');
-  const [sellingPoints, setSellingPoints] = useState('');
 
   // ── Preprocessing ──
   const [preprocessEnabled, setPreprocessEnabled] = useState(true);
@@ -119,8 +89,6 @@ export default function NewProjectPage() {
     if (!name.trim()) { alert('请输入项目名称'); return; }
     if (!provider) { alert('请选择供应商'); return; }
     if (!provider.hasApiKey) { alert('当前供应商未配置 API Key'); return; }
-    if (sceneAFiles.length === 0) { alert('请上传场景图 A'); return; }
-    if (shotFiles.length === 0) { alert('请上传至少 1 张原始分镜图'); return; }
 
     setCreating(true);
     try {
@@ -130,23 +98,12 @@ export default function NewProjectPage() {
           name, productName, productCode, category,
           workflowType: 'complex_product',
           providerId: provider.id, model, size, quality, timeoutMs,
-          generationCount, aspectRatio, resolution,
-          concurrency: sceneConcurrency,
-          sceneSeedImageId: sceneAFiles[0].id,
-          scenePrompt,
-          shotImageIds: shotFiles.map((f) => f.id),
-          shotPrompt,
-          targetAudience, tone, platform,
-          sellingPoints: sellingPoints.trim() ? sellingPoints.trim().split('\n').filter(Boolean).map((s) => ({ title: s.trim(), priority: 0 })) : undefined,
+          aspectRatio, resolution,
           preprocessEnabled, targetMaxSide, jpegQuality,
         }),
       });
       const data = await res.json();
       if (data.id) {
-        await fetch(`/api/projects/${data.id}/run`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'start', concurrency: sceneConcurrency, maxAttempts: 1, timeoutMs }),
-        });
         router.push(`/projects/${data.id}`);
       } else {
         alert('创建失败: ' + (data.error || '未知错误'));
@@ -327,7 +284,7 @@ export default function NewProjectPage() {
       ) : (
         /* ── Complex product workflow ── */
         <form onSubmit={handleSubmitComplex} className="space-y-8">
-          {/* 1. Project info */}
+          {/* Project info */}
           <div className="card p-4">
             <h3 className="font-medium text-sm mb-3">项目信息</h3>
             <div className="grid grid-cols-2 gap-4">
@@ -337,7 +294,7 @@ export default function NewProjectPage() {
               </div>
               <div>
                 <label className="label">产品名称</label>
-                <input type="text" value={productName} onChange={(e) => setProductName(e.target.value)} className="input-field" placeholder="例如：奶油风软包床" />
+                <input type="text" value={productName} onChange={(e) => setProductName(e.target.value)} className="input-field" placeholder="可选" />
               </div>
               <div>
                 <label className="label">产品编号</label>
@@ -345,118 +302,33 @@ export default function NewProjectPage() {
               </div>
               <div>
                 <label className="label">品类</label>
-                <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} className="input-field" placeholder="可选，例如：卧室家具" />
+                <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} className="input-field" placeholder="可选" />
               </div>
             </div>
+            <p className="text-xs text-gray-400 mt-3">
+              创建项目后，可在项目工作台中按需上传素材、生成场景图、分镜图、脚本和视频。
+            </p>
           </div>
 
-          {/* 2. Provider */}
+          {/* Provider */}
           <ProviderSettings selectedId={provider?.id} onSelect={(p) => { setProvider(p); setModel(p.model); }} />
 
-          {/* 3. Scene A */}
-          <div className="card p-4">
-            <h3 className="font-medium text-sm mb-2">场景图 A</h3>
-            <p className="text-xs text-gray-500 mb-3">上传 1 张原始场景图 / 灵感场景图，用于生成新的场景图 B。</p>
-            <ImageUploader role="input" label="场景图 A" maxFiles={1}
-              files={sceneAFiles} onUploaded={(files) => setSceneAFiles((p) => [...p, ...files])}
-              onRemove={(i) => setSceneAFiles((p) => p.filter((_, idx) => idx !== i))}
-              preprocessEnabled={preprocessEnabled} targetMaxSide={targetMaxSide} jpegQuality={jpegQuality} />
-          </div>
-
-          {/* 4. Scene B generation */}
-          <div className="card p-4">
-            <h3 className="font-medium text-sm mb-3">生成场景图 B</h3>
-            <div>
-              <label className="label">场景生成提示词</label>
-              <textarea value={scenePrompt} onChange={(e) => setScenePrompt(e.target.value)} rows={4} className="input-field text-sm font-mono" />
-            </div>
-            <div className="flex gap-4 mt-3">
-              <div>
-                <label className="label">生成数量</label>
-                <input type="number" min={1} max={9} value={generationCount}
-                  onChange={(e) => setGenerationCount(Math.max(1, Math.min(9, Number(e.target.value))))} className="input-field w-20" />
-              </div>
-              <div>
-                <label className="label">并发数</label>
-                <input type="number" min={1} max={8} value={sceneConcurrency}
-                  onChange={(e) => setSceneConcurrency(Math.max(1, Math.min(8, Number(e.target.value) || 1)))} className="input-field w-20" />
-              </div>
-              <div>
-                <label className="label">预估成本</label>
-                <div className="text-lg font-bold text-blue-700">¥{(generationCount * costPerImage).toFixed(2)}</div>
-                <p className="text-[10px] text-gray-400">{generationCount} 张 × ¥{costPerImage.toFixed(3)}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* 5. Shot images */}
-          <div className="card p-4">
-            <h3 className="font-medium text-sm mb-2">原始分镜图</h3>
-            <p className="text-xs text-gray-500 mb-3">上传 1-9 张选好的原始分镜图。后续会让每张分镜参考同一个场景图 B 重新生成。点击顺序即为分镜顺序。</p>
-            <ImageUploader role="input" label="原始分镜图" maxFiles={9}
-              files={shotFiles} onUploaded={(files) => setShotFiles((p) => [...p, ...files])}
-              onRemove={(i) => setShotFiles((p) => p.filter((_, idx) => idx !== i))}
-              preprocessEnabled={preprocessEnabled} targetMaxSide={targetMaxSide} jpegQuality={jpegQuality} />
-            {shotFiles.length > 0 && (
-              <div className="grid grid-cols-5 sm:grid-cols-9 gap-2 mt-3">
-                {shotFiles.map((file, i) => (
-                  <div key={file.id} className="relative">
-                    <div className="aspect-square bg-gray-100 rounded border">
-                      <img src={file.imageUrl} alt={file.filename} className="w-full h-full object-cover rounded" />
-                    </div>
-                    <div className="absolute top-1 left-1 w-4 h-4 bg-purple-500 text-white rounded-full flex items-center justify-center text-[9px] font-bold">{i + 1}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* 6. Shot redo template */}
-          <div className="card p-4">
-            <h3 className="font-medium text-sm mb-2">分镜重做模板</h3>
-            <p className="text-xs text-gray-500 mb-2">图1 = 每张原始分镜图，图2 = 选中的场景图B。确认场景图 B 后会批量应用此模板。</p>
-            <textarea value={shotPrompt} onChange={(e) => setShotPrompt(e.target.value)} rows={5} className="input-field text-sm font-mono" />
-          </div>
-
-          {/* 7. Product brief */}
-          <div className="card p-4">
-            <h3 className="font-medium text-sm mb-3">产品卖点（用于后续 15 秒口播文案）</h3>
-            <div className="grid grid-cols-2 gap-4 mb-3">
-              <div>
-                <label className="label">目标人群</label>
-                <input type="text" value={targetAudience} onChange={(e) => setTargetAudience(e.target.value)} className="input-field" placeholder="可选，例如：25-35岁女性" />
-              </div>
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <label className="label">语气</label>
-                  <select value={tone} onChange={(e) => setTone(e.target.value)} className="input-field">
-                    {TONE_OPTIONS.map((t) => (<option key={t} value={t}>{t}</option>))}
-                  </select>
-                </div>
-                <div className="flex-1">
-                  <label className="label">平台</label>
-                  <select value={platform} onChange={(e) => setPlatform(e.target.value)} className="input-field">
-                    {PLATFORM_OPTIONS.map((p) => (<option key={p} value={p}>{p}</option>))}
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div>
-              <label className="label">卖点（每行一条）</label>
-              <textarea value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} rows={4}
-                className="input-field text-sm" placeholder={'1. 软包靠背，久靠舒服\n2. 奶油色百搭，适合小户型卧室\n3. 床架稳固，视觉轻盈\n4. 适合拍生活方式种草视频'} />
-            </div>
-          </div>
-
-          {/* 8. Model params */}
+          {/* Model params */}
           {renderModelParams()}
-          {renderPreprocessing()}
+
+          {/* Preprocessing (collapsible) */}
+          <details className="card p-4">
+            <summary className="font-medium text-sm cursor-pointer text-gray-500 hover:text-gray-700">图片预处理（高级设置）</summary>
+            <div className="mt-3">
+              {renderPreprocessing()}
+            </div>
+          </details>
 
           {/* Submit */}
           <div className="flex gap-3 justify-end">
             <Link href="/" className="btn-secondary">取消</Link>
             <button type="submit" disabled={creating} className="btn-primary">
-              {creating ? '创建中...' : '创建项目并生成场景图 B'}
+              {creating ? '创建中...' : '创建项目'}
             </button>
           </div>
         </form>

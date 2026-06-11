@@ -81,18 +81,22 @@ export async function PATCH(
     const { id } = await params;
     const db = getDb();
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
-    const shotPrompt = typeof body.shotPrompt === 'string' ? body.shotPrompt.trim() : '';
+    const updates: string[] = [];
+    const values: unknown[] = [];
 
-    if (!shotPrompt) {
-      return NextResponse.json({ error: '分镜重做模板不能为空' }, { status: 400 });
-    }
+    if (typeof body.shotPrompt === 'string') { updates.push('shotPrompt = ?'); values.push(body.shotPrompt.trim()); }
+    if (typeof body.targetAudience === 'string') { updates.push('targetAudience = ?'); values.push(body.targetAudience); }
+    if (typeof body.scriptTone === 'string') { updates.push('scriptTone = ?'); values.push(body.scriptTone); }
+    if (typeof body.scriptPlatform === 'string') { updates.push('scriptPlatform = ?'); values.push(body.scriptPlatform); }
+    if (typeof body.sellingPointsJson === 'string') { updates.push('sellingPointsJson = ?'); values.push(body.sellingPointsJson); }
 
-    const result = db.prepare(`UPDATE projects SET shotPrompt = ? WHERE id = ?`).run(shotPrompt, id);
-    if (result.changes !== 1) {
-      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
-    }
+    if (updates.length === 0) return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
 
-    return NextResponse.json({ success: true, shotPrompt });
+    values.push(id);
+    const result = db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    if (result.changes !== 1) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
+    return NextResponse.json({ success: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import VideoGenerationPanel from '@/components/VideoGenerationPanel';
+import ImageUploader from '@/components/ImageUploader';
 
 interface Shot {
   id: string;
@@ -30,16 +30,19 @@ interface ShotSet {
 
 interface Props {
   projectId: string;
-  images: Array<{ id: string; imageUrl?: string; filename: string; role: string }>;
+  images: Array<{ id: string; imageUrl?: string; filename: string; role: string; usage?: string }>;
   jobs?: Array<{ id: string; status: string; outputImageId?: string }>;
   onApplyScene?: (shotSetId: string) => void;
+  onImagesUploaded?: () => void;
+  showUploader?: boolean;
+  showCreateControls?: boolean;
 }
 
 const STATUS_LABELS: Record<string, string> = {
   draft: '草稿', generating: '生成中', reviewing: '审核中', approved: '已通过', video_ready: '待生成视频',
 };
 
-export default function ShotSetPanel({ projectId, images, jobs, onApplyScene }: Props) {
+export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, onImagesUploaded, showUploader = true, showCreateControls = true }: Props) {
   const [sets, setSets] = useState<ShotSet[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -114,17 +117,25 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene }: 
   };
 
   const getImageUrl = (assetId: string) => images.find((img) => img.id === assetId)?.imageUrl || '';
-  const getFilename = (assetId: string) => images.find((img) => img.id === assetId)?.filename || '';
   const getJobStatus = (jobId?: string) => jobs?.find((j) => j.id === jobId)?.status;
 
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="font-semibold">分镜组</h2>
-        <button onClick={openCreate} className="btn-secondary btn-sm text-xs">+ 创建分镜组</button>
+        <div className="flex items-center gap-2">
+          <h2 className="font-semibold">原始分镜图</h2>
+          {showUploader && (
+            <ImageUploader role="input" usage="shot_source" label="" maxFiles={9}
+              files={[]} onUploaded={async () => { await onImagesUploaded?.(); await loadSets(); }} onRemove={() => {}}
+              preprocessEnabled={true} targetMaxSide={1536} jpegQuality={85} projectId={projectId} />
+          )}
+        </div>
+        {showCreateControls && (
+          <button onClick={openCreate} className="btn-secondary btn-sm text-xs">+ 创建分镜组</button>
+        )}
       </div>
 
-      {isCreating && (
+      {showCreateControls && isCreating && (
         <div className="mb-4 p-3 bg-gray-50 rounded-lg space-y-2">
           <div>
             <label className="text-xs text-gray-500">分镜组名称</label>
@@ -133,7 +144,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene }: 
           <div>
             <label className="text-xs text-gray-500">选择分镜图（1-9 张，拖选顺序即分镜顺序）</label>
             <div className="grid grid-cols-5 sm:grid-cols-6 gap-2 mt-1">
-              {images.filter((img) => img.role === 'input').map((img, idx) => (
+              {images.filter((img) => img.role === 'input' && img.usage === 'shot_source').map((img) => (
                 <div key={img.id} onClick={() => toggleImage(img.id)}
                   className={`relative rounded border-2 cursor-pointer overflow-hidden ${
                     selectedImageIds.includes(img.id) ? 'border-purple-500' : 'border-gray-200 hover:border-gray-300'
@@ -185,7 +196,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene }: 
                 )}
                 {onApplyScene && (
                   <button onClick={(e) => { e.stopPropagation(); onApplyScene(set.id); }}
-                    className="btn-secondary btn-sm text-xs text-purple-600">批量应用场景</button>
+                    className="btn-secondary btn-sm text-xs text-purple-600">生成分镜</button>
                 )}
                 <button onClick={(e) => { e.stopPropagation(); handleDelete(set.id); }}
                   className="text-xs text-gray-400 hover:text-red-500">删除</button>
@@ -228,18 +239,6 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene }: 
                     </div>
                   )}
 
-                  {/* Video generation for this shot set */}
-                  <VideoGenerationPanel
-                    projectId={projectId}
-                    shotSetId={set.id}
-                    shots={shots.map((s) => ({
-                      id: s.id,
-                      indexNum: s.indexNum,
-                      sourceImageId: s.sourceImageId,
-                      latestGeneratedImageId: s.latestGeneratedImageId,
-                      imageUrl: getImageUrl(s.latestGeneratedImageId || s.sourceImageId),
-                    }))}
-                  />
                 </div>
               )}
             </div>

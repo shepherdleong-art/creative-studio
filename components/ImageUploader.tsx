@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useId } from 'react';
 
 export interface UploadedFile {
   id: string;
@@ -16,6 +16,7 @@ export interface UploadedFile {
   originalHeight?: number;
   processedWidth?: number;
   processedHeight?: number;
+  usage?: string;
 }
 
 interface Props {
@@ -30,6 +31,7 @@ interface Props {
   targetMaxSide?: number;
   jpegQuality?: number;
   projectId?: string;
+  usage?: string;
 }
 
 const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
@@ -46,7 +48,9 @@ export default function ImageUploader({
   targetMaxSide = 1536,
   jpegQuality = 85,
   projectId,
+  usage,
 }: Props) {
+  const inputId = useId();
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
@@ -77,6 +81,7 @@ export default function ImageUploader({
         form.append('targetMaxSide', String(targetMaxSide));
         form.append('jpegQuality', String(jpegQuality));
         if (projectId) form.append('projectId', projectId);
+        if (usage) form.append('usage', usage);
 
         const res = await fetch('/api/upload', {
           method: 'POST',
@@ -96,7 +101,7 @@ export default function ImageUploader({
         setUploading(false);
       }
     },
-    [role, files.length, maxFiles, onUploaded, preprocessEnabled, targetMaxSide, jpegQuality, projectId]
+    [role, files.length, maxFiles, onUploaded, preprocessEnabled, targetMaxSide, jpegQuality, projectId, usage]
   );
 
   return (
@@ -134,10 +139,10 @@ export default function ImageUploader({
           multiple
           onChange={(e) => handleFiles(e.target.files)}
           className="hidden"
-          id={`upload-${role}`}
+          id={inputId}
         />
         <label
-          htmlFor={`upload-${role}`}
+          htmlFor={inputId}
           className="cursor-pointer text-sm text-gray-600"
         >
           {uploading ? (

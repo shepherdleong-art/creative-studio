@@ -92,59 +92,52 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Complex product workflow ──
-    const sceneSeedImageId: string = body.sceneSeedImageId;
+    const sceneSeedImageId: string | undefined = body.sceneSeedImageId;
     const scenePrompt: string = (body.scenePrompt || '').trim();
     const shotImageIds: string[] = body.shotImageIds || [];
     const shotPrompt: string = (body.shotPrompt || '').trim();
-    const generationCount = Math.max(1, Math.min(9, Number(body.generationCount) || 4));
+    const genCount = Math.max(1, Math.min(9, Number(body.generationCount) || 4));
+    const hasFullCreation = sceneSeedImageId && scenePrompt && shotImageIds.length > 0;
 
-    if (!sceneSeedImageId) return NextResponse.json({ error: '场景图 A 不能为空' }, { status: 400 });
-    if (!scenePrompt) return NextResponse.json({ error: '场景生成提示词不能为空' }, { status: 400 });
-    if (shotImageIds.length === 0) return NextResponse.json({ error: '至少需要 1 张原始分镜图' }, { status: 400 });
-    if (shotImageIds.length > 9) return NextResponse.json({ error: '分镜图最多 9 张' }, { status: 400 });
+    const defaultScenePrompt = '基于图1生成新的室内产品场景图。保留适合家居产品展示的空间关系，重构墙面、软装、灯光、窗帘、地面和整体氛围，使画面更适合电商生活方式图。不要添加文字。';
+    const defaultShotPrompt = `图1 是待编辑分镜图，是本次修改的主要对象。
+图2 是场景参考图。
+请参考图2的空间风格、光线、墙面、软装和布置，重绘图1的场景。
+保持图1中的产品结构、模特姿态、主体位置和画面构图尽量一致。`;
 
     db.transaction(() => {
-      // Create project
+      // Create project shell
       db.prepare(`
         INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)
       `).run(projectId, body.name || '', body.productName || '', body.productCode || '', body.category || '',
-        body.providerId, model, scenePrompt, '', resolvedSize, quality, concurrency, maxAttempts, 'none', timeoutMs, 'complex_product',
-        scenePrompt, shotPrompt);
+        body.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'none', timeoutMs, 'complex_product',
+        scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt);
 
-      // Bind scene seed image
-      db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`).run(projectId, sceneSeedImageId);
+      if (hasFullCreation) {
+        // Bind scene seed image
+        db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`).run(projectId, sceneSeedImageId);
 
-      // Bind shot source images
-      for (const imgId of shotImageIds) {
-        db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`).run(projectId, imgId);
+        // Bind shot source images
+        for (const imgId of shotImageIds) {
+          db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`).run(projectId, imgId);
+        }
+
+        // Create scene generation jobs
+        const insertJob = db.prepare(`
+          INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode)
+          VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none')
+        `);
+        for (let g = 0; g < genCount; g++) {
+          insertJob.run(uuidv4(), projectId, sceneSeedImageId, body.providerId, model, scenePrompt, resolvedSize, quality, maxAttempts);
+        }
+
+        // Create draft ShotSet
+        const setId = uuidv4();
+        db.prepare(`INSERT INTO shot_sets (id, projectId, name, productCode, category) VALUES (?, ?, ?, ?, ?)`).run(setId, projectId, body.name || '默认分镜组', body.productCode || '', body.category || '');
+        const insertShot = db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, ?, ?)`);
+        shotImageIds.forEach((imgId, i) => insertShot.run(uuidv4(), setId, i + 1, imgId));
       }
-
-      // Create scene B generation jobs (scene seed → scene candidates, no reference)
-      const insertJob = db.prepare(`
-        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode)
-        VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none')
-      `);
-      for (let g = 0; g < generationCount; g++) {
-        insertJob.run(uuidv4(), projectId, sceneSeedImageId, body.providerId, model, scenePrompt, resolvedSize, quality, maxAttempts);
-      }
-
-      // Create draft ShotSet
-      const setId = uuidv4();
-      db.prepare(`INSERT INTO shot_sets (id, projectId, name, productCode, category) VALUES (?, ?, ?, ?, ?)`).run(setId, projectId, body.name || '默认分镜组', body.productCode || '', body.category || '');
-      const insertShot = db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, ?, ?)`);
-      shotImageIds.forEach((imgId, i) => insertShot.run(uuidv4(), setId, i + 1, imgId));
-
-      // Save product brief as JSON field (simple approach)
-      const brief = {
-        targetAudience: body.targetAudience || '',
-        tone: body.tone || '种草',
-        platform: body.platform || '通用',
-        sellingPoints: body.sellingPoints || [],
-      };
-      // Store brief in project record via a comment/summary field (use a separate table later if needed)
-      // For now, attach to shotSet as metadata
-      db.prepare(`UPDATE shot_sets SET category = ? WHERE id = ?`).run(JSON.stringify(brief), setId);
     })();
 
     return NextResponse.json({ id: projectId, workflowType: 'complex_product' });

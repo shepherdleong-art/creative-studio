@@ -47,6 +47,9 @@ export async function POST(request: NextRequest) {
     const files = formData.getAll('files') as File[];
     const role = (formData.get('role') as string) || 'input';
     const projectId = (formData.get('projectId') as string) || null;
+    const usage = (formData.get('usage') as string) || '';
+    const allowedUsage = ['', 'scene_seed', 'shot_source'];
+    if (!allowedUsage.includes(usage)) return NextResponse.json({ error: '非法的 usage 值' }, { status: 400 });
     const preprocessEnabled = formData.get('preprocessEnabled') !== 'false'; // default true
     const targetMaxSide = parseInt(formData.get('targetMaxSide') as string) || DEFAULT_OPTIONS.targetMaxSide;
     const jpegQuality = parseInt(formData.get('jpegQuality') as string) || DEFAULT_OPTIONS.jpegQuality;
@@ -78,8 +81,8 @@ export async function POST(request: NextRequest) {
       INSERT INTO image_assets
         (id, projectId, role, filename, path, originalPath, processedPath, mimeType,
          originalWidth, originalHeight, processedWidth, processedHeight,
-         originalSizeBytes, processedSizeBytes, preprocessingEnabled, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         originalSizeBytes, processedSizeBytes, preprocessingEnabled, usage, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
     const results: Array<{
@@ -96,6 +99,7 @@ export async function POST(request: NextRequest) {
       originalHeight?: number;
       processedWidth?: number;
       processedHeight?: number;
+      usage?: string;
     }> = [];
 
     for (const file of files) {
@@ -153,7 +157,8 @@ export async function POST(request: NextRequest) {
         preprocessResult.processedHeight || null,
         preprocessResult.originalSizeBytes || null,
         preprocessResult.processedSizeBytes || null,
-        preprocessEnabled ? 1 : 0
+        preprocessEnabled ? 1 : 0,
+        usage
       );
 
       // Relative path for the preview image (will be used for imageUrl)
@@ -174,6 +179,7 @@ export async function POST(request: NextRequest) {
         originalHeight: preprocessResult.originalHeight,
         processedWidth: preprocessResult.processedWidth,
         processedHeight: preprocessResult.processedHeight,
+        usage: usage || undefined,
       });
     }
 
