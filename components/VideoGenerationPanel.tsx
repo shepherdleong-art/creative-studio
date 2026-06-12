@@ -180,7 +180,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       }))
       .filter((r) => r.prompt.length > 0);
     if (items.some((r) => !r.providerId)) { alert('每行都需要选择供应商'); return; }
-    if (items.length === 0) { alert('请至少填写一条运镜提示词'); return; }
+    if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
     setCreating(true);
     try {
       const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs/batch`, {
@@ -246,60 +246,58 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               )}
             </div>
 
-            {/* Create video form — each row is independent */}
+            {/* Create video form — each row is one horizontal "描述" line */}
             {selectedShot === shot.id ? (
               <div className="space-y-2 mb-2">
                 {motionRows.map((row, idx) => (
-                  <div key={row.key} className="rounded border bg-gray-50 p-2">
-                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <span className="text-[10px] text-gray-400 whitespace-nowrap">运镜 {idx + 1}</span>
-                      <select
-                        value={row.providerId}
-                        onChange={(e) => updateRowProvider(idx, e.target.value)}
-                        className="input-field text-xs"
-                      >
-                        <option value="">供应商</option>
-                        {providers.map((p) => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={row.templateId}
-                        onChange={(e) => updateRowTemplate(idx, e.target.value)}
-                        className="input-field text-xs"
-                      >
-                        <option value="">模板（可选）</option>
-                        {templates.map((t) => (
-                          <option key={t.id} value={t.id}>{t.name}</option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        min={2}
-                        max={15}
-                        value={row.durationSec}
-                        onChange={(e) => updateRowDuration(idx, Math.max(2, Math.min(15, Number(e.target.value) || 5)))}
-                        className="input-field text-xs w-16"
-                        title="秒数"
-                      />
-                      <button
-                        onClick={() => removeMotionRow(idx)}
-                        disabled={motionRows.length <= 1}
-                        className="px-1 text-base leading-none text-gray-400 hover:text-red-500 disabled:opacity-30"
-                        title="删除该运镜"
-                      >−</button>
-                    </div>
-                    <textarea
+                  <div key={row.key} className="flex items-center gap-2 rounded border bg-gray-50 px-2 py-1.5">
+                    <span className="text-[10px] text-gray-400 whitespace-nowrap shrink-0">描述 {idx + 1}</span>
+                    <select
+                      value={row.providerId}
+                      onChange={(e) => updateRowProvider(idx, e.target.value)}
+                      className="input-field text-xs w-20 shrink-0"
+                    >
+                      <option value="">供应商</option>
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={row.templateId}
+                      onChange={(e) => updateRowTemplate(idx, e.target.value)}
+                      className="input-field text-xs w-24 shrink-0"
+                    >
+                      <option value="">模板（可选）</option>
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={2}
+                      max={15}
+                      value={row.durationSec}
+                      onChange={(e) => updateRowDuration(idx, Math.max(2, Math.min(15, Number(e.target.value) || 5)))}
+                      className="input-field text-xs w-14 shrink-0 text-center"
+                      title="秒数"
+                    />
+                    <input
+                      type="text"
                       value={row.prompt}
                       onChange={(e) => updateRowPrompt(idx, e.target.value)}
-                      rows={2}
-                      className="input-field text-xs font-mono"
-                      placeholder="视频生成提示词（运镜描述）"
+                      className="input-field text-xs font-mono flex-1 min-w-0"
+                      placeholder="运镜描述（提示词）"
                     />
+                    <button
+                      onClick={() => removeMotionRow(idx)}
+                      disabled={motionRows.length <= 1}
+                      className="shrink-0 px-1 text-base leading-none text-gray-400 hover:text-red-500 disabled:opacity-30"
+                      title="删除该描述"
+                    >−</button>
                   </div>
                 ))}
                 <div className="flex items-center gap-2">
-                  <button onClick={addMotionRow} className="btn-secondary btn-sm text-xs">+ 运镜</button>
+                  <button onClick={addMotionRow} className="btn-secondary btn-sm text-xs">+ 描述</button>
                   <button
                     onClick={() => handleCreateVideos(shot.id)}
                     disabled={creating || motionRows.every((r) => !r.prompt.trim())}
@@ -312,7 +310,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 </div>
               </div>
             ) : (
-              <button onClick={() => activate(shot.id)} className="btn-secondary btn-sm text-xs mb-2">+ 运镜</button>
+              <button onClick={() => activate(shot.id)} className="btn-secondary btn-sm text-xs mb-2">+ 描述</button>
             )}
 
             {/* Existing video jobs for this shot */}

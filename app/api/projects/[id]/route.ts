@@ -96,7 +96,8 @@ export async function PATCH(
     const result = db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     if (result.changes !== 1) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
-    return NextResponse.json({ success: true });
+    const responseShotPrompt = typeof body.shotPrompt === 'string' ? body.shotPrompt.trim() : '';
+    return NextResponse.json({ success: true, shotPrompt: responseShotPrompt });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

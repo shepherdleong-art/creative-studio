@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 
 interface LogEntry {
   id: string;
@@ -19,13 +19,6 @@ interface Props {
   fill?: boolean; // When true, fill parent height instead of capping at max-h-96
 }
 
-const LEVEL_CONFIG: Record<string, { bg: string; text: string; icon: string }> = {
-  info: { bg: 'bg-blue-50', text: 'text-blue-700', icon: 'ℹ️' },
-  warn: { bg: 'bg-yellow-50', text: 'text-yellow-700', icon: '⚠️' },
-  error: { bg: 'bg-red-50', text: 'text-red-700', icon: '❌' },
-  debug: { bg: 'bg-gray-50', text: 'text-gray-500', icon: '🔍' },
-};
-
 const LEVEL_LABELS: Record<string, string> = {
   info: 'INFO',
   warn: 'WARN',
@@ -40,38 +33,35 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
   const containerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
-  const mountedRef = useRef(true);
-  useEffect(() => { return () => { mountedRef.current = false; }; }, []);
-
-  const loadLogs = async () => {
-    const mounted = mountedRef.current;
+  const loadLogs = useCallback(async () => {
     try {
       const params = new URLSearchParams();
       if (jobId) params.set('jobId', jobId);
       params.set('limit', '300');
-
       const res = await fetch(`/api/projects/${projectId}/logs?${params}`, {
         cache: 'no-store',
       });
       const data = await res.json();
-      if (Array.isArray(data) && mounted) setLogs(data);
-    } catch {
-      // Silently fail on log fetch errors
+      if (Array.isArray(data)) setLogs(data);
+    } catch (err) {
+      console.error('加载日志失败:', err);
     } finally {
-      if (mounted) setLoading(false);
+      setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    const t = setTimeout(loadLogs, 0);
-    return () => { clearTimeout(t); };
   }, [projectId, jobId]);
 
+  // Initial load
+  useEffect(() => {
+    setLoading(true);
+    loadLogs();
+  }, [loadLogs]);
+
+  // Auto-refresh
   useEffect(() => {
     if (!autoRefresh) return;
     const interval = setInterval(loadLogs, refreshMs);
     return () => clearInterval(interval);
-  }, [autoRefresh, projectId, jobId]);
+  }, [autoRefresh, loadLogs, refreshMs]);
 
   // Auto-scroll to bottom when new logs arrive
   useEffect(() => {

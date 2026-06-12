@@ -659,8 +659,6 @@ function SceneWorkspace({
         </div>
         <ResultGallery jobs={jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
       </section>
-
-      <SceneReferencePanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} />
     </div>
   );
 }
