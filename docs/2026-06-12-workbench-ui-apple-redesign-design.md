@@ -61,14 +61,15 @@
 
 ### 3.3 字体
 
-**重要约束（本地离线工具）：** App 运行在 `127.0.0.1`、需离线可用 → 字体必须经 `next/font` 自托管（构建期拉取、运行期本地），**不得**在运行时引用 Google Fonts CDN（可视化稿用了 CDN，仅供预览）。
+**重要约束（本地离线工具）：** App 运行在 `127.0.0.1`、需离线可用。
 
-- **UI 无衬线：** 先用系统 SF / 苹方，再回退到自托管 Latin 字体——
-  `-apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-ui), "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif`
-  - Mac：真 SF Pro + 苹方；Windows：自托管 `--font-ui` + 系统微软雅黑。
-  - `--font-ui` = **Inter**（`next/font/google`）——SF 最接近、最稳的开源替身（理由见 §9）。
-- **中文：** 以系统为主（Mac 苹方 / Windows 微软雅黑），不强制打包重型 CJK 字体；保留 `Noto Sans SC` 作为兜底名。
-- **等宽（数字 / ID / 代码）：** `ui-monospace, "SF Mono", var(--font-mono), Menlo, Consolas, monospace`，`--font-mono` = **JetBrains Mono**（`next/font/google`）。
+> **实现修订（2026-06-12，已落地）：** 实测构建环境离线、`fonts.googleapis.com` 不可达——`next/font/google` 下载失败并静默回退，离线 `next build` 亦有失败风险。故**最终弃用 `next/font`，改用纯系统字体栈**（零网络、最稳），Phase 1 已按此实现并通过离线 `npm run build`。
+
+- **UI 无衬线：**
+  `-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif`
+  - Mac：真 SF Pro + 苹方（最 Apple）；Windows：Segoe UI + 微软雅黑（干净、可接受）。UI 以中文为主，拉丁字保真差异影响很小。
+- **等宽（数字 / ID / 代码）：** `ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace`。
+- **可选升级：** 若日后想在 Windows 也拿到 Inter 级拉丁保真，改用 `next/font/local` 自托管字体文件（需先联网取 woff2 提交进仓库）。
 
 **字号 / 字重 / 字距（type scale）：**
 
