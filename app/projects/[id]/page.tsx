@@ -159,7 +159,7 @@ export default function ProjectDetailPage() {
   const sceneJobs = useMemo(
     () => (project?.jobs || []).filter((j) => {
       const u = j.inputImageId ? (imageUsageMap.get(j.inputImageId) || '') : '';
-      return !u || u === 'scene_seed'; // include unclassified as fallback
+      return !u || u === 'scene_seed'; // KNOWN LIMITATION: !u also matches jobs whose image was deleted or has no usage tag
     }),
     [project, imageUsageMap]
   );

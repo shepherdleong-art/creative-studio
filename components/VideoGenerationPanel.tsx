@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 
 interface VideoProvider {
   id: string;
@@ -56,6 +57,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   // Shot set selection (for top-level Panel 4)
   const [availableSets, setAvailableSets] = useState<Array<{ id: string; name: string; shotCount: number }>>([]);
   const [selectedSetId, setSelectedSetId] = useState<string>(shotSetId || '');
+  const selectedSetIdRef = useRef<string>(shotSetId || '');
   const [selectedSetShots, setSelectedSetShots] = useState<typeof shots>(shots);
 
   // Per-shot form state (one active shot at a time)
@@ -67,7 +69,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const defaultDuration = 5;
 
   const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
-    key: crypto.randomUUID(), prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
+    key: uuidv4(), prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
   });
 
   // Load providers and templates once
@@ -108,7 +110,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     try {
       const res = await fetch(`/api/shot-sets/${setId}`);
       const data = await res.json();
-      if (data.shots && selectedSetId === setId) {
+      if (data.shots && selectedSetIdRef.current === setId) {
         setSelectedSetShots(data.shots.map((s: { id: string; indexNum: number; sourceImageId: string; latestGeneratedImageId?: string; sourceImageUrl?: string; generatedImageUrl?: string }) => ({
           id: s.id, indexNum: s.indexNum, sourceImageId: s.sourceImageId,
           latestGeneratedImageId: s.latestGeneratedImageId,
@@ -118,12 +120,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       // Load video jobs
       const jobRes = await fetch(`/api/shot-sets/${setId}/video-jobs`);
       const jobData = await jobRes.json().catch(() => ({ jobs: [] }));
-      if (jobData.jobs && selectedSetId === setId) setVideoJobs(jobData.jobs);
+      if (jobData.jobs && selectedSetIdRef.current === setId) setVideoJobs(jobData.jobs);
     } catch { /* ignore */ }
   };
 
   const handleSelectSet = (setId: string) => {
     setSelectedSetId(setId);
+    selectedSetIdRef.current = setId;
     if (setId) loadShotsForSet(setId);
   };
 
@@ -149,8 +152,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   const addMotionRow = () => setMotionRows((rows) => {
-    const last = rows[rows.length - 1];
-    return [...rows, last ? { ...last, prompt: '' } : makeEmptyRow()];
+    return [...rows, makeEmptyRow()];
   });
   const removeMotionRow = (idx: number) =>
     setMotionRows((rows) => (rows.length <= 1 ? rows : rows.filter((_, i) => i !== idx)));

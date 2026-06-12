@@ -44,6 +44,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
   useEffect(() => { return () => { mountedRef.current = false; }; }, []);
 
   const loadLogs = async () => {
+    const mounted = mountedRef.current;
     try {
       const params = new URLSearchParams();
       if (jobId) params.set('jobId', jobId);
@@ -53,17 +54,17 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
         cache: 'no-store',
       });
       const data = await res.json();
-      if (Array.isArray(data) && mountedRef.current) setLogs(data);
+      if (Array.isArray(data) && mounted) setLogs(data);
     } catch {
       // Silently fail on log fetch errors
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mounted) setLoading(false);
     }
   };
 
   useEffect(() => {
     const t = setTimeout(loadLogs, 0);
-    return () => { clearTimeout(t); mountedRef.current = false; };
+    return () => { clearTimeout(t); };
   }, [projectId, jobId]);
 
   useEffect(() => {

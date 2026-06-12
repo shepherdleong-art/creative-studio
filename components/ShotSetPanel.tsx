@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import ImageUploader from '@/components/ImageUploader';
 
 interface Shot {
@@ -62,6 +62,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   const [redoPrompt, setRedoPrompt] = useState('');
   const [redoing, setRedoing] = useState(false);
   const [sceneRefInfo, setSceneRefInfo] = useState<{ name: string; imageUrl: string } | null>(null);
+  const expandedIdRef = useRef<string | null>(null);
 
   const loadSets = useCallback(async () => {
     try {
@@ -108,8 +109,8 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     try {
       const res = await fetch(`/api/shot-sets/${setId}`);
       const data = await res.json();
-      // Race guard: only apply if still viewing this set
-      if (expandedId !== setId) return;
+      // Race guard using ref — avoids stale-closure from useCallback
+      if (expandedIdRef.current !== setId) return;
       if (data.shots) setShots(data.shots);
       if (data.sceneRefImageUrl) {
         setSceneRefInfo({ name: data.sceneRefName || '场景参考', imageUrl: data.sceneRefImageUrl });
@@ -117,12 +118,13 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
         setSceneRefInfo(null);
       }
     } catch { /* ignore */ }
-    finally { if (!silent && expandedId === setId) setLoadingShots(false); }
-  }, [expandedId]);
+    finally { if (!silent) setLoadingShots(false); }
+  }, []);
 
   const handleExpand = (setId: string) => {
-    if (expandedId === setId) { setExpandedId(null); return; }
+    if (expandedId === setId) { setExpandedId(null); expandedIdRef.current = null; return; }
     setExpandedId(setId);
+    expandedIdRef.current = setId;
     loadShots(setId);
   };
 
@@ -143,11 +145,16 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   const goPreview = (delta: number) => {
     setPreviewIndex((prev) => {
       if (prev === null || shots.length === 0) return prev;
-      const next = Math.min(shots.length - 1, Math.max(0, prev + delta));
-      setRedoPrompt(shots[next]?.jobPrompt || '');
-      return next;
+      return Math.min(shots.length - 1, Math.max(0, prev + delta));
     });
   };
+
+  // Sync redoPrompt whenever previewIndex changes
+  useEffect(() => {
+    if (previewIndex === null) return;
+    const t = setTimeout(() => setRedoPrompt(shots[previewIndex]?.jobPrompt || ''), 0);
+    return () => clearTimeout(t);
+  }, [previewIndex, shots]);
 
   // Keyboard navigation while preview is open
   useEffect(() => {
