@@ -1,51 +1,115 @@
 @import "tailwindcss";
 
-@theme inline {
-  --color-background: #f9fafb;
-  --color-foreground: #111827;
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+/* ===== Apple-style design tokens ===== */
+@theme {
+  /* surfaces */
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f5f5f7;
+  --color-surface-hover: #fafafc;
+  /* ink (text) */
+  --color-ink: #1d1d1f;
+  --color-ink-secondary: #6e6e73;
+  --color-ink-tertiary: #86868b;
+  /* hairlines */
+  --color-hairline: #e6e6eb;
+  --color-hairline-soft: #f0f0f3;
+  /* accent */
+  --color-accent: #0071e3;
+  --color-accent-hover: #0077ed;
+  /* status: text + tint */
+  --color-run: #0071e3;   --color-run-tint: #e8f1ff;
+  --color-ok: #1b8e4d;    --color-ok-tint: #e7f7ee;
+  --color-fail: #d7372b;  --color-fail-tint: #fdebea;
+  --color-warn: #b25e00;  --color-warn-tint: #fff4e5;
+  --color-idle: #6e6e73;  --color-idle-tint: #efeff2;
+  --color-check: #5331d8; --color-check-tint: #ececfb;
+  /* status dots */
+  --color-dot-ok: #34c759;
+  --color-dot-fail: #ff3b30;
+  --color-dot-warn: #ff9f0a;
+  /* radii */
+  --radius-pill: 980px;
+  --radius-card: 18px;
+  --radius-tile: 16px;
+  --radius-control: 10px;
+  /* type */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-ui), "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", var(--font-jb), "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
+/* ===== Base ===== */
 body {
-  background: var(--color-background);
-  color: var(--color-foreground);
+  background: var(--color-surface);
+  color: var(--color-ink);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Custom utilities */
+/* ===== Component utilities ===== */
 @layer utilities {
-  .card {
-    @apply bg-white rounded-xl border border-gray-200 shadow-sm;
-  }
-  .btn-primary {
-    @apply bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
-  }
-  .btn-secondary {
-    @apply bg-gray-100 text-gray-700 px-4 py-2 rounded-lg font-medium hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
-  }
-  .btn-danger {
-    @apply bg-red-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
-  }
-  .btn-sm {
-    @apply px-2.5 py-1 text-sm;
-  }
-  .input-field {
-    @apply w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent;
-  }
-  .label {
-    @apply block text-sm font-medium text-gray-700 mb-1;
-  }
-}
+  /* surfaces */
+  .card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-card); }
+  .tile { background: var(--color-surface-subtle); border-radius: var(--radius-tile); }
 
-/* Status badges */
-.status-badge {
-  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  /* buttons (pill) */
+  .btn-primary, .btn-secondary, .btn-danger {
+    display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+    padding: .55rem 1.1rem; border-radius: var(--radius-pill);
+    font-size: .9rem; font-weight: 500; line-height: 1; cursor: pointer;
+    transition: background .15s ease, color .15s ease, opacity .15s ease, border-color .15s ease;
+  }
+  .btn-primary { background: var(--color-accent); color: #fff; }
+  .btn-primary:hover { background: var(--color-accent-hover); }
+  .btn-secondary { background: var(--color-surface-subtle); color: var(--color-ink); }
+  .btn-secondary:hover { background: #ececf0; }
+  .btn-danger { background: transparent; color: var(--color-fail); border: 1px solid var(--color-hairline); }
+  .btn-danger:hover { background: var(--color-fail-tint); border-color: var(--color-fail-tint); }
+  .btn-primary:disabled, .btn-secondary:disabled, .btn-danger:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-sm { padding: .35rem .8rem; font-size: .8rem; }
+
+  /* inputs */
+  .input-field {
+    width: 100%; background: var(--color-surface);
+    border: 1px solid var(--color-hairline); border-radius: var(--radius-control);
+    padding: .5rem .7rem; font-size: .875rem; color: var(--color-ink);
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .input-field::placeholder { color: var(--color-ink-tertiary); }
+  .input-field:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px rgba(0,113,227,.35); }
+  .label { display: block; font-size: .72rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--color-ink-tertiary); margin-bottom: .4rem; }
+
+  /* link + icon button */
+  .link-accent { color: var(--color-accent); transition: opacity .15s ease; }
+  .link-accent:hover { text-decoration: underline; }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 8px; color: var(--color-ink); background: transparent; cursor: pointer; transition: background .15s ease, color .15s ease; }
+  .icon-btn:hover { background: var(--color-surface-subtle); }
+
+  /* generic pill */
+  .pill { display: inline-flex; align-items: center; gap: .3rem; padding: .15rem .55rem; border-radius: var(--radius-pill); font-size: .72rem; font-weight: 500; white-space: nowrap; }
+
+  /* status badge (legacy class names kept, restyled) */
+  .status-badge { display: inline-flex; align-items: center; gap: .3rem; padding: .15rem .55rem; border-radius: var(--radius-pill); font-size: .72rem; font-weight: 500; white-space: nowrap; }
+  .status-pending     { background: var(--color-idle-tint);  color: var(--color-idle); }
+  .status-running     { background: var(--color-run-tint);   color: var(--color-run); }
+  .status-succeeded   { background: var(--color-ok-tint);    color: var(--color-ok); }
+  .status-failed      { background: var(--color-fail-tint);  color: var(--color-fail); }
+  .status-retrying    { background: var(--color-warn-tint);  color: var(--color-warn); }
+  .status-canceled    { background: var(--color-idle-tint);  color: var(--color-ink-tertiary); text-decoration: line-through; }
+  .status-needs_check { background: var(--color-check-tint); color: var(--color-check); }
+
+  /* segmented control */
+  .segmented { display: inline-flex; gap: 2px; padding: 3px; background: var(--color-surface-subtle); border-radius: 11px; }
+  .segmented > button { border: none; background: transparent; cursor: pointer; font-size: .82rem; font-weight: 500; color: var(--color-ink-secondary); padding: .35rem 1rem; border-radius: 8px; transition: background .15s ease, color .15s ease; }
+  .segmented > button[aria-selected="true"] { background: var(--color-surface); color: var(--color-ink); box-shadow: 0 1px 3px rgba(0,0,0,.13); }
+
+  /* frosted toolbar */
+  .toolbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; background: rgba(255,255,255,.72); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid rgba(0,0,0,.08); }
+
+  /* hairline data table */
+  .data-table { width: 100%; border-collapse: collapse; }
+  .data-table th { text-align: left; font-size: .68rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--color-ink-tertiary); padding: .55rem .7rem; border-bottom: 1px solid var(--color-hairline); }
+  .data-table td { padding: .65rem .7rem; font-size: .82rem; color: var(--color-ink); border-bottom: 1px solid var(--color-hairline-soft); }
+  .data-table tr:hover td { background: var(--color-surface-hover); }
+  .data-table .num { text-align: right; font-family: var(--font-mono); font-size: .76rem; }
 }
-.status-pending { @apply bg-gray-100 text-gray-600; }
-.status-running { @apply bg-blue-100 text-blue-700; }
-.status-succeeded { @apply bg-green-100 text-green-700; }
-.status-failed { @apply bg-red-100 text-red-700; }
-.status-retrying { @apply bg-yellow-100 text-yellow-700; }
-.status-canceled { @apply bg-gray-100 text-gray-400 line-through; }
-.status-needs_check { @apply bg-purple-100 text-purple-700; }
