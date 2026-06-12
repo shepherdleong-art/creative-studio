@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useState, useId } from 'react';
+import { Icon } from '@/components/ui/Icon';
 
 export interface UploadedFile {
   id: string;
@@ -109,12 +110,12 @@ export default function ImageUploader({
       <label className="label">
         {label}
         {files.length > 0 && (
-          <span className="text-gray-400 font-normal ml-2">
+          <span className="ml-2 font-normal text-ink-tertiary">
             ({files.length} 张)
           </span>
         )}
       </label>
-      {hint && <p className="text-xs text-gray-500 mb-2">{hint}</p>}
+      {hint && <p className="mb-2 text-xs text-ink-secondary">{hint}</p>}
 
       <div
         onDragOver={(e) => {
@@ -129,8 +130,8 @@ export default function ImageUploader({
         }}
         className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
           dragOver
-            ? 'border-blue-400 bg-blue-50'
-            : 'border-gray-300 hover:border-gray-400'
+            ? 'border-accent bg-run-tint'
+            : 'border-hairline hover:border-accent/40'
         }`}
       >
         <input
@@ -143,15 +144,15 @@ export default function ImageUploader({
         />
         <label
           htmlFor={inputId}
-          className="cursor-pointer text-sm text-gray-600"
+          className="cursor-pointer text-sm text-ink-secondary"
         >
           {uploading ? (
-            <span className="text-blue-600">上传中...</span>
+            <span className="text-accent">上传中...</span>
           ) : (
             <>
-              <div className="text-2xl mb-1">📁</div>
+              <Icon name="folder" size={28} className="mx-auto mb-1 text-ink-tertiary" />
               <div>拖拽图片到此处，或点击选择</div>
-              <div className="text-xs text-gray-400 mt-1">
+              <div className="mt-1 text-xs text-ink-tertiary">
                 支持 PNG / JPEG / WebP，大图会在本地上传后自动压缩
               </div>
             </>
@@ -166,15 +167,17 @@ export default function ImageUploader({
               <img
                 src={file.imageUrl}
                 alt={file.filename}
-                className="w-full aspect-square object-cover rounded-lg border border-gray-200"
+                className="aspect-square w-full rounded-lg border border-hairline object-cover"
               />
               <button
                 onClick={() => onRemove(i)}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-fail text-white opacity-0 transition-opacity group-hover:opacity-100"
+                title="移除"
+                aria-label="移除图片"
               >
-                ×
+                <Icon name="close" size={12} />
               </button>
-              <div className="text-[10px] text-gray-400 truncate mt-0.5">
+              <div className="mt-0.5 truncate text-[10px] text-ink-tertiary">
                 {file.filename}
               </div>
             </div>

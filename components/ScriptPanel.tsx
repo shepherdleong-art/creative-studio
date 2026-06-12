@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { Icon } from '@/components/ui/Icon';
 
 interface ScriptShot {
   shotIndex: number;
@@ -169,7 +170,7 @@ export default function ScriptPanel({ projectId }: Props) {
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="font-semibold">📝 脚本生成</h2>
+        <h2 className="flex items-center gap-2 font-semibold"><Icon name="file-text" size={16} /> 脚本生成</h2>
         <div className="flex gap-2">
           {drafts.length > 1 && (
             <select
@@ -197,37 +198,37 @@ export default function ScriptPanel({ projectId }: Props) {
       {/* Brief form */}
       <div className="grid grid-cols-3 gap-3 mb-4">
         <div>
-          <label className="text-xs text-gray-500">目标人群</label>
+        <label className="label">目标人群</label>
           <input value={audience} onChange={(e) => setAudience(e.target.value)} className="input-field text-sm" placeholder="25-35岁女性" />
         </div>
         <div>
-          <label className="text-xs text-gray-500">语气</label>
+          <label className="label">语气</label>
           <select value={tone} onChange={(e) => setTone(e.target.value)} className="input-field text-sm">
             {['种草','专业','温柔生活方式','促销'].map((t) => (<option key={t} value={t}>{t}</option>))}
           </select>
         </div>
         <div>
-          <label className="text-xs text-gray-500">平台</label>
+          <label className="label">平台</label>
           <select value={platform} onChange={(e) => setPlatform(e.target.value)} className="input-field text-sm">
             {['抖音','小红书','视频号','通用'].map((p) => (<option key={p} value={p}>{p}</option>))}
           </select>
         </div>
       </div>
       <div className="mb-4">
-        <label className="text-xs text-gray-500">卖点（每行一条）</label>
+        <label className="label">卖点（每行一条）</label>
         <textarea value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} rows={3}
           className="input-field text-sm" placeholder={'1. 软包靠背，久靠舒服\n2. 奶油色百搭，适合小户型\n3. 床架稳固，视觉轻盈'} />
       </div>
 
       {!script && !generating && (
-        <p className="text-sm text-gray-400">
+        <p className="text-sm text-ink-tertiary">
           基于项目信息、分镜顺序和产品卖点，通过 Gemini 生成结构化口播脚本。需要先配置环境变量 GEMINI_API_KEY。
         </p>
       )}
 
       {generating && (
-        <div className="text-center py-8 text-gray-400">
-          <div className="animate-spin w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full mx-auto mb-2" />
+        <div className="py-8 text-center text-ink-tertiary">
+          <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
           Gemini 正在生成脚本...
         </div>
       )}
@@ -235,17 +236,17 @@ export default function ScriptPanel({ projectId }: Props) {
       {script && (
         <div className="space-y-4">
           {/* Meta */}
-          <div className="flex gap-4 text-xs text-gray-500">
-            <span>标题: <strong className="text-gray-700">{script.title}</strong></span>
+          <div className="flex gap-4 text-xs text-ink-secondary">
+            <span>标题: <strong className="text-ink">{script.title}</strong></span>
             <span>平台: {script.platform}</span>
             <span>语气: {script.tone}</span>
           </div>
 
           {/* Shot-by-shot table */}
           <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
+            <table className="data-table text-sm">
               <thead>
-                <tr className="border-b border-gray-200 text-left text-gray-500 text-xs">
+                <tr>
                   <th className="pb-2 pr-2">#</th>
                   <th className="pb-2 pr-2">时长</th>
                   <th className="pb-2 pr-2">口播</th>
@@ -255,12 +256,12 @@ export default function ScriptPanel({ projectId }: Props) {
               </thead>
               <tbody>
                 {script.shots.map((shot) => (
-                  <tr key={shot.shotIndex} className="border-b border-gray-100 align-top">
-                    <td className="py-2 pr-2 text-gray-500">{shot.shotIndex}</td>
-                    <td className="py-2 pr-2 text-gray-500 text-xs">{shot.duration}</td>
+                  <tr key={shot.shotIndex} className="align-top">
+                    <td className="py-2 pr-2 text-ink-secondary">{shot.shotIndex}</td>
+                    <td className="py-2 pr-2 text-xs text-ink-secondary">{shot.duration}</td>
                     <td className="py-2 pr-2">{shot.voiceover}</td>
-                    <td className="py-2 pr-2 text-gray-600">{shot.subtitle}</td>
-                    <td className="py-2 text-gray-400 text-xs">{shot.visualIntent}</td>
+                    <td className="py-2 pr-2 text-ink-secondary">{shot.subtitle}</td>
+                    <td className="py-2 text-xs text-ink-tertiary">{shot.visualIntent}</td>
                   </tr>
                 ))}
               </tbody>
@@ -269,8 +270,8 @@ export default function ScriptPanel({ projectId }: Props) {
 
           {/* Full script */}
           <div>
-            <h4 className="text-xs font-medium text-gray-500 mb-1">完整口播稿</h4>
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 p-3 rounded leading-relaxed">
+            <h4 className="mb-1 text-xs font-medium text-ink-secondary">完整口播稿</h4>
+            <pre className="whitespace-pre-wrap rounded bg-surface-subtle p-3 text-sm leading-relaxed text-ink-secondary">
               {script.fullScript}
             </pre>
           </div>
@@ -278,13 +279,13 @@ export default function ScriptPanel({ projectId }: Props) {
           {/* Actions */}
           <div className="flex gap-2">
             <button onClick={handleCopyFullScript} className="btn-secondary btn-sm text-xs">
-              {copied ? '已复制 ✓' : '复制完整口播'}
+              {copied ? <><Icon name="check" size={13} /> 已复制</> : <><Icon name="copy" size={13} /> 复制完整口播</>}
             </button>
             <button onClick={handleDownloadTxt} className="btn-secondary btn-sm text-xs">
-              下载 .txt
+              <Icon name="download" size={13} /> 下载 .txt
             </button>
             <button onClick={handleDownloadJson} className="btn-secondary btn-sm text-xs">
-              下载 .json
+              <Icon name="download" size={13} /> 下载 .json
             </button>
           </div>
         </div>

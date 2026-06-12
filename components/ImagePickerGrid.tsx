@@ -21,7 +21,7 @@ export default function ImagePickerGrid({ items, selectedId, onSelect, emptyText
   const [preview, setPreview] = useState<{ item: ImagePickerItem; x: number; y: number } | null>(null);
 
   if (items.length === 0) {
-    return <p className="text-sm text-gray-400">{emptyText}</p>;
+    return <p className="text-sm text-ink-tertiary">{emptyText}</p>;
   }
 
   const left = preview ? Math.min(preview.x + 16, window.innerWidth - 340) : 0;
@@ -41,24 +41,24 @@ export default function ImagePickerGrid({ items, selectedId, onSelect, emptyText
               onMouseEnter={(e) => setPreview({ item, x: e.clientX, y: e.clientY })}
               onMouseMove={(e) => setPreview({ item, x: e.clientX, y: e.clientY })}
               onMouseLeave={() => setPreview(null)}
-              className={`text-left rounded-lg border-2 overflow-hidden bg-white transition-all ${
+              className={`overflow-hidden rounded-lg border-2 bg-white text-left transition-all ${
                 selected
-                  ? 'border-blue-500 ring-2 ring-blue-100'
-                  : 'border-gray-200 hover:border-blue-300'
+                  ? 'border-accent ring-2 ring-accent/20'
+                  : 'border-hairline hover:border-accent/40'
               } ${item.disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
             >
-              <div className="aspect-square bg-gray-100">
+              <div className="aspect-square bg-surface-subtle">
                 {item.imageUrl ? (
                   <img src={item.imageUrl} alt={item.label} className="w-full h-full object-cover" />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">
+                  <div className="flex h-full w-full items-center justify-center text-xs text-ink-tertiary">
                     无预览
                   </div>
                 )}
               </div>
               <div className="p-2">
                 <div className="text-xs font-medium truncate">{item.label}</div>
-                {item.filename && <div className="text-[10px] text-gray-400 truncate">{item.filename}</div>}
+                {item.filename && <div className="truncate text-[10px] text-ink-tertiary">{item.filename}</div>}
               </div>
             </button>
           );

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ImageUploader from '@/components/ImageUploader';
+import { Icon } from '@/components/ui/Icon';
 
 interface Shot {
   id: string;
@@ -231,36 +232,36 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
           )}
         </div>
         {showCreateControls && (
-          <button onClick={openCreate} className="btn-secondary btn-sm text-xs">+ 创建分镜组</button>
+          <button onClick={openCreate} className="btn-secondary btn-sm text-xs"><Icon name="plus" size={13} /> 创建分镜组</button>
         )}
       </div>
 
       {showCreateControls && isCreating && (
-        <div className="mb-4 p-3 bg-gray-50 rounded-lg space-y-2">
+        <div className="mb-4 space-y-2 rounded-lg bg-surface-subtle p-3">
           <div>
-            <label className="text-xs text-gray-500">分镜组名称</label>
+            <label className="label">分镜组名称</label>
             <input value={newName} onChange={(e) => setNewName(e.target.value)} className="input-field text-sm" placeholder="例如: 卧室场景分镜 1-6" />
           </div>
           <div>
-            <label className="text-xs text-gray-500">选择分镜图（1-9 张，拖选顺序即分镜顺序）</label>
+            <label className="label">选择分镜图（1-9 张，拖选顺序即分镜顺序）</label>
             <div className="grid grid-cols-5 sm:grid-cols-6 gap-2 mt-1">
               {images.filter((img) => img.role === 'input' && img.usage === 'shot_source').map((img) => (
                 <div key={img.id} onClick={() => toggleImage(img.id)}
                   className={`relative rounded border-2 cursor-pointer overflow-hidden ${
-                    selectedImageIds.includes(img.id) ? 'border-purple-500' : 'border-gray-200 hover:border-gray-300'
+                    selectedImageIds.includes(img.id) ? 'border-accent' : 'border-hairline hover:border-accent/40'
                   }`}>
-                  <div className="aspect-square bg-gray-100">
+                  <div className="aspect-square bg-surface-subtle">
                     {img.imageUrl && <img src={img.imageUrl} alt={img.filename} className="w-full h-full object-cover" />}
                   </div>
                   {selectedImageIds.includes(img.id) && (
-                    <div className="absolute top-1 left-1 w-5 h-5 bg-purple-500 text-white rounded-full flex items-center justify-center text-[10px] font-bold">
+                    <div className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-white">
                       {selectedImageIds.indexOf(img.id) + 1}
                     </div>
                   )}
                 </div>
               ))}
             </div>
-            <p className="text-[10px] text-gray-400 mt-1">已选 {selectedImageIds.length}/9 张，点击顺序即为分镜顺序</p>
+            <p className="mt-1 text-[10px] text-ink-tertiary">已选 {selectedImageIds.length}/9 张，点击顺序即为分镜顺序</p>
           </div>
           <div className="flex gap-2">
             <button onClick={handleCreate} disabled={!newName.trim() || selectedImageIds.length === 0 || saving}
@@ -271,27 +272,27 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
       )}
 
       {loading ? (
-        <p className="text-sm text-gray-400">加载中...</p>
+        <p className="text-sm text-ink-tertiary">加载中...</p>
       ) : sets.length === 0 ? (
-        <p className="text-sm text-gray-400">暂无分镜组。选择 1-9 张原始分镜图创建分镜组，配合场景参考图批量生成。</p>
+        <p className="text-sm text-ink-tertiary">暂无分镜组。选择 1-9 张原始分镜图创建分镜组，配合场景参考图批量生成。</p>
       ) : (
         <div className="space-y-2">
           {sets.map((set) => (
             <div key={set.id}>
-              <div className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded cursor-pointer" onClick={() => handleExpand(set.id)}>
-                <span className="text-xs text-gray-400">{expandedId === set.id ? '▼' : '▶'}</span>
+              <div className="flex cursor-pointer items-center gap-3 rounded p-2 hover:bg-surface-subtle" onClick={() => handleExpand(set.id)}>
+                <Icon name={expandedId === set.id ? 'chevron-right' : 'chevron-right'} size={13} className={`text-ink-tertiary transition-transform ${expandedId === set.id ? 'rotate-90' : ''}`} />
                 <span className="text-sm font-medium flex-1">{set.name}</span>
-                <span className={`text-xs px-2 py-0.5 rounded ${set.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                <span className={`pill ${set.status === 'approved' ? 'status-succeeded' : 'status-pending'}`}>
                   {STATUS_LABELS[set.status] || set.status}
                 </span>
-                <span className="text-xs text-gray-400">{set.shotCount} 张 | {set.generatedCount} 已生成 | {set.approvedCount} 可用</span>
+                <span className="text-xs text-ink-tertiary">{set.shotCount} 张 | {set.generatedCount} 已生成 | {set.approvedCount} 可用</span>
                 {set.generatedCount > 0 && (
                   <a
                     href={`/api/shot-sets/${set.id}/download`}
                     onClick={(e) => e.stopPropagation()}
-                    className="btn-secondary btn-sm text-xs text-blue-600"
+                    className="btn-secondary btn-sm text-xs text-accent"
                   >
-                    下载ZIP
+                    <Icon name="download" size={13} /> 下载ZIP
                   </a>
                 )}
                 {onApplyScene && (
@@ -299,53 +300,53 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                     className="btn-primary btn-sm text-xs">生成分镜</button>
                 )}
                 <button onClick={(e) => { e.stopPropagation(); handleDelete(set.id); }}
-                  className="text-xs text-gray-400 hover:text-red-500">删除</button>
+                  className="icon-btn text-ink-tertiary hover:text-fail" title="删除" aria-label="删除"><Icon name="trash" size={13} /></button>
               </div>
 
               {expandedId === set.id && (
-                <div className="ml-6 mb-2 p-3 bg-gray-50 rounded-lg">
+                <div className="mb-2 ml-6 rounded-lg bg-surface-subtle p-3">
                   {!loadingShots && sceneRefInfo && (
-                    <div className="mb-3 flex items-center gap-3 rounded border bg-white p-2">
+                    <div className="mb-3 flex items-center gap-3 rounded border border-hairline bg-white p-2">
                       <img src={sceneRefInfo.imageUrl} alt={sceneRefInfo.name} className="h-12 w-12 rounded border object-cover" />
                       <div>
-                        <div className="text-xs text-gray-400">参考场景</div>
-                        <div className="text-sm font-medium text-gray-700">{sceneRefInfo.name}</div>
+                        <div className="text-xs text-ink-tertiary">参考场景</div>
+                        <div className="text-sm font-medium text-ink">{sceneRefInfo.name}</div>
                       </div>
                     </div>
                   )}
                   {loadingShots ? (
-                    <p className="text-xs text-gray-400">加载分镜...</p>
+                    <p className="text-xs text-ink-tertiary">加载分镜...</p>
                   ) : shots.length === 0 ? (
-                    <p className="text-xs text-gray-400">无分镜数据</p>
+                    <p className="text-xs text-ink-tertiary">无分镜数据</p>
                   ) : (
                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
                       {shots.map((shot, idx) => (
                         <div key={shot.id} onClick={() => openPreview(idx)}
-                          className="border rounded overflow-hidden bg-white cursor-pointer hover:border-purple-300 hover:shadow-sm transition">
-                          <div className="text-[10px] text-gray-400 px-2 pt-1">分镜 {shot.indexNum}</div>
+                          className="cursor-pointer overflow-hidden rounded border border-hairline bg-white transition hover:border-accent/40 hover:shadow-[0_8px_28px_rgba(0,0,0,.08)]">
+                          <div className="px-2 pt-1 text-[10px] text-ink-tertiary">分镜 {shot.indexNum}</div>
                           <div className="grid grid-cols-2 gap-px">
                             <div>
-                              <div className="text-[8px] text-gray-400 text-center">原图</div>
-                              <div className="aspect-square bg-gray-100">
+                              <div className="text-center text-[8px] text-ink-tertiary">原图</div>
+                              <div className="aspect-square bg-surface-subtle">
                                 {(shot.sourceImageUrl || getImageUrl(shot.sourceImageId)) && (
                                   <img src={shot.sourceImageUrl || getImageUrl(shot.sourceImageId)} alt="原图" className="w-full h-full object-cover" />
                                 )}
                               </div>
                             </div>
                             <div>
-                              <div className="text-[8px] text-gray-400 text-center">结果</div>
-                              <div className="aspect-square bg-gray-100">
+                              <div className="text-center text-[8px] text-ink-tertiary">结果</div>
+                              <div className="aspect-square bg-surface-subtle">
                                 {(shot.generatedImageUrl || (shot.latestGeneratedImageId ? getImageUrl(shot.latestGeneratedImageId) : null)) ? (
                                   <img src={shot.generatedImageUrl || getImageUrl(shot.latestGeneratedImageId!)} alt="结果" className="w-full h-full object-cover" />
                                 ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-400">
+                                  <div className="flex h-full w-full items-center justify-center text-[10px] text-ink-tertiary">
                                     {shot.jobStatus === 'running' ? '生成中' : shot.jobStatus === 'failed' ? '失败' : shot.jobStatus === 'succeeded' ? '生成完成' : shot.latestJobId ? (getJobStatusFallback(shot.latestJobId) === 'running' ? '生成中' : '等待中') : '-'}
                                   </div>
                                 )}
                               </div>
                             </div>
                           </div>
-                          <div className="px-2 pb-1 text-[10px] text-gray-400 truncate">{shot.sourceFilename}</div>
+                          <div className="truncate px-2 pb-1 text-[10px] text-ink-tertiary">{shot.sourceFilename}</div>
                         </div>
                       ))}
                     </div>
@@ -373,10 +374,10 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
               <div className="flex shrink-0 items-center justify-between border-b p-4">
                 <div className="flex items-center gap-3">
                   <h3 className="text-sm font-medium">分镜 {shot.indexNum}</h3>
-                  <span className="text-xs text-gray-400">{previewIndex + 1} / {shots.length}</span>
-                  {generating && <span className="text-xs text-blue-500">生成中…</span>}
+                  <span className="text-xs text-ink-tertiary">{previewIndex + 1} / {shots.length}</span>
+                  {generating && <span className="text-xs text-accent">生成中…</span>}
                 </div>
-                <button onClick={closePreview} className="text-xl leading-none text-gray-400 hover:text-gray-600">×</button>
+                <button onClick={closePreview} className="icon-btn" title="关闭" aria-label="关闭"><Icon name="close" size={16} /></button>
               </div>
 
               {/* Image area — with overlay arrows (matches ResultGallery) */}
@@ -384,41 +385,41 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                 <div className="relative grid grid-cols-2 gap-4">
                   {!isFirst && (
                     <button onClick={() => goPreview(-1)}
-                      className="absolute -left-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center text-2xl transition-colors z-10"
-                      title="上一个 (←)">‹</button>
+                      className="absolute -left-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
+                      title="上一个"><Icon name="chevron-left" size={22} /></button>
                   )}
                   {!isLast && (
                     <button onClick={() => goPreview(1)}
-                      className="absolute -right-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center text-2xl transition-colors z-10"
-                      title="下一个 (→)">›</button>
+                      className="absolute -right-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
+                      title="下一个"><Icon name="chevron-right" size={22} /></button>
                   )}
                   <div>
                     <div className="mb-1 text-xs text-gray-500">原图</div>
-                    {sourceUrl ? <img src={sourceUrl} alt="原图" className="w-full rounded-lg border" /> : <div className="text-sm text-gray-400">原图不可用</div>}
+                    {sourceUrl ? <img src={sourceUrl} alt="原图" className="w-full rounded-lg border" /> : <div className="text-sm text-ink-tertiary">原图不可用</div>}
                   </div>
                   <div>
                     <div className="mb-1 text-xs text-gray-500">结果</div>
-                    {genUrl ? <img src={genUrl} alt="结果" className="w-full rounded-lg border" /> : <div className="flex aspect-square items-center justify-center rounded-lg border bg-gray-50 text-sm text-gray-400">{generating ? '生成中…' : '暂无结果'}</div>}
+                    {genUrl ? <img src={genUrl} alt="结果" className="w-full rounded-lg border" /> : <div className="flex aspect-square items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-sm text-ink-tertiary">{generating ? '生成中…' : '暂无结果'}</div>}
                   </div>
                 </div>
 
                 {/* Redo area */}
                 <div className="mt-4 border-t pt-3">
-                  <label className="text-xs text-gray-500">重做提示词</label>
+                  <label className="label">重做提示词</label>
                   <textarea value={redoPrompt} onChange={(e) => { setRedoPrompt(e.target.value); setRedoPromptEdited(true); }} rows={4} className="input-field mt-1 font-mono text-xs" placeholder="编辑提示词后点重新生成" />
                   <div className="mt-2 flex items-center gap-2">
                     <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-primary btn-sm text-xs">{redoing ? '提交中…' : '重新生成'}</button>
-                    {!canRedo && <span className="text-[11px] text-gray-400">{shot.latestJobId ? '任务生成中，完成后可重做' : '该分镜尚未生成，无法重做'}</span>}
+                    {!canRedo && <span className="text-[11px] text-ink-tertiary">{shot.latestJobId ? '任务生成中，完成后可重做' : '该分镜尚未生成，无法重做'}</span>}
                   </div>
                 </div>
               </div>
 
               {/* Bottom nav bar (matches ResultGallery footer) */}
               <div className="shrink-0 border-t p-3 flex items-center gap-2">
-                <button onClick={() => goPreview(-1)} disabled={isFirst} className="btn-secondary btn-sm text-xs disabled:opacity-40">‹ 上一张</button>
-                <button onClick={() => goPreview(1)} disabled={isLast} className="btn-secondary btn-sm text-xs disabled:opacity-40">下一张 ›</button>
-                <span className="text-gray-300 mx-1">|</span>
-                <button onClick={closePreview} className="btn-secondary btn-sm text-xs text-gray-500">关闭</button>
+                <button onClick={() => goPreview(-1)} disabled={isFirst} className="btn-secondary btn-sm text-xs disabled:opacity-40"><Icon name="chevron-left" size={13} /> 上一张</button>
+                <button onClick={() => goPreview(1)} disabled={isLast} className="btn-secondary btn-sm text-xs disabled:opacity-40">下一张 <Icon name="chevron-right" size={13} /></button>
+                <span className="mx-1 text-hairline">|</span>
+                <button onClick={closePreview} className="btn-secondary btn-sm text-xs text-ink-secondary">关闭</button>
               </div>
             </div>
           </div>

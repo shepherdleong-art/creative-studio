@@ -67,19 +67,19 @@ export default function JobQueueTable({
       {/* Stats bar */}
       <div className="flex items-center gap-4 mb-4 flex-wrap">
         <div className="flex gap-3 text-sm">
-          <span className="text-gray-500">
+          <span className="text-ink-secondary">
             总计: <strong>{counts.total}</strong>
           </span>
-          <span className="text-green-600">
+          <span className="text-ok">
             成功: <strong>{counts.succeeded}</strong>
           </span>
-          <span className="text-red-600">
+          <span className="text-fail">
             失败: <strong>{counts.failed}</strong>
           </span>
-          <span className="text-blue-600">
+          <span className="text-accent">
             运行中: <strong>{counts.running}</strong>
           </span>
-          <span className="text-gray-400">
+          <span className="text-ink-tertiary">
             等待: <strong>{counts.pending}</strong>
           </span>
         </div>
@@ -92,8 +92,8 @@ export default function JobQueueTable({
               onClick={() => setStatusFilter(s)}
               className={`text-xs px-2 py-0.5 rounded transition-colors ${
                 statusFilter === s
-                  ? 'bg-gray-700 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  ? 'bg-ink text-white'
+                  : 'bg-surface-subtle text-ink-secondary hover:bg-hairline'
               }`}
             >
               {s === 'all' ? '全部' : s === 'succeeded' ? '成功' : s === 'failed' ? '失败' : s === 'running' ? '运行中' : '等待'}
@@ -124,7 +124,7 @@ export default function JobQueueTable({
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-gray-200 text-left text-gray-500">
+            <tr className="border-b border-hairline text-left text-ink-secondary">
               <th className="pb-2 font-medium">输入文件</th>
               <th className="pb-2 font-medium">状态</th>
               <th className="pb-2 font-medium">远端进度</th>
@@ -138,13 +138,13 @@ export default function JobQueueTable({
           <tbody>
             {filteredJobs.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-8 text-center text-sm text-gray-400">
+                <td colSpan={8} className="py-8 text-center text-sm text-ink-tertiary">
                   {statusFilter === 'all' ? '暂无任务' : `无 "${statusFilter === 'succeeded' ? '成功' : statusFilter === 'failed' ? '失败' : statusFilter === 'running' ? '运行中' : '等待'}" 状态的任务`}
                 </td>
               </tr>
             ) : (
               filteredJobs.map((job) => (
-              <tr key={job.id} className="border-b border-gray-100">
+              <tr key={job.id} className="border-b border-hairline-soft">
                 <td className="py-2 max-w-[200px] truncate" title={job.inputFilename}>
                   {job.inputFilename}
                 </td>
@@ -153,7 +153,7 @@ export default function JobQueueTable({
                     {STATUS_LABELS[job.status] || job.status}
                   </span>
                 </td>
-                <td className="py-2 text-xs text-gray-500">
+                <td className="py-2 text-xs text-ink-secondary">
                   {job.providerTaskId ? (
                     <div>
                       <div>task: {job.providerTaskId.slice(0, 10)}</div>
@@ -168,23 +168,23 @@ export default function JobQueueTable({
                     <span>-</span>
                   )}
                 </td>
-                <td className="py-2 text-gray-500">
+                <td className="py-2 text-ink-secondary">
                   {job.attempt}/{job.maxAttempts}
                 </td>
-                <td className="py-2 text-gray-500">
+                <td className="py-2 text-ink-secondary">
                   {job.latencyMs ? `${(job.latencyMs / 1000).toFixed(1)}s` : '-'}
                 </td>
-                <td className="py-2 text-gray-500">
+                <td className="py-2 text-ink-secondary">
                   {job.estimatedCost ? `¥${job.estimatedCost.toFixed(4)}` : '-'}
                 </td>
-                <td className="py-2 max-w-[150px] truncate text-red-500 text-xs" title={job.errorMessage || ''}>
+                <td className="max-w-[150px] truncate py-2 text-xs text-fail" title={job.errorMessage || ''}>
                   {job.errorMessage || ''}
                 </td>
                 <td className="py-2">
                   {job.status === 'needs_check' && (
                     <button
                       onClick={() => onRetry(job.id)}
-                      className="text-purple-600 hover:text-purple-800 text-xs"
+                      className="link-accent text-xs"
                     >
                       补抓结果
                     </button>
@@ -192,7 +192,7 @@ export default function JobQueueTable({
                   {(job.status === 'failed' || job.status === 'canceled') && (
                     <button
                       onClick={() => onRetry(job.id)}
-                      className="text-blue-600 hover:text-blue-800 text-xs"
+                      className="link-accent text-xs"
                     >
                       重试
                     </button>

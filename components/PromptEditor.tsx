@@ -1,7 +1,5 @@
 'use client';
 
-import { useState } from 'react';
-
 interface Props {
   prompt: string;
   onChange: (prompt: string) => void;
@@ -33,8 +31,6 @@ export default function PromptEditor({
   negativePrompt,
   onNegativeChange,
 }: Props) {
-  const [variables, setVariables] = useState<string[]>([]);
-
   const applyTemplate = (template: (typeof TEMPLATES)[number]) => {
     onChange(template.prompt);
   };
@@ -52,7 +48,7 @@ export default function PromptEditor({
               key={t.name}
               type="button"
               onClick={() => applyTemplate(t)}
-              className="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors"
+              className="rounded bg-surface-subtle px-2 py-1 text-xs text-ink-secondary transition-colors hover:bg-hairline"
             >
               {t.name}
             </button>
@@ -69,12 +65,12 @@ export default function PromptEditor({
       />
 
       {uniqueVars.length > 0 && (
-        <div className="bg-blue-50 rounded-lg p-3 text-xs text-blue-700">
+        <div className="rounded-lg bg-run-tint p-3 text-xs text-accent">
           <span className="font-medium">检测到变量：</span>
           {uniqueVars.map((v) => (
-            <code key={v} className="mx-1 bg-blue-100 px-1 rounded">{`{${v}}`}</code>
+            <code key={v} className="mx-1 rounded bg-white px-1">{`{${v}}`}</code>
           ))}
-          <span className="text-blue-500 ml-1">
+          <span className="ml-1 text-accent">
             — 每张图会替换为对应的值
           </span>
         </div>

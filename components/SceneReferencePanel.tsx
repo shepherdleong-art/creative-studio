@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import ImagePickerGrid from '@/components/ImagePickerGrid';
+import { Icon } from '@/components/ui/Icon';
 
 interface SceneReference {
   id: string;
@@ -105,7 +106,7 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
     <div className="card p-4">
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">场景参考图</h2>
-        <button onClick={openCreate} className="btn-secondary btn-sm text-xs">+ 新增</button>
+        <button onClick={openCreate} className="btn-secondary btn-sm text-xs"><Icon name="plus" size={13} /> 新增</button>
       </div>
 
       {/* Scene Reference creation modal */}
@@ -120,8 +121,8 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
           >
             <div className="flex items-center justify-between border-b p-4">
               <h3 className="font-semibold">新增场景参考图</h3>
-              <button onClick={closeCreate} className="text-xl text-gray-400 hover:text-gray-600">
-                ×
+              <button onClick={closeCreate} className="icon-btn" title="关闭" aria-label="关闭">
+                <Icon name="close" size={16} />
               </button>
             </div>
 
@@ -170,25 +171,25 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
       )}
 
       {loading ? (
-        <p className="text-sm text-gray-400">加载中...</p>
+        <p className="text-sm text-ink-tertiary">加载中...</p>
       ) : activeRefs.length === 0 ? (
-        <p className="text-sm text-gray-400">暂无场景参考图。将审核通过的结果图保存为场景模板，供分镜组批量引用。</p>
+        <p className="text-sm text-ink-tertiary">暂无场景参考图。将审核通过的结果图保存为场景模板，供分镜组批量引用。</p>
       ) : (
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
           {activeRefs.map((ref) => (
             <div key={ref.id} className="border rounded-lg overflow-hidden group">
-              <div className="aspect-square bg-gray-100">
+              <div className="aspect-square bg-surface-subtle">
                 <img src={getImageUrl(ref.imageAssetId)} alt={ref.name} className="w-full h-full object-cover" />
               </div>
               <div className="p-2">
                 <div className="text-xs font-medium truncate">{ref.name}</div>
-                <div className="text-[10px] text-gray-400 truncate">{ref.imageFilename}</div>
+                <div className="truncate text-[10px] text-ink-tertiary">{ref.imageFilename}</div>
                 <div className="flex items-center gap-2 mt-1">
                   {onApplyToShotSet && (
-                    <button onClick={() => onApplyToShotSet(ref.id)} className="text-[10px] text-purple-600 hover:text-purple-800">应用到分镜组</button>
+                    <button onClick={() => onApplyToShotSet(ref.id)} className="link-accent text-[10px]">应用到分镜组</button>
                   )}
-                  <button onClick={() => handleArchive(ref.id)} className="text-[10px] text-gray-400 hover:text-gray-600 ml-auto">归档</button>
-                  <button onClick={() => handleDelete(ref.id)} className="text-[10px] text-red-500 hover:text-red-700">删除</button>
+                  <button onClick={() => handleArchive(ref.id)} className="ml-auto text-[10px] text-ink-tertiary hover:text-ink-secondary">归档</button>
+                  <button onClick={() => handleDelete(ref.id)} className="text-[10px] text-fail hover:underline">删除</button>
                 </div>
               </div>
             </div>
@@ -200,23 +201,24 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
         <div className="mt-4 border-t pt-3">
           <button
             onClick={() => setShowArchived((v) => !v)}
-            className="text-xs text-gray-500 hover:text-gray-700"
+            className="inline-flex items-center gap-1 text-xs text-ink-secondary hover:text-ink"
           >
-            {showArchived ? '▾' : '▸'} 已归档 ({archivedRefs.length})
+            <Icon name="chevron-right" size={13} className={`transition-transform ${showArchived ? 'rotate-90' : ''}`} />
+            已归档 ({archivedRefs.length})
           </button>
           {showArchived && (
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 mt-2">
               {archivedRefs.map((ref) => (
                 <div key={ref.id} className="border rounded-lg overflow-hidden opacity-70">
-                  <div className="aspect-square bg-gray-100">
+                  <div className="aspect-square bg-surface-subtle">
                     <img src={getImageUrl(ref.imageAssetId)} alt={ref.name} className="w-full h-full object-cover" />
                   </div>
                   <div className="p-2">
                     <div className="text-xs font-medium truncate">{ref.name}</div>
-                    <div className="text-[10px] text-gray-400 truncate">{ref.imageFilename}</div>
+                    <div className="truncate text-[10px] text-ink-tertiary">{ref.imageFilename}</div>
                     <div className="flex items-center gap-2 mt-1">
-                      <button onClick={() => handleRestore(ref.id)} className="text-[10px] text-green-600 hover:text-green-800">恢复</button>
-                      <button onClick={() => handleDelete(ref.id)} className="text-[10px] text-red-500 hover:text-red-700 ml-auto">删除</button>
+                      <button onClick={() => handleRestore(ref.id)} className="text-[10px] text-ok hover:underline">恢复</button>
+                      <button onClick={() => handleDelete(ref.id)} className="ml-auto text-[10px] text-fail hover:underline">删除</button>
                     </div>
                   </div>
                 </div>

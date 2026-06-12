@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
+import { Icon } from '@/components/ui/Icon';
 
 interface LogEntry {
   id: string;
@@ -78,10 +79,6 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
 
   const filteredLogs = filter === 'all' ? logs : logs.filter((l) => l.level === filter);
 
-  const handleClear = async () => {
-    await loadLogs();
-  };
-
   const copyLogs = async (entries: LogEntry[]) => {
     const text = entries
       .map(
@@ -108,7 +105,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
   };
 
   if (loading) {
-    return <div className="text-sm text-gray-400 py-4 text-center">加载日志...</div>;
+    return <div className="py-4 text-center text-sm text-ink-tertiary">加载日志...</div>;
   }
 
   return (
@@ -122,8 +119,8 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
               onClick={() => setFilter(level)}
               className={`text-xs px-2 py-1 rounded ${
                 filter === level
-                  ? 'bg-gray-700 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  ? 'bg-ink text-white'
+                  : 'bg-surface-subtle text-ink-secondary hover:bg-hairline'
               }`}
             >
               {level === 'all' ? '全部' : LEVEL_LABELS[level]}
@@ -137,23 +134,23 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
         </div>
         <div className="ml-auto flex items-center gap-2">
           {autoRefresh && (
-            <span className="text-xs text-green-500">实时刷新中</span>
+            <span className="text-xs text-ok">实时刷新中</span>
           )}
           <button
             onClick={() => copyLogs(logs)}
-            className="text-xs text-gray-500 hover:text-gray-700"
+            className="link-accent inline-flex items-center gap-1 text-xs"
             title="复制全部日志"
           >
-            📋 全部
+            <Icon name="copy" size={12} /> 全部
           </button>
           <button
             onClick={() => copyLogs(logs.filter(l => l.level === 'error'))}
-            className="text-xs text-red-500 hover:text-red-700"
+            className="inline-flex items-center gap-1 text-xs text-fail hover:underline"
             title="复制错误日志"
           >
-            ⚠️ 错误
+            <Icon name="alert" size={12} /> 错误
           </button>
-          <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+          <label className="flex cursor-pointer items-center gap-1 text-xs text-ink-tertiary">
             <input
               type="checkbox"
               checked={autoScroll}
@@ -164,7 +161,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
           </label>
           <button
             onClick={loadLogs}
-            className="text-xs text-blue-600 hover:text-blue-800"
+            className="link-accent text-xs"
           >
             刷新
           </button>
@@ -173,13 +170,13 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
 
       {/* Log list */}
       {filteredLogs.length === 0 ? (
-        <div className={`text-center text-gray-400 text-sm ${fill ? 'flex flex-1 items-center justify-center' : 'py-6'}`}>
+        <div className={`text-center text-sm text-ink-tertiary ${fill ? 'flex flex-1 items-center justify-center' : 'py-6'}`}>
           {filter === 'all' ? '暂无日志' : `无 ${LEVEL_LABELS[filter]} 级别日志`}
         </div>
       ) : (
         <div
           ref={containerRef}
-          className={`${fill ? 'min-h-0 flex-1' : 'max-h-96'} overflow-y-auto border border-gray-200 rounded-lg bg-gray-900 text-gray-100 font-mono text-xs`}
+          className={`${fill ? 'min-h-0 flex-1' : 'max-h-96'} overflow-y-auto rounded-lg border border-hairline bg-gray-900 font-mono text-xs text-gray-100`}
           onScroll={(e) => {
             const el = e.currentTarget;
             const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
@@ -211,7 +208,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
                           ? 'bg-yellow-800 text-yellow-200'
                           : log.level === 'debug'
                           ? 'bg-gray-700 text-gray-300'
-                          : 'bg-blue-800 text-blue-200'
+                          : 'bg-accent/40 text-run-tint'
                       }`}
                     >
                       {LEVEL_LABELS[log.level]}
@@ -219,8 +216,8 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
                   </td>
                   {!jobId && (
                     <td className="py-1 px-2 text-gray-500 w-1 whitespace-nowrap">
-                      {!log.jobId ? '📋' : (
-                        <span title={`任务 ID: ${log.jobId} (点击复制)`} className="cursor-pointer hover:text-blue-300" onClick={() => { navigator.clipboard.writeText(log.jobId!).catch(() => {}); }}>
+                      {!log.jobId ? <Icon name="logs" size={12} className="text-gray-500" /> : (
+                        <span title={`任务 ID: ${log.jobId} (点击复制)`} className="cursor-pointer hover:text-accent" onClick={() => { navigator.clipboard.writeText(log.jobId!).catch(() => {}); }}>
                           {log.jobId.slice(0, 6)}
                         </span>
                       )}
@@ -239,7 +236,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
         </div>
       )}
 
-      <div className="text-xs text-gray-400 mt-1 shrink-0">
+      <div className="mt-1 shrink-0 text-xs text-ink-tertiary">
         共 {filteredLogs.length} 条日志
         {filter !== 'all' && ` (过滤: ${LEVEL_LABELS[filter]})`}
       </div>

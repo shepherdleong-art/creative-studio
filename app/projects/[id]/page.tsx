@@ -355,8 +355,8 @@ export default function ProjectDetailPage() {
   if (loading) {
     return (
       <div className="text-center py-16">
-        <div className="animate-spin w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full mx-auto mb-4" />
-        <p className="text-gray-400">加载项目...</p>
+        <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+        <p className="text-ink-tertiary">加载项目...</p>
       </div>
     );
   }
@@ -365,7 +365,7 @@ export default function ProjectDetailPage() {
     return (
       <div className="text-center py-16">
         <p className="text-gray-500">项目不存在</p>
-        <Link href="/" className="text-blue-600 hover:underline mt-2 inline-block">返回列表</Link>
+        <Link href="/" className="link-accent mt-2 inline-block">返回列表</Link>
       </div>
     );
   }

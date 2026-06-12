@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
+import { Icon } from '@/components/ui/Icon';
 
 interface Job {
   id: string;
@@ -86,9 +87,10 @@ function InlineUploader({
   };
 
   return (
-    <label className="flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 cursor-pointer">
+    <label className="link-accent flex cursor-pointer items-center gap-1 text-xs">
       <input ref={ref} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleChange} className="hidden" />
-      {uploading ? '上传中…' : '+ 添加参考图'}
+      <Icon name="plus" size={12} />
+      {uploading ? '上传中…' : '添加参考图'}
     </label>
   );
 }
@@ -118,14 +120,14 @@ function GenerationContextPanel({
   };
 
   return (
-    <aside className="w-64 shrink-0 border-l border-gray-100 p-3 overflow-y-auto text-xs">
-      <h4 className="font-medium text-gray-700 mb-3">生成上下文</h4>
+    <aside className="w-64 shrink-0 overflow-y-auto border-l border-hairline p-3 text-xs">
+      <h4 className="mb-3 font-medium text-ink">生成上下文</h4>
 
       {/* Reference images */}
       <div className="mb-4">
-        <div className="text-gray-500 mb-1.5">参考图</div>
+        <div className="mb-1.5 text-ink-secondary">参考图</div>
         {referenceImages.length === 0 ? (
-          <p className="text-gray-400 italic">无参考图</p>
+          <p className="text-ink-tertiary italic">无参考图</p>
         ) : (
           <div className="grid grid-cols-3 gap-1.5">
             {referenceImages.map((img) => (
@@ -140,9 +142,9 @@ function GenerationContextPanel({
                 <HoverZoomImage
                   src={img.imageUrl || ''}
                   alt={img.filename}
-                  className="w-full aspect-square object-cover rounded border border-gray-200 hover:border-blue-400 transition-colors"
+                  className="aspect-square w-full rounded border border-hairline object-cover transition-colors hover:border-accent"
                 />
-                <div className="text-[9px] text-gray-400 truncate mt-0.5">{img.filename}</div>
+                <div className="mt-0.5 truncate text-[9px] text-ink-tertiary">{img.filename}</div>
               </a>
             ))}
           </div>
@@ -152,27 +154,28 @@ function GenerationContextPanel({
       {/* Prompt */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-gray-500">提示词</span>
+          <span className="text-ink-secondary">提示词</span>
           {job.prompt && (
-            <button onClick={handleCopyPrompt} className="text-[10px] text-blue-500 hover:text-blue-700">
-              {copied ? '已复制 ✓' : '复制'}
+            <button onClick={handleCopyPrompt} className="link-accent inline-flex items-center gap-1 text-[10px]">
+              <Icon name={copied ? 'check' : 'copy'} size={11} />
+              {copied ? '已复制' : '复制'}
             </button>
           )}
         </div>
-        <div className="bg-gray-50 rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap text-gray-600 leading-relaxed">
-          {job.prompt || <span className="text-gray-400 italic">无提示词</span>}
+        <div className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded bg-surface-subtle p-2 leading-relaxed text-ink-secondary">
+          {job.prompt || <span className="text-ink-tertiary italic">无提示词</span>}
         </div>
       </div>
 
       {/* Parameters */}
       <div>
-        <div className="text-gray-500 mb-1.5">参数</div>
-        <div className="space-y-1 text-gray-500">
-          {providerName && <div>供应商: <span className="text-gray-700">{providerName}</span></div>}
-          {job.model && <div>模型: <span className="text-gray-700">{job.model}</span></div>}
-          {job.size && <div>尺寸: <span className="text-gray-700">{job.size}</span></div>}
-          {job.quality && <div>质量: <span className="text-gray-700">{job.quality}</span></div>}
-          {job.revision != null && <div>版本: <span className="text-gray-700">r{job.revision}</span></div>}
+        <div className="mb-1.5 text-ink-secondary">参数</div>
+        <div className="space-y-1 text-ink-secondary">
+          {providerName && <div>供应商: <span className="text-ink">{providerName}</span></div>}
+          {job.model && <div>模型: <span className="text-ink">{job.model}</span></div>}
+          {job.size && <div>尺寸: <span className="text-ink">{job.size}</span></div>}
+          {job.quality && <div>质量: <span className="text-ink">{job.quality}</span></div>}
+          {job.revision != null && <div>版本: <span className="text-ink">r{job.revision}</span></div>}
         </div>
       </div>
     </aside>
@@ -348,8 +351,8 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
   return (
     <div>
       {displayedJobs.length === 0 && (succeededJobs.length === 0 && failedJobs.length === 0) ? (
-        <div className="text-center py-12 text-gray-400">
-          <div className="text-4xl mb-2">🖼️</div>
+        <div className="flex flex-col items-center py-12 text-center text-ink-tertiary">
+          <Icon name="image" size={34} className="mb-2" />
           <p>暂无生成的图片</p>
         </div>
       ) : (
@@ -365,7 +368,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
             {failedJobs.length > 0 && (
               <button
                 onClick={() => { setStatusFilter('failed'); setSelectedIndex(null); }}
-                className={`btn-sm text-xs ${statusFilter === 'failed' ? 'btn-primary bg-red-600 hover:bg-red-700' : 'btn-secondary'}`}
+                className={`btn-sm text-xs ${statusFilter === 'failed' ? 'btn-primary bg-fail hover:bg-fail' : 'btn-secondary'}`}
               >
                 失败 ({failedJobs.length})
               </button>
@@ -373,8 +376,8 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
           </div>
 
           {displayedJobs.length === 0 ? (
-            <div className="text-center py-12 text-gray-400">
-              <div className="text-4xl mb-2">{statusFilter === 'failed' ? '✅' : '🖼️'}</div>
+            <div className="flex flex-col items-center py-12 text-center text-ink-tertiary">
+              <Icon name={statusFilter === 'failed' ? 'check' : 'image'} size={34} className="mb-2" />
               <p>{statusFilter === 'failed' ? '暂无失败的生成任务' : '暂无成功生成的图片'}</p>
             </div>
           ) : (
@@ -385,27 +388,27 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                 const isFailed = job.status === 'failed';
                 return (
                   <div key={job.id} onClick={() => setSelectedIndex(idx)}
-                    className={`card overflow-hidden cursor-pointer group transition-all hover:ring-2 ${isFailed ? 'hover:ring-red-400 border-red-200' : 'hover:ring-blue-400'} ${mark === 'discard' ? 'opacity-40' : ''}`}>
-                    <div className="aspect-square relative bg-gray-100">
+                    className={`card group cursor-pointer overflow-hidden transition-all hover:ring-2 ${isFailed ? 'border-fail/30 hover:ring-fail/40' : 'hover:ring-accent/40'} ${mark === 'discard' ? 'opacity-40' : ''}`}>
+                    <div className="relative aspect-square bg-surface-subtle">
                       {isFailed ? (
-                        <div className="w-full h-full flex flex-col items-center justify-center bg-red-50 p-2">
-                          <span className="text-2xl mb-1">❌</span>
-                          <span className="text-[10px] text-red-600 text-center line-clamp-3">{job.errorMessage || '未知错误'}</span>
+                        <div className="flex h-full w-full flex-col items-center justify-center bg-fail-tint p-2">
+                          <Icon name="alert" size={24} className="mb-1 text-fail" />
+                          <span className="line-clamp-3 text-center text-[10px] text-fail">{job.errorMessage || '未知错误'}</span>
                         </div>
                       ) : (
                         <img src={`/api/images/outputs/${job.outputFilename}`} alt={job.inputFilename} className="w-full h-full object-cover" />
                       )}
                       {mark && (
-                        <span className={`absolute top-1 left-1 text-xs px-1.5 py-0.5 rounded ${
-                          mark === 'available' ? 'bg-green-500 text-white' : mark === 'rework' ? 'bg-yellow-500 text-white' : 'bg-gray-500 text-white'}`}>
+                        <span className={`pill absolute left-1 top-1 ${
+                          mark === 'available' ? 'bg-ok-tint text-ok' : mark === 'rework' ? 'bg-warn-tint text-warn' : 'bg-idle-tint text-idle'}`}>
                           {{ available: '可用', rework: '返工', discard: '废弃' }[mark]}
                         </span>
                       )}
                     </div>
                     <div className="p-2">
-                      <div className="text-xs text-gray-500 truncate">{job.inputFilename}</div>
+                      <div className="truncate text-xs text-ink-secondary">{job.inputFilename}</div>
                       {isFailed && job.errorMessage && (
-                        <div className="text-[10px] text-red-500 truncate mt-0.5" title={job.errorMessage}>{job.errorMessage}</div>
+                        <div className="mt-0.5 truncate text-[10px] text-fail" title={job.errorMessage}>{job.errorMessage}</div>
                       )}
                     </div>
                   </div>
@@ -418,17 +421,17 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
           {selectedJob && selectedIndex != null && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
               onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}>
-              <div className="bg-white rounded-xl max-w-[68rem] w-full max-h-[90vh] overflow-hidden flex flex-col"
+              <div className="card flex max-h-[90vh] w-full max-w-[68rem] flex-col overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,.14)]"
                 onClick={(e) => e.stopPropagation()}>
 
                 {/* Header */}
-                <div className="p-4 border-b flex items-center justify-between shrink-0">
+                <div className="flex shrink-0 items-center justify-between border-b border-hairline p-4">
                   <div className="flex items-center gap-3">
                     <h3 className="font-medium text-sm truncate max-w-[300px]">{selectedJob.inputFilename}</h3>
-                    <span className="text-xs text-gray-400">{selectedIndex + 1} / {displayedJobs.length}</span>
+                    <span className="text-xs text-ink-tertiary">{selectedIndex + 1} / {displayedJobs.length}</span>
                   </div>
                   <button onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}
-                    className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+                    className="icon-btn" title="关闭" aria-label="关闭"><Icon name="close" size={16} /></button>
                 </div>
 
                 {/* Body: images + sidebar */}
@@ -437,48 +440,48 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                   <div className="flex-1 p-4 overflow-y-auto">
                     {/* Regenerate panel (above images when open) */}
                     {regenOpen && (
-                      <div className="mb-4 p-4 bg-purple-50 rounded-lg space-y-4">
-                        <h4 className="text-sm font-semibold text-purple-900">重新生成设置</h4>
+                      <div className="mb-4 space-y-4 rounded-lg bg-surface-subtle p-4">
+                        <h4 className="text-sm font-semibold text-ink">重新生成设置</h4>
 
                         {/* Base image selector */}
                         <div>
-                          <div className="text-xs font-medium text-gray-600 mb-2">编辑底图</div>
+                          <div className="mb-2 text-xs font-medium text-ink-secondary">编辑底图</div>
                           <div className="flex gap-2">
                             <label className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition-colors ${
-                              regenInputSource === 'original' ? 'border-purple-400 bg-purple-100 text-purple-800' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'}`}>
+                              regenInputSource === 'original' ? 'border-accent bg-run-tint text-accent' : 'border-hairline bg-white text-ink-secondary hover:border-accent/40'}`}>
                               <input type="radio" name="inputSource" value="original" checked={regenInputSource === 'original'}
                                 onChange={() => handleInputSourceChange('original')} className="sr-only" />原图
                             </label>
                             <label className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition-colors ${
-                              regenInputSource === 'current_result' ? 'border-purple-400 bg-purple-100 text-purple-800' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'} ${!hasOutput ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                              regenInputSource === 'current_result' ? 'border-accent bg-run-tint text-accent' : 'border-hairline bg-white text-ink-secondary hover:border-accent/40'} ${!hasOutput ? 'opacity-40 cursor-not-allowed' : ''}`}>
                               <input type="radio" name="inputSource" value="current_result" checked={regenInputSource === 'current_result'}
                                 onChange={() => handleInputSourceChange('current_result')} disabled={!hasOutput} className="sr-only" />当前结果
                             </label>
                           </div>
-                          <p className="text-xs text-gray-400 mt-1">
+                          <p className="mt-1 text-xs text-ink-tertiary">
                             {regenInputSource === 'current_result' ? '基于当前生成结果继续编辑' : '基于原始输入图重新生成'}
                           </p>
                         </div>
 
                         {/* Send order preview */}
                         <div>
-                          <div className="text-xs font-medium text-gray-600 mb-2">本次发送顺序</div>
-                          <div className="bg-white rounded border border-gray-200 p-2 space-y-1 text-xs">
-                            <div className="flex items-center gap-2 text-gray-700">
-                              <span className="w-5 h-5 rounded bg-purple-100 text-purple-700 flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
+                          <div className="mb-2 text-xs font-medium text-ink-secondary">本次发送顺序</div>
+                          <div className="space-y-1 rounded border border-hairline bg-white p-2 text-xs">
+                            <div className="flex items-center gap-2 text-ink">
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-run-tint text-[10px] font-bold text-accent">1</span>
                               <span>底图：{regenInputSource === 'current_result' ? '当前结果' : '原图'}</span>
                             </div>
                             {selectedReferenceIds.filter((id) => id !== baseImageId).map((refId, idx) => {
                               const asset = imageById.get(refId);
                               return (
-                                <div key={refId} className="flex items-center gap-2 text-gray-500">
-                                  <span className="w-5 h-5 rounded bg-gray-100 text-gray-500 flex items-center justify-center text-[10px] shrink-0">{idx + 2}</span>
+                                <div key={refId} className="flex items-center gap-2 text-ink-secondary">
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-subtle text-[10px]">{idx + 2}</span>
                                   <span className="truncate">参考：{asset?.filename || refId.slice(0, 8)}</span>
                                 </div>
                               );
                             })}
                             {selectedReferenceIds.filter((id) => id !== baseImageId).length === 0 && (
-                              <div className="text-gray-400 pl-7">仅底图，无参考图</div>
+                              <div className="pl-7 text-ink-tertiary">仅底图，无参考图</div>
                             )}
                           </div>
                         </div>
@@ -486,13 +489,13 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                         {/* Reference selector */}
                         <div>
                           <div className="flex items-center gap-2 mb-2">
-                            <span className="text-xs font-medium text-gray-600">参考图</span>
-                            <span className="text-xs text-gray-400">已选 {selectedReferenceIds.filter((id) => id !== baseImageId).length} 张</span>
+                            <span className="text-xs font-medium text-ink-secondary">参考图</span>
+                            <span className="text-xs text-ink-tertiary">已选 {selectedReferenceIds.filter((id) => id !== baseImageId).length} 张</span>
                             <InlineUploader projectId={projectId} onUploaded={handleUploaded} />
                           </div>
-                          <p className="text-xs text-gray-400 mb-2">图1 是底图，后面的图只作为参考。请在提示词里描述要改什么，不需要写图1/图2。</p>
+                          <p className="mb-2 text-xs text-ink-tertiary">图1 是底图，后面的图只作为参考。请在提示词里描述要改什么，不需要写图1/图2。</p>
                           {referenceCandidates.length === 0 ? (
-                            <p className="text-xs text-gray-400 italic">无可选参考图</p>
+                            <p className="text-xs text-ink-tertiary italic">无可选参考图</p>
                           ) : (
                             <div className="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 gap-2">
                               {referenceCandidates.map((candidate) => {
@@ -503,12 +506,12 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                                     onClick={() => toggleReference(candidate.id)}
                                     className={`relative rounded-lg border-2 overflow-hidden transition-all ${
                                       isBase
-                                        ? 'border-purple-300 bg-purple-50 cursor-default'
+                                        ? 'border-accent/30 bg-run-tint cursor-default'
                                         : isSelected
-                                        ? 'border-purple-500 ring-1 ring-purple-300 cursor-pointer'
-                                        : 'border-gray-200 hover:border-gray-300 cursor-pointer'
+                                        ? 'border-accent ring-1 ring-accent/30 cursor-pointer'
+                                        : 'border-hairline hover:border-accent/40 cursor-pointer'
                                     }`}>
-                                    <div className="aspect-square bg-gray-100">
+                                    <div className="aspect-square bg-surface-subtle">
                                       <HoverZoomImage
                                         src={candidate.imageUrl}
                                         alt={candidate.label}
@@ -516,11 +519,11 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                                       />
                                     </div>
                                     <div className="p-1">
-                                      <div className="text-[9px] text-gray-500 truncate">{candidate.label}</div>
-                                      {isBase && <div className="text-[8px] text-purple-600 font-medium">图1 底图</div>}
+                                      <div className="truncate text-[9px] text-ink-secondary">{candidate.label}</div>
+                                      {isBase && <div className="text-[8px] font-medium text-accent">图1 底图</div>}
                                     </div>
                                     {isSelected && (
-                                      <div className="absolute top-1 right-1 w-5 h-5 bg-purple-500 text-white rounded-full flex items-center justify-center text-xs">✓</div>
+                                      <div className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-white"><Icon name="check" size={12} /></div>
                                     )}
                                   </div>
                                 );
@@ -531,7 +534,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
 
                         {/* Prompt */}
                         <div>
-                          <div className="text-xs font-medium text-gray-600 mb-1">提示词</div>
+                          <div className="mb-1 text-xs font-medium text-ink-secondary">提示词</div>
                           <textarea value={regenPrompt} onChange={(e) => setRegenPrompt(e.target.value)}
                             rows={3} className="input-field font-mono text-sm" placeholder="输入新的提示词..." />
                         </div>
@@ -546,25 +549,25 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                     {/* Before/After images */}
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <div className="text-xs text-gray-500 mb-1">原图</div>
+                        <div className="mb-1 text-xs text-ink-secondary">原图</div>
                         {(() => {
                           const inputAsset = images.find((img) => img.id === selectedJob.inputImageId);
                           const url = getImageUrl(inputAsset);
                           return url ? <img src={url} alt="原图" className="w-full rounded-lg border" />
-                            : <div className="text-gray-400 text-sm">原图不可用</div>;
+                            : <div className="text-sm text-ink-tertiary">原图不可用</div>;
                         })()}
                       </div>
                       <div>
-                        <div className="text-xs text-gray-500 mb-1">结果</div>
+                        <div className="mb-1 text-xs text-ink-secondary">结果</div>
                         {selectedJob.outputFilename ? (
                           <img src={`/api/images/outputs/${selectedJob.outputFilename}`} alt="结果" className="w-full rounded-lg border" />
                         ) : selectedJob.status === 'failed' ? (
-                          <div className="w-full aspect-square rounded-lg border border-red-200 bg-red-50 flex flex-col items-center justify-center p-4">
-                            <span className="text-2xl mb-1">❌</span>
-                            <span className="text-xs text-red-600 text-center">{selectedJob.errorMessage || '生成失败'}</span>
+                          <div className="flex aspect-square w-full flex-col items-center justify-center rounded-lg border border-fail/30 bg-fail-tint p-4">
+                            <Icon name="alert" size={24} className="mb-1 text-fail" />
+                            <span className="text-center text-xs text-fail">{selectedJob.errorMessage || '生成失败'}</span>
                           </div>
                         ) : (
-                          <div className="text-gray-400 text-sm">结果不可用</div>
+                          <div className="text-sm text-ink-tertiary">结果不可用</div>
                         )}
                       </div>
                     </div>
@@ -577,31 +580,31 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                 {/* Arrow overlays */}
                 {!isFirst && (
                   <button onClick={goPrev}
-                    className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center text-2xl transition-colors z-10"
-                    title="上一张 (←)">‹</button>
+                    className="absolute left-4 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
+                    title="上一张"><Icon name="chevron-left" size={22} /></button>
                 )}
                 {!isLast && (
                   <button onClick={goNext}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/40 hover:bg-black/60 text-white rounded-full flex items-center justify-center text-2xl transition-colors z-10"
-                    title="下一张 (→)">›</button>
+                    className="absolute right-4 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
+                    title="下一张"><Icon name="chevron-right" size={22} /></button>
                 )}
 
                 {/* Footer actions */}
                 <div className="p-4 border-t flex gap-2 flex-wrap items-center shrink-0">
-                  <button onClick={goPrev} disabled={isFirst} className="btn-secondary btn-sm">‹ 上一张</button>
-                  <button onClick={goNext} disabled={isLast} className="btn-secondary btn-sm">下一张 ›</button>
-                  <span className="text-gray-300 mx-1">|</span>
-                  <button onClick={() => handleMark('available')} className="btn-secondary btn-sm text-green-700">✅ 可用</button>
-                  <button onClick={() => handleMark('rework')} className="btn-secondary btn-sm text-yellow-700">🔄 待返工</button>
-                  <button onClick={() => handleMark('discard')} className="btn-secondary btn-sm text-red-700">🗑️ 废弃</button>
-                  <span className="text-gray-300 mx-1">|</span>
-                  <button onClick={openRegen} className="btn-secondary btn-sm text-purple-700">🔄 重新生成</button>
+                  <button onClick={goPrev} disabled={isFirst} className="btn-secondary btn-sm"><Icon name="chevron-left" size={14} /> 上一张</button>
+                  <button onClick={goNext} disabled={isLast} className="btn-secondary btn-sm">下一张 <Icon name="chevron-right" size={14} /></button>
+                  <span className="mx-1 text-hairline">|</span>
+                  <button onClick={() => handleMark('available')} className="btn-secondary btn-sm text-ok"><Icon name="check" size={14} /> 可用</button>
+                  <button onClick={() => handleMark('rework')} className="btn-secondary btn-sm text-warn"><Icon name="retry" size={14} /> 待返工</button>
+                  <button onClick={() => handleMark('discard')} className="btn-secondary btn-sm text-fail"><Icon name="trash" size={14} /> 废弃</button>
+                  <span className="mx-1 text-hairline">|</span>
+                  <button onClick={openRegen} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重新生成</button>
                   {onSetSceneRef && selectedJob.outputImageId && (
                     <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)}
-                      className="btn-secondary btn-sm text-blue-700">🎬 设为场景参考图</button>
+                      className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
                   )}
                   {selectedJob.outputFilename && (
-                    <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm ml-auto">下载</a>
+                    <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm ml-auto"><Icon name="download" size={14} /> 下载</a>
                   )}
                 </div>
               </div>

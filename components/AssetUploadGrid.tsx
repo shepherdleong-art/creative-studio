@@ -69,10 +69,10 @@ export default function AssetUploadGrid({
   return (
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+        <div className="rounded-lg border border-hairline bg-surface-subtle p-4">
           <div className="mb-3">
-            <h3 className="text-sm font-semibold text-gray-900">{uploadTitle}</h3>
-            <p className="mt-1 text-xs text-gray-500">{uploadHint}</p>
+            <h3 className="text-sm font-semibold text-ink">{uploadTitle}</h3>
+            <p className="mt-1 text-xs text-ink-secondary">{uploadHint}</p>
           </div>
           <ImageUploader
             role="input"
@@ -90,11 +90,11 @@ export default function AssetUploadGrid({
           />
         </div>
 
-        <div className="rounded-lg border border-gray-200 bg-white p-4">
+        <div className="rounded-lg border border-hairline bg-white p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-gray-900">已上传素材</h3>
-              <p className="mt-1 text-xs text-gray-500">已上传 {assets.length} 张，{selectionLabel}</p>
+              <h3 className="text-sm font-semibold text-ink">已上传素材</h3>
+              <p className="mt-1 text-xs text-ink-secondary">已上传 {assets.length} 张，{selectionLabel}</p>
             </div>
             {selectedIds.length > 0 && (
               <button type="button" onClick={() => onSelectionChange([])} className="btn-secondary btn-sm text-xs">
@@ -104,7 +104,7 @@ export default function AssetUploadGrid({
           </div>
 
           {assets.length === 0 ? (
-            <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 text-sm text-gray-400">
+            <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-hairline bg-surface-subtle text-sm text-ink-tertiary">
               {emptyText}
             </div>
           ) : (
@@ -125,25 +125,25 @@ export default function AssetUploadGrid({
                     }}
                     onMouseLeave={() => setPreview(null)}
                     className={`group relative rounded-lg border bg-white p-1 text-left transition ${
-                      selected ? 'border-blue-600 ring-2 ring-blue-200' : 'border-gray-200 hover:border-gray-400 hover:shadow-sm'
+                      selected ? 'border-accent ring-2 ring-accent/20' : 'border-hairline hover:border-accent/40 hover:shadow-sm'
                     }`}
                   >
-                    <div className="relative aspect-square overflow-hidden rounded-md bg-gray-100">
+                    <div className="relative aspect-square overflow-hidden rounded-md bg-surface-subtle">
                       {asset.imageUrl ? (
                         <img src={asset.imageUrl} alt={asset.filename} className="h-full w-full object-cover" />
                       ) : (
-                        <div className="flex h-full items-center justify-center text-xs text-gray-400">无预览</div>
+                        <div className="flex h-full items-center justify-center text-xs text-ink-tertiary">无预览</div>
                       )}
                       <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] text-white">
                         {USAGE_LABELS[asset.usage || usage] || '素材'}
                       </span>
                       {selected && (
-                        <span className="absolute right-1.5 top-1.5 flex h-6 min-w-6 items-center justify-center rounded-full bg-blue-600 px-1.5 text-xs font-semibold text-white">
+                        <span className="absolute right-1.5 top-1.5 flex h-6 min-w-6 items-center justify-center rounded-full bg-accent px-1.5 text-xs font-semibold text-white">
                           {maxSelection === 1 ? '选中' : selectedIndex + 1}
                         </span>
                       )}
                     </div>
-                    <div className="mt-1 truncate px-0.5 text-xs text-gray-600">{asset.filename}</div>
+                    <div className="mt-1 truncate px-0.5 text-xs text-ink-secondary">{asset.filename}</div>
                   </button>
                 );
               })}

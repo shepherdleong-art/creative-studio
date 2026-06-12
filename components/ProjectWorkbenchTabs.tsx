@@ -18,7 +18,7 @@ interface Props {
 
 export default function ProjectWorkbenchTabs({ projectId, activeTab }: Props) {
   return (
-    <nav className="mb-5 rounded-xl border border-gray-200 bg-white p-2 shadow-sm" aria-label="项目工作台分区">
+    <nav className="segmented mb-5 w-full" aria-label="项目工作台分区">
       <div className="grid gap-2 md:grid-cols-4">
         {TABS.map((tab, index) => {
           const active = tab.id === activeTab;
@@ -28,12 +28,12 @@ export default function ProjectWorkbenchTabs({ projectId, activeTab }: Props) {
               href={`/projects/${projectId}?tab=${tab.id}`}
               className={`rounded-lg border px-4 py-3 transition ${
                 active
-                  ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-sm'
-                  : 'border-transparent text-gray-600 hover:border-gray-200 hover:bg-gray-50'
+                  ? 'border-accent bg-white text-accent shadow-sm'
+                  : 'border-transparent text-ink-secondary hover:border-hairline hover:bg-white/70'
               }`}
             >
               <div className="flex items-center gap-2">
-                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${active ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'}`}>
+                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${active ? 'bg-accent text-white' : 'bg-surface-subtle text-ink-tertiary'}`}>
                   {index + 1}
                 </span>
                 <span className="text-sm font-semibold">{tab.label}</span>
