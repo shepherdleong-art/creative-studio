@@ -1,11 +1,11 @@
 # 2026-06-12 Evening UI Handoff for Claude Code
 
-This note summarizes the evening UI/UX changes on branch `feat/apple-ui-redesign`.
+This note summarizes the evening UI/UX changes on branch `feat/creative-studio-redesign`.
 It is intended as the next-session handoff for Claude Code or other coding agents.
 
 ## Goal
 
-Continue the Apple-style workbench redesign and remove several workflow frictions found during live visual review:
+Continue the Creative Studio workbench redesign and remove several workflow frictions found during live visual review:
 
 - Make result/shot preview experiences consistent.
 - Improve video generation form usability.
@@ -186,7 +186,7 @@ Main changes:
 
 Added `localStorage` persistence:
 
-- key: `batch-image-workbench:video-shot-set:${projectId}`
+- key: `creative-studio:video-shot-set:${projectId}`
 - restores last selected shot set after tab remounts
 - guarded by `restoredSetRef`
 

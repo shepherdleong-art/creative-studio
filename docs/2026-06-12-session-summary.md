@@ -1,8 +1,8 @@
-# 2026-06-12 会话总结：Apple 风格 UI 改版
+# 2026-06-12 会话总结：Creative Studio UI 改版
 
 ## 目标
 
-把「批量图片编辑工作台」全站 UI 从通用 Tailwind 默认观感改为 **Apple（apple.com.cn）精致极简风格**——纯视觉重构、不改任何功能。
+把「Creative Studio」全站 UI 从通用 Tailwind 默认观感改为 **Apple（apple.com.cn）精致极简风格**——纯视觉重构、不改任何功能。
 
 ## 设计探索
 
@@ -19,8 +19,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| `docs/2026-06-12-workbench-ui-apple-redesign-design.md` | 设计规格（令牌/原语/各屏方案/约束/节奏） |
-| `docs/2026-06-12-workbench-ui-apple-redesign-plan.md` | Phase 1 详细实现计划 + Phase 2–4 路线图 |
+| `docs/2026-06-12-creative-studio-redesign-design.md` | 设计规格（令牌/原语/各屏方案/约束/节奏） |
+| `docs/2026-06-12-creative-studio-redesign-plan.md` | Phase 1 详细实现计划 + Phase 2–4 路线图 |
 
 ## 实现过程
 
@@ -83,4 +83,4 @@
 
 ## 分支
 
-`feat/apple-ui-redesign`（已 push 至 `origin`）
+`feat/creative-studio-redesign`

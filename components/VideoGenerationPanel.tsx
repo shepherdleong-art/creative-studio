@@ -80,7 +80,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const defaultProviderId = providers.length > 0 ? providers[0].id : '';
   const defaultDuration = 5;
-  const storageKey = `batch-image-workbench:video-shot-set:${projectId}`;
+  const storageKey = `creative-studio:video-shot-set:${projectId}`;
 
   const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
     key: crypto.randomUUID(), prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,

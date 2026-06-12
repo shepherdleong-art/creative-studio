@@ -1,4 +1,4 @@
-# 工作台 UI 改版 · Apple 风格 — 实现计划
+# Creative Studio 工作台 UI 改版 — 实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Next.js 16 (App Router) · React 19 · Tailwind CSS v4（`@theme` 令牌）· TypeScript · 系统字体栈（离线安全，不使用 `next/font/google`）。
 
-**Spec:** `docs/2026-06-12-workbench-ui-apple-redesign-design.md` · **可视化稿:** `.superpowers/brainstorm/118-1781252957/content/`（`apple-home.html`、`apple-workbench.html`）
+**Spec:** `docs/2026-06-12-creative-studio-redesign-design.md` · **可视化稿:** `.superpowers/brainstorm/118-1781252957/content/`（`apple-home.html`、`apple-workbench.html`）
 
 ---
 
