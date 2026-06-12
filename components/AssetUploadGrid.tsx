@@ -90,7 +90,7 @@ export default function AssetUploadGrid({
           />
         </div>
 
-        <div className="rounded-lg border border-hairline bg-white p-4">
+        <div className="rounded-[18px] border border-hairline bg-white p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold text-ink">已上传素材</h3>
@@ -108,7 +108,7 @@ export default function AssetUploadGrid({
               {emptyText}
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-3">
               {assets.map((asset) => {
                 const selectedIndex = selectedIds.indexOf(asset.id);
                 const selected = selectedIndex >= 0;
@@ -118,32 +118,31 @@ export default function AssetUploadGrid({
                     key={asset.id}
                     onClick={() => toggle(asset.id)}
                     onMouseEnter={(event) => {
-                      if (asset.imageUrl) setPreview({ src: asset.imageUrl, title: asset.filename, x: event.clientX, y: event.clientY });
-                    }}
-                    onMouseMove={(event) => {
-                      if (asset.imageUrl) setPreview({ src: asset.imageUrl, title: asset.filename, x: event.clientX, y: event.clientY });
+                      if (!asset.imageUrl) return;
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setPreview({ src: asset.imageUrl, title: asset.filename, x: rect.right, y: rect.top });
                     }}
                     onMouseLeave={() => setPreview(null)}
-                    className={`group relative rounded-lg border bg-white p-1 text-left transition ${
-                      selected ? 'border-accent ring-2 ring-accent/20' : 'border-hairline hover:border-accent/40 hover:shadow-sm'
+                    className={`group relative rounded-[18px] border p-2 text-left transition ${
+                      selected ? 'border-accent bg-white shadow-sm ring-2 ring-accent/20' : 'border-transparent bg-surface-subtle hover:border-accent/30 hover:bg-white hover:shadow-sm'
                     }`}
                   >
-                    <div className="relative aspect-square overflow-hidden rounded-md bg-surface-subtle">
+                    <div className="relative aspect-[4/3] overflow-hidden rounded-[14px] bg-surface">
                       {asset.imageUrl ? (
                         <img src={asset.imageUrl} alt={asset.filename} className="h-full w-full object-cover" />
                       ) : (
                         <div className="flex h-full items-center justify-center text-xs text-ink-tertiary">无预览</div>
                       )}
-                      <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] text-white">
+                      <span className="absolute left-2 top-2 rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white backdrop-blur">
                         {USAGE_LABELS[asset.usage || usage] || '素材'}
                       </span>
                       {selected && (
-                        <span className="absolute right-1.5 top-1.5 flex h-6 min-w-6 items-center justify-center rounded-full bg-accent px-1.5 text-xs font-semibold text-white">
+                        <span className="absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-accent px-2 text-xs font-semibold text-white shadow-sm">
                           {maxSelection === 1 ? '选中' : selectedIndex + 1}
                         </span>
                       )}
                     </div>
-                    <div className="mt-1 truncate px-0.5 text-xs text-ink-secondary">{asset.filename}</div>
+                    <div className="mt-2 truncate px-1 text-xs font-medium text-ink-secondary">{asset.filename}</div>
                   </button>
                 );
               })}
@@ -154,11 +153,11 @@ export default function AssetUploadGrid({
 
       {preview && (
         <div
-          className="pointer-events-none fixed z-[120] w-80 rounded-xl border border-gray-700 bg-gray-950 p-2 shadow-2xl"
+          className="theme-preview-popover w-80"
           style={{ left: previewLeft, top: previewTop }}
         >
           <img src={preview.src} alt={preview.title} className="max-h-60 w-full rounded-lg object-contain" />
-          <div className="mt-1 truncate px-1 text-xs text-gray-200">{preview.title}</div>
+          <div className="theme-preview-caption px-1 text-xs">{preview.title}</div>
         </div>
       )}
     </div>

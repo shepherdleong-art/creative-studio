@@ -113,3 +113,100 @@ body {
   .data-table tr:hover td { background: var(--color-surface-hover); }
   .data-table .num { text-align: right; font-family: var(--font-mono); font-size: .76rem; }
 }
+
+/* ===== Dark theme scope (Phase 4: result gallery / viewer) ===== */
+.theme-dark {
+  --color-surface: #000000;
+  --color-surface-subtle: #1c1c1e;
+  --color-surface-hover: #2c2c2e;
+  --color-ink: #ffffff;
+  --color-ink-secondary: #98989d;
+  --color-ink-tertiary: #6e6e73;
+  --color-hairline: #2c2c2e;
+  --color-hairline-soft: #1c1c1e;
+}
+
+.theme-dark .card {
+  background: var(--color-surface-subtle);
+  border-color: var(--color-hairline);
+}
+
+.theme-dark .btn-secondary {
+  background: rgba(255,255,255,.08);
+  color: var(--color-ink);
+}
+.theme-dark .btn-secondary:hover {
+  background: rgba(255,255,255,.14);
+}
+
+.theme-dark .icon-btn {
+  color: var(--color-ink-secondary);
+}
+.theme-dark .icon-btn:hover {
+  background: rgba(255,255,255,.08);
+}
+
+.theme-dark .input-field {
+  background: var(--color-surface-subtle);
+  color: var(--color-ink);
+}
+.theme-dark .input-field::placeholder {
+  color: var(--color-ink-tertiary);
+}
+
+.theme-dark .pill {
+  backdrop-filter: none;
+}
+
+.theme-dark .tile {
+  background: var(--color-surface-subtle);
+}
+
+.theme-dark .segmented {
+  background: var(--color-surface-subtle);
+}
+.theme-dark .segmented > button[aria-selected="true"] {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+.theme-dark .link-accent {
+  color: #4da6ff;
+}
+.theme-dark .link-accent:hover {
+  color: #66b5ff;
+}
+
+/* status dot (Phase 4 dark gallery) */
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot-ok    { background: var(--color-dot-ok); }
+.status-dot-fail  { background: var(--color-dot-fail); }
+.status-dot-warn  { background: var(--color-dot-warn); }
+.status-dot-idle  { background: #6e6e73; }
+.status-dot-run   { background: var(--color-accent); }
+
+/* ── Dark preview popover (Phase 4: hover zoom / picker previews) ── */
+.theme-preview-popover {
+  position: fixed;
+  z-index: 120;
+  pointer-events: none;
+  border-radius: var(--radius-tile);
+  background: rgba(28, 28, 30, 0.95);
+  border: 1px solid var(--color-hairline);
+  padding: 0.5rem;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5);
+}
+.theme-preview-caption {
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.688rem;
+  color: var(--color-ink-secondary);
+}

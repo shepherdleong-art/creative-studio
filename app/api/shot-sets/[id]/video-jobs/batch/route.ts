@@ -35,7 +35,7 @@ export async function POST(
           prompt: (obj.prompt as string)?.trim() || '',
           templateId: (obj.templateId as string) || null,
           providerId: (obj.providerId as string) || '',
-          durationSec: Math.max(2, Math.min(15, Number(obj.durationSec) || 5)),
+          durationSec: (() => { const v = Number(obj.durationSec); const sec = (Number.isFinite(v) && v > 0) ? v : 5; return Math.max(2, Math.min(15, sec)); })(),
         };
       })
       .filter((it) => it.prompt.length > 0);

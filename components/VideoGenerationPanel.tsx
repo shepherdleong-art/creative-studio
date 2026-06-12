@@ -1,7 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { v4 as uuidv4 } from 'uuid';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import { Icon } from '@/components/ui/Icon';
 
@@ -70,6 +69,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [selectedSetId, setSelectedSetId] = useState<string>(shotSetId || '');
   const selectedSetIdRef = useRef<string>(shotSetId || '');
   const [selectedSetShots, setSelectedSetShots] = useState<typeof shots>(shots);
+  const restoredSetRef = useRef(false);
 
   // Per-shot form state (one active shot at a time)
   const [selectedShot, setSelectedShot] = useState<string | null>(null);
@@ -80,9 +80,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const defaultProviderId = providers.length > 0 ? providers[0].id : '';
   const defaultDuration = 5;
+  const storageKey = `batch-image-workbench:video-shot-set:${projectId}`;
 
   const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
-    key: uuidv4(), prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
+    key: crypto.randomUUID(), prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
   });
 
   // Load providers and templates once
@@ -140,12 +141,47 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const handleSelectSet = (setId: string) => {
     setSelectedSetId(setId);
     selectedSetIdRef.current = setId;
+    setSelectedShot(null);
+    setMotionRows([]);
+    // Clear per-shot motion cache — switching sets resets all motion form state
+    perShotMotionCache.current.clear();
+    setSelectedSetShots(undefined);
+    setVideoJobs([]);
+    if (!shotSetId) {
+      if (setId) window.localStorage.setItem(storageKey, setId);
+      else window.localStorage.removeItem(storageKey);
+    }
     if (setId) loadShotsForSet(setId);
   };
+
+  // Restore the last selected shot set after tab remounts.
+  useEffect(() => {
+    if (shotSetId || restoredSetRef.current || availableSets.length === 0 || selectedSetIdRef.current) return;
+    restoredSetRef.current = true;
+    const storedSetId = window.localStorage.getItem(storageKey);
+    if (storedSetId && availableSets.some((set) => set.id === storedSetId)) {
+      const timer = window.setTimeout(() => handleSelectSet(storedSetId), 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+    // handleSelectSet intentionally stays out of deps; this one-shot restore is guarded by refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableSets, shotSetId, storageKey]);
 
   const effectiveSetId = shotSetId || selectedSetId;
   const effectiveShots = shots || selectedSetShots;
   const safeShots = effectiveShots || [];
+
+  // Index video jobs by shotId for O(1) lookup (avoid O(N*M) per render)
+  const videoJobsByShot = useMemo(() => {
+    const map = new Map<string, VideoJob[]>();
+    for (const j of videoJobs) {
+      const arr = map.get(j.shotId);
+      if (arr) arr.push(j);
+      else map.set(j.shotId, [j]);
+    }
+    return map;
+  }, [videoJobs]);
 
   const refreshJobs = async () => {
     if (!effectiveSetId) return;
@@ -181,13 +217,18 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     setMotionRows((rows) => rows.map((r, i) => {
       if (i !== idx) return r;
       const tmpl = templates.find((t) => t.id === templateId);
+      // Only auto-fill when prompt is empty; preserve user edits
       const nextPrompt = !r.prompt.trim() && tmpl ? tmpl.prompt : r.prompt;
       return { ...r, templateId, prompt: nextPrompt };
     }));
   const updateRowProvider = (idx: number, providerId: string) =>
     setMotionRows((rows) => rows.map((r, i) => (i === idx ? { ...r, providerId } : r)));
-  const updateRowDuration = (idx: number, durationSec: number) =>
-    setMotionRows((rows) => rows.map((r, i) => (i === idx ? { ...r, durationSec } : r)));
+  const updateRowDuration = (idx: number, raw: number) =>
+    setMotionRows((rows) => rows.map((r, i) => {
+      if (i !== idx) return r;
+      const v = Number.isFinite(raw) && raw > 0 ? raw : 5;
+      return { ...r, durationSec: Math.max(2, Math.min(15, v)) };
+    }));
 
   const handleCreateVideos = async (shotId: string) => {
     const items = motionRows
@@ -245,18 +286,22 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   if (loading) return <p className="text-xs text-ink-tertiary">加载视频功能...</p>;
+  const shotSetSelector = !shotSetId ? (
+    <div className="mb-4">
+      <label className="label">选择分镜组</label>
+      <select value={selectedSetId} onChange={(e) => handleSelectSet(e.target.value)} className="input-field text-sm">
+        <option value="">-- 选择分镜组 --</option>
+        {availableSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
+      </select>
+      {availableSets.length === 0 && <p className="mt-1 text-xs text-ink-tertiary">暂无分镜组，请先在分镜生成中创建。</p>}
+    </div>
+  ) : null;
+
   if (!effectiveSetId && !shotSetId) {
     // Top-level: show shot set selector
     return (
       <div>
-        <div className="mb-3">
-          <label className="label">选择分镜组</label>
-          <select value={selectedSetId} onChange={(e) => handleSelectSet(e.target.value)} className="input-field text-sm">
-            <option value="">-- 选择分镜组 --</option>
-            {availableSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
-          </select>
-          {availableSets.length === 0 && <p className="mt-1 text-xs text-ink-tertiary">暂无分镜组，请先在分镜生成中创建。</p>}
-        </div>
+        {shotSetSelector}
         {!selectedSetId && <p className="text-xs text-ink-tertiary">选择一个分镜组后可以创建视频任务。</p>}
       </div>
     );
@@ -265,19 +310,22 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   return (
     <div className="mt-3 min-w-0 max-w-full rounded-lg bg-surface-subtle p-3">
       <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-ink"><Icon name="video" size={15} /> 视频生成</h4>
+      {shotSetSelector}
 
       {/* Per-shot panels */}
       {safeShots.map((shot) => {
-        const shotVideos = videoJobs.filter((j) => j.shotId === shot.id);
+        const shotVideos = videoJobsByShot.get(shot.id) || [];
         return (
-          <div key={shot.id} className="mb-3 min-w-0 max-w-full rounded border border-hairline bg-white p-3">
-            <div className="flex items-center gap-3 mb-2">
-              <span className="text-xs font-medium text-ink-secondary">分镜 {shot.indexNum}</span>
+          <div key={shot.id} className="mb-4 min-w-0 max-w-full rounded-[18px] border border-hairline bg-white p-4">
+            <div className="mb-3 flex flex-wrap items-start gap-4">
+              <span className="mt-2 min-w-16 text-xs font-medium text-ink-secondary">分镜 {shot.indexNum}</span>
               {shot.imageUrl && (
                 <HoverZoomImage
                   src={shot.imageUrl}
                   alt={`Shot ${shot.indexNum}`}
-                  className="h-10 w-10 cursor-pointer rounded border border-hairline object-cover transition-colors hover:border-accent/40"
+                  className="h-36 w-56 max-w-full cursor-pointer rounded-[18px] border border-hairline bg-surface-subtle object-cover shadow-sm transition-colors hover:border-accent/40"
+                  zoomMaxWidth={520}
+                  zoomMaxHeight={390}
                 />
               )}
             </div>
@@ -286,12 +334,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             {selectedShot === shot.id ? (
               <div className="mb-2 min-w-0 max-w-full space-y-2">
                 {motionRows.map((row, idx) => (
-                  <div key={row.key} className="flex min-w-0 max-w-full flex-wrap items-center gap-2 rounded border border-hairline bg-surface-subtle px-2 py-1.5">
+                  <div key={row.key} className="grid min-w-0 max-w-full grid-cols-[auto_minmax(7.5rem,10rem)_minmax(8rem,11rem)_4.5rem_minmax(16rem,1fr)_2.5rem] items-start gap-2 rounded border border-hairline bg-surface-subtle px-2 py-1.5 max-xl:grid-cols-[auto_minmax(8rem,1fr)_minmax(9rem,1fr)_4.5rem_2.5rem] max-xl:[&_.motion-prompt]:col-span-full max-sm:grid-cols-1">
                     <span className="shrink-0 whitespace-nowrap text-[10px] text-ink-tertiary">描述 {idx + 1}</span>
                     <select
                       value={row.providerId}
                       onChange={(e) => updateRowProvider(idx, e.target.value)}
-                      className="input-field w-24 max-w-full shrink-0 text-xs"
+                      className="input-field !w-full text-xs"
                     >
                       <option value="">供应商</option>
                       {providers.map((p) => (
@@ -301,7 +349,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     <select
                       value={row.templateId}
                       onChange={(e) => updateRowTemplate(idx, e.target.value)}
-                      className="input-field w-32 max-w-full shrink-0 text-xs"
+                      className="input-field !w-full text-xs"
                     >
                       <option value="">模板（可选）</option>
                       {templates.map((t) => (
@@ -313,23 +361,23 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       min={2}
                       max={15}
                       value={row.durationSec}
-                      onChange={(e) => updateRowDuration(idx, Math.max(2, Math.min(15, Number(e.target.value) || 5)))}
-                      className="input-field w-14 max-w-full shrink-0 text-center text-xs"
+                      onChange={(e) => updateRowDuration(idx, Number(e.target.value))}
+                      className="input-field !w-full text-center text-xs"
                       title="秒数"
                     />
-                    <input
-                      type="text"
+                    <textarea
                       value={row.prompt}
                       onChange={(e) => updateRowPrompt(idx, e.target.value)}
-                      className="input-field min-w-0 flex-[1_1_18rem] text-xs font-mono"
+                      rows={3}
+                      className="motion-prompt input-field min-h-[4.75rem] min-w-0 !w-full resize-y text-xs font-mono leading-relaxed"
                       placeholder="运镜描述（提示词）"
                     />
                     <button
                       onClick={() => removeMotionRow(idx)}
                       disabled={motionRows.length <= 1}
-                      className="icon-btn h-7 w-7 shrink-0 text-ink-tertiary hover:text-fail disabled:opacity-30"
+                      className="icon-btn h-8 w-8 shrink-0 justify-self-end rounded-full border border-hairline bg-white text-ink-secondary hover:border-fail/30 hover:bg-fail-tint hover:text-fail disabled:cursor-not-allowed disabled:bg-transparent disabled:text-ink-tertiary disabled:opacity-35 max-sm:justify-self-start"
                       title="删除该描述"
-                    ><Icon name="minus" size={13} /></button>
+                    ><Icon name="trash" size={14} /></button>
                   </div>
                 ))}
                 <div className="flex flex-wrap items-center gap-2">

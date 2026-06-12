@@ -1,6 +1,23 @@
 import fs from 'fs';
 import path from 'path';
 
+export interface UsagePrefixInfo {
+  filePrefix: string;
+  outputUsage: string;
+}
+
+/**
+ * Maps an input image's usage role to a filename prefix and output usage tag.
+ * Centralized so adding a new usage type only requires one edit.
+ */
+export function getUsagePrefix(usage: string): UsagePrefixInfo {
+  switch (usage) {
+    case 'scene_seed': return { filePrefix: '场景-', outputUsage: 'scene_gen' };
+    case 'shot_source': return { filePrefix: '分镜-', outputUsage: 'shot_gen' };
+    default: return { filePrefix: 'output-', outputUsage: '' };
+  }
+}
+
 export function sanitizeFilenameBase(filePathOrName: string): string {
   const parsed = path.parse(filePathOrName);
   return parsed.name

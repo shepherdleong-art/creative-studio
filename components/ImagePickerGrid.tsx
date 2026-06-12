@@ -67,7 +67,7 @@ export default function ImagePickerGrid({ items, selectedId, onSelect, emptyText
 
       {preview?.item.imageUrl && (
         <div
-          className="fixed z-[120] pointer-events-none rounded-lg border border-gray-700 bg-gray-900/95 p-2 shadow-2xl"
+          className="theme-preview-popover"
           style={{ left, top, width: 320 }}
         >
           <img
@@ -75,7 +75,7 @@ export default function ImagePickerGrid({ items, selectedId, onSelect, emptyText
             alt={preview.item.label}
             className="max-h-[260px] w-full object-contain rounded"
           />
-          <div className="mt-1 truncate text-[11px] text-gray-100">{preview.item.label}</div>
+          <div className="theme-preview-caption text-[11px]">{preview.item.label}</div>
         </div>
       )}
     </div>

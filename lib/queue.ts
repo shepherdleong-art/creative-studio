@@ -4,7 +4,7 @@ import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIR
 import { editImagePacky } from './providers/packy-images';
 import { calculateEstimatedCost } from './cost';
 import { writeLog } from './logger';
-import { sanitizeFilenameBase, ensureUniqueFilename } from './output-filenames';
+import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -506,11 +506,7 @@ async function runJob(
     }
 
     // Output filename: use a meaningful prefix based on the input image's usage role
-    const inputUsage = inputImage.usage || '';
-    let filePrefix = 'output-';
-    let outputUsage = '';
-    if (inputUsage === 'scene_seed') { filePrefix = '场景-'; outputUsage = 'scene_gen'; }
-    else if (inputUsage === 'shot_source') { filePrefix = '分镜-'; outputUsage = 'shot_gen'; }
+    const { filePrefix, outputUsage } = getUsagePrefix(inputImage.usage || '');
 
     const inputBase = sanitizeFilenameBase(inputImage.filename || inputImage.path);
     const revSuffix = (job.revision && job.revision > 0) ? `-r${job.revision}` : '';

@@ -182,6 +182,17 @@ function GenerationContextPanel({
   );
 }
 
+/** ── Status dot helper ── */
+function JobStatusDot({ status }: { status: string }) {
+  const cls =
+    status === 'succeeded' ? 'status-dot-ok' :
+    status === 'failed' ? 'status-dot-fail' :
+    status === 'running' ? 'status-dot-run' :
+    status === 'retrying' ? 'status-dot-warn' :
+    'status-dot-idle';
+  return <span className={`status-dot ${cls}`} title={status} />;
+}
+
 export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSetSceneRef, projectId }: Props) {
   const succeededJobs = jobs.filter((j) => j.status === 'succeeded' && j.outputFilename);
   const failedJobs = jobs.filter((j) => j.status === 'failed');
@@ -349,7 +360,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
   const isLast = selectedIndex === displayedJobs.length - 1;
 
   return (
-    <div>
+    <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4">
       {displayedJobs.length === 0 && (succeededJobs.length === 0 && failedJobs.length === 0) ? (
         <div className="flex flex-col items-center py-12 text-center text-ink-tertiary">
           <Icon name="image" size={34} className="mb-2" />
@@ -381,14 +392,16 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
               <p>{statusFilter === 'failed' ? '暂无失败的生成任务' : '暂无成功生成的图片'}</p>
             </div>
           ) : (
-            /* ── Grid ── */
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            /* ── Grid (light workbench style) ── */
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
               {displayedJobs.map((job, idx) => {
                 const mark = getMark(job);
                 const isFailed = job.status === 'failed';
                 return (
                   <div key={job.id} onClick={() => setSelectedIndex(idx)}
-                    className={`card group cursor-pointer overflow-hidden transition-all hover:ring-2 ${isFailed ? 'border-fail/30 hover:ring-fail/40' : 'hover:ring-accent/40'} ${mark === 'discard' ? 'opacity-40' : ''}`}>
+                    className={`card group cursor-pointer overflow-hidden transition-all duration-200 hover:ring-1 ${
+                      isFailed ? 'border-fail/30 hover:ring-fail/40' : 'hover:border-accent/35 hover:ring-accent/15'
+                    } ${mark === 'discard' ? 'opacity-40' : ''}`}>
                     <div className="relative aspect-square bg-surface-subtle">
                       {isFailed ? (
                         <div className="flex h-full w-full flex-col items-center justify-center bg-fail-tint p-2">
@@ -398,6 +411,10 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                       ) : (
                         <img src={`/api/images/outputs/${job.outputFilename}`} alt={job.inputFilename} className="w-full h-full object-cover" />
                       )}
+                      {/* Status dot (Apple Photos-style) */}
+                      <span className="absolute right-1.5 top-1.5 z-10">
+                        <JobStatusDot status={job.status} />
+                      </span>
                       {mark && (
                         <span className={`pill absolute left-1 top-1 ${
                           mark === 'available' ? 'bg-ok-tint text-ok' : mark === 'rework' ? 'bg-warn-tint text-warn' : 'bg-idle-tint text-idle'}`}>
@@ -417,30 +434,20 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
             </div>
           )}
 
-          {/* ── Modal ── */}
+          {/* ── Fullscreen viewer (Apple Photos dark style) ── */}
           {selectedJob && selectedIndex != null && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+            <div className="theme-dark fixed inset-0 bg-black/95 z-50 flex flex-col"
               onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}>
-              <div className="card flex max-h-[90vh] w-full max-w-[68rem] flex-col overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,.14)]"
+              <div className="flex flex-1 min-h-0 overflow-hidden"
                 onClick={(e) => e.stopPropagation()}>
-
-                {/* Header */}
-                <div className="flex shrink-0 items-center justify-between border-b border-hairline p-4">
-                  <div className="flex items-center gap-3">
-                    <h3 className="font-medium text-sm truncate max-w-[300px]">{selectedJob.inputFilename}</h3>
-                    <span className="text-xs text-ink-tertiary">{selectedIndex + 1} / {displayedJobs.length}</span>
-                  </div>
-                  <button onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}
-                    className="icon-btn" title="关闭" aria-label="关闭"><Icon name="close" size={16} /></button>
-                </div>
 
                 {/* Body: images + sidebar */}
                 <div className="flex overflow-hidden flex-1 min-h-0">
                   {/* Main image area */}
-                  <div className="flex-1 p-4 overflow-y-auto">
-                    {/* Regenerate panel (above images when open) */}
+                  <div className="flex-1 flex flex-col min-w-0 overflow-y-auto p-6">
+                    {/* Regenerate panel (overlay above images when open) */}
                     {regenOpen && (
-                      <div className="mb-4 space-y-4 rounded-lg bg-surface-subtle p-4">
+                      <div className="mb-4 space-y-4 rounded-xl bg-surface-subtle p-4 border border-hairline">
                         <h4 className="text-sm font-semibold text-ink">重新生成设置</h4>
 
                         {/* Base image selector */}
@@ -448,12 +455,12 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                           <div className="mb-2 text-xs font-medium text-ink-secondary">编辑底图</div>
                           <div className="flex gap-2">
                             <label className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition-colors ${
-                              regenInputSource === 'original' ? 'border-accent bg-run-tint text-accent' : 'border-hairline bg-white text-ink-secondary hover:border-accent/40'}`}>
+                              regenInputSource === 'original' ? 'border-accent bg-run-tint text-accent' : 'border-hairline bg-surface text-ink-secondary hover:border-accent/40'}`}>
                               <input type="radio" name="inputSource" value="original" checked={regenInputSource === 'original'}
                                 onChange={() => handleInputSourceChange('original')} className="sr-only" />原图
                             </label>
                             <label className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition-colors ${
-                              regenInputSource === 'current_result' ? 'border-accent bg-run-tint text-accent' : 'border-hairline bg-white text-ink-secondary hover:border-accent/40'} ${!hasOutput ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                              regenInputSource === 'current_result' ? 'border-accent bg-run-tint text-accent' : 'border-hairline bg-surface text-ink-secondary hover:border-accent/40'} ${!hasOutput ? 'opacity-40 cursor-not-allowed' : ''}`}>
                               <input type="radio" name="inputSource" value="current_result" checked={regenInputSource === 'current_result'}
                                 onChange={() => handleInputSourceChange('current_result')} disabled={!hasOutput} className="sr-only" />当前结果
                             </label>
@@ -466,7 +473,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                         {/* Send order preview */}
                         <div>
                           <div className="mb-2 text-xs font-medium text-ink-secondary">本次发送顺序</div>
-                          <div className="space-y-1 rounded border border-hairline bg-white p-2 text-xs">
+                          <div className="space-y-1 rounded border border-hairline bg-surface p-2 text-xs">
                             <div className="flex items-center gap-2 text-ink">
                               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-run-tint text-[10px] font-bold text-accent">1</span>
                               <span>底图：{regenInputSource === 'current_result' ? '当前结果' : '原图'}</span>
@@ -546,29 +553,36 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                       </div>
                     )}
 
-                    {/* Before/After images */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <div className="mb-1 text-xs text-ink-secondary">原图</div>
-                        {(() => {
-                          const inputAsset = images.find((img) => img.id === selectedJob.inputImageId);
-                          const url = getImageUrl(inputAsset);
-                          return url ? <img src={url} alt="原图" className="w-full rounded-lg border" />
-                            : <div className="text-sm text-ink-tertiary">原图不可用</div>;
-                        })()}
+                    {/* Before/After images — dark viewer focus */}
+                    <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 md:grid-cols-2">
+                      <div className="flex flex-col min-h-0">
+                        <div className="mb-2 text-xs text-ink-tertiary">原图</div>
+                        <div className="flex-1 flex items-center justify-center min-h-0">
+                          {(() => {
+                            const inputAsset = images.find((img) => img.id === selectedJob.inputImageId);
+                            const url = getImageUrl(inputAsset);
+                            return url ? (
+                              <img src={url} alt="原图" className="max-w-full max-h-full object-contain rounded-lg" />
+                            ) : (
+                              <div className="text-sm text-ink-tertiary">原图不可用</div>
+                            );
+                          })()}
+                        </div>
                       </div>
-                      <div>
-                        <div className="mb-1 text-xs text-ink-secondary">结果</div>
-                        {selectedJob.outputFilename ? (
-                          <img src={`/api/images/outputs/${selectedJob.outputFilename}`} alt="结果" className="w-full rounded-lg border" />
-                        ) : selectedJob.status === 'failed' ? (
-                          <div className="flex aspect-square w-full flex-col items-center justify-center rounded-lg border border-fail/30 bg-fail-tint p-4">
-                            <Icon name="alert" size={24} className="mb-1 text-fail" />
-                            <span className="text-center text-xs text-fail">{selectedJob.errorMessage || '生成失败'}</span>
-                          </div>
-                        ) : (
-                          <div className="text-sm text-ink-tertiary">结果不可用</div>
-                        )}
+                      <div className="flex flex-col min-h-0">
+                        <div className="mb-2 text-xs text-ink-tertiary">结果</div>
+                        <div className="flex-1 flex items-center justify-center min-h-0">
+                          {selectedJob.outputFilename ? (
+                            <img src={`/api/images/outputs/${selectedJob.outputFilename}`} alt="结果" className="max-w-full max-h-full object-contain rounded-lg" />
+                          ) : selectedJob.status === 'failed' ? (
+                            <div className="flex aspect-square w-full max-w-sm flex-col items-center justify-center rounded-lg border border-fail/30 bg-fail-tint p-4">
+                              <Icon name="alert" size={24} className="mb-1 text-fail" />
+                              <span className="text-center text-xs text-fail">{selectedJob.errorMessage || '生成失败'}</span>
+                            </div>
+                          ) : (
+                            <div className="text-sm text-ink-tertiary">结果不可用</div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -576,37 +590,56 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                   {/* Generation context sidebar */}
                   <GenerationContextPanel job={selectedJob} referenceImages={usedReferenceImages} />
                 </div>
+              </div>
 
-                {/* Arrow overlays */}
-                {!isFirst && (
-                  <button onClick={goPrev}
-                    className="absolute left-4 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
-                    title="上一张"><Icon name="chevron-left" size={22} /></button>
-                )}
-                {!isLast && (
-                  <button onClick={goNext}
-                    className="absolute right-4 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
-                    title="下一张"><Icon name="chevron-right" size={22} /></button>
-                )}
-
-                {/* Footer actions */}
-                <div className="p-4 border-t flex gap-2 flex-wrap items-center shrink-0">
-                  <button onClick={goPrev} disabled={isFirst} className="btn-secondary btn-sm"><Icon name="chevron-left" size={14} /> 上一张</button>
-                  <button onClick={goNext} disabled={isLast} className="btn-secondary btn-sm">下一张 <Icon name="chevron-right" size={14} /></button>
-                  <span className="mx-1 text-hairline">|</span>
-                  <button onClick={() => handleMark('available')} className="btn-secondary btn-sm text-ok"><Icon name="check" size={14} /> 可用</button>
-                  <button onClick={() => handleMark('rework')} className="btn-secondary btn-sm text-warn"><Icon name="retry" size={14} /> 待返工</button>
-                  <button onClick={() => handleMark('discard')} className="btn-secondary btn-sm text-fail"><Icon name="trash" size={14} /> 废弃</button>
-                  <span className="mx-1 text-hairline">|</span>
-                  <button onClick={openRegen} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重新生成</button>
-                  {onSetSceneRef && selectedJob.outputImageId && (
-                    <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)}
-                      className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
-                  )}
-                  {selectedJob.outputFilename && (
-                    <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm ml-auto"><Icon name="download" size={14} /> 下载</a>
-                  )}
+              {/* ── Viewer header bar (Apple Photos style: translucent, minimal) ── */}
+              <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 py-3"
+                onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <h3 className="font-medium text-sm truncate max-w-[320px] text-white/90">{selectedJob.inputFilename}</h3>
+                  <span className="text-xs text-white/50 shrink-0">{selectedIndex + 1} / {displayedJobs.length}</span>
                 </div>
+                <button onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}
+                  className="flex items-center justify-center w-8 h-8 rounded-full bg-white/10 text-white/70 hover:bg-white/20 hover:text-white transition-colors"
+                  title="关闭" aria-label="关闭">
+                  <Icon name="close" size={16} />
+                </button>
+              </div>
+
+              {/* ── Arrow overlays (Apple Photos style: large, translucent circles) ── */}
+              {!isFirst && (
+                <button onClick={(e) => { e.stopPropagation(); goPrev(); }}
+                  className="absolute left-3 top-1/2 z-20 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/80 transition-all hover:bg-white/20 hover:scale-105"
+                  title="上一张" aria-label="上一张">
+                  <Icon name="chevron-left" size={24} />
+                </button>
+              )}
+              {!isLast && (
+                <button onClick={(e) => { e.stopPropagation(); goNext(); }}
+                  className="absolute right-3 top-1/2 z-20 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/80 transition-all hover:bg-white/20 hover:scale-105"
+                  title="下一张" aria-label="下一张">
+                  <Icon name="chevron-right" size={24} />
+                </button>
+              )}
+
+              {/* ── Viewer footer actions (Apple Photos style: translucent bar) ── */}
+              <div className="flex shrink-0 flex-wrap items-center justify-center gap-3 border-t border-white/10 px-4 py-3"
+                onClick={(e) => e.stopPropagation()}>
+                <button onClick={goPrev} disabled={isFirst} className="btn-secondary btn-sm"><Icon name="chevron-left" size={14} /> 上一张</button>
+                <button onClick={goNext} disabled={isLast} className="btn-secondary btn-sm">下一张 <Icon name="chevron-right" size={14} /></button>
+                <span className="mx-1 text-white/20">|</span>
+                <button onClick={() => handleMark('available')} className="btn-secondary btn-sm text-ok"><Icon name="check" size={14} /> 可用</button>
+                <button onClick={() => handleMark('rework')} className="btn-secondary btn-sm text-warn"><Icon name="retry" size={14} /> 待返工</button>
+                <button onClick={() => handleMark('discard')} className="btn-secondary btn-sm text-fail"><Icon name="trash" size={14} /> 废弃</button>
+                <span className="mx-1 text-white/20">|</span>
+                <button onClick={openRegen} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重新生成</button>
+                {onSetSceneRef && selectedJob.outputImageId && (
+                  <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)}
+                    className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
+                )}
+                {selectedJob.outputFilename && (
+                  <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm sm:ml-auto"><Icon name="download" size={14} /> 下载</a>
+                )}
               </div>
             </div>
           )}

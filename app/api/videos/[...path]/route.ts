@@ -40,10 +40,27 @@ export async function GET(
   const rangeHeader = request.headers.get('range');
   if (rangeHeader) {
     const parts = rangeHeader.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    let start = parseInt(parts[0], 10);
+    let end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
 
-    if (start >= fileSize || end >= fileSize) {
+    // Guard against NaN from suffix-byte ranges (bytes=-500) or malformed headers
+    if (!Number.isFinite(start)) start = 0;
+
+    // Handle suffix-byte-range: "bytes=-500" → last 500 bytes (RFC 7233 §2.1)
+    // Must run BEFORE the 416 guard so end gets recalibrated too.
+    if (rangeHeader.includes('=-')) {
+      const suffixLen = parseInt(parts[1], 10) || 0;
+      start = Math.max(0, fileSize - suffixLen);
+      end = fileSize - 1;
+    }
+
+    if (!Number.isFinite(end) || end >= fileSize) {
+      return new NextResponse('Range Not Satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${fileSize}` },
+      });
+    }
+    if (start >= fileSize) {
       return new NextResponse('Range Not Satisfiable', {
         status: 416,
         headers: { 'Content-Range': `bytes */${fileSize}` },
@@ -51,17 +68,20 @@ export async function GET(
     }
 
     const chunkSize = end - start + 1;
-    const buffer = Buffer.alloc(chunkSize);
+    const buffer = Buffer.alloc(Math.min(chunkSize, fileSize - start));
     const fd = fs.openSync(resolved, 'r');
-    fs.readSync(fd, buffer, 0, chunkSize, start);
-    fs.closeSync(fd);
+    try {
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+    } finally {
+      fs.closeSync(fd);
+    }
 
     return new NextResponse(buffer, {
       status: 206,
       headers: {
         'Content-Type': mimeType,
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Content-Length': String(chunkSize),
+        'Content-Length': String(buffer.length),
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'public, max-age=86400',
       },

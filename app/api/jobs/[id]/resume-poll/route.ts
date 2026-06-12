@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from '@/lib/providers/geekai-json';
 import { writeLog } from '@/lib/logger';
-import { sanitizeFilenameBase, ensureUniqueFilename } from '@/lib/output-filenames';
+import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from '@/lib/output-filenames';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -72,11 +72,7 @@ export async function POST(
               if (!fs.existsSync(outputsDir)) fs.mkdirSync(outputsDir, { recursive: true });
 
               const inputImage = db.prepare(`SELECT filename, usage FROM image_assets WHERE id = ?`).get(job.inputImageId) as { filename: string; usage?: string } | undefined;
-              const inputUsage = inputImage?.usage || '';
-              let filePrefix = 'output-';
-              let outputUsage = '';
-              if (inputUsage === 'scene_seed') { filePrefix = '场景-'; outputUsage = 'scene_gen'; }
-              else if (inputUsage === 'shot_source') { filePrefix = '分镜-'; outputUsage = 'shot_gen'; }
+              const { filePrefix, outputUsage } = getUsagePrefix(inputImage?.usage || '');
 
               const inputBase = inputImage?.filename ? sanitizeFilenameBase(inputImage.filename) : job.id.slice(0, 8);
               const preferredOutputName = `${filePrefix}${inputBase}.png`;
@@ -114,6 +110,6 @@ export async function POST(
 }
 
 function safeJson(obj: unknown, ml = 4000): string {
-  if (!obj) return '';
+  if (obj === null || obj === undefined) return '';
   try { const s = JSON.stringify(obj); return s.length > ml ? s.slice(0, ml) + '...[t]' : s; } catch { return '[?]'; }
 }

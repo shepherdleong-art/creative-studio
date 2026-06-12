@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import ImageUploader from '@/components/ImageUploader';
+import HoverZoomImage from '@/components/HoverZoomImage';
 import { Icon } from '@/components/ui/Icon';
 
 interface Shot {
@@ -46,7 +47,7 @@ interface Props {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  draft: '草稿', generating: '生成中', reviewing: '审核中', approved: '已通过', video_ready: '待生成视频',
+  draft: '草稿', generating: '生成中', completed: '已完成', reviewing: '审核中', approved: '已通过', video_ready: '待生成视频',
 };
 
 export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, onImagesUploaded, onShotChanged, showUploader = true, showCreateControls = true }: Props) {
@@ -56,15 +57,16 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState('');
   const [selectedImageIds, setSelectedImageIds] = useState<string[]>([]);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [shots, setShots] = useState<Shot[]>([]);
-  const [loadingShots, setLoadingShots] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<string[]>([]);
+  const [shotsBySet, setShotsBySet] = useState<Record<string, Shot[]>>({});
+  const [loadingShotSetIds, setLoadingShotSetIds] = useState<string[]>([]);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [previewSetId, setPreviewSetId] = useState<string | null>(null);
   const [redoPrompt, setRedoPrompt] = useState('');
   const [redoPromptEdited, setRedoPromptEdited] = useState(false);
   const [redoing, setRedoing] = useState(false);
-  const [sceneRefInfo, setSceneRefInfo] = useState<{ name: string; imageUrl: string } | null>(null);
-  const expandedIdRef = useRef<string | null>(null);
+  const [sceneRefInfoBySet, setSceneRefInfoBySet] = useState<Record<string, { name: string; imageUrl: string } | null>>({});
+  const expandedIdsRef = useRef<Set<string>>(new Set());
 
   const loadSets = useCallback(async () => {
     try {
@@ -107,48 +109,68 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   };
 
   const loadShots = useCallback(async (setId: string, silent = false) => {
-    if (!silent) setLoadingShots(true);
+    if (!silent) setLoadingShotSetIds((prev) => (prev.includes(setId) ? prev : [...prev, setId]));
     try {
       const res = await fetch(`/api/shot-sets/${setId}`);
       const data = await res.json();
       // Race guard using ref — avoids stale-closure from useCallback
-      if (expandedIdRef.current !== setId) return;
-      if (data.shots) setShots(data.shots);
+      if (!expandedIdsRef.current.has(setId)) return;
+      setShotsBySet((prev) => ({ ...prev, [setId]: data.shots || [] }));
       if (data.sceneRefImageUrl) {
-        setSceneRefInfo({ name: data.sceneRefName || '场景参考', imageUrl: data.sceneRefImageUrl });
+        setSceneRefInfoBySet((prev) => ({
+          ...prev,
+          [setId]: { name: data.sceneRefName || '场景参考', imageUrl: data.sceneRefImageUrl },
+        }));
       } else {
-        setSceneRefInfo(null);
+        setSceneRefInfoBySet((prev) => ({ ...prev, [setId]: null }));
       }
     } catch { /* ignore */ }
-    finally { if (!silent) setLoadingShots(false); }
+    finally {
+      if (!silent) setLoadingShotSetIds((prev) => prev.filter((id) => id !== setId));
+    }
   }, []);
 
   const handleExpand = (setId: string) => {
-    if (expandedId === setId) { setExpandedId(null); expandedIdRef.current = null; return; }
-    setExpandedId(setId);
-    expandedIdRef.current = setId;
+    if (expandedIdsRef.current.has(setId)) {
+      const next = expandedIds.filter((id) => id !== setId);
+      expandedIdsRef.current = new Set(next);
+      setExpandedIds(next);
+      if (previewSetId === setId) closePreview();
+      return;
+    }
+    const next = [...expandedIds, setId];
+    expandedIdsRef.current = new Set(next);
+    setExpandedIds(next);
     loadShots(setId);
   };
 
   const handleDelete = async (setId: string) => {
     if (!confirm('确定删除此分镜组？')) return;
     await fetch(`/api/shot-sets/${setId}`, { method: 'DELETE' });
-    if (expandedId === setId) setExpandedId(null);
+    const next = expandedIds.filter((id) => id !== setId);
+    expandedIdsRef.current = new Set(next);
+    setExpandedIds(next);
+    if (previewSetId === setId) closePreview();
     await loadSets();
   };
 
   // ── Shot preview + redo ──────────────────────────────────────────────
-  const openPreview = (idx: number) => {
+  const previewShots = useMemo(() => (previewSetId ? (shotsBySet[previewSetId] || []) : []), [previewSetId, shotsBySet]);
+  const previewSceneRefInfo = previewSetId ? sceneRefInfoBySet[previewSetId] : null;
+
+  const openPreview = (setId: string, idx: number) => {
+    const nextShots = shotsBySet[setId] || [];
+    setPreviewSetId(setId);
     setPreviewIndex(idx);
-    setRedoPrompt(shots[idx]?.jobPrompt || '');
+    setRedoPrompt(nextShots[idx]?.jobPrompt || '');
     setRedoPromptEdited(false);
     setRedoing(false);
   };
-  const closePreview = () => { setPreviewIndex(null); setRedoing(false); };
+  const closePreview = () => { setPreviewIndex(null); setPreviewSetId(null); setRedoing(false); };
   const goPreview = (delta: number) => {
     setPreviewIndex((prev) => {
-      if (prev === null || shots.length === 0) return prev;
-      return Math.min(shots.length - 1, Math.max(0, prev + delta));
+      if (prev === null || previewShots.length === 0) return prev;
+      return Math.min(previewShots.length - 1, Math.max(0, prev + delta));
     });
   };
 
@@ -156,40 +178,43 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   useEffect(() => {
     if (previewIndex === null) return;
     if (redoPromptEdited) return;
-    const t = setTimeout(() => setRedoPrompt(shots[previewIndex]?.jobPrompt || ''), 0);
+    const t = setTimeout(() => setRedoPrompt(previewShots[previewIndex]?.jobPrompt || ''), 0);
     return () => clearTimeout(t);
-  }, [previewIndex, shots, redoPromptEdited]);
+  }, [previewIndex, previewShots, redoPromptEdited]);
 
   // Keyboard navigation while preview is open
   useEffect(() => {
     if (previewIndex === null) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setPreviewIndex(null); setRedoing(false); return; }
+      if (e.key === 'Escape') { setPreviewIndex(null); setPreviewSetId(null); setRedoing(false); return; }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         const delta = e.key === 'ArrowLeft' ? -1 : 1;
         setPreviewIndex((prev) => {
           if (prev === null) return null;
-          return Math.min(shots.length - 1, Math.max(0, prev + delta));
+          return Math.min(previewShots.length - 1, Math.max(0, prev + delta));
         });
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [previewIndex, shots]);
+  }, [previewIndex, previewShots]);
 
   // Poll shots while any job is generating (no need to poll when all are done,
   // even if the preview modal is open — the prompt won't be overwritten).
   useEffect(() => {
-    if (!expandedId) return;
-    const anyActive = shots.some((s) => s.jobStatus === 'pending' || s.jobStatus === 'running');
-    if (!anyActive) return;
-    const t = setInterval(() => { loadShots(expandedId, true); }, 2000);
+    const activeSetIds = expandedIds.filter((setId) =>
+      (shotsBySet[setId] || []).some((s) => s.jobStatus === 'pending' || s.jobStatus === 'running')
+    );
+    if (activeSetIds.length === 0) return;
+    const t = setInterval(() => {
+      activeSetIds.forEach((setId) => { loadShots(setId, true); });
+    }, 2000);
     return () => clearInterval(t);
-  }, [expandedId, shots, loadShots]);
+  }, [expandedIds, shotsBySet, loadShots]);
 
   const handleRedo = async () => {
-    if (previewIndex === null) return;
-    const shot = shots[previewIndex];
+    if (previewIndex === null || !previewSetId) return;
+    const shot = previewShots[previewIndex];
     if (!shot?.latestJobId) { alert('该分镜还没有可重做的生成任务'); return; }
     if (!redoPrompt.trim()) { alert('请填写提示词'); return; }
     if (!REDOABLE_STATUSES.has(shot.jobStatus || '')) { alert('当前任务尚在生成中，请稍后再重做'); return; }
@@ -202,13 +227,13 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.newJobId) { alert('重做失败: ' + (data.error || '未知错误')); return; }
       // Repoint the shot to the new job, then kick the queue
-      const patchRes = await fetch(`/api/shot-sets/${expandedId}`, {
+      const patchRes = await fetch(`/api/shot-sets/${previewSetId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shotId: shot.id, latestJobId: data.newJobId }),
       });
       if (!patchRes.ok) { alert('更新分镜任务关联失败'); return; }
       await onShotChanged?.();
-      if (expandedId) await loadShots(expandedId, true);
+      await loadShots(previewSetId, true);
     } catch (err) {
       alert('重做失败: ' + String(err));
     } finally {
@@ -277,13 +302,19 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
         <p className="text-sm text-ink-tertiary">暂无分镜组。选择 1-9 张原始分镜图创建分镜组，配合场景参考图批量生成。</p>
       ) : (
         <div className="space-y-2">
-          {sets.map((set) => (
+          {sets.map((set) => {
+            const expanded = expandedIds.includes(set.id);
+            const setShots = shotsBySet[set.id] || [];
+            const loadingShots = loadingShotSetIds.includes(set.id);
+            const sceneRefInfo = sceneRefInfoBySet[set.id];
+            const displayStatus = set.shotCount > 0 && set.generatedCount >= set.shotCount ? 'completed' : set.status;
+            return (
             <div key={set.id}>
               <div className="flex cursor-pointer items-center gap-3 rounded p-2 hover:bg-surface-subtle" onClick={() => handleExpand(set.id)}>
-                <Icon name={expandedId === set.id ? 'chevron-right' : 'chevron-right'} size={13} className={`text-ink-tertiary transition-transform ${expandedId === set.id ? 'rotate-90' : ''}`} />
+                <Icon name="chevron-right" size={13} className={`text-ink-tertiary transition-transform ${expanded ? 'rotate-90' : ''}`} />
                 <span className="text-sm font-medium flex-1">{set.name}</span>
-                <span className={`pill ${set.status === 'approved' ? 'status-succeeded' : 'status-pending'}`}>
-                  {STATUS_LABELS[set.status] || set.status}
+                <span className={`pill ${displayStatus === 'approved' || displayStatus === 'completed' ? 'status-succeeded' : 'status-pending'}`}>
+                  {STATUS_LABELS[displayStatus] || displayStatus}
                 </span>
                 <span className="text-xs text-ink-tertiary">{set.shotCount} 张 | {set.generatedCount} 已生成 | {set.approvedCount} 可用</span>
                 {set.generatedCount > 0 && (
@@ -303,11 +334,17 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                   className="icon-btn text-ink-tertiary hover:text-fail" title="删除" aria-label="删除"><Icon name="trash" size={13} /></button>
               </div>
 
-              {expandedId === set.id && (
+              {expanded && (
                 <div className="mb-2 ml-6 rounded-lg bg-surface-subtle p-3">
                   {!loadingShots && sceneRefInfo && (
                     <div className="mb-3 flex items-center gap-3 rounded border border-hairline bg-white p-2">
-                      <img src={sceneRefInfo.imageUrl} alt={sceneRefInfo.name} className="h-12 w-12 rounded border object-cover" />
+                      <HoverZoomImage
+                        src={sceneRefInfo.imageUrl}
+                        alt={sceneRefInfo.name}
+                        className="h-12 w-12 cursor-zoom-in rounded border border-hairline object-cover transition-colors hover:border-accent/40"
+                        zoomMaxWidth={420}
+                        zoomMaxHeight={320}
+                      />
                       <div>
                         <div className="text-xs text-ink-tertiary">参考场景</div>
                         <div className="text-sm font-medium text-ink">{sceneRefInfo.name}</div>
@@ -316,26 +353,26 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                   )}
                   {loadingShots ? (
                     <p className="text-xs text-ink-tertiary">加载分镜...</p>
-                  ) : shots.length === 0 ? (
+                  ) : setShots.length === 0 ? (
                     <p className="text-xs text-ink-tertiary">无分镜数据</p>
                   ) : (
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
-                      {shots.map((shot, idx) => (
-                        <div key={shot.id} onClick={() => openPreview(idx)}
+                    <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-3">
+                      {setShots.map((shot, idx) => (
+                        <div key={shot.id} onClick={() => openPreview(set.id, idx)}
                           className="cursor-pointer overflow-hidden rounded border border-hairline bg-white transition hover:border-accent/40 hover:shadow-[0_8px_28px_rgba(0,0,0,.08)]">
-                          <div className="px-2 pt-1 text-[10px] text-ink-tertiary">分镜 {shot.indexNum}</div>
+                          <div className="px-3 pt-2 text-xs text-ink-tertiary">分镜 {shot.indexNum}</div>
                           <div className="grid grid-cols-2 gap-px">
                             <div>
-                              <div className="text-center text-[8px] text-ink-tertiary">原图</div>
-                              <div className="aspect-square bg-surface-subtle">
+                              <div className="text-center text-[10px] text-ink-tertiary">原图</div>
+                              <div className="aspect-[4/3] bg-surface-subtle">
                                 {(shot.sourceImageUrl || getImageUrl(shot.sourceImageId)) && (
                                   <img src={shot.sourceImageUrl || getImageUrl(shot.sourceImageId)} alt="原图" className="w-full h-full object-cover" />
                                 )}
                               </div>
                             </div>
                             <div>
-                              <div className="text-center text-[8px] text-ink-tertiary">结果</div>
-                              <div className="aspect-square bg-surface-subtle">
+                              <div className="text-center text-[10px] text-ink-tertiary">结果</div>
+                              <div className="aspect-[4/3] bg-surface-subtle">
                                 {(shot.generatedImageUrl || (shot.latestGeneratedImageId ? getImageUrl(shot.latestGeneratedImageId) : null)) ? (
                                   <img src={shot.generatedImageUrl || getImageUrl(shot.latestGeneratedImageId!)} alt="结果" className="w-full h-full object-cover" />
                                 ) : (
@@ -346,7 +383,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                               </div>
                             </div>
                           </div>
-                          <div className="truncate px-2 pb-1 text-[10px] text-ink-tertiary">{shot.sourceFilename}</div>
+                          <div className="truncate px-3 py-2 text-[11px] text-ink-tertiary">{shot.sourceFilename}</div>
                         </div>
                       ))}
                     </div>
@@ -355,71 +392,104 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {previewIndex !== null && shots[previewIndex] && (() => {
-        const shot = shots[previewIndex];
+      {previewIndex !== null && previewShots[previewIndex] && (() => {
+        const shot = previewShots[previewIndex];
         const sourceUrl = shot.sourceImageUrl || getImageUrl(shot.sourceImageId);
         const genUrl = shot.generatedImageUrl || (shot.latestGeneratedImageId ? getImageUrl(shot.latestGeneratedImageId) : '');
+        const refUrl = previewSceneRefInfo?.imageUrl || '';
         const generating = shot.jobStatus === 'pending' || shot.jobStatus === 'running';
         const canRedo = !!shot.latestJobId && REDOABLE_STATUSES.has(shot.jobStatus || '');
         const isFirst = previewIndex === 0;
-        const isLast = previewIndex === shots.length - 1;
+        const isLast = previewIndex === previewShots.length - 1;
         return (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4" onClick={closePreview}>
-            <div className="flex max-h-[90vh] w-full max-w-[64rem] flex-col overflow-hidden rounded-xl bg-white" onClick={(e) => e.stopPropagation()}>
+          <div className="theme-dark fixed inset-0 z-[100] flex flex-col overflow-hidden bg-black/95" onClick={closePreview}>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
               {/* Header — title + count + close only (no nav, matches ResultGallery) */}
-              <div className="flex shrink-0 items-center justify-between border-b p-4">
+              <div className="flex shrink-0 items-center justify-between border-b border-white/10 p-4">
                 <div className="flex items-center gap-3">
-                  <h3 className="text-sm font-medium">分镜 {shot.indexNum}</h3>
-                  <span className="text-xs text-ink-tertiary">{previewIndex + 1} / {shots.length}</span>
+                  <h3 className="text-sm font-medium text-ink">分镜 {shot.indexNum}</h3>
+                  <span className="text-xs text-ink-tertiary">{previewIndex + 1} / {previewShots.length}</span>
                   {generating && <span className="text-xs text-accent">生成中…</span>}
                 </div>
-                <button onClick={closePreview} className="icon-btn" title="关闭" aria-label="关闭"><Icon name="close" size={16} /></button>
+                <button onClick={closePreview} className="flex items-center justify-center w-8 h-8 rounded-full bg-white/10 text-white/70 hover:bg-white/20 hover:text-white transition-colors" title="关闭" aria-label="关闭"><Icon name="close" size={16} /></button>
               </div>
 
               {/* Image area — with overlay arrows (matches ResultGallery) */}
-              <div className="relative overflow-y-auto p-4">
-                <div className="relative grid grid-cols-2 gap-4">
+              <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_18rem]">
+                <div className={`relative grid min-w-0 gap-6 overflow-y-auto overflow-x-hidden p-6 ${refUrl ? 'grid-cols-1 xl:grid-cols-3' : 'grid-cols-1 md:grid-cols-2'}`}>
                   {!isFirst && (
                     <button onClick={() => goPreview(-1)}
-                      className="absolute -left-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
+                      className="absolute -left-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/80 transition-all hover:bg-white/20 hover:scale-105"
                       title="上一个"><Icon name="chevron-left" size={22} /></button>
                   )}
                   {!isLast && (
                     <button onClick={() => goPreview(1)}
-                      className="absolute -right-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
+                      className="absolute -right-2 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/80 transition-all hover:bg-white/20 hover:scale-105"
                       title="下一个"><Icon name="chevron-right" size={22} /></button>
                   )}
-                  <div>
-                    <div className="mb-1 text-xs text-gray-500">原图</div>
-                    {sourceUrl ? <img src={sourceUrl} alt="原图" className="w-full rounded-lg border" /> : <div className="text-sm text-ink-tertiary">原图不可用</div>}
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs text-ink-tertiary">原图</div>
+                    {sourceUrl ? <img src={sourceUrl} alt="原图" className="max-h-[72vh] max-w-full rounded-lg border border-hairline object-contain" /> : <div className="text-sm text-ink-tertiary">原图不可用</div>}
                   </div>
-                  <div>
-                    <div className="mb-1 text-xs text-gray-500">结果</div>
-                    {genUrl ? <img src={genUrl} alt="结果" className="w-full rounded-lg border" /> : <div className="flex aspect-square items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-sm text-ink-tertiary">{generating ? '生成中…' : '暂无结果'}</div>}
+                  {refUrl && (
+                    <div className="min-w-0">
+                      <div className="mb-1 text-xs text-ink-tertiary">参考图</div>
+                      <img src={refUrl} alt={previewSceneRefInfo?.name || '参考图'} className="max-h-[72vh] max-w-full rounded-lg border border-hairline object-contain" />
+                      {previewSceneRefInfo?.name && (
+                        <div className="mt-1 truncate text-[11px] text-ink-tertiary" title={previewSceneRefInfo.name}>{previewSceneRefInfo.name}</div>
+                      )}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="mb-1 text-xs text-ink-tertiary">结果</div>
+                    {genUrl ? <img src={genUrl} alt="结果" className="max-h-[72vh] max-w-full rounded-lg border border-hairline object-contain" /> : <div className="flex aspect-square items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-sm text-ink-tertiary">{generating ? '生成中…' : '暂无结果'}</div>}
                   </div>
                 </div>
 
-                {/* Redo area */}
-                <div className="mt-4 border-t pt-3">
+                <aside className="hidden overflow-y-auto border-l border-white/10 bg-black/55 p-4 lg:block">
+                  <h4 className="mb-4 text-sm font-semibold text-white/90">生成上下文</h4>
+                  <div className="mb-5 space-y-4">
+                    <section>
+                      <div className="mb-1 text-xs font-medium text-white/50">分镜</div>
+                      <div className="text-sm text-white/85">分镜 {shot.indexNum}</div>
+                      <div className="mt-1 text-xs text-white/45">{previewIndex + 1} / {previewShots.length}</div>
+                    </section>
+                    <section>
+                      <div className="mb-1 text-xs font-medium text-white/50">状态</div>
+                      <span className={`status-badge status-${generating ? 'running' : shot.jobStatus === 'failed' ? 'failed' : shot.jobStatus === 'succeeded' ? 'succeeded' : 'pending'}`}>
+                        {generating ? '生成中' : shot.jobStatus === 'succeeded' ? '成功' : shot.jobStatus === 'failed' ? '失败' : shot.jobStatus || '等待'}
+                      </span>
+                    </section>
+                    <section>
+                      <div className="mb-1 text-xs font-medium text-white/50">参考图</div>
+                      <div className="text-xs leading-relaxed text-white/75">{previewSceneRefInfo?.name || '无参考图'}</div>
+                    </section>
+                  </div>
+
+                  {/* Redo area */}
+                  <div className="border-t border-white/10 pt-4">
                   <label className="label">重做提示词</label>
-                  <textarea value={redoPrompt} onChange={(e) => { setRedoPrompt(e.target.value); setRedoPromptEdited(true); }} rows={4} className="input-field mt-1 font-mono text-xs" placeholder="编辑提示词后点重新生成" />
-                  <div className="mt-2 flex items-center gap-2">
-                    <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-primary btn-sm text-xs">{redoing ? '提交中…' : '重新生成'}</button>
+                  <textarea value={redoPrompt} onChange={(e) => { setRedoPrompt(e.target.value); setRedoPromptEdited(true); }} rows={8} className="input-field mt-1 font-mono text-xs leading-relaxed" placeholder="编辑提示词后点重新生成" />
+                  <div className="mt-3 flex flex-col items-stretch gap-2">
+                    <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-primary btn-sm w-full text-xs">{redoing ? '提交中…' : '重新生成'}</button>
                     {!canRedo && <span className="text-[11px] text-ink-tertiary">{shot.latestJobId ? '任务生成中，完成后可重做' : '该分镜尚未生成，无法重做'}</span>}
                   </div>
-                </div>
+                  </div>
+                </aside>
               </div>
 
               {/* Bottom nav bar (matches ResultGallery footer) */}
-              <div className="shrink-0 border-t p-3 flex items-center gap-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/10 p-3">
                 <button onClick={() => goPreview(-1)} disabled={isFirst} className="btn-secondary btn-sm text-xs disabled:opacity-40"><Icon name="chevron-left" size={13} /> 上一张</button>
                 <button onClick={() => goPreview(1)} disabled={isLast} className="btn-secondary btn-sm text-xs disabled:opacity-40">下一张 <Icon name="chevron-right" size={13} /></button>
-                <span className="mx-1 text-hairline">|</span>
-                <button onClick={closePreview} className="btn-secondary btn-sm text-xs text-ink-secondary">关闭</button>
+                <span className="mx-1 text-white/20">|</span>
+                <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-secondary btn-sm text-xs text-accent"><Icon name="retry" size={13} /> {redoing ? '提交中…' : '重新生成'}</button>
+                {genUrl && <a href={genUrl} download className="btn-primary btn-sm text-xs sm:ml-auto"><Icon name="download" size={13} /> 下载</a>}
               </div>
             </div>
           </div>

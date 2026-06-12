@@ -18,7 +18,12 @@ function readEnv(env: EnvMap, name: string): string {
 
 export function isPlaceholderValue(value: string): boolean {
   const normalized = value.trim().toLowerCase();
-  return !normalized || normalized.includes('example.com') || normalized.includes('your-');
+  if (!normalized) return true;
+  if (normalized.includes('example.com')) return true;
+  // Match "your-" when NOT preceded by a letter or hyphen — prevents false
+  // positives on compound tokens like "sk-your-key" or "get-your-data".
+  if (/(?<![a-zA-Z-])your-/i.test(normalized)) return true;
+  return false;
 }
 
 export function resolveKlingCredentialPair(
