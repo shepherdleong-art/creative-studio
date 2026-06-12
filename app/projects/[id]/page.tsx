@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { Icon } from '@/components/ui/Icon';
 import JobQueueTable from '@/components/JobQueueTable';
 import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
 import SceneReferencePanel from '@/components/SceneReferencePanel';
@@ -363,8 +364,8 @@ export default function ProjectDetailPage() {
 
   if (!project) {
     return (
-      <div className="text-center py-16">
-        <p className="text-gray-500">项目不存在</p>
+      <div className="text-center py-20">
+        <p className="text-ink-secondary">项目不存在</p>
         <Link href="/" className="link-accent mt-2 inline-block">返回列表</Link>
       </div>
     );
@@ -377,16 +378,18 @@ export default function ProjectDetailPage() {
 
   return (
     <div>
-      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="toolbar -mx-6 mb-6 px-6 py-3 gap-3 flex-wrap">
         <div>
           <div className="flex flex-wrap items-center gap-3">
-            <Link href="/" className="text-gray-400 hover:text-gray-600">← 返回</Link>
-            <h1 className="text-2xl font-bold">{project.name}</h1>
+            <Link href="/" className="flex items-center gap-1 text-ink-tertiary hover:text-ink transition-colors">
+              <Icon name="chevron-left" size={16} /> 返回
+            </Link>
+            <h1 className="text-xl font-semibold tracking-[-0.01em]">{project.name}</h1>
             <span className={`status-badge status-${project.status === 'partial_failed' ? 'failed' : project.status}`}>
               {STATUS_LABELS[project.status] || project.status}
             </span>
           </div>
-          <div className="mt-1 flex flex-wrap gap-4 text-xs text-gray-500">
+          <div className="mt-1 flex flex-wrap gap-4 text-xs text-ink-secondary">
             <span>供应商: {project.provider?.name || '-'}</span>
             <span>模型: {project.model}</span>
             <span>任务数: {project.jobs.length}</span>
@@ -433,8 +436,8 @@ export default function ProjectDetailPage() {
 
       {project.prompt && (
         <div className="card mb-6 p-4">
-          <h3 className="mb-1 text-xs font-medium text-gray-500">提示词</h3>
-          <p className="whitespace-pre-wrap text-sm text-gray-700">{project.prompt}</p>
+          <h3 className="label">提示词</h3>
+          <p className="whitespace-pre-wrap text-sm text-ink">{project.prompt}</p>
         </div>
       )}
 
@@ -495,8 +498,8 @@ export default function ProjectDetailPage() {
             {activeTab === 'video' && (
               <div className="card p-5">
                 <div className="mb-4">
-                  <h2 className="text-lg font-semibold">视频生成</h2>
-                  <p className="mt-1 text-sm text-gray-500">选择分镜组和视频供应商，创建图生视频任务。</p>
+                  <h2 className="text-base font-semibold tracking-[-0.01em]">视频生成</h2>
+                  <p className="mt-1 text-sm text-ink-secondary">选择分镜组和视频供应商，创建图生视频任务。</p>
                 </div>
                 <VideoGenerationPanel projectId={project.id} />
               </div>
@@ -524,11 +527,11 @@ export default function ProjectDetailPage() {
       <LogDrawer open={logOpen} projectId={project.id} autoRefresh={running || hasActiveJobs} onClose={() => setLogOpen(false)} />
 
       {sceneRefModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={() => setSceneRefModal(null)}>
-          <div className="w-full max-w-sm rounded-xl bg-white p-6" onClick={(e) => e.stopPropagation()}>
-            <h3 className="mb-4 font-semibold">设为场景参考图</h3>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4" onClick={() => setSceneRefModal(null)}>
+          <div className="card w-full max-w-sm p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-4 text-base font-semibold">设为场景参考图</h3>
             <div>
-              <label className="text-sm text-gray-600">名称</label>
+              <label className="label">名称</label>
               <input value={sceneRefName} onChange={(e) => setSceneRefName(e.target.value)} className="input-field mt-1" placeholder="例如: 现代奶油风卧室场景" autoFocus />
             </div>
             <div className="mt-4 flex justify-end gap-2">
@@ -540,12 +543,12 @@ export default function ProjectDetailPage() {
       )}
 
       {applySceneModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={() => setApplySceneModal(null)}>
-          <div className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4" onClick={() => setApplySceneModal(null)}>
+          <div className="card max-h-[80vh] w-full max-w-lg overflow-y-auto p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]" onClick={(e) => e.stopPropagation()}>
             <h3 className="mb-4 font-semibold">选择新场景图并生成分镜</h3>
             <div className="space-y-3">
               <div>
-                <label className="text-sm text-gray-600">选择场景参考图</label>
+                <label className="label">选择场景参考图</label>
                 {(() => {
                   const applySceneItems: ImagePickerItem[] = sceneRefs.map((ref) => {
                     const asset = project?.images.find((img) => img.id === ref.imageAssetId);
@@ -553,12 +556,12 @@ export default function ProjectDetailPage() {
                   });
                   return <ImagePickerGrid items={applySceneItems} selectedId={applySceneRefId} onSelect={setApplySceneRefId} emptyText="当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。" />;
                 })()}
-                {sceneRefs.length === 0 && <p className="mt-1 text-xs text-red-400">当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。</p>}
+                {sceneRefs.length === 0 && <p className="mt-1 text-xs text-fail">当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。</p>}
               </div>
               <div>
-                <label className="text-sm text-gray-600">提示词模板</label>
+                <label className="label">提示词模板</label>
                 <textarea value={applyScenePrompt} onChange={(e) => setApplyScenePrompt(e.target.value)} rows={4} className="input-field mt-1 font-mono text-sm" />
-                <p className="mt-1 text-xs text-gray-400">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
+                <p className="mt-1 text-xs text-ink-tertiary">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
               </div>
             </div>
             <div className="mt-4 flex justify-end gap-2">
@@ -590,14 +593,14 @@ function QueueCompactBar({
   const succeeded = jobs.filter((job) => job.status === 'succeeded').length;
 
   return (
-    <div className="mb-5 flex flex-col gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+    <div className="tile flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        <span className="font-medium text-gray-900">任务状态</span>
-        <span className="text-gray-500">队列: {queueStatus === 'running' ? '运行中' : queueStatus === 'paused' ? '已暂停' : '空闲'}</span>
-        <span className="text-gray-500">等待 {pending}</span>
-        <span className="text-gray-500">活跃 {active}</span>
-        <span className="text-green-600">成功 {succeeded}</span>
-        {failed > 0 && <span className="text-red-600">失败 {failed}</span>}
+        <span className="font-medium text-ink">任务状态</span>
+        <span className="text-ink-secondary">队列: {queueStatus === 'running' ? '运行中' : queueStatus === 'paused' ? '已暂停' : '空闲'}</span>
+        <span className="text-ink-secondary">等待 {pending}</span>
+        <span className="text-ink-secondary">活跃 {active}</span>
+        <span className="text-ok">成功 {succeeded}</span>
+        {failed > 0 && <span className="text-fail">失败 {failed}</span>}
       </div>
       <div className="flex gap-2">
         {!running && pending > 0 && queueStatus !== 'paused' && <button className="btn-primary btn-sm" disabled={!!actionLoading} onClick={onStart}>开始</button>}
@@ -638,8 +641,8 @@ function SceneWorkspace({
     <div className="space-y-6">
       <section className="card p-5">
         <div className="mb-4">
-          <h2 className="text-lg font-semibold">新场景图生成</h2>
-          <p className="mt-1 text-sm text-gray-500">先上传原始场景图 A，再选择 1 张作为生成输入。</p>
+          <h2 className="text-base font-semibold tracking-[-0.01em]">新场景图生成</h2>
+          <p className="mt-1 text-sm text-ink-secondary">先上传原始场景图 A，再选择 1 张作为生成输入。</p>
         </div>
         <AssetUploadGrid
           projectId={project.id}
@@ -660,8 +663,8 @@ function SceneWorkspace({
 
       <section className="card p-5">
         <div className="mb-4">
-          <h2 className="text-lg font-semibold">生成结果</h2>
-          <p className="mt-1 text-sm text-gray-500">生成成功后，在这里挑选可用图并保存为场景参考图。</p>
+          <h2 className="text-base font-semibold tracking-[-0.01em]">生成结果</h2>
+          <p className="mt-1 text-sm text-ink-secondary">生成成功后，在这里挑选可用图并保存为场景参考图。</p>
         </div>
         <ResultGallery jobs={jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
       </section>
@@ -684,8 +687,8 @@ function SceneGenerationForm({
   return (
     <section className="card p-5">
       <div className="mb-4">
-        <h2 className="text-lg font-semibold">生成参数</h2>
-        <p className="mt-1 text-sm text-gray-500">选中原始场景图 A 后，确认提示词和数量再开始生成。</p>
+        <h2 className="text-base font-semibold tracking-[-0.01em]">生成参数</h2>
+        <p className="mt-1 text-sm text-ink-secondary">选中原始场景图 A 后，确认提示词和数量再开始生成。</p>
       </div>
       <div className="grid gap-4 md:grid-cols-[1fr_120px]">
         <div>
@@ -719,7 +722,7 @@ function SceneGenerationForm({
         >
           {creating ? '创建中...' : `生成 ${count} 张新场景图`}
         </button>
-        {!selectedImageId && <span className="text-sm text-gray-400">请先选择 1 张原始场景图 A</span>}
+        {!selectedImageId && <span className="text-sm text-ink-tertiary">请先选择 1 张原始场景图 A</span>}
       </div>
     </section>
   );
@@ -762,8 +765,8 @@ function StoryboardWorkspace({
     <div className="space-y-6">
       <section className="card p-5">
         <div className="mb-4">
-          <h2 className="text-lg font-semibold">新分镜图</h2>
-          <p className="mt-1 text-sm text-gray-500">上传后在宫格里按顺序选择 1-9 张，再创建分镜组。</p>
+          <h2 className="text-base font-semibold tracking-[-0.01em]">新分镜图</h2>
+          <p className="mt-1 text-sm text-ink-secondary">上传后在宫格里按顺序选择 1-9 张，再创建分镜组。</p>
         </div>
         <AssetUploadGrid
           projectId={project.id}
@@ -784,8 +787,8 @@ function StoryboardWorkspace({
       <section className="card p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold">分镜生成模板</h2>
-            <p className="mt-1 text-sm text-gray-500">分镜生成时会使用这个模板描述图1和场景参考图的关系。</p>
+            <h2 className="text-base font-semibold tracking-[-0.01em]">分镜生成模板</h2>
+            <p className="mt-1 text-sm text-ink-secondary">分镜生成时会使用这个模板描述图1和场景参考图的关系。</p>
           </div>
           {!editingShotPrompt && (
             <button onClick={() => { setShotPromptDraft(project.shotPrompt || ''); setEditingShotPrompt(true); }} className="btn-secondary btn-sm">
@@ -802,7 +805,7 @@ function StoryboardWorkspace({
             </div>
           </div>
         ) : (
-          <pre className="whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-xs text-gray-600">{project.shotPrompt || '未设置'}</pre>
+          <pre className="whitespace-pre-wrap rounded-[18px] bg-surface-subtle p-4 text-xs text-ink-secondary">{project.shotPrompt || '未设置'}</pre>
         )}
       </section>
 
@@ -826,7 +829,7 @@ function StoryboardGroupCreator({ projectId, selectedImageIds, onCreated }: { pr
   const [saving, setSaving] = useState(false);
 
   return (
-    <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
+    <div className="mt-4 tile p-4">
       <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
         <div>
           <label className="label">分镜组名称</label>
@@ -853,7 +856,7 @@ function StoryboardGroupCreator({ projectId, selectedImageIds, onCreated }: { pr
           {saving ? '创建中...' : `创建分镜组 (${selectedImageIds.length})`}
         </button>
       </div>
-      <p className="mt-2 text-xs text-gray-400">已选择 {selectedImageIds.length}/9 张。点击宫格图片可调整选择和顺序。</p>
+      <p className="mt-2 text-xs text-ink-tertiary">已选择 {selectedImageIds.length}/9 张。点击宫格图片可调整选择和顺序。</p>
     </div>
   );
 }
@@ -904,7 +907,7 @@ function LegacyProjectContent({
         </div>
       )}
       <div className="card p-4">
-        <h2 className="mb-4 font-semibold">结果预览 {succeededJobs.length > 0 && <span className="ml-2 text-sm font-normal text-gray-400">({succeededJobs.length} 张)</span>}</h2>
+        <h2 className="mb-4 font-semibold">结果预览 {succeededJobs.length > 0 && <span className="ml-2 text-sm font-normal text-ink-tertiary">({succeededJobs.length} 张)</span>}</h2>
         <ResultGallery jobs={project.jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
       </div>
       <SceneReferencePanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} />

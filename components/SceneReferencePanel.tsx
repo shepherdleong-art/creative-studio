@@ -116,7 +116,7 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
           onClick={closeCreate}
         >
           <div
-            className="flex max-h-[86vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-xl"
+            className="flex max-h-[86vh] w-full max-w-4xl flex-col rounded-[18px] bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b p-4">
