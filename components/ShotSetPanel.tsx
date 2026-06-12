@@ -108,16 +108,17 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     try {
       const res = await fetch(`/api/shot-sets/${setId}`);
       const data = await res.json();
+      // Race guard: only apply if still viewing this set
+      if (expandedId !== setId) return;
       if (data.shots) setShots(data.shots);
-      // Capture scene reference thumbnail info
       if (data.sceneRefImageUrl) {
         setSceneRefInfo({ name: data.sceneRefName || '场景参考', imageUrl: data.sceneRefImageUrl });
       } else {
         setSceneRefInfo(null);
       }
     } catch { /* ignore */ }
-    finally { if (!silent) setLoadingShots(false); }
-  }, []);
+    finally { if (!silent && expandedId === setId) setLoadingShots(false); }
+  }, [expandedId]);
 
   const handleExpand = (setId: string) => {
     if (expandedId === setId) { setExpandedId(null); return; }
@@ -136,13 +137,16 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   const openPreview = (idx: number) => {
     setPreviewIndex(idx);
     setRedoPrompt(shots[idx]?.jobPrompt || '');
+    setRedoing(false);
   };
   const closePreview = () => { setPreviewIndex(null); setRedoing(false); };
   const goPreview = (delta: number) => {
-    if (previewIndex === null || shots.length === 0) return;
-    const next = Math.min(shots.length - 1, Math.max(0, previewIndex + delta));
-    setPreviewIndex(next);
-    setRedoPrompt(shots[next]?.jobPrompt || '');
+    setPreviewIndex((prev) => {
+      if (prev === null || shots.length === 0) return prev;
+      const next = Math.min(shots.length - 1, Math.max(0, prev + delta));
+      setRedoPrompt(shots[next]?.jobPrompt || '');
+      return next;
+    });
   };
 
   // Keyboard navigation while preview is open
@@ -152,9 +156,10 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
       if (e.key === 'Escape') { setPreviewIndex(null); setRedoing(false); return; }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         const delta = e.key === 'ArrowLeft' ? -1 : 1;
-        const next = Math.min(shots.length - 1, Math.max(0, previewIndex + delta));
-        setPreviewIndex(next);
-        setRedoPrompt(shots[next]?.jobPrompt || '');
+        setPreviewIndex((prev) => {
+          if (prev === null) return null;
+          return Math.min(shots.length - 1, Math.max(0, prev + delta));
+        });
       }
     };
     window.addEventListener('keydown', onKey);
@@ -185,10 +190,11 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.newJobId) { alert('重做失败: ' + (data.error || '未知错误')); return; }
       // Repoint the shot to the new job, then kick the queue
-      await fetch(`/api/shot-sets/${expandedId}`, {
+      const patchRes = await fetch(`/api/shot-sets/${expandedId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shotId: shot.id, latestJobId: data.newJobId }),
       });
+      if (!patchRes.ok) { alert('更新分镜任务关联失败'); return; }
       await onShotChanged?.();
       if (expandedId) await loadShots(expandedId, true);
     } catch (err) {
@@ -199,7 +205,8 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   };
 
   const getImageUrl = (assetId: string) => images.find((img) => img.id === assetId)?.imageUrl || '';
-  const getJobStatus = (jobId?: string) => jobs?.find((j) => j.id === jobId)?.status;
+  // Fallback: look up job status; prefer shot.jobStatus from API, only query if missing
+  const getJobStatusFallback = (jobId?: string) => jobId ? jobs?.find((j) => j.id === jobId)?.status : undefined;
 
   return (
     <div className="card p-4">
@@ -321,7 +328,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                                   <img src={shot.generatedImageUrl || getImageUrl(shot.latestGeneratedImageId!)} alt="结果" className="w-full h-full object-cover" />
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-400">
-                                    {shot.jobStatus === 'running' ? '生成中' : shot.jobStatus === 'failed' ? '失败' : shot.jobStatus === 'succeeded' ? '生成完成' : shot.latestJobId ? (getJobStatus(shot.latestJobId) === 'running' ? '生成中' : '等待中') : '-'}
+                                    {shot.jobStatus === 'running' ? '生成中' : shot.jobStatus === 'failed' ? '失败' : shot.jobStatus === 'succeeded' ? '生成完成' : shot.latestJobId ? (getJobStatusFallback(shot.latestJobId) === 'running' ? '生成中' : '等待中') : '-'}
                                   </div>
                                 )}
                               </div>

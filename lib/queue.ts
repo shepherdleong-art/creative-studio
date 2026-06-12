@@ -210,6 +210,7 @@ async function runJob(
       processedWidth: number | null;
       processedHeight: number | null;
       processedSizeBytes: number | null;
+      usage?: string;
     } | undefined;
 
     if (!inputImage) {
@@ -505,7 +506,7 @@ async function runJob(
     }
 
     // Output filename: use a meaningful prefix based on the input image's usage role
-    const inputUsage = (db.prepare(`SELECT usage FROM image_assets WHERE id = ?`).get(job.inputImageId) as { usage?: string } | undefined)?.usage || '';
+    const inputUsage = inputImage.usage || '';
     let filePrefix = 'output-';
     let outputUsage = '';
     if (inputUsage === 'scene_seed') { filePrefix = '场景-'; outputUsage = 'scene_gen'; }

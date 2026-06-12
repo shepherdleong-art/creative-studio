@@ -60,14 +60,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   // Per-shot form state (one active shot at a time)
   const [selectedShot, setSelectedShot] = useState<string | null>(null);
-  const [motionRows, setMotionRows] = useState<Array<{ prompt: string; templateId: string; providerId: string; durationSec: number }>>([]);
+  const [motionRows, setMotionRows] = useState<Array<{ key: string; prompt: string; templateId: string; providerId: string; durationSec: number }>>([]);
   const [creating, setCreating] = useState(false);
 
   const defaultProviderId = providers.length > 0 ? providers[0].id : '';
   const defaultDuration = 5;
 
-  const makeEmptyRow = (): { prompt: string; templateId: string; providerId: string; durationSec: number } => ({
-    prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
+  const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
+    key: crypto.randomUUID(), prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
   });
 
   // Load providers and templates once
@@ -103,12 +103,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return () => { active = false; };
   }, [projectId, shotSetId]);
 
-  // Load shots when set is selected
+  // Load shots when set is selected (with race guard)
   const loadShotsForSet = async (setId: string) => {
     try {
       const res = await fetch(`/api/shot-sets/${setId}`);
       const data = await res.json();
-      if (data.shots) {
+      if (data.shots && selectedSetId === setId) {
         setSelectedSetShots(data.shots.map((s: { id: string; indexNum: number; sourceImageId: string; latestGeneratedImageId?: string; sourceImageUrl?: string; generatedImageUrl?: string }) => ({
           id: s.id, indexNum: s.indexNum, sourceImageId: s.sourceImageId,
           latestGeneratedImageId: s.latestGeneratedImageId,
@@ -118,7 +118,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       // Load video jobs
       const jobRes = await fetch(`/api/shot-sets/${setId}/video-jobs`);
       const jobData = await jobRes.json().catch(() => ({ jobs: [] }));
-      if (jobData.jobs) setVideoJobs(jobData.jobs);
+      if (jobData.jobs && selectedSetId === setId) setVideoJobs(jobData.jobs);
     } catch { /* ignore */ }
   };
 
@@ -248,7 +248,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             {selectedShot === shot.id ? (
               <div className="space-y-2 mb-2">
                 {motionRows.map((row, idx) => (
-                  <div key={idx} className="rounded border bg-gray-50 p-2">
+                  <div key={row.key} className="rounded border bg-gray-50 p-2">
                     <div className="flex flex-wrap items-center gap-2 mb-1">
                       <span className="text-[10px] text-gray-400 whitespace-nowrap">运镜 {idx + 1}</span>
                       <select

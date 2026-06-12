@@ -149,19 +149,26 @@ export default function ProjectDetailPage() {
     [project]
   );
 
+  // Pre-compute image usage lookup to avoid O(m*n) per filter
+  const imageUsageMap = useMemo(() => {
+    const map = new Map<string, string>();
+    (project?.images || []).forEach((img) => { if (img.id) map.set(img.id, img.usage || ''); });
+    return map;
+  }, [project]);
+
   const sceneJobs = useMemo(
     () => (project?.jobs || []).filter((j) => {
-      const img = (project?.images || []).find((i) => i.id === j.inputImageId);
-      return img?.usage === 'scene_seed';
+      const u = j.inputImageId ? (imageUsageMap.get(j.inputImageId) || '') : '';
+      return !u || u === 'scene_seed'; // include unclassified as fallback
     }),
-    [project]
+    [project, imageUsageMap]
   );
   const shotJobs = useMemo(
     () => (project?.jobs || []).filter((j) => {
-      const img = (project?.images || []).find((i) => i.id === j.inputImageId);
-      return img?.usage === 'shot_source';
+      const u = j.inputImageId ? (imageUsageMap.get(j.inputImageId) || '') : '';
+      return u === 'shot_source';
     }),
-    [project]
+    [project, imageUsageMap]
   );
 
 

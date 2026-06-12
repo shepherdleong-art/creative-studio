@@ -84,7 +84,7 @@ export async function PATCH(
     }
 
     // Repoint a shot to a newly regenerated job (used by per-shot redo)
-    if (body.shotId && typeof body.latestJobId === 'string') {
+    if (body.shotId && typeof body.latestJobId === 'string' && body.latestJobId.length > 0) {
       db.prepare(`UPDATE shots SET latestJobId = ? WHERE id = ? AND shotSetId = ?`)
         .run(body.latestJobId, body.shotId, id);
     }

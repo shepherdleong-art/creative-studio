@@ -40,6 +40,9 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
   const containerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
+  const mountedRef = useRef(true);
+  useEffect(() => { return () => { mountedRef.current = false; }; }, []);
+
   const loadLogs = async () => {
     try {
       const params = new URLSearchParams();
@@ -50,17 +53,17 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
         cache: 'no-store',
       });
       const data = await res.json();
-      if (Array.isArray(data)) setLogs(data);
+      if (Array.isArray(data) && mountedRef.current) setLogs(data);
     } catch {
       // Silently fail on log fetch errors
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadLogs();
+    const t = setTimeout(loadLogs, 0);
+    return () => { clearTimeout(t); mountedRef.current = false; };
   }, [projectId, jobId]);
 
   useEffect(() => {
