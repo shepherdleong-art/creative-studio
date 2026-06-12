@@ -67,7 +67,7 @@ export function seedVideoProviders() {
       baseUrlEnv: 'KLING_VIDEO_BASE_URL',
       apiKeyEnv: 'KLING_VIDEO_API_KEY',
       modelEnv: 'KLING_VIDEO_MODEL',
-      defaultModel: 'kling-v3.0-i2v',
+      defaultModel: 'kling-v3',
       enabled: 1,
       defaultDurationSec: 5,
     },

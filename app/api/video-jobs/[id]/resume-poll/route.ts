@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getVideoAdapter } from '@/lib/video-providers/index';
+import { getVideoProviderConfigState, isPlaceholderValue, resolveKlingCredentialPair } from '@/lib/video-auth';
 import { writeLog } from '@/lib/logger';
 import fs from 'fs';
 import path from 'path';
@@ -36,18 +37,18 @@ export async function POST(
 
     if (!provider) return NextResponse.json({ error: 'Video provider not found' }, { status: 404 });
 
-    const baseUrl = process.env[provider.baseUrlEnv];
-    let apiKey = process.env[provider.apiKeyEnv];
-    if (!baseUrl || !apiKey) {
-      return NextResponse.json({ error: `Provider not configured. Set ${provider.baseUrlEnv} and ${provider.apiKeyEnv}` }, { status: 400 });
+    const baseUrl = (process.env[provider.baseUrlEnv] || '').trim();
+    let apiKey = (process.env[provider.apiKeyEnv] || '').trim();
+    const configState = getVideoProviderConfigState(provider);
+    if (!configState.configured || isPlaceholderValue(baseUrl)) {
+      return NextResponse.json({ error: `Provider not configured. Set ${configState.missing.join(', ')}` }, { status: 400 });
     }
 
     if (provider.type === 'kling') {
-      const [accessKey, secretKey] = apiKey.split(':');
-      if (accessKey && secretKey) {
-        const { getKlingToken } = await import('@/lib/video-providers/kling');
-        apiKey = getKlingToken(accessKey, secretKey);
-      }
+      const pair = resolveKlingCredentialPair(process.env, provider.apiKeyEnv);
+      if (!pair) return NextResponse.json({ error: 'Provider not configured. Set KLING_VIDEO_ACCESS_KEY and KLING_VIDEO_SECRET_KEY' }, { status: 400 });
+      const { getKlingToken } = await import('@/lib/video-providers/kling');
+      apiKey = getKlingToken(pair.accessKey, pair.secretKey);
     }
 
     const adapter = getVideoAdapter(provider.type);
@@ -82,20 +83,34 @@ export async function POST(
         UPDATE video_jobs SET
           status = 'succeeded',
           providerStatus = 'succeeded',
+          errorMessage = NULL,
           remoteVideoUrl = ?,
           localVideoPath = ?,
           filename = ?,
-          finishedAt = datetime('now')
+          finishedAt = datetime('now'),
+          lastPolledAt = datetime('now'),
+          pollCount = pollCount + 1
         WHERE id = ?
       `).run(result.videoUrl, videoPath, videoFilename, job.id);
 
       return NextResponse.json({ success: true, status: 'succeeded', filename: videoFilename });
     }
 
-    // Update status
+    const nextStatus = result.status === 'failed' ? 'failed' : 'needs_check';
+    const nextError = result.status === 'failed'
+      ? (result.errorMessage || 'Video generation failed')
+      : 'Provider task is still running. Try resume polling again later.';
+
     db.prepare(
-      `UPDATE video_jobs SET providerStatus = ?, providerRawResponse = ? WHERE id = ?`
-    ).run(result.status, JSON.stringify(result.rawResponse).slice(0, 4000), job.id);
+      `UPDATE video_jobs SET
+        status = ?,
+        errorMessage = ?,
+        providerStatus = ?,
+        providerRawResponse = ?,
+        lastPolledAt = datetime('now'),
+        pollCount = pollCount + 1
+       WHERE id = ?`
+    ).run(nextStatus, nextError, result.status, JSON.stringify(result.rawResponse).slice(0, 4000), job.id);
 
     return NextResponse.json({ success: true, status: result.status });
   } catch (err) {

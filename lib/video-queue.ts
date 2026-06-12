@@ -1,5 +1,6 @@
 import { getDb } from './db';
 import { getVideoAdapter } from './video-providers/index';
+import { getVideoProviderConfigState, isPlaceholderValue, resolveKlingCredentialPair } from './video-auth';
 import { writeLog } from './logger';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
@@ -156,20 +157,20 @@ async function runVideoJob(
 
     if (!provider) throw new Error('Video provider not found');
 
-    const baseUrl = process.env[provider.baseUrlEnv];
+    const baseUrl = (process.env[provider.baseUrlEnv] || '').trim();
     const apiKeyEnvName = provider.apiKeyEnv;
-    let apiKey = process.env[apiKeyEnvName];
-    if (!baseUrl || !apiKey) {
-      throw new Error(`Video provider not configured. Set ${provider.baseUrlEnv} and ${apiKeyEnvName}`);
+    let apiKey = (process.env[apiKeyEnvName] || '').trim();
+    const configState = getVideoProviderConfigState(provider);
+    if (!configState.configured || isPlaceholderValue(baseUrl)) {
+      throw new Error(`Video provider not configured. Set ${configState.missing.join(', ')}`);
     }
 
-    // Kling uses access_key:secret_key format — generate JWT
+    // Kling uses access_key + secret_key to generate a short-lived JWT.
     if (provider.type === 'kling') {
-      const [accessKey, secretKey] = apiKey.split(':');
-      if (accessKey && secretKey) {
-        const { getKlingToken } = await import('./video-providers/kling');
-        apiKey = getKlingToken(accessKey, secretKey);
-      }
+      const pair = resolveKlingCredentialPair(process.env, apiKeyEnvName);
+      if (!pair) throw new Error('Video provider not configured. Set KLING_VIDEO_ACCESS_KEY and KLING_VIDEO_SECRET_KEY');
+      const { getKlingToken } = await import('./video-providers/kling');
+      apiKey = getKlingToken(pair.accessKey, pair.secretKey);
     }
 
     const adapter = getVideoAdapter(provider.type);

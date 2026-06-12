@@ -23,11 +23,11 @@ function createKlingJwt(accessKey: string, secretKey: string): string {
 }
 
 /**
- * Read a local image file and return as a Base64 data URL.
+ * Read a local image file and return raw Base64.
  */
-function fileToBase64DataUrl(filePath: string, mimeType: string): string {
+function fileToBase64(filePath: string): string {
   const buffer = fs.readFileSync(filePath);
-  return `data:${mimeType};base64,${buffer.toString('base64')}`;
+  return buffer.toString('base64');
 }
 
 type KlingTaskResponse = {
@@ -72,11 +72,11 @@ export const klingAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos/image2video`;
 
-    const imageDataUrl = fileToBase64DataUrl(request.sourceImagePath, request.sourceMimeType);
+    const imageBase64 = fileToBase64(request.sourceImagePath);
 
     const body = {
       model_name: request.model,
-      image: imageDataUrl,
+      image: imageBase64,
       prompt: request.prompt || 'gentle camera movement, stable product detail',
       duration: String(request.durationSec),
       mode: 'std',

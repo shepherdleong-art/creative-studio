@@ -231,14 +231,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   }
 
   return (
-    <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+    <div className="mt-3 min-w-0 max-w-full rounded-lg bg-gray-50 p-3">
       <h4 className="text-sm font-medium mb-3 text-gray-700">🎬 视频生成</h4>
 
       {/* Per-shot panels */}
       {safeShots.map((shot) => {
         const shotVideos = videoJobs.filter((j) => j.shotId === shot.id);
         return (
-          <div key={shot.id} className="mb-3 p-3 bg-white rounded border">
+          <div key={shot.id} className="mb-3 min-w-0 max-w-full rounded border bg-white p-3">
             <div className="flex items-center gap-3 mb-2">
               <span className="text-xs font-medium text-gray-500">分镜 {shot.indexNum}</span>
               {shot.imageUrl && (
@@ -248,14 +248,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
             {/* Create video form — each row is one horizontal "描述" line */}
             {selectedShot === shot.id ? (
-              <div className="space-y-2 mb-2">
+              <div className="mb-2 min-w-0 max-w-full space-y-2">
                 {motionRows.map((row, idx) => (
-                  <div key={row.key} className="flex items-center gap-2 rounded border bg-gray-50 px-2 py-1.5">
+                  <div key={row.key} className="flex min-w-0 max-w-full flex-wrap items-center gap-2 rounded border bg-gray-50 px-2 py-1.5">
                     <span className="text-[10px] text-gray-400 whitespace-nowrap shrink-0">描述 {idx + 1}</span>
                     <select
                       value={row.providerId}
                       onChange={(e) => updateRowProvider(idx, e.target.value)}
-                      className="input-field text-xs w-20 shrink-0"
+                      className="input-field w-24 max-w-full shrink-0 text-xs"
                     >
                       <option value="">供应商</option>
                       {providers.map((p) => (
@@ -265,7 +265,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     <select
                       value={row.templateId}
                       onChange={(e) => updateRowTemplate(idx, e.target.value)}
-                      className="input-field text-xs w-24 shrink-0"
+                      className="input-field w-32 max-w-full shrink-0 text-xs"
                     >
                       <option value="">模板（可选）</option>
                       {templates.map((t) => (
@@ -278,14 +278,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       max={15}
                       value={row.durationSec}
                       onChange={(e) => updateRowDuration(idx, Math.max(2, Math.min(15, Number(e.target.value) || 5)))}
-                      className="input-field text-xs w-14 shrink-0 text-center"
+                      className="input-field w-14 max-w-full shrink-0 text-center text-xs"
                       title="秒数"
                     />
                     <input
                       type="text"
                       value={row.prompt}
                       onChange={(e) => updateRowPrompt(idx, e.target.value)}
-                      className="input-field text-xs font-mono flex-1 min-w-0"
+                      className="input-field min-w-0 flex-[1_1_18rem] text-xs font-mono"
                       placeholder="运镜描述（提示词）"
                     />
                     <button
@@ -296,7 +296,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     >−</button>
                   </div>
                 ))}
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button onClick={addMotionRow} className="btn-secondary btn-sm text-xs">+ 描述</button>
                   <button
                     onClick={() => handleCreateVideos(shot.id)}
@@ -317,11 +317,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             {shotVideos.length > 0 && (
               <div className="space-y-1 mt-1">
                 {shotVideos.map((job) => (
-                  <div key={job.id} className="flex items-center gap-2 text-xs p-1.5 bg-gray-50 rounded">
+                  <div key={job.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded bg-gray-50 p-1.5 text-xs">
                     <span className={`status-badge status-${job.status === 'succeeded' ? 'succeeded' : job.status === 'failed' ? 'failed' : job.status === 'running' ? 'running' : 'pending'}`}>
                       {job.status === 'succeeded' ? '✅' : job.status === 'failed' ? '❌' : job.status === 'running' ? '⏳' : job.status === 'pending' ? '📋' : '⚠️'}
                     </span>
-                    <span className="text-gray-600 truncate flex-1">
+                    <span className="min-w-[10rem] flex-1 truncate text-gray-600">
                       {job.providerName || '-'} / {job.templateName || '自定义'} / {job.durationSec}s
                     </span>
                     {job.status === 'succeeded' && job.filename && (
