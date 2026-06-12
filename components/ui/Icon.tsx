@@ -3,7 +3,8 @@ import type { ReactNode, SVGProps } from "react";
 export type IconName =
   | "chevron-left" | "chevron-right" | "download" | "play" | "pause"
   | "stop" | "retry" | "trash" | "plus" | "minus" | "check" | "alert"
-  | "image" | "settings" | "key" | "logs" | "close" | "power";
+  | "image" | "settings" | "key" | "logs" | "close" | "power" | "copy"
+  | "lock" | "folder" | "video" | "file-text";
 
 const PATHS: Record<IconName, ReactNode> = {
   "chevron-left": <polyline points="15 18 9 12 15 6" />,
@@ -24,6 +25,11 @@ const PATHS: Record<IconName, ReactNode> = {
   logs: (<><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="15" y2="18" /></>),
   close: (<><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>),
   power: (<><path d="M18.36 6.64a9 9 0 11-12.73 0" /><line x1="12" y1="2" x2="12" y2="12" /></>),
+  copy: (<><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></>),
+  lock: (<><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0110 0v4" /></>),
+  folder: (<><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></>),
+  video: (<><rect x="3" y="5" width="14" height="14" rx="2" /><path d="M17 9l4-2v10l-4-2" /></>),
+  "file-text": (<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="16" y2="17" /><line x1="8" y1="9" x2="10" y2="9" /></>),
 };
 
 export function Icon({

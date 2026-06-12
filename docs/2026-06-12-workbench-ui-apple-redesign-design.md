@@ -130,7 +130,7 @@
 
 ## 5. 应用外壳
 
-- **`app/layout.tsx`：** 经 `next/font` 注入 `--font-ui` / `--font-mono` 到 `<html>`；背景从 `bg-gray-50` 改为白；`<main>` 居中、留白节奏按 Apple；语言保持 `zh-CN`。
+- **`app/layout.tsx`：** 不使用 `next/font`；通过 `globals.css` 的系统字体栈提供离线安全字体；背景从 `bg-gray-50` 改为白；`<main>` 居中、留白节奏按 Apple；语言保持 `zh-CN`。
 - **`components/Header.tsx`：** 改为**磨砂 sticky 顶栏**（半透明白 + `backdrop-blur` + 发丝线底）；品牌去 emoji；导航链接（项目 / 供应商）；右侧“新建项目”蓝色胶囊；“停止服务”改为线性图标按钮 + 确认弹窗按 Apple sheet 样式。
 
 ---
@@ -170,8 +170,8 @@
 ## 7. 约束与非目标
 
 - **纯视觉重构**：不改数据流、API、状态机、交互行为；所有控件、状态、文案（中文）、两套工作流（legacy / complex_product）功能保持不变。
-- **不引入 UI 框架**：沿用 Tailwind v4 + 自定义工具类；唯一新增依赖是 `next/font` 字体（Inter / JetBrains Mono）与一个内联图标组件。
-- **离线优先**：字体自托管（§3.3），不依赖运行时 CDN。
+- **不引入 UI 框架**：沿用 Tailwind v4 + 自定义工具类；不新增 UI/字体依赖，仅使用一个内联图标组件。
+- **离线优先**：字体走系统栈（§3.3），不依赖运行时 CDN，也不依赖构建期联网。
 - **可访问性**：维持对比度（近黑 on 白达标）；可见焦点环（Apple 蓝）；图标按钮带 `aria-label`/`title`。
 - **无回归**：不降低性能；保持响应式断点行为。
 
@@ -191,7 +191,7 @@
 
 ## 9. 已决与备注
 
-- **Latin 替身字体 = Inter**：在 `-apple-system` 之后作为跨平台回退；Mac 仍得真 SF。选 Inter 是因为它是 SF 最接近、`next/font` 最稳的开源替身（用户在 Windows，实际看到的就是这个回退）。**可后续升级**为 Mona Sans / 官方 SF Pro（需自托管字体文件），不影响结构。
+- **Latin 字体策略 = 系统优先**：Mac 使用 SF Pro；Windows 使用 Segoe UI + 微软雅黑；`Noto Sans SC` / `Helvetica Neue` / Arial 作为兜底名。若日后需要更强跨平台一致性，可升级为自托管 Mona Sans / 官方 SF Pro 字体文件，不影响结构。
 - **图标 = 自建内联 SVG 集**（不引图标库），保持轻量与 Apple 线性观感。
 - **CJK 不打包重型字体**：依赖系统苹方/雅黑，保留 Noto Sans SC 兜底名；如日后要全平台统一中文观感，再评估自托管。
 

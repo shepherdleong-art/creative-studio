@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
 
 interface Provider {
   id: string;
@@ -165,11 +166,11 @@ export default function SettingsPage() {
     <div className="max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold">供应商配置</h1>
-          <p className="text-sm text-gray-500 mt-1">
+          <h1 className="text-3xl font-semibold tracking-[-0.02em]">供应商配置</h1>
+          <p className="mt-1 text-sm text-ink-secondary">
             管理 API 供应商的 Base URL、API Key 和默认参数
           </p>
-          <p className="text-xs text-gray-400 mt-1">
+          <p className="mt-1 text-xs text-ink-tertiary">
             可以保存多个供应商，只有启用且已配置 Key 的供应商会出现在新建项目中。允许多个供应商同时启用。
           </p>
         </div>
@@ -189,17 +190,17 @@ export default function SettingsPage() {
           }}
           className="btn-primary"
         >
-          + 添加供应商
+          <Icon name="plus" size={15} /> 添加供应商
         </button>
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-gray-400">加载中...</div>
+        <div className="py-12 text-center text-sm text-ink-tertiary">加载中...</div>
       ) : (
         <div className="space-y-4">
           {/* New provider form */}
           {showNewForm && (
-            <div className="card p-5 border-blue-300 bg-blue-50/50">
+            <div className="card border-accent/30 bg-accent/[0.06] p-5 shadow-[0_0_0_1px_var(--color-accent)_inset]">
               <h3 className="font-semibold mb-4">新建供应商</h3>
               <ProviderForm
                 form={editForm}
@@ -220,7 +221,7 @@ export default function SettingsPage() {
 
           {/* Existing providers */}
           {providers.map((p) => (
-            <div key={p.id} className={`card p-5 ${editingId === p.id ? 'border-blue-300' : ''}`}>
+            <div key={p.id} className={`card p-5 ${editingId === p.id ? 'border-accent/40' : ''}`}>
               {editingId === p.id ? (
                 <>
                   <h3 className="font-semibold mb-4">编辑: {p.name}</h3>
@@ -246,25 +247,26 @@ export default function SettingsPage() {
                       <div className="flex items-center gap-3 mb-2">
                         <h3 className="font-semibold">{p.name}</h3>
                         <span className={`status-badge ${p.hasApiKey ? 'status-succeeded' : 'status-failed'}`}>
-                          {p.hasApiKey ? '🔑 已配置 Key' : '⚠️ 未配置 Key'}
+                          <Icon name={p.hasApiKey ? 'key' : 'alert'} size={12} />
+                          {p.hasApiKey ? '已配置 Key' : '未配置 Key'}
                         </span>
                         {!p.enabled && (
                           <span className="status-badge status-canceled">已禁用</span>
                         )}
                       </div>
-                      <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm text-gray-600">
+                      <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm text-ink-secondary">
                         <div>
-                          <span className="text-gray-400">Base URL:</span>{' '}
-                          <code className="text-xs bg-gray-100 px-1 rounded">{p.baseUrl}</code>
+                          <span className="text-ink-tertiary">Base URL:</span>{' '}
+                          <code className="rounded bg-surface-subtle px-1 text-xs">{p.baseUrl}</code>
                         </div>
                         <div>
-                          <span className="text-gray-400">模型:</span> {p.model}
+                          <span className="text-ink-tertiary">模型:</span> {p.model}
                         </div>
                         <div>
-                          <span className="text-gray-400">类型:</span> {p.type}
+                          <span className="text-ink-tertiary">类型:</span> {p.type}
                         </div>
                         <div>
-                          <span className="text-gray-400">预估成本:</span>{' '}
+                          <span className="text-ink-tertiary">预估成本:</span>{' '}
                           {p.defaultCostPerImage != null ? `¥${p.defaultCostPerImage}/张` : '未设置'}
                         </div>
                       </div>
@@ -287,9 +289,11 @@ export default function SettingsPage() {
                       <button
                         onClick={() => handleDelete(p.id)}
                         disabled={saving}
-                        className="text-red-400 hover:text-red-600 text-sm px-2"
+                        className="icon-btn text-fail"
+                        title="删除"
+                        aria-label={`删除 ${p.name}`}
                       >
-                        删除
+                        <Icon name="trash" size={15} />
                       </button>
                     </div>
                   </div>
@@ -299,8 +303,8 @@ export default function SettingsPage() {
           ))}
 
           {providers.length === 0 && !showNewForm && (
-            <div className="text-center py-12 text-gray-400">
-              <div className="text-4xl mb-2">⚙️</div>
+            <div className="flex flex-col items-center py-12 text-center text-ink-tertiary">
+              <Icon name="settings" size={34} className="mb-2" />
               <p>暂无供应商配置</p>
               <p className="text-xs mt-1">点击「添加供应商」开始</p>
             </div>
@@ -309,9 +313,11 @@ export default function SettingsPage() {
       )}
 
       {/* Security note */}
-      <div className="mt-8 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
-        <strong>🔒 安全提示：</strong>API Key 仅存储在本地 SQLite 数据库中，不会出现在前端页面和日志里。
+      <div className="mt-8 flex gap-2 rounded-[18px] bg-surface-subtle p-4 text-sm text-ink-secondary">
+        <Icon name="key" size={16} className="mt-0.5 shrink-0 text-ink-tertiary" />
+        <p><strong className="text-ink">安全提示：</strong>API Key 仅存储在本地 SQLite 数据库中，不会出现在前端页面和日志里。
         编辑时 Key 字段始终显示为空，只有输入新值才会更新。
+        </p>
       </div>
     </div>
   );
@@ -387,7 +393,7 @@ function ProviderForm({
           placeholder="留空则不修改；输入新 Key 以更新"
           autoComplete="off"
         />
-        <p className="text-xs text-gray-400 mt-1">
+        <p className="mt-1 text-xs text-ink-tertiary">
           密钥已保存时此处为空，不会回显
         </p>
       </div>
@@ -408,9 +414,9 @@ function ProviderForm({
             type="checkbox"
             checked={form.enabled}
             onChange={(e) => onChange({ ...form, enabled: e.target.checked })}
-            className="w-4 h-4 rounded border-gray-300"
+            className="w-4 h-4 rounded border-hairline accent-accent"
           />
-          <span className="text-sm text-gray-700">启用</span>
+          <span className="text-sm text-ink-secondary">启用</span>
         </label>
       </div>
     </div>

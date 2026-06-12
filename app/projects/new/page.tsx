@@ -147,7 +147,7 @@ export default function NewProjectPage() {
 
   const renderModelParams = () => (
     <div className="card p-4">
-      <h3 className="font-medium text-sm mb-3">模型参数</h3>
+      <h3 className="text-sm font-semibold mb-3 text-ink">模型参数</h3>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <div>
           <label className="label">模型</label>
@@ -181,13 +181,13 @@ export default function NewProjectPage() {
             onChange={(e) => setTimeoutMs(Number(e.target.value) * 1000)} className="input-field" />
         </div>
       </div>
-      <p className="text-xs text-gray-400 mt-2">以上为参考价格，实际以中转站后台扣费为准</p>
+      <p className="text-xs text-ink-tertiary mt-2">以上为参考价格，实际以中转站后台扣费为准</p>
     </div>
   );
 
   const renderPreprocessing = () => (
     <div className="card p-4">
-      <h3 className="font-medium text-sm mb-3">图片预处理</h3>
+      <h3 className="text-sm font-semibold mb-3 text-ink">图片预处理</h3>
       <div className="grid grid-cols-3 gap-4">
         <div>
           <label className="label">启用压缩</label>
@@ -213,28 +213,22 @@ export default function NewProjectPage() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">
+      <h1 className="text-3xl font-semibold tracking-[-0.02em] mb-8">
         {workflowType === 'complex_product' ? '新建复杂结构产品项目' : '新建批量编辑项目'}
       </h1>
 
       {/* Mode toggle */}
-      <div className="mb-6 flex items-center gap-2">
-        <span className="text-xs text-gray-500">工作流：</span>
-        <label className={`text-xs px-3 py-1 rounded-full cursor-pointer transition-colors ${workflowType === 'complex_product' ? 'bg-purple-100 text-purple-700 font-medium' : 'bg-gray-100 text-gray-500'}`}>
-          <input type="radio" name="workflow" value="complex_product" checked={workflowType === 'complex_product'}
-            onChange={() => setWorkflowType('complex_product')} className="sr-only" />
-          复杂结构产品
-        </label>
-        <label className={`text-xs px-3 py-1 rounded-full cursor-pointer transition-colors ${workflowType === 'legacy_batch_edit' ? 'bg-gray-200 text-gray-700 font-medium' : 'bg-gray-100 text-gray-500'}`}>
-          <input type="radio" name="workflow" value="legacy_batch_edit" checked={workflowType === 'legacy_batch_edit'}
-            onChange={() => setWorkflowType('legacy_batch_edit')} className="sr-only" />
-          旧版批量编辑
-        </label>
+      <div className="mb-8 flex items-center gap-3">
+        <span className="text-sm text-ink-secondary">工作流</span>
+        <div className="segmented">
+          <button type="button" aria-selected={workflowType === 'complex_product'} onClick={() => setWorkflowType('complex_product')}>复杂结构产品</button>
+          <button type="button" aria-selected={workflowType === 'legacy_batch_edit'} onClick={() => setWorkflowType('legacy_batch_edit')}>旧版批量编辑</button>
+        </div>
       </div>
 
       {workflowType === 'legacy_batch_edit' ? (
         /* ── Legacy batch edit form ── */
-        <form onSubmit={handleSubmitLegacy} className="space-y-8">
+        <form onSubmit={handleSubmitLegacy} className="space-y-10">
           <div>
             <label className="label">项目名称</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="例如：春季家居图批量处理" />
@@ -268,12 +262,12 @@ export default function NewProjectPage() {
             </div>
           </div>
           {renderPreprocessing()}
-          <div className="card p-4 bg-blue-50 border-blue-200">
+          <div className="tile p-5">
             <h3 className="font-medium text-sm mb-2">成本预估（参考价）</h3>
             <div className="grid grid-cols-3 gap-4 text-sm">
-              <div><div className="text-gray-500">任务数</div><div className="font-bold text-lg">{legacyInputFiles.length * generationCount}</div></div>
-              <div><div className="text-gray-500">单张成本</div><div className="font-bold text-lg">¥{costPerImage.toFixed(3)}</div></div>
-              <div><div className="text-gray-500">预估总成本</div><div className="font-bold text-lg text-blue-700">¥{(legacyInputFiles.length * generationCount * costPerImage).toFixed(2)}</div></div>
+              <div><div className="text-ink-secondary">任务数</div><div className="font-bold text-lg">{legacyInputFiles.length * generationCount}</div></div>
+              <div><div className="text-ink-secondary">单张成本</div><div className="font-bold text-lg">¥{costPerImage.toFixed(3)}</div></div>
+              <div><div className="text-ink-secondary">预估总成本</div><div className="text-lg font-bold text-accent">¥{(legacyInputFiles.length * generationCount * costPerImage).toFixed(2)}</div></div>
             </div>
           </div>
           <div className="flex gap-3 justify-end">
@@ -283,10 +277,10 @@ export default function NewProjectPage() {
         </form>
       ) : (
         /* ── Complex product workflow ── */
-        <form onSubmit={handleSubmitComplex} className="space-y-8">
+        <form onSubmit={handleSubmitComplex} className="space-y-10">
           {/* Project info */}
           <div className="card p-4">
-            <h3 className="font-medium text-sm mb-3">项目信息</h3>
+            <h3 className="text-sm font-semibold mb-3 text-ink">项目信息</h3>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="label">项目名称 *</label>
@@ -305,7 +299,7 @@ export default function NewProjectPage() {
                 <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} className="input-field" placeholder="可选" />
               </div>
             </div>
-            <p className="text-xs text-gray-400 mt-3">
+            <p className="text-xs text-ink-tertiary mt-3">
               创建项目后，可在项目工作台中按需上传素材、生成场景图、分镜图、脚本和视频。
             </p>
           </div>
@@ -318,7 +312,7 @@ export default function NewProjectPage() {
 
           {/* Preprocessing (collapsible) */}
           <details className="card p-4">
-            <summary className="font-medium text-sm cursor-pointer text-gray-500 hover:text-gray-700">图片预处理（高级设置）</summary>
+            <summary className="text-sm font-semibold text-ink cursor-pointer">图片预处理（高级设置）</summary>
             <div className="mt-3">
               {renderPreprocessing()}
             </div>

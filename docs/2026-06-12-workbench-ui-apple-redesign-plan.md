@@ -6,7 +6,7 @@
 
 **Architecture:** 杠杆点是 `app/globals.css` 的设计令牌 + 共享工具类——“类名不变、定义替换”让复用这些类的组件一键换肤；再配合外壳（`layout.tsx` 字体/白底、`Header.tsx` 磨砂导航）与新增的内联 SVG 图标组件，逐屏推进。本计划只详写 **Phase 1（设计系统 + 外壳 + 首页 + Icon）**，Phases 2–4 在 Phase 1 真机验证后各自出详细计划。
 
-**Tech Stack:** Next.js 16 (App Router) · React 19 · Tailwind CSS v4（`@theme` 令牌）· TypeScript · `next/font/google`（Inter / JetBrains Mono）。
+**Tech Stack:** Next.js 16 (App Router) · React 19 · Tailwind CSS v4（`@theme` 令牌）· TypeScript · 系统字体栈（离线安全，不使用 `next/font/google`）。
 
 **Spec:** `docs/2026-06-12-workbench-ui-apple-redesign-design.md` · **可视化稿:** `.superpowers/brainstorm/118-1781252957/content/`（`apple-home.html`、`apple-workbench.html`）
 
@@ -29,7 +29,7 @@
 | 文件 | 动作 | 职责 |
 |---|---|---|
 | `app/globals.css` | 重写 | Apple 设计令牌（`@theme`）+ 重定义共享类（`.card`/`.btn-*`/`.input-field`/`.label`/`.status-*`）+ 新原语（`.pill`/`.segmented`/`.toolbar`/`.data-table`/`.tile`/`.icon-btn`/`.link-accent`） |
-| `app/layout.tsx` | 修改 | 经 `next/font` 注入字体变量；白底；居中 `main` 节奏；去 emoji 标题 |
+| `app/layout.tsx` | 修改 | 使用全局系统字体栈；白底；居中 `main` 节奏；去 emoji 标题 |
 | `components/ui/Icon.tsx` | 新建 | 细线 SVG 图标集（替代 emoji），`<Icon name size />` |
 | `components/Header.tsx` | 重写 | 磨砂 sticky 导航 + 蓝胶囊“新建项目” + 图标“停止服务” + Apple 弹窗 |
 | `app/page.tsx` | 重写 | 首页：hero + 统计块 + 项目图卡 + 首用引导 + 空/加载态 |
@@ -79,8 +79,8 @@
   --radius-tile: 16px;
   --radius-control: 10px;
   /* type */
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-ui), "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", var(--font-jb), "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
 
 /* ===== Base ===== */
@@ -179,7 +179,7 @@ git commit -m "feat(ui): Apple-style design tokens and component utilities"
 
 ---
 
-## Task 2: 字体与外壳（layout.tsx）
+## Task 2: 系统字体与外壳（layout.tsx）
 
 **Files:**
 - Modify (整文件替换): `app/layout.tsx`
@@ -188,12 +188,8 @@ git commit -m "feat(ui): Apple-style design tokens and component utilities"
 
 ```tsx
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
 import Header from "@/components/Header";
 import "./globals.css";
-
-const fontUi = Inter({ subsets: ["latin"], variable: "--font-ui", display: "swap" });
-const fontJb = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jb", display: "swap" });
 
 export const metadata: Metadata = {
   title: "产品素材工作台",
@@ -204,7 +200,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="zh-CN" className={`h-full antialiased ${fontUi.variable} ${fontJb.variable}`}>
+    <html lang="zh-CN" className="h-full antialiased">
       <body className="min-h-full flex flex-col bg-surface text-ink">
         <Header />
         <main className="flex-1 w-full max-w-[980px] mx-auto px-6 py-10">
@@ -219,17 +215,17 @@ export default function RootLayout({
 - [ ] **Step 2: 验证类型与规则**
 
 Run: `npx tsc --noEmit && npm run lint`
-Expected: 通过。（`next/font/google` 内置于 Next，无需安装依赖；首次构建会联网拉取并缓存字体。）
+Expected: 通过。（字体走系统栈，不访问 Google Fonts，也不依赖构建期联网。）
 
 - [ ] **Step 3: 目视**
 
-刷新 `http://127.0.0.1:3000`。预期：正文字体变为 Inter/系统苹方观感、背景纯白、内容居中且留白更足。
+刷新 `http://127.0.0.1:3000`。预期：正文字体走系统 Apple/SF/苹方/微软雅黑栈，背景纯白，内容居中且留白更足。
 
 - [ ] **Step 4: 提交**
 
 ```bash
 git add app/layout.tsx
-git commit -m "feat(ui): self-hosted fonts and Apple-style app shell"
+git commit -m "feat(ui): system font stack and Apple-style app shell"
 ```
 
 ---
@@ -695,6 +691,6 @@ git commit --allow-empty -m "chore(ui): Phase 1 (design system + shell + home) c
 
 - **覆盖：** spec §3 令牌→Task 1；§4 原语→Task 1；§5 外壳→Task 2/4；§3.7 图标→Task 3；§6.1 首页→Task 5；§6.2–6.5→Phases 2–4 路线图。无遗漏。
 - **占位符：** 无 TBD/TODO；每个改码步骤含完整代码。
-- **类型一致：** 全程统一 `Icon`/`IconName`、字体变量 `--font-ui`/`--font-jb`、令牌 `--color-*`/`--radius-*`、状态类名 `status-pending|running|succeeded|failed|retrying|canceled|needs_check`（与 `globals.css` 一致）。
-- **离线约束：** 字体经 `next/font`（构建期拉取、运行期本地），无运行时 CDN。
+- **类型一致：** 全程统一 `Icon`/`IconName`、系统字体栈、令牌 `--color-*`/`--radius-*`、状态类名 `status-pending|running|succeeded|failed|retrying|canceled|needs_check`（与 `globals.css` 一致）。
+- **离线约束：** 字体不经 `next/font/google`，不访问运行时 CDN，也不依赖构建期联网。
 ```
