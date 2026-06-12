@@ -79,7 +79,8 @@ export const klingAdapter: VideoProviderAdapter = {
       image: imageBase64,
       prompt: request.prompt || 'gentle camera movement, stable product detail',
       duration: String(request.durationSec),
-      mode: 'std',
+      mode: 'pro',
+      sound: true,
     };
 
     const controller = new AbortController();

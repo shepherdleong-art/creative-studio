@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { isPlaceholderValue } from '@/lib/video-auth';
+
+function isRealKey(value: string | undefined | null): boolean {
+  const s = (value || '').trim();
+  return !!s && !isPlaceholderValue(s);
+}
 
 export async function GET(
   _request: NextRequest,
@@ -19,7 +25,7 @@ export async function GET(
     const safe = {
       ...provider,
       apiKey: undefined,
-      hasApiKey: !!(provider.apiKey as string),
+      hasApiKey: isRealKey(provider.apiKey as string),
     };
 
     return NextResponse.json(safe);
@@ -87,7 +93,7 @@ export async function PUT(
     const safe = {
       ...updated,
       apiKey: undefined,
-      hasApiKey: !!(updated.apiKey as string),
+      hasApiKey: isRealKey(updated.apiKey as string),
     };
 
     return NextResponse.json(safe);

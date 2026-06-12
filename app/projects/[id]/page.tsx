@@ -391,7 +391,11 @@ export default function ProjectDetailPage() {
             <span>模型: {project.model}</span>
             <span>任务数: {project.jobs.length}</span>
             <span>成功: {succeededJobs.length}</span>
-            <span>失败: {project.jobs.filter((j) => j.status === 'failed').length}</span>
+            <span
+              className="cursor-pointer hover:underline"
+              onClick={() => document.querySelector('[data-section="jobs"]')?.scrollIntoView({ behavior: 'smooth' })}
+              title="点击查看失败任务"
+            >失败: {project.jobs.filter((j) => j.status === 'failed').length}</span>
           </div>
         </div>
 
@@ -436,6 +440,7 @@ export default function ProjectDetailPage() {
 
       {isComplex && <ProjectWorkbenchTabs projectId={project.id} activeTab={activeTab} />}
       {isComplex && project.jobs.length > 0 && (
+        <div data-section="jobs">
         <QueueCompactBar
           jobs={project.jobs}
           queueStatus={queueStatus}
@@ -446,6 +451,7 @@ export default function ProjectDetailPage() {
           onResume={() => handleAction('resume')}
           onCancel={() => handleAction('cancel')}
         />
+        </div>
       )}
 
       <div className="space-y-6">
@@ -884,7 +890,7 @@ function LegacyProjectContent({
   return (
     <>
       {project.jobs.length > 0 && (
-        <div className="card p-4">
+        <div className="card p-4" data-section="jobs">
           <h2 className="mb-4 font-semibold">任务队列</h2>
           <JobQueueTable
             jobs={project.jobs}

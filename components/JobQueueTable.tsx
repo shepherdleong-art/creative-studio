@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+
 interface Job {
   id: string;
   inputFilename: string;
@@ -57,6 +59,9 @@ export default function JobQueueTable({
     pending: jobs.filter((j) => j.status === 'pending').length,
   };
 
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const filteredJobs = statusFilter === 'all' ? jobs : jobs.filter((j) => j.status === statusFilter);
+
   return (
     <div>
       {/* Stats bar */}
@@ -77,6 +82,23 @@ export default function JobQueueTable({
           <span className="text-gray-400">
             等待: <strong>{counts.pending}</strong>
           </span>
+        </div>
+
+        {/* Status filter */}
+        <div className="flex gap-1">
+          {(['all', 'succeeded', 'failed', 'running', 'pending'] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setStatusFilter(s)}
+              className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                statusFilter === s
+                  ? 'bg-gray-700 text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              {s === 'all' ? '全部' : s === 'succeeded' ? '成功' : s === 'failed' ? '失败' : s === 'running' ? '运行中' : '等待'}
+            </button>
+          ))}
         </div>
 
         <div className="ml-auto flex gap-2">
@@ -114,7 +136,14 @@ export default function JobQueueTable({
             </tr>
           </thead>
           <tbody>
-            {jobs.map((job) => (
+            {filteredJobs.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="py-8 text-center text-sm text-gray-400">
+                  {statusFilter === 'all' ? '暂无任务' : `无 "${statusFilter === 'succeeded' ? '成功' : statusFilter === 'failed' ? '失败' : statusFilter === 'running' ? '运行中' : '等待'}" 状态的任务`}
+                </td>
+              </tr>
+            ) : (
+              filteredJobs.map((job) => (
               <tr key={job.id} className="border-b border-gray-100">
                 <td className="py-2 max-w-[200px] truncate" title={job.inputFilename}>
                   {job.inputFilename}
@@ -170,7 +199,7 @@ export default function JobQueueTable({
                   )}
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </div>

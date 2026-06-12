@@ -1,13 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-
-type HoverPreviewState = {
-  src: string;
-  title: string;
-  x: number;
-  y: number;
-} | null;
+import HoverZoomImage from '@/components/HoverZoomImage';
 
 interface Job {
   id: string;
@@ -98,42 +92,13 @@ function InlineUploader({
     </label>
   );
 }
-
-/** ── Hover image preview overlay ── */
-function HoverImagePreview({ preview }: { preview: HoverPreviewState }) {
-  if (!preview) return null;
-
-  const maxWidth = 280;
-  const maxHeight = 220;
-  const gap = 14;
-  const left = Math.min(preview.x + gap, window.innerWidth - maxWidth - 12);
-  const top = Math.min(preview.y + gap, window.innerHeight - maxHeight - 12);
-
-  return (
-    <div
-      className="fixed z-[80] pointer-events-none rounded-lg border border-gray-700 bg-gray-900/95 p-2 shadow-2xl"
-      style={{ left, top, maxWidth }}
-    >
-      <img
-        src={preview.src}
-        alt={preview.title}
-        className="block max-h-[220px] max-w-[280px] rounded object-contain"
-      />
-      <div className="mt-1 max-w-[260px] truncate text-[10px] text-gray-200">
-        {preview.title}
-      </div>
-    </div>
-  );
-}
-
 /** ── Generation context sidebar ── */
 function GenerationContextPanel({
-  job, referenceImages, providerName, onHoverPreview,
+  job, referenceImages, providerName,
 }: {
   job: Job;
   referenceImages: ImageAsset[];
   providerName?: string;
-  onHoverPreview: (state: HoverPreviewState) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -171,16 +136,8 @@ function GenerationContextPanel({
                 rel="noreferrer"
                 title={img.filename}
                 className="block"
-                onMouseEnter={(e) => img.imageUrl && onHoverPreview({ src: img.imageUrl, title: img.filename, x: e.clientX, y: e.clientY })}
-                onMouseMove={(e) => img.imageUrl && onHoverPreview({ src: img.imageUrl, title: img.filename, x: e.clientX, y: e.clientY })}
-                onMouseLeave={() => onHoverPreview(null)}
-                onFocus={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  if (img.imageUrl) onHoverPreview({ src: img.imageUrl, title: img.filename, x: rect.right, y: rect.top });
-                }}
-                onBlur={() => onHoverPreview(null)}
               >
-                <img
+                <HoverZoomImage
                   src={img.imageUrl || ''}
                   alt={img.filename}
                   className="w-full aspect-square object-cover rounded border border-gray-200 hover:border-blue-400 transition-colors"
@@ -224,14 +181,16 @@ function GenerationContextPanel({
 
 export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSetSceneRef, projectId }: Props) {
   const succeededJobs = jobs.filter((j) => j.status === 'succeeded' && j.outputFilename);
+  const failedJobs = jobs.filter((j) => j.status === 'failed');
+  const [statusFilter, setStatusFilter] = useState<'succeeded' | 'failed'>('succeeded');
+  const displayedJobs = statusFilter === 'succeeded' ? succeededJobs : failedJobs;
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenPrompt, setRegenPrompt] = useState('');
   const [regenInputSource, setRegenInputSource] = useState<'original' | 'current_result'>('original');
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
   const [extraUploads, setExtraUploads] = useState<ImageAsset[]>([]);
-  const [hoverPreview, setHoverPreview] = useState<HoverPreviewState>(null);
-  const selectedJob = selectedIndex != null ? succeededJobs[selectedIndex] : null;
+  const selectedJob = selectedIndex != null ? displayedJobs[selectedIndex] : null;
 
   const getImageUrl = (asset: ImageAsset | undefined): string | null => asset?.imageUrl || null;
   const getMark = (job: Job): string | null => job.reviewMark || null;
@@ -240,8 +199,8 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
     setSelectedIndex((i) => (i != null ? Math.max(0, i - 1) : null));
   }, []);
   const goNext = useCallback(() => {
-    setSelectedIndex((i) => (i != null ? Math.min(succeededJobs.length - 1, i + 1) : null));
-  }, [succeededJobs.length]);
+    setSelectedIndex((i) => (i != null ? Math.min(displayedJobs.length - 1, i + 1) : null));
+  }, [displayedJobs.length]);
 
   useEffect(() => {
     if (selectedIndex == null) return;
@@ -384,55 +343,91 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
 
   const hasOutput = selectedJob?.outputImageId && imageById.has(selectedJob.outputImageId);
   const isFirst = selectedIndex === 0;
-  const isLast = selectedIndex === succeededJobs.length - 1;
+  const isLast = selectedIndex === displayedJobs.length - 1;
 
   return (
     <div>
-      {succeededJobs.length === 0 ? (
+      {displayedJobs.length === 0 && (succeededJobs.length === 0 && failedJobs.length === 0) ? (
         <div className="text-center py-12 text-gray-400">
           <div className="text-4xl mb-2">🖼️</div>
-          <p>暂无成功生成的图片</p>
+          <p>暂无生成的图片</p>
         </div>
       ) : (
         <>
-          {/* ── Grid ── */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            {succeededJobs.map((job, idx) => {
-              const mark = getMark(job);
-              return (
-                <div key={job.id} onClick={() => setSelectedIndex(idx)}
-                  className={`card overflow-hidden cursor-pointer group transition-all hover:ring-2 hover:ring-blue-400 ${mark === 'discard' ? 'opacity-40' : ''}`}>
-                  <div className="aspect-square relative bg-gray-100">
-                    <img src={`/api/images/outputs/${job.outputFilename}`} alt={job.inputFilename} className="w-full h-full object-cover" />
-                    {mark && (
-                      <span className={`absolute top-1 left-1 text-xs px-1.5 py-0.5 rounded ${
-                        mark === 'available' ? 'bg-green-500 text-white' : mark === 'rework' ? 'bg-yellow-500 text-white' : 'bg-gray-500 text-white'}`}>
-                        {{ available: '可用', rework: '返工', discard: '废弃' }[mark]}
-                      </span>
-                    )}
-                  </div>
-                  <div className="p-2"><div className="text-xs text-gray-500 truncate">{job.inputFilename}</div></div>
-                </div>
-              );
-            })}
+          {/* ── Status filter toggle ── */}
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              onClick={() => { setStatusFilter('succeeded'); setSelectedIndex(null); }}
+              className={`btn-sm text-xs ${statusFilter === 'succeeded' ? 'btn-primary' : 'btn-secondary'}`}
+            >
+              成功 ({succeededJobs.length})
+            </button>
+            {failedJobs.length > 0 && (
+              <button
+                onClick={() => { setStatusFilter('failed'); setSelectedIndex(null); }}
+                className={`btn-sm text-xs ${statusFilter === 'failed' ? 'btn-primary bg-red-600 hover:bg-red-700' : 'btn-secondary'}`}
+              >
+                失败 ({failedJobs.length})
+              </button>
+            )}
           </div>
+
+          {displayedJobs.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <div className="text-4xl mb-2">{statusFilter === 'failed' ? '✅' : '🖼️'}</div>
+              <p>{statusFilter === 'failed' ? '暂无失败的生成任务' : '暂无成功生成的图片'}</p>
+            </div>
+          ) : (
+            /* ── Grid ── */
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {displayedJobs.map((job, idx) => {
+                const mark = getMark(job);
+                const isFailed = job.status === 'failed';
+                return (
+                  <div key={job.id} onClick={() => setSelectedIndex(idx)}
+                    className={`card overflow-hidden cursor-pointer group transition-all hover:ring-2 ${isFailed ? 'hover:ring-red-400 border-red-200' : 'hover:ring-blue-400'} ${mark === 'discard' ? 'opacity-40' : ''}`}>
+                    <div className="aspect-square relative bg-gray-100">
+                      {isFailed ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-red-50 p-2">
+                          <span className="text-2xl mb-1">❌</span>
+                          <span className="text-[10px] text-red-600 text-center line-clamp-3">{job.errorMessage || '未知错误'}</span>
+                        </div>
+                      ) : (
+                        <img src={`/api/images/outputs/${job.outputFilename}`} alt={job.inputFilename} className="w-full h-full object-cover" />
+                      )}
+                      {mark && (
+                        <span className={`absolute top-1 left-1 text-xs px-1.5 py-0.5 rounded ${
+                          mark === 'available' ? 'bg-green-500 text-white' : mark === 'rework' ? 'bg-yellow-500 text-white' : 'bg-gray-500 text-white'}`}>
+                          {{ available: '可用', rework: '返工', discard: '废弃' }[mark]}
+                        </span>
+                      )}
+                    </div>
+                    <div className="p-2">
+                      <div className="text-xs text-gray-500 truncate">{job.inputFilename}</div>
+                      {isFailed && job.errorMessage && (
+                        <div className="text-[10px] text-red-500 truncate mt-0.5" title={job.errorMessage}>{job.errorMessage}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* ── Modal ── */}
           {selectedJob && selectedIndex != null && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
-              onClick={() => { setSelectedIndex(null); setRegenOpen(false); setHoverPreview(null); }}>
+              onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}>
               <div className="bg-white rounded-xl max-w-[68rem] w-full max-h-[90vh] overflow-hidden flex flex-col"
                 onClick={(e) => e.stopPropagation()}>
-
-                <HoverImagePreview preview={hoverPreview} />
 
                 {/* Header */}
                 <div className="p-4 border-b flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-3">
                     <h3 className="font-medium text-sm truncate max-w-[300px]">{selectedJob.inputFilename}</h3>
-                    <span className="text-xs text-gray-400">{selectedIndex + 1} / {succeededJobs.length}</span>
+                    <span className="text-xs text-gray-400">{selectedIndex + 1} / {displayedJobs.length}</span>
                   </div>
-                  <button onClick={() => { setSelectedIndex(null); setRegenOpen(false); setHoverPreview(null); }}
+                  <button onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}
                     className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
                 </div>
 
@@ -506,9 +501,6 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                                 return (
                                   <div key={candidate.id}
                                     onClick={() => toggleReference(candidate.id)}
-                                    onMouseEnter={(e) => candidate.imageUrl && setHoverPreview({ src: candidate.imageUrl, title: candidate.label, x: e.clientX, y: e.clientY })}
-                                    onMouseMove={(e) => candidate.imageUrl && setHoverPreview({ src: candidate.imageUrl, title: candidate.label, x: e.clientX, y: e.clientY })}
-                                    onMouseLeave={() => setHoverPreview(null)}
                                     className={`relative rounded-lg border-2 overflow-hidden transition-all ${
                                       isBase
                                         ? 'border-purple-300 bg-purple-50 cursor-default'
@@ -517,7 +509,11 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                                         : 'border-gray-200 hover:border-gray-300 cursor-pointer'
                                     }`}>
                                     <div className="aspect-square bg-gray-100">
-                                      <img src={candidate.imageUrl} alt={candidate.label} className={`w-full h-full object-cover ${isBase ? 'opacity-60' : ''}`} />
+                                      <HoverZoomImage
+                                        src={candidate.imageUrl}
+                                        alt={candidate.label}
+                                        className={`w-full h-full object-cover ${isBase ? 'opacity-60' : ''}`}
+                                      />
                                     </div>
                                     <div className="p-1">
                                       <div className="text-[9px] text-gray-500 truncate">{candidate.label}</div>
@@ -560,13 +556,22 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                       </div>
                       <div>
                         <div className="text-xs text-gray-500 mb-1">结果</div>
-                        <img src={`/api/images/outputs/${selectedJob.outputFilename}`} alt="结果" className="w-full rounded-lg border" />
+                        {selectedJob.outputFilename ? (
+                          <img src={`/api/images/outputs/${selectedJob.outputFilename}`} alt="结果" className="w-full rounded-lg border" />
+                        ) : selectedJob.status === 'failed' ? (
+                          <div className="w-full aspect-square rounded-lg border border-red-200 bg-red-50 flex flex-col items-center justify-center p-4">
+                            <span className="text-2xl mb-1">❌</span>
+                            <span className="text-xs text-red-600 text-center">{selectedJob.errorMessage || '生成失败'}</span>
+                          </div>
+                        ) : (
+                          <div className="text-gray-400 text-sm">结果不可用</div>
+                        )}
                       </div>
                     </div>
                   </div>
 
                   {/* Generation context sidebar */}
-                  <GenerationContextPanel job={selectedJob} referenceImages={usedReferenceImages} onHoverPreview={setHoverPreview} />
+                  <GenerationContextPanel job={selectedJob} referenceImages={usedReferenceImages} />
                 </div>
 
                 {/* Arrow overlays */}
@@ -595,7 +600,9 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                     <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)}
                       className="btn-secondary btn-sm text-blue-700">🎬 设为场景参考图</button>
                   )}
-                  <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm ml-auto">下载</a>
+                  {selectedJob.outputFilename && (
+                    <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm ml-auto">下载</a>
+                  )}
                 </div>
               </div>
             </div>

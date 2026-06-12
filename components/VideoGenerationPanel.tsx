@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import HoverZoomImage from '@/components/HoverZoomImage';
 
 interface VideoProvider {
   id: string;
@@ -63,7 +64,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   // Per-shot form state (one active shot at a time)
   const [selectedShot, setSelectedShot] = useState<string | null>(null);
   const [motionRows, setMotionRows] = useState<Array<{ key: string; prompt: string; templateId: string; providerId: string; durationSec: number }>>([]);
+  const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
   const [creating, setCreating] = useState(false);
+  const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
 
   const defaultProviderId = providers.length > 0 ? providers[0].id : '';
   const defaultDuration = 5;
@@ -143,11 +146,17 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     } catch { /* ignore */ }
   };
 
-  // Switch the active shot, resetting its 运镜 rows
+  // Switch the active shot, preserving per-shot 运镜 rows
   const activate = (shotId: string) => {
     if (selectedShot !== shotId) {
+      // Save current rows before switching away
+      if (selectedShot) {
+        perShotMotionCache.current.set(selectedShot, motionRows);
+      }
       setSelectedShot(shotId);
-      setMotionRows([makeEmptyRow()]);
+      // Restore cached rows or start fresh
+      const cached = perShotMotionCache.current.get(shotId);
+      setMotionRows(cached ? [...cached] : [makeEmptyRow()]);
     }
   };
 
@@ -191,6 +200,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       const data = await res.json();
       if (res.ok) {
         await refreshJobs();
+        perShotMotionCache.current.delete(shotId);
         setMotionRows([makeEmptyRow()]);
       } else {
         alert('创建视频任务失败: ' + (data.error || '未知错误'));
@@ -203,13 +213,25 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   const handleRetry = async (jobId: string) => {
-    await fetch(`/api/video-jobs/${jobId}/retry`, { method: 'POST' });
-    await refreshJobs();
+    try {
+      const res = await fetch(`/api/video-jobs/${jobId}/retry`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('重试失败: ' + (data.error || `HTTP ${res.status}`)); return; }
+      await refreshJobs();
+    } catch (err) {
+      alert('重试失败: ' + String(err));
+    }
   };
 
   const handleResumePoll = async (jobId: string) => {
-    await fetch(`/api/video-jobs/${jobId}/resume-poll`, { method: 'POST' });
-    await refreshJobs();
+    try {
+      const res = await fetch(`/api/video-jobs/${jobId}/resume-poll`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('补抓失败: ' + (data.error || `HTTP ${res.status}`)); return; }
+      await refreshJobs();
+    } catch (err) {
+      alert('补抓失败: ' + String(err));
+    }
   };
 
   if (loading) return <p className="text-xs text-gray-400">加载视频功能...</p>;
@@ -242,7 +264,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             <div className="flex items-center gap-3 mb-2">
               <span className="text-xs font-medium text-gray-500">分镜 {shot.indexNum}</span>
               {shot.imageUrl && (
-                <img src={shot.imageUrl} alt={`Shot ${shot.indexNum}`} className="w-10 h-10 object-cover rounded border" />
+                <HoverZoomImage
+                  src={shot.imageUrl}
+                  alt={`Shot ${shot.indexNum}`}
+                  className="w-10 h-10 object-cover rounded border cursor-pointer hover:border-purple-300 transition-colors"
+                />
               )}
             </div>
 
@@ -321,11 +347,27 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     <span className={`status-badge status-${job.status === 'succeeded' ? 'succeeded' : job.status === 'failed' ? 'failed' : job.status === 'running' ? 'running' : 'pending'}`}>
                       {job.status === 'succeeded' ? '✅' : job.status === 'failed' ? '❌' : job.status === 'running' ? '⏳' : job.status === 'pending' ? '📋' : '⚠️'}
                     </span>
-                    <span className="min-w-[10rem] flex-1 truncate text-gray-600">
-                      {job.providerName || '-'} / {job.templateName || '自定义'} / {job.durationSec}s
-                    </span>
+                    <div className="min-w-0 flex-1 truncate">
+                      <div className="text-gray-600">
+                        {job.providerName || '-'} / {job.templateName || '自定义'} / {job.durationSec}s
+                      </div>
+                      {job.prompt && (
+                        <div className="text-[10px] text-gray-400 truncate" title={job.prompt}>
+                          {job.prompt}
+                        </div>
+                      )}
+                    </div>
                     {job.status === 'succeeded' && job.filename && (
-                      <a href={`/api/videos/videos/${encodeURIComponent(job.filename)}`} download className="text-blue-600 hover:underline">下载</a>
+                      <>
+                        <a href={`/api/videos/videos/${encodeURIComponent(job.filename)}`} download className="text-blue-600 hover:underline">下载</a>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); setVideoPreviewJobId(videoPreviewJobId === job.id ? null : job.id); }}
+                          className="text-[10px] text-purple-600 hover:text-purple-800 cursor-pointer ml-1"
+                        >
+                          {videoPreviewJobId === job.id ? '收起' : '预览'}
+                        </button>
+                      </>
                     )}
                     {job.status === 'needs_check' && (
                       <button onClick={() => handleResumePoll(job.id)} className="text-purple-600 hover:underline">补抓结果</button>
@@ -334,10 +376,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       <button onClick={() => handleRetry(job.id)} className="text-blue-600 hover:underline">重试</button>
                     )}
                     {job.errorMessage && (
-                      <span className="text-red-400 truncate max-w-[120px]" title={job.errorMessage}>{job.errorMessage}</span>
+                      <span className="text-red-400 text-[10px] break-words">{job.errorMessage}</span>
                     )}
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Video preview — rendered outside the row so the element is in the DOM when shown */}
+            {videoPreviewJobId && shotVideos.find((j) => j.id === videoPreviewJobId)?.filename && (
+              <div className="mt-2">
+                <video
+                  controls
+                  className="max-w-[400px] max-h-[300px] rounded border"
+                  src={`/api/videos/videos/${encodeURIComponent(shotVideos.find((j) => j.id === videoPreviewJobId)!.filename!)}`}
+                />
               </div>
             )}
           </div>

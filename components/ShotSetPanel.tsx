@@ -60,6 +60,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   const [loadingShots, setLoadingShots] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [redoPrompt, setRedoPrompt] = useState('');
+  const [redoPromptEdited, setRedoPromptEdited] = useState(false);
   const [redoing, setRedoing] = useState(false);
   const [sceneRefInfo, setSceneRefInfo] = useState<{ name: string; imageUrl: string } | null>(null);
   const expandedIdRef = useRef<string | null>(null);
@@ -139,6 +140,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   const openPreview = (idx: number) => {
     setPreviewIndex(idx);
     setRedoPrompt(shots[idx]?.jobPrompt || '');
+    setRedoPromptEdited(false);
     setRedoing(false);
   };
   const closePreview = () => { setPreviewIndex(null); setRedoing(false); };
@@ -149,12 +151,13 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     });
   };
 
-  // Sync redoPrompt whenever previewIndex changes
+  // Sync redoPrompt on shot change, but never overwrite user edits
   useEffect(() => {
     if (previewIndex === null) return;
+    if (redoPromptEdited) return;
     const t = setTimeout(() => setRedoPrompt(shots[previewIndex]?.jobPrompt || ''), 0);
     return () => clearTimeout(t);
-  }, [previewIndex, shots]);
+  }, [previewIndex, shots, redoPromptEdited]);
 
   // Keyboard navigation while preview is open
   useEffect(() => {
@@ -173,14 +176,15 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     return () => window.removeEventListener('keydown', onKey);
   }, [previewIndex, shots]);
 
-  // Poll shots while any is generating or while the preview is open
+  // Poll shots while any job is generating (no need to poll when all are done,
+  // even if the preview modal is open — the prompt won't be overwritten).
   useEffect(() => {
     if (!expandedId) return;
     const anyActive = shots.some((s) => s.jobStatus === 'pending' || s.jobStatus === 'running');
-    if (!anyActive && previewIndex === null) return;
+    if (!anyActive) return;
     const t = setInterval(() => { loadShots(expandedId, true); }, 2000);
     return () => clearInterval(t);
-  }, [expandedId, shots, previewIndex, loadShots]);
+  }, [expandedId, shots, loadShots]);
 
   const handleRedo = async () => {
     if (previewIndex === null) return;
@@ -401,7 +405,7 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
                 {/* Redo area */}
                 <div className="mt-4 border-t pt-3">
                   <label className="text-xs text-gray-500">重做提示词</label>
-                  <textarea value={redoPrompt} onChange={(e) => setRedoPrompt(e.target.value)} rows={4} className="input-field mt-1 font-mono text-xs" placeholder="编辑提示词后点重新生成" />
+                  <textarea value={redoPrompt} onChange={(e) => { setRedoPrompt(e.target.value); setRedoPromptEdited(true); }} rows={4} className="input-field mt-1 font-mono text-xs" placeholder="编辑提示词后点重新生成" />
                   <div className="mt-2 flex items-center gap-2">
                     <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-primary btn-sm text-xs">{redoing ? '提交中…' : '重新生成'}</button>
                     {!canRedo && <span className="text-[11px] text-gray-400">{shot.latestJobId ? '任务生成中，完成后可重做' : '该分镜尚未生成，无法重做'}</span>}

@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { seedProviders } from '@/lib/seed';
+import { isPlaceholderValue } from '@/lib/video-auth';
 import { v4 as uuidv4 } from 'uuid';
+
+function isRealKey(value: string | undefined | null): boolean {
+  const s = (value || '').trim();
+  return !!s && !isPlaceholderValue(s);
+}
 
 export async function GET() {
   try {
@@ -14,7 +20,7 @@ export async function GET() {
       ...p,
       apiKeyEnv: undefined,
       apiKey: undefined,
-      hasApiKey: !!(p.apiKey as string) || !!process.env[p.apiKeyEnv as string],
+      hasApiKey: isRealKey(p.apiKey as string) || isRealKey(process.env[p.apiKeyEnv as string]),
     }));
 
     return NextResponse.json(safe);
@@ -47,7 +53,7 @@ export async function POST(request: Request) {
       ...provider,
       apiKeyEnv: undefined,
       apiKey: undefined,
-      hasApiKey: !!(provider.apiKey as string),
+      hasApiKey: isRealKey(provider.apiKey as string),
     };
 
     return NextResponse.json(safe);

@@ -219,7 +219,11 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
                   </td>
                   {!jobId && (
                     <td className="py-1 px-2 text-gray-500 w-1 whitespace-nowrap">
-                      {!log.jobId ? '📋' : log.jobId.slice(0, 6)}
+                      {!log.jobId ? '📋' : (
+                        <span title={`任务 ID: ${log.jobId} (点击复制)`} className="cursor-pointer hover:text-blue-300" onClick={() => { navigator.clipboard.writeText(log.jobId!).catch(() => {}); }}>
+                          {log.jobId.slice(0, 6)}
+                        </span>
+                      )}
                     </td>
                   )}
                   <td className="py-1 px-2 break-words whitespace-pre-wrap">

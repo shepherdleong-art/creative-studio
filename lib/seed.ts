@@ -1,5 +1,11 @@
 import { getDb } from '@/lib/db';
+import { isPlaceholderValue } from '@/lib/video-auth';
 import { v4 as uuidv4 } from 'uuid';
+
+function realOrEmpty(raw: string | undefined): string {
+  const s = (raw || '').trim();
+  return s && !isPlaceholderValue(s) ? s : '';
+}
 
 export function seedProviders() {
   const db = getDb();
@@ -13,7 +19,7 @@ export function seedProviders() {
       name: 'GeekAI',
       baseUrl: process.env.GEEKAI_BASE_URL || 'https://geekai.co/api',
       apiKeyEnv: 'GEEKAI_API_KEY',
-      apiKey: process.env.GEEKAI_API_KEY || '',
+      apiKey: realOrEmpty(process.env.GEEKAI_API_KEY),
       model: 'gpt-image-2',
       type: 'geekai-json',
       enabled: 1,
@@ -24,7 +30,7 @@ export function seedProviders() {
       name: 'Packy GPT-Image-2',
       baseUrl: process.env.PACKY_BASE_URL || 'https://www.packyapi.com',
       apiKeyEnv: 'PACKY_API_KEY',
-      apiKey: process.env.PACKY_API_KEY || '',
+      apiKey: realOrEmpty(process.env.PACKY_API_KEY),
       model: 'gpt-image-2',
       type: 'packy-images',
       enabled: 0,
@@ -35,7 +41,7 @@ export function seedProviders() {
       name: '公司现有 API',
       baseUrl: process.env.COMPANY_BASE_URL || 'https://company-gateway.example.com',
       apiKeyEnv: 'COMPANY_API_KEY',
-      apiKey: process.env.COMPANY_API_KEY || '',
+      apiKey: realOrEmpty(process.env.COMPANY_API_KEY),
       model: 'gpt-image-2',
       type: 'openai-compatible',
       enabled: 0,
@@ -50,6 +56,22 @@ export function seedProviders() {
 
   for (const p of providers) {
     insert.run(p.id, p.name, p.baseUrl, p.apiKeyEnv, p.apiKey, p.model, p.type, p.enabled, p.defaultCostPerImage);
+  }
+
+  // Clean up any placeholder apiKey values that may have been persisted before
+  // isPlaceholderValue filtering was added to the seed (self-healing migration).
+  cleanPlaceholderKeys(db);
+}
+
+function cleanPlaceholderKeys(db: ReturnType<typeof getDb>) {
+  const rows = db.prepare(
+    `SELECT id, apiKey FROM providers WHERE apiKey IS NOT NULL AND apiKey != ''`
+  ).all() as Array<{ id: string; apiKey: string }>;
+
+  for (const row of rows) {
+    if (isPlaceholderValue(row.apiKey)) {
+      db.prepare(`UPDATE providers SET apiKey = '' WHERE id = ?`).run(row.id);
+    }
   }
 }
 

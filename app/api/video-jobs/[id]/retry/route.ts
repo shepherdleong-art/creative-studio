@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY } from '@/lib/video-queue';
 
 export async function POST(
   _request: NextRequest,
@@ -18,6 +19,19 @@ export async function POST(
     }
 
     db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL WHERE id = ?`).run(id);
+
+    // Auto-start video queue if idle so the retried job gets picked up
+    const qStatus = getVideoQueueStatus(job.projectId);
+    if (qStatus === 'idle') {
+      runVideoQueue({
+        projectId: job.projectId,
+        concurrency: DEFAULT_VIDEO_CONCURRENCY,
+        timeoutMs: 600000,
+      }).catch((err) => {
+        console.error(`[VideoQueue] Auto-restart on retry failed:`, err);
+      });
+    }
+
     return NextResponse.json({ success: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
