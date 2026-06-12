@@ -33,8 +33,8 @@
   --radius-tile: 16px;
   --radius-control: 10px;
   /* type */
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-ui), "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", var(--font-jb), "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
 
 /* ===== Base ===== */
