@@ -46,3 +46,6 @@ next-env.d.ts
 /data/
 /storage/
 !/storage/.gitkeep
+
+# brainstorming visual-companion workspace (generated mockups, not source)
+/.superpowers/
