@@ -45,15 +45,21 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
       if (Array.isArray(data)) setLogs(data);
     } catch (err) {
       console.error('加载日志失败:', err);
-    } finally {
-      setLoading(false);
     }
   }, [projectId, jobId]);
 
-  // Initial load
+  // Initial load. `loading` starts true (useState); we clear it here inside a
+  // nested async fn (same pattern as the other panels) so loadLogs() never
+  // setStates synchronously from the effect body (react-hooks/set-state-in-effect).
   useEffect(() => {
-    setLoading(true);
-    loadLogs();
+    let active = true;
+    (async () => {
+      await loadLogs();
+      if (active) setLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
   }, [loadLogs]);
 
   // Auto-refresh
