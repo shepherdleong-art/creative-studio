@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
+import VideoGenerationPreview from '@/components/VideoGenerationPreview';
+import VideoGenerationResults from '@/components/VideoGenerationResults';
 import { Icon } from '@/components/ui/Icon';
 
 interface VideoProvider {
@@ -35,6 +37,7 @@ interface VideoJob {
   errorMessage?: string;
   providerName?: string;
   templateName?: string;
+  posterImageUrl?: string;
 }
 
 interface Props {
@@ -48,15 +51,6 @@ interface Props {
     imageUrl?: string;
   }>;
 }
-
-const VIDEO_STATUS_LABELS: Record<string, string> = {
-  succeeded: '完成',
-  failed: '失败',
-  running: '运行中',
-  pending: '等待',
-  needs_check: '待补抓',
-  canceled: '已取消',
-};
 
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
@@ -77,6 +71,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
   const [creating, setCreating] = useState(false);
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
+  const previewSuppressedRef = useRef(false);
 
   const defaultProviderId = providers.length > 0 ? providers[0].id : '';
   const defaultDuration = 5;
@@ -104,6 +99,20 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return () => { active = false; };
   }, []);
 
+  // Backfill empty providerId in motion rows once providers arrive.  This
+  // handles the race where loadShotsForSet auto-selects a shot and creates
+  // a row with defaultProviderId = '' before /api/providers/video resolves.
+  useEffect(() => {
+    if (providers.length === 0) return;
+    const firstId = providers[0].id;
+    setMotionRows((rows) => {
+      if (rows.some((r) => !r.providerId)) {
+        return rows.map((r) => (r.providerId ? r : { ...r, providerId: firstId }));
+      }
+      return rows;
+    });
+  }, [providers]);
+
   // Load shot sets for selector
   useEffect(() => {
     if (shotSetId) return; // Already have a specific set
@@ -120,21 +129,40 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   }, [projectId, shotSetId]);
 
   // Load shots when set is selected (with race guard)
+  const getDefaultPreviewJobId = (jobs: VideoJob[]) =>
+    jobs.find((j) => j.status === 'succeeded' && j.filename)?.id || null;
+
+  const syncPreviewSelection = (jobs: VideoJob[]) => {
+    setVideoPreviewJobId((current) => {
+      if (current && jobs.some((j) => j.id === current && j.status === 'succeeded' && j.filename)) return current;
+      if (previewSuppressedRef.current) return null;
+      return getDefaultPreviewJobId(jobs);
+    });
+  };
+
   const loadShotsForSet = async (setId: string) => {
     try {
       const res = await fetch(`/api/shot-sets/${setId}`);
       const data = await res.json();
       if (data.shots && selectedSetIdRef.current === setId) {
-        setSelectedSetShots(data.shots.map((s: { id: string; indexNum: number; sourceImageId: string; latestGeneratedImageId?: string; sourceImageUrl?: string; generatedImageUrl?: string }) => ({
+        const loadedShots = data.shots.map((s: { id: string; indexNum: number; sourceImageId: string; latestGeneratedImageId?: string; sourceImageUrl?: string; generatedImageUrl?: string }) => ({
           id: s.id, indexNum: s.indexNum, sourceImageId: s.sourceImageId,
           latestGeneratedImageId: s.latestGeneratedImageId,
           imageUrl: s.generatedImageUrl || s.sourceImageUrl || '',
-        })));
+        }));
+        setSelectedSetShots(loadedShots);
+        if (loadedShots.length > 0) {
+          setSelectedShot(loadedShots[0].id);
+          setMotionRows([makeEmptyRow()]);
+        }
       }
       // Load video jobs
       const jobRes = await fetch(`/api/shot-sets/${setId}/video-jobs`);
       const jobData = await jobRes.json().catch(() => ({ jobs: [] }));
-      if (jobData.jobs && selectedSetIdRef.current === setId) setVideoJobs(jobData.jobs);
+      if (jobData.jobs && selectedSetIdRef.current === setId) {
+        setVideoJobs(jobData.jobs);
+        syncPreviewSelection(jobData.jobs);
+      }
     } catch { /* ignore */ }
   };
 
@@ -143,6 +171,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     selectedSetIdRef.current = setId;
     setSelectedShot(null);
     setMotionRows([]);
+    previewSuppressedRef.current = false;
+    setVideoPreviewJobId(null);
     // Clear per-shot motion cache — switching sets resets all motion form state
     perShotMotionCache.current.clear();
     setSelectedSetShots(undefined);
@@ -172,17 +202,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const effectiveShots = shots || selectedSetShots;
   const safeShots = effectiveShots || [];
 
-  // Index video jobs by shotId for O(1) lookup (avoid O(N*M) per render)
-  const videoJobsByShot = useMemo(() => {
-    const map = new Map<string, VideoJob[]>();
-    for (const j of videoJobs) {
-      const arr = map.get(j.shotId);
-      if (arr) arr.push(j);
-      else map.set(j.shotId, [j]);
-    }
-    return map;
-  }, [videoJobs]);
-
   const ensureVideoQueueRunning = async (projectIdToUse: string) => {
     try {
       await fetch(`/api/projects/${projectIdToUse}/video-run`, { method: 'POST' });
@@ -196,6 +215,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       const data = await res.json().catch(() => ({ jobs: [] }));
       if (data.jobs) {
         setVideoJobs(data.jobs);
+        syncPreviewSelection(data.jobs);
         // Auto-start video queue when pending jobs are detected
         if (data.jobs.some((j: { status: string }) => j.status === 'pending')) {
           ensureVideoQueueRunning(projectId);
@@ -268,7 +288,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         durationSec: r.durationSec,
       }))
       .filter((r) => r.prompt.length > 0);
-    if (items.some((r) => !r.providerId)) { alert('每行都需要选择供应商'); return; }
     if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
     setCreating(true);
     try {
@@ -336,156 +355,170 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     );
   }
 
+  const selectedShotData = safeShots.find((s) => s.id === selectedShot);
+  const previewVideoUrl = (() => {
+    if (!videoPreviewJobId) return null;
+    const job = videoJobs.find((j) => j.id === videoPreviewJobId);
+    if (!job?.filename) return null;
+    return `/api/videos/videos/${encodeURIComponent(job.filename)}`;
+  })();
+  const previewPosterUrl = videoPreviewJobId
+    ? videoJobs.find((j) => j.id === videoPreviewJobId)?.posterImageUrl || null
+    : null;
+
   return (
-    <div className="mt-3 min-w-0 max-w-full rounded-lg bg-surface-subtle p-3">
-      <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-ink"><Icon name="video" size={15} /> 视频生成</h4>
+    <div className="mt-3 min-w-0 max-w-full">
       {shotSetSelector}
 
-      {/* Per-shot panels */}
-      {safeShots.map((shot) => {
-        const shotVideos = videoJobsByShot.get(shot.id) || [];
-        return (
-          <div key={shot.id} className="mb-4 min-w-0 max-w-full rounded-[18px] border border-hairline bg-white p-4">
-            <div className="mb-3 flex flex-wrap items-start gap-4">
-              <span className="mt-2 min-w-16 text-xs font-medium text-ink-secondary">分镜 {shot.indexNum}</span>
-              {shot.imageUrl && (
-                <HoverZoomImage
-                  src={shot.imageUrl}
-                  alt={`Shot ${shot.indexNum}`}
-                  className="h-36 w-56 max-w-full cursor-pointer rounded-[18px] border border-hairline bg-surface-subtle object-cover shadow-sm transition-colors hover:border-accent/40"
-                  zoomMaxWidth={520}
-                  zoomMaxHeight={390}
-                />
-              )}
+      <div className="video-workspace">
+        {/* ═══ LEFT: Shot selector + params ═══ */}
+        <div className="panel-col">
+          {/* Shot tabs */}
+          {safeShots.length > 0 && (
+            <div className="shot-tab-row">
+              {safeShots.map((shot) => (
+                <button
+                  key={shot.id}
+                  type="button"
+                  onClick={() => activate(shot.id)}
+                  className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
+                >
+                  分镜 {shot.indexNum}
+                </button>
+              ))}
             </div>
+          )}
 
-            {/* Create video form — each row is one horizontal "描述" line */}
-            {selectedShot === shot.id ? (
-              <div className="mb-2 min-w-0 max-w-full space-y-2">
+          {/* Source image preview */}
+          {selectedShotData?.imageUrl ? (
+            <HoverZoomImage
+              src={selectedShotData.imageUrl}
+              alt={`分镜 ${selectedShotData.indexNum}`}
+              className="w-full aspect-[4/3] cursor-pointer rounded-lg border border-hairline object-cover bg-surface-subtle transition-colors hover:border-accent/40"
+              zoomMaxWidth={520}
+              zoomMaxHeight={390}
+            />
+          ) : selectedShotData ? (
+            <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
+              源图不可用
+            </div>
+          ) : safeShots.length > 0 ? (
+            <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
+              请选择一个分镜
+            </div>
+          ) : null}
+
+          {/* Motion form */}
+          {selectedShot && (
+            <>
+              <div className="space-y-3">
                 {motionRows.map((row, idx) => (
-                  <div key={row.key} className="grid min-w-0 max-w-full grid-cols-[auto_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_minmax(16rem,3fr)_2.5rem] items-start gap-2 rounded border border-hairline bg-surface-subtle px-2 py-1.5 max-xl:grid-cols-[auto_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_2.5rem] max-xl:[&_.motion-prompt]:col-span-full max-sm:grid-cols-1">
-                    <span className="shrink-0 whitespace-nowrap text-[10px] text-ink-tertiary">描述 {idx + 1}</span>
+                  <div key={row.key} className="video-motion-card">
+                    <span className="video-motion-label">描述 {idx + 1}</span>
+
                     <select
                       value={row.providerId}
                       onChange={(e) => updateRowProvider(idx, e.target.value)}
-                      className="input-field !w-full text-xs h-9"
+                      className="input-field video-control"
                     >
-                      <option value="">供应商</option>
-                      {providers.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
+                      {providers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
                     </select>
-                    <select
-                      value={row.templateId}
-                      onChange={(e) => updateRowTemplate(idx, e.target.value)}
-                      className="input-field !w-full text-xs h-9"
-                    >
-                      <option value="">模板（可选）</option>
-                      {templates.map((t) => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                    </select>
-                    <input
-                      type="number"
-                      min={2}
-                      max={15}
-                      value={row.durationSec}
-                      onChange={(e) => updateRowDuration(idx, Number(e.target.value))}
-                      className="input-field !w-full text-center text-xs h-9"
-                      title="秒数"
-                    />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={row.templateId}
+                        onChange={(e) => updateRowTemplate(idx, e.target.value)}
+                        className="input-field video-control"
+                      >
+                        <option value="">模板（可选）</option>
+                        {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                      </select>
+                      <input
+                        type="number" min={2} max={15}
+                        value={row.durationSec}
+                        onChange={(e) => updateRowDuration(idx, Number(e.target.value))}
+                        className="input-field video-control text-center"
+                        title="秒数"
+                      />
+                    </div>
+
                     <textarea
                       value={row.prompt}
                       onChange={(e) => updateRowPrompt(idx, e.target.value)}
                       rows={3}
-                      className="motion-prompt input-field min-h-[4.75rem] min-w-0 !w-full resize-y text-xs font-mono leading-relaxed"
+                      className="input-field video-prompt-field"
                       placeholder="运镜描述（提示词）"
                     />
+
                     <button
                       onClick={() => removeMotionRow(idx)}
                       disabled={motionRows.length <= 1}
-                      className="icon-btn h-8 w-8 shrink-0 justify-self-end rounded-full border border-hairline bg-white text-ink-secondary hover:border-fail/30 hover:bg-fail-tint hover:text-fail disabled:cursor-not-allowed disabled:bg-transparent disabled:text-ink-tertiary disabled:opacity-35 max-sm:justify-self-start"
+                      className="video-motion-delete"
                       title="删除该描述"
-                    ><Icon name="trash" size={14} /></button>
-                  </div>
-                ))}
-                <div className="flex flex-wrap items-center gap-2">
-                  <button onClick={addMotionRow} className="btn-secondary btn-sm text-xs"><Icon name="plus" size={13} /> 描述</button>
-                  <button
-                    onClick={() => handleCreateVideos(shot.id)}
-                    disabled={creating || motionRows.every((r) => !r.prompt.trim())}
-                    className="btn-primary btn-sm text-xs"
-                  >
-                    {creating
-                      ? '创建中...'
-                      : `并发生成 ${motionRows.filter((r) => r.prompt.trim()).length} 条视频`}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button onClick={() => activate(shot.id)} className="btn-secondary btn-sm text-xs mb-2"><Icon name="plus" size={13} /> 描述</button>
-            )}
-
-            {/* Existing video jobs for this shot */}
-            {shotVideos.length > 0 && (
-              <div className="space-y-1 mt-1">
-                {shotVideos.map((job) => (
-                  <div key={job.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded bg-surface-subtle p-1.5 text-xs">
-                    <span className={`status-badge status-${job.status === 'succeeded' ? 'succeeded' : job.status === 'failed' ? 'failed' : job.status === 'running' ? 'running' : 'pending'}`}>
-                      {VIDEO_STATUS_LABELS[job.status] || job.status}
-                    </span>
-                    <div className="min-w-0 flex-1 truncate">
-                      <div className="text-ink-secondary">
-                        {job.providerName || '-'} / {job.templateName || '自定义'} / {job.durationSec}s
-                      </div>
-                      {job.prompt && (
-                        <div className="truncate text-[10px] text-ink-tertiary" title={job.prompt}>
-                          {job.prompt}
-                        </div>
-                      )}
-                    </div>
-                    {job.status === 'succeeded' && job.filename && (
-                      <>
-                        <a href={`/api/videos/videos/${encodeURIComponent(job.filename)}`} download className="link-accent inline-flex items-center gap-1 text-xs"><Icon name="download" size={12} /> 下载</a>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.preventDefault(); setVideoPreviewJobId(videoPreviewJobId === job.id ? null : job.id); }}
-                          className="link-accent inline-flex items-center gap-1 text-xs"
-                        >
-                          {videoPreviewJobId === job.id ? '收起' : '预览'}
-                        </button>
-                      </>
-                    )}
-                    {job.status === 'needs_check' && (
-                      <button onClick={() => handleResumePoll(job.id)} className="link-accent text-xs">补抓结果</button>
-                    )}
-                    {(job.status === 'failed' || job.status === 'canceled') && (
-                      <button onClick={() => handleRetry(job.id)} className="link-accent text-xs">重试</button>
-                    )}
-                    {job.errorMessage && (
-                      <span className="break-words text-[10px] text-fail">{job.errorMessage}</span>
-                    )}
+                    ><Icon name="trash" size={12} /></button>
                   </div>
                 ))}
               </div>
-            )}
 
-            {/* Video preview — rendered outside the row so the element is in the DOM when shown */}
-            {videoPreviewJobId && shotVideos.find((j) => j.id === videoPreviewJobId)?.filename && (
-              <div className="mt-2">
-                <video
-                  controls
-                  className="max-w-[400px] max-h-[300px] rounded border"
-                  src={`/api/videos/videos/${encodeURIComponent(shotVideos.find((j) => j.id === videoPreviewJobId)!.filename!)}`}
-                />
+              <div className="flex flex-col gap-2">
+                <button onClick={addMotionRow} className="btn-secondary btn-sm w-full video-add-action">
+                  <Icon name="plus" size={12} /> 添加描述
+                </button>
+                <button
+                  onClick={() => handleCreateVideos(selectedShot)}
+                  disabled={creating || motionRows.every((r) => !r.prompt.trim())}
+                  className="btn-primary btn-sm w-full video-create-action"
+                >
+                  {creating
+                    ? '创建中...'
+                    : `生成 ${motionRows.filter((r) => r.prompt.trim()).length} 条视频`}
+                </button>
               </div>
-            )}
-          </div>
-        );
-      })}
+            </>
+          )}
+        </div>
+
+        {/* ═══ CENTER: Video preview ═══ */}
+        <div className="panel-col center-col video-preview-col">
+          <VideoGenerationPreview
+            videoUrl={previewVideoUrl}
+            posterUrl={previewPosterUrl}
+            placeholderText={safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
+            videoJobs={videoJobs}
+            currentJobId={videoPreviewJobId}
+            onNavigate={(jobId) => {
+              previewSuppressedRef.current = false;
+              setVideoPreviewJobId(jobId);
+            }}
+            onClose={() => {
+              previewSuppressedRef.current = true;
+              setVideoPreviewJobId(null);
+            }}
+          />
+        </div>
+
+        {/* ═══ RIGHT: Result cards ═══ */}
+        <div className="panel-col">
+          <VideoGenerationResults
+            videoJobs={videoJobs}
+            onPreview={(jobId) => {
+              if (videoPreviewJobId === jobId) {
+                previewSuppressedRef.current = true;
+                setVideoPreviewJobId(null);
+              } else {
+                previewSuppressedRef.current = false;
+                setVideoPreviewJobId(jobId);
+              }
+            }}
+            onRetry={handleRetry}
+            onResumePoll={handleResumePoll}
+            activePreviewJobId={videoPreviewJobId}
+          />
+        </div>
+      </div>
 
       {safeShots.length === 0 && (
-        <p className="text-xs text-ink-tertiary">分镜组中没有分镜。</p>
+        <p className="text-xs text-ink-tertiary mt-3">分镜组中没有分镜。</p>
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY } from '@/lib/video-queue';
+import { toStorageImageUrl } from '@/lib/storage-url';
 
 export async function POST(
   request: NextRequest,
@@ -76,14 +77,21 @@ export async function GET(
     const { id: shotSetId } = await params;
     const db = getDb();
     const jobs = db.prepare(`
-      SELECT vj.*, vp.name as providerName, vpt.name as templateName
+      SELECT vj.*, vp.name as providerName, vpt.name as templateName, ia.path as posterImagePath
       FROM video_jobs vj
       LEFT JOIN video_providers vp ON vp.id = vj.providerId
       LEFT JOIN video_prompt_templates vpt ON vpt.id = vj.templateId
+      LEFT JOIN image_assets ia ON ia.id = vj.sourceImageId
       WHERE vj.shotSetId = ?
       ORDER BY vj.createdAt DESC
-    `).all(shotSetId);
-    return NextResponse.json({ jobs });
+    `).all(shotSetId) as Array<Record<string, unknown> & { posterImagePath?: string | null }>;
+
+    const jobsWithPosters = jobs.map(({ posterImagePath, ...job }) => ({
+      ...job,
+      posterImageUrl: toStorageImageUrl(posterImagePath),
+    }));
+
+    return NextResponse.json({ jobs: jobsWithPosters });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

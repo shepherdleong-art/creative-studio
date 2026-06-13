@@ -94,6 +94,17 @@ export function seedVideoProviders() {
       defaultDurationSec: 5,
     },
     {
+      id: 'kling-2-5',
+      name: '可灵 2.5',
+      type: 'kling',
+      baseUrlEnv: 'KLING_VIDEO_BASE_URL',
+      apiKeyEnv: 'KLING_VIDEO_API_KEY',
+      modelEnv: 'KLING_2_5_VIDEO_MODEL',
+      defaultModel: 'kling-v2-5-turbo',
+      enabled: 1,
+      defaultDurationSec: 5,
+    },
+    {
       id: 'jimeng-2',
       name: '即梦 2.0 (Seedance)',
       type: 'jimeng',

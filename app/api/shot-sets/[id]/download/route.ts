@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { buildZipStream, ZipImageEntry } from '@/lib/zip-download';
+import { buildGenericZipStream, ZipImageEntry } from '@/lib/zip-download';
 
 export const runtime = 'nodejs';
 
@@ -23,16 +23,32 @@ export async function GET(
       ORDER BY s.indexNum
     `).all(id) as Array<{ indexNum: number; sourceFilename: string | null; filePath: string; outputFilename: string | null }>;
 
-    if (rows.length === 0) {
-      return NextResponse.json({ error: 'No generated shot images to download' }, { status: 404 });
-    }
-
     const entries: ZipImageEntry[] = rows.map((row) => ({
       filePath: row.filePath,
       filename: `${String(row.indexNum).padStart(2, '0')}-${row.outputFilename || row.sourceFilename || 'shot.png'}`,
     }));
 
-    const stream = buildZipStream(entries);
+    // Include succeeded video files
+    const videoRows = db.prepare(`
+      SELECT vj.shotId, vj.filename, vj.localVideoPath, s.indexNum
+      FROM video_jobs vj
+      JOIN shots s ON s.id = vj.shotId
+      WHERE vj.shotSetId = ? AND vj.status = 'succeeded' AND vj.localVideoPath IS NOT NULL
+      ORDER BY s.indexNum, vj.createdAt
+    `).all(id) as Array<{ shotId: string; filename: string | null; localVideoPath: string; indexNum: number }>;
+
+    for (const v of videoRows) {
+      entries.push({
+        filePath: v.localVideoPath,
+        filename: `${String(v.indexNum).padStart(2, '0')}-${v.filename || 'video.mp4'}`,
+      });
+    }
+
+    if (entries.length === 0) {
+      return NextResponse.json({ error: 'No generated shot images to download' }, { status: 404 });
+    }
+
+    const stream = buildGenericZipStream(entries);
     const zipName = encodeURIComponent(`${set.name || 'shot-set'}-generated.zip`);
     return new NextResponse(stream, {
       headers: {

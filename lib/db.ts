@@ -177,6 +177,7 @@ function initTables(db: Database.Database) {
     `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND type = 'openai-compatible'`,
     `UPDATE video_providers SET defaultModel = 'kling-v3' WHERE id = 'kling-3' AND defaultModel IN ('kling-3.0', 'kling-v3.0-i2v', 'kling-v3-0')`,
     `UPDATE video_providers SET defaultModel = 'doubao-seedance-2-0-260128' WHERE id = 'jimeng-2' AND defaultModel = 'jimeng-2.0'`,
+    `INSERT OR IGNORE INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec) VALUES ('kling-2-5', '可灵 2.5', 'kling', 'KLING_VIDEO_BASE_URL', 'KLING_VIDEO_API_KEY', 'KLING_2_5_VIDEO_MODEL', 'kling-v2-5-turbo', 1, 5)`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* Column already exists */ }
