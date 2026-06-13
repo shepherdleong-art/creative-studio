@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import Header from "@/components/Header";
 import "./globals.css";
 
@@ -15,7 +16,13 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-surface text-ink">
         <Header />
         <main className="flex-1 w-full max-w-[980px] mx-auto px-6 py-10">
-          {children}
+          <Suspense fallback={
+            <div className="flex items-center justify-center py-20">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+            </div>
+          }>
+            {children}
+          </Suspense>
         </main>
       </body>
     </html>

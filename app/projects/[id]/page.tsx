@@ -284,6 +284,24 @@ export default function ProjectDetailPage() {
   const handleExportCSV = () => { window.open(`/api/projects/${id}/export`, '_blank'); };
   const handleSetSceneRef = (jobId: string, imageAssetId: string) => { setSceneRefModal({ jobId, imageAssetId }); };
 
+  const handleDeleteAsset = async (assetId: string) => {
+    try {
+      const res = await fetch(`/api/images/${assetId}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert('删除失败: ' + (data.error || '未知错误'));
+        return;
+      }
+    } catch {
+      alert('删除失败: 网络错误，请稍后重试');
+      return;
+    }
+    // Remove deleted asset from selection
+    setSelectedSceneSeedIds((prev) => prev.filter((id) => id !== assetId));
+    setSelectedShotSourceIds((prev) => prev.filter((id) => id !== assetId));
+    await loadProject();
+  };
+
   const handleCreateSceneRef = async () => {
     if (!sceneRefModal || !sceneRefName.trim()) return;
     const res = await fetch(`/api/projects/${id}/scene-references`, {
@@ -472,6 +490,7 @@ export default function ProjectDetailPage() {
                 onMark={handleMark}
                 onRegenerate={handleRegenerate}
                 onSetSceneRef={handleSetSceneRef}
+                onDeleteAsset={handleDeleteAsset}
                 jobs={sceneJobs}
               />
             )}
@@ -492,6 +511,7 @@ export default function ProjectDetailPage() {
                 setShotPromptDraft={setShotPromptDraft}
                 onSaveShotPrompt={handleSaveShotPrompt}
                 onShotChanged={handleShotChanged}
+                onDeleteAsset={handleDeleteAsset}
               />
             )}
             {activeTab === 'script' && <ScriptPanel projectId={project.id} />}
@@ -623,6 +643,7 @@ function SceneWorkspace({
   onMark,
   onRegenerate,
   onSetSceneRef,
+  onDeleteAsset,
   jobs,
 }: {
   project: Project;
@@ -635,6 +656,7 @@ function SceneWorkspace({
   onMark: (jobId: string, mark: string) => void;
   onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
   onSetSceneRef: (jobId: string, imageAssetId: string) => void;
+  onDeleteAsset: (assetId: string) => void | Promise<void>;
   jobs: Job[];
 }) {
   return (
@@ -656,6 +678,7 @@ function SceneWorkspace({
           maxSelection={1}
           onSelectionChange={onSelectSceneSeed}
           onUploaded={onUploaded}
+          onDelete={onDeleteAsset}
         />
       </section>
 
@@ -744,6 +767,7 @@ function StoryboardWorkspace({
   setShotPromptDraft,
   onSaveShotPrompt,
   onShotChanged,
+  onDeleteAsset,
 }: {
   project: Project;
   shotSourceImages: AssetGridItem[];
@@ -760,6 +784,7 @@ function StoryboardWorkspace({
   setShotPromptDraft: (value: string) => void;
   onSaveShotPrompt: () => void;
   onShotChanged: () => void | Promise<void>;
+  onDeleteAsset: (assetId: string) => void | Promise<void>;
 }) {
   return (
     <div className="space-y-6">
@@ -780,6 +805,7 @@ function StoryboardWorkspace({
           maxSelection={9}
           onSelectionChange={onSelectShotSources}
           onUploaded={onUploaded}
+          onDelete={onDeleteAsset}
         />
         <StoryboardGroupCreator projectId={project.id} selectedImageIds={selectedShotSourceIds} onCreated={onShotSetCreated} />
       </section>

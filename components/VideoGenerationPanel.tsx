@@ -183,14 +183,39 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return map;
   }, [videoJobs]);
 
+  const ensureVideoQueueRunning = async (projectIdToUse: string) => {
+    try {
+      await fetch(`/api/projects/${projectIdToUse}/video-run`, { method: 'POST' });
+    } catch { /* best-effort */ }
+  };
+
   const refreshJobs = async () => {
     if (!effectiveSetId) return;
     try {
       const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs`);
       const data = await res.json().catch(() => ({ jobs: [] }));
-      if (data.jobs) setVideoJobs(data.jobs);
+      if (data.jobs) {
+        setVideoJobs(data.jobs);
+        // Auto-start video queue when pending jobs are detected
+        if (data.jobs.some((j: { status: string }) => j.status === 'pending')) {
+          ensureVideoQueueRunning(projectId);
+        }
+      }
     } catch { /* ignore */ }
   };
+
+  // Poll video job status every 3s while any job is still active
+  const hasActiveVideoJobs = useMemo(
+    () => videoJobs.some((j) => j.status === 'pending' || j.status === 'running'),
+    [videoJobs]
+  );
+  useEffect(() => {
+    if (!effectiveSetId || !hasActiveVideoJobs) return;
+    const t = setInterval(() => { refreshJobs(); }, 3000);
+    return () => clearInterval(t);
+    // refreshJobs intentionally stable, effectiveSetId already handled
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveSetId, hasActiveVideoJobs]);
 
   // Switch the active shot, preserving per-shot 运镜 rows
   const activate = (shotId: string) => {
@@ -216,9 +241,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const updateRowTemplate = (idx: number, templateId: string) =>
     setMotionRows((rows) => rows.map((r, i) => {
       if (i !== idx) return r;
-      const tmpl = templates.find((t) => t.id === templateId);
-      // Only auto-fill when prompt is empty; preserve user edits
-      const nextPrompt = !r.prompt.trim() && tmpl ? tmpl.prompt : r.prompt;
+      const oldTmpl = r.templateId ? templates.find((t) => t.id === r.templateId) : null;
+      const newTmpl = templates.find((t) => t.id === templateId);
+      // Update prompt when: prompt is empty (first selection), or the current
+      // prompt matches the old template exactly (auto-filled, not user-edited).
+      // Preserve prompts that the user has manually written.
+      const isAutoFilled = !r.prompt.trim() || (oldTmpl ? r.prompt.trim() === oldTmpl.prompt.trim() : false);
+      const nextPrompt = (isAutoFilled && newTmpl) ? newTmpl.prompt : r.prompt;
       return { ...r, templateId, prompt: nextPrompt };
     }));
   const updateRowProvider = (idx: number, providerId: string) =>
@@ -334,12 +363,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             {selectedShot === shot.id ? (
               <div className="mb-2 min-w-0 max-w-full space-y-2">
                 {motionRows.map((row, idx) => (
-                  <div key={row.key} className="grid min-w-0 max-w-full grid-cols-[auto_minmax(7.5rem,10rem)_minmax(8rem,11rem)_4.5rem_minmax(16rem,1fr)_2.5rem] items-start gap-2 rounded border border-hairline bg-surface-subtle px-2 py-1.5 max-xl:grid-cols-[auto_minmax(8rem,1fr)_minmax(9rem,1fr)_4.5rem_2.5rem] max-xl:[&_.motion-prompt]:col-span-full max-sm:grid-cols-1">
+                  <div key={row.key} className="grid min-w-0 max-w-full grid-cols-[auto_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_minmax(16rem,3fr)_2.5rem] items-start gap-2 rounded border border-hairline bg-surface-subtle px-2 py-1.5 max-xl:grid-cols-[auto_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_minmax(5.5rem,1fr)_2.5rem] max-xl:[&_.motion-prompt]:col-span-full max-sm:grid-cols-1">
                     <span className="shrink-0 whitespace-nowrap text-[10px] text-ink-tertiary">描述 {idx + 1}</span>
                     <select
                       value={row.providerId}
                       onChange={(e) => updateRowProvider(idx, e.target.value)}
-                      className="input-field !w-full text-xs"
+                      className="input-field !w-full text-xs h-9"
                     >
                       <option value="">供应商</option>
                       {providers.map((p) => (
@@ -349,7 +378,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     <select
                       value={row.templateId}
                       onChange={(e) => updateRowTemplate(idx, e.target.value)}
-                      className="input-field !w-full text-xs"
+                      className="input-field !w-full text-xs h-9"
                     >
                       <option value="">模板（可选）</option>
                       {templates.map((t) => (
@@ -362,7 +391,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       max={15}
                       value={row.durationSec}
                       onChange={(e) => updateRowDuration(idx, Number(e.target.value))}
-                      className="input-field !w-full text-center text-xs"
+                      className="input-field !w-full text-center text-xs h-9"
                       title="秒数"
                     />
                     <textarea
@@ -417,21 +446,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     </div>
                     {job.status === 'succeeded' && job.filename && (
                       <>
-                        <a href={`/api/videos/videos/${encodeURIComponent(job.filename)}`} download className="link-accent inline-flex items-center gap-1"><Icon name="download" size={12} /> 下载</a>
+                        <a href={`/api/videos/videos/${encodeURIComponent(job.filename)}`} download className="link-accent inline-flex items-center gap-1 text-xs"><Icon name="download" size={12} /> 下载</a>
                         <button
                           type="button"
                           onClick={(e) => { e.preventDefault(); setVideoPreviewJobId(videoPreviewJobId === job.id ? null : job.id); }}
-                          className="link-accent ml-1 cursor-pointer text-[10px]"
+                          className="link-accent inline-flex items-center gap-1 text-xs"
                         >
                           {videoPreviewJobId === job.id ? '收起' : '预览'}
                         </button>
                       </>
                     )}
                     {job.status === 'needs_check' && (
-                      <button onClick={() => handleResumePoll(job.id)} className="link-accent">补抓结果</button>
+                      <button onClick={() => handleResumePoll(job.id)} className="link-accent text-xs">补抓结果</button>
                     )}
                     {(job.status === 'failed' || job.status === 'canceled') && (
-                      <button onClick={() => handleRetry(job.id)} className="link-accent">重试</button>
+                      <button onClick={() => handleRetry(job.id)} className="link-accent text-xs">重试</button>
                     )}
                     {job.errorMessage && (
                       <span className="break-words text-[10px] text-fail">{job.errorMessage}</span>

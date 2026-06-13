@@ -80,7 +80,7 @@ export const klingAdapter: VideoProviderAdapter = {
       prompt: request.prompt || 'gentle camera movement, stable product detail',
       duration: String(request.durationSec),
       mode: 'pro',
-      sound: true,
+      sound: 'on',
     };
 
     const controller = new AbortController();

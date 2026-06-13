@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import ImageUploader, { UploadedFile } from '@/components/ImageUploader';
+import { Icon } from '@/components/ui/Icon';
 
 export interface AssetGridItem {
   id: string;
@@ -23,6 +24,7 @@ interface Props {
   maxSelection?: number;
   onSelectionChange: (ids: string[]) => void;
   onUploaded: (files: UploadedFile[]) => void | Promise<void>;
+  onDelete?: (assetId: string) => void | Promise<void>;
 }
 
 type PreviewState = { src: string; title: string; x: number; y: number } | null;
@@ -44,8 +46,10 @@ export default function AssetUploadGrid({
   maxSelection = 1,
   onSelectionChange,
   onUploaded,
+  onDelete,
 }: Props) {
   const [preview, setPreview] = useState<PreviewState>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const toggle = (id: string) => {
     if (maxSelection === 1) {
@@ -57,6 +61,17 @@ export default function AssetUploadGrid({
       return;
     }
     if (selectedIds.length < maxSelection) onSelectionChange([...selectedIds, id]);
+  };
+
+  const handleDelete = async (e: React.MouseEvent, assetId: string) => {
+    e.stopPropagation();
+    if (!onDelete || deletingId) return;
+    setDeletingId(assetId);
+    try {
+      await onDelete(assetId);
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const previewLeft = preview
@@ -112,38 +127,60 @@ export default function AssetUploadGrid({
               {assets.map((asset) => {
                 const selectedIndex = selectedIds.indexOf(asset.id);
                 const selected = selectedIndex >= 0;
+                const isDeleting = deletingId === asset.id;
                 return (
-                  <button
-                    type="button"
+                  <div
                     key={asset.id}
-                    onClick={() => toggle(asset.id)}
-                    onMouseEnter={(event) => {
-                      if (!asset.imageUrl) return;
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      setPreview({ src: asset.imageUrl, title: asset.filename, x: rect.right, y: rect.top });
-                    }}
-                    onMouseLeave={() => setPreview(null)}
-                    className={`group relative rounded-[18px] border p-2 text-left transition ${
-                      selected ? 'border-accent bg-white shadow-sm ring-2 ring-accent/20' : 'border-transparent bg-surface-subtle hover:border-accent/30 hover:bg-white hover:shadow-sm'
-                    }`}
+                    className={`group relative ${isDeleting ? 'opacity-50 pointer-events-none' : ''}`}
                   >
-                    <div className="relative aspect-[4/3] overflow-hidden rounded-[14px] bg-surface">
-                      {asset.imageUrl ? (
-                        <img src={asset.imageUrl} alt={asset.filename} className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-xs text-ink-tertiary">无预览</div>
-                      )}
-                      <span className="absolute left-2 top-2 rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white backdrop-blur">
-                        {USAGE_LABELS[asset.usage || usage] || '素材'}
-                      </span>
-                      {selected && (
-                        <span className="absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-accent px-2 text-xs font-semibold text-white shadow-sm">
-                          {maxSelection === 1 ? '选中' : selectedIndex + 1}
+                    <button
+                      type="button"
+                      onClick={() => toggle(asset.id)}
+                      onMouseEnter={(event) => {
+                        if (!asset.imageUrl) return;
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        setPreview({ src: asset.imageUrl, title: asset.filename, x: rect.right, y: rect.top });
+                      }}
+                      onMouseLeave={() => setPreview(null)}
+                      className={`w-full rounded-[18px] border p-2 text-left transition ${
+                        selected ? 'border-accent bg-white shadow-sm ring-2 ring-accent/20' : 'border-transparent bg-surface-subtle hover:border-accent/30 hover:bg-white hover:shadow-sm'
+                      }`}
+                    >
+                      <div className="relative aspect-[4/3] overflow-hidden rounded-[14px] bg-surface">
+                        {asset.imageUrl ? (
+                          <img src={asset.imageUrl} alt={asset.filename} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-xs text-ink-tertiary">无预览</div>
+                        )}
+                        <span className="absolute left-2 top-2 rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white backdrop-blur">
+                          {USAGE_LABELS[asset.usage || usage] || '素材'}
                         </span>
-                      )}
-                    </div>
-                    <div className="mt-2 truncate px-1 text-xs font-medium text-ink-secondary">{asset.filename}</div>
-                  </button>
+                        {selected && (
+                          <span className="absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-accent px-2 text-xs font-semibold text-white shadow-sm">
+                            {maxSelection === 1 ? '选中' : selectedIndex + 1}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 truncate px-1 text-xs font-medium text-ink-secondary">{asset.filename}</div>
+                    </button>
+                    {onDelete && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleDelete(e, asset.id)}
+                        className={`absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur transition hover:bg-fail group-hover:opacity-100 ${
+                          isDeleting ? 'opacity-100' : 'opacity-0'
+                        } max-md:opacity-60`}
+                        title="删除此图片"
+                        aria-label={`删除 ${asset.filename}`}
+                      >
+                        {isDeleting ? (
+                          <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        ) : (
+                          <Icon name="close" size={14} />
+                        )}
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>

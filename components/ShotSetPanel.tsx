@@ -86,6 +86,17 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     return () => { active = false; };
   }, [loadSets]);
 
+  // Re-fetch shot set list when the parent's jobs list changes (e.g. after a
+  // job completes and loadProject() refreshes project data).  This keeps the
+  // generatedCount / shot-status badges in sync without remounting the panel.
+  const jobsFingerprint = useMemo(
+    () => (jobs || []).map((j) => `${j.id}:${j.status}`).join(','),
+    [jobs]
+  );
+  useEffect(() => {
+    (async () => { await loadSets(); })();
+  }, [jobsFingerprint]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const openCreate = () => { setIsCreating(true); setNewName(''); setSelectedImageIds([]); };
   const closeCreate = () => { setIsCreating(false); setNewName(''); setSelectedImageIds([]); };
 

@@ -175,7 +175,7 @@ function initTables(db: Database.Database) {
     `ALTER TABLE projects ADD COLUMN sellingPointsJson TEXT DEFAULT '[]'`,
     `ALTER TABLE image_assets ADD COLUMN usage TEXT DEFAULT ''`,
     `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND type = 'openai-compatible'`,
-    `UPDATE video_providers SET defaultModel = 'kling-v3' WHERE id = 'kling-3' AND defaultModel IN ('kling-3.0', 'kling-v3.0-i2v')`,
+    `UPDATE video_providers SET defaultModel = 'kling-v3' WHERE id = 'kling-3' AND defaultModel IN ('kling-3.0', 'kling-v3.0-i2v', 'kling-v3-0')`,
     `UPDATE video_providers SET defaultModel = 'doubao-seedance-2-0-260128' WHERE id = 'jimeng-2' AND defaultModel = 'jimeng-2.0'`,
   ];
   for (const sql of migrations) {
