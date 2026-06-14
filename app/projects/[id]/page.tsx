@@ -172,6 +172,11 @@ export default function ProjectDetailPage() {
     [project, imageUsageMap]
   );
 
+  const sceneReferenceImageIds = useMemo(
+    () => new Set(sceneRefs.map((ref) => ref.imageAssetId)),
+    [sceneRefs]
+  );
+
 
   const validSelectedSceneSeedIds = useMemo(
     () => selectedSceneSeedIds.filter((assetId) => sceneSeedImages.some((img) => img.id === assetId)),
@@ -396,7 +401,7 @@ export default function ProjectDetailPage() {
 
   return (
     <div>
-      <div className="toolbar -mx-6 mb-6 px-6 py-3 gap-3 flex-wrap">
+      <div className="project-header mb-6">
         <div>
           <div className="flex flex-wrap items-center gap-3">
             <Link href="/" className="flex items-center gap-1 text-ink-tertiary hover:text-ink transition-colors">
@@ -492,6 +497,7 @@ export default function ProjectDetailPage() {
                 onSetSceneRef={handleSetSceneRef}
                 onDeleteAsset={handleDeleteAsset}
                 jobs={sceneJobs}
+                sceneReferenceImageIds={sceneReferenceImageIds}
               />
             )}
             {activeTab === 'storyboard' && (
@@ -544,7 +550,7 @@ export default function ProjectDetailPage() {
         )}
       </div>
 
-      <LogDrawer open={logOpen} projectId={project.id} autoRefresh={running || hasActiveJobs} onClose={() => setLogOpen(false)} />
+      <LogDrawer open={logOpen} projectId={project.id} autoRefresh={logOpen} onClose={() => setLogOpen(false)} />
 
       {sceneRefModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4" onClick={() => setSceneRefModal(null)}>
@@ -645,6 +651,7 @@ function SceneWorkspace({
   onSetSceneRef,
   onDeleteAsset,
   jobs,
+  sceneReferenceImageIds,
 }: {
   project: Project;
   sceneSeedImages: AssetGridItem[];
@@ -658,6 +665,7 @@ function SceneWorkspace({
   onSetSceneRef: (jobId: string, imageAssetId: string) => void;
   onDeleteAsset: (assetId: string) => void | Promise<void>;
   jobs: Job[];
+  sceneReferenceImageIds: Set<string>;
 }) {
   return (
     <div className="space-y-6">
@@ -685,13 +693,103 @@ function SceneWorkspace({
       <SceneGenerationForm selectedImageId={selectedSceneSeedIds[0] || ''} defaultPrompt={project.scenePrompt || ''} onJobsCreated={onJobsCreated} projectId={project.id} />
 
       <section className="card p-5">
-        <div className="mb-4">
-          <h2 className="text-base font-semibold tracking-[-0.01em]">生成结果</h2>
-          <p className="mt-1 text-sm text-ink-secondary">生成成功后，在这里挑选可用图并保存为场景参考图。</p>
-        </div>
-        <ResultGallery jobs={jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
+        <SceneResultsSection
+          jobs={jobs}
+          images={project.images}
+          onRetry={onRetry}
+          onMark={onMark}
+          onRegenerate={onRegenerate}
+          onSetSceneRef={onSetSceneRef}
+          projectId={project.id}
+          sceneReferenceImageIds={sceneReferenceImageIds}
+        />
       </section>
     </div>
+  );
+}
+
+function SceneResultsSection({
+  jobs, images, onRetry, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceImageIds,
+}: {
+  jobs: Job[];
+  images: ImageAsset[];
+  onRetry: (jobId: string) => void;
+  onMark: (jobId: string, mark: string) => void;
+  onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
+  onSetSceneRef?: (jobId: string, imageAssetId: string) => void;
+  projectId?: string;
+  sceneReferenceImageIds: Set<string>;
+}) {
+  const total = jobs.length;
+  const activeCount = jobs.filter((j) => ['pending', 'running', 'retrying', 'needs_check'].includes(j.status)).length;
+  const succeededCount = jobs.filter((j) => j.status === 'succeeded').length;
+  const failedCount = jobs.filter((j) => j.status === 'failed').length;
+  const isEmpty = total === 0;
+  const isGenerating = activeCount > 0;
+  const isComplete = total > 0 && activeCount === 0;
+  const isFailedOnly = isComplete && succeededCount === 0 && failedCount > 0;
+
+  return (
+    <>
+      <div className="mb-4">
+        <h2 className="text-base font-semibold tracking-[-0.01em]">生成结果</h2>
+        <p className="mt-1 text-sm text-ink-secondary">
+          {isEmpty
+            ? '还没有开始生成。选择原始场景图 A 后，点击生成按钮。'
+            : isGenerating
+              ? `正在生成 ${activeCount} 张图片，已完成 ${succeededCount}/${total}。`
+              : succeededCount > 0
+                ? '生成完成。挑选可用图并保存为场景参考图。'
+                : '本次生成未成功，可查看失败原因或重新生成。'}
+        </p>
+      </div>
+
+      {isEmpty && (
+        <div className="scene-result-state">
+          <Icon name="image" size={32} />
+          <div className="font-medium text-ink-secondary">等待生成</div>
+          <div className="text-xs text-ink-tertiary">生成的场景图会出现在这里。</div>
+        </div>
+      )}
+
+      {isGenerating && (
+        <div className="scene-result-state scene-result-state-active">
+          <div className="h-7 w-7 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+          <div className="font-medium text-ink">生成中</div>
+          <div className="text-xs text-ink-tertiary">
+            已完成 {succeededCount}/{total}，剩余 {activeCount}
+          </div>
+        </div>
+      )}
+
+      {isComplete && (
+        <>
+          <div className="scene-result-summary">
+            {succeededCount > 0 && <span className="status-badge status-succeeded">成功 {succeededCount}</span>}
+            {failedCount > 0 && <span className="status-badge status-failed">失败 {failedCount}</span>}
+          </div>
+
+          {isFailedOnly ? (
+            <div className="scene-result-state">
+              <Icon name="alert" size={28} />
+              <div className="font-medium text-ink-secondary">没有生成成功的图片</div>
+              <div className="text-xs text-ink-tertiary">请查看运行日志，或调整提示词后重新生成。</div>
+            </div>
+          ) : (
+            <ResultGallery
+              jobs={jobs}
+              images={images}
+              onRetry={onRetry}
+              onMark={onMark}
+              onRegenerate={onRegenerate}
+              onSetSceneRef={onSetSceneRef}
+              projectId={projectId}
+              sceneReferenceImageIds={sceneReferenceImageIds}
+            />
+          )}
+        </>
+      )}
+    </>
   );
 }
 

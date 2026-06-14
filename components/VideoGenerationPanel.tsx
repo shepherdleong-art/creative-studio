@@ -71,14 +71,25 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
   const [creating, setCreating] = useState(false);
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
+  const [videoPreviewPlaySignal, setVideoPreviewPlaySignal] = useState(0);
   const previewSuppressedRef = useRef(false);
 
-  const defaultProviderId = providers.length > 0 ? providers[0].id : '';
+  const selectVideoPreview = (jobId: string) => {
+    previewSuppressedRef.current = false;
+    setVideoPreviewJobId(jobId);
+    setVideoPreviewPlaySignal((v) => v + 1);
+  };
+
   const defaultDuration = 5;
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
 
+  // Effective provider id for a row: fall back to the first available provider
+  // when the row was created before providers had loaded.
+  const getRowProviderId = (row: { providerId: string }): string =>
+    row.providerId || providers[0]?.id || '';
+
   const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
-    key: crypto.randomUUID(), prompt: '', templateId: '', providerId: defaultProviderId, durationSec: defaultDuration,
+    key: crypto.randomUUID(), prompt: '', templateId: '', providerId: '', durationSec: defaultDuration,
   });
 
   // Load providers and templates once
@@ -98,20 +109,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     })();
     return () => { active = false; };
   }, []);
-
-  // Backfill empty providerId in motion rows once providers arrive.  This
-  // handles the race where loadShotsForSet auto-selects a shot and creates
-  // a row with defaultProviderId = '' before /api/providers/video resolves.
-  useEffect(() => {
-    if (providers.length === 0) return;
-    const firstId = providers[0].id;
-    setMotionRows((rows) => {
-      if (rows.some((r) => !r.providerId)) {
-        return rows.map((r) => (r.providerId ? r : { ...r, providerId: firstId }));
-      }
-      return rows;
-    });
-  }, [providers]);
 
   // Load shot sets for selector
   useEffect(() => {
@@ -284,7 +281,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       .map((r) => ({
         prompt: r.prompt.trim(),
         templateId: r.templateId || null,
-        providerId: r.providerId,
+        providerId: getRowProviderId(r),
         durationSec: r.durationSec,
       }))
       .filter((r) => r.prompt.length > 0);
@@ -417,7 +414,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     <span className="video-motion-label">描述 {idx + 1}</span>
 
                     <select
-                      value={row.providerId}
+                      value={getRowProviderId(row)}
                       onChange={(e) => updateRowProvider(idx, e.target.value)}
                       className="input-field video-control"
                     >
@@ -486,10 +483,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             placeholderText={safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
             videoJobs={videoJobs}
             currentJobId={videoPreviewJobId}
-            onNavigate={(jobId) => {
-              previewSuppressedRef.current = false;
-              setVideoPreviewJobId(jobId);
-            }}
+            playSignal={videoPreviewPlaySignal}
+            onNavigate={selectVideoPreview}
             onClose={() => {
               previewSuppressedRef.current = true;
               setVideoPreviewJobId(null);
@@ -501,15 +496,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         <div className="panel-col">
           <VideoGenerationResults
             videoJobs={videoJobs}
-            onPreview={(jobId) => {
-              if (videoPreviewJobId === jobId) {
-                previewSuppressedRef.current = true;
-                setVideoPreviewJobId(null);
-              } else {
-                previewSuppressedRef.current = false;
-                setVideoPreviewJobId(jobId);
-              }
-            }}
+            onPreview={selectVideoPreview}
             onRetry={handleRetry}
             onResumePoll={handleResumePoll}
             activePreviewJobId={videoPreviewJobId}

@@ -66,8 +66,9 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
   // Auto-refresh
   useEffect(() => {
     if (!autoRefresh) return;
+    const timeout = setTimeout(loadLogs, 0);
     const interval = setInterval(loadLogs, refreshMs);
-    return () => clearInterval(interval);
+    return () => { clearTimeout(timeout); clearInterval(interval); };
   }, [autoRefresh, loadLogs, refreshMs]);
 
   // Auto-scroll to bottom when new logs arrive

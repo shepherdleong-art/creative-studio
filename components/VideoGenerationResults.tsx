@@ -120,7 +120,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                       onClick={(e) => { e.stopPropagation(); onPreview(job.id); }}
                       className="result-action link-accent"
                     >
-                      {isActive ? '收起' : '预览'}
+                      {isActive ? '正在播放' : '播放'}
                     </button>
                   </>
                 )}

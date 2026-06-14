@@ -1,15 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import ScriptSellingPointInput from './ScriptSellingPointInput';
+import ScriptStrategyConfig from './ScriptStrategyConfig';
+import ScriptResultView from './ScriptResultView';
+import type { AnalysisResult, ProviderMeta, ScriptOutput } from '@/lib/script-providers';
 
-interface ScriptShot {
-  shotIndex: number;
-  duration: string;
-  voiceover: string;
-  subtitle: string;
-  visualIntent: string;
-}
+// ── Types ──
 
 interface ScriptDraft {
   id: string;
@@ -20,163 +18,391 @@ interface ScriptDraft {
   createdAt: string;
 }
 
+interface ShotSetOption {
+  id: string;
+  name: string;
+  shotCount: number;
+  status: string;
+}
+
+interface ShotWithImage {
+  shotId: string;
+  shotIndex: number;
+  sourceImageUrl?: string;
+  generatedImageUrl?: string;
+  sourceFilename: string;
+}
+
 interface Props {
   projectId: string;
 }
 
+type Step = 1 | 2 | 3;
+
+// ── Component ──
+
 export default function ScriptPanel({ projectId }: Props) {
+  // ── Core state ──
+  const [step, setStep] = useState<Step>(1);
+  const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+
+  // Brief (from project)
   const [audience, setAudience] = useState('');
   const [tone, setTone] = useState('种草');
   const [platform, setPlatform] = useState('通用');
   const [sellingPoints, setSellingPoints] = useState('');
-  const [briefLoaded, setBriefLoaded] = useState(false);
-  const [script, setScript] = useState<{
-    title: string;
-    platform: string;
-    tone: string;
-    shots: ScriptShot[];
-    fullScript: string;
-  } | null>(null);
+
+  // Analysis
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [analysisProviderId, setAnalysisProviderId] = useState('gemini');
+  const [analyzing, setAnalyzing] = useState(false);
+
+  // Strategy
+  const [selectedSellingPoints, setSelectedSellingPoints] = useState<string[]>([]);
+  const [templateId, setTemplateId] = useState('scene_seeding');
+  const [templateName, setTemplateName] = useState('场景种草');
+  const [duration, setDuration] = useState('30s');
+  const [generateProviderId, setGenerateProviderId] = useState('gemini');
+
+  // ShotSet selection
+  const [shotSets, setShotSets] = useState<ShotSetOption[]>([]);
+  const [selectedShotSetId, setSelectedShotSetId] = useState('');
+
+  // Result
+  const [script, setScript] = useState<ScriptOutput | null>(null);
   const [drafts, setDrafts] = useState<ScriptDraft[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [shotImages, setShotImages] = useState<ShotWithImage[]>([]);
 
+  // Models
+  const [providers, setProviders] = useState<ProviderMeta[]>([]);
+
+  // Refs
   const initialLoadDone = useRef(false);
 
+  // ── Load shot images for result view (must be declared before loadAll) ──
+  const loadShotImages = useCallback(async (shotSetId: string) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/shot-sets`);
+      const sets = await res.json() as Array<{ id: string }>;
+      const set = sets.find((s) => s.id === shotSetId);
+      if (!set) return;
+
+      const detailRes = await fetch(`/api/shot-sets/${shotSetId}`);
+      const detail = await detailRes.json() as {
+        shots?: Array<{
+          id: string;
+          indexNum: number;
+          sourceImageUrl?: string;
+          generatedImageUrl?: string;
+          sourceFilename?: string;
+        }>;
+      };
+
+      if (detail.shots) {
+        setShotImages(
+          detail.shots.map((s) => ({
+            shotId: s.id,
+            shotIndex: s.indexNum,
+            sourceImageUrl: s.sourceImageUrl,
+            generatedImageUrl: s.generatedImageUrl,
+            sourceFilename: s.sourceFilename || '',
+          }))
+        );
+      }
+    } catch { /* ignore */ }
+  }, [projectId]);
+
+  // ── Initial load ──
   useEffect(() => {
     let active = true;
-    (async () => {
+
+    const run = async () => {
       try {
-        const res = await fetch(`/api/projects/${projectId}/script`);
-        const data = await res.json().catch(() => ({ drafts: [] }));
+        const [projRes, draftRes, modelRes, shotSetRes] = await Promise.all([
+          fetch(`/api/projects/${projectId}`),
+          fetch(`/api/projects/${projectId}/script`),
+          fetch(`/api/projects/${projectId}/script?action=models`),
+          fetch(`/api/projects/${projectId}/shot-sets`),
+        ]);
+
+        const projData = await projRes.json().catch(() => ({}));
+        const draftData = await draftRes.json().catch(() => ({ drafts: [], analysis: null }));
+        const modelData = await modelRes.json().catch(() => ({ providers: [] }));
+        const shotSetData = await shotSetRes.json().catch(() => []);
+
         if (!active) return;
-        if (data.drafts) {
-          setDrafts(data.drafts);
-          if (!initialLoadDone.current && data.drafts.length > 0) {
+
+        // Brief
+        setAudience(projData.targetAudience || '');
+        setTone(projData.scriptTone || '种草');
+        setPlatform(projData.scriptPlatform || '通用');
+        try {
+          const sp = JSON.parse(projData.sellingPointsJson || '[]') as Array<{ title: string }>;
+          setSellingPoints(sp.map((s) => s.title).join('\n'));
+        } catch { /* ignore */ }
+
+        // Analysis
+        if (draftData.analysis) {
+          setAnalysis(draftData.analysis);
+          setStep(2);
+        }
+
+        // Drafts
+        if (draftData.drafts?.length > 0) {
+          setDrafts(draftData.drafts);
+          if (!initialLoadDone.current) {
             initialLoadDone.current = true;
-            setSelectedDraftId(data.drafts[0].id);
-            setScript(JSON.parse(data.drafts[0].outputJson));
+            const first = draftData.drafts[0] as ScriptDraft;
+            setSelectedDraftId(first.id);
+            try {
+              const parsed = JSON.parse(first.outputJson) as ScriptOutput;
+              setScript(parsed);
+              setStep(3);
+              if (parsed.shotSetId) {
+                void loadShotImages(parsed.shotSetId);
+              }
+            } catch { /* ignore */ }
           }
         }
-      } catch { /* ignore */ }
-    })();
+
+        // Models
+        if (modelData.providers?.length > 0) {
+          setProviders(modelData.providers);
+        }
+
+        // ShotSets
+        const sets = Array.isArray(shotSetData) ? shotSetData as ShotSetOption[] : [];
+        setShotSets(sets);
+        if (sets.length === 1) {
+          setSelectedShotSetId((current) => current || sets[0].id);
+        }
+
+        // P1: Mark loading as done after all data is loaded
+        setLoading(false);
+
+        // P2: Default provider to the first configured one (not always gemini)
+        if (modelData.providers?.length > 0) {
+          const configured = (modelData.providers as ProviderMeta[]).find((p) => p.configured);
+          if (configured && configured.id !== 'gemini') {
+            setAnalysisProviderId(configured.id);
+            setGenerateProviderId(configured.id);
+          }
+        }
+      } catch {
+        if (active) setLoading(false);
+      }
+    };
+
+    run();
     return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // Load brief from project
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetch(`/api/projects/${projectId}`);
-        const data = await res.json();
-        if (!active || data.error) return;
-        setAudience(data.targetAudience || '');
-        setTone(data.scriptTone || '种草');
-        setPlatform(data.scriptPlatform || '通用');
-        try { setSellingPoints(JSON.parse(data.sellingPointsJson || '[]').map((s: { title: string }) => s.title).join('\n')); } catch { setSellingPoints(''); }
-        setBriefLoaded(true);
-      } catch { /* ignore */ }
-    })();
-    return () => { active = false; };
-  }, [projectId]);
-
-  const saveBrief = async () => {
-    const res = await fetch(`/api/projects/${projectId}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+  // ── Save brief ──
+  const saveBrief = useCallback(async () => {
+    await fetch(`/api/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         targetAudience: audience,
         scriptTone: tone,
         scriptPlatform: platform,
-        sellingPointsJson: JSON.stringify(sellingPoints.trim().split('\n').filter(Boolean).map((s) => ({ title: s.trim(), priority: 0 }))),
+        sellingPointsJson: JSON.stringify(
+          sellingPoints
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((s) => ({ title: s.trim(), priority: 0 }))
+        ),
       }),
     });
-    if (!res.ok) throw new Error('保存卖点失败');
-  };
+  }, [projectId, audience, tone, platform, sellingPoints]);
 
-  const handleGenerate = async () => {
-    if (!briefLoaded) { alert('卖点信息加载中，请稍后再试'); return; }
-    setGenerating(true);
-    try { await saveBrief(); } catch { alert('保存卖点失败'); setGenerating(false); return; }
+  // ── Handle analyze ──
+  const handleAnalyze = useCallback(async () => {
+    if (!sellingPoints.trim()) {
+      alert('请至少输入一条卖点');
+      return;
+    }
+    setAnalyzing(true);
     try {
-      const res = await fetch(`/api/projects/${projectId}/script`, { method: 'POST' });
+      await saveBrief();
+      const res = await fetch(`/api/projects/${projectId}/script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'analyze',
+          sellingPoints: sellingPoints.trim().split('\n').filter(Boolean),
+          targetAudience: audience,
+          platform,
+          providerId: analysisProviderId,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAnalysis(data.analysis);
+        // Pre-select top 3
+        setSelectedSellingPoints(
+          (data.analysis as AnalysisResult).rankings.slice(0, 3).map((r: { title: string }) => r.title)
+        );
+        setStep(2);
+      } else {
+        alert('分析失败: ' + (data.error || '未知错误'));
+      }
+    } catch (err) {
+      alert('分析失败: ' + String(err));
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [projectId, sellingPoints, audience, platform, analysisProviderId, saveBrief]);
+
+  // ── Handle generate ──
+  const handleGenerate = useCallback(async () => {
+    if (!selectedShotSetId) {
+      alert('请选择一个分镜组');
+      return;
+    }
+    if (selectedSellingPoints.length === 0) {
+      alert('请至少选择一个卖点');
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      await saveBrief();
+
+      // Build selected selling points with analysis data
+      const spWithData = selectedSellingPoints.map((title) => {
+        const rank = analysis?.rankings?.find((r) => r.title === title);
+        return {
+          title,
+          priority: rank?.priority || 'medium',
+          reason: rank?.reason || '',
+        };
+      });
+
+      const res = await fetch(`/api/projects/${projectId}/script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate',
+          shotSetId: selectedShotSetId,
+          selectedSellingPoints: spWithData,
+          templateId,
+          templateName,
+          duration,
+          providerId: generateProviderId,
+          tone,
+          platform,
+        }),
+      });
       const data = await res.json();
       if (res.ok) {
         setScript(data.script);
-        // Reload drafts list
+        setStep(3);
+
+        // Reload drafts
         const listRes = await fetch(`/api/projects/${projectId}/script`);
         const listData = await listRes.json().catch(() => ({ drafts: [] }));
-        if (listData.drafts) {
+        if (listData.drafts?.length > 0) {
           setDrafts(listData.drafts);
-          if (listData.drafts.length > 0) {
-            setSelectedDraftId(listData.drafts[0].id);
-          }
+          setSelectedDraftId(listData.drafts[0].id);
         }
+
+        // Load shot images for the result view
+        await loadShotImages(selectedShotSetId);
       } else {
-        alert('脚本生成失败: ' + (data.error || '未知错误'));
+        alert('生成失败: ' + (data.error || '未知错误'));
       }
     } catch (err) {
       alert('生成失败: ' + String(err));
     } finally {
       setGenerating(false);
     }
-  };
+  }, [
+    projectId, selectedShotSetId, selectedSellingPoints, analysis,
+    templateId, templateName, duration, generateProviderId,
+    tone, platform, saveBrief, loadShotImages,
+  ]);
 
-  const handleSelectDraft = (draftId: string) => {
+  // ── Handle selecting a draft ──
+  const handleSelectDraft = useCallback((draftId: string) => {
     const draft = drafts.find((d) => d.id === draftId);
     if (draft) {
       setSelectedDraftId(draftId);
-      setScript(JSON.parse(draft.outputJson));
+      try {
+        const parsed = JSON.parse(draft.outputJson) as ScriptOutput;
+        setScript(parsed);
+        setStep(3);
+        if (parsed.shotSetId) {
+          void loadShotImages(parsed.shotSetId);
+        }
+      } catch { /* ignore */ }
     }
-  };
+  }, [drafts, loadShotImages]);
 
-  const handleCopyFullScript = async () => {
-    if (!script?.fullScript) return;
-    try {
-      await navigator.clipboard.writeText(script.fullScript);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = script.fullScript;
-      ta.style.position = 'fixed'; ta.style.left = '-9999px';
-      document.body.appendChild(ta); ta.select();
-      document.execCommand('copy'); document.body.removeChild(ta);
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  // ── Reset to start over ──
+  const handleReset = useCallback(() => {
+    setStep(1);
+    setAnalysis(null);
+    setScript(null);
+    setSelectedDraftId(null);
+    setShotImages([]);
+  }, []);
 
-  const handleDownloadTxt = () => {
-    if (!script) return;
-    const text = `# ${script.title}\n平台: ${script.platform}\n语气: ${script.tone}\n\n## 完整口播稿\n\n${script.fullScript}\n\n## 分镜详情\n\n${script.shots.map((s) => `### 分镜 ${s.shotIndex} (${s.duration})\n口播: ${s.voiceover}\n字幕: ${s.subtitle}\n视觉意图: ${s.visualIntent}`).join('\n\n')}`;
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${script.title || 'script'}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  // ── Derive display image URL ──
+  const getShotImageUrl = useCallback((shotId: string): string | undefined => {
+    const img = shotImages.find((s) => s.shotId === shotId);
+    return img?.generatedImageUrl || img?.sourceImageUrl;
+  }, [shotImages]);
 
-  const handleDownloadJson = () => {
-    if (!script) return;
-    const blob = new Blob([JSON.stringify(script, null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${script.title || 'script'}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  // ── Render ──
+
+  if (loading) {
+    return (
+      <div className="card p-4">
+        <div className="py-8 text-center text-ink-tertiary">
+          <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+          加载中…
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="card p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="flex items-center gap-2 font-semibold"><Icon name="file-text" size={16} /> 脚本生成</h2>
-        <div className="flex gap-2">
+    <div className="card">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-hairline px-5 py-3.5">
+        <div className="flex items-center gap-3">
+          <h2 className="flex items-center gap-2 font-semibold text-ink">
+            <Icon name="file-text" size={16} />
+            脚本生成
+          </h2>
+          {/* Step indicator */}
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${step === 1 ? 'bg-accent text-white' : 'bg-ok text-white'}`}>
+              {step > 1 ? '✓' : '1'}
+            </span>
+            <span className="text-ink-tertiary">·</span>
+            <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${step === 2 ? 'bg-accent text-white' : step > 2 ? 'bg-ok text-white' : 'bg-surface-subtle text-ink-tertiary'}`}>
+              {step > 2 ? '✓' : '2'}
+            </span>
+            <span className="text-ink-tertiary">·</span>
+            <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${step === 3 ? 'bg-accent text-white' : 'bg-surface-subtle text-ink-tertiary'}`}>
+              3
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Draft selector */}
           {drafts.length > 1 && (
             <select
               value={selectedDraftId || ''}
               onChange={(e) => handleSelectDraft(e.target.value)}
-              className="input-field text-xs w-48"
+              className="input-field text-xs w-44"
             >
               {drafts.map((d) => (
                 <option key={d.id} value={d.id}>
@@ -185,111 +411,76 @@ export default function ScriptPanel({ projectId }: Props) {
               ))}
             </select>
           )}
-          <button
-            onClick={handleGenerate}
-            disabled={generating}
-            className="btn-primary btn-sm"
-          >
-            {generating ? '生成中...' : '生成脚本'}
-          </button>
+          {step > 1 && (
+            <button onClick={handleReset} className="btn-secondary btn-sm text-xs">
+              重新开始
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Brief form */}
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div>
-        <label className="label">目标人群</label>
-          <input value={audience} onChange={(e) => setAudience(e.target.value)} className="input-field text-sm" placeholder="25-35岁女性" />
-        </div>
-        <div>
-          <label className="label">语气</label>
-          <select value={tone} onChange={(e) => setTone(e.target.value)} className="input-field text-sm">
-            {['种草','专业','温柔生活方式','促销'].map((t) => (<option key={t} value={t}>{t}</option>))}
-          </select>
-        </div>
-        <div>
-          <label className="label">平台</label>
-          <select value={platform} onChange={(e) => setPlatform(e.target.value)} className="input-field text-sm">
-            {['抖音','小红书','视频号','通用'].map((p) => (<option key={p} value={p}>{p}</option>))}
-          </select>
-        </div>
+      {/* Body */}
+      <div className="p-5">
+        {/* Step 1: Selling Point Input & Analysis */}
+        {(step === 1 || (step === 2 && analyzing)) && (
+          <ScriptSellingPointInput
+            sellingPoints={sellingPoints}
+            onSellingPointsChange={setSellingPoints}
+            audience={audience}
+            onAudienceChange={setAudience}
+            tone={tone}
+            onToneChange={setTone}
+            platform={platform}
+            onPlatformChange={setPlatform}
+            providerId={analysisProviderId}
+            onProviderIdChange={setAnalysisProviderId}
+            providers={providers}
+            onAnalyze={handleAnalyze}
+            analyzing={analyzing}
+          />
+        )}
+
+        {/* Step 2: Strategy Configuration */}
+        {step === 2 && analysis && !analyzing && (
+          <ScriptStrategyConfig
+            analysis={analysis}
+            selectedSellingPoints={selectedSellingPoints}
+            onSellingPointsChange={setSelectedSellingPoints}
+            templateId={templateId}
+            onTemplateIdChange={(id, name) => { setTemplateId(id); setTemplateName(name); }}
+            templateName={templateName}
+            duration={duration}
+            onDurationChange={setDuration}
+            providers={providers}
+            providerId={generateProviderId}
+            onProviderIdChange={setGenerateProviderId}
+            shotSets={shotSets}
+            selectedShotSetId={selectedShotSetId}
+            onShotSetIdChange={setSelectedShotSetId}
+            onGenerate={handleGenerate}
+            generating={generating}
+          />
+        )}
+
+        {/* Step 3: Result */}
+        {step === 3 && script && (
+          <ScriptResultView
+            script={script}
+            getShotImageUrl={getShotImageUrl}
+            projectId={projectId}
+          />
+        )}
+
+        {/* Generating spinner overlay */}
+        {generating && (
+          <div className="py-12 text-center text-ink-tertiary">
+            <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+            <p className="text-sm">
+              {providers.find((p) => p.id === generateProviderId)?.name || 'AI'} 正在生成脚本...
+            </p>
+          </div>
+        )}
       </div>
-      <div className="mb-4">
-        <label className="label">卖点（每行一条）</label>
-        <textarea value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} rows={3}
-          className="input-field text-sm" placeholder={'1. 软包靠背，久靠舒服\n2. 奶油色百搭，适合小户型\n3. 床架稳固，视觉轻盈'} />
-      </div>
-
-      {!script && !generating && (
-        <p className="text-sm text-ink-tertiary">
-          基于项目信息、分镜顺序和产品卖点，通过 Gemini 生成结构化口播脚本。需要先配置环境变量 GEMINI_API_KEY。
-        </p>
-      )}
-
-      {generating && (
-        <div className="py-8 text-center text-ink-tertiary">
-          <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-          Gemini 正在生成脚本...
-        </div>
-      )}
-
-      {script && (
-        <div className="space-y-4">
-          {/* Meta */}
-          <div className="flex gap-4 text-xs text-ink-secondary">
-            <span>标题: <strong className="text-ink">{script.title}</strong></span>
-            <span>平台: {script.platform}</span>
-            <span>语气: {script.tone}</span>
-          </div>
-
-          {/* Shot-by-shot table */}
-          <div className="overflow-x-auto">
-            <table className="data-table text-sm">
-              <thead>
-                <tr>
-                  <th className="pb-2 pr-2">#</th>
-                  <th className="pb-2 pr-2">时长</th>
-                  <th className="pb-2 pr-2">口播</th>
-                  <th className="pb-2 pr-2">字幕</th>
-                  <th className="pb-2">视觉意图</th>
-                </tr>
-              </thead>
-              <tbody>
-                {script.shots.map((shot) => (
-                  <tr key={shot.shotIndex} className="align-top">
-                    <td className="py-2 pr-2 text-ink-secondary">{shot.shotIndex}</td>
-                    <td className="py-2 pr-2 text-xs text-ink-secondary">{shot.duration}</td>
-                    <td className="py-2 pr-2">{shot.voiceover}</td>
-                    <td className="py-2 pr-2 text-ink-secondary">{shot.subtitle}</td>
-                    <td className="py-2 text-xs text-ink-tertiary">{shot.visualIntent}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Full script */}
-          <div>
-            <h4 className="mb-1 text-xs font-medium text-ink-secondary">完整口播稿</h4>
-            <pre className="whitespace-pre-wrap rounded bg-surface-subtle p-3 text-sm leading-relaxed text-ink-secondary">
-              {script.fullScript}
-            </pre>
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-2">
-            <button onClick={handleCopyFullScript} className="btn-secondary btn-sm text-xs">
-              {copied ? <><Icon name="check" size={13} /> 已复制</> : <><Icon name="copy" size={13} /> 复制完整口播</>}
-            </button>
-            <button onClick={handleDownloadTxt} className="btn-secondary btn-sm text-xs">
-              <Icon name="download" size={13} /> 下载 .txt
-            </button>
-            <button onClick={handleDownloadJson} className="btn-secondary btn-sm text-xs">
-              <Icon name="download" size={13} /> 下载 .json
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -46,6 +46,7 @@ interface Props {
   onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
   onSetSceneRef?: (jobId: string, imageAssetId: string) => void;
   projectId?: string;
+  sceneReferenceImageIds?: Set<string>;
 }
 
 /** ── Tiny inline uploader for the regen modal ── */
@@ -193,7 +194,7 @@ function JobStatusDot({ status }: { status: string }) {
   return <span className={`status-dot ${cls}`} title={status} />;
 }
 
-export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSetSceneRef, projectId }: Props) {
+export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceImageIds }: Props) {
   const succeededJobs = jobs.filter((j) => j.status === 'succeeded' && j.outputFilename);
   const failedJobs = jobs.filter((j) => j.status === 'failed');
   const [statusFilter, setStatusFilter] = useState<'succeeded' | 'failed'>('succeeded');
@@ -205,16 +206,17 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
   const [extraUploads, setExtraUploads] = useState<ImageAsset[]>([]);
   const selectedJob = selectedIndex != null ? displayedJobs[selectedIndex] : null;
+  const selectedJobIsSceneRef = !!(selectedJob?.outputImageId && sceneReferenceImageIds?.has(selectedJob.outputImageId));
 
   const getImageUrl = (asset: ImageAsset | undefined): string | null => asset?.imageUrl || null;
   const getMark = (job: Job): string | null => job.reviewMark || null;
 
   const goPrev = useCallback(() => {
     setSelectedIndex((i) => (i != null ? Math.max(0, i - 1) : null));
-  }, []);
+  }, [setSelectedIndex]);
   const goNext = useCallback(() => {
     setSelectedIndex((i) => (i != null ? Math.min(displayedJobs.length - 1, i + 1) : null));
-  }, [displayedJobs.length]);
+  }, [setSelectedIndex, displayedJobs.length]);
 
   useEffect(() => {
     if (selectedIndex == null) return;
@@ -311,7 +313,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
 
     setSelectedReferenceIds(defaultRefs);
     setRegenOpen(true);
-  }, [selectedJob]);
+  }, [selectedJob, setRegenPrompt, setRegenInputSource, setExtraUploads, setSelectedReferenceIds, setRegenOpen]);
 
   const handleInputSourceChange = (source: 'original' | 'current_result') => {
     if (!selectedJob) return;
@@ -397,6 +399,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
               {displayedJobs.map((job, idx) => {
                 const mark = getMark(job);
                 const isFailed = job.status === 'failed';
+                const isSceneReference = !!job.outputImageId && (sceneReferenceImageIds?.has(job.outputImageId) ?? false);
                 return (
                   <div key={job.id} onClick={() => setSelectedIndex(idx)}
                     className={`card group cursor-pointer overflow-hidden transition-all duration-200 hover:ring-1 ${
@@ -415,6 +418,9 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                       <span className="absolute right-1.5 top-1.5 z-10">
                         <JobStatusDot status={job.status} />
                       </span>
+                      {isSceneReference && (
+                        <span className="scene-ref-badge"><Icon name="check" size={12} /> 已设为场景参考</span>
+                      )}
                       {mark && (
                         <span className={`pill absolute left-1 top-1 ${
                           mark === 'available' ? 'bg-ok-tint text-ok' : mark === 'rework' ? 'bg-warn-tint text-warn' : 'bg-idle-tint text-idle'}`}>
@@ -634,8 +640,9 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                 <span className="mx-1 text-white/20">|</span>
                 <button onClick={openRegen} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重新生成</button>
                 {onSetSceneRef && selectedJob.outputImageId && (
-                  <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)}
-                    className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
+                  selectedJobIsSceneRef
+                    ? <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-ok"><Icon name="check" size={13} /> 已设为场景参考</span>
+                    : <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)} className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
                 )}
                 {selectedJob.outputFilename && (
                   <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm sm:ml-auto"><Icon name="download" size={14} /> 下载</a>

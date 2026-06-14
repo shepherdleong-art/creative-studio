@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Icon } from '@/components/ui/Icon';
 
 interface VideoJob {
@@ -16,15 +16,28 @@ interface Props {
   placeholderText: string;
   videoJobs: VideoJob[];
   currentJobId: string | null;
+  playSignal: number;
   onNavigate: (jobId: string) => void;
   onClose: () => void;
 }
 
-export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholderText, videoJobs, currentJobId, onNavigate, onClose }: Props) {
+export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholderText, videoJobs, currentJobId, playSignal, onNavigate, onClose }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const succeededJobs = videoJobs.filter((j) => j.status === 'succeeded' && j.filename);
   const currentIndex = currentJobId ? succeededJobs.findIndex((j) => j.id === currentJobId) : -1;
+
+  useEffect(() => {
+    if (!videoUrl || !videoRef.current) return;
+    const video = videoRef.current;
+    video.currentTime = 0;
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => {
+        // Browser autoplay policy may block — controls remain visible
+      });
+    }
+  }, [videoUrl, currentJobId, playSignal]);
 
   return (
     <div className="video-preview-shell">
@@ -36,6 +49,8 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
             src={videoUrl}
             poster={posterUrl || undefined}
             controls
+            autoPlay
+            playsInline
             className="video-player"
           />
         ) : (

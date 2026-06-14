@@ -5,7 +5,8 @@ export type IconName =
   | "stop" | "retry" | "trash" | "plus" | "minus" | "check" | "alert"
   | "image" | "settings" | "key" | "logs" | "close" | "power" | "copy"
   | "lock" | "folder" | "video" | "file-text"
-  | "skip-back" | "skip-forward" | "maximize";
+  | "skip-back" | "skip-forward" | "maximize"
+  | "cpu" | "sparkle" | "users" | "monitor" | "film";
 
 const PATHS: Record<IconName, ReactNode> = {
   "chevron-left": <polyline points="15 18 9 12 15 6" />,
@@ -34,6 +35,11 @@ const PATHS: Record<IconName, ReactNode> = {
   "skip-back": (<><polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" /></>),
   "skip-forward": (<><polyline points="13 17 18 12 13 7" /><polyline points="6 17 11 12 6 7" /></>),
   "maximize": (<><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></>),
+  cpu: (<><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><line x1="9" y1="1" x2="9" y2="4" /><line x1="15" y1="1" x2="15" y2="4" /><line x1="9" y1="20" x2="9" y2="23" /><line x1="15" y1="20" x2="15" y2="23" /><line x1="20" y1="9" x2="23" y2="9" /><line x1="20" y1="14" x2="23" y2="14" /><line x1="1" y1="9" x2="4" y2="9" /><line x1="1" y1="14" x2="4" y2="14" /></>),
+  sparkle: (<><path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z" /><path d="M18 15l.5 1.5L20 17l-1.5.5L18 19l-.5-1.5L16 17l1.5-.5z" /></>),
+  users: (<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></>),
+  monitor: (<><rect x="2" y="3" width="20" height="14" rx="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" /></>),
+  film: (<><rect x="2" y="2" width="20" height="20" rx="2.18" /><line x1="7" y1="2" x2="7" y2="22" /><line x1="17" y1="2" x2="17" y2="22" /><line x1="2" y1="7" x2="22" y2="7" /><line x1="2" y1="17" x2="22" y2="17" /><line x1="2" y1="12" x2="7" y2="12" /><line x1="17" y1="12" x2="22" y2="12" /></>),
 };
 
 export function Icon({

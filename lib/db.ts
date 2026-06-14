@@ -173,6 +173,7 @@ function initTables(db: Database.Database) {
     `ALTER TABLE projects ADD COLUMN scriptTone TEXT DEFAULT '种草'`,
     `ALTER TABLE projects ADD COLUMN scriptPlatform TEXT DEFAULT '通用'`,
     `ALTER TABLE projects ADD COLUMN sellingPointsJson TEXT DEFAULT '[]'`,
+    `ALTER TABLE projects ADD COLUMN sellingPointAnalysisJson TEXT DEFAULT ''`,
     `ALTER TABLE image_assets ADD COLUMN usage TEXT DEFAULT ''`,
     `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND type = 'openai-compatible'`,
     `UPDATE video_providers SET defaultModel = 'kling-v3' WHERE id = 'kling-3' AND defaultModel IN ('kling-3.0', 'kling-v3.0-i2v', 'kling-v3-0')`,

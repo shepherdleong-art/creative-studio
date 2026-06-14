@@ -21,6 +21,7 @@ interface Shot {
 }
 
 const REDOABLE_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'needs_check']);
+const ACTIVE_JOB_STATUSES = new Set(['pending', 'running', 'retrying', 'needs_check']);
 
 interface ShotSet {
   id: string;
@@ -86,15 +87,43 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     return () => { active = false; };
   }, [loadSets]);
 
+  // ── Load shots for a set (declared before the fingerprint effect that references it) ──
+  const loadShots = useCallback(async (setId: string, silent = false) => {
+    if (!silent) setLoadingShotSetIds((prev) => (prev.includes(setId) ? prev : [...prev, setId]));
+    try {
+      const res = await fetch(`/api/shot-sets/${setId}`);
+      const data = await res.json();
+      if (!expandedIdsRef.current.has(setId)) return;
+      setShotsBySet((prev) => ({ ...prev, [setId]: data.shots || [] }));
+      if (data.sceneRefImageUrl) {
+        setSceneRefInfoBySet((prev) => ({
+          ...prev,
+          [setId]: { name: data.sceneRefName || '场景参考', imageUrl: data.sceneRefImageUrl },
+        }));
+      } else {
+        setSceneRefInfoBySet((prev) => ({ ...prev, [setId]: null }));
+      }
+    } catch { /* ignore */ }
+    finally {
+      if (!silent) setLoadingShotSetIds((prev) => prev.filter((id) => id !== setId));
+    }
+  }, []);
+
   // Re-fetch shot set list when the parent's jobs list changes (e.g. after a
   // job completes and loadProject() refreshes project data).  This keeps the
   // generatedCount / shot-status badges in sync without remounting the panel.
   const jobsFingerprint = useMemo(
-    () => (jobs || []).map((j) => `${j.id}:${j.status}`).join(','),
+    () => (jobs || []).map((j) => `${j.id}:${j.status}:${j.outputImageId || ''}`).join(','),
     [jobs]
   );
   useEffect(() => {
-    (async () => { await loadSets(); })();
+    (async () => {
+      await loadSets();
+      // Also refetch expanded shot sets so generated images appear immediately
+      Array.from(expandedIdsRef.current).forEach((setId) => {
+        loadShots(setId, true);
+      });
+    })();
   }, [jobsFingerprint]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openCreate = () => { setIsCreating(true); setNewName(''); setSelectedImageIds([]); };
@@ -118,28 +147,6 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
       prev.includes(imgId) ? prev.filter((id) => id !== imgId) : prev.length < 9 ? [...prev, imgId] : prev
     );
   };
-
-  const loadShots = useCallback(async (setId: string, silent = false) => {
-    if (!silent) setLoadingShotSetIds((prev) => (prev.includes(setId) ? prev : [...prev, setId]));
-    try {
-      const res = await fetch(`/api/shot-sets/${setId}`);
-      const data = await res.json();
-      // Race guard using ref — avoids stale-closure from useCallback
-      if (!expandedIdsRef.current.has(setId)) return;
-      setShotsBySet((prev) => ({ ...prev, [setId]: data.shots || [] }));
-      if (data.sceneRefImageUrl) {
-        setSceneRefInfoBySet((prev) => ({
-          ...prev,
-          [setId]: { name: data.sceneRefName || '场景参考', imageUrl: data.sceneRefImageUrl },
-        }));
-      } else {
-        setSceneRefInfoBySet((prev) => ({ ...prev, [setId]: null }));
-      }
-    } catch { /* ignore */ }
-    finally {
-      if (!silent) setLoadingShotSetIds((prev) => prev.filter((id) => id !== setId));
-    }
-  }, []);
 
   const handleExpand = (setId: string) => {
     if (expandedIdsRef.current.has(setId)) {
@@ -210,11 +217,10 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     return () => window.removeEventListener('keydown', onKey);
   }, [previewIndex, previewShots]);
 
-  // Poll shots while any job is generating (no need to poll when all are done,
-  // even if the preview modal is open — the prompt won't be overwritten).
+  // Poll shots while any job is still active (pending, running, retrying, needs_check)
   useEffect(() => {
     const activeSetIds = expandedIds.filter((setId) =>
-      (shotsBySet[setId] || []).some((s) => s.jobStatus === 'pending' || s.jobStatus === 'running')
+      (shotsBySet[setId] || []).some((s) => ACTIVE_JOB_STATUSES.has(s.jobStatus || ''))
     );
     if (activeSetIds.length === 0) return;
     const t = setInterval(() => {
