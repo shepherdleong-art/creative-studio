@@ -522,9 +522,9 @@ export default function ProjectDetailPage() {
             )}
             {activeTab === 'script' && <ScriptPanel projectId={project.id} />}
             {activeTab === 'video' && (
-              <div className="video-generation-section card p-5">
-                <div className="mb-4">
-                  <h2 className="text-base font-semibold tracking-[-0.01em]">视频生成</h2>
+              <div className="video-generation-section">
+                <div className="video-generation-heading">
+                  <h2 className="text-base font-semibold">视频生成</h2>
                   <p className="mt-1 text-sm text-ink-secondary">选择分镜组和视频供应商，创建图生视频任务。</p>
                 </div>
                 <VideoGenerationPanel projectId={project.id} />
