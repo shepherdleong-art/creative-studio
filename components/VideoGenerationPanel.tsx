@@ -369,45 +369,47 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
       <div className="video-workspace">
         {/* ═══ LEFT: Shot selector + params ═══ */}
-        <div className="panel-col">
-          {/* Shot tabs */}
-          {safeShots.length > 0 && (
-            <div className="shot-tab-row">
-              {safeShots.map((shot) => (
-                <button
-                  key={shot.id}
-                  type="button"
-                  onClick={() => activate(shot.id)}
-                  className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
-                >
-                  分镜 {shot.indexNum}
-                </button>
-              ))}
-            </div>
-          )}
+        <div className="panel-col left-col">
+          <div className="panel-col-header">
+            {/* Shot tabs */}
+            {safeShots.length > 0 && (
+              <div className="shot-tab-row">
+                {safeShots.map((shot) => (
+                  <button
+                    key={shot.id}
+                    type="button"
+                    onClick={() => activate(shot.id)}
+                    className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
+                  >
+                    分镜 {shot.indexNum}
+                  </button>
+                ))}
+              </div>
+            )}
 
-          {/* Source image preview */}
-          {selectedShotData?.imageUrl ? (
-            <HoverZoomImage
-              src={selectedShotData.imageUrl}
-              alt={`分镜 ${selectedShotData.indexNum}`}
-              className="w-full aspect-[4/3] cursor-pointer rounded-lg border border-hairline object-cover bg-surface-subtle transition-colors hover:border-accent/40"
-              zoomMaxWidth={520}
-              zoomMaxHeight={390}
-            />
-          ) : selectedShotData ? (
-            <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
-              源图不可用
-            </div>
-          ) : safeShots.length > 0 ? (
-            <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
-              请选择一个分镜
-            </div>
-          ) : null}
+            {/* Source image preview */}
+            {selectedShotData?.imageUrl ? (
+              <HoverZoomImage
+                src={selectedShotData.imageUrl}
+                alt={`分镜 ${selectedShotData.indexNum}`}
+                className="w-full aspect-[4/3] cursor-pointer rounded-lg border border-hairline object-cover bg-surface-subtle transition-colors hover:border-accent/40"
+                zoomMaxWidth={520}
+                zoomMaxHeight={390}
+              />
+            ) : selectedShotData ? (
+              <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
+                源图不可用
+              </div>
+            ) : safeShots.length > 0 ? (
+              <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
+                请选择一个分镜
+              </div>
+            ) : null}
+          </div>
 
-          {/* Motion form */}
+          {/* Motion form — scrollable independently */}
           {selectedShot && (
-            <>
+            <div className="panel-scroll-area">
               <div className="space-y-3">
                 {motionRows.map((row, idx) => (
                   <div key={row.key} className="video-motion-card">
@@ -471,7 +473,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     : `生成 ${motionRows.filter((r) => r.prompt.trim()).length} 条视频`}
                 </button>
               </div>
-            </>
+            </div>
           )}
         </div>
 
@@ -493,14 +495,16 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         </div>
 
         {/* ═══ RIGHT: Result cards ═══ */}
-        <div className="panel-col">
-          <VideoGenerationResults
-            videoJobs={videoJobs}
-            onPreview={selectVideoPreview}
-            onRetry={handleRetry}
-            onResumePoll={handleResumePoll}
-            activePreviewJobId={videoPreviewJobId}
-          />
+        <div className="panel-col right-col">
+          <div className="panel-scroll-area">
+            <VideoGenerationResults
+              videoJobs={videoJobs}
+              onPreview={selectVideoPreview}
+              onRetry={handleRetry}
+              onResumePoll={handleResumePoll}
+              activePreviewJobId={videoPreviewJobId}
+            />
+          </div>
         </div>
       </div>
 
