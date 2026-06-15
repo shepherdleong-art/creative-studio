@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import {
+  IMAGE_REFERENCE_COUNTS_SQL,
+  getImageDeleteBlockMessage,
+  type ImageReferenceCounts,
+} from '@/lib/image-delete-policy';
 import fs from 'fs';
 
 export async function DELETE(
@@ -31,31 +36,20 @@ export async function DELETE(
     // not a FK column, so we CHECK it explicitly with LIKE to avoid
     // deleting images that are still used as references.
     const deleteResult = db.transaction(() => {
-      const refs = db.prepare(`
-        SELECT
-          EXISTS(SELECT 1 FROM jobs WHERE inputImageId = ?1 OR outputImageId = ?1
-                 OR referenceImageIds LIKE '%"' || ?1 || '"%') as jobRefs,
-          EXISTS(SELECT 1 FROM scene_references WHERE imageAssetId = ?1) as sceneRefs,
-          EXISTS(SELECT 1 FROM shots WHERE sourceImageId = ?1 OR latestGeneratedImageId = ?1) as shotRefs,
-          EXISTS(SELECT 1 FROM video_jobs WHERE sourceImageId = ?1) as videoRefs
-      `).get(id) as {
-        jobRefs: number;
-        sceneRefs: number;
-        shotRefs: number;
-        videoRefs: number;
-      };
+      const refs = db.prepare(IMAGE_REFERENCE_COUNTS_SQL).get({ id }) as ImageReferenceCounts;
 
-      if (refs.jobRefs || refs.sceneRefs || refs.shotRefs || refs.videoRefs) {
-        return { blocked: true };
+      const blockMessage = getImageDeleteBlockMessage(refs);
+      if (blockMessage) {
+        return { blocked: true, message: blockMessage };
       }
 
       db.prepare(`DELETE FROM image_assets WHERE id = ?`).run(id);
-      return { blocked: false };
+      return { blocked: false, message: null };
     })();
 
     if (deleteResult.blocked) {
       return NextResponse.json(
-        { error: '该图片已被任务或分镜引用，无法删除。请先删除关联的任务或分镜。' },
+        { error: deleteResult.message },
         { status: 409 }
       );
     }

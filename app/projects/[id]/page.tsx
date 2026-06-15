@@ -294,7 +294,8 @@ export default function ProjectDetailPage() {
       const res = await fetch(`/api/images/${assetId}`, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert('删除失败: ' + (data.error || '未知错误'));
+        const message = data.error || '未知错误';
+        alert(res.status === 409 ? message : `删除失败: ${message}`);
         return;
       }
     } catch {
