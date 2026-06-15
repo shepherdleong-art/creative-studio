@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import ScriptSellingPointInput from './ScriptSellingPointInput';
 import ScriptStrategyConfig from './ScriptStrategyConfig';
 import ScriptResultView from './ScriptResultView';
+import { canNavigateToScriptStep, getScriptStepStatus, type ScriptStep } from '@/lib/script-workflow';
 import type { AnalysisResult, ProviderMeta, ScriptOutput } from '@/lib/script-providers';
 
 // ── Types ──
@@ -37,7 +38,13 @@ interface Props {
   projectId: string;
 }
 
-type Step = 1 | 2 | 3;
+type Step = ScriptStep;
+
+const STEP_LABELS: Record<Step, string> = {
+  1: '卖点',
+  2: '策略',
+  3: '脚本',
+};
 
 // ── Component ──
 
@@ -80,6 +87,34 @@ export default function ScriptPanel({ projectId }: Props) {
 
   // Refs
   const initialLoadDone = useRef(false);
+
+  const hydrateStrategyFromDraft = useCallback((draft: ScriptDraft) => {
+    try {
+      const snapshot = JSON.parse(draft.inputSnapshot || '{}') as {
+        selectedSellingPoints?: Array<{ title?: string }>;
+        templateId?: string;
+        templateName?: string;
+        duration?: string;
+        shotSetId?: string;
+        providerId?: string;
+        tone?: string;
+        platform?: string;
+      };
+
+      const titles = Array.isArray(snapshot.selectedSellingPoints)
+        ? snapshot.selectedSellingPoints.map((s) => s.title).filter((title): title is string => Boolean(title))
+        : [];
+
+      setSelectedSellingPoints(titles);
+      if (snapshot.templateId) setTemplateId(snapshot.templateId);
+      if (snapshot.templateName) setTemplateName(snapshot.templateName);
+      if (snapshot.duration) setDuration(snapshot.duration);
+      if (snapshot.shotSetId) setSelectedShotSetId(snapshot.shotSetId);
+      if (snapshot.providerId) setGenerateProviderId(snapshot.providerId);
+      if (snapshot.tone) setTone(snapshot.tone);
+      if (snapshot.platform) setPlatform(snapshot.platform);
+    } catch { /* ignore corrupt draft snapshots */ }
+  }, []);
 
   // ── Load shot images for result view (must be declared before loadAll) ──
   const loadShotImages = useCallback(async (shotSetId: string) => {
@@ -146,6 +181,11 @@ export default function ScriptPanel({ projectId }: Props) {
         // Analysis
         if (draftData.analysis) {
           setAnalysis(draftData.analysis);
+          setSelectedSellingPoints((current) => {
+            if (current.length > 0) return current;
+            const rankings = (draftData.analysis as AnalysisResult).rankings || [];
+            return rankings.slice(0, 3).map((r) => r.title);
+          });
           setStep(2);
         }
 
@@ -156,6 +196,7 @@ export default function ScriptPanel({ projectId }: Props) {
             initialLoadDone.current = true;
             const first = draftData.drafts[0] as ScriptDraft;
             setSelectedDraftId(first.id);
+            hydrateStrategyFromDraft(first);
             try {
               const parsed = JSON.parse(first.outputJson) as ScriptOutput;
               setScript(parsed);
@@ -197,8 +238,7 @@ export default function ScriptPanel({ projectId }: Props) {
 
     run();
     return () => { active = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, hydrateStrategyFromDraft, loadShotImages]);
 
   // ── Save brief ──
   const saveBrief = useCallback(async () => {
@@ -332,6 +372,7 @@ export default function ScriptPanel({ projectId }: Props) {
     const draft = drafts.find((d) => d.id === draftId);
     if (draft) {
       setSelectedDraftId(draftId);
+      hydrateStrategyFromDraft(draft);
       try {
         const parsed = JSON.parse(draft.outputJson) as ScriptOutput;
         setScript(parsed);
@@ -341,10 +382,15 @@ export default function ScriptPanel({ projectId }: Props) {
         }
       } catch { /* ignore */ }
     }
-  }, [drafts, loadShotImages]);
+  }, [drafts, hydrateStrategyFromDraft, loadShotImages]);
 
-  // ── Reset to start over ──
-  const handleReset = useCallback(() => {
+  // ── Step navigation ──
+  const handleStepSelect = useCallback((targetStep: Step) => {
+    if (!canNavigateToScriptStep(targetStep, { hasAnalysis: Boolean(analysis), hasScript: Boolean(script) })) return;
+    setStep(targetStep);
+  }, [analysis, script]);
+
+  const handleBackToBrief = useCallback(() => {
     setStep(1);
     setAnalysis(null);
     setScript(null);
@@ -359,6 +405,11 @@ export default function ScriptPanel({ projectId }: Props) {
   }, [shotImages]);
 
   // ── Render ──
+  const stepStatus = getScriptStepStatus({
+    step,
+    hasAnalysis: Boolean(analysis),
+    hasScript: Boolean(script),
+  });
 
   if (loading) {
     return (
@@ -381,18 +432,37 @@ export default function ScriptPanel({ projectId }: Props) {
             脚本生成
           </h2>
           {/* Step indicator */}
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${step === 1 ? 'bg-accent text-white' : 'bg-ok text-white'}`}>
-              {step > 1 ? '✓' : '1'}
-            </span>
-            <span className="text-ink-tertiary">·</span>
-            <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${step === 2 ? 'bg-accent text-white' : step > 2 ? 'bg-ok text-white' : 'bg-surface-subtle text-ink-tertiary'}`}>
-              {step > 2 ? '✓' : '2'}
-            </span>
-            <span className="text-ink-tertiary">·</span>
-            <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${step === 3 ? 'bg-accent text-white' : 'bg-surface-subtle text-ink-tertiary'}`}>
-              3
-            </span>
+          <div className="flex items-center gap-1.5 text-xs" aria-label="脚本生成步骤">
+            {([1, 2, 3] as Step[]).map((item, index) => {
+              const status = stepStatus[item];
+              const canSelect = canNavigateToScriptStep(item, {
+                hasAnalysis: Boolean(analysis),
+                hasScript: Boolean(script),
+              });
+              const className = status === 'active'
+                ? 'bg-accent text-white'
+                : status === 'complete'
+                  ? 'bg-ok text-white hover:bg-ok/90'
+                  : status === 'available'
+                    ? 'bg-accent-tint text-accent hover:bg-accent-tint/80'
+                    : 'bg-surface-subtle text-ink-tertiary';
+
+              return (
+                <div key={item} className="flex items-center gap-1.5">
+                  {index > 0 && <span className="text-ink-tertiary">·</span>}
+                  <button
+                    type="button"
+                    onClick={() => handleStepSelect(item)}
+                    disabled={!canSelect}
+                    title={canSelect ? `返回第 ${item} 步：${STEP_LABELS[item]}` : `第 ${item} 步还没有可用结果`}
+                    aria-current={status === 'active' ? 'step' : undefined}
+                    className={`flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[0.7rem] font-semibold transition-colors disabled:cursor-not-allowed ${className}`}
+                  >
+                    {status === 'complete' ? '✓' : item}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -412,7 +482,7 @@ export default function ScriptPanel({ projectId }: Props) {
             </select>
           )}
           {step > 1 && (
-            <button onClick={handleReset} className="btn-secondary btn-sm text-xs">
+            <button onClick={handleBackToBrief} className="btn-secondary btn-sm text-xs">
               重新开始
             </button>
           )}

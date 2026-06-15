@@ -723,12 +723,10 @@ function SceneResultsSection({
 }) {
   const total = jobs.length;
   const activeCount = jobs.filter((j) => ['pending', 'running', 'retrying', 'needs_check'].includes(j.status)).length;
-  const succeededCount = jobs.filter((j) => j.status === 'succeeded').length;
+  const succeededCount = jobs.filter((j) => j.status === 'succeeded' && j.outputFilename).length;
   const failedCount = jobs.filter((j) => j.status === 'failed').length;
   const isEmpty = total === 0;
   const isGenerating = activeCount > 0;
-  const isComplete = total > 0 && activeCount === 0;
-  const isFailedOnly = isComplete && succeededCount === 0 && failedCount > 0;
 
   return (
     <>
@@ -753,41 +751,24 @@ function SceneResultsSection({
         </div>
       )}
 
-      {isGenerating && (
-        <div className="scene-result-state scene-result-state-active">
-          <div className="h-7 w-7 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-          <div className="font-medium text-ink">生成中</div>
-          <div className="text-xs text-ink-tertiary">
-            已完成 {succeededCount}/{total}，剩余 {activeCount}
-          </div>
-        </div>
-      )}
-
-      {isComplete && (
+      {!isEmpty && (
         <>
           <div className="scene-result-summary">
+            {activeCount > 0 && <span className="status-badge status-running">生成中 {activeCount}</span>}
             {succeededCount > 0 && <span className="status-badge status-succeeded">成功 {succeededCount}</span>}
             {failedCount > 0 && <span className="status-badge status-failed">失败 {failedCount}</span>}
           </div>
 
-          {isFailedOnly ? (
-            <div className="scene-result-state">
-              <Icon name="alert" size={28} />
-              <div className="font-medium text-ink-secondary">没有生成成功的图片</div>
-              <div className="text-xs text-ink-tertiary">请查看运行日志，或调整提示词后重新生成。</div>
-            </div>
-          ) : (
-            <ResultGallery
-              jobs={jobs}
-              images={images}
-              onRetry={onRetry}
-              onMark={onMark}
-              onRegenerate={onRegenerate}
-              onSetSceneRef={onSetSceneRef}
-              projectId={projectId}
-              sceneReferenceImageIds={sceneReferenceImageIds}
-            />
-          )}
+          <ResultGallery
+            jobs={jobs}
+            images={images}
+            onRetry={onRetry}
+            onMark={onMark}
+            onRegenerate={onRegenerate}
+            onSetSceneRef={onSetSceneRef}
+            projectId={projectId}
+            sceneReferenceImageIds={sceneReferenceImageIds}
+          />
         </>
       )}
     </>

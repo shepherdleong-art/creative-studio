@@ -7,6 +7,9 @@ import ProviderSettings from '@/components/ProviderSettings';
 import ImageUploader from '@/components/ImageUploader';
 import type { UploadedFile } from '@/components/ImageUploader';
 import {
+  getImageModelCapabilities,
+} from '@/lib/image-model-capabilities';
+import {
   GPT_IMAGE_2_ASPECT_RATIOS,
   GPT_IMAGE_2_RESOLUTIONS,
   GPT_IMAGE_2_SIZE_MAP,
@@ -66,6 +69,8 @@ export default function NewProjectPage() {
     try { return resolveGptImage2Size(aspectRatio, resolution); }
     catch { return ''; }
   }, [aspectRatio, resolution]);
+  const modelCapabilities = useMemo(() => getImageModelCapabilities(model), [model]);
+  const supportsQuality = modelCapabilities.supportsQuality;
 
   // ── Preprocessing ──
   const [preprocessEnabled, setPreprocessEnabled] = useState(true);
@@ -82,7 +87,10 @@ export default function NewProjectPage() {
 
   const [creating, setCreating] = useState(false);
 
-  const costPerImage = getEstimatedCost(size, quality) || provider?.defaultCostPerImage || 0;
+  const effectiveQuality = supportsQuality ? quality : 'auto';
+  const costPerImage = supportsQuality
+    ? getEstimatedCost(size, quality) || provider?.defaultCostPerImage || 0
+    : provider?.defaultCostPerImage || 0;
 
   const handleSubmitComplex = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,7 +105,7 @@ export default function NewProjectPage() {
         body: JSON.stringify({
           name, productName, productCode, category,
           workflowType: 'complex_product',
-          providerId: provider.id, model, size, quality, timeoutMs,
+          providerId: provider.id, model, size, quality: effectiveQuality, timeoutMs,
           aspectRatio, resolution,
           preprocessEnabled, targetMaxSide, jpegQuality,
         }),
@@ -127,7 +135,8 @@ export default function NewProjectPage() {
           name, workflowType: 'legacy_batch_edit',
           providerId: provider.id, model,
           prompt: legacyPrompt, negativePrompt: legacyNegativePrompt,
-          aspectRatio, resolution, size, quality,
+          aspectRatio, resolution, size, quality: effectiveQuality,
+          generationCount,
           concurrency: legacyConcurrency, maxAttempts: legacyMaxAttempts, timeoutMs,
           referenceImageIds: legacyRefFiles.map((f) => f.id),
           inputImageIds: legacyInputFiles.map((f) => f.id),
@@ -145,43 +154,58 @@ export default function NewProjectPage() {
     finally { setCreating(false); }
   };
 
+  const modelControlClass = 'input-field h-11 w-full text-sm leading-none';
+  const providerLocksModel = provider?.type === 'packy-images' || provider?.type === 'packy-gemini-image';
+
   const renderModelParams = () => (
     <div className="card p-4">
       <h3 className="text-sm font-semibold mb-3 text-ink">模型参数</h3>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <div>
           <label className="label">模型</label>
-          <input type="text" value={model} onChange={(e) => setModel(e.target.value)} className="input-field" />
+          <input
+            type="text"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            readOnly={providerLocksModel}
+            className={modelControlClass}
+          />
         </div>
         <div>
           <label className="label">画面比例</label>
-          <select value={aspectRatio} onChange={(e) => { setAspectRatio(e.target.value); const avail = Object.keys(GPT_IMAGE_2_SIZE_MAP[e.target.value] || {}); if (!avail.includes(resolution)) setResolution(avail[0] || '1k'); }} className="input-field">
+          <select value={aspectRatio} onChange={(e) => { setAspectRatio(e.target.value); const avail = Object.keys(GPT_IMAGE_2_SIZE_MAP[e.target.value] || {}); if (!avail.includes(resolution)) setResolution(avail[0] || '1k'); }} className={modelControlClass}>
             {GPT_IMAGE_2_ASPECT_RATIOS.map((r) => (<option key={r} value={r}>{r}</option>))}
           </select>
         </div>
         {aspectRatio !== 'auto' && (
         <div>
           <label className="label">清晰度</label>
-          <select value={resolution} onChange={(e) => setResolution(e.target.value)} className="input-field">
+          <select value={resolution} onChange={(e) => setResolution(e.target.value)} className={modelControlClass}>
             {GPT_IMAGE_2_RESOLUTIONS.map((r) => (
               <option key={r} value={r} disabled={!(GPT_IMAGE_2_SIZE_MAP[aspectRatio] || {})[r]}>{r}{GPT_IMAGE_2_SIZE_MAP[aspectRatio]?.[r] ? ` → ${GPT_IMAGE_2_SIZE_MAP[aspectRatio][r]}` : ' — 不支持'}</option>
             ))}
           </select>
         </div>
         )}
-        <div>
-          <label className="label">质量</label>
-          <select value={quality} onChange={(e) => setQuality(e.target.value)} className="input-field">
-            <option value="low">低</option><option value="medium">中</option><option value="high">高</option>
-          </select>
-        </div>
+        {supportsQuality && (
+          <div>
+            <label className="label">质量</label>
+            <select value={quality} onChange={(e) => setQuality(e.target.value)} className={modelControlClass}>
+              <option value="low">低</option><option value="medium">中</option><option value="high">高</option>
+            </select>
+          </div>
+        )}
         <div>
           <label className="label">超时(秒)</label>
           <input type="number" min={30} max={600} value={Math.floor(timeoutMs / 1000)}
-            onChange={(e) => setTimeoutMs(Number(e.target.value) * 1000)} className="input-field" />
+            onChange={(e) => setTimeoutMs(Number(e.target.value) * 1000)} className={modelControlClass} />
         </div>
       </div>
-      <p className="text-xs text-ink-tertiary mt-2">以上为参考价格，实际以中转站后台扣费为准</p>
+      <p className="text-xs text-ink-tertiary mt-2">
+        {supportsQuality
+          ? '以上为参考价格，实际以中转站后台扣费为准'
+          : '当前模型不支持质量参数，实际扣费以供应商后台为准'}
+      </p>
     </div>
   );
 
@@ -233,7 +257,14 @@ export default function NewProjectPage() {
             <label className="label">项目名称</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="例如：春季家居图批量处理" />
           </div>
-          <ProviderSettings selectedId={provider?.id} onSelect={(p) => { setProvider(p); setModel(p.model); }} />
+          <ProviderSettings
+            selectedId={provider?.id}
+            onSelect={(p) => {
+              setProvider(p);
+              setModel(p.model);
+              setTimeoutMs(getImageModelCapabilities(p.model).recommendedTimeoutMs);
+            }}
+          />
           <ImageUploader role="reference" label="参考图" hint="上传 1-3 张参考图" maxFiles={3}
             files={legacyRefFiles} onUploaded={(files) => setLegacyRefFiles((p) => [...p, ...files])}
             onRemove={(i) => setLegacyRefFiles((p) => p.filter((_, idx) => idx !== i))}
@@ -305,7 +336,14 @@ export default function NewProjectPage() {
           </div>
 
           {/* Provider */}
-          <ProviderSettings selectedId={provider?.id} onSelect={(p) => { setProvider(p); setModel(p.model); }} />
+          <ProviderSettings
+            selectedId={provider?.id}
+            onSelect={(p) => {
+              setProvider(p);
+              setModel(p.model);
+              setTimeoutMs(getImageModelCapabilities(p.model).recommendedTimeoutMs);
+            }}
+          />
 
           {/* Model params */}
           {renderModelParams()}

@@ -380,6 +380,7 @@ function ProviderForm({
         >
           <option value="geekai-json">GeekAI (JSON + async polling)</option>
           <option value="packy-images">Packy Images API (multipart, no polling)</option>
+          <option value="packy-gemini-image">Gemini Image API (chat completions, no polling)</option>
           <option value="openai-compatible">OpenAI-compatible (multipart)</option>
         </select>
       </div>
