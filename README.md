@@ -1,29 +1,46 @@
-# 批量图片编辑工作台
+# Creative Studio
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Creative Studio 是一个本地优先的 AI 素材生产工作台，用来把复杂结构产品从「一张素材图」推进到「场景图、分镜图、脚本、视频任务和导出包」。
+
+它基于 Next.js 构建，适合在 Windows 和 macOS 本地运行。API Key、项目数据、生成结果默认保存在本机，不需要把素材和密钥交给外部后台托管。
+
+## 主要能力
+
+- **复杂产品素材流**：创建产品项目，维护产品名、编号、品类、供应商、模型、画面比例、清晰度和图片预处理参数。
+- **场景图生成**：上传原始素材，按项目提示词生成候选场景图。
+- **分镜管理**：把场景图整理成分镜组，为后续视频任务和脚本生成提供稳定素材结构。
+- **脚本生成**：围绕卖点、人群、平台、语气和分镜组生成口播脚本，并支持图文审阅和复制。
+- **视频任务准备**：基于分镜创建视频任务，支持视频供应商配置、任务轮询、重试和结果预览。
+- **批量编辑兼容模式**：保留旧版批量图片编辑流程，可上传参考图和待处理图后并发生成结果。
+- **本地导出**：支持下载项目产物、创意包、脚本和生成素材，便于交付或二次编辑。
+
+## 技术栈
+
+- Next.js 16 App Router
+- React 19
+- TypeScript
+- Tailwind CSS 4
+- SQLite via `better-sqlite3`
+- `sharp` 图片预处理
+- `archiver` ZIP 导出
 
 ## Windows 快速启动
 
-双击：
+推荐直接双击：
 
 ```text
 start-windows.cmd
 ```
 
-或手动运行：
+启动脚本会检查 Node.js、安装依赖、启动本地服务，并尝试打开浏览器。
 
-```powershell
-npm ci
-npm run dev -- --hostname 127.0.0.1 --port 3000
-```
-
-打开：
+默认访问地址：
 
 ```text
 http://127.0.0.1:3000
 ```
 
-停止：
+停止服务：
 
 ```text
 stop-windows.cmd
@@ -31,37 +48,157 @@ stop-windows.cmd
 
 详细说明见 [WINDOWS.md](./WINDOWS.md)。
 
-## Getting Started
+## macOS 快速启动
 
-First, run the development server:
+推荐直接双击：
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```text
+start.command
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+如果 macOS 提示没有执行权限，可以在终端运行一次：
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+chmod +x start.command stop.command start.sh stop.sh
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+然后再次双击 `start.command`，或在终端运行：
 
-## Learn More
+```bash
+./start.command
+```
 
-To learn more about Next.js, take a look at the following resources:
+默认访问地址：
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```text
+http://localhost:3000
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+停止服务：
 
-## Deploy on Vercel
+```text
+stop.command
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+也可以在启动窗口按 `Ctrl+C` 停止。
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 手动启动
+
+需要 Node.js 20 或更高版本。
+
+```bash
+npm ci
+npm run dev
+```
+
+然后打开：
+
+```text
+http://localhost:3000
+```
+
+Windows 如果需要固定本机地址，可运行：
+
+```powershell
+npm run dev -- --hostname 127.0.0.1 --port 3000
+```
+
+Windows 快启脚本换端口：
+
+```powershell
+$env:BATCH_WORKBENCH_PORT=3001
+.\start-windows.cmd
+```
+
+## 首次使用
+
+1. 打开 `/settings`。
+2. 添加图片供应商，例如 Packy、GeekAI 或其他 OpenAI-compatible 图片接口。
+3. 填写 Base URL、API Key、模型名和默认单图成本。
+4. 只启用当前要测试的供应商，避免误用其他余额。
+5. 返回首页，新建复杂结构产品项目或旧版批量编辑项目。
+
+API Key 会存储在本地 SQLite 数据库中，前端列表只显示是否已配置，不显示明文 Key。
+
+## 脚本模型配置
+
+脚本生成模型使用服务端环境变量读取。可以在 `.env.local` 中配置：
+
+```env
+GEMINI_API_KEY=
+GEMINI_BASE_URL=
+GEMINI_MODEL=
+GEMINI_API_STYLE=openai-compatible
+
+QWEN_API_KEY=
+QWEN_BASE_URL=
+QWEN_MODEL=
+
+KIMI_API_KEY=
+KIMI_BASE_URL=
+KIMI_MODEL=
+
+GPT_API_KEY=
+GPT_BASE_URL=
+GPT_MODEL=
+```
+
+只需要配置实际使用的模型。`.env.local` 不应提交到 GitHub。
+
+## 常用命令
+
+```powershell
+npm run dev
+npm run lint
+npm run build
+npm run start
+```
+
+## 目录结构
+
+```text
+app/                    Next.js 页面和 API 路由
+components/             工作台 UI 组件
+components/ui/          通用 UI 原语和图标
+lib/                    数据库、队列、供应商适配器、文件导出等核心逻辑
+lib/providers/          图片生成供应商适配器
+lib/script-providers/   脚本生成供应商适配器
+lib/video-providers/    视频生成供应商适配器
+docs/                   设计、评审和实现记录
+outputs/                阶段性规格、测试清单和交付记录
+scripts/                启停辅助脚本
+```
+
+## 本地数据和安全
+
+这些目录或文件属于本机运行数据，不应提交或打包给别人：
+
+```text
+node_modules/
+.next/
+data/
+storage/
+.env.local
+```
+
+原因：
+
+- `node_modules` 包含 Windows/Mac/Linux 不同的原生二进制依赖。
+- `.next` 是 Next.js 构建缓存。
+- `data/` 通常包含本地 SQLite 数据库，可能保存供应商配置。
+- `storage/` 通常包含上传素材、生成图片、视频和日志。
+- `.env.local` 可能包含 API Key。
+
+干净迁移方式：从 GitHub 下载源码，在目标机器运行 `npm ci`、`start-windows.cmd` 或 `start.command`，再到 `/settings` 重新配置供应商。
+
+## 适用场景
+
+- 电商产品场景图批量生产
+- 家居、消费品、复杂结构产品的分镜素材管理
+- 短视频脚本和分镜图文对照
+- 多供应商 API 测试和成本控制
+- 本地私有素材工作流
+
+## 状态
+
+当前项目仍在快速迭代中，重点方向是复杂结构产品的图片生产、分镜管理、脚本生成和视频任务准备。旧版批量图片编辑流程仍保留，作为兼容模式使用。
