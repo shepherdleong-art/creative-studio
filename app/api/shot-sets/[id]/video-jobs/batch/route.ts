@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY } from '@/lib/video-queue';
+import { getVideoProviderConfigState } from '@/lib/video-auth';
 
 const MAX_ITEMS = 10;
 
@@ -56,9 +57,16 @@ export async function POST(
     const providerCache = new Map<string, { model: string }>();
     for (const pid of uniqueProviderIds) {
       const prov = db.prepare(`SELECT * FROM video_providers WHERE id = ? AND enabled = 1`).get(pid) as {
-        id: string; name: string; defaultModel: string;
+        id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; defaultModel: string;
       } | undefined;
       if (!prov) return NextResponse.json({ error: `视频供应商 ${pid} 未找到或已禁用` }, { status: 400 });
+      const providerConfig = getVideoProviderConfigState(prov);
+      if (!providerConfig.configured) {
+        return NextResponse.json(
+          { error: `视频供应商 ${prov.name} 未配置完整：${providerConfig.missing.join(', ')}` },
+          { status: 400 }
+        );
+      }
       providerCache.set(pid, { model: prov.defaultModel });
     }
 

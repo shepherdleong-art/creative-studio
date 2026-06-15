@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { buildGenericZipStream, ZipImageEntry } from '@/lib/zip-download';
+import { buildGenericZipStream, createZipNameRegistry, reserveZipFilename, ZipImageEntry } from '@/lib/zip-download';
 import path from 'path';
 import fs from 'fs';
 
@@ -54,6 +54,12 @@ export async function GET(
 
     // Build entries
     const entries: ZipImageEntry[] = [];
+    const zipNames = createZipNameRegistry();
+    const addEntry = (filePath: string, filename: string): string => {
+      const zipFilename = reserveZipFilename(filename, zipNames);
+      entries.push({ filePath, filename: zipFilename });
+      return zipFilename;
+    };
     const manifestShots: Array<{
       shotIndex: number;
       sourceImage: string;
@@ -70,35 +76,40 @@ export async function GET(
 
     // Add shot images
     for (const shot of shots) {
-      const shotEntry = shot.imagePath ? `${prefix}images/shot-${String(shot.indexNum).padStart(2, '0')}.png` : null;
+      let shotEntry = shot.imagePath ? `${prefix}images/shot-${String(shot.indexNum).padStart(2, '0')}.png` : null;
       if (shot.imagePath) {
         const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
         const resolved = path.resolve(shot.imagePath);
         if (resolved.startsWith(storageRoot + path.sep) && fs.existsSync(resolved)) {
-          entries.push({ filePath: resolved, filename: shotEntry! });
+          shotEntry = addEntry(resolved, shotEntry!);
         }
       }
 
       const shotVideos = videos.filter((v) => v.shotId === shot.shotId);
+      const manifestVideos: Array<{
+        filename: string;
+        provider: string;
+        template: string;
+        prompt: string;
+      }> = [];
+      for (const v of shotVideos) {
+        let videoFilename = `${prefix}videos/shot-${String(shot.indexNum).padStart(2, '0')}-${v.providerName || 'unknown'}-${v.templateName || 'custom'}.mp4`;
+        const resolved = path.resolve(v.localVideoPath);
+        const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+        if (!resolved.startsWith(storageRoot + path.sep) || !fs.existsSync(resolved)) continue;
+        videoFilename = addEntry(resolved, videoFilename);
+        manifestVideos.push({
+          filename: videoFilename,
+          provider: v.providerName || 'unknown',
+          template: v.templateName || 'custom',
+          prompt: v.prompt || '',
+        });
+      }
+
       manifestShots.push({
         shotIndex: shot.indexNum,
         sourceImage: shotEntry || '',
-        videos: shotVideos.map((v) => {
-          const videoFilename = `${prefix}videos/shot-${String(shot.indexNum).padStart(2, '0')}-${v.providerName || 'unknown'}-${v.templateName || 'custom'}.mp4`;
-          if (v.localVideoPath) {
-            const resolved = path.resolve(v.localVideoPath);
-            const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
-            if (resolved.startsWith(storageRoot + path.sep) && fs.existsSync(resolved)) {
-              entries.push({ filePath: resolved, filename: videoFilename });
-            }
-          }
-          return {
-            filename: videoFilename,
-            provider: v.providerName || 'unknown',
-            template: v.templateName || 'custom',
-            prompt: v.prompt || '',
-          };
-        }),
+        videos: manifestVideos,
       });
     }
 
@@ -121,8 +132,8 @@ export async function GET(
         fs.writeFileSync(txtPath, scriptText, 'utf-8');
         fs.writeFileSync(jsonPathf, scriptJson, 'utf-8');
 
-        entries.push({ filePath: txtPath, filename: `${prefix}scripts/latest-script.txt` });
-        entries.push({ filePath: jsonPathf, filename: `${prefix}scripts/latest-script.json` });
+        addEntry(txtPath, `${prefix}scripts/latest-script.txt`);
+        addEntry(jsonPathf, `${prefix}scripts/latest-script.json`);
 
         // Annotate shots with script
         const shotsArr = (scriptObj as Record<string, unknown>).shots as Array<Record<string, unknown>> | undefined;
@@ -152,7 +163,7 @@ export async function GET(
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
     const manifestPath = path.join(tmpDir, `manifest-${projectId}.json`);
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
-    entries.push({ filePath: manifestPath, filename: `${prefix}manifest.json` });
+    addEntry(manifestPath, `${prefix}manifest.json`);
 
     if (entries.length === 0) {
       return NextResponse.json({ error: 'No content to export' }, { status: 404 });

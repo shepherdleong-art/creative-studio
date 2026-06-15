@@ -9,12 +9,59 @@ export interface ZipImageEntry {
   filename: string;
 }
 
-export function sanitizeZipFilename(name: string): string {
-  return name
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+export interface ZipNameRegistry {
+  usedNames: Set<string>;
+  baseCounts: Map<string, number>;
+}
+
+export function createZipNameRegistry(): ZipNameRegistry {
+  return {
+    usedNames: new Set<string>(),
+    baseCounts: new Map<string, number>(),
+  };
+}
+
+function sanitizeZipPathSegment(segment: string): string {
+  return segment
+    .replace(/[<>:"|?*\x00-\x1F]/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 120) || 'image.png';
+    .slice(0, 120);
+}
+
+export function sanitizeZipFilename(name: string): string {
+  const segments = name
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('/')
+    .map(sanitizeZipPathSegment)
+    .filter((segment) => segment && segment !== '.' && segment !== '..');
+
+  return segments.join('/') || 'image.png';
+}
+
+function appendDuplicateSuffix(cleanName: string, duplicateNumber: number): string {
+  const dir = path.posix.dirname(cleanName);
+  const filename = path.posix.basename(cleanName);
+  const ext = path.posix.extname(filename);
+  const base = ext ? path.posix.basename(filename, ext) : filename;
+  const nextName = ext ? `${base}-${duplicateNumber}${ext}` : `${base}-${duplicateNumber}`;
+  return dir === '.' ? nextName : `${dir}/${nextName}`;
+}
+
+export function reserveZipFilename(name: string, registry: ZipNameRegistry): string {
+  const clean = sanitizeZipFilename(name);
+  let candidate = clean;
+  let duplicateNumber = registry.baseCounts.get(clean) || 1;
+
+  while (registry.usedNames.has(candidate)) {
+    duplicateNumber += 1;
+    candidate = appendDuplicateSuffix(clean, duplicateNumber);
+  }
+
+  registry.baseCounts.set(clean, duplicateNumber);
+  registry.usedNames.add(candidate);
+  return candidate;
 }
 
 export function assertStorageImagePath(filePath: string): string {
@@ -63,19 +110,14 @@ export function buildGenericZipStream(entries: ZipImageEntry[]): ReadableStream 
 function buildZipStreamWithExts(entries: ZipImageEntry[], allowedExts: string[]): ReadableStream {
   const pass = new PassThrough();
   const archive = new ZipArchive({ zlib: { level: 9 } });
-  const used = new Map<string, number>();
+  const registry = createZipNameRegistry();
 
   archive.on('error', (err) => pass.destroy(err));
   archive.pipe(pass);
 
   for (const entry of entries) {
     const resolved = assertStoragePath(entry.filePath, allowedExts);
-    const clean = sanitizeZipFilename(entry.filename);
-    const ext = path.extname(clean) || '.png';
-    const base = path.basename(clean, ext);
-    const count = used.get(clean) || 0;
-    used.set(clean, count + 1);
-    const zipName = count === 0 ? clean : `${base}-${count + 1}${ext}`;
+    const zipName = reserveZipFilename(entry.filename, registry);
     archive.file(resolved, { name: zipName });
   }
 

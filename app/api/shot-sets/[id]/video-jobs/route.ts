@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY } from '@/lib/video-queue';
 import { toStorageImageUrl } from '@/lib/storage-url';
+import { getVideoProviderConfigState } from '@/lib/video-auth';
 
 export async function POST(
   request: NextRequest,
@@ -32,9 +33,16 @@ export async function POST(
 
     // Validate provider
     const provider = db.prepare(`SELECT * FROM video_providers WHERE id = ? AND enabled = 1`).get(providerId) as {
-      id: string; name: string; defaultModel: string;
+      id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; defaultModel: string;
     } | undefined;
     if (!provider) return NextResponse.json({ error: 'Video provider not found or disabled' }, { status: 400 });
+    const providerConfig = getVideoProviderConfigState(provider);
+    if (!providerConfig.configured) {
+      return NextResponse.json(
+        { error: `视频供应商 ${provider.name} 未配置完整：${providerConfig.missing.join(', ')}` },
+        { status: 400 }
+      );
+    }
 
     // Use latest generated image, fallback to source image
     const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;

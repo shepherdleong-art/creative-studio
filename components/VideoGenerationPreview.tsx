@@ -34,6 +34,7 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
   const videoRef = useRef<HTMLVideoElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -46,14 +47,13 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
 
   const applyStageSize = useCallback(() => {
     const shell = shellRef.current;
-    const fit = fitRef.current;
+    const player = playerRef.current;
     const stage = stageRef.current;
     const video = videoRef.current;
-    if (!shell || !fit || !stage) return;
+    if (!shell || !player || !stage) return;
 
     if (!video || !video.videoWidth || !video.videoHeight) {
-      fit.style.width = '';
-      stage.style.width = '';
+      player.style.width = '';
       stage.style.height = '';
       return;
     }
@@ -74,11 +74,8 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
       w = availableH * naturalAspect;
     }
 
-    const roundedW = Math.floor(w);
-    const roundedH = Math.floor(h);
-    fit.style.width = `${roundedW}px`;
-    stage.style.width = `${roundedW}px`;
-    stage.style.height = `${roundedH}px`;
+    player.style.width = `${Math.floor(w)}px`;
+    stage.style.height = `${Math.floor(h)}px`;
   }, []);
 
   useEffect(() => {
@@ -123,11 +120,36 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
     setIsMuted(video.muted);
   }, []);
 
-  const progressPct = duration > 0 ? `${(currentTime / duration) * 100}%` : '0%';
+  const resetPlaybackState = useCallback(() => {
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      video.currentTime = 0;
+      video.muted = false;
+    }
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    setIsMuted(false);
+    if (playerRef.current) playerRef.current.style.width = '';
+    if (stageRef.current) stageRef.current.style.height = '';
+  }, []);
+
+  const handleClose = useCallback(() => {
+    resetPlaybackState();
+    onClose();
+  }, [onClose, resetPlaybackState]);
+
+  const displayCurrentTime = videoUrl ? currentTime : 0;
+  const displayDuration = videoUrl ? duration : 0;
+  const displayIsPlaying = Boolean(videoUrl && isPlaying);
+  const displayIsMuted = Boolean(videoUrl && isMuted);
+  const progressPct = displayDuration > 0 ? `${(displayCurrentTime / displayDuration) * 100}%` : '0%';
 
   return (
     <div ref={shellRef} className="video-preview-shell">
       <div ref={fitRef} className="video-preview-fit">
+        <div ref={playerRef} className="video-player-wrap">
         <div ref={stageRef} className="video-stage">
           {videoUrl ? (
             <video
@@ -137,6 +159,12 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
               poster={posterUrl || undefined}
               playsInline
               className="video-player"
+              onLoadStart={() => {
+                setIsPlaying(false);
+                setCurrentTime(0);
+                setDuration(0);
+                setIsMuted(false);
+              }}
               onLoadedMetadata={applyStageSize}
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
@@ -163,32 +191,32 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
           </button>
 
           {/* Play + timeline */}
-          <button onClick={handlePlayPause} title={isPlaying ? '暂停' : '播放'} className="sc-play-btn">
-            <Icon name={isPlaying ? 'pause' : 'play'} size={14} />
+          <button onClick={handlePlayPause} disabled={!videoUrl} title={displayIsPlaying ? '暂停' : '播放'} className="sc-play-btn">
+            <Icon name={displayIsPlaying ? 'pause' : 'play'} size={14} />
           </button>
-          <span className="sc-time">{formatTime(currentTime)}</span>
+          <span className="sc-time">{formatTime(displayCurrentTime)}</span>
           <div className="sc-progress-wrap">
             <input
               type="range"
               className="sc-progress"
               style={{ '--pct': progressPct } as React.CSSProperties}
               min={0}
-              max={duration || 1}
+              max={displayDuration || 1}
               step={0.01}
-              value={currentTime}
+              value={displayCurrentTime}
               onChange={handleSeek}
               disabled={!videoUrl}
             />
           </div>
-          <span className="sc-time">{formatTime(duration)}</span>
+          <span className="sc-time">{formatTime(displayDuration)}</span>
 
           {/* Right: meta + volume + close */}
           <div className="sc-right">
             {currentJobId && succeededJobs.length > 1 && (
               <span className="sc-shot-label">{`${currentIndex + 1}/${succeededJobs.length}`}</span>
             )}
-            <button onClick={handleMuteToggle} title={isMuted ? '取消静音' : '静音'} className="sc-icon-btn">
-              {isMuted ? (
+            <button onClick={handleMuteToggle} disabled={!videoUrl} title={displayIsMuted ? '取消静音' : '静音'} className="sc-icon-btn">
+              {displayIsMuted ? (
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                   <line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" />
@@ -202,7 +230,7 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
               )}
             </button>
             {videoUrl && (
-              <button onClick={onClose} title="关闭预览" className="sc-icon-btn">
+              <button onClick={handleClose} title="关闭预览" className="sc-icon-btn">
                 <Icon name="close" size={13} />
               </button>
             )}
@@ -217,6 +245,7 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
           >
             <Icon name="skip-forward" size={14} />
           </button>
+        </div>
         </div>
       </div>
     </div>

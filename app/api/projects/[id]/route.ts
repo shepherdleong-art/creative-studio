@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import path from 'path';
+import fs from 'fs';
 
 export async function GET(
   _request: NextRequest,
@@ -66,7 +67,51 @@ export async function DELETE(
   try {
     const { id } = await params;
     const db = getDb();
-    db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+
+    const assetRows = db.prepare(`
+      SELECT id, path, originalPath, processedPath
+      FROM image_assets
+      WHERE projectId = ?
+    `).all(id) as Array<{
+      id: string;
+      path: string;
+      originalPath: string | null;
+      processedPath: string | null;
+    }>;
+
+    const deleteProject = db.transaction(() => {
+      const result = db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+      if (result.changes !== 1) return result.changes;
+      if (assetRows.length > 0) {
+        const deleteAsset = db.prepare(`DELETE FROM image_assets WHERE id = ?`);
+        for (const asset of assetRows) deleteAsset.run(asset.id);
+      }
+      return result.changes;
+    });
+
+    const deletedCount = deleteProject();
+    if (deletedCount !== 1) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+
+    const pathsToDelete = new Set<string>();
+    for (const asset of assetRows) {
+      for (const filePath of [asset.path, asset.originalPath, asset.processedPath]) {
+        if (typeof filePath === 'string' && filePath.length > 0) pathsToDelete.add(filePath);
+      }
+    }
+
+    for (const filePath of pathsToDelete) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code !== 'ENOENT') {
+          console.error(`[DELETE /api/projects] Failed to unlink ${filePath}:`, err);
+        }
+      }
+    }
+
     return NextResponse.json({ success: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

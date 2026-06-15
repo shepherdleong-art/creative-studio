@@ -12,6 +12,8 @@ interface VideoProvider {
   type: string;
   defaultModel: string;
   defaultDurationSec: number;
+  configured?: boolean;
+  missing?: string[];
 }
 
 interface MotionTemplate {
@@ -82,11 +84,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const defaultDuration = 5;
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
+  const configuredProviders = providers.filter((provider) => provider.configured !== false);
 
   // Effective provider id for a row: fall back to the first available provider
   // when the row was created before providers had loaded.
   const getRowProviderId = (row: { providerId: string }): string =>
-    row.providerId || providers[0]?.id || '';
+    (row.providerId && configuredProviders.some((provider) => provider.id === row.providerId))
+      ? row.providerId
+      : configuredProviders[0]?.id || '';
 
   const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
     key: crypto.randomUUID(), prompt: '', templateId: '', providerId: '', durationSec: defaultDuration,
@@ -286,6 +291,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       }))
       .filter((r) => r.prompt.length > 0);
     if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
+    if (configuredProviders.length === 0) { alert('请先配置视频供应商'); return; }
     setCreating(true);
     try {
       const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs/batch`, {
@@ -419,9 +425,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       value={getRowProviderId(row)}
                       onChange={(e) => updateRowProvider(idx, e.target.value)}
                       className="input-field video-control"
+                      disabled={configuredProviders.length === 0}
                     >
-                      {providers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                      {providers.length === 0 && <option value="">暂无供应商</option>}
+                      {providers.length > 0 && configuredProviders.length === 0 && <option value="">暂无可用供应商</option>}
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id} disabled={p.configured === false}>
+                          {p.name}{p.configured === false ? '（未配置）' : ''}
+                        </option>
+                      ))}
                     </select>
+                    {providers.some((p) => p.configured === false) && (
+                      <p className="text-[11px] leading-4 text-ink-tertiary">
+                        未配置的视频供应商需要先补齐环境变量。
+                      </p>
+                    )}
 
                     <div className="grid grid-cols-2 gap-2">
                       <select
@@ -465,7 +483,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 </button>
                 <button
                   onClick={() => handleCreateVideos(selectedShot)}
-                  disabled={creating || motionRows.every((r) => !r.prompt.trim())}
+                  disabled={creating || configuredProviders.length === 0 || motionRows.every((r) => !r.prompt.trim())}
                   className="btn-primary btn-sm w-full video-create-action"
                 >
                   {creating
