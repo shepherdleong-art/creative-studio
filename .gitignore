@@ -19,6 +19,8 @@
 
 # production
 /build
+/dist
+/.cache
 
 # misc
 .DS_Store
@@ -45,6 +47,7 @@ next-env.d.ts
 # local data (database, uploads, outputs, logs)
 /data/
 /storage/
+/outputs/
 !/storage/.gitkeep
 
 # brainstorming visual-companion workspace (generated mockups, not source)

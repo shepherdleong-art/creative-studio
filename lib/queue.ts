@@ -266,7 +266,7 @@ async function runJob(
       throw new Error('Provider not found');
     }
 
-    const apiKey = provider.apiKey || process.env[provider.apiKeyEnv];
+    const apiKey = provider.apiKey;
     if (!apiKey) {
       throw new Error('API key not configured. Please set it in Settings.');
     }

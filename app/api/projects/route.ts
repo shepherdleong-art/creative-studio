@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     } | undefined;
     if (!provider) return NextResponse.json({ error: 'Provider not found' }, { status: 400 });
     if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
-    if (!provider.apiKey && !process.env[provider.apiKeyEnv]) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
+    if (!provider.apiKey) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
 
     // Resolve size
     let resolvedSize: string;

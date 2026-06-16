@@ -6,6 +6,7 @@
     "dev": "next dev",
     "dev:win": "next dev --hostname 127.0.0.1",
     "build": "next build",
+    "build:win-installer": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-installer.ps1",
     "start": "next start",
     "start:win": "next start --hostname 127.0.0.1",
     "lint": "eslint"

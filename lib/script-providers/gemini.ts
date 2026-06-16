@@ -21,6 +21,8 @@ import type {
   ScriptOutput,
   ProviderScriptResult,
 } from './types';
+import type { ScriptProviderRuntimeConfig } from './config';
+import { resolveStoredScriptProvider } from './store';
 import {
   chatCompletion,
   parseJsonResponse,
@@ -45,11 +47,15 @@ export const geminiConfig: ProviderConfig = {
 // ── Helpers ──
 
 export function isGeminiConfigured(): boolean {
-  return Boolean(process.env.GEMINI_API_KEY);
+  try {
+    return resolveStoredScriptProvider('gemini').configured;
+  } catch {
+    return false;
+  }
 }
 
 export function getGeminiModel(): string {
-  return process.env.GEMINI_MODEL || geminiConfig.defaultModel;
+  return geminiConfig.defaultModel;
 }
 
 export function getGeminiMeta(): ProviderMeta {
@@ -58,23 +64,23 @@ export function getGeminiMeta(): ProviderMeta {
     name: geminiConfig.name,
     model: getGeminiModel(),
     configured: isGeminiConfigured(),
-    apiStyle: (process.env.GEMINI_API_STYLE as ProviderMeta['apiStyle']) || 'openai-compatible',
+    apiStyle: 'openai-compatible',
   };
 }
 
-function getApiStyle(): 'native' | 'openai-compatible' {
-  return (process.env.GEMINI_API_STYLE || 'openai-compatible') as 'native' | 'openai-compatible';
+function getApiStyle(runtime?: ScriptProviderRuntimeConfig): 'native' | 'openai-compatible' {
+  return (runtime?.apiStyle || 'openai-compatible') as 'native' | 'openai-compatible';
 }
 
 // ── Native Gemini API call ──
 
-async function geminiNativeCall(prompt: string): Promise<string> {
-  const baseUrl = (process.env.GEMINI_BASE_URL || geminiConfig.defaultBaseUrl).replace(/\/$/, '');
-  const apiKey = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL || geminiConfig.defaultModel;
+async function geminiNativeCall(prompt: string, runtime?: ScriptProviderRuntimeConfig): Promise<string> {
+  const baseUrl = (runtime?.baseUrl || geminiConfig.defaultBaseUrl).replace(/\/$/, '');
+  const apiKey = runtime?.apiKey;
+  const model = runtime?.model || geminiConfig.defaultModel;
 
   if (!apiKey) {
-    throw new Error('Gemini API Key 未配置。请在 .env.local 中设置 GEMINI_API_KEY。');
+    throw new Error('Gemini API Key 未配置。请在供应商配置页填写。');
   }
 
   const url = `${baseUrl}/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -84,7 +90,7 @@ async function geminiNativeCall(prompt: string): Promise<string> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: geminiConfig.maxTokens },
+      generationConfig: { temperature: 0.7, maxOutputTokens: runtime?.maxTokens || geminiConfig.maxTokens },
     }),
   });
 
@@ -111,40 +117,41 @@ async function geminiNativeCall(prompt: string): Promise<string> {
 async function geminiCall(
   systemPrompt: string,
   userPrompt: string,
-  responseFormat: 'json_object' | 'text' = 'json_object'
+  responseFormat: 'json_object' | 'text' = 'json_object',
+  runtime?: ScriptProviderRuntimeConfig
 ): Promise<string> {
-  const apiStyle = getApiStyle();
+  const apiStyle = getApiStyle(runtime);
 
   if (apiStyle === 'openai-compatible') {
     return chatCompletion(geminiConfig, {
       systemPrompt,
       userPrompt,
       temperature: 0.7,
-      maxTokens: geminiConfig.maxTokens,
+      maxTokens: runtime?.maxTokens || geminiConfig.maxTokens,
       responseFormat,
-    });
+    }, runtime);
   }
 
   // Native path: combine system + user into a single prompt (Gemini native doesn't have system role)
   const combined = `${systemPrompt}\n\n${userPrompt}`;
-  return geminiNativeCall(combined);
+  return geminiNativeCall(combined, runtime);
 }
 
 // ── Public API ──
 
-export async function geminiAnalyzeSellingPoints(input: AnalysisInput): Promise<AnalysisResult> {
+export async function geminiAnalyzeSellingPoints(input: AnalysisInput, runtime?: ScriptProviderRuntimeConfig): Promise<AnalysisResult> {
   const systemPrompt = 'You are a professional e-commerce content strategist. Always respond with valid JSON only, no markdown fences.';
   const userPrompt = buildAnalysisPrompt(input);
 
-  const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object');
+  const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object', runtime);
   return parseJsonResponse<AnalysisResult>(rawText, 'Gemini');
 }
 
-export async function geminiGenerateScript(input: ScriptInput): Promise<ProviderScriptResult> {
+export async function geminiGenerateScript(input: ScriptInput, runtime?: ScriptProviderRuntimeConfig): Promise<ProviderScriptResult> {
   const systemPrompt = 'You are a professional e-commerce short-video scriptwriter. Always respond with valid JSON only, no markdown fences.';
   const userPrompt = buildScriptPrompt(input);
 
-  const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object');
+  const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object', runtime);
   const script = parseJsonResponse<ScriptOutput>(rawText, 'Gemini');
 
   // Ensure fullScript exists
@@ -152,5 +159,5 @@ export async function geminiGenerateScript(input: ScriptInput): Promise<Provider
     script.fullScript = script.shots.map((s) => s.voiceover).join('\n');
   }
 
-  return { script, provider: 'gemini', model: getGeminiModel() };
+  return { script, provider: 'gemini', model: runtime?.model || getGeminiModel() };
 }

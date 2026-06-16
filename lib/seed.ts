@@ -1,11 +1,7 @@
 import { getDb } from '@/lib/db';
 import { isPlaceholderValue } from '@/lib/video-auth';
+import { defaultScriptProviderConfigs } from '@/lib/script-providers/config';
 import { v4 as uuidv4 } from 'uuid';
-
-function realOrEmpty(raw: string | undefined): string {
-  const s = (raw || '').trim();
-  return s && !isPlaceholderValue(s) ? s : '';
-}
 
 export function seedProviders() {
   const db = getDb();
@@ -16,9 +12,9 @@ export function seedProviders() {
       {
         id: uuidv4(),
         name: 'GeekAI',
-        baseUrl: process.env.GEEKAI_BASE_URL || 'https://geekai.co/api',
+        baseUrl: 'https://geekai.co/api',
         apiKeyEnv: 'GEEKAI_API_KEY',
-        apiKey: realOrEmpty(process.env.GEEKAI_API_KEY),
+        apiKey: '',
         model: 'gpt-image-2',
         type: 'geekai-json',
         enabled: 1,
@@ -27,9 +23,9 @@ export function seedProviders() {
       {
         id: 'packy-gpt-image-2',
         name: 'Packy GPT-Image-2',
-        baseUrl: process.env.PACKY_BASE_URL || 'https://www.packyapi.com',
+        baseUrl: 'https://www.packyapi.com',
         apiKeyEnv: 'PACKY_API_KEY',
-        apiKey: realOrEmpty(process.env.PACKY_API_KEY),
+        apiKey: '',
         model: 'gpt-image-2',
         type: 'packy-images',
         enabled: 0,
@@ -38,9 +34,9 @@ export function seedProviders() {
       {
         id: 'packy-nano-banana-2',
         name: 'Packy Nano Banana 2',
-        baseUrl: process.env.PACKY_BASE_URL || 'https://www.packyapi.com',
+        baseUrl: 'https://www.packyapi.com',
         apiKeyEnv: 'PACKY_IMAGE_API_KEY',
-        apiKey: realOrEmpty(process.env.PACKY_IMAGE_API_KEY),
+        apiKey: '',
         model: 'gemini-3.1-flash-image-preview',
         type: 'packy-gemini-image',
         enabled: 0,
@@ -49,9 +45,9 @@ export function seedProviders() {
       {
         id: 'gptge-nano-banana-2-2k',
         name: 'GPT.ge Nano Banana 2 2K',
-        baseUrl: process.env.GPTGE_BASE_URL || 'https://api.gpt.ge',
+        baseUrl: 'https://api.gpt.ge',
         apiKeyEnv: 'GPTGE_API_KEY',
-        apiKey: realOrEmpty(process.env.GPTGE_API_KEY),
+        apiKey: '',
         model: 'gemini-3.1-flash-image-2k',
         type: 'packy-gemini-image',
         enabled: 0,
@@ -60,9 +56,9 @@ export function seedProviders() {
       {
         id: 'gptge-nano-banana-pro-2k',
         name: 'GPT.ge Nano Banana Pro 2K',
-        baseUrl: process.env.GPTGE_BASE_URL || 'https://api.gpt.ge',
+        baseUrl: 'https://api.gpt.ge',
         apiKeyEnv: 'GPTGE_API_KEY',
-        apiKey: realOrEmpty(process.env.GPTGE_API_KEY),
+        apiKey: '',
         model: 'gemini-3-pro-image-2k',
         type: 'packy-gemini-image',
         enabled: 0,
@@ -71,9 +67,9 @@ export function seedProviders() {
       {
         id: 'packy-nano-banana-pro',
         name: 'Packy Nano Banana Pro',
-        baseUrl: process.env.PACKY_BASE_URL || 'https://www.packyapi.com',
+        baseUrl: 'https://www.packyapi.com',
         apiKeyEnv: 'PACKY_IMAGE_API_KEY',
-        apiKey: realOrEmpty(process.env.PACKY_IMAGE_API_KEY),
+        apiKey: '',
         model: 'gemini-3-pro-image-preview',
         type: 'packy-gemini-image',
         enabled: 0,
@@ -82,9 +78,9 @@ export function seedProviders() {
       {
         id: uuidv4(),
         name: '公司现有 API',
-        baseUrl: process.env.COMPANY_BASE_URL || 'https://company-gateway.example.com',
+        baseUrl: 'https://company-gateway.example.com',
         apiKeyEnv: 'COMPANY_API_KEY',
-        apiKey: realOrEmpty(process.env.COMPANY_API_KEY),
+        apiKey: '',
         model: 'gpt-image-2',
         type: 'openai-compatible',
         enabled: 0,
@@ -140,8 +136,8 @@ function ensurePackyImageProviders(db: ReturnType<typeof getDb>) {
         AND model = 'gemini-3.1-flash-image-preview'
     )
   `).run(
-    process.env.PACKY_BASE_URL || 'https://www.packyapi.com',
-    realOrEmpty(process.env.PACKY_IMAGE_API_KEY)
+    'https://www.packyapi.com',
+    ''
   );
 
   db.prepare(`
@@ -155,8 +151,8 @@ function ensurePackyImageProviders(db: ReturnType<typeof getDb>) {
         AND model = 'gemini-3-pro-image-preview'
     )
   `).run(
-    process.env.PACKY_BASE_URL || 'https://www.packyapi.com',
-    realOrEmpty(process.env.PACKY_IMAGE_API_KEY)
+    'https://www.packyapi.com',
+    ''
   );
 }
 
@@ -172,8 +168,8 @@ function ensureGptGeImageProvider(db: ReturnType<typeof getDb>) {
         OR (baseUrl LIKE '%api.gpt.ge%' AND model = 'gemini-3.1-flash-image-2k')
     )
   `).run(
-    process.env.GPTGE_BASE_URL || 'https://api.gpt.ge',
-    realOrEmpty(process.env.GPTGE_API_KEY)
+    'https://api.gpt.ge',
+    ''
   );
 
   db.prepare(`
@@ -187,8 +183,8 @@ function ensureGptGeImageProvider(db: ReturnType<typeof getDb>) {
         OR (baseUrl LIKE '%api.gpt.ge%' AND model = 'gemini-3-pro-image-2k')
     )
   `).run(
-    process.env.GPTGE_BASE_URL || 'https://api.gpt.ge',
-    realOrEmpty(process.env.GPTGE_API_KEY)
+    'https://api.gpt.ge',
+    ''
   );
 }
 
@@ -209,6 +205,10 @@ export function seedVideoProviders() {
       defaultModel: 'kling-v3',
       enabled: 1,
       defaultDurationSec: 5,
+      baseUrl: '',
+      apiKey: '',
+      accessKey: '',
+      secretKey: '',
     },
     {
       id: 'kling-2-5',
@@ -220,6 +220,10 @@ export function seedVideoProviders() {
       defaultModel: 'kling-v2-5-turbo',
       enabled: 1,
       defaultDurationSec: 5,
+      baseUrl: '',
+      apiKey: '',
+      accessKey: '',
+      secretKey: '',
     },
     {
       id: 'jimeng-2',
@@ -231,16 +235,59 @@ export function seedVideoProviders() {
       defaultModel: 'doubao-seedance-2-0-260128',
       enabled: 1,
       defaultDurationSec: 5,
+      baseUrl: '',
+      apiKey: '',
+      accessKey: '',
+      secretKey: '',
     },
   ];
 
   const insert = db.prepare(
-    `INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec, baseUrl, apiKey, accessKey, secretKey)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   for (const p of providers) {
-    insert.run(p.id, p.name, p.type, p.baseUrlEnv, p.apiKeyEnv, p.modelEnv, p.defaultModel, p.enabled, p.defaultDurationSec);
+    insert.run(p.id, p.name, p.type, p.baseUrlEnv, p.apiKeyEnv, p.modelEnv, p.defaultModel, p.enabled, p.defaultDurationSec, p.baseUrl, p.apiKey, p.accessKey, p.secretKey);
+  }
+}
+
+export function seedScriptProviders() {
+  const db = getDb();
+
+  const insert = db.prepare(`
+    INSERT INTO script_providers
+      (id, name, type, apiStyle, baseUrl, apiKey, model, keyEnv, baseUrlEnv, modelEnv, defaultBaseUrl, defaultModel, maxTokens, enabled, isBuiltin)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      type = excluded.type,
+      apiStyle = excluded.apiStyle,
+      keyEnv = excluded.keyEnv,
+      baseUrlEnv = excluded.baseUrlEnv,
+      modelEnv = excluded.modelEnv,
+      defaultBaseUrl = excluded.defaultBaseUrl,
+      defaultModel = excluded.defaultModel,
+      maxTokens = excluded.maxTokens,
+      isBuiltin = 1
+  `);
+
+  for (const config of defaultScriptProviderConfigs) {
+    insert.run(
+      config.id,
+      config.name,
+      config.id === 'gemini' ? 'gemini' : 'openai-compatible',
+      config.apiStyle,
+      '',
+      '',
+      '',
+      config.keyEnv,
+      config.baseUrlEnv,
+      config.modelEnv,
+      config.defaultBaseUrl,
+      config.defaultModel,
+      config.maxTokens
+    );
   }
 }
 
@@ -296,4 +343,5 @@ export function seedMotionTemplates() {
 export function seedAllVideo() {
   seedVideoProviders();
   seedMotionTemplates();
+  seedScriptProviders();
 }
