@@ -336,6 +336,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
 
+  const handleCancelVideoJob = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/video-jobs/${jobId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('取消失败: ' + (data.error || `HTTP ${res.status}`)); return; }
+      await refreshJobs();
+    } catch (err) {
+      alert('取消失败: ' + String(err));
+    }
+  };
+
   if (loading) return <p className="text-xs text-ink-tertiary">加载视频功能...</p>;
   const shotSetSelector = !shotSetId ? (
     <div className="mb-4">
@@ -520,6 +535,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               onPreview={selectVideoPreview}
               onRetry={handleRetry}
               onResumePoll={handleResumePoll}
+              onCancel={handleCancelVideoJob}
               activePreviewJobId={videoPreviewJobId}
             />
           </div>

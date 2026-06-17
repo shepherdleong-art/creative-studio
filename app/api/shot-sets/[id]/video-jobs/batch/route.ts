@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
-import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY } from '@/lib/video-queue';
+import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
 
 const MAX_ITEMS = 10;
@@ -100,7 +100,7 @@ export async function POST(
       runVideoQueue({
         projectId: shotSet.projectId,
         concurrency: DEFAULT_VIDEO_CONCURRENCY,
-        timeoutMs: 600000,
+        timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS,
       }).catch((err) => {
         console.error(`[VideoQueue] Auto-start failed:`, err);
       });

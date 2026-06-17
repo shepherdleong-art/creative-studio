@@ -42,6 +42,7 @@ export const CORE_DB_MIGRATIONS = [
   `UPDATE providers SET type = 'packy-gemini-image' WHERE baseUrl LIKE '%packyapi.com%' AND model IN ('gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview')`,
   `UPDATE video_providers SET defaultModel = 'kling-v3' WHERE id = 'kling-3' AND defaultModel IN ('kling-3.0', 'kling-v3.0-i2v', 'kling-v3-0')`,
   `UPDATE video_providers SET defaultModel = 'doubao-seedance-2-0-260128' WHERE id = 'jimeng-2' AND defaultModel = 'jimeng-2.0'`,
+  `UPDATE video_providers SET name = '即梦 1.5 Pro (Seedance)', defaultModel = 'doubao-seedance-1-5-pro-251215' WHERE id = 'jimeng-2' AND defaultModel IN ('doubao-seedance-1-5', 'doubao-seedance-1-5-pro', 'doubao-seedance-2-0-260128')`,
   `INSERT OR IGNORE INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec) VALUES ('kling-2-5', '可灵 2.5', 'kling', 'KLING_VIDEO_BASE_URL', 'KLING_VIDEO_API_KEY', 'KLING_2_5_VIDEO_MODEL', 'kling-v2-5-turbo', 1, 5)`,
   `ALTER TABLE video_providers ADD COLUMN baseUrl TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE video_providers ADD COLUMN apiKey TEXT NOT NULL DEFAULT ''`,

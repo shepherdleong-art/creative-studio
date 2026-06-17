@@ -1,13 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY } from '@/lib/video-queue';
+import { cancelVideoQueue, getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+    const body = await request.json().catch(() => ({})) as { action?: string };
+    if (body.action === 'cancel') {
+      cancelVideoQueue(id);
+      writeLog({ jobId: '', projectId: id, level: 'warn', message: 'Video queue canceled from frontend' });
+      return NextResponse.json({ queueStatus: 'idle' });
+    }
+
     const qStatus = getVideoQueueStatus(id);
 
     if (qStatus !== 'idle') {
@@ -19,7 +26,7 @@ export async function POST(
     runVideoQueue({
       projectId: id,
       concurrency: DEFAULT_VIDEO_CONCURRENCY,
-      timeoutMs: 600000,
+      timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS,
     }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[VideoQueue] Fatal:`, msg);

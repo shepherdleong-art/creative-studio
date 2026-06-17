@@ -39,6 +39,9 @@ db.exec(`
   INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec)
   VALUES ('video-provider', 'Video Provider', 'jimeng', 'VIDEO_BASE_URL', 'VIDEO_API_KEY', 'VIDEO_MODEL', 'jimeng-2', 1, 5);
 
+  INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec)
+  VALUES ('jimeng-2', '即梦 1.5 (Seedance)', 'jimeng', 'JIMENG_VIDEO_BASE_URL', 'JIMENG_VIDEO_API_KEY', 'JIMENG_VIDEO_MODEL', 'doubao-seedance-1-5', 1, 5);
+
   INSERT INTO script_providers (id, name)
   VALUES ('script-provider', 'Script Provider');
 `);
@@ -68,6 +71,11 @@ db.prepare(`
   SET name = ?, type = ?, baseUrl = ?, defaultModel = ?, enabled = ?, defaultDurationSec = ?, apiKey = ?, accessKey = ?, secretKey = ?
   WHERE id = ?
 `).run('Video Provider', 'jimeng', 'https://new.video', 'jimeng-2', 1, 5, 'db-video-key', '', '', 'video-provider');
+
+assert.deepEqual(
+  db.prepare(`SELECT name, defaultModel FROM video_providers WHERE id = 'jimeng-2'`).get(),
+  { name: '即梦 1.5 Pro (Seedance)', defaultModel: 'doubao-seedance-1-5-pro-251215' },
+);
 
 db.prepare(`
   UPDATE script_providers

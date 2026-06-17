@@ -17,6 +17,7 @@ export interface VideoQueueOptions {
 const raw = process.env.VIDEO_CONCURRENCY;
 const envConcurrency = (raw !== undefined && raw !== '') ? Number(raw) : NaN;
 export const DEFAULT_VIDEO_CONCURRENCY = Math.max(1, Math.min(6, Number.isFinite(envConcurrency) ? envConcurrency : 3));
+export const DEFAULT_VIDEO_TIMEOUT_MS = 300_000;
 
 interface VideoJobRecord {
   id: string;
@@ -231,12 +232,20 @@ async function runVideoJob(
 
     // Step 2: Poll with graduated intervals
     let polled = false;
-    const maxPollMs = timeoutMs || 600_000;
+    const maxPollMs = timeoutMs || DEFAULT_VIDEO_TIMEOUT_MS;
 
     while (Date.now() - startedAt < maxPollMs) {
       if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (!isVideoJobStillRunning(db, job.id)) {
+        logWarn('Video job stopped because it is no longer running');
+        return;
+      }
 
       await sleep(5000); // poll every 5 seconds
+      if (!isVideoJobStillRunning(db, job.id)) {
+        logWarn('Video job stopped because it is no longer running');
+        return;
+      }
 
       const pollResult = await adapter.poll(taskId, apiKey, runtime.baseUrl, reqAbort.signal);
 
@@ -342,6 +351,11 @@ function claimNextVideoJob(projectId: string): (VideoJobRecord & { attempt: numb
 
   if (result.changes !== 1) return null;
   return { ...job, status: 'running', attempt: nextAttempt };
+}
+
+function isVideoJobStillRunning(db: ReturnType<typeof getDb>, jobId: string): boolean {
+  const row = db.prepare(`SELECT status FROM video_jobs WHERE id = ?`).get(jobId) as { status: string } | undefined;
+  return row?.status === 'running';
 }
 
 async function downloadVideo(url: string): Promise<Buffer | null> {

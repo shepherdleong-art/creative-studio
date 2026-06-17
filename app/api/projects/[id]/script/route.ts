@@ -288,6 +288,7 @@ function validateAndNormalizeScript(
     return {
       shotId,
       shotIndex: s.shotIndex || shotRows[i]?.indexNum || i + 1,
+      title: normalizeShotTitle(s.title, s.shotIndex || shotRows[i]?.indexNum || i + 1),
       duration: s.duration || '',
       voiceover: s.voiceover || '',
       subtitle: s.subtitle || s.voiceover || '',
@@ -303,6 +304,7 @@ function validateAndNormalizeScript(
       normalizedShots.push({
         shotId: shotRows[i].shotId,
         shotIndex: shotRows[i].indexNum,
+        title: normalizeShotTitle('', shotRows[i].indexNum),
         duration: '',
         voiceover: '',
         subtitle: '',
@@ -339,4 +341,9 @@ function validateAndNormalizeScript(
     shots: normalizedShots,
     fullScript,
   };
+}
+
+function normalizeShotTitle(value: string | undefined, shotIndex: number): string {
+  const title = (value || '').trim();
+  return title || `分镜 ${shotIndex} 文案`;
 }
