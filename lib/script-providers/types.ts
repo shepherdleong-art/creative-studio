@@ -114,6 +114,12 @@ export interface ProviderMeta {
   model: string;
   configured: boolean;
   apiStyle: ApiStyle;
+  category?: 'script';
+  type?: string;
+  enabled?: number;
+  hasApiKey?: boolean;
+  missing?: string[];
+  maxTokens?: number;
 }
 
 // ── Provider Interface ──

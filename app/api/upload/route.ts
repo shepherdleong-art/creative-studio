@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
     }
 
     const dirName = role === 'reference' ? 'references' : 'inputs';
-    const storageRoot = path.join(/* turbopackIgnore: true */ process.cwd(), 'storage');
+    const storageRoot = path.join(/*turbopackIgnore: true*/ process.cwd(), 'storage');
     const originalsDir = path.join(storageRoot, 'originals', dirName);
     const processedDir = path.join(storageRoot, 'processed', dirName);
 

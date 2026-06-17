@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const DB_PATH = path.join(process.cwd(), 'data', 'workbench.db');
+const DB_PATH = path.join(/*turbopackIgnore: true*/ process.cwd(), 'data', 'workbench.db');
 
 let db: Database.Database | null = null;
 
@@ -175,10 +175,15 @@ function initTables(db: Database.Database) {
     `ALTER TABLE projects ADD COLUMN sellingPointsJson TEXT DEFAULT '[]'`,
     `ALTER TABLE projects ADD COLUMN sellingPointAnalysisJson TEXT DEFAULT ''`,
     `ALTER TABLE image_assets ADD COLUMN usage TEXT DEFAULT ''`,
-    `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND type = 'openai-compatible'`,
+    `UPDATE providers SET type = 'packy-images' WHERE baseUrl LIKE '%packyapi.com%' AND model = 'gpt-image-2' AND type = 'openai-compatible'`,
+    `UPDATE providers SET type = 'packy-gemini-image' WHERE baseUrl LIKE '%packyapi.com%' AND model IN ('gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview')`,
     `UPDATE video_providers SET defaultModel = 'kling-v3' WHERE id = 'kling-3' AND defaultModel IN ('kling-3.0', 'kling-v3.0-i2v', 'kling-v3-0')`,
     `UPDATE video_providers SET defaultModel = 'doubao-seedance-2-0-260128' WHERE id = 'jimeng-2' AND defaultModel = 'jimeng-2.0'`,
     `INSERT OR IGNORE INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec) VALUES ('kling-2-5', '可灵 2.5', 'kling', 'KLING_VIDEO_BASE_URL', 'KLING_VIDEO_API_KEY', 'KLING_2_5_VIDEO_MODEL', 'kling-v2-5-turbo', 1, 5)`,
+    `ALTER TABLE video_providers ADD COLUMN baseUrl TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE video_providers ADD COLUMN apiKey TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE video_providers ADD COLUMN accessKey TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE video_providers ADD COLUMN secretKey TEXT NOT NULL DEFAULT ''`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* Column already exists */ }
@@ -251,7 +256,29 @@ function initTables(db: Database.Database) {
       defaultModel TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       defaultDurationSec INTEGER NOT NULL DEFAULT 5,
-      defaultCostPerVideo REAL
+      defaultCostPerVideo REAL,
+      baseUrl TEXT NOT NULL DEFAULT '',
+      apiKey TEXT NOT NULL DEFAULT '',
+      accessKey TEXT NOT NULL DEFAULT '',
+      secretKey TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS script_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'openai-compatible',
+      apiStyle TEXT NOT NULL DEFAULT 'openai-compatible',
+      baseUrl TEXT NOT NULL DEFAULT '',
+      apiKey TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      keyEnv TEXT NOT NULL DEFAULT '',
+      baseUrlEnv TEXT NOT NULL DEFAULT '',
+      modelEnv TEXT NOT NULL DEFAULT '',
+      defaultBaseUrl TEXT NOT NULL DEFAULT '',
+      defaultModel TEXT NOT NULL DEFAULT '',
+      maxTokens INTEGER NOT NULL DEFAULT 8192,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      isBuiltin INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS video_prompt_templates (

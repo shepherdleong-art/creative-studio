@@ -52,7 +52,7 @@ export async function GET(
         ...provider,
         apiKeyEnv: undefined,
         apiKey: undefined,
-        hasApiKey: !!(provider.apiKey as string) || !!process.env[provider.apiKeyEnv as string],
+        hasApiKey: !!(provider.apiKey as string),
       } : null,
     });
   } catch (err) {

@@ -35,7 +35,7 @@ export async function POST(
       return NextResponse.json({ error: 'Only GeekAI jobs support resume-poll' }, { status: 400 });
     }
 
-    const apiKey = job.apiKey || process.env[job.apiKeyEnv];
+    const apiKey = job.apiKey;
     if (!apiKey) return NextResponse.json({ error: 'API key not configured' }, { status: 400 });
 
     const taskId = job.providerTaskId;

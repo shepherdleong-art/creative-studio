@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { runQueue, cancelQueue, pauseQueue, resumeQueue, getQueueStatus } from '@/lib/queue';
 import { writeLog } from '@/lib/logger';
+import { getEffectiveImageConcurrency } from '@/lib/provider-concurrency';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(
@@ -18,6 +19,7 @@ export async function POST(
       maxAttempts: number;
       timeoutMs: number;
       status: string;
+      providerId: string;
     } | undefined;
 
     if (!project) {
@@ -38,7 +40,14 @@ export async function POST(
           );
         }
 
-        const concurrency = body.concurrency || project.concurrency || 3;
+        const requestedConcurrency = body.concurrency || project.concurrency || 3;
+        const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
+          id?: string;
+          name?: string;
+          type?: string;
+          baseUrl?: string;
+        } | undefined;
+        const concurrency = getEffectiveImageConcurrency(provider || {}, requestedConcurrency);
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
         const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;
 
@@ -49,7 +58,7 @@ export async function POST(
           jobId: '',
           projectId: id,
           level: 'info',
-          message: `队列启动 runId=${runId} (concurrency=${concurrency}, maxAttempts=${maxAttempts}, timeout=${timeoutMs}ms)`,
+          message: `队列启动 runId=${runId} (concurrency=${concurrency}, requested=${requestedConcurrency}, maxAttempts=${maxAttempts}, timeout=${timeoutMs}ms)`,
         });
 
         // Save runId to project
@@ -84,12 +93,19 @@ export async function POST(
           );
         }
 
-        const concurrency = body.concurrency || project.concurrency || 3;
+        const requestedConcurrency = body.concurrency || project.concurrency || 3;
+        const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
+          id?: string;
+          name?: string;
+          type?: string;
+          baseUrl?: string;
+        } | undefined;
+        const concurrency = getEffectiveImageConcurrency(provider || {}, requestedConcurrency);
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
         const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;
 
         resumeQueue(id, { projectId: id, concurrency, maxAttempts, timeoutMs });
-        writeLog({ jobId: '', projectId: id, level: 'info', message: '队列已恢复' });
+        writeLog({ jobId: '', projectId: id, level: 'info', message: `队列已恢复 (concurrency=${concurrency}, requested=${requestedConcurrency})` });
 
         return NextResponse.json({ status: 'resumed' });
       }

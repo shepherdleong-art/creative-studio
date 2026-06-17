@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { imageModelSupportsQuality } from '@/lib/image-model-capabilities';
 
 export interface PackyEditImageRequest {
   model: string;
@@ -78,7 +79,9 @@ export async function editImagePacky(
   form.append('model', request.model);
   form.append('prompt', prompt);
   form.append('size', request.size);
-  form.append('quality', request.quality || 'auto');
+  if (imageModelSupportsQuality(request.model)) {
+    form.append('quality', request.quality || 'auto');
+  }
   form.append('n', '1');
   form.append('output_format', 'png');
 

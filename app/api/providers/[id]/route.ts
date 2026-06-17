@@ -24,6 +24,9 @@ export async function GET(
     // Never expose apiKey
     const safe = {
       ...provider,
+      category: 'image',
+      configured: isRealKey(provider.apiKey as string),
+      missing: isRealKey(provider.apiKey as string) ? [] : ['API Key'],
       apiKey: undefined,
       hasApiKey: isRealKey(provider.apiKey as string),
     };
@@ -92,6 +95,9 @@ export async function PUT(
     const updated = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) as Record<string, unknown>;
     const safe = {
       ...updated,
+      category: 'image',
+      configured: isRealKey(updated.apiKey as string),
+      missing: isRealKey(updated.apiKey as string) ? [] : ['API Key'],
       apiKey: undefined,
       hasApiKey: isRealKey(updated.apiKey as string),
     };

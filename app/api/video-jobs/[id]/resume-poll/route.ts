@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getVideoAdapter } from '@/lib/video-providers/index';
-import { getVideoProviderConfigState, isPlaceholderValue, resolveKlingCredentialPair } from '@/lib/video-auth';
+import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { writeLog } from '@/lib/logger';
 import fs from 'fs';
 import path from 'path';
@@ -33,29 +33,36 @@ export async function POST(
       type: string;
       baseUrlEnv: string;
       apiKeyEnv: string;
+      modelEnv: string;
+      defaultModel: string;
+      defaultDurationSec: number;
+      baseUrl: string;
+      apiKey: string;
+      accessKey: string;
+      secretKey: string;
     } | undefined;
 
     if (!provider) return NextResponse.json({ error: 'Video provider not found' }, { status: 404 });
 
-    const baseUrl = (process.env[provider.baseUrlEnv] || '').trim();
-    let apiKey = (process.env[provider.apiKeyEnv] || '').trim();
-    const configState = getVideoProviderConfigState(provider);
-    if (!configState.configured || isPlaceholderValue(baseUrl)) {
-      return NextResponse.json({ error: `Provider not configured. Set ${configState.missing.join(', ')}` }, { status: 400 });
+    const runtime = resolveVideoProviderRuntimeConfig(provider);
+    let apiKey = runtime.apiKey;
+    if (!runtime.enabled) {
+      return NextResponse.json({ error: 'Video provider is disabled.' }, { status: 400 });
+    }
+    if (!runtime.configured) {
+      return NextResponse.json({ error: `Provider not configured. Set ${runtime.missing.join(', ')}` }, { status: 400 });
     }
 
     if (provider.type === 'kling') {
-      const pair = resolveKlingCredentialPair(process.env, provider.apiKeyEnv);
-      if (!pair) return NextResponse.json({ error: 'Provider not configured. Set KLING_VIDEO_ACCESS_KEY and KLING_VIDEO_SECRET_KEY' }, { status: 400 });
       const { getKlingToken } = await import('@/lib/video-providers/kling');
-      apiKey = getKlingToken(pair.accessKey, pair.secretKey);
+      apiKey = getKlingToken(runtime.accessKey, runtime.secretKey);
     }
 
     const adapter = getVideoAdapter(provider.type);
     if (!adapter) return NextResponse.json({ error: `Unknown provider type: ${provider.type}` }, { status: 400 });
 
     // Poll
-    const result = await adapter.poll(job.providerTaskId!, apiKey, baseUrl);
+    const result = await adapter.poll(job.providerTaskId!, apiKey, runtime.baseUrl);
 
     writeLog({
       jobId: job.id,

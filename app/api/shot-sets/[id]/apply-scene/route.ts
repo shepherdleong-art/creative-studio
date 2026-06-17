@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { resolveImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(
@@ -22,6 +23,16 @@ export async function POST(
       projectId: string; status: string; providerId: string; model: string; size: string; quality: string; maxAttempts: number;
     } | undefined;
     if (!set) return NextResponse.json({ error: '分镜组不存在' }, { status: 404 });
+
+    let jobProvider: { providerId: string; model: string };
+    try {
+      jobProvider = resolveImageJobProvider(db, body.providerId, {
+        providerId: set.providerId,
+        model: set.model,
+      });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    }
 
     // Validate scene reference
     const sceneRef = db.prepare(`SELECT * FROM scene_references WHERE id = ? AND projectId = ?`).get(sceneReferenceId, set.projectId) as { imageAssetId: string } | undefined;
@@ -46,7 +57,7 @@ export async function POST(
         insertJob.run(
           jobId, set.projectId, shot.sourceImageId,
           JSON.stringify([sceneRef.imageAssetId]),
-          set.providerId, set.model, promptTemplate, set.size, set.quality,
+          jobProvider.providerId, jobProvider.model, promptTemplate, set.size, set.quality,
           set.maxAttempts || 2
         );
         db.prepare(`UPDATE shots SET latestJobId = ? WHERE id = ?`).run(jobId, shot.id);

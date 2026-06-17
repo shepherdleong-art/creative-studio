@@ -18,9 +18,12 @@ export async function GET() {
     // Don't expose apiKey or apiKeyEnv; just indicate if configured
     const safe = (providers as Array<Record<string, unknown>>).map((p) => ({
       ...p,
+      category: 'image',
+      configured: isRealKey(p.apiKey as string),
+      missing: isRealKey(p.apiKey as string) ? [] : ['API Key'],
       apiKeyEnv: undefined,
       apiKey: undefined,
-      hasApiKey: isRealKey(p.apiKey as string) || isRealKey(process.env[p.apiKeyEnv as string]),
+      hasApiKey: isRealKey(p.apiKey as string),
     }));
 
     return NextResponse.json(safe);
@@ -51,6 +54,9 @@ export async function POST(request: Request) {
     const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) as Record<string, unknown>;
     const safe = {
       ...provider,
+      category: 'image',
+      configured: isRealKey(provider.apiKey as string),
+      missing: isRealKey(provider.apiKey as string) ? [] : ['API Key'],
       apiKeyEnv: undefined,
       apiKey: undefined,
       hasApiKey: isRealKey(provider.apiKey as string),

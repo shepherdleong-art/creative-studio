@@ -6,6 +6,7 @@
  */
 
 import type { ProviderConfig, AnalysisInput, ScriptInput } from './types';
+import type { ScriptProviderRuntimeConfig } from './config';
 
 // ── Low-level chat completion ──
 
@@ -19,14 +20,15 @@ export interface ChatOptions {
 
 export async function chatCompletion(
   config: ProviderConfig,
-  options: ChatOptions
+  options: ChatOptions,
+  runtime?: ScriptProviderRuntimeConfig
 ): Promise<string> {
-  const baseUrl = (process.env[config.baseUrlEnv] || config.defaultBaseUrl).replace(/\/$/, '');
-  const apiKey = process.env[config.keyEnv];
-  const model = process.env[config.modelEnv] || config.defaultModel;
+  const baseUrl = (runtime?.baseUrl || config.defaultBaseUrl).replace(/\/$/, '');
+  const apiKey = runtime?.apiKey;
+  const model = runtime?.model || config.defaultModel;
 
   if (!apiKey) {
-    throw new Error(`${config.name} API Key 未配置。请在 .env.local 中设置 ${config.keyEnv}。`);
+    throw new Error(`${config.name} API Key 未配置。请在供应商配置页填写。`);
   }
 
   const chatUrl = baseUrl.endsWith('/chat/completions')
@@ -42,7 +44,7 @@ export async function chatCompletion(
       { role: 'user', content: options.userPrompt },
     ],
     temperature: options.temperature ?? 0.7,
-    max_tokens: options.maxTokens ?? config.maxTokens,
+    max_tokens: options.maxTokens ?? runtime?.maxTokens ?? config.maxTokens,
   };
 
   if (options.responseFormat === 'json_object') {

@@ -2,6 +2,9 @@ import { getDb } from './db';
 import { editImage as editImageOpenAI, EditImageRequest } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
 import { editImagePacky } from './providers/packy-images';
+import { editImagePackyGemini } from './providers/packy-gemini-image';
+import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors';
+import { getEffectiveImageConcurrency } from './provider-concurrency';
 import { calculateEstimatedCost } from './cost';
 import { writeLog } from './logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames';
@@ -89,7 +92,8 @@ export function cancelQueue(projectId: string) {
  * Start running the queue for a project. Throws if a queue is already active.
  */
 export async function runQueue(options: QueueOptions): Promise<void> {
-  const { projectId, concurrency, maxAttempts, timeoutMs } = options;
+  const { projectId, maxAttempts, timeoutMs } = options;
+  let { concurrency } = options;
 
   // Guard: prevent duplicate start
   const existingStatus = getQueueStatus(projectId);
@@ -101,6 +105,14 @@ export async function runQueue(options: QueueOptions): Promise<void> {
   runningQueues.set(projectId, { abort, status: 'running' });
 
   const db = getDb();
+  const providerRow = db.prepare(`
+    SELECT p.id, p.name, p.type, p.baseUrl
+    FROM projects pr
+    JOIN providers p ON p.id = pr.providerId
+    WHERE pr.id = ?
+  `).get(projectId) as { id?: string; name?: string; type?: string; baseUrl?: string } | undefined;
+  const effectiveConcurrency = getEffectiveImageConcurrency(providerRow || {}, concurrency);
+  concurrency = effectiveConcurrency;
 
   // Recover any stuck "running" jobs from a previous crash
   db.prepare(
@@ -254,7 +266,7 @@ async function runJob(
       throw new Error('Provider not found');
     }
 
-    const apiKey = provider.apiKey || process.env[provider.apiKeyEnv];
+    const apiKey = provider.apiKey;
     if (!apiKey) {
       throw new Error('API key not configured. Please set it in Settings.');
     }
@@ -390,9 +402,13 @@ async function runJob(
       } else {
         throw new Error('GeekAI 未返回 task_id 或图片结果');
       }
-    } else if (providerType === 'packy-images') {
-      // Packy uses multipart/form-data, synchronous long-connection, no polling
-      logInfo('Calling Packy Images API (multipart, no polling)...');
+    } else if (providerType === 'packy-images' || providerType === 'packy-gemini-image') {
+      // Packy image routes are synchronous long-connections with no polling.
+      logInfo(
+        providerType === 'packy-gemini-image'
+          ? 'Calling Packy Gemini Image API (chat completions, no polling)...'
+          : 'Calling Packy Images API (multipart, no polling)...'
+      );
       if (refApiPaths.length > 0) {
         logInfo(`Packy 参考图模式：${refApiPaths.length} 张参考图 + 1 张待处理图`);
       }
@@ -402,23 +418,40 @@ async function runJob(
       const stopHeartbeat = startPackyHeartbeat(logInfo);
 
       try {
+        const packyRequest =
+          providerType === 'packy-gemini-image'
+            ? editImagePackyGemini(
+                {
+                  model: job.model,
+                  prompt: job.prompt,
+                  inputImagePath: inputApiPath,
+                  inputMimeType,
+                  referenceImagePaths: refApiPaths,
+                  referenceMimeTypes: refMimeTypes,
+                  size: job.size,
+                },
+                apiKey,
+                provider.baseUrl,
+                reqAbort.signal
+              )
+            : editImagePacky(
+                {
+                  model: job.model,
+                  prompt: job.prompt,
+                  inputImagePath: inputApiPath,
+                  inputMimeType,
+                  referenceImagePaths: refApiPaths,
+                  referenceMimeTypes: refMimeTypes,
+                  size: job.size,
+                  quality: job.quality || 'auto',
+                  referenceGuidanceMode: 'none',
+                },
+                apiKey,
+                provider.baseUrl,
+                reqAbort.signal
+              );
         const packyResult = await withTimeout(
-          editImagePacky(
-            {
-              model: job.model,
-              prompt: job.prompt,
-              inputImagePath: inputApiPath,
-              inputMimeType,
-              referenceImagePaths: refApiPaths,
-              referenceMimeTypes: refMimeTypes,
-              size: job.size,
-              quality: job.quality || 'auto',
-              referenceGuidanceMode: 'none',
-            },
-            apiKey,
-            provider.baseUrl,
-            reqAbort.signal
-          ),
+          packyRequest,
           timeoutMs,
           reqAbort
         );
@@ -561,7 +594,7 @@ async function runJob(
 
     const pType = getProviderTypeForJob(job.id);
 
-    if (pType === 'packy-images') {
+    if (pType === 'packy-images' || pType === 'packy-gemini-image') {
       // Packy timeout protection: synchronous long-connection timeouts may
       // still result in successful image generation on the server side.
       // Auto-retrying risks duplicate charges.
@@ -576,7 +609,7 @@ async function runJob(
       }
 
       if (isNonRetryablePackyError(errorMessage)) {
-        const msg = `${errorMessage}。Packy 返回 4xx 参数/请求错误，自动重试不会成功；已停止自动重试。请根据错误调整参数后手动重跑。`;
+        const msg = `${errorMessage}。${getNonRetryablePackyAdvice(errorMessage)}`;
         db.prepare(
           `UPDATE jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
            WHERE id = ? AND status = 'running'`
@@ -652,22 +685,6 @@ function startRequestHeartbeat(
 
 function startPackyHeartbeat(logInfo: (msg: string) => void, intervalMs = 10000): () => void {
   return startRequestHeartbeat('Packy 长连接', logInfo, intervalMs);
-}
-
-function isTimeoutLikeError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes('timeout') ||
-    m.includes('timed out') ||
-    m.includes('abort') ||
-    m.includes('aborted') ||
-    m.includes('failed to fetch') ||
-    m.includes('network')
-  );
-}
-
-function isNonRetryablePackyError(message: string): boolean {
-  return /^Packy API error 4\d\d:/i.test(message);
 }
 
 function getProviderTypeForJob(jobId: string): string {

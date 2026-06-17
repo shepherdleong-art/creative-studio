@@ -1,6 +1,6 @@
 import { getDb } from './db';
 import { getVideoAdapter } from './video-providers/index';
-import { getVideoProviderConfigState, isPlaceholderValue, resolveKlingCredentialPair } from './video-auth';
+import { resolveVideoProviderRuntimeConfig } from './video-auth';
 import { writeLog } from './logger';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
@@ -155,24 +155,28 @@ async function runVideoJob(
       apiKeyEnv: string;
       modelEnv: string;
       defaultModel: string;
+      baseUrl: string;
+      apiKey: string;
+      accessKey: string;
+      secretKey: string;
+      defaultDurationSec: number;
     } | undefined;
 
     if (!provider) throw new Error('Video provider not found');
 
-    const baseUrl = (process.env[provider.baseUrlEnv] || '').trim();
-    const apiKeyEnvName = provider.apiKeyEnv;
-    let apiKey = (process.env[apiKeyEnvName] || '').trim();
-    const configState = getVideoProviderConfigState(provider);
-    if (!configState.configured || isPlaceholderValue(baseUrl)) {
-      throw new Error(`Video provider not configured. Set ${configState.missing.join(', ')}`);
+    const runtime = resolveVideoProviderRuntimeConfig(provider);
+    let apiKey = runtime.apiKey;
+    if (!runtime.enabled) {
+      throw new Error('Video provider is disabled. Enable it in Settings before running jobs.');
+    }
+    if (!runtime.configured) {
+      throw new Error(`Video provider not configured. Set ${runtime.missing.join(', ')}`);
     }
 
     // Kling uses access_key + secret_key to generate a short-lived JWT.
     if (provider.type === 'kling') {
-      const pair = resolveKlingCredentialPair(process.env, apiKeyEnvName);
-      if (!pair) throw new Error('Video provider not configured. Set KLING_VIDEO_ACCESS_KEY and KLING_VIDEO_SECRET_KEY');
       const { getKlingToken } = await import('./video-providers/kling');
-      apiKey = getKlingToken(pair.accessKey, pair.secretKey);
+      apiKey = getKlingToken(runtime.accessKey, runtime.secretKey);
     }
 
     const adapter = getVideoAdapter(provider.type);
@@ -192,7 +196,7 @@ async function runVideoJob(
     const imagePath = sourceImage.processedPath || sourceImage.path;
     const mimeType = (sourceImage.mimeType || 'image/png') as 'image/png' | 'image/jpeg' | 'image/webp';
 
-    logInfo(`Calling video API: ${baseUrl} (type=${provider.type}, model=${job.model}, duration=${job.durationSec}s)`);
+    logInfo(`Calling video API: ${runtime.baseUrl} (type=${provider.type}, model=${job.model}, duration=${job.durationSec}s)`);
 
     const reqAbort = new AbortController();
     const onAbort = () => reqAbort.abort();
@@ -210,7 +214,7 @@ async function runVideoJob(
         durationSec: job.durationSec,
       },
       apiKey,
-      baseUrl,
+      runtime.baseUrl,
       reqAbort.signal
     );
 
@@ -234,7 +238,7 @@ async function runVideoJob(
 
       await sleep(5000); // poll every 5 seconds
 
-      const pollResult = await adapter.poll(taskId, apiKey, baseUrl, reqAbort.signal);
+      const pollResult = await adapter.poll(taskId, apiKey, runtime.baseUrl, reqAbort.signal);
 
       const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
       db.prepare(

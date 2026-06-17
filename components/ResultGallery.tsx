@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import { Icon } from '@/components/ui/Icon';
+import { getResultGalleryCounts, getResultJobKind, getSelectableResultJobs } from '@/lib/result-gallery-jobs';
 
 interface Job {
   id: string;
@@ -194,63 +195,67 @@ function JobStatusDot({ status }: { status: string }) {
   return <span className={`status-dot ${cls}`} title={status} />;
 }
 
-export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceImageIds }: Props) {
-  const succeededJobs = jobs.filter((j) => j.status === 'succeeded' && j.outputFilename);
+export default function ResultGallery({ jobs, images, onRetry, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceImageIds }: Props) {
+  const counts = getResultGalleryCounts(jobs);
+  const succeededJobs = jobs.filter((j) => getResultJobKind(j) === 'succeeded');
   const failedJobs = jobs.filter((j) => j.status === 'failed');
-  const [statusFilter, setStatusFilter] = useState<'succeeded' | 'failed'>('succeeded');
-  const displayedJobs = statusFilter === 'succeeded' ? succeededJobs : failedJobs;
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'failed'>('all');
+  const displayedJobs = statusFilter === 'all' ? jobs : failedJobs;
+  const selectableJobs = getSelectableResultJobs(displayedJobs);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenPrompt, setRegenPrompt] = useState('');
   const [regenInputSource, setRegenInputSource] = useState<'original' | 'current_result'>('original');
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
   const [extraUploads, setExtraUploads] = useState<ImageAsset[]>([]);
-  const selectedJob = selectedIndex != null ? displayedJobs[selectedIndex] : null;
+  const selectedIndex = selectedJobId ? selectableJobs.findIndex((job) => job.id === selectedJobId) : -1;
+  const selectedJob = selectedIndex >= 0 ? selectableJobs[selectedIndex] : null;
   const selectedJobIsSceneRef = !!(selectedJob?.outputImageId && sceneReferenceImageIds?.has(selectedJob.outputImageId));
 
   const getImageUrl = (asset: ImageAsset | undefined): string | null => asset?.imageUrl || null;
   const getMark = (job: Job): string | null => job.reviewMark || null;
 
-  const goPrev = useCallback(() => {
-    setSelectedIndex((i) => (i != null ? Math.max(0, i - 1) : null));
-  }, [setSelectedIndex]);
-  const goNext = useCallback(() => {
-    setSelectedIndex((i) => (i != null ? Math.min(displayedJobs.length - 1, i + 1) : null));
-  }, [setSelectedIndex, displayedJobs.length]);
+  const goPrev = () => {
+    if (selectedIndex > 0) setSelectedJobId(selectableJobs[selectedIndex - 1].id);
+  };
+  const goNext = () => {
+    if (selectedIndex >= 0 && selectedIndex < selectableJobs.length - 1) {
+      setSelectedJobId(selectableJobs[selectedIndex + 1].id);
+    }
+  };
 
   useEffect(() => {
-    if (selectedIndex == null) return;
+    if (!selectedJob) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedIndex(null);
-      if (e.key === 'ArrowLeft') goPrev();
-      if (e.key === 'ArrowRight') goNext();
+      if (e.key === 'Escape') setSelectedJobId(null);
+      if (e.key === 'ArrowLeft' && selectedIndex > 0) setSelectedJobId(selectableJobs[selectedIndex - 1].id);
+      if (e.key === 'ArrowRight' && selectedIndex < selectableJobs.length - 1) setSelectedJobId(selectableJobs[selectedIndex + 1].id);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedIndex, goPrev, goNext]);
+  }, [selectedJob, selectedIndex, selectableJobs]);
 
   const handleMark = (mark: string) => { if (!selectedJob) return; onMark(selectedJob.id, mark); };
 
   // ── Current base image ID ──
-  const baseImageId = useMemo(() => {
-    if (!selectedJob) return null;
-    return regenInputSource === 'current_result' ? selectedJob.outputImageId ?? null : selectedJob.inputImageId;
-  }, [selectedJob, regenInputSource]);
+  const baseImageId = selectedJob
+    ? (regenInputSource === 'current_result' ? selectedJob.outputImageId ?? null : selectedJob.inputImageId)
+    : null;
 
   // ── Image lookup ──
-  const imageById = useMemo(() => new Map(images.map((img) => [img.id, img])), [images]);
+  const imageById = new Map(images.map((img) => [img.id, img]));
 
   // ── Reference images used in the current job (for sidebar) ──
-  const usedReferenceImages = useMemo(() => {
+  const usedReferenceImages = (() => {
     if (!selectedJob || !selectedJob.referenceImageIds) return [];
     try {
       const ids: string[] = JSON.parse(selectedJob.referenceImageIds);
       return ids.map((id) => imageById.get(id)).filter(Boolean) as ImageAsset[];
     } catch { return []; }
-  }, [selectedJob, imageById]);
+  })();
 
   // ── Reference candidates for the regen panel ──
-  const referenceCandidates = useMemo(() => {
+  const referenceCandidates = (() => {
     if (!selectedJob) return [];
     const seen = new Set<string>();
     const candidates: { id: string; label: string; imageUrl: string; role: string; isBase: boolean }[] = [];
@@ -286,10 +291,10 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
     extraUploads.forEach((img) => add(img, `上传: ${img.filename}`));
 
     return candidates;
-  }, [selectedJob, regenInputSource, images, succeededJobs, extraUploads, imageById]);
+  })();
 
   // ── Initialize regen state ──
-  const openRegen = useCallback(() => {
+  const openRegen = () => {
     if (!selectedJob) return;
     setRegenPrompt(selectedJob.prompt || '');
     setRegenInputSource('original');
@@ -313,7 +318,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
 
     setSelectedReferenceIds(defaultRefs);
     setRegenOpen(true);
-  }, [selectedJob, setRegenPrompt, setRegenInputSource, setExtraUploads, setSelectedReferenceIds, setRegenOpen]);
+  };
 
   const handleInputSourceChange = (source: 'original' | 'current_result') => {
     if (!selectedJob) return;
@@ -358,8 +363,11 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
   };
 
   const hasOutput = selectedJob?.outputImageId && imageById.has(selectedJob.outputImageId);
-  const isFirst = selectedIndex === 0;
-  const isLast = selectedIndex === displayedJobs.length - 1;
+  const selectedJobKind = selectedJob ? getResultJobKind(selectedJob) : 'empty';
+  const selectedJobHasResult = !!selectedJob && selectedJobKind === 'succeeded' && !!selectedJob.outputFilename;
+  const selectedJobIsFailed = selectedJobKind === 'failed';
+  const isFirst = selectedIndex <= 0;
+  const isLast = selectedIndex === selectableJobs.length - 1;
 
   return (
     <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4">
@@ -373,14 +381,14 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
           {/* ── Status filter toggle ── */}
           <div className="flex items-center gap-2 mb-3">
             <button
-              onClick={() => { setStatusFilter('succeeded'); setSelectedIndex(null); }}
-              className={`btn-sm text-xs ${statusFilter === 'succeeded' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => { setStatusFilter('all'); setSelectedJobId(null); }}
+              className={`btn-sm text-xs ${statusFilter === 'all' ? 'btn-primary' : 'btn-secondary'}`}
             >
-              成功 ({succeededJobs.length})
+              全部 ({counts.succeeded}/{counts.total})
             </button>
             {failedJobs.length > 0 && (
               <button
-                onClick={() => { setStatusFilter('failed'); setSelectedIndex(null); }}
+                onClick={() => { setStatusFilter('failed'); setSelectedJobId(null); }}
                 className={`btn-sm text-xs ${statusFilter === 'failed' ? 'btn-primary bg-fail hover:bg-fail' : 'btn-secondary'}`}
               >
                 失败 ({failedJobs.length})
@@ -396,13 +404,21 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
           ) : (
             /* ── Grid (light workbench style) ── */
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {displayedJobs.map((job, idx) => {
+              {displayedJobs.map((job) => {
                 const mark = getMark(job);
-                const isFailed = job.status === 'failed';
+                const kind = getResultJobKind(job);
+                const isFailed = kind === 'failed';
+                const isSucceeded = kind === 'succeeded';
                 const isSceneReference = !!job.outputImageId && (sceneReferenceImageIds?.has(job.outputImageId) ?? false);
+                const selectableIndex = selectableJobs.findIndex((candidate) => candidate.id === job.id);
+                const handleOpen = () => {
+                  if (selectableIndex >= 0) setSelectedJobId(job.id);
+                };
                 return (
-                  <div key={job.id} onClick={() => setSelectedIndex(idx)}
-                    className={`card group cursor-pointer overflow-hidden transition-all duration-200 hover:ring-1 ${
+                  <div key={job.id} onClick={handleOpen}
+                    className={`card group overflow-hidden transition-all duration-200 ${
+                      selectableIndex >= 0 ? 'cursor-pointer hover:ring-1' : 'cursor-default'
+                    } ${
                       isFailed ? 'border-fail/30 hover:ring-fail/40' : 'hover:border-accent/35 hover:ring-accent/15'
                     } ${mark === 'discard' ? 'opacity-40' : ''}`}>
                     <div className="relative aspect-square bg-surface-subtle">
@@ -411,8 +427,22 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                           <Icon name="alert" size={24} className="mb-1 text-fail" />
                           <span className="line-clamp-3 text-center text-[10px] text-fail">{job.errorMessage || '未知错误'}</span>
                         </div>
-                      ) : (
+                      ) : isSucceeded ? (
                         <img src={`/api/images/outputs/${job.outputFilename}`} alt={job.inputFilename} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-surface-subtle p-3 text-center">
+                          {kind === 'queued' ? (
+                            <Icon name="logs" size={24} className="text-ink-tertiary" />
+                          ) : (
+                            <div className="h-7 w-7 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+                          )}
+                          <div className="text-xs font-medium text-ink-secondary">
+                            {kind === 'queued' ? '排队中' : kind === 'checking' ? '待确认' : '生成中'}
+                          </div>
+                          <div className="text-[10px] text-ink-tertiary">
+                            {kind === 'queued' ? '等待并发空位' : kind === 'checking' ? '等待补抓结果' : '图片完成后会自动出现'}
+                          </div>
+                        </div>
                       )}
                       {/* Status dot (Apple Photos-style) */}
                       <span className="absolute right-1.5 top-1.5 z-10">
@@ -421,7 +451,7 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                       {isSceneReference && (
                         <span className="scene-ref-badge"><Icon name="check" size={12} /> 已设为场景参考</span>
                       )}
-                      {mark && (
+                      {mark && isSucceeded && (
                         <span className={`pill absolute left-1 top-1 ${
                           mark === 'available' ? 'bg-ok-tint text-ok' : mark === 'rework' ? 'bg-warn-tint text-warn' : 'bg-idle-tint text-idle'}`}>
                           {{ available: '可用', rework: '返工', discard: '废弃' }[mark]}
@@ -433,6 +463,22 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                       {isFailed && job.errorMessage && (
                         <div className="mt-0.5 truncate text-[10px] text-fail" title={job.errorMessage}>{job.errorMessage}</div>
                       )}
+                      {isFailed && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onRetry(job.id);
+                          }}
+                          className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-accent hover:underline"
+                        >
+                          <Icon name="retry" size={10} />
+                          重试
+                        </button>
+                      )}
+                      {!isSucceeded && !isFailed && (
+                        <div className="mt-0.5 truncate text-[10px] text-ink-tertiary">{job.status}</div>
+                      )}
                     </div>
                   </div>
                 );
@@ -441,9 +487,9 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
           )}
 
           {/* ── Fullscreen viewer (Apple Photos dark style) ── */}
-          {selectedJob && selectedIndex != null && (
+          {selectedJob && selectedIndex >= 0 && (
             <div className="theme-dark fixed inset-0 bg-black/95 z-50 flex flex-col"
-              onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}>
+              onClick={() => { setSelectedJobId(null); setRegenOpen(false); }}>
               <div className="flex flex-1 min-h-0 overflow-hidden"
                 onClick={(e) => e.stopPropagation()}>
 
@@ -603,9 +649,9 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                 onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center gap-3 min-w-0">
                   <h3 className="font-medium text-sm truncate max-w-[320px] text-white/90">{selectedJob.inputFilename}</h3>
-                  <span className="text-xs text-white/50 shrink-0">{selectedIndex + 1} / {displayedJobs.length}</span>
+                  <span className="text-xs text-white/50 shrink-0">{selectedIndex + 1} / {selectableJobs.length}</span>
                 </div>
-                <button onClick={() => { setSelectedIndex(null); setRegenOpen(false); }}
+                <button onClick={() => { setSelectedJobId(null); setRegenOpen(false); }}
                   className="flex items-center justify-center w-8 h-8 rounded-full bg-white/10 text-white/70 hover:bg-white/20 hover:text-white transition-colors"
                   title="关闭" aria-label="关闭">
                   <Icon name="close" size={16} />
@@ -634,17 +680,23 @@ export default function ResultGallery({ jobs, images, onMark, onRegenerate, onSe
                 <button onClick={goPrev} disabled={isFirst} className="btn-secondary btn-sm"><Icon name="chevron-left" size={14} /> 上一张</button>
                 <button onClick={goNext} disabled={isLast} className="btn-secondary btn-sm">下一张 <Icon name="chevron-right" size={14} /></button>
                 <span className="mx-1 text-white/20">|</span>
-                <button onClick={() => handleMark('available')} className="btn-secondary btn-sm text-ok"><Icon name="check" size={14} /> 可用</button>
-                <button onClick={() => handleMark('rework')} className="btn-secondary btn-sm text-warn"><Icon name="retry" size={14} /> 待返工</button>
-                <button onClick={() => handleMark('discard')} className="btn-secondary btn-sm text-fail"><Icon name="trash" size={14} /> 废弃</button>
-                <span className="mx-1 text-white/20">|</span>
-                <button onClick={openRegen} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重新生成</button>
-                {onSetSceneRef && selectedJob.outputImageId && (
+                {selectedJobHasResult ? (
+                  <>
+                    <button onClick={() => handleMark('available')} className="btn-secondary btn-sm text-ok"><Icon name="check" size={14} /> 可用</button>
+                    <button onClick={() => handleMark('rework')} className="btn-secondary btn-sm text-warn"><Icon name="retry" size={14} /> 待返工</button>
+                    <button onClick={() => handleMark('discard')} className="btn-secondary btn-sm text-fail"><Icon name="trash" size={14} /> 废弃</button>
+                    <span className="mx-1 text-white/20">|</span>
+                    <button onClick={openRegen} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重新生成</button>
+                  </>
+                ) : selectedJobIsFailed ? (
+                  <button onClick={() => onRetry(selectedJob.id)} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重试</button>
+                ) : null}
+                {selectedJobHasResult && onSetSceneRef && selectedJob.outputImageId && (
                   selectedJobIsSceneRef
                     ? <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-ok"><Icon name="check" size={13} /> 已设为场景参考</span>
                     : <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)} className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
                 )}
-                {selectedJob.outputFilename && (
+                {selectedJobHasResult && selectedJob.outputFilename && (
                   <a href={`/api/images/outputs/${selectedJob.outputFilename}`} download className="btn-primary btn-sm sm:ml-auto"><Icon name="download" size={14} /> 下载</a>
                 )}
               </div>
