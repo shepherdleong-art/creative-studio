@@ -79,6 +79,136 @@ body {
   .input-field:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px rgba(0,113,227,.35); }
   .label { display: block; font-size: .72rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--color-ink-tertiary); margin-bottom: .4rem; }
 
+  /* Apple-like generation forms */
+  .generation-card {
+    border-color: #e1e1e6;
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.72);
+  }
+  .generation-form-grid,
+  .provider-run-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 196px;
+    gap: 18px 24px;
+    align-items: start;
+  }
+  .generation-main-stack,
+  .generation-side-stack {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .generation-control.input-field {
+    min-height: 42px;
+    border-color: #d2d2d7;
+    border-radius: 12px;
+    background: rgba(251,251,253,.95);
+    padding: 0 14px;
+    font-size: 14px;
+    line-height: 20px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 1px 2px rgba(0,0,0,.015);
+  }
+  .generation-control.input-field:hover { border-color: #c6c6cc; background: #fff; }
+  .generation-control.input-field:focus { border-color: rgba(0,113,227,.7); box-shadow: 0 0 0 4px rgba(0,113,227,.14); }
+  .generation-textarea.input-field {
+    min-height: 126px;
+    padding: 12px 14px;
+    resize: vertical;
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+  .generation-select.input-field {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 40px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background-image: url("data:image/svg+xml,%3Csvg width='14' height='16' viewBox='0 0 14 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.25 6.25L7 2.5L10.75 6.25' stroke='%231D1D1F' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M10.75 9.75L7 13.5L3.25 9.75' stroke='%231D1D1F' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    background-size: 13px 15px;
+  }
+  .generation-number.input-field {
+    font-size: 17px;
+    letter-spacing: 0;
+  }
+  .generation-empty-provider {
+    border: 1px solid rgba(245, 158, 11, .28);
+    border-radius: 12px;
+    background: rgba(255, 251, 235, .72);
+    padding: 12px 14px;
+    color: var(--color-warn);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .generation-label.label {
+    margin-bottom: 7px;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: #8e8e93;
+  }
+  .generation-helper {
+    margin-top: 6px;
+    min-height: 20px;
+    color: var(--color-ink-tertiary);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .generation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    margin-top: 20px;
+  }
+  .generation-primary-action {
+    min-height: 40px;
+    padding: 0 20px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .apply-scene-dialog {
+    display: flex;
+    flex-direction: column;
+    width: min(820px, calc(100vw - 48px));
+    max-height: min(90vh, 820px);
+    overflow: hidden;
+    border-radius: 22px;
+    border-color: rgba(0,0,0,.1);
+    padding: 24px 28px 22px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.9);
+  }
+  .apply-scene-dialog-body {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .apply-scene-dialog-actions {
+    display: flex;
+    flex-shrink: 0;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 20px;
+  }
+  .apply-scene-textarea.input-field {
+    min-height: 110px;
+  }
+
+  @media (max-width: 860px) {
+    .generation-form-grid,
+    .provider-run-grid {
+      grid-template-columns: 1fr;
+    }
+    .apply-scene-dialog {
+      width: min(100%, calc(100vw - 24px));
+      padding: 24px;
+    }
+  }
+
   /* Script wizard controls */
   .script-brief-grid { align-items: end; }
   .script-field { min-width: 0; }

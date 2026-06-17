@@ -30,7 +30,16 @@ interface Project {
   shotPrompt?: string;
   images: ImageAsset[];
   jobs: Job[];
-  provider: { name: string } | null;
+  provider: { id: string; name: string; model: string } | null;
+}
+
+interface ImageProvider {
+  id: string;
+  name: string;
+  model: string;
+  type: string;
+  enabled: number;
+  hasApiKey: boolean;
 }
 
 interface ImageAsset {
@@ -88,6 +97,7 @@ export default function ProjectDetailPage() {
   type QueueStatus = 'idle' | 'running' | 'paused';
 
   const [project, setProject] = useState<Project | null>(null);
+  const [providers, setProviders] = useState<ImageProvider[]>([]);
   const [loading, setLoading] = useState(true);
   const [queueStatus, setQueueStatus] = useState<QueueStatus>('idle');
   const running = queueStatus === 'running';
@@ -103,6 +113,8 @@ export default function ProjectDetailPage() {
   const [applySceneModal, setApplySceneModal] = useState<string | null>(null);
   const [applySceneRefId, setApplySceneRefId] = useState('');
   const [applyScenePrompt, setApplyScenePrompt] = useState('图1 是待编辑分镜图。图2 是场景参考图。请参考图2的空间风格、光线、墙面、软装和布置，重绘图1的场景。保持图1中的产品结构、模特姿态、主体位置和画面构图尽量一致。不要改变产品结构，不要添加文字。');
+  const [applySceneProviderId, setApplySceneProviderId] = useState('');
+  const [applySceneConcurrency, setApplySceneConcurrency] = useState(3);
   const [logOpen, setLogOpen] = useState(false);
   const [selectedSceneSeedIds, setSelectedSceneSeedIds] = useState<string[]>([]);
   const [selectedShotSourceIds, setSelectedShotSourceIds] = useState<string[]>([]);
@@ -133,6 +145,17 @@ export default function ProjectDetailPage() {
     const timer = window.setTimeout(() => { void loadProject(); }, 0);
     return () => window.clearTimeout(timer);
   }, [loadProject]);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/providers')
+      .then((res) => res.json())
+      .then((data: ImageProvider[]) => {
+        if (active && Array.isArray(data)) setProviders(data);
+      })
+      .catch(console.error);
+    return () => { active = false; };
+  }, []);
   useEffect(() => { editingShotPromptRef.current = editingShotPrompt; }, [editingShotPrompt]);
 
   useEffect(() => {
@@ -227,7 +250,7 @@ export default function ProjectDetailPage() {
     await loadProject();
   };
 
-  const ensureQueueRunning = async (): Promise<boolean> => {
+  const ensureQueueRunning = async (concurrencyOverride?: number): Promise<boolean> => {
     const statusRes = await fetch(`/api/projects/${id}/run`);
     const statusData = await statusRes.json().catch(() => ({}));
     const currentStatus = (statusData.queueStatus || queueStatus || 'idle') as QueueStatus;
@@ -241,7 +264,11 @@ export default function ProjectDetailPage() {
     const res = await fetch(`/api/projects/${id}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, timeoutMs: project?.timeoutMs }),
+      body: JSON.stringify({
+        action,
+        timeoutMs: project?.timeoutMs,
+        ...(concurrencyOverride ? { concurrency: concurrencyOverride } : {}),
+      }),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -350,6 +377,8 @@ export default function ProjectDetailPage() {
     setApplySceneModal(shotSetId);
     setApplySceneRefId('');
     setApplyScenePrompt(project?.shotPrompt || '');
+    setApplySceneProviderId(project?.providerId || '');
+    setApplySceneConcurrency(clampImageConcurrency(project?.concurrency || 3));
   };
 
   const handleApplySceneSubmit = async () => {
@@ -357,15 +386,20 @@ export default function ProjectDetailPage() {
       alert('请选择场景参考图并填写提示词');
       return;
     }
+    const selectedProviderId = resolveSelectableImageProviderId(providers, applySceneProviderId);
+    if (!selectedProviderId) {
+      alert('请选择可用供应商');
+      return;
+    }
     const res = await fetch(`/api/shot-sets/${applySceneModal}/apply-scene`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sceneReferenceId: applySceneRefId, prompt: applyScenePrompt.trim() }),
+      body: JSON.stringify({ sceneReferenceId: applySceneRefId, prompt: applyScenePrompt.trim(), providerId: selectedProviderId }),
     });
     const data = await res.json();
     if (res.ok) {
       alert(`已创建 ${data.jobCount} 个任务`);
       setApplySceneModal(null);
-      await ensureQueueRunning();
+      await ensureQueueRunning(applySceneConcurrency);
     } else {
       alert('应用失败: ' + (data.error || '未知错误'));
     }
@@ -487,11 +521,12 @@ export default function ProjectDetailPage() {
             {activeTab === 'scene' && (
               <SceneWorkspace
                 project={project}
+                providers={providers}
                 sceneSeedImages={sceneSeedImages}
                 selectedSceneSeedIds={validSelectedSceneSeedIds}
                 onSelectSceneSeed={setSelectedSceneSeedIds}
                 onUploaded={loadProject}
-                onJobsCreated={async () => { await loadProject(); await ensureQueueRunning(); }}
+                onJobsCreated={async (concurrency) => { await loadProject(); await ensureQueueRunning(concurrency); }}
                 onRetry={handleRetry}
                 onMark={handleMark}
                 onRegenerate={handleRegenerate}
@@ -571,11 +606,11 @@ export default function ProjectDetailPage() {
 
       {applySceneModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4" onClick={() => setApplySceneModal(null)}>
-          <div className="card max-h-[80vh] w-full max-w-lg overflow-y-auto p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]" onClick={(e) => e.stopPropagation()}>
-            <h3 className="mb-4 font-semibold">选择新场景图并生成分镜</h3>
-            <div className="space-y-3">
+          <div className="card apply-scene-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-5 text-lg font-semibold tracking-[-0.01em]">选择新场景图并生成分镜</h3>
+            <div className="apply-scene-dialog-body space-y-5">
               <div>
-                <label className="label">选择场景参考图</label>
+                <label className="label generation-label">选择场景参考图</label>
                 {(() => {
                   const applySceneItems: ImagePickerItem[] = sceneRefs.map((ref) => {
                     const asset = project?.images.find((img) => img.id === ref.imageAssetId);
@@ -586,14 +621,21 @@ export default function ProjectDetailPage() {
                 {sceneRefs.length === 0 && <p className="mt-1 text-xs text-fail">当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。</p>}
               </div>
               <div>
-                <label className="label">提示词模板</label>
-                <textarea value={applyScenePrompt} onChange={(e) => setApplyScenePrompt(e.target.value)} rows={4} className="input-field mt-1 font-mono text-sm" />
-                <p className="mt-1 text-xs text-ink-tertiary">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
+                <label className="label generation-label">提示词模板</label>
+                <textarea value={applyScenePrompt} onChange={(e) => setApplyScenePrompt(e.target.value)} rows={4} className="input-field generation-control generation-textarea apply-scene-textarea" />
+                <p className="generation-helper">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
               </div>
+              <ImageProviderRunControls
+                providers={providers}
+                providerId={resolveSelectableImageProviderId(providers, applySceneProviderId)}
+                onProviderIdChange={setApplySceneProviderId}
+                concurrency={applySceneConcurrency}
+                onConcurrencyChange={setApplySceneConcurrency}
+              />
             </div>
-            <div className="mt-4 flex justify-end gap-2">
+            <div className="apply-scene-dialog-actions">
               <button onClick={() => setApplySceneModal(null)} className="btn-secondary btn-sm">取消</button>
-              <button onClick={handleApplySceneSubmit} disabled={!applySceneRefId || !applyScenePrompt.trim()} className="btn-primary btn-sm">创建任务并开始</button>
+              <button onClick={handleApplySceneSubmit} disabled={!applySceneRefId || !applyScenePrompt.trim() || !resolveSelectableImageProviderId(providers, applySceneProviderId)} className="btn-primary btn-sm">创建任务并开始</button>
             </div>
           </div>
         </div>
@@ -641,6 +683,7 @@ function QueueCompactBar({
 
 function SceneWorkspace({
   project,
+  providers,
   sceneSeedImages,
   selectedSceneSeedIds,
   onSelectSceneSeed,
@@ -655,11 +698,12 @@ function SceneWorkspace({
   sceneReferenceImageIds,
 }: {
   project: Project;
+  providers: ImageProvider[];
   sceneSeedImages: AssetGridItem[];
   selectedSceneSeedIds: string[];
   onSelectSceneSeed: (ids: string[]) => void;
   onUploaded: () => void | Promise<void>;
-  onJobsCreated: () => void | Promise<void>;
+  onJobsCreated: (concurrency?: number) => void | Promise<void>;
   onRetry: (jobId: string) => void;
   onMark: (jobId: string, mark: string) => void;
   onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
@@ -691,7 +735,13 @@ function SceneWorkspace({
         />
       </section>
 
-      <SceneGenerationForm selectedImageId={selectedSceneSeedIds[0] || ''} defaultPrompt={project.scenePrompt || ''} onJobsCreated={onJobsCreated} projectId={project.id} />
+      <SceneGenerationForm
+        project={project}
+        providers={providers}
+        selectedImageId={selectedSceneSeedIds[0] || ''}
+        defaultPrompt={project.scenePrompt || ''}
+        onJobsCreated={onJobsCreated}
+      />
 
       <section className="card p-5">
         <SceneResultsSection
@@ -775,53 +825,186 @@ function SceneResultsSection({
   );
 }
 
-function SceneGenerationForm({
-  projectId, selectedImageId, defaultPrompt, onJobsCreated,
+function clampImageConcurrency(value: number): number {
+  return Math.max(1, Math.min(8, Math.floor(value) || 1));
+}
+
+function getSelectableImageProviders(providers: ImageProvider[]): ImageProvider[] {
+  return providers.filter((provider) => provider.enabled && provider.hasApiKey);
+}
+
+function resolveSelectableImageProviderId(providers: ImageProvider[], providerId: string): string {
+  const selectableProviders = getSelectableImageProviders(providers);
+  return selectableProviders.some((provider) => provider.id === providerId)
+    ? providerId
+    : selectableProviders[0]?.id || '';
+}
+
+function ImageProviderSelect({
+  providers,
+  providerId,
+  onProviderIdChange,
 }: {
-  projectId: string;
+  providers: ImageProvider[];
+  providerId: string;
+  onProviderIdChange: (providerId: string) => void;
+}) {
+  const selectedProvider = providers.find((provider) => provider.id === providerId);
+
+  return (
+    <div>
+      <label className="label generation-label">供应商</label>
+      <select
+        value={providerId}
+        onChange={(e) => onProviderIdChange(e.target.value)}
+        className="input-field generation-control generation-select"
+      >
+        {providers.map((provider) => (
+          <option key={provider.id} value={provider.id}>
+            {provider.name} ({provider.model})
+          </option>
+        ))}
+      </select>
+      <p className="generation-helper">
+        当前模型：{selectedProvider?.model || '未选择'}。如果供应商临时不可用，可以换另一个再创建新任务。
+      </p>
+    </div>
+  );
+}
+
+function ImageConcurrencyField({
+  concurrency,
+  onConcurrencyChange,
+}: {
+  concurrency: number;
+  onConcurrencyChange: (concurrency: number) => void;
+}) {
+  return (
+    <div>
+      <label className="label generation-label">并发数</label>
+      <input
+        type="number"
+        min={1}
+        max={8}
+        value={concurrency}
+        onChange={(e) => onConcurrencyChange(clampImageConcurrency(Number(e.target.value)))}
+        className="input-field generation-control generation-number"
+      />
+      <p className="generation-helper">失败或限流时调回 1。</p>
+    </div>
+  );
+}
+
+function ImageProviderRunControls({
+  providers,
+  providerId,
+  onProviderIdChange,
+  concurrency,
+  onConcurrencyChange,
+}: {
+  providers: ImageProvider[];
+  providerId: string;
+  onProviderIdChange: (providerId: string) => void;
+  concurrency: number;
+  onConcurrencyChange: (concurrency: number) => void;
+}) {
+  const selectableProviders = getSelectableImageProviders(providers);
+
+  if (selectableProviders.length === 0) {
+    return (
+      <div className="generation-empty-provider">
+        当前没有可用图片供应商，请先到 <a href="/settings" className="underline">供应商配置</a> 启用并填写 Key。
+      </div>
+    );
+  }
+
+  return (
+    <div className="provider-run-grid">
+      <ImageProviderSelect
+        providers={selectableProviders}
+        providerId={providerId}
+        onProviderIdChange={onProviderIdChange}
+      />
+      <ImageConcurrencyField
+        concurrency={concurrency}
+        onConcurrencyChange={onConcurrencyChange}
+      />
+    </div>
+  );
+}
+
+function SceneGenerationForm({
+  project, providers, selectedImageId, defaultPrompt, onJobsCreated,
+}: {
+  project: Project;
+  providers: ImageProvider[];
   selectedImageId: string;
   defaultPrompt: string;
-  onJobsCreated: () => void | Promise<void>;
+  onJobsCreated: (concurrency?: number) => void | Promise<void>;
 }) {
   const [prompt, setPrompt] = useState(defaultPrompt);
   const [count, setCount] = useState(4);
+  const [providerId, setProviderId] = useState(project.providerId);
+  const [concurrency, setConcurrency] = useState(clampImageConcurrency(project.concurrency || 3));
   const [creating, setCreating] = useState(false);
+  const selectableProviders = getSelectableImageProviders(providers);
+  const selectedProviderId = resolveSelectableImageProviderId(providers, providerId);
 
   return (
-    <section className="card p-5">
+    <section className="card generation-card p-6">
       <div className="mb-4">
         <h2 className="text-base font-semibold tracking-[-0.01em]">生成参数</h2>
         <p className="mt-1 text-sm text-ink-secondary">选中原始场景图 A 后，确认提示词和数量再开始生成。</p>
       </div>
-      <div className="grid gap-4 md:grid-cols-[1fr_120px]">
-        <div>
-          <label className="label">场景提示词</label>
-          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} className="input-field font-mono text-sm" />
+      <div className="generation-form-grid">
+        <div className="generation-main-stack">
+          <div>
+            <label className="label generation-label">场景提示词</label>
+            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} className="input-field generation-control generation-textarea" />
+          </div>
+          {selectableProviders.length > 0 ? (
+            <ImageProviderSelect
+              providers={selectableProviders}
+              providerId={selectedProviderId}
+              onProviderIdChange={setProviderId}
+            />
+          ) : (
+            <div className="generation-empty-provider">
+              当前没有可用图片供应商，请先到 <a href="/settings" className="underline">供应商配置</a> 启用并填写 Key。
+            </div>
+          )}
         </div>
-        <div>
-          <label className="label">数量</label>
-          <input type="number" min={1} max={9} value={count} onChange={(e) => setCount(Math.max(1, Math.min(9, Number(e.target.value) || 1)))} className="input-field" />
+        <div className="generation-side-stack">
+          <div>
+            <label className="label generation-label">数量</label>
+            <input type="number" min={1} max={9} value={count} onChange={(e) => setCount(Math.max(1, Math.min(9, Number(e.target.value) || 1)))} className="input-field generation-control generation-number" />
+          </div>
+          <ImageConcurrencyField
+            concurrency={concurrency}
+            onConcurrencyChange={setConcurrency}
+          />
         </div>
       </div>
-      <div className="mt-4 flex flex-wrap items-center gap-3">
+      <div className="generation-actions">
         <button
           onClick={async () => {
             if (!selectedImageId) { alert('请先在上方宫格选择原始场景图 A'); return; }
             if (!prompt.trim()) { alert('请输入场景提示词'); return; }
+            if (!selectedProviderId) { alert('请选择可用供应商'); return; }
             setCreating(true);
             try {
-              const res = await fetch(`/api/projects/${projectId}/scene-jobs`, {
+              const res = await fetch(`/api/projects/${project.id}/scene-jobs`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sceneSeedImageId: selectedImageId, scenePrompt: prompt.trim(), generationCount: count }),
+                body: JSON.stringify({ sceneSeedImageId: selectedImageId, scenePrompt: prompt.trim(), generationCount: count, providerId: selectedProviderId }),
               });
               const data = await res.json();
-              if (res.ok) await onJobsCreated();
+              if (res.ok) await onJobsCreated(concurrency);
               else alert('创建失败: ' + (data.error || '未知错误'));
             } catch (err) { alert('创建失败: ' + String(err)); }
             finally { setCreating(false); }
           }}
-          disabled={creating || !selectedImageId}
-          className="btn-primary"
+          disabled={creating || !selectedImageId || !selectedProviderId}
+          className="btn-primary generation-primary-action"
         >
           {creating ? '创建中...' : `生成 ${count} 张新场景图`}
         </button>

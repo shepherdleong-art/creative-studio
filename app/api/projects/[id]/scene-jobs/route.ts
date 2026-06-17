@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { resolveImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(
@@ -26,6 +27,15 @@ export async function POST(
     if (project.workflowType !== 'complex_product') return NextResponse.json({ error: '只有复杂产品项目支持场景生成' }, { status: 400 });
 
     const maxAttempts = Number(body.maxAttempts) || project.maxAttempts || 2;
+    let jobProvider: { providerId: string; model: string };
+    try {
+      jobProvider = resolveImageJobProvider(db, body.providerId, {
+        providerId: project.providerId,
+        model: project.model,
+      });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    }
 
     // Validate image exists and belongs to this project or is unbound
     const img = db.prepare(`SELECT id, projectId FROM image_assets WHERE id = ?`).get(sceneSeedImageId) as { projectId: string | null } | undefined;
@@ -47,7 +57,7 @@ export async function POST(
       `);
       for (let g = 0; g < generationCount; g++) {
         const jobId = uuidv4();
-        insertJob.run(jobId, id, sceneSeedImageId, project.providerId, project.model, scenePrompt, project.size, project.quality, maxAttempts);
+        insertJob.run(jobId, id, sceneSeedImageId, jobProvider.providerId, jobProvider.model, scenePrompt, project.size, project.quality, maxAttempts);
         jobIds.push(jobId);
       }
     })();

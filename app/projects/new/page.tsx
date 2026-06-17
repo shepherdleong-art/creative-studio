@@ -64,6 +64,7 @@ export default function NewProjectPage() {
   const [quality, setQuality] = useState('medium');
   const [timeoutMs, setTimeoutMs] = useState(600000);
   const [generationCount, setGenerationCount] = useState(1);
+  const [concurrency, setConcurrency] = useState(3);
 
   const size = useMemo(() => {
     try { return resolveGptImage2Size(aspectRatio, resolution); }
@@ -107,6 +108,7 @@ export default function NewProjectPage() {
           workflowType: 'complex_product',
           providerId: provider.id, model, size, quality: effectiveQuality, timeoutMs,
           aspectRatio, resolution,
+          concurrency,
           preprocessEnabled, targetMaxSide, jpegQuality,
         }),
       });
@@ -157,7 +159,7 @@ export default function NewProjectPage() {
   const modelControlClass = 'input-field h-11 w-full text-sm leading-none';
   const providerLocksModel = provider?.type === 'packy-images' || provider?.type === 'packy-gemini-image';
 
-  const renderModelParams = () => (
+  const renderModelParams = (showConcurrency = false) => (
     <div className="card p-4">
       <h3 className="text-sm font-semibold mb-3 text-ink">模型参数</h3>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
@@ -200,6 +202,20 @@ export default function NewProjectPage() {
           <input type="number" min={30} max={600} value={Math.floor(timeoutMs / 1000)}
             onChange={(e) => setTimeoutMs(Number(e.target.value) * 1000)} className={modelControlClass} />
         </div>
+        {showConcurrency && (
+          <div>
+            <label className="label">并发数</label>
+            <input
+              type="number"
+              min={1}
+              max={8}
+              value={concurrency}
+              onChange={(e) => setConcurrency(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
+              className={modelControlClass}
+            />
+            <p className="mt-1 text-xs text-ink-tertiary">失败或限流时调回 1。</p>
+          </div>
+        )}
       </div>
       <p className="text-xs text-ink-tertiary mt-2">
         {supportsQuality
@@ -281,7 +297,7 @@ export default function NewProjectPage() {
             <label className="label">每张生成数量</label>
             <input type="number" min={1} max={10} value={generationCount} onChange={(e) => setGenerationCount(Math.max(1, Number(e.target.value)))} className="input-field w-24" />
           </div>
-          {renderModelParams()}
+          {renderModelParams(false)}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">并发数</label>
@@ -346,7 +362,7 @@ export default function NewProjectPage() {
           />
 
           {/* Model params */}
-          {renderModelParams()}
+          {renderModelParams(true)}
 
           {/* Preprocessing (collapsible) */}
           <details className="card p-4">
