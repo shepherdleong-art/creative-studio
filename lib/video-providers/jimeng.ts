@@ -9,6 +9,14 @@ function fileToBase64DataUrl(filePath: string, mimeType: string): string {
   return `data:${mimeType};base64,${buffer.toString('base64')}`;
 }
 
+function normalizeJimengPrompt(prompt: string): string {
+  return (prompt || 'gentle camera movement, stable product detail').trim();
+}
+
+function normalizeJimengDuration(durationSec: number): number {
+  return Math.max(4, Math.min(12, Number(durationSec) || 5));
+}
+
 type ArkTaskResponse = {
   id: string; // This IS the task_id
   model: string;
@@ -51,9 +59,8 @@ export const jimengAdapter: VideoProviderAdapter = {
 
     const imageDataUrl = fileToBase64DataUrl(request.sourceImagePath, request.sourceMimeType);
 
-    // NOTE: Seedance 2.0 official docs specify public HTTPS URLs, TOS URLs, or asset:// URLs
-    // for reference media. Base64 data URLs may or may not be accepted depending on deployment.
-    // If Seedance returns 4xx on image_url, serve images via a public URL instead.
+    // Seedance accepts public HTTPS/TOS/asset URLs. We use a data URL here because
+    // the desktop app works with local files; if Ark rejects it, serve images publicly.
     console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
 
     const body = {
@@ -61,19 +68,19 @@ export const jimengAdapter: VideoProviderAdapter = {
       content: [
         {
           type: 'text',
-          text: request.prompt || 'gentle camera movement, stable product detail',
+          text: normalizeJimengPrompt(request.prompt),
         },
         {
           type: 'image_url',
           image_url: { url: imageDataUrl },
-          role: 'first_frame',
         },
       ],
-      duration: request.durationSec,
-      resolution: '720p',
+      resolution: '1080p',
       ratio: 'adaptive',
+      duration: normalizeJimengDuration(request.durationSec),
+      camera_fixed: false,
       watermark: false,
-      generate_audio: false,
+      generate_audio: true,
     };
 
     const controller = new AbortController();
@@ -125,7 +132,10 @@ export const jimengAdapter: VideoProviderAdapter = {
 
     try {
       const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
         signal: controller.signal,
       });
 

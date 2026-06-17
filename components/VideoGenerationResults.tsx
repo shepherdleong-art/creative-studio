@@ -27,6 +27,7 @@ interface Props {
   onPreview: (jobId: string) => void;
   onRetry: (jobId: string) => void | Promise<void>;
   onResumePoll: (jobId: string) => void | Promise<void>;
+  onCancel: (jobId: string) => void | Promise<void>;
   activePreviewJobId: string | null;
 }
 
@@ -39,7 +40,7 @@ const STATUS_LABELS: Record<string, string> = {
   canceled: '已取消',
 };
 
-export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, onResumePoll, activePreviewJobId }: Props) {
+export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, onResumePoll, onCancel, activePreviewJobId }: Props) {
   if (videoJobs.length === 0) {
     return (
       <div className="result-empty">
@@ -131,6 +132,15 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                     className="result-action link-accent"
                   >
                     补抓结果
+                  </button>
+                )}
+                {(isRunning || isNeedsCheck) && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onCancel(job.id); }}
+                    className="result-action text-fail"
+                  >
+                    取消
                   </button>
                 )}
                 {isFailed && (

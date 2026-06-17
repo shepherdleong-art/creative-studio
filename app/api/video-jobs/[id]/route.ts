@@ -21,3 +21,35 @@ export async function GET(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const body = await request.json().catch(() => ({})) as { action?: string };
+    if (body.action !== 'cancel') {
+      return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+    const db = getDb();
+    const result = db.prepare(`
+      UPDATE video_jobs
+      SET status = 'canceled',
+          errorMessage = 'Canceled by user',
+          finishedAt = datetime('now')
+      WHERE id = ?
+        AND status IN ('pending', 'running', 'needs_check')
+    `).run(id);
+
+    if (result.changes !== 1) {
+      const job = db.prepare(`SELECT id FROM video_jobs WHERE id = ?`).get(id);
+      if (!job) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { runQueue, cancelQueue, pauseQueue, resumeQueue, getQueueStatus } from '@/lib/queue';
+import { cancelVideoQueue } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
 import { getEffectiveImageConcurrency } from '@/lib/provider-concurrency';
 import { v4 as uuidv4 } from 'uuid';
@@ -111,6 +112,7 @@ export async function POST(
       }
       case 'cancel': {
         cancelQueue(id);
+        cancelVideoQueue(id);
         writeLog({ jobId: '', projectId: id, level: 'warn', message: '队列已取消' });
         return NextResponse.json({ status: 'canceled' });
       }

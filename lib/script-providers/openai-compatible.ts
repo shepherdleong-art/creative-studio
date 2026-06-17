@@ -206,6 +206,7 @@ ${input.videoTemplates?.join('、') || '未指定'}
     {
       "shotId": "对应分镜的shotId",
       "shotIndex": 1,
+      "title": "本段文案标题，8-16字，适合作为剪辑卡片标题",
       "duration": "0-5s",
       "voiceover": "口播文案",
       "subtitle": "字幕文案",
@@ -217,6 +218,7 @@ ${input.videoTemplates?.join('、') || '未指定'}
 
 ## 注意事项
 - 分镜数量与实际分镜列表严格一致，shotId 必须与上面列出的一致。
+- 每个分镜必须生成 title，要求短、具体、能概括这一段口播的核心卖点或情绪。
 - 每个分镜的 voiceover 控制在适合 ${input.duration} 时长内可以自然说完的长度。
 - 卖点要自然融入口播，不要像读说明书。使用模版 "${input.templateName}" 的叙事结构。
 - fullScript 是连续口播全文，适合直接粘贴到剪映做智能配音。使用中文标点断句。

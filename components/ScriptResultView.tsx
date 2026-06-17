@@ -16,11 +16,12 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
   // ── Copy full script ──
   const handleCopyFullScript = useCallback(async () => {
     if (!script?.fullScript) return;
+    const textToCopy = script.title ? `标题: ${script.title}\n\n${script.fullScript}` : script.fullScript;
     try {
-      await navigator.clipboard.writeText(script.fullScript);
+      await navigator.clipboard.writeText(textToCopy);
     } catch {
       const ta = document.createElement('textarea');
-      ta.value = script.fullScript;
+      ta.value = textToCopy;
       ta.style.position = 'fixed';
       ta.style.left = '-9999px';
       document.body.appendChild(ta);
@@ -45,10 +46,10 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
       '',
       '## 分镜详情',
       '',
-      ...script.shots.map(
-        (s) =>
-          `### 分镜 ${s.shotIndex}（${s.duration}）\n口播: ${s.voiceover}\n字幕: ${s.subtitle}\n视觉意图: ${s.visualIntent}\n`
-      ),
+      ...script.shots.map((s) => {
+        const shotTitle = s.title || `分镜 ${s.shotIndex} 文案`;
+        return `### ${shotTitle}（分镜 ${s.shotIndex}，${s.duration}）\n标题: ${shotTitle}\n口播: ${s.voiceover}\n字幕: ${s.subtitle}\n视觉意图: ${s.visualIntent}\n`;
+      }),
     ].join('\n');
 
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
@@ -135,15 +136,22 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
 
                 {/* Right: Script */}
                 <div className="flex min-w-0 flex-1 flex-col justify-center p-4">
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="text-xs font-semibold text-ink-tertiary">
-                      分镜 {shot.shotIndex}
-                    </span>
-                    <span className="text-[0.65rem] text-ink-tertiary">{shot.duration}</span>
-                    {spTag && (
-                      <span className="inline-flex items-center rounded-full bg-accent-tint/10 px-2 py-px text-[0.65rem] font-medium text-accent">
-                        🏷 {spTag}
+                  <div className="mb-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold text-ink-tertiary">
+                        分镜 {shot.shotIndex}
                       </span>
+                      <span className="text-[0.65rem] text-ink-tertiary">{shot.duration}</span>
+                      {spTag && (
+                        <span className="inline-flex items-center rounded-full bg-accent-tint/10 px-2 py-px text-[0.65rem] font-medium text-accent">
+                          🏷 {spTag}
+                        </span>
+                      )}
+                    </div>
+                    {shot.title && (
+                      <h4 className="mt-1 text-sm font-semibold leading-snug text-ink">
+                        {shot.title}
+                      </h4>
                     )}
                   </div>
 
@@ -191,6 +199,12 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
             )}
           </button>
         </div>
+        {script.title && (
+          <div className="mb-2 rounded-[12px] bg-surface-subtle px-4 py-3">
+            <div className="text-[0.65rem] font-medium text-ink-tertiary">标题</div>
+            <div className="mt-0.5 text-sm font-semibold text-ink">{script.title}</div>
+          </div>
+        )}
         <pre className="whitespace-pre-wrap rounded-[14px] bg-surface-subtle p-4 text-sm leading-relaxed text-ink-secondary">
           {script.fullScript}
         </pre>

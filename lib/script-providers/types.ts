@@ -62,6 +62,7 @@ export interface ScriptInput {
 export interface ScriptShot {
   shotId: string;
   shotIndex: number;
+  title?: string;
   duration: string;
   voiceover: string;
   subtitle: string;

@@ -127,7 +127,7 @@ export default function SettingsPage() {
       ...emptyForm,
       type: category === 'image' ? 'openai-compatible' : category === 'video' ? 'jimeng' : 'openai-compatible',
       apiStyle: 'openai-compatible',
-      model: category === 'image' ? 'gpt-image-2' : category === 'video' ? 'doubao-seedance-2-0-260128' : 'gpt-4o',
+      model: category === 'image' ? 'gpt-image-2' : category === 'video' ? 'doubao-seedance-1-5-pro-251215' : 'gpt-4o',
     });
   };
 
