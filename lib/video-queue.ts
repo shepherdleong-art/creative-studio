@@ -2,6 +2,7 @@ import { getDb } from './db';
 import { getVideoAdapter } from './video-providers/index';
 import { resolveVideoProviderRuntimeConfig } from './video-auth';
 import { writeLog } from './logger';
+import { downloadVideo } from './video-download';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -257,16 +258,19 @@ async function runVideoJob(
       logInfo(`Video poll status=${pollResult.status} (${elapsedSec}s elapsed)`);
 
       if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
+        db.prepare(`UPDATE video_jobs SET remoteVideoUrl = ? WHERE id = ? AND status = 'running'`)
+          .run(pollResult.videoUrl, job.id);
+
         // Step 3: Download video
         logInfo(`Video generation succeeded, downloading: ${pollResult.videoUrl}`);
         const videoBuffer = await downloadVideo(pollResult.videoUrl);
 
         if (!videoBuffer) {
-          logError(`Remote video ready but local download failed: ${pollResult.videoUrl}`);
+          logWarn(`Remote video ready but local download failed: ${pollResult.videoUrl}`);
           db.prepare(
-            `UPDATE video_jobs SET status = 'failed', errorMessage = ?, providerStatus = 'download_failed', remoteVideoUrl = ?
+            `UPDATE video_jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'download_failed', remoteVideoUrl = ?, finishedAt = datetime('now')
              WHERE id = ? AND status = 'running'`
-          ).run(`Remote video ready but download failed. URL: ${pollResult.videoUrl}`, pollResult.videoUrl, job.id);
+          ).run(`Remote video ready but local download failed or timed out. Use 补抓结果 to retry downloading. URL: ${pollResult.videoUrl}`, pollResult.videoUrl, job.id);
           return;
         }
 
@@ -356,16 +360,6 @@ function claimNextVideoJob(projectId: string): (VideoJobRecord & { attempt: numb
 function isVideoJobStillRunning(db: ReturnType<typeof getDb>, jobId: string): boolean {
   const row = db.prepare(`SELECT status FROM video_jobs WHERE id = ?`).get(jobId) as { status: string } | undefined;
   return row?.status === 'running';
-}
-
-async function downloadVideo(url: string): Promise<Buffer | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return Buffer.from(await res.arrayBuffer());
-  } catch {
-    return null;
-  }
 }
 
 function safeJson(obj: unknown, maxLen = 4000): string {

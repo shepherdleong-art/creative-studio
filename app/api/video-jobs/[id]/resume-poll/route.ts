@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { getVideoAdapter } from '@/lib/video-providers/index';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { writeLog } from '@/lib/logger';
+import { downloadVideo } from '@/lib/video-download';
 import fs from 'fs';
 import path from 'path';
 
@@ -73,12 +74,21 @@ export async function POST(
 
     if (result.status === 'succeeded' && result.videoUrl) {
       // Download
-      const videoRes = await fetch(result.videoUrl);
-      if (!videoRes.ok) {
-        return NextResponse.json({ error: `Remote video download failed: ${videoRes.status}` }, { status: 502 });
+      const videoBuffer = await downloadVideo(result.videoUrl);
+      if (!videoBuffer) {
+        db.prepare(
+          `UPDATE video_jobs SET
+            status = 'needs_check',
+            errorMessage = ?,
+            providerStatus = 'download_failed',
+            remoteVideoUrl = ?,
+            lastPolledAt = datetime('now'),
+            pollCount = pollCount + 1
+           WHERE id = ?`
+        ).run('Remote video ready but local download failed or timed out. Try 补抓结果 again later.', result.videoUrl, job.id);
+        return NextResponse.json({ error: 'Remote video download failed or timed out' }, { status: 502 });
       }
 
-      const videoBuffer = Buffer.from(await videoRes.arrayBuffer());
       const videosDir = path.join(process.cwd(), 'storage', 'videos');
       if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
