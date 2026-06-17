@@ -4,6 +4,12 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import ImageUploader from '@/components/ImageUploader';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import { Icon } from '@/components/ui/Icon';
+import {
+  getRedoFormDefaults,
+  getRedoInitKey,
+  parseRedoReferenceIds,
+  shouldInitializeRedoForm,
+} from '@/lib/shot-redo-state';
 
 interface Shot {
   id: string;
@@ -17,6 +23,11 @@ interface Shot {
   latestJobId?: string;
   jobStatus?: string;
   jobPrompt?: string;
+  referenceImageIds?: string;
+  providerId?: string;
+  model?: string;
+  size?: string;
+  quality?: string;
   reviewMark?: string;
 }
 
@@ -38,6 +49,7 @@ interface ShotSet {
 
 interface Props {
   projectId: string;
+  providers?: ImageProvider[];
   images: Array<{ id: string; imageUrl?: string; filename: string; role: string; usage?: string }>;
   jobs?: Array<{ id: string; status: string; outputImageId?: string }>;
   onApplyScene?: (shotSetId: string) => void;
@@ -47,11 +59,23 @@ interface Props {
   showCreateControls?: boolean;
 }
 
+interface ImageProvider {
+  id: string;
+  name: string;
+  model: string;
+  enabled: number | boolean;
+  hasApiKey: boolean;
+}
+
 const STATUS_LABELS: Record<string, string> = {
   draft: '草稿', generating: '生成中', completed: '已完成', reviewing: '审核中', approved: '已通过', video_ready: '待生成视频',
 };
 
-export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, onImagesUploaded, onShotChanged, showUploader = true, showCreateControls = true }: Props) {
+function safeParseImageIds(value: string | undefined): string[] {
+  return parseRedoReferenceIds(value);
+}
+
+export default function ShotSetPanel({ projectId, providers = [], images, jobs, onApplyScene, onImagesUploaded, onShotChanged, showUploader = true, showCreateControls = true }: Props) {
   const [sets, setSets] = useState<ShotSet[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -64,10 +88,13 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [previewSetId, setPreviewSetId] = useState<string | null>(null);
   const [redoPrompt, setRedoPrompt] = useState('');
-  const [redoPromptEdited, setRedoPromptEdited] = useState(false);
+  const [redoInputSource, setRedoInputSource] = useState<'original' | 'current_result'>('original');
+  const [redoReferenceIds, setRedoReferenceIds] = useState<string[]>([]);
+  const [redoProviderId, setRedoProviderId] = useState('');
   const [redoing, setRedoing] = useState(false);
   const [sceneRefInfoBySet, setSceneRefInfoBySet] = useState<Record<string, { name: string; imageUrl: string } | null>>({});
   const expandedIdsRef = useRef<Set<string>>(new Set());
+  const redoInitKeyRef = useRef('');
 
   const loadSets = useCallback(async () => {
     try {
@@ -175,30 +202,63 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
   // ── Shot preview + redo ──────────────────────────────────────────────
   const previewShots = useMemo(() => (previewSetId ? (shotsBySet[previewSetId] || []) : []), [previewSetId, shotsBySet]);
   const previewSceneRefInfo = previewSetId ? sceneRefInfoBySet[previewSetId] : null;
+  const selectableProviders = useMemo(
+    () => providers.filter((provider) => provider.enabled && provider.hasApiKey),
+    [providers]
+  );
+  const imageById = useMemo(() => new Map(images.map((img) => [img.id, img])), [images]);
 
   const openPreview = (setId: string, idx: number) => {
     const nextShots = shotsBySet[setId] || [];
+    const shot = nextShots[idx];
     setPreviewSetId(setId);
     setPreviewIndex(idx);
-    setRedoPrompt(nextShots[idx]?.jobPrompt || '');
-    setRedoPromptEdited(false);
+    const nextInitKey = getRedoInitKey(setId, shot);
+    redoInitKeyRef.current = nextInitKey;
+    if (shot) {
+      const defaults = getRedoFormDefaults(shot, selectableProviders[0]?.id || '');
+      setRedoPrompt(defaults.prompt);
+      setRedoInputSource(defaults.inputSource);
+      setRedoReferenceIds(defaults.referenceIds);
+      setRedoProviderId(defaults.providerId);
+    } else {
+      setRedoPrompt('');
+      setRedoInputSource('original');
+      setRedoReferenceIds([]);
+      setRedoProviderId(selectableProviders[0]?.id || '');
+    }
     setRedoing(false);
   };
-  const closePreview = () => { setPreviewIndex(null); setPreviewSetId(null); setRedoing(false); };
+  const closePreview = () => { setPreviewIndex(null); setPreviewSetId(null); setRedoing(false); redoInitKeyRef.current = ''; };
   const goPreview = (delta: number) => {
     setPreviewIndex((prev) => {
       if (prev === null || previewShots.length === 0) return prev;
       return Math.min(previewShots.length - 1, Math.max(0, prev + delta));
     });
   };
+  const currentPreviewShot = previewIndex !== null ? previewShots[previewIndex] : undefined;
 
-  // Sync redoPrompt on shot change, but never overwrite user edits
+  // Initialize redo form only when the selected shot identity changes.
   useEffect(() => {
-    if (previewIndex === null) return;
-    if (redoPromptEdited) return;
-    const t = setTimeout(() => setRedoPrompt(previewShots[previewIndex]?.jobPrompt || ''), 0);
-    return () => clearTimeout(t);
-  }, [previewIndex, previewShots, redoPromptEdited]);
+    if (previewIndex === null || !previewSetId) return;
+    const shot = previewShots[previewIndex];
+    if (!shot) return;
+    const nextInitKey = getRedoInitKey(previewSetId, shot);
+    if (!shouldInitializeRedoForm(redoInitKeyRef.current, nextInitKey)) return;
+    redoInitKeyRef.current = nextInitKey;
+    const defaults = getRedoFormDefaults(shot, selectableProviders[0]?.id || '');
+    setRedoInputSource(defaults.inputSource);
+    setRedoReferenceIds(defaults.referenceIds);
+    setRedoProviderId(defaults.providerId);
+    setRedoPrompt(defaults.prompt);
+  }, [
+    previewSetId,
+    previewIndex,
+    previewShots,
+    currentPreviewShot?.id,
+    currentPreviewShot?.latestJobId,
+    selectableProviders,
+  ]);
 
   // Keyboard navigation while preview is open
   useEffect(() => {
@@ -229,6 +289,76 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     return () => clearInterval(t);
   }, [expandedIds, shotsBySet, loadShots]);
 
+  const redoBaseImageId = currentPreviewShot
+    ? (redoInputSource === 'current_result' ? currentPreviewShot.latestGeneratedImageId || '' : currentPreviewShot.sourceImageId)
+    : '';
+  const selectedRedoProviderId = selectableProviders.some((provider) => provider.id === redoProviderId)
+    ? redoProviderId
+    : (selectableProviders.some((provider) => provider.id === currentPreviewShot?.providerId)
+      ? currentPreviewShot?.providerId || ''
+      : selectableProviders[0]?.id || '');
+  const selectedRedoProvider = selectableProviders.find((provider) => provider.id === selectedRedoProviderId);
+  const redoReferenceCandidates = (() => {
+    if (!currentPreviewShot) return [];
+    const seen = new Set<string>();
+    const candidates: Array<{ id: string; label: string; imageUrl: string; isBase: boolean; sendIndex?: number }> = [];
+    const add = (id: string | undefined, label: string, imageUrl?: string) => {
+      if (!id || seen.has(id)) return;
+      const asset = imageById.get(id);
+      const url = imageUrl || asset?.imageUrl || '';
+      if (!url) return;
+      seen.add(id);
+      candidates.push({ id, label, imageUrl: url, isBase: id === redoBaseImageId });
+    };
+    const addSendItem = (id: string | undefined, label: string, sendIndex: number) => {
+      if (!id || seen.has(id)) return;
+      const asset = imageById.get(id);
+      const url =
+        id === currentPreviewShot.sourceImageId ? currentPreviewShot.sourceImageUrl || asset?.imageUrl || ''
+        : id === currentPreviewShot.latestGeneratedImageId ? currentPreviewShot.generatedImageUrl || asset?.imageUrl || ''
+        : asset?.imageUrl || '';
+      if (!url) return;
+      seen.add(id);
+      candidates.push({ id, label, imageUrl: url, isBase: id === redoBaseImageId, sendIndex });
+    };
+
+    addSendItem(redoBaseImageId, '图1 底图', 1);
+    redoReferenceIds
+      .filter((id) => id !== redoBaseImageId)
+      .forEach((id, idx) => {
+        const label = id === currentPreviewShot.latestGeneratedImageId
+          ? `图${idx + 2} 当前结果`
+          : `图${idx + 2} 参考图`;
+        addSendItem(id, label, idx + 2);
+      });
+    add(currentPreviewShot.sourceImageId, '原图', currentPreviewShot.sourceImageUrl);
+    safeParseImageIds(currentPreviewShot.referenceImageIds).forEach((id, idx) => add(id, `参考图 ${idx + 1}`));
+    add(currentPreviewShot.latestGeneratedImageId, '当前结果', currentPreviewShot.generatedImageUrl);
+    images.filter((img) => img.role === 'reference').forEach((img) => add(img.id, img.filename, img.imageUrl));
+
+    return candidates;
+  })();
+
+  const handleRedoInputSourceChange = (source: 'original' | 'current_result') => {
+    if (!currentPreviewShot) return;
+    const newBaseId = source === 'current_result' ? currentPreviewShot.latestGeneratedImageId : currentPreviewShot.sourceImageId;
+    const oldBaseId = redoInputSource === 'current_result' ? currentPreviewShot.latestGeneratedImageId : currentPreviewShot.sourceImageId;
+
+    setRedoInputSource(source);
+    setRedoReferenceIds((prev) => {
+      const next = prev.filter((id) => id !== newBaseId);
+      if (oldBaseId && oldBaseId !== newBaseId && !next.includes(oldBaseId)) next.push(oldBaseId);
+      return next;
+    });
+  };
+
+  const toggleRedoReference = (imageId: string) => {
+    if (imageId === redoBaseImageId) return;
+    setRedoReferenceIds((prev) =>
+      prev.includes(imageId) ? prev.filter((id) => id !== imageId) : [...prev, imageId]
+    );
+  };
+
   const handleRedo = async () => {
     if (previewIndex === null || !previewSetId) return;
     const shot = previewShots[previewIndex];
@@ -239,7 +369,13 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
     try {
       const res = await fetch(`/api/jobs/${shot.latestJobId}/regenerate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: redoPrompt.trim(), markOriginal: true }),
+        body: JSON.stringify({
+          prompt: redoPrompt.trim(),
+          markOriginal: true,
+          inputSource: redoInputSource,
+          referenceImageIds: redoReferenceIds.filter((id) => id !== redoBaseImageId),
+          providerId: selectedRedoProviderId || undefined,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.newJobId) { alert('重做失败: ' + (data.error || '未知错误')); return; }
@@ -490,12 +626,88 @@ export default function ShotSetPanel({ projectId, images, jobs, onApplyScene, on
 
                   {/* Redo area */}
                   <div className="border-t border-white/10 pt-4">
-                  <label className="label">重做提示词</label>
-                  <textarea value={redoPrompt} onChange={(e) => { setRedoPrompt(e.target.value); setRedoPromptEdited(true); }} rows={8} className="input-field mt-1 font-mono text-xs leading-relaxed" placeholder="编辑提示词后点重新生成" />
-                  <div className="mt-3 flex flex-col items-stretch gap-2">
-                    <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-primary btn-sm w-full text-xs">{redoing ? '提交中…' : '重新生成'}</button>
-                    {!canRedo && <span className="text-[11px] text-ink-tertiary">{shot.latestJobId ? '任务生成中，完成后可重做' : '该分镜尚未生成，无法重做'}</span>}
-                  </div>
+                    <div className="space-y-4">
+                      <section>
+                        <div className="mb-2 text-xs font-medium text-white/50">编辑底图</div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleRedoInputSourceChange('original')}
+                            className={`btn-sm flex-1 text-xs ${redoInputSource === 'original' ? 'btn-primary' : 'btn-secondary'}`}
+                          >
+                            原图
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRedoInputSourceChange('current_result')}
+                            disabled={!genUrl}
+                            className={`btn-sm flex-1 text-xs ${redoInputSource === 'current_result' ? 'btn-primary' : 'btn-secondary'} ${!genUrl ? 'opacity-40' : ''}`}
+                          >
+                            当前结果
+                          </button>
+                        </div>
+                      </section>
+
+                      {selectableProviders.length > 0 && (
+                        <section>
+                          <label className="mb-1 block text-xs font-medium text-white/50">供应商 / 模型</label>
+                          <select
+                            value={selectedRedoProviderId}
+                            onChange={(e) => setRedoProviderId(e.target.value)}
+                            className="input-field text-xs"
+                          >
+                            {selectableProviders.map((provider) => (
+                              <option key={provider.id} value={provider.id}>
+                                {provider.name} ({provider.model})
+                              </option>
+                            ))}
+                          </select>
+                          <div className="mt-1 text-[11px] text-white/45">
+                            本次使用：{selectedRedoProvider?.model || shot.model || '原任务模型'}
+                          </div>
+                        </section>
+                      )}
+
+                      <section>
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-white/50">参考图</span>
+                          <span className="text-[11px] text-white/40">已选 {redoReferenceIds.filter((id) => id !== redoBaseImageId).length}</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {redoReferenceCandidates.map((candidate) => {
+                            const isBase = candidate.id === redoBaseImageId;
+                            const selected = !isBase && redoReferenceIds.includes(candidate.id);
+                            return (
+                              <button
+                                key={candidate.id}
+                                type="button"
+                                onClick={() => toggleRedoReference(candidate.id)}
+                                className={`relative overflow-hidden rounded border text-left ${isBase ? 'border-accent/50 opacity-60' : selected ? 'border-accent' : 'border-white/15 hover:border-accent/50'}`}
+                                title={candidate.label}
+                              >
+                                <img src={candidate.imageUrl} alt={candidate.label} className="aspect-square w-full object-cover" />
+                                <span className="block truncate px-1 py-0.5 text-[9px] text-white/70">{candidate.sendIndex ? candidate.label : isBase ? '底图' : candidate.label}</span>
+                                {selected && (
+                                  <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-white">
+                                    <Icon name="check" size={10} />
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </section>
+
+                      <section>
+                        <label className="label">重做提示词</label>
+                        <textarea value={redoPrompt} onChange={(e) => setRedoPrompt(e.target.value)} rows={8} className="input-field mt-1 font-mono text-xs leading-relaxed" placeholder="编辑提示词后点重新生成" />
+                      </section>
+
+                      <div className="flex flex-col items-stretch gap-2">
+                        <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-primary btn-sm w-full text-xs">{redoing ? '提交中…' : '重新生成'}</button>
+                        {!canRedo && <span className="text-[11px] text-ink-tertiary">{shot.latestJobId ? '任务生成中，完成后可重做' : '该分镜尚未生成，无法重做'}</span>}
+                      </div>
+                    </div>
                   </div>
                 </aside>
               </div>

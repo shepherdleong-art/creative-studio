@@ -3,7 +3,13 @@
 import { useState, useEffect, useRef } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import { Icon } from '@/components/ui/Icon';
-import { getResultGalleryCounts, getResultJobKind, getSelectableResultJobs } from '@/lib/result-gallery-jobs';
+import {
+  getResultGalleryCounts,
+  getResultJobKind,
+  getSceneReferenceBadgeLabel,
+  getSelectableResultJobs,
+  SceneReferenceSummary,
+} from '@/lib/result-gallery-jobs';
 
 interface Job {
   id: string;
@@ -33,10 +39,19 @@ interface ImageAsset {
   imageUrl?: string;
 }
 
+interface ImageProvider {
+  id: string;
+  name: string;
+  model: string;
+  enabled: number | boolean;
+  hasApiKey: boolean;
+}
+
 export type RegeneratePayload = {
   prompt: string;
   inputSource: 'original' | 'current_result';
   referenceImageIds: string[];
+  providerId?: string;
 };
 
 interface Props {
@@ -47,7 +62,8 @@ interface Props {
   onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
   onSetSceneRef?: (jobId: string, imageAssetId: string) => void;
   projectId?: string;
-  sceneReferenceImageIds?: Set<string>;
+  sceneReferenceByImageId?: Map<string, SceneReferenceSummary>;
+  providers?: ImageProvider[];
 }
 
 /** ── Tiny inline uploader for the regen modal ── */
@@ -195,7 +211,7 @@ function JobStatusDot({ status }: { status: string }) {
   return <span className={`status-dot ${cls}`} title={status} />;
 }
 
-export default function ResultGallery({ jobs, images, onRetry, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceImageIds }: Props) {
+export default function ResultGallery({ jobs, images, onRetry, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceByImageId, providers = [] }: Props) {
   const counts = getResultGalleryCounts(jobs);
   const succeededJobs = jobs.filter((j) => getResultJobKind(j) === 'succeeded');
   const failedJobs = jobs.filter((j) => j.status === 'failed');
@@ -206,11 +222,19 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenPrompt, setRegenPrompt] = useState('');
   const [regenInputSource, setRegenInputSource] = useState<'original' | 'current_result'>('original');
+  const [regenProviderId, setRegenProviderId] = useState('');
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
   const [extraUploads, setExtraUploads] = useState<ImageAsset[]>([]);
   const selectedIndex = selectedJobId ? selectableJobs.findIndex((job) => job.id === selectedJobId) : -1;
   const selectedJob = selectedIndex >= 0 ? selectableJobs[selectedIndex] : null;
-  const selectedJobIsSceneRef = !!(selectedJob?.outputImageId && sceneReferenceImageIds?.has(selectedJob.outputImageId));
+  const selectedSceneReference = selectedJob?.outputImageId ? sceneReferenceByImageId?.get(selectedJob.outputImageId) : undefined;
+  const selectableProviders = providers.filter((provider) => provider.enabled && provider.hasApiKey);
+  const selectedProviderId = selectableProviders.some((provider) => provider.id === regenProviderId)
+    ? regenProviderId
+    : (selectableProviders.some((provider) => provider.id === selectedJob?.providerId)
+      ? selectedJob?.providerId || ''
+      : selectableProviders[0]?.id || '');
+  const selectedProvider = selectableProviders.find((provider) => provider.id === selectedProviderId);
 
   const getImageUrl = (asset: ImageAsset | undefined): string | null => asset?.imageUrl || null;
   const getMark = (job: Job): string | null => job.reviewMark || null;
@@ -298,6 +322,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
     if (!selectedJob) return;
     setRegenPrompt(selectedJob.prompt || '');
     setRegenInputSource('original');
+    setRegenProviderId(selectedJob.providerId || selectableProviders[0]?.id || '');
     setExtraUploads([]);
 
     // Default base = original → exclude original from refs
@@ -358,6 +383,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
       prompt: regenPrompt.trim(),
       inputSource: regenInputSource,
       referenceImageIds: normalizedRefIds,
+      providerId: selectedProviderId || undefined,
     });
     setRegenOpen(false);
   };
@@ -409,7 +435,12 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                 const kind = getResultJobKind(job);
                 const isFailed = kind === 'failed';
                 const isSucceeded = kind === 'succeeded';
-                const isSceneReference = !!job.outputImageId && (sceneReferenceImageIds?.has(job.outputImageId) ?? false);
+                const failedMessage =
+                  job.status === 'succeeded'
+                    ? '生成任务已成功，但输出文件或图片引用缺失'
+                    : job.errorMessage || '未知错误';
+                const sceneReference = job.outputImageId ? sceneReferenceByImageId?.get(job.outputImageId) : undefined;
+                const sceneReferenceLabel = getSceneReferenceBadgeLabel(sceneReference);
                 const selectableIndex = selectableJobs.findIndex((candidate) => candidate.id === job.id);
                 const handleOpen = () => {
                   if (selectableIndex >= 0) setSelectedJobId(job.id);
@@ -425,7 +456,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                       {isFailed ? (
                         <div className="flex h-full w-full flex-col items-center justify-center bg-fail-tint p-2">
                           <Icon name="alert" size={24} className="mb-1 text-fail" />
-                          <span className="line-clamp-3 text-center text-[10px] text-fail">{job.errorMessage || '未知错误'}</span>
+                          <span className="line-clamp-3 text-center text-[10px] text-fail">{failedMessage}</span>
                         </div>
                       ) : isSucceeded ? (
                         <img src={`/api/images/outputs/${job.outputFilename}`} alt={job.inputFilename} className="w-full h-full object-cover" />
@@ -448,8 +479,14 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                       <span className="absolute right-1.5 top-1.5 z-10">
                         <JobStatusDot status={job.status} />
                       </span>
-                      {isSceneReference && (
-                        <span className="scene-ref-badge"><Icon name="check" size={12} /> 已设为场景参考</span>
+                      {sceneReference && (
+                        <span
+                          className="scene-ref-badge"
+                          title={`${sceneReferenceLabel}${sceneReference.imageFilename ? ` · ${sceneReference.imageFilename}` : ''}`}
+                        >
+                          <Icon name="check" size={12} />
+                          <span className="scene-ref-badge-text">{sceneReferenceLabel}</span>
+                        </span>
                       )}
                       {mark && isSucceeded && (
                         <span className={`pill absolute left-1 top-1 ${
@@ -521,6 +558,26 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                             {regenInputSource === 'current_result' ? '基于当前生成结果继续编辑' : '基于原始输入图重新生成'}
                           </p>
                         </div>
+
+                        {selectableProviders.length > 0 && (
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-ink-secondary">供应商 / 模型</label>
+                            <select
+                              value={selectedProviderId}
+                              onChange={(e) => setRegenProviderId(e.target.value)}
+                              className="input-field text-sm"
+                            >
+                              {selectableProviders.map((provider) => (
+                                <option key={provider.id} value={provider.id}>
+                                  {provider.name} ({provider.model})
+                                </option>
+                              ))}
+                            </select>
+                            <p className="mt-1 text-xs text-ink-tertiary">
+                              本次重新生成会使用：{selectedProvider?.model || selectedJob.model || '原任务模型'}
+                            </p>
+                          </div>
+                        )}
 
                         {/* Send order preview */}
                         <div>
@@ -692,8 +749,16 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                   <button onClick={() => onRetry(selectedJob.id)} className="btn-secondary btn-sm text-accent"><Icon name="retry" size={14} /> 重试</button>
                 ) : null}
                 {selectedJobHasResult && onSetSceneRef && selectedJob.outputImageId && (
-                  selectedJobIsSceneRef
-                    ? <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-ok"><Icon name="check" size={13} /> 已设为场景参考</span>
+                  selectedSceneReference
+                    ? (
+                      <span
+                        className="inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-ok"
+                        title={`${getSceneReferenceBadgeLabel(selectedSceneReference)}${selectedSceneReference.imageFilename ? ` · ${selectedSceneReference.imageFilename}` : ''}`}
+                      >
+                        <Icon name="check" size={13} />
+                        <span className="truncate">{`已设为：${selectedSceneReference.name}`}</span>
+                      </span>
+                    )
                     : <button onClick={() => onSetSceneRef(selectedJob.id, selectedJob.outputImageId!)} className="btn-secondary btn-sm text-accent"><Icon name="video" size={14} /> 设为场景参考图</button>
                 )}
                 {selectedJobHasResult && selectedJob.outputFilename && (

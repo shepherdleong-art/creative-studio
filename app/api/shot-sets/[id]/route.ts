@@ -20,7 +20,12 @@ export async function GET(
         gia.filename as generatedFilename,
         j.status as jobStatus,
         j.outputImageId,
-        j.prompt as jobPrompt
+        j.prompt as jobPrompt,
+        j.referenceImageIds,
+        j.providerId,
+        j.model,
+        j.size,
+        j.quality
       FROM shots s
       LEFT JOIN image_assets sia ON s.sourceImageId = sia.id
       LEFT JOIN image_assets gia ON s.latestGeneratedImageId = gia.id

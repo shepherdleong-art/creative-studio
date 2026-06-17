@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { resolveImageJobProvider } from '../lib/image-provider-selection.ts';
+import { resolveImageJobProvider, resolveRegenerateImageJobProvider } from '../lib/image-provider-selection.ts';
 
 const db = new Database(':memory:');
 db.exec(`
@@ -16,15 +16,19 @@ db.exec(`
   );
 `);
 
+process.env.ENV_ONLY_IMAGE_KEY = 'env-only-key';
+
 const insert = db.prepare(`
   INSERT INTO providers (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled)
   VALUES (?, ?, 'https://example.com', ?, ?, ?, ?, ?)
 `);
 
-insert.run('primary', 'Primary', '', 'dummy-primary-key', 'gpt-image-2', 'openai-compatible', 1);
+insert.run('primary', 'Primary', 'ENV_ONLY_IMAGE_KEY', 'dummy-primary-key', 'gpt-image-2', 'openai-compatible', 1);
 insert.run('backup', 'Backup', '', 'dummy-backup-key', 'gemini-3.1-flash-image-preview', 'packy-gemini-image', 1);
 insert.run('disabled', 'Disabled', '', 'dummy-disabled-key', 'gpt-image-2', 'openai-compatible', 0);
 insert.run('missing-key', 'Missing Key', '', '', 'gpt-image-2', 'openai-compatible', 1);
+insert.run('env-only', 'Env Only', 'ENV_ONLY_IMAGE_KEY', '', 'gpt-image-2', 'openai-compatible', 1);
+insert.run('placeholder', 'Placeholder', '', 'https://example.com/key', 'gpt-image-2', 'openai-compatible', 1);
 
 assert.deepEqual(
   resolveImageJobProvider(db, undefined, { providerId: 'primary', model: 'project-model' }),
@@ -36,6 +40,16 @@ assert.deepEqual(
   { providerId: 'backup', model: 'gemini-3.1-flash-image-preview' }
 );
 
+assert.deepEqual(
+  resolveRegenerateImageJobProvider(db, undefined, { providerId: 'primary', model: 'original-model' }),
+  { providerId: 'primary', model: 'gpt-image-2' }
+);
+
+assert.deepEqual(
+  resolveRegenerateImageJobProvider(db, 'backup', { providerId: 'primary', model: 'original-model' }),
+  { providerId: 'backup', model: 'gemini-3.1-flash-image-preview' }
+);
+
 assert.throws(
   () => resolveImageJobProvider(db, 'disabled', { providerId: 'primary', model: 'project-model' }),
   /供应商已禁用/
@@ -43,6 +57,16 @@ assert.throws(
 
 assert.throws(
   () => resolveImageJobProvider(db, 'missing-key', { providerId: 'primary', model: 'project-model' }),
+  /供应商 API Key 未配置/
+);
+
+assert.throws(
+  () => resolveImageJobProvider(db, 'env-only', { providerId: 'primary', model: 'project-model' }),
+  /供应商 API Key 未配置/
+);
+
+assert.throws(
+  () => resolveImageJobProvider(db, 'placeholder', { providerId: 'primary', model: 'project-model' }),
   /供应商 API Key 未配置/
 );
 

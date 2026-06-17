@@ -162,3 +162,44 @@ assert.deepEqual(
     hasApiKey: true,
   }
 );
+
+assert.deepEqual(
+  resolveVideoProviderRuntimeConfig(
+    {
+      id: 'kling-env-only',
+      name: 'Kling Env Only',
+      type: 'kling',
+      baseUrlEnv: 'KLING_VIDEO_BASE_URL',
+      apiKeyEnv: 'KLING_VIDEO_API_KEY',
+      baseUrl: '',
+      apiKey: '',
+      accessKey: '',
+      secretKey: '',
+      defaultModel: 'kling-v3',
+      defaultDurationSec: 5,
+      enabled: 1,
+    },
+    {
+      KLING_VIDEO_BASE_URL: 'https://kling.env',
+      KLING_VIDEO_ACCESS_KEY: 'env-access',
+      KLING_VIDEO_SECRET_KEY: 'env-secret',
+    }
+  ),
+  {
+    id: 'kling-env-only',
+    name: 'Kling Env Only',
+    type: 'kling',
+    baseUrl: '',
+    apiKey: '',
+    accessKey: '',
+    secretKey: '',
+    model: 'kling-v3',
+    durationSec: 5,
+    enabled: true,
+    configured: false,
+    missing: ['Base URL', 'Access Key/Secret Key'],
+    hasApiKey: false,
+  }
+);
+
+console.log('provider-config-resolvers tests passed');

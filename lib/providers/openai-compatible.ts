@@ -30,6 +30,14 @@ export interface EditImageResult {
   rawResponse?: unknown;
 }
 
+function isGptGeBaseUrl(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === 'api.gpt.ge';
+  } catch {
+    return baseUrl.includes('api.gpt.ge');
+  }
+}
+
 /**
  * Call an OpenAI-compatible /v1/images/edits endpoint.
  *
@@ -47,13 +55,17 @@ export async function editImage(
 ): Promise<EditImageResult> {
   const startTime = Date.now();
   const hasRefs = request.referenceImagePaths.length > 0;
+  const useGptGeForm = isGptGeBaseUrl(baseUrl);
+  const imageFieldName = useGptGeForm ? 'image' : 'image[]';
 
   const form = new FormData();
   form.append('model', request.model);
   form.append('size', request.size);
   form.append('quality', request.quality);
   form.append('n', '1');
-  form.append('response_format', 'b64_json');
+  if (!useGptGeForm) {
+    form.append('response_format', 'b64_json');
+  }
 
   // ── Build prompt with structural prefix when refs present ──
   let finalPrompt = request.prompt;
@@ -70,18 +82,18 @@ export async function editImage(
   }
   form.append('prompt', finalPrompt);
 
-  // ── Append images as `image[]` array (OpenAI standard) ──
+  // ── Append images in the provider's expected multipart field ──
   // 图1 = 底图, 图2-N = 参考图
   const inputBuffer = fs.readFileSync(request.inputImagePath);
   const inputFilename = path.basename(request.inputImagePath);
-  form.append('image[]', new Blob([inputBuffer], { type: request.inputMimeType }), inputFilename);
+  form.append(imageFieldName, new Blob([inputBuffer], { type: request.inputMimeType }), inputFilename);
 
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
     const refPath = request.referenceImagePaths[i];
     const refMime = request.referenceMimeTypes[i] || 'image/png';
     const refBuffer = fs.readFileSync(refPath);
     const refFilename = path.basename(refPath);
-    form.append('image[]', new Blob([refBuffer], { type: refMime }), refFilename);
+    form.append(imageFieldName, new Blob([refBuffer], { type: refMime }), refFilename);
   }
 
   const url = `${baseUrl.replace(/\/$/, '')}/v1/images/edits`;

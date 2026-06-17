@@ -3,7 +3,7 @@ type EnvMap = Record<string, string | undefined>;
 export interface KlingCredentialPair {
   accessKey: string;
   secretKey: string;
-  source: 'split-env' | 'legacy-combined';
+  source: 'split-db' | 'legacy-combined';
 }
 
 export interface VideoProviderEnvConfig {
@@ -46,7 +46,7 @@ export function resolveKlingCredentialPair(
     if (!dbAccessKey || !dbSecretKey) {
       throw new Error('Set both KLING_VIDEO_ACCESS_KEY and KLING_VIDEO_SECRET_KEY for Kling video.');
     }
-    return { accessKey: dbAccessKey, secretKey: dbSecretKey, source: 'split-env' };
+    return { accessKey: dbAccessKey, secretKey: dbSecretKey, source: 'split-db' };
   }
 
   const dbLegacyApiKey = (dbCredentials?.apiKey || '').trim();

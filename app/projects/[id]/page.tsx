@@ -14,6 +14,12 @@ import VideoGenerationPanel from '@/components/VideoGenerationPanel';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
+import {
+  buildSceneReferenceByImageId,
+  getActiveSceneReferences,
+  SceneReferenceRecord,
+  SceneReferenceSummary,
+} from '@/lib/result-gallery-jobs';
 
 interface Project {
   id: string;
@@ -63,6 +69,11 @@ interface Job {
   errorMessage?: string;
   outputImageId?: string;
   inputImageId?: string;
+  referenceImageIds?: string;
+  providerId?: string;
+  model?: string;
+  size?: string;
+  quality?: string;
   prompt?: string;
   parentJobId?: string;
   revision?: number;
@@ -107,9 +118,7 @@ export default function ProjectDetailPage() {
   const [editingShotPrompt, setEditingShotPrompt] = useState(false);
   const editingShotPromptRef = useRef(false);
   const [shotPromptDraft, setShotPromptDraft] = useState('');
-  const [sceneRefs, setSceneRefs] = useState<Array<{
-    id: string; name: string; imageAssetId: string; imageFilename: string; status: string;
-  }>>([]);
+  const [sceneRefs, setSceneRefs] = useState<SceneReferenceRecord[]>([]);
   const [applySceneModal, setApplySceneModal] = useState<string | null>(null);
   const [applySceneRefId, setApplySceneRefId] = useState('');
   const [applyScenePrompt, setApplyScenePrompt] = useState('图1 是待编辑分镜图。图2 是场景参考图。请参考图2的空间风格、光线、墙面、软装和布置，重绘图1的场景。保持图1中的产品结构、模特姿态、主体位置和画面构图尽量一致。不要改变产品结构，不要添加文字。');
@@ -195,8 +204,8 @@ export default function ProjectDetailPage() {
     [project, imageUsageMap]
   );
 
-  const sceneReferenceImageIds = useMemo(
-    () => new Set(sceneRefs.map((ref) => ref.imageAssetId)),
+  const sceneReferenceByImageId = useMemo(
+    () => buildSceneReferenceByImageId(sceneRefs),
     [sceneRefs]
   );
 
@@ -335,23 +344,35 @@ export default function ProjectDetailPage() {
     await loadProject();
   };
 
+  const loadSceneRefs = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${id}/scene-references`);
+      const data = await res.json();
+      if (Array.isArray(data)) setSceneRefs(getActiveSceneReferences(data as SceneReferenceRecord[]));
+    } catch { /* ignore */ }
+  }, [id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadSceneRefs(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSceneRefs]);
+
   const handleCreateSceneRef = async () => {
     if (!sceneRefModal || !sceneRefName.trim()) return;
     const res = await fetch(`/api/projects/${id}/scene-references`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: sceneRefName.trim(), imageAssetId: sceneRefModal.imageAssetId, sourceJobId: sceneRefModal.jobId }),
     });
-    if (res.ok) { setSceneRefModal(null); setSceneRefName(''); await loadProject(); }
-    else { const err = await res.json().catch(() => ({})); alert('创建失败: ' + (err.error || '未知错误')); }
+    if (res.ok) {
+      setSceneRefModal(null);
+      setSceneRefName('');
+      await loadSceneRefs();
+      await loadProject();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert('创建失败: ' + (err.error || '未知错误'));
+    }
   };
-
-  const loadSceneRefs = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/projects/${id}/scene-references`);
-      const data = await res.json();
-      if (Array.isArray(data)) setSceneRefs(data.filter((r: { status: string }) => r.status === 'active'));
-    } catch { /* ignore */ }
-  }, [id]);
 
   const handleSaveShotPrompt = async () => {
     if (!shotPromptDraft.trim()) {
@@ -533,13 +554,14 @@ export default function ProjectDetailPage() {
                 onSetSceneRef={handleSetSceneRef}
                 onDeleteAsset={handleDeleteAsset}
                 jobs={sceneJobs}
-                sceneReferenceImageIds={sceneReferenceImageIds}
+                sceneReferenceByImageId={sceneReferenceByImageId}
               />
             )}
             {activeTab === 'storyboard' && (
-              <StoryboardWorkspace
-                project={project}
-                shotSourceImages={shotSourceImages}
+                <StoryboardWorkspace
+                  project={project}
+                  providers={providers}
+                  shotSourceImages={shotSourceImages}
                 selectedShotSourceIds={validSelectedShotSourceIds}
                 onSelectShotSources={setSelectedShotSourceIds}
                 onUploaded={loadProject}
@@ -570,6 +592,7 @@ export default function ProjectDetailPage() {
         ) : (
           <LegacyProjectContent
             project={project}
+            providers={providers}
             queueStatus={queueStatus}
             running={running}
             hasPendingJobs={hasPendingJobs}
@@ -582,6 +605,7 @@ export default function ProjectDetailPage() {
             onApplyScene={openApplySceneModal}
             onImagesUploaded={loadProject}
             onShotChanged={handleShotChanged}
+            sceneReferenceByImageId={sceneReferenceByImageId}
           />
         )}
       </div>
@@ -695,7 +719,7 @@ function SceneWorkspace({
   onSetSceneRef,
   onDeleteAsset,
   jobs,
-  sceneReferenceImageIds,
+  sceneReferenceByImageId,
 }: {
   project: Project;
   providers: ImageProvider[];
@@ -710,7 +734,7 @@ function SceneWorkspace({
   onSetSceneRef: (jobId: string, imageAssetId: string) => void;
   onDeleteAsset: (assetId: string) => void | Promise<void>;
   jobs: Job[];
-  sceneReferenceImageIds: Set<string>;
+  sceneReferenceByImageId: Map<string, SceneReferenceSummary>;
 }) {
   return (
     <div className="space-y-6">
@@ -747,12 +771,13 @@ function SceneWorkspace({
         <SceneResultsSection
           jobs={jobs}
           images={project.images}
+          providers={providers}
           onRetry={onRetry}
           onMark={onMark}
           onRegenerate={onRegenerate}
           onSetSceneRef={onSetSceneRef}
           projectId={project.id}
-          sceneReferenceImageIds={sceneReferenceImageIds}
+          sceneReferenceByImageId={sceneReferenceByImageId}
         />
       </section>
     </div>
@@ -760,16 +785,17 @@ function SceneWorkspace({
 }
 
 function SceneResultsSection({
-  jobs, images, onRetry, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceImageIds,
+  jobs, images, providers, onRetry, onMark, onRegenerate, onSetSceneRef, projectId, sceneReferenceByImageId,
 }: {
   jobs: Job[];
   images: ImageAsset[];
+  providers: ImageProvider[];
   onRetry: (jobId: string) => void;
   onMark: (jobId: string, mark: string) => void;
   onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
   onSetSceneRef?: (jobId: string, imageAssetId: string) => void;
   projectId?: string;
-  sceneReferenceImageIds: Set<string>;
+  sceneReferenceByImageId: Map<string, SceneReferenceSummary>;
 }) {
   const total = jobs.length;
   const activeCount = jobs.filter((j) => ['pending', 'running', 'retrying', 'needs_check'].includes(j.status)).length;
@@ -812,12 +838,13 @@ function SceneResultsSection({
           <ResultGallery
             jobs={jobs}
             images={images}
+            providers={providers}
             onRetry={onRetry}
             onMark={onMark}
             onRegenerate={onRegenerate}
             onSetSceneRef={onSetSceneRef}
             projectId={projectId}
-            sceneReferenceImageIds={sceneReferenceImageIds}
+            sceneReferenceByImageId={sceneReferenceByImageId}
           />
         </>
       )}
@@ -1016,6 +1043,7 @@ function SceneGenerationForm({
 
 function StoryboardWorkspace({
   project,
+  providers,
   shotSourceImages,
   selectedShotSourceIds,
   onSelectShotSources,
@@ -1033,6 +1061,7 @@ function StoryboardWorkspace({
   onDeleteAsset,
 }: {
   project: Project;
+  providers: ImageProvider[];
   shotSourceImages: AssetGridItem[];
   selectedShotSourceIds: string[];
   onSelectShotSources: (ids: string[]) => void;
@@ -1101,6 +1130,7 @@ function StoryboardWorkspace({
       <ShotSetPanel
         key={shotSetRefreshKey}
         projectId={project.id}
+        providers={providers}
         images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))}
         jobs={jobs}
         onApplyScene={onApplyScene}
@@ -1152,6 +1182,7 @@ function StoryboardGroupCreator({ projectId, selectedImageIds, onCreated }: { pr
 
 function LegacyProjectContent({
   project,
+  providers,
   queueStatus,
   running,
   hasPendingJobs,
@@ -1164,8 +1195,10 @@ function LegacyProjectContent({
   onApplyScene,
   onImagesUploaded,
   onShotChanged,
+  sceneReferenceByImageId,
 }: {
   project: Project;
+  providers: ImageProvider[];
   queueStatus: 'idle' | 'running' | 'paused';
   running: boolean;
   hasPendingJobs: boolean;
@@ -1178,6 +1211,7 @@ function LegacyProjectContent({
   onApplyScene: (shotSetId: string) => void;
   onImagesUploaded: () => void;
   onShotChanged: () => void | Promise<void>;
+  sceneReferenceByImageId: Map<string, SceneReferenceSummary>;
 }) {
   return (
     <>
@@ -1197,10 +1231,10 @@ function LegacyProjectContent({
       )}
       <div className="card p-4">
         <h2 className="mb-4 font-semibold">结果预览 {succeededJobs.length > 0 && <span className="ml-2 text-sm font-normal text-ink-tertiary">({succeededJobs.length} 张)</span>}</h2>
-        <ResultGallery jobs={project.jobs} images={project.images} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} />
+        <ResultGallery jobs={project.jobs} images={project.images} providers={providers} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} sceneReferenceByImageId={sceneReferenceByImageId} />
       </div>
       <SceneReferencePanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} />
-      <ShotSetPanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} jobs={project.jobs} onApplyScene={onApplyScene} onImagesUploaded={onImagesUploaded} onShotChanged={onShotChanged} />
+      <ShotSetPanel projectId={project.id} providers={providers} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} jobs={project.jobs} onApplyScene={onApplyScene} onImagesUploaded={onImagesUploaded} onShotChanged={onShotChanged} />
     </>
   );
 }

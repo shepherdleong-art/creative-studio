@@ -10,7 +10,7 @@ assert.deepEqual(
     accessKey: 'access-from-db',
     secretKey: 'secret-from-db',
   }),
-  { accessKey: 'access-from-db', secretKey: 'secret-from-db', source: 'split-env' }
+  { accessKey: 'access-from-db', secretKey: 'secret-from-db', source: 'split-db' }
 );
 
 assert.deepEqual(

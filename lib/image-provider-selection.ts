@@ -20,8 +20,7 @@ export interface ResolvedImageJobProvider {
 
 function hasUsableKey(provider: ImageProviderRow): boolean {
   const stored = (provider.apiKey || '').trim();
-  const fromEnv = (process.env[provider.apiKeyEnv] || '').trim();
-  return (!!stored && !isPlaceholderValue(stored)) || (!!fromEnv && !isPlaceholderValue(fromEnv));
+  return !!stored && !isPlaceholderValue(stored);
 }
 
 function isPlaceholderValue(value: string): boolean {
@@ -56,4 +55,15 @@ export function resolveImageJobProvider(
     providerId: provider.id,
     model: provider.model || defaults.model,
   };
+}
+
+export function resolveRegenerateImageJobProvider(
+  db: Database.Database,
+  requestedProviderId: unknown,
+  originalJob: ImageProviderDefaults
+): ResolvedImageJobProvider {
+  return resolveImageJobProvider(db, requestedProviderId, {
+    providerId: originalJob.providerId,
+    model: originalJob.model,
+  });
 }

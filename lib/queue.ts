@@ -6,6 +6,8 @@ import { editImagePackyGemini } from './providers/packy-gemini-image';
 import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors';
 import { getEffectiveImageConcurrency } from './provider-concurrency';
 import { calculateEstimatedCost } from './cost';
+import { isPlaceholderValue } from './video-auth';
+import { getEffectiveProjectFinalStatus } from './project-status';
 import { writeLog } from './logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames';
 import { v4 as uuidv4 } from 'uuid';
@@ -154,23 +156,7 @@ export async function runQueue(options: QueueOptions): Promise<void> {
     );
 
     if (!abort.signal.aborted) {
-      const statusCounts = db.prepare(`
-        SELECT
-          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-          SUM(CASE WHEN status = 'needs_check' THEN 1 ELSE 0 END) as needsCheck,
-          SUM(CASE WHEN status IN ('pending', 'retrying', 'running') THEN 1 ELSE 0 END) as active
-        FROM jobs
-        WHERE projectId = ?
-      `).get(projectId) as { failed: number | null; needsCheck: number | null; active: number | null };
-
-      let finalStatus = 'completed';
-      if ((statusCounts.needsCheck || 0) > 0) {
-        finalStatus = 'needs_check';
-      } else if ((statusCounts.failed || 0) > 0) {
-        finalStatus = 'partial_failed';
-      } else if ((statusCounts.active || 0) > 0) {
-        finalStatus = 'draft';
-      }
+      const finalStatus = getEffectiveProjectFinalStatus(db, projectId);
 
       db.prepare(`UPDATE projects SET status = ? WHERE id = ?`).run(finalStatus, projectId);
     }
@@ -234,19 +220,24 @@ async function runJob(
     const inputMimeType = (inputImage.mimeType || 'image/png') as 'image/png' | 'image/jpeg' | 'image/webp';
 
     // Load reference images
-    const refIds: string[] = JSON.parse(job.referenceImageIds);
+    const refIds = safeParseReferenceImageIds(job.referenceImageIds, (msg) => logWarn(msg));
     const rawRefImages = refIds.length > 0
       ? db.prepare(
           `SELECT * FROM image_assets WHERE id IN (${refIds.map(() => '?').join(',')})`
         ).all(...refIds) as Array<{
+        id: string;
         path: string;
         processedPath: string | null;
         mimeType: string;
       }>
       : [];
 
-    const refApiPaths = rawRefImages.map((r) => r.processedPath || r.path);
-    const refMimeTypes = rawRefImages.map((r) => (r.mimeType || 'image/png') as 'image/png' | 'image/jpeg' | 'image/webp');
+    const rawRefImageById = new Map(rawRefImages.map((image) => [image.id, image]));
+    const orderedRefImages = refIds
+      .map((refId) => rawRefImageById.get(refId))
+      .filter((image): image is NonNullable<typeof image> => !!image);
+    const refApiPaths = orderedRefImages.map((r) => r.processedPath || r.path);
+    const refMimeTypes = orderedRefImages.map((r) => (r.mimeType || 'image/png') as 'image/png' | 'image/jpeg' | 'image/webp');
 
     // Load provider
     const provider = db
@@ -266,15 +257,21 @@ async function runJob(
       throw new Error('Provider not found');
     }
 
-    const apiKey = provider.apiKey;
-    if (!apiKey) {
+    const apiKey = (provider.apiKey || '').trim();
+    if (isPlaceholderValue(apiKey)) {
       throw new Error('API key not configured. Please set it in Settings.');
     }
 
     const providerType = provider.type || 'openai-compatible';
 
     logInfo(`Calling API: ${provider.baseUrl} (type=${providerType}, model=${job.model}, size=${job.size})`);
-    logInfo(`图片发送顺序: adapter=${providerType}, multipart=${providerType === 'openai-compatible' ? 'image[]' : 'image'}, refs=${refApiPaths.length}`);
+    const multipartImageField =
+      providerType === 'openai-compatible' && provider.baseUrl.includes('api.gpt.ge')
+        ? 'image'
+        : providerType === 'openai-compatible'
+          ? 'image[]'
+          : 'image';
+    logInfo(`图片发送顺序: adapter=${providerType}, multipart=${multipartImageField}, refs=${refApiPaths.length}`);
     logInfo(`  图1 底图: ${path.basename(inputApiPath)}`);
     for (let ri = 0; ri < refApiPaths.length; ri++) {
       logInfo(`  图${ri + 2} 参考: ${path.basename(refApiPaths[ri])}`);
@@ -706,6 +703,20 @@ function safeJsonForDB(obj: unknown, maxLen = 4000): string {
     return s.length > maxLen ? s.slice(0, maxLen) + '...[truncated]' : s;
   } catch {
     return '[unserializable]';
+  }
+}
+
+function safeParseReferenceImageIds(value: string, logWarn?: (msg: string) => void): string[] {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    if (!Array.isArray(parsed)) {
+      logWarn?.('referenceImageIds is not an array; continuing without reference images');
+      return [];
+    }
+    return parsed.filter((id): id is string => typeof id === 'string' && id.length > 0);
+  } catch {
+    logWarn?.('referenceImageIds contains invalid JSON; continuing without reference images');
+    return [];
   }
 }
 

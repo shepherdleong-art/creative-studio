@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { resolveRegenerateImageJobProvider } from '@/lib/image-provider-selection';
 import { v4 as uuidv4 } from 'uuid';
 
 const ALLOWED_SOURCE_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'needs_check']);
@@ -45,6 +46,16 @@ export async function POST(
         { error: `Cannot regenerate from status "${originalJob.status}". Must be succeeded, failed, canceled, or needs_check.` },
         { status: 400 }
       );
+    }
+
+    let jobProvider: { providerId: string; model: string };
+    try {
+      jobProvider = resolveRegenerateImageJobProvider(db, body.providerId, {
+        providerId: originalJob.providerId,
+        model: originalJob.model,
+      });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
     }
 
     // ── Determine new input image ID ──
@@ -108,7 +119,7 @@ export async function POST(
           prompt, size, quality, status, attempt, maxAttempts,
           parentJobId, revision, referenceGuidanceMode
         )
-        SELECT ?, projectId, ?, ?, providerId, model,
+        SELECT ?, projectId, ?, ?, ?, ?,
                ?, size, quality, 'pending', 0, maxAttempts,
                id, ?, referenceGuidanceMode
         FROM jobs
@@ -117,6 +128,8 @@ export async function POST(
         newJobId,
         newInputImageId,
         JSON.stringify(uniqueReferenceIds),
+        jobProvider.providerId,
+        jobProvider.model,
         prompt,
         latest.rev,
         id

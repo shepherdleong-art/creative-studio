@@ -2,6 +2,28 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
+import { isPlaceholderValue } from '@/lib/video-auth';
+
+function isRealApiKey(value: string | null | undefined): boolean {
+  const trimmed = (value || '').trim();
+  return !!trimmed && !isPlaceholderValue(trimmed);
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is string => typeof id === 'string' && id.length > 0);
+}
+
+function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, projectId: string, role: 'input' | 'reference') {
+  const result = db.prepare(`
+    UPDATE image_assets
+    SET projectId = ?, role = ?
+    WHERE id = ? AND (projectId IS NULL OR projectId = ?)
+  `).run(projectId, role, imageId, projectId);
+  if (result.changes !== 1) {
+    throw new Error(`Image asset is not available for this project: ${imageId}`);
+  }
+}
 
 export async function GET() {
   try {
@@ -17,7 +39,9 @@ export async function GET() {
     `).all();
     return NextResponse.json(projects);
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    const message = err instanceof Error ? err.message : String(err);
+    const status = message.startsWith('Image asset is not available for this project:') ? 400 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }
 
@@ -33,7 +57,7 @@ export async function POST(request: NextRequest) {
     } | undefined;
     if (!provider) return NextResponse.json({ error: 'Provider not found' }, { status: 400 });
     if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
-    if (!provider.apiKey) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
+    if (!isRealApiKey(provider.apiKey)) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
 
     // Resolve size
     let resolvedSize: string;
@@ -58,35 +82,33 @@ export async function POST(request: NextRequest) {
       const prompt = body.prompt?.trim();
       if (!prompt) return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
 
-      db.prepare(`
-        INSERT INTO projects (id, name, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
-      `).run(projectId, body.name, body.providerId, model, prompt, body.negativePrompt || '',
-        resolvedSize, quality, concurrency, maxAttempts, 'none', timeoutMs, 'legacy_batch_edit');
+      const referenceImageIds = asStringArray(body.referenceImageIds);
+      const inputImageIds = asStringArray(body.inputImageIds);
 
-      const referenceImageIds: string[] = body.referenceImageIds || [];
-      const inputImageIds: string[] = body.inputImageIds || [];
+      db.transaction(() => {
+        db.prepare(`
+          INSERT INTO projects (id, name, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
+        `).run(projectId, body.name, body.providerId, model, prompt, body.negativePrompt || '',
+          resolvedSize, quality, concurrency, maxAttempts, 'none', timeoutMs, 'legacy_batch_edit');
 
-      if (referenceImageIds.length > 0) {
-        const ph = referenceImageIds.map(() => '?').join(',');
-        db.prepare(`UPDATE image_assets SET projectId = ?, role = 'reference' WHERE id IN (${ph})`).run(projectId, ...referenceImageIds);
-      }
+        for (const imageId of referenceImageIds) {
+          bindProjectImage(db, imageId, projectId, 'reference');
+        }
 
-      if (inputImageIds.length > 0) {
         const refIdsJson = JSON.stringify(referenceImageIds);
         const count = Math.max(1, Math.min(10, Number(body.generationCount) || 1));
-        const updateAsset = db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`);
         const insertJob = db.prepare(`
           INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
         `);
         for (const imageId of inputImageIds) {
-          updateAsset.run(projectId, imageId);
+          bindProjectImage(db, imageId, projectId, 'input');
           for (let g = 0; g < count; g++) {
             insertJob.run(uuidv4(), projectId, imageId, refIdsJson, body.providerId, model, prompt, resolvedSize, quality, maxAttempts, 'none');
           }
         }
-      }
+      })();
 
       return NextResponse.json({ id: projectId, workflowType: 'legacy_batch_edit' });
     }
@@ -94,7 +116,7 @@ export async function POST(request: NextRequest) {
     // ── Complex product workflow ──
     const sceneSeedImageId: string | undefined = body.sceneSeedImageId;
     const scenePrompt: string = (body.scenePrompt || '').trim();
-    const shotImageIds: string[] = body.shotImageIds || [];
+    const shotImageIds = asStringArray(body.shotImageIds);
     const shotPrompt: string = (body.shotPrompt || '').trim();
     const genCount = Math.max(1, Math.min(9, Number(body.generationCount) || 4));
     const hasFullCreation = sceneSeedImageId && scenePrompt && shotImageIds.length > 0;
@@ -115,12 +137,10 @@ export async function POST(request: NextRequest) {
         scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt);
 
       if (hasFullCreation) {
-        // Bind scene seed image
-        db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`).run(projectId, sceneSeedImageId);
+        bindProjectImage(db, sceneSeedImageId, projectId, 'input');
 
-        // Bind shot source images
         for (const imgId of shotImageIds) {
-          db.prepare(`UPDATE image_assets SET projectId = ?, role = 'input' WHERE id = ?`).run(projectId, imgId);
+          bindProjectImage(db, imgId, projectId, 'input');
         }
 
         // Create scene generation jobs

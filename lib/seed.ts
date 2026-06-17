@@ -1,4 +1,5 @@
 import { getDb } from '@/lib/db';
+import { GPTGE_GPT_IMAGE_2_PROVIDER } from '@/lib/image-provider-presets';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { defaultScriptProviderConfigs } from '@/lib/script-providers/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -31,6 +32,7 @@ export function seedProviders() {
         enabled: 0,
         defaultCostPerImage: 0.5,
       },
+      GPTGE_GPT_IMAGE_2_PROVIDER,
       {
         id: 'packy-nano-banana-2',
         name: 'Packy Nano Banana 2',
@@ -157,6 +159,21 @@ function ensurePackyImageProviders(db: ReturnType<typeof getDb>) {
 }
 
 function ensureGptGeImageProvider(db: ReturnType<typeof getDb>) {
+  db.prepare(`
+    INSERT INTO providers
+      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
+    SELECT
+      'gptge-gpt-image-2', 'GPT.ge GPT-Image-2', ?, 'GPTGE_API_KEY', ?, 'gpt-image-2', 'openai-compatible', 0, 0.12
+    WHERE NOT EXISTS (
+      SELECT 1 FROM providers
+      WHERE id = 'gptge-gpt-image-2'
+        OR (baseUrl LIKE '%api.gpt.ge%' AND model = 'gpt-image-2')
+    )
+  `).run(
+    'https://api.gpt.ge',
+    ''
+  );
+
   db.prepare(`
     INSERT INTO providers
       (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
