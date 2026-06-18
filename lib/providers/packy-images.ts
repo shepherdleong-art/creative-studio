@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { imageModelSupportsQuality } from '@/lib/image-model-capabilities';
+import { GPT_IMAGE_2_SIZE_MAP } from '@/lib/gpt-image-2-size-presets';
 
 export interface PackyEditImageRequest {
   model: string;
@@ -42,6 +43,16 @@ async function downloadImage(url: string, signal?: AbortSignal): Promise<Buffer>
   return Buffer.from(await res.arrayBuffer());
 }
 
+/** Reverse-lookup aspect ratio and resolution from a resolved size string. */
+function describeSize(size: string): string {
+  for (const [ratio, resolutions] of Object.entries(GPT_IMAGE_2_SIZE_MAP)) {
+    for (const [res, s] of Object.entries(resolutions)) {
+      if (s === size) return `输出宽高比：${ratio}。分辨率级别：${res}。`;
+    }
+  }
+  return `输出尺寸要求：${size}。`;
+}
+
 /**
  * Call Packy GPT-Image-2 Images API.
  *
@@ -62,7 +73,7 @@ export async function editImagePacky(
 
   const hasRefs = request.referenceImagePaths.length > 0;
 
-  const sizeHint = `输出尺寸要求：${request.size}。`;
+  const sizeHint = describeSize(request.size);
 
   let prompt = request.prompt;
   if (hasRefs) {
