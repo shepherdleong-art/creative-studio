@@ -62,6 +62,8 @@ export async function editImagePacky(
 
   const hasRefs = request.referenceImagePaths.length > 0;
 
+  const sizeHint = `输出宽高比要求：${request.size}。`;
+
   let prompt = request.prompt;
   if (hasRefs) {
     prompt = [
@@ -69,10 +71,13 @@ export async function editImagePacky(
       '图1 是待编辑底图，是本次修改的主要对象。',
       `图2 到图${request.referenceImagePaths.length + 1} 是参考图，只用于参考场景、风格、光线、材质、构图、产品或人物一致性。`,
       '不要把参考图当成最终画面的主体，不要把参考图整体复制进结果。',
+      sizeHint,
       '',
       '用户修改要求：',
       request.prompt,
     ].join('\n');
+  } else {
+    prompt = [sizeHint, request.prompt].join('\n');
   }
 
   const form = new FormData();
