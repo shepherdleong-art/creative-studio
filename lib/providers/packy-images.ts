@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import { imageModelSupportsQuality } from '@/lib/image-model-capabilities';
-import { GPT_IMAGE_2_SIZE_MAP } from '@/lib/gpt-image-2-size-presets';
 
 export interface PackyEditImageRequest {
   model: string;
@@ -43,16 +42,6 @@ async function downloadImage(url: string, signal?: AbortSignal): Promise<Buffer>
   return Buffer.from(await res.arrayBuffer());
 }
 
-/** Reverse-lookup aspect ratio and resolution from a resolved size string. */
-function describeSize(size: string): string {
-  for (const [ratio, resolutions] of Object.entries(GPT_IMAGE_2_SIZE_MAP)) {
-    for (const [res, s] of Object.entries(resolutions)) {
-      if (s === size) return `输出宽高比：${ratio}。分辨率级别：${res}。`;
-    }
-  }
-  return `输出尺寸要求：${size}。`;
-}
-
 /**
  * Call Packy GPT-Image-2 Images API.
  *
@@ -73,8 +62,6 @@ export async function editImagePacky(
 
   const hasRefs = request.referenceImagePaths.length > 0;
 
-  const sizeHint = describeSize(request.size);
-
   let prompt = request.prompt;
   if (hasRefs) {
     prompt = [
@@ -82,13 +69,10 @@ export async function editImagePacky(
       '图1 是待编辑底图，是本次修改的主要对象。',
       `图2 到图${request.referenceImagePaths.length + 1} 是参考图，只用于参考场景、风格、光线、材质、构图、产品或人物一致性。`,
       '不要把参考图当成最终画面的主体，不要把参考图整体复制进结果。',
-      sizeHint,
       '',
       '用户修改要求：',
       request.prompt,
     ].join('\n');
-  } else {
-    prompt = [sizeHint, request.prompt].join('\n');
   }
 
   const form = new FormData();
