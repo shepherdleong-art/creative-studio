@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
 import { isPlaceholderValue } from '@/lib/video-auth';
+import { toStorageImageUrl } from '@/lib/storage-url';
 
 function isRealApiKey(value: string | null | undefined): boolean {
   const trimmed = (value || '').trim();
@@ -28,15 +29,33 @@ function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, project
 export async function GET() {
   try {
     const db = getDb();
-    const projects = db.prepare(`
+    const projects = (db.prepare(`
       SELECT p.*,
         (SELECT COUNT(*) FROM jobs WHERE projectId = p.id) as totalJobs,
         (SELECT COUNT(*) FROM jobs WHERE projectId = p.id AND status = 'succeeded') as completedJobs,
         (SELECT COUNT(*) FROM jobs WHERE projectId = p.id AND status = 'failed') as failedJobs,
-        (SELECT COALESCE(SUM(estimatedCost), 0) FROM jobs WHERE projectId = p.id) as totalCost
+        (SELECT COALESCE(SUM(estimatedCost), 0) FROM jobs WHERE projectId = p.id) as totalCost,
+        thumb.path as thumbnailPath
       FROM projects p
+      LEFT JOIN (
+        SELECT projectId, path
+        FROM (
+          SELECT
+            projectId,
+            path,
+            ROW_NUMBER() OVER (PARTITION BY projectId ORDER BY createdAt ASC) as rn
+          FROM image_assets
+          WHERE role = 'output' AND usage = 'scene_gen'
+        )
+        WHERE rn = 1
+      ) thumb ON thumb.projectId = p.id
       ORDER BY p.createdAt DESC
-    `).all();
+    `).all() as Array<Record<string, unknown>>).map((project) => {
+      const thumbnailPath = typeof project.thumbnailPath === 'string' ? project.thumbnailPath : '';
+      const rest = { ...project };
+      delete rest.thumbnailPath;
+      return { ...rest, thumbnailImageUrl: toStorageImageUrl(thumbnailPath) };
+    });
     return NextResponse.json(projects);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

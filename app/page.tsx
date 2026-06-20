@@ -16,6 +16,7 @@ interface Project {
   failedJobs: number;
   totalCost: number;
   workflowType?: string;
+  thumbnailImageUrl?: string;
 }
 
 interface ProviderStatus {
@@ -164,8 +165,12 @@ export default function HomePage() {
                 href={`/projects/${p.id}`}
                 className="card flex items-center gap-4 p-4 transition-shadow hover:shadow-[0_8px_28px_rgba(0,0,0,.08)]"
               >
-                <div className="grid h-[60px] w-[60px] shrink-0 place-items-center rounded-[14px] bg-surface-subtle text-ink-tertiary">
-                  <Icon name="image" size={22} />
+                <div className="grid h-[60px] w-[60px] shrink-0 place-items-center overflow-hidden rounded-[14px] bg-surface-subtle text-ink-tertiary">
+                  {p.thumbnailImageUrl ? (
+                    <img src={p.thumbnailImageUrl} alt={`${p.name} 场景图`} className="h-full w-full object-cover" loading="lazy" />
+                  ) : (
+                    <Icon name="image" size={22} />
+                  )}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2.5">
