@@ -29,6 +29,23 @@ interface Shot {
   size?: string;
   quality?: string;
   reviewMark?: string;
+  resultCandidates?: ShotResultCandidate[];
+}
+
+interface ShotResultCandidate {
+  shotId: string;
+  jobId: string;
+  imageAssetId: string;
+  createdAt: string;
+  filename?: string;
+  imageUrl?: string;
+  jobStatus?: string;
+  jobPrompt?: string;
+  referenceImageIds?: string;
+  providerId?: string;
+  model?: string;
+  size?: string;
+  quality?: string;
 }
 
 const REDOABLE_STATUSES = new Set(['succeeded', 'failed', 'canceled', 'needs_check']);
@@ -92,6 +109,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
   const [redoReferenceIds, setRedoReferenceIds] = useState<string[]>([]);
   const [redoProviderId, setRedoProviderId] = useState('');
   const [redoing, setRedoing] = useState(false);
+  const [selectingResultId, setSelectingResultId] = useState('');
   const [sceneRefInfoBySet, setSceneRefInfoBySet] = useState<Record<string, { name: string; imageUrl: string } | null>>({});
   const expandedIdsRef = useRef<Set<string>>(new Set());
   const redoInitKeyRef = useRef('');
@@ -208,74 +226,85 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
   );
   const imageById = useMemo(() => new Map(images.map((img) => [img.id, img])), [images]);
 
+  const closePreview = useCallback(() => {
+    setPreviewIndex(null);
+    setPreviewSetId(null);
+    setRedoing(false);
+    setSelectingResultId('');
+    redoInitKeyRef.current = '';
+  }, []);
+  const currentPreviewShot = previewIndex !== null ? previewShots[previewIndex] : undefined;
+
+  const getSelectedResultCandidate = useCallback((shot: Shot | undefined): ShotResultCandidate | undefined => {
+    if (!shot?.resultCandidates?.length) return undefined;
+    return shot.resultCandidates.find((candidate) => candidate.imageAssetId === shot.latestGeneratedImageId)
+      || shot.resultCandidates[shot.resultCandidates.length - 1];
+  }, []);
+
+  const currentResultCandidate = getSelectedResultCandidate(currentPreviewShot);
+
+  const applyRedoDefaultsFromCandidate = useCallback((candidate: ShotResultCandidate | undefined, shot: Shot, fallbackProviderId: string) => {
+    setRedoInputSource('original');
+    setRedoReferenceIds(parseRedoReferenceIds(candidate?.referenceImageIds || shot.referenceImageIds).filter((id) => id !== shot.sourceImageId));
+    setRedoProviderId(candidate?.providerId || shot.providerId || fallbackProviderId || '');
+    setRedoPrompt(candidate?.jobPrompt || shot.jobPrompt || '');
+  }, []);
+
+  const initializeRedoForShot = useCallback((setId: string, shot: Shot | undefined) => {
+    const nextInitKey = getRedoInitKey(setId, shot);
+    if (!shouldInitializeRedoForm(redoInitKeyRef.current, nextInitKey)) return;
+    redoInitKeyRef.current = nextInitKey;
+    const selectedCandidate = getSelectedResultCandidate(shot);
+    if (shot && selectedCandidate) {
+      applyRedoDefaultsFromCandidate(selectedCandidate, shot, selectableProviders[0]?.id || '');
+      return;
+    }
+    if (shot) {
+      const defaults = getRedoFormDefaults(shot, selectableProviders[0]?.id || '');
+      setRedoInputSource(defaults.inputSource);
+      setRedoReferenceIds(defaults.referenceIds);
+      setRedoProviderId(defaults.providerId);
+      setRedoPrompt(defaults.prompt);
+      return;
+    }
+    setRedoPrompt('');
+    setRedoInputSource('original');
+    setRedoReferenceIds([]);
+    setRedoProviderId(selectableProviders[0]?.id || '');
+  }, [applyRedoDefaultsFromCandidate, getSelectedResultCandidate, selectableProviders]);
+
   const openPreview = (setId: string, idx: number) => {
     const nextShots = shotsBySet[setId] || [];
     const shot = nextShots[idx];
     setPreviewSetId(setId);
     setPreviewIndex(idx);
-    const nextInitKey = getRedoInitKey(setId, shot);
-    redoInitKeyRef.current = nextInitKey;
-    if (shot) {
-      const defaults = getRedoFormDefaults(shot, selectableProviders[0]?.id || '');
-      setRedoPrompt(defaults.prompt);
-      setRedoInputSource(defaults.inputSource);
-      setRedoReferenceIds(defaults.referenceIds);
-      setRedoProviderId(defaults.providerId);
-    } else {
-      setRedoPrompt('');
-      setRedoInputSource('original');
-      setRedoReferenceIds([]);
-      setRedoProviderId(selectableProviders[0]?.id || '');
-    }
+    initializeRedoForShot(setId, shot);
     setRedoing(false);
   };
-  const closePreview = () => { setPreviewIndex(null); setPreviewSetId(null); setRedoing(false); redoInitKeyRef.current = ''; };
-  const goPreview = (delta: number) => {
+
+  const goPreview = useCallback((delta: number) => {
+    if (!previewSetId) return;
     setPreviewIndex((prev) => {
       if (prev === null || previewShots.length === 0) return prev;
-      return Math.min(previewShots.length - 1, Math.max(0, prev + delta));
+      const nextIndex = Math.min(previewShots.length - 1, Math.max(0, prev + delta));
+      initializeRedoForShot(previewSetId, previewShots[nextIndex]);
+      return nextIndex;
     });
-  };
-  const currentPreviewShot = previewIndex !== null ? previewShots[previewIndex] : undefined;
-
-  // Initialize redo form only when the selected shot identity changes.
-  useEffect(() => {
-    if (previewIndex === null || !previewSetId) return;
-    const shot = previewShots[previewIndex];
-    if (!shot) return;
-    const nextInitKey = getRedoInitKey(previewSetId, shot);
-    if (!shouldInitializeRedoForm(redoInitKeyRef.current, nextInitKey)) return;
-    redoInitKeyRef.current = nextInitKey;
-    const defaults = getRedoFormDefaults(shot, selectableProviders[0]?.id || '');
-    setRedoInputSource(defaults.inputSource);
-    setRedoReferenceIds(defaults.referenceIds);
-    setRedoProviderId(defaults.providerId);
-    setRedoPrompt(defaults.prompt);
-  }, [
-    previewSetId,
-    previewIndex,
-    previewShots,
-    currentPreviewShot?.id,
-    currentPreviewShot?.latestJobId,
-    selectableProviders,
-  ]);
+  }, [initializeRedoForShot, previewSetId, previewShots]);
 
   // Keyboard navigation while preview is open
   useEffect(() => {
     if (previewIndex === null) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setPreviewIndex(null); setPreviewSetId(null); setRedoing(false); return; }
+      if (e.key === 'Escape') { closePreview(); return; }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         const delta = e.key === 'ArrowLeft' ? -1 : 1;
-        setPreviewIndex((prev) => {
-          if (prev === null) return null;
-          return Math.min(previewShots.length - 1, Math.max(0, prev + delta));
-        });
+        goPreview(delta);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [previewIndex, previewShots]);
+  }, [closePreview, goPreview, previewIndex]);
 
   // Poll shots while any job is still active (pending, running, retrying, needs_check)
   useEffect(() => {
@@ -290,7 +319,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
   }, [expandedIds, shotsBySet, loadShots]);
 
   const redoBaseImageId = currentPreviewShot
-    ? (redoInputSource === 'current_result' ? currentPreviewShot.latestGeneratedImageId || '' : currentPreviewShot.sourceImageId)
+    ? (redoInputSource === 'current_result' ? currentResultCandidate?.imageAssetId || currentPreviewShot.latestGeneratedImageId || '' : currentPreviewShot.sourceImageId)
     : '';
   const selectedRedoProviderId = selectableProviders.some((provider) => provider.id === redoProviderId)
     ? redoProviderId
@@ -315,7 +344,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
       const asset = imageById.get(id);
       const url =
         id === currentPreviewShot.sourceImageId ? currentPreviewShot.sourceImageUrl || asset?.imageUrl || ''
-        : id === currentPreviewShot.latestGeneratedImageId ? currentPreviewShot.generatedImageUrl || asset?.imageUrl || ''
+        : id === (currentResultCandidate?.imageAssetId || currentPreviewShot.latestGeneratedImageId) ? currentResultCandidate?.imageUrl || currentPreviewShot.generatedImageUrl || asset?.imageUrl || ''
         : asset?.imageUrl || '';
       if (!url) return;
       seen.add(id);
@@ -326,14 +355,19 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     redoReferenceIds
       .filter((id) => id !== redoBaseImageId)
       .forEach((id, idx) => {
-        const label = id === currentPreviewShot.latestGeneratedImageId
+        const label = id === (currentResultCandidate?.imageAssetId || currentPreviewShot.latestGeneratedImageId)
           ? `图${idx + 2} 当前结果`
           : `图${idx + 2} 参考图`;
         addSendItem(id, label, idx + 2);
       });
     add(currentPreviewShot.sourceImageId, '原图', currentPreviewShot.sourceImageUrl);
     safeParseImageIds(currentPreviewShot.referenceImageIds).forEach((id, idx) => add(id, `参考图 ${idx + 1}`));
-    add(currentPreviewShot.latestGeneratedImageId, '当前结果', currentPreviewShot.generatedImageUrl);
+    currentPreviewShot.resultCandidates?.forEach((candidate, idx) => {
+      add(candidate.imageAssetId, candidate.imageAssetId === currentPreviewShot.latestGeneratedImageId ? '当前结果' : `结果 ${idx + 1}`, candidate.imageUrl);
+    });
+    if (!currentPreviewShot.resultCandidates?.length) {
+      add(currentPreviewShot.latestGeneratedImageId, '当前结果', currentPreviewShot.generatedImageUrl);
+    }
     images.filter((img) => img.role === 'reference').forEach((img) => add(img.id, img.filename, img.imageUrl));
 
     return candidates;
@@ -341,8 +375,9 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
 
   const handleRedoInputSourceChange = (source: 'original' | 'current_result') => {
     if (!currentPreviewShot) return;
-    const newBaseId = source === 'current_result' ? currentPreviewShot.latestGeneratedImageId : currentPreviewShot.sourceImageId;
-    const oldBaseId = redoInputSource === 'current_result' ? currentPreviewShot.latestGeneratedImageId : currentPreviewShot.sourceImageId;
+    const selectedResultImageId = currentResultCandidate?.imageAssetId || currentPreviewShot.latestGeneratedImageId;
+    const newBaseId = source === 'current_result' ? selectedResultImageId : currentPreviewShot.sourceImageId;
+    const oldBaseId = redoInputSource === 'current_result' ? selectedResultImageId : currentPreviewShot.sourceImageId;
 
     setRedoInputSource(source);
     setRedoReferenceIds((prev) => {
@@ -357,6 +392,77 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     setRedoReferenceIds((prev) =>
       prev.includes(imageId) ? prev.filter((id) => id !== imageId) : [...prev, imageId]
     );
+  };
+
+  const selectResultCandidate = async (candidate: ShotResultCandidate) => {
+    if (selectingResultId) return;
+    if (!previewSetId || previewIndex === null || !currentPreviewShot) return;
+    if (candidate.imageAssetId === currentPreviewShot.latestGeneratedImageId) {
+      applyRedoDefaultsFromCandidate(candidate, currentPreviewShot, selectableProviders[0]?.id || '');
+      return;
+    }
+    const previousShot = currentPreviewShot;
+    setSelectingResultId(candidate.imageAssetId);
+    setShotsBySet((prev) => {
+      const list = prev[previewSetId] || [];
+      return {
+        ...prev,
+        [previewSetId]: list.map((shot) => shot.id === previousShot.id ? {
+          ...shot,
+          latestGeneratedImageId: candidate.imageAssetId,
+          latestJobId: candidate.jobId,
+          generatedFilename: candidate.filename,
+          generatedImageUrl: candidate.imageUrl,
+          jobStatus: candidate.jobStatus || shot.jobStatus,
+          jobPrompt: candidate.jobPrompt || '',
+          referenceImageIds: candidate.referenceImageIds || '[]',
+          providerId: candidate.providerId || shot.providerId,
+          model: candidate.model || shot.model,
+          size: candidate.size || shot.size,
+          quality: candidate.quality || shot.quality,
+        } : shot),
+      };
+    });
+    applyRedoDefaultsFromCandidate(candidate, previousShot, selectableProviders[0]?.id || '');
+    try {
+      const res = await fetch(`/api/shot-sets/${previewSetId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shotId: previousShot.id, selectedImageAssetId: candidate.imageAssetId }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert('切换结果失败: ' + (data.error || '未知错误'));
+        setShotsBySet((prev) => {
+          const list = prev[previewSetId] || [];
+          return {
+            ...prev,
+            [previewSetId]: list.map((shot) => shot.id === previousShot.id ? previousShot : shot),
+          };
+        });
+        return;
+      }
+      await onShotChanged?.();
+    } catch (err) {
+      alert('切换结果失败: ' + String(err));
+      setShotsBySet((prev) => {
+        const list = prev[previewSetId] || [];
+        return {
+          ...prev,
+          [previewSetId]: list.map((shot) => shot.id === previousShot.id ? previousShot : shot),
+        };
+      });
+    } finally {
+      setSelectingResultId('');
+    }
+  };
+
+  const goResultCandidate = (delta: number) => {
+    if (!currentPreviewShot?.resultCandidates?.length) return;
+    const candidates = currentPreviewShot.resultCandidates;
+    const currentIdx = Math.max(0, candidates.findIndex((candidate) => candidate.imageAssetId === currentPreviewShot.latestGeneratedImageId));
+    const next = candidates[Math.min(candidates.length - 1, Math.max(0, currentIdx + delta))];
+    if (next) selectResultCandidate(next);
   };
 
   const handleRedo = async () => {
@@ -553,12 +659,20 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
       {previewIndex !== null && previewShots[previewIndex] && (() => {
         const shot = previewShots[previewIndex];
         const sourceUrl = shot.sourceImageUrl || getImageUrl(shot.sourceImageId);
-        const genUrl = shot.generatedImageUrl || (shot.latestGeneratedImageId ? getImageUrl(shot.latestGeneratedImageId) : '');
+        const selectedResult = getSelectedResultCandidate(shot);
+        const resultCandidates = shot.resultCandidates || [];
+        const selectedResultIndex = selectedResult
+          ? Math.max(0, resultCandidates.findIndex((candidate) => candidate.imageAssetId === selectedResult.imageAssetId))
+          : -1;
+        const resultCount = resultCandidates.length;
+        const genUrl = selectedResult?.imageUrl || shot.generatedImageUrl || (shot.latestGeneratedImageId ? getImageUrl(shot.latestGeneratedImageId) : '');
         const refUrl = previewSceneRefInfo?.imageUrl || '';
         const generating = shot.jobStatus === 'pending' || shot.jobStatus === 'running';
         const canRedo = !!shot.latestJobId && REDOABLE_STATUSES.has(shot.jobStatus || '');
         const isFirst = previewIndex === 0;
         const isLast = previewIndex === previewShots.length - 1;
+        const canGoPrevResult = selectedResultIndex > 0;
+        const canGoNextResult = selectedResultIndex >= 0 && selectedResultIndex < resultCandidates.length - 1;
         return (
           <div className="theme-dark fixed inset-0 z-[100] flex flex-col overflow-hidden bg-black/95" onClick={closePreview}>
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -599,8 +713,66 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                     </div>
                   )}
                   <div className="min-w-0">
-                    <div className="mb-1 text-xs text-ink-tertiary">结果</div>
-                    {genUrl ? <img src={genUrl} alt="结果" className="max-h-[72vh] max-w-full rounded-lg border border-hairline object-contain" /> : <div className="flex aspect-square items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-sm text-ink-tertiary">{generating ? '生成中…' : '暂无结果'}</div>}
+                    <div className="mb-1 flex items-center justify-between gap-2 text-xs text-ink-tertiary">
+                      <span>结果</span>
+                      {resultCount > 1 && (
+                        <span>{selectedResultIndex + 1} / {resultCount}</span>
+                      )}
+                    </div>
+                    <div className="relative">
+                      {genUrl ? <img src={genUrl} alt="结果" className="max-h-[72vh] max-w-full rounded-lg border border-hairline object-contain" /> : <div className="flex aspect-square items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-sm text-ink-tertiary">{generating ? '生成中…' : '暂无结果'}</div>}
+                      {resultCount > 1 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => goResultCandidate(-1)}
+                            disabled={!canGoPrevResult || !!selectingResultId}
+                            className="absolute left-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white/85 transition hover:bg-black/65 disabled:opacity-30"
+                            title="上一张结果"
+                            aria-label="上一张结果"
+                          >
+                            <Icon name="chevron-left" size={19} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => goResultCandidate(1)}
+                            disabled={!canGoNextResult || !!selectingResultId}
+                            className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white/85 transition hover:bg-black/65 disabled:opacity-30"
+                            title="下一张结果"
+                            aria-label="下一张结果"
+                          >
+                            <Icon name="chevron-right" size={19} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {resultCount > 1 && (
+                      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                        {resultCandidates.map((candidate, idx) => {
+                          const selected = candidate.imageAssetId === selectedResult?.imageAssetId;
+                          return (
+                            <button
+                              key={candidate.imageAssetId}
+                              type="button"
+                              disabled={!!selectingResultId}
+                              onClick={() => selectResultCandidate(candidate)}
+                              className={`relative h-16 w-16 shrink-0 overflow-hidden rounded border disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'border-accent' : 'border-white/15 hover:border-accent/50'}`}
+                              title={`结果 ${idx + 1}`}
+                              aria-label={`选择结果 ${idx + 1}`}
+                            >
+                              {candidate.imageUrl && <img src={candidate.imageUrl} alt={`结果 ${idx + 1}`} className="h-full w-full object-cover" />}
+                              <span className="absolute left-1 top-1 rounded bg-black/60 px-1 text-[9px] text-white">{idx + 1}</span>
+                              {selected && (
+                                <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-white">
+                                  <Icon name="check" size={10} />
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {selectingResultId && <div className="mt-2 text-[11px] text-accent">正在保存当前选择…</div>}
                   </div>
                 </div>
 
@@ -663,7 +835,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                             ))}
                           </select>
                           <div className="mt-1 text-[11px] text-white/45">
-                            本次使用：{selectedRedoProvider?.model || shot.model || '原任务模型'}
+                            本次使用：{selectedRedoProvider?.model || selectedResult?.model || shot.model || '原任务模型'}
                           </div>
                         </section>
                       )}

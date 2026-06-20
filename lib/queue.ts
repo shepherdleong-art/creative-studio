@@ -6,6 +6,7 @@ import { editImagePackyGemini } from './providers/packy-gemini-image';
 import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors';
 import { getEffectiveImageConcurrency } from './provider-concurrency';
 import { calculateEstimatedCost } from './cost';
+import { normalizeGeneratedImageToSize } from './image-output-normalize';
 import { isPlaceholderValue } from './video-auth';
 import { getEffectiveProjectFinalStatus } from './project-status';
 import { writeLog } from './logger';
@@ -543,14 +544,18 @@ async function runJob(
     const preferredOutputName = `${filePrefix}${inputBase}${revSuffix}.png`;
     const outputFilename = ensureUniqueFilename(outputsDir, preferredOutputName, job.id.slice(0, 6));
     const outputPath = path.join(outputsDir, outputFilename);
-    fs.writeFileSync(outputPath, result.imageBuffer);
+    const normalizedImage = await normalizeGeneratedImageToSize(result.imageBuffer, job.size);
+    if (normalizedImage.changed) {
+      logWarn(`输出尺寸与任务尺寸不一致，已自动规整: ${normalizedImage.reason}`);
+    }
+    fs.writeFileSync(outputPath, normalizedImage.imageBuffer);
 
     // Save output image asset (tag with usage so tabs can filter)
     const outputImageId = uuidv4();
     db.prepare(
-      `INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, createdAt)
-       VALUES (?, ?, 'output', ?, ?, 'image/png', ?, datetime('now'))`
-    ).run(outputImageId, job.projectId, outputFilename, outputPath, outputUsage);
+      `INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, width, height, createdAt)
+       VALUES (?, ?, 'output', ?, ?, 'image/png', ?, ?, ?, datetime('now'))`
+    ).run(outputImageId, job.projectId, outputFilename, outputPath, outputUsage, normalizedImage.width, normalizedImage.height);
 
     const finishedAt = new Date().toISOString();
     const estimatedCost = calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
@@ -570,7 +575,24 @@ async function runJob(
 
     if (completeResult.changes === 1) {
       logInfo(`任务完成 (成本: ¥${estimatedCost.toFixed(4)})`);
-      // Sync shot: if this job belongs to a shot, write back the generated image
+      // Sync shot candidates even if a newer redo job already replaced latestJobId.
+      const linkedShots = db.prepare(`
+        SELECT s.id
+        FROM shots s
+        WHERE s.latestJobId = ?
+        UNION
+        SELECT s.id
+        FROM shots s
+        JOIN jobs latestJob ON latestJob.id = s.latestJobId
+        WHERE latestJob.parentJobId = ?
+      `).all(job.id, job.id) as Array<{ id: string }>;
+      const insertCandidate = db.prepare(`
+        INSERT OR IGNORE INTO shot_result_candidates (id, shotId, jobId, imageAssetId)
+        VALUES (?, ?, ?, ?)
+      `);
+      for (const shot of linkedShots) {
+        insertCandidate.run(`${shot.id}:${outputImageId}`, shot.id, job.id, outputImageId);
+      }
       db.prepare(`UPDATE shots SET latestGeneratedImageId = ? WHERE latestJobId = ?`).run(outputImageId, job.id);
     } else {
       logWarn('Job was no longer running when trying to mark succeeded, discarding');

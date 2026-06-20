@@ -199,6 +199,21 @@ function initTables(db: Database.Database) {
       FOREIGN KEY (latestJobId) REFERENCES jobs(id)
     );
 
+    CREATE TABLE IF NOT EXISTS shot_result_candidates (
+      id TEXT PRIMARY KEY,
+      shotId TEXT NOT NULL,
+      jobId TEXT NOT NULL,
+      imageAssetId TEXT NOT NULL,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (shotId) REFERENCES shots(id) ON DELETE CASCADE,
+      FOREIGN KEY (jobId) REFERENCES jobs(id) ON DELETE CASCADE,
+      FOREIGN KEY (imageAssetId) REFERENCES image_assets(id) ON DELETE CASCADE,
+      UNIQUE(shotId, imageAssetId)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_shot ON shot_result_candidates(shotId);
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_job ON shot_result_candidates(jobId);
+
     CREATE TABLE IF NOT EXISTS video_providers (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -301,6 +316,35 @@ function initTables(db: Database.Database) {
   for (const sql of videoJobMigrations) {
     try { db.exec(sql); } catch { /* Column already exists */ }
   }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_shot ON shot_result_candidates(shotId);
+    CREATE INDEX IF NOT EXISTS idx_shot_result_candidates_job ON shot_result_candidates(jobId);
+
+    INSERT OR IGNORE INTO shot_result_candidates (id, shotId, jobId, imageAssetId, createdAt)
+    SELECT s.id || ':' || s.latestGeneratedImageId, s.id, s.latestJobId, s.latestGeneratedImageId, datetime('now')
+    FROM shots s
+    WHERE s.latestGeneratedImageId IS NOT NULL AND s.latestJobId IS NOT NULL;
+
+    INSERT OR IGNORE INTO shot_result_candidates (id, shotId, jobId, imageAssetId, createdAt)
+    WITH RECURSIVE shot_job_chain(shotId, jobId) AS (
+      SELECT id, latestJobId FROM shots WHERE latestJobId IS NOT NULL
+      UNION
+      SELECT c.shotId, j.parentJobId
+      FROM shot_job_chain c
+      JOIN jobs j ON j.id = c.jobId
+      WHERE j.parentJobId IS NOT NULL
+    )
+    SELECT
+      c.shotId || ':' || j.outputImageId,
+      c.shotId,
+      j.id,
+      j.outputImageId,
+      COALESCE(j.finishedAt, j.startedAt, j.submittedAt, datetime('now'))
+    FROM shot_job_chain c
+    JOIN jobs j ON j.id = c.jobId
+    WHERE j.status = 'succeeded' AND j.outputImageId IS NOT NULL;
+  `);
 }
 
 export function closeDb() {

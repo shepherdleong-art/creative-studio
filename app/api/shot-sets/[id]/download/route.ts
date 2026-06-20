@@ -15,18 +15,29 @@ export async function GET(
     if (!set) return NextResponse.json({ error: 'Shot set not found' }, { status: 404 });
 
     const rows = db.prepare(`
-      SELECT s.indexNum, src.filename as sourceFilename, out.path as filePath, out.filename as outputFilename
+      SELECT
+        s.indexNum,
+        src.filename as sourceFilename,
+        out.path as filePath,
+        out.filename as outputFilename,
+        CASE WHEN s.latestGeneratedImageId = COALESCE(c.imageAssetId, s.latestGeneratedImageId) THEN 1 ELSE 0 END as isSelected
       FROM shots s
-      JOIN image_assets out ON out.id = s.latestGeneratedImageId
+      LEFT JOIN shot_result_candidates c ON c.shotId = s.id
+      JOIN image_assets out ON out.id = COALESCE(c.imageAssetId, s.latestGeneratedImageId)
       LEFT JOIN image_assets src ON src.id = s.sourceImageId
-      WHERE s.shotSetId = ? AND s.latestGeneratedImageId IS NOT NULL
-      ORDER BY s.indexNum
-    `).all(id) as Array<{ indexNum: number; sourceFilename: string | null; filePath: string; outputFilename: string | null }>;
+      WHERE s.shotSetId = ? AND (c.imageAssetId IS NOT NULL OR s.latestGeneratedImageId IS NOT NULL)
+      ORDER BY s.indexNum, c.createdAt
+    `).all(id) as Array<{ indexNum: number; sourceFilename: string | null; filePath: string; outputFilename: string | null; isSelected: number }>;
 
-    const entries: ZipImageEntry[] = rows.map((row) => ({
-      filePath: row.filePath,
-      filename: `${String(row.indexNum).padStart(2, '0')}-${row.outputFilename || row.sourceFilename || 'shot.png'}`,
-    }));
+    const resultCountByShot = new Map<number, number>();
+    const entries: ZipImageEntry[] = rows.map((row) => {
+      const nextCount = (resultCountByShot.get(row.indexNum) || 0) + 1;
+      resultCountByShot.set(row.indexNum, nextCount);
+      return {
+        filePath: row.filePath,
+        filename: `${String(row.indexNum).padStart(2, '0')}-result-${String(nextCount).padStart(2, '0')}${row.isSelected ? '-selected' : ''}-${row.outputFilename || row.sourceFilename || 'shot.png'}`,
+      };
+    });
 
     // Include succeeded video files
     const videoRows = db.prepare(`
