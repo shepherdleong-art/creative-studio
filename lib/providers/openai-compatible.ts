@@ -33,7 +33,7 @@ export interface EditImageResult {
 // These providers expect the singular `image` field, not the OpenAI-standard `image[]`
 const SINGULAR_IMAGE_FIELD_HOSTS = new Set(['api.gpt.ge', 'api.v3.cm']);
 
-function useSingularImageField(baseUrl: string): boolean {
+function shouldUseSingularImageField(baseUrl: string): boolean {
   try {
     return SINGULAR_IMAGE_FIELD_HOSTS.has(new URL(baseUrl).hostname);
   } catch {
@@ -58,7 +58,7 @@ export async function editImage(
 ): Promise<EditImageResult> {
   const startTime = Date.now();
   const hasRefs = request.referenceImagePaths.length > 0;
-  const useGptGeForm = useSingularImageField(baseUrl);
+  const useGptGeForm = shouldUseSingularImageField(baseUrl);
   const imageFieldName = useGptGeForm ? 'image' : 'image[]';
 
   const form = new FormData();
