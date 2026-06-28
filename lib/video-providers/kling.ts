@@ -74,7 +74,7 @@ export const klingAdapter: VideoProviderAdapter = {
 
     const imageBase64 = fileToBase64(request.sourceImagePath);
 
-    const body = {
+    const body: Record<string, unknown> = {
       model_name: request.model,
       image: imageBase64,
       prompt: request.prompt || 'gentle camera movement, stable product detail',
@@ -82,6 +82,15 @@ export const klingAdapter: VideoProviderAdapter = {
       mode: 'pro',
       sound: 'on',
     };
+
+    // Kling 3.0 (kling-v3) supports 智能分镜 (intelligent storyboard): the model
+    // auto-segments the prompt into multiple shots. Older models (e.g.
+    // kling-v2-5-turbo) reject these fields, so gate them to v3+. The endpoint
+    // expects multi_shot as the string "true" (same style as duration).
+    if (/v3|3\.0/i.test(request.model)) {
+      body.multi_shot = 'true';
+      body.shot_type = 'intelligence';
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
