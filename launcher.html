@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>批量图片编辑工作台</title>
+<title>产品素材工作台</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -177,8 +177,8 @@
 <div class="container">
   <div class="logo-area">
     <div class="logo-icon">🖼️</div>
-    <h1 class="logo-title">批量图片编辑工作台</h1>
-    <p class="logo-sub">AI 驱动的批量图片生成与编辑</p>
+    <h1 class="logo-title">产品素材工作台</h1>
+    <p class="logo-sub">AI 驱动的产品素材生成与编辑</p>
   </div>
 
   <div class="card fade-enter" id="card">
@@ -206,19 +206,19 @@
   <div class="tips fade-enter" id="tips">
     <div class="tip-item">
       <span class="tip-icon">💡</span>
-      <span>双击 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">launcher.vbs</code> 即可一键启动并打开工作台，无需手动操作命令行。</span>
+      <span>双击 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">CreativeStudio.exe</code> 或开始菜单快捷方式即可一键启动并打开工作台，无需手动操作命令行。</span>
     </div>
     <div class="tip-item">
       <span class="tip-icon">🔧</span>
-      <span>需要换端口？在 PowerShell 里先设 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">$env:BATCH_WORKBENCH_PORT=3001</code>，再运行 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">start-windows.cmd</code>。</span>
+      <span>需要换端口？在 PowerShell 里先设 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">$env:CREATIVE_STUDIO_PORT=3001</code>，再运行 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">CreativeStudio.exe</code> 或开始菜单快捷方式。</span>
     </div>
     <div class="tip-item">
       <span class="tip-icon">🛑</span>
-      <span>用完记得双击 <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">stop-windows.cmd</code> 释放资源。</span>
+      <span>用完记得用开始菜单的"停止产品素材工作台"释放资源。</span>
     </div>
   </div>
 
-  <div class="footer">batch-image-workbench · 本地 AI 工作台</div>
+  <div class="footer">Creative Studio · 本地 AI 工作台</div>
 </div>
 
 <script>
@@ -301,7 +301,7 @@
     mainBtn.href = '#';
     mainBtn.onclick = function(e) {
       e.preventDefault();
-      alert('服务似乎没有正常启动。\n\n请尝试：\n1. 双击项目目录下的 start-windows.cmd 手动启动\n2. 检查 Node.js 是否已安装\n3. 检查 3000 端口是否被占用');
+      alert('服务似乎没有正常启动。\n\n请尝试：\n1. 双击 CreativeStudio.exe 或开始菜单快捷方式手动启动\n2. 检查 Node.js 是否已安装\n3. 检查 3000 端口是否被占用');
     };
     mainBtn.style.pointerEvents = 'auto';
     mainBtn.style.opacity = '1';

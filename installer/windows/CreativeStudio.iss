@@ -1,5 +1,5 @@
 #define MyAppName "产品素材工作台"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.0"
 #define MyAppPublisher "Creative Studio"
 #define MyAppExeName "产品素材工作台"
 
@@ -94,17 +94,17 @@ UninstalledMost=%1 卸载完成。%n%n有些项目无法移除，你可以手动
 Source: "..\..\dist\windows\CreativeStudio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\产品素材工作台\产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\start-installed.ps1"""; WorkingDir: "{app}"
-Name: "{autoprograms}\产品素材工作台\停止产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\stop-installed.ps1"""; WorkingDir: "{app}"
-Name: "{autoprograms}\产品素材工作台\彻底删除用户数据"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\clear-user-data.ps1"""; WorkingDir: "{app}"
+Name: "{autoprograms}\产品素材工作台\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"
+Name: "{autoprograms}\产品素材工作台\停止产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\stop-installed.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
+Name: "{autoprograms}\产品素材工作台\彻底删除用户数据"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\clear-user-data.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
 Name: "{autoprograms}\产品素材工作台\卸载产品素材工作台"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\start-installed.ps1"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: checkedonce
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\start-installed.ps1"""; Description: "安装完成后启动产品素材工作台"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\CreativeStudio.exe"; Description: "安装完成后启动产品素材工作台"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\stop-installed.ps1"""; Flags: runhidden waituntilterminated; RunOnceId: "StopCreativeStudio"

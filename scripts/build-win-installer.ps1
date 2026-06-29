@@ -144,12 +144,38 @@ Copy-DirectoryContent -Source (Join-Path $Root 'public') -Destination (Join-Path
 Copy-DirectoryContent -Source $NodeExtracted -Destination (Join-Path $AppDir 'runtime')
 
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'scripts') | Out-Null
-Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\start-installed.ps1') -Destination (Join-Path $AppDir 'scripts\start-installed.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-installed.ps1') -Destination (Join-Path $AppDir 'scripts\stop-installed.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\clear-user-data.ps1') -Destination (Join-Path $AppDir 'scripts\clear-user-data.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'launcher.html') -Destination (Join-Path $AppDir 'launcher.html') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination (Join-Path $AppDir 'README.md') -Force
-Copy-Item -LiteralPath (Join-Path $Root 'WINDOWS.md') -Destination (Join-Path $AppDir 'WINDOWS.md') -Force
+
+# ── Compile CreativeStudio.exe launcher ──
+$cscCandidates = @(
+  Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+  Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
+)
+$csc = $null
+foreach ($candidate in $cscCandidates) {
+  if (Test-Path $candidate) { $csc = $candidate; break }
+}
+if (-not $csc) {
+  throw 'csc.exe (C# compiler) not found. .NET Framework 4.x is required.'
+}
+$launcherCs = Join-Path $Root 'installer\windows\launcher.cs'
+$iconPath = Join-Path $Root 'app\favicon.ico'
+$exeOut = Join-Path $AppDir 'CreativeStudio.exe'
+Write-Host "Compiling CreativeStudio.exe from $launcherCs ..."
+& $csc /nologo /target:winexe /optimize+ /win32icon:"$iconPath" /out:"$exeOut" "$launcherCs"
+if ($LASTEXITCODE -ne 0) { throw 'csc.exe failed to compile launcher.cs' }
+if (-not (Test-Path $exeOut)) { throw "CreativeStudio.exe was not produced at $exeOut" }
+Write-Host 'CreativeStudio.exe compiled successfully.' -ForegroundColor Green
+
+# ── Also copy EXE to project root for dev-mode testing ──
+# Running CreativeStudio.exe from I:\creative-studio\ will use .next\standalone for the server
+# and .cache\windows-installer for the node runtime (dev layout detection in launcher.cs).
+$rootExe = Join-Path $Root 'CreativeStudio.exe'
+Copy-Item -LiteralPath $exeOut -Destination $rootExe -Force
+Write-Host "Dev copy: $rootExe" -ForegroundColor Cyan
 
 $iscc = Resolve-InnoCompiler -ExplicitPath $InnoSetupCompiler
 Write-Host "Compiling installer with Inno Setup: $iscc"
