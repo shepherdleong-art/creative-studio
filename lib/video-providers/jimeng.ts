@@ -13,8 +13,12 @@ function normalizeJimengPrompt(prompt: string): string {
   return (prompt || 'gentle camera movement, stable product detail').trim();
 }
 
-function normalizeJimengDuration(durationSec: number): number {
-  return Math.max(4, Math.min(12, Number(durationSec) || 5));
+function normalizeJimengDuration(durationSec: number, maxSec = 12): number {
+  return Math.max(4, Math.min(maxSec, Number(durationSec) || 5));
+}
+
+function isSeedance2(model: string): boolean {
+  return /seedance-2[-.]/.test(model);
 }
 
 type ArkTaskResponse = {
@@ -63,7 +67,8 @@ export const jimengAdapter: VideoProviderAdapter = {
     // the desktop app works with local files; if Ark rejects it, serve images publicly.
     console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
 
-    const body = {
+    const seedance2 = isSeedance2(request.model);
+    const body: Record<string, unknown> = {
       model: request.model,
       content: [
         {
@@ -77,11 +82,11 @@ export const jimengAdapter: VideoProviderAdapter = {
       ],
       resolution: '1080p',
       ratio: 'adaptive',
-      duration: normalizeJimengDuration(request.durationSec),
-      camera_fixed: false,
+      duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),
       watermark: false,
       generate_audio: true,
     };
+    if (!seedance2) body.camera_fixed = false;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);

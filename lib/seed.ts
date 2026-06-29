@@ -257,6 +257,21 @@ export function seedVideoProviders() {
       accessKey: '',
       secretKey: '',
     },
+    {
+      id: 'jimeng-2-0',
+      name: '即梦 2.0 (Seedance 2.0)',
+      type: 'jimeng',
+      baseUrlEnv: 'JIMENG_VIDEO_BASE_URL',
+      apiKeyEnv: 'JIMENG_VIDEO_API_KEY',
+      modelEnv: 'JIMENG_VIDEO_MODEL',
+      defaultModel: 'doubao-seedance-2-0-260128',
+      enabled: 1,
+      defaultDurationSec: 5,
+      baseUrl: '',
+      apiKey: '',
+      accessKey: '',
+      secretKey: '',
+    },
   ];
 
   const insert = db.prepare(

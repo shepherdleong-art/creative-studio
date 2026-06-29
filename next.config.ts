@@ -2,6 +2,11 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  outputFileTracingIncludes: {
+    '/**': [
+      './node_modules/next/dist/compiled/next-server/*.runtime.prod.js',
+    ],
+  },
   outputFileTracingExcludes: {
     '*': [
       './.cache/**/*',
