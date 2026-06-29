@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     '/**': [
       './node_modules/next/dist/compiled/next-server/*.runtime.prod.js',
+      './node_modules/next/dist/compiled/react/**/*',
     ],
   },
   outputFileTracingExcludes: {
