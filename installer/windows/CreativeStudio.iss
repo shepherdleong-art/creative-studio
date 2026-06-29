@@ -13,12 +13,14 @@ DefaultGroupName=产品素材工作台
 DisableProgramGroupPage=yes
 OutputDir=..\..\dist\windows
 OutputBaseFilename=CreativeStudioSetup
+SetupIconFile=..\..\app\favicon.ico
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\CreativeStudio.exe
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
@@ -94,16 +96,16 @@ UninstalledMost=%1 卸载完成。%n%n有些项目无法移除，你可以手动
 Source: "..\..\dist\windows\CreativeStudio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\产品素材工作台\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"
+Name: "{autoprograms}\产品素材工作台\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"
 Name: "{autoprograms}\产品素材工作台\停止产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\stop-installed.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
 Name: "{autoprograms}\产品素材工作台\彻底删除用户数据"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\clear-user-data.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
-Name: "{autoprograms}\产品素材工作台\卸载产品素材工作台"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; Tasks: desktopicon
-
+Name: "{autoprograms}\产品素材工作台\卸载产品素材工作台"; Filename: "{uninstallexe}"; IconFilename: "{app}\CreativeStudio.exe"
+Name: "{autodesktop}\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"; Tasks: desktopicon
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: checkedonce
 
 [Run]
+Filename: "ie4uinit.exe"; Parameters: "-ClearIconCache"; Flags: runhidden waituntilterminated
 Filename: "{app}\CreativeStudio.exe"; Description: "安装完成后启动产品素材工作台"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]

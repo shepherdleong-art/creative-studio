@@ -6,6 +6,16 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "产品素材工作台",
   description: "复杂结构产品的图片生产 + 分镜管理 + 视频任务准备",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icons/app-icon.svg", type: "image/svg+xml" },
+      { url: "/icons/app-icon-32.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
 };
 
 export default function RootLayout({
