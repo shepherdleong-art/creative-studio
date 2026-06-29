@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { buildGenericZipStream, createZipNameRegistry, reserveZipFilename, ZipImageEntry } from '@/lib/zip-download';
 import path from 'path';
 import fs from 'fs';
+import { dataRoot } from '@/lib/data-root';
 
 export const runtime = 'nodejs';
 
@@ -78,7 +79,7 @@ export async function GET(
     for (const shot of shots) {
       let shotEntry = shot.imagePath ? `${prefix}images/shot-${String(shot.indexNum).padStart(2, '0')}.png` : null;
       if (shot.imagePath) {
-        const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+        const storageRoot = path.resolve(path.join(dataRoot(), 'storage'));
         const resolved = path.resolve(shot.imagePath);
         if (resolved.startsWith(storageRoot + path.sep) && fs.existsSync(resolved)) {
           shotEntry = addEntry(resolved, shotEntry!);
@@ -95,7 +96,7 @@ export async function GET(
       for (const v of shotVideos) {
         let videoFilename = `${prefix}videos/shot-${String(shot.indexNum).padStart(2, '0')}-${v.providerName || 'unknown'}-${v.templateName || 'custom'}.mp4`;
         const resolved = path.resolve(v.localVideoPath);
-        const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+        const storageRoot = path.resolve(path.join(dataRoot(), 'storage'));
         if (!resolved.startsWith(storageRoot + path.sep) || !fs.existsSync(resolved)) continue;
         videoFilename = addEntry(resolved, videoFilename);
         manifestVideos.push({
@@ -124,7 +125,7 @@ export async function GET(
           : scriptJson;
 
         // Write script files to temp so they can be added to zip
-        const tmpDir = path.join(process.cwd(), 'storage', 'tmp');
+        const tmpDir = path.join(dataRoot(), 'storage', 'tmp');
         if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
         const txtPath = path.join(tmpDir, `script-${projectId}-latest.txt`);
@@ -159,7 +160,7 @@ export async function GET(
       shots: manifestShots,
     };
 
-    const tmpDir = path.join(process.cwd(), 'storage', 'tmp');
+    const tmpDir = path.join(dataRoot(), 'storage', 'tmp');
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
     const manifestPath = path.join(tmpDir, `manifest-${projectId}.json`);
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');

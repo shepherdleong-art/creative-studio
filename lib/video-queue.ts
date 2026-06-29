@@ -5,6 +5,7 @@ import { writeLog } from './logger';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
+import { dataRoot } from './data-root';
 
 export interface VideoQueueOptions {
   projectId: string;
@@ -271,7 +272,7 @@ async function runVideoJob(
         }
 
         // Save video to storage/videos/
-        const videosDir = path.join(process.cwd(), 'storage', 'videos');
+        const videosDir = path.join(dataRoot(), 'storage', 'videos');
         if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
         const videoFilename = `video-${job.id.slice(0, 8)}-${Date.now()}.mp4`;

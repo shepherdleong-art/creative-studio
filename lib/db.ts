@@ -2,8 +2,9 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { CORE_DB_MIGRATIONS } from './db-migrations';
+import { dataRoot } from './data-root';
 
-const DB_PATH = path.join(/*turbopackIgnore: true*/ process.cwd(), 'data', 'workbench.db');
+const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
 
 let db: Database.Database | null = null;
 

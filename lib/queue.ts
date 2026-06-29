@@ -13,6 +13,7 @@ import { writeLog } from './logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
+import { dataRoot } from './data-root';
 import fs from 'fs';
 
 export interface QueueOptions {
@@ -531,7 +532,7 @@ async function runJob(
     }
 
     // Save output image
-    const outputsDir = path.join(process.cwd(), 'storage', 'outputs');
+    const outputsDir = path.join(dataRoot(), 'storage', 'outputs');
     if (!fs.existsSync(outputsDir)) {
       fs.mkdirSync(outputsDir, { recursive: true });
     }

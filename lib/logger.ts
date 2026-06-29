@@ -2,8 +2,9 @@ import { getDb } from './db';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
+import { dataRoot } from './data-root';
 
-const LOG_DIR = path.join(process.cwd(), 'storage', 'logs');
+const LOG_DIR = path.join(dataRoot(), 'storage', 'logs');
 
 function ensureLogDir() {
   if (!fs.existsSync(LOG_DIR)) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import path from 'path';
+import { dataRoot } from '@/lib/data-root';
 
 function toImageUrl(storageRoot: string, imagePath: string | null | undefined): string {
   return imagePath ? `/api/images/${path.relative(storageRoot, path.resolve(imagePath)).split(path.sep).join('/')}` : '';
@@ -38,7 +39,7 @@ export async function GET(
       ORDER BY s.indexNum
     `).all(id);
 
-    const storageRoot = path.resolve(process.cwd(), 'storage');
+    const storageRoot = path.resolve(dataRoot(), 'storage');
 
     // Fetch attached scene reference image info
     let sceneRefName: string | null = null;

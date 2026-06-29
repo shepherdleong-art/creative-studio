@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { dataRoot } from '@/lib/data-root';
 
 export async function GET(
   request: NextRequest,
@@ -9,7 +10,7 @@ export async function GET(
   const { path: segments } = await params;
 
   // Path traversal protection
-  const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+  const storageRoot = path.resolve(path.join(dataRoot(), 'storage'));
   const requested = path.join(storageRoot, ...segments);
   const resolved = path.resolve(requested);
 

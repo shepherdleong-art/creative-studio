@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { dataRoot } from '@/lib/data-root';
 
 /** Only these subdirectories under storage/ are allowed to be served. */
 const ALLOWED_DIRS = ['inputs', 'outputs', 'references', 'originals', 'processed'];
@@ -45,9 +46,9 @@ export async function GET(
     }
 
     // 4. Resolve and prevent directory traversal
-    const fullPath = path.join(process.cwd(), 'storage', relativePath);
+    const fullPath = path.join(dataRoot(), 'storage', relativePath);
     const resolvedPath = path.resolve(fullPath);
-    const storagePath = path.resolve(path.join(process.cwd(), 'storage'));
+    const storagePath = path.resolve(path.join(dataRoot(), 'storage'));
     if (!resolvedPath.startsWith(storagePath)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }

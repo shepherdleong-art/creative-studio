@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { preprocessImage, DEFAULT_OPTIONS } from '@/lib/image-preprocess';
 import fs from 'fs';
 import path from 'path';
+import { dataRoot } from '@/lib/data-root';
 
 /** Allowed image MIME types and their extensions. */
 const ALLOWED_MIME: Record<string, string> = {
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
     }
 
     const dirName = role === 'reference' ? 'references' : 'inputs';
-    const storageRoot = path.join(/*turbopackIgnore: true*/ process.cwd(), 'storage');
+    const storageRoot = path.join(/*turbopackIgnore: true*/ dataRoot(), 'storage');
     const originalsDir = path.join(storageRoot, 'originals', dirName);
     const processedDir = path.join(storageRoot, 'processed', dirName);
 

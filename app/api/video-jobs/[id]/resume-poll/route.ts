@@ -5,6 +5,7 @@ import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { writeLog } from '@/lib/logger';
 import fs from 'fs';
 import path from 'path';
+import { dataRoot } from '@/lib/data-root';
 
 export async function POST(
   _request: NextRequest,
@@ -79,7 +80,7 @@ export async function POST(
       }
 
       const videoBuffer = Buffer.from(await videoRes.arrayBuffer());
-      const videosDir = path.join(process.cwd(), 'storage', 'videos');
+      const videosDir = path.join(dataRoot(), 'storage', 'videos');
       if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
       const videoFilename = `video-${job.id.slice(0, 8)}-${Date.now()}.mp4`;

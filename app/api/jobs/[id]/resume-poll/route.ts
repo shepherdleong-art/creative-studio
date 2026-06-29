@@ -5,6 +5,7 @@ import { writeLog } from '@/lib/logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from '@/lib/output-filenames';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
+import { dataRoot } from '@/lib/data-root';
 import fs from 'fs';
 
 /**
@@ -68,7 +69,7 @@ export async function POST(
           if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
             const imgBuffer = await downloadGeekAIImage(pollResult.imageUrl);
             if (imgBuffer) {
-              const outputsDir = path.join(process.cwd(), 'storage', 'outputs');
+              const outputsDir = path.join(dataRoot(), 'storage', 'outputs');
               if (!fs.existsSync(outputsDir)) fs.mkdirSync(outputsDir, { recursive: true });
 
               const inputImage = db.prepare(`SELECT filename, usage FROM image_assets WHERE id = ?`).get(job.inputImageId) as { filename: string; usage?: string } | undefined;

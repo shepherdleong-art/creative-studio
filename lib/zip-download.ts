@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { PassThrough } from 'stream';
 import { Readable } from 'stream';
+import { dataRoot } from './data-root';
 
 export interface ZipImageEntry {
   filePath: string;
@@ -65,7 +66,7 @@ export function reserveZipFilename(name: string, registry: ZipNameRegistry): str
 }
 
 export function assertStorageImagePath(filePath: string): string {
-  const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+  const storageRoot = path.resolve(path.join(dataRoot(), 'storage'));
   const resolved = path.resolve(filePath);
   const ext = path.extname(resolved).toLowerCase();
   if (!resolved.startsWith(storageRoot + path.sep)) {
@@ -84,7 +85,7 @@ const STORAGE_EXTENSIONS_IMAGE = ['.png', '.jpg', '.jpeg', '.webp'];
 const STORAGE_EXTENSIONS_ALL = [...STORAGE_EXTENSIONS_IMAGE, '.mp4', '.mov', '.webm', '.txt', '.json'];
 
 export function assertStoragePath(filePath: string, allowedExts: string[]): string {
-  const storageRoot = path.resolve(path.join(process.cwd(), 'storage'));
+  const storageRoot = path.resolve(path.join(dataRoot(), 'storage'));
   const resolved = path.resolve(filePath);
   const ext = path.extname(resolved).toLowerCase();
   if (!resolved.startsWith(storageRoot + path.sep)) {
