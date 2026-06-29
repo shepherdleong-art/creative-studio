@@ -106,7 +106,7 @@ export default function ImageUploader({
   );
 
   return (
-    <div>
+    <div className="flex h-full flex-col">
       <label className="label">
         {label}
         {files.length > 0 && (
@@ -128,7 +128,7 @@ export default function ImageUploader({
           setDragOver(false);
           handleFiles(e.dataTransfer.files);
         }}
-        className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+        className={`flex flex-1 flex-col items-center justify-center border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
           dragOver
             ? 'border-accent bg-run-tint'
             : 'border-hairline hover:border-accent/40'

@@ -50,6 +50,11 @@ export default function AssetUploadGrid({
 }: Props) {
   const [preview, setPreview] = useState<PreviewState>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredAssets = normalizedQuery
+    ? assets.filter((asset) => asset.filename.toLowerCase().includes(normalizedQuery))
+    : assets;
 
   const toggle = (id: string) => {
     if (maxSelection === 1) {
@@ -84,11 +89,12 @@ export default function AssetUploadGrid({
   return (
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
-        <div className="rounded-lg border border-hairline bg-surface-subtle p-4">
+        <div className="flex flex-col rounded-lg border border-hairline bg-surface-subtle p-4">
           <div className="mb-3">
             <h3 className="text-sm font-semibold text-ink">{uploadTitle}</h3>
             <p className="mt-1 text-xs text-ink-secondary">{uploadHint}</p>
           </div>
+          <div className="flex flex-1 flex-col">
           <ImageUploader
             role="input"
             usage={usage}
@@ -103,28 +109,66 @@ export default function AssetUploadGrid({
             jpegQuality={85}
             projectId={projectId}
           />
+          </div>
         </div>
 
         <div className="rounded-[18px] border border-hairline bg-white p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
               <h3 className="text-sm font-semibold text-ink">已上传素材</h3>
-              <p className="mt-1 text-xs text-ink-secondary">已上传 {assets.length} 张，{selectionLabel}</p>
+              <p className="mt-1 text-xs text-ink-secondary">
+                已上传 {assets.length} 张{normalizedQuery ? `，筛选出 ${filteredAssets.length} 张` : ''}，{selectionLabel}
+              </p>
             </div>
-            {selectedIds.length > 0 && (
-              <button type="button" onClick={() => onSelectionChange([])} className="btn-secondary btn-sm text-xs">
-                清空选择
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {assets.length > 0 && (
+                <div className="relative w-full sm:w-56">
+                  <Icon
+                    name="search"
+                    size={14}
+                    className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-tertiary"
+                  />
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="按文件名搜索…"
+                    className="input-field pr-7 text-xs"
+                    style={{ paddingLeft: '2rem' }}
+                  />
+                  {query && (
+                    <button
+                      type="button"
+                      onClick={() => setQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-tertiary transition hover:text-ink"
+                      title="清除搜索"
+                      aria-label="清除搜索"
+                    >
+                      <Icon name="close" size={13} />
+                    </button>
+                  )}
+                </div>
+              )}
+              {selectedIds.length > 0 && (
+                <button type="button" onClick={() => onSelectionChange([])} className="btn-secondary btn-sm text-xs whitespace-nowrap">
+                  清空选择
+                </button>
+              )}
+            </div>
           </div>
 
           {assets.length === 0 ? (
             <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-hairline bg-surface-subtle text-sm text-ink-tertiary">
               {emptyText}
             </div>
+          ) : filteredAssets.length === 0 ? (
+            <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-hairline bg-surface-subtle text-sm text-ink-tertiary">
+              没有匹配「{query}」的素材
+            </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-3">
-              {assets.map((asset) => {
+            <div className="max-h-[420px] overflow-y-auto overscroll-contain rounded-[14px] p-1 pr-2">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-3">
+                {filteredAssets.map((asset) => {
                 const selectedIndex = selectedIds.indexOf(asset.id);
                 const selected = selectedIndex >= 0;
                 const isDeleting = deletingId === asset.id;
@@ -182,7 +226,8 @@ export default function AssetUploadGrid({
                     )}
                   </div>
                 );
-              })}
+                })}
+              </div>
             </div>
           )}
         </div>
