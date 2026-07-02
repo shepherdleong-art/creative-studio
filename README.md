@@ -125,30 +125,6 @@ $env:BATCH_WORKBENCH_PORT=3001
 
 API Key 会存储在本地 SQLite 数据库中，前端列表只显示是否已配置，不显示明文 Key。
 
-## 脚本模型配置
-
-脚本生成模型使用服务端环境变量读取。可以在 `.env.local` 中配置：
-
-```env
-GEMINI_API_KEY=
-GEMINI_BASE_URL=
-GEMINI_MODEL=
-GEMINI_API_STYLE=openai-compatible
-
-QWEN_API_KEY=
-QWEN_BASE_URL=
-QWEN_MODEL=
-
-KIMI_API_KEY=
-KIMI_BASE_URL=
-KIMI_MODEL=
-
-GPT_API_KEY=
-GPT_BASE_URL=
-GPT_MODEL=
-```
-
-只需要配置实际使用的模型。`.env.local` 不应提交到 GitHub。
 
 ## 常用命令
 
