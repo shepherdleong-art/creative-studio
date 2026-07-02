@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:win": "next dev --hostname 127.0.0.1",
-    "build": "next build",
+    "build": "next build && node scripts/sync-standalone-assets.mjs",
     "build:win-installer": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-installer.ps1",
     "icons": "node scripts/generate-app-icons.mjs",
     "start": "next start",

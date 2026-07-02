@@ -139,8 +139,8 @@ async function handleGenerate(
 
   // Verify shotSet belongs to this project
   const shotSet = db.prepare(
-    `SELECT id FROM shot_sets WHERE id = ? AND projectId = ?`
-  ).get(shotSetId, projectId) as { id: string } | undefined;
+    `SELECT id, name FROM shot_sets WHERE id = ? AND projectId = ?`
+  ).get(shotSetId, projectId) as { id: string; name: string } | undefined;
   if (!shotSet) {
     return NextResponse.json({ error: '分镜组不存在或不属于当前项目' }, { status: 400 });
   }
@@ -247,6 +247,7 @@ async function handleGenerate(
     JSON.stringify({
       projectName: project.name,
       shotSetId,
+      shotSetName: shotSet.name,
       shotCount: shots.length,
       selectedSellingPoints,
       templateId,

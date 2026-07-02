@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import ScriptSellingPointInput from './ScriptSellingPointInput';
 import ScriptStrategyConfig from './ScriptStrategyConfig';
@@ -46,6 +46,50 @@ const STEP_LABELS: Record<Step, string> = {
   3: '脚本',
 };
 
+function readDraftSnapshot(draft: ScriptDraft): { shotSetId?: string; shotSetName?: string } {
+  try {
+    return JSON.parse(draft.inputSnapshot || '{}') as { shotSetId?: string; shotSetName?: string };
+  } catch {
+    return {};
+  }
+}
+
+function readDraftShotSetId(draft: ScriptDraft): string {
+  const snapshot = readDraftSnapshot(draft);
+  if (snapshot.shotSetId) return snapshot.shotSetId;
+
+  try {
+    const output = JSON.parse(draft.outputJson || '{}') as { shotSetId?: string };
+    return output.shotSetId || '';
+  } catch {
+    return '';
+  }
+}
+
+function buildDraftLabels(drafts: ScriptDraft[], shotSets: ShotSetOption[]): Map<string, string> {
+  const shotSetNames = new Map(shotSets.map((set) => [set.id, set.name]));
+  const draftNumbers = new Map<string, number>();
+  const counters = new Map<string, number>();
+
+  [...drafts]
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    .forEach((draft) => {
+      const shotSetKey = readDraftShotSetId(draft) || '__missing_shot_set__';
+      const nextNumber = (counters.get(shotSetKey) || 0) + 1;
+      counters.set(shotSetKey, nextNumber);
+      draftNumbers.set(draft.id, nextNumber);
+    });
+
+  return new Map(
+    drafts.map((draft) => {
+      const snapshot = readDraftSnapshot(draft);
+      const shotSetId = snapshot.shotSetId || readDraftShotSetId(draft);
+      const shotSetName = (shotSetId ? shotSetNames.get(shotSetId) : '') || snapshot.shotSetName || '未关联分镜组';
+      const scriptNumber = draftNumbers.get(draft.id) || 1;
+      return [draft.id, `${shotSetName} · 脚本${scriptNumber}`];
+    })
+  );
+}
 // ── Component ──
 
 export default function ScriptPanel({ projectId }: Props) {
@@ -410,6 +454,7 @@ export default function ScriptPanel({ projectId }: Props) {
     hasAnalysis: Boolean(analysis),
     hasScript: Boolean(script),
   });
+  const draftLabels = useMemo(() => buildDraftLabels(drafts, shotSets), [drafts, shotSets]);
 
   if (loading) {
     return (
@@ -472,11 +517,11 @@ export default function ScriptPanel({ projectId }: Props) {
             <select
               value={selectedDraftId || ''}
               onChange={(e) => handleSelectDraft(e.target.value)}
-              className="input-field text-xs w-44"
+              className="input-field text-xs w-48 max-w-[min(12rem,42vw)]"
             >
               {drafts.map((d) => (
                 <option key={d.id} value={d.id}>
-                  {new Date(d.createdAt + 'Z').toLocaleString('zh-CN')}
+                  {draftLabels.get(d.id) || '未关联分镜组 · 脚本'}
                 </option>
               ))}
             </select>
