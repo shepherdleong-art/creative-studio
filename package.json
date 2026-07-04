@@ -8,6 +8,7 @@
     "dev:win": "next dev --hostname 127.0.0.1",
     "build": "next build && node scripts/sync-standalone-assets.mjs",
     "build:win-installer": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-installer.ps1",
+    "build:mac-installer": "bash scripts/build-mac-installer.sh",
     "icons": "node scripts/generate-app-icons.mjs",
     "start": "next start",
     "start:win": "next start --hostname 127.0.0.1",
@@ -16,6 +17,8 @@
   "dependencies": {
     "archiver": "^8.0.0",
     "better-sqlite3": "^12.10.0",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
     "next": "16.2.7",
     "react": "19.2.4",
     "react-dom": "19.2.4",

@@ -19,4 +19,9 @@ if (!existsSync(standaloneDir)) {
 copyDirectory(join(root, '.next', 'static'), join(standaloneDir, '.next', 'static'));
 copyDirectory(join(root, 'public'), join(standaloneDir, 'public'));
 
+// ffmpeg/ffprobe 静态二进制不会被 Next 的文件追踪收录，强制拷入 standalone
+for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {
+  copyDirectory(join(root, 'node_modules', pkg), join(standaloneDir, 'node_modules', pkg));
+}
+
 console.log('Standalone static assets synced.');
