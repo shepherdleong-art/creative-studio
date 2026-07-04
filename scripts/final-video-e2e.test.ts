@@ -12,11 +12,11 @@ import { buildRenderArgs } from '../lib/final-video/ffmpeg-graph.ts';
 import { buildCoverArgs } from '../lib/final-video/cover.ts';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'final-video-e2e-'));
-const clip = (name: string, dur: number) => path.join(tmp, name);
+const clip = (name: string) => path.join(tmp, name);
 
 async function main() {
-  const c1 = clip('c1.mp4', 2);
-  const c2 = clip('c2.mp4', 3);
+  const c1 = clip('c1.mp4');
+  const c2 = clip('c2.mp4');
   const bgm = path.join(tmp, 'bgm.m4a');
   await runFfmpeg(['-f', 'lavfi', '-i', 'testsrc=duration=2:size=640x360:rate=30', '-pix_fmt', 'yuv420p', '-y', c1]);
   await runFfmpeg(['-f', 'lavfi', '-i', 'testsrc2=duration=3:size=360x640:rate=30', '-pix_fmt', 'yuv420p', '-y', c2]);
