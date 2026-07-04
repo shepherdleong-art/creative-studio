@@ -1,7 +1,7 @@
 import path from 'node:path';
-import { dataRoot } from './data-root';
+import { dataRoot } from './data-root.ts';
 
-export function toStorageImageUrl(filePath: string | null | undefined, storageRoot = path.resolve(dataRoot(), 'storage')) {
+function toStorageUrl(filePath: string | null | undefined, prefix: string, storageRoot: string) {
   if (!filePath) return '';
 
   const resolvedRoot = path.resolve(storageRoot);
@@ -14,5 +14,13 @@ export function toStorageImageUrl(filePath: string | null | undefined, storageRo
     .map(encodeURIComponent)
     .join('/');
 
-  return relativePath ? `/api/images/${relativePath}` : '';
+  return relativePath ? `${prefix}/${relativePath}` : '';
+}
+
+export function toStorageImageUrl(filePath: string | null | undefined, storageRoot = path.resolve(dataRoot(), 'storage')) {
+  return toStorageUrl(filePath, '/api/images', storageRoot);
+}
+
+export function toStorageVideoUrl(filePath: string | null | undefined, storageRoot = path.resolve(dataRoot(), 'storage')) {
+  return toStorageUrl(filePath, '/api/videos', storageRoot);
 }

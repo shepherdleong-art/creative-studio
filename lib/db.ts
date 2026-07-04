@@ -308,6 +308,32 @@ function initTables(db: Database.Database) {
       createdAt TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS final_video_jobs (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      shotSetId TEXT NOT NULL,
+      scriptDraftId TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','succeeded','failed','canceled')),
+      currentStep TEXT NOT NULL DEFAULT 'queued',
+      progress REAL NOT NULL DEFAULT 0,
+      packageJson TEXT NOT NULL DEFAULT '{}',
+      timelineJson TEXT NOT NULL DEFAULT '[]',
+      outputPath TEXT,
+      coverPath TEXT,
+      manifestPath TEXT,
+      durationSec REAL,
+      errorMessage TEXT,
+      startedAt TEXT,
+      finishedAt TEXT,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE CASCADE,
+      FOREIGN KEY (scriptDraftId) REFERENCES script_drafts(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_final_video_jobs_project ON final_video_jobs(projectId);
+    CREATE INDEX IF NOT EXISTS idx_final_video_jobs_status ON final_video_jobs(status);
   `);
 
   const videoJobMigrations = [
