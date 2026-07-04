@@ -11,6 +11,7 @@ import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 import ScriptPanel from '@/components/ScriptPanel';
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
+import FinalVideoPanel from '@/components/FinalVideoPanel';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
@@ -89,7 +90,7 @@ const STATUS_LABELS: Record<string, string> = {
   needs_check: '待补抓',
 };
 
-const WORKBENCH_TABS: WorkbenchTabId[] = ['scene', 'storyboard', 'script', 'video'];
+const WORKBENCH_TABS: WorkbenchTabId[] = ['scene', 'storyboard', 'script', 'video', 'package'];
 
 function parseWorkbenchTab(value: string | null): WorkbenchTabId {
   return WORKBENCH_TABS.includes(value as WorkbenchTabId) ? (value as WorkbenchTabId) : 'scene';
@@ -586,6 +587,15 @@ export default function ProjectDetailPage() {
                   <p className="mt-1 text-sm text-ink-secondary">选择分镜组和视频供应商，创建图生视频任务。</p>
                 </div>
                 <VideoGenerationPanel projectId={project.id} />
+              </div>
+            )}
+            {activeTab === 'package' && (
+              <div className="video-generation-section">
+                <div className="video-generation-heading">
+                  <h2 className="text-base font-semibold">成片包装</h2>
+                  <p className="mt-1 text-sm text-ink-secondary">按脚本顺序拼接分镜视频，配 BGM、字幕与封面标题，输出可发布成品。</p>
+                </div>
+                <FinalVideoPanel projectId={project.id} />
               </div>
             )}
           </>
