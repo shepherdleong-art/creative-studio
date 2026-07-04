@@ -44,9 +44,11 @@ export async function POST(
     if (pkg.narration.mode !== 'none' && pkg.narration.mode !== 'tts') {
       return NextResponse.json({ error: `未知口播模式: ${pkg.narration.mode}` }, { status: 400 });
     }
-    // Phase 6 (Task 14/15) 落地前，口播固定关闭：
     if (pkg.narration.mode === 'tts') {
-      return NextResponse.json({ error: '口播（TTS）功能尚未启用' }, { status: 400 });
+      const { resolveTtsApiKey } = await import('@/lib/final-video/tts');
+      if (!resolveTtsApiKey()) {
+        return NextResponse.json({ error: '未配置口播 API key：请在 .env.local 设置 QWEN_TTS_API_KEY（或 DASHSCOPE_API_KEY）' }, { status: 400 });
+      }
     }
 
     const jobId = uuidv4();
