@@ -54,6 +54,9 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
   const [introSec, setIntroSec] = useState(0);
   const [subtitleEnabled, setSubtitleEnabled] = useState(true);
   const [subtitleSize, setSubtitleSize] = useState(56);
+  const [narrationMode, setNarrationMode] = useState<'none' | 'tts'>('none');
+  const [voice, setVoice] = useState('Cherry');
+  const [speed, setSpeed] = useState(1.0);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadShotSets = useCallback(async () => {
@@ -135,6 +138,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
             height: res.height,
             bgm: bgmPath ? { path: bgmPath, volume: bgmVolume, ducking } : null,
             cover: { titleText: coverTitle, titleSize: 72, titleColor: '#ffffff', introDurationSec: introSec },
+            narration: { mode: narrationMode, voice, speed },
             subtitle: { enabled: subtitleEnabled, fontSize: subtitleSize, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 10 },
           },
         }),
@@ -147,7 +151,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     } finally {
       setSubmitting(false);
     }
-  }, [projectId, selectedSetId, resolution, bgmPath, bgmVolume, ducking, coverTitle, introSec, subtitleEnabled, subtitleSize, loadJobs]);
+  }, [projectId, selectedSetId, resolution, bgmPath, bgmVolume, ducking, coverTitle, introSec, subtitleEnabled, subtitleSize, narrationMode, voice, speed, loadJobs]);
 
   const handleRetry = useCallback(async (id: string) => {
     await fetch(`/api/final-video-jobs/${id}/retry`, { method: 'POST' });
@@ -220,6 +224,22 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
             <select value={introSec} onChange={(e) => setIntroSec(Number(e.target.value))} className="input-field text-sm">
               <option value={0}>无</option><option value={1}>1 秒</option><option value={2}>2 秒</option>
             </select>
+          </div>
+          <div>
+            <label className="label">口播配音</label>
+            <select value={narrationMode} onChange={(e) => setNarrationMode(e.target.value as 'none' | 'tts')} className="input-field text-sm">
+              <option value="none">不配音（仅画面+BGM）</option>
+              <option value="tts">AI 配音（qwen-tts）</option>
+            </select>
+            {narrationMode === 'tts' && (
+              <div className="mt-1 flex items-center gap-2 text-xs">
+                <select value={voice} onChange={(e) => setVoice(e.target.value)} className="input-field w-24 text-xs">
+                  {['Cherry', 'Serena', 'Ethan', 'Chelsie'].map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+                <span className="text-ink-tertiary">语速 {speed.toFixed(1)}x</span>
+                <input type="range" min={0.8} max={1.5} step={0.1} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} />
+              </div>
+            )}
           </div>
           <div>
             <label className="label">BGM</label>
