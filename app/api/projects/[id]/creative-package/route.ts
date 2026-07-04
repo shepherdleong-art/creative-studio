@@ -114,6 +114,33 @@ export async function GET(
       });
     }
 
+    // Add final packaged videos
+    const finalRows = db.prepare(`
+      SELECT id, outputPath, coverPath, manifestPath, packageJson, durationSec FROM final_video_jobs
+      WHERE projectId = ? AND status = 'succeeded' AND outputPath IS NOT NULL
+      ORDER BY createdAt
+    `).all(projectId) as Array<{
+      id: string; outputPath: string; coverPath: string | null;
+      manifestPath: string | null; packageJson: string; durationSec: number | null;
+    }>;
+    const manifestFinals: Array<{ filename: string; cover: string; durationSec: number | null }> = [];
+    const storageRootForFinals = path.resolve(path.join(dataRoot(), 'storage'));
+    for (const f of finalRows) {
+      let outputName = f.id;
+      try { outputName = String(JSON.parse(f.packageJson).outputName || f.id); } catch { /* keep id */ }
+      const resolvedOut = path.resolve(f.outputPath);
+      if (!resolvedOut.startsWith(storageRootForFinals + path.sep) || !fs.existsSync(resolvedOut)) continue;
+      const videoEntry = addEntry(resolvedOut, `${prefix}finals/${outputName}.mp4`);
+      let coverEntry = '';
+      if (f.coverPath && fs.existsSync(f.coverPath) && path.resolve(f.coverPath).startsWith(storageRootForFinals + path.sep)) {
+        coverEntry = addEntry(path.resolve(f.coverPath), `${prefix}finals/${outputName}-cover.jpg`);
+      }
+      if (f.manifestPath && fs.existsSync(f.manifestPath) && path.resolve(f.manifestPath).startsWith(storageRootForFinals + path.sep)) {
+        addEntry(path.resolve(f.manifestPath), `${prefix}finals/${outputName}-manifest.json`);
+      }
+      manifestFinals.push({ filename: videoEntry, cover: coverEntry, durationSec: f.durationSec });
+    }
+
     // Add script files
     let scriptObj: unknown = null;
     if (scriptDraft) {
@@ -158,6 +185,7 @@ export async function GET(
       projectName: project.name || '',
       exportedAt: new Date().toISOString(),
       shots: manifestShots,
+      finalVideos: manifestFinals,
     };
 
     const tmpDir = path.join(dataRoot(), 'storage', 'tmp');
