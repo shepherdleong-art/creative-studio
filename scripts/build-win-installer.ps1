@@ -139,6 +139,17 @@ foreach ($relativePath in $forbiddenPayload) {
   }
 }
 
+$ffmpegBinaries = @(
+  'node_modules\ffmpeg-static\ffmpeg.exe',
+  'node_modules\ffprobe-static\bin\win32\x64\ffprobe.exe'
+)
+foreach ($relativePath in $ffmpegBinaries) {
+  $target = Join-Path $AppDir $relativePath
+  if (-not (Test-Path $target)) {
+    throw "Installer payload missing bundled ffmpeg binary: $target"
+  }
+}
+
 Copy-DirectoryContent -Source (Join-Path $Root '.next\static') -Destination (Join-Path $AppDir '.next\static')
 Copy-DirectoryContent -Source (Join-Path $Root 'public') -Destination (Join-Path $AppDir 'public')
 Copy-DirectoryContent -Source $NodeExtracted -Destination (Join-Path $AppDir 'runtime')
