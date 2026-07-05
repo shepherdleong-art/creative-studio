@@ -96,14 +96,47 @@ export const KNOWN_VOICE_CATALOG: Record<string, KnownVoice[]> = {
 
 数据来源：阿里云百炼官方文档「Qwen-TTS 非实时语音合成音色列表」（用户从控制台核实并提供），只收录该表中标注支持 `qwen3-tts-flash`（含其带日期的版本号）的音色——即整张非实时表的全部 48 个音色。**没有**混入「实时语音合成」表（`qwen3-tts-flash-realtime` 等 WebSocket 模型）的音色，因为本项目的 openai-compatible 合成走的是 HTTP `POST /v1/audio/speech`（`lib/final-video/tts.ts` 的 `openaiSpeechUrl`），对应官方文档里的"非实时"接口。
 
+#### 辅助函数（同文件导出）
+
+`voice-catalog.ts` 除了 `KNOWN_VOICE_CATALOG` 数据本身，还导出三个纯函数，供 `ProviderForm` 和测试共用——项目没有组件级测试基础设施，所以判断逻辑必须能脱离 React 单独调用/单独测试，不能写成组件内联闭包：
+
+```ts
+/**
+ * 解析模型名对应的已知音色目录：trim + 大小写不敏感精确匹配；
+ * qwen3-tts-flash 的带日期版本号（如 qwen3-tts-flash-2025-11-27）归一到同一目录。
+ * 未命中返回 null。
+ */
+export function resolveKnownVoiceCatalog(model: string): KnownVoice[] | null;
+
+/**
+ * 切换一个音色的勾选状态，返回新的逗号分隔字符串。
+ * 已知音色按 catalog 原始顺序排在前面；currentVoicesCsv 里已存在但不在 catalog 中的
+ * "目录外音色" 原样保留、按其原有相对顺序追加在后，不会因为这次切换被丢弃。
+ */
+export function toggleVoiceSelection(currentVoicesCsv: string, catalog: KnownVoice[], toggledId: string): string;
+
+/**
+ * 仅当 mode === 'create' 且 currentVoicesCsv 为空时，返回 catalog 前 4 个音色 id 作为默认勾选建议；
+ * 其余情况（编辑模式，或音色框已有内容——包括"用户曾经填过又清空"这种为空但非首次的场景）一律返回 null，
+ * 调用方收到 null 就什么都不做，绝不主动补默认值。
+ */
+export function resolveDefaultVoiceSelection(
+  mode: 'create' | 'edit',
+  catalog: KnownVoice[],
+  currentVoicesCsv: string
+): string[] | null;
+```
+
 ### 2. `ProviderForm` 的「可选音色」字段行为
 
 `app/settings/page.tsx` 的 `ProviderForm` 组件里，「可选音色」从单一的自由文本框，变成条件渲染：
 
-- **触发条件**：`form.type === 'openai-compatible-tts'` **且** `KNOWN_VOICE_CATALOG[form.model.trim()]` 存在。两个条件缺一不可——原生 `qwen-tts` 类型下「模型名」输入框本身是隐藏的（该类型运行时调用的模型是写死的字面量，见 `lib/final-video/tts.ts` 的 `synthesizeQwen`，不读 `rt.model`），`form.model` 可能残留任意历史值，不能单靠模型名判断，否则会在原生 qwen-tts 类型下产生误判。加上类型限定后，原生 qwen-tts 类型的现有行为（自由文本 + 切换类型时的音色预填）完全不受影响。
+- `ProviderForm` 需要新增一个显式入参 `mode: 'create' | 'edit'`。父组件在 `beginCreate` 分支传 `create`，在 `beginEdit` 分支传 `edit`。这个入参只用于给 `resolveDefaultVoiceSelection` 判断是否允许默认勾选，避免编辑已有供应商时因为 `voices` 恰好为空而自动写入默认音色。
+- **触发条件**：`form.type === 'openai-compatible-tts'` **且** `resolveKnownVoiceCatalog(form.model)` 返回非 `null`。两个条件缺一不可——原生 `qwen-tts` 类型下「模型名」输入框本身是隐藏的（该类型运行时调用的模型是写死的字面量，见 `lib/final-video/tts.ts` 的 `synthesizeQwen`，不读 `rt.model`），`form.model` 可能残留任意历史值，不能单靠模型名判断，否则会在原生 qwen-tts 类型下产生误判。加上类型限定后，原生 qwen-tts 类型的现有行为（自由文本 + 切换类型时的音色预填）完全不受影响。
   - 渲染一个 checkbox 网格。每项显示 `voice 参数（中文音色名）`，如 `Cherry（芊悦）`；`title` 属性放完整 `description`，鼠标悬停时由浏览器原生 tooltip 展示，不占版面。
-  - 选中状态：把 `form.voices`（逗号分隔字符串）按逗号 split/trim 成 `Set<string>`，`voice.id` 在集合里就是勾选。
-  - 勾选/取消：把该 `voice.id` 加入/移出集合，再按目录原始顺序 join 成逗号分隔字符串写回 `form.voices`。存库字段格式完全不变，`narration_providers.voices` 列还是逗号分隔文本，`resolveNarrationProviderRuntimeConfig` 的解析逻辑不用动。
+  - 选中状态：把 `form.voices` 按逗号 split/trim 成 `Set<string>`，`voice.id` 在集合里就是勾选。
+  - 勾选/取消：调用 `toggleVoiceSelection(form.voices, catalog, voice.id)`，把返回值写回 `form.voices`。存库字段格式完全不变，`narration_providers.voices` 列还是逗号分隔文本，`resolveNarrationProviderRuntimeConfig` 的解析逻辑不用动。
+  - `toggleVoiceSelection` 保证目录外音色不丢失（例如中转额外支持的音色，或用户临时验证的自定义 voice id）。UI 在 checkbox 网格下方用一行小字显示 `未识别音色：xxx, yyy`（`form.voices` 里不在 `catalog` 中的部分），提醒这些值会继续保存但不在当前官方目录中。
   - 目录同时收录了 `qwen-tts`（4 个）作为 key，服务的是另一种真实场景：用户在 `openai-compatible-tts` 类型下把「模型名」手填成字面量 `qwen-tts`（某些中转确实按这个名字暴露旧版千问 TTS），这时也应该出 checkbox 而不是文本框。
 - **未命中**（类型不是 `openai-compatible-tts`，或模型名不在目录里、或还没填）：保持现状——自由文本输入框，不做任何改动。
 
@@ -111,9 +144,9 @@ export const KNOWN_VOICE_CATALOG: Record<string, KnownVoice[]> = {
 
 ### 3. 默认勾选
 
-新建供应商、模型名初始为已知值时（目前仅在 `beginCreate` 里 narration 分类默认模型是 `tts-1`，不在目录里，所以新建时默认还是文本框；只有用户手动把模型名改成 `qwen-tts` 或 `qwen3-tts-flash` 才会切换成 checkbox），首次切换到 checkbox 视图且 `form.voices` 为空时，默认勾选该模型目录里的前 4 项（`qwen-tts`：全部 4 个；`qwen3-tts-flash`：`Cherry / Serena / Ethan / Chelsie`），其余保持未勾选，用户按需自己加。这个"默认勾 4 个"只在 `form.voices` 为空时触发一次，不会覆盖用户已经保存/修改过的音色列表。
+模型名初始为已知值时（目前仅在 `beginCreate` 里 narration 分类默认模型是 `tts-1`，不在目录里，所以新建时默认还是文本框；只有用户手动把模型名改成 `qwen-tts` 或 `qwen3-tts-flash` 才会切换成 checkbox），checkbox 视图首次出现时调用 `resolveDefaultVoiceSelection(mode, catalog, form.voices)`：返回非 `null` 就把结果 join 成逗号分隔字符串写入 `form.voices`（`qwen-tts`：全部 4 个；`qwen3-tts-flash`：`Cherry / Serena / Ethan / Chelsie`），返回 `null` 就什么都不做。
 
-编辑已有供应商时，直接按已保存的 `voices` 字符串还原勾选状态，不做默认勾选。
+按函数签名，这一行为只在 `mode === 'create'` 且 `form.voices` 为空时才会真正写入内容。编辑已有供应商时（`mode === 'edit'`），直接按已保存的 `voices` 字符串还原勾选状态，不做默认勾选；即使已有供应商的 `voices` 为空，也保持为空，让用户明确点击勾选后再保存。
 
 ### 4. 不变的部分
 
@@ -127,6 +160,9 @@ export const KNOWN_VOICE_CATALOG: Record<string, KnownVoice[]> = {
 新增 `scripts/narration-voice-catalog.test.ts`（沿用项目里 `scripts/*.test.ts` + Node 原生 TS 执行的惯例），覆盖 `lib/narration-providers/voice-catalog.ts` 的纯数据/纯函数部分：
 - `KNOWN_VOICE_CATALOG['qwen-tts']` 长度为 4，且 4 个 id 与现有 `defaultNarrationProviderConfigs` 里 `qwen-tts` 的 `defaultVoices` 完全一致（防止两处音色定义漂移）。
 - `KNOWN_VOICE_CATALOG['qwen3-tts-flash']` 长度为 48，且每个条目的 `id`/`label`/`description` 都是非空字符串，`id` 无重复。
+- `resolveKnownVoiceCatalog('qwen3-tts-flash')` 与带日期版本（如 `qwen3-tts-flash-2025xxxx`）都命中 `qwen3-tts-flash` 目录；未知模型返回 `null`。
+- `toggleVoiceSelection` 能按目录顺序回写已知音色，同时保留目录外音色并维持其原始相对顺序不丢失。
+- `resolveDefaultVoiceSelection` 只在 `mode === 'create'` 且 `currentVoicesCsv` 为空时返回前 4 个音色 id；`mode === 'edit'` 或 `currentVoicesCsv` 非空时一律返回 `null`。
 
 `ProviderForm` 的 checkbox 渲染/勾选交互属于纯前端组件行为，项目目前没有组件级测试基础设施（无 React Testing Library / jsdom 依赖），沿用现状不新增，改为交付前用 `npm run dev` 手动过一遍：新建/编辑 narration 供应商，模型名切换到 `qwen3-tts-flash` 时出现 checkbox 网格且默认勾 4 个、勾选变化正确回写 `voices` 字符串；切到其他模型名时正确退回文本框且不清空已有内容。
 
