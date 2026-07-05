@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { resolveKnownVoiceCatalog, toggleVoiceSelection, resolveDefaultVoiceSelection } from '@/lib/narration-providers/voice-catalog';
 
-type Category = 'image' | 'script' | 'video';
+type Category = 'image' | 'script' | 'video' | 'narration';
 
 interface ImageProvider {
   id: string;
@@ -44,6 +45,20 @@ interface VideoProvider {
   hasApiKey: boolean;
 }
 
+interface NarrationProvider {
+  id: string;
+  name: string;
+  category: 'narration';
+  type: string;
+  baseUrl: string;
+  model: string;
+  voices: string[];
+  enabled: number;
+  configured: boolean;
+  hasApiKey: boolean;
+  missing: string[];
+}
+
 type ProviderFormState = {
   name: string;
   type: string;
@@ -57,6 +72,8 @@ type ProviderFormState = {
   defaultCostPerImage: number;
   defaultDurationSec: number;
   maxTokens: number;
+  /** 仅 narration 分类使用：逗号分隔的可选音色列表，原样存库。 */
+  voices: string;
 };
 
 const KEY_PLACEHOLDER = '••••••••';
@@ -74,12 +91,14 @@ const emptyForm: ProviderFormState = {
   defaultCostPerImage: 0,
   defaultDurationSec: 5,
   maxTokens: 8192,
+  voices: '',
 };
 
 const sections: Array<{ id: Category; title: string; description: string; icon: IconName }> = [
   { id: 'image', title: '图片生成', description: '场景图、分镜图和图片重做供应商', icon: 'image' },
   { id: 'script', title: '脚本生成', description: '卖点分析和短视频脚本文案模型', icon: 'file-text' },
   { id: 'video', title: '视频生成', description: '可灵、即梦等图生视频供应商', icon: 'video' },
+  { id: 'narration', title: '口播配音', description: 'AI 配音 (TTS) 供应商', icon: 'mic' },
 ];
 
 export default function SettingsPage() {
@@ -87,6 +106,7 @@ export default function SettingsPage() {
   const [imageProviders, setImageProviders] = useState<ImageProvider[]>([]);
   const [scriptProviders, setScriptProviders] = useState<ScriptProvider[]>([]);
   const [videoProviders, setVideoProviders] = useState<VideoProvider[]>([]);
+  const [narrationProviders, setNarrationProviders] = useState<NarrationProvider[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<{ category: Category; id: string } | null>(null);
@@ -96,19 +116,22 @@ export default function SettingsPage() {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [imageRes, scriptRes, videoRes] = await Promise.all([
+      const [imageRes, scriptRes, videoRes, narrationRes] = await Promise.all([
         fetch('/api/providers'),
         fetch('/api/providers/script'),
         fetch('/api/providers/video?all=1'),
+        fetch('/api/providers/narration'),
       ]);
-      const [imageData, scriptData, videoData] = await Promise.all([
+      const [imageData, scriptData, videoData, narrationData] = await Promise.all([
         imageRes.json().catch(() => []),
         scriptRes.json().catch(() => []),
         videoRes.json().catch(() => []),
+        narrationRes.json().catch(() => []),
       ]);
       if (Array.isArray(imageData)) setImageProviders(imageData);
       if (Array.isArray(scriptData)) setScriptProviders(scriptData);
       if (Array.isArray(videoData)) setVideoProviders(videoData);
+      if (Array.isArray(narrationData)) setNarrationProviders(narrationData);
     } finally {
       setLoading(false);
     }
@@ -125,13 +148,13 @@ export default function SettingsPage() {
     setEditing(null);
     setForm({
       ...emptyForm,
-      type: category === 'image' ? 'openai-compatible' : category === 'video' ? 'jimeng' : 'openai-compatible',
+      type: category === 'image' ? 'openai-compatible' : category === 'video' ? 'jimeng' : category === 'narration' ? 'openai-compatible-tts' : 'openai-compatible',
       apiStyle: 'openai-compatible',
-      model: category === 'image' ? 'gpt-image-2' : category === 'video' ? 'doubao-seedance-1-5-pro-251215' : 'gpt-4o',
+      model: category === 'image' ? 'gpt-image-2' : category === 'video' ? 'doubao-seedance-1-5-pro-251215' : category === 'narration' ? 'tts-1' : 'gpt-4o',
     });
   };
 
-  const beginEdit = (category: Category, provider: ImageProvider | ScriptProvider | VideoProvider) => {
+  const beginEdit = (category: Category, provider: ImageProvider | ScriptProvider | VideoProvider | NarrationProvider) => {
     setActive(category);
     setCreating(null);
     setEditing({ category, id: provider.id });
@@ -150,6 +173,7 @@ export default function SettingsPage() {
       apiKey: hasKey && provider.type !== 'kling' ? KEY_PLACEHOLDER : '',
       accessKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
       secretKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
+      voices: 'voices' in provider ? provider.voices.join(',') : '',
     });
   };
 
@@ -214,6 +238,15 @@ export default function SettingsPage() {
         ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
       };
     }
+    if (category === 'narration') {
+      return {
+        ...base,
+        baseUrl: form.baseUrl,
+        model: form.model,
+        voices: form.voices,
+        ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
+      };
+    }
     return {
       ...base,
       baseUrl: form.baseUrl,
@@ -258,7 +291,7 @@ export default function SettingsPage() {
   };
 
   const currentProviders =
-    active === 'image' ? imageProviders : active === 'script' ? scriptProviders : videoProviders;
+    active === 'image' ? imageProviders : active === 'script' ? scriptProviders : active === 'video' ? videoProviders : narrationProviders;
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -266,7 +299,7 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-[-0.02em]">供应商配置</h1>
           <p className="mt-1 text-sm text-ink-secondary">
-            管理图片、脚本和视频生成模型。所有密钥统一从这里配置，避免和环境变量产生冲突。
+            管理图片、脚本、视频和口播模型。所有密钥统一从这里配置，避免和环境变量产生冲突。
           </p>
         </div>
         <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
@@ -274,7 +307,7 @@ export default function SettingsPage() {
         </button>
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-3">
+      <div className="mb-5 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {sections.map((section) => (
           <button
             key={section.id}
@@ -301,7 +334,7 @@ export default function SettingsPage() {
           {(creating === active || editing?.category === active) && (
             <div className="card border-accent/30 bg-accent/[0.04] p-5">
               <h3 className="mb-4 font-semibold">{creating ? '新建供应商' : '编辑供应商'}</h3>
-              <ProviderForm category={active} form={form} onChange={setForm} />
+              <ProviderForm category={active} form={form} mode={creating ? 'create' : 'edit'} onChange={setForm} />
               <div className="mt-4 flex flex-wrap justify-end gap-2">
                 {editing && (
                   <button onClick={() => void saveProvider(true)} disabled={saving} className="btn-secondary btn-sm text-fail">
@@ -358,7 +391,7 @@ function ProviderCard({
   onDelete,
 }: {
   category: Category;
-  provider: ImageProvider | ScriptProvider | VideoProvider;
+  provider: ImageProvider | ScriptProvider | VideoProvider | NarrationProvider;
   editing: boolean;
   onEdit: () => void;
   onToggle: () => void;
@@ -368,8 +401,39 @@ function ProviderCard({
     ? provider.hasApiKey
     : 'configured' in provider ? provider.configured : false;
   const missing = 'missing' in provider ? provider.missing || [] : [];
-  const model = 'model' in provider ? provider.model : provider.defaultModel;
+  const model = 'model' in provider ? provider.model : 'defaultModel' in provider ? (provider as VideoProvider).defaultModel : '';
   const baseUrl = 'baseUrl' in provider ? provider.baseUrl : '';
+  const showModel = category !== 'narration' || provider.type === 'openai-compatible-tts';
+
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+
+  useEffect(() => {
+    return () => { if (previewUrl) URL.revokeObjectURL(previewUrl); };
+  }, [previewUrl]);
+
+  const handlePreview = async () => {
+    setPreviewLoading(true);
+    setPreviewError('');
+    try {
+      const resp = await fetch(`/api/providers/narration/${provider.id}/preview`, { method: 'POST' });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data?.error || `试听失败：HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      setPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
 
   return (
     <div className={`card p-5 ${editing ? 'border-accent/40' : ''}`}>
@@ -390,7 +454,13 @@ function ProviderCard({
                 <code className="break-all rounded bg-surface-subtle px-1 text-xs">{baseUrl}</code>
               </div>
             )}
-            <div><span className="text-ink-tertiary">模型:</span> {model || '-'}</div>
+            {showModel && <div><span className="text-ink-tertiary">模型:</span> {model || '-'}</div>}
+            {category === 'narration' && 'voices' in provider && (
+              <div className="min-w-0">
+                <span className="text-ink-tertiary">音色:</span>{' '}
+                {provider.voices.length > 0 ? provider.voices.join(', ') : '未配置'}
+              </div>
+            )}
             <div><span className="text-ink-tertiary">类型:</span> {provider.type}</div>
             {category === 'image' && 'defaultCostPerImage' in provider && (
               <div><span className="text-ink-tertiary">成本:</span> ¥{provider.defaultCostPerImage || 0}/张</div>
@@ -401,6 +471,15 @@ function ProviderCard({
           </div>
           {missing.length > 0 && (
             <p className="mt-2 text-xs text-fail">缺少配置：{missing.join(', ')}</p>
+          )}
+          {category === 'narration' && configured && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button onClick={() => void handlePreview()} disabled={previewLoading} className="btn-secondary btn-sm">
+                <Icon name="mic" size={13} /> {previewLoading ? '试听生成中…' : '试听'}
+              </button>
+              {previewUrl && <audio controls autoPlay src={previewUrl} className="h-8" />}
+              {previewError && <p className="text-xs text-fail">{previewError}</p>}
+            </div>
           )}
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
@@ -420,13 +499,34 @@ function ProviderCard({
 function ProviderForm({
   category,
   form,
+  mode,
   onChange,
 }: {
   category: Category;
   form: ProviderFormState;
+  mode: 'create' | 'edit';
   onChange: (form: ProviderFormState) => void;
 }) {
   const isVideoKling = category === 'video' && form.type === 'kling';
+
+  // 本次表单会话是否已经自动补过默认音色。ProviderForm 在表单关闭时卸载、重新打开时重新挂载，
+  // 这个 ref 随之复位，从而保证“默认勾 4 个”每个新建会话只发生一次：用户清空音色后再改模型名不会被再次覆盖。
+  const voiceDefaultsAppliedRef = useRef(false);
+
+  /**
+   * narration 分类下，接口类型/模型名变化后如果新组合命中已知音色目录、当前音色为空、且本会话尚未补过默认音色
+   * （仅新建模式），补上目录前 4 个音色，减少用户手动勾选；其余情况原样返回 next.voices。
+   */
+  const applyVoiceDefaultsIfNeeded = (next: { type: string; model: string; voices: string }): string => {
+    if (category !== 'narration' || next.type !== 'openai-compatible-tts') return next.voices;
+    if (voiceDefaultsAppliedRef.current) return next.voices;
+    const catalog = resolveKnownVoiceCatalog(next.model);
+    if (!catalog) return next.voices;
+    const defaults = resolveDefaultVoiceSelection(mode, catalog, next.voices);
+    if (!defaults) return next.voices;
+    voiceDefaultsAppliedRef.current = true;
+    return defaults.join(',');
+  };
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -435,7 +535,25 @@ function ProviderForm({
       </Field>
 
       <Field label="接口类型">
-        <select value={form.type} onChange={(e) => onChange({ ...form, type: e.target.value })} className="input-field">
+        <select
+          value={form.type}
+          onChange={(e) => {
+            const nextType = e.target.value;
+            // 便利项：narration 分类下切到 qwen-tts 且音色还没填时，自动带入已知的内置音色，减少用户手动输入。
+            // 切到其他类型（含 openai-compatible-tts）走 applyVoiceDefaultsIfNeeded：只有当前模型名也命中
+            // 已知音色目录时才会补默认音色，命不中时原样保留 voices，不会替用户瞎猜。
+            if (category === 'narration' && nextType === 'qwen-tts' && !form.voices.trim()) {
+              onChange({ ...form, type: nextType, voices: 'Cherry,Serena,Ethan,Chelsie' });
+            } else {
+              onChange({
+                ...form,
+                type: nextType,
+                voices: applyVoiceDefaultsIfNeeded({ type: nextType, model: form.model, voices: form.voices }),
+              });
+            }
+          }}
+          className="input-field"
+        >
           {category === 'image' && (
             <>
               <option value="geekai-json">GeekAI (JSON + async polling)</option>
@@ -456,6 +574,12 @@ function ProviderForm({
               <option value="kling">可灵</option>
             </>
           )}
+          {category === 'narration' && (
+            <>
+              <option value="qwen-tts">Qwen TTS（阿里云 DashScope）</option>
+              <option value="openai-compatible-tts">OpenAI 兼容 TTS</option>
+            </>
+          )}
         </select>
       </Field>
 
@@ -468,13 +592,31 @@ function ProviderForm({
         </Field>
       )}
 
-      <Field label="Base URL">
-        <input value={form.baseUrl} onChange={(e) => onChange({ ...form, baseUrl: e.target.value })} className="input-field font-mono text-xs" placeholder="https://api.example.net" />
-      </Field>
+      {(category !== 'narration' || form.type === 'openai-compatible-tts') && (
+        <Field label="Base URL">
+          <input value={form.baseUrl} onChange={(e) => onChange({ ...form, baseUrl: e.target.value })} className="input-field font-mono text-xs" placeholder={category === 'narration' ? 'https://api.gpt.ge' : 'https://api.example.net'} />
+        </Field>
+      )}
 
-      <Field label={category === 'video' ? '默认模型' : '模型名'}>
-        <input value={form.model} onChange={(e) => onChange({ ...form, model: e.target.value })} className="input-field" placeholder="gpt-4o / kling-v3" />
-      </Field>
+      {(category !== 'narration' || form.type === 'openai-compatible-tts') && (
+        <Field label={category === 'video' ? '默认模型' : '模型名'}>
+          <input
+            value={form.model}
+            onChange={(e) => {
+              const nextModel = e.target.value;
+              onChange({
+                ...form,
+                model: nextModel,
+                voices: applyVoiceDefaultsIfNeeded({ type: form.type, model: nextModel, voices: form.voices }),
+              });
+            }}
+            className="input-field"
+            placeholder={category === 'narration' ? 'tts-1' : 'gpt-4o / kling-v3'}
+          />
+        </Field>
+      )}
+
+      {category === 'narration' && <NarrationVoicesField form={form} onChange={onChange} />}
 
       {isVideoKling ? (
         <>
@@ -519,9 +661,62 @@ function ProviderForm({
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function NarrationVoicesField({
+  form,
+  onChange,
+}: {
+  form: ProviderFormState;
+  onChange: (form: ProviderFormState) => void;
+}) {
+  const catalog = form.type === 'openai-compatible-tts' ? resolveKnownVoiceCatalog(form.model) : null;
+
+  if (!catalog) {
+    return (
+      <Field label="可选音色" className="sm:col-span-2">
+        <input
+          value={form.voices}
+          onChange={(e) => onChange({ ...form, voices: e.target.value })}
+          className="input-field font-mono text-xs"
+          placeholder="例如：Cherry,Serena,Ethan,Chelsie（需与该 Base URL / 模型实际支持的音色一致，逗号分隔，留空则该供应商无法用于合成）"
+        />
+      </Field>
+    );
+  }
+
+  const selected = new Set(
+    form.voices
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean)
+  );
+  const catalogIds = new Set(catalog.map((v) => v.id));
+  const unknownVoices = [...selected].filter((v) => !catalogIds.has(v));
+
   return (
-    <div>
+    <Field label="可选音色" className="sm:col-span-2">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-[10px] border border-hairline p-3 sm:grid-cols-3">
+        {catalog.map((voice) => (
+          <label key={voice.id} title={voice.description} className="flex cursor-pointer items-center gap-1.5 text-sm">
+            <input
+              type="checkbox"
+              checked={selected.has(voice.id)}
+              onChange={() => onChange({ ...form, voices: toggleVoiceSelection(form.voices, catalog, voice.id) })}
+              className="h-3.5 w-3.5 rounded border-hairline accent-accent"
+            />
+            <span>{voice.id}（{voice.label}）</span>
+          </label>
+        ))}
+      </div>
+      {unknownVoices.length > 0 && (
+        <p className="mt-1.5 text-xs text-ink-tertiary">未识别音色：{unknownVoices.join(', ')}</p>
+      )}
+    </Field>
+  );
+}
+
+function Field({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
+  return (
+    <div className={className}>
       <label className="label">{label}</label>
       {children}
     </div>
