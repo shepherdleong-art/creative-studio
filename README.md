@@ -145,6 +145,16 @@ npm run build:win-installer
 
 安装包输出到 `dist/windows/CreativeStudioSetup.exe`。安装后可从桌面或开始菜单启动，默认卸载保留本地数据。
 
+## macOS 安装包
+
+提供 Apple Silicon 专用的 DMG，内置私有 Node.js 运行时，用户拖到 Applications 后即可从 Finder 启动。
+
+```bash
+npm run build:mac-installer
+```
+
+安装包输出到 `dist/macos/产品素材工作台-<version>.dmg`。详细说明见 [MACOS.md](./MACOS.md)。
+
 ## 目录结构
 
 ```text
@@ -152,6 +162,7 @@ app/                    Next.js 页面和 API 路由
 components/             工作台 UI 组件
 components/ui/          通用 UI 原语和图标
 installer/windows/      Windows 安装包脚本和配置
+installer/macos/        macOS .app bundle 模板和启动脚本
 lib/                    数据库、队列、供应商适配器、文件导出等核心逻辑
 lib/providers/          图片生成供应商适配器
 lib/script-providers/   脚本生成供应商适配器

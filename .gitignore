@@ -53,3 +53,11 @@ next-env.d.ts
 # brainstorming visual-companion workspace (generated mockups, not source)
 /.superpowers/
 .tmp-pdf-text/
+
+# local Claude Code / skills tooling (not project source)
+/.claude/
+/.agents/
+/skills-lock.json
+
+# oversized local docs (exceed GitHub's 100MB push limit; use Git LFS if they must be tracked)
+/docs/*.xlsx
