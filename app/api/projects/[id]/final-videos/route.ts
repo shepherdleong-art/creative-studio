@@ -45,9 +45,11 @@ export async function POST(
       return NextResponse.json({ error: `未知口播模式: ${pkg.narration.mode}` }, { status: 400 });
     }
     if (pkg.narration.mode === 'tts') {
-      const { resolveTtsApiKey } = await import('@/lib/final-video/tts');
-      if (!resolveTtsApiKey()) {
-        return NextResponse.json({ error: '未配置口播 API key：请在 .env.local 设置 QWEN_TTS_API_KEY（或 DASHSCOPE_API_KEY）' }, { status: 400 });
+      try {
+        const { resolveNarrationRuntime } = await import('@/lib/final-video/tts');
+        await resolveNarrationRuntime(pkg.narration.providerId);
+      } catch (err) {
+        return NextResponse.json({ error: String(err) }, { status: 400 });
       }
     }
 

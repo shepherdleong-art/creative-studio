@@ -250,6 +250,18 @@ function initTables(db: Database.Database) {
       isBuiltin INTEGER NOT NULL DEFAULT 1
     );
 
+    CREATE TABLE IF NOT EXISTS narration_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'qwen-tts',
+      apiKey TEXT NOT NULL DEFAULT '',
+      baseUrl TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      voices TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      isBuiltin INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS video_prompt_templates (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,

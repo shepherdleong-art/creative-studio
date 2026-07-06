@@ -404,10 +404,22 @@ function ProviderCard({
   const model = 'model' in provider ? provider.model : 'defaultModel' in provider ? (provider as VideoProvider).defaultModel : '';
   const baseUrl = 'baseUrl' in provider ? provider.baseUrl : '';
   const showModel = category !== 'narration' || provider.type === 'openai-compatible-tts';
+  const narrationVoices = category === 'narration' && 'voices' in provider ? provider.voices : [];
+  const voiceCatalog = category === 'narration' ? resolveKnownVoiceCatalog(model) : null;
+  // 已知音色带上官方中文名（如「Cherry（芊悦）」），未知音色原样显示 id。
+  const voiceOptionLabel = (id: string) => {
+    const known = voiceCatalog?.find((v) => v.id === id);
+    return known ? `${id}（${known.label}）` : id;
+  };
 
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const [previewVoice, setPreviewVoice] = useState('');
+  // 选中音色须仍在已配置列表内（供应商编辑后音色可能变化），否则回退到第一个配置音色。
+  const effectiveVoice = previewVoice && narrationVoices.includes(previewVoice)
+    ? previewVoice
+    : narrationVoices[0] || '';
 
   useEffect(() => {
     return () => { if (previewUrl) URL.revokeObjectURL(previewUrl); };
@@ -417,7 +429,11 @@ function ProviderCard({
     setPreviewLoading(true);
     setPreviewError('');
     try {
-      const resp = await fetch(`/api/providers/narration/${provider.id}/preview`, { method: 'POST' });
+      const resp = await fetch(`/api/providers/narration/${provider.id}/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: effectiveVoice }),
+      });
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));
         throw new Error(data?.error || `试听失败：HTTP ${resp.status}`);
@@ -474,6 +490,18 @@ function ProviderCard({
           )}
           {category === 'narration' && configured && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
+              {narrationVoices.length > 1 && (
+                <select
+                  value={effectiveVoice}
+                  onChange={(e) => setPreviewVoice(e.target.value)}
+                  className="input-field w-auto text-xs"
+                  aria-label="试听音色"
+                >
+                  {narrationVoices.map((v) => (
+                    <option key={v} value={v}>{voiceOptionLabel(v)}</option>
+                  ))}
+                </select>
+              )}
               <button onClick={() => void handlePreview()} disabled={previewLoading} className="btn-secondary btn-sm">
                 <Icon name="mic" size={13} /> {previewLoading ? '试听生成中…' : '试听'}
               </button>

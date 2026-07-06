@@ -136,6 +136,7 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
       voice: pkg.narration.voice,
       speed: pkg.narration.speed,
       workDir,
+      providerId: pkg.narration.providerId,
       onProgress: (done, total) => setStep(job.id, 'tts', 8 + Math.round((done / Math.max(1, total)) * 12)),
     });
     narrationDurations = synth.durations;
@@ -183,6 +184,8 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
       height: pkg.height,
       fontFile,
       outJpgPath: coverPath,
+      templateId: pkg.cover.templateId,
+      sellingPoints: pkg.cover.sellingPoints,
     }),
     { timeoutMs: 60_000 }
   );

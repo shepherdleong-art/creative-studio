@@ -4,6 +4,8 @@ export interface NarrationConfig {
   mode: 'none' | 'tts';
   voice: string;
   speed: number;
+  /** 口播供应商 id（narration_providers.id）；留空则由服务端自动挑第一个已配置的供应商。 */
+  providerId?: string;
 }
 
 export interface BgmConfig {
@@ -12,11 +14,15 @@ export interface BgmConfig {
   ducking: boolean;
 }
 
+export type CoverTemplateId = 'luxury-01' | 'minimal-01' | 'luxury-02';
+
 export interface CoverConfig {
   titleText: string;
   titleSize: number;
   titleColor: string;
   introDurationSec: number;
+  templateId?: CoverTemplateId;
+  sellingPoints?: string[];
 }
 
 export interface SubtitleStyle {
@@ -79,10 +85,10 @@ export function defaultPackageConfig(): PackageConfig {
     width: 1080,
     height: 1920,
     fps: 30,
-    narration: { mode: 'none', voice: 'Cherry', speed: 1.0 },
+    narration: { mode: 'none', voice: 'Cherry', speed: 1.0, providerId: '' },
     bgm: null,
-    cover: { titleText: '', titleSize: 72, titleColor: '#ffffff', introDurationSec: 0 },
-    subtitle: { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 10 },
+    cover: { titleText: '', titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: 'minimal-01' as const },
+    subtitle: { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
   };
 }
 

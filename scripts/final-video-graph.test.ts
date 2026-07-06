@@ -103,4 +103,18 @@ const c2 = buildCoverArgs({
 });
 assert.doesNotMatch(c2[c2.indexOf('-vf') + 1], /drawtext/);
 
+// 模板卖点在渲染层兜底截断，且只取模板允许的条数
+const c3 = buildCoverArgs({
+  sourceVideoPath: '/clips/1.mp4',
+  titleText: '标题', titleSize: 72, titleColor: '#ffffff',
+  width: 360, height: 640,
+  fontFile: '',
+  outJpgPath: '/out/cover.jpg',
+  templateId: 'luxury-01',
+  sellingPoints: ['这是一个很长很长很长卖点', '第二条', '第三条', '第四条'],
+});
+const vf3 = c3[c3.indexOf('-vf') + 1];
+assert.match(vf3, /drawtext=text='这是一个很长很…'/);
+assert.doesNotMatch(vf3, /第四条/);
+
 console.log('final-video-graph tests passed');
