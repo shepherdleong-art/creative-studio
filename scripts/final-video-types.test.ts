@@ -9,6 +9,7 @@ import {
   parseNarrationBeatsJson,
   parsePackageConfigJson,
   parseTimelineIssuesJson,
+  validatePackageConfigRequest,
 } from '../lib/final-video/types.ts';
 
 const oldTts = mergePackageConfig({
@@ -48,6 +49,11 @@ const invalidPackages = [
 for (const invalid of invalidPackages) {
   assert.throws(() => parsePackageConfigJson(JSON.stringify(invalid)), /packageJson/i);
 }
+const invalidRequestResult = validatePackageConfigRequest({ ...validPackage, mode: 'invalid' });
+assert.equal(invalidRequestResult.ok, false);
+if (!invalidRequestResult.ok) assert.match(invalidRequestResult.error, /packageConfig\.mode/i);
+const validRequestResult = validatePackageConfigRequest(validPackage);
+assert.equal(validRequestResult.ok, true);
 
 const validWorkflow = {
   packageConfig: validPackage,

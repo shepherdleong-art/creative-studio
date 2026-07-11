@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
-import { mergePackageConfig, FinalVideoJobRow, PackageConfig } from '@/lib/final-video/types';
+import { mergePackageConfig, validatePackageConfigRequest, FinalVideoJobRow, PackageConfig } from '@/lib/final-video/types';
 import { findScriptDraftForShotSet } from '@/lib/final-video/draft';
 import { startFinalVideoQueue } from '@/lib/final-video/render-queue';
 import { toStorageImageUrl, toStorageVideoUrl } from '@/lib/storage-url';
@@ -40,7 +40,11 @@ export async function POST(
       return NextResponse.json({ error: '该分镜组还没有已完成的视频片段' }, { status: 400 });
     }
 
-    const pkg = mergePackageConfig(body.packageConfig);
+    const packageValidation = validatePackageConfigRequest(body.packageConfig);
+    if (!packageValidation.ok) {
+      return NextResponse.json({ error: packageValidation.error }, { status: 400 });
+    }
+    const pkg = packageValidation.value;
     const narrationMode = (pkg.narration as { mode: string }).mode;
     if (narrationMode !== 'none' && narrationMode !== 'tts') {
       return NextResponse.json({ error: `未知口播模式: ${narrationMode}` }, { status: 400 });

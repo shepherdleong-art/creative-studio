@@ -196,6 +196,18 @@ function mergePackageConfigAt(partial: unknown, field: string): PackageConfig {
 export function mergePackageConfig(partial: unknown): PackageConfig {
   return mergePackageConfigAt(partial, 'packageConfig');
 }
+export type PackageConfigRequestValidation =
+  | { ok: true; value: PackageConfig }
+  | { ok: false; error: string };
+
+/** Route-boundary adapter: keeps strict parsing while making client validation failures explicit. */
+export function validatePackageConfigRequest(partial: unknown): PackageConfigRequestValidation {
+  try {
+    return { ok: true, value: mergePackageConfig(partial) };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 export function parsePackageConfigJson(json: string): PackageConfig {
   const value = parseJson(json, 'packageJson');
