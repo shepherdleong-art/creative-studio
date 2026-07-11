@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { deleteFinalVideoDraft, getFinalVideoDraft, updateFinalVideoDraft } from '@/lib/final-video/draft-store';
 import { buildDraftApiPatch, parseArrangement, parseDraftResponse, parseWorkflowConfig } from '@/lib/final-video/draft-api';
-import { validateArrangement } from '@/lib/final-video/arrangement';
+import { assertValidArrangement } from '@/lib/final-video/arrangement';
 import { parseClipPoolJson, parseFinalVideoWorkflowConfigJson, parseNarrationBeatsJson } from '@/lib/final-video/types';
 
 type Context = { params: Promise<{ id: string }> };
@@ -39,7 +39,7 @@ export async function PATCH(request: Request, { params }: Context) {
   if (arrangement !== undefined) {
     try {
       const workflow = parseFinalVideoWorkflowConfigJson(row.workflowConfigJson);
-      arrangement = validateArrangement(
+      arrangement = assertValidArrangement(
         arrangement,
         parseNarrationBeatsJson(row.narrationBeatsJson),
         parseClipPoolJson(row.clipPoolJson),
