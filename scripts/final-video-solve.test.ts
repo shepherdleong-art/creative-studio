@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { solveTimeline } from '../lib/final-video/solve-timeline.ts';
 import type { ArrangementPlan, ClipPoolItem, NarrationBeat, TimelineResult } from '../lib/final-video/types.ts';
 
@@ -146,6 +147,24 @@ expectCode('invalid_beats', { beats: [beat('a', 0, 0)] });
 expectCode('invalid_clips', { clips: [clip('c', 0, 1), clip('c', 1, 1)] });
 expectCode('invalid_clips', { clips: [clip('c', 0, 0)] });
 expectCode('invalid_arrangement', { plan: plan([['missing', ['b0']]], [{ beatId: 'b1', reason: 'gap' }]) });
+
+// Overflow must terminate promptly instead of entering an unbounded frame-adjustment loop.
+const overflowProbe = (durations: number[], fps: number) => {
+  const source = `
+    import { solveTimeline } from './lib/final-video/solve-timeline.ts';
+    const durations = ${JSON.stringify(durations)};
+    const beats = durations.map((durationSec, index) => ({ beatId: 'b' + index, groupId: 'g' + index, index, text: '', audioPath: '', durationSec, startSec: 0 }));
+    const gaps = beats.map(({ beatId }) => ({ beatId, reason: 'gap' }));
+    const clips = [{ clipId: 'c', shotId: 's', shotIndex: 0, videoPath: '/tmp/c.mp4', clipDurationSec: 1, sourceImageId: 'i', sourceImagePath: '/tmp/i.png', visualDescription: '', descriptionProviderId: null, descriptionModel: null }];
+    try { solveTimeline({ plan: { assignments: [], gaps }, beats, clips, introDurationSec: 0, targetDurationSec: 1, durationTolerancePct: 0, maxClipSeconds: 4, fps: ${fps} }); }
+    catch (error) { process.stdout.write(error.code ?? 'missing_code'); }
+  `;
+  return spawnSync(process.execPath, ['--input-type=module', '--eval', source], { cwd: process.cwd(), encoding: 'utf8', timeout: 1_000 });
+};
+for (const probe of [overflowProbe([1e308], 2), overflowProbe([1e308, 1e308], 1)]) {
+  assert.equal(probe.signal, null, `overflow probe did not terminate: ${probe.error?.message ?? probe.signal}`);
+  assert.equal(probe.stdout, 'invalid_timeline_input');
+}
 try {
   solve({ plan: plan([['missing', ['b0']]], [{ beatId: 'b1', reason: 'gap' }]) });
   assert.fail('expected invalid arrangement');

@@ -79,7 +79,12 @@ export function solveTimeline(input: {
 }): TimelineResult {
   const { beats, clips, plan } = validateInput(input);
   const rawNarrationDurationSec = beats.reduce((sum, beat) => sum + beat.durationSec, 0);
-  let contentFrames = Math.ceil(rawNarrationDurationSec * input.fps);
+  const rawFrameCount = rawNarrationDurationSec * input.fps;
+  const requiredFrames = Math.ceil(rawFrameCount);
+  if (!Number.isFinite(rawNarrationDurationSec) || !Number.isFinite(rawFrameCount) || requiredFrames > Number.MAX_SAFE_INTEGER) {
+    fail('invalid_timeline_input', '口播总时长无法转换为安全的时间线帧数');
+  }
+  let contentFrames = requiredFrames;
   while (contentFrames > 0 && (contentFrames - 1) / input.fps >= rawNarrationDurationSec) contentFrames -= 1;
   while (contentFrames / input.fps < rawNarrationDurationSec) contentFrames += 1;
   const contentDurationSec = contentFrames / input.fps;
