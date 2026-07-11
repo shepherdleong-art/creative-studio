@@ -139,13 +139,28 @@ export async function prepareFinalVideoDraft(input: {
       narrationBeatsJson: JSON.stringify(narrationBeats),
       clipPoolJson: JSON.stringify(clips),
       issuesJson: JSON.stringify(issues),
+      // A successful (re-)prepare clears any stale failure note from an earlier attempt —
+      // mirrors the failed→running recovery convention in render-queue.ts (errorMessage = NULL).
+      errorMessage: null,
     });
   } catch (error) {
     // Any remote/file error → failed; re-running the same action can recover, and
     // already-successful snapshots (narrationBeatsJson etc.) are left untouched.
-    return updateFinalVideoDraft(input.draftId, currentRevision, {
-      stage: 'failed',
-      errorMessage: error instanceof Error ? error.message : String(error),
-    });
+    try {
+      return updateFinalVideoDraft(input.draftId, currentRevision, {
+        stage: 'failed',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    } catch {
+      // This recovery write itself raced and lost — almost certainly stale_revision because
+      // a concurrent writer (another prepare/PATCH call) already moved the draft's revision
+      // past currentRevision while we were awaiting the LLM/TTS/clip-pool work above. That
+      // writer's state is now the source of truth: we must not clobber it, and we must not
+      // crash this request just because we lost the race to also write our own failure note.
+      // Best-effort: report whatever the draft currently looks like.
+      const current = getFinalVideoDraft(input.draftId);
+      if (current) return current;
+      throw error;
+    }
   }
 }

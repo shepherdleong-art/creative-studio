@@ -282,6 +282,14 @@ try {
   assert.equal(failBody.revision, 2);
   ttsFailureMode = 'none';
 
+  // ── errorMessage from a previous failure must not linger once prepare succeeds again ──
+  assert.ok((failBody.errorMessage as string).length > 0, 'sanity: previous case really did fail with a message');
+  const recoveredResult = await prepare(failDraft.id, failBody.revision as number);
+  assert.equal(recoveredResult.status, 200);
+  const recoveredBody = recoveredResult.body.draft as Record<string, unknown>;
+  assert.equal(recoveredBody.stage, 'narration-ready');
+  assert.equal(recoveredBody.errorMessage, null, 'a successful re-prepare must clear the stale errorMessage');
+
   globalThis.fetch = originalFetch;
   console.log('final-video-prepare tests passed');
 } finally {
