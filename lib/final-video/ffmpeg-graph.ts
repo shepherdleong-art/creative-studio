@@ -5,7 +5,7 @@
  *   音频：口播/BGM 组合，BGM 可 sidechaincompress ducking（探测失败退化 amix）
  * 参考：混剪计划 §Task 3.2 音频图的 TS 移植；输出时长用显式 -t 保证确定性。
  */
-import type { LegacyTimelineSegment } from './types.ts';
+import type { LegacyTimelineSegment, TimelineSegment } from './types.ts';
 
 /** subtitles/fontsdir 的 filter 内路径转义（Windows 盘符冒号 + 反斜杠 + 单引号） */
 export function escapeSubtitlePath(p: string): string {
@@ -39,6 +39,67 @@ export interface RenderGraphInput {
 }
 
 export function buildRenderArgs(g: RenderGraphInput): string[] {
+  return buildArgs(g, (s, scaleChain) => {
+    const pad = s.segmentDurationSec - s.clipDurationSec;
+    const padPart = pad > 0.01 ? `,tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}` : '';
+    return `setpts=PTS-STARTPTS,${scaleChain}${padPart}`;
+  });
+}
+
+export interface SolvedRenderGraphInput extends Omit<RenderGraphInput, 'segments'> {
+  segments: TimelineSegment[];
+}
+
+const SOLVED_EPSILON = 1e-9;
+const finitePositive = (value: number) => Number.isFinite(value) && value > 0;
+const finiteNonNegative = (value: number) => Number.isFinite(value) && value >= 0;
+const duration = (value: number) => (Math.abs(value) < 0.0005 ? 0 : value).toFixed(3);
+
+function validateSolvedGraph(g: SolvedRenderGraphInput): void {
+  if (g.segments.length === 0) throw new Error('Solved render graph requires at least one segment');
+  if (!finitePositive(g.width) || !finitePositive(g.height) || !finitePositive(g.fps) || !finitePositive(g.totalDurationSec)) {
+    throw new Error('Solved render graph dimensions, fps, and total duration must be finite positive values');
+  }
+  if (!finiteNonNegative(g.introDurationSec)) throw new Error('Solved render graph intro duration must be finite and non-negative');
+  for (const [index, s] of g.segments.entries()) {
+    if (!s.clipPath.trim() || !finitePositive(s.clipDurationSec) || !finitePositive(s.segmentDurationSec)
+      || !finiteNonNegative(s.mediaDurationSec) || !finiteNonNegative(s.padStopSec) || !finiteNonNegative(s.startSec)) {
+      throw new Error(`Invalid solved render segment at index ${index}`);
+    }
+    if (Math.abs(s.segmentDurationSec - (s.mediaDurationSec + s.padStopSec)) > SOLVED_EPSILON) {
+      throw new Error(`Solved render segment duration mismatch at index ${index}`);
+    }
+    if (s.trimEndToSec !== null) {
+      if (!finitePositive(s.trimEndToSec) || Math.abs(s.trimEndToSec - s.mediaDurationSec) > SOLVED_EPSILON
+        || s.trimEndToSec - s.clipDurationSec > SOLVED_EPSILON) {
+        throw new Error(`Invalid solved render trim at index ${index}`);
+      }
+    } else if (s.mediaDurationSec - s.clipDurationSec > SOLVED_EPSILON) {
+      throw new Error(`Solved render media exceeds clip at index ${index}`);
+    }
+  }
+  const segmentTotal = g.segments.reduce((sum, s) => sum + s.segmentDurationSec, 0);
+  const tolerance = Math.max(1e-6, 1 / g.fps);
+  if (Math.abs(g.introDurationSec + segmentTotal - g.totalDurationSec) > tolerance) {
+    throw new Error('Solved render graph total duration mismatch');
+  }
+}
+
+export function buildSolvedRenderArgs(g: SolvedRenderGraphInput): string[] {
+  validateSolvedGraph(g);
+  return buildArgs(g, (s, scaleChain) => {
+    const trimPart = s.trimEndToSec === null ? '' : `trim=duration=${duration(s.trimEndToSec)},`;
+    const padPart = s.padStopSec > SOLVED_EPSILON
+      ? `,tpad=stop_mode=clone:stop_duration=${duration(s.padStopSec)}`
+      : '';
+    return `${trimPart}setpts=PTS-STARTPTS${padPart},${scaleChain}`;
+  });
+}
+
+function buildArgs<S extends { clipPath: string }>(
+  g: Omit<RenderGraphInput, 'segments'> & { segments: S[] },
+  videoChain: (segment: S, scaleChain: string) => string,
+): string[] {
   const { width: w, height: h, fps } = g;
   const args: string[] = ['-hide_banner', '-nostats'];
   const hasIntro = g.introDurationSec > 0 && !!g.coverJpgPath;
@@ -68,9 +129,7 @@ export function buildRenderArgs(g: RenderGraphInput): string[] {
     vLabels.push('[vintro]');
   }
   g.segments.forEach((s, i) => {
-    const pad = s.segmentDurationSec - s.clipDurationSec;
-    const padPart = pad > 0.01 ? `,tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}` : '';
-    parts.push(`[${base + i}:v]setpts=PTS-STARTPTS,${scaleChain}${padPart}[v${i}]`);
+    parts.push(`[${base + i}:v]${videoChain(s, scaleChain)}[v${i}]`);
     vLabels.push(`[v${i}]`);
   });
   parts.push(`${vLabels.join('')}concat=n=${vLabels.length}:v=1:a=0[vcat]`);
