@@ -29,7 +29,6 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = testRoot;
 
 const { generateNarrationDraftBeats } = await import('../lib/final-video/narration-script.ts');
 const { getDb } = await import('../lib/db.ts');
-const { defaultScriptProviderConfigs } = await import('../lib/script-providers/config.ts');
 const db = getDb();
 const originalFetch = globalThis.fetch;
 let fetchCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
@@ -114,9 +113,6 @@ try {
   configure('qwen', 'openai-compatible', 0);
   await assert.rejects(generateNarrationDraftBeats({ sourceText: 'source', targetContentSec: 5, providerId: 'qwen' }), /未配置完整/);
 
-  const geminiDefaults = defaultScriptProviderConfigs.find((item) => item.id === 'gemini');
-  assert.ok(geminiDefaults);
-  geminiDefaults.apiStyle = 'native-gemini';
   configure('gemini', 'native-gemini');
   response = { ok: true, status: 200, json: { candidates: [{ content: { parts: [{ text: '{"sentences":[{"text":"原生成功。"}]}' }] } }] } };
   fetchCalls = [];

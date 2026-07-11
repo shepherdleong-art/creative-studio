@@ -295,7 +295,6 @@ export function seedScriptProviders() {
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       type = excluded.type,
-      apiStyle = excluded.apiStyle,
       keyEnv = excluded.keyEnv,
       baseUrlEnv = excluded.baseUrlEnv,
       modelEnv = excluded.modelEnv,
