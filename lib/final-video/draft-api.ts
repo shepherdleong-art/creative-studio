@@ -89,6 +89,8 @@ export function buildDraftApiPatch(input: {
   const visionChanged = oldConfig.visionProviderId !== next.visionProviderId;
   const orchestrationChanged = oldConfig.orchestrationProviderId !== next.orchestrationProviderId;
   const selectedClipsChanged = !equal(oldConfig.selectedClipIds, next.selectedClipIds);
+  const solverChanged = oldPackage.fps !== nextPackage.fps
+    || oldPackage.durationTolerancePct !== nextPackage.durationTolerancePct;
 
   if (narrationChanged) {
     patch.narrationBeatsJson = '[]';
@@ -107,5 +109,6 @@ export function buildDraftApiPatch(input: {
     patch.arrangementJson = EMPTY_ARRANGEMENT;
     patch.issuesJson = '[]';
   }
+  if (solverChanged) patch.issuesJson = '[]';
   return patch;
 }

@@ -76,7 +76,11 @@ function assertParsedDraft(draft: Record<string, unknown>) {
 }
 
 const snapshots = {
-  narrationBeats: [{ beatId: 'beat-1', groupId: 'group-1', index: 0, text: 'hello', audioPath: '/a.wav', durationSec: 1, startSec: 0 }],
+  narrationBeats: [
+    { beatId: 'beat-1', groupId: 'group-1', index: 0, text: 'one', audioPath: '/a.wav', durationSec: 2, startSec: 0 },
+    { beatId: 'beat-2', groupId: 'group-1', index: 1, text: 'two', audioPath: '/a.wav', durationSec: 2, startSec: 2 },
+    { beatId: 'beat-3', groupId: 'group-2', index: 2, text: 'three', audioPath: '/b.wav', durationSec: 2, startSec: 4 },
+  ],
   clipPool: [{ clipId: 'clip-1', shotId: 'shot-1', shotIndex: 0, videoPath: '/v.mp4', clipDurationSec: 2,
     sourceImageId: 'image-1', sourceImagePath: '/i.png', visualDescription: 'shown', descriptionProviderId: 'vision-provider', descriptionModel: 'vision-model' }],
   arrangement: { assignments: [{ assignmentId: 'a-1', clipId: 'clip-1', beatIds: ['beat-1'] }], gaps: [] },
@@ -132,13 +136,38 @@ try {
   assert.deepEqual((await patchDraft('missing', { revision: 0 })).body, { error: 'stale_revision', message: '草稿已在别处更新，请刷新后重试' });
 
   const arrangementCase = await newSeededDraft();
-  const arrangementResult = await patchDraft(arrangementCase.id, { revision: 0, arrangement: { assignments: [], gaps: [] } });
+  const arrangementResult = await patchDraft(arrangementCase.id, { revision: 0, arrangement: {
+    assignments: [{ assignmentId: 'a-new', clipId: 'clip-1', beatIds: ['beat-1', 'beat-2'] }],
+    gaps: [{ beatId: 'beat-3', reason: '  no suitable clip  ' }],
+  } });
   const arrangementDraft = arrangementResult.body.draft as Record<string, unknown>;
+  assert.deepEqual(arrangementDraft.arrangement, {
+    assignments: [{ assignmentId: 'a-new', clipId: 'clip-1', beatIds: ['beat-1', 'beat-2'] }],
+    gaps: [{ beatId: 'beat-3', reason: 'no suitable clip' }],
+  });
   assert.deepEqual(arrangementDraft.narrationBeats, snapshots.narrationBeats);
   assert.deepEqual(arrangementDraft.clipPool, snapshots.clipPool);
   assert.deepEqual(arrangementDraft.issues, snapshots.issues);
   assert.equal(arrangementDraft.previewJobId, null);
   assert.equal(arrangementDraft.previewRevision, null);
+
+  const invalidPlans = [
+    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: [] }], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: 'gap' })) },
+    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-1', 'beat-3'] }], gaps: [{ beatId: 'beat-2', reason: 'gap' }] },
+    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-2', 'beat-1'] }], gaps: [{ beatId: 'beat-3', reason: 'gap' }] },
+    { assignments: [{ assignmentId: 'a', clipId: 'missing', beatIds: ['beat-1'] }], gaps: [{ beatId: 'beat-2', reason: 'gap' }, { beatId: 'beat-3', reason: 'gap' }] },
+    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['missing'] }], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: 'gap' })) },
+    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-1'] }, { assignmentId: 'b', clipId: 'clip-1', beatIds: ['beat-2'] }], gaps: [{ beatId: 'beat-3', reason: 'gap' }] },
+    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-1'] }], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: 'gap' })) },
+    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-1', 'beat-2', 'beat-3'] }], gaps: [] },
+    { assignments: [], gaps: [{ beatId: 'beat-1', reason: 'gap' }, { beatId: 'beat-2', reason: 'gap' }] },
+    { assignments: [], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: '   ' })) },
+    { assignments: [], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: beat.beatId === 'beat-1' ? 'x'.repeat(201) : 'gap' })) },
+  ];
+  for (const plan of invalidPlans) {
+    const testCase = await newSeededDraft();
+    assert.equal((await patchDraft(testCase.id, { revision: 0, arrangement: plan })).status, 400);
+  }
 
   const appearanceCase = await newSeededDraft();
   const appearance = structuredClone(appearanceCase.workflow);
@@ -150,6 +179,19 @@ try {
   assert.deepEqual(appearanceDraft.issues, snapshots.issues);
   assert.equal(appearanceDraft.previewJobId, null);
   assert.equal(appearanceDraft.previewRevision, null);
+
+  for (const [field, value] of [['fps', 24], ['durationTolerancePct', 0.1]] as const) {
+    const solverCase = await newSeededDraft();
+    const solverConfig = structuredClone(solverCase.workflow);
+    (solverConfig.packageConfig as Record<string, unknown>)[field] = value;
+    const solverDraft = (await patchDraft(solverCase.id, { revision: 0, workflowConfig: solverConfig })).body.draft as Record<string, unknown>;
+    assert.deepEqual(solverDraft.narrationBeats, snapshots.narrationBeats);
+    assert.deepEqual(solverDraft.clipPool, snapshots.clipPool);
+    assert.deepEqual(solverDraft.arrangement, snapshots.arrangement);
+    assert.deepEqual(solverDraft.issues, []);
+    assert.equal(solverDraft.previewJobId, null);
+    assert.equal(solverDraft.previewRevision, null);
+  }
 
   const narrationCase = await newSeededDraft();
   const narrationChanged = structuredClone(narrationCase.workflow);
