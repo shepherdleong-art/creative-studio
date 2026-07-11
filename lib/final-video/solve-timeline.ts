@@ -79,7 +79,8 @@ export function solveTimeline(input: {
 }): TimelineResult {
   const { beats, clips, plan } = validateInput(input);
   const rawNarrationDurationSec = beats.reduce((sum, beat) => sum + beat.durationSec, 0);
-  const contentFrames = Math.ceil(rawNarrationDurationSec * input.fps - SECONDS_EPSILON);
+  let contentFrames = Math.ceil(rawNarrationDurationSec * input.fps);
+  if (contentFrames / input.fps < rawNarrationDurationSec) contentFrames += 1;
   const contentDurationSec = contentFrames / input.fps;
   const totalDurationSec = input.introDurationSec + contentDurationSec;
   const clipById = new Map(clips.map((clip) => [clip.clipId, clip]));

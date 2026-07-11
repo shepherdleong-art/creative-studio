@@ -21,7 +21,7 @@ const solve = (overrides: Partial<Parameters<typeof solveTimeline>[0]> = {}) => 
 const invariant = (result: TimelineResult, raw: number, fps: number) => {
   const sum = result.segments.reduce((total, segment) => total + segment.segmentDurationSec, 0);
   assert.ok(Math.abs(sum - result.contentDurationSec) <= 1e-9);
-  assert.ok(result.contentDurationSec + 1e-9 >= raw);
+  assert.ok(result.contentDurationSec >= raw);
   assert.ok(result.contentDurationSec - raw < 1 / fps);
   for (const segment of result.segments) {
     assert.ok(Math.abs(segment.segmentDurationSec - segment.mediaDurationSec - segment.padStopSec) <= 1e-9);
@@ -100,6 +100,15 @@ assert.equal(result.contentDurationSec, 31 / 30);
 assert.deepEqual(result.segments[0].coveredBeatIds, ['b0']);
 invariant(result, 1.001, 30);
 
+// A narration duration infinitesimally above a frame boundary must never be shortened.
+result = solve({
+  beats: [beat('b0', 0, 1.00000000001)], clips: [clip('c0', 0, 2)],
+  plan: plan([['c0', ['b0']]]), targetDurationSec: 1.00000000001,
+});
+assert.equal(result.contentDurationSec, 31 / 30);
+assert.ok(result.contentDurationSec >= 1.00000000001);
+invariant(result, 1.00000000001, 30);
+
 // Decimal equality uses epsilon and results are deterministic without mutating inputs.
 const input = {
   beats: [beat('b1', 1, 0.2), beat('b0', 0, 0.1)], clips: [clip('c0', 0, 1)],
@@ -110,7 +119,7 @@ const snapshot = structuredClone(input);
 const first = solveTimeline(input);
 assert.deepEqual(input, snapshot);
 assert.deepEqual(solveTimeline(input), first);
-invariant(first, 0.3, 10);
+invariant(first, input.beats.reduce((sum, item) => sum + item.durationSec, 0), 10);
 
 // Stable local error codes cover scalar and collection preconditions and invalid arrangements.
 const expectCode = (code: string, overrides: Partial<Parameters<typeof solveTimeline>[0]>) => assert.throws(
