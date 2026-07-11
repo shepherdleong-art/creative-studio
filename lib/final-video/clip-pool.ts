@@ -12,6 +12,8 @@ interface ClipCandidateRow {
   sourceImagePath: string | null;
 }
 
+interface ShotSetRow { id: string; projectId: string }
+
 function missingIssue(shotId: string, clipId: string | null, reason: string): TimelineIssue {
   return {
     code: 'clip_missing',
@@ -40,7 +42,7 @@ export async function buildClipPool(shotSetId: string): Promise<{
   if (!normalizedShotSetId) throw new Error('shotSetId is required');
 
   const db = getDb();
-  const shotSet = db.prepare(`SELECT id FROM shot_sets WHERE id = ?`).get(normalizedShotSetId);
+  const shotSet = db.prepare(`SELECT id, projectId FROM shot_sets WHERE id = ?`).get(normalizedShotSetId) as ShotSetRow | undefined;
   if (!shotSet) throw new Error(`Shot set not found: ${normalizedShotSetId}`);
 
   const rows = db.prepare(`
@@ -57,6 +59,7 @@ export async function buildClipPool(shotSetId: string): Promise<{
       FROM video_jobs candidate
       WHERE candidate.shotId = s.id
         AND candidate.shotSetId = s.shotSetId
+        AND candidate.projectId = ?
         AND candidate.status = 'succeeded'
       ORDER BY
         COALESCE(candidate.finishedAt, candidate.createdAt) DESC,
@@ -64,10 +67,10 @@ export async function buildClipPool(shotSetId: string): Promise<{
         candidate.id DESC
       LIMIT 1
     )
-    LEFT JOIN image_assets ia ON ia.id = vj.sourceImageId
+    LEFT JOIN image_assets ia ON ia.id = vj.sourceImageId AND ia.projectId = ?
     WHERE s.shotSetId = ?
     ORDER BY s.indexNum ASC, s.id ASC
-  `).all(normalizedShotSetId) as ClipCandidateRow[];
+  `).all(shotSet.projectId, shotSet.projectId, normalizedShotSetId) as ClipCandidateRow[];
 
   const clips: ClipPoolItem[] = [];
   const issues: TimelineIssue[] = [];

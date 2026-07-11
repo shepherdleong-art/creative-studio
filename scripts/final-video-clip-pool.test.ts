@@ -43,6 +43,14 @@ function image(id: string, fileExists = true): string {
   return filePath;
 }
 
+function projectImage(id: string, projectId: string): string {
+  const filePath = path.join(storage, `${id}.png`);
+  fs.writeFileSync(filePath, 'image fixture');
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUES (?, ?, 'output', ?, ?)`)
+    .run(id, projectId, `${id}.png`, filePath);
+  return filePath;
+}
+
 function shot(id: string, setId: string, indexNum: number, sourceImageId: string): void {
   db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId, latestGeneratedImageId) VALUES (?, ?, ?, ?, ?)`)
     .run(id, setId, indexNum, sourceImageId, sourceImageId);
@@ -50,14 +58,14 @@ function shot(id: string, setId: string, indexNum: number, sourceImageId: string
 
 function videoJob(input: {
   id: string; shotId: string; shotSetId?: string; sourceImageId: string; status?: string;
-  localVideoPath?: string | null; durationSec?: number; createdAt?: string; finishedAt?: string | null;
+  projectId?: string; localVideoPath?: string | null; durationSec?: number; createdAt?: string; finishedAt?: string | null;
 }): void {
   db.prepare(`
     INSERT INTO video_jobs
       (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec,
        status, localVideoPath, createdAt, finishedAt)
-    VALUES (?, 'project', ?, ?, ?, 'video-provider', 'model', '', ?, ?, ?, ?, ?)
-  `).run(input.id, input.shotSetId ?? 'set-main', input.shotId, input.sourceImageId,
+    VALUES (?, ?, ?, ?, ?, 'video-provider', 'model', '', ?, ?, ?, ?, ?)
+  `).run(input.id, input.projectId ?? 'project', input.shotSetId ?? 'set-main', input.shotId, input.sourceImageId,
     input.durationSec ?? 99, input.status ?? 'succeeded', input.localVideoPath ?? null,
     input.createdAt ?? '2026-01-01 00:00:00', input.finishedAt ?? null);
 }
@@ -65,6 +73,7 @@ function videoJob(input: {
 try {
   db.prepare(`INSERT OR IGNORE INTO providers (id, name, baseUrl, model) VALUES ('provider', 'Provider', '', 'model')`).run();
   db.prepare(`INSERT INTO projects (id, name, providerId, model, prompt) VALUES ('project', 'Project', 'provider', 'model', '')`).run();
+  db.prepare(`INSERT INTO projects (id, name, providerId, model, prompt) VALUES ('project-other', 'Other', 'provider', 'model', '')`).run();
   db.prepare(`INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel) VALUES ('video-provider', 'Video', 'kling', '', '', '', 'model')`).run();
   db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set-main', 'project', 'Main'), ('set-other', 'project', 'Other')`).run();
 
@@ -79,12 +88,14 @@ try {
   const orderImagePath = image('image-order');
   image('image-missing-path', false);
   image('image-other');
+  projectImage('image-cross-project', 'project-other');
 
   shot('shot-later', 'set-main', 20, oldImagePath ? 'image-old' : '');
   db.prepare(`UPDATE shots SET latestGeneratedImageId = 'image-current' WHERE id = 'shot-later'`).run();
   shot('shot-first', 'set-main', 2, 'image-order');
   shot('shot-no-image', 'set-main', 30, 'image-current');
   shot('shot-no-video', 'set-main', 40, 'image-current');
+  shot('shot-cross-image', 'set-main', 45, 'image-current');
   shot('shot-corrupt', 'set-main', 50, 'image-current');
   shot('shot-no-job', 'set-main', 60, 'image-current');
   shot('shot-other', 'set-other', 0, 'image-other');
@@ -97,6 +108,8 @@ try {
     createdAt: '2026-01-03 00:00:00', finishedAt: '2026-01-03 00:01:00' });
   videoJob({ id: 'job-newer-pending', shotId: 'shot-later', sourceImageId: 'image-current', status: 'pending', localVideoPath: media,
     createdAt: '2026-01-04 00:00:00' });
+  videoJob({ id: 'job-cross-project-newest', shotId: 'shot-later', sourceImageId: 'image-current', projectId: 'project-other', localVideoPath: media,
+    createdAt: '2026-01-05 00:00:00', finishedAt: '2026-01-05 00:01:00' });
   videoJob({ id: 'job-first', shotId: 'shot-first', sourceImageId: 'image-order', localVideoPath: media,
     createdAt: '2025-01-01 00:00:00', finishedAt: '2025-01-01 00:01:00' });
   videoJob({ id: 'job-no-image', shotId: 'shot-no-image', sourceImageId: 'image-missing-path', localVideoPath: media });
@@ -104,6 +117,7 @@ try {
     createdAt: '2025-01-01 00:00:00', finishedAt: '2025-01-01 00:01:00' });
   videoJob({ id: 'job-no-video', shotId: 'shot-no-video', sourceImageId: 'image-current', localVideoPath: path.join(storage, 'missing.mp4'),
     createdAt: '2026-01-01 00:00:00', finishedAt: '2026-01-01 00:01:00' });
+  videoJob({ id: 'job-cross-image', shotId: 'shot-cross-image', sourceImageId: 'image-cross-project', localVideoPath: media });
   const corrupt = path.join(storage, 'corrupt.mp4');
   fs.writeFileSync(corrupt, 'not media');
   videoJob({ id: 'job-corrupt', shotId: 'shot-corrupt', sourceImageId: 'image-current', localVideoPath: corrupt });
@@ -127,10 +141,11 @@ try {
   assert.equal(selected.descriptionModel, null);
   assert.equal(result.clips[0].sourceImagePath, orderImagePath);
 
-  assert.deepEqual(result.issues.map((issue) => issue.clipId), ['job-no-image', 'job-no-video', 'job-corrupt', null]);
+  assert.deepEqual(result.issues.map((issue) => issue.clipId), ['job-no-image', 'job-no-video', 'job-cross-image', 'job-corrupt', null]);
   assert.ok(result.issues.every((issue) => issue.code === 'clip_missing' && issue.severity === 'warning'));
   assert.ok(result.issues.every((issue) => issue.beatIds.length === 0));
   assert.ok(!result.clips.some((clip) => clip.clipId === 'job-old' || clip.clipId === 'job-other' || clip.clipId === 'job-cross-set'));
+  assert.ok(!result.clips.some((clip) => clip.clipId === 'job-cross-project-newest'), 'another project must not displace the valid project clip');
   assert.ok(!result.clips.some((clip) => clip.clipId === 'job-no-video-old-valid'), 'must not fall back after selecting the newest successful job');
   assert.equal(oldImagePath.endsWith('image-old.png'), true);
 
