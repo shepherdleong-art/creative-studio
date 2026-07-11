@@ -9,6 +9,7 @@ export interface ScriptProviderDbConfig {
   apiStyle?: ApiStyle | null;
   enabled?: number | boolean | null;
   maxTokens?: number | null;
+  supportsVision?: number | boolean | null;
 }
 
 export interface ScriptProviderRuntimeConfig {
@@ -23,6 +24,7 @@ export interface ScriptProviderRuntimeConfig {
   configured: boolean;
   missing: string[];
   hasApiKey: boolean;
+  supportsVision: boolean;
 }
 
 export const defaultScriptProviderConfigs: ProviderConfig[] = [
@@ -88,6 +90,12 @@ function enabledValue(value: number | boolean | null | undefined): boolean {
   return typeof value === 'boolean' ? value : value === 1;
 }
 
+/** Unlike enabledValue, this defaults to false — supportsVision's DB column default is 0. */
+function supportsVisionValue(value: number | boolean | null | undefined): boolean {
+  if (value === undefined || value === null) return false;
+  return typeof value === 'boolean' ? value : value === 1;
+}
+
 export function resolveScriptProviderRuntimeConfig(
   defaults: ProviderConfig,
   dbConfig: ScriptProviderDbConfig | undefined,
@@ -100,6 +108,7 @@ export function resolveScriptProviderRuntimeConfig(
   const apiStyle = dbConfig?.apiStyle || defaults.apiStyle;
   const maxTokens = Number(dbConfig?.maxTokens || defaults.maxTokens);
   const enabled = enabledValue(dbConfig?.enabled);
+  const supportsVision = supportsVisionValue(dbConfig?.supportsVision);
   const missing: string[] = [];
 
   if (!isReal(baseUrl)) missing.push('Base URL');
@@ -118,6 +127,7 @@ export function resolveScriptProviderRuntimeConfig(
     configured: enabled && missing.length === 0,
     missing,
     hasApiKey: isReal(apiKey),
+    supportsVision,
   };
 }
 
@@ -128,6 +138,7 @@ export function toScriptProviderMeta(runtime: ScriptProviderRuntimeConfig): Prov
     model: runtime.model,
     configured: runtime.configured,
     apiStyle: runtime.apiStyle,
+    supportsVision: runtime.supportsVision,
     category: 'script',
     type: runtime.apiStyle,
     enabled: runtime.enabled ? 1 : 0,

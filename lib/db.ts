@@ -247,7 +247,8 @@ function initTables(db: Database.Database) {
       defaultModel TEXT NOT NULL DEFAULT '',
       maxTokens INTEGER NOT NULL DEFAULT 8192,
       enabled INTEGER NOT NULL DEFAULT 1,
-      isBuiltin INTEGER NOT NULL DEFAULT 1
+      isBuiltin INTEGER NOT NULL DEFAULT 1,
+      supportsVision INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS narration_providers (

@@ -18,6 +18,15 @@ export interface ChatOptions {
   responseFormat?: 'json_object' | 'text';
 }
 
+/** Normalizes a (trailing-slash-stripped) base URL to the /chat/completions endpoint. */
+function buildChatCompletionsUrl(baseUrl: string): string {
+  return baseUrl.endsWith('/chat/completions')
+    ? baseUrl
+    : baseUrl.endsWith('/v1')
+      ? `${baseUrl}/chat/completions`
+      : `${baseUrl}/v1/chat/completions`;
+}
+
 export async function chatCompletion(
   config: ProviderConfig,
   options: ChatOptions,
@@ -31,11 +40,7 @@ export async function chatCompletion(
     throw new Error(`${config.name} API Key 未配置。请在供应商配置页填写。`);
   }
 
-  const chatUrl = baseUrl.endsWith('/chat/completions')
-    ? baseUrl
-    : baseUrl.endsWith('/v1')
-      ? `${baseUrl}/chat/completions`
-      : `${baseUrl}/v1/chat/completions`;
+  const chatUrl = buildChatCompletionsUrl(baseUrl);
 
   const body: Record<string, unknown> = {
     model,
@@ -63,6 +68,72 @@ export async function chatCompletion(
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`${config.name} (openai-compatible) error ${res.status}: ${errText.slice(0, 500)}`);
+  }
+
+  const data = await res.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+
+  const rawText = data.choices?.[0]?.message?.content || '';
+
+  if (!rawText.trim()) {
+    throw new Error(`${config.name} 返回了空响应`);
+  }
+
+  return rawText;
+}
+
+/**
+ * OpenAI-compatible vision call: same baseUrl/apiKey/model resolution and chat URL
+ * construction as chatCompletion(), but sends an image content part instead of a
+ * plain-text user message. This is a plain-text description response, not JSON —
+ * response_format is intentionally not set. Used by lib/final-video/vision.ts for
+ * source-image description; always receives a fully-resolved runtime.
+ */
+export async function describeImageOpenAiCompatible(
+  config: ProviderConfig,
+  input: { prompt: string; imageBase64: string; mimeType: string },
+  runtime: ScriptProviderRuntimeConfig,
+  signal?: AbortSignal,
+): Promise<string> {
+  const baseUrl = (runtime.baseUrl || config.defaultBaseUrl).replace(/\/$/, '');
+  const apiKey = runtime.apiKey;
+  const model = runtime.model || config.defaultModel;
+
+  if (!apiKey) {
+    throw new Error(`${config.name} API Key 未配置。请在供应商配置页填写。`);
+  }
+
+  const chatUrl = buildChatCompletionsUrl(baseUrl);
+
+  const body = {
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: input.prompt },
+          { type: 'image_url', image_url: { url: `data:${input.mimeType};base64,${input.imageBase64}` } },
+        ],
+      },
+    ],
+    temperature: 0.3,
+    max_tokens: runtime.maxTokens,
+  };
+
+  const res = await fetch(chatUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`${config.name} (openai-compatible vision) error ${res.status}: ${errText.slice(0, 500)}`);
   }
 
   const data = await res.json() as {

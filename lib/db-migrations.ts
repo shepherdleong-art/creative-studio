@@ -93,4 +93,5 @@ export const CORE_DB_MIGRATIONS = [
     model TEXT NOT NULL, createdAt TEXT NOT NULL DEFAULT (datetime('now')), updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (imageAssetId) REFERENCES image_assets(id) ON DELETE CASCADE, UNIQUE(imageAssetId, providerId, model)
   )`,
+  `ALTER TABLE script_providers ADD COLUMN supportsVision INTEGER NOT NULL DEFAULT 0`,
 ];

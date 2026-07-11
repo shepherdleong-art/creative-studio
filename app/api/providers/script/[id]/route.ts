@@ -26,6 +26,10 @@ export async function PUT(
       updates.push('enabled = ?');
       values.push(body.enabled ? 1 : 0);
     }
+    if (body.supportsVision !== undefined) {
+      updates.push('supportsVision = ?');
+      values.push(body.supportsVision ? 1 : 0);
+    }
     if (body.maxTokens !== undefined) {
       updates.push('maxTokens = ?');
       values.push(Number(body.maxTokens) || 8192);

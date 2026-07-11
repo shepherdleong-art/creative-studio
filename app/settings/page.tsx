@@ -24,6 +24,7 @@ interface ScriptProvider {
   type: string;
   model: string;
   apiStyle: string;
+  supportsVision: boolean;
   enabled: number;
   configured: boolean;
   missing?: string[];
@@ -69,6 +70,8 @@ type ProviderFormState = {
   accessKey: string;
   secretKey: string;
   enabled: boolean;
+  /** 仅 script 分类使用：该供应商是否支持图片理解（视觉识别）。 */
+  supportsVision: boolean;
   defaultCostPerImage: number;
   defaultDurationSec: number;
   maxTokens: number;
@@ -88,6 +91,7 @@ const emptyForm: ProviderFormState = {
   accessKey: '',
   secretKey: '',
   enabled: true,
+  supportsVision: false,
   defaultCostPerImage: 0,
   defaultDurationSec: 5,
   maxTokens: 8192,
@@ -167,6 +171,7 @@ export default function SettingsPage() {
       baseUrl: 'baseUrl' in provider ? provider.baseUrl : '',
       model: 'model' in provider ? provider.model : ('defaultModel' in provider ? provider.defaultModel : ''),
       apiStyle: 'apiStyle' in provider ? provider.apiStyle : 'openai-compatible',
+      supportsVision: 'supportsVision' in provider ? Boolean(provider.supportsVision) : false,
       defaultCostPerImage: 'defaultCostPerImage' in provider ? provider.defaultCostPerImage || 0 : 0,
       defaultDurationSec: 'defaultDurationSec' in provider ? provider.defaultDurationSec || 5 : 5,
       maxTokens: 'maxTokens' in provider ? (provider as ScriptProvider).maxTokens || 8192 : 8192,
@@ -235,6 +240,7 @@ export default function SettingsPage() {
         baseUrl: form.baseUrl,
         model: form.model,
         maxTokens: form.maxTokens,
+        supportsVision: form.supportsVision,
         ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
       };
     }
@@ -618,6 +624,20 @@ function ProviderForm({
             <option value="native-gemini">Native Gemini</option>
           </select>
         </Field>
+      )}
+
+      {category === 'script' && (
+        <div className="flex items-end pb-2">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={form.supportsVision}
+              onChange={(e) => onChange({ ...form, supportsVision: e.target.checked })}
+              className="h-4 w-4 rounded border-hairline accent-accent"
+            />
+            <span className="text-sm text-ink-secondary">支持图片理解</span>
+          </label>
+        </div>
       )}
 
       {(category !== 'narration' || form.type === 'openai-compatible-tts') && (

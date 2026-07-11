@@ -45,6 +45,7 @@ assert.deepEqual(
     configured: true,
     missing: [],
     hasApiKey: true,
+    supportsVision: false,
   }
 );
 
@@ -82,6 +83,7 @@ assert.deepEqual(toScriptProviderMeta(scriptEnvFallback), {
   model: 'qwen-default',
   configured: false,
   apiStyle: 'openai-compatible',
+  supportsVision: false,
   category: 'script',
   type: 'openai-compatible',
   enabled: 1,

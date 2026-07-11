@@ -115,6 +115,7 @@ export interface ProviderMeta {
   model: string;
   configured: boolean;
   apiStyle: ApiStyle;
+  supportsVision: boolean;
   category?: 'script';
   type?: string;
   enabled?: number;

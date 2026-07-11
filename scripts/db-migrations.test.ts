@@ -118,6 +118,23 @@ db.prepare(`
   WHERE id = ?
 `).run('Script Provider', 'openai-compatible', 'openai-compatible', 'https://new.script', 'script-model', 1, 8192, 'db-script-key', 'script-provider');
 
+const scriptProviderColumns = db.prepare(`PRAGMA table_info(script_providers)`).all() as Array<{ name: string }>;
+assert.ok(
+  scriptProviderColumns.some((column) => column.name === 'supportsVision'),
+  'script_providers.supportsVision should be added when migrating older installed databases',
+);
+assert.deepEqual(
+  db.prepare(`SELECT supportsVision FROM script_providers WHERE id = 'script-provider'`).get(),
+  { supportsVision: 0 },
+  'existing script_providers rows default supportsVision to 0 after migration',
+);
+db.prepare(`UPDATE script_providers SET supportsVision = 1 WHERE id = 'script-provider'`).run();
+assert.deepEqual(
+  db.prepare(`SELECT supportsVision FROM script_providers WHERE id = 'script-provider'`).get(),
+  { supportsVision: 1 },
+  'supportsVision should accept and persist an explicit opt-in',
+);
+
 const narrationColumns = db.prepare(`PRAGMA table_info(narration_providers)`).all() as Array<{ name: string }>;
 assert.ok(
   narrationColumns.some((column) => column.name === 'baseUrl'),

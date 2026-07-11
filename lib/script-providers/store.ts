@@ -24,6 +24,7 @@ export interface ScriptProviderRow {
   maxTokens: number;
   enabled: number;
   isBuiltin: number;
+  supportsVision: number;
 }
 
 export function getScriptProviderRows(): ScriptProviderRow[] {
