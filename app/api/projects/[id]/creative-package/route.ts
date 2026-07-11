@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { buildGenericZipStream, createZipNameRegistry, reserveZipFilename, ZipImageEntry } from '@/lib/zip-download';
+import { buildGenericZipStream, createZipNameRegistry, reserveZipFilename } from '@/lib/zip-download';
+import type { ZipImageEntry } from '@/lib/zip-download';
 import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
@@ -114,10 +115,10 @@ export async function GET(
       });
     }
 
-    // Add final packaged videos
+    // Add final packaged videos (kind='final' only; preview jobs excluded from ZIP)
     const finalRows = db.prepare(`
       SELECT id, outputPath, coverPath, manifestPath, packageJson, durationSec FROM final_video_jobs
-      WHERE projectId = ? AND status = 'succeeded' AND outputPath IS NOT NULL
+      WHERE projectId = ? AND status = 'succeeded' AND kind = 'final' AND outputPath IS NOT NULL
       ORDER BY createdAt
     `).all(projectId) as Array<{
       id: string; outputPath: string; coverPath: string | null;

@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { getDb } from '../db.ts';
+import { dataRoot } from '../data-root.ts';
 import {
   parseArrangementPlanJson,
   parseClipPoolJson,
@@ -102,7 +105,31 @@ export function updateFinalVideoDraft(id: string, expectedRevision: number, patc
 }
 
 export function deleteFinalVideoDraft(id: string): void {
-  getDb().prepare(`DELETE FROM final_video_drafts WHERE id = ?`).run(id);
+  const db = getDb();
+  const draft = db.prepare(`SELECT id, previewJobId FROM final_video_drafts WHERE id = ?`).get(id) as
+    { id: string; previewJobId: string | null } | undefined;
+  if (!draft) return;
+
+  const storageRoot = path.resolve(path.join(dataRoot(), 'storage'));
+
+  // Clean up draft storage directory
+  const draftDir = path.join(dataRoot(), 'storage', 'final-video-drafts', draft.id);
+  const resolvedDraftDir = path.resolve(draftDir);
+  if (resolvedDraftDir.startsWith(storageRoot + path.sep)) {
+    fs.rmSync(resolvedDraftDir, { recursive: true, force: true });
+  }
+
+  // Clean up associated preview job (directory + DB row), but never delete formal jobs
+  if (draft.previewJobId) {
+    const previewDir = path.join(dataRoot(), 'storage', 'final-videos', draft.previewJobId);
+    const resolvedPreviewDir = path.resolve(previewDir);
+    if (resolvedPreviewDir.startsWith(storageRoot + path.sep)) {
+      fs.rmSync(resolvedPreviewDir, { recursive: true, force: true });
+    }
+    db.prepare(`DELETE FROM final_video_jobs WHERE id = ? AND kind = 'preview'`).run(draft.previewJobId);
+  }
+
+  db.prepare(`DELETE FROM final_video_drafts WHERE id = ?`).run(id);
 }
 
 export function snapshotDraftForJob(
