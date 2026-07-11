@@ -34,13 +34,17 @@ function jobDirectory(jobId: string): string {
 function copyNarrationIntoJob(snapshot: FinalVideoJobSnapshot, jobId: string): FinalVideoJobSnapshot {
   if (snapshot.narrationBeats.length === 0) return snapshot;
 
-  const narrationRoot = path.resolve(dataRoot(), 'storage', 'final-video-drafts', snapshot.draftId, 'narration');
+  const draftsRoot = path.resolve(dataRoot(), 'storage', 'final-video-drafts');
+  const narrationRoot = path.resolve(draftsRoot, snapshot.draftId, 'narration');
+  let realDraftsRoot: string;
   let realNarrationRoot: string;
   try {
+    realDraftsRoot = fs.realpathSync(draftsRoot);
     realNarrationRoot = fs.realpathSync(narrationRoot);
   } catch {
     throw submissionError('草稿口播目录不存在');
   }
+  if (!isWithin(realDraftsRoot, realNarrationRoot)) throw submissionError('草稿口播目录路径不安全');
   const workDir = path.join(jobDirectory(jobId), 'work');
   const narrationDir = path.join(workDir, 'narration');
   fs.mkdirSync(narrationDir, { recursive: true });
@@ -67,22 +71,6 @@ function copyNarrationIntoJob(snapshot: FinalVideoJobSnapshot, jobId: string): F
     return { ...beat, audioPath: copiedPath };
   });
   return { ...snapshot, narrationBeats: beats };
-}
-
-function writeCurrentPreviewWhenSucceeded(jobId: string, draftId: string, draftRevision: number): void {
-  const poll = () => {
-    const job = getDb().prepare(`SELECT status FROM final_video_jobs WHERE id = ?`).get(jobId) as { status: string } | undefined;
-    if (!job || job.status === 'failed' || job.status === 'canceled') return;
-    if (job.status !== 'succeeded') {
-      setTimeout(poll, 25);
-      return;
-    }
-    // Do not bump revision: this result describes exactly the revision it was submitted from.
-    getDb().prepare(`UPDATE final_video_drafts
-      SET previewJobId = ?, previewRevision = ?, updatedAt = datetime('now')
-      WHERE id = ? AND revision = ?`).run(jobId, draftRevision, draftId, draftRevision);
-  };
-  setTimeout(poll, 0);
 }
 
 export function submitFinalVideoDraftJob(input: {
@@ -123,7 +111,6 @@ export function submitFinalVideoDraftJob(input: {
 
   // Queue startup must follow the durable INSERT; a recovered process can now pick up this job safely.
   startFinalVideoQueue();
-  if (input.kind === 'preview') writeCurrentPreviewWhenSucceeded(jobId, input.draftId, input.expectedRevision);
   return jobId;
 }
 

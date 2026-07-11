@@ -39,6 +39,7 @@ export function startFinalVideoQueue(): void {
         `UPDATE final_video_jobs SET status = 'pending', errorMessage = 'Recovered from interrupted run'
          WHERE status = 'running' AND solverVersion = 2`
       ).run();
+      reconcileSucceededPreviewJobs(db);
       for (;;) {
         const job = db
           .prepare(`SELECT * FROM final_video_jobs WHERE status = 'pending' AND solverVersion = 2 ORDER BY createdAt LIMIT 1`)
@@ -75,6 +76,23 @@ function jobStillRunning(jobId: string): boolean {
     | { status: string }
     | undefined;
   return row?.status === 'running';
+}
+
+/** A preview is current only when the draft has not changed since this job was submitted. */
+function writeCurrentPreviewJob(db: ReturnType<typeof getDb>, job: FinalVideoJobRow): void {
+  if (job.kind !== 'preview' || !job.draftId || !Number.isInteger(job.draftRevision)) return;
+  db.prepare(`UPDATE final_video_drafts
+    SET previewJobId = ?, previewRevision = ?, updatedAt = datetime('now')
+    WHERE id = ? AND revision = ?`)
+    .run(job.id, job.draftRevision, job.draftId, job.draftRevision);
+}
+
+/** Recover the crash window after a preview succeeds but before its draft writeback runs. */
+function reconcileSucceededPreviewJobs(db: ReturnType<typeof getDb>): void {
+  const jobs = db.prepare(`SELECT * FROM final_video_jobs
+    WHERE status = 'succeeded' AND kind = 'preview' AND solverVersion = 2
+    ORDER BY createdAt`).all() as FinalVideoJobRow[];
+  for (const job of jobs) writeCurrentPreviewJob(db, job);
 }
 
 /** Runtime parser for the fields persisted by the submission route. */
@@ -236,12 +254,13 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
   );
   fs.rmSync(workDir, { recursive: true, force: true });
 
-  db.prepare(
+  const completed = db.prepare(
     `UPDATE final_video_jobs SET
        status = 'succeeded', currentStep = 'done', progress = 100,
        outputPath = ?, coverPath = ?, manifestPath = ?, durationSec = ?,
        finishedAt = datetime('now')
      WHERE id = ? AND status = 'running'`
   ).run(outputPath, coverPath, manifestPath, actualDuration, job.id);
+  if (completed.changes === 1) writeCurrentPreviewJob(db, job);
   logInfo(`Final video rendered: ${outputPath} (${actualDuration.toFixed(1)}s)`);
 }

@@ -20,6 +20,11 @@ export async function GET(
       error: 'draft_workflow_required',
       message: '预览已迁移到成片草稿工作流，请使用当前草稿创建 preview job',
       currentDraft: draft ?? null,
+      // Keep the v1 panel inert during the migration without calculating a v1 timeline.
+      draft: null,
+      segments: [],
+      issues: [],
+      totalDurationSec: 0,
     });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

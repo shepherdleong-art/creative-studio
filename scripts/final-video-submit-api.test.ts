@@ -117,6 +117,15 @@ try {
   assert.equal((await response(previewRoute.POST(request(0), ctx(wrongStageSeed.id)))).status, 400);
   assert.equal((await response(renderRoute.POST(request(0), ctx(wrongStageSeed.id)))).status, 400);
 
+  const escapedNarrationDraft = await seedDraft({ videoPath });
+  const escapedNarrationDir = path.join(draftNarrationRoot, escapedNarrationDraft.id, 'narration');
+  const outsideNarrationDir = path.join(mediaDir, 'escaped-narration');
+  fs.mkdirSync(outsideNarrationDir, { recursive: true });
+  fs.renameSync(path.join(escapedNarrationDir, 'group-1.m4a'), path.join(outsideNarrationDir, 'group-1.m4a'));
+  fs.rmdirSync(escapedNarrationDir);
+  fs.symlinkSync(outsideNarrationDir, escapedNarrationDir);
+  assert.equal((await response(previewRoute.POST(request(0), ctx(escapedNarrationDraft.id)))).status, 400);
+
   const staleDraft = await seedDraft({ videoPath, revision: 1 });
   assert.deepEqual(await response(previewRoute.POST(request(0), ctx(staleDraft.id))), {
     status: 409, body: { error: 'stale_revision', message: '草稿已在别处更新，请刷新后重试' },
@@ -169,6 +178,10 @@ try {
     error: 'draft_workflow_required',
     message: '预览已迁移到成片草稿工作流，请使用当前草稿创建 preview job',
     currentDraft: { id: stalePreviewDraft.id, stage: 'review', revision: 1, previewJobId: null, previewRevision: null },
+    draft: null,
+    segments: [],
+    issues: [],
+    totalDurationSec: 0,
   });
 
   const previewSource = fs.readFileSync(new URL('../app/api/final-video-drafts/[id]/preview/route.ts', import.meta.url), 'utf8');

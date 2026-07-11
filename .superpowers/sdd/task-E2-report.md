@@ -31,4 +31,11 @@ All commands passed. Lint completed with the repository's existing 39 warnings a
 
 ## Concerns
 
-- Preview writeback is a small in-process completion poller. It conditionally writes by revision, so stale previews are harmless; a future queue completion hook could replace the poller for more direct lifecycle integration.
+- Review identified that an in-process completion poller would lose preview writeback across a server restart, and that the old panel still expects the v1 preview response shape.
+
+## Review fixes
+
+- Moved preview writeback into the queue's successful completion path and added startup reconciliation for already-succeeded v2 preview jobs. Both use the same conditional `draft.id + revision` update, so late previews cannot overwrite a changed draft even after recovery.
+- Added a restart/recovery test covering both a current preview and a stale revision.
+- The legacy route now retains inert `draft`, `segments`, `issues`, and `totalDurationSec` fields alongside its migration notice/current-draft summary. It never recomputes a v1 timeline.
+- Hardened narration-copy containment by canonicalizing the drafts storage root as well as the submitted narration directory; a symlink escaping that root is rejected and regression-tested.

@@ -32,6 +32,7 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = testRoot;
 const { getDb } = await import('../lib/db.ts');
 const { runFfmpeg } = await import('../lib/ffmpeg.ts');
 const { defaultPackageConfig } = await import('../lib/final-video/types.ts');
+const { createFinalVideoDraft, getFinalVideoDraft, updateFinalVideoDraft } = await import('../lib/final-video/draft-store.ts');
 const { startFinalVideoQueue, getFinalVideoQueueStatus } = await import('../lib/final-video/render-queue.ts');
 const legacyRoute = await import('../app/api/projects/[id]/final-videos/route.ts');
 const retryRoute = await import('../app/api/final-video-jobs/[id]/retry/route.ts');
@@ -142,6 +143,26 @@ try {
   const v2Retry = await response(retryRoute.POST(new NextRequest('http://test/api', { method: 'POST' }), ctx('final-v2-retry')));
   assert.deepEqual(v2Retry, { status: 200, body: { success: true } });
   await waitFor(() => (db.prepare(`SELECT status FROM final_video_jobs WHERE id = 'final-v2-retry'`).get() as { status: string }).status === 'succeeded', 'v2 retry');
+
+  // A restart must reconcile preview jobs that had already reached succeeded before
+  // their conditional draft writeback ran; stale revisions remain untouched.
+  const workflowConfig = {
+    packageConfig,
+    narrationScriptProviderId: 'qwen', visionProviderId: 'qwen', orchestrationProviderId: 'qwen', selectedClipIds: [],
+  };
+  const recoveredDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig });
+  const stalePreviewDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig });
+  updateFinalVideoDraft(stalePreviewDraft.id, 0, { stage: 'review' });
+  insertJob.run('recovered-preview', 'succeeded', JSON.stringify(packageConfig), 'preview', recoveredDraft.id, 0,
+    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), 2);
+  insertJob.run('stale-recovered-preview', 'succeeded', JSON.stringify(packageConfig), 'preview', stalePreviewDraft.id, 0,
+    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), 2);
+  startFinalVideoQueue();
+  await waitFor(() => getFinalVideoQueueStatus() === 'idle', 'succeeded preview reconciliation');
+  assert.equal(getFinalVideoDraft(recoveredDraft.id)?.previewJobId, 'recovered-preview');
+  assert.equal(getFinalVideoDraft(recoveredDraft.id)?.previewRevision, 0);
+  assert.equal(getFinalVideoDraft(stalePreviewDraft.id)?.previewJobId, null);
+  assert.equal(getFinalVideoDraft(stalePreviewDraft.id)?.previewRevision, null);
 
   const source = fs.readFileSync(new URL('../lib/final-video/render-queue.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /FROM script_drafts|FROM video_jobs/);
