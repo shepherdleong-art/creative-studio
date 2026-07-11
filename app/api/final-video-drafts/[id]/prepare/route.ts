@@ -1,12 +1,9 @@
 import { NextResponse } from 'next/server';
 import { prepareFinalVideoDraft } from '@/lib/final-video/prepare-draft';
 import { parseDraftResponse } from '@/lib/final-video/draft-api';
+import { errorCode, jsonError, stale } from '@/lib/final-video/route-helpers';
 
 type Context = { params: Promise<{ id: string }> };
-const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
-const stale = () => NextResponse.json(
-  { error: 'stale_revision', message: '草稿已在别处更新，请刷新后重试' }, { status: 409 },
-);
 
 export async function POST(request: Request, { params }: Context) {
   const { id } = await params;
@@ -18,7 +15,7 @@ export async function POST(request: Request, { params }: Context) {
     const draft = await prepareFinalVideoDraft({ draftId: id, expectedRevision: body.revision as number });
     return NextResponse.json({ draft: parseDraftResponse(draft) });
   } catch (error) {
-    const code = error instanceof Error ? (error as Error & { code?: string }).code : undefined;
+    const code = errorCode(error);
     if (code === 'not_found') return jsonError('成片草稿不存在', 404);
     if (code === 'stale_revision') return stale();
     if (code === 'invalid_input') return jsonError(error instanceof Error ? error.message : String(error), 400);

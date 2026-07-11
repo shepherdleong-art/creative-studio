@@ -215,8 +215,8 @@ try {
     totalDurationSec: 0,
   });
 
-  const previewSource = fs.readFileSync(new URL('../app/api/final-video-drafts/[id]/preview/route.ts', import.meta.url), 'utf8');
-  assert.ok(previewSource.indexOf('INSERT INTO final_video_jobs') < previewSource.indexOf('startFinalVideoQueue();'));
+  const submitJobSource = fs.readFileSync(new URL('../lib/final-video/submit-job.ts', import.meta.url), 'utf8');
+  assert.ok(submitJobSource.indexOf('INSERT INTO final_video_jobs') < submitJobSource.indexOf('startFinalVideoQueue();'));
   const legacySource = fs.readFileSync(new URL('../app/api/projects/[id]/final-videos/preview/route.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(legacySource, /buildTimeline|video_jobs|script_drafts/);
   console.log('final-video-submit-api tests passed');

@@ -3,13 +3,9 @@ import { parseDraftResponse } from '@/lib/final-video/draft-api';
 import { getFinalVideoDraft, updateFinalVideoDraft } from '@/lib/final-video/draft-store';
 import { buildArrangement } from '@/lib/final-video/orchestrate';
 import { parseClipPoolJson, parseFinalVideoWorkflowConfigJson, parseNarrationBeatsJson } from '@/lib/final-video/types';
+import { errorCode, jsonError, stale } from '@/lib/final-video/route-helpers';
 
 type Context = { params: Promise<{ id: string }> };
-
-const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
-const stale = () => NextResponse.json(
-  { error: 'stale_revision', message: '草稿已在别处更新，请刷新后重试' }, { status: 409 },
-);
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -46,7 +42,7 @@ export async function POST(request: Request, { params }: Context) {
   try {
     arranging = updateFinalVideoDraft(id, body.revision as number, { stage: 'arranging' });
   } catch (error) {
-    if (error instanceof Error && (error as Error & { code?: string }).code === 'stale_revision') return stale();
+    if (errorCode(error) === 'stale_revision') return stale();
     return jsonError(`更新成片草稿失败：${errorMessage(error)}`, 500);
   }
 
@@ -70,7 +66,7 @@ export async function POST(request: Request, { params }: Context) {
     });
     return NextResponse.json({ draft: parseDraftResponse(draft) });
   } catch (error) {
-    if (error instanceof Error && (error as Error & { code?: string }).code === 'stale_revision') return stale();
+    if (errorCode(error) === 'stale_revision') return stale();
     try {
       const draft = updateFinalVideoDraft(id, currentRevision, {
         stage: 'failed',
@@ -78,7 +74,7 @@ export async function POST(request: Request, { params }: Context) {
       });
       return NextResponse.json({ draft: parseDraftResponse(draft) });
     } catch (recoveryError) {
-      if (recoveryError instanceof Error && (recoveryError as Error & { code?: string }).code === 'stale_revision') return stale();
+      if (errorCode(recoveryError) === 'stale_revision') return stale();
       return jsonError(`编排素材失败：${errorMessage(error)}`, 500);
     }
   }

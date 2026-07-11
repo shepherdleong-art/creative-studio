@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { createFinalVideoDraft, listFinalVideoDrafts } from '@/lib/final-video/draft-store';
 import { parseDraftResponse, parseWorkflowConfig } from '@/lib/final-video/draft-api';
+import { jsonError } from '@/lib/final-video/route-helpers';
 
 type Context = { params: Promise<{ id: string }> };
-const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
 
 export async function POST(request: Request, { params }: Context) {
   try {

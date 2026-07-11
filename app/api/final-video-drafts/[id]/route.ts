@@ -3,12 +3,9 @@ import { deleteFinalVideoDraft, getFinalVideoDraft, updateFinalVideoDraft } from
 import { buildDraftApiPatch, parseArrangement, parseDraftResponse, parseWorkflowConfig } from '@/lib/final-video/draft-api';
 import { assertValidArrangement } from '@/lib/final-video/arrangement';
 import { parseClipPoolJson, parseFinalVideoWorkflowConfigJson, parseNarrationBeatsJson } from '@/lib/final-video/types';
+import { jsonError, stale } from '@/lib/final-video/route-helpers';
 
 type Context = { params: Promise<{ id: string }> };
-const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
-const stale = () => NextResponse.json(
-  { error: 'stale_revision', message: '草稿已在别处更新，请刷新后重试' }, { status: 409 },
-);
 
 export async function GET(_request: Request, { params }: Context) {
   const { id } = await params;
