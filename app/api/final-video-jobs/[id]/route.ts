@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
-import { parseFinalVideoJobSnapshotJson } from '@/lib/final-video/types';
+import { parseFinalVideoJobRowSnapshot } from '@/lib/final-video/types';
 import type { FinalVideoJobRow } from '@/lib/final-video/types';
 import { toStorageImageUrl, toStorageVideoUrl } from '@/lib/storage-url';
 
@@ -18,12 +18,7 @@ export async function GET(
   if (!row) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
   if (row.solverVersion === 2) {
     try {
-      parseFinalVideoJobSnapshotJson(JSON.stringify({
-        kind: row.kind, draftId: row.draftId, draftRevision: row.draftRevision,
-        packageConfig: JSON.parse(row.packageJson), narrationBeats: JSON.parse(row.narrationBeatsJson),
-        clipPool: JSON.parse(row.clipPoolJson), arrangement: JSON.parse(row.arrangementJson),
-        issues: JSON.parse(row.issuesJson), selectedClipIds: JSON.parse(row.selectedClipIdsJson), solverVersion: row.solverVersion,
-      }));
+      parseFinalVideoJobRowSnapshot(row);
     } catch (error) {
       return NextResponse.json({ error: `Job snapshot is invalid: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 });
     }

@@ -16,7 +16,7 @@ import { buildSolvedRenderArgs } from './ffmpeg-graph.ts';
 import { buildCoverArgs } from './cover.ts';
 import { buildNarrationTrack } from './tts.ts';
 import {
-  parseFinalVideoJobSnapshotJson,
+  parseFinalVideoJobRowSnapshot,
   type FinalVideoJobRow,
   type FinalVideoJobSnapshot,
   type PackageConfig,
@@ -96,22 +96,6 @@ function reconcileSucceededPreviewJobs(db: ReturnType<typeof getDb>): void {
   for (const job of jobs) writeCurrentPreviewJob(db, job);
 }
 
-/** Runtime parser for the fields persisted by the submission route. */
-function parseSnapshot(job: FinalVideoJobRow): FinalVideoJobSnapshot {
-  return parseFinalVideoJobSnapshotJson(JSON.stringify({
-    kind: job.kind,
-    draftId: job.draftId,
-    draftRevision: job.draftRevision,
-    packageConfig: JSON.parse(job.packageJson),
-    narrationBeats: JSON.parse(job.narrationBeatsJson),
-    clipPool: JSON.parse(job.clipPoolJson),
-    arrangement: JSON.parse(job.arrangementJson),
-    issues: JSON.parse(job.issuesJson),
-    selectedClipIds: JSON.parse(job.selectedClipIdsJson),
-    solverVersion: job.solverVersion,
-  }));
-}
-
 function previewDimensions(pkg: PackageConfig): { width: number; height: number } {
   if (pkg.width <= 540) return { width: pkg.width, height: pkg.height };
   const height = Math.max(2, Math.round((pkg.height * 540) / pkg.width / 2) * 2);
@@ -131,7 +115,7 @@ function applyRenderProfile(args: string[], kind: FinalVideoJobSnapshot['kind'])
 
 async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
   const db = getDb();
-  const snapshot = parseSnapshot(job);
+  const snapshot = parseFinalVideoJobRowSnapshot(job);
   const pkg = snapshot.packageConfig;
   const dimensions = snapshot.kind === 'preview' ? previewDimensions(pkg) : { width: pkg.width, height: pkg.height };
   const logInfo = (message: string) =>

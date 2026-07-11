@@ -271,3 +271,18 @@ export function parseFinalVideoJobSnapshotJson(json: string): FinalVideoJobSnaps
     arrangement: parseArrangementPlanJson(JSON.stringify(value.arrangement)), issues: parseTimelineIssuesJson(JSON.stringify(value.issues)),
     selectedClipIds: stringArray(value.selectedClipIds, 'jobSnapshotJson.selectedClipIds'), solverVersion: 2 };
 }
+/** Re-assemble and validate the immutable snapshot persisted across a job row's *Json columns. */
+export function parseFinalVideoJobRowSnapshot(row: FinalVideoJobRow): FinalVideoJobSnapshot {
+  return parseFinalVideoJobSnapshotJson(JSON.stringify({
+    kind: row.kind,
+    draftId: row.draftId,
+    draftRevision: row.draftRevision,
+    packageConfig: JSON.parse(row.packageJson),
+    narrationBeats: JSON.parse(row.narrationBeatsJson),
+    clipPool: JSON.parse(row.clipPoolJson),
+    arrangement: JSON.parse(row.arrangementJson),
+    issues: JSON.parse(row.issuesJson),
+    selectedClipIds: JSON.parse(row.selectedClipIdsJson),
+    solverVersion: row.solverVersion,
+  }));
+}
