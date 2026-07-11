@@ -9,6 +9,7 @@ import { getDb } from '../db.ts';
 import { dataRoot } from '../data-root.ts';
 import { writeLog } from '../logger.ts';
 import { runFfmpeg, probeDurationSec, supportsFilter } from '../ffmpeg.ts';
+import { solveBgmTimeline } from './solve-bgm-timeline.ts';
 import { solveTimeline } from './solve-timeline.ts';
 import { buildNarrationAss, resolveFontFile } from './subtitles.ts';
 import { buildSolvedRenderArgs } from './ffmpeg-graph.ts';
@@ -106,6 +107,7 @@ function parseSnapshot(job: FinalVideoJobRow): FinalVideoJobSnapshot {
     clipPool: JSON.parse(job.clipPoolJson),
     arrangement: JSON.parse(job.arrangementJson),
     issues: JSON.parse(job.issuesJson),
+    selectedClipIds: JSON.parse(job.selectedClipIdsJson),
     solverVersion: job.solverVersion,
   }));
 }
@@ -137,16 +139,25 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
 
   setStep(job.id, 'preparing', 5);
   const introDurationSec = pkg.cover.introDurationSec > 0 ? pkg.cover.introDurationSec : 0;
-  const timeline = solveTimeline({
-    plan: snapshot.arrangement,
-    beats: snapshot.narrationBeats,
-    clips: snapshot.clipPool,
-    introDurationSec,
-    targetDurationSec: pkg.targetDurationSec,
-    durationTolerancePct: pkg.durationTolerancePct,
-    maxClipSeconds: pkg.maxClipSeconds,
-    fps: pkg.fps,
-  });
+  const timeline = pkg.mode === 'bgm-only'
+    ? solveBgmTimeline({
+      selectedClipIds: snapshot.selectedClipIds,
+      clips: snapshot.clipPool,
+      introDurationSec,
+      targetDurationSec: pkg.targetDurationSec,
+      maxClipSeconds: pkg.maxClipSeconds,
+      fps: pkg.fps,
+    })
+    : solveTimeline({
+      plan: snapshot.arrangement,
+      beats: snapshot.narrationBeats,
+      clips: snapshot.clipPool,
+      introDurationSec,
+      targetDurationSec: pkg.targetDurationSec,
+      durationTolerancePct: pkg.durationTolerancePct,
+      maxClipSeconds: pkg.maxClipSeconds,
+      fps: pkg.fps,
+    });
   if (timeline.segments.length === 0) throw new Error('不可变草稿快照没有可渲染的画面');
   db.prepare(`UPDATE final_video_jobs SET timelineJson = ? WHERE id = ?`).run(JSON.stringify(timeline.segments), job.id);
   for (const issue of [...snapshot.issues, ...timeline.issues]) {
@@ -159,7 +170,7 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
   fs.mkdirSync(workDir, { recursive: true });
 
   let narrationTrackPath: string | null = null;
-  if (snapshot.narrationBeats.length > 0) {
+  if (pkg.mode === 'narration' && snapshot.narrationBeats.length > 0) {
     setStep(job.id, 'narration', 20);
     const cachedTrack = path.join(workDir, 'narration.m4a');
     narrationTrackPath = fs.existsSync(cachedTrack)
@@ -188,7 +199,7 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
 
   setStep(job.id, 'subtitles', 30);
   let assPath: string | null = null;
-  if (pkg.subtitle.enabled && snapshot.narrationBeats.some((beat) => beat.text.trim())) {
+  if (pkg.mode === 'narration' && pkg.subtitle.enabled && snapshot.narrationBeats.some((beat) => beat.text.trim())) {
     assPath = path.join(workDir, 'subs.ass');
     fs.writeFileSync(
       assPath,
@@ -245,6 +256,7 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
       package: pkg,
       beats: snapshot.narrationBeats,
       arrangement: snapshot.arrangement,
+      selectedClipIds: snapshot.selectedClipIds,
       issues: snapshot.issues,
       solverVersion: snapshot.solverVersion,
       timeline: timeline.segments,

@@ -71,6 +71,9 @@ assert.match(introAudioGraph, /subtitles=filename='C\\:\/work\/it\\'s\.ass':font
 assert.equal(introAudio[introAudio.lastIndexOf('-t') + 1], '4.000');
 assert.match(solvedGraph(solvedArgs([solvedSeg()], { narrationTrackPath: '/narr.m4a' })), /\[1:a\]anull\[aout\]/);
 assert.match(solvedGraph(solvedArgs([solvedSeg()], { bgm: { path: '/bgm.mp3', volume: 0.3, ducking: false } })), /afade=t=out/);
+assert.match(solvedGraph(solvedArgs([solvedSeg({ segmentDurationSec: 6, mediaDurationSec: 5, trimEndToSec: 5, padStopSec: 1 })], {
+  totalDurationSec: 6, bgm: { path: '/bgm.mp3', volume: 0.3, ducking: false },
+})), /afade=t=out:st=4\.50:d=1\.5/);
 assert.match(solvedGraph(solvedArgs([solvedSeg()], {
   narrationTrackPath: '/narr.m4a', bgm: { path: '/bgm.mp3', volume: 0.3, ducking: true }, duckingSupported: false,
 })), /amix=inputs=2/);

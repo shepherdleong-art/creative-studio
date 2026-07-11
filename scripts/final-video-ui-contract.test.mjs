@@ -26,7 +26,13 @@ assert.match(panel, /previewJob\?\.draftRevision\s*===\s*draft\.revision/);
 assert.match(panel, /草稿已更新/);
 assert.match(panel, /不自动调用/);
 assert.match(panel, /供应商/);
-assert.match(panel, /FLOW\s*=\s*\['创建草稿', '准备口播', '识别画面', 'AI 编排', '审核', '预览', '正式渲染'\]/);
+assert.match(panel, /bgm-only/);
+assert.match(panel, /纯 BGM/);
+assert.match(panel, /targetDurationSec/);
+assert.match(panel, /准备素材/);
+assert.match(panel, /mode === 'narration'/);
+assert.match(panel, /新建草稿/);
+assert.match(panel, /bgmSelectionReady/);
 
 // Lifecycle: a newly submitted final job must refresh the list until it reaches a terminal state.
 assert.match(panel, /activeFinalJob/);
@@ -47,6 +53,9 @@ assert.match(editor, /NarrationTimeline/);
 assert.match(editor, /视觉缺口/);
 assert.match(editor, /交换画面|换片/);
 assert.match(editor, /上移|下移/);
+assert.match(editor, /mode === 'bgm-only'/);
+assert.match(editor, /selectedClipIds/);
+assert.match(editor, /目标时长/);
 
 assert.match(picker, /缩略图|画面素材/);
 assert.match(timeline, /beat\.text/);

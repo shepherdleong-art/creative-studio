@@ -156,6 +156,37 @@ try {
   await waitFor(() => getFinalVideoDraft(previewDraft.id)?.previewJobId === previewJobId, 'preview draft writeback');
   assert.equal(getFinalVideoDraft(previewDraft.id)?.previewRevision, 0);
 
+  // BGM-only submission persists the explicit review selection in the immutable
+  // job snapshot and does not require a script, narration beat, or arrangement.
+  const bgmBase = defaultPackageConfig();
+  const bgmWorkflow = {
+    packageConfig: {
+      ...bgmBase,
+      outputName: 'submitted-bgm', width: 120, height: 240, fps: 25,
+      targetDurationSec: 0.4, maxClipSeconds: 4,
+      subtitle: { ...bgmBase.subtitle, enabled: true },
+    },
+    narrationScriptProviderId: '', visionProviderId: '', orchestrationProviderId: '', selectedClipIds: ['clip-1'],
+  };
+  const emptyBgmDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig: { ...bgmWorkflow, selectedClipIds: [] } });
+  db.prepare(`UPDATE final_video_drafts SET stage = 'review' WHERE id = ?`).run(emptyBgmDraft.id);
+  assert.equal((await response(previewRoute.POST(request(0), ctx(emptyBgmDraft.id)))).status, 400, 'BGM-only jobs need at least one selected clip');
+  const bgmDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig: bgmWorkflow });
+  db.prepare(`UPDATE final_video_drafts SET stage = 'review', clipPoolJson = ? WHERE id = ?`)
+    .run(JSON.stringify([{
+      clipId: 'clip-1', shotId: 'shot-1', shotIndex: 0, videoPath, clipDurationSec: 0.4,
+      sourceImageId: 'image-1', sourceImagePath: path.join(testRoot, 'source.png'), visualDescription: '',
+      descriptionProviderId: null, descriptionModel: null,
+    }]), bgmDraft.id);
+  const submittedBgm = await response(previewRoute.POST(request(0), ctx(bgmDraft.id)));
+  assert.equal(submittedBgm.status, 200);
+  const bgmJobId = submittedBgm.body.jobId as string;
+  const bgmJob = db.prepare(`SELECT selectedClipIdsJson, narrationBeatsJson, arrangementJson FROM final_video_jobs WHERE id = ?`).get(bgmJobId) as Record<string, string>;
+  assert.deepEqual(JSON.parse(bgmJob.selectedClipIdsJson), ['clip-1']);
+  assert.deepEqual(JSON.parse(bgmJob.narrationBeatsJson), []);
+  assert.deepEqual(JSON.parse(bgmJob.arrangementJson), { assignments: [], gaps: [] });
+  await waitFor(() => getFinalVideoQueueStatus() === 'idle', 'bgm queue');
+
   const finalDraft = await seedDraft({ videoPath });
   const submittedFinal = await response(renderRoute.POST(request(0), ctx(finalDraft.id)));
   assert.equal(submittedFinal.status, 200);

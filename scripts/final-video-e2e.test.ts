@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runFfmpeg, probeDurationSec } from '../lib/ffmpeg.ts';
+import { solveBgmTimeline } from '../lib/final-video/solve-bgm-timeline.ts';
 import { solveTimeline } from '../lib/final-video/solve-timeline.ts';
 import { buildSolvedRenderArgs } from '../lib/final-video/ffmpeg-graph.ts';
 import { buildCoverArgs } from '../lib/final-video/cover.ts';
@@ -76,6 +77,35 @@ async function main() {
     `solved duration ${solvedDuration} ≈ ${solved.totalDurationSec} within ${solvedTolerance}`,
   );
 
+  const bgmSolved = solveBgmTimeline({
+    selectedClipIds: ['clip-2', 'clip-1'],
+    clips: [
+      {
+        clipId: 'clip-1', shotId: 'a', shotIndex: 1, videoPath: c1, clipDurationSec: clip1Duration,
+        sourceImageId: 'image-1', sourceImagePath: '/unused/image-1.png', visualDescription: '',
+        descriptionProviderId: null, descriptionModel: null,
+      },
+      {
+        clipId: 'clip-2', shotId: 'b', shotIndex: 2, videoPath: c2, clipDurationSec: clip2Duration,
+        sourceImageId: 'image-2', sourceImagePath: '/unused/image-2.png', visualDescription: '',
+        descriptionProviderId: null, descriptionModel: null,
+      },
+    ],
+    introDurationSec: 1, targetDurationSec: 5.5, maxClipSeconds: 4, fps: 30,
+  });
+  assert.deepEqual(bgmSolved.segments.map((segment) => segment.clipId), ['clip-2', 'clip-1']);
+  assert.equal(bgmSolved.segments.at(-1)?.trimEndToSec, 1.5, 'BGM solver trims the final selected clip to target');
+  const bgmSolvedOut = path.join(tmp, 'bgm-solved-final.mp4');
+  const bgmSolvedArgs = buildSolvedRenderArgs({
+    segments: bgmSolved.segments, width: 540, height: 960, fps: 30,
+    totalDurationSec: bgmSolved.totalDurationSec, introDurationSec: 1, coverJpgPath: coverJpg,
+    narrationTrackPath: null, bgm: { path: bgm, volume: 0.3, ducking: false }, duckingSupported: false,
+    assPath: null, fontsDir: '', outputPath: bgmSolvedOut,
+  });
+  assert.match(bgmSolvedArgs[bgmSolvedArgs.indexOf('-filter_complex') + 1], /afade=t=out:st=4\.00:d=1\.5/);
+  await runFfmpeg(bgmSolvedArgs, { timeoutMs: 120_000 });
+  const bgmSolvedDuration = await probeDurationSec(bgmSolvedOut);
+  assert.ok(Math.abs(bgmSolvedDuration - bgmSolved.totalDurationSec) <= solvedTolerance, `BGM duration ${bgmSolvedDuration} ≈ ${bgmSolved.totalDurationSec}`);
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`final-video-e2e passed (solved ${solvedDuration.toFixed(2)}s output)`);
 }

@@ -67,7 +67,7 @@ assert.throws(
 
 const validSnapshot = {
   kind: 'final', draftId: 'draft-1', draftRevision: 3, packageConfig: validPackage,
-  narrationBeats: [], clipPool: [], arrangement: { assignments: [], gaps: [] }, issues: [], solverVersion: 2,
+  narrationBeats: [], clipPool: [], arrangement: { assignments: [], gaps: [] }, issues: [], selectedClipIds: [], solverVersion: 2,
 };
 assert.deepEqual(parseFinalVideoJobSnapshotJson(JSON.stringify(validSnapshot)), validSnapshot);
 assert.throws(

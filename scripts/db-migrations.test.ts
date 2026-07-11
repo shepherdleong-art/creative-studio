@@ -172,18 +172,19 @@ assert.deepEqual(
 const finalVideoColumns = db.prepare(`PRAGMA table_info(final_video_jobs)`).all() as Array<{ name: string }>;
 for (const name of [
   'kind', 'draftId', 'draftRevision', 'narrationBeatsJson', 'clipPoolJson',
-  'arrangementJson', 'issuesJson', 'solverVersion',
+  'arrangementJson', 'issuesJson', 'selectedClipIdsJson', 'solverVersion',
 ]) {
   assert.ok(finalVideoColumns.some((column) => column.name === name), `final_video_jobs.${name} should be added`);
 }
 
 assert.deepEqual(
-  db.prepare(`SELECT id, kind, solverVersion, arrangementJson FROM final_video_jobs WHERE id = 'old-final-job'`).get(),
+  db.prepare(`SELECT id, kind, solverVersion, arrangementJson, selectedClipIdsJson FROM final_video_jobs WHERE id = 'old-final-job'`).get(),
   {
     id: 'old-final-job',
     kind: 'final',
     solverVersion: 1,
     arrangementJson: '{"assignments":[],"gaps":[]}',
+    selectedClipIdsJson: '[]',
   },
   'old final-video rows remain readable with legacy solverVersion 1 defaults',
 );

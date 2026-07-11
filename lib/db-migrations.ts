@@ -72,6 +72,7 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE final_video_jobs ADD COLUMN clipPoolJson TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE final_video_jobs ADD COLUMN arrangementJson TEXT NOT NULL DEFAULT '{"assignments":[],"gaps":[]}'`,
   `ALTER TABLE final_video_jobs ADD COLUMN issuesJson TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE final_video_jobs ADD COLUMN selectedClipIdsJson TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE final_video_jobs ADD COLUMN solverVersion INTEGER NOT NULL DEFAULT 1`,
   `CREATE TABLE IF NOT EXISTS final_video_drafts (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT NOT NULL, scriptDraftId TEXT,

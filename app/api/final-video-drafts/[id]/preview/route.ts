@@ -91,17 +91,26 @@ export function submitFinalVideoDraftJob(input: {
       if (draft.stage !== 'review') throw submissionError('只有审核中的成片草稿可以提交渲染');
 
       const snapshot = snapshotDraftForJob(input.draftId, input.expectedRevision, input.kind);
+      if (snapshot.packageConfig.mode === 'bgm-only') {
+        if (snapshot.selectedClipIds.length === 0) throw submissionError('纯 BGM 模式请至少选择一条视频素材');
+        if (new Set(snapshot.selectedClipIds).size !== snapshot.selectedClipIds.length) throw submissionError('同一视频素材不能重复选择');
+        const clipIds = new Set(snapshot.clipPool.map((clip) => clip.clipId));
+        if (snapshot.selectedClipIds.some((clipId) => !clipIds.has(clipId))) {
+          throw submissionError('已选择的视频素材不存在，请刷新后重新选择');
+        }
+      }
       createdDirectory = true;
       const copiedSnapshot = copyNarrationIntoJob(snapshot, jobId);
       db.prepare(`INSERT INTO final_video_jobs (
         id, projectId, shotSetId, scriptDraftId, status, packageJson, kind, draftId, draftRevision,
-        narrationBeatsJson, clipPoolJson, arrangementJson, issuesJson, solverVersion
-      ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        narrationBeatsJson, clipPoolJson, arrangementJson, issuesJson, selectedClipIdsJson, solverVersion
+      ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           jobId, draft.projectId, draft.shotSetId, draft.scriptDraftId,
           JSON.stringify(copiedSnapshot.packageConfig), copiedSnapshot.kind, copiedSnapshot.draftId, copiedSnapshot.draftRevision,
           JSON.stringify(copiedSnapshot.narrationBeats), JSON.stringify(copiedSnapshot.clipPool),
-          JSON.stringify(copiedSnapshot.arrangement), JSON.stringify(copiedSnapshot.issues), copiedSnapshot.solverVersion,
+          JSON.stringify(copiedSnapshot.arrangement), JSON.stringify(copiedSnapshot.issues),
+          JSON.stringify(copiedSnapshot.selectedClipIds), copiedSnapshot.solverVersion,
         );
     })();
   } catch (error) {

@@ -339,6 +339,7 @@ function initTables(db: Database.Database) {
       clipPoolJson TEXT NOT NULL DEFAULT '[]',
       arrangementJson TEXT NOT NULL DEFAULT '{"assignments":[],"gaps":[]}',
       issuesJson TEXT NOT NULL DEFAULT '[]',
+      selectedClipIdsJson TEXT NOT NULL DEFAULT '[]',
       solverVersion INTEGER NOT NULL DEFAULT 2,
       outputPath TEXT,
       coverPath TEXT,

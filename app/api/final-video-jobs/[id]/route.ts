@@ -22,7 +22,7 @@ export async function GET(
         kind: row.kind, draftId: row.draftId, draftRevision: row.draftRevision,
         packageConfig: JSON.parse(row.packageJson), narrationBeats: JSON.parse(row.narrationBeatsJson),
         clipPool: JSON.parse(row.clipPoolJson), arrangement: JSON.parse(row.arrangementJson),
-        issues: JSON.parse(row.issuesJson), solverVersion: row.solverVersion,
+        issues: JSON.parse(row.issuesJson), selectedClipIds: JSON.parse(row.selectedClipIdsJson), solverVersion: row.solverVersion,
       }));
     } catch (error) {
       return NextResponse.json({ error: `Job snapshot is invalid: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 });

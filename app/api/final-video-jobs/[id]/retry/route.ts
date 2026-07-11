@@ -13,7 +13,7 @@ export async function POST(
   const db = getDb();
   const row = db.prepare(`SELECT * FROM final_video_jobs WHERE id = ?`).get(id) as {
     status: string; kind: string; draftId: string | null; draftRevision: number | null; packageJson: string;
-    narrationBeatsJson: string; clipPoolJson: string; arrangementJson: string; issuesJson: string; solverVersion: number;
+    narrationBeatsJson: string; clipPoolJson: string; arrangementJson: string; issuesJson: string; selectedClipIdsJson: string; solverVersion: number;
   } | undefined;
   if (!row) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
   if (row.status !== 'failed' && row.status !== 'canceled') {
@@ -27,7 +27,7 @@ export async function POST(
       kind: row.kind, draftId: row.draftId, draftRevision: row.draftRevision,
       packageConfig: JSON.parse(row.packageJson), narrationBeats: JSON.parse(row.narrationBeatsJson),
       clipPool: JSON.parse(row.clipPoolJson), arrangement: JSON.parse(row.arrangementJson),
-      issues: JSON.parse(row.issuesJson), solverVersion: row.solverVersion,
+      issues: JSON.parse(row.issuesJson), selectedClipIds: JSON.parse(row.selectedClipIdsJson), solverVersion: row.solverVersion,
     }));
   } catch (error) {
     return NextResponse.json({ error: `任务快照无效，不能重试: ${error instanceof Error ? error.message : String(error)}` }, { status: 409 });

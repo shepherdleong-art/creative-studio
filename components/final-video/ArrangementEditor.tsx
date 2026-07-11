@@ -16,13 +16,22 @@ function assignmentForBeat(draft: ReviewDraft, beatId: string) {
   return draft.arrangement.assignments.find((assignment) => assignment.beatIds.includes(beatId));
 }
 
-export default function ArrangementEditor({ draft, onDraft, onConflict, onError }: {
+export default function ArrangementEditor(props: {
   draft: ReviewDraft;
   onDraft: (draft: ReviewDraft) => void;
   onConflict: (message: string) => void;
   onError: (message: string) => void;
+  mode?: 'narration' | 'bgm-only';
+  selectedClipIds?: string[];
+  targetDurationSec?: number;
+  onSelectedClipIds?: (clipIds: string[]) => Promise<void>;
 }) {
+  const {
+    draft, onDraft, onConflict, onError,
+    mode = 'narration', selectedClipIds = [], targetDurationSec = 0, onSelectedClipIds,
+  } = props;
   const [editingBeatId, setEditingBeatId] = useState<string | null>(null);
+  const [savingSelection, setSavingSelection] = useState(false);
   const orderedAssignments = useMemo(() => [...draft.arrangement.assignments].sort((left, right) => {
     const leftIndex = Math.min(...left.beatIds.map((beatId) => draft.narrationBeats.find((beat) => beat.beatId === beatId)?.index ?? Infinity));
     const rightIndex = Math.min(...right.beatIds.map((beatId) => draft.narrationBeats.find((beat) => beat.beatId === beatId)?.index ?? Infinity));
@@ -77,6 +86,45 @@ export default function ArrangementEditor({ draft, onDraft, onConflict, onError 
 
   const editingAssignment = editingBeatId ? assignmentForBeat(draft, editingBeatId) : undefined;
   const unavailableClipIds = draft.arrangement.assignments.filter((assignment) => assignment.assignmentId !== editingAssignment?.assignmentId).map((assignment) => assignment.clipId);
+  const saveSelectedClipIds = async (next: string[]) => {
+    if (!onSelectedClipIds || savingSelection) return;
+    setSavingSelection(true);
+    try { await onSelectedClipIds(next); } finally { setSavingSelection(false); }
+  };
+  const toggleClip = (clipId: string) => {
+    const next = selectedClipIds.includes(clipId)
+      ? selectedClipIds.filter((id) => id !== clipId)
+      : [...selectedClipIds, clipId];
+    void saveSelectedClipIds(next);
+  };
+  const moveSelectedClip = (clipId: string, direction: -1 | 1) => {
+    const index = selectedClipIds.indexOf(clipId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= selectedClipIds.length) return;
+    const next = [...selectedClipIds];
+    [next[index], next[target]] = [next[target], next[index]];
+    void saveSelectedClipIds(next);
+  };
+
+  if (mode === 'bgm-only') {
+    return (
+      <section className="space-y-3 rounded-lg border border-hairline p-4">
+        <div><h3 className="text-sm font-medium">选择 BGM 画面</h3><p className="mt-1 text-xs text-ink-tertiary">目标时长 {targetDurationSec} 秒（含片头）。按下方选择顺序播放，每条正常画面最多 4 秒。</p></div>
+        <div className="space-y-2">
+          {draft.clipPool.map((clip) => {
+            const index = selectedClipIds.indexOf(clip.clipId);
+            const selected = index >= 0;
+            return <div key={clip.clipId} className="flex flex-wrap items-center gap-2 rounded border border-hairline p-2 text-xs">
+              <label className="flex min-w-0 flex-1 items-center gap-2"><input type="checkbox" checked={selected} disabled={savingSelection} onChange={() => toggleClip(clip.clipId)} /><span className="truncate">#{clip.shotIndex + 1} {clip.visualDescription || '视频画面'}</span></label>
+              {selected && <><span className="text-ink-tertiary">第 {index + 1} 条</span><button type="button" disabled={savingSelection || index === 0} onClick={() => moveSelectedClip(clip.clipId, -1)} className="btn-secondary btn-sm">上移</button><button type="button" disabled={savingSelection || index === selectedClipIds.length - 1} onClick={() => moveSelectedClip(clip.clipId, 1)} className="btn-secondary btn-sm">下移</button></>}
+            </div>;
+          })}
+        </div>
+        {draft.clipPool.length === 0 && <p className="text-xs text-ink-tertiary">当前分镜组还没有成功生成的视频素材。</p>}
+      </section>
+    );
+  }
+
   return (
     <section className="space-y-3 rounded-lg border border-hairline p-4">
       <div><h3 className="text-sm font-medium">审核编排</h3><p className="mt-1 text-xs text-ink-tertiary">每一句口播都是独立画面操作单位；红色项需要分配画面。</p></div>

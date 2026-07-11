@@ -122,6 +122,7 @@ export function snapshotDraftForJob(
     clipPool: parseClipPoolJson(row.clipPoolJson),
     arrangement: parseArrangementPlanJson(row.arrangementJson),
     issues: parseTimelineIssuesJson(row.issuesJson),
+    selectedClipIds: [...workflowConfig.selectedClipIds],
     solverVersion: 2,
   };
 }

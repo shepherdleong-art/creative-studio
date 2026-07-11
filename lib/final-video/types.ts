@@ -60,14 +60,14 @@ export interface FinalVideoDraftRow {
 export interface FinalVideoJobSnapshot {
   kind: 'preview' | 'final'; draftId: string; draftRevision: number; packageConfig: PackageConfig;
   narrationBeats: NarrationBeat[]; clipPool: ClipPoolItem[]; arrangement: ArrangementPlan;
-  issues: TimelineIssue[]; solverVersion: 2;
+  issues: TimelineIssue[]; selectedClipIds: string[]; solverVersion: 2;
 }
 export interface FinalVideoJobRow {
   id: string; projectId: string; shotSetId: string; scriptDraftId: string | null;
   status: 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled'; currentStep: string; progress: number;
   packageJson: string; timelineJson: string; kind: 'preview' | 'final'; draftId: string | null;
   draftRevision: number | null; narrationBeatsJson: string; clipPoolJson: string; arrangementJson: string;
-  issuesJson: string; solverVersion: number; outputPath: string | null; coverPath: string | null;
+  issuesJson: string; selectedClipIdsJson: string; solverVersion: number; outputPath: string | null; coverPath: string | null;
   manifestPath: string | null; durationSec: number | null; errorMessage: string | null;
   startedAt: string | null; finishedAt: string | null; createdAt: string;
 }
@@ -268,5 +268,6 @@ export function parseFinalVideoJobSnapshotJson(json: string): FinalVideoJobSnaps
   return { kind: value.kind, draftId: string(value.draftId, 'jobSnapshotJson.draftId'), draftRevision: number(value.draftRevision, 'jobSnapshotJson.draftRevision'),
     packageConfig: mergePackageConfigAt(object(value.packageConfig, 'jobSnapshotJson.packageConfig'), 'jobSnapshotJson.packageConfig'),
     narrationBeats: parseNarrationBeatsJson(JSON.stringify(value.narrationBeats)), clipPool: parseClipPoolJson(JSON.stringify(value.clipPool)),
-    arrangement: parseArrangementPlanJson(JSON.stringify(value.arrangement)), issues: parseTimelineIssuesJson(JSON.stringify(value.issues)), solverVersion: 2 };
+    arrangement: parseArrangementPlanJson(JSON.stringify(value.arrangement)), issues: parseTimelineIssuesJson(JSON.stringify(value.issues)),
+    selectedClipIds: stringArray(value.selectedClipIds, 'jobSnapshotJson.selectedClipIds'), solverVersion: 2 };
 }

@@ -121,7 +121,7 @@ try {
   assert.deepEqual(snapshot, {
     kind: 'preview', draftId: first.id, draftRevision: 2, packageConfig,
     narrationBeats: JSON.parse(narrationBeatsJson), clipPool: JSON.parse(clipPoolJson),
-    arrangement: JSON.parse(arrangementJson), issues: JSON.parse(issuesJson), solverVersion: 2,
+    arrangement: JSON.parse(arrangementJson), issues: JSON.parse(issuesJson), selectedClipIds: ['clip-1'], solverVersion: 2,
   });
   snapshot.packageConfig.outputName = 'mutated';
   snapshot.narrationBeats[0].text = 'mutated';
