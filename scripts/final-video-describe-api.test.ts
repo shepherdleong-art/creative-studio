@@ -32,7 +32,7 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = testRoot;
 const describeRoute = await import('../app/api/final-video-drafts/[id]/describe/route.ts');
 const { getDb } = await import('../lib/db.ts');
 const { defaultPackageConfig } = await import('../lib/final-video/types.ts');
-const { createFinalVideoDraft, getFinalVideoDraft } = await import('../lib/final-video/draft-store.ts');
+const { createFinalVideoDraft, getFinalVideoDraft, updateFinalVideoDraft } = await import('../lib/final-video/draft-store.ts');
 
 const db = getDb();
 const storage = path.join(testRoot, 'storage');
@@ -89,12 +89,15 @@ async function result(pending: Promise<Response>) { const response = await pendi
 async function describe(id: string, body: unknown) { return result(describeRoute.POST(request(body), ctx(id))); }
 
 const originalFetch = globalThis.fetch;
-let resolveFetch!: () => void;
-const fetchReleased = new Promise<void>((resolve) => { resolveFetch = resolve; });
+let fetchPause: Promise<void> | null = null;
+let releaseFetch: () => void = () => { throw new Error('fetch was not paused'); };
 let fetchStarted: (() => void) | null = null;
+function pauseFetch(): void {
+  fetchPause = new Promise<void>((resolve) => { releaseFetch = resolve; });
+}
 globalThis.fetch = (async () => {
   fetchStarted?.();
-  await fetchReleased;
+  if (fetchPause) await fetchPause;
   return Response.json({ choices: [{ message: { content: '远程识别的主图：白色杯子。' } }] });
 }) as typeof fetch;
 
@@ -113,29 +116,31 @@ try {
     .run(firstImage, secondImage, firstImage);
 
   // Provider validation occurs before the temporary describing state is persisted.
-  const noVision = seedDraft({ providerId: 'kimi', clips: [clip({ clipId: 'clip-1', imageId: 'image-1', imagePath: firstImage })] });
-  assert.equal((await describe(noVision.id, { revision: 0 })).status, 400);
+  const noVision = seedDraft({ clips: [clip({ clipId: 'clip-1', imageId: 'image-1', imagePath: firstImage })] });
+  assert.equal((await describe(noVision.id, { revision: 0, providerId: 'kimi' })).status, 400);
   assert.deepEqual(getFinalVideoDraft(noVision.id), noVision);
-  const unconfigured = seedDraft({ providerId: 'gemini', clips: [clip({ clipId: 'clip-2', imageId: 'image-1', imagePath: firstImage })] });
-  assert.equal((await describe(unconfigured.id, { revision: 0 })).status, 400);
+  const unconfigured = seedDraft({ clips: [clip({ clipId: 'clip-2', imageId: 'image-1', imagePath: firstImage })] });
+  assert.equal((await describe(unconfigured.id, { revision: 0, providerId: 'gemini' })).status, 400);
   assert.deepEqual(getFinalVideoDraft(unconfigured.id), unconfigured);
-  assert.equal((await describe('missing', { revision: 0 })).status, 404);
-  assert.equal((await describe(noVision.id, {})).status, 400);
-  assert.equal((await describe(noVision.id, { revision: -1 })).status, 400);
-  assert.equal((await describe(noVision.id, { revision: 0, force: 'yes' })).status, 400);
+  assert.equal((await describe('missing', { revision: 0, providerId: 'qwen' })).status, 404);
+  assert.match((await describe(noVision.id, { revision: 0 })).body.error as string, /providerId/);
+  assert.equal((await describe(noVision.id, { revision: -1, providerId: 'qwen' })).status, 400);
+  assert.equal((await describe(noVision.id, { revision: 0, providerId: 'qwen', force: 'yes' })).status, 400);
 
   // The in-flight stage is durable; success returns to narration-ready, increments twice,
   // writes description provenance, and invalidates all derived arrangement/preview state.
-  const success = seedDraft({ clips: [clip({ clipId: 'clip-success', imageId: 'image-1', imagePath: firstImage })] });
+  const success = seedDraft({ providerId: 'kimi', clips: [clip({ clipId: 'clip-success', imageId: 'image-1', imagePath: firstImage })] });
   let markFetchStarted!: () => void;
   const started = new Promise<void>((resolve) => { markFetchStarted = resolve; });
   fetchStarted = markFetchStarted;
-  const pending = describe(success.id, { revision: 0 });
+  pauseFetch();
+  const pending = describe(success.id, { revision: 0, providerId: 'qwen' });
   await started;
   const inFlight = getFinalVideoDraft(success.id)!;
   assert.equal(inFlight.stage, 'describing');
   assert.equal(inFlight.revision, 1);
-  resolveFetch();
+  releaseFetch();
+  fetchPause = null;
   const successResult = await pending;
   assert.equal(successResult.status, 200);
   const successDraft = successResult.body.draft as Record<string, unknown>;
@@ -155,7 +160,7 @@ try {
     clip({ clipId: 'clip-cached', imageId: 'image-2', imagePath: secondImage }),
     clip({ clipId: 'clip-bad-path', imageId: 'image-3', imagePath: '/outside/data-root.png' }),
   ] });
-  const partialResult = await describe(partial.id, { revision: 0 });
+  const partialResult = await describe(partial.id, { revision: 0, providerId: 'qwen' });
   assert.equal(partialResult.status, 200);
   const partialDraft = partialResult.body.draft as Record<string, unknown>;
   assert.equal(partialDraft.stage, 'failed');
@@ -170,7 +175,27 @@ try {
   assert.deepEqual(db.prepare(`SELECT description FROM clip_visual_descriptions WHERE imageAssetId = 'image-2' AND providerId = 'qwen' AND model = 'vision-model'`).get(), { description: '缓存中的成功描述。' });
 
   // Optimistic locking applies to the initial transition and returns the shared API contract.
-  assert.deepEqual(await describe(success.id, { revision: 0 }), {
+  assert.deepEqual(await describe(success.id, { revision: 0, providerId: 'qwen' }), {
+    status: 409,
+    body: { error: 'stale_revision', message: '草稿已在别处更新，请刷新后重试' },
+  });
+
+  // A later writer can win after the durable describing transition. The endpoint must
+  // surface that final compare-and-swap conflict instead of returning the newer draft as
+  // if this describe request completed successfully.
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUES ('image-4', 'project-1', 'output', 'race.png', ?)`).run(firstImage);
+  const race = seedDraft({ clips: [clip({ clipId: 'clip-race', imageId: 'image-4', imagePath: firstImage })] });
+  let markRaceFetchStarted!: () => void;
+  const raceStarted = new Promise<void>((resolve) => { markRaceFetchStarted = resolve; });
+  fetchStarted = markRaceFetchStarted;
+  pauseFetch();
+  const racePending = describe(race.id, { revision: 0, providerId: 'qwen' });
+  await raceStarted;
+  assert.equal(getFinalVideoDraft(race.id)?.stage, 'describing');
+  updateFinalVideoDraft(race.id, 1, { stage: 'review' });
+  releaseFetch();
+  fetchPause = null;
+  assert.deepEqual(await racePending, {
     status: 409,
     body: { error: 'stale_revision', message: '草稿已在别处更新，请刷新后重试' },
   });

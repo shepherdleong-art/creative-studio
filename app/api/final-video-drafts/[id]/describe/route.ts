@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { parseDraftResponse } from '@/lib/final-video/draft-api';
 import { getFinalVideoDraft, updateFinalVideoDraft } from '@/lib/final-video/draft-store';
 import { describeClipPool } from '@/lib/final-video/vision';
-import { parseClipPoolJson, parseFinalVideoWorkflowConfigJson } from '@/lib/final-video/types';
+import { parseClipPoolJson } from '@/lib/final-video/types';
 import { resolveStoredScriptProvider } from '@/lib/script-providers/store';
 
 type Context = { params: Promise<{ id: string }> };
@@ -35,18 +35,19 @@ export async function POST(request: Request, { params }: Context) {
   const { id } = await params;
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonError('请求内容必须是 JSON 对象', 400);
-  const unknownKeys = Object.keys(body).filter((key) => !['revision', 'force'].includes(key));
+  const unknownKeys = Object.keys(body).filter((key) => !['revision', 'providerId', 'force'].includes(key));
   if (unknownKeys.length) return jsonError(`不支持的字段：${unknownKeys.join(', ')}`, 400);
   if (!Number.isInteger(body.revision) || (body.revision as number) < 0) return jsonError('revision 必须是非负整数', 400);
+  if (typeof body.providerId !== 'string' || !body.providerId.trim()) return jsonError('providerId 必须是非空字符串', 400);
   if ('force' in body && typeof body.force !== 'boolean') return jsonError('force 必须是布尔值', 400);
+  const providerId = body.providerId.trim();
 
   const initial = getFinalVideoDraft(id);
   if (!initial) return jsonError('成片草稿不存在', 404);
 
   let clips;
   try {
-    const workflowConfig = parseFinalVideoWorkflowConfigJson(initial.workflowConfigJson);
-    validateVisionProvider(workflowConfig.visionProviderId);
+    validateVisionProvider(providerId);
     clips = parseClipPoolJson(initial.clipPoolJson);
   } catch (error) {
     const code = error instanceof Error ? (error as Error & { code?: string }).code : undefined;
@@ -62,12 +63,11 @@ export async function POST(request: Request, { params }: Context) {
     return jsonError(`更新成片草稿失败：${error instanceof Error ? error.message : String(error)}`, 500);
   }
 
-  const workflowConfig = parseFinalVideoWorkflowConfigJson(describing.workflowConfigJson);
   const currentRevision = describing.revision;
   try {
     const described = await describeClipPool({
       clips,
-      providerId: workflowConfig.visionProviderId,
+      providerId,
       force: body.force as boolean | undefined,
     });
     const failed = described.failures.length > 0;
@@ -82,15 +82,15 @@ export async function POST(request: Request, { params }: Context) {
     });
     return NextResponse.json({ draft: parseDraftResponse(draft) });
   } catch (error) {
+    if (error instanceof Error && (error as Error & { code?: string }).code === 'stale_revision') return stale();
     try {
       const draft = updateFinalVideoDraft(id, currentRevision, {
         stage: 'failed',
         errorMessage: error instanceof Error ? error.message : String(error),
       });
       return NextResponse.json({ draft: parseDraftResponse(draft) });
-    } catch {
-      const current = getFinalVideoDraft(id);
-      if (current) return NextResponse.json({ draft: parseDraftResponse(current) });
+    } catch (recoveryError) {
+      if (recoveryError instanceof Error && (recoveryError as Error & { code?: string }).code === 'stale_revision') return stale();
       return jsonError(`描述素材失败：${error instanceof Error ? error.message : String(error)}`, 500);
     }
   }
