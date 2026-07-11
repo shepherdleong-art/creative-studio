@@ -109,6 +109,14 @@ assert.equal(result.contentDurationSec, 31 / 30);
 assert.ok(result.contentDurationSec >= 1.00000000001);
 invariant(result, 1.00000000001, 30);
 
+// Binary multiplication noise must not add a whole frame when the quotient is exactly representable.
+result = solve({
+  beats: [beat('b0', 0, 2.2)], clips: [clip('c0', 0, 3)],
+  plan: plan([['c0', ['b0']]]), targetDurationSec: 2.2, fps: 25,
+});
+assert.equal(result.contentDurationSec, 55 / 25);
+invariant(result, 2.2, 25);
+
 // Decimal equality uses epsilon and results are deterministic without mutating inputs.
 const input = {
   beats: [beat('b1', 1, 0.2), beat('b0', 0, 0.1)], clips: [clip('c0', 0, 1)],
