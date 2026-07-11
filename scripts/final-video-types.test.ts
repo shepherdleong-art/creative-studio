@@ -5,7 +5,9 @@ import {
   parseArrangementPlanJson,
   parseClipPoolJson,
   parseFinalVideoWorkflowConfigJson,
+  parseFinalVideoJobSnapshotJson,
   parseNarrationBeatsJson,
+  parsePackageConfigJson,
   parseTimelineIssuesJson,
 } from '../lib/final-video/types.ts';
 
@@ -26,6 +28,47 @@ assert.equal(oldNone.targetDurationSec, 15);
 assert.equal(oldNone.durationTolerancePct, 0.2);
 assert.equal(oldNone.maxClipSeconds, 4);
 assert.equal(defaultPackageConfig().mode, 'bgm-only');
+
+const validPackage = {
+  mode: 'bgm-only', outputName: 'valid', width: 1080, height: 1920, fps: 30,
+  targetDurationSec: 15, durationTolerancePct: 0.2, maxClipSeconds: 4,
+  narration: { mode: 'none' }, bgm: null,
+  cover: { titleText: '', titleSize: 72, titleColor: '#fff', introDurationSec: 0, templateId: 'minimal-01' },
+  subtitle: { enabled: true, fontSize: 56, color: '#fff', strokeColor: '#000', strokeWidth: 2, marginBottomPct: 18 },
+};
+const invalidPackages = [
+  { ...validPackage, mode: 'invalid' },
+  { ...validPackage, width: '1080' },
+  { ...validPackage, targetDurationSec: '15' },
+  { ...validPackage, narration: { mode: 'tts', providerId: 7, voice: 'Cherry', speed: 1 } },
+  { ...validPackage, bgm: { path: '/music.mp3', volume: 'loud', ducking: true } },
+  { ...validPackage, cover: { ...validPackage.cover, introDurationSec: '0' } },
+  { ...validPackage, subtitle: { ...validPackage.subtitle, enabled: 'yes' } },
+];
+for (const invalid of invalidPackages) {
+  assert.throws(() => parsePackageConfigJson(JSON.stringify(invalid)), /packageJson/i);
+}
+
+const validWorkflow = {
+  packageConfig: validPackage,
+  narrationScriptProviderId: 'script', visionProviderId: 'vision', orchestrationProviderId: 'orchestrator',
+  selectedClipIds: ['clip-1'],
+};
+assert.throws(
+  () => parseFinalVideoWorkflowConfigJson(JSON.stringify({ ...validWorkflow, packageConfig: { ...validPackage, fps: '30' } })),
+  /workflowConfigJson\.packageConfig/i,
+);
+
+const validSnapshot = {
+  kind: 'final', draftId: 'draft-1', draftRevision: 3, packageConfig: validPackage,
+  narrationBeats: [], clipPool: [], arrangement: { assignments: [], gaps: [] }, issues: [], solverVersion: 2,
+};
+assert.deepEqual(parseFinalVideoJobSnapshotJson(JSON.stringify(validSnapshot)), validSnapshot);
+assert.throws(
+  () => parseFinalVideoJobSnapshotJson(JSON.stringify({ ...validSnapshot, packageConfig: { ...validPackage, height: '1920' } })),
+  /jobSnapshotJson\.packageConfig/i,
+);
+assert.throws(() => parseFinalVideoJobSnapshotJson(JSON.stringify({ ...validSnapshot, solverVersion: 1 })), /solverVersion/i);
 
 const expectCorruptJsonError = (parser: (value: string) => unknown, label: string) => {
   assert.throws(() => parser('{broken'), new RegExp(`${label}.*invalid JSON`, 'i'));

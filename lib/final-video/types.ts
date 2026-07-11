@@ -49,6 +49,11 @@ export interface TimelineSegment {
   gapBeatIds: string[]; clipDurationSec: number; mediaDurationSec: number; trimEndToSec: number | null;
   padStopSec: number; segmentDurationSec: number; startSec: number;
 }
+/** v1 renderer compatibility shape; removed with the legacy timeline implementation in a later task. */
+export interface LegacyTimelineSegment {
+  shotId: string; shotIndex: number; videoJobId: string; clipPath: string; clipDurationSec: number;
+  voiceover: string; subtitle: string; narrationDurationSec: number; segmentDurationSec: number; startSec: number;
+}
 export interface TimelineResult { segments: TimelineSegment[]; issues: TimelineIssue[]; contentDurationSec: number; totalDurationSec: number }
 export type FinalVideoDraftStage = 'draft' | 'preparing' | 'narration-ready' | 'describing' | 'arranging' | 'review' | 'failed';
 export interface FinalVideoDraftRow {
@@ -87,6 +92,7 @@ const isObject = (value: unknown): value is JsonObject => !!value && typeof valu
 const string = (value: unknown, field: string): string => { if (typeof value !== 'string') throw new Error(`${field} must be a string`); return value; };
 const number = (value: unknown, field: string): number => { if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${field} must be a finite number`); return value; };
 const nullableString = (value: unknown, field: string): string | null => value === null ? null : string(value, field);
+const boolean = (value: unknown, field: string): boolean => { if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`); return value; };
 const stringArray = (value: unknown, field: string): string[] => {
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
   return value.map((item, index) => string(item, `${field}[${index}]`));
@@ -101,10 +107,65 @@ function object(value: unknown, field: string): JsonObject {
   return value;
 }
 
-/** 兼容旧 package JSON：没有顶层 mode 时根据 narration.mode 映射。 */
-export function mergePackageConfig(partial: unknown): PackageConfig {
+function optionalString(value: JsonObject, key: string, field: string): void {
+  if (key in value) string(value[key], `${field}.${key}`);
+}
+function optionalNumber(value: JsonObject, key: string, field: string): void {
+  if (key in value) number(value[key], `${field}.${key}`);
+}
+function validatePackageConfigInput(partial: JsonObject, field: string): void {
+  if ('mode' in partial && partial.mode !== 'narration' && partial.mode !== 'bgm-only') {
+    throw new Error(`${field}.mode must be narration or bgm-only`);
+  }
+  for (const key of ['outputName'] as const) optionalString(partial, key, field);
+  for (const key of ['width', 'height', 'fps', 'targetDurationSec', 'durationTolerancePct', 'maxClipSeconds'] as const) {
+    optionalNumber(partial, key, field);
+  }
+
+  let narration: JsonObject | undefined;
+  if ('narration' in partial) {
+    narration = object(partial.narration, `${field}.narration`);
+    if (narration.mode !== 'tts' && narration.mode !== 'none') throw new Error(`${field}.narration.mode is invalid`);
+    optionalString(narration, 'providerId', `${field}.narration`);
+    optionalString(narration, 'voice', `${field}.narration`);
+    optionalNumber(narration, 'speed', `${field}.narration`);
+  }
+  if (partial.mode === 'narration' && narration?.mode !== 'tts') throw new Error(`${field}.narration.mode must be tts`);
+  if (partial.mode === 'bgm-only' && narration?.mode !== 'none') throw new Error(`${field}.narration.mode must be none`);
+  if (narration?.mode === 'tts') {
+    string(narration.providerId, `${field}.narration.providerId`);
+    string(narration.voice, `${field}.narration.voice`);
+    number(narration.speed, `${field}.narration.speed`);
+  }
+
+  if ('bgm' in partial && partial.bgm !== null) {
+    const bgm = object(partial.bgm, `${field}.bgm`);
+    string(bgm.path, `${field}.bgm.path`);
+    number(bgm.volume, `${field}.bgm.volume`);
+    boolean(bgm.ducking, `${field}.bgm.ducking`);
+  }
+  if ('cover' in partial) {
+    const cover = object(partial.cover, `${field}.cover`);
+    optionalString(cover, 'titleText', `${field}.cover`); optionalNumber(cover, 'titleSize', `${field}.cover`);
+    optionalString(cover, 'titleColor', `${field}.cover`); optionalNumber(cover, 'introDurationSec', `${field}.cover`);
+    if ('templateId' in cover && !['luxury-01', 'minimal-01', 'luxury-02'].includes(string(cover.templateId, `${field}.cover.templateId`))) {
+      throw new Error(`${field}.cover.templateId is invalid`);
+    }
+    if ('sellingPoints' in cover) stringArray(cover.sellingPoints, `${field}.cover.sellingPoints`);
+  }
+  if ('subtitle' in partial) {
+    const subtitle = object(partial.subtitle, `${field}.subtitle`);
+    if ('enabled' in subtitle) boolean(subtitle.enabled, `${field}.subtitle.enabled`);
+    for (const key of ['fontSize', 'strokeWidth', 'marginBottomPct'] as const) optionalNumber(subtitle, key, `${field}.subtitle`);
+    optionalString(subtitle, 'color', `${field}.subtitle`); optionalString(subtitle, 'strokeColor', `${field}.subtitle`);
+  }
+}
+
+/** 兼容旧 package JSON：缺失字段使用默认值；任何显式字段必须通过结构校验。 */
+function mergePackageConfigAt(partial: unknown, field: string): PackageConfig {
   const base = defaultPackageConfig();
   if (!isObject(partial)) return base;
+  validatePackageConfigInput(partial, field);
   const narrationInput = isObject(partial.narration) ? partial.narration : {};
   const mode = partial.mode === 'narration' || (!('mode' in partial) && narrationInput.mode === 'tts')
     ? 'narration' : 'bgm-only';
@@ -132,15 +193,18 @@ export function mergePackageConfig(partial: unknown): PackageConfig {
   }
   return { ...common, mode, narration: { mode: 'none' } };
 }
+export function mergePackageConfig(partial: unknown): PackageConfig {
+  return mergePackageConfigAt(partial, 'packageConfig');
+}
 
 export function parsePackageConfigJson(json: string): PackageConfig {
   const value = parseJson(json, 'packageJson');
   object(value, 'packageJson');
-  return mergePackageConfig(value);
+  return mergePackageConfigAt(value, 'packageJson');
 }
 export function parseFinalVideoWorkflowConfigJson(json: string): FinalVideoWorkflowConfig {
   const value = object(parseJson(json, 'workflowConfigJson'), 'workflowConfigJson');
-  const packageConfig = mergePackageConfig(object(value.packageConfig, 'workflowConfigJson.packageConfig'));
+  const packageConfig = mergePackageConfigAt(object(value.packageConfig, 'workflowConfigJson.packageConfig'), 'workflowConfigJson.packageConfig');
   const selectedClipIds = stringArray(value.selectedClipIds, 'workflowConfigJson.selectedClipIds');
   if (packageConfig.mode === 'narration' && selectedClipIds.length) throw new Error('workflowConfigJson.selectedClipIds must be empty in narration mode');
   return { packageConfig, narrationScriptProviderId: string(value.narrationScriptProviderId, 'workflowConfigJson.narrationScriptProviderId'),
@@ -195,7 +259,7 @@ export function parseFinalVideoJobSnapshotJson(json: string): FinalVideoJobSnaps
   if (value.kind !== 'preview' && value.kind !== 'final') throw new Error('jobSnapshotJson.kind is invalid');
   if (value.solverVersion !== 2) throw new Error('jobSnapshotJson.solverVersion must be 2');
   return { kind: value.kind, draftId: string(value.draftId, 'jobSnapshotJson.draftId'), draftRevision: number(value.draftRevision, 'jobSnapshotJson.draftRevision'),
-    packageConfig: mergePackageConfig(object(value.packageConfig, 'jobSnapshotJson.packageConfig')),
+    packageConfig: mergePackageConfigAt(object(value.packageConfig, 'jobSnapshotJson.packageConfig'), 'jobSnapshotJson.packageConfig'),
     narrationBeats: parseNarrationBeatsJson(JSON.stringify(value.narrationBeats)), clipPool: parseClipPoolJson(JSON.stringify(value.clipPool)),
     arrangement: parseArrangementPlanJson(JSON.stringify(value.arrangement)), issues: parseTimelineIssuesJson(JSON.stringify(value.issues)), solverVersion: 2 };
 }

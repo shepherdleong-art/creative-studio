@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { runFfmpeg, probeDurationSec } from '../ffmpeg.ts';
-import type { TimelineSegment } from './types.ts';
+import type { LegacyTimelineSegment } from './types.ts';
 import type { NarrationProviderRuntimeConfig } from '../narration-providers/config.ts';
 
 const QWEN_TTS_URL = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
@@ -135,7 +135,7 @@ export async function synthesizeNarrationSegments(opts: {
 
 /** 按最终时间线拼装整轨：每段 apad 到 segmentDurationSec，无口播段填静音，片头前置静音。 */
 export async function buildNarrationTrack(opts: {
-  timeline: TimelineSegment[];
+  timeline: LegacyTimelineSegment[];
   files: Record<string, string>;
   introDurationSec: number;
   workDir: string;

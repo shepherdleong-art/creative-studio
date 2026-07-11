@@ -1,5 +1,5 @@
 // lib/final-video/timeline.ts
-import type { TimelineSegment } from './types.ts';
+import type { LegacyTimelineSegment } from './types.ts';
 
 /** 口播结束后画面多停留的秒数，避免音频戛然而止 */
 export const NARRATION_TAIL_PAD_SEC = 0.15;
@@ -25,7 +25,7 @@ export interface TimelineIssue {
 }
 
 export interface TimelineResult {
-  segments: TimelineSegment[];
+  segments: LegacyTimelineSegment[];
   issues: TimelineIssue[];
   totalDurationSec: number;
 }
@@ -40,7 +40,7 @@ export function buildTimeline(input: {
 }): TimelineResult {
   const intro = input.introDurationSec ?? 0;
   const clipByShot = new Map(input.clips.map((c) => [c.shotId, c]));
-  const segments: TimelineSegment[] = [];
+  const segments: LegacyTimelineSegment[] = [];
   const issues: TimelineIssue[] = [];
   let cursor = intro;
 

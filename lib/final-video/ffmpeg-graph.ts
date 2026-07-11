@@ -5,7 +5,7 @@
  *   音频：口播/BGM 组合，BGM 可 sidechaincompress ducking（探测失败退化 amix）
  * 参考：混剪计划 §Task 3.2 音频图的 TS 移植；输出时长用显式 -t 保证确定性。
  */
-import type { TimelineSegment } from './types.ts';
+import type { LegacyTimelineSegment } from './types.ts';
 
 /** subtitles/fontsdir 的 filter 内路径转义（Windows 盘符冒号 + 反斜杠 + 单引号） */
 export function escapeSubtitlePath(p: string): string {
@@ -22,7 +22,7 @@ export function escapeDrawtext(text: string): string {
 }
 
 export interface RenderGraphInput {
-  segments: TimelineSegment[];
+  segments: LegacyTimelineSegment[];
   width: number;
   height: number;
   fps: number;

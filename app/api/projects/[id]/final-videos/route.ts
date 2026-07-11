@@ -41,8 +41,9 @@ export async function POST(
     }
 
     const pkg = mergePackageConfig(body.packageConfig);
-    if (pkg.narration.mode !== 'none' && pkg.narration.mode !== 'tts') {
-      return NextResponse.json({ error: `未知口播模式: ${pkg.narration.mode}` }, { status: 400 });
+    const narrationMode = (pkg.narration as { mode: string }).mode;
+    if (narrationMode !== 'none' && narrationMode !== 'tts') {
+      return NextResponse.json({ error: `未知口播模式: ${narrationMode}` }, { status: 400 });
     }
     if (pkg.narration.mode === 'tts') {
       try {
