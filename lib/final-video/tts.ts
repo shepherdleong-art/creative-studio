@@ -103,38 +103,6 @@ export async function synthesizeOne(
   return { buffer: await synthesizeQwen(text, voice, rt.apiKey), speedApplied: false };
 }
 
-export async function synthesizeNarrationSegments(opts: {
-  segments: Array<{ shotId: string; text: string }>;
-  voice: string;
-  speed: number;
-  workDir: string;
-  /** 指定使用的口播供应商；缺省时自动挑第一个已配置的供应商。 */
-  providerId?: string;
-  onProgress?: (done: number, total: number) => void;
-}): Promise<{ files: Record<string, string>; durations: Record<string, number> }> {
-  const rt = await resolveNarrationRuntime(opts.providerId);
-  const speed = Math.min(2, Math.max(0.5, opts.speed || 1));
-  const targets = opts.segments.filter((s) => s.text.trim());
-  const files: Record<string, string> = {};
-  const durations: Record<string, number> = {};
-  let done = 0;
-  for (const seg of targets) {
-    // 无扩展名：合成结果可能是 wav（qwen）或 mp3（openai 兼容），ffmpeg 按内容探测容器，无需扩展名提示。
-    const raw = path.join(opts.workDir, `tts-${seg.shotId}-raw`);
-    const final = path.join(opts.workDir, `tts-${seg.shotId}.m4a`);
-    const { buffer, speedApplied } = await synthesizeOne(seg.text.trim(), opts.voice, speed, rt);
-    fs.writeFileSync(raw, buffer);
-    const atempo = !speedApplied && Math.abs(speed - 1) > 0.01 ? ['-filter:a', `atempo=${speed}`] : [];
-    await runFfmpeg(['-i', raw, ...atempo, '-c:a', 'aac', '-b:a', '128k', '-y', final], { timeoutMs: 60_000 });
-    fs.unlinkSync(raw);
-    files[seg.shotId] = final;
-    durations[seg.shotId] = await probeDurationSec(final);
-    done += 1;
-    opts.onProgress?.(done, targets.length);
-  }
-  return { files, durations };
-}
-
 const TIMING_EPSILON_SEC = 1e-6;
 
 function requirePositiveFinite(name: string, value: number): void {
