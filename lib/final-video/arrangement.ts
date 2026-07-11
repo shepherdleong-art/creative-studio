@@ -4,6 +4,11 @@ export type ArrangementValidationResult =
   | { ok: true; plan: ArrangementPlan }
   | { ok: false; issues: TimelineIssue[] };
 
+// One nanosecond absorbs binary floating-point noise in second sums without permitting a meaningful overrun.
+const DURATION_EPSILON_SECONDS = 1e-9;
+const exceedsDurationLimit = (durationSec: number, maxDurationSec: number) =>
+  durationSec - maxDurationSec > DURATION_EPSILON_SECONDS;
+
 const invalidIssue = (message: string, beatIds: string[] = [], clipId: string | null = null): TimelineIssue => ({
   code: 'arrangement_invalid', severity: 'error', message, beatIds, clipId,
 });
@@ -54,7 +59,7 @@ export function validateArrangement(
     }
     if (positions[0] <= previousAssignmentEnd) return fail('编排片段的口播节拍必须整体升序', [...assignment.beatIds], assignment.clipId);
     previousAssignmentEnd = positions.at(-1) as number;
-    if (duration > maxClipSeconds) return fail('编排片段时长超过单画面时长上限', [...assignment.beatIds], assignment.clipId);
+    if (exceedsDurationLimit(duration, maxClipSeconds)) return fail('编排片段时长超过单画面时长上限', [...assignment.beatIds], assignment.clipId);
     assignments.push({ assignmentId: assignment.assignmentId, clipId: assignment.clipId, beatIds: [...assignment.beatIds] });
   }
 
@@ -100,7 +105,7 @@ export function buildFallbackArrangement(
 
   while (beatIndex < orderedBeats.length) {
     const current = orderedBeats[beatIndex];
-    if (!Number.isFinite(current.durationSec) || current.durationSec <= 0 || current.durationSec > maxClipSeconds) {
+    if (!Number.isFinite(current.durationSec) || current.durationSec <= 0 || exceedsDurationLimit(current.durationSec, maxClipSeconds)) {
       gaps.push({ beatId: current.beatId, reason: '口播节拍超过单画面时长限制' });
       beatIndex += 1;
       continue;
@@ -115,8 +120,8 @@ export function buildFallbackArrangement(
     let duration = 0;
     while (beatIndex < orderedBeats.length) {
       const candidate = orderedBeats[beatIndex];
-      if (!Number.isFinite(candidate.durationSec) || candidate.durationSec <= 0 || candidate.durationSec > maxClipSeconds) break;
-      if (duration + candidate.durationSec > maxClipSeconds) break;
+      if (!Number.isFinite(candidate.durationSec) || candidate.durationSec <= 0 || exceedsDurationLimit(candidate.durationSec, maxClipSeconds)) break;
+      if (exceedsDurationLimit(duration + candidate.durationSec, maxClipSeconds)) break;
       beatIds.push(candidate.beatId);
       duration += candidate.durationSec;
       beatIndex += 1;

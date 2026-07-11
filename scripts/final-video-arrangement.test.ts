@@ -53,6 +53,7 @@ invalid({ assignments: [], gaps: beats.map(({ beatId }) => ({ beatId, reason: ' 
 invalid({ assignments: [], gaps: beats.map(({ beatId }) => ({ beatId, reason: 'x'.repeat(201) })) });
 invalid({ assignments: [{ assignmentId: 'a', clipId: 'c0', beatIds: ['b0', 'b1'] }], gaps: beats.slice(2).map(({ beatId }) => ({ beatId, reason: 'x' })) }, [beat('b0', 0, 2.1), beat('b1', 1, 2), beat('b2', 2), beat('b3', 3)]);
 assert.equal(validateArrangement({ assignments: [{ assignmentId: 'a', clipId: 'c0', beatIds: ['b0', 'b1'] }], gaps: [] }, [beat('b0', 0, 2), beat('b1', 1, 2)], clips, 4).ok, true);
+assert.equal(validateArrangement({ assignments: [{ assignmentId: 'a', clipId: 'c0', beatIds: ['b0', 'b1'] }], gaps: [] }, [beat('b0', 0, 0.1), beat('b1', 1, 0.2)], clips, 0.3).ok, true);
 for (const duration of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) invalid({ assignments: [], gaps: [{ beatId: 'b', reason: 'x' }] }, [beat('b', 0, duration)], clips);
 for (const max of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) invalid(valid, beats, clips, max);
 
@@ -79,6 +80,16 @@ assert.deepEqual(buildFallbackArrangement([beat('b0', 0, 2), beat('b1', 1, 2), b
   assignments: [{ assignmentId: 'fallback-0', clipId: 'c0', beatIds: ['b0', 'b1'] }],
   gaps: [{ beatId: 'b2', reason: '没有足够的候选画面' }],
 });
+assert.deepEqual(buildFallbackArrangement([beat('b0', 0, 0.1), beat('b1', 1, 0.2)], [clip('c0', 0)], 0.3), {
+  assignments: [{ assignmentId: 'fallback-0', clipId: 'c0', beatIds: ['b0', 'b1'] }],
+  gaps: [],
+});
+for (const duration of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assert.deepEqual(buildFallbackArrangement([beat('bad', 0, duration), beat('good', 1, 1)], [clip('c0', 0)], 4), {
+    assignments: [{ assignmentId: 'fallback-0', clipId: 'c0', beatIds: ['good'] }],
+    gaps: [{ beatId: 'bad', reason: '口播节拍超过单画面时长限制' }],
+  });
+}
 assert.equal(validateArrangement(fallback, unsortedBeats, unsortedClips, 4).ok, true);
 
 console.log('final-video-arrangement tests passed');
