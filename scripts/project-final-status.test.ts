@@ -33,5 +33,10 @@ assert.equal(getEffectiveProjectFinalStatus(db, 'project-2'), 'completed');
 insert.run('needs-check', 'project-3', 'needs_check', '', null);
 assert.equal(getEffectiveProjectFinalStatus(db, 'project-3'), 'needs_check');
 
+// Historical completed work (including pre-v2 final-video jobs) must not be
+// reclassified as draft merely because newer preview jobs are kept elsewhere.
+insert.run('legacy-success', 'project-4', 'succeeded', '', null);
+assert.equal(getEffectiveProjectFinalStatus(db, 'project-4'), 'completed');
+
 db.close();
 console.log('project-final-status tests passed');

@@ -1,74 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { v4 as uuidv4 } from 'uuid';
-import { mergePackageConfig, validatePackageConfigRequest, FinalVideoJobRow, PackageConfig } from '@/lib/final-video/types';
-import { findScriptDraftForShotSet } from '@/lib/final-video/draft';
-import { startFinalVideoQueue } from '@/lib/final-video/render-queue';
+import { mergePackageConfig } from '@/lib/final-video/types';
+import type { FinalVideoJobRow, PackageConfig } from '@/lib/final-video/types';
 import { toStorageImageUrl, toStorageVideoUrl } from '@/lib/storage-url';
 
 export const runtime = 'nodejs';
 
 export async function POST(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id: projectId } = await params;
-    const db = getDb();
-    const body = (await request.json().catch(() => ({}))) as {
-      shotSetId?: string;
-      packageConfig?: Partial<PackageConfig>;
-    };
-    const shotSetId = body.shotSetId;
-    if (!shotSetId) return NextResponse.json({ error: 'shotSetId is required' }, { status: 400 });
-
-    const shotSet = db
-      .prepare(`SELECT id FROM shot_sets WHERE id = ? AND projectId = ?`)
-      .get(shotSetId, projectId);
-    if (!shotSet) return NextResponse.json({ error: '分镜组不存在' }, { status: 404 });
-
-    const draft = findScriptDraftForShotSet(db, projectId, shotSetId);
-    if (!draft) return NextResponse.json({ error: '该分镜组还没有匹配的脚本草稿，请先在「脚本生成」中生成' }, { status: 400 });
-
-    const clipCount = db
-      .prepare(
-        `SELECT COUNT(DISTINCT shotId) as count FROM video_jobs
-         WHERE shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL`
-      )
-      .get(shotSetId) as { count: number };
-    if (clipCount.count === 0) {
-      return NextResponse.json({ error: '该分镜组还没有已完成的视频片段' }, { status: 400 });
-    }
-
-    const packageValidation = validatePackageConfigRequest(body.packageConfig);
-    if (!packageValidation.ok) {
-      return NextResponse.json({ error: packageValidation.error }, { status: 400 });
-    }
-    const pkg = packageValidation.value;
-    const narrationMode = (pkg.narration as { mode: string }).mode;
-    if (narrationMode !== 'none' && narrationMode !== 'tts') {
-      return NextResponse.json({ error: `未知口播模式: ${narrationMode}` }, { status: 400 });
-    }
-    if (pkg.narration.mode === 'tts') {
-      try {
-        const { resolveNarrationRuntime } = await import('@/lib/final-video/tts');
-        await resolveNarrationRuntime(pkg.narration.providerId);
-      } catch (err) {
-        return NextResponse.json({ error: String(err) }, { status: 400 });
-      }
-    }
-
-    const jobId = uuidv4();
-    db.prepare(
-      `INSERT INTO final_video_jobs (id, projectId, shotSetId, scriptDraftId, packageJson)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(jobId, projectId, shotSetId, draft.id, JSON.stringify(pkg));
-
-    startFinalVideoQueue();
-    return NextResponse.json({ success: true, jobId });
-  } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
-  }
+  await params;
+  return NextResponse.json({ error: 'draft_workflow_required' }, { status: 409 });
 }
 
 export async function GET(
@@ -79,7 +22,7 @@ export async function GET(
     const { id: projectId } = await params;
     const db = getDb();
     const rows = db
-      .prepare(`SELECT * FROM final_video_jobs WHERE projectId = ? ORDER BY createdAt DESC`)
+      .prepare(`SELECT * FROM final_video_jobs WHERE projectId = ? AND kind = 'final' ORDER BY createdAt DESC`)
       .all(projectId) as FinalVideoJobRow[];
     const jobs = rows.map((row) => {
       let packageConfig: PackageConfig | Record<string, never> = {};

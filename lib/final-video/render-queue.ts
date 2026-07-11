@@ -1,7 +1,7 @@
 // lib/final-video/render-queue.ts
 /**
- * 成片渲染队列：单并发（本地 CPU 密集），仿 video-queue 的恢复/自启惯例。
- * 步骤与进度区间见 docs/superpowers/plans/2026-07-04-final-video-packaging.md §1.5
+ * 成片渲染队列：v2 job 只能消费写入 final_video_jobs 的不可变快照。
+ * 队列恢复时只复用 job work 目录中的本地音轨，绝不重新调用 TTS、视觉或 LLM。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,13 +9,17 @@ import { getDb } from '../db.ts';
 import { dataRoot } from '../data-root.ts';
 import { writeLog } from '../logger.ts';
 import { runFfmpeg, probeDurationSec, supportsFilter } from '../ffmpeg.ts';
-import { buildTimeline } from './timeline.ts';
-import type { TimelineClipInput, TimelineShotInput } from './timeline.ts';
-import { buildAss, resolveFontFile } from './subtitles.ts';
-import { buildRenderArgs } from './ffmpeg-graph.ts';
+import { solveTimeline } from './solve-timeline.ts';
+import { buildNarrationAss, resolveFontFile } from './subtitles.ts';
+import { buildSolvedRenderArgs } from './ffmpeg-graph.ts';
 import { buildCoverArgs } from './cover.ts';
-import type { FinalVideoJobRow, PackageConfig } from './types.ts';
-import { mergePackageConfig } from './types.ts';
+import { buildNarrationTrack } from './tts.ts';
+import {
+  parseFinalVideoJobSnapshotJson,
+  type FinalVideoJobRow,
+  type FinalVideoJobSnapshot,
+  type PackageConfig,
+} from './types.ts';
 
 const RENDER_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -73,104 +77,78 @@ function jobStillRunning(jobId: string): boolean {
   return row?.status === 'running';
 }
 
+/** Runtime parser for the fields persisted by the submission route. */
+function parseSnapshot(job: FinalVideoJobRow): FinalVideoJobSnapshot {
+  return parseFinalVideoJobSnapshotJson(JSON.stringify({
+    kind: job.kind,
+    draftId: job.draftId,
+    draftRevision: job.draftRevision,
+    packageConfig: JSON.parse(job.packageJson),
+    narrationBeats: JSON.parse(job.narrationBeatsJson),
+    clipPool: JSON.parse(job.clipPoolJson),
+    arrangement: JSON.parse(job.arrangementJson),
+    issues: JSON.parse(job.issuesJson),
+    solverVersion: job.solverVersion,
+  }));
+}
+
+function previewDimensions(pkg: PackageConfig): { width: number; height: number } {
+  if (pkg.width <= 540) return { width: pkg.width, height: pkg.height };
+  const height = Math.max(2, Math.round((pkg.height * 540) / pkg.width / 2) * 2);
+  return { width: 540, height };
+}
+
+function applyRenderProfile(args: string[], kind: FinalVideoJobSnapshot['kind']): string[] {
+  if (kind !== 'preview') return args;
+  const profile = [...args];
+  const preset = profile.indexOf('-preset');
+  const crf = profile.indexOf('-crf');
+  if (preset < 0 || crf < 0) throw new Error('渲染参数缺少编码 profile');
+  profile[preset + 1] = 'ultrafast';
+  profile[crf + 1] = '28';
+  return profile;
+}
+
 async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
   const db = getDb();
-  const pkg: PackageConfig = mergePackageConfig(JSON.parse(job.packageJson || '{}'));
+  const snapshot = parseSnapshot(job);
+  const pkg = snapshot.packageConfig;
+  const dimensions = snapshot.kind === 'preview' ? previewDimensions(pkg) : { width: pkg.width, height: pkg.height };
   const logInfo = (message: string) =>
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message });
 
-  // ── preparing：脚本分镜 + 片段 + 实际时长 ──
   setStep(job.id, 'preparing', 5);
-  const draft = db
-    .prepare(`SELECT outputJson FROM script_drafts WHERE id = ?`)
-    .get(job.scriptDraftId) as { outputJson: string } | undefined;
-  if (!draft) throw new Error('脚本草稿不存在，无法确定分镜顺序与字幕');
-  const draftOutput = JSON.parse(draft.outputJson) as {
-    shots?: Array<{ shotId: string; shotIndex: number; voiceover?: string; subtitle?: string }>;
-  };
-  const scriptShots: TimelineShotInput[] = (draftOutput.shots ?? []).map((s) => ({
-    shotId: s.shotId,
-    shotIndex: s.shotIndex,
-    voiceover: String(s.voiceover ?? ''),
-    subtitle: String(s.subtitle ?? ''),
-  }));
-  if (scriptShots.length === 0) throw new Error('脚本草稿中没有分镜');
-
-  const clipRows = db
-    .prepare(
-      `SELECT shotId, id as videoJobId, localVideoPath FROM video_jobs
-       WHERE shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
-       ORDER BY createdAt DESC`
-    )
-    .all(job.shotSetId) as Array<{ shotId: string | null; videoJobId: string; localVideoPath: string }>;
-  const latestByShot = new Map<string, { videoJobId: string; localVideoPath: string }>();
-  for (const row of clipRows) {
-    if (row.shotId && !latestByShot.has(row.shotId) && fs.existsSync(row.localVideoPath)) {
-      latestByShot.set(row.shotId, row);
-    }
+  const introDurationSec = pkg.cover.introDurationSec > 0 ? pkg.cover.introDurationSec : 0;
+  const timeline = solveTimeline({
+    plan: snapshot.arrangement,
+    beats: snapshot.narrationBeats,
+    clips: snapshot.clipPool,
+    introDurationSec,
+    targetDurationSec: pkg.targetDurationSec,
+    durationTolerancePct: pkg.durationTolerancePct,
+    maxClipSeconds: pkg.maxClipSeconds,
+    fps: pkg.fps,
+  });
+  if (timeline.segments.length === 0) throw new Error('不可变草稿快照没有可渲染的画面');
+  db.prepare(`UPDATE final_video_jobs SET timelineJson = ? WHERE id = ?`).run(JSON.stringify(timeline.segments), job.id);
+  for (const issue of [...snapshot.issues, ...timeline.issues]) {
+    writeLog({ jobId: job.id, projectId: job.projectId, level: 'warn', message: issue.message });
   }
-  const clips: TimelineClipInput[] = [];
-  for (const [shotId, row] of latestByShot) {
-    clips.push({
-      shotId,
-      videoJobId: row.videoJobId,
-      clipPath: row.localVideoPath,
-      clipDurationSec: await probeDurationSec(row.localVideoPath),
-    });
-  }
-  logInfo(`Prepared ${clips.length} clips for ${scriptShots.length} script shots`);
+  logInfo(`Solved ${timeline.segments.length} snapshot segments for ${snapshot.narrationBeats.length} beats`);
 
-  // ── 工作目录 ──
   const jobDir = path.join(dataRoot(), 'storage', 'final-videos', job.id);
   const workDir = path.join(jobDir, 'work');
   fs.mkdirSync(workDir, { recursive: true });
 
-  // ── tts（Phase 6 交付 lib/final-video/tts.ts；在那之前 create 路由拒绝 mode='tts'）──
-  let narrationDurations: Record<string, number> = {};
-  let narrationFiles: Record<string, string> = {};
-  if (pkg.narration.mode === 'tts') {
-    setStep(job.id, 'tts', 8);
-    const tts = await import('./tts.ts');
-    const synth = await tts.synthesizeNarrationSegments({
-      segments: scriptShots.map((s) => ({ shotId: s.shotId, text: s.voiceover })),
-      voice: pkg.narration.voice,
-      speed: pkg.narration.speed,
-      workDir,
-      providerId: pkg.narration.providerId,
-      onProgress: (done, total) => setStep(job.id, 'tts', 8 + Math.round((done / Math.max(1, total)) * 12)),
-    });
-    narrationDurations = synth.durations;
-    narrationFiles = synth.files;
-  }
-
-  // ── 时间线 ──
-  const intro = pkg.cover.introDurationSec > 0 ? pkg.cover.introDurationSec : 0;
-  const timeline = buildTimeline({ scriptShots, clips, narrationDurations, introDurationSec: intro });
-  if (timeline.segments.length === 0) {
-    throw new Error(`没有可用片段：${timeline.issues.map((i) => `分镜${i.shotIndex}${i.reason}`).join('；')}`);
-  }
-  db.prepare(`UPDATE final_video_jobs SET timelineJson = ? WHERE id = ?`).run(
-    JSON.stringify(timeline.segments),
-    job.id
-  );
-  for (const issue of timeline.issues) {
-    writeLog({ jobId: job.id, projectId: job.projectId, level: 'warn', message: `分镜 ${issue.shotIndex} 被跳过：${issue.reason}` });
-  }
-
-  // ── 口播整轨 ──
   let narrationTrackPath: string | null = null;
-  if (pkg.narration.mode === 'tts') {
-    setStep(job.id, 'narration', 25);
-    const tts = await import('./tts.ts');
-    narrationTrackPath = await tts.buildNarrationTrack({
-      timeline: timeline.segments,
-      files: narrationFiles,
-      introDurationSec: intro,
-      workDir,
-    });
+  if (snapshot.narrationBeats.length > 0) {
+    setStep(job.id, 'narration', 20);
+    const cachedTrack = path.join(workDir, 'narration.m4a');
+    narrationTrackPath = fs.existsSync(cachedTrack)
+      ? cachedTrack
+      : await buildNarrationTrack({ beats: snapshot.narrationBeats, introDurationSec, workDir });
   }
 
-  // ── 封面（始终生成，intro>0 时兼作片头贴片）──
   setStep(job.id, 'cover', 28);
   const fontFile = resolveFontFile();
   const coverPath = path.join(jobDir, 'cover.jpg');
@@ -180,8 +158,8 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
       titleText: pkg.cover.titleText,
       titleSize: pkg.cover.titleSize,
       titleColor: pkg.cover.titleColor,
-      width: pkg.width,
-      height: pkg.height,
+      width: dimensions.width,
+      height: dimensions.height,
       fontFile,
       outJpgPath: coverPath,
       templateId: pkg.cover.templateId,
@@ -190,70 +168,70 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
     { timeoutMs: 60_000 }
   );
 
-  // ── 字幕 ──
   setStep(job.id, 'subtitles', 30);
   let assPath: string | null = null;
-  if (pkg.subtitle.enabled && timeline.segments.some((s) => s.subtitle.trim())) {
+  if (pkg.subtitle.enabled && snapshot.narrationBeats.some((beat) => beat.text.trim())) {
     assPath = path.join(workDir, 'subs.ass');
-    fs.writeFileSync(assPath, buildAss(timeline.segments, pkg.subtitle, pkg.width, pkg.height), 'utf-8');
+    fs.writeFileSync(
+      assPath,
+      buildNarrationAss(snapshot.narrationBeats, introDurationSec, pkg.subtitle, dimensions.width, dimensions.height),
+      'utf-8'
+    );
   }
 
-  // ── 渲染 ──
   setStep(job.id, 'render', 32);
   const duckingSupported = await supportsFilter('sidechaincompress');
   const safeName = (pkg.outputName || `final-${Date.now()}`).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
   const outputPath = path.join(jobDir, `${safeName}.mp4`);
   let lastProgressWrite = 0;
-  await runFfmpeg(
-    buildRenderArgs({
-      segments: timeline.segments,
-      width: pkg.width,
-      height: pkg.height,
-      fps: pkg.fps,
-      totalDurationSec: timeline.totalDurationSec,
-      introDurationSec: intro,
-      coverJpgPath: intro > 0 ? coverPath : null,
-      narrationTrackPath,
-      bgm: pkg.bgm && fs.existsSync(pkg.bgm.path) ? pkg.bgm : null,
-      duckingSupported,
-      assPath,
-      fontsDir: fontFile ? path.dirname(fontFile) : '',
-      outputPath,
-    }),
-    {
-      timeoutMs: RENDER_TIMEOUT_MS,
-      onProgressSec: (sec) => {
-        const now = Date.now();
-        if (now - lastProgressWrite < 1000) return;
-        lastProgressWrite = now;
-        if (!jobStillRunning(job.id)) return;
-        const pct = 32 + Math.min(63, (sec / Math.max(0.1, timeline.totalDurationSec)) * 63);
-        setStep(job.id, 'render', Math.round(pct));
-      },
-    }
-  );
+  const renderArgs = applyRenderProfile(buildSolvedRenderArgs({
+    segments: timeline.segments,
+    width: dimensions.width,
+    height: dimensions.height,
+    fps: pkg.fps,
+    totalDurationSec: timeline.totalDurationSec,
+    introDurationSec,
+    coverJpgPath: introDurationSec > 0 ? coverPath : null,
+    narrationTrackPath,
+    bgm: pkg.bgm && fs.existsSync(pkg.bgm.path) ? pkg.bgm : null,
+    duckingSupported,
+    assPath,
+    fontsDir: fontFile ? path.dirname(fontFile) : '',
+    outputPath,
+  }), snapshot.kind);
+  await runFfmpeg(renderArgs, {
+    timeoutMs: RENDER_TIMEOUT_MS,
+    onProgressSec: (sec) => {
+      const now = Date.now();
+      if (now - lastProgressWrite < 1000) return;
+      lastProgressWrite = now;
+      if (!jobStillRunning(job.id)) return;
+      const pct = 32 + Math.min(63, (sec / Math.max(0.1, timeline.totalDurationSec)) * 63);
+      setStep(job.id, 'render', Math.round(pct));
+    },
+  });
 
-  // ── finalize ──
   setStep(job.id, 'finalize', 98);
   const actualDuration = await probeDurationSec(outputPath);
   const manifestPath = path.join(jobDir, 'manifest.json');
   fs.writeFileSync(
     manifestPath,
-    JSON.stringify(
-      {
-        schemaVersion: 1,
-        jobId: job.id,
-        projectId: job.projectId,
-        shotSetId: job.shotSetId,
-        scriptDraftId: job.scriptDraftId,
-        createdAt: new Date().toISOString(),
-        package: pkg,
-        timeline: timeline.segments,
-        output: { video: outputPath, cover: coverPath, durationSec: actualDuration, width: pkg.width, height: pkg.height },
-      },
-      null,
-      2
-    ),
+    JSON.stringify({
+      schemaVersion: 2,
+      jobId: job.id,
+      projectId: job.projectId,
+      shotSetId: job.shotSetId,
+      draftId: snapshot.draftId,
+      draftRevision: snapshot.draftRevision,
+      createdAt: new Date().toISOString(),
+      package: pkg,
+      beats: snapshot.narrationBeats,
+      arrangement: snapshot.arrangement,
+      issues: snapshot.issues,
+      solverVersion: snapshot.solverVersion,
+      timeline: timeline.segments,
+      output: { video: outputPath, cover: coverPath, durationSec: actualDuration, ...dimensions },
+    }, null, 2),
     'utf-8'
   );
   fs.rmSync(workDir, { recursive: true, force: true });
