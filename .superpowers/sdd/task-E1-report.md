@@ -32,3 +32,9 @@ All commands passed. Lint completed with the repository's existing 39 warnings a
 ## Concerns
 
 - Phase E2 must copy narration source files into the submitted job directory and persist the copied paths in the job snapshot. E1 already reuses the job-local combined narration track on recovery and never invokes paid generation work.
+
+## Follow-up review fix
+
+- Review found that the v2 queue's recovery and pending-job selection were not constrained by `solverVersion`, so a legacy pending/running row could be claimed and failed by the v2 parser.
+- Added a regression fixture for both legacy statuses. It failed with `legacy-pending` changed to `failed`, then passed after adding `solverVersion = 2` to both recovery and selection SQL predicates.
+- Re-ran the focused snapshot and project-status tests, TypeScript check, lint, and `git diff --check`.

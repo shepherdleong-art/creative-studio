@@ -37,11 +37,11 @@ export function startFinalVideoQueue(): void {
     try {
       db.prepare(
         `UPDATE final_video_jobs SET status = 'pending', errorMessage = 'Recovered from interrupted run'
-         WHERE status = 'running'`
+         WHERE status = 'running' AND solverVersion = 2`
       ).run();
       for (;;) {
         const job = db
-          .prepare(`SELECT * FROM final_video_jobs WHERE status = 'pending' ORDER BY createdAt LIMIT 1`)
+          .prepare(`SELECT * FROM final_video_jobs WHERE status = 'pending' AND solverVersion = 2 ORDER BY createdAt LIMIT 1`)
           .get() as FinalVideoJobRow | undefined;
         if (!job) break;
         db.prepare(

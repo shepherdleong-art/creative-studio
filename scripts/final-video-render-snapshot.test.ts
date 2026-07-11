@@ -86,6 +86,12 @@ try {
       narrationBeatsJson, clipPoolJson, arrangementJson, issuesJson, solverVersion
     ) VALUES (?, 'project-1', 'shot-set-1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  // A v2-only queue must never recover or consume legacy jobs, even if their
+  // status says pending/running. They remain visible for historical diagnosis.
+  insertJob.run('legacy-pending', 'pending', '{}', 'final', null, null,
+    '[]', '[]', '{"assignments":[],"gaps":[]}', '[]', 1);
+  insertJob.run('legacy-running', 'running', '{}', 'final', null, null,
+    '[]', '[]', '{"assignments":[],"gaps":[]}', '[]', 1);
   insertJob.run('preview-v2', 'pending', JSON.stringify(packageConfig), 'preview', 'draft-1', 7,
     JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), 2);
 
@@ -97,6 +103,8 @@ try {
 
   const rendered = db.prepare(`SELECT * FROM final_video_jobs WHERE id = 'preview-v2'`).get() as { status: string; manifestPath: string | null; outputPath: string | null };
   assert.equal(rendered.status, 'succeeded', 'v2 job must render without script_drafts or video_jobs rows');
+  assert.equal((db.prepare(`SELECT status FROM final_video_jobs WHERE id = 'legacy-pending'`).get() as { status: string }).status, 'pending');
+  assert.equal((db.prepare(`SELECT status FROM final_video_jobs WHERE id = 'legacy-running'`).get() as { status: string }).status, 'running');
   assert.ok(rendered.outputPath && fs.existsSync(rendered.outputPath));
   assert.ok(rendered.manifestPath && fs.existsSync(rendered.manifestPath));
   const manifest = JSON.parse(fs.readFileSync(rendered.manifestPath!, 'utf8')) as Record<string, unknown>;
