@@ -11,6 +11,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { runFfmpeg, probeDurationSec } from '../ffmpeg.ts';
 import { dataRoot } from '../data-root.ts';
+import { assertPathWithinRoot } from './fs-safety.ts';
 import type { NarrationBeat, NarrationDraftBeat } from './types.ts';
 import type { NarrationProviderRuntimeConfig } from '../narration-providers/config.ts';
 
@@ -130,8 +131,7 @@ function narrationDirectory(draftId: string): string {
   }
   const draftRoot = path.resolve(dataRoot(), 'storage', 'final-video-drafts');
   const directory = path.resolve(draftRoot, draftId, 'narration');
-  if (!directory.startsWith(`${draftRoot}${path.sep}`)) throw new Error('draftId 路径不安全');
-  return directory;
+  return assertPathWithinRoot(draftRoot, directory, 'draftId 路径不安全');
 }
 
 function safeGroupFileName(groupId: string): string {

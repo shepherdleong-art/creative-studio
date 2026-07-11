@@ -11,6 +11,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { getDb } from '../db.ts';
 import { dataRoot } from '../data-root.ts';
+import { assertPathWithinRoot } from './fs-safety.ts';
 import { resolveStoredScriptProvider, getScriptProviderDefaults } from '../script-providers/store.ts';
 import { describeImageOpenAiCompatible } from '../script-providers/openai-compatible.ts';
 import { describeImageGeminiNative } from '../script-providers/gemini.ts';
@@ -31,14 +32,9 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
-/** Mirrors the path-safety idiom in lib/final-video/tts.ts's narrationDirectory(). */
 function assertInsideDataRoot(imagePath: string): string {
   const resolved = path.resolve(imagePath);
-  const root = path.resolve(dataRoot());
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new Error('图片路径不在数据目录内');
-  }
-  return resolved;
+  return assertPathWithinRoot(path.resolve(dataRoot()), resolved, '图片路径不在数据目录内');
 }
 
 /**

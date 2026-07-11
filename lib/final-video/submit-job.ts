@@ -9,21 +9,17 @@ import { dataRoot } from '../data-root.ts';
 import { getFinalVideoDraft, snapshotDraftForJob } from './draft-store.ts';
 import { startFinalVideoQueue } from './render-queue.ts';
 import { errorCode, jsonError, stale } from './route-helpers.ts';
+import { isPathWithinRoot } from './fs-safety.ts';
 import type { FinalVideoJobSnapshot, NarrationBeat } from './types.ts';
 
 function submissionError(message: string, code: 'invalid_input' | 'not_found' = 'invalid_input'): Error & { code: string } {
   return Object.assign(new Error(message), { code });
 }
 
-function isWithin(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return relative.length > 0 && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
-}
-
 function jobDirectory(jobId: string): string {
   const storageRoot = path.resolve(dataRoot(), 'storage');
   const directory = path.resolve(storageRoot, 'final-videos', jobId);
-  if (!isWithin(storageRoot, directory)) throw submissionError('job 工作目录不安全');
+  if (!isPathWithinRoot(storageRoot, directory)) throw submissionError('job 工作目录不安全');
   return directory;
 }
 
@@ -40,7 +36,7 @@ function copyNarrationIntoJob(snapshot: FinalVideoJobSnapshot, jobId: string): F
   } catch {
     throw submissionError('草稿口播目录不存在');
   }
-  if (!isWithin(realDraftsRoot, realNarrationRoot)) throw submissionError('草稿口播目录路径不安全');
+  if (!isPathWithinRoot(realDraftsRoot, realNarrationRoot)) throw submissionError('草稿口播目录路径不安全');
   const workDir = path.join(jobDirectory(jobId), 'work');
   const narrationDir = path.join(workDir, 'narration');
   fs.mkdirSync(narrationDir, { recursive: true });
@@ -53,7 +49,7 @@ function copyNarrationIntoJob(snapshot: FinalVideoJobSnapshot, jobId: string): F
     } catch {
       throw submissionError(`口播音频不存在：${beat.audioPath}`);
     }
-    if (!isWithin(realNarrationRoot, realSource)) throw submissionError('草稿口播音频路径不安全');
+    if (!isPathWithinRoot(realNarrationRoot, realSource)) throw submissionError('草稿口播音频路径不安全');
     if (!fs.statSync(realSource).isFile()) throw submissionError(`口播音频不是文件：${beat.audioPath}`);
 
     let copiedPath = copied.get(realSource);

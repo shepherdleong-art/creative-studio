@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getDb } from '../db.ts';
 import { dataRoot } from '../data-root.ts';
+import { isPathWithinRoot } from './fs-safety.ts';
 import {
   parseArrangementPlanJson,
   parseClipPoolJson,
@@ -115,7 +116,7 @@ export function deleteFinalVideoDraft(id: string): void {
   // Clean up draft storage directory
   const draftDir = path.join(dataRoot(), 'storage', 'final-video-drafts', draft.id);
   const resolvedDraftDir = path.resolve(draftDir);
-  if (resolvedDraftDir.startsWith(storageRoot + path.sep)) {
+  if (isPathWithinRoot(storageRoot, resolvedDraftDir)) {
     fs.rmSync(resolvedDraftDir, { recursive: true, force: true });
   }
 
@@ -123,7 +124,7 @@ export function deleteFinalVideoDraft(id: string): void {
   if (draft.previewJobId) {
     const previewDir = path.join(dataRoot(), 'storage', 'final-videos', draft.previewJobId);
     const resolvedPreviewDir = path.resolve(previewDir);
-    if (resolvedPreviewDir.startsWith(storageRoot + path.sep)) {
+    if (isPathWithinRoot(storageRoot, resolvedPreviewDir)) {
       fs.rmSync(resolvedPreviewDir, { recursive: true, force: true });
     }
     db.prepare(`DELETE FROM final_video_jobs WHERE id = ? AND kind = 'preview'`).run(draft.previewJobId);
