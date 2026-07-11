@@ -69,12 +69,16 @@ export function getGeminiMeta(): ProviderMeta {
 }
 
 function getApiStyle(runtime?: ScriptProviderRuntimeConfig): 'native' | 'openai-compatible' {
-  return (runtime?.apiStyle || 'openai-compatible') as 'native' | 'openai-compatible';
+  return runtime?.apiStyle === 'native-gemini' ? 'native' : 'openai-compatible';
 }
 
 // ── Native Gemini API call ──
 
-async function geminiNativeCall(prompt: string, runtime?: ScriptProviderRuntimeConfig): Promise<string> {
+async function geminiNativeCall(
+  prompt: string,
+  runtime?: ScriptProviderRuntimeConfig,
+  options?: { temperature?: number; maxTokens?: number }
+): Promise<string> {
   const baseUrl = (runtime?.baseUrl || geminiConfig.defaultBaseUrl).replace(/\/$/, '');
   const apiKey = runtime?.apiKey;
   const model = runtime?.model || geminiConfig.defaultModel;
@@ -90,7 +94,10 @@ async function geminiNativeCall(prompt: string, runtime?: ScriptProviderRuntimeC
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: runtime?.maxTokens || geminiConfig.maxTokens },
+      generationConfig: {
+        temperature: options?.temperature ?? 0.7,
+        maxOutputTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
+      },
     }),
   });
 
@@ -118,7 +125,8 @@ async function geminiCall(
   systemPrompt: string,
   userPrompt: string,
   responseFormat: 'json_object' | 'text' = 'json_object',
-  runtime?: ScriptProviderRuntimeConfig
+  runtime?: ScriptProviderRuntimeConfig,
+  options?: { temperature?: number; maxTokens?: number }
 ): Promise<string> {
   const apiStyle = getApiStyle(runtime);
 
@@ -126,15 +134,15 @@ async function geminiCall(
     return chatCompletion(geminiConfig, {
       systemPrompt,
       userPrompt,
-      temperature: 0.7,
-      maxTokens: runtime?.maxTokens || geminiConfig.maxTokens,
+      temperature: options?.temperature ?? 0.7,
+      maxTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
       responseFormat,
     }, runtime);
   }
 
   // Native path: combine system + user into a single prompt (Gemini native doesn't have system role)
   const combined = `${systemPrompt}\n\n${userPrompt}`;
-  return geminiNativeCall(combined, runtime);
+  return geminiNativeCall(combined, runtime, options);
 }
 
 // ── Public API ──
@@ -160,4 +168,20 @@ export async function geminiGenerateScript(input: ScriptInput, runtime?: ScriptP
   }
 
   return { script, provider: 'gemini', model: runtime?.model || getGeminiModel() };
+}
+
+export async function geminiCompleteJson<T>(input: {
+  systemPrompt: string;
+  userPrompt: string;
+  temperature?: number;
+  maxTokens?: number;
+}, runtime?: ScriptProviderRuntimeConfig): Promise<T> {
+  const rawText = await geminiCall(
+    input.systemPrompt,
+    input.userPrompt,
+    'json_object',
+    runtime,
+    { temperature: input.temperature, maxTokens: input.maxTokens },
+  );
+  return parseJsonResponse<T>(rawText, 'Gemini');
 }

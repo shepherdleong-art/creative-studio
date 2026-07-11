@@ -13,8 +13,14 @@ import type {
   ScriptInput,
   ProviderScriptResult,
 } from './types';
-import { chatCompletion, buildAnalysisPrompt, buildScriptPrompt, parseJsonResponse } from './openai-compatible';
-import { geminiAnalyzeSellingPoints, geminiGenerateScript } from './gemini';
+import {
+  chatCompletion,
+  buildAnalysisPrompt,
+  buildScriptPrompt,
+  completeOpenAiCompatibleJson,
+  parseJsonResponse,
+} from './openai-compatible';
+import { geminiAnalyzeSellingPoints, geminiCompleteJson, geminiGenerateScript } from './gemini';
 import type { ScriptOutput } from './types';
 import { toScriptProviderMeta } from './config';
 import {
@@ -56,6 +62,29 @@ function checkConfigured(providerId: string): void {
   if (!meta.configured) {
     throw new Error(`${runtime.name} 未配置完整：${runtime.missing.join(', ')}`);
   }
+}
+
+export async function completeJson<T>(input: {
+  providerId: string;
+  systemPrompt: string;
+  userPrompt: string;
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<T> {
+  checkConfigured(input.providerId);
+  const runtime = resolveStoredScriptProvider(input.providerId);
+  const options = {
+    systemPrompt: input.systemPrompt,
+    userPrompt: input.userPrompt,
+    temperature: input.temperature,
+    maxTokens: input.maxTokens,
+  };
+
+  if (input.providerId === 'gemini') {
+    return geminiCompleteJson<T>(options, runtime);
+  }
+
+  return completeOpenAiCompatibleJson<T>(resolveConfig(input.providerId), options, runtime);
 }
 
 export async function analyzeSellingPoints(

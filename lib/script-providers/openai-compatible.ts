@@ -98,6 +98,15 @@ export function parseJsonResponse<T>(rawText: string, providerName: string): T {
   }
 }
 
+export async function completeOpenAiCompatibleJson<T>(
+  config: ProviderConfig,
+  options: Omit<ChatOptions, 'responseFormat'>,
+  runtime?: ScriptProviderRuntimeConfig
+): Promise<T> {
+  const rawText = await chatCompletion(config, { ...options, responseFormat: 'json_object' }, runtime);
+  return parseJsonResponse<T>(rawText, config.name);
+}
+
 // ── Prompt builders (shared across all providers) ──
 
 export function buildAnalysisPrompt(input: AnalysisInput): string {
