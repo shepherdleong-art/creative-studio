@@ -42,6 +42,29 @@ db.exec(`
     isBuiltin INTEGER NOT NULL DEFAULT 1
   );
 
+  CREATE TABLE final_video_jobs (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    shotSetId TEXT NOT NULL,
+    scriptDraftId TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    currentStep TEXT NOT NULL DEFAULT 'queued',
+    progress REAL NOT NULL DEFAULT 0,
+    packageJson TEXT NOT NULL DEFAULT '{}',
+    timelineJson TEXT NOT NULL DEFAULT '[]',
+    outputPath TEXT,
+    coverPath TEXT,
+    manifestPath TEXT,
+    durationSec REAL,
+    errorMessage TEXT,
+    startedAt TEXT,
+    finishedAt TEXT,
+    createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  INSERT INTO final_video_jobs (id, projectId, shotSetId, status, packageJson)
+  VALUES ('old-final-job', 'project-1', 'shot-set-1', 'succeeded', '{"outputName":"legacy"}');
+
   INSERT INTO providers (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled)
   VALUES ('image-provider', 'Image Provider', 'https://old.image', 'IMAGE_API_KEY', '', 'gpt-image-2', 'openai-compatible', 1);
 
@@ -128,6 +151,37 @@ assert.deepEqual(
   { voices: 'Cherry,Serena,Ethan,Chelsie' },
   'voices column should accept and persist a user-configured comma-separated voice list',
 );
+
+const finalVideoColumns = db.prepare(`PRAGMA table_info(final_video_jobs)`).all() as Array<{ name: string }>;
+for (const name of [
+  'kind', 'draftId', 'draftRevision', 'narrationBeatsJson', 'clipPoolJson',
+  'arrangementJson', 'issuesJson', 'solverVersion',
+]) {
+  assert.ok(finalVideoColumns.some((column) => column.name === name), `final_video_jobs.${name} should be added`);
+}
+
+assert.deepEqual(
+  db.prepare(`SELECT id, kind, solverVersion, arrangementJson FROM final_video_jobs WHERE id = 'old-final-job'`).get(),
+  {
+    id: 'old-final-job',
+    kind: 'final',
+    solverVersion: 1,
+    arrangementJson: '{"assignments":[],"gaps":[]}',
+  },
+  'old final-video rows remain readable with legacy solverVersion 1 defaults',
+);
+
+const draftColumns = db.prepare(`PRAGMA table_info(final_video_drafts)`).all() as Array<{
+  name: string; notnull: number; dflt_value: string | null;
+}>;
+assert.equal(draftColumns.find((column) => column.name === 'scriptDraftId')?.notnull, 0);
+assert.equal(
+  draftColumns.find((column) => column.name === 'arrangementJson')?.dflt_value,
+  `'${'{"assignments":[],"gaps":[]}'.replaceAll("'", "''")}'`,
+);
+
+const visualDescriptionColumns = db.prepare(`PRAGMA table_info(clip_visual_descriptions)`).all() as Array<{ name: string }>;
+assert.ok(visualDescriptionColumns.some((column) => column.name === 'description'));
 
 db.close();
 console.log('db-migrations tests passed');

@@ -1,107 +1,201 @@
-/** 成片包装的共享类型。字段契约见 docs/superpowers/plans/2026-07-04-final-video-packaging.md §1.2-1.3 */
+/** 成片包装 v2 共享契约与数据库 JSON 字段的运行时解析。 */
 
-export interface NarrationConfig {
-  mode: 'none' | 'tts';
-  voice: string;
-  speed: number;
-  /** 口播供应商 id（narration_providers.id）；留空则由服务端自动挑第一个已配置的供应商。 */
-  providerId?: string;
-}
-
-export interface BgmConfig {
-  path: string;
-  volume: number;
-  ducking: boolean;
-}
-
+export interface BgmConfig { path: string; volume: number; ducking: boolean }
 export type CoverTemplateId = 'luxury-01' | 'minimal-01' | 'luxury-02';
-
 export interface CoverConfig {
-  titleText: string;
-  titleSize: number;
-  titleColor: string;
-  introDurationSec: number;
-  templateId?: CoverTemplateId;
-  sellingPoints?: string[];
+  titleText: string; titleSize: number; titleColor: string; introDurationSec: number;
+  templateId?: CoverTemplateId; sellingPoints?: string[];
 }
-
 export interface SubtitleStyle {
-  enabled: boolean;
-  fontSize: number;
-  color: string;
-  strokeColor: string;
-  strokeWidth: number;
-  /** 字幕基线距底部的画面高度百分比 */
-  marginBottomPct: number;
+  enabled: boolean; fontSize: number; color: string; strokeColor: string;
+  strokeWidth: number; marginBottomPct: number;
 }
-
-export interface PackageConfig {
-  outputName: string;
-  width: number;
-  height: number;
-  fps: number;
-  narration: NarrationConfig;
-  bgm: BgmConfig | null;
-  cover: CoverConfig;
-  subtitle: SubtitleStyle;
+export interface PackageCommonConfig {
+  outputName: string; width: number; height: number; fps: number;
+  targetDurationSec: number; durationTolerancePct: number; maxClipSeconds: number;
+  bgm: BgmConfig | null; cover: CoverConfig; subtitle: SubtitleStyle;
 }
+export type PackageConfig =
+  | (PackageCommonConfig & { mode: 'narration'; narration: { mode: 'tts'; providerId: string; voice: string; speed: number } })
+  | (PackageCommonConfig & { mode: 'bgm-only'; narration: { mode: 'none' } });
 
+export interface FinalVideoWorkflowConfig {
+  packageConfig: PackageConfig;
+  narrationScriptProviderId: string;
+  visionProviderId: string;
+  orchestrationProviderId: string;
+  selectedClipIds: string[];
+}
+export interface NarrationDraftBeat { beatId: string; groupId: string; index: number; text: string }
+export interface NarrationBeat extends NarrationDraftBeat { audioPath: string; durationSec: number; startSec: number }
+export interface ClipPoolItem {
+  clipId: string; shotId: string; shotIndex: number; videoPath: string; clipDurationSec: number;
+  sourceImageId: string; sourceImagePath: string; visualDescription: string;
+  descriptionProviderId: string | null; descriptionModel: string | null;
+}
+export interface ArrangementAssignment { assignmentId: string; clipId: string; beatIds: string[] }
+export interface ArrangementGap { beatId: string; reason: string }
+export interface ArrangementPlan { assignments: ArrangementAssignment[]; gaps: ArrangementGap[] }
+export type TimelineIssueCode =
+  | 'target_duration_out_of_tolerance' | 'arrangement_invalid' | 'arrangement_fallback_used'
+  | 'visual_gap' | 'clip_missing' | 'clip_short_borrowed_forward' | 'last_clip_frozen'
+  | 'last_clip_exceeds_max_after_fallback';
+export interface TimelineIssue {
+  code: TimelineIssueCode; severity: 'warning' | 'error'; message: string;
+  beatIds: string[]; clipId: string | null;
+}
 export interface TimelineSegment {
-  shotId: string;
-  shotIndex: number;
-  videoJobId: string;
-  clipPath: string;
-  clipDurationSec: number;
-  voiceover: string;
-  subtitle: string;
-  narrationDurationSec: number;
-  segmentDurationSec: number;
-  startSec: number;
+  order: number; clipId: string; clipPath: string; intendedBeatIds: string[]; coveredBeatIds: string[];
+  gapBeatIds: string[]; clipDurationSec: number; mediaDurationSec: number; trimEndToSec: number | null;
+  padStopSec: number; segmentDurationSec: number; startSec: number;
 }
-
+export interface TimelineResult { segments: TimelineSegment[]; issues: TimelineIssue[]; contentDurationSec: number; totalDurationSec: number }
+export type FinalVideoDraftStage = 'draft' | 'preparing' | 'narration-ready' | 'describing' | 'arranging' | 'review' | 'failed';
+export interface FinalVideoDraftRow {
+  id: string; projectId: string; shotSetId: string; scriptDraftId: string | null; stage: FinalVideoDraftStage;
+  revision: number; workflowConfigJson: string; narrationBeatsJson: string; clipPoolJson: string;
+  arrangementJson: string; issuesJson: string; previewJobId: string | null; previewRevision: number | null;
+  errorMessage: string | null; createdAt: string; updatedAt: string;
+}
+export interface FinalVideoJobSnapshot {
+  kind: 'preview' | 'final'; draftId: string; draftRevision: number; packageConfig: PackageConfig;
+  narrationBeats: NarrationBeat[]; clipPool: ClipPoolItem[]; arrangement: ArrangementPlan;
+  issues: TimelineIssue[]; solverVersion: 2;
+}
 export interface FinalVideoJobRow {
-  id: string;
-  projectId: string;
-  shotSetId: string;
-  scriptDraftId: string | null;
-  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled';
-  currentStep: string;
-  progress: number;
-  packageJson: string;
-  timelineJson: string;
-  outputPath: string | null;
-  coverPath: string | null;
-  manifestPath: string | null;
-  durationSec: number | null;
-  errorMessage: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  createdAt: string;
+  id: string; projectId: string; shotSetId: string; scriptDraftId: string | null;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled'; currentStep: string; progress: number;
+  packageJson: string; timelineJson: string; kind: 'preview' | 'final'; draftId: string | null;
+  draftRevision: number | null; narrationBeatsJson: string; clipPoolJson: string; arrangementJson: string;
+  issuesJson: string; solverVersion: number; outputPath: string | null; coverPath: string | null;
+  manifestPath: string | null; durationSec: number | null; errorMessage: string | null;
+  startedAt: string | null; finishedAt: string | null; createdAt: string;
 }
 
 export function defaultPackageConfig(): PackageConfig {
   return {
-    outputName: `final-${Date.now()}`,
-    width: 1080,
-    height: 1920,
-    fps: 30,
-    narration: { mode: 'none', voice: 'Cherry', speed: 1.0, providerId: '' },
-    bgm: null,
-    cover: { titleText: '', titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: 'minimal-01' as const },
+    mode: 'bgm-only', outputName: `final-${Date.now()}`, width: 1080, height: 1920, fps: 30,
+    targetDurationSec: 15, durationTolerancePct: 0.2, maxClipSeconds: 4,
+    narration: { mode: 'none' }, bgm: null,
+    cover: { titleText: '', titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: 'minimal-01' },
     subtitle: { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
   };
 }
 
-/** 浅合并用户提交的部分配置（narration/bgm/cover/subtitle 为对象级覆盖） */
-export function mergePackageConfig(partial: Partial<PackageConfig> | undefined): PackageConfig {
+type JsonObject = Record<string, unknown>;
+const isObject = (value: unknown): value is JsonObject => !!value && typeof value === 'object' && !Array.isArray(value);
+const string = (value: unknown, field: string): string => { if (typeof value !== 'string') throw new Error(`${field} must be a string`); return value; };
+const number = (value: unknown, field: string): number => { if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${field} must be a finite number`); return value; };
+const nullableString = (value: unknown, field: string): string | null => value === null ? null : string(value, field);
+const stringArray = (value: unknown, field: string): string[] => {
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  return value.map((item, index) => string(item, `${field}[${index}]`));
+};
+function parseJson(value: string, field: string): unknown {
+  try { return JSON.parse(value); } catch (error) {
+    throw new Error(`${field}: invalid JSON (${error instanceof Error ? error.message : String(error)})`);
+  }
+}
+function object(value: unknown, field: string): JsonObject {
+  if (!isObject(value)) throw new Error(`${field} must be an object`);
+  return value;
+}
+
+/** 兼容旧 package JSON：没有顶层 mode 时根据 narration.mode 映射。 */
+export function mergePackageConfig(partial: unknown): PackageConfig {
   const base = defaultPackageConfig();
-  if (!partial || typeof partial !== 'object') return base;
+  if (!isObject(partial)) return base;
+  const narrationInput = isObject(partial.narration) ? partial.narration : {};
+  const mode = partial.mode === 'narration' || (!('mode' in partial) && narrationInput.mode === 'tts')
+    ? 'narration' : 'bgm-only';
+  const cover = isObject(partial.cover) ? partial.cover : {};
+  const subtitle = isObject(partial.subtitle) ? partial.subtitle : {};
+  const bgm = partial.bgm === null ? null : isObject(partial.bgm) ? partial.bgm as unknown as BgmConfig : base.bgm;
+  const common: PackageCommonConfig = {
+    outputName: typeof partial.outputName === 'string' ? partial.outputName : base.outputName,
+    width: typeof partial.width === 'number' ? partial.width : base.width,
+    height: typeof partial.height === 'number' ? partial.height : base.height,
+    fps: typeof partial.fps === 'number' ? partial.fps : base.fps,
+    targetDurationSec: typeof partial.targetDurationSec === 'number' ? partial.targetDurationSec : base.targetDurationSec,
+    durationTolerancePct: typeof partial.durationTolerancePct === 'number' ? partial.durationTolerancePct : base.durationTolerancePct,
+    maxClipSeconds: typeof partial.maxClipSeconds === 'number' ? partial.maxClipSeconds : base.maxClipSeconds,
+    bgm,
+    cover: { ...base.cover, ...cover },
+    subtitle: { ...base.subtitle, ...subtitle },
+  } as PackageCommonConfig;
+  if (mode === 'narration') {
+    return { ...common, mode, narration: {
+      mode: 'tts', providerId: typeof narrationInput.providerId === 'string' ? narrationInput.providerId : '',
+      voice: typeof narrationInput.voice === 'string' ? narrationInput.voice : 'Cherry',
+      speed: typeof narrationInput.speed === 'number' ? narrationInput.speed : 1,
+    } };
+  }
+  return { ...common, mode, narration: { mode: 'none' } };
+}
+
+export function parsePackageConfigJson(json: string): PackageConfig {
+  const value = parseJson(json, 'packageJson');
+  object(value, 'packageJson');
+  return mergePackageConfig(value);
+}
+export function parseFinalVideoWorkflowConfigJson(json: string): FinalVideoWorkflowConfig {
+  const value = object(parseJson(json, 'workflowConfigJson'), 'workflowConfigJson');
+  const packageConfig = mergePackageConfig(object(value.packageConfig, 'workflowConfigJson.packageConfig'));
+  const selectedClipIds = stringArray(value.selectedClipIds, 'workflowConfigJson.selectedClipIds');
+  if (packageConfig.mode === 'narration' && selectedClipIds.length) throw new Error('workflowConfigJson.selectedClipIds must be empty in narration mode');
+  return { packageConfig, narrationScriptProviderId: string(value.narrationScriptProviderId, 'workflowConfigJson.narrationScriptProviderId'),
+    visionProviderId: string(value.visionProviderId, 'workflowConfigJson.visionProviderId'),
+    orchestrationProviderId: string(value.orchestrationProviderId, 'workflowConfigJson.orchestrationProviderId'), selectedClipIds };
+}
+export function parseNarrationBeatsJson(json: string): NarrationBeat[] {
+  const value = parseJson(json, 'narrationBeatsJson');
+  if (!Array.isArray(value)) throw new Error('narrationBeatsJson must be an array');
+  return value.map((raw, index) => { const beat = object(raw, `narrationBeatsJson[${index}]`); return {
+    beatId: string(beat.beatId, `narrationBeatsJson[${index}].beatId`), groupId: string(beat.groupId, `narrationBeatsJson[${index}].groupId`),
+    index: number(beat.index, `narrationBeatsJson[${index}].index`), text: string(beat.text, `narrationBeatsJson[${index}].text`),
+    audioPath: string(beat.audioPath, `narrationBeatsJson[${index}].audioPath`), durationSec: number(beat.durationSec, `narrationBeatsJson[${index}].durationSec`),
+    startSec: number(beat.startSec, `narrationBeatsJson[${index}].startSec`),
+  }; });
+}
+export function parseClipPoolJson(json: string): ClipPoolItem[] {
+  const value = parseJson(json, 'clipPoolJson'); if (!Array.isArray(value)) throw new Error('clipPoolJson must be an array');
+  return value.map((raw, index) => { const clip = object(raw, `clipPoolJson[${index}]`); const p = `clipPoolJson[${index}]`; return {
+    clipId: string(clip.clipId, `${p}.clipId`), shotId: string(clip.shotId, `${p}.shotId`), shotIndex: number(clip.shotIndex, `${p}.shotIndex`),
+    videoPath: string(clip.videoPath, `${p}.videoPath`), clipDurationSec: number(clip.clipDurationSec, `${p}.clipDurationSec`),
+    sourceImageId: string(clip.sourceImageId, `${p}.sourceImageId`), sourceImagePath: string(clip.sourceImagePath, `${p}.sourceImagePath`),
+    visualDescription: string(clip.visualDescription, `${p}.visualDescription`), descriptionProviderId: nullableString(clip.descriptionProviderId, `${p}.descriptionProviderId`),
+    descriptionModel: nullableString(clip.descriptionModel, `${p}.descriptionModel`),
+  }; });
+}
+export function parseArrangementPlanJson(json: string): ArrangementPlan {
+  const value = object(parseJson(json, 'arrangementJson'), 'arrangementJson');
+  if (!Array.isArray(value.assignments) || !Array.isArray(value.gaps)) throw new Error('arrangementJson assignments and gaps must be arrays');
   return {
-    ...base,
-    ...partial,
-    narration: { ...base.narration, ...(partial.narration ?? {}) },
-    bgm: partial.bgm === null ? null : partial.bgm ? { ...partial.bgm } : base.bgm,
-    cover: { ...base.cover, ...(partial.cover ?? {}) },
-    subtitle: { ...base.subtitle, ...(partial.subtitle ?? {}) },
+    assignments: value.assignments.map((raw, index) => { const a = object(raw, `arrangementJson.assignments[${index}]`); return {
+      assignmentId: string(a.assignmentId, `arrangementJson.assignments[${index}].assignmentId`), clipId: string(a.clipId, `arrangementJson.assignments[${index}].clipId`),
+      beatIds: stringArray(a.beatIds, `arrangementJson.assignments[${index}].beatIds`),
+    }; }),
+    gaps: value.gaps.map((raw, index) => { const gap = object(raw, `arrangementJson.gaps[${index}]`); return {
+      beatId: string(gap.beatId, `arrangementJson.gaps[${index}].beatId`), reason: string(gap.reason, `arrangementJson.gaps[${index}].reason`),
+    }; }),
   };
+}
+const ISSUE_CODES: TimelineIssueCode[] = ['target_duration_out_of_tolerance','arrangement_invalid','arrangement_fallback_used','visual_gap','clip_missing','clip_short_borrowed_forward','last_clip_frozen','last_clip_exceeds_max_after_fallback'];
+export function parseTimelineIssuesJson(json: string): TimelineIssue[] {
+  const value = parseJson(json, 'issuesJson'); if (!Array.isArray(value)) throw new Error('issuesJson must be an array');
+  return value.map((raw, index) => { const issue = object(raw, `issuesJson[${index}]`); const code = string(issue.code, `issuesJson[${index}].code`);
+    if (!ISSUE_CODES.includes(code as TimelineIssueCode)) throw new Error(`issuesJson[${index}].code is invalid`);
+    if (issue.severity !== 'warning' && issue.severity !== 'error') throw new Error(`issuesJson[${index}].severity is invalid`);
+    return { code: code as TimelineIssueCode, severity: issue.severity, message: string(issue.message, `issuesJson[${index}].message`),
+      beatIds: stringArray(issue.beatIds, `issuesJson[${index}].beatIds`), clipId: nullableString(issue.clipId, `issuesJson[${index}].clipId`) };
+  });
+}
+export function parseFinalVideoJobSnapshotJson(json: string): FinalVideoJobSnapshot {
+  const value = object(parseJson(json, 'jobSnapshotJson'), 'jobSnapshotJson');
+  if (value.kind !== 'preview' && value.kind !== 'final') throw new Error('jobSnapshotJson.kind is invalid');
+  if (value.solverVersion !== 2) throw new Error('jobSnapshotJson.solverVersion must be 2');
+  return { kind: value.kind, draftId: string(value.draftId, 'jobSnapshotJson.draftId'), draftRevision: number(value.draftRevision, 'jobSnapshotJson.draftRevision'),
+    packageConfig: mergePackageConfig(object(value.packageConfig, 'jobSnapshotJson.packageConfig')),
+    narrationBeats: parseNarrationBeatsJson(JSON.stringify(value.narrationBeats)), clipPool: parseClipPoolJson(JSON.stringify(value.clipPool)),
+    arrangement: parseArrangementPlanJson(JSON.stringify(value.arrangement)), issues: parseTimelineIssuesJson(JSON.stringify(value.issues)), solverVersion: 2 };
 }

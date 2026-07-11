@@ -65,4 +65,32 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE narration_providers ADD COLUMN baseUrl TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE narration_providers ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE narration_providers ADD COLUMN voices TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE final_video_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'final'`,
+  `ALTER TABLE final_video_jobs ADD COLUMN draftId TEXT`,
+  `ALTER TABLE final_video_jobs ADD COLUMN draftRevision INTEGER`,
+  `ALTER TABLE final_video_jobs ADD COLUMN narrationBeatsJson TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE final_video_jobs ADD COLUMN clipPoolJson TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE final_video_jobs ADD COLUMN arrangementJson TEXT NOT NULL DEFAULT '{"assignments":[],"gaps":[]}'`,
+  `ALTER TABLE final_video_jobs ADD COLUMN issuesJson TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE final_video_jobs ADD COLUMN solverVersion INTEGER NOT NULL DEFAULT 1`,
+  `CREATE TABLE IF NOT EXISTS final_video_drafts (
+    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT NOT NULL, scriptDraftId TEXT,
+    stage TEXT NOT NULL DEFAULT 'draft' CHECK(stage IN ('draft','preparing','narration-ready','describing','arranging','review','failed')),
+    revision INTEGER NOT NULL DEFAULT 0, workflowConfigJson TEXT NOT NULL DEFAULT '{}',
+    narrationBeatsJson TEXT NOT NULL DEFAULT '[]', clipPoolJson TEXT NOT NULL DEFAULT '[]',
+    arrangementJson TEXT NOT NULL DEFAULT '{"assignments":[],"gaps":[]}', issuesJson TEXT NOT NULL DEFAULT '[]',
+    previewJobId TEXT, previewRevision INTEGER, errorMessage TEXT,
+    createdAt TEXT NOT NULL DEFAULT (datetime('now')), updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE CASCADE,
+    FOREIGN KEY (scriptDraftId) REFERENCES script_drafts(id) ON DELETE SET NULL,
+    FOREIGN KEY (previewJobId) REFERENCES final_video_jobs(id) ON DELETE SET NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_final_video_drafts_project ON final_video_drafts(projectId)`,
+  `CREATE INDEX IF NOT EXISTS idx_final_video_drafts_shot_set ON final_video_drafts(shotSetId)`,
+  `CREATE TABLE IF NOT EXISTS clip_visual_descriptions (
+    id TEXT PRIMARY KEY, imageAssetId TEXT NOT NULL, description TEXT NOT NULL, providerId TEXT NOT NULL,
+    model TEXT NOT NULL, createdAt TEXT NOT NULL DEFAULT (datetime('now')), updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (imageAssetId) REFERENCES image_assets(id) ON DELETE CASCADE, UNIQUE(imageAssetId, providerId, model)
+  )`,
 ];
