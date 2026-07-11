@@ -65,6 +65,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const finalJobsPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Never let a draft refresh or preview poll replace a title the user has typed.
   const titleTouchedRef = useRef(false);
@@ -144,9 +145,21 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     return () => { if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; } };
   }, [previewJobId, previewJob, draft?.id, loadDraft, loadPreviewJob]);
 
+  const activeFinalJob = jobs.some((job) => job.status === 'pending' || job.status === 'running');
+  useEffect(() => {
+    if (!activeFinalJob) return;
+    finalJobsPollTimer.current = setInterval(() => { void loadJobs(); }, 2000);
+    return () => {
+      if (finalJobsPollTimer.current) {
+        clearInterval(finalJobsPollTimer.current);
+        finalJobsPollTimer.current = null;
+      }
+    };
+  }, [activeFinalJob, loadJobs]);
+
   const handleTitleChange = (value: string) => {
     setCoverTitle(value);
-    titleTouchedRef.current = value !== '' && value !== lastAutoTitleRef.current;
+    titleTouchedRef.current = true;
   };
 
   const workflowConfig = (): WorkflowConfig => ({
@@ -217,7 +230,8 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
       const data = await response.json().catch(() => ({}));
       if (response.status === 409) { await reportConflict(current.id); return; }
       if (!response.ok) throw new Error(data.error || '提交渲染失败');
-      if (kind === 'preview') { setPreviewJobId(data.jobId as string); await loadPreviewJob(data.jobId as string); } else await loadJobs();
+      if (kind === 'preview') { setPreviewJobId(data.jobId as string); await loadPreviewJob(data.jobId as string); }
+      if (kind === 'render') await loadJobs();
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); }
   };
 

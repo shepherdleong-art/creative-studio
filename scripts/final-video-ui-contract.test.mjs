@@ -20,15 +20,28 @@ assert.match(panel, /\/api\/final-video-drafts\/\$\{draft\.id\}\/preview/);
 assert.match(panel, /\/api\/final-video-drafts\/\$\{draft\.id\}\/render/);
 assert.doesNotMatch(panel, /\/api\/projects\/\$\{projectId\}\/final-videos`\s*,\s*\{\s*method:\s*'POST'/);
 assert.match(panel, /titleTouchedRef/);
+assert.match(panel, /titleTouchedRef\.current\s*=\s*true/);
 assert.match(panel, /previewRevision\s*===\s*draft\.revision/);
+assert.match(panel, /previewJob\?\.draftRevision\s*===\s*draft\.revision/);
 assert.match(panel, /草稿已更新/);
 assert.match(panel, /不自动调用/);
 assert.match(panel, /供应商/);
+assert.match(panel, /FLOW\s*=\s*\['创建草稿', '准备口播', '识别画面', 'AI 编排', '审核', '预览', '正式渲染'\]/);
+
+// Lifecycle: a newly submitted final job must refresh the list until it reaches a terminal state.
+assert.match(panel, /activeFinalJob/);
+assert.match(panel, /jobs\.some\(\(job\)\s*=>\s*job\.status\s*===\s*'pending'\s*\|\|\s*job\.status\s*===\s*'running'/);
+assert.match(panel, /setInterval\(\(\)\s*=>\s*\{\s*void loadJobs\(\);\s*}\s*,\s*2000\)/);
+assert.match(panel, /kind === 'preview'[\s\S]*kind === 'render'/);
+assert.match(panel, /JSON\.stringify\(\{ revision: current\.revision \}\)/);
+assert.match(panel, /response\.status\s*===\s*409[\s\S]{0,240}reportConflict\(current\.id\)/);
+assert.match(panel, /if\s*\(kind === 'render'\)\s*await loadJobs\(\)/);
 
 assert.match(editor, /revision/);
 assert.match(editor, /method:\s*'PATCH'/);
 assert.match(editor, /response\.status\s*===\s*409/);
 assert.match(editor, /草稿已更新/);
+assert.match(editor, /fetch\(`\/api\/final-video-drafts\/\$\{draft\.id\}`\)/);
 assert.match(editor, /ClipPicker/);
 assert.match(editor, /NarrationTimeline/);
 assert.match(editor, /视觉缺口/);
