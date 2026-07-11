@@ -11,7 +11,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { runFfmpeg, probeDurationSec } from '../ffmpeg.ts';
 import { dataRoot } from '../data-root.ts';
-import type { LegacyTimelineSegment, NarrationBeat, NarrationDraftBeat } from './types.ts';
+import type { NarrationBeat, NarrationDraftBeat } from './types.ts';
 import type { NarrationProviderRuntimeConfig } from '../narration-providers/config.ts';
 
 const QWEN_TTS_URL = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
@@ -289,13 +289,6 @@ export async function synthesizeNarrationBeats(input: {
   return output;
 }
 
-interface LegacyNarrationTrackInput {
-  timeline: LegacyTimelineSegment[];
-  files: Record<string, string>;
-  introDurationSec: number;
-  workDir: string;
-}
-
 interface BeatNarrationTrackInput {
   beats: NarrationBeat[];
   introDurationSec: number;
@@ -310,13 +303,9 @@ function validateTrackBase(input: { introDurationSec: number; workDir: string })
   fs.mkdirSync(input.workDir, { recursive: true });
 }
 
-/** 新 beat 轨道按 group 去重拼整句；旧时间线调用保留到 E1。 */
-export function buildNarrationTrack(opts: BeatNarrationTrackInput): Promise<string>;
-export function buildNarrationTrack(opts: LegacyNarrationTrackInput): Promise<string>;
-export async function buildNarrationTrack(opts: BeatNarrationTrackInput | LegacyNarrationTrackInput): Promise<string> {
+export async function buildNarrationTrack(opts: BeatNarrationTrackInput): Promise<string> {
   validateTrackBase(opts);
-  if ('beats' in opts) return buildBeatNarrationTrack(opts);
-  return buildLegacyNarrationTrack(opts);
+  return buildBeatNarrationTrack(opts);
 }
 
 async function buildBeatNarrationTrack(opts: BeatNarrationTrackInput): Promise<string> {
@@ -361,35 +350,6 @@ async function buildBeatNarrationTrack(opts: BeatNarrationTrackInput): Promise<s
     args.push('-i', group[0].audioPath);
     parts.push(`[${index}:a]anull[ag${index}]`);
     labels.push(`[ag${index}]`);
-  });
-  parts.push(`${labels.join('')}concat=n=${labels.length}:v=0:a=1[aout]`);
-  args.push('-filter_complex', parts.join(';'), '-map', '[aout]', '-c:a', 'aac', '-b:a', '128k', '-y', out);
-  await runFfmpeg(args, { timeoutMs: 120_000 });
-  return out;
-}
-
-/** 按旧最终时间线拼装整轨：每段 apad，无口播段填静音，片头前置静音。 */
-async function buildLegacyNarrationTrack(opts: LegacyNarrationTrackInput): Promise<string> {
-  const out = path.join(opts.workDir, 'narration.m4a');
-  const args: string[] = ['-hide_banner'];
-  const parts: string[] = [];
-  const labels: string[] = [];
-  let inputIdx = 0;
-
-  if (opts.introDurationSec > 0) {
-    parts.push(`aevalsrc=0:d=${opts.introDurationSec}:s=44100[aintro]`);
-    labels.push('[aintro]');
-  }
-  opts.timeline.forEach((seg, k) => {
-    const file = opts.files[seg.shotId];
-    if (file && seg.narrationDurationSec > 0) {
-      args.push('-i', file);
-      parts.push(`[${inputIdx}:a]apad=whole_dur=${seg.segmentDurationSec.toFixed(3)}[a${k}]`);
-      inputIdx += 1;
-    } else {
-      parts.push(`aevalsrc=0:d=${seg.segmentDurationSec.toFixed(3)}:s=44100[a${k}]`);
-    }
-    labels.push(`[a${k}]`);
   });
   parts.push(`${labels.join('')}concat=n=${labels.length}:v=0:a=1[aout]`);
   args.push('-filter_complex', parts.join(';'), '-map', '[aout]', '-c:a', 'aac', '-b:a', '128k', '-y', out);

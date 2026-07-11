@@ -5,7 +5,7 @@
  *   音频：口播/BGM 组合，BGM 可 sidechaincompress ducking（探测失败退化 amix）
  * 参考：混剪计划 §Task 3.2 音频图的 TS 移植；输出时长用显式 -t 保证确定性。
  */
-import type { LegacyTimelineSegment, TimelineSegment } from './types.ts';
+import type { TimelineSegment } from './types.ts';
 
 /** subtitles/fontsdir 的 filter 内路径转义（Windows 盘符冒号 + 反斜杠 + 单引号） */
 export function escapeSubtitlePath(p: string): string {
@@ -21,33 +21,20 @@ export function escapeDrawtext(text: string): string {
     .replace(/%/g, '\\%');
 }
 
-export interface RenderGraphInput {
-  segments: LegacyTimelineSegment[];
+export interface SolvedRenderGraphInput {
+  segments: TimelineSegment[];
   width: number;
   height: number;
   fps: number;
   totalDurationSec: number;
   introDurationSec: number;
   coverJpgPath: string | null;
-  /** 已含片头静音偏移的完整口播音轨（Task 14 产出），无口播传 null */
   narrationTrackPath: string | null;
   bgm: { path: string; volume: number; ducking: boolean } | null;
   duckingSupported: boolean;
   assPath: string | null;
   fontsDir: string;
   outputPath: string;
-}
-
-export function buildRenderArgs(g: RenderGraphInput): string[] {
-  return buildArgs(g, (s, scaleChain) => {
-    const pad = s.segmentDurationSec - s.clipDurationSec;
-    const padPart = pad > 0.01 ? `,tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}` : '';
-    return `setpts=PTS-STARTPTS,${scaleChain}${padPart}`;
-  });
-}
-
-export interface SolvedRenderGraphInput extends Omit<RenderGraphInput, 'segments'> {
-  segments: TimelineSegment[];
 }
 
 const SOLVED_EPSILON = 1e-9;
@@ -87,19 +74,6 @@ function validateSolvedGraph(g: SolvedRenderGraphInput): void {
 
 export function buildSolvedRenderArgs(g: SolvedRenderGraphInput): string[] {
   validateSolvedGraph(g);
-  return buildArgs(g, (s, scaleChain) => {
-    const trimPart = s.trimEndToSec === null ? '' : `trim=duration=${duration(s.trimEndToSec)},`;
-    const padPart = s.padStopSec > SOLVED_EPSILON
-      ? `,tpad=stop_mode=clone:stop_duration=${duration(s.padStopSec)}`
-      : '';
-    return `${trimPart}setpts=PTS-STARTPTS${padPart},${scaleChain}`;
-  });
-}
-
-function buildArgs<S extends { clipPath: string }>(
-  g: Omit<RenderGraphInput, 'segments'> & { segments: S[] },
-  videoChain: (segment: S, scaleChain: string) => string,
-): string[] {
   const { width: w, height: h, fps } = g;
   const args: string[] = ['-hide_banner', '-nostats'];
   const hasIntro = g.introDurationSec > 0 && !!g.coverJpgPath;
@@ -129,7 +103,12 @@ function buildArgs<S extends { clipPath: string }>(
     vLabels.push('[vintro]');
   }
   g.segments.forEach((s, i) => {
-    parts.push(`[${base + i}:v]${videoChain(s, scaleChain)}[v${i}]`);
+    const trimPart = s.trimEndToSec === null ? '' : `trim=duration=${duration(s.trimEndToSec)},`;
+    const padPart = s.padStopSec > SOLVED_EPSILON
+      ? `,tpad=stop_mode=clone:stop_duration=${duration(s.padStopSec)}`
+      : '';
+    const videoChain = `${trimPart}setpts=PTS-STARTPTS${padPart},${scaleChain}`;
+    parts.push(`[${base + i}:v]${videoChain}[v${i}]`);
     vLabels.push(`[v${i}]`);
   });
   parts.push(`${vLabels.join('')}concat=n=${vLabels.length}:v=1:a=0[vcat]`);

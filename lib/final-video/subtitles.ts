@@ -52,12 +52,6 @@ function bgr(hexColor: string): string {
   return `${c.slice(4, 6)}${c.slice(2, 4)}${c.slice(0, 2)}`.toUpperCase();
 }
 
-export interface AssSegment {
-  subtitle: string;
-  startSec: number;
-  segmentDurationSec: number;
-}
-
 function buildAssHeader(style: SubtitleStyle, width: number, height: number): string {
   const marginV = Math.round((height * style.marginBottomPct) / 100);
   return (
@@ -77,20 +71,6 @@ function buildAssHeader(style: SubtitleStyle, width: number, height: number): st
 
 function escapeAssText(text: string): string {
   return text.replace(/\n/g, '\\N');
-}
-
-export function buildAss(segments: AssSegment[], style: SubtitleStyle, width: number, height: number): string {
-  const header = buildAssHeader(style, width, height);
-
-  const lines = [header];
-  for (const seg of segments) {
-    const text = (seg.subtitle || '').trim();
-    if (!text) continue;
-    const start = assTime(seg.startSec);
-    const end = assTime(seg.startSec + seg.segmentDurationSec);
-    lines.push(`Dialogue: 0,${start},${end},Default,,0,0,0,,${escapeAssText(text)}`);
-  }
-  return lines.join('\n') + '\n';
 }
 
 /** Build one subtitle dialogue per natural narration sentence (`groupId`). */

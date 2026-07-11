@@ -49,11 +49,6 @@ export interface TimelineSegment {
   gapBeatIds: string[]; clipDurationSec: number; mediaDurationSec: number; trimEndToSec: number | null;
   padStopSec: number; segmentDurationSec: number; startSec: number;
 }
-/** v1 renderer compatibility shape; removed with the legacy timeline implementation in a later task. */
-export interface LegacyTimelineSegment {
-  shotId: string; shotIndex: number; videoJobId: string; clipPath: string; clipDurationSec: number;
-  voiceover: string; subtitle: string; narrationDurationSec: number; segmentDurationSec: number; startSec: number;
-}
 export interface TimelineResult { segments: TimelineSegment[]; issues: TimelineIssue[]; contentDurationSec: number; totalDurationSec: number }
 export type FinalVideoDraftStage = 'draft' | 'preparing' | 'narration-ready' | 'describing' | 'arranging' | 'review' | 'failed';
 export interface FinalVideoDraftRow {
