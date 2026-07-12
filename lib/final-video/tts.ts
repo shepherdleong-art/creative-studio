@@ -188,8 +188,8 @@ export async function synthesizeNarrationBeats(input: {
     output.push({
       beatId: draftBeat.beatId,
       index: output.length,
-      text: draftBeat.text,
-      subtitleText: draftBeat.subtitleText || draftBeat.text,
+      text: draftBeat.text.trim(),
+      subtitleText: draftBeat.subtitleText.trim() || draftBeat.text.trim(),
       shotId: draftBeat.shotId,
       imageAssetId: draftBeat.imageAssetId,
       audioPath,
