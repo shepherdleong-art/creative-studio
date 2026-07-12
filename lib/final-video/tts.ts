@@ -104,8 +104,6 @@ export async function synthesizeOne(
   return { buffer: await synthesizeQwen(text, voice, rt.apiKey), speedApplied: false };
 }
 
-const TIMING_EPSILON_SEC = 1e-6;
-
 function requirePositiveFinite(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} 必须是有限正数`);
 }
@@ -134,70 +132,33 @@ function narrationDirectory(draftId: string): string {
   return assertPathWithinRoot(draftRoot, directory, 'draftId 路径不安全');
 }
 
-function safeGroupFileName(groupId: string): string {
-  return `group-${createHash('sha256').update(groupId).digest('hex').slice(0, 24)}.m4a`;
+function safeBeatFileName(beatId: string): string {
+  return `beat-${createHash('sha256').update(beatId).digest('hex').slice(0, 24)}.m4a`;
 }
 
-function partitionTextByDuration(text: string, durations: number[], totalDurationSec: number): string[] {
-  const characters = Array.from(text);
-  const contentPositions = characters
-    .map((character, index) => (/\s/u.test(character) ? -1 : index))
-    .filter((index) => index >= 0);
-  if (contentPositions.length < durations.length) {
-    throw new Error('口播文本字符数不足，无法为每个时间窗口生成非空文本');
-  }
-  const result: string[] = [];
-  let consumedContent = 0;
-  let startCharacter = 0;
-  let consumedDuration = 0;
-  for (let index = 0; index < durations.length; index += 1) {
-    consumedDuration += durations[index];
-    const remainingWindows = durations.length - index - 1;
-    const proportionalContentEnd = index === durations.length - 1
-      ? contentPositions.length
-      : Math.round((consumedDuration / totalDurationSec) * contentPositions.length);
-    const contentEnd = Math.min(
-      contentPositions.length - remainingWindows,
-      Math.max(consumedContent + 1, proportionalContentEnd),
-    );
-    const endCharacter = index === durations.length - 1
-      ? characters.length
-      : contentPositions[contentEnd - 1] + 1;
-    result.push(characters.slice(startCharacter, endCharacter).join(''));
-    consumedContent = contentEnd;
-    startCharacter = endCharacter;
-  }
-  return result;
-}
-
-/** 每个自然句只合成一次，再按真实音频时长切成连续 beat 时间窗口。 */
+/** 一句合成一次，真实音频时长即该句的段时长。不再切窗口。 */
 export async function synthesizeNarrationBeats(input: {
   draftId: string;
   beats: NarrationDraftBeat[];
   providerId: string;
   voice: string;
   speed: number;
-  maxClipSeconds: number;
 }): Promise<NarrationBeat[]> {
   requirePositiveFinite('speed', input.speed);
-  requirePositiveFinite('maxClipSeconds', input.maxClipSeconds);
   if (!Array.isArray(input.beats) || input.beats.length === 0) throw new Error('beats 不能为空');
   if (!input.providerId.trim()) throw new Error('providerId 不能为空');
   if (!input.voice.trim()) throw new Error('voice 不能为空');
 
   const directory = narrationDirectory(input.draftId);
-  const seenGroups = new Set<string>();
   const seenBeatIds = new Set<string>();
   const seenIndexes = new Set<number>();
   for (const [position, beat] of input.beats.entries()) {
-    if (!beat || !beat.groupId?.trim()) throw new Error(`beats[${position}].groupId 不能为空`);
-    if (!beat.beatId?.trim()) throw new Error(`beats[${position}].beatId 不能为空`);
+    if (!beat?.beatId?.trim()) throw new Error(`beats[${position}].beatId 不能为空`);
     if (!beat.text?.trim()) throw new Error(`beats[${position}].text 不能为空`);
+    if (!beat.shotId?.trim()) throw new Error(`beats[${position}].shotId 不能为空`);
     if (!Number.isInteger(beat.index) || beat.index < 0) throw new Error(`beats[${position}].index 无效`);
-    if (seenGroups.has(beat.groupId)) throw new Error(`重复 groupId：${beat.groupId}`);
     if (seenBeatIds.has(beat.beatId)) throw new Error(`重复 beatId：${beat.beatId}`);
     if (seenIndexes.has(beat.index)) throw new Error(`重复 index：${beat.index}`);
-    seenGroups.add(beat.groupId);
     seenBeatIds.add(beat.beatId);
     seenIndexes.add(beat.index);
   }
@@ -205,11 +166,10 @@ export async function synthesizeNarrationBeats(input: {
   fs.mkdirSync(directory, { recursive: true });
   const rt = await resolveNarrationRuntime(input.providerId);
   const output: NarrationBeat[] = [];
-  const outputBeatIds = new Set<string>();
-  let contentStartSec = 0;
+  let startSec = 0;
 
   for (const draftBeat of [...input.beats].sort((a, b) => a.index - b.index)) {
-    const audioPath = path.join(directory, safeGroupFileName(draftBeat.groupId));
+    const audioPath = path.join(directory, safeBeatFileName(draftBeat.beatId));
     const rawPath = `${audioPath}.raw`;
     const { buffer, speedApplied } = await synthesizeOne(draftBeat.text.trim(), input.voice, input.speed, rt);
     fs.writeFileSync(rawPath, buffer);
@@ -224,35 +184,19 @@ export async function synthesizeNarrationBeats(input: {
 
     const durationSec = await probeDurationSec(audioPath);
     requirePositiveFinite('probed duration', durationSec);
-    const windows: number[] = [];
-    let remainingSec = durationSec;
-    while (remainingSec > TIMING_EPSILON_SEC) {
-      const windowSec = Math.min(input.maxClipSeconds, remainingSec);
-      windows.push(windowSec);
-      remainingSec -= windowSec;
-    }
-    if (windows.length === 0) throw new Error('probed duration 未产生有效时间窗口');
-    const windowTotal = windows.reduce((sum, value) => sum + value, 0);
-    windows[windows.length - 1] += durationSec - windowTotal;
-    const texts = partitionTextByDuration(draftBeat.text.trim(), windows, durationSec);
 
-    let groupOffsetSec = 0;
-    windows.forEach((windowSec, windowIndex) => {
-      const beatId = windows.length === 1 ? draftBeat.beatId : `${draftBeat.beatId}-${windowIndex + 1}`;
-      if (outputBeatIds.has(beatId)) throw new Error(`切分后产生重复 beatId：${beatId}`);
-      outputBeatIds.add(beatId);
-      output.push({
-        beatId,
-        groupId: draftBeat.groupId,
-        index: output.length,
-        text: texts[windowIndex],
-        audioPath,
-        durationSec: windowSec,
-        startSec: contentStartSec + groupOffsetSec,
-      });
-      groupOffsetSec += windowSec;
+    output.push({
+      beatId: draftBeat.beatId,
+      index: output.length,
+      text: draftBeat.text,
+      subtitleText: draftBeat.subtitleText || draftBeat.text,
+      shotId: draftBeat.shotId,
+      imageAssetId: draftBeat.imageAssetId,
+      audioPath,
+      durationSec,
+      startSec,
     });
-    contentStartSec += durationSec;
+    startSec += durationSec;
   }
   return output;
 }
@@ -279,30 +223,18 @@ export async function buildNarrationTrack(opts: BeatNarrationTrackInput): Promis
 async function buildBeatNarrationTrack(opts: BeatNarrationTrackInput): Promise<string> {
   if (!Array.isArray(opts.beats) || opts.beats.length === 0) throw new Error('beats 不能为空');
   const ordered = [...opts.beats].sort((a, b) => a.index - b.index);
-  const groups: NarrationBeat[][] = [];
-  const closedGroups = new Set<string>();
   const seenBeatIds = new Set<string>();
   const seenIndexes = new Set<number>();
   let expectedStartSec = 0;
   for (const [position, beat] of ordered.entries()) {
     if (!beat.beatId?.trim() || seenBeatIds.has(beat.beatId)) throw new Error(`beats[${position}].beatId 无效或重复`);
     if (!Number.isInteger(beat.index) || seenIndexes.has(beat.index)) throw new Error(`beats[${position}].index 无效或重复`);
-    if (!beat.groupId?.trim()) throw new Error(`beats[${position}].groupId 不能为空`);
     seenBeatIds.add(beat.beatId);
     seenIndexes.add(beat.index);
     requirePositiveFinite(`beats[${position}].durationSec`, beat.durationSec);
     if (!Number.isFinite(beat.startSec) || beat.startSec < 0) throw new Error(`beats[${position}].startSec 无效`);
     if (Math.abs(beat.startSec - expectedStartSec) > 0.01) throw new Error('beats startSec 不连续');
     expectedStartSec += beat.durationSec;
-    const current = groups.at(-1);
-    if (!current || current[0].groupId !== beat.groupId) {
-      if (closedGroups.has(beat.groupId)) throw new Error(`groupId ${beat.groupId} 不连续`);
-      if (current) closedGroups.add(current[0].groupId);
-      groups.push([beat]);
-    } else {
-      if (current[0].audioPath !== beat.audioPath) throw new Error(`groupId ${beat.groupId} 的 audioPath 必须一致`);
-      current.push(beat);
-    }
   }
 
   const out = path.join(opts.workDir, 'narration.m4a');
@@ -313,9 +245,9 @@ async function buildBeatNarrationTrack(opts: BeatNarrationTrackInput): Promise<s
     parts.push(`aevalsrc=0:d=${opts.introDurationSec}:s=44100[aintro]`);
     labels.push('[aintro]');
   }
-  groups.forEach((group, index) => {
-    if (!group[0].audioPath || !fs.existsSync(group[0].audioPath)) throw new Error(`口播音频不存在：${group[0].audioPath}`);
-    args.push('-i', group[0].audioPath);
+  ordered.forEach((beat, index) => {
+    if (!beat.audioPath || !fs.existsSync(beat.audioPath)) throw new Error(`口播音频不存在：${beat.audioPath}`);
+    args.push('-i', beat.audioPath);
     parts.push(`[${index}:a]anull[ag${index}]`);
     labels.push(`[ag${index}]`);
   });

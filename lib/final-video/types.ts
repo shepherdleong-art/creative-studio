@@ -26,7 +26,18 @@ export interface FinalVideoWorkflowConfig {
   orchestrationProviderId: string;
   selectedClipIds: string[];
 }
-export interface NarrationDraftBeat { beatId: string; groupId: string; index: number; text: string }
+/** 一句口播。一句 = 一个 beat = 一张画面（不再切窗口，故无 groupId）。 */
+export interface NarrationDraftBeat {
+  beatId: string;
+  index: number;
+  text: string;
+  /** ASS 字幕渲染用；缺省等于 text。 */
+  subtitleText: string;
+  /** 这一句该展示哪个分镜的画面（来自脚本的计划）。 */
+  shotId: string;
+  /** 脚本写作时看的那张图；用于过期检测。旧格式脚本为 null。 */
+  imageAssetId: string | null;
+}
 export interface NarrationBeat extends NarrationDraftBeat { audioPath: string; durationSec: number; startSec: number }
 export interface ClipPoolItem {
   clipId: string; shotId: string; shotIndex: number; videoPath: string; clipDurationSec: number;
@@ -50,7 +61,7 @@ export interface TimelineSegment {
   padStopSec: number; segmentDurationSec: number; startSec: number;
 }
 export interface TimelineResult { segments: TimelineSegment[]; issues: TimelineIssue[]; contentDurationSec: number; totalDurationSec: number }
-export type FinalVideoDraftStage = 'draft' | 'preparing' | 'narration-ready' | 'describing' | 'arranging' | 'review' | 'failed';
+export type FinalVideoDraftStage = 'draft' | 'preparing' | 'review' | 'failed';
 export interface FinalVideoDraftRow {
   id: string; projectId: string; shotSetId: string; scriptDraftId: string | null; stage: FinalVideoDraftStage;
   revision: number; workflowConfigJson: string; narrationBeatsJson: string; clipPoolJson: string;
@@ -221,11 +232,16 @@ export function parseFinalVideoWorkflowConfigJson(json: string): FinalVideoWorkf
 export function parseNarrationBeatsJson(json: string): NarrationBeat[] {
   const value = parseJson(json, 'narrationBeatsJson');
   if (!Array.isArray(value)) throw new Error('narrationBeatsJson must be an array');
-  return value.map((raw, index) => { const beat = object(raw, `narrationBeatsJson[${index}]`); return {
-    beatId: string(beat.beatId, `narrationBeatsJson[${index}].beatId`), groupId: string(beat.groupId, `narrationBeatsJson[${index}].groupId`),
-    index: number(beat.index, `narrationBeatsJson[${index}].index`), text: string(beat.text, `narrationBeatsJson[${index}].text`),
-    audioPath: string(beat.audioPath, `narrationBeatsJson[${index}].audioPath`), durationSec: number(beat.durationSec, `narrationBeatsJson[${index}].durationSec`),
-    startSec: number(beat.startSec, `narrationBeatsJson[${index}].startSec`),
+  return value.map((raw, index) => { const beat = object(raw, `narrationBeatsJson[${index}]`); const p = `narrationBeatsJson[${index}]`; return {
+    beatId: string(beat.beatId, `${p}.beatId`),
+    index: number(beat.index, `${p}.index`),
+    text: string(beat.text, `${p}.text`),
+    subtitleText: string(beat.subtitleText, `${p}.subtitleText`),
+    shotId: string(beat.shotId, `${p}.shotId`),
+    imageAssetId: nullableString(beat.imageAssetId, `${p}.imageAssetId`),
+    audioPath: string(beat.audioPath, `${p}.audioPath`),
+    durationSec: number(beat.durationSec, `${p}.durationSec`),
+    startSec: number(beat.startSec, `${p}.startSec`),
   }; });
 }
 export function parseClipPoolJson(json: string): ClipPoolItem[] {
