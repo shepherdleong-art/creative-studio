@@ -33,10 +33,10 @@ export async function POST(
     const action = (body.action as string) || 'generate';
 
     if (action === 'analyze') {
-      return handleAnalyze(projectId, project, body);
+      return await handleAnalyze(projectId, project, body);
     }
 
-    return handleGenerate(projectId, project, body);
+    return await handleGenerate(projectId, project, body);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });
