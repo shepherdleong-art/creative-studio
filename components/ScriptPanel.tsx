@@ -46,6 +46,13 @@ const STEP_LABELS: Record<Step, string> = {
   3: '脚本',
 };
 
+/** 旧版（v1）草稿是 {shots, duration}，没有 segments/version，直接 render 会在 .segments.map 上炸整页。 */
+function isValidScriptOutput(value: unknown): value is ScriptOutput {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { version?: unknown; segments?: unknown; droppedShots?: unknown };
+  return candidate.version === 2 && Array.isArray(candidate.segments) && Array.isArray(candidate.droppedShots);
+}
+
 function readDraftSnapshot(draft: ScriptDraft): { shotSetId?: string; shotSetName?: string } {
   try {
     return JSON.parse(draft.inputSnapshot || '{}') as { shotSetId?: string; shotSetName?: string };
@@ -125,6 +132,7 @@ export default function ScriptPanel({ projectId }: Props) {
   const [drafts, setDrafts] = useState<ScriptDraft[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [shotImages, setShotImages] = useState<ShotWithImage[]>([]);
+  const [legacyDraftNotice, setLegacyDraftNotice] = useState(false);
 
   // Models
   const [providers, setProviders] = useState<ProviderMeta[]>([]);
@@ -242,11 +250,15 @@ export default function ScriptPanel({ projectId }: Props) {
             setSelectedDraftId(first.id);
             hydrateStrategyFromDraft(first);
             try {
-              const parsed = JSON.parse(first.outputJson) as ScriptOutput;
-              setScript(parsed);
-              setStep(3);
-              if (parsed.shotSetId) {
-                void loadShotImages(parsed.shotSetId);
+              const parsed = JSON.parse(first.outputJson) as unknown;
+              if (isValidScriptOutput(parsed)) {
+                setScript(parsed);
+                setStep(3);
+                if (parsed.shotSetId) {
+                  void loadShotImages(parsed.shotSetId);
+                }
+              } else {
+                setLegacyDraftNotice(true);
               }
             } catch { /* ignore */ }
           }
@@ -386,6 +398,7 @@ export default function ScriptPanel({ projectId }: Props) {
       if (res.ok) {
         setScript(data.script);
         setStep(3);
+        setLegacyDraftNotice(false);
 
         // Reload drafts
         const listRes = await fetch(`/api/projects/${projectId}/script`);
@@ -418,11 +431,17 @@ export default function ScriptPanel({ projectId }: Props) {
       setSelectedDraftId(draftId);
       hydrateStrategyFromDraft(draft);
       try {
-        const parsed = JSON.parse(draft.outputJson) as ScriptOutput;
-        setScript(parsed);
-        setStep(3);
-        if (parsed.shotSetId) {
-          void loadShotImages(parsed.shotSetId);
+        const parsed = JSON.parse(draft.outputJson) as unknown;
+        if (isValidScriptOutput(parsed)) {
+          setLegacyDraftNotice(false);
+          setScript(parsed);
+          setStep(3);
+          if (parsed.shotSetId) {
+            void loadShotImages(parsed.shotSetId);
+          }
+        } else {
+          setScript(null);
+          setLegacyDraftNotice(true);
         }
       } catch { /* ignore */ }
     }
@@ -440,6 +459,7 @@ export default function ScriptPanel({ projectId }: Props) {
     setScript(null);
     setSelectedDraftId(null);
     setShotImages([]);
+    setLegacyDraftNotice(false);
   }, []);
 
   // ── Derive display image URL ──
@@ -536,6 +556,12 @@ export default function ScriptPanel({ projectId }: Props) {
 
       {/* Body */}
       <div className="p-5">
+        {legacyDraftNotice && (
+          <div className="mb-4 rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm text-warn">
+            <Icon name="alert" size={13} /> 这份脚本由旧版本生成，格式已不兼容，无法展示。请重新生成脚本。
+          </div>
+        )}
+
         {/* Step 1: Selling Point Input & Analysis */}
         {(step === 1 || (step === 2 && analyzing)) && (
           <ScriptSellingPointInput

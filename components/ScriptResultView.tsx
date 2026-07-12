@@ -10,7 +10,7 @@ interface Props {
   projectId: string;
 }
 
-export default function ScriptResultView({ script, getShotImageUrl: _getShotImageUrl, projectId: _projectId }: Props) {
+export default function ScriptResultView({ script, getShotImageUrl, projectId: _projectId }: Props) {
   const [copied, setCopied] = useState(false);
 
   // ── Copy full script ──
@@ -98,23 +98,32 @@ export default function ScriptResultView({ script, getShotImageUrl: _getShotImag
 
       {/* Segment cards */}
       <div className="space-y-3">
-        {script.segments.map((segment, i) => (
-          <div key={segment.shotId} className="flex gap-3 rounded border border-hairline p-3">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={`/api/images/${segment.imageAssetId}`}
-              alt={`第 ${i + 1} 段画面`}
-              className="h-20 w-20 shrink-0 rounded object-cover"
-            />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs text-ink-tertiary">第 {i + 1} 段</p>
-              <p className="mt-0.5 text-sm text-ink">{segment.narration}</p>
-              {segment.rationale && (
-                <p className="mt-1 text-xs leading-relaxed text-ink-tertiary">画面理由：{segment.rationale}</p>
+        {script.segments.map((segment, i) => {
+          const imageUrl = getShotImageUrl(segment.shotId);
+          return (
+            <div key={segment.shotId} className="flex gap-3 rounded border border-hairline p-3">
+              {imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={imageUrl}
+                  alt={`第 ${i + 1} 段画面`}
+                  className="h-20 w-20 shrink-0 rounded object-cover"
+                />
+              ) : (
+                <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded bg-surface-subtle text-ink-tertiary">
+                  <Icon name="image" size={20} />
+                </div>
               )}
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-ink-tertiary">第 {i + 1} 段</p>
+                <p className="mt-0.5 text-sm text-ink">{segment.narration}</p>
+                {segment.rationale && (
+                  <p className="mt-1 text-xs leading-relaxed text-ink-tertiary">画面理由：{segment.rationale}</p>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Dropped shots (backup pool) */}
