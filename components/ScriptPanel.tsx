@@ -113,7 +113,7 @@ export default function ScriptPanel({ projectId }: Props) {
   const [selectedSellingPoints, setSelectedSellingPoints] = useState<string[]>([]);
   const [templateId, setTemplateId] = useState('scene_seeding');
   const [templateName, setTemplateName] = useState('场景种草');
-  const [duration, setDuration] = useState('30s');
+  const [targetDurationSec, setTargetDurationSec] = useState(20);
   const [generateProviderId, setGenerateProviderId] = useState('gemini');
 
   // ShotSet selection
@@ -138,7 +138,7 @@ export default function ScriptPanel({ projectId }: Props) {
         selectedSellingPoints?: Array<{ title?: string }>;
         templateId?: string;
         templateName?: string;
-        duration?: string;
+        targetDurationSec?: number;
         shotSetId?: string;
         providerId?: string;
         tone?: string;
@@ -152,7 +152,7 @@ export default function ScriptPanel({ projectId }: Props) {
       setSelectedSellingPoints(titles);
       if (snapshot.templateId) setTemplateId(snapshot.templateId);
       if (snapshot.templateName) setTemplateName(snapshot.templateName);
-      if (snapshot.duration) setDuration(snapshot.duration);
+      if (snapshot.targetDurationSec) setTargetDurationSec(snapshot.targetDurationSec);
       if (snapshot.shotSetId) setSelectedShotSetId(snapshot.shotSetId);
       if (snapshot.providerId) setGenerateProviderId(snapshot.providerId);
       if (snapshot.tone) setTone(snapshot.tone);
@@ -376,7 +376,7 @@ export default function ScriptPanel({ projectId }: Props) {
           selectedSellingPoints: spWithData,
           templateId,
           templateName,
-          duration,
+          targetDurationSec,
           providerId: generateProviderId,
           tone,
           platform,
@@ -407,7 +407,7 @@ export default function ScriptPanel({ projectId }: Props) {
     }
   }, [
     projectId, selectedShotSetId, selectedSellingPoints, analysis,
-    templateId, templateName, duration, generateProviderId,
+    templateId, templateName, targetDurationSec, generateProviderId,
     tone, platform, saveBrief, loadShotImages,
   ]);
 
@@ -564,8 +564,8 @@ export default function ScriptPanel({ projectId }: Props) {
             templateId={templateId}
             onTemplateIdChange={(id, name) => { setTemplateId(id); setTemplateName(name); }}
             templateName={templateName}
-            duration={duration}
-            onDurationChange={setDuration}
+            targetDurationSec={targetDurationSec}
+            onTargetDurationSecChange={setTargetDurationSec}
             providers={providers}
             providerId={generateProviderId}
             onProviderIdChange={setGenerateProviderId}

@@ -10,7 +10,7 @@ interface Props {
   projectId: string;
 }
 
-export default function ScriptResultView({ script, getShotImageUrl, projectId: _projectId }: Props) {
+export default function ScriptResultView({ script, getShotImageUrl: _getShotImageUrl, projectId: _projectId }: Props) {
   const [copied, setCopied] = useState(false);
 
   // ── Copy full script ──
@@ -38,18 +38,16 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
     if (!script) return;
     const text = [
       `# ${script.title}`,
-      `平台: ${script.platform}  语气: ${script.tone}  时长: ${script.duration}`,
+      `平台: ${script.platform}  语气: ${script.tone}  时长: ${script.targetDurationSec}秒`,
       '',
       '## 完整口播稿',
       '',
       script.fullScript,
       '',
-      '## 分镜详情',
-      '',
-      ...script.shots.map((s) => {
-        const shotTitle = s.title || `分镜 ${s.shotIndex} 文案`;
-        return `### ${shotTitle}（分镜 ${s.shotIndex}，${s.duration}）\n标题: ${shotTitle}\n口播: ${s.voiceover}\n字幕: ${s.subtitle}\n视觉意图: ${s.visualIntent}\n`;
-      }),
+      '## 分段',
+      ...script.segments.map((s, i) => (
+        `### 第 ${i + 1} 段\n口播: ${s.narration}\n字幕: ${s.subtitle}\n画面理由: ${s.rationale}\n`
+      )),
     ].join('\n');
 
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
@@ -75,14 +73,6 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
 
   if (!script) return null;
 
-  // Build selling point lookup by shotId
-  const spMap = new Map<string, string>();
-  if (script.sellingPointMap) {
-    for (const m of script.sellingPointMap) {
-      spMap.set(m.shotId, m.sellingPoint);
-    }
-  }
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -92,7 +82,7 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
           <div className="mt-1 flex flex-wrap gap-3 text-xs text-ink-secondary">
             <span>平台: {script.platform}</span>
             <span>语气: {script.tone}</span>
-            <span>时长: {script.duration}</span>
+            <span>时长: {script.targetDurationSec}秒</span>
             <span>模版: {script.template}</span>
           </div>
         </div>
@@ -106,79 +96,38 @@ export default function ScriptResultView({ script, getShotImageUrl, projectId: _
         </div>
       </div>
 
-      {/* Shot-by-shot cards */}
-      <div className="space-y-4">
-        {script.shots.map((shot) => {
-          const imageUrl = getShotImageUrl(shot.shotId);
-          const spTag = spMap.get(shot.shotId);
-
-          return (
-            <div
-              key={shot.shotId || shot.shotIndex}
-              className="overflow-hidden rounded-[18px] border border-hairline bg-surface"
-            >
-              <div className="flex flex-col sm:flex-row">
-                {/* Left: Image */}
-                <div className="flex w-full shrink-0 items-center justify-center bg-surface-subtle p-4 sm:w-[200px]">
-                  {imageUrl ? (
-                    <img
-                      src={imageUrl}
-                      alt={`分镜 ${shot.shotIndex}`}
-                      className="max-h-[180px] w-full rounded-xl object-contain"
-                    />
-                  ) : (
-                    <div className="flex h-[120px] w-full flex-col items-center justify-center rounded-xl bg-surface text-ink-tertiary">
-                      <Icon name="image" size={24} />
-                      <span className="mt-1 text-[0.65rem]">暂无图片</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Right: Script */}
-                <div className="flex min-w-0 flex-1 flex-col justify-center p-4">
-                  <div className="mb-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-semibold text-ink-tertiary">
-                        分镜 {shot.shotIndex}
-                      </span>
-                      <span className="text-[0.65rem] text-ink-tertiary">{shot.duration}</span>
-                      {spTag && (
-                        <span className="inline-flex items-center rounded-full bg-accent-tint/10 px-2 py-px text-[0.65rem] font-medium text-accent">
-                          🏷 {spTag}
-                        </span>
-                      )}
-                    </div>
-                    {shot.title && (
-                      <h4 className="mt-1 text-sm font-semibold leading-snug text-ink">
-                        {shot.title}
-                      </h4>
-                    )}
-                  </div>
-
-                  <div className="space-y-2.5">
-                    <div>
-                      <span className="text-[0.65rem] font-medium text-ink-tertiary">🗣 口播</span>
-                      <p className="mt-0.5 text-sm leading-relaxed text-ink">{shot.voiceover}</p>
-                    </div>
-                    {shot.subtitle && shot.subtitle !== shot.voiceover && (
-                      <div>
-                        <span className="text-[0.65rem] font-medium text-ink-tertiary">📝 字幕</span>
-                        <p className="mt-0.5 text-xs leading-relaxed text-ink-secondary">{shot.subtitle}</p>
-                      </div>
-                    )}
-                    {shot.visualIntent && (
-                      <div>
-                        <span className="text-[0.65rem] font-medium text-ink-tertiary">👁 视觉意图</span>
-                        <p className="mt-0.5 text-xs leading-relaxed text-ink-tertiary">{shot.visualIntent}</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
+      {/* Segment cards */}
+      <div className="space-y-3">
+        {script.segments.map((segment, i) => (
+          <div key={segment.shotId} className="flex gap-3 rounded border border-hairline p-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`/api/images/${segment.imageAssetId}`}
+              alt={`第 ${i + 1} 段画面`}
+              className="h-20 w-20 shrink-0 rounded object-cover"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-ink-tertiary">第 {i + 1} 段</p>
+              <p className="mt-0.5 text-sm text-ink">{segment.narration}</p>
+              {segment.rationale && (
+                <p className="mt-1 text-xs leading-relaxed text-ink-tertiary">画面理由：{segment.rationale}</p>
+              )}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
+
+      {/* Dropped shots (backup pool) */}
+      {script.droppedShots.length > 0 && (
+        <div className="mt-4 rounded border border-hairline bg-surface-subtle p-3">
+          <p className="text-xs font-medium text-ink-secondary">未使用的分镜（备用素材，用于替补生成失败的画面）</p>
+          <ul className="mt-1 space-y-0.5">
+            {script.droppedShots.map((dropped) => (
+              <li key={dropped.shotId} className="text-xs text-ink-tertiary">· {dropped.reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Full script with copy */}
       <div>

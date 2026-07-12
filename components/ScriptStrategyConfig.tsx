@@ -18,8 +18,8 @@ interface Props {
   templateId: string;
   onTemplateIdChange: (id: string, name: string) => void;
   templateName: string;
-  duration: string;
-  onDurationChange: (d: string) => void;
+  targetDurationSec: number;
+  onTargetDurationSecChange: (value: number) => void;
   providers: ProviderMeta[];
   providerId: string;
   onProviderIdChange: (id: string) => void;
@@ -30,7 +30,7 @@ interface Props {
   generating: boolean;
 }
 
-const DURATIONS = ['15s', '20s', '30s', '60s'];
+const DURATIONS = [15, 20, 30, 45, 60];
 
 const PRIORITY_CONFIG: Record<string, { label: string; className: string }> = {
   highest: { label: '最优先', className: 'bg-fail-tint text-fail' },
@@ -46,8 +46,8 @@ export default function ScriptStrategyConfig({
   templateId,
   onTemplateIdChange,
   templateName: _templateName,
-  duration,
-  onDurationChange,
+  targetDurationSec,
+  onTargetDurationSecChange,
   providers,
   providerId,
   onProviderIdChange,
@@ -152,19 +152,19 @@ export default function ScriptStrategyConfig({
       {/* Duration + ShotSet */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
-          <label className="label">⏱ 视频时长</label>
+          <label className="label">⏱ 目标时长（秒）</label>
           <div className="flex gap-2">
             {DURATIONS.map((d) => (
               <button
                 key={d}
-                onClick={() => onDurationChange(d)}
+                onClick={() => onTargetDurationSecChange(d)}
                 className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
-                  duration === d
+                  targetDurationSec === d
                     ? 'bg-accent text-white'
                     : 'bg-surface-subtle text-ink-secondary hover:bg-surface'
                 }`}
               >
-                {d}
+                {d}s
               </button>
             ))}
           </div>

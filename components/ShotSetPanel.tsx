@@ -527,7 +527,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
             <input value={newName} onChange={(e) => setNewName(e.target.value)} className="input-field text-sm" placeholder="例如: 卧室场景分镜 1-6" />
           </div>
           <div>
-            <label className="label">选择分镜图（1-9 张，拖选顺序即分镜顺序）</label>
+            <label className="label">选择分镜图（1-9 张，顺序无所谓）</label>
             <div className="grid grid-cols-5 sm:grid-cols-6 gap-2 mt-1">
               {images.filter((img) => img.role === 'input' && img.usage === 'shot_source').map((img) => (
                 <div key={img.id} onClick={() => toggleImage(img.id)}
@@ -545,7 +545,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                 </div>
               ))}
             </div>
-            <p className="mt-1 text-[10px] text-ink-tertiary">已选 {selectedImageIds.length}/9 张，点击顺序即为分镜顺序</p>
+            <p className="mt-1 text-[10px] text-ink-tertiary">已选 {selectedImageIds.length}/9 张，顺序由脚本决定，这里随便点</p>
           </div>
           <div className="flex gap-2">
             <button onClick={handleCreate} disabled={!newName.trim() || selectedImageIds.length === 0 || saving}

@@ -63,6 +63,7 @@ export async function GET(
       return zipFilename;
     };
     const manifestShots: Array<{
+      shotId: string;
       shotIndex: number;
       sourceImage: string;
       videos: Array<{
@@ -109,6 +110,7 @@ export async function GET(
       }
 
       manifestShots.push({
+        shotId: shot.shotId,
         shotIndex: shot.indexNum,
         sourceImage: shotEntry || '',
         videos: manifestVideos,
@@ -164,18 +166,22 @@ export async function GET(
         addEntry(txtPath, `${prefix}scripts/latest-script.txt`);
         addEntry(jsonPathf, `${prefix}scripts/latest-script.json`);
 
-        // Annotate shots with script
-        const shotsArr = (scriptObj as Record<string, unknown>).shots as Array<Record<string, unknown>> | undefined;
-        if (shotsArr) {
-          for (const s of manifestShots) {
-            const match = shotsArr.find((ss) => ss.shotIndex === s.shotIndex);
-            if (match) {
-              s.script = {
-                voiceover: String(match.voiceover || ''),
-                subtitle: String(match.subtitle || ''),
-              };
-            }
-          }
+        // Annotate shots with script.
+        // v2：segments[] 按 shotId 关联（segments 没有 shotIndex，且顺序是叙事顺序不是分镜序）。
+        // 旧草稿：shots[] 仍按 shotIndex 关联，保持原行为。
+        const rawScript = scriptObj as Record<string, unknown>;
+        const segmentsArr = rawScript.segments as Array<Record<string, unknown>> | undefined;
+        const legacyShotsArr = rawScript.shots as Array<Record<string, unknown>> | undefined;
+
+        for (const s of manifestShots) {
+          const match = segmentsArr
+            ? segmentsArr.find((ss) => ss.shotId === s.shotId)
+            : legacyShotsArr?.find((ss) => ss.shotIndex === s.shotIndex);
+          if (!match) continue;
+          s.script = {
+            voiceover: String(match.narration ?? match.voiceover ?? ''),
+            subtitle: String(match.subtitle || ''),
+          };
         }
       }
     }
