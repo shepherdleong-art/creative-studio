@@ -59,5 +59,8 @@ next-env.d.ts
 /.agents/
 /skills-lock.json
 
+# git worktrees for isolated feature work
+/.worktrees/
+
 # oversized local docs (exceed GitHub's 100MB push limit; use Git LFS if they must be tracked)
 /docs/*.xlsx
