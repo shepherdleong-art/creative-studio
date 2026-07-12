@@ -255,11 +255,12 @@ export function buildScriptPrompt(input: ScriptInput): string {
     .map((sp, i) => `${i + 1}. ${sp.title}（优先级：${sp.priority}，理由：${sp.reason}）`)
     .join('\n');
 
+  // 图片按此顺序作为 image part 附在本 prompt 之后，与这里的编号一一对应。
   const shotsText = input.shots
-    .map((s) => `分镜 ${s.shotIndex}（shotId=${s.shotId}）：${s.sourceFilename}${s.description ? ` — ${s.description}` : ''}`)
+    .map((s, i) => `图 ${i + 1}（shotId=${s.shotId}）`)
     .join('\n');
 
-  return `你是一个专业电商短视频脚本策划。请根据以下信息撰写一条 ${input.duration} 短视频口播脚本。
+  return `你是一个专业电商短视频脚本策划。本条消息附带了 ${input.shots.length} 张候选分镜图，请**看图**写一条约 ${input.targetDurationSec} 秒的短视频口播脚本。
 
 ## 产品信息
 - 项目名称：${input.projectName}
@@ -269,7 +270,7 @@ export function buildScriptPrompt(input: ScriptInput): string {
 - 目标人群：${input.targetAudience || '未填写'}
 - 语气：${input.tone || '种草'}
 - 平台：${input.platform || '通用'}
-- 时长：${input.duration}
+- 目标时长：${input.targetDurationSec} 秒
 
 ## 脚本模版：${input.templateName}
 ${getTemplateInstruction(input.templateId)}
@@ -277,7 +278,7 @@ ${getTemplateInstruction(input.templateId)}
 ## 选中的重点卖点
 ${sellingPointsText}
 
-## 分镜顺序
+## 候选分镜图（顺序与附带的图片一一对应）
 ${shotsText}
 
 ## 场景参考
@@ -286,39 +287,49 @@ ${input.sceneReference || '未指定'}
 ## 运镜模板
 ${input.videoTemplates?.join('、') || '未指定'}
 
+## 你的任务
+1. **看清楚每张图里到底有什么**（主体、材质、工艺细节、使用场景、画面强调了什么）。
+2. **挑选**你真正需要的图，**决定它们的先后顺序**，组成一条有叙事的片子。
+3. 为**每一张选中的图**写**一句**口播，这句话必须描述**这张图里真实存在的东西**。
+
+## 硬性规则
+- **一句口播 = 一张图。** segments 数组的顺序就是成片的画面顺序。
+- **文案优先，不要为了用满图而硬凑。** 目标时长决定你写多少句：约 ${input.targetDurationSec} 秒，每句约 5 秒（约 25 个中文字），所以大约需要 ${Math.max(1, Math.round(input.targetDurationSec / 5))} 句、也就是 ${Math.max(1, Math.round(input.targetDurationSec / 5))} 张图。
+- **没被你选中的图不会浪费**——它们会成为备用素材，用于替补生成失败的画面。所以**该舍就舍**。
+- **绝对不要写图里没有的东西。** 你看不到的卖点，就不要写进口播。
+- 每张选中的图必须给 rationale；每张丢弃的图必须给 reason。
+- 每个 shotId 只能出现一次（要么在 segments，要么在 droppedShots）。
+
 ## 输出要求
 请返回严格 JSON 格式（不要 markdown 代码块），结构如下：
 
 {
+  "version": 2,
   "title": "脚本标题",
   "platform": "${input.platform || '通用'}",
   "tone": "${input.tone || '种草'}",
-  "duration": "${input.duration}",
+  "targetDurationSec": ${input.targetDurationSec},
   "template": "${input.templateName}",
   "shotSetId": "${input.shotSetId}",
   "sellingPointMap": [
-    { "shotId": "对应分镜的shotId", "shotIndex": 1, "sellingPoint": "本段对应的卖点标题" }
+    { "shotId": "对应分镜的shotId", "sellingPoint": "本段对应的卖点标题" }
   ],
-  "shots": [
+  "segments": [
     {
-      "shotId": "对应分镜的shotId",
-      "shotIndex": 1,
-      "title": "本段文案标题，8-16字，适合作为剪辑卡片标题",
-      "duration": "0-5s",
-      "voiceover": "口播文案",
-      "subtitle": "字幕文案",
-      "visualIntent": "这个分镜承担的叙事作用"
+      "shotId": "这一段展示哪张图的shotId",
+      "narration": "一句口播，约25字，描述这张图里真实存在的东西",
+      "subtitle": "字幕文案，通常与 narration 相同",
+      "rationale": "这张图里有什么，以及我为什么在这个位置用它"
     }
   ],
-  "fullScript": "连续完整口播稿，纯文本，按句使用中文标点（。，！？），不要换行符或 markdown"
+  "droppedShots": [
+    { "shotId": "没选用的shotId", "reason": "为什么不用它" }
+  ],
+  "fullScript": "各句 narration 的拼接，纯文本，中文标点，不要换行符或 markdown"
 }
 
 ## 注意事项
-- 分镜数量与实际分镜列表严格一致，shotId 必须与上面列出的一致。
-- 每个分镜必须生成 title，要求短、具体、能概括这一段口播的核心卖点或情绪。
-- 每个分镜的 voiceover 控制在适合 ${input.duration} 时长内可以自然说完的长度。
 - 卖点要自然融入口播，不要像读说明书。使用模版 "${input.templateName}" 的叙事结构。
-- fullScript 是连续口播全文，适合直接粘贴到剪映做智能配音。使用中文标点断句。
 - 只返回 JSON，不要有其他内容。`;
 }
 

@@ -34,11 +34,15 @@ export interface SelectedSellingPoint {
   reason: string;
 }
 
+/** 一张候选分镜图，连同它的真实像素（base64）一起发给多模态模型。 */
 export interface ShotContext {
   shotId: string;
   shotIndex: number;
   sourceFilename: string;
-  description?: string;
+  /** 模型实际看到的那张图（= 将来做成视频的那张）。 */
+  imageAssetId: string;
+  mimeType: string;
+  imageBase64: string;
 }
 
 export interface ScriptInput {
@@ -52,38 +56,48 @@ export interface ScriptInput {
   selectedSellingPoints: SelectedSellingPoint[];
   templateId: string;
   templateName: string;
-  duration: string;
+  /** 取代旧的自由文本 duration。成片目标时长的唯一来源。 */
+  targetDurationSec: number;
   shotSetId: string;
   shots: ShotContext[];
   sceneReference?: string;
   videoTemplates?: string[];
 }
 
-export interface ScriptShot {
+/** 一句口播 ↔ 一张画面。数组顺序 = 叙事顺序 = 成片画面顺序。 */
+export interface ScriptSegment {
   shotId: string;
-  shotIndex: number;
-  title?: string;
-  duration: string;
-  voiceover: string;
+  /** 写作时看的那张图，用于下游过期检测。 */
+  imageAssetId: string;
+  narration: string;
   subtitle: string;
-  visualIntent: string;
+  /** 为什么选这张图 / 这张图里有什么。取代旧的 visualIntent（那是凭空编的）。 */
+  rationale: string;
+}
+
+/** 没被选中的分镜 = 备用池，供成片阶段替补缺失素材。 */
+export interface DroppedShot {
+  shotId: string;
+  reason: string;
 }
 
 export interface SellingPointMapEntry {
   shotId: string;
-  shotIndex: number;
   sellingPoint: string;
 }
 
 export interface ScriptOutput {
+  version: 2;
   title: string;
   platform: string;
   tone: string;
-  duration: string;
+  targetDurationSec: number;
   template: string;
   shotSetId: string;
   sellingPointMap: SellingPointMapEntry[];
-  shots: ScriptShot[];
+  segments: ScriptSegment[];
+  droppedShots: DroppedShot[];
+  /** 各 segment narration 的拼接（派生字段）。 */
   fullScript: string;
 }
 
