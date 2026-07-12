@@ -10,12 +10,19 @@ import type { ScriptProviderRuntimeConfig } from './config';
 
 // ── Low-level chat completion ──
 
+export interface ChatImagePart {
+  mimeType: string;
+  imageBase64: string;
+}
+
 export interface ChatOptions {
   systemPrompt: string;
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'json_object' | 'text';
+  /** 非空时，user message 变成多模态 content 数组（文本在前、图片在后）。 */
+  images?: ChatImagePart[];
 }
 
 /** Normalizes a (trailing-slash-stripped) base URL to the /chat/completions endpoint. */
@@ -42,11 +49,21 @@ export async function chatCompletion(
 
   const chatUrl = buildChatCompletionsUrl(baseUrl);
 
+  const userContent = options.images?.length
+    ? [
+        { type: 'text', text: options.userPrompt },
+        ...options.images.map((image) => ({
+          type: 'image_url',
+          image_url: { url: `data:${image.mimeType};base64,${image.imageBase64}` },
+        })),
+      ]
+    : options.userPrompt;
+
   const body: Record<string, unknown> = {
     model,
     messages: [
       { role: 'system', content: options.systemPrompt },
-      { role: 'user', content: options.userPrompt },
+      { role: 'user', content: userContent },
     ],
     temperature: options.temperature ?? 0.7,
     max_tokens: options.maxTokens ?? runtime?.maxTokens ?? config.maxTokens,
