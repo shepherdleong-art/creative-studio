@@ -12,7 +12,7 @@ export interface SubtitleStyle {
 }
 export interface PackageCommonConfig {
   outputName: string; width: number; height: number; fps: number;
-  targetDurationSec: number; durationTolerancePct: number; maxClipSeconds: number;
+  targetDurationSec: number; durationTolerancePct: number;
   bgm: BgmConfig | null; cover: CoverConfig; subtitle: SubtitleStyle;
 }
 export type PackageConfig =
@@ -48,9 +48,10 @@ export interface ArrangementAssignment { assignmentId: string; clipId: string; b
 export interface ArrangementGap { beatId: string; reason: string }
 export interface ArrangementPlan { assignments: ArrangementAssignment[]; gaps: ArrangementGap[] }
 export type TimelineIssueCode =
-  | 'target_duration_out_of_tolerance' | 'arrangement_invalid' | 'arrangement_fallback_used'
+  | 'target_duration_out_of_tolerance' | 'arrangement_invalid'
   | 'visual_gap' | 'clip_missing' | 'clip_short_borrowed_forward' | 'last_clip_frozen'
-  | 'last_clip_exceeds_max_after_fallback';
+  | 'last_clip_exceeds_max_after_fallback'
+  | 'planned_clip_substituted' | 'script_image_stale';
 export interface TimelineIssue {
   code: TimelineIssueCode; severity: 'warning' | 'error'; message: string;
   beatIds: string[]; clipId: string | null;
@@ -86,7 +87,7 @@ export interface FinalVideoJobRow {
 export function defaultPackageConfig(): PackageConfig {
   return {
     mode: 'bgm-only', outputName: `final-${Date.now()}`, width: 1080, height: 1920, fps: 30,
-    targetDurationSec: 15, durationTolerancePct: 0.2, maxClipSeconds: 4,
+    targetDurationSec: 15, durationTolerancePct: 0.2,
     narration: { mode: 'none' }, bgm: null,
     cover: { titleText: '', titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: 'minimal-01' },
     subtitle: { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
@@ -124,7 +125,7 @@ function validatePackageConfigInput(partial: JsonObject, field: string): void {
     throw new Error(`${field}.mode must be narration or bgm-only`);
   }
   for (const key of ['outputName'] as const) optionalString(partial, key, field);
-  for (const key of ['width', 'height', 'fps', 'targetDurationSec', 'durationTolerancePct', 'maxClipSeconds'] as const) {
+  for (const key of ['width', 'height', 'fps', 'targetDurationSec', 'durationTolerancePct'] as const) {
     optionalNumber(partial, key, field);
   }
 
@@ -185,7 +186,6 @@ function mergePackageConfigAt(partial: unknown, field: string): PackageConfig {
     fps: typeof partial.fps === 'number' ? partial.fps : base.fps,
     targetDurationSec: typeof partial.targetDurationSec === 'number' ? partial.targetDurationSec : base.targetDurationSec,
     durationTolerancePct: typeof partial.durationTolerancePct === 'number' ? partial.durationTolerancePct : base.durationTolerancePct,
-    maxClipSeconds: typeof partial.maxClipSeconds === 'number' ? partial.maxClipSeconds : base.maxClipSeconds,
     bgm,
     cover: { ...base.cover, ...cover },
     subtitle: { ...base.subtitle, ...subtitle },
@@ -267,7 +267,7 @@ export function parseArrangementPlanJson(json: string): ArrangementPlan {
     }; }),
   };
 }
-const ISSUE_CODES: TimelineIssueCode[] = ['target_duration_out_of_tolerance','arrangement_invalid','arrangement_fallback_used','visual_gap','clip_missing','clip_short_borrowed_forward','last_clip_frozen','last_clip_exceeds_max_after_fallback'];
+const ISSUE_CODES: TimelineIssueCode[] = ['target_duration_out_of_tolerance','arrangement_invalid','visual_gap','clip_missing','clip_short_borrowed_forward','last_clip_frozen','last_clip_exceeds_max_after_fallback','planned_clip_substituted','script_image_stale'];
 export function parseTimelineIssuesJson(json: string): TimelineIssue[] {
   const value = parseJson(json, 'issuesJson'); if (!Array.isArray(value)) throw new Error('issuesJson must be an array');
   return value.map((raw, index) => { const issue = object(raw, `issuesJson[${index}]`); const code = string(issue.code, `issuesJson[${index}].code`);

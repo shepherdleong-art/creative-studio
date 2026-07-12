@@ -2,6 +2,9 @@ import { TimelineSolverError } from './solve-timeline.ts';
 import type { ClipPoolItem, TimelineIssue, TimelineResult, TimelineSegment } from './types.ts';
 
 const SECONDS_EPSILON = 1e-9;
+/** 纯 BGM 蒙太奇的单画面上限。narration 路径已无上限（口播定长度），BGM 没有口播，仍需要一个节奏闸门。
+ *  原实现是 Math.min(config.maxClipSeconds, 4) 且 config 默认就是 4 —— 恒等于 4，故行为逐位不变。 */
+const BGM_MAX_CLIP_SECONDS = 4;
 
 const finitePositive = (value: number) => Number.isFinite(value) && value > 0;
 const finiteNonNegative = (value: number) => Number.isFinite(value) && value >= 0;
@@ -24,12 +27,10 @@ export function solveBgmTimeline(input: {
   clips: ClipPoolItem[];
   introDurationSec: number;
   targetDurationSec: number;
-  maxClipSeconds: number;
   fps: number;
 }): TimelineResult {
   if (!finitePositive(input.fps)) fail('invalid_fps', '帧率必须是有限正数');
   if (!finitePositive(input.targetDurationSec)) fail('invalid_target_duration', '目标时长必须是有限正数');
-  if (!finitePositive(input.maxClipSeconds)) fail('invalid_max_clip_seconds', '单画面时长上限必须是有限正数');
   if (!finiteNonNegative(input.introDurationSec)) fail('invalid_intro_duration', '片头时长必须是有限非负数');
   if (input.targetDurationSec - input.introDurationSec <= SECONDS_EPSILON) {
     fail('target_duration_without_content', '目标时长必须大于片头时长');
@@ -54,13 +55,12 @@ export function solveBgmTimeline(input: {
   }
 
   const contentDurationSec = input.targetDurationSec - input.introDurationSec;
-  const maxClipSeconds = Math.min(input.maxClipSeconds, 4);
   const segments: TimelineSegment[] = [];
   let cursor = 0;
   for (const clip of selected) {
     const remaining = contentDurationSec - cursor;
     if (remaining <= SECONDS_EPSILON) break;
-    const mediaDurationSec = Math.min(remaining, clip.clipDurationSec, maxClipSeconds);
+    const mediaDurationSec = Math.min(remaining, clip.clipDurationSec, BGM_MAX_CLIP_SECONDS);
     const segment: TimelineSegment = {
       order: segments.length,
       clipId: clip.clipId,
@@ -88,7 +88,7 @@ export function solveBgmTimeline(input: {
     last.segmentDurationSec += remaining;
     cursor += remaining;
     issues.push(warning('last_clip_frozen', '最后画面已定格以覆盖目标时长', last.clipId));
-    if (last.segmentDurationSec - maxClipSeconds > SECONDS_EPSILON) {
+    if (last.segmentDurationSec - BGM_MAX_CLIP_SECONDS > SECONDS_EPSILON) {
       issues.push(warning('last_clip_exceeds_max_after_fallback', '末段兜底后超过单画面时长上限', last.clipId));
     }
   }

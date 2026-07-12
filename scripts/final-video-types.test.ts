@@ -27,12 +27,11 @@ assert.equal(oldNone.mode, 'bgm-only');
 assert.deepEqual(oldNone.narration, { mode: 'none' });
 assert.equal(oldNone.targetDurationSec, 15);
 assert.equal(oldNone.durationTolerancePct, 0.2);
-assert.equal(oldNone.maxClipSeconds, 4);
 assert.equal(defaultPackageConfig().mode, 'bgm-only');
 
 const validPackage = {
   mode: 'bgm-only', outputName: 'valid', width: 1080, height: 1920, fps: 30,
-  targetDurationSec: 15, durationTolerancePct: 0.2, maxClipSeconds: 4,
+  targetDurationSec: 15, durationTolerancePct: 0.2,
   narration: { mode: 'none' }, bgm: null,
   cover: { titleText: '', titleSize: 72, titleColor: '#fff', introDurationSec: 0, templateId: 'minimal-01' },
   subtitle: { enabled: true, fontSize: 56, color: '#fff', strokeColor: '#000', strokeWidth: 2, marginBottomPct: 18 },

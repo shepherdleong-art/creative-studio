@@ -72,7 +72,6 @@ export function buildDraftApiPatch(input: {
     {
       mode: oldPackage.mode,
       targetDurationSec: oldPackage.targetDurationSec,
-      maxClipSeconds: oldPackage.maxClipSeconds,
       introDurationSec: oldPackage.cover.introDurationSec,
       narration: oldPackage.narration,
       narrationScriptProviderId: oldConfig.narrationScriptProviderId,
@@ -80,7 +79,6 @@ export function buildDraftApiPatch(input: {
     {
       mode: nextPackage.mode,
       targetDurationSec: nextPackage.targetDurationSec,
-      maxClipSeconds: nextPackage.maxClipSeconds,
       introDurationSec: nextPackage.cover.introDurationSec,
       narration: nextPackage.narration,
       narrationScriptProviderId: next.narrationScriptProviderId,

@@ -129,7 +129,6 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
       clips: snapshot.clipPool,
       introDurationSec,
       targetDurationSec: pkg.targetDurationSec,
-      maxClipSeconds: pkg.maxClipSeconds,
       fps: pkg.fps,
     })
     : solveTimeline({
@@ -139,7 +138,6 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
       introDurationSec,
       targetDurationSec: pkg.targetDurationSec,
       durationTolerancePct: pkg.durationTolerancePct,
-      maxClipSeconds: pkg.maxClipSeconds,
       fps: pkg.fps,
     });
   if (timeline.segments.length === 0) throw new Error('不可变草稿快照没有可渲染的画面');

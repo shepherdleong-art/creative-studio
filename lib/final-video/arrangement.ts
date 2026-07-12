@@ -4,11 +4,6 @@ export type ArrangementValidationResult =
   | { ok: true; plan: ArrangementPlan }
   | { ok: false; issues: TimelineIssue[] };
 
-// One nanosecond absorbs binary floating-point noise in second sums without permitting a meaningful overrun.
-const DURATION_EPSILON_SECONDS = 1e-9;
-const exceedsDurationLimit = (durationSec: number, maxDurationSec: number) =>
-  durationSec - maxDurationSec > DURATION_EPSILON_SECONDS;
-
 const invalidIssue = (message: string, beatIds: string[] = [], clipId: string | null = null): TimelineIssue => ({
   code: 'arrangement_invalid', severity: 'error', message, beatIds, clipId,
 });
@@ -18,12 +13,10 @@ export function validateArrangement(
   plan: ArrangementPlan,
   beats: NarrationBeat[],
   clips: ClipPoolItem[],
-  maxClipSeconds: number,
 ): ArrangementValidationResult {
   const fail = (message: string, beatIds: string[] = [], clipId: string | null = null): ArrangementValidationResult =>
     ({ ok: false, issues: [invalidIssue(message, beatIds, clipId)] });
 
-  if (!Number.isFinite(maxClipSeconds) || maxClipSeconds <= 0) return fail('单画面时长上限必须是有限正数');
   const orderedBeats = [...beats].sort((a, b) => a.index - b.index);
   const beatPosition = new Map<string, number>();
   for (const [position, beat] of orderedBeats.entries()) {
@@ -45,21 +38,18 @@ export function validateArrangement(
     if (assignment.beatIds.length === 0) return fail('每个编排片段至少需要一个口播节拍', [], assignment.clipId);
 
     const positions: number[] = [];
-    let duration = 0;
     for (const beatId of assignment.beatIds) {
       const position = beatPosition.get(beatId);
       if (position === undefined) return fail(`口播节拍不存在：${beatId}`, [beatId], assignment.clipId);
       if (coveredBeats.has(beatId)) return fail(`口播节拍被重复使用：${beatId}`, [beatId], assignment.clipId);
       coveredBeats.add(beatId);
       positions.push(position);
-      duration += orderedBeats[position].durationSec;
     }
     for (let index = 1; index < positions.length; index += 1) {
       if (positions[index] !== positions[index - 1] + 1) return fail('片段内口播节拍必须连续且升序', [...assignment.beatIds], assignment.clipId);
     }
     if (positions[0] <= previousAssignmentEnd) return fail('编排片段的口播节拍必须整体升序', [...assignment.beatIds], assignment.clipId);
     previousAssignmentEnd = positions.at(-1) as number;
-    if (exceedsDurationLimit(duration, maxClipSeconds)) return fail('编排片段时长超过单画面时长上限', [...assignment.beatIds], assignment.clipId);
     assignments.push({ assignmentId: assignment.assignmentId, clipId: assignment.clipId, beatIds: [...assignment.beatIds] });
   }
 
@@ -83,52 +73,8 @@ export function assertValidArrangement(
   plan: ArrangementPlan,
   beats: NarrationBeat[],
   clips: ClipPoolItem[],
-  maxClipSeconds: number,
 ): ArrangementPlan {
-  const result = validateArrangement(plan, beats, clips, maxClipSeconds);
+  const result = validateArrangement(plan, beats, clips);
   if (!result.ok) throw new Error(result.issues[0]?.message ?? '编排内容无效');
   return result.plan;
-}
-
-/** Build a deterministic, non-mutating arrangement when an AI plan cannot be used. */
-export function buildFallbackArrangement(
-  beats: NarrationBeat[],
-  clips: ClipPoolItem[],
-  maxClipSeconds: number,
-): ArrangementPlan {
-  const orderedBeats = [...beats].sort((a, b) => a.index - b.index);
-  const orderedClips = [...clips].sort((a, b) => a.shotIndex - b.shotIndex);
-  const assignments: ArrangementPlan['assignments'] = [];
-  const gaps: ArrangementPlan['gaps'] = [];
-  let beatIndex = 0;
-  let clipIndex = 0;
-
-  while (beatIndex < orderedBeats.length) {
-    const current = orderedBeats[beatIndex];
-    if (!Number.isFinite(current.durationSec) || current.durationSec <= 0 || exceedsDurationLimit(current.durationSec, maxClipSeconds)) {
-      gaps.push({ beatId: current.beatId, reason: '口播节拍超过单画面时长限制' });
-      beatIndex += 1;
-      continue;
-    }
-    if (clipIndex >= orderedClips.length) {
-      gaps.push({ beatId: current.beatId, reason: '没有足够的候选画面' });
-      beatIndex += 1;
-      continue;
-    }
-
-    const beatIds: string[] = [];
-    let duration = 0;
-    while (beatIndex < orderedBeats.length) {
-      const candidate = orderedBeats[beatIndex];
-      if (!Number.isFinite(candidate.durationSec) || candidate.durationSec <= 0 || exceedsDurationLimit(candidate.durationSec, maxClipSeconds)) break;
-      if (exceedsDurationLimit(duration + candidate.durationSec, maxClipSeconds)) break;
-      beatIds.push(candidate.beatId);
-      duration += candidate.durationSec;
-      beatIndex += 1;
-    }
-    assignments.push({ assignmentId: `fallback-${assignments.length}`, clipId: orderedClips[clipIndex].clipId, beatIds });
-    clipIndex += 1;
-  }
-
-  return { assignments, gaps };
 }
