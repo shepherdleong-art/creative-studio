@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import {
@@ -8,13 +10,11 @@ import {
 import type {
   AnalysisInput,
   ScriptInput,
-  ScriptOutput,
   SelectedSellingPoint,
   ShotContext,
-  SellingPointMapEntry,
-  ScriptShot,
 } from '@/lib/script-providers';
 import { v4 as uuidv4 } from 'uuid';
+import { normalizeScriptOutput, type NormalizeShotRow } from './normalize';
 
 // ── POST: analyze | generate ──
 
@@ -145,20 +145,23 @@ async function handleGenerate(
     return NextResponse.json({ error: '分镜组不存在或不属于当前项目' }, { status: 400 });
   }
 
-  // Load shots for this shotSet (with shotId, not just index)
+  // 取模型该看的那张图：优先第 2 步生成的新分镜图，回退导入的原图。
+  // 这与 app/api/shot-sets/[id]/video-jobs/route.ts:48 的取图逻辑一致 ——
+  // 脚本看到的必须就是将来被做成视频的那一张。
   const shotRows = db.prepare(`
-    SELECT s.id as shotId, s.indexNum, s.sourceImageId, s.latestGeneratedImageId,
-           src.filename as sourceFilename
+    SELECT s.id as shotId, s.indexNum,
+           COALESCE(s.latestGeneratedImageId, s.sourceImageId) as imageAssetId,
+           ia.path as imagePath, ia.filename as sourceFilename
     FROM shots s
     JOIN shot_sets ss ON ss.id = s.shotSetId
-    JOIN image_assets src ON src.id = s.sourceImageId
+    JOIN image_assets ia ON ia.id = COALESCE(s.latestGeneratedImageId, s.sourceImageId)
     WHERE ss.projectId = ? AND ss.id = ?
     ORDER BY s.indexNum
   `).all(projectId, shotSetId) as Array<{
     shotId: string;
     indexNum: number;
-    sourceImageId: string;
-    latestGeneratedImageId: string | null;
+    imageAssetId: string;
+    imagePath: string;
     sourceFilename: string;
   }>;
 
@@ -166,13 +169,26 @@ async function handleGenerate(
     return NextResponse.json({ error: '所选分镜组中没有分镜' }, { status: 400 });
   }
 
-  // Build ShotContext
-  const shots: ShotContext[] = shotRows.map((r) => ({
-    shotId: r.shotId,
-    shotIndex: r.indexNum,
-    sourceFilename: r.sourceFilename,
-    description: r.sourceFilename,
-  }));
+  const mimeByExt: Record<string, string> = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  };
+
+  const shots: ShotContext[] = [];
+  for (const row of shotRows) {
+    if (!fs.existsSync(row.imagePath)) continue; // 图文件丢了的分镜进不了候选
+    shots.push({
+      shotId: row.shotId,
+      shotIndex: row.indexNum,
+      sourceFilename: row.sourceFilename,
+      imageAssetId: row.imageAssetId,
+      mimeType: mimeByExt[path.extname(row.imagePath).toLowerCase()] || 'image/png',
+      imageBase64: fs.readFileSync(row.imagePath).toString('base64'),
+    });
+  }
+
+  if (shots.length === 0) {
+    return NextResponse.json({ error: '所选分镜组中没有可读取的分镜图片' }, { status: 400 });
+  }
 
   // Load scene references
   const sceneRefs = db.prepare(`
@@ -206,7 +222,7 @@ async function handleGenerate(
 
   const templateId = (body.templateId as string) || 'scene_seeding';
   const templateName = (body.templateName as string) || '场景种草';
-  const duration = (body.duration as string) || '30s';
+  const targetDurationSec = Number(body.targetDurationSec) > 0 ? Number(body.targetDurationSec) : 20;
   const providerId = (body.providerId as string) || 'gemini';
   const tone = (body.tone as string) || (project.scriptTone as string) || '种草';
   const platform = (body.platform as string) || (project.scriptPlatform as string) || '通用';
@@ -222,7 +238,7 @@ async function handleGenerate(
     selectedSellingPoints,
     templateId,
     templateName,
-    duration,
+    targetDurationSec,
     shotSetId,
     shots,
     sceneReference: sceneRefs[0]?.name,
@@ -232,7 +248,12 @@ async function handleGenerate(
   const result = await generateScript(input, providerId);
 
   // Validate and normalize output
-  const script = validateAndNormalizeScript(result.script, shotRows, shotSetId);
+  const normalizeRows: NormalizeShotRow[] = shots.map((s) => ({
+    shotId: s.shotId,
+    indexNum: s.shotIndex,
+    imageAssetId: s.imageAssetId,
+  }));
+  const script = normalizeScriptOutput(result.script, normalizeRows, shotSetId, targetDurationSec);
 
   // Save draft
   const draftId = uuidv4();
@@ -252,7 +273,7 @@ async function handleGenerate(
       selectedSellingPoints,
       templateId,
       templateName,
-      duration,
+      targetDurationSec,
       targetAudience: project.targetAudience,
       tone,
       platform,
@@ -267,84 +288,4 @@ async function handleGenerate(
     provider: result.provider,
     model: result.model,
   });
-}
-
-// ── Output validation & normalization ──
-
-function validateAndNormalizeScript(
-  script: ScriptOutput,
-  shotRows: Array<{ shotId: string; indexNum: number }>,
-  fallbackShotSetId: string
-): ScriptOutput {
-  const validShotIds = new Set(shotRows.map((r) => r.shotId));
-
-  // Normalize shots: ensure each has a valid shotId
-  const normalizedShots: ScriptShot[] = script.shots.map((s, i) => {
-    // If shotId is missing or invalid, try to match by index
-    let shotId = s.shotId;
-    if (!validShotIds.has(shotId)) {
-      const match = shotRows[i];
-      shotId = match?.shotId || shotId;
-    }
-    return {
-      shotId,
-      shotIndex: s.shotIndex || shotRows[i]?.indexNum || i + 1,
-      title: normalizeShotTitle(s.title, s.shotIndex || shotRows[i]?.indexNum || i + 1),
-      duration: s.duration || '',
-      voiceover: s.voiceover || '',
-      subtitle: s.subtitle || s.voiceover || '',
-      visualIntent: s.visualIntent || '',
-    };
-  });
-
-  // Ensure we have the right number of shots
-  if (normalizedShots.length !== shotRows.length) {
-    // If too few, pad with empty entries
-    while (normalizedShots.length < shotRows.length) {
-      const i = normalizedShots.length;
-      normalizedShots.push({
-        shotId: shotRows[i].shotId,
-        shotIndex: shotRows[i].indexNum,
-        title: normalizeShotTitle('', shotRows[i].indexNum),
-        duration: '',
-        voiceover: '',
-        subtitle: '',
-        visualIntent: '',
-      });
-    }
-    // If too many, trim
-    normalizedShots.length = shotRows.length;
-  }
-
-  // Normalize sellingPointMap
-  const normalizedMap: SellingPointMapEntry[] = (script.sellingPointMap || [])
-    .filter((m) => validShotIds.has(m.shotId))
-    .map((m) => {
-      const match = normalizedShots.find((s) => s.shotId === m.shotId);
-      return {
-        shotId: m.shotId,
-        shotIndex: match?.shotIndex || m.shotIndex || 0,
-        sellingPoint: m.sellingPoint || '',
-      };
-    });
-
-  // Ensure fullScript
-  const fullScript = script.fullScript || normalizedShots.map((s) => s.voiceover).filter(Boolean).join('\n');
-
-  return {
-    title: script.title || '未命名脚本',
-    platform: script.platform || '通用',
-    tone: script.tone || '种草',
-    duration: script.duration || '30s',
-    template: script.template || '',
-    shotSetId: script.shotSetId || fallbackShotSetId,
-    sellingPointMap: normalizedMap,
-    shots: normalizedShots,
-    fullScript,
-  };
-}
-
-function normalizeShotTitle(value: string | undefined, shotIndex: number): string {
-  const title = (value || '').trim();
-  return title || `分镜 ${shotIndex} 文案`;
 }
