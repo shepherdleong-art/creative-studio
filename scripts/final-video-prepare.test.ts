@@ -46,8 +46,6 @@ try {
     VALUES ('video-provider', 'Video', 'kling', '', '', '', 'model')
   `).run();
 
-  db.prepare(`UPDATE script_providers SET baseUrl = ?, apiKey = ?, model = ?, apiStyle = ?, enabled = 1 WHERE id = 'qwen'`)
-    .run('https://qwen.example/api', 'qwen-secret', 'qwen-model', 'openai-compatible');
   db.prepare(`UPDATE narration_providers SET apiKey = ?, baseUrl = ?, model = ?, voices = ?, enabled = 1 WHERE id = 'openai-tts'`)
     .run('tts-secret', 'https://tts.example', 'tts-model', 'test-voice');
 
