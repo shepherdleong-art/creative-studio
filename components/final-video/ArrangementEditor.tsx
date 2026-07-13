@@ -115,7 +115,7 @@ export default function ArrangementEditor(props: {
             const index = selectedClipIds.indexOf(clip.clipId);
             const selected = index >= 0;
             return <div key={clip.clipId} className="flex flex-wrap items-center gap-2 rounded border border-hairline p-2 text-xs">
-              <label className="flex min-w-0 flex-1 items-center gap-2"><input type="checkbox" checked={selected} disabled={savingSelection} onChange={() => toggleClip(clip.clipId)} /><span className="truncate">#{clip.shotIndex + 1} {clip.visualDescription || '视频画面'}</span></label>
+              <label className="flex min-w-0 flex-1 items-center gap-2"><input type="checkbox" checked={selected} disabled={savingSelection} onChange={() => toggleClip(clip.clipId)} /><span className="truncate">#{clip.shotIndex + 1} 视频画面</span></label>
               {selected && <><span className="text-ink-tertiary">第 {index + 1} 条</span><button type="button" disabled={savingSelection || index === 0} onClick={() => moveSelectedClip(clip.clipId, -1)} className="btn-secondary btn-sm">上移</button><button type="button" disabled={savingSelection || index === selectedClipIds.length - 1} onClick={() => moveSelectedClip(clip.clipId, 1)} className="btn-secondary btn-sm">下移</button></>}
             </div>;
           })}

@@ -7,7 +7,6 @@ import type { PackageConfig } from '@/lib/final-video/types';
 
 interface ShotSetOption { id: string; name: string }
 interface ScriptDraftOption { id: string; provider: string | null; model: string | null; createdAt: string }
-interface ScriptProviderOption { id: string; name: string; model?: string; configured?: boolean; supportsVision?: boolean }
 interface NarrationProviderOption { id: string; name: string; configured?: boolean; voices: string[] }
 interface PreviewJob {
   id: string; kind: 'preview'; draftRevision: number | null;
@@ -21,10 +20,10 @@ interface FinalJob {
 }
 interface WorkflowConfig {
   packageConfig: PackageConfig;
-  narrationScriptProviderId: string; visionProviderId: string; orchestrationProviderId: string; selectedClipIds: string[];
+  selectedClipIds: string[];
 }
 interface Draft extends ReviewDraft {
-  stage: 'draft' | 'preparing' | 'narration-ready' | 'describing' | 'arranging' | 'review' | 'failed';
+  stage: 'draft' | 'preparing' | 'review' | 'failed';
   shotSetId: string; scriptDraftId: string | null; previewJobId: string | null; previewRevision: number | null;
   errorMessage: string | null; workflowConfig: WorkflowConfig;
 }
@@ -33,26 +32,17 @@ const STEP_LABELS: Record<string, string> = {
   queued: '排队中', preparing: '准备素材', tts: '合成口播', narration: '拼装口播音轨',
   cover: '生成封面', subtitles: '生成字幕', render: '合成视频', finalize: '写入产物', done: '完成',
 };
-const NARRATION_FLOW = ['创建草稿', '准备口播', '识别画面', 'AI 编排', '审核', '预览', '正式渲染'];
+const NARRATION_FLOW = ['创建草稿', '准备口播', '审核', '预览', '正式渲染'];
 const BGM_FLOW = ['创建草稿', '准备素材', '选择画面', '审核', '预览', '正式渲染'];
-
-function providerName(providers: Array<{ id: string; name: string }>, id: string): string {
-  return providers.find((provider) => provider.id === id)?.name || '未配置供应商';
-}
 
 export default function FinalVideoPanel({ projectId }: { projectId: string }) {
   const [shotSets, setShotSets] = useState<ShotSetOption[]>([]);
   const [scriptDrafts, setScriptDrafts] = useState<ScriptDraftOption[]>([]);
-  const [scriptProviders, setScriptProviders] = useState<ScriptProviderOption[]>([]);
   const [narrationProviders, setNarrationProviders] = useState<NarrationProviderOption[]>([]);
   const [selectedSetId, setSelectedSetId] = useState('');
   const [mode, setMode] = useState<'narration' | 'bgm-only'>('narration');
-  const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [selectedScriptId, setSelectedScriptId] = useState('');
   const [narrationProviderId, setNarrationProviderId] = useState('');
-  const [narrationScriptProviderId, setNarrationScriptProviderId] = useState('');
-  const [visionProviderId, setVisionProviderId] = useState('');
-  const [orchestrationProviderId, setOrchestrationProviderId] = useState('');
   const [voice, setVoice] = useState('Cherry');
   const [coverTitle, setCoverTitle] = useState('');
   const [coverTemplate, setCoverTemplate] = useState<CoverTemplateId>('minimal-01');
@@ -74,11 +64,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     setPreviewJobId((previous) => next.previewJobId || (preservePreviewJob ? previous : null));
     setSelectedSetId(next.shotSetId);
     setMode(next.workflowConfig.packageConfig.mode);
-    setTargetDurationSec(next.workflowConfig.packageConfig.targetDurationSec);
     setSelectedScriptId(next.scriptDraftId ?? '');
-    setNarrationScriptProviderId(next.workflowConfig.narrationScriptProviderId);
-    setVisionProviderId(next.workflowConfig.visionProviderId);
-    setOrchestrationProviderId(next.workflowConfig.orchestrationProviderId);
     if (next.workflowConfig.packageConfig.mode === 'narration') {
       setNarrationProviderId(next.workflowConfig.packageConfig.narration.providerId);
       setVoice(next.workflowConfig.packageConfig.narration.voice);
@@ -116,23 +102,18 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     void Promise.all([
       fetch(`/api/projects/${projectId}/shot-sets`).then((response) => response.json()).catch(() => []),
       fetch(`/api/projects/${projectId}/script`).then((response) => response.json()).catch(() => ({})),
-      fetch('/api/providers/script').then((response) => response.json()).catch(() => []),
       fetch('/api/providers/narration').then((response) => response.json()).catch(() => []),
       fetch(`/api/projects/${projectId}/final-video-drafts`).then((response) => response.json()).catch(() => ({})),
       fetch(`/api/projects/${projectId}/final-videos`).then((response) => response.json()).catch(() => ({})),
-    ]).then(([setsData, scriptsData, scriptProviderData, narrationProviderData, draftsData, jobsData]) => {
+    ]).then(([setsData, scriptsData, narrationProviderData, draftsData, jobsData]) => {
       if (!active) return;
       const sets = (Array.isArray(setsData) ? setsData : []).map((item: { id: string; name: string }) => ({ id: item.id, name: item.name }));
       const scripts = Array.isArray(scriptsData.drafts) ? scriptsData.drafts as ScriptDraftOption[] : [];
-      const scriptsProviders = (Array.isArray(scriptProviderData) ? scriptProviderData : []).filter((item: ScriptProviderOption) => item.configured !== false) as ScriptProviderOption[];
       const narration = (Array.isArray(narrationProviderData) ? narrationProviderData : []).filter((item: NarrationProviderOption) => item.configured !== false) as NarrationProviderOption[];
-      setShotSets(sets); setScriptDrafts(scripts); setScriptProviders(scriptsProviders); setNarrationProviders(narration); setJobs(jobsData.jobs ?? []);
+      setShotSets(sets); setScriptDrafts(scripts); setNarrationProviders(narration); setJobs(jobsData.jobs ?? []);
       setSelectedSetId((previous) => sets.some((set) => set.id === previous) ? previous : sets[0]?.id ?? '');
       setSelectedScriptId((previous) => scripts.some((item) => item.id === previous) ? previous : scripts[0]?.id ?? '');
       setNarrationProviderId((previous) => narration.some((item) => item.id === previous) ? previous : narration[0]?.id ?? '');
-      setNarrationScriptProviderId((previous) => scriptsProviders.some((item) => item.id === previous) ? previous : scriptsProviders[0]?.id ?? '');
-      setVisionProviderId((previous) => scriptsProviders.some((item) => item.id === previous && item.supportsVision) ? previous : scriptsProviders.find((item) => item.supportsVision)?.id ?? '');
-      setOrchestrationProviderId((previous) => scriptsProviders.some((item) => item.id === previous) ? previous : scriptsProviders[0]?.id ?? '');
       const latest = Array.isArray(draftsData.drafts) ? draftsData.drafts[0] as Draft | undefined : undefined;
       if (latest) acceptDraft(latest);
     });
@@ -167,25 +148,24 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
   const workflowConfig = (): WorkflowConfig => ({
     packageConfig: mode === 'narration' ? {
       mode: 'narration', outputName: `final-${Date.now()}`, width: 1080, height: 1920, fps: 30,
-      targetDurationSec, durationTolerancePct: 0.2, maxClipSeconds: 4, bgm: null,
+      targetDurationSec: 15, durationTolerancePct: 0.2, bgm: null,
       cover: { titleText: coverTitle, titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: coverTemplate },
       subtitle: { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
       narration: { mode: 'tts', providerId: narrationProviderId, voice, speed: 1 },
     } : {
       mode: 'bgm-only', outputName: `final-${Date.now()}`, width: 1080, height: 1920, fps: 30,
-      targetDurationSec, durationTolerancePct: 0.2, maxClipSeconds: 4, bgm: null,
+      targetDurationSec: 15, durationTolerancePct: 0.2, bgm: null,
       cover: { titleText: coverTitle, titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: coverTemplate },
       subtitle: { enabled: false, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
       narration: { mode: 'none' },
     },
-    narrationScriptProviderId, visionProviderId, orchestrationProviderId, selectedClipIds: [],
+    selectedClipIds: [],
   });
 
   const reportConflict = async (draftId: string) => { await loadDraft(draftId); setError('草稿已更新，请确认最新编排后重试。'); };
 
   const createDraft = async () => {
-    if (!Number.isFinite(targetDurationSec) || targetDurationSec <= 0) { setError('目标时长必须大于 0 秒。'); return; }
-    if (!selectedSetId || (mode === 'narration' && (!selectedScriptId || !narrationProviderId || !narrationScriptProviderId || !visionProviderId || !orchestrationProviderId))) { setError(mode === 'narration' ? '请先选择分镜、脚本和所有供应商。' : '请先选择分镜组。'); return; }
+    if (!selectedSetId || (mode === 'narration' && (!selectedScriptId || !narrationProviderId))) { setError(mode === 'narration' ? '请先选择分镜、脚本和口播供应商。' : '请先选择分镜组。'); return; }
     setBusy(true); setError('');
     try {
       const response = await fetch(`/api/projects/${projectId}/final-video-drafts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shotSetId: selectedSetId, scriptDraftId: mode === 'narration' ? selectedScriptId : null, workflowConfig: workflowConfig() }) });
@@ -196,17 +176,12 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); }
   };
 
-  const runDraftAction = async (action: 'prepare' | 'describe' | 'arrange') => {
+  const runDraftAction = async () => {
     if (!draft) return;
-    const providerId = action === 'describe' ? visionProviderId : action === 'arrange' ? orchestrationProviderId : undefined;
-    const endpoint = action === 'prepare'
-      ? `/api/final-video-drafts/${draft.id}/prepare`
-      : action === 'describe'
-        ? `/api/final-video-drafts/${draft.id}/describe`
-        : `/api/final-video-drafts/${draft.id}/arrange`;
+    const endpoint = `/api/final-video-drafts/${draft.id}/prepare`;
     setBusy(true); setError('');
     try {
-      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: draft.revision, ...(providerId ? { providerId } : {}) }) });
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: draft.revision }) });
       const data = await response.json().catch(() => ({}));
       if (response.status === 409) { await reportConflict(draft.id); return; }
       if (!response.ok) throw new Error(data.error || '工作流操作失败');
@@ -262,7 +237,6 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
   const createAnotherDraft = () => { setDraft(null); setPreviewJob(null); setPreviewJobId(null); setError(''); titleTouchedRef.current = false; };
   const previewMatchesDraft = Boolean(draft && draft.previewRevision === draft.revision && previewJob?.draftRevision === draft.revision);
   const selectedNarration = narrationProviders.find((item) => item.id === narrationProviderId);
-  const hasDescribedVisuals = Boolean(draft?.clipPool.length && draft.clipPool.every((clip) => clip.visualDescription.trim()));
   const bgmSelectionReady = draft?.workflowConfig.packageConfig.mode !== 'bgm-only' || draft.workflowConfig.selectedClipIds.length > 0;
 
   return (
@@ -272,14 +246,10 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="label">分镜组<select value={selectedSetId} onChange={(event) => setSelectedSetId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{shotSets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>
           <label className="label">成片模式<select value={mode} disabled={Boolean(draft)} onChange={(event) => setMode(event.target.value as 'narration' | 'bgm-only')} className="input-field text-sm"><option value="narration">口播</option><option value="bgm-only">纯 BGM</option></select></label>
-          <label className="label">目标时长（秒）<input type="number" min="1" step="0.1" value={targetDurationSec} disabled={Boolean(draft)} onChange={(event) => setTargetDurationSec(Number(event.target.value))} className="input-field text-sm" /></label>
           {mode === 'narration' && <>
             <label className="label">口播脚本<select value={selectedScriptId} onChange={(event) => setSelectedScriptId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{scriptDrafts.map((item) => <option key={item.id} value={item.id}>{item.provider || '脚本'} · {item.model || item.id.slice(0, 8)}</option>)}</select></label>
-            <label className="label">口播文本供应商<select value={narrationScriptProviderId} onChange={(event) => setNarrationScriptProviderId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{scriptProviders.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             <label className="label">口播供应商<select value={narrationProviderId} onChange={(event) => setNarrationProviderId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{narrationProviders.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             <label className="label">音色<select value={voice} onChange={(event) => setVoice(event.target.value)} className="input-field text-sm">{(selectedNarration?.voices ?? ['Cherry']).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-            <label className="label">图片理解供应商<select value={visionProviderId} onChange={(event) => setVisionProviderId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{scriptProviders.filter((item) => item.supportsVision).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label className="label">编排供应商<select value={orchestrationProviderId} onChange={(event) => setOrchestrationProviderId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{scriptProviders.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           </>}
         </div>
         <div className="grid gap-3 sm:grid-cols-2"><label className="label">封面标题<input value={coverTitle} onChange={(event) => handleTitleChange(event.target.value)} className="input-field text-sm" placeholder="如：三大亮点一次看完" /></label><label className="label">封面模板<select value={coverTemplate} onChange={(event) => setCoverTemplate(event.target.value as CoverTemplateId)} className="input-field text-sm">{TEMPLATE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>
@@ -287,9 +257,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
         {draft && <div className="flex flex-wrap items-center gap-2 text-xs text-ink-secondary"><span>当前草稿 revision {draft.revision} · {draft.stage}</span><button type="button" onClick={createAnotherDraft} className="btn-secondary btn-sm">新建草稿</button></div>}
       </div>
 
-      {draft?.stage === 'draft' && <button type="button" disabled={busy} onClick={() => void runDraftAction('prepare')} className="btn-primary btn-sm">{draft.workflowConfig.packageConfig.mode === 'narration' ? `准备口播（${providerName(scriptProviders, narrationScriptProviderId)} + ${providerName(narrationProviders, narrationProviderId)}）` : '准备素材'}</button>}
-      {draft?.workflowConfig.packageConfig.mode === 'narration' && draft.stage === 'narration-ready' && !hasDescribedVisuals && <button type="button" disabled={busy} onClick={() => void runDraftAction('describe')} className="btn-primary btn-sm">识别画面（{providerName(scriptProviders, visionProviderId)}）</button>}
-      {draft?.workflowConfig.packageConfig.mode === 'narration' && draft.stage === 'narration-ready' && hasDescribedVisuals && <button type="button" disabled={busy} onClick={() => void runDraftAction('arrange')} className="btn-primary btn-sm">AI 编排（{providerName(scriptProviders, orchestrationProviderId)}）</button>}
+      {draft?.stage === 'draft' && <button type="button" disabled={busy} onClick={() => void runDraftAction()} className="btn-primary btn-sm">{draft.workflowConfig.packageConfig.mode === 'narration' ? '准备口播' : '准备素材'}</button>}
       {draft?.stage === 'failed' && <p className="rounded border border-red-300 bg-red-50 p-3 text-xs text-red-600">{draft.errorMessage || '草稿执行失败，请新建草稿后重试。'}</p>}
       {draft?.stage === 'review' && <>
         <ArrangementEditor draft={draft} onDraft={(next) => acceptDraft(next as Draft)} onConflict={setError} onError={setError} mode={draft.workflowConfig.packageConfig.mode} selectedClipIds={draft.workflowConfig.selectedClipIds} targetDurationSec={draft.workflowConfig.packageConfig.targetDurationSec} onSelectedClipIds={updateBgmSelection} />

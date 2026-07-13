@@ -131,62 +131,6 @@ async function geminiNativeCall(
   return rawText;
 }
 
-/**
- * Native Gemini vision call: same URL/config resolution as geminiNativeCall, with an
- * inlineData image part alongside the text prompt. Used by lib/final-video/vision.ts
- * for source-image description; always receives a fully-resolved runtime.
- */
-export async function describeImageGeminiNative(
-  input: { prompt: string; imageBase64: string; mimeType: string },
-  runtime: ScriptProviderRuntimeConfig,
-  signal?: AbortSignal,
-): Promise<string> {
-  const baseUrl = (runtime.baseUrl || geminiConfig.defaultBaseUrl).replace(/\/$/, '');
-  const apiKey = runtime.apiKey;
-  const model = runtime.model || geminiConfig.defaultModel;
-
-  if (!apiKey) {
-    throw new Error('Gemini API Key 未配置。请在供应商配置页填写。');
-  }
-
-  const url = `${baseUrl}/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          { text: input.prompt },
-          { inlineData: { mimeType: input.mimeType, data: input.imageBase64 } },
-        ],
-      }],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: runtime.maxTokens,
-      },
-    }),
-    signal,
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini (native) error ${res.status}: ${errText.slice(0, 500)}`);
-  }
-
-  const data = await res.json() as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-  if (!rawText.trim()) {
-    throw new Error('Gemini 返回了空响应');
-  }
-
-  return rawText;
-}
-
 // ── Unified call (routes to native or openai-compatible) ──
 
 async function geminiCall(

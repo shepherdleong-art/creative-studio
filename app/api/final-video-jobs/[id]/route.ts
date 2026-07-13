@@ -16,7 +16,7 @@ export async function GET(
   const { id } = await params;
   const row = getDb().prepare(`SELECT * FROM final_video_jobs WHERE id = ?`).get(id) as FinalVideoJobRow | undefined;
   if (!row) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
-  if (row.solverVersion === 2) {
+  if (row.solverVersion === 3) {
     try {
       parseFinalVideoJobRowSnapshot(row);
     } catch (error) {

@@ -56,7 +56,6 @@ assert.equal(validRequestResult.ok, true);
 
 const validWorkflow = {
   packageConfig: validPackage,
-  narrationScriptProviderId: 'script', visionProviderId: 'vision', orchestrationProviderId: 'orchestrator',
   selectedClipIds: ['clip-1'],
 };
 assert.throws(
@@ -66,7 +65,7 @@ assert.throws(
 
 const validSnapshot = {
   kind: 'final', draftId: 'draft-1', draftRevision: 3, packageConfig: validPackage,
-  narrationBeats: [], clipPool: [], arrangement: { assignments: [], gaps: [] }, issues: [], selectedClipIds: [], solverVersion: 2,
+  narrationBeats: [], clipPool: [], arrangement: { assignments: [], gaps: [] }, issues: [], selectedClipIds: [], solverVersion: 3,
 };
 assert.deepEqual(parseFinalVideoJobSnapshotJson(JSON.stringify(validSnapshot)), validSnapshot);
 assert.throws(

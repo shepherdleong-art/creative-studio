@@ -38,12 +38,12 @@ export function startFinalVideoQueue(): void {
     try {
       db.prepare(
         `UPDATE final_video_jobs SET status = 'pending', errorMessage = 'Recovered from interrupted run'
-         WHERE status = 'running' AND solverVersion = 2`
+         WHERE status = 'running' AND solverVersion = 3`
       ).run();
       reconcileSucceededPreviewJobs(db);
       for (;;) {
         const job = db
-          .prepare(`SELECT * FROM final_video_jobs WHERE status = 'pending' AND solverVersion = 2 ORDER BY createdAt LIMIT 1`)
+          .prepare(`SELECT * FROM final_video_jobs WHERE status = 'pending' AND solverVersion = 3 ORDER BY createdAt LIMIT 1`)
           .get() as FinalVideoJobRow | undefined;
         if (!job) break;
         db.prepare(
@@ -91,7 +91,7 @@ function writeCurrentPreviewJob(db: ReturnType<typeof getDb>, job: FinalVideoJob
 /** Recover the crash window after a preview succeeds but before its draft writeback runs. */
 function reconcileSucceededPreviewJobs(db: ReturnType<typeof getDb>): void {
   const jobs = db.prepare(`SELECT * FROM final_video_jobs
-    WHERE status = 'succeeded' AND kind = 'preview' AND solverVersion = 2
+    WHERE status = 'succeeded' AND kind = 'preview' AND solverVersion = 3
     ORDER BY createdAt`).all() as FinalVideoJobRow[];
   for (const job of jobs) writeCurrentPreviewJob(db, job);
 }

@@ -74,18 +74,14 @@ export function buildDraftApiPatch(input: {
       targetDurationSec: oldPackage.targetDurationSec,
       introDurationSec: oldPackage.cover.introDurationSec,
       narration: oldPackage.narration,
-      narrationScriptProviderId: oldConfig.narrationScriptProviderId,
     },
     {
       mode: nextPackage.mode,
       targetDurationSec: nextPackage.targetDurationSec,
       introDurationSec: nextPackage.cover.introDurationSec,
       narration: nextPackage.narration,
-      narrationScriptProviderId: next.narrationScriptProviderId,
     },
   );
-  const visionChanged = oldConfig.visionProviderId !== next.visionProviderId;
-  const orchestrationChanged = oldConfig.orchestrationProviderId !== next.orchestrationProviderId;
   const selectedClipsChanged = !equal(oldConfig.selectedClipIds, next.selectedClipIds);
   const solverChanged = oldPackage.fps !== nextPackage.fps
     || oldPackage.durationTolerancePct !== nextPackage.durationTolerancePct;
@@ -95,15 +91,7 @@ export function buildDraftApiPatch(input: {
     patch.arrangementJson = EMPTY_ARRANGEMENT;
     patch.issuesJson = '[]';
   }
-  if (visionChanged) {
-    const clips = parseClipPoolJson(input.row.clipPoolJson).map((clip) => ({
-      ...clip, visualDescription: '', descriptionProviderId: null, descriptionModel: null,
-    }));
-    patch.clipPoolJson = JSON.stringify(clips);
-    patch.arrangementJson = EMPTY_ARRANGEMENT;
-    patch.issuesJson = '[]';
-  }
-  if (orchestrationChanged || selectedClipsChanged) {
+  if (selectedClipsChanged) {
     patch.arrangementJson = EMPTY_ARRANGEMENT;
     patch.issuesJson = '[]';
   }

@@ -21,9 +21,6 @@ export type PackageConfig =
 
 export interface FinalVideoWorkflowConfig {
   packageConfig: PackageConfig;
-  narrationScriptProviderId: string;
-  visionProviderId: string;
-  orchestrationProviderId: string;
   selectedClipIds: string[];
 }
 /** 一句口播。一句 = 一个 beat = 一张画面（不再切窗口，故无 groupId）。 */
@@ -41,8 +38,7 @@ export interface NarrationDraftBeat {
 export interface NarrationBeat extends NarrationDraftBeat { audioPath: string; durationSec: number; startSec: number }
 export interface ClipPoolItem {
   clipId: string; shotId: string; shotIndex: number; videoPath: string; clipDurationSec: number;
-  sourceImageId: string; sourceImagePath: string; visualDescription: string;
-  descriptionProviderId: string | null; descriptionModel: string | null;
+  sourceImageId: string; sourceImagePath: string;
 }
 export interface ArrangementAssignment { assignmentId: string; clipId: string; beatIds: string[] }
 export interface ArrangementGap { beatId: string; reason: string }
@@ -72,7 +68,7 @@ export interface FinalVideoDraftRow {
 export interface FinalVideoJobSnapshot {
   kind: 'preview' | 'final'; draftId: string; draftRevision: number; packageConfig: PackageConfig;
   narrationBeats: NarrationBeat[]; clipPool: ClipPoolItem[]; arrangement: ArrangementPlan;
-  issues: TimelineIssue[]; selectedClipIds: string[]; solverVersion: 2;
+  issues: TimelineIssue[]; selectedClipIds: string[]; solverVersion: 3;
 }
 export interface FinalVideoJobRow {
   id: string; projectId: string; shotSetId: string; scriptDraftId: string | null;
@@ -225,9 +221,7 @@ export function parseFinalVideoWorkflowConfigJson(json: string): FinalVideoWorkf
   const packageConfig = mergePackageConfigAt(object(value.packageConfig, 'workflowConfigJson.packageConfig'), 'workflowConfigJson.packageConfig');
   const selectedClipIds = stringArray(value.selectedClipIds, 'workflowConfigJson.selectedClipIds');
   if (packageConfig.mode === 'narration' && selectedClipIds.length) throw new Error('workflowConfigJson.selectedClipIds must be empty in narration mode');
-  return { packageConfig, narrationScriptProviderId: string(value.narrationScriptProviderId, 'workflowConfigJson.narrationScriptProviderId'),
-    visionProviderId: string(value.visionProviderId, 'workflowConfigJson.visionProviderId'),
-    orchestrationProviderId: string(value.orchestrationProviderId, 'workflowConfigJson.orchestrationProviderId'), selectedClipIds };
+  return { packageConfig, selectedClipIds };
 }
 export function parseNarrationBeatsJson(json: string): NarrationBeat[] {
   const value = parseJson(json, 'narrationBeatsJson');
@@ -250,8 +244,6 @@ export function parseClipPoolJson(json: string): ClipPoolItem[] {
     clipId: string(clip.clipId, `${p}.clipId`), shotId: string(clip.shotId, `${p}.shotId`), shotIndex: number(clip.shotIndex, `${p}.shotIndex`),
     videoPath: string(clip.videoPath, `${p}.videoPath`), clipDurationSec: number(clip.clipDurationSec, `${p}.clipDurationSec`),
     sourceImageId: string(clip.sourceImageId, `${p}.sourceImageId`), sourceImagePath: string(clip.sourceImagePath, `${p}.sourceImagePath`),
-    visualDescription: string(clip.visualDescription, `${p}.visualDescription`), descriptionProviderId: nullableString(clip.descriptionProviderId, `${p}.descriptionProviderId`),
-    descriptionModel: nullableString(clip.descriptionModel, `${p}.descriptionModel`),
   }; });
 }
 export function parseArrangementPlanJson(json: string): ArrangementPlan {
@@ -280,12 +272,12 @@ export function parseTimelineIssuesJson(json: string): TimelineIssue[] {
 export function parseFinalVideoJobSnapshotJson(json: string): FinalVideoJobSnapshot {
   const value = object(parseJson(json, 'jobSnapshotJson'), 'jobSnapshotJson');
   if (value.kind !== 'preview' && value.kind !== 'final') throw new Error('jobSnapshotJson.kind is invalid');
-  if (value.solverVersion !== 2) throw new Error('jobSnapshotJson.solverVersion must be 2');
+  if (value.solverVersion !== 3) throw new Error('jobSnapshotJson.solverVersion must be 3');
   return { kind: value.kind, draftId: string(value.draftId, 'jobSnapshotJson.draftId'), draftRevision: number(value.draftRevision, 'jobSnapshotJson.draftRevision'),
     packageConfig: mergePackageConfigAt(object(value.packageConfig, 'jobSnapshotJson.packageConfig'), 'jobSnapshotJson.packageConfig'),
     narrationBeats: parseNarrationBeatsJson(JSON.stringify(value.narrationBeats)), clipPool: parseClipPoolJson(JSON.stringify(value.clipPool)),
     arrangement: parseArrangementPlanJson(JSON.stringify(value.arrangement)), issues: parseTimelineIssuesJson(JSON.stringify(value.issues)),
-    selectedClipIds: stringArray(value.selectedClipIds, 'jobSnapshotJson.selectedClipIds'), solverVersion: 2 };
+    selectedClipIds: stringArray(value.selectedClipIds, 'jobSnapshotJson.selectedClipIds'), solverVersion: 3 };
 }
 /** Re-assemble and validate the immutable snapshot persisted across a job row's *Json columns. */
 export function parseFinalVideoJobRowSnapshot(row: FinalVideoJobRow): FinalVideoJobSnapshot {

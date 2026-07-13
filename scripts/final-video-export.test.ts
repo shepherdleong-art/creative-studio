@@ -97,9 +97,6 @@ try {
     scriptDraftId: null,
     workflowConfig: {
       packageConfig: bgmOnlyPackageConfig,
-      narrationScriptProviderId: '',
-      visionProviderId: '',
-      orchestrationProviderId: '',
       selectedClipIds: [],
     },
   });
@@ -150,9 +147,6 @@ try {
     scriptDraftId: null,
     workflowConfig: {
       packageConfig: bgmOnlyPackageConfig,
-      narrationScriptProviderId: '',
-      visionProviderId: '',
-      orchestrationProviderId: '',
       selectedClipIds: [],
     },
   });

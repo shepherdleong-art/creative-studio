@@ -3,7 +3,7 @@
 export interface ReviewBeat { beatId: string; index: number; text: string; durationSec: number }
 export interface TimelineAssignment { assignmentId: string; clipId: string; beatIds: string[] }
 export interface TimelineGap { beatId: string; reason: string }
-export interface TimelineClip { clipId: string; shotIndex: number; visualDescription: string; sourceImagePath: string }
+export interface TimelineClip { clipId: string; shotIndex: number; sourceImagePath: string }
 
 function thumbnailUrl(sourceImagePath: string): string {
   const marker = '/storage/';
@@ -33,8 +33,8 @@ export default function NarrationTimeline({ beats, assignments, gaps, clips }: {
             {gap ? <p className="mt-1 font-medium">视觉缺口：{gap.reason}</p> : <div className="mt-1 flex items-center gap-2 text-ink-tertiary">{thumbnail && <>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={thumbnail} alt={`画面 #${(clip?.shotIndex ?? -1) + 1}`} className="h-10 w-16 rounded object-cover" />
-              <p>画面 #{(clip?.shotIndex ?? -1) + 1} · {clip?.visualDescription || '尚未描述'}</p>
-            </>}{!thumbnail && <p>画面 #{(clip?.shotIndex ?? -1) + 1} · {clip?.visualDescription || '尚未描述'}</p>}</div>}
+              <p>画面 #{(clip?.shotIndex ?? -1) + 1}</p>
+            </>}{!thumbnail && <p>画面 #{(clip?.shotIndex ?? -1) + 1}</p>}</div>}
           </div>
         );
       })}

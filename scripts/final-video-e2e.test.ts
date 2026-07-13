@@ -36,19 +36,17 @@ async function main() {
 
   const solved = solveTimeline({
     beats: [
-      { beatId: 'beat-1', groupId: 'group-1', index: 0, text: '短画面', audioPath: '/unused/group-1.m4a', durationSec: 1, startSec: 0 },
-      { beatId: 'beat-2', groupId: 'group-2', index: 1, text: '末段定格', audioPath: '/unused/group-2.m4a', durationSec: 4.5, startSec: 1 },
+      { beatId: 'beat-1', index: 0, text: '短画面', subtitleText: '短画面', shotId: 'a', imageAssetId: 'image-1', audioPath: '/unused/beat-1.m4a', durationSec: 1, startSec: 0 },
+      { beatId: 'beat-2', index: 1, text: '末段定格', subtitleText: '末段定格', shotId: 'b', imageAssetId: 'image-2', audioPath: '/unused/beat-2.m4a', durationSec: 4.5, startSec: 1 },
     ],
     clips: [
       {
         clipId: 'clip-1', shotId: 'a', shotIndex: 1, videoPath: c1, clipDurationSec: clip1Duration,
-        sourceImageId: 'image-1', sourceImagePath: '/unused/image-1.png', visualDescription: 'first',
-        descriptionProviderId: null, descriptionModel: null,
+        sourceImageId: 'image-1', sourceImagePath: '/unused/image-1.png',
       },
       {
         clipId: 'clip-2', shotId: 'b', shotIndex: 2, videoPath: c2, clipDurationSec: clip2Duration,
-        sourceImageId: 'image-2', sourceImagePath: '/unused/image-2.png', visualDescription: 'second',
-        descriptionProviderId: null, descriptionModel: null,
+        sourceImageId: 'image-2', sourceImagePath: '/unused/image-2.png',
       },
     ],
     plan: {
@@ -58,7 +56,7 @@ async function main() {
       ],
       gaps: [],
     },
-    introDurationSec: 0, targetDurationSec: 5.5, durationTolerancePct: 0.2, maxClipSeconds: 5, fps: 30,
+    introDurationSec: 0, targetDurationSec: 5.5, durationTolerancePct: 0.2, fps: 30,
   });
   assert.ok(solved.segments.some((segment) => segment.trimEndToSec !== null), 'solver must produce a trimmed segment');
   assert.ok(solved.segments.at(-1)!.padStopSec > 0, 'solver must freeze the final segment');
@@ -82,16 +80,14 @@ async function main() {
     clips: [
       {
         clipId: 'clip-1', shotId: 'a', shotIndex: 1, videoPath: c1, clipDurationSec: clip1Duration,
-        sourceImageId: 'image-1', sourceImagePath: '/unused/image-1.png', visualDescription: '',
-        descriptionProviderId: null, descriptionModel: null,
+        sourceImageId: 'image-1', sourceImagePath: '/unused/image-1.png',
       },
       {
         clipId: 'clip-2', shotId: 'b', shotIndex: 2, videoPath: c2, clipDurationSec: clip2Duration,
-        sourceImageId: 'image-2', sourceImagePath: '/unused/image-2.png', visualDescription: '',
-        descriptionProviderId: null, descriptionModel: null,
+        sourceImageId: 'image-2', sourceImagePath: '/unused/image-2.png',
       },
     ],
-    introDurationSec: 1, targetDurationSec: 5.5, maxClipSeconds: 4, fps: 30,
+    introDurationSec: 1, targetDurationSec: 5.5, fps: 30,
   });
   assert.deepEqual(bgmSolved.segments.map((segment) => segment.clipId), ['clip-2', 'clip-1']);
   assert.equal(bgmSolved.segments.at(-1)?.trimEndToSec, 1.5, 'BGM solver trims the final selected clip to target');

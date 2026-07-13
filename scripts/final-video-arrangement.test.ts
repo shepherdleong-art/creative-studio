@@ -3,12 +3,11 @@ import { validateArrangement } from '../lib/final-video/arrangement.ts';
 import type { ArrangementPlan, ClipPoolItem, NarrationBeat } from '../lib/final-video/types.ts';
 
 const beat = (beatId: string, index: number, durationSec = 1): NarrationBeat => ({
-  beatId, groupId: `group-${beatId}`, index, text: beatId, audioPath: `/tmp/${beatId}.mp3`, durationSec, startSec: index,
+  beatId, index, text: beatId, subtitleText: beatId, shotId: `shot-${beatId}`, imageAssetId: `image-${beatId}`, audioPath: `/tmp/${beatId}.mp3`, durationSec, startSec: index,
 });
 const clip = (clipId: string, shotIndex: number): ClipPoolItem => ({
   clipId, shotId: `shot-${clipId}`, shotIndex, videoPath: `/tmp/${clipId}.mp4`, clipDurationSec: 10,
-  sourceImageId: `image-${clipId}`, sourceImagePath: `/tmp/${clipId}.png`, visualDescription: clipId,
-  descriptionProviderId: null, descriptionModel: null,
+  sourceImageId: `image-${clipId}`, sourceImagePath: `/tmp/${clipId}.png`,
 });
 const beats = [beat('b0', 0), beat('b1', 1), beat('b2', 2), beat('b3', 3)];
 const clips = [clip('c0', 0), clip('c1', 1), clip('c2', 2)];

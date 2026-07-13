@@ -11,9 +11,6 @@ function clip(clipId: string, clipDurationSec: number, shotIndex: number): ClipP
     clipDurationSec,
     sourceImageId: `image-${clipId}`,
     sourceImagePath: `/images/${clipId}.jpg`,
-    visualDescription: '',
-    descriptionProviderId: null,
-    descriptionModel: null,
   };
 }
 

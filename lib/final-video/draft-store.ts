@@ -151,6 +151,6 @@ export function snapshotDraftForJob(
     arrangement: parseArrangementPlanJson(row.arrangementJson),
     issues: parseTimelineIssuesJson(row.issuesJson),
     selectedClipIds: [...workflowConfig.selectedClipIds],
-    solverVersion: 2,
+    solverVersion: 3,
   };
 }

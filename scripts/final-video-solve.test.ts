@@ -4,12 +4,11 @@ import { solveTimeline } from '../lib/final-video/solve-timeline.ts';
 import type { ArrangementPlan, ClipPoolItem, NarrationBeat, TimelineResult } from '../lib/final-video/types.ts';
 
 const beat = (beatId: string, index: number, durationSec: number): NarrationBeat => ({
-  beatId, index, text: beatId, audioPath: `/tmp/${beatId}.mp3`, durationSec, startSec: 99,
+  beatId, index, text: beatId, subtitleText: beatId, shotId: `s-${beatId}`, imageAssetId: `i-${beatId}`, audioPath: `/tmp/${beatId}.mp3`, durationSec, startSec: 99,
 });
 const clip = (clipId: string, shotIndex: number, clipDurationSec: number): ClipPoolItem => ({
   clipId, shotId: `s-${clipId}`, shotIndex, videoPath: `/tmp/${clipId}.mp4`, clipDurationSec,
-  sourceImageId: `i-${clipId}`, sourceImagePath: `/tmp/${clipId}.png`, visualDescription: clipId,
-  descriptionProviderId: null, descriptionModel: null,
+  sourceImageId: `i-${clipId}`, sourceImagePath: `/tmp/${clipId}.png`,
 });
 const plan = (assignments: Array<[string, string[]]>, gaps: ArrangementPlan['gaps'] = []): ArrangementPlan => ({
   assignments: assignments.map(([clipId, beatIds], index) => ({ assignmentId: `a${index}`, clipId, beatIds })), gaps,
@@ -165,7 +164,7 @@ const overflowProbe = (durations: number[], fps: number) => {
     const durations = ${JSON.stringify(durations)};
     const beats = durations.map((durationSec, index) => ({ beatId: 'b' + index, index, text: '', audioPath: '', durationSec, startSec: 0 }));
     const gaps = beats.map(({ beatId }) => ({ beatId, reason: 'gap' }));
-    const clips = [{ clipId: 'c', shotId: 's', shotIndex: 0, videoPath: '/tmp/c.mp4', clipDurationSec: 1, sourceImageId: 'i', sourceImagePath: '/tmp/i.png', visualDescription: '', descriptionProviderId: null, descriptionModel: null }];
+    const clips = [{ clipId: 'c', shotId: 's', shotIndex: 0, videoPath: '/tmp/c.mp4', clipDurationSec: 1, sourceImageId: 'i', sourceImagePath: '/tmp/i.png' }];
     try { solveTimeline({ plan: { assignments: [], gaps }, beats, clips, introDurationSec: 0, targetDurationSec: 1, durationTolerancePct: 0, fps: ${fps} }); }
     catch (error) { process.stdout.write(error.code ?? 'missing_code'); }
   `;

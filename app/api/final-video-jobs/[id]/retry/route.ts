@@ -17,7 +17,7 @@ export async function POST(
   if (row.status !== 'failed' && row.status !== 'canceled') {
     return NextResponse.json({ error: `当前状态 ${row.status} 不能重试` }, { status: 409 });
   }
-  if (row.solverVersion !== 2) {
+  if (row.solverVersion !== 3) {
     return NextResponse.json({ error: '旧版成片任务不能重试，请新建成片草稿' }, { status: 409 });
   }
   try {

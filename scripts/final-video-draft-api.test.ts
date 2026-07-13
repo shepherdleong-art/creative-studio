@@ -47,8 +47,7 @@ db.prepare(`INSERT INTO final_video_jobs (id, projectId, shotSetId) VALUES ('pre
 
 const bgmWorkflow = (overrides: Record<string, unknown> = {}) => ({
   packageConfig: { ...defaultPackageConfig(), outputName: 'api-test' },
-  narrationScriptProviderId: 'script-provider', visionProviderId: 'vision-provider',
-  orchestrationProviderId: 'orchestration-provider', selectedClipIds: ['clip-1'], ...overrides,
+  selectedClipIds: ['clip-1'], ...overrides,
 });
 const narrationWorkflow = () => ({
   ...bgmWorkflow(), selectedClipIds: [],
@@ -77,12 +76,12 @@ function assertParsedDraft(draft: Record<string, unknown>) {
 
 const snapshots = {
   narrationBeats: [
-    { beatId: 'beat-1', groupId: 'group-1', index: 0, text: 'one', audioPath: '/a.wav', durationSec: 2, startSec: 0 },
-    { beatId: 'beat-2', groupId: 'group-1', index: 1, text: 'two', audioPath: '/a.wav', durationSec: 2, startSec: 2 },
-    { beatId: 'beat-3', groupId: 'group-2', index: 2, text: 'three', audioPath: '/b.wav', durationSec: 2, startSec: 4 },
+    { beatId: 'beat-1', index: 0, text: 'one', subtitleText: 'one', shotId: 'shot-1', imageAssetId: 'image-1', audioPath: '/a.wav', durationSec: 2, startSec: 0 },
+    { beatId: 'beat-2', index: 1, text: 'two', subtitleText: 'two', shotId: 'shot-2', imageAssetId: 'image-2', audioPath: '/a.wav', durationSec: 2, startSec: 2 },
+    { beatId: 'beat-3', index: 2, text: 'three', subtitleText: 'three', shotId: 'shot-3', imageAssetId: 'image-3', audioPath: '/b.wav', durationSec: 2, startSec: 4 },
   ],
   clipPool: [{ clipId: 'clip-1', shotId: 'shot-1', shotIndex: 0, videoPath: '/v.mp4', clipDurationSec: 2,
-    sourceImageId: 'image-1', sourceImagePath: '/i.png', visualDescription: 'shown', descriptionProviderId: 'vision-provider', descriptionModel: 'vision-model' }],
+    sourceImageId: 'image-1', sourceImagePath: '/i.png' }],
   arrangement: { assignments: [{ assignmentId: 'a-1', clipId: 'clip-1', beatIds: ['beat-1'] }], gaps: [] },
   issues: [{ code: 'visual_gap', severity: 'warning', message: 'gap', beatIds: ['beat-1'], clipId: null }],
 };
@@ -159,7 +158,6 @@ try {
     { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['missing'] }], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: 'gap' })) },
     { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-1'] }, { assignmentId: 'b', clipId: 'clip-1', beatIds: ['beat-2'] }], gaps: [{ beatId: 'beat-3', reason: 'gap' }] },
     { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-1'] }], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: 'gap' })) },
-    { assignments: [{ assignmentId: 'a', clipId: 'clip-1', beatIds: ['beat-1', 'beat-2', 'beat-3'] }], gaps: [] },
     { assignments: [], gaps: [{ beatId: 'beat-1', reason: 'gap' }, { beatId: 'beat-2', reason: 'gap' }] },
     { assignments: [], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: '   ' })) },
     { assignments: [], gaps: snapshots.narrationBeats.map((beat) => ({ beatId: beat.beatId, reason: beat.beatId === 'beat-1' ? 'x'.repeat(201) : 'gap' })) },
@@ -210,15 +208,7 @@ try {
   assert.deepEqual(modeDraft.narrationBeats, []);
   assert.deepEqual(modeDraft.arrangement, { assignments: [], gaps: [] });
 
-  const visionCase = await newSeededDraft();
-  const visionChanged = structuredClone(visionCase.workflow);
-  visionChanged.visionProviderId = 'new-vision';
-  const visionDraft = (await patchDraft(visionCase.id, { revision: 0, workflowConfig: visionChanged })).body.draft as Record<string, unknown>;
-  assert.deepEqual((visionDraft.clipPool as Array<Record<string, unknown>>)[0], { ...snapshots.clipPool[0], visualDescription: '', descriptionProviderId: null, descriptionModel: null });
-  assert.deepEqual(visionDraft.narrationBeats, snapshots.narrationBeats);
-  assert.deepEqual(visionDraft.arrangement, { assignments: [], gaps: [] });
-
-  for (const [field, value] of [['orchestrationProviderId', 'new-orchestrator'], ['selectedClipIds', ['clip-2']]] as const) {
+  for (const [field, value] of [['selectedClipIds', ['clip-2']]] as const) {
     const testCase = await newSeededDraft();
     const changed = structuredClone(testCase.workflow);
     changed[field] = value;
