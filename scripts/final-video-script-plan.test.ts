@@ -47,4 +47,11 @@ import { parseScriptPlan } from '../lib/final-video/script-plan.ts';
   assert.throws(() => parseScriptPlan('{not valid json'), SyntaxError);
 }
 
+// 合法 JSON 但顶层不是对象（null/数组/原始值）→ 按"空脚本"报错，而不是抛未过滤的 TypeError
+{
+  assert.throws(() => parseScriptPlan('null'), /脚本内容为空/);
+  assert.throws(() => parseScriptPlan('[]'), /脚本内容为空/);
+  assert.throws(() => parseScriptPlan('42'), /脚本内容为空/);
+}
+
 console.log('final-video script-plan: OK');

@@ -35,6 +35,10 @@ function invalidInputError(message: string): Error & { code: string } {
 export function parseScriptPlan(outputJson: string): ScriptPlan {
   // outputJson 本身是坏 JSON 时让 JSON.parse 抛出（路由回落 500）——绝不当作"空脚本"吞掉。
   const parsed = JSON.parse(outputJson) as Raw;
+  // 合法 JSON 但顶层不是对象（null/数组/原始值）——按"空脚本"处理，而不是让下面的字段访问抛出难懂的 TypeError。
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw invalidInputError('脚本内容为空，无法生成口播');
+  }
 
   if (parsed.version === 2 && Array.isArray(parsed.segments)) {
     const segments: ScriptPlanSegment[] = [];
