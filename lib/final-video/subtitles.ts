@@ -55,6 +55,9 @@ function buildAssHeader(style: SubtitleStyle, width: number, height: number): st
   return (
     '[Script Info]\n' +
     'ScriptType: v4.00+\n' +
+    // Keep libass on its documented smart-wrap policy; Chinese-specific
+    // wrapping is added below because Chinese text has no word boundaries.
+    'WrapStyle: 0\n' +
     `PlayResX: ${width}\n` +
     `PlayResY: ${height}\n\n` +
     '[V4+ Styles]\n' +
@@ -67,8 +70,32 @@ function buildAssHeader(style: SubtitleStyle, width: number, height: number): st
   );
 }
 
+const MAX_SUBTITLE_COLUMNS = 30;
+
+function subtitleColumnWidth(char: string): number {
+  // CJK/full-width glyphs consume roughly twice the horizontal space of ASCII
+  // in the configured Chinese font. This keeps sentence-level subtitles from
+  // running beyond a 1080px portrait canvas.
+  return /^[\x00-\xff]$/.test(char) ? 1 : 2;
+}
+
+function wrapSubtitleLine(line: string): string {
+  let columns = 0;
+  let wrapped = '';
+  for (const char of line) {
+    const width = subtitleColumnWidth(char);
+    if (columns > 0 && columns + width > MAX_SUBTITLE_COLUMNS) {
+      wrapped += '\\N';
+      columns = 0;
+    }
+    wrapped += char;
+    columns += width;
+  }
+  return wrapped;
+}
+
 function escapeAssText(text: string): string {
-  return text.replace(/\n/g, '\\N');
+  return text.split('\n').map(wrapSubtitleLine).join('\\N');
 }
 
 /** Build one subtitle dialogue per narration sentence (one beat = one sentence). */

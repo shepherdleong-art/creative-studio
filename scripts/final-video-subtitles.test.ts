@@ -27,8 +27,17 @@ function beat(overrides: Partial<NarrationBeat> = {}): NarrationBeat {
 }
 
 const oneBeatAss = buildNarrationAss([beat()], 1, style, 1080, 1920);
+assert.match(oneBeatAss, /WrapStyle: 0/);
 assert.equal((oneBeatAss.match(/^Dialogue:/gm) || []).length, 1);
 assert.match(oneBeatAss, /Dialogue: 0,0:00:01\.00,0:00:03\.50,.*,,第一句/);
+
+// 长中文句仍是一条 Dialogue，但会在条内换行，避免右侧被裁切。
+const wrappedAss = buildNarrationAss([
+  beat({ subtitleText: '这是一段用于验证竖版视频长中文字幕不会被右侧裁切的完整句子内容。' }),
+], 0, style, 1080, 1920);
+assert.equal((wrappedAss.match(/^Dialogue:/gm) || []).length, 1);
+assert.match(wrappedAss.replaceAll('\\N', ''), /完整句子内容。/);
+assert.match(wrappedAss, /\\N/);
 
 // 两句相邻（原先若共享 groupId 会被合并成一条）——现在一句一条，绝不合并
 const twoAdjacentBeats = [
