@@ -1,12 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ArrangementEditor, { type ReviewDraft } from './final-video/ArrangementEditor';
 import { TEMPLATE_OPTIONS, type CoverTemplateId } from '@/lib/final-video/cover-templates';
 import type { PackageConfig } from '@/lib/final-video/types';
 
 interface ShotSetOption { id: string; name: string }
-interface ScriptDraftOption { id: string; provider: string | null; model: string | null; createdAt: string }
+interface ScriptDraftOption { id: string; provider: string | null; model: string | null; createdAt: string; outputJson: string }
 interface NarrationProviderOption { id: string; name: string; configured?: boolean; voices: string[] }
 interface PreviewJob {
   id: string; kind: 'preview'; draftRevision: number | null;
@@ -25,7 +25,7 @@ interface WorkflowConfig {
 interface Draft extends ReviewDraft {
   stage: 'draft' | 'preparing' | 'review' | 'failed';
   shotSetId: string; scriptDraftId: string | null; previewJobId: string | null; previewRevision: number | null;
-  errorMessage: string | null; workflowConfig: WorkflowConfig;
+  errorMessage: string | null; workflowConfig: WorkflowConfig; issues: Array<{ code: string }>;
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -145,16 +145,33 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     titleTouchedRef.current = true;
   };
 
+  // 目标时长属于脚本层：它只指导模型写多少文案，实际成片始终由 TTS 的真实时长决定。
+  // 成片表单不再暴露一个无法改变结果的重复控制器。
+  const selectedScriptTargetDurationSec = useMemo(() => {
+    const scriptDraft = scriptDrafts.find((item) => item.id === selectedScriptId);
+    if (!scriptDraft) return null;
+    try {
+      const output = JSON.parse(scriptDraft.outputJson || '{}') as { targetDurationSec?: unknown };
+      return typeof output.targetDurationSec === 'number' && output.targetDurationSec > 0
+        ? output.targetDurationSec
+        : null;
+    } catch {
+      return null;
+    }
+  }, [scriptDrafts, selectedScriptId]);
+
+  const targetDurationSec = selectedScriptTargetDurationSec ?? 20;
+
   const workflowConfig = (): WorkflowConfig => ({
     packageConfig: mode === 'narration' ? {
       mode: 'narration', outputName: `final-${Date.now()}`, width: 1080, height: 1920, fps: 30,
-      targetDurationSec: 15, durationTolerancePct: 0.2, bgm: null,
+      targetDurationSec, durationTolerancePct: 0.2, bgm: null,
       cover: { titleText: coverTitle, titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: coverTemplate },
       subtitle: { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
       narration: { mode: 'tts', providerId: narrationProviderId, voice, speed: 1 },
     } : {
       mode: 'bgm-only', outputName: `final-${Date.now()}`, width: 1080, height: 1920, fps: 30,
-      targetDurationSec: 15, durationTolerancePct: 0.2, bgm: null,
+      targetDurationSec, durationTolerancePct: 0.2, bgm: null,
       cover: { titleText: coverTitle, titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: coverTemplate },
       subtitle: { enabled: false, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
       narration: { mode: 'none' },
@@ -260,6 +277,16 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
       {draft?.stage === 'draft' && <button type="button" disabled={busy} onClick={() => void runDraftAction()} className="btn-primary btn-sm">{draft.workflowConfig.packageConfig.mode === 'narration' ? '准备口播' : '准备素材'}</button>}
       {draft?.stage === 'failed' && <p className="rounded border border-red-300 bg-red-50 p-3 text-xs text-red-600">{draft.errorMessage || '草稿执行失败，请新建草稿后重试。'}</p>}
       {draft?.stage === 'review' && <>
+        {draft.issues.some((issue) => issue.code === 'script_image_stale') && (
+          <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-700">
+            分镜图在脚本生成后被重新生成过，文案可能与画面不匹配。可以继续出片，也可以回到脚本步骤重新生成。
+          </p>
+        )}
+        {draft.issues.some((issue) => issue.code === 'planned_clip_substituted') && (
+          <p className="rounded border border-red-300 bg-red-50 p-2 text-xs text-red-600">
+            脚本计划中的部分画面缺失（视频未生成或生成失败），已用备用画面替补。
+          </p>
+        )}
         <ArrangementEditor draft={draft} onDraft={(next) => acceptDraft(next as Draft)} onConflict={setError} onError={setError} mode={draft.workflowConfig.packageConfig.mode} selectedClipIds={draft.workflowConfig.selectedClipIds} targetDurationSec={draft.workflowConfig.packageConfig.targetDurationSec} onSelectedClipIds={updateBgmSelection} />
         {!bgmSelectionReady && <p className="text-xs text-amber-600">请至少选择一条视频素材后再渲染。</p>}
         <div className="flex flex-wrap gap-2"><button type="button" disabled={busy || !bgmSelectionReady} onClick={() => void submitJob('preview')} className="btn-primary btn-sm">{busy ? '提交中…' : '生成预览（本地渲染）'}</button><button type="button" disabled={busy || !bgmSelectionReady} onClick={() => void submitJob('render')} className="btn-secondary btn-sm">{busy ? '提交中…' : '正式渲染（本地渲染）'}</button></div>
