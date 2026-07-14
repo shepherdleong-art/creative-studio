@@ -4,7 +4,6 @@ export interface ReviewClip {
   clipId: string;
   shotIndex: number;
   sourceImagePath: string;
-  visualDescription: string;
 }
 
 function imageUrl(sourceImagePath: string): string {
@@ -38,7 +37,7 @@ export default function ClipPicker({ clips, selectedClipId, unavailableClipIds, 
               // eslint-disable-next-line @next/next/no-img-element
               <img src={thumbnail} alt={`画面素材 ${clip.shotIndex + 1}`} className="aspect-video w-full rounded object-cover" />
             ) : <div className="flex aspect-video items-center justify-center rounded bg-surface-subtle text-ink-tertiary">画面素材</div>}
-            <p className="mt-1 line-clamp-2">#{clip.shotIndex + 1} {clip.visualDescription || '尚未生成画面描述'}</p>
+            <p className="mt-1 line-clamp-2">#{clip.shotIndex + 1} 视频画面</p>
           </button>
         );
       })}

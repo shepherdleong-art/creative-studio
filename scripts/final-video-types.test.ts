@@ -27,12 +27,11 @@ assert.equal(oldNone.mode, 'bgm-only');
 assert.deepEqual(oldNone.narration, { mode: 'none' });
 assert.equal(oldNone.targetDurationSec, 15);
 assert.equal(oldNone.durationTolerancePct, 0.2);
-assert.equal(oldNone.maxClipSeconds, 4);
 assert.equal(defaultPackageConfig().mode, 'bgm-only');
 
 const validPackage = {
   mode: 'bgm-only', outputName: 'valid', width: 1080, height: 1920, fps: 30,
-  targetDurationSec: 15, durationTolerancePct: 0.2, maxClipSeconds: 4,
+  targetDurationSec: 15, durationTolerancePct: 0.2,
   narration: { mode: 'none' }, bgm: null,
   cover: { titleText: '', titleSize: 72, titleColor: '#fff', introDurationSec: 0, templateId: 'minimal-01' },
   subtitle: { enabled: true, fontSize: 56, color: '#fff', strokeColor: '#000', strokeWidth: 2, marginBottomPct: 18 },
@@ -57,7 +56,6 @@ assert.equal(validRequestResult.ok, true);
 
 const validWorkflow = {
   packageConfig: validPackage,
-  narrationScriptProviderId: 'script', visionProviderId: 'vision', orchestrationProviderId: 'orchestrator',
   selectedClipIds: ['clip-1'],
 };
 assert.throws(
@@ -67,7 +65,7 @@ assert.throws(
 
 const validSnapshot = {
   kind: 'final', draftId: 'draft-1', draftRevision: 3, packageConfig: validPackage,
-  narrationBeats: [], clipPool: [], arrangement: { assignments: [], gaps: [] }, issues: [], selectedClipIds: [], solverVersion: 2,
+  narrationBeats: [], clipPool: [], arrangement: { assignments: [], gaps: [] }, issues: [], selectedClipIds: [], solverVersion: 3,
 };
 assert.deepEqual(parseFinalVideoJobSnapshotJson(JSON.stringify(validSnapshot)), validSnapshot);
 assert.throws(

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { deleteFinalVideoDraft, getFinalVideoDraft, updateFinalVideoDraft } from '@/lib/final-video/draft-store';
 import { buildDraftApiPatch, parseArrangement, parseDraftResponse, parseWorkflowConfig } from '@/lib/final-video/draft-api';
 import { assertValidArrangement } from '@/lib/final-video/arrangement';
-import { parseClipPoolJson, parseFinalVideoWorkflowConfigJson, parseNarrationBeatsJson } from '@/lib/final-video/types';
+import { parseClipPoolJson, parseNarrationBeatsJson } from '@/lib/final-video/types';
 import { jsonError, stale } from '@/lib/final-video/route-helpers';
 
 type Context = { params: Promise<{ id: string }> };
@@ -35,12 +35,10 @@ export async function PATCH(request: Request, { params }: Context) {
   if (!row) return stale();
   if (arrangement !== undefined) {
     try {
-      const workflow = parseFinalVideoWorkflowConfigJson(row.workflowConfigJson);
       arrangement = assertValidArrangement(
         arrangement,
         parseNarrationBeatsJson(row.narrationBeatsJson),
         parseClipPoolJson(row.clipPoolJson),
-        workflow.packageConfig.maxClipSeconds,
       );
     } catch (error) {
       return jsonError(`编排内容无效：${error instanceof Error ? error.message : String(error)}`, 400);

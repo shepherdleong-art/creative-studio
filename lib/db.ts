@@ -340,7 +340,7 @@ function initTables(db: Database.Database) {
       arrangementJson TEXT NOT NULL DEFAULT '{"assignments":[],"gaps":[]}',
       issuesJson TEXT NOT NULL DEFAULT '[]',
       selectedClipIdsJson TEXT NOT NULL DEFAULT '[]',
-      solverVersion INTEGER NOT NULL DEFAULT 2,
+      solverVersion INTEGER NOT NULL DEFAULT 3,
       outputPath TEXT,
       coverPath TEXT,
       manifestPath TEXT,

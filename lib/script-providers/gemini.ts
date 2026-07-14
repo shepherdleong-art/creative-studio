@@ -84,7 +84,7 @@ function getApiStyle(runtime?: ScriptProviderRuntimeConfig): 'native' | 'openai-
 async function geminiNativeCall(
   prompt: string,
   runtime?: ScriptProviderRuntimeConfig,
-  options?: { temperature?: number; maxTokens?: number }
+  options?: { temperature?: number; maxTokens?: number; images?: Array<{ mimeType: string; imageBase64: string }> }
 ): Promise<string> {
   const baseUrl = (runtime?.baseUrl || geminiConfig.defaultBaseUrl).replace(/\/$/, '');
   const apiKey = runtime?.apiKey;
@@ -96,72 +96,21 @@ async function geminiNativeCall(
 
   const url = `${baseUrl}/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+  const parts: Array<Record<string, unknown>> = [{ text: prompt }];
+  for (const image of options?.images ?? []) {
+    parts.push({ inlineData: { mimeType: image.mimeType, data: image.imageBase64 } });
+  }
+
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [{ parts }],
       generationConfig: {
         temperature: options?.temperature ?? 0.7,
         maxOutputTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
       },
     }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini (native) error ${res.status}: ${errText.slice(0, 500)}`);
-  }
-
-  const data = await res.json() as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-  if (!rawText.trim()) {
-    throw new Error('Gemini 返回了空响应');
-  }
-
-  return rawText;
-}
-
-/**
- * Native Gemini vision call: same URL/config resolution as geminiNativeCall, with an
- * inlineData image part alongside the text prompt. Used by lib/final-video/vision.ts
- * for source-image description; always receives a fully-resolved runtime.
- */
-export async function describeImageGeminiNative(
-  input: { prompt: string; imageBase64: string; mimeType: string },
-  runtime: ScriptProviderRuntimeConfig,
-  signal?: AbortSignal,
-): Promise<string> {
-  const baseUrl = (runtime.baseUrl || geminiConfig.defaultBaseUrl).replace(/\/$/, '');
-  const apiKey = runtime.apiKey;
-  const model = runtime.model || geminiConfig.defaultModel;
-
-  if (!apiKey) {
-    throw new Error('Gemini API Key 未配置。请在供应商配置页填写。');
-  }
-
-  const url = `${baseUrl}/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          { text: input.prompt },
-          { inlineData: { mimeType: input.mimeType, data: input.imageBase64 } },
-        ],
-      }],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: runtime.maxTokens,
-      },
-    }),
-    signal,
   });
 
   if (!res.ok) {
@@ -189,7 +138,7 @@ async function geminiCall(
   userPrompt: string,
   responseFormat: 'json_object' | 'text' = 'json_object',
   runtime?: ScriptProviderRuntimeConfig,
-  options?: { temperature?: number; maxTokens?: number }
+  options?: { temperature?: number; maxTokens?: number; images?: Array<{ mimeType: string; imageBase64: string }> }
 ): Promise<string> {
   const apiStyle = getApiStyle(runtime);
 
@@ -200,6 +149,7 @@ async function geminiCall(
       temperature: options?.temperature ?? 0.7,
       maxTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
       responseFormat,
+      images: options?.images,
     }, runtime);
   }
 
@@ -222,13 +172,10 @@ export async function geminiGenerateScript(input: ScriptInput, runtime?: ScriptP
   const systemPrompt = 'You are a professional e-commerce short-video scriptwriter. Always respond with valid JSON only, no markdown fences.';
   const userPrompt = buildScriptPrompt(input);
 
-  const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object', runtime);
+  const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object', runtime, {
+    images: input.shots.map((shot) => ({ mimeType: shot.mimeType, imageBase64: shot.imageBase64 })),
+  });
   const script = parseJsonResponse<ScriptOutput>(rawText, 'Gemini');
-
-  // Ensure fullScript exists
-  if (!script.fullScript && script.shots?.length) {
-    script.fullScript = script.shots.map((s) => s.voiceover).join('\n');
-  }
 
   return { script, provider: 'gemini', model: runtime?.model || getGeminiModel() };
 }

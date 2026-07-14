@@ -27,11 +27,10 @@ const finiteNonNegative = (value: number) => Number.isFinite(value) && value >= 
 
 function validateInput(input: {
   plan: ArrangementPlan; beats: NarrationBeat[]; clips: ClipPoolItem[]; introDurationSec: number;
-  targetDurationSec: number; durationTolerancePct: number; maxClipSeconds: number; fps: number;
+  targetDurationSec: number; durationTolerancePct: number; fps: number;
 }): { beats: NarrationBeat[]; clips: ClipPoolItem[]; plan: ArrangementPlan } {
   if (!finitePositive(input.fps)) fail('invalid_fps', '帧率必须是有限正数');
   if (!finitePositive(input.targetDurationSec)) fail('invalid_target_duration', '目标时长必须是有限正数');
-  if (!finitePositive(input.maxClipSeconds)) fail('invalid_max_clip_seconds', '单画面时长上限必须是有限正数');
   if (!finiteNonNegative(input.introDurationSec)) fail('invalid_intro_duration', '片头时长必须是有限非负数');
   if (!finiteNonNegative(input.durationTolerancePct)) fail('invalid_duration_tolerance', '时长容差必须是有限非负数');
   if (input.clips.length === 0) fail('no_visual_source', '没有可用的候选画面');
@@ -56,7 +55,7 @@ function validateInput(input: {
     clipIds.add(clip.clipId);
   }
 
-  const validation = validateArrangement(input.plan, beats, clips, input.maxClipSeconds);
+  const validation = validateArrangement(input.plan, beats, clips);
   if (!validation.ok) {
     throw new TimelineSolverError('invalid_arrangement', '编排内容无效', validation.issues.map((issue) => ({ ...issue, beatIds: [...issue.beatIds] })));
   }
@@ -74,7 +73,6 @@ export function solveTimeline(input: {
   introDurationSec: number;
   targetDurationSec: number;
   durationTolerancePct: number;
-  maxClipSeconds: number;
   fps: number;
 }): TimelineResult {
   const { beats, clips, plan } = validateInput(input);
@@ -116,9 +114,9 @@ export function solveTimeline(input: {
     const lastBeatId = assignment.beatIds.at(-1) as string;
     const targetEnd = (intervals.get(lastBeatId) as { start: number; end: number }).end;
     const wanted = Math.max(0, targetEnd - cursor);
-    let mediaDurationSec = Math.min(wanted, clip.clipDurationSec, input.maxClipSeconds);
+    let mediaDurationSec = Math.min(wanted, clip.clipDurationSec);
 
-    // Every boundary before another segment lies on a frame. Quantizing down preserves all three caps;
+    // Every boundary before another segment lies on a frame. Quantizing down preserves both caps;
     // any fractional carry is deliberately picked up by the following assignment.
     if (assignmentIndex < plan.assignments.length - 1) {
       const alignedEnd = Math.floor((cursor + mediaDurationSec) * input.fps + SECONDS_EPSILON) / input.fps;
@@ -152,7 +150,7 @@ export function solveTimeline(input: {
     let segmentStart = cursor;
     if (!segment) {
       const clip = [...clips].sort((left, right) => left.shotIndex - right.shotIndex || left.clipId.localeCompare(right.clipId))[0];
-      const mediaDurationSec = Math.min(clip.clipDurationSec, input.maxClipSeconds, contentDurationSec);
+      const mediaDurationSec = Math.min(clip.clipDurationSec, contentDurationSec);
       segmentStart = 0;
       segment = {
         order: 0, clipId: clip.clipId, clipPath: clip.videoPath, intendedBeatIds: [], coveredBeatIds: [], gapBeatIds: [],
@@ -168,8 +166,7 @@ export function solveTimeline(input: {
 
     const remaining = Math.max(0, contentDurationSec - cursor);
     const unusedPhysical = Math.max(0, segment.clipDurationSec - segment.mediaDurationSec);
-    const unusedUnderMax = Math.max(0, input.maxClipSeconds - segment.mediaDurationSec);
-    const mediaExtension = Math.min(remaining, unusedPhysical, unusedUnderMax);
+    const mediaExtension = Math.min(remaining, unusedPhysical);
     segment.mediaDurationSec += mediaExtension;
     cursor += mediaExtension;
     const pad = Math.max(0, contentDurationSec - cursor);
@@ -180,9 +177,6 @@ export function solveTimeline(input: {
     applyCoverage(segment, segmentStart);
     if (segment.padStopSec > SECONDS_EPSILON) {
       issues.push(warning('last_clip_frozen', '最后画面已定格以覆盖完整口播', segment.coveredBeatIds, segment.clipId));
-    }
-    if (segment.segmentDurationSec - input.maxClipSeconds > SECONDS_EPSILON) {
-      issues.push(warning('last_clip_exceeds_max_after_fallback', '末段兜底后超过单画面时长上限', segment.coveredBeatIds, segment.clipId));
     }
   }
 

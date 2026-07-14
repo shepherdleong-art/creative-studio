@@ -54,9 +54,6 @@ for (const [id, name] of [['shot-set-1', 'Shot Set 1'], ['shot-set-2', 'Shot Set
 const packageConfig = { ...defaultPackageConfig(), outputName: 'draft-test' };
 const workflowConfig = {
   packageConfig,
-  narrationScriptProviderId: 'script-provider',
-  visionProviderId: 'vision-provider',
-  orchestrationProviderId: 'orchestration-provider',
   selectedClipIds: ['clip-1'],
 };
 
@@ -100,13 +97,12 @@ try {
   assert.deepEqual(getFinalVideoDraft(first.id), updated);
 
   const narrationBeatsJson = JSON.stringify([{
-    beatId: 'beat-1', groupId: 'group-1', index: 0, text: 'Hello', audioPath: '/tmp/hello.wav',
+    beatId: 'beat-1', index: 0, text: 'Hello', subtitleText: 'Hello', shotId: 'shot-1', imageAssetId: 'image-1', audioPath: '/tmp/hello.wav',
     durationSec: 1.5, startSec: 0,
   }]);
   const clipPoolJson = JSON.stringify([{
     clipId: 'clip-1', shotId: 'shot-1', shotIndex: 0, videoPath: '/tmp/clip.mp4', clipDurationSec: 2,
-    sourceImageId: 'image-1', sourceImagePath: '/tmp/image.png', visualDescription: 'Product',
-    descriptionProviderId: null, descriptionModel: null,
+    sourceImageId: 'image-1', sourceImagePath: '/tmp/image.png',
   }]);
   const arrangementJson = JSON.stringify({
     assignments: [{ assignmentId: 'assignment-1', clipId: 'clip-1', beatIds: ['beat-1'] }], gaps: [],
@@ -121,7 +117,7 @@ try {
   assert.deepEqual(snapshot, {
     kind: 'preview', draftId: first.id, draftRevision: 2, packageConfig,
     narrationBeats: JSON.parse(narrationBeatsJson), clipPool: JSON.parse(clipPoolJson),
-    arrangement: JSON.parse(arrangementJson), issues: JSON.parse(issuesJson), selectedClipIds: ['clip-1'], solverVersion: 2,
+    arrangement: JSON.parse(arrangementJson), issues: JSON.parse(issuesJson), selectedClipIds: ['clip-1'], solverVersion: 3,
   });
   snapshot.packageConfig.outputName = 'mutated';
   snapshot.narrationBeats[0].text = 'mutated';

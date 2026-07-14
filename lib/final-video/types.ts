@@ -12,7 +12,7 @@ export interface SubtitleStyle {
 }
 export interface PackageCommonConfig {
   outputName: string; width: number; height: number; fps: number;
-  targetDurationSec: number; durationTolerancePct: number; maxClipSeconds: number;
+  targetDurationSec: number; durationTolerancePct: number;
   bgm: BgmConfig | null; cover: CoverConfig; subtitle: SubtitleStyle;
 }
 export type PackageConfig =
@@ -21,25 +21,33 @@ export type PackageConfig =
 
 export interface FinalVideoWorkflowConfig {
   packageConfig: PackageConfig;
-  narrationScriptProviderId: string;
-  visionProviderId: string;
-  orchestrationProviderId: string;
   selectedClipIds: string[];
 }
-export interface NarrationDraftBeat { beatId: string; groupId: string; index: number; text: string }
+/** 一句口播。一句 = 一个 beat = 一张画面（不再切窗口，故无 groupId）。 */
+export interface NarrationDraftBeat {
+  beatId: string;
+  index: number;
+  text: string;
+  /** ASS 字幕渲染用；缺省等于 text。 */
+  subtitleText: string;
+  /** 这一句该展示哪个分镜的画面（来自脚本的计划）。 */
+  shotId: string;
+  /** 脚本写作时看的那张图；用于过期检测。旧格式脚本为 null。 */
+  imageAssetId: string | null;
+}
 export interface NarrationBeat extends NarrationDraftBeat { audioPath: string; durationSec: number; startSec: number }
 export interface ClipPoolItem {
   clipId: string; shotId: string; shotIndex: number; videoPath: string; clipDurationSec: number;
-  sourceImageId: string; sourceImagePath: string; visualDescription: string;
-  descriptionProviderId: string | null; descriptionModel: string | null;
+  sourceImageId: string; sourceImagePath: string;
 }
 export interface ArrangementAssignment { assignmentId: string; clipId: string; beatIds: string[] }
 export interface ArrangementGap { beatId: string; reason: string }
 export interface ArrangementPlan { assignments: ArrangementAssignment[]; gaps: ArrangementGap[] }
 export type TimelineIssueCode =
-  | 'target_duration_out_of_tolerance' | 'arrangement_invalid' | 'arrangement_fallback_used'
+  | 'target_duration_out_of_tolerance' | 'arrangement_invalid'
   | 'visual_gap' | 'clip_missing' | 'clip_short_borrowed_forward' | 'last_clip_frozen'
-  | 'last_clip_exceeds_max_after_fallback';
+  | 'last_clip_exceeds_max_after_fallback'
+  | 'planned_clip_substituted' | 'script_image_stale';
 export interface TimelineIssue {
   code: TimelineIssueCode; severity: 'warning' | 'error'; message: string;
   beatIds: string[]; clipId: string | null;
@@ -50,7 +58,7 @@ export interface TimelineSegment {
   padStopSec: number; segmentDurationSec: number; startSec: number;
 }
 export interface TimelineResult { segments: TimelineSegment[]; issues: TimelineIssue[]; contentDurationSec: number; totalDurationSec: number }
-export type FinalVideoDraftStage = 'draft' | 'preparing' | 'narration-ready' | 'describing' | 'arranging' | 'review' | 'failed';
+export type FinalVideoDraftStage = 'draft' | 'preparing' | 'review' | 'failed';
 export interface FinalVideoDraftRow {
   id: string; projectId: string; shotSetId: string; scriptDraftId: string | null; stage: FinalVideoDraftStage;
   revision: number; workflowConfigJson: string; narrationBeatsJson: string; clipPoolJson: string;
@@ -60,7 +68,7 @@ export interface FinalVideoDraftRow {
 export interface FinalVideoJobSnapshot {
   kind: 'preview' | 'final'; draftId: string; draftRevision: number; packageConfig: PackageConfig;
   narrationBeats: NarrationBeat[]; clipPool: ClipPoolItem[]; arrangement: ArrangementPlan;
-  issues: TimelineIssue[]; selectedClipIds: string[]; solverVersion: 2;
+  issues: TimelineIssue[]; selectedClipIds: string[]; solverVersion: 3;
 }
 export interface FinalVideoJobRow {
   id: string; projectId: string; shotSetId: string; scriptDraftId: string | null;
@@ -75,7 +83,7 @@ export interface FinalVideoJobRow {
 export function defaultPackageConfig(): PackageConfig {
   return {
     mode: 'bgm-only', outputName: `final-${Date.now()}`, width: 1080, height: 1920, fps: 30,
-    targetDurationSec: 15, durationTolerancePct: 0.2, maxClipSeconds: 4,
+    targetDurationSec: 15, durationTolerancePct: 0.2,
     narration: { mode: 'none' }, bgm: null,
     cover: { titleText: '', titleSize: 72, titleColor: '#ffffff', introDurationSec: 0, templateId: 'minimal-01' },
     subtitle: { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 },
@@ -113,7 +121,7 @@ function validatePackageConfigInput(partial: JsonObject, field: string): void {
     throw new Error(`${field}.mode must be narration or bgm-only`);
   }
   for (const key of ['outputName'] as const) optionalString(partial, key, field);
-  for (const key of ['width', 'height', 'fps', 'targetDurationSec', 'durationTolerancePct', 'maxClipSeconds'] as const) {
+  for (const key of ['width', 'height', 'fps', 'targetDurationSec', 'durationTolerancePct'] as const) {
     optionalNumber(partial, key, field);
   }
 
@@ -174,7 +182,6 @@ function mergePackageConfigAt(partial: unknown, field: string): PackageConfig {
     fps: typeof partial.fps === 'number' ? partial.fps : base.fps,
     targetDurationSec: typeof partial.targetDurationSec === 'number' ? partial.targetDurationSec : base.targetDurationSec,
     durationTolerancePct: typeof partial.durationTolerancePct === 'number' ? partial.durationTolerancePct : base.durationTolerancePct,
-    maxClipSeconds: typeof partial.maxClipSeconds === 'number' ? partial.maxClipSeconds : base.maxClipSeconds,
     bgm,
     cover: { ...base.cover, ...cover },
     subtitle: { ...base.subtitle, ...subtitle },
@@ -214,18 +221,21 @@ export function parseFinalVideoWorkflowConfigJson(json: string): FinalVideoWorkf
   const packageConfig = mergePackageConfigAt(object(value.packageConfig, 'workflowConfigJson.packageConfig'), 'workflowConfigJson.packageConfig');
   const selectedClipIds = stringArray(value.selectedClipIds, 'workflowConfigJson.selectedClipIds');
   if (packageConfig.mode === 'narration' && selectedClipIds.length) throw new Error('workflowConfigJson.selectedClipIds must be empty in narration mode');
-  return { packageConfig, narrationScriptProviderId: string(value.narrationScriptProviderId, 'workflowConfigJson.narrationScriptProviderId'),
-    visionProviderId: string(value.visionProviderId, 'workflowConfigJson.visionProviderId'),
-    orchestrationProviderId: string(value.orchestrationProviderId, 'workflowConfigJson.orchestrationProviderId'), selectedClipIds };
+  return { packageConfig, selectedClipIds };
 }
 export function parseNarrationBeatsJson(json: string): NarrationBeat[] {
   const value = parseJson(json, 'narrationBeatsJson');
   if (!Array.isArray(value)) throw new Error('narrationBeatsJson must be an array');
-  return value.map((raw, index) => { const beat = object(raw, `narrationBeatsJson[${index}]`); return {
-    beatId: string(beat.beatId, `narrationBeatsJson[${index}].beatId`), groupId: string(beat.groupId, `narrationBeatsJson[${index}].groupId`),
-    index: number(beat.index, `narrationBeatsJson[${index}].index`), text: string(beat.text, `narrationBeatsJson[${index}].text`),
-    audioPath: string(beat.audioPath, `narrationBeatsJson[${index}].audioPath`), durationSec: number(beat.durationSec, `narrationBeatsJson[${index}].durationSec`),
-    startSec: number(beat.startSec, `narrationBeatsJson[${index}].startSec`),
+  return value.map((raw, index) => { const beat = object(raw, `narrationBeatsJson[${index}]`); const p = `narrationBeatsJson[${index}]`; return {
+    beatId: string(beat.beatId, `${p}.beatId`),
+    index: number(beat.index, `${p}.index`),
+    text: string(beat.text, `${p}.text`),
+    subtitleText: string(beat.subtitleText, `${p}.subtitleText`),
+    shotId: string(beat.shotId, `${p}.shotId`),
+    imageAssetId: nullableString(beat.imageAssetId, `${p}.imageAssetId`),
+    audioPath: string(beat.audioPath, `${p}.audioPath`),
+    durationSec: number(beat.durationSec, `${p}.durationSec`),
+    startSec: number(beat.startSec, `${p}.startSec`),
   }; });
 }
 export function parseClipPoolJson(json: string): ClipPoolItem[] {
@@ -234,8 +244,6 @@ export function parseClipPoolJson(json: string): ClipPoolItem[] {
     clipId: string(clip.clipId, `${p}.clipId`), shotId: string(clip.shotId, `${p}.shotId`), shotIndex: number(clip.shotIndex, `${p}.shotIndex`),
     videoPath: string(clip.videoPath, `${p}.videoPath`), clipDurationSec: number(clip.clipDurationSec, `${p}.clipDurationSec`),
     sourceImageId: string(clip.sourceImageId, `${p}.sourceImageId`), sourceImagePath: string(clip.sourceImagePath, `${p}.sourceImagePath`),
-    visualDescription: string(clip.visualDescription, `${p}.visualDescription`), descriptionProviderId: nullableString(clip.descriptionProviderId, `${p}.descriptionProviderId`),
-    descriptionModel: nullableString(clip.descriptionModel, `${p}.descriptionModel`),
   }; });
 }
 export function parseArrangementPlanJson(json: string): ArrangementPlan {
@@ -251,7 +259,7 @@ export function parseArrangementPlanJson(json: string): ArrangementPlan {
     }; }),
   };
 }
-const ISSUE_CODES: TimelineIssueCode[] = ['target_duration_out_of_tolerance','arrangement_invalid','arrangement_fallback_used','visual_gap','clip_missing','clip_short_borrowed_forward','last_clip_frozen','last_clip_exceeds_max_after_fallback'];
+const ISSUE_CODES: TimelineIssueCode[] = ['target_duration_out_of_tolerance','arrangement_invalid','visual_gap','clip_missing','clip_short_borrowed_forward','last_clip_frozen','last_clip_exceeds_max_after_fallback','planned_clip_substituted','script_image_stale'];
 export function parseTimelineIssuesJson(json: string): TimelineIssue[] {
   const value = parseJson(json, 'issuesJson'); if (!Array.isArray(value)) throw new Error('issuesJson must be an array');
   return value.map((raw, index) => { const issue = object(raw, `issuesJson[${index}]`); const code = string(issue.code, `issuesJson[${index}].code`);
@@ -264,12 +272,12 @@ export function parseTimelineIssuesJson(json: string): TimelineIssue[] {
 export function parseFinalVideoJobSnapshotJson(json: string): FinalVideoJobSnapshot {
   const value = object(parseJson(json, 'jobSnapshotJson'), 'jobSnapshotJson');
   if (value.kind !== 'preview' && value.kind !== 'final') throw new Error('jobSnapshotJson.kind is invalid');
-  if (value.solverVersion !== 2) throw new Error('jobSnapshotJson.solverVersion must be 2');
+  if (value.solverVersion !== 3) throw new Error('jobSnapshotJson.solverVersion must be 3');
   return { kind: value.kind, draftId: string(value.draftId, 'jobSnapshotJson.draftId'), draftRevision: number(value.draftRevision, 'jobSnapshotJson.draftRevision'),
     packageConfig: mergePackageConfigAt(object(value.packageConfig, 'jobSnapshotJson.packageConfig'), 'jobSnapshotJson.packageConfig'),
     narrationBeats: parseNarrationBeatsJson(JSON.stringify(value.narrationBeats)), clipPool: parseClipPoolJson(JSON.stringify(value.clipPool)),
     arrangement: parseArrangementPlanJson(JSON.stringify(value.arrangement)), issues: parseTimelineIssuesJson(JSON.stringify(value.issues)),
-    selectedClipIds: stringArray(value.selectedClipIds, 'jobSnapshotJson.selectedClipIds'), solverVersion: 2 };
+    selectedClipIds: stringArray(value.selectedClipIds, 'jobSnapshotJson.selectedClipIds'), solverVersion: 3 };
 }
 /** Re-assemble and validate the immutable snapshot persisted across a job row's *Json columns. */
 export function parseFinalVideoJobRowSnapshot(row: FinalVideoJobRow): FinalVideoJobSnapshot {

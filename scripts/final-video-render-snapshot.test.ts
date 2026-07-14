@@ -69,15 +69,13 @@ try {
     fps: 25,
     targetDurationSec: 1.2,
     durationTolerancePct: 0.5,
-    maxClipSeconds: 4,
     narration: { mode: 'tts' as const, providerId: 'must-not-run', voice: 'unused', speed: 1 },
     cover: { ...defaultPackageConfig().cover, titleText: 'Snapshot', introDurationSec: 0 },
   };
-  const beats = [{ beatId: 'beat-1', groupId: 'group-1', index: 0, text: 'Snapshot narration', audioPath, durationSec: 1.2, startSec: 0 }];
+  const beats = [{ beatId: 'beat-1', index: 0, text: 'Snapshot narration', subtitleText: 'Snapshot narration', shotId: 'shot-1', imageAssetId: 'image-1', audioPath, durationSec: 1.2, startSec: 0 }];
   const clips = [{
     clipId: 'clip-1', shotId: 'shot-1', shotIndex: 0, videoPath: clipPath, clipDurationSec: 1.2,
-    sourceImageId: 'image-1', sourceImagePath: path.join(mediaDir, 'image.png'), visualDescription: 'blue image',
-    descriptionProviderId: null, descriptionModel: null,
+    sourceImageId: 'image-1', sourceImagePath: path.join(mediaDir, 'image.png'),
   }];
   const arrangement = { assignments: [{ assignmentId: 'assignment-1', clipId: 'clip-1', beatIds: ['beat-1'] }], gaps: [] };
   const issues = [{ code: 'visual_gap', severity: 'warning' as const, message: 'Persisted issue', beatIds: ['beat-1'], clipId: null }];
@@ -94,7 +92,7 @@ try {
   insertJob.run('legacy-running', 'running', '{}', 'final', null, null,
     '[]', '[]', '{"assignments":[],"gaps":[]}', '[]', '[]', 1);
   insertJob.run('preview-v2', 'pending', JSON.stringify(packageConfig), 'preview', 'draft-1', 7,
-    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 2);
+    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 3);
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => { throw new Error('rendering a persisted snapshot must not call a paid API'); }) as typeof fetch;
@@ -114,7 +112,7 @@ try {
   assert.deepEqual(manifest.beats, beats);
   assert.deepEqual(manifest.arrangement, arrangement);
   assert.deepEqual(manifest.issues, issues);
-  assert.equal(manifest.solverVersion, 2);
+  assert.equal(manifest.solverVersion, 3);
   assert.deepEqual(manifest.output, {
     video: rendered.outputPath,
     cover: path.join(testRoot, 'storage', 'final-videos', 'preview-v2', 'cover.jpg'),
@@ -139,7 +137,7 @@ try {
   assert.match(String(legacyRetry.body.error), /新建成片草稿/);
 
   insertJob.run('final-v2-retry', 'failed', JSON.stringify(packageConfig), 'final', 'draft-1', 7,
-    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 2);
+    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 3);
   const v2Retry = await response(retryRoute.POST(new NextRequest('http://test/api', { method: 'POST' }), ctx('final-v2-retry')));
   assert.deepEqual(v2Retry, { status: 200, body: { success: true } });
   await waitFor(() => (db.prepare(`SELECT status FROM final_video_jobs WHERE id = 'final-v2-retry'`).get() as { status: string }).status === 'succeeded', 'v2 retry');
@@ -153,11 +151,10 @@ try {
     height: 960,
     fps: 25,
     targetDurationSec: 1.2,
-    maxClipSeconds: 4,
     subtitle: { ...defaultPackageConfig().subtitle, enabled: true },
   };
   insertJob.run('bgm-v2', 'pending', JSON.stringify(bgmPackageConfig), 'preview', 'draft-bgm', 1,
-    '[]', JSON.stringify(clips), JSON.stringify({ assignments: [], gaps: [] }), '[]', JSON.stringify(['clip-1']), 2);
+    '[]', JSON.stringify(clips), JSON.stringify({ assignments: [], gaps: [] }), '[]', JSON.stringify(['clip-1']), 3);
   startFinalVideoQueue();
   await waitFor(() => (db.prepare(`SELECT status FROM final_video_jobs WHERE id = 'bgm-v2'`).get() as { status: string }).status === 'succeeded', 'bgm-only snapshot');
   const bgmManifestPath = (db.prepare(`SELECT manifestPath FROM final_video_jobs WHERE id = 'bgm-v2'`).get() as { manifestPath: string }).manifestPath;
@@ -168,17 +165,14 @@ try {
 
   // A restart must reconcile preview jobs that had already reached succeeded before
   // their conditional draft writeback ran; stale revisions remain untouched.
-  const workflowConfig = {
-    packageConfig,
-    narrationScriptProviderId: 'qwen', visionProviderId: 'qwen', orchestrationProviderId: 'qwen', selectedClipIds: [],
-  };
+  const workflowConfig = { packageConfig, selectedClipIds: [] };
   const recoveredDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig });
   const stalePreviewDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig });
   updateFinalVideoDraft(stalePreviewDraft.id, 0, { stage: 'review' });
   insertJob.run('recovered-preview', 'succeeded', JSON.stringify(packageConfig), 'preview', recoveredDraft.id, 0,
-    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 2);
+    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 3);
   insertJob.run('stale-recovered-preview', 'succeeded', JSON.stringify(packageConfig), 'preview', stalePreviewDraft.id, 0,
-    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 2);
+    JSON.stringify(beats), JSON.stringify(clips), JSON.stringify(arrangement), JSON.stringify(issues), '[]', 3);
   startFinalVideoQueue();
   await waitFor(() => getFinalVideoQueueStatus() === 'idle', 'succeeded preview reconciliation');
   assert.equal(getFinalVideoDraft(recoveredDraft.id)?.previewJobId, 'recovered-preview');

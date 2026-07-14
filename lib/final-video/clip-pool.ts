@@ -108,9 +108,6 @@ export async function buildClipPool(shotSetId: string): Promise<{
       clipDurationSec,
       sourceImageId: row.sourceImageId!,
       sourceImagePath: row.sourceImagePath,
-      visualDescription: '',
-      descriptionProviderId: null,
-      descriptionModel: null,
     });
   }
 

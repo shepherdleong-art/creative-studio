@@ -46,8 +46,6 @@ try {
     VALUES ('video-provider', 'Video', 'kling', '', '', '', 'model')
   `).run();
 
-  db.prepare(`UPDATE script_providers SET baseUrl = ?, apiKey = ?, model = ?, apiStyle = ?, enabled = 1 WHERE id = 'qwen'`)
-    .run('https://qwen.example/api', 'qwen-secret', 'qwen-model', 'openai-compatible');
   db.prepare(`UPDATE narration_providers SET apiKey = ?, baseUrl = ?, model = ?, voices = ?, enabled = 1 WHERE id = 'openai-tts'`)
     .run('tts-secret', 'https://tts.example', 'tts-model', 'test-voice');
 
@@ -56,46 +54,73 @@ try {
     db.prepare(`INSERT INTO script_drafts (id, projectId, model, inputSnapshot, outputJson) VALUES (?, 'project-1', 'model', '{}', ?)`)
       .run(id, raw);
   }
-  scriptDraft('script-full', { fullScript: '这是完整口播文案，用于验证优先读取全文。', shots: [] });
-  scriptDraft('script-fallback', { fullScript: '', shots: [{ voiceover: '第一句分镜台词。' }, { voiceover: '第二句分镜台词。' }] });
+
+  // Shared narration text for the two v2 segments below; also what actually gets sent to TTS
+  // (there is no LLM re-split step anymore — the script's plan already is the sentence list).
+  const SENTENCES = ['这是第一句测试口播文本，用于验证流程。', '这是第二句测试口播文本，同样验证流程。'];
+
+  // v2 shape: segments[] IS the plan, in script order. Two segments -> two shots -> two beats,
+  // each pointing at the shot whose image the script actually saw (imageAssetId), so the
+  // resulting arrangement has zero staleness/substitution issues (see build-arrangement.ts).
+  scriptDraft('script-plan', {
+    version: 2,
+    segments: [
+      { shotId: 'shot-1', imageAssetId: 'image-1', narration: SENTENCES[0], rationale: '开场展示商品全貌' },
+      { shotId: 'shot-2', imageAssetId: 'image-2', narration: SENTENCES[1], rationale: '特写展示细节' },
+    ],
+    droppedShots: [],
+  });
+  // Legacy shape (no version:2): parseScriptPlan's legacy adapter reads shots[].voiceover 1:1
+  // into segments and forces imageAssetId null. That adapter's own edge cases are already
+  // covered by final-video-script-plan.test.ts (Task B3) — this fixture only exists so this
+  // file can prove prepare-draft.ts wires the adapter's output through end-to-end.
+  scriptDraft('script-legacy', {
+    shots: [
+      { shotId: 'shot-1', voiceover: '第一句分镜台词。' },
+      { shotId: 'shot-2', voiceover: '第二句分镜台词。' },
+    ],
+  });
   scriptDraft('script-empty', { fullScript: '', shots: [{ voiceover: '' }, {}] });
   scriptDraft('script-broken', '{not valid json');
 
-  // ── Fixtures: one shot with a succeeded video job so the clip pool is non-empty ──
+  // ── Fixtures: two shots, each with a succeeded video job, so a two-segment script plan maps
+  // 1:1 onto two distinct clips (matching imageAssetId <-> sourceImageId, zero substitution/
+  // staleness issues). Both video jobs point at the same physical media file — ffprobe only
+  // needs a valid video at the path, it doesn't care whether two jobs share one file. ──
   const storage = path.join(testRoot, 'storage');
   fs.mkdirSync(storage, { recursive: true });
   const media = path.join(storage, 'clip.mp4');
   await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'color=c=black:s=32x32:r=25:d=1.5', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', media]);
-  const imagePath = path.join(storage, 'image-1.png');
-  fs.writeFileSync(imagePath, 'image fixture');
-  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUES ('image-1', 'project-1', 'output', 'image-1.png', ?)`).run(imagePath);
-  db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId, latestGeneratedImageId) VALUES ('shot-1', 'shot-set-1', 0, 'image-1', 'image-1')`).run();
-  db.prepare(`
-    INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec, status, localVideoPath, createdAt, finishedAt)
-    VALUES ('video-job-1', 'project-1', 'shot-set-1', 'shot-1', 'image-1', 'video-provider', 'model', '', 5, 'succeeded', ?, '2026-01-01 00:00:00', '2026-01-01 00:01:00')
-  `).run(media);
+  for (const n of [1, 2]) {
+    const imagePath = path.join(storage, `image-${n}.png`);
+    fs.writeFileSync(imagePath, 'image fixture');
+    db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUES (?, 'project-1', 'output', ?, ?)`)
+      .run(`image-${n}`, `image-${n}.png`, imagePath);
+    db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId, latestGeneratedImageId) VALUES (?, 'shot-set-1', ?, ?, ?)`)
+      .run(`shot-${n}`, n - 1, `image-${n}`, `image-${n}`);
+    db.prepare(`
+      INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec, status, localVideoPath, createdAt, finishedAt)
+      VALUES (?, 'project-1', 'shot-set-1', ?, ?, 'video-provider', 'model', '', 5, 'succeeded', ?, '2026-01-01 00:00:00', '2026-01-01 00:01:00')
+    `).run(`video-job-${n}`, `shot-${n}`, `image-${n}`, media);
+  }
 
   // ── Fixtures: TTS source audio (real, via lavfi) reused for every synthesized sentence ──
   const ttsSourceWav = path.join(testRoot, 'tts-source.wav');
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=2.5', '-c:a', 'pcm_s16le', '-y', ttsSourceWav]);
   const ttsSourceBytes = fs.readFileSync(ttsSourceWav);
 
-  // ── fetch mock: dispatch by URL between the narration-script LLM call and the TTS call ──
+  // ── fetch mock: only /audio/speech is a real endpoint prepare-draft.ts calls now. There is
+  // deliberately no /chat/completions branch — prepare-draft.ts no longer calls any LLM to
+  // re-split narration into sentences (the script's v2 plan already is the sentence list). If
+  // prepare-draft.ts ever regresses and calls an LLM again, this mock throws immediately via the
+  // fallback branch below instead of silently answering it. ──
   const originalFetch = globalThis.fetch;
-  let narrationCalls = 0;
   let ttsCalls = 0;
-  const narrationRequests: Array<Record<string, unknown>> = [];
   const ttsRequests: Array<Record<string, unknown>> = [];
   let ttsFailureMode: 'none' | 'http-error' = 'none';
-  const SENTENCES = ['这是第一句测试口播文本，用于验证流程。', '这是第二句测试口播文本，同样验证流程。'];
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes('/chat/completions')) {
-      narrationCalls += 1;
-      narrationRequests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return Response.json({ choices: [{ message: { content: JSON.stringify({ sentences: SENTENCES.map((text) => ({ text })) }) } }] });
-    }
     if (url.includes('/audio/speech')) {
       ttsCalls += 1;
       ttsRequests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -109,9 +134,6 @@ try {
   function bgmWorkflowConfig() {
     return {
       packageConfig: { ...defaultPackageConfig(), outputName: 'bgm-test' },
-      narrationScriptProviderId: 'qwen',
-      visionProviderId: 'vision-provider',
-      orchestrationProviderId: 'orchestration-provider',
       selectedClipIds: [],
     };
   }
@@ -126,9 +148,6 @@ try {
         cover: { ...base.cover, introDurationSec: overrides.introDurationSec ?? base.cover.introDurationSec },
         narration: { mode: 'tts' as const, providerId: 'openai-tts', voice: 'test-voice', speed: 1.15 },
       },
-      narrationScriptProviderId: 'qwen',
-      visionProviderId: 'vision-provider',
-      orchestrationProviderId: 'orchestration-provider',
       selectedClipIds: [],
     };
   }
@@ -144,19 +163,21 @@ try {
     return responseFor(prepareRoute.POST(jsonRequest({ revision }), ctx(id)));
   }
 
-  // ── bgm-only happy path: never touches narration/TTS, ends in review ──
+  // ── bgm-only happy path: never touches narration/TTS, ends in review, arrangement untouched ──
   const bgmDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig: bgmWorkflowConfig() });
   assert.equal(bgmDraft.stage, 'draft');
+  assert.deepEqual(JSON.parse(bgmDraft.arrangementJson), { assignments: [], gaps: [] }, 'fresh draft starts with the empty arrangement default');
   const bgmResult = await prepare(bgmDraft.id, 0);
   assert.equal(bgmResult.status, 200);
   const bgmBody = bgmResult.body.draft as Record<string, unknown>;
   assert.equal(bgmBody.stage, 'review');
   assert.equal(bgmBody.revision, 2, 'preparing bump + final patch = +2 revisions');
   assert.deepEqual(bgmBody.narrationBeats, []);
-  assert.equal((bgmBody.clipPool as unknown[]).length, 1);
+  assert.equal((bgmBody.clipPool as unknown[]).length, 2);
   assert.equal((bgmBody.clipPool as Array<Record<string, unknown>>)[0].clipId, 'video-job-1');
+  assert.equal((bgmBody.clipPool as Array<Record<string, unknown>>)[1].clipId, 'video-job-2');
   assert.deepEqual(bgmBody.issues, []);
-  assert.equal(narrationCalls, 0, 'bgm-only must never call the narration-script LLM');
+  assert.deepEqual(bgmBody.arrangement, { assignments: [], gaps: [] }, 'bgm-only never runs the script-driven arrangement step: arrangementJson is left exactly as the draft default, not recomputed to an equivalent-looking empty value');
   assert.equal(ttsCalls, 0, 'bgm-only must never call TTS');
 
   // ── bgm-only with a scriptDraftId pointing at genuinely broken JSON: must still never read it ──
@@ -165,63 +186,87 @@ try {
   assert.equal(bgmBrokenResult.status, 200, 'bgm-only must never parse the script draft, even if it is malformed JSON');
   assert.equal((bgmBrokenResult.body.draft as Record<string, unknown>).stage, 'review');
 
-  // ── narration happy path: fullScript preferred, real audio on disk, tolerance satisfied ──
+  // ── narration happy path: script plan segments map 1:1 to beats, real audio on disk, tolerance
+  // satisfied, arrangement assigns each beat its own planned clip with zero issues ──
   const narrationDraft = createFinalVideoDraft({
-    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-full',
+    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-plan',
     workflowConfig: narrationWorkflowConfig({ targetDurationSec: 5.5 }),
   });
   const narrationResult = await prepare(narrationDraft.id, 0);
   assert.equal(narrationResult.status, 200);
   const narrationBody = narrationResult.body.draft as Record<string, unknown>;
-  assert.equal(narrationBody.stage, 'narration-ready');
+  assert.equal(narrationBody.stage, 'review');
   assert.equal(narrationBody.revision, 2);
   const beats = narrationBody.narrationBeats as Array<Record<string, unknown>>;
-  assert.equal(beats.length, 2, 'one beat per synthesized natural sentence, no splitting under maxClipSeconds');
+  assert.equal(beats.length, 2, 'one beat per script segment, 1:1, no LLM re-split');
+  assert.equal(beats[0].shotId, 'shot-1');
+  assert.equal(beats[0].imageAssetId, 'image-1');
+  assert.equal(beats[1].shotId, 'shot-2');
+  assert.equal(beats[1].imageAssetId, 'image-2');
   for (const beat of beats) {
     assert.ok(fs.existsSync(beat.audioPath as string), `audio file must exist on disk: ${beat.audioPath}`);
     assert.ok((beat.durationSec as number) > 2 && (beat.durationSec as number) < 3, `real probed duration: ${beat.durationSec}`);
   }
-  assert.equal((narrationBody.clipPool as unknown[]).length, 1);
-  assert.deepEqual(narrationBody.issues, [], 'target duration chosen to stay inside tolerance');
-  assert.equal(narrationCalls, 1, 'narration-script LLM called exactly once');
-  assert.equal(ttsCalls, 2, 'TTS called exactly once per natural sentence');
-  assert.match((narrationRequests[0].messages as Array<{ content: string }>)[1].content, /这是完整口播文案/);
+  assert.equal((narrationBody.clipPool as unknown[]).length, 2);
+  assert.deepEqual(narrationBody.issues, [], 'target duration chosen to stay inside tolerance, and the plan maps cleanly onto the clip pool');
+  assert.equal(ttsCalls, 2, 'TTS called exactly once per script segment');
   assert.equal(ttsRequests[0].voice, 'test-voice');
   assert.equal(ttsRequests[0].speed, 1.15, 'TTS speed must come from workflowConfig.packageConfig.narration, not a hardcoded default');
 
-  // ── retry semantics: same draft, same workflowConfig, new revision -> reuse audio, no new calls ──
-  const callsAfterFirstPrepare = { narrationCalls, ttsCalls };
+  // arrangement is built deterministically from the plan: each beat gets the clip for its own
+  // shotId, in script order, with no substitution or gaps needed (substitution/gap/staleness
+  // edge cases themselves are covered by final-video-build-arrangement.test.ts, Task B4).
+  const narrationArrangement = narrationBody.arrangement as { assignments: Array<Record<string, unknown>>; gaps: unknown[] };
+  assert.equal(narrationArrangement.assignments.length, 2, 'arrangement must have one assignment per beat');
+  assert.deepEqual(narrationArrangement.assignments.map((a) => a.clipId), ['video-job-1', 'video-job-2']);
+  assert.deepEqual(narrationArrangement.assignments.map((a) => a.beatIds), [['beat-0'], ['beat-1']]);
+  assert.deepEqual(narrationArrangement.gaps, []);
+
+  // ── retry semantics: same draft, same workflowConfig, new revision -> reuse audio, no new TTS
+  // calls; arrangement is cheap/deterministic so it's recomputed anyway, byte-identically ──
+  const callsAfterFirstPrepare = { ttsCalls };
   const retryResult = await prepare(narrationDraft.id, narrationBody.revision as number);
   assert.equal(retryResult.status, 200);
   const retryBody = retryResult.body.draft as Record<string, unknown>;
-  assert.equal(retryBody.stage, 'narration-ready');
+  assert.equal(retryBody.stage, 'review');
   assert.deepEqual(retryBody.narrationBeats, narrationBody.narrationBeats, 'reused beats must be identical to the first run');
-  assert.equal(narrationCalls, callsAfterFirstPrepare.narrationCalls, 'retry must not call the narration-script LLM again');
   assert.equal(ttsCalls, callsAfterFirstPrepare.ttsCalls, 'retry must not call TTS again (avoid duplicate billing)');
+  assert.deepEqual(retryBody.arrangement, narrationBody.arrangement, 'same beats + same clip pool + same dropped shots recomputes to an identical arrangement');
   const rawRowAfterRetry = getFinalVideoDraft(narrationDraft.id)!;
   assert.equal(rawRowAfterRetry.narrationBeatsJson, JSON.stringify(narrationBody.narrationBeats), 'raw JSON column is byte-identical, not regenerated');
+  assert.equal(rawRowAfterRetry.arrangementJson, JSON.stringify(narrationBody.arrangement), 'raw arrangementJson column is byte-identical across the deterministic recompute');
 
-  // ── sourceText fallback: empty fullScript falls back to shots[].voiceover joined in order ──
-  const fallbackDraft = createFinalVideoDraft({
-    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-fallback',
+  // ── legacy script shape (no version:2): parseScriptPlan's legacy adapter reads shots[].voiceover
+  // 1:1 into segments with imageAssetId forced null. That adapter's own edge cases already have
+  // dedicated coverage (Task B3) — this block only proves prepare-draft.ts wires the adapter's
+  // output through end-to-end: beats, TTS, and arrangement all still work. ──
+  const legacyDraft = createFinalVideoDraft({
+    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-legacy',
     workflowConfig: narrationWorkflowConfig({ targetDurationSec: 5.5 }),
   });
-  const fallbackResult = await prepare(fallbackDraft.id, 0);
-  assert.equal(fallbackResult.status, 200);
-  assert.equal((fallbackResult.body.draft as Record<string, unknown>).stage, 'narration-ready');
-  const fallbackPrompt = (narrationRequests.at(-1)!.messages as Array<{ content: string }>)[1].content;
-  assert.match(fallbackPrompt, /第一句分镜台词/);
-  assert.match(fallbackPrompt, /第二句分镜台词/);
+  const legacyResult = await prepare(legacyDraft.id, 0);
+  assert.equal(legacyResult.status, 200);
+  const legacyBody = legacyResult.body.draft as Record<string, unknown>;
+  assert.equal(legacyBody.stage, 'review');
+  const legacyBeats = legacyBody.narrationBeats as Array<Record<string, unknown>>;
+  assert.equal(legacyBeats.length, 2, 'one beat per legacy shot, no windowing');
+  assert.equal(legacyBeats[0].text, '第一句分镜台词。');
+  assert.equal(legacyBeats[1].text, '第二句分镜台词。');
+  assert.equal(legacyBeats[0].imageAssetId, null, 'legacy segments never know which image the script saw');
+  assert.equal(legacyBeats[1].imageAssetId, null);
+  const legacyArrangement = legacyBody.arrangement as { assignments: Array<Record<string, unknown>>; gaps: unknown[] };
+  assert.equal(legacyArrangement.assignments.length, 2, 'legacy beats still arrange cleanly against the clip pool');
+  assert.deepEqual(legacyArrangement.gaps, []);
 
   // ── duration tolerance exceeded: warning issue recorded, never a failure, audio not truncated ──
   const toleranceDraft = createFinalVideoDraft({
-    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-full',
+    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-plan',
     workflowConfig: narrationWorkflowConfig({ targetDurationSec: 50 }),
   });
   const toleranceResult = await prepare(toleranceDraft.id, 0);
   assert.equal(toleranceResult.status, 200);
   const toleranceBody = toleranceResult.body.draft as Record<string, unknown>;
-  assert.equal(toleranceBody.stage, 'narration-ready');
+  assert.equal(toleranceBody.stage, 'review');
   assert.equal((toleranceBody.narrationBeats as unknown[]).length, 2, 'audio must not be truncated');
   const toleranceIssues = toleranceBody.issues as Array<Record<string, unknown>>;
   assert.ok(toleranceIssues.some((issue) => issue.code === 'target_duration_out_of_tolerance' && issue.severity === 'warning'));
@@ -229,17 +274,16 @@ try {
   // ── narration mode without scriptDraftId -> 400, stage/revision left untouched ──
   const noScriptDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig: narrationWorkflowConfig() });
   assert.equal(noScriptDraft.scriptDraftId, null);
-  const callsBeforeNoScript = { narrationCalls, ttsCalls };
+  const callsBeforeNoScript = { ttsCalls };
   const noScriptResult = await prepare(noScriptDraft.id, 0);
   assert.equal(noScriptResult.status, 400);
   assert.match(String(noScriptResult.body.error), /口播.*脚本/);
   const noScriptRow = getFinalVideoDraft(noScriptDraft.id)!;
   assert.equal(noScriptRow.stage, 'draft');
   assert.equal(noScriptRow.revision, 0);
-  assert.equal(narrationCalls, callsBeforeNoScript.narrationCalls);
   assert.equal(ttsCalls, callsBeforeNoScript.ttsCalls);
 
-  // ── narration mode with empty script content (empty fullScript + empty/missing voiceover) -> 400 ──
+  // ── narration mode with a legacy-shape script draft that has no usable shots -> 400 ──
   const emptyScriptDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-empty', workflowConfig: narrationWorkflowConfig() });
   const emptyScriptResult = await prepare(emptyScriptDraft.id, 0);
   assert.equal(emptyScriptResult.status, 400);
@@ -271,7 +315,7 @@ try {
   // ── remote failure during TTS -> ends at stage=failed with an error message, route still returns 200 ──
   ttsFailureMode = 'http-error';
   const failDraft = createFinalVideoDraft({
-    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-full',
+    projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: 'script-plan',
     workflowConfig: narrationWorkflowConfig({ targetDurationSec: 5.5 }),
   });
   const failResult = await prepare(failDraft.id, 0);
@@ -287,7 +331,7 @@ try {
   const recoveredResult = await prepare(failDraft.id, failBody.revision as number);
   assert.equal(recoveredResult.status, 200);
   const recoveredBody = recoveredResult.body.draft as Record<string, unknown>;
-  assert.equal(recoveredBody.stage, 'narration-ready');
+  assert.equal(recoveredBody.stage, 'review');
   assert.equal(recoveredBody.errorMessage, null, 'a successful re-prepare must clear the stale errorMessage');
 
   globalThis.fetch = originalFetch;

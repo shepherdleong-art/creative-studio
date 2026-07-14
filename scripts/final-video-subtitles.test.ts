@@ -14,10 +14,12 @@ assert.ok(platformFontName().length > 0);
 function beat(overrides: Partial<NarrationBeat> = {}): NarrationBeat {
   return {
     beatId: 'beat-0',
-    groupId: 'group-0',
     index: 0,
     text: '第一句',
-    audioPath: '/tmp/group-0.wav',
+    subtitleText: '第一句',
+    shotId: 'shot-0',
+    imageAssetId: 'image-0',
+    audioPath: '/tmp/beat-0.m4a',
     durationSec: 2.5,
     startSec: 0,
     ...overrides,
@@ -25,36 +27,50 @@ function beat(overrides: Partial<NarrationBeat> = {}): NarrationBeat {
 }
 
 const oneBeatAss = buildNarrationAss([beat()], 1, style, 1080, 1920);
+assert.match(oneBeatAss, /WrapStyle: 0/);
 assert.equal((oneBeatAss.match(/^Dialogue:/gm) || []).length, 1);
 assert.match(oneBeatAss, /Dialogue: 0,0:00:01\.00,0:00:03\.50,.*,,第一句/);
 
-const splitSentence = [
-  beat({ text: '一句话，', durationSec: 1.25 }),
-  beat({ beatId: 'beat-1', index: 1, text: '跨越两个画面。', startSec: 1.25, durationSec: 2.75 }),
+// 长中文句仍是一条 Dialogue，但会在条内换行，避免右侧被裁切。
+const wrappedAss = buildNarrationAss([
+  beat({ subtitleText: '这是一段用于验证竖版视频长中文字幕不会被右侧裁切的完整句子内容。' }),
+], 0, style, 1080, 1920);
+assert.equal((wrappedAss.match(/^Dialogue:/gm) || []).length, 1);
+assert.match(wrappedAss.replaceAll('\\N', ''), /完整句子内容。/);
+assert.match(wrappedAss, /\\N/);
+
+// 两句相邻（原先若共享 groupId 会被合并成一条）——现在一句一条，绝不合并
+const twoAdjacentBeats = [
+  beat({ text: '一句话，', subtitleText: '一句话，', durationSec: 1.25 }),
+  beat({ beatId: 'beat-1', index: 1, text: '跨越两个画面。', subtitleText: '跨越两个画面。', audioPath: '/tmp/beat-1.m4a', startSec: 1.25, durationSec: 2.75 }),
 ];
-const splitSentenceBefore = structuredClone(splitSentence);
+const twoAdjacentBeatsBefore = structuredClone(twoAdjacentBeats);
 const styleBefore = structuredClone(style);
-const splitAss = buildNarrationAss(splitSentence, 0.5, style, 1080, 1920);
-assert.equal((splitAss.match(/^Dialogue:/gm) || []).length, 1);
-assert.match(splitAss, /Dialogue: 0,0:00:00\.50,0:00:04\.50,.*,,一句话，跨越两个画面。/);
-assert.deepEqual(splitSentence, splitSentenceBefore);
+const twoAdjacentAss = buildNarrationAss(twoAdjacentBeats, 0.5, style, 1080, 1920);
+const twoAdjacentDialogues = twoAdjacentAss.match(/^Dialogue:.*$/gm) || [];
+assert.equal(twoAdjacentDialogues.length, 2);
+assert.match(twoAdjacentDialogues[0], /0:00:00\.50,0:00:01\.75,.*,,一句话，/);
+assert.match(twoAdjacentDialogues[1], /0:00:01\.75,0:00:04\.50,.*,,跨越两个画面。/);
+assert.deepEqual(twoAdjacentBeats, twoAdjacentBeatsBefore);
 assert.deepEqual(style, styleBefore);
 
-const twoGroupsAss = buildNarrationAss([
-  beat({ beatId: 'beat-1', groupId: 'group-1', index: 1, text: '第二句', audioPath: '/tmp/group-1.wav', startSec: 1, durationSec: 2 }),
-  beat({ text: '第一句', durationSec: 1 }),
+// 乱序输入按 index 排序渲染
+const orderedBeatsAss = buildNarrationAss([
+  beat({ beatId: 'beat-1', index: 1, text: '第二句', subtitleText: '第二句', audioPath: '/tmp/beat-1.m4a', startSec: 1, durationSec: 2 }),
+  beat({ text: '第一句', subtitleText: '第一句', durationSec: 1 }),
 ], 0, style, 1080, 1920);
-const dialogues = twoGroupsAss.match(/^Dialogue:.*$/gm) || [];
-assert.equal(dialogues.length, 2);
-assert.match(dialogues[0], /0:00:00\.00,0:00:01\.00,.*第一句/);
-assert.match(dialogues[1], /0:00:01\.00,0:00:03\.00,.*第二句/);
+const orderedDialogues = orderedBeatsAss.match(/^Dialogue:.*$/gm) || [];
+assert.equal(orderedDialogues.length, 2);
+assert.match(orderedDialogues[0], /0:00:00\.00,0:00:01\.00,.*第一句/);
+assert.match(orderedDialogues[1], /0:00:01\.00,0:00:03\.00,.*第二句/);
 
-const emptyGroupAss = buildNarrationAss([
-  beat({ text: ' \n ' }),
-  beat({ beatId: 'beat-1', groupId: 'group-1', index: 1, text: '  保留两边  ', audioPath: '/tmp/group-1.wav', startSec: 2.5 }),
+// 空白文本的 beat 被跳过；有内容的文本会被 trim 后渲染（不再保留两边空格）
+const blankBeatAss = buildNarrationAss([
+  beat({ text: ' \n ', subtitleText: ' \n ' }),
+  beat({ beatId: 'beat-1', index: 1, text: '  保留两边  ', subtitleText: '  保留两边  ', audioPath: '/tmp/beat-1.m4a', startSec: 2.5 }),
 ], 0, style, 1080, 1920);
-assert.equal((emptyGroupAss.match(/^Dialogue:/gm) || []).length, 1);
-assert.match(emptyGroupAss, /,,  保留两边  $/m);
+assert.equal((blankBeatAss.match(/^Dialogue:/gm) || []).length, 1);
+assert.match(blankBeatAss, /,,保留两边$/m);
 
 const boundaryAss = buildNarrationAss([beat({ startSec: 59.995, durationSec: 0.01 })], 0.005, style, 1080, 1920);
 assert.match(boundaryAss, /Dialogue: 0,0:01:00\.00,0:01:00\.01,/);
@@ -70,15 +86,6 @@ function rejects(beats: NarrationBeat[], introDurationSec = 0): void {
 rejects([beat({ beatId: 'same' }), beat({ beatId: 'same', index: 1, startSec: 2.5 })]);
 rejects([beat(), beat({ beatId: 'beat-1', index: 0, startSec: 2.5 })]);
 rejects([beat(), beat({ beatId: 'beat-2', index: 2, startSec: 2.5 })]);
-rejects([
-  beat(),
-  beat({ beatId: 'beat-1', groupId: 'group-1', index: 1, audioPath: '/tmp/group-1.wav', startSec: 2.5 }),
-  beat({ beatId: 'beat-2', index: 2, startSec: 5 }),
-]);
-rejects([beat(), beat({ beatId: 'beat-1', index: 1, startSec: 2.6 })]);
-rejects([beat(), beat({ beatId: 'beat-1', index: 1, startSec: 2.4 })]);
-rejects([beat(), beat({ beatId: 'beat-1', index: 1, startSec: 2.5, audioPath: '/tmp/other.wav' })]);
-rejects([beat({ groupId: '   ' })]);
 rejects([beat({ index: -1 })]);
 rejects([beat({ index: 0.5 })]);
 rejects([beat({ startSec: -1 })]);
@@ -87,5 +94,22 @@ rejects([beat({ durationSec: 0 })]);
 rejects([beat({ durationSec: Number.POSITIVE_INFINITY })]);
 rejects([beat()], -1);
 rejects([beat()], Number.NaN);
+
+// 一句 = 一条 Dialogue（不再按 groupId 合并）
+{
+  const style = { enabled: true, fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 2, marginBottomPct: 18 };
+  const beats = [
+    { beatId: 'b0', index: 0, text: '第一句', subtitleText: '第一句', shotId: 's1', imageAssetId: 'i1', audioPath: '/tmp/a0.m4a', durationSec: 3, startSec: 0 },
+    { beatId: 'b1', index: 1, text: '第二句', subtitleText: '第二句字幕', shotId: 's2', imageAssetId: 'i2', audioPath: '/tmp/a1.m4a', durationSec: 4, startSec: 3 },
+  ];
+  const ass = buildNarrationAss(beats, 2, style, 1080, 1920);
+  const dialogues = ass.split('\n').filter((line) => line.startsWith('Dialogue:'));
+  assert.equal(dialogues.length, 2);
+  // 渲染的是 subtitleText，不是 text
+  assert.ok(dialogues[1].includes('第二句字幕'));
+  // 起止时间含片头偏移
+  assert.ok(dialogues[0].includes('0:00:02.00'));
+}
+console.log('subtitles one-per-beat: OK');
 
 console.log('final-video-subtitles tests passed');

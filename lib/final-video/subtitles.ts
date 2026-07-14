@@ -6,8 +6,6 @@
 import fs from 'node:fs';
 import type { NarrationBeat, SubtitleStyle } from './types.ts';
 
-const BEAT_TIME_TOLERANCE_SEC = 1e-6;
-
 const PLATFORM_FONTS: Record<string, string[]> = {
   darwin: [
     '/System/Library/Fonts/PingFang.ttc',
@@ -57,6 +55,9 @@ function buildAssHeader(style: SubtitleStyle, width: number, height: number): st
   return (
     '[Script Info]\n' +
     'ScriptType: v4.00+\n' +
+    // Keep libass on its documented smart-wrap policy; Chinese-specific
+    // wrapping is added below because Chinese text has no word boundaries.
+    'WrapStyle: 0\n' +
     `PlayResX: ${width}\n` +
     `PlayResY: ${height}\n\n` +
     '[V4+ Styles]\n' +
@@ -69,11 +70,35 @@ function buildAssHeader(style: SubtitleStyle, width: number, height: number): st
   );
 }
 
-function escapeAssText(text: string): string {
-  return text.replace(/\n/g, '\\N');
+const MAX_SUBTITLE_COLUMNS = 30;
+
+function subtitleColumnWidth(char: string): number {
+  // CJK/full-width glyphs consume roughly twice the horizontal space of ASCII
+  // in the configured Chinese font. This keeps sentence-level subtitles from
+  // running beyond a 1080px portrait canvas.
+  return /^[\x00-\xff]$/.test(char) ? 1 : 2;
 }
 
-/** Build one subtitle dialogue per natural narration sentence (`groupId`). */
+function wrapSubtitleLine(line: string): string {
+  let columns = 0;
+  let wrapped = '';
+  for (const char of line) {
+    const width = subtitleColumnWidth(char);
+    if (columns > 0 && columns + width > MAX_SUBTITLE_COLUMNS) {
+      wrapped += '\\N';
+      columns = 0;
+    }
+    wrapped += char;
+    columns += width;
+  }
+  return wrapped;
+}
+
+function escapeAssText(text: string): string {
+  return text.split('\n').map(wrapSubtitleLine).join('\\N');
+}
+
+/** Build one subtitle dialogue per narration sentence (one beat = one sentence). */
 export function buildNarrationAss(
   beats: NarrationBeat[],
   introDurationSec: number,
@@ -87,57 +112,28 @@ export function buildNarrationAss(
 
   const sorted = [...beats].sort((a, b) => a.index - b.index);
   const beatIds = new Set<string>();
-  const seenGroups = new Set<string>();
-  const groups: NarrationBeat[][] = [];
-  let currentGroup: NarrationBeat[] | undefined;
-
   for (let position = 0; position < sorted.length; position += 1) {
     const beat = sorted[position];
-    if (!Number.isFinite(beat.index) || !Number.isInteger(beat.index) || beat.index < 0) {
-      throw new Error(`beat index must be a finite non-negative integer: ${beat.beatId}`);
-    }
-    if (beat.index !== position) {
+    if (!Number.isInteger(beat.index) || beat.index !== position) {
       throw new Error(`beat indexes must be contiguous from zero; expected ${position}, got ${beat.index}`);
     }
     if (beatIds.has(beat.beatId)) throw new Error(`duplicate beatId: ${beat.beatId}`);
     beatIds.add(beat.beatId);
-    if (!beat.groupId.trim()) throw new Error(`groupId must be nonempty: ${beat.beatId}`);
     if (!Number.isFinite(beat.startSec) || beat.startSec < 0) {
       throw new Error(`beat startSec must be finite and non-negative: ${beat.beatId}`);
     }
     if (!Number.isFinite(beat.durationSec) || beat.durationSec <= 0) {
       throw new Error(`beat durationSec must be finite and positive: ${beat.beatId}`);
     }
-
-    if (!currentGroup || currentGroup[0].groupId !== beat.groupId) {
-      if (seenGroups.has(beat.groupId)) throw new Error(`groupId must occupy one contiguous run: ${beat.groupId}`);
-      seenGroups.add(beat.groupId);
-      currentGroup = [beat];
-      groups.push(currentGroup);
-      continue;
-    }
-
-    const previous = currentGroup[currentGroup.length - 1];
-    const expectedStartSec = previous.startSec + previous.durationSec;
-    if (Math.abs(beat.startSec - expectedStartSec) > BEAT_TIME_TOLERANCE_SEC) {
-      throw new Error(`beats in group ${beat.groupId} must have contiguous startSec values`);
-    }
-    if (beat.audioPath !== previous.audioPath) {
-      throw new Error(`beats in group ${beat.groupId} must share audioPath`);
-    }
-    currentGroup.push(beat);
   }
 
-  const header = buildAssHeader(style, width, height);
-  const lines = [header];
+  const lines = [buildAssHeader(style, width, height)];
   if (style.enabled) {
-    for (const group of groups) {
-      const text = group.map((beat) => beat.text).join('');
-      if (!text.trim()) continue;
-      const first = group[0];
-      const last = group[group.length - 1];
-      const start = assTime(introDurationSec + first.startSec);
-      const end = assTime(introDurationSec + last.startSec + last.durationSec);
+    for (const beat of sorted) {
+      const text = (beat.subtitleText || beat.text).trim();
+      if (!text) continue;
+      const start = assTime(introDurationSec + beat.startSec);
+      const end = assTime(introDurationSec + beat.startSec + beat.durationSec);
       lines.push(`Dialogue: 0,${start},${end},Default,,0,0,0,,${escapeAssText(text)}`);
     }
   }

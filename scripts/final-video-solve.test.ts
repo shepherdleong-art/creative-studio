@@ -4,12 +4,11 @@ import { solveTimeline } from '../lib/final-video/solve-timeline.ts';
 import type { ArrangementPlan, ClipPoolItem, NarrationBeat, TimelineResult } from '../lib/final-video/types.ts';
 
 const beat = (beatId: string, index: number, durationSec: number): NarrationBeat => ({
-  beatId, groupId: `g-${beatId}`, index, text: beatId, audioPath: `/tmp/${beatId}.mp3`, durationSec, startSec: 99,
+  beatId, index, text: beatId, subtitleText: beatId, shotId: `s-${beatId}`, imageAssetId: `i-${beatId}`, audioPath: `/tmp/${beatId}.mp3`, durationSec, startSec: 99,
 });
 const clip = (clipId: string, shotIndex: number, clipDurationSec: number): ClipPoolItem => ({
   clipId, shotId: `s-${clipId}`, shotIndex, videoPath: `/tmp/${clipId}.mp4`, clipDurationSec,
-  sourceImageId: `i-${clipId}`, sourceImagePath: `/tmp/${clipId}.png`, visualDescription: clipId,
-  descriptionProviderId: null, descriptionModel: null,
+  sourceImageId: `i-${clipId}`, sourceImagePath: `/tmp/${clipId}.png`,
 });
 const plan = (assignments: Array<[string, string[]]>, gaps: ArrangementPlan['gaps'] = []): ArrangementPlan => ({
   assignments: assignments.map(([clipId, beatIds], index) => ({ assignmentId: `a${index}`, clipId, beatIds })), gaps,
@@ -17,7 +16,7 @@ const plan = (assignments: Array<[string, string[]]>, gaps: ArrangementPlan['gap
 const solve = (overrides: Partial<Parameters<typeof solveTimeline>[0]> = {}) => solveTimeline({
   beats: [beat('b0', 0, 2), beat('b1', 1, 2)], clips: [clip('c0', 0, 10)],
   plan: plan([['c0', ['b0', 'b1']]]), introDurationSec: 0, targetDurationSec: 4,
-  durationTolerancePct: 0.2, maxClipSeconds: 4, fps: 30, ...overrides,
+  durationTolerancePct: 0.2, fps: 30, ...overrides,
 });
 const invariant = (result: TimelineResult, raw: number, fps: number) => {
   const sum = result.segments.reduce((total, segment) => total + segment.segmentDurationSec, 0);
@@ -122,7 +121,7 @@ invariant(result, 2.2, 25);
 const input = {
   beats: [beat('b1', 1, 0.2), beat('b0', 0, 0.1)], clips: [clip('c0', 0, 1)],
   plan: plan([['c0', ['b0', 'b1']]]), introDurationSec: 0, targetDurationSec: 0.3,
-  durationTolerancePct: 0, maxClipSeconds: 0.3, fps: 10,
+  durationTolerancePct: 0, fps: 10,
 };
 const snapshot = structuredClone(input);
 const first = solveTimeline(input);
@@ -130,13 +129,23 @@ assert.deepEqual(input, snapshot);
 assert.deepEqual(solveTimeline(input), first);
 invariant(first, input.beats.reduce((sum, item) => sum + item.durationSec, 0), 10);
 
+// 没有 4 秒上限：一句 6 秒、素材 10 秒 → 整段就放 6 秒
+result = solve({
+  beats: [beat('b0', 0, 6)], clips: [clip('c0', 0, 10)],
+  plan: plan([['c0', ['b0']]]), targetDurationSec: 6,
+});
+assert.equal(result.segments.length, 1);
+assert.equal(result.segments[0].mediaDurationSec, 6);
+assert.equal(result.segments[0].padStopSec, 0);
+assert.ok(!codes(result).includes('last_clip_exceeds_max_after_fallback'));
+console.log('solve without maxClipSeconds: OK');
+
 // Stable local error codes cover scalar and collection preconditions and invalid arrangements.
 const expectCode = (code: string, overrides: Partial<Parameters<typeof solveTimeline>[0]>) => assert.throws(
   () => solve(overrides), (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === code,
 );
 for (const fps of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) expectCode('invalid_fps', { fps });
 for (const targetDurationSec of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) expectCode('invalid_target_duration', { targetDurationSec });
-for (const maxClipSeconds of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) expectCode('invalid_max_clip_seconds', { maxClipSeconds });
 for (const introDurationSec of [-1, Number.NaN, Number.POSITIVE_INFINITY]) expectCode('invalid_intro_duration', { introDurationSec });
 for (const durationTolerancePct of [-1, Number.NaN, Number.POSITIVE_INFINITY]) expectCode('invalid_duration_tolerance', { durationTolerancePct });
 expectCode('no_visual_source', { clips: [] });
@@ -153,10 +162,10 @@ const overflowProbe = (durations: number[], fps: number) => {
   const source = `
     import { solveTimeline } from './lib/final-video/solve-timeline.ts';
     const durations = ${JSON.stringify(durations)};
-    const beats = durations.map((durationSec, index) => ({ beatId: 'b' + index, groupId: 'g' + index, index, text: '', audioPath: '', durationSec, startSec: 0 }));
+    const beats = durations.map((durationSec, index) => ({ beatId: 'b' + index, index, text: '', audioPath: '', durationSec, startSec: 0 }));
     const gaps = beats.map(({ beatId }) => ({ beatId, reason: 'gap' }));
-    const clips = [{ clipId: 'c', shotId: 's', shotIndex: 0, videoPath: '/tmp/c.mp4', clipDurationSec: 1, sourceImageId: 'i', sourceImagePath: '/tmp/i.png', visualDescription: '', descriptionProviderId: null, descriptionModel: null }];
-    try { solveTimeline({ plan: { assignments: [], gaps }, beats, clips, introDurationSec: 0, targetDurationSec: 1, durationTolerancePct: 0, maxClipSeconds: 4, fps: ${fps} }); }
+    const clips = [{ clipId: 'c', shotId: 's', shotIndex: 0, videoPath: '/tmp/c.mp4', clipDurationSec: 1, sourceImageId: 'i', sourceImagePath: '/tmp/i.png' }];
+    try { solveTimeline({ plan: { assignments: [], gaps }, beats, clips, introDurationSec: 0, targetDurationSec: 1, durationTolerancePct: 0, fps: ${fps} }); }
     catch (error) { process.stdout.write(error.code ?? 'missing_code'); }
   `;
   return spawnSync(process.execPath, ['--input-type=module', '--eval', source], { cwd: process.cwd(), encoding: 'utf8', timeout: 1_000 });

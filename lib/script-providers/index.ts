@@ -37,7 +37,8 @@ export type {
   ScriptInput,
   ScriptOutput,
   ProviderScriptResult,
-  ScriptShot,
+  ScriptSegment,
+  DroppedShot,
   SellingPointMapEntry,
   SelectedSellingPoint,
   ShotContext,
@@ -130,7 +131,6 @@ export async function generateScript(
   }
 
   const config = resolveConfig(providerId);
-  const providerName = config.name;
 
   const rawText = await chatCompletion(config, {
     systemPrompt,
@@ -138,13 +138,10 @@ export async function generateScript(
     temperature: 0.7,
     maxTokens: runtime.maxTokens,
     responseFormat: 'json_object',
+    images: input.shots.map((shot) => ({ mimeType: shot.mimeType, imageBase64: shot.imageBase64 })),
   }, runtime);
 
-  const script = parseJsonResponse<ScriptOutput>(rawText, providerName);
-
-  if (!script.fullScript && script.shots?.length) {
-    script.fullScript = script.shots.map((s) => s.voiceover).join('\n');
-  }
+  const script = parseJsonResponse<ScriptOutput>(rawText, config.name);
 
   return { script, provider: providerId, model: runtime.model };
 }

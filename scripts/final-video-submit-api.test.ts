@@ -67,14 +67,10 @@ function workflow() {
       fps: 25,
       targetDurationSec: 0.4,
       durationTolerancePct: 1,
-      maxClipSeconds: 4,
       subtitle: { ...packageConfig.subtitle, enabled: false },
       mode: 'narration' as const,
       narration: { mode: 'tts' as const, providerId: 'never-called', voice: 'unused', speed: 1 },
     },
-    narrationScriptProviderId: 'qwen',
-    visionProviderId: 'qwen',
-    orchestrationProviderId: 'qwen',
     selectedClipIds: [],
   };
 }
@@ -89,11 +85,10 @@ async function makeAudio(draftId: string): Promise<string> {
 async function seedDraft(input: { stage?: string; revision?: number; videoPath: string }) {
   const draft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig: workflow() });
   const audioPath = await makeAudio(draft.id);
-  const beats = [{ beatId: 'beat-1', groupId: 'group-1', index: 0, text: '提交快照', audioPath, durationSec: 0.4, startSec: 0 }];
+  const beats = [{ beatId: 'beat-1', index: 0, text: '提交快照', subtitleText: '提交快照', shotId: 'shot-1', imageAssetId: 'image-1', audioPath, durationSec: 0.4, startSec: 0 }];
   const clips = [{
     clipId: 'clip-1', shotId: 'shot-1', shotIndex: 0, videoPath: input.videoPath, clipDurationSec: 0.4,
-    sourceImageId: 'image-1', sourceImagePath: path.join(testRoot, 'source.png'), visualDescription: '蓝色产品',
-    descriptionProviderId: null, descriptionModel: null,
+    sourceImageId: 'image-1', sourceImagePath: path.join(testRoot, 'source.png'),
   }];
   db.prepare(`UPDATE final_video_drafts SET
     stage = ?, revision = ?, narrationBeatsJson = ?, clipPoolJson = ?, arrangementJson = ?, issuesJson = ?
@@ -163,10 +158,10 @@ try {
     packageConfig: {
       ...bgmBase,
       outputName: 'submitted-bgm', width: 120, height: 240, fps: 25,
-      targetDurationSec: 0.4, maxClipSeconds: 4,
+      targetDurationSec: 0.4,
       subtitle: { ...bgmBase.subtitle, enabled: true },
     },
-    narrationScriptProviderId: '', visionProviderId: '', orchestrationProviderId: '', selectedClipIds: ['clip-1'],
+    selectedClipIds: ['clip-1'],
   };
   const emptyBgmDraft = createFinalVideoDraft({ projectId: 'project-1', shotSetId: 'shot-set-1', scriptDraftId: null, workflowConfig: { ...bgmWorkflow, selectedClipIds: [] } });
   db.prepare(`UPDATE final_video_drafts SET stage = 'review' WHERE id = ?`).run(emptyBgmDraft.id);
@@ -175,8 +170,7 @@ try {
   db.prepare(`UPDATE final_video_drafts SET stage = 'review', clipPoolJson = ? WHERE id = ?`)
     .run(JSON.stringify([{
       clipId: 'clip-1', shotId: 'shot-1', shotIndex: 0, videoPath, clipDurationSec: 0.4,
-      sourceImageId: 'image-1', sourceImagePath: path.join(testRoot, 'source.png'), visualDescription: '',
-      descriptionProviderId: null, descriptionModel: null,
+      sourceImageId: 'image-1', sourceImagePath: path.join(testRoot, 'source.png'),
     }]), bgmDraft.id);
   const submittedBgm = await response(previewRoute.POST(request(0), ctx(bgmDraft.id)));
   assert.equal(submittedBgm.status, 200);

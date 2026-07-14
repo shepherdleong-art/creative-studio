@@ -136,9 +136,6 @@ try {
   assert.equal(selected.videoPath, media);
   assert.ok(Math.abs(selected.clipDurationSec - actualDuration) < 0.01);
   assert.notEqual(selected.clipDurationSec, 99);
-  assert.equal(selected.visualDescription, '');
-  assert.equal(selected.descriptionProviderId, null);
-  assert.equal(selected.descriptionModel, null);
   assert.equal(result.clips[0].sourceImagePath, orderImagePath);
 
   assert.deepEqual(result.issues.map((issue) => issue.clipId), ['job-no-image', 'job-no-video', 'job-cross-image', 'job-corrupt', null]);
