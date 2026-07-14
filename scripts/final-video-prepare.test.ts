@@ -134,9 +134,6 @@ try {
   function bgmWorkflowConfig() {
     return {
       packageConfig: { ...defaultPackageConfig(), outputName: 'bgm-test' },
-      narrationScriptProviderId: 'qwen',
-      visionProviderId: 'vision-provider',
-      orchestrationProviderId: 'orchestration-provider',
       selectedClipIds: [],
     };
   }
@@ -151,9 +148,6 @@ try {
         cover: { ...base.cover, introDurationSec: overrides.introDurationSec ?? base.cover.introDurationSec },
         narration: { mode: 'tts' as const, providerId: 'openai-tts', voice: 'test-voice', speed: 1.15 },
       },
-      narrationScriptProviderId: 'qwen',
-      visionProviderId: 'vision-provider',
-      orchestrationProviderId: 'orchestration-provider',
       selectedClipIds: [],
     };
   }

@@ -37,7 +37,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
   - `video-providers/` — Video generation adapters (Kling, Jimeng)
   - `image-output-normalize.ts` — Sharp-based crop/resize to target dimensions
   - `provider-concurrency.ts` — Per-provider concurrency limits
-  - `final-video/` — 成片包装引擎（时间线/ASS 字幕/FFmpeg 渲染图/渲染队列），ffmpeg 二进制经 `lib/ffmpeg.ts` 解析（env → ffmpeg-static → PATH）
+  - `final-video/` — 成片包装引擎（时间线/ASS 字幕/FFmpeg 渲染图/渲染队列）。画面的选择与顺序由脚本生成步骤决定（`script_drafts.outputJson.segments`），本层只做确定性对账与秒数精算，不调用 LLM。ffmpeg 二进制经 `lib/ffmpeg.ts` 解析（env → ffmpeg-static → PATH）
 - **`components/`** — React UI (workbench tabs, shot panels, video panels)
 - **`data/`** — Local SQLite DB (`workbench.db`, gitignored)
 - **`storage/`** — Uploaded assets & generated outputs (gitignored)
