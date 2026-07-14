@@ -69,4 +69,32 @@ const codes = (issues: { code: string }[]) => issues.map((i) => i.code);
   assert.deepEqual(plan.gaps.map((g) => g.beatId), ['b1']);
 }
 
+// 脚本写完后才加进分镜组的新分镜（脚本没见过、也不在 droppedShots）也是备用素材
+{
+  const beats = [beat('b0', 0, 's1'), beat('b1', 1, 's9')];   // s9 没视频
+  const clips = [clip('c1', 's1', 1), clip('c-new', 's-new', 7)];  // s-new 脚本没见过
+  const { plan, issues } = buildPlanArrangement({ beats, clips, droppedShotIds: [] });
+  assert.deepEqual(plan.assignments.map((a) => a.clipId), ['c1', 'c-new']);
+  assert.deepEqual(plan.gaps, []);
+  assert.ok(codes(issues).includes('planned_clip_substituted'));
+}
+
+// 旧格式脚本（droppedShotIds 恒为空）仍然有备用池，不会因缺素材就开天窗
+{
+  const beats = [beat('b0', 0, 's1', null), beat('b1', 1, 's9', null)];
+  const clips = [clip('c1', 's1', 1), clip('c2', 's2', 2)];
+  const { plan, issues } = buildPlanArrangement({ beats, clips, droppedShotIds: [] });
+  assert.deepEqual(plan.assignments.map((a) => a.clipId), ['c1', 'c2']);
+  assert.deepEqual(plan.gaps, []);
+  assert.ok(codes(issues).includes('planned_clip_substituted'));
+}
+
+// 替补优先级：脚本看过并丢弃的排在「脚本没见过的」前面，即使 shotIndex 更大
+{
+  const beats = [beat('b0', 0, 's9')];   // s9 没视频，必须替补
+  const clips = [clip('c-new', 's-new', 1), clip('c-dropped', 's2', 5)];
+  const { plan } = buildPlanArrangement({ beats, clips, droppedShotIds: ['s2'] });
+  assert.deepEqual(plan.assignments.map((a) => a.clipId), ['c-dropped']);
+}
+
 console.log('final-video build-arrangement: OK');

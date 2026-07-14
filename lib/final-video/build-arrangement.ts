@@ -3,7 +3,7 @@
  * 把脚本的计划（beat.shotId）变成 solver 吃的 ArrangementPlan。**确定性，不调 LLM。**
  *
  * 铁律：顺序是计划不是合同。
- * - 计划里的素材缺席（视频没生成/失败）→ 从备用池（脚本没选中的分镜）替补 + warning。
+ * - 计划里的素材缺席（视频没生成/失败）→ 从备用池（计划没用到的分镜）替补 + warning。
  * - 备用池也空了 → 该 beat 进 gaps；solve-timeline 会让邻近画面提前顶上并报 visual_gap。
  * - 分镜图在脚本写完后被重生成过 → 只发 warning，绝不阻断出片。
  */
@@ -24,12 +24,19 @@ export function buildPlanArrangement(input: {
   const beats = [...input.beats].sort((a, b) => a.index - b.index);
   const clipByShotId = new Map(input.clips.map((clip) => [clip.shotId, clip]));
 
-  // 备用池 = 脚本明确丢弃的分镜里、确实有可用视频的那些。按 shotIndex 稳定排序，
+  // 备用池 = 计划没用到的一切可用素材，而不只是脚本亲手丢弃的那些。三种来源：
+  //   1. 脚本明确丢弃的分镜（droppedShots）；
+  //   2. 脚本压根没见过的分镜 —— 写完脚本后才加进分镜组的（spec §6.2 同样算作备用池）；
+  //   3. 旧格式脚本里未被引用的分镜 —— 旧脚本没有 droppedShots，只有靠这一条才有备用池。
+  // 排序：脚本看过并挑剩的优先（它至少评估过那张图），其次按 shotIndex 稳定排序，
   // 让替补结果可复现（同一草稿反复 prepare 得到同一条片子）。
+  const plannedShotIds = new Set(beats.map((beat) => beat.shotId));
   const droppedSet = new Set(input.droppedShotIds);
   const spares = input.clips
-    .filter((clip) => droppedSet.has(clip.shotId))
-    .sort((a, b) => a.shotIndex - b.shotIndex || a.clipId.localeCompare(b.clipId));
+    .filter((clip) => !plannedShotIds.has(clip.shotId))
+    .sort((a, b) => Number(droppedSet.has(b.shotId)) - Number(droppedSet.has(a.shotId))
+      || a.shotIndex - b.shotIndex
+      || a.clipId.localeCompare(b.clipId));
 
   const usedClipIds = new Set<string>();
   const assignments: ArrangementPlan['assignments'] = [];

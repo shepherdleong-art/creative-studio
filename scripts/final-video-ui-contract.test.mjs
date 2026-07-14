@@ -31,7 +31,12 @@ assert.match(panel, /selectedScriptTargetDurationSec/);
 assert.match(panel, /script_image_stale/);
 assert.match(panel, /planned_clip_substituted/);
 assert.doesNotMatch(panel, /narrationScriptProviderId|visionProviderId|orchestrationProviderId/);
-assert.doesNotMatch(panel, /识别画面|AI 编排|目标时长（秒）/);
+assert.doesNotMatch(panel, /识别画面|AI 编排/);
+// 目标时长在口播模式下由脚本决定，表单不再暴露；但纯 BGM 模式没有口播，它是 solve-bgm-timeline
+// 计算成片长度的唯一依据（contentDurationSec = targetDurationSec - introDurationSec），
+// 必须留给用户直接控制 —— 所以这个输入框存在，且只在 bgm-only 时渲染。
+assert.match(panel, /bgmTargetDurationSec/);
+assert.match(panel, /mode === 'bgm-only' && <label[\s\S]{0,40}目标时长（秒）/);
 assert.match(panel, /准备素材/);
 assert.match(panel, /mode === 'narration'/);
 assert.match(panel, /新建草稿/);

@@ -42,6 +42,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
   const [selectedSetId, setSelectedSetId] = useState('');
   const [mode, setMode] = useState<'narration' | 'bgm-only'>('narration');
   const [selectedScriptId, setSelectedScriptId] = useState('');
+  const [bgmTargetDurationSec, setBgmTargetDurationSec] = useState(15);
   const [narrationProviderId, setNarrationProviderId] = useState('');
   const [voice, setVoice] = useState('Cherry');
   const [coverTitle, setCoverTitle] = useState('');
@@ -68,6 +69,8 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     if (next.workflowConfig.packageConfig.mode === 'narration') {
       setNarrationProviderId(next.workflowConfig.packageConfig.narration.providerId);
       setVoice(next.workflowConfig.packageConfig.narration.voice);
+    } else {
+      setBgmTargetDurationSec(next.workflowConfig.packageConfig.targetDurationSec);
     }
     setCoverTemplate(next.workflowConfig.packageConfig.cover.templateId ?? 'minimal-01');
     const autoTitle = next.workflowConfig?.packageConfig?.cover?.titleText ?? '';
@@ -145,8 +148,8 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     titleTouchedRef.current = true;
   };
 
-  // 目标时长属于脚本层：它只指导模型写多少文案，实际成片始终由 TTS 的真实时长决定。
-  // 成片表单不再暴露一个无法改变结果的重复控制器。
+  // 口播模式：目标时长属于脚本层——它只指导模型写多少文案，实际成片由 TTS 的真实时长决定，
+  // 所以从脚本读，表单不再暴露一个无法改变结果的重复控制器。
   const selectedScriptTargetDurationSec = useMemo(() => {
     const scriptDraft = scriptDrafts.find((item) => item.id === selectedScriptId);
     if (!scriptDraft) return null;
@@ -160,7 +163,11 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
     }
   }, [scriptDrafts, selectedScriptId]);
 
-  const targetDurationSec = selectedScriptTargetDurationSec ?? 20;
+  // 纯 BGM 模式没有口播，targetDurationSec 是 solve-bgm-timeline 计算成片长度的唯一依据
+  // （contentDurationSec = targetDurationSec - introDurationSec），必须由用户直接控制。
+  const targetDurationSec = mode === 'narration'
+    ? (selectedScriptTargetDurationSec ?? 20)
+    : bgmTargetDurationSec;
 
   const workflowConfig = (): WorkflowConfig => ({
     packageConfig: mode === 'narration' ? {
@@ -183,6 +190,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
 
   const createDraft = async () => {
     if (!selectedSetId || (mode === 'narration' && (!selectedScriptId || !narrationProviderId))) { setError(mode === 'narration' ? '请先选择分镜、脚本和口播供应商。' : '请先选择分镜组。'); return; }
+    if (mode === 'bgm-only' && !(targetDurationSec > 0)) { setError('目标时长必须大于 0 秒。'); return; }
     setBusy(true); setError('');
     try {
       const response = await fetch(`/api/projects/${projectId}/final-video-drafts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shotSetId: selectedSetId, scriptDraftId: mode === 'narration' ? selectedScriptId : null, workflowConfig: workflowConfig() }) });
@@ -263,6 +271,7 @@ export default function FinalVideoPanel({ projectId }: { projectId: string }) {
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="label">分镜组<select value={selectedSetId} onChange={(event) => setSelectedSetId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{shotSets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>
           <label className="label">成片模式<select value={mode} disabled={Boolean(draft)} onChange={(event) => setMode(event.target.value as 'narration' | 'bgm-only')} className="input-field text-sm"><option value="narration">口播</option><option value="bgm-only">纯 BGM</option></select></label>
+          {mode === 'bgm-only' && <label className="label">目标时长（秒）<input type="number" min="1" step="0.1" value={bgmTargetDurationSec} disabled={Boolean(draft)} onChange={(event) => setBgmTargetDurationSec(Number(event.target.value))} className="input-field text-sm" /></label>}
           {mode === 'narration' && <>
             <label className="label">口播脚本<select value={selectedScriptId} onChange={(event) => setSelectedScriptId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{scriptDrafts.map((item) => <option key={item.id} value={item.id}>{item.provider || '脚本'} · {item.model || item.id.slice(0, 8)}</option>)}</select></label>
             <label className="label">口播供应商<select value={narrationProviderId} onChange={(event) => setNarrationProviderId(event.target.value)} className="input-field text-sm"><option value="">请选择</option>{narrationProviders.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>

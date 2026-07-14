@@ -142,7 +142,12 @@ async function runFinalVideoJob(job: FinalVideoJobRow): Promise<void> {
     });
   if (timeline.segments.length === 0) throw new Error('不可变草稿快照没有可渲染的画面');
   db.prepare(`UPDATE final_video_jobs SET timelineJson = ? WHERE id = ?`).run(JSON.stringify(timeline.segments), job.id);
+  // prepare 阶段和 solver 会各自独立算一次时长容差，同一条警告不必写两遍日志。
+  const loggedIssues = new Set<string>();
   for (const issue of [...snapshot.issues, ...timeline.issues]) {
+    const key = `${issue.code}|${issue.clipId ?? ''}|${issue.beatIds.join(',')}`;
+    if (loggedIssues.has(key)) continue;
+    loggedIssues.add(key);
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'warn', message: issue.message });
   }
   logInfo(`Solved ${timeline.segments.length} snapshot segments for ${snapshot.narrationBeats.length} beats`);
