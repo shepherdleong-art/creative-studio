@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { dataRoot } from './data-root.ts';
 
-function toStorageUrl(filePath: string | null | undefined, prefix: string, storageRoot: string) {
+export function toStorageImageUrl(filePath: string | null | undefined, storageRoot = path.resolve(dataRoot(), 'storage')) {
   if (!filePath) return '';
 
   const resolvedRoot = path.resolve(storageRoot);
@@ -14,13 +14,5 @@ function toStorageUrl(filePath: string | null | undefined, prefix: string, stora
     .map(encodeURIComponent)
     .join('/');
 
-  return relativePath ? `${prefix}/${relativePath}` : '';
-}
-
-export function toStorageImageUrl(filePath: string | null | undefined, storageRoot = path.resolve(dataRoot(), 'storage')) {
-  return toStorageUrl(filePath, '/api/images', storageRoot);
-}
-
-export function toStorageVideoUrl(filePath: string | null | undefined, storageRoot = path.resolve(dataRoot(), 'storage')) {
-  return toStorageUrl(filePath, '/api/videos', storageRoot);
+  return relativePath ? `/api/images/${relativePath}` : '';
 }

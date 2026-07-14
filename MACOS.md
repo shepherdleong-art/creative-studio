@@ -76,8 +76,6 @@ macOS 安装版不会把数据库、上传文件、日志写进 `.app` 包内。
 data/workbench.db
 storage/logs/
 storage/run/server.pid
-storage/final-videos/  (成片包装产物)
-storage/bgm/           (BGM 库)
 ```
 
 ## 卸载

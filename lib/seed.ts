@@ -2,7 +2,6 @@ import { getDb } from '@/lib/db';
 import { GPTGE_GPT_IMAGE_2_PROVIDER } from '@/lib/image-provider-presets';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { defaultScriptProviderConfigs } from '@/lib/script-providers/config';
-import { defaultNarrationProviderConfigs } from '@/lib/narration-providers/config';
 import { v4 as uuidv4 } from 'uuid';
 
 export function seedProviders() {
@@ -372,35 +371,8 @@ export function seedMotionTemplates() {
   }
 }
 
-export function seedNarrationProviders() {
-  const db = getDb();
-
-  // voices 不在 ON CONFLICT 的 DO UPDATE SET 里：和 apiKey/baseUrl/model 一样，
-  // 用户在 Settings 里手填的音色列表不能被重新 seed 覆盖掉。
-  const insert = db.prepare(`
-    INSERT INTO narration_providers (id, name, type, apiKey, baseUrl, model, voices, enabled, isBuiltin)
-    VALUES (?, ?, ?, '', ?, ?, ?, 1, 1)
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      type = excluded.type,
-      isBuiltin = 1
-  `);
-
-  for (const config of defaultNarrationProviderConfigs) {
-    insert.run(
-      config.id,
-      config.name,
-      config.type,
-      config.defaultBaseUrl ?? '',
-      config.defaultModel ?? '',
-      config.defaultVoices?.join(',') ?? ''
-    );
-  }
-}
-
 export function seedAllVideo() {
   seedVideoProviders();
   seedMotionTemplates();
   seedScriptProviders();
-  seedNarrationProviders();
 }

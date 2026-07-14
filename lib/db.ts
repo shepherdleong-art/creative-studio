@@ -251,18 +251,6 @@ function initTables(db: Database.Database) {
       supportsVision INTEGER NOT NULL DEFAULT 0
     );
 
-    CREATE TABLE IF NOT EXISTS narration_providers (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'qwen-tts',
-      apiKey TEXT NOT NULL DEFAULT '',
-      baseUrl TEXT NOT NULL DEFAULT '',
-      model TEXT NOT NULL DEFAULT '',
-      voices TEXT NOT NULL DEFAULT '',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      isBuiltin INTEGER NOT NULL DEFAULT 1
-    );
-
     CREATE TABLE IF NOT EXISTS video_prompt_templates (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -322,77 +310,6 @@ function initTables(db: Database.Database) {
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS final_video_jobs (
-      id TEXT PRIMARY KEY,
-      projectId TEXT NOT NULL,
-      shotSetId TEXT NOT NULL,
-      scriptDraftId TEXT,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','succeeded','failed','canceled')),
-      currentStep TEXT NOT NULL DEFAULT 'queued',
-      progress REAL NOT NULL DEFAULT 0,
-      packageJson TEXT NOT NULL DEFAULT '{}',
-      timelineJson TEXT NOT NULL DEFAULT '[]',
-      kind TEXT NOT NULL DEFAULT 'final' CHECK(kind IN ('preview','final')),
-      draftId TEXT,
-      draftRevision INTEGER,
-      narrationBeatsJson TEXT NOT NULL DEFAULT '[]',
-      clipPoolJson TEXT NOT NULL DEFAULT '[]',
-      arrangementJson TEXT NOT NULL DEFAULT '{"assignments":[],"gaps":[]}',
-      issuesJson TEXT NOT NULL DEFAULT '[]',
-      selectedClipIdsJson TEXT NOT NULL DEFAULT '[]',
-      solverVersion INTEGER NOT NULL DEFAULT 3,
-      outputPath TEXT,
-      coverPath TEXT,
-      manifestPath TEXT,
-      durationSec REAL,
-      errorMessage TEXT,
-      startedAt TEXT,
-      finishedAt TEXT,
-      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
-      FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE CASCADE,
-      FOREIGN KEY (scriptDraftId) REFERENCES script_drafts(id) ON DELETE SET NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS final_video_drafts (
-      id TEXT PRIMARY KEY,
-      projectId TEXT NOT NULL,
-      shotSetId TEXT NOT NULL,
-      scriptDraftId TEXT,
-      stage TEXT NOT NULL DEFAULT 'draft' CHECK(stage IN ('draft','preparing','narration-ready','describing','arranging','review','failed')),
-      revision INTEGER NOT NULL DEFAULT 0,
-      workflowConfigJson TEXT NOT NULL DEFAULT '{}',
-      narrationBeatsJson TEXT NOT NULL DEFAULT '[]',
-      clipPoolJson TEXT NOT NULL DEFAULT '[]',
-      arrangementJson TEXT NOT NULL DEFAULT '{"assignments":[],"gaps":[]}',
-      issuesJson TEXT NOT NULL DEFAULT '[]',
-      previewJobId TEXT,
-      previewRevision INTEGER,
-      errorMessage TEXT,
-      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
-      updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
-      FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE CASCADE,
-      FOREIGN KEY (scriptDraftId) REFERENCES script_drafts(id) ON DELETE SET NULL,
-      FOREIGN KEY (previewJobId) REFERENCES final_video_jobs(id) ON DELETE SET NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS clip_visual_descriptions (
-      id TEXT PRIMARY KEY,
-      imageAssetId TEXT NOT NULL,
-      description TEXT NOT NULL,
-      providerId TEXT NOT NULL,
-      model TEXT NOT NULL,
-      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
-      updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (imageAssetId) REFERENCES image_assets(id) ON DELETE CASCADE,
-      UNIQUE(imageAssetId, providerId, model)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_final_video_jobs_project ON final_video_jobs(projectId);
-    CREATE INDEX IF NOT EXISTS idx_final_video_jobs_status ON final_video_jobs(status);
-    CREATE INDEX IF NOT EXISTS idx_final_video_drafts_project ON final_video_drafts(projectId);
-    CREATE INDEX IF NOT EXISTS idx_final_video_drafts_shot_set ON final_video_drafts(shotSetId);
   `);
 
   const videoJobMigrations = [

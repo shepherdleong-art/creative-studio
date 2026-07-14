@@ -16,11 +16,3 @@ assert.equal(
 
 assert.equal(toStorageImageUrl('', storageRoot), '');
 assert.equal(toStorageImageUrl(null, storageRoot), '');
-
-import { toStorageVideoUrl } from '../lib/storage-url.ts';
-
-assert.equal(
-  toStorageVideoUrl(path.join(storageRoot, 'final-videos', 'j1', 'final 01.mp4'), storageRoot),
-  '/api/videos/final-videos/j1/final%2001.mp4'
-);
-assert.equal(toStorageVideoUrl('/etc/passwd', storageRoot), '');
