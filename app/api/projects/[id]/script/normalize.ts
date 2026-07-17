@@ -74,10 +74,18 @@ export function normalizeScriptOutput(
     .map((entry) => ({ shotId: str(entry.shotId), sellingPoint: str(entry.sellingPoint) }));
 
   const fullScript = str(source.fullScript) || segments.map((s) => s.narration).join('');
+  const rawCoverTitle = source.coverTitleParts && typeof source.coverTitleParts === 'object'
+    ? source.coverTitleParts as Raw
+    : null;
+  const coverPrimary = rawCoverTitle ? str(rawCoverTitle.primary) : '';
+  const coverSecondary = rawCoverTitle ? str(rawCoverTitle.secondary) : '';
 
   return {
     version: 2,
     title: str(source.title) || '未命名脚本',
+    ...(coverPrimary && coverSecondary
+      ? { coverTitleParts: { primary: coverPrimary, secondary: coverSecondary } }
+      : {}),
     platform: str(source.platform) || '通用',
     tone: str(source.tone) || '种草',
     targetDurationSec,

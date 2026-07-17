@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { CORE_DB_MIGRATIONS } from './db-migrations';
 import { dataRoot } from './data-root';
+import { initFinalEditSchema } from './final-edit/schema';
 
 const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
 
@@ -20,6 +21,7 @@ export function getDb(): Database.Database {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initTables(db);
+    initFinalEditSchema(db);
     seedAllVideo();
   }
   return db;
@@ -248,7 +250,8 @@ function initTables(db: Database.Database) {
       maxTokens INTEGER NOT NULL DEFAULT 8192,
       enabled INTEGER NOT NULL DEFAULT 1,
       isBuiltin INTEGER NOT NULL DEFAULT 1,
-      supportsVision INTEGER NOT NULL DEFAULT 0
+      supportsVision INTEGER NOT NULL DEFAULT 0,
+      visionCostPerRequest REAL NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS video_prompt_templates (

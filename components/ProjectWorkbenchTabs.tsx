@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 
-export type WorkbenchTabId = 'scene' | 'storyboard' | 'script' | 'video';
+export type WorkbenchTabId = 'scene' | 'storyboard' | 'script' | 'video' | 'final-edit';
 
 const TABS: Array<{ id: WorkbenchTabId; label: string; description: string }> = [
   { id: 'scene', label: '新场景图生成', description: '上传场景图 A，生成候选场景' },
   { id: 'storyboard', label: '分镜生成', description: '整理原始分镜并批量生成' },
   { id: 'script', label: '脚本生成', description: '卖点、人群和口播脚本' },
   { id: 'video', label: '视频生成', description: '选择分镜组创建视频任务' },
+  { id: 'final-edit', label: '成片剪辑', description: '配音、字幕、封面和成片导出' },
 ];
 
 interface Props {
@@ -19,7 +20,7 @@ interface Props {
 export default function ProjectWorkbenchTabs({ projectId, activeTab }: Props) {
   return (
     <nav className="segmented mb-5 w-full" aria-label="项目工作台分区">
-      <div className="grid gap-2 md:grid-cols-4">
+      <div className="grid gap-2 md:grid-cols-5">
         {TABS.map((tab, index) => {
           const active = tab.id === activeTab;
           return (

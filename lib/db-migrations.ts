@@ -63,4 +63,5 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE script_providers ADD COLUMN isBuiltin INTEGER NOT NULL DEFAULT 1`,
   `INSERT OR IGNORE INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec, baseUrl, apiKey, accessKey, secretKey) VALUES ('jimeng-2-0', '即梦 2.0 (Seedance 2.0)', 'jimeng', 'JIMENG_VIDEO_BASE_URL', 'JIMENG_VIDEO_API_KEY', 'JIMENG_VIDEO_MODEL', 'doubao-seedance-2-0-260128', 1, 5, '', '', '', '')`,
   `ALTER TABLE script_providers ADD COLUMN supportsVision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE script_providers ADD COLUMN visionCostPerRequest REAL NOT NULL DEFAULT 0`,
 ];

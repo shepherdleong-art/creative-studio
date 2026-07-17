@@ -10,6 +10,7 @@ export interface ScriptProviderDbConfig {
   enabled?: number | boolean | null;
   maxTokens?: number | null;
   supportsVision?: number | boolean | null;
+  visionCostPerRequest?: number | null;
 }
 
 export interface ScriptProviderRuntimeConfig {
@@ -25,6 +26,7 @@ export interface ScriptProviderRuntimeConfig {
   missing: string[];
   hasApiKey: boolean;
   supportsVision: boolean;
+  visionCostPerRequest: number;
 }
 
 export const defaultScriptProviderConfigs: ProviderConfig[] = [
@@ -109,6 +111,7 @@ export function resolveScriptProviderRuntimeConfig(
   const maxTokens = Number(dbConfig?.maxTokens || defaults.maxTokens);
   const enabled = enabledValue(dbConfig?.enabled);
   const supportsVision = supportsVisionValue(dbConfig?.supportsVision);
+  const visionCostPerRequest = Math.max(0, Number(dbConfig?.visionCostPerRequest || 0));
   const missing: string[] = [];
 
   if (!isReal(baseUrl)) missing.push('Base URL');
@@ -128,6 +131,7 @@ export function resolveScriptProviderRuntimeConfig(
     missing,
     hasApiKey: isReal(apiKey),
     supportsVision,
+    visionCostPerRequest,
   };
 }
 
@@ -145,5 +149,6 @@ export function toScriptProviderMeta(runtime: ScriptProviderRuntimeConfig): Prov
     hasApiKey: runtime.hasApiKey,
     missing: runtime.missing,
     maxTokens: runtime.maxTokens,
+    visionCostPerRequest: runtime.visionCostPerRequest,
   };
 }

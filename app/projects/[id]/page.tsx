@@ -11,6 +11,7 @@ import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 import ScriptPanel from '@/components/ScriptPanel';
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
+import FinalEditPanel from '@/components/final-edit/FinalEditPanel';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
@@ -89,7 +90,7 @@ const STATUS_LABELS: Record<string, string> = {
   needs_check: '待补抓',
 };
 
-const WORKBENCH_TABS: WorkbenchTabId[] = ['scene', 'storyboard', 'script', 'video'];
+const WORKBENCH_TABS: WorkbenchTabId[] = ['scene', 'storyboard', 'script', 'video', 'final-edit'];
 
 function parseWorkbenchTab(value: string | null): WorkbenchTabId {
   return WORKBENCH_TABS.includes(value as WorkbenchTabId) ? (value as WorkbenchTabId) : 'scene';
@@ -513,7 +514,7 @@ export default function ProjectDetailPage() {
         </div>
       </div>
 
-      {project.prompt && (
+      {project.prompt && activeTab !== 'final-edit' && (
         <div className="card mb-6 p-4">
           <h3 className="label">提示词</h3>
           <p className="whitespace-pre-wrap text-sm text-ink">{project.prompt}</p>
@@ -521,7 +522,7 @@ export default function ProjectDetailPage() {
       )}
 
       {isComplex && <ProjectWorkbenchTabs projectId={project.id} activeTab={activeTab} />}
-      {isComplex && project.jobs.length > 0 && (
+      {isComplex && activeTab !== 'final-edit' && project.jobs.length > 0 && (
         <div data-section="jobs">
         <QueueCompactBar
           jobs={project.jobs}
@@ -587,6 +588,9 @@ export default function ProjectDetailPage() {
                 </div>
                 <VideoGenerationPanel projectId={project.id} />
               </div>
+            )}
+            {activeTab === 'final-edit' && (
+              <FinalEditPanel projectId={project.id} projectName={project.name} />
             )}
           </>
         ) : (

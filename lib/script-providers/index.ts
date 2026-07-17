@@ -53,6 +53,11 @@ export function getProviderMeta(providerId: string): ProviderMeta | undefined {
   return getAvailableProviders().find((p) => p.id === providerId);
 }
 
+export function estimateVisionAnalysisCost(providerId: string, requestCount: number): number {
+  const runtime = resolveStoredScriptProvider(providerId);
+  return Number((Math.max(0, Math.trunc(requestCount)) * runtime.visionCostPerRequest).toFixed(6));
+}
+
 function resolveConfig(providerId: string): ProviderConfig {
   return getScriptProviderDefaults(providerId);
 }
@@ -71,6 +76,7 @@ export async function completeJson<T>(input: {
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
+  images?: Array<{ mimeType: string; imageBase64: string }>;
 }): Promise<T> {
   checkConfigured(input.providerId);
   const runtime = resolveStoredScriptProvider(input.providerId);
@@ -79,6 +85,7 @@ export async function completeJson<T>(input: {
     userPrompt: input.userPrompt,
     temperature: input.temperature,
     maxTokens: input.maxTokens,
+    images: input.images,
   };
 
   if (input.providerId === 'gemini') {

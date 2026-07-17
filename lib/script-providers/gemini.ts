@@ -185,13 +185,14 @@ export async function geminiCompleteJson<T>(input: {
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
+  images?: Array<{ mimeType: string; imageBase64: string }>;
 }, runtime?: ScriptProviderRuntimeConfig): Promise<T> {
   const rawText = await geminiCall(
     input.systemPrompt,
     input.userPrompt,
     'json_object',
     runtime,
-    { temperature: input.temperature, maxTokens: input.maxTokens },
+    { temperature: input.temperature, maxTokens: input.maxTokens, images: input.images },
   );
   return parseJsonResponse<T>(rawText, 'Gemini');
 }

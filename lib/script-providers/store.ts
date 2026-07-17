@@ -25,6 +25,7 @@ export interface ScriptProviderRow {
   enabled: number;
   isBuiltin: number;
   supportsVision: number;
+  visionCostPerRequest: number;
 }
 
 export function getScriptProviderRows(): ScriptProviderRow[] {

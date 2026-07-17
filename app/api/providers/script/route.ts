@@ -19,8 +19,8 @@ export async function POST(request: Request) {
 
     db.prepare(`
       INSERT INTO script_providers
-        (id, name, type, apiStyle, baseUrl, apiKey, model, keyEnv, baseUrlEnv, modelEnv, defaultBaseUrl, defaultModel, maxTokens, enabled, isBuiltin, supportsVision)
-      VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, ?, 0, ?)
+        (id, name, type, apiStyle, baseUrl, apiKey, model, keyEnv, baseUrlEnv, modelEnv, defaultBaseUrl, defaultModel, maxTokens, enabled, isBuiltin, supportsVision, visionCostPerRequest)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, ?, 0, ?, ?)
     `).run(
       id,
       body.name || '新脚本供应商',
@@ -33,7 +33,8 @@ export async function POST(request: Request) {
       '',
       Number(body.maxTokens || 8192),
       body.enabled === false ? 0 : 1,
-      body.supportsVision ? 1 : 0
+      body.supportsVision ? 1 : 0,
+      Math.max(0, Number(body.visionCostPerRequest || 0))
     );
 
     return NextResponse.json(listScriptProviderMeta().find((p) => p.id === id));

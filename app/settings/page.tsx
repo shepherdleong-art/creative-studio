@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 
-type Category = 'image' | 'script' | 'video';
+type Category = 'image' | 'script' | 'video' | 'tts';
 
 interface ImageProvider {
   id: string;
@@ -29,6 +29,7 @@ interface ScriptProvider {
   missing?: string[];
   hasApiKey: boolean;
   maxTokens?: number;
+  visionCostPerRequest?: number;
 }
 
 interface VideoProvider {
@@ -60,6 +61,7 @@ type ProviderFormState = {
   defaultCostPerImage: number;
   defaultDurationSec: number;
   maxTokens: number;
+  visionCostPerRequest: number;
 };
 
 const KEY_PLACEHOLDER = '••••••••';
@@ -78,12 +80,14 @@ const emptyForm: ProviderFormState = {
   defaultCostPerImage: 0,
   defaultDurationSec: 5,
   maxTokens: 8192,
+  visionCostPerRequest: 0,
 };
 
 const sections: Array<{ id: Category; title: string; description: string; icon: IconName }> = [
   { id: 'image', title: '图片生成', description: '场景图、分镜图和图片重做供应商', icon: 'image' },
   { id: 'script', title: '脚本生成', description: '卖点分析和短视频脚本文案模型', icon: 'file-text' },
   { id: 'video', title: '视频生成', description: '可灵、即梦等图生视频供应商', icon: 'video' },
+  { id: 'tts', title: '口播配音', description: '成片剪辑的 V-API Qwen3 TTS', icon: 'monitor' },
 ];
 
 export default function SettingsPage() {
@@ -124,6 +128,7 @@ export default function SettingsPage() {
   }, []);
 
   const beginCreate = (category: Category) => {
+    if (category === 'tts') return;
     setActive(category);
     setCreating(category);
     setEditing(null);
@@ -152,6 +157,7 @@ export default function SettingsPage() {
       defaultCostPerImage: 'defaultCostPerImage' in provider ? provider.defaultCostPerImage || 0 : 0,
       defaultDurationSec: 'defaultDurationSec' in provider ? provider.defaultDurationSec || 5 : 5,
       maxTokens: 'maxTokens' in provider ? (provider as ScriptProvider).maxTokens || 8192 : 8192,
+      visionCostPerRequest: 'visionCostPerRequest' in provider ? provider.visionCostPerRequest || 0 : 0,
       apiKey: hasKey && provider.type !== 'kling' ? KEY_PLACEHOLDER : '',
       accessKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
       secretKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
@@ -217,6 +223,7 @@ export default function SettingsPage() {
         model: form.model,
         maxTokens: form.maxTokens,
         supportsVision: form.supportsVision,
+        visionCostPerRequest: form.visionCostPerRequest,
         ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
       };
     }
@@ -264,7 +271,7 @@ export default function SettingsPage() {
   };
 
   const currentProviders =
-    active === 'image' ? imageProviders : active === 'script' ? scriptProviders : videoProviders;
+    active === 'image' ? imageProviders : active === 'script' ? scriptProviders : active === 'video' ? videoProviders : [];
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -275,12 +282,12 @@ export default function SettingsPage() {
             管理图片、脚本和视频生成模型。所有密钥统一从这里配置，避免和环境变量产生冲突。
           </p>
         </div>
-        <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
+        {active !== 'tts' && <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
           <Icon name="plus" size={15} /> 添加供应商
-        </button>
+        </button>}
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-3">
+      <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-4">
         {sections.map((section) => (
           <button
             key={section.id}
@@ -304,6 +311,7 @@ export default function SettingsPage() {
         <div className="py-12 text-center text-sm text-ink-tertiary">加载中...</div>
       ) : (
         <div className="space-y-4">
+          {active === 'tts' && <TtsSettingsCard />}
           {(creating === active || editing?.category === active) && (
             <div className="card border-accent/30 bg-accent/[0.04] p-5">
               <h3 className="mb-4 font-semibold">{creating ? '新建供应商' : '编辑供应商'}</h3>
@@ -334,7 +342,7 @@ export default function SettingsPage() {
             />
           ))}
 
-          {currentProviders.length === 0 && (
+          {active !== 'tts' && currentProviders.length === 0 && (
             <div className="flex flex-col items-center py-12 text-center text-ink-tertiary">
               <Icon name="settings" size={34} className="mb-2" />
               <p>暂无供应商配置</p>
@@ -400,6 +408,9 @@ function ProviderCard({
             <div><span className="text-ink-tertiary">类型:</span> {provider.type}</div>
             {category === 'image' && 'defaultCostPerImage' in provider && (
               <div><span className="text-ink-tertiary">成本:</span> ¥{provider.defaultCostPerImage || 0}/张</div>
+            )}
+            {category === 'script' && 'visionCostPerRequest' in provider && provider.supportsVision && (
+              <div><span className="text-ink-tertiary">视觉分析成本:</span> ¥{provider.visionCostPerRequest || 0}/次</div>
             )}
             {category === 'video' && 'defaultDurationSec' in provider && (
               <div><span className="text-ink-tertiary">默认时长:</span> {provider.defaultDurationSec}s</div>
@@ -518,9 +529,7 @@ function ProviderForm({
       )}
 
       {category === 'script' && (
-        <Field label="最大输出 Token">
-          <input type="number" min="512" step="512" value={form.maxTokens} onChange={(e) => onChange({ ...form, maxTokens: Number(e.target.value) || 8192 })} className="input-field" />
-        </Field>
+        <><Field label="最大输出 Token"><input type="number" min="512" step="512" value={form.maxTokens} onChange={(e) => onChange({ ...form, maxTokens: Number(e.target.value) || 8192 })} className="input-field" /></Field><Field label="视觉分析成本（元 / 次）"><input type="number" min="0" step="0.0001" value={form.visionCostPerRequest} onChange={(e) => onChange({ ...form, visionCostPerRequest: Math.max(0, Number(e.target.value) || 0) })} className="input-field" /></Field></>
       )}
 
       {category === 'video' && (
@@ -546,4 +555,75 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       {children}
     </div>
   );
+}
+
+interface TtsProviderSettings {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  enabled: number;
+  hasApiKey: boolean;
+  configured: boolean;
+  costPerThousandCharacters: number;
+  voices: Array<{ id: string; label: string }>;
+}
+
+function TtsSettingsCard() {
+  const [provider, setProvider] = useState<TtsProviderSettings | null>(null);
+  const [baseUrl, setBaseUrl] = useState('https://api.v3.cm');
+  const [apiKey, setApiKey] = useState('');
+  const [enabled, setEnabled] = useState(true);
+  const [costPerThousandCharacters, setCostPerThousandCharacters] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const load = async () => {
+    const response = await fetch('/api/providers/tts');
+    const rows = await response.json().catch(() => []);
+    const next = Array.isArray(rows) ? rows[0] as TtsProviderSettings | undefined : undefined;
+    if (!next) return;
+    setProvider(next);
+    setBaseUrl(next.baseUrl);
+    setEnabled(Boolean(next.enabled));
+    setCostPerThousandCharacters(Number(next.costPerThousandCharacters || 0));
+    setApiKey(next.hasApiKey ? KEY_PLACEHOLDER : '');
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const save = async (clear = false) => {
+    if (!provider) return;
+    setSaving(true); setMessage('');
+    try {
+      const response = await fetch(`/api/providers/tts/${provider.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, baseUrl, apiKey: clear ? '' : apiKey, costPerThousandCharacters }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.message || body.error || '保存失败');
+      setMessage('已保存');
+      await load();
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setSaving(false); }
+  };
+
+  if (!provider) return <div className="card p-8 text-center text-sm text-ink-tertiary">正在加载口播配音设置…</div>;
+  return <div className="card p-5">
+    <div className="flex items-start justify-between gap-4">
+      <div><div className="flex items-center gap-2"><h3 className="font-semibold">{provider.name}</h3><span className={`status-badge ${provider.configured ? 'status-succeeded' : 'status-failed'}`}>{provider.configured ? '已配置' : '未配置'}</span></div><p className="mt-1 text-xs text-ink-tertiary">首版固定模型与 17 项音色；语速由应用下载后本地处理。</p></div>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-accent" />启用</label>
+    </div>
+    <div className="mt-5 grid gap-4 sm:grid-cols-2">
+      <Field label="Base URL"><input className="input-field font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
+      <Field label="模型（只读）"><input className="input-field bg-surface-subtle" value={provider.model} readOnly /></Field>
+      <Field label="API Key"><input type="password" className="input-field font-mono" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="留空则不修改" autoComplete="off" /></Field>
+      <Field label="成本（元 / 千字符）"><input type="number" min="0" step="0.0001" className="input-field" value={costPerThousandCharacters} onChange={(event) => setCostPerThousandCharacters(Math.max(0, Number(event.target.value) || 0))} /></Field>
+      <div><label className="label">固定音色</label><p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">{provider.voices.length} 项 · 含 Cherry、Ethan、li 等</p></div>
+    </div>
+    <div className="mt-4 flex items-center justify-between"><p className={`text-sm ${message === '已保存' ? 'text-success' : 'text-fail'}`}>{message}</p><div className="flex gap-2"><button type="button" className="btn-secondary btn-sm text-fail" disabled={saving} onClick={() => void save(true)}>清除密钥</button><button type="button" className="btn-primary btn-sm" disabled={saving} onClick={() => void save(false)}>{saving ? '保存中…' : '保存'}</button></div></div>
+  </div>;
 }

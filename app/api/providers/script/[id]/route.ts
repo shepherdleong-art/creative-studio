@@ -34,6 +34,12 @@ export async function PUT(
       updates.push('maxTokens = ?');
       values.push(Number(body.maxTokens) || 8192);
     }
+    if (body.visionCostPerRequest !== undefined) {
+      const cost = Number(body.visionCostPerRequest);
+      if (!Number.isFinite(cost) || cost < 0) return NextResponse.json({ error: 'Invalid vision cost' }, { status: 400 });
+      updates.push('visionCostPerRequest = ?');
+      values.push(cost);
+    }
     if (body.apiKey !== undefined) {
       updates.push('apiKey = ?');
       values.push(body.apiKey);

@@ -46,6 +46,7 @@ assert.deepEqual(
     missing: [],
     hasApiKey: true,
     supportsVision: false,
+    visionCostPerRequest: 0,
   }
 );
 
@@ -90,6 +91,7 @@ assert.deepEqual(toScriptProviderMeta(scriptEnvFallback), {
   hasApiKey: false,
   missing: ['API Key'],
   maxTokens: 2048,
+  visionCostPerRequest: 0,
 });
 
 assert.deepEqual(

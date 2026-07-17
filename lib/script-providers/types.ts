@@ -89,6 +89,8 @@ export interface SellingPointMapEntry {
 export interface ScriptOutput {
   version: 2;
   title: string;
+  /** 第五步封面使用的两段式标题；旧脚本可以没有，由成片组首次创建时确定性拆分。 */
+  coverTitleParts?: { primary: string; secondary: string };
   platform: string;
   tone: string;
   targetDurationSec: number;
@@ -136,6 +138,7 @@ export interface ProviderMeta {
   hasApiKey?: boolean;
   missing?: string[];
   maxTokens?: number;
+  visionCostPerRequest?: number;
 }
 
 // ── Provider Interface ──
