@@ -78,6 +78,7 @@ const workspace = createFinalEditWorkspace({
     sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 0, endUs: 12_000_000, qualityScore: 1 }],
     qualityIssues: [], coverFrameTimesUs: [1_000_000],
   }),
+  materializeCoverFrame: async () => undefined,
   estimateAnalysisCost: ({ requestCount }) => requestCount * 0.1,
   synthesize: async () => ({
     relativePath: 'final-edits/test/narration.wav',
@@ -109,6 +110,8 @@ assert.equal(group.totalDurationUs, 19_333_333);
 assert.equal(group.variants.length, 2);
 assert.equal(group.assets.length, 2);
 assert.ok(group.assets.every((asset) => asset.shotSetId === 'set-a'));
+assert.ok(group.assets.every((asset) => asset.thumbnailUrl.includes('/thumbnail')));
+assert.ok(group.coverCandidates.some((candidate) => candidate.coverKey.startsWith('video:')));
 assert.ok(group.variants.every((variant) => variant.timeline.clips.every((clip) => clip.videoJobId !== 'foreign')));
 
 const first = group.variants[0];
@@ -162,6 +165,46 @@ assert.ok(duplicateCover.issues.some((issue) => issue.code === 'duplicate_cover'
 db.prepare(`INSERT INTO final_edit_proposals (id, variantId, baseRevision, kind, proposalJson, issuesJson, status, createdAt) VALUES ('stale-proposal', ?, ?, 'fill_gap', ?, '[]', 'ready', datetime('now'))`).run(duplicateCover.id, duplicateCover.revision, JSON.stringify({ timeline: duplicateCover.timeline }));
 const changedAfterProposal = workspace.apply({ scope: 'variant', variantId: duplicateCover.id, expectedRevision: duplicateCover.revision, type: 'set_bgm_gain', gainDb: -20 }).view as FinalEditVariantView;
 assert.throws(() => workspace.apply({ scope: 'variant', variantId: duplicateCover.id, expectedRevision: changedAfterProposal.revision, type: 'apply_proposal', proposalId: 'stale-proposal' }), (error: unknown) => error instanceof FinalEditError && error.code === 'proposal_stale');
+
+const beforeManualCommands = workspace.load(group.id);
+const commandVariant = beforeManualCommands.variants.find((variant) => variant.id === first.id)!;
+assert.ok(commandVariant.timeline.clips.length >= 2);
+const [leftClip, rightClip] = commandVariant.timeline.clips;
+const swapped = workspace.apply({
+  scope: 'variant', variantId: commandVariant.id, expectedRevision: commandVariant.revision,
+  type: 'swap_clips', leftClipId: leftClip.id, rightClipId: rightClip.id,
+}).view as FinalEditVariantView;
+assert.equal(swapped.timeline.clips.find((clip) => clip.id === leftClip.id)?.timelineInFrame, rightClip.timelineInFrame);
+assert.equal(swapped.timeline.clips.find((clip) => clip.id === rightClip.id)?.timelineInFrame, leftClip.timelineInFrame);
+
+const framedCover = workspace.apply({
+  scope: 'variant', variantId: swapped.id, expectedRevision: swapped.revision,
+  type: 'set_cover_framing', scale: 1.25, offsetX: 0.2, offsetY: -0.15,
+}).view as FinalEditVariantView;
+assert.deepEqual(framedCover.cover.framing, { scale: 1.25, offsetX: 0.2, offsetY: -0.15 });
+
+const beforeSubtitleCommands = workspace.load(group.id);
+const cueToReplace = beforeSubtitleCommands.subtitleCues.at(-1)!;
+const withoutCue = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: beforeSubtitleCommands.revision,
+  type: 'delete_subtitle_cue', cueId: cueToReplace.id,
+}).view as typeof group;
+const insertedCueGroup = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: withoutCue.revision,
+  type: 'insert_subtitle_cue', segmentId: cueToReplace.segmentId, text: '补充字幕', startUs: cueToReplace.startUs, endUs: cueToReplace.endUs,
+}).view as typeof group;
+const insertedCue = insertedCueGroup.subtitleCues.find((cue) => cue.text === '补充字幕')!;
+assert.ok(insertedCue);
+const trimmedCueGroup = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: insertedCueGroup.revision,
+  type: 'trim_subtitle_cue', cueId: insertedCue.id, startUs: insertedCue.startUs + 50_000, endUs: insertedCue.endUs,
+}).view as typeof group;
+assert.equal(trimmedCueGroup.subtitleCues.find((cue) => cue.id === insertedCue.id)?.startUs, insertedCue.startUs + 50_000);
+const resetStyleGroup = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: trimmedCueGroup.revision,
+  type: 'reset_text_style', preset: '3x4', target: 'subtitle',
+}).view as typeof group;
+assert.equal(resetStyleGroup.textStyles['3x4'].subtitle.fontSizePx, 56);
 
 db.close();
 fs.rmSync(root, { recursive: true, force: true });

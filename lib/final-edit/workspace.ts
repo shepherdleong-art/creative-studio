@@ -6,6 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { defaultTextStyle, splitCoverTitle, timelineGaps } from './domain.ts';
 import { calculateOverlapScore } from './overlap.ts';
 import { scanFinalEditBgm } from './bgm.ts';
+import { parseCoverKey, resolveCoverCandidateFile } from './cover-candidates.ts';
+import { materializeVideoFrame } from './video-frame.ts';
 import { runFinalEditHeavyJob } from './heavy-job-lock.ts';
 import { getFinalEditTtsAdapter } from './adapters/tts-registry.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
@@ -66,6 +68,7 @@ export interface FinalEditWorkspaceDependencies {
   runJobsInline?: boolean;
   probeVideo(input: { filePath: string; videoJobId: string }): Promise<{ durationUs: number; width: number; height: number; fps: number }>;
   analyzeVideo(input: { filePath: string; videoJobId: string; shotSetId: string; providerId: string }): Promise<VideoAnalysisResult>;
+  materializeCoverFrame?(input: { sourcePath: string; cacheNamespace: string; cacheKey: string; frameUs: number }): Promise<void>;
   synthesize(input: {
     scriptDraftId: string;
     segments: Array<{ segmentId: string; narration: string }>;
@@ -97,20 +100,25 @@ export type FinalEditCommand =
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'trim_clip'; clipId: string; sourceInFrame: number; sourceOutFrame: number; timelineInFrame: number; timelineOutFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'replace_clip'; clipId: string; videoJobId: string; sourceFingerprint: string; sourceInFrame: number; sourceOutFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'insert_clip'; videoJobId: string; sourceFingerprint: string; sourceInFrame: number; sourceOutFrame: number; timelineInFrame: number; timelineOutFrame: number }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'swap_clips'; leftClipId: string; rightClipId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'restore_revision'; revision: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_bgm_gain'; gainDb: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_bgm'; trackId: string | null }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_cover'; coverKey: string }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_cover_framing'; scale: number; offsetX: number; offsetY: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'apply_proposal'; proposalId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'unbind_clip'; clipId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'bind_clip'; clipId: string; segmentId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_framing'; clipId: string; scale: number; offsetX: number; offsetY: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_subtitle_cue_text'; cueId: string; text: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'move_subtitle_cue'; cueId: string; startUs: number; endUs: number }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'trim_subtitle_cue'; cueId: string; startUs: number; endUs: number }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'insert_subtitle_cue'; segmentId: string; text: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'split_subtitle_cue'; cueId: string; splitUs: number; leftText: string; rightText: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'delete_subtitle_cue'; cueId: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_cover_title_part_text'; part: 'primary' | 'secondary'; text: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_text_style'; preset: OutputPresetId; target: 'coverPrimary' | 'coverSecondary' | 'subtitle'; style: TextStyle }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'reset_text_style'; preset: OutputPresetId; target: 'coverPrimary' | 'coverSecondary' | 'subtitle' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_title_preset'; presetId: string };
 
 export interface EnqueueRenderInput {
@@ -218,6 +226,22 @@ function buildStyles() {
       subtitle: defaultTextStyle('subtitle', width),
     }];
   })) as FinalEditGroupView['textStyles'];
+}
+
+const DEFAULT_COVER_FRAMING = { scale: 1, offsetX: 0, offsetY: 0 } as const;
+
+function normalizeCover(value: unknown): FinalEditVariantView['cover'] {
+  const cover = (value && typeof value === 'object' ? value : {}) as Partial<FinalEditVariantView['cover']>;
+  return {
+    coverKey: typeof cover.coverKey === 'string' ? cover.coverKey : null,
+    kind: cover.kind === 'storyboard_image' || cover.kind === 'video_keyframe' ? cover.kind : null,
+    sourceUrl: typeof cover.sourceUrl === 'string' ? cover.sourceUrl : null,
+    framing: {
+      scale: Number.isFinite(cover.framing?.scale) ? Number(cover.framing?.scale) : DEFAULT_COVER_FRAMING.scale,
+      offsetX: Number.isFinite(cover.framing?.offsetX) ? Number(cover.framing?.offsetX) : DEFAULT_COVER_FRAMING.offsetX,
+      offsetY: Number.isFinite(cover.framing?.offsetY) ? Number(cover.framing?.offsetY) : DEFAULT_COVER_FRAMING.offsetY,
+    },
+  };
 }
 
 function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean): FinalEditIssue[] {
@@ -408,7 +432,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       outputPreset: String(row.outputPreset) as OutputPresetId,
       timeline: parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] }),
       bgm: parseJson(String(row.bgmJson), { trackId: null, gainDb: -16, loop: true, fadeOutSec: 0.8 }),
-      cover: parseJson(String(row.coverJson), { coverKey: null, kind: null, sourceUrl: null }),
+      cover: normalizeCover(parseJson(String(row.coverJson), {})),
       issues: parseJson<FinalEditIssue[]>(String(row.issuesJson), []),
       maxOverlap: Number(parseJson<{ maxScore?: number }>(String(row.overlapJson), {}).maxScore || 0),
       revision: Number(row.revision),
@@ -430,6 +454,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         shotId: asset.shotId,
         filename: asset.filename || asset.videoJobId,
         previewUrl: `/api/videos/${relative}`,
+        thumbnailUrl: `/api/final-edit-groups/${groupId}/assets/${asset.videoJobId}/thumbnail`,
         durationUs: Number(parseJson<{ durationUs?: number }>(String(analysis?.mediaJson || '{}'), {}).durationUs || Number(asset.durationSec || 0) * 1_000_000),
         fingerprint,
         analysisStatus: (analysis?.status || 'pending') as FinalEditAssetView['analysisStatus'],
@@ -440,7 +465,21 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     });
     const jobs = db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as FinalEditGroupView['jobs'];
     const bgmTracks = db.prepare(`SELECT id, relativePath, durationUs FROM final_edit_bgm_tracks WHERE status='ready' ORDER BY relativePath`).all() as FinalEditGroupView['bgmTracks'];
-    const coverCandidates = db.prepare(`SELECT ia.id FROM shots s JOIN image_assets ia ON ia.id=s.latestGeneratedImageId WHERE s.shotSetId=? AND s.latestGeneratedImageId IS NOT NULL ORDER BY s.indexNum`).all(String(group.shotSetId)) as Array<{ id: string }>;
+    const imageCoverCandidates = db.prepare(`SELECT ia.id FROM shots s JOIN image_assets ia ON ia.id=s.latestGeneratedImageId WHERE s.shotSetId=? AND s.latestGeneratedImageId IS NOT NULL ORDER BY s.indexNum`).all(String(group.shotSetId)) as Array<{ id: string }>;
+    const videoCoverCandidates = (db.prepare(`
+      SELECT vj.id AS videoJobId, a.generatedJson
+      FROM video_jobs vj
+      JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id
+      WHERE vj.projectId=? AND vj.shotSetId=? AND vj.status='succeeded' AND a.status='succeeded'
+      ORDER BY vj.id
+    `).all(String(group.projectId), String(group.shotSetId)) as Array<{ videoJobId: string; generatedJson: string }>).flatMap((row) => {
+      const generated = parseJson<{ coverFrameTimesUs?: unknown[] }>(row.generatedJson, {});
+      return (generated.coverFrameTimesUs || [])
+        .map((value) => Math.round(Number(value)))
+        .filter((value) => Number.isFinite(value) && value >= 0)
+        .slice(0, 3)
+        .map((frameUs) => ({ videoJobId: row.videoJobId, frameUs }));
+    });
     return {
       id: String(group.id), projectId: String(group.projectId), scriptDraftId: String(group.scriptDraftId), shotSetId: String(group.shotSetId),
       status: String(group.status), phase: String(group.phase), revision: Number(group.revision),
@@ -450,7 +489,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       subtitleCues: parseJson<SubtitleCue[]>(String(group.subtitleStateJson), []),
       textStyles: parseJson(String(group.textStylesJson), buildStyles()),
       variants, assets, bgmTracks,
-      coverCandidates: coverCandidates.map((candidate) => ({ coverKey: `image:${candidate.id}`, sourceUrl: `/api/final-edit-groups/${String(group.id)}/cover-candidates/${encodeURIComponent(`image:${candidate.id}`)}` })),
+      coverCandidates: [
+        ...imageCoverCandidates.map((candidate) => ({ kind: 'storyboard_image' as const, coverKey: `image:${candidate.id}`, sourceUrl: `/api/final-edit-groups/${String(group.id)}/cover-candidates/${encodeURIComponent(`image:${candidate.id}`)}` })),
+        ...videoCoverCandidates.map((candidate) => {
+          const coverKey = `video:${candidate.videoJobId}:${candidate.frameUs}`;
+          return { kind: 'video_keyframe' as const, coverKey, sourceUrl: `/api/final-edit-groups/${String(group.id)}/cover-candidates/${encodeURIComponent(coverKey)}` };
+        }),
+      ],
       jobs,
     };
   };
@@ -498,6 +543,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               providerId=excluded.providerId, model=excluded.model, status='succeeded', mediaJson=excluded.mediaJson, generatedJson=excluded.generatedJson,
               errorCode=NULL, errorMessage=NULL, analyzedAt=excluded.analyzedAt, updatedAt=excluded.updatedAt
           `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, JSON.stringify(media), JSON.stringify(analysis), now(), now());
+          for (const frameUs of (analysis.coverFrameTimesUs || []).slice(0, 3)) {
+            const frameInput = { sourcePath: row.localVideoPath, cacheNamespace: path.join('covers', groupId), cacheKey: `video:${row.videoJobId}:${frameUs}:${fingerprint}`, frameUs };
+            if (deps.materializeCoverFrame) await deps.materializeCoverFrame(frameInput);
+            else await materializeVideoFrame({ storageRoot, ...frameInput });
+          }
         } catch (error) {
           analysis = { summary: '', sellingPoints: [], semanticTags: [], usableRanges: [], qualityIssues: ['analysis_failed'], coverFrameTimesUs: [] };
           db.prepare(`
@@ -559,7 +609,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         for (let index = 0; index < input.count; index += 1) {
           const variantIndex = nextIndex + index;
           const timeline = planTimeline(prepared, bodyFrames, variantIndex - 1, script.segments.map((segment, i) => ({ ...segment, id: segment.id || `segment-${i + 1}` })), autoUseLimit);
-          const cover = covers[variantIndex - 1] ? { coverKey: `image:${covers[variantIndex - 1].imageAssetId}`, kind: 'storyboard_image' as const, sourceUrl: `/api/final-edit-groups/${groupId}/cover-candidates/${encodeURIComponent(`image:${covers[variantIndex - 1].imageAssetId}`)}` } : { coverKey: null, kind: null, sourceUrl: null };
+          const cover = covers[variantIndex - 1]
+            ? { coverKey: `image:${covers[variantIndex - 1].imageAssetId}`, kind: 'storyboard_image' as const, sourceUrl: `/api/final-edit-groups/${groupId}/cover-candidates/${encodeURIComponent(`image:${covers[variantIndex - 1].imageAssetId}`)}`, framing: { ...DEFAULT_COVER_FRAMING } }
+            : { coverKey: null, kind: null, sourceUrl: null, framing: { ...DEFAULT_COVER_FRAMING } };
           const issues = issueList(timeline, cover.coverKey, true);
           const variant: FinalEditVariantView = { id: uuidv4(), indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeOutSec: 0.8 }, cover, issues, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null };
           variants.push(variant);
@@ -631,7 +683,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       if (Number(row.revision) !== command.expectedRevision) throw new FinalEditError('revision_conflict', '草稿已被其他操作更新', 409, { expectedRevision: command.expectedRevision, currentRevision: Number(row.revision) });
       let timeline = parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
       let bgm = parseJson<{ trackId: string | null; gainDb: number; loop: boolean; fadeOutSec: number }>(String(row.bgmJson), { trackId: null, gainDb: -16, loop: true, fadeOutSec: 0.8 });
-      let cover = parseJson<{ coverKey: string | null; kind: 'storyboard_image' | 'video_keyframe' | null; sourceUrl: string | null }>(String(row.coverJson), { coverKey: null, kind: null, sourceUrl: null });
+      let cover = normalizeCover(parseJson(String(row.coverJson), {}));
       if (command.type === 'apply_proposal') {
         const proposal = db.prepare(`SELECT baseRevision, proposalJson, status FROM final_edit_proposals WHERE id=? AND variantId=?`).get(command.proposalId, command.variantId) as { baseRevision: number; proposalJson: string; status: string } | undefined;
         if (!proposal || proposal.status !== 'ready') throw new FinalEditError('proposal_not_ready', 'AI 候选不存在或不可应用', 404);
@@ -656,6 +708,23 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         timeline = state.timeline; bgm = state.bgm; cover = state.cover;
       }
       if (command.type === 'delete_clip') timeline.clips = timeline.clips.filter((clip) => clip.id !== command.clipId);
+      if (command.type === 'swap_clips') {
+        const ordered = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
+        const leftIndex = ordered.findIndex((clip) => clip.id === command.leftClipId);
+        const rightIndex = ordered.findIndex((clip) => clip.id === command.rightClipId);
+        if (leftIndex < 0 || rightIndex < 0) throw new FinalEditError('clip_not_found', '要交换的视频片段不存在', 404);
+        if (Math.abs(leftIndex - rightIndex) !== 1) throw new FinalEditError('clips_not_adjacent', '只能交换相邻的视频片段');
+        const first = ordered[Math.min(leftIndex, rightIndex)];
+        const second = ordered[Math.max(leftIndex, rightIndex)];
+        const gap = second.timelineInFrame - first.timelineOutFrame;
+        const firstDuration = first.timelineOutFrame - first.timelineInFrame;
+        const secondDuration = second.timelineOutFrame - second.timelineInFrame;
+        const start = first.timelineInFrame;
+        second.timelineInFrame = start;
+        second.timelineOutFrame = start + secondDuration;
+        first.timelineInFrame = second.timelineOutFrame + gap;
+        first.timelineOutFrame = first.timelineInFrame + firstDuration;
+      }
       if (command.type === 'insert_clip') {
         const source = db.prepare(`SELECT a.fileFingerprint FROM video_jobs vj JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id JOIN final_edit_groups g ON g.id=? WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId`).get(String(row.groupId), command.videoJobId) as { fileFingerprint: string } | undefined;
         if (!source || source.fileFingerprint !== command.sourceFingerprint) throw new FinalEditError('shot_set_mismatch', '插入素材不属于当前分镜组或文件已变化');
@@ -691,11 +760,33 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         bgm.trackId = command.trackId;
       }
       if (command.type === 'set_cover') {
-        if (!command.coverKey.startsWith('image:')) throw new FinalEditError('cover_not_found', '封面来源不可用', 404);
-        const imageId = command.coverKey.slice('image:'.length);
-        const exists = db.prepare(`SELECT 1 FROM shots s JOIN final_edit_groups g ON g.id=? WHERE s.latestGeneratedImageId=? AND s.shotSetId=g.shotSetId`).get(String(row.groupId), imageId);
-        if (!exists) throw new FinalEditError('cover_not_found', '封面不属于当前分镜组', 404);
-        cover = { coverKey: command.coverKey, kind: 'storyboard_image', sourceUrl: `/api/final-edit-groups/${String(row.groupId)}/cover-candidates/${encodeURIComponent(command.coverKey)}` };
+        const parsedKey = parseCoverKey(command.coverKey);
+        if (!parsedKey) throw new FinalEditError('cover_not_found', '封面候选格式无效', 404);
+        let kind: FinalEditVariantView['cover']['kind'];
+        if (parsedKey.kind === 'storyboard_image') {
+          const exists = db.prepare(`SELECT 1 FROM shots s JOIN final_edit_groups g ON g.id=? WHERE s.latestGeneratedImageId=? AND s.shotSetId=g.shotSetId`).get(String(row.groupId), parsedKey.imageId);
+          if (!exists) throw new FinalEditError('cover_not_found', '封面不属于当前分镜组', 404);
+          kind = 'storyboard_image';
+        } else {
+          const candidate = db.prepare(`
+            SELECT a.generatedJson
+            FROM video_jobs vj
+            JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id
+            JOIN final_edit_groups g ON g.id=?
+            WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId AND a.status='succeeded'
+          `).get(String(row.groupId), parsedKey.videoJobId) as { generatedJson: string } | undefined;
+          const frames = candidate ? parseJson<{ coverFrameTimesUs?: unknown[] }>(candidate.generatedJson, {}).coverFrameTimesUs || [] : [];
+          if (!frames.some((value) => Number(value) === parsedKey.frameUs)) throw new FinalEditError('cover_not_found', '视频关键帧封面不属于当前分镜组', 404);
+          kind = 'video_keyframe';
+        }
+        cover = { coverKey: command.coverKey, kind, sourceUrl: `/api/final-edit-groups/${String(row.groupId)}/cover-candidates/${encodeURIComponent(command.coverKey)}`, framing: cover.framing };
+      }
+      if (command.type === 'set_cover_framing') {
+        cover.framing = {
+          scale: Math.max(1, Math.min(3, command.scale)),
+          offsetX: Math.max(-1, Math.min(1, command.offsetX)),
+          offsetY: Math.max(-1, Math.min(1, command.offsetY)),
+        };
       }
       if (command.type === 'unbind_clip' || command.type === 'bind_clip' || command.type === 'set_framing') {
         const clip = timeline.clips.find((item) => item.id === command.clipId);
@@ -710,6 +801,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         const sourceFrames = Math.floor(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0) * 24 / 1_000_000);
         if (!analysis || clip.sourceOutFrame > sourceFrames) throw new FinalEditError('source_out_of_range', '片段超出源视频真实时长');
       }
+      const orderedClips = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
+      if (orderedClips.some((clip, index) => index > 0 && clip.timelineInFrame < orderedClips[index - 1].timelineOutFrame)) throw new FinalEditError('timeline_overlap', '视频片段不能重叠');
       const issues = issueList(timeline, cover.coverKey, true);
       const revision = Number(row.revision) + 1;
       const groupId = String(row.groupId);
@@ -734,18 +827,28 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const cues = parseJson<SubtitleCue[]>(String(row.subtitleStateJson), []);
     const coverTitle = parseJson<{ primary: { id: 'primary'; text: string; textSource: 'script' | 'manual' }; secondary: { id: 'secondary'; text: string; textSource: 'script' | 'manual' } }>(String(row.coverTitleJson), { primary: { id: 'primary', text: '', textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } });
     const textStyles = parseJson<FinalEditGroupView['textStyles']>(String(row.textStylesJson), buildStyles());
+    const validateCueRange = (cueId: string | null, startUs: number, endUs: number) => {
+      const frameUs = Math.round(1_000_000 / FINAL_EDIT_FPS);
+      if (startUs < 0 || endUs > Number(row.narrationDurationUs) || endUs - startUs < frameUs) throw new FinalEditError('subtitle_out_of_range', '字幕时间超出正文或短于一帧');
+      if (cues.some((item) => item.id !== cueId && startUs < item.endUs && endUs > item.startUs)) throw new FinalEditError('subtitle_overlap', '字幕时间不能重叠');
+    };
     if (command.type === 'set_subtitle_cue_text') {
       const cue = cues.find((item) => item.id === command.cueId);
       if (!cue) throw new FinalEditError('subtitle_not_found', '字幕不存在', 404);
       cue.text = command.text.replace(/[\r\n]+/g, ''); cue.textSource = 'manual';
     }
-    if (command.type === 'move_subtitle_cue') {
+    if (command.type === 'move_subtitle_cue' || command.type === 'trim_subtitle_cue') {
       const cue = cues.find((item) => item.id === command.cueId);
       if (!cue) throw new FinalEditError('subtitle_not_found', '字幕不存在', 404);
-      if (command.startUs < 0 || command.endUs > Number(row.narrationDurationUs) || command.endUs - command.startUs < Math.round(1_000_000 / 24)) throw new FinalEditError('subtitle_out_of_range', '字幕时间超出正文或短于一帧');
-      const other = cues.find((item) => item.id !== cue.id && command.startUs < item.endUs && command.endUs > item.startUs);
-      if (other) throw new FinalEditError('subtitle_overlap', '字幕时间不能重叠');
+      validateCueRange(cue.id, command.startUs, command.endUs);
       cue.startUs = command.startUs; cue.endUs = command.endUs; cue.timingSource = 'manual';
+      cues.sort((a, b) => a.startUs - b.startUs);
+    }
+    if (command.type === 'insert_subtitle_cue') {
+      const text = command.text.replace(/[\r\n]+/g, '').trim();
+      if (!text) throw new FinalEditError('subtitle_text_empty', '字幕文字不能为空');
+      validateCueRange(null, command.startUs, command.endUs);
+      cues.push({ id: uuidv4(), segmentId: command.segmentId, text, startUs: command.startUs, endUs: command.endUs, textSource: 'manual', timingSource: 'manual' });
       cues.sort((a, b) => a.startUs - b.startUs);
     }
     if (command.type === 'split_subtitle_cue') {
@@ -773,6 +876,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     if (command.type === 'set_text_style') {
       if (!(command.preset in OUTPUT_PRESETS)) throw new FinalEditError('invalid_output_preset', '不支持的输出比例');
       textStyles[command.preset][command.target] = command.style;
+    }
+    if (command.type === 'reset_text_style') {
+      if (!(command.preset in OUTPUT_PRESETS)) throw new FinalEditError('invalid_output_preset', '不支持的输出比例');
+      textStyles[command.preset][command.target] = defaultTextStyle(command.target, OUTPUT_PRESETS[command.preset].width);
     }
     if (command.type === 'apply_title_preset') {
       const preset = db.prepare(`SELECT stylesByPresetJson FROM final_edit_title_presets WHERE id=?`).get(command.presetId) as { stylesByPresetJson: string } | undefined;
@@ -817,14 +924,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const clip = variant.timeline.clips.find((item) => item.videoJobId === videoJobId)!;
       return { videoJobId, relativePath: toRelative(row.localVideoPath), fingerprint: clip.sourceFingerprint };
     });
+    if (!variant.cover.coverKey) throw new FinalEditError('cover_missing', '封面底图缺失');
     let coverRelativePath = '';
-    if (variant.cover.coverKey?.startsWith('image:')) {
-      const imageId = variant.cover.coverKey.slice('image:'.length);
-      const row = db.prepare(`SELECT ia.path FROM image_assets ia JOIN shots s ON s.latestGeneratedImageId=ia.id WHERE ia.id=? AND s.shotSetId=? LIMIT 1`).get(imageId, group.shotSetId) as { path: string } | undefined;
-      if (!row) throw new FinalEditError('cover_missing', '封面底图缺失');
-      coverRelativePath = toRelative(row.path);
-    } else {
-      throw new FinalEditError('cover_missing', '当前封面来源无法渲染');
+    try {
+      const coverFile = await resolveCoverCandidateFile({ db, storageRoot, group: { id: group.id, projectId: group.projectId, shotSetId: group.shotSetId }, coverKey: variant.cover.coverKey });
+      coverRelativePath = coverFile.relativePath;
+    } catch (error) {
+      throw new FinalEditError('cover_missing', error instanceof Error ? error.message : '封面底图缺失');
     }
     const bgmTrack = variant.bgm.trackId
       ? db.prepare(`SELECT id, relativePath, fileFingerprint FROM final_edit_bgm_tracks WHERE id=? AND status='ready'`).get(variant.bgm.trackId) as { id: string; relativePath: string; fileFingerprint: string } | undefined

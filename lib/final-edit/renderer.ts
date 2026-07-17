@@ -68,10 +68,24 @@ export async function renderFinalEditSnapshot(input: {
 
   const coverPng = path.join(jobDir, 'cover.png');
   const coverJpg = path.join(jobDir, 'cover.jpg');
-  const resize = preset === '16x9'
-    ? sharp(coverSource).resize(output.width, output.height, { fit: 'cover', position: 'centre' })
-    : sharp(coverSource).resize(output.width, output.height, { fit: 'cover', position: 'centre' });
-  await resize.composite([{ input: path.join(overlayDir, 'title.png') }]).png().toFile(coverPng);
+  const coverFraming = snapshot.variant.cover.framing || { scale: 1, offsetX: 0, offsetY: 0 };
+  const source = sharp(coverSource).rotate();
+  const metadata = await source.metadata();
+  if (!metadata.width || !metadata.height) throw new Error('封面底图尺寸无效');
+  const scale = Math.max(1, Math.min(3, coverFraming.scale));
+  const fitScale = Math.max(output.width / metadata.width, output.height / metadata.height) * scale;
+  const resizedWidth = Math.max(output.width, Math.ceil(metadata.width * fitScale));
+  const resizedHeight = Math.max(output.height, Math.ceil(metadata.height * fitScale));
+  const overflowX = resizedWidth - output.width;
+  const overflowY = resizedHeight - output.height;
+  const left = Math.round(overflowX * (Math.max(-1, Math.min(1, coverFraming.offsetX)) + 1) / 2);
+  const top = Math.round(overflowY * (Math.max(-1, Math.min(1, coverFraming.offsetY)) + 1) / 2);
+  await source
+    .resize(resizedWidth, resizedHeight, { fit: 'fill' })
+    .extract({ left, top, width: output.width, height: output.height })
+    .composite([{ input: path.join(overlayDir, 'title.png') }])
+    .png()
+    .toFile(coverPng);
   await sharp(coverPng).jpeg({ quality: 92 }).toFile(coverJpg);
 
   const clips = [...snapshot.variant.timeline.clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame);

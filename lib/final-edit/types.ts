@@ -68,6 +68,7 @@ export interface FinalEditAssetView {
   shotId: string | null;
   filename: string;
   previewUrl: string;
+  thumbnailUrl: string;
   durationUs: number;
   fingerprint: string;
   analysisStatus: 'pending' | 'succeeded' | 'failed';
@@ -82,7 +83,12 @@ export interface FinalEditVariantView {
   outputPreset: OutputPresetId;
   timeline: VideoTimeline;
   bgm: { trackId: string | null; gainDb: number; loop: boolean; fadeOutSec: number };
-  cover: { coverKey: string | null; kind: 'storyboard_image' | 'video_keyframe' | null; sourceUrl: string | null };
+  cover: {
+    coverKey: string | null;
+    kind: 'storyboard_image' | 'video_keyframe' | null;
+    sourceUrl: string | null;
+    framing: { scale: number; offsetX: number; offsetY: number };
+  };
   issues: FinalEditIssue[];
   maxOverlap: number;
   revision: number;
@@ -109,7 +115,7 @@ export interface FinalEditGroupView {
   variants: FinalEditVariantView[];
   assets: FinalEditAssetView[];
   bgmTracks: Array<{ id: string; relativePath: string; durationUs: number }>;
-  coverCandidates: Array<{ coverKey: string; sourceUrl: string }>;
+  coverCandidates: Array<{ coverKey: string; sourceUrl: string; kind: 'storyboard_image' | 'video_keyframe' }>;
   jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null }>;
 }
 
