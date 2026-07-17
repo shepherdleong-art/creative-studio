@@ -66,6 +66,16 @@ function splitInput(text: string): string[] {
   return parts.filter(Boolean);
 }
 
+export async function isReusableNarrationChunk(filePath: string): Promise<boolean> {
+  try {
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).size <= 44) return false;
+    const durationSec = await probeDurationSec(filePath);
+    return Number.isFinite(durationSec) && durationSec > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function requestVapiAudio(config: VapiProviderConfig, voice: string, input: string, destination: string): Promise<void> {
   const response = await fetch(speechUrl(config.baseUrl), {
     method: 'POST',
@@ -114,11 +124,19 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
       const rawPath = path.join(input.outputDir, `segment-${segmentIndex}-${chunkIndex}-raw.wav`);
       const normalizedPath = path.join(input.outputDir, `segment-${segmentIndex}-${chunkIndex}.wav`);
-      const reusableChunk = fs.existsSync(normalizedPath) && fs.statSync(normalizedPath).size > 44;
+      const reusableChunk = await isReusableNarrationChunk(normalizedPath);
       if (!reusableChunk) {
         await requestVapiAudio(input.provider, input.voice, chunks[chunkIndex], rawPath);
         const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
-        await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', normalizedPath], { timeoutMs: 180_000 });
+        const temporaryPath = `${normalizedPath}.${process.pid}-${Date.now()}.tmp.wav`;
+        try {
+          await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', temporaryPath], { timeoutMs: 180_000 });
+          if (!await isReusableNarrationChunk(temporaryPath)) throw new Error('TTS 分段音频标准化后不可读取');
+          fs.rmSync(normalizedPath, { force: true });
+          fs.renameSync(temporaryPath, normalizedPath);
+        } finally {
+          fs.rmSync(temporaryPath, { force: true });
+        }
       }
       chunkFiles.push(normalizedPath);
     }

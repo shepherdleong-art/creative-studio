@@ -6,7 +6,7 @@ import { estimateVisionAnalysisCost, getAvailableProviders } from '../script-pro
 import { createFinalEditWorkspace, type FinalEditWorkspaceRuntime } from './workspace';
 import { analyzeVideoWithVision } from './adapters/video-analysis';
 import { createOpenAiAlignmentAdapter, type AlignmentAdapter } from './adapters/alignment';
-import { getFinalEditTtsAdapter } from './adapters/tts-registry';
+import { getFinalEditTtsAdapter, listFinalEditTtsAdapters } from './adapters/tts-registry';
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
@@ -18,10 +18,16 @@ type AlignmentFallbackProvider = {
   keyEnv: string;
 };
 
+function resolveProviderApiKey(provider?: Pick<AlignmentFallbackProvider, 'apiKey' | 'keyEnv'>): string {
+  return provider?.apiKey.trim() || (provider?.keyEnv ? (process.env[provider.keyEnv] || '').trim() : '');
+}
+
 function createFinalEditAlignmentAdapter(provider?: AlignmentFallbackProvider): AlignmentAdapter {
-  const apiKey = provider?.apiKey.trim() || (provider?.keyEnv ? (process.env[provider.keyEnv] || '').trim() : '');
-  const fallback = provider?.id === 'vapi-qwen3-tts'
-    ? { baseUrl: provider.baseUrl, apiKey, model: 'whisper-1' }
+  const alignmentModel = provider
+    ? listFinalEditTtsAdapters().find((adapter) => adapter.id === provider.id)?.alignmentModel
+    : undefined;
+  const fallback = provider && alignmentModel
+    ? { baseUrl: provider.baseUrl, apiKey: resolveProviderApiKey(provider), model: alignmentModel }
     : undefined;
   return createOpenAiAlignmentAdapter(process.env, fallback);
 }
@@ -43,7 +49,7 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
     synthesize: async ({ segments, providerId, voice, speed, narrationHash }) => {
       const row = db.prepare(`SELECT * FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { baseUrl: string; apiKey: string; keyEnv: string; model: string } | undefined;
       if (!row) throw new Error('口播配音供应商未启用');
-      const apiKey = row.apiKey.trim() || (row.keyEnv ? (process.env[row.keyEnv] || '').trim() : '');
+      const apiKey = resolveProviderApiKey(row);
       if (!apiKey) throw new Error('口播配音供应商 API Key 未配置');
       const alignment = createFinalEditAlignmentAdapter({ id: providerId, ...row });
       const relativeOutputPath = path.join('final-edits', 'narration', narrationHash, 'narration.wav');

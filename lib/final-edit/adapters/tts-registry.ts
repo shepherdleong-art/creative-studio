@@ -14,6 +14,7 @@ export interface TtsAdapterInput {
 export interface FinalEditTtsAdapter {
   id: string;
   type: string;
+  alignmentModel?: string;
   voices: ReadonlyArray<{ id: string; label: string }>;
   defaultVoice: string;
   previewText: string;
@@ -26,6 +27,7 @@ export interface FinalEditTtsAdapter {
 const adapters: FinalEditTtsAdapter[] = [{
   id: 'vapi-qwen3-tts',
   type: 'vapi-qwen-json-url',
+  alignmentModel: 'whisper-1',
   voices: VAPI_VOICES,
   defaultVoice: 'Cherry',
   previewText: VAPI_PREVIEW_TEXT,
