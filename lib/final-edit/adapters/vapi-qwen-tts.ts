@@ -4,6 +4,7 @@ import { runFfmpeg, probeDurationSec } from '../../ffmpeg.ts';
 import type { AlignmentAdapter, AlignmentWordTiming } from './alignment.ts';
 
 export const VAPI_PREVIEW_TEXT = '你好，我是产品素材工作台语音助手，这是当前音色和语速的试听效果。';
+const PCM_WAV_HEADER_BYTES = 44;
 
 export const VAPI_VOICES = [
   { id: 'Cherry', label: '芊悦' }, { id: 'Ethan', label: '晨煦' },
@@ -68,7 +69,7 @@ function splitInput(text: string): string[] {
 
 export async function isReusableNarrationChunk(filePath: string): Promise<boolean> {
   try {
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).size <= 44) return false;
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).size <= PCM_WAV_HEADER_BYTES) return false;
     const durationSec = await probeDurationSec(filePath);
     return Number.isFinite(durationSec) && durationSec > 0;
   } catch {
