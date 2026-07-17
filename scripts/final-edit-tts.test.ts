@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-
-const { VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } = await import('../lib/final-edit/adapters/vapi-qwen-tts.ts');
+import { VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } from '../lib/final-edit/adapters/vapi-qwen-tts.ts';
 
 assert.equal(VAPI_VOICES.length, 17);
 assert.equal(VAPI_VOICES.find((voice) => voice.label.includes('南京'))?.id, 'li');

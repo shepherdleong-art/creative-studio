@@ -1,6 +1,47 @@
 import assert from 'node:assert/strict';
 import { FinalEditError, planTimeline, validateNarrationAlignment } from '../lib/final-edit/workspace.ts';
 import { clipFilter } from '../lib/final-edit/renderer.ts';
+import { createOpenAiAlignmentAdapter } from '../lib/final-edit/adapters/alignment.ts';
+
+const vapiAlignment = createOpenAiAlignmentAdapter({}, {
+  baseUrl: 'https://api.v3.cm',
+  apiKey: 'configured-vapi-key',
+  model: 'whisper-1',
+});
+assert.equal(vapiAlignment.configured, true, 'V-API provider config should enable Whisper alignment without duplicate env settings');
+
+const incompleteOverride = createOpenAiAlignmentAdapter({
+  FINAL_EDIT_ALIGNMENT_BASE_URL: 'https://dedicated-alignment.example.com',
+}, {
+  baseUrl: 'https://api.v3.cm',
+  apiKey: 'configured-vapi-key',
+  model: 'whisper-1',
+});
+assert.equal(incompleteOverride.configured, false, 'partial dedicated alignment settings must not mix credentials with the V-API fallback');
+
+async function testTransientAlignmentRetry() {
+  const originalFetch = globalThis.fetch;
+  let alignmentRequestCount = 0;
+  globalThis.fetch = async () => {
+    alignmentRequestCount += 1;
+    if (alignmentRequestCount < 3) {
+      return new Response('{"error":{"message":"busy"}}', { status: 429, headers: { 'Retry-After': '0' } });
+    }
+    return Response.json({ words: [{ word: '你好', start: 0, end: 0.5 }] });
+  };
+  try {
+    const retryingAlignment = createOpenAiAlignmentAdapter({}, {
+      baseUrl: 'https://api.v3.cm',
+      apiKey: 'configured-vapi-key',
+      model: 'whisper-1',
+    });
+    const words = await retryingAlignment.align({ audioPath: new URL(import.meta.url).pathname, text: '你好' });
+    assert.equal(alignmentRequestCount, 3, 'transient alignment rate limits should be retried');
+    assert.deepEqual(words, [{ text: '你好', startUs: 0, endUs: 500_000 }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
 
 const assets = [
   {
@@ -41,4 +82,9 @@ assert.match(framingFilter, /scale=iw\*1\.5000:ih\*1\.5000/);
 assert.match(framingFilter, /0\.2500/);
 assert.match(framingFilter, /-0\.5000/);
 
-console.log('final-edit planner, alignment, and framing tests passed');
+void testTransientAlignmentRetry()
+  .then(() => console.log('final-edit planner, alignment, and framing tests passed'))
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

@@ -114,9 +114,12 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
       const rawPath = path.join(input.outputDir, `segment-${segmentIndex}-${chunkIndex}-raw.wav`);
       const normalizedPath = path.join(input.outputDir, `segment-${segmentIndex}-${chunkIndex}.wav`);
-      await requestVapiAudio(input.provider, input.voice, chunks[chunkIndex], rawPath);
-      const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
-      await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', normalizedPath], { timeoutMs: 180_000 });
+      const reusableChunk = fs.existsSync(normalizedPath) && fs.statSync(normalizedPath).size > 44;
+      if (!reusableChunk) {
+        await requestVapiAudio(input.provider, input.voice, chunks[chunkIndex], rawPath);
+        const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
+        await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', normalizedPath], { timeoutMs: 180_000 });
+      }
       chunkFiles.push(normalizedPath);
     }
     const segmentPath = path.join(input.outputDir, `segment-${segmentIndex}.wav`);

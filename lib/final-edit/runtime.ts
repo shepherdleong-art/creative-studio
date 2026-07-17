@@ -5,11 +5,26 @@ import { probeDurationSec } from '../ffmpeg';
 import { estimateVisionAnalysisCost, getAvailableProviders } from '../script-providers';
 import { createFinalEditWorkspace, type FinalEditWorkspaceRuntime } from './workspace';
 import { analyzeVideoWithVision } from './adapters/video-analysis';
-import { createOpenAiAlignmentAdapter } from './adapters/alignment';
+import { createOpenAiAlignmentAdapter, type AlignmentAdapter } from './adapters/alignment';
 import { getFinalEditTtsAdapter } from './adapters/tts-registry';
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
+
+type AlignmentFallbackProvider = {
+  id: string;
+  baseUrl: string;
+  apiKey: string;
+  keyEnv: string;
+};
+
+function createFinalEditAlignmentAdapter(provider?: AlignmentFallbackProvider): AlignmentAdapter {
+  const apiKey = provider?.apiKey.trim() || (provider?.keyEnv ? (process.env[provider.keyEnv] || '').trim() : '');
+  const fallback = provider?.id === 'vapi-qwen3-tts'
+    ? { baseUrl: provider.baseUrl, apiKey, model: 'whisper-1' }
+    : undefined;
+  return createOpenAiAlignmentAdapter(process.env, fallback);
+}
 
 export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
   if (workspace) return workspace;
@@ -30,7 +45,7 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
       if (!row) throw new Error('口播配音供应商未启用');
       const apiKey = row.apiKey.trim() || (row.keyEnv ? (process.env[row.keyEnv] || '').trim() : '');
       if (!apiKey) throw new Error('口播配音供应商 API Key 未配置');
-      const alignment = createOpenAiAlignmentAdapter();
+      const alignment = createFinalEditAlignmentAdapter({ id: providerId, ...row });
       const relativeOutputPath = path.join('final-edits', 'narration', narrationHash, 'narration.wav');
       return getFinalEditTtsAdapter(providerId).synthesize({
         provider: { baseUrl: row.baseUrl, apiKey, model: row.model },
@@ -55,5 +70,6 @@ export function recoverFinalEditPrepareJobs() {
 }
 
 export function isFinalEditAlignmentConfigured(): boolean {
-  return createOpenAiAlignmentAdapter().configured;
+  const provider = getDb().prepare(`SELECT id, baseUrl, apiKey, keyEnv FROM final_edit_tts_providers WHERE enabled=1 ORDER BY isBuiltin DESC, name LIMIT 1`).get() as AlignmentFallbackProvider | undefined;
+  return createFinalEditAlignmentAdapter(provider).configured;
 }
