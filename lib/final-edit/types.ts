@@ -135,3 +135,55 @@ export interface JobRef {
   kind: 'prepare' | 'proposal' | 'render';
   status: string;
 }
+
+export interface MixcutContextResponse {
+  project: {
+    id: string;
+    name: string;
+    productName: string;
+    productCode: string;
+    createdAt: string;
+  };
+  shotSets: Array<{
+    id: string;
+    name: string;
+    shotCount: number;
+    succeededVideoCount: number;
+    totalDurationUs: number;
+  }>;
+  currentShotSetId: string | null;
+  drafts: Array<{
+    id: string;
+    shotSetId: string;
+    title: string;
+    narrationText: string;
+    targetDurationSec: number;
+    provider: string;
+    model: string;
+    createdAt: string;
+  }>;
+  videoAssets: Array<{
+    videoJobId: string;
+    shotSetId: string;
+    filename: string;
+    durationUs: number;
+    width: number;
+    height: number;
+    thumbnailUrl: string;
+    source: 'module4';
+  }>;
+}
+
+export interface ExportIdentity {
+  projectId: string;
+  taskName: string;
+  /**
+   * The product/SKU code (`projects.productCode`) — distinct from
+   * `projects.model`, which is the image-generation provider's model.
+   * Never use `projects.model` as the product code here.
+   */
+  productCode: string;
+  taskDate: string;
+}
+
+export type MixcutErrorCode = 'product_code_required';
