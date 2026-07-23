@@ -259,28 +259,45 @@ function issueList(timeline: VideoTimeline, coverKey: string | null, narrationRe
   if (!narrationReady) issues.push({ code: 'alignment_failed', severity: 'blocking', message: '字幕尚未获得可靠的强制对齐结果' });
   for (const clip of timeline.clips) {
     if (clip.timelineOutFrame - clip.timelineInFrame < 12) {
-      issues.push({ code: 'clip_too_short', severity: 'warning', message: '人工片段短于 0.5 秒', targetId: clip.id });
+      issues.push({ code: 'clip_too_short', severity: 'warning', message: '片段短于 0.5 秒', targetId: clip.id });
     }
   }
   return issues;
 }
 
 export function planTimeline(assets: PreparedAsset[], bodyFrames: number, variantIndex: number, segments: ScriptSegment[], autoUseLimit = 2): VideoTimeline {
+  const minimumClipFrames = 24;
+  const maximumClipFrames = 84;
   const clips: TimelineClip[] = [];
   const rangeCursor = new Map<string, number>();
   const timelineUseCount = new Map<string, number>();
   let cursor = 0;
   const candidates = assets
     .filter((asset) => !asset.autoUseDisabled && asset.existingUsageCount < autoUseLimit)
-    .flatMap((asset) => asset.analysis.usableRanges
-      .map((range, rangeIndex) => ({
+    .flatMap((asset) => {
+      const mediaEndFrame = Math.floor(asset.durationUs * FINAL_EDIT_FPS / 1_000_000);
+      const normalized = asset.analysis.usableRanges
+        .map((range) => ({
+          startFrame: Math.max(0, Math.ceil(range.startUs * FINAL_EDIT_FPS / 1_000_000)),
+          endFrame: Math.min(mediaEndFrame, Math.floor(range.endUs * FINAL_EDIT_FPS / 1_000_000)),
+          qualityScore: Math.max(0, Math.min(1, Number(range.qualityScore) || 0)),
+        }))
+        .filter((range) => range.endFrame - range.startFrame >= minimumClipFrames)
+        .sort((left, right) => left.startFrame - right.startFrame || left.endFrame - right.endFrame);
+      const merged: typeof normalized = [];
+      for (const range of normalized) {
+        const previous = merged.at(-1);
+        if (previous && range.startFrame <= previous.endFrame) {
+          previous.endFrame = Math.max(previous.endFrame, range.endFrame);
+          previous.qualityScore = Math.max(previous.qualityScore, range.qualityScore);
+        } else merged.push({ ...range });
+      }
+      return merged.map((range, rangeIndex) => ({
         asset,
         rangeIndex,
-        startFrame: Math.max(0, Math.ceil(range.startUs * FINAL_EDIT_FPS / 1_000_000)),
-        endFrame: Math.min(Math.floor(asset.durationUs * FINAL_EDIT_FPS / 1_000_000), Math.floor(range.endUs * FINAL_EDIT_FPS / 1_000_000)),
-        qualityScore: Math.max(0, Math.min(1, Number(range.qualityScore) || 0)),
-      }))
-      .filter((candidate) => candidate.endFrame - candidate.startFrame >= 12));
+        ...range,
+      }));
+    });
   const totalAvailableFrames = candidates.reduce((sum, candidate) => sum + candidate.endFrame - candidate.startFrame, 0);
   const safeOffsetPerRange = Math.floor(Math.max(0, totalAvailableFrames - bodyFrames) / Math.max(1, candidates.length));
   while (cursor < bodyFrames && candidates.length > 0) {
@@ -295,16 +312,27 @@ export function planTimeline(assets: PreparedAsset[], bodyFrames: number, varian
         const directReference = Boolean(segment?.shotId && candidate.asset.shotId === segment.shotId);
         const repeated = timelineUseCount.get(candidate.asset.videoJobId) || 0;
         const rotation = ((index - variantIndex) % candidates.length + candidates.length) % candidates.length;
-        const score = (directReference ? 10 : 0) + candidate.qualityScore * 3 - repeated * 2 - candidate.asset.existingUsageCount - rotation / Math.max(1, candidates.length);
+        const score = (directReference ? 10 : 0) + candidate.qualityScore * 3 - repeated * 12 - candidate.asset.existingUsageCount - rotation / Math.max(1, candidates.length);
         return { ...candidate, key, rangeStart, available, score };
       })
-      .filter((candidate) => candidate.available >= 12)
+      .filter((candidate) => candidate.available >= minimumClipFrames)
       .sort((left, right) => right.score - left.score);
-    const candidate = ranked[0];
-    if (!candidate) break;
     const remainingSegment = Math.max(12, Math.ceil((segmentIndex + 1) * bodyFrames / Math.max(1, segments.length)) - cursor);
-    const length = Math.min(84, remainingSegment, candidate.available, bodyFrames - cursor);
-    if (length < 12) break;
+    const remainingBody = bodyFrames - cursor;
+    let selected: (typeof ranked)[number] | null = null;
+    let length = 0;
+    for (const candidate of ranked) {
+      const segmentTarget = remainingSegment >= minimumClipFrames && remainingSegment <= maximumClipFrames ? remainingSegment : maximumClipFrames;
+      let candidateLength = Math.min(segmentTarget, candidate.available, remainingBody);
+      const tail = remainingBody - candidateLength;
+      if (tail > 0 && tail < minimumClipFrames) candidateLength -= minimumClipFrames - tail;
+      if (candidateLength < minimumClipFrames) continue;
+      selected = candidate;
+      length = candidateLength;
+      break;
+    }
+    const candidate = selected;
+    if (!candidate) break;
     clips.push({
       id: uuidv4(),
       videoJobId: candidate.asset.videoJobId,
@@ -544,9 +572,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               errorCode=NULL, errorMessage=NULL, analyzedAt=excluded.analyzedAt, updatedAt=excluded.updatedAt
           `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, JSON.stringify(media), JSON.stringify(analysis), now(), now());
           for (const frameUs of (analysis.coverFrameTimesUs || []).slice(0, 3)) {
-            const frameInput = { sourcePath: row.localVideoPath, cacheNamespace: path.join('covers', groupId), cacheKey: `video:${row.videoJobId}:${frameUs}:${fingerprint}`, frameUs };
-            if (deps.materializeCoverFrame) await deps.materializeCoverFrame(frameInput);
-            else await materializeVideoFrame({ storageRoot, ...frameInput });
+            const lastSafeFrameUs = Math.max(0, media.durationUs - Math.max(50_000, Math.ceil(1_000_000 / Math.max(1, media.fps))));
+            const safeFrameUs = Math.max(0, Math.min(lastSafeFrameUs, frameUs));
+            const frameInput = { sourcePath: row.localVideoPath, cacheNamespace: path.join('covers', groupId), cacheKey: `video:${row.videoJobId}:${safeFrameUs}:${fingerprint}`, frameUs: safeFrameUs };
+            try {
+              if (deps.materializeCoverFrame) await deps.materializeCoverFrame(frameInput);
+              else await materializeVideoFrame({ storageRoot, ...frameInput });
+            } catch { /* 封面候选抽帧失败不应淘汰已经成功分析的完整视频。 */ }
           }
         } catch (error) {
           analysis = { summary: '', sellingPoints: [], semanticTags: [], usableRanges: [], qualityIssues: ['analysis_failed'], coverFrameTimesUs: [] };
@@ -568,6 +600,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           autoUseDisabled: Boolean(analysisState?.autoUseDisabled),
           existingUsageCount: Number(usage?.count || 0),
         });
+        updateJob('analyzing', 0.1 + prepared.length / Math.max(1, rows.length) * 0.3);
       }
       if (prepared.length === 0) throw new FinalEditError('no_succeeded_videos', '没有可读取的视频素材');
 
@@ -604,6 +637,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const autoUseLimit = Math.max(1, Math.min(10, Number(settings?.autoUseLimit || 2)));
       const variants: FinalEditVariantView[] = [];
       const nextIndex = Number((db.prepare(`SELECT COALESCE(MAX(indexNum), 0) AS value FROM final_edit_variants WHERE groupId=?`).get(groupId) as { value: number }).value) + 1;
+      updateJob('saving', 0.9);
       const transaction = db.transaction(() => {
         db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, status='ready', phase='saving', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, JSON.stringify(narration.wordTimings), JSON.stringify(cues), now(), groupId);
         for (let index = 0; index < input.count; index += 1) {
@@ -644,14 +678,15 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   const start = async (input: StartFinalEditInput): Promise<JobRef> => {
     await preflight(input);
     const script = scriptFromDb(db, input.projectId, input.scriptDraftId);
-    const narrationHash = sha256(JSON.stringify({ scriptDraftId: input.scriptDraftId, narration: script.segments.map((segment) => segment.narration), providerId: input.providerId, voice: input.voice, speed: input.speed, adapterVersion: 1 }));
-    let group = db.prepare(`SELECT id FROM final_edit_groups WHERE projectId=? AND scriptDraftId=? AND narrationHash=?`).get(input.projectId, input.scriptDraftId, narrationHash) as { id: string } | undefined;
-    const groupId = group?.id || uuidv4();
-    if (!group) {
-      const titleParts = script.coverTitleParts || splitCoverTitle(script.title);
-      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, input.projectId, input.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), now(), now());
-      group = { id: groupId };
-    }
+    // A generate action creates a new editable group. Reusing a group by its
+    // narration hash appended variants to the old group, so requesting one
+    // output after earlier runs appeared as three or four outputs in the UI.
+    const groupId = uuidv4();
+    // The v1 schema also made narrationHash unique per project/script. Include
+    // this generation id so new groups remain compatible with existing DBs.
+    const narrationHash = sha256(JSON.stringify({ scriptDraftId: input.scriptDraftId, narration: script.segments.map((segment) => segment.narration), providerId: input.providerId, voice: input.voice, speed: input.speed, adapterVersion: 1, generationId: groupId }));
+    const titleParts = script.coverTitleParts || splitCoverTitle(script.title);
+    db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, input.projectId, input.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), now(), now());
     const jobId = uuidv4();
     const requestKey = sha256(JSON.stringify({ kind: 'prepare', groupId, count: input.count, outputPreset: input.outputPreset, at: Date.now() }));
     const provider = db.prepare(`SELECT costPerThousandCharacters FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(input.providerId) as { costPerThousandCharacters: number } | undefined;

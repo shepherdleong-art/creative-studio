@@ -25,6 +25,48 @@ assert.ok(timeline.clips.length > 0);
 assert.ok(timeline.clips.every((clip) => clip.videoJobId === 'direct'));
 assert.ok(timeline.clips.every((clip) => clip.sourceInFrame >= 48 && clip.sourceOutFrame <= 144));
 
+const fiveSecondAssets = Array.from({ length: 7 }, (_, index) => ({
+  videoJobId: `five-second-${index + 1}`,
+  shotSetId: 'set',
+  shotId: `shot-${index + 1}`,
+  filename: `five-second-${index + 1}.mp4`,
+  localVideoPath: `/storage/five-second-${index + 1}.mp4`,
+  durationSec: 5.05,
+  durationUs: 5_050_000,
+  fingerprint: `five-second-fingerprint-${index + 1}`,
+  autoUseDisabled: false,
+  existingUsageCount: 0,
+  analysis: {
+    summary: '', sellingPoints: [], semanticTags: [], qualityIssues: [], coverFrameTimesUs: [],
+    usableRanges: index === 0
+      ? [
+          { startUs: 0, endUs: 5_050_000, qualityScore: 1 },
+          { startUs: 0, endUs: 5_050_000, qualityScore: 0.9 },
+        ]
+      : [{ startUs: 0, endUs: 5_050_000, qualityScore: 0.9 }],
+  },
+}));
+const longTimeline = planTimeline(fiveSecondAssets, 25 * 24, 0, [
+  { id: 'segment-1', shotId: 'shot-1', narration: '第一段', subtitle: '第一段' },
+  { id: 'segment-2', shotId: 'shot-2', narration: '第二段', subtitle: '第二段' },
+  { id: 'segment-3', shotId: 'shot-3', narration: '第三段', subtitle: '第三段' },
+], 2);
+assert.equal(longTimeline.clips.reduce((sum, clip) => sum + clip.timelineOutFrame - clip.timelineInFrame, 0), 25 * 24, '7 条 5 秒素材必须完整覆盖 25 秒正文');
+assert.equal(new Set(longTimeline.clips.slice(0, 7).map((clip) => clip.sourceFingerprint)).size, 7, '自动剪辑必须先轮换不同素材，再复用同一文件的后段');
+assert.ok(longTimeline.clips.every((clip) => clip.timelineOutFrame - clip.timelineInFrame >= 24), '自动剪辑不得制造不足 1 秒的黑闪片段');
+for (let index = 0; index < longTimeline.clips.length; index += 1) {
+  const clip = longTimeline.clips[index];
+  const overlapsSameSource = longTimeline.clips.slice(index + 1).some((other) => other.sourceFingerprint === clip.sourceFingerprint && clip.sourceInFrame < other.sourceOutFrame && clip.sourceOutFrame > other.sourceInFrame);
+  assert.equal(overlapsSameSource, false, '同一素材的自动截取区间不得重叠或复制前段');
+}
+const fiveUsableTimeline = planTimeline(fiveSecondAssets.slice(0, 5), 582, 0, [
+  { id: 'segment-1', shotId: 'shot-1', narration: '第一段', subtitle: '第一段' },
+  { id: 'segment-2', shotId: 'shot-2', narration: '第二段', subtitle: '第二段' },
+  { id: 'segment-3', shotId: 'shot-3', narration: '第三段', subtitle: '第三段' },
+], 2);
+assert.equal(fiveUsableTimeline.clips.reduce((sum, clip) => sum + clip.timelineOutFrame - clip.timelineInFrame, 0), 582, '5 条 5.05 秒有效素材也必须完整覆盖 24.25 秒正文');
+assert.ok(fiveUsableTimeline.clips.every((clip) => clip.timelineOutFrame - clip.timelineInFrame >= 24), '接近容量上限时也不能用超短片段硬补尾部');
+
 validateNarrationAlignment({
   relativePath: 'narration.wav', durationUs: 1_000_000,
   segmentTimings: [{ segmentId: 'segment-1', startUs: 0, endUs: 1_000_000 }],

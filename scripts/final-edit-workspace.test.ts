@@ -78,7 +78,9 @@ const workspace = createFinalEditWorkspace({
     sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 0, endUs: 12_000_000, qualityScore: 1 }],
     qualityIssues: [], coverFrameTimesUs: [1_000_000],
   }),
-  materializeCoverFrame: async () => undefined,
+  materializeCoverFrame: async ({ cacheKey }) => {
+    if (cacheKey.includes('v2')) throw new Error('模拟末帧封面抽取失败');
+  },
   estimateAnalysisCost: ({ requestCount }) => requestCount * 0.1,
   synthesize: async () => ({
     relativePath: 'final-edits/test/narration.wav',
@@ -154,7 +156,10 @@ assert.equal(styledGroup.textStyles['3x4'].coverPrimary.fontSizePx, originalPrim
 
 workspace.apply({ scope: 'group', groupId: group.id, expectedRevision: styledGroup.revision, type: 'set_subtitle_cue_text', cueId: styledGroup.subtitleCues[0].id, text: '人工字幕不可覆盖' });
 db.prepare(`INSERT INTO final_edit_project_settings (projectId, autoUseLimit, updatedAt) VALUES ('p1', 10, datetime('now')) ON CONFLICT(projectId) DO UPDATE SET autoUseLimit=10`).run();
-await workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision' });
+const regeneratedJob = await workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision' });
+assert.notEqual(regeneratedJob.groupId, group.id, '每次生成都必须创建独立成片组，不能向旧组继续追加');
+assert.equal(workspace.load(regeneratedJob.groupId).variants.length, 1, '生成数量为 1 时，新成片组必须严格只有 1 条');
+assert.equal(workspace.load(group.id).variants.length, 2, '再次生成不能改变旧成片组的条数');
 assert.equal(workspace.load(group.id).subtitleCues[0].text, '人工字幕不可覆盖');
 
 const duplicateCover = workspace.apply({
@@ -170,6 +175,10 @@ const beforeManualCommands = workspace.load(group.id);
 const commandVariant = beforeManualCommands.variants.find((variant) => variant.id === first.id)!;
 assert.ok(commandVariant.timeline.clips.length >= 2);
 const [leftClip, rightClip] = commandVariant.timeline.clips;
+assert.throws(() => workspace.apply({
+  scope: 'variant', variantId: commandVariant.id, expectedRevision: commandVariant.revision,
+  type: 'move_clip', clipId: rightClip.id, timelineInFrame: leftClip.timelineInFrame,
+}), (error: unknown) => error instanceof FinalEditError && error.code === 'timeline_overlap', '后端必须拒绝覆盖相邻素材的移动命令');
 const swapped = workspace.apply({
   scope: 'variant', variantId: commandVariant.id, expectedRevision: commandVariant.revision,
   type: 'swap_clips', leftClipId: leftClip.id, rightClipId: rightClip.id,

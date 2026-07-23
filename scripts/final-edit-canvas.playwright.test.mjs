@@ -49,9 +49,13 @@ try {
     const subtitlePreview = document.createElement('canvas');
     drawEditorOverlay(subtitlePreview, group, '3x4', group.subtitleCues[0], false);
     let overflowRejected = false;
+    let overflowCueIds = [];
     try {
       await createOverlayBundlePayload({ ...group, textStyles: { '3x4': { ...group.textStyles['3x4'], subtitle: { ...group.textStyles['3x4'].subtitle, boxWidthPx: 10 } } } }, '3x4');
-    } catch { overflowRejected = true; }
+    } catch (error) {
+      overflowRejected = true;
+      overflowCueIds = error.cueIds || [];
+    }
 
     const secondaryOnly = document.createElement('canvas');
     secondaryOnly.width = 320; secondaryOnly.height = 240;
@@ -70,6 +74,7 @@ try {
       subtitleMatchesBundle: subtitlePreview.toDataURL('image/png').split(',')[1] === bundle.subtitlePngs['cue-1'],
       secondaryUnchanged: secondaryBefore === secondaryOnly.toDataURL('image/png'),
       overflowRejected,
+      overflowCueIds,
       manifest: bundle.manifest,
     };
   });
@@ -80,6 +85,7 @@ try {
   assert.equal(result.subtitleMatchesBundle, true, 'preview canvas 必须与上传 bundle 字幕 PNG 一致');
   assert.equal(result.secondaryUnchanged, true, '修改第一段标题不得改变第二段标题像素');
   assert.equal(result.overflowRejected, true, '单行宽度溢出必须阻止 bundle');
+  assert.deepEqual(result.overflowCueIds, ['cue-1'], '超宽错误必须保留具体字幕 ID，供编辑器定位与标记');
   assert.deepEqual(result.manifest.cues, [{ id: 'cue-1', startUs: 0, endUs: 1_000_000 }]);
   console.log('final-edit Chromium Canvas golden test passed');
 } finally {

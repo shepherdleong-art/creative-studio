@@ -57,6 +57,7 @@ next-env.d.ts
 # local Claude Code / skills tooling (not project source)
 /.claude/
 /.agents/
+/.omo/
 /skills-lock.json
 
 # git worktrees for isolated feature work

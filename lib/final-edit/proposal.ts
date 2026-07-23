@@ -7,8 +7,9 @@ export function findAvailableSourceWindow(
   range: SourceFrameRange,
   occupied: SourceFrameRange[],
   requestedFrames: number,
+  minimumFrames = 1,
 ): SourceFrameRange | null {
-  if (requestedFrames < 1 || range.endFrame <= range.startFrame) return null;
+  if (requestedFrames < 1 || minimumFrames < 1 || range.endFrame <= range.startFrame) return null;
   const blockers = occupied
     .map((item) => ({
       startFrame: Math.max(range.startFrame, item.startFrame),
@@ -33,5 +34,5 @@ export function findAvailableSourceWindow(
     const candidate = { startFrame: cursor, endFrame: cursor + Math.min(requestedFrames, range.endFrame - cursor) };
     if (!best || candidate.endFrame - candidate.startFrame > best.endFrame - best.startFrame) best = candidate;
   }
-  return best;
+  return best && best.endFrame - best.startFrame >= minimumFrames ? best : null;
 }

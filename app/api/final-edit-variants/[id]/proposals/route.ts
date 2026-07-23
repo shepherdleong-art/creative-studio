@@ -5,6 +5,8 @@ import { timelineGaps } from '@/lib/final-edit/domain';
 import { findAvailableSourceWindow } from '@/lib/final-edit/proposal';
 import type { VideoTimeline } from '@/lib/final-edit/types';
 
+const MIN_AUTO_CLIP_FRAMES = 24;
+
 function parse<T>(value: string, fallback: T): T { try { return JSON.parse(value) as T; } catch { return fallback; } }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -33,6 +35,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     for (let index = 0; index < targets.length; index += 1) {
       const gap = targets[index];
       const requestedFrames = gap.endFrame - gap.startFrame;
+      if (requestedFrames < MIN_AUTO_CLIP_FRAMES) continue;
       let selected: { asset: typeof eligibleAssets[number]; window: { startFrame: number; endFrame: number } } | null = null;
       let foundExact = false;
       for (let offset = 0; offset < eligibleAssets.length && !foundExact; offset += 1) {
@@ -44,7 +47,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           const window = findAvailableSourceWindow({
             startFrame: Math.max(0, Math.ceil(range.startUs * 24 / 1_000_000)),
             endFrame: Math.max(0, Math.floor(range.endUs * 24 / 1_000_000)),
-          }, occupiedByAsset.get(asset.fileFingerprint) || [], requestedFrames);
+          }, occupiedByAsset.get(asset.fileFingerprint) || [], requestedFrames, MIN_AUTO_CLIP_FRAMES);
           if (window && (!selected || window.endFrame - window.startFrame > selected.window.endFrame - selected.window.startFrame)) selected = { asset, window };
           if (window && window.endFrame - window.startFrame === requestedFrames) { foundExact = true; break; }
         }

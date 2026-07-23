@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FinalEditAssetView, FinalEditGroupView, FinalEditVariantView } from '@/lib/final-edit/types';
 import type { StyleTarget } from './FinalEditInspector';
+import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame } from './preview-playback';
 import { drawEditorOverlay } from './text-canvas-renderer';
 import styles from './FinalEditEditor.module.css';
 
@@ -35,6 +36,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const clockOffsetRef = useRef(0);
   const animationRef = useRef(0);
   const playingRef = useRef(false);
+  const lastStartedClipRef = useRef('');
   const [playing, setPlaying] = useState(false);
 
   const totalSec = INTRO_SEC + variant.timeline.bodyFrames / FPS;
@@ -43,29 +45,66 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const activeClipIndex = playheadSec >= INTRO_SEC ? sortedClips.findIndex((clip) => bodyFrame >= clip.timelineInFrame && bodyFrame < clip.timelineOutFrame) : -1;
   const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
   const activeAsset = activeClip ? assets.find((asset) => asset.videoJobId === activeClip.videoJobId) || null : null;
-  const nextClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex + 1] || null : sortedClips[0] || null;
-  const nextAsset = nextClip ? assets.find((asset) => asset.videoJobId === nextClip.videoJobId) || null : null;
-  const activeSlot = activeClipIndex < 0 ? 0 : activeClipIndex % 2;
+  const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);
+  const slotClips = slotPlan.clipIndexes.map((index) => index == null ? null : sortedClips[index]) as [typeof activeClip, typeof activeClip];
+  const slotAssets = slotClips.map((clip) => clip ? assets.find((asset) => asset.videoJobId === clip.videoJobId) || null : null) as [FinalEditAssetView | null, FinalEditAssetView | null];
+  const activeSlot = slotPlan.activeSlot;
+  const slotAClipId = slotClips[0]?.id || '';
+  const slotASourceInFrame = slotClips[0]?.sourceInFrame ?? -1;
+  const slotBClipId = slotClips[1]?.id || '';
+  const slotBSourceInFrame = slotClips[1]?.sourceInFrame ?? -1;
   const bodyTimeUs = Math.max(0, (playheadSec - INTRO_SEC) * 1_000_000);
   const activeCue = playheadSec >= INTRO_SEC ? group.subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs) || null : null;
   const showSelectedMaterial = !playing && Boolean(selectedAsset);
   const activeFraming = activeClip?.framing || { scale: 1, offsetX: 0, offsetY: 0 };
+  const activeFramingScale = activeFraming.scale;
+  const activeFramingOffsetX = activeFraming.offsetX;
+  const activeFramingOffsetY = activeFraming.offsetY;
 
   useEffect(() => {
     if (canvasRef.current) drawEditorOverlay(canvasRef.current, group, variant.outputPreset, showSelectedMaterial ? null : activeCue, playheadSec < INTRO_SEC && !showSelectedMaterial);
   }, [activeCue, group, playheadSec, showSelectedMaterial, variant.outputPreset]);
 
   useEffect(() => {
-    const current = activeSlot === 0 ? videoARef.current : videoBRef.current;
-    const standby = activeSlot === 0 ? videoBRef.current : videoARef.current;
-    standby?.pause();
-    if (current) {
-      if (!activeClip || !activeAsset || showSelectedMaterial) { current.pause(); return; }
-      const expected = activeClip.sourceInFrame / FPS + Math.max(0, bodyFrame - activeClip.timelineInFrame) / FPS;
-      if (Math.abs(current.currentTime - expected) > 0.16) current.currentTime = expected;
-      if (playing) void current.play().catch(() => undefined); else current.pause();
+    const videos = [videoARef.current, videoBRef.current] as const;
+    const cleanups: Array<() => void> = [];
+    videos.forEach((video, slot) => {
+      const clip = slotClips[slot];
+      if (!video || !clip) return;
+      const expected = slot === activeSlot
+        ? expectedVideoTimeSec(clip.sourceInFrame, clip.timelineInFrame, bodyFrame, FPS)
+        : clip.sourceInFrame / FPS;
+      const synchronize = () => {
+        if (slot !== activeSlot) {
+          video.pause();
+          if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
+          return;
+        }
+        if (!activeAsset || showSelectedMaterial) { video.pause(); return; }
+        if (!playing) {
+          lastStartedClipRef.current = '';
+          video.pause();
+          if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
+          return;
+        }
+        if (lastStartedClipRef.current === clip.id) return;
+        if (Math.abs(video.currentTime - expected) > 0.35) video.currentTime = expected;
+        lastStartedClipRef.current = clip.id;
+        void video.play().catch(() => undefined);
+      };
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) synchronize();
+      else {
+        video.addEventListener('loadedmetadata', synchronize, { once: true });
+        cleanups.push(() => video.removeEventListener('loadedmetadata', synchronize));
+      }
+    });
+    if (activeSlot == null || !activeClip || !activeAsset || showSelectedMaterial) {
+      lastStartedClipRef.current = '';
+      videoARef.current?.pause();
+      videoBRef.current?.pause();
     }
-  }, [activeAsset, activeClip, activeSlot, bodyFrame, playing, showSelectedMaterial]);
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [activeAsset, activeClip, activeSlot, bodyFrame, playing, showSelectedMaterial, slotAClipId, slotASourceInFrame, slotBClipId, slotBSourceInFrame, slotClips]);
 
   useEffect(() => {
     const canvas = foregroundCanvasRef.current;
@@ -74,19 +113,15 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     if (!context) return;
     let frame = 0;
     const paint = () => {
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      const video = activeSlot === 0 ? videoARef.current : videoBRef.current;
-      if (variant.outputPreset === '16x9' && activeAsset && video && video.readyState >= 2 && video.videoWidth && video.videoHeight) {
-        const fit = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight) * activeFraming.scale;
-        const width = video.videoWidth * fit;
-        const height = video.videoHeight * fit;
-        const x = (canvas.width - width) / 2 + activeFraming.offsetX * Math.abs(canvas.width - width) / 2;
-        const y = (canvas.height - height) / 2 + activeFraming.offsetY * Math.abs(canvas.height - height) / 2;
-        context.drawImage(video, x, y, width, height);
-      }
+      const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+      if (activeAsset && video) paintDecodedVideoFrame(context, canvas, video, variant.outputPreset, {
+        scale: activeFramingScale,
+        offsetX: activeFramingOffsetX,
+        offsetY: activeFramingOffsetY,
+      });
     };
     const loop = () => { paint(); frame = requestAnimationFrame(loop); };
-    const video = activeSlot === 0 ? videoARef.current : videoBRef.current;
+    const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
     video?.addEventListener('loadeddata', paint);
     video?.addEventListener('seeked', paint);
     if (playing) loop(); else paint();
@@ -95,7 +130,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       video?.removeEventListener('loadeddata', paint);
       video?.removeEventListener('seeked', paint);
     };
-  }, [activeAsset, activeFraming.offsetX, activeFraming.offsetY, activeFraming.scale, activeSlot, bodyFrame, playing, variant.outputPreset]);
+  }, [activeAsset, activeFramingOffsetX, activeFramingOffsetY, activeFramingScale, activeSlot, bodyFrame, playing, variant.outputPreset]);
 
   useEffect(() => {
     if (!playing) return;
@@ -168,8 +203,9 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
 
   const coverFraming = variant.cover.framing || { scale: 1, offsetX: 0, offsetY: 0 };
   const previewClass = variant.outputPreset === '16x9' ? styles.preview169 : variant.outputPreset === '9x16' ? styles.preview916 : styles.preview34;
-  const videoAAsset = activeSlot === 0 ? activeAsset : nextAsset;
-  const videoBAsset = activeSlot === 1 ? activeAsset : nextAsset;
+  const previewSize = variant.outputPreset === '16x9' ? { width: 1920, height: 1080 } : variant.outputPreset === '9x16' ? { width: 1080, height: 1920 } : { width: 1080, height: 1440 };
+  const videoAAsset = slotAssets[0];
+  const videoBAsset = slotAssets[1];
   const canDragText = !showSelectedMaterial && Boolean(textTarget) && ((playheadSec < INTRO_SEC && textTarget !== 'subtitle') || (playheadSec >= INTRO_SEC && textTarget === 'subtitle' && activeCue));
   const beginTextDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!textTarget || !canDragText) return;
@@ -197,9 +233,9 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         <div className={`${styles.previewStage} ${previewClass}`}>
           {showSelectedMaterial && selectedAsset && <img className={`${styles.previewMedia} ${variant.outputPreset === '16x9' ? styles.previewContain : ''}`} src={selectedAsset.thumbnailUrl} alt="当前素材预览" />}
           {!showSelectedMaterial && playheadSec < INTRO_SEC && variant.cover.sourceUrl && <img className={styles.previewMedia} src={variant.cover.sourceUrl} alt="封面预览" style={{ objectPosition: `${50 + coverFraming.offsetX * 50}% ${50 + coverFraming.offsetY * 50}%`, transform: `scale(${coverFraming.scale})` }} />}
-          <video ref={videoARef} src={videoAAsset?.previewUrl} className={`${styles.previewMedia} ${variant.outputPreset === '16x9' ? styles.previewBlurred : ''} ${showSelectedMaterial || !activeAsset || activeSlot !== 0 ? styles.previewInactive : ''}`} muted playsInline preload="auto" style={variant.outputPreset === '16x9' ? undefined : { objectPosition: `${50 + activeFraming.offsetX * 50}% ${50 + activeFraming.offsetY * 50}%`, transform: `scale(${activeFraming.scale})` }} />
-          <video ref={videoBRef} src={videoBAsset?.previewUrl} className={`${styles.previewMedia} ${variant.outputPreset === '16x9' ? styles.previewBlurred : ''} ${showSelectedMaterial || !activeAsset || activeSlot !== 1 ? styles.previewInactive : ''}`} muted playsInline preload="auto" style={variant.outputPreset === '16x9' ? undefined : { objectPosition: `${50 + activeFraming.offsetX * 50}% ${50 + activeFraming.offsetY * 50}%`, transform: `scale(${activeFraming.scale})` }} />
-          <canvas ref={foregroundCanvasRef} width={1920} height={1080} className={`${styles.previewMedia} ${variant.outputPreset === '16x9' ? '' : styles.previewInactive}`} />
+          <video ref={videoARef} src={videoAAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
+          <video ref={videoBRef} src={videoBAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
+          <canvas ref={foregroundCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec < INTRO_SEC || !activeAsset ? styles.previewInactive : ''}`} />
           {!showSelectedMaterial && playheadSec >= INTRO_SEC && !activeAsset && <div className={styles.previewGap}><strong>这里没有画面</strong><small>把左侧素材拖到视频轨，或使用 AI 补齐缺口</small></div>}
           <canvas ref={canvasRef} className={`${styles.previewCanvas} ${canDragText ? styles.draggableOverlay : ''}`} onPointerDown={beginTextDrag} />
           <span className={styles.previewBadge}>{showSelectedMaterial ? '选中素材' : '成片时间线'}</span>

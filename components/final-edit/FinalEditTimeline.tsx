@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { timelineGaps } from '@/lib/final-edit/domain';
 import type { FinalEditAssetView, FinalEditVariantView, SubtitleCue, TimelineClip } from '@/lib/final-edit/types';
+import { constrainClipDrag, type ClipDraft, type ClipDragMode } from './timeline-edit';
 import styles from './FinalEditEditor.module.css';
 
 const FPS = 24;
@@ -12,6 +14,7 @@ export function FinalEditTimeline({
   variant,
   cues,
   assets,
+  overflowCueIds,
   selectedCueId,
   selectedClipId,
   playheadSec,
@@ -24,10 +27,13 @@ export function FinalEditTimeline({
   onTrimClip,
   onDeleteClip,
   onInsertAsset,
+  onRepairIssues,
+  repairingIssues,
 }: {
   variant: FinalEditVariantView;
   cues: SubtitleCue[];
   assets: FinalEditAssetView[];
+  overflowCueIds: string[];
   selectedCueId: string;
   selectedClipId: string;
   playheadSec: number;
@@ -36,10 +42,12 @@ export function FinalEditTimeline({
   onSelectClip: (id: string) => void;
   onMoveCue: (id: string, startUs: number, endUs: number) => void;
   onTrimCue: (id: string, startUs: number, endUs: number) => void;
-  onMoveClip: (id: string, timelineInFrame: number) => void;
-  onTrimClip: (id: string, sourceInFrame: number, sourceOutFrame: number, timelineInFrame: number, timelineOutFrame: number) => void;
+  onMoveClip: (id: string, timelineInFrame: number) => Promise<boolean>;
+  onTrimClip: (id: string, sourceInFrame: number, sourceOutFrame: number, timelineInFrame: number, timelineOutFrame: number) => Promise<boolean>;
   onDeleteClip: (id: string) => void;
   onInsertAsset: (asset: FinalEditAssetView, timelineInFrame: number) => void;
+  onRepairIssues: () => void;
+  repairingIssues: boolean;
 }) {
   const bodyUs = variant.timeline.bodyFrames / FPS * 1_000_000;
   const totalUs = INTRO_US + bodyUs;
@@ -48,6 +56,9 @@ export function FinalEditTimeline({
   const assetById = new Map(assets.map((asset) => [asset.videoJobId, asset]));
   const left = (timeUs: number) => `${timeUs / totalUs * 100}%`;
   const width = (timeUs: number) => `${timeUs / totalUs * 100}%`;
+  const blockingIssues = variant.issues.filter((issue) => issue.severity === 'blocking');
+  const primaryIssue = blockingIssues[0] || variant.issues[0];
+  const videoGaps = timelineGaps(variant.timeline.bodyFrames, variant.timeline.clips);
 
   const seekFromPointer = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -79,16 +90,19 @@ export function FinalEditTimeline({
           <div className={styles.ruler}>{ticks.map((tick) => <span key={tick} style={{ left: `${tick / totalSec * 100}%` }}>{tick.toFixed(0)}s</span>)}</div>
           <div className={styles.track}>
             {cues.map((cue) => (
-              <CueBlock key={`${cue.id}-${cue.startUs}-${cue.endUs}`} cue={cue} selected={cue.id === selectedCueId} bodyUs={bodyUs} totalUs={totalUs} onSelect={onSelectCue} onMove={onMoveCue} onTrim={onTrimCue} />
+              <CueBlock key={`${cue.id}-${cue.startUs}-${cue.endUs}`} cue={cue} selected={cue.id === selectedCueId} overflow={overflowCueIds.includes(cue.id)} bodyUs={bodyUs} totalUs={totalUs} onSelect={onSelectCue} onMove={onMoveCue} onTrim={onTrimCue} />
             ))}
           </div>
           <div className={styles.track} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropAsset}>
             <div className={styles.coverBlock} style={{ left: 0, width: width(INTRO_US) }}>封面</div>
+            {videoGaps.map((gap) => <div key={`${gap.startFrame}-${gap.endFrame}`} className={styles.videoGapBlock} aria-label={`画面缺口 ${gap.startFrame}–${gap.endFrame} 帧`} style={{ left: left(INTRO_US + gap.startFrame / FPS * 1_000_000), width: width((gap.endFrame - gap.startFrame) / FPS * 1_000_000) }} />)}
             {variant.timeline.clips.map((clip) => (
               <ClipBlock
                 key={`${clip.id}-${clip.sourceInFrame}-${clip.sourceOutFrame}-${clip.timelineInFrame}-${clip.timelineOutFrame}`}
                 clip={clip}
+                clips={variant.timeline.clips}
                 thumbnailUrl={assetById.get(clip.videoJobId)?.thumbnailUrl}
+                sourceFrames={Math.floor((assetById.get(clip.videoJobId)?.durationUs || 0) / 1_000_000 * FPS)}
                 selected={selectedClipId === clip.id}
                 bodyFrames={variant.timeline.bodyFrames}
                 totalUs={totalUs}
@@ -105,15 +119,19 @@ export function FinalEditTimeline({
         </div>
       </div>
       {variant.issues.length > 0 && (
-        <div className={styles.issueBar}><span>{variant.issues.filter((issue) => issue.severity === 'blocking').length ? '存在阻断问题，修复后才能导出' : `${variant.issues.length} 个提醒`}</span><span>{variant.issues[0]?.message}</span></div>
+        <div className={styles.issueBar}>
+          <div className={styles.issueBarMessage}><strong>{blockingIssues.length ? '存在阻断问题，修复后才能导出' : `${variant.issues.length} 个提醒`}</strong><span>{primaryIssue?.message}</span></div>
+          {blockingIssues.length > 0 && <button type="button" className={styles.repairButton} disabled={repairingIssues} onClick={onRepairIssues}>{repairingIssues ? '正在修复…' : '一键修复'}</button>}
+        </div>
       )}
     </section>
   );
 }
 
-function CueBlock({ cue, selected, bodyUs, totalUs, onSelect, onMove, onTrim }: {
+function CueBlock({ cue, selected, overflow, bodyUs, totalUs, onSelect, onMove, onTrim }: {
   cue: SubtitleCue;
   selected: boolean;
+  overflow: boolean;
   bodyUs: number;
   totalUs: number;
   onSelect: (id: string) => void;
@@ -153,27 +171,30 @@ function CueBlock({ cue, selected, bodyUs, totalUs, onSelect, onMove, onTrim }: 
   };
 
   return (
-    <div data-cue-block role="button" tabIndex={0} className={`${styles.cueBlock} ${selected ? styles.selectedBlock : ''}`} style={{ left: `${(INTRO_US + draft.startUs) / totalUs * 100}%`, width: `${(draft.endUs - draft.startUs) / totalUs * 100}%` }} onKeyDown={(event) => { if (event.key === 'Enter') onSelect(cue.id); }} onPointerDown={(event) => begin('move', event)}>
+    <div data-cue-block data-text-overflow={overflow || undefined} role="button" tabIndex={0} aria-label={overflow ? `字幕超宽：${cue.text}` : cue.text} className={`${styles.cueBlock} ${selected ? styles.selectedBlock : ''} ${overflow ? styles.overflowCueBlock : ''}`} style={{ left: `${(INTRO_US + draft.startUs) / totalUs * 100}%`, width: `${(draft.endUs - draft.startUs) / totalUs * 100}%` }} onKeyDown={(event) => { if (event.key === 'Enter') onSelect(cue.id); }} onPointerDown={(event) => begin('move', event)}>
       <div className={styles.cueHandle} onPointerDown={(event) => begin('start', event)} />
+      {overflow && <span className={styles.overflowBadge}>超宽</span>}
       <b>{cue.text}</b>
       <div className={styles.cueHandle} onPointerDown={(event) => begin('end', event)} />
     </div>
   );
 }
 
-function ClipBlock({ clip, thumbnailUrl, selected, bodyFrames, totalUs, onSelect, onMove, onTrim, onDelete }: {
+function ClipBlock({ clip, clips, thumbnailUrl, sourceFrames, selected, bodyFrames, totalUs, onSelect, onMove, onTrim, onDelete }: {
   clip: TimelineClip;
+  clips: TimelineClip[];
   thumbnailUrl?: string;
+  sourceFrames: number;
   selected: boolean;
   bodyFrames: number;
   totalUs: number;
   onSelect: (id: string) => void;
-  onMove: (id: string, timelineInFrame: number) => void;
-  onTrim: (id: string, sourceInFrame: number, sourceOutFrame: number, timelineInFrame: number, timelineOutFrame: number) => void;
+  onMove: (id: string, timelineInFrame: number) => Promise<boolean>;
+  onTrim: (id: string, sourceInFrame: number, sourceOutFrame: number, timelineInFrame: number, timelineOutFrame: number) => Promise<boolean>;
   onDelete: (id: string) => void;
 }) {
-  const [draft, setDraft] = useState({ sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame });
-  const begin = (mode: 'move' | 'start' | 'end', event: React.PointerEvent<HTMLDivElement>) => {
+  const [draft, setDraft] = useState<ClipDraft>({ sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame });
+  const begin = (mode: ClipDragMode, event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault(); event.stopPropagation(); onSelect(clip.id);
     const track = event.currentTarget.closest('[data-clip-block]')?.parentElement;
     if (!track) return;
@@ -182,24 +203,17 @@ function ClipBlock({ clip, thumbnailUrl, selected, bodyFrames, totalUs, onSelect
     let latest = initial;
     const movePointer = (pointer: PointerEvent) => {
       const deltaFrames = Math.round((pointer.clientX - startX) / Math.max(1, track.getBoundingClientRect().width) * totalUs / 1_000_000 * FPS);
-      if (mode === 'move') {
-        const duration = initial.timelineOutFrame - initial.timelineInFrame;
-        const timelineInFrame = Math.max(0, Math.min(bodyFrames - duration, initial.timelineInFrame + deltaFrames));
-        latest = { ...initial, timelineInFrame, timelineOutFrame: timelineInFrame + duration };
-      } else if (mode === 'start') {
-        const delta = Math.max(-Math.min(initial.timelineInFrame, initial.sourceInFrame), Math.min(initial.timelineOutFrame - initial.timelineInFrame - 1, deltaFrames));
-        latest = { ...initial, sourceInFrame: initial.sourceInFrame + delta, timelineInFrame: initial.timelineInFrame + delta };
-      } else {
-        const delta = Math.max(-(initial.timelineOutFrame - initial.timelineInFrame - 1), Math.min(bodyFrames - initial.timelineOutFrame, deltaFrames));
-        latest = { ...initial, sourceOutFrame: initial.sourceOutFrame + delta, timelineOutFrame: initial.timelineOutFrame + delta };
-      }
+      latest = constrainClipDrag({ clip: { ...clip, ...initial }, clips, bodyFrames, sourceFrames, mode, deltaFrames });
       setDraft(latest);
     };
-    const up = () => {
+    const up = async () => {
       window.removeEventListener('pointermove', movePointer);
       window.removeEventListener('pointerup', up);
-      if (mode === 'move') onMove(clip.id, latest.timelineInFrame);
-      else onTrim(clip.id, latest.sourceInFrame, latest.sourceOutFrame, latest.timelineInFrame, latest.timelineOutFrame);
+      if (latest.sourceInFrame === initial.sourceInFrame && latest.sourceOutFrame === initial.sourceOutFrame && latest.timelineInFrame === initial.timelineInFrame && latest.timelineOutFrame === initial.timelineOutFrame) return;
+      const accepted = mode === 'move'
+        ? await onMove(clip.id, latest.timelineInFrame)
+        : await onTrim(clip.id, latest.sourceInFrame, latest.sourceOutFrame, latest.timelineInFrame, latest.timelineOutFrame);
+      if (!accepted) setDraft(initial);
     };
     window.addEventListener('pointermove', movePointer);
     window.addEventListener('pointerup', up, { once: true });

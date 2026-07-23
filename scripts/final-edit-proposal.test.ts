@@ -13,5 +13,10 @@ assert.equal(
   findAvailableSourceWindow({ startFrame: 10, endFrame: 20 }, [{ startFrame: 0, endFrame: 30 }], 5),
   null,
 );
+assert.equal(
+  findAvailableSourceWindow({ startFrame: 0, endFrame: 20 }, [], 30, 24),
+  null,
+  'AI 补缺口不得生成不足 1 秒的黑闪片段',
+);
 
 console.log('final-edit proposal tests passed');

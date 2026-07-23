@@ -1,6 +1,33 @@
 import type { FinalEditGroupView, OutputPresetId, SubtitleCue, TextStyle } from '@/lib/final-edit/types';
 import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
 
+export type TextOverflowTarget = 'coverPrimary' | 'coverSecondary' | 'subtitle';
+
+export interface TextOverflowDetail {
+  target: TextOverflowTarget;
+  cueId?: string;
+  measuredWidthPx: number;
+  safeWidthPx: number;
+}
+
+export class TextOverflowError extends Error {
+  readonly details: TextOverflowDetail[];
+  readonly cueIds: string[];
+
+  constructor(details: TextOverflowDetail[]) {
+    const subtitleCount = details.filter((detail) => detail.target === 'subtitle').length;
+    const titleCount = details.length - subtitleCount;
+    const parts = [
+      subtitleCount ? `${subtitleCount} 条字幕` : '',
+      titleCount ? `${titleCount} 处封面标题` : '',
+    ].filter(Boolean);
+    super(`有 ${parts.join('、')}超出单行安全宽度，请点击提示定位并调整文字或样式`);
+    this.name = 'TextOverflowError';
+    this.details = details;
+    this.cueIds = details.flatMap((detail) => detail.cueId ? [detail.cueId] : []);
+  }
+}
+
 export function drawText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle) {
   ctx.save();
   ctx.font = `${style.fontSizePx * style.scale}px ${JSON.stringify(style.fontFamily)}`;
@@ -63,7 +90,33 @@ function toBase64(canvas: HTMLCanvasElement): string {
 
 function measureText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle): number {
   ctx.font = `${style.fontSizePx * style.scale}px ${JSON.stringify(style.fontFamily)}`;
-  return ctx.measureText(text).width + (style.stroke.enabled ? style.stroke.widthPx * 2 : 0) + (style.shadow.enabled ? style.shadow.blurPx * 2 + style.shadow.distancePx : 0);
+  const shadowOffsetX = style.shadow.enabled
+    ? Math.abs(Math.cos(style.shadow.angleDeg * Math.PI / 180) * style.shadow.distancePx)
+    : 0;
+  return ctx.measureText(text).width
+    + (style.stroke.enabled ? style.stroke.widthPx * 2 : 0)
+    + (style.shadow.enabled ? style.shadow.blurPx * 2 + shadowOffsetX : 0);
+}
+
+export function measureTextOverflowDetails(group: FinalEditGroupView, preset: OutputPresetId): TextOverflowDetail[] {
+  const style = group.textStyles[preset];
+  const canvas = canvasFor(preset);
+  const context = canvas.getContext('2d');
+  if (!context) return [];
+  const details: TextOverflowDetail[] = [];
+  const titleParts = [
+    { target: 'coverPrimary' as const, text: group.coverTitle.primary.text, style: style.coverPrimary },
+    { target: 'coverSecondary' as const, text: group.coverTitle.secondary.text, style: style.coverSecondary },
+  ];
+  for (const part of titleParts) {
+    const measuredWidthPx = measureText(context, part.text, part.style);
+    if (measuredWidthPx > part.style.boxWidthPx) details.push({ target: part.target, measuredWidthPx, safeWidthPx: part.style.boxWidthPx });
+  }
+  for (const cue of group.subtitleCues) {
+    const measuredWidthPx = measureText(context, cue.text, style.subtitle);
+    if (measuredWidthPx > style.subtitle.boxWidthPx) details.push({ target: 'subtitle', cueId: cue.id, measuredWidthPx, safeWidthPx: style.subtitle.boxWidthPx });
+  }
+  return details;
 }
 
 export async function createOverlayBundlePayload(group: FinalEditGroupView, preset: OutputPresetId) {
@@ -78,24 +131,22 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
   if (!titleContext) throw new Error('浏览器 Canvas 不可用');
   const titlePrimaryWidth = measureText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
   const titleSecondaryWidth = measureText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
-  if (titlePrimaryWidth > style.coverPrimary.boxWidthPx || titleSecondaryWidth > style.coverSecondary.boxWidthPx) throw new Error('封面标题超出单行安全宽度，请调整文字或样式');
+  const overflowDetails = measureTextOverflowDetails(group, preset);
+  if (overflowDetails.length) throw new TextOverflowError(overflowDetails);
   drawText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
   drawText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
 
   const subtitles: Record<string, string> = {};
   const subtitleWidths: Record<string, number> = {};
-  const overflows: string[] = [];
   for (const cue of group.subtitleCues) {
     const canvas = canvasFor(preset);
     const context = canvas.getContext('2d');
     if (!context) throw new Error('浏览器 Canvas 不可用');
     const measured = measureText(context, cue.text, style.subtitle);
-    if (measured > style.subtitle.boxWidthPx) overflows.push(cue.id);
     subtitleWidths[cue.id] = measured;
     drawText(context, cue.text, style.subtitle);
     subtitles[cue.id] = toBase64(canvas);
   }
-  if (overflows.length) throw new Error(`有 ${overflows.length} 条字幕超出单行安全宽度，请调整文字或样式`);
   return {
     groupRevision: group.revision,
     titlePngBase64: toBase64(titleCanvas),
