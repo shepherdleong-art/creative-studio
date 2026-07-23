@@ -124,15 +124,41 @@ const legacyV1Draft = {
   segments: [{ shotId: 'shot-a1', text: '夜晚加湿也不怕吵醒家人', visualIntent: '卧室静音' }],
 };
 
+// Two more invalid drafts, each isolating exactly one of the gate's other
+// AND-conditions (legacyV1Draft above only ever exercises the first,
+// version !== 2, condition — short-circuiting means the remaining three were
+// never independently hit by any fixture row). Both are still real,
+// type-valid ScriptOutput values: the TS type has no non-empty-string /
+// non-empty-array constraint, so only the runtime gate catches these.
+const v2MissingShotSetIdDraft: ScriptOutput = {
+  ...validScriptOutput,
+  shotSetId: '',
+};
+
+const v2EmptySegmentsDraft: ScriptOutput = {
+  ...validScriptOutput,
+  segments: [],
+};
+
 db.prepare(`
   INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, createdAt)
-  VALUES ('script-valid-a', 'project-a', 'gemini', 'gemini-2.5-pro', '{}', ?, '2026-01-05 12:00:00')
+  VALUES ('script-valid-a', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 12:00:00')
 `).run(JSON.stringify(validScriptOutput));
 
 db.prepare(`
   INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, createdAt)
-  VALUES ('script-invalid-a', 'project-a', 'gemini', 'gemini-2.5-pro', '{}', ?, '2026-01-05 12:01:00')
+  VALUES ('script-invalid-a', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 12:01:00')
 `).run(JSON.stringify(legacyV1Draft));
+
+db.prepare(`
+  INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, createdAt)
+  VALUES ('script-empty-shotset-a', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 12:02:00')
+`).run(JSON.stringify(v2MissingShotSetIdDraft));
+
+db.prepare(`
+  INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, createdAt)
+  VALUES ('script-empty-segments-a', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 12:03:00')
+`).run(JSON.stringify(v2EmptySegmentsDraft));
 
 // ---------------------------------------------------------------------------
 // Fixture: Project B — unrelated project, to prove project-level isolation.
@@ -152,6 +178,31 @@ db.prepare(`
   VALUES ('video-succeeded-c', 'project-b', 'ss-c', 'shot-c1', '/data/storage/final-edits/videos/video-succeeded-c.mp4', 'video-succeeded-c.mp4', 'succeeded', 5, '2026-02-10 10:00:00')
 `).run();
 
+// A valid V2 draft under project-b too — without this, the script_drafts
+// `WHERE projectId = ?` query used below is never actually exercised against
+// a foreign draft, so cross-project isolation for script_drafts would be
+// assumed rather than proven.
+const validScriptOutputForB: ScriptOutput = {
+  version: 2,
+  title: '空气净化更清新',
+  platform: '抖音',
+  tone: '种草',
+  targetDurationSec: 15,
+  template: '功能展示',
+  shotSetId: 'ss-c',
+  sellingPointMap: [{ shotId: 'shot-c1', sellingPoint: '强力净化' }],
+  segments: [
+    { shotId: 'shot-c1', imageAssetId: 'img-shot-c1', narration: '强力净化，还你清新空气', subtitle: '强力净化', rationale: '展示净化效果' },
+  ],
+  droppedShots: [],
+  fullScript: '强力净化，还你清新空气。',
+};
+
+db.prepare(`
+  INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, createdAt)
+  VALUES ('script-valid-b', 'project-b', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-02-10 12:00:00')
+`).run(JSON.stringify(validScriptOutputForB));
+
 // =============================================================================
 // Rule: `shot_sets.projectId = :projectId`
 // =============================================================================
@@ -164,6 +215,14 @@ assert.ok(!shotSetIdsForA.includes('ss-c'), '按 project-a 查询 shot_sets 不�
 // =============================================================================
 // Rule: video_jobs.projectId = :projectId AND shotSetId = currentShotSetId
 //       AND status = 'succeeded' AND localVideoPath IS NOT NULL
+//
+// This is only the SQL-provable half of plan §5.1's full rule. The full rule
+// also requires localVideoPath to pass safe-path validation ("...localVideoPath
+// 存在且通过安全路径校验") — that has no fixture-testable SQL predicate and is
+// deferred to Phase 1's real route/workspace code, which should mirror the
+// toRelative()/`unsafe_path` pattern already used for the analogous check in
+// lib/final-edit/workspace.ts:951-953. The assertion below only proves
+// existence (IS NOT NULL), not full path-safety.
 // =============================================================================
 const succeededVideosForSetA = db.prepare(`
   SELECT id FROM video_jobs
@@ -178,7 +237,7 @@ assert.deepEqual(succeededVideosForSetA.map((row) => row.id), ['video-succeeded-
 const allVideoIdsForProjectA = (db.prepare(`SELECT id FROM video_jobs WHERE projectId = ?`).all('project-a') as Array<{ id: string }>)
   .map((row) => row.id)
   .sort();
-assert.deepEqual(allVideoIdsForProjectA, ['video-pending-a', 'video-succeeded-a', 'video-succeeded-b']);
+assert.deepEqual(allVideoIdsForProjectA, ['video-pending-a', 'video-succeeded-a', 'video-succeeded-b'], 'project-a 名下应有全部三条视频（不论状态），证明上面的排除来自 shotSetId/status 条件，而不是 projectId 过滤本身漏了行');
 assert.ok(!allVideoIdsForProjectA.includes('video-succeeded-c'), '按 project-a 查询 video_jobs 不得泄漏 project-b 的 video-succeeded-c');
 
 // =============================================================================
@@ -195,9 +254,26 @@ const isUsableV2Draft = (parsed: unknown): boolean => {
     && value.segments.length > 0;
 };
 
+// Exercise each AND-condition in isolation, directly on the parsed objects,
+// before ever touching the DB — pinpoints exactly which condition rejects
+// each malformed shape (legacyV1Draft alone only ever exercised the first
+// condition; the other three were previously never independently hit).
+assert.equal(isUsableV2Draft(validScriptOutput), true, '合法 V2 草稿必须通过 version/shotSetId/segments 网关');
+assert.equal(isUsableV2Draft(legacyV1Draft), false, 'version !== 2 的草稿必须被拒绝');
+assert.equal(isUsableV2Draft(v2MissingShotSetIdDraft), false, 'shotSetId 为空字符串的草稿必须被拒绝，即使 version 正确');
+assert.equal(isUsableV2Draft(v2EmptySegmentsDraft), false, 'segments 为空数组的草稿必须被拒绝，即使 version 和 shotSetId 都正确');
+
 const draftRowsForA = db.prepare(`SELECT id, outputJson FROM script_drafts WHERE projectId = ?`).all('project-a') as Array<{ id: string; outputJson: string }>;
+
+// Raw-row scoping check (mirrors the video_jobs project-isolation check
+// above): proves the `WHERE projectId = ?` clause itself never returns
+// project-b's script-valid-b, independent of the version/shape gate below.
+const allDraftIdsForA = draftRowsForA.map((row) => row.id).sort();
+assert.deepEqual(allDraftIdsForA, ['script-empty-segments-a', 'script-empty-shotset-a', 'script-invalid-a', 'script-valid-a']);
+assert.ok(!allDraftIdsForA.includes('script-valid-b'), '按 project-a 查询 script_drafts 不得泄漏 project-b 的合法 V2 草稿 script-valid-b');
+
 const usableDraftIds = draftRowsForA.filter((row) => isUsableV2Draft(JSON.parse(row.outputJson))).map((row) => row.id);
-assert.deepEqual(usableDraftIds, ['script-valid-a'], '只有合法 V2 草稿通过版本/结构校验；V1 形态（无 version:2、无 shotSetId）的草稿必须被拒绝');
+assert.deepEqual(usableDraftIds, ['script-valid-a'], '只有合法 V2 草稿通过版本/结构校验；V1 形态、空 shotSetId、空 segments[] 的草稿都必须被拒绝，且 project-b 的合法草稿不得混入 project-a 的结果');
 
 // =============================================================================
 // Redline (plan §11.1; JSDoc on ExportIdentity.productCode in lib/final-edit/types.ts):
