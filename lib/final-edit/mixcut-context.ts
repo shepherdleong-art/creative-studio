@@ -1,0 +1,255 @@
+import fs from 'node:fs';
+import type Database from 'better-sqlite3';
+import { probeVideoMedia } from '../ffmpeg.ts';
+import type { ScriptOutput } from '../script-providers/types.ts';
+import { resolveStoragePath } from './storage-path.ts';
+import type { MixcutContextResponse } from './types.ts';
+
+// Pure, dependency-injected (db + storageRoot passed in — never getDb()/
+// dataRoot()) query/aggregation logic backing
+// GET /api/projects/:projectId/final-edit/context (plan §5.1). Kept out of
+// workspace.ts so scripts/final-edit-mixcut-flow.test.ts can exercise the
+// real query logic against an isolated in-memory SQLite db + temp storage
+// root, mirroring how scripts/final-edit-mixcut-context-contract.test.ts
+// proved the same rules in raw SQL during Phase 0 — without ever touching
+// the real data/workbench.db.
+//
+// "project not found" is signalled by returning null rather than throwing
+// FinalEditError directly: FinalEditError lives in lib/final-edit/workspace.ts,
+// and workspace.ts is the module that imports buildMixcutContext() from here
+// (to implement FinalEditWorkspace.getMixcutContext) — importing FinalEditError
+// back from workspace.ts would make this module circularly depend on its own
+// consumer. workspace.ts's getMixcutContext() turns a null result into
+// FinalEditError('project_not_found', '项目不存在', 404).
+
+/**
+ * Matches Task 2 contract test's local `isUsableV2Draft` predicate exactly:
+ * only a V2 script draft with a non-empty shotSetId and at least one segment
+ * is usable for mixcut context purposes.
+ *
+ * This is the single well-named exported predicate the plan's conventions
+ * ask for. It is NOT wired into app/api/projects/[id]/final-edit/bootstrap/route.ts
+ * (out of scope — that route already has its own inline copy of this same
+ * check, and a private near-duplicate also lives in workspace.ts's
+ * scriptFromDb; both are pre-existing warts left as-is, see delivery report).
+ */
+export function isUsableV2ScriptDraft(parsed: unknown): boolean {
+  if (typeof parsed !== 'object' || parsed === null) return false;
+  const value = parsed as Record<string, unknown>;
+  return value.version === 2
+    && typeof value.shotSetId === 'string'
+    && value.shotSetId.length > 0
+    && Array.isArray(value.segments)
+    && value.segments.length > 0;
+}
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  productName: string | null;
+  productCode: string | null;
+  createdAt: string;
+}
+
+interface ShotSetRow {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+interface ScriptDraftRow {
+  id: string;
+  provider: string;
+  model: string;
+  outputJson: string;
+  createdAt: string;
+}
+
+interface VideoJobRow {
+  videoJobId: string;
+  shotSetId: string;
+  filename: string | null;
+  localVideoPath: string;
+}
+
+/**
+ * Resolve+validate a `video_jobs.localVideoPath` value against storageRoot,
+ * and confirm the resolved file actually exists on disk.
+ *
+ * Mirrors the `toRelative()` idiom at lib/final-edit/workspace.ts:951-954
+ * (enqueueRender) and assetsForScript()'s try/catch at
+ * lib/final-edit/workspace.ts:195-208: a single row failing safe-path
+ * validation (escapes storageRoot, contains `..`, etc.) or pointing at a file
+ * that doesn't actually exist must not break the whole context response —
+ * return null so the caller silently excludes just that one row.
+ */
+function resolveSafeVideoAbsolutePath(storageRoot: string, localVideoPath: string | null): string | null {
+  if (!localVideoPath) return null;
+  try {
+    const resolved = resolveStoragePath(storageRoot, localVideoPath, { allowAbsolute: true });
+    // JUDGMENT CALL (JC-4): also require the file to exist on disk — same
+    // "exclude, don't 500" reasoning as the safe-path check above.
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds the full MixcutContextResponse for one project, per plan §5.1's four
+ * query rules:
+ *   - shot_sets.projectId = :projectId.
+ *   - script_drafts.outputJson parsed; only V2 + usable shotSetId/segments.
+ *   - videos for the CURRENT shot set: projectId+shotSetId+status='succeeded'
+ *     +localVideoPath present, and passing safe-path validation.
+ *   - no grouping ever inferred from filename/title/createdAt.
+ *
+ * Returns null when the project itself doesn't exist (see file header for
+ * why the caller, not this function, turns that into a FinalEditError).
+ */
+export async function buildMixcutContext(
+  db: Database.Database,
+  storageRoot: string,
+  projectId: string,
+  requestedShotSetId?: string | null,
+): Promise<MixcutContextResponse | null> {
+  const projectRow = db.prepare(`
+    SELECT id, name, productName, productCode, createdAt FROM projects WHERE id = ?
+  `).get(projectId) as ProjectRow | undefined;
+  if (!projectRow) return null;
+
+  // Rule: shot_sets.projectId = :projectId.
+  const shotSetRows = db.prepare(`
+    SELECT id, name, createdAt FROM shot_sets WHERE projectId = ? ORDER BY createdAt DESC
+  `).all(projectId) as ShotSetRow[];
+
+  // JUDGMENT CALL (JC-1): currentShotSetId selection. §5.2 only says "current"
+  // shotSetId lives in client workspace state; the plan never specifies a
+  // server-side default. An explicit ?shotSetId= is honored only if it
+  // belongs to this project (shotSetRows is already projectId-scoped, so a
+  // foreign or made-up id simply won't be found here); absent or
+  // non-belonging both fall back to the most-recently-created shot set
+  // rather than erroring — a stale client-cached shotSetId (e.g. from a
+  // deleted shot set) must not break the whole page load. Zero shot sets ->
+  // null.
+  const requestedRow = requestedShotSetId ? shotSetRows.find((row) => row.id === requestedShotSetId) : undefined;
+  const currentShotSetId: string | null = requestedRow?.id ?? shotSetRows[0]?.id ?? null;
+
+  // JUDGMENT CALL (JC-3): sidebar stats for EVERY shot set in the project use
+  // cheap DB-only aggregation, never probeVideoMedia/ffprobe — probing every
+  // video in the whole project on every page load would be wasteful.
+  // succeededVideoCount reuses the same SQL predicate as the detail rule
+  // below (projectId+shotSetId+status='succeeded'+localVideoPath IS NOT
+  // NULL) but intentionally skips the fs safe-path/existence check the
+  // detail list performs below — an intentional, documented approximation
+  // (a row with a corrupt/unsafe path still counts toward this number, even
+  // though it would never appear in that shot set's videoAssets[] detail
+  // list once it becomes "current"). totalDurationUs is likewise a coarse
+  // whole-second SUM(durationSec) * 1e6, not the precise per-file
+  // probeVideoMedia duration used for the CURRENT shot set's videoAssets[]
+  // further down.
+  // JUDGMENT CALL (new, not covered by JC-1..JC-5): shotCount = COUNT(*) of
+  // every row in `shots` for this shotSetId, unfiltered by any
+  // generation/review state — the frozen type just says "shotCount" with no
+  // further qualifier, and this is the only unambiguous reading.
+  const shotSets = shotSetRows.map((row) => {
+    const shotCountRow = db.prepare(`SELECT COUNT(*) AS count FROM shots WHERE shotSetId = ?`).get(row.id) as { count: number };
+    const videoAggRow = db.prepare(`
+      SELECT COUNT(*) AS count, COALESCE(SUM(durationSec), 0) AS totalSec
+      FROM video_jobs
+      WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
+    `).get(projectId, row.id) as { count: number; totalSec: number };
+    return {
+      id: row.id,
+      name: row.name,
+      shotCount: Number(shotCountRow.count) || 0,
+      succeededVideoCount: Number(videoAggRow.count) || 0,
+      totalDurationUs: (Number(videoAggRow.totalSec) || 0) * 1_000_000,
+    };
+  });
+
+  // Rule: script_drafts.outputJson parsed; only V2 + usable shotSetId/segments.
+  const draftRows = db.prepare(`
+    SELECT id, provider, model, outputJson, createdAt FROM script_drafts WHERE projectId = ? ORDER BY createdAt DESC
+  `).all(projectId) as ScriptDraftRow[];
+  const drafts: MixcutContextResponse['drafts'] = [];
+  for (const row of draftRows) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.outputJson); } catch { continue; }
+    if (!isUsableV2ScriptDraft(parsed)) continue;
+    const script = parsed as ScriptOutput;
+    drafts.push({
+      id: row.id,
+      shotSetId: script.shotSetId,
+      title: script.title || '',
+      // JUDGMENT CALL: MixcutContextResponse.drafts[].narrationText has no
+      // 1:1 source field in ScriptOutput (lib/script-providers/types.ts).
+      // fullScript is the pre-derived concatenation of every segment's
+      // narration in narrative order — the closest real value and not a
+      // placeholder, but this mapping isn't spelled out verbatim in the plan.
+      narrationText: script.fullScript ?? '',
+      targetDurationSec: Number(script.targetDurationSec) || 0,
+      provider: row.provider,
+      model: row.model,
+      createdAt: row.createdAt,
+    });
+  }
+
+  // Rule: videos for the CURRENT shot set must satisfy projectId+shotSetId+
+  // status='succeeded'+localVideoPath present AND pass safe-path validation
+  // (+ actually exist on disk). Only probed (JC-2) for this one shot set's
+  // detail list — never for the whole project (see shotSets aggregation
+  // above, which stays DB-only on purpose).
+  const videoAssets: MixcutContextResponse['videoAssets'] = [];
+  if (currentShotSetId) {
+    const videoRows = db.prepare(`
+      SELECT id AS videoJobId, shotSetId, filename, localVideoPath
+      FROM video_jobs
+      WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
+      ORDER BY createdAt
+    `).all(projectId, currentShotSetId) as VideoJobRow[];
+
+    const safeRows = videoRows
+      .map((row) => ({ row, absolutePath: resolveSafeVideoAbsolutePath(storageRoot, row.localVideoPath) }))
+      .filter((entry): entry is { row: VideoJobRow; absolutePath: string } => entry.absolutePath !== null);
+
+    // JUDGMENT CALL (JC-2): one ffprobe call per video, run in parallel (not
+    // serially) via Promise.all — this is a metadata-only subprocess read
+    // (~tens of ms), not a transcode/AI job, so it does not violate plan
+    // §2.1's "不得在 HTTP 请求中同步等待完整 FFmpeg 或付费 AI 任务" rule.
+    const probes = await Promise.all(safeRows.map((entry) => probeVideoMedia(entry.absolutePath)));
+
+    safeRows.forEach((entry, index) => {
+      const probe = probes[index];
+      videoAssets.push({
+        videoJobId: entry.row.videoJobId,
+        shotSetId: entry.row.shotSetId,
+        filename: entry.row.filename || entry.row.videoJobId,
+        durationUs: probe.durationUs,
+        width: probe.width,
+        height: probe.height,
+        thumbnailUrl: `/api/final-edit-assets/${entry.row.videoJobId}/thumbnail`,
+        source: 'module4',
+      });
+    });
+  }
+
+  return {
+    project: {
+      id: projectRow.id,
+      name: projectRow.name,
+      productName: projectRow.productName || '',
+      // Redline (plan §11.1 / ExportIdentity.productCode JSDoc in types.ts /
+      // Task 2 contract test): productCode must come from projects.productCode,
+      // NEVER projects.model (that's the image-generation provider's model).
+      // This module never reads projectRow.model anywhere.
+      productCode: projectRow.productCode || '',
+      createdAt: projectRow.createdAt,
+    },
+    shotSets,
+    currentShotSetId,
+    drafts,
+    videoAssets,
+  };
+}

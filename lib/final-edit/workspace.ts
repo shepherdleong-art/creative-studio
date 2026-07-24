@@ -11,6 +11,7 @@ import { materializeVideoFrame } from './video-frame.ts';
 import { runFinalEditHeavyJob } from './heavy-job-lock.ts';
 import { getFinalEditTtsAdapter } from './adapters/tts-registry.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
+import { buildMixcutContext } from './mixcut-context.ts';
 import {
   FINAL_EDIT_FPS,
   FINAL_EDIT_INTRO_DURATION_US,
@@ -22,6 +23,7 @@ import {
   type FinalEditIssue,
   type FinalEditVariantView,
   type JobRef,
+  type MixcutContextResponse,
   type OutputPresetId,
   type SubtitleCue,
   type TimelineClip,
@@ -140,6 +142,13 @@ export interface FinalEditWorkspace {
   load(groupId: string): FinalEditGroupView;
   apply(command: FinalEditCommand): MutationResult;
   enqueueRender(input: EnqueueRenderInput): Promise<JobRef>;
+  // NOTE: the plan's illustrative signature (§ task brief) shows a
+  // synchronous MixcutContextResponse return, but JC-2 requires per-video
+  // probeVideoMedia (ffprobe subprocess) calls to populate videoAssets[]
+  // duration/width/height — genuinely async I/O — so this is Promise-returning
+  // like the other read/command methods that touch the filesystem or a job
+  // pipeline (start/enqueueRender).
+  getMixcutContext(projectId: string, requestedShotSetId?: string | null): Promise<MixcutContextResponse>;
 }
 
 export interface FinalEditWorkspaceRuntime extends FinalEditWorkspace {
@@ -983,5 +992,19 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     return { id, groupId: group.id, variantId: variant.id, kind: 'render', status: 'queued' };
   };
 
-  return { preflight, start, load, apply, enqueueRender, resumePrepareJob };
+  const getMixcutContext = async (projectId: string, requestedShotSetId?: string | null): Promise<MixcutContextResponse> => {
+    // Query/aggregation logic lives in ./mixcut-context.ts so it can be
+    // exercised directly by scripts/final-edit-mixcut-flow.test.ts against an
+    // isolated in-memory db, without going through this closure's full
+    // FinalEditWorkspaceDependencies (probeVideo/analyzeVideo/synthesize
+    // stubs it doesn't need). This method's only job is the project-not-found
+    // -> FinalEditError translation, since FinalEditError is owned by this
+    // file (see mixcut-context.ts's file header for why that split avoids a
+    // circular import).
+    const context = await buildMixcutContext(db, storageRoot, projectId, requestedShotSetId ?? null);
+    if (!context) throw new FinalEditError('project_not_found', '项目不存在', 404);
+    return context;
+  };
+
+  return { preflight, start, load, apply, enqueueRender, resumePrepareJob, getMixcutContext };
 }
