@@ -39,7 +39,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
   - `image-output-normalize.ts` — Sharp-based crop/resize to target dimensions
   - `provider-concurrency.ts` — Per-provider concurrency limits
   - `ffmpeg.ts` — resolves ffmpeg/ffprobe (env → static package → PATH), probes media with an asynchronous fallback, and runs final-edit renders with progress/timeout/error-tail handling
-- **`components/`** — React UI (workbench tabs, shot panels, video panels); `components/final-edit/` is the existing editor and `components/mixcut/` is the phased Mixcut V1 workspace
+- **`components/`** — React UI (workbench tabs, shot panels, video panels); `components/mixcut/` is the formal fifth-step “智能混剪” workspace, while `components/final-edit/` retains shared preview, inspector, and Canvas editing primitives
 - **`data/`** — Local SQLite DB (`workbench.db`, gitignored)
 - **`storage/`** — Uploaded assets & generated outputs (gitignored)
 
@@ -56,8 +56,8 @@ node scripts/<name>.test.ts          # pattern for any other test file
 ### Desktop packaging
 
 - `scripts/build-win-installer.ps1` and `scripts/build-mac-installer.sh` each run the production build, download a matching private Node runtime, and assemble a self-contained installer from `installer/windows/` (Inno Setup script + launcher) or `installer/macos/` (`.app` bundle template + launcher).
-- macOS builds are Apple Silicon-only and must run on a Node 22.x host — the bundled runtime is pinned to a specific Node 22 build, and a mismatched major version breaks the native module ABI for `better-sqlite3`/`sharp`.
-- Installer payloads must not leak dev-only paths (`data/`, `storage/`, `outputs/`, `docs/`, `scripts/`, `.git/`); the build scripts prune them and then assert none remain before packaging. `ffmpeg-static`/`ffprobe-static` 由 `sync-standalone-assets.mjs` 拷入 standalone，两个安装脚本会断言其存在。
+- macOS builds are Apple Silicon-only and must run on an arm64 Node 22.x host — the bundled runtime is pinned to a specific Node 22 build, and a mismatched major version or x64 Node under Rosetta breaks the native module ABI for `better-sqlite3`/`sharp`.
+- Installer payloads must not leak dev-only paths (`data/`, `storage/`, `outputs/`, `docs/`, `scripts/`, `.git/`); the build scripts prune them and then assert none remain before packaging. Both platforms require bundled FFmpeg. On macOS the installer verifies an arm64 FFmpeg and removes the currently mislabeled x86_64 `ffprobe-static` payload, relying on the tested FFmpeg metadata-probe fallback; Windows still requires its native ffprobe binary.
 - `app/api/shutdown` exposes a graceful `POST` shutdown endpoint that installed-app stop scripts/launchers call instead of killing the process directly.
 - `MACOS.md` covers the macOS installer's user-facing install/uninstall/data-location instructions.
 

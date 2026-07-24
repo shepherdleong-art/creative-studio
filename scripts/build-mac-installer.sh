@@ -57,15 +57,38 @@ remove_payload_path() {
   esac
 }
 
+binary_has_arch() {
+  local binary="$1"
+  local expected_arch="$2"
+  local arch
+  for arch in $(lipo -archs "$binary" 2>/dev/null); do
+    if [ "$arch" = "$expected_arch" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 echo "Preflight..."
 NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
+HOST_PLATFORM="$(node -p "process.platform")"
+HOST_ARCH="$(node -p "process.arch")"
 if [ "$NODE_MAJOR" != "22" ]; then
   echo "Creative Studio macOS packaging requires Node 22.x on the build host." >&2
   echo "The bundled runtime is Node $NODE_VERSION; mismatched native module ABI can crash better-sqlite3 or sharp." >&2
   exit 1
 fi
+if [ "$HOST_PLATFORM" != "darwin" ]; then
+  echo "Creative Studio macOS packaging must run on macOS; detected $HOST_PLATFORM." >&2
+  exit 1
+fi
+if [ "$HOST_ARCH" != "arm64" ]; then
+  echo "Creative Studio macOS packaging requires an arm64 Node build host; detected $HOST_ARCH." >&2
+  echo "Do not package under Rosetta because native modules would not match the bundled arm64 runtime." >&2
+  exit 1
+fi
 
-for command in iconutil codesign hdiutil sips curl tar npm node clang osascript SetFile; do
+for command in iconutil codesign hdiutil sips curl tar npm node clang lipo osascript SetFile; do
   require_command "$command"
 done
 
@@ -153,14 +176,30 @@ for forbidden in data storage outputs .env.local; do
   fi
 done
 
-for ffbin in \
-  "node_modules/ffmpeg-static/ffmpeg" \
-  "node_modules/ffprobe-static/bin/darwin/arm64/ffprobe"; do
-  if [ ! -x "$PAYLOAD/$ffbin" ]; then
-    echo "Installer payload missing bundled ffmpeg binary: $PAYLOAD/$ffbin" >&2
-    exit 1
+BUNDLED_FFMPEG="$PAYLOAD/node_modules/ffmpeg-static/ffmpeg"
+BUNDLED_FFPROBE="$PAYLOAD/node_modules/ffprobe-static/bin/darwin/arm64/ffprobe"
+if [ ! -x "$BUNDLED_FFMPEG" ]; then
+  echo "Installer payload missing bundled ffmpeg binary: $BUNDLED_FFMPEG" >&2
+  exit 1
+fi
+if ! binary_has_arch "$BUNDLED_FFMPEG" arm64; then
+  echo "Installer payload contains a non-arm64 ffmpeg binary: $BUNDLED_FFMPEG" >&2
+  exit 1
+fi
+if ! "$BUNDLED_FFMPEG" -version >/dev/null 2>&1; then
+  echo "Installer payload contains an unusable ffmpeg binary: $BUNDLED_FFMPEG" >&2
+  exit 1
+fi
+# ffprobe-static 3.1.0 labels its macOS file as arm64 even when the payload is
+# actually x86_64. Shipping that file causes an exec-format error on a clean
+# Apple Silicon Mac. The runtime already has a tested ffmpeg metadata fallback,
+# so omit an unusable ffprobe instead of packaging the wrong architecture.
+if [ -e "$BUNDLED_FFPROBE" ]; then
+  if ! binary_has_arch "$BUNDLED_FFPROBE" arm64 || ! "$BUNDLED_FFPROBE" -version >/dev/null 2>&1; then
+    echo "Removing incompatible bundled ffprobe; metadata probing will use the bundled ffmpeg fallback."
+    rm -f "$BUNDLED_FFPROBE"
   fi
-done
+fi
 
 echo "Generating macOS icon..."
 bash scripts/generate-icns.sh "$APP/Contents/Resources/app.icns"

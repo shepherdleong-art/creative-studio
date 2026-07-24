@@ -67,6 +67,19 @@ function Remove-PayloadPath {
 
 Set-Location $Root
 
+$HostNodeMajor = (& node.exe -p "process.versions.node.split('.')[0]").Trim()
+$HostNodePlatform = (& node.exe -p 'process.platform').Trim()
+$HostNodeArch = (& node.exe -p 'process.arch').Trim()
+if ($HostNodeMajor -ne '22') {
+  throw "Creative Studio Windows packaging requires Node 22.x on the build host; detected major version $HostNodeMajor."
+}
+if ($HostNodePlatform -ne 'win32') {
+  throw "Creative Studio Windows packaging must run on Windows; detected $HostNodePlatform."
+}
+if ($HostNodeArch -ne 'x64') {
+  throw "Creative Studio Windows packaging requires an x64 Node build host; detected $HostNodeArch. Native modules must match the bundled win-x64 runtime."
+}
+
 if ($SkipNpmCi) {
   Write-Host 'Skipping npm ci because -SkipNpmCi was provided.'
 } else {

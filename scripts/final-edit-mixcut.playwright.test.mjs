@@ -424,7 +424,7 @@ try {
       return json({ error: `Unhandled E2E API: ${request.method()} ${pathname}` }, 404);
     });
 
-    const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit&mixcut=v1`;
+    const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
     await page.goto(formalUrl, { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
     await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
@@ -706,11 +706,12 @@ try {
     await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
     assert.equal(await page.getByLabel('选择导出草稿').inputValue(), 'variant-e2e-b', '从预览进入导出必须保持当前草稿，不得回退第一条');
     await page.getByLabel('选择导出草稿').selectOption('variant-e2e');
-    await page.getByText('Mixcut E2E 项目', { exact: true }).waitFor();
-    await page.getByText('E2E-001', { exact: true }).waitFor();
-    await page.getByText('20260724', { exact: true }).waitFor();
-    await page.getByText('成片-E2E-001-20260724.mp4', { exact: true }).waitFor();
-    await page.getByText('工作台/Mixcut E2E 项目/成片/', { exact: true }).waitFor();
+    const exportStep = page.locator('section[aria-labelledby="mixcut-export-heading"]');
+    await exportStep.getByText('Mixcut E2E 项目', { exact: true }).waitFor();
+    await exportStep.getByText('E2E-001', { exact: true }).waitFor();
+    await exportStep.getByText('20260724', { exact: true }).waitFor();
+    await exportStep.getByText('成片-E2E-001-20260724.mp4', { exact: true }).waitFor();
+    await exportStep.getByText('工作台/Mixcut E2E 项目/成片/', { exact: true }).waitFor();
     assert.equal(await page.getByText('model-e2e', { exact: true }).count(), 0, '导出命名不得误用 projects.model');
 
     const renderResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e/render') && response.request().method() === 'POST');
@@ -735,9 +736,12 @@ try {
     assert.equal(await page.getByRole('link', { name: '下载封面' }).getAttribute('href'), '/api/final-edit-jobs/render-job-e2e/cover?download=1');
     assert.equal(await page.locator('section[aria-label="导出结果"] video').getAttribute('src'), '/api/final-edit-jobs/render-job-e2e/video');
     await expectEventually(async () => page.locator('section[aria-label="导出结果"] img').evaluate((image) => image.naturalWidth > 0), '导出封面预览必须真实加载成功');
-    const inlineVideoResponse = await page.request.get(`${server.baseUrl}/api/final-edit-jobs/render-job-e2e/video`);
-    assert.equal(inlineVideoResponse.ok(), true, '导出视频预览 URL 必须返回成功媒体响应');
-    assert.equal((await inlineVideoResponse.body()).length > 0, true, '导出视频预览响应不得为空');
+    const inlineVideoResponse = await page.evaluate(async () => {
+      const response = await fetch('/api/final-edit-jobs/render-job-e2e/video');
+      return { ok: response.ok, size: (await response.arrayBuffer()).byteLength };
+    });
+    assert.equal(inlineVideoResponse.ok, true, '导出视频预览 URL 必须返回成功媒体响应');
+    assert.equal(inlineVideoResponse.size > 0, true, '导出视频预览响应不得为空');
     assert.equal(await page.getByRole('button', { name: '在文件夹中查看' }).count(), 0, '普通 Web 模式不得显示桌面文件定位入口');
 
     revealAvailable = true;

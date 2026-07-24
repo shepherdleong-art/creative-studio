@@ -7,11 +7,14 @@ const materialStep = fs.readFileSync('components/mixcut/MaterialStep.tsx', 'utf8
 const creationStep = fs.readFileSync('components/mixcut/CreationStep.tsx', 'utf8');
 const previewStep = fs.readFileSync('components/mixcut/PreviewStep.tsx', 'utf8');
 const timeline = fs.readFileSync('components/mixcut/MixcutTimeline.tsx', 'utf8');
+const exportStep = fs.readFileSync('components/mixcut/ExportStep.tsx', 'utf8');
 const styles = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
 const page = fs.readFileSync('app/projects/[id]/page.tsx', 'utf8');
+const workbenchTabs = fs.readFileSync('components/ProjectWorkbenchTabs.tsx', 'utf8');
 
-assert.match(page, /mixcut=v1|searchParams\.get\('mixcut'\)/, 'Phase 1 正式 UI 必须有不替换旧第五步的可达入口');
+assert.doesNotMatch(page, /searchParams\.get\('mixcut'\)|showMixcutV1|FinalEditPanel/, 'Phase 7 必须移除查询参数灰度和旧第五步表面');
 assert.match(page, /<MixcutPanel projectId=/, '项目页必须挂载真实 MixcutPanel');
+assert.match(workbenchTabs, /id: 'final-edit', label: '智能混剪'/, '正式第五步标签必须切换为智能混剪');
 assert.match(panel, /\/api\/projects\/\$\{projectId\}\/final-edit\/context/, 'MixcutPanel 必须读取真实 context API');
 assert.match(panel, /AbortController/, '快速切组必须取消旧请求，防止迟到响应覆盖当前组');
 assert.match(panel, /initializeMaterialSelection/, '素材默认选择必须通过按 shotSetId 隔离的领域函数');
@@ -65,7 +68,7 @@ assert.doesNotMatch(creationStep, /apiKey\b/, '新界面不得读取或回显明
 assert.match(styles, /\.fieldLabel textarea\s*{[^}]*min-height:\s*180px/s, '口播文案区必须舒适容纳 15～30 秒内容');
 assert.match(styles, /\.voiceControls\s*{[^}]*grid-template-columns/s);
 assert.match(styles, /@media[\s\S]*\.voiceControls\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s, '宽度不足时文案与音色必须纵向排列');
-assert.match(panel, /useState<0 \| 1 \| 2>/, 'Phase 4 必须把正式预览调整接入第三步');
+assert.match(panel, /useState<0 \| 1 \| 2 \| 3>/, 'Phase 6 必须把正式导出接入第四步');
 assert.match(panel, /\/api\/final-edit-groups\/\$\{job\.groupId\}/, 'prepare 成功后必须按任务精确 groupId 加载草稿');
 assert.match(panel, /<PreviewStep/, '正式 MixcutPanel 必须挂载 PreviewStep');
 assert.match(panel, /<option value="3x4">3:4<\/option><option value="9x16">9:16<\/option>/, '正式入口必须允许选择 V1 的 3:4 和 9:16 全局画幅');
@@ -87,5 +90,9 @@ assert.match(timeline, /视频[\s\S]*字幕[\s\S]*口播[\s\S]*BGM/, '正式时�
 assert.match(styles, /position:\s*sticky/, '轨道标签必须在横向滚动时保持可见');
 assert.match(styles, /overflow:\s*auto/, '正式时间轴必须允许横向和纵向滚动');
 assert.doesNotMatch(panel + previewStep, /localStorage|sessionStorage/, '正式编辑和运行态不得落浏览器 storage');
+assert.match(panel, /<ExportStep/, '正式 MixcutPanel 必须挂载 ExportStep');
+assert.match(exportStep, /导出并写回项目/);
+assert.match(exportStep, /产品型号/);
+assert.match(exportStep, /\/api\/final-edit-variants\/\$\{encodeURIComponent\(variant\.id\)\}\/render/, '正式导出必须创建持久化 render job');
 
 console.log('final-edit mixcut UI contract tests passed');

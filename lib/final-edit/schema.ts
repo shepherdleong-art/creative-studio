@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-const MIGRATIONS: Array<{ version: number; sql: string }> = [
+export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   {
     version: 1,
     sql: `
@@ -196,7 +196,7 @@ export function initFinalEditSchema(db: Database.Database): void {
       appliedAt TEXT NOT NULL
     )
   `);
-  for (const migration of MIGRATIONS) {
+  for (const migration of FINAL_EDIT_MIGRATIONS) {
     const applied = db.prepare(`SELECT 1 FROM final_edit_schema_migrations WHERE version = ?`).get(migration.version);
     if (applied) continue;
     db.transaction(() => {

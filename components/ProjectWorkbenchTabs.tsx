@@ -9,7 +9,7 @@ const TABS: Array<{ id: WorkbenchTabId; label: string; description: string }> = 
   { id: 'storyboard', label: '分镜生成', description: '整理原始分镜并批量生成' },
   { id: 'script', label: '脚本生成', description: '卖点、人群和口播脚本' },
   { id: 'video', label: '视频生成', description: '选择分镜组创建视频任务' },
-  { id: 'final-edit', label: '成片剪辑', description: '配音、字幕、封面和成片导出' },
+  { id: 'final-edit', label: '智能混剪', description: '智能匹配、预览调整和成片导出' },
 ];
 
 interface Props {

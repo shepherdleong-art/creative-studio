@@ -58,7 +58,8 @@ app/                    Next.js 页面与 API 路由
                         以及成片剪辑的 final-edit / final-edit-groups /
                         final-edit-variants / final-edit-jobs /
                         final-edit-assets / final-edit-bgm / final-edit-proposals
-components/             React UI（工作台各面板）；components/final-edit/ 是成片剪辑编辑器；
+components/             React UI（工作台各面板）；components/mixcut/ 是正式第五步“智能混剪”；
+                        components/final-edit/ 保留预览、检查器和 Canvas 等共享编辑能力；
                         components/ui/ 是通用原语（目前只有 Icon.tsx）
 lib/                    核心业务逻辑（见下）
 data/                   本地 SQLite 库 workbench.db（gitignored）
@@ -80,7 +81,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `providers/` — 图片生成适配器：`openai-compatible`、`packy-images`、`packy-gemini-image`、`geekai-json`。
 - `script-providers/` — 脚本（LLM）生成：`gemini`、`openai-compatible`（覆盖 Qwen/Kimi/GPT 等），配置存库。
 - `video-providers/` — 视频生成适配器：`kling`（可灵）、`jimeng`（即梦）。
-- `final-edit/` — 成片剪辑模块（当前迭代重点）：`schema.ts`（独立版本化迁移）、`domain.ts`/`types.ts`（时间线、字幕、文字样式等领域模型）、`renderer.ts`（ffmpeg 渲染成片）、`worker.ts`（渲染任务 drain 循环，重启时把 running 任务恢复为 queued）、`workspace.ts`、`proposal.ts`、`bgm.ts`，以及 `adapters/`（视频分析 `video-analysis.ts`、TTS `tts-registry.ts`/`vapi-qwen-tts.ts`、字幕对齐 `alignment.ts`）。
+- `final-edit/` — “智能混剪”正式第五步的后端：`schema.ts`（独立版本化迁移）、`domain.ts`/`types.ts`（时间线、字幕、文字样式等领域模型）、`renderer.ts`（ffmpeg 渲染成片）、`worker.ts`（渲染任务 drain 循环，重启时把 running 任务恢复为 queued）、`workspace.ts`、`proposal.ts`、`bgm.ts`，以及 `adapters/`（视频分析 `video-analysis.ts`、TTS `tts-registry.ts`/`vapi-qwen-tts.ts`、字幕对齐 `alignment.ts`）。Mixcut 上下文与外部素材必须按 `projectId + shotSetId` 隔离。
 - `ffmpeg.ts` — 解析 ffmpeg/ffprobe 二进制：环境变量 `CREATIVE_STUDIO_FFMPEG`/`CREATIVE_STUDIO_FFPROBE` → ffmpeg-static/ffprobe-static → PATH；封装 `runFfmpeg`（带进度回调、超时、stderr 尾部报错）和 `probeDurationSec`（ffprobe 失败时回退 ffmpeg 解析）。
 - `logger.ts` — 同时写数据库和 `storage/logs/` 文件；会主动脱敏 API Key，不要在日志里打印密钥。
 - `provider-concurrency.ts` / `cost.ts` — 每供应商并发上限；每个 job 记录预估成本。
@@ -120,4 +121,4 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 - `next.config.ts` 使用 `output: 'standalone'`，并通过 `outputFileTracingExcludes` 排除数据/文档/脚本目录；`ffmpeg-static`、`ffprobe-static` 在 `serverExternalPackages` 中，由 `scripts/sync-standalone-assets.mjs` 强制拷入 standalone（`npm run build` 会自动执行）。
 - **Windows**：`scripts/build-win-installer.ps1` 跑生产构建、下载配套私有 Node 运行时、用 Inno Setup（`installer/windows/CreativeStudio.iss`）组装，输出 `dist/windows/CreativeStudioSetup.exe`。默认卸载保留本地数据。
-- **macOS**：`scripts/build-mac-installer.sh` 输出 `dist/macos/产品素材工作台-<version>.dmg`，仅 Apple Silicon。构建机必须用 Node 22.x（内置运行时锁定 Node 22.22.3），主版本不一致会导致 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；还需要 Xcode Command Line Tools。用户侧说明见 `MACOS.md`。
+- **macOS**：`scripts/build-mac-installer.sh` 输出 `dist/macos/产品素材工作台-<version>.dmg`，仅 Apple Silicon。构建机必须用 arm64 Node 22.x（内置运行时锁定 Node 22.22.3），主版本或架构不一致会导致 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；还需要 Xcode Command Line Tools。脚本会校验 FFmpeg 为 arm64，并移除错误标为 arm64 的 x86_64 `ffprobe-static`，由已测试的 FFmpeg 元数据探测回退接管。用户侧说明见 `MACOS.md`。
