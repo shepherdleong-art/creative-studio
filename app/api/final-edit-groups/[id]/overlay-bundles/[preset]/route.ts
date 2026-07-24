@@ -73,7 +73,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     fs.mkdirSync(absoluteDir, { recursive: true });
     fs.writeFileSync(path.join(absoluteDir, 'title.png.tmp'), title); fs.renameSync(path.join(absoluteDir, 'title.png.tmp'), path.join(absoluteDir, 'title.png'));
     for (const [cueId, buffer] of Object.entries(subtitleBuffers)) { const target = path.join(absoluteDir, `subtitle-${cueId}.png`); fs.writeFileSync(`${target}.tmp`, buffer); fs.renameSync(`${target}.tmp`, target); }
-    const manifest = { ...body.manifest, specHash, titleSha256: digest(title), subtitles: Object.fromEntries(Object.entries(subtitleBuffers).map(([key, value]) => [key, digest(value)])) };
+    const manifest = { ...body.manifest, specHash, fonts: { primary: styles.coverPrimary.fontFamily, secondary: styles.coverSecondary.fontFamily, subtitle: styles.subtitle.fontFamily }, titleSha256: digest(title), subtitles: Object.fromEntries(Object.entries(subtitleBuffers).map(([key, value]) => [key, digest(value)])) };
     fs.writeFileSync(path.join(absoluteDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
     getDb().prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)`).run(bundleId, id, preset, group.revision, specHash, JSON.stringify(manifest), relativeDir, new Date().toISOString());
     return NextResponse.json({ id: bundleId, specHash, reused: false }, { status: 201 });

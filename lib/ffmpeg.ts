@@ -162,7 +162,9 @@ function probeWithFfmpeg(filePath: string): Promise<number> {
 
 export interface VideoMediaProbe {
   durationUs: number;
+  /** 显示宽（已按旋转元数据归一：±90/270° 时与 height 交换） */
   width: number;
+  /** 显示高（同上） */
   height: number;
   fps: number;
   format?: string;
@@ -189,7 +191,7 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
     try {
       const child = spawn(
         resolveFfprobeCandidatePath(),
-        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate:format=duration,format_name', '-of', 'json', filePath],
+        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate:stream_tags=rotate:stream_side_data=rotation:format=duration,format_name', '-of', 'json', filePath],
         { windowsHide: true }
       );
       let out = '';
@@ -227,14 +229,18 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
         if (settled || fallbackStarted) return;
         if (code !== 0) { fallbackToFfmpeg(); return; }
         try {
-          const parsed = JSON.parse(out) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string }>; format?: { duration?: string; format_name?: string } };
+          const parsed = JSON.parse(out) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
           const stream = parsed.streams?.[0];
           const durationSec = parseFloat(parsed.format?.duration ?? '');
           if (!stream || !Number.isFinite(durationSec) || !Number(stream.width) || !Number(stream.height)) { fallbackToFfmpeg(); return; }
+          // §7.3 要求读取旋转信息：displaymatrix side data（如 -90）优先，legacy rotate tag 兜底。
+          // 下游（分析/预览/缩略图）统一消费显示尺寸，±90/270° 时交换宽高。
+          const rotation = normalizeRotationDegrees(stream.side_data_list?.find((item) => Number.isFinite(Number(item?.rotation)))?.rotation ?? stream.tags?.rotate);
+          const swap = rotation % 180 === 90;
           finish({
             durationUs: Math.round(durationSec * 1_000_000),
-            width: Number(stream.width) || 0,
-            height: Number(stream.height) || 0,
+            width: Number(swap ? stream.height : stream.width) || 0,
+            height: Number(swap ? stream.width : stream.height) || 0,
             fps: parseFrameRateFraction(stream.r_frame_rate),
             format: parsed.format?.format_name || '',
           });
@@ -283,10 +289,13 @@ function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Prom
       const durationSec = Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3]);
       const fpsMatch = videoLine.match(/(?:,|\s)(\d+(?:\.\d+)?)\s*fps(?:,|\s)/);
       if (!Number.isFinite(durationSec) || durationSec <= 0) { failed('ffmpeg returned an invalid video duration'); return; }
+      // ffmpeg -i 的旋转线索：`rotate : 90`（流元数据）或 `displaymatrix: rotation of -90.00 degrees`。
+      const rotateTag = stderrTail.match(/rotate\s*:\s*(-?\d+)/) || stderrTail.match(/rotation of\s+(-?[\d.]+)\s+degrees/);
+      const swap = normalizeRotationDegrees(rotateTag?.[1]) % 180 === 90;
       finish({
         durationUs: Math.round(durationSec * 1_000_000),
-        width: Number(dimensionsMatch[1]) || 0,
-        height: Number(dimensionsMatch[2]) || 0,
+        width: Number(dimensionsMatch[swap ? 2 : 1]) || 0,
+        height: Number(dimensionsMatch[swap ? 1 : 2]) || 0,
         fps: fpsMatch ? Number(fpsMatch[1]) || 0 : 0,
         format: formatMatch?.[1]?.trim() || '',
       });
@@ -300,6 +309,13 @@ function parseFrameRateFraction(value: string | undefined): number {
   if (!Number.isFinite(numerator)) return 0;
   if (!denominator || !Number.isFinite(denominator)) return numerator;
   return numerator / denominator;
+}
+
+/** 把 ffprobe/ffmpeg 各种来源的旋转角归一到 [0,360)；非法输入按 0 处理 */
+function normalizeRotationDegrees(value: unknown): number {
+  const degrees = Number(value);
+  if (!Number.isFinite(degrees)) return 0;
+  return ((Math.round(degrees) % 360) + 360) % 360;
 }
 
 const filterCache = new Map<string, boolean>();

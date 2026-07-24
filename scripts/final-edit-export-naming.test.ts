@@ -6,18 +6,14 @@ import { FinalEditError } from '../lib/final-edit/workspace.ts';
 import type { ExportIdentity, MixcutErrorCode } from '../lib/final-edit/types.ts';
 
 // ---------------------------------------------------------------------------
-// Phase 0 contract-freeze test for `lib/final-edit/export-naming.ts`.
+// Contract test for `lib/final-edit/export-naming.ts`.
 //
-// That module does NOT exist yet — implementing it is Phase 6's job (see
-// docs/superpowers/plans/2026-07-23-mixcut-technical-execution.md §12,
-// Phase 6: "实现 export-naming.ts、碰撞序号与目录创建"). This file is expected
-// to fail at the `await import(...)` below with a module-not-found error
-// until Phase 6 lands — that failure is the correct, intentional state of
-// the repo right now. Do not "fix" this by stubbing or implementing
-// lib/final-edit/export-naming.ts; the point of this file is to pin down
-// the exact contract (signatures, sanitization, collisions, path safety)
-// that Phase 6 must satisfy. Rules encoded below are from plan §11.1-11.2
-// and product spec §7.5.2.
+// This file was written in Phase 0 as a deliberately-red contract-freeze test
+// (the module did not exist yet); Phase 6 implemented the module against it.
+// It now serves as the protective contract for the naming rules: signatures,
+// sanitization, collisions, path safety. Rules encoded below are from plan
+// §11.1-11.2 and product spec §7.5.2 — keep the implementation aligned with
+// these assertions, not the other way around.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

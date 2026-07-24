@@ -109,6 +109,14 @@ const BEAT_TOLERANCE_US = 200_000;
 const MIN_SEGMENT_DURATION_US = 200_000;
 const EPSILON = 1e-9;
 
+// TODO(v1.1, 计划 §7.4.2 第 4/5 条的已知偏差，2026-07-24 评审确认接受)：
+// 1) 「相邻视觉重复惩罚」未实现——最小费用流的边成本是逐句独立的，无法直接
+//    表达相邻句之间的成对惩罚（等价于二次分配问题）。当前同素材不同场景可
+//    相邻出现而不加价，仅靠 REUSE_PENALTY 递增抑制整体复用。若后续要补，
+//    可在求解后加确定性的局部交换后处理，而不是破坏求解器的纯函数结构。
+// 2) 「可用时长/裁剪损失」只有象征性权重（quality*0.001）——1:1 audio-first
+//    段长恒定下裁剪损失难建模，V1 以质量分微扰替代。
+
 function finiteNumber(value: number, fallback = 0): number {
   return Number.isFinite(value) ? value : fallback;
 }

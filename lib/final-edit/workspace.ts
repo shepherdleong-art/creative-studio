@@ -1060,7 +1060,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const normalizedCachedMatrix = cachedMatrix
         ? normalizeSemanticMatrix({ score_matrix: parseJson(cachedMatrix.semanticScoresJson, []), hook_scores: parseJson(cachedMatrix.hookScoresJson, []) }, semanticSentences.length, semanticScenes.length)
         : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
-      const semanticCacheHit = Boolean(cachedMatrix && !normalizedCachedMatrix.semanticFallback);
+      const semanticCacheHit = Boolean(cachedMatrix && !cachedMatrix.semanticFallback && !normalizedCachedMatrix.semanticFallback);
       let semanticResult = semanticCacheHit
         ? { ...normalizedCachedMatrix, semanticFallback: Boolean(cachedMatrix?.semanticFallback) }
         : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
@@ -1076,7 +1076,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         } catch {
           semanticResult = normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
         }
-        db.prepare(`
+        // fallback（LLM 失败的 0.6 均匀矩阵）不写缓存：一次抖动不得把该输入
+        // 永久绑定到降级结果，下次重跑必须重试 LLM 直至成功（自愈）。
+        if (!semanticResult.semanticFallback) {
+          db.prepare(`
           INSERT INTO final_edit_semantic_matrix_cache
             (cacheKey, scriptHash, scenesFingerprint, providerId, model, promptVersion, semanticScoresJson, hookScoresJson, semanticFallback, createdAt, updatedAt)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1086,9 +1089,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             semanticScoresJson=excluded.semanticScoresJson, hookScoresJson=excluded.hookScoresJson,
             semanticFallback=excluded.semanticFallback, updatedAt=excluded.updatedAt
         `).run(
-          semanticCacheKey, scriptHash, scenesFingerprint, semanticInput.providerId, semanticInput.model, semanticInput.promptVersion,
-          JSON.stringify(semanticResult.semanticScores), JSON.stringify(semanticResult.hookScores), semanticResult.semanticFallback ? 1 : 0, now(), now(),
-        );
+            semanticCacheKey, scriptHash, scenesFingerprint, semanticInput.providerId, semanticInput.model, semanticInput.promptVersion,
+            JSON.stringify(semanticResult.semanticScores), JSON.stringify(semanticResult.hookScores), semanticResult.semanticFallback ? 1 : 0, now(), now(),
+          );
+        }
       }
       const beatResult = deps.detectBeatPoints
         ? await deps.detectBeatPoints({ audioPath: resolveStoragePath(storageRoot, narration.relativePath), durationUs: narration.durationUs })
@@ -1715,6 +1719,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const snapshot = {
       groupRevision: group.revision, variantRevision: variant.revision,
       group: { coverTitle: group.coverTitle, subtitleCues: group.subtitleCues, narrationDurationUs: group.narrationDurationUs },
+      // §10.5：快照必须记录渲染所用字体（标准字体名称/PostScript 名），保证可审计、可复现
+      textStyles: group.textStyles[variant.outputPreset],
       variant, sources, coverRelativePath, narrationRelativePath: toRelative(groupRow.narrationAudioPath),
       bgm: bgmTrack ? { ...bgmTrack, gainDb: variant.bgm.gainDb, loop: variant.bgm.loop, fadeInSec: variant.bgm.fadeInSec, fadeOutSec: variant.bgm.fadeOutSec } : null,
       overlayBundle: { id: input.overlayBundleId, relativeDir: bundle.relativeDir, manifest: parseJson(bundle.manifestJson, {}) },

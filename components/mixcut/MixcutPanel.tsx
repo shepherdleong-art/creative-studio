@@ -60,6 +60,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const [outputPreset, setOutputPreset] = useState<OutputPresetId>('3x4');
   const [activeJob, setActiveJob] = useState<MixcutPrepareJobView | null>(null);
   const [preparedGroup, setPreparedGroup] = useState<FinalEditGroupView | null>(null);
+  const [recentGroups, setRecentGroups] = useState<FinalEditGroupView[]>([]);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [previewingVoice, setPreviewingVoice] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -108,6 +109,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       ]);
       if (requestRef.current?.sequence !== sequence) return;
       setContext(next);
+      setRecentGroups(groupsResult.groups);
       setTtsProviders(providersResult);
       const configuredTts = providersResult.find((provider) => provider.configured) ?? providersResult[0] ?? null;
       setTtsProviderId(configuredTts?.id ?? '');
@@ -232,6 +234,21 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const activeShotSet = context?.shotSets.find((shotSet) => shotSet.id === activeShotSetId) ?? null;
   const selectedIds = materialSelectionForShotSet(selectionByShotSet, activeShotSetId);
   const externalAssets = activeShotSetId ? externalByShotSet[activeShotSetId] ?? [] : [];
+  // 左辅栏「当前步骤概览」与「最近会话」（PRD §6 信息架构）
+  const stepOverviews = [
+    { label: STEPS[0].label, detail: activeShotSet ? `${activeShotSet.name} · 已选 ${selectedIds.length} 条素材` : '请先选择分镜组' },
+    { label: STEPS[1].label, detail: ['queued', 'running'].includes(activeJobStatus) ? `任务${activeJobStatus === 'running' ? '运行中' : '排队中'} ${Math.round((activeJob?.progress ?? 0) * 100)}%` : scriptEditor.editedNarrationText.trim() ? `文案 ${scriptEditor.editedNarrationText.trim().length} 字` : '待选择脚本或填写文案' },
+    { label: STEPS[2].label, detail: preparedGroup ? `${preparedGroup.variants.length} 条时间线草稿` : '等待 AI 创作完成' },
+    { label: STEPS[3].label, detail: preparedGroup ? '可预检并导出' : '等待 AI 创作完成' },
+  ];
+  const sessions = recentGroups.slice(0, 5).map((group) => ({
+    id: group.id,
+    shotSetId: group.shotSetId,
+    title: group.script?.title || '未命名会话',
+    shotSetName: context?.shotSets.find((shotSet) => shotSet.id === group.shotSetId)?.name || group.shotSetId,
+    status: group.status,
+    variantCount: group.variants.length,
+  }));
   const materials: MaterialCardView[] = [
     ...(context?.videoAssets ?? []).map((asset) => ({
       key: `module4:${asset.videoJobId}`,
@@ -578,6 +595,9 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
             activeShotSetId={activeShotSetId}
             selectedCount={selectedIds.length}
             availableVideoCount={materials.filter((material) => material.status === 'ready').length}
+            stepOverview={stepOverviews[activeStep]}
+            sessions={sessions}
+            onSelectSession={selectShotSet}
             onSelectShotSet={selectShotSet}
             disabled={loading || submitting}
           />

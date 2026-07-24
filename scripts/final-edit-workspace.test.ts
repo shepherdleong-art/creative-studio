@@ -226,8 +226,12 @@ const fallbackInput = {
 const semanticFallbackJob = await workspace.start(fallbackInput);
 assert.ok(workspace.load(semanticFallbackJob.groupId).variants[0].issues.some((issue) => issue.code === 'semantic_fallback'));
 await workspace.start(fallbackInput);
-assert.equal(semanticScoreCalls, fallbackCallsBefore + 1, '有效的 fallback 矩阵也必须缓存，重复输入不得再次调用 LLM');
+assert.equal(semanticScoreCalls, fallbackCallsBefore + 2, 'fallback 矩阵不得写入缓存，相同输入必须重试 LLM 而不是永久绑定降级结果');
 failSemanticScore = false;
+await workspace.start(fallbackInput);
+assert.equal(semanticScoreCalls, fallbackCallsBefore + 3, 'LLM 恢复后必须重新评分并写入缓存（自愈）');
+await workspace.start(fallbackInput);
+assert.equal(semanticScoreCalls, fallbackCallsBefore + 3, '自愈后的成功矩阵必须命中缓存，零 LLM 调用');
 assert.deepEqual(MIXCUT_PREPARE_PHASE_RANGES, {
   analyzing: [0, 0.3], synthesizing: [0.3, 0.55], matching: [0.55, 0.8], previewing: [0.8, 1],
 });

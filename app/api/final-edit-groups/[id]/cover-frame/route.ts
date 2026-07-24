@@ -25,8 +25,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return mediaResponse(request, frame.relativePath, 'image/jpeg');
   } catch (error) {
     if (error instanceof CoverFrameError) {
-      return NextResponse.json({ error: error.code }, { status: error.status });
+      return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
     }
-    return NextResponse.json({ error: 'cover_frame_failed' }, { status: 500 });
+    return NextResponse.json({ error: 'cover_frame_failed', message: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }

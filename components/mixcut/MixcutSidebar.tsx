@@ -4,6 +4,24 @@ import styles from './MixcutPanel.module.css';
 
 type ShotSet = MixcutContextResponse['shotSets'][number];
 
+export interface MixcutSessionItem {
+  id: string;
+  shotSetId: string;
+  title: string;
+  shotSetName: string;
+  status: string;
+  variantCount: number;
+}
+
+const SESSION_STATUS_LABELS: Record<string, string> = {
+  editing: '编辑中',
+  queued: '排队中',
+  running: '生成中',
+  ready: '就绪',
+  partial: '部分就绪',
+  failed: '失败',
+};
+
 function formatDuration(durationUs: number): string {
   const totalSeconds = Math.max(0, Math.round(durationUs / 1_000_000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -15,6 +33,9 @@ export function MixcutSidebar({
   activeShotSetId,
   selectedCount,
   availableVideoCount,
+  stepOverview,
+  sessions,
+  onSelectSession,
   onSelectShotSet,
   disabled,
 }: {
@@ -22,6 +43,9 @@ export function MixcutSidebar({
   activeShotSetId: string | null;
   selectedCount: number;
   availableVideoCount: number;
+  stepOverview: { label: string; detail: string };
+  sessions: MixcutSessionItem[];
+  onSelectSession: (shotSetId: string) => void;
   onSelectShotSet: (shotSetId: string) => void;
   disabled?: boolean;
 }) {
@@ -64,6 +88,35 @@ export function MixcutSidebar({
         <Icon name="lock" size={15} />
         <span>只会使用当前组的视频，其他分镜组不会混入本次匹配。</span>
       </div>
+
+      <p className={`${styles.eyebrow} ${styles.sidebarSection}`}>当前步骤</p>
+      <div className={styles.stepOverview} data-step-overview={stepOverview.label}>
+        <strong>{stepOverview.label}</strong>
+        <span>{stepOverview.detail}</span>
+      </div>
+
+      {sessions.length > 0 && (
+        <>
+          <p className={`${styles.eyebrow} ${styles.sidebarSection}`}>最近会话</p>
+          <div className={styles.sessionList}>
+            {sessions.map((session) => (
+              <button
+                type="button"
+                key={session.id}
+                disabled={disabled}
+                onClick={() => onSelectSession(session.shotSetId)}
+                aria-label={`切换到会话 ${session.title}`}
+              >
+                <strong>{session.title}</strong>
+                <small>
+                  {session.shotSetName} · {SESSION_STATUS_LABELS[session.status] ?? session.status}
+                  {session.variantCount > 0 ? ` · ${session.variantCount} 条草稿` : ''}
+                </small>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </aside>
   );
 }

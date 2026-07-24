@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { runFfmpeg, probeDurationSec } from '../ffmpeg.ts';
-import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue } from './types.ts';
+import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue, type TextStyle } from './types.ts';
 import { resolveStoragePath } from './storage-path.ts';
 import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
 import { coverFramingGeometry } from './cover-framing.ts';
@@ -24,6 +24,8 @@ export interface FinalEditRenderSnapshot {
   exportIdentity?: ExportIdentity;
   /** Added in Mixcut Phase 6; worker fills it once for older queued snapshots. */
   exportTarget?: ReservedProjectExportTarget;
+  /** §10.5 字体审计：记录渲染所用文字样式（含 fontFamily）；旧快照恢复时可能缺失。 */
+  textStyles?: { coverPrimary: TextStyle; coverSecondary: TextStyle; subtitle: TextStyle };
 }
 
 async function fileSha256(filePath: string): Promise<string> {
@@ -115,7 +117,10 @@ export async function renderFinalEditSnapshot(input: {
   filters.push(`[0:v]trim=duration=${(FINAL_EDIT_INTRO_DURATION_US / 1_000_000).toFixed(6)},setpts=PTS-STARTPTS,scale=${output.width}:${output.height},fps=24,format=yuv420p[intro]`);
   clips.forEach((clip, index) => filters.push(clipFilter(index + 1, preset, clip.framing)));
   filters.push(`${clips.map((_, index) => `[v${index + 1}]`).join('')}concat=n=${clips.length}:v=1:a=0[body]`);
-  filters.push(`[intro][body]concat=n=2:v=1:a=0[base]`);
+  filters.push(`[intro][body]concat=n=2:v=1:a=0[basepre]`);
+  // §11.4 末段不足时用 tpad=stop_mode=clone 防御性补帧（克隆最后一帧），
+  // 最终 -t 裁到精确时长；正常情况（matcher 精确铺满）下这段尾巴被完整裁掉，不改变输出。
+  filters.push(`[basepre]tpad=stop_mode=clone:stop=0.5[base]`);
   let currentVideo = 'base';
   snapshot.group.subtitleCues.forEach((cue, index) => {
     const next = `subtitle${index}`;
