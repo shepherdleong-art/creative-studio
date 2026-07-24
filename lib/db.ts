@@ -140,11 +140,6 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_job_logs_job ON job_logs(jobId);
   `);
 
-  // Migrations for existing DBs
-  for (const sql of CORE_DB_MIGRATIONS) {
-    try { db.exec(sql); } catch { /* Column already exists */ }
-  }
-
   // Ensure job_logs table exists without FKs (for older DBs)
   db.exec(`
     CREATE TABLE IF NOT EXISTS job_logs (
@@ -314,6 +309,14 @@ function initTables(db: Database.Database) {
     );
 
   `);
+
+  // Run core migrations only after every core table has been created. Some
+  // appended migrations (for example indexes on shots) target tables from
+  // the second schema block above and would otherwise be skipped forever on
+  // a fresh database because this legacy runner intentionally catches errors.
+  for (const sql of CORE_DB_MIGRATIONS) {
+    try { db.exec(sql); } catch { /* Column already exists */ }
+  }
 
   const videoJobMigrations = [
     `ALTER TABLE video_jobs ADD COLUMN lastPolledAt TEXT`,

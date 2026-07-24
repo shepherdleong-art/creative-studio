@@ -106,22 +106,6 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
     `,
   },
   {
-    // `shots` is a core-app table (lib/db.ts), not a final_edit_* table, but
-    // it has zero secondary indexes and lib/final-edit/mixcut-context.ts's
-    // shot-set stats pass now runs a GROUP BY shotSetId query against it on
-    // every final-edit context request — without this index that's a full
-    // table scan of `shots` across every project on every request. This
-    // migration runner just executes arbitrary SQL against the same db
-    // handle initFinalEditSchema() is called on (see lib/db.ts), so an
-    // index on a core-app table is safe to add here; CREATE INDEX IF NOT
-    // EXISTS is idempotent and doesn't conflict with lib/db.ts's own
-    // (unrelated) index creation for other tables.
-    version: 4,
-    sql: `
-      CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId);
-    `,
-  },
-  {
     version: 5,
     sql: `
       CREATE TABLE IF NOT EXISTS final_edit_external_assets (

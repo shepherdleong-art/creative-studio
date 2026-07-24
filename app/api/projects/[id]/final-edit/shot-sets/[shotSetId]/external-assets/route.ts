@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
-import { readShotSetExternalAssetImportFormData } from '@/lib/final-edit/material-import-http';
+import { importShotSetExternalAssetsFromFormData } from '@/lib/final-edit/material-import-http';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 
 export const runtime = 'nodejs';
@@ -23,15 +23,11 @@ export async function POST(
 ) {
   try {
     const { id: projectId, shotSetId } = await params;
-    const { files } = await readShotSetExternalAssetImportFormData(request);
-    const result = await getFinalEditWorkspace().importShotSetExternalAssets({ projectId, shotSetId, files });
-    if (!result.assets.some((asset) => asset.status === 'ready')) {
-      return NextResponse.json({
-        error: 'external_asset_import_failed',
-        message: '没有文件导入成功',
-        ...result,
-      }, { status: 400 });
-    }
+    const workspace = getFinalEditWorkspace();
+    const result = await importShotSetExternalAssetsFromFormData(
+      request,
+      (files) => workspace.importShotSetExternalAssets({ projectId, shotSetId, files }),
+    );
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
     return finalEditErrorResponse(error);

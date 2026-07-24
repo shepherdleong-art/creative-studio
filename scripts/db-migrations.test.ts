@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import Database from 'better-sqlite3';
 import { CORE_DB_MIGRATIONS } from '../lib/db-migrations.ts';
 
@@ -33,6 +35,11 @@ db.exec(`
     name TEXT NOT NULL
   );
 
+  CREATE TABLE shots (
+    id TEXT PRIMARY KEY,
+    shotSetId TEXT NOT NULL
+  );
+
   INSERT INTO providers (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled)
   VALUES ('image-provider', 'Image Provider', 'https://old.image', 'IMAGE_API_KEY', '', 'gpt-image-2', 'openai-compatible', 1);
 
@@ -53,6 +60,22 @@ for (const sql of CORE_DB_MIGRATIONS) {
     // Match production migration behavior for columns/tables that do not exist in this old schema.
   }
 }
+
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-1),
+  `CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId)`,
+  'new core migrations must be appended without rewriting published entries',
+);
+const shotIndexes = db.prepare(`PRAGMA index_list(shots)`).all() as Array<{ name: string }>;
+assert.ok(
+  shotIndexes.some((index) => index.name === 'idx_shots_shotset'),
+  'the shots lookup index belongs to the core migration stream',
+);
+const dbSource = fs.readFileSync(path.join(process.cwd(), 'lib/db.ts'), 'utf8');
+assert.ok(
+  dbSource.indexOf('CREATE TABLE IF NOT EXISTS shots') < dbSource.indexOf('for (const sql of CORE_DB_MIGRATIONS)'),
+  'fresh databases must create shots before applying its appended index migration',
+);
 
 const columns = db.prepare(`PRAGMA table_info(providers)`).all() as Array<{ name: string }>;
 assert.ok(

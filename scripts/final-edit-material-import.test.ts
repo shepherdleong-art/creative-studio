@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { probeVideoMedia, runFfmpeg } from '../lib/ffmpeg.ts';
 import { initFinalEditSchema } from '../lib/final-edit/schema.ts';
-import { readShotSetExternalAssetImportFormData } from '../lib/final-edit/material-import-http.ts';
+import { importShotSetExternalAssetsFromFormData } from '../lib/final-edit/material-import-http.ts';
 import { createFinalEditWorkspace, FinalEditError } from '../lib/final-edit/workspace.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-material-import-'));
@@ -91,11 +91,37 @@ const form = new FormData();
 form.set('projectId', 'project-b');
 form.set('shotSetId', 'set-c');
 form.append('files', new File([sourceBytes], '../../client-name.mp4', { type: 'video/mp4' }));
-const parsedForm = await readShotSetExternalAssetImportFormData(new Request('http://local/import', { method: 'POST', body: form }));
-assert.equal(parsedForm.files.length, 1);
-assert.equal(parsedForm.files[0].filename, '../../client-name.mp4');
-assert.deepEqual(parsedForm.files[0].data, sourceBytes, 'FormData bytes must be read directly, not JSON-stringified');
-assert.ok(!('projectId' in parsedForm) && !('shotSetId' in parsedForm), 'ownership must never come from FormData');
+let stagedUploadPath = '';
+const parsedResult = await importShotSetExternalAssetsFromFormData(
+  new Request('http://local/import', { method: 'POST', body: form }),
+  async (files) => {
+    assert.equal(files.length, 1, 'multipart uploads must be processed one file at a time');
+    assert.equal(files[0].filename, '../../client-name.mp4');
+    assert.ok('temporaryPath' in files[0], 'HTTP uploads should be staged to disk instead of retained as batch Buffers');
+    stagedUploadPath = files[0].temporaryPath;
+    assert.deepEqual(fs.readFileSync(stagedUploadPath), sourceBytes, 'FormData bytes must be streamed without JSON conversion');
+    return { assets: [], errors: [] };
+  },
+);
+assert.deepEqual(parsedResult, { assets: [], errors: [] });
+assert.equal(fs.existsSync(stagedUploadPath), false, 'staged request files must be cleaned after processing');
+const failingForm = new FormData();
+failingForm.append('files', new File([sourceBytes], 'cleanup.mp4', { type: 'video/mp4' }));
+let failedStagedPath = '';
+await assert.rejects(
+  () => importShotSetExternalAssetsFromFormData(
+    new Request('http://local/import', { method: 'POST', body: failingForm }),
+    async (files) => {
+      failedStagedPath = 'temporaryPath' in files[0] ? files[0].temporaryPath : '';
+      throw new FinalEditError('shot_set_not_found', '测试请求级失败', 404);
+    },
+  ),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'shot_set_not_found',
+);
+assert.equal(fs.existsSync(failedStagedPath), false, 'request-level failures must clean staged bytes');
+const parsedForm = {
+  files: [{ filename: '../../client-name.mp4', mimeType: 'video/mp4', data: sourceBytes }],
+};
 
 const workspace = createFinalEditWorkspace({
   db,
@@ -125,9 +151,10 @@ const preGroupForm = new FormData();
 preGroupForm.set('projectId', 'project-b');
 preGroupForm.set('shotSetId', 'set-c');
 preGroupForm.append('files', new File([sourceBytes], 'pre-group.mp4', { type: 'video/mp4' }));
-const preGroupParsed = await readShotSetExternalAssetImportFormData(new Request('http://local/import', { method: 'POST', body: preGroupForm }));
-assert.ok(!('expectedRevision' in preGroupParsed));
-const preGroup = await workspace.importShotSetExternalAssets({ projectId: 'project-a', shotSetId: 'set-pre', files: preGroupParsed.files });
+const preGroup = await importShotSetExternalAssetsFromFormData(
+  new Request('http://local/import', { method: 'POST', body: preGroupForm }),
+  (files) => workspace.importShotSetExternalAssets({ projectId: 'project-a', shotSetId: 'set-pre', files }),
+);
 assert.equal(preGroup.assets.length, 1);
 assert.equal(preGroup.assets[0].projectId, 'project-a');
 assert.equal(preGroup.assets[0].shotSetId, 'set-pre');
@@ -263,17 +290,29 @@ assert.ok(fs.existsSync(path.join(storageRoot, firstRow.relativePath)));
 const rejectedForm = new FormData();
 rejectedForm.append('files', new File([Buffer.from('not an image either')], 'still.png', { type: 'image/png' }));
 rejectedForm.append('files', new File([Buffer.from('plain text')], 'notes.txt', { type: 'text/plain' }));
-const rejectedUploads = await readShotSetExternalAssetImportFormData(new Request('http://local/import', { method: 'POST', body: rejectedForm }));
-const rejected = await workspace.importShotSetExternalAssets({ projectId: 'project-a', shotSetId: 'set-a', ...rejectedUploads });
+const rejected = await importShotSetExternalAssetsFromFormData(
+  new Request('http://local/import', { method: 'POST', body: rejectedForm }),
+  (files) => workspace.importShotSetExternalAssets({ projectId: 'project-a', shotSetId: 'set-a', files }),
+);
 assert.equal(rejected.assets.length, 0);
 assert.deepEqual(rejected.errors.map((item) => item.error), ['unsupported_media_kind', 'unsupported_video_format']);
+await assert.rejects(
+  () => importShotSetExternalAssetsFromFormData(
+    new Request('http://local/import', { method: 'POST', body: new FormData() }),
+    (files) => workspace.importShotSetExternalAssets({ projectId: 'project-a', shotSetId: 'set-a', files }),
+  ),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'files_required',
+  'empty multipart requests remain request-level 4xx errors',
+);
 
-const spoofed = await workspace.importShotSetExternalAssets({
-  projectId: 'project-a',
-  shotSetId: 'set-invalid',
-  files: [{ filename: 'spoofed.webm', mimeType: 'video/webm', data: sourceBytes }],
-});
+const spoofedForm = new FormData();
+spoofedForm.append('files', new File([sourceBytes], 'spoofed.webm', { type: 'video/webm' }));
+const spoofed = await importShotSetExternalAssetsFromFormData(
+  new Request('http://local/import', { method: 'POST', body: spoofedForm }),
+  (files) => workspace.importShotSetExternalAssets({ projectId: 'project-a', shotSetId: 'set-invalid', files }),
+);
 assert.equal(spoofed.errors[0].error, 'video_format_mismatch');
+assert.equal(spoofed.assets.length, 1, 'all-file failures still return a parseable result containing the failed asset');
 assert.equal(spoofed.assets[0].status, 'failed', 'probe-stage failures must remain visible after refresh');
 assert.equal(workspace.listShotSetExternalAssets('project-a', 'set-invalid')[0].status, 'failed');
 assert.throws(
@@ -291,9 +330,12 @@ assert.equal(unsafeImport.errors[0].error, 'unsafe_path');
 assert.deepEqual(fs.readdirSync(outside), [], 'symlinked owner directory must never receive bytes');
 
 const canonicalRoute = fs.readFileSync(path.join(process.cwd(), 'app/api/projects/[id]/final-edit/shot-sets/[shotSetId]/external-assets/route.ts'), 'utf8');
-assert.match(canonicalRoute, /readShotSetExternalAssetImportFormData\(request\)/);
+assert.match(canonicalRoute, /importShotSetExternalAssetsFromFormData\(/);
 assert.match(canonicalRoute, /importShotSetExternalAssets\(\{ projectId, shotSetId, files \}\)/);
+assert.doesNotMatch(canonicalRoute, /status === ['"]ready['"]/, 'all-file failures must remain a parseable success response');
 assert.doesNotMatch(canonicalRoute, /expectedRevision/, 'pre-group canonical import must not invent revision semantics');
+const finalEditSchemaSource = fs.readFileSync(path.join(process.cwd(), 'lib/final-edit/schema.ts'), 'utf8');
+assert.doesNotMatch(finalEditSchemaSource, /idx_shots_shotset/, 'core shots indexes must not be owned by final-edit migrations');
 const deleteRoute = fs.readFileSync(path.join(process.cwd(), 'app/api/projects/[id]/final-edit/shot-sets/[shotSetId]/external-assets/[assetId]/route.ts'), 'utf8');
 assert.match(deleteRoute, /deleteShotSetExternalAsset\(\{ projectId, shotSetId, assetId \}\)/);
 
