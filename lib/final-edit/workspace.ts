@@ -13,6 +13,11 @@ import { getFinalEditTtsAdapter } from './adapters/tts-registry.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
 import { buildMixcutContext } from './mixcut-context.ts';
 import {
+  buildMixcutTaskScriptSnapshot,
+  type MixcutSourceScript,
+  type MixcutTaskScriptSnapshot,
+} from './mixcut-script.ts';
+import {
   deleteShotSetExternalAsset as deleteImportedShotSetExternalAsset,
   importShotSetExternalAssets as importUploadedShotSetExternalAssets,
   listShotSetExternalAssets as listImportedShotSetExternalAssets,
@@ -48,15 +53,7 @@ interface ScriptSegment {
   subtitle: string;
 }
 
-interface ScriptSnapshot {
-  version: number;
-  title: string;
-  coverTitleParts?: { primary: string; secondary: string };
-  targetDurationSec: number;
-  shotSetId: string;
-  segments: ScriptSegment[];
-  fullScript: string;
-}
+type ScriptSnapshot = MixcutTaskScriptSnapshot;
 
 interface VideoAnalysisResult {
   summary: string;
@@ -90,11 +87,20 @@ export interface FinalEditWorkspaceDependencies {
     narrationHash: string;
   }): Promise<NarrationArtifact>;
   estimateAnalysisCost?(input: { providerId: string; requestCount: number }): number;
+  validateAnalysisProvider?(providerId: string): boolean;
+  validateTtsProvider?(providerId: string): boolean;
 }
 
 export interface PreflightInput {
   projectId: string;
-  scriptDraftId: string;
+  scriptDraftId?: string;
+  shotSetId?: string;
+  editedNarrationText?: string;
+  selectedMaterialKeys?: string[];
+  providerId?: string;
+  voice?: string;
+  speed?: number;
+  analysisProviderId?: string;
   count: number;
   outputPreset: OutputPresetId;
 }
@@ -131,7 +137,8 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_cover_title_part_text'; part: 'primary' | 'secondary'; text: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_text_style'; preset: OutputPresetId; target: 'coverPrimary' | 'coverSecondary' | 'subtitle'; style: TextStyle }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'reset_text_style'; preset: OutputPresetId; target: 'coverPrimary' | 'coverSecondary' | 'subtitle' }
-  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_title_preset'; presetId: string };
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_title_preset'; presetId: string }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_mixcut_script_state'; editedNarrationText: string; selectedMaterialKeys: string[]; voice: string; speed: number };
 
 export interface EnqueueRenderInput {
   groupId: string;
@@ -183,7 +190,16 @@ export class FinalEditError extends Error {
   }
 }
 
+export const MIXCUT_PREPARE_PHASE_RANGES = {
+  analyzing: [0, 0.3],
+  synthesizing: [0.3, 0.55],
+  matching: [0.55, 0.8],
+  previewing: [0.8, 1],
+} as const;
+
 interface AssetRow {
+  assetKey?: string;
+  source?: 'module4' | 'external';
   videoJobId: string;
   shotSetId: string;
   shotId: string | null;
@@ -205,14 +221,35 @@ function parseJson<T>(value: string, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 function sha256(value: string | Buffer) { return crypto.createHash('sha256').update(value).digest('hex'); }
-function scriptFromDb(db: Database.Database, projectId: string, scriptDraftId: string): ScriptSnapshot {
-  const row = db.prepare(`SELECT projectId, outputJson FROM script_drafts WHERE id = ?`).get(scriptDraftId) as { projectId: string; outputJson: string } | undefined;
-  if (!row || row.projectId !== projectId) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
-  const script = parseJson<ScriptSnapshot | null>(row.outputJson, null);
-  if (!script || script.version !== 2 || !script.shotSetId || !Array.isArray(script.segments) || script.segments.length === 0) {
+function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'projectId' | 'scriptDraftId' | 'shotSetId' | 'editedNarrationText'>): ScriptSnapshot {
+  const scriptDraftId = String(input.scriptDraftId || '').trim();
+  if (!scriptDraftId) {
+    try {
+      return buildMixcutTaskScriptSnapshot({ shotSetId: String(input.shotSetId || ''), editedNarrationText: String(input.editedNarrationText || '') });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : String(error);
+      if (code === 'shot_set_required') throw new FinalEditError('shot_set_required', '手工文案必须明确当前分镜组');
+      throw new FinalEditError('narration_text_required', '请输入混剪文案');
+    }
+  }
+  const row = db.prepare(`SELECT projectId, outputJson, createdAt FROM script_drafts WHERE id = ?`).get(scriptDraftId) as { projectId: string; outputJson: string; createdAt: string } | undefined;
+  if (!row || row.projectId !== input.projectId) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
+  const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
+  if (!source || source.version !== 2 || !source.shotSetId || !Array.isArray(source.segments) || source.segments.length === 0) {
     throw new FinalEditError('script_invalid_v2', '脚本不是可用的 v2 脚本');
   }
-  return script;
+  if (input.shotSetId && source.shotSetId !== input.shotSetId) throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
+  try {
+    return buildMixcutTaskScriptSnapshot({
+      sourceDraftId: scriptDraftId,
+      sourceScriptUpdatedAt: row.createdAt || null,
+      sourceScript: source,
+      shotSetId: source.shotSetId,
+      editedNarrationText: String(input.editedNarrationText == null ? source.segments.map((segment) => segment.narration || segment.subtitle || '').join('\n') : input.editedNarrationText),
+    });
+  } catch {
+    throw new FinalEditError('narration_text_required', '请输入混剪文案');
+  }
 }
 
 function assetsForScript(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string): AssetRow[] {
@@ -221,12 +258,50 @@ function assetsForScript(db: Database.Database, storageRoot: string, projectId: 
     FROM video_jobs
     WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
     ORDER BY id
-  `).all(projectId, shotSetId) as AssetRow[];
+  `).all(projectId, shotSetId) as Array<Omit<AssetRow, 'assetKey' | 'source'>>;
   return rows.filter((row) => {
     try {
       const resolved = resolveStoragePath(storageRoot, row.localVideoPath, { allowAbsolute: true });
       return fs.existsSync(resolved) && fs.statSync(resolved).isFile();
     } catch { return false; }
+  }).map((row) => ({ ...row, assetKey: `module4:${row.videoJobId}`, source: 'module4' as const }));
+}
+
+function selectedAssets(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string, requestedKeys?: string[]): AssetRow[] {
+  const module4 = assetsForScript(db, storageRoot, projectId, shotSetId);
+  const requested = requestedKeys == null ? module4.map((asset) => asset.assetKey!) : [...new Set(requestedKeys.map(String))];
+  if (requested.length === 0) throw new FinalEditError('materials_required', '请至少选择一个可用视频素材');
+  const module4ByKey = new Map(module4.map((asset) => [asset.assetKey, asset]));
+  return requested.map((assetKey) => {
+    const moduleAsset = module4ByKey.get(assetKey);
+    if (moduleAsset) return moduleAsset;
+    if (assetKey.startsWith('module4:')) throw new FinalEditError('material_not_ready', '所选模块 4 素材不存在、未完成或不属于当前分镜组');
+    if (!assetKey.startsWith('external:')) throw new FinalEditError('material_key_invalid', '素材标识格式无效');
+    const assetId = assetKey.slice('external:'.length);
+    const row = db.prepare(`
+      SELECT id, projectId, shotSetId, originalFilename, relativePath, durationUs, status
+      FROM final_edit_external_assets WHERE id=?
+    `).get(assetId) as { id: string; projectId: string; shotSetId: string; originalFilename: string; relativePath: string; durationUs: number; status: string } | undefined;
+    if (!row || row.projectId !== projectId || row.shotSetId !== shotSetId || row.status !== 'ready') {
+      throw new FinalEditError('material_not_ready', '所选外部素材不存在、未完成或不属于当前分镜组');
+    }
+    let absolutePath: string;
+    try { absolutePath = resolveStoragePath(storageRoot, row.relativePath); }
+    catch { throw new FinalEditError('material_not_ready', '所选外部素材路径无效'); }
+    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) throw new FinalEditError('material_not_ready', '所选外部素材文件缺失');
+    return {
+      assetKey,
+      source: 'external',
+      // Keep filesystem/cache namespaces portable to Windows. The canonical
+      // selected key remains external:<id>; only this internal media id avoids
+      // the colon that Windows filenames reject.
+      videoJobId: `external-asset-${assetId}`,
+      shotSetId,
+      shotId: null,
+      filename: row.originalFilename,
+      localVideoPath: absolutePath,
+      durationSec: Number(row.durationUs || 0) / 1_000_000,
+    };
   });
 }
 
@@ -470,10 +545,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   const preflight = async (input: PreflightInput): Promise<CapacityEstimate> => {
     if (!Number.isInteger(input.count) || input.count < 1 || input.count > 5) throw new FinalEditError('invalid_count', '生成数量必须是 1～5');
     if (!(input.outputPreset in OUTPUT_PRESETS)) throw new FinalEditError('invalid_output_preset', '不支持的输出比例');
+    if (input.selectedMaterialKeys !== undefined && !Array.isArray(input.selectedMaterialKeys)) throw new FinalEditError('material_key_invalid', '素材选择必须是数组');
     const project = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(input.projectId);
     if (!project) throw new FinalEditError('project_not_found', '项目不存在', 404);
-    const script = scriptFromDb(db, input.projectId, input.scriptDraftId);
-    const assets = assetsForScript(db, storageRoot, input.projectId, script.shotSetId);
+    const script = resolveTaskScript(db, input);
+    const assets = selectedAssets(db, storageRoot, input.projectId, script.shotSetId, input.selectedMaterialKeys);
     if (assets.length === 0) throw new FinalEditError('no_succeeded_videos', '当前脚本分镜组没有可读取的成功视频');
     const totalSec = assets.reduce((sum, asset) => sum + Math.max(0, Number(asset.durationSec || 0)) * 0.7, 0);
     const estimatedCompleteCount = Math.min(input.count, Math.floor(totalSec / Math.max(1, script.targetDurationSec)));
@@ -481,7 +557,21 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const warnings: string[] = [];
     if (estimatedCompleteCount < input.count) warnings.push(`预计只有 ${estimatedCompleteCount} 条可完整覆盖，其余草稿会保留缺口`);
     if (coverCandidateCount < input.count) warnings.push('独特封面底图不足，重复封面将阻止导出');
-    return { assetCount: assets.length, videoJobIds: assets.map((asset) => asset.videoJobId), coverCandidateCount, requestedCount: input.count, estimatedCompleteCount, warnings };
+    let estimatedCost: number | null = null;
+    if (input.providerId) {
+      if (!input.voice?.trim()) throw new FinalEditError('tts_selection_required', '必须明确选择音色');
+      if (!Number.isFinite(input.speed) || Number(input.speed) < 0.5 || Number(input.speed) > 2) throw new FinalEditError('invalid_tts_speed', '语速必须在 0.5～2.0 之间');
+      const provider = db.prepare(`SELECT costPerThousandCharacters FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(input.providerId) as { costPerThousandCharacters: number } | undefined;
+      if (!provider) throw new FinalEditError('tts_provider_unavailable', '口播配音供应商不存在或未启用');
+      if (deps.validateTtsProvider && !deps.validateTtsProvider(input.providerId)) throw new FinalEditError('tts_provider_unconfigured', '口播配音供应商尚未配置 API Key');
+      const ttsCost = getFinalEditTtsAdapter(input.providerId).estimateCost({ text: script.segments.map((segment) => segment.narration).join(''), costPerThousandCharacters: provider.costPerThousandCharacters });
+      if (input.analysisProviderId && deps.validateAnalysisProvider && !deps.validateAnalysisProvider(input.analysisProviderId)) {
+        throw new FinalEditError('analysis_provider_unavailable', '视觉分析供应商不存在、未配置或不支持图片理解');
+      }
+      const analysisCost = input.analysisProviderId && deps.estimateAnalysisCost ? deps.estimateAnalysisCost({ providerId: input.analysisProviderId, requestCount: assets.length }) : 0;
+      estimatedCost = Number((ttsCost + analysisCost).toFixed(6));
+    }
+    return { assetCount: assets.length, videoJobIds: assets.map((asset) => asset.videoJobId), coverCandidateCount, requestedCount: input.count, estimatedCompleteCount, estimatedCost, costCurrency: 'CNY', warnings };
   };
 
   const load = (groupId: string): FinalEditGroupView => {
@@ -501,21 +591,38 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       renderStatus: (db.prepare(`SELECT status FROM final_edit_jobs WHERE variantId = ? AND kind = 'render' ORDER BY createdAt DESC LIMIT 1`).get(String(row.id)) as { status: string } | undefined)?.status || null,
     } satisfies FinalEditVariantView));
     const script = parseJson<ScriptSnapshot>(String(group.scriptSnapshotJson), {} as ScriptSnapshot);
-    const assets = assetsForScript(db, storageRoot, String(group.projectId), String(group.shotSetId)).map((asset) => {
+    const selectedKeys = parseJson<unknown[]>(String(group.selectedMaterialKeysJson || '[]'), []).map(String);
+    const selectedKeySet = new Set(selectedKeys);
+    const module4Assets = assetsForScript(db, storageRoot, String(group.projectId), String(group.shotSetId))
+      .filter((asset) => selectedKeySet.size === 0 || selectedKeySet.has(asset.assetKey!));
+    const externalAssets = selectedKeys.filter((key) => key.startsWith('external:')).flatMap((assetKey) => {
+      const id = assetKey.slice('external:'.length);
+      const row = db.prepare(`SELECT id, shotSetId, originalFilename, relativePath, durationUs FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?`).get(id, String(group.projectId), String(group.shotSetId)) as { id: string; shotSetId: string; originalFilename: string; relativePath: string; durationUs: number } | undefined;
+      if (!row) return [];
+      return [{ assetKey, source: 'external' as const, videoJobId: `external-asset-${id}`, shotSetId: row.shotSetId, shotId: null, filename: row.originalFilename, localVideoPath: row.relativePath, durationSec: row.durationUs / 1_000_000 }];
+    });
+    const assets = [...module4Assets, ...externalAssets].map((asset) => {
       const analysis = db.prepare(`SELECT * FROM final_edit_asset_analysis WHERE videoJobId = ?`).get(asset.videoJobId) as Record<string, unknown> | undefined;
       const generated = analysis ? parseJson<VideoAnalysisResult>(String(analysis.generatedJson), {} as VideoAnalysisResult) : null;
       const manual = analysis ? parseJson<Partial<VideoAnalysisResult>>(String(analysis.manualOverrideJson), {}) : {};
       const effective = generated ? { ...generated, ...manual } : null;
       const fingerprint = analysis ? String(analysis.fileFingerprint) : '';
-      const relative = path.relative(storageRoot, asset.localVideoPath).split(path.sep).map(encodeURIComponent).join('/');
       const usage = db.prepare(`SELECT COUNT(*) AS count FROM final_edit_usage WHERE assetKind = 'video' AND assetKey = ?`).get(fingerprint) as { count: number };
+      const externalId = asset.source === 'external' ? asset.assetKey!.slice('external:'.length) : null;
+      const relative = asset.source === 'external' ? '' : path.relative(storageRoot, asset.localVideoPath).split(path.sep).map(encodeURIComponent).join('/');
       return {
+        assetKey: asset.assetKey,
+        source: asset.source,
         videoJobId: asset.videoJobId,
         shotSetId: asset.shotSetId,
         shotId: asset.shotId,
         filename: asset.filename || asset.videoJobId,
-        previewUrl: `/api/videos/${relative}`,
-        thumbnailUrl: `/api/final-edit-groups/${groupId}/assets/${asset.videoJobId}/thumbnail`,
+        previewUrl: externalId
+          ? `/api/projects/${String(group.projectId)}/final-edit/shot-sets/${String(group.shotSetId)}/external-assets/${externalId}/media`
+          : `/api/videos/${relative}`,
+        thumbnailUrl: externalId
+          ? `/api/projects/${String(group.projectId)}/final-edit/shot-sets/${String(group.shotSetId)}/external-assets/${externalId}/thumbnail`
+          : `/api/final-edit-groups/${groupId}/assets/${asset.videoJobId}/thumbnail`,
         durationUs: Number(parseJson<{ durationUs?: number }>(String(analysis?.mediaJson || '{}'), {}).durationUs || Number(asset.durationSec || 0) * 1_000_000),
         fingerprint,
         analysisStatus: (analysis?.status || 'pending') as FinalEditAssetView['analysisStatus'],
@@ -524,7 +631,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         usageCount: Number(usage?.count || 0),
       } satisfies FinalEditAssetView;
     });
-    const jobs = db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as FinalEditGroupView['jobs'];
+    const jobs = db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage, startedAt, finishedAt, createdAt FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as FinalEditGroupView['jobs'];
     const bgmTracks = db.prepare(`SELECT id, relativePath, durationUs FROM final_edit_bgm_tracks WHERE status='ready' ORDER BY relativePath`).all() as FinalEditGroupView['bgmTracks'];
     const imageCoverCandidates = db.prepare(`SELECT ia.id FROM shots s JOIN image_assets ia ON ia.id=s.latestGeneratedImageId WHERE s.shotSetId=? AND s.latestGeneratedImageId IS NOT NULL ORDER BY s.indexNum`).all(String(group.shotSetId)) as Array<{ id: string }>;
     const videoCoverCandidates = (db.prepare(`
@@ -544,6 +651,19 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     return {
       id: String(group.id), projectId: String(group.projectId), scriptDraftId: String(group.scriptDraftId), shotSetId: String(group.shotSetId),
       status: String(group.status), phase: String(group.phase), revision: Number(group.revision),
+      script: {
+        sourceDraftId: String(group.scriptDraftId || '') || null,
+        title: script.title || '',
+        importedNarrationText: script.sourceNarrationText || '',
+        editedNarrationText: String(group.editedNarrationText || script.editedNarrationText || script.fullScript || ''),
+        syncState: group.scriptSyncState === 'modified' ? 'modified' : 'synced',
+        sourceScriptUpdatedAt: group.sourceScriptUpdatedAt == null ? null : String(group.sourceScriptUpdatedAt),
+        narrationConfig: (() => {
+          const config = parseJson<{ providerId?: unknown; voice?: unknown; speed?: unknown }>(String(group.narrationConfigJson), {});
+          return { providerId: String(config.providerId || ''), voice: String(config.voice || ''), speed: Number(config.speed || 1) };
+        })(),
+        selectedMaterialKeys: selectedKeys,
+      },
       narrationDurationUs: Number(group.narrationDurationUs),
       totalDurationUs: FINAL_EDIT_INTRO_DURATION_US + Number(group.narrationDurationUs),
       coverTitle: parseJson(String(group.coverTitleJson), { primary: { id: 'primary', text: script.title, textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } }),
@@ -579,10 +699,16 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   const prepare = async (jobId: string, groupId: string, input: StartFinalEditInput, script: ScriptSnapshot): Promise<void> => {
-    const updateJob = (phase: string, progress: number) => db.prepare(`UPDATE final_edit_jobs SET status = 'running', phase = ?, progress = ?, startedAt = COALESCE(startedAt, ?) WHERE id = ?`).run(phase, progress, now(), jobId);
+    const phaseRank = (phase: string) => ['analyzing', 'synthesizing', 'matching', 'previewing'].indexOf(phase);
+    const updateJob = (phase: string, progress: number) => {
+      const current = db.prepare(`SELECT phase, progress FROM final_edit_jobs WHERE id=? AND status='running'`).get(jobId) as { phase: string; progress: number } | undefined;
+      if (!current) return;
+      if (progress < current.progress || (progress === current.progress && phaseRank(phase) < phaseRank(current.phase))) return;
+      db.prepare(`UPDATE final_edit_jobs SET phase=?, progress=? WHERE id=? AND status='running'`).run(phase, progress, jobId);
+    };
     try {
-      updateJob('analyzing', 0.1);
-      const rows = assetsForScript(db, storageRoot, input.projectId, script.shotSetId);
+      updateJob('analyzing', 0);
+      const rows = selectedAssets(db, storageRoot, input.projectId, script.shotSetId, input.selectedMaterialKeys);
       const prepared: PreparedAsset[] = [];
       for (const row of rows) {
         const fingerprint = sha256(fs.readFileSync(row.localVideoPath));
@@ -633,11 +759,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           autoUseDisabled: Boolean(analysisState?.autoUseDisabled),
           existingUsageCount: Number(usage?.count || 0),
         });
-        updateJob('analyzing', 0.1 + prepared.length / Math.max(1, rows.length) * 0.3);
+        updateJob('analyzing', prepared.length / Math.max(1, rows.length) * 0.3);
       }
       if (prepared.length === 0) throw new FinalEditError('no_succeeded_videos', '没有可读取的视频素材');
 
-      updateJob('synthesizing', 0.45);
+      updateJob('synthesizing', 0.3);
       const narrationHash = String((db.prepare(`SELECT narrationHash FROM final_edit_groups WHERE id = ?`).get(groupId) as { narrationHash: string }).narrationHash);
       const normalizedSegments = script.segments.map((segment, index) => ({ segmentId: segment.id || `segment-${index + 1}`, narration: segment.narration }));
       const existingNarration = db.prepare(`SELECT narrationAudioPath, narrationDurationUs, wordTimingsJson, subtitleStateJson FROM final_edit_groups WHERE id=?`).get(groupId) as { narrationAudioPath: string | null; narrationDurationUs: number; wordTimingsJson: string; subtitleStateJson: string };
@@ -653,10 +779,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               return { segmentId: segment.segmentId, startUs: Math.min(...matching.map((cue) => cue.startUs)), endUs: Math.max(...matching.map((cue) => cue.endUs)) };
             }),
           }
-        : await deps.synthesize({ scriptDraftId: input.scriptDraftId, segments: normalizedSegments, providerId: input.providerId, voice: input.voice, speed: input.speed, narrationHash });
+        : await deps.synthesize({ scriptDraftId: String(input.scriptDraftId || ''), segments: normalizedSegments, providerId: input.providerId, voice: input.voice, speed: input.speed, narrationHash });
       validateNarrationAlignment(narration, script.segments.map((segment) => segment.narration).join(''));
 
-      updateJob('planning', 0.7);
+      updateJob('synthesizing', 0.55);
+      updateJob('matching', 0.55);
       const bodyFrames = Math.ceil(narration.durationUs * FINAL_EDIT_FPS / 1_000_000);
       const cues = reusingNarration ? existingCues : buildAlignedSubtitleCues(script, narration);
       const covers = db.prepare(`
@@ -670,35 +797,52 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const autoUseLimit = Math.max(1, Math.min(10, Number(settings?.autoUseLimit || 2)));
       const variants: FinalEditVariantView[] = [];
       const nextIndex = Number((db.prepare(`SELECT COALESCE(MAX(indexNum), 0) AS value FROM final_edit_variants WHERE groupId=?`).get(groupId) as { value: number }).value) + 1;
-      updateJob('saving', 0.9);
+      for (let index = 0; index < input.count; index += 1) {
+        const variantIndex = nextIndex + index;
+        const timeline = planTimeline(prepared, bodyFrames, variantIndex - 1, script.segments.map((segment, i) => ({ ...segment, id: segment.id || `segment-${i + 1}` })), autoUseLimit);
+        const cover = covers[variantIndex - 1]
+          ? { coverKey: `image:${covers[variantIndex - 1].imageAssetId}`, kind: 'storyboard_image' as const, sourceUrl: `/api/final-edit-groups/${groupId}/cover-candidates/${encodeURIComponent(`image:${covers[variantIndex - 1].imageAssetId}`)}`, framing: { ...DEFAULT_COVER_FRAMING } }
+          : { coverKey: null, kind: null, sourceUrl: null, framing: { ...DEFAULT_COVER_FRAMING } };
+        const issues = issueList(timeline, cover.coverKey, true);
+        variants.push({ id: uuidv4(), indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeOutSec: 0.8 }, cover, issues, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null });
+        updateJob('matching', 0.55 + ((index + 1) / input.count) * 0.25);
+      }
+      // This phase performs the real persistence that makes variants and
+      // cover candidates immediately available to browser reads. It is not a
+      // timer-based stand-in for future preview rendering.
+      updateJob('previewing', 0.8);
       const transaction = db.transaction(() => {
-        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, status='ready', phase='saving', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, JSON.stringify(narration.wordTimings), JSON.stringify(cues), now(), groupId);
-        for (let index = 0; index < input.count; index += 1) {
-          const variantIndex = nextIndex + index;
-          const timeline = planTimeline(prepared, bodyFrames, variantIndex - 1, script.segments.map((segment, i) => ({ ...segment, id: segment.id || `segment-${i + 1}` })), autoUseLimit);
-          const cover = covers[variantIndex - 1]
-            ? { coverKey: `image:${covers[variantIndex - 1].imageAssetId}`, kind: 'storyboard_image' as const, sourceUrl: `/api/final-edit-groups/${groupId}/cover-candidates/${encodeURIComponent(`image:${covers[variantIndex - 1].imageAssetId}`)}`, framing: { ...DEFAULT_COVER_FRAMING } }
-            : { coverKey: null, kind: null, sourceUrl: null, framing: { ...DEFAULT_COVER_FRAMING } };
-          const issues = issueList(timeline, cover.coverKey, true);
-          const variant: FinalEditVariantView = { id: uuidv4(), indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeOutSec: 0.8 }, cover, issues, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null };
-          variants.push(variant);
-          db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, overlapJson, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(timeline), JSON.stringify(variant.bgm), JSON.stringify(cover), JSON.stringify(issues), now(), now());
-          db.prepare(`INSERT OR IGNORE INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('variant', ?, 0, ?, '{"type":"initial"}', ?)`).run(variant.id, JSON.stringify({ timeline, bgm: variant.bgm, cover, issues }), now());
-          const uniqueFingerprints = new Set(timeline.clips.map((clip) => clip.sourceFingerprint));
+        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, status='ready', phase='previewing', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, JSON.stringify(narration.wordTimings), JSON.stringify(cues), now(), groupId);
+        for (let index = 0; index < variants.length; index += 1) {
+          const variant = variants[index];
+          db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, overlapJson, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), now(), now());
+          db.prepare(`INSERT OR IGNORE INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('variant', ?, 0, ?, '{"type":"initial"}', ?)`).run(variant.id, JSON.stringify({ timeline: variant.timeline, bgm: variant.bgm, cover: variant.cover, issues: variant.issues }), now());
+          const uniqueFingerprints = new Set(variant.timeline.clips.map((clip) => clip.sourceFingerprint));
           for (const fingerprint of uniqueFingerprints) db.prepare(`INSERT OR IGNORE INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'video', ?, ?)`).run(`${variant.id}:0`, input.projectId, script.shotSetId, groupId, variant.id, fingerprint, now());
           for (const asset of prepared) if (uniqueFingerprints.has(asset.fingerprint)) asset.existingUsageCount += 1;
-          if (cover.coverKey) db.prepare(`INSERT OR IGNORE INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'cover', ?, ?)`).run(`${variant.id}:0`, input.projectId, script.shotSetId, groupId, variant.id, cover.coverKey, now());
+          if (variant.cover.coverKey) db.prepare(`INSERT OR IGNORE INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'cover', ?, ?)`).run(`${variant.id}:0`, input.projectId, script.shotSetId, groupId, variant.id, variant.cover.coverKey, now());
           if (variant.bgm.trackId) db.prepare(`INSERT OR IGNORE INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'bgm', ?, ?)`).run(`${variant.id}:0`, input.projectId, script.shotSetId, groupId, variant.id, variant.bgm.trackId, now());
+          updateJob('previewing', 0.8 + ((index + 1) / variants.length) * 0.19);
         }
         for (let left = 0; left < variants.length; left += 1) {
           let maxScore = 0;
           for (let right = 0; right < variants.length; right += 1) if (left !== right) maxScore = Math.max(maxScore, calculateOverlapScore(overlapInput(variants[left]), overlapInput(variants[right])).score);
           db.prepare(`UPDATE final_edit_variants SET overlapJson=? WHERE id=?`).run(JSON.stringify({ maxScore }), variants[left].id);
         }
-        db.prepare(`UPDATE final_edit_groups SET phase='ready', status=?, updatedAt=? WHERE id=?`).run(variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
-        db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, finishedAt=? WHERE id=?`).run(JSON.stringify({ groupId, variantIds: variants.map((variant) => variant.id) }), now(), jobId);
       });
       transaction();
+      // The committed variants and cover references are now browser-readable
+      // while the persisted job is still in previewing. This is a real state
+      // boundary, not a timer inserted solely for UI animation.
+      updateJob('previewing', 0.99);
+      // Yield one event-loop turn so an HTTP poll can observe the committed
+      // previewing state. setImmediate adds no artificial duration; the saved
+      // variants and their real media/cover URLs are already readable.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      db.transaction(() => {
+        db.prepare(`UPDATE final_edit_groups SET phase='ready', status=?, updatedAt=? WHERE id=?`).run(variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
+        db.prepare(`UPDATE final_edit_jobs SET status='succeeded', phase='succeeded', progress=1, outputJson=?, finishedAt=? WHERE id=?`).run(JSON.stringify({ groupId, variantIds: variants.map((variant) => variant.id) }), now(), jobId);
+      })();
     } catch (error) {
       const code = error instanceof FinalEditError ? error.code : 'prepare_failed';
       const message = error instanceof Error ? error.message : String(error);
@@ -709,28 +853,42 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   const start = async (input: StartFinalEditInput): Promise<JobRef> => {
+    if (!input.providerId.trim() || !input.voice.trim()) throw new FinalEditError('tts_selection_required', '必须明确选择口播配音供应商和音色');
+    if (!Number.isFinite(input.speed) || input.speed < 0.5 || input.speed > 2) throw new FinalEditError('invalid_tts_speed', '语速必须在 0.5～2.0 之间');
     await preflight(input);
-    const script = scriptFromDb(db, input.projectId, input.scriptDraftId);
+    const script = resolveTaskScript(db, input);
+    const selectedMaterialKeys = selectedAssets(db, storageRoot, input.projectId, script.shotSetId, input.selectedMaterialKeys).map((asset) => asset.assetKey!);
+    const normalizedInput: StartFinalEditInput = {
+      ...input,
+      scriptDraftId: script.sourceDraftId || '',
+      shotSetId: script.shotSetId,
+      editedNarrationText: script.editedNarrationText,
+      selectedMaterialKeys,
+    };
+    const provider = db.prepare(`SELECT costPerThousandCharacters FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(input.providerId) as { costPerThousandCharacters: number } | undefined;
+    if (!provider) throw new FinalEditError('tts_provider_unavailable', '口播配音供应商不存在或未启用');
     // A generate action creates a new editable group. Reusing a group by its
     // narration hash appended variants to the old group, so requesting one
     // output after earlier runs appeared as three or four outputs in the UI.
     const groupId = uuidv4();
     // The v1 schema also made narrationHash unique per project/script. Include
     // this generation id so new groups remain compatible with existing DBs.
-    const narrationHash = sha256(JSON.stringify({ scriptDraftId: input.scriptDraftId, narration: script.segments.map((segment) => segment.narration), providerId: input.providerId, voice: input.voice, speed: input.speed, adapterVersion: 1, generationId: groupId }));
+    const narrationHash = sha256(JSON.stringify({ scriptDraftId: normalizedInput.scriptDraftId, narration: script.segments.map((segment) => segment.narration), providerId: input.providerId, voice: input.voice, speed: input.speed, adapterVersion: 1, generationId: groupId }));
     const titleParts = script.coverTitleParts || splitCoverTitle(script.title);
-    db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, input.projectId, input.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), now(), now());
     const jobId = uuidv4();
     const requestKey = sha256(JSON.stringify({ kind: 'prepare', groupId, count: input.count, outputPreset: input.outputPreset, at: Date.now() }));
-    const provider = db.prepare(`SELECT costPerThousandCharacters FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(input.providerId) as { costPerThousandCharacters: number } | undefined;
-    if (!provider) throw new FinalEditError('tts_provider_unavailable', '口播配音供应商不存在或未启用');
     const ttsCost = getFinalEditTtsAdapter(input.providerId).estimateCost({ text: script.segments.map((segment) => segment.narration).join(''), costPerThousandCharacters: provider.costPerThousandCharacters });
-    const analysisCount = assetsForScript(db, storageRoot, input.projectId, script.shotSetId).length;
+    const analysisCount = selectedMaterialKeys.length;
     const analysisCost = input.analysisProviderId && deps.estimateAnalysisCost ? deps.estimateAnalysisCost({ providerId: input.analysisProviderId, requestCount: analysisCount }) : 0;
     const estimatedCost = Number((ttsCost + analysisCost).toFixed(6));
-    db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'validating', 0, ?, ?, ?, 'CNY', ?)`).run(jobId, input.projectId, groupId, requestKey, JSON.stringify(input), estimatedCost, now());
-    if (deps.runJobsInline) await prepare(jobId, groupId, input, script);
-    else void runFinalEditHeavyJob(() => prepare(jobId, groupId, input, script));
+    const jobSnapshot = { version: 1 as const, input: normalizedInput, scriptSnapshot: script };
+    const createdAt = now();
+    db.transaction(() => {
+      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, input.projectId, normalizedInput.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), createdAt, createdAt);
+      db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'analyzing', 0, ?, ?, ?, 'CNY', ?)`).run(jobId, input.projectId, groupId, requestKey, JSON.stringify(jobSnapshot), estimatedCost, createdAt);
+    })();
+    if (deps.runJobsInline) await resumePrepareJob(jobId);
+    else void resumePrepareJob(jobId);
     const status = (db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(jobId) as { status: string }).status;
     return { id: jobId, groupId, kind: 'prepare', status };
   };
@@ -738,10 +896,24 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   const resumePrepareJob = async (jobId: string) => {
     const row = db.prepare(`SELECT groupId, inputSnapshotJson FROM final_edit_jobs WHERE id=? AND kind='prepare' AND status='queued'`).get(jobId) as { groupId: string; inputSnapshotJson: string } | undefined;
     if (!row) return;
-    const input = parseJson<StartFinalEditInput | null>(row.inputSnapshotJson, null);
-    if (!input) throw new FinalEditError('prepare_snapshot_invalid', '准备任务快照损坏');
-    const script = scriptFromDb(db, input.projectId, input.scriptDraftId);
-    await runFinalEditHeavyJob(() => prepare(jobId, row.groupId, input, script));
+    const snapshot = parseJson<{ version?: number; input?: StartFinalEditInput; scriptSnapshot?: ScriptSnapshot } | null>(row.inputSnapshotJson, null);
+    let input = snapshot?.input;
+    let script = snapshot?.scriptSnapshot;
+    // Compatibility for prepare jobs written before Phase 2: their group copy
+    // is already immutable and is safe to use. Recovery must never re-read
+    // mutable script_drafts.
+    if (!input || !script) {
+      input = parseJson<StartFinalEditInput | null>(row.inputSnapshotJson, null) || undefined;
+      const groupSnapshot = db.prepare(`SELECT scriptSnapshotJson FROM final_edit_groups WHERE id=?`).get(row.groupId) as { scriptSnapshotJson: string } | undefined;
+      script = groupSnapshot ? parseJson<ScriptSnapshot | null>(groupSnapshot.scriptSnapshotJson, null) || undefined : undefined;
+    }
+    if (!input || !script || !Array.isArray(script.segments)) {
+      db.prepare(`UPDATE final_edit_jobs SET status='failed', phase='failed', errorCode='prepare_snapshot_invalid', errorMessage='准备任务快照损坏', finishedAt=? WHERE id=? AND status='queued'`).run(now(), jobId);
+      return;
+    }
+    const claimed = db.prepare(`UPDATE final_edit_jobs SET status='running', attempt=attempt+1, startedAt=COALESCE(startedAt, ?) WHERE id=? AND kind='prepare' AND status='queued'`).run(now(), jobId);
+    if (!claimed.changes) return;
+    await runFinalEditHeavyJob(() => prepare(jobId, row.groupId, input!, script!));
   };
 
   const apply = (command: FinalEditCommand): MutationResult => {
@@ -895,6 +1067,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const cues = parseJson<SubtitleCue[]>(String(row.subtitleStateJson), []);
     const coverTitle = parseJson<{ primary: { id: 'primary'; text: string; textSource: 'script' | 'manual' }; secondary: { id: 'secondary'; text: string; textSource: 'script' | 'manual' } }>(String(row.coverTitleJson), { primary: { id: 'primary', text: '', textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } });
     const textStyles = parseJson<FinalEditGroupView['textStyles']>(String(row.textStylesJson), buildStyles());
+    let mixcutScriptSnapshot = parseJson<ScriptSnapshot>(String(row.scriptSnapshotJson), {} as ScriptSnapshot);
+    let narrationConfig = parseJson<{ providerId: string; voice: string; speed: number }>(String(row.narrationConfigJson), { providerId: '', voice: '', speed: 1 });
+    let selectedMaterialKeys = parseJson<unknown[]>(String(row.selectedMaterialKeysJson || '[]'), []).map(String);
     const validateCueRange = (cueId: string | null, startUs: number, endUs: number) => {
       const frameUs = Math.round(1_000_000 / FINAL_EDIT_FPS);
       if (startUs < 0 || endUs > Number(row.narrationDurationUs) || endUs - startUs < frameUs) throw new FinalEditError('subtitle_out_of_range', '字幕时间超出正文或短于一帧');
@@ -959,10 +1134,43 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         textStyles[outputPreset].coverSecondary = structuredClone(stored[outputPreset].coverSecondary);
       }
     }
+    if (command.type === 'set_mixcut_script_state') {
+      const editedNarrationText = String(command.editedNarrationText || '');
+      if (!command.voice.trim()) throw new FinalEditError('tts_selection_required', '必须明确选择音色');
+      if (!Number.isFinite(command.speed) || command.speed < 0.5 || command.speed > 2) throw new FinalEditError('invalid_tts_speed', '语速必须在 0.5～2.0 之间');
+      selectedMaterialKeys = selectedAssets(db, storageRoot, String(row.projectId), String(row.shotSetId), command.selectedMaterialKeys).map((asset) => asset.assetKey!);
+      const sourceScript: MixcutSourceScript | null = mixcutScriptSnapshot.source === 'module3'
+        ? {
+            version: 2,
+            title: mixcutScriptSnapshot.title,
+            coverTitleParts: mixcutScriptSnapshot.coverTitleParts,
+            targetDurationSec: mixcutScriptSnapshot.targetDurationSec,
+            shotSetId: String(row.shotSetId),
+            segments: mixcutScriptSnapshot.sourceSegments || [],
+            fullScript: mixcutScriptSnapshot.sourceNarrationText || '',
+          }
+        : null;
+      try {
+        mixcutScriptSnapshot = buildMixcutTaskScriptSnapshot({
+          sourceDraftId: String(row.scriptDraftId || '') || null,
+          sourceScriptUpdatedAt: row.sourceScriptUpdatedAt == null ? null : String(row.sourceScriptUpdatedAt),
+          sourceScript,
+          shotSetId: String(row.shotSetId),
+          editedNarrationText,
+        });
+      } catch {
+        throw new FinalEditError('narration_text_required', '请输入混剪文案');
+      }
+      narrationConfig = { ...narrationConfig, voice: command.voice.trim(), speed: command.speed };
+    }
     const revision = Number(row.revision) + 1;
     db.transaction(() => {
-      db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, ?, ?)`).run(command.groupId, revision, JSON.stringify({ cues, coverTitle, textStyles }), JSON.stringify(command), now());
-      db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), revision, now(), command.groupId);
+      db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, ?, ?)`).run(command.groupId, revision, JSON.stringify({ cues, coverTitle, textStyles, scriptSnapshot: mixcutScriptSnapshot, narrationConfig, selectedMaterialKeys }), JSON.stringify(command), now());
+      if (command.type === 'set_mixcut_script_state') {
+        db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, scriptSnapshotJson=?, editedNarrationText=?, scriptSyncState=?, narrationConfigJson=?, selectedMaterialKeysJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), JSON.stringify(mixcutScriptSnapshot), mixcutScriptSnapshot.editedNarrationText, mixcutScriptSnapshot.scriptSyncState, JSON.stringify(narrationConfig), JSON.stringify(selectedMaterialKeys), revision, now(), command.groupId);
+      } else {
+        db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), revision, now(), command.groupId);
+      }
     })();
     return { scope: 'group', view: load(command.groupId) };
   };
@@ -987,6 +1195,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     };
     const sourceIds = [...new Set(variant.timeline.clips.map((clip) => clip.videoJobId))];
     const sources = sourceIds.map((videoJobId) => {
+      if (videoJobId.startsWith('external-asset-')) {
+        const assetId = videoJobId.slice('external-asset-'.length);
+        const external = db.prepare(`SELECT relativePath FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=? AND status='ready'`).get(assetId, group.projectId, group.shotSetId) as { relativePath: string } | undefined;
+        if (!external) throw new FinalEditError('video_file_missing', `外部视频素材 ${assetId} 缺失`);
+        const clip = variant.timeline.clips.find((item) => item.videoJobId === videoJobId)!;
+        return { videoJobId, relativePath: toRelative(external.relativePath), fingerprint: clip.sourceFingerprint };
+      }
       const row = db.prepare(`SELECT localVideoPath FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=?`).get(videoJobId, group.projectId, group.shotSetId) as { localVideoPath: string | null } | undefined;
       if (!row?.localVideoPath) throw new FinalEditError('video_file_missing', `视频素材 ${videoJobId} 缺失`);
       const clip = variant.timeline.clips.find((item) => item.videoJobId === videoJobId)!;

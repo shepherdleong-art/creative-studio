@@ -8,6 +8,7 @@ import type { FinalEditVariantView } from '../lib/final-edit/types.ts';
 const {
   createFinalEditWorkspace,
   FinalEditError,
+  MIXCUT_PREPARE_PHASE_RANGES,
 } = await import('../lib/final-edit/workspace.ts');
 const { initFinalEditSchema } = await import('../lib/final-edit/schema.ts');
 
@@ -68,6 +69,7 @@ const script = {
 };
 db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('script-1', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(script));
 
+const synthesizedNarrations: string[][] = [];
 const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
@@ -82,21 +84,31 @@ const workspace = createFinalEditWorkspace({
     if (cacheKey.includes('v2')) throw new Error('模拟末帧封面抽取失败');
   },
   estimateAnalysisCost: ({ requestCount }) => requestCount * 0.1,
-  synthesize: async () => ({
+  synthesize: async ({ segments }) => {
+    synthesizedNarrations.push(segments.map((segment) => segment.narration));
+    return ({
     relativePath: 'final-edits/test/narration.wav',
     durationUs: 18_500_000,
-    segmentTimings: [
-      { segmentId: 'seg-1', startUs: 0, endUs: 9_000_000 },
-      { segmentId: 'seg-2', startUs: 9_000_000, endUs: 18_500_000 },
-    ],
-    wordTimings: [{ text: '第一段', startUs: 0, endUs: 9_000_000 }, { text: '第二段', startUs: 9_000_000, endUs: 18_500_000 }],
-  }),
+    segmentTimings: segments.map((segment, index) => ({
+      segmentId: segment.segmentId,
+      startUs: Math.round(index * 18_500_000 / segments.length),
+      endUs: Math.round((index + 1) * 18_500_000 / segments.length),
+    })),
+    wordTimings: segments.map((segment, index) => ({
+      text: segment.narration,
+      startUs: Math.round(index * 18_500_000 / segments.length),
+      endUs: Math.round((index + 1) * 18_500_000 / segments.length),
+    })),
+  }); },
 });
 
 const capacity = await workspace.preflight({ projectId: 'p1', scriptDraftId: 'script-1', count: 2, outputPreset: '3x4' });
 assert.equal(capacity.assetCount, 2);
 assert.deepEqual(capacity.videoJobIds.sort(), ['v1', 'v2']);
 assert.ok(!capacity.videoJobIds.includes('foreign'));
+const pricedCapacity = await workspace.preflight({ projectId: 'p1', scriptDraftId: 'script-1', count: 2, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision' });
+assert.equal(pricedCapacity.estimatedCost, 0.2);
+assert.equal(pricedCapacity.costCurrency, 'CNY');
 
 const job = await workspace.start({
   projectId: 'p1', scriptDraftId: 'script-1', count: 2, outputPreset: '3x4',
@@ -115,6 +127,78 @@ assert.ok(group.assets.every((asset) => asset.shotSetId === 'set-a'));
 assert.ok(group.assets.every((asset) => asset.thumbnailUrl.includes('/thumbnail')));
 assert.ok(group.coverCandidates.some((candidate) => candidate.coverKey.startsWith('video:')));
 assert.ok(group.variants.every((variant) => variant.timeline.clips.every((clip) => clip.videoJobId !== 'foreign')));
+assert.deepEqual(MIXCUT_PREPARE_PHASE_RANGES, {
+  analyzing: [0, 0.3], synthesizing: [0.3, 0.55], matching: [0.55, 0.8], previewing: [0.8, 1],
+});
+const schemaColumns = new Set((db.prepare(`PRAGMA table_info(final_edit_groups)`).all() as Array<{ name: string }>).map((column) => column.name));
+for (const name of ['editedNarrationText', 'scriptSyncState', 'sourceScriptUpdatedAt', 'selectedMaterialKeysJson']) assert.ok(schemaColumns.has(name), `missing migration column ${name}`);
+const groupsBeforeInvalidProvider = Number((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_groups`).get() as { count: number }).count);
+await assert.rejects(
+  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4', providerId: 'missing-provider', voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'tts_provider_unavailable',
+);
+assert.equal(Number((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_groups`).get() as { count: number }).count), groupsBeforeInvalidProvider, '输入/供应商校验失败不得留下孤儿 group');
+await assert.rejects(
+  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-b', editedNarrationText: '错误跨组', selectedMaterialKeys: ['module4:foreign'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'script_shot_set_mismatch',
+);
+await assert.rejects(
+  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['module4:foreign'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'material_not_ready',
+);
+for (const [id, shotSetId] of [['external-a', 'set-a'], ['external-b', 'set-b']] as const) {
+  const relativePath = `external/${id}.mp4`;
+  fs.mkdirSync(path.join(storageRoot, 'external'), { recursive: true });
+  fs.writeFileSync(path.join(storageRoot, relativePath), `video-${id}`);
+  db.prepare(`INSERT INTO final_edit_external_assets (id, projectId, shotSetId, originalFilename, relativePath, mimeType, mediaKind, durationUs, width, height, fileFingerprint, status, createdAt) VALUES (?, 'p1', ?, ?, ?, 'video/mp4', 'video', 12000000, 720, 960, ?, 'ready', datetime('now'))`).run(id, shotSetId, `${id}.mp4`, relativePath, `fingerprint-${id}`);
+}
+await assert.rejects(
+  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['external:external-b'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'material_not_ready',
+);
+const externalJob = await workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['external:external-a'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision' });
+const externalGroup = workspace.load(externalJob.groupId);
+assert.equal(externalGroup.assets[0].videoJobId, 'external-asset-external-a');
+assert.equal(externalGroup.assets[0].source, 'external');
+assert.match(externalGroup.assets[0].previewUrl, /external-assets\/external-a\/media$/);
+assert.ok(externalGroup.variants[0].timeline.clips.every((clip) => clip.videoJobId === 'external-asset-external-a'), '外部素材 timeline 必须能由 group assets read model 解析');
+
+const editedJob = await workspace.start({
+  projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', editedNarrationText: '改写第一句。\n改写第二句！',
+  selectedMaterialKeys: ['module4:v1'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1,
+});
+assert.deepEqual(synthesizedNarrations.at(-1), ['改写第一句。', '改写第二句！'], 'TTS 必须使用用户编辑后的任务脚本');
+const editedGroup = workspace.load(editedJob.groupId);
+assert.equal(editedGroup.script.syncState, 'modified');
+assert.deepEqual(editedGroup.script.selectedMaterialKeys, ['module4:v1']);
+assert.equal(editedGroup.script.narrationConfig.voice, 'Cherry');
+db.prepare(`UPDATE final_edit_tts_providers SET apiKey='must-not-leak' WHERE id='vapi-qwen3-tts'`).run();
+assert.doesNotMatch(JSON.stringify(workspace.load(editedJob.groupId)), /must-not-leak/, 'group read model 不得泄漏供应商密钥');
+
+const storedJobSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(editedJob.id) as { inputSnapshotJson: string }).inputSnapshotJson) as { scriptSnapshot?: { editedNarrationText?: string } };
+assert.equal(storedJobSnapshot.scriptSnapshot?.editedNarrationText, '改写第一句。\n改写第二句！', 'prepare job 必须保存完整不可变脚本快照');
+db.prepare(`UPDATE script_drafts SET outputJson=? WHERE id='script-1'`).run(JSON.stringify({ ...script, fullScript: '上游漂移', segments: [{ ...script.segments[0], narration: '上游漂移', subtitle: '上游漂移' }] }));
+db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=NULL, narrationDurationUs=0, wordTimingsJson='[]', subtitleStateJson='[]' WHERE id=?`).run(editedJob.groupId);
+db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='analyzing', progress=0 WHERE id=?`).run(editedJob.id);
+const synthCountBeforeRecovery = synthesizedNarrations.length;
+await Promise.all([workspace.resumePrepareJob(editedJob.id), workspace.resumePrepareJob(editedJob.id)]);
+assert.equal(synthesizedNarrations.length, synthCountBeforeRecovery + 1, '并发恢复只能原子 claim 一次');
+assert.deepEqual(synthesizedNarrations.at(-1), ['改写第一句。', '改写第二句！'], '恢复任务不得重读已漂移的 script_drafts');
+assert.equal((db.prepare(`SELECT attempt FROM final_edit_jobs WHERE id=?`).get(editedJob.id) as { attempt: number }).attempt, 2);
+db.prepare(`UPDATE script_drafts SET outputJson=? WHERE id='script-1'`).run(JSON.stringify(script));
+
+const manualJob = await workspace.start({
+  projectId: 'p1', scriptDraftId: '', shotSetId: 'set-a', editedNarrationText: '手工文案。', selectedMaterialKeys: ['module4:v1'],
+  count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1,
+});
+assert.equal(workspace.load(manualJob.groupId).script.sourceDraftId, null, '手工文案不得伪造 script_drafts 行');
+const beforeScriptCommand = workspace.load(manualJob.groupId);
+const scriptCommandResult = workspace.apply({ scope: 'group', groupId: manualJob.groupId, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '手工文案已修改。', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1.1 }).view as typeof beforeScriptCommand;
+assert.equal(scriptCommandResult.script.editedNarrationText, '手工文案已修改。');
+assert.throws(
+  () => workspace.apply({ scope: 'group', groupId: manualJob.groupId, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '冲突覆盖', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict' && error.status === 409,
+);
 
 const first = group.variants[0];
 const deleteResult = workspace.apply({

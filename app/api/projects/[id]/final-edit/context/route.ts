@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
+import { getFinalEditWorkspace, recoverFinalEditPrepareJobs } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 
 // docs/superpowers/plans/2026-07-23-mixcut-technical-execution.md §5.1 /
@@ -9,6 +9,7 @@ import { finalEditErrorResponse } from '@/lib/final-edit/http';
 // delegates to the pure, independently-testable lib/final-edit/mixcut-context.ts.
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    recoverFinalEditPrepareJobs();
     const { id: projectId } = await params;
     const url = new URL(request.url);
     // JUDGMENT CALL (JC-1): optional ?shotSetId= query param — see

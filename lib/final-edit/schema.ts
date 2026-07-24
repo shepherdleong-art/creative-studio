@@ -130,6 +130,15 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
         ON final_edit_external_assets(projectId, shotSetId, createdAt);
     `,
   },
+  {
+    version: 6,
+    sql: `
+      ALTER TABLE final_edit_groups ADD COLUMN editedNarrationText TEXT NOT NULL DEFAULT '';
+      ALTER TABLE final_edit_groups ADD COLUMN scriptSyncState TEXT NOT NULL DEFAULT 'synced';
+      ALTER TABLE final_edit_groups ADD COLUMN sourceScriptUpdatedAt TEXT;
+      ALTER TABLE final_edit_groups ADD COLUMN selectedMaterialKeysJson TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

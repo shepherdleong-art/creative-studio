@@ -63,6 +63,8 @@ export interface FinalEditIssue {
 }
 
 export interface FinalEditAssetView {
+  assetKey?: string;
+  source?: 'module4' | 'external';
   videoJobId: string;
   shotSetId: string;
   shotId: string | null;
@@ -123,6 +125,16 @@ export interface FinalEditGroupView {
   status: string;
   phase: string;
   revision: number;
+  script: {
+    sourceDraftId: string | null;
+    title: string;
+    importedNarrationText: string;
+    editedNarrationText: string;
+    syncState: 'synced' | 'modified';
+    sourceScriptUpdatedAt: string | null;
+    narrationConfig: { providerId: string; voice: string; speed: number };
+    selectedMaterialKeys: string[];
+  };
   narrationDurationUs: number;
   totalDurationUs: number;
   coverTitle: {
@@ -135,7 +147,7 @@ export interface FinalEditGroupView {
   assets: FinalEditAssetView[];
   bgmTracks: Array<{ id: string; relativePath: string; durationUs: number }>;
   coverCandidates: Array<{ coverKey: string; sourceUrl: string; kind: 'storyboard_image' | 'video_keyframe' }>;
-  jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null }>;
+  jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string }>;
 }
 
 export interface CapacityEstimate {
@@ -144,6 +156,8 @@ export interface CapacityEstimate {
   coverCandidateCount: number;
   requestedCount: number;
   estimatedCompleteCount: number;
+  estimatedCost: number | null;
+  costCurrency: string;
   warnings: string[];
 }
 

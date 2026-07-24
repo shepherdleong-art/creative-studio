@@ -10,6 +10,7 @@ import { getFinalEditTtsAdapter, listFinalEditTtsAdapters } from './adapters/tts
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
+const runtimeStartedAt = new Date().toISOString();
 
 type AlignmentFallbackProvider = {
   id: string;
@@ -45,6 +46,11 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
       if (!provider) throw new Error('没有已启用并支持图片理解的视觉分析供应商');
       return analyzeVideoWithVision({ filePath, videoJobId, providerId: provider.id, cacheDir: path.join(storageRoot, 'final-edits', 'analysis', videoJobId) });
     },
+    validateTtsProvider: (providerId) => {
+      const provider = db.prepare(`SELECT apiKey, keyEnv FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { apiKey: string; keyEnv: string } | undefined;
+      return Boolean(resolveProviderApiKey(provider));
+    },
+    validateAnalysisProvider: (providerId) => getAvailableProviders().some((provider) => provider.id === providerId && provider.configured && provider.supportsVision),
     estimateAnalysisCost: ({ providerId, requestCount }) => estimateVisionAnalysisCost(providerId, requestCount),
     synthesize: async ({ segments, providerId, voice, speed, narrationHash }) => {
       const row = db.prepare(`SELECT * FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { baseUrl: string; apiKey: string; keyEnv: string; model: string } | undefined;
@@ -69,7 +75,7 @@ export function recoverFinalEditPrepareJobs() {
   if (prepareRecoveryStarted) return;
   prepareRecoveryStarted = true;
   const db = getDb();
-  db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='recovered_after_restart', startedAt=NULL WHERE kind='prepare' AND status='running'`).run();
+  db.prepare(`UPDATE final_edit_jobs SET status='queued', phase=CASE WHEN progress < 0.3 THEN 'analyzing' WHEN progress < 0.55 THEN 'synthesizing' WHEN progress < 0.8 THEN 'matching' ELSE 'previewing' END, startedAt=NULL WHERE kind='prepare' AND status='running' AND (startedAt IS NULL OR startedAt < ?)`).run(runtimeStartedAt);
   const jobs = db.prepare(`SELECT id FROM final_edit_jobs WHERE kind='prepare' AND status='queued' ORDER BY createdAt`).all() as Array<{ id: string }>;
   const activeWorkspace = getFinalEditWorkspace();
   for (const job of jobs) void activeWorkspace.resumePrepareJob(job.id);
