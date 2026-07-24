@@ -663,4 +663,41 @@ assert.equal(segmentFor(result9a.plan, 's1').assetKey, 'asset-hi', '语义可接
 const result9b = await matchAudioFirst(input9(hookAssetsHiFirst));
 assert.equal(segmentFor(result9b.plan, 's1').assetKey, 'asset-hi', '语义可接受集合内开场句必须偏好高 hook 分（方向性，asset-hi 在前）');
 
+// ---------------------------------------------------------------------------
+// 10. maxReuse is a hard per-source upper bound. Two assets with maxReuse=1
+//     can cover at most two of three sentences. The solver may back off from
+//     asset-a to asset-b for s2, but it must not fabricate a third reuse for
+//     s3; the uncovered sentence is represented explicitly as a gap + issue.
+// ---------------------------------------------------------------------------
+const input10: AudioFirstMatchInput = {
+  sentences: [
+    sentence('s1', 0, 1_000_000),
+    sentence('s2', 1_000_000, 2_000_000),
+    sentence('s3', 2_000_000, 3_000_000),
+  ],
+  assets: [
+    asset('asset-a', [scene(0, 5_000_000)]),
+    asset('asset-b', [scene(0, 5_000_000)]),
+  ],
+  semanticScores: [
+    [0.9, 0.2],
+    [0.9, 0.2],
+    [0.9, 0.2],
+  ],
+  hookScores: [0, 0],
+  beatPoints: [],
+  manualLocks: [],
+  maxReuse: 1,
+  semanticFallback: false,
+};
+const result10 = await matchAudioFirst(input10);
+const usage10 = new Map<string, number>();
+for (const segment of result10.plan.segments) {
+  usage10.set(segment.assetKey, (usage10.get(segment.assetKey) ?? 0) + 1);
+}
+assert.ok([...usage10.values()].every((count) => count <= 1), '每个源素材的使用次数不得超过 maxReuse=1');
+assert.equal(result10.plan.segments.length, 2, '两份素材各最多使用一次，只能覆盖三个句段中的两个');
+assert.ok(result10.diagnostics.gaps.some((gap) => (gap as { sentenceId?: string }).sentenceId === 's3'));
+assert.ok(result10.diagnostics.issues.some((issue) => (issue as { sentenceId?: string }).sentenceId === 's3'));
+
 console.log('final-edit audio-first-matcher contract tests passed');
