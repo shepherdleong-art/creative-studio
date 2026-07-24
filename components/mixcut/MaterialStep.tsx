@@ -38,6 +38,7 @@ export function MaterialStep({
   onClear,
   onRefresh,
   onImportFiles,
+  onContinue,
   importDisabledReason,
   loading,
 }: {
@@ -49,6 +50,7 @@ export function MaterialStep({
   onClear: () => void;
   onRefresh: () => void;
   onImportFiles?: (files: File[]) => void;
+  onContinue?: () => void;
   importDisabledReason?: string;
   loading?: boolean;
 }) {
@@ -207,6 +209,11 @@ export function MaterialStep({
       {!onImportFiles && importDisabledReason && (
         <p className={styles.importNotice}><Icon name="alert" size={14} />{importDisabledReason}</p>
       )}
+
+      <footer className={styles.materialFooter}>
+        <span>{selectedMaterialKeys.length > 0 ? `已选 ${selectedMaterialKeys.length} 个素材，下一步选择脚本和音色。` : '至少选择一个可用视频才能继续。'}</span>
+        <button type="button" className={styles.primaryButton} onClick={onContinue} disabled={!onContinue || selectedMaterialKeys.length === 0 || loading}>下一步：AI 智能创作<Icon name="chevron-right" size={15} /></button>
+      </footer>
     </section>
   );
 }

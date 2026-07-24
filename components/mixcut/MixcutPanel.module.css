@@ -49,7 +49,9 @@
 .scopeNotice svg { flex: 0 0 auto; margin-top: 1px; }
 
 .main { min-width: 0; min-height: 0; padding: 10px; overflow: hidden; }
+.main > div:not(.errorBanner) { height: 100%; min-width: 0; }
 .materialStep { box-sizing: border-box; height: 100%; min-width: 0; padding: 26px; overflow-y: auto; border: 1px solid var(--mixcut-line); border-radius: 16px; background: #fff; }
+.stepHidden { display: none !important; }
 .stepHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .stepHeader h1 { margin: 6px 0; font-size: clamp(21px, 2vw, 28px); letter-spacing: -.035em; }
 .stepHeader p:last-child { margin: 0; color: var(--mixcut-secondary); font-size: 12px; }
@@ -97,10 +99,67 @@
 .loadingState > span { width: 24px; height: 24px; border: 2px solid #d7e9fb; border-top-color: var(--mixcut-blue); border-radius: 50%; animation: spin .8s linear infinite; }
 .importNotice, .errorBanner { display: flex; align-items: center; gap: 7px; margin: 16px 0 0; padding: 10px 12px; border-radius: 10px; background: #fff7ed; color: #9a5b13; font-size: 10px; }
 .errorBanner { margin: 0 0 8px; background: #fff0f0; color: #a42b2b; }
+.materialFooter, .creationFooter { position: sticky; bottom: -26px; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 24px -26px -26px; padding: 15px 26px; border-top: 1px solid var(--mixcut-line); background: rgba(255,255,255,.96); backdrop-filter: blur(14px); }
+.materialFooter span, .creationFooter span { color: var(--mixcut-secondary); font-size: 10px; }
+
+.creationStep { box-sizing: border-box; height: 100%; min-width: 0; padding: 26px; overflow-y: auto; border: 1px solid var(--mixcut-line); border-radius: 16px; background: #fff; }
+.creationStack { display: flex; min-width: 0; flex-direction: column; gap: 14px; margin-top: 22px; }
+.creationCard { min-width: 0; padding: 18px; border: 1px solid var(--mixcut-line); border-radius: 15px; background: #fbfbfd; }
+.cardTitleRow { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 15px; }
+.cardTitleRow > div { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.cardTitleRow > div > span:last-child { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.cardTitleRow strong { font-size: 12px; }
+.cardTitleRow small { color: var(--mixcut-secondary); font-size: 9px; }
+.cardIcon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: #eaf3ff; color: var(--mixcut-blue); }
+.syncedBadge, .modifiedBadge { flex: 0 0 auto; padding: 5px 9px; border-radius: 999px; background: #e7f7ed; color: #237344; font-size: 9px; font-weight: 700; }
+.modifiedBadge { background: #fff2df; color: #9a5b13; }
+.fieldLabel { display: flex; min-width: 0; flex-direction: column; gap: 6px; margin-top: 12px; color: #4d4d52; font-size: 10px; font-weight: 650; }
+.fieldLabel select, .fieldLabel textarea, .searchField { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid #d8d8de; border-radius: 10px; outline: 0; background: #fff; color: var(--mixcut-ink); font: inherit; }
+.fieldLabel select { height: 38px; padding: 0 11px; }
+.fieldLabel textarea { min-height: 180px; max-height: 360px; padding: 12px; resize: vertical; font-size: 12px; font-weight: 450; line-height: 1.75; }
+.fieldLabel select:focus, .fieldLabel textarea:focus, .searchField:focus-within { border-color: var(--mixcut-blue); box-shadow: 0 0 0 3px rgba(0,113,227,.1); }
+.scriptMeta { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 9px; color: var(--mixcut-secondary); font-size: 9px; }
+.scriptMeta button, .textButton { margin-left: auto; border: 0; background: transparent; color: var(--mixcut-blue); font-size: 10px; font-weight: 650; cursor: pointer; }
+.scriptMeta button:disabled { cursor: default; opacity: .42; }
+.warningNotice, .errorNotice, .successNotice { display: flex; align-items: center; gap: 7px; padding: 10px 12px; border-radius: 10px; background: #fff7ed; color: #9a5b13; font-size: 10px; }
+.errorNotice { margin-top: 12px; background: #fff0f0; color: #a42b2b; }
+.successNotice { margin-top: 12px; background: #eef9f2; color: #237344; }
+.voiceControls { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.searchField { display: flex; height: 38px; align-items: center; gap: 8px; padding: 0 10px; }
+.searchField svg { flex: 0 0 auto; color: #8e8e93; }
+.searchField input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; }
+.voiceGrid { display: grid; min-width: 0; grid-template-columns: repeat(auto-fill, minmax(115px, 1fr)); gap: 8px; margin-top: 13px; }
+.voiceGrid button { display: flex; min-width: 0; flex-direction: column; gap: 3px; padding: 10px; border: 1px solid var(--mixcut-line); border-radius: 10px; background: #fff; color: var(--mixcut-ink); cursor: pointer; text-align: left; }
+.voiceGrid button strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.voiceGrid button small { color: var(--mixcut-secondary); font-size: 8px; }
+.voiceGrid .voiceSelected { border-color: var(--mixcut-blue); background: #edf6ff; box-shadow: 0 0 0 2px rgba(0,113,227,.08); }
+.creationCard > .textButton { display: block; margin: 10px 0 0 auto; }
+.speedRow { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 18px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--mixcut-line); }
+.speedRow label { display: grid; min-width: 0; flex: 1; grid-template-columns: auto minmax(100px, 1fr) 42px; align-items: center; gap: 10px; font-size: 10px; }
+.speedRow input { width: 100%; accent-color: var(--mixcut-blue); }
+.progressTrack { height: 8px; overflow: hidden; border-radius: 999px; background: #e8e8ed; }
+.progressTrack > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #1685f4, #46a4ff); transition: width .25s ease; }
+.stageList { display: grid; min-width: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.stageList > div { display: grid; min-width: 0; grid-template-columns: 24px minmax(0, 1fr); gap: 2px 7px; align-items: center; padding: 9px; border: 1px solid var(--mixcut-line); border-radius: 10px; background: #fff; }
+.stageList > div > span { display: grid; width: 24px; height: 24px; grid-row: 1 / 3; place-items: center; border-radius: 50%; background: #ececf0; color: #77777d; font-size: 9px; font-weight: 750; }
+.stageList strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.stageList small { color: var(--mixcut-secondary); font-size: 8px; }
+.stageList [data-state='running'] { border-color: #b9d9ff; background: #f4f9ff; }
+.stageList [data-state='running'] > span { background: var(--mixcut-blue); color: #fff; }
+.stageList [data-state='done'] > span { background: #2d9a58; color: #fff; }
+.stageList [data-state='failed'] > span { background: #d83b3b; color: #fff; }
+.switchDialogBackdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(20,20,23,.28); backdrop-filter: blur(6px); }
+.switchDialog { width: min(440px, 100%); padding: 22px; border: 1px solid rgba(255,255,255,.8); border-radius: 18px; background: #fff; box-shadow: 0 28px 80px rgba(0,0,0,.2); }
+.switchDialog h2 { margin: 0; font-size: 17px; }
+.switchDialog p { margin: 10px 0 18px; color: var(--mixcut-secondary); font-size: 11px; line-height: 1.6; }
+.switchDialog > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.switchDialog .textButton { margin: 0; padding: 0 10px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
   .body { grid-template-columns: 170px 220px minmax(0, 1fr); }
   .materialGrid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
   .stepHeader { flex-direction: column; }
+  .voiceControls { grid-template-columns: minmax(0, 1fr); }
+  .stageList { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

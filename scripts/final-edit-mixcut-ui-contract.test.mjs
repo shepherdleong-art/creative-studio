@@ -4,6 +4,7 @@ import fs from 'node:fs';
 const panel = fs.readFileSync('components/mixcut/MixcutPanel.tsx', 'utf8');
 const sidebar = fs.readFileSync('components/mixcut/MixcutSidebar.tsx', 'utf8');
 const materialStep = fs.readFileSync('components/mixcut/MaterialStep.tsx', 'utf8');
+const creationStep = fs.readFileSync('components/mixcut/CreationStep.tsx', 'utf8');
 const styles = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
 const page = fs.readFileSync('app/projects/[id]/page.tsx', 'utf8');
 
@@ -13,7 +14,7 @@ assert.match(panel, /\/api\/projects\/\$\{projectId\}\/final-edit\/context/, 'Mi
 assert.match(panel, /AbortController/, '快速切组必须取消旧请求，防止迟到响应覆盖当前组');
 assert.match(panel, /initializeMaterialSelection/, '素材默认选择必须通过按 shotSetId 隔离的领域函数');
 assert.match(panel, /materialSelectionForShotSet/, '渲染素材选择时必须只读取当前 shotSetId');
-assert.match(panel, /selectShotSet[\s\S]{0,300}setSelectionByShotSet\(\{\}\)/, '切组发起时必须立即清空旧组选择');
+assert.match(panel, /performShotSetSwitch[\s\S]{0,300}setSelectionByShotSet\(\{\}\)/, '真正切组时必须立即清空旧组选择');
 assert.match(panel, /externalByShotSet/, '外部素材必须按 shotSetId 分桶保存');
 assert.match(panel, /targetShotSetId/, '上传开始时必须捕获目标分镜组，切组后不能把响应合并到当前组');
 assert.match(panel, /finally\s*{[\s\S]*refreshExternalAssets\(targetShotSetId\)/, '导入接口失败时也必须刷新目标组，展示后端已经落库的失败卡片');
@@ -34,5 +35,20 @@ assert.doesNotMatch(materialStep, /JPG|PNG|图片/, 'V1 已否决静态图片导
 assert.match(materialStep, /当前组还没有可用视频/, '空分镜组必须显示明确阻断提示');
 assert.match(styles, /min-width:\s*0/, '主工作区 grid child 必须允许收缩，避免文字和卡片越界');
 assert.match(styles, /overflow-y:\s*auto/, '素材区必须可独立滚动');
+assert.match(panel, /<CreationStep/, 'Phase 2 必须挂载真实智能创作步骤');
+assert.match(panel, /\/api\/projects\/\$\{projectId\}\/final-edit\/start/, '生成必须进入持久化 prepare job');
+assert.match(panel, /\/api\/final-edit-jobs\/\$\{activeJobId\}/, '进度必须读取真实 job API');
+assert.match(panel, /selectedMaterialKeys:\s*selectedIds/, '任务快照必须冻结当前素材选择');
+assert.match(creationStep, /保留修改并切换/);
+assert.match(creationStep, /放弃修改并切换/);
+assert.match(creationStep, /取消/, '脚本切换必须有保留、放弃、取消三路决策');
+assert.match(creationStep, /恢复导入版本/);
+assert.match(creationStep, /role="progressbar"/);
+assert.match(creationStep, /analyzing[\s\S]*synthesizing[\s\S]*matching[\s\S]*previewing/, '只能显示冻结的四阶段进度');
+assert.match(creationStep, /provider\?\.configured/, '只显示口播供应商配置状态');
+assert.doesNotMatch(creationStep, /apiKey\b/, '新界面不得读取或回显明文 API Key');
+assert.match(styles, /\.fieldLabel textarea\s*{[^}]*min-height:\s*180px/s, '口播文案区必须舒适容纳 15～30 秒内容');
+assert.match(styles, /\.voiceControls\s*{[^}]*grid-template-columns/s);
+assert.match(styles, /@media[\s\S]*\.voiceControls\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s, '宽度不足时文案与音色必须纵向排列');
 
 console.log('final-edit mixcut UI contract tests passed');
