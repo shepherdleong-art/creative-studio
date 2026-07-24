@@ -1,5 +1,6 @@
 export interface AudioFirstSentence {
   id: string;
+  shotId?: string;
   text: string;
   startUs: number;
   endUs: number;
@@ -79,6 +80,12 @@ export interface MatchDiagnostics {
   snappedCuts: SnappedCut[];
   gaps: MatchGap[];
   issues: MatchIssue[];
+  usedMaterials: string[];
+  totalMaterials: number;
+  feasible: boolean;
+  redLine: number;
+  coveragePenalty: number;
+  candidateWindow: number;
 }
 
 export interface AudioFirstMatchResult {
@@ -92,15 +99,11 @@ interface Candidate {
   flatIndex: number;
 }
 
-interface SelectedCandidate {
-  candidate: Candidate;
-  belowFloor: boolean;
-}
-
 const RED_LINE = 0.35;
 const SEMANTIC_FLOOR_ABS = 0.3;
 const SEMANTIC_FLOOR_REL = 0.15;
 const REUSE_PENALTY = 0.15;
+const CANDIDATE_WINDOW = 0.1;
 const HOOK_WEIGHT = 0.2;
 const BEAT_TOLERANCE_US = 200_000;
 const MIN_SEGMENT_DURATION_US = 200_000;
@@ -160,72 +163,133 @@ function isLengthFeasible(candidate: Candidate, durationUs: number): boolean {
     && sceneStartUs + durationUs <= assetDurationUs;
 }
 
-function candidateScore(
+function candidateBaseScore(
   input: AudioFirstMatchInput,
   sentence: AudioFirstSentence,
   sentenceIndex: number,
   candidate: Candidate,
-  usageByAsset: ReadonlyMap<string, number>,
-  previousAssetKey: string | undefined,
 ): number {
   const semantic = clampScore(input.semanticScores[sentenceIndex]?.[candidate.flatIndex]);
   const keyword = keywordSimilarity(sentence, candidate.scene);
   const quality = clampScore(candidate.scene.quality);
-  const usage = usageByAsset.get(candidate.asset.assetKey) ?? 0;
-  const sameShotPrior = candidate.asset.shotId === sentence.id ? 0.1 : 0;
+  const sameShotPrior = Boolean(sentence.shotId && candidate.asset.shotId === sentence.shotId) ? 0.1 : 0;
   const hook = sentenceIndex === 0 ? clampScore(input.hookScores[candidate.flatIndex]) * HOOK_WEIGHT : 0;
   const fallbackKeyword = input.semanticFallback ? keyword : keyword * 0.02;
-  const adjacentPenalty = previousAssetKey === candidate.asset.assetKey ? 0.05 : 0;
 
   return semantic
     + sameShotPrior
     + fallbackKeyword
     + quality * 0.001
-    + hook
-    - usage * REUSE_PENALTY
-    - adjacentPenalty;
+    + hook;
 }
 
-function chooseCandidate(
+interface FlowEdge {
+  to: number;
+  reverseIndex: number;
+  capacity: number;
+  cost: number;
+}
+
+function addFlowEdge(graph: FlowEdge[][], from: number, to: number, capacity: number, cost: number): FlowEdge {
+  const forward = { to, reverseIndex: graph[to].length, capacity, cost };
+  const reverse = { to: from, reverseIndex: graph[from].length, capacity: 0, cost: -cost };
+  graph[from].push(forward);
+  graph[to].push(reverse);
+  return forward;
+}
+
+function solveGlobalAssignments(
   input: AudioFirstMatchInput,
-  sentence: AudioFirstSentence,
-  sentenceIndex: number,
+  sentences: Array<{ sentence: AudioFirstSentence; originalIndex: number }>,
   candidates: Candidate[],
-  usageByAsset: ReadonlyMap<string, number>,
-  previousAssetKey: string | undefined,
-): SelectedCandidate | undefined {
-  const durationUs = sentence.endUs - sentence.startUs;
-  const lengthFeasible = candidates.filter((candidate) => isLengthFeasible(candidate, durationUs));
-  if (lengthFeasible.length === 0) return undefined;
-
-  const rawScores = lengthFeasible.map((candidate) =>
-    clampScore(input.semanticScores[sentenceIndex]?.[candidate.flatIndex]));
-  const bestSemantic = Math.max(0, ...rawScores);
-  const semanticFloor = Math.max(
-    SEMANTIC_FLOOR_ABS,
-    RED_LINE,
-    bestSemantic * (1 - SEMANTIC_FLOOR_REL),
-  );
+  reservedSceneIndexes: ReadonlySet<number>,
+  lockedUsageByAsset: ReadonlyMap<string, number>,
+): Map<string, { candidate: Candidate; belowFloor: boolean }> {
+  const availableCandidates = candidates.filter((candidate) => !reservedSceneIndexes.has(candidate.flatIndex));
   const reuseLimit = Math.max(0, Math.floor(finiteNumber(input.maxReuse)));
-  const reuseEligible = lengthFeasible.filter((candidate) =>
-    (usageByAsset.get(candidate.asset.assetKey) ?? 0) < reuseLimit);
-  if (reuseEligible.length === 0) return undefined;
+  if (!sentences.length || !availableCandidates.length || reuseLimit === 0) return new Map();
 
-  const acceptable = reuseEligible.filter((candidate) =>
-    clampScore(input.semanticScores[sentenceIndex]?.[candidate.flatIndex]) >= semanticFloor - EPSILON);
-  const pool = acceptable.length > 0 ? acceptable : reuseEligible;
+  const source = 0;
+  const sentenceOffset = 1;
+  const sceneOffset = sentenceOffset + sentences.length;
+  const assetOffset = sceneOffset + availableCandidates.length;
+  const sink = assetOffset + input.assets.length;
+  const graph: FlowEdge[][] = Array.from({ length: sink + 1 }, () => []);
+  const sceneNodeByFlatIndex = new Map<number, number>();
+  availableCandidates.forEach((candidate, index) => sceneNodeByFlatIndex.set(candidate.flatIndex, sceneOffset + index));
+  const assetIndexByKey = new Map(input.assets.map((asset, index) => [asset.assetKey, index]));
+  const candidateEdges = new Map<string, { edge: FlowEdge; candidate: Candidate; belowFloor: boolean }>();
+  const COST_SCALE = 1_000_000;
+  const BELOW_FLOOR_COST = 1_000_000_000;
 
-  let best = pool[0];
-  let bestScore = candidateScore(input, sentence, sentenceIndex, best, usageByAsset, previousAssetKey);
-  for (const candidate of pool.slice(1)) {
-    const score = candidateScore(input, sentence, sentenceIndex, candidate, usageByAsset, previousAssetKey);
-    if (score > bestScore + EPSILON || (Math.abs(score - bestScore) <= EPSILON && candidate.flatIndex < best.flatIndex)) {
-      best = candidate;
-      bestScore = score;
+  sentences.forEach(({ sentence, originalIndex }, sentenceListIndex) => {
+    const sentenceNode = sentenceOffset + sentenceListIndex;
+    addFlowEdge(graph, source, sentenceNode, 1, originalIndex);
+    const durationUs = sentence.endUs - sentence.startUs;
+    const feasible = availableCandidates.filter((candidate) => isLengthFeasible(candidate, durationUs));
+    const bestSemantic = Math.max(0, ...feasible.map((candidate) => clampScore(input.semanticScores[originalIndex]?.[candidate.flatIndex])));
+    const semanticFloor = Math.max(SEMANTIC_FLOOR_ABS, RED_LINE, bestSemantic * (1 - SEMANTIC_FLOOR_REL));
+    for (const candidate of feasible) {
+      const semantic = clampScore(input.semanticScores[originalIndex]?.[candidate.flatIndex]);
+      const belowFloor = semantic < semanticFloor - EPSILON;
+      const score = candidateBaseScore(input, sentence, originalIndex, candidate);
+      const cost = Math.max(0, Math.round((2 - score) * COST_SCALE)) + (belowFloor ? BELOW_FLOOR_COST : 0) + candidate.flatIndex;
+      const edge = addFlowEdge(graph, sentenceNode, sceneNodeByFlatIndex.get(candidate.flatIndex)!, 1, cost);
+      candidateEdges.set(`${sentenceListIndex}:${candidate.flatIndex}`, { edge, candidate, belowFloor });
+    }
+  });
+  availableCandidates.forEach((candidate) => {
+    const assetIndex = assetIndexByKey.get(candidate.asset.assetKey);
+    if (assetIndex == null) return;
+    addFlowEdge(graph, sceneNodeByFlatIndex.get(candidate.flatIndex)!, assetOffset + assetIndex, 1, 0);
+  });
+  input.assets.forEach((asset, assetIndex) => {
+    const lockedUsage = lockedUsageByAsset.get(asset.assetKey) ?? 0;
+    for (let useIndex = lockedUsage; useIndex < reuseLimit; useIndex += 1) {
+      addFlowEdge(graph, assetOffset + assetIndex, sink, 1, Math.round(REUSE_PENALTY * useIndex * COST_SCALE));
+    }
+  });
+
+  while (true) {
+    const distance = Array(graph.length).fill(Number.POSITIVE_INFINITY) as number[];
+    const previousNode = Array(graph.length).fill(-1) as number[];
+    const previousEdge = Array(graph.length).fill(-1) as number[];
+    const queued = Array(graph.length).fill(false) as boolean[];
+    const queue = [source];
+    distance[source] = 0;
+    queued[source] = true;
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const node = queue[cursor];
+      queued[node] = false;
+      for (let edgeIndex = 0; edgeIndex < graph[node].length; edgeIndex += 1) {
+        const edge = graph[node][edgeIndex];
+        if (edge.capacity <= 0) continue;
+        const nextDistance = distance[node] + edge.cost;
+        if (nextDistance >= distance[edge.to]) continue;
+        distance[edge.to] = nextDistance;
+        previousNode[edge.to] = node;
+        previousEdge[edge.to] = edgeIndex;
+        if (!queued[edge.to]) {
+          queued[edge.to] = true;
+          queue.push(edge.to);
+        }
+      }
+    }
+    if (!Number.isFinite(distance[sink])) break;
+    for (let node = sink; node !== source; node = previousNode[node]) {
+      const edge = graph[previousNode[node]][previousEdge[node]];
+      edge.capacity -= 1;
+      graph[node][edge.reverseIndex].capacity += 1;
     }
   }
 
-  return { candidate: best, belowFloor: acceptable.length === 0 };
+  const assignments = new Map<string, { candidate: Candidate; belowFloor: boolean }>();
+  for (const [key, value] of candidateEdges) {
+    if (value.edge.capacity !== 0) continue;
+    const sentenceListIndex = Number(key.slice(0, key.indexOf(':')));
+    assignments.set(sentences[sentenceListIndex].sentence.id, { candidate: value.candidate, belowFloor: value.belowFloor });
+  }
+  return assignments;
 }
 
 function sourceIntervalInsideAsset(
@@ -309,18 +373,21 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
   const lockBySentence = new Map(input.manualLocks.map((lock) => [lock.sentenceId, lock]));
   const lockedSentences = new Set<string>();
   const usageByAsset = new Map<string, number>();
+  const reservedSceneIndexes = new Set<number>();
   const candidateBySentence = new Map<string, Candidate>();
   const segments: TimelinePlanSegment[] = [];
   const backoffSentences: string[] = [];
   const gaps: MatchGap[] = [];
   const issues: MatchIssue[] = [];
-  let previousAssetKey: string | undefined;
 
   const orderedSentences = input.sentences
     .map((sentence, originalIndex) => ({ sentence, originalIndex }))
     .sort((left, right) => left.sentence.startUs - right.sentence.startUs || left.originalIndex - right.originalIndex);
 
-  for (const { sentence, originalIndex } of orderedSentences) {
+  const automaticSentences: typeof orderedSentences = [];
+  const lockedSegments = new Map<string, TimelinePlanSegment>();
+  for (const entry of orderedSentences) {
+    const { sentence } = entry;
     const durationUs = sentence.endUs - sentence.startUs;
     const lock = lockBySentence.get(sentence.id);
     if (lock) {
@@ -330,7 +397,7 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
         && lock.startUs >= item.scene.startUs
         && lock.endUs <= item.scene.endUs);
       if (asset && candidate && lock.endUs - lock.startUs === durationUs && sourceIntervalInsideAsset(asset, lock.startUs, lock.endUs)) {
-        segments.push({
+        lockedSegments.set(sentence.id, {
           sentenceId: sentence.id,
           assetKey: lock.assetKey,
           startUs: sentence.startUs,
@@ -340,8 +407,8 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
         });
         lockedSentences.add(sentence.id);
         candidateBySentence.set(sentence.id, candidate);
+        reservedSceneIndexes.add(candidate.flatIndex);
         usageByAsset.set(lock.assetKey, (usageByAsset.get(lock.assetKey) ?? 0) + 1);
-        previousAssetKey = lock.assetKey;
         continue;
       }
 
@@ -352,14 +419,18 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
       });
     }
 
-    const selection = chooseCandidate(
-      input,
-      sentence,
-      originalIndex,
-      candidates,
-      usageByAsset,
-      previousAssetKey,
-    );
+    automaticSentences.push(entry);
+  }
+
+  const assignments = solveGlobalAssignments(input, automaticSentences, candidates, reservedSceneIndexes, usageByAsset);
+  for (const { sentence } of orderedSentences) {
+    const lockedSegment = lockedSegments.get(sentence.id);
+    if (lockedSegment) {
+      segments.push(lockedSegment);
+      continue;
+    }
+    const durationUs = sentence.endUs - sentence.startUs;
+    const selection = assignments.get(sentence.id);
     if (!selection) {
       const hasLengthFeasible = candidates.some((candidate) => isLengthFeasible(candidate, durationUs));
       const reason: MatchGap['reason'] = candidates.length === 0
@@ -385,10 +456,10 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
     if (belowFloor) backoffSentences.push(sentence.id);
     candidateBySentence.set(sentence.id, candidate);
     usageByAsset.set(candidate.asset.assetKey, (usageByAsset.get(candidate.asset.assetKey) ?? 0) + 1);
-    previousAssetKey = candidate.asset.assetKey;
   }
 
   const snappedCuts = applyBeatSnapping(segments, input, candidateBySentence, lockedSentences);
+  const usedMaterials = [...new Set(segments.map((segment) => segment.assetKey))].sort();
   return {
     plan: { segments },
     diagnostics: {
@@ -397,6 +468,12 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
       snappedCuts,
       gaps,
       issues,
+      usedMaterials,
+      totalMaterials: input.assets.length,
+      feasible: gaps.length === 0,
+      redLine: RED_LINE,
+      coveragePenalty: REUSE_PENALTY,
+      candidateWindow: CANDIDATE_WINDOW,
     },
   };
 }

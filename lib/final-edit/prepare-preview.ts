@@ -8,14 +8,14 @@ import type { FinalEditVariantView, OutputPresetId, VideoTimeline } from './type
 export function preparePreviewCacheKey(input: {
   timeline: VideoTimeline;
   sources: Array<{ videoJobId: string; fingerprint: string }>;
-  narration: { hash: string; relativePath: string; durationUs: number };
+  narration: { fingerprint: string; durationUs: number };
   outputPreset: OutputPresetId;
 }): string {
   return crypto.createHash('sha256').update(JSON.stringify({
     version: 1,
     timeline: input.timeline,
     sources: [...input.sources].sort((left, right) => left.videoJobId.localeCompare(right.videoJobId)),
-    narration: input.narration,
+    narration: { fingerprint: input.narration.fingerprint, durationUs: input.narration.durationUs },
     outputPreset: input.outputPreset,
   })).digest('hex');
 }

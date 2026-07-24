@@ -117,6 +117,7 @@ import assert from 'node:assert/strict';
 
 interface AudioFirstSentence {
   id: string;
+  shotId?: string;
   text: string;
   startUs: number;
   endUs: number;
@@ -699,5 +700,44 @@ assert.ok([...usage10.values()].every((count) => count <= 1), '每个源素材�
 assert.equal(result10.plan.segments.length, 2, '两份素材各最多使用一次，只能覆盖三个句段中的两个');
 assert.ok(result10.diagnostics.gaps.some((gap) => (gap as { sentenceId?: string }).sentenceId === 's3'));
 assert.ok(result10.diagnostics.issues.some((issue) => (issue as { sentenceId?: string }).sentenceId === 's3'));
+
+// ---------------------------------------------------------------------------
+// 11. The original storyboard prior compares shotId to shotId. A segment id
+//     is an independent identity and must not be mistaken for the shot id.
+// ---------------------------------------------------------------------------
+const input11: AudioFirstMatchInput = {
+  sentences: [{ ...sentence('segment-99', 0, 1_000_000), shotId: 'shot-target' }],
+  assets: [
+    asset('asset-other', [scene(0, 2_000_000)], { shotId: 'shot-other' }),
+    asset('asset-target', [scene(0, 2_000_000)], { shotId: 'shot-target' }),
+  ],
+  semanticScores: [[0.8, 0.8]],
+  hookScores: [0, 0],
+  beatPoints: [],
+  manualLocks: [],
+  maxReuse: 1,
+  semanticFallback: false,
+};
+assert.equal(segmentFor((await matchAudioFirst(input11)).plan, 'segment-99').assetKey, 'asset-target', 'shotId 先验必须选中原脚本对应镜头');
+
+// 12. 同一检测场景容量为 1，不能把同一 sourceStart 区间重复配给多句。
+const input12: AudioFirstMatchInput = {
+  sentences: [sentence('s1', 0, 1_000_000), sentence('s2', 1_000_000, 2_000_000)],
+  assets: [asset('only-scene', [scene(0, 5_000_000)])],
+  semanticScores: [[0.9], [0.9]], hookScores: [0], beatPoints: [], manualLocks: [], maxReuse: 3, semanticFallback: false,
+};
+const result12 = await matchAudioFirst(input12);
+assert.equal(result12.plan.segments.length, 1, '一个场景只能被自动分配一次');
+assert.equal(result12.diagnostics.gaps.length, 1);
+
+// 13. 全局求解不能让第一句贪心占掉第二句唯一的高质量选择。
+const input13: AudioFirstMatchInput = {
+  sentences: [sentence('s1', 0, 1_000_000), sentence('s2', 1_000_000, 2_000_000)],
+  assets: [asset('asset-a', [scene(0, 2_000_000)]), asset('asset-b', [scene(0, 2_000_000)])],
+  semanticScores: [[0.9, 0.88], [0.89, 0.1]], hookScores: [0, 0], beatPoints: [], manualLocks: [], maxReuse: 1, semanticFallback: false,
+};
+const result13 = await matchAudioFirst(input13);
+assert.equal(segmentFor(result13.plan, 's1').assetKey, 'asset-b');
+assert.equal(segmentFor(result13.plan, 's2').assetKey, 'asset-a');
 
 console.log('final-edit audio-first-matcher contract tests passed');

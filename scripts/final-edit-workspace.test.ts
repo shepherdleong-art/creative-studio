@@ -75,6 +75,8 @@ let semanticScoreCalls = 0;
 const analysisFailures = new Set<string>();
 let degradeAlignment = false;
 let analyzeVideoCalls = 0;
+let failPreview = false;
+let failSemanticScore = false;
 const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
@@ -91,12 +93,14 @@ const workspace = createFinalEditWorkspace({
   },
   scoreSemanticMatrix: async () => {
     semanticScoreCalls += 1;
+    if (failSemanticScore) throw new Error('模拟语义评分失败');
     return { score_matrix: [[0.95, 0.4], [0.4, 0.95]], hook_scores: [0.8, 0.2] };
   },
   materializeCoverFrame: async ({ cacheKey }) => {
     if (cacheKey.includes('v2')) throw new Error('模拟末帧封面抽取失败');
   },
   warmPreview: async ({ relativePath }) => {
+    if (failPreview) throw new Error('模拟低清预览失败');
     const absolutePath = path.join(storageRoot, relativePath);
     fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
     if (!fs.existsSync(absolutePath)) fs.writeFileSync(absolutePath, 'low-resolution-preview');
@@ -158,6 +162,7 @@ const repeatJob = await workspace.start({
 const repeatGroup = workspace.load(repeatJob.groupId);
 assert.equal(semanticScoreCalls, 1, '素材与脚本不变时必须命中语义矩阵缓存，零 LLM 调用');
 assert.deepEqual(repeatGroup.variants[0].timeline, group.variants[0].timeline, '相同输入必须得到完全相同的时间线和 clip ID');
+assert.equal(repeatGroup.variants[0].previewUrl, group.variants[0].previewUrl, '相同输入和口播内容必须复用同一个低清预览缓存');
 db.prepare(`UPDATE final_edit_semantic_matrix_cache SET semanticScoresJson='[]'`).run();
 await workspace.start({
   projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4',
@@ -196,6 +201,28 @@ await workspace.start({
   providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
 });
 assert.equal(analyzeVideoCalls, analyzeCallsBeforeCorruptCache + 1, '损坏的视频分析缓存必须重新分析，不能作为成功结果继续');
+failPreview = true;
+const previewFailedJob = await workspace.start({
+  projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4',
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+});
+const previewFailedGroup = workspace.load(previewFailedJob.groupId);
+assert.equal(previewFailedJob.status, 'succeeded', '预览失败必须保留已经生成的时间线');
+assert.ok(previewFailedGroup.variants[0].timeline.clips.length > 0);
+assert.equal(previewFailedGroup.variants[0].previewUrl, null);
+assert.ok(previewFailedGroup.variants[0].issues.some((issue) => issue.code === 'preview_failed'));
+failPreview = false;
+failSemanticScore = true;
+const fallbackCallsBefore = semanticScoreCalls;
+const fallbackInput = {
+  projectId: 'p1', scriptDraftId: 'script-1', editedNarrationText: '缓存失败第一句。\n缓存失败第二句。', count: 1 as const, outputPreset: '3x4' as const,
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+};
+const semanticFallbackJob = await workspace.start(fallbackInput);
+assert.ok(workspace.load(semanticFallbackJob.groupId).variants[0].issues.some((issue) => issue.code === 'semantic_fallback'));
+await workspace.start(fallbackInput);
+assert.equal(semanticScoreCalls, fallbackCallsBefore + 1, '有效的 fallback 矩阵也必须缓存，重复输入不得再次调用 LLM');
+failSemanticScore = false;
 assert.deepEqual(MIXCUT_PREPARE_PHASE_RANGES, {
   analyzing: [0, 0.3], synthesizing: [0.3, 0.55], matching: [0.55, 0.8], previewing: [0.8, 1],
 });

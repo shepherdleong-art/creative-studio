@@ -41,9 +41,12 @@ const snapshot: FinalEditRenderSnapshot = {
   overlayBundle: { id: 'bundle-1', relativeDir: 'overlays', manifest: {} },
 };
 
-const previewCacheInput = { timeline: snapshot.variant.timeline, sources: [{ videoJobId: 'video-1', fingerprint }], narration: { hash: 'narration-hash', relativePath: snapshot.narrationRelativePath, durationUs: snapshot.group.narrationDurationUs }, outputPreset: snapshot.variant.outputPreset };
+const previewCacheInput = { timeline: snapshot.variant.timeline, sources: [{ videoJobId: 'video-1', fingerprint }], narration: { fingerprint: 'narration-fingerprint', durationUs: snapshot.group.narrationDurationUs }, outputPreset: snapshot.variant.outputPreset };
 const previewCacheKey = preparePreviewCacheKey(previewCacheInput);
 assert.notEqual(preparePreviewCacheKey({ ...previewCacheInput, sources: [{ videoJobId: 'video-1', fingerprint: `${fingerprint}-changed` }] }), previewCacheKey, '源 fingerprint 改变必须使预览缓存失效');
+assert.notEqual(preparePreviewCacheKey({ ...previewCacheInput, narration: { ...previewCacheInput.narration, fingerprint: 'narration-changed' } }), previewCacheKey, '口播音频变化必须使预览缓存失效');
+const relocatedNarrationInput = { ...previewCacheInput, narration: { ...previewCacheInput.narration, relativePath: 'another/job/narration.wav' } };
+assert.equal(preparePreviewCacheKey(relocatedNarrationInput), previewCacheKey, '缓存身份不得绑定每次生成的音频路径');
 assert.notEqual(preparePreviewCacheKey({ ...previewCacheInput, timeline: { ...previewCacheInput.timeline, bodyFrames: previewCacheInput.timeline.bodyFrames + 1 } }), previewCacheKey, '时间轴计划改变必须使预览缓存失效');
 
 const preparedPreview = await warmPreparePreview({

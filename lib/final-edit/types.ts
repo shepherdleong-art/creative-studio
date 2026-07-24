@@ -1,3 +1,5 @@
+import type { MatchDiagnostics } from './audio-first-matcher.ts';
+
 export type OutputPresetId = '3x4' | '9x16' | '16x9';
 
 export const OUTPUT_PRESETS = {
@@ -111,13 +113,7 @@ export interface FinalEditVariantView {
     framing: { scale: number; offsetX: number; offsetY: number };
   };
   issues: FinalEditIssue[];
-  matchDiagnostics?: {
-    semanticFallback: boolean;
-    backoffSentences: string[];
-    snappedCuts: unknown[];
-    gaps: unknown[];
-    issues: unknown[];
-  };
+  matchDiagnostics?: MatchDiagnostics;
   maxOverlap: number;
   revision: number;
   lastRenderedRevision: number | null;

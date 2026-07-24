@@ -30,7 +30,7 @@ import {
 } from './material-import.ts';
 import { assertTtsSpeed } from './tts-speed.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
-import { matchAudioFirst } from './audio-first-matcher.ts';
+import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts';
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
 import {
   buildSemanticMatrixPrompt,
@@ -279,9 +279,48 @@ interface PreparedAsset extends AssetRow {
 
 const FINAL_EDIT_ANALYZER_VERSION = '2';
 
+function flattenPreparedSemanticScenes(assets: PreparedAsset[]): SemanticScene[] {
+  return assets.flatMap((asset) => {
+    const sourceScenes = asset.analysis.scenes?.length
+      ? asset.analysis.scenes
+      : asset.analysis.usableRanges.map((range) => ({
+          ...range,
+          description: asset.analysis.summary,
+          labels: asset.analysis.semanticTags,
+          qualityScore: range.qualityScore,
+        }));
+    return sourceScenes.map((scene, sceneIndex) => ({
+      assetKey: asset.assetKey!,
+      assetFingerprint: asset.fingerprint,
+      sceneIndex,
+      startUs: scene.startUs,
+      endUs: scene.endUs,
+      labels: [...new Set([...(scene.labels || []), ...asset.analysis.semanticTags, ...asset.analysis.sellingPoints])],
+      description: scene.description || asset.analysis.summary,
+      quality: scene.qualityScore,
+    }));
+  });
+}
+
 function now() { return new Date().toISOString(); }
 function parseJson<T>(value: string, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
+}
+function normalizeMatchDiagnostics(value: unknown): MatchDiagnostics {
+  const raw = value && typeof value === 'object' ? value as Partial<MatchDiagnostics> : {};
+  return {
+    semanticFallback: Boolean(raw.semanticFallback),
+    backoffSentences: Array.isArray(raw.backoffSentences) ? raw.backoffSentences : [],
+    snappedCuts: Array.isArray(raw.snappedCuts) ? raw.snappedCuts : [],
+    gaps: Array.isArray(raw.gaps) ? raw.gaps : [],
+    issues: Array.isArray(raw.issues) ? raw.issues : [],
+    usedMaterials: Array.isArray(raw.usedMaterials) ? raw.usedMaterials : [],
+    totalMaterials: Number.isFinite(raw.totalMaterials) ? Number(raw.totalMaterials) : 0,
+    feasible: raw.feasible == null ? true : Boolean(raw.feasible),
+    redLine: Number.isFinite(raw.redLine) ? Number(raw.redLine) : 0.35,
+    coveragePenalty: Number.isFinite(raw.coveragePenalty) ? Number(raw.coveragePenalty) : 0.15,
+    candidateWindow: Number.isFinite(raw.candidateWindow) ? Number(raw.candidateWindow) : 0.1,
+  };
 }
 function sha256(value: string | Buffer) { return crypto.createHash('sha256').update(value).digest('hex'); }
 function validateTtsSpeed(speed: number): void {
@@ -676,9 +715,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       bgm: parseJson(String(row.bgmJson), { trackId: null, gainDb: -16, loop: true, fadeOutSec: 0.8 }),
       cover: normalizeCover(parseJson(String(row.coverJson), {})),
       issues: parseJson<FinalEditIssue[]>(String(row.issuesJson), []),
-      matchDiagnostics: parseJson<FinalEditVariantView['matchDiagnostics']>(String(row.matchDiagnosticsJson || '{}'), {
-        semanticFallback: false, backoffSentences: [], snappedCuts: [], gaps: [], issues: [],
-      }),
+      matchDiagnostics: normalizeMatchDiagnostics(parseJson<unknown>(String(row.matchDiagnosticsJson || '{}'), {})),
       maxOverlap: Number(parseJson<{ maxScore?: number }>(String(row.overlapJson), {}).maxScore || 0),
       revision: Number(row.revision),
       lastRenderedRevision: row.lastRenderedRevision == null ? null : Number(row.lastRenderedRevision),
@@ -934,21 +971,17 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const settings = db.prepare(`SELECT autoUseLimit FROM final_edit_project_settings WHERE projectId=?`).get(input.projectId) as { autoUseLimit: number } | undefined;
       const autoUseLimit = Math.max(1, Math.min(10, Number(settings?.autoUseLimit || 2)));
       const matchingAssets = prepared.filter((asset) => asset.analysisSucceeded !== false && !asset.autoUseDisabled);
+      const semanticScenes = flattenPreparedSemanticScenes(matchingAssets);
       const matcherAssets = matchingAssets.map((asset) => ({
         assetKey: asset.assetKey!,
         ...(asset.shotId ? { shotId: asset.shotId } : {}),
         durationUs: asset.durationUs,
         source: asset.source || 'module4' as const,
-        scenes: (asset.analysis.scenes?.length ? asset.analysis.scenes : asset.analysis.usableRanges.map((range) => ({
-          ...range,
-          description: asset.analysis.summary,
-          labels: [...asset.analysis.semanticTags, ...asset.analysis.sellingPoints],
-          qualityScore: range.qualityScore,
-        }))).map((scene) => ({
+        scenes: semanticScenes.filter((scene) => scene.assetKey === asset.assetKey).map((scene) => ({
           startUs: scene.startUs,
           endUs: scene.endUs,
-          labels: [...new Set([...(scene.labels || []), ...asset.analysis.semanticTags])],
-          quality: scene.qualityScore,
+          labels: scene.labels,
+          quality: scene.quality,
         })),
       }));
       const semanticSentences: SemanticSentence[] = script.segments.map((segment, index) => ({
@@ -956,18 +989,6 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         text: segment.narration,
         keywords: extractMatchKeywords(segment.narration),
       }));
-      const semanticScenes: SemanticScene[] = matchingAssets.flatMap((asset) => {
-        const sourceScenes = asset.analysis.scenes?.length ? asset.analysis.scenes : asset.analysis.usableRanges.map((range) => ({
-          ...range, description: asset.analysis.summary, labels: asset.analysis.semanticTags, qualityScore: range.qualityScore,
-        }));
-        return sourceScenes.map((scene, sceneIndex) => ({
-          assetKey: asset.assetKey!, assetFingerprint: asset.fingerprint, sceneIndex,
-          startUs: scene.startUs, endUs: scene.endUs,
-          labels: [...new Set([...(scene.labels || []), ...asset.analysis.semanticTags, ...asset.analysis.sellingPoints])],
-          description: scene.description || asset.analysis.summary,
-          quality: scene.qualityScore,
-        }));
-      });
       const semanticInput = {
         sentences: semanticSentences,
         scenes: semanticScenes,
@@ -982,10 +1003,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const scriptHash = sha256(JSON.stringify(semanticSentences));
       const scenesFingerprint = sha256(JSON.stringify(semanticScenes));
       const cachedMatrix = db.prepare(`SELECT semanticScoresJson, hookScoresJson, semanticFallback FROM final_edit_semantic_matrix_cache WHERE cacheKey=?`).get(semanticCacheKey) as { semanticScoresJson: string; hookScoresJson: string; semanticFallback: number } | undefined;
-      let semanticResult = cachedMatrix
+      const normalizedCachedMatrix = cachedMatrix
         ? normalizeSemanticMatrix({ score_matrix: parseJson(cachedMatrix.semanticScoresJson, []), hook_scores: parseJson(cachedMatrix.hookScoresJson, []) }, semanticSentences.length, semanticScenes.length)
         : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
-      const semanticCacheHit = Boolean(cachedMatrix && !cachedMatrix.semanticFallback && !semanticResult.semanticFallback);
+      const semanticCacheHit = Boolean(cachedMatrix && !normalizedCachedMatrix.semanticFallback);
+      let semanticResult = semanticCacheHit
+        ? { ...normalizedCachedMatrix, semanticFallback: Boolean(cachedMatrix?.semanticFallback) }
+        : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
       if (!semanticCacheHit && semanticSentences.length && semanticScenes.length && deps.scoreSemanticMatrix) {
         try {
           const prompt = buildSemanticMatrixPrompt(semanticInput);
@@ -995,24 +1019,22 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             temperature: 0.2,
             maxTokens: 1500,
           }), semanticSentences.length, semanticScenes.length);
-          if (!semanticResult.semanticFallback) {
-            db.prepare(`
-              INSERT INTO final_edit_semantic_matrix_cache
-                (cacheKey, scriptHash, scenesFingerprint, providerId, model, promptVersion, semanticScoresJson, hookScoresJson, semanticFallback, createdAt, updatedAt)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-              ON CONFLICT(cacheKey) DO UPDATE SET
-                scriptHash=excluded.scriptHash, scenesFingerprint=excluded.scenesFingerprint,
-                providerId=excluded.providerId, model=excluded.model, promptVersion=excluded.promptVersion,
-                semanticScoresJson=excluded.semanticScoresJson, hookScoresJson=excluded.hookScoresJson,
-                semanticFallback=0, updatedAt=excluded.updatedAt
-            `).run(
-              semanticCacheKey, scriptHash, scenesFingerprint, semanticInput.providerId, semanticInput.model, semanticInput.promptVersion,
-              JSON.stringify(semanticResult.semanticScores), JSON.stringify(semanticResult.hookScores), now(), now(),
-            );
-          }
         } catch {
           semanticResult = normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
         }
+        db.prepare(`
+          INSERT INTO final_edit_semantic_matrix_cache
+            (cacheKey, scriptHash, scenesFingerprint, providerId, model, promptVersion, semanticScoresJson, hookScoresJson, semanticFallback, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(cacheKey) DO UPDATE SET
+            scriptHash=excluded.scriptHash, scenesFingerprint=excluded.scenesFingerprint,
+            providerId=excluded.providerId, model=excluded.model, promptVersion=excluded.promptVersion,
+            semanticScoresJson=excluded.semanticScoresJson, hookScoresJson=excluded.hookScoresJson,
+            semanticFallback=excluded.semanticFallback, updatedAt=excluded.updatedAt
+        `).run(
+          semanticCacheKey, scriptHash, scenesFingerprint, semanticInput.providerId, semanticInput.model, semanticInput.promptVersion,
+          JSON.stringify(semanticResult.semanticScores), JSON.stringify(semanticResult.hookScores), semanticResult.semanticFallback ? 1 : 0, now(), now(),
+        );
       }
       const beatResult = deps.detectBeatPoints
         ? await deps.detectBeatPoints({ audioPath: resolveStoragePath(storageRoot, narration.relativePath), durationUs: narration.durationUs })
@@ -1021,7 +1043,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         const segmentId = segment.id || `segment-${index + 1}`;
         const timing = narration.segmentTimings.find((item) => item.segmentId === segmentId);
         if (!timing) throw new FinalEditError('alignment_failed', `缺少 ${segmentId} 的真实 TTS 时长`);
-        return { id: segmentId, text: segment.narration, startUs: timing.startUs, endUs: timing.endUs, keywords: semanticSentences[index].keywords };
+        return { id: segmentId, shotId: segment.shotId, text: segment.narration, startUs: timing.startUs, endUs: timing.endUs, keywords: semanticSentences[index].keywords };
       });
       const matchResult = matchAudioFirst({
         sentences: matcherSentences,
@@ -1063,26 +1085,34 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       updateJob('previewing', 0.8);
       await new Promise<void>((resolve) => setImmediate(resolve));
       const previewPaths = new Map<string, string>();
+      const narrationAbsolutePath = resolveStoragePath(storageRoot, narration.relativePath);
+      const narrationPreviewFingerprint = fs.existsSync(narrationAbsolutePath)
+        ? sha256(fs.readFileSync(narrationAbsolutePath))
+        : sha256(JSON.stringify({ segments: normalizedSegments, providerId: input.providerId, voice: input.voice, speed: input.speed, durationUs: narration.durationUs }));
       for (let index = 0; index < variants.length; index += 1) {
         const variant = variants[index];
         if (deps.warmPreview && variant.timeline.clips.length > 0) {
-          const usedVideoJobIds = new Set(variant.timeline.clips.map((clip) => clip.videoJobId));
-          const previewCacheKey = preparePreviewCacheKey({
-            timeline: variant.timeline,
-            sources: prepared
-              .filter((asset) => usedVideoJobIds.has(asset.videoJobId))
-              .map((asset) => ({ videoJobId: asset.videoJobId, fingerprint: asset.fingerprint })),
-            narration: { hash: narrationHash, relativePath: narration.relativePath, durationUs: narration.durationUs },
-            outputPreset: variant.outputPreset,
-          });
-          const relativePath = path.join('final-edits', 'previews', 'prepare', `${previewCacheKey}.mp4`);
-          const warmed = await deps.warmPreview({
-            jobId, groupId, variant,
-            sources: prepared.filter((asset) => usedVideoJobIds.has(asset.videoJobId)).map((asset) => ({ videoJobId: asset.videoJobId, absolutePath: asset.localVideoPath })),
-            narrationAbsolutePath: resolveStoragePath(storageRoot, narration.relativePath),
-            relativePath,
-          });
-          previewPaths.set(variant.id, warmed.relativePath);
+          try {
+            const usedVideoJobIds = new Set(variant.timeline.clips.map((clip) => clip.videoJobId));
+            const previewCacheKey = preparePreviewCacheKey({
+              timeline: variant.timeline,
+              sources: prepared
+                .filter((asset) => usedVideoJobIds.has(asset.videoJobId))
+                .map((asset) => ({ videoJobId: asset.videoJobId, fingerprint: asset.fingerprint })),
+              narration: { fingerprint: narrationPreviewFingerprint, durationUs: narration.durationUs },
+              outputPreset: variant.outputPreset,
+            });
+            const relativePath = path.join('final-edits', 'previews', 'prepare', `${previewCacheKey}.mp4`);
+            const warmed = await deps.warmPreview({
+              jobId, groupId, variant,
+              sources: prepared.filter((asset) => usedVideoJobIds.has(asset.videoJobId)).map((asset) => ({ videoJobId: asset.videoJobId, absolutePath: asset.localVideoPath })),
+              narrationAbsolutePath,
+              relativePath,
+            });
+            previewPaths.set(variant.id, warmed.relativePath);
+          } catch {
+            variant.issues.push({ code: 'preview_failed', severity: 'warning', message: '低清预览生成失败，时间线已保留，可稍后重试' });
+          }
         }
         updateJob('previewing', 0.8 + ((index + 1) / variants.length) * 0.19);
       }
