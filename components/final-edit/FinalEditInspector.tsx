@@ -179,7 +179,7 @@ export function FinalEditInspector({
 function InspectorHeading({ title, description }: { title: string; description: string }) { return <div className={styles.inspectorHeading}><h3>{title}</h3><p>{description}</p></div>; }
 function SectionTitle({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) { return <div className={styles.sectionTitle}><span>{title}</span>{action && <button type="button" onClick={onAction}>{action}</button>}</div>; }
 
-function StyleEditor({ value, onPreview, onCommit }: { value: TextStyle; onPreview: (style: TextStyle) => void; onCommit: (style: TextStyle) => void }) {
+export function StyleEditor({ value, onPreview, onCommit }: { value: TextStyle; onPreview: (style: TextStyle) => void; onCommit: (style: TextStyle) => void }) {
   const [draft, setDraft] = useState(value);
   const [fonts, setFonts] = useState<string[]>([value.fontFamily]);
 

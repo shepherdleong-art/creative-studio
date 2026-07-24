@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FinalEditAssetView, FinalEditGroupView, FinalEditVariantView } from '@/lib/final-edit/types';
 import type { StyleTarget } from './FinalEditInspector';
-import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame } from './preview-playback';
+import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime } from './preview-playback';
 import { drawEditorOverlay } from './text-canvas-renderer';
 import styles from './FinalEditEditor.module.css';
 
@@ -15,16 +15,38 @@ function formatTime(timeSec: number) {
   return `${String(Math.floor(value / 60)).padStart(2, '0')}:${(value % 60).toFixed(2).padStart(5, '0')}`;
 }
 
-export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, textTarget, onPlayheadChange, onTextPositionChange }: {
+interface PreviewAudioGraph {
+  context: AudioContext;
+  narrationGain: GainNode;
+  bgmGain: GainNode;
+}
+
+function seekMedia(element: HTMLMediaElement | null, timeSec: number) {
+  if (!element || !Number.isFinite(timeSec)) return;
+  if (element.readyState === HTMLMediaElement.HAVE_NOTHING) {
+    element.addEventListener('loadedmetadata', () => seekMedia(element, timeSec), { once: true });
+    return;
+  }
+  try {
+    element.currentTime = Math.max(0, timeSec);
+  } catch {
+    // A media source can disappear while switching groups; the next prop sync retries.
+  }
+}
+
+export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, active = true, textTarget, onPlayheadChange, onTextPositionChange }: {
   group: FinalEditGroupView;
   variant: FinalEditVariantView;
   assets: FinalEditAssetView[];
   selectedAsset: FinalEditAssetView | null;
   playheadSec: number;
+  seekRequestId?: string | number;
+  active?: boolean;
   textTarget: StyleTarget | null;
   onPlayheadChange: (timeSec: number) => void;
   onTextPositionChange: (target: StyleTarget, x: number, y: number, commit: boolean) => void;
 }) {
+  const previewRootRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const foregroundCanvasRef = useRef<HTMLCanvasElement>(null);
   const videoARef = useRef<HTMLVideoElement>(null);
@@ -32,14 +54,19 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const narrationRef = useRef<HTMLAudioElement>(null);
   const bgmRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioGraphRef = useRef<PreviewAudioGraph | null>(null);
   const clockStartRef = useRef(0);
   const clockOffsetRef = useRef(0);
   const animationRef = useRef(0);
+  const audioStartTimerRef = useRef(0);
   const playingRef = useRef(false);
   const lastStartedClipRef = useRef('');
+  const emittedPlayheadsRef = useRef<number[]>([]);
+  const lastSeekRequestIdRef = useRef<string | number | undefined>(seekRequestId);
   const [playing, setPlaying] = useState(false);
 
-  const totalSec = INTRO_SEC + variant.timeline.bodyFrames / FPS;
+  const bodyDurationSec = variant.timeline.bodyFrames / FPS;
+  const totalSec = INTRO_SEC + bodyDurationSec;
   const bodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
   const sortedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
   const activeClipIndex = playheadSec >= INTRO_SEC ? sortedClips.findIndex((clip) => bodyFrame >= clip.timelineInFrame && bodyFrame < clip.timelineOutFrame) : -1;
@@ -60,6 +87,59 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const activeFramingScale = activeFraming.scale;
   const activeFramingOffsetX = activeFraming.offsetX;
   const activeFramingOffsetY = activeFraming.offsetY;
+
+  const setAudioLevels = useCallback((timeSec: number) => {
+    const graph = audioGraphRef.current;
+    if (!graph) return;
+    const levels = previewAudioLevelsAtTime({
+      playheadSec: timeSec,
+      introSec: INTRO_SEC,
+      bodyDurationSec,
+      gainDb: variant.bgm.gainDb,
+      fadeInSec: variant.bgm.fadeInSec,
+      fadeOutSec: variant.bgm.fadeOutSec,
+    });
+    graph.narrationGain.gain.setValueAtTime(levels.narrationGain, graph.context.currentTime);
+    graph.bgmGain.gain.setValueAtTime(levels.bgmGain, graph.context.currentTime);
+  }, [bodyDurationSec, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.bgm.gainDb]);
+
+  const pauseAllMedia = useCallback(() => {
+    playingRef.current = false;
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    animationRef.current = 0;
+    if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
+    audioStartTimerRef.current = 0;
+    videoARef.current?.pause();
+    videoBRef.current?.pause();
+    narrationRef.current?.pause();
+    bgmRef.current?.pause();
+    const graph = audioGraphRef.current;
+    if (graph) {
+      graph.narrationGain.gain.setValueAtTime(0, graph.context.currentTime);
+      graph.bgmGain.gain.setValueAtTime(0, graph.context.currentTime);
+    }
+  }, []);
+
+  const stopPlayback = useCallback(() => {
+    pauseAllMedia();
+    setPlaying(false);
+  }, [pauseAllMedia]);
+
+  const emitPlayhead = useCallback((timeSec: number) => {
+    emittedPlayheadsRef.current.push(timeSec);
+    if (emittedPlayheadsRef.current.length > 8) emittedPlayheadsRef.current.shift();
+    onPlayheadChange(timeSec);
+  }, [onPlayheadChange]);
+
+  const synchronizePausedAudio = useCallback((timeSec: number) => {
+    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, timeSec - INTRO_SEC));
+    seekMedia(narrationRef.current, bodyOffset);
+    const bgm = bgmRef.current;
+    if (bgm) {
+      const loopDuration = Number.isFinite(bgm.duration) && bgm.duration > 0 ? bgm.duration : bodyDurationSec;
+      seekMedia(bgm, bodyOffset % Math.max(0.1, loopDuration));
+    }
+  }, [bodyDurationSec]);
 
   useEffect(() => {
     if (canvasRef.current) drawEditorOverlay(canvasRef.current, group, variant.outputPreset, showSelectedMaterial ? null : activeCue, playheadSec < INTRO_SEC && !showSelectedMaterial);
@@ -139,66 +219,118 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     const tick = () => {
       const next = clockOffsetRef.current + (context.currentTime - clockStartRef.current);
       if (next >= totalSec) {
-        onPlayheadChange(totalSec);
-        playingRef.current = false;
-        setPlaying(false);
+        emitPlayhead(totalSec);
+        stopPlayback();
         return;
       }
-      if (bgmRef.current) {
-        const baseGain = Math.min(1, Math.pow(10, variant.bgm.gainDb / 20));
-        const remaining = Math.max(0, totalSec - next);
-        bgmRef.current.volume = baseGain * Math.min(1, remaining / Math.max(0.01, variant.bgm.fadeOutSec));
-      }
-      onPlayheadChange(next);
+      setAudioLevels(next);
+      emitPlayhead(next);
       animationRef.current = requestAnimationFrame(tick);
     };
     animationRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationRef.current);
-  }, [onPlayheadChange, playing, totalSec, variant.bgm.fadeOutSec, variant.bgm.gainDb]);
+  }, [emitPlayhead, playing, setAudioLevels, stopPlayback, totalSec]);
 
   useEffect(() => {
     playingRef.current = playing;
     if (playing) return;
-    narrationRef.current?.pause();
-    bgmRef.current?.pause();
-    videoARef.current?.pause();
-    videoBRef.current?.pause();
-  }, [playing]);
+    pauseAllMedia();
+  }, [pauseAllMedia, playing]);
+
+  useEffect(() => {
+    if (active) return;
+    pauseAllMedia();
+    const timer = window.setTimeout(() => setPlaying(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [active, pauseAllMedia]);
+
+  useEffect(() => () => {
+    pauseAllMedia();
+    const context = audioContextRef.current;
+    audioGraphRef.current = null;
+    audioContextRef.current = null;
+    if (context && context.state !== 'closed') void context.close();
+  }, [pauseAllMedia]);
+
+  useEffect(() => {
+    const requestChanged = seekRequestId !== undefined && seekRequestId !== lastSeekRequestIdRef.current;
+    lastSeekRequestIdRef.current = seekRequestId;
+    const emittedIndex = emittedPlayheadsRef.current.findIndex((value) => Math.abs(value - playheadSec) < 1e-6);
+    const internallyEmitted = emittedIndex >= 0;
+    if (internallyEmitted) emittedPlayheadsRef.current.splice(0, emittedIndex + 1);
+    else emittedPlayheadsRef.current = [];
+    if (internallyEmitted && !requestChanged) return;
+    stopPlayback();
+    synchronizePausedAudio(playheadSec);
+  }, [playheadSec, seekRequestId, stopPlayback, synchronizePausedAudio, variant.id]);
 
   const syncAudio = (startAt: number) => {
     const bodyOffset = Math.max(0, startAt - INTRO_SEC);
     const delayMs = Math.max(0, (INTRO_SEC - startAt) * 1000);
-    window.setTimeout(() => {
+    if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
+    audioStartTimerRef.current = window.setTimeout(() => {
+      audioStartTimerRef.current = 0;
       if (!audioContextRef.current || !playingRef.current) return;
       const narration = narrationRef.current;
       const bgm = bgmRef.current;
-      if (narration) { narration.currentTime = bodyOffset; void narration.play().catch(() => undefined); }
-      if (bgm) {
-        bgm.currentTime = bodyOffset % Math.max(0.1, bgm.duration || variant.timeline.bodyFrames / FPS);
-        bgm.volume = Math.min(1, Math.pow(10, variant.bgm.gainDb / 20));
+      if (narration) {
+        narration.volume = 1;
+        seekMedia(narration, bodyOffset);
+        void narration.play().catch(() => undefined);
+      }
+      if (bgm && variant.bgm.trackId) {
+        const loopDuration = Number.isFinite(bgm.duration) && bgm.duration > 0 ? bgm.duration : bodyDurationSec;
+        bgm.volume = 1;
+        seekMedia(bgm, bodyOffset % Math.max(0.1, loopDuration));
         void bgm.play().catch(() => undefined);
       }
     }, delayMs);
   };
 
-  const togglePlayback = async () => {
-    if (playing) { playingRef.current = false; setPlaying(false); return; }
+  const ensureAudioGraph = () => {
+    if (audioGraphRef.current) return audioGraphRef.current;
+    const narration = narrationRef.current;
+    const bgm = bgmRef.current;
+    if (!narration || !bgm) return null;
     const context = audioContextRef.current || new AudioContext();
     audioContextRef.current = context;
+    const narrationGain = context.createGain();
+    const bgmGain = context.createGain();
+    context.createMediaElementSource(narration).connect(narrationGain).connect(context.destination);
+    context.createMediaElementSource(bgm).connect(bgmGain).connect(context.destination);
+    const graph = { context, narrationGain, bgmGain };
+    audioGraphRef.current = graph;
+    return graph;
+  };
+
+  const togglePlayback = async () => {
+    if (!active) return;
+    if (playing) { stopPlayback(); return; }
+    const graph = ensureAudioGraph();
+    if (!graph) return;
+    const { context } = graph;
     if (context.state === 'suspended') await context.resume();
     const startAt = playheadSec >= totalSec ? 0 : playheadSec;
-    if (startAt !== playheadSec) onPlayheadChange(startAt);
+    if (startAt !== playheadSec) emitPlayhead(startAt);
     clockOffsetRef.current = startAt;
     clockStartRef.current = context.currentTime;
+    setAudioLevels(startAt);
     playingRef.current = true;
     setPlaying(true);
-    window.setTimeout(() => syncAudio(startAt), 0);
+    syncAudio(startAt);
   };
 
   const seek = (next: number) => {
-    playingRef.current = false;
-    setPlaying(false);
-    onPlayheadChange(Math.max(0, Math.min(totalSec, next)));
+    const clamped = Math.max(0, Math.min(totalSec, next));
+    stopPlayback();
+    synchronizePausedAudio(clamped);
+    emitPlayhead(clamped);
+  };
+
+  const enterFullscreen = async () => {
+    const root = previewRootRef.current;
+    if (!root || document.fullscreenElement === root) return;
+    await root.requestFullscreen().catch(() => undefined);
   };
 
   const coverFraming = variant.cover.framing || { scale: 1, offsetX: 0, offsetY: 0 };
@@ -227,7 +359,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   };
 
   return (
-    <main className={styles.previewColumn} aria-label="成片预览">
+    <main ref={previewRootRef} className={styles.previewColumn} aria-label="成片预览">
       <div className={styles.previewToolbar}><span>{variant.outputPreset.replace('x', ':')} · {FPS} fps</span><span>{showSelectedMaterial ? '素材预览' : activeClip ? `片段 ${activeClipIndex + 1}` : playheadSec < INTRO_SEC ? '封面' : '画面缺口'}</span></div>
       <div className={styles.previewStageWrap}>
         <div className={`${styles.previewStage} ${previewClass}`}>
@@ -245,9 +377,10 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         <button type="button" className={styles.playButton} aria-label={playing ? '暂停' : '播放成片'} onClick={() => void togglePlayback()}>{playing ? 'Ⅱ' : '▶'}</button>
         <span className={styles.timecode}>{formatTime(playheadSec)} / {formatTime(totalSec)}</span>
         <input aria-label="播放位置" type="range" min={0} max={totalSec} step={1 / FPS} value={playheadSec} onChange={(event) => seek(Number(event.target.value))} />
+        <button type="button" className={styles.actionButton} aria-label="全屏预览" onClick={() => void enterFullscreen()}>全屏</button>
       </div>
       <audio ref={narrationRef} preload="metadata" src={`/api/final-edit-groups/${group.id}/narration`} />
-      {variant.bgm.trackId && <audio ref={bgmRef} preload="metadata" loop src={`/api/final-edit-bgm/${variant.bgm.trackId}/file`} />}
+      <audio ref={bgmRef} preload="metadata" loop src={variant.bgm.trackId ? `/api/final-edit-bgm/${variant.bgm.trackId}/file` : undefined} />
     </main>
   );
 }

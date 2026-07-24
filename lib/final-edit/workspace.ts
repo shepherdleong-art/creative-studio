@@ -45,6 +45,7 @@ import {
   FINAL_EDIT_FPS,
   FINAL_EDIT_INTRO_DURATION_US,
   FINAL_EDIT_INTRO_FRAMES,
+  FINAL_EDIT_MIN_CLIP_FRAMES,
   OUTPUT_PRESETS,
   type CapacityEstimate,
   type FinalEditAssetView,
@@ -178,8 +179,10 @@ export type FinalEditCommand =
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'replace_clip'; clipId: string; videoJobId: string; sourceFingerprint: string; sourceInFrame: number; sourceOutFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'insert_clip'; videoJobId: string; sourceFingerprint: string; sourceInFrame: number; sourceOutFrame: number; timelineInFrame: number; timelineOutFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'swap_clips'; leftClipId: string; rightClipId: string }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'reorder_clips'; orderedClipIds: string[] }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'restore_revision'; revision: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_bgm_gain'; gainDb: number }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_bgm_fades'; fadeInSec: number; fadeOutSec: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_bgm'; trackId: string | null }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_cover'; coverKey: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_cover_framing'; scale: number; offsetX: number; offsetY: number }
@@ -459,6 +462,43 @@ function normalizeCover(value: unknown): FinalEditVariantView['cover'] {
   };
 }
 
+function normalizeBgm(value: unknown): FinalEditVariantView['bgm'] {
+  const bgm = (value && typeof value === 'object' ? value : {}) as Partial<FinalEditVariantView['bgm']>;
+  return {
+    trackId: typeof bgm.trackId === 'string' ? bgm.trackId : null,
+    gainDb: Number.isFinite(bgm.gainDb) ? Number(bgm.gainDb) : -16,
+    loop: bgm.loop == null ? true : Boolean(bgm.loop),
+    fadeInSec: Number.isFinite(bgm.fadeInSec) ? Math.max(0, Number(bgm.fadeInSec)) : 0,
+    fadeOutSec: Number.isFinite(bgm.fadeOutSec) ? Math.max(0, Number(bgm.fadeOutSec)) : 0.8,
+  };
+}
+
+function editableVideoSource(db: Database.Database, storageRoot: string, groupId: string, videoJobId: string): { fileFingerprint: string; mediaJson: string } | null {
+  if (videoJobId.startsWith('external-asset-')) {
+    const externalId = videoJobId.slice('external-asset-'.length);
+    const source = db.prepare(`
+      SELECT g.projectId, g.shotSetId, e.relativePath, e.status, a.fileFingerprint, a.mediaJson
+      FROM final_edit_groups g
+      JOIN final_edit_external_assets e ON e.projectId=g.projectId AND e.shotSetId=g.shotSetId AND e.id=?
+      JOIN final_edit_asset_analysis a ON a.videoJobId=?
+      WHERE g.id=?
+    `).get(externalId, videoJobId, groupId) as { projectId: string; shotSetId: string; relativePath: string; status: string; fileFingerprint: string; mediaJson: string } | undefined;
+    if (!source || source.status !== 'ready') return null;
+    try {
+      const absolutePath = resolveImportedExternalAssetVideoPath(storageRoot, { projectId: source.projectId, shotSetId: source.shotSetId }, source.relativePath);
+      if (!fs.existsSync(absolutePath)) return null;
+    } catch { return null; }
+    return { fileFingerprint: source.fileFingerprint, mediaJson: source.mediaJson };
+  }
+  return db.prepare(`
+    SELECT a.fileFingerprint, a.mediaJson
+    FROM video_jobs vj
+    JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id
+    JOIN final_edit_groups g ON g.id=?
+    WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId
+  `).get(groupId, videoJobId) as { fileFingerprint: string; mediaJson: string } | undefined || null;
+}
+
 function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean): FinalEditIssue[] {
   const issues: FinalEditIssue[] = [];
   for (const gap of timelineGaps(timeline.bodyFrames, timeline.clips)) {
@@ -473,7 +513,7 @@ function issueList(timeline: VideoTimeline, coverKey: string | null, narrationRe
   if (!coverKey) issues.push({ code: 'cover_missing', severity: 'blocking', message: '缺少可用的独立封面底图' });
   if (!narrationReady) issues.push({ code: 'alignment_failed', severity: 'blocking', message: '字幕尚未获得可靠的强制对齐结果' });
   for (const clip of timeline.clips) {
-    if (clip.timelineOutFrame - clip.timelineInFrame < 12) {
+    if (clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) {
       issues.push({ code: 'clip_too_short', severity: 'warning', message: '片段短于 0.5 秒', targetId: clip.id });
     }
   }
@@ -712,7 +752,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       indexNum: Number(row.indexNum),
       outputPreset: String(row.outputPreset) as OutputPresetId,
       timeline: parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] }),
-      bgm: parseJson(String(row.bgmJson), { trackId: null, gainDb: -16, loop: true, fadeOutSec: 0.8 }),
+      bgm: normalizeBgm(parseJson<unknown>(String(row.bgmJson), {})),
       cover: normalizeCover(parseJson(String(row.coverJson), {})),
       issues: parseJson<FinalEditIssue[]>(String(row.issuesJson), []),
       matchDiagnostics: normalizeMatchDiagnostics(parseJson<unknown>(String(row.matchDiagnosticsJson || '{}'), {})),
@@ -1079,7 +1119,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           ...matchResult.diagnostics.gaps.map((gap) => ({ code: 'material_gap', severity: 'blocking' as const, message: `句段 ${gap.sentenceId} 素材不足，保留时间线缺口`, targetId: gap.sentenceId })),
         ];
         const variantId = `prepare-${sha256(`${jobId}:${variantIndex}`).slice(0, 32)}`;
-        variants.push({ id: variantId, indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeOutSec: 0.8 }, cover, issues, matchDiagnostics: matchResult.diagnostics, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null, previewUrl: null });
+        variants.push({ id: variantId, indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeInSec: 0, fadeOutSec: 0.8 }, cover, issues, matchDiagnostics: matchResult.diagnostics, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null, previewUrl: null });
         updateJob('matching', 0.55 + ((index + 1) / input.count) * 0.25);
       }
       updateJob('previewing', 0.8);
@@ -1237,7 +1277,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       if (!row) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
       if (Number(row.revision) !== command.expectedRevision) throw new FinalEditError('revision_conflict', '草稿已被其他操作更新', 409, { expectedRevision: command.expectedRevision, currentRevision: Number(row.revision) });
       let timeline = parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
-      let bgm = parseJson<{ trackId: string | null; gainDb: number; loop: boolean; fadeOutSec: number }>(String(row.bgmJson), { trackId: null, gainDb: -16, loop: true, fadeOutSec: 0.8 });
+      let bgm = normalizeBgm(parseJson<unknown>(String(row.bgmJson), {}));
       let cover = normalizeCover(parseJson(String(row.coverJson), {}));
       if (command.type === 'apply_proposal') {
         const proposal = db.prepare(`SELECT baseRevision, proposalJson, status FROM final_edit_proposals WHERE id=? AND variantId=?`).get(command.proposalId, command.variantId) as { baseRevision: number; proposalJson: string; status: string } | undefined;
@@ -1280,8 +1320,27 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         first.timelineInFrame = second.timelineOutFrame + gap;
         first.timelineOutFrame = first.timelineInFrame + firstDuration;
       }
+      if (command.type === 'reorder_clips') {
+        const ordered = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame || left.id.localeCompare(right.id));
+        const requestedIds = command.orderedClipIds.map(String);
+        const currentIds = new Set(ordered.map((clip) => clip.id));
+        if (requestedIds.length !== ordered.length || new Set(requestedIds).size !== ordered.length || requestedIds.some((id) => !currentIds.has(id))) {
+          throw new FinalEditError('invalid_clip_order', '片段排序必须包含当前时间轴全部且唯一的片段');
+        }
+        const gaps = ordered.map((clip, index) => index === 0 ? clip.timelineInFrame : clip.timelineInFrame - ordered[index - 1].timelineOutFrame);
+        const byId = new Map(ordered.map((clip) => [clip.id, clip]));
+        let cursor = 0;
+        for (let index = 0; index < requestedIds.length; index += 1) {
+          const clip = byId.get(requestedIds[index])!;
+          const duration = clip.timelineOutFrame - clip.timelineInFrame;
+          cursor += gaps[index];
+          clip.timelineInFrame = cursor;
+          clip.timelineOutFrame = cursor + duration;
+          cursor = clip.timelineOutFrame;
+        }
+      }
       if (command.type === 'insert_clip') {
-        const source = db.prepare(`SELECT a.fileFingerprint FROM video_jobs vj JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id JOIN final_edit_groups g ON g.id=? WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId`).get(String(row.groupId), command.videoJobId) as { fileFingerprint: string } | undefined;
+        const source = editableVideoSource(db, storageRoot, String(row.groupId), command.videoJobId);
         if (!source || source.fileFingerprint !== command.sourceFingerprint) throw new FinalEditError('shot_set_mismatch', '插入素材不属于当前分镜组或文件已变化');
         timeline.clips.push({
           id: uuidv4(), videoJobId: command.videoJobId, sourceFingerprint: command.sourceFingerprint,
@@ -1303,13 +1362,18 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           clip.timelineInFrame = Math.round(command.timelineInFrame); clip.timelineOutFrame = Math.round(command.timelineOutFrame);
         }
         if (command.type === 'replace_clip') {
-          const source = db.prepare(`SELECT vj.shotSetId, a.fileFingerprint, a.mediaJson FROM video_jobs vj JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id JOIN final_edit_groups g ON g.id=? WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId`).get(String(row.groupId), command.videoJobId) as { shotSetId: string; fileFingerprint: string; mediaJson: string } | undefined;
+          const source = editableVideoSource(db, storageRoot, String(row.groupId), command.videoJobId);
           if (!source || source.fileFingerprint !== command.sourceFingerprint) throw new FinalEditError('shot_set_mismatch', '替换素材不属于当前分镜组或文件已变化');
           clip.videoJobId = command.videoJobId; clip.sourceFingerprint = command.sourceFingerprint;
           clip.sourceInFrame = Math.round(command.sourceInFrame); clip.sourceOutFrame = Math.round(command.sourceOutFrame);
         }
       }
       if (command.type === 'set_bgm_gain') bgm.gainDb = Math.max(-40, Math.min(0, command.gainDb));
+      if (command.type === 'set_bgm_fades') {
+        const bodySec = timeline.bodyFrames / FINAL_EDIT_FPS;
+        bgm.fadeInSec = Math.max(0, Math.min(bodySec, Number(command.fadeInSec) || 0));
+        bgm.fadeOutSec = Math.max(0, Math.min(bodySec, Number(command.fadeOutSec) || 0));
+      }
       if (command.type === 'set_bgm') {
         if (command.trackId && !db.prepare(`SELECT 1 FROM final_edit_bgm_tracks WHERE id=? AND status='ready'`).get(command.trackId)) throw new FinalEditError('bgm_not_found', 'BGM 不存在或不可用', 404);
         bgm.trackId = command.trackId;
@@ -1351,10 +1415,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (command.type === 'set_framing') clip.framing = { scale: Math.max(1, Math.min(3, command.scale)), offsetX: Math.max(-1, Math.min(1, command.offsetX)), offsetY: Math.max(-1, Math.min(1, command.offsetY)) };
       }
       for (const clip of timeline.clips) {
-        if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame <= clip.timelineInFrame || clip.sourceInFrame < 0 || clip.sourceOutFrame <= clip.sourceInFrame) throw new FinalEditError('source_out_of_range', '片段时间范围无效');
-        const analysis = db.prepare(`SELECT mediaJson FROM final_edit_asset_analysis WHERE videoJobId=? AND fileFingerprint=?`).get(clip.videoJobId, clip.sourceFingerprint) as { mediaJson: string } | undefined;
+        if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒');
+        const analysis = editableVideoSource(db, storageRoot, String(row.groupId), clip.videoJobId);
         const sourceFrames = Math.floor(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0) * 24 / 1_000_000);
-        if (!analysis || clip.sourceOutFrame > sourceFrames) throw new FinalEditError('source_out_of_range', '片段超出源视频真实时长');
+        if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) throw new FinalEditError('source_out_of_range', '片段超出源视频真实时长');
       }
       const orderedClips = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
       if (orderedClips.some((clip, index) => index > 0 && clip.timelineInFrame < orderedClips[index - 1].timelineOutFrame)) throw new FinalEditError('timeline_overlap', '视频片段不能重叠');
@@ -1541,7 +1605,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       groupRevision: group.revision, variantRevision: variant.revision,
       group: { coverTitle: group.coverTitle, subtitleCues: group.subtitleCues, narrationDurationUs: group.narrationDurationUs },
       variant, sources, coverRelativePath, narrationRelativePath: toRelative(groupRow.narrationAudioPath),
-      bgm: bgmTrack ? { ...bgmTrack, gainDb: variant.bgm.gainDb, loop: variant.bgm.loop, fadeOutSec: variant.bgm.fadeOutSec } : null,
+      bgm: bgmTrack ? { ...bgmTrack, gainDb: variant.bgm.gainDb, loop: variant.bgm.loop, fadeInSec: variant.bgm.fadeInSec, fadeOutSec: variant.bgm.fadeOutSec } : null,
       overlayBundle: { id: input.overlayBundleId, relativeDir: bundle.relativeDir, manifest: parseJson(bundle.manifestJson, {}) },
     };
     db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'render', 'queued', 'preflight', 0, ?, ?, 0, 'CNY', ?)`).run(id, group.projectId, group.id, variant.id, sha256(JSON.stringify({ id, snapshot })), JSON.stringify(snapshot), now());

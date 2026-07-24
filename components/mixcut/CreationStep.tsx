@@ -83,6 +83,7 @@ export function CreationStep({
   job,
   elapsedSec,
   onStart,
+  onPreview,
   onBack,
   submitting,
   startDisabledReason,
@@ -111,6 +112,7 @@ export function CreationStep({
   job: MixcutPrepareJobView | null;
   elapsedSec: number;
   onStart: () => void;
+  onPreview: () => void;
   onBack: () => void;
   submitting: boolean;
   startDisabledReason?: string;
@@ -206,7 +208,9 @@ export function CreationStep({
 
       <footer className={styles.creationFooter}>
         <span>{startDisabledReason || '开始后会创建不可变任务快照，刷新页面不会丢失。'}</span>
-        <button type="button" className={styles.primaryButton} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={16} />{submitting ? '正在创建任务…' : busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>
+        {job?.status === 'succeeded'
+          ? <button type="button" className={styles.primaryButton} onClick={onPreview}><Icon name="play" size={16} />去预览调整</button>
+          : <button type="button" className={styles.primaryButton} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={16} />{submitting ? '正在创建任务…' : busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>}
       </footer>
 
       {pendingDraft && (

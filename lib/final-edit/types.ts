@@ -11,6 +11,7 @@ export const OUTPUT_PRESETS = {
 export const FINAL_EDIT_FPS = 24 as const;
 export const FINAL_EDIT_INTRO_FRAMES = 20 as const;
 export const FINAL_EDIT_INTRO_DURATION_US = 833_333;
+export const FINAL_EDIT_MIN_CLIP_FRAMES = 12 as const;
 
 export interface TimelineClip {
   id: string;
@@ -105,7 +106,7 @@ export interface FinalEditVariantView {
   indexNum: number;
   outputPreset: OutputPresetId;
   timeline: VideoTimeline;
-  bgm: { trackId: string | null; gainDb: number; loop: boolean; fadeOutSec: number };
+  bgm: { trackId: string | null; gainDb: number; loop: boolean; fadeInSec: number; fadeOutSec: number };
   cover: {
     coverKey: string | null;
     kind: 'storyboard_image' | 'video_keyframe' | null;

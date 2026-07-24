@@ -5,6 +5,8 @@ const panel = fs.readFileSync('components/mixcut/MixcutPanel.tsx', 'utf8');
 const sidebar = fs.readFileSync('components/mixcut/MixcutSidebar.tsx', 'utf8');
 const materialStep = fs.readFileSync('components/mixcut/MaterialStep.tsx', 'utf8');
 const creationStep = fs.readFileSync('components/mixcut/CreationStep.tsx', 'utf8');
+const previewStep = fs.readFileSync('components/mixcut/PreviewStep.tsx', 'utf8');
+const timeline = fs.readFileSync('components/mixcut/MixcutTimeline.tsx', 'utf8');
 const styles = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
 const page = fs.readFileSync('app/projects/[id]/page.tsx', 'utf8');
 
@@ -63,5 +65,27 @@ assert.doesNotMatch(creationStep, /apiKey\b/, '新界面不得读取或回显明
 assert.match(styles, /\.fieldLabel textarea\s*{[^}]*min-height:\s*180px/s, '口播文案区必须舒适容纳 15～30 秒内容');
 assert.match(styles, /\.voiceControls\s*{[^}]*grid-template-columns/s);
 assert.match(styles, /@media[\s\S]*\.voiceControls\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s, '宽度不足时文案与音色必须纵向排列');
+assert.match(panel, /useState<0 \| 1 \| 2>/, 'Phase 4 必须把正式预览调整接入第三步');
+assert.match(panel, /\/api\/final-edit-groups\/\$\{job\.groupId\}/, 'prepare 成功后必须按任务精确 groupId 加载草稿');
+assert.match(panel, /<PreviewStep/, '正式 MixcutPanel 必须挂载 PreviewStep');
+assert.match(panel, /<option value="3x4">3:4<\/option><option value="9x16">9:16<\/option>/, '正式入口必须允许选择 V1 的 3:4 和 9:16 全局画幅');
+assert.match(panel, /outputPreset,/, '所选画幅必须冻结到 prepare job，不能只改浏览器预览');
+assert.match(panel, /activeStep === 2 \? undefined : styles\.stepHidden/, '步骤切换必须只隐藏而不卸载播放器和时间轴状态');
+assert.match(creationStep, /onPreview/, 'prepare 成功态必须提供去预览调整入口');
+assert.match(previewStep, /expectedRevision:\s*currentVariant\.revision/, '视频编辑必须读取队列执行时的最新 variant revision');
+assert.match(previewStep, /expectedRevision:\s*currentGroup\.revision/, '字幕编辑必须读取队列执行时的最新 group revision');
+assert.match(previewStep, /queueRef\.current\.then\(work, work\)/, '连续编辑必须进入串行 command 队列，不能在 busy 时静默丢弃');
+assert.doesNotMatch(previewStep, /if\s*\(busy\)\s*return false/, '保存期间不得直接丢弃第二个编辑 command');
+assert.match(previewStep, /\/api\/final-edit-groups\/\$\{groupId\}/, '冲突或刷新必须重新读取服务端 group 权威状态');
+assert.match(previewStep, /<FinalEditPreview/, '正式第三步必须复用双 video/Web Audio 预览器');
+assert.match(previewStep, /<MixcutTimeline/, '正式第三步必须挂载可操作 Mixcut 时间轴');
+assert.match(previewStep, /<StyleEditor/, '正式第三步必须提供字体、字号、颜色、描边和位置等全局字幕样式');
+assert.match(timeline, /clampTimelineZoom/, '时间轴 zoom 必须走固定 40–240 px\/s 领域约束');
+assert.match(timeline, /overflow|timelineScroll/, '时间轴必须提供真实滚动容器');
+assert.match(timeline, /reorder_clips/, '片段拖动排序必须只提交一个原子 command');
+assert.match(timeline, /视频[\s\S]*字幕[\s\S]*口播[\s\S]*BGM/, '正式时间轴必须显示四条共享坐标轨');
+assert.match(styles, /position:\s*sticky/, '轨道标签必须在横向滚动时保持可见');
+assert.match(styles, /overflow:\s*auto/, '正式时间轴必须允许横向和纵向滚动');
+assert.doesNotMatch(panel + previewStep, /localStorage|sessionStorage/, '正式编辑和运行态不得落浏览器 storage');
 
 console.log('final-edit mixcut UI contract tests passed');

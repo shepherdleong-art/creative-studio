@@ -17,10 +17,11 @@ import {
   toggleMaterialSelection,
   type MaterialSelectionByShotSet,
 } from '@/lib/final-edit/material-selection';
-import type { FinalEditExternalAssetView, FinalEditGroupView, MixcutContextResponse } from '@/lib/final-edit/types';
+import type { FinalEditExternalAssetView, FinalEditGroupView, MixcutContextResponse, OutputPresetId } from '@/lib/final-edit/types';
 import { CreationStep, type MixcutPrepareJobView, type MixcutTtsProviderView } from './CreationStep';
 import { MaterialStep, type MaterialCardView } from './MaterialStep';
 import { MixcutSidebar } from './MixcutSidebar';
+import { PreviewStep } from './PreviewStep';
 import styles from './MixcutPanel.module.css';
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -32,7 +33,7 @@ async function readJson<T>(response: Response): Promise<T> {
 const STEPS = [
   { label: '导入素材', hint: '选择当前分镜组', icon: 'folder' as const, enabled: true },
   { label: 'AI 智能创作', hint: '脚本·音色·真实进度', icon: 'sparkle' as const, enabled: true },
-  { label: '预览调整', hint: 'Phase 4 接入', icon: 'play' as const, enabled: false },
+  { label: '预览调整', hint: '完整时间轴·自动保存', icon: 'play' as const, enabled: true },
   { label: '导出渲染', hint: 'Phase 6 接入', icon: 'download' as const, enabled: false },
 ];
 
@@ -43,7 +44,7 @@ const MANUAL_SCRIPT_ID = '__manual__';
 
 export default function MixcutPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
   const [context, setContext] = useState<MixcutContextResponse | null>(null);
-  const [activeStep, setActiveStep] = useState<0 | 1>(0);
+  const [activeStep, setActiveStep] = useState<0 | 1 | 2>(0);
   const [selectionByShotSet, setSelectionByShotSet] = useState<MaterialSelectionByShotSet>({});
   const [externalByShotSet, setExternalByShotSet] = useState<Record<string, FinalEditExternalAssetView[]>>({});
   const [scriptEditor, setScriptEditor] = useState<ScriptEditorState>(() => createScriptEditorState({ id: MANUAL_SCRIPT_ID, narrationText: '' }));
@@ -54,7 +55,9 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const [voice, setVoice] = useState('');
   const [speed, setSpeed] = useState(1);
   const [visionProviderId, setVisionProviderId] = useState('');
+  const [outputPreset, setOutputPreset] = useState<OutputPresetId>('3x4');
   const [activeJob, setActiveJob] = useState<MixcutPrepareJobView | null>(null);
+  const [preparedGroup, setPreparedGroup] = useState<FinalEditGroupView | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [previewingVoice, setPreviewingVoice] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -115,6 +118,9 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         const readyExternalKeys = external.assets.filter((asset) => asset.status === 'ready').map((asset) => `external:${asset.id}`);
         const latestGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId);
         const editingGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && group.status === 'editing');
+        const latestPreparedGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && ['ready', 'partial'].includes(group.status) && group.variants.length > 0) || null;
+        setPreparedGroup(latestPreparedGroup);
+        if (latestPreparedGroup?.variants[0]?.outputPreset) setOutputPreset(latestPreparedGroup.variants[0].outputPreset);
         draftGroupRef.current = editingGroup
           ? { id: editingGroup.id, shotSetId: editingGroup.shotSetId, revision: editingGroup.revision }
           : null;
@@ -186,7 +192,12 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         if (jobPollRef.current !== token) return;
         setActiveJob(job);
         if (job.status === 'failed') setMessage(job.errorMessage || '智能创作任务失败');
-        if (job.status === 'succeeded') setMessage('智能创作任务已完成，脚本与进度已保存');
+        if (job.status === 'succeeded') {
+          const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
+          if (jobPollRef.current !== token) return;
+          setPreparedGroup(completedGroup);
+          setMessage('智能创作任务已完成，可以进入预览调整');
+        }
       } catch (error) {
         if (jobPollRef.current === token) setMessage(error instanceof Error ? error.message : String(error));
       }
@@ -255,6 +266,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     setPendingDraftId(null);
     setPendingShotSetId(null);
     setActiveJob(null);
+    setPreparedGroup(null);
     void loadContext(shotSetId);
   };
 
@@ -496,7 +508,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           editedNarrationText: scriptEditor.editedNarrationText,
           selectedMaterialKeys: selectedIds,
           count: 1,
-          outputPreset: '3x4',
+          outputPreset,
           providerId: ttsProviderId,
           voice,
           speed,
@@ -507,6 +519,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       const job = await readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`, { signal: controller.signal }));
       if (startRequestRef.current?.sequence !== sequence || startRequestRef.current.shotSetId !== requestShotSetId) return;
       setActiveJob({ ...job, groupId: jobRef.groupId });
+      setPreparedGroup(null);
       setMessage('后台任务已创建，可以离开页面后再返回查看');
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError') && startRequestRef.current?.sequence === sequence) {
@@ -532,7 +545,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           : undefined;
 
   return (
-    <div className={styles.shell} data-mixcut-shot-set-id={activeShotSetId ?? ''}>
+    <div className={styles.shell} data-mixcut-shot-set-id={activeShotSetId ?? ''} data-active-step={activeStep}>
       <header className={styles.topbar}>
         <div>
           <span className={styles.brandMark}>CS</span>
@@ -542,13 +555,14 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           <small>{context?.project.productName || projectName}</small>
           <strong>{context?.project.name || projectName}</strong>
         </div>
+        <label className={styles.aspectPicker}>全局画幅<select value={outputPreset} disabled={submitting || ['queued', 'running'].includes(activeJobStatus)} onChange={(event) => setOutputPreset(event.target.value as OutputPresetId)}><option value="3x4">3:4</option><option value="9x16">9:16</option></select></label>
       </header>
 
-      <div className={styles.body}>
+      <div className={`${styles.body} ${activeStep === 2 ? styles.bodyPreview : ''}`}>
         <nav className={styles.stepNav} aria-label="智能混剪步骤">
           <p className={styles.eyebrow}>创作步骤</p>
           {STEPS.map((step, index) => (
-            <button type="button" key={step.label} className={index === activeStep ? styles.activeStep : ''} disabled={!step.enabled || (index === 1 && selectedIds.length === 0)} onClick={() => index < 2 && setActiveStep(index as 0 | 1)}>
+            <button type="button" key={step.label} className={index === activeStep ? styles.activeStep : ''} disabled={!step.enabled || (index === 1 && selectedIds.length === 0) || (index === 2 && !preparedGroup)} onClick={() => index < 3 && setActiveStep(index as 0 | 1 | 2)}>
               <span><Icon name={step.icon} size={16} /></span>
               <span><strong>{step.label}</strong><small>{step.hint}</small></span>
             </button>
@@ -556,16 +570,18 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           <p className={styles.localOnly}><Icon name="lock" size={14} />本地保存</p>
         </nav>
 
-        <MixcutSidebar
-          shotSets={context?.shotSets ?? []}
-          activeShotSetId={activeShotSetId}
-          selectedCount={selectedIds.length}
-          availableVideoCount={materials.filter((material) => material.status === 'ready').length}
-          onSelectShotSet={selectShotSet}
-          disabled={loading || submitting}
-        />
+        <div className={styles.sidebarSlot}>
+          <MixcutSidebar
+            shotSets={context?.shotSets ?? []}
+            activeShotSetId={activeShotSetId}
+            selectedCount={selectedIds.length}
+            availableVideoCount={materials.filter((material) => material.status === 'ready').length}
+            onSelectShotSet={selectShotSet}
+            disabled={loading || submitting}
+          />
+        </div>
 
-        <main className={styles.main}>
+        <main className={`${styles.main} ${activeStep === 2 ? styles.mainPreview : ''}`}>
           {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}
           {!context && loading ? (
             <div className={styles.loadingState}><span /><strong>正在读取真实分镜组和视频…</strong></div>
@@ -632,7 +648,13 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                   onBack={() => setActiveStep(0)}
                   submitting={submitting}
                   startDisabledReason={startDisabledReason}
+                  onPreview={() => setActiveStep(2)}
                 />
+              </div>
+              <div className={activeStep === 2 ? undefined : styles.stepHidden}>
+                {preparedGroup
+                  ? <PreviewStep group={preparedGroup} active={activeStep === 2} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(1)} />
+                  : <div className={styles.emptyState}><strong>预览草稿尚未准备完成</strong><span>完成四阶段智能创作后，第三步会自动开放。</span></div>}
               </div>
             </>
           )}

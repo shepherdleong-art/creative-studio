@@ -307,6 +307,25 @@ await assert.rejects(
 );
 fs.unlinkSync(externalAPath);
 fs.writeFileSync(externalAPath, 'video-external-a');
+const editableExternal = workspace.load(externalGroup.id);
+const externalVariant = editableExternal.variants[0];
+const externalClip = [...externalVariant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame)[0];
+const externalAfterDelete = workspace.apply({
+  scope: 'variant', variantId: externalVariant.id, expectedRevision: externalVariant.revision,
+  type: 'delete_clip', clipId: externalClip.id,
+}).view as FinalEditVariantView;
+const externalAfterInsert = workspace.apply({
+  scope: 'variant', variantId: externalAfterDelete.id, expectedRevision: externalAfterDelete.revision,
+  type: 'insert_clip', videoJobId: 'external-asset-external-a', sourceFingerprint: editableExternal.assets[0].fingerprint,
+  sourceInFrame: externalClip.sourceInFrame, sourceOutFrame: externalClip.sourceOutFrame,
+  timelineInFrame: externalClip.timelineInFrame, timelineOutFrame: externalClip.timelineOutFrame,
+}).view as FinalEditVariantView;
+assert.ok(externalAfterInsert.timeline.clips.some((clip) => clip.videoJobId === 'external-asset-external-a'), '正式时间轴必须允许重新插入当前组外部素材');
+assert.equal(
+  workspace.load(externalGroup.id).variants[0].timeline.clips.filter((clip) => clip.videoJobId === 'external-asset-external-a').length,
+  externalAfterInsert.timeline.clips.filter((clip) => clip.videoJobId === 'external-asset-external-a').length,
+  '刷新后必须保留人工插入的外部素材',
+);
 
 const editedJob = await workspace.start({
   projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', editedNarrationText: '改写第一句。\n改写第二句！',
@@ -467,6 +486,14 @@ assert.throws(() => workspace.apply({
   scope: 'variant', variantId: commandVariant.id, expectedRevision: commandVariant.revision,
   type: 'move_clip', clipId: rightClip.id, timelineInFrame: leftClip.timelineInFrame,
 }), (error: unknown) => error instanceof FinalEditError && error.code === 'timeline_overlap', '后端必须拒绝覆盖相邻素材的移动命令');
+assert.throws(() => workspace.apply({
+  scope: 'variant', variantId: commandVariant.id, expectedRevision: commandVariant.revision,
+  type: 'trim_clip', clipId: leftClip.id,
+  sourceInFrame: leftClip.sourceInFrame,
+  sourceOutFrame: leftClip.sourceInFrame + 11,
+  timelineInFrame: leftClip.timelineInFrame,
+  timelineOutFrame: leftClip.timelineInFrame + 11,
+}), (error: unknown) => error instanceof FinalEditError && error.code === 'source_out_of_range', '后端必须拒绝短于 0.5 秒的片段');
 const swapped = workspace.apply({
   scope: 'variant', variantId: commandVariant.id, expectedRevision: commandVariant.revision,
   type: 'swap_clips', leftClipId: leftClip.id, rightClipId: rightClip.id,
@@ -474,11 +501,50 @@ const swapped = workspace.apply({
 assert.equal(swapped.timeline.clips.find((clip) => clip.id === leftClip.id)?.timelineInFrame, rightClip.timelineInFrame);
 assert.equal(swapped.timeline.clips.find((clip) => clip.id === rightClip.id)?.timelineInFrame, leftClip.timelineInFrame);
 
-const framedCover = workspace.apply({
+const reorderedIds = [...swapped.timeline.clips]
+  .sort((left, right) => left.timelineInFrame - right.timelineInFrame)
+  .map((clip) => clip.id)
+  .reverse();
+const reordered = workspace.apply({
   scope: 'variant', variantId: swapped.id, expectedRevision: swapped.revision,
+  type: 'reorder_clips', orderedClipIds: reorderedIds,
+}).view as FinalEditVariantView;
+assert.equal(reordered.revision, swapped.revision + 1, '任意片段排序必须只提交一个原子 revision');
+assert.deepEqual(
+  [...reordered.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame).map((clip) => clip.id),
+  reorderedIds,
+);
+assert.deepEqual(
+  [...workspace.load(group.id).variants.find((variant) => variant.id === reordered.id)!.timeline.clips]
+    .sort((left, right) => left.timelineInFrame - right.timelineInFrame)
+    .map((clip) => clip.id),
+  reorderedIds,
+  '刷新重新 load 后必须保留片段顺序',
+);
+assert.throws(() => workspace.apply({
+  scope: 'variant', variantId: reordered.id, expectedRevision: reordered.revision,
+  type: 'reorder_clips', orderedClipIds: [reorderedIds[0], reorderedIds[0]],
+}), (error: unknown) => error instanceof FinalEditError && error.code === 'invalid_clip_order');
+
+const framedCover = workspace.apply({
+  scope: 'variant', variantId: reordered.id, expectedRevision: reordered.revision,
   type: 'set_cover_framing', scale: 1.25, offsetX: 0.2, offsetY: -0.15,
 }).view as FinalEditVariantView;
 assert.deepEqual(framedCover.cover.framing, { scale: 1.25, offsetX: 0.2, offsetY: -0.15 });
+const fadedBgm = workspace.apply({
+  scope: 'variant', variantId: framedCover.id, expectedRevision: framedCover.revision,
+  type: 'set_bgm_fades', fadeInSec: 1.25, fadeOutSec: 2.5,
+}).view as FinalEditVariantView;
+assert.deepEqual(
+  { fadeInSec: fadedBgm.bgm.fadeInSec, fadeOutSec: fadedBgm.bgm.fadeOutSec },
+  { fadeInSec: 1.25, fadeOutSec: 2.5 },
+);
+const reloadedFades = workspace.load(group.id).variants.find((variant) => variant.id === fadedBgm.id)!.bgm;
+assert.deepEqual(
+  { fadeInSec: reloadedFades.fadeInSec, fadeOutSec: reloadedFades.fadeOutSec },
+  { fadeInSec: 1.25, fadeOutSec: 2.5 },
+  '刷新重新 load 后必须保留 BGM 淡入淡出',
+);
 
 const beforeSubtitleCommands = workspace.load(group.id);
 const cueToReplace = beforeSubtitleCommands.subtitleCues.at(-1)!;

@@ -25,6 +25,37 @@ export function expectedVideoTimeSec(sourceInFrame: number, timelineInFrame: num
   return sourceInFrame / fps + Math.max(0, bodyFrame - timelineInFrame) / fps;
 }
 
+export function bgmGainAtTime({ bodyTimeSec, bodyDurationSec, gainDb, fadeInSec, fadeOutSec }: {
+  bodyTimeSec: number;
+  bodyDurationSec: number;
+  gainDb: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+}): number {
+  if (bodyTimeSec < 0 || bodyTimeSec >= bodyDurationSec || bodyDurationSec <= 0) return 0;
+  const baseGain = Math.min(1, Math.pow(10, gainDb / 20));
+  const fadeIn = fadeInSec > 0 ? Math.min(1, bodyTimeSec / fadeInSec) : 1;
+  const remaining = Math.max(0, bodyDurationSec - bodyTimeSec);
+  const fadeOut = fadeOutSec > 0 ? Math.min(1, remaining / fadeOutSec) : 1;
+  return baseGain * fadeIn * fadeOut;
+}
+
+export function previewAudioLevelsAtTime({ playheadSec, introSec, bodyDurationSec, gainDb, fadeInSec, fadeOutSec }: {
+  playheadSec: number;
+  introSec: number;
+  bodyDurationSec: number;
+  gainDb: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+}): { narrationGain: number; bgmGain: number } {
+  const bodyTimeSec = playheadSec - introSec;
+  const narrationGain = bodyTimeSec >= 0 && bodyTimeSec < bodyDurationSec ? 1 : 0;
+  return {
+    narrationGain,
+    bgmGain: bgmGainAtTime({ bodyTimeSec, bodyDurationSec, gainDb, fadeInSec, fadeOutSec }),
+  };
+}
+
 interface PreviewFraming {
   scale: number;
   offsetX: number;

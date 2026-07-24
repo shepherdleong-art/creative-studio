@@ -19,8 +19,13 @@
 .topbar small { color: var(--mixcut-secondary); font-size: 10px; }
 .brandMark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #1685f4, #0066cc); color: #fff; font-size: 12px; font-weight: 750; }
 .projectContext { align-items: flex-end !important; gap: 2px !important; }
+.aspectPicker { display: flex; align-items: center; gap: 7px; margin-left: auto; color: var(--mixcut-secondary); font-size: 9px; }
+.aspectPicker select { height: 30px; border: 1px solid var(--mixcut-line); border-radius: 8px; padding: 0 8px; background: #f7f7f9; color: var(--mixcut-ink); font-size: 10px; font-weight: 650; }
 
 .body { display: grid; min-width: 0; min-height: 616px; grid-template-columns: 188px 238px minmax(0, 1fr); }
+.sidebarSlot { display: contents; }
+.bodyPreview { min-height: 850px; grid-template-columns: 188px minmax(0, 1fr); }
+.bodyPreview .sidebarSlot { display: none; }
 .stepNav { display: flex; min-width: 0; flex-direction: column; gap: 7px; padding: 21px 12px 14px; border-right: 1px solid var(--mixcut-line); background: #fbfbfd; }
 .eyebrow { margin: 0; color: #8e8e93; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .stepNav > .eyebrow { padding: 0 10px 5px; }
@@ -49,6 +54,7 @@
 .scopeNotice svg { flex: 0 0 auto; margin-top: 1px; }
 
 .main { min-width: 0; min-height: 0; padding: 10px; overflow: hidden; }
+.mainPreview { overflow: auto; }
 .main > div:not(.errorBanner) { height: 100%; min-width: 0; }
 .materialStep { box-sizing: border-box; height: 100%; min-width: 0; padding: 26px; overflow-y: auto; border: 1px solid var(--mixcut-line); border-radius: 16px; background: #fff; }
 .stepHidden { display: none !important; }
@@ -154,6 +160,69 @@
 .switchDialog p { margin: 10px 0 18px; color: var(--mixcut-secondary); font-size: 11px; line-height: 1.6; }
 .switchDialog > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .switchDialog .textButton { margin: 0; padding: 0 10px; }
+
+.previewStep { box-sizing: border-box; display: flex; width: 100%; min-width: 0; height: 100%; min-height: 820px; flex-direction: column; overflow: hidden; border: 1px solid var(--mixcut-line); border-radius: 16px; background: #fff; }
+.previewStepHeader { display: flex; min-width: 0; min-height: 72px; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 18px; border-bottom: 1px solid var(--mixcut-line); background: #fbfbfd; }
+.previewStepHeader h1 { margin: 3px 0; font-size: 19px; letter-spacing: -.025em; }
+.previewStepHeader p:last-child { color: var(--mixcut-secondary); font-size: 10px; }
+.previewHeaderActions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 9px; }
+.previewHeaderActions > span { max-width: 260px; overflow: hidden; color: #258247; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.previewHeaderActions select { height: 34px; border: 1px solid var(--mixcut-line); border-radius: 9px; padding: 0 9px; background: #fff; font-size: 9px; }
+.previewEditorGrid { display: grid; min-width: 0; min-height: 0; flex: 1; grid-template-columns: minmax(420px, 1fr) 290px; overflow: hidden; border-bottom: 1px solid var(--mixcut-line); }
+.previewPlayerCell { min-width: 0; min-height: 0; overflow: hidden; }
+.previewPropertyPanel { min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--mixcut-line); background: #fff; }
+.previewPropertyTabs { display: flex; height: 42px; align-items: center; justify-content: space-between; padding: 0 13px; border-bottom: 1px solid var(--mixcut-line); background: #fbfbfd; font-size: 10px; }
+.previewPropertyTabs span { color: var(--mixcut-blue); }
+.previewPropertyScroll { box-sizing: border-box; width: 100%; height: calc(100% - 42px); margin: 0; overflow-y: auto; border: 0; padding: 12px; }
+.previewPropertyScroll:disabled { opacity: .76; }
+.previewPropertyCard { margin-bottom: 11px; padding: 12px; border: 1px solid var(--mixcut-line); border-radius: 12px; background: #fbfbfd; }
+.previewPropertyCard h2 { margin: 0 0 8px; font-size: 11px; }
+.previewPropertyCard p { margin: 6px 0 0; color: var(--mixcut-secondary); font-size: 9px; line-height: 1.55; }
+.previewPropertyCard > .fieldLabel > input,.previewPropertyCard > .fieldLabel > select,.fadeFields .fieldLabel > input { box-sizing: border-box; width: 100%; min-width: 0; height: 34px; border: 1px solid #d8d8de; border-radius: 8px; padding: 0 8px; background: #fff; color: var(--mixcut-ink); font-size: 9px; }
+.previewStyleHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--mixcut-line); font-size: 9px; }
+.previewStyleHeading button { border: 0; background: transparent; color: var(--mixcut-blue); font-size: 9px; cursor: pointer; }
+.clipOrderButtons { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 9px; }
+.clipOrderButtons button { min-height: 30px; border-radius: 8px; background: #eaf3ff; color: var(--mixcut-blue); font-size: 9px; }
+.clipOrderButtons button:disabled { opacity: .4; }
+.fadeFields { display: grid; min-width: 0; grid-template-columns: 1fr 1fr; gap: 8px; }
+.previewBlockingIssue { color: #b42318 !important; }
+
+.mixcutTimeline { min-width: 0; flex: 0 0 302px; overflow: hidden; background: #fbfbfd; }
+.timelineToolbar { display: flex; min-width: 0; height: 44px; align-items: center; justify-content: space-between; gap: 18px; padding: 0 14px; border-bottom: 1px solid var(--mixcut-line); background: #fff; }
+.timelineToolbar > div { display: flex; min-width: 0; align-items: baseline; gap: 12px; }
+.timelineToolbar strong { font-size: 11px; }
+.timelineToolbar span,.timelineToolbar output { color: var(--mixcut-secondary); font-size: 9px; }
+.zoomControl { display: flex; min-width: 300px; align-items: center; gap: 7px; }
+.zoomControl input { width: 150px; accent-color: var(--mixcut-blue); }
+.zoomControl button { display: grid; width: 26px; height: 26px; place-items: center; border: 1px solid var(--mixcut-line); border-radius: 7px; background: #f7f7f9; color: var(--mixcut-blue); }
+.zoomControl output { width: 58px; text-align: right; }
+.timelineScroll { width: 100%; max-height: 258px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; touch-action: pan-x pan-y; }
+.timelineCanvas { display: grid; min-height: 262px; grid-template-columns: 88px minmax(0, 1fr); }
+.timelineLabels { position: sticky; z-index: 30; left: 0; display: grid; grid-template-rows: 30px repeat(4, 58px); border-right: 1px solid var(--mixcut-line); background: #f5f5f7; box-shadow: 4px 0 8px rgba(0,0,0,.04); }
+.timelineRulerLabel,.timelineLabel { display: flex; align-items: center; padding: 0 11px; border-bottom: 1px solid var(--mixcut-line); color: var(--mixcut-secondary); font-size: 9px; font-weight: 650; }
+.timelineContent { position: relative; min-width: 0; height: 262px; background: #fff; }
+.timelineRuler { position: relative; height: 30px; border-bottom: 1px solid var(--mixcut-line); background: #fafafc; }
+.timelineRuler span { position: absolute; top: 8px; transform: translateX(-50%); color: #8e8e93; font-size: 8px; }
+.timelineTrack { position: relative; height: 58px; overflow: hidden; border-bottom: 1px solid var(--mixcut-line); background: #fff; }
+.timelineBlock,.audioTrackBlock,.introBlock { position: absolute; top: 7px; bottom: 7px; overflow: hidden; border-radius: 8px; }
+.introBlock { display: grid; min-width: 18px; place-items: center; border: 1px solid #b8cff0; background: #e8f1ff; color: #0066cc; font-size: 8px; }
+.timelineBlock { display: flex; min-width: 18px; align-items: center; cursor: grab; touch-action: none; }
+.timelineBlock b { position: relative; z-index: 2; min-width: 0; flex: 1; overflow: hidden; padding: 0 5px; font-size: 8px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.videoTimelineBlock { border: 1px solid rgba(255,255,255,.88); background-color: #66788e; background-position: center; background-size: cover; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.85); }
+.videoTimelineBlock::before { position: absolute; z-index: 1; inset: 0; background: rgba(0,0,0,.24); content: ''; }
+.subtitleTimelineBlock { border: 1px solid #84b4ef; background: #dbeaff; color: #174f8f; }
+.selectedTimelineBlock { box-shadow: inset 0 0 0 2px var(--mixcut-blue), 0 0 0 2px rgba(0,113,227,.16); }
+.timelineBlock[data-reorder-active='true'] { opacity: .72; outline: 2px dashed var(--mixcut-blue); outline-offset: 1px; }
+.timelineHandle { position: relative; z-index: 3; width: 6px; height: 100%; flex: 0 0 6px; background: rgba(0,113,227,.28); cursor: ew-resize; }
+.audioTrackBlock { display: flex; align-items: center; padding: 0 10px; color: #2767a5; }
+.narrationTrackBlock { background: #e9f4ff; }
+.bgmTrackBlock { background: #f0ebff; color: #6e49b5; }
+.audioTrackBlock b { position: relative; z-index: 2; overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.waveform { position: absolute; inset: 7px 5px; opacity: .45; background: repeating-linear-gradient(90deg, currentColor 0 2px, transparent 2px 5px); clip-path: polygon(0 45%,4% 20%,8% 60%,12% 30%,16% 72%,20% 18%,24% 58%,28% 35%,32% 80%,36% 24%,40% 62%,44% 38%,48% 76%,52% 28%,56% 66%,60% 16%,64% 70%,68% 32%,72% 82%,76% 22%,80% 62%,84% 34%,88% 74%,92% 26%,96% 58%,100% 45%,100% 55%,0 55%); }
+.timelinePlayhead { position: absolute; z-index: 40; top: 0; bottom: 0; width: 15px; transform: translateX(-7px); touch-action: none; cursor: ew-resize; }
+.timelinePlayhead::after { position: absolute; top: 0; bottom: 0; left: 7px; width: 1px; background: var(--mixcut-blue); content: ''; }
+.timelinePlayhead span { position: absolute; z-index: 2; top: 1px; left: 2px; width: 11px; height: 11px; border: 2px solid #fff; border-radius: 50%; background: var(--mixcut-blue); box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+.mixcutTimeline[data-mutations-disabled='true'] .timelineBlock { cursor: wait; opacity: .72; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
@@ -162,4 +231,5 @@
   .stepHeader { flex-direction: column; }
   .voiceControls { grid-template-columns: minmax(0, 1fr); }
   .stageList { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .previewEditorGrid { grid-template-columns: minmax(390px, 1fr) 260px; }
 }

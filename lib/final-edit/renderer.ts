@@ -15,7 +15,7 @@ export interface FinalEditRenderSnapshot {
   sources: Array<{ videoJobId: string; relativePath: string; fingerprint: string; externalScope?: { projectId: string; shotSetId: string } }>;
   coverRelativePath: string;
   narrationRelativePath: string;
-  bgm: { id: string; relativePath: string; fileFingerprint: string; gainDb: number; loop: boolean; fadeOutSec: number } | null;
+  bgm: { id: string; relativePath: string; fileFingerprint: string; gainDb: number; loop: boolean; fadeInSec: number; fadeOutSec: number } | null;
   overlayBundle: { id: string; relativeDir: string; manifest: unknown };
 }
 
@@ -128,9 +128,14 @@ export async function renderFinalEditSnapshot(input: {
   const bodySec = snapshot.group.narrationDurationUs / 1_000_000;
   filters.push(`[${narrationInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
   if (snapshot.bgm && bgmInput != null) {
-    const fadeDuration = Math.min(snapshot.bgm.fadeOutSec, bodySec / 4);
-    const fadeStart = Math.max(0, bodySec - fadeDuration);
-    filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},afade=t=out:st=${fadeStart.toFixed(6)}:d=${fadeDuration.toFixed(6)},asetpts=PTS-STARTPTS[music]`);
+    const fadeInDuration = Math.min(Math.max(0, snapshot.bgm.fadeInSec), bodySec);
+    const fadeOutDuration = Math.min(Math.max(0, snapshot.bgm.fadeOutSec), bodySec);
+    const fadeStart = Math.max(0, bodySec - fadeOutDuration);
+    const fades = [
+      fadeInDuration > 0 ? `afade=t=in:st=0:d=${fadeInDuration.toFixed(6)}` : '',
+      fadeOutDuration > 0 ? `afade=t=out:st=${fadeStart.toFixed(6)}:d=${fadeOutDuration.toFixed(6)}` : '',
+    ].filter(Boolean).join(',');
+    filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
     filters.push(`[narration][music]amix=inputs=2:duration=first:dropout_transition=0[bodyaudio]`);
   } else {
     filters.push('[narration]anull[bodyaudio]');

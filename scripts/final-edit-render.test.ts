@@ -33,11 +33,11 @@ const snapshot: FinalEditRenderSnapshot = {
   variant: {
     id: 'variant-1', indexNum: 1, outputPreset: '3x4', revision: 0, lastRenderedRevision: null, renderStatus: null, maxOverlap: 0, issues: [],
     timeline: { fps: 24, introFrames: 20, bodyFrames: 48, clips: [{ id: 'clip-1', videoJobId: 'video-1', sourceFingerprint: fingerprint, sourceInFrame: 0, sourceOutFrame: 48, timelineInFrame: 0, timelineOutFrame: 48, boundSegmentId: 'seg-1', framing: { scale: 1.15, offsetX: 0.25, offsetY: -0.25 }, manualUseOverride: false }] },
-    bgm: { trackId: null, gainDb: -16, loop: true, fadeOutSec: 0.8 }, cover: { coverKey: 'image:cover', kind: 'storyboard_image', sourceUrl: null, framing: { scale: 1.1, offsetX: 0.2, offsetY: -0.1 } },
+    bgm: { trackId: null, gainDb: -16, loop: true, fadeInSec: 0, fadeOutSec: 0.8 }, cover: { coverKey: 'image:cover', kind: 'storyboard_image', sourceUrl: null, framing: { scale: 1.1, offsetX: 0.2, offsetY: -0.1 } },
   },
   sources: [{ videoJobId: 'video-1', relativePath: 'videos/source.mp4', fingerprint }],
   coverRelativePath: 'cover.png', narrationRelativePath: 'audio/narration.wav',
-  bgm: { id: 'bgm-1', relativePath: 'audio/bgm.wav', fileFingerprint: bgmFingerprint, gainDb: -16, loop: true, fadeOutSec: 0.8 },
+  bgm: { id: 'bgm-1', relativePath: 'audio/bgm.wav', fileFingerprint: bgmFingerprint, gainDb: -16, loop: true, fadeInSec: 0.2, fadeOutSec: 0.8 },
   overlayBundle: { id: 'bundle-1', relativeDir: 'overlays', manifest: {} },
 };
 
