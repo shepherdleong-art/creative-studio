@@ -13,12 +13,22 @@ import { getFinalEditTtsAdapter } from './adapters/tts-registry.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
 import { buildMixcutContext } from './mixcut-context.ts';
 import {
+  deleteShotSetExternalAsset as deleteImportedShotSetExternalAsset,
+  importShotSetExternalAssets as importUploadedShotSetExternalAssets,
+  listShotSetExternalAssets as listImportedShotSetExternalAssets,
+  MaterialImportError,
+  resolveShotSetExternalAssetMedia as resolveImportedShotSetExternalAssetMedia,
+  type ExternalAssetImportResult,
+  type ShotSetExternalAssetImportInput,
+} from './material-import.ts';
+import {
   FINAL_EDIT_FPS,
   FINAL_EDIT_INTRO_DURATION_US,
   FINAL_EDIT_INTRO_FRAMES,
   OUTPUT_PRESETS,
   type CapacityEstimate,
   type FinalEditAssetView,
+  type FinalEditExternalAssetView,
   type FinalEditGroupView,
   type FinalEditIssue,
   type FinalEditVariantView,
@@ -149,6 +159,10 @@ export interface FinalEditWorkspace {
   // this is Promise-returning like the other read/command methods that touch
   // the filesystem or a job pipeline (start/enqueueRender).
   getMixcutContext(projectId: string, requestedShotSetId?: string | null): Promise<MixcutContextResponse>;
+  listShotSetExternalAssets(projectId: string, shotSetId: string): FinalEditExternalAssetView[];
+  importShotSetExternalAssets(input: ShotSetExternalAssetImportInput): Promise<ExternalAssetImportResult>;
+  resolveShotSetExternalAssetMedia(projectId: string, shotSetId: string, assetId: string, kind: 'video' | 'thumbnail'): { relativePath: string; mimeType: string };
+  deleteShotSetExternalAsset(input: { projectId: string; shotSetId: string; assetId: string }): { deleted: true };
 }
 
 export interface FinalEditWorkspaceRuntime extends FinalEditWorkspace {
@@ -442,6 +456,16 @@ function overlapInput(variant: FinalEditVariantView) {
 
 export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): FinalEditWorkspaceRuntime {
   const { db, storageRoot } = deps;
+  const materialDeps = {
+    db,
+    storageRoot,
+    probeVideo: deps.probeVideo,
+    materializeThumbnail: (input: { sourcePath: string; cacheNamespace: string; cacheKey: string; frameUs: number }) => materializeVideoFrame({ storageRoot, ...input }),
+  };
+  const translateMaterialError = (error: unknown): never => {
+    if (error instanceof MaterialImportError) throw new FinalEditError(error.code, error.message, error.status, error.details);
+    throw error;
+  };
 
   const preflight = async (input: PreflightInput): Promise<CapacityEstimate> => {
     if (!Number.isInteger(input.count) || input.count < 1 || input.count > 5) throw new FinalEditError('invalid_count', '生成数量必须是 1～5');
@@ -1006,5 +1030,25 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     return context;
   };
 
-  return { preflight, start, load, apply, enqueueRender, resumePrepareJob, getMixcutContext };
+  const listShotSetExternalAssets = (projectId: string, shotSetId: string) => {
+    try { return listImportedShotSetExternalAssets(materialDeps, projectId, shotSetId); }
+    catch (error) { return translateMaterialError(error); }
+  };
+  const importShotSetExternalAssets = async (input: ShotSetExternalAssetImportInput) => {
+    try { return await importUploadedShotSetExternalAssets(materialDeps, input); }
+    catch (error) { return translateMaterialError(error); }
+  };
+  const resolveShotSetExternalAssetMedia = (projectId: string, shotSetId: string, assetId: string, kind: 'video' | 'thumbnail') => {
+    try { return resolveImportedShotSetExternalAssetMedia(materialDeps, projectId, shotSetId, assetId, kind); }
+    catch (error) { return translateMaterialError(error); }
+  };
+  const deleteShotSetExternalAsset = (input: { projectId: string; shotSetId: string; assetId: string }) => {
+    try { return deleteImportedShotSetExternalAsset(materialDeps, input); }
+    catch (error) { return translateMaterialError(error); }
+  };
+
+  return {
+    preflight, start, load, apply, enqueueRender, resumePrepareJob, getMixcutContext,
+    listShotSetExternalAssets, importShotSetExternalAssets, resolveShotSetExternalAssetMedia, deleteShotSetExternalAsset,
+  };
 }

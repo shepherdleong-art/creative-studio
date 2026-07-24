@@ -121,6 +121,31 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
       CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE IF NOT EXISTS final_edit_external_assets (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        shotSetId TEXT NOT NULL,
+        originalFilename TEXT NOT NULL,
+        relativePath TEXT NOT NULL,
+        thumbnailRelativePath TEXT,
+        mimeType TEXT NOT NULL,
+        mediaKind TEXT NOT NULL CHECK(mediaKind IN ('video','image')),
+        durationUs INTEGER NOT NULL DEFAULT 0,
+        width INTEGER,
+        height INTEGER,
+        fileFingerprint TEXT NOT NULL,
+        status TEXT NOT NULL,
+        errorMessage TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(shotSetId, fileFingerprint)
+      );
+      CREATE INDEX IF NOT EXISTS idx_final_edit_external_assets_group
+        ON final_edit_external_assets(projectId, shotSetId, createdAt);
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

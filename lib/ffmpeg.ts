@@ -35,6 +35,25 @@ export function resolveFfprobePath(): string {
   return 'ffprobe';
 }
 
+// Metadata probing is used directly by HTTP handlers. Candidate selection on
+// that path must not run a synchronous `-version` child process per asset;
+// the real async spawn below decides whether the candidate works and falls
+// back to ffmpeg when it does not.
+function resolveFfprobeCandidatePath(): string {
+  const env = process.env.CREATIVE_STUDIO_FFPROBE;
+  if (env && fs.existsSync(env)) return env;
+  const bundled = (ffprobeStatic as { path?: string })?.path;
+  if (bundled && fs.existsSync(bundled)) return bundled;
+  return 'ffprobe';
+}
+
+function resolveFfmpegCandidatePath(): string {
+  const env = process.env.CREATIVE_STUDIO_FFMPEG;
+  if (env && fs.existsSync(env)) return env;
+  if (typeof ffmpegStatic === 'string' && fs.existsSync(ffmpegStatic)) return ffmpegStatic;
+  return 'ffmpeg';
+}
+
 export interface RunFfmpegOptions {
   /** 每次解析到 -progress 输出时回调（已换算为秒） */
   onProgressSec?: (outTimeSec: number) => void;
@@ -146,6 +165,8 @@ export interface VideoMediaProbe {
   width: number;
   height: number;
   fps: number;
+  format?: string;
+  errorMessage?: string;
 }
 
 // Metadata-only read, not a transcode — much shorter than runFfmpeg's 30s
@@ -158,26 +179,34 @@ const PROBE_VIDEO_MEDIA_TIMEOUT_MS = 10_000;
 
 /**
  * ffprobe 一次性取时长 + 视频流宽高/帧率（JSON 输出）。只做元数据读取（毫秒级），
- * 不转码，供成片模块 4 视频列表/缩略图使用。单个文件探测失败（ffprobe 不可用、
- * 文件损坏、没有视频流、超时）一律 resolve 全零结果，绝不 reject——一条视频探测
- * 失败不应打断整份 context 响应。
+ * 不转码，供成片模块 4 视频列表/缩略图使用。ffprobe 不可用或读取失败时，异步
+ * 回退到 ffmpeg 的输入元数据输出（不解码完整视频）；两者都失败才返回全零结果。
+ * 失败仍不 reject，避免一条损坏视频打断整份 context 响应；errorMessage 保留 stderr
+ * 尾部，供导入接口返回可观察的诊断。
  */
 export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
-  const fallback: VideoMediaProbe = { durationUs: 0, width: 0, height: 0, fps: 0 };
   return new Promise((resolve) => {
     try {
       const child = spawn(
-        resolveFfprobePath(),
-        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate:format=duration', '-of', 'json', filePath],
+        resolveFfprobeCandidatePath(),
+        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate:format=duration,format_name', '-of', 'json', filePath],
         { windowsHide: true }
       );
       let out = '';
+      let stderrTail = '';
       let settled = false;
+      let fallbackStarted = false;
       const finish = (result: VideoMediaProbe) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         resolve(result);
+      };
+      const fallbackToFfmpeg = () => {
+        if (settled || fallbackStarted) return;
+        fallbackStarted = true;
+        clearTimeout(timer);
+        probeVideoMediaWithFfmpeg(filePath, stderrTail).then(finish);
       };
       // Mirrors runFfmpeg's timeout guard above (kill + settle rather than
       // hang forever), but — per this function's documented "never reject"
@@ -185,35 +214,83 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
       // other probe failure instead of rejecting.
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
-        finish(fallback);
+        stderrTail = `${stderrTail}\nffprobe timeout after ${PROBE_VIDEO_MEDIA_TIMEOUT_MS}ms`.slice(-4000);
+        fallbackToFfmpeg();
       }, PROBE_VIDEO_MEDIA_TIMEOUT_MS);
       child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
-      // Drain stderr so a chatty/stuck ffprobe process can't back up its
-      // stderr pipe and hang (same undrained-stderr gap noted elsewhere in
-      // this file for supportsFilter; fixed here since this path is now
-      // reachable from live HTTP requests).
-      child.stderr.on('data', () => {});
-      child.on('error', () => finish(fallback));
+      child.stderr.on('data', (b: Buffer) => { stderrTail = (stderrTail + b.toString()).slice(-4000); });
+      child.on('error', (error) => {
+        stderrTail = `${stderrTail}\n${error.message}`.slice(-4000);
+        fallbackToFfmpeg();
+      });
       child.on('close', (code) => {
-        if (code !== 0) { finish(fallback); return; }
+        if (settled || fallbackStarted) return;
+        if (code !== 0) { fallbackToFfmpeg(); return; }
         try {
-          const parsed = JSON.parse(out) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string }>; format?: { duration?: string } };
+          const parsed = JSON.parse(out) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string }>; format?: { duration?: string; format_name?: string } };
           const stream = parsed.streams?.[0];
           const durationSec = parseFloat(parsed.format?.duration ?? '');
-          if (!stream || !Number.isFinite(durationSec)) { finish(fallback); return; }
+          if (!stream || !Number.isFinite(durationSec) || !Number(stream.width) || !Number(stream.height)) { fallbackToFfmpeg(); return; }
           finish({
             durationUs: Math.round(durationSec * 1_000_000),
             width: Number(stream.width) || 0,
             height: Number(stream.height) || 0,
             fps: parseFrameRateFraction(stream.r_frame_rate),
+            format: parsed.format?.format_name || '',
           });
         } catch {
-          finish(fallback);
+          fallbackToFfmpeg();
         }
       });
-    } catch {
-      resolve(fallback);
+    } catch (error) {
+      probeVideoMediaWithFfmpeg(filePath, error instanceof Error ? error.message : String(error)).then(resolve);
     }
+  });
+}
+
+function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Promise<VideoMediaProbe> {
+  return new Promise((resolve) => {
+    let stderrTail = '';
+    let settled = false;
+    const child = spawn(resolveFfmpegCandidatePath(), ['-hide_banner', '-i', filePath], { windowsHide: true });
+    const finish = (result: VideoMediaProbe) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const failed = (message?: string) => finish({
+      durationUs: 0,
+      width: 0,
+      height: 0,
+      fps: 0,
+      errorMessage: [ffprobeError, stderrTail, message].filter(Boolean).join('\n').slice(-1500),
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      failed(`ffmpeg metadata probe timeout after ${PROBE_VIDEO_MEDIA_TIMEOUT_MS}ms`);
+    }, PROBE_VIDEO_MEDIA_TIMEOUT_MS);
+    child.stdout.on('data', () => {});
+    child.stderr.on('data', (buffer: Buffer) => { stderrTail = (stderrTail + buffer.toString()).slice(-8000); });
+    child.on('error', (error) => failed(error.message));
+    child.on('close', () => {
+      if (settled) return;
+      const durationMatch = stderrTail.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+      const formatMatch = stderrTail.match(/Input #0,\s*(.+?),\s+from /);
+      const videoLine = stderrTail.split(/\r?\n/).find((line) => /Stream .*Video:/.test(line)) || '';
+      const dimensionsMatch = videoLine.match(/Video:[^\n]*?(?:,|\s)(\d{2,6})x(\d{2,6})(?=[,\s\[]|$)/);
+      if (!durationMatch || !dimensionsMatch) { failed('ffmpeg metadata output did not contain a readable video stream'); return; }
+      const durationSec = Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3]);
+      const fpsMatch = videoLine.match(/(?:,|\s)(\d+(?:\.\d+)?)\s*fps(?:,|\s)/);
+      if (!Number.isFinite(durationSec) || durationSec <= 0) { failed('ffmpeg returned an invalid video duration'); return; }
+      finish({
+        durationUs: Math.round(durationSec * 1_000_000),
+        width: Number(dimensionsMatch[1]) || 0,
+        height: Number(dimensionsMatch[2]) || 0,
+        fps: fpsMatch ? Number(fpsMatch[1]) || 0 : 0,
+        format: formatMatch?.[1]?.trim() || '',
+      });
+    });
   });
 }
 

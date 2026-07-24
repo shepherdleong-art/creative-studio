@@ -77,6 +77,25 @@ export interface FinalEditAssetView {
   usageCount: number;
 }
 
+export interface FinalEditExternalAssetView {
+  id: string;
+  assetKey: `external:${string}`;
+  projectId: string;
+  shotSetId: string;
+  originalFilename: string;
+  mimeType: string;
+  mediaKind: 'video';
+  durationUs: number;
+  width: number;
+  height: number;
+  status: 'ready' | 'missing' | 'failed';
+  errorMessage: string | null;
+  previewUrl: string;
+  thumbnailUrl: string | null;
+  source: 'external';
+  createdAt: string;
+}
+
 export interface FinalEditVariantView {
   id: string;
   indexNum: number;

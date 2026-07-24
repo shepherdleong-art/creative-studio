@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { getDb } from '../db';
 import { dataRoot } from '../data-root';
-import { probeDurationSec } from '../ffmpeg';
+import { probeVideoMedia } from '../ffmpeg';
 import { estimateVisionAnalysisCost, getAvailableProviders } from '../script-providers';
 import { createFinalEditWorkspace, type FinalEditWorkspaceRuntime } from './workspace';
 import { analyzeVideoWithVision } from './adapters/video-analysis';
@@ -39,7 +39,7 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
   workspace = createFinalEditWorkspace({
     db,
     storageRoot,
-    probeVideo: async ({ filePath }) => ({ durationUs: Math.round(await probeDurationSec(filePath) * 1_000_000), width: 0, height: 0, fps: 0 }),
+    probeVideo: async ({ filePath }) => probeVideoMedia(filePath),
     analyzeVideo: async ({ filePath, videoJobId, providerId }) => {
       const provider = getAvailableProviders().find((item) => item.id === providerId && item.configured && item.supportsVision);
       if (!provider) throw new Error('没有已启用并支持图片理解的视觉分析供应商');

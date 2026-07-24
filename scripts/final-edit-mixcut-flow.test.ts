@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import type { ScriptOutput } from '../lib/script-providers/types.ts';
 import { buildMixcutContext, isUsableV2ScriptDraft } from '../lib/final-edit/mixcut-context.ts';
+import { findModule4Video } from '../lib/final-edit/module4-asset.ts';
 import { resolveFfprobePath, runFfmpeg } from '../lib/ffmpeg.ts';
 
 // Phase 1 integration test for
@@ -93,16 +93,10 @@ fs.mkdirSync(videosDir, { recursive: true });
 const realVideoPath = path.join(videosDir, 'video-real.mp4');
 await runFfmpeg(['-f', 'lavfi', '-i', 'testsrc2=duration=1:size=320x240:rate=24', '-pix_fmt', 'yuv420p', '-y', realVideoPath]);
 
-// ffprobe-static ships broken arm64 binaries on macOS (same caveat documented
-// in scripts/ffmpeg-resolve.test.ts) and this sandbox has no system ffprobe
-// on PATH either, so resolveFfprobePath() falls back to a path that spawns
-// but can't run. probeVideoMedia (JC-2) is specified to degrade gracefully
-// in exactly this situation — resolve the documented all-zero fallback
-// rather than reject — so detect the real environment capability up front
-// and assert against whichever outcome is actually correct for THIS
-// environment, mirroring ffmpeg-resolve.test.ts's own pattern.
-const ffprobeWorks = spawnSync(resolveFfprobePath(), ['-version'], { timeout: 5000 }).status === 0;
-console.log(ffprobeWorks ? 'ffprobe binary verified; asserting real probed values' : 'ffprobe binary unavailable in this environment; asserting probeVideoMedia\'s documented zero-fallback instead');
+// ffprobe-static is unusable on some Apple Silicon machines. probeVideoMedia
+// now falls back asynchronously to ffmpeg input metadata, so the real values
+// are required regardless of which binary supplied them.
+console.log(`probing with ffprobe candidate ${resolveFfprobePath()} and async ffmpeg fallback`);
 
 // ---------------------------------------------------------------------------
 // Fixture: project-a, two shot sets.
@@ -188,13 +182,17 @@ const validScript: ScriptOutput = {
 const v1Draft = { version: 1, title: '旧版脚本', duration: '15秒', segments: [{ shotId: 'shot-a1', text: '夜晚加湿也不怕吵醒家人' }] };
 const emptyShotSetIdDraft: ScriptOutput = { ...validScript, shotSetId: '' };
 const emptySegmentsDraft: ScriptOutput = { ...validScript, segments: [] };
+const foreignShotSetDraft: ScriptOutput = { ...validScript, shotSetId: 'ss-c' };
+const staleFullScriptDraft: ScriptOutput = { ...validScript, fullScript: '这是一份已经漂移的派生文案' };
 
 db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, createdAt) VALUES
   ('draft-valid', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:00:00'),
   ('draft-v1', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:01:00'),
   ('draft-empty-shotset', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:02:00'),
-  ('draft-empty-segments', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:03:00')
-`).run(JSON.stringify(validScript), JSON.stringify(v1Draft), JSON.stringify(emptyShotSetIdDraft), JSON.stringify(emptySegmentsDraft));
+  ('draft-empty-segments', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:03:00'),
+  ('draft-foreign-shotset', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:04:00'),
+  ('draft-stale-fullscript', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:05:00')
+`).run(JSON.stringify(validScript), JSON.stringify(v1Draft), JSON.stringify(emptyShotSetIdDraft), JSON.stringify(emptySegmentsDraft), JSON.stringify(foreignShotSetDraft), JSON.stringify(staleFullScriptDraft));
 
 // ---------------------------------------------------------------------------
 // Fixture: project-b — unrelated project (isolation + "wrong project" gate).
@@ -273,12 +271,17 @@ assert.ok(!defaultContext.drafts.some((d) => d.id === 'draft-for-b'), 'project-a
 // (c) script draft gates, via real code: only draft-valid survives; each of
 // the other three malformed drafts is excluded for its own single reason.
 // =============================================================================
-assert.deepEqual(defaultContext.drafts.map((d) => d.id), ['draft-valid'], '只有合法 V2 草稿应出现在 drafts[] 中');
-assert.equal(defaultContext.drafts[0].shotSetId, 'ss-a');
-assert.equal(defaultContext.drafts[0].narrationText, validScript.fullScript, 'narrationText 应取自 ScriptOutput.fullScript');
-assert.equal(defaultContext.drafts[0].targetDurationSec, 15);
-assert.equal(defaultContext.drafts[0].provider, 'gemini');
-assert.equal(defaultContext.drafts[0].model, 'gemini-3.5-flash');
+assert.deepEqual(defaultContext.drafts.map((d) => d.id), ['draft-stale-fullscript', 'draft-valid'], '只有引用当前项目真实分镜组的合法 V2 草稿应出现');
+assert.ok(!defaultContext.drafts.some((draft) => draft.id === 'draft-foreign-shotset'), '当前项目草稿不得引用其他项目的 shotSetId');
+const validDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-valid');
+const staleDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-stale-fullscript');
+assert.ok(validDraftView && staleDraftView);
+assert.equal(validDraftView.shotSetId, 'ss-a');
+assert.equal(validDraftView.narrationText, validScript.segments.map((segment) => segment.narration).join('\n'), 'narrationText 应从有序 segments 派生');
+assert.equal(staleDraftView.narrationText, validDraftView.narrationText, '陈旧 fullScript 不得覆盖真实 segments 文案');
+assert.equal(validDraftView.targetDurationSec, 15);
+assert.equal(validDraftView.provider, 'gemini');
+assert.equal(validDraftView.model, 'gemini-3.5-flash');
 
 // =============================================================================
 // (d)+(e)+JC-2/JC-4: videoAssets[] for the CURRENT shot set (ss-a via
@@ -304,20 +307,15 @@ assert.ok(
 const realAsset = explicitContext.videoAssets[0];
 assert.equal(realAsset.shotSetId, 'ss-a');
 assert.equal(realAsset.filename, 'video-real.mp4');
-assert.equal(realAsset.thumbnailUrl, '/api/final-edit-assets/video-real/thumbnail');
+assert.equal(realAsset.thumbnailUrl, '/api/projects/project-a/final-edit/shot-sets/ss-a/module4-assets/video-real/thumbnail');
 assert.equal(realAsset.source, 'module4');
-if (ffprobeWorks) {
-  // Real ffprobe output (JC-2, end-to-end, not mocked): a 1s/320x240 lavfi
-  // testsrc2 clip should probe back to ~1,000,000us at 320x240.
-  assert.ok(Math.abs(realAsset.durationUs - 1_000_000) < 200_000, `真实探测 durationUs=${realAsset.durationUs} 应接近 1,000,000`);
-  assert.equal(realAsset.width, 320, '真实探测宽度应为 320');
-  assert.equal(realAsset.height, 240, '真实探测高度应为 240');
-} else {
-  // JC-2's documented "ffprobe unavailable" fallback: all-zero, not a crash.
-  assert.equal(realAsset.durationUs, 0);
-  assert.equal(realAsset.width, 0);
-  assert.equal(realAsset.height, 0);
-}
+
+assert.ok(findModule4Video(db, { projectId: 'project-a', shotSetId: 'ss-a', videoJobId: 'video-real' }));
+assert.equal(findModule4Video(db, { projectId: 'project-a', shotSetId: 'ss-b', videoJobId: 'video-real' }), null, '其他分镜组不能读取 ss-a 视频缩略图');
+assert.equal(findModule4Video(db, { projectId: 'project-b', shotSetId: 'ss-a', videoJobId: 'video-real' }), null, '其他项目不能读取 project-a 视频缩略图');
+assert.ok(Math.abs(realAsset.durationUs - 1_000_000) < 200_000, `真实探测 durationUs=${realAsset.durationUs} 应接近 1,000,000`);
+assert.equal(realAsset.width, 320, '真实探测宽度应为 320');
+assert.equal(realAsset.height, 240, '真实探测高度应为 240');
 
 // bogusIdContext/defaultContext both resolve to ss-b as "current" — assert
 // ss-b's videoAssets[] is empty, since none of its fixture files exist on

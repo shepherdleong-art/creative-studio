@@ -163,6 +163,7 @@ export async function buildMixcutContext(
   // lib/final-edit/schema.ts version 4) so the shots query itself is no
   // longer a full scan either.
   const shotSetIds = shotSetRows.map((row) => row.id);
+  const validShotSetIds = new Set(shotSetIds);
 
   const shotCountByShotSetId = new Map<string, number>();
   if (shotSetIds.length > 0) {
@@ -203,16 +204,20 @@ export async function buildMixcutContext(
     try { parsed = JSON.parse(row.outputJson); } catch { continue; }
     if (!isUsableV2ScriptDraft(parsed)) continue;
     const script = parsed as ScriptOutput;
+    if (!validShotSetIds.has(script.shotSetId)) continue;
+    // fullScript is a derived convenience field and can be absent or stale in
+    // historical V2 rows. Rebuild the narration from the ordered source
+    // segments so Phase 2 never sends drifted text to TTS.
+    const narrationText = script.segments
+      .map((segment) => typeof segment.narration === 'string' ? segment.narration.trim() : '')
+      .filter(Boolean)
+      .join('\n');
+    if (!narrationText) continue;
     drafts.push({
       id: row.id,
       shotSetId: script.shotSetId,
       title: script.title || '',
-      // JUDGMENT CALL: MixcutContextResponse.drafts[].narrationText has no
-      // 1:1 source field in ScriptOutput (lib/script-providers/types.ts).
-      // fullScript is the pre-derived concatenation of every segment's
-      // narration in narrative order — the closest real value and not a
-      // placeholder, but this mapping isn't spelled out verbatim in the plan.
-      narrationText: script.fullScript ?? '',
+      narrationText,
       targetDurationSec: Number(script.targetDurationSec) || 0,
       provider: row.provider,
       model: row.model,
@@ -253,7 +258,7 @@ export async function buildMixcutContext(
         durationUs: probe.durationUs,
         width: probe.width,
         height: probe.height,
-        thumbnailUrl: `/api/final-edit-assets/${entry.row.videoJobId}/thumbnail`,
+        thumbnailUrl: `/api/projects/${encodeURIComponent(projectId)}/final-edit/shot-sets/${encodeURIComponent(currentShotSetId)}/module4-assets/${encodeURIComponent(entry.row.videoJobId)}/thumbnail`,
         source: 'module4',
       });
     });

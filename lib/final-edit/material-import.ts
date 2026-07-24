@@ -1,0 +1,625 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import type Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
+import type { VideoMediaProbe } from '../ffmpeg.ts';
+import { resolveStoragePath } from './storage-path.ts';
+import type { FinalEditExternalAssetView } from './types.ts';
+
+export interface ExternalAssetUpload {
+  filename: string;
+  mimeType: string;
+  data: Buffer;
+}
+
+export interface ExternalAssetImportFailure {
+  filename: string;
+  error: string;
+  message: string;
+}
+
+export interface ImportedExternalAsset extends FinalEditExternalAssetView {
+  reused: boolean;
+}
+
+export interface ExternalAssetImportResult {
+  assets: ImportedExternalAsset[];
+  errors: ExternalAssetImportFailure[];
+}
+
+export interface ShotSetExternalAssetImportInput {
+  projectId: string;
+  shotSetId: string;
+  files: ExternalAssetUpload[];
+}
+
+export interface MaterialImportDependencies {
+  db: Database.Database;
+  storageRoot: string;
+  probeVideo(input: { filePath: string; videoJobId: string }): Promise<VideoMediaProbe>;
+  materializeThumbnail(input: {
+    sourcePath: string;
+    cacheNamespace: string;
+    cacheKey: string;
+    frameUs: number;
+  }): Promise<{ absolutePath: string; relativePath: string }>;
+}
+
+export class MaterialImportError extends Error {
+  readonly code: string;
+  readonly status: number;
+  readonly details?: unknown;
+
+  constructor(code: string, message: string, status = 400, details?: unknown) {
+    super(message);
+    this.name = 'MaterialImportError';
+    this.code = code;
+    this.status = status;
+    this.details = details;
+  }
+}
+
+interface AssetOwner {
+  projectId: string;
+  shotSetId: string;
+}
+
+interface ExternalAssetRow {
+  id: string;
+  projectId: string;
+  shotSetId: string;
+  originalFilename: string;
+  relativePath: string;
+  thumbnailRelativePath: string | null;
+  mimeType: string;
+  mediaKind: 'video' | 'image';
+  durationUs: number;
+  width: number | null;
+  height: number | null;
+  fileFingerprint: string;
+  status: string;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
+interface PendingAssetWrite {
+  row: ExternalAssetRow;
+  videoAbsolutePath: string;
+  thumbnailAbsolutePath: string | null;
+  videoExistedBefore: boolean;
+  thumbnailExistedBefore: boolean;
+}
+
+const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.avi': 'video/x-msvideo',
+  '.webm': 'video/webm',
+};
+
+function currentTime(): string {
+  return new Date().toISOString();
+}
+
+function getShotSetOwner(db: Database.Database, projectId: string, shotSetId: string): AssetOwner {
+  const owner = db.prepare(`
+    SELECT ss.projectId, ss.id AS shotSetId
+    FROM shot_sets ss JOIN projects p ON p.id=ss.projectId
+    WHERE ss.projectId=? AND ss.id=?
+  `).get(projectId, shotSetId) as AssetOwner | undefined;
+  if (!owner) throw new MaterialImportError('shot_set_not_found', '分镜组不存在或不属于当前项目', 404);
+  return owner;
+}
+
+function safeIdSegment(value: string, label: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new MaterialImportError('unsafe_path', `${label} 不能用于素材存储路径`);
+  return value;
+}
+
+function materialsRelativeDirectory(group: AssetOwner): string {
+  return path.join(
+    'final-edits',
+    'projects',
+    safeIdSegment(group.projectId, 'projectId'),
+    'groups',
+    safeIdSegment(group.shotSetId, 'shotSetId'),
+    'materials',
+  );
+}
+
+function cleanOriginalFilename(filename: string, extension: string): string {
+  const slashNormalized = filename.replace(/\\/g, '/');
+  const base = path.posix.basename(slashNormalized).replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return base || `upload${extension}`;
+}
+
+function validateUpload(upload: ExternalAssetUpload): { extension: string; mimeType: string; originalFilename: string } {
+  const extension = path.extname(upload.filename.replace(/\\/g, '/')).toLowerCase();
+  if (upload.mimeType.toLowerCase().startsWith('image/') || ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic'].includes(extension)) {
+    throw new MaterialImportError('unsupported_media_kind', 'V1 只支持视频素材，不支持静态图片');
+  }
+  const mimeType = VIDEO_MIME_BY_EXTENSION[extension];
+  if (!mimeType) throw new MaterialImportError('unsupported_video_format', '仅支持 MP4、MOV、AVI、WebM 视频');
+  const suppliedMime = upload.mimeType.trim().toLowerCase();
+  if (suppliedMime && suppliedMime !== 'application/octet-stream' && !suppliedMime.startsWith('video/')) {
+    throw new MaterialImportError('unsupported_video_mime', '上传文件的 MIME 类型不是视频');
+  }
+  if (!upload.data.length) throw new MaterialImportError('empty_upload', '上传文件为空');
+  return { extension, mimeType, originalFilename: cleanOriginalFilename(upload.filename, extension) };
+}
+
+function validateDetectedContainer(extension: string, detectedFormat: string | undefined): void {
+  const formats = new Set((detectedFormat || '').toLowerCase().split(',').map((value) => value.trim()).filter(Boolean));
+  const matches = extension === '.mp4' || extension === '.mov'
+    ? formats.has('mov') || formats.has('mp4')
+    : extension === '.avi'
+      ? formats.has('avi')
+      : formats.has('webm');
+  if (!matches) throw new MaterialImportError('video_format_mismatch', '视频内容与文件扩展名不一致');
+}
+
+function isWithin(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+}
+
+function isWithinOrEqual(parent: string, child: string): boolean {
+  return parent === child || isWithin(parent, child);
+}
+
+function ensureSafeRelativeDirectory(storageRoot: string, relativeDirectory: string, create: boolean): string {
+  const logicalRoot = path.resolve(storageRoot);
+  const realRoot = fs.realpathSync(logicalRoot);
+  const segments = relativeDirectory.split(/[\\/]+/).filter(Boolean);
+  let current = logicalRoot;
+  let missing = false;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    if (!fs.existsSync(current)) {
+      missing = true;
+      if (create) fs.mkdirSync(current);
+      continue;
+    }
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new MaterialImportError('unsafe_path', '素材目录包含不安全的链接或文件');
+    if (!missing) {
+      const realCurrent = fs.realpathSync(current);
+      if (!isWithinOrEqual(realRoot, realCurrent)) throw new MaterialImportError('unsafe_path', '素材目录越过 storage 边界');
+    }
+  }
+  return current;
+}
+
+function resolveAssetVideoPath(storageRoot: string, group: AssetOwner, relativePath: string, createDirectory = false): string {
+  if (!VIDEO_MIME_BY_EXTENSION[path.extname(relativePath).toLowerCase()]) {
+    throw new MaterialImportError('unsafe_path', '外部素材路径扩展名不在视频白名单内');
+  }
+  const expectedDirectory = ensureSafeRelativeDirectory(storageRoot, materialsRelativeDirectory(group), createDirectory);
+  const absolutePath = resolveStoragePath(storageRoot, relativePath);
+  if (!isWithin(expectedDirectory, absolutePath)) throw new MaterialImportError('unsafe_path', '外部素材路径不在当前分镜组 materials 目录内');
+  if (fs.existsSync(absolutePath)) {
+    const stat = fs.lstatSync(absolutePath);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new MaterialImportError('unsafe_path', '外部素材不是安全的普通文件');
+    const realDirectory = fs.realpathSync(expectedDirectory);
+    if (!isWithin(realDirectory, fs.realpathSync(absolutePath))) throw new MaterialImportError('unsafe_path', '外部素材真实路径越界');
+  }
+  return absolutePath;
+}
+
+function thumbnailRelativeDirectory(group: AssetOwner): string {
+  return path.join('final-edits', 'previews', 'external-assets', safeIdSegment(group.projectId, 'projectId'), safeIdSegment(group.shotSetId, 'shotSetId'));
+}
+
+function resolveThumbnailPath(storageRoot: string, group: AssetOwner, relativePath: string, createDirectory = false): string {
+  if (path.extname(relativePath).toLowerCase() !== '.jpg') throw new MaterialImportError('unsafe_path', '缩略图扩展名无效');
+  const expectedDirectory = ensureSafeRelativeDirectory(storageRoot, thumbnailRelativeDirectory(group), createDirectory);
+  const absolutePath = resolveStoragePath(storageRoot, relativePath);
+  if (!isWithin(expectedDirectory, absolutePath)) throw new MaterialImportError('unsafe_path', '缩略图路径不属于当前分镜组');
+  if (fs.existsSync(absolutePath)) {
+    const stat = fs.lstatSync(absolutePath);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new MaterialImportError('unsafe_path', '缩略图不是安全的普通文件');
+    if (!isWithin(fs.realpathSync(expectedDirectory), fs.realpathSync(absolutePath))) throw new MaterialImportError('unsafe_path', '缩略图真实路径越界');
+  }
+  return absolutePath;
+}
+
+function assetView(storageRoot: string, row: ExternalAssetRow): FinalEditExternalAssetView {
+  if (row.mediaKind !== 'video') throw new MaterialImportError('unsupported_media_kind', 'V1 不支持读取图片素材');
+  const group = { projectId: row.projectId, shotSetId: row.shotSetId };
+  const absolutePath = resolveAssetVideoPath(storageRoot, group, row.relativePath);
+  let status: FinalEditExternalAssetView['status'] = row.status === 'failed' ? 'failed' : 'ready';
+  let errorMessage = row.errorMessage;
+  if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+    status = 'missing';
+    errorMessage = '素材文件已丢失，请重新导入';
+  } else if (status === 'ready' && (!row.thumbnailRelativePath || !fs.existsSync(resolveThumbnailPath(storageRoot, group, row.thumbnailRelativePath)))) {
+    status = 'failed';
+    errorMessage = '素材缩略图已丢失，请重新导入';
+  }
+  return {
+    id: row.id,
+    assetKey: `external:${row.id}`,
+    projectId: row.projectId,
+    shotSetId: row.shotSetId,
+    originalFilename: row.originalFilename,
+    mimeType: row.mimeType,
+    mediaKind: 'video',
+    durationUs: Number(row.durationUs) || 0,
+    width: Number(row.width) || 0,
+    height: Number(row.height) || 0,
+    status,
+    errorMessage,
+    previewUrl: `/api/projects/${encodeURIComponent(row.projectId)}/final-edit/shot-sets/${encodeURIComponent(row.shotSetId)}/external-assets/${encodeURIComponent(row.id)}/media`,
+    thumbnailUrl: row.thumbnailRelativePath
+      ? `/api/projects/${encodeURIComponent(row.projectId)}/final-edit/shot-sets/${encodeURIComponent(row.shotSetId)}/external-assets/${encodeURIComponent(row.id)}/thumbnail`
+      : null,
+    source: 'external',
+    createdAt: row.createdAt,
+  };
+}
+
+function writeFileAtomic(absolutePath: string, data: Buffer): void {
+  const temporaryPath = `${absolutePath}.${uuidv4()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, data, { flag: 'wx' });
+    fs.renameSync(temporaryPath, absolutePath);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
+}
+
+function errorResult(filename: string, error: unknown): ExternalAssetImportFailure {
+  if (error instanceof MaterialImportError) return { filename, error: error.code, message: error.message };
+  return { filename, error: 'external_asset_import_failed', message: '外部素材导入失败，请重试' };
+}
+
+export function listShotSetExternalAssets(
+  deps: Pick<MaterialImportDependencies, 'db' | 'storageRoot'>,
+  projectId: string,
+  shotSetId: string,
+): FinalEditExternalAssetView[] {
+  const owner = getShotSetOwner(deps.db, projectId, shotSetId);
+  const rows = deps.db.prepare(`
+    SELECT * FROM final_edit_external_assets
+    WHERE projectId=? AND shotSetId=? ORDER BY createdAt, id
+  `).all(owner.projectId, owner.shotSetId) as ExternalAssetRow[];
+  return rows.map((row) => assetView(deps.storageRoot, row));
+}
+
+async function importExternalAssetsForOwner(
+  deps: MaterialImportDependencies,
+  group: AssetOwner,
+  files: ExternalAssetUpload[],
+): Promise<ExternalAssetImportResult> {
+  if (!files.length) throw new MaterialImportError('files_required', '请选择至少一个视频文件');
+
+  const pending = new Map<string, PendingAssetWrite>();
+  const results: Array<{ assetId: string; fingerprint: string; reused: boolean }> = [];
+  const errors: ExternalAssetImportFailure[] = [];
+
+  for (const upload of files) {
+    let writtenVideoPath: string | null = null;
+    let thumbnailAbsolutePath: string | null = null;
+    let videoExistedBefore = false;
+    let thumbnailExistedBefore = false;
+    let existingThumbnailWasPresent = false;
+    let valid: ReturnType<typeof validateUpload> | null = null;
+    let fingerprint = '';
+    let existing: ExternalAssetRow | undefined;
+    let assetId = '';
+    let relativePath = '';
+    let media: VideoMediaProbe | null = null;
+    try {
+      valid = validateUpload(upload);
+      fingerprint = crypto.createHash('sha256').update(upload.data).digest('hex');
+      const stagedDuplicate = pending.get(fingerprint);
+      if (stagedDuplicate) {
+        results.push({ assetId: stagedDuplicate.row.id, fingerprint, reused: true });
+        continue;
+      }
+      existing = deps.db.prepare(`
+        SELECT * FROM final_edit_external_assets WHERE shotSetId=? AND fileFingerprint=?
+      `).get(group.shotSetId, fingerprint) as ExternalAssetRow | undefined;
+      if (existing && existing.projectId !== group.projectId) {
+        throw new MaterialImportError('external_asset_ownership_invalid', '外部素材归属数据不一致', 409);
+      }
+      if (existing) {
+        const existingPath = resolveAssetVideoPath(deps.storageRoot, group, existing.relativePath);
+        const thumbnailExists = Boolean(existing.thumbnailRelativePath)
+          && fs.existsSync(resolveThumbnailPath(deps.storageRoot, group, existing.thumbnailRelativePath!));
+        existingThumbnailWasPresent = thumbnailExists;
+        if (existing.status === 'ready' && fs.existsSync(existingPath) && fs.statSync(existingPath).isFile() && thumbnailExists) {
+          results.push({ assetId: existing.id, fingerprint, reused: true });
+          continue;
+        }
+      }
+
+      assetId = existing?.id || uuidv4();
+      relativePath = existing?.relativePath || path.join(materialsRelativeDirectory(group), `${assetId}${valid.extension}`);
+      const absolutePath = resolveAssetVideoPath(deps.storageRoot, group, relativePath, true);
+      videoExistedBefore = fs.existsSync(absolutePath);
+      writeFileAtomic(absolutePath, upload.data);
+      writtenVideoPath = absolutePath;
+
+      media = await deps.probeVideo({ filePath: absolutePath, videoJobId: assetId });
+      if (media.durationUs <= 0 || media.width <= 0 || media.height <= 0) {
+        if (media.errorMessage) console.error('[final-edit] external video probe failed:', media.errorMessage.replaceAll(path.resolve(deps.storageRoot), '<storage>').replaceAll(absolutePath, '<material>'));
+        throw new MaterialImportError('video_probe_failed', '无法读取视频时长或分辨率');
+      }
+      validateDetectedContainer(valid.extension, media.format);
+      const lastSafeFrameUs = Math.max(0, media.durationUs - Math.max(50_000, Math.ceil(1_000_000 / Math.max(1, media.fps || 24))));
+      const frameUs = Math.min(lastSafeFrameUs, Math.max(0, Math.min(100_000, Math.round(media.durationUs / 10))));
+      ensureSafeRelativeDirectory(deps.storageRoot, thumbnailRelativeDirectory(group), true);
+      const thumbnail = await deps.materializeThumbnail({
+        sourcePath: absolutePath,
+        cacheNamespace: path.join('external-assets', safeIdSegment(group.projectId, 'projectId'), safeIdSegment(group.shotSetId, 'shotSetId')),
+        cacheKey: `${assetId}:${fingerprint}:${frameUs}`,
+        frameUs,
+      });
+      thumbnailAbsolutePath = resolveThumbnailPath(deps.storageRoot, group, thumbnail.relativePath);
+      if (path.resolve(thumbnail.absolutePath) !== path.resolve(thumbnailAbsolutePath)) throw new MaterialImportError('unsafe_path', '缩略图返回了不一致的路径');
+      thumbnailExistedBefore = existingThumbnailWasPresent && existing?.thumbnailRelativePath === thumbnail.relativePath;
+      const row: ExternalAssetRow = {
+        id: assetId,
+        projectId: group.projectId,
+        shotSetId: group.shotSetId,
+        originalFilename: valid.originalFilename,
+        relativePath,
+        thumbnailRelativePath: thumbnail.relativePath,
+        mimeType: valid.mimeType,
+        mediaKind: 'video',
+        durationUs: media.durationUs,
+        width: media.width,
+        height: media.height,
+        fileFingerprint: fingerprint,
+        status: 'ready',
+        errorMessage: null,
+        createdAt: existing?.createdAt || currentTime(),
+      };
+      pending.set(fingerprint, {
+        row,
+        videoAbsolutePath: absolutePath,
+        thumbnailAbsolutePath,
+        videoExistedBefore,
+        thumbnailExistedBefore,
+      });
+      results.push({ assetId, fingerprint, reused: false });
+    } catch (error) {
+      if (!(error instanceof MaterialImportError)) {
+        const diagnostic = error instanceof Error ? error.message : String(error);
+        console.error('[final-edit] external asset import failed:', diagnostic.replaceAll(path.resolve(deps.storageRoot), '<storage>'));
+      }
+      const failure = errorResult(upload.filename, error);
+      errors.push(failure);
+      const unsafeFailure = error instanceof MaterialImportError
+        && ['unsafe_path', 'external_asset_ownership_invalid'].includes(error.code);
+      if (writtenVideoPath && valid && fingerprint && assetId && relativePath && !unsafeFailure) {
+        const row: ExternalAssetRow = {
+          id: assetId,
+          projectId: group.projectId,
+          shotSetId: group.shotSetId,
+          originalFilename: valid.originalFilename,
+          relativePath,
+          thumbnailRelativePath: existing?.thumbnailRelativePath || null,
+          mimeType: valid.mimeType,
+          mediaKind: 'video',
+          durationUs: media?.durationUs || 0,
+          width: media?.width || null,
+          height: media?.height || null,
+          fileFingerprint: fingerprint,
+          status: 'failed',
+          errorMessage: failure.message,
+          createdAt: existing?.createdAt || currentTime(),
+        };
+        pending.set(fingerprint, {
+          row,
+          videoAbsolutePath: writtenVideoPath,
+          thumbnailAbsolutePath,
+          videoExistedBefore,
+          thumbnailExistedBefore,
+        });
+        results.push({ assetId, fingerprint, reused: false });
+      } else if (writtenVideoPath && !videoExistedBefore && fs.existsSync(writtenVideoPath)) {
+        fs.unlinkSync(writtenVideoPath);
+      }
+    }
+  }
+
+  if (pending.size > 0) {
+    const cleanupPending = (item: PendingAssetWrite) => {
+      if (!item.videoExistedBefore && fs.existsSync(item.videoAbsolutePath)) fs.unlinkSync(item.videoAbsolutePath);
+      if (item.thumbnailAbsolutePath && !item.thumbnailExistedBefore && fs.existsSync(item.thumbnailAbsolutePath)) fs.unlinkSync(item.thumbnailAbsolutePath);
+    };
+    for (const [fingerprint, item] of pending) {
+      try {
+        deps.db.transaction(() => {
+          const { row } = item;
+          deps.db.prepare(`
+            INSERT INTO final_edit_external_assets (
+              id, projectId, shotSetId, originalFilename, relativePath, thumbnailRelativePath,
+              mimeType, mediaKind, durationUs, width, height, fileFingerprint, status,
+              errorMessage, createdAt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              originalFilename=excluded.originalFilename,
+              relativePath=excluded.relativePath,
+              thumbnailRelativePath=excluded.thumbnailRelativePath,
+              mimeType=excluded.mimeType,
+              durationUs=excluded.durationUs,
+              width=excluded.width,
+              height=excluded.height,
+              status=excluded.status,
+              errorMessage=excluded.errorMessage
+          `).run(
+            row.id, row.projectId, row.shotSetId, row.originalFilename, row.relativePath,
+            row.thumbnailRelativePath, row.mimeType, row.mediaKind, row.durationUs,
+            row.width, row.height, row.fileFingerprint, row.status, row.errorMessage, row.createdAt,
+          );
+        })();
+      } catch (error) {
+        const constraint = (error as { code?: string })?.code?.startsWith('SQLITE_CONSTRAINT');
+        const winner = constraint
+          ? deps.db.prepare(`SELECT * FROM final_edit_external_assets WHERE shotSetId=? AND fileFingerprint=?`).get(group.shotSetId, fingerprint) as ExternalAssetRow | undefined
+          : undefined;
+        if (winner?.projectId === group.projectId) {
+          cleanupPending(item);
+          for (const result of results) {
+            if (result.fingerprint === fingerprint && result.assetId !== winner.id) {
+              result.assetId = winner.id;
+              result.reused = true;
+            }
+          }
+        } else {
+          cleanupPending(item);
+          results.splice(0, results.length, ...results.filter((result) => result.fingerprint !== fingerprint));
+          errors.push({
+            filename: item.row.originalFilename,
+            error: 'external_asset_persist_failed',
+            message: '外部素材保存失败，请重试',
+          });
+        }
+      }
+    }
+  }
+
+  const rowsById = new Map((deps.db.prepare(`
+    SELECT * FROM final_edit_external_assets WHERE projectId=? AND shotSetId=?
+  `).all(group.projectId, group.shotSetId) as ExternalAssetRow[]).map((row) => [row.id, row]));
+  return {
+    assets: results.flatMap(({ assetId, reused }) => {
+      const row = rowsById.get(assetId);
+      return row ? [{ ...assetView(deps.storageRoot, row), reused }] : [];
+    }),
+    errors,
+  };
+}
+
+export async function importShotSetExternalAssets(
+  deps: MaterialImportDependencies,
+  input: ShotSetExternalAssetImportInput,
+): Promise<ExternalAssetImportResult> {
+  // JUDGMENT CALL: Step 1 permits import before a revision-bearing
+  // final_edit_group exists. The canonical project+shot-set API therefore
+  // validates both ownership keys but intentionally has no expectedRevision;
+  // importing bytes must never manufacture a placeholder group/scriptDraftId.
+  // If Phase 2 later needs a group-scoped compatibility route, it must be a
+  // real atomic group command with revision CAS, not a wrapper around this
+  // pre-group operation.
+  const owner = getShotSetOwner(deps.db, input.projectId, input.shotSetId);
+  return importExternalAssetsForOwner(deps, owner, input.files);
+}
+
+function objectReferencesAsset(value: unknown, assetId: string): boolean {
+  if (typeof value === 'string') return value === assetId || value === `external:${assetId}`;
+  if (Array.isArray(value)) return value.some((item) => objectReferencesAsset(item, assetId));
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some((item) => objectReferencesAsset(item, assetId));
+}
+
+function jsonReferencesAsset(value: string | null, assetId: string): boolean {
+  if (!value) return false;
+  try { return objectReferencesAsset(JSON.parse(value), assetId); } catch { return false; }
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(table));
+}
+
+function assertAssetNotReferenced(db: Database.Database, group: AssetOwner, asset: ExternalAssetRow): void {
+  const variants = db.prepare(`
+    SELECT v.timelineJson, v.coverJson
+    FROM final_edit_variants v
+    JOIN final_edit_groups g ON g.id=v.groupId
+    WHERE g.projectId=? AND g.shotSetId=?
+  `).all(group.projectId, group.shotSetId) as Array<{ timelineJson: string; coverJson: string }>;
+  if (variants.some((row) => jsonReferencesAsset(row.timelineJson, asset.id) || jsonReferencesAsset(row.coverJson, asset.id))) {
+    throw new MaterialImportError('external_asset_in_use', '外部素材正在被草稿引用，不能删除', 409);
+  }
+  const jobs = db.prepare(`
+    SELECT inputSnapshotJson, outputJson FROM final_edit_jobs WHERE projectId=?
+  `).all(group.projectId) as Array<{ inputSnapshotJson: string; outputJson: string | null }>;
+  if (jobs.some((row) => jsonReferencesAsset(row.inputSnapshotJson, asset.id)
+    || jsonReferencesAsset(row.outputJson, asset.id)
+    || jsonReferencesAsset(row.inputSnapshotJson, asset.relativePath)
+    || jsonReferencesAsset(row.outputJson, asset.relativePath))) {
+    throw new MaterialImportError('external_asset_in_use', '外部素材正在被任务产物引用，不能删除', 409);
+  }
+  if (tableExists(db, 'project_artifacts')) {
+    const artifact = db.prepare(`
+      SELECT 1 FROM project_artifacts WHERE projectId=? AND relativePath IN (?, ?) LIMIT 1
+    `).get(group.projectId, asset.relativePath, asset.thumbnailRelativePath || '');
+    if (artifact) throw new MaterialImportError('external_asset_in_use', '外部素材正在被项目产物引用，不能删除', 409);
+  }
+}
+
+export function resolveShotSetExternalAssetMedia(
+  deps: Pick<MaterialImportDependencies, 'db' | 'storageRoot'>,
+  projectId: string,
+  shotSetId: string,
+  assetId: string,
+  kind: 'video' | 'thumbnail',
+): { relativePath: string; mimeType: string } {
+  const owner = getShotSetOwner(deps.db, projectId, shotSetId);
+  const row = deps.db.prepare(`
+    SELECT * FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?
+  `).get(assetId, owner.projectId, owner.shotSetId) as ExternalAssetRow | undefined;
+  if (!row) throw new MaterialImportError('external_asset_not_found', '外部素材不存在或不属于当前分镜组', 404);
+  if (row.status !== 'ready') throw new MaterialImportError('external_asset_not_ready', '外部素材尚不可用', 409);
+  if (kind === 'video') {
+    const absolutePath = resolveAssetVideoPath(deps.storageRoot, owner, row.relativePath);
+    if (!fs.existsSync(absolutePath)) throw new MaterialImportError('external_asset_missing', '外部素材文件已丢失', 404);
+    return { relativePath: row.relativePath, mimeType: row.mimeType };
+  }
+  if (!row.thumbnailRelativePath) throw new MaterialImportError('external_asset_thumbnail_missing', '外部素材缩略图不存在', 404);
+  const thumbnailPath = resolveThumbnailPath(deps.storageRoot, owner, row.thumbnailRelativePath);
+  if (!fs.existsSync(thumbnailPath)) throw new MaterialImportError('external_asset_thumbnail_missing', '外部素材缩略图不存在', 404);
+  return { relativePath: row.thumbnailRelativePath, mimeType: 'image/jpeg' };
+}
+
+function deleteExternalAssetForOwner(
+  deps: Pick<MaterialImportDependencies, 'db' | 'storageRoot'>,
+  group: AssetOwner,
+  assetId: string,
+): { deleted: true } {
+  const asset = deps.db.prepare(`
+    SELECT * FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?
+  `).get(assetId, group.projectId, group.shotSetId) as ExternalAssetRow | undefined;
+  if (!asset) throw new MaterialImportError('external_asset_not_found', '外部素材不存在或不属于当前分镜组', 404);
+  const videoPath = resolveAssetVideoPath(deps.storageRoot, group, asset.relativePath);
+  const thumbnailPath = asset.thumbnailRelativePath ? resolveThumbnailPath(deps.storageRoot, group, asset.thumbnailRelativePath) : null;
+  assertAssetNotReferenced(deps.db, group, asset);
+
+  const moved: Array<{ original: string; quarantine: string }> = [];
+  try {
+    for (const original of [videoPath, thumbnailPath].filter((value): value is string => Boolean(value))) {
+      if (!fs.existsSync(original)) continue;
+      const quarantine = `${original}.${uuidv4()}.deleting`;
+      fs.renameSync(original, quarantine);
+      moved.push({ original, quarantine });
+    }
+    deps.db.transaction(() => {
+      const deleted = deps.db.prepare(`
+        DELETE FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?
+      `).run(asset.id, group.projectId, group.shotSetId);
+      if (deleted.changes !== 1) throw new MaterialImportError('external_asset_not_found', '外部素材不存在或不属于当前分镜组', 404);
+    })();
+    for (const item of moved) {
+      try { fs.unlinkSync(item.quarantine); } catch { /* inaccessible quarantine is no longer addressable by any DB row */ }
+    }
+    return { deleted: true };
+  } catch (error) {
+    for (const item of moved.reverse()) {
+      if (fs.existsSync(item.quarantine) && !fs.existsSync(item.original)) fs.renameSync(item.quarantine, item.original);
+    }
+    throw error;
+  }
+}
+
+export function deleteShotSetExternalAsset(
+  deps: Pick<MaterialImportDependencies, 'db' | 'storageRoot'>,
+  input: { projectId: string; shotSetId: string; assetId: string },
+): { deleted: true } {
+  const owner = getShotSetOwner(deps.db, input.projectId, input.shotSetId);
+  return deleteExternalAssetForOwner(deps, owner, input.assetId);
+}
