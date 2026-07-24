@@ -105,8 +105,8 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       setContext(next);
       setTtsProviders(providersResult);
       const configuredTts = providersResult.find((provider) => provider.configured) ?? providersResult[0] ?? null;
-      setTtsProviderId((current) => providersResult.some((provider) => provider.id === current) ? current : configuredTts?.id ?? '');
-      setVoice((current) => configuredTts?.voices.some((item) => item.id === current) ? current : configuredTts?.voices[0]?.id ?? '');
+      setTtsProviderId(configuredTts?.id ?? '');
+      setVoice(configuredTts?.voices[0]?.id ?? '');
       setVisionProviderId(visionProviders.find((provider) => provider.configured && provider.supportsVision)?.id ?? '');
       if (next.currentShotSetId) {
         const currentShotSetId = next.currentShotSetId;
@@ -114,8 +114,9 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         const module4Keys = next.videoAssets.map((asset) => `module4:${asset.videoJobId}`);
         const readyExternalKeys = external.assets.filter((asset) => asset.status === 'ready').map((asset) => `external:${asset.id}`);
         const latestGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId);
-        draftGroupRef.current = latestGroup
-          ? { id: latestGroup.id, shotSetId: latestGroup.shotSetId, revision: latestGroup.revision }
+        const editingGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && group.status === 'editing');
+        draftGroupRef.current = editingGroup
+          ? { id: editingGroup.id, shotSetId: editingGroup.shotSetId, revision: editingGroup.revision }
           : null;
         persistVersionRef.current = 0;
         lastSavedVersionRef.current = 0;
@@ -172,7 +173,6 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     return () => {
       window.clearTimeout(timer);
       requestRef.current?.controller.abort();
-      saveAbortRef.current?.abort();
     };
   }, [loadContext]);
 
@@ -250,10 +250,6 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     persistVersionRef.current = 0;
     lastSavedVersionRef.current = 0;
     setPersistVersion(0);
-    startRequestRef.current?.controller.abort();
-    startRequestRef.current = null;
-    submittingRef.current = false;
-    setSubmitting(false);
     setSelectionByShotSet({});
     setActiveStep(0);
     setPendingDraftId(null);
@@ -264,7 +260,8 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
 
   const selectShotSet = (shotSetId: string) => {
     if (!shotSetId || shotSetId === activeShotSetId) return;
-    if (scriptEditor.dirty) {
+    if (submittingRef.current) return;
+    if (persistVersionRef.current > lastSavedVersionRef.current) {
       setPendingShotSetId(shotSetId);
       return;
     }
@@ -275,7 +272,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     const targetShotSetId = pendingShotSetId;
     if (!targetShotSetId) return;
     if (resolution === 'cancel') { setPendingShotSetId(null); return; }
-    if (resolution === 'preserve' && scriptEditor.dirty) {
+    if (resolution === 'preserve' && persistVersionRef.current > lastSavedVersionRef.current) {
       try { await persistCurrentState(persistVersionRef.current); }
       catch { return; }
     }
@@ -358,6 +355,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             signal: controller.signal,
+            keepalive: true,
             body: JSON.stringify({
               type: 'set_mixcut_script_state',
               expectedRevision: currentGroup.revision,
@@ -370,6 +368,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             signal: controller.signal,
+            keepalive: true,
             body: JSON.stringify(snapshot),
           }));
         }
@@ -400,6 +399,17 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     const timer = window.setTimeout(() => void persistCurrentState(persistVersion).catch(() => undefined), 600);
     return () => window.clearTimeout(timer);
   }, [persistCurrentState, persistVersion]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (persistVersionRef.current <= lastSavedVersionRef.current) return;
+      void persistCurrentState(persistVersionRef.current).catch(() => undefined);
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [persistCurrentState]);
 
   const refreshWorkspace = async () => {
     try {
@@ -494,12 +504,8 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           draftGroupId: draftGroupRef.current?.shotSetId === requestShotSetId ? draftGroupRef.current.id : undefined,
         }),
       }));
-      const [job, group] = await Promise.all([
-        readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`, { signal: controller.signal })),
-        readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`, { signal: controller.signal })),
-      ]);
+      const job = await readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`, { signal: controller.signal }));
       if (startRequestRef.current?.sequence !== sequence || startRequestRef.current.shotSetId !== requestShotSetId) return;
-      draftGroupRef.current = { id: group.id, shotSetId: group.shotSetId, revision: group.revision };
       setActiveJob({ ...job, groupId: jobRef.groupId });
       setMessage('后台任务已创建，可以离开页面后再返回查看');
     } catch (error) {
@@ -556,7 +562,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           selectedCount={selectedIds.length}
           availableVideoCount={materials.filter((material) => material.status === 'ready').length}
           onSelectShotSet={selectShotSet}
-          disabled={loading}
+          disabled={loading || submitting}
         />
 
         <main className={styles.main}>
@@ -635,8 +641,8 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       {pendingShotSetId && (
         <div className={styles.switchDialogBackdrop} role="presentation">
           <div className={styles.switchDialog} role="dialog" aria-modal="true" aria-labelledby="mixcut-shot-set-switch-title">
-            <h2 id="mixcut-shot-set-switch-title">当前分镜组的脚本有未保存修改</h2>
-            <p>切换到「{context?.shotSets.find((shotSet) => shotSet.id === pendingShotSetId)?.name || '其他分镜组'}」前，请选择如何处理当前文案。</p>
+            <h2 id="mixcut-shot-set-switch-title">当前分镜组有未保存的创作设置</h2>
+            <p>切换到「{context?.shotSets.find((shotSet) => shotSet.id === pendingShotSetId)?.name || '其他分镜组'}」前，请选择如何处理当前文案、素材和音色设置。</p>
             <div>
               <button type="button" className={styles.primaryButton} onClick={() => void resolveShotSetSwitch('preserve')}>保留修改并切换</button>
               <button type="button" className={styles.secondaryButton} onClick={() => void resolveShotSetSwitch('discard')}>放弃修改并切换</button>

@@ -41,12 +41,16 @@ assert.match(panel, /\/api\/projects\/\$\{projectId\}\/final-edit\/draft/, '首�
 assert.match(panel, /type:\s*'set_mixcut_script_state'/, '文案、素材和音色修改必须通过 group command 落库');
 assert.match(panel, /expectedRevision:\s*currentGroup\.revision/, '自动保存必须带 expectedRevision，不得 last-write-wins');
 assert.match(panel, /markScriptSaved/, '服务端保存成功后才能清除未保存状态');
+assert.match(panel, /group\.status === 'editing'/, '自动保存只能继续修改专用 editing group，不得改写已生成成片组');
 assert.match(panel, /setSelectionByShotSet\(\(current\) => latestGroup[\s\S]{0,160}\{ \[currentShotSetId\]: persistedSelection \}/, '服务端已保存空选择时刷新不得重置为默认全选');
 assert.match(panel, /const editedText = groupScript \? groupScript\.editedNarrationText : importedText/, '服务端已保存空文案时刷新不得回退为导入稿');
 assert.match(panel, /\/api\/final-edit-jobs\/\$\{activeJobId\}/, '进度必须读取真实 job API');
 assert.match(panel, /selectedMaterialKeys:\s*selectedIds/, '任务快照必须冻结当前素材选择');
 assert.match(panel, /submittingRef\.current/, '生成提交必须有同步锁，防止快速双击重复计费');
 assert.match(panel, /startRequestRef\.current\?\.sequence/, '生成响应必须校验请求 token，防止跨组迟到回填');
+assert.match(panel, /disabled=\{loading \|\| submitting\}/, '生成 POST 未返回前必须禁止切组，避免丢失已创建任务的身份');
+assert.match(panel, /persistVersionRef\.current > lastSavedVersionRef\.current[\s\S]{0,120}setPendingShotSetId/, '任何未保存文案、素材或音色都必须阻止直接切组');
+assert.match(panel, /beforeunload/, '刷新或关闭页面前必须冲刷并保护待保存状态');
 assert.match(creationStep, /保留修改并切换/);
 assert.match(creationStep, /放弃修改并切换/);
 assert.match(creationStep, /取消/, '脚本切换必须有保留、放弃、取消三路决策');
