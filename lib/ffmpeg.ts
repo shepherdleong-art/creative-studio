@@ -141,6 +141,62 @@ function probeWithFfmpeg(filePath: string): Promise<number> {
   });
 }
 
+export interface VideoMediaProbe {
+  durationUs: number;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+/**
+ * ffprobe 一次性取时长 + 视频流宽高/帧率（JSON 输出）。只做元数据读取（毫秒级），
+ * 不转码，供成片模块 4 视频列表/缩略图使用。单个文件探测失败（ffprobe 不可用、
+ * 文件损坏、没有视频流）一律 resolve 全零结果，绝不 reject——一条视频探测失败
+ * 不应打断整份 context 响应。
+ */
+export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
+  const fallback: VideoMediaProbe = { durationUs: 0, width: 0, height: 0, fps: 0 };
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(
+        resolveFfprobePath(),
+        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate:format=duration', '-of', 'json', filePath],
+        { windowsHide: true }
+      );
+      let out = '';
+      child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
+      child.on('error', () => resolve(fallback));
+      child.on('close', (code) => {
+        if (code !== 0) { resolve(fallback); return; }
+        try {
+          const parsed = JSON.parse(out) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string }>; format?: { duration?: string } };
+          const stream = parsed.streams?.[0];
+          const durationSec = parseFloat(parsed.format?.duration ?? '');
+          if (!stream || !Number.isFinite(durationSec)) { resolve(fallback); return; }
+          resolve({
+            durationUs: Math.round(durationSec * 1_000_000),
+            width: Number(stream.width) || 0,
+            height: Number(stream.height) || 0,
+            fps: parseFrameRateFraction(stream.r_frame_rate),
+          });
+        } catch {
+          resolve(fallback);
+        }
+      });
+    } catch {
+      resolve(fallback);
+    }
+  });
+}
+
+function parseFrameRateFraction(value: string | undefined): number {
+  if (!value) return 0;
+  const [numerator, denominator] = value.split('/').map(Number);
+  if (!Number.isFinite(numerator)) return 0;
+  if (!denominator || !Number.isFinite(denominator)) return numerator;
+  return numerator / denominator;
+}
+
 const filterCache = new Map<string, boolean>();
 
 /** 探测滤镜可用性（sidechaincompress / tpad 等），结果缓存 */
