@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { runFfmpeg, probeDurationSec } from '../../ffmpeg';
 import { completeJson } from '../../script-providers';
+import { detectVideoScenes } from '../scene-detect.ts';
 
 interface RawAnalysis {
   summary?: unknown;
@@ -10,6 +11,7 @@ interface RawAnalysis {
   usableRanges?: unknown;
   qualityIssues?: unknown;
   coverFrameTimesUs?: unknown;
+  scenes?: unknown;
 }
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : [];
@@ -22,11 +24,13 @@ export async function analyzeVideoWithVision(input: {
   cacheDir: string;
 }) {
   const durationSec = await probeDurationSec(input.filePath);
-  const sampleCount = Math.max(4, Math.min(8, Math.ceil(durationSec)));
+  const durationUs = Math.round(durationSec * 1_000_000);
+  const detectedScenes = await detectVideoScenes({ filePath: input.filePath, durationUs });
   fs.mkdirSync(input.cacheDir, { recursive: true });
   const images: Array<{ mimeType: string; imageBase64: string }> = [];
-  for (let index = 0; index < sampleCount; index += 1) {
-    const timeSec = Math.min(durationSec - 0.05, Math.max(0.05, durationSec * (index + 0.5) / sampleCount));
+  for (let index = 0; index < detectedScenes.length; index += 1) {
+    const scene = detectedScenes[index];
+    const timeSec = Math.min(durationSec - 0.05, Math.max(0.05, (scene.startUs + (scene.endUs - scene.startUs) * 0.3) / 1_000_000));
     const output = path.join(input.cacheDir, `${Math.round(timeSec * 1_000_000)}.jpg`);
     await runFfmpeg(['-ss', timeSec.toFixed(6), '-i', input.filePath, '-frames:v', '1', '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease', '-q:v', '3', '-y', output], { timeoutMs: 60_000 });
     images.push({ mimeType: 'image/jpeg', imageBase64: fs.readFileSync(output).toString('base64') });
@@ -34,12 +38,22 @@ export async function analyzeVideoWithVision(input: {
   const result = await completeJson<RawAnalysis>({
     providerId: input.providerId,
     systemPrompt: '你是视频素材分析器。只描述视频本身，严格返回 JSON，不推断脚本文案。',
-    userPrompt: `这些图片按时间顺序均匀抽自同一个完整视频（时长 ${durationSec.toFixed(3)} 秒）。请结合全部帧分析内容、卖点、景别、运镜、可用区间、质量问题和封面帧。返回 {summary,sellingPoints,semanticTags,usableRanges:[{startUs,endUs,qualityScore}],qualityIssues,coverFrameTimesUs}。所有时间使用整数微秒。`,
+    userPrompt: `这些图片按顺序分别来自同一视频的场景区间 ${JSON.stringify(detectedScenes)}（总时长 ${durationSec.toFixed(3)} 秒），每个场景在 30% 位置抽一帧。请逐场景描述画面并给标签、质量分，同时给出整段摘要、卖点、质量问题和封面帧。返回 {summary,sellingPoints,semanticTags,scenes:[{startUs,endUs,description,labels,qualityScore}],qualityIssues,coverFrameTimesUs}。scenes 数量和顺序必须与场景区间一致，所有时间使用整数微秒。`,
     temperature: 0.2,
     images,
   });
-  const durationUs = Math.round(durationSec * 1_000_000);
-  const usableRanges = (Array.isArray(result.usableRanges) ? result.usableRanges : []).map((raw) => {
+  const rawScenes = Array.isArray(result.scenes) ? result.scenes : [];
+  const scenes = detectedScenes.map((range, index) => {
+    const raw = rawScenes[index] && typeof rawScenes[index] === 'object' ? rawScenes[index] as Record<string, unknown> : {};
+    return {
+      startUs: range.startUs,
+      endUs: range.endUs,
+      description: typeof raw.description === 'string' ? raw.description.trim() : '',
+      labels: strings(raw.labels),
+      qualityScore: Math.max(0, Math.min(1, Number(raw.qualityScore) || 0.5)),
+    };
+  });
+  const usableRanges = (Array.isArray(result.usableRanges) ? result.usableRanges : scenes).map((raw) => {
     const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
     return {
       startUs: Math.max(0, Math.min(durationUs, Math.round(Number(value.startUs) || 0))),
@@ -54,5 +68,6 @@ export async function analyzeVideoWithVision(input: {
     usableRanges: usableRanges.length ? usableRanges : [{ startUs: 0, endUs: durationUs, qualityScore: 0.5 }],
     qualityIssues: strings(result.qualityIssues),
     coverFrameTimesUs: (Array.isArray(result.coverFrameTimesUs) ? result.coverFrameTimesUs : []).map(Number).filter((value) => Number.isFinite(value) && value >= 0 && value <= durationUs).map(Math.round),
+    scenes,
   };
 }

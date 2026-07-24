@@ -30,6 +30,17 @@ import {
 } from './material-import.ts';
 import { assertTtsSpeed } from './tts-speed.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
+import { matchAudioFirst } from './audio-first-matcher.ts';
+import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
+import {
+  buildSemanticMatrixPrompt,
+  createSemanticMatrixCacheKey,
+  normalizeSemanticMatrix,
+  SEMANTIC_MATRIX_PROMPT_VERSION,
+  type SemanticScene,
+  type SemanticSentence,
+} from './semantic-matrix.ts';
+import type { BeatDetectionResult } from './beat-detect.ts';
 import {
   FINAL_EDIT_FPS,
   FINAL_EDIT_INTRO_DURATION_US,
@@ -66,6 +77,7 @@ interface VideoAnalysisResult {
   usableRanges: Array<{ startUs: number; endUs: number; qualityScore: number }>;
   qualityIssues: string[];
   coverFrameTimesUs: number[];
+  scenes?: Array<{ startUs: number; endUs: number; description: string; labels: string[]; qualityScore: number }>;
 }
 
 interface NarrationArtifact {
@@ -73,6 +85,19 @@ interface NarrationArtifact {
   durationUs: number;
   segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>;
   wordTimings: Array<{ text: string; startUs: number; endUs: number }>;
+  alignmentDegradedSegmentIds?: string[];
+}
+
+function isVideoAnalysisResult(value: unknown): value is VideoAnalysisResult {
+  if (!value || typeof value !== 'object') return false;
+  const analysis = value as Partial<VideoAnalysisResult>;
+  return typeof analysis.summary === 'string'
+    && Array.isArray(analysis.sellingPoints)
+    && Array.isArray(analysis.semanticTags)
+    && Array.isArray(analysis.usableRanges)
+    && analysis.usableRanges.every((range) => Number.isFinite(range?.startUs) && Number.isFinite(range?.endUs) && Number.isFinite(range?.qualityScore) && range.endUs > range.startUs)
+    && Array.isArray(analysis.qualityIssues)
+    && Array.isArray(analysis.coverFrameTimesUs);
 }
 
 export interface FinalEditWorkspaceDependencies {
@@ -81,6 +106,14 @@ export interface FinalEditWorkspaceDependencies {
   runJobsInline?: boolean;
   probeVideo(input: { filePath: string; videoJobId: string }): Promise<{ durationUs: number; width: number; height: number; fps: number }>;
   analyzeVideo(input: { filePath: string; videoJobId: string; shotSetId: string; providerId: string }): Promise<VideoAnalysisResult>;
+  scoreSemanticMatrix?(input: {
+    providerId: string;
+    systemPrompt: string;
+    userPrompt: string;
+    temperature: number;
+    maxTokens: number;
+  }): Promise<unknown>;
+  detectBeatPoints?(input: { audioPath: string; durationUs: number }): Promise<BeatDetectionResult>;
   materializeCoverFrame?(input: { sourcePath: string; cacheNamespace: string; cacheKey: string; frameUs: number }): Promise<void>;
   synthesize(input: {
     scriptDraftId: string;
@@ -89,6 +122,7 @@ export interface FinalEditWorkspaceDependencies {
     voice: string;
     speed: number;
     narrationHash: string;
+    onSegmentComplete?: (completed: number, total: number) => void;
   }): Promise<NarrationArtifact>;
   warmPreview?(input: {
     jobId: string;
@@ -240,7 +274,10 @@ interface PreparedAsset extends AssetRow {
   analysis: VideoAnalysisResult;
   autoUseDisabled: boolean;
   existingUsageCount: number;
+  analysisSucceeded?: boolean;
 }
+
+const FINAL_EDIT_ANALYZER_VERSION = '2';
 
 function now() { return new Date().toISOString(); }
 function parseJson<T>(value: string, fallback: T): T {
@@ -495,6 +532,18 @@ function contentChars(value: string): string[] {
   return Array.from(value.normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLocaleLowerCase());
 }
 
+function extractMatchKeywords(value: string): string[] {
+  const normalized = value.normalize('NFKC').toLocaleLowerCase();
+  const chunks = normalized.split(/[\p{P}\p{S}\s]+/gu).filter(Boolean);
+  const keywords = new Set<string>();
+  for (const chunk of chunks) {
+    keywords.add(chunk);
+    const chars = Array.from(chunk);
+    for (let index = 0; index < chars.length - 1; index += 1) keywords.add(chars.slice(index, index + 2).join(''));
+  }
+  return [...keywords].slice(0, 12);
+}
+
 function lcsLength(left: string[], right: string[]): number {
   const previous = new Array(right.length + 1).fill(0) as number[];
   for (const value of left) {
@@ -536,6 +585,7 @@ function splitSubtitleText(text: string, maxChars = 16): string[] {
 }
 
 export function buildAlignedSubtitleCues(script: ScriptSnapshot, narration: NarrationArtifact): SubtitleCue[] {
+  const degraded = new Set(narration.alignmentDegradedSegmentIds || []);
   const cues: SubtitleCue[] = [];
   for (let index = 0; index < script.segments.length; index += 1) {
     const segment = script.segments[index];
@@ -552,7 +602,7 @@ export function buildAlignedSubtitleCues(script: ScriptSnapshot, narration: Narr
       const endUs = partIndex === parts.length - 1
         ? timing.endUs
         : Math.round(cursor + (timing.endUs - timing.startUs) * weights[partIndex] / totalWeight);
-      cues.push({ id: uuidv4(), segmentId, text, startUs: cursor, endUs, textSource: 'script', timingSource: 'aligned' });
+      cues.push({ id: uuidv4(), segmentId, text, startUs: cursor, endUs, textSource: 'script', timingSource: degraded.has(segmentId) ? 'proportional' : 'aligned' });
       cursor = endUs;
     });
   }
@@ -626,6 +676,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       bgm: parseJson(String(row.bgmJson), { trackId: null, gainDb: -16, loop: true, fadeOutSec: 0.8 }),
       cover: normalizeCover(parseJson(String(row.coverJson), {})),
       issues: parseJson<FinalEditIssue[]>(String(row.issuesJson), []),
+      matchDiagnostics: parseJson<FinalEditVariantView['matchDiagnostics']>(String(row.matchDiagnosticsJson || '{}'), {
+        semanticFallback: false, backoffSentences: [], snappedCuts: [], gaps: [], issues: [],
+      }),
       maxOverlap: Number(parseJson<{ maxScore?: number }>(String(row.overlapJson), {}).maxScore || 0),
       revision: Number(row.revision),
       lastRenderedRevision: row.lastRenderedRevision == null ? null : Number(row.lastRenderedRevision),
@@ -786,19 +839,29 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         const analysisProviderId = input.analysisProviderId || '';
         let analysisModel = '';
         try { analysisModel = String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(analysisProviderId) as { model?: string } | undefined)?.model || ''); } catch { /* isolated domain tests omit provider tables */ }
-        const cached = db.prepare(`SELECT fileFingerprint, providerId, model, status, mediaJson, generatedJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(row.videoJobId) as { fileFingerprint: string; providerId: string; model: string; status: string; mediaJson: string; generatedJson: string } | undefined;
+        const cached = db.prepare(`SELECT fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(row.videoJobId) as { fileFingerprint: string; providerId: string; model: string; analyzerVersion: string; status: string; mediaJson: string; generatedJson: string } | undefined;
+        let analysisSucceeded = false;
         try {
-          analysis = cached?.fileFingerprint === fingerprint && cached.providerId === analysisProviderId && cached.model === analysisModel && cached.status === 'succeeded'
-            ? parseJson<VideoAnalysisResult>(cached.generatedJson, {} as VideoAnalysisResult)
+          const cachedGenerated = cached ? parseJson<unknown>(cached.generatedJson, null) : null;
+          const cacheHit = cached?.fileFingerprint === fingerprint
+            && cached.providerId === analysisProviderId
+            && cached.model === analysisModel
+            && cached.analyzerVersion === FINAL_EDIT_ANALYZER_VERSION
+            && cached.status === 'succeeded'
+            && isVideoAnalysisResult(cachedGenerated);
+          analysis = cacheHit
+            ? cachedGenerated
             : await deps.analyzeVideo({ filePath: row.localVideoPath, videoJobId: row.videoJobId, shotSetId: row.shotSetId, providerId: analysisProviderId });
+          if (!isVideoAnalysisResult(analysis)) throw new Error('视频分析结果结构无效');
+          analysisSucceeded = true;
           db.prepare(`
             INSERT INTO final_edit_asset_analysis
               (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, updatedAt, analyzedAt)
-            VALUES (?, ?, ?, ?, ?, '1', 'succeeded', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, ?)
             ON CONFLICT(videoJobId) DO UPDATE SET shotSetId=excluded.shotSetId, fileFingerprint=excluded.fileFingerprint,
-              providerId=excluded.providerId, model=excluded.model, status='succeeded', mediaJson=excluded.mediaJson, generatedJson=excluded.generatedJson,
+              providerId=excluded.providerId, model=excluded.model, analyzerVersion=excluded.analyzerVersion, status='succeeded', mediaJson=excluded.mediaJson, generatedJson=excluded.generatedJson,
               errorCode=NULL, errorMessage=NULL, analyzedAt=excluded.analyzedAt, updatedAt=excluded.updatedAt
-          `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, JSON.stringify(media), JSON.stringify(analysis), now(), now());
+          `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, FINAL_EDIT_ANALYZER_VERSION, JSON.stringify(media), JSON.stringify(analysis), now(), now());
           for (const frameUs of (analysis.coverFrameTimesUs || []).slice(0, 3)) {
             const lastSafeFrameUs = Math.max(0, media.durationUs - Math.max(50_000, Math.ceil(1_000_000 / Math.max(1, media.fps))));
             const safeFrameUs = Math.max(0, Math.min(lastSafeFrameUs, frameUs));
@@ -813,9 +876,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           db.prepare(`
             INSERT INTO final_edit_asset_analysis
               (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, errorCode, errorMessage, updatedAt)
-            VALUES (?, ?, ?, ?, ?, '1', 'failed', ?, '{}', 'analysis_failed', ?, ?)
-            ON CONFLICT(videoJobId) DO UPDATE SET providerId=excluded.providerId, model=excluded.model, status='failed', mediaJson=excluded.mediaJson, errorCode='analysis_failed', errorMessage=excluded.errorMessage, updatedAt=excluded.updatedAt
-          `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, JSON.stringify(media), error instanceof Error ? error.message : String(error), now());
+            VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, '{}', 'analysis_failed', ?, ?)
+            ON CONFLICT(videoJobId) DO UPDATE SET fileFingerprint=excluded.fileFingerprint, providerId=excluded.providerId, model=excluded.model, analyzerVersion=excluded.analyzerVersion, status='failed', mediaJson=excluded.mediaJson, generatedJson='{}', errorCode='analysis_failed', errorMessage=excluded.errorMessage, updatedAt=excluded.updatedAt
+          `).run(row.videoJobId, row.shotSetId, fingerprint, analysisProviderId, analysisModel, FINAL_EDIT_ANALYZER_VERSION, JSON.stringify(media), error instanceof Error ? error.message : String(error), now());
         }
         const analysisState = db.prepare(`SELECT manualOverrideJson, autoUseDisabled FROM final_edit_asset_analysis WHERE videoJobId=?`).get(row.videoJobId) as { manualOverrideJson: string; autoUseDisabled: number } | undefined;
         const manual = parseJson<Partial<VideoAnalysisResult>>(analysisState?.manualOverrideJson || '{}', {});
@@ -827,6 +890,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           analysis: { ...analysis, ...manual },
           autoUseDisabled: Boolean(analysisState?.autoUseDisabled),
           existingUsageCount: Number(usage?.count || 0),
+          analysisSucceeded,
         });
         updateJob('analyzing', prepared.length / Math.max(1, rows.length) * 0.3);
       }
@@ -848,12 +912,17 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               return { segmentId: segment.segmentId, startUs: Math.min(...matching.map((cue) => cue.startUs)), endUs: Math.max(...matching.map((cue) => cue.endUs)) };
             }),
           }
-        : await deps.synthesize({ scriptDraftId: String(input.scriptDraftId || ''), segments: normalizedSegments, providerId: input.providerId, voice: input.voice, speed: input.speed, narrationHash });
-      validateNarrationAlignment(narration, script.segments.map((segment) => segment.narration).join(''));
+        : await deps.synthesize({
+            scriptDraftId: String(input.scriptDraftId || ''), segments: normalizedSegments,
+            providerId: input.providerId, voice: input.voice, speed: input.speed, narrationHash,
+            onSegmentComplete: (completed, total) => updateJob('synthesizing', 0.3 + completed / Math.max(1, total) * 0.25),
+          });
+      if (!(narration.alignmentDegradedSegmentIds || []).length) {
+        validateNarrationAlignment(narration, script.segments.map((segment) => segment.narration).join(''));
+      }
 
       updateJob('synthesizing', 0.55);
       updateJob('matching', 0.55);
-      const bodyFrames = Math.ceil(narration.durationUs * FINAL_EDIT_FPS / 1_000_000);
       const cues = reusingNarration ? existingCues : buildAlignedSubtitleCues(script, narration);
       const covers = db.prepare(`
         SELECT s.latestGeneratedImageId AS imageAssetId, ia.path
@@ -864,17 +933,131 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const bgmTracks = await scanFinalEditBgm(db, storageRoot);
       const settings = db.prepare(`SELECT autoUseLimit FROM final_edit_project_settings WHERE projectId=?`).get(input.projectId) as { autoUseLimit: number } | undefined;
       const autoUseLimit = Math.max(1, Math.min(10, Number(settings?.autoUseLimit || 2)));
+      const matchingAssets = prepared.filter((asset) => asset.analysisSucceeded !== false && !asset.autoUseDisabled);
+      const matcherAssets = matchingAssets.map((asset) => ({
+        assetKey: asset.assetKey!,
+        ...(asset.shotId ? { shotId: asset.shotId } : {}),
+        durationUs: asset.durationUs,
+        source: asset.source || 'module4' as const,
+        scenes: (asset.analysis.scenes?.length ? asset.analysis.scenes : asset.analysis.usableRanges.map((range) => ({
+          ...range,
+          description: asset.analysis.summary,
+          labels: [...asset.analysis.semanticTags, ...asset.analysis.sellingPoints],
+          qualityScore: range.qualityScore,
+        }))).map((scene) => ({
+          startUs: scene.startUs,
+          endUs: scene.endUs,
+          labels: [...new Set([...(scene.labels || []), ...asset.analysis.semanticTags])],
+          quality: scene.qualityScore,
+        })),
+      }));
+      const semanticSentences: SemanticSentence[] = script.segments.map((segment, index) => ({
+        id: segment.id || `segment-${index + 1}`,
+        text: segment.narration,
+        keywords: extractMatchKeywords(segment.narration),
+      }));
+      const semanticScenes: SemanticScene[] = matchingAssets.flatMap((asset) => {
+        const sourceScenes = asset.analysis.scenes?.length ? asset.analysis.scenes : asset.analysis.usableRanges.map((range) => ({
+          ...range, description: asset.analysis.summary, labels: asset.analysis.semanticTags, qualityScore: range.qualityScore,
+        }));
+        return sourceScenes.map((scene, sceneIndex) => ({
+          assetKey: asset.assetKey!, assetFingerprint: asset.fingerprint, sceneIndex,
+          startUs: scene.startUs, endUs: scene.endUs,
+          labels: [...new Set([...(scene.labels || []), ...asset.analysis.semanticTags, ...asset.analysis.sellingPoints])],
+          description: scene.description || asset.analysis.summary,
+          quality: scene.qualityScore,
+        }));
+      });
+      const semanticInput = {
+        sentences: semanticSentences,
+        scenes: semanticScenes,
+        providerId: input.analysisProviderId || '',
+        model: (() => {
+          try { return String((db.prepare(`SELECT COALESCE(NULLIF(model, ''), defaultModel, '') AS model FROM script_providers WHERE id=?`).get(input.analysisProviderId || '') as { model?: string } | undefined)?.model || ''); }
+          catch { return ''; }
+        })(),
+        promptVersion: SEMANTIC_MATRIX_PROMPT_VERSION,
+      };
+      const semanticCacheKey = createSemanticMatrixCacheKey(semanticInput);
+      const scriptHash = sha256(JSON.stringify(semanticSentences));
+      const scenesFingerprint = sha256(JSON.stringify(semanticScenes));
+      const cachedMatrix = db.prepare(`SELECT semanticScoresJson, hookScoresJson, semanticFallback FROM final_edit_semantic_matrix_cache WHERE cacheKey=?`).get(semanticCacheKey) as { semanticScoresJson: string; hookScoresJson: string; semanticFallback: number } | undefined;
+      let semanticResult = cachedMatrix
+        ? normalizeSemanticMatrix({ score_matrix: parseJson(cachedMatrix.semanticScoresJson, []), hook_scores: parseJson(cachedMatrix.hookScoresJson, []) }, semanticSentences.length, semanticScenes.length)
+        : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
+      const semanticCacheHit = Boolean(cachedMatrix && !cachedMatrix.semanticFallback && !semanticResult.semanticFallback);
+      if (!semanticCacheHit && semanticSentences.length && semanticScenes.length && deps.scoreSemanticMatrix) {
+        try {
+          const prompt = buildSemanticMatrixPrompt(semanticInput);
+          semanticResult = normalizeSemanticMatrix(await deps.scoreSemanticMatrix({
+            providerId: semanticInput.providerId,
+            ...prompt,
+            temperature: 0.2,
+            maxTokens: 1500,
+          }), semanticSentences.length, semanticScenes.length);
+          if (!semanticResult.semanticFallback) {
+            db.prepare(`
+              INSERT INTO final_edit_semantic_matrix_cache
+                (cacheKey, scriptHash, scenesFingerprint, providerId, model, promptVersion, semanticScoresJson, hookScoresJson, semanticFallback, createdAt, updatedAt)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+              ON CONFLICT(cacheKey) DO UPDATE SET
+                scriptHash=excluded.scriptHash, scenesFingerprint=excluded.scenesFingerprint,
+                providerId=excluded.providerId, model=excluded.model, promptVersion=excluded.promptVersion,
+                semanticScoresJson=excluded.semanticScoresJson, hookScoresJson=excluded.hookScoresJson,
+                semanticFallback=0, updatedAt=excluded.updatedAt
+            `).run(
+              semanticCacheKey, scriptHash, scenesFingerprint, semanticInput.providerId, semanticInput.model, semanticInput.promptVersion,
+              JSON.stringify(semanticResult.semanticScores), JSON.stringify(semanticResult.hookScores), now(), now(),
+            );
+          }
+        } catch {
+          semanticResult = normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
+        }
+      }
+      const beatResult = deps.detectBeatPoints
+        ? await deps.detectBeatPoints({ audioPath: resolveStoragePath(storageRoot, narration.relativePath), durationUs: narration.durationUs })
+        : { pointsUs: [], fallback: true };
+      const matcherSentences = script.segments.map((segment, index) => {
+        const segmentId = segment.id || `segment-${index + 1}`;
+        const timing = narration.segmentTimings.find((item) => item.segmentId === segmentId);
+        if (!timing) throw new FinalEditError('alignment_failed', `缺少 ${segmentId} 的真实 TTS 时长`);
+        return { id: segmentId, text: segment.narration, startUs: timing.startUs, endUs: timing.endUs, keywords: semanticSentences[index].keywords };
+      });
+      const matchResult = matchAudioFirst({
+        sentences: matcherSentences,
+        assets: matcherAssets,
+        semanticScores: semanticResult.semanticScores,
+        hookScores: semanticResult.hookScores,
+        beatPoints: beatResult.fallback ? [] : beatResult.pointsUs,
+        manualLocks: [],
+        maxReuse: autoUseLimit,
+        semanticFallback: semanticResult.semanticFallback,
+      });
+      const converted = audioFirstPlanToVideoTimeline({
+        plan: matchResult.plan,
+        assetsByKey: new Map(matchingAssets.map((asset) => [asset.assetKey!, { videoJobId: asset.videoJobId, fingerprint: asset.fingerprint, durationUs: asset.durationUs }])),
+        narrationDurationUs: narration.durationUs,
+      });
       const variants: FinalEditVariantView[] = [];
       const nextIndex = Number((db.prepare(`SELECT COALESCE(MAX(indexNum), 0) AS value FROM final_edit_variants WHERE groupId=?`).get(groupId) as { value: number }).value) + 1;
       for (let index = 0; index < input.count; index += 1) {
         const variantIndex = nextIndex + index;
-        const timeline = planTimeline(prepared, bodyFrames, variantIndex - 1, script.segments.map((segment, i) => ({ ...segment, id: segment.id || `segment-${i + 1}` })), autoUseLimit);
+        const timeline = converted.timeline;
         const cover = covers[variantIndex - 1]
           ? { coverKey: `image:${covers[variantIndex - 1].imageAssetId}`, kind: 'storyboard_image' as const, sourceUrl: `/api/final-edit-groups/${groupId}/cover-candidates/${encodeURIComponent(`image:${covers[variantIndex - 1].imageAssetId}`)}`, framing: { ...DEFAULT_COVER_FRAMING } }
           : { coverKey: null, kind: null, sourceUrl: null, framing: { ...DEFAULT_COVER_FRAMING } };
-        const issues = issueList(timeline, cover.coverKey, true);
+        const issues = [
+          ...issueList(timeline, cover.coverKey, true),
+          ...converted.issues,
+          ...prepared.filter((asset) => asset.analysisSucceeded === false).map((asset) => ({ code: 'asset_analysis_failed', severity: 'warning' as const, message: `素材 ${asset.filename || asset.videoJobId} 分析失败，已从自动匹配池排除`, targetId: asset.assetKey })),
+          ...(narration.alignmentDegradedSegmentIds || []).map((segmentId) => ({ code: 'alignment_degraded', severity: 'warning' as const, message: `句段 ${segmentId} 的字幕对齐已按真实音频时长降级`, targetId: segmentId })),
+          ...(semanticResult.semanticFallback ? [{ code: 'semantic_fallback', severity: 'warning' as const, message: '语义评分不可用，本次已使用确定性关键词降级匹配' }] : []),
+          ...(beatResult.fallback ? [{ code: 'beat_detection_fallback', severity: 'warning' as const, message: '未检测到可靠口播气口，本次未吸附切点' }] : []),
+          ...matchResult.diagnostics.backoffSentences.map((segmentId) => ({ code: 'match_backoff', severity: 'warning' as const, message: `句段 ${segmentId} 使用了语义地板外候选`, targetId: segmentId })),
+          ...matchResult.diagnostics.gaps.map((gap) => ({ code: 'material_gap', severity: 'blocking' as const, message: `句段 ${gap.sentenceId} 素材不足，保留时间线缺口`, targetId: gap.sentenceId })),
+        ];
         const variantId = `prepare-${sha256(`${jobId}:${variantIndex}`).slice(0, 32)}`;
-        variants.push({ id: variantId, indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeOutSec: 0.8 }, cover, issues, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null, previewUrl: null });
+        variants.push({ id: variantId, indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeOutSec: 0.8 }, cover, issues, matchDiagnostics: matchResult.diagnostics, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null, previewUrl: null });
         updateJob('matching', 0.55 + ((index + 1) / input.count) * 0.25);
       }
       updateJob('previewing', 0.8);
@@ -882,7 +1065,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const previewPaths = new Map<string, string>();
       for (let index = 0; index < variants.length; index += 1) {
         const variant = variants[index];
-        if (deps.warmPreview) {
+        if (deps.warmPreview && variant.timeline.clips.length > 0) {
           const usedVideoJobIds = new Set(variant.timeline.clips.map((clip) => clip.videoJobId));
           const previewCacheKey = preparePreviewCacheKey({
             timeline: variant.timeline,
@@ -892,10 +1075,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             narration: { hash: narrationHash, relativePath: narration.relativePath, durationUs: narration.durationUs },
             outputPreset: variant.outputPreset,
           });
-          const relativePath = path.join('final-edits', 'previews', 'prepare', jobId, `${previewCacheKey}.mp4`);
+          const relativePath = path.join('final-edits', 'previews', 'prepare', `${previewCacheKey}.mp4`);
           const warmed = await deps.warmPreview({
             jobId, groupId, variant,
-            sources: prepared.map((asset) => ({ videoJobId: asset.videoJobId, absolutePath: asset.localVideoPath })),
+            sources: prepared.filter((asset) => usedVideoJobIds.has(asset.videoJobId)).map((asset) => ({ videoJobId: asset.videoJobId, absolutePath: asset.localVideoPath })),
             narrationAbsolutePath: resolveStoragePath(storageRoot, narration.relativePath),
             relativePath,
           });
@@ -907,8 +1090,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, JSON.stringify(narration.wordTimings), JSON.stringify(cues), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
         for (let index = 0; index < variants.length; index += 1) {
           const variant = variants[index];
-          db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), previewPaths.get(variant.id) || null, now(), now());
-          db.prepare(`INSERT OR IGNORE INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('variant', ?, 0, ?, '{"type":"initial"}', ?)`).run(variant.id, JSON.stringify({ timeline: variant.timeline, bgm: variant.bgm, cover: variant.cover, issues: variant.issues }), now());
+          db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, matchDiagnosticsJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), JSON.stringify(variant.matchDiagnostics || {}), previewPaths.get(variant.id) || null, now(), now());
+          db.prepare(`INSERT OR IGNORE INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('variant', ?, 0, ?, '{"type":"initial"}', ?)`).run(variant.id, JSON.stringify({ timeline: variant.timeline, bgm: variant.bgm, cover: variant.cover, issues: variant.issues, matchDiagnostics: variant.matchDiagnostics }), now());
           const uniqueFingerprints = new Set(variant.timeline.clips.map((clip) => clip.sourceFingerprint));
           for (const fingerprint of uniqueFingerprints) db.prepare(`INSERT OR IGNORE INTO final_edit_usage (scopeKind, scopeId, projectId, shotSetId, groupId, variantId, assetKind, assetKey, createdAt) VALUES ('draft', ?, ?, ?, ?, ?, 'video', ?, ?)`).run(`${variant.id}:0`, input.projectId, script.shotSetId, groupId, variant.id, fingerprint, now());
           for (const asset of prepared) if (uniqueFingerprints.has(asset.fingerprint)) asset.existingUsageCount += 1;

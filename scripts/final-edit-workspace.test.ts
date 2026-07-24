@@ -71,16 +71,28 @@ db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnap
 
 const synthesizedNarrations: string[][] = [];
 const warmedPreviewPaths: string[] = [];
+let semanticScoreCalls = 0;
+const analysisFailures = new Set<string>();
+let degradeAlignment = false;
+let analyzeVideoCalls = 0;
 const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
   runJobsInline: true,
   probeVideo: async () => ({ durationUs: 12_000_000, width: 720, height: 960, fps: 24 }),
-  analyzeVideo: async ({ videoJobId }) => ({
-    summary: videoJobId === 'v1' ? '沙发全景' : '面料细节',
-    sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 0, endUs: 12_000_000, qualityScore: 1 }],
-    qualityIssues: [], coverFrameTimesUs: [1_000_000],
-  }),
+  analyzeVideo: async ({ videoJobId }) => {
+    analyzeVideoCalls += 1;
+    if (analysisFailures.has(videoJobId)) throw new Error('模拟素材分析失败');
+    return {
+      summary: videoJobId === 'v1' ? '沙发全景' : '面料细节',
+      sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 0, endUs: 12_000_000, qualityScore: 1 }],
+      qualityIssues: [], coverFrameTimesUs: [1_000_000],
+    };
+  },
+  scoreSemanticMatrix: async () => {
+    semanticScoreCalls += 1;
+    return { score_matrix: [[0.95, 0.4], [0.4, 0.95]], hook_scores: [0.8, 0.2] };
+  },
   materializeCoverFrame: async ({ cacheKey }) => {
     if (cacheKey.includes('v2')) throw new Error('模拟末帧封面抽取失败');
   },
@@ -107,6 +119,7 @@ const workspace = createFinalEditWorkspace({
       startUs: Math.round(index * 18_500_000 / segments.length),
       endUs: Math.round((index + 1) * 18_500_000 / segments.length),
     })),
+    alignmentDegradedSegmentIds: degradeAlignment ? segments.map((segment) => segment.segmentId) : [],
   }); },
 });
 
@@ -124,6 +137,7 @@ const job = await workspace.start({
 });
 assert.equal(job.status, 'succeeded');
 assert.equal((db.prepare(`SELECT estimatedCost FROM final_edit_jobs WHERE id=?`).get(job.id) as { estimatedCost: number }).estimatedCost, 0.2);
+assert.equal(semanticScoreCalls, 1, '一次 prepare 只能生成一次句段 × 场景语义矩阵');
 
 const group = workspace.load(job.groupId);
 assert.equal(group.status, 'ready');
@@ -137,6 +151,51 @@ assert.ok(group.coverCandidates.some((candidate) => candidate.coverKey.startsWit
 assert.ok(group.variants.every((variant) => variant.timeline.clips.every((clip) => clip.videoJobId !== 'foreign')));
 assert.equal(warmedPreviewPaths.length, 2, 'previewing 必须调用真实预览预热 seam');
 assert.ok(group.variants.every((variant) => variant.previewUrl?.includes('/api/videos/final-edits/previews/prepare/')));
+const repeatJob = await workspace.start({
+  projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4',
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+});
+const repeatGroup = workspace.load(repeatJob.groupId);
+assert.equal(semanticScoreCalls, 1, '素材与脚本不变时必须命中语义矩阵缓存，零 LLM 调用');
+assert.deepEqual(repeatGroup.variants[0].timeline, group.variants[0].timeline, '相同输入必须得到完全相同的时间线和 clip ID');
+db.prepare(`UPDATE final_edit_semantic_matrix_cache SET semanticScoresJson='[]'`).run();
+await workspace.start({
+  projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4',
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+});
+assert.equal(semanticScoreCalls, 2, '损坏的矩阵缓存必须视为 miss 并重新评分');
+analysisFailures.add('v1');
+db.prepare(`UPDATE final_edit_asset_analysis SET analyzerVersion='stale' WHERE videoJobId='v1'`).run();
+const previewsBeforeDegradedPrepare = warmedPreviewPaths.length;
+const degradedJob = await workspace.start({
+  projectId: 'p1', scriptDraftId: 'script-1', selectedMaterialKeys: ['module4:v1'], count: 1, outputPreset: '3x4',
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+});
+const degradedGroup = workspace.load(degradedJob.groupId);
+assert.equal(degradedJob.status, 'succeeded', '素材分析失败仍应保留可修复的 partial 草稿');
+assert.equal(degradedGroup.status, 'partial');
+assert.ok(degradedGroup.variants[0].issues.some((issue) => issue.code === 'asset_analysis_failed'));
+assert.ok(degradedGroup.variants[0].issues.some((issue) => issue.code === 'material_gap' && issue.severity === 'blocking'));
+assert.equal(warmedPreviewPaths.length, previewsBeforeDegradedPrepare, '零 clip 的 partial 草稿不得调用预览渲染器');
+assert.equal(degradedGroup.variants[0].previewUrl, null);
+analysisFailures.clear();
+db.prepare(`UPDATE final_edit_asset_analysis SET analyzerVersion='stale' WHERE videoJobId='v1'`).run();
+degradeAlignment = true;
+const alignmentDegradedJob = await workspace.start({
+  projectId: 'p1', scriptDraftId: 'script-1', selectedMaterialKeys: ['module4:v1'], count: 1, outputPreset: '3x4',
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+});
+const alignmentDegradedGroup = workspace.load(alignmentDegradedJob.groupId);
+assert.ok(alignmentDegradedGroup.variants[0].issues.some((issue) => issue.code === 'alignment_degraded' && issue.severity === 'warning'));
+assert.ok(alignmentDegradedGroup.subtitleCues.every((cue) => cue.timingSource === 'proportional'));
+degradeAlignment = false;
+db.prepare(`UPDATE final_edit_asset_analysis SET generatedJson='{}', status='succeeded', analyzerVersion='2' WHERE videoJobId='v1'`).run();
+const analyzeCallsBeforeCorruptCache = analyzeVideoCalls;
+await workspace.start({
+  projectId: 'p1', scriptDraftId: 'script-1', selectedMaterialKeys: ['module4:v1'], count: 1, outputPreset: '3x4',
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+});
+assert.equal(analyzeVideoCalls, analyzeCallsBeforeCorruptCache + 1, '损坏的视频分析缓存必须重新分析，不能作为成功结果继续');
 assert.deepEqual(MIXCUT_PREPARE_PHASE_RANGES, {
   analyzing: [0, 0.3], synthesizing: [0.3, 0.55], matching: [0.55, 0.8], previewing: [0.8, 1],
 });

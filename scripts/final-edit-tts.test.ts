@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isReusableNarrationChunk, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } from '../lib/final-edit/adapters/vapi-qwen-tts.ts';
+import { isReusableNarrationChunk, proportionalWordTimings, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } from '../lib/final-edit/adapters/vapi-qwen-tts.ts';
 import { assertTtsSpeed } from '../lib/final-edit/tts-speed.ts';
 
 assert.equal(VAPI_VOICES.length, 17);
@@ -17,6 +17,10 @@ assert.doesNotThrow(() => assertTtsSpeed(0.5));
 assert.doesNotThrow(() => assertTtsSpeed(2));
 assert.throws(() => assertTtsSpeed(0.55), /0.1/);
 assert.throws(() => assertTtsSpeed(2.1), /0.5x～2.0x/);
+assert.deepEqual(proportionalWordTimings('安静', 1_000_000), [
+  { text: '安', startUs: 0, endUs: 500_000 },
+  { text: '静', startUs: 500_000, endUs: 1_000_000 },
+]);
 
 await assert.rejects(
   synthesizeVapiNarration({

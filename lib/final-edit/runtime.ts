@@ -2,12 +2,13 @@ import path from 'node:path';
 import { getDb } from '../db';
 import { dataRoot } from '../data-root';
 import { probeVideoMedia } from '../ffmpeg';
-import { estimateVisionAnalysisCost, getAvailableProviders } from '../script-providers';
+import { completeJson, estimateVisionAnalysisCost, getAvailableProviders } from '../script-providers';
 import { createFinalEditWorkspace, type FinalEditWorkspaceRuntime } from './workspace';
 import { analyzeVideoWithVision } from './adapters/video-analysis';
 import { createOpenAiAlignmentAdapter, type AlignmentAdapter } from './adapters/alignment';
 import { getFinalEditTtsAdapter, listFinalEditTtsAdapters } from './adapters/tts-registry';
 import { warmPreparePreview } from './prepare-preview';
+import { detectBeatPoints } from './beat-detect';
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
@@ -47,13 +48,21 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
       if (!provider) throw new Error('没有已启用并支持图片理解的视觉分析供应商');
       return analyzeVideoWithVision({ filePath, videoJobId, providerId: provider.id, cacheDir: path.join(storageRoot, 'final-edits', 'analysis', videoJobId) });
     },
+    scoreSemanticMatrix: (input) => completeJson({
+      providerId: input.providerId,
+      systemPrompt: input.systemPrompt,
+      userPrompt: input.userPrompt,
+      temperature: input.temperature,
+      maxTokens: input.maxTokens,
+    }),
+    detectBeatPoints,
     validateTtsProvider: (providerId) => {
       const provider = db.prepare(`SELECT apiKey, keyEnv FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { apiKey: string; keyEnv: string } | undefined;
       return Boolean(resolveProviderApiKey(provider));
     },
     validateAnalysisProvider: (providerId) => getAvailableProviders().some((provider) => provider.id === providerId && provider.configured && provider.supportsVision),
     estimateAnalysisCost: ({ providerId, requestCount }) => estimateVisionAnalysisCost(providerId, requestCount),
-    synthesize: async ({ segments, providerId, voice, speed, narrationHash }) => {
+    synthesize: async ({ segments, providerId, voice, speed, narrationHash, onSegmentComplete }) => {
       const row = db.prepare(`SELECT * FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { baseUrl: string; apiKey: string; keyEnv: string; model: string } | undefined;
       if (!row) throw new Error('口播配音供应商未启用');
       const apiKey = resolveProviderApiKey(row);
@@ -66,6 +75,7 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
         outputDir: path.join(storageRoot, 'final-edits', 'narration', narrationHash),
         relativeOutputPath,
         alignment,
+        onSegmentComplete,
       });
     },
     warmPreview: ({ variant, sources, narrationAbsolutePath, relativePath }) => warmPreparePreview({ storageRoot, variant, sources, narrationAbsolutePath, relativePath }),

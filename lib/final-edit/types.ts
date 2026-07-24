@@ -37,7 +37,7 @@ export interface SubtitleCue {
   startUs: number;
   endUs: number;
   textSource: 'script' | 'manual';
-  timingSource: 'aligned' | 'manual';
+  timingSource: 'aligned' | 'proportional' | 'manual';
 }
 
 export interface TextStyle {
@@ -111,6 +111,13 @@ export interface FinalEditVariantView {
     framing: { scale: number; offsetX: number; offsetY: number };
   };
   issues: FinalEditIssue[];
+  matchDiagnostics?: {
+    semanticFallback: boolean;
+    backoffSentences: string[];
+    snappedCuts: unknown[];
+    gaps: unknown[];
+    issues: unknown[];
+  };
   maxOverlap: number;
   revision: number;
   lastRenderedRevision: number | null;

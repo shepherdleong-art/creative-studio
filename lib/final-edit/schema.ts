@@ -145,6 +145,27 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
       ALTER TABLE final_edit_variants ADD COLUMN previewRelativePath TEXT;
     `,
   },
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE IF NOT EXISTS final_edit_semantic_matrix_cache (
+        cacheKey TEXT PRIMARY KEY,
+        scriptHash TEXT NOT NULL,
+        scenesFingerprint TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        promptVersion TEXT NOT NULL,
+        semanticScoresJson TEXT NOT NULL,
+        hookScoresJson TEXT NOT NULL,
+        semanticFallback INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_final_edit_semantic_matrix_lookup
+        ON final_edit_semantic_matrix_cache(scriptHash, scenesFingerprint, providerId, model, promptVersion);
+      ALTER TABLE final_edit_variants ADD COLUMN matchDiagnosticsJson TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

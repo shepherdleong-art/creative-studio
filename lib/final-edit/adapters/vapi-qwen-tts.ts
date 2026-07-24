@@ -49,6 +49,16 @@ interface SynthesisInput {
   outputDir: string;
   relativeOutputPath: string;
   alignment: AlignmentAdapter;
+  onSegmentComplete?: (completed: number, total: number) => void;
+}
+
+export function proportionalWordTimings(text: string, durationUs: number): AlignmentWordTiming[] {
+  const units = Array.from(text).filter((value) => value.trim());
+  return units.map((value, index) => ({
+    text: value,
+    startUs: Math.round(index * durationUs / Math.max(1, units.length)),
+    endUs: Math.round((index + 1) * durationUs / Math.max(1, units.length)),
+  })).filter((timing) => timing.endUs > timing.startUs);
 }
 
 function splitInput(text: string): string[] {
@@ -110,13 +120,13 @@ async function concatWavs(inputs: string[], output: string): Promise<void> {
 }
 
 export async function synthesizeVapiNarration(input: SynthesisInput) {
-  if (!input.alignment.configured) throw new Error('生产强制对齐尚未配置；为避免产生无效 TTS 费用，本次未调用供应商');
   if (!VAPI_VOICES.some((voice) => voice.id === input.voice)) throw new Error('不支持的 V-API 音色');
   assertTtsSpeed(input.speed);
   fs.mkdirSync(input.outputDir, { recursive: true });
   const segmentFiles: string[] = [];
   const segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }> = [];
   const wordTimings: AlignmentWordTiming[] = [];
+  const alignmentDegradedSegmentIds: string[] = [];
   let cursorUs = 0;
 
   for (let segmentIndex = 0; segmentIndex < input.segments.length; segmentIndex += 1) {
@@ -145,24 +155,32 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
     const segmentPath = path.join(input.outputDir, `segment-${segmentIndex}.wav`);
     await concatWavs(chunkFiles, segmentPath);
     const durationUs = Math.round(await probeDurationSec(segmentPath) * 1_000_000);
-    const aligned = await input.alignment.align({ audioPath: segmentPath, text: segment.narration });
-    let lastEndUs = 0;
-    for (const word of aligned) {
-      if (word.startUs < lastEndUs || word.endUs <= word.startUs || word.endUs > durationUs) throw new Error(`强制对齐时间越界或倒退：${segment.segmentId}`);
-      lastEndUs = word.endUs;
+    let aligned: AlignmentWordTiming[];
+    try {
+      if (!input.alignment.configured) throw new Error('alignment unavailable');
+      aligned = await input.alignment.align({ audioPath: segmentPath, text: segment.narration });
+      let lastEndUs = 0;
+      for (const word of aligned) {
+        if (word.startUs < lastEndUs || word.endUs <= word.startUs || word.endUs > durationUs) throw new Error(`强制对齐时间越界或倒退：${segment.segmentId}`);
+        lastEndUs = word.endUs;
+      }
+      const countContent = (value: string) => Array.from(value.replace(/[\p{P}\p{S}\s]/gu, '')).length;
+      const coverage = countContent(aligned.map((word) => word.text).join('')) / Math.max(1, countContent(segment.narration));
+      if (coverage < 0.95) throw new Error(`强制对齐覆盖率不足：${segment.segmentId} 仅 ${Math.round(coverage * 100)}%`);
+    } catch {
+      aligned = proportionalWordTimings(segment.narration, durationUs);
+      alignmentDegradedSegmentIds.push(segment.segmentId);
     }
-    const countContent = (value: string) => Array.from(value.replace(/[\p{P}\p{S}\s]/gu, '')).length;
-    const coverage = countContent(aligned.map((word) => word.text).join('')) / Math.max(1, countContent(segment.narration));
-    if (coverage < 0.95) throw new Error(`强制对齐覆盖率不足：${segment.segmentId} 仅 ${Math.round(coverage * 100)}%`);
     wordTimings.push(...aligned.map((word) => ({ ...word, startUs: word.startUs + cursorUs, endUs: word.endUs + cursorUs })));
     segmentTimings.push({ segmentId: segment.segmentId, startUs: cursorUs, endUs: cursorUs + durationUs });
     cursorUs += durationUs;
     segmentFiles.push(segmentPath);
+    input.onSegmentComplete?.(segmentIndex + 1, input.segments.length);
   }
 
   const outputPath = path.join(input.outputDir, 'narration.wav');
   await concatWavs(segmentFiles, outputPath);
-  return { relativePath: input.relativeOutputPath, absolutePath: outputPath, durationUs: cursorUs, segmentTimings, wordTimings };
+  return { relativePath: input.relativeOutputPath, absolutePath: outputPath, durationUs: cursorUs, segmentTimings, wordTimings, alignmentDegradedSegmentIds };
 }
 
 export async function synthesizeVapiPreview(input: { provider: VapiProviderConfig; voice: string; speed: number; text: string; outputPath: string }): Promise<void> {
