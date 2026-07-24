@@ -188,9 +188,8 @@ export async function buildMixcutContext(
   // secondary index on shotSetId (lib/db.ts), so each iteration was a full
   // table scan of `shots` across every project, repeated once per shot set
   // in this project. Replaced with two GROUP BY queries, each run once for
-  // the whole project, plus a new idx_shots_shotset index (see
-  // lib/final-edit/schema.ts version 4) so the shots query itself is no
-  // longer a full scan either.
+  // the whole project, plus idx_shots_shotset in the append-only core
+  // migrations so the shots query itself is no longer a full scan either.
   const shotSetIds = shotSetRows.map((row) => row.id);
   const validShotSetIds = new Set(shotSetIds);
 

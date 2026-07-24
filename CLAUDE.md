@@ -29,7 +29,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
 
 - **`app/api/`** — REST API route groups for projects, jobs, images, shots, scripts, video, shutdown, and the versioned final-edit/mixcut workflow (context, scoped Module 4 assets, external assets, groups, variants, jobs, BGM and proposals)
 - **`lib/`** — Business logic
-  - `db.ts` / `db-migrations.ts` — SQLite init (WAL mode, foreign keys); `CORE_DB_MIGRATIONS` is a flat list of `ALTER TABLE` statements applied on every startup, each wrapped in try/catch so already-applied columns are silently skipped
+  - `db.ts` / `db-migrations.ts` — SQLite init (WAL mode, foreign keys); `CORE_DB_MIGRATIONS` is an append-only flat SQL list applied after core tables exist, each wrapped in try/catch so already-applied columns/indexes are skipped
   - `data-root.ts` — resolves the local data root for the current run mode (dev server / installed app / EXE, overridable via `CREATIVE_STUDIO_DATA_ROOT`); all local paths (`data/`, `storage/`) derive from this
   - `queue.ts` / `video-queue.ts` — Async job polling queues
   - `providers/` — Image generation adapters (Packy, GeekAI, OpenAI-compatible)
