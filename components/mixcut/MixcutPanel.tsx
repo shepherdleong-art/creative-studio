@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import {
   createScriptEditorState,
   editActiveScript,
+  markScriptSaved,
   resolveScriptSwitch,
   restoreImportedScript,
   type ScriptEditorState,
@@ -35,21 +36,8 @@ const STEPS = [
   { label: '导出渲染', hint: 'Phase 6 接入', icon: 'download' as const, enabled: false },
 ];
 
-type MixcutGroupView = FinalEditGroupView & {
-  script?: {
-    sourceDraftId: string | null;
-    title: string;
-    importedNarrationText: string;
-    editedNarrationText: string;
-    syncState: 'synced' | 'modified';
-    sourceScriptUpdatedAt: string | null;
-    narrationConfig: { providerId: string; voice: string; speed: number };
-    selectedMaterialKeys: string[];
-  };
-  jobs: Array<FinalEditGroupView['jobs'][number] & { startedAt?: string | null; finishedAt?: string | null; createdAt?: string }>;
-};
-
 interface VisionProviderView { id: string; configured: boolean; supportsVision?: boolean }
+interface MixcutDraftRef { id: string; shotSetId: string; revision: number }
 
 const MANUAL_SCRIPT_ID = '__manual__';
 
@@ -69,11 +57,22 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const [activeJob, setActiveJob] = useState<MixcutPrepareJobView | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [previewingVoice, setPreviewingVoice] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingShotSetIds, setUploadingShotSetIds] = useState<string[]>([]);
   const [message, setMessage] = useState('');
+  const [persistVersion, setPersistVersion] = useState(0);
   const requestRef = useRef<{ sequence: number; controller: AbortController } | null>(null);
   const jobPollRef = useRef<symbol | null>(null);
+  const startRequestRef = useRef<{ sequence: number; shotSetId: string; controller: AbortController } | null>(null);
+  const startSequenceRef = useRef(0);
+  const submittingRef = useRef(false);
+  const draftGroupRef = useRef<MixcutDraftRef | null>(null);
+  const persistVersionRef = useRef(0);
+  const lastSavedVersionRef = useRef(0);
+  const persistenceEpochRef = useRef(0);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveAbortRef = useRef<AbortController | null>(null);
   const scriptEditorByShotSetRef = useRef<Record<string, ScriptEditorState>>({});
   const activeJobStartedAt = activeJob?.startedAt ?? null;
   const activeJobFinishedAt = activeJob?.finishedAt ?? null;
@@ -98,7 +97,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
             await fetch(`/api/projects/${projectId}/final-edit/shot-sets/${encodeURIComponent(next.currentShotSetId)}/external-assets`, { signal: controller.signal }),
           )
           : Promise.resolve({ assets: [] }),
-        readJson<{ groups: MixcutGroupView[] }>(await fetch(`/api/projects/${projectId}/final-edit/groups`, { signal: controller.signal })).catch(() => ({ groups: [] })),
+        readJson<{ groups: FinalEditGroupView[] }>(await fetch(`/api/projects/${projectId}/final-edit/groups`, { signal: controller.signal })).catch(() => ({ groups: [] })),
         readJson<MixcutTtsProviderView[]>(await fetch('/api/providers/tts', { signal: controller.signal })).catch(() => []),
         readJson<VisionProviderView[]>(await fetch('/api/providers/script', { signal: controller.signal })).catch(() => []),
       ]);
@@ -115,22 +114,27 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         const module4Keys = next.videoAssets.map((asset) => `module4:${asset.videoJobId}`);
         const readyExternalKeys = external.assets.filter((asset) => asset.status === 'ready').map((asset) => `external:${asset.id}`);
         const latestGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId);
+        draftGroupRef.current = latestGroup
+          ? { id: latestGroup.id, shotSetId: latestGroup.shotSetId, revision: latestGroup.revision }
+          : null;
+        persistVersionRef.current = 0;
+        lastSavedVersionRef.current = 0;
+        setPersistVersion(0);
         const persistedSelection = latestGroup?.script?.selectedMaterialKeys.filter((key) => [...module4Keys, ...readyExternalKeys].includes(key)) ?? [];
-        setSelectionByShotSet((current) => persistedSelection.length > 0
+        setSelectionByShotSet((current) => latestGroup
           ? { [currentShotSetId]: persistedSelection }
           : initializeMaterialSelection(current, currentShotSetId, module4Keys, [...module4Keys, ...readyExternalKeys]));
         const groupScript = latestGroup?.script;
-        const sourceDraftId = groupScript?.sourceDraftId ?? next.drafts.find((draft) => draft.shotSetId === currentShotSetId)?.id ?? MANUAL_SCRIPT_ID;
+        const sourceDraftId = groupScript
+          ? groupScript.sourceDraftId ?? MANUAL_SCRIPT_ID
+          : next.drafts.find((draft) => draft.shotSetId === currentShotSetId)?.id ?? MANUAL_SCRIPT_ID;
         const sourceDraft = next.drafts.find((draft) => draft.id === sourceDraftId);
         const importedText = groupScript?.importedNarrationText ?? sourceDraft?.narrationText ?? '';
-        const editedText = groupScript?.editedNarrationText || importedText;
-        const persistedEditor: ScriptEditorState = {
-          activeDraftId: sourceDraftId,
-          importedNarrationText: importedText,
-          editedNarrationText: editedText,
-          dirty: groupScript?.syncState === 'modified' || editedText !== importedText,
-          textByDraftId: {},
-        };
+        const editedText = groupScript ? groupScript.editedNarrationText : importedText;
+        const persistedEditor = createScriptEditorState(
+          { id: sourceDraftId, narrationText: importedText },
+          { editedNarrationText: editedText },
+        );
         const cachedEditor = scriptEditorByShotSetRef.current[currentShotSetId];
         const cachedSourceStillExists = cachedEditor?.activeDraftId === MANUAL_SCRIPT_ID || next.drafts.some((draft) => draft.id === cachedEditor?.activeDraftId && draft.shotSetId === currentShotSetId);
         setScriptEditor(cachedEditor && cachedSourceStillExists ? cachedEditor : persistedEditor);
@@ -168,6 +172,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     return () => {
       window.clearTimeout(timer);
       requestRef.current?.controller.abort();
+      saveAbortRef.current?.abort();
     };
   }, [loadContext]);
 
@@ -239,6 +244,16 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   ];
 
   const performShotSetSwitch = (shotSetId: string) => {
+    persistenceEpochRef.current += 1;
+    saveAbortRef.current?.abort();
+    draftGroupRef.current = null;
+    persistVersionRef.current = 0;
+    lastSavedVersionRef.current = 0;
+    setPersistVersion(0);
+    startRequestRef.current?.controller.abort();
+    startRequestRef.current = null;
+    submittingRef.current = false;
+    setSubmitting(false);
     setSelectionByShotSet({});
     setActiveStep(0);
     setPendingDraftId(null);
@@ -249,19 +264,24 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
 
   const selectShotSet = (shotSetId: string) => {
     if (!shotSetId || shotSetId === activeShotSetId) return;
-    if (activeStep === 1 && scriptEditor.dirty) {
+    if (scriptEditor.dirty) {
       setPendingShotSetId(shotSetId);
       return;
     }
     performShotSetSwitch(shotSetId);
   };
 
-  const resolveShotSetSwitch = (resolution: ScriptSwitchResolution) => {
+  const resolveShotSetSwitch = async (resolution: ScriptSwitchResolution) => {
     const targetShotSetId = pendingShotSetId;
+    if (!targetShotSetId) return;
+    if (resolution === 'cancel') { setPendingShotSetId(null); return; }
+    if (resolution === 'preserve' && scriptEditor.dirty) {
+      try { await persistCurrentState(persistVersionRef.current); }
+      catch { return; }
+    }
     setPendingShotSetId(null);
-    if (!targetShotSetId || resolution === 'cancel') return;
     if (activeShotSetId) {
-      if (resolution === 'preserve') scriptEditorByShotSetRef.current[activeShotSetId] = scriptEditor;
+      if (resolution === 'preserve') scriptEditorByShotSetRef.current[activeShotSetId] = markScriptSaved(scriptEditor);
       else delete scriptEditorByShotSetRef.current[activeShotSetId];
     }
     performShotSetSwitch(targetShotSetId);
@@ -270,6 +290,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const toggleMaterial = (materialKey: string) => {
     if (!activeShotSetId) return;
     setSelectionByShotSet((current) => toggleMaterialSelection(current, activeShotSetId, materialKey));
+    markPersistenceDirty();
   };
 
   const importFiles = async (files: File[]) => {
@@ -305,25 +326,119 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const pendingDraft = activeDrafts.find((draft) => draft.id === pendingDraftId) ?? null;
   const activeProvider = ttsProviders.find((provider) => provider.id === ttsProviderId) ?? null;
 
+  const markPersistenceDirty = useCallback(() => {
+    const version = persistVersionRef.current + 1;
+    persistVersionRef.current = version;
+    setPersistVersion(version);
+  }, []);
+
+  const persistCurrentState = useCallback((version: number): Promise<void> => {
+    const shotSetId = activeShotSetId;
+    if (!shotSetId || !ttsProviderId || !voice || version <= lastSavedVersionRef.current) return Promise.resolve();
+    const epoch = persistenceEpochRef.current;
+    const snapshot = {
+      shotSetId,
+      scriptDraftId: scriptEditor.activeDraftId === MANUAL_SCRIPT_ID ? '' : scriptEditor.activeDraftId,
+      editedNarrationText: scriptEditor.editedNarrationText,
+      selectedMaterialKeys: [...selectedIds],
+      providerId: ttsProviderId,
+      voice,
+      speed,
+      analysisProviderId: visionProviderId,
+    };
+    const save = async () => {
+      if (persistenceEpochRef.current !== epoch) return;
+      const controller = new AbortController();
+      saveAbortRef.current = controller;
+      try {
+        const currentGroup = draftGroupRef.current?.shotSetId === shotSetId ? draftGroupRef.current : null;
+        let view: FinalEditGroupView;
+        if (currentGroup) {
+          const result = await readJson<{ view: FinalEditGroupView }>(await fetch(`/api/final-edit-groups/${currentGroup.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              type: 'set_mixcut_script_state',
+              expectedRevision: currentGroup.revision,
+              ...snapshot,
+            }),
+          }));
+          view = result.view;
+        } else {
+          view = await readJson<FinalEditGroupView>(await fetch(`/api/projects/${projectId}/final-edit/draft`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify(snapshot),
+          }));
+        }
+        if (persistenceEpochRef.current !== epoch) return;
+        draftGroupRef.current = { id: view.id, shotSetId: view.shotSetId, revision: view.revision };
+        if (version === persistVersionRef.current) {
+          lastSavedVersionRef.current = version;
+          setScriptEditor((current) => current.editedNarrationText === snapshot.editedNarrationText
+            && current.activeDraftId === (snapshot.scriptDraftId || MANUAL_SCRIPT_ID)
+            ? markScriptSaved(current)
+            : current);
+        }
+      } catch (error) {
+        const aborted = error instanceof DOMException && error.name === 'AbortError';
+        if (!aborted && persistenceEpochRef.current === epoch) setMessage(`自动保存失败：${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      } finally {
+        if (saveAbortRef.current === controller) saveAbortRef.current = null;
+      }
+    };
+    const queued = saveQueueRef.current.then(save, save);
+    saveQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }, [activeShotSetId, projectId, scriptEditor.activeDraftId, scriptEditor.editedNarrationText, selectedIds, speed, ttsProviderId, visionProviderId, voice]);
+
+  useEffect(() => {
+    if (persistVersion <= lastSavedVersionRef.current) return;
+    const timer = window.setTimeout(() => void persistCurrentState(persistVersion).catch(() => undefined), 600);
+    return () => window.clearTimeout(timer);
+  }, [persistCurrentState, persistVersion]);
+
+  const refreshWorkspace = async () => {
+    try {
+      if (persistVersionRef.current > lastSavedVersionRef.current) await persistCurrentState(persistVersionRef.current);
+      await loadContext(activeShotSetId);
+    } catch { /* persistCurrentState already exposes the actionable error */ }
+  };
+
   const requestDraftChange = (draftId: string) => {
     if (draftId === scriptEditor.activeDraftId) return;
     const target = activeDrafts.find((draft) => draft.id === draftId);
     if (!target) return;
     if (scriptEditor.dirty) setPendingDraftId(draftId);
-    else setScriptEditor((current) => resolveScriptSwitch(current, { id: target.id, narrationText: target.narrationText }, 'preserve'));
+    else {
+      setScriptEditor((current) => resolveScriptSwitch(current, { id: target.id, narrationText: target.narrationText }, 'preserve'));
+      markPersistenceDirty();
+    }
   };
 
-  const resolveDraftChange = (resolution: ScriptSwitchResolution) => {
+  const resolveDraftChange = async (resolution: ScriptSwitchResolution) => {
     const target = activeDrafts.find((draft) => draft.id === pendingDraftId);
+    if (!target || resolution === 'cancel') { setPendingDraftId(null); return; }
+    if (resolution === 'preserve' && scriptEditor.dirty) {
+      try { await persistCurrentState(persistVersionRef.current); }
+      catch { return; }
+    } else if (resolution === 'discard') {
+      persistenceEpochRef.current += 1;
+      saveAbortRef.current?.abort();
+    }
     setPendingDraftId(null);
-    if (!target) return;
     setScriptEditor((current) => resolveScriptSwitch(current, { id: target.id, narrationText: target.narrationText }, resolution));
+    markPersistenceDirty();
   };
 
   const changeTtsProvider = (providerId: string) => {
     const provider = ttsProviders.find((item) => item.id === providerId);
     setTtsProviderId(providerId);
     setVoice((current) => provider?.voices.some((item) => item.id === current) ? current : provider?.voices[0]?.id ?? '');
+    markPersistenceDirty();
   };
 
   const previewVoice = async () => {
@@ -349,14 +464,24 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   };
 
   const startCreation = async () => {
-    if (!activeShotSetId || !ttsProviderId || !voice) return;
+    if (!activeShotSetId || !ttsProviderId || !voice || submittingRef.current) return;
+    startRequestRef.current?.controller.abort();
+    const controller = new AbortController();
+    const sequence = startSequenceRef.current + 1;
+    startSequenceRef.current = sequence;
+    const requestShotSetId = activeShotSetId;
+    startRequestRef.current = { sequence, shotSetId: requestShotSetId, controller };
+    submittingRef.current = true;
+    setSubmitting(true);
     setMessage('');
     try {
+      if (persistVersionRef.current > lastSavedVersionRef.current) await persistCurrentState(persistVersionRef.current);
       const jobRef = await readJson<{ id: string; groupId: string; status: string }>(await fetch(`/api/projects/${projectId}/final-edit/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
-          shotSetId: activeShotSetId,
+          shotSetId: requestShotSetId,
           scriptDraftId: scriptEditor.activeDraftId === MANUAL_SCRIPT_ID ? '' : scriptEditor.activeDraftId,
           editedNarrationText: scriptEditor.editedNarrationText,
           selectedMaterialKeys: selectedIds,
@@ -366,12 +491,28 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           voice,
           speed,
           analysisProviderId: visionProviderId,
+          draftGroupId: draftGroupRef.current?.shotSetId === requestShotSetId ? draftGroupRef.current.id : undefined,
         }),
       }));
-      const job = await readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`));
+      const [job, group] = await Promise.all([
+        readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`, { signal: controller.signal })),
+        readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`, { signal: controller.signal })),
+      ]);
+      if (startRequestRef.current?.sequence !== sequence || startRequestRef.current.shotSetId !== requestShotSetId) return;
+      draftGroupRef.current = { id: group.id, shotSetId: group.shotSetId, revision: group.revision };
       setActiveJob({ ...job, groupId: jobRef.groupId });
       setMessage('后台任务已创建，可以离开页面后再返回查看');
-    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError') && startRequestRef.current?.sequence === sequence) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (startRequestRef.current?.sequence === sequence) {
+        startRequestRef.current = null;
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
+    }
   };
 
   const startDisabledReason = !selectedIds.length
@@ -430,9 +571,17 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                   materials={materials}
                   selectedMaterialKeys={selectedIds}
                   onToggle={toggleMaterial}
-                  onSelectAll={() => activeShotSetId && setSelectionByShotSet({ [activeShotSetId]: materials.filter((material) => material.status === 'ready').map((material) => material.key) })}
-                  onClear={() => activeShotSetId && setSelectionByShotSet({ [activeShotSetId]: [] })}
-                  onRefresh={() => void loadContext(activeShotSetId)}
+                  onSelectAll={() => {
+                    if (!activeShotSetId) return;
+                    setSelectionByShotSet({ [activeShotSetId]: materials.filter((material) => material.status === 'ready').map((material) => material.key) });
+                    markPersistenceDirty();
+                  }}
+                  onClear={() => {
+                    if (!activeShotSetId) return;
+                    setSelectionByShotSet({ [activeShotSetId]: [] });
+                    markPersistenceDirty();
+                  }}
+                  onRefresh={() => void refreshWorkspace()}
                   onImportFiles={activeShotSetId ? importFiles : undefined}
                   onContinue={() => setActiveStep(1)}
                   importDisabledReason={activeShotSetId ? undefined : '请先选择一个分镜组'}
@@ -446,21 +595,28 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                   editedNarrationText={scriptEditor.editedNarrationText}
                   importedNarrationText={scriptEditor.importedNarrationText}
                   dirty={scriptEditor.dirty}
+                  modified={scriptEditor.modified}
                   pendingDraft={pendingDraft}
                   onDraftChange={requestDraftChange}
-                  onResolveDraftSwitch={resolveDraftChange}
-                  onTextChange={(text) => setScriptEditor((current) => editActiveScript(current, text))}
+                  onResolveDraftSwitch={(resolution) => void resolveDraftChange(resolution)}
+                  onTextChange={(text) => {
+                    setScriptEditor((current) => editActiveScript(current, text));
+                    markPersistenceDirty();
+                  }}
                   onRestoreImported={() => {
                     const draft = activeDrafts.find((item) => item.id === scriptEditor.activeDraftId);
-                    if (draft) setScriptEditor((current) => restoreImportedScript(current, { id: draft.id, narrationText: draft.narrationText }));
+                    if (draft) {
+                      setScriptEditor((current) => restoreImportedScript(current, { id: draft.id, narrationText: draft.narrationText }));
+                      markPersistenceDirty();
+                    }
                   }}
                   providers={ttsProviders}
                   providerId={ttsProviderId}
                   voice={voice}
                   speed={speed}
                   onProviderChange={changeTtsProvider}
-                  onVoiceChange={setVoice}
-                  onSpeedChange={setSpeed}
+                  onVoiceChange={(nextVoice) => { setVoice(nextVoice); markPersistenceDirty(); }}
+                  onSpeedChange={(nextSpeed) => { setSpeed(nextSpeed); markPersistenceDirty(); }}
                   onPreviewVoice={() => void previewVoice()}
                   previewingVoice={previewingVoice}
                   selectedMaterialCount={selectedIds.length}
@@ -468,6 +624,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                   elapsedSec={elapsedSec}
                   onStart={() => void startCreation()}
                   onBack={() => setActiveStep(0)}
+                  submitting={submitting}
                   startDisabledReason={startDisabledReason}
                 />
               </div>
@@ -481,9 +638,9 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
             <h2 id="mixcut-shot-set-switch-title">当前分镜组的脚本有未保存修改</h2>
             <p>切换到「{context?.shotSets.find((shotSet) => shotSet.id === pendingShotSetId)?.name || '其他分镜组'}」前，请选择如何处理当前文案。</p>
             <div>
-              <button type="button" className={styles.primaryButton} onClick={() => resolveShotSetSwitch('preserve')}>保留修改并切换</button>
-              <button type="button" className={styles.secondaryButton} onClick={() => resolveShotSetSwitch('discard')}>放弃修改并切换</button>
-              <button type="button" className={styles.textButton} onClick={() => resolveShotSetSwitch('cancel')}>取消</button>
+              <button type="button" className={styles.primaryButton} onClick={() => void resolveShotSetSwitch('preserve')}>保留修改并切换</button>
+              <button type="button" className={styles.secondaryButton} onClick={() => void resolveShotSetSwitch('discard')}>放弃修改并切换</button>
+              <button type="button" className={styles.textButton} onClick={() => void resolveShotSetSwitch('cancel')}>取消</button>
             </div>
           </div>
         </div>

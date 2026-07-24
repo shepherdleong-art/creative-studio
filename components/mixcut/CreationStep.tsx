@@ -43,7 +43,7 @@ function formatCreatedAt(value: string): string {
 
 function estimateNarrationSec(text: string, speed: number): number {
   const count = Array.from(text.replace(/\s/g, '')).length;
-  return Math.round(count * 0.22 / Math.max(0.75, speed));
+  return Math.round(count * 0.22 / Math.max(0.5, speed));
 }
 
 function stageState(job: MixcutPrepareJobView | null, index: number): 'waiting' | 'running' | 'done' | 'failed' {
@@ -64,6 +64,7 @@ export function CreationStep({
   editedNarrationText,
   importedNarrationText,
   dirty,
+  modified,
   pendingDraft,
   onDraftChange,
   onResolveDraftSwitch,
@@ -83,6 +84,7 @@ export function CreationStep({
   elapsedSec,
   onStart,
   onBack,
+  submitting,
   startDisabledReason,
 }: {
   drafts: Draft[];
@@ -90,6 +92,7 @@ export function CreationStep({
   editedNarrationText: string;
   importedNarrationText: string;
   dirty: boolean;
+  modified: boolean;
   pendingDraft: Draft | null;
   onDraftChange: (draftId: string) => void;
   onResolveDraftSwitch: (resolution: ScriptSwitchResolution) => void;
@@ -109,6 +112,7 @@ export function CreationStep({
   elapsedSec: number;
   onStart: () => void;
   onBack: () => void;
+  submitting: boolean;
   startDisabledReason?: string;
 }) {
   const [voiceQuery, setVoiceQuery] = useState('');
@@ -121,7 +125,7 @@ export function CreationStep({
   }, [provider, showAllVoices, voiceQuery]);
   const activeDraft = drafts.find((draft) => draft.id === activeDraftId) ?? null;
   const charCount = Array.from(editedNarrationText.replace(/\s/g, '')).length;
-  const busy = Boolean(job && ['queued', 'running'].includes(job.status));
+  const busy = submitting || Boolean(job && ['queued', 'running'].includes(job.status));
   const progress = Math.max(0, Math.min(1, Number(job?.progress) || 0));
 
   return (
@@ -141,7 +145,7 @@ export function CreationStep({
         <section className={styles.creationCard}>
           <div className={styles.cardTitleRow}>
             <div><span className={styles.cardIcon}><Icon name="file-text" size={17} /></span><span><strong>模块 3 脚本</strong><small>仅显示当前分镜组的有效草稿</small></span></div>
-            <span className={dirty ? styles.modifiedBadge : styles.syncedBadge}>{dirty ? '已手动修改' : '已同步'}</span>
+            <span className={modified ? styles.modifiedBadge : styles.syncedBadge}>{modified ? '已手动修改' : '已同步'}{dirty ? '，待保存' : ''}</span>
           </div>
 
           {drafts.length > 0 ? (
@@ -160,7 +164,7 @@ export function CreationStep({
           <div className={styles.scriptMeta}>
             <span>{charCount} 字 · 预计 {estimateNarrationSec(editedNarrationText, speed)} 秒</span>
             <span>来源：{activeDraft ? `${activeDraft.provider} / ${activeDraft.model}` : '手动输入'}</span>
-            {importedNarrationText && <button type="button" onClick={onRestoreImported} disabled={!dirty || busy}>恢复导入版本</button>}
+            {importedNarrationText && <button type="button" onClick={onRestoreImported} disabled={!modified || busy}>恢复导入版本</button>}
           </div>
         </section>
 
@@ -178,7 +182,7 @@ export function CreationStep({
           </div>
           {(provider?.voices.length ?? 0) > 6 && !voiceQuery && <button type="button" className={styles.textButton} onClick={() => setShowAllVoices((value) => !value)}>{showAllVoices ? '收起音色' : `查看全部 ${provider?.voices.length} 个音色`}</button>}
           <div className={styles.speedRow}>
-            <label><span>语速</span><input type="range" min="0.75" max="1.5" step="0.05" value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} disabled={busy} /><strong>{speed.toFixed(2)}x</strong></label>
+            <label><span>语速</span><input type="range" min="0.5" max="2" step="0.1" value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} disabled={busy} /><strong>{speed.toFixed(1)}x</strong></label>
             <button type="button" className={styles.secondaryButton} onClick={onPreviewVoice} disabled={previewingVoice || !provider?.configured || busy}><Icon name="play" size={14} />{previewingVoice ? '生成中…' : '试听当前'}</button>
           </div>
         </section>
@@ -202,7 +206,7 @@ export function CreationStep({
 
       <footer className={styles.creationFooter}>
         <span>{startDisabledReason || '开始后会创建不可变任务快照，刷新页面不会丢失。'}</span>
-        <button type="button" className={styles.primaryButton} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={16} />{busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>
+        <button type="button" className={styles.primaryButton} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={16} />{submitting ? '正在创建任务…' : busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>
       </footer>
 
       {pendingDraft && (

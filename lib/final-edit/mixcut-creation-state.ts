@@ -7,18 +7,26 @@ export interface ScriptEditorState {
   activeDraftId: string;
   editedNarrationText: string;
   importedNarrationText: string;
+  savedNarrationText: string;
   dirty: boolean;
+  modified: boolean;
   textByDraftId: Record<string, string>;
 }
 
 export type ScriptSwitchResolution = 'preserve' | 'discard' | 'cancel';
 
-export function createScriptEditorState(choice: ScriptChoice): ScriptEditorState {
+export function createScriptEditorState(
+  choice: ScriptChoice,
+  persisted?: { editedNarrationText: string },
+): ScriptEditorState {
+  const editedNarrationText = persisted?.editedNarrationText ?? choice.narrationText;
   return {
     activeDraftId: choice.id,
-    editedNarrationText: choice.narrationText,
+    editedNarrationText,
     importedNarrationText: choice.narrationText,
+    savedNarrationText: editedNarrationText,
     dirty: false,
+    modified: editedNarrationText !== choice.narrationText,
     textByDraftId: {},
   };
 }
@@ -27,8 +35,13 @@ export function editActiveScript(state: ScriptEditorState, text: string): Script
   return {
     ...state,
     editedNarrationText: text,
-    dirty: text !== state.importedNarrationText,
+    dirty: text !== state.savedNarrationText,
+    modified: text !== state.importedNarrationText,
   };
+}
+
+export function markScriptSaved(state: ScriptEditorState): ScriptEditorState {
+  return { ...state, savedNarrationText: state.editedNarrationText, dirty: false };
 }
 
 export function restoreImportedScript(state: ScriptEditorState, choice: ScriptChoice): ScriptEditorState {
@@ -36,7 +49,8 @@ export function restoreImportedScript(state: ScriptEditorState, choice: ScriptCh
     ...state,
     editedNarrationText: choice.narrationText,
     importedNarrationText: choice.narrationText,
-    dirty: false,
+    dirty: choice.narrationText !== state.savedNarrationText,
+    modified: false,
     textByDraftId: { ...state.textByDraftId, [choice.id]: choice.narrationText },
   };
 }
@@ -55,7 +69,9 @@ export function resolveScriptSwitch(
     activeDraftId: target.id,
     editedNarrationText: targetText,
     importedNarrationText: target.narrationText,
-    dirty: targetText !== target.narrationText,
+    savedNarrationText: state.savedNarrationText,
+    dirty: targetText !== state.savedNarrationText || target.id !== state.activeDraftId,
+    modified: targetText !== target.narrationText,
     textByDraftId,
   };
 }
