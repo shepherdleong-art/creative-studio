@@ -142,12 +142,12 @@ export interface FinalEditWorkspace {
   load(groupId: string): FinalEditGroupView;
   apply(command: FinalEditCommand): MutationResult;
   enqueueRender(input: EnqueueRenderInput): Promise<JobRef>;
-  // NOTE: the plan's illustrative signature (§ task brief) shows a
-  // synchronous MixcutContextResponse return, but JC-2 requires per-video
-  // probeVideoMedia (ffprobe subprocess) calls to populate videoAssets[]
-  // duration/width/height — genuinely async I/O — so this is Promise-returning
-  // like the other read/command methods that touch the filesystem or a job
-  // pipeline (start/enqueueRender).
+  // JUDGMENT CALL (new, not covered by JC-1..JC-5): the plan's illustrative
+  // signature shows a synchronous MixcutContextResponse return, but JC-2
+  // requires per-video probeVideoMedia (ffprobe subprocess) calls to
+  // populate videoAssets[] duration/width/height — genuinely async I/O — so
+  // this is Promise-returning like the other read/command methods that touch
+  // the filesystem or a job pipeline (start/enqueueRender).
   getMixcutContext(projectId: string, requestedShotSetId?: string | null): Promise<MixcutContextResponse>;
 }
 
