@@ -1,4 +1,4 @@
-import { useRef, type ChangeEvent } from 'react';
+import { useRef, useState, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react';
 import Image from 'next/image';
 import { Icon } from '@/components/ui/Icon';
 import styles from './MixcutPanel.module.css';
@@ -20,6 +20,13 @@ function formatDuration(durationUs: number): string {
   const seconds = durationUs / 1_000_000;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${(seconds % 60).toFixed(1).padStart(4, '0')}`;
+}
+
+const SUPPORTED_VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.webm'] as const;
+
+function isSupportedVideoFile(file: File): boolean {
+  const filename = file.name.toLowerCase();
+  return SUPPORTED_VIDEO_EXTENSIONS.some((extension) => filename.endsWith(extension));
 }
 
 export function MaterialStep({
@@ -46,12 +53,44 @@ export function MaterialStep({
   loading?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [importStatus, setImportStatus] = useState('');
   const selected = new Set(selectedMaterialKeys);
+  const importEnabled = Boolean(onImportFiles) && !loading;
+
+  const submitFiles = (files: File[]) => {
+    const supported = files.filter(isSupportedVideoFile);
+    const ignoredCount = files.length - supported.length;
+    if (supported.length === 0) {
+      setImportStatus('没有可导入的视频，仅支持 MP4、MOV、AVI、WebM。');
+      return;
+    }
+    setImportStatus(
+      ignoredCount > 0
+        ? `已提交 ${supported.length} 个视频，忽略 ${ignoredCount} 个不支持的文件。`
+        : `已提交 ${supported.length} 个视频。`,
+    );
+    onImportFiles?.(supported);
+  };
 
   const handleFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     event.target.value = '';
-    if (files.length) onImportFiles?.(files);
+    if (files.length) submitFiles(files);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragActive(false);
+    if (!importEnabled) return;
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length) submitFiles(files);
+  };
+
+  const handleImportKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!importEnabled || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    fileInputRef.current?.click();
   };
 
   return (
@@ -70,10 +109,10 @@ export function MaterialStep({
             type="button"
             className={styles.primaryButton}
             onClick={() => fileInputRef.current?.click()}
-            disabled={!onImportFiles}
+            disabled={!importEnabled}
             title={importDisabledReason}
           >
-            <Icon name="plus" size={16} />导入到当前组
+            <Icon name="plus" size={16} />{loading ? '正在处理' : '选择视频'}
           </button>
           <input
             ref={fileInputRef}
@@ -82,7 +121,7 @@ export function MaterialStep({
             multiple
             accept=".mp4,.mov,.avi,.webm,video/mp4,video/quicktime,video/x-msvideo,video/webm"
             onChange={handleFiles}
-            disabled={!onImportFiles}
+            disabled={!importEnabled}
           />
         </div>
       </header>
@@ -94,6 +133,30 @@ export function MaterialStep({
           <small>当前只显示「{shotSetName || '当前分镜组'}」中真实存在的成功视频。</small>
         </div>
       </div>
+
+      <div
+        className={`${styles.importDropzone} ${dragActive ? styles.importDropzoneActive : ''}`}
+        role="button"
+        tabIndex={importEnabled ? 0 : -1}
+        aria-disabled={!importEnabled}
+        aria-describedby="mixcut-import-help mixcut-import-status"
+        onClick={() => importEnabled && fileInputRef.current?.click()}
+        onKeyDown={handleImportKeyDown}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          if (importEnabled) setDragActive(true);
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={() => setDragActive(false)}
+        onDrop={handleDrop}
+      >
+        <Icon name="plus" size={18} />
+        <span>
+          <strong>{dragActive ? '松开即可导入到本组' : '拖拽视频到这里，或点击选择'}</strong>
+          <small id="mixcut-import-help">支持 MP4、MOV、AVI、WebM，可一次选择多个文件</small>
+        </span>
+      </div>
+      <p id="mixcut-import-status" className={styles.importStatus} aria-live="polite">{importStatus}</p>
 
       <div className={styles.materialToolbar}>
         <strong>{materials.filter((material) => material.status === 'ready').length} 个可用视频</strong>

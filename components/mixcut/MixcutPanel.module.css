@@ -64,6 +64,13 @@
 .syncBanner div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .syncBanner strong { font-size: 11px; }
 .syncBanner small { overflow: hidden; color: #668271; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.importDropzone { display: flex; min-width: 0; align-items: center; justify-content: center; gap: 10px; margin: 0 0 5px; padding: 14px; border: 1px dashed #b8cce5; border-radius: 13px; outline: 0; background: #f7faff; color: #326b9f; cursor: pointer; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+.importDropzone:hover, .importDropzone:focus-visible, .importDropzoneActive { border-color: var(--mixcut-blue); background: #edf6ff; box-shadow: 0 0 0 3px rgba(0, 113, 227, .1); }
+.importDropzone[aria-disabled='true'] { cursor: not-allowed; opacity: .55; }
+.importDropzone > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.importDropzone strong { font-size: 10px; }
+.importDropzone small { color: #6c8297; font-size: 9px; }
+.importStatus { min-height: 15px; margin: 0 0 4px; color: var(--mixcut-secondary); font-size: 9px; }
 .materialToolbar { display: flex; min-width: 0; align-items: center; gap: 10px; margin-bottom: 13px; }
 .materialToolbar strong { font-size: 11px; }
 .materialToolbar > span { flex: 1; }

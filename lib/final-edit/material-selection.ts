@@ -24,9 +24,10 @@ export function initializeMaterialSelection(
     hasUserSelection
     && nextForShotSet.length === (state[shotSetId] ?? []).length
     && nextForShotSet.every((videoJobId, index) => videoJobId === state[shotSetId]?.[index])
+    && Object.keys(state).length === 1
   ) return state;
 
-  return { ...state, [shotSetId]: nextForShotSet };
+  return { [shotSetId]: nextForShotSet };
 }
 
 export function toggleMaterialSelection(
@@ -36,7 +37,6 @@ export function toggleMaterialSelection(
 ): MaterialSelectionByShotSet {
   const current = materialSelectionForShotSet(state, shotSetId);
   return {
-    ...state,
     [shotSetId]: current.includes(videoJobId)
       ? current.filter((id) => id !== videoJobId)
       : [...current, videoJobId],

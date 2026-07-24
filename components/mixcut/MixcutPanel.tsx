@@ -78,6 +78,13 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     };
   }, [loadContext]);
 
+  const refreshExternalAssets = useCallback(async (shotSetId: string) => {
+    const refreshed = await readJson<{ assets: FinalEditExternalAssetView[] }>(
+      await fetch(`/api/projects/${projectId}/final-edit/shot-sets/${encodeURIComponent(shotSetId)}/external-assets`),
+    );
+    setExternalByShotSet((current) => ({ ...current, [shotSetId]: refreshed.assets }));
+  }, [projectId]);
+
   const activeShotSetId = context?.currentShotSetId ?? null;
   const activeShotSet = context?.shotSets.find((shotSet) => shotSet.id === activeShotSetId) ?? null;
   const selectedIds = materialSelectionForShotSet(selectionByShotSet, activeShotSetId);
@@ -108,6 +115,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
 
   const selectShotSet = (shotSetId: string) => {
     if (!shotSetId || shotSetId === activeShotSetId) return;
+    setSelectionByShotSet({});
     void loadContext(shotSetId);
   };
 
@@ -119,23 +127,28 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const importFiles = async (files: File[]) => {
     const targetShotSetId = activeShotSetId;
     if (!targetShotSetId || files.length === 0) return;
+    const targetShotSetName = activeShotSet?.name || targetShotSetId;
     setUploadingShotSetIds((current) => current.includes(targetShotSetId) ? current : [...current, targetShotSetId]);
+    let importMessage = '';
     try {
       const formData = new FormData();
       for (const file of files) formData.append('files', file);
       const result = await readJson<{ assets: FinalEditExternalAssetView[]; errors: Array<{ filename: string; message: string }> }>(
         await fetch(`/api/projects/${projectId}/final-edit/shot-sets/${encodeURIComponent(targetShotSetId)}/external-assets`, { method: 'POST', body: formData }),
       );
-      const refreshed = await readJson<{ assets: FinalEditExternalAssetView[] }>(
-        await fetch(`/api/projects/${projectId}/final-edit/shot-sets/${encodeURIComponent(targetShotSetId)}/external-assets`),
-      );
-      setExternalByShotSet((current) => ({ ...current, [targetShotSetId]: refreshed.assets }));
-      setMessage(result.errors.length > 0
-        ? `已导入 ${result.assets.length} 个视频；${result.errors.map((item) => `${item.filename}：${item.message}`).join('；')}`
-        : `已导入 ${result.assets.length} 个视频到当前分镜组`);
+      importMessage = result.errors.length > 0
+        ? `已向「${targetShotSetName}」导入 ${result.assets.length} 个视频；${result.errors.map((item) => `${item.filename}：${item.message}`).join('；')}`
+        : `已向「${targetShotSetName}」导入 ${result.assets.length} 个视频`;
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      importMessage = `「${targetShotSetName}」导入失败：${error instanceof Error ? error.message : String(error)}`;
     } finally {
+      try {
+        await refreshExternalAssets(targetShotSetId);
+      } catch (error) {
+        const refreshMessage = error instanceof Error ? error.message : String(error);
+        importMessage = `${importMessage}；刷新导入记录失败：${refreshMessage}`;
+      }
+      setMessage(importMessage);
       setUploadingShotSetIds((current) => current.filter((shotSetId) => shotSetId !== targetShotSetId));
     }
   };
@@ -184,8 +197,8 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
               materials={materials}
               selectedMaterialKeys={selectedIds}
               onToggle={toggleMaterial}
-              onSelectAll={() => activeShotSetId && setSelectionByShotSet((current) => ({ ...current, [activeShotSetId]: materials.filter((material) => material.status === 'ready').map((material) => material.key) }))}
-              onClear={() => activeShotSetId && setSelectionByShotSet((current) => ({ ...current, [activeShotSetId]: [] }))}
+              onSelectAll={() => activeShotSetId && setSelectionByShotSet({ [activeShotSetId]: materials.filter((material) => material.status === 'ready').map((material) => material.key) })}
+              onClear={() => activeShotSetId && setSelectionByShotSet({ [activeShotSetId]: [] })}
               onRefresh={() => void loadContext(activeShotSetId)}
               onImportFiles={activeShotSetId ? importFiles : undefined}
               importDisabledReason={activeShotSetId ? undefined : '请先选择一个分镜组'}

@@ -20,37 +20,36 @@ assert.deepEqual(
 );
 assert.deepEqual(
   materialSelectionForShotSet(withSecondGroup, 'shot-set-a'),
-  ['module4:video-a1', 'module4:video-a2'],
-  '切到第二组不能修改第一组已选素材',
+  [],
+  '切到第二组后必须清空第一组缓存，任何时刻只保留当前组选择',
 );
 
-const deselected = toggleMaterialSelection(withSecondGroup, 'shot-set-a', 'module4:video-a1');
-assert.deepEqual(materialSelectionForShotSet(deselected, 'shot-set-a'), ['module4:video-a2']);
+const deselected = toggleMaterialSelection(withSecondGroup, 'shot-set-b', 'module4:video-b1');
 assert.deepEqual(
   materialSelectionForShotSet(deselected, 'shot-set-b'),
-  ['module4:video-b1'],
-  '第一组的选择操作不能污染第二组',
+  [],
+  '当前组可以清空自己的默认选择',
 );
 
-const withExternal = toggleMaterialSelection(deselected, 'shot-set-a', 'external:asset-a1');
+const withExternal = toggleMaterialSelection(deselected, 'shot-set-b', 'external:asset-b1');
 const refreshed = initializeMaterialSelection(
   withExternal,
-  'shot-set-a',
-  ['module4:video-a1', 'module4:video-a2', 'module4:video-a3'],
-  ['module4:video-a1', 'module4:video-a2', 'module4:video-a3', 'external:asset-a1'],
+  'shot-set-b',
+  ['module4:video-b1', 'module4:video-b2'],
+  ['module4:video-b1', 'module4:video-b2', 'external:asset-b1'],
 );
 assert.deepEqual(
-  materialSelectionForShotSet(refreshed, 'shot-set-a'),
-  ['module4:video-a2', 'external:asset-a1'],
+  materialSelectionForShotSet(refreshed, 'shot-set-b'),
+  ['external:asset-b1'],
   '用户已经调整过的组在刷新时不得被静默重置为全选',
 );
 
-const missingRemoved = initializeMaterialSelection(refreshed, 'shot-set-b', []);
+const switchedBack = initializeMaterialSelection(refreshed, 'shot-set-a', ['module4:video-a1', 'module4:video-a2']);
 assert.deepEqual(
-  materialSelectionForShotSet(missingRemoved, 'shot-set-b'),
-  [],
-  '当前组文件全部丢失时必须清掉该组不可用选择',
+  materialSelectionForShotSet(switchedBack, 'shot-set-a'),
+  ['module4:video-a1', 'module4:video-a2'],
+  '切回旧组时应按当前可用模块 4 视频重新初始化，不恢复旧缓存',
 );
-assert.deepEqual(materialSelectionForShotSet(missingRemoved, 'shot-set-a'), ['module4:video-a2', 'external:asset-a1']);
+assert.deepEqual(materialSelectionForShotSet(switchedBack, 'shot-set-b'), []);
 
 console.log('final-edit mixcut material selection tests passed');
