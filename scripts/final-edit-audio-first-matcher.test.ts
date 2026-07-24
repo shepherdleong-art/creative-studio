@@ -377,25 +377,32 @@ assert.equal(result2.diagnostics.semanticFallback, false);
 //    (流程不中断), diagnostics must echo semanticFallback=true, and with the
 //    semantic signal flat, keyword/label similarity becomes the deciding
 //    signal ("semanticFallback 态下的替补主信号").
-// Flattened scene order (JUDGMENT CALL #5): [asset-x#0, asset-m#0, asset-z#0].
+// Flattened scene order (JUDGMENT CALL #5): [asset-a#0, asset-b#0, asset-c#0].
 // Derivation: each row's floor = max(0.35, 0.6×0.85 = 0.51) = 0.51; every
 // candidate at 0.6 is above floor -> no backoff; hooks all zero -> no hook
 // preference; assets carry no shotId -> no shotId prior (item 2). All three
 // assets are identical on every remaining axis (length, quality, label
-// count, source). s1's keyword '开箱' overlaps ONLY asset-m — the MIDDLE
+// count, source). s1's keyword '开箱' overlaps ONLY asset-b — the MIDDLE
 // asset in the flattened order — so no positional tie-break can pass
-// spuriously: "first wins" gives s1 -> asset-x (wrong), "last wins" gives
-// s1 -> asset-z (wrong), and a reuse-penalty-driven freshness preference
+// spuriously: "first wins" gives s1 -> asset-a (wrong), "last wins" gives
+// s1 -> asset-c (wrong), and a reuse-penalty-driven freshness preference
 // cannot reach the middle either (s1 is placed first, when every candidate
-// is still fresh). s2's keyword '夜景' overlaps only asset-x. Only the
-// keyword signal produces the correct s1 -> asset-m, s2 -> asset-x.
+// is still fresh). Asset keys are deliberately named so that lexicographic
+// order coincides with flattened position: a lexicographic-ascending
+// tie-break then collapses into "first wins" and descending into "last
+// wins", both already wrong — a name-order tie-break cannot fluke the
+// middle answer either (code-review follow-up: with the previous x/m/z
+// naming, asset-m was also the lexicographic minimum and an ascending
+// tie-break + reuse penalty false-passed). s2's keyword '夜景' overlaps
+// only asset-a. Only the keyword signal produces the correct
+// s1 -> asset-b, s2 -> asset-a.
 // ---------------------------------------------------------------------------
 const input3: AudioFirstMatchInput = {
   sentences: [sentence('s1', 0, 2_000_000, ['开箱'], '开箱体验'), sentence('s2', 2_000_000, 4_000_000, ['夜景'], '夜景实拍')],
   assets: [
-    asset('asset-x', [scene(0, 5_000_000, ['夜景', '城市'])]),
-    asset('asset-m', [scene(0, 5_000_000, ['开箱', '桌面'])]),
-    asset('asset-z', [scene(0, 5_000_000, ['棚拍', '特写'])]),
+    asset('asset-a', [scene(0, 5_000_000, ['夜景', '城市'])]),
+    asset('asset-b', [scene(0, 5_000_000, ['开箱', '桌面'])]),
+    asset('asset-c', [scene(0, 5_000_000, ['棚拍', '特写'])]),
   ],
   semanticScores: [
     [0.6, 0.6, 0.6],
@@ -412,13 +419,13 @@ assert.equal(result3.diagnostics.semanticFallback, true, '降级输入必须原�
 assert.equal(result3.plan.segments.length, 2, '降级态下流程不中断，仍应产出完整 plan');
 assert.equal(
   segmentFor(result3.plan, 's1').assetKey,
-  'asset-m',
-  'semanticFallback 态下关键词重叠必须成为决定性信号（s1↔asset-m：开箱）',
+  'asset-b',
+  'semanticFallback 态下关键词重叠必须成为决定性信号（s1↔asset-b：开箱）',
 );
 assert.equal(
   segmentFor(result3.plan, 's2').assetKey,
-  'asset-x',
-  'semanticFallback 态下关键词重叠必须成为决定性信号（s2↔asset-x：夜景）',
+  'asset-a',
+  'semanticFallback 态下关键词重叠必须成为决定性信号（s2↔asset-a：夜景）',
 );
 assert.deepEqual(result3.diagnostics.backoffSentences, [], '均匀矩阵 0.6 高于地板 0.51，不得出现兜底句');
 for (const seg of result3.plan.segments) {
