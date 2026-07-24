@@ -168,6 +168,31 @@
 .previewHeaderActions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 9px; }
 .previewHeaderActions > span { max-width: 260px; overflow: hidden; color: #258247; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .previewHeaderActions select { height: 34px; border: 1px solid var(--mixcut-line); border-radius: 9px; padding: 0 9px; background: #fff; font-size: 9px; }
+
+.exportStep { box-sizing: border-box; width: 100%; min-height: 720px; padding: 24px; overflow-y: auto; border: 1px solid var(--mixcut-line); border-radius: 16px; background: #fff; }
+.exportHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--mixcut-line); }
+.exportHeader h1 { margin: 5px 0 7px; font-size: 24px; letter-spacing: -.035em; }
+.exportHeader p:last-child { margin: 0; color: var(--mixcut-secondary); font-size: 11px; }
+.exportGrid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, .65fr); gap: 14px; margin-top: 18px; }
+.exportCard,.exportProgressCard { padding: 17px; border: 1px solid var(--mixcut-line); border-radius: 14px; background: #fbfbfd; }
+.exportCard h2 { margin: 0 0 14px; font-size: 13px; }
+.exportCard > p { color: var(--mixcut-secondary); font-size: 10px; }
+.exportChecks { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 12px 0; padding: 0; list-style: none; }
+.exportChecks li { padding: 8px; border-radius: 8px; background: #f0f5fb; color: #47627d; font-size: 9px; }
+.exportCard select { box-sizing: border-box; width: 100%; height: 36px; border: 1px solid #d8d8de; border-radius: 9px; padding: 0 9px; background: #fff; font-size: 10px; }
+.exportFacts { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; margin: 0; }
+.exportFacts div { min-width: 0; padding: 9px 0; border-top: 1px solid #ececf0; }
+.exportFacts dt { margin-bottom: 4px; color: var(--mixcut-secondary); font-size: 9px; }
+.exportFacts dd { overflow-wrap: anywhere; margin: 0; font-size: 10px; font-weight: 650; }
+.exportProgressCard { margin-top: 14px; background: #fff; }
+.exportProgressCard > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.exportProgressCard > div:first-child span { color: var(--mixcut-blue); font-size: 10px; font-weight: 700; }
+.exportProgressCard > div:first-child strong { color: var(--mixcut-secondary); font-size: 9px; font-weight: 500; }
+.exportBlocker { display: flex; align-items: flex-start; gap: 7px; color: #b42318 !important; font-size: 10px; line-height: 1.5; }
+.exportActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.exportActions a { text-decoration: none; }
+.exportResult { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(170px, 280px); gap: 14px; margin-top: 14px; padding: 14px; border-radius: 14px; background: #111; }
+.exportResult video,.exportResult img { display: block; width: 100%; max-height: 460px; border-radius: 10px; background: #000; object-fit: contain; }
 .previewEditorGrid { display: grid; min-width: 0; min-height: 0; flex: 1; grid-template-columns: minmax(420px, 1fr) 290px; overflow: hidden; border-bottom: 1px solid var(--mixcut-line); }
 .previewPlayerCell { min-width: 0; min-height: 0; overflow: hidden; }
 .previewPropertyPanel { min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--mixcut-line); background: #fff; }

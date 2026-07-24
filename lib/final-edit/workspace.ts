@@ -32,6 +32,9 @@ import { assertTtsSpeed } from './tts-speed.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
 import { normalizeCoverPreset } from './title-presets.ts';
 import { CoverFrameError, materializeCoverFrame, resolveCoverFrameSource } from './cover-frame.ts';
+import { FinalEditError } from './errors.ts';
+import { formatShanghaiTaskDate } from './export-identity.ts';
+import { releaseReservedExportTarget, reserveProjectExportTarget } from './export-naming.ts';
 import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts';
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
 import {
@@ -59,6 +62,7 @@ import {
   type JobRef,
   type MixcutContextResponse,
   type OutputPresetId,
+  type RenderJobRef,
   type SubtitleCue,
   type TimelineClip,
   type TextStyle,
@@ -225,7 +229,7 @@ export interface FinalEditWorkspace {
   ensureMixcutDraft(input: EnsureMixcutDraftInput): FinalEditGroupView;
   load(groupId: string): FinalEditGroupView;
   apply(command: FinalEditCommand): MutationResult;
-  enqueueRender(input: EnqueueRenderInput): Promise<JobRef>;
+  enqueueRender(input: EnqueueRenderInput): Promise<RenderJobRef>;
   // JUDGMENT CALL (new, not covered by JC-1..JC-5): the plan's illustrative
   // signature shows a synchronous MixcutContextResponse return, but JC-2
   // requires per-video probeVideoMedia (ffprobe subprocess) calls to
@@ -243,19 +247,7 @@ export interface FinalEditWorkspaceRuntime extends FinalEditWorkspace {
   resumePrepareJob(jobId: string): Promise<void>;
 }
 
-export class FinalEditError extends Error {
-  readonly code: string;
-  readonly status: number;
-  readonly details?: unknown;
-
-  constructor(code: string, message: string, status = 400, details?: unknown) {
-    super(message);
-    this.name = 'FinalEditError';
-    this.code = code;
-    this.status = status;
-    this.details = details;
-  }
-}
+export { FinalEditError } from './errors.ts';
 
 export const MIXCUT_PREPARE_PHASE_RANGES = {
   analyzing: [0, 0.3],
@@ -1653,7 +1645,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     return { scope: 'group', view: load(command.groupId) };
   };
 
-  const enqueueRender = async (input: EnqueueRenderInput): Promise<JobRef> => {
+  const enqueueRender = async (input: EnqueueRenderInput): Promise<RenderJobRef> => {
     const group = load(input.groupId);
     const variant = group.variants.find((item) => item.id === input.variantId);
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
@@ -1709,6 +1701,16 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     } catch (error) {
       throw new FinalEditError('cover_missing', error instanceof Error ? error.message : '封面底图缺失');
     }
+    const project = db.prepare(`SELECT name, productCode, createdAt FROM projects WHERE id=?`).get(group.projectId) as { name: string; productCode: string | null; createdAt: string } | undefined;
+    if (!project) throw new FinalEditError('project_not_found', '项目不存在', 404);
+    const exportIdentity = {
+      projectId: group.projectId,
+      taskName: project.name,
+      productCode: project.productCode || '',
+      taskDate: formatShanghaiTaskDate(project.createdAt),
+    };
+    const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(group.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
+    const exportTarget = reserveProjectExportTarget(storageRoot, exportIdentity, { blockedRelativePaths });
     const id = uuidv4();
     const snapshot = {
       groupRevision: group.revision, variantRevision: variant.revision,
@@ -1716,9 +1718,30 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       variant, sources, coverRelativePath, narrationRelativePath: toRelative(groupRow.narrationAudioPath),
       bgm: bgmTrack ? { ...bgmTrack, gainDb: variant.bgm.gainDb, loop: variant.bgm.loop, fadeInSec: variant.bgm.fadeInSec, fadeOutSec: variant.bgm.fadeOutSec } : null,
       overlayBundle: { id: input.overlayBundleId, relativeDir: bundle.relativeDir, manifest: parseJson(bundle.manifestJson, {}) },
+      exportIdentity,
+      exportTarget,
     };
-    db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'render', 'queued', 'preflight', 0, ?, ?, 0, 'CNY', ?)`).run(id, group.projectId, group.id, variant.id, sha256(JSON.stringify({ id, snapshot })), JSON.stringify(snapshot), now());
-    return { id, groupId: group.id, variantId: variant.id, kind: 'render', status: 'queued' };
+    try {
+      db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, ?, 'render', 'queued', 'preflight', 0, ?, ?, 0, 'CNY', ?)`).run(id, group.projectId, group.id, variant.id, sha256(JSON.stringify({ id, snapshot })), JSON.stringify(snapshot), now());
+    } catch (error) {
+      releaseReservedExportTarget(storageRoot, exportTarget);
+      throw error;
+    }
+    return {
+      id,
+      groupId: group.id,
+      variantId: variant.id,
+      kind: 'render',
+      status: 'queued',
+      target: {
+        taskName: exportIdentity.taskName,
+        productCode: exportIdentity.productCode,
+        taskDate: exportIdentity.taskDate,
+        videoFilename: exportTarget.videoFilename,
+        coverFilename: exportTarget.coverFilename,
+        displayDirectory: exportTarget.displayDirectory,
+      },
+    };
   };
 
   const getMixcutContext = async (projectId: string, requestedShotSetId?: string | null): Promise<MixcutContextResponse> => {

@@ -166,6 +166,27 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
       ALTER TABLE final_edit_variants ADD COLUMN matchDiagnosticsJson TEXT NOT NULL DEFAULT '{}';
     `,
   },
+  {
+    version: 9,
+    sql: `
+      CREATE TABLE IF NOT EXISTS project_artifacts (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        displayName TEXT NOT NULL,
+        relativePath TEXT NOT NULL,
+        mimeType TEXT NOT NULL,
+        sourceJobId TEXT,
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_artifacts_project
+        ON project_artifacts(projectId, createdAt);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_artifacts_project_path
+        ON project_artifacts(projectId, relativePath);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_artifacts_source_kind
+        ON project_artifacts(sourceJobId, kind);
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

@@ -200,6 +200,21 @@ export interface JobRef {
   status: string;
 }
 
+export interface ExportTargetView {
+  taskName: string;
+  productCode: string;
+  taskDate: string;
+  videoFilename: string;
+  coverFilename: string;
+  displayDirectory: string;
+}
+
+export interface RenderJobRef extends JobRef {
+  variantId: string;
+  kind: 'render';
+  target: ExportTargetView;
+}
+
 export interface MixcutContextResponse {
   project: {
     id: string;
@@ -207,6 +222,7 @@ export interface MixcutContextResponse {
     productName: string;
     productCode: string;
     createdAt: string;
+    taskDate: string;
   };
   shotSets: Array<{
     id: string;

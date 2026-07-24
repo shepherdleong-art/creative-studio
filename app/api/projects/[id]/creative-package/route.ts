@@ -5,6 +5,7 @@ import type { ZipImageEntry } from '@/lib/zip-download';
 import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
+import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
 
 export const runtime = 'nodejs';
 
@@ -48,6 +49,15 @@ export async function GET(
       prompt: string; providerName: string | null; templateName: string | null;
     }>;
 
+    const projectArtifacts = db.prepare(`
+      SELECT kind, displayName, relativePath, mimeType, sourceJobId
+      FROM project_artifacts
+      WHERE projectId=? AND kind IN ('final_video', 'final_cover')
+      ORDER BY createdAt, id
+    `).all(projectId) as Array<{
+      kind: string; displayName: string; relativePath: string; mimeType: string; sourceJobId: string | null;
+    }>;
+
     // Latest script draft
     const scriptDraft = db.prepare(`
       SELECT outputJson FROM script_drafts
@@ -76,6 +86,21 @@ export async function GET(
     }> = [];
 
     const prefix = `${String(project.name || 'project').replace(/[/\\:*?"<>|]/g, '_')}-package/`;
+
+    const manifestArtifacts: Array<{ kind: string; filename: string; sourceJobId: string | null }> = [];
+    const storageRoot = path.join(dataRoot(), 'storage');
+    const projectArtifactRoot = path.join('projects', projectId, '成片');
+    for (const artifact of projectArtifacts) {
+      let filePath: string;
+      try {
+        if (!artifact.relativePath.startsWith(`${projectArtifactRoot}${path.sep}`) && !artifact.relativePath.startsWith(`${projectArtifactRoot}/`)) continue;
+        filePath = assertNoStorageSymlink(storageRoot, artifact.relativePath);
+      }
+      catch { continue; }
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) continue;
+      const filename = addEntry(filePath, `${prefix}成片/${artifact.displayName}`);
+      manifestArtifacts.push({ kind: artifact.kind, filename, sourceJobId: artifact.sourceJobId });
+    }
 
     // Add shot images
     for (const shot of shots) {
@@ -165,6 +190,7 @@ export async function GET(
       projectName: project.name || '',
       exportedAt: new Date().toISOString(),
       shots: manifestShots,
+      artifacts: manifestArtifacts,
     };
 
     const tmpDir = path.join(dataRoot(), 'storage', 'tmp');

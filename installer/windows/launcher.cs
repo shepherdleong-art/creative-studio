@@ -112,6 +112,7 @@ class CreativeStudioLauncher
         psi.EnvironmentVariables["PORT"]      = port.ToString();
         psi.EnvironmentVariables["HOSTNAME"]  = "127.0.0.1";
         psi.EnvironmentVariables["NODE_ENV"]  = "production";
+        psi.EnvironmentVariables["CREATIVE_STUDIO_DESKTOP"] = "1";
         // Overrides process.cwd() for data/storage paths (server.js does process.chdir(__dirname)
         // which would otherwise point cwd at .next/standalone in dev mode).
         psi.EnvironmentVariables["CREATIVE_STUDIO_DATA_ROOT"] = storageBase;

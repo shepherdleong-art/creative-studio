@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { FinalEditError } from './workspace';
+import { FinalEditError } from './errors';
 
 export function finalEditErrorResponse(error: unknown): NextResponse {
   if (error instanceof FinalEditError) {

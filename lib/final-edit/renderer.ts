@@ -7,6 +7,8 @@ import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView
 import { resolveStoragePath } from './storage-path.ts';
 import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
 import { coverFramingGeometry } from './cover-framing.ts';
+import type { ReservedProjectExportTarget } from './export-naming.ts';
+import type { ExportIdentity } from './types.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
@@ -18,6 +20,10 @@ export interface FinalEditRenderSnapshot {
   narrationRelativePath: string;
   bgm: { id: string; relativePath: string; fileFingerprint: string; gainDb: number; loop: boolean; fadeInSec: number; fadeOutSec: number } | null;
   overlayBundle: { id: string; relativeDir: string; manifest: unknown };
+  /** Added in Mixcut Phase 6; optional only while recovering older queued snapshots. */
+  exportIdentity?: ExportIdentity;
+  /** Added in Mixcut Phase 6; worker fills it once for older queued snapshots. */
+  exportTarget?: ReservedProjectExportTarget;
 }
 
 async function fileSha256(filePath: string): Promise<string> {

@@ -21,11 +21,12 @@ async function responseBody<T>(response: Response): Promise<T> {
 type VariantCommandRequest = VariantCommandInput | ((variant: FinalEditVariantView) => VariantCommandInput);
 type GroupCommandRequest = GroupCommandInput | ((group: FinalEditGroupView) => GroupCommandInput);
 
-export function PreviewStep({ group, active, onGroupChange, onBack }: {
+export function PreviewStep({ group, active, onGroupChange, onBack, onExport }: {
   group: FinalEditGroupView;
   active: boolean;
   onGroupChange: (group: FinalEditGroupView) => void;
   onBack: () => void;
+  onExport: (variantId: string) => void;
 }) {
   const [selectedVariantId, setSelectedVariantId] = useState(group.variants[0]?.id || '');
   const [selectedClipId, setSelectedClipId] = useState('');
@@ -149,6 +150,7 @@ export function PreviewStep({ group, active, onGroupChange, onBack }: {
             {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
           </select>}
           <button type="button" className={styles.secondaryButton} onClick={onBack}><Icon name="chevron-left" size={14} />返回创作</button>
+          <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => onExport(variant.id)}>下一步：导出<Icon name="chevron-right" size={14} /></button>
         </div>
       </header>
 

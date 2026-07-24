@@ -28,6 +28,7 @@ const launcher = read('installer/macos/launcher.sh');
 assert.match(launcher, /DATA_ROOT="\$\{CREATIVE_STUDIO_DATA_ROOT:-\$HOME\/Library\/Application Support\/CreativeStudio\}"/);
 assert.match(launcher, /runtime\/bin\/node/);
 assert.match(launcher, /CREATIVE_STUDIO_DATA_ROOT="\$DATA_ROOT"/);
+assert.match(launcher, /CREATIVE_STUDIO_DESKTOP="1"/);
 assert.match(launcher, /curl -fsS -o \/dev\/null --max-time 2 "\$URL"/);
 assert.match(launcher, /nohup "\$NODE_BIN" "\$SERVER"/);
 assert.match(launcher, /open "\$URL"/);

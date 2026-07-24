@@ -23,13 +23,16 @@ db.exec(`
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT,
     status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, durationSec INTEGER
   );
-  CREATE TABLE project_artifacts (
-    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, kind TEXT NOT NULL,
-    displayName TEXT NOT NULL, relativePath TEXT NOT NULL, mimeType TEXT NOT NULL,
-    sourceJobId TEXT, createdAt TEXT NOT NULL
-  );
 `);
 initFinalEditSchema(db);
+
+const artifactColumns = db.prepare(`PRAGMA table_info(project_artifacts)`).all() as Array<{ name: string }>;
+assert.deepEqual(artifactColumns.map((column) => column.name), [
+  'id', 'projectId', 'kind', 'displayName', 'relativePath', 'mimeType', 'sourceJobId', 'createdAt',
+], 'final-edit schema 必须创建真实项目产物表');
+const artifactIndexes = db.prepare(`PRAGMA index_list(project_artifacts)`).all() as Array<{ name: string; unique: number }>;
+assert.ok(artifactIndexes.some((index) => index.name === 'idx_project_artifacts_project'));
+assert.ok(artifactIndexes.some((index) => index.name === 'idx_project_artifacts_source_kind' && index.unique === 1));
 
 const columns = db.prepare(`PRAGMA table_info(final_edit_external_assets)`).all() as Array<{ name: string }>;
 assert.deepEqual(columns.map((column) => column.name), [

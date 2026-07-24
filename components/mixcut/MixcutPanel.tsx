@@ -22,6 +22,7 @@ import { CreationStep, type MixcutPrepareJobView, type MixcutTtsProviderView } f
 import { MaterialStep, type MaterialCardView } from './MaterialStep';
 import { MixcutSidebar } from './MixcutSidebar';
 import { PreviewStep } from './PreviewStep';
+import { ExportStep } from './ExportStep';
 import styles from './MixcutPanel.module.css';
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -34,7 +35,7 @@ const STEPS = [
   { label: '导入素材', hint: '选择当前分镜组', icon: 'folder' as const, enabled: true },
   { label: 'AI 智能创作', hint: '脚本·音色·真实进度', icon: 'sparkle' as const, enabled: true },
   { label: '预览调整', hint: '完整时间轴·自动保存', icon: 'play' as const, enabled: true },
-  { label: '导出渲染', hint: 'Phase 6 接入', icon: 'download' as const, enabled: false },
+  { label: '导出渲染', hint: '写回项目成片目录', icon: 'download' as const, enabled: true },
 ];
 
 interface VisionProviderView { id: string; configured: boolean; supportsVision?: boolean }
@@ -44,7 +45,8 @@ const MANUAL_SCRIPT_ID = '__manual__';
 
 export default function MixcutPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
   const [context, setContext] = useState<MixcutContextResponse | null>(null);
-  const [activeStep, setActiveStep] = useState<0 | 1 | 2>(0);
+  const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
+  const [exportVariantId, setExportVariantId] = useState('');
   const [selectionByShotSet, setSelectionByShotSet] = useState<MaterialSelectionByShotSet>({});
   const [externalByShotSet, setExternalByShotSet] = useState<Record<string, FinalEditExternalAssetView[]>>({});
   const [scriptEditor, setScriptEditor] = useState<ScriptEditorState>(() => createScriptEditorState({ id: MANUAL_SCRIPT_ID, narrationText: '' }));
@@ -558,11 +560,11 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         <label className={styles.aspectPicker}>全局画幅<select value={outputPreset} disabled={submitting || ['queued', 'running'].includes(activeJobStatus)} onChange={(event) => setOutputPreset(event.target.value as OutputPresetId)}><option value="3x4">3:4</option><option value="9x16">9:16</option></select></label>
       </header>
 
-      <div className={`${styles.body} ${activeStep === 2 ? styles.bodyPreview : ''}`}>
+      <div className={`${styles.body} ${activeStep >= 2 ? styles.bodyPreview : ''}`}>
         <nav className={styles.stepNav} aria-label="智能混剪步骤">
           <p className={styles.eyebrow}>创作步骤</p>
           {STEPS.map((step, index) => (
-            <button type="button" key={step.label} className={index === activeStep ? styles.activeStep : ''} disabled={!step.enabled || (index === 1 && selectedIds.length === 0) || (index === 2 && !preparedGroup)} onClick={() => index < 3 && setActiveStep(index as 0 | 1 | 2)}>
+            <button type="button" key={step.label} className={index === activeStep ? styles.activeStep : ''} disabled={!step.enabled || (index === 1 && selectedIds.length === 0) || (index >= 2 && !preparedGroup)} onClick={() => index < 4 && setActiveStep(index as 0 | 1 | 2 | 3)}>
               <span><Icon name={step.icon} size={16} /></span>
               <span><strong>{step.label}</strong><small>{step.hint}</small></span>
             </button>
@@ -581,7 +583,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           />
         </div>
 
-        <main className={`${styles.main} ${activeStep === 2 ? styles.mainPreview : ''}`}>
+        <main className={`${styles.main} ${activeStep >= 2 ? styles.mainPreview : ''}`}>
           {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}
           {!context && loading ? (
             <div className={styles.loadingState}><span /><strong>正在读取真实分镜组和视频…</strong></div>
@@ -653,8 +655,13 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
               </div>
               <div className={activeStep === 2 ? undefined : styles.stepHidden}>
                 {preparedGroup
-                  ? <PreviewStep group={preparedGroup} active={activeStep === 2} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(1)} />
+                  ? <PreviewStep group={preparedGroup} active={activeStep === 2} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(1)} onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }} />
                   : <div className={styles.emptyState}><strong>预览草稿尚未准备完成</strong><span>完成四阶段智能创作后，第三步会自动开放。</span></div>}
+              </div>
+              <div className={activeStep === 3 ? undefined : styles.stepHidden}>
+                {preparedGroup && context
+                  ? <ExportStep key={`${preparedGroup.id}:${exportVariantId}`} project={context.project} group={preparedGroup} initialVariantId={exportVariantId} active={activeStep === 3} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(2)} />
+                  : <div className={styles.emptyState}><strong>还没有可导出的成片草稿</strong><span>完成智能创作并检查预览后再导出。</span></div>}
               </div>
             </>
           )}

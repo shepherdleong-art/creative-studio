@@ -251,7 +251,12 @@ try {
     const variantPatchBodies = [];
     const groupPatchBodies = [];
     const presetPostBodies = [];
+    const overlayPostBodies = [];
+    const renderPostBodies = [];
+    const revealRequests = [];
     let savedPresets = [];
+    let revealAvailable = false;
+    let renderPollCount = 0;
     const project = {
       id: 'e2e-project',
       name: 'Mixcut E2E 项目',
@@ -269,7 +274,7 @@ try {
       provider: null,
     };
     const context = {
-      project: { id: project.id, name: project.name, productName: project.productName, productCode: project.productCode, createdAt: '2026-07-24T00:00:00.000Z' },
+      project: { id: project.id, name: project.name, productName: project.productName, productCode: project.productCode, createdAt: '2026-07-24T00:00:00.000Z', taskDate: '20260724' },
       shotSets: [{ id: 'shot-set-e2e', name: '正式测试分镜组', shotCount: 2, succeededVideoCount: 2, totalDurationUs: 10_000_000 }],
       currentShotSetId: 'shot-set-e2e',
       drafts: [{ id: 'draft-e2e', shotSetId: 'shot-set-e2e', title: 'E2E 文案', narrationText: '第一句。第二句。', targetDurationSec: 10, provider: 'mock', model: 'mock', createdAt: '2026-07-24T00:00:00.000Z' }],
@@ -291,6 +296,7 @@ try {
       if (pathname === '/api/providers/tts') return json([{ id: 'tts-e2e', name: 'Mock TTS', configured: true, voices: [{ id: 'voice-e2e', name: '测试音色' }] }]);
       if (pathname === '/api/providers/script') return json([{ id: 'vision-e2e', configured: true, supportsVision: true }]);
       if (pathname === '/api/system-fonts') return json(['Arial']);
+      if (pathname === '/api/final-edit/capabilities') return json({ revealInFolder: revealAvailable });
       if (pathname === '/api/final-edit/title-presets' && request.method() === 'GET') return json(savedPresets);
       if (pathname === '/api/final-edit/title-presets' && request.method() === 'POST') {
         const body = request.postDataJSON();
@@ -310,6 +316,10 @@ try {
       if (pathname === '/api/final-edit-groups/group-e2e/narration') return route.fulfill({ status: 204, body: '' });
       if (pathname === '/api/final-edit-groups/group-e2e/cover-frame') return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'GET') return json(savedGroup);
+      if (pathname === '/api/final-edit-groups/group-e2e/overlay-bundles/9x16' && request.method() === 'POST') {
+        overlayPostBodies.push(request.postDataJSON());
+        return json({ id: 'overlay-e2e' }, 201);
+      }
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'PATCH') {
         const body = request.postDataJSON();
         groupPatchBodies.push(body);
@@ -387,6 +397,29 @@ try {
         }
         return json({ view: currentVariant });
       }
+      if (pathname === '/api/final-edit-variants/variant-e2e/render' && request.method() === 'POST') {
+        const body = request.postDataJSON();
+        renderPostBodies.push(body);
+        const queued = { id: 'render-job-e2e', variantId: 'variant-e2e', kind: 'render', status: 'queued', phase: 'preflight', progress: 0, estimatedCost: 0, costCurrency: 'CNY', errorCode: null, errorMessage: null, startedAt: null, finishedAt: null, createdAt: '2026-07-24T01:00:00.000Z' };
+        savedGroup = { ...savedGroup, jobs: [queued, ...savedGroup.jobs.filter((job) => job.id !== queued.id)] };
+        renderPollCount = 0;
+        return json({ ...queued, groupId: savedGroup.id, target: { taskName: project.name, productCode: project.productCode, taskDate: '20260724', videoFilename: '成片-E2E-001-20260724-02.mp4', coverFilename: '成片-E2E-001-20260724-02-封面.jpg', displayDirectory: '工作台/Mixcut E2E 项目/成片/' } }, 202);
+      }
+      if (pathname === '/api/final-edit-jobs/render-job-e2e' && request.method() === 'GET') {
+        renderPollCount += 1;
+        const target = { taskName: project.name, productCode: project.productCode, taskDate: '20260724', videoFilename: '成片-E2E-001-20260724-02.mp4', coverFilename: '成片-E2E-001-20260724-02-封面.jpg', displayDirectory: '工作台/Mixcut E2E 项目/成片/' };
+        if (renderPollCount <= 4) return json({ id: 'render-job-e2e', groupId: savedGroup.id, variantId: 'variant-e2e', kind: 'render', status: 'running', phase: 'rendering', progress: 0.42, target, output: null, errorMessage: null });
+        const output = { videoRelativePath: 'final-edits/jobs/render-job-e2e/final.mp4', coverRelativePath: 'final-edits/jobs/render-job-e2e/cover.jpg', publishedVideoRelativePath: 'projects/e2e-project/成片/成片-E2E-001-20260724-02.mp4', publishedCoverRelativePath: 'projects/e2e-project/成片/成片-E2E-001-20260724-02-封面.jpg', videoFilename: '成片-E2E-001-20260724-02.mp4', coverFilename: '成片-E2E-001-20260724-02-封面.jpg', displayDirectory: '工作台/Mixcut E2E 项目/成片/', durationSec: 10.83, width: 1080, height: 1920, fps: 24, videoUrl: '/api/final-edit-jobs/render-job-e2e/video', videoDownloadUrl: '/api/final-edit-jobs/render-job-e2e/video?download=1', coverUrl: '/api/final-edit-jobs/render-job-e2e/cover', coverDownloadUrl: '/api/final-edit-jobs/render-job-e2e/cover?download=1' };
+        const succeeded = { id: 'render-job-e2e', groupId: savedGroup.id, variantId: 'variant-e2e', kind: 'render', status: 'succeeded', phase: 'succeeded', progress: 1, output, errorMessage: null, finishedAt: '2026-07-24T01:00:10.000Z' };
+        savedGroup = { ...savedGroup, jobs: savedGroup.jobs.map((job) => job.id === succeeded.id ? { ...job, ...succeeded } : job) };
+        return json({ ...succeeded, target });
+      }
+      if (pathname === '/api/final-edit-jobs/render-job-e2e/reveal' && request.method() === 'POST') {
+        revealRequests.push(request.postData());
+        return json({ revealed: true });
+      }
+      if (pathname === '/api/final-edit-jobs/render-job-e2e/cover') return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
+      if (pathname === '/api/final-edit-jobs/render-job-e2e/video') return route.fulfill({ status: 200, contentType: 'video/mp4', body: Buffer.from('non-empty-mocked-video-response') });
       if (pathname.startsWith('/api/final-edit-bgm/')) return route.fulfill({ status: 204, body: '' });
       return json({ error: `Unhandled E2E API: ${request.method()} ${pathname}` }, 404);
     });
@@ -664,6 +697,56 @@ try {
     await page.getByRole('button', { name: '暂停' }).waitFor();
     await page.getByRole('button', { name: /AI 智能创作/ }).click();
     await expectEventually(async () => await page.locator('button[aria-label="播放成片"]').count() === 1, '切出第三步后预览必须恢复暂停');
+
+    savedGroup = { ...savedGroup, variants: [...savedGroup.variants, { ...savedGroup.variants[0], id: 'variant-e2e-b', indexNum: 2 }] };
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: /预览调整/ }).click();
+    await page.getByLabel('选择成片草稿').selectOption('variant-e2e-b');
+    await page.getByRole('button', { name: '下一步：导出' }).click();
+    await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
+    assert.equal(await page.getByLabel('选择导出草稿').inputValue(), 'variant-e2e-b', '从预览进入导出必须保持当前草稿，不得回退第一条');
+    await page.getByLabel('选择导出草稿').selectOption('variant-e2e');
+    await page.getByText('Mixcut E2E 项目', { exact: true }).waitFor();
+    await page.getByText('E2E-001', { exact: true }).waitFor();
+    await page.getByText('20260724', { exact: true }).waitFor();
+    await page.getByText('成片-E2E-001-20260724.mp4', { exact: true }).waitFor();
+    await page.getByText('工作台/Mixcut E2E 项目/成片/', { exact: true }).waitFor();
+    assert.equal(await page.getByText('model-e2e', { exact: true }).count(), 0, '导出命名不得误用 projects.model');
+
+    const renderResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e/render') && response.request().method() === 'POST');
+    await page.getByRole('button', { name: '开始导出' }).click();
+    await renderResponse;
+    assert.equal(overlayPostBodies.length, 1, '开始导出必须先冻结当前画幅的叠加层');
+    assert.equal(renderPostBodies.length, 1, '开始导出必须只创建一个渲染任务');
+    assert.equal(renderPostBodies[0].groupId, savedGroup.id);
+    assert.equal(renderPostBodies[0].expectedGroupRevision, savedGroup.revision);
+    assert.equal(renderPostBodies[0].expectedVariantRevision, savedGroup.variants[0].revision);
+    assert.equal(renderPostBodies[0].overlayBundleId, 'overlay-e2e');
+    await page.getByRole('progressbar').waitFor();
+    await page.getByText('正在渲染 · 42%').waitFor();
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: /导出渲染/ }).click();
+    await page.getByText('正在渲染 · 42%').waitFor();
+    await page.getByText('成片-E2E-001-20260724-02.mp4', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '开始导出' }).count(), 0, '恢复运行中任务时不得短暂开放重复导出');
+    await page.getByText('成片-E2E-001-20260724-02.mp4', { exact: true }).waitFor();
+    await page.getByText('成片-E2E-001-20260724-02-封面.jpg', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('link', { name: '下载视频' }).getAttribute('href'), '/api/final-edit-jobs/render-job-e2e/video?download=1');
+    assert.equal(await page.getByRole('link', { name: '下载封面' }).getAttribute('href'), '/api/final-edit-jobs/render-job-e2e/cover?download=1');
+    assert.equal(await page.locator('section[aria-label="导出结果"] video').getAttribute('src'), '/api/final-edit-jobs/render-job-e2e/video');
+    await expectEventually(async () => page.locator('section[aria-label="导出结果"] img').evaluate((image) => image.naturalWidth > 0), '导出封面预览必须真实加载成功');
+    const inlineVideoResponse = await page.request.get(`${server.baseUrl}/api/final-edit-jobs/render-job-e2e/video`);
+    assert.equal(inlineVideoResponse.ok(), true, '导出视频预览 URL 必须返回成功媒体响应');
+    assert.equal((await inlineVideoResponse.body()).length > 0, true, '导出视频预览响应不得为空');
+    assert.equal(await page.getByRole('button', { name: '在文件夹中查看' }).count(), 0, '普通 Web 模式不得显示桌面文件定位入口');
+
+    revealAvailable = true;
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: /导出渲染/ }).click();
+    await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
+    await page.getByText('成片-E2E-001-20260724-02.mp4', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '在文件夹中查看' }).click();
+    assert.deepEqual(revealRequests, [null], '文件定位请求不得接受或泄露客户端路径');
 
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');

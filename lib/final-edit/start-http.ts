@@ -1,7 +1,7 @@
 import { getDb } from '../db';
 import { getFinalEditWorkspace, recoverFinalEditPrepareJobs } from './runtime';
 import type { OutputPresetId } from './types';
-import { FinalEditError } from './workspace';
+import { FinalEditError } from './errors';
 
 export interface FinalEditStartBody {
   scriptDraftId?: string | null;

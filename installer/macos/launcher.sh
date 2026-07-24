@@ -20,6 +20,7 @@ fi
 
 PORT="$PORT" HOSTNAME="$HOST" NODE_ENV="production" \
 CREATIVE_STUDIO_DATA_ROOT="$DATA_ROOT" \
+CREATIVE_STUDIO_DESKTOP="1" \
 nohup "$NODE_BIN" "$SERVER" \
   >>"$DATA_ROOT/storage/logs/server.out.log" \
   2>>"$DATA_ROOT/storage/logs/server.err.log" &

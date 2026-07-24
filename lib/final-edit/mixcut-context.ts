@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
+import { formatShanghaiTaskDate } from './export-identity.ts';
 import { probeVideoMedia } from '../ffmpeg.ts';
 import type { ScriptOutput } from '../script-providers/types.ts';
 import { resolveStoragePath } from './storage-path.ts';
@@ -15,11 +16,9 @@ import type { MixcutContextResponse } from './types.ts';
 // the real data/workbench.db.
 //
 // "project not found" is signalled by returning null rather than throwing
-// FinalEditError directly: FinalEditError lives in lib/final-edit/workspace.ts,
-// and workspace.ts is the module that imports buildMixcutContext() from here
-// (to implement FinalEditWorkspace.getMixcutContext) — importing FinalEditError
-// back from workspace.ts would make this module circularly depend on its own
-// consumer. workspace.ts's getMixcutContext() turns a null result into
+// FinalEditError directly: this query layer deliberately returns data/null,
+// while workspace.ts owns the HTTP-facing domain translation. Its
+// getMixcutContext() turns a null result into
 // FinalEditError('project_not_found', '项目不存在', 404).
 
 /**
@@ -306,6 +305,7 @@ export async function buildMixcutContext(
       // This module never reads projectRow.model anywhere.
       productCode: projectRow.productCode || '',
       createdAt: projectRow.createdAt,
+      taskDate: formatShanghaiTaskDate(projectRow.createdAt),
     },
     shotSets,
     currentShotSetId,

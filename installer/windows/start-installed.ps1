@@ -89,6 +89,7 @@ $serverCommand = @"
 `$env:PORT = '$Port'
 `$env:HOSTNAME = '127.0.0.1'
 `$env:NODE_ENV = 'production'
+`$env:CREATIVE_STUDIO_DESKTOP = '1'
 Set-Location -LiteralPath '$escapedRoot'
 & '$escapedNode' 'server.js' 1>> '$escapedStdout' 2>> '$escapedStderr'
 "@

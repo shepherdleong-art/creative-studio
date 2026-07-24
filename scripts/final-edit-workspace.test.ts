@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { FinalEditVariantView } from '../lib/final-edit/types.ts';
+import { releaseReservedExportTarget, type ReservedProjectExportTarget } from '../lib/final-edit/export-naming.ts';
 
 const {
   createFinalEditWorkspace,
@@ -19,7 +20,11 @@ fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });
 const db = new Database(':memory:');
 db.pragma('foreign_keys = ON');
 db.exec(`
-  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, finalEditAutoUseLimit INTEGER DEFAULT 2);
+  CREATE TABLE projects (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
+    productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL,
+    finalEditAutoUseLimit INTEGER DEFAULT 2
+  );
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE shots (
     id TEXT PRIMARY KEY, shotSetId TEXT NOT NULL, indexNum INTEGER NOT NULL,
@@ -42,7 +47,7 @@ db.exec(`
 `);
 initFinalEditSchema(db);
 
-db.prepare(`INSERT INTO projects (id, name) VALUES ('p1', '沙发')`).run();
+db.prepare(`INSERT INTO projects (id, name, model, productCode, createdAt) VALUES ('p1', '沙发任务', 'gpt-image-2-not-product-code', 'SF-A1', '2026-07-23 16:00:00')`).run();
 db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set-a', 'p1', '客厅'), ('set-b', 'p1', '卧室')`).run();
 for (const [id, setId, index] of [['s1', 'set-a', 1], ['s2', 'set-a', 2], ['s3', 'set-b', 1]] as const) {
   const imagePath = path.join(storageRoot, `${id}.png`);
@@ -442,6 +447,33 @@ await assert.rejects(
 
 const restored = workspace.apply({ scope: 'variant', variantId: first.id, expectedRevision: deleteResult.view.revision, type: 'restore_revision', revision: 0 });
 assert.equal((restored.view as FinalEditVariantView).issues.some((issue) => issue.code === 'timeline_gap'), false);
+
+const restoredVariant = restored.view as FinalEditVariantView;
+db.prepare(`UPDATE final_edit_variants SET coverJson=? WHERE id=?`).run(JSON.stringify({ ...restoredVariant.cover, coverKey: 'image:img-s1', kind: 'storyboard_image', sourceKey: undefined, sourceUrl: '/api/final-edit-groups/test/cover-candidates/image%3Aimg-s1' }), restoredVariant.id);
+db.prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES ('export-identity-bundle', ?, '3x4', ?, 'export-identity', '{}', 'final-edits/test/export-overlays', 'ready', datetime('now'))`).run(group.id, group.revision);
+const exportReady = workspace.load(group.id);
+const exportReadyVariant = exportReady.variants.find((variant) => variant.id === restoredVariant.id)!;
+const renderJob = await workspace.enqueueRender({ groupId: group.id, variantId: exportReadyVariant.id, expectedGroupRevision: exportReady.revision, expectedVariantRevision: exportReadyVariant.revision, overlayBundleId: 'export-identity-bundle' });
+assert.equal(renderJob.target.taskName, '沙发任务');
+assert.equal(renderJob.target.productCode, 'SF-A1');
+assert.equal(renderJob.target.taskDate, '20260724');
+assert.equal(renderJob.target.videoFilename, '成片-SF-A1-20260724.mp4');
+assert.equal(renderJob.target.displayDirectory, '工作台/沙发任务/成片/');
+const renderSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(renderJob.id) as { inputSnapshotJson: string }).inputSnapshotJson) as {
+  exportIdentity: { productCode: string; taskDate: string };
+  exportTarget: ReservedProjectExportTarget;
+};
+assert.equal(renderSnapshot.exportIdentity.productCode, 'SF-A1', '不可把 projects.model 当作型号写入快照');
+assert.equal(renderSnapshot.exportIdentity.taskDate, '20260724');
+releaseReservedExportTarget(storageRoot, renderSnapshot.exportTarget);
+db.prepare(`UPDATE projects SET productCode='' WHERE id='p1'`).run();
+await assert.rejects(
+  workspace.enqueueRender({ groupId: group.id, variantId: exportReadyVariant.id, expectedGroupRevision: exportReady.revision, expectedVariantRevision: exportReadyVariant.revision, overlayBundleId: 'export-identity-bundle' }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'product_code_required',
+  '空型号必须在创建 render job 前阻断',
+);
+db.prepare(`UPDATE projects SET productCode='SF-A1' WHERE id='p1'`).run();
+db.prepare(`UPDATE final_edit_variants SET coverJson=? WHERE id=?`).run(JSON.stringify(restoredVariant.cover), restoredVariant.id);
 
 db.prepare(`INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt) VALUES ('missing-bgm', 'bgm/missing.mp3', 'missing-bgm-fingerprint', 10000000, 'mp3', 'ready', datetime('now'))`).run();
 const withBgm = workspace.apply({ scope: 'variant', variantId: first.id, expectedRevision: restored.view.revision, type: 'set_bgm', trackId: 'missing-bgm' }).view as FinalEditVariantView;

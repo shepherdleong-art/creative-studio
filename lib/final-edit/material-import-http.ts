@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { FinalEditError } from './workspace.ts';
+import { FinalEditError } from './errors.ts';
 import type {
   ExternalAssetImportResult,
   ExternalAssetUpload,
