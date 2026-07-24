@@ -130,18 +130,31 @@ db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, createdAt) VALUES
 `).run();
 
 // ss-a videos: one real+succeeded+safe (the only one that should ever appear
-// in a videoAssets[] detail list), plus three that each fail exactly one gate
-// for the DETAIL list (status / unsafe path / missing file) while still
-// counting toward the coarse ss-a sidebar aggregate (JC-3 is DB-only and
-// doesn't re-check path safety or file existence).
+// in a videoAssets[] detail list), plus four that each fail exactly one gate
+// for the DETAIL list (status / status / unsafe path / missing file) while
+// still counting toward the coarse ss-a sidebar aggregate where applicable
+// (JC-3 is DB-only and doesn't re-check path safety or file existence).
+//
+// video-real-pending is the status-filter isolation fixture (code review
+// Fix 1): it points at the SAME real file as video-real, so it passes both
+// the safe-path check AND the fs.existsSync check (JC-4) — its status
+// ('pending', not 'succeeded') is the ONLY thing that can exclude it from
+// videoAssets[]. Without this row, video-pending (below) was the only
+// non-succeeded fixture, but video-pending's file is never materialized on
+// disk, so it was ALREADY excluded by JC-4 regardless of whether the
+// `status = 'succeeded'` filter at mixcut-context.ts:209 did anything —
+// i.e. a regression that weakened/removed the status filter (e.g. widening
+// it to `status IN ('succeeded','pending')`) could not be caught by any
+// existing row. video-real-pending breaks that confound.
 db.prepare(`
   INSERT INTO video_jobs (id, projectId, shotSetId, localVideoPath, filename, status, durationSec, createdAt)
   VALUES
-    ('video-real',    'project-a', 'ss-a', ?,                              'video-real.mp4', 'succeeded', 1, '2026-01-05 11:00:00'),
-    ('video-pending', 'project-a', 'ss-a', ?,                              'video-pending.mp4', 'pending', 5, '2026-01-05 11:01:00'),
-    ('video-unsafe',  'project-a', 'ss-a', '../../etc/passwd',             'video-unsafe.mp4', 'succeeded', 5, '2026-01-05 11:02:00'),
-    ('video-missing', 'project-a', 'ss-a', ?,                              'video-missing.mp4', 'succeeded', 5, '2026-01-05 11:03:00')
-`).run(realVideoPath, path.join(videosDir, 'video-pending.mp4'), path.join(videosDir, 'does-not-exist.mp4'));
+    ('video-real',         'project-a', 'ss-a', ?,                  'video-real.mp4', 'succeeded', 1, '2026-01-05 11:00:00'),
+    ('video-real-pending', 'project-a', 'ss-a', ?,                  'video-real-pending.mp4', 'pending', 1, '2026-01-05 11:00:30'),
+    ('video-pending',      'project-a', 'ss-a', ?,                  'video-pending.mp4', 'pending', 5, '2026-01-05 11:01:00'),
+    ('video-unsafe',       'project-a', 'ss-a', '../../etc/passwd', 'video-unsafe.mp4', 'succeeded', 5, '2026-01-05 11:02:00'),
+    ('video-missing',      'project-a', 'ss-a', ?,                  'video-missing.mp4', 'succeeded', 5, '2026-01-05 11:03:00')
+`).run(realVideoPath, realVideoPath, path.join(videosDir, 'video-pending.mp4'), path.join(videosDir, 'does-not-exist.mp4'));
 
 // ss-b videos: purely for JC-3 aggregate coverage — files are never actually
 // created on disk (JC-3's aggregation is pure SQL and must never touch the
@@ -274,6 +287,20 @@ assert.equal(defaultContext.drafts[0].model, 'gemini-3.5-flash');
 // excluded, not surfaced as errors.
 // =============================================================================
 assert.deepEqual(explicitContext.videoAssets.map((v) => v.videoJobId), ['video-real'], 'ss-a 的 videoAssets[] 只应包含通过全部校验的 video-real');
+
+// Status-filter isolation (code review Fix 1): video-real-pending points at
+// the exact same on-disk file as video-real (real, safe-path-valid,
+// existing), so JC-4's fs.existsSync gate and the safe-path check both pass
+// for it — its 'pending' status is the ONLY possible reason it can be
+// excluded here. This specifically catches a regression that weakens or
+// removes the `status = 'succeeded'` predicate at mixcut-context.ts:209
+// (e.g. widening it to `status IN ('succeeded','pending')`), which the
+// deepEqual assertion above would also fail on, but this makes the isolated
+// claim explicit and independently verifiable.
+assert.ok(
+  !explicitContext.videoAssets.some((v) => v.videoJobId === 'video-real-pending'),
+  'video-real-pending 与 video-real 指向同一个真实存在、路径安全的文件，唯一能排除它的只能是 status 过滤器'
+);
 const realAsset = explicitContext.videoAssets[0];
 assert.equal(realAsset.shotSetId, 'ss-a');
 assert.equal(realAsset.filename, 'video-real.mp4');
