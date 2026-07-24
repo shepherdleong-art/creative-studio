@@ -148,11 +148,19 @@ export interface VideoMediaProbe {
   fps: number;
 }
 
+// Metadata-only read, not a transcode — much shorter than runFfmpeg's 30s
+// (used elsewhere for actual frame extraction). probeVideoMedia is now
+// awaited directly inside live HTTP handlers (final-edit context route +
+// module-4 thumbnail route), so a hung ffprobe (e.g. reading a truncated
+// file from an interrupted download) must not be able to block a request
+// indefinitely.
+const PROBE_VIDEO_MEDIA_TIMEOUT_MS = 10_000;
+
 /**
  * ffprobe 一次性取时长 + 视频流宽高/帧率（JSON 输出）。只做元数据读取（毫秒级），
  * 不转码，供成片模块 4 视频列表/缩略图使用。单个文件探测失败（ffprobe 不可用、
- * 文件损坏、没有视频流）一律 resolve 全零结果，绝不 reject——一条视频探测失败
- * 不应打断整份 context 响应。
+ * 文件损坏、没有视频流、超时）一律 resolve 全零结果，绝不 reject——一条视频探测
+ * 失败不应打断整份 context 响应。
  */
 export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
   const fallback: VideoMediaProbe = { durationUs: 0, width: 0, height: 0, fps: 0 };
@@ -164,23 +172,43 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
         { windowsHide: true }
       );
       let out = '';
+      let settled = false;
+      const finish = (result: VideoMediaProbe) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      // Mirrors runFfmpeg's timeout guard above (kill + settle rather than
+      // hang forever), but — per this function's documented "never reject"
+      // contract — a timeout resolves the same all-zero fallback as any
+      // other probe failure instead of rejecting.
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish(fallback);
+      }, PROBE_VIDEO_MEDIA_TIMEOUT_MS);
       child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
-      child.on('error', () => resolve(fallback));
+      // Drain stderr so a chatty/stuck ffprobe process can't back up its
+      // stderr pipe and hang (same undrained-stderr gap noted elsewhere in
+      // this file for supportsFilter; fixed here since this path is now
+      // reachable from live HTTP requests).
+      child.stderr.on('data', () => {});
+      child.on('error', () => finish(fallback));
       child.on('close', (code) => {
-        if (code !== 0) { resolve(fallback); return; }
+        if (code !== 0) { finish(fallback); return; }
         try {
           const parsed = JSON.parse(out) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string }>; format?: { duration?: string } };
           const stream = parsed.streams?.[0];
           const durationSec = parseFloat(parsed.format?.duration ?? '');
-          if (!stream || !Number.isFinite(durationSec)) { resolve(fallback); return; }
-          resolve({
+          if (!stream || !Number.isFinite(durationSec)) { finish(fallback); return; }
+          finish({
             durationUs: Math.round(durationSec * 1_000_000),
             width: Number(stream.width) || 0,
             height: Number(stream.height) || 0,
             fps: parseFrameRateFraction(stream.r_frame_rate),
           });
         } catch {
-          resolve(fallback);
+          finish(fallback);
         }
       });
     } catch {
