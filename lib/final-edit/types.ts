@@ -47,6 +47,7 @@ export interface TextStyle {
   fontFamily: string;
   fontPostscriptName?: string;
   fontSizePx: number;
+  italic: boolean;
   x: number;
   y: number;
   scale: number;
@@ -56,6 +57,29 @@ export interface TextStyle {
   lineHeight: number;
   stroke: { enabled: boolean; color: string; widthPx: number };
   shadow: { enabled: boolean; color: string; opacity: number; blurPx: number; distancePx: number; angleDeg: number };
+}
+
+export interface CoverFraming {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+export interface CoverPresetV2 {
+  version: 2;
+  stylesByPreset: Record<OutputPresetId, {
+    primary: TextStyle;
+    secondary: TextStyle;
+    framing: CoverFraming;
+  }>;
+}
+
+export interface CoverEditorDraft {
+  sourceKey: string;
+  frameTimeUs: number;
+  framing: CoverFraming;
+  primary: { text: string; style: TextStyle };
+  secondary: { text: string; style: TextStyle };
 }
 
 export interface FinalEditIssue {
@@ -111,7 +135,9 @@ export interface FinalEditVariantView {
     coverKey: string | null;
     kind: 'storyboard_image' | 'video_keyframe' | null;
     sourceUrl: string | null;
-    framing: { scale: number; offsetX: number; offsetY: number };
+    framing: CoverFraming;
+    sourceKey: string | null;
+    frameTimeUs: number;
   };
   issues: FinalEditIssue[];
   matchDiagnostics?: MatchDiagnostics;

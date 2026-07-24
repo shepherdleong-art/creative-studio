@@ -1,14 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { FinalEditAssetView, FinalEditGroupView, FinalEditVariantView, OutputPresetId, SubtitleCue, TextStyle, TimelineClip } from '@/lib/final-edit/types';
+import type { CoverPresetV2, FinalEditAssetView, FinalEditGroupView, FinalEditVariantView, SubtitleCue, TextStyle, TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from './command-types';
 import styles from './FinalEditEditor.module.css';
 
-export interface TitlePresetView {
+export interface TitlePresetView extends CoverPresetV2 {
   id: string;
   name: string;
-  stylesByPreset: Record<OutputPresetId, { coverPrimary: TextStyle; coverSecondary: TextStyle }>;
 }
 
 export type InspectorMode = 'subtitle' | 'cover' | 'framing' | 'audio';
@@ -211,6 +210,7 @@ export function StyleEditor({ value, onPreview, onCommit }: { value: TextStyle; 
       <Slider label="缩放" value={draft.scale} min={0.5} max={2} step={0.01} onPreview={(scale) => preview({ scale })} onCommit={(scale) => commit({ scale })} />
       <Slider label="单行宽度" value={draft.boxWidthPx} min={200} max={1800} step={10} onPreview={(boxWidthPx) => preview({ boxWidthPx })} onCommit={(boxWidthPx) => commit({ boxWidthPx })} />
       <div className={styles.twoColumns}><label><span className={styles.fieldLabel}>颜色</span><input className={styles.input} type="color" value={draft.color} onChange={(event) => commit({ color: event.target.value })} /></label><label><span className={styles.fieldLabel}>对齐</span><select className={styles.input} value={draft.align} onChange={(event) => commit({ align: event.target.value as TextStyle['align'] })}><option value="left">左</option><option value="center">中</option><option value="right">右</option></select></label></div>
+      <label className={styles.effectHeader}>斜体 <input type="checkbox" checked={draft.italic} onChange={(event) => commit({ italic: event.target.checked })} /></label>
       <label className={styles.effectHeader}>描边 <input type="checkbox" checked={draft.stroke.enabled} onChange={(event) => commit({ stroke: { ...draft.stroke, enabled: event.target.checked } })} /></label>
       {draft.stroke.enabled && <div className={styles.effectBody}><label className={styles.colorRow}><input type="color" value={draft.stroke.color} onChange={(event) => commit({ stroke: { ...draft.stroke, color: event.target.value } })} /><span /></label><Slider label="粗细" value={draft.stroke.widthPx} min={0} max={16} step={0.5} onPreview={(widthPx) => preview({ stroke: { ...draft.stroke, widthPx } })} onCommit={(widthPx) => commit({ stroke: { ...draft.stroke, widthPx } })} /></div>}
       <label className={styles.effectHeader}>阴影 <input type="checkbox" checked={draft.shadow.enabled} onChange={(event) => commit({ shadow: { ...draft.shadow, enabled: event.target.checked } })} /></label>

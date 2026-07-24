@@ -6,6 +6,7 @@ import { runFfmpeg, probeDurationSec } from '../ffmpeg.ts';
 import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue } from './types.ts';
 import { resolveStoragePath } from './storage-path.ts';
 import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
+import { coverFramingGeometry } from './cover-framing.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
@@ -76,14 +77,7 @@ export async function renderFinalEditSnapshot(input: {
   const source = sharp(coverSource).rotate();
   const metadata = await source.metadata();
   if (!metadata.width || !metadata.height) throw new Error('封面底图尺寸无效');
-  const scale = Math.max(1, Math.min(3, coverFraming.scale));
-  const fitScale = Math.max(output.width / metadata.width, output.height / metadata.height) * scale;
-  const resizedWidth = Math.max(output.width, Math.ceil(metadata.width * fitScale));
-  const resizedHeight = Math.max(output.height, Math.ceil(metadata.height * fitScale));
-  const overflowX = resizedWidth - output.width;
-  const overflowY = resizedHeight - output.height;
-  const left = Math.round(overflowX * (Math.max(-1, Math.min(1, coverFraming.offsetX)) + 1) / 2);
-  const top = Math.round(overflowY * (Math.max(-1, Math.min(1, coverFraming.offsetY)) + 1) / 2);
+  const { resizedWidth, resizedHeight, left, top } = coverFramingGeometry({ sourceWidth: metadata.width, sourceHeight: metadata.height, outputWidth: output.width, outputHeight: output.height, framing: coverFraming });
   await source
     .resize(resizedWidth, resizedHeight, { fit: 'fill' })
     .extract({ left, top, width: output.width, height: output.height })

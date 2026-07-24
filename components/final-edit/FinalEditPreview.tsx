@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FinalEditAssetView, FinalEditGroupView, FinalEditVariantView } from '@/lib/final-edit/types';
+import { drawFramedImage } from '@/lib/final-edit/cover-framing';
+import { OUTPUT_PRESETS, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView } from '@/lib/final-edit/types';
 import type { StyleTarget } from './FinalEditInspector';
 import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime } from './preview-playback';
-import { drawEditorOverlay } from './text-canvas-renderer';
+import { drawEditorOverlay, textStyleFont } from './text-canvas-renderer';
 import styles from './FinalEditEditor.module.css';
 
 const FPS = 24;
@@ -48,6 +49,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
 }) {
   const previewRootRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const coverImageCanvasRef = useRef<HTMLCanvasElement>(null);
   const foregroundCanvasRef = useRef<HTMLCanvasElement>(null);
   const videoARef = useRef<HTMLVideoElement>(null);
   const videoBRef = useRef<HTMLVideoElement>(null);
@@ -87,6 +89,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const activeFramingScale = activeFraming.scale;
   const activeFramingOffsetX = activeFraming.offsetX;
   const activeFramingOffsetY = activeFraming.offsetY;
+  const previewSize = OUTPUT_PRESETS[variant.outputPreset];
 
   const setAudioLevels = useCallback((timeSec: number) => {
     const graph = audioGraphRef.current;
@@ -142,8 +145,38 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   }, [bodyDurationSec]);
 
   useEffect(() => {
-    if (canvasRef.current) drawEditorOverlay(canvasRef.current, group, variant.outputPreset, showSelectedMaterial ? null : activeCue, playheadSec < INTRO_SEC && !showSelectedMaterial);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const showTitle = playheadSec < INTRO_SEC && !showSelectedMaterial;
+    const cue = showSelectedMaterial ? null : activeCue;
+    const styles = group.textStyles[variant.outputPreset];
+    const fonts = showTitle
+      ? [[styles.coverPrimary, group.coverTitle.primary.text], [styles.coverSecondary, group.coverTitle.secondary.text]] as const
+      : cue ? [[styles.subtitle, cue.text]] as const : [];
+    let cancelled = false;
+    void Promise.all(fonts.map(([style, text]) => document.fonts.load(textStyleFont(style), text)))
+      .catch(() => undefined)
+      .then(() => { if (!cancelled) drawEditorOverlay(canvas, group, variant.outputPreset, cue, showTitle); });
+    return () => { cancelled = true; };
   }, [activeCue, group, playheadSec, showSelectedMaterial, variant.outputPreset]);
+
+  useEffect(() => {
+    const canvas = coverImageCanvasRef.current;
+    if (!canvas) return;
+    canvas.width = previewSize.width;
+    canvas.height = previewSize.height;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    if (!variant.cover.sourceUrl) return;
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) drawFramedImage(context, image, variant.cover.framing);
+    };
+    image.src = variant.cover.sourceUrl;
+    return () => { cancelled = true; };
+  }, [previewSize.height, previewSize.width, variant.cover.framing, variant.cover.sourceUrl]);
 
   useEffect(() => {
     const videos = [videoARef.current, videoBRef.current] as const;
@@ -333,9 +366,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     await root.requestFullscreen().catch(() => undefined);
   };
 
-  const coverFraming = variant.cover.framing || { scale: 1, offsetX: 0, offsetY: 0 };
   const previewClass = variant.outputPreset === '16x9' ? styles.preview169 : variant.outputPreset === '9x16' ? styles.preview916 : styles.preview34;
-  const previewSize = variant.outputPreset === '16x9' ? { width: 1920, height: 1080 } : variant.outputPreset === '9x16' ? { width: 1080, height: 1920 } : { width: 1080, height: 1440 };
   const videoAAsset = slotAssets[0];
   const videoBAsset = slotAssets[1];
   const canDragText = !showSelectedMaterial && Boolean(textTarget) && ((playheadSec < INTRO_SEC && textTarget !== 'subtitle') || (playheadSec >= INTRO_SEC && textTarget === 'subtitle' && activeCue));
@@ -364,7 +395,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       <div className={styles.previewStageWrap}>
         <div className={`${styles.previewStage} ${previewClass}`}>
           {showSelectedMaterial && selectedAsset && <img className={`${styles.previewMedia} ${variant.outputPreset === '16x9' ? styles.previewContain : ''}`} src={selectedAsset.thumbnailUrl} alt="当前素材预览" />}
-          {!showSelectedMaterial && playheadSec < INTRO_SEC && variant.cover.sourceUrl && <img className={styles.previewMedia} src={variant.cover.sourceUrl} alt="封面预览" style={{ objectPosition: `${50 + coverFraming.offsetX * 50}% ${50 + coverFraming.offsetY * 50}%`, transform: `scale(${coverFraming.scale})` }} />}
+          <canvas ref={coverImageCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec >= INTRO_SEC || !variant.cover.sourceUrl ? styles.previewInactive : ''}`} aria-label="封面预览" />
           <video ref={videoARef} src={videoAAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
           <video ref={videoBRef} src={videoBAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
           <canvas ref={foregroundCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec < INTRO_SEC || !activeAsset ? styles.previewInactive : ''}`} />

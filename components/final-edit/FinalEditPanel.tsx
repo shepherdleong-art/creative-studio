@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
-import type { FinalEditGroupView, FinalEditVariantView, OutputPresetId } from '@/lib/final-edit/types';
+import type { CoverPresetV2, FinalEditGroupView, FinalEditVariantView, OutputPresetId } from '@/lib/final-edit/types';
 import { createOverlayBundlePayload, measureTextOverflowDetails, TextOverflowError, type TextOverflowDetail } from './text-canvas-renderer';
 import { FinalEditAssetPool, type AssetFilter } from './FinalEditAssetPool';
 import { FinalEditInspector, type InspectorMode, type StyleTarget, type TitlePresetView } from './FinalEditInspector';
@@ -318,12 +318,16 @@ export default function FinalEditPanel({ projectId, projectName }: { projectId: 
   };
 
   const saveTitlePreset = async () => {
-    if (!group) return;
+    if (!group || !selectedVariant) return;
     const name = window.prompt('预设名称', `我的标题预设 ${titlePresets.length + 1}`)?.trim();
     if (!name) return;
     try {
-      const stylesByPreset = Object.fromEntries((['3x4', '9x16', '16x9'] as OutputPresetId[]).map((preset) => [preset, { coverPrimary: group.textStyles[preset].coverPrimary, coverSecondary: group.textStyles[preset].coverSecondary }]));
-      const created = await readJson<TitlePreset>(await fetch('/api/final-edit/title-presets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, stylesByPreset }) }));
+      const stylesByPreset = Object.fromEntries((['3x4', '9x16', '16x9'] as OutputPresetId[]).map((preset) => [preset, {
+        primary: group.textStyles[preset].coverPrimary,
+        secondary: group.textStyles[preset].coverSecondary,
+        framing: { scale: 1, offsetX: 0, offsetY: 0 },
+      }])) as CoverPresetV2['stylesByPreset'];
+      const created = await readJson<TitlePreset>(await fetch('/api/final-edit/title-presets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, version: 2, stylesByPreset }) }));
       setTitlePresets((items) => [created, ...items]); setMessage(`已保存预设「${name}」`);
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
   };

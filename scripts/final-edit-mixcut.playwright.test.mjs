@@ -14,6 +14,7 @@ function textStyle(fontSizePx, y) {
   return {
     fontFamily: 'Arial',
     fontSizePx,
+    italic: false,
     x: 0.5,
     y,
     scale: 1,
@@ -75,7 +76,7 @@ function createFormalGroup() {
         ],
       },
       bgm: { trackId: null, gainDb: -12, loop: true, fadeInSec: 0.5, fadeOutSec: 0.8 },
-      cover: { coverKey: 'cover-e2e', kind: 'storyboard_image', sourceUrl: transparentPixel, framing: { scale: 1, offsetX: 0, offsetY: 0 } },
+      cover: { coverKey: 'video:video-a:1000000', kind: 'video_keyframe', sourceKey: 'module4:video-a', frameTimeUs: 1_000_000, sourceUrl: '/api/final-edit-groups/group-e2e/cover-frame?sourceKey=module4%3Avideo-a&timeUs=1000000&preset=3x4', framing: { scale: 1, offsetX: 0, offsetY: 0 } },
       issues: [],
       maxOverlap: 1,
       revision: 7,
@@ -248,6 +249,9 @@ try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1 });
     let savedGroup = createFormalGroup();
     const variantPatchBodies = [];
+    const groupPatchBodies = [];
+    const presetPostBodies = [];
+    let savedPresets = [];
     const project = {
       id: 'e2e-project',
       name: 'Mixcut E2E 项目',
@@ -287,14 +291,67 @@ try {
       if (pathname === '/api/providers/tts') return json([{ id: 'tts-e2e', name: 'Mock TTS', configured: true, voices: [{ id: 'voice-e2e', name: '测试音色' }] }]);
       if (pathname === '/api/providers/script') return json([{ id: 'vision-e2e', configured: true, supportsVision: true }]);
       if (pathname === '/api/system-fonts') return json(['Arial']);
+      if (pathname === '/api/final-edit/title-presets' && request.method() === 'GET') return json(savedPresets);
+      if (pathname === '/api/final-edit/title-presets' && request.method() === 'POST') {
+        const body = request.postDataJSON();
+        presetPostBodies.push(body);
+        const created = { id: `preset-${savedPresets.length + 1}`, name: body.name, version: 2, stylesByPreset: body.stylesByPreset, createdAt: '2026-07-24T00:00:00.000Z', updatedAt: '2026-07-24T00:00:00.000Z' };
+        savedPresets = [created, ...savedPresets];
+        return json(created, 201);
+      }
+      if (pathname.startsWith('/api/final-edit/title-presets/') && request.method() === 'DELETE') {
+        const id = pathname.split('/').at(-1);
+        savedPresets = savedPresets.filter((preset) => preset.id !== id);
+        return route.fulfill({ status: 204, body: '' });
+      }
       if (pathname === '/api/projects/e2e-project/final-edit/context') return json(context);
       if (pathname === '/api/projects/e2e-project/final-edit/shot-sets/shot-set-e2e/external-assets') return json({ assets: [] });
       if (pathname === '/api/projects/e2e-project/final-edit/groups') return json({ groups: [savedGroup] });
       if (pathname === '/api/final-edit-groups/group-e2e/narration') return route.fulfill({ status: 204, body: '' });
+      if (pathname === '/api/final-edit-groups/group-e2e/cover-frame') return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'GET') return json(savedGroup);
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'PATCH') {
         const body = request.postDataJSON();
-        savedGroup = { ...savedGroup, revision: savedGroup.revision + 1 };
+        groupPatchBodies.push(body);
+        if (body.type === 'apply_cover_editor') {
+          const currentVariant = savedGroup.variants.find((variant) => variant.id === body.variantId);
+          assert.ok(currentVariant, 'cover command variant must exist');
+          const sourceKey = body.draft.sourceKey;
+          const videoJobId = sourceKey.replace(/^module4:/, '');
+          const frameTimeUs = Math.floor(body.draft.frameTimeUs * 24 / 1_000_000) * 1_000_000 / 24;
+          const nextVariant = {
+            ...currentVariant,
+            revision: currentVariant.revision + 1,
+            cover: {
+              coverKey: `video:${videoJobId}:${frameTimeUs}`,
+              kind: 'video_keyframe',
+              sourceKey,
+              frameTimeUs,
+              sourceUrl: `/api/final-edit-groups/group-e2e/cover-frame?sourceKey=${encodeURIComponent(sourceKey)}&timeUs=${frameTimeUs}&preset=${currentVariant.outputPreset}`,
+              framing: body.draft.framing,
+            },
+          };
+          savedGroup = {
+            ...savedGroup,
+            revision: savedGroup.revision + 1,
+            coverTitle: {
+              primary: { ...savedGroup.coverTitle.primary, text: body.draft.primary.text, textSource: 'manual' },
+              secondary: { ...savedGroup.coverTitle.secondary, text: body.draft.secondary.text, textSource: 'manual' },
+            },
+            textStyles: {
+              ...savedGroup.textStyles,
+              [currentVariant.outputPreset]: {
+                ...savedGroup.textStyles[currentVariant.outputPreset],
+                coverPrimary: body.draft.primary.style,
+                coverSecondary: body.draft.secondary.style,
+              },
+            },
+            variants: savedGroup.variants.map((variant) => variant.id === nextVariant.id ? nextVariant : variant),
+          };
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        } else {
+          savedGroup = { ...savedGroup, revision: savedGroup.revision + 1 };
+        }
         return json({ view: savedGroup, command: body.type });
       }
       if (pathname === '/api/final-edit-variants/variant-e2e' && request.method() === 'PATCH') {
@@ -374,6 +431,126 @@ try {
     await page.getByRole('button', { name: /预览调整/ }).click();
     await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
     assert.ok(Math.abs(await stageRatio() - 9 / 16) < 0.02, '正式页面 9:16 播放器必须保持画幅');
+
+    const openCoverDrawer = async () => {
+      await page.getByRole('button', { name: '封面', exact: true }).click();
+      await page.getByRole('button', { name: '精调封面' }).click();
+      return page.getByRole('dialog', { name: '精调封面' });
+    };
+    let coverDialog = await openCoverDrawer();
+    await coverDialog.waitFor();
+    const drawerGeometry = await coverDialog.evaluate((dialog) => ({
+      directPortal: dialog.parentElement?.parentElement === document.body,
+      widthRatio: dialog.getBoundingClientRect().width / window.innerWidth,
+      bodyLocked: document.body.style.overflow === 'hidden',
+    }));
+    assert.equal(drawerGeometry.directPortal, true, '封面抽屉必须 portal 到 document.body 根级');
+    assert.ok(drawerGeometry.widthRatio >= 0.68 && drawerGeometry.widthRatio <= 0.72, `封面抽屉宽度应为视口 68%–72%，实际 ${drawerGeometry.widthRatio}`);
+    assert.equal(drawerGeometry.bodyLocked, true, '打开根级抽屉时必须锁定底层滚动');
+    await page.getByRole('button', { name: '关闭封面精调' }).focus();
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await coverDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true, 'Shift+Tab 必须被圈定在 aria-modal 抽屉内');
+    await page.getByRole('button', { name: /a\.mp4/ }).waitFor();
+    assert.equal(await page.getByRole('slider', { name: '封面截帧时间' }).inputValue(), '1', '抽屉必须恢复真实截帧时间');
+
+    const groupWritesBeforeCancel = groupPatchBodies.length;
+    await page.getByLabel('主标题文字').fill('取消不保存');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    assert.equal(groupPatchBodies.length, groupWritesBeforeCancel, '点击取消不得提交任何 group PATCH');
+    coverDialog = await openCoverDrawer();
+    assert.equal(await page.getByLabel('主标题文字').inputValue(), '正式页面测试', '取消后重开必须从持久化状态重新克隆草稿');
+    await page.getByLabel('主标题文字').fill('Esc 不保存');
+    await page.keyboard.press('Escape');
+    assert.equal(groupPatchBodies.length, groupWritesBeforeCancel, 'Esc 不得提交封面修改');
+    coverDialog = await openCoverDrawer();
+    await page.getByLabel('主标题文字').fill('关闭不保存');
+    await page.getByRole('button', { name: '关闭封面精调' }).click();
+    assert.equal(groupPatchBodies.length, groupWritesBeforeCancel, '关闭按钮不得提交封面修改');
+    coverDialog = await openCoverDrawer();
+    await page.getByLabel('主标题文字').fill('遮罩不保存');
+    await page.getByTestId('cover-drawer-backdrop').dispatchEvent('pointerdown', { bubbles: true });
+    assert.equal(groupPatchBodies.length, groupWritesBeforeCancel, '点击遮罩不得提交封面修改');
+
+    coverDialog = await openCoverDrawer();
+    const expectedGroupRevision = savedGroup.revision;
+    const expectedVariantRevision = savedGroup.variants[0].revision;
+    await page.getByRole('button', { name: /b\.mp4/ }).click();
+    await page.getByRole('slider', { name: '封面截帧时间' }).fill('2');
+    await page.getByLabel('主标题文字').fill('封面主标题');
+    await page.getByLabel('副标题文字').fill('封面副标题');
+    const primaryControls = page.getByRole('heading', { name: '主标题' }).locator('xpath=../..');
+    const secondaryControls = page.getByRole('heading', { name: '副标题' }).locator('xpath=../..');
+    await primaryControls.locator('input[type="checkbox"]').first().check();
+    await primaryControls.locator('input[type="color"]').first().fill('#ff3300');
+    await primaryControls.locator('input[type="color"]').nth(1).fill('#111111');
+    await primaryControls.locator('input[type="number"]').first().fill('68');
+    await primaryControls.locator('input[type="number"]').nth(1).fill('5');
+    await secondaryControls.locator('input[type="checkbox"]').first().uncheck();
+    await secondaryControls.locator('input[type="color"]').first().fill('#33aaff');
+    await secondaryControls.locator('input[type="color"]').nth(1).fill('#002244');
+    await secondaryControls.locator('input[type="number"]').first().fill('42');
+    await secondaryControls.locator('input[type="number"]').nth(1).fill('2');
+    const zoomRange = coverDialog.getByRole('heading', { name: '画面' }).locator('xpath=..').locator('input[type="range"]').first();
+    await zoomRange.fill('1.4');
+    await page.getByRole('button', { name: '拖动主标题' }).click();
+    const coverCanvas = coverDialog.locator('canvas');
+    const coverCanvasBox = await coverCanvas.boundingBox();
+    assert.ok(coverCanvasBox, '真实封面画布必须可交互');
+    await page.mouse.move(coverCanvasBox.x + coverCanvasBox.width / 2, coverCanvasBox.y + coverCanvasBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(coverCanvasBox.x + coverCanvasBox.width / 2 + 28, coverCanvasBox.y + coverCanvasBox.height / 2 + 16, { steps: 4 });
+    await page.mouse.up();
+    const coverApplyResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-groups/group-e2e') && response.request().method() === 'PATCH');
+    await page.getByRole('button', { name: '应用封面' }).click();
+    assert.equal(await page.getByLabel('主标题文字').isDisabled(), true, '保存进行中必须冻结抽屉正文，防止修改丢失');
+    assert.equal(await page.getByRole('button', { name: '取消', exact: true }).isDisabled(), true, '保存进行中不得关闭并误以为修改被取消');
+    assert.equal(await coverCanvas.evaluate((canvas) => getComputedStyle(canvas).pointerEvents), 'none', '保存进行中必须冻结画布拖拽');
+    assert.equal(await coverDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true, '保存进行中焦点不得逃到背景页面');
+    await coverApplyResponse;
+    assert.equal(groupPatchBodies.length, groupWritesBeforeCancel + 1, '应用封面必须恰好提交一次 group PATCH');
+    const coverCommand = groupPatchBodies.at(-1);
+    assert.equal(coverCommand.type, 'apply_cover_editor');
+    assert.equal(coverCommand.expectedRevision, expectedGroupRevision);
+    assert.equal(coverCommand.expectedVariantRevision, expectedVariantRevision);
+    assert.equal(coverCommand.draft.sourceKey, 'module4:video-b');
+    assert.equal(coverCommand.draft.primary.style.italic, true);
+    assert.equal(coverCommand.draft.secondary.style.italic, false);
+    assert.ok(coverCommand.draft.primary.style.x > 0.5, '画布拖拽必须改变主标题位置');
+    assert.deepEqual(coverCommand.draft.framing, { scale: 1.4, offsetX: 0, offsetY: 0 });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: /预览调整/ }).click();
+    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
+    await page.getByRole('button', { name: '封面', exact: true }).click();
+    await page.getByText('封面主标题', { exact: true }).waitFor();
+    await page.getByText('封面副标题', { exact: true }).waitFor();
+    coverDialog = await openCoverDrawer();
+    assert.equal(await page.getByLabel('主标题文字').inputValue(), '封面主标题', '刷新后必须恢复已应用主标题');
+    assert.equal(await page.getByLabel('副标题文字').inputValue(), '封面副标题', '刷新后必须恢复已应用副标题');
+    assert.equal(await page.getByRole('slider', { name: '封面截帧时间' }).inputValue(), '2', '刷新后必须恢复视频截帧时间');
+
+    await page.getByLabel('预设名称').fill('电商蓝橙');
+    const presetCreateResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit/title-presets') && response.request().method() === 'POST');
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await presetCreateResponse;
+    assert.equal(presetPostBodies.at(-1).version, 2, '自定义封面预设必须写 V2');
+    assert.equal('text' in presetPostBodies.at(-1), false, '封面预设不得保存标题文案');
+    assert.equal('sourceKey' in presetPostBodies.at(-1), false, '封面预设不得保存来源片段');
+    assert.equal('frameTimeUs' in presetPostBodies.at(-1), false, '封面预设不得保存截帧时间');
+    assert.deepEqual(presetPostBodies.at(-1).stylesByPreset['3x4'].framing, { scale: 1, offsetX: 0, offsetY: 0 }, '非当前画幅不得继承未经审阅的 framing');
+    assert.deepEqual(presetPostBodies.at(-1).stylesByPreset['16x9'].framing, { scale: 1, offsetX: 0, offsetY: 0 }, '跨画幅预设必须保留独立 framing');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: /预览调整/ }).click();
+    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
+    coverDialog = await openCoverDrawer();
+    await page.getByRole('button', { name: '电商蓝橙', exact: true }).waitFor();
+    await primaryControls.locator('input[type="color"]').first().fill('#000000').catch(() => undefined);
+    await page.getByRole('button', { name: '电商蓝橙', exact: true }).click();
+    assert.equal(await page.getByRole('heading', { name: '主标题' }).locator('xpath=../..').locator('input[type="color"]').first().inputValue(), '#ff3300', '重启后应用 V2 预设必须恢复样式');
+    await page.getByRole('button', { name: '删除预设 电商蓝橙' }).click();
+    assert.equal(savedPresets.length, 0, '删除预设必须持久化到服务端');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
 
     const playbackPosition = page.getByRole('slider', { name: '播放位置' });
     await playbackPosition.fill('4');

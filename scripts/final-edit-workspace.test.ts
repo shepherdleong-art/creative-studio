@@ -546,6 +546,45 @@ assert.deepEqual(
   '刷新重新 load 后必须保留 BGM 淡入淡出',
 );
 
+const beforeCoverApply = workspace.load(group.id);
+const coverVariant = beforeCoverApply.variants.find((variant) => variant.id === fadedBgm.id)!;
+const coverSource = beforeCoverApply.assets[0];
+const coverApplied = workspace.apply({
+  scope: 'group', groupId: beforeCoverApply.id, expectedRevision: beforeCoverApply.revision,
+  type: 'apply_cover_editor', variantId: coverVariant.id, expectedVariantRevision: coverVariant.revision,
+  draft: {
+    sourceKey: coverSource.videoJobId,
+    frameTimeUs: 400_000,
+    framing: { scale: 1.4, offsetX: 0.2, offsetY: -0.3 },
+    primary: { text: '主标题\n单行', style: { ...beforeCoverApply.textStyles['3x4'].coverPrimary, italic: true, x: 0.42, stroke: { enabled: true, color: '#ff0000', widthPx: 6 } } },
+    secondary: { text: '副标题', style: { ...beforeCoverApply.textStyles['3x4'].coverSecondary, italic: false, x: 0.61, stroke: { enabled: true, color: '#00ff00', widthPx: 2 } } },
+  },
+}).view as typeof group;
+const appliedCoverVariant = coverApplied.variants.find((variant) => variant.id === coverVariant.id)!;
+assert.equal(coverApplied.revision, beforeCoverApply.revision + 1, '应用封面必须只增加一次 group revision');
+assert.equal(appliedCoverVariant.revision, coverVariant.revision + 1, '应用封面必须在同一事务增加一次 variant revision');
+assert.equal(coverApplied.coverTitle.primary.text, '主标题单行', '标题换行必须在服务端清除');
+assert.equal(coverApplied.textStyles['3x4'].coverPrimary.italic, true);
+assert.equal(appliedCoverVariant.cover.sourceKey, `module4:${coverSource.videoJobId}`);
+assert.equal(appliedCoverVariant.cover.frameTimeUs, 375_000, '封面时间必须落到 24fps 的确定性帧桶');
+assert.deepEqual(appliedCoverVariant.cover.framing, { scale: 1.4, offsetX: 0.2, offsetY: -0.3 });
+assert.deepEqual(
+  appliedCoverVariant.issues.filter((issue) => !['cover_missing', 'duplicate_cover', 'high_overlap'].includes(issue.code)).map((issue) => issue.code),
+  coverVariant.issues.filter((issue) => !['cover_missing', 'duplicate_cover', 'high_overlap'].includes(issue.code)).map((issue) => issue.code),
+  '应用封面只能更新封面相关诊断，不得清空语义、对齐或素材警告',
+);
+const afterAtomicCover = workspace.load(group.id);
+assert.throws(() => workspace.apply({
+  scope: 'group', groupId: beforeCoverApply.id, expectedRevision: beforeCoverApply.revision,
+  type: 'apply_cover_editor', variantId: coverVariant.id, expectedVariantRevision: coverVariant.revision,
+  draft: {
+    sourceKey: coverSource.videoJobId, frameTimeUs: 800_000, framing: { scale: 1, offsetX: 0, offsetY: 0 },
+    primary: { text: '不应写入', style: beforeCoverApply.textStyles['3x4'].coverPrimary },
+    secondary: { text: '不应写入', style: beforeCoverApply.textStyles['3x4'].coverSecondary },
+  },
+}), (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict');
+assert.deepEqual(workspace.load(group.id), afterAtomicCover, '任一 revision 过期时不得产生半写入');
+
 const beforeSubtitleCommands = workspace.load(group.id);
 const cueToReplace = beforeSubtitleCommands.subtitleCues.at(-1)!;
 const withoutCue = workspace.apply({
@@ -568,6 +607,20 @@ const resetStyleGroup = workspace.apply({
   type: 'reset_text_style', preset: '3x4', target: 'subtitle',
 }).view as typeof group;
 assert.equal(resetStyleGroup.textStyles['3x4'].subtitle.fontSizePx, 56);
+
+const beforeChangedCoverSource = workspace.load(group.id);
+const changedSourceVariant = beforeChangedCoverSource.variants[0];
+fs.writeFileSync(path.join(storageRoot, 'videos', 'v1.mp4'), 'video-v1-has-changed');
+assert.throws(() => workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: beforeChangedCoverSource.revision,
+  type: 'apply_cover_editor', variantId: changedSourceVariant.id, expectedVariantRevision: changedSourceVariant.revision,
+  draft: {
+    sourceKey: 'module4:v1', frameTimeUs: 500_000, framing: { scale: 1, offsetX: 0, offsetY: 0 },
+    primary: { text: '文件变化后不能保存', style: beforeChangedCoverSource.textStyles['3x4'].coverPrimary },
+    secondary: { text: '仍应保持原状态', style: beforeChangedCoverSource.textStyles['3x4'].coverSecondary },
+  },
+}), (error: unknown) => error instanceof FinalEditError && error.code === 'source_fingerprint_changed', '来源文件变化后 apply 必须复用抽帧级别的完整指纹校验');
+assert.deepEqual(workspace.load(group.id), beforeChangedCoverSource, '来源文件失效时不得写入任何 group 或 variant 状态');
 
 db.close();
 fs.rmSync(root, { recursive: true, force: true });

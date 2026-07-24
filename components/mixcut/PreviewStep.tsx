@@ -1,12 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { FinalEditPreview } from '@/components/final-edit/FinalEditPreview';
 import { StyleEditor } from '@/components/final-edit/FinalEditInspector';
+import { drawText, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
-import type { FinalEditGroupView, FinalEditVariantView } from '@/lib/final-edit/types';
+import { drawFramedImage } from '@/lib/final-edit/cover-framing';
+import { OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditGroupView, type FinalEditVariantView } from '@/lib/final-edit/types';
 import { MixcutTimeline } from './MixcutTimeline';
+import { CoverEditorDrawer } from './CoverEditorDrawer';
 import styles from './MixcutPanel.module.css';
 
 async function responseBody<T>(response: Response): Promise<T> {
@@ -16,6 +19,7 @@ async function responseBody<T>(response: Response): Promise<T> {
 }
 
 type VariantCommandRequest = VariantCommandInput | ((variant: FinalEditVariantView) => VariantCommandInput);
+type GroupCommandRequest = GroupCommandInput | ((group: FinalEditGroupView) => GroupCommandInput);
 
 export function PreviewStep({ group, active, onGroupChange, onBack }: {
   group: FinalEditGroupView;
@@ -30,6 +34,8 @@ export function PreviewStep({ group, active, onGroupChange, onBack }: {
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
   const [busy, setBusy] = useState(false);
+  const [propertyTab, setPropertyTab] = useState<'edit' | 'cover'>('edit');
+  const [coverOpen, setCoverOpen] = useState(false);
   const groupRef = useRef(group);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingRef = useRef(0);
@@ -89,8 +95,9 @@ export function PreviewStep({ group, active, onGroupChange, onBack }: {
     }
   });
 
-  const applyGroup = (command: GroupCommandInput): Promise<boolean> => enqueue(async () => {
+  const applyGroup = (request: GroupCommandRequest): Promise<boolean> => enqueue(async () => {
     const currentGroup = groupRef.current;
+    const command = typeof request === 'function' ? request(currentGroup) : request;
     try {
       const result = await responseBody<{ view: FinalEditGroupView }>(await fetch(`/api/final-edit-groups/${currentGroup.id}`, {
         method: 'PATCH',
@@ -122,6 +129,7 @@ export function PreviewStep({ group, active, onGroupChange, onBack }: {
     setPlayheadSec(seconds);
     setSeekRequestId((value) => value + 1);
   };
+  const closeCover = useCallback(() => setCoverOpen(false), []);
 
   if (!variant) {
     return <section className={styles.previewStep}><div className={styles.emptyState}><strong>还没有可预览的成片草稿</strong><span>返回智能创作，等待后台四个阶段完成后再进入。</span><button type="button" className={styles.secondaryButton} onClick={onBack}>返回智能创作</button></div></section>;
@@ -160,8 +168,8 @@ export function PreviewStep({ group, active, onGroupChange, onBack }: {
           />
         </div>
         <aside className={styles.previewPropertyPanel} aria-label="时间轴属性">
-          <div className={styles.previewPropertyTabs}><strong>当前编辑</strong><span>{variant.outputPreset.replace('x', ':')}</span></div>
-          <fieldset className={styles.previewPropertyScroll} disabled={busy} aria-label="可持久化编辑属性">
+          <div className={styles.previewPropertyTabs}><div><button type="button" className={propertyTab === 'edit' ? styles.previewPropertyTabActive : ''} onClick={() => setPropertyTab('edit')}>当前编辑</button><button type="button" className={propertyTab === 'cover' ? styles.previewPropertyTabActive : ''} onClick={() => setPropertyTab('cover')}>封面</button></div><span>{variant.outputPreset.replace('x', ':')}</span></div>
+          {propertyTab === 'edit' ? <fieldset className={styles.previewPropertyScroll} disabled={busy} aria-label="可持久化编辑属性">
             {selectedCue && (
               <section className={styles.previewPropertyCard}>
                 <h2>字幕</h2>
@@ -212,7 +220,7 @@ export function PreviewStep({ group, active, onGroupChange, onBack }: {
               </div>
             </section>
             {variant.issues.length > 0 && <section className={styles.previewPropertyCard}><h2>诊断</h2>{variant.issues.map((issue, index) => <p key={`${issue.code}-${index}`} className={issue.severity === 'blocking' ? styles.previewBlockingIssue : undefined}>{issue.message}</p>)}</section>}
-          </fieldset>
+          </fieldset> : <CoverSummary group={group} variant={variant} onOpen={() => setCoverOpen(true)} />}
         </aside>
       </div>
 
@@ -230,6 +238,59 @@ export function PreviewStep({ group, active, onGroupChange, onBack }: {
         onVariantCommand={(command) => applyVariant(command)}
         onGroupCommand={applyGroup}
       />
+      {coverOpen && <CoverEditorDrawer
+        active={active}
+        group={group}
+        variant={variant}
+        busy={busy}
+        onClose={closeCover}
+        onApply={(draft: CoverEditorDraft) => applyGroup((current) => {
+          const currentVariant = current.variants.find((item) => item.id === variant.id) || current.variants[0];
+          if (!currentVariant) throw new Error('当前没有可编辑的成片草稿');
+          return { type: 'apply_cover_editor', variantId: currentVariant.id, expectedVariantRevision: currentVariant.revision, draft };
+        })}
+      />}
     </section>
   );
+}
+
+function CoverSummary({ group, variant, onOpen }: { group: FinalEditGroupView; variant: FinalEditVariantView; onOpen: () => void }) {
+  const source = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === variant.cover.sourceKey || asset.videoJobId === variant.cover.sourceKey);
+  return <div className={styles.coverSummary}>
+    <div className={styles.coverSummaryImage}>{variant.cover.sourceUrl ? <CoverThumbnail group={group} variant={variant} /> : <span>尚未选择视频封面</span>}</div>
+    <dl><div><dt>来源片段</dt><dd>{source?.filename || '待选择'}</dd></div><div><dt>截帧时间</dt><dd>{(variant.cover.frameTimeUs / 1_000_000).toFixed(2)}s</dd></div><div><dt>主标题</dt><dd>{group.coverTitle.primary.text || '—'}</dd></div><div><dt>副标题</dt><dd>{group.coverTitle.secondary.text || '—'}</dd></div></dl>
+    <button type="button" className={styles.primaryButton} onClick={onOpen}>精调封面</button>
+  </div>;
+}
+
+function CoverThumbnail({ group, variant }: { group: FinalEditGroupView; variant: FinalEditVariantView }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const output = OUTPUT_PRESETS[variant.outputPreset];
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !variant.cover.sourceUrl) return;
+    canvas.width = output.width;
+    canvas.height = output.height;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (cancelled) return;
+      const primary = group.textStyles[variant.outputPreset].coverPrimary;
+      const secondary = group.textStyles[variant.outputPreset].coverSecondary;
+      void Promise.all([
+        document.fonts.load(textStyleFont(primary), group.coverTitle.primary.text),
+        document.fonts.load(textStyleFont(secondary), group.coverTitle.secondary.text),
+      ]).catch(() => undefined).then(() => {
+        if (cancelled) return;
+        drawFramedImage(context, image, variant.cover.framing);
+        drawText(context, group.coverTitle.primary.text, primary);
+        drawText(context, group.coverTitle.secondary.text, secondary);
+      });
+    };
+    image.src = variant.cover.sourceUrl;
+    return () => { cancelled = true; };
+  }, [group.coverTitle.primary.text, group.coverTitle.secondary.text, group.textStyles, output.height, output.width, variant.cover.framing, variant.cover.sourceUrl, variant.outputPreset]);
+  return <canvas ref={canvasRef} width={output.width} height={output.height} aria-label="当前真实封面" />;
 }

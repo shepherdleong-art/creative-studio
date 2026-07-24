@@ -1,8 +1,12 @@
 import type { FinalEditCommand } from '@/lib/final-edit/workspace';
 
-type WithoutCommandEnvelope<T> = T extends unknown
-  ? Omit<T, 'scope' | 'variantId' | 'groupId' | 'expectedRevision'>
+type WithoutVariantCommandEnvelope<T> = T extends unknown
+  ? Omit<T, 'scope' | 'variantId' | 'expectedRevision'>
   : never;
 
-export type VariantCommandInput = WithoutCommandEnvelope<Extract<FinalEditCommand, { scope: 'variant' }>>;
-export type GroupCommandInput = WithoutCommandEnvelope<Extract<FinalEditCommand, { scope: 'group' }>>;
+type WithoutGroupCommandEnvelope<T> = T extends unknown
+  ? Omit<T, 'scope' | 'groupId' | 'expectedRevision'>
+  : never;
+
+export type VariantCommandInput = WithoutVariantCommandEnvelope<Extract<FinalEditCommand, { scope: 'variant' }>>;
+export type GroupCommandInput = WithoutGroupCommandEnvelope<Extract<FinalEditCommand, { scope: 'group' }>>;

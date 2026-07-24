@@ -28,9 +28,13 @@ export class TextOverflowError extends Error {
   }
 }
 
+export function textStyleFont(style: TextStyle): string {
+  return `${style.italic ? 'italic ' : ''}${style.fontSizePx * style.scale}px ${JSON.stringify(style.fontFamily)}`;
+}
+
 export function drawText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle) {
   ctx.save();
-  ctx.font = `${style.fontSizePx * style.scale}px ${JSON.stringify(style.fontFamily)}`;
+  ctx.font = textStyleFont(style);
   ctx.textAlign = style.align;
   ctx.textBaseline = 'middle';
   ctx.fillStyle = style.color;
@@ -88,14 +92,48 @@ function toBase64(canvas: HTMLCanvasElement): string {
   return canvas.toDataURL('image/png').split(',')[1] || '';
 }
 
-function measureText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle): number {
-  ctx.font = `${style.fontSizePx * style.scale}px ${JSON.stringify(style.fontFamily)}`;
+export function measureSingleLineText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle): number {
+  ctx.font = textStyleFont(style);
   const shadowOffsetX = style.shadow.enabled
     ? Math.abs(Math.cos(style.shadow.angleDeg * Math.PI / 180) * style.shadow.distancePx)
     : 0;
   return ctx.measureText(text).width
     + (style.stroke.enabled ? style.stroke.widthPx * 2 : 0)
     + (style.shadow.enabled ? style.shadow.blurPx * 2 + shadowOffsetX : 0);
+}
+
+function horizontalTextBounds(canvasWidth: number, measuredWidth: number, style: TextStyle) {
+  const anchor = style.x * canvasWidth;
+  if (style.align === 'left') return { left: anchor, right: anchor + measuredWidth };
+  if (style.align === 'right') return { left: anchor - measuredWidth, right: anchor };
+  return { left: anchor - measuredWidth / 2, right: anchor + measuredWidth / 2 };
+}
+
+export function isTextStyleWithinSafeArea(ctx: CanvasRenderingContext2D, text: string, style: TextStyle, safeMargin = 0.04): boolean {
+  const measuredWidth = measureSingleLineText(ctx, text, style);
+  const safeLeft = ctx.canvas.width * safeMargin;
+  const safeRight = ctx.canvas.width * (1 - safeMargin);
+  const bounds = horizontalTextBounds(ctx.canvas.width, measuredWidth, style);
+  return measuredWidth <= Math.min(style.boxWidthPx, safeRight - safeLeft)
+    && bounds.left >= safeLeft
+    && bounds.right <= safeRight;
+}
+
+export function fitTextStyleToSingleLine(ctx: CanvasRenderingContext2D, text: string, style: TextStyle, minimumFontSizePx = 12): TextStyle {
+  let next = { ...style };
+  const safeLeft = ctx.canvas.width * 0.04;
+  const safeRight = ctx.canvas.width * 0.96;
+  const shiftInsideSafeArea = (current: TextStyle): TextStyle => {
+    const measuredWidth = measureSingleLineText(ctx, text, current);
+    const bounds = horizontalTextBounds(ctx.canvas.width, measuredWidth, current);
+    const delta = bounds.left < safeLeft ? safeLeft - bounds.left : bounds.right > safeRight ? safeRight - bounds.right : 0;
+    return delta ? { ...current, x: Math.max(0.04, Math.min(0.96, current.x + delta / ctx.canvas.width)) } : current;
+  };
+  next = shiftInsideSafeArea(next);
+  while (next.fontSizePx > minimumFontSizePx && !isTextStyleWithinSafeArea(ctx, text, next)) {
+    next = { ...next, fontSizePx: Math.max(minimumFontSizePx, next.fontSizePx - 1) };
+  }
+  return shiftInsideSafeArea(next);
 }
 
 export function measureTextOverflowDetails(group: FinalEditGroupView, preset: OutputPresetId): TextOverflowDetail[] {
@@ -109,11 +147,11 @@ export function measureTextOverflowDetails(group: FinalEditGroupView, preset: Ou
     { target: 'coverSecondary' as const, text: group.coverTitle.secondary.text, style: style.coverSecondary },
   ];
   for (const part of titleParts) {
-    const measuredWidthPx = measureText(context, part.text, part.style);
+    const measuredWidthPx = measureSingleLineText(context, part.text, part.style);
     if (measuredWidthPx > part.style.boxWidthPx) details.push({ target: part.target, measuredWidthPx, safeWidthPx: part.style.boxWidthPx });
   }
   for (const cue of group.subtitleCues) {
-    const measuredWidthPx = measureText(context, cue.text, style.subtitle);
+    const measuredWidthPx = measureSingleLineText(context, cue.text, style.subtitle);
     if (measuredWidthPx > style.subtitle.boxWidthPx) details.push({ target: 'subtitle', cueId: cue.id, measuredWidthPx, safeWidthPx: style.subtitle.boxWidthPx });
   }
   return details;
@@ -129,8 +167,8 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
   const titleCanvas = canvasFor(preset);
   const titleContext = titleCanvas.getContext('2d');
   if (!titleContext) throw new Error('浏览器 Canvas 不可用');
-  const titlePrimaryWidth = measureText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
-  const titleSecondaryWidth = measureText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
+  const titlePrimaryWidth = measureSingleLineText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
+  const titleSecondaryWidth = measureSingleLineText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
   const overflowDetails = measureTextOverflowDetails(group, preset);
   if (overflowDetails.length) throw new TextOverflowError(overflowDetails);
   drawText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
@@ -142,7 +180,7 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
     const canvas = canvasFor(preset);
     const context = canvas.getContext('2d');
     if (!context) throw new Error('浏览器 Canvas 不可用');
-    const measured = measureText(context, cue.text, style.subtitle);
+    const measured = measureSingleLineText(context, cue.text, style.subtitle);
     subtitleWidths[cue.id] = measured;
     drawText(context, cue.text, style.subtitle);
     subtitles[cue.id] = toBase64(canvas);
