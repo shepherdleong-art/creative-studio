@@ -153,19 +153,43 @@ export async function buildMixcutContext(
   // every row in `shots` for this shotSetId, unfiltered by any
   // generation/review state — the frozen type just says "shotCount" with no
   // further qualifier, and this is the only unambiguous reading.
+  //
+  // PERF (code review fix): this used to run two queries PER shot set inside
+  // a .map() — an N+1 pattern, and worse than usual because `shots` has no
+  // secondary index on shotSetId (lib/db.ts), so each iteration was a full
+  // table scan of `shots` across every project, repeated once per shot set
+  // in this project. Replaced with two GROUP BY queries, each run once for
+  // the whole project, plus a new idx_shots_shotset index (see
+  // lib/final-edit/schema.ts version 4) so the shots query itself is no
+  // longer a full scan either.
+  const shotSetIds = shotSetRows.map((row) => row.id);
+
+  const shotCountByShotSetId = new Map<string, number>();
+  if (shotSetIds.length > 0) {
+    const placeholders = shotSetIds.map(() => '?').join(',');
+    const shotCountRows = db.prepare(`
+      SELECT shotSetId, COUNT(*) AS count FROM shots WHERE shotSetId IN (${placeholders}) GROUP BY shotSetId
+    `).all(...shotSetIds) as { shotSetId: string; count: number }[];
+    for (const r of shotCountRows) shotCountByShotSetId.set(r.shotSetId, Number(r.count) || 0);
+  }
+
+  const videoAggByShotSetId = new Map<string, { count: number; totalSec: number }>();
+  const videoAggRows = db.prepare(`
+    SELECT shotSetId, COUNT(*) AS count, COALESCE(SUM(durationSec), 0) AS totalSec
+    FROM video_jobs
+    WHERE projectId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL AND shotSetId IS NOT NULL
+    GROUP BY shotSetId
+  `).all(projectId) as { shotSetId: string; count: number; totalSec: number }[];
+  for (const r of videoAggRows) videoAggByShotSetId.set(r.shotSetId, { count: Number(r.count) || 0, totalSec: Number(r.totalSec) || 0 });
+
   const shotSets = shotSetRows.map((row) => {
-    const shotCountRow = db.prepare(`SELECT COUNT(*) AS count FROM shots WHERE shotSetId = ?`).get(row.id) as { count: number };
-    const videoAggRow = db.prepare(`
-      SELECT COUNT(*) AS count, COALESCE(SUM(durationSec), 0) AS totalSec
-      FROM video_jobs
-      WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
-    `).get(projectId, row.id) as { count: number; totalSec: number };
+    const videoAgg = videoAggByShotSetId.get(row.id);
     return {
       id: row.id,
       name: row.name,
-      shotCount: Number(shotCountRow.count) || 0,
-      succeededVideoCount: Number(videoAggRow.count) || 0,
-      totalDurationUs: (Number(videoAggRow.totalSec) || 0) * 1_000_000,
+      shotCount: shotCountByShotSetId.get(row.id) || 0,
+      succeededVideoCount: videoAgg?.count || 0,
+      totalDurationUs: (videoAgg?.totalSec || 0) * 1_000_000,
     };
   });
 
