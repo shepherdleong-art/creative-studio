@@ -136,6 +136,14 @@ assert.equal(
   '成片-JSQ-A1-20260723',
 );
 
+// 2d. inner dots/spaces are PRESERVED — the rule strips trailing dots/spaces
+// only. Pins against an over-stripping implementation (e.g. one that turns
+// 'A1.Pro X' into 'A1ProX'), which would pass 2a-2c.
+assert.equal(
+  buildExportBaseName(makeIdentity({ productCode: 'A1.Pro X' })),
+  '成片-A1.Pro X-20260723',
+);
+
 // ---------------------------------------------------------------------------
 // 3. Empty productCode -> `product_code_required` domain error
 //    (plan §11.2: "productCode 为空时返回领域错误 product_code_required";
@@ -215,6 +223,21 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
     !posixTraversal.relativePath.split(/[\\/]/).includes('..'),
     'relativePath must not contain a ".." segment (POSIX traversal input)',
   );
+  // The two assertions above are necessary but NOT sufficient for §14: an
+  // implementation that path.join()s the RAW productCode still lands at
+  // <root>/projects/etc/passwd-20260723.mp4 on a POSIX host — inside
+  // storageRoot, with no '..' segment in relativePath — and would pass them
+  // (verified against exactly that naive-join variant). So additionally pin
+  // the exact sanitized filename (8 leading dots: 4 x '..' with '/' stripped)
+  // and that the file sits DIRECTLY in the project's export directory. Both
+  // comparisons use path APIs, not literal separators, so they bite on
+  // Windows hosts too.
+  assert.equal(posixTraversal.filename, '成片-........etcpasswd-20260723.mp4');
+  assert.equal(
+    path.resolve(path.dirname(posixTraversal.absolutePath)),
+    path.resolve(exportDir),
+    '导出文件必须直接位于目标成片目录内（POSIX traversal input）',
+  );
 
   // Windows-style traversal. `\` is also one of the stripped characters.
   const windowsTraversal = reserveExportPath(
@@ -226,6 +249,17 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
   assert.ok(
     !windowsTraversal.relativePath.split(/[\\/]/).includes('..'),
     'relativePath must not contain a ".." segment (Windows-style traversal input)',
+  );
+  // Same gap as the POSIX case above, mirrored for the Windows-style input
+  // (6 leading dots: 3 x '..' with '\' stripped). On a POSIX host the raw
+  // input is a single segment, so only the exact-filename assertion bites;
+  // on a Windows host a naive join would escape the export directory, so the
+  // dirname assertion bites as well.
+  assert.equal(windowsTraversal.filename, '成片-......windowssystem32config-20260723.mp4');
+  assert.equal(
+    path.resolve(path.dirname(windowsTraversal.absolutePath)),
+    path.resolve(exportDir),
+    '导出文件必须直接位于目标成片目录内（Windows-style traversal input）',
   );
 }
 
@@ -265,6 +299,15 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
   const reserved = reserveExportPath(storageRoot, makeIdentity({ projectId: cleanProjectId }), MP4_EXTENSION);
   assert.equal(reserved.filename, '成片-JSQ-A1-20260723.mp4');
   assert.equal(path.resolve(reserved.absolutePath), path.resolve(exportDir, '成片-JSQ-A1-20260723.mp4'));
+  // relativePath was previously never asserted — an implementation returning
+  // `relativePath = absolutePath` passed everything. Build the expectation
+  // with path.join so it uses the host separator (matching
+  // toStorageRelativePath()'s path.relative() output on any platform).
+  assert.equal(
+    reserved.relativePath,
+    path.join('projects', cleanProjectId, '成片', '成片-JSQ-A1-20260723.mp4'),
+    'relativePath 必须是 storageRoot 相对路径，不能复读 absolutePath',
+  );
 }
 
 fs.rmSync(storageRoot, { recursive: true, force: true });
