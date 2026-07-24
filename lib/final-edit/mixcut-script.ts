@@ -135,3 +135,34 @@ export function buildMixcutTaskScriptSnapshot(input: {
     fullScript: editedNarrationText,
   };
 }
+
+export function buildMixcutEditingScriptSnapshot(input: {
+  sourceDraftId?: string | null;
+  sourceScriptUpdatedAt?: string | null;
+  sourceScript?: MixcutSourceScript | null;
+  shotSetId: string;
+  editedNarrationText: string;
+}): MixcutTaskScriptSnapshot {
+  const normalized = normalizeNarrationText(input.editedNarrationText);
+  if (normalized) return buildMixcutTaskScriptSnapshot({ ...input, editedNarrationText: normalized });
+  if (!input.shotSetId.trim()) throw new Error('shot_set_required');
+  const source = input.sourceScript || null;
+  if (source && source.shotSetId !== input.shotSetId) throw new Error('script_shot_set_mismatch');
+  const originalText = source ? sourceNarrationText(source) : '';
+  return {
+    version: 2,
+    source: source ? 'module3' : 'manual',
+    sourceDraftId: source ? (input.sourceDraftId || null) : null,
+    sourceScriptUpdatedAt: source ? (input.sourceScriptUpdatedAt || null) : null,
+    title: source?.title || '手工混剪文案',
+    ...(source?.coverTitleParts ? { coverTitleParts: source.coverTitleParts } : {}),
+    targetDurationSec: Math.max(1, Number(source?.targetDurationSec || 15)),
+    shotSetId: input.shotSetId,
+    sourceNarrationText: originalText,
+    sourceSegments: source ? structuredClone(source.segments) : [],
+    editedNarrationText: '',
+    scriptSyncState: source && !originalText ? 'synced' : 'modified',
+    segments: [],
+    fullScript: '',
+  };
+}

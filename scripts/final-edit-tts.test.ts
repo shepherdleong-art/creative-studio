@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isReusableNarrationChunk, VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } from '../lib/final-edit/adapters/vapi-qwen-tts.ts';
+import { isReusableNarrationChunk, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_VOICES, VAPI_PREVIEW_TEXT, speechUrl, validateVapiAudioUrl } from '../lib/final-edit/adapters/vapi-qwen-tts.ts';
+import { assertTtsSpeed } from '../lib/final-edit/tts-speed.ts';
 
 assert.equal(VAPI_VOICES.length, 17);
 assert.equal(VAPI_VOICES.find((voice) => voice.label.includes('南京'))?.id, 'li');
@@ -12,6 +13,24 @@ assert.equal(speechUrl('https://api.v3.cm/v1/'), 'https://api.v3.cm/v1/audio/spe
 assert.equal(validateVapiAudioUrl('http://dashscope-result-sh.oss-cn-shanghai.aliyuncs.com/a.wav?x=1').protocol, 'https:');
 assert.throws(() => validateVapiAudioUrl('https://127.0.0.1/private'));
 assert.throws(() => validateVapiAudioUrl('file:///tmp/a.wav'));
+assert.doesNotThrow(() => assertTtsSpeed(0.5));
+assert.doesNotThrow(() => assertTtsSpeed(2));
+assert.throws(() => assertTtsSpeed(0.55), /0.1/);
+assert.throws(() => assertTtsSpeed(2.1), /0.5x～2.0x/);
+
+await assert.rejects(
+  synthesizeVapiNarration({
+    provider: { baseUrl: 'https://api.v3.cm', apiKey: 'unused', model: 'qwen3-tts-flash' },
+    voice: 'Cherry', speed: 0.55, segments: [{ segmentId: 's1', narration: '测试' }],
+    outputDir: path.join(os.tmpdir(), 'unused-vapi-narration'), relativeOutputPath: 'unused.wav',
+    alignment: { configured: true, align: async () => [] },
+  }),
+  /0.1/,
+);
+await assert.rejects(
+  synthesizeVapiPreview({ provider: { baseUrl: 'https://api.v3.cm', apiKey: 'unused', model: 'qwen3-tts-flash' }, voice: 'Cherry', speed: 2.1, text: '测试', outputPath: path.join(os.tmpdir(), 'unused-vapi-preview.wav') }),
+  /0.5x～2.0x/,
+);
 
 function pcmWav(durationMs: number): Buffer {
   const sampleRate = 16_000;

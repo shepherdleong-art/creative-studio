@@ -7,6 +7,7 @@ import { createFinalEditWorkspace, type FinalEditWorkspaceRuntime } from './work
 import { analyzeVideoWithVision } from './adapters/video-analysis';
 import { createOpenAiAlignmentAdapter, type AlignmentAdapter } from './adapters/alignment';
 import { getFinalEditTtsAdapter, listFinalEditTtsAdapters } from './adapters/tts-registry';
+import { warmPreparePreview } from './prepare-preview';
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
@@ -67,6 +68,7 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
         alignment,
       });
     },
+    warmPreview: ({ variant, sources, narrationAbsolutePath, relativePath }) => warmPreparePreview({ storageRoot, variant, sources, narrationAbsolutePath, relativePath }),
   });
   return workspace;
 }
@@ -75,7 +77,7 @@ export function recoverFinalEditPrepareJobs() {
   if (prepareRecoveryStarted) return;
   prepareRecoveryStarted = true;
   const db = getDb();
-  db.prepare(`UPDATE final_edit_jobs SET status='queued', phase=CASE WHEN progress < 0.3 THEN 'analyzing' WHEN progress < 0.55 THEN 'synthesizing' WHEN progress < 0.8 THEN 'matching' ELSE 'previewing' END, startedAt=NULL WHERE kind='prepare' AND status='running' AND (startedAt IS NULL OR startedAt < ?)`).run(runtimeStartedAt);
+  db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='analyzing', progress=0, startedAt=NULL WHERE kind='prepare' AND status='running' AND (startedAt IS NULL OR startedAt < ?)`).run(runtimeStartedAt);
   const jobs = db.prepare(`SELECT id FROM final_edit_jobs WHERE kind='prepare' AND status='queued' ORDER BY createdAt`).all() as Array<{ id: string }>;
   const activeWorkspace = getFinalEditWorkspace();
   for (const job of jobs) void activeWorkspace.resumePrepareJob(job.id);

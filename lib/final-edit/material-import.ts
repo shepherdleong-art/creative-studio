@@ -70,7 +70,7 @@ export class MaterialImportError extends Error {
   }
 }
 
-interface ShotSetMaterialScope {
+export interface ShotSetMaterialScope {
   projectId: string;
   shotSetId: string;
 }
@@ -225,7 +225,7 @@ function ensureSafeRelativeDirectory(storageRoot: string, relativeDirectory: str
   return current;
 }
 
-function resolveAssetVideoPath(storageRoot: string, scope: ShotSetMaterialScope, relativePath: string, createDirectory = false): string {
+export function resolveImportedExternalAssetVideoPath(storageRoot: string, scope: ShotSetMaterialScope, relativePath: string, createDirectory = false): string {
   if (!VIDEO_MIME_BY_EXTENSION[path.extname(relativePath).toLowerCase()]) {
     throw new MaterialImportError('unsafe_path', '外部素材路径扩展名不在视频白名单内');
   }
@@ -261,7 +261,7 @@ function resolveThumbnailPath(storageRoot: string, scope: ShotSetMaterialScope, 
 function assetView(storageRoot: string, row: ExternalAssetRow): FinalEditExternalAssetView {
   if (row.mediaKind !== 'video') throw new MaterialImportError('unsupported_media_kind', 'V1 不支持读取图片素材');
   const scope = { projectId: row.projectId, shotSetId: row.shotSetId };
-  const absolutePath = resolveAssetVideoPath(storageRoot, scope, row.relativePath);
+  const absolutePath = resolveImportedExternalAssetVideoPath(storageRoot, scope, row.relativePath);
   let status: FinalEditExternalAssetView['status'] = row.status === 'failed' ? 'failed' : 'ready';
   let errorMessage = row.errorMessage;
   if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
@@ -364,7 +364,7 @@ async function importExternalAssetsForScope(
         throw new MaterialImportError('external_asset_ownership_invalid', '外部素材归属数据不一致', 409);
       }
       if (existing) {
-        const existingPath = resolveAssetVideoPath(deps.storageRoot, scope, existing.relativePath);
+        const existingPath = resolveImportedExternalAssetVideoPath(deps.storageRoot, scope, existing.relativePath);
         const thumbnailExists = Boolean(existing.thumbnailRelativePath)
           && fs.existsSync(resolveThumbnailPath(deps.storageRoot, scope, existing.thumbnailRelativePath!));
         existingThumbnailWasPresent = thumbnailExists;
@@ -376,7 +376,7 @@ async function importExternalAssetsForScope(
 
       assetId = existing?.id || uuidv4();
       relativePath = existing?.relativePath || path.join(materialsRelativeDirectory(scope), `${assetId}${valid.extension}`);
-      const absolutePath = resolveAssetVideoPath(deps.storageRoot, scope, relativePath, true);
+      const absolutePath = resolveImportedExternalAssetVideoPath(deps.storageRoot, scope, relativePath, true);
       videoExistedBefore = fs.existsSync(absolutePath);
       writeUploadAtomic(absolutePath, upload);
       writtenVideoPath = absolutePath;
@@ -606,7 +606,7 @@ export function resolveShotSetExternalAssetMedia(
   if (!row) throw new MaterialImportError('external_asset_not_found', '外部素材不存在或不属于当前分镜组', 404);
   if (row.status !== 'ready') throw new MaterialImportError('external_asset_not_ready', '外部素材尚不可用', 409);
   if (kind === 'video') {
-    const absolutePath = resolveAssetVideoPath(deps.storageRoot, scope, row.relativePath);
+    const absolutePath = resolveImportedExternalAssetVideoPath(deps.storageRoot, scope, row.relativePath);
     if (!fs.existsSync(absolutePath)) throw new MaterialImportError('external_asset_missing', '外部素材文件已丢失', 404);
     return { relativePath: row.relativePath, mimeType: row.mimeType };
   }
@@ -625,7 +625,7 @@ function deleteExternalAssetForScope(
     SELECT * FROM final_edit_external_assets WHERE id=? AND projectId=? AND shotSetId=?
   `).get(assetId, scope.projectId, scope.shotSetId) as ExternalAssetRow | undefined;
   if (!asset) throw new MaterialImportError('external_asset_not_found', '外部素材不存在或不属于当前分镜组', 404);
-  const videoPath = resolveAssetVideoPath(deps.storageRoot, scope, asset.relativePath);
+  const videoPath = resolveImportedExternalAssetVideoPath(deps.storageRoot, scope, asset.relativePath);
   const thumbnailPath = asset.thumbnailRelativePath ? resolveThumbnailPath(deps.storageRoot, scope, asset.thumbnailRelativePath) : null;
   assertAssetNotReferenced(deps.db, scope, asset);
 

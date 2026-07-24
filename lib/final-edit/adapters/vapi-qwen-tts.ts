@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { runFfmpeg, probeDurationSec } from '../../ffmpeg.ts';
+import { assertTtsSpeed } from '../tts-speed.ts';
 import type { AlignmentAdapter, AlignmentWordTiming } from './alignment.ts';
 
 export const VAPI_PREVIEW_TEXT = '你好，我是产品素材工作台语音助手，这是当前音色和语速的试听效果。';
@@ -111,7 +112,7 @@ async function concatWavs(inputs: string[], output: string): Promise<void> {
 export async function synthesizeVapiNarration(input: SynthesisInput) {
   if (!input.alignment.configured) throw new Error('生产强制对齐尚未配置；为避免产生无效 TTS 费用，本次未调用供应商');
   if (!VAPI_VOICES.some((voice) => voice.id === input.voice)) throw new Error('不支持的 V-API 音色');
-  if (input.speed < 0.75 || input.speed > 1.5) throw new Error('语速必须位于 0.75x～1.50x');
+  assertTtsSpeed(input.speed);
   fs.mkdirSync(input.outputDir, { recursive: true });
   const segmentFiles: string[] = [];
   const segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }> = [];
@@ -166,7 +167,7 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
 
 export async function synthesizeVapiPreview(input: { provider: VapiProviderConfig; voice: string; speed: number; text: string; outputPath: string }): Promise<void> {
   if (!VAPI_VOICES.some((voice) => voice.id === input.voice)) throw new Error('不支持的 V-API 音色');
-  if (input.speed < 0.75 || input.speed > 1.5) throw new Error('语速必须位于 0.75x～1.50x');
+  assertTtsSpeed(input.speed);
   fs.mkdirSync(path.dirname(input.outputPath), { recursive: true });
   const rawPath = `${input.outputPath}.raw.wav`;
   await requestVapiAudio(input.provider, input.voice, input.text, rawPath);

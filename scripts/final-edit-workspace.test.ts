@@ -70,6 +70,7 @@ const script = {
 db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('script-1', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(script));
 
 const synthesizedNarrations: string[][] = [];
+const warmedPreviewPaths: string[] = [];
 const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
@@ -82,6 +83,13 @@ const workspace = createFinalEditWorkspace({
   }),
   materializeCoverFrame: async ({ cacheKey }) => {
     if (cacheKey.includes('v2')) throw new Error('模拟末帧封面抽取失败');
+  },
+  warmPreview: async ({ relativePath }) => {
+    const absolutePath = path.join(storageRoot, relativePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    if (!fs.existsSync(absolutePath)) fs.writeFileSync(absolutePath, 'low-resolution-preview');
+    warmedPreviewPaths.push(relativePath);
+    return { relativePath };
   },
   estimateAnalysisCost: ({ requestCount }) => requestCount * 0.1,
   synthesize: async ({ segments }) => {
@@ -127,11 +135,40 @@ assert.ok(group.assets.every((asset) => asset.shotSetId === 'set-a'));
 assert.ok(group.assets.every((asset) => asset.thumbnailUrl.includes('/thumbnail')));
 assert.ok(group.coverCandidates.some((candidate) => candidate.coverKey.startsWith('video:')));
 assert.ok(group.variants.every((variant) => variant.timeline.clips.every((clip) => clip.videoJobId !== 'foreign')));
+assert.equal(warmedPreviewPaths.length, 2, 'previewing 必须调用真实预览预热 seam');
+assert.ok(group.variants.every((variant) => variant.previewUrl?.includes('/api/videos/final-edits/previews/prepare/')));
 assert.deepEqual(MIXCUT_PREPARE_PHASE_RANGES, {
   analyzing: [0, 0.3], synthesizing: [0.3, 0.55], matching: [0.55, 0.8], previewing: [0.8, 1],
 });
 const schemaColumns = new Set((db.prepare(`PRAGMA table_info(final_edit_groups)`).all() as Array<{ name: string }>).map((column) => column.name));
 for (const name of ['editedNarrationText', 'scriptSyncState', 'sourceScriptUpdatedAt', 'selectedMaterialKeysJson']) assert.ok(schemaColumns.has(name), `missing migration column ${name}`);
+const editingDraft = workspace.ensureMixcutDraft({
+  projectId: 'p1', shotSetId: 'set-a', scriptDraftId: '', editedNarrationText: '', selectedMaterialKeys: [],
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 0.5, analysisProviderId: 'vision',
+});
+assert.equal(editingDraft.status, 'editing');
+assert.equal(editingDraft.script.editedNarrationText, '');
+assert.deepEqual(editingDraft.script.selectedMaterialKeys, []);
+assert.equal(workspace.load(editingDraft.id).id, editingDraft.id, '首次保存后刷新必须能 load 同一草稿');
+const editingWithScript = workspace.apply({
+  scope: 'group', groupId: editingDraft.id, expectedRevision: editingDraft.revision, type: 'set_mixcut_script_state',
+  scriptDraftId: 'script-1', editedNarrationText: '草稿改写文案。', selectedMaterialKeys: ['module4:v1'],
+  providerId: 'vapi-qwen3-tts', analysisProviderId: 'vision', voice: 'Cherry', speed: 2,
+}).view as typeof editingDraft;
+assert.equal(editingWithScript.script.sourceDraftId, 'script-1');
+const foreignScript = { ...script, shotSetId: 'set-b', segments: [{ ...script.segments[0], shotId: 's3' }] };
+db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('script-b', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(foreignScript));
+assert.throws(
+  () => workspace.apply({ scope: 'group', groupId: editingDraft.id, expectedRevision: editingWithScript.revision, type: 'set_mixcut_script_state', scriptDraftId: 'script-b', editedNarrationText: '跨组', selectedMaterialKeys: [], voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'script_shot_set_mismatch',
+);
+assert.throws(
+  () => workspace.apply({ scope: 'group', groupId: editingDraft.id, expectedRevision: editingDraft.revision, type: 'set_mixcut_script_state', editedNarrationText: '旧版本覆盖', selectedMaterialKeys: [], voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict',
+);
+const draftJob = await workspace.start({ projectId: 'p1', draftGroupId: editingDraft.id, count: 1, outputPreset: '3x4', providerId: '', voice: '', speed: 1 });
+const draftJobSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(draftJob.id) as { inputSnapshotJson: string }).inputSnapshotJson) as { scriptSnapshot: { editedNarrationText: string } };
+assert.equal(draftJobSnapshot.scriptSnapshot.editedNarrationText, '草稿改写文案。', '从草稿生成必须固化当前快照');
 const groupsBeforeInvalidProvider = Number((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_groups`).get() as { count: number }).count);
 await assert.rejects(
   workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', count: 1, outputPreset: '3x4', providerId: 'missing-provider', voice: 'Cherry', speed: 1 }),
@@ -147,8 +184,8 @@ await assert.rejects(
   (error: unknown) => error instanceof FinalEditError && error.code === 'material_not_ready',
 );
 for (const [id, shotSetId] of [['external-a', 'set-a'], ['external-b', 'set-b']] as const) {
-  const relativePath = `external/${id}.mp4`;
-  fs.mkdirSync(path.join(storageRoot, 'external'), { recursive: true });
+  const relativePath = path.join('final-edits', 'projects', 'p1', 'groups', shotSetId, 'materials', `${id}.mp4`);
+  fs.mkdirSync(path.dirname(path.join(storageRoot, relativePath)), { recursive: true });
   fs.writeFileSync(path.join(storageRoot, relativePath), `video-${id}`);
   db.prepare(`INSERT INTO final_edit_external_assets (id, projectId, shotSetId, originalFilename, relativePath, mimeType, mediaKind, durationUs, width, height, fileFingerprint, status, createdAt) VALUES (?, 'p1', ?, ?, ?, 'video/mp4', 'video', 12000000, 720, 960, ?, 'ready', datetime('now'))`).run(id, shotSetId, `${id}.mp4`, relativePath, `fingerprint-${id}`);
 }
@@ -162,6 +199,28 @@ assert.equal(externalGroup.assets[0].videoJobId, 'external-asset-external-a');
 assert.equal(externalGroup.assets[0].source, 'external');
 assert.match(externalGroup.assets[0].previewUrl, /external-assets\/external-a\/media$/);
 assert.ok(externalGroup.variants[0].timeline.clips.every((clip) => clip.videoJobId === 'external-asset-external-a'), '外部素材 timeline 必须能由 group assets read model 解析');
+
+const externalARow = db.prepare(`SELECT relativePath FROM final_edit_external_assets WHERE id='external-a'`).get() as { relativePath: string };
+const externalAPath = path.join(storageRoot, externalARow.relativePath);
+const outsideVideoPath = path.join(root, 'outside-replacement.mp4');
+fs.writeFileSync(outsideVideoPath, 'outside-owner-directory');
+fs.unlinkSync(externalAPath);
+fs.symlinkSync(outsideVideoPath, externalAPath);
+await assert.rejects(
+  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['external:external-a'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'material_not_ready',
+  '导入后替换成 symlink 的外部素材不得再被 prepare 读取',
+);
+assert.equal(workspace.load(externalJob.groupId).assets.length, 0, 'load 不得暴露已经 symlink 越界的外部素材');
+db.prepare(`UPDATE final_edit_variants SET issuesJson='[]' WHERE id=?`).run(externalGroup.variants[0].id);
+db.prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES ('external-symlink-bundle', ?, '3x4', ?, 'external-symlink', '{}', 'final-edits/test/overlays', 'ready', datetime('now'))`).run(externalGroup.id, externalGroup.revision);
+await assert.rejects(
+  workspace.enqueueRender({ groupId: externalGroup.id, variantId: externalGroup.variants[0].id, expectedGroupRevision: externalGroup.revision, expectedVariantRevision: externalGroup.variants[0].revision, overlayBundleId: 'external-symlink-bundle' }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'unsafe_path',
+  'render 快照不得读取已经 symlink 越界的外部素材',
+);
+fs.unlinkSync(externalAPath);
+fs.writeFileSync(externalAPath, 'video-external-a');
 
 const editedJob = await workspace.start({
   projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', editedNarrationText: '改写第一句。\n改写第二句！',
@@ -186,6 +245,34 @@ assert.equal(synthesizedNarrations.length, synthCountBeforeRecovery + 1, '并发
 assert.deepEqual(synthesizedNarrations.at(-1), ['改写第一句。', '改写第二句！'], '恢复任务不得重读已漂移的 script_drafts');
 assert.equal((db.prepare(`SELECT attempt FROM final_edit_jobs WHERE id=?`).get(editedJob.id) as { attempt: number }).attempt, 2);
 db.prepare(`UPDATE script_drafts SET outputJson=? WHERE id='script-1'`).run(JSON.stringify(script));
+
+db.exec(`
+  CREATE TEMP TRIGGER fail_prepare_success_before_commit
+  BEFORE UPDATE OF status ON final_edit_jobs
+  WHEN NEW.kind='prepare' AND NEW.status='succeeded'
+  BEGIN
+    SELECT RAISE(ABORT, 'simulated crash before prepare commit');
+  END;
+`);
+await assert.rejects(
+  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['module4:v1'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+  /simulated crash before prepare commit/,
+);
+const interruptedPrepare = db.prepare(`SELECT id, groupId, phase, progress FROM final_edit_jobs WHERE kind='prepare' AND status='failed' ORDER BY rowid DESC LIMIT 1`).get() as { id: string; groupId: string; phase: string; progress: number };
+assert.equal(interruptedPrepare.phase, 'previewing', '失败状态必须保留最后一个活动阶段');
+assert.ok(interruptedPrepare.progress >= 0.8);
+assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_variants WHERE groupId=?`).get(interruptedPrepare.groupId) as { count: number }).count, 0, '成功状态未提交时 variants 也必须回滚');
+assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_usage WHERE groupId=?`).get(interruptedPrepare.groupId) as { count: number }).count, 0, '成功状态未提交时 usage 也必须回滚');
+db.exec(`DROP TRIGGER fail_prepare_success_before_commit`);
+db.prepare(`UPDATE final_edit_jobs SET status='queued', errorCode=NULL, errorMessage=NULL, finishedAt=NULL WHERE id=?`).run(interruptedPrepare.id);
+const previewsBeforeRecovery = warmedPreviewPaths.length;
+const failedPreviewPath = warmedPreviewPaths.at(-1);
+await workspace.resumePrepareJob(interruptedPrepare.id);
+const recoveredPrepare = db.prepare(`SELECT status, phase, progress FROM final_edit_jobs WHERE id=?`).get(interruptedPrepare.id) as { status: string; phase: string; progress: number };
+assert.deepEqual(recoveredPrepare, { status: 'succeeded', phase: 'succeeded', progress: 1 });
+assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_variants WHERE groupId=?`).get(interruptedPrepare.groupId) as { count: number }).count, 1, '故障窗口恢复后只能产生一份 variant');
+assert.equal(warmedPreviewPaths.length, previewsBeforeRecovery + 1, '恢复会复用同一预览缓存路径');
+assert.equal(warmedPreviewPaths.at(-1), failedPreviewPath, '故障恢复必须命中同一个确定性预览路径');
 
 const manualJob = await workspace.start({
   projectId: 'p1', scriptDraftId: '', shotSetId: 'set-a', editedNarrationText: '手工文案。', selectedMaterialKeys: ['module4:v1'],

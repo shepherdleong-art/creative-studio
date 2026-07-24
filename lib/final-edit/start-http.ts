@@ -14,10 +14,11 @@ export interface FinalEditStartBody {
   voice?: string;
   speed?: number;
   analysisProviderId?: string;
+  draftGroupId?: string;
 }
 
 export async function startFinalEditFromHttp(projectId: string, body: FinalEditStartBody) {
-  if (!body.providerId || !body.voice) throw new FinalEditError('tts_selection_required', '必须明确选择口播配音供应商和音色');
+  if (!body.draftGroupId && (!body.providerId || !body.voice)) throw new FinalEditError('tts_selection_required', '必须明确选择口播配音供应商和音色');
   recoverFinalEditPrepareJobs();
   const job = await getFinalEditWorkspace().start({
     projectId,
@@ -27,10 +28,11 @@ export async function startFinalEditFromHttp(projectId: string, body: FinalEditS
     selectedMaterialKeys: body.selectedMaterialKeys,
     count: Number(body.count || 2),
     outputPreset: body.outputPreset || '3x4',
-    providerId: body.providerId,
-    voice: body.voice,
+    providerId: body.providerId || '',
+    voice: body.voice || '',
     speed: Number(body.speed || 1),
     analysisProviderId: body.analysisProviderId,
+    draftGroupId: body.draftGroupId,
   });
   return getDb().prepare(`SELECT id, groupId, variantId, kind, status, phase, progress, startedAt, finishedAt, errorMessage FROM final_edit_jobs WHERE id=?`).get(job.id) || job;
 }

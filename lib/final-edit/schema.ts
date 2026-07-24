@@ -139,6 +139,12 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
       ALTER TABLE final_edit_groups ADD COLUMN selectedMaterialKeysJson TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    version: 7,
+    sql: `
+      ALTER TABLE final_edit_variants ADD COLUMN previewRelativePath TEXT;
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

@@ -5,13 +5,14 @@ import sharp from 'sharp';
 import { runFfmpeg, probeDurationSec } from '../ffmpeg.ts';
 import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue } from './types.ts';
 import { resolveStoragePath } from './storage-path.ts';
+import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
   variantRevision: number;
   group: { narrationDurationUs: number; subtitleCues: SubtitleCue[] };
   variant: FinalEditVariantView;
-  sources: Array<{ videoJobId: string; relativePath: string; fingerprint: string }>;
+  sources: Array<{ videoJobId: string; relativePath: string; fingerprint: string; externalScope?: { projectId: string; shotSetId: string } }>;
   coverRelativePath: string;
   narrationRelativePath: string;
   bgm: { id: string; relativePath: string; fileFingerprint: string; gainDb: number; loop: boolean; fadeOutSec: number } | null;
@@ -55,8 +56,11 @@ export async function renderFinalEditSnapshot(input: {
   const jobDir = resolveStoragePath(storageRoot, jobRelativeDir);
   fs.mkdirSync(path.join(jobDir, 'tmp'), { recursive: true });
   const sourceById = new Map(snapshot.sources.map((source) => [source.videoJobId, source]));
+  const resolveSource = (source: FinalEditRenderSnapshot['sources'][number]) => source.externalScope
+    ? resolveImportedExternalAssetVideoPath(storageRoot, source.externalScope, source.relativePath)
+    : resolveStoragePath(storageRoot, source.relativePath);
   for (const source of snapshot.sources) {
-    const absolute = resolveStoragePath(storageRoot, source.relativePath);
+    const absolute = resolveSource(source);
     if (!fs.existsSync(absolute) || await fileSha256(absolute) !== source.fingerprint) throw new Error(`视频素材已变化：${source.videoJobId}`);
   }
   const coverSource = resolveStoragePath(storageRoot, snapshot.coverRelativePath);
@@ -94,7 +98,7 @@ export async function renderFinalEditSnapshot(input: {
   for (const clip of clips) {
     const source = sourceById.get(clip.videoJobId);
     if (!source) throw new Error(`快照缺少视频素材：${clip.videoJobId}`);
-    args.push('-ss', (clip.sourceInFrame / 24).toFixed(6), '-t', ((clip.sourceOutFrame - clip.sourceInFrame) / 24).toFixed(6), '-i', resolveStoragePath(storageRoot, source.relativePath));
+    args.push('-ss', (clip.sourceInFrame / 24).toFixed(6), '-t', ((clip.sourceOutFrame - clip.sourceInFrame) / 24).toFixed(6), '-i', resolveSource(source));
   }
   const narrationInput = clips.length + 1;
   args.push('-i', narration);

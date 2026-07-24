@@ -6,6 +6,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { runFfmpeg, probeDurationSec } from '../lib/ffmpeg.ts';
 import { renderFinalEditSnapshot, type FinalEditRenderSnapshot } from '../lib/final-edit/renderer.ts';
+import { warmPreparePreview } from '../lib/final-edit/prepare-preview.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-final-render-'));
 const storage = path.join(root, 'storage');
@@ -39,6 +40,19 @@ const snapshot: FinalEditRenderSnapshot = {
   bgm: { id: 'bgm-1', relativePath: 'audio/bgm.wav', fileFingerprint: bgmFingerprint, gainDb: -16, loop: true, fadeOutSec: 0.8 },
   overlayBundle: { id: 'bundle-1', relativeDir: 'overlays', manifest: {} },
 };
+
+const preparedPreview = await warmPreparePreview({
+  storageRoot: storage,
+  relativePath: 'final-edits/previews/prepare/job-1/variant-1.mp4',
+  variant: snapshot.variant,
+  sources: [{ videoJobId: 'video-1', absolutePath: source }],
+  narrationAbsolutePath: narration,
+});
+const preparedPreviewPath = path.join(storage, preparedPreview.relativePath);
+assert.ok(fs.statSync(preparedPreviewPath).size > 0, 'previewing 必须产出真实低清视频');
+const preparedPreviewMtime = fs.statSync(preparedPreviewPath).mtimeMs;
+await warmPreparePreview({ storageRoot: storage, relativePath: preparedPreview.relativePath, variant: snapshot.variant, sources: [{ videoJobId: 'video-1', absolutePath: source }], narrationAbsolutePath: narration });
+assert.equal(fs.statSync(preparedPreviewPath).mtimeMs, preparedPreviewMtime, '恢复任务必须复用已原子完成的预览缓存');
 
 const result = await renderFinalEditSnapshot({ jobId: 'job-1', storageRoot: storage, snapshot });
 assert.ok(fs.existsSync(path.join(storage, result.videoRelativePath)));

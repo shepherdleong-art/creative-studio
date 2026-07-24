@@ -115,6 +115,7 @@ export interface FinalEditVariantView {
   revision: number;
   lastRenderedRevision: number | null;
   renderStatus: string | null;
+  previewUrl?: string | null;
 }
 
 export interface FinalEditGroupView {
