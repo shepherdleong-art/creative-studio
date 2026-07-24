@@ -80,7 +80,7 @@ import assert from 'node:assert/strict';
 // the matrix is "句段 × 候选场景" (m = scenes, not assets) but never fixes
 // the scene ordering. Assumed: scenes flattened in encounter order — asset
 // order as given in `assets`, then scene order within each asset. Every
-// scenario below states its flattened order in a comment.
+// scenario whose flattened order is not self-evident states it in a comment.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -377,26 +377,31 @@ assert.equal(result2.diagnostics.semanticFallback, false);
 //    (流程不中断), diagnostics must echo semanticFallback=true, and with the
 //    semantic signal flat, keyword/label similarity becomes the deciding
 //    signal ("semanticFallback 态下的替补主信号").
+// Flattened scene order (JUDGMENT CALL #5): [asset-x#0, asset-m#0, asset-z#0].
 // Derivation: each row's floor = max(0.35, 0.6×0.85 = 0.51) = 0.51; every
 // candidate at 0.6 is above floor -> no backoff; hooks all zero -> no hook
-// preference; assets carry no shotId -> no shotId prior (item 2). Both
+// preference; assets carry no shotId -> no shotId prior (item 2). All three
 // assets are identical on every remaining axis (length, quality, label
-// count, source) and asset-x is listed FIRST, so any non-keyword tie-break
-// produces at least one wrong assignment: "first wins" misassigns s1,
-// "last wins" misassigns s2. s1 keywords overlap only asset-y's labels
-// ('开箱'); s2 only asset-x's ('夜景').
+// count, source). s1's keyword '开箱' overlaps ONLY asset-m — the MIDDLE
+// asset in the flattened order — so no positional tie-break can pass
+// spuriously: "first wins" gives s1 -> asset-x (wrong), "last wins" gives
+// s1 -> asset-z (wrong), and a reuse-penalty-driven freshness preference
+// cannot reach the middle either (s1 is placed first, when every candidate
+// is still fresh). s2's keyword '夜景' overlaps only asset-x. Only the
+// keyword signal produces the correct s1 -> asset-m, s2 -> asset-x.
 // ---------------------------------------------------------------------------
 const input3: AudioFirstMatchInput = {
   sentences: [sentence('s1', 0, 2_000_000, ['开箱'], '开箱体验'), sentence('s2', 2_000_000, 4_000_000, ['夜景'], '夜景实拍')],
   assets: [
     asset('asset-x', [scene(0, 5_000_000, ['夜景', '城市'])]),
-    asset('asset-y', [scene(0, 5_000_000, ['开箱', '桌面'])]),
+    asset('asset-m', [scene(0, 5_000_000, ['开箱', '桌面'])]),
+    asset('asset-z', [scene(0, 5_000_000, ['棚拍', '特写'])]),
   ],
   semanticScores: [
-    [0.6, 0.6],
-    [0.6, 0.6],
+    [0.6, 0.6, 0.6],
+    [0.6, 0.6, 0.6],
   ],
-  hookScores: [0.0, 0.0],
+  hookScores: [0.0, 0.0, 0.0],
   beatPoints: [],
   manualLocks: [],
   maxReuse: 3,
@@ -407,8 +412,8 @@ assert.equal(result3.diagnostics.semanticFallback, true, '降级输入必须原�
 assert.equal(result3.plan.segments.length, 2, '降级态下流程不中断，仍应产出完整 plan');
 assert.equal(
   segmentFor(result3.plan, 's1').assetKey,
-  'asset-y',
-  'semanticFallback 态下关键词重叠必须成为决定性信号（s1↔asset-y：开箱）',
+  'asset-m',
+  'semanticFallback 态下关键词重叠必须成为决定性信号（s1↔asset-m：开箱）',
 );
 assert.equal(
   segmentFor(result3.plan, 's2').assetKey,
@@ -605,7 +610,7 @@ const input8: AudioFirstMatchInput = {
 const result8 = await matchAudioFirst(input8);
 assert.ok(
   result8.diagnostics.gaps.length + result8.diagnostics.issues.length > 0,
-  '素材总可用时长（4s）盖不住句段总时长（8s）时必须产生显式 gap/issue 记录',
+  '唯一场景 4s 容纳不了 s2 的 5s 句段（无长度可行候选）时必须产生显式 gap/issue 记录',
 );
 for (const seg of result8.plan.segments) {
   const assetDef = assertSegmentReferencesInputAsset(input8, seg);
