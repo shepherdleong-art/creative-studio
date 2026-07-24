@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { ScriptOutput } from '../lib/script-providers/types.ts';
-import { buildMixcutContext, isUsableV2ScriptDraft } from '../lib/final-edit/mixcut-context.ts';
+import { buildMixcutContext, isUsableV2ScriptDraft, mapWithConcurrency } from '../lib/final-edit/mixcut-context.ts';
 import { findModule4Video } from '../lib/final-edit/module4-asset.ts';
 import { resolveFfprobePath, runFfmpeg } from '../lib/ffmpeg.ts';
 
@@ -23,6 +23,19 @@ import { resolveFfprobePath, runFfmpeg } from '../lib/ffmpeg.ts';
 
 const db = new Database(':memory:');
 db.pragma('foreign_keys = ON');
+
+let activeMappers = 0;
+let maxActiveMappers = 0;
+const mapped = await mapWithConcurrency([0, 1, 2, 3, 4, 5, 6], 3, async (value) => {
+  activeMappers += 1;
+  maxActiveMappers = Math.max(maxActiveMappers, activeMappers);
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  activeMappers -= 1;
+  return value * 2;
+});
+assert.deepEqual(mapped, [0, 2, 4, 6, 8, 10, 12], '并发映射应保持输入顺序');
+assert.ok(maxActiveMappers <= 3, '并发映射不得超过指定上限');
+await assert.rejects(() => mapWithConcurrency([1], 0, async (value) => value), /positive integer/);
 
 db.exec(`
   CREATE TABLE projects (

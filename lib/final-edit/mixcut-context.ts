@@ -72,6 +72,35 @@ interface VideoJobRow {
   localVideoPath: string;
 }
 
+const MEDIA_PROBE_CONCURRENCY = 4;
+
+/**
+ * Resolve media metadata without allowing one context request to fan out into
+ * an unbounded number of ffprobe/ffmpeg child processes.
+ */
+export async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error('concurrency must be a positive integer');
+  }
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index], index);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, () => worker()),
+  );
+  return results;
+}
+
 /**
  * Resolve+validate a `video_jobs.localVideoPath` value against storageRoot,
  * and confirm the resolved file actually exists on disk.
@@ -243,11 +272,14 @@ export async function buildMixcutContext(
       .map((row) => ({ row, absolutePath: resolveSafeVideoAbsolutePath(storageRoot, row.localVideoPath) }))
       .filter((entry): entry is { row: VideoJobRow; absolutePath: string } => entry.absolutePath !== null);
 
-    // JUDGMENT CALL (JC-2): one ffprobe call per video, run in parallel (not
-    // serially) via Promise.all — this is a metadata-only subprocess read
-    // (~tens of ms), not a transcode/AI job, so it does not violate plan
-    // §2.1's "不得在 HTTP 请求中同步等待完整 FFmpeg 或付费 AI 任务" rule.
-    const probes = await Promise.all(safeRows.map((entry) => probeVideoMedia(entry.absolutePath)));
+    // JUDGMENT CALL (JC-2): metadata probing stays inside the request because
+    // it is not a transcode/paid task, but it is bounded so a large shot set
+    // cannot spawn an ffprobe/ffmpeg process storm.
+    const probes = await mapWithConcurrency(
+      safeRows,
+      MEDIA_PROBE_CONCURRENCY,
+      (entry) => probeVideoMedia(entry.absolutePath),
+    );
 
     safeRows.forEach((entry, index) => {
       const probe = probes[index];

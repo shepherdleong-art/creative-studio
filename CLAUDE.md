@@ -23,11 +23,11 @@ node scripts/<name>.test.ts          # pattern for any other test file
 
 ## Architecture
 
-**Creative Studio** is a local-first AI asset production workbench — it turns a product image into scene images, shot sequences, scripts, and video tasks, then exports a ZIP package. Built with Next.js 16 App Router + React 19 + SQLite (`better-sqlite3`). Ships either as a plain web app or as a packaged Windows/macOS desktop installer with a bundled private Node runtime.
+**Creative Studio** is a local-first AI asset production workbench — it turns a product image into scene images, shot sequences, scripts, video tasks, and rendered final edits, then exports a ZIP package. Built with Next.js 16 App Router + React 19 + SQLite (`better-sqlite3`). Ships either as a plain web app or as a packaged Windows/macOS desktop installer with a bundled private Node runtime.
 
 ### Core layers
 
-- **`app/api/`** — ~40 REST API routes (projects, jobs, images, shots, scripts, video, shutdown)
+- **`app/api/`** — REST API route groups for projects, jobs, images, shots, scripts, video, shutdown, and the versioned final-edit/mixcut workflow (context, scoped Module 4 assets, external assets, groups, variants, jobs, BGM and proposals)
 - **`lib/`** — Business logic
   - `db.ts` / `db-migrations.ts` — SQLite init (WAL mode, foreign keys); `CORE_DB_MIGRATIONS` is a flat list of `ALTER TABLE` statements applied on every startup, each wrapped in try/catch so already-applied columns are silently skipped
   - `data-root.ts` — resolves the local data root for the current run mode (dev server / installed app / EXE, overridable via `CREATIVE_STUDIO_DATA_ROOT`); all local paths (`data/`, `storage/`) derive from this
@@ -35,10 +35,11 @@ node scripts/<name>.test.ts          # pattern for any other test file
   - `providers/` — Image generation adapters (Packy, GeekAI, OpenAI-compatible)
   - `script-providers/` — LLM script generation (Gemini, Qwen, Kimi, GPT)
   - `video-providers/` — Video generation adapters (Kling, Jimeng)
+  - `final-edit/` — Versioned final-edit schema, group/variant workspace, external-material import, media analysis, TTS/alignment, timeline planning and FFmpeg rendering. Mixcut context and external assets are scoped by `projectId + shotSetId`; never infer grouping from filenames or timestamps
   - `image-output-normalize.ts` — Sharp-based crop/resize to target dimensions
   - `provider-concurrency.ts` — Per-provider concurrency limits
-  - `ffmpeg.ts` — resolves the ffmpeg/ffprobe binary (env → ffmpeg-static → PATH); not currently called by any module (成片包装模块待重做)
-- **`components/`** — React UI (workbench tabs, shot panels, video panels)
+  - `ffmpeg.ts` — resolves ffmpeg/ffprobe (env → static package → PATH), probes media with an asynchronous fallback, and runs final-edit renders with progress/timeout/error-tail handling
+- **`components/`** — React UI (workbench tabs, shot panels, video panels); `components/final-edit/` is the existing editor and `components/mixcut/` is the phased Mixcut V1 workspace
 - **`data/`** — Local SQLite DB (`workbench.db`, gitignored)
 - **`storage/`** — Uploaded assets & generated outputs (gitignored)
 
@@ -49,7 +50,8 @@ node scripts/<name>.test.ts          # pattern for any other test file
 3. Queue polls provider status asynchronously; on completion, image downloaded and normalized via Sharp
 4. Results stored in `image_assets`, organized into `shot_sets` → `shots` → `shot_result_candidates`
 5. Scripts generated via LLM providers; video jobs created from shots
-6. Project exported as ZIP
+6. Final edit analyzes selected video, generates narration and aligned subtitles, builds timelines, and renders output through FFmpeg
+7. Project artifacts, including historical storyboard candidates, can be exported as ZIP
 
 ### Desktop packaging
 
