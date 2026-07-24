@@ -274,16 +274,47 @@ assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_variants WHER
 assert.equal(warmedPreviewPaths.length, previewsBeforeRecovery + 1, '恢复会复用同一预览缓存路径');
 assert.equal(warmedPreviewPaths.at(-1), failedPreviewPath, '故障恢复必须命中同一个确定性预览路径');
 
+db.exec(`
+  CREATE TEMP TRIGGER fail_changed_source_prepare_success
+  BEFORE UPDATE OF status ON final_edit_jobs
+  WHEN NEW.kind='prepare' AND NEW.status='succeeded'
+  BEGIN
+    SELECT RAISE(ABORT, 'simulated crash before changed-source commit');
+  END;
+`);
+await assert.rejects(
+  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['module4:v1'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+  /simulated crash before changed-source commit/,
+);
+const changedSourcePrepare = db.prepare(`SELECT id FROM final_edit_jobs WHERE kind='prepare' AND status='failed' ORDER BY rowid DESC LIMIT 1`).get() as { id: string };
+const stalePreviewPath = warmedPreviewPaths.at(-1);
+const v1Path = path.join(storageRoot, 'videos', 'v1.mp4');
+const originalV1Bytes = fs.readFileSync(v1Path);
+const originalV1Fingerprint = (db.prepare(`SELECT fileFingerprint FROM final_edit_asset_analysis WHERE videoJobId='v1'`).get() as { fileFingerprint: string }).fileFingerprint;
+fs.writeFileSync(v1Path, 'video-v1-replaced-after-preview');
+db.exec(`DROP TRIGGER fail_changed_source_prepare_success`);
+db.prepare(`UPDATE final_edit_jobs SET status='queued', errorCode=NULL, errorMessage=NULL, finishedAt=NULL WHERE id=?`).run(changedSourcePrepare.id);
+await workspace.resumePrepareJob(changedSourcePrepare.id);
+assert.notEqual(warmedPreviewPaths.at(-1), stalePreviewPath, '源素材 fingerprint 改变后恢复不得复用旧预览缓存');
+fs.writeFileSync(v1Path, originalV1Bytes);
+db.prepare(`UPDATE final_edit_asset_analysis SET fileFingerprint=? WHERE videoJobId='v1'`).run(originalV1Fingerprint);
+
 const manualJob = await workspace.start({
   projectId: 'p1', scriptDraftId: '', shotSetId: 'set-a', editedNarrationText: '手工文案。', selectedMaterialKeys: ['module4:v1'],
   count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1,
 });
 assert.equal(workspace.load(manualJob.groupId).script.sourceDraftId, null, '手工文案不得伪造 script_drafts 行');
-const beforeScriptCommand = workspace.load(manualJob.groupId);
-const scriptCommandResult = workspace.apply({ scope: 'group', groupId: manualJob.groupId, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '手工文案已修改。', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1.1 }).view as typeof beforeScriptCommand;
+const readyManualGroup = workspace.load(manualJob.groupId);
+assert.throws(
+  () => workspace.apply({ scope: 'group', groupId: manualJob.groupId, expectedRevision: readyManualGroup.revision, type: 'set_mixcut_script_state', editedNarrationText: '不得改写已生成组', selectedMaterialKeys: [], voice: 'Cherry', speed: 1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'draft_not_editable' && error.status === 409,
+  '已有音频/字幕/variant 的非 editing group 不得再改脚本状态',
+);
+const beforeScriptCommand = workspace.load(editingDraft.id);
+const scriptCommandResult = workspace.apply({ scope: 'group', groupId: editingDraft.id, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '手工文案已修改。', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1.1 }).view as typeof beforeScriptCommand;
 assert.equal(scriptCommandResult.script.editedNarrationText, '手工文案已修改。');
 assert.throws(
-  () => workspace.apply({ scope: 'group', groupId: manualJob.groupId, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '冲突覆盖', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1 }),
+  () => workspace.apply({ scope: 'group', groupId: editingDraft.id, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '冲突覆盖', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1 }),
   (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict' && error.status === 409,
 );
 

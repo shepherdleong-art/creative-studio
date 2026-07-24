@@ -8,7 +8,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     recoverFinalEditPrepareJobs();
     const { id: projectId } = await params;
-    const ids = getDb().prepare(`SELECT id FROM final_edit_groups WHERE projectId=? ORDER BY createdAt DESC`).all(projectId) as Array<{ id: string }>;
+    const ids = getDb().prepare(`SELECT id FROM final_edit_groups WHERE projectId=? ORDER BY updatedAt DESC, createdAt DESC`).all(projectId) as Array<{ id: string }>;
     return NextResponse.json({ groups: ids.map((row) => getFinalEditWorkspace().load(row.id)) });
   } catch (error) { return finalEditErrorResponse(error); }
 }

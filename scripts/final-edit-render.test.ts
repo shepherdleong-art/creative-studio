@@ -6,7 +6,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { runFfmpeg, probeDurationSec } from '../lib/ffmpeg.ts';
 import { renderFinalEditSnapshot, type FinalEditRenderSnapshot } from '../lib/final-edit/renderer.ts';
-import { warmPreparePreview } from '../lib/final-edit/prepare-preview.ts';
+import { preparePreviewCacheKey, warmPreparePreview } from '../lib/final-edit/prepare-preview.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-final-render-'));
 const storage = path.join(root, 'storage');
@@ -40,6 +40,11 @@ const snapshot: FinalEditRenderSnapshot = {
   bgm: { id: 'bgm-1', relativePath: 'audio/bgm.wav', fileFingerprint: bgmFingerprint, gainDb: -16, loop: true, fadeOutSec: 0.8 },
   overlayBundle: { id: 'bundle-1', relativeDir: 'overlays', manifest: {} },
 };
+
+const previewCacheInput = { timeline: snapshot.variant.timeline, sources: [{ videoJobId: 'video-1', fingerprint }], narration: { hash: 'narration-hash', relativePath: snapshot.narrationRelativePath, durationUs: snapshot.group.narrationDurationUs }, outputPreset: snapshot.variant.outputPreset };
+const previewCacheKey = preparePreviewCacheKey(previewCacheInput);
+assert.notEqual(preparePreviewCacheKey({ ...previewCacheInput, sources: [{ videoJobId: 'video-1', fingerprint: `${fingerprint}-changed` }] }), previewCacheKey, '源 fingerprint 改变必须使预览缓存失效');
+assert.notEqual(preparePreviewCacheKey({ ...previewCacheInput, timeline: { ...previewCacheInput.timeline, bodyFrames: previewCacheInput.timeline.bodyFrames + 1 } }), previewCacheKey, '时间轴计划改变必须使预览缓存失效');
 
 const preparedPreview = await warmPreparePreview({
   storageRoot: storage,

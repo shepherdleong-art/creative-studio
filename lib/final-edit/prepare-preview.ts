@@ -1,8 +1,24 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { runFfmpeg } from '../ffmpeg.ts';
 import { resolveStoragePath } from './storage-path.ts';
-import type { FinalEditVariantView } from './types.ts';
+import type { FinalEditVariantView, OutputPresetId, VideoTimeline } from './types.ts';
+
+export function preparePreviewCacheKey(input: {
+  timeline: VideoTimeline;
+  sources: Array<{ videoJobId: string; fingerprint: string }>;
+  narration: { hash: string; relativePath: string; durationUs: number };
+  outputPreset: OutputPresetId;
+}): string {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    version: 1,
+    timeline: input.timeline,
+    sources: [...input.sources].sort((left, right) => left.videoJobId.localeCompare(right.videoJobId)),
+    narration: input.narration,
+    outputPreset: input.outputPreset,
+  })).digest('hex');
+}
 
 export interface PreparePreviewInput {
   storageRoot: string;

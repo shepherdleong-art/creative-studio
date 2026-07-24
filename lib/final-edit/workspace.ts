@@ -29,6 +29,7 @@ import {
   type ShotSetExternalAssetImportInput,
 } from './material-import.ts';
 import { assertTtsSpeed } from './tts-speed.ts';
+import { preparePreviewCacheKey } from './prepare-preview.ts';
 import {
   FINAL_EDIT_FPS,
   FINAL_EDIT_INTRO_DURATION_US,
@@ -882,7 +883,16 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       for (let index = 0; index < variants.length; index += 1) {
         const variant = variants[index];
         if (deps.warmPreview) {
-          const relativePath = path.join('final-edits', 'previews', 'prepare', jobId, `${variant.id}.mp4`);
+          const usedVideoJobIds = new Set(variant.timeline.clips.map((clip) => clip.videoJobId));
+          const previewCacheKey = preparePreviewCacheKey({
+            timeline: variant.timeline,
+            sources: prepared
+              .filter((asset) => usedVideoJobIds.has(asset.videoJobId))
+              .map((asset) => ({ videoJobId: asset.videoJobId, fingerprint: asset.fingerprint })),
+            narration: { hash: narrationHash, relativePath: narration.relativePath, durationUs: narration.durationUs },
+            outputPreset: variant.outputPreset,
+          });
+          const relativePath = path.join('final-edits', 'previews', 'prepare', jobId, `${previewCacheKey}.mp4`);
           const warmed = await deps.warmPreview({
             jobId, groupId, variant,
             sources: prepared.map((asset) => ({ videoJobId: asset.videoJobId, absolutePath: asset.localVideoPath })),
@@ -1156,6 +1166,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const row = db.prepare(`SELECT * FROM final_edit_groups WHERE id=?`).get(command.groupId) as Record<string, unknown> | undefined;
     if (!row) throw new FinalEditError('group_not_found', '成片组不存在', 404);
     if (Number(row.revision) !== command.expectedRevision) throw new FinalEditError('revision_conflict', '成片组已被其他操作更新', 409, { expectedRevision: command.expectedRevision, currentRevision: Number(row.revision) });
+    if (command.type === 'set_mixcut_script_state' && row.status !== 'editing') throw new FinalEditError('draft_not_editable', '只能修改编辑中的混剪草稿', 409);
     const cues = parseJson<SubtitleCue[]>(String(row.subtitleStateJson), []);
     const coverTitle = parseJson<{ primary: { id: 'primary'; text: string; textSource: 'script' | 'manual' }; secondary: { id: 'secondary'; text: string; textSource: 'script' | 'manual' } }>(String(row.coverTitleJson), { primary: { id: 'primary', text: '', textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } });
     const textStyles = parseJson<FinalEditGroupView['textStyles']>(String(row.textStylesJson), buildStyles());
