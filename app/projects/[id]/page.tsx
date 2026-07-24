@@ -12,6 +12,7 @@ import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 import ScriptPanel from '@/components/ScriptPanel';
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
 import FinalEditPanel from '@/components/final-edit/FinalEditPanel';
+import MixcutPanel from '@/components/mixcut/MixcutPanel';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
@@ -105,6 +106,7 @@ export default function ProjectDetailPage() {
   const searchParams = useSearchParams();
   const id = params.id as string;
   const activeTab = parseWorkbenchTab(searchParams.get('tab'));
+  const showMixcutV1 = searchParams.get('mixcut') === 'v1';
 
   type QueueStatus = 'idle' | 'running' | 'paused';
 
@@ -590,7 +592,9 @@ export default function ProjectDetailPage() {
               </div>
             )}
             {activeTab === 'final-edit' && (
-              <FinalEditPanel projectId={project.id} projectName={project.name} />
+              showMixcutV1
+                ? <MixcutPanel projectId={project.id} projectName={project.name} />
+                : <FinalEditPanel projectId={project.id} projectName={project.name} />
             )}
           </>
         ) : (
