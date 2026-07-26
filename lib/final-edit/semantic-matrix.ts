@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-export const SEMANTIC_MATRIX_PROMPT_VERSION = '1';
+export const SEMANTIC_MATRIX_PROMPT_VERSION = '2';
 
 export interface SemanticSentence {
   id: string;
@@ -80,8 +80,75 @@ export function normalizeSemanticMatrix(raw: unknown, sentenceCount: number, sce
 }
 
 export function buildSemanticMatrixPrompt(input: Pick<SemanticMatrixInput, 'sentences' | 'scenes'>): { systemPrompt: string; userPrompt: string } {
+  const sentences = input.sentences.map((sentence, index) =>
+    `句${index + 1}: ${JSON.stringify(sentence.text)}\n画面关键词: ${sentence.keywords.length ? sentence.keywords.join('、') : '无'}`,
+  ).join('\n');
+  const scenes = input.scenes.map((scene, index) =>
+    `素材${index + 1}: ${scene.description || '无描述'}\n标签: ${scene.labels.length ? scene.labels.join('、') : '无'}`,
+  ).join('\n');
   return {
     systemPrompt: '你是电商短视频的镜头匹配评分器。只返回严格 JSON，不返回解释或 Markdown。',
-    userPrompt: `请一次性评估每个口播句段与每个候选场景的语义匹配度，并评估每个场景作为首镜头的吸引力。\n口播句段：${JSON.stringify(input.sentences)}\n候选场景：${JSON.stringify(input.scenes)}\n返回 {"score_matrix":[[0到1]],"hook_scores":[0到1]}。score_matrix 必须是 ${input.sentences.length} 行、每行 ${input.scenes.length} 列；hook_scores 必须有 ${input.scenes.length} 项。`,
+    userPrompt: `请一次性评估每个口播句段与每个候选场景的语义匹配度，并评估每个场景作为首镜头的吸引力。\n\n口播句段：\n${sentences}\n\n候选场景：\n${scenes}\n\n返回 {"score_matrix":[[0到1]],"hook_scores":[0到1]}。score_matrix 必须是 ${input.sentences.length} 行、每行 ${input.scenes.length} 列；hook_scores 必须有 ${input.scenes.length} 项。`,
   };
+}
+
+export interface SemanticMatrixRetryEvent {
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  error: unknown;
+}
+
+function errorStatus(error: unknown): number | null {
+  if (error && typeof error === 'object' && Number.isFinite(Number((error as { status?: unknown }).status))) {
+    return Number((error as { status: number }).status);
+  }
+  const match = (error instanceof Error ? error.message : String(error)).match(/(?:error|status|http)\s*[:=]?\s*(\d{3})/i);
+  return match ? Number(match[1]) : null;
+}
+
+function retryableSemanticError(error: unknown): boolean {
+  if (error instanceof InvalidSemanticMatrixError) return true;
+  const status = errorStatus(error);
+  if (status != null) return status === 429 || status === 502 || status === 503 || status === 504;
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return /timeout|connect|network|socket|remoteprotocol|fetch failed|空响应|无效\s*json|invalid\s*json/i.test(`${name} ${message}`);
+}
+
+class InvalidSemanticMatrixError extends Error {
+  constructor() {
+    super('semantic_matrix_invalid');
+    this.name = 'InvalidSemanticMatrixError';
+  }
+}
+
+export async function scoreSemanticMatrixWithRetry(input: {
+  sentenceCount: number;
+  sceneCount: number;
+  score: () => Promise<unknown>;
+  sleep?: (delayMs: number) => Promise<void>;
+  onRetry?: (event: SemanticMatrixRetryEvent) => void;
+  onFailure?: (error: unknown, attempts: number) => void;
+}): Promise<SemanticMatrixResult> {
+  const delays = [500, 1_000, 2_000] as const;
+  const maxAttempts = delays.length + 1;
+  let lastError: unknown = new InvalidSemanticMatrixError();
+  let attempts = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      const normalized = normalizeSemanticMatrix(await input.score(), input.sentenceCount, input.sceneCount);
+      if (normalized.semanticFallback) throw new InvalidSemanticMatrixError();
+      return normalized;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !retryableSemanticError(error)) break;
+      const delayMs = delays[attempt - 1];
+      input.onRetry?.({ attempt, maxAttempts, delayMs, error });
+      await (input.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(delayMs);
+    }
+  }
+  input.onFailure?.(lastError, attempts);
+  return fallback(input.sentenceCount, input.sceneCount);
 }

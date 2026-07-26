@@ -111,7 +111,7 @@ export interface ProviderScriptResult {
 
 // ── Provider Metadata ──
 
-export type ApiStyle = 'native-gemini' | 'openai-compatible';
+export type ApiStyle = 'native-gemini' | 'openai-compatible' | 'openai-responses';
 
 export interface ProviderConfig {
   id: string;

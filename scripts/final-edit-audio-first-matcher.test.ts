@@ -178,7 +178,9 @@ interface MatchDiagnostics {
   backoffSentences: string[];
   snappedCuts: unknown[];
   gaps: unknown[];
-  issues: unknown[];
+  issues: Array<{ sentenceId: string; code: string; severity: 'blocking' | 'warning'; message: string }>;
+  selectionReasons: Array<{ sentenceId: string; assetKey: string; startUs: number; score: number; reason: string }>;
+  feasible?: boolean;
 }
 
 interface AudioFirstMatchResult {
@@ -249,6 +251,15 @@ function assertAudioFirstDurationParity(seg: TimelinePlanSegment) {
     seg.endUs - seg.startUs,
     `audio-first：句段 ${seg.sentenceId} 的源侧时长必须等于口播侧时长`,
   );
+}
+
+function assertTimelineCoverage(segments: TimelinePlanSegment[], startUs: number, endUs: number) {
+  const ordered = [...segments].sort((left, right) => left.startUs - right.startUs);
+  assert.equal(ordered[0]?.startUs, startUs, '兜底拼接必须从句段起点开始');
+  for (let index = 1; index < ordered.length; index += 1) {
+    assert.equal(ordered[index - 1].endUs, ordered[index].startUs, '兜底拼接片段之间不得有空洞或重叠');
+  }
+  assert.equal(ordered.at(-1)?.endUs, endUs, '兜底拼接必须覆盖到句段终点');
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +353,7 @@ assert.equal(
 assert.equal(diag1.semanticFallback, false, '未降级时 semanticFallback 必须为 false');
 assert.deepEqual(diag1.backoffSentences, [], '两句都有地板之上候选，不得出现兜底句');
 assert.deepEqual(diag1.snappedCuts, [], 'beatPoints 为空数组时必须跳过吸附（snappedCuts 为空）');
+assert.deepEqual(diag1.selectionReasons.map((item) => item.reason), ['semantic_primary', 'semantic_primary'], '正常选择必须逐段留下可展示的语义原因');
 
 // ---------------------------------------------------------------------------
 // 2. Semantic floor, case (b): only below-floor candidates exist -> the
@@ -433,6 +445,16 @@ for (const seg of result3.plan.segments) {
   assertSegmentReferencesInputAsset(input3, seg);
   assertAudioFirstDurationParity(seg);
 }
+
+const substringKeywordResult = await matchAudioFirst({
+  sentences: [sentence('substring', 0, 1_000_000, ['沙发'], '忙碌一天后陷进柔软沙发')],
+  assets: [
+    asset('asset-wrong', [scene(0, 2_000_000, ['扫地机器人'])]),
+    asset('asset-right', [scene(0, 2_000_000, ['黑色皮沙发'])]),
+  ],
+  semanticScores: [[0.6, 0.6]], hookScores: [0, 0], beatPoints: [], manualLocks: [], maxReuse: 1, semanticFallback: true,
+});
+assert.equal(segmentFor(substringKeywordResult.plan, 'substring').assetKey, 'asset-right', '中文关键词与完整标签应按双向子串命中，不再要求完全相等');
 
 // ---------------------------------------------------------------------------
 // 4. Beat snapping — positive case (§7.4.3). One breath point 0.1s after the
@@ -591,38 +613,36 @@ assert.equal(seg7s1.endUs, 2_000_000);
 assert.equal(segmentFor(locked7.plan, 's2').assetKey, 'asset-hi', 's2 不受锁定影响，仍选语义赢家 asset-hi');
 
 // ---------------------------------------------------------------------------
-// 8. Insufficient material -> explicit gap/issue, no fabricated assets
-//    (§7.4.2: "素材不足产生显式 gap/issue，不得跨组取材").
-// s2 needs 5s contiguous; the only scene is 4s -> s2 has no length-feasible
-// candidate (hard constraint, migration spec §5.6: 分配素材 available >= 句
-// 时长), so the plan cannot cover the narration. Whether Phase 3 places s2
-// truncated or leaves it unplaced is deliberately NOT asserted. What is
-// asserted:
-//   (a) at least one explicit gap/issue entry exists;
-//   (b) every referenced assetKey comes from the input (不得凭空捏造素材 —
-//       "不跨组取材" at this layer);
-//   (c) every placed source interval stays inside a real scene (a 5s source
-//       interval claimed inside a 4s scene would be fabrication and is
-//       caught here).
+// 8. Every individual material is shorter than the sentence. The fallback
+//    must concatenate safe source intervals, keep audio-first duration parity,
+//    cover the complete narration interval, and surface a warning rather than
+//    a blocking gap. This deliberately improves on AI-remix's duration clamp,
+//    which shortens Σduration.
 // ---------------------------------------------------------------------------
 const input8: AudioFirstMatchInput = {
-  sentences: [sentence('s1', 0, 3_000_000, ['产品']), sentence('s2', 3_000_000, 8_000_000, ['产品'])],
-  assets: [asset('asset-tiny', [scene(0, 4_000_000, ['产品'])])],
-  semanticScores: [[0.9], [0.9]],
-  hookScores: [0.0],
+  sentences: [sentence('s1', 0, 7_000_000, ['产品'])],
+  assets: [
+    asset('asset-a', [scene(0, 4_000_000, ['产品'])]),
+    asset('asset-b', [scene(0, 4_000_000, ['产品'])]),
+  ],
+  semanticScores: [[0.9, 0.8]],
+  hookScores: [0.0, 0.0],
   beatPoints: [],
   manualLocks: [],
-  maxReuse: 3,
+  maxReuse: 1,
   semanticFallback: false,
 };
 const result8 = await matchAudioFirst(input8);
-assert.ok(
-  result8.diagnostics.gaps.length + result8.diagnostics.issues.length > 0,
-  '唯一场景 4s 容纳不了 s2 的 5s 句段（无长度可行候选）时必须产生显式 gap/issue 记录',
-);
+assert.equal(result8.plan.segments.length, 2, '7 秒句段应由两段不越界的 4 秒素材拼满');
+assert.equal(result8.diagnostics.gaps.length, 0, '存在可拼接容量时不得留下视频轨空洞');
+assert.equal(result8.diagnostics.feasible, false, '触发短素材兜底时必须保留 feasible=false 诊断');
+assert.ok(result8.diagnostics.issues.some((issue) => issue.sentenceId === 's1' && issue.severity === 'warning'));
+assert.ok(result8.diagnostics.selectionReasons.every((item) => item.reason === 'material_length_fallback'));
+assertTimelineCoverage(result8.plan.segments, 0, 7_000_000);
 for (const seg of result8.plan.segments) {
   const assetDef = assertSegmentReferencesInputAsset(input8, seg);
   assertSourceInsideScene(assetDef, seg);
+  assertAudioFirstDurationParity(seg);
 }
 
 // ---------------------------------------------------------------------------
@@ -720,15 +740,17 @@ const input11: AudioFirstMatchInput = {
 };
 assert.equal(segmentFor((await matchAudioFirst(input11)).plan, 'segment-99').assetKey, 'asset-target', 'shotId 先验必须选中原脚本对应镜头');
 
-// 12. 同一检测场景容量为 1，不能把同一 sourceStart 区间重复配给多句。
+// 12. 全局求解的一次性 scene 边用完后，只要 maxReuse 还有容量，局部回退
+//     必须复用同一素材覆盖下一句，而不是制造 reuse_limit gap。
 const input12: AudioFirstMatchInput = {
   sentences: [sentence('s1', 0, 1_000_000), sentence('s2', 1_000_000, 2_000_000)],
   assets: [asset('only-scene', [scene(0, 5_000_000)])],
   semanticScores: [[0.9], [0.9]], hookScores: [0], beatPoints: [], manualLocks: [], maxReuse: 3, semanticFallback: false,
 };
 const result12 = await matchAudioFirst(input12);
-assert.equal(result12.plan.segments.length, 1, '一个场景只能被自动分配一次');
-assert.equal(result12.diagnostics.gaps.length, 1);
+assert.equal(result12.plan.segments.length, 2, 'maxReuse=3 时同一素材必须能覆盖两个短句段');
+assert.equal(result12.diagnostics.gaps.length, 0);
+assertTimelineCoverage(result12.plan.segments, 0, 2_000_000);
 
 // 13. 全局求解不能让第一句贪心占掉第二句唯一的高质量选择。
 const input13: AudioFirstMatchInput = {

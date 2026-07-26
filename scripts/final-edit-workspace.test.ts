@@ -82,6 +82,7 @@ let degradeAlignment = false;
 let analyzeVideoCalls = 0;
 let failPreview = false;
 let failSemanticScore = false;
+const semanticLogs: Array<{ level: string; message: string; attempt: number }> = [];
 const workspace = createFinalEditWorkspace({
   db,
   storageRoot,
@@ -101,6 +102,8 @@ const workspace = createFinalEditWorkspace({
     if (failSemanticScore) throw new Error('模拟语义评分失败');
     return { score_matrix: [[0.95, 0.4], [0.4, 0.95]], hook_scores: [0.8, 0.2] };
   },
+  semanticRetrySleep: async () => undefined,
+  log: ({ level, message, attempt }) => semanticLogs.push({ level, message, attempt }),
   materializeCoverFrame: async ({ cacheKey }) => {
     if (cacheKey.includes('v2')) throw new Error('模拟末帧封面抽取失败');
   },
@@ -225,6 +228,7 @@ const fallbackInput = {
 };
 const semanticFallbackJob = await workspace.start(fallbackInput);
 assert.ok(workspace.load(semanticFallbackJob.groupId).variants[0].issues.some((issue) => issue.code === 'semantic_fallback'));
+assert.ok(semanticLogs.some((entry) => entry.level === 'error' && entry.message.includes('关键词匹配')), '语义降级必须写入可定位的错误日志');
 await workspace.start(fallbackInput);
 assert.equal(semanticScoreCalls, fallbackCallsBefore + 2, 'fallback 矩阵不得写入缓存，相同输入必须重试 LLM 而不是永久绑定降级结果');
 failSemanticScore = false;

@@ -71,7 +71,16 @@ export interface MatchGap {
 export interface MatchIssue {
   sentenceId: string;
   code: 'invalid_lock' | 'material_gap';
+  severity: 'blocking' | 'warning';
   message: string;
+}
+
+export interface MatchSelectionReason {
+  sentenceId: string;
+  assetKey: string;
+  startUs: number;
+  score: number;
+  reason: 'manual_lock' | 'semantic_primary' | 'semantic_backoff' | 'material_length_fallback' | 'scene_reuse_fallback';
 }
 
 export interface MatchDiagnostics {
@@ -80,6 +89,7 @@ export interface MatchDiagnostics {
   snappedCuts: SnappedCut[];
   gaps: MatchGap[];
   issues: MatchIssue[];
+  selectionReasons: MatchSelectionReason[];
   usedMaterials: string[];
   totalMaterials: number;
   feasible: boolean;
@@ -148,15 +158,18 @@ function normalizeTerms(values: string[]): Set<string> {
 }
 
 function keywordSimilarity(sentence: AudioFirstSentence, scene: AudioFirstScene): number {
-  const keywords = normalizeTerms(sentence.keywords);
+  const keywords = normalizeTerms([...sentence.keywords, sentence.text.replace(/[\p{P}\p{S}\s]/gu, '')]);
   const labels = normalizeTerms(scene.labels);
   if (keywords.size === 0 || labels.size === 0) return 0;
 
-  let overlap = 0;
-  for (const keyword of keywords) {
-    if (labels.has(keyword)) overlap += 1;
+  let matchedLabels = 0;
+  for (const label of labels) {
+    if (label.length < 2) continue;
+    if ([...keywords].some((keyword) => keyword.length >= 2 && (keyword.includes(label) || label.includes(keyword)))) {
+      matchedLabels += 1;
+    }
   }
-  return overlap / Math.max(keywords.size, labels.size);
+  return matchedLabels / labels.size;
 }
 
 function isLengthFeasible(candidate: Candidate, durationUs: number): boolean {
@@ -387,6 +400,8 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
   const backoffSentences: string[] = [];
   const gaps: MatchGap[] = [];
   const issues: MatchIssue[] = [];
+  const selectionReasons: MatchSelectionReason[] = [];
+  let usedConstraintFallback = false;
 
   const orderedSentences = input.sentences
     .map((sentence, originalIndex) => ({ sentence, originalIndex }))
@@ -417,12 +432,14 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
         candidateBySentence.set(sentence.id, candidate);
         reservedSceneIndexes.add(candidate.flatIndex);
         usageByAsset.set(lock.assetKey, (usageByAsset.get(lock.assetKey) ?? 0) + 1);
+        selectionReasons.push({ sentenceId: sentence.id, assetKey: lock.assetKey, startUs: sentence.startUs, score: 1, reason: 'manual_lock' });
         continue;
       }
 
       issues.push({
         sentenceId: sentence.id,
         code: 'invalid_lock',
+        severity: 'blocking',
         message: '锁定片段不存在、越界或与口播句段时长不一致。',
       });
     }
@@ -431,7 +448,10 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
   }
 
   const assignments = solveGlobalAssignments(input, automaticSentences, candidates, reservedSceneIndexes, usageByAsset);
-  for (const { sentence } of orderedSentences) {
+  for (const { candidate } of assignments.values()) {
+    usageByAsset.set(candidate.asset.assetKey, (usageByAsset.get(candidate.asset.assetKey) ?? 0) + 1);
+  }
+  for (const { sentence, originalIndex } of orderedSentences) {
     const lockedSegment = lockedSegments.get(sentence.id);
     if (lockedSegment) {
       segments.push(lockedSegment);
@@ -441,13 +461,83 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
     const selection = assignments.get(sentence.id);
     if (!selection) {
       const hasLengthFeasible = candidates.some((candidate) => isLengthFeasible(candidate, durationUs));
+      const localUsage = new Map(usageByAsset);
+      const fallbackSegments: TimelinePlanSegment[] = [];
+      let cursorUs = sentence.startUs;
+      let remainingUs = durationUs;
+      while (remainingUs > 0) {
+        const candidate = candidates
+          .filter((item) => {
+            const sceneDurationUs = item.scene.endUs - item.scene.startUs;
+            return sceneDurationUs >= MIN_SEGMENT_DURATION_US
+              && (localUsage.get(item.asset.assetKey) ?? 0) < Math.max(0, Math.floor(finiteNumber(input.maxReuse)));
+          })
+          .sort((left, right) => {
+            const leftScore = candidateBaseScore(input, sentence, originalIndex, left)
+              - REUSE_PENALTY * (localUsage.get(left.asset.assetKey) ?? 0);
+            const rightScore = candidateBaseScore(input, sentence, originalIndex, right)
+              - REUSE_PENALTY * (localUsage.get(right.asset.assetKey) ?? 0);
+            return rightScore - leftScore || left.flatIndex - right.flatIndex;
+          })[0];
+        if (!candidate) break;
+        const sceneDurationUs = candidate.scene.endUs - candidate.scene.startUs;
+        let chunkDurationUs = Math.min(sceneDurationUs, remainingUs);
+        if (remainingUs > sceneDurationUs && remainingUs - chunkDurationUs < MIN_SEGMENT_DURATION_US) {
+          chunkDurationUs = remainingUs - MIN_SEGMENT_DURATION_US;
+        }
+        if (chunkDurationUs < MIN_SEGMENT_DURATION_US) break;
+        const useIndex = localUsage.get(candidate.asset.assetKey) ?? 0;
+        const sourceStartUs = useIndex % 2 === 0
+          ? candidate.scene.startUs
+          : candidate.scene.endUs - chunkDurationUs;
+        fallbackSegments.push({
+          sentenceId: sentence.id,
+          assetKey: candidate.asset.assetKey,
+          startUs: cursorUs,
+          endUs: cursorUs + chunkDurationUs,
+          sourceStartUs,
+          sourceEndUs: sourceStartUs + chunkDurationUs,
+        });
+        cursorUs += chunkDurationUs;
+        remainingUs -= chunkDurationUs;
+        localUsage.set(candidate.asset.assetKey, useIndex + 1);
+      }
+      if (remainingUs === 0 && fallbackSegments.length > 0) {
+        segments.push(...fallbackSegments);
+        for (const [assetKey, count] of localUsage) usageByAsset.set(assetKey, count);
+        for (const segment of fallbackSegments) {
+          const candidate = candidates.find((item) => item.asset.assetKey === segment.assetKey && segment.sourceStartUs >= item.scene.startUs && segment.sourceEndUs <= item.scene.endUs);
+          if (candidate) {
+            candidateBySentence.set(sentence.id, candidate);
+            selectionReasons.push({
+              sentenceId: sentence.id,
+              assetKey: candidate.asset.assetKey,
+              startUs: segment.startUs,
+              score: Number(candidateBaseScore(input, sentence, originalIndex, candidate).toFixed(3)),
+              reason: hasLengthFeasible ? 'scene_reuse_fallback' : 'material_length_fallback',
+            });
+          }
+        }
+        lockedSentences.add(sentence.id);
+        backoffSentences.push(sentence.id);
+        usedConstraintFallback = true;
+        issues.push({
+          sentenceId: sentence.id,
+          code: 'material_gap',
+          severity: 'warning',
+          message: hasLengthFeasible
+            ? '单场景分配容量不足，已在复用上限内拼接兜底素材。'
+            : '素材短于口播句段，已拼接多个安全片段完整覆盖。',
+        });
+        continue;
+      }
       const reason: MatchGap['reason'] = candidates.length === 0
         ? 'no_material'
         : hasLengthFeasible
           ? 'reuse_limit'
           : 'insufficient_duration';
       gaps.push({ sentenceId: sentence.id, startUs: sentence.startUs, endUs: sentence.endUs, reason });
-      issues.push({ sentenceId: sentence.id, code: 'material_gap', message: '没有满足时长与复用限制的可用场景。' });
+      issues.push({ sentenceId: sentence.id, code: 'material_gap', severity: 'blocking', message: '没有满足时长与复用限制的可用场景。' });
       continue;
     }
 
@@ -462,8 +552,14 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
       sourceEndUs: sourceStartUs + durationUs,
     });
     if (belowFloor) backoffSentences.push(sentence.id);
+    selectionReasons.push({
+      sentenceId: sentence.id,
+      assetKey: candidate.asset.assetKey,
+      startUs: sentence.startUs,
+      score: Number(candidateBaseScore(input, sentence, originalIndex, candidate).toFixed(3)),
+      reason: belowFloor ? 'semantic_backoff' : 'semantic_primary',
+    });
     candidateBySentence.set(sentence.id, candidate);
-    usageByAsset.set(candidate.asset.assetKey, (usageByAsset.get(candidate.asset.assetKey) ?? 0) + 1);
   }
 
   const snappedCuts = applyBeatSnapping(segments, input, candidateBySentence, lockedSentences);
@@ -476,9 +572,10 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
       snappedCuts,
       gaps,
       issues,
+      selectionReasons: selectionReasons.sort((left, right) => left.startUs - right.startUs || left.assetKey.localeCompare(right.assetKey)),
       usedMaterials,
       totalMaterials: input.assets.length,
-      feasible: gaps.length === 0,
+      feasible: gaps.length === 0 && !usedConstraintFallback,
       redLine: RED_LINE,
       coveragePenalty: REUSE_PENALTY,
       candidateWindow: CANDIDATE_WINDOW,

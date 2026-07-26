@@ -9,6 +9,7 @@ import { createOpenAiAlignmentAdapter, type AlignmentAdapter } from './adapters/
 import { getFinalEditTtsAdapter, listFinalEditTtsAdapters } from './adapters/tts-registry';
 import { warmPreparePreview } from './prepare-preview';
 import { detectBeatPoints } from './beat-detect';
+import { writeLog } from '../logger';
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
@@ -55,6 +56,7 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
       temperature: input.temperature,
       maxTokens: input.maxTokens,
     }),
+    log: (input) => writeLog(input),
     detectBeatPoints,
     validateTtsProvider: (providerId) => {
       const provider = db.prepare(`SELECT apiKey, keyEnv FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { apiKey: string; keyEnv: string } | undefined;

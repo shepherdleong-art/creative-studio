@@ -62,10 +62,58 @@ export function getScriptSyncState(sourceText: string, editedText: string): Mixc
   return normalizeNarrationText(sourceText) === normalizeNarrationText(editedText) ? 'synced' : 'modified';
 }
 
+const MIN_MATCH_SEGMENT_CHARS = 10;
+const SOFT_MAX_MATCH_SEGMENT_CHARS = 22;
+const HARD_MAX_MATCH_SEGMENT_CHARS = 24;
+
+function contentLength(value: string): number {
+  return Array.from(value.replace(/[\p{P}\p{S}\s]/gu, '')).length;
+}
+
+function mergeNarrationClauses(sentence: string): string[] {
+  const clauses = sentence.match(/[^，,、]+[，,、]*/g)?.map((part) => part.trim()).filter(Boolean) || [sentence];
+  const merged: string[] = [];
+  let current = '';
+  for (const clause of clauses) {
+    const currentLength = contentLength(current);
+    const combinedLength = currentLength + contentLength(clause);
+    const shouldSplit = Boolean(current) && (
+      combinedLength > HARD_MAX_MATCH_SEGMENT_CHARS
+      || (currentLength >= MIN_MATCH_SEGMENT_CHARS && combinedLength > SOFT_MAX_MATCH_SEGMENT_CHARS)
+    );
+    if (shouldSplit) {
+      merged.push(current);
+      current = clause;
+    } else {
+      current += clause;
+    }
+  }
+  if (current) merged.push(current);
+
+  if (merged.length > 1 && contentLength(merged.at(-1)!) < MIN_MATCH_SEGMENT_CHARS) {
+    const tail = merged.pop()!;
+    const previous = merged.pop()!;
+    if (contentLength(previous) + contentLength(tail) <= HARD_MAX_MATCH_SEGMENT_CHARS) {
+      merged.push(previous + tail);
+    } else {
+      const characters = Array.from(previous + tail);
+      const target = Math.ceil(contentLength(previous + tail) / 2);
+      let splitIndex = 0;
+      let seen = 0;
+      while (splitIndex < characters.length && seen < target) {
+        if (!/[\p{P}\p{S}\s]/u.test(characters[splitIndex])) seen += 1;
+        splitIndex += 1;
+      }
+      merged.push(characters.slice(0, splitIndex).join('').trim(), characters.slice(splitIndex).join('').trim());
+    }
+  }
+  return merged.filter(Boolean);
+}
+
 /**
- * Split at explicit lines and Chinese/English sentence punctuation. Punctuation
- * remains attached to its sentence, which makes the result stable and suitable
- * for TTS. No model call or locale-dependent segmenter is involved.
+ * Split at explicit lines and sentence punctuation, then use weak punctuation
+ * to create material-matching segments. Short comma clauses are merged so TTS
+ * does not turn the edit into rapid-fire cuts. Punctuation remains attached.
  */
 export function splitNarrationSentences(value: string): string[] {
   const normalized = normalizeNarrationText(value);
@@ -75,7 +123,7 @@ export function splitNarrationSentences(value: string): string[] {
     const matches = line.match(/[^。！？!?；;]+[。！？!?；;]*/g) || [];
     for (const match of matches) {
       const sentence = match.trim();
-      if (sentence) sentences.push(sentence);
+      if (sentence) sentences.push(...mergeNarrationClauses(sentence));
     }
   }
   return sentences;
@@ -105,15 +153,29 @@ export function buildMixcutTaskScriptSnapshot(input: {
     && syncState === 'synced'
     && originalSegments.length > 0
     && originalSegments.every((segment) => normalizeNarrationText(String(segment.narration || segment.subtitle || '')));
-  const sentences = canPreserveBoundaries
-    ? originalSegments.map((segment) => normalizeNarrationText(String(segment.narration || segment.subtitle || '')))
-    : splitNarrationSentences(editedNarrationText);
+  const preservedSegments = canPreserveBoundaries
+    ? originalSegments.flatMap((segment, sourceIndex) => {
+        const narration = normalizeNarrationText(String(segment.narration || segment.subtitle || ''));
+        // Module 3 already produced the target 5–8 visual sentences: keep them.
+        // Only refine coarse scripts (the real regression had 3 × ~7.4s).
+        const parts = originalSegments.length >= 5 && originalSegments.length <= 8
+          ? [narration]
+          : splitNarrationSentences(narration);
+        return parts.map((part, partIndex) => ({
+          id: parts.length === 1 && segment.id ? segment.id : `${segment.id || `source-${sourceIndex + 1}`}-part-${partIndex + 1}`,
+          shotId: String(segment.shotId || ''),
+          narration: part,
+        }));
+      })
+    : null;
+  const sentences = preservedSegments?.map((segment) => segment.narration) || splitNarrationSentences(editedNarrationText);
   const shotIds = usableShotIds(source);
   const segments = sentences.map((narration, index) => {
+    const preserved = preservedSegments?.[index];
     const original = originalSegments[index];
     return {
-      id: canPreserveBoundaries && original?.id ? original.id : `segment-${index + 1}`,
-      shotId: String(original?.shotId || shotIds[index] || ''),
+      id: preserved?.id || `segment-${index + 1}`,
+      shotId: preserved?.shotId || String(original?.shotId || shotIds[index] || ''),
       narration,
       subtitle: narration,
     };

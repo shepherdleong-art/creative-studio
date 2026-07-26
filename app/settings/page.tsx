@@ -465,6 +465,7 @@ function ProviderForm({
             <>
               <option value="gemini">Gemini</option>
               <option value="openai-compatible">OpenAI-compatible</option>
+              <option value="openai-responses">OpenAI Responses</option>
             </>
           )}
           {category === 'video' && (
@@ -480,6 +481,7 @@ function ProviderForm({
         <Field label="API 风格">
           <select value={form.apiStyle} onChange={(e) => onChange({ ...form, apiStyle: e.target.value })} className="input-field">
             <option value="openai-compatible">OpenAI-compatible</option>
+            <option value="openai-responses">OpenAI Responses</option>
             <option value="native-gemini">Native Gemini</option>
           </select>
         </Field>

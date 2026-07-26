@@ -20,6 +20,10 @@ import {
   completeOpenAiCompatibleJson,
   parseJsonResponse,
 } from './openai-compatible';
+import {
+  chatCompletion as responsesChatCompletion,
+  completeOpenAiResponsesJson,
+} from './openai-responses';
 import { geminiAnalyzeSellingPoints, geminiCompleteJson, geminiGenerateScript } from './gemini';
 import type { ScriptOutput } from './types';
 import { toScriptProviderMeta } from './config';
@@ -88,8 +92,12 @@ export async function completeJson<T>(input: {
     images: input.images,
   };
 
-  if (input.providerId === 'gemini') {
+  if (runtime.apiStyle === 'native-gemini') {
     return geminiCompleteJson<T>(options, runtime);
+  }
+
+  if (runtime.apiStyle === 'openai-responses') {
+    return completeOpenAiResponsesJson<T>(resolveConfig(input.providerId), options, runtime);
   }
 
   return completeOpenAiCompatibleJson<T>(resolveConfig(input.providerId), options, runtime);
@@ -106,12 +114,13 @@ export async function analyzeSellingPoints(
     'You are a professional e-commerce content strategist. Always respond with valid JSON only, no markdown fences.';
   const userPrompt = buildAnalysisPrompt(input);
 
-  if (providerId === 'gemini') {
+  if (runtime.apiStyle === 'native-gemini') {
     return geminiAnalyzeSellingPoints(input, runtime);
   }
 
   const config = resolveConfig(providerId);
-  const rawText = await chatCompletion(config, {
+  const completion = runtime.apiStyle === 'openai-responses' ? responsesChatCompletion : chatCompletion;
+  const rawText = await completion(config, {
     systemPrompt,
     userPrompt,
     temperature: 0.7,
@@ -133,13 +142,14 @@ export async function generateScript(
     'You are a professional e-commerce short-video scriptwriter. Always respond with valid JSON only, no markdown fences.';
   const userPrompt = buildScriptPrompt(input);
 
-  if (providerId === 'gemini') {
+  if (runtime.apiStyle === 'native-gemini') {
     return geminiGenerateScript(input, runtime);
   }
 
   const config = resolveConfig(providerId);
 
-  const rawText = await chatCompletion(config, {
+  const completion = runtime.apiStyle === 'openai-responses' ? responsesChatCompletion : chatCompletion;
+  const rawText = await completion(config, {
     systemPrompt,
     userPrompt,
     temperature: 0.7,

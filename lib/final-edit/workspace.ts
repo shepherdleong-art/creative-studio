@@ -41,10 +41,12 @@ import {
   buildSemanticMatrixPrompt,
   createSemanticMatrixCacheKey,
   normalizeSemanticMatrix,
+  scoreSemanticMatrixWithRetry,
   SEMANTIC_MATRIX_PROMPT_VERSION,
   type SemanticScene,
   type SemanticSentence,
 } from './semantic-matrix.ts';
+import { extractMatchKeywords } from './match-keywords.ts';
 import type { BeatDetectionResult } from './beat-detect.ts';
 import {
   FINAL_EDIT_FPS,
@@ -121,6 +123,8 @@ export interface FinalEditWorkspaceDependencies {
     temperature: number;
     maxTokens: number;
   }): Promise<unknown>;
+  semanticRetrySleep?(delayMs: number): Promise<void>;
+  log?(input: { jobId: string; projectId: string; level: 'warn' | 'error'; message: string; attempt: number }): void;
   detectBeatPoints?(input: { audioPath: string; durationUs: number }): Promise<BeatDetectionResult>;
   materializeCoverFrame?(input: { sourcePath: string; cacheNamespace: string; cacheKey: string; frameUs: number }): Promise<void>;
   synthesize(input: {
@@ -313,6 +317,7 @@ function normalizeMatchDiagnostics(value: unknown): MatchDiagnostics {
     snappedCuts: Array.isArray(raw.snappedCuts) ? raw.snappedCuts : [],
     gaps: Array.isArray(raw.gaps) ? raw.gaps : [],
     issues: Array.isArray(raw.issues) ? raw.issues : [],
+    selectionReasons: Array.isArray(raw.selectionReasons) ? raw.selectionReasons : [],
     usedMaterials: Array.isArray(raw.usedMaterials) ? raw.usedMaterials : [],
     totalMaterials: Number.isFinite(raw.totalMaterials) ? Number(raw.totalMaterials) : 0,
     feasible: raw.feasible == null ? true : Boolean(raw.feasible),
@@ -612,18 +617,6 @@ export function planTimeline(assets: PreparedAsset[], bodyFrames: number, varian
 
 function contentChars(value: string): string[] {
   return Array.from(value.normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLocaleLowerCase());
-}
-
-function extractMatchKeywords(value: string): string[] {
-  const normalized = value.normalize('NFKC').toLocaleLowerCase();
-  const chunks = normalized.split(/[\p{P}\p{S}\s]+/gu).filter(Boolean);
-  const keywords = new Set<string>();
-  for (const chunk of chunks) {
-    keywords.add(chunk);
-    const chars = Array.from(chunk);
-    for (let index = 0; index < chars.length - 1; index += 1) keywords.add(chars.slice(index, index + 2).join(''));
-  }
-  return [...keywords].slice(0, 12);
 }
 
 function lcsLength(left: string[], right: string[]): number {
@@ -1065,17 +1058,32 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         ? { ...normalizedCachedMatrix, semanticFallback: Boolean(cachedMatrix?.semanticFallback) }
         : normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
       if (!semanticCacheHit && semanticSentences.length && semanticScenes.length && deps.scoreSemanticMatrix) {
-        try {
-          const prompt = buildSemanticMatrixPrompt(semanticInput);
-          semanticResult = normalizeSemanticMatrix(await deps.scoreSemanticMatrix({
+        const prompt = buildSemanticMatrixPrompt(semanticInput);
+        semanticResult = await scoreSemanticMatrixWithRetry({
+          sentenceCount: semanticSentences.length,
+          sceneCount: semanticScenes.length,
+          score: () => deps.scoreSemanticMatrix!({
             providerId: semanticInput.providerId,
             ...prompt,
             temperature: 0.2,
             maxTokens: 1500,
-          }), semanticSentences.length, semanticScenes.length);
-        } catch {
-          semanticResult = normalizeSemanticMatrix(null, semanticSentences.length, semanticScenes.length);
-        }
+          }),
+          sleep: deps.semanticRetrySleep,
+          onRetry: ({ attempt, maxAttempts, delayMs, error }) => deps.log?.({
+            jobId,
+            projectId: input.projectId,
+            level: 'warn',
+            attempt,
+            message: `语义评分失败，将进行第 ${attempt + 1}/${maxAttempts} 次尝试（${delayMs}ms）：${error instanceof Error ? error.message : String(error)}`,
+          }),
+          onFailure: (error, attempts) => deps.log?.({
+            jobId,
+            projectId: input.projectId,
+            level: 'error',
+            attempt: attempts,
+            message: `语义评分不可用，已降级到关键词匹配：${error instanceof Error ? error.message : String(error)}`,
+          }),
+        });
         // fallback（LLM 失败的 0.6 均匀矩阵）不写缓存：一次抖动不得把该输入
         // 永久绑定到降级结果，下次重跑必须重试 LLM 直至成功（自愈）。
         if (!semanticResult.semanticFallback) {
@@ -1134,6 +1142,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               framing: { ...DEFAULT_COVER_FRAMING },
             }
           : { coverKey: null, kind: null, sourceKey: null, frameTimeUs: 0, sourceUrl: null, framing: { ...DEFAULT_COVER_FRAMING } };
+        const constraintFallbackSentenceIds = new Set(matchResult.diagnostics.issues
+          .filter((issue) => issue.severity === 'warning')
+          .map((issue) => issue.sentenceId));
         const issues = [
           ...issueList(timeline, cover.coverKey, true),
           ...converted.issues,
@@ -1141,7 +1152,12 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           ...(narration.alignmentDegradedSegmentIds || []).map((segmentId) => ({ code: 'alignment_degraded', severity: 'warning' as const, message: `句段 ${segmentId} 的字幕对齐已按真实音频时长降级`, targetId: segmentId })),
           ...(semanticResult.semanticFallback ? [{ code: 'semantic_fallback', severity: 'warning' as const, message: '语义评分不可用，本次已使用确定性关键词降级匹配' }] : []),
           ...(beatResult.fallback ? [{ code: 'beat_detection_fallback', severity: 'warning' as const, message: '未检测到可靠口播气口，本次未吸附切点' }] : []),
-          ...matchResult.diagnostics.backoffSentences.map((segmentId) => ({ code: 'match_backoff', severity: 'warning' as const, message: `句段 ${segmentId} 使用了语义地板外候选`, targetId: segmentId })),
+          ...matchResult.diagnostics.backoffSentences
+            .filter((segmentId) => !constraintFallbackSentenceIds.has(segmentId))
+            .map((segmentId) => ({ code: 'match_backoff', severity: 'warning' as const, message: `句段 ${segmentId} 使用了语义地板外候选`, targetId: segmentId })),
+          ...matchResult.diagnostics.issues
+            .filter((issue) => issue.severity === 'warning')
+            .map((issue) => ({ code: 'match_material_fallback', severity: 'warning' as const, message: `句段 ${issue.sentenceId}：${issue.message}`, targetId: issue.sentenceId })),
           ...matchResult.diagnostics.gaps.map((gap) => ({ code: 'material_gap', severity: 'blocking' as const, message: `句段 ${gap.sentenceId} 素材不足，保留时间线缺口`, targetId: gap.sentenceId })),
         ];
         const variantId = `prepare-${sha256(`${jobId}:${variantIndex}`).slice(0, 32)}`;
