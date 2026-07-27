@@ -11,14 +11,15 @@ const FPS = FINAL_EDIT_FPS;
 const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;
 const FRAME_US = Math.round(1_000_000 / FPS);
 const PX_PER_SECOND = 60; // V2 固定缩放（规格 §6.4），内容超宽靠横向滚动
+const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持一致
 
-function Waveform({ tone, seed, playedRatio }: { tone: 'tts' | 'bgm'; seed: number; playedRatio: number }) {
+function Waveform({ tone, seed, playedWidthPx }: { tone: 'tts' | 'bgm'; seed: number; playedWidthPx: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [count, setCount] = useState(0);
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const update = () => setCount(Math.floor(element.offsetWidth / 5));
+    const update = () => setCount(Math.floor(element.offsetWidth / WAVEFORM_BAR_PITCH_PX));
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
@@ -28,7 +29,7 @@ function Waveform({ tone, seed, playedRatio }: { tone: 'tts' | 'bgm'; seed: numb
     const raw = Math.sin(index * 127.1 + seed * 311.7) * 43758.5453;
     return 18 + (raw - Math.floor(raw)) * 74;
   }), [count, seed]);
-  const playedCount = Math.round(count * Math.max(0, Math.min(1, playedRatio)));
+  const playedCount = Math.round(Math.max(0, playedWidthPx) / WAVEFORM_BAR_PITCH_PX);
   return (
     <div ref={ref} className={`${styles.wf} ${tone === 'tts' ? styles.wfTts : styles.wfBgm}`} aria-hidden="true">
       {bars.map((height, index) => <span key={index} style={{ height: `${height}%` }} data-played={index < playedCount || undefined} />)}
@@ -76,6 +77,7 @@ export function MixcutTimeline({
   const totalUs = totalSec * 1_000_000;
   const contentWidth = timelineContentWidthPx({ totalUs, pxPerSecond, viewportWidth: Math.max(1, viewportWidth) });
   const introPx = INTRO_FRAMES / FPS * pxPerSecond;
+  const playheadPx = Math.max(0, Math.min(totalSec, playheadSec)) * pxPerSecond;
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.videoJobId, asset])), [assets]);
   const orderedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
 
@@ -191,18 +193,18 @@ export function MixcutTimeline({
             ))}
           </div>
           <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="narration">
-            <Waveform tone="tts" seed={3} playedRatio={playheadSec / totalSec} />
+            <Waveform tone="tts" seed={3} playedWidthPx={playheadPx} />
             <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {bodySec.toFixed(1)}s</span>
           </div>
           <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
-            <Waveform tone="bgm" seed={7} playedRatio={playheadSec / totalSec} />
+            <Waveform tone="bgm" seed={7} playedWidthPx={playheadPx} />
             <span className={styles.wfLabel} style={{ left: introPx + 8 }}>{variant.bgm.trackId ? `${variant.bgm.gainDb} dB · 淡入 ${variant.bgm.fadeInSec}s · 淡出 ${variant.bgm.fadeOutSec}s` : '无 BGM'}</span>
           </div>
           <button
             type="button"
             aria-label="拖动播放头"
             className={styles.tlPlayhead}
-            style={{ left: Math.max(0, Math.min(totalSec, playheadSec)) * pxPerSecond }}
+            style={{ left: playheadPx }}
             onPointerDown={beginPlayheadDrag}
           />
         </div>

@@ -704,6 +704,13 @@ try {
     }));
     assert.notEqual(playheadVisual.backgroundColor, 'rgba(0, 0, 0, 0)', '播放头必须显示贯穿时间轴的实线，不能只剩顶部小点');
     assert.ok(playheadVisual.height > 150, '播放头实线必须贯穿时间尺与全部轨道');
+    const lastPlayedNarrationBar = page.locator('[data-track="narration"] [data-played]').last();
+    const lastPlayedNarrationBarBox = await lastPlayedNarrationBar.boundingBox();
+    assert.ok(lastPlayedNarrationBarBox, '口播波形必须显示已播放区域');
+    const waveformPlayheadDelta = Math.abs(
+      lastPlayedNarrationBarBox.x + lastPlayedNarrationBarBox.width - (playheadBox.x + playheadBox.width / 2),
+    );
+    assert.ok(waveformPlayheadDelta <= 6, `口播波形已播放终点必须与黄色播放线对齐（实测相差 ${waveformPlayheadDelta.toFixed(1)}px）`);
     await page.mouse.move(playheadBox.x + playheadBox.width / 2, playheadBox.y + playheadBox.height / 2);
     await page.mouse.down();
     await page.mouse.move(contentBox.x + 1, playheadBox.y + playheadBox.height / 2, { steps: 4 });
