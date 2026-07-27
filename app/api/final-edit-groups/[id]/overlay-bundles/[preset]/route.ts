@@ -8,7 +8,7 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { OUTPUT_PRESETS, type OutputPresetId } from '@/lib/final-edit/types';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
-import { alphaBoundsWidth, overlayMeasurementLimit, textInterval } from '@/lib/final-edit/overlay-measurement';
+import { alphaBoundsWidth, overlayMeasurementLimit } from '@/lib/final-edit/overlay-measurement';
 
 function digest(value: string | Buffer) { return crypto.createHash('sha256').update(value).digest('hex'); }
 
@@ -18,14 +18,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!(rawPreset in OUTPUT_PRESETS)) return NextResponse.json({ error: 'invalid_output_preset' }, { status: 400 });
     const preset = rawPreset as OutputPresetId;
     const group = getFinalEditWorkspace().load(id);
-    const body = await request.json() as { groupRevision?: number; titlePngBase64?: string; subtitlePngs?: Record<string, string>; manifest?: { width?: number; height?: number; overflow?: boolean; measurements?: { titlePrimaryWidth?: number; titleSecondaryWidth?: number; subtitleWidths?: Record<string, number> }; cues?: Array<{ id: string; startUs: number; endUs: number }> } };
+    const body = await request.json() as { groupRevision?: number; titlePngBase64?: string; subtitlePngs?: Record<string, string>; manifest?: { width?: number; height?: number; overflow?: boolean; measurements?: { titlePrimaryWidth?: number; titleSecondaryWidth?: number; titleCompositeWidth?: number; subtitleWidths?: Record<string, number> }; cues?: Array<{ id: string; startUs: number; endUs: number }> } };
     if (body.groupRevision !== group.revision) return NextResponse.json({ error: 'revision_conflict', currentRevision: group.revision }, { status: 409 });
     const expected = OUTPUT_PRESETS[preset];
     if (body.manifest?.width !== expected.width || body.manifest?.height !== expected.height) return NextResponse.json({ error: 'overlay_dimensions_invalid' }, { status: 400 });
     const measurements = body.manifest.measurements;
     const finiteWidth = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
     const styles = group.textStyles[preset];
-    if (body.manifest.overflow !== false || !measurements || !finiteWidth(measurements.titlePrimaryWidth) || !finiteWidth(measurements.titleSecondaryWidth)
+    if (body.manifest.overflow !== false || !measurements || !finiteWidth(measurements.titlePrimaryWidth) || !finiteWidth(measurements.titleSecondaryWidth) || !finiteWidth(measurements.titleCompositeWidth)
       || Number(measurements.titlePrimaryWidth) > styles.coverPrimary.boxWidthPx || Number(measurements.titleSecondaryWidth) > styles.coverSecondary.boxWidthPx) {
       return NextResponse.json({ error: 'overlay_text_overflow' }, { status: 400 });
     }
@@ -40,10 +40,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const metadata = await sharp(buffer).metadata();
       if (metadata.format !== 'png' || metadata.width !== expected.width || metadata.height !== expected.height) return NextResponse.json({ error: 'overlay_dimensions_invalid' }, { status: 400 });
     }
-    const primaryInterval = textInterval(Number(measurements.titlePrimaryWidth), styles.coverPrimary.x * expected.width, styles.coverPrimary.align);
-    const secondaryInterval = textInterval(Number(measurements.titleSecondaryWidth), styles.coverSecondary.x * expected.width, styles.coverSecondary.align);
-    const expectedTitleWidth = Math.max(primaryInterval[1], secondaryInterval[1]) - Math.min(primaryInterval[0], secondaryInterval[0]);
-    if (await alphaBoundsWidth(title) > overlayMeasurementLimit(expectedTitleWidth)) return NextResponse.json({ error: 'overlay_measurement_mismatch' }, { status: 400 });
+    if (await alphaBoundsWidth(title) > overlayMeasurementLimit(Number(measurements.titleCompositeWidth))) return NextResponse.json({ error: 'overlay_measurement_mismatch' }, { status: 400 });
     for (const [cueId, buffer] of Object.entries(subtitleBuffers)) {
       if (await alphaBoundsWidth(buffer) > overlayMeasurementLimit(Number(measurements.subtitleWidths?.[cueId]))) return NextResponse.json({ error: 'overlay_measurement_mismatch' }, { status: 400 });
     }

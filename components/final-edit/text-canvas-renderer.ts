@@ -92,6 +92,31 @@ function toBase64(canvas: HTMLCanvasElement): string {
   return canvas.toDataURL('image/png').split(',')[1] || '';
 }
 
+function renderedAlphaWidth(canvas: HTMLCanvasElement): number {
+  const context = canvas.getContext('2d');
+  if (!context) return 0;
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let minX = canvas.width;
+  let maxX = -1;
+  for (let y = 0; y < canvas.height; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      if (pixels[(y * canvas.width + x) * 4 + 3] > 0) {
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+      }
+    }
+  }
+  return maxX < minX ? 0 : maxX - minX + 1;
+}
+
+function renderSingleTextWidth(preset: OutputPresetId, text: string, style: TextStyle): number {
+  const canvas = canvasFor(preset);
+  const context = canvas.getContext('2d');
+  if (!context) return 0;
+  drawText(context, text, style);
+  return renderedAlphaWidth(canvas);
+}
+
 export function measureSingleLineText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle): number {
   ctx.font = textStyleFont(style);
   ctx.textAlign = style.align;
@@ -172,12 +197,14 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
   const titleCanvas = canvasFor(preset);
   const titleContext = titleCanvas.getContext('2d');
   if (!titleContext) throw new Error('浏览器 Canvas 不可用');
-  const titlePrimaryWidth = measureSingleLineText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
-  const titleSecondaryWidth = measureSingleLineText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
-  const overflowDetails = measureTextOverflowDetails(group, preset);
-  if (overflowDetails.length) throw new TextOverflowError(overflowDetails);
   drawText(titleContext, group.coverTitle.primary.text, style.coverPrimary);
   drawText(titleContext, group.coverTitle.secondary.text, style.coverSecondary);
+  const titlePrimaryWidth = renderSingleTextWidth(preset, group.coverTitle.primary.text, style.coverPrimary);
+  const titleSecondaryWidth = renderSingleTextWidth(preset, group.coverTitle.secondary.text, style.coverSecondary);
+  const titleCompositeWidth = renderedAlphaWidth(titleCanvas);
+  const overflowDetails: TextOverflowDetail[] = [];
+  if (titlePrimaryWidth > style.coverPrimary.boxWidthPx) overflowDetails.push({ target: 'coverPrimary', measuredWidthPx: titlePrimaryWidth, safeWidthPx: style.coverPrimary.boxWidthPx });
+  if (titleSecondaryWidth > style.coverSecondary.boxWidthPx) overflowDetails.push({ target: 'coverSecondary', measuredWidthPx: titleSecondaryWidth, safeWidthPx: style.coverSecondary.boxWidthPx });
 
   const subtitles: Record<string, string> = {};
   const subtitleWidths: Record<string, number> = {};
@@ -185,11 +212,13 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
     const canvas = canvasFor(preset);
     const context = canvas.getContext('2d');
     if (!context) throw new Error('浏览器 Canvas 不可用');
-    const measured = measureSingleLineText(context, cue.text, style.subtitle);
-    subtitleWidths[cue.id] = measured;
     drawText(context, cue.text, style.subtitle);
+    const measured = renderedAlphaWidth(canvas);
+    subtitleWidths[cue.id] = measured;
+    if (measured > style.subtitle.boxWidthPx) overflowDetails.push({ target: 'subtitle', cueId: cue.id, measuredWidthPx: measured, safeWidthPx: style.subtitle.boxWidthPx });
     subtitles[cue.id] = toBase64(canvas);
   }
+  if (overflowDetails.length) throw new TextOverflowError(overflowDetails);
   return {
     groupRevision: group.revision,
     titlePngBase64: toBase64(titleCanvas),
@@ -198,7 +227,7 @@ export async function createOverlayBundlePayload(group: FinalEditGroupView, pres
       width: titleCanvas.width,
       height: titleCanvas.height,
       overflow: false,
-      measurements: { titlePrimaryWidth, titleSecondaryWidth, subtitleWidths },
+      measurements: { titlePrimaryWidth, titleSecondaryWidth, titleCompositeWidth, subtitleWidths },
       cues: group.subtitleCues.map((cue) => ({ id: cue.id, startUs: cue.startUs, endUs: cue.endUs })),
     },
   };

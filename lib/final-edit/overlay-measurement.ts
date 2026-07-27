@@ -17,12 +17,6 @@ export async function alphaBoundsWidth(buffer: Buffer): Promise<number> {
   return maxX < minX ? 0 : maxX - minX + 1;
 }
 
-export function textInterval(width: number, x: number, align: 'left' | 'center' | 'right') {
-  if (align === 'left') return [x, x + width] as const;
-  if (align === 'right') return [x - width, x] as const;
-  return [x - width / 2, x + width / 2] as const;
-}
-
 export function overlayMeasurementLimit(expectedWidth: number): number {
   return Math.ceil(expectedWidth) + OVERLAY_MEASUREMENT_TOLERANCE_PX;
 }
