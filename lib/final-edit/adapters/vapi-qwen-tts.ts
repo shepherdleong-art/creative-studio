@@ -3,9 +3,11 @@ import path from 'node:path';
 import { runFfmpeg, probeDurationSec } from '../../ffmpeg.ts';
 import { assertTtsSpeed } from '../tts-speed.ts';
 import type { AlignmentAdapter, AlignmentWordTiming } from './alignment.ts';
+import { alignOrProportionallyTime, concatWavFiles, isReusableNarrationChunk, splitTtsInput } from './tts-common.ts';
+
+export { isReusableNarrationChunk, proportionalWordTimings } from './tts-common.ts';
 
 export const VAPI_PREVIEW_TEXT = '你好，我是产品素材工作台语音助手，这是当前音色和语速的试听效果。';
-const PCM_WAV_HEADER_BYTES = 44;
 
 export const VAPI_VOICES = [
   { id: 'Cherry', label: '芊悦' }, { id: 'Ethan', label: '晨煦' },
@@ -52,42 +54,6 @@ interface SynthesisInput {
   onSegmentComplete?: (completed: number, total: number) => void;
 }
 
-export function proportionalWordTimings(text: string, durationUs: number): AlignmentWordTiming[] {
-  const units = Array.from(text).filter((value) => value.trim());
-  return units.map((value, index) => ({
-    text: value,
-    startUs: Math.round(index * durationUs / Math.max(1, units.length)),
-    endUs: Math.round((index + 1) * durationUs / Math.max(1, units.length)),
-  })).filter((timing) => timing.endUs > timing.startUs);
-}
-
-function splitInput(text: string): string[] {
-  if (Array.from(text).length <= 600) return [text];
-  const parts: string[] = [];
-  let remaining = text;
-  while (Array.from(remaining).length > 600) {
-    const chars = Array.from(remaining);
-    let cut = 600;
-    for (let index = 599; index >= 300; index -= 1) {
-      if (/[。！？；，,.!?;\s]/u.test(chars[index])) { cut = index + 1; break; }
-    }
-    parts.push(chars.slice(0, cut).join('').trim());
-    remaining = chars.slice(cut).join('').trim();
-  }
-  if (remaining) parts.push(remaining);
-  return parts.filter(Boolean);
-}
-
-export async function isReusableNarrationChunk(filePath: string): Promise<boolean> {
-  try {
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).size <= PCM_WAV_HEADER_BYTES) return false;
-    const durationSec = await probeDurationSec(filePath);
-    return Number.isFinite(durationSec) && durationSec > 0;
-  } catch {
-    return false;
-  }
-}
-
 export async function requestVapiAudio(config: VapiProviderConfig, voice: string, input: string, destination: string): Promise<void> {
   const response = await fetch(speechUrl(config.baseUrl), {
     method: 'POST',
@@ -109,16 +75,6 @@ export async function requestVapiAudio(config: VapiProviderConfig, voice: string
   fs.writeFileSync(destination, Buffer.from(await audioResponse.arrayBuffer()));
 }
 
-async function concatWavs(inputs: string[], output: string): Promise<void> {
-  if (inputs.length === 1) {
-    fs.copyFileSync(inputs[0], output);
-    return;
-  }
-  const args = inputs.flatMap((input) => ['-i', input]);
-  const labels = inputs.map((_, index) => `[${index}:a]`).join('');
-  await runFfmpeg([...args, '-filter_complex', `${labels}concat=n=${inputs.length}:v=0:a=1[outa]`, '-map', '[outa]', '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', output], { timeoutMs: 180_000 });
-}
-
 export async function synthesizeVapiNarration(input: SynthesisInput) {
   if (!VAPI_VOICES.some((voice) => voice.id === input.voice)) throw new Error('不支持的 V-API 音色');
   assertTtsSpeed(input.speed);
@@ -132,7 +88,7 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
   for (let segmentIndex = 0; segmentIndex < input.segments.length; segmentIndex += 1) {
     const segment = input.segments[segmentIndex];
     const chunkFiles: string[] = [];
-    const chunks = splitInput(segment.narration);
+    const chunks = splitTtsInput(segment.narration);
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
       const rawPath = path.join(input.outputDir, `segment-${segmentIndex}-${chunkIndex}-raw.wav`);
       const normalizedPath = path.join(input.outputDir, `segment-${segmentIndex}-${chunkIndex}.wav`);
@@ -153,25 +109,17 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
       chunkFiles.push(normalizedPath);
     }
     const segmentPath = path.join(input.outputDir, `segment-${segmentIndex}.wav`);
-    await concatWavs(chunkFiles, segmentPath);
+    await concatWavFiles(chunkFiles, segmentPath);
     const durationUs = Math.round(await probeDurationSec(segmentPath) * 1_000_000);
-    let aligned: AlignmentWordTiming[];
-    try {
-      if (!input.alignment.configured) throw new Error('alignment unavailable');
-      aligned = await input.alignment.align({ audioPath: segmentPath, text: segment.narration });
-      let lastEndUs = 0;
-      for (const word of aligned) {
-        if (word.startUs < lastEndUs || word.endUs <= word.startUs || word.endUs > durationUs) throw new Error(`强制对齐时间越界或倒退：${segment.segmentId}`);
-        lastEndUs = word.endUs;
-      }
-      const countContent = (value: string) => Array.from(value.replace(/[\p{P}\p{S}\s]/gu, '')).length;
-      const coverage = countContent(aligned.map((word) => word.text).join('')) / Math.max(1, countContent(segment.narration));
-      if (coverage < 0.95) throw new Error(`强制对齐覆盖率不足：${segment.segmentId} 仅 ${Math.round(coverage * 100)}%`);
-    } catch {
-      aligned = proportionalWordTimings(segment.narration, durationUs);
-      alignmentDegradedSegmentIds.push(segment.segmentId);
-    }
-    wordTimings.push(...aligned.map((word) => ({ ...word, startUs: word.startUs + cursorUs, endUs: word.endUs + cursorUs })));
+    const aligned = await alignOrProportionallyTime({
+      alignment: input.alignment,
+      audioPath: segmentPath,
+      narration: segment.narration,
+      durationUs,
+      segmentId: segment.segmentId,
+    });
+    if (aligned.degraded) alignmentDegradedSegmentIds.push(segment.segmentId);
+    wordTimings.push(...aligned.words.map((word) => ({ ...word, startUs: word.startUs + cursorUs, endUs: word.endUs + cursorUs })));
     segmentTimings.push({ segmentId: segment.segmentId, startUs: cursorUs, endUs: cursorUs + durationUs });
     cursorUs += durationUs;
     segmentFiles.push(segmentPath);
@@ -179,7 +127,7 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
   }
 
   const outputPath = path.join(input.outputDir, 'narration.wav');
-  await concatWavs(segmentFiles, outputPath);
+  await concatWavFiles(segmentFiles, outputPath);
   return { relativePath: input.relativeOutputPath, absolutePath: outputPath, durationUs: cursorUs, segmentTimings, wordTimings, alignmentDegradedSegmentIds };
 }
 

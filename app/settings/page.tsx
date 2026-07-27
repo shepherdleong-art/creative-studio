@@ -569,27 +569,16 @@ interface TtsProviderSettings {
   configured: boolean;
   costPerThousandCharacters: number;
   voices: Array<{ id: string; label: string }>;
+  description: string;
 }
 
 function TtsSettingsCard() {
-  const [provider, setProvider] = useState<TtsProviderSettings | null>(null);
-  const [baseUrl, setBaseUrl] = useState('https://api.v3.cm');
-  const [apiKey, setApiKey] = useState('');
-  const [enabled, setEnabled] = useState(true);
-  const [costPerThousandCharacters, setCostPerThousandCharacters] = useState(0);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
+  const [providers, setProviders] = useState<TtsProviderSettings[]>([]);
 
   const load = async () => {
     const response = await fetch('/api/providers/tts');
     const rows = await response.json().catch(() => []);
-    const next = Array.isArray(rows) ? rows[0] as TtsProviderSettings | undefined : undefined;
-    if (!next) return;
-    setProvider(next);
-    setBaseUrl(next.baseUrl);
-    setEnabled(Boolean(next.enabled));
-    setCostPerThousandCharacters(Number(next.costPerThousandCharacters || 0));
-    setApiKey(next.hasApiKey ? KEY_PLACEHOLDER : '');
+    setProviders(Array.isArray(rows) ? rows as TtsProviderSettings[] : []);
   };
 
   useEffect(() => {
@@ -597,8 +586,21 @@ function TtsSettingsCard() {
     return () => window.clearTimeout(timer);
   }, []);
 
+  if (providers.length === 0) return <div className="card p-8 text-center text-sm text-ink-tertiary">正在加载口播配音设置…</div>;
+  return <div className="space-y-4">
+    {providers.map((provider) => <TtsProviderSettingsCard key={provider.id} provider={provider} onSaved={load} />)}
+  </div>;
+}
+
+function TtsProviderSettingsCard({ provider, onSaved }: { provider: TtsProviderSettings; onSaved: () => Promise<void> }) {
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl);
+  const [apiKey, setApiKey] = useState(provider.hasApiKey ? KEY_PLACEHOLDER : '');
+  const [enabled, setEnabled] = useState(Boolean(provider.enabled));
+  const [costPerThousandCharacters, setCostPerThousandCharacters] = useState(provider.costPerThousandCharacters || 0);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
   const save = async (clear = false) => {
-    if (!provider) return;
     setSaving(true); setMessage('');
     try {
       const response = await fetch(`/api/providers/tts/${provider.id}`, {
@@ -607,16 +609,18 @@ function TtsSettingsCard() {
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.message || body.error || '保存失败');
+      setApiKey(body.hasApiKey ? KEY_PLACEHOLDER : '');
       setMessage('已保存');
-      await load();
+      await onSaved();
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
     finally { setSaving(false); }
   };
 
-  if (!provider) return <div className="card p-8 text-center text-sm text-ink-tertiary">正在加载口播配音设置…</div>;
+  const voiceExamples = provider.voices.slice(0, 3).map((voice) => voice.label).join('、');
+
   return <div className="card p-5">
     <div className="flex items-start justify-between gap-4">
-      <div><div className="flex items-center gap-2"><h3 className="font-semibold">{provider.name}</h3><span className={`status-badge ${provider.configured ? 'status-succeeded' : 'status-failed'}`}>{provider.configured ? '已配置' : '未配置'}</span></div><p className="mt-1 text-xs text-ink-tertiary">首版固定模型与 17 项音色；语速由应用下载后本地处理。</p></div>
+      <div><div className="flex items-center gap-2"><h3 className="font-semibold">{provider.name}</h3><span className={`status-badge ${provider.configured ? 'status-succeeded' : 'status-failed'}`}>{provider.configured ? '已配置' : '未配置'}</span></div><p className="mt-1 text-xs text-ink-tertiary">{provider.description}</p></div>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-accent" />启用</label>
     </div>
     <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -624,7 +628,7 @@ function TtsSettingsCard() {
       <Field label="模型（只读）"><input className="input-field bg-surface-subtle" value={provider.model} readOnly /></Field>
       <Field label="API Key"><input type="password" className="input-field font-mono" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="留空则不修改" autoComplete="off" /></Field>
       <Field label="成本（元 / 千字符）"><input type="number" min="0" step="0.0001" className="input-field" value={costPerThousandCharacters} onChange={(event) => setCostPerThousandCharacters(Math.max(0, Number(event.target.value) || 0))} /></Field>
-      <div><label className="label">固定音色</label><p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">{provider.voices.length} 项 · 含 Cherry、Ethan、li 等</p></div>
+      <div><label className="label">固定音色</label><p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">{provider.voices.length} 项 · 含 {voiceExamples} 等</p></div>
     </div>
     <div className="mt-4 flex items-center justify-between"><p className={`text-sm ${message === '已保存' ? 'text-success' : 'text-fail'}`}>{message}</p><div className="flex gap-2"><button type="button" className="btn-secondary btn-sm text-fail" disabled={saving} onClick={() => void save(true)}>清除密钥</button><button type="button" className="btn-primary btn-sm" disabled={saving} onClick={() => void save(false)}>{saving ? '保存中…' : '保存'}</button></div></div>
   </div>;

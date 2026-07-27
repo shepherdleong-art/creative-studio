@@ -4,5 +4,27 @@ import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 
 export async function GET() {
   const rows = getDb().prepare(`SELECT id, name, type, baseUrl, keyEnv, model, enabled, isBuiltin, apiKey, costPerThousandCharacters FROM final_edit_tts_providers ORDER BY name`).all() as Array<Record<string, unknown>>;
-  return NextResponse.json(rows.map(({ apiKey, ...row }) => ({ ...row, hasApiKey: Boolean(String(apiKey || '').trim() || (row.keyEnv && process.env[String(row.keyEnv)])), configured: Boolean(row.enabled && (String(apiKey || '').trim() || (row.keyEnv && process.env[String(row.keyEnv)]))), voices: getFinalEditTtsAdapter(String(row.id)).voices })));
+  const providers = rows.map(({ apiKey, ...row }) => {
+    const adapter = getFinalEditTtsAdapter(String(row.id));
+    const hasApiKey = Boolean(String(apiKey || '').trim() || (row.keyEnv && process.env[String(row.keyEnv)]));
+    return {
+      ...row,
+      id: String(row.id),
+      name: String(row.name),
+      enabled: Number(row.enabled),
+      hasApiKey,
+      configured: Boolean(row.enabled && hasApiKey),
+      voices: adapter.voices,
+      description: adapter.description,
+    };
+  });
+  providers.sort((left, right) => {
+    if (left.configured !== right.configured) return left.configured ? -1 : 1;
+    const leftPreferred = left.id === 'doubao-seed-tts-2';
+    const rightPreferred = right.id === 'doubao-seed-tts-2';
+    if (leftPreferred !== rightPreferred) return leftPreferred ? -1 : 1;
+    if (Boolean(left.enabled) !== Boolean(right.enabled)) return left.enabled ? -1 : 1;
+    return String(left.name).localeCompare(String(right.name), 'zh-CN');
+  });
+  return NextResponse.json(providers);
 }

@@ -77,6 +77,20 @@ const tts = db.prepare(`
 assert.equal(tts.model, 'legacy-model');
 assert.equal(tts.costPerThousandCharacters, 0);
 
+const doubao = db.prepare(`
+  SELECT name, type, baseUrl, keyEnv, model, enabled, isBuiltin
+  FROM final_edit_tts_providers WHERE id = 'doubao-seed-tts-2'
+`).get() as Record<string, unknown> | undefined;
+assert.deepEqual(doubao, {
+  name: '豆包语音合成 2.0',
+  type: 'doubao-http-chunked',
+  baseUrl: 'https://openspeech.bytedance.com',
+  keyEnv: 'DOUBAO_TTS_API_KEY',
+  model: 'seed-tts-2.0',
+  enabled: 1,
+  isBuiltin: 1,
+});
+
 assert.deepEqual(
   db.prepare(`SELECT version FROM final_edit_schema_migrations ORDER BY version`).all().map((row) => (row as { version: number }).version),
   FINAL_EDIT_MIGRATIONS.map(({ version }) => version),

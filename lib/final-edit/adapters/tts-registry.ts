@@ -1,4 +1,5 @@
 import type { AlignmentAdapter } from './alignment.ts';
+import { DOUBAO_PREVIEW_TEXT, DOUBAO_VOICES, doubaoSpeechUrl, synthesizeDoubaoNarration, synthesizeDoubaoPreview } from './doubao-tts.ts';
 import { speechUrl, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_PREVIEW_TEXT, VAPI_VOICES } from './vapi-qwen-tts.ts';
 
 export interface TtsAdapterInput {
@@ -16,6 +17,8 @@ export interface FinalEditTtsAdapter {
   id: string;
   type: string;
   alignmentModel?: string;
+  providesWordTimings?: boolean;
+  description: string;
   voices: ReadonlyArray<{ id: string; label: string }>;
   defaultVoice: string;
   previewText: string;
@@ -25,25 +28,56 @@ export interface FinalEditTtsAdapter {
   estimateCost(input: { text: string; costPerThousandCharacters: number }): number;
 }
 
-const adapters: FinalEditTtsAdapter[] = [{
-  id: 'vapi-qwen3-tts',
-  type: 'vapi-qwen-json-url',
-  alignmentModel: 'whisper-1',
-  voices: VAPI_VOICES,
-  defaultVoice: 'Cherry',
-  previewText: VAPI_PREVIEW_TEXT,
-  validateBaseUrl: (value) => {
-    const trimmed = value.trim().replace(/\/+$/, '');
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'https:' || (parsed.pathname !== '/' && parsed.pathname !== '/v1')) throw new Error('Base URL 必须是 HTTPS origin，可选带 /v1');
-    const normalized = `${parsed.origin}${parsed.pathname === '/v1' ? '/v1' : ''}`;
-    void speechUrl(normalized);
-    return normalized;
+const estimateCharacterCost: FinalEditTtsAdapter['estimateCost'] = ({ text, costPerThousandCharacters }) => (
+  Number((Array.from(text).length / 1000 * Math.max(0, costPerThousandCharacters)).toFixed(6))
+);
+
+const adapters: FinalEditTtsAdapter[] = [
+  {
+    id: 'vapi-qwen3-tts',
+    type: 'vapi-qwen-json-url',
+    alignmentModel: 'whisper-1',
+    description: 'Qwen3 TTS Flash · JSON 临时音频地址；语速由应用下载后本地处理。',
+    voices: VAPI_VOICES,
+    defaultVoice: 'Cherry',
+    previewText: VAPI_PREVIEW_TEXT,
+    validateBaseUrl: (value) => {
+      const trimmed = value.trim().replace(/\/+$/, '');
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'https:' || (parsed.pathname !== '/' && parsed.pathname !== '/v1')) throw new Error('Base URL 必须是 HTTPS origin，可选带 /v1');
+      const normalized = `${parsed.origin}${parsed.pathname === '/v1' ? '/v1' : ''}`;
+      void speechUrl(normalized);
+      return normalized;
+    },
+    synthesize: synthesizeVapiNarration,
+    synthesizePreview: synthesizeVapiPreview,
+    estimateCost: estimateCharacterCost,
   },
-  synthesize: synthesizeVapiNarration,
-  synthesizePreview: synthesizeVapiPreview,
-  estimateCost: ({ text, costPerThousandCharacters }) => Number((Array.from(text).length / 1000 * Math.max(0, costPerThousandCharacters)).toFixed(6)),
-}];
+  {
+    id: 'doubao-seed-tts-2',
+    type: 'doubao-http-chunked',
+    providesWordTimings: true,
+    description: '豆包 Seed TTS 2.0 · HTTP Chunked 流式音频；语速由应用下载后本地处理。',
+    voices: DOUBAO_VOICES,
+    defaultVoice: 'zh_female_vv_uranus_bigtts',
+    previewText: DOUBAO_PREVIEW_TEXT,
+    validateBaseUrl: (value) => {
+      const trimmed = value.trim().replace(/\/+$/, '');
+      const parsed = new URL(trimmed);
+      const endpointPath = '/api/v3/tts/unidirectional';
+      if (parsed.protocol !== 'https:') throw new Error('Base URL 必须使用 HTTPS');
+      if (parsed.search || parsed.hash || !['/', endpointPath].includes(parsed.pathname)) {
+        throw new Error('Base URL 必须是 HTTPS origin，或完整的 /api/v3/tts/unidirectional 地址');
+      }
+      const normalized = parsed.pathname === endpointPath ? `${parsed.origin}${endpointPath}` : parsed.origin;
+      void doubaoSpeechUrl(normalized);
+      return normalized;
+    },
+    synthesize: synthesizeDoubaoNarration,
+    synthesizePreview: synthesizeDoubaoPreview,
+    estimateCost: estimateCharacterCost,
+  },
+];
 
 export function getFinalEditTtsAdapter(id: string): FinalEditTtsAdapter {
   const adapter = adapters.find((item) => item.id === id);

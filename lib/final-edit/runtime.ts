@@ -97,5 +97,6 @@ export function recoverFinalEditPrepareJobs() {
 
 export function isFinalEditAlignmentConfigured(): boolean {
   const provider = getDb().prepare(`SELECT id, baseUrl, apiKey, keyEnv FROM final_edit_tts_providers WHERE enabled=1 ORDER BY isBuiltin DESC, name LIMIT 1`).get() as AlignmentFallbackProvider | undefined;
+  if (provider && getFinalEditTtsAdapter(provider.id).providesWordTimings) return true;
   return createFinalEditAlignmentAdapter(provider).configured;
 }
