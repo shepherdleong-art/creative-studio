@@ -29,6 +29,13 @@ export interface ScriptProviderRuntimeConfig {
   visionCostPerRequest: number;
 }
 
+export function scriptProviderProtocolFields(apiStyle: ApiStyle): {
+  type: ApiStyle;
+  apiStyle: ApiStyle;
+} {
+  return { type: apiStyle, apiStyle };
+}
+
 export const defaultScriptProviderConfigs: ProviderConfig[] = [
   {
     id: 'gemini',

@@ -2,6 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { scriptProviderProtocolFields } from '@/lib/script-providers/config';
+import type { ApiStyle } from '@/lib/script-providers/types';
 
 type Category = 'image' | 'script' | 'video' | 'tts';
 
@@ -22,7 +24,7 @@ interface ScriptProvider {
   category: 'script';
   type: string;
   model: string;
-  apiStyle: string;
+  apiStyle: ApiStyle;
   supportsVision: boolean;
   enabled: number;
   configured: boolean;
@@ -49,7 +51,7 @@ interface VideoProvider {
 type ProviderFormState = {
   name: string;
   type: string;
-  apiStyle: string;
+  apiStyle: ApiStyle;
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -451,37 +453,39 @@ function ProviderForm({
         <input value={form.name} onChange={(e) => onChange({ ...form, name: e.target.value })} className="input-field" placeholder="例如：Packy API" />
       </Field>
 
-      <Field label="接口类型">
-        <select value={form.type} onChange={(e) => onChange({ ...form, type: e.target.value })} className="input-field">
-          {category === 'image' && (
-            <>
-              <option value="geekai-json">GeekAI (JSON + async polling)</option>
-              <option value="packy-images">Packy Images API</option>
-              <option value="packy-gemini-image">Gemini Image API</option>
-              <option value="openai-compatible">OpenAI-compatible</option>
-            </>
-          )}
-          {category === 'script' && (
-            <>
-              <option value="gemini">Gemini</option>
-              <option value="openai-compatible">OpenAI-compatible</option>
-              <option value="openai-responses">OpenAI Responses</option>
-            </>
-          )}
-          {category === 'video' && (
-            <>
-              <option value="jimeng">即梦 / Seedance</option>
-              <option value="kling">可灵</option>
-            </>
-          )}
-        </select>
-      </Field>
+      {category !== 'script' && (
+        <Field label="接口类型">
+          <select value={form.type} onChange={(e) => onChange({ ...form, type: e.target.value })} className="input-field">
+            {category === 'image' && (
+              <>
+                <option value="geekai-json">GeekAI (JSON + async polling)</option>
+                <option value="packy-images">Packy Images API</option>
+                <option value="packy-gemini-image">Gemini Image API</option>
+                <option value="openai-compatible">OpenAI-compatible</option>
+              </>
+            )}
+            {category === 'video' && (
+              <>
+                <option value="jimeng">即梦 / Seedance</option>
+                <option value="kling">可灵</option>
+              </>
+            )}
+          </select>
+        </Field>
+      )}
 
       {category === 'script' && (
         <Field label="API 风格">
-          <select value={form.apiStyle} onChange={(e) => onChange({ ...form, apiStyle: e.target.value })} className="input-field">
+          <select
+            value={form.apiStyle}
+            onChange={(e) => {
+              const apiStyle = e.target.value as ApiStyle;
+              onChange({ ...form, ...scriptProviderProtocolFields(apiStyle) });
+            }}
+            className="input-field"
+          >
             <option value="openai-compatible">OpenAI-compatible</option>
-            <option value="openai-responses">OpenAI Responses</option>
+            <option value="openai-responses">OpenAI Responses (gpt-5.5 / 5.6)</option>
             <option value="native-gemini">Native Gemini</option>
           </select>
         </Field>

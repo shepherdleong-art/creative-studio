@@ -5,8 +5,17 @@ import {
 } from '../lib/video-auth.ts';
 import {
   resolveScriptProviderRuntimeConfig,
+  scriptProviderProtocolFields,
   toScriptProviderMeta,
 } from '../lib/script-providers/config.ts';
+
+for (const apiStyle of ['native-gemini', 'openai-compatible', 'openai-responses'] as const) {
+  assert.deepEqual(
+    scriptProviderProtocolFields(apiStyle),
+    { type: apiStyle, apiStyle },
+    `脚本供应商协议 ${apiStyle} 必须作为 type/apiStyle 的单一真源`,
+  );
+}
 
 assert.deepEqual(
   resolveScriptProviderRuntimeConfig(

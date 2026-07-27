@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { chatCompletion, usesOpenAiResponses } from '../lib/script-providers/openai-responses.ts';
 import type { ScriptProviderRuntimeConfig } from '../lib/script-providers/config.ts';
 import type { ProviderConfig } from '../lib/script-providers/types.ts';
@@ -90,6 +95,58 @@ try {
   assert.equal(usesOpenAiResponses('openai-responses'), true);
   assert.equal(usesOpenAiResponses('native-gemini'), false, 'Native Gemini 不得路由到 Responses');
   assert.equal(usesOpenAiResponses('openai-compatible'), false, 'Chat Completions 供应商不得路由到 Responses');
+
+  const routingDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-responses-routing-'));
+  try {
+    const childPath = path.join(routingDataRoot, 'routing-check.mjs');
+    const indexUrl = pathToFileURL(path.resolve('lib/script-providers/index.ts')).href;
+    const dbUrl = pathToFileURL(path.resolve('lib/db.ts')).href;
+    fs.writeFileSync(childPath, `
+      import assert from 'node:assert/strict';
+      const { completeJson, getAvailableProviders } = await import(${JSON.stringify(indexUrl)});
+      const { closeDb, getDb } = await import(${JSON.stringify(dbUrl)});
+      getAvailableProviders();
+      const db = getDb();
+      db.prepare("UPDATE script_providers SET baseUrl=?, apiKey=?, model=?, apiStyle=?, enabled=1 WHERE id=?")
+        .run('https://chat.example/v1', 'chat-key', 'chat-model', 'openai-compatible', 'qwen');
+      db.prepare("UPDATE script_providers SET baseUrl=?, apiKey=?, model=?, apiStyle=?, enabled=1 WHERE id=?")
+        .run('https://gemini.example', 'gemini-key', 'gemini-model', 'native-gemini', 'gemini');
+      const urls = [];
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        urls.push(url);
+        if (url.includes('/responses')) throw new Error('non-Responses apiStyle was routed to Responses');
+        if (url.includes(':generateContent')) {
+          return Response.json({ candidates: [{ content: { parts: [{ text: '{"route":"native-gemini"}' }] } }] });
+        }
+        return Response.json({ choices: [{ message: { content: '{"route":"openai-compatible"}' } }] });
+      };
+      assert.deepEqual(await completeJson({ providerId: 'qwen', systemPrompt: 'system', userPrompt: 'user' }), { route: 'openai-compatible' });
+      assert.deepEqual(await completeJson({ providerId: 'gemini', systemPrompt: 'system', userPrompt: 'user' }), { route: 'native-gemini' });
+      assert.equal(urls.some((url) => url.endsWith('/v1/chat/completions')), true);
+      assert.equal(urls.some((url) => url.includes(':generateContent')), true);
+      assert.equal(urls.some((url) => url.includes('/responses')), false);
+      closeDb();
+    `);
+    const routingResult = spawnSync(process.execPath, [
+      '--no-warnings',
+      '--experimental-loader', path.resolve('scripts/typescript-extension-loader.mjs'),
+      '--experimental-strip-types',
+      childPath,
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, CREATIVE_STUDIO_DATA_ROOT: routingDataRoot },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    assert.equal(
+      routingResult.status,
+      0,
+      `真实 completeJson 分发测试失败：\n${routingResult.stderr}\n${routingResult.stdout}`,
+    );
+  } finally {
+    fs.rmSync(routingDataRoot, { recursive: true, force: true });
+  }
 
   globalThis.fetch = async (_input, init) => new Response(new ReadableStream<Uint8Array>({
     start() {
