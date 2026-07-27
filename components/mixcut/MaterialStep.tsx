@@ -29,13 +29,14 @@ function isSupportedVideoFile(file: File): boolean {
   return SUPPORTED_VIDEO_EXTENSIONS.some((extension) => filename.endsWith(extension));
 }
 
+// V2 素材池语义（规格 §5 第 1 步）：默认全部参与混剪，点击卡片=排除/恢复。
+// selectedMaterialKeys 是「将参与」的集合，卡片为排除态 ⇔ ready 且不在集合内。
 export function MaterialStep({
   shotSetName,
   materials,
   selectedMaterialKeys,
   onToggle,
   onSelectAll,
-  onClear,
   onRefresh,
   onImportFiles,
   onContinue,
@@ -47,7 +48,6 @@ export function MaterialStep({
   selectedMaterialKeys: string[];
   onToggle: (materialKey: string) => void;
   onSelectAll: () => void;
-  onClear: () => void;
   onRefresh: () => void;
   onImportFiles?: (files: File[]) => void;
   onContinue?: () => void;
@@ -57,7 +57,9 @@ export function MaterialStep({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [importStatus, setImportStatus] = useState('');
-  const selected = new Set(selectedMaterialKeys);
+  const included = new Set(selectedMaterialKeys);
+  const readyCount = materials.filter((material) => material.status === 'ready').length;
+  const excludedCount = materials.filter((material) => material.status === 'ready' && !included.has(material.key)).length;
   const importEnabled = Boolean(onImportFiles) && !loading;
 
   const submitFiles = (files: File[]) => {
@@ -96,25 +98,28 @@ export function MaterialStep({
   };
 
   return (
-    <section className={styles.materialStep} aria-labelledby="mixcut-material-heading">
-      <header className={styles.stepHeader}>
+    <>
+      <header className={styles.stepHead}>
         <div>
-          <p className={styles.eyebrow}>STEP 01</p>
-          <h1 id="mixcut-material-heading">选择这次混剪要用的素材</h1>
-          <p>从当前分镜组挑选模块 4 的完成视频，也可以补充外部视频。</p>
+          <p className={`${styles.eyebrow} ${styles.stepTitle}`} style={{ fontSize: 11 }}>STEP 01</p>
+          <h1 className={styles.stepTitle} id="mixcut-material-heading">确认本次混剪要用的素材</h1>
+          <div className={styles.stepSub} style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            当前分镜组的完成视频默认全部参与混剪，点掉不想要的即可。
+            <span className={styles.linked}>已与模块 4 联动，仅显示「{shotSetName || '当前分镜组'}」的真实成功视频</span>
+          </div>
         </div>
-        <div className={styles.headerActions}>
-          <button type="button" className={styles.secondaryButton} onClick={onRefresh} disabled={loading}>
-            <Icon name="retry" size={15} />{loading ? '同步中' : '同步模块 4'}
+        <div className={styles.stepActions}>
+          <button type="button" className={styles.btn} onClick={onRefresh} disabled={loading}>
+            <Icon name="retry" size={14} />{loading ? '同步中' : '同步模块 4'}
           </button>
           <button
             type="button"
-            className={styles.primaryButton}
+            className={`${styles.btn} ${styles.primary}`}
             onClick={() => fileInputRef.current?.click()}
             disabled={!importEnabled}
             title={importDisabledReason}
           >
-            <Icon name="plus" size={16} />{loading ? '正在处理' : '选择视频'}
+            <Icon name="plus" size={14} />{loading ? '正在处理' : '选择视频'}
           </button>
           <input
             ref={fileInputRef}
@@ -128,92 +133,84 @@ export function MaterialStep({
         </div>
       </header>
 
-      <div className={styles.syncBanner}>
-        <span><Icon name="video" size={18} /></span>
-        <div>
-          <strong>已与模块 4「视频生成」联动</strong>
-          <small>当前只显示「{shotSetName || '当前分镜组'}」中真实存在的成功视频。</small>
+      <div className={styles.stepScroll}>
+        <div
+          className={`${styles.dropzone} ${dragActive ? styles.dropzoneActive : ''}`}
+          role="button"
+          tabIndex={importEnabled ? 0 : -1}
+          aria-disabled={!importEnabled}
+          aria-describedby="mixcut-import-help mixcut-import-status"
+          onClick={() => importEnabled && fileInputRef.current?.click()}
+          onKeyDown={handleImportKeyDown}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            if (importEnabled) setDragActive(true);
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={handleDrop}
+        >
+          <div className={styles.dropzoneT1}>{dragActive ? '松开即可导入到本组' : '拖拽视频到这里，或点击导入外部视频'}</div>
+          <div className={styles.dropzoneT2} id="mixcut-import-help">支持 MP4 / MOV / AVI / WebM，可一次多选</div>
         </div>
+        <p id="mixcut-import-status" className={styles.importStatus} aria-live="polite">{importStatus}</p>
+
+        <div className={styles.poolToolbar}>
+          <span><b>{readyCount}</b> 个可用视频 · <b>{included.size}</b> 个将参与混剪</span>
+          {excludedCount > 0 && <button type="button" className={styles.linkBtn} onClick={onSelectAll}>恢复全部（已排除 {excludedCount} 个）</button>}
+        </div>
+
+        {materials.length > 0 ? (
+          <div className={styles.pool}>
+            {materials.map((material) => {
+              const selectable = material.status === 'ready';
+              const excluded = selectable && !included.has(material.key);
+              const sourceLabel = material.source === 'module4' ? '模块 4' : '外部导入';
+              const stateLabel = material.status === 'missing' ? '文件丢失' : material.status === 'failed' ? '导入失败' : excluded ? '已排除' : '将参与混剪';
+              return (
+                <button
+                  type="button"
+                  key={material.key}
+                  className={`${styles.mat} ${excluded ? styles.matExcluded : ''} ${!selectable ? styles.matError : ''}`}
+                  onClick={() => selectable && onToggle(material.key)}
+                  aria-pressed={!excluded}
+                  disabled={!selectable}
+                  title={excluded ? '点击恢复：重新参与本次混剪' : '点击排除：这条不参与本次混剪'}
+                >
+                  <span className={styles.matThumb}>
+                    {material.thumbnailUrl
+                      ? <Image src={material.thumbnailUrl} alt={`${material.filename} 视频缩略图`} fill sizes="(max-width: 1120px) 170px, 220px" unoptimized />
+                      : <span className={styles.matThumbFallback}><Icon name="video" size={24} /></span>}
+                    <span className={styles.matDur}>{formatDuration(material.durationUs)}</span>
+                  </span>
+                  <span className={styles.matBadge}><Icon name={excluded ? 'plus' : 'close'} size={11} /></span>
+                  <span className={styles.matTag}>已排除</span>
+                  <span className={styles.matBody}>
+                    <span className={styles.matName}>{material.filename}</span>
+                    <span className={styles.matMeta}>{material.errorMessage || (material.width && material.height ? `${material.width} × ${material.height}` : '媒体信息待探测')}</span>
+                    <span className={styles.matSrc}>{sourceLabel} · {stateLabel}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className={styles.emptyState}>
+            <Icon name="video" size={26} />
+            <strong>当前组还没有可用视频</strong>
+            <span>请先返回模块 4 完成视频生成；其他分镜组的素材不会在这里兜底出现。</span>
+          </div>
+        )}
+
+        {!onImportFiles && importDisabledReason && (
+          <p className={styles.importNotice}><Icon name="alert" size={14} />{importDisabledReason}</p>
+        )}
       </div>
 
-      <div
-        className={`${styles.importDropzone} ${dragActive ? styles.importDropzoneActive : ''}`}
-        role="button"
-        tabIndex={importEnabled ? 0 : -1}
-        aria-disabled={!importEnabled}
-        aria-describedby="mixcut-import-help mixcut-import-status"
-        onClick={() => importEnabled && fileInputRef.current?.click()}
-        onKeyDown={handleImportKeyDown}
-        onDragEnter={(event) => {
-          event.preventDefault();
-          if (importEnabled) setDragActive(true);
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragLeave={() => setDragActive(false)}
-        onDrop={handleDrop}
-      >
-        <Icon name="plus" size={18} />
-        <span>
-          <strong>{dragActive ? '松开即可导入到本组' : '拖拽视频到这里，或点击选择'}</strong>
-          <small id="mixcut-import-help">支持 MP4、MOV、AVI、WebM，可一次选择多个文件</small>
-        </span>
-      </div>
-      <p id="mixcut-import-status" className={styles.importStatus} aria-live="polite">{importStatus}</p>
-
-      <div className={styles.materialToolbar}>
-        <strong>{materials.filter((material) => material.status === 'ready').length} 个可用视频</strong>
-        <span />
-        {selectedMaterialKeys.length > 0
-          ? <button type="button" onClick={onClear}>清除本组已选 {selectedMaterialKeys.length} 个</button>
-          : materials.some((material) => material.status === 'ready') && <button type="button" onClick={onSelectAll}>全选本组</button>}
-      </div>
-
-      {materials.length > 0 ? (
-        <div className={styles.materialGrid}>
-          {materials.map((material) => {
-            const checked = selected.has(material.key);
-            const selectable = material.status === 'ready';
-            return (
-              <button
-                type="button"
-                key={material.key}
-                className={`${styles.materialCard} ${checked ? styles.materialSelected : ''}`}
-                onClick={() => selectable && onToggle(material.key)}
-                aria-pressed={checked}
-                disabled={!selectable}
-              >
-                <span className={styles.thumbnail}>
-                  {material.thumbnailUrl
-                    ? <Image src={material.thumbnailUrl} alt={`${material.filename} 视频缩略图`} fill sizes="(max-width: 1120px) 170px, 220px" unoptimized />
-                    : <span className={styles.thumbnailFallback}><Icon name="video" size={24} /></span>}
-                  <i className={checked ? styles.checkSelected : styles.checkIdle}>{checked && <Icon name="check" size={12} />}</i>
-                  <em>{formatDuration(material.durationUs)}</em>
-                </span>
-                <span className={styles.materialMeta}>
-                  <strong>{material.filename}</strong>
-                  <small>{material.errorMessage || (material.width && material.height ? `${material.width} × ${material.height}` : '媒体信息待探测')}</small>
-                  <span>{material.source === 'module4' ? '模块 4' : '外部导入'} · {material.status === 'ready' ? '就绪' : material.status === 'missing' ? '文件丢失' : '导入失败'}</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className={styles.emptyState}>
-          <Icon name="video" size={26} />
-          <strong>当前组还没有可用视频</strong>
-          <span>请先返回模块 4 完成视频生成；其他分镜组的素材不会在这里兜底出现。</span>
-        </div>
-      )}
-
-      {!onImportFiles && importDisabledReason && (
-        <p className={styles.importNotice}><Icon name="alert" size={14} />{importDisabledReason}</p>
-      )}
-
-      <footer className={styles.materialFooter}>
-        <span>{selectedMaterialKeys.length > 0 ? `已选 ${selectedMaterialKeys.length} 个素材，下一步选择脚本和音色。` : '至少选择一个可用视频才能继续。'}</span>
-        <button type="button" className={styles.primaryButton} onClick={onContinue} disabled={!onContinue || selectedMaterialKeys.length === 0 || loading}>下一步：AI 智能创作<Icon name="chevron-right" size={15} /></button>
+      <footer className={styles.stepFoot}>
+        <span className={styles.stepFootMsg}>{included.size > 0 ? `${included.size} 个视频将参与本次混剪，下一步选择脚本和音色。` : '至少保留一个视频才能继续。'}</span>
+        <button type="button" className={`${styles.btn} ${styles.primary}`} onClick={onContinue} disabled={!onContinue || included.size === 0 || loading}>下一步：AI 智能创作</button>
       </footer>
-    </section>
+    </>
   );
 }

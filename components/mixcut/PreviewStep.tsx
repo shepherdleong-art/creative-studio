@@ -7,10 +7,13 @@ import { StyleEditor } from '@/components/final-edit/FinalEditInspector';
 import { drawText, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
-import { OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditGroupView, type FinalEditVariantView } from '@/lib/final-edit/types';
+import { FINAL_EDIT_FPS, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
 import { MixcutTimeline } from './MixcutTimeline';
+import { TrimEditor } from './TrimEditor';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
 import styles from './MixcutPanel.module.css';
+
+const FPS = FINAL_EDIT_FPS;
 
 async function responseBody<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
@@ -21,12 +24,16 @@ async function responseBody<T>(response: Response): Promise<T> {
 type VariantCommandRequest = VariantCommandInput | ((variant: FinalEditVariantView) => VariantCommandInput);
 type GroupCommandRequest = GroupCommandInput | ((group: FinalEditGroupView) => GroupCommandInput);
 
-export function PreviewStep({ group, active, onGroupChange, onBack, onExport }: {
+// V2 第 3 步（规格 §6）：直接渲染网格子节点——素材替换列 / Resizer / 主区（工具行+大纸）/ Resizer / 右栏三卡。
+// 列宽与折叠由 MixcutPanel 通过 CSS 变量与 body class 驱动。
+export function PreviewStep({ group, active, onGroupChange, onExport, onRepCollapse, onRgtCollapse, onResizeStart }: {
   group: FinalEditGroupView;
   active: boolean;
   onGroupChange: (group: FinalEditGroupView) => void;
-  onBack: () => void;
   onExport: (variantId: string) => void;
+  onRepCollapse: (collapsed: boolean) => void;
+  onRgtCollapse: (collapsed: boolean) => void;
+  onResizeStart: (side: 'rep' | 'rgt') => (event: React.PointerEvent<HTMLDivElement>) => void;
 }) {
   const [selectedVariantId, setSelectedVariantId] = useState(group.variants[0]?.id || '');
   const [selectedClipId, setSelectedClipId] = useState('');
@@ -35,8 +42,8 @@ export function PreviewStep({ group, active, onGroupChange, onBack, onExport }: 
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
   const [busy, setBusy] = useState(false);
-  const [propertyTab, setPropertyTab] = useState<'edit' | 'cover'>('edit');
   const [coverOpen, setCoverOpen] = useState(false);
+  const [trimClip, setTrimClip] = useState<TimelineClip | null>(null);
   const groupRef = useRef(group);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingRef = useRef(0);
@@ -45,6 +52,9 @@ export function PreviewStep({ group, active, onGroupChange, onBack, onExport }: 
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedCue = group.subtitleCues.find((cue) => cue.id === selectedCueId) || group.subtitleCues[0] || null;
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
+  const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
+  const trimAsset = trimClip ? group.assets.find((asset) => asset.videoJobId === trimClip.videoJobId) ?? null : null;
+  const usedVideoJobIds = useMemo(() => new Set(variant?.timeline.clips.map((clip) => clip.videoJobId) ?? []), [variant]);
 
   useEffect(() => { groupRef.current = group; }, [group]);
   useEffect(() => {
@@ -132,114 +142,244 @@ export function PreviewStep({ group, active, onGroupChange, onBack, onExport }: 
   };
   const closeCover = useCallback(() => setCoverOpen(false), []);
 
+  // 素材替换：把选中片段的素材换成另一个（规格 §6.5），保留片段时长、从 0 帧起截
+  const replaceClipAsset = (asset: FinalEditAssetView) => {
+    if (!selectedClip || busy) return;
+    const sourceFrames = Math.max(1, Math.round((asset.durationUs / 1_000_000) * FPS));
+    const length = selectedClip.sourceOutFrame - selectedClip.sourceInFrame;
+    void applyVariant({
+      type: 'replace_clip',
+      clipId: selectedClip.id,
+      videoJobId: asset.videoJobId,
+      sourceFingerprint: asset.fingerprint,
+      sourceInFrame: 0,
+      sourceOutFrame: Math.min(length, sourceFrames),
+    });
+  };
+
+  const openTrim = (clip: TimelineClip) => {
+    setSelectedClipId(clip.id);
+    setTrimClip(clip);
+  };
+
+  const totalSec = variant ? (variant.timeline.bodyFrames / FPS) + (variant.cover ? 20 / FPS : 0) : 0;
+  const bodySec = variant ? variant.timeline.bodyFrames / FPS : 0;
+  const narrationSec = group.narrationDurationUs / 1_000_000;
+  const narrationMatch = Math.abs(narrationSec - bodySec) < 1;
+  const coverSourceIndex = variant ? orderedClips.findIndex((clip) => clip.videoJobId === variant.cover.sourceKey) : -1;
+  // 匹配诊断必须在第 3 步第一眼可见：blocking 解释真实缺口，warning
+  // 解释语义或短素材兜底，避免用户把降级结果误认为预览故障。
+  const blockingIssues = variant.issues.filter((issue) => issue.severity === 'blocking');
+  const warningIssues = variant.issues.filter((issue) => issue.severity === 'warning');
+  const selectedAssetKey = selectedClip ? group.assets.find((asset) => asset.videoJobId === selectedClip.videoJobId)?.assetKey : null;
+  const selectedMatchReason = selectedClip && selectedAssetKey
+    ? variant.matchDiagnostics?.selectionReasons.find((reason) => reason.sentenceId === selectedClip.boundSegmentId && reason.assetKey === selectedAssetKey)
+    : null;
+  const selectedMatchReasonLabel = selectedMatchReason ? ({
+    manual_lock: '手动锁定',
+    semantic_primary: '语义首选',
+    semantic_backoff: '语义降级',
+    keyword_fallback: '关键词兜底',
+    material_length_fallback: '短素材拼接',
+    scene_reuse_fallback: '场景复用',
+  } as const)[selectedMatchReason.reason] : null;
+
   if (!variant) {
-    return <section className={styles.previewStep}><div className={styles.emptyState}><strong>还没有可预览的成片草稿</strong><span>返回智能创作，等待后台四个阶段完成后再进入。</span><button type="button" className={styles.secondaryButton} onClick={onBack}>返回智能创作</button></div></section>;
+    return (
+      <main className={styles.mainCol}>
+        <div className={styles.emptyState}><strong>还没有可预览的成片草稿</strong><span>返回智能创作，等待后台四个阶段完成后再进入。</span></div>
+      </main>
+    );
   }
 
   return (
-    <section className={styles.previewStep} aria-labelledby="mixcut-preview-heading" data-output-preset={variant.outputPreset}>
-      <header className={styles.previewStepHeader}>
-        <div>
-          <p className={styles.eyebrow}>STEP 03</p>
-          <h1 id="mixcut-preview-heading">预览并调整完整时间轴</h1>
-          <p>视频、字幕、口播和 BGM 共享同一个真实时间原点。</p>
-        </div>
-        <div className={styles.previewHeaderActions}>
-          <span aria-live="polite">{busy ? '正在保存…' : message}</span>
-          {group.variants.length > 1 && <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); setSelectedClipId(''); setPlayheadSec(0); }}>
-            {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
-          </select>}
-          <button type="button" className={styles.secondaryButton} onClick={onBack}><Icon name="chevron-left" size={14} />返回创作</button>
-          <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => onExport(variant.id)}>下一步：导出<Icon name="chevron-right" size={14} /></button>
-        </div>
-      </header>
+    <>
+      {/* 素材替换列 */}
+      <aside className={styles.replaceCol}>
+        <button type="button" className={styles.collapseBtn} title="隐藏素材替换" onClick={() => onRepCollapse(true)}>‹</button>
+        <button type="button" className={styles.expandBtn} title="展开素材替换" onClick={() => onRepCollapse(false)}>›</button>
+        <section className={`${styles.panel} ${styles.panelGrow}`}>
+          <h3><Icon name="retry" size={15} />素材替换</h3>
+          <div className={styles.hintLine} style={{ color: '#B25E00' }}>先在时间线选中片段，再点下面素材直接替换；仅显示本次参与混剪的素材。</div>
+          <div className={styles.replaceList}>
+            {group.assets.map((asset) => (
+              <button
+                type="button"
+                key={asset.assetKey || asset.videoJobId}
+                className={`${styles.rep} ${selectedClip?.videoJobId === asset.videoJobId ? styles.repActive : ''}`}
+                disabled={busy || !selectedClip}
+                onClick={() => replaceClipAsset(asset)}
+                title={selectedClip ? `用「${asset.filename}」替换选中片段` : '先在时间线选中一个片段'}
+              >
+                <span className={styles.repThumb}>
+                  {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <Icon name="video" size={14} />}
+                </span>
+                <span className={styles.repInfo}>
+                  <span className={styles.repN}>{asset.filename}</span>
+                  <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'}</span>
+                </span>
+                {usedVideoJobIds.has(asset.videoJobId) && <span className={`${styles.chip} ${styles.chipGreen}`}>已用</span>}
+              </button>
+            ))}
+          </div>
+        </section>
+      </aside>
+      <div className={styles.rz} role="separator" aria-orientation="vertical" title="拖拽调整宽度" onPointerDown={onResizeStart('rep')} />
 
-      <div className={styles.previewEditorGrid}>
-        <div className={styles.previewPlayerCell}>
-          <FinalEditPreview
-            group={group}
+      {/* 主区：工具行 + 大纸 */}
+      <main className={styles.mainCol}>
+        <div className={styles.t3Toolbar}>
+          <span className={styles.t3Title}>预览调整</span>
+          <span className={`${styles.chip} ${styles.chipGrey}`}>{orderedClips.length} 片段</span>
+          <span className={`${styles.chip} ${styles.chipBlue}`}>总时长 {totalSec.toFixed(1)}s</span>
+          <span className={`${styles.chip} ${narrationMatch ? styles.chipGreen : styles.chipGrey}`}>口播 {narrationSec.toFixed(1)}s {narrationMatch ? '✓' : '⚠'}</span>
+          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击片段/字幕编辑</span>
+          {selectedMatchReason && selectedMatchReasonLabel && (
+            <span className={`${styles.chip} ${styles.chipBlue}`}>匹配：{selectedMatchReasonLabel} · {selectedMatchReason.score.toFixed(2)}</span>
+          )}
+          <span className={styles.spacer} />
+          <span className={styles.flowHint} aria-live="polite">{busy ? '正在保存…' : message}</span>
+          {group.variants.length > 1 && (
+            <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); setSelectedClipId(''); setTrimClip(null); setPlayheadSec(0); }}>
+              {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
+            </select>
+          )}
+          <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={busy} onClick={() => onExport(variant.id)}>下一步：导出</button>
+        </div>
+
+        {blockingIssues.length > 0 && (
+          <div className={styles.errorBanner} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+            {blockingIssues.map((issue, index) => (
+              <span key={`${issue.code}-${issue.targetId ?? index}`} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                <Icon name="alert" size={13} />{issue.message}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {warningIssues.length > 0 && (
+          <div className={styles.warningNotice} style={{ marginBottom: 8, flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+            {warningIssues.map((issue, index) => (
+              <span key={`${issue.code}-${issue.targetId ?? index}`} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                <Icon name="alert" size={13} />{issue.message}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className={styles.bigPaper} data-output-preset={variant.outputPreset}>
+          <div className={styles.previewWrap}>
+            <div className={styles.previewFrame} data-output-preset={variant.outputPreset}>
+              <FinalEditPreview
+                group={group}
+                variant={variant}
+                assets={group.assets}
+                selectedAsset={null}
+                playheadSec={playheadSec}
+                seekRequestId={seekRequestId}
+                active={active}
+                textTarget={null}
+                onPlayheadChange={setPlayheadSec}
+                onTextPositionChange={() => undefined}
+              />
+            </div>
+          </div>
+
+          {trimClip && (
+            <TrimEditor
+              clip={trimClip}
+              clipIndex={Math.max(0, trimClipIndex)}
+              asset={trimAsset}
+              disabled={busy}
+              onCommit={(sourceInFrame, sourceOutFrame) => applyVariant({
+                type: 'trim_clip',
+                clipId: trimClip.id,
+                sourceInFrame,
+                sourceOutFrame,
+                timelineInFrame: trimClip.timelineInFrame,
+                timelineOutFrame: trimClip.timelineOutFrame,
+              })}
+              onClose={() => setTrimClip(null)}
+            />
+          )}
+
+          <MixcutTimeline
             variant={variant}
+            cues={group.subtitleCues}
             assets={group.assets}
-            selectedAsset={null}
+            selectedClipId={selectedClipId}
+            selectedCueId={selectedCue?.id || ''}
             playheadSec={playheadSec}
-            seekRequestId={seekRequestId}
-            active={active}
-            textTarget={null}
-            onPlayheadChange={setPlayheadSec}
-            onTextPositionChange={() => undefined}
+            disabled={busy}
+            onSeek={seek}
+            onSelectClip={setSelectedClipId}
+            onSelectCue={setSelectedCueId}
+            onVariantCommand={(command) => applyVariant(command)}
+            onGroupCommand={applyGroup}
+            onTrimClip={openTrim}
+            onEditCueText={(cueId, text) => void applyGroup({ type: 'set_subtitle_cue_text', cueId, text })}
           />
         </div>
-        <aside className={styles.previewPropertyPanel} aria-label="时间轴属性">
-          <div className={styles.previewPropertyTabs}><div><button type="button" className={propertyTab === 'edit' ? styles.previewPropertyTabActive : ''} onClick={() => setPropertyTab('edit')}>当前编辑</button><button type="button" className={propertyTab === 'cover' ? styles.previewPropertyTabActive : ''} onClick={() => setPropertyTab('cover')}>封面</button></div><span>{variant.outputPreset.replace('x', ':')}</span></div>
-          {propertyTab === 'edit' ? <fieldset className={styles.previewPropertyScroll} disabled={busy} aria-label="可持久化编辑属性">
-            {selectedCue && (
-              <section className={styles.previewPropertyCard}>
-                <h2>字幕</h2>
-                <label className={styles.fieldLabel}>文字<input defaultValue={selectedCue.text} key={`${selectedCue.id}-${selectedCue.text}`} onBlur={(event) => void applyGroup({ type: 'set_subtitle_cue_text', cueId: selectedCue.id, text: event.target.value })} /></label>
-                <p>{(selectedCue.startUs / 1_000_000).toFixed(2)}s – {(selectedCue.endUs / 1_000_000).toFixed(2)}s</p>
-                <div className={styles.previewStyleHeading}><strong>全局字幕样式</strong><button type="button" onClick={() => void applyGroup({ type: 'reset_text_style', preset: variant.outputPreset, target: 'subtitle' })}>恢复默认</button></div>
-                <StyleEditor
-                  key={`subtitle-style-${variant.outputPreset}-${group.revision}`}
-                  value={group.textStyles[variant.outputPreset].subtitle}
-                  onPreview={previewSubtitleStyle}
-                  onCommit={(style) => void applyGroup({ type: 'set_text_style', preset: variant.outputPreset, target: 'subtitle', style })}
-                />
-              </section>
-            )}
-            {selectedClip && (
-              <section className={styles.previewPropertyCard}>
-                <h2>视频片段</h2>
-                <p>源 {selectedClip.sourceInFrame}–{selectedClip.sourceOutFrame} 帧<br />时间轴 {selectedClip.timelineInFrame}–{selectedClip.timelineOutFrame} 帧</p>
-                <div className={styles.clipOrderButtons}>
-                  <button type="button" disabled={orderedClips[0]?.id === selectedClip.id} onClick={() => {
-                    void applyVariant((current) => {
-                      const clips = [...current.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
-                      const index = clips.findIndex((clip) => clip.id === selectedClip.id);
-                      const ids = clips.map((clip) => clip.id);
-                      if (index > 0) [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
-                      return { type: 'reorder_clips', orderedClipIds: ids };
-                    });
-                  }}>前移</button>
-                  <button type="button" disabled={orderedClips.at(-1)?.id === selectedClip.id} onClick={() => {
-                    void applyVariant((current) => {
-                      const clips = [...current.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
-                      const index = clips.findIndex((clip) => clip.id === selectedClip.id);
-                      const ids = clips.map((clip) => clip.id);
-                      if (index >= 0 && index < ids.length - 1) [ids[index], ids[index + 1]] = [ids[index + 1], ids[index]];
-                      return { type: 'reorder_clips', orderedClipIds: ids };
-                    });
-                  }}>后移</button>
-                </div>
-              </section>
-            )}
-            <section className={styles.previewPropertyCard}>
-              <h2>背景音乐</h2>
-              <label className={styles.fieldLabel}>曲目<select value={variant.bgm.trackId || ''} onChange={(event) => void applyVariant({ type: 'set_bgm', trackId: event.target.value || null })}><option value="">无 BGM</option>{group.bgmTracks.map((track) => <option key={track.id} value={track.id}>{track.relativePath}</option>)}</select></label>
-              <label className={styles.fieldLabel}>音量（dB）<input type="number" min={-40} max={0} step={0.5} defaultValue={variant.bgm.gainDb} key={`gain-${variant.revision}`} onBlur={(event) => void applyVariant({ type: 'set_bgm_gain', gainDb: Number(event.target.value) })} /></label>
-              <div className={styles.fadeFields}>
-                <label className={styles.fieldLabel}>淡入（秒）<input type="number" min={0} max={variant.timeline.bodyFrames / 24} step={0.1} defaultValue={variant.bgm.fadeInSec} key={`fade-in-${variant.revision}`} onBlur={(event) => { const fadeInSec = Number(event.target.value); void applyVariant((current) => ({ type: 'set_bgm_fades', fadeInSec, fadeOutSec: current.bgm.fadeOutSec })); }} /></label>
-                <label className={styles.fieldLabel}>淡出（秒）<input type="number" min={0} max={variant.timeline.bodyFrames / 24} step={0.1} defaultValue={variant.bgm.fadeOutSec} key={`fade-out-${variant.revision}`} onBlur={(event) => { const fadeOutSec = Number(event.target.value); void applyVariant((current) => ({ type: 'set_bgm_fades', fadeInSec: current.bgm.fadeInSec, fadeOutSec })); }} /></label>
-              </div>
-            </section>
-            {variant.issues.length > 0 && <section className={styles.previewPropertyCard}><h2>诊断</h2>{variant.issues.map((issue, index) => <p key={`${issue.code}-${index}`} className={issue.severity === 'blocking' ? styles.previewBlockingIssue : undefined}>{issue.message}</p>)}</section>}
-          </fieldset> : <CoverSummary group={group} variant={variant} onOpen={() => setCoverOpen(true)} />}
-        </aside>
-      </div>
+      </main>
+      <div className={styles.rz} role="separator" aria-orientation="vertical" title="拖拽调整宽度" onPointerDown={onResizeStart('rgt')} />
 
-      <MixcutTimeline
-        variant={variant}
-        cues={group.subtitleCues}
-        assets={group.assets}
-        selectedClipId={selectedClipId}
-        selectedCueId={selectedCue?.id || ''}
-        playheadSec={playheadSec}
-        disabled={busy}
-        onSeek={seek}
-        onSelectClip={setSelectedClipId}
-        onSelectCue={setSelectedCueId}
-        onVariantCommand={(command) => applyVariant(command)}
-        onGroupCommand={applyGroup}
-      />
+      {/* 右栏：字幕样式 / 背景音乐 / 封面 */}
+      <aside className={styles.rightCol}>
+        <button type="button" className={styles.collapseBtn} title="隐藏面板" onClick={() => onRgtCollapse(true)}>›</button>
+        <button type="button" className={styles.expandBtn} title="展开面板" onClick={() => onRgtCollapse(false)}>‹</button>
+
+        <section className={styles.rcard}>
+          <h4><Icon name="text" size={15} />字幕样式</h4>
+          <div className={styles.ctlRow} style={{ justifyContent: 'flex-end', marginBottom: 6 }}>
+            <button type="button" className={styles.linkBtn} onClick={() => void applyGroup({ type: 'reset_text_style', preset: variant.outputPreset, target: 'subtitle' })}>恢复默认</button>
+          </div>
+          <StyleEditor
+            key={`subtitle-style-${variant.outputPreset}-${group.revision}`}
+            value={group.textStyles[variant.outputPreset].subtitle}
+            onPreview={previewSubtitleStyle}
+            onCommit={(style) => void applyGroup({ type: 'set_text_style', preset: variant.outputPreset, target: 'subtitle', style })}
+          />
+        </section>
+
+        <section className={styles.rcard}>
+          <h4><Icon name="music" size={15} />背景音乐</h4>
+          <div className={styles.ctlRow}>
+            <select style={{ flex: 1, minWidth: 100 }} value={variant.bgm.trackId || ''} disabled={busy} onChange={(event) => void applyVariant({ type: 'set_bgm', trackId: event.target.value || null })} aria-label="BGM 曲目">
+              <option value="">无 BGM</option>
+              {group.bgmTracks.map((track) => <option key={track.id} value={track.id}>{track.relativePath}</option>)}
+            </select>
+          </div>
+          <div className={styles.ctlRow}>
+            <span className={styles.ctlLab}>音量</span>
+            <input type="range" min={-40} max={0} step={1} defaultValue={variant.bgm.gainDb} key={`gain-${variant.revision}`} disabled={busy} onChange={(event) => void applyVariant({ type: 'set_bgm_gain', gainDb: Number(event.target.value) })} aria-label="音量（dB）" />
+            <span className={styles.ctlVal}>{variant.bgm.gainDb} dB</span>
+          </div>
+          <div className={styles.ctlRow}>
+            <span className={styles.ctlLab}>淡入</span>
+            <input type="range" min={0} max={5} step={0.1} defaultValue={variant.bgm.fadeInSec} key={`fade-in-${variant.revision}`} disabled={busy} onChange={(event) => void applyVariant((current) => ({ type: 'set_bgm_fades', fadeInSec: Number(event.target.value), fadeOutSec: current.bgm.fadeOutSec }))} aria-label="淡入（秒）" />
+            <span className={styles.ctlVal}>{variant.bgm.fadeInSec}s</span>
+          </div>
+          <div className={styles.ctlRow}>
+            <span className={styles.ctlLab}>淡出</span>
+            <input type="range" min={0} max={5} step={0.1} defaultValue={variant.bgm.fadeOutSec} key={`fade-out-${variant.revision}`} disabled={busy} onChange={(event) => void applyVariant((current) => ({ type: 'set_bgm_fades', fadeInSec: current.bgm.fadeInSec, fadeOutSec: Number(event.target.value) }))} aria-label="淡出（秒）" />
+            <span className={styles.ctlVal}>{variant.bgm.fadeOutSec}s</span>
+          </div>
+        </section>
+
+        <section className={styles.rcard}>
+          <button type="button" className={styles.coverEntry} onClick={() => setCoverOpen(true)}>
+            <span className={styles.coverThumb}>
+              {variant.cover.sourceUrl ? <CoverThumbnail group={group} variant={variant} /> : <Icon name="image" size={18} />}
+            </span>
+            <span>
+              <span className={styles.coverEntryT} style={{ display: 'block' }}>视频封面设置</span>
+              <span className={styles.coverEntryS} style={{ display: 'block' }}>{variant.cover.sourceUrl ? '已自定义' : '默认封面'} · {variant.outputPreset.replace('x', ':')}{coverSourceIndex >= 0 ? ` · 片段 #${coverSourceIndex + 1}` : ''}</span>
+            </span>
+            <span className={styles.coverEntryGo}><Icon name="chevron-right" size={16} /></span>
+          </button>
+        </section>
+      </aside>
+
       {coverOpen && <CoverEditorDrawer
         active={active}
         group={group}
@@ -252,17 +392,8 @@ export function PreviewStep({ group, active, onGroupChange, onBack, onExport }: 
           return { type: 'apply_cover_editor', variantId: currentVariant.id, expectedVariantRevision: currentVariant.revision, draft };
         })}
       />}
-    </section>
+    </>
   );
-}
-
-function CoverSummary({ group, variant, onOpen }: { group: FinalEditGroupView; variant: FinalEditVariantView; onOpen: () => void }) {
-  const source = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === variant.cover.sourceKey || asset.videoJobId === variant.cover.sourceKey);
-  return <div className={styles.coverSummary}>
-    <div className={styles.coverSummaryImage}>{variant.cover.sourceUrl ? <CoverThumbnail group={group} variant={variant} /> : <span>尚未选择视频封面</span>}</div>
-    <dl><div><dt>来源片段</dt><dd>{source?.filename || '待选择'}</dd></div><div><dt>截帧时间</dt><dd>{(variant.cover.frameTimeUs / 1_000_000).toFixed(2)}s</dd></div><div><dt>主标题</dt><dd>{group.coverTitle.primary.text || '—'}</dd></div><div><dt>副标题</dt><dd>{group.coverTitle.secondary.text || '—'}</dd></div></dl>
-    <button type="button" className={styles.primaryButton} onClick={onOpen}>精调封面</button>
-  </div>;
 }
 
 function CoverThumbnail({ group, variant }: { group: FinalEditGroupView; variant: FinalEditVariantView }) {

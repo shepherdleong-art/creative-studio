@@ -58,6 +58,7 @@ function stageState(job: MixcutPrepareJobView | null, index: number): 'waiting' 
   return currentIndex > index ? 'done' : 'waiting';
 }
 
+// V2 第 2 步（规格 §5）：单列卡片流——口播文案卡 → 音色卡 → CTA 区 → 进度卡。
 export function CreationStep({
   drafts,
   activeDraftId,
@@ -84,7 +85,6 @@ export function CreationStep({
   elapsedSec,
   onStart,
   onPreview,
-  onBack,
   submitting,
   startDisabledReason,
 }: {
@@ -126,92 +126,116 @@ export function CreationStep({
     return showAllVoices || query ? filtered : filtered.slice(0, 6);
   }, [provider, showAllVoices, voiceQuery]);
   const activeDraft = drafts.find((draft) => draft.id === activeDraftId) ?? null;
+  const selectedVoice = provider?.voices.find((item) => item.id === voice) ?? null;
   const charCount = Array.from(editedNarrationText.replace(/\s/g, '')).length;
   const busy = submitting || Boolean(job && ['queued', 'running'].includes(job.status));
   const progress = Math.max(0, Math.min(1, Number(job?.progress) || 0));
 
+  const auditionVoice = (voiceId: string) => {
+    if (voiceId !== voice) onVoiceChange(voiceId);
+    onPreviewVoice();
+  };
+
   return (
-    <section className={styles.creationStep} aria-labelledby="mixcut-creation-heading">
-      <header className={styles.stepHeader}>
-        <div>
-          <p className={styles.eyebrow}>STEP 02</p>
-          <h1 id="mixcut-creation-heading">编辑口播并启动智能创作</h1>
-          <p>脚本、音色和素材选择会一起冻结到本次后台任务。</p>
-        </div>
-        <button type="button" className={styles.secondaryButton} onClick={onBack} disabled={busy}>
-          <Icon name="chevron-left" size={15} />返回素材
-        </button>
-      </header>
-
-      <div className={styles.creationStack}>
-        <section className={styles.creationCard}>
-          <div className={styles.cardTitleRow}>
-            <div><span className={styles.cardIcon}><Icon name="file-text" size={17} /></span><span><strong>模块 3 脚本</strong><small>仅显示当前分镜组的有效草稿</small></span></div>
-            <span className={modified ? styles.modifiedBadge : styles.syncedBadge}>{modified ? '已手动修改' : '已同步'}{dirty ? '，待保存' : ''}</span>
+    <>
+      <div className={`${styles.stepScroll} ${styles.stepScrollGap24}`} style={{ paddingTop: 14 }}>
+        {/* 口播文案卡 */}
+        <section className={styles.card}>
+          <div className={styles.cardHead}>
+            <div className={styles.cardTitle}><Icon name="mic" size={16} />口播文案 <span style={{ fontWeight: 400, color: 'var(--sub)', fontSize: 12 }}>（15 秒约 150-200 字）</span></div>
+            <div className={styles.flowHint}>输入文案 → 选音色 → AI 匹配画面 → 出片</div>
           </div>
-
           {drafts.length > 0 ? (
-            <label className={styles.fieldLabel}>
-              <span>脚本版本</span>
+            <label className={styles.field}>
+              <span>脚本版本（模块 3 · 仅显示当前分镜组的有效草稿）
+                <span className={modified ? styles.chipGrey : styles.chipGreen} style={{ marginLeft: 8 }}>{modified ? '已手动修改' : '已同步'}{dirty ? '，待保存' : ''}</span>
+              </span>
               <select value={activeDraftId} onChange={(event) => onDraftChange(event.target.value)} disabled={busy}>
                 {drafts.map((draft) => <option key={draft.id} value={draft.id}>{draft.title || '未命名脚本'} · {draft.targetDurationSec}s · {draft.provider}/{draft.model} · {formatCreatedAt(draft.createdAt)}</option>)}
               </select>
             </label>
           ) : <div className={styles.warningNotice}>当前组还没有模块 3 脚本，可以先手动输入口播文案。</div>}
-
-          <label className={styles.fieldLabel}>
+          <label className={styles.field}>
             <span>口播文案</span>
             <textarea value={editedNarrationText} onChange={(event) => onTextChange(event.target.value)} disabled={busy} placeholder="输入 15～30 秒口播文案…" />
           </label>
-          <div className={styles.scriptMeta}>
-            <span>{charCount} 字 · 预计 {estimateNarrationSec(editedNarrationText, speed)} 秒</span>
+          <div className={styles.metaRow}>
+            <span>{charCount}/500 字（约 {estimateNarrationSec(editedNarrationText, speed)} 秒口播）</span>
             <span>来源：{activeDraft ? `${activeDraft.provider} / ${activeDraft.model}` : '手动输入'}</span>
-            {importedNarrationText && <button type="button" onClick={onRestoreImported} disabled={!modified || busy}>恢复导入版本</button>}
+            {importedNarrationText && <button type="button" className={styles.linkBtn} onClick={onRestoreImported} disabled={!modified || busy}>恢复导入版本</button>}
           </div>
         </section>
 
-        <section className={styles.creationCard}>
-          <div className={styles.cardTitleRow}>
-            <div><span className={styles.cardIcon}><Icon name="users" size={17} /></span><span><strong>口播音色</strong><small>供应商密钥只显示配置状态</small></span></div>
-            <span className={provider?.configured ? styles.syncedBadge : styles.modifiedBadge}>{provider?.configured ? '已配置' : '未配置'}</span>
+        {/* 音色选择卡 */}
+        <section className={styles.card}>
+          <div className={styles.cardHead}>
+            <div>
+              <div className={styles.cardTitle}><Icon name="speaker" size={16} />选择朗读音色</div>
+              <div className={styles.cardSub}>当前服务商：{provider ? `${provider.name} · ${provider.model}` : '未配置'}（密钥{provider?.configured ? '已配置' : '未配置'}）</div>
+            </div>
+            <select style={{ minWidth: 200 }} value={providerId} onChange={(event) => onProviderChange(event.target.value)} disabled={busy} aria-label="配音服务">
+              {providers.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
+            </select>
           </div>
-          <div className={styles.voiceControls}>
-            <label className={styles.fieldLabel}><span>配音服务</span><select value={providerId} onChange={(event) => onProviderChange(event.target.value)} disabled={busy}>{providers.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}</select></label>
-            <label className={styles.fieldLabel}><span>搜索音色</span><span className={styles.searchField}><Icon name="search" size={15} /><input value={voiceQuery} onChange={(event) => setVoiceQuery(event.target.value)} placeholder="输入名称或 ID" /></span></label>
+          <div className={styles.rateRow}>
+            <span className={styles.rateLab}>语速</span>
+            <input type="range" min="0.5" max="2" step="0.1" value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} disabled={busy} aria-label="语速" />
+            <span className={`${styles.chip} ${styles.chipGrey}`}>{speed.toFixed(1)}x</span>
+            <span className={styles.rateHint}>0.5x 慢速 · 1.0x 正常 · 2.0x 快速</span>
           </div>
+          <div className={styles.cardSub}>精选音色（点击选中，可单独试听）</div>
           <div className={styles.voiceGrid}>
-            {voices.map((item) => <button type="button" key={item.id} className={item.id === voice ? styles.voiceSelected : ''} onClick={() => onVoiceChange(item.id)} disabled={busy}><strong>{item.label}</strong><small>{item.id}</small></button>)}
+            {voices.map((item) => (
+              <div key={item.id} role="button" tabIndex={0} className={`${styles.voice} ${item.id === voice ? styles.voiceOn : ''}`}
+                onClick={() => !busy && onVoiceChange(item.id)}
+                onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !busy) onVoiceChange(item.id); }}>
+                <div className={styles.voiceVi}><Icon name="mic" size={18} /></div>
+                <div className={styles.voiceN}>{item.label}</div>
+                <div className={styles.voiceI}>{item.id}</div>
+                <button type="button" className={styles.voiceTry} disabled={previewingVoice || !provider?.configured || busy} onClick={(event) => { event.stopPropagation(); auditionVoice(item.id); }}>
+                  <Icon name="play" size={9} />{previewingVoice && item.id === voice ? '生成中…' : '试听'}
+                </button>
+              </div>
+            ))}
           </div>
-          {(provider?.voices.length ?? 0) > 6 && !voiceQuery && <button type="button" className={styles.textButton} onClick={() => setShowAllVoices((value) => !value)}>{showAllVoices ? '收起音色' : `查看全部 ${provider?.voices.length} 个音色`}</button>}
-          <div className={styles.speedRow}>
-            <label><span>语速</span><input type="range" min="0.5" max="2" step="0.1" value={speed} onChange={(event) => onSpeedChange(Number(event.target.value))} disabled={busy} /><strong>{speed.toFixed(1)}x</strong></label>
-            <button type="button" className={styles.secondaryButton} onClick={onPreviewVoice} disabled={previewingVoice || !provider?.configured || busy}><Icon name="play" size={14} />{previewingVoice ? '生成中…' : '试听当前'}</button>
+          <div className={styles.moreRow}>
+            <span className={styles.field} style={{ margin: 0, flex: 1, minWidth: 180 }}><input type="text" value={voiceQuery} onChange={(event) => setVoiceQuery(event.target.value)} placeholder="搜索更多音色（名称或 ID）" /></span>
+            {(provider?.voices.length ?? 0) > 6 && !voiceQuery && <button type="button" className={styles.linkBtn} onClick={() => setShowAllVoices((value) => !value)}>{showAllVoices ? '收起音色' : `查看全部 ${provider?.voices.length} 个音色`}</button>}
+            <span className={styles.flowHint}>当前选中：{selectedVoice ? `${selectedVoice.label} · ${selectedVoice.id}` : '未选择'}</span>
           </div>
         </section>
 
-        <section className={styles.creationCard} aria-label="智能创作进度">
-          <div className={styles.cardTitleRow}>
-            <div><span className={styles.cardIcon}><Icon name="sparkle" size={17} /></span><span><strong>真实后台进度</strong><small>{job ? `已用时 ${elapsedSec} 秒` : `已选 ${selectedMaterialCount} 个素材`}</small></span></div>
-            {job && <strong>{Math.round(progress * 100)}%</strong>}
+        {/* CTA 区 */}
+        <div className={styles.ctaZone}>
+          {job?.status === 'succeeded'
+            ? <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} onClick={onPreview}><Icon name="play-circle" size={17} />去预览调整</button>
+            : <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={17} />{submitting ? '正在创建任务…' : busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>}
+          <span className={`${styles.chip} ${styles.chipGreen}`}><Icon name="film" size={12} />可用视频素材：{selectedMaterialCount} 个</span>
+          <span className={styles.flowHint}>{startDisabledReason || '开始后会创建不可变任务快照，刷新页面不会丢失。'}</span>
+        </div>
+
+        {/* 进度卡 */}
+        <section className={styles.card} aria-label="智能创作进度">
+          <div className={styles.cardHead}>
+            <div className={styles.cardTitle}>处理进度</div>
+            <div className={styles.flowHint}>{job ? `${STAGES.find((stage) => stage.phase === job.phase)?.label ?? ''} · 已用时 ${elapsedSec}s` : `已选 ${selectedMaterialCount} 个素材`}</div>
           </div>
-          <div className={styles.progressTrack} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span style={{ width: `${progress * 100}%` }} /></div>
-          <div className={styles.stageList}>
-            {STAGES.map((stage, index) => {
-              const state = stageState(job, index);
-              return <div key={stage.phase} data-state={state}><span>{state === 'done' ? '✓' : state === 'running' ? '▶' : state === 'failed' ? '!' : index + 1}</span><strong>{stage.label}</strong><small>{state === 'done' ? '已完成' : state === 'running' ? '进行中' : state === 'failed' ? '失败' : '等待'}</small></div>;
-            })}
-          </div>
+          <div className={styles.progBar} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} style={{ marginBottom: 14 }}><i style={{ width: `${progress * 100}%` }} /></div>
+          {STAGES.map((stage, index) => {
+            const state = stageState(job, index);
+            const cls = state === 'done' ? styles.pipeDone : state === 'running' ? styles.pipeDoing : state === 'failed' ? styles.pipeFail : styles.pipeWait;
+            return (
+              <div key={stage.phase} className={`${styles.pipe} ${cls}`} data-state={state}>
+                <span className={styles.pipeIc}>{state === 'done' ? <Icon name="check" size={12} /> : state === 'running' ? <Icon name="play" size={9} /> : state === 'failed' ? '!' : index + 1}</span>
+                <span className={styles.pipeNm}>{stage.label}</span>
+                <span className={styles.pipeSt}>{state === 'done' ? '已完成' : state === 'running' ? '进行中' : state === 'failed' ? '失败' : '等待'}</span>
+              </div>
+            );
+          })}
           {job?.errorMessage && <div className={styles.errorNotice}><Icon name="alert" size={15} />{job.errorMessage}</div>}
           {job?.status === 'succeeded' && <div className={styles.successNotice}><Icon name="check" size={15} />准备任务已完成，脚本和进度已保存到本地。</div>}
         </section>
       </div>
-
-      <footer className={styles.creationFooter}>
-        <span>{startDisabledReason || '开始后会创建不可变任务快照，刷新页面不会丢失。'}</span>
-        {job?.status === 'succeeded'
-          ? <button type="button" className={styles.primaryButton} onClick={onPreview}><Icon name="play" size={16} />去预览调整</button>
-          : <button type="button" className={styles.primaryButton} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={16} />{submitting ? '正在创建任务…' : busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>}
-      </footer>
 
       {pendingDraft && (
         <div className={styles.switchDialogBackdrop} role="presentation">
@@ -222,6 +246,6 @@ export function CreationStep({
           </div>
         </div>
       )}
-    </section>
+    </>
   );
 }

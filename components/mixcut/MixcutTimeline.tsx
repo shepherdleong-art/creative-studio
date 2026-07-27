@@ -3,17 +3,36 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditAssetView, type FinalEditVariantView, type SubtitleCue, type TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
-import { clampTimelineZoom, constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
+import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
 import styles from './MixcutPanel.module.css';
 
 const FPS = FINAL_EDIT_FPS;
 const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;
 const FRAME_US = Math.round(1_000_000 / FPS);
-const LABEL_WIDTH = 88;
+const PX_PER_SECOND = 60; // V2 固定缩放（规格 §6.4），内容超宽靠横向滚动
 
-function formatTime(seconds: number): string {
-  const safe = Math.max(0, seconds);
-  return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${(safe % 60).toFixed(1).padStart(4, '0')}`;
+function Waveform({ tone, seed, playedRatio }: { tone: 'tts' | 'bgm'; seed: number; playedRatio: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const update = () => setCount(Math.floor(element.offsetWidth / 5));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const bars = useMemo(() => Array.from({ length: Math.max(0, count) }, (_, index) => {
+    const raw = Math.sin(index * 127.1 + seed * 311.7) * 43758.5453;
+    return 18 + (raw - Math.floor(raw)) * 74;
+  }), [count, seed]);
+  const playedCount = Math.round(count * Math.max(0, Math.min(1, playedRatio)));
+  return (
+    <div ref={ref} className={`${styles.wf} ${tone === 'tts' ? styles.wfTts : styles.wfBgm}`} aria-hidden="true">
+      {bars.map((height, index) => <span key={index} style={{ height: `${height}%` }} data-played={index < playedCount || undefined} />)}
+    </div>
+  );
 }
 
 export function MixcutTimeline({
@@ -29,6 +48,8 @@ export function MixcutTimeline({
   onSelectCue,
   onVariantCommand,
   onGroupCommand,
+  onTrimClip,
+  onEditCueText,
 }: {
   variant: FinalEditVariantView;
   cues: SubtitleCue[];
@@ -42,16 +63,19 @@ export function MixcutTimeline({
   onSelectCue: (cueId: string) => void;
   onVariantCommand: (command: VariantCommandInput) => Promise<boolean>;
   onGroupCommand: (command: GroupCommandInput) => Promise<boolean>;
+  onTrimClip: (clip: TimelineClip) => void;
+  onEditCueText: (cueId: string, text: string) => void;
 }) {
-  const [pxPerSecond, setPxPerSecond] = useState(80);
+  const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodySec = variant.timeline.bodyFrames / FPS;
   const totalSec = (INTRO_FRAMES + variant.timeline.bodyFrames) / FPS;
   const totalUs = totalSec * 1_000_000;
-  const contentWidth = timelineContentWidthPx({ totalUs, pxPerSecond, viewportWidth: Math.max(1, viewportWidth - LABEL_WIDTH) });
+  const contentWidth = timelineContentWidthPx({ totalUs, pxPerSecond, viewportWidth: Math.max(1, viewportWidth) });
   const introPx = INTRO_FRAMES / FPS * pxPerSecond;
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.videoJobId, asset])), [assets]);
+  const orderedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -68,7 +92,7 @@ export function MixcutTimeline({
     if (!scroll) return;
     const absoluteFrame = timelineAbsoluteFrameFromPointer({
       clientX,
-      contentLeft: scroll.getBoundingClientRect().left + LABEL_WIDTH,
+      contentLeft: scroll.getBoundingClientRect().left,
       scrollLeft: scroll.scrollLeft,
       pxPerSecond,
       totalFrames: INTRO_FRAMES + variant.timeline.bodyFrames,
@@ -76,8 +100,8 @@ export function MixcutTimeline({
     });
     onSeek(absoluteFrame / FPS);
   };
-  const ticks = Array.from({ length: Math.floor(totalSec) + 1 }, (_, index) => index).filter((value) => value % (pxPerSecond >= 140 ? 1 : pxPerSecond >= 70 ? 2 : 5) === 0);
 
+  const ticks = Array.from({ length: Math.floor(totalSec) }, (_, index) => index * 0.5 + 0.5);
   const beginPlayheadDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -96,83 +120,81 @@ export function MixcutTimeline({
   };
 
   return (
-    <section className={styles.mixcutTimeline} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined}>
-      <div className={styles.timelineToolbar}>
-        <div><strong>精细时间轴</strong><span>{formatTime(playheadSec)} / {formatTime(totalSec)}</span></div>
-        <label className={styles.zoomControl}>
-          <span>缩放</span>
-          <button type="button" onClick={() => setPxPerSecond((value) => clampTimelineZoom(value - 20))} aria-label="缩小时间轴">−</button>
-          <input aria-label="时间轴缩放" type="range" min={40} max={240} step={10} value={pxPerSecond} onChange={(event) => setPxPerSecond(clampTimelineZoom(Number(event.target.value)))} />
-          <button type="button" onClick={() => setPxPerSecond((value) => clampTimelineZoom(value + 20))} aria-label="放大时间轴">＋</button>
-          <output>{pxPerSecond} px/s</output>
-        </label>
+    <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined}>
+      <div className={styles.tlLabels}>
+        <div className={styles.tlLab} style={{ height: 20 }} />
+        <div className={styles.tlLab} style={{ height: 64 }}>视频</div>
+        <div className={styles.tlLab} style={{ height: 28 }}>字幕</div>
+        <div className={styles.tlLab} style={{ height: 60 }}>音频</div>
       </div>
-      <div ref={scrollRef} className={styles.timelineScroll} data-testid="mixcut-timeline-scroll">
-        <div className={styles.timelineCanvas} style={{ width: contentWidth + LABEL_WIDTH }}>
-          <div className={styles.timelineLabels}>
-            <div className={styles.timelineRulerLabel}>轨道</div>
-            {['视频', '字幕', '口播', 'BGM'].map((label) => <div className={styles.timelineLabel} key={label}>{label}</div>)}
+      <div ref={scrollRef} className={styles.tlScroll} data-testid="mixcut-timeline-scroll">
+        <div className={styles.tlInner} style={{ width: contentWidth }} onPointerDown={(event) => seekFromPointer(event.clientX)}>
+          <div className={styles.tlRuler}>
+            {ticks.map((tick) => Number.isInteger(tick)
+              ? <div key={tick} className={styles.tlTick} style={{ left: tick * pxPerSecond }}><span>{tick}s</span></div>
+              : <div key={tick} className={`${styles.tlTick} ${styles.tlTickMinor}`} style={{ left: tick * pxPerSecond }} />)}
           </div>
-          <div className={styles.timelineContent} style={{ width: contentWidth }} onPointerDown={(event) => seekFromPointer(event.clientX)}>
-            <div className={styles.timelineRuler}>
-              {ticks.map((tick) => <span key={tick} style={{ left: tick * pxPerSecond }}>{tick}s</span>)}
-            </div>
-            <div className={styles.timelineTrack} data-track="video">
-              <div className={styles.introBlock} style={{ left: 0, width: introPx }}>封面</div>
-              {[...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame).map((clip) => (
-                <VideoBlock
-                  key={`${clip.id}-${clip.sourceInFrame}-${clip.sourceOutFrame}-${clip.timelineInFrame}-${clip.timelineOutFrame}`}
-                  clip={clip}
-                  clips={variant.timeline.clips}
-                  sourceFrames={Math.floor((assetById.get(clip.videoJobId)?.durationUs || 0) / 1_000_000 * FPS)}
-                  thumbnailUrl={assetById.get(clip.videoJobId)?.thumbnailUrl}
-                  bodyFrames={variant.timeline.bodyFrames}
-                  pxPerSecond={pxPerSecond}
-                  selected={clip.id === selectedClipId}
-                  disabled={disabled}
-                  onSelect={onSelectClip}
-                  onCommand={onVariantCommand}
-                />
-              ))}
-            </div>
-            <div className={styles.timelineTrack} data-track="subtitle">
-              {cues.map((cue, index) => (
-                <SubtitleBlock
-                  key={`${cue.id}-${cue.startUs}-${cue.endUs}`}
-                  cue={cue}
-                  previousCue={index > 0 ? cues[index - 1] : null}
-                  nextCue={index < cues.length - 1 ? cues[index + 1] : null}
-                  bodyUs={bodySec * 1_000_000}
-                  pxPerSecond={pxPerSecond}
-                  selected={cue.id === selectedCueId}
-                  disabled={disabled}
-                  onSelect={onSelectCue}
-                  onCommand={onGroupCommand}
-                />
-              ))}
-            </div>
-            <div className={styles.timelineTrack} data-track="narration">
-              <div className={`${styles.audioTrackBlock} ${styles.narrationTrackBlock}`} style={{ left: introPx, width: bodySec * pxPerSecond }}><span className={styles.waveform} aria-label="口播波形" /><b>锁定口播 · {bodySec.toFixed(2)}s</b></div>
-            </div>
-            <div className={styles.timelineTrack} data-track="bgm">
-              <div className={`${styles.audioTrackBlock} ${styles.bgmTrackBlock}`} style={{ left: introPx, width: bodySec * pxPerSecond }}><span className={styles.waveform} aria-label="BGM 波形" /><b>{variant.bgm.trackId ? `${variant.bgm.gainDb} dB · 淡入 ${variant.bgm.fadeInSec}s · 淡出 ${variant.bgm.fadeOutSec}s` : '无 BGM'}</b></div>
-            </div>
-            <button
-              type="button"
-              aria-label="拖动播放头"
-              className={styles.timelinePlayhead}
-              style={{ left: Math.max(0, Math.min(totalSec, playheadSec)) * pxPerSecond }}
-              onPointerDown={beginPlayheadDrag}
-            ><span /></button>
+          <div className={`${styles.tlTrack} ${styles.tlTrackVideo}`} data-track="video">
+            {orderedClips.map((clip, index) => (
+              <VideoBlock
+                key={`${clip.id}-${clip.sourceInFrame}-${clip.sourceOutFrame}-${clip.timelineInFrame}-${clip.timelineOutFrame}`}
+                clip={clip}
+                index={index}
+                clips={variant.timeline.clips}
+                sourceFrames={Math.floor((assetById.get(clip.videoJobId)?.durationUs || 0) / 1_000_000 * FPS)}
+                thumbnailUrl={assetById.get(clip.videoJobId)?.thumbnailUrl}
+                bodyFrames={variant.timeline.bodyFrames}
+                pxPerSecond={pxPerSecond}
+                selected={clip.id === selectedClipId}
+                disabled={disabled}
+                onSelect={onSelectClip}
+                onCommand={onVariantCommand}
+                onTrimClip={onTrimClip}
+              />
+            ))}
           </div>
+          <div className={`${styles.tlTrack} ${styles.tlTrackSub}`} data-track="subtitle">
+            {cues.map((cue, index) => (
+              <SubtitleBlock
+                key={`${cue.id}-${cue.startUs}-${cue.endUs}`}
+                cue={cue}
+                previousCue={index > 0 ? cues[index - 1] : null}
+                nextCue={index < cues.length - 1 ? cues[index + 1] : null}
+                bodyUs={bodySec * 1_000_000}
+                pxPerSecond={pxPerSecond}
+                selected={cue.id === selectedCueId}
+                anySelected={Boolean(selectedCueId)}
+                disabled={disabled}
+                onSelect={onSelectCue}
+                onCommand={onGroupCommand}
+                onEditText={onEditCueText}
+              />
+            ))}
+          </div>
+          <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="narration">
+            <Waveform tone="tts" seed={3} playedRatio={playheadSec / totalSec} />
+            <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {bodySec.toFixed(1)}s</span>
+          </div>
+          <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
+            <Waveform tone="bgm" seed={7} playedRatio={playheadSec / totalSec} />
+            <span className={styles.wfLabel} style={{ left: introPx + 8 }}>{variant.bgm.trackId ? `${variant.bgm.gainDb} dB · 淡入 ${variant.bgm.fadeInSec}s · 淡出 ${variant.bgm.fadeOutSec}s` : '无 BGM'}</span>
+          </div>
+          <button
+            type="button"
+            aria-label="拖动播放头"
+            className={styles.tlPlayhead}
+            style={{ left: Math.max(0, Math.min(totalSec, playheadSec)) * pxPerSecond }}
+            onPointerDown={beginPlayheadDrag}
+          />
         </div>
       </div>
     </section>
   );
 }
 
-function VideoBlock({ clip, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, onSelect, onCommand }: {
+function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, onSelect, onCommand, onTrimClip }: {
   clip: TimelineClip;
+  index: number;
   clips: TimelineClip[];
   sourceFrames: number;
   thumbnailUrl?: string;
@@ -182,12 +204,14 @@ function VideoBlock({ clip, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPer
   disabled: boolean;
   onSelect: (clipId: string) => void;
   onCommand: (command: VariantCommandInput) => Promise<boolean>;
+  onTrimClip: (clip: TimelineClip) => void;
 }) {
   const initial: ClipDraft = { sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame };
   const [draft, setDraft] = useState(initial);
   const [reorderIds, setReorderIds] = useState<string[] | null>(null);
   const left = (INTRO_FRAMES + draft.timelineInFrame) / FPS * pxPerSecond;
   const width = (draft.timelineOutFrame - draft.timelineInFrame) / FPS * pxPerSecond;
+  const durationSec = (draft.timelineOutFrame - draft.timelineInFrame) / FPS;
 
   const begin = (mode: ClipDragMode, event: React.PointerEvent<HTMLElement>) => {
     if (disabled) return;
@@ -207,7 +231,7 @@ function VideoBlock({ clip, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPer
       if (mode === 'move') {
         const pointerFrame = initial.timelineInFrame + (initial.timelineOutFrame - initial.timelineInFrame) / 2 + deltaFrames;
         const planned = planClipReorder({ clips, clipId: clip.id, pointerFrame });
-        latestOrder = planned.some((id, index) => id !== orderedIds[index]) ? planned : null;
+        latestOrder = planned.some((id, idx) => id !== orderedIds[idx]) ? planned : null;
         setReorderIds(latestOrder);
       }
       latest = constrainClipDrag({ clip: { ...clip, ...initial }, clips, bodyFrames, sourceFrames, mode, deltaFrames });
@@ -234,30 +258,37 @@ function VideoBlock({ clip, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPer
     <article
       data-clip-id={clip.id}
       data-reorder-active={reorderIds ? 'true' : undefined}
-      className={`${styles.timelineBlock} ${styles.videoTimelineBlock} ${selected ? styles.selectedTimelineBlock : ''}`}
-      style={{ left, width, backgroundImage: thumbnailUrl ? `url(${JSON.stringify(thumbnailUrl).slice(1, -1)})` : undefined }}
+      className={`${styles.clip} ${selected ? styles.clipSel : ''}`}
+      style={{ left, width, background: 'linear-gradient(135deg,#3a3d46,#22242b)' }}
       onPointerDown={(event) => begin('move', event)}
+      onDoubleClick={() => !disabled && onTrimClip(clip)}
+      title="单击选中 · 拖拽排序 · 双击截取时段"
     >
-      <i className={styles.timelineHandle} aria-label="裁剪片段开头" onPointerDown={(event) => begin('start', event)} />
-      <b>{clip.videoJobId.replace('external-asset-', '外部 ').slice(0, 18)}</b>
-      <i className={styles.timelineHandle} aria-label="裁剪片段结尾" onPointerDown={(event) => begin('end', event)} />
+      {thumbnailUrl && <img src={thumbnailUrl} alt="" draggable={false} />}
+      <span className={styles.clipNo}>#{index + 1}</span>
+      <span className={styles.clipCd}>{durationSec.toFixed(1)}s</span>
+      <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪片段开头" onPointerDown={(event) => begin('start', event)} />
+      <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪片段结尾" onPointerDown={(event) => begin('end', event)} />
     </article>
   );
 }
 
-function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, pxPerSecond, selected, disabled, onSelect, onCommand }: {
+function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, pxPerSecond, selected, anySelected, disabled, onSelect, onCommand, onEditText }: {
   cue: SubtitleCue;
   previousCue: SubtitleCue | null;
   nextCue: SubtitleCue | null;
   bodyUs: number;
   pxPerSecond: number;
   selected: boolean;
+  anySelected: boolean;
   disabled: boolean;
   onSelect: (cueId: string) => void;
   onCommand: (command: GroupCommandInput) => Promise<boolean>;
+  onEditText: (cueId: string, text: string) => void;
 }) {
   const initial = { startUs: cue.startUs, endUs: cue.endUs };
   const [draft, setDraft] = useState(initial);
+  const [editing, setEditing] = useState(false);
   const begin = (mode: 'move' | 'start' | 'end', event: React.PointerEvent<HTMLElement>) => {
     if (disabled) return;
     event.preventDefault();
@@ -298,13 +329,33 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, pxPerSecond, selecte
   return (
     <article
       data-cue-id={cue.id}
-      className={`${styles.timelineBlock} ${styles.subtitleTimelineBlock} ${selected ? styles.selectedTimelineBlock : ''}`}
+      className={`${styles.subclip} ${selected ? styles.subclipSel : anySelected ? styles.subclipDim : ''}`}
       style={{ left: (INTRO_FRAMES / FPS + draft.startUs / 1_000_000) * pxPerSecond, width: (draft.endUs - draft.startUs) / 1_000_000 * pxPerSecond }}
       onPointerDown={(event) => begin('move', event)}
+      onDoubleClick={() => { if (!disabled) { onSelect(cue.id); setEditing(true); } }}
+      title="双击编辑文案"
     >
-      <i className={styles.timelineHandle} aria-label="裁剪字幕开头" onPointerDown={(event) => begin('start', event)} />
-      <b>{cue.text}</b>
-      <i className={styles.timelineHandle} aria-label="裁剪字幕结尾" onPointerDown={(event) => begin('end', event)} />
+      {editing ? (
+        <input
+          type="text"
+          defaultValue={cue.text}
+          autoFocus
+          style={{ width: '100%', padding: '1px 4px', fontSize: 11 }}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onBlur={(event) => { onEditText(cue.id, event.target.value); setEditing(false); }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+            if (event.key === 'Escape') setEditing(false);
+          }}
+        />
+      ) : (
+        <>
+          <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪字幕开头" onPointerDown={(event) => begin('start', event)} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{cue.text}</span>
+          <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪字幕结尾" onPointerDown={(event) => begin('end', event)} />
+        </>
+      )}
     </article>
   );
 }

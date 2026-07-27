@@ -128,7 +128,7 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 1050 }, deviceScaleFactor: 1 });
   page.setDefaultTimeout(20_000);
   await page.goto(`${server.baseUrl}/projects/${fixture.projectId}?tab=final-edit`, { waitUntil: 'networkidle' });
-  await page.getByRole('heading', { name: '选择这次混剪要用的素材' }).waitFor();
+  await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
 
   const shotSetPicker = page.getByLabel('选择分镜组');
   assert.equal(await shotSetPicker.inputValue(), fixture.shotSetB, '最近分镜组必须成为真实初始上下文');
@@ -143,7 +143,7 @@ try {
   assert.equal(await page.getByText('真实组B-专属.mp4', { exact: true }).count(), 0, '切换到组 A 后不得残留组 B 视频');
 
   await page.getByRole('button', { name: /预览调整/ }).click();
-  await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
+  await page.locator('[data-track="video"]').waitFor();
   await page.getByRole('button', { name: '下一步：导出' }).click();
   await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
   await page.getByText('REAL-E2E', { exact: true }).waitFor();

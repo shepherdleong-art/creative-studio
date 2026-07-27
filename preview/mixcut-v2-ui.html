@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能混剪 V2 · 视觉稿 v3（Apple 风）</title>
+<style>
+/* ============ Apple 风设计 token ============ */
+:root{
+  --bg:#f5f5f7;
+  --paper:#ffffff;
+  --line:rgba(0,0,0,.08);
+  --line-soft:rgba(0,0,0,.05);
+  --ink:#1d1d1f; --sub:#6e6e73; --faint:#86868b;
+  --blue:#0071e3; --blue-hover:#0077ed; --blue-wash:rgba(0,113,227,.08);
+  --green:#34c759; --green-ink:#248a3d; --orange:#ff9f0a; --red:#ff3b30;
+  --seg:#e8e8ed;
+  --sh-sm:0 1px 2px rgba(0,0,0,.05);
+  --sh-md:0 2px 8px rgba(0,0,0,.04),0 10px 28px rgba(0,0,0,.06);
+  --sh-lg:0 24px 70px rgba(0,0,0,.09);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font:400 14px/1.6 var(--font);color:var(--ink);background:var(--bg);overflow:hidden;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+::selection{background:rgba(0,113,227,.85);color:#fff}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:rgba(0,0,0,.16);border-radius:99px}
+::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.28)}
+::-webkit-scrollbar-track{background:transparent}
+:focus-visible{outline:3px solid rgba(0,113,227,.3);outline-offset:1px;border-radius:6px}
+
+/* 图标（SF 风描边 SVG，由 JS 注入） */
+.ic{display:inline-grid;place-items:center;flex-shrink:0}
+.ic svg{width:15px;height:15px;display:block}
+.ic.lg svg{width:18px;height:18px}
+.ic.xl svg{width:22px;height:22px}
+
+/* ============ 外层 chrome（示意工作台上下文，非本次改造范围） ============ */
+.g-header{height:48px;flex-shrink:0;background:rgba(255,255,255,.8);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-bottom:.5px solid var(--line);display:flex;align-items:center;gap:20px;padding:0 24px}
+.g-brand{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.g-nav{display:flex;gap:16px;font-size:13px;color:var(--sub)}
+.g-nav b{color:var(--ink);font-weight:500}
+.g-header .sp{flex:1}
+.g-project{flex-shrink:0;padding:14px 24px 8px;display:flex;align-items:center;gap:12px}
+.g-back{font-size:13px;color:var(--sub)}
+.g-proj-name{font-size:17px;font-weight:600;letter-spacing:-.01em}
+.g-badge{font-size:11px;padding:3px 9px;border-radius:99px;background:var(--blue-wash);color:var(--blue);font-weight:500}
+.g-proj-meta{font-size:12px;color:var(--sub)}
+.g-tabs{flex-shrink:0;margin:6px 24px 12px;display:grid;grid-template-columns:repeat(5,1fr);background:rgba(0,0,0,.04);border-radius:12px;padding:4px;gap:4px}
+.g-tab{display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:9px;font-size:13px;color:var(--sub)}
+.g-tab .no{width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.06);display:grid;place-items:center;font-size:11px;font-weight:600;color:var(--sub);flex-shrink:0}
+.g-tab small{font-size:11px;color:var(--faint);display:block;line-height:1.2}
+.g-tab.on{background:#fff;box-shadow:var(--sh-sm);color:var(--ink);font-weight:500}
+.g-tab.on .no{background:var(--blue);color:#fff}
+
+/* ============ 混剪 shell：固定骨架，整页不滚动 ============ */
+.workbench{flex:1;min-height:0;padding:0 24px 16px;display:flex}
+.shell{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);border:.5px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:var(--sh-lg)}
+.shell-top{height:56px;flex-shrink:0;background:rgba(255,255,255,.85);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-bottom:.5px solid var(--line);display:flex;align-items:center;gap:12px;padding:0 16px}
+.cs-logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(180deg,#2b8ef7,#0071e3);color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700;box-shadow:var(--sh-sm)}
+.shell-title{font-size:15px;font-weight:600;letter-spacing:-.01em;line-height:1.2}
+.shell-title small{display:block;font-size:11px;font-weight:400;color:var(--faint)}
+.shell-ctx{margin:0 auto;text-align:center;line-height:1.3}
+.shell-ctx small{display:block;font-size:11px;color:var(--faint)}
+.shell-ctx b{font-size:13px;font-weight:600}
+.shell-right{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+
+/* 表单控件（自定义 mac 风） */
+select,input[type=text],textarea{font:400 13px var(--font);color:var(--ink);border:.5px solid var(--line);border-radius:8px;background:#fff;padding:7px 12px;outline:none;box-shadow:var(--sh-sm);transition:border-color .15s,box-shadow .15s}
+select{appearance:none;-webkit-appearance:none;padding-right:26px;background:#fff url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 10px center}
+textarea{box-shadow:none;line-height:1.7}
+select:focus,textarea:focus,input[type=text]:focus{border-color:var(--blue);box-shadow:0 0 0 3.5px rgba(0,113,227,.15)}
+input[type=range]{-webkit-appearance:none;appearance:none;height:4px;border-radius:99px;background:#d2d2d7;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:.5px solid rgba(0,0,0,.08);box-shadow:0 1px 4px rgba(0,0,0,.18);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#fff;border:.5px solid rgba(0,0,0,.08);box-shadow:0 1px 4px rgba(0,0,0,.18);cursor:pointer}
+
+.shell-body{flex:1;min-height:0;display:grid;grid-template-columns:var(--navw,208px) 280px minmax(0,1fr)}
+.shell-body.colOffA{grid-template-columns:var(--navw,208px) 36px minmax(0,1fr)}
+.shell-body.preview{grid-template-columns:var(--navw,208px) var(--repw,244px) 6px minmax(0,1fr) 6px var(--rgtw,320px)}
+.shell-body.navOff{--navw:64px}
+.shell-body.preview .side-col{display:none}
+.shell-body:not(.preview) .right-col{display:none}
+.shell-body:not(.preview) .replace-col{display:none}
+
+/* ---- 左步骤条 ---- */
+.step-nav{border-right:.5px solid var(--line);padding:14px 12px;display:flex;flex-direction:column;gap:6px;overflow-y:auto}
+.eyebrow{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--faint);padding:0 10px 4px}
+.snav{position:relative;display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;text-align:left;width:100%;transition:background .15s}
+.snav:hover{background:rgba(0,0,0,.04)}
+.snav .bar{position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:99px;background:var(--blue);opacity:0;transition:opacity .15s}
+.snav.on{background:#fff;box-shadow:var(--sh-sm)}
+.snav.on .bar{opacity:1}
+.snav .ico{width:32px;height:32px;flex-shrink:0;border-radius:50%;background:#fff;border:.5px solid var(--line);display:grid;place-items:center;color:var(--sub);transition:all .15s}
+.snav.on .ico{background:var(--blue);border-color:var(--blue);color:#fff}
+.snav.done .ico{color:var(--green-ink)}
+.snav .tx{min-width:0}
+.snav .lb{font-size:13px;font-weight:400;color:var(--ink);white-space:nowrap;display:block}
+.snav.on .lb{font-weight:600;color:var(--blue)}
+.snav .hint{font-size:11px;color:var(--faint);white-space:nowrap}
+.snav:disabled{opacity:.45;cursor:not-allowed}
+.snav:disabled:hover{background:none}
+.step-nav .foot{margin-top:auto;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--faint);padding:8px 10px 0}
+.step-nav .foot .ic svg{width:12px;height:12px}
+.nav-row{display:flex;align-items:center;padding-right:2px}
+.nav-toggle{width:20px;height:20px;border-radius:6px;color:var(--faint);display:grid;place-items:center;font-size:13px;flex-shrink:0}
+.nav-toggle:hover{background:rgba(0,0,0,.06);color:var(--ink)}
+.navOff .step-nav{padding:14px 8px;align-items:center}
+.navOff .snav{justify-content:center;padding:9px 6px}
+.navOff .snav .tx,.navOff .eyebrow,.navOff .step-nav .foot span{display:none}
+.navOff .snav .bar{display:none}
+
+/* ---- 侧栏列（Panel 化，可折叠） ---- */
+.side-col{position:relative;padding:10px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;min-height:0}
+.colOffA .side-col .panel,.colOffA .side-col .collapse-btn{display:none}
+.right-col{position:relative;padding:12px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;min-height:0}
+.collapse-btn{position:absolute;top:16px;right:16px;z-index:2;width:22px;height:22px;border-radius:7px;border:.5px solid var(--line);background:#fff;color:var(--sub);font-size:12px;display:grid;place-items:center;box-shadow:var(--sh-sm)}
+.collapse-btn:hover{color:var(--ink)}
+.expand-btn{display:none;width:22px;height:22px;margin:10px auto 0;border-radius:7px;border:.5px solid var(--line);background:#fff;color:var(--sub);font-size:12px;place-items:center;box-shadow:var(--sh-sm)}
+.colOffA .side-col .expand-btn,.repOff .replace-col .expand-btn,.rgtOff .right-col .expand-btn{display:grid}
+.colOffA .side-col,.repOff .replace-col,.rgtOff .right-col{padding:0;overflow:hidden}
+
+.panel{background:var(--paper);border-radius:14px;box-shadow:var(--sh-sm);padding:14px;display:flex;flex-direction:column;min-height:0;flex-shrink:0}
+.panel>h3{font-size:13px;font-weight:600;letter-spacing:-.01em;margin-bottom:10px;display:flex;align-items:center;gap:7px}
+.panel>h3 .ic{color:var(--sub)}
+.panel .hint-line{font-size:11px;color:var(--faint);margin-top:8px;line-height:1.5}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--bg);border-radius:12px;padding:10px 12px}
+.stat b{font-size:19px;font-weight:600;letter-spacing:-.02em;line-height:1;display:block}
+.stat span{font-size:11px;color:var(--sub);display:block;margin-top:4px}
+.stat.accent b{color:var(--blue)}
+.notice{display:flex;gap:8px;align-items:flex-start;background:var(--bg);border-radius:12px;padding:8px 10px;font-size:11px;color:var(--sub);line-height:1.5}
+.notice .ic{margin-top:1px}
+.session{background:var(--bg);border-radius:12px;padding:8px 10px;margin-bottom:6px;cursor:pointer;transition:background .15s}
+.session:hover{background:#ececf0}
+.session .t{font-size:13px;font-weight:500}
+.session .m{font-size:11px;color:var(--faint);margin-top:2px}
+.side-col .grow{flex:1;min-height:0}
+.side-col .grow .list{overflow-y:auto;min-height:0;flex:1}
+
+/* ---- 主区：卡片流浮在灰底上 ---- */
+.main-col{padding:12px 12px 12px 0;min-height:0;display:flex;min-width:0}
+.shell-body.preview .main-col{padding-left:0}
+.step{display:none;height:100%;min-height:0;min-width:0;flex:1;flex-direction:column}
+.step.on{display:flex}
+.step-scroll{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;padding:2px 2px 12px}
+.step-head{flex-shrink:0;padding:14px 6px 12px;display:flex;justify-content:space-between;align-items:flex-end;gap:14px}
+.step-head .eyebrow{padding:0;color:var(--blue);font-weight:600}
+.step-title{font-size:17px;font-weight:600;letter-spacing:-.01em;margin-top:2px}
+.step-sub{font-size:12px;color:var(--sub);margin-top:4px}
+.step-actions{display:flex;gap:8px;flex-shrink:0;align-items:center}
+.step-foot{flex-shrink:0;padding:10px 6px 2px;display:flex;justify-content:space-between;align-items:center;gap:14px}
+.step-foot .msg{font-size:12px;color:var(--sub)}
+.gap16{gap:16px}.gap24{gap:24px}
+
+/* 按钮：Apple 胶囊 */
+.btn{height:34px;padding:0 16px;border-radius:99px;font-size:13px;font-weight:500;letter-spacing:-.01em;background:var(--seg);color:var(--ink);display:inline-flex;align-items:center;gap:6px;transition:background .15s,transform .05s}
+.btn:hover{background:#e0e0e6}
+.btn:active{transform:scale(.98)}
+.btn.primary{background:var(--blue);color:#fff}
+.btn.primary:hover{background:var(--blue-hover)}
+.btn.small{height:28px;padding:0 12px;font-size:12px}
+.btn.big{height:48px;padding:0 30px;font-size:15px;border-radius:99px;box-shadow:0 6px 18px rgba(0,113,227,.25)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.link-btn{color:var(--blue);font-size:12px;font-weight:500;padding:0}
+
+/* 卡片 */
+.card{background:var(--paper);border-radius:16px;box-shadow:var(--sh-sm);padding:24px;flex-shrink:0}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}
+.card-title{font-size:14px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+.card-title .ic{color:var(--sub)}
+.card-sub{font-size:12px;color:var(--sub);margin-top:3px}
+.chip{font-size:11px;font-weight:500;padding:4px 10px;border-radius:99px;display:inline-flex;align-items:center;gap:5px;background:var(--seg);color:var(--ink)}
+.chip .ic svg{width:11px;height:11px}
+.chip.blue{background:var(--blue-wash);color:var(--blue)}
+.chip.green{background:rgba(52,199,89,.14);color:var(--green-ink)}
+.chip.grey{background:var(--seg);color:var(--sub)}
+
+/* macOS 分段控件 */
+.seg{display:inline-flex;background:var(--seg);border-radius:9px;padding:2px;gap:2px}
+.seg button{border-radius:7px;padding:4px 12px;font-size:12px;font-weight:500;color:var(--sub);transition:all .15s;white-space:nowrap}
+.seg button.on{background:#fff;color:var(--ink);box-shadow:var(--sh-sm)}
+.seg-tag{height:26px;padding:0 12px;border-radius:99px;border:.5px solid var(--line);background:#fff;font-size:12px;font-weight:500;color:var(--sub);display:inline-flex;align-items:center;gap:5px}
+.seg-tag.on{background:var(--blue-wash);border-color:rgba(0,113,227,.3);color:var(--blue)}
+.seg-label{font-size:12px;color:var(--sub)}
+
+/* ============ 第 1 步：素材池 ============ */
+.linked{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--green-ink)}
+.linked::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green)}
+.dropzone{border:1.5px dashed rgba(0,0,0,.14);border-radius:14px;background:rgba(0,0,0,.02);padding:26px;text-align:center;cursor:pointer;transition:all .15s;flex-shrink:0}
+.dropzone:hover{border-color:var(--blue);background:var(--blue-wash)}
+.dropzone .t1{font-size:14px;font-weight:500}
+.dropzone .t2{font-size:12px;color:var(--faint);margin-top:4px}
+.pool-toolbar{display:flex;justify-content:space-between;align-items:center;font-size:13px;flex-shrink:0;padding:0 2px}
+.pool-toolbar b{font-weight:600}
+.pool{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:12px}
+.mat{background:#fff;border-radius:12px;box-shadow:var(--sh-sm);overflow:hidden;cursor:pointer;transition:all .18s;position:relative}
+.mat:hover{box-shadow:var(--sh-md);transform:translateY(-1px)}
+.mat .thumb{aspect-ratio:16/9;position:relative;background:linear-gradient(135deg,#3a3d46,#22242b)}
+.g1{background:linear-gradient(135deg,#4a6fa5,#2c3e50)}
+.g2{background:linear-gradient(135deg,#5b8c5a,#2f4b3a)}
+.g3{background:linear-gradient(135deg,#8a6d9c,#3f3355)}
+.g4{background:linear-gradient(135deg,#b0764a,#5c3a2a)}
+.g5{background:linear-gradient(135deg,#3d7a8a,#21444e)}
+.g6{background:linear-gradient(135deg,#96555f,#4a2a33)}
+.g7{background:linear-gradient(135deg,#6a7a3a,#39431f)}
+.g8{background:linear-gradient(135deg,#4a5a8a,#262f4a)}
+.mat .thumb .play{position:absolute;inset:0;display:grid;place-items:center;color:rgba(255,255,255,.9);z-index:1}
+.mat .thumb .play svg{width:20px;height:20px}
+.mat .thumb img,.clip img,.rep-thumb img,.cover-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.clip img{z-index:0}
+.clip .no,.clip .cd{z-index:1}
+.rep-thumb,.cover-thumb{position:relative;overflow:hidden}
+.rep-thumb .ic,.cover-thumb .ic{position:relative;z-index:1}
+.mat .dur{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);color:#fff;font-size:10px;font-weight:500;padding:2px 7px;border-radius:99px;font-family:var(--mono)}
+.mat .badge{position:absolute;top:6px;right:6px;width:24px;height:24px;border-radius:50%;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:grid;place-items:center;color:var(--ink);box-shadow:var(--sh-sm);transition:all .15s}
+.mat .badge svg{width:11px;height:11px}
+.mat .badge:hover{background:#fff;transform:scale(1.08)}
+.mat .tag{position:absolute;top:6px;left:6px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);color:#fff;display:none}
+.mat .m-body{padding:9px 11px 10px}
+.mat .m-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mat .m-meta{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;font-family:var(--mono)}
+.mat .m-src{font-size:11px;color:var(--green-ink);margin-top:1px}
+.mat.excluded{box-shadow:none;border:1.5px dashed rgba(0,0,0,.16)}
+.mat.excluded .thumb{filter:grayscale(1);opacity:.45}
+.mat.excluded .m-body{opacity:.5}
+.mat.excluded .tag{display:block}
+.mat.excluded .badge{color:var(--blue)}
+.mat.excluded .m-src{color:var(--faint)}
+
+/* ============ 第 2 步：单列卡片流 ============ */
+.field{margin-bottom:14px}
+.field:last-child{margin-bottom:0}
+.field label{display:block;font-size:12px;font-weight:500;color:var(--sub);margin-bottom:6px}
+.field select,.field input[type=text]{width:100%}
+.field textarea{width:100%;min-height:128px;resize:vertical;background:#fff}
+.meta-row{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--sub);margin-top:10px;flex-wrap:wrap}
+.flow-hint{font-size:12px;color:var(--faint)}
+.rate-row{display:flex;align-items:center;gap:12px;margin:4px 0 16px}
+.rate-row .lab{font-size:12px;font-weight:500;color:var(--sub);min-width:28px}
+.rate-row input[type=range]{flex:1;max-width:300px}
+.rate-row .hint{font-size:11px;color:var(--faint)}
+.voice-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:10px}
+.voice{background:#fff;border:.5px solid var(--line);border-radius:12px;padding:14px 6px 12px;cursor:pointer;text-align:center;transition:all .15s;box-shadow:var(--sh-sm)}
+.voice:hover{box-shadow:var(--sh-md);transform:translateY(-1px)}
+.voice.on{border:1.5px solid var(--blue);background:var(--blue-wash);padding:13px 5px 11px}
+.voice .vi{color:var(--sub)}
+.voice.on .vi{color:var(--blue)}
+.voice .n{font-size:13px;font-weight:500;margin-top:6px}
+.voice.on .n{color:var(--blue);font-weight:600}
+.voice .i{font-size:11px;color:var(--faint)}
+.voice .try{font-size:11px;color:var(--blue);margin-top:5px;font-weight:500;display:inline-flex;align-items:center;gap:3px}
+.voice .try .ic svg{width:9px;height:9px}
+.more-row{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.more-row select{min-width:120px}
+.more-row input[type=text]{flex:1;min-width:180px}
+.cta-zone{display:flex;flex-direction:column;align-items:center;gap:14px;padding:6px 0}
+.prog-bar{height:6px;border-radius:99px;background:var(--seg);overflow:hidden}
+.prog-bar i{display:block;height:100%;border-radius:99px;background:var(--blue);transition:width .4s}
+.pipe{display:flex;align-items:center;gap:12px;padding:9px 0}
+.pipe .ic{width:22px;height:22px;flex-shrink:0;border-radius:50%;display:grid;place-items:center}
+.pipe .ic svg{width:12px;height:12px}
+.pipe.done .ic{color:var(--green)}
+.pipe.doing .ic{background:var(--blue);color:#fff}
+.pipe.doing .ic svg{width:9px;height:9px}
+.pipe.wait .ic{background:var(--seg);color:var(--faint);font-size:11px;font-weight:600}
+.pipe.fail .ic{color:var(--red)}
+.pipe .nm{font-size:13px;font-weight:500;flex:1}
+.pipe.doing .nm{color:var(--blue);font-weight:600}
+.pipe.wait .nm{color:var(--faint)}
+.pipe .st{font-size:12px;color:var(--sub)}
+.pipe.doing .st{color:var(--blue)}
+.pipe.done .st{color:var(--green-ink)}
+
+/* ============ 第 3 步：工具行 + 大纸（预览+时间轴） ============ */
+.t3-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:36px;padding:0 2px;flex-shrink:0}
+.t3-toolbar .ttl{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.t3-toolbar .sp{flex:1}
+.bigpaper{background:var(--paper);border-radius:16px;box-shadow:var(--sh-md);padding:14px;flex:1 0 auto;min-height:0;display:flex;flex-direction:column}
+.ctrl-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-shrink:0;flex-wrap:wrap}
+.ctrl-row .sep{width:1px;height:18px;background:var(--line);margin:0 2px}
+.ctrl-row .icb{width:30px;height:30px;border-radius:8px;border:.5px solid var(--line);background:#fff;display:grid;place-items:center;color:var(--ink);box-shadow:var(--sh-sm)}
+.ctrl-row .icb svg{width:12px;height:12px}
+.ctrl-row .icb.play{color:#fff;background:var(--blue);border-color:var(--blue)}
+.ctrl-row .tc{font-size:12px;color:var(--sub);font-family:var(--mono)}
+.ctrl-row .sp{flex:1}
+.ctrl-row .kbd{font-size:11px;color:var(--faint)}
+.ctrl-row .seg-label{font-size:12px;color:var(--sub)}
+.preview-wrap{flex:0 0 auto;display:flex;justify-content:center;margin-bottom:12px}
+.preview320{height:clamp(360px,58vh,560px);max-width:min(450px,100%);aspect-ratio:3/4;position:relative;background:#000;border-radius:14px;overflow:hidden;flex-shrink:0;container-type:inline-size;box-shadow:var(--sh-md)}
+.preview320 .frame{position:absolute;inset:0;background:linear-gradient(160deg,#54423a,#1d1712)}
+.preview320 .safe{position:absolute;inset:5%;border:1.5px dashed rgba(255,255,255,.35);border-radius:8px;z-index:3}
+.preview320 .big-play{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:52px;height:52px;border-radius:50%;background:rgba(255,255,255,.18);backdrop-filter:blur(6px);display:grid;place-items:center;color:#fff;cursor:pointer;z-index:2;transition:transform .15s}
+.preview320 .big-play:hover{transform:translate(-50%,-50%) scale(1.06)}
+.preview320 .big-play svg{width:20px;height:20px}
+.preview320 .subtitle{position:absolute;left:50%;bottom:12%;transform:translateX(-50%);color:#fff;font-size:clamp(9px,5.2cqw,20px);font-weight:600;text-shadow:0 0 4px #000,0 1px 6px rgba(0,0,0,.8);white-space:nowrap;z-index:2}
+.preview320 .tcode{position:absolute;bottom:6px;right:8px;font-size:10px;color:#fff;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);padding:2px 8px;border-radius:99px;font-family:var(--mono);z-index:2}
+
+/* 时间轴 */
+.tl{border:.5px solid var(--line);border-radius:12px;background:var(--bg);display:flex;overflow:hidden;flex-shrink:0}
+.tl-labels{width:48px;flex-shrink:0;border-right:.5px solid var(--line);background:#fafafc;display:flex;flex-direction:column}
+.tl-labels .lab{font-size:11px;color:var(--faint);display:flex;align-items:center;justify-content:center;border-bottom:.5px solid var(--line-soft)}
+.tl-scroll{flex:1;min-width:0;overflow-x:auto;position:relative}
+.tl-inner{position:relative;width:1452px}
+.tl-ruler{height:20px;border-bottom:.5px solid var(--line);position:relative;background:#fafafc}
+.tl-ruler .tick{position:absolute;top:0;bottom:0;border-left:.5px solid rgba(0,0,0,.12)}
+.tl-ruler .tick span{position:absolute;top:3px;left:4px;font-size:9px;color:var(--faint);font-family:var(--mono)}
+.tl-ruler .tick.minor{top:auto;height:6px;border-left-color:rgba(0,0,0,.07)}
+.tl-track{position:relative;border-bottom:.5px solid var(--line-soft)}
+.tl-track.t-video{height:64px}
+.tl-track.t-sub{height:28px}
+.tl-track.t-audio{height:30px}
+.clip{position:absolute;top:5px;bottom:5px;border-radius:8px;overflow:hidden;cursor:pointer;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.12);transition:filter .15s}
+.clip:hover{filter:brightness(1.05)}
+.clip.sel{box-shadow:inset 0 0 0 2px var(--blue)}
+.clip .no{position:absolute;top:4px;left:4px;font-size:10px;font-weight:600;color:#fff;background:rgba(0,0,0,.45);backdrop-filter:blur(4px);padding:1px 6px;border-radius:99px}
+.clip .cd{position:absolute;bottom:4px;right:4px;font-size:10px;color:#fff;background:rgba(0,0,0,.45);backdrop-filter:blur(4px);padding:1px 6px;border-radius:99px;font-family:var(--mono)}
+.subclip{position:absolute;top:3px;height:22px;border-radius:6px;border:.5px solid var(--line);background:#fff;font-size:11px;color:var(--ink);display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:hidden;cursor:pointer;box-shadow:var(--sh-sm)}
+.subclip.dim{opacity:.5}
+.subclip.sel{border-color:var(--blue);background:var(--blue-wash);color:var(--blue);font-weight:500}
+.wf{position:absolute;top:0;bottom:0;left:0;right:0;display:flex;align-items:center;gap:2px;padding:0 2px;overflow:hidden}
+.wf span{flex-shrink:0;width:2.5px;border-radius:2px;background:currentColor;opacity:.22}
+.wf span.played{opacity:.95}
+.wf.tts{color:var(--blue)}
+.wf.bgm{color:#7d7d85}
+.tl-playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--orange);z-index:5}
+.tl-playhead::before{content:"";position:absolute;top:0;left:-3px;width:8px;height:8px;background:var(--orange);border-radius:0 0 3px 3px}
+
+/* 第 3 步左栏：素材替换（可折叠/可调宽） */
+.replace-col{position:relative;padding:12px 0 12px 12px;overflow:hidden;display:flex;min-height:0}
+.repOff .replace-col .panel,.repOff .replace-col .collapse-btn,.rgtOff .right-col .rcard,.rgtOff .right-col .collapse-btn{display:none}
+.rz{display:none;cursor:col-resize;transition:background .15s;border-radius:3px;margin:12px 0}
+.shell-body.preview .rz{display:block}
+.rz:hover,.rz.drag{background:rgba(0,113,227,.25)}
+.replace-col .panel{flex:1}
+.replace-col .list{overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:2px;margin-top:8px}
+.rep{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:10px;cursor:pointer;flex-shrink:0;transition:background .15s}
+.rep:hover{background:rgba(0,0,0,.04)}
+.rep.active{background:var(--blue-wash)}
+.rep-thumb{width:38px;height:54px;border-radius:8px;flex-shrink:0;display:grid;place-items:center;color:rgba(255,255,255,.9)}
+.rep-thumb svg{width:12px;height:12px}
+.rep-info{min-width:0;flex:1}
+.rep-info .n{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rep-info .m{font-size:10px;color:var(--faint);font-family:var(--mono);margin-top:2px}
+
+/* Trim 截取条（双击片段出现） */
+.trim{flex-shrink:0;margin-bottom:10px}
+.trim-head{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--sub)}
+.trim-head .t{font-size:13px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:7px}
+.trim-head .sp{flex:1}
+.trim-strip{position:relative;height:72px;display:flex;overflow-x:auto;border-radius:10px;background:#111;box-shadow:var(--sh-sm)}
+.trim-strip .fr{flex:0 0 45px;height:100%;background-size:cover;background-position:center;border-right:1px solid rgba(0,0,0,.25)}
+.trim-dim{position:absolute;top:0;bottom:0;background:rgba(8,8,12,.62);z-index:2;pointer-events:none}
+.trim-sel{position:absolute;top:0;bottom:0;border:2px solid var(--blue);border-radius:8px;z-index:3;cursor:ew-resize}
+.trim-sel .handle{position:absolute;top:50%;transform:translateY(-50%);width:12px;height:26px;background:var(--blue);color:#fff;font-size:10px;display:grid;place-items:center;border-radius:4px}
+.trim-sel .handle.l{left:-7px}
+.trim-sel .handle.r{right:-7px}
+
+/* 第 3 步右栏三卡 */
+.rcard{background:var(--paper);border-radius:14px;box-shadow:var(--sh-sm);padding:18px;flex-shrink:0}
+.rcard h4{font-size:13px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:7px;margin-bottom:14px}
+.rcard h4 .ic{color:var(--sub)}
+.rcard .ctl-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.rcard .ctl-row:last-child{margin-bottom:0}
+.rcard .ctl-row .lab{font-size:12px;color:var(--sub);min-width:52px}
+.rcard select{font-size:12px;padding:6px 26px 6px 10px}
+.rcard input[type=range]{flex:1;min-width:60px}
+.rcard .val{font-size:11px;color:var(--sub);font-family:var(--mono);min-width:24px;text-align:right}
+.color-well{width:28px;height:24px;padding:0;border:.5px solid var(--line);border-radius:6px;background:none;cursor:pointer;box-shadow:var(--sh-sm)}
+.sub-preview{background:#1d1d1f;border-radius:10px;text-align:center;padding:16px 8px;color:#fff;font-size:15px;font-weight:600;text-shadow:0 0 4px #000}
+.sub-preview small{display:block;font-size:11px;font-weight:400;color:rgba(255,255,255,.55);margin-top:4px}
+.cover-entry{display:flex;gap:12px;align-items:center;cursor:pointer;border-radius:10px;transition:transform .15s}
+.cover-entry:hover{transform:translateY(-1px)}
+.cover-thumb{width:54px;height:72px;border-radius:10px;background:linear-gradient(160deg,#54423a,#1d1712);flex-shrink:0;display:grid;place-items:center;color:rgba(255,255,255,.65);box-shadow:var(--sh-sm)}
+.cover-entry .t{font-size:13px;font-weight:600}
+.cover-entry .s{font-size:11px;color:var(--faint);margin-top:2px}
+.cover-entry .go{margin-left:auto;color:var(--faint)}
+
+/* ============ 第 4 步：导出 ============ */
+.ready-banner{display:flex;align-items:center;gap:14px;border-radius:16px;padding:16px 20px;background:rgba(52,199,89,.09);border:.5px solid rgba(52,199,89,.3);flex-shrink:0}
+.ready-banner .ok{width:32px;height:32px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;flex-shrink:0;box-shadow:0 2px 8px rgba(52,199,89,.35)}
+.ready-banner .ok svg{width:14px;height:14px}
+.ready-banner .t{font-size:14px;font-weight:600}
+.ready-banner .s{font-size:12px;color:var(--sub);margin-top:2px}
+.ready-banner .sp{flex:1}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.kv{display:flex;font-size:13px;padding:7px 0;border-bottom:.5px solid var(--line-soft)}
+.kv:last-child{border-bottom:none}
+.kv .k{width:92px;flex-shrink:0;font-size:12px;color:var(--sub);padding-top:1px}
+.kv .v{font-weight:500;word-break:break-all}
+.check-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px;margin-top:10px}
+.check-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px}
+.check-item .ck{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;flex-shrink:0}
+.check-item .ck svg{width:10px;height:10px}
+.check-item.pass .ck{color:var(--green)}
+.check-item.miss{color:var(--faint)}
+.check-item.miss .ck{background:var(--seg);color:transparent}
+.dl-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+
+@media (max-width:1100px){
+  .shell-body{grid-template-columns:var(--navw,190px) 244px minmax(0,1fr)}
+  .shell-body.preview{grid-template-columns:var(--navw,190px) var(--repw,200px) 6px minmax(0,1fr) 6px var(--rgtw,280px)}
+  .voice-grid{grid-template-columns:repeat(3,1fr)}
+  .g-tab small{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- ======== 外层 chrome（示意工作台上下文，非本次改造范围） ======== -->
+<header class="g-header">
+  <div class="g-brand">产品素材工作台</div>
+  <nav class="g-nav"><b>项目</b><span>供应商</span></nav>
+  <div class="sp"></div>
+  <button class="btn small primary">新建项目</button>
+</header>
+<div class="g-project">
+  <span class="g-back">‹ 返回</span>
+  <span class="g-proj-name">便携榨汁杯 · 夏季投放</span>
+  <span class="g-badge">进行中</span>
+  <span class="g-proj-meta">供应商 Gemini · 模型 gemini-2.5-pro · 26 个任务</span>
+</div>
+<div class="g-tabs">
+  <div class="g-tab"><span class="no">1</span><span>新场景图生成<small>上传场景图 A，生成候选场景</small></span></div>
+  <div class="g-tab"><span class="no">2</span><span>分镜生成<small>整理原始分镜并批量生成</small></span></div>
+  <div class="g-tab"><span class="no">3</span><span>脚本生成<small>卖点、人群和口播脚本</small></span></div>
+  <div class="g-tab"><span class="no">4</span><span>视频生成<small>选择分镜组创建视频任务</small></span></div>
+  <div class="g-tab on"><span class="no">5</span><span>智能混剪<small>智能匹配、预览调整和成片导出</small></span></div>
+</div>
+
+<!-- ======== 混剪 shell ======== -->
+<div class="workbench">
+<div class="shell">
+
+  <div class="shell-top">
+    <div class="cs-logo">CS</div>
+    <div class="shell-title">智能混剪<small>Creative Studio · V2</small></div>
+    <div class="shell-ctx"><small>榨汁杯 Pro</small><b>便携榨汁杯 · 夏季投放</b></div>
+    <div class="shell-right">
+      <span class="seg-label">画幅</span>
+      <span class="seg"><button class="on">3:4</button><button>9:16</button></span>
+      <span class="seg-label">分辨率</span>
+      <span class="seg"><button class="on">1080p</button><button>2K</button></span>
+    </div>
+  </div>
+
+  <div class="shell-body" id="shellBody">
+
+    <!-- 左步骤条 -->
+    <nav class="step-nav" id="stepNav">
+      <div class="nav-row"><div class="eyebrow" style="flex:1">创作步骤</div><button class="nav-toggle" id="navToggle" title="收起步骤条">‹</button></div>
+      <button class="snav on" data-step="1" data-icon="folder">
+        <span class="bar"></span><span class="ico"><i class="ic" data-ic="folder"></i></span>
+        <span class="tx"><span class="lb">导入素材</span><span class="hint" style="display:block">选择当前分镜组</span></span>
+      </button>
+      <button class="snav" data-step="2" data-icon="sparkle">
+        <span class="bar"></span><span class="ico"><i class="ic" data-ic="sparkle"></i></span>
+        <span class="tx"><span class="lb">AI 智能创作</span><span class="hint" style="display:block">脚本·音色·真实进度</span></span>
+      </button>
+      <button class="snav" data-step="3" data-icon="playCircle">
+        <span class="bar"></span><span class="ico"><i class="ic" data-ic="playCircle"></i></span>
+        <span class="tx"><span class="lb">预览调整</span><span class="hint" style="display:block">完整时间轴·自动保存</span></span>
+      </button>
+      <button class="snav" data-step="4" data-icon="download">
+        <span class="bar"></span><span class="ico"><i class="ic" data-ic="download"></i></span>
+        <span class="tx"><span class="lb">导出渲染</span><span class="hint" style="display:block">写回项目成片目录</span></span>
+      </button>
+      <div class="foot"><i class="ic" data-ic="lock"></i><span>本地保存</span></div>
+    </nav>
+
+    <!-- 侧栏（第 1/2/4 步） -->
+    <aside class="side-col" id="sideCol">
+      <button class="collapse-btn" id="collapseA" title="隐藏辅栏">‹</button>
+      <button class="expand-btn" id="expandA" title="展开辅栏">›</button>
+      <section class="panel">
+        <h3><i class="ic" data-ic="film"></i>当前素材组</h3>
+        <select style="width:100%"><option selected>分镜组 A · 8 条视频</option><option>分镜组 B · 5 条视频</option></select>
+        <div class="hint-line">12 个分镜 · 8 条完成视频</div>
+      </section>
+
+      <section class="panel">
+        <h3>本组概览</h3>
+        <div class="stat-grid">
+          <div class="stat"><b>8</b><span>可用视频</span></div>
+          <div class="stat accent"><b id="statIncluded">6</b><span>将参与混剪</span></div>
+          <div class="stat"><b>1:32</b><span>视频时长</span></div>
+          <div class="stat"><b style="font-size:15px">独立</b><span>素材范围</span></div>
+        </div>
+        <div class="notice" style="margin-top:10px"><i class="ic" data-ic="lock"></i>只会使用当前组的视频，其他分镜组不会混入本次匹配。</div>
+      </section>
+
+      <section class="panel">
+        <h3>当前步骤</h3>
+        <div style="font-size:14px;font-weight:600" id="sideStepLabel">导入素材</div>
+        <div class="hint-line" style="margin-top:2px" id="sideStepDetail">分镜组 A · 已选 6 条素材</div>
+      </section>
+
+      <section class="panel grow">
+        <h3>最近会话</h3>
+        <div class="list">
+          <div class="session"><div class="t">便携榨汁杯 · 7-24 晚</div><div class="m">分镜组 A · 就绪 · 2 条草稿</div></div>
+          <div class="session"><div class="t">未命名会话</div><div class="m">分镜组 A · 编辑中</div></div>
+          <div class="session"><div class="t">户外场景测试</div><div class="m">分镜组 B · 失败</div></div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- 第 3 步左栏：素材替换（可折叠/可调宽） -->
+    <aside class="replace-col" id="repCol">
+      <button class="collapse-btn" id="collapseRep" title="隐藏素材替换">‹</button>
+      <button class="expand-btn" id="expandRep" title="展开素材替换">›</button>
+      <section class="panel grow">
+        <h3><i class="ic" data-ic="refresh"></i>素材替换</h3>
+        <div class="hint-line" style="color:#B25E00">先在时间线选中片段，再点下面素材直接替换；仅显示本次参与混剪的素材。</div>
+        <div class="list">
+          <div class="rep" data-img="https://picsum.photos/seed/c1/300/64" data-bg="linear-gradient(135deg,#4a6fa5,#2c3e50)"><div class="rep-thumb g1"><img src="https://picsum.photos/seed/c1/76/108" alt="" onerror="this.remove()"><i class="ic" data-ic="play"></i></div><div class="rep-info"><div class="n">分镜 01 · 开箱全景</div><div class="m">0:04.2 · 1080×1920</div></div><span class="chip green">已用</span></div>
+          <div class="rep" data-img="https://picsum.photos/seed/c2/300/64" data-bg="linear-gradient(135deg,#5b8c5a,#2f4b3a)"><div class="rep-thumb g2"><img src="https://picsum.photos/seed/c2/76/108" alt="" onerror="this.remove()"><i class="ic" data-ic="play"></i></div><div class="rep-info"><div class="n">分镜 02 · 特写刀头</div><div class="m">0:03.8 · 1080×1920</div></div><span class="chip green">已用</span></div>
+          <div class="rep" data-img="https://picsum.photos/seed/c3/300/64" data-bg="linear-gradient(135deg,#b0764a,#5c3a2a)"><div class="rep-thumb g4"><img src="https://picsum.photos/seed/c3/76/108" alt="" onerror="this.remove()"><i class="ic" data-ic="play"></i></div><div class="rep-info"><div class="n">分镜 04 · 倒入水果</div><div class="m">0:04.6 · 1080×1920</div></div><span class="chip green">已用</span></div>
+          <div class="rep" data-img="https://picsum.photos/seed/c4/300/64" data-bg="linear-gradient(135deg,#3d7a8a,#21444e)"><div class="rep-thumb g5"><img src="https://picsum.photos/seed/c4/76/108" alt="" onerror="this.remove()"><i class="ic" data-ic="play"></i></div><div class="rep-info"><div class="n">分镜 05 · 户外野餐</div><div class="m">0:03.5 · 1080×1920</div></div><span class="chip green">已用</span></div>
+          <div class="rep" data-img="https://picsum.photos/seed/c5/300/64" data-bg="linear-gradient(135deg,#96555f,#4a2a33)"><div class="rep-thumb g6"><img src="https://picsum.photos/seed/c5/76/108" alt="" onerror="this.remove()"><i class="ic" data-ic="play"></i></div><div class="rep-info"><div class="n">分镜 06 · 健身房场景</div><div class="m">0:04.9 · 1080×1920</div></div><span class="chip green">已用</span></div>
+          <div class="rep" data-img="https://picsum.photos/seed/c6/300/64" data-bg="linear-gradient(135deg,#4a5a8a,#262f4a)"><div class="rep-thumb g8"><img src="https://picsum.photos/seed/c6/76/108" alt="" onerror="this.remove()"><i class="ic" data-ic="play"></i></div><div class="rep-info"><div class="n">外部 · 品牌片头</div><div class="m">0:03.2 · 1920×1080</div></div><span class="chip green">已用</span></div>
+        </div>
+      </section>
+    </aside>
+
+    <div class="rz" data-side="rep" title="拖拽调整宽度"></div>
+
+    <!-- 主区 -->
+    <main class="main-col">
+
+      <!-- ============ STEP 1 导入素材 ============ -->
+      <section class="step on" id="step1">
+        <header class="step-head">
+          <div>
+            <div class="eyebrow">STEP 01</div>
+            <div class="step-title">确认本次混剪要用的素材</div>
+            <div class="step-sub" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+              当前分镜组的完成视频默认全部参与混剪，点掉不想要的即可。
+              <span class="linked">已与模块 4 联动，仅显示「分镜组 A」的真实成功视频</span>
+            </div>
+          </div>
+          <div class="step-actions">
+            <button class="btn"><i class="ic" data-ic="refresh"></i>同步模块 4</button>
+            <button class="btn primary"><i class="ic" data-ic="plus"></i>选择视频</button>
+          </div>
+        </header>
+
+        <div class="step-scroll gap16">
+          <div class="dropzone">
+            <div class="t1">拖拽视频到这里，或点击导入外部视频</div>
+            <div class="t2">支持 MP4 / MOV / AVI / WebM，可一次多选</div>
+          </div>
+
+          <div class="pool-toolbar">
+            <span><b>8</b> 个可用视频 · <b id="tbIncluded">6</b> 个将参与混剪</span>
+            <button class="link-btn" id="restoreAll">恢复全部（已排除 <span id="tbExcluded">2</span> 个）</button>
+          </div>
+
+          <div class="pool" id="pool">
+            <div class="mat"><div class="thumb g1"><img src="https://picsum.photos/seed/m1/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:04.2</span></div><button class="badge"><i class="ic" data-ic="x"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">分镜 01 · 开箱全景</div><div class="m-meta">1080 × 1920</div><div class="m-src">模块 4 · 将参与混剪</div></div></div>
+            <div class="mat"><div class="thumb g2"><img src="https://picsum.photos/seed/m2/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:03.8</span></div><button class="badge"><i class="ic" data-ic="x"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">分镜 02 · 特写刀头</div><div class="m-meta">1080 × 1920</div><div class="m-src">模块 4 · 将参与混剪</div></div></div>
+            <div class="mat excluded"><div class="thumb g3"><img src="https://picsum.photos/seed/m3/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:05.1</span></div><button class="badge"><i class="ic" data-ic="plus"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">分镜 03 · 厨房台面</div><div class="m-meta">1080 × 1920</div><div class="m-src">模块 4 · 已排除</div></div></div>
+            <div class="mat"><div class="thumb g4"><img src="https://picsum.photos/seed/m4/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:04.6</span></div><button class="badge"><i class="ic" data-ic="x"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">分镜 04 · 倒入水果</div><div class="m-meta">1080 × 1920</div><div class="m-src">模块 4 · 将参与混剪</div></div></div>
+            <div class="mat"><div class="thumb g5"><img src="https://picsum.photos/seed/m5/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:03.5</span></div><button class="badge"><i class="ic" data-ic="x"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">分镜 05 · 户外野餐</div><div class="m-meta">1080 × 1920</div><div class="m-src">模块 4 · 将参与混剪</div></div></div>
+            <div class="mat"><div class="thumb g6"><img src="https://picsum.photos/seed/m6/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:04.9</span></div><button class="badge"><i class="ic" data-ic="x"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">分镜 06 · 健身房场景</div><div class="m-meta">1080 × 1920</div><div class="m-src">模块 4 · 将参与混剪</div></div></div>
+            <div class="mat excluded"><div class="thumb g7"><img src="https://picsum.photos/seed/m7/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:04.0</span></div><button class="badge"><i class="ic" data-ic="plus"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">分镜 07 · 办公室桌面</div><div class="m-meta">1080 × 1920</div><div class="m-src">模块 4 · 已排除</div></div></div>
+            <div class="mat"><div class="thumb g8"><img src="https://picsum.photos/seed/m8/320/180" alt="" onerror="this.remove()"><span class="play"><i class="ic" data-ic="play"></i></span><span class="dur">0:03.2</span></div><button class="badge"><i class="ic" data-ic="x"></i></button><span class="tag">已排除</span><div class="m-body"><div class="m-name">外部 · 品牌片头</div><div class="m-meta">1920 × 1080</div><div class="m-src">外部导入 · 将参与混剪</div></div></div>
+          </div>
+        </div>
+
+        <footer class="step-foot">
+          <span class="msg" id="footMsg1">6 个视频将参与本次混剪，下一步选择脚本和音色。</span>
+          <button class="btn primary" data-go="2">下一步：AI 智能创作</button>
+        </footer>
+      </section>
+
+      <!-- ============ STEP 2 AI 智能创作（单列卡片流） ============ -->
+      <section class="step" id="step2">
+        <div class="step-scroll gap24" style="padding-top:14px">
+
+          <!-- 口播文案卡 -->
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title"><i class="ic" data-ic="mic"></i>口播文案 <span style="font-weight:400;color:var(--sub);font-size:12px">（15 秒约 150-200 字）</span></div>
+              </div>
+              <div class="flow-hint">输入文案 → 选音色 → AI 匹配画面 → 出片</div>
+            </div>
+            <div class="field">
+              <label>脚本版本（模块 3 · 仅显示当前分镜组的有效草稿）<span class="chip green" style="margin-left:8px">已同步</span></label>
+              <select><option selected>夏季主推版 · 24s · Qwen/qwen-vl-max · 07-24 22:31</option><option>功能向 · 22s · Qwen/qwen-vl-max · 07-23 18:02</option></select>
+            </div>
+            <div class="field">
+              <textarea placeholder="输入 15～30 秒口播文案…">早上起床想喝新鲜果汁？这款便携榨汁杯，三十秒搞定一杯。无线设计，充一次电用一周，办公室、健身房、野餐都能带。食品级材质，一键清洗不费力。现在下单，夏天第一杯鲜榨，从它开始。</textarea>
+            </div>
+            <div class="meta-row">
+              <span>86/500 字（约 24 秒口播）</span>
+              <span>来源：Qwen / qwen-vl-max</span>
+              <button class="link-btn">恢复导入版本</button>
+            </div>
+          </div>
+
+          <!-- 音色选择卡 -->
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title"><i class="ic" data-ic="speaker"></i>选择朗读音色</div>
+                <div class="card-sub">当前服务商：阿里云百炼 · qwen3-tts-flash（密钥已配置）</div>
+              </div>
+              <select style="min-width:200px"><option selected>阿里云百炼 · qwen3-tts-flash</option></select>
+            </div>
+            <div class="rate-row">
+              <span class="lab">语速</span>
+              <input type="range" min="0.5" max="2" step="0.1" value="1">
+              <span class="chip grey">1.0x</span>
+              <span class="hint">0.5x 慢速 · 1.0x 正常 · 2.0x 快速</span>
+            </div>
+            <div class="card-sub">精选音色（点击选中，可单独试听）</div>
+            <div class="voice-grid">
+              <div class="voice on"><div class="vi"><i class="ic lg" data-ic="mic"></i></div><div class="n">清亮女声</div><div class="i">女声 · 默认</div><button class="try"><i class="ic" data-ic="play"></i>试听</button></div>
+              <div class="voice"><div class="vi"><i class="ic lg" data-ic="mic"></i></div><div class="n">活力少女</div><div class="i">女声</div><button class="try"><i class="ic" data-ic="play"></i>试听</button></div>
+              <div class="voice"><div class="vi"><i class="ic lg" data-ic="mic"></i></div><div class="n">温柔姐姐</div><div class="i">女声</div><button class="try"><i class="ic" data-ic="play"></i>试听</button></div>
+              <div class="voice"><div class="vi"><i class="ic lg" data-ic="mic"></i></div><div class="n">磁性男声</div><div class="i">男声</div><button class="try"><i class="ic" data-ic="play"></i>试听</button></div>
+              <div class="voice"><div class="vi"><i class="ic lg" data-ic="mic"></i></div><div class="n">阳光少年</div><div class="i">男声</div><button class="try"><i class="ic" data-ic="play"></i>试听</button></div>
+              <div class="voice"><div class="vi"><i class="ic lg" data-ic="mic"></i></div><div class="n">沉稳旁白</div><div class="i">男声</div><button class="try"><i class="ic" data-ic="play"></i>试听</button></div>
+            </div>
+            <div class="more-row">
+              <select><option selected>全部分类</option><option>女声</option><option>男声</option></select>
+              <input type="text" placeholder="搜索更多音色（名称或 ID）">
+              <button class="btn small">试听当前</button>
+              <span class="flow-hint">当前选中：清亮女声 · v-001</span>
+            </div>
+          </div>
+
+          <!-- CTA -->
+          <div class="cta-zone">
+            <button class="btn primary big"><i class="ic" data-ic="sparkle"></i>开始智能创作</button>
+            <span class="chip green"><i class="ic" data-ic="film"></i>可用视频素材：6 个</span>
+            <span class="flow-hint">开始后会创建不可变任务快照，刷新页面不会丢失。</span>
+          </div>
+
+          <!-- 进度卡（任务运行中出现） -->
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">处理进度</div>
+              <div class="flow-hint">逐句口播生成 · 已用时 96s</div>
+            </div>
+            <div class="prog-bar" style="margin-bottom:14px"><i style="width:52%"></i></div>
+            <div class="pipe done"><span class="ic"><i class="ic" data-ic="checkCircle"></i></span><span class="nm">文案拆分与素材分析</span><span class="st">7/7 · 已完成</span></div>
+            <div class="pipe doing"><span class="ic"><i class="ic" data-ic="play"></i></span><span class="nm">逐句口播生成</span><span class="st">5/8 · 进行中</span></div>
+            <div class="pipe wait"><span class="ic">3</span><span class="nm">节拍检测与场景匹配</span><span class="st">等待</span></div>
+            <div class="pipe wait"><span class="ic">4</span><span class="nm">预热可预览草稿</span><span class="st">等待</span></div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ============ STEP 3 预览调整 ============ -->
+      <section class="step" id="step3">
+        <div class="step-scroll gap16" style="padding-top:12px">
+
+          <!-- 顶部工具行 -->
+          <div class="t3-toolbar">
+            <span class="ttl">预览调整</span>
+            <span class="chip grey">6 片段</span>
+            <span class="chip blue">总时长 24.2s</span>
+            <span class="chip green">口播 24.2s ✓</span>
+            <span class="chip grey" title="单击选中 | 拖拽排序 | 双击片段重选时段 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击片段/字幕编辑</span>
+            <span class="sp"></span>
+            <span class="flow-hint">已自动保存</span>
+            <select><option selected>成片 1 · 3:4</option><option>成片 2 · 3:4</option></select>
+            <button class="btn primary" data-go="4">下一步：导出</button>
+          </div>
+
+          <!-- 大纸：预览 + 控制 + 时间轴 -->
+          <div class="bigpaper">
+            <div class="preview-wrap">
+              <div class="preview320">
+                <div class="frame"><img src="https://picsum.photos/seed/mixcut-frame/600/800" alt="" onerror="this.remove()" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"></div>
+                <div class="safe"></div>
+                <span class="big-play"><i class="ic xl" data-ic="play"></i></span>
+                <span class="subtitle">三十秒搞定一杯鲜榨果汁</span>
+                <span class="tcode">12.3s / 24.2s</span>
+              </div>
+            </div>
+
+            <!-- Trim 截取条（双击时间线片段出现） -->
+            <div class="trim" id="trimEditor" style="display:none">
+              <div class="trim-head">
+                <span class="t"><i class="ic" data-ic="scissors"></i>截取片段 <b id="trimName">#3</b></span>
+                <span>拖动蓝色选择框调整入点，框外画面不会进入成片</span>
+                <span class="sp"></span>
+                <button class="btn small" id="trimCancel">取消</button>
+                <button class="btn small primary" id="trimDone">完成</button>
+              </div>
+              <div class="trim-strip" id="trimStrip">
+                <div class="trim-dim left" id="trimDimL" style="left:0;width:90px"></div>
+                <div class="trim-dim right" id="trimDimR" style="left:504px;width:216px"></div>
+                <div class="trim-sel" id="trimSel" style="left:90px;width:414px"><span class="handle l">‹</span><span class="handle r">›</span></div>
+              </div>
+            </div>
+
+            <div class="ctrl-row">
+              <button class="icb play"><i class="ic" data-ic="play"></i></button>
+              <button class="icb"><i class="ic" data-ic="stop"></i></button>
+              <span class="tc">12.3s / 24.2s</span>
+              <span class="sp"></span>
+              <button class="seg-tag on">安全区</button>
+              <span class="kbd">空格 播放 · ←/→ 微调</span>
+            </div>
+
+            <!-- 三轨时间轴 -->
+            <div class="tl">
+              <div class="tl-labels">
+                <div class="lab" style="height:20px"></div>
+                <div class="lab" style="height:64px">视频</div>
+                <div class="lab" style="height:28px">字幕</div>
+                <div class="lab" style="height:60px">音频</div>
+              </div>
+              <div class="tl-scroll">
+                <div class="tl-inner">
+                  <div class="tl-ruler" id="ruler"></div>
+                  <div class="tl-track t-video">
+                    <div class="clip g1" style="left:0;width:252px"><img src="https://picsum.photos/seed/c1/300/64" alt="" onerror="this.remove()"><span class="no">#1</span><span class="cd">4.2s</span></div>
+                    <div class="clip g2" style="left:252px;width:228px"><img src="https://picsum.photos/seed/c2/300/64" alt="" onerror="this.remove()"><span class="no">#2</span><span class="cd">3.8s</span></div>
+                    <div class="clip sel g4" style="left:480px;width:276px"><img src="https://picsum.photos/seed/c3/300/64" alt="" onerror="this.remove()"><span class="no">#3</span><span class="cd">4.6s</span></div>
+                    <div class="clip g5" style="left:756px;width:210px"><img src="https://picsum.photos/seed/c4/300/64" alt="" onerror="this.remove()"><span class="no">#4</span><span class="cd">3.5s</span></div>
+                    <div class="clip g6" style="left:966px;width:294px"><img src="https://picsum.photos/seed/c5/300/64" alt="" onerror="this.remove()"><span class="no">#5</span><span class="cd">4.9s</span></div>
+                    <div class="clip g8" style="left:1260px;width:192px"><img src="https://picsum.photos/seed/c6/300/64" alt="" onerror="this.remove()"><span class="no">#6</span><span class="cd">3.2s</span></div>
+                  </div>
+                  <div class="tl-track t-sub">
+                    <div class="subclip dim" style="left:30px;width:204px">早上起床想喝新鲜果汁？</div>
+                    <div class="subclip dim" style="left:258px;width:210px">三十秒搞定一杯鲜榨</div>
+                    <div class="subclip sel" style="left:492px;width:246px">无线设计，充电用一周</div>
+                    <div class="subclip dim" style="left:768px;width:186px">办公室健身房都能带</div>
+                    <div class="subclip dim" style="left:978px;width:264px">食品级材质一键清洗</div>
+                    <div class="subclip dim" style="left:1272px;width:168px">现在下单，从它开始</div>
+                  </div>
+                  <div class="tl-track t-audio">
+                    <div class="wf tts" data-seed="3"></div>
+                  </div>
+                  <div class="tl-track t-audio" style="border-bottom:none">
+                    <div class="wf bgm" data-seed="7"></div>
+                  </div>
+                  <div class="tl-playhead" style="left:738px"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ============ STEP 4 导出渲染 ============ -->
+      <section class="step" id="step4">
+        <div class="step-scroll gap16" style="padding-top:14px">
+
+          <div class="ready-banner">
+            <span class="ok"><i class="ic" data-ic="check"></i></span>
+            <div>
+              <div class="t">AI 时间线已就绪</div>
+              <div class="s">6 个片段 · 约 24 秒 · 音色：清亮女声</div>
+            </div>
+            <span class="sp"></span>
+            <span class="chip grey">3:4</span><span class="chip grey">字幕</span><span class="chip grey">BGM</span><span class="chip grey">口播</span>
+          </div>
+
+          <div class="two-col">
+            <div class="card">
+              <div class="card-head"><div class="card-title">导出身份</div></div>
+              <div class="kv"><span class="k">任务名</span><span class="v">便携榨汁杯 · 夏季投放</span></div>
+              <div class="kv"><span class="k">产品型号</span><span class="v">榨汁杯 Pro</span></div>
+              <div class="kv"><span class="k">任务日期</span><span class="v">2026-07-25</span></div>
+              <div class="kv"><span class="k">成片文件</span><span class="v">榨汁杯Pro-20260725.mp4</span></div>
+              <div class="kv"><span class="k">封面文件</span><span class="v">榨汁杯Pro-20260725-封面.jpg</span></div>
+              <div class="kv"><span class="k">写入位置</span><span class="v">工作台/便携榨汁杯/成片/</span></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head"><div class="card-title">渲染设置</div></div>
+              <div class="field">
+                <label>成片草稿</label>
+                <select><option selected>成片 1 · 3:4</option><option>成片 2 · 3:4</option></select>
+              </div>
+              <div class="kv"><span class="k">分辨率</span><span class="v">1080 × 1440 · 24 fps</span></div>
+              <div class="kv"><span class="k">预计时长</span><span class="v">24 秒</span></div>
+              <div class="check-grid">
+                <div class="check-item pass"><span class="ck"><i class="ic" data-ic="checkCircle"></i></span>时间轴：6 个片段</div>
+                <div class="check-item pass"><span class="ck"><i class="ic" data-ic="checkCircle"></i></span>字幕：6 条</div>
+                <div class="check-item pass"><span class="ck"><i class="ic" data-ic="checkCircle"></i></span>封面：已就绪</div>
+                <div class="check-item pass"><span class="ck"><i class="ic" data-ic="checkCircle"></i></span>BGM：已选择</div>
+              </div>
+              <div style="margin-top:10px"><span class="chip green">可以导出</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div><div class="card-title">尚未开始</div><div class="card-sub">准备好后开始本地渲染</div></div>
+              <span class="flow-hint">导出在本地串行队列渲染，可离开页面后再回来查看。</span>
+            </div>
+            <div class="cta-zone">
+              <button class="btn primary big">开始导出</button>
+              <div class="dl-row">
+                <button class="btn small"><i class="ic" data-ic="download"></i>下载整组 ZIP</button>
+                <button class="btn small"><i class="ic" data-ic="download"></i>下载项目创意包</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+
+    <div class="rz" data-side="rgt" title="拖拽调整宽度"></div>
+
+    <!-- 第 3 步右栏（字幕样式 / BGM / 封面，可折叠/可调宽） -->
+    <aside class="right-col" id="rightCol">
+      <button class="collapse-btn" id="collapseRgt" title="隐藏面板">›</button>
+      <button class="expand-btn" id="expandRgt" title="展开面板">‹</button>
+
+      <div class="rcard">
+        <h4><i class="ic" data-ic="text"></i>字幕样式</h4>
+        <div class="ctl-row">
+          <select style="flex:1;min-width:110px"><option selected>苹方</option><option>微软雅黑</option><option>思源黑体</option></select>
+          <input type="color" class="color-well" value="#ffffff" title="字幕颜色">
+        </div>
+        <div class="ctl-row"><span class="lab">大小</span><input type="range" min="2" max="12" value="5"><span class="val">5%</span></div>
+        <div class="ctl-row">
+          <span class="lab">描边</span><input type="color" class="color-well" value="#000000" title="描边颜色">
+          <input type="range" min="0" max="6" value="3"><span class="val">3</span>
+        </div>
+        <div class="ctl-row"><span class="lab">间距</span><input type="range" min="-2" max="10" value="0"><span class="val">0</span>
+          <button class="seg-tag on">对齐</button></div>
+        <div class="ctl-row">
+          <span class="lab">位置</span>
+          <span class="seg"><button class="on">底部</button><button>中下</button><button>居中</button><button>顶部</button></span>
+        </div>
+        <div class="sub-preview">预览效果 Preview<small>三十秒搞定一杯鲜榨果汁</small></div>
+      </div>
+
+      <div class="rcard">
+        <h4><i class="ic" data-ic="music"></i>背景音乐</h4>
+        <div class="ctl-row">
+          <select style="flex:1;min-width:100px"><option selected>轻快夏日.mp3</option><option>无 BGM</option></select>
+          <button class="btn small primary"><i class="ic" data-ic="upload"></i>导入</button>
+          <button class="btn small">试听</button>
+        </div>
+        <div class="flow-hint" style="margin-bottom:10px">♪ 轻快夏日 · 0:45 · 铺满全程、结尾淡出、不循环</div>
+        <div class="ctl-row"><span class="lab">音乐音量</span><input type="range" value="40"><span class="val">40</span></div>
+        <div class="ctl-row"><span class="lab">口播音量</span><input type="range" value="100"><span class="val">100</span></div>
+      </div>
+
+      <div class="rcard">
+        <div class="cover-entry">
+          <div class="cover-thumb"><img src="https://picsum.photos/seed/c1/108/144" alt="" onerror="this.remove()"><i class="ic lg" data-ic="photo"></i></div>
+          <div>
+            <div class="t">视频封面设置</div>
+            <div class="s">默认封面 · 3:4 · 片段 #1</div>
+          </div>
+          <span class="go"><i class="ic" data-ic="chevR"></i></span>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+</div>
+
+<script>
+/* ============ SF 风图标库 + 注入 ============ */
+const P=(d,fill)=>`<svg viewBox="0 0 24 24" fill="${fill?'currentColor':'none'}" stroke="${fill?'none':'currentColor'}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICONS={
+  folder:P('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+  sparkle:P('<path d="M12 3.5l1.7 4.6 4.6 1.7-4.6 1.7L12 16.1l-1.7-4.6-4.6-1.7 4.6-1.7z"/><path d="M18.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>'),
+  play:P('<path d="M8 5.4v13.2c0 .8.9 1.3 1.6.9l10.4-6.6c.6-.4.6-1.4 0-1.8L9.6 4.5c-.7-.4-1.6.1-1.6.9z"/>',1),
+  playCircle:P('<circle cx="12" cy="12" r="9"/><path d="M10 8.8v6.4c0 .6.7 1 1.2.7l5-3.2c.5-.3.5-1 0-1.3l-5-3.2c-.5-.3-1.2 0-1.2.6z" fill="currentColor" stroke="none"/>'),
+  stop:P('<rect x="7" y="7" width="10" height="10" rx="2.5"/>',1),
+  download:P('<path d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5M4.5 18.5h15"/>'),
+  upload:P('<path d="M12 14V4m0 0L8.5 7.5M12 4l3.5 3.5M4.5 18.5h15"/>'),
+  check:P('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+  checkCircle:P('<path d="M12 2.2a9.8 9.8 0 1 0 0 19.6 9.8 9.8 0 0 0 0-19.6zm-1.3 13.9-3.8-3.8 1.3-1.3 2.5 2.5 5.4-5.4 1.3 1.3z"/>',1),
+  lock:P('<rect x="6" y="11" width="12" height="9" rx="2"/><path d="M9 11V8a3 3 0 0 1 6 0v3"/>'),
+  chevL:P('<path d="M14.5 6L8.5 12l6 6"/>'),
+  chevR:P('<path d="M9.5 6l6 6-6 6"/>'),
+  x:P('<path d="M6 6l12 12M18 6L6 18"/>'),
+  plus:P('<path d="M12 5v14M5 12h14"/>'),
+  mic:P('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>'),
+  speaker:P('<path d="M4 10v4h3l4 3.5v-11L7 10z" fill="currentColor" stroke="none"/><path d="M15 9.5a4 4 0 0 1 0 5M17.5 7a7.5 7.5 0 0 1 0 10"/>'),
+  music:P('<path d="M9 18V6l10-2v11"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="15" r="2.5"/>'),
+  photo:P('<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9.5" cy="10.5" r="1.5"/><path d="M4 16l4.5-4 3.5 3 3-2.5 5 4.5"/>'),
+  refresh:P('<path d="M20 8A8 8 0 0 0 5.6 6.6M4 16a8 8 0 0 0 14.4 1.4M4 4v4.5h4.5M20 20v-4.5h-4.5"/>'),
+  scissors:P('<circle cx="6.5" cy="7" r="2.2"/><circle cx="6.5" cy="17" r="2.2"/><path d="M8.4 8.6L20 19M8.4 15.4L20 5"/>'),
+  film:P('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7.5 5v14M16.5 5v14M3 9.5h4.5M3 14.5h4.5M16.5 9.5H21M16.5 14.5H21"/>'),
+  text:P('<path d="M4 6h16M4 11h16M4 16h9"/>'),
+};
+function setIcon(el,name){el.innerHTML=ICONS[name]||''}
+document.querySelectorAll('[data-ic]').forEach(el=>setIcon(el,el.dataset.ic));
+
+/* ============ 步骤切换 ============ */
+const shellBody = document.getElementById('shellBody');
+const snavs = [...document.querySelectorAll('.snav')];
+const stepMeta = {
+  1:['导入素材','分镜组 A · 已选 6 条素材'],
+  2:['AI 智能创作','文案 86 字'],
+  3:['预览调整','2 条时间线草稿'],
+  4:['导出渲染','可预检并导出'],
+};
+function go(n){
+  document.querySelectorAll('.step').forEach(s=>s.classList.remove('on'));
+  document.getElementById('step'+n).classList.add('on');
+  shellBody.classList.toggle('preview', n===3);
+  snavs.forEach(b=>{
+    const k=+b.dataset.step;
+    b.classList.toggle('on', k===n);
+    b.classList.toggle('done', k<n);
+    setIcon(b.querySelector('.ico'), k<n ? 'checkCircle' : b.dataset.icon);
+  });
+  document.getElementById('sideStepLabel').textContent = stepMeta[n][0];
+  document.getElementById('sideStepDetail').textContent = stepMeta[n][1];
+}
+snavs.forEach(b=>b.addEventListener('click',()=>go(+b.dataset.step)));
+document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>go(+b.dataset.go)));
+
+/* 步骤条收起为纯图标 */
+document.getElementById('navToggle').onclick=e=>{
+  const off=shellBody.classList.toggle('navOff');
+  e.currentTarget.textContent=off?'›':'‹';
+  e.currentTarget.title=off?'展开步骤条':'收起步骤条';
+};
+
+/* 侧栏折叠（第 1/2/4 步左侧栏） */
+document.getElementById('collapseA').onclick=()=>shellBody.classList.add('colOffA');
+document.getElementById('expandA').onclick=()=>shellBody.classList.remove('colOffA');
+
+/* 第 3 步两侧面板：折叠 + 拖拽调宽 */
+let repOff=false, rgtOff=false;
+const W={rep:244, rgt:320};
+function applyCols(){
+  shellBody.classList.toggle('repOff',repOff);
+  shellBody.classList.toggle('rgtOff',rgtOff);
+  shellBody.style.setProperty('--repw',(repOff?36:W.rep)+'px');
+  shellBody.style.setProperty('--rgtw',(rgtOff?36:W.rgt)+'px');
+}
+document.getElementById('collapseRep').onclick=()=>{repOff=true;applyCols()};
+document.getElementById('expandRep').onclick=()=>{repOff=false;applyCols()};
+document.getElementById('collapseRgt').onclick=()=>{rgtOff=true;applyCols()};
+document.getElementById('expandRgt').onclick=()=>{rgtOff=false;applyCols()};
+document.querySelectorAll('.rz').forEach(rz=>{
+  rz.addEventListener('mousedown',e=>{
+    e.preventDefault();
+    rz.classList.add('drag');
+    const side=rz.dataset.side;
+    const startX=e.clientX, startW=W[side];
+    const [min,max]=side==='rep'?[180,440]:[240,500];
+    const move=ev=>{
+      const dx=ev.clientX-startX;
+      let w=side==='rep'?startW+dx:startW-dx;
+      W[side]=Math.min(max,Math.max(min,w));
+      if(side==='rep')repOff=false;else rgtOff=false;
+      applyCols();
+    };
+    const up=()=>{rz.classList.remove('drag');window.removeEventListener('mousemove',move);window.removeEventListener('mouseup',up)};
+    window.addEventListener('mousemove',move);
+    window.addEventListener('mouseup',up);
+  });
+});
+
+/* 素材排除/恢复 + 计数联动 */
+const TOTAL = 8;
+function refreshCounts(){
+  const excluded = document.querySelectorAll('#pool .mat.excluded').length;
+  const included = TOTAL - excluded;
+  document.getElementById('tbIncluded').textContent = included;
+  document.getElementById('tbExcluded').textContent = excluded;
+  document.getElementById('statIncluded').textContent = included;
+  document.getElementById('footMsg1').textContent = included===0
+    ? '至少保留一个视频才能继续。'
+    : `${included} 个视频将参与本次混剪，下一步选择脚本和音色。`;
+  document.getElementById('restoreAll').style.visibility = excluded? 'visible':'hidden';
+}
+document.querySelectorAll('#pool .mat').forEach(card=>{
+  card.addEventListener('click',()=>{
+    card.classList.toggle('excluded');
+    const ex = card.classList.contains('excluded');
+    setIcon(card.querySelector('.badge'), ex ? 'plus' : 'x');
+    const src = card.querySelector('.m-src');
+    const prefix = src.textContent.startsWith('外部') ? '外部导入' : '模块 4';
+    src.textContent = `${prefix} · ${ex ? '已排除' : '将参与混剪'}`;
+    refreshCounts();
+  });
+});
+document.getElementById('restoreAll').addEventListener('click',()=>{
+  document.querySelectorAll('#pool .mat.excluded').forEach(c=>c.click());
+});
+refreshCounts();
+
+/* 时间标尺：每秒主刻度 + 半秒次刻度（60px/秒） */
+const ruler = document.getElementById('ruler');
+for(let s=0;s<=24;s++){
+  const t=document.createElement('div');
+  t.className='tick'; t.style.left=(s*60)+'px';
+  t.innerHTML=`<span>${s}s</span>`;
+  ruler.appendChild(t);
+  if(s<24){
+    const m=document.createElement('div');
+    m.className='tick minor'; m.style.left=(s*60+30)+'px';
+    ruler.appendChild(m);
+  }
+}
+
+/* 伪波形（确定性） */
+document.querySelectorAll('.wf').forEach(el=>{
+  const seed=+el.dataset.seed;
+  const n=Math.floor(el.offsetWidth/5)||240;
+  const playedN=Math.round(n*(12.3/24.2));
+  for(let i=0;i<n;i++){
+    const x=Math.sin(i*127.1+seed*311.7)*43758.5453;
+    const r=x-Math.floor(x);
+    const b=document.createElement('span');
+    b.style.height=(18+r*74)+'%';
+    if(i<playedN) b.classList.add('played');
+    el.appendChild(b);
+  }
+});
+
+/* 片段/字幕选中 */
+document.querySelectorAll('.clip').forEach(c=>c.addEventListener('click',()=>{
+  document.querySelectorAll('.clip').forEach(x=>x.classList.remove('sel'));
+  c.classList.add('sel');
+}));
+document.querySelectorAll('.subclip').forEach(c=>c.addEventListener('click',()=>{
+  document.querySelectorAll('.subclip').forEach(x=>{x.classList.remove('sel');x.classList.add('dim')});
+  c.classList.remove('dim');c.classList.add('sel');
+}));
+
+/* 素材替换：点击素材行 → 替换时间线上选中的片段（示意） */
+document.querySelectorAll('.rep').forEach(row=>{
+  row.addEventListener('click',()=>{
+    document.querySelectorAll('.rep').forEach(r=>r.classList.remove('active'));
+    row.classList.add('active');
+    const sel=document.querySelector('.clip.sel');
+    if(sel){
+      const img=sel.querySelector('img');
+      if(img) img.src=row.dataset.img; else sel.style.background=row.dataset.bg;
+    }
+  });
+});
+
+/* Trim：双击片段打开截取条 */
+const trim=document.getElementById('trimEditor');
+const trimStrip=document.getElementById('trimStrip');
+const trimSel=document.getElementById('trimSel');
+const trimDimL=document.getElementById('trimDimL');
+const trimDimR=document.getElementById('trimDimR');
+document.querySelectorAll('.clip').forEach(c=>{
+  c.addEventListener('dblclick',()=>{
+    document.getElementById('trimName').textContent = c.querySelector('.no').textContent + ' · 源素材 0:08.0';
+    trimStrip.querySelectorAll('.fr').forEach(f=>f.remove());
+    const cimg=c.querySelector('img');
+    const bg=cimg&&!cimg.matches(':not([src])') ? `url(${cimg.src})` : getComputedStyle(c).backgroundImage;
+    for(let i=0;i<16;i++){
+      const f=document.createElement('div');
+      f.className='fr';
+      f.style.backgroundImage=bg;
+      f.style.backgroundSize='cover';
+      f.style.filter=`brightness(${i%2?0.8:1.05})`;
+      trimStrip.insertBefore(f, trimDimL);
+    }
+    trim.style.display='block';
+  });
+});
+document.getElementById('trimDone').onclick=()=>trim.style.display='none';
+document.getElementById('trimCancel').onclick=()=>trim.style.display='none';
+
+/* Trim 选择框拖动 */
+let trimDrag=null;
+trimSel.addEventListener('mousedown',e=>{trimDrag={x:e.clientX,left:trimSel.offsetLeft};e.preventDefault();});
+window.addEventListener('mousemove',e=>{
+  if(!trimDrag)return;
+  const max=trimStrip.scrollWidth - trimSel.offsetWidth;
+  const l=Math.min(max,Math.max(0,trimDrag.left+e.clientX-trimDrag.x));
+  trimSel.style.left=l+'px';
+  trimDimL.style.width=l+'px';
+  trimDimR.style.left=(l+trimSel.offsetWidth)+'px';
+  trimDimR.style.width=(trimStrip.scrollWidth-l-trimSel.offsetWidth)+'px';
+});
+window.addEventListener('mouseup',()=>trimDrag=null);
+
+/* 分段控件（纯示意：点击切换） */
+document.querySelectorAll('.seg').forEach(seg=>{
+  seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    seg.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+  }));
+});
+</script>
+</body>
+</html>

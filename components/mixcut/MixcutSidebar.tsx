@@ -52,71 +52,69 @@ export function MixcutSidebar({
   const active = shotSets.find((shotSet) => shotSet.id === activeShotSetId) ?? null;
 
   return (
-    <aside className={styles.sidebar} aria-label="当前素材组">
-      <p className={styles.eyebrow}>当前素材组</p>
-      <h2>{active?.name || '暂无分镜组'}</h2>
+    <>
+      <section className={styles.panel}>
+        <h3><Icon name="film" size={15} />当前素材组</h3>
+        <select
+          style={{ width: '100%' }}
+          value={activeShotSetId ?? ''}
+          onChange={(event) => onSelectShotSet(event.target.value)}
+          disabled={disabled || shotSets.length === 0}
+          aria-label="选择分镜组"
+        >
+          {shotSets.length === 0 && <option value="">暂无分镜组</option>}
+          {shotSets.map((shotSet) => (
+            <option key={shotSet.id} value={shotSet.id}>
+              {shotSet.name} · {shotSet.succeededVideoCount} 条视频
+            </option>
+          ))}
+        </select>
+        <div className={styles.hintLine}>{active ? `${active.shotCount} 个分镜 · ${active.succeededVideoCount} 条完成视频` : '请先到模块 2 创建分镜组'}</div>
+      </section>
 
-      <label className={styles.groupPicker}>
-        <span className={styles.groupIcon}><Icon name="film" size={17} /></span>
-        <span>
-          <strong>模块 4 分镜组</strong>
-          <select
-            value={activeShotSetId ?? ''}
-            onChange={(event) => onSelectShotSet(event.target.value)}
-            disabled={disabled || shotSets.length === 0}
-            aria-label="选择分镜组"
-          >
-            {shotSets.length === 0 && <option value="">暂无分镜组</option>}
-            {shotSets.map((shotSet) => (
-              <option key={shotSet.id} value={shotSet.id}>
-                {shotSet.name} · {shotSet.succeededVideoCount} 条视频
-              </option>
-            ))}
-          </select>
-          <small>{active ? `${active.shotCount} 个分镜 · ${active.succeededVideoCount} 条完成视频` : '请先到模块 2 创建分镜组'}</small>
-        </span>
-      </label>
+      <section className={styles.panel}>
+        <h3>本组概览</h3>
+        <div className={styles.statGrid}>
+          <div className={styles.stat}><b>{availableVideoCount}</b><span>可用视频</span></div>
+          <div className={`${styles.stat} ${styles.statAccent}`}><b>{selectedCount}</b><span>将参与混剪</span></div>
+          <div className={styles.stat}><b>{formatDuration(active?.totalDurationUs ?? 0)}</b><span>视频时长</span></div>
+          <div className={styles.stat}><b style={{ fontSize: 15 }}>独立</b><span>素材范围</span></div>
+        </div>
+        <div className={styles.notice} style={{ marginTop: 10 }}>
+          <Icon name="lock" size={13} />
+          <span>只会使用当前组的视频，其他分镜组不会混入本次匹配。</span>
+        </div>
+      </section>
 
-      <div className={styles.statGrid}>
-        <div><strong>{availableVideoCount}</strong><span>可用视频</span></div>
-        <div><strong>{selectedCount}</strong><span>已选素材</span></div>
-        <div><strong>{formatDuration(active?.totalDurationUs ?? 0)}</strong><span>视频时长</span></div>
-        <div><strong>独立</strong><span>素材范围</span></div>
-      </div>
-
-      <div className={styles.scopeNotice}>
-        <Icon name="lock" size={15} />
-        <span>只会使用当前组的视频，其他分镜组不会混入本次匹配。</span>
-      </div>
-
-      <p className={`${styles.eyebrow} ${styles.sidebarSection}`}>当前步骤</p>
-      <div className={styles.stepOverview} data-step-overview={stepOverview.label}>
-        <strong>{stepOverview.label}</strong>
-        <span>{stepOverview.detail}</span>
-      </div>
+      <section className={styles.panel}>
+        <h3>当前步骤</h3>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>{stepOverview.label}</div>
+        <div className={styles.hintLine} style={{ marginTop: 2 }}>{stepOverview.detail}</div>
+      </section>
 
       {sessions.length > 0 && (
-        <>
-          <p className={`${styles.eyebrow} ${styles.sidebarSection}`}>最近会话</p>
-          <div className={styles.sessionList}>
+        <section className={`${styles.panel} ${styles.panelGrow}`}>
+          <h3>最近会话</h3>
+          <div className={styles.panelList}>
             {sessions.map((session) => (
               <button
                 type="button"
+                className={styles.session}
                 key={session.id}
                 disabled={disabled}
                 onClick={() => onSelectSession(session.shotSetId)}
                 aria-label={`切换到会话 ${session.title}`}
               >
-                <strong>{session.title}</strong>
-                <small>
+                <div className={styles.sessionT}>{session.title}</div>
+                <div className={styles.sessionM}>
                   {session.shotSetName} · {SESSION_STATUS_LABELS[session.status] ?? session.status}
                   {session.variantCount > 0 ? ` · ${session.variantCount} 条草稿` : ''}
-                </small>
+                </div>
               </button>
             ))}
           </div>
-        </>
+        </section>
       )}
-    </aside>
+    </>
   );
 }

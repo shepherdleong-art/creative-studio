@@ -177,42 +177,108 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   };
   const progress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
   const statusText = job ? `${PHASE_LABELS[job.phase] || job.phase} · ${Math.round(progress * 100)}%` : '尚未开始';
+  const canExport = !blockingIssue && Boolean(project.productCode.trim());
+  const checks = variant ? [
+    { pass: variant.timeline.clips.length > 0, label: variant.timeline.clips.length ? `时间轴：${variant.timeline.clips.length} 个片段` : '时间轴：缺少片段' },
+    { pass: group.subtitleCues.length > 0, label: group.subtitleCues.length ? `字幕：${group.subtitleCues.length} 条` : '字幕：无字幕' },
+    { pass: Boolean(variant.cover.coverKey), label: `封面：${variant.cover.coverKey ? '已就绪' : '未设置'}` },
+    { pass: Boolean(variant.bgm.trackId), label: `BGM：${variant.bgm.trackId ? '已选择' : '不使用'}` },
+  ] : [];
 
-  return <section className={styles.exportStep} aria-labelledby="mixcut-export-heading">
-    <header className={styles.exportHeader}>
-      <div><p className={styles.eyebrow}>STEP 04</p><h1 id="mixcut-export-heading">导出并写回项目</h1><p>成片和封面会保留渲染副本，并原子写入当前项目的成片目录。</p></div>
-      <button type="button" className={styles.secondaryButton} onClick={onBack}><Icon name="chevron-left" size={14} />返回预览修复</button>
-    </header>
+  return (
+    <>
+      <header className={styles.stepHead}>
+        <div>
+          <p className={`${styles.eyebrow} ${styles.stepTitle}`} style={{ fontSize: 11 }}>STEP 04</p>
+          <h1 className={styles.stepTitle} id="mixcut-export-heading">导出并写回项目</h1>
+          <p className={styles.stepSub}>成片和封面会保留渲染副本，并原子写入当前项目的成片目录。</p>
+        </div>
+        <div className={styles.stepActions}>
+          <button type="button" className={styles.btn} onClick={onBack}><Icon name="chevron-left" size={14} />返回预览修复</button>
+        </div>
+      </header>
 
-    <div className={styles.exportGrid}>
-      <section className={styles.exportCard}>
-        <h2>导出身份</h2>
-        <dl className={styles.exportFacts}><div><dt>任务名</dt><dd>{effectiveTarget.taskName}</dd></div><div><dt>产品型号</dt><dd>{effectiveTarget.productCode || '未填写'}</dd></div><div><dt>任务日期</dt><dd>{effectiveTarget.taskDate}</dd></div><div><dt>成片文件</dt><dd>{job?.output?.videoFilename || effectiveTarget.videoFilename}</dd></div><div><dt>封面文件</dt><dd>{job?.output?.coverFilename || effectiveTarget.coverFilename}</dd></div><div><dt>写入位置</dt><dd>{job?.output?.displayDirectory || effectiveTarget.displayDirectory}</dd></div></dl>
-      </section>
-      <section className={styles.exportCard}>
-        <h2>渲染设置</h2>
-        <label className={styles.fieldLabel}>成片草稿<select aria-label="选择导出草稿" value={variant?.id || ''} disabled={busy || restoringJob || Boolean(job && ['queued', 'running'].includes(job.status))} onChange={(event) => { setSelectedVariantId(event.target.value); setJob(null); setTarget(null); setRestoringJob(true); setMessage(''); }}>{group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}</select></label>
-        <p>分辨率 {variant ? `${OUTPUT_PRESETS[variant.outputPreset].width} × ${OUTPUT_PRESETS[variant.outputPreset].height}` : '—'} · 24 fps</p>
-        <p>预计时长 {(group.totalDurationUs / 1_000_000).toFixed(2)} 秒</p>
-        <ul className={styles.exportChecks}><li>时间轴：{variant?.timeline.clips.length ? `${variant.timeline.clips.length} 个片段` : '缺少片段'}</li><li>字幕：{group.subtitleCues.length ? `${group.subtitleCues.length} 条` : '无字幕'}</li><li>封面：{variant?.cover.coverKey ? '已就绪' : '未设置'}</li><li>BGM：{variant?.bgm.trackId ? '已选择' : '不使用'}</li></ul>
-        {variant?.issues.filter((issue) => issue.severity === 'blocking').map((issue, index) => <p key={`${issue.code}-${index}`} className={styles.exportBlocker}><Icon name="alert" size={14} />{issue.message}</p>)}
-        {!project.productCode.trim() && <p className={styles.exportBlocker}><Icon name="alert" size={14} />请先在项目信息中填写产品型号</p>}
-      </section>
-    </div>
+      <div className={styles.stepScroll}>
+        {variant && (
+          <div className={styles.readyBanner}>
+            <span className={styles.readyOk}><Icon name="check" size={14} /></span>
+            <div>
+              <div className={styles.readyT}>AI 时间线已就绪</div>
+              <div className={styles.readyS}>{variant.timeline.clips.length} 个片段 · 约 {(group.totalDurationUs / 1_000_000).toFixed(0)} 秒 · 音色：{group.script?.narrationConfig?.voice || '默认'}</div>
+            </div>
+            <span className={styles.spacer} />
+            <span className={`${styles.chip} ${styles.chipGrey}`}>{variant.outputPreset.replace('x', ':')}</span>
+            <span className={`${styles.chip} ${styles.chipGrey}`}>字幕</span>
+            <span className={`${styles.chip} ${styles.chipGrey}`}>BGM</span>
+            <span className={`${styles.chip} ${styles.chipGrey}`}>口播</span>
+          </div>
+        )}
 
-    <section className={styles.exportProgressCard}>
-      <div><span>{restoringJob ? '正在恢复导出任务' : statusText}</span><strong>{job?.status === 'succeeded' ? '文件已写回项目' : message || '准备好后开始本地渲染'}</strong></div>
-      <div className={styles.progressTrack} role="progressbar" aria-label="导出进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span style={{ width: `${progress * 100}%` }} /></div>
-      {job?.status === 'failed' && <p className={styles.exportBlocker}>{job.errorMessage || '渲染失败'}</p>}
-      <div className={styles.exportActions}>
-        {!restoringJob && (!job || !['queued', 'running', 'succeeded'].includes(job.status)) ? <button type="button" className={styles.primaryButton} disabled={busy || Boolean(blockingIssue) || !project.productCode.trim()} onClick={() => void startExport()}><Icon name="download" size={15} />开始导出</button> : null}
-        {job?.status === 'failed' && <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => void retry()}><Icon name="retry" size={15} />重试导出</button>}
-        {job?.status === 'succeeded' && job.output && <><a className={styles.primaryButton} href={job.output.videoDownloadUrl}><Icon name="download" size={15} />下载视频</a><a className={styles.secondaryButton} href={job.output.coverDownloadUrl}><Icon name="image" size={15} />下载封面</a>{revealAvailable && <button type="button" className={styles.secondaryButton} onClick={() => void reveal()}><Icon name="folder" size={15} />在文件夹中查看</button>}</>}
-        <a className={styles.secondaryButton} href={`/api/final-edit-groups/${encodeURIComponent(group.id)}/download`}>下载整组 ZIP</a>
-        <a className={styles.secondaryButton} href={`/api/projects/${encodeURIComponent(project.id)}/creative-package`}>下载项目创意包</a>
+        <div className={styles.twoCol}>
+          <section className={styles.card}>
+            <div className={styles.cardHead}><div className={styles.cardTitle}>导出身份</div></div>
+            <div className={styles.kv}><span className={styles.kvK}>任务名</span><span className={styles.kvV}>{effectiveTarget.taskName}</span></div>
+            <div className={styles.kv}><span className={styles.kvK}>产品型号</span><span className={styles.kvV}>{effectiveTarget.productCode || '未填写'}</span></div>
+            <div className={styles.kv}><span className={styles.kvK}>任务日期</span><span className={styles.kvV}>{effectiveTarget.taskDate}</span></div>
+            <div className={styles.kv}><span className={styles.kvK}>成片文件</span><span className={styles.kvV}>{job?.output?.videoFilename || effectiveTarget.videoFilename}</span></div>
+            <div className={styles.kv}><span className={styles.kvK}>封面文件</span><span className={styles.kvV}>{job?.output?.coverFilename || effectiveTarget.coverFilename}</span></div>
+            <div className={styles.kv}><span className={styles.kvK}>写入位置</span><span className={styles.kvV}>{job?.output?.displayDirectory || effectiveTarget.displayDirectory}</span></div>
+          </section>
+
+          <section className={styles.card}>
+            <div className={styles.cardHead}><div className={styles.cardTitle}>渲染设置</div></div>
+            <label className={styles.field}>
+              <span>成片草稿</span>
+              <select aria-label="选择导出草稿" value={variant?.id || ''} disabled={busy || restoringJob || Boolean(job && ['queued', 'running'].includes(job.status))} onChange={(event) => { setSelectedVariantId(event.target.value); setJob(null); setTarget(null); setRestoringJob(true); setMessage(''); }}>
+                {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
+              </select>
+            </label>
+            <div className={styles.kv}><span className={styles.kvK}>分辨率</span><span className={styles.kvV}>{variant ? `${OUTPUT_PRESETS[variant.outputPreset].width} × ${OUTPUT_PRESETS[variant.outputPreset].height} · 24 fps` : '—'}</span></div>
+            <div className={styles.kv}><span className={styles.kvK}>预计时长</span><span className={styles.kvV}>{(group.totalDurationUs / 1_000_000).toFixed(2)} 秒</span></div>
+            <div className={styles.checkGrid}>
+              {checks.map((check) => (
+                <div key={check.label} className={`${styles.checkItem} ${check.pass ? styles.checkPass : styles.checkMiss}`}>
+                  <span className={styles.checkCk}><Icon name="check-circle" size={14} /></span>{check.label}
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 10 }}><span className={`${styles.chip} ${canExport ? styles.chipGreen : styles.chipGrey}`}>{canExport ? '可以导出' : '尚不满足条件'}</span></div>
+            {variant?.issues.filter((issue) => issue.severity === 'blocking').map((issue, index) => <p key={`${issue.code}-${index}`} className={styles.exportBlocker}><Icon name="alert" size={14} />{issue.message}</p>)}
+            {!project.productCode.trim() && <p className={styles.exportBlocker}><Icon name="alert" size={14} />请先在项目信息中填写产品型号</p>}
+          </section>
+        </div>
+
+        <section className={styles.card}>
+          <div className={styles.cardHead}>
+            <div>
+              <div className={styles.cardTitle}>{restoringJob ? '正在恢复导出任务' : statusText}</div>
+              <div className={styles.cardSub}>{job?.status === 'succeeded' ? '文件已写回项目' : message || '准备好后开始本地渲染'}</div>
+            </div>
+            <span className={styles.flowHint}>导出在本地串行队列渲染，可离开页面后再回来查看。</span>
+          </div>
+          <div className={styles.progBar} role="progressbar" aria-label="导出进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} style={{ marginBottom: 14 }}><i style={{ width: `${progress * 100}%` }} /></div>
+          {job?.status === 'failed' && <p className={styles.exportBlocker}>{job.errorMessage || '渲染失败'}</p>}
+          <div className={styles.ctaZone}>
+            {!restoringJob && (!job || !['queued', 'running', 'succeeded'].includes(job.status)) ? (
+              <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} disabled={busy || !canExport} onClick={() => void startExport()}><Icon name="download" size={16} />开始导出</button>
+            ) : null}
+            {job?.status === 'failed' && <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={busy} onClick={() => void retry()}><Icon name="retry" size={15} />重试导出</button>}
+            {job?.status === 'succeeded' && job.output && (
+              <div className={styles.dlRow}>
+                <a className={styles.primaryButton} href={job.output.videoDownloadUrl}><Icon name="download" size={15} />下载视频</a>
+                <a className={styles.secondaryButton} href={job.output.coverDownloadUrl}><Icon name="image" size={15} />下载封面</a>
+                {revealAvailable && <button type="button" className={styles.secondaryButton} onClick={() => void reveal()}><Icon name="folder" size={15} />在文件夹中查看</button>}
+              </div>
+            )}
+            <div className={styles.dlRow}>
+              <a className={styles.secondaryButton} href={`/api/final-edit-groups/${encodeURIComponent(group.id)}/download`}><Icon name="download" size={14} />下载整组 ZIP</a>
+              <a className={styles.secondaryButton} href={`/api/projects/${encodeURIComponent(project.id)}/creative-package`}><Icon name="download" size={14} />下载项目创意包</a>
+            </div>
+          </div>
+        </section>
+
+        {job?.status === 'succeeded' && job.output && <section className={styles.exportResult} aria-label="导出结果"><video controls preload="metadata" src={job.output.videoUrl} /><img src={job.output.coverUrl} alt="导出封面" /></section>}
       </div>
-    </section>
-
-    {job?.status === 'succeeded' && job.output && <section className={styles.exportResult} aria-label="导出结果"><video controls preload="metadata" src={job.output.videoUrl} /><img src={job.output.coverUrl} alt="导出封面" /></section>}
-  </section>;
+    </>
+  );
 }

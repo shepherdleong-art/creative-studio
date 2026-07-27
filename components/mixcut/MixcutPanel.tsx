@@ -34,9 +34,11 @@ async function readJson<T>(response: Response): Promise<T> {
 const STEPS = [
   { label: '导入素材', hint: '选择当前分镜组', icon: 'folder' as const, enabled: true },
   { label: 'AI 智能创作', hint: '脚本·音色·真实进度', icon: 'sparkle' as const, enabled: true },
-  { label: '预览调整', hint: '完整时间轴·自动保存', icon: 'play' as const, enabled: true },
+  { label: '预览调整', hint: '完整时间轴·自动保存', icon: 'play-circle' as const, enabled: true },
   { label: '导出渲染', hint: '写回项目成片目录', icon: 'download' as const, enabled: true },
 ];
+
+type LayoutSide = 'rep' | 'rgt';
 
 interface VisionProviderView { id: string; configured: boolean; supportsVision?: boolean }
 interface MixcutDraftRef { id: string; shotSetId: string; revision: number }
@@ -68,6 +70,52 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const [uploadingShotSetIds, setUploadingShotSetIds] = useState<string[]>([]);
   const [message, setMessage] = useState('');
   const [persistVersion, setPersistVersion] = useState(0);
+  // V2 布局状态：步骤条/左侧栏收起、第 3 步双栏折叠与宽度（规格 §4/§7）
+  const [navOff, setNavOff] = useState(false);
+  const [colOffA, setColOffA] = useState(false);
+  const [repOff, setRepOff] = useState(false);
+  const [rgtOff, setRgtOff] = useState(false);
+  const [repW, setRepW] = useState(244);
+  const [rgtW, setRgtW] = useState(320);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = JSON.parse(localStorage.getItem('mixcut-layout-v2') || 'null') as Record<string, unknown> | null;
+        if (saved) {
+          setNavOff(Boolean(saved.navOff));
+          setColOffA(Boolean(saved.colOffA));
+          setRepOff(Boolean(saved.repOff));
+          setRgtOff(Boolean(saved.rgtOff));
+          if (typeof saved.repW === 'number') setRepW(saved.repW);
+          if (typeof saved.rgtW === 'number') setRgtW(saved.rgtW);
+        }
+      } catch { /* 忽略损坏的布局记忆 */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem('mixcut-layout-v2', JSON.stringify({ navOff, colOffA, repOff, rgtOff, repW, rgtW })); } catch { /* 隐私模式等场景忽略 */ }
+  }, [navOff, colOffA, repOff, rgtOff, repW, rgtW]);
+
+  // 第 3 步双栏拖拽调宽：宽度由 JS 写入 --repw/--rgtw（规格 §8.8，不与 class 折叠机制混用）
+  const beginResize = (side: LayoutSide) => (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startW = side === 'rep' ? repW : rgtW;
+    const [min, max] = side === 'rep' ? [180, 440] : [240, 500];
+    const move = (pointer: PointerEvent) => {
+      const dx = pointer.clientX - startX;
+      const width = Math.min(max, Math.max(min, side === 'rep' ? startW + dx : startW - dx));
+      if (side === 'rep') { setRepW(width); setRepOff(false); } else { setRgtW(width); setRgtOff(false); }
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
+  };
   const requestRef = useRef<{ sequence: number; controller: AbortController } | null>(null);
   const jobPollRef = useRef<symbol | null>(null);
   const startRequestRef = useRef<{ sequence: number; shotSetId: string; controller: AbortController } | null>(null);
@@ -568,28 +616,51 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       <header className={styles.topbar}>
         <div>
           <span className={styles.brandMark}>CS</span>
-          <span><strong>智能混剪</strong><small>Creative Studio · V1</small></span>
+          <span className={styles.brandText}><strong>智能混剪</strong><small>Creative Studio · V2</small></span>
         </div>
         <div className={styles.projectContext}>
           <small>{context?.project.productName || projectName}</small>
-          <strong>{context?.project.name || projectName}</strong>
+          <b>{context?.project.name || projectName}</b>
         </div>
-        <label className={styles.aspectPicker}>全局画幅<select value={outputPreset} disabled={submitting || ['queued', 'running'].includes(activeJobStatus)} onChange={(event) => setOutputPreset(event.target.value as OutputPresetId)}><option value="3x4">3:4</option><option value="9x16">9:16</option></select></label>
+        <div className={styles.topbarRight}>
+          <span className={styles.segLabel}>画幅</span>
+          <span className={styles.seg} role="group" aria-label="全局画幅">
+            {(['3x4', '9x16'] as const).map((preset) => (
+              <button type="button" key={preset} className={outputPreset === preset ? styles.segOn : ''} disabled={submitting || ['queued', 'running'].includes(activeJobStatus)} onClick={() => setOutputPreset(preset)}>{preset.replace('x', ':')}</button>
+            ))}
+          </span>
+        </div>
       </header>
 
-      <div className={`${styles.body} ${activeStep >= 2 ? styles.bodyPreview : ''}`}>
+      <div
+        className={`${styles.body} ${activeStep === 2 && preparedGroup ? styles.bodyPreview : ''} ${colOffA ? styles.colOffA : ''} ${navOff ? styles.navOff : ''} ${repOff ? styles.repOff : ''} ${rgtOff ? styles.rgtOff : ''}`}
+        style={{ '--repw': `${repOff ? 36 : repW}px`, '--rgtw': `${rgtOff ? 36 : rgtW}px` } as React.CSSProperties}
+      >
         <nav className={styles.stepNav} aria-label="智能混剪步骤">
-          <p className={styles.eyebrow}>创作步骤</p>
+          <div className={styles.navRow}>
+            <p className={styles.eyebrow}>创作步骤</p>
+            <button type="button" className={styles.navToggle} title={navOff ? '展开步骤条' : '收起步骤条'} onClick={() => setNavOff((value) => !value)}>{navOff ? '›' : '‹'}</button>
+          </div>
           {STEPS.map((step, index) => (
-            <button type="button" key={step.label} className={index === activeStep ? styles.activeStep : ''} disabled={!step.enabled || (index === 1 && selectedIds.length === 0) || (index >= 2 && !preparedGroup)} onClick={() => index < 4 && setActiveStep(index as 0 | 1 | 2 | 3)}>
-              <span><Icon name={step.icon} size={16} /></span>
-              <span><strong>{step.label}</strong><small>{step.hint}</small></span>
+            <button
+              type="button"
+              key={step.label}
+              className={`${styles.snav} ${index === activeStep ? styles.snavOn : ''} ${index < activeStep ? styles.snavDone : ''}`}
+              disabled={!step.enabled || (index === 1 && selectedIds.length === 0) || (index >= 2 && !preparedGroup)}
+              onClick={() => setActiveStep(index as 0 | 1 | 2 | 3)}
+              aria-label={navOff ? step.label : undefined}
+            >
+              <span className={styles.snavBar} />
+              <span className={styles.snavIco}><Icon name={index < activeStep ? 'check-circle' : step.icon} size={16} /></span>
+              <span className={styles.snavTx}><span className={styles.snavLb}>{step.label}</span><span className={styles.snavHint}>{step.hint}</span></span>
             </button>
           ))}
-          <p className={styles.localOnly}><Icon name="lock" size={14} />本地保存</p>
+          <p className={styles.stepNavFoot}><Icon name="lock" size={12} /><span>本地保存</span></p>
         </nav>
 
-        <div className={styles.sidebarSlot}>
+        <div className={styles.sideCol}>
+          <button type="button" className={styles.collapseBtn} title="隐藏辅栏" onClick={() => setColOffA(true)}>‹</button>
+          <button type="button" className={styles.expandBtn} title="展开辅栏" onClick={() => setColOffA(false)}>›</button>
           <MixcutSidebar
             shotSets={context?.shotSets ?? []}
             activeShotSetId={activeShotSetId}
@@ -603,89 +674,98 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           />
         </div>
 
-        <main className={`${styles.main} ${activeStep >= 2 ? styles.mainPreview : ''}`}>
-          {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}
-          {!context && loading ? (
-            <div className={styles.loadingState}><span /><strong>正在读取真实分镜组和视频…</strong></div>
+        {activeStep === 2 ? (
+          preparedGroup ? (
+            <PreviewStep
+              group={preparedGroup}
+              active
+              onGroupChange={setPreparedGroup}
+              onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }}
+              onRepCollapse={setRepOff}
+              onRgtCollapse={setRgtOff}
+              onResizeStart={beginResize}
+            />
           ) : (
-            <>
-              <div className={activeStep === 0 ? undefined : styles.stepHidden}>
-                <MaterialStep
-                  shotSetName={activeShotSet?.name ?? ''}
-                  materials={materials}
-                  selectedMaterialKeys={selectedIds}
-                  onToggle={toggleMaterial}
-                  onSelectAll={() => {
-                    if (!activeShotSetId) return;
-                    setSelectionByShotSet({ [activeShotSetId]: materials.filter((material) => material.status === 'ready').map((material) => material.key) });
-                    markPersistenceDirty();
-                  }}
-                  onClear={() => {
-                    if (!activeShotSetId) return;
-                    setSelectionByShotSet({ [activeShotSetId]: [] });
-                    markPersistenceDirty();
-                  }}
-                  onRefresh={() => void refreshWorkspace()}
-                  onImportFiles={activeShotSetId ? importFiles : undefined}
-                  onContinue={() => setActiveStep(1)}
-                  importDisabledReason={activeShotSetId ? undefined : '请先选择一个分镜组'}
-                  loading={loading || Boolean(activeShotSetId && uploadingShotSetIds.includes(activeShotSetId))}
-                />
-              </div>
-              <div className={activeStep === 1 ? undefined : styles.stepHidden}>
-                <CreationStep
-                  drafts={activeDrafts}
-                  activeDraftId={scriptEditor.activeDraftId}
-                  editedNarrationText={scriptEditor.editedNarrationText}
-                  importedNarrationText={scriptEditor.importedNarrationText}
-                  dirty={scriptEditor.dirty}
-                  modified={scriptEditor.modified}
-                  pendingDraft={pendingDraft}
-                  onDraftChange={requestDraftChange}
-                  onResolveDraftSwitch={(resolution) => void resolveDraftChange(resolution)}
-                  onTextChange={(text) => {
-                    setScriptEditor((current) => editActiveScript(current, text));
-                    markPersistenceDirty();
-                  }}
-                  onRestoreImported={() => {
-                    const draft = activeDrafts.find((item) => item.id === scriptEditor.activeDraftId);
-                    if (draft) {
-                      setScriptEditor((current) => restoreImportedScript(current, { id: draft.id, narrationText: draft.narrationText }));
+            <main className={styles.mainCol}>
+              {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}
+              <div className={styles.emptyState}><strong>预览草稿尚未准备完成</strong><span>完成四阶段智能创作后，第三步会自动开放。</span></div>
+            </main>
+          )
+        ) : (
+          <main className={styles.mainCol}>
+            {message && <div className={styles.errorBanner}><Icon name="alert" size={15} />{message}</div>}
+            {!context && loading ? (
+              <div className={styles.loadingState}><span /><strong>正在读取真实分镜组和视频…</strong></div>
+            ) : (
+              <>
+                <div className={activeStep === 0 ? styles.stepWrap : styles.stepHidden}>
+                  <MaterialStep
+                    shotSetName={activeShotSet?.name ?? ''}
+                    materials={materials}
+                    selectedMaterialKeys={selectedIds}
+                    onToggle={toggleMaterial}
+                    onSelectAll={() => {
+                      if (!activeShotSetId) return;
+                      setSelectionByShotSet({ [activeShotSetId]: materials.filter((material) => material.status === 'ready').map((material) => material.key) });
                       markPersistenceDirty();
-                    }
-                  }}
-                  providers={ttsProviders}
-                  providerId={ttsProviderId}
-                  voice={voice}
-                  speed={speed}
-                  onProviderChange={changeTtsProvider}
-                  onVoiceChange={(nextVoice) => { setVoice(nextVoice); markPersistenceDirty(); }}
-                  onSpeedChange={(nextSpeed) => { setSpeed(nextSpeed); markPersistenceDirty(); }}
-                  onPreviewVoice={() => void previewVoice()}
-                  previewingVoice={previewingVoice}
-                  selectedMaterialCount={selectedIds.length}
-                  job={activeJob}
-                  elapsedSec={elapsedSec}
-                  onStart={() => void startCreation()}
-                  onBack={() => setActiveStep(0)}
-                  submitting={submitting}
-                  startDisabledReason={startDisabledReason}
-                  onPreview={() => setActiveStep(2)}
-                />
-              </div>
-              <div className={activeStep === 2 ? undefined : styles.stepHidden}>
-                {preparedGroup
-                  ? <PreviewStep group={preparedGroup} active={activeStep === 2} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(1)} onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }} />
-                  : <div className={styles.emptyState}><strong>预览草稿尚未准备完成</strong><span>完成四阶段智能创作后，第三步会自动开放。</span></div>}
-              </div>
-              <div className={activeStep === 3 ? undefined : styles.stepHidden}>
-                {preparedGroup && context
-                  ? <ExportStep key={`${preparedGroup.id}:${exportVariantId}`} project={context.project} group={preparedGroup} initialVariantId={exportVariantId} active={activeStep === 3} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(2)} />
-                  : <div className={styles.emptyState}><strong>还没有可导出的成片草稿</strong><span>完成智能创作并检查预览后再导出。</span></div>}
-              </div>
-            </>
-          )}
-        </main>
+                    }}
+                    onRefresh={() => void refreshWorkspace()}
+                    onImportFiles={activeShotSetId ? importFiles : undefined}
+                    onContinue={() => setActiveStep(1)}
+                    importDisabledReason={activeShotSetId ? undefined : '请先选择一个分镜组'}
+                    loading={loading || Boolean(activeShotSetId && uploadingShotSetIds.includes(activeShotSetId))}
+                  />
+                </div>
+                <div className={activeStep === 1 ? styles.stepWrap : styles.stepHidden}>
+                  <CreationStep
+                    drafts={activeDrafts}
+                    activeDraftId={scriptEditor.activeDraftId}
+                    editedNarrationText={scriptEditor.editedNarrationText}
+                    importedNarrationText={scriptEditor.importedNarrationText}
+                    dirty={scriptEditor.dirty}
+                    modified={scriptEditor.modified}
+                    pendingDraft={pendingDraft}
+                    onDraftChange={requestDraftChange}
+                    onResolveDraftSwitch={(resolution) => void resolveDraftChange(resolution)}
+                    onTextChange={(text) => {
+                      setScriptEditor((current) => editActiveScript(current, text));
+                      markPersistenceDirty();
+                    }}
+                    onRestoreImported={() => {
+                      const draft = activeDrafts.find((item) => item.id === scriptEditor.activeDraftId);
+                      if (draft) {
+                        setScriptEditor((current) => restoreImportedScript(current, { id: draft.id, narrationText: draft.narrationText }));
+                        markPersistenceDirty();
+                      }
+                    }}
+                    providers={ttsProviders}
+                    providerId={ttsProviderId}
+                    voice={voice}
+                    speed={speed}
+                    onProviderChange={changeTtsProvider}
+                    onVoiceChange={(nextVoice) => { setVoice(nextVoice); markPersistenceDirty(); }}
+                    onSpeedChange={(nextSpeed) => { setSpeed(nextSpeed); markPersistenceDirty(); }}
+                    onPreviewVoice={() => void previewVoice()}
+                    previewingVoice={previewingVoice}
+                    selectedMaterialCount={selectedIds.length}
+                    job={activeJob}
+                    elapsedSec={elapsedSec}
+                    onStart={() => void startCreation()}
+                    onBack={() => setActiveStep(0)}
+                    submitting={submitting}
+                    startDisabledReason={startDisabledReason}
+                    onPreview={() => setActiveStep(2)}
+                  />
+                </div>
+                <div className={activeStep === 3 ? styles.stepWrap : styles.stepHidden}>
+                  {preparedGroup && context
+                    ? <ExportStep key={`${preparedGroup.id}:${exportVariantId}`} project={context.project} group={preparedGroup} initialVariantId={exportVariantId} active={activeStep === 3} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(2)} />
+                    : <div className={styles.emptyState}><strong>还没有可导出的成片草稿</strong><span>完成智能创作并检查预览后再导出。</span></div>}
+                </div>
+              </>
+            )}
+          </main>
+        )}
       </div>
       {pendingShotSetId && (
         <div className={styles.switchDialogBackdrop} role="presentation">

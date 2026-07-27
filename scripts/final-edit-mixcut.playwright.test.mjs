@@ -5,9 +5,6 @@ import net from 'node:net';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 
-const mixcutCss = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
-const editorCss = fs.readFileSync('components/final-edit/FinalEditEditor.module.css', 'utf8');
-
 const transparentPixel = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
 function textStyle(fontSizePx, y) {
@@ -84,9 +81,11 @@ function createFormalGroup() {
       renderStatus: null,
       previewUrl: null,
     }],
+    // 素材时长比片段用量长（8s 素材只用了前 5s），给 Trim 截取条留出可拖拽的余量；
+    // clip 的 sourceInFrame/sourceOutFrame 若正好等于素材全长，选择框会撑满整条、拖不动。
     assets: [
-      { assetKey: 'module4:video-a', source: 'module4', videoJobId: 'video-a', shotSetId: 'shot-set-e2e', shotId: 'shot-a', filename: 'a.mp4', previewUrl: '', thumbnailUrl: transparentPixel, durationUs: 5_000_000, fingerprint: 'fingerprint-a', analysisStatus: 'succeeded', summary: '素材 A', autoUseDisabled: false, usageCount: 1 },
-      { assetKey: 'module4:video-b', source: 'module4', videoJobId: 'video-b', shotSetId: 'shot-set-e2e', shotId: 'shot-b', filename: 'b.mp4', previewUrl: '', thumbnailUrl: transparentPixel, durationUs: 5_000_000, fingerprint: 'fingerprint-b', analysisStatus: 'succeeded', summary: '素材 B', autoUseDisabled: false, usageCount: 1 },
+      { assetKey: 'module4:video-a', source: 'module4', videoJobId: 'video-a', shotSetId: 'shot-set-e2e', shotId: 'shot-a', filename: 'a.mp4', previewUrl: '', thumbnailUrl: transparentPixel, durationUs: 8_000_000, fingerprint: 'fingerprint-a', analysisStatus: 'succeeded', summary: '素材 A', autoUseDisabled: false, usageCount: 1 },
+      { assetKey: 'module4:video-b', source: 'module4', videoJobId: 'video-b', shotSetId: 'shot-set-e2e', shotId: 'shot-b', filename: 'b.mp4', previewUrl: '', thumbnailUrl: transparentPixel, durationUs: 8_000_000, fingerprint: 'fingerprint-b', analysisStatus: 'succeeded', summary: '素材 B', autoUseDisabled: false, usageCount: 1 },
     ],
     bgmTracks: [{ id: 'bgm-e2e', relativePath: 'bgm/e2e.mp3', durationUs: 20_000_000 }],
     coverCandidates: [{ coverKey: 'cover-e2e', sourceUrl: transparentPixel, kind: 'storyboard_image' }],
@@ -142,6 +141,36 @@ async function stopNextDevServer(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
 }
 
+// Next.js 只允许同一项目目录下存在一个 `next dev`（见 .next/dev/lock）；本机常年开着手动调试用的
+// dev server，直接 spawn 会报 "Another next dev server is already running." 而不是端口冲突。
+// 复用它跑测试是安全的：mock 测试用 page.route 拦截了全部 /api/**，不会打到真实后端数据。
+function readRunningDevLock() {
+  try {
+    const lock = JSON.parse(fs.readFileSync(path.resolve('.next/dev/lock'), 'utf8'));
+    process.kill(lock.pid, 0);
+    return lock;
+  } catch {
+    return null;
+  }
+}
+
+async function acquireNextDevServer() {
+  const lock = readRunningDevLock();
+  if (lock) {
+    const baseUrl = lock.appUrl || `http://${lock.hostname}:${lock.port}`;
+    try {
+      const response = await fetch(baseUrl, { redirect: 'manual' });
+      if (response.status < 500) return { child: null, baseUrl, output: () => '(复用已在运行的 dev server，未捕获其输出)' };
+    } catch { /* 锁文件失效，走下面的自起流程 */ }
+  }
+  return startNextDevServer();
+}
+
+async function releaseNextDevServer(server) {
+  if (!server.child) return; // 复用的外部 server 不归本测试管理，不主动停止
+  await stopNextDevServer(server.child);
+}
+
 async function expectEventually(check, message, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -158,93 +187,7 @@ async function expectEventually(check, message, timeoutMs = 5_000) {
 
 const browser = await chromium.launch({ headless: true });
 try {
-  for (const fixture of [
-    { width: 1600, presetClass: 'preview34', ratio: 3 / 4 },
-    { width: 1600, presetClass: 'preview916', ratio: 9 / 16 },
-    { width: 1024, presetClass: 'preview34', ratio: 3 / 4 },
-    { width: 1024, presetClass: 'preview916', ratio: 9 / 16 },
-  ]) {
-    const page = await browser.newPage({ viewport: { width: fixture.width, height: 1000 }, deviceScaleFactor: 1 });
-    await page.setContent(`
-      <style>
-        *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:auto}button{border:0;background:transparent}
-        ${mixcutCss}
-        ${editorCss}
-      </style>
-      <section class="previewStep" data-output-preset="fixture">
-        <header class="previewStepHeader"><div><p class="eyebrow">STEP 03</p><h1>预览并调整完整时间轴</h1></div></header>
-        <div class="previewEditorGrid">
-          <div class="previewPlayerCell">
-            <main class="previewColumn" aria-label="成片预览">
-              <div class="previewToolbar"><span>24 fps</span><span>成片时间线</span></div>
-              <div class="previewStageWrap"><div class="previewStage ${fixture.presetClass}" data-testid="stage"><canvas class="previewCanvas"></canvas></div></div>
-              <div class="playbackBar" data-testid="controls"><button class="playButton">▶</button><span class="timecode">00:00 / 00:15</span><input type="range"></div>
-            </main>
-          </div>
-          <aside class="previewPropertyPanel"><div class="previewPropertyTabs"><strong>当前编辑</strong></div><div class="previewPropertyScroll"><section class="previewPropertyCard"><h2>字幕</h2></section></div></aside>
-        </div>
-        <section class="mixcutTimeline" data-testid="timeline">
-          <div class="timelineToolbar"><div><strong>精细时间轴</strong></div><label class="zoomControl"><span>缩放</span><input type="range"></label></div>
-          <div class="timelineScroll" data-testid="scroll">
-            <div class="timelineCanvas" data-testid="canvas" style="width:2488px">
-              <div class="timelineLabels" data-testid="labels"><div class="timelineRulerLabel">轨道</div><div class="timelineLabel">视频</div><div class="timelineLabel">字幕</div><div class="timelineLabel">口播</div><div class="timelineLabel">BGM</div></div>
-              <div class="timelineContent" style="width:2400px"><div class="timelineRuler"></div><div class="timelineTrack"></div><div class="timelineTrack"></div><div class="timelineTrack"></div><div class="timelineTrack"></div></div>
-            </div>
-          </div>
-        </section>
-      </section>
-    `);
-
-    const boxes = await page.evaluate(() => {
-      const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
-      const stage = rect('[data-testid=stage]');
-      const controls = rect('[data-testid=controls]');
-      const timeline = rect('[data-testid=timeline]');
-      const scroll = document.querySelector('[data-testid=scroll]');
-      const labels = document.querySelector('[data-testid=labels]');
-      const labelBefore = labels.getBoundingClientRect().left;
-      scroll.scrollLeft = 900;
-      scroll.scrollTop = 40;
-      const labelAfter = labels.getBoundingClientRect().left;
-      return {
-        stage: { width: stage.width, height: stage.height, bottom: stage.bottom },
-        controls: { top: controls.top, bottom: controls.bottom },
-        timeline: { top: timeline.top },
-        scrollWidth: scroll.scrollWidth,
-        clientWidth: scroll.clientWidth,
-        scrollHeight: scroll.scrollHeight,
-        clientHeight: scroll.clientHeight,
-        labelBefore,
-        labelAfter,
-        trackLabels: [...labels.querySelectorAll('.timelineLabel')].map((element) => element.textContent),
-      };
-    });
-
-    assert.ok(Math.abs(boxes.stage.width / boxes.stage.height - fixture.ratio) < 0.02, `${fixture.presetClass}/${fixture.width}: 播放器必须保持画幅`);
-    assert.ok(boxes.stage.bottom <= boxes.controls.top + 0.5, `${fixture.presetClass}/${fixture.width}: 视频不能覆盖控制条`);
-    assert.ok(boxes.controls.bottom <= boxes.timeline.top + 0.5, `${fixture.presetClass}/${fixture.width}: 播放器不能覆盖时间轴`);
-    assert.ok(boxes.scrollWidth > boxes.clientWidth, `${fixture.presetClass}/${fixture.width}: 时间轴必须可以横向滚动`);
-    assert.ok(boxes.scrollHeight > boxes.clientHeight, `${fixture.presetClass}/${fixture.width}: 轨道区必须可以纵向滚动`);
-    assert.ok(Math.abs(boxes.labelBefore - boxes.labelAfter) < 0.5, `${fixture.presetClass}/${fixture.width}: 轨道标签必须 sticky`);
-    assert.deepEqual(boxes.trackLabels, ['视频', '字幕', '口播', 'BGM']);
-
-    const zoom = await page.evaluate(() => {
-      const canvas = document.querySelector('[data-testid=canvas]');
-      const scroll = document.querySelector('[data-testid=scroll]');
-      const before = canvas.getBoundingClientRect().width;
-      canvas.style.width = '4888px';
-      canvas.querySelector('.timelineContent').style.width = '4800px';
-      const after = canvas.getBoundingClientRect().width;
-      scroll.scrollLeft = scroll.scrollWidth;
-      return { before, after, end: scroll.scrollLeft, maximum: scroll.scrollWidth - scroll.clientWidth };
-    });
-    assert.ok(zoom.after > zoom.before, 'zoom 必须增加真实内容宽度');
-    assert.ok(Math.abs(zoom.end - zoom.maximum) <= 1, 'zoom 后必须仍可滚到完整时间轴结尾');
-    await page.close();
-  }
-  console.log('final-edit mixcut Playwright layout tests passed');
-
-  const server = await startNextDevServer();
+  const server = await acquireNextDevServer();
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1 });
     let savedGroup = createFormalGroup();
@@ -395,6 +338,18 @@ try {
           savedGroup = { ...savedGroup, variants: [nextVariant] };
           return json({ view: nextVariant });
         }
+        if (body.type === 'replace_clip') {
+          const clips = currentVariant.timeline.clips.map((clip) => clip.id === body.clipId ? {
+            ...clip,
+            videoJobId: body.videoJobId,
+            sourceFingerprint: body.sourceFingerprint,
+            sourceInFrame: body.sourceInFrame,
+            sourceOutFrame: body.sourceOutFrame,
+          } : clip);
+          const nextVariant = { ...currentVariant, revision: currentVariant.revision + 1, timeline: { ...currentVariant.timeline, clips } };
+          savedGroup = { ...savedGroup, variants: [nextVariant] };
+          return json({ view: nextVariant });
+        }
         return json({ view: currentVariant });
       }
       if (pathname === '/api/final-edit-variants/variant-e2e/render' && request.method() === 'POST') {
@@ -424,50 +379,75 @@ try {
       return json({ error: `Unhandled E2E API: ${request.method()} ${pathname}` }, 404);
     });
 
-    const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
-    await page.goto(formalUrl, { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: /预览调整/ }).click();
-    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
-
-    await page.setViewportSize({ width: 1024, height: 1000 });
-    const formalSmallScreen = await page.evaluate(() => {
+    // 第 3 步预览区几何回归（规格 §6.3/§8.3）：预览必须留在大纸内，工具行/时间轴不得互相覆盖，
+    // 页面不得横向溢出。V2 用 clamp(360px,58vh,560px) 视口驱动尺寸，取代 V1 的 flex 撑满写法，
+    // 这类 viewport 相关几何 bug 只有挂载真实组件才能测出来，不用独立 CSS 样机复现。
+    const checkPreviewGeometry = () => page.evaluate(() => {
       const root = document.documentElement;
-      const stage = document.querySelector('main[aria-label="成片预览"] canvas')?.parentElement?.getBoundingClientRect();
-      const controls = document.querySelector('input[aria-label="播放位置"]')?.parentElement?.getBoundingClientRect();
-      const timeline = document.querySelector('section[aria-label="智能混剪时间轴"]')?.getBoundingClientRect();
+      const stageEl = document.querySelector('main[aria-label="成片预览"] canvas')?.parentElement;
+      const controlsEl = document.querySelector('input[aria-label="播放位置"]')?.parentElement;
+      const timelineEl = document.querySelector('section[aria-label="智能混剪时间轴"]');
+      const bigPaperEl = stageEl?.closest('[class*="bigPaper"]');
+      const stage = stageEl?.getBoundingClientRect();
+      const controls = controlsEl?.getBoundingClientRect();
+      const timeline = timelineEl?.getBoundingClientRect();
+      const bigPaper = bigPaperEl?.getBoundingClientRect();
       return {
         overflowX: root.scrollWidth - root.clientWidth,
         stageBottom: stage?.bottom ?? Infinity,
         controlsTop: controls?.top ?? -Infinity,
         controlsBottom: controls?.bottom ?? Infinity,
         timelineTop: timeline?.top ?? -Infinity,
+        bigPaperBottom: bigPaper?.bottom ?? Infinity,
       };
     });
-    assert.ok(formalSmallScreen.overflowX <= 1, '1024px 正式外壳不得整页横向溢出，横滚只能发生在时间轴内部');
-    assert.ok(formalSmallScreen.stageBottom <= formalSmallScreen.controlsTop + 0.5, '1024px 正式播放器不得覆盖控制条');
-    assert.ok(formalSmallScreen.controlsBottom <= formalSmallScreen.timelineTop + 0.5, '1024px 正式控制条不得覆盖时间轴');
+    const assertPreviewGeometry = async (label) => {
+      const box = await checkPreviewGeometry();
+      assert.ok(box.overflowX <= 1, `${label}: 不得整页横向溢出（当前溢出 ${box.overflowX}px）`);
+      assert.ok(box.stageBottom <= box.controlsTop + 0.5, `${label}: 预览不得覆盖播放控制条`);
+      assert.ok(box.controlsBottom <= box.timelineTop + 0.5, `${label}: 播放控制条不得覆盖时间轴`);
+      assert.ok(box.stageBottom <= box.bigPaperBottom + 0.5, `${label}: 预览底边必须始终在大纸内（规格 §9）`);
+    };
+
+    const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
+    await page.goto(formalUrl, { waitUntil: 'networkidle' });
+    await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
+    await page.getByRole('button', { name: /预览调整/ }).click();
+    await page.locator('[data-track="video"]').waitFor();
+
+    assert.equal(await page.locator('[data-track]').count(), 4, '正式页面必须挂载四条真实轨道');
+    assert.deepEqual(
+      await page.locator('section[aria-label="智能混剪时间轴"] > div:first-child > div').allTextContents(),
+      ['', '视频', '字幕', '音频'],
+      '时间轴标签列文案必须是视频/字幕/音频三组（音频行合并展示口播+BGM）',
+    );
+
+    await page.setViewportSize({ width: 1024, height: 1000 });
+    await assertPreviewGeometry('1024×1000');
+    await page.setViewportSize({ width: 1280, height: 650 });
+    await assertPreviewGeometry('1280×650（规格 §9 最小验收窗口）');
     await page.setViewportSize({ width: 1440, height: 1100 });
+    await assertPreviewGeometry('1440×1100');
 
     const stageRatio = async () => page.locator('main[aria-label="成片预览"] canvas').first().evaluate((canvas) => {
       const stage = canvas.parentElement.getBoundingClientRect();
       return stage.width / stage.height;
     });
     assert.ok(Math.abs(await stageRatio() - 3 / 4) < 0.02, '正式页面 3:4 播放器必须保持画幅');
-    assert.equal(await page.locator('[data-track]').count(), 4, '正式页面必须挂载四条真实轨道');
-    await page.getByText('全局字幕样式').waitFor();
-    await page.getByText('字体', { exact: true }).waitFor();
-    await page.getByText('字号', { exact: true }).waitFor();
-    await page.getByText('描边', { exact: true }).waitFor();
 
     savedGroup = { ...savedGroup, variants: [{ ...savedGroup.variants[0], outputPreset: '9x16' }] };
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
-    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
+    await page.locator('[data-track="video"]').waitFor();
     assert.ok(Math.abs(await stageRatio() - 9 / 16) < 0.02, '正式页面 9:16 播放器必须保持画幅');
 
+    await page.getByText('字幕样式', { exact: true }).waitFor();
+    await page.getByText('字体', { exact: true }).waitFor();
+    await page.getByText('字号', { exact: true }).waitFor();
+    await page.getByText('描边', { exact: true }).waitFor();
+
     const openCoverDrawer = async () => {
-      await page.getByRole('button', { name: '封面', exact: true }).click();
-      await page.getByRole('button', { name: '精调封面' }).click();
+      await page.getByRole('button', { name: /视频封面设置/ }).click();
       return page.getByRole('dialog', { name: '精调封面' });
     };
     let coverDialog = await openCoverDrawer();
@@ -483,7 +463,7 @@ try {
     await page.getByRole('button', { name: '关闭封面精调' }).focus();
     await page.keyboard.press('Shift+Tab');
     assert.equal(await coverDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true, 'Shift+Tab 必须被圈定在 aria-modal 抽屉内');
-    await page.getByRole('button', { name: /a\.mp4/ }).waitFor();
+    await coverDialog.getByRole('button', { name: /a\.mp4/ }).waitFor();
     assert.equal(await page.getByRole('slider', { name: '封面截帧时间' }).inputValue(), '1', '抽屉必须恢复真实截帧时间');
 
     const groupWritesBeforeCancel = groupPatchBodies.length;
@@ -507,7 +487,7 @@ try {
     coverDialog = await openCoverDrawer();
     const expectedGroupRevision = savedGroup.revision;
     const expectedVariantRevision = savedGroup.variants[0].revision;
-    await page.getByRole('button', { name: /b\.mp4/ }).click();
+    await coverDialog.getByRole('button', { name: /b\.mp4/ }).click();
     await page.getByRole('slider', { name: '封面截帧时间' }).fill('2');
     await page.getByLabel('主标题文字').fill('封面主标题');
     await page.getByLabel('副标题文字').fill('封面副标题');
@@ -553,10 +533,9 @@ try {
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
-    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
-    await page.getByRole('button', { name: '封面', exact: true }).click();
-    await page.getByText('封面主标题', { exact: true }).waitFor();
-    await page.getByText('封面副标题', { exact: true }).waitFor();
+    await page.locator('[data-track="video"]').waitFor();
+    await page.getByRole('button', { name: /视频封面设置/ }).waitFor();
+    await page.getByText('已自定义', { exact: false }).first().waitFor();
     coverDialog = await openCoverDrawer();
     assert.equal(await page.getByLabel('主标题文字').inputValue(), '封面主标题', '刷新后必须恢复已应用主标题');
     assert.equal(await page.getByLabel('副标题文字').inputValue(), '封面副标题', '刷新后必须恢复已应用副标题');
@@ -575,7 +554,7 @@ try {
     await page.getByRole('button', { name: '取消', exact: true }).click();
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
-    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
+    await page.locator('[data-track="video"]').waitFor();
     coverDialog = await openCoverDrawer();
     await page.getByRole('button', { name: '电商蓝橙', exact: true }).waitFor();
     await primaryControls.locator('input[type="color"]').first().fill('#000000').catch(() => undefined);
@@ -587,11 +566,11 @@ try {
 
     const playbackPosition = page.getByRole('slider', { name: '播放位置' });
     await playbackPosition.fill('4');
-    const timelineContent = page.locator('[data-testid="mixcut-timeline-scroll"] > div > div').nth(1);
+    const timelineContent = page.locator('[data-testid="mixcut-timeline-scroll"] > div');
     await timelineContent.scrollIntoViewIfNeeded();
     const contentBox = await timelineContent.boundingBox();
     assert.ok(contentBox, '正式时间轴内容必须可见');
-    await timelineContent.dispatchEvent('pointerdown', { bubbles: true, clientX: contentBox.x + 1, clientY: contentBox.y + 20, pointerId: 1, pointerType: 'mouse' });
+    await timelineContent.dispatchEvent('pointerdown', { bubbles: true, clientX: contentBox.x + 1, clientY: contentBox.y + 30, pointerId: 1, pointerType: 'mouse' });
     await expectEventually(async () => Number(await playbackPosition.inputValue()) <= 1 / 24, `点击时间轴开头应回到封面 0 秒（当前 ${await playbackPosition.inputValue()}）`);
 
     await playbackPosition.fill('4');
@@ -624,43 +603,37 @@ try {
       return Boolean(a && b && a.x > b.x);
     }, '保存后正式时间轴必须显示新的片段顺序');
 
+    // 素材替换列（V2 新功能，规格 §6.5）：选中片段后点击另一个素材，直接替换该片段的视频来源。
+    const replaceResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
+    await page.locator('[data-clip-id="clip-a"]').click();
+    await page.getByRole('button', { name: /b\.mp4/ }).click();
+    await replaceResponse;
+    assert.equal(variantPatchBodies.at(-1)?.type, 'replace_clip');
+    assert.equal(variantPatchBodies.at(-1)?.clipId, 'clip-a');
+    assert.equal(variantPatchBodies.at(-1)?.videoJobId, 'video-b');
+    assert.equal(variantPatchBodies.at(-1)?.sourceFingerprint, 'fingerprint-b');
+    assert.equal(savedGroup.variants[0].timeline.clips.find((clip) => clip.id === 'clip-a')?.videoJobId, 'video-b', 'mock 服务端必须保存替换后的素材');
+
+    // V2 固定时间轴缩放为 60px/秒（不再提供缩放滑杆），内容超出可视宽度时改为横向滚动；
+    // 标签列现在完全在滚动容器之外（不是 sticky），横滚后不应发生任何位移。
+    await page.setViewportSize({ width: 1024, height: 1000 });
+    await page.locator('[data-track="video"]').waitFor();
+    assert.equal(await page.getByRole('slider', { name: '时间轴缩放' }).count(), 0, 'V2 时间轴不再提供缩放控件');
     const timelineScroll = page.locator('[data-testid="mixcut-timeline-scroll"]');
-    const timelineCanvas = page.locator('[data-testid="mixcut-timeline-scroll"] > div');
-    const timelineLabels = page.locator('[data-testid="mixcut-timeline-scroll"] > div > div').first();
-    const widthBeforeZoom = await timelineCanvas.evaluate((element) => element.getBoundingClientRect().width);
-    await page.getByRole('slider', { name: '时间轴缩放' }).fill('220');
-    await expectEventually(async () => await timelineCanvas.evaluate((element) => element.getBoundingClientRect().width) > widthBeforeZoom, '真实 zoom 控件必须改变 canvas 宽度');
-    const scrollBefore = await timelineScroll.evaluate((element) => ({
-      scrollWidth: element.scrollWidth,
-      clientWidth: element.clientWidth,
-      scrollHeight: element.scrollHeight,
-      clientHeight: element.clientHeight,
-    }));
-    assert.ok(scrollBefore.scrollWidth > scrollBefore.clientWidth, '正式时间轴必须产生真实横向滚动范围');
-    assert.ok(scrollBefore.scrollHeight > scrollBefore.clientHeight, '正式时间轴必须产生真实纵向滚动范围');
+    const timelineLabels = page.locator('section[aria-label="智能混剪时间轴"] > div').first();
+    const scrollBefore = await timelineScroll.evaluate((element) => ({ scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }));
+    assert.ok(scrollBefore.scrollWidth > scrollBefore.clientWidth, '正式时间轴必须产生真实横向滚动范围（无需缩放）');
     const stickyLeftBefore = await timelineLabels.evaluate((element) => element.getBoundingClientRect().left);
-    await timelineScroll.evaluate((element) => {
-      element.scrollLeft = Math.min(700, element.scrollWidth - element.clientWidth);
-      element.scrollTop = element.scrollHeight;
-    });
+    await timelineScroll.evaluate((element) => { element.scrollLeft = Math.min(200, element.scrollWidth - element.clientWidth); });
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
-    const scrolled = await timelineScroll.evaluate((element) => ({ left: element.scrollLeft, top: element.scrollTop }));
+    const scrolledLeft = await timelineScroll.evaluate((element) => element.scrollLeft);
     const stickyLeftAfter = await timelineLabels.evaluate((element) => element.getBoundingClientRect().left);
-    assert.ok(scrolled.left > 0, '正式时间轴必须可以实际横向滚动');
-    assert.ok(scrolled.top > 0, '正式时间轴必须可以实际纵向滚动');
-    assert.ok(Math.abs(stickyLeftAfter - stickyLeftBefore) <= 0.5, '正式时间轴横滚后轨道标签必须保持 sticky');
+    assert.ok(scrolledLeft > 0, '正式时间轴必须可以实际横向滚动');
+    assert.ok(Math.abs(stickyLeftAfter - stickyLeftBefore) <= 0.5, '横滚后标签列必须保持原位（labels 在滚动容器之外）');
+    await timelineScroll.evaluate((element) => { element.scrollLeft = 0; });
+    await page.setViewportSize({ width: 1440, height: 1100 });
 
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: /预览调整/ }).click();
-    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
-    await expectEventually(async () => {
-      const [a, b] = await Promise.all([
-        page.locator('[data-clip-id="clip-a"]').boundingBox(),
-        page.locator('[data-clip-id="clip-b"]').boundingBox(),
-      ]);
-      return Boolean(a && b && a.x > b.x);
-    }, '重载后必须从 mock 服务端恢复保存的片段顺序');
-
+    // 直接拖拽时间轴片段自身的裁剪手柄（保留自 V1 的能力，VideoBlock 内建 trim 支持）。
     const clipABeforeTrim = page.locator('[data-clip-id="clip-a"]');
     const widthBeforeTrim = (await clipABeforeTrim.boundingBox())?.width;
     const endHandle = clipABeforeTrim.locator('[aria-label="裁剪片段结尾"]');
@@ -686,27 +659,64 @@ try {
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
-    await page.getByRole('heading', { name: '预览并调整完整时间轴' }).waitFor();
+    await page.locator('[data-track="video"]').waitFor();
     const widthAfterTrimReload = (await page.locator('[data-clip-id="clip-a"]').boundingBox())?.width ?? 0;
     assert.ok(Math.abs(widthAfterTrimReload - widthAfterTrim) <= 1, '重载后必须恢复服务端保存的裁剪宽度');
-    await page.locator('[data-clip-id="clip-a"]').click();
-    await page.getByText(`源 ${trimRequest.sourceInFrame}–${trimRequest.sourceOutFrame} 帧`, { exact: false }).waitFor();
+
+    // V2 新增：双击片段打开专门的 Trim 截取条（规格 §6.7），拖动蓝色选择框调整入点。
+    // 注：前面的排序测试已把顺序换成 [clip-b, clip-a]，所以此刻 clip-a 是第 2 个片段、clip-b 是第 1 个。
+    await page.locator('[data-clip-id="clip-a"]').dblclick();
+    await page.getByText(/截取片段 #2/).waitFor();
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByText(/截取片段 #2/).waitFor({ state: 'detached' });
+
+    const clipBTrimTarget = page.locator('[data-clip-id="clip-b"]');
+    await clipBTrimTarget.dblclick();
+    await page.getByText(/截取片段 #1/).waitFor();
+    const trimSel = page.locator('[class*="trimSel"]');
+    const trimSelBoxBefore = await trimSel.boundingBox();
+    assert.ok(trimSelBoxBefore, 'Trim 选择框必须可见');
+    const dialogTrimResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
+    await page.mouse.move(trimSelBoxBefore.x + trimSelBoxBefore.width / 2, trimSelBoxBefore.y + trimSelBoxBefore.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(trimSelBoxBefore.x + trimSelBoxBefore.width / 2 + 40, trimSelBoxBefore.y + trimSelBoxBefore.height / 2, { steps: 6 });
+    await page.mouse.up();
+    await page.getByRole('button', { name: '完成', exact: true }).click();
+    await dialogTrimResponse;
+    const dialogTrimRequest = variantPatchBodies.at(-1);
+    assert.equal(dialogTrimRequest?.type, 'trim_clip');
+    assert.equal(dialogTrimRequest?.clipId, 'clip-b');
+    assert.ok(dialogTrimRequest.sourceInFrame > 0, '向右拖动选择框必须推迟源入点');
+    assert.equal(dialogTrimRequest.sourceOutFrame - dialogTrimRequest.sourceInFrame, 120, 'Trim 对话框拖动只平移窗口，不改变片段时长');
+    await page.getByText(/截取片段 #1/).waitFor({ state: 'detached' });
 
     const playButton = page.getByRole('button', { name: '播放成片' });
     await playButton.click();
     await page.getByRole('button', { name: '暂停' }).waitFor();
     await page.getByRole('button', { name: /AI 智能创作/ }).click();
-    await expectEventually(async () => await page.locator('button[aria-label="播放成片"]').count() === 1, '切出第三步后预览必须恢复暂停');
+    // V2 第 3 步只在 activeStep===2 时挂载 PreviewStep（不再是全步骤常驻 + CSS 隐藏），
+    // 离开第三步会把预览连同播放器一起卸载，而不是仅仅停止播放。
+    await expectEventually(async () => await page.locator('button[aria-label="播放成片"]').count() === 0, '切出第三步必须卸载预览播放器');
+    // 此刻第 2 步 CreationStep 可见，其「去预览调整」CTA 文案也含「预览调整」子串，
+    // 与左侧步骤条按钮同名，必须限定在步骤条 nav 内点击以消除歧义。
+    const stepNav = page.getByRole('navigation', { name: '智能混剪步骤' });
+    await stepNav.getByRole('button', { name: /预览调整/ }).click();
+    await page.locator('[data-track="video"]').waitFor();
+    await page.getByRole('button', { name: '播放成片' }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '暂停' }).count(), 0, '重新进入第三步后播放器必须以暂停状态重新挂载');
 
     savedGroup = { ...savedGroup, variants: [...savedGroup.variants, { ...savedGroup.variants[0], id: 'variant-e2e-b', indexNum: 2 }] };
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
+    await page.locator('[data-track="video"]').waitFor();
     await page.getByLabel('选择成片草稿').selectOption('variant-e2e-b');
     await page.getByRole('button', { name: '下一步：导出' }).click();
     await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
     assert.equal(await page.getByLabel('选择导出草稿').inputValue(), 'variant-e2e-b', '从预览进入导出必须保持当前草稿，不得回退第一条');
     await page.getByLabel('选择导出草稿').selectOption('variant-e2e');
-    const exportStep = page.locator('section[aria-labelledby="mixcut-export-heading"]');
+    // V2 导出步不再用 <section aria-labelledby> 包裹（见 ExportStep.tsx），改用离标题最近的
+    // <main> 祖先来限定查找范围，避免和顶栏里同样显示项目名称的文案混淆。
+    const exportStep = page.getByRole('heading', { name: '导出并写回项目' }).locator('xpath=ancestor::main[1]');
     await exportStep.getByText('Mixcut E2E 项目', { exact: true }).waitFor();
     await exportStep.getByText('E2E-001', { exact: true }).waitFor();
     await exportStep.getByText('20260724', { exact: true }).waitFor();
@@ -752,13 +762,51 @@ try {
     await page.getByRole('button', { name: '在文件夹中查看' }).click();
     assert.deepEqual(revealRequests, [null], '文件定位请求不得接受或泄露客户端路径');
 
+    // 回归：匹配诊断必须在第 3 步可见；真实缺口显示红色 blocking，语义/短素材
+    // 兜底显示黄色 warning，不再只等到第 4 步导出才第一次露面。
+    savedGroup = { ...savedGroup, variants: savedGroup.variants.map((item) => item.id === savedGroup.variants[0].id ? { ...item, issues: [
+      { code: 'timeline_gap', severity: 'blocking', message: '正文 0–536 帧缺少画面' },
+      { code: 'material_gap', severity: 'blocking', message: '句段 segment-1 素材不足，保留时间线缺口', targetId: 'segment-1' },
+      { code: 'semantic_fallback', severity: 'warning', message: '语义评分不可用，本次已使用确定性关键词降级匹配' },
+    ] } : item) };
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /预览调整/ }).click();
+    await page.locator('[data-track="video"]').waitFor();
+    await page.getByText('正文 0–536 帧缺少画面', { exact: true }).waitFor();
+    await page.getByText('句段 segment-1 素材不足，保留时间线缺口', { exact: true }).waitFor();
+    await page.getByText('语义评分不可用，本次已使用确定性关键词降级匹配', { exact: true }).waitFor();
+
+    // 回归：真实环境实测过一次「预览调整」布局炸裂——prepare job 已 succeeded（第 2 步会出现
+    // 「去预览调整」CTA），但 group 还没到 ready/partial（variants 未最终落定），此时点 CTA 会让
+    // activeStep===2 而 preparedGroup 仍是 null。.bodyPreview 六列网格只有在真正渲染 PreviewStep
+    // 的五个子节点时列数才对得上；退回的 emptyState 只有一个 <main>，网格会把它自动摆进「素材替换」
+    // 那条窄列（真实浏览器里如果之前折叠过该列，会窄到中文逐字换行）。断言：辅栏必须还在、
+    // 空状态文案必须落在宽的主列而不是被挤扁。
+    savedGroup = { ...savedGroup, status: 'editing' };
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
+    const previewCta = page.getByRole('button', { name: '去预览调整' });
+    await previewCta.waitFor();
+    await previewCta.click();
+    await page.getByText('预览草稿尚未准备完成').waitFor();
+    const emptyStateLayout = await page.evaluate(() => {
+      const main = document.querySelector('[class*="mainCol"]');
+      const sideCol = document.querySelector('[class*="sideCol"]');
+      return {
+        mainWidth: main?.getBoundingClientRect().width ?? 0,
+        sideColVisible: sideCol ? getComputedStyle(sideCol).display !== 'none' : false,
+      };
+    });
+    assert.ok(emptyStateLayout.sideColVisible, 'preparedGroup 未就绪时辅栏（当前素材组/本组概览）不得被 .bodyPreview 误隐藏');
+    assert.ok(emptyStateLayout.mainWidth > 500, `preparedGroup 未就绪时空状态必须落在宽主列，不是被挤进素材替换窄列（实测 ${emptyStateLayout.mainWidth}px）`);
+
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');
   } catch (error) {
     error.message = `${error.message}\nNext dev output:\n${server.output()}`;
     throw error;
   } finally {
-    await stopNextDevServer(server.child);
+    await releaseNextDevServer(server);
   }
 } finally {
   await browser.close();
