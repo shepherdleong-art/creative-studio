@@ -20,15 +20,17 @@ export function audioFirstPlanToVideoTimeline(input: {
   plan: TimelinePlan;
   assetsByKey: ReadonlyMap<string, TimelineSourceAsset>;
   narrationDurationUs: number;
+  boundSegmentIdBySentenceId?: ReadonlyMap<string, string>;
 }): { timeline: VideoTimeline; issues: FinalEditIssue[] } {
   const bodyFrames = Math.ceil(Math.max(0, input.narrationDurationUs) * FINAL_EDIT_FPS / 1_000_000);
   const clips: TimelineClip[] = [];
   const issues: FinalEditIssue[] = [];
   const ordered = [...input.plan.segments].sort((left, right) => left.startUs - right.startUs || left.sentenceId.localeCompare(right.sentenceId));
   for (const segment of ordered) {
+    const boundSegmentId = input.boundSegmentIdBySentenceId?.get(segment.sentenceId) ?? segment.sentenceId;
     const asset = input.assetsByKey.get(segment.assetKey);
     if (!asset) {
-      issues.push({ code: 'material_gap', severity: 'blocking', message: `句段 ${segment.sentenceId} 的素材不存在`, targetId: segment.sentenceId });
+      issues.push({ code: 'material_gap', severity: 'blocking', message: `句段 ${boundSegmentId} 的素材不存在`, targetId: boundSegmentId });
       continue;
     }
     const timelineInFrame = frameAt(segment.startUs);
@@ -38,7 +40,7 @@ export function audioFirstPlanToVideoTimeline(input: {
     const sourceOutFrame = sourceInFrame + lengthFrames;
     const sourceFrameLimit = Math.ceil(asset.durationUs * FINAL_EDIT_FPS / 1_000_000);
     if (lengthFrames <= 0 || sourceOutFrame > sourceFrameLimit) {
-      issues.push({ code: 'material_gap', severity: 'blocking', message: `句段 ${segment.sentenceId} 无法安全换算为视频帧`, targetId: segment.sentenceId });
+      issues.push({ code: 'material_gap', severity: 'blocking', message: `句段 ${boundSegmentId} 无法安全换算为视频帧`, targetId: boundSegmentId });
       continue;
     }
     clips.push({
@@ -49,7 +51,7 @@ export function audioFirstPlanToVideoTimeline(input: {
       sourceOutFrame,
       timelineInFrame,
       timelineOutFrame,
-      boundSegmentId: segment.sentenceId,
+      boundSegmentId,
       framing: { scale: 1, offsetX: 0, offsetY: 0 },
       manualUseOverride: false,
     });

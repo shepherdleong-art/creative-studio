@@ -47,6 +47,7 @@ import {
   type SemanticSentence,
 } from './semantic-matrix.ts';
 import { extractMatchKeywords } from './match-keywords.ts';
+import { buildTtsAwareMatchSentences } from './match-sentence-refinement.ts';
 import type { BeatDetectionResult } from './beat-detect.ts';
 import {
   FINAL_EDIT_FPS,
@@ -1017,6 +1018,25 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           quality: scene.quality,
         })),
       }));
+      const timedMatchSourceSegments = script.segments.map((segment, index) => {
+        const segmentId = segment.id || `segment-${index + 1}`;
+        const timing = narration.segmentTimings.find((item) => item.segmentId === segmentId);
+        if (!timing) throw new FinalEditError('alignment_failed', `缺少 ${segmentId} 的真实 TTS 时长`);
+        return {
+          id: segmentId,
+          ...(segment.shotId ? { shotId: segment.shotId } : {}),
+          text: segment.narration,
+          startUs: timing.startUs,
+          endUs: timing.endUs,
+        };
+      });
+      const maxSceneDurationUs = Math.max(0, ...semanticScenes.map((scene) => scene.endUs - scene.startUs));
+      const ttsAwareMatchSentences = buildTtsAwareMatchSentences({
+        segments: timedMatchSourceSegments,
+        wordTimings: narration.wordTimings,
+        maxSceneDurationUs,
+        availableSceneCount: semanticScenes.length,
+      });
       const videoCoverChoices = matchingAssets.flatMap((asset) => {
         const frameDurationUs = Math.ceil(1_000_000 / FINAL_EDIT_FPS);
         const lastSafeFrameUs = Math.max(0, asset.durationUs - frameDurationUs);
@@ -1031,10 +1051,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         ].map((value) => Math.round(Math.floor(value * FINAL_EDIT_FPS / 1_000_000) * 1_000_000 / FINAL_EDIT_FPS));
         return [...new Set(frameTimes)].slice(0, 3).map((frameTimeUs) => ({ asset, frameTimeUs }));
       });
-      const semanticSentences: SemanticSentence[] = script.segments.map((segment, index) => ({
-        id: segment.id || `segment-${index + 1}`,
-        text: segment.narration,
-        keywords: extractMatchKeywords(segment.narration),
+      const semanticSentences: SemanticSentence[] = ttsAwareMatchSentences.map((sentence) => ({
+        id: sentence.id,
+        text: sentence.text,
+        keywords: extractMatchKeywords(sentence.text),
       }));
       const semanticInput = {
         sentences: semanticSentences,
@@ -1105,12 +1125,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const beatResult = deps.detectBeatPoints
         ? await deps.detectBeatPoints({ audioPath: resolveStoragePath(storageRoot, narration.relativePath), durationUs: narration.durationUs })
         : { pointsUs: [], fallback: true };
-      const matcherSentences = script.segments.map((segment, index) => {
-        const segmentId = segment.id || `segment-${index + 1}`;
-        const timing = narration.segmentTimings.find((item) => item.segmentId === segmentId);
-        if (!timing) throw new FinalEditError('alignment_failed', `缺少 ${segmentId} 的真实 TTS 时长`);
-        return { id: segmentId, shotId: segment.shotId, text: segment.narration, startUs: timing.startUs, endUs: timing.endUs, keywords: semanticSentences[index].keywords };
-      });
+      const matcherSentences = ttsAwareMatchSentences.map((sentence, index) => ({
+        ...sentence,
+        keywords: semanticSentences[index].keywords,
+      }));
+      const sourceSegmentIdByMatchSentenceId = new Map(
+        ttsAwareMatchSentences.map((sentence) => [sentence.id, sentence.sourceSegmentId]),
+      );
       const matchResult = matchAudioFirst({
         sentences: matcherSentences,
         assets: matcherAssets,
@@ -1121,10 +1142,24 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         maxReuse: autoUseLimit,
         semanticFallback: semanticResult.semanticFallback,
       });
+      const persistedSentenceId = (sentenceId: string) => sourceSegmentIdByMatchSentenceId.get(sentenceId) ?? sentenceId;
+      const matchDiagnostics = {
+        ...matchResult.diagnostics,
+        backoffSentences: matchResult.diagnostics.backoffSentences.map(persistedSentenceId),
+        snappedCuts: matchResult.diagnostics.snappedCuts.map((cut) => ({
+          ...cut,
+          previousSentenceId: persistedSentenceId(cut.previousSentenceId),
+          nextSentenceId: persistedSentenceId(cut.nextSentenceId),
+        })),
+        gaps: matchResult.diagnostics.gaps.map((gap) => ({ ...gap, sentenceId: persistedSentenceId(gap.sentenceId) })),
+        issues: matchResult.diagnostics.issues.map((issue) => ({ ...issue, sentenceId: persistedSentenceId(issue.sentenceId) })),
+        selectionReasons: matchResult.diagnostics.selectionReasons.map((reason) => ({ ...reason, sentenceId: persistedSentenceId(reason.sentenceId) })),
+      };
       const converted = audioFirstPlanToVideoTimeline({
         plan: matchResult.plan,
         assetsByKey: new Map(matchingAssets.map((asset) => [asset.assetKey!, { videoJobId: asset.videoJobId, fingerprint: asset.fingerprint, durationUs: asset.durationUs }])),
         narrationDurationUs: narration.durationUs,
+        boundSegmentIdBySentenceId: sourceSegmentIdByMatchSentenceId,
       });
       const variants: FinalEditVariantView[] = [];
       const nextIndex = Number((db.prepare(`SELECT COALESCE(MAX(indexNum), 0) AS value FROM final_edit_variants WHERE groupId=?`).get(groupId) as { value: number }).value) + 1;
@@ -1142,7 +1177,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               framing: { ...DEFAULT_COVER_FRAMING },
             }
           : { coverKey: null, kind: null, sourceKey: null, frameTimeUs: 0, sourceUrl: null, framing: { ...DEFAULT_COVER_FRAMING } };
-        const constraintFallbackSentenceIds = new Set(matchResult.diagnostics.issues
+        const constraintFallbackSentenceIds = new Set(matchDiagnostics.issues
           .filter((issue) => issue.severity === 'warning')
           .map((issue) => issue.sentenceId));
         const issues = [
@@ -1152,16 +1187,16 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           ...(narration.alignmentDegradedSegmentIds || []).map((segmentId) => ({ code: 'alignment_degraded', severity: 'warning' as const, message: `句段 ${segmentId} 的字幕对齐已按真实音频时长降级`, targetId: segmentId })),
           ...(semanticResult.semanticFallback ? [{ code: 'semantic_fallback', severity: 'warning' as const, message: '语义评分不可用，本次已使用确定性关键词降级匹配' }] : []),
           ...(beatResult.fallback ? [{ code: 'beat_detection_fallback', severity: 'warning' as const, message: '未检测到可靠口播气口，本次未吸附切点' }] : []),
-          ...matchResult.diagnostics.backoffSentences
+          ...matchDiagnostics.backoffSentences
             .filter((segmentId) => !constraintFallbackSentenceIds.has(segmentId))
             .map((segmentId) => ({ code: 'match_backoff', severity: 'warning' as const, message: `句段 ${segmentId} 使用了语义地板外候选`, targetId: segmentId })),
-          ...matchResult.diagnostics.issues
+          ...matchDiagnostics.issues
             .filter((issue) => issue.severity === 'warning')
             .map((issue) => ({ code: 'match_material_fallback', severity: 'warning' as const, message: `句段 ${issue.sentenceId}：${issue.message}`, targetId: issue.sentenceId })),
-          ...matchResult.diagnostics.gaps.map((gap) => ({ code: 'material_gap', severity: 'blocking' as const, message: `句段 ${gap.sentenceId} 素材不足，保留时间线缺口`, targetId: gap.sentenceId })),
+          ...matchDiagnostics.gaps.map((gap) => ({ code: 'material_gap', severity: 'blocking' as const, message: `句段 ${gap.sentenceId} 素材不足，保留时间线缺口`, targetId: gap.sentenceId })),
         ];
         const variantId = `prepare-${sha256(`${jobId}:${variantIndex}`).slice(0, 32)}`;
-        variants.push({ id: variantId, indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeInSec: 0, fadeOutSec: 0.8 }, cover, issues, matchDiagnostics: matchResult.diagnostics, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null, previewUrl: null });
+        variants.push({ id: variantId, indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeInSec: 0, fadeOutSec: 0.8 }, cover, issues, matchDiagnostics, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null, previewUrl: null });
         updateJob('matching', 0.55 + ((index + 1) / input.count) * 0.25);
       }
       updateJob('previewing', 0.8);
