@@ -80,7 +80,7 @@ export interface MatchSelectionReason {
   assetKey: string;
   startUs: number;
   score: number;
-  reason: 'manual_lock' | 'semantic_primary' | 'semantic_backoff' | 'material_length_fallback' | 'scene_reuse_fallback';
+  reason: 'manual_lock' | 'semantic_primary' | 'semantic_backoff' | 'keyword_fallback' | 'material_length_fallback' | 'scene_reuse_fallback';
 }
 
 export interface MatchDiagnostics {
@@ -557,7 +557,7 @@ export function matchAudioFirst(input: AudioFirstMatchInput): AudioFirstMatchRes
       assetKey: candidate.asset.assetKey,
       startUs: sentence.startUs,
       score: Number(candidateBaseScore(input, sentence, originalIndex, candidate).toFixed(3)),
-      reason: belowFloor ? 'semantic_backoff' : 'semantic_primary',
+      reason: input.semanticFallback ? 'keyword_fallback' : belowFloor ? 'semantic_backoff' : 'semantic_primary',
     });
     candidateBySentence.set(sentence.id, candidate);
   }

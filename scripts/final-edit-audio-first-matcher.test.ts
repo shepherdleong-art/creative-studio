@@ -429,6 +429,7 @@ const input3: AudioFirstMatchInput = {
 };
 const result3 = await matchAudioFirst(input3);
 assert.equal(result3.diagnostics.semanticFallback, true, '降级输入必须原样反映到 MatchDiagnostics.semanticFallback');
+assert.ok(result3.diagnostics.selectionReasons.every((item) => item.reason === 'keyword_fallback'), '语义矩阵降级时必须明确标记关键词兜底，不能冒充语义首选');
 assert.equal(result3.plan.segments.length, 2, '降级态下流程不中断，仍应产出完整 plan');
 assert.equal(
   segmentFor(result3.plan, 's1').assetKey,

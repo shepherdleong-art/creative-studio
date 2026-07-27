@@ -6,7 +6,15 @@
 import type { ScriptProviderRuntimeConfig } from './config.ts';
 import type { ChatOptions } from './openai-compatible.ts';
 import { parseJsonResponse } from './openai-compatible.ts';
-import type { ProviderConfig } from './types.ts';
+import type { ApiStyle, ProviderConfig } from './types.ts';
+
+const DEFAULT_RESPONSES_TIMEOUT_MS = 120_000;
+
+export function usesOpenAiResponses(apiStyle: ApiStyle): boolean {
+  return apiStyle === 'openai-responses';
+}
+
+type ResponsesChatOptions = ChatOptions & { timeoutMs?: number };
 
 function buildResponsesUrl(baseUrl: string): string {
   if (baseUrl.endsWith('/responses')) return baseUrl;
@@ -53,30 +61,51 @@ function consumeSseLine(line: string, deltas: string[]): void {
   }
 }
 
-async function readSseText(body: ReadableStream<Uint8Array> | null): Promise<string> {
+function readWithAbort(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    reader.read().then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+async function readSseText(body: ReadableStream<Uint8Array> | null, signal: AbortSignal): Promise<string> {
   if (!body) throw new Error('OpenAI Responses 返回了空响应流');
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const deltas: string[] = [];
   let buffer = '';
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) consumeSseLine(line, deltas);
-  }
+  let completed = false;
+  try {
+    while (true) {
+      const { value, done } = await readWithAbort(reader, signal);
+      if (done) {
+        completed = true;
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) consumeSseLine(line, deltas);
+    }
 
-  buffer += decoder.decode();
-  if (buffer.trim()) consumeSseLine(buffer, deltas);
-  return deltas.join('');
+    buffer += decoder.decode();
+    if (buffer.trim()) consumeSseLine(buffer, deltas);
+    return deltas.join('');
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 export async function chatCompletion(
   config: ProviderConfig,
-  options: ChatOptions,
+  options: ResponsesChatOptions,
   runtime?: ScriptProviderRuntimeConfig
 ): Promise<string> {
   const baseUrl = (runtime?.baseUrl || config.defaultBaseUrl).replace(/\/$/, '');
@@ -101,23 +130,40 @@ export async function chatCompletion(
     max_output_tokens: options.maxTokens ?? runtime?.maxTokens ?? config.maxTokens,
   };
 
-  const response = await fetch(buildResponsesUrl(baseUrl), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`${config.name} (openai-responses) error ${response.status}: ${errorText.slice(0, 500)}`);
-  }
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_RESPONSES_TIMEOUT_MS));
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const response = await fetch(buildResponsesUrl(baseUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`${config.name} (openai-responses) error ${response.status}: ${errorText.slice(0, 500)}`);
+    }
 
-  const rawText = await readSseText(response.body);
-  if (!rawText.trim()) throw new Error(`${config.name} (openai-responses) 返回了空响应`);
-  return rawText;
+    const rawText = await readSseText(response.body, controller.signal);
+    if (!rawText.trim()) throw new Error(`${config.name} (openai-responses) 返回了空响应`);
+    return rawText;
+  } catch (error) {
+    if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
+      throw new Error(`${config.name} (openai-responses) 请求超时（${timeoutMs}ms）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function completeOpenAiResponsesJson<T>(

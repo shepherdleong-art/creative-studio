@@ -70,8 +70,53 @@ function contentLength(value: string): number {
   return Array.from(value.replace(/[\p{P}\p{S}\s]/gu, '')).length;
 }
 
+function splitByContentLimit(value: string): string[] {
+  const total = contentLength(value);
+  const chunkCount = Math.ceil(total / HARD_MAX_MATCH_SEGMENT_CHARS);
+  if (chunkCount <= 1) return [value];
+
+  const characters = Array.from(value);
+  const chunks: string[] = [];
+  let current = '';
+  let currentContent = 0;
+  let remainingContent = total;
+  let remainingChunks = chunkCount;
+  let target = Math.ceil(remainingContent / remainingChunks);
+  for (let index = 0; index < characters.length; index += 1) {
+    const character = characters[index];
+    current += character;
+    if (!/[\p{P}\p{S}\s]/u.test(character)) currentContent += 1;
+    const next = characters[index + 1];
+    const nextIsContent = next != null && !/[\p{P}\p{S}\s]/u.test(next);
+    if (remainingChunks > 1 && currentContent >= target && nextIsContent) {
+      chunks.push(current.trim());
+      remainingContent -= currentContent;
+      remainingChunks -= 1;
+      target = Math.ceil(remainingContent / remainingChunks);
+      current = '';
+      currentContent = 0;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+function rebalanceShortSegments(values: string[]): string[] {
+  const balanced = values.slice();
+  for (let index = 0; index < balanced.length; index += 1) {
+    if (contentLength(balanced[index]) >= MIN_MATCH_SEGMENT_CHARS || balanced.length === 1) continue;
+    const pairStart = index < balanced.length - 1 ? index : index - 1;
+    if (pairStart < 0) continue;
+    const replacement = splitByContentLimit(balanced[pairStart] + balanced[pairStart + 1]);
+    balanced.splice(pairStart, 2, ...replacement);
+    index = Math.max(-1, pairStart - 1);
+  }
+  return balanced;
+}
+
 function mergeNarrationClauses(sentence: string): string[] {
-  const clauses = sentence.match(/[^，,、]+[，,、]*/g)?.map((part) => part.trim()).filter(Boolean) || [sentence];
+  const clauses = (sentence.match(/[^，,、]+[，,、]*/g)?.map((part) => part.trim()).filter(Boolean) || [sentence])
+    .flatMap(splitByContentLimit);
   const merged: string[] = [];
   let current = '';
   for (const clause of clauses) {
@@ -89,25 +134,7 @@ function mergeNarrationClauses(sentence: string): string[] {
     }
   }
   if (current) merged.push(current);
-
-  if (merged.length > 1 && contentLength(merged.at(-1)!) < MIN_MATCH_SEGMENT_CHARS) {
-    const tail = merged.pop()!;
-    const previous = merged.pop()!;
-    if (contentLength(previous) + contentLength(tail) <= HARD_MAX_MATCH_SEGMENT_CHARS) {
-      merged.push(previous + tail);
-    } else {
-      const characters = Array.from(previous + tail);
-      const target = Math.ceil(contentLength(previous + tail) / 2);
-      let splitIndex = 0;
-      let seen = 0;
-      while (splitIndex < characters.length && seen < target) {
-        if (!/[\p{P}\p{S}\s]/u.test(characters[splitIndex])) seen += 1;
-        splitIndex += 1;
-      }
-      merged.push(characters.slice(0, splitIndex).join('').trim(), characters.slice(splitIndex).join('').trim());
-    }
-  }
-  return merged.filter(Boolean);
+  return rebalanceShortSegments(merged.filter(Boolean));
 }
 
 /**
@@ -149,15 +176,24 @@ export function buildMixcutTaskScriptSnapshot(input: {
   const originalText = source ? sourceNarrationText(source) : '';
   const syncState = source ? getScriptSyncState(originalText, editedNarrationText) : 'modified';
   const originalSegments = source?.segments || [];
+  const editedLines = editedNarrationText.split('\n').map((line) => line.trim()).filter(Boolean);
   const canPreserveBoundaries = Boolean(source)
     && syncState === 'synced'
     && originalSegments.length > 0
     && originalSegments.every((segment) => normalizeNarrationText(String(segment.narration || segment.subtitle || '')));
-  const preservedSegments = canPreserveBoundaries
-    ? originalSegments.flatMap((segment, sourceIndex) => {
-        const narration = normalizeNarrationText(String(segment.narration || segment.subtitle || ''));
+  const canMapEditedLines = Boolean(source)
+    && syncState === 'modified'
+    && editedLines.length === originalSegments.length;
+  const mappedParentSegments = canPreserveBoundaries
+    ? originalSegments.map((segment) => ({ segment, narration: normalizeNarrationText(String(segment.narration || segment.subtitle || '')) }))
+    : canMapEditedLines
+      ? originalSegments.map((segment, index) => ({ segment, narration: editedLines[index] }))
+      : null;
+  const preservedSegments = mappedParentSegments
+    ? mappedParentSegments.flatMap(({ segment, narration }, sourceIndex) => {
         // Module 3 already produced the target 5–8 visual sentences: keep them.
-        // Only refine coarse scripts (the real regression had 3 × ~7.4s).
+        // Character count cannot predict TTS duration across providers/speeds;
+        // the real regression is the coarse 3-segment script refined below.
         const parts = originalSegments.length >= 5 && originalSegments.length <= 8
           ? [narration]
           : splitNarrationSentences(narration);
@@ -175,7 +211,7 @@ export function buildMixcutTaskScriptSnapshot(input: {
     const original = originalSegments[index];
     return {
       id: preserved?.id || `segment-${index + 1}`,
-      shotId: preserved?.shotId || String(original?.shotId || shotIds[index] || ''),
+      shotId: preserved?.shotId || (syncState === 'synced' ? String(original?.shotId || shotIds[index] || '') : ''),
       narration,
       subtitle: narration,
     };

@@ -23,6 +23,7 @@ import {
 import {
   chatCompletion as responsesChatCompletion,
   completeOpenAiResponsesJson,
+  usesOpenAiResponses,
 } from './openai-responses';
 import { geminiAnalyzeSellingPoints, geminiCompleteJson, geminiGenerateScript } from './gemini';
 import type { ScriptOutput } from './types';
@@ -96,7 +97,7 @@ export async function completeJson<T>(input: {
     return geminiCompleteJson<T>(options, runtime);
   }
 
-  if (runtime.apiStyle === 'openai-responses') {
+  if (usesOpenAiResponses(runtime.apiStyle)) {
     return completeOpenAiResponsesJson<T>(resolveConfig(input.providerId), options, runtime);
   }
 
@@ -119,7 +120,7 @@ export async function analyzeSellingPoints(
   }
 
   const config = resolveConfig(providerId);
-  const completion = runtime.apiStyle === 'openai-responses' ? responsesChatCompletion : chatCompletion;
+  const completion = usesOpenAiResponses(runtime.apiStyle) ? responsesChatCompletion : chatCompletion;
   const rawText = await completion(config, {
     systemPrompt,
     userPrompt,
@@ -148,7 +149,7 @@ export async function generateScript(
 
   const config = resolveConfig(providerId);
 
-  const completion = runtime.apiStyle === 'openai-responses' ? responsesChatCompletion : chatCompletion;
+  const completion = usesOpenAiResponses(runtime.apiStyle) ? responsesChatCompletion : chatCompletion;
   const rawText = await completion(config, {
     systemPrompt,
     userPrompt,

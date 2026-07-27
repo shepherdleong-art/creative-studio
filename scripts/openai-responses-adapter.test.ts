@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chatCompletion } from '../lib/script-providers/openai-responses.ts';
+import { chatCompletion, usesOpenAiResponses } from '../lib/script-providers/openai-responses.ts';
 import type { ScriptProviderRuntimeConfig } from '../lib/script-providers/config.ts';
 import type { ProviderConfig } from '../lib/script-providers/types.ts';
 
@@ -87,8 +87,19 @@ try {
     /quota exceeded/
   );
 
-  assert.notEqual('native-gemini', runtime.apiStyle);
-  assert.notEqual('openai-compatible', runtime.apiStyle);
+  assert.equal(usesOpenAiResponses('openai-responses'), true);
+  assert.equal(usesOpenAiResponses('native-gemini'), false, 'Native Gemini 不得路由到 Responses');
+  assert.equal(usesOpenAiResponses('openai-compatible'), false, 'Chat Completions 供应商不得路由到 Responses');
+
+  globalThis.fetch = async (_input, init) => new Response(new ReadableStream<Uint8Array>({
+    start() {
+      init?.signal?.addEventListener('abort', () => undefined);
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  await assert.rejects(
+    chatCompletion(config, { systemPrompt: 'system', userPrompt: 'user', timeoutMs: 20 }, runtime),
+    /请求超时/
+  );
 } finally {
   globalThis.fetch = originalFetch;
 }

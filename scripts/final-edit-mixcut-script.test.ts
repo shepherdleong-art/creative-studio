@@ -11,6 +11,15 @@ assert.equal(getScriptSyncState('第一句\n第二句', '第一句\r\n第二句'
 assert.equal(getScriptSyncState('第一句', '第一句。'), 'modified');
 assert.deepEqual(splitNarrationSentences('第一句。第二句！\nThird? Last'), ['第一句。', '第二句！', 'Third?', 'Last']);
 
+const longSentenceSegments = splitNarrationSentences('这是一段没有任何逗号但是长度明显超过二十四个汉字所以必须被稳定拆开的测试文本。');
+assert.ok(longSentenceSegments.length >= 2, '无逗号长句也必须按硬上限拆开');
+assert.ok(longSentenceSegments.every((segment) => Array.from(segment.replace(/[\p{P}\p{S}\s]/gu, '')).length <= 24));
+const shortHeadSegments = splitNarrationSentences('好，这是一段很长很长而且没有更多逗号的正文内容用于验证短首句会被重新平衡而不是单独成段。');
+assert.ok(shortHeadSegments.every((segment) => {
+  const length = Array.from(segment.replace(/[\p{P}\p{S}\s]/gu, '')).length;
+  return length >= 10 && length <= 24;
+}), '短首子句与长尾必须重新平衡到可用长度');
+
 const realShortMaterialNarration = '忙碌一天回到家，只想陷进这26斤满铺鹅毛的怀抱，感受5芯软弹带来的极致解压。112度的人体工学靠背，精准承托疲惫的腰背，久坐不累，让阅读时光也变得格外轻盈。触手可及的是婴幼级半青皮，A类认证的细腻质感，给全家一份可以贴脸呼吸的安心。';
 const realShortMaterialSegments = splitNarrationSentences(realShortMaterialNarration);
 assert.equal(realShortMaterialSegments.length, 6, '真实 116 字口播必须稳定切成 5–8 个适合短素材的句段');
@@ -78,10 +87,29 @@ assert.equal(alreadyFine.segments.length, 7, '模块 3 已有 5–8 段时不得
 
 const modified = buildMixcutTaskScriptSnapshot({
   sourceDraftId: 'draft-1', sourceScript: source, shotSetId: 'set-a',
-  editedNarrationText: '改写第一句。新增一句！',
+  editedNarrationText: '改写第一句。\n新增一句！',
 });
 assert.equal(modified.scriptSyncState, 'modified');
 assert.deepEqual(modified.segments.map((segment) => [segment.narration, segment.shotId]), [['改写第一句。', 'shot-1'], ['新增一句！', 'shot-2']]);
+
+const lightlyModifiedReal = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-real',
+  sourceScript: realSynced.sourceSegments.length ? {
+    version: 2,
+    shotSetId: 'set-a',
+    segments: realSynced.sourceSegments,
+  } : null,
+  shotSetId: 'set-a',
+  editedNarrationText: realShortMaterialNarration.replace('极致解压', '彻底解压').replace(/。/g, '。\n').trim(),
+});
+assert.equal(lightlyModifiedReal.segments.length, 6);
+assert.deepEqual(lightlyModifiedReal.segments.map((segment) => segment.shotId), ['shot-1', 'shot-1', 'shot-2', 'shot-2', 'shot-3', 'shot-3'], '逐行轻微改写后，细分句仍必须继承对应父分镜');
+
+const unmappableModified = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-1', sourceScript: source, shotSetId: 'set-a',
+  editedNarrationText: '完全重写且移除了原来的分段。又补充一句。',
+});
+assert.ok(unmappableModified.segments.every((segment) => segment.shotId === ''), '无法可靠映射原段时必须清空 shotId，不能按下标错绑');
 
 const manual = buildMixcutTaskScriptSnapshot({ shotSetId: 'set-a', editedNarrationText: '纯手工第一句。纯手工第二句。' });
 assert.equal(manual.source, 'manual');
