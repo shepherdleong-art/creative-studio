@@ -685,6 +685,38 @@ try {
     assert.equal(await page.getByLabel('4% 预览安全区').count(), 0, '再次点击必须隐藏预览安全区');
 
     const playbackPosition = page.getByRole('slider', { name: '播放位置' });
+    const harnessVideoCount = await page.evaluate(() => {
+      const videos = [...document.querySelectorAll('main[aria-label="成片预览"] video')];
+      videos.forEach((video) => {
+        let harnessTime = 0;
+        Object.defineProperty(video, 'readyState', { configurable: true, get: () => HTMLMediaElement.HAVE_METADATA });
+        Object.defineProperty(video, 'currentTime', { configurable: true, get: () => harnessTime, set: (value) => { harnessTime = Number(value); } });
+        video.play = async () => undefined;
+        video.pause = () => undefined;
+        video.dispatchEvent(new Event('loadedmetadata'));
+      });
+      return videos.length;
+    });
+    assert.equal(harnessVideoCount, 2, '预览同步回归必须接管双视频解码槽');
+    await playbackPosition.fill('4');
+    await page.getByRole('button', { name: '播放成片' }).click();
+    await page.getByRole('button', { name: '暂停' }).waitFor();
+    await page.evaluate(() => {
+      const activeVideo = document.querySelector('main[aria-label="成片预览"] video');
+      if (!(activeVideo instanceof HTMLVideoElement)) throw new Error('缺少活动视频槽');
+      activeVideo.currentTime += 1;
+    });
+    await page.waitForTimeout(250);
+    const playbackDrift = await page.evaluate(() => {
+      const slider = document.querySelector('input[aria-label="播放位置"]');
+      const activeVideo = document.querySelector('main[aria-label="成片预览"] video');
+      if (!(slider instanceof HTMLInputElement) || !(activeVideo instanceof HTMLVideoElement)) throw new Error('缺少预览同步测量节点');
+      return Math.abs(activeVideo.currentTime - (Number(slider.value) - 20 / 24));
+    });
+    assert.ok(playbackDrift <= 0.25, `同一片段内视频解码与播放头漂移必须被自动校正（实测 ${playbackDrift.toFixed(3)}s）`);
+    await page.getByRole('button', { name: '暂停' }).click();
+    await page.getByRole('button', { name: '播放成片' }).waitFor();
+
     await playbackPosition.fill('4');
     const timelineContent = page.locator('[data-testid="mixcut-timeline-scroll"] > div');
     await timelineContent.scrollIntoViewIfNeeded();

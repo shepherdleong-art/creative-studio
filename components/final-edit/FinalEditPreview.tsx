@@ -62,7 +62,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const animationRef = useRef(0);
   const audioStartTimerRef = useRef(0);
   const playingRef = useRef(false);
-  const lastStartedClipRef = useRef('');
+  const lastStartedPlaybackKeyRef = useRef('');
   const emittedPlayheadsRef = useRef<number[]>([]);
   const lastSeekRequestIdRef = useRef<string | number | undefined>(seekRequestId);
   const [playing, setPlaying] = useState(false);
@@ -188,6 +188,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       const expected = slot === activeSlot
         ? expectedVideoTimeSec(clip.sourceInFrame, clip.timelineInFrame, bodyFrame, FPS)
         : clip.sourceInFrame / FPS;
+      const playbackKey = `${clip.id}:${clip.videoJobId}:${clip.sourceFingerprint}:${clip.sourceInFrame}:${clip.timelineInFrame}`;
       const synchronize = () => {
         if (slot !== activeSlot) {
           video.pause();
@@ -196,14 +197,18 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         }
         if (!activeAsset || showSelectedMaterial) { video.pause(); return; }
         if (!playing) {
-          lastStartedClipRef.current = '';
+          lastStartedPlaybackKeyRef.current = '';
           video.pause();
           if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
           return;
         }
-        if (lastStartedClipRef.current === clip.id) return;
+        if (lastStartedPlaybackKeyRef.current === playbackKey) {
+          if (Math.abs(video.currentTime - expected) > 0.2) video.currentTime = expected;
+          if (video.paused) void video.play().catch(() => undefined);
+          return;
+        }
         if (Math.abs(video.currentTime - expected) > 0.35) video.currentTime = expected;
-        lastStartedClipRef.current = clip.id;
+        lastStartedPlaybackKeyRef.current = playbackKey;
         void video.play().catch(() => undefined);
       };
       if (video.readyState >= HTMLMediaElement.HAVE_METADATA) synchronize();
@@ -213,7 +218,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       }
     });
     if (activeSlot == null || !activeClip || !activeAsset || showSelectedMaterial) {
-      lastStartedClipRef.current = '';
+      lastStartedPlaybackKeyRef.current = '';
       videoARef.current?.pause();
       videoBRef.current?.pause();
     }
