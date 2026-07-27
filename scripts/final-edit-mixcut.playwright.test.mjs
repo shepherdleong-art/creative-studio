@@ -559,6 +559,11 @@ try {
     };
     let coverDialog = await openCoverDrawer();
     await coverDialog.waitFor();
+    assert.equal(
+      await page.getByRole('button', { name: '应用封面' }).evaluate((button) => getComputedStyle(button).backgroundColor),
+      'rgb(0, 113, 227)',
+      '封面抽屉的主操作按钮必须保持蓝色可见，不能因 Portal 脱离主题变量作用域而变透明',
+    );
     const drawerGeometry = await coverDialog.evaluate((dialog) => ({
       directPortal: dialog.parentElement?.parentElement === document.body,
       widthRatio: dialog.getBoundingClientRect().width / window.innerWidth,

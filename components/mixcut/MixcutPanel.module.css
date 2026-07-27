@@ -4,7 +4,8 @@
  * 注意：骨架列模型为 CSS 变量驱动（--navw/--repw/--rgtw），预览态网格定义必须在 .colOffA 之后且不受其影响（规格 §8.1）。
  */
 
-.shell {
+.shell,
+.coverDrawerBackdrop {
   --bg: #f5f5f7;
   --paper: #ffffff;
   --line: rgba(0, 0, 0, .08);
@@ -27,7 +28,9 @@
   --mixcut-ink: #1d1d1f;
   --mixcut-secondary: #6e6e73;
   --mixcut-line: #e5e5ea;
+}
 
+.shell {
   display: flex;
   width: min(1440px, calc(100vw - 48px));
   /* 父容器是全局 980px 居中栏，混剪工作台按视口宽度居中突破（不用 transform，避免影响 fixed 抽屉） */
