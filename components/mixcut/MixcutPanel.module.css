@@ -47,6 +47,11 @@
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
+.shell[data-active-step='2'] {
+  height: calc(100dvh - 32px);
+  min-height: 560px;
+  max-height: none;
+}
 .shell button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 .shell button:disabled { cursor: not-allowed; }
 .mono, .shell select, .dur, .tc, .cd, .val { font-variant-numeric: tabular-nums; }
@@ -171,10 +176,7 @@
 .panelGrow .panelList { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* ---- 主区 ---- */
-/* overflow-y:auto 是第 3 步「预览大但窗口矮时整列下滚」的关键（规格 §6.3/§8.3）：第 3 步没有
-   .stepScroll 包一层，工具行+大纸直接是 mainCol 的子节点，撑高时必须让 mainCol 自己滚，
-   否则会被 .shell{overflow:hidden} 直接裁掉、时间轴整条消失且无法触达。对 1/2/4 步无副作用：
-   那几步的内容高度恒等于 mainCol（内部 .stepScroll 自己吃掉多余高度），不会真的触发这条滚动。 */
+/* 第 3 步把外层页面滚动封顶在编辑正文，同时保留右侧属性栏的独立滚动。 */
 .mainCol { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 12px 12px 12px 0; overflow-y: auto; }
 .bodyPreview .mainCol { padding-left: 0; }
 .mainCol > .errorBanner { display: flex; flex: none; }

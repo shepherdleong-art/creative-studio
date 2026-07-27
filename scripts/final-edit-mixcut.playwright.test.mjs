@@ -426,6 +426,89 @@ try {
     await assertPreviewGeometry('1024×1000');
     await page.setViewportSize({ width: 1280, height: 650 });
     await assertPreviewGeometry('1280×650（规格 §9 最小验收窗口）');
+    const previewPageScroll = await page.evaluate(() => {
+      window.scrollTo(0, 0);
+      const tabs = document.querySelector('nav[aria-label="项目工作台分区"]');
+      const timeline = document.querySelector('section[aria-label="智能混剪时间轴"]');
+      const previewMain = timeline?.closest('main');
+      if (!(tabs instanceof HTMLElement) || !(timeline instanceof HTMLElement) || !(previewMain instanceof HTMLElement)) {
+        throw new Error('正式预览页面缺少流程栏、时间线或主编辑列');
+      }
+      previewMain.scrollTop = 0;
+      const tabsTopBefore = tabs.getBoundingClientRect().top;
+      timeline.scrollIntoView({ block: 'end' });
+      const timelineRect = timeline.getBoundingClientRect();
+      return {
+        pageY: window.scrollY,
+        previewMainY: previewMain.scrollTop,
+        tabsTopBefore,
+        tabsTopAfter: tabs.getBoundingClientRect().top,
+        timelineTop: timelineRect.top,
+        timelineBottom: timelineRect.bottom,
+        viewportHeight: window.innerHeight,
+      };
+    });
+    assert.ok(previewPageScroll.pageY > 0, '矮屏查看时间线时必须滚动浏览器页面');
+    assert.ok(previewPageScroll.tabsTopAfter < previewPageScroll.tabsTopBefore, '顶部流程栏必须随浏览器页面滚动离开视口');
+    assert.ok(previewPageScroll.timelineTop >= 0 && previewPageScroll.timelineBottom <= previewPageScroll.viewportHeight + 1, '时间线必须能仅靠浏览器页面滚动完整进入矮屏视口');
+
+    await page.setViewportSize({ width: 2048, height: 1072 });
+    const cappedPreviewScroll = await page.evaluate(() => {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      const appHeader = document.querySelector('body > header');
+      const timeline = document.querySelector('section[aria-label="智能混剪时间轴"]');
+      const stage = document.querySelector('main[aria-label="成片预览"] canvas')?.parentElement;
+      const previewBody = timeline?.closest('[class*="bodyPreview"]');
+      const rightPanel = previewBody ? [...previewBody.querySelectorAll('aside')].at(-1) : null;
+      if (!(appHeader instanceof HTMLElement) || !(timeline instanceof HTMLElement) || !(stage instanceof HTMLElement) || !(previewBody instanceof HTMLElement) || !(rightPanel instanceof HTMLElement)) {
+        throw new Error('正式预览页面缺少全局顶栏、预览、时间线或字幕样式栏');
+      }
+      const headerRect = appHeader.getBoundingClientRect();
+      const bodyRect = previewBody.getBoundingClientRect();
+      const stageRect = stage.getBoundingClientRect();
+      const timelineRect = timeline.getBoundingClientRect();
+      return {
+        pageY: window.scrollY,
+        headerBottom: headerRect.bottom,
+        bodyTop: bodyRect.top,
+        stageTop: stageRect.top,
+        stageBottom: stageRect.bottom,
+        timelineTop: timelineRect.top,
+        timelineBottom: timelineRect.bottom,
+        viewportHeight: window.innerHeight,
+        rightScrollTop: rightPanel.scrollTop,
+        rightScrollHeight: rightPanel.scrollHeight,
+        rightClientHeight: rightPanel.clientHeight,
+      };
+    });
+    assert.ok(Math.abs(cappedPreviewScroll.bodyTop - cappedPreviewScroll.headerBottom) <= 1, '页面最大滚动位置必须让预览正文顶边贴住全局顶栏');
+    assert.ok(cappedPreviewScroll.stageTop >= cappedPreviewScroll.headerBottom, '页面滚到底时视频预览仍必须完整留在视口内');
+    assert.ok(cappedPreviewScroll.stageBottom <= cappedPreviewScroll.timelineTop + 0.5, '页面滚到底时视频预览不得覆盖时间线');
+    assert.ok(cappedPreviewScroll.timelineBottom <= cappedPreviewScroll.viewportHeight + 1, '页面滚到底时完整时间线必须留在视口内');
+    assert.ok(cappedPreviewScroll.rightScrollHeight > cappedPreviewScroll.rightClientHeight + 1, '字幕样式栏必须恢复独立纵向滚动');
+
+    await page.getByText('字幕样式', { exact: true }).hover();
+    await page.mouse.wheel(0, 600);
+    await expectEventually(async () => await page.evaluate(() => {
+      const timeline = document.querySelector('section[aria-label="智能混剪时间轴"]');
+      const previewBody = timeline?.closest('[class*="bodyPreview"]');
+      const rightPanel = previewBody ? [...previewBody.querySelectorAll('aside')].at(-1) : null;
+      return rightPanel instanceof HTMLElement && rightPanel.scrollTop > 0;
+    }), '页面到达上限后，滚轮必须只推进字幕样式栏');
+    const cappedPreviewAfterRightScroll = await page.evaluate(() => {
+      const timeline = document.querySelector('section[aria-label="智能混剪时间轴"]');
+      const stage = document.querySelector('main[aria-label="成片预览"] canvas')?.parentElement;
+      const previewBody = timeline?.closest('[class*="bodyPreview"]');
+      const rightPanel = previewBody ? [...previewBody.querySelectorAll('aside')].at(-1) : null;
+      return {
+        pageY: window.scrollY,
+        stageTop: stage?.getBoundingClientRect().top ?? -1,
+        rightScrollTop: rightPanel?.scrollTop ?? 0,
+      };
+    });
+    assert.equal(cappedPreviewAfterRightScroll.pageY, cappedPreviewScroll.pageY, '字幕样式滚动不得继续推动浏览器页面');
+    assert.ok(Math.abs(cappedPreviewAfterRightScroll.stageTop - cappedPreviewScroll.stageTop) <= 0.5, '字幕样式滚动时视频预览必须保持原位');
+    assert.ok(cappedPreviewAfterRightScroll.rightScrollTop > cappedPreviewScroll.rightScrollTop, '字幕样式滚动必须能访问下方功能');
     await page.setViewportSize({ width: 1440, height: 1100 });
     await assertPreviewGeometry('1440×1100');
 
