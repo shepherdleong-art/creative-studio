@@ -66,6 +66,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const emittedPlayheadsRef = useRef<number[]>([]);
   const lastSeekRequestIdRef = useRef<string | number | undefined>(seekRequestId);
   const [playing, setPlaying] = useState(false);
+  const [showSafeArea, setShowSafeArea] = useState(false);
 
   const bodyDurationSec = variant.timeline.bodyFrames / FPS;
   const totalSec = INTRO_SEC + bodyDurationSec;
@@ -401,6 +402,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
           <canvas ref={foregroundCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec < INTRO_SEC || !activeAsset ? styles.previewInactive : ''}`} />
           {!showSelectedMaterial && playheadSec >= INTRO_SEC && !activeAsset && <div className={styles.previewGap}><strong>这里没有画面</strong><small>把左侧素材拖到视频轨，或使用 AI 补齐缺口</small></div>}
           <canvas ref={canvasRef} className={`${styles.previewCanvas} ${canDragText ? styles.draggableOverlay : ''}`} onPointerDown={beginTextDrag} />
+          {showSafeArea && <div className={styles.previewSafeArea} aria-label="4% 预览安全区" />}
           <span className={styles.previewBadge}>{showSelectedMaterial ? '选中素材' : '成片时间线'}</span>
         </div>
       </div>
@@ -408,6 +410,13 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         <button type="button" className={styles.playButton} aria-label={playing ? '暂停' : '播放成片'} onClick={() => void togglePlayback()}>{playing ? 'Ⅱ' : '▶'}</button>
         <span className={styles.timecode}>{formatTime(playheadSec)} / {formatTime(totalSec)}</span>
         <input aria-label="播放位置" type="range" min={0} max={totalSec} step={1 / FPS} value={playheadSec} onChange={(event) => seek(Number(event.target.value))} />
+        <button
+          type="button"
+          className={`${styles.actionButton} ${showSafeArea ? styles.safeAreaButtonActive : ''}`}
+          aria-label={showSafeArea ? '隐藏安全区' : '显示安全区'}
+          aria-pressed={showSafeArea}
+          onClick={() => setShowSafeArea((visible) => !visible)}
+        >安全区</button>
         <button type="button" className={styles.actionButton} aria-label="全屏预览" onClick={() => void enterFullscreen()}>全屏</button>
       </div>
       <audio ref={narrationRef} preload="metadata" src={`/api/final-edit-groups/${group.id}/narration`} />

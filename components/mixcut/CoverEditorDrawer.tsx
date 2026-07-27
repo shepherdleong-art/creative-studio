@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { OUTPUT_PRESETS, type CoverEditorDraft, type CoverPresetV2, type FinalEditGroupView, type FinalEditVariantView, type OutputPresetId, type TextStyle } from '@/lib/final-edit/types';
-import { drawText, fitTextStyleToSingleLine, isTextStyleWithinSafeArea, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
+import { drawText, fitTextStyleToSingleLine, horizontalTextBounds, isTextStyleWithinSafeArea, measureSingleLineText, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
 import styles from './MixcutPanel.module.css';
 
 interface CoverPresetView extends CoverPresetV2 {
@@ -43,7 +43,6 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   onApply: (draft: CoverEditorDraft) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<CoverEditorDraft>(() => cloneDraft(group, variant));
-  const [selectedTarget, setSelectedTarget] = useState<'frame' | 'primary' | 'secondary'>('frame');
   const [fonts, setFonts] = useState<string[]>(['PingFang SC']);
   const [presets, setPresets] = useState<CoverPresetView[]>([]);
   const [presetName, setPresetName] = useState('');
@@ -200,10 +199,36 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   const patchStyle = (part: 'primary' | 'secondary', patch: Partial<TextStyle>) => setDraft((current) => ({ ...current, [part]: { ...current[part], style: { ...current[part].style, ...patch } } }));
   const patchFraming = (patch: Partial<CoverEditorDraft['framing']>) => setDraft((current) => ({ ...current, framing: { ...current.framing, ...patch } }));
 
+  const textTargetAtPoint = (clientX: number, clientY: number): 'primary' | 'secondary' | null => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = (clientX - rect.left) / Math.max(1, rect.width) * canvas.width;
+    const y = (clientY - rect.top) / Math.max(1, rect.height) * canvas.height;
+    const hits = (['primary', 'secondary'] as const).flatMap((part) => {
+      const value = draft[part];
+      const style = value.style;
+      const width = measureSingleLineText(context, value.text, style);
+      const { left, right } = horizontalTextBounds(canvas.width, width, style);
+      const padding = Math.max(14, style.fontSizePx * style.scale * 0.2);
+      const halfHeight = style.fontSizePx * style.scale * 0.65 + (style.stroke.enabled ? style.stroke.widthPx : 0);
+      const centerY = style.y * canvas.height;
+      return x >= left - padding && x <= right + padding && y >= centerY - halfHeight - padding && y <= centerY + halfHeight + padding
+        ? [{ part, distance: Math.abs(y - centerY) }]
+        : [];
+    });
+    hits.sort((left, right) => left.distance - right.distance);
+    return hits[0]?.part || null;
+  };
+
   const beginCanvasDrag = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (busy) return;
+    const dragTarget = textTargetAtPoint(event.clientX, event.clientY);
+    if (!dragTarget) return;
     event.preventDefault();
     const target = event.currentTarget;
+    target.style.cursor = 'grabbing';
     target.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startY = event.clientY;
@@ -212,15 +237,12 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
       const rect = target.getBoundingClientRect();
       const dx = (pointer.clientX - startX) / Math.max(1, rect.width);
       const dy = (pointer.clientY - startY) / Math.max(1, rect.height);
-      if (selectedTarget === 'frame') {
-        setDraft({ ...initial, framing: { ...initial.framing, offsetX: Math.max(-1, Math.min(1, initial.framing.offsetX - dx * 2)), offsetY: Math.max(-1, Math.min(1, initial.framing.offsetY - dy * 2)) } });
-      } else {
-        setDraft({ ...initial, [selectedTarget]: { ...initial[selectedTarget], style: { ...initial[selectedTarget].style, x: Math.max(0.04, Math.min(0.96, initial[selectedTarget].style.x + dx)), y: Math.max(0.04, Math.min(0.96, initial[selectedTarget].style.y + dy)) } } });
-      }
+      setDraft({ ...initial, [dragTarget]: { ...initial[dragTarget], style: { ...initial[dragTarget].style, x: Math.max(0.04, Math.min(0.96, initial[dragTarget].style.x + dx)), y: Math.max(0.04, Math.min(0.96, initial[dragTarget].style.y + dy)) } } });
     };
     const up = (pointer: PointerEvent) => {
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
+      target.style.cursor = textTargetAtPoint(pointer.clientX, pointer.clientY) ? 'grab' : 'default';
       if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
     };
     target.addEventListener('pointermove', move);
@@ -279,12 +301,20 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
             <label className={styles.fieldLabel}>截帧时间 {(draft.frameTimeUs / 1_000_000).toFixed(2)}s<input aria-label="封面截帧时间" type="range" min={0} max={Math.max(0, (source?.durationUs || 0) / 1_000_000)} step={1 / 24} value={draft.frameTimeUs / 1_000_000} onChange={(event) => setDraft((current) => ({ ...current, frameTimeUs: Math.round(Number(event.target.value) * 1_000_000) }))} /></label>
           </aside>
           <main className={styles.coverCanvasPanel}>
-            <div className={styles.coverTargetTabs}>{(['frame', 'primary', 'secondary'] as const).map((target) => <button type="button" key={target} className={selectedTarget === target ? styles.coverTargetActive : ''} onClick={() => setSelectedTarget(target)}>{target === 'frame' ? '拖动画面' : target === 'primary' ? '拖动主标题' : '拖动副标题'}</button>)}</div>
             <div className={styles.coverCanvasWrap} data-output-preset={variant.outputPreset}>
-              <canvas ref={canvasRef} onPointerDown={beginCanvasDrag} style={{ pointerEvents: busy ? 'none' : undefined }} />
+              <canvas
+                ref={canvasRef}
+                aria-label="拖动主标题或副标题"
+                onPointerDown={beginCanvasDrag}
+                onPointerMove={(event) => {
+                  if (!event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.style.cursor = textTargetAtPoint(event.clientX, event.clientY) ? 'grab' : 'default';
+                }}
+                onPointerLeave={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.style.cursor = 'default'; }}
+                style={{ pointerEvents: busy ? 'none' : undefined }}
+              />
               <div className={styles.coverSafeArea} aria-label="4% 导出安全区" />
             </div>
-            <p>拖动画面或标题定位；虚线框为四边 4% 导出安全区。</p>
+            <p>直接拖动主标题或副标题定位；画面缩放与位置请使用右侧滑杆。虚线框为四边 4% 导出安全区。</p>
           </main>
           <aside className={styles.coverControlsPanel}>
             <section><h3>画面</h3><Range label="缩放" value={draft.framing.scale} min={1} max={3} step={0.05} onChange={(scale) => patchFraming({ scale })} /><Range label="水平" value={draft.framing.offsetX} min={-1} max={1} step={0.02} onChange={(offsetX) => patchFraming({ offsetX })} /><Range label="垂直" value={draft.framing.offsetY} min={-1} max={1} step={0.02} onChange={(offsetY) => patchFraming({ offsetY })} /></section>

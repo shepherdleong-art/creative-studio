@@ -7,7 +7,8 @@ import { StyleEditor } from '@/components/final-edit/FinalEditInspector';
 import { drawText, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
-import { FINAL_EDIT_FPS, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
+import { timelineGaps } from '@/lib/final-edit/domain';
+import { FINAL_EDIT_FPS, FINAL_EDIT_MIN_CLIP_FRAMES, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
 import { MixcutTimeline } from './MixcutTimeline';
 import { TrimEditor } from './TrimEditor';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
@@ -55,6 +56,10 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
   const trimAsset = trimClip ? group.assets.find((asset) => asset.videoJobId === trimClip.videoJobId) ?? null : null;
   const usedVideoJobIds = useMemo(() => new Set(variant?.timeline.clips.map((clip) => clip.videoJobId) ?? []), [variant]);
+  const firstInsertableGap = useMemo(() => variant
+    ? timelineGaps(variant.timeline.bodyFrames, variant.timeline.clips)
+      .find((gap) => gap.endFrame - gap.startFrame >= FINAL_EDIT_MIN_CLIP_FRAMES) || null
+    : null, [variant]);
 
   useEffect(() => { groupRef.current = group; }, [group]);
   useEffect(() => {
@@ -157,6 +162,25 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     });
   };
 
+  const insertClipAsset = (asset: FinalEditAssetView) => {
+    if (!firstInsertableGap || busy) return;
+    const sourceFrames = Math.max(0, Math.floor((asset.durationUs / 1_000_000) * FPS));
+    const length = Math.min(firstInsertableGap.endFrame - firstInsertableGap.startFrame, sourceFrames);
+    if (length < FINAL_EDIT_MIN_CLIP_FRAMES) {
+      setMessage('该素材不足 0.5 秒，无法插入时间轴');
+      return;
+    }
+    void applyVariant({
+      type: 'insert_clip',
+      videoJobId: asset.videoJobId,
+      sourceFingerprint: asset.fingerprint,
+      sourceInFrame: 0,
+      sourceOutFrame: length,
+      timelineInFrame: firstInsertableGap.startFrame,
+      timelineOutFrame: firstInsertableGap.startFrame + length,
+    });
+  };
+
   const openTrim = (clip: TimelineClip) => {
     setSelectedClipId(clip.id);
     setTrimClip(clip);
@@ -199,17 +223,25 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         <button type="button" className={styles.collapseBtn} title="隐藏素材替换" onClick={() => onRepCollapse(true)}>‹</button>
         <button type="button" className={styles.expandBtn} title="展开素材替换" onClick={() => onRepCollapse(false)}>›</button>
         <section className={`${styles.panel} ${styles.panelGrow}`}>
-          <h3><Icon name="retry" size={15} />素材替换</h3>
-          <div className={styles.hintLine} style={{ color: '#B25E00' }}>先在时间线选中片段，再点下面素材直接替换；仅显示本次参与混剪的素材。</div>
+          <h3><Icon name="retry" size={15} />素材调整</h3>
+          <div className={styles.hintLine} style={{ color: '#B25E00' }}>{selectedClip
+            ? '点击素材可替换当前片段；右键时间轴片段可删除。'
+            : firstInsertableGap
+              ? `时间轴有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口，点击素材即可从缺口起点插入。`
+              : '先在时间轴选中片段再替换；右键片段可删除并腾出缺口。'}</div>
           <div className={styles.replaceList}>
             {group.assets.map((asset) => (
               <button
                 type="button"
                 key={asset.assetKey || asset.videoJobId}
                 className={`${styles.rep} ${selectedClip?.videoJobId === asset.videoJobId ? styles.repActive : ''}`}
-                disabled={busy || !selectedClip}
-                onClick={() => replaceClipAsset(asset)}
-                title={selectedClip ? `用「${asset.filename}」替换选中片段` : '先在时间线选中一个片段'}
+                disabled={busy || (!selectedClip && !firstInsertableGap)}
+                onClick={() => selectedClip ? replaceClipAsset(asset) : insertClipAsset(asset)}
+                title={selectedClip
+                  ? `用「${asset.filename}」替换选中片段`
+                  : firstInsertableGap
+                    ? `把「${asset.filename}」插入第一个时间轴缺口`
+                    : '先删除片段腾出缺口，或选中一个片段进行替换'}
               >
                 <span className={styles.repThumb}>
                   {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <Icon name="video" size={14} />}
@@ -233,7 +265,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           <span className={`${styles.chip} ${styles.chipGrey}`}>{orderedClips.length} 片段</span>
           <span className={`${styles.chip} ${styles.chipBlue}`}>总时长 {totalSec.toFixed(1)}s</span>
           <span className={`${styles.chip} ${narrationMatch ? styles.chipGreen : styles.chipGrey}`}>口播 {narrationSec.toFixed(1)}s {narrationMatch ? '✓' : '⚠'}</span>
-          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击片段/字幕编辑</span>
+          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键删除 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击编辑 · 右键删除</span>
           {selectedMatchReason && selectedMatchReasonLabel && (
             <span className={`${styles.chip} ${styles.chipBlue}`}>匹配：{selectedMatchReasonLabel} · {selectedMatchReason.score.toFixed(2)}</span>
           )}

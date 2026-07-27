@@ -350,6 +350,30 @@ try {
           savedGroup = { ...savedGroup, variants: [nextVariant] };
           return json({ view: nextVariant });
         }
+        if (body.type === 'delete_clip') {
+          const clips = currentVariant.timeline.clips.filter((clip) => clip.id !== body.clipId);
+          const nextVariant = { ...currentVariant, revision: currentVariant.revision + 1, timeline: { ...currentVariant.timeline, clips } };
+          savedGroup = { ...savedGroup, variants: [nextVariant] };
+          return json({ view: nextVariant });
+        }
+        if (body.type === 'insert_clip') {
+          const clip = {
+            id: `clip-inserted-${variantPatchBodies.length}`,
+            videoJobId: body.videoJobId,
+            sourceFingerprint: body.sourceFingerprint,
+            sourceInFrame: body.sourceInFrame,
+            sourceOutFrame: body.sourceOutFrame,
+            timelineInFrame: body.timelineInFrame,
+            timelineOutFrame: body.timelineOutFrame,
+            boundSegmentId: null,
+            framing: { scale: 1, offsetX: 0, offsetY: 0 },
+            manualUseOverride: true,
+          };
+          const clips = [...currentVariant.timeline.clips, clip];
+          const nextVariant = { ...currentVariant, revision: currentVariant.revision + 1, timeline: { ...currentVariant.timeline, clips } };
+          savedGroup = { ...savedGroup, variants: [nextVariant] };
+          return json({ view: nextVariant });
+        }
         return json({ view: currentVariant });
       }
       if (pathname === '/api/final-edit-variants/variant-e2e/render' && request.method() === 'POST') {
@@ -553,6 +577,7 @@ try {
     await page.getByLabel('主标题文字').fill('取消不保存');
     await page.getByRole('button', { name: '取消', exact: true }).click();
     assert.equal(groupPatchBodies.length, groupWritesBeforeCancel, '点击取消不得提交任何 group PATCH');
+    await page.setViewportSize({ width: 1440, height: 720 });
     coverDialog = await openCoverDrawer();
     assert.equal(await page.getByLabel('主标题文字').inputValue(), '正式页面测试', '取消后重开必须从持久化状态重新克隆草稿');
     await page.getByLabel('主标题文字').fill('Esc 不保存');
@@ -588,13 +613,14 @@ try {
     await secondaryControls.locator('input[type="number"]').nth(1).fill('2');
     const zoomRange = coverDialog.getByRole('heading', { name: '画面' }).locator('xpath=..').locator('input[type="range"]').first();
     await zoomRange.fill('1.4');
-    await page.getByRole('button', { name: '拖动主标题' }).click();
     const coverCanvas = coverDialog.locator('canvas');
     const coverCanvasBox = await coverCanvas.boundingBox();
     assert.ok(coverCanvasBox, '真实封面画布必须可交互');
-    await page.mouse.move(coverCanvasBox.x + coverCanvasBox.width / 2, coverCanvasBox.y + coverCanvasBox.height / 2);
+    assert.ok(Math.abs(coverCanvasBox.width / coverCanvasBox.height - 9 / 16) < 0.01, `9:16 封面画布在低视口下也不得被纵向压扁或拉伸（实测 ${coverCanvasBox.width.toFixed(1)}×${coverCanvasBox.height.toFixed(1)}）`);
+    assert.equal(await page.getByRole('button', { name: /拖动(画面|主标题|副标题)/ }).count(), 0, '封面不得再显示拖动目标切换按钮');
+    await page.mouse.move(coverCanvasBox.x + coverCanvasBox.width / 2, coverCanvasBox.y + coverCanvasBox.height * 0.35);
     await page.mouse.down();
-    await page.mouse.move(coverCanvasBox.x + coverCanvasBox.width / 2 + 28, coverCanvasBox.y + coverCanvasBox.height / 2 + 16, { steps: 4 });
+    await page.mouse.move(coverCanvasBox.x + coverCanvasBox.width / 2 + 28, coverCanvasBox.y + coverCanvasBox.height * 0.35 + 16, { steps: 4 });
     await page.mouse.up();
     const coverApplyResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-groups/group-e2e') && response.request().method() === 'PATCH');
     await page.getByRole('button', { name: '应用封面' }).click();
@@ -614,6 +640,7 @@ try {
     assert.ok(coverCommand.draft.primary.style.x > 0.5, '画布拖拽必须改变主标题位置');
     assert.deepEqual(coverCommand.draft.framing, { scale: 1.4, offsetX: 0, offsetY: 0 });
 
+    await page.setViewportSize({ width: 1440, height: 1100 });
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
     await page.locator('[data-track="video"]').waitFor();
@@ -647,6 +674,16 @@ try {
     assert.equal(savedPresets.length, 0, '删除预设必须持久化到服务端');
     await page.getByRole('button', { name: '取消', exact: true }).click();
 
+    const safeAreaButton = page.locator('button[aria-label="显示安全区"]');
+    assert.equal(await safeAreaButton.count(), 1, '视频预览必须渲染安全区按钮');
+    assert.ok(await safeAreaButton.boundingBox(), '安全区按钮在竖屏预览底栏必须可见且可点击');
+    await safeAreaButton.click();
+    const hideSafeAreaButton = page.locator('button[aria-label="隐藏安全区"]');
+    assert.equal(await hideSafeAreaButton.getAttribute('aria-pressed'), 'true', '安全区按钮必须暴露开启状态');
+    await page.getByLabel('4% 预览安全区').waitFor();
+    await hideSafeAreaButton.click();
+    assert.equal(await page.getByLabel('4% 预览安全区').count(), 0, '再次点击必须隐藏预览安全区');
+
     const playbackPosition = page.getByRole('slider', { name: '播放位置' });
     await playbackPosition.fill('4');
     const timelineContent = page.locator('[data-testid="mixcut-timeline-scroll"] > div');
@@ -661,6 +698,12 @@ try {
     await playhead.scrollIntoViewIfNeeded();
     const playheadBox = await playhead.boundingBox();
     assert.ok(playheadBox, '播放头必须可拖动');
+    const playheadVisual = await playhead.evaluate((element) => ({
+      backgroundColor: getComputedStyle(element).backgroundColor,
+      height: element.getBoundingClientRect().height,
+    }));
+    assert.notEqual(playheadVisual.backgroundColor, 'rgba(0, 0, 0, 0)', '播放头必须显示贯穿时间轴的实线，不能只剩顶部小点');
+    assert.ok(playheadVisual.height > 150, '播放头实线必须贯穿时间尺与全部轨道');
     await page.mouse.move(playheadBox.x + playheadBox.width / 2, playheadBox.y + playheadBox.height / 2);
     await page.mouse.down();
     await page.mouse.move(contentBox.x + 1, playheadBox.y + playheadBox.height / 2, { steps: 4 });
@@ -772,6 +815,23 @@ try {
     assert.ok(dialogTrimRequest.sourceInFrame > 0, '向右拖动选择框必须推迟源入点');
     assert.equal(dialogTrimRequest.sourceOutFrame - dialogTrimRequest.sourceInFrame, 120, 'Trim 对话框拖动只平移窗口，不改变片段时长');
     await page.getByText(/截取片段 #1/).waitFor({ state: 'detached' });
+
+    const deleteResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
+    await page.locator('[data-clip-id="clip-a"]').click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '删除片段' }).click();
+    await deleteResponse;
+    assert.equal(variantPatchBodies.at(-1)?.type, 'delete_clip', '右键删除必须提交持久化 delete_clip 命令');
+    assert.equal(variantPatchBodies.at(-1)?.clipId, 'clip-a');
+    await page.locator('[data-clip-id="clip-a"]').waitFor({ state: 'detached' });
+
+    const insertResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
+    await page.getByRole('button', { name: /a\.mp4/ }).click();
+    await insertResponse;
+    const insertRequest = variantPatchBodies.at(-1);
+    assert.equal(insertRequest?.type, 'insert_clip', '删除形成缺口后点击素材必须提交插入命令');
+    assert.equal(insertRequest?.videoJobId, 'video-a');
+    assert.equal(insertRequest?.timelineInFrame, 120, '素材必须从第一个视频缺口起点插入');
+    await page.locator('[data-clip-id^="clip-inserted-"]').waitFor();
 
     const playButton = page.getByRole('button', { name: '播放成片' });
     await playButton.click();

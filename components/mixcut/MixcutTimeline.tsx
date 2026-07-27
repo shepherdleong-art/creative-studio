@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditAssetView, type FinalEditVariantView, type SubtitleCue, type TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
 import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
@@ -68,6 +69,7 @@ export function MixcutTimeline({
 }) {
   const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
+  const [contextMenu, setContextMenu] = useState<{ clipId: string; x: number; y: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodySec = variant.timeline.bodyFrames / FPS;
   const totalSec = (INTRO_FRAMES + variant.timeline.bodyFrames) / FPS;
@@ -86,6 +88,18 @@ export function MixcutTimeline({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('blur', close);
+    window.addEventListener('keydown', keydown);
+    return () => {
+      window.removeEventListener('blur', close);
+      window.removeEventListener('keydown', keydown);
+    };
+  }, [contextMenu]);
 
   const seekFromPointer = (clientX: number) => {
     const scroll = scrollRef.current;
@@ -150,6 +164,11 @@ export function MixcutTimeline({
                 onSelect={onSelectClip}
                 onCommand={onVariantCommand}
                 onTrimClip={onTrimClip}
+                onOpenContextMenu={(clientX, clientY) => setContextMenu({
+                  clipId: clip.id,
+                  x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
+                  y: Math.max(8, Math.min(clientY, window.innerHeight - 86)),
+                })}
               />
             ))}
           </div>
@@ -188,11 +207,37 @@ export function MixcutTimeline({
           />
         </div>
       </div>
+      {contextMenu && typeof document !== 'undefined' && createPortal(
+        <div className={styles.timelineContextLayer} onPointerDown={() => setContextMenu(null)}>
+          <div
+            role="menu"
+            aria-label="视频片段操作"
+            className={styles.timelineContextMenu}
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className={styles.timelineContextDanger}
+              disabled={disabled}
+              onClick={() => {
+                const clipId = contextMenu.clipId;
+                setContextMenu(null);
+                void onVariantCommand({ type: 'delete_clip', clipId }).then((accepted) => {
+                  if (accepted && selectedClipId === clipId) onSelectClip('');
+                });
+              }}
+            >删除片段</button>
+          </div>
+        </div>,
+        document.body,
+      )}
     </section>
   );
 }
 
-function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, onSelect, onCommand, onTrimClip }: {
+function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, onSelect, onCommand, onTrimClip, onOpenContextMenu }: {
   clip: TimelineClip;
   index: number;
   clips: TimelineClip[];
@@ -205,6 +250,7 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
   onSelect: (clipId: string) => void;
   onCommand: (command: VariantCommandInput) => Promise<boolean>;
   onTrimClip: (clip: TimelineClip) => void;
+  onOpenContextMenu: (clientX: number, clientY: number) => void;
 }) {
   const initial: ClipDraft = { sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame };
   const [draft, setDraft] = useState(initial);
@@ -261,8 +307,15 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
       className={`${styles.clip} ${selected ? styles.clipSel : ''}`}
       style={{ left, width, background: 'linear-gradient(135deg,#3a3d46,#22242b)' }}
       onPointerDown={(event) => begin('move', event)}
+      onContextMenu={(event) => {
+        if (disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect(clip.id);
+        onOpenContextMenu(event.clientX, event.clientY);
+      }}
       onDoubleClick={() => !disabled && onTrimClip(clip)}
-      title="单击选中 · 拖拽排序 · 双击截取时段"
+      title="单击选中 · 拖拽排序 · 双击截取时段 · 右键更多操作"
     >
       {thumbnailUrl && <img src={thumbnailUrl} alt="" draggable={false} />}
       <span className={styles.clipNo}>#{index + 1}</span>

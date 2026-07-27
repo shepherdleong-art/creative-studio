@@ -102,7 +102,7 @@ export function measureSingleLineText(ctx: CanvasRenderingContext2D, text: strin
     + (style.shadow.enabled ? style.shadow.blurPx * 2 + shadowOffsetX : 0);
 }
 
-function horizontalTextBounds(canvasWidth: number, measuredWidth: number, style: TextStyle) {
+export function horizontalTextBounds(canvasWidth: number, measuredWidth: number, style: TextStyle) {
   const anchor = style.x * canvasWidth;
   if (style.align === 'left') return { left: anchor, right: anchor + measuredWidth };
   if (style.align === 'right') return { left: anchor - measuredWidth, right: anchor };
