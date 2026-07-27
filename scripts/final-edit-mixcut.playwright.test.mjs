@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { alphaBoundsWidth, overlayMeasurementLimit, textInterval } from '../lib/final-edit/overlay-measurement.ts';
 
 const transparentPixel = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
@@ -195,6 +196,8 @@ try {
     const groupPatchBodies = [];
     const presetPostBodies = [];
     const overlayPostBodies = [];
+    const overlayMeasurementFailures = [];
+    let overlayForcedError = '';
     const renderPostBodies = [];
     const revealRequests = [];
     let savedPresets = [];
@@ -260,7 +263,20 @@ try {
       if (pathname === '/api/final-edit-groups/group-e2e/cover-frame') return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'GET') return json(savedGroup);
       if (pathname === '/api/final-edit-groups/group-e2e/overlay-bundles/9x16' && request.method() === 'POST') {
-        overlayPostBodies.push(request.postDataJSON());
+        const body = request.postDataJSON();
+        overlayPostBodies.push(body);
+        if (overlayForcedError) return json({ error: overlayForcedError }, 400);
+        const styles = savedGroup.textStyles['9x16'];
+        const widths = body.manifest.measurements;
+        const primary = textInterval(widths.titlePrimaryWidth, styles.coverPrimary.x * 1080, styles.coverPrimary.align);
+        const secondary = textInterval(widths.titleSecondaryWidth, styles.coverSecondary.x * 1080, styles.coverSecondary.align);
+        const expectedTitleWidth = Math.max(primary[1], secondary[1]) - Math.min(primary[0], secondary[0]);
+        const actualTitleWidth = await alphaBoundsWidth(Buffer.from(body.titlePngBase64, 'base64'));
+        const limit = overlayMeasurementLimit(expectedTitleWidth);
+        if (actualTitleWidth > limit) {
+          overlayMeasurementFailures.push({ actualTitleWidth, expectedTitleWidth, limit });
+          return json({ error: 'overlay_measurement_mismatch' }, 400);
+        }
         return json({ id: 'overlay-e2e' }, 201);
       }
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'PATCH') {
@@ -879,10 +895,21 @@ try {
     await exportStep.getByText('工作台/Mixcut E2E 项目/成片/', { exact: true }).waitFor();
     assert.equal(await page.getByText('model-e2e', { exact: true }).count(), 0, '导出命名不得误用 projects.model');
 
-    const renderResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e/render') && response.request().method() === 'POST');
+    overlayForcedError = 'overlay_measurement_mismatch';
+    const rejectedOverlayResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-groups/group-e2e/overlay-bundles/9x16') && response.request().method() === 'POST');
     await page.getByRole('button', { name: '开始导出' }).click();
-    await renderResponse;
-    assert.equal(overlayPostBodies.length, 1, '开始导出必须先冻结当前画幅的叠加层');
+    await rejectedOverlayResponse;
+    await page.getByText('文字图层与当前样式不一致，请返回预览刷新后重试', { exact: true }).waitFor();
+    assert.equal(renderPostBodies.length, 0, '图层校验失败时不得创建渲染任务');
+    overlayForcedError = '';
+
+    const overlayResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-groups/group-e2e/overlay-bundles/9x16') && response.request().method() === 'POST');
+    const renderResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e/render') && response.request().method() === 'POST').catch(() => null);
+    await page.getByRole('button', { name: '开始导出' }).click();
+    await overlayResponse;
+    assert.deepEqual(overlayMeasurementFailures, [], `浏览器生成的合法标题图层不得被生产宽度校验误拒：${JSON.stringify(overlayMeasurementFailures)}`);
+    assert.ok(await renderResponse, '合法图层上传成功后必须继续创建渲染任务');
+    assert.equal(overlayPostBodies.length, 2, '图层校验重试时，每次开始导出都必须重新冻结当前画幅的叠加层');
     assert.equal(renderPostBodies.length, 1, '开始导出必须只创建一个渲染任务');
     assert.equal(renderPostBodies[0].groupId, savedGroup.id);
     assert.equal(renderPostBodies[0].expectedGroupRevision, savedGroup.revision);

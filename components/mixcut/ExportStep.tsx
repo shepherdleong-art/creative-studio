@@ -37,9 +37,13 @@ const PHASE_LABELS: Record<string, string> = {
   succeeded: '导出完成',
 };
 
+const EXPORT_ERROR_MESSAGES: Record<string, string> = {
+  overlay_measurement_mismatch: '文字图层与当前样式不一致，请返回预览刷新后重试',
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.message || body.error || `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(body.message || EXPORT_ERROR_MESSAGES[body.error] || body.error || `HTTP ${response.status}`);
   return body as T;
 }
 

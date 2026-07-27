@@ -8,26 +8,9 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { OUTPUT_PRESETS, type OutputPresetId } from '@/lib/final-edit/types';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
+import { alphaBoundsWidth, overlayMeasurementLimit, textInterval } from '@/lib/final-edit/overlay-measurement';
 
 function digest(value: string | Buffer) { return crypto.createHash('sha256').update(value).digest('hex'); }
-
-async function alphaBoundsWidth(buffer: Buffer): Promise<number> {
-  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  let minX = info.width;
-  let maxX = -1;
-  for (let y = 0; y < info.height; y += 1) {
-    for (let x = 0; x < info.width; x += 1) {
-      if (data[(y * info.width + x) * info.channels + 3] > 0) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
-    }
-  }
-  return maxX < minX ? 0 : maxX - minX + 1;
-}
-
-function textInterval(width: number, x: number, align: 'left' | 'center' | 'right') {
-  if (align === 'left') return [x, x + width] as const;
-  if (align === 'right') return [x - width, x] as const;
-  return [x - width / 2, x + width / 2] as const;
-}
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string; preset: string }> }) {
   try {
@@ -60,9 +43,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const primaryInterval = textInterval(Number(measurements.titlePrimaryWidth), styles.coverPrimary.x * expected.width, styles.coverPrimary.align);
     const secondaryInterval = textInterval(Number(measurements.titleSecondaryWidth), styles.coverSecondary.x * expected.width, styles.coverSecondary.align);
     const expectedTitleWidth = Math.max(primaryInterval[1], secondaryInterval[1]) - Math.min(primaryInterval[0], secondaryInterval[0]);
-    if (await alphaBoundsWidth(title) > Math.ceil(expectedTitleWidth) + 4) return NextResponse.json({ error: 'overlay_measurement_mismatch' }, { status: 400 });
+    if (await alphaBoundsWidth(title) > overlayMeasurementLimit(expectedTitleWidth)) return NextResponse.json({ error: 'overlay_measurement_mismatch' }, { status: 400 });
     for (const [cueId, buffer] of Object.entries(subtitleBuffers)) {
-      if (await alphaBoundsWidth(buffer) > Math.ceil(Number(measurements.subtitleWidths?.[cueId])) + 4) return NextResponse.json({ error: 'overlay_measurement_mismatch' }, { status: 400 });
+      if (await alphaBoundsWidth(buffer) > overlayMeasurementLimit(Number(measurements.subtitleWidths?.[cueId]))) return NextResponse.json({ error: 'overlay_measurement_mismatch' }, { status: 400 });
     }
     const specHash = digest(JSON.stringify({ groupRevision: group.revision, preset, coverTitle: group.coverTitle, cues: group.subtitleCues, styles: group.textStyles[preset], renderer: 1 }));
     const existing = getDb().prepare(`SELECT id FROM final_edit_overlay_bundles WHERE groupId=? AND outputPreset=? AND specHash=? AND status='ready'`).get(id, preset, specHash) as { id: string } | undefined;

@@ -94,10 +94,15 @@ function toBase64(canvas: HTMLCanvasElement): string {
 
 export function measureSingleLineText(ctx: CanvasRenderingContext2D, text: string, style: TextStyle): number {
   ctx.font = textStyleFont(style);
+  ctx.textAlign = style.align;
+  const metrics = ctx.measureText(text);
+  const inkLeft = Number.isFinite(metrics.actualBoundingBoxLeft) ? Math.max(0, metrics.actualBoundingBoxLeft) : 0;
+  const inkRight = Number.isFinite(metrics.actualBoundingBoxRight) ? Math.max(0, metrics.actualBoundingBoxRight) : 0;
+  const inkWidth = style.align === 'center' ? Math.max(inkLeft, inkRight) * 2 : inkLeft + inkRight;
   const shadowOffsetX = style.shadow.enabled
     ? Math.abs(Math.cos(style.shadow.angleDeg * Math.PI / 180) * style.shadow.distancePx)
     : 0;
-  return ctx.measureText(text).width
+  return Math.max(metrics.width, inkWidth)
     + (style.stroke.enabled ? style.stroke.widthPx * 2 : 0)
     + (style.shadow.enabled ? style.shadow.blurPx * 2 + shadowOffsetX : 0);
 }
