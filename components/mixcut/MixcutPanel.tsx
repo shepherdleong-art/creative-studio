@@ -61,6 +61,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const [visionProviderId, setVisionProviderId] = useState('');
   const [outputPreset, setOutputPreset] = useState<OutputPresetId>('3x4');
   const [activeJob, setActiveJob] = useState<MixcutPrepareJobView | null>(null);
+  const [durationReviewGroup, setDurationReviewGroup] = useState<FinalEditGroupView | null>(null);
   const [preparedGroup, setPreparedGroup] = useState<FinalEditGroupView | null>(null);
   const [recentGroups, setRecentGroups] = useState<FinalEditGroupView[]>([]);
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -172,6 +173,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         const editingGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && group.status === 'editing');
         const latestPreparedGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && ['ready', 'partial'].includes(group.status) && group.variants.length > 0) || null;
         setPreparedGroup(latestPreparedGroup);
+        setDurationReviewGroup(latestGroup?.status === 'needs_input' && latestGroup.phase === 'duration_review' ? latestGroup : null);
         if (latestPreparedGroup?.variants[0]?.outputPreset) setOutputPreset(latestPreparedGroup.variants[0].outputPreset);
         draftGroupRef.current = editingGroup
           ? { id: editingGroup.id, shotSetId: editingGroup.shotSetId, revision: editingGroup.revision }
@@ -214,7 +216,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
             finishedAt: latestPrepare.finishedAt ?? null,
             errorMessage: latestPrepare.errorMessage,
           });
-          if (['queued', 'running'].includes(latestPrepare.status)) setActiveStep(1);
+          if (['queued', 'running', 'needs_input'].includes(latestPrepare.status)) setActiveStep(1);
         } else setActiveJob(null);
       }
       setMessage('');
@@ -244,10 +246,18 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         if (jobPollRef.current !== token) return;
         setActiveJob(job);
         if (job.status === 'failed') setMessage(job.errorMessage || '智能创作任务失败');
+        if (job.status === 'needs_input' && job.phase === 'duration_review') {
+          const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
+          if (jobPollRef.current !== token) return;
+          setDurationReviewGroup(reviewGroup);
+          setPreparedGroup(null);
+          setMessage('真实口播时长超出目标容差，请选择处理方式');
+        }
         if (job.status === 'succeeded') {
           const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
           if (jobPollRef.current !== token) return;
           setPreparedGroup(completedGroup);
+          setDurationReviewGroup(null);
           setMessage('智能创作任务已完成，可以进入预览调整');
         }
       } catch (error) {
@@ -262,6 +272,20 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       window.clearInterval(timer);
     };
   }, [activeJobId, activeJobStatus]);
+
+  useEffect(() => {
+    if (!activeJobId || activeJobStatus !== 'needs_input' || activeJob?.durationReview) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const job = await readJson<MixcutPrepareJobView>(await fetch(`/api/final-edit-jobs/${activeJobId}`, { signal: controller.signal }));
+        if (!controller.signal.aborted) setActiveJob((current) => current?.id === job.id ? { ...job, groupId: current.groupId } : current);
+      })().catch((error) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) setMessage(error instanceof Error ? error.message : String(error));
+      });
+    }, 0);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [activeJob?.durationReview, activeJobId, activeJobStatus]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -333,6 +357,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     setPendingDraftId(null);
     setPendingShotSetId(null);
     setActiveJob(null);
+    setDurationReviewGroup(null);
     setPreparedGroup(null);
     void loadContext(shotSetId);
   };
@@ -587,7 +612,14 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       if (startRequestRef.current?.sequence !== sequence || startRequestRef.current.shotSetId !== requestShotSetId) return;
       setActiveJob({ ...job, groupId: jobRef.groupId });
       setPreparedGroup(null);
-      setMessage('后台任务已创建，可以离开页面后再返回查看');
+      if (job.status === 'needs_input' && job.phase === 'duration_review') {
+        const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`, { signal: controller.signal }));
+        setDurationReviewGroup(reviewGroup);
+        setMessage('真实口播时长超出目标容差，请选择处理方式');
+      } else {
+        setDurationReviewGroup(null);
+        setMessage('后台任务已创建，可以离开页面后再返回查看');
+      }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError') && startRequestRef.current?.sequence === sequence) {
         setMessage(error instanceof Error ? error.message : String(error));
@@ -598,6 +630,45 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         submittingRef.current = false;
         setSubmitting(false);
       }
+    }
+  };
+
+  const resolveDuration = async (action: 'smart_fit' | 'retry_with_changes' | 'accept_actual') => {
+    if (!activeJob || !durationReviewGroup || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setMessage('');
+    try {
+      const jobRef = await readJson<{ id: string; groupId: string; status: string }>(await fetch(`/api/final-edit-groups/${encodeURIComponent(durationReviewGroup.id)}/duration-resolution`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: durationReviewGroup.revision,
+          action,
+          ...(action === 'retry_with_changes' ? { editedNarrationText: scriptEditor.editedNarrationText, speed } : {}),
+        }),
+      }));
+      const job = await readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`));
+      setActiveJob({ ...job, groupId: jobRef.groupId });
+      setDurationReviewGroup(null);
+      if (job.status === 'needs_input' && job.phase === 'duration_review') {
+        const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`));
+        setDurationReviewGroup(reviewGroup);
+        setPreparedGroup(null);
+        setMessage('重新合成后仍超出目标容差，请继续修改或按实际时长继续');
+      } else if (job.status === 'succeeded') {
+        const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`));
+        setPreparedGroup(completedGroup);
+        setMessage(action === 'accept_actual' ? '已按实际时长继续，预览和导出会持续显示提示' : '真实口播时长已通过，可以进入预览调整');
+      } else {
+        setPreparedGroup(null);
+        setMessage('处理任务已创建，可以离开页面后再返回查看');
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -751,6 +822,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                     job={activeJob}
                     elapsedSec={elapsedSec}
                     onStart={() => void startCreation()}
+                    onResolveDuration={(action) => void resolveDuration(action)}
                     onBack={() => setActiveStep(0)}
                     submitting={submitting}
                     startDisabledReason={startDisabledReason}

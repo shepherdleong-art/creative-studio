@@ -27,11 +27,25 @@ export interface MixcutPrepareJobView {
   startedAt: string | null;
   finishedAt: string | null;
   errorMessage: string | null;
+  durationReview?: MixcutDurationReviewView | null;
+}
+
+export interface MixcutDurationReviewView {
+  targetTotalSec: number;
+  targetNarrationSec: number;
+  estimatedNarrationSec: number | null;
+  actualNarrationSec: number;
+  actualTotalSec: number;
+  deltaSec: number;
+  toleranceSec: number;
+  reason: 'too_short' | 'too_long';
+  smartFitAvailable: boolean;
 }
 
 const STAGES = [
   { phase: 'analyzing', label: '文案拆分与素材分析' },
   { phase: 'synthesizing', label: '逐句口播生成' },
+  { phase: 'duration_check', label: '真实口播时长校验' },
   { phase: 'matching', label: '节拍检测与场景匹配' },
   { phase: 'previewing', label: '预热可预览草稿' },
 ] as const;
@@ -46,14 +60,19 @@ function estimateNarrationSec(text: string, speed: number): number {
   return Math.round(count * 0.22 / Math.max(0.5, speed));
 }
 
-function stageState(job: MixcutPrepareJobView | null, index: number): 'waiting' | 'running' | 'done' | 'failed' {
+function stageState(job: MixcutPrepareJobView | null, index: number): 'waiting' | 'running' | 'review' | 'done' | 'failed' {
   if (!job) return 'waiting';
-  const currentIndex = STAGES.findIndex((stage) => stage.phase === job.phase);
+  const activePhase = job.phase === 'duration_review' ? 'duration_check' : job.phase;
+  const currentIndex = STAGES.findIndex((stage) => stage.phase === activePhase);
   if (job.status === 'failed') {
     if (currentIndex === index || (currentIndex < 0 && index === 0)) return 'failed';
     return currentIndex > index ? 'done' : 'waiting';
   }
   if (job.status === 'succeeded') return 'done';
+  if (job.status === 'needs_input') {
+    if (currentIndex === index) return 'review';
+    return currentIndex > index ? 'done' : 'waiting';
+  }
   if (currentIndex === index) return 'running';
   return currentIndex > index ? 'done' : 'waiting';
 }
@@ -85,6 +104,7 @@ export function CreationStep({
   elapsedSec,
   onStart,
   onPreview,
+  onResolveDuration,
   submitting,
   startDisabledReason,
 }: {
@@ -113,6 +133,7 @@ export function CreationStep({
   elapsedSec: number;
   onStart: () => void;
   onPreview: () => void;
+  onResolveDuration: (action: 'smart_fit' | 'retry_with_changes' | 'accept_actual') => void;
   onBack: () => void;
   submitting: boolean;
   startDisabledReason?: string;
@@ -130,6 +151,8 @@ export function CreationStep({
   const charCount = Array.from(editedNarrationText.replace(/\s/g, '')).length;
   const busy = submitting || Boolean(job && ['queued', 'running'].includes(job.status));
   const progress = Math.max(0, Math.min(1, Number(job?.progress) || 0));
+  const durationReview = job?.status === 'needs_input' && job.phase === 'duration_review' ? job.durationReview : null;
+  const largeOverrun = Boolean(durationReview?.reason === 'too_long' && durationReview.actualTotalSec >= durationReview.targetTotalSec * 1.5);
 
   const auditionVoice = (voiceId: string) => {
     if (voiceId !== voice) onVoiceChange(voiceId);
@@ -142,7 +165,7 @@ export function CreationStep({
         {/* 口播文案卡 */}
         <section className={styles.card}>
           <div className={styles.cardHead}>
-            <div className={styles.cardTitle}><Icon name="mic" size={16} />口播文案 <span style={{ fontWeight: 400, color: 'var(--sub)', fontSize: 12 }}>（15 秒约 150-200 字）</span></div>
+            <div className={styles.cardTitle}><Icon name="mic" size={16} />口播文案 <span style={{ fontWeight: 400, color: 'var(--sub)', fontSize: 12 }}>（目标总时长包含封面）</span></div>
             <div className={styles.flowHint}>输入文案 → 选音色 → AI 匹配画面 → 出片</div>
           </div>
           {drafts.length > 0 ? (
@@ -209,10 +232,38 @@ export function CreationStep({
         <div className={styles.ctaZone}>
           {job?.status === 'succeeded'
             ? <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} onClick={onPreview}><Icon name="play-circle" size={17} />去预览调整</button>
+            : job?.status === 'needs_input'
+              ? <span className={`${styles.chip} ${styles.chipGrey}`}><Icon name="alert" size={13} />等待确认真实口播时长</span>
             : <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={17} />{submitting ? '正在创建任务…' : busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>}
           <span className={`${styles.chip} ${styles.chipGreen}`}><Icon name="film" size={12} />可用视频素材：{selectedMaterialCount} 个</span>
           <span className={styles.flowHint}>{startDisabledReason || '开始后会创建不可变任务快照，刷新页面不会丢失。'}</span>
         </div>
+
+        {durationReview && (
+          <section className={styles.card} aria-label="真实口播时长处理">
+            <div className={styles.cardHead}>
+              <div>
+                <div className={styles.cardTitle}><Icon name="alert" size={16} />真实口播时长需要确认</div>
+                <div className={styles.cardSub}>TTS 和自动字幕已经保存；确认前不会进入素材匹配，也不会生成成片草稿。</div>
+              </div>
+              <span className={`${styles.chip} ${styles.chipGrey}`}>{durationReview.reason === 'too_long' ? '超出目标' : '低于目标'}</span>
+            </div>
+            <div className={styles.durationReviewGrid}>
+              <div><span>目标总时长</span><strong>{durationReview.targetTotalSec.toFixed(2)} 秒</strong></div>
+              <div><span>实际总时长</span><strong>{durationReview.actualTotalSec.toFixed(2)} 秒</strong></div>
+              <div><span>偏差</span><strong>{durationReview.deltaSec > 0 ? '+' : ''}{durationReview.deltaSec.toFixed(2)} 秒</strong></div>
+              <div><span>容差</span><strong>±{durationReview.toleranceSec.toFixed(2)} 秒</strong></div>
+              <div><span>目标正文</span><strong>{durationReview.targetNarrationSec.toFixed(2)} 秒</strong></div>
+              <div><span>预计正文</span><strong>{durationReview.estimatedNarrationSec == null ? '—' : `${durationReview.estimatedNarrationSec.toFixed(2)} 秒`}</strong></div>
+            </div>
+            {largeOverrun && <div className={styles.warningNotice} style={{ marginTop: 12 }}>当前偏差较大，不能只靠自动加速解决；请优先智能贴合或精简口播文案。</div>}
+            <div className={styles.durationReviewActions}>
+              <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={submitting || !durationReview.smartFitAvailable} onClick={() => onResolveDuration('smart_fit')}><Icon name="sparkle" size={14} />{durationReview.smartFitAvailable ? '智能贴合时长' : '智能贴合已使用'}</button>
+              <button type="button" className={styles.btn} disabled={submitting || !editedNarrationText.trim()} onClick={() => onResolveDuration('retry_with_changes')}><Icon name="retry" size={14} />修改文案或语速后重试</button>
+              <button type="button" className={styles.btn} disabled={submitting} onClick={() => onResolveDuration('accept_actual')}>按实际时长继续</button>
+            </div>
+          </section>
+        )}
 
         {/* 进度卡 */}
         <section className={styles.card} aria-label="智能创作进度">
@@ -223,12 +274,12 @@ export function CreationStep({
           <div className={styles.progBar} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} style={{ marginBottom: 14 }}><i style={{ width: `${progress * 100}%` }} /></div>
           {STAGES.map((stage, index) => {
             const state = stageState(job, index);
-            const cls = state === 'done' ? styles.pipeDone : state === 'running' ? styles.pipeDoing : state === 'failed' ? styles.pipeFail : styles.pipeWait;
+            const cls = state === 'done' ? styles.pipeDone : state === 'running' || state === 'review' ? styles.pipeDoing : state === 'failed' ? styles.pipeFail : styles.pipeWait;
             return (
               <div key={stage.phase} className={`${styles.pipe} ${cls}`} data-state={state}>
-                <span className={styles.pipeIc}>{state === 'done' ? <Icon name="check" size={12} /> : state === 'running' ? <Icon name="play" size={9} /> : state === 'failed' ? '!' : index + 1}</span>
+                <span className={styles.pipeIc}>{state === 'done' ? <Icon name="check" size={12} /> : state === 'running' ? <Icon name="play" size={9} /> : state === 'review' || state === 'failed' ? '!' : index + 1}</span>
                 <span className={styles.pipeNm}>{stage.label}</span>
-                <span className={styles.pipeSt}>{state === 'done' ? '已完成' : state === 'running' ? '进行中' : state === 'failed' ? '失败' : '等待'}</span>
+                <span className={styles.pipeSt}>{state === 'done' ? '已完成' : state === 'running' ? '进行中' : state === 'review' ? '需要处理' : state === 'failed' ? '失败' : '等待'}</span>
               </div>
             );
           })}

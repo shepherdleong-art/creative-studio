@@ -66,6 +66,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
   const predictedBaseName = useMemo(() => previewExportBaseName(project.productCode, project.taskDate), [project.productCode, project.taskDate]);
   const blockingIssue = variant?.issues.find((issue) => issue.severity === 'blocking');
+  const warningIssues = variant?.issues.filter((issue) => issue.severity === 'warning') ?? [];
   const latestJobId = useMemo(() => group.jobs.find((item) => item.kind === 'render' && item.variantId === variant?.id)?.id || '', [group.jobs, variant?.id]);
 
   const fetchJob = useCallback(async (id: string, signal?: AbortSignal) => {
@@ -215,6 +216,16 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
             <span className={`${styles.chip} ${styles.chipGrey}`}>字幕</span>
             <span className={`${styles.chip} ${styles.chipGrey}`}>BGM</span>
             <span className={`${styles.chip} ${styles.chipGrey}`}>口播</span>
+          </div>
+        )}
+
+        {warningIssues.length > 0 && (
+          <div className={styles.warningNotice} style={{ marginBottom: 12, flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+            {warningIssues.map((issue, index) => (
+              <span key={`${issue.code}-${issue.targetId ?? index}`} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                <Icon name="alert" size={13} />{issue.message}
+              </span>
+            ))}
           </div>
         )}
 
