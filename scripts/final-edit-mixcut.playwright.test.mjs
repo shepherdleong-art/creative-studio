@@ -878,6 +878,8 @@ try {
     await page.locator('[data-clip-id="clip-a"]').click();
     const selectedTimelineClip = page.locator('[data-clip-id="clip-a"]');
     assert.equal(await selectedTimelineClip.getAttribute('data-selected'), 'true', '单击时间轴视频片段后必须暴露明确选中态');
+    assert.match(await selectedTimelineClip.evaluate((element) => getComputedStyle(element).boxShadow), /inset/, '时间轴视频选中态必须保留蓝色内描边');
+    await page.getByText(/拖拽排序/, { exact: false }).waitFor();
     const materialB = page.getByRole('button', { name: /b\.mp4/ });
     await materialB.click();
     assert.equal(await materialB.getAttribute('aria-pressed'), 'true', '单击左侧视频素材后必须高亮并暴露可访问选中态');
@@ -944,6 +946,7 @@ try {
     const insertAfterTrimRequest = variantPatchBodies.at(-1);
     assert.equal(insertAfterTrimRequest?.type, 'insert_clip', '裁剪后即使原片段仍选中，也必须能显式添加新素材');
     assert.equal(insertAfterTrimRequest?.videoJobId, 'video-a');
+    assert.equal(insertAfterTrimRequest?.timelineInFrame, trimRequest.timelineOutFrame, '裁剪后添加的新素材必须从裁剪形成的第一个缺口起点插入');
     await page.locator('[data-clip-id^="clip-inserted-"]').waitFor();
 
     await page.reload({ waitUntil: 'networkidle' });
@@ -995,6 +998,7 @@ try {
     const insertRequest = variantPatchBodies.at(-1);
     assert.equal(insertRequest?.type, 'insert_clip', '删除形成缺口后点击“添加到缺口”必须提交插入命令');
     assert.equal(insertRequest?.videoJobId, 'video-a');
+    assert.equal(insertRequest?.timelineInFrame, 120, '删除后添加的新素材必须从删除形成的第一个缺口起点插入');
 
     const playButton = page.getByRole('button', { name: '播放成片' });
     await playButton.click();
@@ -1182,8 +1186,10 @@ try {
     await page.getByRole('button', { name: '切换到会话 E2E 文案 版本 1', exact: true }).click();
     await page.locator('[data-track="video"]').waitFor();
     await page.locator('[data-track="narration"]').dispatchEvent('contextmenu', { button: 2, clientX: 720, clientY: 820, bubbles: true, cancelable: true });
-    await page.getByRole('menu', { name: '口播音频变速' }).waitFor();
+    const speedMenu = page.getByRole('menu', { name: '口播音频变速' });
+    await speedMenu.waitFor();
     assert.equal(await page.getByRole('menuitem').count(), 16, '右键倍速菜单必须覆盖 0.5x～2.0x 的全部 0.1x 档位');
+    assert.ok(Number.parseFloat(await speedMenu.locator('button span').first().evaluate((element) => getComputedStyle(element).fontSize)) >= 10, '倍速菜单辅助文字不得小于 10px');
     await page.getByRole('menuitem', { name: '1.3x · 生成新版本', exact: true }).click();
     await expectEventually(() => startPostBodies.length === 3, '口播轨右键变速必须创建新的 prepare 任务');
     assert.equal(startPostBodies[2].speed, 1.3, '右键变速必须把所选倍速写入新版本任务');

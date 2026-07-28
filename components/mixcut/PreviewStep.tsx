@@ -294,7 +294,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
           <span className={`${styles.chip} ${styles.chipGrey}`}>{orderedClips.length} 片段</span>
           <span className={`${styles.chip} ${styles.chipBlue}`}>总时长 {totalSec.toFixed(1)}s</span>
           <span className={`${styles.chip} ${narrationMatch ? styles.chipGreen : styles.chipGrey}`}>口播 {narrationSec.toFixed(1)}s {narrationMatch ? '✓' : '⚠'}</span>
-          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键视频删除 | 右键口播调速 | 双击字幕编辑">单击选中 · 双击编辑 · 右键视频删除/口播调速</span>
+          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键视频删除 | 右键口播调速 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击编辑 · 右键视频删除/口播调速</span>
           {selectedMatchReason && selectedMatchReasonLabel && (
             <span className={`${styles.chip} ${styles.chipBlue}`}>匹配：{selectedMatchReasonLabel} · {selectedMatchReason.score.toFixed(2)}</span>
           )}
