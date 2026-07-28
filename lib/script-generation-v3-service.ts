@@ -1,10 +1,15 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import {
   generateScriptV3,
   type CompleteJsonRequest,
   type ScriptGenerationV3Dependencies,
+  type ScriptVisualContext,
 } from './script-generation-v3.ts';
+import { dataRoot } from './data-root.ts';
+import { assertNoStorageSymlink } from './final-edit/storage-path.ts';
 import { buildScriptDurationBudget } from './script-duration-policy.ts';
 import type { ProviderMeta, SelectedSellingPoint } from './script-providers/types.ts';
 import { getScriptTemplate } from './script-templates.ts';
@@ -13,8 +18,76 @@ export interface GenerateScriptV3ServiceDependencies {
   db: Database.Database;
   completeJson(providerId: string, request: CompleteJsonRequest): Promise<unknown>;
   providerMeta(providerId: string): ProviderMeta | undefined;
+  storageRoot?: string;
   generate?: typeof generateScriptV3;
   createId?: () => string;
+}
+
+interface ShotVisualRow {
+  shotId: string;
+  indexNum: number;
+  sourceImageAssetId: string;
+  sourceFilename: string;
+  sourceImagePath: string;
+  sourceMimeType: string;
+  generatedImageAssetId: string | null;
+  generatedFilename: string | null;
+  generatedImagePath: string | null;
+  generatedMimeType: string | null;
+}
+
+const SUPPORTED_SCRIPT_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+function fallbackImageMimeType(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
+  if (extension === '.webp') return 'image/webp';
+  return 'image/png';
+}
+
+function readShotVisuals(rows: ShotVisualRow[], storageRoot: string): ScriptVisualContext[] {
+  const visuals: ScriptVisualContext[] = [];
+  for (const row of rows) {
+    const candidates = [
+      row.generatedImageAssetId && row.generatedImagePath && row.generatedFilename ? {
+        imageAssetId: row.generatedImageAssetId,
+        filename: row.generatedFilename,
+        imagePath: row.generatedImagePath,
+        mimeType: row.generatedMimeType,
+      } : null,
+      {
+        imageAssetId: row.sourceImageAssetId,
+        filename: row.sourceFilename,
+        imagePath: row.sourceImagePath,
+        mimeType: row.sourceMimeType,
+      },
+    ].filter((candidate): candidate is {
+      imageAssetId: string;
+      filename: string;
+      imagePath: string;
+      mimeType: string | null;
+    } => Boolean(candidate));
+
+    for (const candidate of candidates) {
+      try {
+        const imagePath = assertNoStorageSymlink(storageRoot, candidate.imagePath, { allowAbsolute: true });
+        if (!fs.existsSync(imagePath) || !fs.statSync(imagePath).isFile()) continue;
+        const mimeType = SUPPORTED_SCRIPT_IMAGE_MIME_TYPES.has(String(candidate.mimeType || ''))
+          ? String(candidate.mimeType)
+          : fallbackImageMimeType(imagePath);
+        visuals.push({
+          shotId: row.shotId,
+          shotIndex: row.indexNum,
+          imageAssetId: candidate.imageAssetId,
+          sourceFilename: candidate.filename,
+          mimeType,
+          imageBase64: fs.readFileSync(imagePath).toString('base64'),
+        });
+        break;
+      } catch { /* unsafe, missing or unreadable candidate falls back to the next image */ }
+    }
+  }
+  return visuals;
 }
 
 export async function generateAndPersistScriptV3(
@@ -59,6 +132,36 @@ export async function generateAndPersistScriptV3(
   }
 
   const providerId = typeof body.providerId === 'string' ? body.providerId : 'gemini';
+  const provider = dependencies.providerMeta(providerId);
+  if (!provider?.supportsVision) {
+    return { status: 400, body: { error: '所选生成模型不支持图片理解，请选择已启用视觉能力的脚本模型' } };
+  }
+
+  const shotRows = dependencies.db.prepare(`
+    SELECT
+      s.id AS shotId,
+      s.indexNum,
+      source.id AS sourceImageAssetId,
+      source.filename AS sourceFilename,
+      source.path AS sourceImagePath,
+      source.mimeType AS sourceMimeType,
+      generated.id AS generatedImageAssetId,
+      generated.filename AS generatedFilename,
+      generated.path AS generatedImagePath,
+      generated.mimeType AS generatedMimeType
+    FROM shots s
+    JOIN shot_sets ss ON ss.id = s.shotSetId
+    JOIN image_assets source ON source.id = s.sourceImageId
+    LEFT JOIN image_assets generated ON generated.id = s.latestGeneratedImageId
+    WHERE ss.projectId = ? AND ss.id = ?
+    ORDER BY s.indexNum
+  `).all(projectId, shotSetId) as ShotVisualRow[];
+  const storageRoot = dependencies.storageRoot || path.join(dataRoot(), 'storage');
+  const visuals = readShotVisuals(shotRows, storageRoot);
+  if (visuals.length === 0) {
+    return { status: 400, body: { error: '所选分镜组中没有可读取的分镜图片' } };
+  }
+
   const tone = typeof body.tone === 'string' ? body.tone : String(project.scriptTone || '种草');
   const platform = typeof body.platform === 'string' ? body.platform : String(project.scriptPlatform || '通用');
   const generationInput = {
@@ -74,12 +177,13 @@ export async function generateAndPersistScriptV3(
     templateName: template.name,
     targetDurationSec,
     shotSetId,
+    visuals,
   };
   const generatorDependencies: ScriptGenerationV3Dependencies = {
     completeJson: (request) => dependencies.completeJson(providerId, request),
   };
   const result = await (dependencies.generate || generateScriptV3)(generationInput, generatorDependencies);
-  const model = dependencies.providerMeta(providerId)?.model || '';
+  const model = provider.model || '';
   const draftId = (dependencies.createId || uuidv4)();
   dependencies.db.prepare(`
     INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson)
@@ -104,6 +208,8 @@ export async function generateAndPersistScriptV3(
       durationPolicyVersion: budget.policyVersion,
       targetNarrationSec: budget.targetNarrationSec,
       targetCharacterRange: [budget.minContentCharacters, budget.maxContentCharacters],
+      visualCount: visuals.length,
+      visualImageAssetIds: visuals.map((visual) => visual.imageAssetId),
       attempts: result.attempts,
     }),
     JSON.stringify(result.script),

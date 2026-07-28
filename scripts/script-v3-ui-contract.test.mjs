@@ -14,6 +14,13 @@ assert.doesNotMatch(panel, /await loadShotImages\(selectedShotSetId\)/, 'V3 生�
 assert.match(strategy, /目标总时长（包含封面）/);
 assert.match(strategy, /口播正文约/);
 assert.match(strategy, /minContentCharacters/);
+assert.match(strategy, /视觉生成模型/);
+assert.match(strategy, /p\.supportsVision/);
+assert.match(strategy, /发送给该模型进行视觉理解/);
+assert.match(panel, /p\.configured && p\.supportsVision/, '脚本生成模型必须默认选择已配置且支持视觉的供应商');
+assert.match(panel, /script_material_mismatch/, '模板与图片不匹配时必须展示专用提示，不能误报为时长问题');
+assert.match(panel, /materialReason/, '素材不匹配提示必须展示模型给出的图片不足原因');
+assert.match(panel, /unsupportedNarrativeBeats/, '素材不匹配提示必须说明模板中缺少画面承接的阶段');
 assert.match(result, /复制字幕稿/);
 assert.match(result, /复制配音稿/);
 assert.match(result, /完整字幕稿/);

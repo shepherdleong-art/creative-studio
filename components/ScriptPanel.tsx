@@ -307,13 +307,12 @@ export default function ScriptPanel({ projectId }: Props) {
         // P1: Mark loading as done after all data is loaded
         setLoading(false);
 
-        // P2: Default provider to the first configured one (not always gemini)
+        // P2: Analysis may use text-only models, but script generation now requires vision.
         if (modelData.providers?.length > 0) {
           const configured = (modelData.providers as ProviderMeta[]).find((p) => p.configured);
-          if (configured && configured.id !== 'gemini') {
-            setAnalysisProviderId(configured.id);
-            setGenerateProviderId(configured.id);
-          }
+          const vision = (modelData.providers as ProviderMeta[]).find((p) => p.configured && p.supportsVision);
+          if (configured) setAnalysisProviderId(configured.id);
+          if (vision) setGenerateProviderId(vision.id);
         }
       } catch {
         if (active) setLoading(false);
@@ -446,10 +445,20 @@ export default function ScriptPanel({ projectId }: Props) {
           targetCharacterRange?: [number, number];
           estimatedNarrationSec?: number;
           targetNarrationSec?: number;
+          unsupportedNarrativeBeats?: string[];
+          materialReason?: string;
         } | undefined;
-        const actionable = details
-          ? `\n当前 ${details.contentCharacterCount ?? '-'} 字 / 目标 ${details.targetCharacterRange?.join('～') ?? '-'} 字；预计 ${details.estimatedNarrationSec?.toFixed(2) ?? '-'} 秒 / 目标正文 ${details.targetNarrationSec?.toFixed(2) ?? '-'} 秒。`
-          : '';
+        const unsupportedNarrativeBeats = Array.isArray(details?.unsupportedNarrativeBeats)
+          ? details.unsupportedNarrativeBeats.filter(Boolean)
+          : [];
+        const actionable = data.error === 'script_material_mismatch'
+          ? [
+              details?.materialReason ? `\n原因：${details.materialReason}` : '',
+              unsupportedNarrativeBeats.length > 0 ? `\n缺少画面承接：${unsupportedNarrativeBeats.join('；')}` : '',
+            ].join('')
+          : details
+            ? `\n当前 ${details.contentCharacterCount ?? '-'} 字 / 目标 ${details.targetCharacterRange?.join('～') ?? '-'} 字；预计 ${details.estimatedNarrationSec?.toFixed(2) ?? '-'} 秒 / 目标正文 ${details.targetNarrationSec?.toFixed(2) ?? '-'} 秒。`
+            : '';
         alert('生成失败: ' + (data.message || data.error || '未知错误') + actionable);
       }
     } catch (err) {

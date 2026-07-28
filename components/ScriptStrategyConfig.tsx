@@ -55,7 +55,9 @@ export default function ScriptStrategyConfig({
   onGenerate,
   generating,
 }: Props) {
-  const configuredProviders = providers.filter((p) => p.configured);
+  const visionProviders = providers.filter((p) => p.configured && p.supportsVision);
+  const selectedProvider = providers.find((p) => p.id === providerId);
+  const canGenerateWithSelectedProvider = Boolean(selectedProvider?.configured && selectedProvider.supportsVision);
   const hasShotSets = shotSets.length > 0;
   const budget = SCRIPT_DURATION_BUDGETS[targetDurationSec as keyof typeof SCRIPT_DURATION_BUDGETS]
     || SCRIPT_DURATION_BUDGETS[20];
@@ -218,28 +220,36 @@ export default function ScriptStrategyConfig({
       </div>
 
       {/* Model + Generate */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <label className="label mb-0 flex items-center gap-1.5">
-            <Icon name="cpu" size={13} />
-            生成模型
-          </label>
-          <select
-            value={providerId}
-            onChange={(e) => onProviderIdChange(e.target.value)}
-            className="input-field text-xs w-36"
-          >
-            {providers.map((p) => (
-              <option key={p.id} value={p.id} disabled={!p.configured}>
-                {p.name} {!p.configured ? '(未配置)' : ''}
-              </option>
-            ))}
-          </select>
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-3">
+            <label className="label mb-0 flex items-center gap-1.5">
+              <Icon name="cpu" size={13} />
+              视觉生成模型
+            </label>
+            <select
+              value={providerId}
+              onChange={(e) => onProviderIdChange(e.target.value)}
+              className="input-field text-xs w-44"
+            >
+              {providers.map((p) => (
+                <option key={p.id} value={p.id} disabled={!p.configured || !p.supportsVision}>
+                  {p.name} {!p.configured ? '(未配置)' : !p.supportsVision ? '(不支持图片)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="mt-2 max-w-lg text-xs leading-relaxed text-ink-tertiary">
+            生成时会将所选分镜组的当前图片发送给该模型进行视觉理解，并要求文案只写画面能够承接的内容。
+          </p>
+          {visionProviders.length === 0 && (
+            <p className="mt-1 text-xs text-fail">请先在设置中启用一个支持视觉能力的脚本模型。</p>
+          )}
         </div>
 
         <button
           onClick={onGenerate}
-          disabled={generating || !selectedShotSetId || configuredProviders.length === 0}
+          disabled={generating || !selectedShotSetId || visionProviders.length === 0 || !canGenerateWithSelectedProvider}
           className="btn-primary"
         >
           {generating ? (

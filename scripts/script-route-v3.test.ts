@@ -1,21 +1,61 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { ScriptOutputV3 } from '../lib/script-providers/types.ts';
 
 const { generateAndPersistScriptV3 } = await import('../lib/script-generation-v3-service.ts');
 
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'script-route-v3-'));
+const storageRoot = path.join(tempRoot, 'storage');
+const imageDir = path.join(storageRoot, 'script-test-images');
+fs.mkdirSync(imageDir, { recursive: true });
+const sourceImagePath = path.join(imageDir, 'source.png');
+const fallbackSourceImagePath = path.join(imageDir, 'fallback-source.webp');
+const generatedImagePath = path.join(imageDir, 'generated.jpg');
+fs.writeFileSync(sourceImagePath, Buffer.from('source-image'));
+fs.writeFileSync(fallbackSourceImagePath, Buffer.from('fallback-source-image'));
+fs.writeFileSync(generatedImagePath, Buffer.from('generated-image'));
+
 const db = new Database(':memory:');
 db.exec(`
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);
+  CREATE TABLE image_assets (
+    id TEXT PRIMARY KEY, filename TEXT NOT NULL, path TEXT NOT NULL, mimeType TEXT NOT NULL
+  );
+  CREATE TABLE shots (
+    id TEXT PRIMARY KEY, shotSetId TEXT NOT NULL, indexNum INTEGER NOT NULL,
+    sourceImageId TEXT NOT NULL, latestGeneratedImageId TEXT
+  );
   CREATE TABLE script_drafts (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, provider TEXT NOT NULL,
     model TEXT NOT NULL, inputSnapshot TEXT NOT NULL, outputJson TEXT NOT NULL,
     createdAt TEXT NOT NULL DEFAULT (datetime('now'))
   );
   INSERT INTO shot_sets (id, projectId, name) VALUES
-    ('set-owned', 'project-a', '空分镜组'),
+    ('set-owned', 'project-a', '当前分镜组'),
+    ('set-empty', 'project-a', '空分镜组'),
     ('set-foreign', 'project-b', '其他项目');
 `);
+db.prepare(`INSERT INTO image_assets (id, filename, path, mimeType) VALUES (?, ?, ?, ?)`).run(
+  'image-source', 'source.png', sourceImagePath, 'image/png',
+);
+db.prepare(`INSERT INTO image_assets (id, filename, path, mimeType) VALUES (?, ?, ?, ?)`).run(
+  'image-generated', 'generated.jpg', generatedImagePath, 'image/jpeg',
+);
+db.prepare(`INSERT INTO image_assets (id, filename, path, mimeType) VALUES (?, ?, ?, ?)`).run(
+  'image-fallback-source', 'fallback-source.webp', fallbackSourceImagePath, 'image/webp',
+);
+db.prepare(`INSERT INTO image_assets (id, filename, path, mimeType) VALUES (?, ?, ?, ?)`).run(
+  'image-missing-generated', 'missing-generated.png', path.join(imageDir, 'missing-generated.png'), 'image/png',
+);
+db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId, latestGeneratedImageId) VALUES (?, ?, ?, ?, ?)`).run(
+  'shot-owned', 'set-owned', 1, 'image-source', 'image-generated',
+);
+db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId, latestGeneratedImageId) VALUES (?, ?, ?, ?, ?)`).run(
+  'shot-fallback', 'set-owned', 2, 'image-fallback-source', 'image-missing-generated',
+);
 
 const script: ScriptOutputV3 = {
   version: 3,
@@ -59,10 +99,11 @@ const response = await generateAndPersistScriptV3({
   },
 }, {
   db,
+  storageRoot,
   createId: () => 'draft-v3',
   providerMeta: () => ({
     id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
-    apiStyle: 'openai-compatible', supportsVision: false,
+    apiStyle: 'openai-compatible', supportsVision: true,
   }),
   completeJson: async () => ({}),
   generate: async (input) => {
@@ -72,7 +113,22 @@ const response = await generateAndPersistScriptV3({
 });
 
 assert.equal(response.status, 200);
-assert.equal('shots' in (receivedInput || {}), false, 'V3 生成输入不得包含图片或分镜上下文');
+const visualInput = receivedInput as { visuals?: Array<Record<string, unknown>> } | null;
+assert.deepEqual(visualInput?.visuals, [{
+  shotId: 'shot-owned',
+  shotIndex: 1,
+  imageAssetId: 'image-generated',
+  sourceFilename: 'generated.jpg',
+  mimeType: 'image/jpeg',
+  imageBase64: Buffer.from('generated-image').toString('base64'),
+}, {
+  shotId: 'shot-fallback',
+  shotIndex: 2,
+  imageAssetId: 'image-fallback-source',
+  sourceFilename: 'fallback-source.webp',
+  mimeType: 'image/webp',
+  imageBase64: Buffer.from('fallback-source-image').toString('base64'),
+}], 'V3 必须优先读取最新生成图，并在该文件缺失时回退同分镜源图');
 assert.deepEqual(response.body, {
   draftId: 'draft-v3', script, provider: 'fake-provider', model: 'fake-model', attempts: 2,
 });
@@ -85,13 +141,53 @@ assert.equal(snapshot.shotSetId, 'set-owned');
 assert.equal(snapshot.durationPolicyVersion, 'zh-tts-budget-v1');
 assert.deepEqual(snapshot.targetCharacterRange, [54, 59]);
 assert.equal('imageBase64' in snapshot, false);
+assert.equal(snapshot.visualCount, 2);
+assert.deepEqual(snapshot.visualImageAssetIds, ['image-generated', 'image-fallback-source']);
 assert.deepEqual(JSON.parse(row.outputJson), script);
+
+let nonVisionGenerateCalled = false;
+const nonVisionResponse = await generateAndPersistScriptV3({
+  projectId: 'project-a', project,
+  body: { shotSetId: 'set-owned', templateId: 'scene_seeding', targetDurationSec: 15, providerId: 'text-only' },
+}, {
+  db,
+  storageRoot,
+  completeJson: async () => ({}),
+  providerMeta: () => ({
+    id: 'text-only', name: 'Text only', model: 'text-model', configured: true,
+    apiStyle: 'openai-compatible', supportsVision: false,
+  }),
+  generate: async () => {
+    nonVisionGenerateCalled = true;
+    return { script, attempts: 1 };
+  },
+});
+assert.equal(nonVisionResponse.status, 400);
+assert.equal(nonVisionResponse.body.error, '所选生成模型不支持图片理解，请选择已启用视觉能力的脚本模型');
+assert.equal(nonVisionGenerateCalled, false);
+
+const emptyResponse = await generateAndPersistScriptV3({
+  projectId: 'project-a', project,
+  body: { shotSetId: 'set-empty', templateId: 'scene_seeding', targetDurationSec: 15, providerId: 'fake-provider' },
+}, {
+  db,
+  storageRoot,
+  completeJson: async () => ({}),
+  providerMeta: () => ({
+    id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
+    apiStyle: 'openai-compatible', supportsVision: true,
+  }),
+  generate: async () => ({ script, attempts: 1 }),
+});
+assert.equal(emptyResponse.status, 400);
+assert.equal(emptyResponse.body.error, '所选分镜组中没有可读取的分镜图片');
 
 const foreignResponse = await generateAndPersistScriptV3({
   projectId: 'project-a', project,
   body: { shotSetId: 'set-foreign', templateId: 'scene_seeding', targetDurationSec: 15 },
 }, {
   db,
+  storageRoot,
   completeJson: async () => ({}),
   providerMeta: () => undefined,
   generate: async () => ({ script, attempts: 1 }),
@@ -100,4 +196,5 @@ assert.equal(foreignResponse.status, 400);
 assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM script_drafts`).get() as { count: number }).count, 1);
 
 db.close();
+fs.rmSync(tempRoot, { recursive: true, force: true });
 console.log('script route v3 tests passed');
