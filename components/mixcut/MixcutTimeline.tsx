@@ -12,7 +12,7 @@ const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;
 const FRAME_US = Math.round(1_000_000 / FPS);
 const PX_PER_SECOND = 60; // V2 固定缩放（规格 §6.4），内容超宽靠横向滚动
 const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持一致
-const NARRATION_SPEED_OPTIONS = [0.8, 0.9, 1, 1.1, 1.2, 1.5] as const;
+const NARRATION_SPEED_OPTIONS = Array.from({ length: 16 }, (_, index) => Number((0.5 + index * 0.1).toFixed(1)));
 
 type TimelineContextMenu =
   | { kind: 'video'; clipId: string; x: number; y: number }
@@ -203,16 +203,17 @@ export function MixcutTimeline({
             ))}
           </div>
           <div
-            className={`${styles.tlTrack} ${styles.tlTrackAudio}`}
+            className={`${styles.tlTrack} ${styles.tlTrackAudio} ${styles.tlTrackNarration}`}
             data-track="narration"
+            title="右键调整口播音频倍速"
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
               if (disabled) return;
               setContextMenu({
                 kind: 'narration',
-                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 196)),
-                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 286)),
+                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 244)),
+                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 214)),
               });
             }}
           >
@@ -237,7 +238,7 @@ export function MixcutTimeline({
           <div
             role="menu"
             aria-label={contextMenu.kind === 'video' ? '视频片段操作' : '口播音频变速'}
-            className={styles.timelineContextMenu}
+            className={`${styles.timelineContextMenu} ${contextMenu.kind === 'narration' ? styles.timelineSpeedMenu : ''}`}
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onPointerDown={(event) => event.stopPropagation()}
           >
@@ -257,22 +258,25 @@ export function MixcutTimeline({
               >删除片段</button>
             ) : (
               <>
-                <div className={styles.timelineContextTitle}>选择语速后生成独立新版本</div>
-                {NARRATION_SPEED_OPTIONS.map((option) => {
-                  const current = Math.abs(option - narrationSpeed) < 0.001;
-                  return (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      key={option}
-                      disabled={disabled || current}
-                      onClick={() => {
-                        setContextMenu(null);
-                        onNarrationSpeedChange(option);
-                      }}
-                    >{option.toFixed(1)}x · {current ? '当前版本' : '生成新版本'}</button>
-                  );
-                })}
+                <div className={styles.timelineContextTitle}>调整音频倍速（生成独立新版本）</div>
+                <div className={styles.timelineSpeedGrid}>
+                  {NARRATION_SPEED_OPTIONS.map((option) => {
+                    const current = Math.abs(option - narrationSpeed) < 0.001;
+                    return (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        key={option}
+                        aria-label={`${option.toFixed(1)}x · ${current ? '当前版本' : '生成新版本'}`}
+                        disabled={disabled || current}
+                        onClick={() => {
+                          setContextMenu(null);
+                          onNarrationSpeedChange(option);
+                        }}
+                      >{option.toFixed(1)}x<span>{current ? '当前' : '新版本'}</span></button>
+                    );
+                  })}
+                </div>
               </>
             )}
           </div>
@@ -349,6 +353,7 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
   return (
     <article
       data-clip-id={clip.id}
+      data-selected={selected ? 'true' : undefined}
       data-reorder-active={reorderIds ? 'true' : undefined}
       className={`${styles.clip} ${selected ? styles.clipSel : ''}`}
       style={{ left, width, background: 'linear-gradient(135deg,#3a3d46,#22242b)' }}

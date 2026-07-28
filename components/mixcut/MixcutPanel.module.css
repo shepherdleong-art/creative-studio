@@ -319,7 +319,8 @@
 .tlTrackAudio { height: 30px; }
 .clip { position: absolute; top: 5px; bottom: 5px; overflow: hidden; border-radius: 8px; box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .12); cursor: grab; touch-action: none; transition: filter .15s; }
 .clip:hover { filter: brightness(1.05); }
-.clipSel { box-shadow: inset 0 0 0 2px var(--blue); }
+.clipSel { z-index: 2; outline: 2px solid var(--blue); outline-offset: 1px; box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .82), 0 0 0 4px rgba(0, 113, 227, .16); filter: saturate(1.12) brightness(1.04); }
+.clipSel .clipNo { background: var(--blue); box-shadow: 0 1px 5px rgba(0, 113, 227, .35); }
 .clip img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 .clip::after { position: absolute; inset: 0; z-index: 0; background: rgba(0, 0, 0, .18); content: ''; }
 .clipNo { position: absolute; z-index: 2; top: 4px; left: 4px; padding: 1px 6px; border-radius: 99px; background: rgba(0, 0, 0, .45); color: #fff; font-size: 10px; font-weight: 600; backdrop-filter: blur(4px); }
@@ -337,6 +338,7 @@
 .wf span[data-played] { opacity: .95; }
 .wfTts { color: var(--blue); }
 .wfBgm { color: #7d7d85; }
+.tlTrackNarration { cursor: context-menu; }
 .wfLabel { position: absolute; z-index: 1; top: 50%; left: 8px; transform: translateY(-50%); padding: 1px 7px; border-radius: 99px; background: rgba(255, 255, 255, .85); color: var(--sub); font-size: 10px; font-weight: 500; }
 .shell .tlPlayhead { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; background: var(--orange); cursor: ew-resize; touch-action: none; }
 .tlPlayhead::before { position: absolute; top: 0; left: -3px; width: 8px; height: 8px; border-radius: 0 0 3px 3px; background: var(--orange); content: ''; }
@@ -347,6 +349,11 @@
 .timelineContextMenu button:disabled { color: var(--faint); cursor: default; }
 .timelineContextTitle { padding: 7px 10px 5px; color: var(--sub); font-size: 11px; line-height: 1.35; }
 .timelineContextMenu .timelineContextDanger { color: #ff3b30; }
+.timelineSpeedMenu { width: 232px; }
+.timelineSpeedGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; padding: 3px; }
+.timelineContextMenu .timelineSpeedGrid button { display: flex; min-height: 38px; flex-direction: column; align-items: center; justify-content: center; padding: 3px 2px; text-align: center; font-variant-numeric: tabular-nums; }
+.timelineSpeedGrid button span { margin-top: 1px; color: var(--faint); font-size: 9px; }
+.timelineSpeedGrid button:not(:disabled) { color: var(--blue); }
 
 /* Trim 截取条 */
 .trim { flex-shrink: 0; margin-bottom: 10px; }
@@ -365,10 +372,16 @@
 .replaceCol .panel { flex: 1; }
 .repOff .replaceCol .panel, .repOff .replaceCol .collapseBtn, .rgtOff .rightCol .rcard, .rgtOff .rightCol .collapseBtn { display: none; }
 .repOff .replaceCol, .rgtOff .rightCol { padding: 0; overflow: hidden; }
+.replaceSelection { margin-top: 10px; padding: 9px; border: .5px solid var(--line); border-radius: 10px; background: var(--bg); }
+.replaceSelectionName { display: block; overflow: hidden; color: var(--sub); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.replaceActions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 7px; }
+.replaceActions .btn { min-width: 0; padding: 0 7px; font-size: 11px; white-space: nowrap; }
 .replaceList { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 2px; margin-top: 8px; overflow-y: auto; }
-.rep { display: flex; flex-shrink: 0; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 10px; cursor: pointer; text-align: left; transition: background .15s; }
+.rep { display: flex; flex-shrink: 0; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 10px; cursor: pointer; text-align: left; transition: background .15s, box-shadow .15s, transform .15s; }
 .rep:hover { background: rgba(0, 0, 0, .04); }
-.repActive { background: var(--blue-wash); }
+.repActive { background: var(--blue-wash); box-shadow: inset 0 0 0 1.5px rgba(0, 113, 227, .48), 0 2px 8px rgba(0, 113, 227, .1); transform: translateY(-1px); }
+.repActive:hover { background: var(--blue-wash); }
+.repActive .repN { color: var(--blue); }
 .rep:disabled { opacity: .5; cursor: not-allowed; }
 .repThumb { position: relative; display: grid; width: 38px; height: 54px; flex-shrink: 0; place-items: center; overflow: hidden; border-radius: 8px; background: linear-gradient(135deg, #3a3d46, #22242b); color: rgba(255, 255, 255, .9); }
 .repThumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }

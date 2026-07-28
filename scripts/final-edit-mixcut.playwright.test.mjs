@@ -873,10 +873,16 @@ try {
       return Boolean(a && b && a.x > b.x);
     }, '保存后正式时间轴必须显示新的片段顺序');
 
-    // 素材替换列（V2 新功能，规格 §6.5）：选中片段后点击另一个素材，直接替换该片段的视频来源。
-    const replaceResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
+    // 素材调整列：单击素材只负责选中并给出明确高亮，再由独立按钮选择“替换”或“添加”。
+    // 这样裁剪后即使时间轴片段仍处于选中态，也不会把用户的“添加素材”误执行成替换。
     await page.locator('[data-clip-id="clip-a"]').click();
-    await page.getByRole('button', { name: /b\.mp4/ }).click();
+    const selectedTimelineClip = page.locator('[data-clip-id="clip-a"]');
+    assert.equal(await selectedTimelineClip.getAttribute('data-selected'), 'true', '单击时间轴视频片段后必须暴露明确选中态');
+    const materialB = page.getByRole('button', { name: /b\.mp4/ });
+    await materialB.click();
+    assert.equal(await materialB.getAttribute('aria-pressed'), 'true', '单击左侧视频素材后必须高亮并暴露可访问选中态');
+    const replaceResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
+    await page.getByRole('button', { name: '替换当前片段', exact: true }).click();
     await replaceResponse;
     assert.equal(variantPatchBodies.at(-1)?.type, 'replace_clip');
     assert.equal(variantPatchBodies.at(-1)?.clipId, 'clip-a');
@@ -927,6 +933,19 @@ try {
       return widthAfterTrim > 0 && widthAfterTrim < widthBeforeTrim;
     }, '裁剪成功后正式时间轴片段宽度必须缩短');
 
+    // 裁剪会形成时间轴缺口，同时保留当前片段选中态。此时用户应仍能明确选择另一素材并“添加到缺口”，
+    // 不能因为 selectedClip 仍存在就只能替换原片段。
+    const insertAfterTrimResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
+    const materialAAfterTrim = page.getByRole('button', { name: /a\.mp4/ });
+    await materialAAfterTrim.click();
+    assert.equal(await materialAAfterTrim.getAttribute('aria-pressed'), 'true', '裁剪后再次单击素材必须切换左侧高亮');
+    await page.getByRole('button', { name: '添加到缺口', exact: true }).click();
+    await insertAfterTrimResponse;
+    const insertAfterTrimRequest = variantPatchBodies.at(-1);
+    assert.equal(insertAfterTrimRequest?.type, 'insert_clip', '裁剪后即使原片段仍选中，也必须能显式添加新素材');
+    assert.equal(insertAfterTrimRequest?.videoJobId, 'video-a');
+    await page.locator('[data-clip-id^="clip-inserted-"]').waitFor();
+
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: /预览调整/ }).click();
     await page.locator('[data-track="video"]').waitFor();
@@ -969,13 +988,13 @@ try {
     await page.locator('[data-clip-id="clip-a"]').waitFor({ state: 'detached' });
 
     const insertResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
-    await page.getByRole('button', { name: /a\.mp4/ }).click();
+    const materialAAfterDelete = page.getByRole('button', { name: /a\.mp4/ });
+    await materialAAfterDelete.click();
+    await page.getByRole('button', { name: '添加到缺口', exact: true }).click();
     await insertResponse;
     const insertRequest = variantPatchBodies.at(-1);
-    assert.equal(insertRequest?.type, 'insert_clip', '删除形成缺口后点击素材必须提交插入命令');
+    assert.equal(insertRequest?.type, 'insert_clip', '删除形成缺口后点击“添加到缺口”必须提交插入命令');
     assert.equal(insertRequest?.videoJobId, 'video-a');
-    assert.equal(insertRequest?.timelineInFrame, 120, '素材必须从第一个视频缺口起点插入');
-    await page.locator('[data-clip-id^="clip-inserted-"]').waitFor();
 
     const playButton = page.getByRole('button', { name: '播放成片' });
     await playButton.click();
@@ -1164,9 +1183,10 @@ try {
     await page.locator('[data-track="video"]').waitFor();
     await page.locator('[data-track="narration"]').dispatchEvent('contextmenu', { button: 2, clientX: 720, clientY: 820, bubbles: true, cancelable: true });
     await page.getByRole('menu', { name: '口播音频变速' }).waitFor();
-    await page.getByRole('menuitem', { name: '1.2x · 生成新版本', exact: true }).click();
+    assert.equal(await page.getByRole('menuitem').count(), 16, '右键倍速菜单必须覆盖 0.5x～2.0x 的全部 0.1x 档位');
+    await page.getByRole('menuitem', { name: '1.3x · 生成新版本', exact: true }).click();
     await expectEventually(() => startPostBodies.length === 3, '口播轨右键变速必须创建新的 prepare 任务');
-    assert.equal(startPostBodies[2].speed, 1.2, '右键变速必须把所选倍速写入新版本任务');
+    assert.equal(startPostBodies[2].speed, 1.3, '右键变速必须把所选倍速写入新版本任务');
     assert.deepEqual(startPostBodies[2].selectedMaterialKeys, savedGroup.script.selectedMaterialKeys, '右键变速必须沿用当前会话的素材快照');
 
     await page.close();

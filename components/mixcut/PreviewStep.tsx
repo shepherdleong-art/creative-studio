@@ -39,6 +39,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
 }) {
   const [selectedVariantId, setSelectedVariantId] = useState(group.variants[0]?.id || '');
   const [selectedClipId, setSelectedClipId] = useState('');
+  const [selectedMaterialKey, setSelectedMaterialKey] = useState('');
   const [selectedCueId, setSelectedCueId] = useState(group.subtitleCues[0]?.id || '');
   const [playheadSec, setPlayheadSec] = useState(0);
   const [seekRequestId, setSeekRequestId] = useState(0);
@@ -52,6 +53,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
   const mountedRef = useRef(true);
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
+  const selectedMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === selectedMaterialKey) || null;
   const selectedCue = group.subtitleCues.find((cue) => cue.id === selectedCueId) || group.subtitleCues[0] || null;
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
@@ -225,35 +227,61 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
         <button type="button" className={styles.expandBtn} title="展开素材替换" onClick={() => onRepCollapse(false)}>›</button>
         <section className={`${styles.panel} ${styles.panelGrow}`}>
           <h3><Icon name="retry" size={15} />素材调整</h3>
-          <div className={styles.hintLine} style={{ color: '#B25E00' }}>{selectedClip
-            ? '点击素材可替换当前片段；右键时间轴片段可删除。'
-            : firstInsertableGap
-              ? `时间轴有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口，点击素材即可从缺口起点插入。`
-              : '先在时间轴选中片段再替换；右键片段可删除并腾出缺口。'}</div>
-          <div className={styles.replaceList}>
-            {group.assets.map((asset) => (
+          <div className={styles.hintLine} style={{ color: '#B25E00' }}>{selectedClip && firstInsertableGap
+            ? `当前片段已选中，时间轴另有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口。先选素材，再明确选择替换或添加。`
+            : selectedClip
+              ? '当前片段已选中。先选素材，再点击“替换当前片段”；裁剪或删除可腾出添加缺口。'
+              : firstInsertableGap
+                ? `时间轴有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口。先选素材，再点击“添加到缺口”。`
+                : '单击下方素材会高亮选中；选中时间轴片段后可替换，右键片段可删除并腾出缺口。'}</div>
+          <div className={styles.replaceSelection} aria-live="polite">
+            <span className={styles.replaceSelectionName} title={selectedMaterial?.filename}>
+              {selectedMaterial ? `已选：${selectedMaterial.filename}` : '尚未选择素材'}
+            </span>
+            <div className={styles.replaceActions}>
               <button
                 type="button"
-                key={asset.assetKey || asset.videoJobId}
-                className={`${styles.rep} ${selectedClip?.videoJobId === asset.videoJobId ? styles.repActive : ''}`}
-                disabled={busy || (!selectedClip && !firstInsertableGap)}
-                onClick={() => selectedClip ? replaceClipAsset(asset) : insertClipAsset(asset)}
-                title={selectedClip
-                  ? `用「${asset.filename}」替换选中片段`
-                  : firstInsertableGap
-                    ? `把「${asset.filename}」插入第一个时间轴缺口`
-                    : '先删除片段腾出缺口，或选中一个片段进行替换'}
-              >
-                <span className={styles.repThumb}>
-                  {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <Icon name="video" size={14} />}
-                </span>
-                <span className={styles.repInfo}>
-                  <span className={styles.repN}>{asset.filename}</span>
-                  <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'}</span>
-                </span>
-                {usedVideoJobIds.has(asset.videoJobId) && <span className={`${styles.chip} ${styles.chipGreen}`}>已用</span>}
-              </button>
-            ))}
+                className={`${styles.btn} ${styles.small}`}
+                disabled={busy || !selectedMaterial || !selectedClip}
+                title={!selectedClip ? '先在时间轴单击选中要替换的片段' : !selectedMaterial ? '先在下方选择素材' : undefined}
+                onClick={() => selectedMaterial && replaceClipAsset(selectedMaterial)}
+              >替换当前片段</button>
+              <button
+                type="button"
+                className={`${styles.btn} ${styles.small} ${styles.primary}`}
+                disabled={busy || !selectedMaterial || !firstInsertableGap}
+                title={!firstInsertableGap ? '时间轴当前没有可插入的缺口' : !selectedMaterial ? '先在下方选择素材' : undefined}
+                onClick={() => selectedMaterial && insertClipAsset(selectedMaterial)}
+              ><Icon name="plus" size={12} />添加到缺口</button>
+            </div>
+          </div>
+          <div className={styles.replaceList}>
+            {group.assets.map((asset) => {
+              const materialKey = asset.assetKey || asset.videoJobId;
+              const materialSelected = materialKey === selectedMaterialKey;
+              return (
+                <button
+                  type="button"
+                  key={materialKey}
+                  className={`${styles.rep} ${materialSelected ? styles.repActive : ''}`}
+                  disabled={busy}
+                  aria-pressed={materialSelected}
+                  onClick={() => setSelectedMaterialKey(materialKey)}
+                  title={`选择素材「${asset.filename}」`}
+                >
+                  <span className={styles.repThumb}>
+                    {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <Icon name="video" size={14} />}
+                  </span>
+                  <span className={styles.repInfo}>
+                    <span className={styles.repN}>{asset.filename}</span>
+                    <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'}</span>
+                  </span>
+                  {materialSelected
+                    ? <span className={`${styles.chip} ${styles.chipBlue}`}><Icon name="check" size={10} />已选</span>
+                    : usedVideoJobIds.has(asset.videoJobId) && <span className={`${styles.chip} ${styles.chipGreen}`}>已用</span>}
+                </button>
+              );
+            })}
           </div>
         </section>
       </aside>
@@ -266,14 +294,14 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
           <span className={`${styles.chip} ${styles.chipGrey}`}>{orderedClips.length} 片段</span>
           <span className={`${styles.chip} ${styles.chipBlue}`}>总时长 {totalSec.toFixed(1)}s</span>
           <span className={`${styles.chip} ${narrationMatch ? styles.chipGreen : styles.chipGrey}`}>口播 {narrationSec.toFixed(1)}s {narrationMatch ? '✓' : '⚠'}</span>
-          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键删除 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击编辑 · 右键删除</span>
+          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键视频删除 | 右键口播调速 | 双击字幕编辑">单击选中 · 双击编辑 · 右键视频删除/口播调速</span>
           {selectedMatchReason && selectedMatchReasonLabel && (
             <span className={`${styles.chip} ${styles.chipBlue}`}>匹配：{selectedMatchReasonLabel} · {selectedMatchReason.score.toFixed(2)}</span>
           )}
           <span className={styles.spacer} />
           <span className={styles.flowHint} aria-live="polite">{busy ? '正在保存…' : message}</span>
           {group.variants.length > 1 && (
-            <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); setSelectedClipId(''); setTrimClip(null); setPlayheadSec(0); }}>
+            <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); setSelectedClipId(''); setSelectedMaterialKey(''); setTrimClip(null); setPlayheadSec(0); }}>
               {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
             </select>
           )}
