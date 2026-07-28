@@ -29,10 +29,16 @@ export interface AnalysisResult {
 export interface ScriptStrategyAnalysisV3 {
   version: 3;
   rankings: Array<{
+    sellingPointId: string;
     rank: number;
     title: string;
     priority: 'highest' | 'high' | 'medium' | 'low';
     reason: string;
+    factors: {
+      audienceFit: number;
+      platformFit: number;
+      sellingPointStrength: number;
+    };
   }>;
   audienceInsight: string;
   platformAdvice: string;
@@ -47,6 +53,7 @@ export interface ScriptStrategyAnalysisV3 {
 // ── Script Generation ──
 
 export interface SelectedSellingPoint {
+  sellingPointId?: string;
   title: string;
   priority: string;
   reason: string;
@@ -95,9 +102,17 @@ export interface ScriptSegmentV3 {
   id: string;
   narration: string;
   subtitle: string;
+  sellingPointIdRefs?: string[];
   sellingPointRefs: string[];
   visualIntent: string;
   visualKeywords: string[];
+}
+
+export interface ScriptSellingPointUsageV3 {
+  sellingPointId: string;
+  title: string;
+  status: 'used' | 'omitted_no_visual_support';
+  reason: string;
 }
 
 export interface ScriptOutputV3 {
@@ -119,6 +134,8 @@ export interface ScriptOutputV3 {
   estimatedNarrationDurationSec: number;
   durationStatus: 'qualified';
   durationPolicyVersion: 'zh-tts-budget-v1';
+  /** New V3 drafts include one entry per selected selling point; historical V3 drafts may omit it. */
+  sellingPointUsage?: ScriptSellingPointUsageV3[];
   segments: ScriptSegmentV3[];
   fullScript: string;
   fullSubtitle: string;

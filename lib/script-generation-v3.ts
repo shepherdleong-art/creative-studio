@@ -1,14 +1,15 @@
+import { createHash } from 'node:crypto';
 import {
   buildScriptDurationBudget,
   countScriptContentCharacters,
   estimateNarrationDurationSec,
 } from './script-duration-policy.ts';
 import {
-  chooseFallbackScriptTemplate,
   getScriptTemplate,
   SCRIPT_TEMPLATES,
 } from './script-templates.ts';
 import { normalizeAutomaticSubtitleText } from './subtitle-display.ts';
+import { getScriptStrategyAnalysisV3ValidationIssues } from './script-strategy.ts';
 import type {
   AnalysisInput,
   ScriptOutputV3,
@@ -77,10 +78,17 @@ interface ScriptMaterialMismatchErrorDetails {
   materialReason: string;
 }
 
+interface ScriptAnalysisContractErrorDetails {
+  kind: 'analysis_contract';
+  attempts: number;
+  validationIssues: string[];
+}
+
 interface ScriptGenerationV3ErrorDetailsByCode {
   script_duration_unresolved: ScriptDurationErrorDetails;
   script_contract_invalid: ScriptContractErrorDetails;
   script_material_mismatch: ScriptMaterialMismatchErrorDetails;
+  script_analysis_contract_invalid: ScriptAnalysisContractErrorDetails;
 }
 
 export type ScriptGenerationV3ErrorCode = keyof ScriptGenerationV3ErrorDetailsByCode;
@@ -199,12 +207,28 @@ function titlePartsDoNotOverlap(values: string[]): boolean {
 interface GroundedScriptSegment {
   segment: ScriptSegmentV3;
   visualRefs: string[];
+  sellingPointIds: string[];
+}
+
+interface GenerationSellingPoint extends SelectedSellingPoint {
+  sellingPointId: string;
+}
+
+function generationSellingPoints(input: ScriptGenerationInputV3): GenerationSellingPoint[] {
+  const seenIds = new Set<string>();
+  return input.selectedSellingPoints.map((point) => {
+    const sellingPointId = string(point.sellingPointId) || stableSellingPointId(point.title);
+    if (seenIds.has(sellingPointId)) throw new Error('selected_selling_point_ids_invalid');
+    seenIds.add(sellingPointId);
+    return { ...point, sellingPointId };
+  });
 }
 
 function normalizeTitleParts(
   raw: JsonObject,
   input: ScriptGenerationInputV3,
   groundedSegments: GroundedScriptSegment[],
+  sellingPoints: GenerationSellingPoint[],
 ): ScriptOutputV3['coverTitleParts'] {
   const rawParts = object(raw.coverTitleParts);
   const primary = string(rawParts.primary);
@@ -217,9 +241,12 @@ function normalizeTitleParts(
   const secondarySceneTerm = string(rawParts.secondarySceneTerm);
   const secondaryValuePhrase = string(rawParts.secondaryValuePhrase);
   const visualRefs = stringArray(rawParts.visualRefs);
-  const sellingPointRefs = stringArray(rawParts.sellingPointRefs);
+  const sellingPointIds = stringArray(rawParts.sellingPointIds);
   const allowedVisualRefs = new Set<string>(input.visuals.map((_, index) => visualRefForIndex(index)));
-  const allowedSellingPointRefs = new Set(input.selectedSellingPoints.map((point) => point.title));
+  const sellingPointById = new Map(sellingPoints.map((point) => [point.sellingPointId, point]));
+  const sellingPointRefs = sellingPointIds
+    .map((sellingPointId) => sellingPointById.get(sellingPointId)?.title || '')
+    .filter(Boolean);
   const categoryKey = titleKey(productCategoryTerm);
   const primaryEvidenceKey = titleKey(primaryEvidenceTerm);
   const secondarySceneKey = titleKey(secondarySceneTerm);
@@ -261,16 +288,20 @@ function normalizeTitleParts(
     && titlePartsDoNotOverlap([secondaryQualifier, secondarySceneTerm, secondaryValuePhrase])
     && visualRefs.length > 0
     && visualRefs.every((visualRef) => allowedVisualRefs.has(visualRef))
-    && (input.selectedSellingPoints.length === 0 || (
-      sellingPointRefs.length > 0
-      && sellingPointRefs.every((reference) => allowedSellingPointRefs.has(reference))
+    && (sellingPoints.length === 0 || (
+      sellingPointIds.length > 0
+      && sellingPointIds.every((sellingPointId) => sellingPointById.has(sellingPointId))
     ));
   if (!valid) throw new Error('cover_title_contract_invalid');
   return { primary, secondary, source: 'model' };
 }
 
-function normalizeSegments(raw: JsonObject, input: ScriptGenerationInputV3): GroundedScriptSegment[] {
-  const allowedSellingPoints = new Set(input.selectedSellingPoints.map((point) => point.title));
+function normalizeSegments(
+  raw: JsonObject,
+  input: ScriptGenerationInputV3,
+  sellingPoints: GenerationSellingPoint[],
+): GroundedScriptSegment[] {
+  const sellingPointById = new Map(sellingPoints.map((point) => [point.sellingPointId, point]));
   const allowedVisualRefs = new Set<string>(input.visuals.map((_, index) => visualRefForIndex(index)));
   const rawSegments = Array.isArray(raw.segments) ? raw.segments : [];
   const usedIds = new Set<string>();
@@ -282,8 +313,11 @@ function normalizeSegments(raw: JsonObject, input: ScriptGenerationInputV3): Gro
     let id = string(source.id) || `segment-${index + 1}`;
     if (usedIds.has(id)) id = `segment-${index + 1}`;
     usedIds.add(id);
-    const sellingPointRefs = stringArray(source.sellingPointRefs)
-      .filter((reference) => allowedSellingPoints.has(reference));
+    const sellingPointIds = stringArray(source.sellingPointIds);
+    if (sellingPointIds.some((sellingPointId) => !sellingPointById.has(sellingPointId))) {
+      throw new Error('segment_selling_point_ids_invalid');
+    }
+    const sellingPointRefs = sellingPointIds.map((sellingPointId) => sellingPointById.get(sellingPointId)!.title);
     const visualKeywords = stringArray(source.visualKeywords)
       .map((keyword) => Array.from(keyword).slice(0, 20).join(''));
     const visualIntent = string(source.visualIntent);
@@ -299,14 +333,60 @@ function normalizeSegments(raw: JsonObject, input: ScriptGenerationInputV3): Gro
         id,
         narration,
         subtitle: normalizeAutomaticSubtitleText(narration),
+        sellingPointIdRefs: sellingPointIds,
         sellingPointRefs,
         visualIntent,
         visualKeywords,
       },
       visualRefs,
+      sellingPointIds,
     });
   });
   return segments;
+}
+
+function normalizeSellingPointUsage(
+  raw: JsonObject,
+  input: ScriptGenerationInputV3,
+  sellingPoints: GenerationSellingPoint[],
+  groundedSegments: GroundedScriptSegment[],
+): NonNullable<ScriptOutputV3['sellingPointUsage']> {
+  const allowedVisualRefs = new Set<string>(input.visuals.map((_, index) => visualRefForIndex(index)));
+  const sellingPointById = new Map(sellingPoints.map((point) => [point.sellingPointId, point]));
+  const rawUsage = Array.isArray(raw.sellingPointUsage) ? raw.sellingPointUsage : [];
+  const normalizedById = new Map<string, NonNullable<ScriptOutputV3['sellingPointUsage']>[number]>();
+  rawUsage.forEach((value) => {
+    const usage = object(value);
+    const sellingPointId = string(usage.sellingPointId);
+    const status = string(usage.status);
+    const reason = string(usage.reason);
+    const visualRefs = stringArray(usage.visualRefs);
+    const supportingSegments = groundedSegments.filter((segment) => segment.sellingPointIds.includes(sellingPointId));
+    const isUsed = supportingSegments.length > 0;
+    const hasMatchingVisual = visualRefs.some((visualRef) => (
+      allowedVisualRefs.has(visualRef)
+      && supportingSegments.some((segment) => segment.visualRefs.includes(visualRef))
+    ));
+    if (!sellingPointById.has(sellingPointId)
+      || normalizedById.has(sellingPointId)
+      || !reason
+      || (status !== 'used' && status !== 'omitted_no_visual_support')
+      || (status === 'used' && (!isUsed || !hasMatchingVisual))
+      || (status === 'omitted_no_visual_support' && (isUsed || visualRefs.some((visualRef) => !allowedVisualRefs.has(visualRef))))) {
+      throw new Error('selling_point_usage_invalid');
+    }
+    normalizedById.set(sellingPointId, {
+      sellingPointId,
+      title: sellingPointById.get(sellingPointId)!.title,
+      status: status as 'used' | 'omitted_no_visual_support',
+      reason,
+    });
+  });
+  if (normalizedById.size !== sellingPoints.length
+    || sellingPoints.some((point) => !normalizedById.has(point.sellingPointId))) {
+    throw new Error('selling_point_usage_incomplete');
+  }
+  return sellingPoints.map((point) => normalizedById.get(point.sellingPointId)!);
 }
 
 function assertMaterialFeasible(raw: JsonObject, input: ScriptGenerationInputV3): void {
@@ -334,9 +414,11 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
 } {
   const raw = object(rawValue);
   assertMaterialFeasible(raw, input);
-  const groundedSegments = normalizeSegments(raw, input);
+  const sellingPoints = generationSellingPoints(input);
+  const groundedSegments = normalizeSegments(raw, input, sellingPoints);
   if (groundedSegments.length === 0) throw new Error('segments_required');
   const segments = groundedSegments.map(({ segment }) => segment);
+  const sellingPointUsage = normalizeSellingPointUsage(raw, input, sellingPoints, groundedSegments);
   const title = string(raw.title) || `${input.productName || input.projectName || '产品'}口播脚本`;
   const fullScript = segments.map((segment) => segment.narration).join('\n');
   const fullSubtitle = segments.map((segment) => segment.subtitle).join('\n');
@@ -351,7 +433,7 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
     script: {
       version: 3,
       title,
-      coverTitleParts: normalizeTitleParts(raw, input, groundedSegments),
+      coverTitleParts: normalizeTitleParts(raw, input, groundedSegments, sellingPoints),
       platform: input.platform,
       tone: input.tone,
       templateId: input.templateId,
@@ -363,6 +445,7 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
       estimatedNarrationDurationSec,
       durationStatus: 'qualified',
       durationPolicyVersion: budget.policyVersion,
+      sellingPointUsage,
       segments,
       fullScript,
       fullSubtitle,
@@ -421,14 +504,20 @@ const SCRIPT_OUTPUT_CONTRACT = {
     secondarySceneTerm: '2-5 字；必须是附图中真实可见的具体场景词，并原样出现在至少一段 visualKeywords 中，例如“卧室”“客厅”“小户型”',
     secondaryValuePhrase: `只能从以下短语中原样选择一个：${Array.from(COVER_TITLE_SECONDARY_VALUE_PHRASES).join('、')}`,
     visualRefs: 'string[]；标题依据的附图，只允许 visualMaterials 中的 visualRef',
-    sellingPointRefs: 'string[]；标题依据的已选卖点，只允许 selectedSellingPoints 中的完整 title',
+    sellingPointIds: 'string[]；标题依据的已选卖点，只允许原样引用 selectedSellingPoints 中的 sellingPointId',
   },
   segments: [{
     narration: 'string',
-    sellingPointRefs: 'string[]',
+    sellingPointIds: 'string[]；本段实际使用的卖点，只允许原样引用 selectedSellingPoints 中的 sellingPointId；没有使用卖点时返回空数组',
     visualIntent: 'string',
     visualKeywords: 'string[]',
     visualRefs: 'string[]；只允许 visualMaterials 中的 visualRef',
+  }],
+  sellingPointUsage: [{
+    sellingPointId: 'string；每个 selectedSellingPoints 的 sellingPointId 必须且只能出现一次',
+    status: '只能是 used 或 omitted_no_visual_support；正文引用时为 used，图片不能承接且正文未引用时为 omitted_no_visual_support',
+    reason: 'string；具体说明在哪些图片中看到了支撑，或为什么当前图片无法证明该卖点，不得为空',
+    visualRefs: 'string[]；used 时必须引用实际承接该卖点的图片；omitted_no_visual_support 时可为空',
   }],
 } as const;
 
@@ -440,10 +529,11 @@ function scriptRequirements(rewrite = false): string[] {
     `禁止使用以下无具体信息的万能标题：${GENERIC_COVER_TITLE_PHRASES.join('、')}`,
     'primary 必须严格等于 primaryStyleModifier + primaryEvidenceTerm + productCategoryTerm；secondary 必须严格等于 secondaryQualifier + secondarySceneTerm + secondaryValuePhrase',
     'primary 和 secondary 的各组成字段不得互相包含或重复，避免“软弹沙发沙发”“安心客厅安心之选”这类病句',
-    'coverTitleParts.visualRefs 和 sellingPointRefs 必须证明标题能由真实附图与已选卖点共同承接；productCategoryTerm 和 secondarySceneTerm 所在段落的 visualRefs 必须与标题 visualRefs 至少命中同一张图',
+    'coverTitleParts.visualRefs 和 sellingPointIds 必须证明标题能由真实附图与已选卖点共同承接；productCategoryTerm 和 secondarySceneTerm 所在段落的 visualRefs 必须与标题 visualRefs 至少命中同一张图',
     '只生成带自然标点的口播，不选择或绑定具体图片、shotId 或素材顺序；visualRefs 仅用于证明内容有输入图片承接',
     '返回独立主标题和副标题，正文只能使用已选卖点中的事实',
-    '每段返回 narration、sellingPointRefs、visualIntent、visualKeywords、visualRefs',
+    '每段返回 narration、sellingPointIds、visualIntent、visualKeywords、visualRefs；不要复述卖点标题作为关联键',
+    'sellingPointUsage 必须逐项覆盖全部已选卖点；已采用卖点必须与正文 sellingPointIds 和承接图片一致，未采用卖点必须明确说明当前图片缺少什么证据',
     rewrite ? '返回完整重写后的 JSON，不返回 diff，不截断字符串末尾' : '返回完整 JSON；字幕、全文、时长和 ID 由服务端派生',
   ];
 }
@@ -461,7 +551,7 @@ function generationPrompt(input: ScriptGenerationInputV3): string {
     platform: input.platform,
     tone: input.tone,
     template: promptTemplate(input),
-    selectedSellingPoints: input.selectedSellingPoints,
+    selectedSellingPoints: generationSellingPoints(input),
     visualMaterials: promptVisualMaterials(input),
     duration: {
       targetTotalSec: budget.targetTotalSec,
@@ -488,7 +578,7 @@ function rewritePrompt(
     currentContentCharacterCount: currentScript?.contentCharacterCount,
     currentEstimatedNarrationSec: currentScript?.estimatedNarrationDurationSec,
     template: promptTemplate(input),
-    selectedSellingPoints: input.selectedSellingPoints,
+    selectedSellingPoints: generationSellingPoints(input),
     visualMaterials: promptVisualMaterials(input),
     previousResult,
     outputContract: SCRIPT_OUTPUT_CONTRACT,
@@ -499,68 +589,232 @@ function rewritePrompt(
   });
 }
 
+interface AnalysisSellingPoint {
+  sellingPointId: string;
+  title: string;
+}
+
+interface NormalizedAnalysisCandidate {
+  analysis?: ScriptStrategyAnalysisV3;
+  validationIssues: string[];
+}
+
+function stableSellingPointId(title: string): string {
+  const digest = createHash('sha256').update(title.normalize('NFKC').trim(), 'utf8').digest('hex').slice(0, 16);
+  return `selling-point-${digest}`;
+}
+
+function buildAnalysisSellingPoints(input: AnalysisInput): AnalysisSellingPoint[] {
+  const seenIds = new Set<string>();
+  return input.sellingPoints.map((title) => {
+    const sellingPointId = stableSellingPointId(title);
+    if (seenIds.has(sellingPointId)) {
+      throw new ScriptGenerationV3Error(
+        'script_analysis_contract_invalid',
+        '存在重复卖点，请合并或修改后再分析',
+        { kind: 'analysis_contract', attempts: 0, validationIssues: [`duplicate_input_selling_point:${sellingPointId}`] },
+      );
+    }
+    seenIds.add(sellingPointId);
+    return { sellingPointId, title };
+  });
+}
+
+function analysisPriority(rank: number, total: number): 'highest' | 'high' | 'medium' | 'low' {
+  if (rank === 1) return 'highest';
+  if (rank <= 3) return 'high';
+  if (total >= 5 && rank === total) return 'low';
+  return 'medium';
+}
+
+function analysisFactorScore(factors: {
+  audienceFit: number;
+  platformFit: number;
+  sellingPointStrength: number;
+}): number {
+  return factors.audienceFit * 0.4 + factors.platformFit * 0.35 + factors.sellingPointStrength * 0.25;
+}
+
+function normalizeAnalysisCandidate(
+  rawValue: unknown,
+  sellingPoints: AnalysisSellingPoint[],
+): NormalizedAnalysisCandidate {
+  const raw = object(rawValue);
+  const validationIssues: string[] = [];
+  const audienceInsight = string(raw.audienceInsight);
+  const platformAdvice = string(raw.platformAdvice);
+  if (!audienceInsight) validationIssues.push('audienceInsight_required');
+  if (!platformAdvice) validationIssues.push('platformAdvice_required');
+
+  const sellingPointById = new Map(sellingPoints.map((point) => [point.sellingPointId, point]));
+  const seenIds = new Set<string>();
+  const seenRanks = new Set<number>();
+  const rankingCandidates: Array<Omit<ScriptStrategyAnalysisV3['rankings'][number], 'rank' | 'priority'> & {
+    modelRank: number;
+  }> = [];
+  const rawRankings = Array.isArray(raw.rankings) ? raw.rankings : [];
+  rawRankings.forEach((value) => {
+    const ranking = object(value);
+    const sellingPointId = string(ranking.sellingPointId);
+    const rank = Number(ranking.rank);
+    const reason = string(ranking.reason);
+    const factors = object(ranking.factors);
+    const audienceFit = Number(factors.audienceFit);
+    const platformFit = Number(factors.platformFit);
+    const sellingPointStrength = Number(factors.sellingPointStrength);
+    if (!sellingPointById.has(sellingPointId)) validationIssues.push(`unknown_selling_point_id:${sellingPointId || 'empty'}`);
+    if (seenIds.has(sellingPointId)) validationIssues.push(`duplicate_selling_point_id:${sellingPointId}`);
+    if (!Number.isInteger(rank) || rank < 1 || rank > sellingPoints.length) validationIssues.push(`invalid_rank:${sellingPointId || 'empty'}`);
+    if (seenRanks.has(rank)) validationIssues.push(`duplicate_rank:${rank}`);
+    if (!reason) validationIssues.push(`ranking_reason_required:${sellingPointId || 'empty'}`);
+    const factorValues = [audienceFit, platformFit, sellingPointStrength];
+    if (!factorValues.every((score) => Number.isInteger(score) && score >= 1 && score <= 5)) {
+      validationIssues.push(`ranking_factors_invalid:${sellingPointId || 'empty'}`);
+    }
+    if (!sellingPointById.has(sellingPointId)
+      || seenIds.has(sellingPointId)
+      || !Number.isInteger(rank)
+      || rank < 1
+      || rank > sellingPoints.length
+      || seenRanks.has(rank)
+      || !reason
+      || !factorValues.every((score) => Number.isInteger(score) && score >= 1 && score <= 5)) {
+      return;
+    }
+    seenIds.add(sellingPointId);
+    seenRanks.add(rank);
+    rankingCandidates.push({
+      sellingPointId,
+      modelRank: rank,
+      title: sellingPointById.get(sellingPointId)!.title,
+      reason,
+      factors: { audienceFit, platformFit, sellingPointStrength },
+    });
+  });
+  sellingPoints.forEach((point) => {
+    if (!seenIds.has(point.sellingPointId)) validationIssues.push(`missing_selling_point_id:${point.sellingPointId}`);
+  });
+  for (let rank = 1; rank <= sellingPoints.length; rank += 1) {
+    if (!seenRanks.has(rank)) validationIssues.push(`missing_rank:${rank}`);
+  }
+  rankingCandidates.sort((left, right) => (
+    analysisFactorScore(right.factors) - analysisFactorScore(left.factors)
+      || left.modelRank - right.modelRank
+  ));
+  const rankings: ScriptStrategyAnalysisV3['rankings'] = rankingCandidates.map((ranking, index) => ({
+    sellingPointId: ranking.sellingPointId,
+    rank: index + 1,
+    title: ranking.title,
+    priority: analysisPriority(index + 1, sellingPoints.length),
+    reason: ranking.reason,
+    factors: ranking.factors,
+  }));
+
+  const rawRecommendation = object(raw.recommendedTemplate);
+  const recommendation = getScriptTemplate(string(rawRecommendation.id));
+  const recommendationReason = string(rawRecommendation.reason);
+  if (!recommendation) validationIssues.push('recommended_template_invalid');
+  if (!recommendationReason) validationIssues.push('recommended_template_reason_required');
+  if (validationIssues.length > 0 || !recommendation) return { validationIssues };
+
+  const analysis: ScriptStrategyAnalysisV3 = {
+    version: 3,
+    rankings,
+    audienceInsight,
+    platformAdvice,
+    recommendedTemplate: {
+      id: recommendation.id,
+      name: recommendation.name,
+      reason: recommendationReason,
+    },
+    recommendationSource: 'model',
+  };
+  const finalContractIssues = getScriptStrategyAnalysisV3ValidationIssues(analysis);
+  if (finalContractIssues.length > 0) return { validationIssues: finalContractIssues };
+  return { validationIssues: [], analysis };
+}
+
+function buildAnalysisPrompt(
+  input: AnalysisInput,
+  sellingPoints: AnalysisSellingPoint[],
+  revision?: { previousResult: unknown; validationIssues: string[] },
+): string {
+  return JSON.stringify({
+    task: revision ? 'rewrite_script_strategy_analysis_v3' : 'analyze_script_strategy_v3',
+    targetAudience: input.targetAudience,
+    platform: input.platform,
+    sellingPoints,
+    allowedTemplates: SCRIPT_TEMPLATES.map((template) => ({
+      id: template.id,
+      name: template.name,
+      suitable: template.suitable,
+      objective: template.objective,
+      narrativeStructure: template.narrativeStructure,
+      writingRules: template.writingRules,
+      desiredAudienceResponse: template.desiredAudienceResponse,
+    })),
+    outputContract: {
+      audienceInsight: 'string；必须具体分析目标人群的需求、顾虑和购买决策因素，不得为空',
+      platformAdvice: 'string；必须具体分析所选平台的内容偏好、表达方式和信任证据，不得为空',
+      rankings: [{
+        sellingPointId: 'string；只能原样引用 sellingPoints 中的 sellingPointId，每个 ID 必须且只能出现一次',
+        rank: 'integer；模型给出的综合判断顺序，仅在三维加权分相同时用于破同分；从 1 开始连续且不得重复或遗漏',
+        factors: {
+          audienceFit: 'integer 1-5；与目标人群需求的匹配度',
+          platformFit: 'integer 1-5；与平台内容偏好和表达方式的匹配度',
+          sellingPointStrength: 'integer 1-5；卖点自身的差异化、可信度和购买决策影响力',
+        },
+        reason: 'string；结合目标人群、平台和卖点强度解释排名，不得为空',
+      }],
+      recommendedTemplate: {
+        id: 'string；只能使用 allowedTemplates 中的 id',
+        reason: 'string；说明排名靠前的卖点、人群和平台如何匹配模板叙事结构',
+      },
+    },
+    requirements: [
+      '卖点最终排名由服务端按人群匹配 40%、平台匹配 35%、卖点强度 25% 加权计算；必须如实给出三项评分，禁止沿用输入顺序',
+      '返回完整卖点排列，每个 sellingPointId 必须且只能出现一次；不要复述或改写卖点标题',
+      '只推荐一个综合模板，推荐理由必须引用排名靠前卖点、人群和平台的具体关系',
+      '不分析分镜图片；图片承接能力在脚本生成阶段单独判断',
+    ],
+    ...(revision || {}),
+  });
+}
+
 export async function analyzeScriptStrategyV3(
   input: AnalysisInput,
   dependencies: ScriptGenerationV3Dependencies,
 ): Promise<ScriptStrategyAnalysisV3> {
-  const raw = object(await dependencies.completeJson({
-    systemPrompt: '你是电商短视频内容策略师。只返回 JSON，不分析或索取图片。必须依据每个模板的目标、叙事结构和适用卖点推荐，不能只根据模板名称猜测。',
-    userPrompt: JSON.stringify({
-      task: 'analyze_script_strategy_v3',
-      ...input,
-      allowedTemplates: SCRIPT_TEMPLATES.map((template) => ({
-        id: template.id,
-        name: template.name,
-        suitable: template.suitable,
-        objective: template.objective,
-        narrativeStructure: template.narrativeStructure,
-        writingRules: template.writingRules,
-        desiredAudienceResponse: template.desiredAudienceResponse,
-      })),
-      requirements: [
-        '给出卖点统一排序',
-        '只推荐一个综合模板',
-        '推荐理由必须说明最高优先级卖点、目标人群和平台如何匹配该模板的叙事结构',
-        '不分析分镜图片',
-      ],
-    }),
-    temperature: 0.5,
-  }));
-  const inputSellingPoints = new Set(input.sellingPoints);
-  const rankings = (Array.isArray(raw.rankings) ? raw.rankings : [])
-    .map((value, index) => {
-      const ranking = object(value);
-      const title = string(ranking.title);
-      const priority = ['highest', 'high', 'medium', 'low'].includes(String(ranking.priority))
-        ? ranking.priority as 'highest' | 'high' | 'medium' | 'low'
-        : index === 0 ? 'highest' : 'medium';
-      return { rank: index + 1, title, priority, reason: string(ranking.reason) };
-    })
-    .filter((ranking) => ranking.title && inputSellingPoints.has(ranking.title));
-  const missing = input.sellingPoints.filter((title) => !rankings.some((ranking) => ranking.title === title));
-  missing.forEach((title) => rankings.push({
-    rank: rankings.length + 1,
-    title,
-    priority: rankings.length === 0 ? 'highest' : 'medium',
-    reason: '根据用户输入保留',
-  }));
-  rankings.sort((a, b) => a.rank - b.rank).forEach((ranking, index) => { ranking.rank = index + 1; });
-
-  const rawRecommendation = object(raw.recommendedTemplate);
-  const modelTemplate = getScriptTemplate(string(rawRecommendation.id));
-  const recommendation = modelTemplate || chooseFallbackScriptTemplate(input.platform);
-  return {
-    version: 3,
-    rankings,
-    audienceInsight: string(raw.audienceInsight),
-    platformAdvice: string(raw.platformAdvice),
-    recommendedTemplate: {
-      id: recommendation.id,
-      name: recommendation.name,
-      reason: string(rawRecommendation.reason) || '根据平台与优先卖点确定',
-    },
-    recommendationSource: modelTemplate ? 'model' : 'system_fallback',
-  };
+  if (!input.targetAudience.trim()) {
+    throw new ScriptGenerationV3Error(
+      'script_analysis_contract_invalid',
+      '请先填写目标人群，再进行策略分析',
+      { kind: 'analysis_contract', attempts: 0, validationIssues: ['targetAudience_required'] },
+    );
+  }
+  const sellingPoints = buildAnalysisSellingPoints(input);
+  let previousResult: unknown;
+  let validationIssues: string[] = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const raw = await dependencies.completeJson({
+      systemPrompt: '你是电商短视频内容策略师。只返回完整 JSON，不分析或索取图片。必须结合目标人群、发布平台与卖点强度完成排序，并严格使用输入提供的 sellingPointId，不能按输入顺序机械排序。必须依据每个模板的目标、叙事结构和适用卖点推荐，不能只根据模板名称猜测。',
+      userPrompt: buildAnalysisPrompt(
+        input,
+        sellingPoints,
+        attempt === 1 ? undefined : { previousResult, validationIssues },
+      ),
+      temperature: attempt === 1 ? 0.5 : 0.2,
+    });
+    const normalized = normalizeAnalysisCandidate(raw, sellingPoints);
+    if (normalized.analysis) return normalized.analysis;
+    previousResult = raw;
+    validationIssues = normalized.validationIssues;
+  }
+  throw new ScriptGenerationV3Error(
+    'script_analysis_contract_invalid',
+    '策略分析未返回完整的人群、平台与卖点排序结果，请重试',
+    { kind: 'analysis_contract', attempts: 3, validationIssues },
+  );
 }
 
 export async function generateScriptV3(

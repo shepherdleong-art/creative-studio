@@ -15,8 +15,8 @@ const baseInput = {
   tone: '温柔种草',
   platform: '小红书',
   selectedSellingPoints: [
-    { title: '112°承托', priority: 'highest', reason: '缓解久坐疲劳' },
-    { title: '5芯软弹', priority: 'high', reason: '坐感柔软' },
+    { sellingPointId: 'selling-point-1', title: '112°承托', priority: 'highest', reason: '缓解久坐疲劳' },
+    { sellingPointId: 'selling-point-2', title: '5芯软弹', priority: 'high', reason: '坐感柔软' },
   ],
   templateId: 'scene_seeding',
   templateName: '场景种草',
@@ -45,7 +45,7 @@ const validCoverTitleParts = {
   secondarySceneTerm: '客厅',
   secondaryValuePhrase: '必备',
   visualRefs: ['visual-1', 'visual-2'],
-  sellingPointRefs: ['5芯软弹'],
+  sellingPointIds: ['selling-point-2'],
 };
 
 function feasibleResult(
@@ -53,6 +53,35 @@ function feasibleResult(
   coverTitleParts: Record<string, unknown> = validCoverTitleParts,
 ): Record<string, unknown> {
   const segments = Array.isArray(value.segments) ? value.segments : [];
+  const normalizedSegments = segments.map((segment, index) => {
+    const source = segment && typeof segment === 'object' ? segment as Record<string, unknown> : {};
+    const visualKeywords = Array.isArray(source.visualKeywords) && source.visualKeywords.length > 0
+      ? [...source.visualKeywords, '客厅', '沙发']
+      : source.visualKeywords;
+    const sellingPointRefs = Array.isArray(source.sellingPointRefs) ? source.sellingPointRefs : [];
+    const sellingPointIds = sellingPointRefs.map((reference) => (
+      `selling-point-${baseInput.selectedSellingPoints.findIndex((point) => point.title === reference) + 1}`
+    )).filter((id) => id !== 'selling-point-0');
+    return {
+      visualRefs: [`visual-${(index % baseInput.visuals.length) + 1}`],
+      ...source,
+      visualKeywords,
+      sellingPointIds,
+    };
+  });
+  const usedSellingPointIds = new Set(normalizedSegments.flatMap((segment) => (
+    Array.isArray(segment.sellingPointIds) ? segment.sellingPointIds : []
+  )));
+  const defaultSellingPointUsage = baseInput.selectedSellingPoints.map((point, index) => {
+    const sellingPointId = `selling-point-${index + 1}`;
+    const used = usedSellingPointIds.has(sellingPointId);
+    return {
+      sellingPointId,
+      status: used ? 'used' : 'omitted_no_visual_support',
+      reason: used ? '卖点与对应图片细节一致' : '当前分镜图片没有清晰呈现该卖点',
+      visualRefs: used ? ['visual-1', 'visual-2'] : [],
+    };
+  });
   return {
     materialAssessment: {
       templateFeasible: true,
@@ -61,17 +90,10 @@ function feasibleResult(
     },
     ...value,
     coverTitleParts,
-    segments: segments.map((segment, index) => {
-      const source = segment && typeof segment === 'object' ? segment as Record<string, unknown> : {};
-      const visualKeywords = Array.isArray(source.visualKeywords) && source.visualKeywords.length > 0
-        ? [...source.visualKeywords, '客厅', '沙发']
-        : source.visualKeywords;
-      return {
-        visualRefs: [`visual-${(index % baseInput.visuals.length) + 1}`],
-        ...source,
-        visualKeywords,
-      };
-    }),
+    segments: normalizedSegments,
+    sellingPointUsage: Array.isArray(value.sellingPointUsage)
+      ? value.sellingPointUsage
+      : defaultSellingPointUsage,
   };
 }
 
@@ -192,8 +214,9 @@ assert.deepEqual(
         secondarySceneTerm: string;
         secondaryValuePhrase: string;
         visualRefs: string;
-        sellingPointRefs: string;
+        sellingPointIds: string;
       };
+      sellingPointUsage: Array<Record<string, string>>;
     };
     requirements: string[];
   };
@@ -232,6 +255,8 @@ assert.deepEqual(
   assert.match(initialPrompt.outputContract.coverTitleParts.secondary, /理想卧室必备/);
   assert.match(initialPrompt.outputContract.coverTitleParts.primaryEvidenceTerm, /selectedSellingPoints/);
   assert.match(initialPrompt.outputContract.coverTitleParts.secondarySceneTerm, /visualKeywords/);
+  assert.match(initialPrompt.outputContract.coverTitleParts.sellingPointIds, /sellingPointId/);
+  assert.match(initialPrompt.outputContract.sellingPointUsage[0].status, /omitted_no_visual_support/);
   assert.match(calls[1].userPrompt, /too_long/);
   const rewritePrompt = JSON.parse(calls[1].userPrompt) as {
     template?: { id?: string };
@@ -252,6 +277,17 @@ assert.deepEqual(
   });
   assert.ok(result.script.segments.every((segment) => !('shotId' in segment)));
   assert.ok(result.script.segments.every((segment) => !('visualRefs' in segment)), '生成期画面引用不能形成持久化素材绑定');
+  assert.deepEqual(result.script.sellingPointUsage, [{
+    sellingPointId: 'selling-point-1',
+    title: '112°承托',
+    status: 'used',
+    reason: '卖点与对应图片细节一致',
+  }, {
+    sellingPointId: 'selling-point-2',
+    title: '5芯软弹',
+    status: 'used',
+    reason: '卖点与对应图片细节一致',
+  }]);
   assert.ok(result.script.contentCharacterCount >= budget.minContentCharacters);
   assert.ok(result.script.contentCharacterCount <= budget.maxContentCharacters);
 }
@@ -464,6 +500,50 @@ assert.deepEqual(
 
 {
   let calls = 0;
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => {
+      calls += 1;
+      return feasibleResult({
+        title: '卖点采用状态校验',
+        segments: [{
+          narration: `${'柔软坐感'.repeat(13)}安心。`,
+          sellingPointRefs: ['5芯软弹'],
+          visualIntent: '附图中的沙发坐垫和客厅环境',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+        ...(calls === 1 ? {
+          sellingPointUsage: [{
+            sellingPointId: 'selling-point-1',
+            status: 'used',
+            reason: '声称正文已经采用',
+            visualRefs: ['visual-1'],
+          }, {
+            sellingPointId: 'selling-point-2',
+            status: 'omitted_no_visual_support',
+            reason: '声称正文没有采用',
+            visualRefs: [],
+          }],
+        } : {}),
+      });
+    },
+  });
+  assert.equal(calls, 2, '卖点采用状态与正文引用不一致时必须重写');
+  assert.deepEqual(result.script.sellingPointUsage, [{
+    sellingPointId: 'selling-point-1',
+    title: '112°承托',
+    status: 'omitted_no_visual_support',
+    reason: '当前分镜图片没有清晰呈现该卖点',
+  }, {
+    sellingPointId: 'selling-point-2',
+    title: '5芯软弹',
+    status: 'used',
+    reason: '卖点与对应图片细节一致',
+  }]);
+}
+
+{
+  let calls = 0;
   await assert.rejects(
     generateScriptV3(baseInput, {
       completeJson: async () => {
@@ -492,31 +572,76 @@ assert.deepEqual(
 
 {
   const analysisRequests: Array<{ systemPrompt: string; userPrompt: string }> = [];
+  let analysisSellingPointIds: string[] = [];
   const analysis = await analyzeScriptStrategyV3({
-    sellingPoints: ['112°承托', '5芯软弹'],
-    targetAudience: '久坐上班族',
+    sellingPoints: ['"1.婴幼级半青皮，A 类认证透气耐折', '2.1.3mm 黄金厚度，保留自然皮纹'],
+    targetAudience: '25-40岁女性',
     platform: '小红书',
   }, {
     completeJson: async (request) => {
       analysisRequests.push({ systemPrompt: request.systemPrompt, userPrompt: request.userPrompt });
+      const requestPrompt = JSON.parse(request.userPrompt) as {
+        sellingPoints: Array<{ sellingPointId: string }>;
+      };
+      analysisSellingPointIds = requestPrompt.sellingPoints.map((point) => point.sellingPointId);
+      if (analysisRequests.length === 1) {
+        return {
+          rankings: [{ sellingPointId: 'unknown', rank: 1, reason: '泛化理由' }],
+          recommendedTemplate: { id: 'unknown-template', reason: '' },
+        };
+      }
       return {
         rankings: [
-          { rank: 1, title: '112°承托', priority: 'highest', reason: '直击久坐痛点' },
-          { rank: 2, title: '5芯软弹', priority: 'high', reason: '提供舒适证据' },
+          {
+            sellingPointId: analysisSellingPointIds[0],
+            rank: 1,
+            factors: { audienceFit: 2, platformFit: 2, sellingPointStrength: 3 },
+            reason: '材质安全能回应目标人群顾虑，但平台画面表达相对有限',
+          },
+          {
+            sellingPointId: analysisSellingPointIds[1],
+            rank: 2,
+            factors: { audienceFit: 5, platformFit: 5, sellingPointStrength: 4 },
+            reason: '自然皮纹适合小红书近景展示，也符合目标人群对家居质感的关注',
+          },
         ],
-        audienceInsight: '关注腰背舒适',
-        platformAdvice: '用生活场景建立代入感',
-        recommendedTemplate: { id: 'unknown-template', name: '未知模板', reason: '模型建议' },
+        audienceInsight: '25-40岁女性更关注材质安全、真实触感和客厅整体质感',
+        platformAdvice: '小红书适合从生活场景切入，用材质近景和具体认证建立信任',
+        recommendedTemplate: { id: 'scene_seeding', reason: '场景种草能把材质质感转化为生活方式体验' },
       };
     },
   });
   assert.equal(analysis.version, 3);
-  assert.equal(analysis.recommendationSource, 'system_fallback');
-  assert.notEqual(analysis.recommendedTemplate.id, 'unknown-template');
-  assert.equal(analysisRequests.length, 1);
+  assert.equal(analysis.recommendationSource, 'model');
+  assert.equal(analysis.recommendedTemplate.id, 'scene_seeding');
+  assert.equal(analysisRequests.length, 2, '缺少人群/平台分析或卖点 ID 非法时必须重写，不能静默兜底');
+  assert.deepEqual(analysis.rankings.map((ranking) => ({
+    sellingPointId: ranking.sellingPointId,
+    title: ranking.title,
+    rank: ranking.rank,
+    priority: ranking.priority,
+  })), [{
+    sellingPointId: analysisSellingPointIds[1],
+    title: '2.1.3mm 黄金厚度，保留自然皮纹',
+    rank: 1,
+    priority: 'highest',
+  }, {
+    sellingPointId: analysisSellingPointIds[0],
+    title: '"1.婴幼级半青皮，A 类认证透气耐折',
+    rank: 2,
+    priority: 'high',
+  }], '服务端必须按三维评分计算名次，并用稳定 ID 回填用户原文');
   const analysisRequest = analysisRequests[0];
   assert.match(analysisRequest.systemPrompt, /依据每个模板的目标、叙事结构和适用卖点推荐/);
   const analysisPrompt = JSON.parse(analysisRequest.userPrompt) as {
+    targetAudience: string;
+    platform: string;
+    sellingPoints: Array<{ sellingPointId: string; title: string }>;
+    outputContract: {
+      audienceInsight: string;
+      platformAdvice: string;
+      rankings: Array<{ sellingPointId: string; factors: Record<string, string> }>;
+    };
     allowedTemplates: Array<{
       id: string;
       objective: string;
@@ -526,6 +651,20 @@ assert.deepEqual(
       desiredAudienceResponse: string;
     }>;
   };
+  assert.equal(analysisPrompt.targetAudience, '25-40岁女性');
+  assert.equal(analysisPrompt.platform, '小红书');
+  assert.deepEqual(analysisPrompt.sellingPoints.map((point) => point.title), [
+    '"1.婴幼级半青皮，A 类认证透气耐折',
+    '2.1.3mm 黄金厚度，保留自然皮纹',
+  ]);
+  assert.ok(analysisPrompt.sellingPoints.every((point) => /^selling-point-[a-f0-9]{16}$/u.test(point.sellingPointId)));
+  assert.equal(new Set(analysisPrompt.sellingPoints.map((point) => point.sellingPointId)).size, 2);
+  assert.match(analysisPrompt.outputContract.audienceInsight, /目标人群/);
+  assert.match(analysisPrompt.outputContract.platformAdvice, /平台/);
+  assert.match(analysisPrompt.outputContract.rankings[0].sellingPointId, /sellingPoints/);
+  assert.deepEqual(Object.keys(analysisPrompt.outputContract.rankings[0].factors), [
+    'audienceFit', 'platformFit', 'sellingPointStrength',
+  ]);
   assert.deepEqual(
     analysisPrompt.allowedTemplates.map((template) => template.id),
     ['pain_point', 'scene_seeding', 'feature_showcase', 'emotional', 'comparison', 'unboxing', 'problem_solving'],
@@ -549,6 +688,72 @@ assert.deepEqual(
       && template.writingRules.length >= 3
       && template.desiredAudienceResponse
   )));
+  assert.match(analysisRequests[1].userPrompt, /validationIssues/);
+}
+
+{
+  let calls = 0;
+  await assert.rejects(
+    () => analyzeScriptStrategyV3({
+      sellingPoints: ['安全面料', '实木框架'],
+      targetAudience: '亲子家庭',
+      platform: '抖音',
+    }, {
+      completeJson: async (request) => {
+        calls += 1;
+        const requestPrompt = JSON.parse(request.userPrompt) as {
+          sellingPoints: Array<{ sellingPointId: string }>;
+        };
+        const duplicateId = requestPrompt.sellingPoints[0].sellingPointId;
+        return {
+          audienceInsight: '亲子家庭关注材质安全和耐用性',
+          platformAdvice: '抖音适合用直接利益点和可视化证据快速建立认知',
+          rankings: [{
+            sellingPointId: duplicateId, rank: 1,
+            factors: { audienceFit: 5, platformFit: 4, sellingPointStrength: 4 }, reason: '安全价值明确',
+          }, {
+            sellingPointId: duplicateId, rank: 1,
+            factors: { audienceFit: 4, platformFit: 4, sellingPointStrength: 5 }, reason: '重复的非法排名',
+          }],
+          recommendedTemplate: { id: 'pain_point', reason: '适合直接切入家庭安全顾虑' },
+        };
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ScriptGenerationV3Error);
+      assert.equal(error.code, 'script_analysis_contract_invalid');
+      assert.equal(error.details.kind, 'analysis_contract');
+      assert.equal(error.details.attempts, 3);
+      assert.ok(error.details.validationIssues.some((issue: string) => issue.startsWith('duplicate_selling_point_id:')));
+      assert.ok(error.details.validationIssues.some((issue: string) => issue.startsWith('missing_selling_point_id:')));
+      return true;
+    },
+  );
+  assert.equal(calls, 3, '策略分析最多进行三次合同修正，仍失败必须显式报错');
+}
+
+{
+  let calls = 0;
+  await assert.rejects(
+    () => analyzeScriptStrategyV3({
+      sellingPoints: ['安全面料'],
+      targetAudience: '   ',
+      platform: '小红书',
+    }, {
+      completeJson: async () => {
+        calls += 1;
+        return {};
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ScriptGenerationV3Error);
+      assert.equal(error.code, 'script_analysis_contract_invalid');
+      assert.equal(error.message, '请先填写目标人群，再进行策略分析');
+      assert.equal(error.details.attempts, 0);
+      return true;
+    },
+  );
+  assert.equal(calls, 0, '缺少目标人群时不得把泛化任务发送给模型');
 }
 
 console.log('script generation v3 tests passed');

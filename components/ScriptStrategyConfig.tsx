@@ -4,6 +4,10 @@ import { Icon } from '@/components/ui/Icon';
 import ScriptTemplatePicker from './ScriptTemplatePicker';
 import type { AnalysisResult, ProviderMeta, ScriptStrategyAnalysisV3 } from '@/lib/script-providers';
 import { SCRIPT_DURATION_BUDGETS, SCRIPT_DURATION_OPTIONS } from '@/lib/script-duration-policy';
+import {
+  getSellingPointSelectionKey,
+  isCompleteScriptStrategyAnalysisV3,
+} from '@/lib/script-strategy';
 
 interface ShotSetOption {
   id: string;
@@ -14,8 +18,8 @@ interface ShotSetOption {
 
 interface Props {
   analysis: AnalysisResult | ScriptStrategyAnalysisV3;
-  selectedSellingPoints: string[];
-  onSellingPointsChange: (points: string[]) => void;
+  selectedSellingPointKeys: string[];
+  onSellingPointKeysChange: (keys: string[]) => void;
   templateId: string;
   onTemplateIdChange: (id: string, name: string) => void;
   templateName: string;
@@ -40,8 +44,8 @@ const PRIORITY_CONFIG: Record<string, { label: string; className: string }> = {
 
 export default function ScriptStrategyConfig({
   analysis,
-  selectedSellingPoints,
-  onSellingPointsChange,
+  selectedSellingPointKeys,
+  onSellingPointKeysChange,
   templateId,
   onTemplateIdChange,
   targetDurationSec,
@@ -62,14 +66,20 @@ export default function ScriptStrategyConfig({
   const budget = SCRIPT_DURATION_BUDGETS[targetDurationSec as keyof typeof SCRIPT_DURATION_BUDGETS]
     || SCRIPT_DURATION_BUDGETS[20];
   const suggestedSellingPointCount = Math.max(1, Math.floor(budget.maxContentCharacters / 18));
-  const hasTooManySellingPoints = selectedSellingPoints.length > suggestedSellingPointCount;
+  const hasTooManySellingPoints = selectedSellingPointKeys.length > suggestedSellingPointCount;
   const v3Analysis = 'version' in analysis && analysis.version === 3 ? analysis : null;
+  const v3AnalysisIsComplete = !v3Analysis || isCompleteScriptStrategyAnalysisV3(v3Analysis);
 
-  const toggleSellingPoint = (title: string) => {
-    if (selectedSellingPoints.includes(title)) {
-      onSellingPointsChange(selectedSellingPoints.filter((s) => s !== title));
+  const toggleSellingPoint = (ranking: (typeof analysis.rankings)[number]) => {
+    const selectionKey = getSellingPointSelectionKey(ranking);
+    const isSelected = selectedSellingPointKeys.includes(selectionKey)
+      || selectedSellingPointKeys.includes(ranking.title);
+    if (isSelected) {
+      onSellingPointKeysChange(selectedSellingPointKeys.filter((key) => (
+        key !== selectionKey && key !== ranking.title
+      )));
     } else {
-      onSellingPointsChange([...selectedSellingPoints, title]);
+      onSellingPointKeysChange([...selectedSellingPointKeys, selectionKey]);
     }
   };
 
@@ -81,6 +91,12 @@ export default function ScriptStrategyConfig({
           确认 AI 分析的卖点排名、选择脚本模版和时长，然后生成。
         </p>
       </div>
+
+      {v3Analysis && !v3AnalysisIsComplete && (
+        <p className="rounded-lg bg-warn-tint px-3 py-2 text-xs leading-relaxed text-warn">
+          历史策略分析不完整，缺少真实的人群、平台或卖点排序依据。请重新开始并再次分析后再生成脚本。
+        </p>
+      )}
 
       {/* Audience insight + Platform advice */}
       {(analysis.audienceInsight || analysis.platformAdvice) && (
@@ -117,11 +133,13 @@ export default function ScriptStrategyConfig({
         <label className="label mb-2">📊 卖点优先级（勾选要使用的卖点）</label>
         <div className="space-y-1.5">
           {analysis.rankings.map((r) => {
-            const isSelected = selectedSellingPoints.includes(r.title);
+            const selectionKey = getSellingPointSelectionKey(r);
+            const isSelected = selectedSellingPointKeys.includes(selectionKey)
+              || selectedSellingPointKeys.includes(r.title);
             const pc = PRIORITY_CONFIG[r.priority] || PRIORITY_CONFIG.medium;
             return (
               <label
-                key={r.rank}
+                key={selectionKey}
                 className={`flex cursor-pointer items-start gap-3 rounded-[14px] border p-3 transition-all ${
                   isSelected
                     ? 'border-accent/30 bg-accent-tint/5'
@@ -131,7 +149,7 @@ export default function ScriptStrategyConfig({
                 <input
                   type="checkbox"
                   checked={isSelected}
-                  onChange={() => toggleSellingPoint(r.title)}
+                  onChange={() => toggleSellingPoint(r)}
                   className="mt-0.5 h-4 w-4 rounded accent-accent"
                 />
                 <div className="min-w-0 flex-1">
@@ -142,6 +160,13 @@ export default function ScriptStrategyConfig({
                     <span className="text-sm font-medium text-ink">{r.title}</span>
                   </div>
                   <p className="mt-0.5 text-xs leading-relaxed text-ink-secondary">{r.reason}</p>
+                  {'factors' in r && r.factors && (
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[0.65rem] text-ink-tertiary">
+                      <span>人群匹配 {r.factors.audienceFit}/5</span>
+                      <span>平台匹配 {r.factors.platformFit}/5</span>
+                      <span>卖点强度 {r.factors.sellingPointStrength}/5</span>
+                    </div>
+                  )}
                   {'recommendedTemplateName' in r && (
                     <div className="mt-1 flex items-center gap-1.5 text-[0.65rem] text-ink-tertiary">
                       <Icon name="film" size={10} />
@@ -249,7 +274,11 @@ export default function ScriptStrategyConfig({
 
         <button
           onClick={onGenerate}
-          disabled={generating || !selectedShotSetId || visionProviders.length === 0 || !canGenerateWithSelectedProvider}
+          disabled={generating
+            || !selectedShotSetId
+            || visionProviders.length === 0
+            || !canGenerateWithSelectedProvider
+            || !v3AnalysisIsComplete}
           className="btn-primary"
         >
           {generating ? (

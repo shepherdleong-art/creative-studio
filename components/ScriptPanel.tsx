@@ -5,7 +5,15 @@ import { Icon } from '@/components/ui/Icon';
 import ScriptSellingPointInput from './ScriptSellingPointInput';
 import ScriptStrategyConfig from './ScriptStrategyConfig';
 import ScriptResultView from './ScriptResultView';
-import { canNavigateToScriptStep, getScriptStepStatus, type ScriptStep } from '@/lib/script-workflow';
+import {
+  canNavigateToScriptStep,
+  getScriptStepStatus,
+  type ScriptStep,
+} from '@/lib/script-workflow';
+import {
+  getDefaultSelectedSellingPointKeys,
+  resolveSelectedSellingPoints,
+} from '@/lib/script-strategy';
 import type {
   AnalysisResult,
   ProviderMeta,
@@ -138,7 +146,7 @@ export default function ScriptPanel({ projectId }: Props) {
   const [analyzing, setAnalyzing] = useState(false);
 
   // Strategy
-  const [selectedSellingPoints, setSelectedSellingPoints] = useState<string[]>([]);
+  const [selectedSellingPointKeys, setSelectedSellingPointKeys] = useState<string[]>([]);
   const [templateId, setTemplateId] = useState('scene_seeding');
   const [templateName, setTemplateName] = useState('场景种草');
   const [targetDurationSec, setTargetDurationSec] = useState(20);
@@ -161,10 +169,13 @@ export default function ScriptPanel({ projectId }: Props) {
   // Refs
   const initialLoadDone = useRef(false);
 
-  const hydrateStrategyFromDraft = useCallback((draft: ScriptDraft) => {
+  const hydrateStrategyFromDraft = useCallback((
+    draft: ScriptDraft,
+    options: { restoreSellingPoints?: boolean } = {},
+  ) => {
     try {
       const snapshot = JSON.parse(draft.inputSnapshot || '{}') as {
-        selectedSellingPoints?: Array<{ title?: string }>;
+        selectedSellingPoints?: Array<{ sellingPointId?: string; title?: string }>;
         templateId?: string;
         templateName?: string;
         targetDurationSec?: number;
@@ -174,11 +185,13 @@ export default function ScriptPanel({ projectId }: Props) {
         platform?: string;
       };
 
-      const titles = Array.isArray(snapshot.selectedSellingPoints)
-        ? snapshot.selectedSellingPoints.map((s) => s.title).filter((title): title is string => Boolean(title))
+      const selectionKeys = Array.isArray(snapshot.selectedSellingPoints)
+        ? snapshot.selectedSellingPoints
+            .map((point) => point.sellingPointId?.trim() || point.title?.trim() || '')
+            .filter(Boolean)
         : [];
 
-      setSelectedSellingPoints(titles);
+      if (options.restoreSellingPoints !== false) setSelectedSellingPointKeys(selectionKeys);
       if (snapshot.templateId) setTemplateId(snapshot.templateId);
       if (snapshot.templateName) setTemplateName(snapshot.templateName);
       if (snapshot.targetDurationSec) setTargetDurationSec(snapshot.targetDurationSec);
@@ -255,12 +268,9 @@ export default function ScriptPanel({ projectId }: Props) {
         if (draftData.analysis) {
           const loadedAnalysis = draftData.analysis as AnalysisResult | ScriptStrategyAnalysisV3;
           setAnalysis(loadedAnalysis);
-          setSelectedSellingPoints((current) => {
+          setSelectedSellingPointKeys((current) => {
             if (current.length > 0) return current;
-            const rankings = loadedAnalysis.rankings || [];
-            return isV3Analysis(loadedAnalysis)
-              ? rankings.filter((ranking) => ranking.priority === 'highest').slice(0, 1).map((ranking) => ranking.title)
-              : rankings.slice(0, 3).map((ranking) => ranking.title);
+            return getDefaultSelectedSellingPointKeys(loadedAnalysis);
           });
           if (isV3Analysis(loadedAnalysis)) {
             setTemplateId(loadedAnalysis.recommendedTemplate.id);
@@ -276,7 +286,7 @@ export default function ScriptPanel({ projectId }: Props) {
             initialLoadDone.current = true;
             const first = draftData.drafts[0] as ScriptDraft;
             setSelectedDraftId(first.id);
-            hydrateStrategyFromDraft(first);
+            hydrateStrategyFromDraft(first, { restoreSellingPoints: false });
             try {
               const parsed = JSON.parse(first.outputJson) as unknown;
               if (isSupportedScriptOutput(parsed)) {
@@ -349,6 +359,10 @@ export default function ScriptPanel({ projectId }: Props) {
       alert('请至少输入一条卖点');
       return;
     }
+    if (!audience.trim()) {
+      alert('请先填写目标人群，再进行策略分析');
+      return;
+    }
     setAnalyzing(true);
     try {
       await saveBrief();
@@ -367,16 +381,14 @@ export default function ScriptPanel({ projectId }: Props) {
       if (res.ok) {
         const analyzed = data.analysis as AnalysisResult | ScriptStrategyAnalysisV3;
         setAnalysis(analyzed);
-        setSelectedSellingPoints(isV3Analysis(analyzed)
-          ? analyzed.rankings.filter((ranking) => ranking.priority === 'highest').slice(0, 1).map((ranking) => ranking.title)
-          : analyzed.rankings.slice(0, 3).map((ranking) => ranking.title));
+        setSelectedSellingPointKeys(getDefaultSelectedSellingPointKeys(analyzed));
         if (isV3Analysis(analyzed)) {
           setTemplateId(analyzed.recommendedTemplate.id);
           setTemplateName(analyzed.recommendedTemplate.name);
         }
         setStep(2);
       } else {
-        alert('分析失败: ' + (data.error || '未知错误'));
+        alert('分析失败: ' + (data.message || data.error || '未知错误'));
       }
     } catch (err) {
       alert('分析失败: ' + String(err));
@@ -391,24 +403,19 @@ export default function ScriptPanel({ projectId }: Props) {
       alert('请选择一个分镜组');
       return;
     }
-    if (selectedSellingPoints.length === 0) {
+    if (selectedSellingPointKeys.length === 0) {
       alert('请至少选择一个卖点');
+      return;
+    }
+    const spWithData = resolveSelectedSellingPoints(analysis, selectedSellingPointKeys);
+    if (spWithData.length !== selectedSellingPointKeys.length) {
+      alert('选中的卖点与当前策略分析不一致，请重新分析后再生成');
       return;
     }
 
     setGenerating(true);
     try {
       await saveBrief();
-
-      // Build selected selling points with analysis data
-      const spWithData = selectedSellingPoints.map((title) => {
-        const rank = analysis?.rankings?.find((r) => r.title === title);
-        return {
-          title,
-          priority: rank?.priority || 'medium',
-          reason: rank?.reason || '',
-        };
-      });
 
       const res = await fetch(`/api/projects/${projectId}/script`, {
         method: 'POST',
@@ -467,7 +474,7 @@ export default function ScriptPanel({ projectId }: Props) {
       setGenerating(false);
     }
   }, [
-    projectId, selectedShotSetId, selectedSellingPoints, analysis,
+    projectId, selectedShotSetId, selectedSellingPointKeys, analysis,
     templateId, templateName, targetDurationSec, generateProviderId,
     tone, platform, saveBrief,
   ]);
@@ -633,8 +640,8 @@ export default function ScriptPanel({ projectId }: Props) {
         {step === 2 && analysis && !analyzing && (
           <ScriptStrategyConfig
             analysis={analysis}
-            selectedSellingPoints={selectedSellingPoints}
-            onSellingPointsChange={setSelectedSellingPoints}
+            selectedSellingPointKeys={selectedSellingPointKeys}
+            onSellingPointKeysChange={setSelectedSellingPointKeys}
             templateId={templateId}
             onTemplateIdChange={(id, name) => { setTemplateId(id); setTemplateName(name); }}
             templateName={templateName}

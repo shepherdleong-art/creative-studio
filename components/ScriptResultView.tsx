@@ -65,6 +65,13 @@ function buildV3Txt(script: ScriptOutputV3): string {
     '## 字幕稿（无语言标点）',
     script.fullSubtitle,
     '',
+    ...(script.sellingPointUsage?.length ? [
+      '## 卖点采用情况',
+      ...script.sellingPointUsage.map((usage) => (
+        `${usage.status === 'used' ? '已采用' : '图片暂不支持'}：${usage.title}｜${usage.reason}`
+      )),
+      '',
+    ] : []),
     '## 分段',
     ...script.segments.map((segment, index) => [
       `### 第 ${index + 1} 段`,
@@ -161,6 +168,27 @@ export default function ScriptResultView({ script, getShotImageUrl }: Props) {
           <span>预计正文 {script.estimatedNarrationDurationSec.toFixed(2)} 秒</span>
           <span>正文预算 {script.targetNarrationDurationSec.toFixed(2)} 秒</span>
         </div>
+
+        {script.sellingPointUsage && script.sellingPointUsage.length > 0 && (
+          <div>
+            <h4 className="mb-2 text-sm font-semibold text-ink">卖点采用情况</h4>
+            <div className="space-y-2">
+              {script.sellingPointUsage.map((usage) => (
+                <div key={usage.sellingPointId} className="rounded-[14px] border border-hairline p-3">
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full px-2 py-0.5 text-[0.65rem] font-semibold ${
+                      usage.status === 'used' ? 'bg-ok-tint text-ok' : 'bg-warn-tint text-warn'
+                    }`}>
+                      {usage.status === 'used' ? '已采用' : '图片暂不支持'}
+                    </span>
+                    <span className="text-sm font-medium text-ink">{usage.title}</span>
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-ink-secondary">{usage.reason}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="space-y-3">
           {script.segments.map((segment, index) => (
