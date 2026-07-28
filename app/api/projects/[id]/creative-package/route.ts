@@ -144,13 +144,30 @@ export async function GET(
 
     // Add script files
     let scriptObj: unknown = null;
+    let manifestScript: Record<string, unknown> | null = null;
     if (scriptDraft) {
       try { scriptObj = JSON.parse(scriptDraft.outputJson); } catch { /* ignore */ }
       if (scriptObj) {
         const scriptJson = JSON.stringify(scriptObj, null, 2);
-        const scriptText = typeof (scriptObj as Record<string, unknown>).fullScript === 'string'
-          ? (scriptObj as Record<string, unknown>).fullScript as string
-          : scriptJson;
+        const rawScript = scriptObj as Record<string, unknown>;
+        const isV3 = rawScript.version === 3;
+        const coverTitleParts = rawScript.coverTitleParts && typeof rawScript.coverTitleParts === 'object'
+          ? rawScript.coverTitleParts as Record<string, unknown>
+          : {};
+        const scriptText = isV3
+          ? [
+              `# ${String(rawScript.title || '脚本')}`,
+              `封面主标题：${String(coverTitleParts.primary || '')}`,
+              `封面副标题：${String(coverTitleParts.secondary || '')}`,
+              `目标总时长：${String(rawScript.targetDurationSec || '')} 秒`,
+              '',
+              '## 配音稿（保留自然标点）',
+              String(rawScript.fullScript || ''),
+              '',
+              '## 字幕稿（无语言标点）',
+              String(rawScript.fullSubtitle || ''),
+            ].join('\n')
+          : typeof rawScript.fullScript === 'string' ? rawScript.fullScript : scriptJson;
 
         // Write script files to temp so they can be added to zip
         const tmpDir = path.join(dataRoot(), 'storage', 'tmp');
@@ -167,19 +184,32 @@ export async function GET(
         // Annotate shots with script.
         // v2：segments[] 按 shotId 关联（segments 没有 shotIndex，且顺序是叙事顺序不是分镜序）。
         // 旧草稿：shots[] 仍按 shotIndex 关联，保持原行为。
-        const rawScript = scriptObj as Record<string, unknown>;
         const segmentsArr = rawScript.segments as Array<Record<string, unknown>> | undefined;
         const legacyShotsArr = rawScript.shots as Array<Record<string, unknown>> | undefined;
 
-        for (const s of manifestShots) {
-          const match = segmentsArr
-            ? segmentsArr.find((ss) => ss.shotId === s.shotId)
-            : legacyShotsArr?.find((ss) => ss.shotIndex === s.shotIndex);
-          if (!match) continue;
-          s.script = {
-            voiceover: String(match.narration ?? match.voiceover ?? ''),
-            subtitle: String(match.subtitle || ''),
+        if (isV3) {
+          manifestScript = {
+            version: 3,
+            title: String(rawScript.title || ''),
+            coverTitleParts: {
+              primary: String(coverTitleParts.primary || ''),
+              secondary: String(coverTitleParts.secondary || ''),
+            },
+            targetDurationSec: Number(rawScript.targetDurationSec || 0),
+            fullScript: String(rawScript.fullScript || ''),
+            fullSubtitle: String(rawScript.fullSubtitle || ''),
           };
+        } else {
+          for (const s of manifestShots) {
+            const match = segmentsArr
+              ? segmentsArr.find((ss) => ss.shotId === s.shotId)
+              : legacyShotsArr?.find((ss) => ss.shotIndex === s.shotIndex);
+            if (!match) continue;
+            s.script = {
+              voiceover: String(match.narration ?? match.voiceover ?? ''),
+              subtitle: String(match.subtitle || ''),
+            };
+          }
         }
       }
     }
@@ -189,6 +219,7 @@ export async function GET(
       projectId,
       projectName: project.name || '',
       exportedAt: new Date().toISOString(),
+      ...(manifestScript ? { script: manifestScript } : {}),
       shots: manifestShots,
       artifacts: manifestArtifacts,
     };

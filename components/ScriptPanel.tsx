@@ -6,7 +6,14 @@ import ScriptSellingPointInput from './ScriptSellingPointInput';
 import ScriptStrategyConfig from './ScriptStrategyConfig';
 import ScriptResultView from './ScriptResultView';
 import { canNavigateToScriptStep, getScriptStepStatus, type ScriptStep } from '@/lib/script-workflow';
-import type { AnalysisResult, ProviderMeta, ScriptOutput } from '@/lib/script-providers';
+import type {
+  AnalysisResult,
+  ProviderMeta,
+  ScriptOutput,
+  ScriptOutputV3,
+  ScriptStrategyAnalysisV3,
+  StoredScriptOutput,
+} from '@/lib/script-providers';
 
 // ── Types ──
 
@@ -51,6 +58,20 @@ function isValidScriptOutput(value: unknown): value is ScriptOutput {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as { version?: unknown; segments?: unknown; droppedShots?: unknown };
   return candidate.version === 2 && Array.isArray(candidate.segments) && Array.isArray(candidate.droppedShots);
+}
+
+function isV3ScriptOutput(value: unknown): value is ScriptOutputV3 {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { version?: unknown; segments?: unknown; fullSubtitle?: unknown };
+  return candidate.version === 3 && Array.isArray(candidate.segments) && typeof candidate.fullSubtitle === 'string';
+}
+
+function isSupportedScriptOutput(value: unknown): value is StoredScriptOutput {
+  return isValidScriptOutput(value) || isV3ScriptOutput(value);
+}
+
+function isV3Analysis(value: AnalysisResult | ScriptStrategyAnalysisV3): value is ScriptStrategyAnalysisV3 {
+  return 'version' in value && value.version === 3;
 }
 
 function readDraftSnapshot(draft: ScriptDraft): { shotSetId?: string; shotSetName?: string } {
@@ -112,7 +133,7 @@ export default function ScriptPanel({ projectId }: Props) {
   const [sellingPoints, setSellingPoints] = useState('');
 
   // Analysis
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [analysis, setAnalysis] = useState<AnalysisResult | ScriptStrategyAnalysisV3 | null>(null);
   const [analysisProviderId, setAnalysisProviderId] = useState('gemini');
   const [analyzing, setAnalyzing] = useState(false);
 
@@ -128,7 +149,7 @@ export default function ScriptPanel({ projectId }: Props) {
   const [selectedShotSetId, setSelectedShotSetId] = useState('');
 
   // Result
-  const [script, setScript] = useState<ScriptOutput | null>(null);
+  const [script, setScript] = useState<StoredScriptOutput | null>(null);
   const [drafts, setDrafts] = useState<ScriptDraft[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [shotImages, setShotImages] = useState<ShotWithImage[]>([]);
@@ -232,12 +253,19 @@ export default function ScriptPanel({ projectId }: Props) {
 
         // Analysis
         if (draftData.analysis) {
-          setAnalysis(draftData.analysis);
+          const loadedAnalysis = draftData.analysis as AnalysisResult | ScriptStrategyAnalysisV3;
+          setAnalysis(loadedAnalysis);
           setSelectedSellingPoints((current) => {
             if (current.length > 0) return current;
-            const rankings = (draftData.analysis as AnalysisResult).rankings || [];
-            return rankings.slice(0, 3).map((r) => r.title);
+            const rankings = loadedAnalysis.rankings || [];
+            return isV3Analysis(loadedAnalysis)
+              ? rankings.filter((ranking) => ranking.priority === 'highest').slice(0, 1).map((ranking) => ranking.title)
+              : rankings.slice(0, 3).map((ranking) => ranking.title);
           });
+          if (isV3Analysis(loadedAnalysis)) {
+            setTemplateId(loadedAnalysis.recommendedTemplate.id);
+            setTemplateName(loadedAnalysis.recommendedTemplate.name);
+          }
           setStep(2);
         }
 
@@ -251,10 +279,10 @@ export default function ScriptPanel({ projectId }: Props) {
             hydrateStrategyFromDraft(first);
             try {
               const parsed = JSON.parse(first.outputJson) as unknown;
-              if (isValidScriptOutput(parsed)) {
+              if (isSupportedScriptOutput(parsed)) {
                 setScript(parsed);
                 setStep(3);
-                if (parsed.shotSetId) {
+                if (parsed.version === 2 && parsed.shotSetId) {
                   void loadShotImages(parsed.shotSetId);
                 }
               } else {
@@ -338,11 +366,15 @@ export default function ScriptPanel({ projectId }: Props) {
       });
       const data = await res.json();
       if (res.ok) {
-        setAnalysis(data.analysis);
-        // Pre-select top 3
-        setSelectedSellingPoints(
-          (data.analysis as AnalysisResult).rankings.slice(0, 3).map((r: { title: string }) => r.title)
-        );
+        const analyzed = data.analysis as AnalysisResult | ScriptStrategyAnalysisV3;
+        setAnalysis(analyzed);
+        setSelectedSellingPoints(isV3Analysis(analyzed)
+          ? analyzed.rankings.filter((ranking) => ranking.priority === 'highest').slice(0, 1).map((ranking) => ranking.title)
+          : analyzed.rankings.slice(0, 3).map((ranking) => ranking.title));
+        if (isV3Analysis(analyzed)) {
+          setTemplateId(analyzed.recommendedTemplate.id);
+          setTemplateName(analyzed.recommendedTemplate.name);
+        }
         setStep(2);
       } else {
         alert('分析失败: ' + (data.error || '未知错误'));
@@ -408,10 +440,17 @@ export default function ScriptPanel({ projectId }: Props) {
           setSelectedDraftId(listData.drafts[0].id);
         }
 
-        // Load shot images for the result view
-        await loadShotImages(selectedShotSetId);
       } else {
-        alert('生成失败: ' + (data.error || '未知错误'));
+        const details = data.details as {
+          contentCharacterCount?: number;
+          targetCharacterRange?: [number, number];
+          estimatedNarrationSec?: number;
+          targetNarrationSec?: number;
+        } | undefined;
+        const actionable = details
+          ? `\n当前 ${details.contentCharacterCount ?? '-'} 字 / 目标 ${details.targetCharacterRange?.join('～') ?? '-'} 字；预计 ${details.estimatedNarrationSec?.toFixed(2) ?? '-'} 秒 / 目标正文 ${details.targetNarrationSec?.toFixed(2) ?? '-'} 秒。`
+          : '';
+        alert('生成失败: ' + (data.message || data.error || '未知错误') + actionable);
       }
     } catch (err) {
       alert('生成失败: ' + String(err));
@@ -421,7 +460,7 @@ export default function ScriptPanel({ projectId }: Props) {
   }, [
     projectId, selectedShotSetId, selectedSellingPoints, analysis,
     templateId, templateName, targetDurationSec, generateProviderId,
-    tone, platform, saveBrief, loadShotImages,
+    tone, platform, saveBrief,
   ]);
 
   // ── Handle selecting a draft ──
@@ -432,11 +471,11 @@ export default function ScriptPanel({ projectId }: Props) {
       hydrateStrategyFromDraft(draft);
       try {
         const parsed = JSON.parse(draft.outputJson) as unknown;
-        if (isValidScriptOutput(parsed)) {
+        if (isSupportedScriptOutput(parsed)) {
           setLegacyDraftNotice(false);
           setScript(parsed);
           setStep(3);
-          if (parsed.shotSetId) {
+          if (parsed.version === 2 && parsed.shotSetId) {
             void loadShotImages(parsed.shotSetId);
           }
         } else {
@@ -608,7 +647,6 @@ export default function ScriptPanel({ projectId }: Props) {
           <ScriptResultView
             script={script}
             getShotImageUrl={getShotImageUrl}
-            projectId={projectId}
           />
         )}
 

@@ -2,7 +2,8 @@
 
 import { Icon } from '@/components/ui/Icon';
 import ScriptTemplatePicker from './ScriptTemplatePicker';
-import type { AnalysisResult, ProviderMeta } from '@/lib/script-providers';
+import type { AnalysisResult, ProviderMeta, ScriptStrategyAnalysisV3 } from '@/lib/script-providers';
+import { SCRIPT_DURATION_BUDGETS, SCRIPT_DURATION_OPTIONS } from '@/lib/script-duration-policy';
 
 interface ShotSetOption {
   id: string;
@@ -12,7 +13,7 @@ interface ShotSetOption {
 }
 
 interface Props {
-  analysis: AnalysisResult;
+  analysis: AnalysisResult | ScriptStrategyAnalysisV3;
   selectedSellingPoints: string[];
   onSellingPointsChange: (points: string[]) => void;
   templateId: string;
@@ -30,8 +31,6 @@ interface Props {
   generating: boolean;
 }
 
-const DURATIONS = [15, 20, 30, 45, 60];
-
 const PRIORITY_CONFIG: Record<string, { label: string; className: string }> = {
   highest: { label: '最优先', className: 'bg-fail-tint text-fail' },
   high: { label: '优先', className: 'bg-accent-tint text-accent' },
@@ -45,7 +44,6 @@ export default function ScriptStrategyConfig({
   onSellingPointsChange,
   templateId,
   onTemplateIdChange,
-  templateName: _templateName,
   targetDurationSec,
   onTargetDurationSecChange,
   providers,
@@ -59,6 +57,11 @@ export default function ScriptStrategyConfig({
 }: Props) {
   const configuredProviders = providers.filter((p) => p.configured);
   const hasShotSets = shotSets.length > 0;
+  const budget = SCRIPT_DURATION_BUDGETS[targetDurationSec as keyof typeof SCRIPT_DURATION_BUDGETS]
+    || SCRIPT_DURATION_BUDGETS[20];
+  const suggestedSellingPointCount = Math.max(1, Math.floor(budget.maxContentCharacters / 18));
+  const hasTooManySellingPoints = selectedSellingPoints.length > suggestedSellingPointCount;
+  const v3Analysis = 'version' in analysis && analysis.version === 3 ? analysis : null;
 
   const toggleSellingPoint = (title: string) => {
     if (selectedSellingPoints.includes(title)) {
@@ -99,6 +102,14 @@ export default function ScriptStrategyConfig({
         </div>
       )}
 
+      {v3Analysis && (
+        <div className="rounded-[14px] border border-accent/20 bg-accent-tint/5 p-3">
+          <div className="text-[0.7rem] font-medium text-ink-tertiary">综合推荐模板</div>
+          <div className="mt-1 text-sm font-semibold text-ink">{v3Analysis.recommendedTemplate.name}</div>
+          <p className="mt-1 text-xs leading-relaxed text-ink-secondary">{v3Analysis.recommendedTemplate.reason}</p>
+        </div>
+      )}
+
       {/* Ranking list */}
       <div>
         <label className="label mb-2">📊 卖点优先级（勾选要使用的卖点）</label>
@@ -129,10 +140,12 @@ export default function ScriptStrategyConfig({
                     <span className="text-sm font-medium text-ink">{r.title}</span>
                   </div>
                   <p className="mt-0.5 text-xs leading-relaxed text-ink-secondary">{r.reason}</p>
-                  <div className="mt-1 flex items-center gap-1.5 text-[0.65rem] text-ink-tertiary">
-                    <Icon name="film" size={10} />
-                    推荐模版：{r.recommendedTemplateName}
-                  </div>
+                  {'recommendedTemplateName' in r && (
+                    <div className="mt-1 flex items-center gap-1.5 text-[0.65rem] text-ink-tertiary">
+                      <Icon name="film" size={10} />
+                      推荐模版：{r.recommendedTemplateName}
+                    </div>
+                  )}
                 </div>
               </label>
             );
@@ -152,9 +165,9 @@ export default function ScriptStrategyConfig({
       {/* Duration + ShotSet */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
-          <label className="label">⏱ 目标时长（秒）</label>
+          <label className="label">⏱ 目标总时长（包含封面）</label>
           <div className="flex gap-2">
-            {DURATIONS.map((d) => (
+            {SCRIPT_DURATION_OPTIONS.map((d) => (
               <button
                 key={d}
                 onClick={() => onTargetDurationSecChange(d)}
@@ -168,10 +181,21 @@ export default function ScriptStrategyConfig({
               </button>
             ))}
           </div>
+          <p className="mt-2 text-xs text-ink-secondary">
+            {targetDurationSec} 秒总时长 · 口播正文约 {budget.targetNarrationSec.toFixed(2)} 秒
+          </p>
+          <p className="mt-1 text-xs text-ink-tertiary">
+            建议 {budget.minContentCharacters}～{budget.maxContentCharacters} 个内容字符
+          </p>
+          {hasTooManySellingPoints && (
+            <p className="mt-2 rounded-lg bg-warn-tint px-2.5 py-2 text-xs text-warn">
+              当前卖点较多，AI 会优先聚合表达；也可以减少卖点，给每一项留下更多口播空间。
+            </p>
+          )}
         </div>
 
         <div>
-          <label className="label">🎯 分镜组</label>
+          <label className="label">🎯 素材隔离分镜组</label>
           {hasShotSets ? (
             <select
               value={selectedShotSetId}
@@ -187,7 +211,7 @@ export default function ScriptStrategyConfig({
             </select>
           ) : (
             <p className="text-xs text-ink-tertiary">
-              暂无分镜组。请先在「分镜」标签页创建分镜组后再生成脚本。
+              暂无分镜组。请先创建分镜组，用于模块 3、4 与智能混剪的素材隔离。
             </p>
           )}
         </div>
