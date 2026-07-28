@@ -86,6 +86,28 @@ function stringArray(value: unknown, limit = 8): string[] {
     : [];
 }
 
+function titleContentLength(value: string): number {
+  return Array.from(value.replace(/[^\p{L}\p{N}]/gu, '')).length;
+}
+
+function titleFits(value: string, range: [number, number]): boolean {
+  const length = titleContentLength(value);
+  return length >= range[0] && length <= range[1];
+}
+
+function titleKey(value: string): string {
+  return value.normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '').toLocaleLowerCase();
+}
+
+function titlesAreComplementary(primary: string, secondary: string): boolean {
+  const primaryKey = titleKey(primary);
+  const secondaryKey = titleKey(secondary);
+  return Boolean(primaryKey && secondaryKey)
+    && primaryKey !== secondaryKey
+    && !primaryKey.includes(secondaryKey)
+    && !secondaryKey.includes(primaryKey);
+}
+
 function normalizeTitleParts(
   raw: JsonObject,
   fallbackTitle: string,
@@ -94,18 +116,21 @@ function normalizeTitleParts(
   const rawParts = object(raw.coverTitleParts);
   const primary = string(rawParts.primary);
   const secondary = string(rawParts.secondary);
-  if (primary && secondary && primary !== secondary) {
+  if (titleFits(primary, [4, 10]) && titleFits(secondary, [6, 14]) && titlesAreComplementary(primary, secondary)) {
     return { primary, secondary, source: 'model' };
   }
 
   const split = splitCoverTitle(fallbackTitle);
-  const fallbackPrimary = split.primary || fallbackTitle || selectedSellingPoints[0]?.title || '产品推荐';
-  const fallbackSecondary = split.secondary
-    || selectedSellingPoints.find((point) => point.title !== fallbackPrimary)?.title
+  const primaryCandidates = [split.primary, fallbackTitle, ...selectedSellingPoints.map((point) => point.title), '产品推荐'];
+  const fallbackPrimary = primaryCandidates.map(string).find((candidate) => titleFits(candidate, [4, 10])) || '产品推荐';
+  const secondaryCandidates = [split.secondary, ...selectedSellingPoints.map((point) => point.title), '值得认真看看'];
+  const fallbackSecondary = secondaryCandidates
+    .map(string)
+    .find((candidate) => titleFits(candidate, [6, 14]) && titlesAreComplementary(fallbackPrimary, candidate))
     || '值得认真看看';
   return {
-    primary: fallbackPrimary.replace(/\s+/gu, ' ').trim(),
-    secondary: (fallbackSecondary === fallbackPrimary ? '值得认真看看' : fallbackSecondary).replace(/\s+/gu, ' ').trim(),
+    primary: fallbackPrimary,
+    secondary: fallbackSecondary,
     source: 'system_split',
   };
 }

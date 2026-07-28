@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import type { ScriptOutput } from '../lib/script-providers/types.ts';
-import { buildMixcutContext, isUsableV2ScriptDraft, mapWithConcurrency } from '../lib/final-edit/mixcut-context.ts';
+import type { ScriptOutput, ScriptOutputV3 } from '../lib/script-providers/types.ts';
+import { buildMixcutContext, isUsableMixcutScriptDraft, mapWithConcurrency } from '../lib/final-edit/mixcut-context.ts';
 import { findModule4Video } from '../lib/final-edit/module4-asset.ts';
 import { resolveFfprobePath, runFfmpeg } from '../lib/ffmpeg.ts';
 
@@ -197,6 +197,16 @@ const emptyShotSetIdDraft: ScriptOutput = { ...validScript, shotSetId: '' };
 const emptySegmentsDraft: ScriptOutput = { ...validScript, segments: [] };
 const foreignShotSetDraft: ScriptOutput = { ...validScript, shotSetId: 'ss-c' };
 const staleFullScriptDraft: ScriptOutput = { ...validScript, fullScript: '这是一份已经漂移的派生文案' };
+const validV3Script: ScriptOutputV3 = {
+  version: 3,
+  title: '不看图的内容脚本',
+  coverTitleParts: { primary: '下班轻松躺', secondary: '5芯软弹稳稳承托', source: 'model' },
+  platform: '抖音', tone: '种草', templateId: 'scene_seeding', template: '场景种草', shotSetId: 'ss-a',
+  targetDurationSec: 15, targetNarrationDurationSec: 14.166667, contentCharacterCount: 54,
+  estimatedNarrationDurationSec: 12.857143, durationStatus: 'qualified', durationPolicyVersion: 'zh-tts-budget-v1',
+  segments: [{ id: 'v3-segment-1', narration: 'V3口播保留自然标点。', subtitle: 'V3口播保留自然标点', sellingPointRefs: ['超静音运行'], visualIntent: '产品使用场景', visualKeywords: ['产品'] }],
+  fullScript: 'V3口播保留自然标点。', fullSubtitle: 'V3口播保留自然标点',
+};
 
 db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, createdAt) VALUES
   ('draft-valid', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:00:00'),
@@ -204,8 +214,9 @@ db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnap
   ('draft-empty-shotset', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:02:00'),
   ('draft-empty-segments', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:03:00'),
   ('draft-foreign-shotset', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:04:00'),
-  ('draft-stale-fullscript', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:05:00')
-`).run(JSON.stringify(validScript), JSON.stringify(v1Draft), JSON.stringify(emptyShotSetIdDraft), JSON.stringify(emptySegmentsDraft), JSON.stringify(foreignShotSetDraft), JSON.stringify(staleFullScriptDraft));
+  ('draft-stale-fullscript', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:05:00'),
+  ('draft-v3', 'project-a', 'openai-responses', 'gpt-5.5', '{}', ?, '2026-01-05 13:06:00')
+`).run(JSON.stringify(validScript), JSON.stringify(v1Draft), JSON.stringify(emptyShotSetIdDraft), JSON.stringify(emptySegmentsDraft), JSON.stringify(foreignShotSetDraft), JSON.stringify(staleFullScriptDraft), JSON.stringify(validV3Script));
 
 // ---------------------------------------------------------------------------
 // Fixture: project-b — unrelated project (isolation + "wrong project" gate).
@@ -228,15 +239,16 @@ db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnap
 `).run(JSON.stringify(validScriptForB));
 
 // =============================================================================
-// isUsableV2ScriptDraft: exercise each AND-condition in isolation (mirrors
+// isUsableMixcutScriptDraft: V2/V3 share the shape gate while other versions remain legacy-only.
 // Task 2 contract test's isolated checks on its local copy of this logic).
 // =============================================================================
-assert.equal(isUsableV2ScriptDraft(validScript), true, '合法 V2 草稿必须通过网关');
-assert.equal(isUsableV2ScriptDraft(v1Draft), false, 'version !== 2 必须被拒绝');
-assert.equal(isUsableV2ScriptDraft(emptyShotSetIdDraft), false, '空 shotSetId 必须被拒绝');
-assert.equal(isUsableV2ScriptDraft(emptySegmentsDraft), false, '空 segments[] 必须被拒绝');
-assert.equal(isUsableV2ScriptDraft(null), false, 'null 必须被拒绝');
-assert.equal(isUsableV2ScriptDraft('not an object'), false, '非对象必须被拒绝');
+assert.equal(isUsableMixcutScriptDraft(validScript), true, '合法 V2 草稿必须通过网关');
+assert.equal(isUsableMixcutScriptDraft(validV3Script), true, '合法 V3 草稿必须进入智能混剪');
+assert.equal(isUsableMixcutScriptDraft(v1Draft), false, 'V1 草稿继续走既有 legacy 兼容路径');
+assert.equal(isUsableMixcutScriptDraft(emptyShotSetIdDraft), false, '空 shotSetId 必须被拒绝');
+assert.equal(isUsableMixcutScriptDraft(emptySegmentsDraft), false, '空 segments[] 必须被拒绝');
+assert.equal(isUsableMixcutScriptDraft(null), false, 'null 必须被拒绝');
+assert.equal(isUsableMixcutScriptDraft('not an object'), false, '非对象必须被拒绝');
 
 // =============================================================================
 // (a) project-not-found -> null (pure function; workspace.ts wraps this as
@@ -284,7 +296,7 @@ assert.ok(!defaultContext.drafts.some((d) => d.id === 'draft-for-b'), 'project-a
 // (c) script draft gates, via real code: only draft-valid survives; each of
 // the other three malformed drafts is excluded for its own single reason.
 // =============================================================================
-assert.deepEqual(defaultContext.drafts.map((d) => d.id), ['draft-stale-fullscript', 'draft-valid'], '只有引用当前项目真实分镜组的合法 V2 草稿应出现');
+assert.deepEqual(defaultContext.drafts.map((d) => d.id), ['draft-v3', 'draft-stale-fullscript', 'draft-valid'], '引用当前项目真实分镜组的合法 V2/V3 草稿都应出现');
 assert.ok(!defaultContext.drafts.some((draft) => draft.id === 'draft-foreign-shotset'), '当前项目草稿不得引用其他项目的 shotSetId');
 const validDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-valid');
 const staleDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-stale-fullscript');
@@ -295,6 +307,10 @@ assert.equal(staleDraftView.narrationText, validDraftView.narrationText, '陈旧
 assert.equal(validDraftView.targetDurationSec, 15);
 assert.equal(validDraftView.provider, 'gemini');
 assert.equal(validDraftView.model, 'gemini-3.5-flash');
+const v3DraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-v3');
+assert.ok(v3DraftView);
+assert.equal(v3DraftView.version, 3);
+assert.equal(v3DraftView.narrationText, validV3Script.segments[0].narration);
 
 // =============================================================================
 // (d)+(e)+JC-2/JC-4: videoAssets[] for the CURRENT shot set (ss-a via

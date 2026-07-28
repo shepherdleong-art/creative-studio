@@ -28,6 +28,25 @@ const automaticCueFixture = buildAlignedSubtitleCues({
 assert.deepEqual(automaticCueFixture.map((cue) => cue.text), ['厚度3.5cm', '提升20%', '靠背112°', '适配9:16画幅']);
 assert.ok(automaticCueFixture.every((cue) => cue.textSource === 'script' && !/[，。！？；、,.!?;\s]$/u.test(cue.text)));
 
+const alignedBoundaryFixture = buildAlignedSubtitleCues({
+  version: 2, source: 'module3', sourceDraftId: 'fixture', sourceScriptUpdatedAt: null,
+  sourceScriptVersion: 3, title: '词级边界', targetDurationSec: 15, shotSetId: 'set-a',
+  sourceNarrationText: '', sourceSegments: [], editedNarrationText: '', scriptSyncState: 'synced',
+  fullScript: '第一句很慢，第二句很快。',
+  segments: [{ id: 'word-boundary-segment', shotId: '', narration: '第一句很慢，第二句很快。', subtitle: '' }],
+}, {
+  relativePath: 'fixture.wav', durationUs: 4_000_000,
+  segmentTimings: [{ segmentId: 'word-boundary-segment', startUs: 0, endUs: 4_000_000 }],
+  wordTimings: [
+    { text: '第一句很慢，', startUs: 0, endUs: 3_000_000 },
+    { text: '第二句很快。', startUs: 3_000_000, endUs: 4_000_000 },
+  ],
+});
+assert.deepEqual(alignedBoundaryFixture.map((cue) => [cue.text, cue.startUs, cue.endUs]), [
+  ['第一句很慢', 0, 3_000_000],
+  ['第二句很快', 3_000_000, 4_000_000],
+], '非降级字幕必须使用词级对齐边界，而不是按字符比例平分');
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-final-edit-'));
 const storageRoot = path.join(root, 'storage');
 fs.mkdirSync(path.join(storageRoot, 'videos'), { recursive: true });
@@ -310,6 +329,7 @@ const acceptedJob = await workspace.resolveDuration({
   action: 'accept_actual',
 });
 assert.equal(acceptedJob.status, 'succeeded');
+assert.equal((db.prepare(`SELECT estimatedCost FROM final_edit_jobs WHERE id=?`).get(acceptedJob.id) as { estimatedCost: number }).estimatedCost, 0.1, '接受实际时长仍需计入一次语义匹配成本');
 assert.equal(synthesizedNarrations.length, synthesizedCountBeforeAccept + 1, '接受实际时长必须复用首次 TTS，不得再次合成');
 const acceptedGroup = workspace.load(farTooLongGroup.id);
 assert.equal(acceptedGroup.durationGate?.status, 'accepted_actual');
@@ -339,6 +359,7 @@ const smartFitJob = await workspace.resolveDuration({
   action: 'smart_fit',
 });
 assert.equal(smartFitJob.status, 'needs_input', '贴合后真实 TTS 仍超限时必须再次暂停');
+assert.equal((db.prepare(`SELECT estimatedCost FROM final_edit_jobs WHERE id=?`).get(smartFitJob.id) as { estimatedCost: number }).estimatedCost, 0.2, '智能贴合需计入贴合与语义匹配两次模型调用');
 assert.equal(smartFitCalls, 1);
 assert.equal(synthesizedNarrations.length, synthCountBeforeSmartFit + 1, '智能贴合必须废弃旧 TTS 并重新合成');
 const stillLongAfterFit = workspace.load(smartFitPausedGroup.id);
@@ -357,6 +378,7 @@ const retryJob = await workspace.resolveDuration({
   speed: 1.1,
 });
 assert.equal(retryJob.status, 'succeeded');
+assert.equal((db.prepare(`SELECT estimatedCost FROM final_edit_jobs WHERE id=?`).get(retryJob.id) as { estimatedCost: number }).estimatedCost, 0.1, '手工重试需计入一次语义匹配成本');
 const retriedGroup = workspace.load(stillLongAfterFit.id);
 assert.equal(retriedGroup.durationGate?.status, 'within_tolerance');
 assert.equal(retriedGroup.durationGate?.smartFitAttempts, 1, '手工重试不得重置已使用的智能贴合次数');

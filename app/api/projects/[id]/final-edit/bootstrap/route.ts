@@ -18,8 +18,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const drafts = (db.prepare(`SELECT id, outputJson, provider, model, createdAt FROM script_drafts WHERE projectId=? ORDER BY createdAt DESC`).all(projectId) as Array<{ id: string; outputJson: string; provider: string; model: string; createdAt: string }>).flatMap((row) => {
       try {
         const script = JSON.parse(row.outputJson) as { version?: number; title?: string; shotSetId?: string; targetDurationSec?: number; segments?: unknown[] };
-        if (script.version !== 2 || !script.shotSetId) return [];
-        return [{ id: row.id, title: script.title || '未命名脚本', shotSetId: script.shotSetId, targetDurationSec: script.targetDurationSec || 0, segmentCount: script.segments?.length || 0, provider: row.provider, model: row.model, createdAt: row.createdAt }];
+        if (![2, 3].includes(Number(script.version)) || !script.shotSetId || !script.segments?.length) return [];
+        return [{ id: row.id, version: script.version, title: script.title || '未命名脚本', shotSetId: script.shotSetId, targetDurationSec: script.targetDurationSec || 0, segmentCount: script.segments.length, provider: row.provider, model: row.model, createdAt: row.createdAt }];
       } catch { return []; }
     });
     const groups = db.prepare(`SELECT g.id, g.scriptDraftId, g.status, g.phase, g.narrationDurationUs, g.revision, g.createdAt, g.updatedAt, (SELECT COUNT(*) FROM final_edit_variants v WHERE v.groupId=g.id) AS variantCount FROM final_edit_groups g WHERE g.projectId=? ORDER BY g.createdAt DESC`).all(projectId);

@@ -3,6 +3,7 @@ import {
   acceptedDurationGateMatchesNarration,
   createUncheckedDurationGateState,
   evaluateFinalDurationGate,
+  finalDurationGateAllowsProgress,
   parseDurationGateState,
 } from '../lib/final-edit/duration-gate.ts';
 
@@ -38,5 +39,8 @@ const accepted = {
 };
 assert.equal(acceptedDurationGateMatchesNarration(accepted, 'hash-a'), true);
 assert.equal(acceptedDurationGateMatchesNarration(accepted, 'hash-b'), false);
+assert.equal(finalDurationGateAllowsProgress({ state: unchecked, narrationHash: 'hash-a', evaluation: within }), true);
+assert.equal(finalDurationGateAllowsProgress({ state: accepted, narrationHash: 'hash-a', evaluation: muchTooLong }), true);
+assert.equal(finalDurationGateAllowsProgress({ state: accepted, narrationHash: 'hash-b', evaluation: muchTooLong }), false);
 
 console.log('final-edit duration gate tests passed');

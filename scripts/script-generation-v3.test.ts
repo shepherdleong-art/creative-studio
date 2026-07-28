@@ -99,6 +99,29 @@ assert.deepEqual([budget.minContentCharacters, budget.maxContentCharacters], [54
 }
 
 {
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => ({
+      title: '云感沙发推荐',
+      coverTitleParts: {
+        primary: '这是一个明显超过建议长度且无法直接用于封面的主标题',
+        secondary: '这是一个明显超过建议长度且只是重复主标题意思的副标题',
+      },
+      segments: [{
+        narration: `${'舒适承托'.repeat(13)}安心。`,
+        sellingPointRefs: ['112°承托'],
+        visualIntent: '产品使用场景',
+        visualKeywords: ['产品'],
+      }],
+    }),
+  });
+  assert.equal(result.script.coverTitleParts.source, 'system_split');
+  assert.ok(Array.from(result.script.coverTitleParts.primary.replace(/[\p{P}\p{S}\s]/gu, '')).length >= 4);
+  assert.ok(Array.from(result.script.coverTitleParts.primary.replace(/[\p{P}\p{S}\s]/gu, '')).length <= 10);
+  assert.ok(Array.from(result.script.coverTitleParts.secondary.replace(/[\p{P}\p{S}\s]/gu, '')).length >= 6);
+  assert.ok(Array.from(result.script.coverTitleParts.secondary.replace(/[\p{P}\p{S}\s]/gu, '')).length <= 14);
+}
+
+{
   let calls = 0;
   await assert.rejects(
     generateScriptV3(baseInput, {

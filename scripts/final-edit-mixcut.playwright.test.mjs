@@ -242,7 +242,7 @@ try {
       project: { id: project.id, name: project.name, productName: project.productName, productCode: project.productCode, createdAt: '2026-07-24T00:00:00.000Z', taskDate: '20260724' },
       shotSets: [{ id: 'shot-set-e2e', name: '正式测试分镜组', shotCount: 2, succeededVideoCount: 2, totalDurationUs: 10_000_000 }],
       currentShotSetId: 'shot-set-e2e',
-      drafts: [{ id: 'draft-e2e', shotSetId: 'shot-set-e2e', title: 'E2E 文案', narrationText: '第一句。第二句。', targetDurationSec: 10, provider: 'mock', model: 'mock', createdAt: '2026-07-24T00:00:00.000Z' }],
+      drafts: [{ id: 'draft-e2e', version: 3, shotSetId: 'shot-set-e2e', title: 'E2E 文案', narrationText: '第一句。第二句。', targetDurationSec: 10, provider: 'mock', model: 'mock', createdAt: '2026-07-24T00:00:00.000Z' }],
       videoAssets: [
         { videoJobId: 'video-a', shotSetId: 'shot-set-e2e', filename: 'a.mp4', durationUs: 5_000_000, width: 1080, height: 1440, thumbnailUrl: transparentPixel, source: 'module4' },
         { videoJobId: 'video-b', shotSetId: 'shot-set-e2e', filename: 'b.mp4', durationUs: 5_000_000, width: 1080, height: 1440, thumbnailUrl: transparentPixel, source: 'module4' },
@@ -308,7 +308,14 @@ try {
             durationReview: { ...currentDurationJob.durationReview, smartFitAvailable },
             errorMessage: '真实 TTS 时长超出目标', startedAt: '2026-07-28T01:00:00.000Z', finishedAt: '2026-07-28T01:00:01.000Z',
           };
-          savedGroup = { ...savedGroup, revision: body.expectedRevision + 2, jobs: [currentDurationJob] };
+          savedGroup = {
+            ...savedGroup,
+            revision: body.expectedRevision + 2,
+            ...(body.action === 'smart_fit' ? {
+              script: { ...savedGroup.script, editedNarrationText: '智能贴合后的第一段。\n智能贴合后的第二段。', syncState: 'modified' },
+            } : {}),
+            jobs: [currentDurationJob],
+          };
         }
         return json({ id: currentDurationJob.id, groupId: 'group-e2e', kind: 'prepare', status: currentDurationJob.status });
       }
@@ -1074,6 +1081,7 @@ try {
     await page.getByRole('button', { name: '智能贴合已使用' }).waitFor();
     assert.equal(durationResolutionBodies[0].action, 'smart_fit');
     assert.equal(durationResolutionBodies[0].expectedRevision, 12);
+    assert.equal(await page.getByRole('textbox', { name: '口播文案' }).inputValue(), '智能贴合后的第一段。\n智能贴合后的第二段。', '智能贴合后的组级文案必须同步回编辑器');
 
     await page.getByLabel('语速').fill('1.2');
     await page.getByRole('textbox', { name: '口播文案' }).fill('手工精简第一段。\n手工精简第二段。');

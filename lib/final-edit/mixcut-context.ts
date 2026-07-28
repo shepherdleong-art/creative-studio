@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import { formatShanghaiTaskDate } from './export-identity.ts';
 import { probeVideoMedia } from '../ffmpeg.ts';
-import type { ScriptOutput } from '../script-providers/types.ts';
+import type { StoredScriptOutput } from '../script-providers/types.ts';
 import { resolveStoragePath } from './storage-path.ts';
 import type { MixcutContextResponse } from './types.ts';
 
@@ -22,20 +22,13 @@ import type { MixcutContextResponse } from './types.ts';
 // FinalEditError('project_not_found', '项目不存在', 404).
 
 /**
- * Matches Task 2 contract test's local `isUsableV2Draft` predicate exactly:
- * only a V2 script draft with a non-empty shotSetId and at least one segment
- * is usable for mixcut context purposes.
- *
- * This is the single well-named exported predicate the plan's conventions
- * ask for. It is NOT wired into app/api/projects/[id]/final-edit/bootstrap/route.ts
- * (out of scope — that route already has its own inline copy of this same
- * check, and a private near-duplicate also lives in workspace.ts's
- * scriptFromDb; both are pre-existing warts left as-is, see delivery report).
+ * V2 and V3 are both first-class Mixcut inputs. Older unversioned/V1 rows
+ * remain on the existing legacy read path and are never rewritten here.
  */
-export function isUsableV2ScriptDraft(parsed: unknown): boolean {
+export function isUsableMixcutScriptDraft(parsed: unknown): boolean {
   if (typeof parsed !== 'object' || parsed === null) return false;
   const value = parsed as Record<string, unknown>;
-  return value.version === 2
+  return (value.version === 2 || value.version === 3)
     && typeof value.shotSetId === 'string'
     && value.shotSetId.length > 0
     && Array.isArray(value.segments)
@@ -128,7 +121,7 @@ function resolveSafeVideoAbsolutePath(storageRoot: string, localVideoPath: strin
  * Builds the full MixcutContextResponse for one project, per plan §5.1's four
  * query rules:
  *   - shot_sets.projectId = :projectId.
- *   - script_drafts.outputJson parsed; only V2 + usable shotSetId/segments.
+ *   - script_drafts.outputJson parsed; only V2/V3 + usable shotSetId/segments.
  *   - videos for the CURRENT shot set: projectId+shotSetId+status='succeeded'
  *     +localVideoPath present, and passing safe-path validation.
  *   - no grouping ever inferred from filename/title/createdAt.
@@ -221,7 +214,7 @@ export async function buildMixcutContext(
     };
   });
 
-  // Rule: script_drafts.outputJson parsed; only V2 + usable shotSetId/segments.
+  // Rule: script_drafts.outputJson parsed; only V2/V3 + usable shotSetId/segments.
   const draftRows = db.prepare(`
     SELECT id, provider, model, outputJson, createdAt FROM script_drafts WHERE projectId = ? ORDER BY createdAt DESC
   `).all(projectId) as ScriptDraftRow[];
@@ -229,8 +222,8 @@ export async function buildMixcutContext(
   for (const row of draftRows) {
     let parsed: unknown;
     try { parsed = JSON.parse(row.outputJson); } catch { continue; }
-    if (!isUsableV2ScriptDraft(parsed)) continue;
-    const script = parsed as ScriptOutput;
+    if (!isUsableMixcutScriptDraft(parsed)) continue;
+    const script = parsed as StoredScriptOutput;
     if (!validShotSetIds.has(script.shotSetId)) continue;
     // fullScript is a derived convenience field and can be absent or stale in
     // historical V2 rows. Rebuild the narration from the ordered source
@@ -242,6 +235,7 @@ export async function buildMixcutContext(
     if (!narrationText) continue;
     drafts.push({
       id: row.id,
+      version: script.version,
       shotSetId: script.shotSetId,
       title: script.title || '',
       narrationText,

@@ -236,6 +236,7 @@ export interface MixcutContextResponse {
   currentShotSetId: string | null;
   drafts: Array<{
     id: string;
+    version: 2 | 3;
     shotSetId: string;
     title: string;
     narrationText: string;

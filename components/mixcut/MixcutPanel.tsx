@@ -633,6 +633,18 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     }
   };
 
+  const syncResolvedGroupScript = useCallback((group: FinalEditGroupView) => {
+    const resolvedEditor = createScriptEditorState(
+      { id: group.script.sourceDraftId ?? MANUAL_SCRIPT_ID, narrationText: group.script.importedNarrationText },
+      { editedNarrationText: group.script.editedNarrationText },
+    );
+    scriptEditorByShotSetRef.current[group.shotSetId] = resolvedEditor;
+    setScriptEditor(resolvedEditor);
+    setTtsProviderId(group.script.narrationConfig.providerId);
+    setVoice(group.script.narrationConfig.voice);
+    setSpeed(group.script.narrationConfig.speed);
+  }, []);
+
   const resolveDuration = async (action: 'smart_fit' | 'retry_with_changes' | 'accept_actual') => {
     if (!activeJob || !durationReviewGroup || submittingRef.current) return;
     submittingRef.current = true;
@@ -653,11 +665,13 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       setDurationReviewGroup(null);
       if (job.status === 'needs_input' && job.phase === 'duration_review') {
         const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`));
+        syncResolvedGroupScript(reviewGroup);
         setDurationReviewGroup(reviewGroup);
         setPreparedGroup(null);
         setMessage('重新合成后仍超出目标容差，请继续修改或按实际时长继续');
       } else if (job.status === 'succeeded') {
         const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`));
+        syncResolvedGroupScript(completedGroup);
         setPreparedGroup(completedGroup);
         setMessage(action === 'accept_actual' ? '已按实际时长继续，预览和导出会持续显示提示' : '真实口播时长已通过，可以进入预览调整');
       } else {

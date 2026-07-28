@@ -85,6 +85,15 @@ export function acceptedDurationGateMatchesNarration(
   return state?.status === 'accepted_actual' && state.narrationHash === narrationHash;
 }
 
+export function finalDurationGateAllowsProgress(input: {
+  state: FinalEditDurationGateStateV1 | null;
+  narrationHash: string;
+  evaluation: DurationGateEvaluation;
+}): boolean {
+  return input.evaluation.status === 'within_tolerance'
+    || acceptedDurationGateMatchesNarration(input.state, input.narrationHash);
+}
+
 export function stateFromDurationEvaluation(input: {
   narrationHash: string;
   evaluation: DurationGateEvaluation;

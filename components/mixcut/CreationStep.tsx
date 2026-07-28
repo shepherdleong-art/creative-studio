@@ -174,7 +174,7 @@ export function CreationStep({
                 <span className={modified ? styles.chipGrey : styles.chipGreen} style={{ marginLeft: 8 }}>{modified ? '已手动修改' : '已同步'}{dirty ? '，待保存' : ''}</span>
               </span>
               <select value={activeDraftId} onChange={(event) => onDraftChange(event.target.value)} disabled={busy}>
-                {drafts.map((draft) => <option key={draft.id} value={draft.id}>{draft.title || '未命名脚本'} · {draft.targetDurationSec}s · {draft.provider}/{draft.model} · {formatCreatedAt(draft.createdAt)}</option>)}
+                {drafts.map((draft) => <option key={draft.id} value={draft.id}>V{draft.version} · {draft.title || '未命名脚本'} · {draft.targetDurationSec}s · {draft.provider}/{draft.model} · {formatCreatedAt(draft.createdAt)}</option>)}
               </select>
             </label>
           ) : <div className={styles.warningNotice}>当前组还没有模块 3 脚本，可以先手动输入口播文案。</div>}

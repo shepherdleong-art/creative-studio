@@ -9,6 +9,7 @@ const creativePackage = fs.readFileSync(new URL('../app/api/projects/[id]/creati
 
 assert.match(panel, /analyzed\.recommendedTemplate\.id/);
 assert.match(panel, /parsed\.version === 2 && parsed\.shotSetId/);
+assert.match(panel, /这份脚本由旧版本生成/, '未声明版本的历史草稿继续走既有只读提示路径');
 assert.doesNotMatch(panel, /await loadShotImages\(selectedShotSetId\)/, 'V3 生成成功后不得加载分镜图片');
 assert.match(strategy, /目标总时长（包含封面）/);
 assert.match(strategy, /口播正文约/);

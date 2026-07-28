@@ -53,9 +53,9 @@ import { buildTtsAwareMatchSentences } from './match-sentence-refinement.ts';
 import type { BeatDetectionResult } from './beat-detect.ts';
 import { splitNarrationForDisplay } from '../subtitle-display.ts';
 import {
-  acceptedDurationGateMatchesNarration,
   createUncheckedDurationGateState,
   evaluateFinalDurationGate,
+  finalDurationGateAllowsProgress,
   parseDurationGateState,
   stateFromDurationEvaluation,
   type FinalEditDurationGateStateV1,
@@ -724,11 +724,44 @@ export function buildAlignedSubtitleCues(script: ScriptSnapshot, narration: Narr
     if (parts.length === 0) continue;
     const weights = parts.map((part) => Math.max(1, contentChars(part.sourceText).length));
     const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+    const alignedWords = narration.wordTimings
+      .filter((word) => word.endUs > timing.startUs && word.startUs < timing.endUs)
+      .map((word) => ({
+        ...word,
+        startUs: Math.max(timing.startUs, word.startUs),
+        endUs: Math.min(timing.endUs, word.endUs),
+        contentLength: contentChars(word.text).length,
+      }))
+      .filter((word) => word.contentLength > 0 && word.endUs > word.startUs);
+    const alignedContentLength = alignedWords.reduce((sum, word) => sum + word.contentLength, 0);
+    if (!degraded.has(segmentId) && alignedContentLength === 0) {
+      throw new FinalEditError('alignment_failed', `缺少 ${segmentId} 的词级对齐边界`);
+    }
+    const alignedBoundaryUs = (contentOffset: number): number => {
+      const targetOffset = Math.min(alignedContentLength, Math.max(0, contentOffset / totalWeight * alignedContentLength));
+      let consumed = 0;
+      for (const word of alignedWords) {
+        const next = consumed + word.contentLength;
+        if (targetOffset <= next) {
+          const ratio = Math.min(1, Math.max(0, (targetOffset - consumed) / word.contentLength));
+          return Math.round(word.startUs + (word.endUs - word.startUs) * ratio);
+        }
+        consumed = next;
+      }
+      return timing.endUs;
+    };
     let cursor = timing.startUs;
+    let consumedWeight = 0;
     parts.forEach((part, partIndex) => {
+      consumedWeight += weights[partIndex];
       const endUs = partIndex === parts.length - 1
         ? timing.endUs
-        : Math.round(cursor + (timing.endUs - timing.startUs) * weights[partIndex] / totalWeight);
+        : degraded.has(segmentId)
+          ? Math.round(timing.startUs + (timing.endUs - timing.startUs) * consumedWeight / totalWeight)
+          : alignedBoundaryUs(consumedWeight);
+      if (endUs <= cursor || endUs > timing.endUs) {
+        throw new FinalEditError('alignment_failed', `${segmentId} 的字幕边界无效`);
+      }
       cues.push({ id: uuidv4(), segmentId, text: part.displayText, startUs: cursor, endUs, textSource: 'script', timingSource: degraded.has(segmentId) ? 'proportional' : 'aligned' });
       cursor = endUs;
     });
@@ -1061,7 +1094,12 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         targetTotalSec: script.targetDurationSec,
         actualNarrationUs: narration.durationUs,
       });
-      const acceptedActual = acceptedDurationGateMatchesNarration(previousDurationGate, narrationHash);
+      const durationConfirmed = finalDurationGateAllowsProgress({
+        state: previousDurationGate,
+        narrationHash,
+        evaluation: durationEvaluation,
+      });
+      const acceptedActual = durationEvaluation.status !== 'within_tolerance' && durationConfirmed;
       const evaluatedDurationGate = stateFromDurationEvaluation({
         narrationHash,
         evaluation: durationEvaluation,
@@ -1075,7 +1113,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             acceptedAt: previousDurationGate?.acceptedAt || now(),
           }
         : evaluatedDurationGate;
-      if (durationEvaluation.status !== 'within_tolerance' && !acceptedActual) {
+      if (!durationConfirmed) {
         db.transaction(() => {
           db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status='needs_input', phase='duration_review', revision=revision+1, updatedAt=? WHERE id=?`).run(
             narration.relativePath,
@@ -1524,6 +1562,21 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       voice: nextNarrationConfig.voice,
       speed: nextNarrationConfig.speed,
     };
+    let ttsCost = 0;
+    if (clearTts) {
+      const ttsProvider = db.prepare(`SELECT costPerThousandCharacters FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(nextNarrationConfig.providerId) as { costPerThousandCharacters: number } | undefined;
+      if (!ttsProvider) throw new FinalEditError('tts_provider_unavailable', '口播配音供应商不存在或未启用');
+      ttsCost = getFinalEditTtsAdapter(nextNarrationConfig.providerId).estimateCost({
+        text: script.segments.map((segment) => segment.narration).join(''),
+        costPerThousandCharacters: ttsProvider.costPerThousandCharacters,
+      });
+    }
+    const analysisProviderId = String(row.analysisProviderId || '').trim();
+    const analysisRequestCount = analysisProviderId ? (input.action === 'smart_fit' ? 2 : 1) : 0;
+    const analysisCost = analysisProviderId && deps.estimateAnalysisCost
+      ? deps.estimateAnalysisCost({ providerId: analysisProviderId, requestCount: analysisRequestCount })
+      : 0;
+    const estimatedCost = Number((ttsCost + analysisCost).toFixed(6));
     const jobId = uuidv4();
     const requestKey = sha256(JSON.stringify({ kind: 'prepare-duration-resolution', groupId: input.groupId, jobId }));
     db.transaction(() => {
@@ -1541,12 +1594,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       } else {
         db.prepare(`UPDATE final_edit_groups SET durationGateJson=?, status='queued', phase='validating', revision=revision+1, updatedAt=? WHERE id=?`).run(JSON.stringify(nextGate), now(), input.groupId);
       }
-      db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'analyzing', 0, ?, ?, 0, 'CNY', ?)`).run(
+      db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'analyzing', 0, ?, ?, ?, 'CNY', ?)`).run(
         jobId,
         String(row.projectId),
         input.groupId,
         requestKey,
         JSON.stringify({ version: 1, input: nextInput, scriptSnapshot: script }),
+        estimatedCost,
         now(),
       );
     })();
@@ -1958,8 +2012,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         targetTotalSec: durationGate.targetTotalUs / 1_000_000,
         actualNarrationUs: durationRow.narrationDurationUs,
       });
-      const confirmed = currentEvaluation.status === 'within_tolerance'
-        || acceptedDurationGateMatchesNarration(durationGate, durationRow.narrationHash);
+      const confirmed = finalDurationGateAllowsProgress({
+        state: durationGate,
+        narrationHash: durationRow.narrationHash,
+        evaluation: currentEvaluation,
+      });
       if (!confirmed) throw new FinalEditError('target_duration_unconfirmed', '真实口播时长仍超出目标，必须先确认处理方式', 409);
     }
     const blocking = variant.issues.find((issue) => issue.severity === 'blocking');
