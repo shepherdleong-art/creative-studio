@@ -207,6 +207,24 @@ try {
       };
     });
     let savedGroup = createFormalGroup();
+    const foreignTaskBase = createFormalGroup();
+    const foreignTaskGroup = {
+      ...foreignTaskBase,
+      id: 'group-foreign-task',
+      shotSetId: 'shot-set-foreign',
+      script: { ...foreignTaskBase.script, title: '其他任务的 TTS 历史' },
+      jobs: [{ ...foreignTaskBase.jobs[0], id: 'job-foreign-task', groupId: 'group-foreign-task', createdAt: '2026-07-25T00:00:00.000Z' }],
+    };
+    const currentTaskHistoryGroups = Array.from({ length: 6 }, (_, index) => {
+      const group = createFormalGroup();
+      const suffix = String(index + 1).padStart(2, '0');
+      return {
+        ...group,
+        id: `group-history-${suffix}`,
+        script: { ...group.script, title: `历史 TTS ${suffix}` },
+        jobs: group.jobs.map((job) => ({ ...job, id: `job-history-${suffix}`, createdAt: `2026-07-23T0${index}:00:00.000Z` })),
+      };
+    });
     const startPostBodies = [];
     const generatedGroups = new Map();
     const generatedJobPollCounts = new Map();
@@ -315,7 +333,7 @@ try {
         generatedJobPollCounts.set(jobId, 0);
         return json({ id: jobId, groupId, kind: 'prepare', status: 'queued' });
       }
-      if (pathname === '/api/projects/e2e-project/final-edit/groups') return json({ groups: [...generatedGroups.values()].reverse().concat(editingGroup ? [editingGroup] : [], savedGroup) });
+      if (pathname === '/api/projects/e2e-project/final-edit/groups') return json({ groups: [...generatedGroups.values()].reverse().concat(editingGroup ? [editingGroup] : [], savedGroup, currentTaskHistoryGroups, foreignTaskGroup) });
       if (pathname.startsWith('/api/final-edit-jobs/job-regenerated-') && request.method() === 'GET') {
         const jobId = pathname.split('/').at(-1);
         const count = generatedJobPollCounts.get(jobId) ?? 0;
@@ -574,6 +592,21 @@ try {
     const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
     await page.goto(formalUrl, { waitUntil: 'networkidle' });
     await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
+    await page.getByRole('heading', { name: '最近会话' }).waitFor();
+    assert.equal(await page.getByRole('button', { name: /其他任务的 TTS 历史/ }).count(), 0, '最近会话只能显示当前任务（当前分镜组）的生成历史');
+    assert.equal(await page.getByRole('button', { name: /切换到会话/ }).count(), 7, '当前任务的每次 TTS 生成历史都必须保留，不能只截取最近 5 条');
+    await page.setViewportSize({ width: 1280, height: 650 });
+    const recentSessionsLayout = await page.getByRole('heading', { name: '最近会话' }).locator('..').evaluate((panel) => {
+      const list = panel.querySelector(':scope > div');
+      const firstSession = list?.querySelector('button');
+      return {
+        listHeight: list?.clientHeight ?? 0,
+        sessionHeight: firstSession?.getBoundingClientRect().height ?? 0,
+      };
+    });
+    assert.ok(recentSessionsLayout.listHeight >= 48 && recentSessionsLayout.sessionHeight >= 36, `矮窗口下最近会话不能只剩标题，至少应显示一条可回退记录（列表 ${recentSessionsLayout.listHeight}px，会话 ${recentSessionsLayout.sessionHeight}px）`);
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    currentTaskHistoryGroups.length = 0;
     const initialStepNav = page.getByRole('navigation', { name: '智能混剪步骤' });
     await initialStepNav.getByRole('button', { name: /AI 智能创作/ }).click();
     await page.getByRole('button', { name: '再生成一版', exact: true }).waitFor();

@@ -179,7 +179,8 @@
 .sessionT { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .sessionT span { margin-left: 6px; color: var(--blue); font-size: 10px; font-weight: 600; }
 .sessionM { margin-top: 2px; color: var(--faint); font-size: 11px; }
-.panelGrow { flex: 1; min-height: 0; }
+/* 矮窗口也要保留标题和至少一条可回退记录，不能让 flex 把列表压成 0 高。 */
+.panelGrow { flex: 1 0 132px; min-height: 132px; }
 .panelGrow .panelList { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* ---- 主区 ---- */

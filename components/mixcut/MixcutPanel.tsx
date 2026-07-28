@@ -342,9 +342,9 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     { label: STEPS[3].label, detail: preparedGroup ? '可预检并导出' : '等待 AI 创作完成' },
   ];
   const versionGroups = recentGroups
-    .filter((group) => group.status !== 'editing')
+    .filter((group) => group.shotSetId === activeShotSetId && group.status !== 'editing')
     .sort((left, right) => prepareCreatedAt(right).localeCompare(prepareCreatedAt(left)));
-  const sessions = versionGroups.slice(0, 5).map((group, index) => ({
+  const sessions = versionGroups.map((group, index) => ({
     id: group.id,
     title: group.script?.title || '未命名会话',
     versionLabel: `版本 ${versionGroups.length - index}`,
