@@ -302,10 +302,15 @@ export function MixcutTimeline({
                       value={narrationSpeedInput}
                       onChange={(event) => {
                         const rawValue = event.currentTarget.value;
-                        setNarrationSpeedInput(rawValue);
-                        if (rawValue.trim() === '') return;
+                        if (rawValue.trim() === '') {
+                          setNarrationSpeedInput(rawValue);
+                          return;
+                        }
                         const value = Number(rawValue);
-                        if (Number.isFinite(value)) setNarrationSpeedDraft(normalizeNarrationSpeed(value));
+                        if (!Number.isFinite(value)) return;
+                        const normalizedValue = normalizeNarrationSpeed(value);
+                        setNarrationSpeedDraft(normalizedValue);
+                        setNarrationSpeedInput(formatNarrationSpeedInput(normalizedValue));
                       }}
                       onBlur={() => setNarrationSpeedInput(formatNarrationSpeedInput(narrationSpeedDraft))}
                     />

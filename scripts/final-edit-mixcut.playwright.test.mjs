@@ -1196,6 +1196,9 @@ try {
     assert.equal(await speedNumber.inputValue(), '1.3', '拖动拉条必须同步更新右侧数值框');
     await speedNumber.fill('1.4');
     assert.equal(await speedSlider.inputValue(), '1.4', '修改右侧数值框必须反向同步拉条');
+    await speedNumber.fill('1.35');
+    assert.equal(await speedNumber.inputValue(), '1.4', '非步进数值必须立即归一化，避免数值框与实际提交值不一致');
+    assert.equal(await speedSlider.inputValue(), '1.4', '非步进数值归一化后必须与拉条保持一致');
     await speedNumber.fill('1.3');
     assert.equal(startPostBodies.length, 2, '拖动倍速拉条时不得立即创建新版本');
     await page.getByRole('button', { name: '生成 1.3x 新版本', exact: true }).click();
