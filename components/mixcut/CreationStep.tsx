@@ -225,7 +225,6 @@ export function CreationStep({
                 onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !busy) onVoiceChange(item.id); }}>
                 <div className={styles.voiceVi}><Icon name="mic" size={18} /></div>
                 <div className={styles.voiceN}>{item.label}</div>
-                <div className={styles.voiceI}>{item.id}</div>
                 <button type="button" className={styles.voiceTry} disabled={previewingVoice || !provider?.configured || busy} onClick={(event) => { event.stopPropagation(); auditionVoice(item.id); }}>
                   <Icon name="play" size={9} />{previewingVoice && item.id === voice ? '生成中…' : '试听'}
                 </button>
@@ -235,7 +234,7 @@ export function CreationStep({
           <div className={styles.moreRow}>
             <span className={styles.field} style={{ margin: 0, flex: 1, minWidth: 180 }}><input type="text" value={voiceQuery} onChange={(event) => setVoiceQuery(event.target.value)} placeholder="搜索更多音色（名称或 ID）" /></span>
             {(provider?.voices.length ?? 0) > 6 && !voiceQuery && <button type="button" className={styles.linkBtn} onClick={() => setShowAllVoices((value) => !value)}>{showAllVoices ? '收起音色' : `查看全部 ${provider?.voices.length} 个音色`}</button>}
-            <span className={styles.flowHint}>当前选中：{selectedVoice ? `${selectedVoice.label} · ${selectedVoice.id}` : '未选择'}</span>
+            <span className={styles.flowHint}>当前选中：{selectedVoice ? selectedVoice.label : '未选择'}</span>
           </div>
         </section>
 

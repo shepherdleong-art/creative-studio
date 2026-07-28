@@ -271,6 +271,7 @@ try {
         { videoJobId: 'video-b', shotSetId: 'shot-set-e2e', filename: 'b.mp4', durationUs: 5_000_000, width: 1080, height: 1440, thumbnailUrl: transparentPixel, source: 'module4' },
       ],
     };
+    const longVoiceId = 'zh_female_meilinvyou_saturn_bigtts';
 
     await page.route('**/api/**', async (route) => {
       const request = route.request();
@@ -281,7 +282,7 @@ try {
       if (pathname === '/api/projects/e2e-project') return json(project);
       if (pathname === '/api/projects/e2e-project/run') return json({ queueStatus: 'idle' });
       if (pathname === '/api/providers') return json([]);
-      if (pathname === '/api/providers/tts') return json([{ id: 'tts-e2e', name: 'Mock TTS', configured: true, voices: [{ id: 'voice-e2e', name: '测试音色' }] }]);
+      if (pathname === '/api/providers/tts') return json([{ id: 'tts-e2e', name: 'Mock TTS', model: 'mock-tts', configured: true, voices: [{ id: 'voice-e2e', label: '测试音色' }, { id: longVoiceId, label: '魅力女友' }] }]);
       if (pathname === '/api/providers/script') return json([{ id: 'vision-e2e', configured: true, supportsVision: true }]);
       if (pathname === '/api/system-fonts') return json(['Arial']);
       if (pathname === '/api/final-edit/capabilities') return json({ revealInFolder: revealAvailable });
@@ -610,6 +611,8 @@ try {
     const initialStepNav = page.getByRole('navigation', { name: '智能混剪步骤' });
     await initialStepNav.getByRole('button', { name: /AI 智能创作/ }).click();
     await page.getByRole('button', { name: '再生成一版', exact: true }).waitFor();
+    await page.getByText('魅力女友', { exact: true }).waitFor();
+    assert.equal(await page.getByText(longVoiceId, { exact: true }).count(), 0, '音色卡片只能显示友好名称，不能把英文音色 ID 作为小字铺在卡片下方');
     await initialStepNav.getByRole('button', { name: /预览调整/ }).click();
     await page.locator('[data-track="video"]').waitFor();
 
@@ -1253,6 +1256,10 @@ try {
     await page.keyboard.press('Escape');
     await expectEventually(() => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.4), '按 Esc 关闭倍速弹层时也必须自动保存刚刚预览的当前音轨倍速');
     assert.equal(await speedMenu.count(), 0, 'Esc 保存后必须关闭倍速弹层');
+
+    await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
+    await page.getByText('魅力女友', { exact: true }).click();
+    assert.equal(await page.getByText(/^当前选中：/).textContent(), '当前选中：魅力女友', '选中状态也只显示友好名称，不能再次露出英文音色 ID');
 
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');
