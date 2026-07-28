@@ -7,8 +7,8 @@ import {
 import { buildScriptDurationAdvisory, buildScriptDurationBudget } from '../lib/script-duration-policy.ts';
 
 const baseInput = {
-  projectName: '沙发任务',
-  productName: '云感沙发',
+  projectName: '任务 A',
+  productName: '',
   productCode: 'SF-A1',
   productCategory: '家具',
   targetAudience: '久坐上班族',
@@ -24,17 +24,34 @@ const baseInput = {
   shotSetId: 'set-a',
   visuals: [
     {
-      shotId: 'shot-a', shotIndex: 1, imageAssetId: 'image-a', sourceFilename: 'scene-a.png',
+      shotId: 'shot-a', shotIndex: 1, imageAssetId: 'image-a', sourceFilename: 'asset-1.png',
       mimeType: 'image/png', imageBase64: 'image-a-base64',
     },
     {
-      shotId: 'shot-b', shotIndex: 2, imageAssetId: 'image-b', sourceFilename: 'scene-b.jpg',
+      shotId: 'shot-b', shotIndex: 2, imageAssetId: 'image-b', sourceFilename: 'asset-2.jpg',
       mimeType: 'image/jpeg', imageBase64: 'image-b-base64',
     },
   ],
 };
 
-function feasibleResult(value: Record<string, unknown>): Record<string, unknown> {
+const validCoverTitleParts = {
+  primary: '松弛感软弹沙发',
+  secondary: '理想客厅必备',
+  productCategoryTerm: '沙发',
+  primaryStyleModifier: '松弛感',
+  primaryEvidenceTerm: '软弹',
+  secondaryRole: 'scene_aspiration',
+  secondaryQualifier: '理想',
+  secondarySceneTerm: '客厅',
+  secondaryValuePhrase: '必备',
+  visualRefs: ['visual-1', 'visual-2'],
+  sellingPointRefs: ['5芯软弹'],
+};
+
+function feasibleResult(
+  value: Record<string, unknown>,
+  coverTitleParts: Record<string, unknown> = validCoverTitleParts,
+): Record<string, unknown> {
   const segments = Array.isArray(value.segments) ? value.segments : [];
   return {
     materialAssessment: {
@@ -43,10 +60,18 @@ function feasibleResult(value: Record<string, unknown>): Record<string, unknown>
       reason: '所选模板的核心阶段都能由候选分镜承接',
     },
     ...value,
-    segments: segments.map((segment, index) => ({
-      visualRefs: [`visual-${(index % baseInput.visuals.length) + 1}`],
-      ...(segment && typeof segment === 'object' ? segment : {}),
-    })),
+    coverTitleParts,
+    segments: segments.map((segment, index) => {
+      const source = segment && typeof segment === 'object' ? segment as Record<string, unknown> : {};
+      const visualKeywords = Array.isArray(source.visualKeywords) && source.visualKeywords.length > 0
+        ? [...source.visualKeywords, '客厅', '沙发']
+        : source.visualKeywords;
+      return {
+        visualRefs: [`visual-${(index % baseInput.visuals.length) + 1}`],
+        ...source,
+        visualKeywords,
+      };
+    }),
   };
 }
 
@@ -119,7 +144,13 @@ assert.deepEqual(
       ],
     }),
   ];
-  const result = await generateScriptV3(baseInput, {
+  const result = await generateScriptV3({
+    ...baseInput,
+    projectName: '任务 A',
+    productName: '',
+    productCategory: '家具',
+    visuals: baseInput.visuals.map((visual, index) => ({ ...visual, sourceFilename: `asset-${index + 1}.png` })),
+  }, {
     completeJson: async (request) => {
       calls.push({
         images: request.images,
@@ -149,6 +180,21 @@ assert.deepEqual(
       desiredAudienceResponse: string;
     };
     visualMaterials: Array<{ visualRef: string; imageOrder: number; shotIndex: number }>;
+    outputContract: {
+      coverTitleParts: {
+        primary: string;
+        secondary: string;
+        productCategoryTerm: string;
+        primaryStyleModifier: string;
+        primaryEvidenceTerm: string;
+        secondaryRole: string;
+        secondaryQualifier: string;
+        secondarySceneTerm: string;
+        secondaryValuePhrase: string;
+        visualRefs: string;
+        sellingPointRefs: string;
+      };
+    };
     requirements: string[];
   };
   assert.deepEqual(initialPrompt.template, {
@@ -179,6 +225,13 @@ assert.deepEqual(
   assert.ok(initialPrompt.requirements.includes(
     '每段必须返回至少一个 visualRefs，并且只能引用 visualMaterials 中真实存在的 visualRef',
   ));
+  assert.ok(initialPrompt.requirements.includes(
+    '封面标题必须是两段式：primary 使用“可见气质/材质/核心特征 + 具体产品品类”，secondary 使用“场景向往/理想状态/购买理由”；两句都必须独立完整且互相补充',
+  ));
+  assert.match(initialPrompt.outputContract.coverTitleParts.primary, /温润黑胡桃木床/);
+  assert.match(initialPrompt.outputContract.coverTitleParts.secondary, /理想卧室必备/);
+  assert.match(initialPrompt.outputContract.coverTitleParts.primaryEvidenceTerm, /selectedSellingPoints/);
+  assert.match(initialPrompt.outputContract.coverTitleParts.secondarySceneTerm, /visualKeywords/);
   assert.match(calls[1].userPrompt, /too_long/);
   const rewritePrompt = JSON.parse(calls[1].userPrompt) as {
     template?: { id?: string };
@@ -192,6 +245,11 @@ assert.deepEqual(
   assert.equal(result.script.segments[0].subtitle, '忙碌一天回到家 只想陷进柔软怀抱');
   assert.equal(result.script.fullScript, result.script.segments.map((segment) => segment.narration).join('\n'));
   assert.equal(result.script.fullSubtitle, result.script.segments.map((segment) => segment.subtitle).join('\n'));
+  assert.deepEqual(result.script.coverTitleParts, {
+    primary: '松弛感软弹沙发',
+    secondary: '理想客厅必备',
+    source: 'model',
+  });
   assert.ok(result.script.segments.every((segment) => !('shotId' in segment)));
   assert.ok(result.script.segments.every((segment) => !('visualRefs' in segment)), '生成期画面引用不能形成持久化素材绑定');
   assert.ok(result.script.contentCharacterCount >= budget.minContentCharacters);
@@ -327,26 +385,81 @@ assert.deepEqual(
 }
 
 {
+  let calls = 0;
+  const prompts: string[] = [];
   const result = await generateScriptV3(baseInput, {
-    completeJson: async () => feasibleResult({
-      title: '云感沙发推荐',
-      coverTitleParts: {
-        primary: '这是一个明显超过建议长度且无法直接用于封面的主标题',
-        secondary: '这是一个明显超过建议长度且只是重复主标题意思的副标题',
-      },
-      segments: [{
-        narration: `${'舒适承托'.repeat(13)}安心。`,
-        sellingPointRefs: ['112°承托'],
-        visualIntent: '产品使用场景',
-        visualKeywords: ['产品'],
-      }],
-    }),
+    completeJson: async (request) => {
+      calls += 1;
+      prompts.push(request.userPrompt);
+      return feasibleResult({
+        title: '云感沙发推荐',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '产品使用场景',
+          visualKeywords: ['产品'],
+        }],
+      }, calls === 1 ? {
+        primary: '把周末窝成沙发',
+        secondary: '美好生活新选择',
+        productCategoryTerm: '沙发',
+        primaryStyleModifier: '',
+        primaryEvidenceTerm: '软弹',
+        secondaryRole: 'scene_aspiration',
+        secondaryQualifier: '',
+        secondarySceneTerm: '美好生活',
+        secondaryValuePhrase: '新选择',
+        visualRefs: ['visual-1'],
+        sellingPointRefs: ['5芯软弹'],
+      } : validCoverTitleParts);
+    },
   });
-  assert.equal(result.script.coverTitleParts.source, 'system_split');
-  assert.ok(Array.from(result.script.coverTitleParts.primary.replace(/[\p{P}\p{S}\s]/gu, '')).length >= 4);
-  assert.ok(Array.from(result.script.coverTitleParts.primary.replace(/[\p{P}\p{S}\s]/gu, '')).length <= 10);
-  assert.ok(Array.from(result.script.coverTitleParts.secondary.replace(/[\p{P}\p{S}\s]/gu, '')).length >= 6);
-  assert.ok(Array.from(result.script.coverTitleParts.secondary.replace(/[\p{P}\p{S}\s]/gu, '')).length <= 14);
+  assert.equal(calls, 2, '不完整主标题或泛化副标题必须触发完整重写，不能用系统截断兜底');
+  assert.match(prompts[1], /contract_invalid/);
+  assert.deepEqual(result.script.coverTitleParts, {
+    primary: '松弛感软弹沙发',
+    secondary: '理想客厅必备',
+    source: 'model',
+  });
+  assert.equal('productCategoryTerm' in result.script.coverTitleParts, false);
+  assert.equal('secondaryRole' in result.script.coverTitleParts, false);
+  assert.equal('visualRefs' in result.script.coverTitleParts, false);
+  assert.equal('sellingPointRefs' in result.script.coverTitleParts, false);
+}
+
+{
+  let calls = 0;
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => {
+      calls += 1;
+      const coverTitleParts = calls === 1
+        ? { ...validCoverTitleParts, visualRefs: ['visual-2'] }
+        : calls === 2
+          ? {
+              ...validCoverTitleParts,
+              secondary: '安心客厅安心之选',
+              secondaryQualifier: '安心',
+              secondaryValuePhrase: '安心之选',
+            }
+          : validCoverTitleParts;
+      return feasibleResult({
+        title: '真实依据标题',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+      }, coverTitleParts);
+    },
+  });
+  assert.equal(calls, 3, '标题图片与场景词不对应、或组成词内部重复时都必须重写');
+  assert.deepEqual(result.script.coverTitleParts, {
+    primary: '松弛感软弹沙发',
+    secondary: '理想客厅必备',
+    source: 'model',
+  });
 }
 
 {

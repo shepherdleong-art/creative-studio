@@ -1,4 +1,3 @@
-import { splitCoverTitle } from './final-edit/domain.ts';
 import {
   buildScriptDurationBudget,
   countScriptContentCharacters,
@@ -157,39 +156,125 @@ function titlesAreComplementary(primary: string, secondary: string): boolean {
     && !secondaryKey.includes(primaryKey);
 }
 
+const COVER_TITLE_SECONDARY_ROLE_VALUES = [
+  'scene_aspiration',
+  'lifestyle_state',
+  'purchase_reason',
+] as const;
+const COVER_TITLE_SECONDARY_ROLES = new Set<string>(COVER_TITLE_SECONDARY_ROLE_VALUES);
+
+const COVER_TITLE_STYLE_MODIFIERS = new Set([
+  '', '温润', '轻盈', '松弛感', '柔和', '雅致', '简约', '厚实', '柔软', '利落', '治愈系', '原木感',
+]);
+const COVER_TITLE_SECONDARY_QUALIFIERS = new Set([
+  '', '理想', '松弛', '舒适', '雅致', '安心', '治愈', '精致',
+]);
+const COVER_TITLE_SECONDARY_VALUE_PHRASES = new Set([
+  '必备', '氛围担当', '优雅之选', '舒适之选', '安心之选', '质感之选', '空间亮点', '日常搭档', '松弛搭档',
+]);
+const GENERIC_PRODUCT_CATEGORY_TERM_VALUES = ['产品', '好物', '单品', '家具', '家居', '用品'] as const;
+const GENERIC_PRODUCT_CATEGORY_TERMS = new Set<string>(GENERIC_PRODUCT_CATEGORY_TERM_VALUES);
+const GENERIC_SECONDARY_SCENE_TERMS = new Set(['生活', '美好生活', '日常', '居家', '家里', '空间']);
+const GENERIC_COVER_TITLE_PHRASES = [
+  '产品推荐',
+  '好物推荐',
+  '值得认真看看',
+  '品质生活之选',
+  '提升生活品质',
+  '理想生活必备',
+] as const;
+const GENERIC_COVER_TITLE_KEYS = new Set(GENERIC_COVER_TITLE_PHRASES.map(titleKey));
+
+function hasNoSentencePunctuation(value: string): boolean {
+  return Boolean(value) && !/[，。！？；：,.!?;:]/u.test(value);
+}
+
+function titlePartsDoNotOverlap(values: string[]): boolean {
+  const keys = values.map(titleKey).filter(Boolean);
+  return keys.every((key, index) => keys.every((other, otherIndex) => (
+    index === otherIndex || (!key.includes(other) && !other.includes(key))
+  )));
+}
+
+interface GroundedScriptSegment {
+  segment: ScriptSegmentV3;
+  visualRefs: string[];
+}
+
 function normalizeTitleParts(
   raw: JsonObject,
-  fallbackTitle: string,
-  selectedSellingPoints: SelectedSellingPoint[],
+  input: ScriptGenerationInputV3,
+  groundedSegments: GroundedScriptSegment[],
 ): ScriptOutputV3['coverTitleParts'] {
   const rawParts = object(raw.coverTitleParts);
   const primary = string(rawParts.primary);
   const secondary = string(rawParts.secondary);
-  if (titleFits(primary, [4, 10]) && titleFits(secondary, [6, 14]) && titlesAreComplementary(primary, secondary)) {
-    return { primary, secondary, source: 'model' };
-  }
+  const productCategoryTerm = string(rawParts.productCategoryTerm);
+  const primaryStyleModifier = string(rawParts.primaryStyleModifier);
+  const primaryEvidenceTerm = string(rawParts.primaryEvidenceTerm);
+  const secondaryRole = string(rawParts.secondaryRole);
+  const secondaryQualifier = string(rawParts.secondaryQualifier);
+  const secondarySceneTerm = string(rawParts.secondarySceneTerm);
+  const secondaryValuePhrase = string(rawParts.secondaryValuePhrase);
+  const visualRefs = stringArray(rawParts.visualRefs);
+  const sellingPointRefs = stringArray(rawParts.sellingPointRefs);
+  const allowedVisualRefs = new Set<string>(input.visuals.map((_, index) => visualRefForIndex(index)));
+  const allowedSellingPointRefs = new Set(input.selectedSellingPoints.map((point) => point.title));
+  const categoryKey = titleKey(productCategoryTerm);
+  const primaryEvidenceKey = titleKey(primaryEvidenceTerm);
+  const secondarySceneKey = titleKey(secondarySceneTerm);
+  const titleVisualRefSet = new Set(visualRefs);
+  const titleSceneIsGrounded = groundedSegments.some(({ segment, visualRefs: segmentVisualRefs }) => (
+    segment.visualKeywords.some((keyword) => titleKey(keyword) === secondarySceneKey)
+    && segmentVisualRefs.some((visualRef) => titleVisualRefSet.has(visualRef))
+  ));
+  const titleCategoryIsGrounded = groundedSegments.some(({ segment, visualRefs: segmentVisualRefs }) => (
+    segment.visualKeywords.some((keyword) => titleKey(keyword).includes(categoryKey))
+    && segmentVisualRefs.some((visualRef) => titleVisualRefSet.has(visualRef))
+  ));
 
-  const split = splitCoverTitle(fallbackTitle);
-  const primaryCandidates = [split.primary, fallbackTitle, ...selectedSellingPoints.map((point) => point.title), '产品推荐'];
-  const fallbackPrimary = primaryCandidates.map(string).find((candidate) => titleFits(candidate, [4, 10])) || '产品推荐';
-  const secondaryCandidates = [split.secondary, ...selectedSellingPoints.map((point) => point.title), '值得认真看看'];
-  const fallbackSecondary = secondaryCandidates
-    .map(string)
-    .find((candidate) => titleFits(candidate, [6, 14]) && titlesAreComplementary(fallbackPrimary, candidate))
-    || '值得认真看看';
-  return {
-    primary: fallbackPrimary,
-    secondary: fallbackSecondary,
-    source: 'system_split',
-  };
+  const valid = titleFits(primary, [4, 12])
+    && titleFits(secondary, [4, 10])
+    && hasNoSentencePunctuation(primary)
+    && hasNoSentencePunctuation(secondary)
+    && /^[\p{L}\p{N}]{1,6}$/u.test(productCategoryTerm)
+    && !GENERIC_PRODUCT_CATEGORY_TERMS.has(categoryKey)
+    && COVER_TITLE_STYLE_MODIFIERS.has(primaryStyleModifier)
+    && titleContentLength(primaryEvidenceTerm) >= 2
+    && titleContentLength(primaryEvidenceTerm) <= 6
+    && primary === `${primaryStyleModifier}${primaryEvidenceTerm}${productCategoryTerm}`
+    && titlePartsDoNotOverlap([primaryStyleModifier, primaryEvidenceTerm, productCategoryTerm])
+    && titleCategoryIsGrounded
+    && sellingPointRefs.some((reference) => titleKey(reference).includes(primaryEvidenceKey))
+    && titlesAreComplementary(primary, secondary)
+    && !titleKey(secondary).includes(categoryKey)
+    && !GENERIC_COVER_TITLE_KEYS.has(titleKey(primary))
+    && !GENERIC_COVER_TITLE_KEYS.has(titleKey(secondary))
+    && COVER_TITLE_SECONDARY_ROLES.has(secondaryRole)
+    && COVER_TITLE_SECONDARY_QUALIFIERS.has(secondaryQualifier)
+    && titleContentLength(secondarySceneTerm) >= 2
+    && titleContentLength(secondarySceneTerm) <= 5
+    && !GENERIC_SECONDARY_SCENE_TERMS.has(secondarySceneKey)
+    && titleSceneIsGrounded
+    && COVER_TITLE_SECONDARY_VALUE_PHRASES.has(secondaryValuePhrase)
+    && secondary === `${secondaryQualifier}${secondarySceneTerm}${secondaryValuePhrase}`
+    && titlePartsDoNotOverlap([secondaryQualifier, secondarySceneTerm, secondaryValuePhrase])
+    && visualRefs.length > 0
+    && visualRefs.every((visualRef) => allowedVisualRefs.has(visualRef))
+    && (input.selectedSellingPoints.length === 0 || (
+      sellingPointRefs.length > 0
+      && sellingPointRefs.every((reference) => allowedSellingPointRefs.has(reference))
+    ));
+  if (!valid) throw new Error('cover_title_contract_invalid');
+  return { primary, secondary, source: 'model' };
 }
 
-function normalizeSegments(raw: JsonObject, input: ScriptGenerationInputV3): ScriptSegmentV3[] {
+function normalizeSegments(raw: JsonObject, input: ScriptGenerationInputV3): GroundedScriptSegment[] {
   const allowedSellingPoints = new Set(input.selectedSellingPoints.map((point) => point.title));
   const allowedVisualRefs = new Set<string>(input.visuals.map((_, index) => visualRefForIndex(index)));
   const rawSegments = Array.isArray(raw.segments) ? raw.segments : [];
   const usedIds = new Set<string>();
-  const segments: ScriptSegmentV3[] = [];
+  const segments: GroundedScriptSegment[] = [];
   rawSegments.forEach((value, index) => {
     const source = object(value);
     const narration = string(source.narration);
@@ -210,12 +295,15 @@ function normalizeSegments(raw: JsonObject, input: ScriptGenerationInputV3): Scr
       throw new Error('segment_visual_refs_invalid');
     }
     segments.push({
-      id,
-      narration,
-      subtitle: normalizeAutomaticSubtitleText(narration),
-      sellingPointRefs,
-      visualIntent,
-      visualKeywords,
+      segment: {
+        id,
+        narration,
+        subtitle: normalizeAutomaticSubtitleText(narration),
+        sellingPointRefs,
+        visualIntent,
+        visualKeywords,
+      },
+      visualRefs,
     });
   });
   return segments;
@@ -246,8 +334,9 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
 } {
   const raw = object(rawValue);
   assertMaterialFeasible(raw, input);
-  const segments = normalizeSegments(raw, input);
-  if (segments.length === 0) throw new Error('segments_required');
+  const groundedSegments = normalizeSegments(raw, input);
+  if (groundedSegments.length === 0) throw new Error('segments_required');
+  const segments = groundedSegments.map(({ segment }) => segment);
   const title = string(raw.title) || `${input.productName || input.projectName || '产品'}口播脚本`;
   const fullScript = segments.map((segment) => segment.narration).join('\n');
   const fullSubtitle = segments.map((segment) => segment.subtitle).join('\n');
@@ -262,7 +351,7 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
     script: {
       version: 3,
       title,
-      coverTitleParts: normalizeTitleParts(raw, title, input.selectedSellingPoints),
+      coverTitleParts: normalizeTitleParts(raw, input, groundedSegments),
       platform: input.platform,
       tone: input.tone,
       templateId: input.templateId,
@@ -321,6 +410,19 @@ const SCRIPT_OUTPUT_CONTRACT = {
     unsupportedNarrativeBeats: 'string[]；必须从 template.narrativeStructure 中原样复制所有无法由图片承接的阶段；可行时返回空数组',
     reason: 'string；说明图片为什么足够或不足',
   },
+  coverTitleParts: {
+    primary: '4-12 字；结构必须是“可见气质/材质/核心特征 + 具体产品品类”，例如“温润黑胡桃木床”“松弛感真皮沙发”“轻盈岩板餐桌”',
+    secondary: '4-10 字；表达场景向往、理想状态或购买理由，例如“理想卧室必备”“客厅氛围担当”“小户型优雅之选”',
+    productCategoryTerm: `1-6 字；从附图识别出的具体产品品类，且必须是 primary 的结尾，例如“床”“沙发”“餐桌”；禁止以下泛称：${GENERIC_PRODUCT_CATEGORY_TERM_VALUES.join('、')}`,
+    primaryStyleModifier: `只能从以下词中原样选择一个，可为空：${Array.from(COVER_TITLE_STYLE_MODIFIERS).join('、')}`,
+    primaryEvidenceTerm: '2-6 字；必须原样出现在 primary 中，并能在 selectedSellingPoints 至少一个 title 中找到，例如“黑胡桃木”“软弹”“岩板”',
+    secondaryRole: `只能从以下角色中选择：${COVER_TITLE_SECONDARY_ROLE_VALUES.join('、')}`,
+    secondaryQualifier: `只能从以下词中原样选择一个，可为空：${Array.from(COVER_TITLE_SECONDARY_QUALIFIERS).join('、')}`,
+    secondarySceneTerm: '2-5 字；必须是附图中真实可见的具体场景词，并原样出现在至少一段 visualKeywords 中，例如“卧室”“客厅”“小户型”',
+    secondaryValuePhrase: `只能从以下短语中原样选择一个：${Array.from(COVER_TITLE_SECONDARY_VALUE_PHRASES).join('、')}`,
+    visualRefs: 'string[]；标题依据的附图，只允许 visualMaterials 中的 visualRef',
+    sellingPointRefs: 'string[]；标题依据的已选卖点，只允许 selectedSellingPoints 中的完整 title',
+  },
   segments: [{
     narration: 'string',
     sellingPointRefs: 'string[]',
@@ -334,6 +436,11 @@ function scriptRequirements(rewrite = false): string[] {
   return [
     ...SCRIPT_TEMPLATE_REQUIREMENTS,
     ...SCRIPT_VISUAL_REQUIREMENTS,
+    '封面标题必须是两段式：primary 使用“可见气质/材质/核心特征 + 具体产品品类”，secondary 使用“场景向往/理想状态/购买理由”；两句都必须独立完整且互相补充',
+    `禁止使用以下无具体信息的万能标题：${GENERIC_COVER_TITLE_PHRASES.join('、')}`,
+    'primary 必须严格等于 primaryStyleModifier + primaryEvidenceTerm + productCategoryTerm；secondary 必须严格等于 secondaryQualifier + secondarySceneTerm + secondaryValuePhrase',
+    'primary 和 secondary 的各组成字段不得互相包含或重复，避免“软弹沙发沙发”“安心客厅安心之选”这类病句',
+    'coverTitleParts.visualRefs 和 sellingPointRefs 必须证明标题能由真实附图与已选卖点共同承接；productCategoryTerm 和 secondarySceneTerm 所在段落的 visualRefs 必须与标题 visualRefs 至少命中同一张图',
     '只生成带自然标点的口播，不选择或绑定具体图片、shotId 或素材顺序；visualRefs 仅用于证明内容有输入图片承接',
     '返回独立主标题和副标题，正文只能使用已选卖点中的事实',
     '每段返回 narration、sellingPointRefs、visualIntent、visualKeywords、visualRefs',
@@ -472,7 +579,7 @@ export async function generateScriptV3(
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const raw = await dependencies.completeJson({
-      systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，不能承接时明确返回素材不匹配，禁止把不同模板写成同一种通用卖点罗列。',
+      systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，并遵循两段式封面标题结构；不能承接时明确返回素材不匹配。禁止把不同模板写成同一种通用卖点罗列，也禁止返回截断句或万能标题。',
       userPrompt: prompt,
       temperature: attempt === 1 ? 0.7 : 0.4,
       images,
