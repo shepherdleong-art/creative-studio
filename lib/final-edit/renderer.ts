@@ -13,7 +13,7 @@ import type { ExportIdentity } from './types.ts';
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
   variantRevision: number;
-  group: { narrationDurationUs: number; subtitleCues: SubtitleCue[] };
+  group: { narrationDurationUs: number; narrationPlaybackRate?: number; subtitleCues: SubtitleCue[] };
   variant: FinalEditVariantView;
   sources: Array<{ videoJobId: string; relativePath: string; fingerprint: string; externalScope?: { projectId: string; shotSetId: string } }>;
   coverRelativePath: string;
@@ -59,6 +59,9 @@ export async function renderFinalEditSnapshot(input: {
   onProgress?: (progress: number) => void;
 }) {
   const { snapshot, storageRoot } = input;
+  const narrationPlaybackRate = Number.isFinite(snapshot.group.narrationPlaybackRate)
+    ? Math.max(0.5, Math.min(2, Number(snapshot.group.narrationPlaybackRate)))
+    : 1;
   const preset = snapshot.variant.outputPreset;
   const output = OUTPUT_PRESETS[preset];
   const jobRelativeDir = path.join('final-edits', 'jobs', input.jobId);
@@ -124,14 +127,15 @@ export async function renderFinalEditSnapshot(input: {
   let currentVideo = 'base';
   snapshot.group.subtitleCues.forEach((cue, index) => {
     const next = `subtitle${index}`;
-    const start = (FINAL_EDIT_INTRO_DURATION_US + cue.startUs) / 1_000_000;
-    const end = (FINAL_EDIT_INTRO_DURATION_US + cue.endUs) / 1_000_000;
+    const start = (FINAL_EDIT_INTRO_DURATION_US + cue.startUs / narrationPlaybackRate) / 1_000_000;
+    const end = (FINAL_EDIT_INTRO_DURATION_US + cue.endUs / narrationPlaybackRate) / 1_000_000;
     filters.push(`[${currentVideo}][${subtitleStartInput + index}:v]overlay=0:0:enable='between(t,${start.toFixed(6)},${end.toFixed(6)})'[${next}]`);
     currentVideo = next;
   });
   const totalSec = (FINAL_EDIT_INTRO_DURATION_US + snapshot.group.narrationDurationUs) / 1_000_000;
   const bodySec = snapshot.group.narrationDurationUs / 1_000_000;
-  filters.push(`[${narrationInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
+  const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;
+  filters.push(`[${narrationInput}:a]${narrationTempo}aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
   if (snapshot.bgm && bgmInput != null) {
     const fadeInDuration = Math.min(Math.max(0, snapshot.bgm.fadeInSec), bodySec);
     const fadeOutDuration = Math.min(Math.max(0, snapshot.bgm.fadeOutSec), bodySec);

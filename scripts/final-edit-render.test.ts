@@ -29,7 +29,7 @@ const bgmFingerprint = crypto.createHash('sha256').update(fs.readFileSync(bgm)).
 const snapshot: FinalEditRenderSnapshot = {
   groupRevision: 1,
   variantRevision: 0,
-  group: { narrationDurationUs: 2_000_000, subtitleCues: [{ id: 'cue-1', segmentId: 'seg-1', text: '测试字幕', startUs: 0, endUs: 2_000_000, textSource: 'script', timingSource: 'aligned' }] },
+  group: { narrationDurationUs: 2_000_000, narrationPlaybackRate: 1, subtitleCues: [{ id: 'cue-1', segmentId: 'seg-1', text: '测试字幕', startUs: 0, endUs: 2_000_000, textSource: 'script', timingSource: 'aligned' }] },
   variant: {
     id: 'variant-1', indexNum: 1, outputPreset: '3x4', revision: 0, lastRenderedRevision: null, renderStatus: null, maxOverlap: 0, issues: [],
     timeline: { fps: 24, introFrames: 20, bodyFrames: 48, clips: [{ id: 'clip-1', videoJobId: 'video-1', sourceFingerprint: fingerprint, sourceInFrame: 0, sourceOutFrame: 48, timelineInFrame: 0, timelineOutFrame: 48, boundSegmentId: 'seg-1', framing: { scale: 1.15, offsetX: 0.25, offsetY: -0.25 }, manualUseOverride: false }] },
@@ -69,6 +69,27 @@ assert.ok(Math.abs(await probeDurationSec(path.join(storage, result.videoRelativ
 const metadata = await sharp(path.join(storage, result.coverRelativePath)).metadata();
 assert.equal(metadata.width, 1080);
 assert.equal(metadata.height, 1440);
+
+const fastResult = await renderFinalEditSnapshot({
+  jobId: 'job-fast-narration',
+  storageRoot: storage,
+  snapshot: { ...snapshot, group: { ...snapshot.group, narrationPlaybackRate: 2 }, bgm: null },
+});
+const fastPcm = path.join(root, 'fast-narration.pcm');
+await runFfmpeg(['-i', path.join(storage, fastResult.videoRelativePath), '-map', '0:a:0', '-f', 's16le', '-ac', '1', '-ar', '8000', '-y', fastPcm]);
+const pcmBytes = fs.readFileSync(fastPcm);
+const samples = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, Math.floor(pcmBytes.byteLength / 2));
+const rms = (startSec: number, endSec: number) => {
+  const start = Math.floor(startSec * 8000);
+  const end = Math.min(samples.length, Math.floor(endSec * 8000));
+  let sum = 0;
+  for (let index = start; index < end; index += 1) sum += samples[index] ** 2;
+  return Math.sqrt(sum / Math.max(1, end - start));
+};
+const earlyNarrationRms = rms(1.1, 1.5);
+const lateNarrationRms = rms(2.2, 2.6);
+assert.ok(earlyNarrationRms > 500, '2.0x 成片的前半段必须保留可听口播');
+assert.ok(lateNarrationRms < earlyNarrationRms * 0.2, '2.0x 成片口播必须在约一半时间后结束，不能只改变编辑器显示');
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log('final-edit real render test passed');

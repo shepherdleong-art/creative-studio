@@ -42,7 +42,6 @@ type LayoutSide = 'rep' | 'rgt';
 
 interface VisionProviderView { id: string; configured: boolean; supportsVision?: boolean }
 interface MixcutDraftRef { id: string; shotSetId: string; revision: number }
-interface StartCreationOptions { sourceGroup?: FinalEditGroupView; speedOverride?: number }
 
 const MANUAL_SCRIPT_ID = '__manual__';
 
@@ -626,23 +625,15 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     } finally { setPreviewingVoice(false); }
   };
 
-  const startCreation = async (options: StartCreationOptions = {}) => {
-    const sourceGroup = options.sourceGroup;
-    const requestShotSetId = sourceGroup?.shotSetId ?? activeShotSetId;
-    const historicalProvider = sourceGroup
-      ? ttsProviders.find((provider) => provider.id === sourceGroup.script.narrationConfig.providerId && provider.configured)
-      : null;
-    const requestProviderId = historicalProvider?.id ?? ttsProviderId;
-    const requestVoice = historicalProvider
-      ? historicalProvider.voices.some((item) => item.id === sourceGroup?.script.narrationConfig.voice)
-        ? sourceGroup!.script.narrationConfig.voice
-        : historicalProvider.voices[0]?.id ?? voice
-      : voice;
-    const requestSpeed = options.speedOverride ?? sourceGroup?.script.narrationConfig.speed ?? speed;
-    const requestScriptDraftId = sourceGroup?.script.sourceDraftId ?? (scriptEditor.activeDraftId === MANUAL_SCRIPT_ID ? '' : scriptEditor.activeDraftId);
-    const requestNarrationText = sourceGroup?.script.editedNarrationText ?? scriptEditor.editedNarrationText;
-    const requestMaterialKeys = sourceGroup?.script.selectedMaterialKeys ?? selectedIds;
-    const requestOutputPreset = sourceGroup?.variants[0]?.outputPreset ?? outputPreset;
+  const startCreation = async () => {
+    const requestShotSetId = activeShotSetId;
+    const requestProviderId = ttsProviderId;
+    const requestVoice = voice;
+    const requestSpeed = speed;
+    const requestScriptDraftId = scriptEditor.activeDraftId === MANUAL_SCRIPT_ID ? '' : scriptEditor.activeDraftId;
+    const requestNarrationText = scriptEditor.editedNarrationText;
+    const requestMaterialKeys = selectedIds;
+    const requestOutputPreset = outputPreset;
     if (!requestShotSetId || !requestProviderId || !requestVoice || submittingRef.current) return;
     startRequestRef.current?.controller.abort();
     const controller = new AbortController();
@@ -651,23 +642,9 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     startRequestRef.current = { sequence, shotSetId: requestShotSetId, controller };
     submittingRef.current = true;
     setSubmitting(true);
-    if (sourceGroup) {
-      const sourceEditor = createScriptEditorState(
-        { id: sourceGroup.script.sourceDraftId ?? MANUAL_SCRIPT_ID, narrationText: sourceGroup.script.importedNarrationText },
-        { editedNarrationText: sourceGroup.script.editedNarrationText },
-      );
-      scriptEditorByShotSetRef.current[requestShotSetId] = sourceEditor;
-      setScriptEditor(sourceEditor);
-      setSelectionByShotSet({ [requestShotSetId]: [...requestMaterialKeys] });
-      setTtsProviderId(requestProviderId);
-      setVoice(requestVoice);
-      setSpeed(requestSpeed);
-      setOutputPreset(requestOutputPreset);
-      setActiveStep(1);
-      setMessage(`正在以 ${requestSpeed.toFixed(1)}x 口播语速生成独立新版本`);
-    } else setMessage('');
+    setMessage('');
     try {
-      if (!sourceGroup && persistVersionRef.current > lastSavedVersionRef.current) await persistCurrentState(persistVersionRef.current);
+      if (persistVersionRef.current > lastSavedVersionRef.current) await persistCurrentState(persistVersionRef.current);
       const jobRef = await readJson<{ id: string; groupId: string; status: string }>(await fetch(`/api/projects/${projectId}/final-edit/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -683,7 +660,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           voice: requestVoice,
           speed: requestSpeed,
           analysisProviderId: visionProviderId,
-          draftGroupId: sourceGroup ? undefined : draftGroupRef.current?.shotSetId === requestShotSetId ? draftGroupRef.current.id : undefined,
+          draftGroupId: draftGroupRef.current?.shotSetId === requestShotSetId ? draftGroupRef.current.id : undefined,
         }),
       }));
       const job = await readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`, { signal: controller.signal }));
@@ -858,7 +835,6 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
               active
               onGroupChange={setPreparedGroup}
               onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }}
-              onRegenerateWithSpeed={(nextSpeed, group) => void startCreation({ sourceGroup: group, speedOverride: nextSpeed })}
               onRepCollapse={setRepOff}
               onRgtCollapse={setRgtOff}
               onResizeStart={beginResize}

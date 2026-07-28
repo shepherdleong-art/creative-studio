@@ -7,6 +7,7 @@ const materialStep = fs.readFileSync('components/mixcut/MaterialStep.tsx', 'utf8
 const creationStep = fs.readFileSync('components/mixcut/CreationStep.tsx', 'utf8');
 const previewStep = fs.readFileSync('components/mixcut/PreviewStep.tsx', 'utf8');
 const timeline = fs.readFileSync('components/mixcut/MixcutTimeline.tsx', 'utf8');
+const finalPreview = fs.readFileSync('components/final-edit/FinalEditPreview.tsx', 'utf8');
 const exportStep = fs.readFileSync('components/mixcut/ExportStep.tsx', 'utf8');
 const styles = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
 const page = fs.readFileSync('app/projects/[id]/page.tsx', 'utf8');
@@ -97,7 +98,8 @@ assert.match(previewStep, /\/api\/final-edit-groups\/\$\{groupId\}/, '冲突或�
 assert.match(previewStep, /<FinalEditPreview/, '正式第三步必须复用双 video/Web Audio 预览器');
 assert.match(previewStep, /warningIssues/, '预览必须持续展示服务端返回的时长 override warning');
 assert.match(previewStep, /<MixcutTimeline/, '正式第三步必须挂载可操作 Mixcut 时间轴');
-assert.match(previewStep, /onRegenerateWithSpeed/, '预览必须把口播轨变速动作提升为新版本生成请求');
+assert.match(previewStep, /type: 'set_narration_playback_rate'/, '口播轨变速必须保存到当前成片组，不能提升为新版本生成请求');
+assert.doesNotMatch(previewStep, /onRegenerateWithSpeed/, '口播轨直接变速不得保留生成新版本回调');
 assert.match(previewStep, /<StyleEditor/, '正式第三步必须提供字体、字号、颜色、描边和位置等全局字幕样式');
 assert.match(timeline, /const PX_PER_SECOND = 60/, 'V2 时间轴必须使用冻结的 60 px/s 缩放并通过滚动容纳长内容');
 assert.match(timeline, /overflow|timelineScroll/, '时间轴必须提供真实滚动容器');
@@ -106,7 +108,10 @@ assert.match(timeline, /视频[\s\S]*字幕[\s\S]*口播[\s\S]*BGM/, '正式时�
 assert.match(timeline, /aria-label=\{contextMenu\.kind === 'video' \? '视频片段操作' : '口播音频变速'\}/, '口播音频轨必须提供独立右键变速菜单');
 assert.match(timeline, /type="range"[\s\S]{0,160}aria-label="音频倍速拉条"/, '口播变速必须使用 0.5x～2.0x 拉条，而不是平铺倍速按钮');
 assert.match(timeline, /type="number"[\s\S]{0,120}aria-label="音频倍速数值"/, '倍速拉条必须配套可精确输入的同步数值框');
-assert.match(timeline, /onNarrationSpeedChange\(narrationSpeedDraft\)/, '口播变速必须在确认后生成独立版本，不能伪装成只影响播放器的速度控制');
+assert.match(timeline, /onNarrationPlaybackRatePreview\(value\)/, '拖动倍速拉条必须立即更新当前预览音轨');
+assert.match(timeline, /onNarrationPlaybackRateCommit/, '松开倍速拉条必须自动保存当前音轨倍速');
+assert.doesNotMatch(timeline, /生成.*新版本/, '口播音轨直接变速不得显示生成新版本操作');
+assert.match(finalPreview, /narration\.playbackRate = narrationPlaybackRate/, '成片预览必须把保存的倍速应用到真实 audio 元素');
 assert.match(styles, /\.tlLabels\s*{[^}]*flex-shrink:\s*0/s, '轨道标签必须位于横向滚动容器外并保持可见');
 assert.match(styles, /\.tlScroll\s*{[^}]*overflow-x:\s*auto/s, '正式时间轴必须允许横向滚动');
 assert.deepEqual([...new Set([...panel.matchAll(/localStorage\.(?:getItem|setItem)\('([^']+)'/g)].map((match) => match[1]))], ['mixcut-layout-v2'], '浏览器 storage 只能保存无业务含义的布局偏好');

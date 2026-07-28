@@ -519,6 +519,19 @@ assert.throws(
   (error: unknown) => error instanceof FinalEditError && error.code === 'draft_not_editable' && error.status === 409,
   '已有音频/字幕/variant 的非 editing group 不得再改脚本状态',
 );
+const playbackAdjustedGroup = workspace.apply({
+  scope: 'group', groupId: readyManualGroup.id, expectedRevision: readyManualGroup.revision,
+  type: 'set_narration_playback_rate', playbackRate: 1.3,
+}).view as typeof readyManualGroup;
+assert.equal(playbackAdjustedGroup.id, readyManualGroup.id, '直接调速必须更新当前成片组，不能创建新版本');
+assert.equal(playbackAdjustedGroup.script.narrationConfig.speed, 1, '生成阶段的 TTS 语速必须保持不变');
+assert.equal(playbackAdjustedGroup.script.narrationConfig.playbackRate, 1.3, '当前音轨播放倍速必须持久化');
+assert.equal(playbackAdjustedGroup.variants.length, readyManualGroup.variants.length, '直接调速不得新增或删除成片草稿');
+assert.throws(
+  () => workspace.apply({ scope: 'group', groupId: readyManualGroup.id, expectedRevision: playbackAdjustedGroup.revision, type: 'set_narration_playback_rate', playbackRate: 2.1 }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'invalid_tts_speed',
+  '音轨播放倍速仍必须限制在 0.5x～2.0x',
+);
 const beforeScriptCommand = workspace.load(editingDraft.id);
 const scriptCommandResult = workspace.apply({ scope: 'group', groupId: editingDraft.id, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '手工文案已修改。', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1.1 }).view as typeof beforeScriptCommand;
 assert.equal(scriptCommandResult.script.editedNarrationText, '手工文案已修改。');

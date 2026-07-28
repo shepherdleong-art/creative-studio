@@ -65,11 +65,15 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const lastStartedClipRef = useRef('');
   const emittedPlayheadsRef = useRef<number[]>([]);
   const lastSeekRequestIdRef = useRef<string | number | undefined>(seekRequestId);
+  const playheadSecRef = useRef(playheadSec);
   const [playing, setPlaying] = useState(false);
   const [showSafeArea, setShowSafeArea] = useState(false);
 
+  useEffect(() => { playheadSecRef.current = playheadSec; }, [playheadSec]);
+
   const bodyDurationSec = variant.timeline.bodyFrames / FPS;
   const totalSec = INTRO_SEC + bodyDurationSec;
+  const narrationPlaybackRate = group.script.narrationConfig.playbackRate;
   const bodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
   const sortedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
   const activeClipIndex = playheadSec >= INTRO_SEC ? sortedClips.findIndex((clip) => bodyFrame >= clip.timelineInFrame && bodyFrame < clip.timelineOutFrame) : -1;
@@ -83,7 +87,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const slotASourceInFrame = slotClips[0]?.sourceInFrame ?? -1;
   const slotBClipId = slotClips[1]?.id || '';
   const slotBSourceInFrame = slotClips[1]?.sourceInFrame ?? -1;
-  const bodyTimeUs = Math.max(0, (playheadSec - INTRO_SEC) * 1_000_000);
+  const bodyTimeUs = Math.max(0, (playheadSec - INTRO_SEC) * 1_000_000 * narrationPlaybackRate);
   const activeCue = playheadSec >= INTRO_SEC ? group.subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs) || null : null;
   const showSelectedMaterial = !playing && Boolean(selectedAsset);
   const activeFraming = activeClip?.framing || { scale: 1, offsetX: 0, offsetY: 0 };
@@ -137,13 +141,23 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
 
   const synchronizePausedAudio = useCallback((timeSec: number) => {
     const bodyOffset = Math.max(0, Math.min(bodyDurationSec, timeSec - INTRO_SEC));
-    seekMedia(narrationRef.current, bodyOffset);
+    seekMedia(narrationRef.current, bodyOffset * narrationPlaybackRate);
     const bgm = bgmRef.current;
     if (bgm) {
       const loopDuration = Number.isFinite(bgm.duration) && bgm.duration > 0 ? bgm.duration : bodyDurationSec;
       seekMedia(bgm, bodyOffset % Math.max(0.1, loopDuration));
     }
-  }, [bodyDurationSec]);
+  }, [bodyDurationSec, narrationPlaybackRate]);
+
+  useEffect(() => {
+    const narration = narrationRef.current;
+    if (!narration) return;
+    narration.defaultPlaybackRate = narrationPlaybackRate;
+    narration.playbackRate = narrationPlaybackRate;
+    narration.preservesPitch = true;
+    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, playheadSecRef.current - INTRO_SEC));
+    seekMedia(narration, bodyOffset * narrationPlaybackRate);
+  }, [bodyDurationSec, narrationPlaybackRate]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -309,7 +323,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       const bgm = bgmRef.current;
       if (narration) {
         narration.volume = 1;
-        seekMedia(narration, bodyOffset);
+        seekMedia(narration, bodyOffset * narrationPlaybackRate);
         void narration.play().catch(() => undefined);
       }
       if (bgm && variant.bgm.trackId) {

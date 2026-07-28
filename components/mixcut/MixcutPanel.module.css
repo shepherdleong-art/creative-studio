@@ -363,11 +363,6 @@
 .timelineSpeedRow input[type='number'] { box-sizing: border-box; width: 76px; height: 38px; flex-shrink: 0; border: .5px solid rgba(0, 0, 0, .12); border-radius: 10px; outline: none; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .08); color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; padding: 0 10px 0 12px; }
 .timelineSpeedRow input[type='number']:focus { border-color: var(--blue); box-shadow: 0 0 0 3.5px rgba(0, 113, 227, .15); }
 .timelineSpeedScale { display: flex; justify-content: space-between; margin-top: 8px; margin-right: 88px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
-.timelineSpeedActions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 1px 1px; }
-.timelineContextMenu .timelineSpeedActions button { min-width: 64px; padding: 0 12px; text-align: center; }
-.timelineContextMenu .timelineSpeedConfirm { background: var(--blue); color: #fff; }
-.timelineContextMenu .timelineSpeedConfirm:hover { background: var(--blue-hover); }
-.timelineContextMenu .timelineSpeedConfirm:disabled { background: var(--seg); color: var(--faint); }
 
 /* Trim 截取条 */
 .trim { flex-shrink: 0; margin-bottom: 10px; }

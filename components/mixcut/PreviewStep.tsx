@@ -27,12 +27,11 @@ type GroupCommandRequest = GroupCommandInput | ((group: FinalEditGroupView) => G
 
 // V2 第 3 步（规格 §6）：直接渲染网格子节点——素材替换列 / Resizer / 主区（工具行+大纸）/ Resizer / 右栏三卡。
 // 列宽与折叠由 MixcutPanel 通过 CSS 变量与 body class 驱动。
-export function PreviewStep({ group, active, onGroupChange, onExport, onRegenerateWithSpeed, onRepCollapse, onRgtCollapse, onResizeStart }: {
+export function PreviewStep({ group, active, onGroupChange, onExport, onRepCollapse, onRgtCollapse, onResizeStart }: {
   group: FinalEditGroupView;
   active: boolean;
   onGroupChange: (group: FinalEditGroupView) => void;
   onExport: (variantId: string) => void;
-  onRegenerateWithSpeed: (speed: number, group: FinalEditGroupView) => void;
   onRepCollapse: (collapsed: boolean) => void;
   onRgtCollapse: (collapsed: boolean) => void;
   onResizeStart: (side: 'rep' | 'rgt') => (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -148,6 +147,17 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
     setPlayheadSec(seconds);
     setSeekRequestId((value) => value + 1);
   };
+
+  const previewNarrationPlaybackRate = (playbackRate: number) => {
+    const current = groupRef.current;
+    publishGroup({
+      ...current,
+      script: {
+        ...current.script,
+        narrationConfig: { ...current.script.narrationConfig, playbackRate },
+      },
+    });
+  };
   const closeCover = useCallback(() => setCoverOpen(false), []);
 
   // 素材替换：把选中片段的素材换成另一个（规格 §6.5），保留片段时长、从 0 帧起截
@@ -191,7 +201,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
 
   const totalSec = variant ? (variant.timeline.bodyFrames / FPS) + (variant.cover ? 20 / FPS : 0) : 0;
   const bodySec = variant ? variant.timeline.bodyFrames / FPS : 0;
-  const narrationSec = group.narrationDurationUs / 1_000_000;
+  const narrationSec = group.narrationDurationUs / 1_000_000 / group.script.narrationConfig.playbackRate;
   const narrationMatch = Math.abs(narrationSec - bodySec) < 1;
   const coverSourceIndex = variant ? orderedClips.findIndex((clip) => clip.videoJobId === variant.cover.sourceKey) : -1;
   // 匹配诊断必须在第 3 步第一眼可见：blocking 解释真实缺口，warning
@@ -379,8 +389,10 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRegenera
             onGroupCommand={applyGroup}
             onTrimClip={openTrim}
             onEditCueText={(cueId, text) => void applyGroup({ type: 'set_subtitle_cue_text', cueId, text })}
-            narrationSpeed={group.script.narrationConfig.speed}
-            onNarrationSpeedChange={(speed) => onRegenerateWithSpeed(speed, group)}
+            narrationPlaybackRate={group.script.narrationConfig.playbackRate}
+            narrationDurationSec={narrationSec}
+            onNarrationPlaybackRatePreview={previewNarrationPlaybackRate}
+            onNarrationPlaybackRateCommit={(playbackRate) => void applyGroup({ type: 'set_narration_playback_rate', playbackRate })}
           />
         </div>
       </main>

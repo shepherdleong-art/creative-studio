@@ -262,6 +262,7 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'reset_text_style'; preset: OutputPresetId; target: 'coverPrimary' | 'coverSecondary' | 'subtitle' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_title_preset'; presetId: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_cover_editor'; variantId: string; expectedVariantRevision: number; draft: CoverEditorDraft }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_narration_playback_rate'; playbackRate: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_mixcut_script_state'; scriptDraftId?: string; editedNarrationText: string; selectedMaterialKeys: string[]; providerId?: string; analysisProviderId?: string; voice: string; speed: number };
 
 export interface EnqueueRenderInput {
@@ -919,8 +920,14 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         syncState: group.scriptSyncState === 'modified' ? 'modified' : 'synced',
         sourceScriptUpdatedAt: group.sourceScriptUpdatedAt == null ? null : String(group.sourceScriptUpdatedAt),
         narrationConfig: (() => {
-          const config = parseJson<{ providerId?: unknown; voice?: unknown; speed?: unknown }>(String(group.narrationConfigJson), {});
-          return { providerId: String(config.providerId || ''), voice: String(config.voice || ''), speed: Number(config.speed || 1) };
+          const config = parseJson<{ providerId?: unknown; voice?: unknown; speed?: unknown; playbackRate?: unknown }>(String(group.narrationConfigJson), {});
+          const playbackRate = Number(config.playbackRate ?? 1);
+          return {
+            providerId: String(config.providerId || ''),
+            voice: String(config.voice || ''),
+            speed: Number(config.speed || 1),
+            playbackRate: Number.isFinite(playbackRate) && playbackRate >= 0.5 && playbackRate <= 2 ? playbackRate : 1,
+          };
         })(),
         selectedMaterialKeys: selectedKeys,
       },
@@ -1849,7 +1856,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const coverTitle = parseJson<{ primary: { id: 'primary'; text: string; textSource: 'script' | 'manual' }; secondary: { id: 'secondary'; text: string; textSource: 'script' | 'manual' } }>(String(row.coverTitleJson), { primary: { id: 'primary', text: '', textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } });
     const textStyles = normalizeTextStyles(parseJson<unknown>(String(row.textStylesJson), buildStyles()));
     let mixcutScriptSnapshot = parseJson<ScriptSnapshot>(String(row.scriptSnapshotJson), {} as ScriptSnapshot);
-    let narrationConfig = parseJson<{ providerId: string; voice: string; speed: number }>(String(row.narrationConfigJson), { providerId: '', voice: '', speed: 1 });
+    let narrationConfig = parseJson<{ providerId: string; voice: string; speed: number; playbackRate?: number }>(String(row.narrationConfigJson), { providerId: '', voice: '', speed: 1, playbackRate: 1 });
     let selectedMaterialKeys = parseJson<unknown[]>(String(row.selectedMaterialKeysJson || '[]'), []).map(String);
     let analysisProviderId = String(row.analysisProviderId || '');
     const validateCueRange = (cueId: string | null, startUs: number, endUs: number) => {
@@ -1952,14 +1959,20 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         : buildMixcutEditingScriptSnapshot({ sourceDraftId: mixcutScriptSnapshot.sourceDraftId, sourceScriptUpdatedAt: mixcutScriptSnapshot.sourceScriptUpdatedAt, sourceScript, shotSetId: String(row.shotSetId), editedNarrationText });
       const providerId = String(command.providerId ?? narrationConfig.providerId).trim();
       if (!providerId || !db.prepare(`SELECT 1 FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId)) throw new FinalEditError('tts_provider_unavailable', '口播配音供应商不存在或未启用');
-      narrationConfig = { providerId, voice: command.voice.trim(), speed: command.speed };
+      narrationConfig = { providerId, voice: command.voice.trim(), speed: command.speed, playbackRate: narrationConfig.playbackRate ?? 1 };
       analysisProviderId = String(command.analysisProviderId ?? analysisProviderId);
+    }
+    if (command.type === 'set_narration_playback_rate') {
+      validateTtsSpeed(command.playbackRate);
+      narrationConfig = { ...narrationConfig, playbackRate: command.playbackRate };
     }
     const revision = Number(row.revision) + 1;
     db.transaction(() => {
       db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, ?, ?)`).run(command.groupId, revision, JSON.stringify({ cues, coverTitle, textStyles, scriptSnapshot: mixcutScriptSnapshot, narrationConfig, selectedMaterialKeys }), JSON.stringify(command), now());
       if (command.type === 'set_mixcut_script_state') {
         db.prepare(`UPDATE final_edit_groups SET scriptDraftId=?, analysisProviderId=?, subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, scriptSnapshotJson=?, editedNarrationText=?, scriptSyncState=?, sourceScriptUpdatedAt=?, narrationConfigJson=?, selectedMaterialKeysJson=?, revision=?, updatedAt=? WHERE id=?`).run(mixcutScriptSnapshot.sourceDraftId || '', analysisProviderId, JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), JSON.stringify(mixcutScriptSnapshot), mixcutScriptSnapshot.editedNarrationText, mixcutScriptSnapshot.scriptSyncState, mixcutScriptSnapshot.sourceScriptUpdatedAt, JSON.stringify(narrationConfig), JSON.stringify(selectedMaterialKeys), revision, now(), command.groupId);
+      } else if (command.type === 'set_narration_playback_rate') {
+        db.prepare(`UPDATE final_edit_groups SET narrationConfigJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(narrationConfig), revision, now(), command.groupId);
       } else {
         db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), revision, now(), command.groupId);
       }
@@ -2036,7 +2049,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const id = uuidv4();
     const snapshot = {
       groupRevision: group.revision, variantRevision: variant.revision,
-      group: { coverTitle: group.coverTitle, subtitleCues: group.subtitleCues, narrationDurationUs: group.narrationDurationUs },
+      group: { coverTitle: group.coverTitle, subtitleCues: group.subtitleCues, narrationDurationUs: group.narrationDurationUs, narrationPlaybackRate: group.script.narrationConfig.playbackRate },
       // §10.5：快照必须记录渲染所用字体（标准字体名称/PostScript 名），保证可审计、可复现
       textStyles: group.textStyles[variant.outputPreset],
       variant, sources, coverRelativePath, narrationRelativePath: toRelative(groupRow.narrationAudioPath),

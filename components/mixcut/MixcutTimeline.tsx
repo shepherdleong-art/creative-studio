@@ -12,16 +12,16 @@ const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;
 const FRAME_US = Math.round(1_000_000 / FPS);
 const PX_PER_SECOND = 60; // V2 固定缩放（规格 §6.4），内容超宽靠横向滚动
 const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持一致
-const NARRATION_SPEED_MIN = 0.5;
-const NARRATION_SPEED_MAX = 2;
-const NARRATION_SPEED_STEP = 0.1;
+const NARRATION_PLAYBACK_RATE_MIN = 0.5;
+const NARRATION_PLAYBACK_RATE_MAX = 2;
+const NARRATION_PLAYBACK_RATE_STEP = 0.1;
 
-function normalizeNarrationSpeed(value: number): number {
-  const stepped = Math.round(value / NARRATION_SPEED_STEP) * NARRATION_SPEED_STEP;
-  return Number(Math.max(NARRATION_SPEED_MIN, Math.min(NARRATION_SPEED_MAX, stepped)).toFixed(1));
+function normalizeNarrationPlaybackRate(value: number): number {
+  const stepped = Math.round(value / NARRATION_PLAYBACK_RATE_STEP) * NARRATION_PLAYBACK_RATE_STEP;
+  return Number(Math.max(NARRATION_PLAYBACK_RATE_MIN, Math.min(NARRATION_PLAYBACK_RATE_MAX, stepped)).toFixed(1));
 }
 
-function formatNarrationSpeedInput(value: number): string {
+function formatNarrationPlaybackRateInput(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
@@ -68,8 +68,10 @@ export function MixcutTimeline({
   onGroupCommand,
   onTrimClip,
   onEditCueText,
-  narrationSpeed,
-  onNarrationSpeedChange,
+  narrationPlaybackRate,
+  narrationDurationSec,
+  onNarrationPlaybackRatePreview,
+  onNarrationPlaybackRateCommit,
 }: {
   variant: FinalEditVariantView;
   cues: SubtitleCue[];
@@ -85,14 +87,17 @@ export function MixcutTimeline({
   onGroupCommand: (command: GroupCommandInput) => Promise<boolean>;
   onTrimClip: (clip: TimelineClip) => void;
   onEditCueText: (cueId: string, text: string) => void;
-  narrationSpeed: number;
-  onNarrationSpeedChange: (speed: number) => void;
+  narrationPlaybackRate: number;
+  narrationDurationSec: number;
+  onNarrationPlaybackRatePreview: (playbackRate: number) => void;
+  onNarrationPlaybackRateCommit: (playbackRate: number) => void;
 }) {
   const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
   const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
-  const [narrationSpeedDraft, setNarrationSpeedDraft] = useState(narrationSpeed);
-  const [narrationSpeedInput, setNarrationSpeedInput] = useState(() => formatNarrationSpeedInput(narrationSpeed));
+  const [narrationPlaybackRateDraft, setNarrationPlaybackRateDraft] = useState(narrationPlaybackRate);
+  const [narrationPlaybackRateInput, setNarrationPlaybackRateInput] = useState(() => formatNarrationPlaybackRateInput(narrationPlaybackRate));
+  const narrationPlaybackRateDirtyRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodySec = variant.timeline.bodyFrames / FPS;
   const totalSec = (INTRO_FRAMES + variant.timeline.bodyFrames) / FPS;
@@ -223,8 +228,9 @@ export function MixcutTimeline({
               event.preventDefault();
               event.stopPropagation();
               if (disabled) return;
-              setNarrationSpeedDraft(narrationSpeed);
-              setNarrationSpeedInput(formatNarrationSpeedInput(narrationSpeed));
+              setNarrationPlaybackRateDraft(narrationPlaybackRate);
+              setNarrationPlaybackRateInput(formatNarrationPlaybackRateInput(narrationPlaybackRate));
+              narrationPlaybackRateDirtyRef.current = false;
               setContextMenu({
                 kind: 'narration',
                 x: Math.max(8, Math.min(event.clientX, window.innerWidth - 356)),
@@ -233,7 +239,7 @@ export function MixcutTimeline({
             }}
           >
             <Waveform tone="tts" seed={3} playedWidthPx={playheadPx} />
-            <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {narrationSpeed.toFixed(1)}x · {bodySec.toFixed(1)}s</span>
+            <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {narrationPlaybackRate.toFixed(1)}x · {narrationDurationSec.toFixed(1)}s</span>
           </div>
           <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
             <Waveform tone="bgm" seed={7} playedWidthPx={playheadPx} />
@@ -249,7 +255,13 @@ export function MixcutTimeline({
         </div>
       </div>
       {contextMenu && typeof document !== 'undefined' && createPortal(
-        <div className={styles.timelineContextLayer} onPointerDown={() => setContextMenu(null)}>
+        <div className={styles.timelineContextLayer} onPointerDown={() => {
+          if (contextMenu.kind === 'narration' && narrationPlaybackRateDirtyRef.current) {
+            narrationPlaybackRateDirtyRef.current = false;
+            onNarrationPlaybackRateCommit(narrationPlaybackRateDraft);
+          }
+          setContextMenu(null);
+        }}>
           <div
             role={contextMenu.kind === 'video' ? 'menu' : 'dialog'}
             aria-label={contextMenu.kind === 'video' ? '视频片段操作' : '口播音频变速'}
@@ -274,7 +286,7 @@ export function MixcutTimeline({
             ) : (
               <>
                 <div className={styles.timelineContextTitle}>调整音频倍速</div>
-                <div className={styles.timelineSpeedHint} id="mixcut-narration-speed-help">调整后生成独立新版本，当前版本会保留。</div>
+                <div className={styles.timelineSpeedHint} id="mixcut-narration-speed-help">拖动后立即作用于当前音轨，松手自动保存。</div>
                 <div className={styles.timelineSpeedControl}>
                   <label htmlFor="mixcut-narration-speed-range">倍速</label>
                   <div className={styles.timelineSpeedRow}>
@@ -283,51 +295,65 @@ export function MixcutTimeline({
                       type="range"
                       aria-label="音频倍速拉条"
                       aria-describedby="mixcut-narration-speed-help"
-                      min={NARRATION_SPEED_MIN}
-                      max={NARRATION_SPEED_MAX}
-                      step={NARRATION_SPEED_STEP}
-                      value={narrationSpeedDraft}
+                      min={NARRATION_PLAYBACK_RATE_MIN}
+                      max={NARRATION_PLAYBACK_RATE_MAX}
+                      step={NARRATION_PLAYBACK_RATE_STEP}
+                      value={narrationPlaybackRateDraft}
+                      disabled={disabled}
                       onChange={(event) => {
-                        const value = normalizeNarrationSpeed(Number(event.currentTarget.value));
-                        setNarrationSpeedDraft(value);
-                        setNarrationSpeedInput(formatNarrationSpeedInput(value));
+                        const value = normalizeNarrationPlaybackRate(Number(event.currentTarget.value));
+                        setNarrationPlaybackRateDraft(value);
+                        setNarrationPlaybackRateInput(formatNarrationPlaybackRateInput(value));
+                        narrationPlaybackRateDirtyRef.current = true;
+                        onNarrationPlaybackRatePreview(value);
+                      }}
+                      onPointerUp={(event) => {
+                        if (!narrationPlaybackRateDirtyRef.current) return;
+                        narrationPlaybackRateDirtyRef.current = false;
+                        onNarrationPlaybackRateCommit(normalizeNarrationPlaybackRate(Number(event.currentTarget.value)));
+                      }}
+                      onKeyUp={(event) => {
+                        if (!narrationPlaybackRateDirtyRef.current) return;
+                        narrationPlaybackRateDirtyRef.current = false;
+                        onNarrationPlaybackRateCommit(normalizeNarrationPlaybackRate(Number(event.currentTarget.value)));
                       }}
                     />
                     <input
                       type="number"
                       aria-label="音频倍速数值"
-                      min={NARRATION_SPEED_MIN}
-                      max={NARRATION_SPEED_MAX}
-                      step={NARRATION_SPEED_STEP}
-                      value={narrationSpeedInput}
+                      min={NARRATION_PLAYBACK_RATE_MIN}
+                      max={NARRATION_PLAYBACK_RATE_MAX}
+                      step={NARRATION_PLAYBACK_RATE_STEP}
+                      value={narrationPlaybackRateInput}
+                      disabled={disabled}
                       onChange={(event) => {
                         const rawValue = event.currentTarget.value;
                         if (rawValue.trim() === '') {
-                          setNarrationSpeedInput(rawValue);
+                          setNarrationPlaybackRateInput(rawValue);
                           return;
                         }
                         const value = Number(rawValue);
                         if (!Number.isFinite(value)) return;
-                        const normalizedValue = normalizeNarrationSpeed(value);
-                        setNarrationSpeedDraft(normalizedValue);
-                        setNarrationSpeedInput(formatNarrationSpeedInput(normalizedValue));
+                        const normalizedValue = normalizeNarrationPlaybackRate(value);
+                        setNarrationPlaybackRateDraft(normalizedValue);
+                        setNarrationPlaybackRateInput(formatNarrationPlaybackRateInput(normalizedValue));
+                        narrationPlaybackRateDirtyRef.current = true;
+                        onNarrationPlaybackRatePreview(normalizedValue);
                       }}
-                      onBlur={() => setNarrationSpeedInput(formatNarrationSpeedInput(narrationSpeedDraft))}
+                      onBlur={() => {
+                        setNarrationPlaybackRateInput(formatNarrationPlaybackRateInput(narrationPlaybackRateDraft));
+                        if (!narrationPlaybackRateDirtyRef.current) return;
+                        narrationPlaybackRateDirtyRef.current = false;
+                        onNarrationPlaybackRateCommit(narrationPlaybackRateDraft);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' || !narrationPlaybackRateDirtyRef.current) return;
+                        narrationPlaybackRateDirtyRef.current = false;
+                        onNarrationPlaybackRateCommit(narrationPlaybackRateDraft);
+                      }}
                     />
                   </div>
                   <div className={styles.timelineSpeedScale} aria-hidden="true"><span>0.5x</span><span>1.0x</span><span>1.5x</span><span>2.0x</span></div>
-                </div>
-                <div className={styles.timelineSpeedActions}>
-                  <button type="button" onClick={() => setContextMenu(null)}>取消</button>
-                  <button
-                    type="button"
-                    className={styles.timelineSpeedConfirm}
-                    disabled={disabled || Math.abs(narrationSpeedDraft - narrationSpeed) < 0.001}
-                    onClick={() => {
-                      setContextMenu(null);
-                      onNarrationSpeedChange(narrationSpeedDraft);
-                    }}
-                  >生成 {narrationSpeedDraft.toFixed(1)}x 新版本</button>
                 </div>
               </>
             )}

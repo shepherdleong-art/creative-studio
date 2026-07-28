@@ -46,7 +46,7 @@ function createFormalGroup() {
       editedNarrationText: '第一句。第二句。',
       syncState: 'synced',
       sourceScriptUpdatedAt: '2026-07-24T00:00:00.000Z',
-      narrationConfig: { providerId: 'tts-e2e', voice: 'voice-e2e', speed: 1 },
+      narrationConfig: { providerId: 'tts-e2e', voice: 'voice-e2e', speed: 1, playbackRate: 1 },
       selectedMaterialKeys: ['module4:video-a', 'module4:video-b'],
     },
     narrationDurationUs: 10_000_000,
@@ -395,7 +395,16 @@ try {
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'PATCH') {
         const body = request.postDataJSON();
         groupPatchBodies.push(body);
-        if (body.type === 'apply_cover_editor') {
+        if (body.type === 'set_narration_playback_rate') {
+          savedGroup = {
+            ...savedGroup,
+            revision: savedGroup.revision + 1,
+            script: {
+              ...savedGroup.script,
+              narrationConfig: { ...savedGroup.script.narrationConfig, playbackRate: body.playbackRate },
+            },
+          };
+        } else if (body.type === 'apply_cover_editor') {
           const currentVariant = savedGroup.variants.find((variant) => variant.id === body.variantId);
           assert.ok(currentVariant, 'cover command variant must exist');
           const sourceKey = body.draft.sourceKey;
@@ -1194,17 +1203,18 @@ try {
     assert.equal(await speedNumber.inputValue(), '1', '右侧数值框必须同步显示当前版本倍速');
     await speedSlider.fill('1.3');
     assert.equal(await speedNumber.inputValue(), '1.3', '拖动拉条必须同步更新右侧数值框');
+    await page.getByText(/锁定口播 · 1\.3x/).waitFor();
+    assert.equal(await page.locator('audio').first().evaluate((element) => element.playbackRate), 1.3, '拖动拉条必须立即改变当前预览音轨的播放倍速');
     await speedNumber.fill('1.4');
     assert.equal(await speedSlider.inputValue(), '1.4', '修改右侧数值框必须反向同步拉条');
     await speedNumber.fill('1.35');
     assert.equal(await speedNumber.inputValue(), '1.4', '非步进数值必须立即归一化，避免数值框与实际提交值不一致');
     assert.equal(await speedSlider.inputValue(), '1.4', '非步进数值归一化后必须与拉条保持一致');
     await speedNumber.fill('1.3');
-    assert.equal(startPostBodies.length, 2, '拖动倍速拉条时不得立即创建新版本');
-    await page.getByRole('button', { name: '生成 1.3x 新版本', exact: true }).click();
-    await expectEventually(() => startPostBodies.length === 3, '口播轨右键变速必须创建新的 prepare 任务');
-    assert.equal(startPostBodies[2].speed, 1.3, '右键变速必须把所选倍速写入新版本任务');
-    assert.deepEqual(startPostBodies[2].selectedMaterialKeys, savedGroup.script.selectedMaterialKeys, '右键变速必须沿用当前会话的素材快照');
+    await speedSlider.dispatchEvent('pointerup');
+    await expectEventually(() => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.3), '松开倍速拉条必须自动保存当前音轨倍速');
+    assert.equal(startPostBodies.length, 2, '右键调节当前音轨不得创建新的 prepare 任务或成片版本');
+    assert.equal(await page.getByRole('button', { name: /生成.*新版本/ }).count(), 0, '倍速弹层不得再显示生成新版本按钮');
 
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');
