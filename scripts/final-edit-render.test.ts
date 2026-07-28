@@ -75,6 +75,7 @@ const fastResult = await renderFinalEditSnapshot({
   storageRoot: storage,
   snapshot: { ...snapshot, group: { ...snapshot.group, narrationPlaybackRate: 2 }, bgm: null },
 });
+assert.ok(Math.abs(fastResult.durationSec - (1 + 20 / 24)) < 1 / 24 + 0.02, '2.0x 成片总时长必须按当前音轨的有效时长缩短');
 const fastPcm = path.join(root, 'fast-narration.pcm');
 await runFfmpeg(['-i', path.join(storage, fastResult.videoRelativePath), '-map', '0:a:0', '-f', 's16le', '-ac', '1', '-ar', '8000', '-y', fastPcm]);
 const pcmBytes = fs.readFileSync(fastPcm);
@@ -90,6 +91,13 @@ const earlyNarrationRms = rms(1.1, 1.5);
 const lateNarrationRms = rms(2.2, 2.6);
 assert.ok(earlyNarrationRms > 500, '2.0x 成片的前半段必须保留可听口播');
 assert.ok(lateNarrationRms < earlyNarrationRms * 0.2, '2.0x 成片口播必须在约一半时间后结束，不能只改变编辑器显示');
+
+const slowResult = await renderFinalEditSnapshot({
+  jobId: 'job-slow-narration',
+  storageRoot: storage,
+  snapshot: { ...snapshot, group: { ...snapshot.group, narrationPlaybackRate: 0.5 } },
+});
+assert.ok(Math.abs(slowResult.durationSec - (4 + 20 / 24)) < 1 / 24 + 0.02, '0.5x 成片总时长必须按当前音轨的有效时长延长，不能截断慢速口播');
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log('final-edit real render test passed');

@@ -71,12 +71,18 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
 
   useEffect(() => { playheadSecRef.current = playheadSec; }, [playheadSec]);
 
-  const bodyDurationSec = variant.timeline.bodyFrames / FPS;
-  const totalSec = INTRO_SEC + bodyDurationSec;
   const narrationPlaybackRate = group.script.narrationConfig.playbackRate;
-  const bodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
+  const bodyDurationSec = group.narrationDurationUs / 1_000_000 / narrationPlaybackRate;
+  const totalSec = INTRO_SEC + bodyDurationSec;
+  const rawBodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
   const sortedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
-  const activeClipIndex = playheadSec >= INTRO_SEC ? sortedClips.findIndex((clip) => bodyFrame >= clip.timelineInFrame && bodyFrame < clip.timelineOutFrame) : -1;
+  const frozenVideoTail = rawBodyFrame >= variant.timeline.bodyFrames && sortedClips.length > 0;
+  const bodyFrame = frozenVideoTail
+    ? Math.max(0, sortedClips[sortedClips.length - 1].timelineOutFrame - 1)
+    : rawBodyFrame;
+  const activeClipIndex = playheadSec >= INTRO_SEC
+    ? frozenVideoTail ? sortedClips.length - 1 : sortedClips.findIndex((clip) => bodyFrame >= clip.timelineInFrame && bodyFrame < clip.timelineOutFrame)
+    : -1;
   const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
   const activeAsset = activeClip ? assets.find((asset) => asset.videoJobId === activeClip.videoJobId) || null : null;
   const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);
@@ -208,6 +214,11 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
           if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
           return;
         }
+        if (frozenVideoTail) {
+          video.pause();
+          if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
+          return;
+        }
         if (!activeAsset || showSelectedMaterial) { video.pause(); return; }
         if (!playing) {
           lastStartedClipRef.current = '';
@@ -232,7 +243,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       videoBRef.current?.pause();
     }
     return () => cleanups.forEach((cleanup) => cleanup());
-  }, [activeAsset, activeClip, activeSlot, bodyFrame, playing, showSelectedMaterial, slotAClipId, slotASourceInFrame, slotBClipId, slotBSourceInFrame, slotClips]);
+  }, [activeAsset, activeClip, activeSlot, bodyFrame, frozenVideoTail, playing, showSelectedMaterial, slotAClipId, slotASourceInFrame, slotBClipId, slotBSourceInFrame, slotClips]);
 
   useEffect(() => {
     const canvas = foregroundCanvasRef.current;

@@ -30,7 +30,7 @@ import {
   type ExternalAssetImportResult,
   type ShotSetExternalAssetImportInput,
 } from './material-import.ts';
-import { assertTtsSpeed } from './tts-speed.ts';
+import { assertNarrationPlaybackRate, assertTtsSpeed } from './tts-speed.ts';
 import { preparePreviewCacheKey } from './prepare-preview.ts';
 import { normalizeCoverPreset } from './title-presets.ts';
 import { CoverFrameError, materializeCoverFrame, resolveCoverFrameSource } from './cover-frame.ts';
@@ -392,6 +392,10 @@ function sha256(value: string | Buffer) { return crypto.createHash('sha256').upd
 function validateTtsSpeed(speed: number): void {
   try { assertTtsSpeed(speed); }
   catch (error) { throw new FinalEditError('invalid_tts_speed', error instanceof Error ? error.message : '语速无效'); }
+}
+function validateNarrationPlaybackRate(playbackRate: number): void {
+  try { assertNarrationPlaybackRate(playbackRate); }
+  catch (error) { throw new FinalEditError('invalid_narration_playback_rate', error instanceof Error ? error.message : '音轨倍速无效'); }
 }
 function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'projectId' | 'scriptDraftId' | 'shotSetId' | 'editedNarrationText'>): ScriptSnapshot {
   const scriptDraftId = String(input.scriptDraftId || '').trim();
@@ -909,6 +913,15 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         .slice(0, 3)
         .map((frameUs) => ({ videoJobId: row.videoJobId, frameUs }));
     });
+    const parsedNarrationConfig = parseJson<{ providerId?: unknown; voice?: unknown; speed?: unknown; playbackRate?: unknown }>(String(group.narrationConfigJson), {});
+    const parsedPlaybackRate = Number(parsedNarrationConfig.playbackRate ?? 1);
+    const playbackRate = Number.isFinite(parsedPlaybackRate) && parsedPlaybackRate >= 0.5 && parsedPlaybackRate <= 2 ? parsedPlaybackRate : 1;
+    const narrationConfig = {
+      providerId: String(parsedNarrationConfig.providerId || ''),
+      voice: String(parsedNarrationConfig.voice || ''),
+      speed: Number(parsedNarrationConfig.speed || 1),
+      playbackRate,
+    };
     return {
       id: String(group.id), projectId: String(group.projectId), scriptDraftId: String(group.scriptDraftId), shotSetId: String(group.shotSetId),
       status: String(group.status), phase: String(group.phase), revision: Number(group.revision),
@@ -919,20 +932,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         editedNarrationText: String(group.editedNarrationText || script.editedNarrationText || script.fullScript || ''),
         syncState: group.scriptSyncState === 'modified' ? 'modified' : 'synced',
         sourceScriptUpdatedAt: group.sourceScriptUpdatedAt == null ? null : String(group.sourceScriptUpdatedAt),
-        narrationConfig: (() => {
-          const config = parseJson<{ providerId?: unknown; voice?: unknown; speed?: unknown; playbackRate?: unknown }>(String(group.narrationConfigJson), {});
-          const playbackRate = Number(config.playbackRate ?? 1);
-          return {
-            providerId: String(config.providerId || ''),
-            voice: String(config.voice || ''),
-            speed: Number(config.speed || 1),
-            playbackRate: Number.isFinite(playbackRate) && playbackRate >= 0.5 && playbackRate <= 2 ? playbackRate : 1,
-          };
-        })(),
+        narrationConfig,
         selectedMaterialKeys: selectedKeys,
       },
       narrationDurationUs: Number(group.narrationDurationUs),
-      totalDurationUs: FINAL_EDIT_INTRO_DURATION_US + Number(group.narrationDurationUs),
+      totalDurationUs: FINAL_EDIT_INTRO_DURATION_US + Number(group.narrationDurationUs) / playbackRate,
       durationGate: parseDurationGateState(group.durationGateJson),
       coverTitle: parseJson(String(group.coverTitleJson), { primary: { id: 'primary', text: script.title, textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } }),
       subtitleCues: parseJson<SubtitleCue[]>(String(group.subtitleStateJson), []),
@@ -1963,7 +1967,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       analysisProviderId = String(command.analysisProviderId ?? analysisProviderId);
     }
     if (command.type === 'set_narration_playback_rate') {
-      validateTtsSpeed(command.playbackRate);
+      validateNarrationPlaybackRate(command.playbackRate);
       narrationConfig = { ...narrationConfig, playbackRate: command.playbackRate };
     }
     const revision = Number(row.revision) + 1;

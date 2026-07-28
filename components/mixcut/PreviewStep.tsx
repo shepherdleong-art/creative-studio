@@ -199,9 +199,10 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     setTrimClip(clip);
   };
 
-  const totalSec = variant ? (variant.timeline.bodyFrames / FPS) + (variant.cover ? 20 / FPS : 0) : 0;
-  const bodySec = variant ? variant.timeline.bodyFrames / FPS : 0;
   const narrationSec = group.narrationDurationUs / 1_000_000 / group.script.narrationConfig.playbackRate;
+  const totalSec = variant ? narrationSec + (variant.cover ? 20 / FPS : 0) : 0;
+  const effectivePlayheadSec = Math.min(playheadSec, totalSec);
+  const bodySec = variant ? variant.timeline.bodyFrames / FPS : 0;
   const narrationMatch = Math.abs(narrationSec - bodySec) < 1;
   const coverSourceIndex = variant ? orderedClips.findIndex((clip) => clip.videoJobId === variant.cover.sourceKey) : -1;
   // 匹配诊断必须在第 3 步第一眼可见：blocking 解释真实缺口，warning
@@ -346,7 +347,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                 variant={variant}
                 assets={group.assets}
                 selectedAsset={null}
-                playheadSec={playheadSec}
+                playheadSec={effectivePlayheadSec}
                 seekRequestId={seekRequestId}
                 active={active}
                 textTarget={null}
@@ -380,7 +381,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             assets={group.assets}
             selectedClipId={selectedClipId}
             selectedCueId={selectedCue?.id || ''}
-            playheadSec={playheadSec}
+            playheadSec={effectivePlayheadSec}
             disabled={busy}
             onSeek={seek}
             onSelectClip={setSelectedClipId}

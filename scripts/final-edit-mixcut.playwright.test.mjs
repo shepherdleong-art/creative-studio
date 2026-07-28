@@ -1205,6 +1205,7 @@ try {
     assert.equal(await speedNumber.inputValue(), '1.3', '拖动拉条必须同步更新右侧数值框');
     await page.getByText(/锁定口播 · 1\.3x/).waitFor();
     assert.equal(await page.locator('audio').first().evaluate((element) => element.playbackRate), 1.3, '拖动拉条必须立即改变当前预览音轨的播放倍速');
+    await page.getByText(/\/ 00:08\.53/).waitFor();
     await speedNumber.fill('1.4');
     assert.equal(await speedSlider.inputValue(), '1.4', '修改右侧数值框必须反向同步拉条');
     await speedNumber.fill('1.35');
@@ -1215,6 +1216,10 @@ try {
     await expectEventually(() => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.3), '松开倍速拉条必须自动保存当前音轨倍速');
     assert.equal(startPostBodies.length, 2, '右键调节当前音轨不得创建新的 prepare 任务或成片版本');
     assert.equal(await page.getByRole('button', { name: /生成.*新版本/ }).count(), 0, '倍速弹层不得再显示生成新版本按钮');
+    await speedNumber.fill('1.4');
+    await page.keyboard.press('Escape');
+    await expectEventually(() => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.4), '按 Esc 关闭倍速弹层时也必须自动保存刚刚预览的当前音轨倍速');
+    assert.equal(await speedMenu.count(), 0, 'Esc 保存后必须关闭倍速弹层');
 
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');

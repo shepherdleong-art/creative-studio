@@ -526,10 +526,11 @@ const playbackAdjustedGroup = workspace.apply({
 assert.equal(playbackAdjustedGroup.id, readyManualGroup.id, '直接调速必须更新当前成片组，不能创建新版本');
 assert.equal(playbackAdjustedGroup.script.narrationConfig.speed, 1, '生成阶段的 TTS 语速必须保持不变');
 assert.equal(playbackAdjustedGroup.script.narrationConfig.playbackRate, 1.3, '当前音轨播放倍速必须持久化');
+assert.ok(Math.abs(playbackAdjustedGroup.totalDurationUs - (833_333 + readyManualGroup.narrationDurationUs / 1.3)) < 1, '当前成片预计时长必须随音轨播放倍速直接变化');
 assert.equal(playbackAdjustedGroup.variants.length, readyManualGroup.variants.length, '直接调速不得新增或删除成片草稿');
 assert.throws(
   () => workspace.apply({ scope: 'group', groupId: readyManualGroup.id, expectedRevision: playbackAdjustedGroup.revision, type: 'set_narration_playback_rate', playbackRate: 2.1 }),
-  (error: unknown) => error instanceof FinalEditError && error.code === 'invalid_tts_speed',
+  (error: unknown) => error instanceof FinalEditError && error.code === 'invalid_narration_playback_rate',
   '音轨播放倍速仍必须限制在 0.5x～2.0x',
 );
 const beforeScriptCommand = workspace.load(editingDraft.id);

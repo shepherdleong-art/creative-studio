@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditAssetView, type FinalEditVariantView, type SubtitleCue, type TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
@@ -99,8 +99,10 @@ export function MixcutTimeline({
   const [narrationPlaybackRateInput, setNarrationPlaybackRateInput] = useState(() => formatNarrationPlaybackRateInput(narrationPlaybackRate));
   const narrationPlaybackRateDirtyRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const bodySec = variant.timeline.bodyFrames / FPS;
-  const totalSec = (INTRO_FRAMES + variant.timeline.bodyFrames) / FPS;
+  const videoBodySec = variant.timeline.bodyFrames / FPS;
+  const bodySec = narrationDurationSec;
+  const totalSec = INTRO_FRAMES / FPS + bodySec;
+  const totalFrames = INTRO_FRAMES + Math.round(bodySec * FPS);
   const totalUs = totalSec * 1_000_000;
   const contentWidth = timelineContentWidthPx({ totalUs, pxPerSecond, viewportWidth: Math.max(1, viewportWidth) });
   const introPx = INTRO_FRAMES / FPS * pxPerSecond;
@@ -118,17 +120,24 @@ export function MixcutTimeline({
     return () => observer.disconnect();
   }, []);
 
+  const closeContextMenu = useCallback(() => {
+    if (contextMenu?.kind === 'narration' && narrationPlaybackRateDirtyRef.current) {
+      narrationPlaybackRateDirtyRef.current = false;
+      onNarrationPlaybackRateCommit(narrationPlaybackRateDraft);
+    }
+    setContextMenu(null);
+  }, [contextMenu, narrationPlaybackRateDraft, onNarrationPlaybackRateCommit]);
+
   useEffect(() => {
     if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
-    window.addEventListener('blur', close);
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') closeContextMenu(); };
+    window.addEventListener('blur', closeContextMenu);
     window.addEventListener('keydown', keydown);
     return () => {
-      window.removeEventListener('blur', close);
+      window.removeEventListener('blur', closeContextMenu);
       window.removeEventListener('keydown', keydown);
     };
-  }, [contextMenu]);
+  }, [closeContextMenu, contextMenu]);
 
   const seekFromPointer = (clientX: number) => {
     const scroll = scrollRef.current;
@@ -138,7 +147,7 @@ export function MixcutTimeline({
       contentLeft: scroll.getBoundingClientRect().left,
       scrollLeft: scroll.scrollLeft,
       pxPerSecond,
-      totalFrames: INTRO_FRAMES + variant.timeline.bodyFrames,
+      totalFrames,
       fps: FPS,
     });
     onSeek(absoluteFrame / FPS);
@@ -201,6 +210,12 @@ export function MixcutTimeline({
                 })}
               />
             ))}
+            {bodySec > videoBodySec && (
+              <div
+                className={styles.videoFreezeTail}
+                style={{ left: (INTRO_FRAMES / FPS + videoBodySec) * pxPerSecond, width: (bodySec - videoBodySec) * pxPerSecond }}
+              >末帧延长</div>
+            )}
           </div>
           <div className={`${styles.tlTrack} ${styles.tlTrackSub}`} data-track="subtitle">
             {cues.map((cue, index) => (
@@ -209,7 +224,8 @@ export function MixcutTimeline({
                 cue={cue}
                 previousCue={index > 0 ? cues[index - 1] : null}
                 nextCue={index < cues.length - 1 ? cues[index + 1] : null}
-                bodyUs={bodySec * 1_000_000}
+                bodyUs={narrationDurationSec * narrationPlaybackRate * 1_000_000}
+                playbackRate={narrationPlaybackRate}
                 pxPerSecond={pxPerSecond}
                 selected={cue.id === selectedCueId}
                 anySelected={Boolean(selectedCueId)}
@@ -255,13 +271,7 @@ export function MixcutTimeline({
         </div>
       </div>
       {contextMenu && typeof document !== 'undefined' && createPortal(
-        <div className={styles.timelineContextLayer} onPointerDown={() => {
-          if (contextMenu.kind === 'narration' && narrationPlaybackRateDirtyRef.current) {
-            narrationPlaybackRateDirtyRef.current = false;
-            onNarrationPlaybackRateCommit(narrationPlaybackRateDraft);
-          }
-          setContextMenu(null);
-        }}>
+        <div className={styles.timelineContextLayer} onPointerDown={closeContextMenu}>
           <div
             role={contextMenu.kind === 'video' ? 'menu' : 'dialog'}
             aria-label={contextMenu.kind === 'video' ? '视频片段操作' : '口播音频变速'}
@@ -455,11 +465,12 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
   );
 }
 
-function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, pxPerSecond, selected, anySelected, disabled, onSelect, onCommand, onEditText }: {
+function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, onSelect, onCommand, onEditText }: {
   cue: SubtitleCue;
   previousCue: SubtitleCue | null;
   nextCue: SubtitleCue | null;
   bodyUs: number;
+  playbackRate: number;
   pxPerSecond: number;
   selected: boolean;
   anySelected: boolean;
@@ -482,7 +493,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, pxPerSecond, selecte
     let latest = initial;
     let changed = false;
     const move = (pointer: PointerEvent) => {
-      const deltaUs = Math.round((pointer.clientX - startX) / pxPerSecond * 1_000_000 / FRAME_US) * FRAME_US;
+      const deltaUs = Math.round((pointer.clientX - startX) / pxPerSecond * 1_000_000 * playbackRate / FRAME_US) * FRAME_US;
       changed = changed || deltaUs !== 0;
       if (mode === 'move') {
         const duration = initial.endUs - initial.startUs;
@@ -512,7 +523,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, pxPerSecond, selecte
     <article
       data-cue-id={cue.id}
       className={`${styles.subclip} ${selected ? styles.subclipSel : anySelected ? styles.subclipDim : ''}`}
-      style={{ left: (INTRO_FRAMES / FPS + draft.startUs / 1_000_000) * pxPerSecond, width: (draft.endUs - draft.startUs) / 1_000_000 * pxPerSecond }}
+      style={{ left: (INTRO_FRAMES / FPS + draft.startUs / 1_000_000 / playbackRate) * pxPerSecond, width: (draft.endUs - draft.startUs) / 1_000_000 / playbackRate * pxPerSecond }}
       onPointerDown={(event) => begin('move', event)}
       onDoubleClick={() => { if (!disabled) { onSelect(cue.id); setEditing(true); } }}
       title="双击编辑文案"

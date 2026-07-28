@@ -62,6 +62,9 @@ export async function renderFinalEditSnapshot(input: {
   const narrationPlaybackRate = Number.isFinite(snapshot.group.narrationPlaybackRate)
     ? Math.max(0.5, Math.min(2, Number(snapshot.group.narrationPlaybackRate)))
     : 1;
+  const sourceNarrationSec = snapshot.group.narrationDurationUs / 1_000_000;
+  const bodySec = sourceNarrationSec / narrationPlaybackRate;
+  const totalSec = FINAL_EDIT_INTRO_DURATION_US / 1_000_000 + bodySec;
   const preset = snapshot.variant.outputPreset;
   const output = OUTPUT_PRESETS[preset];
   const jobRelativeDir = path.join('final-edits', 'jobs', input.jobId);
@@ -121,9 +124,9 @@ export async function renderFinalEditSnapshot(input: {
   clips.forEach((clip, index) => filters.push(clipFilter(index + 1, preset, clip.framing)));
   filters.push(`${clips.map((_, index) => `[v${index + 1}]`).join('')}concat=n=${clips.length}:v=1:a=0[body]`);
   filters.push(`[intro][body]concat=n=2:v=1:a=0[basepre]`);
-  // §11.4 末段不足时用 tpad=stop_mode=clone 防御性补帧（克隆最后一帧），
-  // 最终 -t 裁到精确时长；正常情况（matcher 精确铺满）下这段尾巴被完整裁掉，不改变输出。
-  filters.push(`[basepre]tpad=stop_mode=clone:stop=0.5[base]`);
+  // 当前口播音轨放慢后，视频轨用最后一帧补足到新的有效时长；加速时最终 -t 直接裁短。
+  // stop_duration 取完整 body 时长，可同时覆盖 matcher 的小缺口和最大 0.5x 的延长量。
+  filters.push(`[basepre]tpad=stop_mode=clone:stop_duration=${Math.max(0.5, bodySec).toFixed(6)}[base]`);
   let currentVideo = 'base';
   snapshot.group.subtitleCues.forEach((cue, index) => {
     const next = `subtitle${index}`;
@@ -132,8 +135,6 @@ export async function renderFinalEditSnapshot(input: {
     filters.push(`[${currentVideo}][${subtitleStartInput + index}:v]overlay=0:0:enable='between(t,${start.toFixed(6)},${end.toFixed(6)})'[${next}]`);
     currentVideo = next;
   });
-  const totalSec = (FINAL_EDIT_INTRO_DURATION_US + snapshot.group.narrationDurationUs) / 1_000_000;
-  const bodySec = snapshot.group.narrationDurationUs / 1_000_000;
   const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;
   filters.push(`[${narrationInput}:a]${narrationTempo}aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
   if (snapshot.bgm && bgmInput != null) {
@@ -145,7 +146,7 @@ export async function renderFinalEditSnapshot(input: {
       fadeOutDuration > 0 ? `afade=t=out:st=${fadeStart.toFixed(6)}:d=${fadeOutDuration.toFixed(6)}` : '',
     ].filter(Boolean).join(',');
     filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
-    filters.push(`[narration][music]amix=inputs=2:duration=first:dropout_transition=0[bodyaudio]`);
+    filters.push(`[narration][music]amix=inputs=2:duration=longest:dropout_transition=0[bodyaudio]`);
   } else {
     filters.push('[narration]anull[bodyaudio]');
   }

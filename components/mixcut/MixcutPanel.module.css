@@ -315,7 +315,7 @@
 .tlTick span { position: absolute; top: 3px; left: 4px; color: var(--faint); font-size: 9px; font-variant-numeric: tabular-nums; }
 .tlTickMinor { top: auto; height: 6px; border-left-color: rgba(0, 0, 0, .07); }
 .tlTrack { position: relative; border-bottom: .5px solid var(--line-soft); }
-.tlTrackVideo { height: 64px; }
+.tlTrackVideo { height: 64px; overflow: hidden; }
 .tlTrackSub { height: 28px; }
 .tlTrackAudio { height: 30px; }
 .clip { position: absolute; top: 5px; bottom: 5px; overflow: hidden; border-radius: 8px; box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .12); cursor: grab; touch-action: none; transition: filter .15s; }
@@ -330,6 +330,7 @@
 .clipHandleL { left: 0; }
 .clipHandleR { right: 0; }
 .clip[data-reorder-active='true'] { opacity: .72; outline: 2px dashed var(--blue); outline-offset: 1px; }
+.videoFreezeTail { position: absolute; top: 5px; bottom: 5px; display: grid; min-width: 36px; place-items: center; overflow: hidden; border: 1px dashed rgba(0, 113, 227, .4); border-radius: 8px; background: repeating-linear-gradient(135deg, rgba(0, 113, 227, .06) 0 7px, rgba(0, 113, 227, .12) 7px 14px); color: var(--blue); font-size: 10px; white-space: nowrap; pointer-events: none; }
 .subclip { position: absolute; top: 3px; display: flex; height: 22px; align-items: center; overflow: hidden; padding: 0 8px; border: .5px solid var(--line); border-radius: 6px; background: #fff; box-shadow: var(--sh-sm); color: var(--ink); font-size: 11px; white-space: nowrap; cursor: grab; touch-action: none; }
 .subclipDim { opacity: .5; }
 .subclipSel { border-color: var(--blue); background: var(--blue-wash); color: var(--blue); font-weight: 500; }
