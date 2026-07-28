@@ -172,8 +172,11 @@
 .notice svg { flex-shrink: 0; margin-top: 1px; }
 .session { margin-bottom: 6px; padding: 8px 10px; border-radius: 12px; background: var(--bg); text-align: left; cursor: pointer; transition: background .15s; }
 .session:hover { background: #ececf0; }
+.sessionActive { background: var(--blue-wash); box-shadow: inset 0 0 0 1px rgba(0, 113, 227, .22); }
+.sessionActive:hover { background: var(--blue-wash); }
 .session:disabled { opacity: .6; cursor: default; }
 .sessionT { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.sessionT span { margin-left: 6px; color: var(--blue); font-size: 10px; font-weight: 600; }
 .sessionM { margin-top: 2px; color: var(--faint); font-size: 11px; }
 .panelGrow { flex: 1; min-height: 0; }
 .panelGrow .panelList { flex: 1; min-height: 0; overflow-y: auto; }
@@ -265,6 +268,7 @@
 .moreRow select { min-width: 120px; }
 .moreRow input[type='text'] { flex: 1; min-width: 180px; }
 .ctaZone { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 6px 0; }
+.ctaActions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; }
 .progBar { height: 6px; overflow: hidden; border-radius: 99px; background: var(--seg); }
 .progBar i { display: block; height: 100%; border-radius: 99px; background: var(--blue); transition: width .4s; }
 .pipe { display: flex; align-items: center; gap: 12px; padding: 9px 0; }
@@ -340,6 +344,8 @@
 .timelineContextMenu { position: fixed; display: grid; width: 176px; overflow: hidden; padding: 5px; border: .5px solid rgba(0,0,0,.12); border-radius: 10px; background: rgba(255,255,255,.96); box-shadow: 0 12px 36px rgba(0,0,0,.18); backdrop-filter: blur(18px); }
 .timelineContextMenu button { min-height: 34px; border-radius: 7px; padding: 0 10px; text-align: left; font-size: 12px; }
 .timelineContextMenu button:hover { background: rgba(0,0,0,.05); }
+.timelineContextMenu button:disabled { color: var(--faint); cursor: default; }
+.timelineContextTitle { padding: 7px 10px 5px; color: var(--sub); font-size: 11px; line-height: 1.35; }
 .timelineContextMenu .timelineContextDanger { color: #ff3b30; }
 
 /* Trim 截取条 */

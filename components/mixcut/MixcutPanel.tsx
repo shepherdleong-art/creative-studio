@@ -42,6 +42,7 @@ type LayoutSide = 'rep' | 'rgt';
 
 interface VisionProviderView { id: string; configured: boolean; supportsVision?: boolean }
 interface MixcutDraftRef { id: string; shotSetId: string; revision: number }
+interface StartCreationOptions { sourceGroup?: FinalEditGroupView; speedOverride?: number }
 
 const MANUAL_SCRIPT_ID = '__manual__';
 
@@ -49,6 +50,14 @@ function isLegacyDurationReviewJob<T extends Pick<MixcutPrepareJobView, 'status'
   job: T | null | undefined,
 ): job is T & { status: 'needs_input'; phase: 'duration_review' } {
   return job?.status === 'needs_input' && job.phase === 'duration_review';
+}
+
+function isPreviewGroupReady(group: FinalEditGroupView | null | undefined): group is FinalEditGroupView {
+  return Boolean(group && ['ready', 'partial'].includes(group.status) && group.variants.length > 0);
+}
+
+function prepareCreatedAt(group: FinalEditGroupView): string {
+  return group.jobs.find((job) => job.kind === 'prepare')?.createdAt ?? '';
 }
 
 export default function MixcutPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
@@ -141,7 +150,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const activeJobId = activeJob?.id ?? '';
   const activeJobStatus = activeJob?.status ?? '';
 
-  const loadContext = useCallback(async (shotSetId?: string | null) => {
+  const loadContext = useCallback(async (shotSetId?: string | null, selectedGroupId?: string | null) => {
     requestRef.current?.controller.abort();
     const controller = new AbortController();
     const sequence = (requestRef.current?.sequence ?? 0) + 1;
@@ -176,13 +185,18 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         setExternalByShotSet((current) => ({ ...current, [currentShotSetId]: external.assets }));
         const module4Keys = next.videoAssets.map((asset) => `module4:${asset.videoJobId}`);
         const readyExternalKeys = external.assets.filter((asset) => asset.status === 'ready').map((asset) => `external:${asset.id}`);
-        const latestGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId);
+        const selectedGroup = selectedGroupId
+          ? groupsResult.groups.find((group) => group.id === selectedGroupId && group.shotSetId === currentShotSetId)
+          : null;
+        const latestGroup = selectedGroup ?? groupsResult.groups.find((group) => group.shotSetId === currentShotSetId);
         const editingGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && group.status === 'editing');
-        const latestPreparedGroup = groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && ['ready', 'partial'].includes(group.status) && group.variants.length > 0) || null;
+        const latestPreparedGroup = selectedGroupId
+          ? isPreviewGroupReady(selectedGroup) ? selectedGroup : null
+          : groupsResult.groups.find((group) => group.shotSetId === currentShotSetId && isPreviewGroupReady(group)) || null;
         setPreparedGroup(latestPreparedGroup);
         setDurationReviewGroup(latestGroup?.status === 'needs_input' && latestGroup.phase === 'duration_review' ? latestGroup : null);
         if (latestPreparedGroup?.variants[0]?.outputPreset) setOutputPreset(latestPreparedGroup.variants[0].outputPreset);
-        draftGroupRef.current = editingGroup
+        draftGroupRef.current = !selectedGroupId && editingGroup
           ? { id: editingGroup.id, shotSetId: editingGroup.shotSetId, revision: editingGroup.revision }
           : null;
         persistVersionRef.current = 0;
@@ -205,10 +219,14 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         );
         const cachedEditor = scriptEditorByShotSetRef.current[currentShotSetId];
         const cachedSourceStillExists = cachedEditor?.activeDraftId === MANUAL_SCRIPT_ID || next.drafts.some((draft) => draft.id === cachedEditor?.activeDraftId && draft.shotSetId === currentShotSetId);
-        setScriptEditor(cachedEditor && cachedSourceStillExists ? cachedEditor : persistedEditor);
+        setScriptEditor(!selectedGroupId && cachedEditor && cachedSourceStillExists ? cachedEditor : persistedEditor);
         if (groupScript?.narrationConfig) {
-          setTtsProviderId(groupScript.narrationConfig.providerId);
-          setVoice(groupScript.narrationConfig.voice);
+          const persistedProvider = providersResult.find((provider) => provider.id === groupScript.narrationConfig.providerId && provider.configured);
+          const selectedProvider = persistedProvider ?? configuredTts;
+          setTtsProviderId(selectedProvider?.id ?? '');
+          setVoice(selectedProvider?.voices.some((item) => item.id === groupScript.narrationConfig.voice)
+            ? groupScript.narrationConfig.voice
+            : selectedProvider?.voices[0]?.id ?? '');
           setSpeed(groupScript.narrationConfig.speed);
         }
         const latestPrepare = latestGroup?.jobs.find((job) => job.kind === 'prepare');
@@ -225,6 +243,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           });
           if (['queued', 'running', 'needs_input'].includes(latestPrepare.status)) setActiveStep(1);
         } else setActiveJob(null);
+        if (selectedGroupId) setActiveStep(latestPreparedGroup ? 2 : 1);
       }
       setMessage('');
     } catch (error) {
@@ -251,21 +270,24 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       try {
         const job = await readJson<MixcutPrepareJobView>(await fetch(`/api/final-edit-jobs/${activeJobId}`));
         if (jobPollRef.current !== token) return;
-        setActiveJob(job);
-        if (job.status === 'failed') setMessage(job.errorMessage || '智能创作任务失败');
         if (isLegacyDurationReviewJob(job)) {
           const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
           if (jobPollRef.current !== token) return;
+          setActiveJob(job);
           setDurationReviewGroup(reviewGroup);
           setPreparedGroup(null);
           setMessage('检测到旧版时长审核任务，正在按实际时长自动继续');
-        }
-        if (job.status === 'succeeded') {
+        } else if (job.status === 'succeeded') {
           const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
           if (jobPollRef.current !== token) return;
+          setActiveJob(job);
           setPreparedGroup(completedGroup);
+          setRecentGroups((current) => [completedGroup, ...current.filter((group) => group.id !== completedGroup.id)]);
           setDurationReviewGroup(null);
           setMessage('智能创作任务已完成，可以进入预览调整');
+        } else {
+          setActiveJob(job);
+          if (job.status === 'failed') setMessage(job.errorMessage || '智能创作任务失败');
         }
       } catch (error) {
         if (jobPollRef.current === token) setMessage(error instanceof Error ? error.message : String(error));
@@ -320,13 +342,18 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     { label: STEPS[2].label, detail: preparedGroup ? `${preparedGroup.variants.length} 条时间线草稿` : '等待 AI 创作完成' },
     { label: STEPS[3].label, detail: preparedGroup ? '可预检并导出' : '等待 AI 创作完成' },
   ];
-  const sessions = recentGroups.slice(0, 5).map((group) => ({
+  const versionGroups = recentGroups
+    .filter((group) => group.status !== 'editing')
+    .sort((left, right) => prepareCreatedAt(right).localeCompare(prepareCreatedAt(left)));
+  const sessions = versionGroups.slice(0, 5).map((group, index) => ({
     id: group.id,
-    shotSetId: group.shotSetId,
     title: group.script?.title || '未命名会话',
+    versionLabel: `版本 ${versionGroups.length - index}`,
     shotSetName: context?.shotSets.find((shotSet) => shotSet.id === group.shotSetId)?.name || group.shotSetId,
     status: group.status,
     variantCount: group.variants.length,
+    speed: group.script.narrationConfig.speed,
+    createdAt: prepareCreatedAt(group),
   }));
   const materials: MaterialCardView[] = [
     ...(context?.videoAssets ?? []).map((asset) => ({
@@ -377,6 +404,21 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       return;
     }
     performShotSetSwitch(shotSetId);
+  };
+
+  const selectSession = async (groupId: string) => {
+    const group = recentGroups.find((item) => item.id === groupId);
+    if (!group || submittingRef.current || group.id === preparedGroup?.id) return;
+    try {
+      if (persistVersionRef.current > lastSavedVersionRef.current) await persistCurrentState(persistVersionRef.current);
+      persistenceEpochRef.current += 1;
+      saveAbortRef.current?.abort();
+      setPendingDraftId(null);
+      setPendingShotSetId(null);
+      setDurationReviewGroup(null);
+      setPreparedGroup(null);
+      await loadContext(group.shotSetId, group.id);
+    } catch { /* persistCurrentState/loadContext expose the actionable error */ }
   };
 
   const resolveShotSetSwitch = async (resolution: ScriptSwitchResolution) => {
@@ -584,35 +626,64 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     } finally { setPreviewingVoice(false); }
   };
 
-  const startCreation = async () => {
-    if (!activeShotSetId || !ttsProviderId || !voice || submittingRef.current) return;
+  const startCreation = async (options: StartCreationOptions = {}) => {
+    const sourceGroup = options.sourceGroup;
+    const requestShotSetId = sourceGroup?.shotSetId ?? activeShotSetId;
+    const historicalProvider = sourceGroup
+      ? ttsProviders.find((provider) => provider.id === sourceGroup.script.narrationConfig.providerId && provider.configured)
+      : null;
+    const requestProviderId = historicalProvider?.id ?? ttsProviderId;
+    const requestVoice = historicalProvider
+      ? historicalProvider.voices.some((item) => item.id === sourceGroup?.script.narrationConfig.voice)
+        ? sourceGroup!.script.narrationConfig.voice
+        : historicalProvider.voices[0]?.id ?? voice
+      : voice;
+    const requestSpeed = options.speedOverride ?? sourceGroup?.script.narrationConfig.speed ?? speed;
+    const requestScriptDraftId = sourceGroup?.script.sourceDraftId ?? (scriptEditor.activeDraftId === MANUAL_SCRIPT_ID ? '' : scriptEditor.activeDraftId);
+    const requestNarrationText = sourceGroup?.script.editedNarrationText ?? scriptEditor.editedNarrationText;
+    const requestMaterialKeys = sourceGroup?.script.selectedMaterialKeys ?? selectedIds;
+    const requestOutputPreset = sourceGroup?.variants[0]?.outputPreset ?? outputPreset;
+    if (!requestShotSetId || !requestProviderId || !requestVoice || submittingRef.current) return;
     startRequestRef.current?.controller.abort();
     const controller = new AbortController();
     const sequence = startSequenceRef.current + 1;
     startSequenceRef.current = sequence;
-    const requestShotSetId = activeShotSetId;
     startRequestRef.current = { sequence, shotSetId: requestShotSetId, controller };
     submittingRef.current = true;
     setSubmitting(true);
-    setMessage('');
+    if (sourceGroup) {
+      const sourceEditor = createScriptEditorState(
+        { id: sourceGroup.script.sourceDraftId ?? MANUAL_SCRIPT_ID, narrationText: sourceGroup.script.importedNarrationText },
+        { editedNarrationText: sourceGroup.script.editedNarrationText },
+      );
+      scriptEditorByShotSetRef.current[requestShotSetId] = sourceEditor;
+      setScriptEditor(sourceEditor);
+      setSelectionByShotSet({ [requestShotSetId]: [...requestMaterialKeys] });
+      setTtsProviderId(requestProviderId);
+      setVoice(requestVoice);
+      setSpeed(requestSpeed);
+      setOutputPreset(requestOutputPreset);
+      setActiveStep(1);
+      setMessage(`正在以 ${requestSpeed.toFixed(1)}x 口播语速生成独立新版本`);
+    } else setMessage('');
     try {
-      if (persistVersionRef.current > lastSavedVersionRef.current) await persistCurrentState(persistVersionRef.current);
+      if (!sourceGroup && persistVersionRef.current > lastSavedVersionRef.current) await persistCurrentState(persistVersionRef.current);
       const jobRef = await readJson<{ id: string; groupId: string; status: string }>(await fetch(`/api/projects/${projectId}/final-edit/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
           shotSetId: requestShotSetId,
-          scriptDraftId: scriptEditor.activeDraftId === MANUAL_SCRIPT_ID ? '' : scriptEditor.activeDraftId,
-          editedNarrationText: scriptEditor.editedNarrationText,
-          selectedMaterialKeys: selectedIds,
+          scriptDraftId: requestScriptDraftId,
+          editedNarrationText: requestNarrationText,
+          selectedMaterialKeys: requestMaterialKeys,
           count: 1,
-          outputPreset,
-          providerId: ttsProviderId,
-          voice,
-          speed,
+          outputPreset: requestOutputPreset,
+          providerId: requestProviderId,
+          voice: requestVoice,
+          speed: requestSpeed,
           analysisProviderId: visionProviderId,
-          draftGroupId: draftGroupRef.current?.shotSetId === requestShotSetId ? draftGroupRef.current.id : undefined,
+          draftGroupId: sourceGroup ? undefined : draftGroupRef.current?.shotSetId === requestShotSetId ? draftGroupRef.current.id : undefined,
         }),
       }));
       const job = await readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`, { signal: controller.signal }));
@@ -683,6 +754,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`));
         syncResolvedGroupScript(completedGroup);
         setPreparedGroup(completedGroup);
+        setRecentGroups((current) => [completedGroup, ...current.filter((group) => group.id !== completedGroup.id)]);
         setMessage('实际口播时长已记录，智能创作已继续完成');
       } else {
         setPreparedGroup(null);
@@ -772,7 +844,8 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
             availableVideoCount={materials.filter((material) => material.status === 'ready').length}
             stepOverview={stepOverviews[activeStep]}
             sessions={sessions}
-            onSelectSession={selectShotSet}
+            activeSessionId={preparedGroup?.id ?? activeJob?.groupId ?? null}
+            onSelectSession={(groupId) => void selectSession(groupId)}
             onSelectShotSet={selectShotSet}
             disabled={loading || submitting}
           />
@@ -785,6 +858,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
               active
               onGroupChange={setPreparedGroup}
               onExport={(variantId) => { setExportVariantId(variantId); setActiveStep(3); }}
+              onRegenerateWithSpeed={(nextSpeed, group) => void startCreation({ sourceGroup: group, speedOverride: nextSpeed })}
               onRepCollapse={setRepOff}
               onRgtCollapse={setRgtOff}
               onResizeStart={beginResize}
@@ -858,6 +932,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                     onBack={() => setActiveStep(0)}
                     submitting={submitting}
                     startDisabledReason={startDisabledReason}
+                    previewReady={isPreviewGroupReady(preparedGroup)}
                     onPreview={() => setActiveStep(2)}
                   />
                 </div>

@@ -104,6 +104,7 @@ export function CreationStep({
   elapsedSec,
   onStart,
   onPreview,
+  previewReady,
   submitting,
   startDisabledReason,
 }: {
@@ -132,6 +133,7 @@ export function CreationStep({
   elapsedSec: number;
   onStart: () => void;
   onPreview: () => void;
+  previewReady: boolean;
   onBack: () => void;
   submitting: boolean;
   startDisabledReason?: string;
@@ -240,7 +242,10 @@ export function CreationStep({
         {/* CTA 区 */}
         <div className={styles.ctaZone}>
           {job?.status === 'succeeded'
-            ? <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} onClick={onPreview}><Icon name="play-circle" size={17} />去预览调整</button>
+            ? <div className={styles.ctaActions}>
+                <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} onClick={onPreview} disabled={submitting || !previewReady}><Icon name="play-circle" size={17} />{previewReady ? '去预览调整' : '正在载入预览草稿…'}</button>
+                <button type="button" className={`${styles.btn} ${styles.big}`} onClick={onStart} disabled={submitting || Boolean(startDisabledReason)}><Icon name="sparkle" size={17} />{submitting ? '正在创建任务…' : '再生成一版'}</button>
+              </div>
             : <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} onClick={onStart} disabled={busy || Boolean(startDisabledReason)}><Icon name="sparkle" size={17} />{submitting ? '正在创建任务…' : job?.status === 'needs_input' ? '正在恢复旧任务…' : busy ? '正在创作…' : job?.status === 'failed' ? '重新创作' : '开始智能创作'}</button>}
           <span className={`${styles.chip} ${styles.chipGreen}`}><Icon name="film" size={12} />可用视频素材：{selectedMaterialCount} 个</span>
           <span className={styles.flowHint}>{startDisabledReason || '开始后会创建不可变任务快照，刷新页面不会丢失。'}</span>

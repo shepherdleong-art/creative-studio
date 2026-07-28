@@ -27,11 +27,12 @@ type GroupCommandRequest = GroupCommandInput | ((group: FinalEditGroupView) => G
 
 // V2 第 3 步（规格 §6）：直接渲染网格子节点——素材替换列 / Resizer / 主区（工具行+大纸）/ Resizer / 右栏三卡。
 // 列宽与折叠由 MixcutPanel 通过 CSS 变量与 body class 驱动。
-export function PreviewStep({ group, active, onGroupChange, onExport, onRepCollapse, onRgtCollapse, onResizeStart }: {
+export function PreviewStep({ group, active, onGroupChange, onExport, onRegenerateWithSpeed, onRepCollapse, onRgtCollapse, onResizeStart }: {
   group: FinalEditGroupView;
   active: boolean;
   onGroupChange: (group: FinalEditGroupView) => void;
   onExport: (variantId: string) => void;
+  onRegenerateWithSpeed: (speed: number, group: FinalEditGroupView) => void;
   onRepCollapse: (collapsed: boolean) => void;
   onRgtCollapse: (collapsed: boolean) => void;
   onResizeStart: (side: 'rep' | 'rgt') => (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -350,6 +351,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             onGroupCommand={applyGroup}
             onTrimClip={openTrim}
             onEditCueText={(cueId, text) => void applyGroup({ type: 'set_subtitle_cue_text', cueId, text })}
+            narrationSpeed={group.script.narrationConfig.speed}
+            onNarrationSpeedChange={(speed) => onRegenerateWithSpeed(speed, group)}
           />
         </div>
       </main>

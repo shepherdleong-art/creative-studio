@@ -207,6 +207,11 @@ try {
       };
     });
     let savedGroup = createFormalGroup();
+    const startPostBodies = [];
+    const generatedGroups = new Map();
+    const generatedJobPollCounts = new Map();
+    let generationSequence = 0;
+    let editingGroup = null;
     const variantPatchBodies = [];
     const groupPatchBodies = [];
     const presetPostBodies = [];
@@ -218,6 +223,7 @@ try {
     const durationResolutionBodies = [];
     let currentDurationJob = null;
     let durationReadyGroup = null;
+    let delayedPreparedGroupMs = 0;
     let savedPresets = [];
     let revealAvailable = false;
     let renderPollCount = 0;
@@ -276,10 +282,61 @@ try {
       }
       if (pathname === '/api/projects/e2e-project/final-edit/context') return json(context);
       if (pathname === '/api/projects/e2e-project/final-edit/shot-sets/shot-set-e2e/external-assets') return json({ assets: [] });
-      if (pathname === '/api/projects/e2e-project/final-edit/groups') return json({ groups: [savedGroup] });
+      if (pathname === '/api/projects/e2e-project/final-edit/draft' && request.method() === 'POST') {
+        const body = request.postDataJSON();
+        const base = createFormalGroup();
+        editingGroup = { ...base, id: 'editing-draft-e2e', status: 'editing', phase: 'editing', revision: 0, script: { ...base.script, editedNarrationText: body.editedNarrationText, narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed }, selectedMaterialKeys: body.selectedMaterialKeys } };
+        return json(editingGroup);
+      }
+      if (pathname === '/api/final-edit-groups/editing-draft-e2e' && request.method() === 'PATCH') {
+        const body = request.postDataJSON();
+        const base = createFormalGroup();
+        editingGroup = { ...base, id: 'editing-draft-e2e', status: 'editing', phase: 'editing', revision: body.expectedRevision + 1, script: { ...base.script, editedNarrationText: body.editedNarrationText, narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed }, selectedMaterialKeys: body.selectedMaterialKeys } };
+        return json({ view: editingGroup });
+      }
+      if (pathname === '/api/projects/e2e-project/final-edit/start' && request.method() === 'POST') {
+        const body = request.postDataJSON();
+        startPostBodies.push(body);
+        generationSequence += 1;
+        const groupId = `group-regenerated-${generationSequence}`;
+        const jobId = `job-regenerated-${generationSequence}`;
+        const base = createFormalGroup();
+        const completedJob = { ...base.jobs[0], id: jobId, groupId, status: 'succeeded', phase: 'succeeded' };
+        generatedGroups.set(groupId, {
+          ...base,
+          id: groupId,
+          script: {
+            ...base.script,
+            title: `E2E 新版本 ${generationSequence}`,
+            narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed },
+          },
+          jobs: [completedJob],
+        });
+        generatedJobPollCounts.set(jobId, 0);
+        return json({ id: jobId, groupId, kind: 'prepare', status: 'queued' });
+      }
+      if (pathname === '/api/projects/e2e-project/final-edit/groups') return json({ groups: [...generatedGroups.values()].reverse().concat(editingGroup ? [editingGroup] : [], savedGroup) });
+      if (pathname.startsWith('/api/final-edit-jobs/job-regenerated-') && request.method() === 'GET') {
+        const jobId = pathname.split('/').at(-1);
+        const count = generatedJobPollCounts.get(jobId) ?? 0;
+        generatedJobPollCounts.set(jobId, count + 1);
+        const sequence = Number(jobId.split('-').at(-1));
+        const groupId = `group-regenerated-${sequence}`;
+        const status = count === 0 ? 'queued' : 'succeeded';
+        return json({ id: jobId, groupId, variantId: null, kind: 'prepare', status, phase: status === 'queued' ? 'validating' : 'succeeded', progress: status === 'queued' ? 0 : 1, durationReview: null, errorMessage: null, startedAt: '2026-07-28T12:00:00.000Z', finishedAt: status === 'succeeded' ? '2026-07-28T12:00:01.000Z' : null });
+      }
+      if (pathname.startsWith('/api/final-edit-groups/group-regenerated-') && request.method() === 'GET') {
+        const group = generatedGroups.get(pathname.split('/').at(-1));
+        return group ? json(group) : json({ error: 'group_not_found' }, 404);
+      }
       if (pathname === '/api/final-edit-groups/group-e2e/narration') return route.fulfill({ status: 204, body: '' });
       if (pathname === '/api/final-edit-groups/group-e2e/cover-frame') return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
-      if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'GET') return json(savedGroup);
+      if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'GET') {
+        const delayMs = delayedPreparedGroupMs;
+        delayedPreparedGroupMs = 0;
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return json(savedGroup);
+      }
       if (pathname === '/api/final-edit-groups/group-e2e/duration-resolution' && request.method() === 'POST') {
         const body = request.postDataJSON();
         durationResolutionBodies.push(body);
@@ -303,6 +360,14 @@ try {
       }
       if (pathname.startsWith('/api/final-edit-jobs/duration-job-') && request.method() === 'GET') {
         return json(currentDurationJob);
+      }
+      if (pathname === '/api/final-edit-jobs/prepare-preview-race' && request.method() === 'GET') {
+        const succeeded = {
+          id: 'prepare-preview-race', groupId: 'group-e2e', variantId: null, kind: 'prepare', status: 'succeeded', phase: 'succeeded', progress: 1,
+          durationReview: null, errorMessage: null, startedAt: '2026-07-28T09:46:04.574Z', finishedAt: '2026-07-28T09:49:26.300Z',
+        };
+        savedGroup = { ...createFormalGroup(), jobs: [succeeded] };
+        return json(succeeded);
       }
       if (pathname === '/api/final-edit-groups/group-e2e/overlay-bundles/9x16' && request.method() === 'POST') {
         const body = request.postDataJSON();
@@ -500,7 +565,10 @@ try {
     const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
     await page.goto(formalUrl, { waitUntil: 'networkidle' });
     await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
-    await page.getByRole('button', { name: /预览调整/ }).click();
+    const initialStepNav = page.getByRole('navigation', { name: '智能混剪步骤' });
+    await initialStepNav.getByRole('button', { name: /AI 智能创作/ }).click();
+    await page.getByRole('button', { name: '再生成一版', exact: true }).waitFor();
+    await initialStepNav.getByRole('button', { name: /预览调整/ }).click();
     await page.locator('[data-track="video"]').waitFor();
 
     assert.equal(await page.locator('[data-track]').count(), 4, '正式页面必须挂载四条真实轨道');
@@ -1007,29 +1075,31 @@ try {
     await page.getByText('句段 segment-1 素材不足，保留时间线缺口', { exact: true }).waitFor();
     await page.getByText('语义评分不可用，本次已使用确定性关键词降级匹配', { exact: true }).waitFor();
 
-    // 回归：真实环境实测过一次「预览调整」布局炸裂——prepare job 已 succeeded（第 2 步会出现
-    // 「去预览调整」CTA），但 group 还没到 ready/partial（variants 未最终落定），此时点 CTA 会让
-    // activeStep===2 而 preparedGroup 仍是 null。.bodyPreview 六列网格只有在真正渲染 PreviewStep
-    // 的五个子节点时列数才对得上；退回的 emptyState 只有一个 <main>，网格会把它自动摆进「素材替换」
-    // 那条窄列（真实浏览器里如果之前折叠过该列，会窄到中文逐字换行）。断言：辅栏必须还在、
-    // 空状态文案必须落在宽的主列而不是被挤扁。
+    // prepare job 已 succeeded、但 group 尚未到 ready/partial 时，不得开放一个会进入空白页的
+    // 「去预览调整」按钮；完整草稿到达前明确保持加载态。
     savedGroup = { ...savedGroup, status: 'editing' };
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
-    const previewCta = page.getByRole('button', { name: '去预览调整' });
-    await previewCta.waitFor();
-    await previewCta.click();
-    await page.getByText('预览草稿尚未准备完成').waitFor();
-    const emptyStateLayout = await page.evaluate(() => {
-      const main = document.querySelector('[class*="mainCol"]');
-      const sideCol = document.querySelector('[class*="sideCol"]');
-      return {
-        mainWidth: main?.getBoundingClientRect().width ?? 0,
-        sideColVisible: sideCol ? getComputedStyle(sideCol).display !== 'none' : false,
-      };
-    });
-    assert.ok(emptyStateLayout.sideColVisible, 'preparedGroup 未就绪时辅栏（当前素材组/本组概览）不得被 .bodyPreview 误隐藏');
-    assert.ok(emptyStateLayout.mainWidth > 500, `preparedGroup 未就绪时空状态必须落在宽主列，不是被挤进素材替换窄列（实测 ${emptyStateLayout.mainWidth}px）`);
+    const loadingPreviewCta = page.getByRole('button', { name: '正在载入预览草稿…' });
+    await loadingPreviewCta.waitFor();
+    assert.equal(await loadingPreviewCta.isDisabled(), true, '完整 group 未就绪时不得允许进入空预览页');
+    assert.equal(await page.getByText('预览草稿尚未准备完成').count(), 0, '未就绪时应停留在创作页而不是展示错误空态');
+
+    // 回归：真实 prepare 任务先返回 succeeded，而完整 group（包含时间线和预览 URL）因为素材读取
+    // 稍晚返回。任务状态更新不能触发轮询 effect 自清理并丢弃随后到达的 group；否则第 2 步会显示
+    // 「去预览调整」，点击后却复现「预览草稿尚未准备完成」。
+    const runningPrepare = {
+      id: 'prepare-preview-race', groupId: 'group-e2e', variantId: null, kind: 'prepare', status: 'running', phase: 'previewing', progress: 0.96,
+      durationReview: null, errorMessage: null, startedAt: '2026-07-28T09:46:04.574Z', finishedAt: null,
+    };
+    savedGroup = { ...createFormalGroup(), status: 'running', phase: 'previewing', variants: [], jobs: [runningPrepare] };
+    delayedPreparedGroupMs = 250;
+    await page.reload({ waitUntil: 'networkidle' });
+    const delayedPreviewCta = page.getByRole('button', { name: '去预览调整' });
+    await delayedPreviewCta.waitFor();
+    await delayedPreviewCta.click();
+    await page.locator('[data-track="video"]').waitFor({ timeout: 3_000 });
+    assert.equal(await page.getByText('预览草稿尚未准备完成').count(), 0, 'prepare succeeded 后不得丢弃稍晚返回的预览 group');
 
     // 兼容旧数据：历史上停在 duration_review 的任务不再要求人工点击三个审核按钮，
     // 界面会自动接受真实 TTS 时长并继续，同时在预览/导出保留软提醒。
@@ -1066,6 +1136,38 @@ try {
     await page.getByRole('button', { name: '下一步：导出' }).click();
     await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
     await page.getByText(overrideWarning, { exact: true }).waitFor();
+
+    // 完成态允许调整语速后再次生成；新任务必须冻结当前 1.3x 配置，并在完成后立即成为可切换的最近会话。
+    savedGroup = createFormalGroup();
+    generatedGroups.clear();
+    generatedJobPollCounts.clear();
+    generationSequence = 0;
+    editingGroup = null;
+    startPostBodies.length = 0;
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
+    await page.getByLabel('语速').fill('1.3');
+    await page.getByRole('button', { name: '再生成一版', exact: true }).click();
+    await expectEventually(() => startPostBodies.length === 1, '再次生成必须提交新的 prepare 任务');
+    assert.equal(startPostBodies[0].speed, 1.3, '再次生成必须冻结用户刚刚选择的 TTS 语速');
+    await page.getByRole('button', { name: /E2E 新版本 1/ }).waitFor();
+    await page.getByRole('button', { name: '切换到会话 E2E 文案 版本 1', exact: true }).click();
+    await page.locator('[data-track="video"]').waitFor();
+    await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
+    await expectEventually(async () => await page.getByLabel('语速').inputValue() === '1', '点击最近会话必须按 groupId 恢复该版本，而不是因为 shotSetId 相同而无响应');
+    await page.getByRole('button', { name: '再生成一版', exact: true }).click();
+    await expectEventually(() => startPostBodies.length === 2, '历史会话也必须可以直接再次生成');
+    assert.equal(startPostBodies[1].speed, 1, '历史会话再次生成必须使用该版本的语速');
+    assert.equal(startPostBodies[1].draftGroupId, undefined, '历史会话不得被同分镜组的通用 editing 草稿覆盖');
+    await page.getByRole('button', { name: /E2E 新版本 2/ }).waitFor();
+    await page.getByRole('button', { name: '切换到会话 E2E 文案 版本 1', exact: true }).click();
+    await page.locator('[data-track="video"]').waitFor();
+    await page.locator('[data-track="narration"]').dispatchEvent('contextmenu', { button: 2, clientX: 720, clientY: 820, bubbles: true, cancelable: true });
+    await page.getByRole('menu', { name: '口播音频变速' }).waitFor();
+    await page.getByRole('menuitem', { name: '1.2x · 生成新版本', exact: true }).click();
+    await expectEventually(() => startPostBodies.length === 3, '口播轨右键变速必须创建新的 prepare 任务');
+    assert.equal(startPostBodies[2].speed, 1.2, '右键变速必须把所选倍速写入新版本任务');
+    assert.deepEqual(startPostBodies[2].selectedMaterialKeys, savedGroup.script.selectedMaterialKeys, '右键变速必须沿用当前会话的素材快照');
 
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');

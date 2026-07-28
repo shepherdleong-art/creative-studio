@@ -12,6 +12,11 @@ const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;
 const FRAME_US = Math.round(1_000_000 / FPS);
 const PX_PER_SECOND = 60; // V2 固定缩放（规格 §6.4），内容超宽靠横向滚动
 const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持一致
+const NARRATION_SPEED_OPTIONS = [0.8, 0.9, 1, 1.1, 1.2, 1.5] as const;
+
+type TimelineContextMenu =
+  | { kind: 'video'; clipId: string; x: number; y: number }
+  | { kind: 'narration'; x: number; y: number };
 
 function Waveform({ tone, seed, playedWidthPx }: { tone: 'tts' | 'bgm'; seed: number; playedWidthPx: number }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -52,6 +57,8 @@ export function MixcutTimeline({
   onGroupCommand,
   onTrimClip,
   onEditCueText,
+  narrationSpeed,
+  onNarrationSpeedChange,
 }: {
   variant: FinalEditVariantView;
   cues: SubtitleCue[];
@@ -67,10 +74,12 @@ export function MixcutTimeline({
   onGroupCommand: (command: GroupCommandInput) => Promise<boolean>;
   onTrimClip: (clip: TimelineClip) => void;
   onEditCueText: (cueId: string, text: string) => void;
+  narrationSpeed: number;
+  onNarrationSpeedChange: (speed: number) => void;
 }) {
   const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
-  const [contextMenu, setContextMenu] = useState<{ clipId: string; x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodySec = variant.timeline.bodyFrames / FPS;
   const totalSec = (INTRO_FRAMES + variant.timeline.bodyFrames) / FPS;
@@ -167,6 +176,7 @@ export function MixcutTimeline({
                 onCommand={onVariantCommand}
                 onTrimClip={onTrimClip}
                 onOpenContextMenu={(clientX, clientY) => setContextMenu({
+                  kind: 'video',
                   clipId: clip.id,
                   x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
                   y: Math.max(8, Math.min(clientY, window.innerHeight - 86)),
@@ -192,9 +202,22 @@ export function MixcutTimeline({
               />
             ))}
           </div>
-          <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="narration">
+          <div
+            className={`${styles.tlTrack} ${styles.tlTrackAudio}`}
+            data-track="narration"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (disabled) return;
+              setContextMenu({
+                kind: 'narration',
+                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 196)),
+                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 286)),
+              });
+            }}
+          >
             <Waveform tone="tts" seed={3} playedWidthPx={playheadPx} />
-            <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {bodySec.toFixed(1)}s</span>
+            <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {narrationSpeed.toFixed(1)}x · {bodySec.toFixed(1)}s</span>
           </div>
           <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
             <Waveform tone="bgm" seed={7} playedWidthPx={playheadPx} />
@@ -213,24 +236,45 @@ export function MixcutTimeline({
         <div className={styles.timelineContextLayer} onPointerDown={() => setContextMenu(null)}>
           <div
             role="menu"
-            aria-label="视频片段操作"
+            aria-label={contextMenu.kind === 'video' ? '视频片段操作' : '口播音频变速'}
             className={styles.timelineContextMenu}
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <button
-              type="button"
-              role="menuitem"
-              className={styles.timelineContextDanger}
-              disabled={disabled}
-              onClick={() => {
-                const clipId = contextMenu.clipId;
-                setContextMenu(null);
-                void onVariantCommand({ type: 'delete_clip', clipId }).then((accepted) => {
-                  if (accepted && selectedClipId === clipId) onSelectClip('');
-                });
-              }}
-            >删除片段</button>
+            {contextMenu.kind === 'video' ? (
+              <button
+                type="button"
+                role="menuitem"
+                className={styles.timelineContextDanger}
+                disabled={disabled}
+                onClick={() => {
+                  const clipId = contextMenu.clipId;
+                  setContextMenu(null);
+                  void onVariantCommand({ type: 'delete_clip', clipId }).then((accepted) => {
+                    if (accepted && selectedClipId === clipId) onSelectClip('');
+                  });
+                }}
+              >删除片段</button>
+            ) : (
+              <>
+                <div className={styles.timelineContextTitle}>选择语速后生成独立新版本</div>
+                {NARRATION_SPEED_OPTIONS.map((option) => {
+                  const current = Math.abs(option - narrationSpeed) < 0.001;
+                  return (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      key={option}
+                      disabled={disabled || current}
+                      onClick={() => {
+                        setContextMenu(null);
+                        onNarrationSpeedChange(option);
+                      }}
+                    >{option.toFixed(1)}x · {current ? '当前版本' : '生成新版本'}</button>
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>,
         document.body,

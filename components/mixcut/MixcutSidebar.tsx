@@ -6,11 +6,13 @@ type ShotSet = MixcutContextResponse['shotSets'][number];
 
 export interface MixcutSessionItem {
   id: string;
-  shotSetId: string;
   title: string;
+  versionLabel: string;
   shotSetName: string;
   status: string;
   variantCount: number;
+  speed: number;
+  createdAt: string;
 }
 
 const SESSION_STATUS_LABELS: Record<string, string> = {
@@ -28,6 +30,15 @@ function formatDuration(durationUs: number): string {
   return `${minutes}:${String(totalSeconds % 60).padStart(2, '0')}`;
 }
 
+function formatSessionTime(value: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date);
+}
+
 export function MixcutSidebar({
   shotSets,
   activeShotSetId,
@@ -35,6 +46,7 @@ export function MixcutSidebar({
   availableVideoCount,
   stepOverview,
   sessions,
+  activeSessionId,
   onSelectSession,
   onSelectShotSet,
   disabled,
@@ -45,7 +57,8 @@ export function MixcutSidebar({
   availableVideoCount: number;
   stepOverview: { label: string; detail: string };
   sessions: MixcutSessionItem[];
-  onSelectSession: (shotSetId: string) => void;
+  activeSessionId: string | null;
+  onSelectSession: (groupId: string) => void;
   onSelectShotSet: (shotSetId: string) => void;
   disabled?: boolean;
 }) {
@@ -99,16 +112,18 @@ export function MixcutSidebar({
             {sessions.map((session) => (
               <button
                 type="button"
-                className={styles.session}
+                className={`${styles.session} ${session.id === activeSessionId ? styles.sessionActive : ''}`}
                 key={session.id}
                 disabled={disabled}
-                onClick={() => onSelectSession(session.shotSetId)}
-                aria-label={`切换到会话 ${session.title}`}
+                onClick={() => onSelectSession(session.id)}
+                aria-label={`切换到会话 ${session.title} ${session.versionLabel}`}
+                aria-current={session.id === activeSessionId ? 'true' : undefined}
               >
-                <div className={styles.sessionT}>{session.title}</div>
+                <div className={styles.sessionT}>{session.title}<span>{session.versionLabel}</span></div>
                 <div className={styles.sessionM}>
-                  {session.shotSetName} · {SESSION_STATUS_LABELS[session.status] ?? session.status}
+                  {session.shotSetName} · {session.speed.toFixed(1)}x · {SESSION_STATUS_LABELS[session.status] ?? session.status}
                   {session.variantCount > 0 ? ` · ${session.variantCount} 条草稿` : ''}
+                  {session.createdAt ? ` · ${formatSessionTime(session.createdAt)}` : ''}
                 </div>
               </button>
             ))}
