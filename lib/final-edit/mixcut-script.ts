@@ -1,3 +1,5 @@
+import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
+
 export type MixcutScriptSyncState = 'synced' | 'modified';
 
 export interface MixcutSourceSegment {
@@ -5,12 +7,15 @@ export interface MixcutSourceSegment {
   shotId?: string;
   narration?: string;
   subtitle?: string;
+  sellingPointRefs?: string[];
+  visualIntent?: string;
+  visualKeywords?: string[];
 }
 
 export interface MixcutSourceScript {
   version: number;
   title?: string;
-  coverTitleParts?: { primary: string; secondary: string };
+  coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' };
   targetDurationSec?: number;
   shotSetId: string;
   segments: MixcutSourceSegment[];
@@ -22,6 +27,9 @@ export interface MixcutTaskScriptSegment {
   shotId: string;
   narration: string;
   subtitle: string;
+  sellingPointRefs?: string[];
+  visualIntent?: string;
+  visualKeywords?: string[];
 }
 
 export interface MixcutTaskScriptSnapshot {
@@ -29,8 +37,9 @@ export interface MixcutTaskScriptSnapshot {
   source: 'module3' | 'manual';
   sourceDraftId: string | null;
   sourceScriptUpdatedAt: string | null;
+  sourceScriptVersion: number | null;
   title: string;
-  coverTitleParts?: { primary: string; secondary: string };
+  coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' };
   targetDurationSec: number;
   shotSetId: string;
   sourceNarrationText: string;
@@ -60,6 +69,20 @@ export function sourceNarrationText(source: Pick<MixcutSourceScript, 'segments' 
 
 export function getScriptSyncState(sourceText: string, editedText: string): MixcutScriptSyncState {
   return normalizeNarrationText(sourceText) === normalizeNarrationText(editedText) ? 'synced' : 'modified';
+}
+
+export function buildMixcutSemanticText(input: {
+  narration: string;
+  sourceScriptVersion: number | null;
+  sourceSegment?: Pick<MixcutTaskScriptSegment, 'sellingPointRefs' | 'visualIntent' | 'visualKeywords'>;
+}): string {
+  if (input.sourceScriptVersion !== 3 || !input.sourceSegment) return input.narration;
+  const auxiliary = [
+    input.sourceSegment.visualIntent || '',
+    ...(input.sourceSegment.visualKeywords || []).slice(0, 8),
+    ...(input.sourceSegment.sellingPointRefs || []).slice(0, 8),
+  ].filter(Boolean).join(' ').slice(0, 180);
+  return auxiliary ? `${input.narration}\n画面语义：${auxiliary}` : input.narration;
 }
 
 const MIN_MATCH_SEGMENT_CHARS = 10;
@@ -157,7 +180,7 @@ export function splitNarrationSentences(value: string): string[] {
 }
 
 function usableShotIds(source: MixcutSourceScript | null): string[] {
-  if (!source) return [];
+  if (!source || source.version === 3) return [];
   return source.segments.map((segment) => String(segment.shotId || '').trim()).filter(Boolean);
 }
 
@@ -199,8 +222,11 @@ export function buildMixcutTaskScriptSnapshot(input: {
           : splitNarrationSentences(narration);
         return parts.map((part, partIndex) => ({
           id: parts.length === 1 && segment.id ? segment.id : `${segment.id || `source-${sourceIndex + 1}`}-part-${partIndex + 1}`,
-          shotId: String(segment.shotId || ''),
+          shotId: source?.version === 3 ? '' : String(segment.shotId || ''),
           narration: part,
+          sellingPointRefs: Array.isArray(segment.sellingPointRefs) ? segment.sellingPointRefs.slice(0, 8) : [],
+          visualIntent: String(segment.visualIntent || '').trim(),
+          visualKeywords: Array.isArray(segment.visualKeywords) ? segment.visualKeywords.map(String).slice(0, 8) : [],
         }));
       })
     : null;
@@ -211,9 +237,12 @@ export function buildMixcutTaskScriptSnapshot(input: {
     const original = originalSegments[index];
     return {
       id: preserved?.id || `segment-${index + 1}`,
-      shotId: preserved?.shotId || (syncState === 'synced' ? String(original?.shotId || shotIds[index] || '') : ''),
+      shotId: source?.version === 3 ? '' : preserved?.shotId || (syncState === 'synced' ? String(original?.shotId || shotIds[index] || '') : ''),
       narration,
-      subtitle: narration,
+      subtitle: normalizeAutomaticSubtitleText(narration),
+      ...(preserved?.sellingPointRefs?.length ? { sellingPointRefs: preserved.sellingPointRefs } : {}),
+      ...(preserved?.visualIntent ? { visualIntent: preserved.visualIntent } : {}),
+      ...(preserved?.visualKeywords?.length ? { visualKeywords: preserved.visualKeywords } : {}),
     };
   });
   return {
@@ -221,6 +250,7 @@ export function buildMixcutTaskScriptSnapshot(input: {
     source: source ? 'module3' : 'manual',
     sourceDraftId: source ? (input.sourceDraftId || null) : null,
     sourceScriptUpdatedAt: source ? (input.sourceScriptUpdatedAt || null) : null,
+    sourceScriptVersion: source?.version || null,
     title: source?.title || '手工混剪文案',
     ...(source?.coverTitleParts ? { coverTitleParts: source.coverTitleParts } : {}),
     targetDurationSec: Math.max(1, Number(source?.targetDurationSec || 15)),
@@ -252,6 +282,7 @@ export function buildMixcutEditingScriptSnapshot(input: {
     source: source ? 'module3' : 'manual',
     sourceDraftId: source ? (input.sourceDraftId || null) : null,
     sourceScriptUpdatedAt: source ? (input.sourceScriptUpdatedAt || null) : null,
+    sourceScriptVersion: source?.version || null,
     title: source?.title || '手工混剪文案',
     ...(source?.coverTitleParts ? { coverTitleParts: source.coverTitleParts } : {}),
     targetDurationSec: Math.max(1, Number(source?.targetDurationSec || 15)),

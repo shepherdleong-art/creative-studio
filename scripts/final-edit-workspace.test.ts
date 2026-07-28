@@ -10,8 +10,23 @@ const {
   createFinalEditWorkspace,
   FinalEditError,
   MIXCUT_PREPARE_PHASE_RANGES,
+  buildAlignedSubtitleCues,
 } = await import('../lib/final-edit/workspace.ts');
 const { initFinalEditSchema } = await import('../lib/final-edit/schema.ts');
+
+const automaticCueFixture = buildAlignedSubtitleCues({
+  version: 2, source: 'module3', sourceDraftId: 'fixture', sourceScriptUpdatedAt: null,
+  sourceScriptVersion: 3, title: '字幕参数', targetDurationSec: 15, shotSetId: 'set-a',
+  sourceNarrationText: '', sourceSegments: [], editedNarrationText: '', scriptSyncState: 'synced',
+  fullScript: '厚度3.5cm，提升20%，靠背112°，适配9:16画幅。',
+  segments: [{ id: 'parameter-segment', shotId: '', narration: '厚度3.5cm，提升20%，靠背112°，适配9:16画幅。', subtitle: '模型字幕不可信！' }],
+}, {
+  relativePath: 'fixture.wav', durationUs: 4_000_000,
+  segmentTimings: [{ segmentId: 'parameter-segment', startUs: 0, endUs: 4_000_000 }],
+  wordTimings: [{ text: '厚度3.5cm，提升20%，靠背112°，适配9:16画幅。', startUs: 0, endUs: 4_000_000 }],
+});
+assert.deepEqual(automaticCueFixture.map((cue) => cue.text), ['厚度3.5cm', '提升20%', '靠背112°', '适配9:16画幅']);
+assert.ok(automaticCueFixture.every((cue) => cue.textSource === 'script' && !/[，。！？；、,.!?;\s]$/u.test(cue.text)));
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-final-edit-'));
 const storageRoot = path.join(root, 'storage');
@@ -508,6 +523,11 @@ assert.notEqual(regeneratedJob.groupId, group.id, '每次生成都必须创建�
 assert.equal(workspace.load(regeneratedJob.groupId).variants.length, 1, '生成数量为 1 时，新成片组必须严格只有 1 条');
 assert.equal(workspace.load(group.id).variants.length, 2, '再次生成不能改变旧成片组的条数');
 assert.equal(workspace.load(group.id).subtitleCues[0].text, '人工字幕不可覆盖');
+const restoredAutomatic = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: workspace.load(group.id).revision,
+  type: 'restore_automatic_subtitles',
+}).view as typeof group;
+assert.ok(restoredAutomatic.subtitleCues.every((cue) => cue.textSource === 'script'), '只有显式恢复自动字幕才允许替换 manual Cue');
 
 const duplicateCover = workspace.apply({
   scope: 'variant', variantId: group.variants[1].id, expectedRevision: group.variants[1].revision,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildMixcutTaskScriptSnapshot,
+  buildMixcutSemanticText,
   getScriptSyncState,
   normalizeNarrationText,
   splitNarrationSentences,
@@ -110,6 +111,46 @@ const unmappableModified = buildMixcutTaskScriptSnapshot({
   editedNarrationText: '完全重写且移除了原来的分段。又补充一句。',
 });
 assert.ok(unmappableModified.segments.every((segment) => segment.shotId === ''), '无法可靠映射原段时必须清空 shotId，不能按下标错绑');
+
+const v3Source = {
+  version: 3,
+  title: 'V3 两段式标题',
+  coverTitleParts: { primary: '下班就该这样躺', secondary: '112°稳稳承托', source: 'model' as const },
+  targetDurationSec: 15,
+  shotSetId: 'set-a',
+  segments: Array.from({ length: 5 }, (_, index) => ({
+    id: index === 0 ? 'shot-1' : `v3-${index + 1}`,
+    shotId: `must-not-propagate-${index + 1}`,
+    narration: `第${index + 1}段带自然标点，保留TTS停顿。`,
+    subtitle: '模型字幕不可信！',
+    sellingPointRefs: ['112°承托'],
+    visualIntent: '靠背承托状态特写',
+    visualKeywords: ['靠背', '承托'],
+  })),
+};
+const v3Synced = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'draft-v3',
+  sourceScript: v3Source,
+  shotSetId: 'set-a',
+  editedNarrationText: v3Source.segments.map((segment) => segment.narration).join('\n'),
+});
+assert.equal(v3Synced.sourceScriptVersion, 3);
+assert.ok(v3Synced.segments.every((segment) => segment.shotId === ''), 'V3 即使返回或伪装成 shot ID 也不得传播同分镜先验');
+assert.equal(v3Synced.segments[0].id, 'shot-1', '稳定段落 ID 可以类似 shot ID，但只作为 canonical segment ID');
+assert.equal(v3Synced.segments[0].subtitle, '第1段带自然标点 保留TTS停顿');
+assert.deepEqual(v3Synced.segments[0].sellingPointRefs, ['112°承托']);
+assert.equal(v3Synced.segments[0].visualIntent, '靠背承托状态特写');
+assert.deepEqual(v3Synced.segments[0].visualKeywords, ['靠背', '承托']);
+assert.match(buildMixcutSemanticText({
+  narration: v3Synced.segments[0].narration,
+  sourceScriptVersion: v3Synced.sourceScriptVersion,
+  sourceSegment: v3Synced.segments[0],
+}), /画面语义：靠背承托状态特写 靠背 承托 112°承托/);
+assert.equal(buildMixcutSemanticText({
+  narration: synced.segments[0].narration,
+  sourceScriptVersion: synced.sourceScriptVersion,
+  sourceSegment: synced.segments[0],
+}), synced.segments[0].narration, 'V2 语义输入仍只使用 narration');
 
 const manual = buildMixcutTaskScriptSnapshot({ shotSetId: 'set-a', editedNarrationText: '纯手工第一句。纯手工第二句。' });
 assert.equal(manual.source, 'manual');

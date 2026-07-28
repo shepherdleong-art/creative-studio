@@ -14,6 +14,7 @@ import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
 import { buildMixcutContext } from './mixcut-context.ts';
 import {
   buildMixcutEditingScriptSnapshot,
+  buildMixcutSemanticText,
   buildMixcutTaskScriptSnapshot,
   type MixcutSourceScript,
   type MixcutTaskScriptSnapshot,
@@ -49,6 +50,7 @@ import {
 import { extractMatchKeywords } from './match-keywords.ts';
 import { buildTtsAwareMatchSentences } from './match-sentence-refinement.ts';
 import type { BeatDetectionResult } from './beat-detect.ts';
+import { splitNarrationForDisplay } from '../subtitle-display.ts';
 import {
   FINAL_EDIT_FPS,
   FINAL_EDIT_INTRO_DURATION_US,
@@ -77,6 +79,9 @@ interface ScriptSegment {
   shotId: string;
   narration: string;
   subtitle: string;
+  sellingPointRefs?: string[];
+  visualIntent?: string;
+  visualKeywords?: string[];
 }
 
 type ScriptSnapshot = MixcutTaskScriptSnapshot;
@@ -97,6 +102,35 @@ interface NarrationArtifact {
   segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>;
   wordTimings: Array<{ text: string; startUs: number; endUs: number }>;
   alignmentDegradedSegmentIds?: string[];
+}
+
+interface StoredNarrationTimingsV1 {
+  version: 1;
+  words: NarrationArtifact['wordTimings'];
+  segments: NarrationArtifact['segmentTimings'];
+  alignmentDegradedSegmentIds: string[];
+}
+
+function parseStoredNarrationTimings(value: unknown): StoredNarrationTimingsV1 {
+  const parsed = parseJson<unknown>(String(value || '[]'), []);
+  if (Array.isArray(parsed)) return { version: 1, words: parsed as NarrationArtifact['wordTimings'], segments: [], alignmentDegradedSegmentIds: [] };
+  if (!parsed || typeof parsed !== 'object') return { version: 1, words: [], segments: [], alignmentDegradedSegmentIds: [] };
+  const stored = parsed as Partial<StoredNarrationTimingsV1>;
+  return {
+    version: 1,
+    words: Array.isArray(stored.words) ? stored.words : [],
+    segments: Array.isArray(stored.segments) ? stored.segments : [],
+    alignmentDegradedSegmentIds: Array.isArray(stored.alignmentDegradedSegmentIds) ? stored.alignmentDegradedSegmentIds.map(String) : [],
+  };
+}
+
+function serializeNarrationTimings(narration: NarrationArtifact): string {
+  return JSON.stringify({
+    version: 1,
+    words: narration.wordTimings,
+    segments: narration.segmentTimings,
+    alignmentDegradedSegmentIds: narration.alignmentDegradedSegmentIds || [],
+  } satisfies StoredNarrationTimingsV1);
 }
 
 function isVideoAnalysisResult(value: unknown): value is VideoAnalysisResult {
@@ -206,6 +240,7 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'move_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'trim_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'insert_subtitle_cue'; segmentId: string; text: string; startUs: number; endUs: number }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'restore_automatic_subtitles' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'split_subtitle_cue'; cueId: string; splitUs: number; leftText: string; rightText: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'delete_subtitle_cue'; cueId: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_cover_title_part_text'; part: 'primary' | 'secondary'; text: string }
@@ -346,8 +381,8 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
   const row = db.prepare(`SELECT projectId, outputJson, createdAt FROM script_drafts WHERE id = ?`).get(scriptDraftId) as { projectId: string; outputJson: string; createdAt: string } | undefined;
   if (!row || row.projectId !== input.projectId) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
-  if (!source || source.version !== 2 || !source.shotSetId || !Array.isArray(source.segments) || source.segments.length === 0) {
-    throw new FinalEditError('script_invalid_v2', '脚本不是可用的 v2 脚本');
+  if (!source || ![2, 3].includes(source.version) || !source.shotSetId || !Array.isArray(source.segments) || source.segments.length === 0) {
+    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
   }
   if (input.shotSetId && source.shotSetId !== input.shotSetId) throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
   try {
@@ -369,7 +404,7 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
   const row = db.prepare(`SELECT projectId, outputJson, createdAt FROM script_drafts WHERE id=?`).get(scriptDraftId) as { projectId: string; outputJson: string; createdAt: string } | undefined;
   if (!row || row.projectId !== input.projectId) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
-  if (!source || source.version !== 2 || !source.shotSetId || !Array.isArray(source.segments)) throw new FinalEditError('script_invalid_v2', '脚本不是可用的 v2 脚本');
+  if (!source || ![2, 3].includes(source.version) || !source.shotSetId || !Array.isArray(source.segments)) throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
   if (source.shotSetId !== input.shotSetId) throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
   return buildMixcutEditingScriptSnapshot({ sourceDraftId: scriptDraftId, sourceScriptUpdatedAt: row.createdAt || null, sourceScript: source, shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
 }
@@ -649,17 +684,6 @@ export function validateNarrationAlignment(narration: NarrationArtifact, sourceT
   }
 }
 
-function splitSubtitleText(text: string, maxChars = 16): string[] {
-  const pieces = text.replace(/[\r\n]+/g, '').split(/(?<=[，。！？；,.!?;])/u).filter(Boolean);
-  const result: string[] = [];
-  for (const piece of pieces.length ? pieces : [text]) {
-    const chars = Array.from(piece);
-    while (chars.length > maxChars) result.push(chars.splice(0, maxChars).join(''));
-    if (chars.length) result.push(chars.join(''));
-  }
-  return result.filter((piece) => piece.trim());
-}
-
 export function buildAlignedSubtitleCues(script: ScriptSnapshot, narration: NarrationArtifact): SubtitleCue[] {
   const degraded = new Set(narration.alignmentDegradedSegmentIds || []);
   const cues: SubtitleCue[] = [];
@@ -670,15 +694,16 @@ export function buildAlignedSubtitleCues(script: ScriptSnapshot, narration: Narr
     if (!timing || timing.startUs < 0 || timing.endUs > narration.durationUs || timing.endUs <= timing.startUs) {
       throw new FinalEditError('alignment_failed', `缺少 ${segmentId} 的可靠时间范围`);
     }
-    const parts = splitSubtitleText(segment.subtitle || segment.narration);
-    const weights = parts.map((part) => Math.max(1, contentChars(part).length));
+    const parts = splitNarrationForDisplay(segment.narration, { maxContentCharacters: 16 });
+    if (parts.length === 0) continue;
+    const weights = parts.map((part) => Math.max(1, contentChars(part.sourceText).length));
     const totalWeight = weights.reduce((sum, value) => sum + value, 0);
     let cursor = timing.startUs;
-    parts.forEach((text, partIndex) => {
+    parts.forEach((part, partIndex) => {
       const endUs = partIndex === parts.length - 1
         ? timing.endUs
         : Math.round(cursor + (timing.endUs - timing.startUs) * weights[partIndex] / totalWeight);
-      cues.push({ id: uuidv4(), segmentId, text, startUs: cursor, endUs, textSource: 'script', timingSource: degraded.has(segmentId) ? 'proportional' : 'aligned' });
+      cues.push({ id: uuidv4(), segmentId, text: part.displayText, startUs: cursor, endUs, textSource: 'script', timingSource: degraded.has(segmentId) ? 'proportional' : 'aligned' });
       cursor = endUs;
     });
   }
@@ -977,17 +1002,19 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const narrationHash = String((db.prepare(`SELECT narrationHash FROM final_edit_groups WHERE id = ?`).get(groupId) as { narrationHash: string }).narrationHash);
       const normalizedSegments = script.segments.map((segment, index) => ({ segmentId: segment.id || `segment-${index + 1}`, narration: segment.narration }));
       const existingNarration = db.prepare(`SELECT narrationAudioPath, narrationDurationUs, wordTimingsJson, subtitleStateJson FROM final_edit_groups WHERE id=?`).get(groupId) as { narrationAudioPath: string | null; narrationDurationUs: number; wordTimingsJson: string; subtitleStateJson: string };
+      const storedTimings = parseStoredNarrationTimings(existingNarration.wordTimingsJson);
       const existingCues = parseJson<SubtitleCue[]>(existingNarration.subtitleStateJson, []);
-      const reusingNarration = Boolean(existingNarration.narrationAudioPath && existingNarration.narrationDurationUs > 0 && parseJson<unknown[]>(existingNarration.wordTimingsJson, []).length > 0);
+      const reusingNarration = Boolean(existingNarration.narrationAudioPath && existingNarration.narrationDurationUs > 0 && storedTimings.words.length > 0);
       const narration = reusingNarration
         ? {
             relativePath: existingNarration.narrationAudioPath!,
             durationUs: existingNarration.narrationDurationUs,
-            wordTimings: parseJson<Array<{ text: string; startUs: number; endUs: number }>>(existingNarration.wordTimingsJson, []),
-            segmentTimings: normalizedSegments.map((segment) => {
+            wordTimings: storedTimings.words,
+            segmentTimings: storedTimings.segments.length ? storedTimings.segments : normalizedSegments.map((segment) => {
               const matching = existingCues.filter((cue) => cue.segmentId === segment.segmentId);
               return { segmentId: segment.segmentId, startUs: Math.min(...matching.map((cue) => cue.startUs)), endUs: Math.max(...matching.map((cue) => cue.endUs)) };
             }),
+            alignmentDegradedSegmentIds: storedTimings.alignmentDegradedSegmentIds,
           }
         : await deps.synthesize({
             scriptDraftId: String(input.scriptDraftId || ''), segments: normalizedSegments,
@@ -1051,11 +1078,23 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         ].map((value) => Math.round(Math.floor(value * FINAL_EDIT_FPS / 1_000_000) * 1_000_000 / FINAL_EDIT_FPS));
         return [...new Set(frameTimes)].slice(0, 3).map((frameTimeUs) => ({ asset, frameTimeUs }));
       });
-      const semanticSentences: SemanticSentence[] = ttsAwareMatchSentences.map((sentence) => ({
-        id: sentence.id,
-        text: sentence.text,
-        keywords: extractMatchKeywords(sentence.text),
-      }));
+      const sourceSegmentById = new Map(script.segments.map((segment) => [segment.id, segment]));
+      const semanticSentences: SemanticSentence[] = ttsAwareMatchSentences.map((sentence) => {
+        const sourceSegment = sourceSegmentById.get(sentence.sourceSegmentId);
+        const text = buildMixcutSemanticText({
+          narration: sentence.text,
+          sourceScriptVersion: script.sourceScriptVersion,
+          sourceSegment,
+        });
+        return {
+          id: sentence.id,
+          text,
+          keywords: [...new Set([
+            ...extractMatchKeywords(sentence.text),
+            ...(sourceSegment?.visualKeywords || []).slice(0, 8),
+          ])].slice(0, 12),
+        };
+      });
       const semanticInput = {
         sentences: semanticSentences,
         scenes: semanticScenes,
@@ -1234,7 +1273,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         updateJob('previewing', 0.8 + ((index + 1) / variants.length) * 0.19);
       }
       const transaction = db.transaction(() => {
-        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, JSON.stringify(narration.wordTimings), JSON.stringify(cues), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
+        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
         for (let index = 0; index < variants.length; index += 1) {
           const variant = variants[index];
           db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, matchDiagnosticsJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), JSON.stringify(variant.matchDiagnostics || {}), previewPaths.get(variant.id) || null, now(), now());
@@ -1623,6 +1662,20 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       cues.push({ id: uuidv4(), segmentId: command.segmentId, text, startUs: command.startUs, endUs: command.endUs, textSource: 'manual', timingSource: 'manual' });
       cues.sort((a, b) => a.startUs - b.startUs);
     }
+    if (command.type === 'restore_automatic_subtitles') {
+      const stored = parseStoredNarrationTimings(row.wordTimingsJson);
+      if (!stored.words.length || !stored.segments.length || Number(row.narrationDurationUs) <= 0) {
+        throw new FinalEditError('alignment_required', '没有可用于恢复自动字幕的有效对齐结果，请重新生成配音');
+      }
+      const rebuilt = buildAlignedSubtitleCues(mixcutScriptSnapshot, {
+        relativePath: String(row.narrationAudioPath || ''),
+        durationUs: Number(row.narrationDurationUs),
+        wordTimings: stored.words,
+        segmentTimings: stored.segments,
+        alignmentDegradedSegmentIds: stored.alignmentDegradedSegmentIds,
+      });
+      cues.splice(0, cues.length, ...rebuilt);
+    }
     if (command.type === 'split_subtitle_cue') {
       const cueIndex = cues.findIndex((item) => item.id === command.cueId);
       const cue = cues[cueIndex];
@@ -1671,7 +1724,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         : [];
       const sourceScript: MixcutSourceScript | null = mixcutScriptSnapshot.source === 'module3'
         ? {
-            version: 2,
+            version: mixcutScriptSnapshot.sourceScriptVersion || 2,
             title: mixcutScriptSnapshot.title,
             coverTitleParts: mixcutScriptSnapshot.coverTitleParts,
             targetDurationSec: mixcutScriptSnapshot.targetDurationSec,
