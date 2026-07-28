@@ -4,7 +4,7 @@ import {
   analyzeScriptStrategyV3,
   generateScriptV3,
 } from '../lib/script-generation-v3.ts';
-import { buildScriptDurationBudget } from '../lib/script-duration-policy.ts';
+import { buildScriptDurationAdvisory, buildScriptDurationBudget } from '../lib/script-duration-policy.ts';
 
 const baseInput = {
   projectName: '沙发任务',
@@ -28,6 +28,23 @@ const budget = buildScriptDurationBudget(15);
 assert.equal(budget.introDurationSec, 20 / 24);
 assert.equal(Number(budget.targetNarrationSec.toFixed(6)), 14.166667);
 assert.deepEqual([budget.minContentCharacters, budget.maxContentCharacters], [54, 59]);
+
+const legacyAdvisory = buildScriptDurationAdvisory(10);
+assert.deepEqual(
+  [legacyAdvisory.minContentCharacters, legacyAdvisory.maxContentCharacters],
+  [35, 38],
+  '混剪字数提醒必须覆盖旧脚本中的非标准目标时长，且不能因此阻止生成',
+);
+assert.deepEqual(
+  [buildScriptDurationAdvisory(10, 0.5).minContentCharacters, buildScriptDurationAdvisory(10, 0.5).maxContentCharacters],
+  [18, 19],
+  '慢语速必须收紧建议字数，避免预计时长超标却不提醒',
+);
+assert.deepEqual(
+  [buildScriptDurationAdvisory(10, 2).minContentCharacters, buildScriptDurationAdvisory(10, 2).maxContentCharacters],
+  [70, 77],
+  '快语速应放宽建议字数，避免对可正常完成的文案误提醒',
+);
 
 {
   const calls: Array<{ images?: unknown[]; userPrompt: string }> = [];

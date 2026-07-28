@@ -218,7 +218,6 @@ try {
     const durationResolutionBodies = [];
     let currentDurationJob = null;
     let durationReadyGroup = null;
-    let durationJobGetCount = 0;
     let savedPresets = [];
     let revealAvailable = false;
     let renderPollCount = 0;
@@ -285,42 +284,24 @@ try {
         const body = request.postDataJSON();
         durationResolutionBodies.push(body);
         assert.ok(durationReadyGroup, 'duration review fixture must provide a ready group template');
-        if (body.action === 'accept_actual') {
-          currentDurationJob = {
-            id: 'duration-job-accepted', groupId: 'group-e2e', variantId: null, kind: 'prepare', status: 'succeeded', phase: 'succeeded', progress: 1,
-            durationReview: null, errorMessage: null, startedAt: '2026-07-28T01:00:00.000Z', finishedAt: '2026-07-28T01:00:02.000Z',
-          };
-          savedGroup = {
-            ...durationReadyGroup,
-            revision: body.expectedRevision + 2,
-            durationGate: { ...durationReadyGroup.durationGate, status: 'accepted_actual', acceptedAt: '2026-07-28T01:00:01.000Z' },
-            variants: durationReadyGroup.variants.map((variant) => ({
-              ...variant,
-              issues: [...variant.issues, { code: 'duration_target_overridden', severity: 'warning', message: '已明确按实际总时长 25.60 秒继续（目标 15.00 秒）' }],
-            })),
-            jobs: [currentDurationJob],
-          };
-        } else {
-          const smartFitAvailable = body.action !== 'smart_fit' && currentDurationJob?.durationReview?.smartFitAvailable !== false;
-          currentDurationJob = {
-            id: body.action === 'smart_fit' ? 'duration-job-fit' : 'duration-job-retry',
-            groupId: 'group-e2e', variantId: null, kind: 'prepare', status: 'needs_input', phase: 'duration_review', progress: 0.6,
-            durationReview: { ...currentDurationJob.durationReview, smartFitAvailable },
-            errorMessage: '真实 TTS 时长超出目标', startedAt: '2026-07-28T01:00:00.000Z', finishedAt: '2026-07-28T01:00:01.000Z',
-          };
-          savedGroup = {
-            ...savedGroup,
-            revision: body.expectedRevision + 2,
-            ...(body.action === 'smart_fit' ? {
-              script: { ...savedGroup.script, editedNarrationText: '智能贴合后的第一段。\n智能贴合后的第二段。', syncState: 'modified' },
-            } : {}),
-            jobs: [currentDurationJob],
-          };
-        }
+        assert.equal(body.action, 'accept_actual', '旧版审核任务只能自动按实际时长继续');
+        currentDurationJob = {
+          id: 'duration-job-accepted', groupId: 'group-e2e', variantId: null, kind: 'prepare', status: 'succeeded', phase: 'succeeded', progress: 1,
+          durationReview: null, errorMessage: null, startedAt: '2026-07-28T01:00:00.000Z', finishedAt: '2026-07-28T01:00:02.000Z',
+        };
+        savedGroup = {
+          ...durationReadyGroup,
+          revision: body.expectedRevision + 2,
+          durationGate: { ...durationReadyGroup.durationGate, status: 'accepted_actual', acceptedAt: '2026-07-28T01:00:01.000Z' },
+          variants: durationReadyGroup.variants.map((variant) => ({
+            ...variant,
+            issues: [...variant.issues, { code: 'duration_target_overridden', severity: 'warning', message: '实际总时长 25.60 秒与目标 15.00 秒不一致，已自动按实际时长继续' }],
+          })),
+          jobs: [currentDurationJob],
+        };
         return json({ id: currentDurationJob.id, groupId: 'group-e2e', kind: 'prepare', status: currentDurationJob.status });
       }
       if (pathname.startsWith('/api/final-edit-jobs/duration-job-') && request.method() === 'GET') {
-        durationJobGetCount += 1;
         return json(currentDurationJob);
       }
       if (pathname === '/api/final-edit-groups/group-e2e/overlay-bundles/9x16' && request.method() === 'POST') {
@@ -1050,8 +1031,8 @@ try {
     assert.ok(emptyStateLayout.sideColVisible, 'preparedGroup 未就绪时辅栏（当前素材组/本组概览）不得被 .bodyPreview 误隐藏');
     assert.ok(emptyStateLayout.mainWidth > 500, `preparedGroup 未就绪时空状态必须落在宽主列，不是被挤进素材替换窄列（实测 ${emptyStateLayout.mainWidth}px）`);
 
-    // Script V3 Phase 6：真实 TTS 超限必须停在可恢复的 review，而不是失败或继续匹配。
-    // 浏览器依次验证一次智能贴合、手工修改重试、明确接受实际时长，以及 warning 在预览/导出持续存在。
+    // 兼容旧数据：历史上停在 duration_review 的任务不再要求人工点击三个审核按钮，
+    // 界面会自动接受真实 TTS 时长并继续，同时在预览/导出保留软提醒。
     const reviewGate = {
       version: 1, narrationHash: 'duration-review-hash', targetTotalUs: 15_000_000, targetNarrationUs: 14_166_667,
       actualNarrationUs: 24_766_667, actualTotalUs: 25_600_000, toleranceUs: 750_000, deltaUs: 10_600_000,
@@ -1068,35 +1049,19 @@ try {
       errorMessage: '真实 TTS 时长超出目标', startedAt: '2026-07-28T01:00:00.000Z', finishedAt: '2026-07-28T01:00:01.000Z',
     };
     savedGroup = { ...durationReadyGroup, status: 'needs_input', phase: 'duration_review', revision: 12, variants: [], jobs: [currentDurationJob] };
-    durationJobGetCount = 0;
     await page.reload({ waitUntil: 'networkidle' });
-    await page.getByText('真实口播时长需要确认', { exact: true }).waitFor();
-    await page.getByText('25.60 秒', { exact: true }).waitFor();
-    await page.getByText('当前偏差较大，不能只靠自动加速解决；请优先智能贴合或精简口播文案。', { exact: true }).waitFor();
-    const reviewGetCountAfterRestore = durationJobGetCount;
-    await page.waitForTimeout(1_800);
-    assert.equal(durationJobGetCount, reviewGetCountAfterRestore, 'needs_input 必须停止定时轮询，只允许恢复状态时读取一次');
-
-    await page.getByRole('button', { name: '智能贴合时长' }).click();
-    await page.getByRole('button', { name: '智能贴合已使用' }).waitFor();
-    assert.equal(durationResolutionBodies[0].action, 'smart_fit');
-    assert.equal(durationResolutionBodies[0].expectedRevision, 12);
-    assert.equal(await page.getByRole('textbox', { name: '口播文案' }).inputValue(), '智能贴合后的第一段。\n智能贴合后的第二段。', '智能贴合后的组级文案必须同步回编辑器');
-
-    await page.getByLabel('语速').fill('1.2');
-    await page.getByRole('textbox', { name: '口播文案' }).fill('手工精简第一段。\n手工精简第二段。');
-    await page.getByRole('button', { name: '修改文案或语速后重试' }).click();
-    await expectEventually(() => durationResolutionBodies.length >= 2, '手工重试必须发送 resolution action');
+    await expectEventually(() => durationResolutionBodies.length >= 1, '旧版时长审核任务必须自动继续');
     assert.deepEqual(
-      { action: durationResolutionBodies[1].action, speed: durationResolutionBodies[1].speed, editedNarrationText: durationResolutionBodies[1].editedNarrationText },
-      { action: 'retry_with_changes', speed: 1.2, editedNarrationText: '手工精简第一段。\n手工精简第二段。' },
+      { action: durationResolutionBodies[0].action, expectedRevision: durationResolutionBodies[0].expectedRevision },
+      { action: 'accept_actual', expectedRevision: 12 },
     );
-
-    await page.getByRole('button', { name: '按实际时长继续' }).click();
     await page.getByRole('button', { name: '去预览调整' }).waitFor();
-    assert.equal(durationResolutionBodies[2].action, 'accept_actual');
+    assert.equal(await page.getByText('真实口播时长需要确认', { exact: true }).count(), 0, '不应再显示时长审核卡片');
+    assert.equal(await page.getByRole('button', { name: '智能贴合时长' }).count(), 0, '不应再显示智能贴合按钮');
+    assert.equal(await page.getByRole('button', { name: '修改文案或语速后重试' }).count(), 0, '不应再显示重试按钮');
+    assert.equal(await page.getByRole('button', { name: '按实际时长继续' }).count(), 0, '不应再显示人工继续按钮');
     await page.getByRole('button', { name: '去预览调整' }).click();
-    const overrideWarning = '已明确按实际总时长 25.60 秒继续（目标 15.00 秒）';
+    const overrideWarning = '实际总时长 25.60 秒与目标 15.00 秒不一致，已自动按实际时长继续';
     await page.getByText(overrideWarning, { exact: true }).waitFor();
     await page.getByRole('button', { name: '下一步：导出' }).click();
     await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();

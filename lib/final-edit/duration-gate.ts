@@ -101,6 +101,9 @@ export function stateFromDurationEvaluation(input: {
   checkedAt?: string;
 }): FinalEditDurationGateStateV1 {
   const { evaluation } = input;
+  const checkedAt = input.checkedAt || new Date().toISOString();
+  const durationReason = evaluation.status === 'within_tolerance' ? null : evaluation.status;
+  const usesActualDuration = durationReason !== null;
   return {
     version: 1,
     narrationHash: input.narrationHash,
@@ -110,10 +113,10 @@ export function stateFromDurationEvaluation(input: {
     actualTotalUs: evaluation.actualTotalUs,
     toleranceUs: evaluation.toleranceUs,
     deltaUs: evaluation.deltaUs,
-    status: evaluation.status === 'within_tolerance' ? 'within_tolerance' : 'needs_input',
-    reason: evaluation.status === 'within_tolerance' ? null : evaluation.status,
+    status: usesActualDuration ? 'accepted_actual' : 'within_tolerance',
+    reason: durationReason,
     smartFitAttempts: input.smartFitAttempts || 0,
-    checkedAt: input.checkedAt || new Date().toISOString(),
-    acceptedAt: null,
+    checkedAt,
+    acceptedAt: usesActualDuration ? checkedAt : null,
   };
 }

@@ -244,6 +244,8 @@
 .fieldLabel { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: var(--sub); font-size: 12px; font-weight: 500; }
 .fieldLabel select, .fieldLabel input, .fieldLabel textarea { box-sizing: border-box; width: 100%; min-width: 0; }
 .metaRow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 10px; color: var(--sub); font-size: 12px; }
+.metaWarning { color: #b76500; font-weight: 600; }
+.softDurationWarning { margin-top: 10px; padding: 9px 12px; border: .5px solid rgba(255, 159, 10, .28); border-radius: 9px; background: rgba(255, 159, 10, .08); color: #9a5700; font-size: 12px; }
 .rateRow { display: flex; align-items: center; gap: 12px; margin: 4px 0 16px; }
 .rateRow .rateLab { min-width: 28px; color: var(--sub); font-size: 12px; font-weight: 500; }
 .rateRow input[type='range'] { flex: 1; max-width: 300px; }
@@ -426,12 +428,6 @@
 .warningNotice, .errorNotice, .successNotice { display: flex; align-items: center; gap: 7px; padding: 10px 12px; border-radius: 10px; background: #fff7ed; color: #9a5b13; font-size: 12px; }
 .errorNotice { margin-top: 12px; background: #fff0f0; color: #a42b2b; }
 .successNotice { margin-top: 12px; background: #eef9f2; color: var(--green-ink); }
-.durationReviewGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.durationReviewGrid > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafafa; }
-.durationReviewGrid span { color: var(--sub); font-size: 11px; }
-.durationReviewGrid strong { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
-.durationReviewActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-@media (max-width: 760px) { .durationReviewGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .switchDialogBackdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(20, 20, 23, .28); backdrop-filter: blur(6px); }
 .switchDialog { width: min(440px, 100%); padding: 22px; border: .5px solid var(--line); border-radius: 18px; background: #fff; box-shadow: 0 28px 80px rgba(0, 0, 0, .2); }
 .switchDialog h2 { margin: 0; font-size: 17px; }

@@ -55,7 +55,6 @@ import { splitNarrationForDisplay } from '../subtitle-display.ts';
 import {
   createUncheckedDurationGateState,
   evaluateFinalDurationGate,
-  finalDurationGateAllowsProgress,
   parseDurationGateState,
   stateFromDurationEvaluation,
   type FinalEditDurationGateStateV1,
@@ -1094,45 +1093,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         targetTotalSec: script.targetDurationSec,
         actualNarrationUs: narration.durationUs,
       });
-      const durationConfirmed = finalDurationGateAllowsProgress({
-        state: previousDurationGate,
-        narrationHash,
-        evaluation: durationEvaluation,
-      });
-      const acceptedActual = durationEvaluation.status !== 'within_tolerance' && durationConfirmed;
       const evaluatedDurationGate = stateFromDurationEvaluation({
         narrationHash,
         evaluation: durationEvaluation,
         smartFitAttempts: previousDurationGate?.narrationHash === narrationHash ? previousDurationGate.smartFitAttempts : 0,
+        checkedAt: now(),
       });
-      const durationGateForRun: FinalEditDurationGateStateV1 = acceptedActual
-        ? {
-            ...evaluatedDurationGate,
-            status: 'accepted_actual',
-            reason: durationEvaluation.status === 'within_tolerance' ? null : durationEvaluation.status,
-            acceptedAt: previousDurationGate?.acceptedAt || now(),
-          }
-        : evaluatedDurationGate;
-      if (!durationConfirmed) {
-        db.transaction(() => {
-          db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status='needs_input', phase='duration_review', revision=revision+1, updatedAt=? WHERE id=?`).run(
-            narration.relativePath,
-            narration.durationUs,
-            serializeNarrationTimings(narration),
-            JSON.stringify(cues),
-            JSON.stringify(durationGateForRun),
-            now(),
-            groupId,
-          );
-          db.prepare(`UPDATE final_edit_jobs SET status='needs_input', phase='duration_review', progress=0.6, outputJson=?, errorCode='target_duration_out_of_tolerance', errorMessage=?, finishedAt=? WHERE id=? AND status='running'`).run(
-            JSON.stringify({ groupId, durationGate: durationGateForRun }),
-            durationEvaluation.status === 'too_long' ? '真实 TTS 时长超出目标' : '真实 TTS 时长低于目标',
-            now(),
-            jobId,
-          );
-        })();
-        return;
-      }
+      const durationGateForRun = evaluatedDurationGate;
       updateJob('matching', 0.6);
       const bgmTracks = await scanFinalEditBgm(db, storageRoot);
       const settings = db.prepare(`SELECT autoUseLimit FROM final_edit_project_settings WHERE projectId=?`).get(input.projectId) as { autoUseLimit: number } | undefined;
@@ -1332,7 +1299,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           ...(narration.alignmentDegradedSegmentIds || []).map((segmentId) => ({ code: 'alignment_degraded', severity: 'warning' as const, message: `句段 ${segmentId} 的字幕对齐已按真实音频时长降级`, targetId: segmentId })),
           ...(semanticResult.semanticFallback ? [{ code: 'semantic_fallback', severity: 'warning' as const, message: '语义评分不可用，本次已使用确定性关键词降级匹配' }] : []),
           ...(beatResult.fallback ? [{ code: 'beat_detection_fallback', severity: 'warning' as const, message: '未检测到可靠口播气口，本次未吸附切点' }] : []),
-          ...(durationGateForRun.status === 'accepted_actual' ? [{ code: 'duration_target_overridden', severity: 'warning' as const, message: `已明确按实际总时长 ${(durationGateForRun.actualTotalUs / 1_000_000).toFixed(2)} 秒继续（目标 ${(durationGateForRun.targetTotalUs / 1_000_000).toFixed(2)} 秒）` }] : []),
+          ...(durationGateForRun.status === 'accepted_actual' ? [{ code: 'duration_target_overridden', severity: 'warning' as const, message: `实际总时长 ${(durationGateForRun.actualTotalUs / 1_000_000).toFixed(2)} 秒与目标 ${(durationGateForRun.targetTotalUs / 1_000_000).toFixed(2)} 秒不一致，已自动按实际时长继续` }] : []),
           ...matchDiagnostics.backoffSentences
             .filter((segmentId) => !constraintFallbackSentenceIds.has(segmentId))
             .map((segmentId) => ({ code: 'match_backoff', severity: 'warning' as const, message: `句段 ${segmentId} 使用了语义地板外候选`, targetId: segmentId })),
@@ -2005,20 +1972,6 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const variant = group.variants.find((item) => item.id === input.variantId);
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
     if (group.revision !== input.expectedGroupRevision || variant.revision !== input.expectedVariantRevision) throw new FinalEditError('revision_conflict', '导出前版本已变化', 409);
-    const durationRow = db.prepare(`SELECT narrationHash, durationGateJson, narrationDurationUs FROM final_edit_groups WHERE id=?`).get(group.id) as { narrationHash: string; durationGateJson: string; narrationDurationUs: number };
-    const durationGate = parseDurationGateState(durationRow.durationGateJson);
-    if (durationGate) {
-      const currentEvaluation = evaluateFinalDurationGate({
-        targetTotalSec: durationGate.targetTotalUs / 1_000_000,
-        actualNarrationUs: durationRow.narrationDurationUs,
-      });
-      const confirmed = finalDurationGateAllowsProgress({
-        state: durationGate,
-        narrationHash: durationRow.narrationHash,
-        evaluation: currentEvaluation,
-      });
-      if (!confirmed) throw new FinalEditError('target_duration_unconfirmed', '真实口播时长仍超出目标，必须先确认处理方式', 409);
-    }
     const blocking = variant.issues.find((issue) => issue.severity === 'blocking');
     if (blocking) throw new FinalEditError(blocking.code, blocking.message);
     if (variant.cover.coverKey && db.prepare(`SELECT 1 FROM final_edit_variants WHERE groupId=? AND id<>? AND json_extract(coverJson, '$.coverKey')=? LIMIT 1`).get(group.id, variant.id, variant.cover.coverKey)) {

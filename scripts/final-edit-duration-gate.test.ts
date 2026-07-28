@@ -5,6 +5,7 @@ import {
   evaluateFinalDurationGate,
   finalDurationGateAllowsProgress,
   parseDurationGateState,
+  stateFromDurationEvaluation,
 } from '../lib/final-edit/duration-gate.ts';
 
 const within = evaluateFinalDurationGate({ targetTotalSec: 15, actualNarrationUs: 14_566_667 });
@@ -20,6 +21,11 @@ assert.equal(slightlyLong.deltaUs, 1_200_000);
 const muchTooLong = evaluateFinalDurationGate({ targetTotalSec: 15, actualNarrationUs: 24_766_667 });
 assert.equal(muchTooLong.actualTotalUs, 25_600_000);
 assert.equal(muchTooLong.status, 'too_long');
+
+const recordedMismatch = stateFromDurationEvaluation({ narrationHash: 'hash-a', evaluation: muchTooLong });
+assert.equal(recordedMismatch.status, 'accepted_actual', '真实口播时长只记录提醒，不得阻断继续生成');
+assert.equal(recordedMismatch.reason, 'too_long');
+assert.ok(recordedMismatch.acceptedAt);
 
 const shortTarget = evaluateFinalDurationGate({ targetTotalSec: 5, actualNarrationUs: 3_466_667 });
 assert.equal(shortTarget.toleranceUs, 500_000, '短目标仍有 0.5 秒最低容差');

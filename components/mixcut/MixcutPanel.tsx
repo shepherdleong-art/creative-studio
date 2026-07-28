@@ -45,6 +45,12 @@ interface MixcutDraftRef { id: string; shotSetId: string; revision: number }
 
 const MANUAL_SCRIPT_ID = '__manual__';
 
+function isLegacyDurationReviewJob<T extends Pick<MixcutPrepareJobView, 'status' | 'phase'>>(
+  job: T | null | undefined,
+): job is T & { status: 'needs_input'; phase: 'duration_review' } {
+  return job?.status === 'needs_input' && job.phase === 'duration_review';
+}
+
 export default function MixcutPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
   const [context, setContext] = useState<MixcutContextResponse | null>(null);
   const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
@@ -122,6 +128,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   const startRequestRef = useRef<{ sequence: number; shotSetId: string; controller: AbortController } | null>(null);
   const startSequenceRef = useRef(0);
   const submittingRef = useRef(false);
+  const durationAutoContinueRef = useRef('');
   const draftGroupRef = useRef<MixcutDraftRef | null>(null);
   const persistVersionRef = useRef(0);
   const lastSavedVersionRef = useRef(0);
@@ -246,12 +253,12 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
         if (jobPollRef.current !== token) return;
         setActiveJob(job);
         if (job.status === 'failed') setMessage(job.errorMessage || '智能创作任务失败');
-        if (job.status === 'needs_input' && job.phase === 'duration_review') {
+        if (isLegacyDurationReviewJob(job)) {
           const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
           if (jobPollRef.current !== token) return;
           setDurationReviewGroup(reviewGroup);
           setPreparedGroup(null);
-          setMessage('真实口播时长超出目标容差，请选择处理方式');
+          setMessage('检测到旧版时长审核任务，正在按实际时长自动继续');
         }
         if (job.status === 'succeeded') {
           const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${job.groupId}`));
@@ -274,7 +281,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
   }, [activeJobId, activeJobStatus]);
 
   useEffect(() => {
-    if (!activeJobId || activeJobStatus !== 'needs_input' || activeJob?.durationReview) return;
+    if (!activeJobId || !isLegacyDurationReviewJob(activeJob) || activeJob?.durationReview) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void (async () => {
@@ -285,7 +292,7 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       });
     }, 0);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [activeJob?.durationReview, activeJobId, activeJobStatus]);
+  }, [activeJob, activeJobId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -612,10 +619,10 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
       if (startRequestRef.current?.sequence !== sequence || startRequestRef.current.shotSetId !== requestShotSetId) return;
       setActiveJob({ ...job, groupId: jobRef.groupId });
       setPreparedGroup(null);
-      if (job.status === 'needs_input' && job.phase === 'duration_review') {
+      if (isLegacyDurationReviewJob(job)) {
         const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`, { signal: controller.signal }));
         setDurationReviewGroup(reviewGroup);
-        setMessage('真实口播时长超出目标容差，请选择处理方式');
+        setMessage('正在按实际时长自动继续');
       } else {
         setDurationReviewGroup(null);
         setMessage('后台任务已创建，可以离开页面后再返回查看');
@@ -645,46 +652,58 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
     setSpeed(group.script.narrationConfig.speed);
   }, []);
 
-  const resolveDuration = async (action: 'smart_fit' | 'retry_with_changes' | 'accept_actual') => {
-    if (!activeJob || !durationReviewGroup || submittingRef.current) return;
+  const continueLegacyDurationReview = useCallback(async () => {
+    if (!isLegacyDurationReviewJob(activeJob) || !durationReviewGroup || submittingRef.current) return;
+    const recoveryKey = `${activeJob.id}:${durationReviewGroup.id}:${durationReviewGroup.revision}`;
+    if (durationAutoContinueRef.current === recoveryKey) return;
+    durationAutoContinueRef.current = recoveryKey;
     submittingRef.current = true;
     setSubmitting(true);
-    setMessage('');
+    setMessage('检测到旧版时长审核任务，正在按实际时长自动继续');
     try {
       const jobRef = await readJson<{ id: string; groupId: string; status: string }>(await fetch(`/api/final-edit-groups/${encodeURIComponent(durationReviewGroup.id)}/duration-resolution`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           expectedRevision: durationReviewGroup.revision,
-          action,
-          ...(action === 'retry_with_changes' ? { editedNarrationText: scriptEditor.editedNarrationText, speed } : {}),
+          action: 'accept_actual',
         }),
       }));
       const job = await readJson<Omit<MixcutPrepareJobView, 'groupId'>>(await fetch(`/api/final-edit-jobs/${jobRef.id}`));
       setActiveJob({ ...job, groupId: jobRef.groupId });
       setDurationReviewGroup(null);
-      if (job.status === 'needs_input' && job.phase === 'duration_review') {
+      if (isLegacyDurationReviewJob(job)) {
         const reviewGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`));
         syncResolvedGroupScript(reviewGroup);
         setDurationReviewGroup(reviewGroup);
         setPreparedGroup(null);
-        setMessage('重新合成后仍超出目标容差，请继续修改或按实际时长继续');
+        durationAutoContinueRef.current = '';
+        setMessage('旧版时长审核任务尚未恢复，请刷新后重试');
       } else if (job.status === 'succeeded') {
         const completedGroup = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${jobRef.groupId}`));
         syncResolvedGroupScript(completedGroup);
         setPreparedGroup(completedGroup);
-        setMessage(action === 'accept_actual' ? '已按实际时长继续，预览和导出会持续显示提示' : '真实口播时长已通过，可以进入预览调整');
+        setMessage('实际口播时长已记录，智能创作已继续完成');
       } else {
         setPreparedGroup(null);
-        setMessage('处理任务已创建，可以离开页面后再返回查看');
+        setMessage('实际口播时长已记录，任务正在继续处理');
       }
     } catch (error) {
+      durationAutoContinueRef.current = '';
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
     }
-  };
+  }, [activeJob, durationReviewGroup, syncResolvedGroupScript]);
+
+  useEffect(() => {
+    if (!isLegacyDurationReviewJob(activeJob) || !durationReviewGroup) return;
+    const timeoutId = window.setTimeout(() => {
+      void continueLegacyDurationReview();
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeJob, continueLegacyDurationReview, durationReviewGroup]);
 
   const startDisabledReason = !selectedIds.length
     ? '请先选择至少一个可用素材'
@@ -836,7 +855,6 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                     job={activeJob}
                     elapsedSec={elapsedSec}
                     onStart={() => void startCreation()}
-                    onResolveDuration={(action) => void resolveDuration(action)}
                     onBack={() => setActiveStep(0)}
                     submitting={submitting}
                     startDisabledReason={startDisabledReason}

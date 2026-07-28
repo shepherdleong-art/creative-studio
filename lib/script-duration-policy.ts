@@ -24,25 +24,32 @@ export function estimateNarrationDurationSec(contentCharacterCount: number): num
   return Math.max(0, contentCharacterCount) / SCRIPT_CALIBRATED_CHARS_PER_SECOND;
 }
 
-export function buildScriptDurationBudget(targetTotalSec: number): ScriptDurationBudget {
-  if (!SCRIPT_DURATION_OPTIONS.includes(targetTotalSec as (typeof SCRIPT_DURATION_OPTIONS)[number])) {
-    throw new Error('unsupported_script_duration');
-  }
+export function buildScriptDurationAdvisory(targetTotalSec: number, speed = 1): ScriptDurationBudget {
+  if (!Number.isFinite(targetTotalSec) || targetTotalSec <= 0) throw new Error('invalid_script_duration');
+  if (!Number.isFinite(speed) || speed <= 0) throw new Error('invalid_script_speed');
   const introDurationSec = FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS;
-  const targetNarrationSec = targetTotalSec - introDurationSec;
+  const targetNarrationSec = Math.max(0, targetTotalSec - introDurationSec);
   const minEstimatedNarrationSec = targetNarrationSec * 0.9;
   const maxEstimatedNarrationSec = targetNarrationSec;
+  const effectiveCharsPerSecond = SCRIPT_CALIBRATED_CHARS_PER_SECOND * speed;
   return {
     targetTotalSec,
     introDurationSec,
     targetNarrationSec,
     minEstimatedNarrationSec,
     maxEstimatedNarrationSec,
-    minContentCharacters: Math.ceil(minEstimatedNarrationSec * SCRIPT_CALIBRATED_CHARS_PER_SECOND),
-    maxContentCharacters: Math.floor(maxEstimatedNarrationSec * SCRIPT_CALIBRATED_CHARS_PER_SECOND),
+    minContentCharacters: Math.ceil(minEstimatedNarrationSec * effectiveCharsPerSecond),
+    maxContentCharacters: Math.floor(maxEstimatedNarrationSec * effectiveCharsPerSecond),
     calibratedCharsPerSecond: SCRIPT_CALIBRATED_CHARS_PER_SECOND,
     policyVersion: SCRIPT_DURATION_POLICY_VERSION,
   };
+}
+
+export function buildScriptDurationBudget(targetTotalSec: number): ScriptDurationBudget {
+  if (!SCRIPT_DURATION_OPTIONS.includes(targetTotalSec as (typeof SCRIPT_DURATION_OPTIONS)[number])) {
+    throw new Error('unsupported_script_duration');
+  }
+  return buildScriptDurationAdvisory(targetTotalSec);
 }
 
 export const SCRIPT_DURATION_BUDGETS = Object.fromEntries(
