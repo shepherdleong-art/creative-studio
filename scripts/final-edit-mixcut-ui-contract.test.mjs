@@ -104,7 +104,9 @@ assert.match(timeline, /overflow|timelineScroll/, '时间轴必须提供真实�
 assert.match(timeline, /reorder_clips/, '片段拖动排序必须只提交一个原子 command');
 assert.match(timeline, /视频[\s\S]*字幕[\s\S]*口播[\s\S]*BGM/, '正式时间轴必须显示四条共享坐标轨');
 assert.match(timeline, /aria-label=\{contextMenu\.kind === 'video' \? '视频片段操作' : '口播音频变速'\}/, '口播音频轨必须提供独立右键变速菜单');
-assert.match(timeline, /生成新版本/, '口播变速必须明确创建新版本，不能伪装成只影响播放器的速度控制');
+assert.match(timeline, /type="range"[\s\S]{0,160}aria-label="音频倍速拉条"/, '口播变速必须使用 0.5x～2.0x 拉条，而不是平铺倍速按钮');
+assert.match(timeline, /type="number"[\s\S]{0,120}aria-label="音频倍速数值"/, '倍速拉条必须配套可精确输入的同步数值框');
+assert.match(timeline, /onNarrationSpeedChange\(narrationSpeedDraft\)/, '口播变速必须在确认后生成独立版本，不能伪装成只影响播放器的速度控制');
 assert.match(styles, /\.tlLabels\s*{[^}]*flex-shrink:\s*0/s, '轨道标签必须位于横向滚动容器外并保持可见');
 assert.match(styles, /\.tlScroll\s*{[^}]*overflow-x:\s*auto/s, '正式时间轴必须允许横向滚动');
 assert.deepEqual([...new Set([...panel.matchAll(/localStorage\.(?:getItem|setItem)\('([^']+)'/g)].map((match) => match[1]))], ['mixcut-layout-v2'], '浏览器 storage 只能保存无业务含义的布局偏好');

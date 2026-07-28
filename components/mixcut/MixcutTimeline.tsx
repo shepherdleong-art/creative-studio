@@ -12,7 +12,18 @@ const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;
 const FRAME_US = Math.round(1_000_000 / FPS);
 const PX_PER_SECOND = 60; // V2 固定缩放（规格 §6.4），内容超宽靠横向滚动
 const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持一致
-const NARRATION_SPEED_OPTIONS = Array.from({ length: 16 }, (_, index) => Number((0.5 + index * 0.1).toFixed(1)));
+const NARRATION_SPEED_MIN = 0.5;
+const NARRATION_SPEED_MAX = 2;
+const NARRATION_SPEED_STEP = 0.1;
+
+function normalizeNarrationSpeed(value: number): number {
+  const stepped = Math.round(value / NARRATION_SPEED_STEP) * NARRATION_SPEED_STEP;
+  return Number(Math.max(NARRATION_SPEED_MIN, Math.min(NARRATION_SPEED_MAX, stepped)).toFixed(1));
+}
+
+function formatNarrationSpeedInput(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
 
 type TimelineContextMenu =
   | { kind: 'video'; clipId: string; x: number; y: number }
@@ -80,6 +91,8 @@ export function MixcutTimeline({
   const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
   const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
+  const [narrationSpeedDraft, setNarrationSpeedDraft] = useState(narrationSpeed);
+  const [narrationSpeedInput, setNarrationSpeedInput] = useState(() => formatNarrationSpeedInput(narrationSpeed));
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodySec = variant.timeline.bodyFrames / FPS;
   const totalSec = (INTRO_FRAMES + variant.timeline.bodyFrames) / FPS;
@@ -210,10 +223,12 @@ export function MixcutTimeline({
               event.preventDefault();
               event.stopPropagation();
               if (disabled) return;
+              setNarrationSpeedDraft(narrationSpeed);
+              setNarrationSpeedInput(formatNarrationSpeedInput(narrationSpeed));
               setContextMenu({
                 kind: 'narration',
-                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 244)),
-                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 214)),
+                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 356)),
+                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 224)),
               });
             }}
           >
@@ -236,7 +251,7 @@ export function MixcutTimeline({
       {contextMenu && typeof document !== 'undefined' && createPortal(
         <div className={styles.timelineContextLayer} onPointerDown={() => setContextMenu(null)}>
           <div
-            role="menu"
+            role={contextMenu.kind === 'video' ? 'menu' : 'dialog'}
             aria-label={contextMenu.kind === 'video' ? '视频片段操作' : '口播音频变速'}
             className={`${styles.timelineContextMenu} ${contextMenu.kind === 'narration' ? styles.timelineSpeedMenu : ''}`}
             style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -258,24 +273,56 @@ export function MixcutTimeline({
               >删除片段</button>
             ) : (
               <>
-                <div className={styles.timelineContextTitle}>调整音频倍速（生成独立新版本）</div>
-                <div className={styles.timelineSpeedGrid}>
-                  {NARRATION_SPEED_OPTIONS.map((option) => {
-                    const current = Math.abs(option - narrationSpeed) < 0.001;
-                    return (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        key={option}
-                        aria-label={`${option.toFixed(1)}x · ${current ? '当前版本' : '生成新版本'}`}
-                        disabled={disabled || current}
-                        onClick={() => {
-                          setContextMenu(null);
-                          onNarrationSpeedChange(option);
-                        }}
-                      >{option.toFixed(1)}x<span>{current ? '当前' : '新版本'}</span></button>
-                    );
-                  })}
+                <div className={styles.timelineContextTitle}>调整音频倍速</div>
+                <div className={styles.timelineSpeedHint} id="mixcut-narration-speed-help">调整后生成独立新版本，当前版本会保留。</div>
+                <div className={styles.timelineSpeedControl}>
+                  <label htmlFor="mixcut-narration-speed-range">倍速</label>
+                  <div className={styles.timelineSpeedRow}>
+                    <input
+                      id="mixcut-narration-speed-range"
+                      type="range"
+                      aria-label="音频倍速拉条"
+                      aria-describedby="mixcut-narration-speed-help"
+                      min={NARRATION_SPEED_MIN}
+                      max={NARRATION_SPEED_MAX}
+                      step={NARRATION_SPEED_STEP}
+                      value={narrationSpeedDraft}
+                      onChange={(event) => {
+                        const value = normalizeNarrationSpeed(Number(event.currentTarget.value));
+                        setNarrationSpeedDraft(value);
+                        setNarrationSpeedInput(formatNarrationSpeedInput(value));
+                      }}
+                    />
+                    <input
+                      type="number"
+                      aria-label="音频倍速数值"
+                      min={NARRATION_SPEED_MIN}
+                      max={NARRATION_SPEED_MAX}
+                      step={NARRATION_SPEED_STEP}
+                      value={narrationSpeedInput}
+                      onChange={(event) => {
+                        const rawValue = event.currentTarget.value;
+                        setNarrationSpeedInput(rawValue);
+                        if (rawValue.trim() === '') return;
+                        const value = Number(rawValue);
+                        if (Number.isFinite(value)) setNarrationSpeedDraft(normalizeNarrationSpeed(value));
+                      }}
+                      onBlur={() => setNarrationSpeedInput(formatNarrationSpeedInput(narrationSpeedDraft))}
+                    />
+                  </div>
+                  <div className={styles.timelineSpeedScale} aria-hidden="true"><span>0.5x</span><span>1.0x</span><span>1.5x</span><span>2.0x</span></div>
+                </div>
+                <div className={styles.timelineSpeedActions}>
+                  <button type="button" onClick={() => setContextMenu(null)}>取消</button>
+                  <button
+                    type="button"
+                    className={styles.timelineSpeedConfirm}
+                    disabled={disabled || Math.abs(narrationSpeedDraft - narrationSpeed) < 0.001}
+                    onClick={() => {
+                      setContextMenu(null);
+                      onNarrationSpeedChange(narrationSpeedDraft);
+                    }}
+                  >生成 {narrationSpeedDraft.toFixed(1)}x 新版本</button>
                 </div>
               </>
             )}
