@@ -10,13 +10,10 @@ import type {
   ProviderMeta,
   AnalysisInput,
   AnalysisResult,
-  ScriptInput,
-  ProviderScriptResult,
 } from './types';
 import {
   chatCompletion,
   buildAnalysisPrompt,
-  buildScriptPrompt,
   completeOpenAiCompatibleJson,
   parseJsonResponse,
 } from './openai-compatible';
@@ -25,8 +22,7 @@ import {
   completeOpenAiResponsesJson,
   usesOpenAiResponses,
 } from './openai-responses';
-import { geminiAnalyzeSellingPoints, geminiCompleteJson, geminiGenerateScript } from './gemini';
-import type { ScriptOutput } from './types';
+import { geminiAnalyzeSellingPoints, geminiCompleteJson } from './gemini';
 import { toScriptProviderMeta } from './config';
 import {
   listScriptProviderMeta,
@@ -39,14 +35,11 @@ export type {
   ProviderMeta,
   AnalysisInput,
   AnalysisResult,
-  ScriptInput,
   ScriptOutput,
-  ProviderScriptResult,
   ScriptSegment,
   DroppedShot,
   SellingPointMapEntry,
   SelectedSellingPoint,
-  ShotContext,
   SellingPointRanking,
   ScriptStrategyAnalysisV3,
   ScriptOutputV3,
@@ -134,36 +127,4 @@ export async function analyzeSellingPoints(
   }, runtime);
 
   return parseJsonResponse<AnalysisResult>(rawText, config.name);
-}
-
-export async function generateScript(
-  input: ScriptInput,
-  providerId: string
-): Promise<ProviderScriptResult> {
-  checkConfigured(providerId);
-  const runtime = resolveStoredScriptProvider(providerId);
-
-  const systemPrompt =
-    'You are a professional e-commerce short-video scriptwriter. Always respond with valid JSON only, no markdown fences.';
-  const userPrompt = buildScriptPrompt(input);
-
-  if (runtime.apiStyle === 'native-gemini') {
-    return geminiGenerateScript(input, runtime);
-  }
-
-  const config = resolveConfig(providerId);
-
-  const completion = usesOpenAiResponses(runtime.apiStyle) ? responsesChatCompletion : chatCompletion;
-  const rawText = await completion(config, {
-    systemPrompt,
-    userPrompt,
-    temperature: 0.7,
-    maxTokens: runtime.maxTokens,
-    responseFormat: 'json_object',
-    images: input.shots.map((shot) => ({ mimeType: shot.mimeType, imageBase64: shot.imageBase64 })),
-  }, runtime);
-
-  const script = parseJsonResponse<ScriptOutput>(rawText, config.name);
-
-  return { script, provider: providerId, model: runtime.model };
 }

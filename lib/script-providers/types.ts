@@ -52,36 +52,6 @@ export interface SelectedSellingPoint {
   reason: string;
 }
 
-/** 一张候选分镜图，连同它的真实像素（base64）一起发给多模态模型。 */
-export interface ShotContext {
-  shotId: string;
-  shotIndex: number;
-  sourceFilename: string;
-  /** 模型实际看到的那张图（= 将来做成视频的那张）。 */
-  imageAssetId: string;
-  mimeType: string;
-  imageBase64: string;
-}
-
-export interface ScriptInput {
-  projectName: string;
-  productName: string;
-  productCode: string;
-  productCategory: string;
-  targetAudience: string;
-  tone: string;
-  platform: string;
-  selectedSellingPoints: SelectedSellingPoint[];
-  templateId: string;
-  templateName: string;
-  /** 取代旧的自由文本 duration。成片目标时长的唯一来源。 */
-  targetDurationSec: number;
-  shotSetId: string;
-  shots: ShotContext[];
-  sceneReference?: string;
-  videoTemplates?: string[];
-}
-
 /** 一句口播 ↔ 一张画面。数组顺序 = 叙事顺序 = 成片画面顺序。 */
 export interface ScriptSegment {
   shotId: string;
@@ -156,12 +126,6 @@ export interface ScriptOutputV3 {
 
 export type StoredScriptOutput = ScriptOutput | ScriptOutputV3;
 
-export interface ProviderScriptResult {
-  script: ScriptOutput;
-  provider: string;
-  model: string;
-}
-
 // ── Provider Metadata ──
 
 export type ApiStyle = 'native-gemini' | 'openai-compatible' | 'openai-responses';
@@ -192,14 +156,4 @@ export interface ProviderMeta {
   missing?: string[];
   maxTokens?: number;
   visionCostPerRequest?: number;
-}
-
-// ── Provider Interface ──
-
-export interface ScriptProvider {
-  readonly config: ProviderConfig;
-  isConfigured(): boolean;
-  getModel(): string;
-  analyzeSellingPoints(input: AnalysisInput): Promise<AnalysisResult>;
-  generateScript(input: ScriptInput): Promise<ProviderScriptResult>;
 }

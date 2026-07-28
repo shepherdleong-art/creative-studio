@@ -17,9 +17,6 @@ import type {
   ProviderMeta,
   AnalysisInput,
   AnalysisResult,
-  ScriptInput,
-  ScriptOutput,
-  ProviderScriptResult,
 } from './types';
 import type { ScriptProviderRuntimeConfig } from './config';
 import { resolveStoredScriptProvider } from './store';
@@ -27,7 +24,6 @@ import {
   chatCompletion,
   parseJsonResponse,
   buildAnalysisPrompt,
-  buildScriptPrompt,
 } from './openai-compatible';
 
 // ── Provider Config ──
@@ -166,18 +162,6 @@ export async function geminiAnalyzeSellingPoints(input: AnalysisInput, runtime?:
 
   const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object', runtime);
   return parseJsonResponse<AnalysisResult>(rawText, 'Gemini');
-}
-
-export async function geminiGenerateScript(input: ScriptInput, runtime?: ScriptProviderRuntimeConfig): Promise<ProviderScriptResult> {
-  const systemPrompt = 'You are a professional e-commerce short-video scriptwriter. Always respond with valid JSON only, no markdown fences.';
-  const userPrompt = buildScriptPrompt(input);
-
-  const rawText = await geminiCall(systemPrompt, userPrompt, 'json_object', runtime, {
-    images: input.shots.map((shot) => ({ mimeType: shot.mimeType, imageBase64: shot.imageBase64 })),
-  });
-  const script = parseJsonResponse<ScriptOutput>(rawText, 'Gemini');
-
-  return { script, provider: 'gemini', model: runtime?.model || getGeminiModel() };
 }
 
 export async function geminiCompleteJson<T>(input: {
