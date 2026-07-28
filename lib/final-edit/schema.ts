@@ -187,6 +187,12 @@ export const FINAL_EDIT_MIGRATIONS: ReadonlyArray<{ version: number; sql: string
         ON project_artifacts(sourceJobId, kind);
     `,
   },
+  {
+    version: 10,
+    sql: `
+      ALTER TABLE final_edit_groups ADD COLUMN durationGateJson TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
 ];
 
 export function initFinalEditSchema(db: Database.Database): void {

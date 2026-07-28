@@ -3,6 +3,7 @@ import { getDb } from '../db';
 import { dataRoot } from '../data-root';
 import { probeVideoMedia } from '../ffmpeg';
 import { completeJson, estimateVisionAnalysisCost, getAvailableProviders } from '../script-providers';
+import { fitNarrationTextToDuration } from '../script-generation-v3';
 import { createFinalEditWorkspace, type FinalEditWorkspaceRuntime } from './workspace';
 import { analyzeVideoWithVision } from './adapters/video-analysis';
 import { createOpenAiAlignmentAdapter, type AlignmentAdapter } from './adapters/alignment';
@@ -55,6 +56,13 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
       userPrompt: input.userPrompt,
       temperature: input.temperature,
       maxTokens: input.maxTokens,
+    }),
+    fitNarrationDuration: ({ providerId, script, actualNarrationUs, targetNarrationUs }) => fitNarrationTextToDuration({
+      script,
+      actualNarrationUs,
+      targetNarrationUs,
+    }, {
+      completeJson: (request) => completeJson({ providerId, ...request }),
     }),
     log: (input) => writeLog(input),
     detectBeatPoints,

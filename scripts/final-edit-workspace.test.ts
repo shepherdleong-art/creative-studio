@@ -80,7 +80,7 @@ const script = {
   version: 2,
   title: '温柔包裹，慢享生活',
   coverTitleParts: { primary: '温柔包裹', secondary: '慢享生活' },
-  platform: '小红书', tone: '温柔', targetDurationSec: 15, template: '种草', shotSetId: 'set-a',
+  platform: '小红书', tone: '温柔', targetDurationSec: 20, template: '种草', shotSetId: 'set-a',
   sellingPointMap: [], droppedShots: [], fullScript: '第一段第二段',
   segments: [
     { id: 'seg-1', shotId: 's1', imageAssetId: 'img-s1', narration: '第一段', subtitle: '第一段', rationale: '' },
@@ -90,6 +90,8 @@ const script = {
 db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('script-1', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(script));
 
 const synthesizedNarrations: string[][] = [];
+let synthesizedDurationUs = 18_500_000;
+let smartFitCalls = 0;
 const warmedPreviewPaths: string[] = [];
 let semanticScoreCalls = 0;
 const analysisFailures = new Set<string>();
@@ -131,20 +133,28 @@ const workspace = createFinalEditWorkspace({
     return { relativePath };
   },
   estimateAnalysisCost: ({ requestCount }) => requestCount * 0.1,
+  fitNarrationDuration: async ({ script }) => {
+    smartFitCalls += 1;
+    return {
+      editedNarrationText: script.segments
+        .map((segment, index) => `贴合后的第${index + 1}段口播`)
+        .join('\n'),
+    };
+  },
   synthesize: async ({ segments }) => {
     synthesizedNarrations.push(segments.map((segment) => segment.narration));
     return ({
     relativePath: 'final-edits/test/narration.wav',
-    durationUs: 18_500_000,
+    durationUs: synthesizedDurationUs,
     segmentTimings: segments.map((segment, index) => ({
       segmentId: segment.segmentId,
-      startUs: Math.round(index * 18_500_000 / segments.length),
-      endUs: Math.round((index + 1) * 18_500_000 / segments.length),
+      startUs: Math.round(index * synthesizedDurationUs / segments.length),
+      endUs: Math.round((index + 1) * synthesizedDurationUs / segments.length),
     })),
     wordTimings: segments.map((segment, index) => ({
       text: segment.narration,
-      startUs: Math.round(index * 18_500_000 / segments.length),
-      endUs: Math.round((index + 1) * 18_500_000 / segments.length),
+      startUs: Math.round(index * synthesizedDurationUs / segments.length),
+      endUs: Math.round((index + 1) * synthesizedDurationUs / segments.length),
     })),
     alignmentDegradedSegmentIds: degradeAlignment ? segments.map((segment) => segment.segmentId) : [],
   }); },
@@ -251,8 +261,111 @@ await workspace.start(fallbackInput);
 assert.equal(semanticScoreCalls, fallbackCallsBefore + 3, 'LLM 恢复后必须重新评分并写入缓存（自愈）');
 await workspace.start(fallbackInput);
 assert.equal(semanticScoreCalls, fallbackCallsBefore + 3, '自愈后的成功矩阵必须命中缓存，零 LLM 调用');
+
+const durationGateScript = {
+  version: 3,
+  title: '真实时长闸门',
+  coverTitleParts: { primary: '真实时长', secondary: '闸门测试', source: 'system_split' },
+  targetDurationSec: 15,
+  shotSetId: 'set-a',
+  fullScript: '第一段真实口播。第二段真实口播。',
+  segments: [
+    { id: 'duration-seg-1', narration: '第一段真实口播。', subtitle: '不采信模型字幕', sellingPointRefs: ['舒适'], visualIntent: '沙发全景', visualKeywords: ['沙发'] },
+    { id: 'duration-seg-2', narration: '第二段真实口播。', subtitle: '仍不采信模型字幕', sellingPointRefs: ['面料'], visualIntent: '面料细节', visualKeywords: ['面料'] },
+  ],
+};
+db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('script-duration-v3', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(durationGateScript));
+const durationStartInput = {
+  projectId: 'p1', scriptDraftId: 'script-duration-v3', count: 1 as const, outputPreset: '3x4' as const,
+  providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
+};
+
+synthesizedDurationUs = 14_566_667;
+const withinToleranceJob = await workspace.start(durationStartInput);
+assert.equal(withinToleranceJob.status, 'succeeded', '15.4 秒总时长应落在 15 秒目标的容差内');
+assert.equal(workspace.load(withinToleranceJob.groupId).durationGate?.status, 'within_tolerance');
+
+synthesizedDurationUs = 15_366_667;
+const semanticCallsBeforeDurationPause = semanticScoreCalls;
+const slightlyLongJob = await workspace.start(durationStartInput);
+assert.equal(slightlyLongJob.status, 'needs_input', '16.2 秒总时长必须暂停等待用户处理');
+const slightlyLongGroup = workspace.load(slightlyLongJob.groupId);
+assert.equal(slightlyLongGroup.status, 'needs_input');
+assert.equal(slightlyLongGroup.phase, 'duration_review');
+assert.equal(slightlyLongGroup.durationGate?.reason, 'too_long');
+assert.equal(slightlyLongGroup.variants.length, 0, '真实时长未确认前不得生成 variant');
+assert.ok(slightlyLongGroup.subtitleCues.length > 0, '暂停前必须持久化已生成的 TTS 字幕');
+assert.equal(semanticScoreCalls, semanticCallsBeforeDurationPause, '时长闸门必须位于语义匹配之前');
+await workspace.resumePrepareJob(slightlyLongJob.id);
+assert.equal((db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(slightlyLongJob.id) as { status: string }).status, 'needs_input', '恢复任务不得把等待用户输入的 job 重新排队');
+
+synthesizedDurationUs = 24_766_667;
+const synthesizedCountBeforeAccept = synthesizedNarrations.length;
+const farTooLongJob = await workspace.start(durationStartInput);
+assert.equal(farTooLongJob.status, 'needs_input', '25.6 秒总时长必须暂停等待用户处理');
+const farTooLongGroup = workspace.load(farTooLongJob.groupId);
+const acceptedJob = await workspace.resolveDuration({
+  groupId: farTooLongGroup.id,
+  expectedRevision: farTooLongGroup.revision,
+  action: 'accept_actual',
+});
+assert.equal(acceptedJob.status, 'succeeded');
+assert.equal(synthesizedNarrations.length, synthesizedCountBeforeAccept + 1, '接受实际时长必须复用首次 TTS，不得再次合成');
+const acceptedGroup = workspace.load(farTooLongGroup.id);
+assert.equal(acceptedGroup.durationGate?.status, 'accepted_actual');
+assert.ok(acceptedGroup.variants[0].issues.some((issue) => issue.code === 'duration_target_overridden' && issue.severity === 'warning'));
+const acceptedGate = acceptedGroup.durationGate!;
+db.prepare(`UPDATE final_edit_groups SET durationGateJson=? WHERE id=?`).run(JSON.stringify({ ...acceptedGate, status: 'needs_input', acceptedAt: null }), acceptedGroup.id);
+await assert.rejects(
+  workspace.enqueueRender({
+    groupId: acceptedGroup.id,
+    variantId: acceptedGroup.variants[0].id,
+    expectedGroupRevision: acceptedGroup.revision,
+    expectedVariantRevision: acceptedGroup.variants[0].revision,
+    overlayBundleId: 'not-reached',
+  }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'target_duration_unconfirmed',
+  '渲染前必须基于当前 narration hash 再执行一次时长闸门',
+);
+db.prepare(`UPDATE final_edit_groups SET durationGateJson=? WHERE id=?`).run(JSON.stringify(acceptedGate), acceptedGroup.id);
+
+synthesizedDurationUs = 15_366_667;
+const smartFitPausedJob = await workspace.start(durationStartInput);
+const smartFitPausedGroup = workspace.load(smartFitPausedJob.groupId);
+const synthCountBeforeSmartFit = synthesizedNarrations.length;
+const smartFitJob = await workspace.resolveDuration({
+  groupId: smartFitPausedGroup.id,
+  expectedRevision: smartFitPausedGroup.revision,
+  action: 'smart_fit',
+});
+assert.equal(smartFitJob.status, 'needs_input', '贴合后真实 TTS 仍超限时必须再次暂停');
+assert.equal(smartFitCalls, 1);
+assert.equal(synthesizedNarrations.length, synthCountBeforeSmartFit + 1, '智能贴合必须废弃旧 TTS 并重新合成');
+const stillLongAfterFit = workspace.load(smartFitPausedGroup.id);
+assert.equal(stillLongAfterFit.durationGate?.smartFitAttempts, 1);
+await assert.rejects(
+  workspace.resolveDuration({ groupId: stillLongAfterFit.id, expectedRevision: stillLongAfterFit.revision, action: 'smart_fit' }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'duration_fit_already_used',
+  '同一成片组只允许一次智能贴合',
+);
+synthesizedDurationUs = 14_566_667;
+const retryJob = await workspace.resolveDuration({
+  groupId: stillLongAfterFit.id,
+  expectedRevision: stillLongAfterFit.revision,
+  action: 'retry_with_changes',
+  editedNarrationText: '手工修改第一段。\n手工修改第二段。',
+  speed: 1.1,
+});
+assert.equal(retryJob.status, 'succeeded');
+const retriedGroup = workspace.load(stillLongAfterFit.id);
+assert.equal(retriedGroup.durationGate?.status, 'within_tolerance');
+assert.equal(retriedGroup.durationGate?.smartFitAttempts, 1, '手工重试不得重置已使用的智能贴合次数');
+assert.equal(retriedGroup.script.narrationConfig.speed, 1.1);
+assert.equal(retriedGroup.script.editedNarrationText, '手工修改第一段。\n手工修改第二段。');
+synthesizedDurationUs = 18_500_000;
+
 assert.deepEqual(MIXCUT_PREPARE_PHASE_RANGES, {
-  analyzing: [0, 0.3], synthesizing: [0.3, 0.55], matching: [0.55, 0.8], previewing: [0.8, 1],
+  analyzing: [0, 0.3], synthesizing: [0.3, 0.55], duration_check: [0.55, 0.6], matching: [0.6, 0.82], previewing: [0.82, 1],
 });
 const schemaColumns = new Set((db.prepare(`PRAGMA table_info(final_edit_groups)`).all() as Array<{ name: string }>).map((column) => column.name));
 for (const name of ['editedNarrationText', 'scriptSyncState', 'sourceScriptUpdatedAt', 'selectedMaterialKeysJson']) assert.ok(schemaColumns.has(name), `missing migration column ${name}`);

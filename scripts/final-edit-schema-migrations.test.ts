@@ -53,7 +53,7 @@ initFinalEditSchema(db);
 
 const group = db.prepare(`
   SELECT scriptSnapshotJson, editedNarrationText, scriptSyncState,
-         sourceScriptUpdatedAt, selectedMaterialKeysJson
+         sourceScriptUpdatedAt, selectedMaterialKeysJson, durationGateJson
   FROM final_edit_groups WHERE id = 'legacy-group'
 `).get() as Record<string, unknown>;
 assert.equal(group.scriptSnapshotJson, '{"version":1,"title":"旧脚本"}');
@@ -61,6 +61,7 @@ assert.equal(group.editedNarrationText, '');
 assert.equal(group.scriptSyncState, 'synced');
 assert.equal(group.sourceScriptUpdatedAt, null);
 assert.equal(group.selectedMaterialKeysJson, '[]');
+assert.equal(group.durationGateJson, '{}');
 
 const variant = db.prepare(`
   SELECT timelineJson, previewRelativePath, matchDiagnosticsJson

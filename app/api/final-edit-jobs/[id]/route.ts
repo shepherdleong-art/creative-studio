@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import { parseDurationGateState } from '@/lib/final-edit/duration-gate';
+import { countScriptContentCharacters, estimateNarrationDurationSec } from '@/lib/script-duration-policy';
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -38,6 +40,24 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     }
     const publicRow = { ...row };
     delete publicRow.inputSnapshotJson;
-    return NextResponse.json({ ...publicRow, target, output });
+    let durationReview: Record<string, unknown> | null = null;
+    if (row.status === 'needs_input' && row.phase === 'duration_review' && typeof row.groupId === 'string') {
+      const group = getDb().prepare(`SELECT durationGateJson, editedNarrationText FROM final_edit_groups WHERE id=?`).get(row.groupId) as { durationGateJson: string; editedNarrationText: string } | undefined;
+      const gate = parseDurationGateState(group?.durationGateJson);
+      if (gate?.status === 'needs_input') {
+        durationReview = {
+          targetTotalSec: gate.targetTotalUs / 1_000_000,
+          targetNarrationSec: gate.targetNarrationUs / 1_000_000,
+          estimatedNarrationSec: estimateNarrationDurationSec(countScriptContentCharacters(group?.editedNarrationText || '')),
+          actualNarrationSec: gate.actualNarrationUs / 1_000_000,
+          actualTotalSec: gate.actualTotalUs / 1_000_000,
+          deltaSec: gate.deltaUs / 1_000_000,
+          toleranceSec: gate.toleranceUs / 1_000_000,
+          reason: gate.reason,
+          smartFitAvailable: gate.smartFitAttempts === 0,
+        };
+      }
+    }
+    return NextResponse.json({ ...publicRow, target, output, durationReview });
   } catch (error) { return finalEditErrorResponse(error); }
 }

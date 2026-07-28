@@ -17,6 +17,7 @@ import type {
   ScriptStrategyAnalysisV3,
   SelectedSellingPoint,
 } from './script-providers/types.ts';
+import type { MixcutTaskScriptSnapshot } from './final-edit/mixcut-script.ts';
 
 type JsonObject = Record<string, unknown>;
 
@@ -310,4 +311,53 @@ export async function generateScriptV3(
     throw new ScriptGenerationV3Error('script_contract_invalid', '模型两次修正后仍未返回有效脚本结构', details);
   }
   throw new ScriptGenerationV3Error('script_duration_unresolved', '模型两次修正后仍未达到时长要求', details);
+}
+
+export async function fitNarrationTextToDuration(
+  input: {
+    script: MixcutTaskScriptSnapshot;
+    actualNarrationUs: number;
+    targetNarrationUs: number;
+  },
+  dependencies: ScriptGenerationV3Dependencies,
+): Promise<{ editedNarrationText: string }> {
+  const budget = buildScriptDurationBudget(input.script.targetDurationSec);
+  const raw = object(await dependencies.completeJson({
+    systemPrompt: '你是电商短视频口播编辑。只返回完整 JSON，不新增事实，不改变音色或语速。',
+    userPrompt: JSON.stringify({
+      task: 'fit_narration_to_real_tts_duration',
+      actualNarrationSec: input.actualNarrationUs / 1_000_000,
+      targetNarrationSec: input.targetNarrationUs / 1_000_000,
+      targetContentCharacters: [budget.minContentCharacters, budget.maxContentCharacters],
+      segments: input.script.segments.map((segment) => ({
+        id: segment.id,
+        narration: segment.narration,
+        sellingPointRefs: segment.sellingPointRefs || [],
+        visualIntent: segment.visualIntent || '',
+        visualKeywords: segment.visualKeywords || [],
+      })),
+      requirements: [
+        '返回相同数量、相同顺序的 segments 和完整 narration',
+        '完整重写自然句，禁止末尾硬截断',
+        '保留已有卖点与事实，禁止新增参数或承诺',
+      ],
+    }),
+    temperature: 0.3,
+  }));
+  const rawSegments = Array.isArray(raw.segments) ? raw.segments : [];
+  const narrations = rawSegments.map((segment) => string(object(segment).narration)).filter(Boolean);
+  const fullScript = narrations.join('\n');
+  const contentCharacterCount = countScriptContentCharacters(fullScript);
+  if (narrations.length !== input.script.segments.length
+    || contentCharacterCount < budget.minContentCharacters
+    || contentCharacterCount > budget.maxContentCharacters) {
+    throw new ScriptGenerationV3Error('script_duration_unresolved', '智能贴合后仍未达到目标时长预算', {
+      targetNarrationSec: budget.targetNarrationSec,
+      estimatedNarrationSec: estimateNarrationDurationSec(contentCharacterCount),
+      contentCharacterCount,
+      targetCharacterRange: [budget.minContentCharacters, budget.maxContentCharacters],
+      attempts: 1,
+    });
+  }
+  return { editedNarrationText: fullScript };
 }

@@ -16,6 +16,7 @@ import {
   buildMixcutEditingScriptSnapshot,
   buildMixcutSemanticText,
   buildMixcutTaskScriptSnapshot,
+  normalizeNarrationText,
   type MixcutSourceScript,
   type MixcutTaskScriptSnapshot,
 } from './mixcut-script.ts';
@@ -51,6 +52,14 @@ import { extractMatchKeywords } from './match-keywords.ts';
 import { buildTtsAwareMatchSentences } from './match-sentence-refinement.ts';
 import type { BeatDetectionResult } from './beat-detect.ts';
 import { splitNarrationForDisplay } from '../subtitle-display.ts';
+import {
+  acceptedDurationGateMatchesNarration,
+  createUncheckedDurationGateState,
+  evaluateFinalDurationGate,
+  parseDurationGateState,
+  stateFromDurationEvaluation,
+  type FinalEditDurationGateStateV1,
+} from './duration-gate.ts';
 import {
   FINAL_EDIT_FPS,
   FINAL_EDIT_INTRO_DURATION_US,
@@ -171,6 +180,12 @@ export interface FinalEditWorkspaceDependencies {
     narrationHash: string;
     onSegmentComplete?: (completed: number, total: number) => void;
   }): Promise<NarrationArtifact>;
+  fitNarrationDuration?(input: {
+    providerId: string;
+    script: MixcutTaskScriptSnapshot;
+    actualNarrationUs: number;
+    targetNarrationUs: number;
+  }): Promise<{ editedNarrationText: string }>;
   warmPreview?(input: {
     jobId: string;
     groupId: string;
@@ -258,6 +273,15 @@ export interface EnqueueRenderInput {
   overlayBundleId: string;
 }
 
+export type DurationResolutionInput = {
+  groupId: string;
+  expectedRevision: number;
+} & (
+  | { action: 'smart_fit' }
+  | { action: 'retry_with_changes'; editedNarrationText: string; speed?: number }
+  | { action: 'accept_actual' }
+);
+
 export interface MutationResult {
   scope: 'group' | 'variant';
   view: FinalEditGroupView | FinalEditVariantView;
@@ -270,6 +294,7 @@ export interface FinalEditWorkspace {
   load(groupId: string): FinalEditGroupView;
   apply(command: FinalEditCommand): MutationResult;
   enqueueRender(input: EnqueueRenderInput): Promise<RenderJobRef>;
+  resolveDuration(input: DurationResolutionInput): Promise<JobRef>;
   // JUDGMENT CALL (new, not covered by JC-1..JC-5): the plan's illustrative
   // signature shows a synchronous MixcutContextResponse return, but JC-2
   // requires per-video probeVideoMedia (ffprobe subprocess) calls to
@@ -292,8 +317,9 @@ export { FinalEditError } from './errors.ts';
 export const MIXCUT_PREPARE_PHASE_RANGES = {
   analyzing: [0, 0.3],
   synthesizing: [0.3, 0.55],
-  matching: [0.55, 0.8],
-  previewing: [0.8, 1],
+  duration_check: [0.55, 0.6],
+  matching: [0.6, 0.82],
+  previewing: [0.82, 1],
 } as const;
 
 interface AssetRow {
@@ -868,6 +894,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       },
       narrationDurationUs: Number(group.narrationDurationUs),
       totalDurationUs: FINAL_EDIT_INTRO_DURATION_US + Number(group.narrationDurationUs),
+      durationGate: parseDurationGateState(group.durationGateJson),
       coverTitle: parseJson(String(group.coverTitleJson), { primary: { id: 'primary', text: script.title, textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } }),
       subtitleCues: parseJson<SubtitleCue[]>(String(group.subtitleStateJson), []),
       textStyles: normalizeTextStyles(parseJson(String(group.textStylesJson), buildStyles())),
@@ -920,7 +947,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   const prepare = async (jobId: string, groupId: string, input: StartFinalEditInput, script: ScriptSnapshot): Promise<void> => {
-    const phaseRank = (phase: string) => ['analyzing', 'synthesizing', 'matching', 'previewing'].indexOf(phase);
+    const phaseRank = (phase: string) => ['analyzing', 'synthesizing', 'duration_check', 'matching', 'previewing'].indexOf(phase);
     const updateJob = (phase: string, progress: number) => {
       const current = db.prepare(`SELECT phase, progress FROM final_edit_jobs WHERE id=? AND status='running'`).get(jobId) as { phase: string; progress: number } | undefined;
       if (!current) return;
@@ -1026,8 +1053,49 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       }
 
       updateJob('synthesizing', 0.55);
-      updateJob('matching', 0.55);
       const cues = reusingNarration ? existingCues : buildAlignedSubtitleCues(script, narration);
+      updateJob('duration_check', 0.56);
+      const durationRow = db.prepare(`SELECT durationGateJson FROM final_edit_groups WHERE id=?`).get(groupId) as { durationGateJson: string };
+      const previousDurationGate = parseDurationGateState(durationRow.durationGateJson);
+      const durationEvaluation = evaluateFinalDurationGate({
+        targetTotalSec: script.targetDurationSec,
+        actualNarrationUs: narration.durationUs,
+      });
+      const acceptedActual = acceptedDurationGateMatchesNarration(previousDurationGate, narrationHash);
+      const evaluatedDurationGate = stateFromDurationEvaluation({
+        narrationHash,
+        evaluation: durationEvaluation,
+        smartFitAttempts: previousDurationGate?.narrationHash === narrationHash ? previousDurationGate.smartFitAttempts : 0,
+      });
+      const durationGateForRun: FinalEditDurationGateStateV1 = acceptedActual
+        ? {
+            ...evaluatedDurationGate,
+            status: 'accepted_actual',
+            reason: durationEvaluation.status === 'within_tolerance' ? null : durationEvaluation.status,
+            acceptedAt: previousDurationGate?.acceptedAt || now(),
+          }
+        : evaluatedDurationGate;
+      if (durationEvaluation.status !== 'within_tolerance' && !acceptedActual) {
+        db.transaction(() => {
+          db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status='needs_input', phase='duration_review', revision=revision+1, updatedAt=? WHERE id=?`).run(
+            narration.relativePath,
+            narration.durationUs,
+            serializeNarrationTimings(narration),
+            JSON.stringify(cues),
+            JSON.stringify(durationGateForRun),
+            now(),
+            groupId,
+          );
+          db.prepare(`UPDATE final_edit_jobs SET status='needs_input', phase='duration_review', progress=0.6, outputJson=?, errorCode='target_duration_out_of_tolerance', errorMessage=?, finishedAt=? WHERE id=? AND status='running'`).run(
+            JSON.stringify({ groupId, durationGate: durationGateForRun }),
+            durationEvaluation.status === 'too_long' ? '真实 TTS 时长超出目标' : '真实 TTS 时长低于目标',
+            now(),
+            jobId,
+          );
+        })();
+        return;
+      }
+      updateJob('matching', 0.6);
       const bgmTracks = await scanFinalEditBgm(db, storageRoot);
       const settings = db.prepare(`SELECT autoUseLimit FROM final_edit_project_settings WHERE projectId=?`).get(input.projectId) as { autoUseLimit: number } | undefined;
       const autoUseLimit = Math.max(1, Math.min(10, Number(settings?.autoUseLimit || 2)));
@@ -1226,6 +1294,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
           ...(narration.alignmentDegradedSegmentIds || []).map((segmentId) => ({ code: 'alignment_degraded', severity: 'warning' as const, message: `句段 ${segmentId} 的字幕对齐已按真实音频时长降级`, targetId: segmentId })),
           ...(semanticResult.semanticFallback ? [{ code: 'semantic_fallback', severity: 'warning' as const, message: '语义评分不可用，本次已使用确定性关键词降级匹配' }] : []),
           ...(beatResult.fallback ? [{ code: 'beat_detection_fallback', severity: 'warning' as const, message: '未检测到可靠口播气口，本次未吸附切点' }] : []),
+          ...(durationGateForRun.status === 'accepted_actual' ? [{ code: 'duration_target_overridden', severity: 'warning' as const, message: `已明确按实际总时长 ${(durationGateForRun.actualTotalUs / 1_000_000).toFixed(2)} 秒继续（目标 ${(durationGateForRun.targetTotalUs / 1_000_000).toFixed(2)} 秒）` }] : []),
           ...matchDiagnostics.backoffSentences
             .filter((segmentId) => !constraintFallbackSentenceIds.has(segmentId))
             .map((segmentId) => ({ code: 'match_backoff', severity: 'warning' as const, message: `句段 ${segmentId} 使用了语义地板外候选`, targetId: segmentId })),
@@ -1236,9 +1305,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         ];
         const variantId = `prepare-${sha256(`${jobId}:${variantIndex}`).slice(0, 32)}`;
         variants.push({ id: variantId, indexNum: variantIndex, outputPreset: input.outputPreset, timeline, bgm: { trackId: bgmTracks.length ? bgmTracks[(variantIndex - 1) % bgmTracks.length].id : null, gainDb: -16, loop: true, fadeInSec: 0, fadeOutSec: 0.8 }, cover, issues, matchDiagnostics, maxOverlap: 0, revision: 0, lastRenderedRevision: null, renderStatus: null, previewUrl: null });
-        updateJob('matching', 0.55 + ((index + 1) / input.count) * 0.25);
+        updateJob('matching', 0.6 + ((index + 1) / input.count) * 0.22);
       }
-      updateJob('previewing', 0.8);
+      updateJob('previewing', 0.82);
       await new Promise<void>((resolve) => setImmediate(resolve));
       const previewPaths = new Map<string, string>();
       const narrationAbsolutePath = resolveStoragePath(storageRoot, narration.relativePath);
@@ -1270,10 +1339,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             variant.issues.push({ code: 'preview_failed', severity: 'warning', message: '低清预览生成失败，时间线已保留，可稍后重试' });
           }
         }
-        updateJob('previewing', 0.8 + ((index + 1) / variants.length) * 0.19);
+        updateJob('previewing', 0.82 + ((index + 1) / variants.length) * 0.17);
       }
       const transaction = db.transaction(() => {
-        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
+        db.prepare(`UPDATE final_edit_groups SET narrationAudioPath=?, narrationDurationUs=?, wordTimingsJson=?, subtitleStateJson=?, durationGateJson=?, status=?, phase='ready', revision=revision+1, updatedAt=? WHERE id=?`).run(narration.relativePath, narration.durationUs, serializeNarrationTimings(narration), JSON.stringify(cues), JSON.stringify(durationGateForRun), variants.some((variant) => variant.issues.some((issue) => issue.severity === 'blocking')) ? 'partial' : 'ready', now(), groupId);
         for (let index = 0; index < variants.length; index += 1) {
           const variant = variants[index];
           db.prepare(`INSERT INTO final_edit_variants (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, matchDiagnosticsJson, overlapJson, revision, previewRelativePath, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, ?, ?, ?)`).run(variant.id, groupId, variant.indexNum, variant.outputPreset, JSON.stringify(variant.timeline), JSON.stringify(variant.bgm), JSON.stringify(variant.cover), JSON.stringify(variant.issues), JSON.stringify(variant.matchDiagnostics || {}), previewPaths.get(variant.id) || null, now(), now());
@@ -1354,13 +1423,137 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const jobSnapshot = { version: 1 as const, input: normalizedInput, scriptSnapshot: script };
     const createdAt = now();
     db.transaction(() => {
-      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, executionInput.projectId, normalizedInput.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, executionInput.analysisProviderId || '', JSON.stringify({ providerId: executionInput.providerId, voice: executionInput.voice, speed: executionInput.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), createdAt, createdAt);
+      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, durationGateJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, executionInput.projectId, normalizedInput.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, executionInput.analysisProviderId || '', JSON.stringify({ providerId: executionInput.providerId, voice: executionInput.voice, speed: executionInput.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), JSON.stringify(createUncheckedDurationGateState({ narrationHash, targetTotalSec: script.targetDurationSec })), createdAt, createdAt);
       db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'analyzing', 0, ?, ?, ?, 'CNY', ?)`).run(jobId, executionInput.projectId, groupId, requestKey, JSON.stringify(jobSnapshot), estimatedCost, createdAt);
     })();
     if (deps.runJobsInline) await resumePrepareJob(jobId);
     else void resumePrepareJob(jobId);
     const status = (db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(jobId) as { status: string }).status;
     return { id: jobId, groupId, kind: 'prepare', status };
+  };
+
+  const resolveDuration = async (input: DurationResolutionInput): Promise<JobRef> => {
+    const row = db.prepare(`SELECT * FROM final_edit_groups WHERE id=?`).get(input.groupId) as Record<string, unknown> | undefined;
+    if (!row) throw new FinalEditError('group_not_found', '成片组不存在', 404);
+    if (Number(row.revision) !== input.expectedRevision) throw new FinalEditError('revision_conflict', '成片组已被其他操作更新', 409);
+    if (row.status !== 'needs_input' || row.phase !== 'duration_review') throw new FinalEditError('duration_review_required', '当前成片组不在真实时长确认状态', 409);
+    const latestJob = db.prepare(`SELECT id, status, phase, inputSnapshotJson FROM final_edit_jobs WHERE groupId=? AND kind='prepare' ORDER BY createdAt DESC, id DESC LIMIT 1`).get(input.groupId) as { id: string; status: string; phase: string; inputSnapshotJson: string } | undefined;
+    if (!latestJob || latestJob.status !== 'needs_input' || latestJob.phase !== 'duration_review') throw new FinalEditError('duration_state_stale', '最新准备任务不再等待时长确认', 409);
+    if (db.prepare(`SELECT 1 FROM final_edit_jobs WHERE groupId=? AND kind='prepare' AND status IN ('queued','running') LIMIT 1`).get(input.groupId)) {
+      throw new FinalEditError('prepare_already_running', '当前成片组已有准备任务运行中', 409);
+    }
+    const gate = parseDurationGateState(row.durationGateJson);
+    const narrationHash = String(row.narrationHash || '');
+    if (!gate || gate.status !== 'needs_input' || gate.narrationHash !== narrationHash) throw new FinalEditError('duration_state_stale', '真实时长状态与当前口播不一致', 409);
+    const storedSnapshot = parseJson<{ version?: number; input?: StartFinalEditInput; scriptSnapshot?: ScriptSnapshot } | null>(latestJob.inputSnapshotJson, null);
+    if (!storedSnapshot?.input || !storedSnapshot.scriptSnapshot) throw new FinalEditError('prepare_snapshot_invalid', '准备任务快照损坏', 409);
+
+    let script = parseJson<ScriptSnapshot>(String(row.scriptSnapshotJson), storedSnapshot.scriptSnapshot);
+    let nextNarrationConfig = parseJson<{ providerId: string; voice: string; speed: number }>(String(row.narrationConfigJson), {
+      providerId: storedSnapshot.input.providerId,
+      voice: storedSnapshot.input.voice,
+      speed: storedSnapshot.input.speed,
+    });
+    let nextHash = narrationHash;
+    let nextGate: FinalEditDurationGateStateV1;
+    let clearTts = false;
+
+    if (input.action === 'accept_actual') {
+      nextGate = { ...gate, status: 'accepted_actual', acceptedAt: now() };
+    } else {
+      let editedNarrationText = input.action === 'retry_with_changes'
+        ? normalizeNarrationText(input.editedNarrationText)
+        : '';
+      if (input.action === 'smart_fit') {
+        if (gate.smartFitAttempts >= 1) throw new FinalEditError('duration_fit_already_used', '智能贴合时长已经使用过一次', 409);
+        const providerId = String(row.analysisProviderId || '').trim();
+        if (!providerId || !deps.fitNarrationDuration) throw new FinalEditError('duration_fit_unavailable', '当前分析模型不可用于智能贴合，请手工修改文案或语速', 409);
+        const fitted = await deps.fitNarrationDuration({
+          providerId,
+          script,
+          actualNarrationUs: gate.actualNarrationUs,
+          targetNarrationUs: gate.targetNarrationUs,
+        });
+        editedNarrationText = normalizeNarrationText(fitted.editedNarrationText);
+      }
+      if (!editedNarrationText) throw new FinalEditError('narration_text_required', '请输入修改后的口播文案');
+      if (input.action === 'retry_with_changes' && input.speed !== undefined) {
+        validateTtsSpeed(input.speed);
+        nextNarrationConfig = { ...nextNarrationConfig, speed: input.speed };
+      }
+      const sourceScript: MixcutSourceScript | null = script.source === 'module3'
+        ? {
+            version: script.sourceScriptVersion || 2,
+            title: script.title,
+            coverTitleParts: script.coverTitleParts,
+            targetDurationSec: script.targetDurationSec,
+            shotSetId: String(row.shotSetId),
+            segments: script.sourceSegments || [],
+            fullScript: script.sourceNarrationText || '',
+          }
+        : null;
+      script = buildMixcutTaskScriptSnapshot({
+        sourceDraftId: script.sourceDraftId,
+        sourceScriptUpdatedAt: script.sourceScriptUpdatedAt,
+        sourceScript,
+        shotSetId: String(row.shotSetId),
+        editedNarrationText,
+      });
+      nextHash = sha256(JSON.stringify({
+        groupId: input.groupId,
+        narration: script.segments.map((segment) => segment.narration),
+        providerId: nextNarrationConfig.providerId,
+        voice: nextNarrationConfig.voice,
+        speed: nextNarrationConfig.speed,
+        adapterVersion: 1,
+      }));
+      nextGate = createUncheckedDurationGateState({
+        narrationHash: nextHash,
+        targetTotalSec: script.targetDurationSec,
+        smartFitAttempts: input.action === 'smart_fit' ? 1 : gate.smartFitAttempts,
+      });
+      clearTts = true;
+    }
+
+    const nextInput: StartFinalEditInput = {
+      ...storedSnapshot.input,
+      scriptDraftId: script.sourceDraftId || '',
+      shotSetId: String(row.shotSetId),
+      editedNarrationText: script.editedNarrationText,
+      providerId: nextNarrationConfig.providerId,
+      voice: nextNarrationConfig.voice,
+      speed: nextNarrationConfig.speed,
+    };
+    const jobId = uuidv4();
+    const requestKey = sha256(JSON.stringify({ kind: 'prepare-duration-resolution', groupId: input.groupId, jobId }));
+    db.transaction(() => {
+      const current = db.prepare(`SELECT revision, status, phase, narrationHash FROM final_edit_groups WHERE id=?`).get(input.groupId) as { revision: number; status: string; phase: string; narrationHash: string } | undefined;
+      if (!current || current.revision !== input.expectedRevision || current.status !== 'needs_input' || current.phase !== 'duration_review' || current.narrationHash !== narrationHash) {
+        throw new FinalEditError('duration_state_stale', '等待处理期间成片组状态已经变化', 409);
+      }
+      if ((db.prepare(`SELECT COUNT(*) AS count FROM final_edit_variants WHERE groupId=?`).get(input.groupId) as { count: number }).count > 0) {
+        throw new FinalEditError('duration_state_stale', '时长确认前不应存在成片 variant', 409);
+      }
+      if (clearTts) {
+        db.prepare(`UPDATE final_edit_groups SET scriptSnapshotJson=?, editedNarrationText=?, scriptSyncState=?, narrationHash=?, narrationConfigJson=?, narrationAudioPath=NULL, narrationDurationUs=0, wordTimingsJson='[]', subtitleStateJson='[]', durationGateJson=?, status='queued', phase='validating', revision=revision+1, updatedAt=? WHERE id=?`).run(
+          JSON.stringify(script), script.editedNarrationText, script.scriptSyncState, nextHash, JSON.stringify(nextNarrationConfig), JSON.stringify(nextGate), now(), input.groupId,
+        );
+      } else {
+        db.prepare(`UPDATE final_edit_groups SET durationGateJson=?, status='queued', phase='validating', revision=revision+1, updatedAt=? WHERE id=?`).run(JSON.stringify(nextGate), now(), input.groupId);
+      }
+      db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'analyzing', 0, ?, ?, 0, 'CNY', ?)`).run(
+        jobId,
+        String(row.projectId),
+        input.groupId,
+        requestKey,
+        JSON.stringify({ version: 1, input: nextInput, scriptSnapshot: script }),
+        now(),
+      );
+    })();
+    if (deps.runJobsInline) await resumePrepareJob(jobId);
+    else void resumePrepareJob(jobId);
+    const status = (db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(jobId) as { status: string }).status;
+    return { id: jobId, groupId: input.groupId, kind: 'prepare', status };
   };
 
   const resumePrepareJob = async (jobId: string) => {
@@ -1758,6 +1951,17 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const variant = group.variants.find((item) => item.id === input.variantId);
     if (!variant) throw new FinalEditError('variant_not_found', '成片草稿不存在', 404);
     if (group.revision !== input.expectedGroupRevision || variant.revision !== input.expectedVariantRevision) throw new FinalEditError('revision_conflict', '导出前版本已变化', 409);
+    const durationRow = db.prepare(`SELECT narrationHash, durationGateJson, narrationDurationUs FROM final_edit_groups WHERE id=?`).get(group.id) as { narrationHash: string; durationGateJson: string; narrationDurationUs: number };
+    const durationGate = parseDurationGateState(durationRow.durationGateJson);
+    if (durationGate) {
+      const currentEvaluation = evaluateFinalDurationGate({
+        targetTotalSec: durationGate.targetTotalUs / 1_000_000,
+        actualNarrationUs: durationRow.narrationDurationUs,
+      });
+      const confirmed = currentEvaluation.status === 'within_tolerance'
+        || acceptedDurationGateMatchesNarration(durationGate, durationRow.narrationHash);
+      if (!confirmed) throw new FinalEditError('target_duration_unconfirmed', '真实口播时长仍超出目标，必须先确认处理方式', 409);
+    }
     const blocking = variant.issues.find((issue) => issue.severity === 'blocking');
     if (blocking) throw new FinalEditError(blocking.code, blocking.message);
     if (variant.cover.coverKey && db.prepare(`SELECT 1 FROM final_edit_variants WHERE groupId=? AND id<>? AND json_extract(coverJson, '$.coverKey')=? LIMIT 1`).get(group.id, variant.id, variant.cover.coverKey)) {
@@ -1886,7 +2090,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
   };
 
   return {
-    preflight, start, ensureMixcutDraft, load, apply, enqueueRender, resumePrepareJob, getMixcutContext,
+    preflight, start, ensureMixcutDraft, load, apply, enqueueRender, resolveDuration, resumePrepareJob, getMixcutContext,
     listShotSetExternalAssets, importShotSetExternalAssets, resolveShotSetExternalAssetMedia, deleteShotSetExternalAsset,
   };
 }

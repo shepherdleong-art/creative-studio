@@ -1,4 +1,5 @@
 import type { MatchDiagnostics } from './audio-first-matcher.ts';
+import type { FinalEditDurationGateStateV1 } from './duration-gate.ts';
 
 export type OutputPresetId = '3x4' | '9x16' | '16x9';
 
@@ -168,6 +169,7 @@ export interface FinalEditGroupView {
   };
   narrationDurationUs: number;
   totalDurationUs: number;
+  durationGate: FinalEditDurationGateStateV1 | null;
   coverTitle: {
     primary: { id: 'primary'; text: string; textSource: 'script' | 'manual' };
     secondary: { id: 'secondary'; text: string; textSource: 'script' | 'manual' };
