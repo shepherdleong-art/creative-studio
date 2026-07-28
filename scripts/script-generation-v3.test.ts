@@ -68,7 +68,7 @@ assert.deepEqual([budget.minContentCharacters, budget.maxContentCharacters], [54
         },
         {
           id: 'segment-c',
-          narration: '5芯软弹层层释压，让每次坐下都轻松自在。',
+          narration: '5芯软弹层层释压，让每次坐下都轻松自在又安心。',
           sellingPointRefs: ['5芯软弹'],
           visualIntent: '坐垫回弹与材质细节',
           visualKeywords: ['回弹', '材质'],

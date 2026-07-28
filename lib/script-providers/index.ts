@@ -48,6 +48,10 @@ export type {
   SelectedSellingPoint,
   ShotContext,
   SellingPointRanking,
+  ScriptStrategyAnalysisV3,
+  ScriptOutputV3,
+  ScriptSegmentV3,
+  StoredScriptOutput,
 } from './types';
 
 export function getAvailableProviders(): ProviderMeta[] {

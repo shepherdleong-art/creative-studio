@@ -1,20 +1,16 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import {
-  generateScript,
-  analyzeSellingPoints,
+  completeJson,
   getAvailableProviders,
+  getProviderMeta,
 } from '@/lib/script-providers';
-import type {
-  AnalysisInput,
-  ScriptInput,
-  SelectedSellingPoint,
-  ShotContext,
-} from '@/lib/script-providers';
-import { v4 as uuidv4 } from 'uuid';
-import { normalizeScriptOutput, type NormalizeShotRow } from './normalize';
+import type { AnalysisInput } from '@/lib/script-providers';
+import {
+  analyzeScriptStrategyV3,
+  ScriptGenerationV3Error,
+} from '@/lib/script-generation-v3';
+import { generateAndPersistScriptV3 } from '@/lib/script-generation-v3-service';
 
 // ── POST: analyze | generate ──
 
@@ -38,6 +34,13 @@ export async function POST(
 
     return await handleGenerate(projectId, project, body);
   } catch (err) {
+    if (err instanceof ScriptGenerationV3Error) {
+      return NextResponse.json({
+        error: err.code,
+        message: err.message,
+        details: err.details,
+      }, { status: 422 });
+    }
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -105,7 +108,9 @@ async function handleAnalyze(
   }
 
   const input: AnalysisInput = { sellingPoints, targetAudience, platform };
-  const result = await analyzeSellingPoints(input, providerId);
+  const result = await analyzeScriptStrategyV3(input, {
+    completeJson: (request) => completeJson({ providerId, ...request }),
+  });
 
   // Persist analysis to DB
   const analysisJson = JSON.stringify({
@@ -127,165 +132,12 @@ async function handleAnalyze(
 async function handleGenerate(
   projectId: string,
   project: Record<string, unknown>,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
 ) {
-  const db = getDb();
-
-  // Require shotSetId
-  const shotSetId = body.shotSetId as string | undefined;
-  if (!shotSetId) {
-    return NextResponse.json({ error: '请选择要生成脚本的分镜组' }, { status: 400 });
-  }
-
-  // Verify shotSet belongs to this project
-  const shotSet = db.prepare(
-    `SELECT id, name FROM shot_sets WHERE id = ? AND projectId = ?`
-  ).get(shotSetId, projectId) as { id: string; name: string } | undefined;
-  if (!shotSet) {
-    return NextResponse.json({ error: '分镜组不存在或不属于当前项目' }, { status: 400 });
-  }
-
-  // 取模型该看的那张图：优先第 2 步生成的新分镜图，回退导入的原图。
-  // 这与 app/api/shot-sets/[id]/video-jobs/route.ts:48 的取图逻辑一致 ——
-  // 脚本看到的必须就是将来被做成视频的那一张。
-  const shotRows = db.prepare(`
-    SELECT s.id as shotId, s.indexNum,
-           COALESCE(s.latestGeneratedImageId, s.sourceImageId) as imageAssetId,
-           ia.path as imagePath, ia.filename as sourceFilename
-    FROM shots s
-    JOIN shot_sets ss ON ss.id = s.shotSetId
-    JOIN image_assets ia ON ia.id = COALESCE(s.latestGeneratedImageId, s.sourceImageId)
-    WHERE ss.projectId = ? AND ss.id = ?
-    ORDER BY s.indexNum
-  `).all(projectId, shotSetId) as Array<{
-    shotId: string;
-    indexNum: number;
-    imageAssetId: string;
-    imagePath: string;
-    sourceFilename: string;
-  }>;
-
-  if (shotRows.length === 0) {
-    return NextResponse.json({ error: '所选分镜组中没有分镜' }, { status: 400 });
-  }
-
-  const mimeByExt: Record<string, string> = {
-    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
-  };
-
-  const shots: ShotContext[] = [];
-  for (const row of shotRows) {
-    if (!fs.existsSync(row.imagePath)) continue; // 图文件丢了的分镜进不了候选
-    shots.push({
-      shotId: row.shotId,
-      shotIndex: row.indexNum,
-      sourceFilename: row.sourceFilename,
-      imageAssetId: row.imageAssetId,
-      mimeType: mimeByExt[path.extname(row.imagePath).toLowerCase()] || 'image/png',
-      imageBase64: fs.readFileSync(row.imagePath).toString('base64'),
-    });
-  }
-
-  if (shots.length === 0) {
-    return NextResponse.json({ error: '所选分镜组中没有可读取的分镜图片' }, { status: 400 });
-  }
-
-  // Load scene references
-  const sceneRefs = db.prepare(`
-    SELECT sr.name FROM scene_references sr
-    WHERE sr.projectId = ? AND sr.status = 'active'
-    LIMIT 1
-  `).all(projectId) as Array<{ name: string }>;
-
-  // Load video template names
-  const videoTemplates = db.prepare(`
-    SELECT DISTINCT vpt.name FROM video_jobs vj
-    JOIN video_prompt_templates vpt ON vpt.id = vj.templateId
-    WHERE vj.projectId = ? AND vj.templateId IS NOT NULL
-  `).all(projectId) as Array<{ name: string }>;
-
-  // Parse selected selling points from body
-  let selectedSellingPoints: SelectedSellingPoint[] = [];
-  if (Array.isArray(body.selectedSellingPoints)) {
-    selectedSellingPoints = body.selectedSellingPoints as SelectedSellingPoint[];
-  } else {
-    // Fallback: load from project sellingPointsJson
-    try {
-      const json = (project.sellingPointsJson as string) || '[]';
-      selectedSellingPoints = (JSON.parse(json) as Array<{ title: string; priority?: number }>).map((s) => ({
-        title: s.title,
-        priority: s.priority?.toString() || 'medium',
-        reason: '',
-      }));
-    } catch { /* ignore */ }
-  }
-
-  const templateId = (body.templateId as string) || 'scene_seeding';
-  const templateName = (body.templateName as string) || '场景种草';
-  const targetDurationSec = Number(body.targetDurationSec) > 0 ? Number(body.targetDurationSec) : 20;
-  const providerId = (body.providerId as string) || 'gemini';
-  const tone = (body.tone as string) || (project.scriptTone as string) || '种草';
-  const platform = (body.platform as string) || (project.scriptPlatform as string) || '通用';
-
-  const input: ScriptInput = {
-    projectName: (project.name as string) || '',
-    productName: (project.productName as string) || '',
-    productCode: (project.productCode as string) || '',
-    productCategory: (project.productCategory as string) || '',
-    targetAudience: (project.targetAudience as string) || '',
-    tone,
-    platform,
-    selectedSellingPoints,
-    templateId,
-    templateName,
-    targetDurationSec,
-    shotSetId,
-    shots,
-    sceneReference: sceneRefs[0]?.name,
-    videoTemplates: videoTemplates.map((t) => t.name),
-  };
-
-  const result = await generateScript(input, providerId);
-
-  // Validate and normalize output
-  const normalizeRows: NormalizeShotRow[] = shots.map((s) => ({
-    shotId: s.shotId,
-    indexNum: s.shotIndex,
-    imageAssetId: s.imageAssetId,
-  }));
-  const script = normalizeScriptOutput(result.script, normalizeRows, shotSetId, targetDurationSec);
-
-  // Save draft
-  const draftId = uuidv4();
-  db.prepare(`
-    INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
-    draftId,
-    projectId,
-    result.provider,
-    result.model,
-    JSON.stringify({
-      projectName: project.name,
-      shotSetId,
-      shotSetName: shotSet.name,
-      shotCount: shots.length,
-      selectedSellingPoints,
-      templateId,
-      templateName,
-      targetDurationSec,
-      targetAudience: project.targetAudience,
-      tone,
-      platform,
-      providerId,
-    }),
-    JSON.stringify(script)
-  );
-
-  return NextResponse.json({
-    draftId,
-    script,
-    provider: result.provider,
-    model: result.model,
+  const result = await generateAndPersistScriptV3({ projectId, project, body }, {
+    db: getDb(),
+    completeJson: (providerId, request) => completeJson({ providerId, ...request }),
+    providerMeta: getProviderMeta,
   });
+  return NextResponse.json(result.body, { status: result.status });
 }

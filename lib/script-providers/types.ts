@@ -26,6 +26,24 @@ export interface AnalysisResult {
   platformAdvice: string;
 }
 
+export interface ScriptStrategyAnalysisV3 {
+  version: 3;
+  rankings: Array<{
+    rank: number;
+    title: string;
+    priority: 'highest' | 'high' | 'medium' | 'low';
+    reason: string;
+  }>;
+  audienceInsight: string;
+  platformAdvice: string;
+  recommendedTemplate: {
+    id: string;
+    name: string;
+    reason: string;
+  };
+  recommendationSource: 'model' | 'system_fallback';
+}
+
 // ── Script Generation ──
 
 export interface SelectedSellingPoint {
@@ -102,6 +120,41 @@ export interface ScriptOutput {
   /** 各 segment narration 的拼接（派生字段）。 */
   fullScript: string;
 }
+
+export interface ScriptSegmentV3 {
+  id: string;
+  narration: string;
+  subtitle: string;
+  sellingPointRefs: string[];
+  visualIntent: string;
+  visualKeywords: string[];
+}
+
+export interface ScriptOutputV3 {
+  version: 3;
+  title: string;
+  coverTitleParts: {
+    primary: string;
+    secondary: string;
+    source: 'model' | 'system_split';
+  };
+  platform: string;
+  tone: string;
+  templateId: string;
+  template: string;
+  shotSetId: string;
+  targetDurationSec: number;
+  targetNarrationDurationSec: number;
+  contentCharacterCount: number;
+  estimatedNarrationDurationSec: number;
+  durationStatus: 'qualified';
+  durationPolicyVersion: 'zh-tts-budget-v1';
+  segments: ScriptSegmentV3[];
+  fullScript: string;
+  fullSubtitle: string;
+}
+
+export type StoredScriptOutput = ScriptOutput | ScriptOutputV3;
 
 export interface ProviderScriptResult {
   script: ScriptOutput;
