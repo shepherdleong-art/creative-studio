@@ -1267,6 +1267,45 @@ try {
     await page.getByRole('button', { name: /E2E 新版本 2/ }).waitFor();
     await page.getByRole('button', { name: '切换到会话 E2E 文案 版本 1', exact: true }).click();
     await page.locator('[data-track="video"]').waitFor();
+
+    const bgmHeading = page.getByRole('heading', { name: '背景音乐' });
+    const narrationSpeedHeading = page.getByRole('heading', { name: '口播音频变速' });
+    const coverButton = page.getByRole('button', { name: /视频封面设置/ });
+    await narrationSpeedHeading.waitFor();
+
+    const [bgmBox, narrationSpeedBox, coverBox] = await Promise.all([
+      bgmHeading.boundingBox(),
+      narrationSpeedHeading.boundingBox(),
+      coverButton.boundingBox(),
+    ]);
+    assert.ok(bgmBox && narrationSpeedBox && coverBox, '三个右栏卡片都必须可见并可测量');
+    assert.ok(bgmBox.y < narrationSpeedBox.y, '口播音频变速卡必须位于背景音乐之后');
+    assert.ok(narrationSpeedBox.y < coverBox.y, '口播音频变速卡必须位于视频封面设置之前');
+
+    const sidebarSpeedSlider = page.getByRole('slider', { name: '右侧音频倍速拉条', exact: true });
+    const sidebarSpeedNumber = page.getByRole('spinbutton', { name: '右侧音频倍速数值', exact: true });
+    assert.equal(await sidebarSpeedSlider.inputValue(), '1');
+    assert.equal(await sidebarSpeedNumber.inputValue(), '1');
+
+    await sidebarSpeedSlider.fill('1.2');
+    assert.equal(await page.locator('audio').first().evaluate((element) => element.playbackRate), 1.2, '右侧滑杆必须立即预览整轨倍速');
+    await sidebarSpeedSlider.dispatchEvent('pointerup');
+    await expectEventually(
+      () => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.2),
+      '右侧滑杆松手必须保存整轨倍速',
+    );
+
+    await page.locator('[data-track="narration"]').click({ button: 'right', position: { x: 120, y: 15 } });
+    assert.equal(await page.getByRole('slider', { name: '音频倍速拉条', exact: true }).inputValue(), '1.2', '右键弹层必须读取右侧刚保存的倍速');
+    await page.keyboard.press('Escape');
+
+    await page.getByRole('button', { name: '设置口播倍速为 1.5x', exact: true }).click();
+    await expectEventually(
+      () => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.5),
+      '快捷值必须保存整轨倍速',
+    );
+    assert.equal(startPostBodies.length, 2, '右侧调速不得创建 prepare 任务或新版本');
+
     const narrationTrack = page.locator('[data-track="narration"]');
     const playheadBeforeRightClick = await page.getByRole('button', { name: '拖动播放头' }).evaluate((element) => element.style.left);
     await narrationTrack.click({ button: 'right', position: { x: 120, y: 15 } });
@@ -1279,10 +1318,10 @@ try {
     await speedMenu.waitFor();
     assert.equal(await speedMenu.locator('[data-narration-speed-control]').count(), 1, '右键弹层必须使用共享倍速控件');
     assert.equal(await speedMenu.getByRole('button', { name: '设置口播倍速为 1.2x' }).count(), 0, '右键弹层保持紧凑，不显示快捷值');
-    const speedSlider = page.getByRole('slider', { name: '音频倍速拉条' });
-    const speedNumber = page.getByRole('spinbutton', { name: '音频倍速数值' });
-    assert.equal(await speedSlider.inputValue(), '1', '倍速拉条必须从当前版本倍速开始');
-    assert.equal(await speedNumber.inputValue(), '1', '右侧数值框必须同步显示当前版本倍速');
+    const speedSlider = speedMenu.getByRole('slider', { name: '音频倍速拉条', exact: true });
+    const speedNumber = speedMenu.getByRole('spinbutton', { name: '音频倍速数值', exact: true });
+    assert.equal(await speedSlider.inputValue(), '1.5', '倍速拉条必须从当前版本倍速开始');
+    assert.equal(await speedNumber.inputValue(), '1.5', '右侧数值框必须同步显示当前版本倍速');
     await speedSlider.fill('1.3');
     assert.equal(await speedNumber.inputValue(), '1.3', '拖动拉条必须同步更新右侧数值框');
     await page.getByText(/锁定口播 · 1\.3x/).waitFor();
@@ -1302,6 +1341,8 @@ try {
     await page.keyboard.press('Escape');
     await expectEventually(() => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.4), '按 Esc 关闭倍速弹层时也必须自动保存刚刚预览的当前音轨倍速');
     assert.equal(await speedMenu.count(), 0, 'Esc 保存后必须关闭倍速弹层');
+    assert.equal(await sidebarSpeedSlider.inputValue(), '1.4', '右键保存后右侧滑杆必须同步');
+    assert.equal(await sidebarSpeedNumber.inputValue(), '1.4', '右键保存后右侧数值框必须同步');
 
     await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
     await page.getByText('魅力女友', { exact: true }).click();

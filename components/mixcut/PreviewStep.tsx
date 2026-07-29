@@ -11,6 +11,7 @@ import { timelineGaps } from '@/lib/final-edit/domain';
 import { hasLegacyAutomaticSubtitleCuesToNormalize } from '@/lib/final-edit/subtitle-cue-normalize';
 import { FINAL_EDIT_FPS, FINAL_EDIT_MIN_CLIP_FRAMES, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
 import { MixcutTimeline } from './MixcutTimeline';
+import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
 import { TrimEditor } from './TrimEditor';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
 import styles from './MixcutPanel.module.css';
@@ -419,7 +420,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       </main>
       <div className={styles.rz} role="separator" aria-orientation="vertical" title="拖拽调整宽度" onPointerDown={onResizeStart('rgt')} />
 
-      {/* 右栏：字幕样式 / 背景音乐 / 封面 */}
+      {/* 右栏：字幕样式 / 背景音乐 / 口播音频变速 / 封面 */}
       <aside className={styles.rightCol}>
         <button type="button" className={styles.collapseBtn} title="隐藏面板" onClick={() => onRgtCollapse(true)}>›</button>
         <button type="button" className={styles.expandBtn} title="展开面板" onClick={() => onRgtCollapse(false)}>‹</button>
@@ -460,6 +461,24 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             <input type="range" min={0} max={5} step={0.1} defaultValue={variant.bgm.fadeOutSec} key={`fade-out-${variant.revision}`} disabled={busy} onChange={(event) => void applyVariant((current) => ({ type: 'set_bgm_fades', fadeInSec: current.bgm.fadeInSec, fadeOutSec: Number(event.target.value) }))} aria-label="淡出（秒）" />
             <span className={styles.ctlVal}>{variant.bgm.fadeOutSec}s</span>
           </div>
+        </section>
+
+        <section className={styles.rcard} data-testid="mixcut-narration-speed-card">
+          <h4><Icon name="speaker" size={15} />口播音频变速</h4>
+          <div className={styles.narrationSpeedSummary}>
+            <span>整条口播音轨</span>
+            <strong>{group.script.narrationConfig.playbackRate.toFixed(1)}x</strong>
+          </div>
+          <p className={styles.narrationSpeedCardHint}>同步调整口播、字幕与成片时长</p>
+          <NarrationPlaybackRateControl
+            idPrefix="mixcut-narration-sidebar-speed"
+            value={group.script.narrationConfig.playbackRate}
+            disabled={busy}
+            showPresets
+            ariaLabelPrefix="右侧音频倍速"
+            onPreview={previewNarrationPlaybackRate}
+            onCommit={(playbackRate) => void applyGroup({ type: 'set_narration_playback_rate', playbackRate })}
+          />
         </section>
 
         <section className={styles.rcard}>

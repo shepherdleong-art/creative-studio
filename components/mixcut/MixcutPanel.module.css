@@ -420,6 +420,10 @@
 .rcard { flex-shrink: 0; padding: 18px; border-radius: 14px; background: var(--paper); box-shadow: var(--sh-sm); }
 .rcard > h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 14px; font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
 .rcard > h4 svg { color: var(--sub); }
+.narrationSpeedSummary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--sub); font-size: 12px; }
+.narrationSpeedSummary strong { color: var(--blue); font-size: 13px; font-variant-numeric: tabular-nums; }
+.narrationSpeedCardHint { margin: 0 0 12px; color: var(--faint); font-size: 11px; line-height: 1.45; }
+.rcard .timelineSpeedControl { padding: 11px 10px 9px; }
 .ctlRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
 .ctlRow:last-child { margin-bottom: 0; }
 .ctlLab { min-width: 52px; color: var(--sub); font-size: 12px; }
