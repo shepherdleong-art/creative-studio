@@ -1277,6 +1277,8 @@ try {
     );
     const speedMenu = page.getByRole('dialog', { name: '口播音频变速' });
     await speedMenu.waitFor();
+    assert.equal(await speedMenu.locator('[data-narration-speed-control]').count(), 1, '右键弹层必须使用共享倍速控件');
+    assert.equal(await speedMenu.getByRole('button', { name: '设置口播倍速为 1.2x' }).count(), 0, '右键弹层保持紧凑，不显示快捷值');
     const speedSlider = page.getByRole('slider', { name: '音频倍速拉条' });
     const speedNumber = page.getByRole('spinbutton', { name: '音频倍速数值' });
     assert.equal(await speedSlider.inputValue(), '1', '倍速拉条必须从当前版本倍速开始');

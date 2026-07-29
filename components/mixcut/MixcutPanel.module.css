@@ -373,6 +373,10 @@
 .timelineSpeedRow input[type='number'] { box-sizing: border-box; width: 76px; height: 38px; flex-shrink: 0; border: .5px solid rgba(0, 0, 0, .12); border-radius: 10px; outline: none; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .08); color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; padding: 0 10px 0 12px; }
 .timelineSpeedRow input[type='number']:focus { border-color: var(--blue); box-shadow: 0 0 0 3.5px rgba(0, 113, 227, .15); }
 .timelineSpeedScale { display: flex; justify-content: space-between; margin-top: 8px; margin-right: 88px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.narrationSpeedPresets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 13px; }
+.narrationSpeedPresets button { min-height: 24px; padding: 0 9px; border: 0; border-radius: 999px; background: var(--blue-wash); color: var(--blue); font-size: 10px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.narrationSpeedPresets button[aria-pressed='true'] { background: var(--blue); color: #fff; }
+.narrationSpeedPresets button:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Trim 截取条 */
 .trim { flex-shrink: 0; margin-bottom: 10px; }
