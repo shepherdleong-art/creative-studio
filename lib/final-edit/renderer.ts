@@ -52,6 +52,10 @@ export function clipFilter(index: number, preset: OutputPresetId, framing: Final
   return `[${index}:v]fps=24,scale=${width}:${height}:force_original_aspect_ratio=increase,scale=iw*${scale.toFixed(4)}:ih*${scale.toFixed(4)},crop=${width}:${height}:'(iw-${width})/2+${offsetX.toFixed(4)}*(iw-${width})/2':'(ih-${height})/2+${offsetY.toFixed(4)}*(ih-${height})/2',setsar=1,format=yuv420p[v${index}]`;
 }
 
+export function subtitleOverlayEnableExpression(startSec: number, endSec: number): string {
+  return 'gte(t,' + startSec.toFixed(6) + ')*lt(t,' + endSec.toFixed(6) + ')';
+}
+
 export async function renderFinalEditSnapshot(input: {
   jobId: string;
   storageRoot: string;
@@ -132,7 +136,7 @@ export async function renderFinalEditSnapshot(input: {
     const next = `subtitle${index}`;
     const start = (FINAL_EDIT_INTRO_DURATION_US + cue.startUs / narrationPlaybackRate) / 1_000_000;
     const end = (FINAL_EDIT_INTRO_DURATION_US + cue.endUs / narrationPlaybackRate) / 1_000_000;
-    filters.push(`[${currentVideo}][${subtitleStartInput + index}:v]overlay=0:0:enable='between(t,${start.toFixed(6)},${end.toFixed(6)})'[${next}]`);
+    filters.push(`[${currentVideo}][${subtitleStartInput + index}:v]overlay=0:0:enable='${subtitleOverlayEnableExpression(start, end)}'[${next}]`);
     currentVideo = next;
   });
   const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;

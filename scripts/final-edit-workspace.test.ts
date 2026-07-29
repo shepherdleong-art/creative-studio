@@ -619,6 +619,75 @@ const restoredAutomatic = workspace.apply({
 }).view as typeof group;
 assert.ok(restoredAutomatic.subtitleCues.every((cue) => cue.textSource === 'script'), '只有显式恢复自动字幕才允许替换 manual Cue');
 
+const exactTwoFrameSplitCue = {
+  id: 'exact-two-frame-split', segmentId: 'seg-exact', text: '甲乙',
+  startUs: 0, endUs: 83_333, textSource: 'script', timingSource: 'aligned',
+};
+db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=? WHERE id=?`).run(JSON.stringify([exactTwoFrameSplitCue]), group.id);
+const beforeExactFrameSplit = workspace.load(group.id);
+const exactFrameSplitGroup = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: beforeExactFrameSplit.revision,
+  type: 'split_subtitle_cue', cueId: exactTwoFrameSplitCue.id, splitUs: 41_667, leftText: '甲', rightText: '乙',
+}).view as typeof group;
+assert.deepEqual(
+  exactFrameSplitGroup.subtitleCues.map((cue) => [cue.text, cue.startUs, cue.endUs]),
+  [['甲', 0, 41_667], ['乙', 41_667, 83_333]],
+  '两帧 Cue 必须能按精确 24fps 中间帧拆分',
+);
+const exactRightCue = exactFrameSplitGroup.subtitleCues[1];
+const exactFrameTrimmedGroup = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: exactFrameSplitGroup.revision,
+  type: 'trim_subtitle_cue', cueId: exactRightCue.id, startUs: exactRightCue.startUs, endUs: exactRightCue.endUs,
+}).view as typeof group;
+assert.equal(exactFrameTrimmedGroup.subtitleCues[1].endUs - exactFrameTrimmedGroup.subtitleCues[1].startUs, 41_666, '合法的相邻帧区间必须能继续修剪保存');
+
+const halfFrameEdgeCue = { ...exactTwoFrameSplitCue, id: 'half-frame-edge', startUs: 20_833, endUs: 62_500 };
+db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=? WHERE id=?`).run(JSON.stringify([halfFrameEdgeCue]), group.id);
+const beforeHalfFrameSplit = workspace.load(group.id);
+assert.throws(
+  () => workspace.apply({
+    scope: 'group', groupId: group.id, expectedRevision: beforeHalfFrameSplit.revision,
+    type: 'split_subtitle_cue', cueId: halfFrameEdgeCue.id, splitUs: 20_834, leftText: '甲', rightText: '乙',
+  }),
+  (error: unknown) => error instanceof FinalEditError && error.code === 'subtitle_out_of_range',
+  '后端不得接受实际任一侧不足一帧的非整帧切割',
+);
+
+const legacyAutomaticCues = [
+  { id: 'legacy-auto', segmentId: 'seg-1', text: '柔软 承托', startUs: 0, endUs: 1_000_000, textSource: 'script', timingSource: 'aligned' },
+  { id: 'manual-text', segmentId: 'seg-1', text: '人工 文本', startUs: 1_000_000, endUs: 2_000_000, textSource: 'manual', timingSource: 'aligned' },
+  { id: 'manual-timing', segmentId: 'seg-2', text: '人工 时间', startUs: 2_000_000, endUs: 3_000_000, textSource: 'script', timingSource: 'manual' },
+  { id: 'manual-split', segmentId: 'seg-2', text: '人工 拆分', startUs: 3_000_000, endUs: 4_000_000, textSource: 'manual', timingSource: 'manual' },
+] as const;
+db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=? WHERE id=?`).run(JSON.stringify(legacyAutomaticCues), group.id);
+const beforeSubtitleNormalization = workspace.load(group.id);
+const normalizedSubtitleGroup = workspace.apply({
+  scope: 'group', groupId: group.id, expectedRevision: beforeSubtitleNormalization.revision,
+  type: 'normalize_automatic_subtitles',
+}).view as typeof group;
+assert.equal(normalizedSubtitleGroup.revision, beforeSubtitleNormalization.revision + 1, '规范化必须作为单个原子 group revision 持久化');
+const normalizedAutomaticCues = normalizedSubtitleGroup.subtitleCues.filter((cue) => cue.segmentId === 'seg-1' && cue.textSource === 'script');
+assert.equal(normalizedAutomaticCues[0].id, 'legacy-auto', '规范化首段必须保留原 Cue ID');
+assert.match(normalizedAutomaticCues[1].id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u, '后续 Cue 必须使用 uuidv4');
+assert.deepEqual(
+  normalizedAutomaticCues.map((cue) => [cue.text, cue.startUs, cue.endUs, cue.timingSource]),
+  [
+    ['柔软', 0, 500_000, 'proportional'],
+    ['承托', 500_000, 1_000_000, 'proportional'],
+  ],
+  '符合条件的历史自动 Cue 必须保留首段 ID 并按帧边界拆分',
+);
+for (const manualCue of legacyAutomaticCues.slice(1)) {
+  assert.deepEqual(
+    normalizedSubtitleGroup.subtitleCues.find((cue) => cue.id === manualCue.id),
+    manualCue,
+    '人工文字、人工时间及人工拆分 Cue 必须保持不变',
+  );
+}
+assert.deepEqual(workspace.load(group.id).subtitleCues, normalizedSubtitleGroup.subtitleCues, '重新 load 后必须保留规范化结果');
+const normalizationRevision = db.prepare(`SELECT commandJson FROM final_edit_revisions WHERE scopeKind='group' AND scopeId=? AND revision=?`).get(group.id, normalizedSubtitleGroup.revision) as { commandJson: string };
+assert.equal(JSON.parse(normalizationRevision.commandJson).type, 'normalize_automatic_subtitles', 'revision history 必须记录原子规范化命令');
+
 const duplicateCover = workspace.apply({
   scope: 'variant', variantId: group.variants[1].id, expectedRevision: group.variants[1].revision,
   type: 'set_cover', coverKey: group.variants[0].cover.coverKey!,

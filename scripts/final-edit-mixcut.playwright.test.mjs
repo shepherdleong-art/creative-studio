@@ -414,7 +414,19 @@ try {
       if (pathname === '/api/final-edit-groups/group-e2e' && request.method() === 'PATCH') {
         const body = request.postDataJSON();
         groupPatchBodies.push(body);
-        if (body.type === 'set_narration_playback_rate') {
+        if (body.type === 'split_subtitle_cue') {
+          const cueIndex = savedGroup.subtitleCues.findIndex((cue) => cue.id === body.cueId);
+          assert.ok(cueIndex >= 0, 'split command cue must exist');
+          const cue = savedGroup.subtitleCues[cueIndex];
+          const subtitleCues = [...savedGroup.subtitleCues];
+          subtitleCues.splice(
+            cueIndex,
+            1,
+            { ...cue, id: cue.id + '-left', text: body.leftText, endUs: body.splitUs, textSource: 'manual', timingSource: 'manual' },
+            { ...cue, id: cue.id + '-right', text: body.rightText, startUs: body.splitUs, textSource: 'manual', timingSource: 'manual' },
+          );
+          savedGroup = { ...savedGroup, revision: savedGroup.revision + 1, subtitleCues };
+        } else if (body.type === 'set_narration_playback_rate') {
           savedGroup = {
             ...savedGroup,
             revision: savedGroup.revision + 1,
@@ -898,6 +910,31 @@ try {
     await page.mouse.move(contentBox.x + 1, playheadBox.y + playheadBox.height / 2, { steps: 4 });
     await page.mouse.up();
     await expectEventually(async () => Number(await playbackPosition.inputValue()) <= 1 / 24, '拖动播放头应回到封面 0 秒');
+
+    const selectTool = page.getByRole('button', { name: '选择工具' });
+    const splitTool = page.getByRole('button', { name: '分割工具' });
+    assert.equal(await selectTool.getAttribute('aria-pressed'), 'true', '时间轴必须默认处于选择模式');
+    await splitTool.click();
+    assert.equal(await splitTool.getAttribute('aria-pressed'), 'true', '点击分割工具后必须保持分割模式');
+    const cueABeforeSplit = page.locator('[data-cue-id="cue-a"]');
+    const cueABeforeSplitBox = await cueABeforeSplit.boundingBox();
+    assert.ok(cueABeforeSplitBox, '待分割字幕块必须可见');
+    const splitX = cueABeforeSplitBox.x + cueABeforeSplitBox.width / 2;
+    const splitY = cueABeforeSplitBox.y + cueABeforeSplitBox.height / 2;
+    await page.mouse.move(splitX, splitY);
+    await cueABeforeSplit.locator('i[aria-hidden="true"]').waitFor();
+    const splitResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-groups/group-e2e') && response.request().method() === 'PATCH');
+    await page.mouse.click(splitX, splitY);
+    await splitResponse;
+    const splitCommand = groupPatchBodies.at(-1);
+    assert.equal(splitCommand?.type, 'split_subtitle_cue', '分割模式点击字幕必须提交原子字幕分割 command');
+    assert.equal(splitCommand?.cueId, 'cue-a');
+    assert.equal(splitCommand?.leftText, '第一');
+    assert.equal(splitCommand?.rightText, '句');
+    await expectEventually(async () => await page.locator('[data-cue-id]').count() === 3, '服务端返回后时间轴必须显示两个分割结果');
+    assert.equal(await splitTool.getAttribute('aria-pressed'), 'true', '完成一次分割后必须保留分割模式以便连续操作');
+    await selectTool.click();
+    assert.equal(await selectTool.getAttribute('aria-pressed'), 'true', '用户必须能明确切回选择模式');
 
     const reorderResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
     const clipABeforeReorder = await page.locator('[data-clip-id="clip-a"]').boundingBox();

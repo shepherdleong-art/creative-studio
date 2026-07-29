@@ -92,6 +92,7 @@ assert.match(sidebar, /aria-current=\{session\.id === activeSessionId/, '最近�
 assert.match(panel, /draftGroupRef\.current = !selectedGroupId && editingGroup/, '打开历史会话后不得继续复用同分镜组的通用 editing 草稿');
 assert.match(previewStep, /expectedRevision:\s*currentVariant\.revision/, '视频编辑必须读取队列执行时的最新 variant revision');
 assert.match(previewStep, /expectedRevision:\s*currentGroup\.revision/, '字幕编辑必须读取队列执行时的最新 group revision');
+assert.match(previewStep, /const targetGroupId = groupRef\.current\.id[\s\S]{0,240}currentGroup\.id !== targetGroupId/, '字幕命令入队时必须绑定目标组，切组后不得误写新组');
 assert.match(previewStep, /queueRef\.current\.then\(work, work\)/, '连续编辑必须进入串行 command 队列，不能在 busy 时静默丢弃');
 assert.doesNotMatch(previewStep, /if\s*\(busy\)\s*return false/, '保存期间不得直接丢弃第二个编辑 command');
 assert.match(previewStep, /\/api\/final-edit-groups\/\$\{groupId\}/, '冲突或刷新必须重新读取服务端 group 权威状态');
@@ -105,6 +106,12 @@ assert.match(timeline, /const PX_PER_SECOND = 60/, 'V2 时间轴必须使用冻�
 assert.match(timeline, /overflow|timelineScroll/, '时间轴必须提供真实滚动容器');
 assert.match(timeline, /reorder_clips/, '片段拖动排序必须只提交一个原子 command');
 assert.match(timeline, /视频[\s\S]*字幕[\s\S]*口播[\s\S]*BGM/, '正式时间轴必须显示四条共享坐标轨');
+assert.match(timeline, /type TimelineTool = 'select' \| 'split'/, '时间轴必须提供互斥的选择/分割工具状态');
+assert.match(timeline, /aria-label="选择工具"[\s\S]*aria-label="分割工具"/, '时间轴工具栏必须按选择、分割顺序提供可访问按钮');
+assert.match(timeline, /name="scissors"/, '分割工具必须复用统一剪刀图标');
+assert.match(timeline, /planSubtitleCueSplit/, '字幕块点击分割必须复用可测试的切点和文字边界规划器');
+assert.match(timeline, /type: 'split_subtitle_cue'/, '分割工具必须通过现有原子字幕 command 持久化');
+assert.match(previewStep, /type: 'normalize_automatic_subtitles'/, '打开旧草稿时必须触发受保护的自动字幕空白重切命令');
 assert.match(timeline, /aria-label=\{contextMenu\.kind === 'video' \? '视频片段操作' : '口播音频变速'\}/, '口播音频轨必须提供独立右键变速菜单');
 assert.match(timeline, /type="range"[\s\S]{0,160}aria-label="音频倍速拉条"/, '口播变速必须使用 0.5x～2.0x 拉条，而不是平铺倍速按钮');
 assert.match(timeline, /type="number"[\s\S]{0,120}aria-label="音频倍速数值"/, '倍速拉条必须配套可精确输入的同步数值框');

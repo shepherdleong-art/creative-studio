@@ -8,6 +8,7 @@ import { drawText, textStyleFont } from '@/components/final-edit/text-canvas-ren
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { timelineGaps } from '@/lib/final-edit/domain';
+import { hasLegacyAutomaticSubtitleCuesToNormalize } from '@/lib/final-edit/subtitle-cue-normalize';
 import { FINAL_EDIT_FPS, FINAL_EDIT_MIN_CLIP_FRAMES, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
 import { MixcutTimeline } from './MixcutTimeline';
 import { TrimEditor } from './TrimEditor';
@@ -50,6 +51,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const queueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingRef = useRef(0);
   const mountedRef = useRef(true);
+  const applyGroupRef = useRef<(request: GroupCommandRequest) => Promise<boolean>>(async () => false);
+  const automaticSubtitleNormalizationRef = useRef(new Set<string>());
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === selectedMaterialKey) || null;
@@ -113,24 +116,41 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     }
   });
 
-  const applyGroup = (request: GroupCommandRequest): Promise<boolean> => enqueue(async () => {
-    const currentGroup = groupRef.current;
-    const command = typeof request === 'function' ? request(currentGroup) : request;
-    try {
-      const result = await responseBody<{ view: FinalEditGroupView }>(await fetch(`/api/final-edit-groups/${currentGroup.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedRevision: currentGroup.revision, ...command }),
-      }));
-      if (groupRef.current.id === currentGroup.id) publishGroup(result.view);
-      if (mountedRef.current) setMessage('已自动保存');
-      return true;
-    } catch (error) {
-      await reloadGroup(currentGroup.id).catch(() => undefined);
-      if (mountedRef.current) setMessage(`保存失败，已恢复服务端版本：${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    }
+  const applyGroup = (request: GroupCommandRequest): Promise<boolean> => {
+    const targetGroupId = groupRef.current.id;
+    return enqueue(async () => {
+      const currentGroup = groupRef.current;
+      if (currentGroup.id !== targetGroupId) return false;
+      const command = typeof request === 'function' ? request(currentGroup) : request;
+      try {
+        const result = await responseBody<{ view: FinalEditGroupView }>(await fetch(`/api/final-edit-groups/${currentGroup.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expectedRevision: currentGroup.revision, ...command }),
+        }));
+        if (groupRef.current.id === currentGroup.id) publishGroup(result.view);
+        if (mountedRef.current) setMessage('已自动保存');
+        return true;
+      } catch (error) {
+        await reloadGroup(currentGroup.id).catch(() => undefined);
+        if (mountedRef.current) setMessage(`保存失败，已恢复服务端版本：${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+    });
+  };
+  useEffect(() => {
+    applyGroupRef.current = applyGroup;
   });
+
+  useEffect(() => {
+    if (!hasLegacyAutomaticSubtitleCuesToNormalize(group.subtitleCues)) return;
+    const requestKey = group.id + ':' + group.revision;
+    if (automaticSubtitleNormalizationRef.current.has(requestKey)) return;
+    automaticSubtitleNormalizationRef.current.add(requestKey);
+    void applyGroupRef.current({ type: 'normalize_automatic_subtitles' }).then((accepted) => {
+      if (!accepted) automaticSubtitleNormalizationRef.current.delete(requestKey);
+    });
+  }, [group.id, group.revision, group.subtitleCues]);
 
   const previewSubtitleStyle = (style: FinalEditGroupView['textStyles']['3x4']['subtitle']) => {
     const current = groupRef.current;

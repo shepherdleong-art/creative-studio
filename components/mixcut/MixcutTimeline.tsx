@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from '@/components/ui/Icon';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditAssetView, type FinalEditVariantView, type SubtitleCue, type TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
+import { planSubtitleCueSplit, type SubtitleCueSplitPlan } from '@/components/final-edit/subtitle-split';
 import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
 import styles from './MixcutPanel.module.css';
 
@@ -28,6 +30,8 @@ function formatNarrationPlaybackRateInput(value: number): string {
 type TimelineContextMenu =
   | { kind: 'video'; clipId: string; x: number; y: number }
   | { kind: 'narration'; x: number; y: number };
+
+type TimelineTool = 'select' | 'split';
 
 function Waveform({ tone, seed, playedWidthPx }: { tone: 'tts' | 'bgm'; seed: number; playedWidthPx: number }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -95,6 +99,7 @@ export function MixcutTimeline({
   const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
   const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
+  const [tool, setTool] = useState<TimelineTool>('select');
   const [narrationPlaybackRateDraft, setNarrationPlaybackRateDraft] = useState(narrationPlaybackRate);
   const [narrationPlaybackRateInput, setNarrationPlaybackRateInput] = useState(() => formatNarrationPlaybackRateInput(narrationPlaybackRate));
   const narrationPlaybackRateDirtyRef = useRef(false);
@@ -172,7 +177,31 @@ export function MixcutTimeline({
   };
 
   return (
-    <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined}>
+    <div className={styles.tlShell}>
+      <div className={styles.tlToolbar} role="toolbar" aria-label="字幕时间轴工具">
+        <button
+          type="button"
+          aria-label="选择工具"
+          aria-pressed={tool === 'select'}
+          className={[styles.tlToolButton, tool === 'select' ? styles.tlToolButtonActive : ''].filter(Boolean).join(' ')}
+          disabled={disabled}
+          onClick={() => setTool('select')}
+        >
+          <span aria-hidden="true">↖</span>选择
+        </button>
+        <button
+          type="button"
+          aria-label="分割工具"
+          aria-pressed={tool === 'split'}
+          className={[styles.tlToolButton, tool === 'split' ? styles.tlToolButtonActive : ''].filter(Boolean).join(' ')}
+          disabled={disabled}
+          onClick={() => setTool('split')}
+        >
+          <Icon name="scissors" size={13} />分割
+        </button>
+        <span className={styles.tlToolHint}>{tool === 'split' ? '点击字幕块上的目标位置即可切开' : '拖动字幕块移动，拖两侧修剪，双击改字'}</span>
+      </div>
+      <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined} data-tool={tool}>
       <div className={styles.tlLabels}>
         <div className={styles.tlLab} style={{ height: 20 }} />
         <div className={styles.tlLab} style={{ height: 64 }}>视频</div>
@@ -230,6 +259,7 @@ export function MixcutTimeline({
                 selected={cue.id === selectedCueId}
                 anySelected={Boolean(selectedCueId)}
                 disabled={disabled}
+                tool={tool}
                 onSelect={onSelectCue}
                 onCommand={onGroupCommand}
                 onEditText={onEditCueText}
@@ -371,7 +401,8 @@ export function MixcutTimeline({
         </div>,
         document.body,
       )}
-    </section>
+      </section>
+    </div>
   );
 }
 
@@ -465,7 +496,7 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
   );
 }
 
-function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, onSelect, onCommand, onEditText }: {
+function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, tool, onSelect, onCommand, onEditText }: {
   cue: SubtitleCue;
   previousCue: SubtitleCue | null;
   nextCue: SubtitleCue | null;
@@ -475,6 +506,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
   selected: boolean;
   anySelected: boolean;
   disabled: boolean;
+  tool: TimelineTool;
   onSelect: (cueId: string) => void;
   onCommand: (command: GroupCommandInput) => Promise<boolean>;
   onEditText: (cueId: string, text: string) => void;
@@ -482,8 +514,19 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
   const initial = { startUs: cue.startUs, endUs: cue.endUs };
   const [draft, setDraft] = useState(initial);
   const [editing, setEditing] = useState(false);
+  const [splitPlan, setSplitPlan] = useState<SubtitleCueSplitPlan | null>(null);
+  const splitPlanFromPointer = (clientX: number, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0) return null;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return planSubtitleCueSplit({
+      cue: { ...cue, startUs: draft.startUs, endUs: draft.endUs },
+      requestedSplitUs: draft.startUs + (draft.endUs - draft.startUs) * ratio,
+      fps: FPS,
+    });
+  };
   const begin = (mode: 'move' | 'start' | 'end', event: React.PointerEvent<HTMLElement>) => {
-    if (disabled) return;
+    if (disabled || tool !== 'select') return;
     event.preventDefault();
     event.stopPropagation();
     onSelect(cue.id);
@@ -524,9 +567,26 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
       data-cue-id={cue.id}
       className={`${styles.subclip} ${selected ? styles.subclipSel : anySelected ? styles.subclipDim : ''}`}
       style={{ left: (INTRO_FRAMES / FPS + draft.startUs / 1_000_000 / playbackRate) * pxPerSecond, width: (draft.endUs - draft.startUs) / 1_000_000 / playbackRate * pxPerSecond }}
-      onPointerDown={(event) => begin('move', event)}
-      onDoubleClick={() => { if (!disabled) { onSelect(cue.id); setEditing(true); } }}
-      title="双击编辑文案"
+      onPointerMove={(event) => {
+        if (tool === 'split' && !disabled) setSplitPlan(splitPlanFromPointer(event.clientX, event.currentTarget));
+      }}
+      onPointerLeave={() => setSplitPlan(null)}
+      onPointerDown={(event) => {
+        if (tool === 'select') {
+          begin('move', event);
+          return;
+        }
+        if (disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const plan = splitPlanFromPointer(event.clientX, event.currentTarget);
+        if (!plan) return;
+        onSelect(cue.id);
+        setSplitPlan(null);
+        void onCommand({ type: 'split_subtitle_cue', cueId: cue.id, ...plan });
+      }}
+      onDoubleClick={() => { if (!disabled && tool === 'select') { onSelect(cue.id); setEditing(true); } }}
+      title={tool === 'split' ? '点击此处切开字幕' : '双击编辑文案'}
     >
       {editing ? (
         <input
@@ -544,9 +604,16 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
         />
       ) : (
         <>
-          <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪字幕开头" onPointerDown={(event) => begin('start', event)} />
+          {tool === 'split' && splitPlan && (
+            <i
+              className={styles.subtitleSplitPreview}
+              style={{ left: String((splitPlan.splitUs - draft.startUs) / Math.max(1, draft.endUs - draft.startUs) * 100) + '%' }}
+              aria-hidden="true"
+            />
+          )}
+          <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪字幕开头" onPointerDown={tool === 'select' ? (event) => begin('start', event) : undefined} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{cue.text}</span>
-          <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪字幕结尾" onPointerDown={(event) => begin('end', event)} />
+          <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪字幕结尾" onPointerDown={tool === 'select' ? (event) => begin('end', event) : undefined} />
         </>
       )}
     </article>

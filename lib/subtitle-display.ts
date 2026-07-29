@@ -8,6 +8,7 @@ export interface SubtitleDisplayPart {
 const ENDING_LANGUAGE_PUNCTUATION = new Set(Array.from('。！？!?；;…'));
 const WEAK_LANGUAGE_PUNCTUATION = new Set(Array.from('，,、：:'));
 const PAIRED_OR_QUOTE_PUNCTUATION = new Set(Array.from('“”‘’「」『』《》〈〉（）()【】[]｛｝{}'));
+const LATIN_LETTER_OR_DIGIT = /[\p{Script=Latin}\p{N}]/u;
 
 function isDigit(value: string | undefined): boolean {
   return value != null && /\p{N}/u.test(value);
@@ -24,6 +25,34 @@ function isNarrationBoundary(characters: string[], index: number): boolean {
   const character = characters[index];
   if (isSemanticPunctuation(characters, index)) return false;
   return ENDING_LANGUAGE_PUNCTUATION.has(character) || WEAK_LANGUAGE_PUNCTUATION.has(character) || character === '.';
+}
+
+export function splitSubtitleTextOnHardWhitespace(text: string): string[] {
+  const characters = Array.from(text);
+  const parts: string[] = [];
+  let current = '';
+  let index = 0;
+  while (index < characters.length) {
+    if (!/\s/u.test(characters[index])) {
+      current += characters[index];
+      index += 1;
+      continue;
+    }
+    const whitespaceStart = index;
+    while (index < characters.length && /\s/u.test(characters[index])) index += 1;
+    const whitespace = characters.slice(whitespaceStart, index).join('');
+    const left = characters[whitespaceStart - 1];
+    const right = characters[index];
+    const isWordSpacing = Array.from(whitespace).every((character) => character === ' ' || character === '\u3000');
+    if (isWordSpacing && LATIN_LETTER_OR_DIGIT.test(left || '') && LATIN_LETTER_OR_DIGIT.test(right || '')) {
+      current += whitespace;
+    } else if (current.trim()) {
+      parts.push(current.trim());
+      current = '';
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
 }
 
 function splitLongPart(sourceText: string, maxContentCharacters: number): string[] {
@@ -70,18 +99,19 @@ export function splitNarrationForDisplay(
   const maxContentCharacters = Math.max(1, Math.trunc(options.maxContentCharacters || 22));
   const normalizedNarration = narration.replace(/\r\n?/gu, '\n').trim();
   if (!normalizedNarration) return [];
-  const characters = Array.from(normalizedNarration);
   const candidates: string[] = [];
-  let current = '';
-  for (let index = 0; index < characters.length; index += 1) {
-    const character = characters[index];
-    current += character;
-    if (character === '\n' || isNarrationBoundary(characters, index)) {
-      if (current.trim()) candidates.push(current.trim());
-      current = '';
+  for (const whitespacePart of splitSubtitleTextOnHardWhitespace(normalizedNarration)) {
+    const characters = Array.from(whitespacePart);
+    let current = '';
+    for (let index = 0; index < characters.length; index += 1) {
+      current += characters[index];
+      if (isNarrationBoundary(characters, index)) {
+        if (current.trim()) candidates.push(current.trim());
+        current = '';
+      }
     }
+    if (current.trim()) candidates.push(current.trim());
   }
-  if (current.trim()) candidates.push(current.trim());
 
   return candidates
     .flatMap((candidate) => splitLongPart(candidate, maxContentCharacters))

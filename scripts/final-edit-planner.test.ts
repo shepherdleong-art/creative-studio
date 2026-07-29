@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { FinalEditError, planTimeline, validateNarrationAlignment } from '../lib/final-edit/workspace.ts';
-import { clipFilter } from '../lib/final-edit/renderer.ts';
+import { clipFilter, subtitleOverlayEnableExpression } from '../lib/final-edit/renderer.ts';
 
 const assets = [
   {
@@ -82,5 +82,10 @@ const framingFilter = clipFilter(1, '3x4', { scale: 1.5, offsetX: 0.25, offsetY:
 assert.match(framingFilter, /scale=iw\*1\.5000:ih\*1\.5000/);
 assert.match(framingFilter, /0\.2500/);
 assert.match(framingFilter, /-0\.5000/);
+assert.equal(
+  subtitleOverlayEnableExpression(1, 2),
+  'gte(t,1.000000)*lt(t,2.000000)',
+  '字幕渲染必须使用结束时间不包含的区间，避免相邻 Cue 在边界帧重叠',
+);
 
 console.log('final-edit planner, alignment, and framing tests passed');

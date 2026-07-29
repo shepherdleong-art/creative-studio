@@ -52,6 +52,8 @@ import { extractMatchKeywords } from './match-keywords.ts';
 import { buildTtsAwareMatchSentences } from './match-sentence-refinement.ts';
 import type { BeatDetectionResult } from './beat-detect.ts';
 import { splitNarrationForDisplay } from '../subtitle-display.ts';
+import { normalizeLegacyAutomaticSubtitleCues } from './subtitle-cue-normalize.ts';
+import { minimumFrameDurationUs, splitTimeAtNearestFrame } from './frame-time.ts';
 import {
   createUncheckedDurationGateState,
   evaluateFinalDurationGate,
@@ -255,6 +257,7 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'trim_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'insert_subtitle_cue'; segmentId: string; text: string; startUs: number; endUs: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'restore_automatic_subtitles' }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'normalize_automatic_subtitles' }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'split_subtitle_cue'; cueId: string; splitUs: number; leftText: string; rightText: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'delete_subtitle_cue'; cueId: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_cover_title_part_text'; part: 'primary' | 'secondary'; text: string }
@@ -1864,8 +1867,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     let selectedMaterialKeys = parseJson<unknown[]>(String(row.selectedMaterialKeysJson || '[]'), []).map(String);
     let analysisProviderId = String(row.analysisProviderId || '');
     const validateCueRange = (cueId: string | null, startUs: number, endUs: number) => {
-      const frameUs = Math.round(1_000_000 / FINAL_EDIT_FPS);
-      if (startUs < 0 || endUs > Number(row.narrationDurationUs) || endUs - startUs < frameUs) throw new FinalEditError('subtitle_out_of_range', '字幕时间超出正文或短于一帧');
+      const minimumUs = minimumFrameDurationUs(FINAL_EDIT_FPS);
+      if (startUs < 0 || endUs > Number(row.narrationDurationUs) || endUs - startUs < minimumUs) throw new FinalEditError('subtitle_out_of_range', '字幕时间超出正文或短于一帧');
       if (cues.some((item) => item.id !== cueId && startUs < item.endUs && endUs > item.startUs)) throw new FinalEditError('subtitle_overlap', '字幕时间不能重叠');
     };
     if (command.type === 'set_subtitle_cue_text') {
@@ -1901,17 +1904,20 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       });
       cues.splice(0, cues.length, ...rebuilt);
     }
+    if (command.type === 'normalize_automatic_subtitles') {
+      cues.splice(0, cues.length, ...normalizeLegacyAutomaticSubtitleCues(cues, uuidv4));
+    }
     if (command.type === 'split_subtitle_cue') {
       const cueIndex = cues.findIndex((item) => item.id === command.cueId);
       const cue = cues[cueIndex];
       if (!cue) throw new FinalEditError('subtitle_not_found', '字幕不存在', 404);
-      const frameUs = Math.round(1_000_000 / 24);
-      if (command.splitUs - cue.startUs < frameUs || cue.endUs - command.splitUs < frameUs) throw new FinalEditError('subtitle_out_of_range', '拆分点两侧都必须至少保留一帧');
+      const splitUs = splitTimeAtNearestFrame(cue.startUs, cue.endUs, command.splitUs, FINAL_EDIT_FPS);
+      if (splitUs == null) throw new FinalEditError('subtitle_out_of_range', '拆分点两侧都必须至少保留一帧');
       const clean = (value: string) => value.replace(/[\r\n]+/g, '').trim();
       if (!clean(command.leftText) || !clean(command.rightText)) throw new FinalEditError('subtitle_text_empty', '拆分后的字幕不能为空');
       cues.splice(cueIndex, 1,
-        { ...cue, id: uuidv4(), text: clean(command.leftText), endUs: command.splitUs, textSource: 'manual', timingSource: 'manual' },
-        { ...cue, id: uuidv4(), text: clean(command.rightText), startUs: command.splitUs, textSource: 'manual', timingSource: 'manual' });
+        { ...cue, id: uuidv4(), text: clean(command.leftText), endUs: splitUs, textSource: 'manual', timingSource: 'manual' },
+        { ...cue, id: uuidv4(), text: clean(command.rightText), startUs: splitUs, textSource: 'manual', timingSource: 'manual' });
     }
     if (command.type === 'delete_subtitle_cue') {
       const cueIndex = cues.findIndex((item) => item.id === command.cueId);
