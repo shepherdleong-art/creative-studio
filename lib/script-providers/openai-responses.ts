@@ -6,6 +6,7 @@
 import type { ScriptProviderRuntimeConfig } from './config.ts';
 import type { ChatOptions } from './openai-compatible.ts';
 import { parseJsonResponse } from './openai-compatible.ts';
+import { createScriptProviderRequestControl } from './request-control.ts';
 import type { ApiStyle, ProviderConfig } from './types.ts';
 
 const DEFAULT_RESPONSES_TIMEOUT_MS = 120_000;
@@ -130,16 +131,12 @@ export async function chatCompletion(
     max_output_tokens: options.maxTokens ?? runtime?.maxTokens ?? config.maxTokens,
   };
 
-  const controller = new AbortController();
-  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_RESPONSES_TIMEOUT_MS));
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-  const requestSignal = options.signal
-    ? AbortSignal.any([controller.signal, options.signal])
-    : controller.signal;
+  const requestControl = createScriptProviderRequestControl({
+    externalSignal: options.signal,
+    timeoutMs: options.timeoutMs,
+    defaultTimeoutMs: DEFAULT_RESPONSES_TIMEOUT_MS,
+    timeoutMessage: (timeoutMs) => `${config.name} (openai-responses) 请求超时（${timeoutMs}ms）`,
+  });
   try {
     const response = await fetch(buildResponsesUrl(baseUrl), {
       method: 'POST',
@@ -149,24 +146,20 @@ export async function chatCompletion(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: requestSignal,
+      signal: requestControl.signal,
     });
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`${config.name} (openai-responses) error ${response.status}: ${errorText.slice(0, 500)}`);
     }
 
-    const rawText = await readSseText(response.body, requestSignal);
+    const rawText = await readSseText(response.body, requestControl.signal);
     if (!rawText.trim()) throw new Error(`${config.name} (openai-responses) 返回了空响应`);
     return rawText;
   } catch (error) {
-    if (options.signal?.aborted) throw new Error('脚本生成已取消');
-    if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
-      throw new Error(`${config.name} (openai-responses) 请求超时（${timeoutMs}ms）`);
-    }
-    throw error;
+    return requestControl.rethrow(error);
   } finally {
-    clearTimeout(timeout);
+    requestControl.dispose();
   }
 }
 

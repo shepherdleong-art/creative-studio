@@ -7,6 +7,7 @@
 import type { ScriptProviderRuntimeConfig } from './config';
 import type { ChatOptions } from './openai-compatible';
 import { parseJsonResponse } from './openai-compatible';
+import { createScriptProviderRequestControl } from './request-control.ts';
 import type { ApiStyle, ProviderConfig } from './types';
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -54,16 +55,12 @@ export async function chatCompletion(
   };
   if (options.temperature !== undefined) body.temperature = options.temperature;
 
-  const controller = new AbortController();
-  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_ANTHROPIC_TIMEOUT_MS));
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-  const requestSignal = options.signal
-    ? AbortSignal.any([controller.signal, options.signal])
-    : controller.signal;
+  const requestControl = createScriptProviderRequestControl({
+    externalSignal: options.signal,
+    timeoutMs: options.timeoutMs,
+    defaultTimeoutMs: DEFAULT_ANTHROPIC_TIMEOUT_MS,
+    timeoutMessage: (timeoutMs) => `${config.name} (anthropic-messages) 请求超时（${timeoutMs}ms）`,
+  });
   try {
     const response = await fetch(buildMessagesUrl(baseUrl), {
       method: 'POST',
@@ -75,7 +72,7 @@ export async function chatCompletion(
         'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify(body),
-      signal: requestSignal,
+      signal: requestControl.signal,
     });
 
     if (!response.ok) {
@@ -96,13 +93,9 @@ export async function chatCompletion(
     if (!rawText.trim()) throw new Error(`${config.name} (anthropic-messages) 返回了空响应`);
     return rawText;
   } catch (error) {
-    if (options.signal?.aborted) throw new Error('脚本生成已取消');
-    if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
-      throw new Error(`${config.name} (anthropic-messages) 请求超时（${timeoutMs}ms）`);
-    }
-    throw error;
+    return requestControl.rethrow(error);
   } finally {
-    clearTimeout(timeout);
+    requestControl.dispose();
   }
 }
 

@@ -7,6 +7,7 @@
 
 import type { ProviderConfig, AnalysisInput } from './types';
 import type { ScriptProviderRuntimeConfig } from './config';
+import { createScriptProviderRequestControl } from './request-control.ts';
 
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
@@ -77,16 +78,12 @@ export async function chatCompletion(
     body.response_format = { type: 'json_object' };
   }
 
-  const controller = new AbortController();
-  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS));
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-  const requestSignal = options.signal
-    ? AbortSignal.any([controller.signal, options.signal])
-    : controller.signal;
+  const requestControl = createScriptProviderRequestControl({
+    externalSignal: options.signal,
+    timeoutMs: options.timeoutMs,
+    defaultTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
+    timeoutMessage: (timeoutMs) => `${config.name} (openai-compatible) 请求超时（${timeoutMs}ms）`,
+  });
   try {
     const res = await fetch(chatUrl, {
       method: 'POST',
@@ -95,7 +92,7 @@ export async function chatCompletion(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: requestSignal,
+      signal: requestControl.signal,
     });
 
     if (!res.ok) {
@@ -110,13 +107,9 @@ export async function chatCompletion(
     if (!rawText.trim()) throw new Error(`${config.name} 返回了空响应`);
     return rawText;
   } catch (error) {
-    if (options.signal?.aborted) throw new Error('脚本生成已取消');
-    if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
-      throw new Error(`${config.name} (openai-compatible) 请求超时（${timeoutMs}ms）`);
-    }
-    throw error;
+    return requestControl.rethrow(error);
   } finally {
-    clearTimeout(timeout);
+    requestControl.dispose();
   }
 }
 

@@ -114,7 +114,10 @@ async function readShotVisuals(
         });
         onPrepared?.(visuals.length, rows.length);
         break;
-      } catch { /* unsafe, missing or unreadable candidate falls back to the next image */ }
+      } catch (error) {
+        if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+        // Unsafe, missing or unreadable candidates fall back to the next image.
+      }
     }
   }
   return visuals;

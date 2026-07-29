@@ -184,6 +184,7 @@ function handleGenerateStream(
   const generationController = registerScriptGeneration(generationId, projectId);
   const abortFromDisconnect = () => generationController.abort();
   requestSignal.addEventListener('abort', abortFromDisconnect, { once: true });
+  if (requestSignal.aborted) generationController.abort();
 
   const stream = new ReadableStream<Uint8Array>({
     start(streamController) {

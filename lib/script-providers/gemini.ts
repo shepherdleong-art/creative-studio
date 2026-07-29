@@ -25,6 +25,7 @@ import {
   parseJsonResponse,
   buildAnalysisPrompt,
 } from './openai-compatible';
+import { createScriptProviderRequestControl } from './request-control.ts';
 
 const DEFAULT_GEMINI_TIMEOUT_MS = 120_000;
 
@@ -107,16 +108,12 @@ async function geminiNativeCall(
     parts.push({ inlineData: { mimeType: image.mimeType, data: image.imageBase64 } });
   }
 
-  const controller = new AbortController();
-  const timeoutMs = Math.max(1, Math.floor(options?.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS));
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-  const requestSignal = options?.signal
-    ? AbortSignal.any([controller.signal, options.signal])
-    : controller.signal;
+  const requestControl = createScriptProviderRequestControl({
+    externalSignal: options?.signal,
+    timeoutMs: options?.timeoutMs,
+    defaultTimeoutMs: DEFAULT_GEMINI_TIMEOUT_MS,
+    timeoutMessage: (timeoutMs) => `Gemini (native) 请求超时（${timeoutMs}ms）`,
+  });
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -128,7 +125,7 @@ async function geminiNativeCall(
           maxOutputTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
         },
       }),
-      signal: requestSignal,
+      signal: requestControl.signal,
     });
 
     if (!res.ok) {
@@ -143,13 +140,9 @@ async function geminiNativeCall(
     if (!rawText.trim()) throw new Error('Gemini 返回了空响应');
     return rawText;
   } catch (error) {
-    if (options?.signal?.aborted) throw new Error('脚本生成已取消');
-    if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
-      throw new Error(`Gemini (native) 请求超时（${timeoutMs}ms）`);
-    }
-    throw error;
+    return requestControl.rethrow(error);
   } finally {
-    clearTimeout(timeout);
+    requestControl.dispose();
   }
 }
 

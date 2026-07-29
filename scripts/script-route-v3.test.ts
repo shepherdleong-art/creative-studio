@@ -186,6 +186,37 @@ assert.equal(nonVisionResponse.status, 400);
 assert.equal(nonVisionResponse.body.error, '所选生成模型不支持图片理解，请选择已启用视觉能力的脚本模型');
 assert.equal(nonVisionGenerateCalled, false);
 
+const preprocessingCancellation = new AbortController();
+let cancelledPrepareCalls = 0;
+let cancelledGenerateCalled = false;
+await assert.rejects(
+  generateAndPersistScriptV3({
+    projectId: 'project-a', project,
+    body: { shotSetId: 'set-owned', templateId: 'scene_seeding', targetDurationSec: 15, providerId: 'fake-provider' },
+  }, {
+    db,
+    storageRoot,
+    signal: preprocessingCancellation.signal,
+    completeJson: async () => ({}),
+    providerMeta: () => ({
+      id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
+      apiStyle: 'openai-compatible', supportsVision: true,
+    }),
+    prepareVisualImage: async () => {
+      cancelledPrepareCalls += 1;
+      preprocessingCancellation.abort();
+      throw new DOMException('脚本生成已取消', 'AbortError');
+    },
+    generate: async () => {
+      cancelledGenerateCalled = true;
+      return { script, attempts: 1 };
+    },
+  }),
+  (error: unknown) => error instanceof Error && error.name === 'AbortError',
+);
+assert.equal(cancelledPrepareCalls, 1, '图片预处理取消后不能继续尝试备用图片');
+assert.equal(cancelledGenerateCalled, false);
+
 const emptyResponse = await generateAndPersistScriptV3({
   projectId: 'project-a', project,
   body: { shotSetId: 'set-empty', templateId: 'scene_seeding', targetDurationSec: 15, providerId: 'fake-provider' },
