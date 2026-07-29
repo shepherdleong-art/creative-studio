@@ -77,7 +77,9 @@ const fastResult = await renderFinalEditSnapshot({
 });
 assert.ok(Math.abs(fastResult.durationSec - (1 + 20 / 24)) < 1 / 24 + 0.02, '2.0x 成片总时长必须按当前音轨的有效时长缩短');
 const fastPcm = path.join(root, 'fast-narration.pcm');
-await runFfmpeg(['-i', path.join(storage, fastResult.videoRelativePath), '-map', '0:a:0', '-f', 's16le', '-ac', '1', '-ar', '8000', '-y', fastPcm]);
+// 裸 PCM 不携带时间戳；解码时显式按 MP4 PTS 补齐 intro 的静音间隙，
+// 否则 adelay 产生的首包时长会被压掉，RMS 窗口会错误地从文件开头取样。
+await runFfmpeg(['-i', path.join(storage, fastResult.videoRelativePath), '-map', '0:a:0', '-af', 'aresample=async=1:first_pts=0', '-f', 's16le', '-ac', '1', '-ar', '8000', '-y', fastPcm]);
 const pcmBytes = fs.readFileSync(fastPcm);
 const samples = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, Math.floor(pcmBytes.byteLength / 2));
 const rms = (startSec: number, endSec: number) => {
