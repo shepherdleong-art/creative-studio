@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import { dataRoot } from './data-root';
+import { resolveVideoPollingTimeoutMs } from './video-polling-policy';
 
 export interface VideoQueueOptions {
   projectId: string;
@@ -233,7 +234,13 @@ async function runVideoJob(
 
     // Step 2: Poll with graduated intervals
     let polled = false;
-    const maxPollMs = timeoutMs || DEFAULT_VIDEO_TIMEOUT_MS;
+    const maxPollMs = resolveVideoPollingTimeoutMs({
+      requestedTimeoutMs: timeoutMs || DEFAULT_VIDEO_TIMEOUT_MS,
+      providerType: provider.type,
+      model: job.model,
+      durationSec: job.durationSec,
+    });
+    logInfo(`Video polling window=${Math.round(maxPollMs / 1000)}s`);
 
     while (Date.now() - startedAt < maxPollMs) {
       if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
