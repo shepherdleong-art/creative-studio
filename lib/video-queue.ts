@@ -206,7 +206,6 @@ async function runVideoJob(
     abort.addEventListener('abort', onAbort, { once: true });
 
     // Step 1: Submit
-    const startedAt = Date.now();
     logInfo('Submitting video generation task...');
     const submitResult = await adapter.submit(
       {
@@ -234,15 +233,15 @@ async function runVideoJob(
 
     // Step 2: Poll with graduated intervals
     let polled = false;
+    const pollStartedAt = Date.now();
     const maxPollMs = resolveVideoPollingTimeoutMs({
       requestedTimeoutMs: timeoutMs || DEFAULT_VIDEO_TIMEOUT_MS,
-      providerType: provider.type,
-      model: job.model,
-      durationSec: job.durationSec,
+      adapter,
+      request: { model: job.model, durationSec: job.durationSec },
     });
     logInfo(`Video polling window=${Math.round(maxPollMs / 1000)}s`);
 
-    while (Date.now() - startedAt < maxPollMs) {
+    while (Date.now() - pollStartedAt < maxPollMs) {
       if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       if (!isVideoJobStillRunning(db, job.id)) {
         logWarn('Video job stopped because it is no longer running');
@@ -257,7 +256,7 @@ async function runVideoJob(
 
       const pollResult = await adapter.poll(taskId, apiKey, runtime.baseUrl, reqAbort.signal);
 
-      const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+      const elapsedSec = Math.round((Date.now() - pollStartedAt) / 1000);
       db.prepare(
         `UPDATE video_jobs SET providerStatus = ?, providerRawResponse = ?, lastPolledAt = datetime('now'), pollCount = pollCount + 1
          WHERE id = ?`
@@ -313,7 +312,7 @@ async function runVideoJob(
       db.prepare(
         `UPDATE video_jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'needs_check', finishedAt = datetime('now')
          WHERE id = ? AND status = 'running'`
-      ).run(`Polling timeout (${Math.round((Date.now() - startedAt) / 1000)}s). task_id=${taskId} may still be running.`, job.id);
+      ).run(`Polling timeout (${Math.round((Date.now() - pollStartedAt) / 1000)}s). task_id=${taskId} may still be running.`, job.id);
     }
   } catch (err: unknown) {
     if (abort.aborted || (err instanceof DOMException && err.name === 'AbortError')) {

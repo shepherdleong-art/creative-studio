@@ -20,6 +20,7 @@ export interface PollVideoResult {
 }
 
 export interface VideoProviderAdapter {
+  minimumPollingTimeoutMs?(request: Pick<SubmitVideoRequest, 'model' | 'durationSec'>): number | undefined;
   submit(request: SubmitVideoRequest, apiKey: string, baseUrl: string, signal?: AbortSignal): Promise<SubmitVideoResult>;
   poll(taskId: string, apiKey: string, baseUrl: string, signal?: AbortSignal): Promise<PollVideoResult>;
 }

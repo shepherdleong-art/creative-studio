@@ -50,8 +50,16 @@ function normalizeArkStatus(raw: string | undefined): PollVideoResult['status'] 
 
 const SUBMIT_TIMEOUT_MS = 120_000;
 const POLL_TIMEOUT_MS = 30_000;
+const JIMENG_2_LONG_VIDEO_MIN_POLLING_MS = 15 * 60_000;
 
 export const jimengAdapter: VideoProviderAdapter = {
+  minimumPollingTimeoutMs(request) {
+    if (isSeedance2(request.model) && request.durationSec === 15) {
+      return JIMENG_2_LONG_VIDEO_MIN_POLLING_MS;
+    }
+    return undefined;
+  },
+
   async submit(
     request: SubmitVideoRequest,
     apiKey: string,
