@@ -306,12 +306,13 @@
 
 /* 时间轴 */
 .tlShell { display: flex; flex-shrink: 0; flex-direction: column; gap: 6px; }
-.tlToolbar { display: flex; min-height: 30px; align-items: center; gap: 5px; padding: 0 2px; }
-.tlToolButton { display: inline-flex; height: 28px; align-items: center; gap: 5px; padding: 0 9px; border: .5px solid var(--line); border-radius: 7px; background: #fff; box-shadow: var(--sh-sm); color: var(--sub); font-size: 11px; cursor: pointer; }
+.tlToolbar { display: flex; min-height: 34px; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 2px; }
+.tlToolButton { display: inline-flex; height: 34px; flex: 0 0 auto; align-items: center; gap: 6px; padding: 0 12px; border: .5px solid var(--line); border-radius: 9px; background: #fff; box-shadow: var(--sh-sm); color: var(--sub); font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; transition: border-color .15s, background .15s, color .15s, box-shadow .15s; }
+.tlToolButton svg { flex-shrink: 0; }
 .tlToolButton:hover:not(:disabled) { border-color: rgba(0, 113, 227, .35); color: var(--blue); }
 .tlToolButton:disabled { cursor: not-allowed; opacity: .48; }
 .tlToolButtonActive { border-color: rgba(0, 113, 227, .48); background: var(--blue-wash); color: var(--blue); font-weight: 600; }
-.tlToolHint { margin-left: 4px; color: var(--faint); font-size: 11px; }
+.tlToolHint { min-width: 160px; flex: 1 1 240px; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, .035); color: var(--faint); font-size: 11px; line-height: 1.45; }
 .tl { display: flex; flex-shrink: 0; overflow: hidden; border: .5px solid var(--line); border-radius: 12px; background: var(--bg); }
 .tlLabels { display: flex; width: 48px; flex-shrink: 0; flex-direction: column; border-right: .5px solid var(--line); background: #fafafc; }
 .tlLab { display: flex; align-items: center; justify-content: center; border-bottom: .5px solid var(--line-soft); color: var(--faint); font-size: 11px; }
@@ -373,9 +374,10 @@
 .timelineSpeedRow input[type='number'] { box-sizing: border-box; width: 76px; height: 38px; flex-shrink: 0; border: .5px solid rgba(0, 0, 0, .12); border-radius: 10px; outline: none; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .08); color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; padding: 0 10px 0 12px; }
 .timelineSpeedRow input[type='number']:focus { border-color: var(--blue); box-shadow: 0 0 0 3.5px rgba(0, 113, 227, .15); }
 .timelineSpeedScale { display: flex; justify-content: space-between; margin-top: 8px; margin-right: 88px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
-.narrationSpeedPresets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 13px; }
-.narrationSpeedPresets button { min-height: 24px; padding: 0 9px; border: 0; border-radius: 999px; background: var(--blue-wash); color: var(--blue); font-size: 10px; font-variant-numeric: tabular-nums; cursor: pointer; }
-.narrationSpeedPresets button[aria-pressed='true'] { background: var(--blue); color: #fff; }
+.narrationSpeedPresets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 13px; overflow: hidden; padding: 2px; border-radius: 10px; background: var(--seg); }
+.narrationSpeedPresets button { min-width: 0; min-height: 32px; padding: 0 4px; border: 0; border-radius: 8px; background: transparent; color: var(--sub); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
+.narrationSpeedPresets button:hover:not(:disabled) { background: rgba(255, 255, 255, .62); color: var(--ink); }
+.narrationSpeedPresets button[aria-pressed='true'] { background: var(--blue); box-shadow: var(--sh-sm); color: #fff; }
 .narrationSpeedPresets button:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Trim 截取条 */
@@ -421,7 +423,7 @@
 .rcard > h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 14px; font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
 .rcard > h4 svg { color: var(--sub); }
 .narrationSpeedSummary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--sub); font-size: 12px; }
-.narrationSpeedSummary strong { color: var(--blue); font-size: 13px; font-variant-numeric: tabular-nums; }
+.narrationSpeedSummary strong { padding: 3px 8px; border: .5px solid rgba(0, 113, 227, .18); border-radius: 8px; background: var(--blue-wash); color: var(--blue); font-size: 13px; font-variant-numeric: tabular-nums; line-height: 1.4; }
 .narrationSpeedCardHint { margin: 0 0 12px; color: var(--faint); font-size: 11px; line-height: 1.45; }
 .rcard .timelineSpeedControl { padding: 11px 10px 9px; }
 .ctlRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }

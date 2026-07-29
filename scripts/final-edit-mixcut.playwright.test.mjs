@@ -913,6 +913,20 @@ try {
 
     const selectTool = page.getByRole('button', { name: '选择工具' });
     const splitTool = page.getByRole('button', { name: '分割工具' });
+    const toolHint = page.getByTestId('mixcut-timeline-tool-hint');
+    const [selectToolBox, splitToolBox, toolHintBox] = await Promise.all([
+      selectTool.boundingBox(),
+      splitTool.boundingBox(),
+      toolHint.boundingBox(),
+    ]);
+    assert.ok(selectToolBox && splitToolBox && toolHintBox, '时间轴工具栏控件必须可见并可测量');
+    assert.ok(selectToolBox.height >= 32 && splitToolBox.height >= 32, '选择和分割按钮必须保留清晰点击高度');
+    assert.ok(splitToolBox.x - (selectToolBox.x + selectToolBox.width) >= 7, '选择和分割按钮之间必须保留可见间距');
+    assert.ok(
+      toolHintBox.x - (splitToolBox.x + splitToolBox.width) >= 7
+        || toolHintBox.y - (selectToolBox.y + selectToolBox.height) >= 7,
+      '操作说明必须与工具按钮分隔或换行，不能挤在一起',
+    );
     assert.equal(await selectTool.getAttribute('aria-pressed'), 'true', '时间轴必须默认处于选择模式');
     await splitTool.click();
     assert.equal(await splitTool.getAttribute('aria-pressed'), 'true', '点击分割工具后必须保持分割模式');
@@ -1284,6 +1298,16 @@ try {
 
     const sidebarSpeedSlider = page.getByRole('slider', { name: '右侧音频倍速拉条', exact: true });
     const sidebarSpeedNumber = page.getByRole('spinbutton', { name: '右侧音频倍速数值', exact: true });
+    const speedPresets = page.locator('[aria-label="口播倍速快捷值"]');
+    const presetLayout = await speedPresets.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const widths = Array.from(element.querySelectorAll('button'), (button) => button.getBoundingClientRect().width);
+      return { display: style.display, columnCount: style.gridTemplateColumns.split(' ').length, widths };
+    });
+    assert.equal(presetLayout.display, 'grid', '倍速快捷值必须呈现为分段网格');
+    assert.equal(presetLayout.columnCount, 4, '倍速快捷值必须保持四等分');
+    assert.equal(presetLayout.widths.length, 4, '倍速分段控件必须保留四个快捷值');
+    assert.ok(Math.max(...presetLayout.widths) - Math.min(...presetLayout.widths) <= 1, '倍速快捷按钮必须等宽');
     assert.equal(await sidebarSpeedSlider.inputValue(), '1');
     assert.equal(await sidebarSpeedNumber.inputValue(), '1');
 

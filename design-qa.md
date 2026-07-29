@@ -104,3 +104,51 @@
 - [x] 视频素材栏使用两列大卡片和固定高度内部滚动，十条素材不会撑高编辑器。
 
 final result: passed
+
+---
+
+# Mixcut toolbar and narration-speed controls — Design QA
+
+## Evidence
+
+- Source visual truth: `/Users/liangpeijian/.codex/generated_images/019fae5d-a660-75e3-8b96-b445cf25ab7c/exec-6f938dbd-4d25-445a-8881-b3037b3d5c35.png`
+- Browser-rendered implementation: `/tmp/mixcut-buttons-implementation-1440x1024.png`
+- Focused implementation crop: `/tmp/mixcut-buttons-implementation-focus.png`
+- Full-view comparison: `/tmp/mixcut-buttons-design-qa-full-comparison.png`
+- Focused comparison: `/tmp/mixcut-buttons-design-qa-comparison.png`
+- Browser viewport: `1440 × 1024` CSS px, device scale factor `1`
+- Responsive check: `1280 × 900` and `1024 × 900` CSS px
+- Source pixels: `1487 × 1058`
+- Implementation pixels: `1440 × 1024`; focused crop `940 × 360`
+- State: Mixcut preview step, select tool active, narration playback rate `1.0x`
+
+## Findings
+
+- No actionable P0, P1, or P2 mismatch remains.
+- The two timeline tools render as separate `67 × 34px` targets with an `8px` gap, `flex-shrink: 0`, and `white-space: nowrap`. At `1024px` viewport width the helper copy moves to its own row while both buttons keep their full width.
+- The four narration presets render as four equal `58.25 × 32px` grid cells. The active `1.0x` value uses the product blue and retains `aria-pressed="true"`.
+- The precise numeric input remains beside the slider. This differs from the simplified concept image but intentionally preserves the production control contract and exact-value entry.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: existing system/PingFang stack, weights, numeric alignment, and Chinese wrapping are preserved; no concatenated labels remain.
+- Spacing and layout rhythm: toolbar gap, fixed button targets, helper surface, summary badge, and four-column speed grid match the selected direction within the production layout.
+- Colors and visual tokens: existing `--paper`, `--bg`, `--seg`, `--sub`, and `--blue` tokens are reused; selected state and hairline treatment are consistent with the current Mixcut design system.
+- Image quality and assets: no new raster assets were required. Existing project icons remain vector-sharp; the former text cursor glyph was replaced with the shared icon system.
+- Copy and content: all production labels and instructions are unchanged.
+
+## Interaction And Runtime Checks
+
+- Select → split → select state transition passed in the in-app browser; `aria-pressed` updated correctly.
+- Preset grid geometry and selected state were inspected without changing the persisted project playback rate.
+- Browser console: zero errors; two unrelated existing Next.js LCP image warnings.
+
+## Comparison History
+
+- Initial implementation comparison found no P0/P1/P2 issue. No visual-fix iteration was required after the source/implementation full-view and focused comparisons.
+
+## Follow-up Polish
+
+- P3: the selected implementation uses the closest existing check-circle icon for the select tool instead of the concept image's dashed selection icon, avoiding a new one-off icon asset.
+
+final result: passed

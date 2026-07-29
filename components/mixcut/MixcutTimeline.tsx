@@ -175,7 +175,7 @@ export function MixcutTimeline({
           disabled={disabled}
           onClick={() => setTool('select')}
         >
-          <span aria-hidden="true">↖</span>选择
+          <Icon name="check-circle" size={13} />选择
         </button>
         <button
           type="button"
@@ -187,7 +187,7 @@ export function MixcutTimeline({
         >
           <Icon name="scissors" size={13} />分割
         </button>
-        <span className={styles.tlToolHint}>{tool === 'split' ? '点击字幕块上的目标位置即可切开' : '拖动字幕块移动，拖两侧修剪，双击改字'}</span>
+        <span className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? '点击字幕块上的目标位置即可切开' : '拖动字幕块移动，拖两侧修剪，双击改字'}</span>
       </div>
       <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined} data-tool={tool}>
       <div className={styles.tlLabels}>
