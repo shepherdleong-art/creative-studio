@@ -1267,7 +1267,14 @@ try {
     await page.getByRole('button', { name: /E2E 新版本 2/ }).waitFor();
     await page.getByRole('button', { name: '切换到会话 E2E 文案 版本 1', exact: true }).click();
     await page.locator('[data-track="video"]').waitFor();
-    await page.locator('[data-track="narration"]').dispatchEvent('contextmenu', { button: 2, clientX: 720, clientY: 820, bubbles: true, cancelable: true });
+    const narrationTrack = page.locator('[data-track="narration"]');
+    const playheadBeforeRightClick = await page.getByRole('button', { name: '拖动播放头' }).evaluate((element) => element.style.left);
+    await narrationTrack.click({ button: 'right', position: { x: 120, y: 15 } });
+    assert.equal(
+      await page.getByRole('button', { name: '拖动播放头' }).evaluate((element) => element.style.left),
+      playheadBeforeRightClick,
+      '右键口播音轨不得移动播放头',
+    );
     const speedMenu = page.getByRole('dialog', { name: '口播音频变速' });
     await speedMenu.waitFor();
     const speedSlider = page.getByRole('slider', { name: '音频倍速拉条' });

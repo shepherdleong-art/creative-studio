@@ -209,7 +209,14 @@ export function MixcutTimeline({
         <div className={styles.tlLab} style={{ height: 60 }}>音频</div>
       </div>
       <div ref={scrollRef} className={styles.tlScroll} data-testid="mixcut-timeline-scroll">
-        <div className={styles.tlInner} style={{ width: contentWidth }} onPointerDown={(event) => seekFromPointer(event.clientX)}>
+        <div
+          className={styles.tlInner}
+          style={{ width: contentWidth }}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            seekFromPointer(event.clientX);
+          }}
+        >
           <div className={styles.tlRuler}>
             {ticks.map((tick) => Number.isInteger(tick)
               ? <div key={tick} className={styles.tlTick} style={{ left: tick * pxPerSecond }}><span>{tick}s</span></div>
