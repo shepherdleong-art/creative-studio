@@ -145,7 +145,11 @@ export type StoredScriptOutput = ScriptOutput | ScriptOutputV3;
 
 // ── Provider Metadata ──
 
-export type ApiStyle = 'native-gemini' | 'openai-compatible' | 'openai-responses';
+export type ApiStyle =
+  | 'native-gemini'
+  | 'openai-compatible'
+  | 'openai-responses'
+  | 'anthropic-messages';
 
 export interface ProviderConfig {
   id: string;

@@ -26,11 +26,22 @@ export interface CompleteJsonRequest {
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number;
   images?: Array<{ mimeType: string; imageBase64: string }>;
+  signal?: AbortSignal;
+}
+
+export interface ScriptGenerationProgress {
+  phase: 'preparing' | 'generating' | 'validating' | 'saving' | 'completed';
+  percent: number;
+  message: string;
+  attempt?: number;
 }
 
 export interface ScriptGenerationV3Dependencies {
   completeJson(input: CompleteJsonRequest): Promise<unknown>;
+  signal?: AbortSignal;
+  onProgress?(progress: ScriptGenerationProgress): void;
 }
 
 export interface ScriptVisualContext {
@@ -832,11 +843,25 @@ export async function generateScriptV3(
   let lastQualification: 'too_short' | 'too_long' | 'contract_invalid' = 'contract_invalid';
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+    dependencies.onProgress?.({
+      phase: 'generating',
+      percent: 32 + ((attempt - 1) * 20),
+      message: attempt === 1 ? '模型正在生成脚本' : `模型正在进行第 ${attempt - 1} 次修正`,
+      attempt,
+    });
     const raw = await dependencies.completeJson({
       systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，并遵循两段式封面标题结构；不能承接时明确返回素材不匹配。禁止把不同模板写成同一种通用卖点罗列，也禁止返回截断句或万能标题。',
       userPrompt: prompt,
       temperature: attempt === 1 ? 0.7 : 0.4,
       images,
+      signal: dependencies.signal,
+    });
+    dependencies.onProgress?.({
+      phase: 'validating',
+      percent: 45 + ((attempt - 1) * 20),
+      message: `正在校验第 ${attempt} 次输出`,
+      attempt,
     });
     try {
       const normalized = normalizeCandidate(raw, input);

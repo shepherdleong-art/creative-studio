@@ -29,6 +29,16 @@ export interface ScriptProviderRuntimeConfig {
   visionCostPerRequest: number;
 }
 
+export const scriptProviderApiStyleOptions: ReadonlyArray<{
+  value: ApiStyle;
+  label: string;
+}> = [
+  { value: 'openai-compatible', label: 'OpenAI-compatible（/v1/chat/completions）' },
+  { value: 'openai-responses', label: 'OpenAI Responses（/v1/responses）' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages（/v1/messages）' },
+  { value: 'native-gemini', label: 'Native Gemini（generateContent）' },
+];
+
 export function scriptProviderProtocolFields(apiStyle: ApiStyle): {
   type: ApiStyle;
   apiStyle: ApiStyle;

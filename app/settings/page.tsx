@@ -2,7 +2,10 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
-import { scriptProviderProtocolFields } from '@/lib/script-providers/config';
+import {
+  scriptProviderApiStyleOptions,
+  scriptProviderProtocolFields,
+} from '@/lib/script-providers/config';
 import type { ApiStyle } from '@/lib/script-providers/types';
 
 type Category = 'image' | 'script' | 'video' | 'tts';
@@ -484,9 +487,9 @@ function ProviderForm({
             }}
             className="input-field"
           >
-            <option value="openai-compatible">OpenAI-compatible</option>
-            <option value="openai-responses">OpenAI Responses (gpt-5.5 / 5.6)</option>
-            <option value="native-gemini">Native Gemini</option>
+            {scriptProviderApiStyleOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
         </Field>
       )}

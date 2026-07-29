@@ -8,6 +8,8 @@
 import type { ProviderConfig, AnalysisInput } from './types';
 import type { ScriptProviderRuntimeConfig } from './config';
 
+const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
+
 // ── Low-level chat completion ──
 
 export interface ChatImagePart {
@@ -21,6 +23,8 @@ export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'json_object' | 'text';
+  timeoutMs?: number;
+  signal?: AbortSignal;
   /** 非空时，user message 变成多模态 content 数组（文本在前、图片在后）。 */
   images?: ChatImagePart[];
 }
@@ -73,31 +77,47 @@ export async function chatCompletion(
     body.response_format = { type: 'json_object' };
   }
 
-  const res = await fetch(chatUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS));
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const requestSignal = options.signal
+    ? AbortSignal.any([controller.signal, options.signal])
+    : controller.signal;
+  try {
+    const res = await fetch(chatUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: requestSignal,
+    });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`${config.name} (openai-compatible) error ${res.status}: ${errText.slice(0, 500)}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`${config.name} (openai-compatible) error ${res.status}: ${errText.slice(0, 500)}`);
+    }
+
+    const data = await res.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const rawText = data.choices?.[0]?.message?.content || '';
+    if (!rawText.trim()) throw new Error(`${config.name} 返回了空响应`);
+    return rawText;
+  } catch (error) {
+    if (options.signal?.aborted) throw new Error('脚本生成已取消');
+    if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
+      throw new Error(`${config.name} (openai-compatible) 请求超时（${timeoutMs}ms）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = await res.json() as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-
-  const rawText = data.choices?.[0]?.message?.content || '';
-
-  if (!rawText.trim()) {
-    throw new Error(`${config.name} 返回了空响应`);
-  }
-
-  return rawText;
 }
 
 // ── JSON extraction ──

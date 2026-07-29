@@ -157,6 +157,13 @@ try {
     chatCompletion(config, { systemPrompt: 'system', userPrompt: 'user', timeoutMs: 20 }, runtime),
     /请求超时/
   );
+
+  const cancellation = new AbortController();
+  const cancelledRequest = chatCompletion(config, {
+    systemPrompt: 'system', userPrompt: 'user', timeoutMs: 100, signal: cancellation.signal,
+  }, runtime);
+  cancellation.abort();
+  await assert.rejects(cancelledRequest, /脚本生成已取消/);
 } finally {
   globalThis.fetch = originalFetch;
 }

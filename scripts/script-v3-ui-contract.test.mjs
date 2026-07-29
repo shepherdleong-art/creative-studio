@@ -35,6 +35,11 @@ assert.match(panel, /data\.message \|\| data\.error/, '策略分析合同失败�
 assert.match(panel, /请先填写目标人群/, '没有目标人群时必须在调用模型前阻止泛化分析');
 assert.match(panel, /materialReason/, '素材不匹配提示必须展示模型给出的图片不足原因');
 assert.match(panel, /unsupportedNarrativeBeats/, '素材不匹配提示必须说明模板中缺少画面承接的阶段');
+assert.match(panel, /readScriptGenerationStream/, '正式脚本生成必须消费服务端真实进度流');
+assert.match(panel, /role="progressbar"/, '生成中必须显示可访问的进度条');
+assert.match(panel, /aria-valuenow=\{generationProgress\.percent\}/, '进度条必须暴露当前进度值');
+assert.match(panel, /handleCancelGeneration/, '生成中必须提供取消处理器');
+assert.match(panel, /取消生成/, '生成中必须显示取消按钮');
 assert.match(result, /复制字幕稿/);
 assert.match(result, /复制配音稿/);
 assert.match(result, /完整字幕稿/);

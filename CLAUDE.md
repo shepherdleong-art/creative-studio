@@ -33,7 +33,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
   - `data-root.ts` — resolves the local data root for the current run mode (dev server / installed app / EXE, overridable via `CREATIVE_STUDIO_DATA_ROOT`); all local paths (`data/`, `storage/`) derive from this
   - `queue.ts` / `video-queue.ts` — Async job polling queues
   - `providers/` — Image generation adapters (Packy, GeekAI, OpenAI-compatible)
-  - `script-providers/` — LLM script generation through Gemini, OpenAI-compatible Chat Completions, or OpenAI Responses/SSE adapters selected by persisted `apiStyle`
+  - `script-providers/` — LLM script generation through Gemini, OpenAI-compatible Chat Completions, OpenAI Responses/SSE, or Anthropic Messages (`/v1/messages`) adapters selected by persisted `apiStyle`
   - `video-providers/` — Video generation adapters (Kling, Jimeng)
   - `final-edit/` — Versioned final-edit schema, group/variant workspace, external-material import, media analysis, V-API/Doubao TTS and alignment adapters, TTS-aware matching-sentence refinement, timeline planning and FFmpeg rendering. Mixcut context and external assets are scoped by `projectId + shotSetId`; never infer grouping from filenames or timestamps
   - `image-output-normalize.ts` — Sharp-based crop/resize to target dimensions

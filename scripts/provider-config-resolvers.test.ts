@@ -5,11 +5,19 @@ import {
 } from '../lib/video-auth.ts';
 import {
   resolveScriptProviderRuntimeConfig,
+  scriptProviderApiStyleOptions,
   scriptProviderProtocolFields,
   toScriptProviderMeta,
 } from '../lib/script-providers/config.ts';
 
-for (const apiStyle of ['native-gemini', 'openai-compatible', 'openai-responses'] as const) {
+assert.deepEqual(scriptProviderApiStyleOptions, [
+  { value: 'openai-compatible', label: 'OpenAI-compatible（/v1/chat/completions）' },
+  { value: 'openai-responses', label: 'OpenAI Responses（/v1/responses）' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages（/v1/messages）' },
+  { value: 'native-gemini', label: 'Native Gemini（generateContent）' },
+]);
+
+for (const { value: apiStyle } of scriptProviderApiStyleOptions) {
   assert.deepEqual(
     scriptProviderProtocolFields(apiStyle),
     { type: apiStyle, apiStyle },

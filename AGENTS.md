@@ -79,7 +79,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `data-root.ts` — 解析本地数据根目录：优先 `CREATIVE_STUDIO_DATA_ROOT` 环境变量，否则 `process.cwd()`。`data/`、`storage/` 都挂在它下面，写路径时一律走 `dataRoot()`。
 - `queue.ts` / `video-queue.ts` — 图片/视频任务的内存中队列：向供应商提交任务、轮询状态、下载结果、失败重试；支持暂停/恢复。视频并发由 `VIDEO_CONCURRENCY` 环境变量控制（1–6，默认 3）。
 - `providers/` — 图片生成适配器：`openai-compatible`、`packy-images`、`packy-gemini-image`、`geekai-json`。
-- `script-providers/` — 脚本（LLM）生成：`gemini`、`openai-compatible`（Chat Completions）与 `openai-responses`（Responses/SSE，覆盖 Packy GPT 等），配置存库并由 `apiStyle` 选择协议。
+- `script-providers/` — 脚本（LLM）生成：`gemini`、`openai-compatible`（Chat Completions）、`openai-responses`（Responses/SSE，覆盖 Packy GPT 等）与 `anthropic-messages`（`/v1/messages`，覆盖 Packy Kimi 等），配置存库并由 `apiStyle` 选择协议。
 - `video-providers/` — 视频生成适配器：`kling`（可灵）、`jimeng`（即梦）。
 - `final-edit/` — “智能混剪”正式第五步的后端：`schema.ts`（独立版本化迁移）、`domain.ts`/`types.ts`（时间线、字幕、文字样式等领域模型）、`renderer.ts`（ffmpeg 渲染成片）、`worker.ts`（渲染任务 drain 循环，重启时把 running 任务恢复为 queued）、`workspace.ts`、`proposal.ts`、`bgm.ts`，以及 `adapters/`（视频分析 `video-analysis.ts`、TTS `tts-registry.ts`/`vapi-qwen-tts.ts`/`doubao-tts.ts`、字幕对齐 `alignment.ts`）。Mixcut 上下文与外部素材必须按 `projectId + shotSetId` 隔离。
 - `ffmpeg.ts` — 解析 ffmpeg/ffprobe 二进制：环境变量 `CREATIVE_STUDIO_FFMPEG`/`CREATIVE_STUDIO_FFPROBE` → ffmpeg-static/ffprobe-static → PATH；封装 `runFfmpeg`（带进度回调、超时、stderr 尾部报错）和 `probeDurationSec`（ffprobe 失败时回退 ffmpeg 解析）。

@@ -11,6 +11,13 @@ import {
   ScriptGenerationV3Error,
 } from '@/lib/script-generation-v3';
 import { generateAndPersistScriptV3 } from '@/lib/script-generation-v3-service';
+import {
+  cancelScriptGeneration,
+  finishScriptGeneration,
+  registerScriptGeneration,
+} from '@/lib/script-generation-control';
+import { encodeScriptGenerationStreamEvent } from '@/lib/script-generation-stream';
+import type { ScriptGenerationProgress } from '@/lib/script-generation-v3';
 
 // ── POST: analyze | generate ──
 
@@ -28,21 +35,23 @@ export async function POST(
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     const action = (body.action as string) || 'generate';
 
+    if (action === 'cancel') {
+      const generationId = typeof body.generationId === 'string' ? body.generationId : '';
+      if (!generationId) return NextResponse.json({ error: '缺少生成任务 ID' }, { status: 400 });
+      return NextResponse.json({ cancelled: cancelScriptGeneration(generationId, projectId) });
+    }
+
     if (action === 'analyze') {
       return await handleAnalyze(projectId, project, body);
     }
 
-    return await handleGenerate(projectId, project, body);
-  } catch (err) {
-    if (err instanceof ScriptGenerationV3Error) {
-      return NextResponse.json({
-        error: err.code,
-        message: err.message,
-        details: err.details,
-      }, { status: 422 });
+    if (body.stream === true) {
+      return handleGenerateStream(projectId, project, body, request.signal);
     }
-    const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return await handleGenerate(projectId, project, body, request.signal);
+  } catch (err) {
+    const failure = scriptGenerationFailure(err);
+    return NextResponse.json(failure.body, { status: failure.status });
   }
 }
 
@@ -133,11 +142,100 @@ async function handleGenerate(
   projectId: string,
   project: Record<string, unknown>,
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ) {
   const result = await generateAndPersistScriptV3({ projectId, project, body }, {
     db: getDb(),
     completeJson: (providerId, request) => completeJson({ providerId, ...request }),
     providerMeta: getProviderMeta,
+    signal,
   });
   return NextResponse.json(result.body, { status: result.status });
+}
+
+function scriptGenerationFailure(error: unknown): { status: number; body: Record<string, unknown> } {
+  if (error instanceof ScriptGenerationV3Error) {
+    return {
+      status: 422,
+      body: { error: error.code, message: error.message, details: error.details },
+    };
+  }
+  if ((error instanceof Error && error.name === 'AbortError')
+    || (error instanceof Error && error.message === '脚本生成已取消')) {
+    return { status: 499, body: { error: 'script_generation_cancelled', message: '脚本生成已取消' } };
+  }
+  return {
+    status: 500,
+    body: { error: error instanceof Error ? error.message : String(error) },
+  };
+}
+
+function handleGenerateStream(
+  projectId: string,
+  project: Record<string, unknown>,
+  body: Record<string, unknown>,
+  requestSignal: AbortSignal,
+): Response {
+  const generationId = typeof body.generationId === 'string' ? body.generationId : '';
+  if (!generationId) {
+    return NextResponse.json({ error: '缺少生成任务 ID' }, { status: 400 });
+  }
+
+  const generationController = registerScriptGeneration(generationId, projectId);
+  const abortFromDisconnect = () => generationController.abort();
+  requestSignal.addEventListener('abort', abortFromDisconnect, { once: true });
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      let streamOpen = true;
+      const send = (event: Parameters<typeof encodeScriptGenerationStreamEvent>[0]) => {
+        if (!streamOpen) return;
+        try {
+          streamController.enqueue(encodeScriptGenerationStreamEvent(event));
+        } catch {
+          streamOpen = false;
+          generationController.abort();
+        }
+      };
+      const onProgress = (progress: ScriptGenerationProgress) => send({ type: 'progress', progress });
+
+      void (async () => {
+        try {
+          const result = await generateAndPersistScriptV3({ projectId, project, body }, {
+            db: getDb(),
+            completeJson: (providerId, request) => completeJson({ providerId, ...request }),
+            providerMeta: getProviderMeta,
+            signal: generationController.signal,
+            onProgress,
+          });
+          send({
+            type: result.status >= 400 ? 'error' : 'result',
+            status: result.status,
+            body: result.body,
+          });
+        } catch (error) {
+          const failure = scriptGenerationFailure(error);
+          send({ type: 'error', status: failure.status, body: failure.body });
+        } finally {
+          finishScriptGeneration(generationId, generationController);
+          requestSignal.removeEventListener('abort', abortFromDisconnect);
+          if (streamOpen) {
+            try {
+              streamController.close();
+            } catch { /* client disconnected */ }
+          }
+        }
+      })();
+    },
+    cancel() {
+      generationController.abort();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    },
+  });
 }

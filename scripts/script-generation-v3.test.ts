@@ -120,7 +120,9 @@ assert.deepEqual(
 );
 
 {
-  const calls: Array<{ images?: unknown[]; systemPrompt: string; userPrompt: string }> = [];
+  const requestController = new AbortController();
+  const progressEvents: Array<{ phase: string; attempt?: number }> = [];
+  const calls: Array<{ images?: unknown[]; systemPrompt: string; userPrompt: string; signal?: AbortSignal }> = [];
   const responses = [
     feasibleResult({
       title: '下班后的云感支撑',
@@ -178,13 +180,23 @@ assert.deepEqual(
         images: request.images,
         systemPrompt: request.systemPrompt,
         userPrompt: request.userPrompt,
+        signal: request.signal,
       });
       return responses.shift();
     },
+    signal: requestController.signal,
+    onProgress: (progress) => progressEvents.push(progress),
   });
 
   assert.equal(result.attempts, 2, '超长首稿应触发一次完整重写');
   assert.equal(calls.length, 2);
+  assert.ok(calls.every((call) => call.signal === requestController.signal), '取消信号必须传到每一次模型请求');
+  assert.deepEqual(progressEvents.map(({ phase, attempt }) => ({ phase, attempt })), [
+    { phase: 'generating', attempt: 1 },
+    { phase: 'validating', attempt: 1 },
+    { phase: 'generating', attempt: 2 },
+    { phase: 'validating', attempt: 2 },
+  ], '进度必须来自真实的模型调用与校验节点');
   const expectedImages = [
     { mimeType: 'image/png', imageBase64: 'image-a-base64' },
     { mimeType: 'image/jpeg', imageBase64: 'image-b-base64' },

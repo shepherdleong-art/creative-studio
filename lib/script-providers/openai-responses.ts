@@ -137,6 +137,9 @@ export async function chatCompletion(
     timedOut = true;
     controller.abort();
   }, timeoutMs);
+  const requestSignal = options.signal
+    ? AbortSignal.any([controller.signal, options.signal])
+    : controller.signal;
   try {
     const response = await fetch(buildResponsesUrl(baseUrl), {
       method: 'POST',
@@ -146,17 +149,18 @@ export async function chatCompletion(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: requestSignal,
     });
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`${config.name} (openai-responses) error ${response.status}: ${errorText.slice(0, 500)}`);
     }
 
-    const rawText = await readSseText(response.body, controller.signal);
+    const rawText = await readSseText(response.body, requestSignal);
     if (!rawText.trim()) throw new Error(`${config.name} (openai-responses) 返回了空响应`);
     return rawText;
   } catch (error) {
+    if (options.signal?.aborted) throw new Error('脚本生成已取消');
     if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
       throw new Error(`${config.name} (openai-responses) 请求超时（${timeoutMs}ms）`);
     }

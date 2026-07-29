@@ -293,13 +293,11 @@ export function seedScriptProviders() {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
-      type = excluded.type,
       keyEnv = excluded.keyEnv,
       baseUrlEnv = excluded.baseUrlEnv,
       modelEnv = excluded.modelEnv,
       defaultBaseUrl = excluded.defaultBaseUrl,
       defaultModel = excluded.defaultModel,
-      maxTokens = excluded.maxTokens,
       isBuiltin = 1
   `);
 

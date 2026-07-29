@@ -26,6 +26,16 @@ import {
   buildAnalysisPrompt,
 } from './openai-compatible';
 
+const DEFAULT_GEMINI_TIMEOUT_MS = 120_000;
+
+interface GeminiCallOptions {
+  temperature?: number;
+  maxTokens?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  images?: Array<{ mimeType: string; imageBase64: string }>;
+}
+
 // ── Provider Config ──
 
 export const geminiConfig: ProviderConfig = {
@@ -80,7 +90,7 @@ function getApiStyle(runtime?: ScriptProviderRuntimeConfig): 'native' | 'openai-
 async function geminiNativeCall(
   prompt: string,
   runtime?: ScriptProviderRuntimeConfig,
-  options?: { temperature?: number; maxTokens?: number; images?: Array<{ mimeType: string; imageBase64: string }> }
+  options?: GeminiCallOptions,
 ): Promise<string> {
   const baseUrl = (runtime?.baseUrl || geminiConfig.defaultBaseUrl).replace(/\/$/, '');
   const apiKey = runtime?.apiKey;
@@ -97,34 +107,50 @@ async function geminiNativeCall(
     parts.push({ inlineData: { mimeType: image.mimeType, data: image.imageBase64 } });
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: {
-        temperature: options?.temperature ?? 0.7,
-        maxOutputTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
-      },
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1, Math.floor(options?.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS));
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const requestSignal = options?.signal
+    ? AbortSignal.any([controller.signal, options.signal])
+    : controller.signal;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          temperature: options?.temperature ?? 0.7,
+          maxOutputTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
+        },
+      }),
+      signal: requestSignal,
+    });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini (native) error ${res.status}: ${errText.slice(0, 500)}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Gemini (native) error ${res.status}: ${errText.slice(0, 500)}`);
+    }
+
+    const data = await res.json() as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!rawText.trim()) throw new Error('Gemini 返回了空响应');
+    return rawText;
+  } catch (error) {
+    if (options?.signal?.aborted) throw new Error('脚本生成已取消');
+    if (timedOut || (error instanceof Error && error.name === 'AbortError')) {
+      throw new Error(`Gemini (native) 请求超时（${timeoutMs}ms）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = await res.json() as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-  if (!rawText.trim()) {
-    throw new Error('Gemini 返回了空响应');
-  }
-
-  return rawText;
 }
 
 // ── Unified call (routes to native or openai-compatible) ──
@@ -134,7 +160,7 @@ async function geminiCall(
   userPrompt: string,
   responseFormat: 'json_object' | 'text' = 'json_object',
   runtime?: ScriptProviderRuntimeConfig,
-  options?: { temperature?: number; maxTokens?: number; images?: Array<{ mimeType: string; imageBase64: string }> }
+  options?: GeminiCallOptions,
 ): Promise<string> {
   const apiStyle = getApiStyle(runtime);
 
@@ -144,6 +170,8 @@ async function geminiCall(
       userPrompt,
       temperature: options?.temperature ?? 0.7,
       maxTokens: options?.maxTokens ?? runtime?.maxTokens ?? geminiConfig.maxTokens,
+      timeoutMs: options?.timeoutMs,
+      signal: options?.signal,
       responseFormat,
       images: options?.images,
     }, runtime);
@@ -169,6 +197,8 @@ export async function geminiCompleteJson<T>(input: {
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
   images?: Array<{ mimeType: string; imageBase64: string }>;
 }, runtime?: ScriptProviderRuntimeConfig): Promise<T> {
   const rawText = await geminiCall(
@@ -176,7 +206,13 @@ export async function geminiCompleteJson<T>(input: {
     input.userPrompt,
     'json_object',
     runtime,
-    { temperature: input.temperature, maxTokens: input.maxTokens, images: input.images },
+    {
+      temperature: input.temperature,
+      maxTokens: input.maxTokens,
+      timeoutMs: input.timeoutMs,
+      signal: input.signal,
+      images: input.images,
+    },
   );
   return parseJsonResponse<T>(rawText, 'Gemini');
 }

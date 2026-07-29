@@ -14,6 +14,11 @@ import {
   getDefaultSelectedSellingPointKeys,
   resolveSelectedSellingPoints,
 } from '@/lib/script-strategy';
+import {
+  readScriptGenerationStream,
+  ScriptGenerationStreamError,
+} from '@/lib/script-generation-stream';
+import type { ScriptGenerationProgress } from '@/lib/script-generation-v3';
 import type {
   AnalysisResult,
   ProviderMeta,
@@ -60,6 +65,35 @@ const STEP_LABELS: Record<Step, string> = {
   2: '策略',
   3: '脚本',
 };
+
+const INITIAL_GENERATION_PROGRESS: ScriptGenerationProgress = {
+  phase: 'preparing',
+  percent: 2,
+  message: '正在保存脚本设置',
+};
+
+function formatGenerationFailure(data: Record<string, unknown>): string {
+  const details = data.details as {
+    contentCharacterCount?: number;
+    targetCharacterRange?: [number, number];
+    estimatedNarrationSec?: number;
+    targetNarrationSec?: number;
+    unsupportedNarrativeBeats?: string[];
+    materialReason?: string;
+  } | undefined;
+  const unsupportedNarrativeBeats = Array.isArray(details?.unsupportedNarrativeBeats)
+    ? details.unsupportedNarrativeBeats.filter(Boolean)
+    : [];
+  const actionable = data.error === 'script_material_mismatch'
+    ? [
+        details?.materialReason ? `\n原因：${details.materialReason}` : '',
+        unsupportedNarrativeBeats.length > 0 ? `\n缺少画面承接：${unsupportedNarrativeBeats.join('；')}` : '',
+      ].join('')
+    : details
+      ? `\n当前 ${details.contentCharacterCount ?? '-'} 字 / 目标 ${details.targetCharacterRange?.join('～') ?? '-'} 字；预计 ${details.estimatedNarrationSec?.toFixed(2) ?? '-'} 秒 / 目标正文 ${details.targetNarrationSec?.toFixed(2) ?? '-'} 秒。`
+      : '';
+  return String(data.message || data.error || '未知错误') + actionable;
+}
 
 /** 旧版（v1）草稿是 {shots, duration}，没有 segments/version，直接 render 会在 .segments.map 上炸整页。 */
 function isValidScriptOutput(value: unknown): value is ScriptOutput {
@@ -133,6 +167,8 @@ export default function ScriptPanel({ projectId }: Props) {
   const [step, setStep] = useState<Step>(1);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [cancellingGeneration, setCancellingGeneration] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<ScriptGenerationProgress>(INITIAL_GENERATION_PROGRESS);
 
   // Brief (from project)
   const [audience, setAudience] = useState('');
@@ -168,6 +204,10 @@ export default function ScriptPanel({ projectId }: Props) {
 
   // Refs
   const initialLoadDone = useRef(false);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const generationIdRef = useRef<string | null>(null);
+
+  useEffect(() => () => generationAbortRef.current?.abort(), []);
 
   const hydrateStrategyFromDraft = useCallback((
     draft: ScriptDraft,
@@ -398,6 +438,19 @@ export default function ScriptPanel({ projectId }: Props) {
   }, [projectId, sellingPoints, audience, platform, analysisProviderId, saveBrief]);
 
   // ── Handle generate ──
+  const handleCancelGeneration = useCallback(() => {
+    const generationId = generationIdRef.current;
+    if (!generationId || cancellingGeneration) return;
+    setCancellingGeneration(true);
+    setGenerationProgress((current) => ({ ...current, message: '正在取消生成…' }));
+    void fetch(`/api/projects/${projectId}/script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel', generationId }),
+    }).catch(() => undefined);
+    generationAbortRef.current?.abort();
+  }, [cancellingGeneration, projectId]);
+
   const handleGenerate = useCallback(async () => {
     if (!selectedShotSetId) {
       alert('请选择一个分镜组');
@@ -413,15 +466,24 @@ export default function ScriptPanel({ projectId }: Props) {
       return;
     }
 
+    const generationId = crypto.randomUUID();
+    const generationController = new AbortController();
+    generationIdRef.current = generationId;
+    generationAbortRef.current = generationController;
+    setGenerationProgress(INITIAL_GENERATION_PROGRESS);
+    setCancellingGeneration(false);
     setGenerating(true);
     try {
       await saveBrief();
+      if (generationController.signal.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
 
       const res = await fetch(`/api/projects/${projectId}/script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'generate',
+          stream: true,
+          generationId,
           shotSetId: selectedShotSetId,
           selectedSellingPoints: spWithData,
           templateId,
@@ -431,9 +493,12 @@ export default function ScriptPanel({ projectId }: Props) {
           tone,
           platform,
         }),
+        signal: generationController.signal,
       });
-      const data = await res.json();
-      if (res.ok) {
+      const streamed = await readScriptGenerationStream(res, setGenerationProgress);
+      const data = streamed.body;
+      if (streamed.status < 400) {
+        if (!isSupportedScriptOutput(data.script)) throw new Error('服务端返回了无法识别的脚本结构');
         setScript(data.script);
         setStep(3);
         setLegacyDraftNotice(false);
@@ -445,33 +510,24 @@ export default function ScriptPanel({ projectId }: Props) {
           setDrafts(listData.drafts);
           setSelectedDraftId(listData.drafts[0].id);
         }
-
       } else {
-        const details = data.details as {
-          contentCharacterCount?: number;
-          targetCharacterRange?: [number, number];
-          estimatedNarrationSec?: number;
-          targetNarrationSec?: number;
-          unsupportedNarrativeBeats?: string[];
-          materialReason?: string;
-        } | undefined;
-        const unsupportedNarrativeBeats = Array.isArray(details?.unsupportedNarrativeBeats)
-          ? details.unsupportedNarrativeBeats.filter(Boolean)
-          : [];
-        const actionable = data.error === 'script_material_mismatch'
-          ? [
-              details?.materialReason ? `\n原因：${details.materialReason}` : '',
-              unsupportedNarrativeBeats.length > 0 ? `\n缺少画面承接：${unsupportedNarrativeBeats.join('；')}` : '',
-            ].join('')
-          : details
-            ? `\n当前 ${details.contentCharacterCount ?? '-'} 字 / 目标 ${details.targetCharacterRange?.join('～') ?? '-'} 字；预计 ${details.estimatedNarrationSec?.toFixed(2) ?? '-'} 秒 / 目标正文 ${details.targetNarrationSec?.toFixed(2) ?? '-'} 秒。`
-            : '';
-        alert('生成失败: ' + (data.message || data.error || '未知错误') + actionable);
+        alert('生成失败: ' + formatGenerationFailure(data));
       }
     } catch (err) {
-      alert('生成失败: ' + String(err));
+      if (generationController.signal.aborted) return;
+      if (err instanceof ScriptGenerationStreamError) {
+        if (err.body.error === 'script_generation_cancelled') return;
+        alert('生成失败: ' + formatGenerationFailure(err.body));
+      } else {
+        alert('生成失败: ' + String(err));
+      }
     } finally {
-      setGenerating(false);
+      if (generationIdRef.current === generationId) {
+        generationIdRef.current = null;
+        generationAbortRef.current = null;
+        setGenerating(false);
+        setCancellingGeneration(false);
+      }
     }
   }, [
     projectId, selectedShotSetId, selectedSellingPointKeys, analysis,
@@ -666,13 +722,39 @@ export default function ScriptPanel({ projectId }: Props) {
           />
         )}
 
-        {/* Generating spinner overlay */}
+        {/* Generating progress */}
         {generating && (
-          <div className="py-12 text-center text-ink-tertiary">
-            <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-            <p className="text-sm">
-              {providers.find((p) => p.id === generateProviderId)?.name || 'AI'} 正在生成脚本...
-            </p>
+          <div className="mx-auto my-8 max-w-xl rounded-[20px] border border-hairline bg-surface-subtle p-5" aria-live="polite">
+            <div className="mb-3 flex items-center justify-between gap-4 text-sm">
+              <span className="font-medium text-ink">
+                {providers.find((p) => p.id === generateProviderId)?.name || 'AI'} 正在生成脚本
+              </span>
+              <span className="tabular-nums text-ink-tertiary">{generationProgress.percent}%</span>
+            </div>
+            <div
+              role="progressbar"
+              aria-label="脚本生成进度"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={generationProgress.percent}
+              className="h-2 overflow-hidden rounded-full bg-hairline"
+            >
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-500 ease-out"
+                style={{ width: `${generationProgress.percent}%` }}
+              />
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-4">
+              <p className="text-sm text-ink-tertiary">{generationProgress.message}</p>
+              <button
+                type="button"
+                onClick={handleCancelGeneration}
+                disabled={cancellingGeneration}
+                className="btn-secondary btn-sm shrink-0 text-xs"
+              >
+                {cancellingGeneration ? '正在取消…' : '取消生成'}
+              </button>
+            </div>
           </div>
         )}
       </div>

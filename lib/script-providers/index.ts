@@ -22,6 +22,11 @@ import {
   completeOpenAiResponsesJson,
   usesOpenAiResponses,
 } from './openai-responses';
+import {
+  chatCompletion as anthropicChatCompletion,
+  completeAnthropicMessagesJson,
+  usesAnthropicMessages,
+} from './anthropic-messages';
 import { geminiAnalyzeSellingPoints, geminiCompleteJson } from './gemini';
 import { toScriptProviderMeta } from './config';
 import {
@@ -78,6 +83,8 @@ export async function completeJson<T>(input: {
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
   images?: Array<{ mimeType: string; imageBase64: string }>;
 }): Promise<T> {
   checkConfigured(input.providerId);
@@ -87,6 +94,8 @@ export async function completeJson<T>(input: {
     userPrompt: input.userPrompt,
     temperature: input.temperature,
     maxTokens: input.maxTokens,
+    timeoutMs: input.timeoutMs,
+    signal: input.signal,
     images: input.images,
   };
 
@@ -96,6 +105,10 @@ export async function completeJson<T>(input: {
 
   if (usesOpenAiResponses(runtime.apiStyle)) {
     return completeOpenAiResponsesJson<T>(resolveConfig(input.providerId), options, runtime);
+  }
+
+  if (usesAnthropicMessages(runtime.apiStyle)) {
+    return completeAnthropicMessagesJson<T>(resolveConfig(input.providerId), options, runtime);
   }
 
   return completeOpenAiCompatibleJson<T>(resolveConfig(input.providerId), options, runtime);
@@ -117,7 +130,11 @@ export async function analyzeSellingPoints(
   }
 
   const config = resolveConfig(providerId);
-  const completion = usesOpenAiResponses(runtime.apiStyle) ? responsesChatCompletion : chatCompletion;
+  const completion = usesOpenAiResponses(runtime.apiStyle)
+    ? responsesChatCompletion
+    : usesAnthropicMessages(runtime.apiStyle)
+      ? anthropicChatCompletion
+      : chatCompletion;
   const rawText = await completion(config, {
     systemPrompt,
     userPrompt,

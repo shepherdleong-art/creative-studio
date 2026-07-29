@@ -87,6 +87,9 @@ const project = {
 };
 
 let receivedInput: object | null = null;
+let receivedSignal: AbortSignal | undefined;
+const generationController = new AbortController();
+const serviceProgress: Array<{ phase: string; percent: number }> = [];
 const response = await generateAndPersistScriptV3({
   projectId: 'project-a',
   project,
@@ -100,19 +103,36 @@ const response = await generateAndPersistScriptV3({
 }, {
   db,
   storageRoot,
+  signal: generationController.signal,
+  onProgress: (progress) => serviceProgress.push(progress),
   createId: () => 'draft-v3',
   providerMeta: () => ({
     id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
     apiStyle: 'openai-compatible', supportsVision: true,
   }),
   completeJson: async () => ({}),
-  generate: async (input) => {
+  prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
+    imageBuffer,
+    mimeType: mimeType as 'image/jpeg',
+    width: 1,
+    height: 1,
+    originalSizeBytes: imageBuffer.length,
+    processedSizeBytes: imageBuffer.length,
+  }),
+  generate: async (input, generatorDependencies) => {
     receivedInput = input;
+    receivedSignal = generatorDependencies.signal;
     return { script, attempts: 2 };
   },
 });
 
 assert.equal(response.status, 200);
+assert.equal(receivedSignal, generationController.signal, '服务层必须把取消信号传给模型生成器');
+assert.equal(serviceProgress[0]?.phase, 'preparing');
+assert.ok(serviceProgress.some((progress) => progress.phase === 'saving'));
+assert.deepEqual(serviceProgress.at(-1), {
+  phase: 'completed', percent: 100, message: '脚本生成完成',
+});
 const visualInput = receivedInput as { visuals?: Array<Record<string, unknown>> } | null;
 assert.deepEqual(visualInput?.visuals, [{
   shotId: 'shot-owned',

@@ -6,6 +6,7 @@ import {
   generateScriptV3,
   type CompleteJsonRequest,
   type ScriptGenerationV3Dependencies,
+  type ScriptGenerationProgress,
   type ScriptVisualContext,
 } from './script-generation-v3.ts';
 import { dataRoot } from './data-root.ts';
@@ -13,6 +14,14 @@ import { assertNoStorageSymlink } from './final-edit/storage-path.ts';
 import { buildScriptDurationBudget } from './script-duration-policy.ts';
 import type { ProviderMeta, SelectedSellingPoint } from './script-providers/types.ts';
 import { getScriptTemplate } from './script-templates.ts';
+import {
+  prepareScriptVisionImage,
+  SCRIPT_VISION_IMAGE_MAX_BYTES,
+  SCRIPT_VISION_TOTAL_BASE64_CHARACTERS,
+  SCRIPT_VISION_TOTAL_RAW_BYTES,
+  type PrepareScriptVisionImageInput,
+  type PreparedScriptVisionImage,
+} from './script-vision-image.ts';
 
 export interface GenerateScriptV3ServiceDependencies {
   db: Database.Database;
@@ -21,6 +30,9 @@ export interface GenerateScriptV3ServiceDependencies {
   storageRoot?: string;
   generate?: typeof generateScriptV3;
   createId?: () => string;
+  prepareVisualImage?: (input: PrepareScriptVisionImageInput) => Promise<PreparedScriptVisionImage>;
+  signal?: AbortSignal;
+  onProgress?(progress: ScriptGenerationProgress): void;
 }
 
 interface ShotVisualRow {
@@ -45,9 +57,20 @@ function fallbackImageMimeType(filePath: string): string {
   return 'image/png';
 }
 
-function readShotVisuals(rows: ShotVisualRow[], storageRoot: string): ScriptVisualContext[] {
+async function readShotVisuals(
+  rows: ShotVisualRow[],
+  storageRoot: string,
+  prepareVisualImage: (input: PrepareScriptVisionImageInput) => Promise<PreparedScriptVisionImage>,
+  signal?: AbortSignal,
+  onPrepared?: (completed: number, total: number) => void,
+): Promise<ScriptVisualContext[]> {
   const visuals: ScriptVisualContext[] = [];
+  const maxBytesPerImage = Math.min(
+    SCRIPT_VISION_IMAGE_MAX_BYTES,
+    Math.floor(SCRIPT_VISION_TOTAL_RAW_BYTES / Math.max(1, rows.length)),
+  );
   for (const row of rows) {
+    if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
     const candidates = [
       row.generatedImageAssetId && row.generatedImagePath && row.generatedFilename ? {
         imageAssetId: row.generatedImageAssetId,
@@ -75,14 +98,21 @@ function readShotVisuals(rows: ShotVisualRow[], storageRoot: string): ScriptVisu
         const mimeType = SUPPORTED_SCRIPT_IMAGE_MIME_TYPES.has(String(candidate.mimeType || ''))
           ? String(candidate.mimeType)
           : fallbackImageMimeType(imagePath);
+        const prepared = await prepareVisualImage({
+          imageBuffer: fs.readFileSync(imagePath),
+          mimeType,
+          maxBytes: maxBytesPerImage,
+        });
+        if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
         visuals.push({
           shotId: row.shotId,
           shotIndex: row.indexNum,
           imageAssetId: candidate.imageAssetId,
           sourceFilename: candidate.filename,
-          mimeType,
-          imageBase64: fs.readFileSync(imagePath).toString('base64'),
+          mimeType: prepared.mimeType,
+          imageBase64: prepared.imageBuffer.toString('base64'),
         });
+        onPrepared?.(visuals.length, rows.length);
         break;
       } catch { /* unsafe, missing or unreadable candidate falls back to the next image */ }
     }
@@ -156,10 +186,30 @@ export async function generateAndPersistScriptV3(
     WHERE ss.projectId = ? AND ss.id = ?
     ORDER BY s.indexNum
   `).all(projectId, shotSetId) as ShotVisualRow[];
+  dependencies.onProgress?.({
+    phase: 'preparing', percent: 5, message: '正在准备分镜图片',
+  });
   const storageRoot = dependencies.storageRoot || path.join(dataRoot(), 'storage');
-  const visuals = readShotVisuals(shotRows, storageRoot);
+  const visuals = await readShotVisuals(
+    shotRows,
+    storageRoot,
+    dependencies.prepareVisualImage || prepareScriptVisionImage,
+    dependencies.signal,
+    (completed, total) => dependencies.onProgress?.({
+      phase: 'preparing',
+      percent: Math.round(5 + ((completed / Math.max(1, total)) * 22)),
+      message: `正在处理分镜图片（${completed}/${total}）`,
+    }),
+  );
   if (visuals.length === 0) {
     return { status: 400, body: { error: '所选分镜组中没有可读取的分镜图片' } };
+  }
+  const visualPayloadBase64Characters = visuals.reduce(
+    (total, visual) => total + visual.imageBase64.length,
+    0,
+  );
+  if (visualPayloadBase64Characters > SCRIPT_VISION_TOTAL_BASE64_CHARACTERS) {
+    return { status: 400, body: { error: '分镜图片总量过大，请减少分镜数量后重试' } };
   }
 
   const tone = typeof body.tone === 'string' ? body.tone : String(project.scriptTone || '种草');
@@ -181,8 +231,12 @@ export async function generateAndPersistScriptV3(
   };
   const generatorDependencies: ScriptGenerationV3Dependencies = {
     completeJson: (request) => dependencies.completeJson(providerId, request),
+    signal: dependencies.signal,
+    onProgress: dependencies.onProgress,
   };
   const result = await (dependencies.generate || generateScriptV3)(generationInput, generatorDependencies);
+  if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+  dependencies.onProgress?.({ phase: 'saving', percent: 92, message: '正在保存脚本草稿' });
   const model = provider.model || '';
   const draftId = (dependencies.createId || uuidv4)();
   dependencies.db.prepare(`
@@ -210,10 +264,12 @@ export async function generateAndPersistScriptV3(
       targetCharacterRange: [budget.minContentCharacters, budget.maxContentCharacters],
       visualCount: visuals.length,
       visualImageAssetIds: visuals.map((visual) => visual.imageAssetId),
+      visualPayloadBase64Characters,
       attempts: result.attempts,
     }),
     JSON.stringify(result.script),
   );
+  dependencies.onProgress?.({ phase: 'completed', percent: 100, message: '脚本生成完成' });
   return {
     status: 200,
     body: { draftId, script: result.script, provider: providerId, model, attempts: result.attempts },
