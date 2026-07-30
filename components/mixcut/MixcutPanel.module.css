@@ -422,6 +422,25 @@
 .rcard { flex-shrink: 0; padding: 18px; border-radius: 14px; background: var(--paper); box-shadow: var(--sh-sm); }
 .rcard > h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 14px; font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
 .rcard > h4 svg { color: var(--sub); }
+.bgmCard { position: relative; overflow: hidden; }
+.bgmCard::before { position: absolute; top: 0; right: 18px; left: 18px; height: 1px; background: linear-gradient(90deg, transparent, rgba(0, 113, 227, .28), transparent); content: ''; }
+.bgmCount { margin-left: auto; padding: 2px 7px; border-radius: 99px; background: var(--seg); color: var(--faint); font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.bgmSelect { width: 100%; min-width: 0; height: 34px; }
+.bgmActions { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 9px; }
+.bgmActions .btn { min-width: 0; padding: 0 9px; border: .5px solid transparent; border-radius: 9px; white-space: nowrap; }
+.bgmAddButton { border-color: rgba(0, 113, 227, .12) !important; background: var(--blue-wash); color: var(--blue); }
+.bgmAddButton:hover { background: rgba(0, 113, 227, .14); }
+.bgmAuditionButton { border-color: var(--line) !important; background: #fff; color: var(--ink); }
+.bgmAuditionButton:hover { background: var(--bg); }
+.bgmAuditionActive { border-color: #1d1d1f !important; background: #1d1d1f; color: #fff; }
+.bgmAuditionActive:hover { background: #000; }
+.bgmFileInput { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.bgmImportStatus { display: flex; min-height: 28px; align-items: flex-start; gap: 6px; margin: 8px 0 12px; padding: 7px 8px; border-radius: 8px; background: var(--bg); color: var(--faint); font-size: 10px; line-height: 1.45; }
+.bgmStatusDot { width: 5px; height: 5px; flex: 0 0 auto; margin-top: 4px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 3px rgba(0, 113, 227, .1); }
+.bgmControls { padding-top: 11px; border-top: .5px solid var(--line); }
+.bgmControls .ctlRow { margin-bottom: 9px; }
+.bgmControls .ctlRow:last-child { margin-bottom: 0; }
+.bgmCard audio { display: none; }
 .narrationSpeedSummary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--sub); font-size: 12px; }
 .narrationSpeedSummary strong { padding: 3px 8px; border: .5px solid rgba(0, 113, 227, .18); border-radius: 8px; background: var(--blue-wash); color: var(--blue); font-size: 13px; font-variant-numeric: tabular-nums; line-height: 1.4; }
 .narrationSpeedCardHint { margin: 0 0 12px; color: var(--faint); font-size: 11px; line-height: 1.45; }
