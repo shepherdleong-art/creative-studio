@@ -10,7 +10,7 @@ const ACCEPTED_AUDIO = '.mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*';
 
 type VariantCommandRequest = VariantCommandInput | ((variant: FinalEditVariantView) => VariantCommandInput);
 
-export type BgmImportOutcome = 'applied' | 'failed';
+export type BgmImportOutcome = 'applied' | 'imported' | 'failed';
 export interface BgmImportUiResult {
   outcome: BgmImportOutcome;
   announcement: string;
@@ -112,6 +112,8 @@ export function BgmCard({
       const result = await onImportFiles(files);
       if (!mountedRef.current) return;
       if (result.outcome === 'applied') {
+        showStatus(result.announcement);
+      } else if (result.outcome === 'imported') {
         showStatus(result.announcement);
       } else {
         showStatus('添加失败');

@@ -139,6 +139,20 @@ assert.equal(
   'restore-content',
 );
 
+const blockedStorageRoot = path.join(root, 'storage-as-file');
+fs.writeFileSync(blockedStorageRoot, 'not-a-directory');
+await assert.rejects(
+  importFinalEditBgmFiles({
+    db,
+    storageRoot: blockedStorageRoot,
+    probeDurationSec: dependencies.probeDurationSec,
+  }, [upload('写入失败.mp3', 'write-failure')]),
+  (error: unknown) => error instanceof Error
+    && (error as Error & { code?: string; status?: number }).code === 'bgm_write_failed'
+    && (error as Error & { code?: string; status?: number }).status === 500,
+  '音乐库或数据库写入故障必须保留为服务端 500，而不是客户端 400',
+);
+
 const dbWithHook = new Database(':memory:');
 initFinalEditSchema(dbWithHook);
 let hookCount = 0;
@@ -332,6 +346,26 @@ const realResult = await realImport(
 assert.equal(realResult.imported.length, 1);
 assert.ok(realResult.imported[0].durationUs > 0);
 assert.equal(realResult.imported[0].filename, '真音频.wav');
+
+const { scanFinalEditBgm } = await import('../lib/final-edit/bgm.ts');
+const rescannedTracks = await scanFinalEditBgm(realDb, realStorage);
+const rescannedRealTrack = rescannedTracks.find((track) => /真音频\.wav$/.test(track.relativePath));
+assert.equal(
+  rescannedRealTrack?.id,
+  realResult.imported[0].id,
+  '重新扫描音乐库必须返回数据库中的权威曲目 ID',
+);
+assert.equal(
+  rescannedRealTrack?.relativePath,
+  'bgm/真音频.wav',
+  '重新扫描不得把公开 relativePath 改成 Windows 反斜杠路径',
+);
+assert.ok(
+  realDb.prepare(`SELECT 1 FROM final_edit_bgm_tracks WHERE id=? AND status='ready'`).get(
+    rescannedRealTrack?.id,
+  ),
+  '扫描结果中的曲目 ID 必须可被媒体接口按主键查询',
+);
 
 const fakeMp3Path = path.join(realAudioRoot, '伪装.mp3');
 fs.writeFileSync(fakeMp3Path, 'this is not audio');

@@ -40,6 +40,7 @@ interface ProjectRow {
   name: string;
   productName: string | null;
   productCode: string | null;
+  productCategory: string | null;
   createdAt: string;
 }
 
@@ -136,7 +137,7 @@ export async function buildMixcutContext(
   requestedShotSetId?: string | null,
 ): Promise<MixcutContextResponse | null> {
   const projectRow = db.prepare(`
-    SELECT id, name, productName, productCode, createdAt FROM projects WHERE id = ?
+    SELECT id, name, productName, productCode, productCategory, createdAt FROM projects WHERE id = ?
   `).get(projectId) as ProjectRow | undefined;
   if (!projectRow) return null;
 
@@ -293,6 +294,7 @@ export async function buildMixcutContext(
       id: projectRow.id,
       name: projectRow.name,
       productName: projectRow.productName || '',
+      productCategory: projectRow.productCategory || '',
       // Redline (plan §11.1 / ExportIdentity.productCode JSDoc in types.ts /
       // Task 2 contract test): productCode must come from projects.productCode,
       // NEVER projects.model (that's the image-generation provider's model).

@@ -118,6 +118,7 @@ assert.match(bgmCard, /stopRequestId/, 'BgmCard 必须支持外部停止请求')
 assert.match(bgmCard, /active/, 'BgmCard 必须根据 active 状态停止播放');
 assert.match(bgmCard, /scopeId/, '切组时 BgmCard 必须停止当前试听');
 assert.match(bgmCard, /result\.outcome === 'applied'/, 'BgmCard 必须处理导入成功路径');
+assert.match(bgmCard, /result\.outcome === 'imported'/, '切组后只能提示音乐已进入音乐库，不能谎报已经应用到音轨');
 assert.match(bgmCard, /result\.announcement/, 'BgmCard 必须播报父组件提供的导入结果');
 assert.match(bgmCard, /添加失败/, 'BgmCard 必须处理导入全部失败路径');
 assert.match(bgmCard, /setTimeout/, '成功提示必须短暂显示后自动收起');
@@ -134,6 +135,10 @@ assert.match(previewStep, /response\.status !== 422/, '422 必须视为合法部
 assert.match(previewStep, /firstSuccessfulTrackId/, '导入后必须使用服务端首选曲目 ID');
 assert.match(previewStep, /await reloadGroup\(targetGroupId\)/, '导入后必须先刷新成片组');
 assert.match(previewStep, /type:\s*'set_bgm'/, '导入后必须自动切换 BGM');
+assert.ok(
+  previewStep.lastIndexOf('setMessage(errorMessages)') > previewStep.indexOf("const succeeded = await applyVariantNow({ type: 'set_bgm'"),
+  '部分失败详情必须在 set_bgm 自动保存完成后发布，不能被“已自动保存”覆盖',
+);
 assert.match(previewStep, /previewStopRequestId/, '成片预览必须有外部停止指引');
 assert.match(previewStep, /auditionStopRequestId/, '独立试听必须有外部停止指引');
 assert.match(previewStep, /selectedBgmTrack/, 'PreviewStep 必须从当前 group 解析 BGM 曲目名称');
@@ -142,6 +147,11 @@ assert.match(finalPreview, /onPlaybackStart/, 'FinalEditPreview 必须通知外�
 assert.match(timeline, /bgmTrackName/, '时间轴必须接收 BGM 曲目文件名');
 assert.match(timeline, /无 BGM/, '时间轴无 BGM 时必须显示空状态');
 assert.match(previewStep, /warningIssues/, '预览必须持续展示服务端返回的时长 override warning');
+assert.match(
+  timeline,
+  /variant\.bgm\.trackId && bgmTrackName \? \([\s\S]{0,180}<Waveform tone="bgm"/,
+  '只有真正选择 BGM 时才能渲染 BGM 波形',
+);
 assert.match(previewStep, /<MixcutTimeline/, '正式第三步必须挂载可操作 Mixcut 时间轴');
 assert.match(previewStep, /type: 'set_narration_playback_rate'/, '口播轨变速必须保存到当前成片组，不能提升为新版本生成请求');
 assert.doesNotMatch(previewStep, /onRegenerateWithSpeed/, '口播轨直接变速不得保留生成新版本回调');

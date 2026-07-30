@@ -30,14 +30,20 @@ export async function scanFinalEditBgm(db: Database.Database, storageRoot: strin
   for (const file of files.sort()) {
     try {
       const fingerprint = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-      const relativePath = path.relative(storageRoot, file);
+      const relativePath = path.relative(storageRoot, file).split(path.sep).join('/');
       const durationUs = Math.round(await probeDurationSec(file) * 1_000_000);
-      const id = fingerprint.slice(0, 32);
-      db.prepare(`INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt) VALUES (?, ?, ?, ?, ?, 'ready', ?) ON CONFLICT(fileFingerprint) DO UPDATE SET relativePath=excluded.relativePath, durationUs=excluded.durationUs, format=excluded.format, status='ready', errorMessage=NULL, scannedAt=excluded.scannedAt`).run(id, relativePath, fingerprint, durationUs, path.extname(file).slice(1).toLowerCase(), new Date().toISOString());
-      result.push({ id, relativePath, fileFingerprint: fingerprint, durationUs });
+      const candidateId = fingerprint.slice(0, 32);
+      db.prepare(`INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt) VALUES (?, ?, ?, ?, ?, 'ready', ?) ON CONFLICT(fileFingerprint) DO UPDATE SET relativePath=excluded.relativePath, durationUs=excluded.durationUs, format=excluded.format, status='ready', errorMessage=NULL, scannedAt=excluded.scannedAt`).run(candidateId, relativePath, fingerprint, durationUs, path.extname(file).slice(1).toLowerCase(), new Date().toISOString());
+      const authoritative = db.prepare(`
+        SELECT id, relativePath, fileFingerprint, durationUs
+        FROM final_edit_bgm_tracks
+        WHERE fileFingerprint=? AND status='ready'
+      `).get(fingerprint) as { id: string; relativePath: string; fileFingerprint: string; durationUs: number } | undefined;
+      if (!authoritative) throw new Error('BGM 扫描结果未能写入索引');
+      result.push(authoritative);
     } catch (error) {
       const fingerprint = crypto.createHash('sha256').update(file).digest('hex');
-      db.prepare(`INSERT OR REPLACE INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, errorMessage, scannedAt) VALUES (?, ?, ?, 0, ?, 'failed', ?, ?)`).run(fingerprint.slice(0, 32), path.relative(storageRoot, file), fingerprint, path.extname(file).slice(1), error instanceof Error ? error.message : String(error), new Date().toISOString());
+      db.prepare(`INSERT OR REPLACE INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, errorMessage, scannedAt) VALUES (?, ?, ?, 0, ?, 'failed', ?, ?)`).run(fingerprint.slice(0, 32), path.relative(storageRoot, file).split(path.sep).join('/'), fingerprint, path.extname(file).slice(1), error instanceof Error ? error.message : String(error), new Date().toISOString());
     }
   }
   return result;

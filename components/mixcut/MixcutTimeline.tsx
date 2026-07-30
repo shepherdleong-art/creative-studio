@@ -283,8 +283,14 @@ export function MixcutTimeline({
             <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {narrationPlaybackRate.toFixed(1)}x · {narrationDurationSec.toFixed(1)}s</span>
           </div>
           <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
-          <Waveform tone="bgm" seed={7} playedWidthPx={playheadPx} />
-          <span className={styles.wfLabel} style={{ left: introPx + 8 }}>{variant.bgm.trackId && bgmTrackName ? `${bgmTrackName} · ${variant.bgm.gainDb} dB · 淡入 ${variant.bgm.fadeInSec}s · 淡出 ${variant.bgm.fadeOutSec}s` : '无 BGM'}</span>
+            {variant.bgm.trackId && bgmTrackName ? (
+              <>
+                <Waveform tone="bgm" seed={7} playedWidthPx={playheadPx} />
+                <span className={styles.wfLabel} style={{ left: introPx + 8 }}>{`${bgmTrackName} · ${variant.bgm.gainDb} dB · 淡入 ${variant.bgm.fadeInSec}s · 淡出 ${variant.bgm.fadeOutSec}s`}</span>
+              </>
+            ) : (
+              <span className={styles.wfLabel} style={{ left: introPx + 8 }}>无 BGM</span>
+            )}
           </div>
           <button
             type="button"

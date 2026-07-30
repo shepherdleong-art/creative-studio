@@ -189,14 +189,14 @@ async function importSingleFile(
     }
     assertNoStorageSymlink(storageRoot, 'bgm');
   } catch (error) {
-    throw new FinalEditError('bgm_write_failed', `无法准备音乐库目录：${error instanceof Error ? error.message : String(error)}`);
+    throw new FinalEditError('bgm_write_failed', `无法准备音乐库目录：${error instanceof Error ? error.message : String(error)}`, 500);
   }
 
   let placed: { filename: string; absolutePath: string };
   try {
     placed = await placeReadableFile(upload.temporaryPath, bgmRoot, safeName);
   } catch (error) {
-    throw new FinalEditError('bgm_write_failed', `无法写入音乐文件"${safeName}"：${error instanceof Error ? error.message : String(error)}`);
+    throw new FinalEditError('bgm_write_failed', `无法写入音乐文件"${safeName}"：${error instanceof Error ? error.message : String(error)}`, 500);
   }
 
   const relativePath = `bgm/${placed.filename}`;
@@ -229,7 +229,7 @@ async function importSingleFile(
 
     if (!row) {
       try { fs.unlinkSync(placed.absolutePath); } catch { /* best effort */ }
-      throw new FinalEditError('bgm_index_failed', `无法索引"${safeName}"`);
+      throw new FinalEditError('bgm_index_failed', `无法索引"${safeName}"`, 500);
     }
 
     if (row.relativePath !== relativePath) {
@@ -255,7 +255,7 @@ async function importSingleFile(
   } catch (error) {
     try { fs.unlinkSync(placed.absolutePath); } catch { /* best effort */ }
     if (error instanceof FinalEditError) throw error;
-    throw new FinalEditError('bgm_index_failed', `无法索引"${safeName}"：${error instanceof Error ? error.message : String(error)}`);
+    throw new FinalEditError('bgm_index_failed', `无法索引"${safeName}"：${error instanceof Error ? error.message : String(error)}`, 500);
   }
 }
 
@@ -286,8 +286,9 @@ export async function importFinalEditBgmFiles(
           errors.push(result.error);
         }
       } catch (error) {
+        if (error instanceof FinalEditError) throw error;
         const err = error instanceof Error ? error.message : String(error);
-        throw new FinalEditError('bgm_write_failed', `导入中断：${err}`);
+        throw new FinalEditError('bgm_write_failed', `导入中断：${err}`, 500);
       }
     }
 

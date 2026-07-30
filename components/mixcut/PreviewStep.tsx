@@ -152,25 +152,30 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       if (errors.length) detailParts.push(`${errors.length} 首失败`);
       const details = detailParts.join('，');
       const errorMessages = errors.map((error) => `${error.filename}：${error.message}`).join('\n');
-      if (errorMessages && mountedRef.current) setMessage(errorMessages);
 
       if (groupRef.current.id !== targetGroupId) {
-        return body.firstSuccessfulTrackId ? { outcome: 'applied' as const, announcement: `已添加并应用到音轨（${details}）`, details } : { outcome: 'failed' as const, announcement: '添加失败', details };
+        if (errorMessages && mountedRef.current) setMessage(errorMessages);
+        return body.firstSuccessfulTrackId
+          ? { outcome: 'imported' as const, announcement: `音乐已添加到音乐库，未应用到当前音轨（${details}）`, details }
+          : { outcome: 'failed' as const, announcement: '添加失败', details };
       }
 
       const refreshed = await reloadGroup(targetGroupId);
       const firstId = body.firstSuccessfulTrackId || null;
       if (!firstId) {
+        if (errorMessages && mountedRef.current) setMessage(errorMessages);
         return { outcome: 'failed' as const, announcement: '添加失败', details };
       }
 
       const refreshedVariant = refreshed.variants.find((item) => item.id === selectedVariantId) || refreshed.variants[0];
       if (!refreshedVariant) {
+        if (errorMessages && mountedRef.current) setMessage(errorMessages);
         return { outcome: 'failed' as const, announcement: '添加失败', details };
       }
 
       const succeeded = await applyVariantNow({ type: 'set_bgm', trackId: firstId });
       if (succeeded) {
+        if (errorMessages && mountedRef.current) setMessage(errorMessages);
         return { outcome: 'applied' as const, announcement: `已添加并应用到音轨（${details}）`, details };
       }
       return { outcome: 'failed' as const, announcement: '添加失败', details };

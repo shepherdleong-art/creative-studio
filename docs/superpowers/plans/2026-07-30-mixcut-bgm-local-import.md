@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在智能混剪“背景音乐”卡片中加入本地多文件导入、可读文件名去重、导入后自动选择和独立试听，同时保持现有草稿 revision、时间线预览与最终渲染行为不回归。
+**Goal:** 在智能混剪“背景音乐”卡片中加入本地多文件导入、可读文件名去重、选完即自动应用到时间线和独立试听；下拉及音轨只显示可读文件名，不暴露“待导入”等内部阶段，同时保持现有草稿 revision、时间线预览与最终渲染行为不回归。
 
-**Architecture:** 新增独立的 BGM 文件导入领域服务与 multipart HTTP 适配层，API 路由只组装依赖、返回状态码；曲目列表统一由服务端读模型生成 `filename`。前端把 BGM 卡片抽成独立组件，上传完成后在现有串行队列内刷新 group 并提交 `set_bgm`，试听使用现有媒体接口，父组件通过 stop request 协调试听与成片播放互斥。
+**Architecture:** 新增独立的 BGM 文件导入领域服务与 multipart HTTP 适配层，API 路由只组装依赖、返回状态码；曲目列表统一由服务端读模型生成 `filename`。前端在已确认的 `BgmCard` UI 样稿上接入正式上传，文件选择后在现有串行队列内完成上传→刷新 group→提交 `set_bgm`→发布新 variant；`MixcutTimeline` 从 `variant.bgm.trackId` 解析 `filename` 并立即刷新唯一 BGM 音轨。试听使用现有媒体接口，父组件通过 stop request 协调试听与成片播放互斥。
 
 **Tech Stack:** Next.js 16 App Router、React 19、TypeScript strict、SQLite/`better-sqlite3`、Node.js `fs`/`crypto`/Web File API、FFmpeg/ffprobe、Playwright、CSS Modules。
 
@@ -19,6 +19,7 @@
 - 完全相同内容仍可使用现有 `fileFingerprint` 做内部去重，但它不得出现在响应展示字段或界面。
 - API 不接受项目、分镜组、成片组或目标目录参数。上传属于全局音乐库，选择 BGM 才属于当前 variant。
 - 独立试听播放原始音量；只有成片预览和最终渲染应用 gain、淡入、淡出与循环。
+- 文件选择是唯一确认动作；生产 UI 不得出现“待导入”“UI 样稿”或额外“添加到时间轴”按钮，成功提示只能在 `set_bgm` 发布后短暂出现。
 - 不顺手处理导出视频文件名、文件夹导入、删除/重命名音乐、搜索分类等非目标。
 
 ## 文件变更地图
@@ -28,7 +29,6 @@
 - `lib/final-edit/bgm-import.ts`：文件名校验、音频探测、流式指纹、完全重复复用、可读同名序号、并发落位、数据库索引与回滚。
 - `lib/final-edit/bgm-import-http.ts`：multipart 解析、100/256 MB/512 MB 限制、逐文件暂存和清理。
 - `app/api/final-edit-bgm/route.ts`：全局 BGM 导入 POST 路由与 200/201/422 状态映射。
-- `components/mixcut/BgmCard.tsx`：下拉选择、添加音乐、结果播报、试听/停止、现有三个参数滑杆。
 - `scripts/final-edit-bgm-import.test.ts`：领域、文件、HTTP 和媒体 Range 回归。
 
 ### 修改
@@ -36,12 +36,14 @@
 - `lib/final-edit/bgm.ts`：导出支持扩展名常量，并提供带 `filename` 的统一 ready 曲目查询。
 - `lib/final-edit/types.ts`：增加 `FinalEditBgmTrackView`、`BgmImportResponse`，更新 `FinalEditGroupView.bgmTracks`。
 - `lib/final-edit/workspace.ts`：group read model 复用统一 BGM 列表函数。
-- `components/mixcut/PreviewStep.tsx`：挂载 `BgmCard`，在串行队列中执行上传→刷新→`set_bgm`，协调两个播放器。
+- `components/mixcut/BgmCard.tsx`：把已确认 UI 样稿接入正式导入，落实“添加中…”、短暂成功播报、无“待导入”标记及试听生命周期。
+- `components/mixcut/MixcutTimeline.tsx`：根据当前曲目 `filename` 显示或清空唯一 BGM 音轨。
+- `components/mixcut/PreviewStep.tsx`：挂载 `BgmCard`，在串行队列中执行上传→刷新→`set_bgm`→时间线发布，协调两个播放器。
 - `components/final-edit/FinalEditPreview.tsx`：支持外部停止请求，并在成片开始播放前通知父组件。
-- `components/mixcut/MixcutPanel.module.css`：BGM 操作行、隐藏文件输入、状态文字与窄栏布局。
+- `components/mixcut/MixcutPanel.module.css`：BGM 操作行、隐藏文件输入、短暂状态提示与窄栏布局。
 - `scripts/final-edit-workspace.test.ts`：验证 group 返回可读 `filename`。
 - `scripts/final-edit-mixcut-ui-contract.test.mjs`：新增结构、可访问性和互斥接线契约。
-- `scripts/final-edit-mixcut.playwright.test.mjs`：真实页面导入、自动选择、试听和播放互斥。
+- `scripts/final-edit-mixcut.playwright.test.mjs`：真实页面导入、自动应用到时间线、切换/移除、试听和播放互斥。
 - `scripts/final-edit-render.test.ts`：使用 `storage/bgm/中文 空格(1).wav` 做真实 FFmpeg 渲染。
 
 ## Task 1: 统一 BGM 曲目读模型并输出可读文件名
@@ -738,17 +740,17 @@ git add -- lib/final-edit/bgm-import-http.ts app/api/final-edit-bgm/route.ts scr
 git commit -m "feat: add global BGM import API"
 ```
 
-## Task 4: 抽出背景音乐卡片并加入导入与独立试听
+## Task 4: 将已确认的背景音乐卡片样稿接入正式导入与独立试听
 
 **Files:**
 
-- Create: `components/mixcut/BgmCard.tsx`
+- Modify: `components/mixcut/BgmCard.tsx`
 - Modify: `components/mixcut/MixcutPanel.module.css`
 - Modify: `scripts/final-edit-mixcut-ui-contract.test.mjs`
 
 - [ ] **Step 1: 写 UI 契约失败测试**
 
-在 `scripts/final-edit-mixcut-ui-contract.test.mjs` 读取新文件：
+在 `scripts/final-edit-mixcut-ui-contract.test.mjs` 读取现有 UI 样稿，并先约束正式状态语义：
 
 ```js
 const bgmCard = fs.readFileSync('components/mixcut/BgmCard.tsx', 'utf8');
@@ -757,11 +759,15 @@ assert.match(bgmCard, /type="file"/);
 assert.match(bgmCard, /multiple/);
 assert.match(bgmCard, /\.mp3,.wav,.m4a,.aac,.flac,.ogg/i);
 assert.match(bgmCard, />添加音乐</);
-assert.match(bgmCard, /导入中…/);
+assert.match(bgmCard, /添加中…/);
+assert.match(bgmCard, /已添加并应用到音轨/);
+assert.doesNotMatch(bgmCard, /待导入|UI 样稿|确认后再导入/);
+assert.match(bgmCard, /setTimeout/);
+assert.match(bgmCard, /onImportFiles/);
 assert.match(bgmCard, /aria-live="polite"/);
 assert.match(bgmCard, /track\.filename/);
 assert.doesNotMatch(bgmCard, />\{track\.relativePath\}</);
-assert.match(bgmCard, /\/api\/final-edit-bgm\/$\{encodeURIComponent\(selectedTrackId\)\}\/file/);
+assert.match(bgmCard, /\/api\/final-edit-bgm\/\$\{encodeURIComponent\(selectedTrackId\)\}\/file/);
 assert.match(bgmCard, />试听</);
 assert.match(bgmCard, />停止</);
 assert.match(bgmCard, /audio\.volume = 1/);
@@ -772,19 +778,21 @@ assert.match(bgmCard, /active/);
 
 同时断言 CSS 含 `.bgmActions`、`.bgmImportStatus` 和真正隐藏但仍可由 label/input 触发的文件输入类。
 
-- [ ] **Step 2: 运行并确认新组件不存在**
+- [ ] **Step 2: 运行并确认正式数据流仍未接入**
 
 Run: `node scripts/final-edit-mixcut-ui-contract.test.mjs`
 
-Expected: 读取 `BgmCard.tsx` 时 `ENOENT`。
+Expected: 组件已存在，但因尚无正式 `onImportFiles`、添加中状态或最终成功语义而失败；失败原因不得是文件缺失。
 
 - [ ] **Step 3: 定义组件边界**
 
 `components/mixcut/BgmCard.tsx` 使用：
 
 ```tsx
+export type BgmImportOutcome = 'applied' | 'imported' | 'failed';
 export interface BgmImportUiResult {
-  summary: string;
+  outcome: BgmImportOutcome;
+  announcement: string;
   details: string;
 }
 
@@ -822,11 +830,13 @@ export function BgmCard({
 - 隐藏 input：`type="file"`、`multiple`、`accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*"`；
 - “添加音乐”按钮触发 `inputRef.current?.click()`；
 - `onChange` 立即复制 `Array.from(event.currentTarget.files || [])`，随后把 `event.currentTarget.value = ''`，允许再次选择同一个文件；
-- 导入期间 `importing=true`，按钮显示“导入中…”并禁用重复触发；
-- 调用 `onImportFiles(files)` 后把 `summary` 写入卡片内 `aria-live="polite"`；
-- 失败时显示“导入失败：<错误>”，且 mounted guard 防止切组/卸载后 setState；
-- 下拉 option 显示 `track.filename`，title 可以保留 `relativePath` 供诊断；
-- 原有“无 BGM”、音量、淡入、淡出语义和 command 不变。
+- 添加期间 `importing=true`，按钮显示“添加中…”并禁用重复触发；
+- `onImportFiles(files)` 对业务结果始终返回 `BgmImportUiResult`：成功应用为 `outcome: 'applied'`，切组后仅进入音乐库为 `outcome: 'imported'`，422 全部失败为 `outcome: 'failed'`；请求级异常才 reject；
+- `applied` 播报“已添加并应用到音轨”，`imported` 播报“音乐已添加到音乐库，未应用到当前音轨”，两者都用约 2–3 秒定时器自动清空；
+- `outcome === 'failed'` 时播报“添加失败”，保持原选择；详细逐文件错误由父组件在自动保存完成后写入页面消息区域，避免被“已自动保存”覆盖；
+- mounted guard 防止切组/卸载后 setState，平时不保留状态条或占位说明；
+- 下拉 option 和 title 都只使用 `track.filename`，不得附加“待导入”、`relativePath` 或其他内部信息；
+- 不增加二次确认按钮；原有“无 BGM”、音量、淡入、淡出语义和 command 不变。
 
 - [ ] **Step 5: 实现原始音量试听**
 
@@ -879,7 +889,7 @@ const startAudition = async () => {
 - `stopRequestId` 变化：停止；
 - unmount：暂停、归零并清除状态。
 
-“试听”在没有曲目、导入中或整体 disabled 时禁用；试听中按钮文字和 accessible name 为“停止”。
+“试听”在没有曲目、添加中或整体 disabled 时禁用；试听中按钮文字和 accessible name 为“停止”。
 
 - [ ] **Step 6: 完成卡片样式**
 
@@ -888,7 +898,7 @@ const startAudition = async () => {
 - 下拉保持整行宽度和现有圆角；
 - `.bgmActions` 使用两列或 flex，窄栏下仍不拆字；
 - “添加音乐”为主操作，“试听”为次操作；
-- `.bgmImportStatus` 小号、可换行、不会撑宽右栏；
+- `.bgmImportStatus` 小号、可换行、不会撑宽右栏；无状态时不渲染常驻说明，避免暗示仍需下一步；
 - 隐藏文件输入使用 `position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);`，不要用会破坏可访问性的 `display: none`；
 - 不修改其他卡片全局间距。
 
@@ -901,7 +911,7 @@ node scripts/final-edit-mixcut-ui-contract.test.mjs
 npx eslint components/mixcut/BgmCard.tsx
 ```
 
-Expected: 组件结构、可读名称、live region 和试听生命周期契约通过。
+Expected: 组件结构、可读名称、“选完即应用”文案、无内部阶段标记、短暂 live region 和试听生命周期契约通过。
 
 - [ ] **Step 8: 提交 Task 4**
 
@@ -910,12 +920,13 @@ git add -- components/mixcut/BgmCard.tsx components/mixcut/MixcutPanel.module.cs
 git commit -m "feat: add BGM import and audition card"
 ```
 
-## Task 5: 在 PreviewStep 串行接入导入、自动选择和播放互斥
+## Task 5: 在 PreviewStep 串行接入导入、自动应用、时间线显示和播放互斥
 
 **Files:**
 
 - Modify: `components/mixcut/PreviewStep.tsx`
 - Modify: `components/final-edit/FinalEditPreview.tsx`
+- Modify: `components/mixcut/MixcutTimeline.tsx`
 - Modify: `scripts/final-edit-mixcut-ui-contract.test.mjs`
 
 - [ ] **Step 1: 写接线契约失败测试**
@@ -935,13 +946,16 @@ assert.match(previewStep, /previewStopRequestId/);
 assert.match(previewStep, /auditionStopRequestId/);
 assert.match(finalPreview, /stopRequestId/);
 assert.match(finalPreview, /onPlaybackStart/);
+assert.match(previewStep, /selectedBgmTrack/);
+assert.match(timeline, /bgmTrackName/);
+assert.match(timeline, /无 BGM/);
 ```
 
 - [ ] **Step 2: 运行并确认接线缺失**
 
 Run: `node scripts/final-edit-mixcut-ui-contract.test.mjs`
 
-Expected: `PreviewStep` 尚未挂载 `BgmCard`，测试失败。
+Expected: UI 样稿虽已挂载 `BgmCard`，但仍因缺少正式 FormData 上传、`set_bgm` 串行发布或时间线文件名接线而失败。
 
 - [ ] **Step 3: 给成片预览增加外部停止协议**
 
@@ -995,7 +1009,7 @@ const [auditionStopRequestId, setAuditionStopRequestId] = useState(0);
 />
 ```
 
-- [ ] **Step 5: 实现一个队列内的上传→刷新→选择**
+- [ ] **Step 5: 实现一个队列内的上传→刷新→选择→时间线发布**
 
 新增 `importBgmFiles(files: File[])`。调用时先捕获 `targetGroupId = groupRef.current.id` 和当前 variant ID，然后让整个流程进入现有 `enqueue`。
 
@@ -1017,15 +1031,17 @@ if (!response.ok && response.status !== 422) {
 
 随后：
 
-1. 生成摘要：“已导入 N 首”“已复用 N 首”“N 首失败”；三类只拼存在的部分；
-2. 详细消息按 `文件名：原因` 拼接并交给现有 `setMessage`；
-3. 如果 group 已切换，只返回摘要，不修改新 group；
+1. 生成内部统计：“已导入 N 首”“已复用 N 首”“N 首失败”；三类只拼存在的部分；
+2. 详细错误按 `文件名：原因` 拼接；成功执行 `set_bgm` 后再交给现有 `setMessage`，避免被自动保存文案覆盖；
+3. 如果 group 已切换，不修改新 group；至少一首成功时返回 `{ outcome: 'imported', announcement: '音乐已添加到音乐库，未应用到当前音轨…', details }`；
 4. `await reloadGroup(targetGroupId)` 获得最新 `bgmTracks`；
-5. 如果没有 `firstSuccessfulTrackId`，保持原选择；
+5. 如果没有 `firstSuccessfulTrackId`，保持原选择，返回 `{ outcome: 'failed', announcement: '添加失败', details }`；
 6. 从刷新后的 group 重新取目标 variant 和最新 revision；
 7. 直接在当前 `enqueue` work 中 PATCH `/api/final-edit-variants/<id>`，提交 `{ expectedRevision, type: 'set_bgm', trackId }`；
-8. 把返回 variant 合并进刚刷新的 group 后 `publishGroup`；
-9. 不要在这个 work 内调用会再次 `enqueue` 的 `applyVariant`，否则形成队列自等待。
+8. 把返回 variant 合并进刚刷新的 group 后 `publishGroup`；此时下拉框与时间线在同一次发布中更新；
+9. 只有第 8 步成功后才向 `BgmCard` 返回 `{ outcome: 'applied', announcement: '已添加并应用到音轨…', details }`；部分失败数量可附加，详细错误仍留在页面消息区域；
+10. 不要在这个 work 内调用会再次 `enqueue` 的 `applyVariant`，否则形成队列自等待；
+11. 导入接口返回第一首为复用曲目时同样执行以上 `set_bgm` 和时间线发布。
 
 建议把现有 PATCH 逻辑抽成不入队的 `applyVariantNow`，由普通 `applyVariant` 和导入流程共同复用；`applyVariant` 仍保持原有公开行为：
 
@@ -1034,7 +1050,7 @@ const applyVariant = (request: VariantCommandRequest): Promise<boolean> =>
   enqueue(() => applyVariantNow(request));
 ```
 
-导入接口返回第一首为复用曲目时也必须提交 `set_bgm`。
+选择本地文件是唯一用户动作；流程中不得暂停等待第二次确认。
 
 - [ ] **Step 6: 用 BgmCard 替换原内联卡片**
 
@@ -1055,7 +1071,29 @@ const applyVariant = (request: VariantCommandRequest): Promise<boolean> =>
 
 删除 `PreviewStep` 中旧的 BGM `section`，不得保留两套控件。`BgmCard` 仍位于原背景音乐卡片位置。
 
-- [ ] **Step 7: 补充失败和切组行为测试契约**
+
+- [ ] **Step 7: 把当前 BGM 可读文件名接入时间线**
+
+在 `PreviewStep` 中从当前 group 读模型解析名称：
+
+```ts
+const selectedBgmTrack = group.bgmTracks.find(
+  (track) => track.id === variant.bgm.trackId,
+);
+```
+
+传给时间线：
+
+```tsx
+<MixcutTimeline
+  {...existingProps}
+  bgmTrackName={selectedBgmTrack?.filename ?? null}
+/>
+```
+
+`MixcutTimeline` 的 BGM 行在 `bgmTrackName` 存在时显示“文件名 · 音量 · 淡入 · 淡出”和铺满成片时长的波形；不存在时只显示“无 BGM”且不显示有效 BGM 波形。切换曲目只替换这一行，选择“无 BGM”立即清空。
+
+- [ ] **Step 8: 补充失败、切组和时间线行为测试契约**
 
 静态契约至少验证：
 
@@ -1066,25 +1104,29 @@ const applyVariant = (request: VariantCommandRequest): Promise<boolean> =>
 - 详细错误进入现有消息区域；
 - `FinalEditPreview` 只有实际开始播放才调用 `onPlaybackStart`。
 
-- [ ] **Step 8: 运行 UI 契约与 lint**
+- `set_bgm` 成功发布后，时间线从 `bgmTracks[].filename` 显示当前曲目；
+- 下拉切曲替换唯一 BGM 音轨，选择“无 BGM”清空音轨；
+- 卡片和时间线均不出现“待导入”。
+
+- [ ] **Step 9: 运行 UI 契约与 lint**
 
 Run:
 
 ```powershell
 node scripts/final-edit-mixcut-ui-contract.test.mjs
-npx eslint components/mixcut/PreviewStep.tsx components/final-edit/FinalEditPreview.tsx components/mixcut/BgmCard.tsx
+npx eslint components/mixcut/PreviewStep.tsx components/mixcut/MixcutTimeline.tsx components/final-edit/FinalEditPreview.tsx components/mixcut/BgmCard.tsx
 ```
 
 Expected: 所有接线契约通过，现有串行 command 断言不回归。
 
-- [ ] **Step 9: 提交 Task 5**
+- [ ] **Step 10: 提交 Task 5**
 
 ```powershell
-git add -- components/mixcut/PreviewStep.tsx components/final-edit/FinalEditPreview.tsx scripts/final-edit-mixcut-ui-contract.test.mjs
+git add -- components/mixcut/PreviewStep.tsx components/mixcut/MixcutTimeline.tsx components/final-edit/FinalEditPreview.tsx scripts/final-edit-mixcut-ui-contract.test.mjs
 git commit -m "feat: connect BGM import to Mixcut preview"
 ```
 
-## Task 6: 增加真实页面导入、自动选择和试听互斥测试
+## Task 6: 增加真实页面导入、自动应用到音轨和试听互斥测试
 
 **Files:**
 
@@ -1163,7 +1205,7 @@ if (body.type === 'set_bgm') {
 }
 ```
 
-- [ ] **Step 3: 写导入和自动选择断言**
+- [ ] **Step 3: 写导入、自动应用与时间线联动断言**
 
 进入第 3 步后：
 
@@ -1187,7 +1229,7 @@ await bgmCard.locator('input[type="file"][multiple]').setInputFiles([
 ]);
 await importResponse;
 
-await page.getByText('已导入 1 首，1 首失败', { exact: true }).waitFor();
+await page.getByText(/已添加并应用到音轨/).waitFor();
 await page.getByText(/损坏\.mp3：无法识别音频内容/).waitFor();
 assert.equal(
   await page.getByLabel('BGM 曲目').inputValue(),
@@ -1202,6 +1244,20 @@ assert.equal(
 ```
 
 测试同时断言 request header 的 `content-type` 含 multipart boundary，而不是前端手写 JSON。
+
+```js
+assert.equal(await page.getByText(/待导入|UI 样稿/).count(), 0);
+const bgmTimelineTrack = page.locator('[data-track="bgm"]');
+await expectEventually(
+  async () => (await bgmTimelineTrack.textContent())?.includes('轻快音乐.mp3') === true,
+  '导入后时间线必须立即显示所选 BGM 文件名',
+);
+await expectEventually(
+  async () => await page.getByText(/已添加并应用到音轨/).count() === 0,
+  '成功提示必须短暂显示后自动收起',
+);
+assert.equal(await page.getByRole('button', { name: /添加到时间轴/ }).count(), 0);
+```
 
 - [ ] **Step 4: 写试听和互斥断言**
 
@@ -1220,6 +1276,14 @@ await expectEventually(
   '启动独立试听必须停止成片播放',
 );
 
+await page.getByLabel('BGM 曲目').selectOption('bgm-e2e');
+await expectEventually(async () => (await bgmTimelineTrack.textContent())?.includes('e2e.mp3') === true);
+assert.equal((await bgmTimelineTrack.textContent())?.includes('轻快音乐.mp3'), false);
+await page.getByLabel('BGM 曲目').selectOption('');
+await expectEventually(
+  async () => (await bgmTimelineTrack.textContent())?.trim() === '无 BGM',
+  '选择无 BGM 后时间线必须立即清空',
+);
 await page.getByLabel('BGM 曲目').selectOption('bgm-e2e');
 await bgmCard.getByRole('button', { name: '试听', exact: true }).waitFor();
 ```
@@ -1344,16 +1408,17 @@ Expected:
 
 在 `npm run dev:win` 或 `npm run dev` 中验证：
 
-1. “背景音乐”下拉只显示文件名；
-2. 一次选择多首，界面立即显示成功/失败摘要；
-3. 磁盘实际得到 `storage/bgm/轻快音乐.mp3`；
-4. 再导入同名不同内容得到 `轻快音乐(1).mp3`；
-5. 再导入完全相同内容不新增文件；
-6. 导入后自动选择本批第一首成功或复用曲目；
-7. 试听从头、原始音量播放，停止后归零；
-8. 成片播放和独立试听不会叠加；
-9. 切曲、切成片组、离开步骤都会停止试听；
-10. 导出成片继续应用当前 gain、淡入、淡出和循环。
+1. “背景音乐”下拉只显示文件名，不出现“待导入”“UI 样稿”或内部路径；
+2. 一次选择多首后立即开始添加，不出现二次确认按钮；
+3. `set_bgm` 成功后短暂显示“已添加并应用到音轨”，随后自动收起；
+4. 磁盘实际得到 `storage/bgm/轻快音乐.mp3`；
+5. 再导入同名不同内容得到 `轻快音乐(1).mp3`，再导入完全相同内容不新增文件；
+6. 导入后自动选择本批第一首成功或复用曲目，时间线立即显示其文件名和 BGM 波形；
+7. 下拉切换音乐直接替换时间线 BGM，选择“无 BGM”立即清空；
+8. 试听从头、原始音量播放，停止后归零；
+9. 成片播放和独立试听不会叠加；
+10. 切曲、切成片组、离开步骤都会停止试听；
+11. 导出成片继续应用当前 gain、淡入、淡出和循环。
 
 - [ ] **Step 7: 检查范围和工作区**
 
@@ -1362,7 +1427,7 @@ Run:
 ```powershell
 git status --short
 git diff --stat HEAD~7..HEAD
-git diff HEAD~7..HEAD -- app/api/final-edit-bgm lib/final-edit/bgm.ts lib/final-edit/bgm-import.ts lib/final-edit/bgm-import-http.ts components/mixcut/BgmCard.tsx components/mixcut/PreviewStep.tsx components/final-edit/FinalEditPreview.tsx
+git diff HEAD~7..HEAD -- app/api/final-edit-bgm lib/final-edit/bgm.ts lib/final-edit/bgm-import.ts lib/final-edit/bgm-import-http.ts components/mixcut/BgmCard.tsx components/mixcut/PreviewStep.tsx components/mixcut/MixcutTimeline.tsx components/final-edit/FinalEditPreview.tsx
 ```
 
 确认：
@@ -1387,8 +1452,10 @@ git commit -m "test: verify BGM import render compatibility"
 - 设计文档的 10 条验收标准全部有自动化测试或明确手工验收证据；
 - API 的 200/201/422/400/413/500 语义与文档一致；
 - 同名不同内容只用 `(n)`，完全相同内容只保留一份；
-- UI 从服务端 `filename` 展示名称，不自行拆路径；
-- 上传、group 刷新和 `set_bgm` 不产生 revision 竞态；
+- UI 从服务端 `filename` 展示名称，不自行拆路径，且不出现“待导入”或二次确认；
+- 上传、group 刷新、`set_bgm` 和 group 发布处于同一串行流程，不产生 revision 竞态；
+- 成功发布后，下拉与时间线同时显示当前文件名；切换和移除只影响唯一 BGM 音轨；
+- “已添加并应用到音轨”只在 `set_bgm` 成功后短暂显示并自动收起；
 - 独立试听与成片播放互斥，生命周期清理完整；
 - 真实 FFmpeg 能读取 `storage/bgm/轻快 音乐(1).wav`；
 - `npm run lint`、`npm run build` 和全部列出的目标测试通过；
