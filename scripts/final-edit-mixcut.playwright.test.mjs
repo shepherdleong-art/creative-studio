@@ -88,7 +88,12 @@ function createFormalGroup() {
       { assetKey: 'module4:video-a', source: 'module4', videoJobId: 'video-a', shotSetId: 'shot-set-e2e', shotId: 'shot-a', filename: 'a.mp4', previewUrl: '', thumbnailUrl: transparentPixel, durationUs: 8_000_000, fingerprint: 'fingerprint-a', analysisStatus: 'succeeded', summary: '素材 A', autoUseDisabled: false, usageCount: 1 },
       { assetKey: 'module4:video-b', source: 'module4', videoJobId: 'video-b', shotSetId: 'shot-set-e2e', shotId: 'shot-b', filename: 'b.mp4', previewUrl: '', thumbnailUrl: transparentPixel, durationUs: 8_000_000, fingerprint: 'fingerprint-b', analysisStatus: 'succeeded', summary: '素材 B', autoUseDisabled: false, usageCount: 1 },
     ],
-    bgmTracks: [{ id: 'bgm-e2e', relativePath: 'bgm/e2e.mp3', durationUs: 20_000_000 }],
+    bgmTracks: [{
+      id: 'bgm-e2e',
+      filename: 'e2e.mp3',
+      relativePath: 'bgm/e2e.mp3',
+      durationUs: 20_000_000,
+    }],
     coverCandidates: [{ coverKey: 'cover-e2e', sourceUrl: transparentPixel, kind: 'storyboard_image' }],
     jobs: [{ id: 'job-e2e', variantId: null, kind: 'prepare', status: 'succeeded', phase: 'ready', progress: 1, estimatedCost: null, costCurrency: 'CNY', errorCode: null, errorMessage: null, startedAt: '2026-07-24T00:00:00.000Z', finishedAt: '2026-07-24T00:00:10.000Z', createdAt: '2026-07-24T00:00:00.000Z' }],
   };
@@ -192,6 +197,13 @@ try {
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1 });
     await page.addInitScript(() => {
+      HTMLMediaElement.prototype.play = function play() {
+        this.dispatchEvent(new Event('play'));
+        return Promise.resolve();
+      };
+      HTMLMediaElement.prototype.pause = function pause() {
+        this.dispatchEvent(new Event('pause'));
+      };
       const originalMeasureText = CanvasRenderingContext2D.prototype.measureText;
       CanvasRenderingContext2D.prototype.measureText = function measureTextWithOptionalUnderreport(text) {
         const metrics = originalMeasureText.call(this, text);
@@ -543,6 +555,15 @@ try {
           savedGroup = { ...savedGroup, variants: [nextVariant] };
           return json({ view: nextVariant });
         }
+        if (body.type === 'set_bgm') {
+          const nextVariant = {
+            ...currentVariant,
+            revision: currentVariant.revision + 1,
+            bgm: { ...currentVariant.bgm, trackId: body.trackId },
+          };
+          savedGroup = { ...savedGroup, variants: [nextVariant] };
+          return json({ view: nextVariant });
+        }
         return json({ view: currentVariant });
       }
       if (pathname === '/api/final-edit-variants/variant-e2e/render' && request.method() === 'POST') {
@@ -568,6 +589,31 @@ try {
       }
       if (pathname === '/api/final-edit-jobs/render-job-e2e/cover') return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
       if (pathname === '/api/final-edit-jobs/render-job-e2e/video') return route.fulfill({ status: 200, contentType: 'video/mp4', body: Buffer.from('non-empty-mocked-video-response') });
+      if (pathname === '/api/final-edit-bgm' && request.method() === 'POST') {
+        const body = request.postDataBuffer();
+        assert.ok(body && body.includes(Buffer.from('轻快音乐.mp3')));
+        const track = {
+          id: 'bgm-imported',
+          filename: '轻快音乐.mp3',
+          relativePath: 'bgm/轻快音乐.mp3',
+          durationUs: 30_000_000,
+        };
+        savedGroup = {
+          ...savedGroup,
+          bgmTracks: [...savedGroup.bgmTracks, track],
+        };
+        return json({
+          firstSuccessfulTrackId: track.id,
+          imported: [track],
+          reused: [],
+          errors: [{
+            filename: '损坏.mp3',
+            code: 'invalid_audio',
+            message: '无法识别音频内容',
+          }],
+          tracks: savedGroup.bgmTracks,
+        }, 201);
+      }
       if (pathname.startsWith('/api/final-edit-bgm/')) return route.fulfill({ status: 204, body: '' });
       return json({ error: `Unhandled E2E API: ${request.method()} ${pathname}` }, 404);
     });
@@ -1295,6 +1341,75 @@ try {
     assert.ok(bgmBox && narrationSpeedBox && coverBox, '三个右栏卡片都必须可见并可测量');
     assert.ok(bgmBox.y < narrationSpeedBox.y, '口播音频变速卡必须位于背景音乐之后');
     assert.ok(narrationSpeedBox.y < coverBox.y, '口播音频变速卡必须位于视频封面设置之前');
+
+    const importResponse = page.waitForResponse(
+      (response) => response.url().endsWith('/api/final-edit-bgm')
+        && response.request().method() === 'POST',
+    );
+    const bgmCard = bgmHeading.locator('xpath=..');
+    await bgmCard.locator('input[type="file"][multiple]').setInputFiles([
+      {
+        name: '轻快音乐.mp3',
+        mimeType: 'audio/mpeg',
+        buffer: Buffer.from('valid-audio'),
+      },
+      {
+        name: '损坏.mp3',
+        mimeType: 'audio/mpeg',
+        buffer: Buffer.from('broken-audio'),
+      },
+    ]);
+    await importResponse;
+
+    await page.getByText(/已添加并应用到音轨/).waitFor();
+    await page.getByText(/损坏\.mp3：无法识别音频内容/).waitFor();
+    assert.equal(
+      await page.getByLabel('BGM 曲目').inputValue(),
+      'bgm-imported',
+    );
+    assert.equal(variantPatchBodies.at(-1)?.type, 'set_bgm');
+    assert.equal(variantPatchBodies.at(-1)?.trackId, 'bgm-imported');
+    assert.equal(
+      await page.getByLabel('BGM 曲目').locator('option:checked').textContent(),
+      '轻快音乐.mp3',
+    );
+
+    assert.equal(await page.getByText(/待导入|UI 样稿/).count(), 0);
+    const bgmTimelineTrack = page.locator('[data-track="bgm"]');
+    await expectEventually(
+      async () => (await bgmTimelineTrack.textContent())?.includes('轻快音乐.mp3') === true,
+      '导入后时间线必须立即显示所选 BGM 文件名',
+    );
+    await expectEventually(
+      async () => await page.getByText(/已添加并应用到音轨/).count() === 0,
+      '成功提示必须短暂显示后自动收起',
+    );
+    assert.equal(await page.getByRole('button', { name: /添加到时间轴/ }).count(), 0);
+
+    const auditionButton = bgmCard.getByRole('button', { name: '试听', exact: true });
+    await auditionButton.click();
+    await bgmCard.getByRole('button', { name: '停止', exact: true }).waitFor();
+
+    await page.getByRole('button', { name: '播放成片', exact: true }).click();
+    await bgmCard.getByRole('button', { name: '试听', exact: true }).waitFor();
+
+    await bgmCard.getByRole('button', { name: '试听', exact: true }).click();
+    await bgmCard.getByRole('button', { name: '停止', exact: true }).waitFor();
+    await expectEventually(
+      async () => await page.getByRole('button', { name: '播放成片', exact: true }).count() === 1,
+      '启动独立试听必须停止成片播放',
+    );
+
+    await page.getByLabel('BGM 曲目').selectOption('bgm-e2e');
+    await expectEventually(async () => (await bgmTimelineTrack.textContent())?.includes('e2e.mp3') === true);
+    assert.equal((await bgmTimelineTrack.textContent())?.includes('轻快音乐.mp3'), false);
+    await page.getByLabel('BGM 曲目').selectOption('');
+    await expectEventually(
+      async () => (await bgmTimelineTrack.textContent())?.trim() === '无 BGM',
+      '选择无 BGM 后时间线必须立即清空',
+    );
+    await page.getByLabel('BGM 曲目').selectOption('bgm-e2e');
+    await bgmCard.getByRole('button', { name: '试听', exact: true }).waitFor();
 
     const sidebarSpeedSlider = page.getByRole('slider', { name: '右侧音频倍速拉条', exact: true });
     const sidebarSpeedNumber = page.getByRole('spinbutton', { name: '右侧音频倍速数值', exact: true });
