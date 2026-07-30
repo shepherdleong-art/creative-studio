@@ -18,6 +18,7 @@ const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持
 
 type TimelineContextMenu =
   | { kind: 'video'; clipId: string; x: number; y: number }
+  | { kind: 'subtitle'; cueId: string; x: number; y: number }
   | { kind: 'narration'; x: number; y: number };
 
 type TimelineTool = 'select' | 'split';
@@ -189,7 +190,7 @@ export function MixcutTimeline({
         >
           <Icon name="scissors" size={13} />分割
         </button>
-        <span className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? '点击字幕块上的目标位置即可切开' : '拖动字幕块移动，拖两侧修剪，双击改字'}</span>
+        <span className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? '点击字幕块上的目标位置即可切开，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字，右键删除'}</span>
       </div>
       <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined} data-tool={tool}>
       <div className={styles.tlLabels}>
@@ -260,6 +261,12 @@ export function MixcutTimeline({
                 onSelect={onSelectCue}
                 onCommand={onGroupCommand}
                 onEditText={onEditCueText}
+                onOpenContextMenu={(clientX, clientY) => setContextMenu({
+                  kind: 'subtitle',
+                  cueId: cue.id,
+                  x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
+                  y: Math.max(8, Math.min(clientY, window.innerHeight - 86)),
+                })}
               />
             ))}
           </div>
@@ -304,8 +311,11 @@ export function MixcutTimeline({
       {contextMenu && typeof document !== 'undefined' && createPortal(
         <div className={styles.timelineContextLayer} onPointerDown={closeContextMenu}>
           <div
-            role={contextMenu.kind === 'video' ? 'menu' : 'dialog'}
-            aria-label={contextMenu.kind === 'video' ? '视频片段操作' : '口播音频变速'}
+            role={contextMenu.kind === 'narration' ? 'dialog' : 'menu'}
+            aria-label={contextMenu.kind === 'video'
+              ? '视频片段操作'
+              : contextMenu.kind === 'subtitle' ? '字幕操作'
+                : '口播音频变速'}
             className={`${styles.timelineContextMenu} ${contextMenu.kind === 'narration' ? styles.timelineSpeedMenu : ''}`}
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onPointerDown={(event) => event.stopPropagation()}
@@ -324,6 +334,20 @@ export function MixcutTimeline({
                   });
                 }}
               >删除片段</button>
+            ) : contextMenu.kind === 'subtitle' ? (
+              <button
+                type="button"
+                role="menuitem"
+                className={styles.timelineContextDanger}
+                disabled={disabled}
+                onClick={() => {
+                  const cueId = contextMenu.cueId;
+                  setContextMenu(null);
+                  void onGroupCommand({ type: 'delete_subtitle_cue', cueId }).then((accepted) => {
+                    if (accepted && selectedCueId === cueId) onSelectCue('');
+                  });
+                }}
+              >删除字幕</button>
             ) : (
               <>
                 <div className={styles.timelineContextTitle}>调整音频倍速</div>
@@ -437,7 +461,7 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
   );
 }
 
-function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, tool, onSelect, onCommand, onEditText }: {
+function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerSecond, selected, anySelected, disabled, tool, onSelect, onCommand, onEditText, onOpenContextMenu }: {
   cue: SubtitleCue;
   previousCue: SubtitleCue | null;
   nextCue: SubtitleCue | null;
@@ -451,6 +475,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
   onSelect: (cueId: string) => void;
   onCommand: (command: GroupCommandInput) => Promise<boolean>;
   onEditText: (cueId: string, text: string) => void;
+  onOpenContextMenu: (clientX: number, clientY: number) => void;
 }) {
   const initial = { startUs: cue.startUs, endUs: cue.endUs };
   const [draft, setDraft] = useState(initial);
@@ -467,6 +492,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
     });
   };
   const begin = (mode: 'move' | 'start' | 'end', event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
     if (disabled || tool !== 'select') return;
     event.preventDefault();
     event.stopPropagation();
@@ -506,6 +532,8 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
   return (
     <article
       data-cue-id={cue.id}
+      data-selected={selected ? 'true' : undefined}
+      data-dimmed={!selected && anySelected ? 'true' : undefined}
       className={`${styles.subclip} ${selected ? styles.subclipSel : anySelected ? styles.subclipDim : ''}`}
       style={{ left: (INTRO_FRAMES / FPS + draft.startUs / 1_000_000 / playbackRate) * pxPerSecond, width: (draft.endUs - draft.startUs) / 1_000_000 / playbackRate * pxPerSecond }}
       onPointerMove={(event) => {
@@ -513,6 +541,7 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
       }}
       onPointerLeave={() => setSplitPlan(null)}
       onPointerDown={(event) => {
+        if (event.button !== 0) return;
         if (tool === 'select') {
           begin('move', event);
           return;
@@ -525,6 +554,12 @@ function SubtitleBlock({ cue, previousCue, nextCue, bodyUs, playbackRate, pxPerS
         onSelect(cue.id);
         setSplitPlan(null);
         void onCommand({ type: 'split_subtitle_cue', cueId: cue.id, ...plan });
+      }}
+      onContextMenu={(event) => { if (disabled) return;
+        event.preventDefault(); event.stopPropagation();
+        onSelect(cue.id);
+        setSplitPlan(null);
+        onOpenContextMenu(event.clientX, event.clientY);
       }}
       onDoubleClick={() => { if (!disabled && tool === 'select') { onSelect(cue.id); setEditing(true); } }}
       title={tool === 'split' ? '点击此处切开字幕' : '双击编辑文案'}

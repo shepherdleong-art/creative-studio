@@ -438,6 +438,14 @@ try {
             { ...cue, id: cue.id + '-right', text: body.rightText, startUs: body.splitUs, textSource: 'manual', timingSource: 'manual' },
           );
           savedGroup = { ...savedGroup, revision: savedGroup.revision + 1, subtitleCues };
+        } else if (body.type === 'delete_subtitle_cue') {
+          const cueIndex = savedGroup.subtitleCues.findIndex((cue) => cue.id === body.cueId);
+          assert.ok(cueIndex >= 0, 'delete command cue must exist');
+          savedGroup = {
+            ...savedGroup,
+            revision: savedGroup.revision + 1,
+            subtitleCues: savedGroup.subtitleCues.filter((cue) => cue.id !== body.cueId),
+          };
         } else if (body.type === 'set_narration_playback_rate') {
           savedGroup = {
             ...savedGroup,
@@ -993,6 +1001,55 @@ try {
     assert.equal(splitCommand?.rightText, '句');
     await expectEventually(async () => await page.locator('[data-cue-id]').count() === 3, '服务端返回后时间轴必须显示两个分割结果');
     assert.equal(await splitTool.getAttribute('aria-pressed'), 'true', '完成一次分割后必须保留分割模式以便连续操作');
+
+    const splitCueId = 'cue-a-right';
+    const splitCue = page.locator(`[data-cue-id="${splitCueId}"]`);
+    assert.notEqual(await splitCue.getAttribute('data-selected'), 'true', '右键前非默认 Cue 不得已经处于选中态');
+    const splitWritesBeforeRightClick = groupPatchBodies.filter((body) => body.type === 'split_subtitle_cue').length;
+    const playheadBeforeSubtitleRightClick = await page.getByRole('button', { name: '拖动播放头' }).evaluate((element) => element.style.left);
+    await splitCue.click({ button: 'right' });
+    const subtitleMenu = page.getByRole('menu', { name: '字幕操作' });
+    await subtitleMenu.waitFor();
+    assert.equal(await splitCue.getAttribute('data-selected'), 'true', '右键字幕必须选中目标 Cue');
+    assert.ok(
+      await page.locator(`[data-cue-id]:not([data-cue-id="${splitCueId}"])[data-dimmed="true"]`).count() >= 1,
+      '右键选中目标 Cue 后至少一个其他字幕必须显示 dim 状态',
+    );
+    assert.equal(
+      groupPatchBodies.filter((body) => body.type === 'split_subtitle_cue').length,
+      splitWritesBeforeRightClick,
+      '分割模式下右键字幕不得再次提交 split_subtitle_cue',
+    );
+    assert.equal(
+      await page.getByRole('button', { name: '拖动播放头' }).evaluate((element) => element.style.left),
+      playheadBeforeSubtitleRightClick,
+      '右键字幕不得移动播放头',
+    );
+    const deleteSubtitleResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      if (
+        !request.url().endsWith('/api/final-edit-groups/group-e2e')
+        || request.method() !== 'PATCH'
+      ) return false;
+      const body = request.postDataJSON();
+      return body.type === 'delete_subtitle_cue'
+        && body.cueId === splitCueId;
+    });
+    await subtitleMenu.getByRole('menuitem', { name: '删除字幕' }).click();
+    await deleteSubtitleResponse;
+    assert.equal(
+      groupPatchBodies.filter((body) => body.type === 'split_subtitle_cue').length,
+      splitWritesBeforeRightClick,
+      '等待特定删除响应后不得出现延迟的 split_subtitle_cue',
+    );
+    const deleteSubtitleCommand = groupPatchBodies.at(-1);
+    assert.equal(deleteSubtitleCommand?.type, 'delete_subtitle_cue', '字幕右键删除必须提交现有原子 group command');
+    assert.equal(deleteSubtitleCommand?.cueId, splitCueId);
+    await splitCue.waitFor({ state: 'detached' });
+    assert.equal(await page.locator('[data-cue-id][data-selected="true"]').count(), 0, '删除后不得残留字幕选中态');
+    assert.equal(await page.locator('[data-cue-id][data-dimmed="true"]').count(), 0, '删除后剩余字幕不得因陈旧选择态保持 dim');
+    assert.equal(savedGroup.subtitleCues.some((cue) => cue.id === splitCueId), false, 'mock 服务端必须持久化删除结果');
+
     await selectTool.click();
     assert.equal(await selectTool.getAttribute('aria-pressed'), 'true', '用户必须能明确切回选择模式');
 

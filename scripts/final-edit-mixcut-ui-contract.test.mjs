@@ -169,7 +169,14 @@ assert.match(styles, /\.tlToolButton\s*{[^}]*flex:\s*0 0 auto[^}]*white-space:\s
 assert.match(timeline, /planSubtitleCueSplit/, '字幕块点击分割必须复用可测试的切点和文字边界规划器');
 assert.match(timeline, /type: 'split_subtitle_cue'/, '分割工具必须通过现有原子字幕 command 持久化');
 assert.match(previewStep, /type: 'normalize_automatic_subtitles'/, '打开旧草稿时必须触发受保护的自动字幕空白重切命令');
-assert.match(timeline, /aria-label=\{contextMenu\.kind === 'video' \? '视频片段操作' : '口播音频变速'\}/, '口播音频轨必须提供独立右键变速菜单');
+assert.match(timeline, /\| \{ kind: 'subtitle'; cueId: string; x: number; y: number \}/, '时间线上下文菜单必须能绑定具体字幕 Cue');
+assert.match(timeline, /onOpenContextMenu=\{\(clientX, clientY\) => setContextMenu\(\{[\s\S]{0,180}kind: 'subtitle'[\s\S]{0,120}cueId: cue\.id/, '字幕块必须把右键坐标和 Cue ID 传给共享菜单');
+assert.match(timeline, /kind: 'subtitle'[\s\S]{0,140}cueId: cue\.id[\s\S]{0,100}x:\s*[\s\S]{0,80}clientX[\s\S]{0,100}y:\s*[\s\S]{0,80}clientY/, '字幕菜单状态必须以右键坐标写入 x 和 y，允许菜单位置受视口约束');
+assert.match(timeline, /function SubtitleBlock[\s\S]{0,6000}onContextMenu=\{[\s\S]{0,160}onOpenContextMenu\(event\.clientX, event\.clientY\)/, 'SubtitleBlock 右键必须把原始 clientX/clientY 坐标传给共享菜单，不能由 VideoBlock 同形代码满足');
+assert.match(timeline, /function SubtitleBlock[\s\S]{0,2400}const begin = \(mode: 'move' \| 'start' \| 'end', event: React\.PointerEvent<HTMLElement>\) => \{\s*if \(event\.button !== 0\) return;/, 'SubtitleBlock 裁剪和移动手柄必须先忽略非左键，避免右键进入裁剪');
+assert.match(timeline, /contextMenu\.kind === 'narration' \? 'dialog' : 'menu'/, '视频和字幕使用 menu 语义，只有口播调速使用 dialog');
+assert.match(timeline, /contextMenu\.kind === 'subtitle' \? '字幕操作'/, '字幕菜单必须提供独立可访问名称');
+assert.match(timeline, /type: 'delete_subtitle_cue', cueId/, '字幕菜单必须通过现有原子 group command 持久化删除');
 assert.match(timeline, /<NarrationPlaybackRateControl/, '口播音频轨必须复用共享倍速控件');
 assert.match(narrationSpeedControl, /type="range"/, '口播变速必须使用 0.5x～2.0x 拉条，而不是平铺倍速按钮');
 assert.match(narrationSpeedControl, /\$\{ariaLabelPrefix\}拉条/, '倍速拉条必须提供按使用位置区分的可访问名称');

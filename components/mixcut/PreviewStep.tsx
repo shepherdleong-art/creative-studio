@@ -61,7 +61,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === selectedMaterialKey) || null;
-  const selectedCue = group.subtitleCues.find((cue) => cue.id === selectedCueId) || group.subtitleCues[0] || null;
+  const timelineSelectedCueId = group.subtitleCues.some((cue) => cue.id === selectedCueId) ? selectedCueId : '';
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
   const trimAsset = trimClip ? group.assets.find((asset) => asset.videoJobId === trimClip.videoJobId) ?? null : null;
@@ -391,7 +391,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           <span className={`${styles.chip} ${styles.chipGrey}`}>{orderedClips.length} 片段</span>
           <span className={`${styles.chip} ${styles.chipBlue}`}>总时长 {totalSec.toFixed(1)}s</span>
           <span className={`${styles.chip} ${narrationMatch ? styles.chipGreen : styles.chipGrey}`}>口播 {narrationSec.toFixed(1)}s {narrationMatch ? '✓' : '⚠'}</span>
-          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键视频删除 | 右键口播调速 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击编辑 · 右键视频删除/口播调速</span>
+          <span className={`${styles.chip} ${styles.chipGrey}`} title="单击选中 | 拖拽排序 | 双击片段重选时段 | 右键视频/字幕删除 | 右键口播调速 | 双击字幕编辑">单击选中 · 拖拽排序 · 双击编辑 · 右键视频/字幕删除、口播调速</span>
           {selectedMatchReason && selectedMatchReasonLabel && (
             <span className={`${styles.chip} ${styles.chipBlue}`}>匹配：{selectedMatchReasonLabel} · {selectedMatchReason.score.toFixed(2)}</span>
           )}
@@ -468,7 +468,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             cues={group.subtitleCues}
             assets={group.assets}
             selectedClipId={selectedClipId}
-            selectedCueId={selectedCue?.id || ''}
+            selectedCueId={timelineSelectedCueId}
             playheadSec={effectivePlayheadSec}
             disabled={busy}
             onSeek={seek}
