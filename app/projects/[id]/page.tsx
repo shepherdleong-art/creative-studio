@@ -15,6 +15,7 @@ import MixcutPanel from '@/components/mixcut/MixcutPanel';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
+import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import {
   buildSceneReferenceByImageId,
   getActiveSceneReferences,
@@ -25,6 +26,9 @@ import {
 interface Project {
   id: string;
   name: string;
+  productName?: string | null;
+  productCode?: string | null;
+  productCategory?: string | null;
   providerId: string;
   model: string;
   prompt: string;
@@ -126,9 +130,14 @@ export default function ProjectDetailPage() {
   const [applySceneProviderId, setApplySceneProviderId] = useState('');
   const [applySceneConcurrency, setApplySceneConcurrency] = useState(3);
   const [logOpen, setLogOpen] = useState(false);
+  const [projectInfoOpen, setProjectInfoOpen] = useState(false);
   const [selectedSceneSeedIds, setSelectedSceneSeedIds] = useState<string[]>([]);
   const [selectedShotSourceIds, setSelectedShotSourceIds] = useState<string[]>([]);
   const [shotSetRefreshKey, setShotSetRefreshKey] = useState(0);
+
+  const handleProjectInfoSaved = useCallback((nextProject: ProjectInfoValue) => {
+    setProject((current) => current ? { ...current, ...nextProject } : current);
+  }, []);
 
   const loadProject = useCallback(async () => {
     try {
@@ -456,6 +465,13 @@ export default function ProjectDetailPage() {
   const hasActiveJobs = project.jobs.some((j) => ['pending', 'running', 'retrying', 'needs_check'].includes(j.status));
   const isComplex = project.workflowType === 'complex_product';
 
+  const projectInfo: ProjectInfoValue = {
+    id: project.id,
+    name: project.name,
+    productName: project.productName || '',
+    productCode: project.productCode || '',
+    productCategory: project.productCategory || '',
+  };
   return (
     <div>
       <div className="project-header mb-6">
@@ -484,6 +500,9 @@ export default function ProjectDetailPage() {
 
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setLogOpen(true)} className="btn-secondary">运行日志</button>
+          <button type="button" onClick={() => setProjectInfoOpen(true)} className="btn-secondary">
+            <Icon name="settings" size={15} />项目信息
+          </button>
           {!running && hasPendingJobs && queueStatus !== 'paused' && (
             <button onClick={() => handleAction('start')} disabled={!!actionLoading} className="btn-primary">
               {actionLoading === 'start' ? '...' : '开始运行'}
@@ -589,7 +608,13 @@ export default function ProjectDetailPage() {
                 <VideoGenerationPanel projectId={project.id} />
               </div>
             )}
-            {activeTab === 'final-edit' && <MixcutPanel projectId={project.id} projectName={project.name} />}
+            {activeTab === 'final-edit' && (
+              <MixcutPanel projectId={project.id}
+                projectName={project.name}
+                projectInfo={projectInfo}
+                onProjectInfoChange={handleProjectInfoSaved}
+              />
+            )}
           </>
         ) : (
           <LegacyProjectContent
@@ -614,6 +639,14 @@ export default function ProjectDetailPage() {
 
       <LogDrawer open={logOpen} projectId={project.id} autoRefresh={logOpen} onClose={() => setLogOpen(false)} />
 
+
+      <ProjectInfoDialog
+        open={projectInfoOpen}
+        project={projectInfo}
+        intent="edit"
+        onClose={() => setProjectInfoOpen(false)}
+        onSaved={handleProjectInfoSaved}
+      />
       {sceneRefModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4" onClick={() => setSceneRefModal(null)}>
           <div className="card w-full max-w-sm p-6 shadow-[0_20px_60px_rgba(0,0,0,.18)]" onClick={(e) => e.stopPropagation()}>

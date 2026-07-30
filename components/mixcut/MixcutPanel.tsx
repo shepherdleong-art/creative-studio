@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import {
   createScriptEditorState,
   editActiveScript,
@@ -42,6 +43,12 @@ type LayoutSide = 'rep' | 'rgt';
 
 interface VisionProviderView { id: string; configured: boolean; supportsVision?: boolean }
 interface MixcutDraftRef { id: string; shotSetId: string; revision: number }
+interface MixcutPanelProps {
+  projectId: string;
+  projectName: string;
+  projectInfo: ProjectInfoValue;
+  onProjectInfoChange: (project: ProjectInfoValue) => void;
+}
 
 const MANUAL_SCRIPT_ID = '__manual__';
 
@@ -59,9 +66,12 @@ function prepareCreatedAt(group: FinalEditGroupView): string {
   return group.jobs.find((job) => job.kind === 'prepare')?.createdAt ?? '';
 }
 
-export default function MixcutPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
+export default function MixcutPanel({
+  projectId, projectName, projectInfo, onProjectInfoChange,
+}: MixcutPanelProps) {
   const [context, setContext] = useState<MixcutContextResponse | null>(null);
   const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
+  const [projectInfoOpen, setProjectInfoOpen] = useState(false);
   const [exportVariantId, setExportVariantId] = useState('');
   const [selectionByShotSet, setSelectionByShotSet] = useState<MaterialSelectionByShotSet>({});
   const [externalByShotSet, setExternalByShotSet] = useState<Record<string, FinalEditExternalAssetView[]>>({});
@@ -772,10 +782,13 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           <span className={styles.brandText}><strong>智能混剪</strong><small>Creative Studio · V2</small></span>
         </div>
         <div className={styles.projectContext}>
-          <small>{context?.project.productName || projectName}</small>
-          <b>{context?.project.name || projectName}</b>
+          <small>{projectInfo.productName || projectName}</small>
+          <b>{projectInfo.name || projectName}</b>
         </div>
         <div className={styles.topbarRight}>
+          <button type="button" className={`${styles.btn} ${styles.small}`} onClick={() => setProjectInfoOpen(true)}>
+            <Icon name="settings" size={14} />项目信息
+          </button>
           <span className={styles.segLabel}>画幅</span>
           <span className={styles.seg} role="group" aria-label="全局画幅">
             {(['3x4', '9x16'] as const).map((preset) => (
@@ -914,7 +927,18 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
                 </div>
                 <div className={activeStep === 3 ? styles.stepWrap : styles.stepHidden}>
                   {preparedGroup && context
-                    ? <ExportStep key={`${preparedGroup.id}:${exportVariantId}`} project={context.project} group={preparedGroup} initialVariantId={exportVariantId} active={activeStep === 3} onGroupChange={setPreparedGroup} onBack={() => setActiveStep(2)} />
+                    ? (
+                      <ExportStep
+                        key={`${preparedGroup.id}:${exportVariantId}`}
+                        project={{ ...context.project, ...projectInfo }}
+                        group={preparedGroup}
+                        initialVariantId={exportVariantId}
+                        active={activeStep === 3}
+                        onGroupChange={setPreparedGroup}
+                        onBack={() => setActiveStep(2)}
+                        onProjectInfoChange={onProjectInfoChange}
+                      />
+                    )
                     : <div className={styles.emptyState}><strong>还没有可导出的成片草稿</strong><span>完成智能创作并检查预览后再导出。</span></div>}
                 </div>
               </>
@@ -922,6 +946,14 @@ export default function MixcutPanel({ projectId, projectName }: { projectId: str
           </main>
         )}
       </div>
+
+      <ProjectInfoDialog
+        open={projectInfoOpen}
+        project={projectInfo}
+        intent="edit"
+        onClose={() => setProjectInfoOpen(false)}
+        onSaved={onProjectInfoChange}
+      />
       {pendingShotSetId && (
         <div className={styles.switchDialogBackdrop} role="presentation">
           <div className={styles.switchDialog} role="dialog" aria-modal="true" aria-labelledby="mixcut-shot-set-switch-title">

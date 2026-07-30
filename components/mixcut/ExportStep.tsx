@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { ProjectInfoDialog, type ProjectInfoDialogIntent, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import { createOverlayBundlePayload, TextOverflowError } from '@/components/final-edit/text-canvas-renderer';
 import { previewExportBaseName } from '@/lib/final-edit/export-identity';
 import { OUTPUT_PRESETS, type ExportTargetView, type FinalEditGroupView, type MixcutContextResponse, type RenderJobRef } from '@/lib/final-edit/types';
@@ -47,13 +48,14 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export function ExportStep({ project, group, initialVariantId, active, onBack, onGroupChange }: {
+export function ExportStep({ project, group, initialVariantId, active, onBack, onGroupChange, onProjectInfoChange }: {
   project: MixcutContextResponse['project'];
   group: FinalEditGroupView;
   initialVariantId: string;
   active: boolean;
   onBack: () => void;
   onGroupChange: (group: FinalEditGroupView) => void;
+  onProjectInfoChange: (project: ProjectInfoValue) => void;
 }) {
   const [selectedVariantId, setSelectedVariantId] = useState(initialVariantId || group.variants[0]?.id || '');
   const [job, setJob] = useState<ExportJob | null>(null);
@@ -62,6 +64,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   const [restoringJob, setRestoringJob] = useState(true);
   const [message, setMessage] = useState('');
   const [revealAvailable, setRevealAvailable] = useState(false);
+  const [projectInfoIntent, setProjectInfoIntent] = useState<ProjectInfoDialogIntent | null>(null);
   const pollTokenRef = useRef<symbol | null>(null);
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
   const predictedBaseName = useMemo(() => previewExportBaseName(project.productCode, project.taskDate), [project.productCode, project.taskDate]);
@@ -131,8 +134,8 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     };
   }, [active, fetchJob, group.id, job?.id, job?.status, job?.variantId, onGroupChange]);
 
-  const startExport = async () => {
-    if (!variant || busy || blockingIssue || !project.productCode.trim()) return;
+  const startExport = async (productCode = project.productCode) => {
+    if (!variant || busy || blockingIssue || !productCode.trim()) return;
     setBusy(true);
     setMessage('正在冻结当前文字与封面图层…');
     try {
@@ -176,13 +179,14 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     taskName: project.name,
     productCode: project.productCode,
     taskDate: project.taskDate,
-    videoFilename: `${predictedBaseName}.mp4`,
-    coverFilename: `${predictedBaseName}-封面.jpg`,
+    videoFilename: predictedBaseName ? `${predictedBaseName}.mp4` : '填写产品型号后自动生成',
+    coverFilename: predictedBaseName ? `${predictedBaseName}-封面.jpg` : '填写产品型号后自动生成',
     displayDirectory: `工作台/${project.name}/成片/`,
   };
   const progress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
   const statusText = job ? `${PHASE_LABELS[job.phase] || job.phase} · ${Math.round(progress * 100)}%` : '尚未开始';
   const canExport = !blockingIssue && Boolean(project.productCode.trim());
+  const canStartExport = Boolean(variant) && !blockingIssue;
   const checks = variant ? [
     { pass: variant.timeline.clips.length > 0, label: variant.timeline.clips.length ? `时间轴：${variant.timeline.clips.length} 个片段` : '时间轴：缺少片段' },
     { pass: group.subtitleCues.length > 0, label: group.subtitleCues.length ? `字幕：${group.subtitleCues.length} 条` : '字幕：无字幕' },
@@ -231,7 +235,10 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
 
         <div className={styles.twoCol}>
           <section className={styles.card}>
-            <div className={styles.cardHead}><div className={styles.cardTitle}>导出身份</div></div>
+            <div className={styles.cardHead}>
+              <div className={styles.cardTitle}>导出身份</div>
+              <button type="button" className={styles.textButton} disabled={busy} onClick={() => setProjectInfoIntent('edit')}>编辑项目信息</button>
+            </div>
             <div className={styles.kv}><span className={styles.kvK}>任务名</span><span className={styles.kvV}>{effectiveTarget.taskName}</span></div>
             <div className={styles.kv}><span className={styles.kvK}>产品型号</span><span className={styles.kvV}>{effectiveTarget.productCode || '未填写'}</span></div>
             <div className={styles.kv}><span className={styles.kvK}>任务日期</span><span className={styles.kvV}>{effectiveTarget.taskDate}</span></div>
@@ -259,7 +266,13 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
             </div>
             <div style={{ marginTop: 10 }}><span className={`${styles.chip} ${canExport ? styles.chipGreen : styles.chipGrey}`}>{canExport ? '可以导出' : '尚不满足条件'}</span></div>
             {variant?.issues.filter((issue) => issue.severity === 'blocking').map((issue, index) => <p key={`${issue.code}-${index}`} className={styles.exportBlocker}><Icon name="alert" size={14} />{issue.message}</p>)}
-            {!project.productCode.trim() && <p className={styles.exportBlocker}><Icon name="alert" size={14} />请先在项目信息中填写产品型号</p>}
+            {!project.productCode.trim() && (
+              <p className={styles.exportBlocker}>
+                <Icon name="alert" size={14} />
+                <span>请先填写产品型号</span>
+                <button type="button" className={styles.textButton} onClick={() => setProjectInfoIntent('export')}>立即填写</button>
+              </p>
+            )}
           </section>
         </div>
 
@@ -275,7 +288,18 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
           {job?.status === 'failed' && <p className={styles.exportBlocker}>{job.errorMessage || '渲染失败'}</p>}
           <div className={styles.ctaZone}>
             {!restoringJob && (!job || !['queued', 'running', 'succeeded'].includes(job.status)) ? (
-              <button type="button" className={`${styles.btn} ${styles.primary} ${styles.big}`} disabled={busy || !canExport} onClick={() => void startExport()}><Icon name="download" size={16} />开始导出</button>
+              <button
+                type="button"
+                className={`${styles.btn} ${styles.primary} ${styles.big}`}
+                disabled={busy || !canStartExport}
+                onClick={() => {
+                  if (project.productCode.trim()) void startExport();
+                  else setProjectInfoIntent('export');
+                }}
+              >
+                <Icon name="download" size={16} />
+                {project.productCode.trim() ? '开始导出' : '填写信息并导出'}
+              </button>
             ) : null}
             {job?.status === 'failed' && <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={busy} onClick={() => void retry()}><Icon name="retry" size={15} />重试导出</button>}
             {job?.status === 'succeeded' && job.output && (
@@ -294,6 +318,17 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
 
         {job?.status === 'succeeded' && job.output && <section className={styles.exportResult} aria-label="导出结果"><video controls preload="metadata" src={job.output.videoUrl} /><img src={job.output.coverUrl} alt="导出封面" /></section>}
       </div>
+
+      <ProjectInfoDialog
+        open={projectInfoIntent !== null}
+        project={project}
+        intent={projectInfoIntent || 'edit'}
+        onClose={() => setProjectInfoIntent(null)}
+        onSaved={(updatedProject) => {
+          onProjectInfoChange(updatedProject);
+          if (projectInfoIntent === 'export') void startExport(updatedProject.productCode);
+        }}
+      />
     </>
   );
 }

@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
+import { parseProjectInfoUpdate, ProjectInfoValidationError } from '@/lib/project-info';
 
 export async function GET(
   _request: NextRequest,
@@ -130,6 +131,15 @@ export async function PATCH(
     const updates: string[] = [];
     const values: unknown[] = [];
 
+    const projectInfoUpdate = parseProjectInfoUpdate(body);
+    for (const key of ['name', 'productName', 'productCode', 'productCategory'] as const) {
+      const value = projectInfoUpdate[key];
+      if (value !== undefined) {
+        updates.push(`${key} = ?`);
+        values.push(value);
+      }
+    }
+
     if (typeof body.shotPrompt === 'string') { updates.push('shotPrompt = ?'); values.push(body.shotPrompt.trim()); }
     if (typeof body.targetAudience === 'string') { updates.push('targetAudience = ?'); values.push(body.targetAudience); }
     if (typeof body.scriptTone === 'string') { updates.push('scriptTone = ?'); values.push(body.scriptTone); }
@@ -144,8 +154,30 @@ export async function PATCH(
     if (result.changes !== 1) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
     const responseShotPrompt = typeof body.shotPrompt === 'string' ? body.shotPrompt.trim() : '';
-    return NextResponse.json({ success: true, shotPrompt: responseShotPrompt });
+    const updatedProjectRow = db.prepare(`
+      SELECT id, name, productName, productCode, productCategory FROM projects WHERE id = ?
+    `).get(id) as {
+      id: string;
+      name: string;
+      productName: string | null;
+      productCode: string | null;
+      productCategory: string | null;
+    } | undefined;
+    if (!updatedProjectRow) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
+    const updatedProject = {
+      id: updatedProjectRow.id,
+      name: updatedProjectRow.name,
+      productName: updatedProjectRow.productName || '',
+      productCode: updatedProjectRow.productCode || '',
+      productCategory: updatedProjectRow.productCategory || '',
+    };
+
+    return NextResponse.json({ success: true, shotPrompt: responseShotPrompt, project: updatedProject });
   } catch (err) {
+    if (err instanceof ProjectInfoValidationError) {
+      return NextResponse.json({ error: 'invalid_project_info', message: err.message }, { status: 400 });
+    }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
