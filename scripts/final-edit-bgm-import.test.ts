@@ -183,6 +183,130 @@ assert.equal(sequence.firstSuccessfulTrackId, first.imported[0].id);
 assert.equal(sequence.reused[0].filename, '轻快音乐.mp3');
 assert.equal(sequence.imported[0].filename, '新建.mp3');
 
+const {
+  bgmImportResponseStatus,
+  importFinalEditBgmFromFormData,
+  validateBgmUploadMetadata,
+  MAX_BGM_FILES,
+  MAX_BGM_FILE_BYTES,
+} = await import('../lib/final-edit/bgm-import-http.ts');
+
+assert.equal(bgmImportResponseStatus({
+  firstSuccessfulTrackId: 'new', imported: [{ id: 'new', filename: 'test.mp3', relativePath: 'bgm/test.mp3', durationUs: 1_000_000 }], reused: [], errors: [],
+}), 201);
+assert.equal(bgmImportResponseStatus({
+  firstSuccessfulTrackId: 'reused', imported: [], reused: [{ id: 'reused', filename: 'test.mp3', relativePath: 'bgm/test.mp3', durationUs: 1_000_000 }], errors: [],
+}), 200);
+assert.equal(bgmImportResponseStatus({
+  firstSuccessfulTrackId: null, imported: [], reused: [], errors: [{
+    filename: '损坏.mp3', code: 'invalid_audio', message: '无法识别音频内容',
+  }],
+}), 422);
+
+assert.throws(
+  () => validateBgmUploadMetadata([]),
+  (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'files_required',
+);
+
+assert.throws(
+  () => validateBgmUploadMetadata(Array.from({ length: MAX_BGM_FILES + 1 }, (_, i) => ({ name: `file${i}.mp3`, size: 100 }))),
+  (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'too_many_files',
+);
+
+assert.throws(
+  () => validateBgmUploadMetadata([{ name: 'large.mp3', size: MAX_BGM_FILE_BYTES + 1 }]),
+  (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'file_too_large',
+);
+
+assert.throws(
+  () => validateBgmUploadMetadata([
+    { name: 'a.mp3', size: MAX_BGM_FILE_BYTES },
+    { name: 'b.mp3', size: MAX_BGM_FILE_BYTES },
+    { name: 'c.mp3', size: 1 },
+  ]),
+  (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'upload_too_large',
+);
+
+const form = new FormData();
+form.set('projectId', 'must-be-ignored');
+form.set('groupId', 'must-be-ignored');
+form.set('targetPath', '../../must-be-ignored');
+form.append('files', new File(['first'], '第一首.mp3', { type: 'audio/mpeg' }));
+form.append('files', new File(['second'], '第二首.wav', { type: 'audio/wav' }));
+
+const stagedNames: string[] = [];
+const parsed = await importFinalEditBgmFromFormData(
+  new Request('http://local/api/final-edit-bgm', { method: 'POST', body: form }),
+  async (uploads) => {
+    assert.equal(uploads.length, 1, 'HTTP 层必须逐文件暂存');
+    assert.ok(fs.existsSync(uploads[0].temporaryPath));
+    stagedNames.push(uploads[0].filename);
+    return {
+      firstSuccessfulTrackId: `track-${stagedNames.length}`,
+      imported: [{
+        id: `track-${stagedNames.length}`,
+        filename: uploads[0].filename,
+        relativePath: `bgm/${uploads[0].filename}`,
+        durationUs: 1_000_000,
+      }],
+      reused: [],
+      errors: [],
+    };
+  },
+);
+assert.deepEqual(stagedNames, ['第一首.mp3', '第二首.wav']);
+assert.equal(parsed.firstSuccessfulTrackId, 'track-1');
+assert.deepEqual(parsed.imported.map((track) => track.id), ['track-1', 'track-2']);
+
+await assert.rejects(
+  importFinalEditBgmFromFormData(
+    new Request('http://local/api/final-edit-bgm', { method: 'POST', body: new FormData() }),
+    async () => ({ firstSuccessfulTrackId: null, imported: [], reused: [], errors: [] }),
+  ),
+  (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'files_required',
+);
+
+await assert.rejects(
+  importFinalEditBgmFromFormData(
+    new Request('http://local/api/final-edit-bgm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }),
+    async () => ({ firstSuccessfulTrackId: null, imported: [], reused: [], errors: [] }),
+  ),
+  (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'invalid_form_data',
+);
+
+const tooManyForm = new FormData();
+for (let i = 0; i < MAX_BGM_FILES + 1; i += 1) {
+  tooManyForm.append('files', new File(['small'], `file${i}.mp3`, { type: 'audio/mpeg' }));
+}
+await assert.rejects(
+  importFinalEditBgmFromFormData(
+    new Request('http://local/api/final-edit-bgm', { method: 'POST', body: tooManyForm }),
+    async () => ({ firstSuccessfulTrackId: null, imported: [], reused: [], errors: [] }),
+  ),
+  (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'too_many_files',
+);
+
+const systemFailForm = new FormData();
+systemFailForm.append('files', new File(['ok'], 'ok.mp3', { type: 'audio/mpeg' }));
+await assert.rejects(
+  importFinalEditBgmFromFormData(
+    new Request('http://local/api/final-edit-bgm', { method: 'POST', body: systemFailForm }),
+    async () => {
+      throw new Error('system failure');
+    },
+  ),
+  (error: unknown) => error instanceof Error && error.message === 'system failure',
+);
+
+const routeSource = fs.readFileSync(
+  path.join(process.cwd(), 'app/api/final-edit-bgm/route.ts'),
+  'utf8',
+);
+assert.match(routeSource, /importFinalEditBgmFromFormData/);
+assert.match(routeSource, /bgmImportResponseStatus/);
+assert.match(routeSource, /path\.join\(dataRoot\(\), 'storage'\)/);
+assert.doesNotMatch(routeSource, /projectId|shotSetId|groupId|targetPath/);
+
 db.close();
 dbWithHook.close();
 fs.rmSync(root, { recursive: true, force: true });
