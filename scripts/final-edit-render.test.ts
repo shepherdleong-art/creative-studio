@@ -12,10 +12,11 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-final-render
 const storage = path.join(root, 'storage');
 fs.mkdirSync(path.join(storage, 'videos'), { recursive: true });
 fs.mkdirSync(path.join(storage, 'audio'), { recursive: true });
+fs.mkdirSync(path.join(storage, 'bgm'), { recursive: true });
 fs.mkdirSync(path.join(storage, 'overlays'), { recursive: true });
 const source = path.join(storage, 'videos', 'source.mp4');
 const narration = path.join(storage, 'audio', 'narration.wav');
-const bgm = path.join(storage, 'audio', 'bgm.wav');
+const bgm = path.join(storage, 'bgm', '轻快 音乐(1).wav');
 const cover = path.join(storage, 'cover.png');
 await runFfmpeg(['-f', 'lavfi', '-i', 'testsrc2=duration=2:size=320x240:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', '-y', source]);
 await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:duration=2', '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', narration]);
@@ -33,11 +34,11 @@ const snapshot: FinalEditRenderSnapshot = {
   variant: {
     id: 'variant-1', indexNum: 1, outputPreset: '3x4', revision: 0, lastRenderedRevision: null, renderStatus: null, maxOverlap: 0, issues: [],
     timeline: { fps: 24, introFrames: 20, bodyFrames: 48, clips: [{ id: 'clip-1', videoJobId: 'video-1', sourceFingerprint: fingerprint, sourceInFrame: 0, sourceOutFrame: 48, timelineInFrame: 0, timelineOutFrame: 48, boundSegmentId: 'seg-1', framing: { scale: 1.15, offsetX: 0.25, offsetY: -0.25 }, manualUseOverride: false }] },
-    bgm: { trackId: null, gainDb: -16, loop: true, fadeInSec: 0, fadeOutSec: 0.8 }, cover: { coverKey: 'image:cover', kind: 'storyboard_image', sourceKey: null, frameTimeUs: 0, sourceUrl: null, framing: { scale: 1.1, offsetX: 0.2, offsetY: -0.1 } },
+    bgm: { trackId: 'bgm-1', gainDb: -16, loop: true, fadeInSec: 0, fadeOutSec: 0.8 }, cover: { coverKey: 'image:cover', kind: 'storyboard_image', sourceKey: null, frameTimeUs: 0, sourceUrl: null, framing: { scale: 1.1, offsetX: 0.2, offsetY: -0.1 } },
   },
   sources: [{ videoJobId: 'video-1', relativePath: 'videos/source.mp4', fingerprint }],
   coverRelativePath: 'cover.png', narrationRelativePath: 'audio/narration.wav',
-  bgm: { id: 'bgm-1', relativePath: 'audio/bgm.wav', fileFingerprint: bgmFingerprint, gainDb: -16, loop: true, fadeInSec: 0.2, fadeOutSec: 0.8 },
+  bgm: { id: 'bgm-1', relativePath: 'bgm/轻快 音乐(1).wav', fileFingerprint: bgmFingerprint, gainDb: -16, loop: true, fadeInSec: 0.2, fadeOutSec: 0.8 },
   overlayBundle: { id: 'bundle-1', relativeDir: 'overlays', manifest: {} },
 };
 

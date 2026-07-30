@@ -307,6 +307,44 @@ assert.match(routeSource, /bgmImportResponseStatus/);
 assert.match(routeSource, /path\.join\(dataRoot\(\), 'storage'\)/);
 assert.doesNotMatch(routeSource, /projectId|shotSetId|groupId|targetPath/);
 
+const realAudioRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-bgm-real-'));
+const realStorage = path.join(realAudioRoot, 'storage');
+const realBgmDir = path.join(realStorage, 'bgm');
+fs.mkdirSync(realBgmDir, { recursive: true });
+const realWavPath = path.join(realAudioRoot, 'real.wav');
+const { runFfmpeg } = await import('../lib/ffmpeg.ts');
+await runFfmpeg([
+  '-f', 'lavfi',
+  '-i', 'sine=frequency=440:duration=0.2',
+  '-ar', '48000',
+  '-ac', '1',
+  '-c:a', 'pcm_s16le',
+  '-y', realWavPath,
+]);
+
+const realDb = new Database(':memory:');
+initFinalEditSchema(realDb);
+const { importFinalEditBgmFiles: realImport } = await import('../lib/final-edit/bgm-import.ts');
+const realResult = await realImport(
+  { db: realDb, storageRoot: realStorage },
+  [{ filename: '真音频.wav', mimeType: 'audio/wav', temporaryPath: realWavPath, size: fs.statSync(realWavPath).size }],
+);
+assert.equal(realResult.imported.length, 1);
+assert.ok(realResult.imported[0].durationUs > 0);
+assert.equal(realResult.imported[0].filename, '真音频.wav');
+
+const fakeMp3Path = path.join(realAudioRoot, '伪装.mp3');
+fs.writeFileSync(fakeMp3Path, 'this is not audio');
+const fakeResult = await realImport(
+  { db: realDb, storageRoot: realStorage },
+  [{ filename: '伪装.mp3', mimeType: 'audio/mpeg', temporaryPath: fakeMp3Path, size: fs.statSync(fakeMp3Path).size }],
+);
+assert.equal(fakeResult.imported.length, 0);
+assert.equal(fakeResult.errors[0].code, 'invalid_audio');
+
+realDb.close();
+fs.rmSync(realAudioRoot, { recursive: true, force: true });
+
 db.close();
 dbWithHook.close();
 fs.rmSync(root, { recursive: true, force: true });
