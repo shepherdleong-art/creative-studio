@@ -178,7 +178,7 @@ export interface FinalEditGroupView {
   textStyles: Record<OutputPresetId, { coverPrimary: TextStyle; coverSecondary: TextStyle; subtitle: TextStyle }>;
   variants: FinalEditVariantView[];
   assets: FinalEditAssetView[];
-  bgmTracks: Array<{ id: string; relativePath: string; durationUs: number }>;
+  bgmTracks: FinalEditBgmTrackView[];
   coverCandidates: Array<{ coverKey: string; sourceUrl: string; kind: 'storyboard_image' | 'video_keyframe' }>;
   jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string }>;
 }
@@ -223,6 +223,7 @@ export interface MixcutContextResponse {
     name: string;
     productName: string;
     productCode: string;
+    productCategory: string;
     createdAt: string;
     taskDate: string;
   };
@@ -267,6 +268,25 @@ export interface ExportIdentity {
    */
   productCode: string;
   taskDate: string;
+}
+
+export interface FinalEditBgmTrackView {
+  id: string;
+  filename: string;
+  relativePath: string;
+  durationUs: number;
+}
+
+export interface BgmImportResponse {
+  firstSuccessfulTrackId: string | null;
+  imported: FinalEditBgmTrackView[];
+  reused: FinalEditBgmTrackView[];
+  errors: Array<{
+    filename: string;
+    code: string;
+    message: string;
+  }>;
+  tracks: FinalEditBgmTrackView[];
 }
 
 export type MixcutErrorCode = 'product_code_required';

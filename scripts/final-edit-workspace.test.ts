@@ -597,6 +597,24 @@ await assert.rejects(
   (error: unknown) => error instanceof FinalEditError && error.code === 'bgm_missing',
 );
 
+db.prepare(`INSERT INTO final_edit_bgm_tracks
+  (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt)
+  VALUES (?, ?, ?, ?, ?, 'ready', ?)`).run(
+  'bgm-readable-name',
+  'bgm/轻快音乐(1).mp3',
+  'fingerprint-readable-name',
+  12_500_000,
+  'mp3',
+  new Date().toISOString(),
+);
+const groupWithBgm = workspace.load(group.id);
+assert.deepEqual(groupWithBgm.bgmTracks, [{
+  id: 'bgm-readable-name',
+  filename: '轻快音乐(1).mp3',
+  relativePath: 'bgm/轻快音乐(1).mp3',
+  durationUs: 12_500_000,
+}]);
+
 const originalPrimarySize = group.textStyles['3x4'].coverPrimary.fontSizePx;
 const styleResult = workspace.apply({
   scope: 'group', groupId: group.id, expectedRevision: group.revision, type: 'set_text_style', preset: '3x4', target: 'subtitle',

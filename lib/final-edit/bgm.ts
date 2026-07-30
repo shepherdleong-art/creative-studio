@@ -3,8 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { probeDurationSec } from '../ffmpeg.ts';
+import type { FinalEditBgmTrackView } from './types.ts';
 
-const EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg']);
+export const FINAL_EDIT_BGM_EXTENSIONS = new Set([
+  '.mp3',
+  '.wav',
+  '.m4a',
+  '.aac',
+  '.flac',
+  '.ogg',
+]);
 
 export async function scanFinalEditBgm(db: Database.Database, storageRoot: string) {
   const root = path.join(storageRoot, 'bgm');
@@ -14,7 +22,7 @@ export async function scanFinalEditBgm(db: Database.Database, storageRoot: strin
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const full = path.join(directory, entry.name);
       if (entry.isDirectory()) visit(full);
-      else if (EXTENSIONS.has(path.extname(entry.name).toLowerCase())) files.push(full);
+      else if (FINAL_EDIT_BGM_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) files.push(full);
     }
   };
   visit(root);
@@ -33,4 +41,27 @@ export async function scanFinalEditBgm(db: Database.Database, storageRoot: strin
     }
   }
   return result;
+}
+
+export function finalEditBgmFilename(relativePath: string): string {
+  return relativePath.split(/[\\/]/).filter(Boolean).at(-1) || relativePath;
+}
+
+export function listReadyFinalEditBgmTracks(
+  db: Database.Database,
+): FinalEditBgmTrackView[] {
+  const rows = db.prepare(`
+    SELECT id, relativePath, durationUs
+    FROM final_edit_bgm_tracks
+    WHERE status='ready'
+    ORDER BY relativePath
+  `).all() as Array<{
+    id: string;
+    relativePath: string;
+    durationUs: number;
+  }>;
+  return rows.map((row) => ({
+    ...row,
+    filename: finalEditBgmFilename(row.relativePath),
+  }));
 }

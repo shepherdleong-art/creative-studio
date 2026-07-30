@@ -5,7 +5,7 @@ import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { defaultTextStyle, normalizeTextStyle, splitCoverTitle, timelineGaps } from './domain.ts';
 import { calculateOverlapScore } from './overlap.ts';
-import { scanFinalEditBgm } from './bgm.ts';
+import { listReadyFinalEditBgmTracks, scanFinalEditBgm } from './bgm.ts';
 import { parseCoverKey, resolveCoverCandidateFile } from './cover-candidates.ts';
 import { materializeVideoFrame } from './video-frame.ts';
 import { runFinalEditHeavyJob } from './heavy-job-lock.ts';
@@ -900,7 +900,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       } satisfies FinalEditAssetView;
     });
     const jobs = db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage, startedAt, finishedAt, createdAt FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as FinalEditGroupView['jobs'];
-    const bgmTracks = db.prepare(`SELECT id, relativePath, durationUs FROM final_edit_bgm_tracks WHERE status='ready' ORDER BY relativePath`).all() as FinalEditGroupView['bgmTracks'];
+    const bgmTracks = listReadyFinalEditBgmTracks(db);
     const imageCoverCandidates = db.prepare(`SELECT ia.id FROM shots s JOIN image_assets ia ON ia.id=s.latestGeneratedImageId WHERE s.shotSetId=? AND s.latestGeneratedImageId IS NOT NULL ORDER BY s.indexNum`).all(String(group.shotSetId)) as Array<{ id: string }>;
     const videoCoverCandidates = (db.prepare(`
       SELECT vj.id AS videoJobId, a.generatedJson
