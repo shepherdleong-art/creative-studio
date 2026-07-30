@@ -100,6 +100,12 @@ export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<
   });
 }
 
+// 与 PROBE_VIDEO_MEDIA_TIMEOUT_MS 同因：ffprobe 偶发在 spawn 后永久卡死
+// （Windows 上观测到子进程 0 CPU、永不退出），没有超时会拖死整个调用方。
+const PROBE_DURATION_FFPROBE_TIMEOUT_MS = 10_000;
+// ffmpeg 兜底要完整解码（-f null -），长文件耗时长一些，给更宽的窗口。
+const PROBE_DURATION_FFMPEG_TIMEOUT_MS = 60_000;
+
 /** ffprobe 取媒体时长（秒）。若 ffprobe 不可用，自动回退用 ffmpeg 解析。 */
 export function probeDurationSec(filePath: string): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -113,13 +119,29 @@ export function probeDurationSec(filePath: string): Promise<number> {
       );
       let out = '';
       let err = '';
+      let settled = false;
+      const fallback = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        probeWithFfmpeg(filePath).then(resolve, reject);
+      };
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        // ffprobe wedged after spawn — kill it and fall back rather than
+        // blocking the caller (final-edit prepare loop) forever.
+        fallback();
+      }, PROBE_DURATION_FFPROBE_TIMEOUT_MS);
       child.stdout.on('data', (b: Buffer) => (out += b.toString()));
       child.stderr.on('data', (b: Buffer) => (err += b.toString()));
       child.on('error', () => {
         // ffprobe spawn itself failed — fall through to ffmpeg
-        probeWithFfmpeg(filePath).then(resolve, reject);
+        fallback();
       });
       child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         const dur = parseFloat(out.trim());
         if (code === 0 && Number.isFinite(dur)) {
           resolve(dur);
@@ -144,18 +166,30 @@ function probeWithFfmpeg(filePath: string): Promise<number> {
       { windowsHide: true }
     );
     let stderr = '';
+    let settled = false;
+    const done = (err?: Error, dur?: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(dur as number);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      done(new Error(`ffmpeg duration probe timeout after ${PROBE_DURATION_FFMPEG_TIMEOUT_MS}ms: ${filePath}`));
+    }, PROBE_DURATION_FFMPEG_TIMEOUT_MS);
     child.stderr.on('data', (b: Buffer) => (stderr += b.toString()));
-    child.on('error', reject);
+    child.on('error', (error) => done(error));
     child.on('close', () => {
       const m = stderr.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
       if (m) {
         const dur = parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]);
         if (Number.isFinite(dur)) {
-          resolve(dur);
+          done(undefined, dur);
           return;
         }
       }
-      reject(new Error(`ffprobe failed for ${filePath} (ffmpeg fallback also failed): ${stderr.slice(-500)}`));
+      done(new Error(`ffprobe failed for ${filePath} (ffmpeg fallback also failed): ${stderr.slice(-500)}`));
     });
   });
 }
