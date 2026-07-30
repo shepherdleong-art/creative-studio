@@ -14,6 +14,8 @@ import { MixcutTimeline } from './MixcutTimeline';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
 import { TrimEditor } from './TrimEditor';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
+import { BgmCard, type BgmImportUiResult } from './BgmCard';
+import type { BgmImportResponse } from '@/lib/final-edit/types';
 import styles from './MixcutPanel.module.css';
 
 const FPS = FINAL_EDIT_FPS;
@@ -46,6 +48,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
   const [busy, setBusy] = useState(false);
+  const [previewStopRequestId, setPreviewStopRequestId] = useState(0);
+  const [auditionStopRequestId, setAuditionStopRequestId] = useState(0);
   const [coverOpen, setCoverOpen] = useState(false);
   const [trimClip, setTrimClip] = useState<TimelineClip | null>(null);
   const groupRef = useRef(group);
@@ -66,6 +70,9 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     ? timelineGaps(variant.timeline.bodyFrames, variant.timeline.clips)
       .find((gap) => gap.endFrame - gap.startFrame >= FINAL_EDIT_MIN_CLIP_FRAMES) || null
     : null, [variant]);
+  const selectedBgmTrack = group.bgmTracks.find(
+    (track) => track.id === variant?.bgm.trackId,
+  );
 
   useEffect(() => { groupRef.current = group; }, [group]);
   useEffect(() => {
@@ -84,7 +91,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     return current;
   };
 
-  const enqueue = (work: () => Promise<boolean>): Promise<boolean> => {
+  const enqueue = <T,>(work: () => Promise<T>): Promise<T> => {
     pendingRef.current += 1;
     setBusy(true);
     const scheduled = queueRef.current.then(work, work);
@@ -95,7 +102,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     });
   };
 
-  const applyVariant = (request: VariantCommandRequest): Promise<boolean> => enqueue(async () => {
+  const applyVariantNow = async (request: VariantCommandRequest): Promise<boolean> => {
     const currentGroup = groupRef.current;
     const currentVariant = currentGroup.variants.find((item) => item.id === selectedVariantId) || currentGroup.variants[0];
     if (!currentVariant) return false;
@@ -115,7 +122,60 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       if (mountedRef.current) setMessage(`保存失败，已恢复服务端版本：${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
-  });
+  };
+
+  const applyVariant = (request: VariantCommandRequest): Promise<boolean> =>
+    enqueue(() => applyVariantNow(request));
+
+  const importBgmFiles = (files: File[]): Promise<BgmImportUiResult> => {
+    const targetGroupId = groupRef.current.id;
+    return enqueue(async () => {
+      const formData = new FormData();
+      for (const file of files) formData.append('files', file);
+      const response = await fetch('/api/final-edit-bgm', {
+        method: 'POST',
+        body: formData,
+      });
+      const body = await response.json().catch(() => ({})) as Partial<BgmImportResponse> & {
+        error?: string;
+        message?: string;
+      };
+      if (!response.ok && response.status !== 422) {
+        throw new Error(body.message || body.error || `HTTP ${response.status}`);
+      }
+      const imported = body.imported || [];
+      const reused = body.reused || [];
+      const errors = body.errors || [];
+      const detailParts: string[] = [];
+      if (imported.length) detailParts.push(`已导入 ${imported.length} 首`);
+      if (reused.length) detailParts.push(`已复用 ${reused.length} 首`);
+      if (errors.length) detailParts.push(`${errors.length} 首失败`);
+      const details = detailParts.join('，');
+      const errorMessages = errors.map((error) => `${error.filename}：${error.message}`).join('\n');
+      if (errorMessages && mountedRef.current) setMessage(errorMessages);
+
+      if (groupRef.current.id !== targetGroupId) {
+        return body.firstSuccessfulTrackId ? { outcome: 'applied' as const, announcement: `已添加并应用到音轨（${details}）`, details } : { outcome: 'failed' as const, announcement: '添加失败', details };
+      }
+
+      const refreshed = await reloadGroup(targetGroupId);
+      const firstId = body.firstSuccessfulTrackId || null;
+      if (!firstId) {
+        return { outcome: 'failed' as const, announcement: '添加失败', details };
+      }
+
+      const refreshedVariant = refreshed.variants.find((item) => item.id === selectedVariantId) || refreshed.variants[0];
+      if (!refreshedVariant) {
+        return { outcome: 'failed' as const, announcement: '添加失败', details };
+      }
+
+      const succeeded = await applyVariantNow({ type: 'set_bgm', trackId: firstId });
+      if (succeeded) {
+        return { outcome: 'applied' as const, announcement: `已添加并应用到音轨（${details}）`, details };
+      }
+      return { outcome: 'failed' as const, announcement: '添加失败', details };
+    }).then((result) => result, () => ({ outcome: 'failed' as const, announcement: '添加失败，请重试', details: '' }));
+  };
 
   const applyGroup = (request: GroupCommandRequest): Promise<boolean> => {
     const targetGroupId = groupRef.current.id;
@@ -370,8 +430,10 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                 selectedAsset={null}
                 playheadSec={effectivePlayheadSec}
                 seekRequestId={seekRequestId}
+                stopRequestId={previewStopRequestId}
                 active={active}
                 textTarget={null}
+                onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}
                 onPlayheadChange={setPlayheadSec}
                 onTextPositionChange={() => undefined}
               />
@@ -415,6 +477,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             narrationDurationSec={narrationSec}
             onNarrationPlaybackRatePreview={previewNarrationPlaybackRate}
             onNarrationPlaybackRateCommit={(playbackRate) => void applyGroup({ type: 'set_narration_playback_rate', playbackRate })}
+            bgmTrackName={selectedBgmTrack?.filename ?? null}
           />
         </div>
       </main>
@@ -438,30 +501,18 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           />
         </section>
 
-        <section className={styles.rcard}>
-          <h4><Icon name="music" size={15} />背景音乐</h4>
-          <div className={styles.ctlRow}>
-            <select style={{ flex: 1, minWidth: 100 }} value={variant.bgm.trackId || ''} disabled={busy} onChange={(event) => void applyVariant({ type: 'set_bgm', trackId: event.target.value || null })} aria-label="BGM 曲目">
-              <option value="">无 BGM</option>
-              {group.bgmTracks.map((track) => <option key={track.id} value={track.id}>{track.relativePath}</option>)}
-            </select>
-          </div>
-          <div className={styles.ctlRow}>
-            <span className={styles.ctlLab}>音量</span>
-            <input type="range" min={-40} max={0} step={1} defaultValue={variant.bgm.gainDb} key={`gain-${variant.revision}`} disabled={busy} onChange={(event) => void applyVariant({ type: 'set_bgm_gain', gainDb: Number(event.target.value) })} aria-label="音量（dB）" />
-            <span className={styles.ctlVal}>{variant.bgm.gainDb} dB</span>
-          </div>
-          <div className={styles.ctlRow}>
-            <span className={styles.ctlLab}>淡入</span>
-            <input type="range" min={0} max={5} step={0.1} defaultValue={variant.bgm.fadeInSec} key={`fade-in-${variant.revision}`} disabled={busy} onChange={(event) => void applyVariant((current) => ({ type: 'set_bgm_fades', fadeInSec: Number(event.target.value), fadeOutSec: current.bgm.fadeOutSec }))} aria-label="淡入（秒）" />
-            <span className={styles.ctlVal}>{variant.bgm.fadeInSec}s</span>
-          </div>
-          <div className={styles.ctlRow}>
-            <span className={styles.ctlLab}>淡出</span>
-            <input type="range" min={0} max={5} step={0.1} defaultValue={variant.bgm.fadeOutSec} key={`fade-out-${variant.revision}`} disabled={busy} onChange={(event) => void applyVariant((current) => ({ type: 'set_bgm_fades', fadeInSec: current.bgm.fadeInSec, fadeOutSec: Number(event.target.value) }))} aria-label="淡出（秒）" />
-            <span className={styles.ctlVal}>{variant.bgm.fadeOutSec}s</span>
-          </div>
-        </section>
+        <BgmCard
+          scopeId={group.id}
+          tracks={group.bgmTracks}
+          bgm={variant.bgm}
+          revision={variant.revision}
+          disabled={busy}
+          active={active}
+          stopRequestId={auditionStopRequestId}
+          onAuditionStart={() => setPreviewStopRequestId((value) => value + 1)}
+          onCommand={applyVariant}
+          onImportFiles={importBgmFiles}
+        />
 
         <section className={styles.rcard} data-testid="mixcut-narration-speed-card">
           <h4><Icon name="speaker" size={15} />口播音频变速</h4>

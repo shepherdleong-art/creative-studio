@@ -35,15 +35,17 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number) {
   }
 }
 
-export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, active = true, textTarget, onPlayheadChange, onTextPositionChange }: {
+export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, onPlaybackStart, onPlayheadChange, onTextPositionChange }: {
   group: FinalEditGroupView;
   variant: FinalEditVariantView;
   assets: FinalEditAssetView[];
   selectedAsset: FinalEditAssetView | null;
   playheadSec: number;
   seekRequestId?: string | number;
+  stopRequestId?: string | number;
   active?: boolean;
   textTarget: StyleTarget | null;
+  onPlaybackStart?: () => void;
   onPlayheadChange: (timeSec: number) => void;
   onTextPositionChange: (target: StyleTarget, x: number, y: number, commit: boolean) => void;
 }) {
@@ -65,6 +67,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const lastStartedClipRef = useRef('');
   const emittedPlayheadsRef = useRef<number[]>([]);
   const lastSeekRequestIdRef = useRef<string | number | undefined>(seekRequestId);
+  const lastStopRequestIdRef = useRef<string | number | undefined>(stopRequestId);
   const playheadSecRef = useRef(playheadSec);
   const [playing, setPlaying] = useState(false);
   const [showSafeArea, setShowSafeArea] = useState(false);
@@ -303,6 +306,15 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     return () => window.clearTimeout(timer);
   }, [active, pauseAllMedia]);
 
+  useEffect(() => {
+    if (
+      stopRequestId === undefined
+      || stopRequestId === lastStopRequestIdRef.current
+    ) return;
+    lastStopRequestIdRef.current = stopRequestId;
+    stopPlayback();
+  }, [stopPlayback, stopRequestId]);
+
   useEffect(() => () => {
     pauseAllMedia();
     const context = audioContextRef.current;
@@ -374,6 +386,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     clockOffsetRef.current = startAt;
     clockStartRef.current = context.currentTime;
     setAudioLevels(startAt);
+    onPlaybackStart?.();
     playingRef.current = true;
     setPlaying(true);
     syncAudio(startAt);
