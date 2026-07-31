@@ -14,6 +14,8 @@ npm run build:win-installer  # Build Windows installer (PowerShell/Inno Setup; r
 npm run build:mac-installer  # Build macOS DMG (bash; Apple Silicon host, requires Node 22.x)
 ```
 
+Company-gateway local stack (Windows): when `.venv-litellm`, `config.yaml` and `.cache/cloudflared/cloudflared.exe` are present, `start-windows.cmd` first runs `scripts/start-stack.ps1 -SkipApp` to bring up the LiteLLM proxy (port 4000) and a tunnel (cloudflared, pinggy fallback), injects the tunnel URL as `CREATIVE_STUDIO_PUBLIC_BASE_URL`, then starts the dev server as before; without those components it behaves exactly as before. `stop-windows.cmd`, Ctrl+C in the start window, and the UI shutdown button (`/api/shutdown` reads `storage/run/stack.json`'s `stopScript` and runs `scripts/stop-stack.ps1`) all tear down the proxy and tunnel too. `storage/run/stack.json` is BOM-less JSON; `scripts/*.ps1` MUST stay UTF-8 **with BOM** — PS 5.1 misreads BOM-less Chinese and fails to parse.
+
 There is no `npm test` script. Tests are standalone files under `scripts/*.test.ts` and `scripts/*.test.mjs`, run directly via Node's native TypeScript support (Node 22+):
 
 ```bash
@@ -37,6 +39,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
   - `providers/` — Image generation adapters (Packy, GeekAI, OpenAI-compatible, `gateway-task-image` for gateways that expose image models via the async `/v1/videos` task protocol)
   - `script-providers/` — LLM script generation through Gemini, OpenAI-compatible Chat Completions, OpenAI Responses/SSE, or Anthropic Messages (`/v1/messages`) adapters selected by persisted `apiStyle`
   - `video-providers/` — Video generation adapters (Kling, Jimeng, `openai-video` for New API-style gateways speaking the OpenAI `/v1/videos` protocol)
+  - `company-gateway-size.ts` — size whitelist and snap-to-whitelist logic for the company model gateway (llm-gateway-idc.linshimuye.com via a local LiteLLM proxy, config in `config.yaml`); the `gateway-task-image` / `openai-video` adapters snap requested sizes to the documented per-model combinations and add the required `response_format` only for company models; completed tasks often carry no result URL, so both adapters fall back to downloading from `/v1/videos/<id>/content` using the ORIGINAL submit-time task id (poll-response ids may lose the embedded model_id and misroute at the LiteLLM proxy)
   - `final-edit/` — Versioned final-edit schema, group/variant workspace, external-material import, media analysis, V-API/Doubao TTS and alignment adapters, TTS-aware matching-sentence refinement, timeline planning and FFmpeg rendering. Mixcut context and external assets are scoped by `projectId + shotSetId`; never infer grouping from filenames or timestamps
   - `image-output-normalize.ts` — Sharp-based crop/resize to target dimensions
   - `provider-concurrency.ts` — Per-provider concurrency limits

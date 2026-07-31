@@ -26,6 +26,8 @@ npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Nod
 
 终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS）、`start-windows.cmd` / `stop-windows.cmd`（Windows），会检查 Node、装依赖、起服务并打开浏览器。
 
+公司网关联动（Windows）：`start-windows.cmd` 检测到联动组件（`.venv-litellm`、`config.yaml`、`.cache/cloudflared/cloudflared.exe`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000）和隧道（优先 cloudflared，不通自动换 pinggy），把隧道公网地址注入 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 后再起 dev server；组件缺失则保持原行为不动。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起 `scripts/stop-stack.ps1`）都会把代理与隧道一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
+
 ## 测试
 
 没有 `npm test` 脚本。测试是 `scripts/` 下的独立文件，靠 Node 22+ 原生 TypeScript 支持直接运行：
@@ -83,6 +85,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `providers/` — 图片生成适配器：`openai-compatible`、`packy-images`、`packy-gemini-image`、`geekai-json`、`gateway-task-image`（New API 类中转网关把图片模型挂在 `/v1/videos` 异步任务协议下的场景，与 geekai-json 同为提交→轮询→下载三段式）。
 - `script-providers/` — 脚本（LLM）生成：`gemini`、`openai-compatible`（Chat Completions）、`openai-responses`（Responses/SSE，覆盖 Packy GPT 等）与 `anthropic-messages`（`/v1/messages`，覆盖 Packy Kimi 等），配置存库并由 `apiStyle` 选择协议。
 - `video-providers/` — 视频生成适配器：`kling`（可灵）、`jimeng`（即梦）、`openai-video`（New API 类统一中转网关的 OpenAI 风格 `/v1/videos` 协议，Bearer Key 鉴权）。
+- `company-gateway-size.ts` — 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并补 `response_format`；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。
 - `final-edit/` — “智能混剪”正式第五步的后端：`schema.ts`（独立版本化迁移）、`domain.ts`/`types.ts`（时间线、字幕、文字样式等领域模型）、`renderer.ts`（ffmpeg 渲染成片）、`worker.ts`（渲染任务 drain 循环，重启时把 running 任务恢复为 queued）、`workspace.ts`、`proposal.ts`、`bgm.ts`，以及 `adapters/`（视频分析 `video-analysis.ts`、TTS `tts-registry.ts`/`vapi-qwen-tts.ts`/`doubao-tts.ts`、字幕对齐 `alignment.ts`）。Mixcut 上下文与外部素材必须按 `projectId + shotSetId` 隔离。
 - `ffmpeg.ts` — 解析 ffmpeg/ffprobe 二进制：环境变量 `CREATIVE_STUDIO_FFMPEG`/`CREATIVE_STUDIO_FFPROBE` → ffmpeg-static/ffprobe-static → PATH；封装 `runFfmpeg`（带进度回调、超时、stderr 尾部报错）和 `probeDurationSec`（ffprobe 失败时回退 ffmpeg 解析）。
 - `logger.ts` — 同时写数据库和 `storage/logs/` 文件；会主动脱敏 API Key，不要在日志里打印密钥。

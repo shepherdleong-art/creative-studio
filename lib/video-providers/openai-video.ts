@@ -1,8 +1,10 @@
+import sharp from 'sharp';
 import {
   isPrivateOrLocalHttpUrl,
   resolvePublicImageUrlWithSource,
 } from '../local-image-url.ts';
 import { normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../gateway-media-url.ts';
+import { companyVideoCapsForModel, snapCompanyVideoSize } from '../company-gateway-size.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -18,12 +20,31 @@ type GatewayVideoResponse = {
   metadata?: {
     url?: string;
   };
+  output?: { url?: string };
+  video?: { url?: string };
+  result?: { video_url?: string; url?: string };
+  video_url?: string;
   url?: string;
   error?: {
     code?: string;
     message?: string;
   };
 };
+
+// 产物 URL 的兼容结构（见《小林生影_AIGC模型调用文档》§4.2）：
+// metadata.url / output.url / video.url / result.video_url / result.url / video_url / url
+function extractVideoUrl(data: GatewayVideoResponse): string | undefined {
+  return (
+    data.metadata?.url ??
+    data.output?.url ??
+    data.video?.url ??
+    data.result?.video_url ??
+    data.result?.url ??
+    data.video_url ??
+    data.url ??
+    undefined
+  );
+}
 
 function normalizeGatewayStatus(raw: string | undefined): PollVideoResult['status'] {
   if (!raw) return 'unknown';
@@ -53,6 +74,17 @@ function parseSanitizedGatewayResponse(value: string, apiKey: string): unknown {
     return JSON.parse(sanitized);
   } catch {
     return sanitized;
+  }
+}
+
+/** 读首帧图宽高；文件缺失或无法解析时返回 null（调用方省略 size，由网关兜底） */
+async function probeImageDimensions(imagePath: string): Promise<{ width: number; height: number } | null> {
+  try {
+    const metadata = await sharp(imagePath).metadata();
+    if (metadata.width && metadata.height) return { width: metadata.width, height: metadata.height };
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -89,9 +121,22 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     // 可灵 3.x 的智能分镜（multi_shot）：网关把 multi_shot / shot_type 透传到
     // 上游 ExtInfo.AdditionalParameters。与原生 kling 适配器一致，仅对 v3/3.0
     // 模型开启；网关协议里 multi_shot 是 JSON boolean（原生接口是字符串 "true"）。
-    if (/v3|3\.0/i.test(request.model)) {
+    // Kling 3.0 Omni 不支持智能分镜，不能传这两个字段（公司文档 §5.1）。
+    if (/v3|3\.0/i.test(request.model) && !/omni/i.test(request.model)) {
       body.multi_shot = true;
       body.shot_type = 'intelligence';
+    }
+
+    // 公司网关要求 response_format=mp4，size 取文档白名单内的像素组合
+    // （按首帧图比例吸附，档位偏好 1K）。首帧尺寸读不出来时省略 size。
+    const companyCaps = companyVideoCapsForModel(request.model);
+    if (companyCaps) {
+      body.response_format = 'mp4';
+      const sourceDims = await probeImageDimensions(request.sourceImagePath);
+      const snappedSize = sourceDims
+        ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
+        : null;
+      if (snappedSize) body.size = snappedSize;
     }
 
     const controller = new AbortController();
@@ -168,7 +213,12 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         };
       }
 
-      const videoUrl = normalizeGatewayResultUrl(data.metadata?.url || data.url, cleanBase);
+      // 公司网关完成态常常不带产物 URL（文档 §5.3）：回退到 /content 端点下载。
+      // 必须用提交时返回的原始任务 id 拼地址——轮询响应里的 id 可能丢失
+      // model_id，LiteLLM 代理凭它会路由到错误的默认上游。
+      const rawUrl = extractVideoUrl(data)
+        ?? (status === 'succeeded' ? `${cleanBase}/v1/videos/${taskId}/content` : undefined);
+      const videoUrl = normalizeGatewayResultUrl(rawUrl, cleanBase);
       return {
         status,
         videoUrl: status === 'succeeded' ? videoUrl : undefined,

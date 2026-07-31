@@ -65,3 +65,8 @@ next-env.d.ts
 
 # oversized local docs (exceed GitHub's 100MB push limit; use Git LFS if they must be tracked)
 /docs/*.xlsx
+
+# company gateway local stack (litellm proxy config holds real API keys; venv is local tooling)
+/config.yaml
+/litellm-config.yaml
+/.venv-litellm/

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { resolvePublicImageUrl } from '../local-image-url.ts';
+import { companyImageCapsForModel, snapCompanyImageSize } from '../company-gateway-size.ts';
 import {
   normalizeGatewayResultUrl,
   downloadGatewayMedia,
@@ -47,6 +48,10 @@ type GatewayTaskResponse = {
   status?: string; // queued / processing / completed / failed
   progress?: number;
   metadata?: { url?: string };
+  output?: { url?: string };
+  video?: { url?: string };
+  result?: { video_url?: string; url?: string };
+  video_url?: string;
   url?: string;
   error?: { code?: string; message?: string } | string;
 };
@@ -65,8 +70,19 @@ function normalizeGatewayStatus(raw: string | undefined): GatewayTaskPollResult[
   return 'unknown';
 }
 
+// 产物 URL 的兼容结构（见《小林生影_AIGC模型调用文档》§4.2）：
+// metadata.url / output.url / video.url / result.video_url / result.url / video_url / url
 function extractImageUrl(data: GatewayTaskResponse): string | undefined {
-  return data.metadata?.url || data.url || undefined;
+  return (
+    data.metadata?.url ??
+    data.output?.url ??
+    data.video?.url ??
+    data.result?.video_url ??
+    data.result?.url ??
+    data.video_url ??
+    data.url ??
+    undefined
+  );
 }
 
 function extractErrorMessage(data: GatewayTaskResponse): string | undefined {
@@ -151,7 +167,15 @@ export async function submitGatewayTaskImage(
     prompt,
     images: imageUrls,
   };
-  if (request.size) body.size = request.size;
+  // 公司网关（image2 / seedream 等）只接受文档白名单内的像素 size 且要求
+  // response_format=jpeg；其余网关保持原样透传。
+  const companyCaps = companyImageCapsForModel(request.model);
+  if (companyCaps) {
+    body.size = snapCompanyImageSize(request.size, companyCaps);
+    body.response_format = 'jpeg';
+  } else if (request.size) {
+    body.size = request.size;
+  }
 
   const url = `${cleanBase}/v1/videos`;
 
@@ -241,12 +265,12 @@ export async function pollGatewayTaskImage(
     const imageUrl = normalizeGatewayResultUrl(extractImageUrl(data), cleanBase);
 
     if (status === 'succeeded') {
-      if (imageUrl) {
-        return { status: 'succeeded', imageUrl, rawResponse: data };
-      }
+      // 公司网关完成态常常不带产物 URL（文档 §4.3）：回退到 /content 端点下载。
+      // 必须用提交时返回的原始任务 id 拼地址——轮询响应里的 id 可能丢失
+      // model_id，LiteLLM 代理凭它会路由到错误的默认上游。
       return {
-        status: 'failed',
-        errorMessage: `Gateway task completed but no result url. Raw: ${sanitizeGatewayMediaDiagnostic(safeJson(data), apiKey)}`,
+        status: 'succeeded',
+        imageUrl: imageUrl ?? `${cleanBase}/v1/videos/${taskId}/content`,
         rawResponse: data,
       };
     }

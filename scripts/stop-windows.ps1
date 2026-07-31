@@ -53,3 +53,11 @@ foreach ($listener in $listeners) {
     }
   }
 }
+
+# ── 联动关闭公司网关代理与隧道（若曾由启动脚本拉起）──
+$stackFile = Join-Path $Root 'storage\run\stack.json'
+$proxyBusy = Get-NetTCPConnection -LocalPort 4000 -State Listen -ErrorAction SilentlyContinue
+if ((Test-Path $stackFile) -or $proxyBusy) {
+  Write-Host '正在关闭 litellm 代理与隧道...'
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
+}

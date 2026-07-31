@@ -1,4 +1,4 @@
-﻿﻿param(
+﻿param(
   [int]$Port = $(if ($env:BATCH_WORKBENCH_PORT) { [int]$env:BATCH_WORKBENCH_PORT } else { 3000 })
 )
 
@@ -55,6 +55,27 @@ if (-not $needsInstall -and (-not (Test-Path $sharpWin) -or -not (Test-Path $sql
   $needsInstall = $true
 }
 
+# ── 公司网关联动：组件齐备时自动拉起 litellm 代理 + 隧道，并把隧道地址注入环境 ──
+$stackStarted = $false
+$hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
+                      (Test-Path (Join-Path $Root 'config.yaml')) -and
+                      (Test-Path (Join-Path $Root '.cache\cloudflared\cloudflared.exe'))
+if ($hasStackComponents) {
+  Write-Host '检测到公司网关组件，启动 litellm 代理与隧道（约半分钟）...'
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') -SkipApp
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host '公司网关组件启动失败，工作台未启动。可删除 .venv-litellm 或 config.yaml 后跳过联动。' -ForegroundColor Red
+    exit 1
+  }
+  $stackFile = Join-Path $Root 'storage\run\stack.json'
+  if (Test-Path $stackFile) {
+    $stack = Get-Content $stackFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $env:CREATIVE_STUDIO_PUBLIC_BASE_URL = $stack.tunnelUrl
+    $stackStarted = $true
+    Write-Host "参考图公网地址: $($stack.tunnelUrl) ($($stack.tunnelEngine))"
+  }
+}
+
 if ($needsInstall) {
   Write-Host '正在安装依赖，请保持联网...'
   & npm.cmd ci
@@ -70,5 +91,15 @@ Write-Host "访问地址: $url"
 Write-Host '停止服务：在此窗口按 Ctrl+C，或运行 stop-windows.cmd。'
 Write-Host ''
 
-& npm.cmd run dev -- --hostname 127.0.0.1 --port $Port
-exit $LASTEXITCODE
+$devExitCode = 0
+try {
+  & npm.cmd run dev -- --hostname 127.0.0.1 --port $Port
+  $devExitCode = $LASTEXITCODE
+} finally {
+  if ($stackStarted) {
+    Write-Host ''
+    Write-Host '正在关闭 litellm 代理与隧道...'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
+  }
+}
+exit $devExitCode

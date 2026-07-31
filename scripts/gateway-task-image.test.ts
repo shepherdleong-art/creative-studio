@@ -38,13 +38,28 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url === 'https://llm-gateway.example.com/v1/videos/task-1/content') {
     return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
   }
-  // poll：模拟网关未配服务器地址时返回 localhost 的 content URL
+  if (url === 'https://cdn.example.com/x.png') {
+    return new Response(new Uint8Array([4, 5, 6]), { status: 200 });
+  }
+  // 公司网关常见形态：完成态不带产物 URL，调用方应回退 /content 下载（文档 §4.3）
+  if (url === 'https://llm-gateway.example.com/v1/videos/task-no-url') {
+    return new Response(JSON.stringify({
+      id: 'task-no-url',
+      status: 'completed',
+      progress: 100,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  // poll：模拟网关未配服务器地址时返回 localhost 的 content URL；
+  // 用 output.url 形态覆盖公司文档 §4.2 的完成响应结构
   pollCount += 1;
   return new Response(JSON.stringify({
     id: 'task-1',
     status: 'completed',
     progress: 100,
-    metadata: { url: 'http://localhost:3000/v1/videos/task-1/content' },
+    output: { url: 'http://localhost:3000/v1/videos/task-1/content' },
   }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
@@ -80,7 +95,9 @@ try {
   assert.equal(capturedUrl, 'https://llm-gateway.example.com/v1/videos');
   assert.equal(capturedHeaders?.get('authorization'), 'Bearer gateway-key');
   assert.equal(capturedBody?.model, 'image2-medium');
+  // 公司模型：size 吸附到文档白名单（1024x1024 本身是 1K 1:1，原样保留），并补 response_format
   assert.equal(capturedBody?.size, '1024x1024');
+  assert.equal(capturedBody?.response_format, 'jpeg');
   // prompt 带参考图引导前缀
   assert.ok(String(capturedBody?.prompt).includes('最后一张是需要编辑的原图'));
   assert.ok(String(capturedBody?.prompt).includes('把产品放到大理石台面上'));
@@ -102,6 +119,16 @@ try {
   assert.equal(pollResult.imageUrl, 'https://llm-gateway.example.com/v1/videos/task-1/content');
   assert.ok(pollCount >= 1);
 
+  // 完成态不带产物 URL：回退用原始任务 id 拼 /content 下载地址
+  const noUrlPollResult = await pollGatewayTaskImage(
+    'task-no-url',
+    'gateway-key',
+    'https://llm-gateway.example.com/',
+    Date.now(),
+  );
+  assert.equal(noUrlPollResult.status, 'succeeded');
+  assert.equal(noUrlPollResult.imageUrl, 'https://llm-gateway.example.com/v1/videos/task-no-url/content');
+
   // 下载网关自身的 /content 端点：必须带 Bearer 鉴权
   const downloadResult = await downloadGatewayTaskImage(
     pollResult.imageUrl!,
@@ -122,6 +149,24 @@ try {
   );
   assert.equal(cdnDownloadResult.ok, true);
   assert.equal(capturedHeaders?.get('authorization'), null);
+
+  // 非公司模型：size 原样透传，不补 response_format
+  await submitGatewayTaskImage(
+    {
+      model: 'nano-banana-2.5',
+      prompt: '换背景',
+      inputImagePath: inputPath,
+      inputMimeType: 'image/png',
+      referenceImagePaths: [],
+      referenceMimeTypes: [],
+      size: '2304x1728',
+      quality: 'high',
+    },
+    'gateway-key',
+    'https://llm-gateway.example.com',
+  );
+  assert.equal(capturedBody?.size, '2304x1728');
+  assert.equal(capturedBody?.response_format, undefined);
 } finally {
   globalThis.fetch = originalFetch;
   fs.rmSync(tmpDir, { recursive: true, force: true });

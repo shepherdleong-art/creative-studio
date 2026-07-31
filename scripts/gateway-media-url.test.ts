@@ -66,6 +66,62 @@ try {
     assert.equal(capturedRedirect, 'manual');
   });
 
+  await test('treats an HTTP 200 JSON error body as a failure', async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ error: { message: 'request blocked: port 3000 is not allowed', type: 'server_error' } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )) as typeof fetch;
+
+    const result = await downloadGatewayMedia(
+      'https://gateway.example.com/v1/videos/task-1/content',
+      'https://gateway.example.com',
+      'gateway-key',
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.errorMessage, /port 3000 is not allowed/);
+    }
+  });
+
+  await test('treats an HTTP 200 JSON error body without JSON content-type as a failure', async () => {
+    // 公司网关经 LiteLLM 代理返回错误时 content-type 是 video/mp4，但内容是 JSON
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ error: { message: 'request blocked', type: 'server_error' } }),
+      { status: 200, headers: { 'Content-Type': 'video/mp4' } },
+    )) as typeof fetch;
+
+    const result = await downloadGatewayMedia(
+      'https://gateway.example.com/v1/videos/task-1/content',
+      'https://gateway.example.com',
+      'gateway-key',
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.errorMessage, /request blocked/);
+    }
+  });
+
+  await test('does not mistake binary media starting near-brace bytes for JSON', async () => {
+    // JPEG 魔数开头，不应被 JSON 检测误判
+    globalThis.fetch = (async () => new Response(
+      new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x10]),
+      { status: 200, headers: { 'Content-Type': 'image/jpeg' } },
+    )) as typeof fetch;
+
+    const result = await downloadGatewayMedia(
+      'https://gateway.example.com/v1/videos/task-1/content',
+      'https://gateway.example.com',
+      'gateway-key',
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.buffer[0], 0xff);
+    }
+  });
+
   await test('does not authenticate a direct third-party CDN request', async () => {
     let capturedHeaders = new Headers();
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

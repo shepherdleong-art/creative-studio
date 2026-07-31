@@ -49,6 +49,29 @@ const MAX_REDIRECTS = 5;
 const MAX_ERROR_SUMMARY_LENGTH = 500;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+/**
+ * 识别「HTTP 200 + JSON 错误体」：content-type 是 json，或 body 以 '{' 开头。
+ * 命中时返回 error.message 文本，否则返回 null（按媒体字节处理）。
+ * 真实媒体（JPEG/PNG/MP4 等）的首字节不会是 '{'，不会误判。
+ */
+function extractJsonErrorBody(contentType: string | null, buffer: Buffer): string | null {
+  const isJsonContentType = !!contentType && /json/i.test(contentType);
+  let text: string | null = null;
+  if (isJsonContentType || buffer.subarray(0, 1).toString('utf8') === '{') {
+    text = buffer.toString('utf8');
+  }
+  if (text === null) return null;
+  try {
+    const parsed = JSON.parse(text) as { error?: { message?: string } | string; message?: string };
+    if (typeof parsed?.error === 'string') return parsed.error;
+    if (parsed?.error?.message) return parsed.error.message;
+    if (parsed?.message) return parsed.message;
+    return text;
+  } catch {
+    return isJsonContentType ? text : null;
+  }
+}
+
 export async function downloadGatewayMedia(
   url: string,
   baseUrl: string,
@@ -126,7 +149,18 @@ export async function downloadGatewayMedia(
 
     try {
       const arrayBuffer = await response.arrayBuffer();
-      return { ok: true, buffer: Buffer.from(arrayBuffer) };
+      const buffer = Buffer.from(arrayBuffer);
+      // 网关/LiteLLM 有时用 HTTP 200 包着 JSON 错误体返回（例如 SSRF 拦截
+      // localhost:3000 结果地址时），不能把错误体当媒体字节交给下游。
+      const jsonErrorMessage = extractJsonErrorBody(response.headers.get('content-type'), buffer);
+      if (jsonErrorMessage) {
+        const summary = sanitizeGatewayMediaDiagnostic(jsonErrorMessage, apiKey)
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, MAX_ERROR_SUMMARY_LENGTH);
+        return { ok: false, status: response.status, errorMessage: `Gateway returned JSON error body: ${summary}` };
+      }
+      return { ok: true, buffer };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const summary = sanitizeGatewayMediaDiagnostic(detail, apiKey).slice(0, MAX_ERROR_SUMMARY_LENGTH);

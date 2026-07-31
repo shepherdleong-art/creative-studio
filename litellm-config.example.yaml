@@ -1,0 +1,41 @@
+# LiteLLM Proxy 配置模板
+# 用法：复制为 litellm-config.yaml，填入真实 key 和模型平台地址后启动：
+#   .venv-litellm/Scripts/litellm --config litellm-config.yaml --port 4000
+#
+# 核心思路：应用侧（Creative Studio）只发统一参数（如 size: "2K"），
+# 每个模型在这里用 litellm_params 做各自的参数映射/补充。
+
+model_list:
+  # ── 示例 1：OpenAI 兼容协议的图片模型（多数中转网关都是这个形态）──
+  - model_name: image-2                    # ← 应用侧统一调用的名字
+    litellm_params:
+      model: openai/image-2                # ← 网关上的真实模型名；openai/ 前缀 = Chat/Images 兼容协议
+      api_base: https://your-gateway.com/v1
+      api_key: sk-xxxx
+      # 这个平台特有的额外参数写在这里，会随每次请求透传：
+      # extra_body:
+      #   size: "2048x2048"
+
+  # ── 示例 2：即梦（火山引擎方舟，也是 OpenAI 兼容协议）──
+  - model_name: jimeng-2k                  # ← 应用侧看到的另一个名字
+    litellm_params:
+      model: openai/doubao-seedream-4-0-250828
+      api_base: https://ark.cn-beijing.volces.com/api/v3
+      api_key: your-ark-key
+      # extra_body:
+      #   size: "2K"                        # 即梦的 2K 写法
+
+  # ── 聊天模型同理，例如 ──
+  # - model_name: my-gpt
+  #   litellm_params:
+  #     model: openai/gpt-4o
+  #     api_base: https://your-gateway.com/v1
+  #     api_key: sk-xxxx
+
+general_settings:
+  master_key: sk-local-proxy               # 应用侧请求代理时用的 key，可改
+  # database_url: 不配置则为无数据库模式（Key 管理/计费功能关闭，最省事）
+
+litellm_settings:
+  drop_params: true                        # 应用侧多传的、模型不认的参数自动丢弃，而不是报错
+  # set_verbose: true                      # 排障时打开
