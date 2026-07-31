@@ -1,6 +1,9 @@
 import { getDb } from './db';
 import { editImage as editImageOpenAI, EditImageRequest } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
+import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image';
+import { redactMediaUrlForLog } from './gateway-media-url.ts';
+import { describeGatewayDownloadFailure } from './media-download-policy.ts';
 import { editImagePacky } from './providers/packy-images';
 import { editImagePackyGemini } from './providers/packy-gemini-image';
 import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors';
@@ -400,6 +403,119 @@ async function runJob(
         }
       } else {
         throw new Error('GeekAI 未返回 task_id 或图片结果');
+      }
+    } else if (providerType === 'gateway-task-image') {
+      // ── 网关异步任务流（/v1/videos 协议）: submit → poll → download ──
+      const gatewayStart = Date.now();
+
+      logInfo('提交任务到网关（异步任务协议）...');
+      const submitResult = await submitGatewayTaskImage(
+        {
+          model: job.model,
+          prompt: job.prompt,
+          inputImagePath: inputApiPath,
+          inputMimeType,
+          referenceImagePaths: refApiPaths,
+          referenceMimeTypes: refMimeTypes,
+          size: job.size,
+          quality: job.quality,
+          referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
+        },
+        apiKey,
+        provider.baseUrl
+      );
+
+      if (submitResult.immediateImageUrl) {
+        const downloadResult = await downloadGatewayTaskImage(submitResult.immediateImageUrl, provider.baseUrl, apiKey);
+        if (!downloadResult.ok) {
+          const failure = describeGatewayDownloadFailure('image', submitResult.immediateImageUrl, downloadResult, apiKey);
+          logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
+          db.prepare(
+            `UPDATE jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
+             WHERE id = ? AND status = 'running'`
+          ).run(failure.status, failure.errorMessage, failure.providerStatus, submitResult.immediateImageUrl, job.id);
+          return;
+        }
+        result = {
+          imageBuffer: downloadResult.buffer,
+          latencyMs: Date.now() - gatewayStart,
+          rawResponse: submitResult.rawResponse,
+          remoteImageUrl: submitResult.immediateImageUrl,
+        };
+        logInfo('网关任务同步返回结果');
+      } else if (submitResult.taskId) {
+        const taskId = submitResult.taskId;
+        db.prepare(
+          `UPDATE jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, submittedAt = datetime('now')
+           WHERE id = ?`
+        ).run(taskId, safeJsonForDB(submitResult.rawResponse), job.id);
+        logInfo(`任务已提交, task_id=${taskId} raw=${summarizeGatewayTaskResponse(submitResult.rawResponse, apiKey)}`);
+
+        let polled = false;
+        const maxPollMs = timeoutMs || 300_000;
+
+        while (Date.now() - gatewayStart < maxPollMs) {
+          if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+          const pollResult = await pollGatewayTaskImage(
+            taskId,
+            apiKey,
+            provider.baseUrl,
+            gatewayStart,
+            reqAbort.signal
+          );
+
+          const elapsedSec = Math.round((Date.now() - gatewayStart) / 1000);
+          db.prepare(
+            `UPDATE jobs SET providerStatus = ?, providerRawResponse = ?, lastPolledAt = datetime('now'), pollCount = pollCount + 1 WHERE id = ?`
+          ).run(pollResult.status, safeJsonForDB(pollResult.rawResponse), job.id);
+          logInfo(`轮询 task_id=${taskId} raw=${summarizeGatewayTaskResponse(pollResult.rawResponse, apiKey)} (${elapsedSec}s)`);
+
+          if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
+            logInfo(`远端生成成功，下载图片: ${redactMediaUrlForLog(pollResult.imageUrl, apiKey)}`);
+            const downloadResult = await downloadGatewayTaskImage(pollResult.imageUrl, provider.baseUrl, apiKey);
+
+            if (downloadResult.ok) {
+              db.prepare(
+                `UPDATE jobs SET providerStatus = 'succeeded', remoteImageUrl = ? WHERE id = ?`
+              ).run(pollResult.imageUrl, job.id);
+              result = {
+                imageBuffer: downloadResult.buffer,
+                latencyMs: Date.now() - gatewayStart,
+                rawResponse: pollResult.rawResponse,
+                remoteImageUrl: pollResult.imageUrl,
+              };
+              polled = true;
+              break;
+            } else {
+              const failure = describeGatewayDownloadFailure('image', pollResult.imageUrl, downloadResult, apiKey);
+              logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
+              db.prepare(
+                `UPDATE jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
+                 WHERE id = ? AND status = 'running'`
+              ).run(failure.status, failure.errorMessage, failure.providerStatus, pollResult.imageUrl, job.id);
+              return; // Don't retry — the money was already spent
+            }
+          }
+
+          if (pollResult.status === 'failed') {
+            throw new Error(`网关任务失败: ${pollResult.errorMessage || 'unknown'}`);
+          }
+        }
+
+        if (!polled) {
+          logWarn(`轮询超时，进入 needs_check (task_id=${taskId})`);
+          db.prepare(
+            `UPDATE jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'needs_check', finishedAt = datetime('now')
+             WHERE id = ? AND status = 'running'`
+          ).run(
+            `轮询超时 (${Math.round((Date.now() - gatewayStart) / 1000)}s)。远端 task_id=${taskId} 可能仍在执行，请点"补抓结果"继续查询。`,
+            job.id
+          );
+          return;
+        }
+      } else {
+        throw new Error('网关未返回 task_id 或图片结果');
       }
     } else if (providerType === 'packy-images' || providerType === 'packy-gemini-image') {
       // Packy image routes are synchronous long-connections with no polling.

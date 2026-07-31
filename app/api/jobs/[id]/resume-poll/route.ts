@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from '@/lib/providers/geekai-json';
+import { pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from '@/lib/providers/gateway-task-image';
+import { describeGatewayDownloadFailure } from '@/lib/media-download-policy';
 import { writeLog } from '@/lib/logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from '@/lib/output-filenames';
 import { v4 as uuidv4 } from 'uuid';
@@ -32,8 +34,8 @@ export async function POST(
     if (job.status !== 'needs_check') {
       return NextResponse.json({ error: 'Only needs_check jobs can be resumed' }, { status: 400 });
     }
-    if (job.type !== 'geekai-json') {
-      return NextResponse.json({ error: 'Only GeekAI jobs support resume-poll' }, { status: 400 });
+    if (job.type !== 'geekai-json' && job.type !== 'gateway-task-image') {
+      return NextResponse.json({ error: 'Only async-task jobs support resume-poll' }, { status: 400 });
     }
 
     const apiKey = job.apiKey;
@@ -50,12 +52,15 @@ export async function POST(
       const db = getDb();
       const startedAt = Date.now();
       const maxPollMs = 300_000;
+      const isGatewayTask = job.type === 'gateway-task-image';
 
       try {
         writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message: `补抓开始 task_id=${taskId}` });
 
         while (Date.now() - startedAt < maxPollMs) {
-          const pollResult = await pollGeekAITask(taskId, apiKey, job.baseUrl, startedAt);
+          const pollResult = isGatewayTask
+            ? await pollGatewayTaskImage(taskId, apiKey, job.baseUrl, startedAt)
+            : await pollGeekAITask(taskId, apiKey, job.baseUrl, startedAt);
 
           db.prepare(
             `UPDATE jobs SET providerStatus = ?, providerRawResponse = ?, lastPolledAt = datetime('now'), pollCount = pollCount + 1 WHERE id = ?`
@@ -63,11 +68,28 @@ export async function POST(
 
           writeLog({
             jobId: job.id, projectId: job.projectId, level: 'info',
-            message: `补抓轮询 task_id=${taskId} raw=${summarizeGeekAIResponse(pollResult.rawResponse)}`,
+            message: `补抓轮询 task_id=${taskId} raw=${isGatewayTask ? summarizeGatewayTaskResponse(pollResult.rawResponse, apiKey) : summarizeGeekAIResponse(pollResult.rawResponse)}`,
           });
 
           if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
-            const imgBuffer = await downloadGeekAIImage(pollResult.imageUrl);
+            let imgBuffer: Buffer | null;
+            if (isGatewayTask) {
+              const downloadResult = await downloadGatewayTaskImage(pollResult.imageUrl, job.baseUrl, apiKey);
+              if (!downloadResult.ok) {
+                const failure = describeGatewayDownloadFailure('image', pollResult.imageUrl, downloadResult, apiKey);
+                db.prepare(
+                  `UPDATE jobs SET status = 'needs_check', errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now') WHERE id = ?`
+                ).run(failure.errorMessage, failure.providerStatus, pollResult.imageUrl, job.id);
+                writeLog({
+                  jobId: job.id, projectId: job.projectId, level: 'error',
+                  message: `补抓下载失败: ${failure.errorMessage} URL: ${failure.logUrl}`,
+                });
+                return;
+              }
+              imgBuffer = downloadResult.buffer;
+            } else {
+              imgBuffer = await downloadGeekAIImage(pollResult.imageUrl);
+            }
             if (imgBuffer) {
               const outputsDir = path.join(dataRoot(), 'storage', 'outputs');
               if (!fs.existsSync(outputsDir)) fs.mkdirSync(outputsDir, { recursive: true });

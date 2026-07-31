@@ -41,7 +41,7 @@ interface VideoProvider {
   id: string;
   name: string;
   category: 'video';
-  type: 'kling' | 'jimeng';
+  type: 'kling' | 'jimeng' | 'openai-video';
   baseUrl: string;
   defaultModel: string;
   defaultDurationSec: number;
@@ -462,6 +462,7 @@ function ProviderForm({
             {category === 'image' && (
               <>
                 <option value="geekai-json">GeekAI (JSON + async polling)</option>
+                <option value="gateway-task-image">网关异步任务（/v1/videos 协议）</option>
                 <option value="packy-images">Packy Images API</option>
                 <option value="packy-gemini-image">Gemini Image API</option>
                 <option value="openai-compatible">OpenAI-compatible</option>
@@ -471,6 +472,7 @@ function ProviderForm({
               <>
                 <option value="jimeng">即梦 / Seedance</option>
                 <option value="kling">可灵</option>
+                <option value="openai-video">OpenAI 视频网关（/v1/videos）</option>
               </>
             )}
           </select>

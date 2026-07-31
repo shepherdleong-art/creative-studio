@@ -1,10 +1,12 @@
 import type { VideoProviderAdapter } from './types';
 import { klingAdapter } from './kling';
 import { jimengAdapter } from './jimeng';
+import { openaiVideoAdapter } from './openai-video';
 
 const adapters: Record<string, VideoProviderAdapter> = {
   kling: klingAdapter,
   jimeng: jimengAdapter,
+  'openai-video': openaiVideoAdapter,
 };
 
 /**
@@ -15,5 +17,5 @@ export function getVideoAdapter(type: string): VideoProviderAdapter | undefined 
   return adapters[type];
 }
 
-export { klingAdapter, jimengAdapter };
+export { klingAdapter, jimengAdapter, openaiVideoAdapter };
 export type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';

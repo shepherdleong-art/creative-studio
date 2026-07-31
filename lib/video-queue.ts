@@ -1,5 +1,7 @@
 import { getDb } from './db';
 import { getVideoAdapter } from './video-providers/index';
+import { redactMediaUrlForLog } from './gateway-media-url.ts';
+import { describeGatewayDownloadFailure, downloadVideoMediaForProvider } from './media-download-policy.ts';
 import { resolveVideoProviderRuntimeConfig } from './video-auth';
 import { writeLog } from './logger';
 import { v4 as uuidv4 } from 'uuid';
@@ -265,17 +267,24 @@ async function runVideoJob(
 
       if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
         // Step 3: Download video
-        logInfo(`Video generation succeeded, downloading: ${pollResult.videoUrl}`);
-        const videoBuffer = await downloadVideo(pollResult.videoUrl);
+        logInfo(`Video generation succeeded, downloading: ${redactMediaUrlForLog(pollResult.videoUrl, apiKey)}`);
+        const downloadResult = await downloadVideoMediaForProvider({
+          providerType: provider.type,
+          url: pollResult.videoUrl,
+          baseUrl: runtime.baseUrl,
+          apiKey,
+        });
 
-        if (!videoBuffer) {
-          logError(`Remote video ready but local download failed: ${pollResult.videoUrl}`);
+        if (!downloadResult.ok) {
+          const failure = describeGatewayDownloadFailure('video', pollResult.videoUrl, downloadResult, apiKey);
+          logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
           db.prepare(
-            `UPDATE video_jobs SET status = 'failed', errorMessage = ?, providerStatus = 'download_failed', remoteVideoUrl = ?
+            `UPDATE video_jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteVideoUrl = ?, finishedAt = datetime('now')
              WHERE id = ? AND status = 'running'`
-          ).run(`Remote video ready but download failed. URL: ${pollResult.videoUrl}`, pollResult.videoUrl, job.id);
+          ).run(failure.status, failure.errorMessage, failure.providerStatus, pollResult.videoUrl, job.id);
           return;
         }
+        const videoBuffer = downloadResult.buffer;
 
         // Save video to storage/videos/
         const videosDir = path.join(dataRoot(), 'storage', 'videos');
@@ -363,16 +372,6 @@ function claimNextVideoJob(projectId: string): (VideoJobRecord & { attempt: numb
 function isVideoJobStillRunning(db: ReturnType<typeof getDb>, jobId: string): boolean {
   const row = db.prepare(`SELECT status FROM video_jobs WHERE id = ?`).get(jobId) as { status: string } | undefined;
   return row?.status === 'running';
-}
-
-async function downloadVideo(url: string): Promise<Buffer | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return Buffer.from(await res.arrayBuffer());
-  } catch {
-    return null;
-  }
 }
 
 function safeJson(obj: unknown, maxLen = 4000): string {

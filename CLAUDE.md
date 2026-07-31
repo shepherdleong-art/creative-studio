@@ -31,10 +31,12 @@ node scripts/<name>.test.ts          # pattern for any other test file
 - **`lib/`** — Business logic
   - `db.ts` / `db-migrations.ts` — SQLite init (WAL mode, foreign keys); `CORE_DB_MIGRATIONS` is an append-only flat SQL list applied after core tables exist, each wrapped in try/catch so already-applied columns/indexes are skipped
   - `data-root.ts` — resolves the local data root for the current run mode (dev server / installed app / EXE, overridable via `CREATIVE_STUDIO_DATA_ROOT`); all local paths (`data/`, `storage/`) derive from this
+  - `local-image-url.ts` — turns a local `storage/` image into an `/api/images/...` HTTP URL for gateway upstreams that only accept real URLs (e.g. Tencent); the address is auto-detected (first non-internal IPv4 + `PORT`/3000, overridable via `CREATIVE_STUDIO_PUBLIC_BASE_URL`), otherwise callers fall back to data URLs
+  - `gateway-media-url.ts` — normalizes gateway result URLs (rewrites localhost/relative result URLs back onto the gateway origin) and downloads media with Bearer auth only when the target is the gateway origin
   - `queue.ts` / `video-queue.ts` — Async job polling queues
-  - `providers/` — Image generation adapters (Packy, GeekAI, OpenAI-compatible)
+  - `providers/` — Image generation adapters (Packy, GeekAI, OpenAI-compatible, `gateway-task-image` for gateways that expose image models via the async `/v1/videos` task protocol)
   - `script-providers/` — LLM script generation through Gemini, OpenAI-compatible Chat Completions, OpenAI Responses/SSE, or Anthropic Messages (`/v1/messages`) adapters selected by persisted `apiStyle`
-  - `video-providers/` — Video generation adapters (Kling, Jimeng)
+  - `video-providers/` — Video generation adapters (Kling, Jimeng, `openai-video` for New API-style gateways speaking the OpenAI `/v1/videos` protocol)
   - `final-edit/` — Versioned final-edit schema, group/variant workspace, external-material import, media analysis, V-API/Doubao TTS and alignment adapters, TTS-aware matching-sentence refinement, timeline planning and FFmpeg rendering. Mixcut context and external assets are scoped by `projectId + shotSetId`; never infer grouping from filenames or timestamps
   - `image-output-normalize.ts` — Sharp-based crop/resize to target dimensions
   - `provider-concurrency.ts` — Per-provider concurrency limits

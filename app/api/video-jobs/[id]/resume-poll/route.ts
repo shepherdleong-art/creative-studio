@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getVideoAdapter } from '@/lib/video-providers/index';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
+import {
+  describeGatewayDownloadFailure,
+  downloadVideoMediaForProvider,
+  shouldPersistVideoResumeDownloadFailure,
+} from '@/lib/media-download-policy';
 import { writeLog } from '@/lib/logger';
 import fs from 'fs';
 import path from 'path';
@@ -73,13 +78,38 @@ export async function POST(
     });
 
     if (result.status === 'succeeded' && result.videoUrl) {
-      // Download
-      const videoRes = await fetch(result.videoUrl);
-      if (!videoRes.ok) {
-        return NextResponse.json({ error: `Remote video download failed: ${videoRes.status}` }, { status: 502 });
+      let videoBuffer: Buffer;
+      if (shouldPersistVideoResumeDownloadFailure(provider.type)) {
+        const downloadResult = await downloadVideoMediaForProvider({
+          providerType: provider.type,
+          url: result.videoUrl,
+          baseUrl: runtime.baseUrl,
+          apiKey,
+        });
+        if (!downloadResult.ok) {
+          const failure = describeGatewayDownloadFailure('video', result.videoUrl, downloadResult, apiKey);
+          db.prepare(`
+            UPDATE video_jobs SET status = ?, providerStatus = ?, errorMessage = ?, remoteVideoUrl = ?,
+              finishedAt = datetime('now'), lastPolledAt = datetime('now'), pollCount = pollCount + 1
+            WHERE id = ?
+          `).run(failure.status, failure.providerStatus, failure.errorMessage, result.videoUrl, job.id);
+          writeLog({
+            jobId: job.id,
+            projectId: job.projectId,
+            level: 'error',
+            message: `${failure.errorMessage} URL: ${failure.logUrl}`,
+          });
+          return NextResponse.json({ error: failure.errorMessage }, { status: 502 });
+        }
+        videoBuffer = downloadResult.buffer;
+      } else {
+        const videoRes = await fetch(result.videoUrl, { headers: {} });
+        if (!videoRes.ok) {
+          return NextResponse.json({ error: `Remote video download failed: ${videoRes.status}` }, { status: 502 });
+        }
+        videoBuffer = Buffer.from(await videoRes.arrayBuffer());
       }
 
-      const videoBuffer = Buffer.from(await videoRes.arrayBuffer());
       const videosDir = path.join(dataRoot(), 'storage', 'videos');
       if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
