@@ -39,7 +39,8 @@ function nowIso(now?: () => Date): string {
 
 /**
  * 创建一个生产任务,服务于素材准备(asset_prepare)或某个成片版本(render)。
- * 具体状态机由后续调度票决定;这里只持久化工作类型、所属对象、状态与汇总进度。
+ * 批次必须属于该项目;render 任务的目标必须是存在的成片版本,
+ * asset_prepare 任务的目标必须是存在的项目素材。具体状态机由后续调度票决定。
  */
 export function createBatchTask(
   db: Database.Database,
@@ -53,12 +54,41 @@ export function createBatchTask(
   },
 ): string {
   const createdAt = nowIso(input.now);
-  const id = randomUUID();
-  db.prepare(`
-    INSERT INTO batch_tasks (id, projectId, batchId, workType, targetKind, targetId, status, progressJson, attemptCount, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, 'queued', '{}', 0, ?, ?)
-  `).run(id, projectId, input.batchId, input.workType, input.targetKind, input.targetId, createdAt, createdAt);
-  return id;
+  return db.transaction(() => {
+    const batch = db.prepare(`
+      SELECT projectId FROM batch_productions WHERE id = ?
+    `).get(input.batchId) as { projectId: string } | undefined;
+    if (!batch) {
+      throw new Error('批次不存在');
+    }
+    if (batch.projectId !== projectId) {
+      throw new Error('批次不属于该项目');
+    }
+    if (input.workType === 'render') {
+      const version = db.prepare(`
+        SELECT 1 FROM batch_output_versions WHERE id = ?
+      `).get(input.targetId);
+      if (!version) {
+        throw new Error('render 任务的目标成片版本不存在');
+      }
+    } else if (input.workType === 'asset_prepare') {
+      const asset = db.prepare(`
+        SELECT projectId FROM batch_assets WHERE id = ?
+      `).get(input.targetId) as { projectId: string } | undefined;
+      if (!asset) {
+        throw new Error('asset_prepare 任务的目标素材不存在');
+      }
+      if (asset.projectId !== projectId) {
+        throw new Error('asset_prepare 任务的目标素材不属于该项目');
+      }
+    }
+    const id = randomUUID();
+    db.prepare(`
+      INSERT INTO batch_tasks (id, projectId, batchId, workType, targetKind, targetId, status, progressJson, attemptCount, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, 'queued', '{}', 0, ?, ?)
+    `).run(id, projectId, input.batchId, input.workType, input.targetKind, input.targetId, createdAt, createdAt);
+    return id;
+  })();
 }
 
 export function getBatchTask(

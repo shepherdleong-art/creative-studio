@@ -179,7 +179,11 @@ export function listAnalysisVersions(db: Database.Database, assetId: string): Ba
   `).all(assetId) as BatchAssetAnalysisRow[];
 }
 
-/** 显式更新素材当前使用的分析版本 */
+/**
+ * 显式更新素材当前使用的分析版本。
+ * 先校验分析版本存在且属于该素材,再在同一事务内更新指向;
+ * 校验失败时不会留下任何脏数据。
+ */
 export function setAssetCurrentAnalysis(
   db: Database.Database,
   projectId: string,
@@ -187,18 +191,23 @@ export function setAssetCurrentAnalysis(
   analysisId: string,
   now?: () => Date,
 ): void {
-  const result = db.prepare(`
-    UPDATE batch_assets
-    SET currentAnalysisId = ?, updatedAt = ?
-    WHERE id = ? AND projectId = ?
-  `).run(analysisId, nowIso(now), assetId, projectId);
-  if (result.changes === 0) {
-    throw new Error('素材不存在');
-  }
-  const analysis = db.prepare(`
-    SELECT 1 FROM batch_asset_analysis WHERE id = ? AND assetId = ?
-  `).get(analysisId, assetId);
-  if (!analysis) {
-    throw new Error('分析版本不属于该素材');
-  }
+  db.transaction(() => {
+    const asset = db.prepare(`
+      SELECT 1 FROM batch_assets WHERE id = ? AND projectId = ?
+    `).get(assetId, projectId);
+    if (!asset) {
+      throw new Error('素材不存在');
+    }
+    const analysis = db.prepare(`
+      SELECT 1 FROM batch_asset_analysis WHERE id = ? AND assetId = ?
+    `).get(analysisId, assetId);
+    if (!analysis) {
+      throw new Error('分析版本不属于该素材');
+    }
+    db.prepare(`
+      UPDATE batch_assets
+      SET currentAnalysisId = ?, updatedAt = ?
+      WHERE id = ? AND projectId = ?
+    `).run(analysisId, nowIso(now), assetId, projectId);
+  })();
 }

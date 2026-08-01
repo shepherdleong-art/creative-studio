@@ -136,8 +136,38 @@ export function listBatchVersions(db: Database.Database, batchId: string): Batch
 }
 
 /**
+ * 查出一个批次版本所属的批次、项目与批次状态;返回 undefined 表示版本不存在。
+ */
+export function getBatchVersionOwner(
+  db: Database.Database,
+  batchVersionId: string,
+): { batchId: string; projectId: string; status: BatchProductionStatus } | undefined {
+  return db.prepare(`
+    SELECT p.id AS batchId, p.projectId AS projectId, p.status AS status
+    FROM batch_production_versions v
+    JOIN batch_productions p ON p.id = v.batchId
+    WHERE v.id = ?
+  `).get(batchVersionId) as { batchId: string; projectId: string; status: BatchProductionStatus } | undefined;
+}
+
+function assertBatchVersionEditable(
+  db: Database.Database,
+  batchVersionId: string,
+): { batchId: string; projectId: string; status: BatchProductionStatus } {
+  const owner = getBatchVersionOwner(db, batchVersionId);
+  if (!owner) {
+    throw new Error('批次版本不存在');
+  }
+  if (owner.status !== 'draft') {
+    throw new Error('批次已开始,批次版本的输入已冻结,不能追加素材或脚本快照');
+  }
+  return owner;
+}
+
+/**
  * 把一个素材及其采用的分析版本放入批次版本的素材池。
- * 池条目锁定引用:素材归档不影响历史批次追溯;同版本不能重复加入同一素材。
+ * 池条目锁定引用:素材归档不影响历史批次追溯;同版本不能重复加入同一素材;
+ * 素材必须与批次属于同一项目;批次一旦开始(draft 之外)输入冻结,不能再追加。
  */
 export function addAssetToPool(
   db: Database.Database,
@@ -151,11 +181,15 @@ export function addAssetToPool(
 ): string {
   const createdAt = nowIso(input.now);
   return db.transaction(() => {
-    const version = db.prepare(`
-      SELECT 1 FROM batch_production_versions WHERE id = ?
-    `).get(batchVersionId);
-    if (!version) {
-      throw new Error('批次版本不存在');
+    const owner = assertBatchVersionEditable(db, batchVersionId);
+    const asset = db.prepare(`
+      SELECT projectId FROM batch_assets WHERE id = ?
+    `).get(input.assetId) as { projectId: string } | undefined;
+    if (!asset) {
+      throw new Error('素材不存在');
+    }
+    if (asset.projectId !== owner.projectId) {
+      throw new Error('素材不属于该批次所在项目');
     }
     const analysis = db.prepare(`
       SELECT assetId FROM batch_asset_analysis WHERE id = ?

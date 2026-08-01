@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { getBatchVersionOwner } from './versions.ts';
 
 export type BatchScriptSourceKind = 'script_draft' | 'external';
 
@@ -75,13 +76,14 @@ export function getProjectScript(
   `).get(scriptId, projectId) as BatchScriptRow | undefined;
 }
 
+/** 项目脚本列表只展示第 3 步保存的项目脚本;批次内外部文案默认不出现在这里 */
 export function listProjectScripts(db: Database.Database, projectId: string): BatchScriptRow[] {
   return db.prepare(`
-    SELECT * FROM batch_scripts WHERE projectId = ? ORDER BY createdAt, id
+    SELECT * FROM batch_scripts WHERE projectId = ? AND sourceKind = 'script_draft' ORDER BY createdAt, id
   `).all(projectId) as BatchScriptRow[];
 }
 
-/** 项目脚本在批次开始前可以继续修改 */
+/** 项目脚本在批次开始前可以继续修改;也可把外部文案显式保存为项目文案 */
 export function updateProjectScript(
   db: Database.Database,
   projectId: string,
@@ -90,21 +92,31 @@ export function updateProjectScript(
     title: string;
     bodyText: string;
     sourceVersion: string;
+    sourceKind?: BatchScriptSourceKind;
     now?: () => Date;
   },
 ): void {
   const result = db.prepare(`
-    UPDATE batch_scripts SET title = ?, bodyText = ?, sourceVersion = ?, updatedAt = ?
+    UPDATE batch_scripts SET title = ?, bodyText = ?, sourceVersion = ?, sourceKind = ?, updatedAt = ?
     WHERE id = ? AND projectId = ?
-  `).run(input.title, input.bodyText, input.sourceVersion, nowIso(input.now), scriptId, projectId);
+  `).run(
+    input.title,
+    input.bodyText,
+    input.sourceVersion,
+    input.sourceKind ?? 'script_draft',
+    nowIso(input.now),
+    scriptId,
+    projectId,
+  );
   if (result.changes === 0) {
     throw new Error('项目脚本不存在');
   }
 }
 
 /**
- * 把一份项目脚本连同其正文、标题、来源版本和生成份数固化为批次版本的脚本快照。
- * 快照一旦创建,上游脚本更新不会改写它;同一批次版本不能重复快照同一来源脚本。
+ * 把一份脚本连同其正文、标题、来源版本和生成份数固化为批次版本的脚本快照。
+ * 快照一旦创建,上游脚本更新不会改写它;同一批次版本不能重复快照同一来源脚本;
+ * 脚本必须与批次属于同一项目;批次一旦开始(draft 之外)输入冻结,不能再快照。
  */
 export function snapshotScriptIntoBatch(
   db: Database.Database,
@@ -117,11 +129,21 @@ export function snapshotScriptIntoBatch(
 ): string {
   const createdAt = nowIso(input.now);
   return db.transaction(() => {
+    const owner = getBatchVersionOwner(db, batchVersionId);
+    if (!owner) {
+      throw new Error('批次版本不存在');
+    }
+    if (owner.status !== 'draft') {
+      throw new Error('批次已开始,批次版本的输入已冻结,不能追加素材或脚本快照');
+    }
     const script = db.prepare(`
-      SELECT id, title, bodyText, sourceVersion FROM batch_scripts WHERE id = ?
-    `).get(input.scriptId) as Pick<BatchScriptRow, 'id' | 'title' | 'bodyText' | 'sourceVersion'> | undefined;
+      SELECT id, projectId, title, bodyText, sourceVersion FROM batch_scripts WHERE id = ?
+    `).get(input.scriptId) as Pick<BatchScriptRow, 'id' | 'projectId' | 'title' | 'bodyText' | 'sourceVersion'> | undefined;
     if (!script) {
       throw new Error('项目脚本不存在');
+    }
+    if (script.projectId !== owner.projectId) {
+      throw new Error('脚本不属于该批次所在项目');
     }
     const duplicate = db.prepare(`
       SELECT 1 FROM batch_script_snapshots WHERE batchVersionId = ? AND sourceScriptId = ?

@@ -24,9 +24,8 @@ function nowIso(now?: () => Date): string {
 }
 
 /**
- * 建立一条成片计划(一张成片卡片)。每份脚本快照按其生成份数建立 N 条计划;
- * 计划有稳定身份,失败重试只能产生新的任务尝试,不能多出第 N+1 张卡片。
- * 同一批次版本、同一快照、同一序号不能重复建立。
+ * 建立一条成片计划(一张成片卡片)。序号必须落在脚本快照的生成份数内:
+ * 份数 N 只允许 seq 1..N,失败重试只能产生新的任务尝试,不能多出第 N+1 张卡片。
  */
 export function createOutputPlan(
   db: Database.Database,
@@ -41,10 +40,13 @@ export function createOutputPlan(
   const createdAt = nowIso(input.now);
   return db.transaction(() => {
     const snapshot = db.prepare(`
-      SELECT 1 FROM batch_script_snapshots WHERE id = ? AND batchVersionId = ?
-    `).get(input.scriptSnapshotId, batchVersionId);
+      SELECT copyCount FROM batch_script_snapshots WHERE id = ? AND batchVersionId = ?
+    `).get(input.scriptSnapshotId, batchVersionId) as { copyCount: number } | undefined;
     if (!snapshot) {
       throw new Error('脚本快照不属于该批次版本');
+    }
+    if (!Number.isInteger(input.seq) || input.seq < 1 || input.seq > snapshot.copyCount) {
+      throw new Error(`成片计划序号必须在 1..${snapshot.copyCount} 份数范围内`);
     }
     const duplicate = db.prepare(`
       SELECT 1 FROM batch_output_plans WHERE batchVersionId = ? AND seq = ?
@@ -58,6 +60,47 @@ export function createOutputPlan(
       VALUES (?, ?, ?, ?, ?, NULL, ?)
     `).run(id, batchVersionId, input.scriptSnapshotId, input.seq, JSON.stringify(input.planJson ?? {}), createdAt);
     return id;
+  })();
+}
+
+/**
+ * 按脚本快照的生成份数一次性建立 N 条成片计划(一张卡片一条计划)。
+ * 同一快照只能建立一次计划集合;重复调用被拒绝,保证重试不增加卡片。
+ * 序号从该批次版本已有最大序号之后续排,多份脚本快照的计划可共存。
+ */
+export function createOutputPlansForSnapshot(
+  db: Database.Database,
+  batchVersionId: string,
+  scriptSnapshotId: string,
+  now?: () => Date,
+): string[] {
+  return db.transaction(() => {
+    const snapshot = db.prepare(`
+      SELECT copyCount FROM batch_script_snapshots WHERE id = ? AND batchVersionId = ?
+    `).get(scriptSnapshotId, batchVersionId) as { copyCount: number } | undefined;
+    if (!snapshot) {
+      throw new Error('脚本快照不属于该批次版本');
+    }
+    const alreadyCreated = db.prepare(`
+      SELECT 1 FROM batch_output_plans WHERE batchVersionId = ? AND scriptSnapshotId = ?
+    `).get(batchVersionId, scriptSnapshotId);
+    if (alreadyCreated) {
+      throw new Error('该脚本快照已建立过成片计划');
+    }
+    const maxSeq = db.prepare(`
+      SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM batch_output_plans WHERE batchVersionId = ?
+    `).get(batchVersionId) as { maxSeq: number };
+    const createdAt = nowIso(now);
+    const ids: string[] = [];
+    for (let seq = 1; seq <= snapshot.copyCount; seq += 1) {
+      const id = randomUUID();
+      db.prepare(`
+        INSERT INTO batch_output_plans (id, batchVersionId, scriptSnapshotId, seq, planJson, currentVersionId, createdAt)
+        VALUES (?, ?, ?, ?, '{}', NULL, ?)
+      `).run(id, batchVersionId, scriptSnapshotId, maxSeq.maxSeq + seq, createdAt);
+      ids.push(id);
+    }
+    return ids;
   })();
 }
 
