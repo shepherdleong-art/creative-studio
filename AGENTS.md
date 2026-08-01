@@ -78,6 +78,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ### `lib/` 核心模块
 
 - `db.ts` / `db-migrations.ts` — SQLite 初始化（WAL 模式、外键开启）。`CORE_DB_MIGRATIONS` 是扁平的 `ALTER TABLE` / `UPDATE` 语句列表，每次启动逐条执行并 try/catch 跳过已应用的列；新增字段就往后追加，不要改已有条目。
+- `batch-production/` — 新批量生产 Module；`schema.ts` 使用独立版本表和逐版本事务，首次待执行迁移前必须经 `backup.ts` 的 SQLite Online Backup、完整性／外键／大小／SHA-256 验证。批量 schema 未就绪时只关闭批量入口，不能阻塞旧项目与单条精准混剪。
 - `data-root.ts` — 解析本地数据根目录：优先 `CREATIVE_STUDIO_DATA_ROOT` 环境变量，否则 `process.cwd()`。`data/`、`storage/` 都挂在它下面，写路径时一律走 `dataRoot()`。
 - `local-image-url.ts` — 把 `storage/` 下的本地图片转成 `/api/images/...` 的 HTTP URL，供只接受真实 URL 的网关上游（腾讯等）拉取；地址默认自动探测（第一张非内部 IPv4 + `PORT`/3000），可用 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 覆盖，探测不到时调用方回退 data URL。
 - `gateway-media-url.ts` — 网关结果 URL 归一化（把网关误配的 localhost/相对路径结果地址改写到网关 origin）与带鉴权下载（仅当目标指向网关 origin 才附 Bearer）。
@@ -106,7 +107,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ## 开发约定
 
 - **供应商适配器模式**：图片/脚本/视频三层都用适配器。新增供应商时实现对应 adapter 接口并注册，不要改动队列等核心逻辑。
-- **数据库迁移**：核心表走 `CORE_DB_MIGRATIONS` 追加式 `ALTER TABLE`（启动时逐条 try/catch）；成片剪辑模块在 `lib/final-edit/schema.ts` 用 `{version, sql}` 的版本化迁移。两种都不要修改已发布条目。
+- **数据库迁移**：既有核心表继续走 `CORE_DB_MIGRATIONS` 追加式 `ALTER TABLE`（启动时逐条 try/catch）；成片剪辑在 `lib/final-edit/schema.ts`、批量生产在 `lib/batch-production/schema.ts` 分别使用独立 `{version, sql}` 迁移。批量迁移前必须完成已验证的一致备份。三种迁移流都不要修改已发布条目，也不要把批量复杂迁移塞回会吞掉错误的旧 core runner。
 - **路径**：所有本地文件路径基于 `dataRoot()`，不要硬编码 `data/`、`storage/` 相对路径。
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。

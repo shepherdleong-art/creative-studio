@@ -32,6 +32,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
 - **`app/api/`** — REST API route groups for projects, jobs, images, shots, scripts, video, shutdown, and the versioned final-edit/mixcut workflow (context, scoped Module 4 assets, external assets, groups, variants, jobs, BGM and proposals)
 - **`lib/`** — Business logic
   - `db.ts` / `db-migrations.ts` — SQLite init (WAL mode, foreign keys); `CORE_DB_MIGRATIONS` is an append-only flat SQL list applied after core tables exist, each wrapped in try/catch so already-applied columns/indexes are skipped
+  - `batch-production/` — independent batch-production module; `schema.ts` uses versioned per-migration transactions, while `backup.ts` performs and validates a SQLite Online Backup before the first pending batch migration. If this schema is unavailable, disable only batch production and preserve legacy projects and single precise mixcut
   - `data-root.ts` — resolves the local data root for the current run mode (dev server / installed app / EXE, overridable via `CREATIVE_STUDIO_DATA_ROOT`); all local paths (`data/`, `storage/`) derive from this
   - `local-image-url.ts` — turns a local `storage/` image into an `/api/images/...` HTTP URL for gateway upstreams that only accept real URLs (e.g. Tencent); the address is auto-detected (first non-internal IPv4 + `PORT`/3000, overridable via `CREATIVE_STUDIO_PUBLIC_BASE_URL`), otherwise callers fall back to data URLs
   - `gateway-media-url.ts` — normalizes gateway result URLs (rewrites localhost/relative result URLs back onto the gateway origin) and downloads media with Bearer auth only when the target is the gateway origin
@@ -69,6 +70,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
 ### Key conventions
 
 - **Provider adapter pattern**: All three provider layers (image/script/video) use adapters — add new suppliers by implementing the adapter interface, not modifying core logic.
+- **Database migrations**: Keep published `CORE_DB_MIGRATIONS` and `FINAL_EDIT_MIGRATIONS` entries unchanged. Existing core tables retain the append-only legacy stream; final edit and batch production have separate versioned streams. Batch migrations must pass the validated backup gate and must not be placed in the legacy catch-and-continue core runner.
 - **Cost tracking**: Each job stores estimated cost; providers expose a cost calculation method.
 - **`projects.concurrency`** controls max parallel job submissions per project.
 - **`.env.local`** holds LLM API keys (Gemini, Qwen, Kimi, GPT) — never commit this file.

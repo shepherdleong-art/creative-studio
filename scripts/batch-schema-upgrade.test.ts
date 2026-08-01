@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,15 +63,23 @@ try {
   assert.equal(backups.length, 1, '首次批量迁移只发布一份已验证备份');
   const backupDir = path.join(healthyBackupRoot, backups[0]);
   const manifest = JSON.parse(fs.readFileSync(path.join(backupDir, 'manifest.json'), 'utf8')) as {
+    applicationVersion: string;
+    dataRootIdentity: string;
     targetVersion: number;
     databaseBytes: number;
     sha256: string;
     integrityCheck: string;
     foreignKeyViolations: number;
   };
+  const packageVersion = (JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as { version: string }).version;
+  assert.equal(manifest.applicationVersion, packageVersion);
+  assert.match(manifest.dataRootIdentity, /^[a-f0-9]{64}$/);
   assert.equal(manifest.targetVersion, BATCH_SCHEMA_MIGRATIONS.at(-1)?.version);
   assert.ok(manifest.databaseBytes > 0);
-  assert.match(manifest.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(
+    manifest.sha256,
+    createHash('sha256').update(fs.readFileSync(path.join(backupDir, 'workbench.db'))).digest('hex'),
+  );
   assert.equal(manifest.integrityCheck, 'ok');
   assert.equal(manifest.foreignKeyViolations, 0);
 
@@ -123,6 +132,51 @@ try {
   );
   assert.equal(listPublishedBackups(path.join(invalidBackupRoot, 'backups')).length, 0);
   invalidBackup.db.close();
+
+  const invalidHistoryRoot = path.join(root, 'invalid-history');
+  fs.mkdirSync(invalidHistoryRoot, { recursive: true });
+  const invalidHistory = createLegacyDatabase(invalidHistoryRoot, 'workbench.db');
+  invalidHistory.db.exec(`
+    CREATE TABLE batch_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      appliedAt TEXT NOT NULL
+    );
+    INSERT INTO batch_schema_migrations (version, appliedAt)
+    VALUES (0, '2026-08-01T00:00:00.000Z');
+  `);
+  const rejectedHistory = await ensureBatchSchemaReady({
+    db: invalidHistory.db,
+    backupRoot: path.join(invalidHistoryRoot, 'backups'),
+  });
+  assert.equal(rejectedHistory.state, 'compatibility_only');
+  if (rejectedHistory.state === 'compatibility_only') {
+    assert.equal(rejectedHistory.code, 'schema_history_invalid');
+  }
+  assert.equal(listPublishedBackups(path.join(invalidHistoryRoot, 'backups')).length, 0);
+  invalidHistory.db.close();
+
+  const invalidStructureRoot = path.join(root, 'invalid-structure');
+  fs.mkdirSync(invalidStructureRoot, { recursive: true });
+  const invalidStructure = createLegacyDatabase(invalidStructureRoot, 'workbench.db');
+  invalidStructure.db.exec(`
+    CREATE TABLE batch_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      appliedAt TEXT NOT NULL
+    );
+    INSERT INTO batch_schema_migrations (version, appliedAt)
+    VALUES (1, '2026-08-01T00:00:00.000Z');
+    CREATE TABLE batch_productions (id TEXT PRIMARY KEY);
+  `);
+  const rejectedStructure = await ensureBatchSchemaReady({
+    db: invalidStructure.db,
+    backupRoot: path.join(invalidStructureRoot, 'backups'),
+  });
+  assert.equal(rejectedStructure.state, 'compatibility_only');
+  if (rejectedStructure.state === 'compatibility_only') {
+    assert.equal(rejectedStructure.code, 'schema_history_invalid');
+  }
+  assert.equal(listPublishedBackups(path.join(invalidStructureRoot, 'backups')).length, 0);
+  invalidStructure.db.close();
 
   const failedMigrationRoot = path.join(root, 'failed-migration');
   fs.mkdirSync(failedMigrationRoot, { recursive: true });

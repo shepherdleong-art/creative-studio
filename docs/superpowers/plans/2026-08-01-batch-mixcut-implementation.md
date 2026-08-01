@@ -41,6 +41,8 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 
 - 增加跨进程升级锁。
 - 让批量 API 等待升级门禁并返回明确可用状态。
+- 持久记录备份、迁移、验证、失败与兼容模式结果，供任务详情审计。
+- 补磁盘不足、进程崩溃和第二实例故障注入，并在真实旧数据库副本上验证旧项目、设置、密钥、脚本和成片不变。
 - 把当前 gateway 引入的旧表重建纳入一致备份与旧库回归审计。
 
 ### 0.3 完整批量领域表
@@ -67,4 +69,3 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 - 不发起真实 AI、TTS 或媒体网关请求。
 - 不新增 Electron 依赖或构建安装包。
 - 不重写或迁移现有单条精准混剪。
-
