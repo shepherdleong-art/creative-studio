@@ -236,6 +236,33 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
       ALTER TABLE batch_output_plans ADD COLUMN currentArtifactId TEXT;
     `,
   },
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE batch_artifacts_new (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT NOT NULL,
+        batchVersionId TEXT NOT NULL,
+        outputPlanId TEXT NOT NULL,
+        outputVersionId TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('video', 'cover')),
+        relativePath TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        UNIQUE(outputPlanId, relativePath),
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE RESTRICT,
+        FOREIGN KEY(batchVersionId) REFERENCES batch_production_versions(id) ON DELETE RESTRICT,
+        FOREIGN KEY(outputPlanId) REFERENCES batch_output_plans(id) ON DELETE RESTRICT,
+        FOREIGN KEY(outputVersionId) REFERENCES batch_output_versions(id) ON DELETE RESTRICT
+      );
+      INSERT INTO batch_artifacts_new SELECT id, projectId, batchId, batchVersionId, outputPlanId, outputVersionId, kind, relativePath, checksum, createdAt FROM batch_artifacts;
+      DROP TABLE batch_artifacts;
+      ALTER TABLE batch_artifacts_new RENAME TO batch_artifacts;
+      CREATE INDEX IF NOT EXISTS idx_batch_artifacts_plan ON batch_artifacts(outputPlanId, createdAt);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -513,6 +540,14 @@ function validateProductionVersionTables(db: Database.Database): void {
   ))) {
     throw new Error('素材池表必须限制被引用素材删除');
   }
+  if (!poolForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_asset_analysis'
+    && foreignKey.from === 'analysisId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'RESTRICT'
+  ))) {
+    throw new Error('素材池表必须限制被引用的分析版本删除');
+  }
 
   const poolIndexes = db.prepare(`PRAGMA index_list(batch_asset_pool_items)`).all() as Array<{ name: string }>;
   if (!poolIndexes.some(({ name }) => name === 'idx_batch_asset_pool_items_version')) {
@@ -718,6 +753,14 @@ function validateTaskTables(db: Database.Database): void {
   ))) {
     throw new Error('生产任务表批次外键检查未通过');
   }
+  if (!taskForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'projects'
+    && foreignKey.from === 'projectId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'CASCADE'
+  ))) {
+    throw new Error('生产任务表项目外键检查未通过');
+  }
 
   const taskIndexes = db.prepare(`PRAGMA index_list(batch_tasks)`).all() as Array<{ name: string }>;
   if (!taskIndexes.some(({ name }) => name === 'idx_batch_tasks_batch')) {
@@ -762,7 +805,8 @@ function validateTaskTables(db: Database.Database): void {
   }
 }
 
-function validateArtifactTables(db: Database.Database): void {
+/** v7 引入的产物表列结构(v8 重建后列不变,可继续验证) */
+function validateArtifactTableColumns(db: Database.Database): void {
   const artifactColumns = db.prepare(`PRAGMA table_info(batch_artifacts)`).all() as Array<{
     name: string;
     notnull: number;
@@ -784,21 +828,6 @@ function validateArtifactTables(db: Database.Database): void {
     throw new Error('正式产物表结构检查未通过');
   }
 
-  const artifactForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_artifacts)`).all() as Array<{
-    table: string;
-    from: string;
-    to: string;
-    on_delete: string;
-  }>;
-  if (!artifactForeignKeys.some((foreignKey) => (
-    foreignKey.table === 'batch_output_versions'
-    && foreignKey.from === 'outputVersionId'
-    && foreignKey.to === 'id'
-    && foreignKey.on_delete.toUpperCase() === 'RESTRICT'
-  ))) {
-    throw new Error('正式产物表必须限制成片版本删除');
-  }
-
   const artifactIndexes = db.prepare(`PRAGMA index_list(batch_artifacts)`).all() as Array<{ name: string }>;
   if (!artifactIndexes.some(({ name }) => name === 'idx_batch_artifacts_plan')) {
     throw new Error('正式产物索引检查未通过');
@@ -810,6 +839,51 @@ function validateArtifactTables(db: Database.Database): void {
   }
 }
 
+/** v8 重建后的产物表约束:删除保护(非级联)与按文件路径的唯一性 */
+function validateArtifactTableConstraints(db: Database.Database): void {
+  const artifactForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_artifacts)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  const requiredForeignKeys: Array<{ table: string; from: string; onDelete: string }> = [
+    { table: 'projects', from: 'projectId', onDelete: 'CASCADE' },
+    { table: 'batch_productions', from: 'batchId', onDelete: 'RESTRICT' },
+    { table: 'batch_production_versions', from: 'batchVersionId', onDelete: 'RESTRICT' },
+    { table: 'batch_output_plans', from: 'outputPlanId', onDelete: 'RESTRICT' },
+    { table: 'batch_output_versions', from: 'outputVersionId', onDelete: 'RESTRICT' },
+  ];
+  for (const required of requiredForeignKeys) {
+    if (!artifactForeignKeys.some((foreignKey) => (
+      foreignKey.table === required.table
+      && foreignKey.from === required.from
+      && foreignKey.to === 'id'
+      && foreignKey.on_delete.toUpperCase() === required.onDelete
+    ))) {
+      throw new Error(`正式产物表外键检查未通过(${required.from})`);
+    }
+  }
+
+  const artifactIndexes = db.prepare(`PRAGMA index_list(batch_artifacts)`).all() as Array<{
+    name: string;
+    unique: number;
+    origin: string;
+  }>;
+  const uniqueIndex = artifactIndexes.find(({ unique, origin }) => unique === 1 && origin !== 'pk');
+  if (!uniqueIndex) {
+    throw new Error('正式产物缺少唯一约束');
+  }
+  const uniqueColumns = db.prepare(`PRAGMA index_info(${uniqueIndex.name})`).all() as Array<{ name: string }>;
+  if (
+    uniqueColumns.length !== 2
+    || uniqueColumns[0]?.name !== 'outputPlanId'
+    || uniqueColumns[1]?.name !== 'relativePath'
+  ) {
+    throw new Error('正式产物唯一约束必须是成片计划与文件路径');
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -817,7 +891,8 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateScriptTables,
   validatePlanTables,
   validateTaskTables,
-  validateArtifactTables,
+  validateArtifactTableColumns,
+  validateArtifactTableConstraints,
 ];
 
 function validateBatchSchema(db: Database.Database): void {
