@@ -318,48 +318,6 @@ function initTables(db: Database.Database) {
     try { db.exec(sql); } catch { /* Column already exists */ }
   }
 
-  // Older databases created video_providers with CHECK(type IN ('kling','jimeng')),
-  // which rejects the 'openai-video' gateway adapter type. SQLite cannot alter a
-  // CHECK constraint, so rebuild the table once. Build the replacement under a
-  // temp name and drop the original (rather than renaming the original first):
-  // renaming rewrites video_jobs' FK to the temp name and would leave it dangling.
-  // foreign_keys must be off during the swap and cannot be toggled inside a
-  // transaction.
-  const videoProvidersSql = db
-    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'video_providers'`)
-    .get() as { sql: string } | undefined;
-  if (videoProvidersSql && !videoProvidersSql.sql.includes('openai-video')) {
-    db.pragma('foreign_keys = OFF');
-    const rebuild = db.transaction(() => {
-      db.exec(`
-        CREATE TABLE video_providers_new (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN ('kling','jimeng','openai-video')),
-          baseUrlEnv TEXT NOT NULL,
-          apiKeyEnv TEXT NOT NULL,
-          modelEnv TEXT NOT NULL,
-          defaultModel TEXT NOT NULL,
-          enabled INTEGER NOT NULL DEFAULT 1,
-          defaultDurationSec INTEGER NOT NULL DEFAULT 5,
-          defaultCostPerVideo REAL,
-          baseUrl TEXT NOT NULL DEFAULT '',
-          apiKey TEXT NOT NULL DEFAULT '',
-          accessKey TEXT NOT NULL DEFAULT '',
-          secretKey TEXT NOT NULL DEFAULT ''
-        );
-        INSERT INTO video_providers_new SELECT * FROM video_providers;
-        DROP TABLE video_providers;
-        ALTER TABLE video_providers_new RENAME TO video_providers;
-      `);
-    });
-    try {
-      rebuild();
-    } finally {
-      db.pragma('foreign_keys = ON');
-    }
-  }
-
   const videoJobMigrations = [
     `ALTER TABLE video_jobs ADD COLUMN lastPolledAt TEXT`,
     `ALTER TABLE video_jobs ADD COLUMN pollCount INTEGER DEFAULT 0`,

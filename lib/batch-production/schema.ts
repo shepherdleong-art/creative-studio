@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   BatchSchemaBackupError,
   createValidatedBatchSchemaBackup,
+  type BatchSchemaDiskSpaceProbe,
 } from './backup.ts';
 
 export interface BatchSchemaMigration {
@@ -32,6 +33,7 @@ export type BatchSchemaFailureCode =
   | 'schema_too_new'
   | 'backup_failed'
   | 'backup_validation_failed'
+  | 'insufficient_disk_space'
   | 'migration_failed';
 
 export type BatchSchemaReadiness =
@@ -54,6 +56,7 @@ export interface EnsureBatchSchemaOptions {
   db: Database.Database;
   backupRoot: string;
   now?: () => Date;
+  diskSpaceProbe?: BatchSchemaDiskSpaceProbe;
 }
 
 const MIGRATION_TABLE = 'batch_schema_migrations';
@@ -132,7 +135,7 @@ function validateBatchSchema(db: Database.Database): void {
 }
 
 function applyMigration(db: Database.Database, migration: BatchSchemaMigration, appliedAt: string): void {
-  db.transaction(() => {
+  const apply = db.transaction(() => {
     db.exec(`
       CREATE TABLE IF NOT EXISTS batch_schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -148,13 +151,19 @@ function applyMigration(db: Database.Database, migration: BatchSchemaMigration, 
       `INSERT INTO batch_schema_migrations (version, appliedAt) VALUES (?, ?)`,
     ).run(migration.version, appliedAt);
     validateBatchSchema(db);
-  })();
+  });
+  apply.immediate();
 }
 
 export async function ensureBatchSchemaReady(
   options: EnsureBatchSchemaOptions,
 ): Promise<BatchSchemaReadiness> {
-  const { db, backupRoot, now = () => new Date() } = options;
+  const {
+    db,
+    backupRoot,
+    now = () => new Date(),
+    diskSpaceProbe,
+  } = options;
   const targetVersion = BATCH_SCHEMA_MIGRATIONS.at(-1)?.version ?? 0;
   let appliedVersions: number[];
 
@@ -209,6 +218,7 @@ export async function ensureBatchSchemaReady(
       sourceVersions: appliedVersions,
       targetVersion,
       now: startedAt,
+      diskSpaceProbe,
     });
     backupDirectory = backup.directory;
   } catch (error) {
@@ -217,7 +227,9 @@ export async function ensureBatchSchemaReady(
       code: error instanceof BatchSchemaBackupError ? error.code : 'backup_failed',
       message: error instanceof BatchSchemaBackupError && error.code === 'backup_validation_failed'
         ? '数据库备份未通过完整性检查，尚未执行批量升级。'
-        : '无法完成数据库安全备份，尚未执行批量升级。',
+        : error instanceof BatchSchemaBackupError && error.code === 'insufficient_disk_space'
+          ? '项目盘空间不足，尚未执行批量升级。'
+          : '无法完成数据库安全备份，尚未执行批量升级。',
       appliedVersions: [],
       targetVersion,
     };

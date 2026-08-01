@@ -20,7 +20,7 @@
 
 ## Phase 0：安全数据地基
 
-### 0.1 批量 schema 升级门禁（当前）
+### 0.1 批量 schema 升级门禁（已完成）
 
 - 新建独立 `BatchProduction` schema Module，不修改已发布的核心迁移和 `final_edit_*` 迁移。
 - 没有待执行批量迁移时直接返回，不生成无意义备份。
@@ -37,7 +37,7 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 
 聚焦测试必须证明：先备份再迁移、重复调用幂等、无效备份不迁移、迁移失败不留下半张表。
 
-### 0.2 启动锁、恢复入口与批量可用状态
+### 0.2 启动锁、恢复入口与批量可用状态（当前）
 
 - 增加跨进程升级锁。
 - 让批量 API 等待升级门禁并返回明确可用状态。
