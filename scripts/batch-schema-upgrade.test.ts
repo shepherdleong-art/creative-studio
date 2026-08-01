@@ -158,13 +158,14 @@ try {
   const invalidStructureRoot = path.join(root, 'invalid-structure');
   fs.mkdirSync(invalidStructureRoot, { recursive: true });
   const invalidStructure = createLegacyDatabase(invalidStructureRoot, 'workbench.db');
+  const latestVersion = BATCH_SCHEMA_MIGRATIONS.at(-1)?.version;
   invalidStructure.db.exec(`
     CREATE TABLE batch_schema_migrations (
       version INTEGER PRIMARY KEY,
       appliedAt TEXT NOT NULL
     );
     INSERT INTO batch_schema_migrations (version, appliedAt)
-    VALUES (1, '2026-08-01T00:00:00.000Z');
+    VALUES (${latestVersion}, '2026-08-01T00:00:00.000Z');
     CREATE TABLE batch_productions (id TEXT PRIMARY KEY);
   `);
   const rejectedStructure = await ensureBatchSchemaReady({

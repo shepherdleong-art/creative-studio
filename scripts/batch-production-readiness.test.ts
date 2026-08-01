@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { appendSchemaUpgradeAudit, readSchemaUpgradeAudit } from '../lib/schema-upgrade/audit.ts';
 import { acquireSchemaUpgradeLock } from '../lib/schema-upgrade/lock.ts';
 import { checkBatchProductionReadiness } from '../lib/batch-production/readiness.ts';
+import { BATCH_SCHEMA_MIGRATIONS } from '../lib/batch-production/schema.ts';
 
 function createLegacyDatabase(root: string): Database.Database {
   const db = new Database(path.join(root, 'workbench.db'));
@@ -59,9 +60,13 @@ try {
   ]);
   assert.equal(firstAudit.at(-1)?.result?.available, true);
   assert.equal(firstAudit.at(-1)?.result?.schemaState, 'ready');
-  assert.match(firstAudit[1]?.details?.backup?.backupId ?? '', /^pre-batch-v1-/);
+  const targetVersion = BATCH_SCHEMA_MIGRATIONS.at(-1)?.version;
+  assert.match(firstAudit[1]?.details?.backup?.backupId ?? '', new RegExp(`^pre-batch-v${targetVersion}-`));
   assert.equal(firstAudit[1]?.details?.backup?.validated, true);
-  assert.deepEqual(firstAudit[2]?.details?.migration?.appliedVersions, [1]);
+  assert.deepEqual(
+    firstAudit[2]?.details?.migration?.appliedVersions,
+    BATCH_SCHEMA_MIGRATIONS.map(({ version }) => version),
+  );
 
   const current = await checkBatchProductionReadiness({
     ...healthyOptions,
