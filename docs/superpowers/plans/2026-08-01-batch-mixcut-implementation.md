@@ -47,10 +47,19 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 
 本阶段的恢复入口只列出并重新校验可恢复备份，不在工作台运行时覆盖主数据库。真正恢复仍要求完全退出工作台、再次确认备份和版本，再由后续桌面运行壳提供明确动作；这条安全限制不能由普通 API 绕过。
 
-### 0.3 完整批量领域表
+### 0.3 完整批量领域表（已完成）
 
 - 按已确认模型逐个加入项目素材、分析版本、项目脚本版本、批次版本、脚本快照、成片计划、成片版本、任务、尝试和产物来源。
 - 每次只增加一个可由公开 Interface 使用的垂直切片，不一次性建立无法验证的大表集合。
+- 共追加 migration v2–v7，领域表全部带 `batch_` 前缀，与单条混剪 `final_edit_*` 隔离：
+  - v2 `batch_assets` + `batch_asset_analysis`（素材身份不依赖路径，分析版本可跨批次复用）
+  - v3 批次表扩展列 + `batch_production_versions` + `batch_asset_pool_items`（整体输入快照、素材池锁定分析版本）
+  - v4 `batch_scripts` + `batch_script_snapshots`（项目脚本稳定身份、开跑后快照不漂移）
+  - v5 `batch_output_plans` + `batch_output_versions`（份数决定 N 条计划、单条调整形成新成片版本）
+  - v6 `batch_tasks` + `batch_task_attempts`（重试只增加任务尝试）
+  - v7 `batch_artifacts` + 成片计划当前成片指向（产物追加保存、最新导出自动成为当前成片）
+- 公开领域接口：`lib/batch-production/{assets,versions,scripts,plans,tasks,artifacts}.ts`，每个切片均有独立聚焦测试。
+- 真实旧库在线备份副本升级核对：33 张旧表、4567 行数据不变。
 
 ## 后续阶段
 
