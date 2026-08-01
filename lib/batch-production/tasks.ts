@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 export type BatchTaskWorkType = 'asset_prepare' | 'render';
+export type BatchTaskTargetKind = 'asset' | 'output_version';
 export type BatchTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type BatchTaskAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
 
@@ -10,7 +11,7 @@ export interface BatchTaskRow {
   projectId: string;
   batchId: string;
   workType: BatchTaskWorkType;
-  targetKind: string;
+  targetKind: BatchTaskTargetKind;
   targetId: string;
   status: BatchTaskStatus;
   progressJson: string;
@@ -45,18 +46,24 @@ function nowIso(now?: () => Date): string {
 export function createBatchTask(
   db: Database.Database,
   projectId: string,
-  input: {
+  input: ({
     batchId: string;
-    workType: BatchTaskWorkType;
-    targetKind: string;
+    workType: 'render';
+    targetKind: 'output_version';
     targetId: string;
     now?: () => Date;
-  },
+  } | {
+    batchId: string;
+    workType: 'asset_prepare';
+    targetKind: 'asset';
+    targetId: string;
+    now?: () => Date;
+  }),
 ): string {
   const createdAt = nowIso(input.now);
   return db.transaction(() => {
     const batch = db.prepare(`
-      SELECT projectId FROM batch_productions WHERE id = ?
+      SELECT projectId FROM batch_productions WHERE id = ? AND deletedAt IS NULL
     `).get(input.batchId) as { projectId: string } | undefined;
     if (!batch) {
       throw new Error('批次不存在');
@@ -65,13 +72,26 @@ export function createBatchTask(
       throw new Error('批次不属于该项目');
     }
     if (input.workType === 'render') {
+      if (input.targetKind !== 'output_version') {
+        throw new Error('render 任务的目标类型必须是 output_version');
+      }
       const version = db.prepare(`
-        SELECT 1 FROM batch_output_versions WHERE id = ?
-      `).get(input.targetId);
+        SELECT v.batchId
+        FROM batch_output_versions o
+        JOIN batch_output_plans p ON p.id = o.planId
+        JOIN batch_production_versions v ON v.id = p.batchVersionId
+        WHERE o.id = ?
+      `).get(input.targetId) as { batchId: string } | undefined;
       if (!version) {
         throw new Error('render 任务的目标成片版本不存在');
       }
+      if (version.batchId !== input.batchId) {
+        throw new Error('render 任务的目标成片版本不属于该批次');
+      }
     } else if (input.workType === 'asset_prepare') {
+      if (input.targetKind !== 'asset') {
+        throw new Error('asset_prepare 任务的目标类型必须是 asset');
+      }
       const asset = db.prepare(`
         SELECT projectId FROM batch_assets WHERE id = ?
       `).get(input.targetId) as { projectId: string } | undefined;

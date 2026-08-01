@@ -12,6 +12,7 @@ import {
   getBatchProduction,
   getBatchVersion,
   listPoolItems,
+  updateBatchProductionStatus,
 } from '../lib/batch-production/versions.ts';
 
 function createLegacyDatabase(root: string, name: string): { db: Database.Database; databasePath: string } {
@@ -47,7 +48,7 @@ try {
     name: string; notnull: number; dflt_value: string | null;
   }>;
   const productionNames = new Set(productionColumns.map((c) => c.name));
-  for (const name of ['status', 'currentVersionId', 'progressJson']) {
+  for (const name of ['status', 'currentVersionId', 'progressJson', 'deletedAt']) {
     assert.ok(productionNames.has(name), `batch_productions 缺少扩展列 ${name}`);
   }
 
@@ -55,7 +56,16 @@ try {
     name: string; notnull: number; pk: number; dflt_value: string | null;
   }>;
   const versionNames = new Map(versionColumns.map((c) => [c.name, c]));
-  for (const name of ['id', 'batchId', 'versionNumber', 'copyCount', 'defaultsJson', 'createdAt']) {
+  for (const name of [
+    'id',
+    'batchId',
+    'versionNumber',
+    'copyCount',
+    'defaultsJson',
+    'inputState',
+    'frozenAt',
+    'createdAt',
+  ]) {
     assert.ok(versionNames.has(name), `batch_production_versions 缺少列 ${name}`);
   }
   assert.equal(versionNames.get('id')?.pk, 1);
@@ -201,14 +211,45 @@ try {
   );
   assert.equal(listPoolItems(db, version2).length, 2, '串线尝试不得写入任何池条目');
 
-  // --- 批次开始后输入冻结:不能再向批次版本追加素材 ---
-  db.prepare(`UPDATE batch_productions SET status = 'running', updatedAt = ? WHERE id = ?`)
-    .run('2026-08-01T10:50:00.000Z', batchId);
+  const assetC = createAsset(db, {
+    projectId: 'project-1',
+    sourceKind: 'linked',
+    locationJson: { path: '/photos/c.mp4' },
+    contentFingerprint: 'sha256:ccc',
+    mediaKind: 'video',
+    now: () => new Date('2026-08-01T10:45:00.000Z'),
+  });
+  const analysisC = createAnalysisVersion(db, {
+    assetId: assetC,
+    analyzerVersion: '0.1.0',
+    providerId: 'provider-1',
+    model: 'model-a',
+    now: () => new Date('2026-08-01T10:46:00.000Z'),
+  });
+
+  // --- 批次第一次开始后版本永久冻结:状态回到 draft 也不能解冻旧版本 ---
+  updateBatchProductionStatus(db, 'project-1', batchId, 'running', () => new Date('2026-08-01T10:50:00.000Z'));
   assert.throws(
-    () => addAssetToPool(db, version2, { assetId: assetB, analysisId: analysisB }),
+    () => addAssetToPool(db, version2, { assetId: assetC, analysisId: analysisC }),
     /冻结/,
     '批次开始后不得向既有批次版本追加素材',
   );
+  assert.equal(listPoolItems(db, version2).length, 2);
+
+  updateBatchProductionStatus(db, 'project-1', batchId, 'draft', () => new Date('2026-08-01T10:51:00.000Z'));
+  assert.throws(
+    () => addAssetToPool(db, version2, { assetId: assetC, analysisId: analysisC }),
+    /冻结/,
+    '批次状态回到 draft 也不能解冻已经开始过的旧版本',
+  );
+
+  // 修改整体输入必须形成新版本;新版本可编辑,旧版本仍冻结
+  const version3 = createBatchProductionVersion(db, batchId, {
+    copyCount: 1,
+    now: () => new Date('2026-08-01T10:52:00.000Z'),
+  });
+  addAssetToPool(db, version3, { assetId: assetC, analysisId: analysisC });
+  assert.equal(listPoolItems(db, version3).length, 1);
   assert.equal(listPoolItems(db, version2).length, 2);
 
   // --- 重复启动幂等 ---

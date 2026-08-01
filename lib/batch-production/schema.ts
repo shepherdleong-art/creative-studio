@@ -263,6 +263,56 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
       CREATE INDEX IF NOT EXISTS idx_batch_artifacts_plan ON batch_artifacts(outputPlanId, createdAt);
     `,
   },
+  {
+    version: 9,
+    sql: `
+      ALTER TABLE batch_productions ADD COLUMN deletedAt TEXT;
+
+      ALTER TABLE batch_production_versions
+        ADD COLUMN inputState TEXT NOT NULL DEFAULT 'frozen'
+        CHECK(inputState IN ('draft', 'frozen'));
+      ALTER TABLE batch_production_versions ADD COLUMN frozenAt TEXT;
+
+      UPDATE batch_production_versions
+      SET inputState = 'draft', frozenAt = NULL
+      WHERE id IN (
+        SELECT currentVersionId
+        FROM batch_productions
+        WHERE status = 'draft'
+          AND currentVersionId IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM batch_tasks t WHERE t.batchId = batch_productions.id
+          )
+      );
+      UPDATE batch_production_versions
+      SET frozenAt = createdAt
+      WHERE inputState = 'frozen' AND frozenAt IS NULL;
+
+      ALTER TABLE batch_scripts
+        ADD COLUMN ownerBatchVersionId TEXT
+        REFERENCES batch_production_versions(id) ON DELETE RESTRICT;
+      ALTER TABLE batch_scripts ADD COLUMN externalSourceId TEXT;
+      UPDATE batch_scripts
+      SET
+        ownerBatchVersionId = (
+          SELECT MIN(s.batchVersionId)
+          FROM batch_script_snapshots s
+          WHERE s.sourceScriptId = batch_scripts.id
+        ),
+        externalSourceId = sourceId
+      WHERE sourceKind = 'external'
+        AND 1 = (
+          SELECT COUNT(DISTINCT s.batchVersionId)
+          FROM batch_script_snapshots s
+          WHERE s.sourceScriptId = batch_scripts.id
+        );
+      CREATE INDEX idx_batch_scripts_owner_version
+        ON batch_scripts(ownerBatchVersionId, createdAt);
+      CREATE UNIQUE INDEX idx_batch_external_scripts_source
+        ON batch_scripts(ownerBatchVersionId, externalSourceId)
+        WHERE sourceKind = 'external';
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -884,6 +934,56 @@ function validateArtifactTableConstraints(db: Database.Database): void {
   }
 }
 
+/** v9 把输入冻结落在批次版本上，并为批次内外部文案和逻辑删除建立边界。 */
+function validateBatchVersionLifecycleColumns(db: Database.Database): void {
+  const productionColumns = db.prepare(`PRAGMA table_info(batch_productions)`).all() as Array<{
+    name: string;
+  }>;
+  if (!productionColumns.some(({ name }) => name === 'deletedAt')) {
+    throw new Error('批次表缺少逻辑删除列');
+  }
+
+  const versionColumns = db.prepare(`PRAGMA table_info(batch_production_versions)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const versionByName = new Map(versionColumns.map((column) => [column.name, column]));
+  if (versionByName.get('inputState')?.notnull !== 1 || !versionByName.has('frozenAt')) {
+    throw new Error('批次版本缺少不可逆冻结列');
+  }
+
+  const scriptColumns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{
+    name: string;
+  }>;
+  if (
+    !scriptColumns.some(({ name }) => name === 'ownerBatchVersionId')
+    || !scriptColumns.some(({ name }) => name === 'externalSourceId')
+  ) {
+    throw new Error('批次文案缺少所属版本列');
+  }
+  const scriptForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_scripts)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!scriptForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_production_versions'
+    && foreignKey.from === 'ownerBatchVersionId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'RESTRICT'
+  ))) {
+    throw new Error('批次文案所属版本外键检查未通过');
+  }
+  const scriptIndexes = db.prepare(`PRAGMA index_list(batch_scripts)`).all() as Array<{ name: string }>;
+  if (!scriptIndexes.some(({ name }) => name === 'idx_batch_scripts_owner_version')) {
+    throw new Error('批次文案所属版本索引检查未通过');
+  }
+  if (!scriptIndexes.some(({ name }) => name === 'idx_batch_external_scripts_source')) {
+    throw new Error('批次文案来源唯一索引检查未通过');
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -893,6 +993,7 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateTaskTables,
   validateArtifactTableColumns,
   validateArtifactTableConstraints,
+  validateBatchVersionLifecycleColumns,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

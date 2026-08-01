@@ -33,6 +33,21 @@ function listPublishedBackups(backupRoot: string): string[] {
   return fs.readdirSync(backupRoot).filter((name) => !name.startsWith('.'));
 }
 
+function applyMigrationsUpTo(db: Database.Database, upToExclusive: number): void {
+  db.exec(`
+    CREATE TABLE batch_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      appliedAt TEXT NOT NULL
+    )
+  `);
+  for (const migration of BATCH_SCHEMA_MIGRATIONS) {
+    if (migration.version >= upToExclusive) break;
+    db.exec(migration.sql);
+    db.prepare(`INSERT INTO batch_schema_migrations (version, appliedAt) VALUES (?, ?)`)
+      .run(migration.version, '2026-08-01T00:00:00.000Z');
+  }
+}
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-schema-'));
 
 try {
@@ -101,6 +116,67 @@ try {
   assert.deepEqual(current.appliedVersions, []);
   assert.equal(listPublishedBackups(healthyBackupRoot).length, 1, '没有待执行迁移时不得重复备份');
   healthy.db.close();
+
+  // v8 → v9：历史已运行版本保持冻结，只有草稿批次的当前版本可继续编辑。
+  const v9Root = path.join(root, 'upgrade-v9');
+  fs.mkdirSync(v9Root, { recursive: true });
+  const v9Upgrade = createLegacyDatabase(v9Root, 'workbench.db');
+  applyMigrationsUpTo(v9Upgrade.db, 9);
+  v9Upgrade.db.exec(`
+    INSERT INTO batch_productions
+      (id, projectId, name, createdAt, updatedAt, status, currentVersionId, progressJson)
+    VALUES
+      ('draft-batch', 'project-1', '草稿批次', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', 'draft', 'draft-v2', '{}'),
+      ('running-batch', 'project-1', '运行批次', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', 'running', 'running-v1', '{}'),
+      ('reset-batch', 'project-1', '曾运行后回到草稿的批次', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', 'draft', 'reset-v1', '{}');
+    INSERT INTO batch_production_versions
+      (id, batchId, versionNumber, copyCount, defaultsJson, createdAt)
+    VALUES
+      ('draft-v1', 'draft-batch', 1, 1, '{}', '2026-08-01T00:01:00.000Z'),
+      ('draft-v2', 'draft-batch', 2, 1, '{}', '2026-08-01T00:02:00.000Z'),
+      ('running-v1', 'running-batch', 1, 1, '{}', '2026-08-01T00:03:00.000Z'),
+      ('reset-v1', 'reset-batch', 1, 1, '{}', '2026-08-01T00:03:30.000Z');
+    INSERT INTO batch_tasks
+      (id, projectId, batchId, workType, targetKind, targetId, status, progressJson, attemptCount, createdAt, updatedAt)
+    VALUES
+      ('reset-task-1', 'project-1', 'reset-batch', 'render', 'output_version', 'legacy-target', 'failed', '{}', 1, '2026-08-01T00:03:40.000Z', '2026-08-01T00:03:50.000Z');
+    INSERT INTO batch_scripts
+      (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion, createdAt, updatedAt)
+    VALUES
+      ('external-1', 'project-1', 'external', 'legacy-external', '外部文案', '正文', 'v1', '2026-08-01T00:04:00.000Z', '2026-08-01T00:04:00.000Z');
+    INSERT INTO batch_script_snapshots
+      (id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion, copyCount, createdAt)
+    VALUES
+      ('snapshot-1', 'draft-v2', 'external-1', '外部文案', '正文', 'v1', 1, '2026-08-01T00:05:00.000Z');
+  `);
+  const upgradedV9 = await ensureBatchSchemaReady({
+    db: v9Upgrade.db,
+    backupRoot: path.join(v9Root, 'backups'),
+    now: () => new Date('2026-08-01T01:00:00.000Z'),
+  });
+  assert.equal(upgradedV9.state, 'ready');
+  assert.deepEqual(upgradedV9.appliedVersions, [9]);
+  assert.deepEqual(
+    v9Upgrade.db.prepare(`
+      SELECT id, inputState, frozenAt
+      FROM batch_production_versions
+      ORDER BY id
+    `).all(),
+    [
+      { id: 'draft-v1', inputState: 'frozen', frozenAt: '2026-08-01T00:01:00.000Z' },
+      { id: 'draft-v2', inputState: 'draft', frozenAt: null },
+      { id: 'reset-v1', inputState: 'frozen', frozenAt: '2026-08-01T00:03:30.000Z' },
+      { id: 'running-v1', inputState: 'frozen', frozenAt: '2026-08-01T00:03:00.000Z' },
+    ],
+  );
+  assert.deepEqual(
+    v9Upgrade.db.prepare(`
+      SELECT ownerBatchVersionId, externalSourceId FROM batch_scripts WHERE id = 'external-1'
+    `).get(),
+    { ownerBatchVersionId: 'draft-v2', externalSourceId: 'legacy-external' },
+    '只有一个历史快照归属的外部文案应安全回填到对应批次版本',
+  );
+  v9Upgrade.db.close();
 
   const invalidBackupRoot = path.join(root, 'invalid-backup');
   fs.mkdirSync(invalidBackupRoot, { recursive: true });

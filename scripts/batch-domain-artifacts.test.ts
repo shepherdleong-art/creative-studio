@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
-import { createBatchProduction, createBatchProductionVersion } from '../lib/batch-production/versions.ts';
+import {
+  createBatchProduction,
+  createBatchProductionVersion,
+  deleteBatchProduction,
+  getBatchProduction,
+  listProjectBatchProductions,
+} from '../lib/batch-production/versions.ts';
 import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
 import { createOutputPlan, createOutputVersion } from '../lib/batch-production/plans.ts';
 import {
@@ -195,7 +201,27 @@ try {
   );
   assert.equal(getCurrentArtifactId(db, planId), artifact1);
 
-  // --- 删除批次被外键阻止:正式产物记录必须保留 ---
+  // --- 用户删除批次是逻辑删除:列表隐藏，但正式产物及谱系继续保留 ---
+  deleteBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-01T12:00:00.000Z'));
+  assert.equal(getBatchProduction(db, 'project-1', batchId), undefined, '逻辑删除后的批次不得继续作为活跃工作单读取');
+  assert.ok(!listProjectBatchProductions(db, 'project-1').some(({ id }) => id === batchId));
+  assert.equal(listPlanArtifacts(db, planId).length, 4, '逻辑删除批次不得删除正式产物');
+  assert.equal(getArtifact(db, 'project-1', artifact1)?.relativePath, 'final-edits/plan-1/export-1.mp4');
+  assert.throws(
+    () => registerArtifact(db, 'project-1', {
+      batchId,
+      batchVersionId: version1,
+      outputPlanId: planId,
+      outputVersionId,
+      kind: 'video',
+      relativePath: 'final-edits/plan-1/after-delete.mp4',
+      checksum: 'sha256:after-delete',
+    }),
+    /批次不存在/,
+    '逻辑删除后不得继续向该批次登记新产物',
+  );
+
+  // 物理删除仍被外键阻止，避免绕过领域接口破坏正式产物
   assert.throws(
     () => db.prepare(`DELETE FROM batch_productions WHERE id = ?`).run(batchId),
     /FOREIGN KEY|foreign key/i,

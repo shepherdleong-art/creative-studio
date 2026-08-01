@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
-import { createBatchProduction, createBatchProductionVersion } from '../lib/batch-production/versions.ts';
+import {
+  createBatchProduction,
+  createBatchProductionVersion,
+  updateBatchProductionStatus,
+} from '../lib/batch-production/versions.ts';
 import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
 import {
   createOutputPlan,
@@ -121,6 +125,25 @@ try {
   );
   assert.equal(listOutputPlans(db, version1).length, 3);
 
+  // 多快照共用批次版本全局序号；第二份快照的第 1 条计划应接续为 seq=4
+  const secondScriptId = createProjectScript(db, 'project-1', {
+    sourceKind: 'script_draft',
+    sourceId: 'draft-2',
+    title: '第二份口播',
+    bodyText: '第二份正文',
+    sourceVersion: 'v1',
+  });
+  const secondSnapshotId = snapshotScriptIntoBatch(db, version1, {
+    scriptId: secondScriptId,
+    copyCount: 1,
+  });
+  const fourthPlanId = createOutputPlan(db, version1, {
+    scriptSnapshotId: secondSnapshotId,
+    seq: 4,
+  });
+  assert.equal(getOutputPlan(db, version1, fourthPlanId)?.seq, 4);
+  assert.equal(listOutputPlans(db, version1).length, 4);
+
   // 计划属于批次版本,新版本计划隔离
   const version2 = createBatchProductionVersion(db, batchId, { copyCount: 1, now: () => new Date('2026-08-01T10:00:00.000Z') });
   assert.equal(listOutputPlans(db, version2).length, 0, '批次版本之间计划必须隔离');
@@ -147,6 +170,27 @@ try {
 
   // 只调整第一条成片:其他计划没有成片版本
   assert.equal(listOutputVersions(db, planIds[1]).length, 0, '单条调整不得影响同批次其他成片');
+
+  // --- 批次开始后计划集合冻结:不能为尚未建计划的快照补卡片 ---
+  const lateScriptId = createProjectScript(db, 'project-1', {
+    sourceKind: 'script_draft',
+    sourceId: 'draft-late',
+    title: '迟到脚本',
+    bodyText: '批次开始前已选中,但尚未建立计划',
+    sourceVersion: 'v1',
+  });
+  const lateSnapshotId = snapshotScriptIntoBatch(db, version2, {
+    scriptId: lateScriptId,
+    copyCount: 1,
+  });
+  updateBatchProductionStatus(db, 'project-1', batchId, 'running');
+  assert.throws(
+    () => createOutputPlansForSnapshot(db, version2, lateSnapshotId),
+    /冻结/,
+    '批次开始后不得再改变稳定的成片计划数量',
+  );
+  assert.equal(listOutputPlans(db, version1).length, 4);
+  assert.equal(listOutputPlans(db, version2).length, 0);
 
   db.close();
   console.log('batch domain plans tests passed');

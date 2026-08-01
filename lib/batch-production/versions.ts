@@ -10,6 +10,7 @@ export interface BatchProductionRow {
   status: BatchProductionStatus;
   currentVersionId: string | null;
   progressJson: string;
+  deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,6 +21,8 @@ export interface BatchProductionVersionRow {
   versionNumber: number;
   copyCount: number;
   defaultsJson: string;
+  inputState: 'draft' | 'frozen';
+  frozenAt: string | null;
   createdAt: string;
 }
 
@@ -58,7 +61,7 @@ export function getBatchProduction(
   batchId: string,
 ): (BatchProductionRow & { progressJson: unknown }) | undefined {
   const row = db.prepare(`
-    SELECT * FROM batch_productions WHERE id = ? AND projectId = ?
+    SELECT * FROM batch_productions WHERE id = ? AND projectId = ? AND deletedAt IS NULL
   `).get(batchId, projectId) as BatchProductionRow | undefined;
   if (!row) return undefined;
   return { ...row, progressJson: JSON.parse(row.progressJson) };
@@ -66,7 +69,9 @@ export function getBatchProduction(
 
 export function listProjectBatchProductions(db: Database.Database, projectId: string): BatchProductionRow[] {
   return db.prepare(`
-    SELECT * FROM batch_productions WHERE projectId = ? ORDER BY createdAt, id
+    SELECT * FROM batch_productions
+    WHERE projectId = ? AND deletedAt IS NULL
+    ORDER BY createdAt, id
   `).all(projectId) as BatchProductionRow[];
 }
 
@@ -77,9 +82,41 @@ export function updateBatchProductionStatus(
   status: BatchProductionStatus,
   now?: () => Date,
 ): void {
+  const updatedAt = nowIso(now);
+  db.transaction(() => {
+    const batch = db.prepare(`
+      SELECT currentVersionId FROM batch_productions
+      WHERE id = ? AND projectId = ? AND deletedAt IS NULL
+    `).get(batchId, projectId) as { currentVersionId: string | null } | undefined;
+    if (!batch) {
+      throw new Error('批次不存在');
+    }
+    if (status !== 'draft' && batch.currentVersionId) {
+      db.prepare(`
+        UPDATE batch_production_versions
+        SET inputState = 'frozen', frozenAt = COALESCE(frozenAt, ?)
+        WHERE id = ? AND inputState = 'draft'
+      `).run(updatedAt, batch.currentVersionId);
+    }
+    db.prepare(`
+      UPDATE batch_productions SET status = ?, updatedAt = ? WHERE id = ?
+    `).run(status, updatedAt, batchId);
+  })();
+}
+
+/** 从正常批次列表移除工作单，历史版本与正式产物继续保留。 */
+export function deleteBatchProduction(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  now?: () => Date,
+): void {
+  const deletedAt = nowIso(now);
   const result = db.prepare(`
-    UPDATE batch_productions SET status = ?, updatedAt = ? WHERE id = ? AND projectId = ?
-  `).run(status, nowIso(now), batchId, projectId);
+    UPDATE batch_productions
+    SET deletedAt = ?, updatedAt = ?
+    WHERE id = ? AND projectId = ? AND deletedAt IS NULL
+  `).run(deletedAt, deletedAt, batchId, projectId);
   if (result.changes === 0) {
     throw new Error('批次不存在');
   }
@@ -100,17 +137,31 @@ export function createBatchProductionVersion(
 ): string {
   const createdAt = nowIso(input.now);
   const versionNumber = db.transaction(() => {
+    const batch = db.prepare(`
+      SELECT id FROM batch_productions WHERE id = ? AND deletedAt IS NULL
+    `).get(batchId);
+    if (!batch) {
+      throw new Error('批次不存在');
+    }
     const existing = db.prepare(`
       SELECT MAX(versionNumber) AS maxVersion FROM batch_production_versions WHERE batchId = ?
     `).get(batchId) as { maxVersion: number | null };
     const next = (existing.maxVersion ?? 0) + 1;
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO batch_production_versions (id, batchId, versionNumber, copyCount, defaultsJson, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?)
+      UPDATE batch_production_versions
+      SET inputState = 'frozen', frozenAt = COALESCE(frozenAt, ?)
+      WHERE batchId = ? AND inputState = 'draft'
+    `).run(createdAt, batchId);
+    db.prepare(`
+      INSERT INTO batch_production_versions
+        (id, batchId, versionNumber, copyCount, defaultsJson, inputState, frozenAt, createdAt)
+      VALUES (?, ?, ?, ?, ?, 'draft', NULL, ?)
     `).run(id, batchId, next, input.copyCount, JSON.stringify(input.defaultsJson ?? {}), createdAt);
     db.prepare(`
-      UPDATE batch_productions SET currentVersionId = ?, updatedAt = ? WHERE id = ?
+      UPDATE batch_productions
+      SET currentVersionId = ?, status = 'draft', progressJson = '{}', updatedAt = ?
+      WHERE id = ?
     `).run(id, createdAt, batchId);
     return id;
   })();
@@ -141,25 +192,35 @@ export function listBatchVersions(db: Database.Database, batchId: string): Batch
 export function getBatchVersionOwner(
   db: Database.Database,
   batchVersionId: string,
-): { batchId: string; projectId: string; status: BatchProductionStatus } | undefined {
+): {
+  batchId: string;
+  projectId: string;
+  status: BatchProductionStatus;
+  inputState: 'draft' | 'frozen';
+} | undefined {
   return db.prepare(`
-    SELECT p.id AS batchId, p.projectId AS projectId, p.status AS status
+    SELECT p.id AS batchId, p.projectId AS projectId, p.status AS status, v.inputState AS inputState
     FROM batch_production_versions v
     JOIN batch_productions p ON p.id = v.batchId
-    WHERE v.id = ?
-  `).get(batchVersionId) as { batchId: string; projectId: string; status: BatchProductionStatus } | undefined;
+    WHERE v.id = ? AND p.deletedAt IS NULL
+  `).get(batchVersionId) as {
+    batchId: string;
+    projectId: string;
+    status: BatchProductionStatus;
+    inputState: 'draft' | 'frozen';
+  } | undefined;
 }
 
-function assertBatchVersionEditable(
+export function assertBatchVersionEditable(
   db: Database.Database,
   batchVersionId: string,
-): { batchId: string; projectId: string; status: BatchProductionStatus } {
+): NonNullable<ReturnType<typeof getBatchVersionOwner>> {
   const owner = getBatchVersionOwner(db, batchVersionId);
   if (!owner) {
     throw new Error('批次版本不存在');
   }
-  if (owner.status !== 'draft') {
-    throw new Error('批次已开始,批次版本的输入已冻结,不能追加素材或脚本快照');
+  if (owner.inputState !== 'draft') {
+    throw new Error('批次版本的输入已冻结,修改整体输入必须创建新版本');
   }
   return owner;
 }
@@ -167,7 +228,7 @@ function assertBatchVersionEditable(
 /**
  * 把一个素材及其采用的分析版本放入批次版本的素材池。
  * 池条目锁定引用:素材归档不影响历史批次追溯;同版本不能重复加入同一素材;
- * 素材必须与批次属于同一项目;批次一旦开始(draft 之外)输入冻结,不能再追加。
+ * 素材必须与批次属于同一项目;批次版本一旦开跑就永久冻结,不能再追加。
  */
 export function addAssetToPool(
   db: Database.Database,

@@ -4,14 +4,22 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
-import { createBatchProduction, createBatchProductionVersion } from '../lib/batch-production/versions.ts';
 import {
+  createBatchProduction,
+  createBatchProductionVersion,
+  updateBatchProductionStatus,
+} from '../lib/batch-production/versions.ts';
+import {
+  createBatchExternalScript,
   createProjectScript,
+  getBatchExternalScript,
   getProjectScript,
   getScriptSnapshot,
   listProjectScripts,
+  saveExternalScriptAsProjectScript,
   listScriptSnapshots,
   snapshotScriptIntoBatch,
+  updateBatchExternalScript,
   updateProjectScript,
 } from '../lib/batch-production/scripts.ts';
 
@@ -48,7 +56,19 @@ try {
     name: string; notnull: number; pk: number;
   }>;
   const scriptNames = new Map(scriptColumns.map((c) => [c.name, c]));
-  for (const name of ['id', 'projectId', 'sourceKind', 'sourceId', 'title', 'bodyText', 'sourceVersion', 'createdAt', 'updatedAt']) {
+  for (const name of [
+    'id',
+    'projectId',
+    'sourceKind',
+    'sourceId',
+    'title',
+    'bodyText',
+    'sourceVersion',
+    'ownerBatchVersionId',
+    'externalSourceId',
+    'createdAt',
+    'updatedAt',
+  ]) {
     assert.ok(scriptNames.has(name), `batch_scripts 缺少列 ${name}`);
   }
   assert.equal(scriptNames.get('id')?.pk, 1);
@@ -58,6 +78,12 @@ try {
   assert.ok(scriptForeignKeys.some((fk) => (
     fk.table === 'projects' && fk.from === 'projectId' && fk.to === 'id' && fk.on_delete.toUpperCase() === 'CASCADE'
   )), 'batch_scripts 缺少指向 projects 的级联外键');
+  assert.ok(scriptForeignKeys.some((fk) => (
+    fk.table === 'batch_production_versions'
+    && fk.from === 'ownerBatchVersionId'
+    && fk.to === 'id'
+    && fk.on_delete.toUpperCase() === 'RESTRICT'
+  )), '批次内外部文案必须归属于一个受删除保护的批次版本');
 
   const snapshotColumns = db.prepare(`PRAGMA table_info(batch_script_snapshots)`).all() as Array<{
     name: string; notnull: number; pk: number;
@@ -108,9 +134,12 @@ try {
   });
   assert.equal(getProjectScript(db, 'project-1', scriptId)?.bodyText, '第二版正文');
 
-  // 外部文案来源是独立脚本
-  const externalId = createProjectScript(db, 'project-1', {
-    sourceKind: 'external',
+  // --- 批次快照:开跑后固定正文与标题 ---
+  const batchId = createBatchProduction(db, 'project-1', '八月大促混剪', () => new Date('2026-08-01T10:00:00.000Z'));
+  const version1 = createBatchProductionVersion(db, batchId, { copyCount: 2, now: () => new Date('2026-08-01T10:05:00.000Z') });
+
+  // 外部文案是批次版本内的输入，不是项目脚本
+  const externalId = createBatchExternalScript(db, version1, {
     sourceId: 'external-1',
     title: '外部文案',
     bodyText: '外部文案正文',
@@ -122,23 +151,43 @@ try {
   // --- 外部文案默认只属于当前批次:不进入项目脚本列表 ---
   const projectScripts = listProjectScripts(db, 'project-1');
   assert.deepEqual(projectScripts.map(({ id }) => id), [scriptId], '外部文案不得出现在项目脚本列表中');
-  // 用户明确“保存为项目文案”后才进入项目脚本目录
-  updateProjectScript(db, 'project-1', externalId, {
+  assert.throws(
+    () => updateProjectScript(db, 'project-1', externalId, {
+      title: '不应成功',
+      bodyText: '不能借普通项目脚本更新接口提升外部文案',
+      sourceVersion: 'v2',
+    }),
+    /项目脚本不存在/,
+    '普通更新接口不得把外部文案静默转成项目脚本',
+  );
+
+  updateBatchExternalScript(db, version1, externalId, {
+    title: '外部文案第二版',
+    bodyText: '外部文案正文第二版',
+    sourceVersion: 'v2',
+    now: () => new Date('2026-08-01T09:44:00.000Z'),
+  });
+
+  // 用户明确“保存为项目文案”时复制出独立项目脚本，批次内来源仍保留原身份
+  const savedExternalId = saveExternalScriptAsProjectScript(db, version1, externalId, {
+    sourceId: 'saved-external-1',
+    now: () => new Date('2026-08-01T09:45:00.000Z'),
+  });
+  assert.notEqual(savedExternalId, externalId);
+  assert.equal(getProjectScript(db, 'project-1', externalId), undefined, '项目脚本读取接口不得暴露批次内文案');
+  assert.equal(getBatchExternalScript(db, version1, externalId)?.sourceKind, 'external');
+  assert.equal(getProjectScript(db, 'project-1', savedExternalId)?.sourceKind, 'script_draft');
+  updateProjectScript(db, 'project-1', savedExternalId, {
     title: '外部文案',
     bodyText: '外部文案正文',
     sourceVersion: 'v1',
-    sourceKind: 'script_draft',
     now: () => new Date('2026-08-01T09:45:00.000Z'),
   });
   assert.deepEqual(
     listProjectScripts(db, 'project-1').map(({ id }) => id).sort(),
-    [externalId, scriptId].sort(),
+    [savedExternalId, scriptId].sort(),
     '保存为项目文案后外部文案进入项目脚本列表',
   );
-
-  // --- 批次快照:开跑后固定正文与标题 ---
-  const batchId = createBatchProduction(db, 'project-1', '八月大促混剪', () => new Date('2026-08-01T10:00:00.000Z'));
-  const version1 = createBatchProductionVersion(db, batchId, { copyCount: 2, now: () => new Date('2026-08-01T10:05:00.000Z') });
 
   const snapshotId = snapshotScriptIntoBatch(db, version1, {
     scriptId,
@@ -179,10 +228,23 @@ try {
   });
   assert.equal(listScriptSnapshots(db, version1).length, 2);
   assert.equal(getScriptSnapshot(db, version1, externalSnapshot)?.copyCount, 3);
+  assert.equal(getScriptSnapshot(db, version1, externalSnapshot)?.bodyText, '外部文案正文第二版');
 
   // 新批次版本不受旧快照影响
   const version2 = createBatchProductionVersion(db, batchId, { copyCount: 1, now: () => new Date('2026-08-01T12:00:00.000Z') });
   assert.equal(listScriptSnapshots(db, version2).length, 0, '批次版本之间的脚本快照必须隔离');
+  assert.throws(
+    () => snapshotScriptIntoBatch(db, version2, { scriptId: externalId, copyCount: 1 }),
+    /不属于该批次版本/,
+    '外部文案不得跨批次版本复用',
+  );
+  const version2ExternalId = createBatchExternalScript(db, version2, {
+    sourceId: 'external-1',
+    title: '新版本外部文案',
+    bodyText: '相同外部来源标识可以在新版本形成独立输入',
+    sourceVersion: 'v1',
+  });
+  assert.notEqual(version2ExternalId, externalId);
 
   // --- 项目归属防串线:项目 2 的脚本不能快照进项目 1 的批次 ---
   db.prepare(`INSERT INTO projects (id, name) VALUES ('project-2', '项目二')`).run();
@@ -202,10 +264,9 @@ try {
   assert.equal(listScriptSnapshots(db, version2).length, 0, '串线尝试不得写入任何快照');
 
   // --- 批次开始后输入冻结:不能再向批次版本快照脚本 ---
-  db.prepare(`UPDATE batch_productions SET status = 'running', updatedAt = ? WHERE id = ?`)
-    .run('2026-08-01T12:20:00.000Z', batchId);
+  updateBatchProductionStatus(db, 'project-1', batchId, 'running', () => new Date('2026-08-01T12:20:00.000Z'));
   assert.throws(
-    () => snapshotScriptIntoBatch(db, version2, { scriptId: externalId, copyCount: 1 }),
+    () => snapshotScriptIntoBatch(db, version2, { scriptId, copyCount: 1 }),
     /冻结/,
     '批次开始后不得向既有批次版本追加脚本快照',
   );

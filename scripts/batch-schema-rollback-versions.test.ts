@@ -6,11 +6,11 @@ import Database from 'better-sqlite3';
 import { BATCH_SCHEMA_MIGRATIONS, ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 
 /**
- * 逐版本故障注入:v2–v7 各自中途失败时,单条迁移事务必须整体回滚,
+ * 逐版本故障注入:v2–v9 各自中途失败时,单条迁移事务必须整体回滚,
  * 不记录版本、不改动已存在数据、不应用后续版本,并进入兼容模式。
  */
 const latestVersion = BATCH_SCHEMA_MIGRATIONS.at(-1)?.version;
-assert.ok(latestVersion && latestVersion >= 8, '本测试要求 schema 至少到 v8');
+assert.ok(latestVersion && latestVersion >= 9, '本测试要求 schema 至少到 v9');
 
 /** 每个版本引入的一张表;预建其残缺结构使该版本的结构校验失败 */
 const FIRST_TABLE_BY_VERSION: Record<number, string> = {
@@ -135,6 +135,123 @@ try {
       '重试不得推进版本表',
     );
 
+    db.close();
+  }
+
+  // v7 在 CREATE TABLE/INDEX 之后的 ALTER 失败：本版本新建的产物表也必须回滚。
+  {
+    const caseRoot = path.join(root, 'fail-v7-after-create');
+    fs.mkdirSync(caseRoot, { recursive: true });
+    const db = createLegacyDatabase(caseRoot, 'workbench.db');
+    applyMigrationsUpTo(db, 7);
+    db.exec(`ALTER TABLE batch_output_plans ADD COLUMN currentArtifactId TEXT`);
+
+    const result = await ensureBatchSchemaReady({
+      db,
+      backupRoot: path.join(caseRoot, 'backups'),
+      now: () => new Date('2026-08-02T07:30:00.000Z'),
+    });
+    assert.equal(result.state, 'compatibility_only');
+    if (result.state === 'compatibility_only') assert.equal(result.code, 'migration_failed');
+    assert.equal(
+      db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_artifacts'`).get(),
+      undefined,
+      'v7 尾部 ALTER 失败时，前面新建的正式产物表必须一起回滚',
+    );
+    assert.deepEqual(
+      (db.prepare(`SELECT version FROM batch_schema_migrations ORDER BY version`).all() as Array<{ version: number }>)
+        .map(({ version }) => version),
+      [1, 2, 3, 4, 5, 6],
+    );
+    db.close();
+  }
+
+  // v8 复制旧数据时撞上新路径唯一约束：旧表、旧数据与版本记录必须原样保留。
+  {
+    const caseRoot = path.join(root, 'fail-v8-during-copy');
+    fs.mkdirSync(caseRoot, { recursive: true });
+    const db = createLegacyDatabase(caseRoot, 'workbench.db');
+    applyMigrationsUpTo(db, 8);
+    db.exec(`
+      INSERT INTO batch_productions
+        (id, projectId, name, createdAt, updatedAt, status, currentVersionId, progressJson)
+      VALUES ('batch-1', 'project-1', '批次', '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z', 'draft', 'batch-version-1', '{}');
+      INSERT INTO batch_production_versions
+        (id, batchId, versionNumber, copyCount, defaultsJson, createdAt)
+      VALUES ('batch-version-1', 'batch-1', 1, 1, '{}', '2026-08-02T00:00:00.000Z');
+      INSERT INTO batch_scripts
+        (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion, createdAt, updatedAt)
+      VALUES ('script-1', 'project-1', 'script_draft', 'draft-1', '标题', '正文', 'v1', '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z');
+      INSERT INTO batch_script_snapshots
+        (id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion, copyCount, createdAt)
+      VALUES ('snapshot-1', 'batch-version-1', 'script-1', '标题', '正文', 'v1', 1, '2026-08-02T00:00:00.000Z');
+      INSERT INTO batch_output_plans
+        (id, batchVersionId, scriptSnapshotId, seq, planJson, currentVersionId, createdAt, currentArtifactId)
+      VALUES ('plan-1', 'batch-version-1', 'snapshot-1', 1, '{}', 'output-version-2', '2026-08-02T00:00:00.000Z', NULL);
+      INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
+      VALUES
+        ('output-version-1', 'plan-1', 1, '{}', '2026-08-02T00:00:00.000Z'),
+        ('output-version-2', 'plan-1', 2, '{}', '2026-08-02T00:01:00.000Z');
+      INSERT INTO batch_artifacts
+        (id, projectId, batchId, batchVersionId, outputPlanId, outputVersionId, kind, relativePath, checksum, createdAt)
+      VALUES
+        ('artifact-1', 'project-1', 'batch-1', 'batch-version-1', 'plan-1', 'output-version-1', 'video', 'same.mp4', 'sha256:one', '2026-08-02T00:02:00.000Z'),
+        ('artifact-2', 'project-1', 'batch-1', 'batch-version-1', 'plan-1', 'output-version-2', 'video', 'same.mp4', 'sha256:two', '2026-08-02T00:03:00.000Z');
+    `);
+
+    const result = await ensureBatchSchemaReady({
+      db,
+      backupRoot: path.join(caseRoot, 'backups'),
+      now: () => new Date('2026-08-02T08:00:00.000Z'),
+    });
+    assert.equal(result.state, 'compatibility_only');
+    if (result.state === 'compatibility_only') assert.equal(result.code, 'migration_failed');
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM batch_artifacts`).get() as { n: number }).n, 2);
+    assert.equal(
+      db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_artifacts_new'`).get(),
+      undefined,
+      'v8 复制失败不得留下临时新表',
+    );
+    assert.deepEqual(
+      (db.prepare(`SELECT version FROM batch_schema_migrations ORDER BY version`).all() as Array<{ version: number }>)
+        .map(({ version }) => version),
+      [1, 2, 3, 4, 5, 6, 7],
+    );
+    db.close();
+  }
+
+  // v9 在多个 ALTER 已执行后失败：此前新增的生命周期列必须全部回滚。
+  {
+    const caseRoot = path.join(root, 'fail-v9-after-alters');
+    fs.mkdirSync(caseRoot, { recursive: true });
+    const db = createLegacyDatabase(caseRoot, 'workbench.db');
+    applyMigrationsUpTo(db, 9);
+    db.exec(`ALTER TABLE batch_scripts ADD COLUMN externalSourceId TEXT`);
+
+    const result = await ensureBatchSchemaReady({
+      db,
+      backupRoot: path.join(caseRoot, 'backups'),
+      now: () => new Date('2026-08-02T09:00:00.000Z'),
+    });
+    assert.equal(result.state, 'compatibility_only');
+    if (result.state === 'compatibility_only') assert.equal(result.code, 'migration_failed');
+    const productionColumns = db.prepare(`PRAGMA table_info(batch_productions)`).all() as Array<{ name: string }>;
+    assert.ok(!productionColumns.some(({ name }) => name === 'deletedAt'));
+    const versionColumns = db.prepare(`PRAGMA table_info(batch_production_versions)`).all() as Array<{ name: string }>;
+    assert.ok(!versionColumns.some(({ name }) => name === 'inputState'));
+    assert.ok(!versionColumns.some(({ name }) => name === 'frozenAt'));
+    const scriptColumns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{ name: string }>;
+    assert.ok(!scriptColumns.some(({ name }) => name === 'ownerBatchVersionId'));
+    assert.ok(scriptColumns.some(({ name }) => name === 'externalSourceId'), '故障注入前已有列必须保留');
+    assert.equal(
+      db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_batch_scripts_owner_version'`).get(),
+      undefined,
+    );
+    assert.deepEqual(
+      (db.prepare(`SELECT version FROM batch_schema_migrations ORDER BY version`).all() as Array<{ version: number }>)
+        .map(({ version }) => version),
+      [1, 2, 3, 4, 5, 6, 7, 8],
+    );
     db.close();
   }
 

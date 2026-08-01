@@ -114,6 +114,33 @@ try {
     /不存在/,
     'render 任务的目标成片版本必须存在',
   );
+  assert.throws(
+    () => createBatchTask(db, 'project-1', {
+      batchId,
+      workType: 'render',
+      targetKind: 'asset' as never,
+      targetId: outputVersionId,
+    }),
+    /目标类型/,
+    'render 任务必须显式指向 output_version',
+  );
+
+  // 同项目内也必须校验完整谱系，不能把另一批次的成片版本接到当前批次
+  const otherBatchId = createBatchProduction(db, 'project-1', '另一批次');
+  const otherBatchVersionId = createBatchProductionVersion(db, otherBatchId, { copyCount: 1 });
+  const otherSnapshotId = snapshotScriptIntoBatch(db, otherBatchVersionId, { scriptId, copyCount: 1 });
+  const [otherPlanId] = createOutputPlansForSnapshot(db, otherBatchVersionId, otherSnapshotId);
+  const otherOutputVersionId = createOutputVersion(db, otherPlanId, {});
+  assert.throws(
+    () => createBatchTask(db, 'project-1', {
+      batchId,
+      workType: 'render',
+      targetKind: 'output_version',
+      targetId: otherOutputVersionId,
+    }),
+    /不属于该批次/,
+    '同项目内其他批次的成片版本也不得串线创建 render 任务',
+  );
 
   // --- 任务生命周期:创建 → 尝试 1 失败 → 尝试 2 成功 ---
   const taskId = createBatchTask(db, 'project-1', {

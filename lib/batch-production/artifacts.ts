@@ -43,7 +43,7 @@ export function registerArtifact(
   const createdAt = nowIso(input.now);
   return db.transaction(() => {
     const batch = db.prepare(`
-      SELECT projectId FROM batch_productions WHERE id = ?
+      SELECT projectId FROM batch_productions WHERE id = ? AND deletedAt IS NULL
     `).get(input.batchId) as { projectId: string } | undefined;
     if (!batch) {
       throw new Error('批次不存在');
