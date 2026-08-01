@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   createValidatedSchemaUpgradeBackup,
   SchemaUpgradeBackupError,
+  type SchemaUpgradeBackupManifest,
   type SchemaUpgradeDiskSpaceProbe,
 } from './schema-upgrade/backup.ts';
 
@@ -17,6 +18,7 @@ export type VideoProviderSchemaReadiness =
       state: 'current' | 'ready';
       targetVersion: number;
       backupDirectory?: string;
+      backupManifest?: SchemaUpgradeBackupManifest;
     }
   | {
       state: 'compatibility_only';
@@ -24,6 +26,7 @@ export type VideoProviderSchemaReadiness =
       message: string;
       targetVersion: number;
       backupDirectory?: string;
+      backupManifest?: SchemaUpgradeBackupManifest;
     };
 
 function videoProviderTableSql(db: Database.Database): string {
@@ -117,6 +120,7 @@ export async function ensureVideoProviderGatewaySchemaReady(options: {
   }
 
   let backupDirectory: string | undefined;
+  let backupManifest: SchemaUpgradeBackupManifest | undefined;
   try {
     const backup = await createValidatedSchemaUpgradeBackup({
       db: options.db,
@@ -128,6 +132,7 @@ export async function ensureVideoProviderGatewaySchemaReady(options: {
       diskSpaceProbe: options.diskSpaceProbe,
     });
     backupDirectory = backup.directory;
+    backupManifest = backup.manifest;
   } catch (error) {
     const code = error instanceof SchemaUpgradeBackupError ? error.code : 'backup_failed';
     return {
@@ -144,7 +149,12 @@ export async function ensureVideoProviderGatewaySchemaReady(options: {
 
   try {
     rebuildVideoProviders(options.db, now().toISOString());
-    return { state: 'ready', targetVersion: TARGET_VERSION, backupDirectory };
+    return {
+      state: 'ready',
+      targetVersion: TARGET_VERSION,
+      backupDirectory,
+      backupManifest,
+    };
   } catch {
     return {
       state: 'compatibility_only',
@@ -152,6 +162,7 @@ export async function ensureVideoProviderGatewaySchemaReady(options: {
       message: '视频供应商数据结构升级失败，旧供应商仍可继续使用。',
       targetVersion: TARGET_VERSION,
       backupDirectory,
+      backupManifest,
     };
   }
 }

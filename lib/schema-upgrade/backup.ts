@@ -174,3 +174,21 @@ export async function createValidatedSchemaUpgradeBackup(params: {
     );
   }
 }
+
+export async function cleanupInterruptedSchemaUpgradeBackups(backupRoot: string): Promise<number> {
+  let entries;
+  try {
+    entries = await fsPromises.readdir(backupRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  const interrupted = entries.filter((entry) => (
+    entry.isDirectory()
+    && /^\.pre-(?:batch|video-gateway)-v\d+-/.test(entry.name)
+  ));
+  for (const entry of interrupted) {
+    await fsPromises.rm(path.join(backupRoot, entry.name), { recursive: true, force: true });
+  }
+  return interrupted.length;
+}

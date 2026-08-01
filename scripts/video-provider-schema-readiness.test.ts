@@ -46,6 +46,9 @@ try {
   const audit = await readSchemaUpgradeAudit(auditFilePath);
   assert.deepEqual(audit.map(({ scope, event }) => ({ scope, event })), [
     { scope: 'video-provider-gateway', event: 'started' },
+    { scope: 'video-provider-gateway', event: 'backup_completed' },
+    { scope: 'video-provider-gateway', event: 'migration_completed' },
+    { scope: 'video-provider-gateway', event: 'validation_completed' },
     { scope: 'video-provider-gateway', event: 'finished' },
   ]);
   assert.equal(audit.at(-1)?.result?.backupCreated, true);

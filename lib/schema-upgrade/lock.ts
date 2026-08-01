@@ -17,7 +17,6 @@ export interface AcquireSchemaUpgradeLockOptions {
   lockDatabasePath: string;
   timeoutMs?: number;
   pollIntervalMs?: number;
-  signal?: AbortSignal;
 }
 
 function isBusyError(error: unknown): boolean {
@@ -29,15 +28,8 @@ function isBusyError(error: unknown): boolean {
   );
 }
 
-function wait(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
-      clearTimeout(timeout);
-      reject(signal.reason);
-    }, { once: true });
-  });
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function acquireSchemaUpgradeLock(
@@ -47,7 +39,6 @@ export async function acquireSchemaUpgradeLock(
     lockDatabasePath,
     timeoutMs = 15_000,
     pollIntervalMs = 100,
-    signal,
   } = options;
   fs.mkdirSync(path.dirname(lockDatabasePath), { recursive: true });
 
@@ -56,7 +47,6 @@ export async function acquireSchemaUpgradeLock(
   const deadline = Date.now() + Math.max(0, timeoutMs);
 
   while (true) {
-    signal?.throwIfAborted();
     try {
       lockDb.exec('BEGIN IMMEDIATE');
       let released = false;
@@ -65,7 +55,7 @@ export async function acquireSchemaUpgradeLock(
           if (released) return;
           released = true;
           try {
-            if (lockDb.inTransaction) lockDb.exec('COMMIT');
+            if (lockDb.inTransaction) lockDb.exec('ROLLBACK');
           } finally {
             lockDb.close();
           }
@@ -80,7 +70,7 @@ export async function acquireSchemaUpgradeLock(
         lockDb.close();
         throw new SchemaUpgradeLockTimeoutError();
       }
-      await wait(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())), signal);
+      await wait(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
     }
   }
 }

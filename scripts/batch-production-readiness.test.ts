@@ -50,9 +50,18 @@ try {
   );
 
   const firstAudit = await readSchemaUpgradeAudit(healthyOptions.auditFilePath);
-  assert.deepEqual(firstAudit.map(({ event }) => event), ['started', 'finished']);
-  assert.equal(firstAudit[1]?.result?.available, true);
-  assert.equal(firstAudit[1]?.result?.schemaState, 'ready');
+  assert.deepEqual(firstAudit.map(({ event }) => event), [
+    'started',
+    'backup_completed',
+    'migration_completed',
+    'validation_completed',
+    'finished',
+  ]);
+  assert.equal(firstAudit.at(-1)?.result?.available, true);
+  assert.equal(firstAudit.at(-1)?.result?.schemaState, 'ready');
+  assert.match(firstAudit[1]?.details?.backup?.backupId ?? '', /^pre-batch-v1-/);
+  assert.equal(firstAudit[1]?.details?.backup?.validated, true);
+  assert.deepEqual(firstAudit[2]?.details?.migration?.appliedVersions, [1]);
 
   const current = await checkBatchProductionReadiness({
     ...healthyOptions,
@@ -156,6 +165,7 @@ try {
     scope: 'batch-production',
     at: '2026-08-01T11:59:00.000Z',
   });
+  fs.appendFileSync(interruptedAuditPath, '{"version":1', 'utf8');
   const recovered = await checkBatchProductionReadiness({
     db: interruptedDb,
     backupRoot: path.join(interruptedRoot, 'backups'),
@@ -169,6 +179,7 @@ try {
     record.event === 'interrupted_recovered'
     && record.attemptId === 'interrupted-attempt'
   )));
+  assert.ok(recoveredAudit.some((record) => record.event === 'corrupt_records_recovered'));
   interruptedDb.close();
 
   console.log('batch production readiness tests passed');

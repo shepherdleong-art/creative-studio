@@ -78,8 +78,8 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ### `lib/` 核心模块
 
 - `db.ts` / `db-migrations.ts` — SQLite 初始化（WAL 模式、外键开启）。`CORE_DB_MIGRATIONS` 是扁平的 `ALTER TABLE` / `UPDATE` 语句列表，每次启动逐条执行并 try/catch 跳过已应用的列；新增字段就往后追加，不要改已有条目。
-- `schema-upgrade/` — 共享数据库安全升级基础设施：SQLite Online Backup、磁盘预检、跨进程 SQLite 写锁和 JSONL 审计。锁数据库与审计文件均基于 `dataRoot()`，升级失败不得阻塞不依赖新结构的旧功能。
-- `batch-production/` — 新批量生产 Module；`schema.ts` 使用独立版本表和逐版本 `IMMEDIATE` 事务，`readiness.ts` 在共享升级锁内执行备份、迁移和持久审计。`GET /api/batch-production/readiness` 是批量入口的可用状态门禁；未就绪时只关闭批量入口，不能阻塞旧项目与单条精准混剪。
+- `schema-upgrade/` — 共享数据库安全升级基础设施：SQLite Online Backup、磁盘预检、跨进程 SQLite 写锁、可修复尾部中断的 JSONL 审计、统一 gate 和恢复候选重验。锁数据库与审计文件均基于 `dataRoot()`，升级失败不得阻塞不依赖新结构的旧功能。
+- `batch-production/` — 新批量生产 Module；`schema.ts` 使用独立版本表和逐版本 `IMMEDIATE` 事务，`readiness.ts` 通过共享 gate 执行备份、迁移和持久审计。`GET /api/batch-production/readiness` 是批量入口的可用状态门禁，`GET /api/batch-production/recovery` 只列出并重新验证恢复候选；运行中的 API 禁止覆盖主数据库。未就绪时只关闭批量入口，不能阻塞旧项目与单条精准混剪。
 - `video-provider-schema.ts` — 旧 `video_providers` CHECK 约束的安全升级；只有新增或改为 `openai-video` 供应商时才在共享锁内先备份再重建，普通数据库启动不得直接重建旧表。
 - `data-root.ts` — 解析本地数据根目录：优先 `CREATIVE_STUDIO_DATA_ROOT` 环境变量，否则 `process.cwd()`。`data/`、`storage/` 都挂在它下面，写路径时一律走 `dataRoot()`。
 - `local-image-url.ts` — 把 `storage/` 下的本地图片转成 `/api/images/...` 的 HTTP URL，供只接受真实 URL 的网关上游（腾讯等）拉取；地址默认自动探测（第一张非内部 IPv4 + `PORT`/3000），可用 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 覆盖，探测不到时调用方回退 data URL。

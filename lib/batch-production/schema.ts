@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   BatchSchemaBackupError,
   createValidatedBatchSchemaBackup,
+  type BatchSchemaBackupManifest,
   type BatchSchemaDiskSpaceProbe,
 } from './backup.ts';
 
@@ -42,6 +43,7 @@ export type BatchSchemaReadiness =
       appliedVersions: number[];
       targetVersion: number;
       backupDirectory?: string;
+      backupManifest?: BatchSchemaBackupManifest;
     }
   | {
       state: 'compatibility_only';
@@ -50,6 +52,7 @@ export type BatchSchemaReadiness =
       appliedVersions: number[];
       targetVersion: number;
       backupDirectory?: string;
+      backupManifest?: BatchSchemaBackupManifest;
     };
 
 export interface EnsureBatchSchemaOptions {
@@ -211,6 +214,7 @@ export async function ensureBatchSchemaReady(
 
   const startedAt = now();
   let backupDirectory: string | undefined;
+  let backupManifest: BatchSchemaBackupManifest | undefined;
   try {
     const backup = await createValidatedBatchSchemaBackup({
       db,
@@ -221,6 +225,7 @@ export async function ensureBatchSchemaReady(
       diskSpaceProbe,
     });
     backupDirectory = backup.directory;
+    backupManifest = backup.manifest;
   } catch (error) {
     return {
       state: 'compatibility_only',
@@ -249,6 +254,7 @@ export async function ensureBatchSchemaReady(
       appliedVersions: newlyApplied,
       targetVersion,
       backupDirectory,
+      backupManifest,
     };
   }
 
@@ -257,5 +263,6 @@ export async function ensureBatchSchemaReady(
     appliedVersions: newlyApplied,
     targetVersion,
     backupDirectory,
+    backupManifest,
   };
 }

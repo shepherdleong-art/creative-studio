@@ -9,7 +9,13 @@ const NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };
 export async function GET() {
   try {
     const readiness = await getBatchProductionReadiness();
-    return NextResponse.json(readiness, { headers: NO_STORE_HEADERS });
+    return NextResponse.json({
+      ...readiness,
+      recovery: {
+        endpoint: '/api/batch-production/recovery',
+        requiresApplicationShutdown: true,
+      },
+    }, { headers: NO_STORE_HEADERS });
   } catch {
     return NextResponse.json({
       available: false,
