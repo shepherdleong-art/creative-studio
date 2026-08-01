@@ -8,6 +8,7 @@ import { createBatchProduction, createBatchProductionVersion } from '../lib/batc
 import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
 import {
   createOutputPlan,
+  createOutputPlansForSnapshot,
   createOutputVersion,
   getOutputPlan,
   getOutputVersion,
@@ -94,18 +95,31 @@ try {
   const snapshotId = snapshotScriptIntoBatch(db, version1, { scriptId, copyCount: 3, now: () => new Date('2026-08-01T09:15:00.000Z') });
 
   // --- 份数决定计划数量:3 份 → 3 条稳定计划 ---
-  const planIds = createOutputPlansFromSnapshot(db, version1, snapshotId, () => new Date('2026-08-01T09:20:00.000Z'));
+  const planIds = createOutputPlansForSnapshot(db, version1, snapshotId, () => new Date('2026-08-01T09:20:00.000Z'));
   assert.equal(planIds.length, 3, '份数必须精确决定成片计划数量');
   const plans = listOutputPlans(db, version1);
   assert.deepEqual(plans.map(({ seq }) => seq), [1, 2, 3], '计划序号必须连续 1..N');
 
   // --- 重试不增加卡片:重复创建被拒绝,计划数量不变 ---
   assert.throws(
-    () => createOutputPlansFromSnapshot(db, version1, snapshotId, () => new Date('2026-08-01T09:21:00.000Z')),
-    /已存在/,
+    () => createOutputPlansForSnapshot(db, version1, snapshotId, () => new Date('2026-08-01T09:21:00.000Z')),
+    /已建立/,
     '同一快照不能重复创建计划',
   );
   assert.equal(listOutputPlans(db, version1).length, 3, '重试不得多出第 N+1 张卡片');
+
+  // --- 序号不得越过生成份数:copyCount=3 时 seq=4 必须被拒绝 ---
+  assert.throws(
+    () => createOutputPlan(db, version1, {
+      scriptSnapshotId: snapshotId,
+      seq: 4,
+      planJson: {},
+      now: () => new Date('2026-08-01T09:22:00.000Z'),
+    }),
+    /1\.\.3/,
+    '成片计划序号不能超过脚本快照的生成份数',
+  );
+  assert.equal(listOutputPlans(db, version1).length, 3);
 
   // 计划属于批次版本,新版本计划隔离
   const version2 = createBatchProductionVersion(db, batchId, { copyCount: 1, now: () => new Date('2026-08-01T10:00:00.000Z') });
@@ -138,27 +152,4 @@ try {
   console.log('batch domain plans tests passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
-}
-
-// 辅助:按快照份数创建全部成片计划(校验快照属于该批次版本)
-function createOutputPlansFromSnapshot(
-  db: Database.Database,
-  batchVersionId: string,
-  scriptSnapshotId: string,
-  now: () => Date,
-): string[] {
-  const snapshot = db.prepare(`
-    SELECT copyCount FROM batch_script_snapshots WHERE id = ? AND batchVersionId = ?
-  `).get(scriptSnapshotId, batchVersionId) as { copyCount: number } | undefined;
-  if (!snapshot) throw new Error('脚本快照不属于该批次版本');
-  const ids: string[] = [];
-  for (let seq = 1; seq <= snapshot.copyCount; seq += 1) {
-    ids.push(createOutputPlan(db, batchVersionId, {
-      scriptSnapshotId,
-      seq,
-      planJson: { segmentOrder: [seq] },
-      now,
-    }));
-  }
-  return ids;
 }

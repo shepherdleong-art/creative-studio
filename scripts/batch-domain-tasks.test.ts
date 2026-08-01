@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
-import { createBatchProduction } from '../lib/batch-production/versions.ts';
+import { createBatchProduction, createBatchProductionVersion } from '../lib/batch-production/versions.ts';
+import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
+import { createOutputPlansForSnapshot, createOutputVersion } from '../lib/batch-production/plans.ts';
 import {
   createBatchTask,
   finishTaskAttempt,
@@ -75,13 +77,50 @@ try {
   const attemptIndexes = db.prepare(`PRAGMA index_list(batch_task_attempts)`).all() as Array<{ name: string }>;
   assert.ok(attemptIndexes.some(({ name }) => name === 'idx_batch_task_attempts_task'), '缺少任务尝试索引');
 
-  // --- 任务生命周期:创建 → 尝试 1 失败 → 尝试 2 成功 ---
+  // --- 准备:完整链条(批次 → 版本 → 脚本快照 → 计划 → 成片版本) ---
   const batchId = createBatchProduction(db, 'project-1', '八月大促混剪', () => new Date('2026-08-01T09:00:00.000Z'));
+  const version1 = createBatchProductionVersion(db, batchId, { copyCount: 1, now: () => new Date('2026-08-01T09:05:00.000Z') });
+  const scriptId = createProjectScript(db, 'project-1', {
+    sourceKind: 'script_draft',
+    sourceId: 'draft-1',
+    title: '口播',
+    bodyText: '正文',
+    sourceVersion: 'v1',
+    now: () => new Date('2026-08-01T09:06:00.000Z'),
+  });
+  const snapshotId = snapshotScriptIntoBatch(db, version1, { scriptId, copyCount: 1, now: () => new Date('2026-08-01T09:07:00.000Z') });
+  const [planId] = createOutputPlansForSnapshot(db, version1, snapshotId, () => new Date('2026-08-01T09:08:00.000Z'));
+  const outputVersionId = createOutputVersion(db, planId, { now: () => new Date('2026-08-01T09:09:00.000Z') });
+
+  // 归属与目标校验
+  db.prepare(`INSERT INTO projects (id, name) VALUES ('project-2', '项目二')`).run();
+  assert.throws(
+    () => createBatchTask(db, 'project-2', {
+      batchId,
+      workType: 'render',
+      targetKind: 'output_version',
+      targetId: outputVersionId,
+    }),
+    /不属于/,
+    '其他项目的批次不能创建任务',
+  );
+  assert.throws(
+    () => createBatchTask(db, 'project-1', {
+      batchId,
+      workType: 'render',
+      targetKind: 'output_version',
+      targetId: 'no-such-version',
+    }),
+    /不存在/,
+    'render 任务的目标成片版本必须存在',
+  );
+
+  // --- 任务生命周期:创建 → 尝试 1 失败 → 尝试 2 成功 ---
   const taskId = createBatchTask(db, 'project-1', {
     batchId,
     workType: 'render',
     targetKind: 'output_version',
-    targetId: 'output-version-1',
+    targetId: outputVersionId,
     now: () => new Date('2026-08-01T09:10:00.000Z'),
   });
   assert.ok(taskId);
@@ -130,7 +169,7 @@ try {
     batchId,
     workType: 'render',
     targetKind: 'output_version',
-    targetId: 'output-version-a',
+    targetId: outputVersionId,
     now: () => new Date('2026-08-01T10:00:00.000Z'),
   });
   const attemptA = startTaskAttempt(db, taskA, () => new Date('2026-08-01T10:01:00.000Z'));
@@ -144,7 +183,7 @@ try {
     batchId,
     workType: 'render',
     targetKind: 'output_version',
-    targetId: 'output-version-b',
+    targetId: outputVersionId,
     now: () => new Date('2026-08-01T10:03:00.000Z'),
   });
   const attemptB = startTaskAttempt(db, taskB, () => new Date('2026-08-01T10:04:00.000Z'));

@@ -9,6 +9,7 @@ import {
   createProjectScript,
   getProjectScript,
   getScriptSnapshot,
+  listProjectScripts,
   listScriptSnapshots,
   snapshotScriptIntoBatch,
   updateProjectScript,
@@ -118,6 +119,23 @@ try {
   });
   assert.notEqual(externalId, scriptId);
 
+  // --- 外部文案默认只属于当前批次:不进入项目脚本列表 ---
+  const projectScripts = listProjectScripts(db, 'project-1');
+  assert.deepEqual(projectScripts.map(({ id }) => id), [scriptId], '外部文案不得出现在项目脚本列表中');
+  // 用户明确“保存为项目文案”后才进入项目脚本目录
+  updateProjectScript(db, 'project-1', externalId, {
+    title: '外部文案',
+    bodyText: '外部文案正文',
+    sourceVersion: 'v1',
+    sourceKind: 'script_draft',
+    now: () => new Date('2026-08-01T09:45:00.000Z'),
+  });
+  assert.deepEqual(
+    listProjectScripts(db, 'project-1').map(({ id }) => id).sort(),
+    [externalId, scriptId].sort(),
+    '保存为项目文案后外部文案进入项目脚本列表',
+  );
+
   // --- 批次快照:开跑后固定正文与标题 ---
   const batchId = createBatchProduction(db, 'project-1', '八月大促混剪', () => new Date('2026-08-01T10:00:00.000Z'));
   const version1 = createBatchProductionVersion(db, batchId, { copyCount: 2, now: () => new Date('2026-08-01T10:05:00.000Z') });
@@ -165,6 +183,33 @@ try {
   // 新批次版本不受旧快照影响
   const version2 = createBatchProductionVersion(db, batchId, { copyCount: 1, now: () => new Date('2026-08-01T12:00:00.000Z') });
   assert.equal(listScriptSnapshots(db, version2).length, 0, '批次版本之间的脚本快照必须隔离');
+
+  // --- 项目归属防串线:项目 2 的脚本不能快照进项目 1 的批次 ---
+  db.prepare(`INSERT INTO projects (id, name) VALUES ('project-2', '项目二')`).run();
+  const project2Script = createProjectScript(db, 'project-2', {
+    sourceKind: 'script_draft',
+    sourceId: 'draft-p2',
+    title: '项目二脚本',
+    bodyText: '项目二正文',
+    sourceVersion: 'v1',
+    now: () => new Date('2026-08-01T12:10:00.000Z'),
+  });
+  assert.throws(
+    () => snapshotScriptIntoBatch(db, version2, { scriptId: project2Script, copyCount: 1 }),
+    /不属于/,
+    '其他项目的脚本不得快照进本项目的批次版本',
+  );
+  assert.equal(listScriptSnapshots(db, version2).length, 0, '串线尝试不得写入任何快照');
+
+  // --- 批次开始后输入冻结:不能再向批次版本快照脚本 ---
+  db.prepare(`UPDATE batch_productions SET status = 'running', updatedAt = ? WHERE id = ?`)
+    .run('2026-08-01T12:20:00.000Z', batchId);
+  assert.throws(
+    () => snapshotScriptIntoBatch(db, version2, { scriptId: externalId, copyCount: 1 }),
+    /冻结/,
+    '批次开始后不得向既有批次版本追加脚本快照',
+  );
+  assert.equal(listScriptSnapshots(db, version2).length, 0);
 
   db.close();
   console.log('batch domain scripts tests passed');

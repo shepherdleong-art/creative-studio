@@ -167,12 +167,41 @@ try {
     now: () => new Date('2026-08-01T14:00:00.000Z'),
   });
   assert.notEqual(analysis2, analysis);
+  const analysisForOtherAsset = createAnalysisVersion(healthy.db, {
+    assetId: other,
+    analyzerVersion: '0.1.0',
+    providerId: 'provider-1',
+    model: 'model-a',
+    now: () => new Date('2026-08-01T14:00:30.000Z'),
+  });
   assert.deepEqual(listAnalysisVersions(healthy.db, first).map(({ id }) => id), [analysis, analysis2]);
-  assert.equal((healthy.db.prepare(`SELECT COUNT(*) AS n FROM batch_asset_analysis`).get() as { n: number }).n, 2);
+  assert.equal(
+    (healthy.db.prepare(`SELECT COUNT(*) AS n FROM batch_asset_analysis`).get() as { n: number }).n,
+    3,
+    '两份素材各有一份或多份分析版本',
+  );
 
   // 新分析不覆盖旧分析;素材当前指向由显式调用更新
   assert.equal(getAsset(healthy.db, 'project-1', first)?.currentAnalysisId, analysis, '新分析版本不得自动改写素材当前指向');
   setAssetCurrentAnalysis(healthy.db, 'project-1', first, analysis2, () => new Date('2026-08-01T14:01:00.000Z'));
+  assert.equal(getAsset(healthy.db, 'project-1', first)?.currentAnalysisId, analysis2);
+
+  // 无效分析版本:先校验后更新,报错后不得留下脏指向
+  assert.throws(
+    () => setAssetCurrentAnalysis(healthy.db, 'project-1', first, 'no-such-analysis', () => new Date('2026-08-01T14:02:00.000Z')),
+    /不属于/,
+    '指向不存在的分析版本必须报错',
+  );
+  assert.equal(
+    getAsset(healthy.db, 'project-1', first)?.currentAnalysisId,
+    analysis2,
+    '校验失败后不得把无效分析版本写入素材当前指向',
+  );
+  // 属于其他素材的分析版本:同样拒绝且不留脏数据
+  assert.throws(
+    () => setAssetCurrentAnalysis(healthy.db, 'project-1', first, analysisForOtherAsset, () => new Date('2026-08-01T14:03:00.000Z')),
+    /不属于/,
+  );
   assert.equal(getAsset(healthy.db, 'project-1', first)?.currentAnalysisId, analysis2);
 
   // --- 幂等:再次启动不重复备份、不报错 ---

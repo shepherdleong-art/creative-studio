@@ -177,6 +177,40 @@ try {
   // 旧版本没有素材池:新版本的内容不影响旧版本
   assert.equal(listPoolItems(db, version1).length, 0, '批次版本之间素材池必须隔离');
 
+  // --- 项目归属防串线:项目 2 的素材不能挂进项目 1 的批次 ---
+  db.prepare(`INSERT INTO projects (id, name) VALUES ('project-2', '项目二')`).run();
+  const project2Asset = createAsset(db, {
+    projectId: 'project-2',
+    sourceKind: 'linked',
+    locationJson: { path: '/photos/p2.mp4' },
+    contentFingerprint: 'sha256:ppp',
+    mediaKind: 'video',
+    now: () => new Date('2026-08-01T10:40:00.000Z'),
+  });
+  const project2Analysis = createAnalysisVersion(db, {
+    assetId: project2Asset,
+    analyzerVersion: '0.1.0',
+    providerId: 'provider-1',
+    model: 'model-a',
+    now: () => new Date('2026-08-01T10:41:00.000Z'),
+  });
+  assert.throws(
+    () => addAssetToPool(db, version2, { assetId: project2Asset, analysisId: project2Analysis }),
+    /不属于/,
+    '其他项目的素材不得加入本项目的批次版本',
+  );
+  assert.equal(listPoolItems(db, version2).length, 2, '串线尝试不得写入任何池条目');
+
+  // --- 批次开始后输入冻结:不能再向批次版本追加素材 ---
+  db.prepare(`UPDATE batch_productions SET status = 'running', updatedAt = ? WHERE id = ?`)
+    .run('2026-08-01T10:50:00.000Z', batchId);
+  assert.throws(
+    () => addAssetToPool(db, version2, { assetId: assetB, analysisId: analysisB }),
+    /冻结/,
+    '批次开始后不得向既有批次版本追加素材',
+  );
+  assert.equal(listPoolItems(db, version2).length, 2);
+
   // --- 重复启动幂等 ---
   const again = await ensureBatchSchemaReady({
     db,

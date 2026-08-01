@@ -55,12 +55,16 @@ try {
   const artifactForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_artifacts)`).all() as Array<{
     table: string; from: string; to: string; on_delete: string;
   }>;
-  assert.ok(artifactForeignKeys.some((fk) => (
-    fk.table === 'batch_productions' && fk.from === 'batchId' && fk.to === 'id' && fk.on_delete.toUpperCase() === 'CASCADE'
-  )), '正式产物表缺少指向批次的级联外键');
-  assert.ok(artifactForeignKeys.some((fk) => (
-    fk.table === 'batch_output_versions' && fk.from === 'outputVersionId' && fk.to === 'id' && fk.on_delete.toUpperCase() === 'RESTRICT'
-  )), '正式产物表必须限制成片版本被删除');
+  for (const [table, from] of [
+    ['batch_productions', 'batchId'],
+    ['batch_production_versions', 'batchVersionId'],
+    ['batch_output_plans', 'outputPlanId'],
+    ['batch_output_versions', 'outputVersionId'],
+  ] as const) {
+    assert.ok(artifactForeignKeys.some((fk) => (
+      fk.table === table && fk.from === from && fk.to === 'id' && fk.on_delete.toUpperCase() === 'RESTRICT'
+    )), `正式产物表必须限制被删除(${from})`);
+  }
   const artifactIndexes = db.prepare(`PRAGMA index_list(batch_artifacts)`).all() as Array<{ name: string }>;
   assert.ok(artifactIndexes.some(({ name }) => name === 'idx_batch_artifacts_plan'), '缺少正式产物计划索引');
 
@@ -81,18 +85,34 @@ try {
   });
   const snapshotId = snapshotScriptIntoBatch(db, version1, { scriptId, copyCount: 1, now: () => new Date('2026-08-01T09:15:00.000Z') });
   const planId = createOutputPlan(db, version1, { scriptSnapshotId: snapshotId, seq: 1, now: () => new Date('2026-08-01T09:20:00.000Z') });
-  const outputVersion1 = createOutputVersion(db, planId, { now: () => new Date('2026-08-01T09:25:00.000Z') });
-  const outputVersion2 = createOutputVersion(db, planId, { now: () => new Date('2026-08-01T09:30:00.000Z') });
-  const outputVersion3 = createOutputVersion(db, planId, { now: () => new Date('2026-08-01T09:35:00.000Z') });
+  const outputVersionId = createOutputVersion(db, planId, { now: () => new Date('2026-08-01T09:25:00.000Z') });
 
-  // --- 同一成片重新导出三次:三份不覆盖的正式产物,最新版自动成为当前成片 ---
+  // --- 关联链校验:批次/版本/计划必须属于同一项目同一链路 ---
+  db.prepare(`INSERT INTO projects (id, name) VALUES ('project-2', '项目二')`).run();
+  const otherBatch = createBatchProduction(db, 'project-2', '项目二批次', () => new Date('2026-08-01T09:26:00.000Z'));
+  assert.throws(
+    () => registerArtifact(db, 'project-1', {
+      batchId: otherBatch,
+      batchVersionId: version1,
+      outputPlanId: planId,
+      outputVersionId: outputVersionId,
+      kind: 'video',
+      relativePath: 'final-edits/plan-1/x.mp4',
+      checksum: 'sha256:x',
+    }),
+    /不属于/,
+    '其他项目的批次不能登记本项目的产物',
+  );
+  assert.equal(listPlanArtifacts(db, planId).length, 0, '关联链校验失败不得写入任何产物');
+
+  // --- 同一成片版本重新导出三次:三份不覆盖的正式产物,最新版自动成为当前成片 ---
   const artifact1 = registerArtifact(db, 'project-1', {
     batchId,
     batchVersionId: version1,
     outputPlanId: planId,
-    outputVersionId: outputVersion1,
+    outputVersionId,
     kind: 'video',
-    relativePath: 'final-edits/plan-1/v1.mp4',
+    relativePath: 'final-edits/plan-1/export-1.mp4',
     checksum: 'sha256:one',
     now: () => new Date('2026-08-01T10:00:00.000Z'),
   });
@@ -100,9 +120,9 @@ try {
     batchId,
     batchVersionId: version1,
     outputPlanId: planId,
-    outputVersionId: outputVersion2,
+    outputVersionId,
     kind: 'video',
-    relativePath: 'final-edits/plan-1/v2.mp4',
+    relativePath: 'final-edits/plan-1/export-2.mp4',
     checksum: 'sha256:two',
     now: () => new Date('2026-08-01T10:10:00.000Z'),
   });
@@ -110,9 +130,9 @@ try {
     batchId,
     batchVersionId: version1,
     outputPlanId: planId,
-    outputVersionId: outputVersion3,
+    outputVersionId,
     kind: 'video',
-    relativePath: 'final-edits/plan-1/v3.mp4',
+    relativePath: 'final-edits/plan-1/export-3.mp4',
     checksum: 'sha256:three',
     now: () => new Date('2026-08-01T10:20:00.000Z'),
   });
@@ -120,29 +140,29 @@ try {
   assert.notEqual(artifact1, artifact2);
   assert.notEqual(artifact2, artifact3);
   const allArtifacts = listPlanArtifacts(db, planId);
-  assert.equal(allArtifacts.length, 3, '每次成功导出必须新增正式产物,不覆盖旧文件');
+  assert.equal(allArtifacts.length, 3, '同一成片版本每次成功导出都必须新增正式产物,不覆盖旧文件');
   assert.deepEqual(allArtifacts.map(({ relativePath }) => relativePath), [
-    'final-edits/plan-1/v1.mp4',
-    'final-edits/plan-1/v2.mp4',
-    'final-edits/plan-1/v3.mp4',
+    'final-edits/plan-1/export-1.mp4',
+    'final-edits/plan-1/export-2.mp4',
+    'final-edits/plan-1/export-3.mp4',
   ]);
   assert.equal(getCurrentArtifactId(db, planId), artifact3, '最新导出必须自动成为当前成片');
-  assert.equal(getArtifact(db, 'project-1', artifact1)?.relativePath, 'final-edits/plan-1/v1.mp4');
+  assert.equal(getArtifact(db, 'project-1', artifact1)?.relativePath, 'final-edits/plan-1/export-1.mp4');
 
-  // 同一成片版本重复登记:拒绝
+  // 同一文件路径重复登记:拒绝
   assert.throws(
     () => registerArtifact(db, 'project-1', {
       batchId,
       batchVersionId: version1,
       outputPlanId: planId,
-      outputVersionId: outputVersion1,
+      outputVersionId,
       kind: 'video',
-      relativePath: 'final-edits/plan-1/v1-dup.mp4',
+      relativePath: 'final-edits/plan-1/export-1.mp4',
       checksum: 'sha256:one-dup',
       now: () => new Date('2026-08-01T10:30:00.000Z'),
     }),
     /已登记/,
-    '同一成片版本的同一类型产物不能重复登记',
+    '同一文件路径的正式产物不能重复登记',
   );
   assert.equal(listPlanArtifacts(db, planId).length, 3);
 
@@ -154,12 +174,12 @@ try {
   // --- 其他成片失败不影响已登记的正式产物 ---
   assert.equal(getArtifact(db, 'project-1', artifact3)?.checksum, 'sha256:three', '登记过的产物不受其他成片失败影响');
 
-  // --- 封面产物与视频产物独立登记 ---
+  // --- 封面登记不改变当前成片;当前成片只能指向视频 ---
   const cover = registerArtifact(db, 'project-1', {
     batchId,
     batchVersionId: version1,
     outputPlanId: planId,
-    outputVersionId: outputVersion3,
+    outputVersionId,
     kind: 'cover',
     relativePath: 'final-edits/plan-1/cover-3.jpg',
     checksum: 'sha256:cover',
@@ -167,6 +187,21 @@ try {
   });
   assert.ok(cover);
   assert.equal(listPlanArtifacts(db, planId).length, 4, '封面与视频是不同产物类型');
+  assert.equal(getCurrentArtifactId(db, planId), artifact1, '登记封面不得改写当前成片指向');
+  assert.throws(
+    () => setCurrentArtifact(db, 'project-1', planId, cover),
+    /视频/,
+    '当前成片不能指向封面',
+  );
+  assert.equal(getCurrentArtifactId(db, planId), artifact1);
+
+  // --- 删除批次被外键阻止:正式产物记录必须保留 ---
+  assert.throws(
+    () => db.prepare(`DELETE FROM batch_productions WHERE id = ?`).run(batchId),
+    /FOREIGN KEY|foreign key/i,
+    '批次仍被正式产物引用时,删除批次必须被拒绝,产物记录不得级联消失',
+  );
+  assert.equal(listPlanArtifacts(db, planId).length, 4, '产物记录必须保留');
 
   db.close();
   console.log('batch domain artifacts tests passed');
