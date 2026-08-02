@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
-export type BatchAssetSourceKind = 'linked' | 'managed';
+/**
+ * 素材来源类型的唯一权威定义。module4 是模块 4 产物来源,
+ * managed 是项目托管副本,linked 是用户原文件链接。
+ * 所有调用方(media-catalog 等)从这里导入,不得各自维护。
+ */
+export type BatchAssetSourceKind = 'module4' | 'managed' | 'linked';
+/**
+ * batch_assets.sourceKind 记录级列的类型(数据库 CHECK 只允许 linked|managed)。
+ * 它是首个来源写入的兼容字段;多来源的权威数据在 batch_asset_sources。
+ */
+export type BatchAssetRecordSourceKind = 'linked' | 'managed';
 export type BatchAssetMediaKind = 'video' | 'image';
 export type BatchAssetStatus = 'online' | 'offline' | 'archived';
 export type BatchAssetAnalysisStatus = 'ready' | 'failed';
@@ -9,7 +19,7 @@ export type BatchAssetAnalysisStatus = 'ready' | 'failed';
 export interface BatchAssetRow {
   id: string;
   projectId: string;
-  sourceKind: BatchAssetSourceKind;
+  sourceKind: BatchAssetRecordSourceKind;
   locationJson: string;
   contentFingerprint: string;
   mediaKind: BatchAssetMediaKind;
@@ -37,13 +47,19 @@ export interface BatchAssetAnalysisRow {
 export interface CreateBatchAssetInput {
   projectId: string;
   sourceKind: BatchAssetSourceKind;
-  /** 原文件定位线索(路径/URI 等),不是素材身份 */
+  /** 首个来源的定位线索,写入记录级兼容字段;多来源权威数据在 batch_asset_sources */
   locationJson: unknown;
   /** 内容身份,不依赖路径;同项目内相同指纹视为同一素材 */
   contentFingerprint: string;
   mediaKind: BatchAssetMediaKind;
   mediaJson?: unknown;
   now?: () => Date;
+}
+
+function recordSourceKindOf(sourceKind: BatchAssetSourceKind): BatchAssetRecordSourceKind {
+  // 记录级 CHECK 只允许 linked|managed;module4 作为首个来源时归入 managed。
+  // 权威的来源类型仍保留在 batch_asset_sources.sourceKind。
+  return sourceKind === 'linked' ? 'linked' : 'managed';
 }
 
 export interface CreateBatchAnalysisInput {
@@ -61,8 +77,12 @@ function nowIso(now?: () => Date): string {
 
 /**
  * 登记项目素材。素材身份是内容指纹,不依赖文件名和路径:
- * 同项目内相同指纹复用同一素材记录,只更新定位线索;
- * 同名但内容不同的文件(指纹不同)则成为新素材。
+ * 同项目内相同指纹复用同一素材记录;同名但内容不同的文件(指纹不同)
+ * 则成为新素材。
+ *
+ * 新来源一律通过 batch_asset_sources 登记:同指纹已存在素材时,本函数
+ * 只返回既有身份,不更新记录级的 sourceKind/locationJson,避免后登记的
+ * 来源覆盖首个来源的主位置。
  */
 export function createAsset(db: Database.Database, input: CreateBatchAssetInput): string {
   const createdAt = nowIso(input.now);
@@ -71,11 +91,6 @@ export function createAsset(db: Database.Database, input: CreateBatchAssetInput)
     WHERE projectId = ? AND contentFingerprint = ?
   `).get(input.projectId, input.contentFingerprint) as { id: string } | undefined;
   if (existing) {
-    db.prepare(`
-      UPDATE batch_assets
-      SET locationJson = ?, updatedAt = ?
-      WHERE id = ?
-    `).run(JSON.stringify(input.locationJson), createdAt, existing.id);
     return existing.id;
   }
   const id = randomUUID();
@@ -86,7 +101,7 @@ export function createAsset(db: Database.Database, input: CreateBatchAssetInput)
   `).run(
     id,
     input.projectId,
-    input.sourceKind,
+    recordSourceKindOf(input.sourceKind),
     JSON.stringify(input.locationJson),
     input.contentFingerprint,
     input.mediaKind,
@@ -146,6 +161,41 @@ export function markAssetArchived(db: Database.Database, projectId: string, asse
 /** 重新定位并核验内容身份后恢复使用 */
 export function restoreAssetOnline(db: Database.Database, projectId: string, assetId: string, now?: () => Date): void {
   updateAssetStatus(db, projectId, assetId, 'online', now);
+}
+
+/**
+ * 按来源聚合素材的可用状态并写回主记录:
+ * - 用户归档(archived)是管理选择,不被来源状态覆盖;
+ * - 至少一个来源 healthy 时素材可用(online);
+ * - 所有来源 offline 或 changed 时素材不可用(offline);
+ * 来源的健康状态各自保留在 batch_asset_sources。
+ */
+export function syncAssetStatusFromSources(
+  db: Database.Database,
+  assetId: string,
+  now?: () => Date,
+): BatchAssetStatus {
+  return db.transaction(() => {
+    const current = db.prepare(`
+      SELECT status FROM batch_assets WHERE id = ?
+    `).get(assetId) as { status: BatchAssetStatus } | undefined;
+    if (!current) {
+      throw new Error('素材不存在');
+    }
+    if (current.status === 'archived') {
+      return current.status;
+    }
+    const sources = db.prepare(`
+      SELECT health FROM batch_asset_sources WHERE assetId = ?
+    `).all(assetId) as Array<{ health: string }>;
+    const next: BatchAssetStatus = sources.some(({ health }) => health === 'healthy') ? 'online' : 'offline';
+    if (next !== current.status) {
+      db.prepare(`
+        UPDATE batch_assets SET status = ?, updatedAt = ? WHERE id = ?
+      `).run(next, nowIso(now), assetId);
+    }
+    return next;
+  })();
 }
 
 /**

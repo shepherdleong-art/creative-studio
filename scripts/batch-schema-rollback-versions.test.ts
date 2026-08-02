@@ -255,6 +255,61 @@ try {
     db.close();
   }
 
+  // v11 多个 ALTER 中途失败:此前新增的脚本元数据列必须全部回滚。
+  {
+    const caseRoot = path.join(root, 'fail-v11-after-alters');
+    fs.mkdirSync(caseRoot, { recursive: true });
+    const db = createLegacyDatabase(caseRoot, 'workbench.db');
+    applyMigrationsUpTo(db, 11);
+    db.exec(`ALTER TABLE batch_scripts ADD COLUMN coverTitleJson TEXT NOT NULL DEFAULT '{}'`);
+
+    const result = await ensureBatchSchemaReady({
+      db,
+      backupRoot: path.join(caseRoot, 'backups'),
+      now: () => new Date('2026-08-02T11:00:00.000Z'),
+    });
+    assert.equal(result.state, 'compatibility_only');
+    if (result.state === 'compatibility_only') assert.equal(result.code, 'migration_failed');
+    const scriptColumns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{ name: string }>;
+    assert.ok(!scriptColumns.some(({ name }) => name === 'shotSetId'), 'v11 失败时后续脚本元数据列必须回滚');
+    assert.ok(!scriptColumns.some(({ name }) => name === 'contentRevision'));
+    assert.ok(scriptColumns.some(({ name }) => name === 'coverTitleJson'), '故障注入前已有列必须保留');
+    const snapshotColumns = db.prepare(`PRAGMA table_info(batch_script_snapshots)`).all() as Array<{ name: string }>;
+    assert.ok(!snapshotColumns.some(({ name }) => name === 'coverTitleJson'), 'v11 失败时快照表元数据列必须回滚');
+    assert.deepEqual(
+      (db.prepare(`SELECT version FROM batch_schema_migrations ORDER BY version`).all() as Array<{ version: number }>)
+        .map(({ version }) => version),
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    );
+    db.close();
+  }
+
+  // v12 多个来源状态 ALTER 中途失败:本版本新增列必须整体回滚。
+  {
+    const caseRoot = path.join(root, 'fail-v12-after-first-alter');
+    fs.mkdirSync(caseRoot, { recursive: true });
+    const db = createLegacyDatabase(caseRoot, 'workbench.db');
+    applyMigrationsUpTo(db, 12);
+    db.exec(`ALTER TABLE batch_scripts ADD COLUMN sourceAvailable INTEGER NOT NULL DEFAULT 1`);
+
+    const result = await ensureBatchSchemaReady({
+      db,
+      backupRoot: path.join(caseRoot, 'backups'),
+      now: () => new Date('2026-08-02T12:00:00.000Z'),
+    });
+    assert.equal(result.state, 'compatibility_only');
+    if (result.state === 'compatibility_only') assert.equal(result.code, 'migration_failed');
+    const scriptColumns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{ name: string }>;
+    assert.ok(scriptColumns.some(({ name }) => name === 'sourceAvailable'), '故障注入前已有列必须保留');
+    assert.ok(!scriptColumns.some(({ name }) => name === 'catalogManaged'), 'v12 失败不得留下后续来源状态列');
+    assert.deepEqual(
+      (db.prepare(`SELECT version FROM batch_schema_migrations ORDER BY version`).all() as Array<{ version: number }>)
+        .map(({ version }) => version),
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    );
+    db.close();
+  }
+
   console.log('batch schema rollback version tests passed');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

@@ -8,6 +8,8 @@ import {
   BATCH_SCHEMA_MIGRATIONS,
   ensureBatchSchemaReady,
 } from '../lib/batch-production/schema.ts';
+import { syncProjectScripts } from '../lib/batch-production/script-catalog.ts';
+import { listProjectScripts } from '../lib/batch-production/scripts.ts';
 
 function createLegacyDatabase(root: string, name: string): { db: Database.Database; databasePath: string } {
   const databasePath = path.join(root, name);
@@ -116,6 +118,57 @@ try {
   assert.deepEqual(current.appliedVersions, []);
   assert.equal(listPublishedBackups(healthyBackupRoot).length, 1, '没有待执行迁移时不得重复备份');
   healthy.db.close();
+
+  // v11 → v12：有内容修订身份的同步脚本可被正向识别并退休；没有可验证
+  // 来源标记的历史项目脚本必须保守保留，避免误伤“保存为项目文案”的独立副本。
+  const v12Root = path.join(root, 'upgrade-v12');
+  fs.mkdirSync(v12Root, { recursive: true });
+  const v12Upgrade = createLegacyDatabase(v12Root, 'workbench.db');
+  v12Upgrade.db.exec(`
+    CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL);
+    CREATE TABLE script_drafts (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      outputJson TEXT NOT NULL,
+      createdAt TEXT NOT NULL
+    );
+  `);
+  applyMigrationsUpTo(v12Upgrade.db, 12);
+  v12Upgrade.db.prepare(`
+    INSERT INTO batch_scripts
+      (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
+       contentRevision, createdAt, updatedAt)
+    VALUES
+      ('legacy-synced-script', 'project-1', 'script_draft', 'deleted-draft',
+       '旧同步脚本', '上游已删除', '2', 'verified-revision',
+       '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+      ('legacy-independent-script', 'project-1', 'script_draft', 'saved-external',
+       '独立项目脚本', '必须保留', '1', '',
+       '2026-08-01T00:01:00.000Z', '2026-08-01T00:01:00.000Z')
+  `).run();
+  const v12Result = await ensureBatchSchemaReady({
+    db: v12Upgrade.db,
+    backupRoot: path.join(v12Root, 'backups'),
+    now: () => new Date('2026-08-02T12:00:00.000Z'),
+  });
+  assert.equal(v12Result.state, 'ready');
+  assert.equal(
+    (v12Upgrade.db.prepare(`SELECT catalogManaged FROM batch_scripts WHERE id = 'legacy-synced-script'`).get() as { catalogManaged: number }).catalogManaged,
+    1,
+    'v12 必须把有内容修订身份的旧同步脚本纳入可用性管理',
+  );
+  assert.equal(
+    (v12Upgrade.db.prepare(`SELECT catalogManaged FROM batch_scripts WHERE id = 'legacy-independent-script'`).get() as { catalogManaged: number }).catalogManaged,
+    0,
+    '无法正向证明来自目录同步的历史项目脚本必须保守保留',
+  );
+  syncProjectScripts(v12Upgrade.db, 'project-1');
+  assert.deepEqual(
+    listProjectScripts(v12Upgrade.db, 'project-1').map(({ id }) => id),
+    ['legacy-independent-script'],
+    '已删除的同步脚本退出列表，独立保存的项目脚本继续可用',
+  );
+  v12Upgrade.db.close();
 
   // v8 → v9：历史已运行版本保持冻结，只有草稿批次的当前版本可继续编辑。
   const v9Root = path.join(root, 'upgrade-v9');

@@ -330,6 +330,29 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         ON batch_asset_sources(assetId, createdAt);
     `,
   },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE batch_scripts ADD COLUMN coverTitleJson TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE batch_scripts ADD COLUMN shotSetId TEXT NOT NULL DEFAULT '';
+      ALTER TABLE batch_scripts ADD COLUMN contentRevision TEXT NOT NULL DEFAULT '';
+      ALTER TABLE batch_script_snapshots ADD COLUMN coverTitleJson TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE batch_script_snapshots ADD COLUMN shotSetId TEXT NOT NULL DEFAULT '';
+      ALTER TABLE batch_script_snapshots ADD COLUMN contentRevision TEXT NOT NULL DEFAULT '';
+    `,
+  },
+  {
+    version: 12,
+    sql: `
+      ALTER TABLE batch_scripts ADD COLUMN sourceAvailable INTEGER NOT NULL DEFAULT 1 CHECK(sourceAvailable IN (0, 1));
+      ALTER TABLE batch_scripts ADD COLUMN catalogManaged INTEGER NOT NULL DEFAULT 0 CHECK(catalogManaged IN (0, 1));
+      UPDATE batch_scripts
+      SET catalogManaged = 1
+      WHERE sourceKind = 'script_draft'
+        AND ownerBatchVersionId IS NULL
+        AND contentRevision <> '';
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -1040,6 +1063,30 @@ function validateSourceTables(db: Database.Database): void {
   }
 }
 
+function validateScriptMetadataColumns(db: Database.Database): void {
+  const scriptColumns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{ name: string }>;
+  for (const name of ['coverTitleJson', 'shotSetId', 'contentRevision']) {
+    if (!scriptColumns.some(({ name: column }) => column === name)) {
+      throw new Error(`项目脚本表缺少元数据列 ${name}`);
+    }
+  }
+  const snapshotColumns = db.prepare(`PRAGMA table_info(batch_script_snapshots)`).all() as Array<{ name: string }>;
+  for (const name of ['coverTitleJson', 'shotSetId', 'contentRevision']) {
+    if (!snapshotColumns.some(({ name: column }) => column === name)) {
+      throw new Error(`脚本快照表缺少元数据列 ${name}`);
+    }
+  }
+}
+
+function validateScriptAvailabilityColumns(db: Database.Database): void {
+  const columns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{ name: string }>;
+  for (const name of ['sourceAvailable', 'catalogManaged']) {
+    if (!columns.some(({ name: column }) => column === name)) {
+      throw new Error(`项目脚本表缺少来源状态列 ${name}`);
+    }
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -1051,6 +1098,8 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateArtifactTableConstraints,
   validateBatchVersionLifecycleColumns,
   validateSourceTables,
+  validateScriptMetadataColumns,
+  validateScriptAvailabilityColumns,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

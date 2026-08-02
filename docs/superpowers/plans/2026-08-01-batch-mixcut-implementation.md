@@ -65,9 +65,10 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 
 ### Phase A 项目输入（已完成）
 
-- 脚本目录 `ProjectScriptCatalog`：`lib/batch-production/script-catalog.ts` 的 `syncProjectScripts` 把第 3 步 `script_drafts` 同步进 `batch_scripts`，复用 `isUsableMixcutScriptDraft` 解析；以 `script_drafts.id` 为稳定来源身份去重，正文按有序叙事段落重组，草稿更新后未开始的批次脚本自动跟随最新版，无效草稿一律跳过。
-- 素材库 `ProjectMediaCatalog`：v10 新增来源表 `batch_asset_sources`（module4/managed/linked 三类来源，各自独立健康状态）；`lib/batch-production/media-catalog.ts` 提供模块 4 登记、链接来源登记、托管复制与来源健康核验，完整 SHA-256 确认内容身份，同一内容多来源只建一份素材。
-- 门禁验证：项目隔离（项目 2 的素材/脚本不进项目 1）、原文件安全（链接素材登记永不删除原文件）、脚本稳定身份（同一来源重复同步只保留一份）。
+- 脚本目录 `ProjectScriptCatalog`：`syncProjectScripts` 以 `script_drafts.id` 为稳定来源身份，保存正文、普通标题、结构化封面标题、shotSetId 与内容修订哈希；缺少结构化标题的旧 V2 草稿复用 `splitCoverTitle` 确定性拆分。v11 增加脚本/快照元数据，v12 增加来源可用性和目录同步所有权；可正向证明来自目录同步的上游草稿删除、失效或脱离项目分镜组后退出准备区，独立项目脚本和历史快照不被删除。升级前已删除且没有修订身份的旧同步行无法与独立项目脚本可靠区分，因此保守保留。
+- 素材库 `ProjectMediaCatalog`：v10 来源表 `batch_asset_sources` 是多来源权威数据（module4/managed/linked，各自独立健康状态）；`media-catalog.ts` 提供模块 4 登记（只信 `video_jobs` 记录：任务存在、成功状态、真实 shotSetId 与产物路径，拒绝跨项目/伪造路径）、链接来源登记（永不删除用户原文件）、托管复制（目录由 `dataRoot()` 推导，目标已存在重新核验完整 SHA-256）、来源健康核验（按可判别 kind 结构解析路径，旧 v10 托管位置按 `dataRoot()/storage/batch-media` 根恢复）与链接重新定位（完整指纹核验，内容不同拒绝替换）。完整 SHA-256 确认内容身份，同一内容多来源只建一份素材；记录级 `batch_assets.sourceKind/locationJson` 只由首个来源写入，新来源不得覆盖。
+- 批量准备区入口：`components/mixcut/MixcutWorkspace.tsx` 在项目第五步提供“单条精准混剪/批量生产”模式切换；批量模式先等待共享 readiness gate，再调用 `GET /api/batch-production/prepare?projectId=…` 自动同步脚本、登记成功视频、核验来源健康并展示项目输入。单条失败只记 warning；Phase A 不建立批次快照、不开始生产。
+- 门禁验证：项目隔离（项目 2 的素材/脚本不进项目 1）、原文件安全（链接素材登记永不删除原文件）、脚本稳定身份（同一来源重复同步只保留一份）、来源聚合（全部离线素材才不可用，任一恢复即可用）。
 
 ## 后续阶段
 

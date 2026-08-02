@@ -11,7 +11,7 @@ import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 import ScriptPanel from '@/components/ScriptPanel';
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
-import MixcutPanel from '@/components/mixcut/MixcutPanel';
+import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
@@ -609,7 +609,7 @@ export default function ProjectDetailPage() {
               </div>
             )}
             {activeTab === 'final-edit' && (
-              <MixcutPanel projectId={project.id}
+              <MixcutWorkspace projectId={project.id}
                 projectName={project.name}
                 projectInfo={projectInfo}
                 onProjectInfoChange={handleProjectInfoSaved}

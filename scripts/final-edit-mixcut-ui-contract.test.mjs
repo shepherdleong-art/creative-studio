@@ -13,11 +13,13 @@ const narrationSpeedControl = fs.readFileSync('components/mixcut/NarrationPlayba
 const finalPreview = fs.readFileSync('components/final-edit/FinalEditPreview.tsx', 'utf8');
 const exportStep = fs.readFileSync('components/mixcut/ExportStep.tsx', 'utf8');
 const styles = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
+const workspace = fs.readFileSync('components/mixcut/MixcutWorkspace.tsx', 'utf8');
 const page = fs.readFileSync('app/projects/[id]/page.tsx', 'utf8');
 const workbenchTabs = fs.readFileSync('components/ProjectWorkbenchTabs.tsx', 'utf8');
 
 assert.doesNotMatch(page, /searchParams\.get\('mixcut'\)|showMixcutV1|FinalEditPanel/, 'Phase 7 必须移除查询参数灰度和旧第五步表面');
-assert.match(page, /<MixcutPanel projectId=/, '项目页必须挂载真实 MixcutPanel');
+assert.match(page, /<MixcutWorkspace projectId=/, '项目页必须挂载智能混剪工作区');
+assert.match(workspace, /<MixcutPanel \{\.\.\.props\} \/>/, '智能混剪工作区必须保留真实 MixcutPanel');
 assert.match(workbenchTabs, /id: 'final-edit', label: '智能混剪'/, '正式第五步标签必须切换为智能混剪');
 assert.match(panel, /\/api\/projects\/\$\{projectId\}\/final-edit\/context/, 'MixcutPanel 必须读取真实 context API');
 assert.match(panel, /AbortController/, '快速切组必须取消旧请求，防止迟到响应覆盖当前组');

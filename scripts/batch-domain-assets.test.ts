@@ -124,7 +124,8 @@ try {
   const located = getAsset(healthy.db, 'project-1', first);
   assert.equal(located?.contentFingerprint, 'sha256:aaa');
   assert.equal(located?.status, 'online');
-  assert.equal((located?.locationJson as unknown as { path: string }).path, '/photos/moved/clip-a.mp4', '定位线索更新但身份不变');
+  // 同指纹复用只返回既有身份,不得覆盖记录级主位置;新位置由来源表表达
+  assert.equal((located?.locationJson as unknown as { path: string }).path, '/photos/clip-a.mp4', '重复登记不得覆盖首个来源的主位置');
 
   // --- 内容不同(指纹不同)是新素材,不能冒充 ---
   const other = createAsset(healthy.db, {

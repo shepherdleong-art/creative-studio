@@ -4,6 +4,10 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import type { VideoMediaProbe } from '../ffmpeg.ts';
+import {
+  isDetectedVideoContainerCompatible,
+  SUPPORTED_VIDEO_MIME_BY_EXTENSION,
+} from '../video-file-format.ts';
 import { resolveStoragePath } from './storage-path.ts';
 import type { FinalEditExternalAssetView } from './types.ts';
 
@@ -101,13 +105,6 @@ interface PendingAssetWrite {
   thumbnailExistedBefore: boolean;
 }
 
-const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
-  '.mp4': 'video/mp4',
-  '.mov': 'video/quicktime',
-  '.avi': 'video/x-msvideo',
-  '.webm': 'video/webm',
-};
-
 function currentTime(): string {
   return new Date().toISOString();
 }
@@ -153,7 +150,7 @@ function validateUpload(upload: ExternalAssetUpload): { extension: string; mimeT
   if (upload.mimeType.toLowerCase().startsWith('image/') || ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic'].includes(extension)) {
     throw new MaterialImportError('unsupported_media_kind', 'V1 只支持视频素材，不支持静态图片');
   }
-  const mimeType = VIDEO_MIME_BY_EXTENSION[extension];
+  const mimeType = SUPPORTED_VIDEO_MIME_BY_EXTENSION[extension];
   if (!mimeType) throw new MaterialImportError('unsupported_video_format', '仅支持 MP4、MOV、AVI、WebM 视频');
   const suppliedMime = upload.mimeType.trim().toLowerCase();
   if (suppliedMime && suppliedMime !== 'application/octet-stream' && !suppliedMime.startsWith('video/')) {
@@ -184,13 +181,9 @@ async function fingerprintUpload(upload: ExternalAssetUpload): Promise<string> {
 }
 
 function validateDetectedContainer(extension: string, detectedFormat: string | undefined): void {
-  const formats = new Set((detectedFormat || '').toLowerCase().split(',').map((value) => value.trim()).filter(Boolean));
-  const matches = extension === '.mp4' || extension === '.mov'
-    ? formats.has('mov') || formats.has('mp4')
-    : extension === '.avi'
-      ? formats.has('avi')
-      : formats.has('webm');
-  if (!matches) throw new MaterialImportError('video_format_mismatch', '视频内容与文件扩展名不一致');
+  if (!isDetectedVideoContainerCompatible(extension, detectedFormat)) {
+    throw new MaterialImportError('video_format_mismatch', '视频内容与文件扩展名不一致');
+  }
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -226,7 +219,7 @@ function ensureSafeRelativeDirectory(storageRoot: string, relativeDirectory: str
 }
 
 export function resolveImportedExternalAssetVideoPath(storageRoot: string, scope: ShotSetMaterialScope, relativePath: string, createDirectory = false): string {
-  if (!VIDEO_MIME_BY_EXTENSION[path.extname(relativePath).toLowerCase()]) {
+  if (!SUPPORTED_VIDEO_MIME_BY_EXTENSION[path.extname(relativePath).toLowerCase()]) {
     throw new MaterialImportError('unsafe_path', '外部素材路径扩展名不在视频白名单内');
   }
   const expectedDirectory = ensureSafeRelativeDirectory(storageRoot, materialsRelativeDirectory(scope), createDirectory);

@@ -12,6 +12,11 @@ export interface BatchScriptRow {
   title: string;
   bodyText: string;
   sourceVersion: string;
+  coverTitleJson: string;
+  shotSetId: string;
+  contentRevision: string;
+  sourceAvailable: number;
+  catalogManaged: number;
   ownerBatchVersionId: string | null;
   externalSourceId: string | null;
   createdAt: string;
@@ -25,8 +30,18 @@ export interface BatchScriptSnapshotRow {
   title: string;
   bodyText: string;
   sourceVersion: string;
+  coverTitleJson: string;
+  shotSetId: string;
+  contentRevision: string;
   copyCount: number;
   createdAt: string;
+}
+
+/** 脚本同步元数据:结构化封面标题、分镜组归属与内容修订身份 */
+export interface BatchScriptMetadata {
+  coverTitleJson?: unknown;
+  shotSetId?: string;
+  contentRevision?: string;
 }
 
 function nowIso(now?: () => Date): string {
@@ -46,10 +61,17 @@ export function createProjectScript(
     title: string;
     bodyText: string;
     sourceVersion: string;
+    metadata?: BatchScriptMetadata;
+    /** 仅 script-catalog 同步上游 script_drafts 时设为 true。 */
+    catalogManaged?: boolean;
     now?: () => Date;
   },
 ): string {
   const updatedAt = nowIso(input.now);
+  const coverTitleJson = JSON.stringify(input.metadata?.coverTitleJson ?? {});
+  const shotSetId = input.metadata?.shotSetId ?? '';
+  const contentRevision = input.metadata?.contentRevision ?? '';
+  const catalogManaged = input.catalogManaged ? 1 : 0;
   if (input.sourceKind !== 'script_draft') {
     throw new Error('外部文案必须在批次版本内创建');
   }
@@ -59,18 +81,34 @@ export function createProjectScript(
   `).get(projectId, input.sourceId) as { id: string } | undefined;
   if (existing) {
     db.prepare(`
-      UPDATE batch_scripts SET title = ?, bodyText = ?, sourceVersion = ?, updatedAt = ?
+      UPDATE batch_scripts
+      SET title = ?, bodyText = ?, sourceVersion = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?,
+          sourceAvailable = 1, catalogManaged = ?, updatedAt = ?
       WHERE id = ?
-    `).run(input.title, input.bodyText, input.sourceVersion, updatedAt, existing.id);
+    `).run(input.title, input.bodyText, input.sourceVersion, coverTitleJson, shotSetId, contentRevision, catalogManaged, updatedAt, existing.id);
     return existing.id;
   }
   const id = randomUUID();
   db.prepare(`
     INSERT INTO batch_scripts
       (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
-       ownerBatchVersionId, externalSourceId, createdAt, updatedAt)
-    VALUES (?, ?, 'script_draft', ?, ?, ?, ?, NULL, NULL, ?, ?)
-  `).run(id, projectId, input.sourceId, input.title, input.bodyText, input.sourceVersion, updatedAt, updatedAt);
+       coverTitleJson, shotSetId, contentRevision,
+       sourceAvailable, catalogManaged, ownerBatchVersionId, externalSourceId, createdAt, updatedAt)
+    VALUES (?, ?, 'script_draft', ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
+  `).run(
+    id,
+    projectId,
+    input.sourceId,
+    input.title,
+    input.bodyText,
+    input.sourceVersion,
+    coverTitleJson,
+    shotSetId,
+    contentRevision,
+    catalogManaged,
+    updatedAt,
+    updatedAt,
+  );
   return id;
 }
 
@@ -130,7 +168,8 @@ export function getProjectScript(
 ): BatchScriptRow | undefined {
   return db.prepare(`
     SELECT * FROM batch_scripts
-    WHERE id = ? AND projectId = ? AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
+    WHERE id = ? AND projectId = ? AND sourceKind = 'script_draft'
+      AND ownerBatchVersionId IS NULL AND sourceAvailable = 1
   `).get(scriptId, projectId) as BatchScriptRow | undefined;
 }
 
@@ -149,7 +188,8 @@ export function getBatchExternalScript(
 export function listProjectScripts(db: Database.Database, projectId: string): BatchScriptRow[] {
   return db.prepare(`
     SELECT * FROM batch_scripts
-    WHERE projectId = ? AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
+    WHERE projectId = ? AND sourceKind = 'script_draft'
+      AND ownerBatchVersionId IS NULL AND sourceAvailable = 1
     ORDER BY createdAt, id
   `).all(projectId) as BatchScriptRow[];
 }
@@ -260,11 +300,14 @@ export function snapshotScriptIntoBatch(
   return db.transaction(() => {
     const owner = assertBatchVersionEditable(db, batchVersionId);
     const script = db.prepare(`
-      SELECT id, projectId, sourceKind, ownerBatchVersionId, title, bodyText, sourceVersion
+      SELECT id, projectId, sourceKind, ownerBatchVersionId, title, bodyText, sourceVersion,
+             coverTitleJson, shotSetId, contentRevision, sourceAvailable
       FROM batch_scripts WHERE id = ?
     `).get(input.scriptId) as Pick<
       BatchScriptRow,
-      'id' | 'projectId' | 'sourceKind' | 'ownerBatchVersionId' | 'title' | 'bodyText' | 'sourceVersion'
+      | 'id' | 'projectId' | 'sourceKind' | 'ownerBatchVersionId' | 'title'
+      | 'bodyText' | 'sourceVersion' | 'coverTitleJson' | 'shotSetId' | 'contentRevision'
+      | 'sourceAvailable'
     > | undefined;
     if (!script) {
       throw new Error('项目脚本不存在');
@@ -275,6 +318,9 @@ export function snapshotScriptIntoBatch(
     if (script.sourceKind === 'external' && script.ownerBatchVersionId !== batchVersionId) {
       throw new Error('外部文案不属于该批次版本');
     }
+    if (script.sourceKind === 'script_draft' && script.sourceAvailable !== 1) {
+      throw new Error('项目脚本的上游来源已不可用');
+    }
     const duplicate = db.prepare(`
       SELECT 1 FROM batch_script_snapshots WHERE batchVersionId = ? AND sourceScriptId = ?
     `).get(batchVersionId, input.scriptId);
@@ -283,8 +329,10 @@ export function snapshotScriptIntoBatch(
     }
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO batch_script_snapshots (id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion, copyCount, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO batch_script_snapshots
+        (id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion,
+         coverTitleJson, shotSetId, contentRevision, copyCount, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       batchVersionId,
@@ -292,6 +340,9 @@ export function snapshotScriptIntoBatch(
       script.title,
       script.bodyText,
       script.sourceVersion,
+      script.coverTitleJson,
+      script.shotSetId,
+      script.contentRevision,
       input.copyCount,
       createdAt,
     );
