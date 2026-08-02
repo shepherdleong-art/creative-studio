@@ -313,6 +313,23 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         WHERE sourceKind = 'external';
     `,
   },
+  {
+    version: 10,
+    sql: `
+      CREATE TABLE IF NOT EXISTS batch_asset_sources (
+        id TEXT PRIMARY KEY,
+        assetId TEXT NOT NULL,
+        sourceKind TEXT NOT NULL CHECK(sourceKind IN ('module4', 'managed', 'linked')),
+        locationJson TEXT NOT NULL,
+        health TEXT NOT NULL DEFAULT 'healthy' CHECK(health IN ('healthy', 'offline', 'changed')),
+        createdAt TEXT NOT NULL,
+        UNIQUE(assetId, sourceKind, locationJson),
+        FOREIGN KEY(assetId) REFERENCES batch_assets(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_batch_asset_sources_asset
+        ON batch_asset_sources(assetId, createdAt);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -984,6 +1001,45 @@ function validateBatchVersionLifecycleColumns(db: Database.Database): void {
   }
 }
 
+function validateSourceTables(db: Database.Database): void {
+  const sourceColumns = db.prepare(`PRAGMA table_info(batch_asset_sources)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const sourceByName = new Map(sourceColumns.map((column) => [column.name, column]));
+  if (
+    sourceByName.get('id')?.pk !== 1
+    || sourceByName.get('assetId')?.notnull !== 1
+    || sourceByName.get('sourceKind')?.notnull !== 1
+    || sourceByName.get('locationJson')?.notnull !== 1
+    || sourceByName.get('health')?.notnull !== 1
+    || sourceByName.get('createdAt')?.notnull !== 1
+  ) {
+    throw new Error('素材来源表结构检查未通过');
+  }
+
+  const sourceForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_asset_sources)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!sourceForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_assets'
+    && foreignKey.from === 'assetId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'CASCADE'
+  ))) {
+    throw new Error('素材来源表素材外键检查未通过');
+  }
+
+  const sourceIndexes = db.prepare(`PRAGMA index_list(batch_asset_sources)`).all() as Array<{ name: string }>;
+  if (!sourceIndexes.some(({ name }) => name === 'idx_batch_asset_sources_asset')) {
+    throw new Error('素材来源索引检查未通过');
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -994,6 +1050,7 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateArtifactTableColumns,
   validateArtifactTableConstraints,
   validateBatchVersionLifecycleColumns,
+  validateSourceTables,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

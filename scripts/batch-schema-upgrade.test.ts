@@ -155,7 +155,11 @@ try {
     now: () => new Date('2026-08-01T01:00:00.000Z'),
   });
   assert.equal(upgradedV9.state, 'ready');
-  assert.deepEqual(upgradedV9.appliedVersions, [9]);
+  assert.deepEqual(
+    upgradedV9.appliedVersions,
+    BATCH_SCHEMA_MIGRATIONS.map(({ version }) => version).filter((version) => version >= 9),
+    '从 v8 升级必须按顺序应用 v9 及之后全部版本',
+  );
   assert.deepEqual(
     v9Upgrade.db.prepare(`
       SELECT id, inputState, frozenAt
