@@ -63,6 +63,12 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 - 公开领域接口：`lib/batch-production/{assets,versions,scripts,plans,tasks,artifacts}.ts`，每个切片均有独立聚焦测试。
 - 真实旧库在线备份副本升级核对：33 张旧表、4567 行数据不变。
 
+### Phase A 项目输入（已完成）
+
+- 脚本目录 `ProjectScriptCatalog`：`lib/batch-production/script-catalog.ts` 的 `syncProjectScripts` 把第 3 步 `script_drafts` 同步进 `batch_scripts`，复用 `isUsableMixcutScriptDraft` 解析；以 `script_drafts.id` 为稳定来源身份去重，正文按有序叙事段落重组，草稿更新后未开始的批次脚本自动跟随最新版，无效草稿一律跳过。
+- 素材库 `ProjectMediaCatalog`：v10 新增来源表 `batch_asset_sources`（module4/managed/linked 三类来源，各自独立健康状态）；`lib/batch-production/media-catalog.ts` 提供模块 4 登记、链接来源登记、托管复制与来源健康核验，完整 SHA-256 确认内容身份，同一内容多来源只建一份素材。
+- 门禁验证：项目隔离（项目 2 的素材/脚本不进项目 1）、原文件安全（链接素材登记永不删除原文件）、脚本稳定身份（同一来源重复同步只保留一份）。
+
 ## 后续阶段
 
 | 阶段 | 可见结果 | 关键门禁 |
