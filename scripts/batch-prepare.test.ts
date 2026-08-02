@@ -12,6 +12,7 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = externalDataRoot;
 const mediaCatalog = await import('../lib/batch-production/media-catalog.ts');
 const schemaModule = await import('../lib/batch-production/schema.ts');
 const prepareModule = await import('../lib/batch-production/prepare.ts');
+const assetsModule = await import('../lib/batch-production/assets.ts');
 
 function createLegacyDatabase(root: string, name: string): Database.Database {
   const db = new Database(path.join(root, name));
@@ -143,6 +144,20 @@ try {
   assert.ok(module4Source, '素材带模块 4 来源');
   assert.equal(module4Source?.health, 'healthy');
   assert.equal((module4Source?.location as { videoJobId: string }).videoJobId, 'video-job-1');
+  const currentAnalysisId = assetsModule.createAnalysisVersion(db, {
+    assetId: preparation.assets[0]!.id,
+    analyzerVersion: 'prepare-test-v1',
+    providerId: 'provider-1',
+    model: 'model-a',
+    analysisJson: { usable: true },
+  });
+  assetsModule.setAssetCurrentAnalysis(db, 'project-1', preparation.assets[0]!.id, currentAnalysisId);
+  const preparedWithAnalysis = await prepareModule.prepareBatchProductionInputs(db, 'project-1');
+  assert.equal(
+    preparedWithAnalysis.assets[0]?.currentAnalysisId,
+    currentAnalysisId,
+    '准备区必须暴露素材当前分析版本，UI 不得伪造 analysisId',
+  );
   assert.equal(
     preparation.warnings.some((warning) => warning.includes('video-job-missing-file')),
     true,

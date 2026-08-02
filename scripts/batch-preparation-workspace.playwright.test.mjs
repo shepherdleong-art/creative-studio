@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { chromium } from '@playwright/test';
+import { createAnalysisVersion, createAsset, setAssetCurrentAnalysis } from '../lib/batch-production/assets.ts';
+import { createProjectScript } from '../lib/batch-production/scripts.ts';
 
 const standaloneServer = path.join(process.cwd(), '.next', 'standalone', 'server.js');
 assert.ok(fs.existsSync(standaloneServer), '请先运行 npm run build，再执行批量准备区浏览器验收');
@@ -71,6 +74,65 @@ try {
     INSERT INTO projects (id, name, providerId, model, prompt, workflowType)
     VALUES ('batch-ui-project', '批量准备区验收项目', 'batch-ui-provider', 'smoke', 'smoke', 'complex_product')
   `).run();
+
+  const scriptAId = createProjectScript(db, 'batch-ui-project', {
+    sourceKind: 'script_draft',
+    sourceId: 'batch-ui-script-a',
+    title: '口播 A',
+    bodyText: '第一份用于生成两条成片的文案。',
+    sourceVersion: '1',
+    metadata: {
+      coverTitleJson: { primary: '口播 A', secondary: '两条成片' },
+      shotSetId: 'shot-set-a',
+      contentRevision: 'revision-a',
+    },
+  });
+  const scriptBId = createProjectScript(db, 'batch-ui-project', {
+    sourceKind: 'script_draft',
+    sourceId: 'batch-ui-script-b',
+    title: '口播 B',
+    bodyText: '第二份用于生成一条成片的文案。',
+    sourceVersion: '1',
+    metadata: {
+      coverTitleJson: { primary: '口播 B', secondary: '一条成片' },
+      shotSetId: 'shot-set-b',
+      contentRevision: 'revision-b',
+    },
+  });
+
+  function seedManagedAsset(idSuffix, withAnalysis) {
+    const relativePath = path.join('storage', 'batch-media', 'batch-ui-project', `${idSuffix}.mp4`);
+    const absolutePath = path.join(dataRoot, relativePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    const contents = Buffer.from(`batch-ui-${idSuffix}`);
+    fs.writeFileSync(absolutePath, contents);
+    const fingerprint = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+    const assetId = createAsset(db, {
+      projectId: 'batch-ui-project',
+      sourceKind: 'managed',
+      locationJson: { kind: 'managed', relativePath },
+      contentFingerprint: fingerprint,
+      mediaKind: 'video',
+      mediaJson: { displayName: idSuffix === 'ready' ? '已分析素材' : '待分析素材', durationSec: 12, width: 1080, height: 1920 },
+    });
+    db.prepare(`
+      INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
+      VALUES (?, ?, 'managed', ?, 'healthy', '2026-08-02T00:00:00.000Z')
+    `).run(randomUUID(), assetId, JSON.stringify({ kind: 'managed', relativePath }));
+    if (!withAnalysis) return { assetId, analysisId: null };
+    const analysisId = createAnalysisVersion(db, {
+      assetId,
+      analyzerVersion: 'batch-ui-v1',
+      providerId: 'batch-ui-provider',
+      model: 'smoke',
+      analysisJson: { usable: true },
+    });
+    setAssetCurrentAnalysis(db, 'batch-ui-project', assetId, analysisId);
+    return { assetId, analysisId };
+  }
+
+  const readyAsset = seedManagedAsset('ready', true);
+  seedManagedAsset('pending', false);
   db.close();
 
   browser = await chromium.launch({ headless: true });
@@ -78,9 +140,19 @@ try {
   page.setDefaultTimeout(10_000);
   page.on('console', (message) => browserMessages.push(`${message.type()}: ${message.text()}`));
   const batchResponses = [];
+  const batchRequests = [];
   page.on('response', (response) => {
     if (response.url().includes('/api/batch-production/')) {
       batchResponses.push({ url: response.url(), status: response.status() });
+    }
+  });
+  page.on('request', (request) => {
+    if (request.url().includes('/api/batch-production/')) {
+      batchRequests.push({
+        url: request.url(),
+        method: request.method(),
+        postData: request.postDataJSON(),
+      });
     }
   });
   await page.goto(`${baseUrl}/projects/batch-ui-project?tab=final-edit`, { waitUntil: 'domcontentloaded' });
@@ -100,11 +172,87 @@ try {
   );
 
   await page.getByRole('heading', { name: '批量生产准备区' }).waitFor();
-  await page.getByText('暂无可用项目脚本，请先在第 3 步保存脚本。').waitFor();
-  await page.getByText('暂无可用视频素材，请先在第 4 步完成视频生成。').waitFor();
-  assert.equal(await page.getByText('本阶段只核对输入，不会创建批次或开始生产。', { exact: false }).count(), 1);
+  await page.getByRole('heading', { name: '口播 A' }).waitFor();
+  await page.getByRole('heading', { name: '已分析素材' }).waitFor();
 
-  console.log('batch preparation workspace Playwright tests passed');
+  await page.getByLabel('新批次名称').fill('三条成片验收批次');
+  await page.getByRole('button', { name: '创建批次', exact: true }).click();
+  await page.getByText('批次已创建', { exact: false }).waitFor();
+
+  await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).check();
+  await page.getByLabel('口播 A 生成份数').fill('2');
+  await page.getByRole('checkbox', { name: '选择脚本 口播 B' }).check();
+  await page.getByLabel('口播 B 生成份数').fill('1');
+  await page.getByRole('checkbox', { name: '选择素材 已分析素材' }).check();
+  assert.equal(
+    await page.getByRole('checkbox', { name: '选择素材 待分析素材' }).isDisabled(),
+    true,
+    '没有 currentAnalysisId 的素材不得参与批次快照',
+  );
+  await page.getByText('尚未完成素材分析，暂不可选').waitFor();
+
+  await page.getByRole('button', { name: '确认整体输入', exact: true }).click();
+  await page.getByText('已确认 3 张成片计划').waitFor();
+  assert.equal(await page.getByTestId('batch-output-card').count(), 3, '必须精确展示份数合计 N 张成片计划');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+  await page.getByRole('heading', { name: '批量生产准备区' }).waitFor();
+  await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).waitFor();
+  assert.equal(await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).isChecked(), true, '刷新后必须恢复脚本 A 选择');
+  assert.equal(await page.getByLabel('口播 A 生成份数').inputValue(), '2', '刷新后必须恢复脚本 A 份数');
+  assert.equal(await page.getByRole('checkbox', { name: '选择脚本 口播 B' }).isChecked(), true, '刷新后必须恢复脚本 B 选择');
+  assert.equal(await page.getByLabel('口播 B 生成份数').inputValue(), '1', '刷新后必须恢复脚本 B 份数');
+  assert.equal(await page.getByRole('checkbox', { name: '选择素材 已分析素材' }).isChecked(), true, '刷新后必须恢复素材池选择');
+  assert.equal(await page.getByTestId('batch-output-card').count(), 3, '刷新后必须从批次详情恢复精确 N 张卡片');
+
+  await page.getByRole('button', { name: '开始批量生产', exact: true }).click();
+  await page.getByText('批次已开始生产').waitFor();
+
+  await page.getByRole('button', { name: '基于当前项目输入创建新版本' }).click();
+  await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).check();
+  await page.getByLabel('口播 A 生成份数').fill('2');
+  await page.getByRole('checkbox', { name: '选择脚本 口播 B' }).check();
+  await page.getByLabel('口播 B 生成份数').fill('1');
+  await page.getByRole('checkbox', { name: '选择素材 已分析素材' }).check();
+  await page.getByRole('button', { name: '确认整体输入', exact: true }).click();
+  await page.getByText('整体输入没有变化，继续使用已冻结的批次版本。').waitFor();
+  await page.getByRole('heading', { name: '已冻结的批次输入' }).waitFor();
+
+  const postStartDb = new Database(path.join(dataRoot, 'data', 'workbench.db'));
+  postStartDb.prepare(`
+    UPDATE batch_scripts SET title = '上游已改标题', bodyText = '上游已经改写，历史批次不得展示这段正文。'
+    WHERE id = ?
+  `).run(scriptAId);
+  postStartDb.close();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('tab', { name: '批量生产', exact: true }).click();
+  await page.getByRole('heading', { name: '已冻结的批次输入' }).waitFor();
+  await page.getByText('冻结脚本快照').first().waitFor();
+  await page.getByText('第一份用于生成两条成片的文案。').waitFor();
+  assert.equal(
+    await page.getByText('上游已经改写，历史批次不得展示这段正文。').count(),
+    0,
+    '冻结批次必须展示自己的脚本快照，不得改为当前项目脚本正文',
+  );
+
+  const created = batchRequests.find(({ method, url }) => method === 'POST' && new URL(url).pathname === '/api/batch-production/batches');
+  assert.equal(created?.postData?.projectId, 'batch-ui-project');
+  assert.equal(created?.postData?.name, '三条成片验收批次');
+
+  const snapshot = batchRequests.find(({ method, url }) => method === 'POST' && /\/api\/batch-production\/batches\/[^/]+\/snapshot$/.test(new URL(url).pathname));
+  assert.deepEqual(snapshot?.postData?.scriptSelections, [
+    { scriptId: scriptAId, copyCount: 2 },
+    { scriptId: scriptBId, copyCount: 1 },
+  ]);
+  assert.deepEqual(snapshot?.postData?.assetSelections, [
+    { assetId: readyAsset.assetId, analysisId: readyAsset.analysisId },
+  ]);
+
+  const started = batchRequests.find(({ method, url }) => method === 'PUT' && /\/api\/batch-production\/batches\/[^/]+\/start$/.test(new URL(url).pathname));
+  assert.ok(started, '开跑必须调用规范的 /batches/[id]/start API');
+
+  console.log('batch preparation and Phase B workspace Playwright tests passed');
 } catch (error) {
   process.stderr.write(serverOutput.join(''));
   if (page) {

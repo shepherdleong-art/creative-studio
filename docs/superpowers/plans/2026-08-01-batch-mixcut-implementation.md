@@ -70,6 +70,18 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 - 批量准备区入口：`components/mixcut/MixcutWorkspace.tsx` 在项目第五步提供“单条精准混剪/批量生产”模式切换；批量模式先等待共享 readiness gate，再调用 `GET /api/batch-production/prepare?projectId=…` 自动同步脚本、登记成功视频、核验来源健康并展示项目输入。单条失败只记 warning；Phase A 不建立批次快照、不开始生产。
 - 门禁验证：项目隔离（项目 2 的素材/脚本不进项目 1）、原文件安全（链接素材登记永不删除原文件）、脚本稳定身份（同一来源重复同步只保留一份）、来源聚合（全部离线素材才不可用，任一恢复即可用）。
 
+### Phase B 批次快照（已完成）
+
+> 范围说明：Phase 0.3 交接停点后，Phase B 由用户明确授权（“继续做 phase B”）后实施；批次 API 全部通过 readiness 门禁，旧库/升级锁失败/兼容模式下统一返回 503，不得绕过备份、锁、审计与迁移。
+
+- `lib/batch-production/batch-flow.ts` 的 `createBatchSnapshot`：一次调用确认可检查的 draft 整体输入——脚本选择与份数、素材池（锁定素材与分析版本）、成片计划（份数总和 = N 张卡片），整个确认过程在单个事务内完成，任一失败全部回滚；完全相同的整体输入幂等复用版本与稳定计划，输入变化才形成新批次版本。
+- 版本语义：未确认且没有选择的 draft 版本可直接复用；已有整体输入时，只有脚本、份数、素材、分析版本或默认设置发生变化才形成新版本（旧版本及其结果永远保留）。开跑后的相同输入仍幂等，修改整体输入才新建 draft 版本，旧版本保持冻结。
+- `startBatchProduction` 开跑：在同一事务内先同步并读取最新项目脚本，刷新 draft 快照，再校验至少一份素材以及逐脚本和全版本精确 `N` 条计划；校验通过后批次进入 running，当前版本永久冻结（`inputState = 'frozen'`）。
+- 批次 API：`POST /api/batch-production/batches`（创建）、`GET /api/batch-production/batches?projectId=`（列表）、`GET /api/batch-production/batches/[id]?projectId=`（详情：版本/快照/素材池/计划）、`POST /api/batch-production/batches/[id]/snapshot`（确认输入，返回计划总数）、`PUT /api/batch-production/batches/[id]/start`（开跑）。
+- 不变量验证：A 2 份 + B 1 份 = 3 张卡片；相同整体输入重复确认不增加版本或计划；失败重试只增加同一任务的 attempt，不增加版本或第 N+1 张卡；开跑时固定最新正文/标题/元数据，冻结后的上游更新不改写快照；跨项目脚本/素材/批次全部拒绝；素材写入中途失败会回滚版本指针和全部子记录。
+- 第五步用户链路：批量准备区可创建/选择批次、勾选多份脚本并分别设置份数、明确选择至少一份已有分析版本的素材、确认 draft 输入、查看精确 N 张成片卡片并开始生产；刷新后从批次详情恢复选择与卡片。
+- 未实现（Phase C 范围）：任务调度器、真实进度、暂停/恢复、应用重启恢复。
+
 ## 后续阶段
 
 | 阶段 | 可见结果 | 关键门禁 |

@@ -52,6 +52,8 @@ export interface PrepareAssetView {
   id: string;
   status: BatchAssetStatus;
   mediaKind: BatchAssetMediaKind;
+  /** 快照时必须提交的真实素材分析版本；为空时 UI 不得允许选择。 */
+  currentAnalysisId: string | null;
   media: PrepareAssetMedia;
   sources: PrepareSourceView[];
 }
@@ -139,6 +141,7 @@ export async function prepareBatchProductionInputs(
     id: row.id,
     status: row.status,
     mediaKind: row.mediaKind,
+    currentAnalysisId: row.currentAnalysisId,
     media: JSON.parse(row.mediaJson) as PrepareAssetMedia,
     sources: listAssetSources(db, row.id).map((source) => ({
       id: source.id,

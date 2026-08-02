@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { appendSchemaUpgradeAudit, readSchemaUpgradeAudit } from '../lib/schema-upgrade/audit.ts';
 import { acquireSchemaUpgradeLock } from '../lib/schema-upgrade/lock.ts';
-import { checkBatchProductionReadiness } from '../lib/batch-production/readiness.ts';
+import { batchReadinessUnavailable, checkBatchProductionReadiness } from '../lib/batch-production/readiness.ts';
 import { BATCH_SCHEMA_MIGRATIONS } from '../lib/batch-production/schema.ts';
 
 function createLegacyDatabase(root: string): Database.Database {
@@ -186,6 +186,50 @@ try {
   )));
   assert.ok(recoveredAudit.some((record) => record.event === 'corrupt_records_recovered'));
   interruptedDb.close();
+
+  // --- API 门禁判定:兼容模式必须判为不可用,current/ready 必须放行 ---
+  assert.deepEqual(
+    batchReadinessUnavailable({
+      available: false,
+      mode: 'compatibility_only',
+      code: 'migration_failed',
+      message: '升级未完成',
+      appliedVersions: [],
+      targetVersion: 12,
+      checkedAt: '2026-08-02T00:00:00.000Z',
+      auditId: 'audit-1',
+    }),
+    { code: 'migration_failed', message: '升级未完成' },
+    '兼容模式必须判为批量 API 不可用',
+  );
+  assert.equal(
+    batchReadinessUnavailable({
+      available: true,
+      mode: 'ready',
+      schemaState: 'current',
+      message: '批量功能已就绪。',
+      appliedVersions: [],
+      targetVersion: 12,
+      checkedAt: '2026-08-02T00:00:00.000Z',
+      auditId: 'audit-2',
+    }),
+    null,
+    'current 状态必须放行',
+  );
+  assert.equal(
+    batchReadinessUnavailable({
+      available: true,
+      mode: 'ready',
+      schemaState: 'ready',
+      message: '批量功能已完成安全升级。',
+      appliedVersions: [1, 2],
+      targetVersion: 12,
+      checkedAt: '2026-08-02T00:00:00.000Z',
+      auditId: 'audit-3',
+    }),
+    null,
+    'ready 状态必须放行',
+  );
 
   console.log('batch production readiness tests passed');
 } finally {

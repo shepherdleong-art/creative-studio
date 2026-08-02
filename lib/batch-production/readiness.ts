@@ -61,3 +61,19 @@ export function checkBatchProductionReadiness(
     },
   });
 }
+
+/**
+ * 批量 API 在兼容模式(备份/锁/迁移门禁未通过)下必须整体不可用。
+ * 纯函数,便于在 Node 测试中直接验证门禁判定。
+ */
+export function batchReadinessUnavailable(
+  readiness: BatchProductionReadiness,
+): { code: string; message: string } | null {
+  if (readiness.available === false) {
+    return {
+      code: readiness.code,
+      message: readiness.message,
+    };
+  }
+  return null;
+}
