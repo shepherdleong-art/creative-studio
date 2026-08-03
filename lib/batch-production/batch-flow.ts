@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { BatchDomainError } from './errors.ts';
 import { createOutputPlansForSnapshot, listOutputPlans } from './plans.ts';
+import { resolveColorSnapshot, type ColorSnapshotInput } from './lut-catalog.ts';
 import { syncProjectScripts } from './script-catalog.ts';
 import { snapshotScriptIntoBatch } from './scripts.ts';
 import { createBatchTask } from './tasks.ts';
@@ -11,7 +12,9 @@ import {
   listPoolItems,
   updateBatchProductionStatus,
   type BatchProductionStatus,
+  type ColorSnapshotV1,
 } from './versions.ts';
+import { colorSnapshotIdentity, upgradeColorSnapshot } from './color-pipeline.ts';
 
 export interface BatchScriptSelection {
   scriptId: string;
@@ -23,6 +26,11 @@ export interface BatchAssetSelection {
   assetId: string;
   /** 该素材在本批次采用的素材分析版本 */
   analysisId: string;
+  /** 关闭或引用一个已验证 LUT 的完整色彩快照;省略等同于关闭。
+   *  接受旧格式 {lutId} 或新格式 ColorSnapshotV1,服务端一律按项目内受管
+   *  LUT 解析成完整快照(§4.2):lutId 非空时指纹必须非空且与受管内容一致,
+   *  空字符串绕过被禁止。是冻结输入的一部分,与"是否已生成代理"无关。 */
+  colorSnapshot?: ColorSnapshotInput;
 }
 
 export interface BatchSnapshotInput {
@@ -102,6 +110,8 @@ function validateSelections(
     if (analysis.assetId !== assetId) {
       throw new BatchDomainError('invalid_input', '分析版本不属于该素材');
     }
+    // LUT 完整身份的校验由 resolveColorSnapshot 统一完成(见 createBatchSnapshot),
+    // 这里只做素材与分析归属的静态校验。
   }
 }
 
@@ -179,13 +189,19 @@ function matchesCurrentInput(
     ) return false;
   }
 
+  // 色彩快照(LUT 引用或关闭)是整体输入身份的一部分(§4.2):变化必须形成新版本,
+  // 不能被当成相同输入幂等合并。代理是否已生成不参与这个比较。
   const selectedAssets = [...input.assetSelections]
-    .map(({ assetId, analysisId }) => `${assetId}\u0000${analysisId}`)
+    .map(({ assetId, analysisId, colorSnapshot }) => (
+      `${assetId}\u0000${analysisId}\u0000${canonicalJson(colorSnapshotIdentity(upgradeColorSnapshot(colorSnapshot ?? { lutId: null })))}`
+    ))
     .sort();
   const storedAssets = (db.prepare(`
-    SELECT assetId, analysisId FROM batch_asset_pool_items WHERE batchVersionId = ?
-  `).all(batchVersionId) as Array<{ assetId: string; analysisId: string }>)
-    .map(({ assetId, analysisId }) => `${assetId}\u0000${analysisId}`)
+    SELECT assetId, analysisId, colorJson FROM batch_asset_pool_items WHERE batchVersionId = ?
+  `).all(batchVersionId) as Array<{ assetId: string; analysisId: string; colorJson: string }>)
+    .map(({ assetId, analysisId, colorJson }) => (
+      `${assetId}\u0000${analysisId}\u0000${canonicalJson(colorSnapshotIdentity(upgradeColorSnapshot(parseJsonOrRaw(colorJson))))}`
+    ))
     .sort();
   if (canonicalJson(storedAssets) !== canonicalJson(selectedAssets)) return false;
 
@@ -238,7 +254,22 @@ export function createBatchSnapshot(
     }
     validateSelections(db, projectId, batch.currentVersionId, input);
 
-    if (batch.currentVersionId && matchesCurrentInput(db, batch.currentVersionId, input)) {
+    // 服务端按项目内受管 LUT 解析完整色彩快照:客户端只提交 lutId,
+    // 指纹、色彩链版本、插值策略与 SDR 合同一律由服务端补齐并校验;
+    // lutId 非空时指纹不可能为空(空字符串绕过在此被拒绝)。
+    const resolvedAssetSelections = input.assetSelections.map(({ assetId, analysisId, colorSnapshot }) => ({
+      assetId,
+      analysisId,
+      colorSnapshot: resolveColorSnapshot(db, projectId, colorSnapshot),
+    }));
+    const resolvedInput: BatchSnapshotInput = {
+      scriptSelections: input.scriptSelections,
+      assetSelections: resolvedAssetSelections,
+      defaultsJson: input.defaultsJson,
+      now: input.now,
+    };
+
+    if (batch.currentVersionId && matchesCurrentInput(db, batch.currentVersionId, resolvedInput)) {
       const planIds = listOutputPlans(db, batch.currentVersionId).map(({ id }) => id);
       const owner = getBatchVersionOwner(db, batch.currentVersionId);
       const inputState: BatchSnapshotResult['inputState'] = owner?.inputState ?? 'draft';
@@ -291,8 +322,8 @@ export function createBatchSnapshot(
       planIds.push(...createOutputPlansForSnapshot(db, batchVersionId, snapshotId, input.now));
     }
 
-    for (const { assetId, analysisId } of input.assetSelections) {
-      addAssetToPool(db, batchVersionId, { assetId, analysisId, now: input.now });
+    for (const { assetId, analysisId, colorSnapshot } of resolvedAssetSelections) {
+      addAssetToPool(db, batchVersionId, { assetId, analysisId, colorSnapshot, now: input.now });
     }
 
     return {
@@ -485,6 +516,7 @@ export interface BatchSnapshotDetail {
     id: string;
     assetId: string;
     analysisId: string;
+    colorSnapshot: ColorSnapshotV1;
   }>;
   outputPlans: Array<{
     id: string;
@@ -549,7 +581,12 @@ export function getBatchSnapshotDetail(
     }
     return { ...snapshot, coverTitle: { primary, secondary } };
   });
-  const assetPool = listPoolItems(db, currentVersionId).map(({ id, assetId, analysisId }) => ({ id, assetId, analysisId }));
+  const assetPool = listPoolItems(db, currentVersionId).map(({ id, assetId, analysisId, colorJson }) => ({
+    id,
+    assetId,
+    analysisId,
+    colorSnapshot: upgradeColorSnapshot(parseJsonOrRaw(colorJson)),
+  }));
   const outputPlans = listOutputPlans(db, currentVersionId).map(({ id, seq }) => ({ id, seq }));
   return {
     batch,

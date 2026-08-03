@@ -143,18 +143,21 @@ async function executeOne(
     `).run(JSON.stringify(lastProgress), claim.attempt.id, workerId);
   };
 
-  // 独立心跳:定期续租并检查批次控制状态,不依赖执行器是否报告进度
+  // 独立心跳:定期续租并检查控制状态,不依赖执行器是否报告进度。
+  // 同时检查批次 controlState 和这个任务自己的 expectedState——单独暂停/取消
+  // 一个任务(不动批次 controlState)必须能在下一个心跳周期内被感知并中止,
+  // 不必等任务自然跑完。
   const heartbeat = setInterval(() => {
     if (!renewLease(db, claim.attempt.id, { workerId, now, leaseDurationMs })) {
       interrupt('lease_lost');
       return;
     }
     const control = db.prepare(`
-      SELECT p.controlState FROM batch_tasks t
+      SELECT p.controlState, t.expectedState FROM batch_tasks t
       JOIN batch_productions p ON p.id = t.batchId
       WHERE t.id = ?
-    `).get(claim.task.id) as { controlState: string } | undefined;
-    if (control && control.controlState !== 'running') {
+    `).get(claim.task.id) as { controlState: string; expectedState: string } | undefined;
+    if (control && (control.controlState !== 'running' || control.expectedState !== 'running')) {
       interrupt('batch_control');
     }
   }, heartbeatMs);

@@ -2,6 +2,7 @@
 
 import type { PrepareAssetView, PrepareScriptView, PrepareSourceView } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
+import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 
 const HEALTH_LABELS: Record<PrepareSourceView['health'], string> = {
   healthy: '可用',
@@ -133,10 +134,20 @@ export function BatchAssetSelectionCard({
   asset,
   selected,
   onSelectedChange,
+  luts,
+  lutId,
+  onLutChange,
+  onRequestProxy,
+  proxyBusy,
 }: {
   asset: PrepareAssetView;
   selected: boolean;
   onSelectedChange: (selected: boolean) => void;
+  luts?: BatchLutRow[];
+  lutId?: string | null;
+  onLutChange?: (lutId: string | null) => void;
+  onRequestProxy?: () => void;
+  proxyBusy?: boolean;
 }) {
   const displayName = asset.media.displayName || asset.media.filename || '视频素材';
   const selectable = asset.status === 'online' && Boolean(asset.currentAnalysisId);
@@ -171,6 +182,32 @@ export function BatchAssetSelectionCard({
           <div className="mt-4 space-y-2">
             {asset.sources.map((source) => <SourceRow key={source.id} source={source} />)}
           </div>
+          {selected && luts && onLutChange && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <label className="flex-1 text-xs text-ink-secondary">
+                <span className="mb-1 block">LUT</span>
+                <select
+                  aria-label={`${displayName} 的 LUT`}
+                  value={lutId ?? ''}
+                  onChange={(event) => onLutChange(event.target.value || null)}
+                  className="h-9 w-full rounded-lg border border-hairline bg-white px-2 text-ink"
+                >
+                  <option value="">关闭</option>
+                  {luts.filter((lut) => lut.status === 'active').map((lut) => (
+                    <option key={lut.id} value={lut.id}>{lut.displayName}</option>
+                  ))}
+                </select>
+              </label>
+              {onRequestProxy && (
+                <button
+                  type="button"
+                  className="btn-secondary h-9 self-end px-3 text-xs"
+                  disabled={proxyBusy}
+                  onClick={onRequestProxy}
+                >{proxyBusy ? '请求中…' : '为当前素材生成代理'}</button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </article>

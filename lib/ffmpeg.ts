@@ -58,21 +58,47 @@ export interface RunFfmpegOptions {
   /** 每次解析到 -progress 输出时回调（已换算为秒） */
   onProgressSec?: (outTimeSec: number) => void;
   timeoutMs?: number;
+  /** 中止直接 FFmpeg 子进程；等子进程真正退出后才 reject 一个可区分的 AbortError */
+  signal?: AbortSignal;
+}
+
+function makeAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
 }
 
 /** 运行 ffmpeg，非零退出码时用 stderr 尾部报错。args 必须含 -y 与输出路径。 */
 export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (opts.signal?.aborted) {
+      reject(makeAbortError('ffmpeg aborted before start'));
+      return;
+    }
     const child = spawn(resolveFfmpegPath(), args, { windowsHide: true });
     let stderrTail = '';
     let settled = false;
+    let aborted = false;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+    };
     const done = (err?: Error) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      cleanup();
       if (err) reject(err);
       else resolve();
     };
+    // 只标记 aborted 并终止子进程，不在这里直接 settle——真正的 reject 要等
+    // 'close' 事件确认子进程已经退出，避免"以为终止了但进程其实还在跑"。
+    const onAbort = () => {
+      if (settled || aborted) return;
+      aborted = true;
+      child.kill('SIGKILL');
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+
     const timer = opts.timeoutMs
       ? setTimeout(() => {
           child.kill('SIGKILL');
@@ -92,8 +118,9 @@ export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<
     child.stderr.on('data', (buf: Buffer) => {
       stderrTail = (stderrTail + buf.toString()).slice(-4000);
     });
-    child.on('error', (err) => done(err));
+    child.on('error', (err) => done(aborted ? makeAbortError(`ffmpeg aborted: ${err.message}`) : err));
     child.on('close', (code) => {
+      if (aborted) { done(makeAbortError('ffmpeg aborted')); return; }
       if (code === 0) done();
       else done(new Error(`ffmpeg exited with code ${code}: ${stderrTail.slice(-1500)}`));
     });

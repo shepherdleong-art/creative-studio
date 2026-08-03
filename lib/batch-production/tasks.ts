@@ -8,8 +8,10 @@ import type { BatchProductionStatus } from './versions.ts';
  * scheduler.ts / runner.ts / batch-flow.ts 一律从这里导入,不得重新定义
  * 漂移的裸 string 状态。
  */
-export type BatchTaskWorkType = 'asset_prepare' | 'render';
-export type BatchTaskTargetKind = 'asset' | 'output_version';
+export type BatchTaskWorkType = 'asset_prepare' | 'render' | 'proxy_generate';
+// legacy_proxy_cache 只可能由 v15 把无法回溯谱系的 v14 异常任务隔离成 cancelled
+// 历史记录；createBatchTask 的判别联合不接受它，运行时不能创建或调度这种目标。
+export type BatchTaskTargetKind = 'asset' | 'output_version' | 'proxy_request' | 'legacy_proxy_cache';
 export type BatchTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type BatchTaskAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export type BatchTaskExpectedState = 'running' | 'paused' | 'stopped';
@@ -103,6 +105,14 @@ export function createBatchTask(
     targetId: string;
     requestKey?: string;
     now?: () => Date;
+  } | {
+    batchId: string;
+    workType: 'proxy_generate';
+    targetKind: 'proxy_request';
+    /** 必须是一个真实存在的 batch_proxy_requests.id(稳定请求身份,cache 可删除但请求不悬空) */
+    targetId: string;
+    requestKey?: string;
+    now?: () => Date;
   }),
 ): string {
   const createdAt = nowIso(input.now);
@@ -116,13 +126,56 @@ export function createBatchTask(
     if (batch.projectId !== projectId) {
       throw new Error('批次不属于该项目');
     }
-    // requestKey 幂等:同一业务动作重复提交返回既有任务
+    // requestKey 幂等:同一业务动作重复提交返回既有任务。
+    // 但已取消的任务是死路(没有自动重试路径),不能让它永久占住 requestKey——
+    // 用户明确重新启用时,先释放旧任务持有的 requestKey(历史记录本身保留),
+    // 再往下走创建流程,在同一业务身份上形成一个全新的任务与 attempt 链。
+    // proxy_generate 额外约定:即使任务未取消,只要它指向的持久化请求的 cache
+    // 已被清理(currentCacheItemId 为空或 cache 行已删除),这个任务就是死路,
+    // 必须释放 requestKey 让同一业务身份形成新任务——不能被旧 succeeded/failed
+    // 任务的历史记录永久卡死(见 ProxyMediaCache.requestProxy)。
     if (input.requestKey) {
       const existing = db.prepare(`
-        SELECT id FROM batch_tasks WHERE requestKey = ? AND projectId = ?
-      `).get(input.requestKey, projectId) as { id: string } | undefined;
+        SELECT id, batchId, status, targetId, targetKind FROM batch_tasks WHERE requestKey = ? AND projectId = ?
+      `).get(input.requestKey, projectId) as {
+        id: string;
+        batchId: string;
+        status: BatchTaskStatus;
+        targetId: string;
+        targetKind: BatchTaskTargetKind;
+      } | undefined;
       if (existing) {
-        return existing.id;
+        if (existing.status !== 'cancelled') {
+          const proxyTarget = existing.targetKind === 'proxy_request' ? db.prepare(`
+            SELECT c.status AS cacheStatus, c.pendingDeleteAt AS pendingDeleteAt
+            FROM batch_proxy_requests r
+            JOIN batch_proxy_cache_items c ON c.id = r.currentCacheItemId
+            WHERE r.id = ?
+          `).get(existing.targetId) as {
+            cacheStatus: 'pending' | 'ready' | 'failed';
+            pendingDeleteAt: string | null;
+          } | undefined : undefined;
+          const targetStillValid = existing.targetKind !== 'proxy_request' || Boolean(
+            proxyTarget
+            && !proxyTarget.pendingDeleteAt
+            && (
+              existing.status === 'queued'
+              || existing.status === 'running'
+              || (existing.status === 'succeeded' && proxyTarget.cacheStatus === 'ready')
+            )
+          );
+          if (targetStillValid) {
+            if (
+              existing.batchId !== input.batchId
+              || existing.targetKind !== input.targetKind
+              || existing.targetId !== input.targetId
+            ) {
+              throw new Error('requestKey 已属于其他批次或业务目标');
+            }
+            return existing.id;
+          }
+        }
+        db.prepare(`UPDATE batch_tasks SET requestKey = NULL WHERE id = ?`).run(existing.id);
       }
     }
     if (input.workType === 'render') {
@@ -154,6 +207,32 @@ export function createBatchTask(
       }
       if (asset.projectId !== projectId) {
         throw new Error('asset_prepare 任务的目标素材不属于该项目');
+      }
+    } else if (input.workType === 'proxy_generate') {
+      if (input.targetKind !== 'proxy_request') {
+        throw new Error('proxy_generate 任务的目标类型必须是 proxy_request');
+      }
+      // targetId 必须指向一个真实存在的持久化代理请求(不是可删除的 cache 行);
+      // 请求身份稳定,cache 可删除但请求不悬空,任务不会因此失去目标。
+      const request = db.prepare(`
+        SELECT r.projectId, r.batchId, r.batchVersionId, v.batchId AS versionBatchId
+        FROM batch_proxy_requests r
+        JOIN batch_production_versions v ON v.id = r.batchVersionId
+        WHERE r.id = ?
+      `).get(input.targetId) as {
+        projectId: string;
+        batchId: string;
+        batchVersionId: string;
+        versionBatchId: string;
+      } | undefined;
+      if (!request) {
+        throw new Error('proxy_generate 任务的目标代理请求不存在');
+      }
+      if (request.projectId !== projectId) {
+        throw new Error('proxy_generate 任务的目标代理请求不属于该项目');
+      }
+      if (request.batchId !== input.batchId || request.versionBatchId !== input.batchId) {
+        throw new Error('proxy_generate 任务的目标代理请求不属于该批次谱系');
       }
     }
     const id = randomUUID();

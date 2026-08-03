@@ -67,11 +67,28 @@ try {
   assert.equal(batch.available, true, '真实旧库副本必须安全通过批量结构门禁');
 
   const after = fingerprintLegacyTables(copiedDb);
+  // batch_luts: v15 迁移的受管内容指纹归一化目标(裸 hex → sha256:hex),
+  // 行数必须不变,内容指纹必须带上 sha256: 前缀——这一处有意变化。
+  // batch_schema_migrations: 升级版本记账表,追加 v15 记录是预期行为。
   for (const [tableName, expected] of before) {
+    if (tableName === 'batch_luts') {
+      assert.equal(after.get(tableName)?.rowCount, expected.rowCount, 'batch_luts 行数在迁移中不得变化');
+      continue;
+    }
+    if (tableName === 'batch_schema_migrations') {
+      continue;
+    }
     assert.deepEqual(
       after.get(tableName),
       expected,
       `${tableName} 的旧数据在副本升级演练中发生变化`,
+    );
+  }
+  const lutRows = copiedDb.prepare(`SELECT id, contentFingerprint FROM batch_luts ORDER BY id`).all() as Array<{ id: string; contentFingerprint: string }>;
+  for (const lut of lutRows) {
+    assert.ok(
+      lut.contentFingerprint.startsWith('sha256:'),
+      `v15 必须把 LUT 指纹归一化为 sha256: 前缀(id=${lut.id}, 实际=${lut.contentFingerprint})`,
     );
   }
   assert.deepEqual(copiedDb.pragma('integrity_check'), [{ integrity_check: 'ok' }]);

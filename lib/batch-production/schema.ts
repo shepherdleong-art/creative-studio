@@ -394,6 +394,390 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         ON batch_task_attempts(taskId, attemptNumber);
     `,
   },
+  {
+    version: 14,
+    sql: `
+      -- LUT 受管内容身份:项目作用域、完整内容指纹、受管相对路径、显示名、验证信息、active/archived 状态
+      CREATE TABLE IF NOT EXISTS batch_luts (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        contentFingerprint TEXT NOT NULL,
+        displayName TEXT NOT NULL,
+        relativePath TEXT NOT NULL,
+        fileSizeBytes INTEGER NOT NULL,
+        verifiedAt TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        UNIQUE(projectId, contentFingerprint),
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_luts_identity
+        ON batch_luts(projectId, contentFingerprint);
+      CREATE INDEX IF NOT EXISTS idx_batch_luts_project
+        ON batch_luts(projectId, status, createdAt);
+
+      -- 批次版本中每份素材的显式色彩快照(关闭或引用一个已验证 LUT);关闭也必须是确定状态,
+      -- 因此用 NOT NULL DEFAULT 而不是可空列。
+      ALTER TABLE batch_asset_pool_items ADD COLUMN colorJson TEXT NOT NULL DEFAULT '{"lutId":null}';
+
+      -- 代理缓存项:proxyKey 是原片指纹+profile+色彩快照+色彩链版本共同派生的全局唯一身份
+      CREATE TABLE IF NOT EXISTS batch_proxy_cache_items (
+        id TEXT PRIMARY KEY,
+        proxyKey TEXT NOT NULL,
+        projectId TEXT NOT NULL,
+        assetId TEXT NOT NULL,
+        profileVersion TEXT NOT NULL,
+        colorJson TEXT NOT NULL DEFAULT '{"lutId":null}',
+        relativePath TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'ready', 'failed')),
+        mediaJson TEXT NOT NULL DEFAULT '{}',
+        fileSizeBytes INTEGER NOT NULL DEFAULT 0,
+        checksum TEXT,
+        pendingDeleteAt TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        UNIQUE(proxyKey),
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(assetId) REFERENCES batch_assets(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_proxy_cache_items_key
+        ON batch_proxy_cache_items(proxyKey);
+      CREATE INDEX IF NOT EXISTS idx_batch_proxy_cache_items_project
+        ON batch_proxy_cache_items(projectId, assetId, status);
+
+      -- 扩展 batch_tasks.workType 支持 proxy_generate(targetKind 本身没有 CHECK,可直接使用 proxy_request)。
+      -- batch_tasks 是 batch_task_attempts 的 FK 父表:SQLite 在 foreign_keys=ON 时,
+      -- DROP TABLE 父表会先对其做隐式 DELETE 并触发子表 ON DELETE CASCADE,
+      -- 若直接 DROP 旧 batch_tasks 会连带清空全部历史 batch_task_attempts。
+      -- 因此必须先让新 attempts 表引用新 tasks 表(此时旧表仍持有全部数据),
+      -- 依次丢弃旧 attempts(叶子表,无人引用它,可安全 DROP)、
+      -- 再丢弃旧 tasks(此时已没有任何表引用它,DROP 不会级联到任何数据),
+      -- 最后把两张新表分别改名到位——SQLite 的表改名会自动重写引用它的外键定义。
+      CREATE TABLE batch_tasks_v14 (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT NOT NULL,
+        workType TEXT NOT NULL CHECK(workType IN ('asset_prepare', 'render', 'proxy_generate')),
+        targetKind TEXT NOT NULL,
+        targetId TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+        requestKey TEXT,
+        expectedState TEXT NOT NULL DEFAULT 'running' CHECK(expectedState IN ('running', 'paused', 'stopped')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        attemptCount INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_tasks_v14
+        (id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt)
+      SELECT id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt
+      FROM batch_tasks;
+
+      CREATE TABLE batch_task_attempts_v14 (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        attemptNumber INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        resultJson TEXT,
+        errorCode TEXT,
+        errorMessage TEXT,
+        claimedBy TEXT,
+        leaseExpiresAt TEXT,
+        heartbeatAt TEXT,
+        adapterVersion TEXT,
+        remoteTaskId TEXT,
+        startedAt TEXT NOT NULL,
+        finishedAt TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(taskId, attemptNumber),
+        FOREIGN KEY(taskId) REFERENCES batch_tasks_v14(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_task_attempts_v14
+        (id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt)
+      SELECT id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt
+      FROM batch_task_attempts;
+
+      DROP TABLE batch_task_attempts;
+      DROP TABLE batch_tasks;
+      ALTER TABLE batch_tasks_v14 RENAME TO batch_tasks;
+      ALTER TABLE batch_task_attempts_v14 RENAME TO batch_task_attempts;
+
+      CREATE INDEX IF NOT EXISTS idx_batch_tasks_batch
+        ON batch_tasks(batchId, status, createdAt);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_tasks_request_key
+        ON batch_tasks(requestKey) WHERE requestKey IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_batch_task_attempts_task
+        ON batch_task_attempts(taskId, attemptNumber);
+    `,
+  },
+  {
+    version: 15,
+    sql: `
+      -- Phase D v15(修正版):统一内容指纹 + 升级完整色彩快照 + 建立持久化代理请求。
+      --
+      -- 修复顺序(必须先确定规范 LUT 身份,再重映射引用,最后归一化指纹):
+      -- 1. 同项目内裸 hex 与 sha256:<hex> 可能指向同一内容:先按规范化指纹分组,
+      --    确定每组的规范 LUT 身份(引用优先 > 创建时间早 > active 优先 > id 字典序),
+      --    把所有素材池/代理缓存/既有代理任务的 lutId 引用重映射到规范身份。
+      -- 2. 删除重复 LUT 行(引用已全部重映射,删除不会留下悬空引用)。
+      -- 3. 归一化指纹为 sha256:<hex>(重复已消除,UPDATE 不会再撞 UNIQUE)。
+      -- 4. 把素材池与代理缓存的 colorJson 升级为完整 ColorSnapshotV1;
+      --    引用 LUT 却解析不到真实指纹时写入 'unresolved:' 标记(非空、显式不可用),
+      --    绝不允许静默生成空指纹伪装成关闭状态。
+      -- 5. 建立 batch_proxy_requests:每个请求固定 project/batch/batchVersion/asset/
+      --    原片指纹/完整色彩快照/proxyKey/当前 cache 引用/请求状态;
+      --    batch_tasks.targetKind=proxy_request 的 targetId 指向请求而非可删除的 cache 行。
+      -- 6. 既有 proxy_generate 任务从指向 cache item 迁移为指向新请求。
+
+      -- Step 1: 每项目每规范化指纹确定规范 LUT 身份(引用数 > createdAt > active > id)。
+      CREATE TEMP TABLE batch_lut_identity_map AS
+      SELECT projectId, normFingerprint, id AS canonicalLutId
+      FROM (
+        SELECT
+          l.id, l.projectId, l.createdAt, l.status,
+          CASE WHEN l.contentFingerprint LIKE 'sha256:%' THEN l.contentFingerprint
+               ELSE 'sha256:' || l.contentFingerprint END AS normFingerprint,
+          (SELECT COUNT(*) FROM batch_asset_pool_items p
+           WHERE json_extract(p.colorJson, '$.lutId') = l.id) AS refCount
+        FROM batch_luts l
+      ) ranked
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM batch_luts l2
+        WHERE l2.projectId = ranked.projectId
+          AND (CASE WHEN l2.contentFingerprint LIKE 'sha256:%' THEN l2.contentFingerprint
+                    ELSE 'sha256:' || l2.contentFingerprint END) = ranked.normFingerprint
+          AND (
+            (SELECT COUNT(*) FROM batch_asset_pool_items p2
+             WHERE json_extract(p2.colorJson, '$.lutId') = l2.id) > ranked.refCount
+            OR (
+              (SELECT COUNT(*) FROM batch_asset_pool_items p2
+               WHERE json_extract(p2.colorJson, '$.lutId') = l2.id) = ranked.refCount
+              AND (l2.createdAt < ranked.createdAt
+                   OR (l2.createdAt = ranked.createdAt
+                       AND (l2.status = 'active' AND ranked.status <> 'active'
+                            OR (l2.status = ranked.status AND l2.id < ranked.id))))
+            )
+          )
+      );
+
+      -- Step 2: 素材池与代理缓存的 lutId 引用重映射到规范身份
+      -- (已经是规范身份的 id 重映射到自身,结果不变)。
+      UPDATE batch_asset_pool_items
+      SET colorJson = json_set(colorJson, '$.lutId', COALESCE(
+        (SELECT m.canonicalLutId
+         FROM batch_lut_identity_map m
+         JOIN batch_luts l ON l.id = json_extract(batch_asset_pool_items.colorJson, '$.lutId')
+         WHERE m.projectId = l.projectId
+           AND m.normFingerprint = (CASE WHEN l.contentFingerprint LIKE 'sha256:%' THEN l.contentFingerprint
+                                         ELSE 'sha256:' || l.contentFingerprint END)),
+        json_extract(batch_asset_pool_items.colorJson, '$.lutId')
+      ))
+      WHERE json_extract(colorJson, '$.lutId') IS NOT NULL;
+
+      UPDATE batch_proxy_cache_items
+      SET colorJson = json_set(colorJson, '$.lutId', COALESCE(
+        (SELECT m.canonicalLutId
+         FROM batch_lut_identity_map m
+         JOIN batch_luts l ON l.id = json_extract(batch_proxy_cache_items.colorJson, '$.lutId')
+         WHERE m.projectId = l.projectId
+           AND m.normFingerprint = (CASE WHEN l.contentFingerprint LIKE 'sha256:%' THEN l.contentFingerprint
+                                         ELSE 'sha256:' || l.contentFingerprint END)),
+        json_extract(batch_proxy_cache_items.colorJson, '$.lutId')
+      ))
+      WHERE json_extract(colorJson, '$.lutId') IS NOT NULL;
+
+      -- Step 3: 删除重复 LUT 行(规范身份之外的全部删除)
+      DELETE FROM batch_luts
+      WHERE id NOT IN (SELECT canonicalLutId FROM batch_lut_identity_map);
+
+      -- Step 4: 归一化指纹为 sha256:<hex>(64 位小写 hex;重复已消除,不再撞 UNIQUE)
+      UPDATE batch_luts
+      SET contentFingerprint = 'sha256:' || contentFingerprint
+      WHERE contentFingerprint NOT LIKE 'sha256:%'
+        AND LENGTH(contentFingerprint) = 64
+        AND LOWER(contentFingerprint) = contentFingerprint
+        AND contentFingerprint NOT GLOB '*[^a-f0-9]*';
+
+      -- Step 5: 升级素材池色彩快照为完整 ColorSnapshotV1。
+      -- lutId 非空时指纹一律从 batch_luts 权威解析;解析不到(悬空引用)写
+      -- 'unresolved:' 标记——非空、显式失败,不允许用空字符串伪装成关闭。
+      UPDATE batch_asset_pool_items
+      SET colorJson = (
+        SELECT CASE
+          WHEN json_extract(batch_asset_pool_items.colorJson, '$.lutId') IS NULL THEN
+            '{"lutId":null,"lutFingerprint":"","colorPipelineVersion":"color-v1","interpolation":"trilinear","outputContract":"sdr-v1"}'
+          ELSE
+            json_set(json_set(json_set(json_set(
+              json_set(batch_asset_pool_items.colorJson, '$.lutFingerprint',
+                COALESCE(
+                  (SELECT l.contentFingerprint FROM batch_luts l
+                   WHERE l.id = json_extract(batch_asset_pool_items.colorJson, '$.lutId')),
+                  'unresolved:' || json_extract(batch_asset_pool_items.colorJson, '$.lutId')
+                )),
+              '$.colorPipelineVersion', 'color-v1'),
+              '$.interpolation', 'trilinear'),
+              '$.outputContract', 'sdr-v1'))
+        END
+      );
+
+      -- Step 6: 同样升级代理缓存项的色彩快照
+      UPDATE batch_proxy_cache_items
+      SET colorJson = (
+        SELECT CASE
+          WHEN json_extract(batch_proxy_cache_items.colorJson, '$.lutId') IS NULL THEN
+            '{"lutId":null,"lutFingerprint":"","colorPipelineVersion":"color-v1","interpolation":"trilinear","outputContract":"sdr-v1"}'
+          ELSE
+            json_set(json_set(json_set(json_set(
+              json_set(batch_proxy_cache_items.colorJson, '$.lutFingerprint',
+                COALESCE(
+                  (SELECT l.contentFingerprint FROM batch_luts l
+                   WHERE l.id = json_extract(batch_proxy_cache_items.colorJson, '$.lutId')),
+                  'unresolved:' || json_extract(batch_proxy_cache_items.colorJson, '$.lutId')
+                )),
+              '$.colorPipelineVersion', 'color-v1'),
+              '$.interpolation', 'trilinear'),
+              '$.outputContract', 'sdr-v1'))
+        END
+      );
+
+      -- Step 7: 持久化代理请求表。请求是稳定身份,cache 可删除但请求不能悬空;
+      -- currentCacheItemId 外键 ON DELETE SET NULL,缓存行被清理后请求仍保留。
+      CREATE TABLE IF NOT EXISTS batch_proxy_requests (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT NOT NULL,
+        batchVersionId TEXT NOT NULL,
+        assetId TEXT NOT NULL,
+        contentFingerprint TEXT NOT NULL,
+        colorJson TEXT NOT NULL,
+        profileVersion TEXT NOT NULL,
+        colorPipelineVersion TEXT NOT NULL,
+        proxyKey TEXT NOT NULL,
+        currentCacheItemId TEXT,
+        status TEXT NOT NULL DEFAULT 'requested'
+          CHECK(status IN ('requested', 'generating', 'ready', 'failed', 'cancelled')),
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        UNIQUE(batchVersionId, assetId, proxyKey),
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchVersionId) REFERENCES batch_production_versions(id) ON DELETE CASCADE,
+        FOREIGN KEY(assetId) REFERENCES batch_assets(id) ON DELETE CASCADE,
+        FOREIGN KEY(currentCacheItemId) REFERENCES batch_proxy_cache_items(id) ON DELETE SET NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_batch_proxy_requests_version
+        ON batch_proxy_requests(batchVersionId, assetId);
+      CREATE INDEX IF NOT EXISTS idx_batch_proxy_requests_cache
+        ON batch_proxy_requests(currentCacheItemId);
+
+      -- Step 8: v14 代理任务只保存了 cache target，没有直接保存批次版本。
+      -- 不能把它们一律挂到 currentVersionId：任务创建后用户可能已切换版本、
+      -- 移除素材或改变 LUT。按任务创建时已经存在的历史版本素材池，以及升级后的
+      -- 完整色彩身份回溯其兼容版本；相同输入的多个历史版本取创建时间不晚于任务的
+      -- 最新版本。无法安全回溯的异常旧任务会在下方隔离取消，不能阻塞整个旧库升级。
+      CREATE TEMP TABLE batch_proxy_legacy_task_versions AS
+      SELECT
+        t.id AS taskId,
+        (
+          SELECT v.id
+          FROM batch_production_versions v
+          JOIN batch_asset_pool_items historicalPool
+            ON historicalPool.batchVersionId = v.id
+          WHERE v.batchId = t.batchId
+            AND v.createdAt <= t.createdAt
+            AND historicalPool.assetId = c.assetId
+            AND json_extract(historicalPool.colorJson, '$.lutId')
+                IS json_extract(c.colorJson, '$.lutId')
+            AND json_extract(historicalPool.colorJson, '$.lutFingerprint')
+                IS json_extract(c.colorJson, '$.lutFingerprint')
+            AND json_extract(historicalPool.colorJson, '$.colorPipelineVersion')
+                IS json_extract(c.colorJson, '$.colorPipelineVersion')
+            AND json_extract(historicalPool.colorJson, '$.interpolation')
+                IS json_extract(c.colorJson, '$.interpolation')
+            AND json_extract(historicalPool.colorJson, '$.outputContract')
+                IS json_extract(c.colorJson, '$.outputContract')
+          ORDER BY v.createdAt DESC, v.versionNumber DESC, v.id DESC
+          LIMIT 1
+        ) AS batchVersionId
+      FROM batch_tasks t
+      JOIN batch_proxy_cache_items c ON c.id = t.targetId
+      WHERE t.workType = 'proxy_generate' AND t.targetKind = 'proxy_request';
+
+      INSERT OR IGNORE INTO batch_proxy_requests
+        (id, projectId, batchId, batchVersionId, assetId, contentFingerprint, colorJson,
+         profileVersion, colorPipelineVersion, proxyKey, currentCacheItemId, status, createdAt, updatedAt)
+      SELECT
+        lower(hex(randomblob(16))),
+        t.projectId, t.batchId, mapping.batchVersionId,
+        c.assetId, a.contentFingerprint, c.colorJson, c.profileVersion, 'color-v1', c.proxyKey, c.id,
+        CASE t.status WHEN 'succeeded' THEN 'ready' WHEN 'failed' THEN 'failed'
+                      WHEN 'cancelled' THEN 'cancelled' ELSE 'requested' END,
+        t.createdAt, t.updatedAt
+      FROM batch_tasks t
+      JOIN batch_proxy_legacy_task_versions mapping ON mapping.taskId = t.id
+      JOIN batch_proxy_cache_items c ON c.id = t.targetId
+      JOIN batch_assets a ON a.id = c.assetId
+      WHERE mapping.batchVersionId IS NOT NULL;
+
+      UPDATE batch_tasks
+      SET targetId = (
+        SELECT r.id
+        FROM batch_proxy_legacy_task_versions mapping
+        JOIN batch_proxy_cache_items c ON c.id = batch_tasks.targetId
+        JOIN batch_proxy_requests r
+          ON r.batchVersionId = mapping.batchVersionId
+         AND r.assetId = c.assetId
+         AND r.proxyKey = c.proxyKey
+        WHERE mapping.taskId = batch_tasks.id
+        LIMIT 1
+      )
+      WHERE workType = 'proxy_generate' AND targetKind = 'proxy_request'
+        AND EXISTS (
+          SELECT 1 FROM batch_proxy_legacy_task_versions mapping
+          WHERE mapping.taskId = batch_tasks.id AND mapping.batchVersionId IS NOT NULL
+        );
+
+      UPDATE batch_tasks
+      SET requestKey = 'proxy_generate:' || projectId || ':' || targetId
+      WHERE workType = 'proxy_generate' AND targetKind = 'proxy_request'
+        AND id IN (
+          SELECT taskId FROM batch_proxy_legacy_task_versions WHERE batchVersionId IS NOT NULL
+        );
+
+      -- 极端损坏/手工写入的 v14 数据可能找不到任何兼容历史版本。保留任务与 attempt
+      -- 历史，但中断仍在运行的 attempt，并把任务改为不可调度的 legacy 隔离目标；
+      -- 清空 requestKey 使未来合法请求不被这条历史记录永久占用。
+      UPDATE batch_task_attempts
+      SET status = 'interrupted',
+          errorCode = 'legacy_proxy_lineage_unresolved',
+          errorMessage = 'v15 升级无法安全恢复旧代理任务的批次版本谱系',
+          leaseExpiresAt = NULL,
+          heartbeatAt = NULL,
+          finishedAt = COALESCE(finishedAt, (
+            SELECT t.updatedAt FROM batch_tasks t WHERE t.id = batch_task_attempts.taskId
+          ))
+      WHERE status = 'running'
+        AND taskId IN (
+          SELECT taskId FROM batch_proxy_legacy_task_versions WHERE batchVersionId IS NULL
+        );
+
+      UPDATE batch_tasks
+      SET status = 'cancelled', targetKind = 'legacy_proxy_cache', requestKey = NULL,
+          expectedState = 'stopped'
+      WHERE workType = 'proxy_generate' AND targetKind = 'proxy_request'
+        AND id IN (
+          SELECT taskId FROM batch_proxy_legacy_task_versions WHERE batchVersionId IS NULL
+        );
+
+      DROP TABLE batch_proxy_legacy_task_versions;
+      DROP TABLE batch_lut_identity_map;
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -1152,6 +1536,222 @@ function validateSchedulerColumns(db: Database.Database): void {
   }
 }
 
+function validateProxyAndColorTables(db: Database.Database): void {
+  const lutColumns = db.prepare(`PRAGMA table_info(batch_luts)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const lutByName = new Map(lutColumns.map((column) => [column.name, column]));
+  if (
+    lutByName.get('id')?.pk !== 1
+    || lutByName.get('projectId')?.notnull !== 1
+    || lutByName.get('contentFingerprint')?.notnull !== 1
+    || lutByName.get('displayName')?.notnull !== 1
+    || lutByName.get('relativePath')?.notnull !== 1
+    || lutByName.get('fileSizeBytes')?.notnull !== 1
+    || lutByName.get('status')?.notnull !== 1
+    || lutByName.get('createdAt')?.notnull !== 1
+    || lutByName.get('updatedAt')?.notnull !== 1
+  ) {
+    throw new Error('LUT 表结构检查未通过');
+  }
+  const lutForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_luts)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!lutForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'projects'
+    && foreignKey.from === 'projectId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'CASCADE'
+  ))) {
+    throw new Error('LUT 表项目外键检查未通过');
+  }
+  const lutIndexes = db.prepare(`PRAGMA index_list(batch_luts)`).all() as Array<{ name: string; unique: number }>;
+  if (!lutIndexes.some(({ name, unique }) => name === 'idx_batch_luts_identity' && unique === 1)) {
+    throw new Error('LUT 身份唯一索引检查未通过');
+  }
+  if (!lutIndexes.some(({ name }) => name === 'idx_batch_luts_project')) {
+    throw new Error('LUT 项目索引检查未通过');
+  }
+
+  const poolColumns = db.prepare(`PRAGMA table_info(batch_asset_pool_items)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  if (!poolColumns.some(({ name, notnull }) => name === 'colorJson' && notnull === 1)) {
+    throw new Error('素材池表缺少色彩快照列');
+  }
+
+  const cacheColumns = db.prepare(`PRAGMA table_info(batch_proxy_cache_items)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const cacheByName = new Map(cacheColumns.map((column) => [column.name, column]));
+  if (
+    cacheByName.get('id')?.pk !== 1
+    || cacheByName.get('proxyKey')?.notnull !== 1
+    || cacheByName.get('projectId')?.notnull !== 1
+    || cacheByName.get('assetId')?.notnull !== 1
+    || cacheByName.get('profileVersion')?.notnull !== 1
+    || cacheByName.get('colorJson')?.notnull !== 1
+    || cacheByName.get('relativePath')?.notnull !== 1
+    || cacheByName.get('status')?.notnull !== 1
+    || cacheByName.get('createdAt')?.notnull !== 1
+    || cacheByName.get('updatedAt')?.notnull !== 1
+  ) {
+    throw new Error('代理缓存表结构检查未通过');
+  }
+  const cacheForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_proxy_cache_items)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!cacheForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'projects' && foreignKey.from === 'projectId' && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'CASCADE'
+  ))) {
+    throw new Error('代理缓存表项目外键检查未通过');
+  }
+  if (!cacheForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_assets' && foreignKey.from === 'assetId' && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'CASCADE'
+  ))) {
+    throw new Error('代理缓存表素材外键检查未通过');
+  }
+  const cacheIndexes = db.prepare(`PRAGMA index_list(batch_proxy_cache_items)`).all() as Array<{
+    name: string;
+    unique: number;
+  }>;
+  if (!cacheIndexes.some(({ name, unique }) => name === 'idx_batch_proxy_cache_items_key' && unique === 1)) {
+    throw new Error('代理缓存 proxyKey 唯一索引检查未通过');
+  }
+  if (!cacheIndexes.some(({ name }) => name === 'idx_batch_proxy_cache_items_project')) {
+    throw new Error('代理缓存项目索引检查未通过');
+  }
+
+  // batch_tasks/batch_task_attempts 在 v14 被整表重建(为了安全放宽 workType CHECK)。
+  // 结构校验复用 v6/v13 已验证过的列/外键/索引断言,外加显式确认新 CHECK 已经生效。
+  validateTaskTables(db);
+  const taskTableSql = (db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'batch_tasks'`).get() as {
+    sql: string;
+  }).sql;
+  if (!taskTableSql.includes('proxy_generate')) {
+    throw new Error('生产任务表 workType 约束未放宽到 proxy_generate');
+  }
+  const attemptColumns = db.prepare(`PRAGMA table_info(batch_task_attempts)`).all() as Array<{ name: string }>;
+  for (const name of ['claimedBy', 'leaseExpiresAt', 'heartbeatAt', 'adapterVersion', 'remoteTaskId']) {
+    if (!attemptColumns.some((column) => column.name === name)) {
+      throw new Error(`重建后的任务尝试表丢失调度列 ${name}`);
+    }
+  }
+}
+
+/** v15 引入的持久化代理请求表:请求是稳定身份,cache 可删除但请求不能悬空。 */
+function validateProxyRequestTables(db: Database.Database): void {
+  const requestColumns = db.prepare(`PRAGMA table_info(batch_proxy_requests)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const requestByName = new Map(requestColumns.map((column) => [column.name, column]));
+  for (const name of ['projectId', 'batchId', 'batchVersionId', 'assetId', 'contentFingerprint', 'colorJson', 'profileVersion', 'colorPipelineVersion', 'proxyKey', 'status', 'createdAt', 'updatedAt']) {
+    if (requestByName.get(name)?.notnull !== 1) {
+      throw new Error(`代理请求表缺少必填列 ${name}`);
+    }
+  }
+  if (requestByName.get('id')?.pk !== 1) {
+    throw new Error('代理请求表主键检查未通过');
+  }
+
+  const requestForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_proxy_requests)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  const requiredRequestForeignKeys: Array<{ table: string; from: string; onDelete: string }> = [
+    { table: 'projects', from: 'projectId', onDelete: 'CASCADE' },
+    { table: 'batch_productions', from: 'batchId', onDelete: 'CASCADE' },
+    { table: 'batch_production_versions', from: 'batchVersionId', onDelete: 'CASCADE' },
+    { table: 'batch_assets', from: 'assetId', onDelete: 'CASCADE' },
+    { table: 'batch_proxy_cache_items', from: 'currentCacheItemId', onDelete: 'SET NULL' },
+  ];
+  for (const required of requiredRequestForeignKeys) {
+    if (!requestForeignKeys.some((foreignKey) => (
+      foreignKey.table === required.table
+      && foreignKey.from === required.from
+      && foreignKey.to === 'id'
+      && foreignKey.on_delete.toUpperCase() === required.onDelete
+    ))) {
+      throw new Error(`代理请求表外键检查未通过(${required.from})`);
+    }
+  }
+
+  const requestIndexes = db.prepare(`PRAGMA index_list(batch_proxy_requests)`).all() as Array<{ name: string }>;
+  if (!requestIndexes.some(({ name }) => name === 'idx_batch_proxy_requests_version')) {
+    throw new Error('代理请求表版本索引检查未通过');
+  }
+  if (!requestIndexes.some(({ name }) => name === 'idx_batch_proxy_requests_cache')) {
+    throw new Error('代理请求表缓存索引检查未通过');
+  }
+
+  // 每条请求要么没有 cache 引用(清理后),要么引用的 cache 行真实存在
+  const dangling = db.prepare(`
+    SELECT COUNT(*) AS n FROM batch_proxy_requests r
+    LEFT JOIN batch_proxy_cache_items c ON c.id = r.currentCacheItemId
+    WHERE r.currentCacheItemId IS NOT NULL AND c.id IS NULL
+  `).get() as { n: number };
+  if (dangling.n > 0) {
+    throw new Error('代理请求表存在悬空的 cache 引用');
+  }
+
+  const invalidLineage = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_proxy_requests r
+    JOIN batch_production_versions v ON v.id = r.batchVersionId
+    JOIN batch_productions p ON p.id = r.batchId
+    JOIN batch_assets a ON a.id = r.assetId
+    LEFT JOIN batch_asset_pool_items pool
+      ON pool.batchVersionId = r.batchVersionId AND pool.assetId = r.assetId
+    WHERE v.batchId <> r.batchId
+       OR p.projectId <> r.projectId
+       OR a.projectId <> r.projectId
+       OR pool.id IS NULL
+  `).get() as { n: number };
+  if (invalidLineage.n > 0) {
+    throw new Error('代理请求表存在跨批次、跨项目或不属于版本素材池的谱系');
+  }
+
+  const invalidTaskTargets = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_tasks t
+    LEFT JOIN batch_proxy_requests r ON r.id = t.targetId
+    WHERE t.workType = 'proxy_generate'
+      AND NOT (
+        (
+          t.targetKind = 'proxy_request'
+          AND r.id IS NOT NULL
+          AND r.projectId = t.projectId
+          AND r.batchId = t.batchId
+        )
+        OR (
+          t.targetKind = 'legacy_proxy_cache'
+          AND t.status = 'cancelled'
+          AND t.requestKey IS NULL
+        )
+      )
+  `).get() as { n: number };
+  if (invalidTaskTargets.n > 0) {
+    throw new Error('代理任务存在跨批次或悬空的请求目标');
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -1166,6 +1766,8 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateScriptMetadataColumns,
   validateScriptAvailabilityColumns,
   validateSchedulerColumns,
+  validateProxyAndColorTables,
+  validateProxyRequestTables,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

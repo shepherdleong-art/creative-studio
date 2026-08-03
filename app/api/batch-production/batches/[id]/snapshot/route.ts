@@ -23,7 +23,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   }
   const body = await request.json().catch(() => null) as {
     scriptSelections?: Array<{ scriptId: string; copyCount: number }>;
-    assetSelections?: Array<{ assetId: string; analysisId: string }>;
+    assetSelections?: Array<{ assetId: string; analysisId: string; colorSnapshot?: unknown }>;
     defaultsJson?: unknown;
   } | null;
   if (!body?.scriptSelections || body.scriptSelections.length === 0) {
@@ -40,9 +40,16 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   }
   try {
     await assertBatchApiReady();
+    // colorSnapshot 原样透传:客户端可以只提交 lutId,服务端 createBatchSnapshot
+    // 会按项目内受管 LUT 构建完整 ColorSnapshotV1(指纹/色彩链版本/插值/SDR 合同),
+    // 空字符串指纹绕过在服务端被拒绝。
+    const assetSelections = body.assetSelections.map(({ colorSnapshot, ...rest }) => ({
+      ...rest,
+      colorSnapshot: colorSnapshot === undefined ? undefined : colorSnapshot as { lutId: string | null } | import('@/lib/batch-production/color-pipeline').ColorSnapshotV1,
+    }));
     const result = createBatchSnapshot(getDb(), projectId, id, {
       scriptSelections: body.scriptSelections,
-      assetSelections: body.assetSelections,
+      assetSelections,
       defaultsJson: body.defaultsJson,
     });
     return NextResponse.json({ batchId: id, ...result }, { status: 201, headers: BATCH_NO_STORE_HEADERS });

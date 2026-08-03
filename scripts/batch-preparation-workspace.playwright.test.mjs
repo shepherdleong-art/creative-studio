@@ -199,6 +199,23 @@ try {
   await page.getByRole('tab', { name: '批量生产', exact: true }).click();
   await page.getByRole('heading', { name: '批量生产准备区' }).waitFor();
   await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).waitFor();
+  // 批次详情恢复是异步的:轮询等待选择状态与卡片数量真正恢复,避免竞态误报。
+  await page.waitForFunction((name) => {
+    const checkbox = [...document.querySelectorAll('input[type="checkbox"]')]
+      .find((element) => element.getAttribute('aria-label') === name);
+    return Boolean(checkbox && checkbox.checked);
+  }, '选择脚本 口播 A');
+  await page.waitForFunction((name) => {
+    const checkbox = [...document.querySelectorAll('input[type="checkbox"]')]
+      .find((element) => element.getAttribute('aria-label') === name);
+    return Boolean(checkbox && checkbox.checked);
+  }, '选择脚本 口播 B');
+  await page.waitForFunction((name) => {
+    const checkbox = [...document.querySelectorAll('input[type="checkbox"]')]
+      .find((element) => element.getAttribute('aria-label') === name);
+    return Boolean(checkbox && checkbox.checked);
+  }, '选择素材 已分析素材');
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="batch-output-card"]').length === 3);
   assert.equal(await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).isChecked(), true, '刷新后必须恢复脚本 A 选择');
   assert.equal(await page.getByLabel('口播 A 生成份数').inputValue(), '2', '刷新后必须恢复脚本 A 份数');
   assert.equal(await page.getByRole('checkbox', { name: '选择脚本 口播 B' }).isChecked(), true, '刷新后必须恢复脚本 B 选择');
@@ -209,15 +226,42 @@ try {
   await page.getByRole('button', { name: '开始批量生产', exact: true }).click();
   await page.getByText('批次已开始生产').waitFor();
 
+  // (i) frozen 批次仍能查看和管理该版本的代理:媒体准备区必须可见、可请求代理。
+  await page.getByRole('button', { name: '为当前批次全部素材生成代理', exact: true }).waitFor();
+  await page.getByRole('button', { name: '为当前批次全部素材生成代理', exact: true }).click();
+  await page.getByText('已为 1 条素材请求代理').waitFor();
+  // 假素材字节无法被 ffprobe 识别,任务会真实失败并显示中文"失败"与"重试"
+  // (不能显示 succeeded/failed 等内部值)。
+  const retryButton = page.getByRole('button', { name: '重试', exact: true }).first();
+  await retryButton.waitFor({ timeout: 20_000 });
+  const failedTaskRow = page.locator('li', { has: retryButton }).first();
+  await failedTaskRow.getByText('失败', { exact: true }).first().waitFor();
+  assert.equal(await page.getByText('succeeded', { exact: true }).count(), 0, '不得直接显示内部状态值 succeeded');
+  assert.equal(await page.getByText('failed', { exact: true }).count(), 0, '不得直接显示内部状态值 failed');
+  assert.equal(await page.getByText('queued', { exact: true }).count(), 0, '不得直接显示内部状态值 queued');
+  assert.equal(await page.getByText('running', { exact: true }).count(), 0, '不得直接显示内部状态值 running');
+  // 预览:冻结版本的素材必须渲染真实 preview API 驱动的可播放 video 元素
+  await page.getByTestId(`asset-preview-${readyAsset.assetId}`).waitFor();
+  assert.ok(
+    batchRequests.some(({ url }) => url.includes(`/api/batch-production/preview/${readyAsset.assetId}`)),
+    '素材预览必须真实请求 /api/batch-production/preview/[assetId]',
+  );
+  // 未确认前不得请求代理:切回草稿编辑(基于当前项目输入)后,任何输入变化都会
+  // 标记"未重新确认",代理按钮必须禁用直到再次确认。
   await page.getByRole('button', { name: '基于当前项目输入创建新版本' }).click();
   await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).check();
   await page.getByLabel('口播 A 生成份数').fill('2');
   await page.getByRole('checkbox', { name: '选择脚本 口播 B' }).check();
   await page.getByLabel('口播 B 生成份数').fill('1');
   await page.getByRole('checkbox', { name: '选择素材 已分析素材' }).check();
+  // 修改输入后尚未重新确认:代理按钮必须禁用,不能请求旧 currentVersion 的快照
+  const unconfirmedProxyButton = page.getByRole('button', { name: '为当前批次全部素材生成代理', exact: true });
+  assert.equal(await unconfirmedProxyButton.isDisabled(), true, '未重新确认输入时代理按钮必须禁用');
   await page.getByRole('button', { name: '确认整体输入', exact: true }).click();
   await page.getByText('整体输入没有变化，继续使用已冻结的批次版本。').waitFor();
   await page.getByRole('heading', { name: '已冻结的批次输入' }).waitFor();
+  // 重新确认后代理按钮恢复可用
+  assert.equal(await unconfirmedProxyButton.isDisabled(), false, '重新确认后代理按钮必须恢复可用');
 
   const postStartDb = new Database(path.join(dataRoot, 'data', 'workbench.db'));
   postStartDb.prepare(`
@@ -246,7 +290,7 @@ try {
     { scriptId: scriptBId, copyCount: 1 },
   ]);
   assert.deepEqual(snapshot?.postData?.assetSelections, [
-    { assetId: readyAsset.assetId, analysisId: readyAsset.analysisId },
+    { assetId: readyAsset.assetId, analysisId: readyAsset.analysisId, colorSnapshot: { lutId: null } },
   ]);
 
   const started = batchRequests.find(({ method, url }) => method === 'PUT' && /\/api\/batch-production\/batches\/[^/]+\/start$/.test(new URL(url).pathname));

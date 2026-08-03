@@ -393,29 +393,42 @@ export function retryTask(
   now?: () => Date,
 ): void {
   const updatedAt = nowIso(now);
-  const result = db.prepare(`
-    UPDATE batch_tasks SET status = 'queued', expectedState = 'running', updatedAt = ?
-    WHERE id = ? AND projectId = ? AND status = 'failed'
-      AND EXISTS (
-        SELECT 1 FROM batch_productions p
-        WHERE p.id = batch_tasks.batchId AND p.controlState <> 'stopped'
-      )
-  `).run(updatedAt, taskId, projectId);
-  if (result.changes === 0) {
+  db.transaction(() => {
     const task = db.prepare(`
-      SELECT t.status, p.controlState
+      SELECT t.status, t.targetKind, t.targetId, p.controlState
       FROM batch_tasks t
       JOIN batch_productions p ON p.id = t.batchId
       WHERE t.id = ? AND t.projectId = ?
-    `).get(taskId, projectId) as { status: string; controlState: string } | undefined;
+    `).get(taskId, projectId) as {
+      status: BatchTaskStatus;
+      targetKind: BatchTaskTargetKind;
+      targetId: string;
+      controlState: BatchControlState;
+    } | undefined;
     if (!task) {
       throw new BatchDomainError('not_found', '任务不存在');
     }
     if (task.controlState === 'stopped') {
       throw new BatchDomainError('conflict', '已停止批次中的任务是终态,不能重试');
     }
-    throw new BatchDomainError('conflict', '任务不是失败状态,不能重试');
-  }
+    if (task.status !== 'failed') {
+      throw new BatchDomainError('conflict', '任务不是失败状态,不能重试');
+    }
+    db.prepare(`
+      UPDATE batch_tasks SET status = 'queued', expectedState = 'running', updatedAt = ? WHERE id = ?
+    `).run(updatedAt, taskId);
+    if (task.targetKind === 'proxy_request') {
+      db.prepare(`
+        UPDATE batch_proxy_requests SET status = 'requested', updatedAt = ? WHERE id = ?
+      `).run(updatedAt, task.targetId);
+      db.prepare(`
+        UPDATE batch_proxy_cache_items
+        SET status = 'pending', updatedAt = ?
+        WHERE id = (SELECT currentCacheItemId FROM batch_proxy_requests WHERE id = ?)
+          AND status = 'failed'
+      `).run(updatedAt, task.targetId);
+    }
+  })();
 }
 
 function assertBatchOwnership(
@@ -476,6 +489,104 @@ export function resumeBatch(
   })();
 }
 
+function assertTaskOwnership(
+  db: Database.Database,
+  projectId: string,
+  taskId: string,
+): { batchId: string; status: BatchTaskStatus; targetKind: BatchTaskTargetKind; targetId: string } {
+  const task = db.prepare(`
+    SELECT batchId, status, targetKind, targetId FROM batch_tasks WHERE id = ? AND projectId = ?
+  `).get(taskId, projectId) as {
+    batchId: string;
+    status: BatchTaskStatus;
+    targetKind: BatchTaskTargetKind;
+    targetId: string;
+  } | undefined;
+  if (!task) {
+    throw new BatchDomainError('not_found', '任务不存在');
+  }
+  return task;
+}
+
+/**
+ * 单独暂停一个任务(不是整个批次):排队中的任务立刻不再被领取;
+ * 正在运行的任务由调度心跳在下一个心跳周期内感知 expectedState 变化并中止,
+ * 中止后回到可继续状态。不影响同批次的其他任务,也不改变批次 controlState。
+ */
+export function pauseTask(
+  db: Database.Database,
+  projectId: string,
+  taskId: string,
+  now?: () => Date,
+): void {
+  db.transaction(() => {
+    const task = assertTaskOwnership(db, projectId, taskId);
+    if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
+      throw new BatchDomainError('conflict', '任务已经是终态,不能暂停');
+    }
+    db.prepare(`
+      UPDATE batch_tasks SET expectedState = 'paused', updatedAt = ? WHERE id = ?
+    `).run(nowIso(now), taskId);
+  })();
+}
+
+/** 继续一个被单独暂停的任务;排队中的任务重新可领取。批次已停止时不能继续单个任务。 */
+export function resumeTask(
+  db: Database.Database,
+  projectId: string,
+  taskId: string,
+  now?: () => Date,
+): void {
+  db.transaction(() => {
+    const task = assertTaskOwnership(db, projectId, taskId);
+    if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
+      throw new BatchDomainError('conflict', '任务已经是终态,不能继续');
+    }
+    const batch = db.prepare(`SELECT controlState FROM batch_productions WHERE id = ?`).get(task.batchId) as {
+      controlState: BatchControlState;
+    };
+    if (batch.controlState === 'stopped') {
+      throw new BatchDomainError('conflict', '批次已经停止,不能继续单个任务');
+    }
+    db.prepare(`
+      UPDATE batch_tasks SET expectedState = 'running', updatedAt = ? WHERE id = ?
+    `).run(nowIso(now), taskId);
+  })();
+}
+
+/**
+ * 单独取消一个任务(不是整个批次):排队中的任务立刻进入 cancelled 终态;
+ * 正在运行的任务由调度心跳感知后中止并收敛为 cancelled(见 settleInterruptedTask)。
+ * 不影响同批次的其他任务,也不停止整个批次;取消是终态,只能通过重新提交
+ * 同一 requestKey 的业务动作在同一身份上形成新任务(见 createBatchTask)。
+ */
+export function cancelTask(
+  db: Database.Database,
+  projectId: string,
+  taskId: string,
+  now?: () => Date,
+): void {
+  const updatedAt = nowIso(now);
+  db.transaction(() => {
+    const task = assertTaskOwnership(db, projectId, taskId);
+    if (task.status === 'succeeded' || task.status === 'cancelled') {
+      throw new BatchDomainError('conflict', '任务已经是终态,不能取消');
+    }
+    db.prepare(`
+      UPDATE batch_tasks
+      SET status = CASE WHEN status IN ('queued', 'failed') THEN 'cancelled' ELSE status END,
+          expectedState = 'stopped', updatedAt = ?
+      WHERE id = ?
+    `).run(updatedAt, taskId);
+    if (task.targetKind === 'proxy_request') {
+      db.prepare(`
+        UPDATE batch_proxy_requests SET status = 'cancelled', updatedAt = ? WHERE id = ?
+      `).run(updatedAt, task.targetId);
+    }
+    refreshBatchProgress(db, taskId, now);
+  })();
+}
+
 /**
  * 停止批次:未完成的工作不再领取,已成功的结果保留;
  * 停止不是删除,历史尝试与成功产物继续存在。
@@ -490,6 +601,15 @@ export function stopBatch(
     assertBatchOwnership(db, projectId, batchId);
     db.prepare(`
       UPDATE batch_productions SET controlState = 'stopped', updatedAt = ? WHERE id = ?
+    `).run(nowIso(now), batchId);
+    db.prepare(`
+      UPDATE batch_proxy_requests
+      SET status = 'cancelled', updatedAt = ?
+      WHERE id IN (
+        SELECT targetId FROM batch_tasks
+        WHERE batchId = ? AND workType = 'proxy_generate' AND targetKind = 'proxy_request'
+          AND status IN ('queued', 'running', 'failed')
+      )
     `).run(nowIso(now), batchId);
     db.prepare(`
       UPDATE batch_tasks

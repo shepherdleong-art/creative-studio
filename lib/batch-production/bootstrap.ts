@@ -1,5 +1,7 @@
 import { getDb } from '../db.ts';
 import { analyzeAssetExecutor } from './executors.ts';
+import { proxyGenerateExecutor } from './proxy-executor.ts';
+import { completePendingProxyDeletions } from './proxy-cache.ts';
 import { assertBatchApiReady } from './runtime-readiness.ts';
 import { startBatchScheduler, type SchedulerController } from './runner.ts';
 
@@ -10,10 +12,14 @@ import { startBatchScheduler, type SchedulerController } from './runner.ts';
  * 不会为每个 API 请求启动新的调度器。
  */
 export function ensureBatchSchedulerStarted(): SchedulerController {
+  const db = getDb();
+  // pending-delete 是持久状态，而进程内读写租约不会跨重启存活；启动调度器前
+  // 先安全重试上次因占用而延后的文件删除，失败记录继续保留供后续重试。
+  completePendingProxyDeletions(db);
   return startBatchScheduler({
-    db: getDb(),
+    db,
     workerId: 'batch-scheduler',
-    executors: [analyzeAssetExecutor],
+    executors: [analyzeAssetExecutor, proxyGenerateExecutor],
     intervalMs: 2_000,
   });
 }

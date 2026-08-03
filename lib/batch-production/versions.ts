@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { type ColorSnapshotV1, type ColorSnapshotIdentity } from './color-pipeline.ts';
+import { fingerprintsEqual } from './fingerprint.ts';
 
 export type BatchProductionStatus = 'draft' | 'running' | 'partially_completed' | 'completed' | 'failed';
 
@@ -32,8 +34,21 @@ export interface BatchAssetPoolItemRow {
   assetId: string;
   analysisId: string;
   selectionState: string;
+  /** 该素材在本批次版本采用的完整色彩快照(V1),序列化 JSON */
+  colorJson: string;
   createdAt: string;
 }
+
+/**
+ * @deprecated 使用 ColorPipeline 的 ColorSnapshotV1 代替。
+ * 旧类型只有 lutId,缺少 LUT 内容指纹、色彩链版本、插值策略和 SDR 合同。
+ * 保留仅用于向后兼容旧测试和迁移代码。
+ */
+export interface BatchColorSnapshot {
+  lutId: string | null;
+}
+
+export type { ColorSnapshotV1, ColorSnapshotIdentity };
 
 function nowIso(now?: () => Date): string {
   return (now ?? (() => new Date()))().toISOString();
@@ -237,6 +252,8 @@ export function addAssetToPool(
     assetId: string;
     analysisId: string;
     selectionState?: string;
+    /** 关闭或引用一个已验证 LUT 的完整色彩快照;省略等同于关闭 */
+    colorSnapshot?: ColorSnapshotV1;
     now?: () => Date;
   },
 ): string {
@@ -261,6 +278,36 @@ export function addAssetToPool(
     if (analysis.assetId !== input.assetId) {
       throw new Error('分析版本不属于该素材');
     }
+    const colorSnapshot: ColorSnapshotV1 = input.colorSnapshot ?? {
+      lutId: null,
+      lutFingerprint: '',
+      colorPipelineVersion: 'color-v1',
+      interpolation: 'trilinear',
+      outputContract: 'sdr-v1',
+    };
+    if (colorSnapshot.lutId !== null) {
+      const lut = db.prepare(`
+        SELECT projectId, status, contentFingerprint FROM batch_luts WHERE id = ?
+      `).get(colorSnapshot.lutId) as { projectId: string; status: 'active' | 'archived'; contentFingerprint: string } | undefined;
+      if (!lut) {
+        throw new Error('LUT 不存在');
+      }
+      if (lut.projectId !== owner.projectId) {
+        throw new Error('LUT 不属于该批次所在项目');
+      }
+      if (lut.status !== 'active') {
+        throw new Error('归档的 LUT 不能进入新的批次选择');
+      }
+      // 完整冻结合同:引用 LUT 时指纹必须非空、非 unresolved 标记且与受管内容一致。
+      // 空字符串绕过在这里被禁止——不允许"引用了 LUT 却没锁定内容"的模糊快照。
+      if (
+        !colorSnapshot.lutFingerprint
+        || colorSnapshot.lutFingerprint.startsWith('unresolved:')
+        || !fingerprintsEqual(colorSnapshot.lutFingerprint, lut.contentFingerprint)
+      ) {
+        throw new Error('色彩快照中的 LUT 指纹缺失或与受管内容不一致');
+      }
+    }
     const duplicate = db.prepare(`
       SELECT 1 FROM batch_asset_pool_items WHERE batchVersionId = ? AND assetId = ?
     `).get(batchVersionId, input.assetId);
@@ -269,9 +316,9 @@ export function addAssetToPool(
     }
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO batch_asset_pool_items (id, batchVersionId, assetId, analysisId, selectionState, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, batchVersionId, input.assetId, input.analysisId, input.selectionState ?? 'selected', createdAt);
+      INSERT INTO batch_asset_pool_items (id, batchVersionId, assetId, analysisId, selectionState, colorJson, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, batchVersionId, input.assetId, input.analysisId, input.selectionState ?? 'selected', JSON.stringify(colorSnapshot), createdAt);
     return id;
   })();
 }
