@@ -23,15 +23,9 @@ export function getBatchProductionReadiness(): Promise<BatchProductionReadiness>
 
 export { batchReadinessUnavailable };
 
-export class BatchApiUnavailableError extends Error {
-  readonly code: string;
+import { BatchApiUnavailableError } from './errors.ts';
 
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = 'BatchApiUnavailableError';
-    this.code = code;
-  }
-}
+export { BatchApiUnavailableError };
 
 /**
  * 每个批量 API 在读取或写入任何 batch_* 数据前都必须先通过这道门禁:

@@ -353,6 +353,47 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         AND contentRevision <> '';
     `,
   },
+  {
+    version: 13,
+    sql: `
+      ALTER TABLE batch_tasks ADD COLUMN requestKey TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_tasks_request_key
+        ON batch_tasks(requestKey) WHERE requestKey IS NOT NULL;
+      ALTER TABLE batch_tasks ADD COLUMN expectedState TEXT NOT NULL DEFAULT 'running'
+        CHECK(expectedState IN ('running', 'paused', 'stopped'));
+      ALTER TABLE batch_productions ADD COLUMN controlState TEXT NOT NULL DEFAULT 'running'
+        CHECK(controlState IN ('running', 'paused', 'stopped'));
+
+      CREATE TABLE batch_task_attempts_new (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        attemptNumber INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        resultJson TEXT,
+        errorCode TEXT,
+        errorMessage TEXT,
+        claimedBy TEXT,
+        leaseExpiresAt TEXT,
+        heartbeatAt TEXT,
+        adapterVersion TEXT,
+        remoteTaskId TEXT,
+        startedAt TEXT NOT NULL,
+        finishedAt TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(taskId, attemptNumber),
+        FOREIGN KEY(taskId) REFERENCES batch_tasks(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_task_attempts_new
+        (id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, startedAt, finishedAt, createdAt)
+      SELECT id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, startedAt, finishedAt, createdAt
+      FROM batch_task_attempts;
+      DROP TABLE batch_task_attempts;
+      ALTER TABLE batch_task_attempts_new RENAME TO batch_task_attempts;
+      CREATE INDEX IF NOT EXISTS idx_batch_task_attempts_task
+        ON batch_task_attempts(taskId, attemptNumber);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -1087,6 +1128,30 @@ function validateScriptAvailabilityColumns(db: Database.Database): void {
   }
 }
 
+function validateSchedulerColumns(db: Database.Database): void {
+  const taskColumns = db.prepare(`PRAGMA table_info(batch_tasks)`).all() as Array<{ name: string }>;
+  for (const name of ['requestKey', 'expectedState']) {
+    if (!taskColumns.some(({ name: column }) => column === name)) {
+      throw new Error(`生产任务表缺少调度列 ${name}`);
+    }
+  }
+  const attemptColumns = db.prepare(`PRAGMA table_info(batch_task_attempts)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const attemptByName = new Map(attemptColumns.map((column) => [column.name, column]));
+  for (const name of ['claimedBy', 'leaseExpiresAt', 'heartbeatAt', 'adapterVersion', 'remoteTaskId']) {
+    if (!attemptByName.has(name)) {
+      throw new Error(`任务尝试表缺少调度列 ${name}`);
+    }
+  }
+  const productionColumns = db.prepare(`PRAGMA table_info(batch_productions)`).all() as Array<{ name: string }>;
+  if (!productionColumns.some(({ name }) => name === 'controlState')) {
+    throw new Error('批次表缺少控制状态列');
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -1100,6 +1165,7 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateSourceTables,
   validateScriptMetadataColumns,
   validateScriptAvailabilityColumns,
+  validateSchedulerColumns,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

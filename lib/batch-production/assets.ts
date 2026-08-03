@@ -230,6 +230,23 @@ export function listAnalysisVersions(db: Database.Database, assetId: string): Ba
 }
 
 /**
+ * 原子地创建一份分析版本并切换素材当前分析指向。
+ * 返回真实的分析版本 id;调用方必须原样使用它(不是 lastInsertRowid)。
+ */
+export function createAnalysisVersionAndSetCurrent(
+  db: Database.Database,
+  input: CreateBatchAnalysisInput,
+): string {
+  return db.transaction(() => {
+    const id = createAnalysisVersion(db, input);
+    db.prepare(`
+      UPDATE batch_assets SET currentAnalysisId = ?, updatedAt = ? WHERE id = ?
+    `).run(id, nowIso(input.now), input.assetId);
+    return id;
+  })();
+}
+
+/**
  * 显式更新素材当前使用的分析版本。
  * 先校验分析版本存在且属于该素材,再在同一事务内更新指向;
  * 校验失败时不会留下任何脏数据。

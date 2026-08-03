@@ -80,7 +80,17 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 - 批次 API：`POST /api/batch-production/batches`（创建）、`GET /api/batch-production/batches?projectId=`（列表）、`GET /api/batch-production/batches/[id]?projectId=`（详情：版本/快照/素材池/计划）、`POST /api/batch-production/batches/[id]/snapshot`（确认输入，返回计划总数）、`PUT /api/batch-production/batches/[id]/start`（开跑）。
 - 不变量验证：A 2 份 + B 1 份 = 3 张卡片；相同整体输入重复确认不增加版本或计划；失败重试只增加同一任务的 attempt，不增加版本或第 N+1 张卡；开跑时固定最新正文/标题/元数据，冻结后的上游更新不改写快照；跨项目脚本/素材/批次全部拒绝；素材写入中途失败会回滚版本指针和全部子记录。
 - 第五步用户链路：批量准备区可创建/选择批次、勾选多份脚本并分别设置份数、明确选择至少一份已有分析版本的素材、确认 draft 输入、查看精确 N 张成片卡片并开始生产；刷新后从批次详情恢复选择与卡片。
-- 未实现（Phase C 范围）：任务调度器、真实进度、暂停/恢复、应用重启恢复。
+### Phase C 持久调度（已完成本地实现与自动化验收）
+
+> 范围说明：Phase C 由用户明确授权（“现在执行phase C”）后实施；调度器只接管批量生产任务，模块 1–4 的图片/视频队列与单条混剪 final_edit 队列不在本轮迁移范围。本阶段已通过 Codex 独立代码复审、批量专项测试、全仓非浏览器测试、TypeScript、lint 与生产构建；浏览器测试因本次执行环境禁止监听本地端口而未运行，不等同于浏览器验收通过。
+
+- v13 迁移：任务尝试重建（status 增加 `interrupted`，新增 `claimedBy`/`leaseExpiresAt`/`heartbeatAt`/`adapterVersion`/`remoteTaskId`）；任务增加幂等 `requestKey` 与 `expectedState`；批次增加 `controlState`（running/paused/stopped）。
+- `lib/batch-production/scheduler.ts`：原子领取（单事务：条件更新 + 创建带有限期租约的尝试，多 worker 竞争只有一个成功）、续租、完成回调（持有者+租约+持久控制状态三重校验，过期或停止后的迟到成功均拒绝）、过期/启动恢复（尝试 → interrupted；运行批次任务回 queued，暂停批次保持 paused，停止批次收敛 cancelled）、失败重试（只增加任务尝试）；批次暂停/继续/停止（持久化期望状态，停止保留成功结果且未完成任务进入不可逆取消终态）。
+- `lib/batch-production/executors.ts`：统一任务执行 Adapter 接口与真实进度报告（阶段/完成数/0–1 百分比，不可测阶段 percent=null 不伪造）；素材分析执行器用 ffprobe 真实探测并写入分析版本。
+- `lib/batch-production/runner.ts`：`runPendingOnce` 领取-执行-落账单轮循环（并发上限、独立心跳、进度节流落库、租约丢失安全恢复、未注册执行器明确失败）；用户停止中止为 cancelled，应用关闭中止为可恢复 queued。`startBatchScheduler` 是进程内单例，`stop()` 会中止并等待在途尝试安全落账后才允许重启，避免两个调度器并存。
+- 启动接线：Next.js `instrumentation.ts` 在 Node 运行时通过 readiness gate 后启动恢复；批次开跑和任务读取 API 也会幂等兜底启动。门禁失败只关闭批量入口，不阻塞旧项目与单条精准混剪。
+- 控制与进度 API：`GET /api/batch-production/batches/[id]/tasks`（任务/尝试/真实进度）、`POST .../control`（pause/resume/stop）、`POST /api/batch-production/tasks/[taskId]/retry`，全部经 readiness 门禁。
+- 未实现（后续阶段）：真实供应商取消/远端确认、磁盘/内存红线自动保护、跨平台进程树回收、正式渲染执行器（Phase E）。
 
 ## 后续阶段
 

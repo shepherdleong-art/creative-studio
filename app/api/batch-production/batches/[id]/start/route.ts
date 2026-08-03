@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { startBatchProduction } from '@/lib/batch-production/batch-flow';
+import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import {
   BATCH_NO_STORE_HEADERS,
@@ -24,6 +25,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
   try {
     await assertBatchApiReady();
     startBatchProduction(getDb(), projectId, id);
+    ensureBatchSchedulerStarted();
     return NextResponse.json({ batchId: id, status: 'running' }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_start_failed', '批次启动失败');

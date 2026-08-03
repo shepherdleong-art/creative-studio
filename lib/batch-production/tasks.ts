@@ -1,10 +1,37 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { BatchDomainError } from './errors.ts';
+import type { BatchProductionStatus } from './versions.ts';
 
+/**
+ * 任务与尝试的领域类型唯一权威定义。
+ * scheduler.ts / runner.ts / batch-flow.ts 一律从这里导入,不得重新定义
+ * 漂移的裸 string 状态。
+ */
 export type BatchTaskWorkType = 'asset_prepare' | 'render';
 export type BatchTaskTargetKind = 'asset' | 'output_version';
 export type BatchTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
-export type BatchTaskAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type BatchTaskAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+export type BatchTaskExpectedState = 'running' | 'paused' | 'stopped';
+export type BatchControlState = 'running' | 'paused' | 'stopped';
+export type BatchTaskCompletionStatus = Extract<
+  BatchTaskAttemptStatus,
+  'succeeded' | 'failed' | 'cancelled'
+>;
+
+export interface ClaimedBatchTask {
+  task: {
+    id: string;
+    batchId: string;
+    workType: BatchTaskWorkType;
+    targetKind: BatchTaskTargetKind;
+    targetId: string;
+  };
+  attempt: {
+    id: string;
+    attemptNumber: number;
+  };
+}
 
 export interface BatchTaskRow {
   id: string;
@@ -14,6 +41,10 @@ export interface BatchTaskRow {
   targetKind: BatchTaskTargetKind;
   targetId: string;
   status: BatchTaskStatus;
+  /** 幂等键:同一业务动作重复提交只返回既有任务 */
+  requestKey: string | null;
+  /** 用户期望状态:运行/暂停/停止 */
+  expectedState: BatchTaskExpectedState;
   progressJson: string;
   attemptCount: number;
   createdAt: string;
@@ -29,6 +60,14 @@ export interface BatchTaskAttemptRow {
   resultJson: string | null;
   errorCode: string | null;
   errorMessage: string | null;
+  /** 领取者身份(调度 worker) */
+  claimedBy: string | null;
+  /** 有限期租约到期时间;到期后尝试失效,可被过期恢复接管 */
+  leaseExpiresAt: string | null;
+  heartbeatAt: string | null;
+  adapterVersion: string | null;
+  /** 远端供应商任务 ID(本轮不实现远端确认,字段保留) */
+  remoteTaskId: string | null;
   startedAt: string;
   finishedAt: string | null;
   createdAt: string;
@@ -41,7 +80,11 @@ function nowIso(now?: () => Date): string {
 /**
  * 创建一个生产任务,服务于素材准备(asset_prepare)或某个成片版本(render)。
  * 批次必须属于该项目;render 任务的目标必须是存在的成片版本,
- * asset_prepare 任务的目标必须是存在的项目素材。具体状态机由后续调度票决定。
+ * asset_prepare 任务的目标必须是存在的项目素材。
+ *
+ * requestKey 是稳定业务身份的幂等键(如 `asset_prepare:<batchId>:<assetId>`),
+ * 必须由调用方基于稳定身份生成,不能包含时间或随机值。同一个业务动作
+ * 重复提交(包括并发提交)只返回既有任务,不会产生等价任务副本。
  */
 export function createBatchTask(
   db: Database.Database,
@@ -51,12 +94,14 @@ export function createBatchTask(
     workType: 'render';
     targetKind: 'output_version';
     targetId: string;
+    requestKey?: string;
     now?: () => Date;
   } | {
     batchId: string;
     workType: 'asset_prepare';
     targetKind: 'asset';
     targetId: string;
+    requestKey?: string;
     now?: () => Date;
   }),
 ): string {
@@ -70,6 +115,15 @@ export function createBatchTask(
     }
     if (batch.projectId !== projectId) {
       throw new Error('批次不属于该项目');
+    }
+    // requestKey 幂等:同一业务动作重复提交返回既有任务
+    if (input.requestKey) {
+      const existing = db.prepare(`
+        SELECT id FROM batch_tasks WHERE requestKey = ? AND projectId = ?
+      `).get(input.requestKey, projectId) as { id: string } | undefined;
+      if (existing) {
+        return existing.id;
+      }
     }
     if (input.workType === 'render') {
       if (input.targetKind !== 'output_version') {
@@ -104,9 +158,19 @@ export function createBatchTask(
     }
     const id = randomUUID();
     db.prepare(`
-      INSERT INTO batch_tasks (id, projectId, batchId, workType, targetKind, targetId, status, progressJson, attemptCount, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, 'queued', '{}', 0, ?, ?)
-    `).run(id, projectId, input.batchId, input.workType, input.targetKind, input.targetId, createdAt, createdAt);
+      INSERT INTO batch_tasks (id, projectId, batchId, workType, targetKind, targetId, requestKey, status, progressJson, attemptCount, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', '{}', 0, ?, ?)
+    `).run(
+      id,
+      projectId,
+      input.batchId,
+      input.workType,
+      input.targetKind,
+      input.targetId,
+      input.requestKey ?? null,
+      createdAt,
+      createdAt,
+    );
     return id;
   })();
 }
@@ -164,7 +228,7 @@ export function finishTaskAttempt(
   taskId: string,
   attemptId: string,
   input: {
-    status: 'succeeded' | 'failed' | 'cancelled';
+    status: BatchTaskCompletionStatus;
     resultJson?: unknown;
     errorCode?: string;
     errorMessage?: string;
@@ -201,4 +265,125 @@ export function listTaskAttempts(db: Database.Database, taskId: string): BatchTa
   return db.prepare(`
     SELECT * FROM batch_task_attempts WHERE taskId = ? ORDER BY attemptNumber
   `).all(taskId) as BatchTaskAttemptRow[];
+}
+
+export interface BatchTaskAttemptView {
+  id: string;
+  attemptNumber: number;
+  status: BatchTaskAttemptStatus;
+  progressJson: unknown;
+  errorCode: string | null;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface BatchTaskView {
+  id: string;
+  workType: BatchTaskWorkType;
+  targetKind: BatchTaskTargetKind;
+  targetId: string;
+  status: BatchTaskStatus;
+  expectedState: BatchTaskExpectedState;
+  attemptCount: number;
+  progressJson: unknown;
+  createdAt: string;
+  attempts: BatchTaskAttemptView[];
+}
+
+export interface BatchTasksView {
+  batch: {
+    id: string;
+    name: string;
+    status: BatchProductionStatus;
+    controlState: BatchControlState;
+    progressJson: unknown;
+  };
+  tasks: BatchTaskView[];
+}
+
+/** 批次任务视图:任务、尝试与真实进度,供主界面展示阶段与完成数量。 */
+export function getBatchTasksView(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+): BatchTasksView {
+  const batch = db.prepare(`
+    SELECT id, name, status, controlState, progressJson FROM batch_productions
+    WHERE id = ? AND projectId = ? AND deletedAt IS NULL
+  `).get(batchId, projectId) as {
+    id: string;
+    name: string;
+    status: BatchProductionStatus;
+    controlState: BatchControlState;
+    progressJson: string;
+  } | undefined;
+  if (!batch) {
+    throw new BatchDomainError('not_found', '批次不存在');
+  }
+  const taskRows = db.prepare(`
+    SELECT id, workType, targetKind, targetId, status, expectedState, attemptCount, progressJson, createdAt
+    FROM batch_tasks WHERE batchId = ? ORDER BY createdAt, id
+  `).all(batchId) as Array<{
+    id: string;
+    workType: BatchTaskWorkType;
+    targetKind: BatchTaskTargetKind;
+    targetId: string;
+    status: BatchTaskStatus;
+    expectedState: BatchTaskExpectedState;
+    attemptCount: number;
+    progressJson: string;
+    createdAt: string;
+  }>;
+  const attemptRows = db.prepare(`
+    SELECT id, taskId, attemptNumber, status, progressJson, errorCode, errorMessage, startedAt, finishedAt
+    FROM batch_task_attempts WHERE taskId IN (${taskRows.map(() => '?').join(',') || "''"})
+    ORDER BY attemptNumber
+  `).all(...taskRows.map(({ id }) => id)) as Array<{
+    id: string;
+    taskId: string;
+    attemptNumber: number;
+    status: BatchTaskAttemptStatus;
+    progressJson: string;
+    errorCode: string | null;
+    errorMessage: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+  }>;
+  const attemptsByTask = new Map<string, BatchTaskAttemptView[]>();
+  for (const row of attemptRows) {
+    const list = attemptsByTask.get(row.taskId) ?? [];
+    list.push({
+      id: row.id,
+      attemptNumber: row.attemptNumber,
+      status: row.status,
+      progressJson: JSON.parse(row.progressJson),
+      errorCode: row.errorCode,
+      errorMessage: row.errorMessage,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt,
+    });
+    attemptsByTask.set(row.taskId, list);
+  }
+  return {
+    batch: {
+      id: batch.id,
+      name: batch.name,
+      status: batch.status,
+      controlState: batch.controlState,
+      progressJson: JSON.parse(batch.progressJson),
+    },
+    tasks: taskRows.map((row) => ({
+      id: row.id,
+      workType: row.workType,
+      targetKind: row.targetKind,
+      targetId: row.targetId,
+      status: row.status,
+      expectedState: row.expectedState,
+      attemptCount: row.attemptCount,
+      progressJson: JSON.parse(row.progressJson),
+      createdAt: row.createdAt,
+      attempts: attemptsByTask.get(row.id) ?? [],
+    })),
+  };
 }

@@ -3,6 +3,7 @@ import { BatchDomainError } from './errors.ts';
 import { createOutputPlansForSnapshot, listOutputPlans } from './plans.ts';
 import { syncProjectScripts } from './script-catalog.ts';
 import { snapshotScriptIntoBatch } from './scripts.ts';
+import { createBatchTask } from './tasks.ts';
 import {
   addAssetToPool,
   createBatchProductionVersion,
@@ -436,6 +437,22 @@ export function startBatchProduction(
         source.snapshotId,
         batch.currentVersionId,
       );
+    }
+    // 为素材池每个素材建立素材分析任务(Phase C 当前真正支持且有 executor
+    // 的任务链);requestKey 基于稳定业务身份,重复启动不会产生等价任务副本。
+    // 不建立 render 任务:正式渲染执行器属于 Phase E。
+    const poolAssets = db.prepare(`
+      SELECT assetId FROM batch_asset_pool_items WHERE batchVersionId = ?
+    `).all(batch.currentVersionId) as Array<{ assetId: string }>;
+    for (const { assetId } of poolAssets) {
+      createBatchTask(db, projectId, {
+        batchId,
+        workType: 'asset_prepare',
+        targetKind: 'asset',
+        targetId: assetId,
+        requestKey: `asset_prepare:${batchId}:${assetId}`,
+        now,
+      });
     }
     updateBatchProductionStatus(db, projectId, batchId, 'running', now);
   })();

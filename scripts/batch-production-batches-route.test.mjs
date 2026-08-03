@@ -10,6 +10,7 @@ assert.ok(fs.existsSync(startRoutePath), '必须实现文档约定的 /batches/[
 const snapshotRoute = fs.readFileSync(snapshotRoutePath, 'utf8');
 const startRoute = fs.readFileSync(startRoutePath, 'utf8');
 const responseHelper = fs.readFileSync('app/api/batch-production/batches/response.ts', 'utf8');
+const httpErrors = fs.readFileSync('lib/batch-production/http-errors.ts', 'utf8');
 
 // 创建与列表
 assert.match(batchesRoute, /createBatchProduction/);
@@ -31,7 +32,16 @@ assert.match(snapshotRoute, /assetSelections 不能为空/);
 assert.match(snapshotRoute, /batch_snapshot_failed/);
 assert.match(startRoute, /export async function PUT/);
 assert.match(startRoute, /startBatchProduction/);
+assert.match(startRoute, /ensureBatchSchedulerStarted/);
+assert.match(startRoute, /ensureBatchSchedulerStarted\(\)/, '开跑建立任务后必须唤醒进程内调度器');
 assert.match(startRoute, /batch_start_failed/);
+
+// 应用进程启动时也必须经过 readiness 门禁恢复调度,不能依赖用户再点控制/重试。
+const instrumentationPath = 'instrumentation.ts';
+assert.ok(fs.existsSync(instrumentationPath), '必须提供 Next.js Node 运行时启动恢复入口');
+const instrumentation = fs.readFileSync(instrumentationPath, 'utf8');
+assert.match(instrumentation, /startBatchSchedulerAfterReadiness/);
+assert.match(instrumentation, /NEXT_RUNTIME/);
 
 // readiness 门禁:每个 handler 在读写 batch_* 数据前必须通过统一 guard,失败返回 503
 for (const route of [batchesRoute, batchRoute, snapshotRoute, startRoute]) {
@@ -39,9 +49,10 @@ for (const route of [batchesRoute, batchRoute, snapshotRoute, startRoute]) {
   assert.match(route, /await assertBatchApiReady\(\)/);
   assert.match(route, /batchRouteErrorResponse/);
 }
-assert.match(responseHelper, /BatchApiUnavailableError/);
-assert.match(responseHelper, /batch_api_unavailable/);
-assert.match(responseHelper, /status:\s*503/);
+assert.match(responseHelper, /batchErrorResponse/);
+assert.match(httpErrors, /BatchApiUnavailableError/);
+assert.match(httpErrors, /batch_api_unavailable/);
+assert.match(httpErrors, /status:\s*503/);
 
 // 公共约定
 for (const route of [batchesRoute, batchRoute, snapshotRoute, startRoute]) {
@@ -58,7 +69,7 @@ for (const route of [batchesRoute, batchRoute, snapshotRoute, startRoute]) {
   assert.doesNotMatch(route, /message\s*===/);
 }
 for (const code of ['not_found', 'invalid_input', 'conflict']) {
-  assert.match(responseHelper, new RegExp(`${code}:\\s*(404|400|409)`));
+  assert.match(httpErrors, new RegExp(`error\.code === '${code}'|${code}`));
 }
 
 console.log('batch production batches route contract tests passed');

@@ -10,3 +10,14 @@ export class BatchDomainError extends Error {
     this.code = code;
   }
 }
+
+/** 批量 API 在兼容模式(备份/锁/迁移门禁未通过)下整体不可用;HTTP 层映射 503。 */
+export class BatchApiUnavailableError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'BatchApiUnavailableError';
+    this.code = code;
+  }
+}
