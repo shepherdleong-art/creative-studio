@@ -1,8 +1,37 @@
 'use client';
 
+import { useState } from 'react';
 import type { PrepareAssetView, PrepareScriptView, PrepareSourceView } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
+
+/**
+ * The prepare endpoint grows these presentation fields independently from the
+ * persisted asset domain model. Keep them optional here so the preparation
+ * panel can still render an older server response while a fresh response is
+ * being loaded after an analysis task completes.
+ */
+export type PrepareAssetAnalysisLevel = 'none' | 'technical' | 'content';
+
+export type PrepareAssetCardView = PrepareAssetView & {
+  analysisLevel?: PrepareAssetAnalysisLevel;
+  thumbnailUrl?: string | null;
+  previewUrl?: string | null;
+};
+
+export interface AssetPrepareTaskView {
+  id: string;
+  targetId: string;
+  status: string;
+  progressJson?: unknown;
+  attemptCount?: number;
+  attempts?: Array<{
+    attemptNumber: number;
+    status: string;
+    errorMessage: string | null;
+    progressJson?: unknown;
+  }>;
+}
 
 const HEALTH_LABELS: Record<PrepareSourceView['health'], string> = {
   healthy: '可用',
@@ -12,21 +41,13 @@ const HEALTH_LABELS: Record<PrepareSourceView['health'], string> = {
 
 function sourcePresentation(source: PrepareSourceView): { label: string; detail: string; health: string } {
   const health = HEALTH_LABELS[source.health];
-  switch (source.location.kind) {
+  switch (source.sourceKind) {
     case 'module4':
-      return { label: '模块 4', detail: `视频任务 ${source.location.videoJobId}`, health };
+      return { label: '模块 4', detail: source.displayName, health };
     case 'managed':
-      return {
-        label: '托管副本',
-        detail: source.location.relativePath.split(/[\\/]/).at(-1) || '受管文件',
-        health,
-      };
+      return { label: '托管副本', detail: source.displayName, health };
     case 'linked':
-      return {
-        label: '链接原文件',
-        detail: source.location.absolutePath.split(/[\\/]/).at(-1) || '用户文件',
-        health,
-      };
+      return { label: '链接原文件', detail: source.displayName, health };
   }
 }
 
@@ -139,8 +160,14 @@ export function BatchAssetSelectionCard({
   onLutChange,
   onRequestProxy,
   proxyBusy,
+  analysisTask,
+  onAnalyze,
+  onRetryAnalyze,
+  onResync,
+  analyzeBusy,
+  onPreview,
 }: {
-  asset: PrepareAssetView;
+  asset: PrepareAssetCardView;
   selected: boolean;
   onSelectedChange: (selected: boolean) => void;
   luts?: BatchLutRow[];
@@ -148,12 +175,121 @@ export function BatchAssetSelectionCard({
   onLutChange?: (lutId: string | null) => void;
   onRequestProxy?: () => void;
   proxyBusy?: boolean;
+  analysisTask?: AssetPrepareTaskView;
+  onAnalyze?: () => void;
+  onRetryAnalyze?: () => void;
+  onResync?: () => void;
+  analyzeBusy?: boolean;
+  onPreview?: () => void;
 }) {
   const displayName = asset.media.displayName || asset.media.filename || '视频素材';
   const selectable = asset.status === 'online' && Boolean(asset.currentAnalysisId);
+  const [thumbnailFailedUrl, setThumbnailFailedUrl] = useState<string | null>(null);
+  const thumbnailFailed = Boolean(asset.thumbnailUrl && thumbnailFailedUrl === asset.thumbnailUrl);
+
+  const progress = (analysisTask?.progressJson && typeof analysisTask.progressJson === 'object'
+    ? analysisTask.progressJson
+    : null) as { phase?: string; description?: string; percent?: number | null } | null;
+  const phaseLabels: Record<string, string> = {
+    locating: '定位来源',
+    probing: '探测媒体',
+    verified: '媒体核验完成',
+    analyzed: '基础分析完成',
+  };
+  const taskStatus = analysisTask?.status;
+  const taskError = analysisTask?.attempts?.at(-1)?.errorMessage;
+  const analysisLevel = asset.analysisLevel ?? (asset.currentAnalysisId ? 'technical' : 'none');
+  const analysisLabel = analysisLevel === 'content' ? '内容分析可用' : '基础分析可用';
+  const previewAvailable = Boolean(asset.status === 'online' && asset.previewUrl && onPreview);
+
+  function renderAnalysisAction() {
+    if (asset.status !== 'online') {
+      return (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-warn-tint px-3 py-2 text-xs text-ink-secondary">
+          <span>{asset.status === 'archived' ? '素材已归档，暂不可入池。' : '素材来源离线，暂不可入池。'}</span>
+          {onResync && <button type="button" className="text-accent underline" onClick={onResync}>重新同步素材状态</button>}
+        </div>
+      );
+    }
+    if (asset.currentAnalysisId) {
+      return (
+        <div className="mt-3 space-y-1 rounded-xl bg-ok/10 px-3 py-2 text-xs text-ink-secondary" role="status">
+          <p className="font-medium text-ok">{analysisLabel}</p>
+          {analysisLevel !== 'content' && <p>智能内容理解尚未启用，联合分配将使用基础时长回退。</p>}
+        </div>
+      );
+    }
+    if (taskStatus === 'queued' || taskStatus === 'running') {
+      const phaseLabel = progress?.phase ? phaseLabels[progress.phase] : undefined;
+      const description = phaseLabel || progress?.description || (taskStatus === 'queued' ? '等待分析任务' : '分析中');
+      return (
+        <div className="mt-3 space-y-1 rounded-xl bg-accent/10 px-3 py-2 text-xs text-ink-secondary" role="status" aria-live="polite">
+          <p className="font-medium text-accent">{description}</p>
+          <p>{taskStatus === 'queued' ? '排队中，开始后会定位来源并探测媒体。' : '正在处理；FFprobe 阶段不可测进度。'}</p>
+        </div>
+      );
+    }
+    if (taskStatus === 'failed') {
+      return (
+        <div className="mt-3 space-y-2 rounded-xl bg-fail/10 px-3 py-2 text-xs text-fail" role="alert">
+          <p className="font-medium">基础分析失败</p>
+          <p>{taskError || '未能完成媒体探测，请重试。'}</p>
+          {onRetryAnalyze && <button type="button" className="underline" disabled={analyzeBusy} onClick={onRetryAnalyze}>{analyzeBusy ? '重试中…' : '重试'}</button>}
+        </div>
+      );
+    }
+    if (taskStatus === 'succeeded') {
+      return <p className="mt-3 rounded-xl bg-accent/10 px-3 py-2 text-xs text-accent" role="status">基础分析已完成，正在同步素材状态…</p>;
+    }
+    return (
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-warn-tint px-3 py-2 text-xs text-ink-secondary">
+        <span>尚未完成基础分析，暂不可选。</span>
+        {onAnalyze && <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={analyzeBusy} onClick={onAnalyze}>{analyzeBusy ? '分析中…' : '开始分析'}</button>}
+      </div>
+    );
+  }
+
   return (
     <article className={`rounded-2xl border bg-white p-4 shadow-sm transition ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
-      <div className="flex items-start gap-3">
+      <div className="space-y-3">
+        <div className="relative aspect-video overflow-hidden rounded-xl border border-hairline bg-surface-subtle">
+          {asset.thumbnailUrl && !thumbnailFailed ? (
+            <button
+              type="button"
+              className="block h-full w-full cursor-pointer text-left"
+              aria-label={`预览素材 ${displayName}`}
+              disabled={!previewAvailable}
+              onClick={onPreview}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={asset.thumbnailUrl}
+                alt={`${displayName} 缩略图`}
+                loading="lazy"
+                onError={() => setThumbnailFailedUrl(asset.thumbnailUrl ?? null)}
+                className="h-full w-full object-cover"
+              />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="flex h-full w-full items-center justify-center text-sm text-ink-tertiary"
+              aria-label={`预览素材 ${displayName}`}
+              disabled={!previewAvailable}
+              onClick={onPreview}
+            >
+              缩略图暂不可用
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {onPreview && (
+            <button type="button" className="text-xs text-accent underline" disabled={!previewAvailable} onClick={onPreview}>
+              预览
+            </button>
+          )}
+        </div>
+        <div className="flex items-start gap-3">
         <input
           type="checkbox"
           aria-label={`选择素材 ${displayName}`}
@@ -169,16 +305,14 @@ export function BatchAssetSelectionCard({
               <h3 className="mt-1 font-semibold text-ink">{displayName}</h3>
             </div>
             <span className={`rounded-full px-2 py-1 text-[11px] ${selectable ? 'bg-ok/10 text-ok' : 'bg-fail/10 text-fail'}`}>
-              {asset.status === 'online' ? (asset.currentAnalysisId ? '可用' : '待分析') : asset.status === 'archived' ? '已归档' : '离线'}
+              {asset.status === 'online' ? (asset.currentAnalysisId ? analysisLabel : '待分析') : asset.status === 'archived' ? '已归档' : '离线'}
             </span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-xs text-ink-secondary">
             {typeof asset.media.durationSec === 'number' && <span>{asset.media.durationSec.toFixed(1)} 秒</span>}
             {asset.media.width && asset.media.height && <span>{asset.media.width}×{asset.media.height}</span>}
           </div>
-          {!asset.currentAnalysisId && asset.status === 'online' && (
-            <p className="mt-3 rounded-xl bg-warn-tint px-3 py-2 text-xs text-ink-secondary">尚未完成素材分析，暂不可选</p>
-          )}
+          {renderAnalysisAction()}
           <div className="mt-4 space-y-2">
             {asset.sources.map((source) => <SourceRow key={source.id} source={source} />)}
           </div>
@@ -209,6 +343,7 @@ export function BatchAssetSelectionCard({
             </div>
           )}
         </div>
+      </div>
       </div>
     </article>
   );

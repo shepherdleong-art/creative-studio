@@ -268,12 +268,20 @@ try {
   `).get(batchLate) as { id: string };
   let lateStarted = false;
   let lateDiscarded = 0;
+  let lateCommitted = 0;
   const ignoresAbortExecutor: BatchTaskExecutor = {
     workTypes: ['render'],
     async execute() {
       lateStarted = true;
       await new Promise((resolve) => setTimeout(resolve, 100));
-      return { resultJson: { late: true }, discard: () => { lateDiscarded += 1; } };
+      return {
+        commit: () => {
+          lateCommitted += 1;
+          // commit 内触发外部中止，runner 必须在同一事务中二次检查并回滚。
+          return { resultJson: { late: true } };
+        },
+        discard: () => { lateDiscarded += 1; },
+      };
     },
   };
   const lateRun = runPendingOnce({
@@ -299,6 +307,47 @@ try {
     '被停止的运行尝试必须保留为 interrupted',
   );
   assert.equal(lateDiscarded, 1, '调度器拒绝迟到结果时必须调用执行器候选清理钩子');
+  assert.equal(lateCommitted, 0, '调度器拒绝迟到结果时不得调用同步发布钩子');
+
+  const batchAbortInCommit = setupBatch(db, 'batch-abort-in-commit', 1);
+  const abortInCommitTask = db.prepare(`
+    SELECT id FROM batch_tasks WHERE batchId = ? AND workType = 'render' LIMIT 1
+  `).get(batchAbortInCommit) as { id: string };
+  const commitAbortController = new AbortController();
+  let commitSideEffect = 0;
+  const originalAbortBatchName = (db.prepare(`SELECT name FROM batch_productions WHERE id = ?`).get(batchAbortInCommit) as { name: string }).name;
+  const abortInCommitExecutor: BatchTaskExecutor = {
+    workTypes: ['render'],
+    async execute() {
+      return {
+        commit: () => {
+          commitSideEffect += 1;
+          db.prepare(`UPDATE batch_productions SET name = '不得保留' WHERE id = ?`).run(batchAbortInCommit);
+          commitAbortController.abort();
+          return { resultJson: { mustRollback: true } };
+        },
+      };
+    },
+  };
+  await runPendingOnce({
+    db,
+    workerId: 'worker-abort-in-commit',
+    executors: [abortInCommitExecutor],
+    concurrency: 1,
+    signal: commitAbortController.signal,
+    progressThrottleMs: 0,
+  });
+  assert.equal(commitSideEffect, 1, '测试必须进入同步发布钩子');
+  assert.equal(
+    getBatchTask(db, 'project-1', abortInCommitTask.id)?.status,
+    'cancelled',
+    '发布回调内触发外部中止后不得落 succeeded',
+  );
+  assert.equal(
+    (db.prepare(`SELECT name FROM batch_productions WHERE id = ?`).get(batchAbortInCommit) as { name: string }).name,
+    originalAbortBatchName,
+    '发布回调内的数据库副作用必须随事务一起回滚',
+  );
 
   // --- 场景 5:租约丢失不是用户暂停,任务保持可恢复运行期望 ---
   const batchLease = setupBatch(db, 'batch-lease-loss', 1);

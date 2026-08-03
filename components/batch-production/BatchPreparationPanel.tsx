@@ -8,9 +8,11 @@ import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import type { BatchOutputCardStatus, BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
 import {
+  type AssetPrepareTaskView,
   BatchAssetSelectionCard,
   BatchFrozenScriptCard,
   BatchScriptSelectionCard,
+  type PrepareAssetCardView,
 } from './BatchInputSelectionCards';
 
 interface AssetSelectionState {
@@ -45,6 +47,14 @@ interface PreviewInfo {
   kind: 'proxy' | 'original' | 'original_pending_lut' | 'unavailable';
   originalOnline: boolean;
   warning?: string;
+}
+
+interface AnalyzeAssetsResponse {
+  items?: Array<{ assetId: string; taskId: string | null; status: string; ready: boolean }>;
+}
+
+interface PreviewAsset extends PrepareAssetCardView {
+  id: string;
 }
 
 interface BatchPreparationPanelProps {
@@ -130,6 +140,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [lutImporting, setLutImporting] = useState(false);
   const lutFileInputRef = useRef<HTMLInputElement | null>(null);
   const [proxyTasks, setProxyTasks] = useState<BatchTasksView['tasks']>([]);
+  const [assetPrepareTasks, setAssetPrepareTasks] = useState<AssetPrepareTaskView[]>([]);
+  const [analysisBusy, setAnalysisBusy] = useState<string | null>(null);
+  const [previewAsset, setPreviewAsset] = useState<PreviewAsset | null>(null);
+  const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
   const [proxyBatchBusy, setProxyBatchBusy] = useState(false);
   const [cacheUsage, setCacheUsage] = useState<{ count: number; totalBytes: number } | null>(null);
@@ -166,6 +181,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         setBatchInputState(null);
         setFrozenScriptSnapshots([]);
         setInputConfirmed(false);
+        setAssetPrepareTasks([]);
       }
       setSelectedBatchId((current) => (
         batchResult.batches.some(({ id }) => id === current) ? current : batchResult.batches[0]?.id ?? ''
@@ -244,6 +260,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const loadProxyTasks = useCallback(async (batchId: string) => {
     if (!batchId) {
       setProxyTasks([]);
+      setAssetPrepareTasks([]);
       return;
     }
     try {
@@ -252,6 +269,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         { cache: 'no-store' },
       ));
       setProxyTasks(view.tasks.filter((task) => task.workType === 'proxy_generate'));
+      setAssetPrepareTasks(view.tasks
+        .filter((task) => task.workType === 'asset_prepare')
+        .map((task) => ({
+          id: task.id,
+          targetId: task.targetId,
+          status: task.status,
+          progressJson: task.progressJson,
+          attemptCount: task.attemptCount,
+          attempts: task.attempts,
+        })));
     } catch {
       // 任务状态轮询失败不阻塞其他操作,下一轮轮询会自动重试。
     }
@@ -304,14 +331,18 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }, [load, loadLuts, loadCacheUsage]);
 
   useEffect(() => {
+    if (!selectedBatchId) return;
     const initial = window.setTimeout(() => void loadProxyTasks(selectedBatchId), 0);
-    if (!selectedBatchId) return () => window.clearTimeout(initial);
-    const interval = window.setInterval(() => void loadProxyTasks(selectedBatchId), 3_000);
-    return () => {
-      window.clearTimeout(initial);
-      window.clearInterval(interval);
-    };
+    return () => window.clearTimeout(initial);
   }, [selectedBatchId, loadProxyTasks]);
+
+  useEffect(() => {
+    if (!selectedBatchId) return;
+    const hasActiveTask = [...proxyTasks, ...assetPrepareTasks].some((task) => task.status === 'queued' || task.status === 'running');
+    if (!hasActiveTask) return;
+    const interval = window.setInterval(() => void loadProxyTasks(selectedBatchId), 3_000);
+    return () => window.clearInterval(interval);
+  }, [selectedBatchId, loadProxyTasks, proxyTasks, assetPrepareTasks]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadWorkspace(selectedBatchId), 0);
@@ -332,6 +363,24 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const currentBatch = batches.find(({ id }) => id === selectedBatchId);
   const currentVersionId = currentBatch?.currentVersionId ?? null;
 
+  // A successful FFprobe task changes the asset's currentAnalysisId. Refresh
+  // the prepare projection once so the card becomes selectable without asking
+  // the user to click a global refresh button.
+  useEffect(() => {
+    const currentAssets = new Map((preparation?.assets ?? []).map((asset) => [asset.id, asset.currentAnalysisId]));
+    for (const task of assetPrepareTasks) {
+      if (task.status !== 'succeeded') analysisReloadedTaskIdsRef.current.delete(task.id);
+    }
+    const completedWithoutProjection = assetPrepareTasks.filter((task) => (
+      task.status === 'succeeded'
+      && currentAssets.get(task.targetId) == null
+      && !analysisReloadedTaskIdsRef.current.has(task.id)
+    ));
+    if (completedWithoutProjection.length === 0) return;
+    completedWithoutProjection.forEach((task) => analysisReloadedTaskIdsRef.current.add(task.id));
+    void load();
+  }, [assetPrepareTasks, preparation, load]);
+
   // 代理任务状态变化后刷新各素材的预览来源信息(代理就绪/未应用 LUT 警告/原片离线等)
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -350,6 +399,15 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }, [selectedBatchId, currentVersionId, selectedAssets, proxyTasks, loadPreviewInfos]);
 
   const selectedScriptEntries = useMemo(() => Object.entries(selectedScripts), [selectedScripts]);
+  const analysisTaskByAsset = useMemo(() => {
+    const byAsset = new Map<string, AssetPrepareTaskView>();
+    for (const task of assetPrepareTasks) byAsset.set(task.targetId, task);
+    return byAsset;
+  }, [assetPrepareTasks]);
+  const analysisCandidates = useMemo(
+    () => (preparation?.assets ?? []).filter(({ status, currentAnalysisId }) => status === 'online' && !currentAnalysisId),
+    [preparation],
+  );
   const plannedCount = useMemo(
     () => selectedScriptEntries.reduce((sum, [, copyCount]) => sum + copyCount, 0),
     [selectedScriptEntries],
@@ -368,6 +426,85 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     if (!selectedBatchId || !currentVersionId) return '';
     return `/api/batch-production/preview/${encodeURIComponent(assetId)}?projectId=${encodeURIComponent(projectId)}`
       + `&batchId=${encodeURIComponent(selectedBatchId)}&batchVersionId=${encodeURIComponent(currentVersionId)}`;
+  }
+
+  useEffect(() => {
+    if (!previewAsset) return;
+    const timer = window.setTimeout(() => previewCloseButtonRef.current?.focus(), 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreviewAsset(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [previewAsset]);
+
+  function openAssetPreview(asset: PrepareAssetCardView): void {
+    if (!asset.previewUrl) return;
+    setPreviewAsset(asset);
+  }
+
+  async function analyzeAssets(assetIds: string[]): Promise<void> {
+    if (!selectedBatchId) {
+      setFeedback({ kind: 'error', message: '请先创建或选择一个批次，再开始素材基础分析。' });
+      return;
+    }
+    const candidates = new Set(
+      (preparation?.assets ?? [])
+        .filter((asset) => asset.status === 'online' && !asset.currentAnalysisId)
+        .map((asset) => asset.id),
+    );
+    const requestedAssetIds = [...new Set(assetIds)].filter((assetId) => candidates.has(assetId));
+    if (requestedAssetIds.length === 0) {
+      setFeedback({ kind: 'success', message: '没有需要基础分析的在线素材。' });
+      return;
+    }
+    const busyKey = requestedAssetIds.length === candidates.size ? '__all__' : requestedAssetIds[0];
+    setAnalysisBusy(busyKey);
+    setFeedback(null);
+    try {
+      const result = await readJson<AnalyzeAssetsResponse>(await fetch(
+        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/assets/analyze?projectId=${encodeURIComponent(projectId)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetIds: requestedAssetIds }),
+        },
+      ));
+      analysisReloadedTaskIdsRef.current.clear();
+      await loadProxyTasks(selectedBatchId);
+      const responseItems = result.items ?? [];
+      if (responseItems.some((item) => item.ready)) await load();
+      setFeedback({ kind: 'success', message: `已为 ${requestedAssetIds.length} 条素材安排基础分析。` });
+    } catch (analyzeError) {
+      setFeedback({ kind: 'error', message: analyzeError instanceof Error ? analyzeError.message : '素材基础分析请求失败' });
+    } finally {
+      setAnalysisBusy(null);
+    }
+  }
+
+  async function retryAssetAnalysis(taskId: string): Promise<void> {
+    if (!selectedBatchId) {
+      setFeedback({ kind: 'error', message: '请先创建或选择一个批次。' });
+      return;
+    }
+    setAnalysisBusy(taskId);
+    setFeedback(null);
+    try {
+      await readJson(await fetch(
+        `/api/batch-production/tasks/${encodeURIComponent(taskId)}/retry?projectId=${encodeURIComponent(projectId)}`,
+        { method: 'POST' },
+      ));
+      analysisReloadedTaskIdsRef.current.delete(taskId);
+      await loadProxyTasks(selectedBatchId);
+      setFeedback({ kind: 'success', message: '已重新排队素材基础分析。' });
+    } catch (retryError) {
+      setFeedback({ kind: 'error', message: retryError instanceof Error ? retryError.message : '素材分析重试失败' });
+    } finally {
+      setAnalysisBusy(null);
+    }
   }
 
   async function createBatch(): Promise<void> {
@@ -391,6 +528,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       };
       setBatches((current) => [...current, batch]);
       setSelectedBatchId(created.id);
+      setProxyTasks([]);
+      setAssetPrepareTasks([]);
+      analysisReloadedTaskIdsRef.current.clear();
       setNewBatchName('');
       setSelectedScripts({});
       setSelectedAssets({});
@@ -810,6 +950,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
 
   if (!preparation) return null;
   const prep = preparation;
+  const assetCards = prep.assets as PrepareAssetCardView[];
 
   const onlineAssets = prep.assets.filter(({ status }) => status === 'online').length;
   const selectableAssets = prep.assets.filter(({ status, currentAnalysisId }) => status === 'online' && currentAnalysisId).length;
@@ -1064,6 +1205,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               value={selectedBatchId}
               onChange={(event) => {
                 setSelectedBatchId(event.target.value);
+                setProxyTasks([]);
+                setAssetPrepareTasks([]);
+                analysisReloadedTaskIdsRef.current.clear();
                 setSelectedScripts({});
                 setSelectedAssets({});
                 setOutputPlans([]);
@@ -1195,12 +1339,29 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           </section>
 
           <section>
-            <div className="mb-3 flex items-end justify-between gap-3">
-              <div><h3 className="font-semibold text-ink">项目素材</h3><p className="mt-1 text-sm text-ink-secondary">只有当前在线且已有可用分析版本的素材才能进入批次素材池。</p></div>
-              <span className="text-sm text-ink-secondary">已选 {Object.keys(selectedAssets).length} 条</span>
+            <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 className="font-semibold text-ink">项目素材</h3>
+                <p className="mt-1 text-sm text-ink-secondary">只有当前在线且已有可用分析版本的素材才能进入批次素材池。</p>
+                {!selectedBatchId && <p className="mt-1 text-xs text-warn">请先创建或选择批次，才能开始素材基础分析。</p>}
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm text-ink-secondary">已选 {Object.keys(selectedAssets).length} 条</span>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={!selectedBatchId || analysisCandidates.length === 0 || analysisBusy !== null}
+                  onClick={() => void analyzeAssets(analysisCandidates.map((asset) => asset.id))}
+                >{analysisBusy === '__all__' ? '分析中…' : `分析全部待分析（${analysisCandidates.length}）`}</button>
+              </div>
             </div>
-            {prep.assets.length > 0
-              ? <div className="grid gap-3 lg:grid-cols-2">{prep.assets.map((asset) => (
+            {assetCards.length > 0
+              ? <div className="grid gap-3 lg:grid-cols-2">{assetCards.map((asset) => {
+                const analysisTask = analysisTaskByAsset.get(asset.id);
+                const assetAnalysisBusy = analysisBusy === asset.id
+                  || analysisBusy === analysisTask?.id
+                  || analysisBusy === '__all__';
+                return (
                 <BatchAssetSelectionCard
                   key={asset.id}
                   asset={asset}
@@ -1224,8 +1385,15 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                   }}
                   onRequestProxy={hasConfirmedVersion && inputConfirmed ? () => void requestProxies([asset.id], asset.id) : undefined}
                   proxyBusy={proxyBusyAssetId === asset.id}
+                  analysisTask={analysisTask}
+                  onAnalyze={() => void analyzeAssets([asset.id])}
+                  onRetryAnalyze={analysisTask?.status === 'failed' ? () => void retryAssetAnalysis(analysisTask.id) : undefined}
+                  onResync={() => void load()}
+                  analyzeBusy={assetAnalysisBusy}
+                  onPreview={() => openAssetPreview(asset)}
                 />
-              ))}</div>
+                );
+              })}</div>
               : <div className="tile p-6 text-sm text-ink-secondary">暂无可用视频素材，请先在第 4 步完成视频生成。</div>}
           </section>
 
@@ -1293,6 +1461,42 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           aria-live="polite"
           className={`rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
         >{feedback.message}</div>
+      )}
+
+      {previewAsset && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="batch-asset-preview-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-4 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">项目素材预览</p>
+                <h3 id="batch-asset-preview-title" className="mt-1 font-semibold text-ink">
+                  {previewAsset.media.displayName || previewAsset.media.filename || '视频素材'}
+                </h3>
+              </div>
+              <button
+                ref={previewCloseButtonRef}
+                type="button"
+                className="btn-secondary text-xs"
+                aria-label="关闭素材预览"
+                onClick={() => setPreviewAsset(null)}
+              >关闭</button>
+            </div>
+            <video
+              className="mt-4 aspect-video w-full rounded-xl bg-black"
+              controls
+              autoFocus
+              preload="metadata"
+              data-testid={`asset-preview-modal-${previewAsset.id}`}
+            >
+              <source src={previewAsset.previewUrl ?? undefined} />
+            </video>
+          </div>
+        </div>
       )}
 
       {workspace && workspace.cards.length > 0 ? (

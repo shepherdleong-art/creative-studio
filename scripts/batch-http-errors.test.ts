@@ -58,6 +58,7 @@ try {
   assert.equal(invalid.status, 400, 'invalid_input 必须映射 400');
   const generic = batchErrorResponse(new Error('boom'), fallback);
   assert.equal(generic.status, 500, '普通错误必须映射 500');
+  assert.equal(generic.body.message, 'fallback', '普通错误不得向客户端泄漏内部错误细节');
   const unavailable = batchErrorResponse(new BatchApiUnavailableError('migration_failed', '升级未完成'), fallback);
   assert.equal(unavailable.status, 503, '兼容模式必须映射 503');
   assert.equal(unavailable.body.error, 'batch_api_unavailable', '503 响应必须带 batch_api_unavailable');

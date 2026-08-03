@@ -18,6 +18,7 @@ import { createBatchSnapshot, startBatchProduction } from '../lib/batch-producti
 import { createAsset, createAnalysisVersion } from '../lib/batch-production/assets.ts';
 import type { BatchTaskExecutor } from '../lib/batch-production/executors.ts';
 import { runPendingOnce } from '../lib/batch-production/runner.ts';
+import { queueAssetPreparation } from '../lib/batch-production/asset-preparation.ts';
 // 目标 seam:任务级控制。这三个具名导出在 D2 之前不存在,
 // import 本身就会让整个测试文件在加载阶段失败——这就是 D0 期望的红。
 import { pauseTask, resumeTask, cancelTask } from '../lib/batch-production/scheduler.ts';
@@ -109,13 +110,14 @@ try {
     ],
     now: () => new Date('2026-08-03T08:04:00.000Z'),
   });
+  queueAssetPreparation(db, 'project-1', batchId, [assetA, assetB]);
   startBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-03T08:05:00.000Z'));
 
-  // 开跑自动为素材池建立两个 asset_prepare 任务(A、B)
+  // snapshot 前分析入口为素材池建立两个 asset_prepare 任务(A、B)
   const tasks = db.prepare(`
     SELECT id, targetId FROM batch_tasks WHERE batchId = ? ORDER BY createdAt, id
   `).all(batchId) as Array<{ id: string; targetId: string }>;
-  assert.equal(tasks.length, 2, '两份素材必须各自建立一个 asset_prepare 任务');
+  assert.equal(tasks.length, 2, '两份素材必须各自在 snapshot 前建立一个 asset_prepare 任务');
   const taskA = tasks.find((t) => t.targetId === assetA)!;
   const taskB = tasks.find((t) => t.targetId === assetB)!;
   assert.ok(taskA && taskB);
@@ -205,6 +207,7 @@ try {
     ],
     now: () => new Date('2026-08-03T09:01:00.000Z'),
   });
+  queueAssetPreparation(db, 'project-1', batch2, [assetA, assetB]);
   startBatchProduction(db, 'project-1', batch2, () => new Date('2026-08-03T09:02:00.000Z'));
   const tasks2 = db.prepare(`
     SELECT id, targetId FROM batch_tasks WHERE batchId = ? ORDER BY createdAt, id

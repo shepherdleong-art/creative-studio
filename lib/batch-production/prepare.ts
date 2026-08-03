@@ -11,10 +11,10 @@ import {
   registerModule4Video,
   verifyAssetSources,
   type BatchAssetSourceHealth,
-  type BatchAssetSourceLocation,
 } from './media-catalog.ts';
 import { listProjectScripts } from './scripts.ts';
 import { syncProjectScripts } from './script-catalog.ts';
+import { getCurrentAssetAnalysis, type AssetAnalysisLevel } from './asset-preparation.ts';
 
 export interface PrepareScriptView {
   id: string;
@@ -36,7 +36,8 @@ export interface PrepareSourceView {
   id: string;
   sourceKind: BatchAssetSourceKind;
   health: BatchAssetSourceHealth;
-  location: BatchAssetSourceLocation;
+  /** 仅供界面识别来源；不得包含绝对或相对本地路径。 */
+  displayName: string;
 }
 
 export interface PrepareAssetMedia {
@@ -54,6 +55,11 @@ export interface PrepareAssetView {
   mediaKind: BatchAssetMediaKind;
   /** 快照时必须提交的真实素材分析版本；为空时 UI 不得允许选择。 */
   currentAnalysisId: string | null;
+  /** 当前分析能力级别；当前本地实现只会产生 technical。 */
+  analysisLevel: AssetAnalysisLevel;
+  /** 由项目素材 id 稳定派生的安全媒体访问地址。 */
+  thumbnailUrl: string;
+  previewUrl: string;
   media: PrepareAssetMedia;
   sources: PrepareSourceView[];
 }
@@ -80,6 +86,11 @@ function parseCoverTitle(value: string): PrepareCoverTitle {
   } catch {
     return { primary: '', secondary: '' };
   }
+}
+
+function safeSourceDisplayName(value: string | undefined, fallback: string): string {
+  const leaf = value?.split(/[\\/]/).at(-1)?.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return leaf || fallback;
 }
 
 /**
@@ -137,19 +148,33 @@ export async function prepareBatchProductionInputs(
     updatedAt: row.updatedAt,
   }));
 
-  const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId).map((row: BatchAssetRow) => ({
-    id: row.id,
-    status: row.status,
-    mediaKind: row.mediaKind,
-    currentAnalysisId: row.currentAnalysisId,
-    media: JSON.parse(row.mediaJson) as PrepareAssetMedia,
-    sources: listAssetSources(db, row.id).map((source) => ({
-      id: source.id,
-      sourceKind: source.sourceKind,
-      health: source.health,
-      location: source.locationJson,
-    })),
-  }));
+  const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId).map((row: BatchAssetRow) => {
+    const current = getCurrentAssetAnalysis(db, projectId, row.id);
+    const encodedProjectId = encodeURIComponent(projectId);
+    const encodedAssetId = encodeURIComponent(row.id);
+    const media = JSON.parse(row.mediaJson) as PrepareAssetMedia;
+    return {
+      id: row.id,
+      status: row.status,
+      mediaKind: row.mediaKind,
+      currentAnalysisId: current?.status === 'ready' ? current.id : null,
+      analysisLevel: current?.status === 'ready' ? current.analysisLevel : 'none',
+      thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}`,
+      previewUrl: `/api/batch-production/assets/${encodedAssetId}/preview?projectId=${encodedProjectId}`,
+      media,
+      sources: listAssetSources(db, row.id).map((source) => {
+        const fallbackName = source.sourceKind === 'module4'
+          ? `视频任务 ${source.locationJson.kind === 'module4' ? source.locationJson.videoJobId : source.id}`
+          : source.sourceKind === 'managed' ? '托管文件' : '用户文件';
+        return {
+          id: source.id,
+          sourceKind: source.sourceKind,
+          health: source.health,
+          displayName: safeSourceDisplayName(media.displayName || media.filename, fallbackName),
+        };
+      }),
+    };
+  });
 
   return {
     project: { id: project.id, name: project.name },

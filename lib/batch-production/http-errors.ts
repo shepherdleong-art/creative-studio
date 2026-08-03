@@ -40,6 +40,8 @@ export function batchErrorResponse(error: unknown, fallback: BatchHttpErrorFallb
   }
   return {
     status: 500,
-    body: { error: fallback.error, message: error instanceof Error ? error.message : fallback.message },
+    // 未预期错误可能携带 FFmpeg stderr、本地绝对路径或 SQLite 细节；
+    // 对客户端只返回 route 提供的安全文案，详细错误留在服务端边界处理。
+    body: { error: fallback.error, message: fallback.message },
   };
 }

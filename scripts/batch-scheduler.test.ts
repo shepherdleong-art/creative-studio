@@ -9,6 +9,7 @@ import { createProjectScript } from '../lib/batch-production/scripts.ts';
 import { createBatchSnapshot, startBatchProduction } from '../lib/batch-production/batch-flow.ts';
 import { createAsset, createAnalysisVersion } from '../lib/batch-production/assets.ts';
 import { createBatchTask } from '../lib/batch-production/tasks.ts';
+import { queueAssetPreparation } from '../lib/batch-production/asset-preparation.ts';
 import {
   claimNextTask,
   completeTaskAttempt,
@@ -98,6 +99,7 @@ try {
     now: () => new Date('2026-08-02T09:10:00.000Z'),
   });
   assert.equal(planIds.length, 2);
+  queueAssetPreparation(db, 'project-1', batchId, [asset1]);
   // 为两张成片各建一个 render 任务(直接造 output_version 并在任务里引用)
   const outputVersionIds: string[] = [];
   for (const planId of planIds) {
@@ -142,11 +144,11 @@ try {
     now: () => new Date('2026-08-02T09:30:02.000Z'),
     leaseDurationMs: 60_000,
   });
-  assert.ok(third, '第三个可领取任务(开跑自动建立的素材分析任务)');
+  assert.ok(third, '第三个可领取任务(snapshot 前排队的素材分析任务)');
 
-  // 三个任务都被领取:两个 render + 一个自动建立的 asset_prepare
+  // 三个任务都被领取:两个 render + 一个 snapshot 前排队的 asset_prepare
   const runningTasks = db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE status = 'running'`).get() as { n: number };
-  assert.equal(runningTasks.n, 3, '两个 render 任务加一个自动分析任务');
+  assert.equal(runningTasks.n, 3, '两个 render 任务加一个分析任务');
 
   // --- 场景 2:旧租约回调不能覆盖新尝试 ---
   const attempt1 = claimedByWorker1!.attempt;
@@ -252,6 +254,7 @@ try {
     assetSelections,
     now: () => new Date('2026-08-02T10:05:00.000Z'),
   });
+  queueAssetPreparation(db, 'project-1', batch2, [asset1]);
   const v2Id = db.prepare(`
     INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
     VALUES (?, ?, 1, '{}', '2026-08-02T10:06:00.000Z')
@@ -281,7 +284,7 @@ try {
   const resumedClaim = claimNextTask(db, { workerId: 'worker-1', now: () => new Date('2026-08-02T10:33:00.000Z') });
   assert.equal(resumedClaim?.task.id, task3, '继续后任务重新可领取');
   completeTaskAttempt(db, resumedClaim!.attempt.id, { workerId: 'worker-1', status: 'succeeded', now: () => new Date('2026-08-02T10:34:00.000Z') });
-  // 清空 batch2 剩余任务(自动分析任务),避免残留 queued 干扰后续场景
+  // 清空 batch2 剩余任务(分析任务),避免残留 queued 干扰后续场景
   for (;;) {
     const leftover = claimNextTask(db, {
       workerId: 'worker-1',
@@ -303,6 +306,7 @@ try {
     assetSelections,
     now: () => new Date('2026-08-02T11:05:00.000Z'),
   });
+  queueAssetPreparation(db, 'project-1', batch3, [asset1]);
   db.prepare(`
     INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
     VALUES (?, ?, 1, '{}', '2026-08-02T11:06:00.000Z')

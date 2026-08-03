@@ -143,7 +143,8 @@ try {
   const module4Source = preparation.assets[0]?.sources.find(({ sourceKind }) => sourceKind === 'module4');
   assert.ok(module4Source, '素材带模块 4 来源');
   assert.equal(module4Source?.health, 'healthy');
-  assert.equal((module4Source?.location as { videoJobId: string }).videoJobId, 'video-job-1');
+  assert.equal(module4Source?.displayName, 'clip.mp4', '来源只返回安全展示名');
+  assert.equal('location' in module4Source!, false, '准备接口不得泄漏本地来源路径');
   const currentAnalysisId = assetsModule.createAnalysisVersion(db, {
     assetId: preparation.assets[0]!.id,
     analyzerVersion: 'prepare-test-v1',
@@ -152,11 +153,20 @@ try {
     analysisJson: { usable: true },
   });
   assetsModule.setAssetCurrentAnalysis(db, 'project-1', preparation.assets[0]!.id, currentAnalysisId);
+  db.prepare(`UPDATE batch_assets SET mediaJson = ? WHERE id = ?`).run(
+    JSON.stringify({ displayName: '/Users/secret/clip.mp4', durationSec: 0.3, width: 64, height: 64 }),
+    preparation.assets[0]!.id,
+  );
   const preparedWithAnalysis = await prepareModule.prepareBatchProductionInputs(db, 'project-1');
   assert.equal(
     preparedWithAnalysis.assets[0]?.currentAnalysisId,
     currentAnalysisId,
     '准备区必须暴露素材当前分析版本，UI 不得伪造 analysisId',
+  );
+  assert.equal(
+    preparedWithAnalysis.assets[0]?.sources[0]?.displayName,
+    'clip.mp4',
+    '即使历史展示名包含路径也只能返回 basename',
   );
   assert.equal(
     preparation.warnings.some((warning) => warning.includes('video-job-missing-file')),

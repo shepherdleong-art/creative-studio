@@ -4,7 +4,6 @@ import { createOutputPlansForSnapshot, listOutputPlans } from './plans.ts';
 import { resolveColorSnapshot, type ColorSnapshotInput } from './lut-catalog.ts';
 import { syncProjectScripts } from './script-catalog.ts';
 import { snapshotScriptIntoBatch } from './scripts.ts';
-import { createBatchTask } from './tasks.ts';
 import {
   addAssetToPool,
   createBatchProductionVersion,
@@ -103,12 +102,16 @@ function validateSelections(
     if (asset.status !== 'online') {
       throw new BatchDomainError('conflict', asset.status === 'archived' ? '归档素材不能进入新批次' : '离线素材不能进入新批次');
     }
-    const analysis = db.prepare(`SELECT assetId FROM batch_asset_analysis WHERE id = ?`).get(analysisId) as {
+    const analysis = db.prepare(`SELECT assetId, status FROM batch_asset_analysis WHERE id = ?`).get(analysisId) as {
       assetId: string;
+      status: 'ready' | 'failed';
     } | undefined;
     if (!analysis) throw new BatchDomainError('not_found', '分析版本不存在');
     if (analysis.assetId !== assetId) {
       throw new BatchDomainError('invalid_input', '分析版本不属于该素材');
+    }
+    if (analysis.status !== 'ready') {
+      throw new BatchDomainError('conflict', '素材分析尚未完成,不能确认批次快照');
     }
     // LUT 完整身份的校验由 resolveColorSnapshot 统一完成(见 createBatchSnapshot),
     // 这里只做素材与分析归属的静态校验。
@@ -470,22 +473,8 @@ export function startBatchProduction(
         batch.currentVersionId,
       );
     }
-    // 为素材池每个素材建立素材分析任务(Phase C 当前真正支持且有 executor
-    // 的任务链);requestKey 基于稳定业务身份,重复启动不会产生等价任务副本。
-    // 不建立 render 任务:正式渲染执行器属于 Phase E。
-    const poolAssets = db.prepare(`
-      SELECT assetId FROM batch_asset_pool_items WHERE batchVersionId = ?
-    `).all(batch.currentVersionId) as Array<{ assetId: string }>;
-    for (const { assetId } of poolAssets) {
-      createBatchTask(db, projectId, {
-        batchId,
-        workType: 'asset_prepare',
-        targetKind: 'asset',
-        targetId: assetId,
-        requestKey: `asset_prepare:${batchId}:${assetId}`,
-        now,
-      });
-    }
+    // 素材分析必须在 snapshot 前由项目素材分析入口排队并完成。start 只
+    // 冻结已锁定的 analysisId，不再为素材池重复创建 asset_prepare 任务。
     updateBatchProductionStatus(db, projectId, batchId, 'running', now);
   })();
 }

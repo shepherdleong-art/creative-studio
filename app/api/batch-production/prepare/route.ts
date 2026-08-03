@@ -42,16 +42,15 @@ export async function GET(request: NextRequest) {
     const preparation = await prepareBatchProductionInputs(db, projectId);
     return NextResponse.json(preparation, { headers: NO_STORE_HEADERS });
   } catch (error) {
-    const message = error instanceof Error ? error.message : '批量准备区数据读取失败';
-    if (message === '项目不存在') {
+    if (error instanceof Error && error.message === '项目不存在') {
       return NextResponse.json({
         error: 'prepare_failed',
-        message,
+        message: '项目不存在',
       }, { status: 404, headers: NO_STORE_HEADERS });
     }
     return NextResponse.json({
       error: 'prepare_failed',
-      message,
+      message: '批量准备区数据读取失败',
     }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }

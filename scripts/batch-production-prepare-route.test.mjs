@@ -8,6 +8,8 @@ assert.match(route, /getBatchProductionReadiness/);
 assert.match(route, /readiness\.available/);
 assert.match(route, /status:\s*503/);
 assert.match(route, /await prepareBatchProductionInputs\(db, projectId\)/);
+assert.doesNotMatch(route, /const message = error instanceof Error/, '500 不得回传内部错误细节');
+assert.match(route, /message: '批量准备区数据读取失败'/);
 assert.match(route, /projectId/);
 assert.match(route, /missing_project_id/);
 assert.match(route, /status:\s*400/);

@@ -272,13 +272,16 @@ export function addAssetToPool(
       throw new Error('素材不属于该批次所在项目');
     }
     const analysis = db.prepare(`
-      SELECT assetId FROM batch_asset_analysis WHERE id = ?
-    `).get(input.analysisId) as { assetId: string } | undefined;
+      SELECT assetId, status FROM batch_asset_analysis WHERE id = ?
+    `).get(input.analysisId) as { assetId: string; status: 'ready' | 'failed' } | undefined;
     if (!analysis) {
       throw new Error('分析版本不存在');
     }
     if (analysis.assetId !== input.assetId) {
       throw new Error('分析版本不属于该素材');
+    }
+    if (analysis.status !== 'ready') {
+      throw new Error('素材分析尚未完成,不能加入批次素材池');
     }
     const colorSnapshot: ColorSnapshotV1 = input.colorSnapshot ?? {
       lutId: null,

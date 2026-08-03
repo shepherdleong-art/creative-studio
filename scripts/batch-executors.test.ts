@@ -4,12 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { runFfmpeg } from '../lib/ffmpeg.ts';
+import { computeFileSha256 } from '../lib/batch-production/media-catalog.ts';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { createAsset } from '../lib/batch-production/assets.ts';
 import { createBatchProduction } from '../lib/batch-production/versions.ts';
 import { createProjectScript } from '../lib/batch-production/scripts.ts';
 import { createBatchSnapshot, startBatchProduction } from '../lib/batch-production/batch-flow.ts';
 import { createBatchTask } from '../lib/batch-production/tasks.ts';
+import { queueAssetPreparation } from '../lib/batch-production/asset-preparation.ts';
 import { analyzeAssetExecutor, type BatchTaskExecutor } from '../lib/batch-production/executors.ts';
 import { runPendingOnce } from '../lib/batch-production/runner.ts';
 
@@ -63,13 +65,14 @@ try {
   fs.mkdirSync(videoDir, { recursive: true });
   const videoPath = path.join(videoDir, 'clip.mp4');
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=red:duration=0.4:size=64x64:rate=12', '-pix_fmt', 'yuv420p', '-y', videoPath]);
+  const videoFingerprint = await computeFileSha256(videoPath);
 
   // --- 准备:素材(带 healthy 链接来源)→ 批次 → 快照 → 开跑 → 分析任务 ---
   const assetId = createAsset(db, {
     projectId: 'project-1',
     sourceKind: 'linked',
     locationJson: { kind: 'linked', absolutePath: videoPath },
-    contentFingerprint: 'sha256:asset-video',
+    contentFingerprint: `sha256:${videoFingerprint}`,
     mediaKind: 'video',
     now: () => new Date('2026-08-02T09:00:00.000Z'),
   });
@@ -98,14 +101,15 @@ try {
     assetSelections: [{ assetId, analysisId: 'analysis-0' }],
     now: () => new Date('2026-08-02T09:16:00.000Z'),
   });
+  queueAssetPreparation(db, 'project-1', batchId, [assetId]);
   startBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-02T09:20:00.000Z'));
 
-  // startBatchProduction 自动为素材池建立素材分析任务(requestKey 幂等)
+  // snapshot 前分析入口为素材建立任务(requestKey 幂等);start 不重复创建
   const autoTask = db.prepare(`
     SELECT id, requestKey FROM batch_tasks
     WHERE batchId = ? AND workType = 'asset_prepare'
   `).get(batchId) as { id: string; requestKey: string | null };
-  assert.ok(autoTask, '开跑必须自动建立素材分析任务');
+  assert.ok(autoTask, 'snapshot 前必须建立素材分析任务');
   assert.equal(autoTask.requestKey, `asset_prepare:${batchId}:${assetId}`, '分析任务必须带稳定 requestKey');
   const task1 = autoTask.id;
 

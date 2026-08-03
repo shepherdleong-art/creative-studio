@@ -182,7 +182,7 @@ try {
   // d/e/f:清理 → 重新请求 → 生成成功;历史终态不卡住;读租约释放自动完成删除
   // ================================================================
   {
-    const { db, sourcePath, fingerprint, assetId, batchId, batchVersionId } = await setupBatchWithSource();
+    const { db, sourcePath, fingerprint, assetId, analysisId, batchId, batchVersionId } = await setupBatchWithSource();
     void sourcePath;
     const first = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
@@ -210,9 +210,6 @@ try {
       () => new Date('2026-08-03T08:05:30.000Z'),
     );
     const scriptId = (db.prepare(`SELECT id FROM batch_scripts LIMIT 1`).get() as { id: string }).id;
-    const analysisId = (db.prepare(`SELECT currentAnalysisId FROM batch_assets WHERE id = ?`).get(assetId) as {
-      currentAnalysisId: string;
-    }).currentAnalysisId;
     const otherSnapshot = batchFlowModule.createBatchSnapshot(db, 'project-1', otherBatchId, {
       scriptSelections: [{ scriptId, copyCount: 1 }],
       assetSelections: [{ assetId, analysisId, colorSnapshot: { lutId: null } }],

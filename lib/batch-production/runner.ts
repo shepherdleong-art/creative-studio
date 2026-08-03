@@ -183,13 +183,14 @@ async function executeOne(
     const signals = [controller.signal, options.signal, options.shutdownSignal]
       .filter((signal): signal is AbortSignal => Boolean(signal));
     const executorSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]!;
-    const { resultJson, discard } = await executor.execute({
+    const execution = await executor.execute({
       db,
       claim,
       signal: executorSignal,
       reportProgress,
     });
-    discardUnacceptedResult = discard;
+    let resultJson = execution.resultJson;
+    discardUnacceptedResult = execution.discard;
     // 执行器可能没有及时响应 AbortSignal。结果发布前必须重新核对持久化
     // 控制状态,不能让 pause/stop 之后的迟到回调提交 succeeded。
     // 指针、控制态、租约和成功落账必须在同一 SQLite 事务内检查，避免
@@ -225,6 +226,18 @@ async function executeOne(
       if (!hasValidLease(db, claim.attempt.id, workerId, now)) {
         interrupt('lease_lost');
         throw new Error('任务租约已到期,不能提交结果');
+      }
+      if (execution.commit) {
+        const committed = execution.commit();
+        resultJson = committed.resultJson;
+        discardUnacceptedResult = committed.discard ?? discardUnacceptedResult;
+        if (committed.progress) Object.assign(lastProgress, committed.progress);
+        // commit 回调也可能触发外部停止信号；再次检查可让同一事务完整
+        // 回滚刚发布的领域写入，而不是把取消后的结果落成 succeeded。
+        if (executorSignal.aborted) {
+          interrupt('batch_control');
+          throw new Error('任务在发布结果时被中止,不能提交成功结果');
+        }
       }
       db.prepare(`
         UPDATE batch_task_attempts SET progressJson = ? WHERE id = ? AND claimedBy = ?

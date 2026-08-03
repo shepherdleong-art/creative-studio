@@ -6,9 +6,11 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { chromium } from '@playwright/test';
+import { chromium, expect as playwrightExpect } from '@playwright/test';
+import sharp from 'sharp';
 import { createAnalysisVersion, createAsset, setAssetCurrentAnalysis } from '../lib/batch-production/assets.ts';
 import { createProjectScript } from '../lib/batch-production/scripts.ts';
+import { runFfmpeg } from '../lib/ffmpeg.ts';
 
 const standaloneServer = path.join(process.cwd(), '.next', 'standalone', 'server.js');
 assert.ok(fs.existsSync(standaloneServer), '请先运行 npm run build，再执行批量准备区浏览器验收');
@@ -100,12 +102,15 @@ try {
     },
   });
 
-  function seedManagedAsset(idSuffix, withAnalysis) {
+  async function seedManagedAsset(idSuffix, withAnalysis) {
     const relativePath = path.join('storage', 'batch-media', 'batch-ui-project', `${idSuffix}.mp4`);
     const absolutePath = path.join(dataRoot, relativePath);
     fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-    const contents = Buffer.from(`batch-ui-${idSuffix}`);
-    fs.writeFileSync(absolutePath, contents);
+    await runFfmpeg([
+      '-f', 'lavfi', '-i', `color=c=${idSuffix === 'ready' ? 'blue' : 'orange'}:duration=0.4:size=64x64:rate=12`,
+      '-pix_fmt', 'yuv420p', '-y', absolutePath,
+    ]);
+    const contents = fs.readFileSync(absolutePath);
     const fingerprint = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
     const assetId = createAsset(db, {
       projectId: 'batch-ui-project',
@@ -136,13 +141,97 @@ try {
     return { assetId, analysisId };
   }
 
-  const readyAsset = seedManagedAsset('ready', true);
-  seedManagedAsset('pending', false);
+  const readyAsset = await seedManagedAsset('ready', true);
+  const pendingAsset = await seedManagedAsset('pending', false);
   db.close();
+
+  const pendingMediaQuery = `projectId=batch-ui-project`;
+  const thumbnailResponse = await fetch(
+    `${baseUrl}/api/batch-production/assets/${pendingAsset.assetId}/thumbnail?${pendingMediaQuery}`,
+  );
+  assert.equal(thumbnailResponse.status, 200, '真实缩略图 route 必须可用');
+  assert.match(thumbnailResponse.headers.get('content-type') ?? '', /^image\/jpeg/);
+  const thumbnailMetadata = await sharp(Buffer.from(await thumbnailResponse.arrayBuffer())).metadata();
+  assert.deepEqual(
+    { format: thumbnailMetadata.format, width: thumbnailMetadata.width, height: thumbnailMetadata.height },
+    { format: 'jpeg', width: 960, height: 540 },
+    '浏览器验收素材必须得到真实 960×540 JPEG 缩略图',
+  );
+  const previewResponse = await fetch(
+    `${baseUrl}/api/batch-production/assets/${pendingAsset.assetId}/preview?${pendingMediaQuery}`,
+    { headers: { Range: 'bytes=0-7' } },
+  );
+  assert.equal(previewResponse.status, 206, '真实原片预览 route 必须支持 Range');
+  assert.equal((await previewResponse.arrayBuffer()).byteLength, 8);
 
   browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10_000);
+  let analysisRequested = false;
+  let analysisTaskReads = 0;
+  await page.route('**/api/batch-production/batches/*/assets/analyze**', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    analysisRequested = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        batchId: 'mock-batch',
+        projectId: 'batch-ui-project',
+        items: [{ assetId: pendingAsset.assetId, taskId: 'mock-asset-task', status: 'queued', ready: false }],
+      }),
+    });
+  });
+  await page.route('**/api/batch-production/prepare?projectId=batch-ui-project', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (analysisRequested) {
+      const pending = body.assets.find(({ id }) => id === pendingAsset.assetId);
+      if (pending) {
+        pending.currentAnalysisId = 'mock-analysis-id';
+        pending.analysisLevel = 'technical';
+      }
+    }
+    await route.fulfill({ response, body: JSON.stringify(body) });
+  });
+  await page.route('**/api/batch-production/batches/*/tasks?projectId=batch-ui-project', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.tasks = body.tasks.filter(({ workType }) => workType !== 'asset_prepare');
+    if (analysisRequested) {
+      analysisTaskReads += 1;
+      const succeeded = analysisTaskReads > 1;
+      body.tasks.push({
+        id: 'mock-asset-task',
+        workType: 'asset_prepare',
+        targetKind: 'asset',
+        targetId: pendingAsset.assetId,
+        status: succeeded ? 'succeeded' : 'queued',
+        expectedState: 'running',
+        attemptCount: 1,
+        progressJson: succeeded
+          ? { phase: 'analyzed', description: '分析完成', percent: 1 }
+          : { phase: 'locating', description: '定位素材来源', percent: null },
+        createdAt: '2026-08-03T00:00:00.000Z',
+        attempts: [{
+          id: 'mock-asset-attempt',
+          attemptNumber: 1,
+          status: succeeded ? 'succeeded' : 'running',
+          progressJson: succeeded
+            ? { phase: 'analyzed', description: '分析完成', percent: 1 }
+            : { phase: 'locating', description: '定位素材来源', percent: null },
+          errorCode: null,
+          errorMessage: null,
+          startedAt: '2026-08-03T00:00:00.000Z',
+          finishedAt: succeeded ? '2026-08-03T00:00:01.000Z' : null,
+        }],
+      });
+    }
+    await route.fulfill({ response, body: JSON.stringify(body) });
+  });
   page.on('console', (message) => browserMessages.push(`${message.type()}: ${message.text()}`));
   const batchResponses = [];
   const batchRequests = [];
@@ -179,22 +268,33 @@ try {
   await page.getByRole('heading', { name: '批量生产准备区' }).waitFor();
   await page.getByRole('heading', { name: '口播 A' }).waitFor();
   await page.getByRole('heading', { name: '已分析素材' }).waitFor();
+  await page.getByRole('img', { name: '待分析素材 缩略图' }).waitFor();
+  const previewDialog = page.getByRole('dialog');
+  await page.getByRole('img', { name: '待分析素材 缩略图' }).click();
+  await previewDialog.waitFor();
+  await page.getByTestId(`asset-preview-modal-${pendingAsset.assetId}`).waitFor();
+  await page.getByRole('button', { name: '关闭素材预览' }).click();
+  assert.equal(await previewDialog.count(), 0, '素材预览弹窗必须可关闭');
 
   await page.getByLabel('新批次名称').fill('三条成片验收批次');
   await page.getByRole('button', { name: '创建批次', exact: true }).click();
   await page.getByText('批次已创建', { exact: false }).waitFor();
+
+  const analyzeRequest = page.waitForRequest((request) => (
+    request.method() === 'POST'
+    && /\/api\/batch-production\/batches\/[^/]+\/assets\/analyze\?projectId=batch-ui-project$/.test(request.url())
+  ));
+  await page.getByRole('button', { name: '分析全部待分析（1）', exact: true }).click();
+  const analysisRequest = await analyzeRequest;
+  assert.deepEqual(analysisRequest.postDataJSON(), { assetIds: [pendingAsset.assetId] });
+  const pendingAssetCheckbox = page.getByRole('checkbox', { name: '选择素材 待分析素材' });
+  await playwrightExpect(pendingAssetCheckbox).toBeEnabled({ timeout: 10_000 });
 
   await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).check();
   await page.getByLabel('口播 A 生成份数').fill('2');
   await page.getByRole('checkbox', { name: '选择脚本 口播 B' }).check();
   await page.getByLabel('口播 B 生成份数').fill('1');
   await page.getByRole('checkbox', { name: '选择素材 已分析素材' }).check();
-  assert.equal(
-    await page.getByRole('checkbox', { name: '选择素材 待分析素材' }).isDisabled(),
-    true,
-    '没有 currentAnalysisId 的素材不得参与批次快照',
-  );
-  await page.getByText('尚未完成素材分析，暂不可选').waitFor();
 
   await page.getByRole('button', { name: '确认整体输入', exact: true }).click();
   await page.getByText('已确认 3 张成片计划').waitFor();
@@ -261,12 +361,9 @@ try {
   await page.getByRole('button', { name: '为当前批次全部素材生成代理', exact: true }).waitFor();
   await page.getByRole('button', { name: '为当前批次全部素材生成代理', exact: true }).click();
   await page.getByText('已为 1 条素材请求代理').waitFor();
-  // 假素材字节无法被 ffprobe 识别,任务会真实失败并显示中文"失败"与"重试"
-  // (不能显示 succeeded/failed 等内部值)。
-  const retryButton = page.getByRole('button', { name: '重试', exact: true }).first();
-  await retryButton.waitFor({ timeout: 20_000 });
-  const failedTaskRow = page.locator('li', { has: retryButton }).first();
-  await failedTaskRow.getByText('失败', { exact: true }).first().waitFor();
+  // 真实视频应完成代理生成，并只显示中文状态（不泄漏内部枚举值）。
+  const mediaPrepSection = page.getByRole('region', { name: '媒体准备:代理与 LUT' });
+  await mediaPrepSection.getByText('已完成', { exact: true }).first().waitFor({ timeout: 20_000 });
   assert.equal(await page.getByText('succeeded', { exact: true }).count(), 0, '不得直接显示内部状态值 succeeded');
   assert.equal(await page.getByText('failed', { exact: true }).count(), 0, '不得直接显示内部状态值 failed');
   assert.equal(await page.getByText('queued', { exact: true }).count(), 0, '不得直接显示内部状态值 queued');

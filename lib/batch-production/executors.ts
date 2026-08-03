@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3';
-import { probeVideoMedia } from '../ffmpeg.ts';
 import { createAnalysisVersionAndSetCurrent } from './assets.ts';
-import { resolveSourceFilePath } from './media-catalog.ts';
+import {
+  assertProjectAssetFileIdentity,
+  resolveVerifiedProjectAssetMedia,
+} from './project-asset-media.ts';
 import type { BatchTaskWorkType, ClaimedBatchTask } from './tasks.ts';
 
 /**
@@ -32,6 +34,15 @@ export interface BatchTaskExecutor {
     resultJson?: unknown;
     /** 成功执行后若调度器拒绝迟到结果，用于删除本次未被接受的候选。 */
     discard?: () => Promise<void> | void;
+    /**
+     * 仅做同步数据库发布；runner 会在同一个 IMMEDIATE 事务中先复核租约、
+     * 任务/批次控制态，再调用它并落成功状态，避免取消后的迟到发布。
+     */
+    commit?: () => {
+      resultJson?: unknown;
+      discard?: () => Promise<void> | void;
+      progress?: BatchTaskProgress;
+    };
   }>;
 }
 
@@ -55,33 +66,49 @@ export const analyzeAssetExecutor: BatchTaskExecutor = {
     }
     context.reportProgress({ phase: 'locating', description: '定位素材来源', percent: null });
     assertNotAborted(signal);
-    const source = db.prepare(`
-      SELECT locationJson FROM batch_asset_sources
-      WHERE assetId = ? AND health = 'healthy'
-      ORDER BY createdAt, id LIMIT 1
-    `).get(claim.task.targetId) as { locationJson: string } | undefined;
-    if (!source) {
-      throw new Error('素材没有可用来源,等待重新定位');
-    }
-    const filePath = resolveSourceFilePath(JSON.parse(source.locationJson));
+    const projectId = (db.prepare(`
+      SELECT projectId FROM batch_assets WHERE id = ?
+    `).get(claim.task.targetId) as { projectId: string } | undefined)?.projectId;
+    if (!projectId) throw new Error('素材不存在');
     context.reportProgress({ phase: 'probing', description: '探测媒体属性', percent: null });
     assertNotAborted(signal);
-    const probe = await probeVideoMedia(filePath);
-    // 领域逻辑在 assets.ts:原子创建分析版本并切换当前指向,返回真实分析 id
-    const analysisId = createAnalysisVersionAndSetCurrent(db, {
-      assetId: claim.task.targetId,
-      analyzerVersion: 'batch-analysis-v1',
-      providerId: 'ffprobe',
-      model: 'ffprobe',
-      analysisJson: {
-        durationUs: probe.durationUs,
-        width: probe.width,
-        height: probe.height,
+    const verified = await resolveVerifiedProjectAssetMedia(db, projectId, claim.task.targetId);
+    // 完整指纹与 FFprobe 本身是不可中断的本地 I/O；在其返回后重新检查
+    // 任务信号，避免取消后的迟到分析版本继续发布。
+    assertNotAborted(signal);
+    const probe = verified.media;
+    context.reportProgress({ phase: 'verified', description: '媒体核验完成，正在发布', percent: null });
+    return {
+      commit: () => {
+        assertNotAborted(signal);
+        const assetState = db.prepare(`
+          SELECT status FROM batch_assets WHERE id = ? AND projectId = ?
+        `).get(claim.task.targetId, projectId) as { status: string } | undefined;
+        if (assetState?.status !== 'online') {
+          throw new Error('素材已离线或归档,不能发布分析结果');
+        }
+        assertProjectAssetFileIdentity(verified.filePath, verified.fileIdentity);
+        // 分析版本、current 指针与任务成功由 runner 的同一事务发布。
+        const analysisId = createAnalysisVersionAndSetCurrent(db, {
+          assetId: claim.task.targetId,
+          analyzerVersion: 'batch-analysis-v1',
+          providerId: 'ffprobe',
+          model: 'ffprobe',
+          analysisJson: {
+            analysisLevel: 'technical',
+            analyzer: 'ffprobe',
+            durationUs: probe.durationUs,
+            width: probe.width,
+            height: probe.height,
+          },
+          now: () => new Date(),
+        });
+        return {
+          resultJson: { analysisId },
+          progress: { phase: 'analyzed', description: '分析完成', percent: 1 },
+        };
       },
-      now: () => new Date(),
-    });
-    context.reportProgress({ phase: 'analyzed', description: '分析完成', percent: 1 });
-    return { resultJson: { analysisId } };
+    };
   },
 };
 
