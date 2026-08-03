@@ -321,14 +321,19 @@ try {
     '无法回溯时不得伪造错误版本的代理请求',
   );
 
-  // 11. 再次执行 v15 的完整 schema 校验路径(幂等,直接走 ensure 全量校验)
+  // 11. 走完整 schema 路径：v15 已应用，当前版本会继续追加 v16 并完成全量校验。
   const schemaModule = await import('../lib/batch-production/schema.ts');
   const revalidate = await schemaModule.ensureBatchSchemaReady({
     db,
     backupRoot: path.join(dbRoot, 'backups'),
     now: () => new Date('2026-08-02T00:00:00.000Z'),
   });
-  assert.equal(revalidate.state, 'current', '迁移后的库必须通过完整 schema 校验');
+  assert.equal(revalidate.state, 'ready', 'v15 旧库必须继续升级到当前 schema 并通过完整校验');
+  assert.equal(
+    (db.prepare(`SELECT MAX(version) AS version FROM batch_schema_migrations`).get() as { version: number }).version,
+    16,
+    '完整校验路径必须追加 Phase E v16',
+  );
 
   db.close();
   console.log('batch-v15-lut-conflict-migration tests passed');

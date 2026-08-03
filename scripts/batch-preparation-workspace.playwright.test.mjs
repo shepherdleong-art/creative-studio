@@ -71,8 +71,8 @@ try {
     VALUES ('batch-ui-provider', 'Browser Smoke', 'http://127.0.0.1', 'smoke', 'openai-compatible')
   `).run();
   db.prepare(`
-    INSERT INTO projects (id, name, providerId, model, prompt, workflowType)
-    VALUES ('batch-ui-project', '批量准备区验收项目', 'batch-ui-provider', 'smoke', 'smoke', 'complex_product')
+    INSERT INTO projects (id, name, providerId, model, prompt, workflowType, productCode)
+    VALUES ('batch-ui-project', '批量准备区验收项目', 'batch-ui-provider', 'smoke', 'smoke', 'complex_product', 'BATCHUI')
   `).run();
 
   const scriptAId = createProjectScript(db, 'batch-ui-project', {
@@ -125,7 +125,12 @@ try {
       analyzerVersion: 'batch-ui-v1',
       providerId: 'batch-ui-provider',
       model: 'smoke',
-      analysisJson: { usable: true },
+      analysisJson: {
+        usable: true,
+        durationUs: 60_000_000,
+        scenes: [{ startUs: 0, endUs: 60_000_000, qualityScore: 0.9, labels: ['产品'] }],
+        coverFrameTimesUs: [0],
+      },
     });
     setAssetCurrentAnalysis(db, 'batch-ui-project', assetId, analysisId);
     return { assetId, analysisId };
@@ -224,7 +229,33 @@ try {
   assert.equal(await page.getByTestId('batch-output-card').count(), 3, '刷新后必须从批次详情恢复精确 N 张卡片');
 
   await page.getByRole('button', { name: '开始批量生产', exact: true }).click();
-  await page.getByText('批次已开始生产').waitFor();
+  await page.getByText('联合分配完成，已建立 3 条渲染候选。').waitFor();
+
+  // Phase E 浏览器闭环：失败候选可重试、单条重分配只调用目标 route、
+  // 无正式候选的选中导出必须逐条跳过并给出原因。
+  const renderRetryRequest = page.waitForRequest((request) => (
+    request.method() === 'POST'
+    && /\/api\/batch-production\/tasks\/[^/]+\/retry$/.test(new URL(request.url()).pathname)
+  ));
+  await page.getByRole('button', { name: '重试渲染', exact: true }).first().click();
+  await renderRetryRequest;
+
+  const reallocateRequest = page.waitForRequest((request) => (
+    request.method() === 'POST'
+    && /\/api\/batch-production\/batches\/[^/]+\/outputs\/[^/]+\/reallocate$/.test(new URL(request.url()).pathname)
+  ));
+  await page.getByRole('button', { name: '只重新分配这一条', exact: true }).first().click();
+  await reallocateRequest;
+  await page.getByText(/已为这一条建立新候选|本次没有得到不同的合法安排/).waitFor();
+
+  await page.getByRole('checkbox', { name: '选择成片 1' }).check();
+  const exportRequest = page.waitForRequest((request) => (
+    request.method() === 'POST'
+    && /\/api\/batch-production\/batches\/[^/]+\/exports$/.test(new URL(request.url()).pathname)
+  ));
+  await page.getByRole('button', { name: '正式导出选中项（1）', exact: true }).click();
+  await exportRequest;
+  await page.getByText(/已发布 0 条，跳过 1 条/).waitFor();
 
   // (i) frozen 批次仍能查看和管理该版本的代理:媒体准备区必须可见、可请求代理。
   await page.getByRole('button', { name: '为当前批次全部素材生成代理', exact: true }).waitFor();
@@ -296,7 +327,7 @@ try {
   const started = batchRequests.find(({ method, url }) => method === 'PUT' && /\/api\/batch-production\/batches\/[^/]+\/start$/.test(new URL(url).pathname));
   assert.ok(started, '开跑必须调用规范的 /batches/[id]/start API');
 
-  console.log('batch preparation and Phase B workspace Playwright tests passed');
+  console.log('batch preparation and Phase E workspace Playwright tests passed');
 } catch (error) {
   process.stderr.write(serverOutput.join(''));
   if (page) {

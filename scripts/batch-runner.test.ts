@@ -136,6 +136,7 @@ function setupBatch(db: Database.Database, name: string, n: number): string {
       INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
       VALUES (?, ?, 1, '{}', '2026-08-02T09:12:00.000Z')
     `).run(`ov-${name}-${i}`, planId);
+    db.prepare(`UPDATE batch_output_plans SET currentVersionId = ? WHERE id = ?`).run(`ov-${name}-${i}`, planId);
     createBatchTask(db, 'project-1', {
       batchId,
       workType: 'render',
@@ -266,12 +267,13 @@ try {
     ORDER BY createdAt LIMIT 1
   `).get(batchLate) as { id: string };
   let lateStarted = false;
+  let lateDiscarded = 0;
   const ignoresAbortExecutor: BatchTaskExecutor = {
     workTypes: ['render'],
     async execute() {
       lateStarted = true;
       await new Promise((resolve) => setTimeout(resolve, 100));
-      return { resultJson: { late: true } };
+      return { resultJson: { late: true }, discard: () => { lateDiscarded += 1; } };
     },
   };
   const lateRun = runPendingOnce({
@@ -296,6 +298,7 @@ try {
     'interrupted',
     '被停止的运行尝试必须保留为 interrupted',
   );
+  assert.equal(lateDiscarded, 1, '调度器拒绝迟到结果时必须调用执行器候选清理钩子');
 
   // --- 场景 5:租约丢失不是用户暂停,任务保持可恢复运行期望 ---
   const batchLease = setupBatch(db, 'batch-lease-loss', 1);
@@ -338,7 +341,48 @@ try {
   assert.equal(leaseExecutions, 1, '同一调度轮不得立即反复领取刚丢失租约的任务');
   stopBatch(db, 'project-1', batchLease);
 
-  // --- 场景 6:startBatchScheduler 单例 + stop 清理 ---
+  // --- 场景 6:重分配切换 currentVersionId 后拒绝并清理旧 render 的迟到结果 ---
+  const batchSuperseded = setupBatch(db, 'batch-superseded', 1);
+  const superseded = db.prepare(`
+    SELECT t.id AS taskId, t.targetId, o.planId
+    FROM batch_tasks t JOIN batch_output_versions o ON o.id = t.targetId
+    WHERE t.batchId = ? AND t.workType = 'render'
+  `).get(batchSuperseded) as { taskId: string; targetId: string; planId: string };
+  let supersededStarted = false;
+  let releaseSuperseded!: () => void;
+  let supersededDiscarded = 0;
+  const supersededExecutor: BatchTaskExecutor = {
+    workTypes: ['render'],
+    async execute() {
+      supersededStarted = true;
+      await new Promise<void>((resolve) => { releaseSuperseded = resolve; });
+      return { resultJson: { stale: true }, discard: () => { supersededDiscarded += 1; } };
+    },
+  };
+  const supersededRun = runPendingOnce({
+    db, workerId: 'worker-superseded', executors: [supersededExecutor], concurrency: 1,
+    heartbeatMs: 10, leaseDurationMs: 1_000, progressThrottleMs: 0,
+  });
+  await waitFor(() => supersededStarted);
+  db.prepare(`
+    INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
+    VALUES (?, ?, 2, '{}', '2026-08-02T12:00:00.000Z')
+  `).run(`${superseded.targetId}-new`, superseded.planId);
+  db.prepare(`UPDATE batch_output_plans SET currentVersionId = ? WHERE id = ?`).run(`${superseded.targetId}-new`, superseded.planId);
+  releaseSuperseded();
+  await supersededRun;
+  assert.deepEqual(
+    {
+      status: getBatchTask(db, 'project-1', superseded.taskId)?.status,
+      expectedState: getBatchTask(db, 'project-1', superseded.taskId)?.expectedState,
+      attemptStatus: listTaskAttempts(db, superseded.taskId)[0]?.status,
+      discarded: supersededDiscarded,
+    },
+    { status: 'cancelled', expectedState: 'stopped', attemptStatus: 'interrupted', discarded: 1 },
+    '被新版本替代的 render 不得成功落账且必须清理迟到候选',
+  );
+
+  // --- 场景 7:startBatchScheduler 单例 + stop 清理 ---
   await resetSchedulerSingletonForTests();
   const batchD = setupBatch(db, 'batch-d', 2);
   const controlledD = controlledExecutor();
@@ -391,7 +435,7 @@ try {
   void batchD;
   void controlledD;
 
-  // --- 场景 7:调度器关闭中止在途执行,但保留任务的可恢复运行期望 ---
+  // --- 场景 8:调度器关闭中止在途执行,但保留任务的可恢复运行期望 ---
   const batchShutdown = setupBatch(db, 'batch-scheduler-shutdown', 1);
   const shutdownExecutor = controlledExecutor();
   const shutdownController = startBatchScheduler({

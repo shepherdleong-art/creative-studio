@@ -46,7 +46,7 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 type ExecuteOneOutcome = 'completed' | 'lease_lost';
-type InterruptionReason = 'batch_control' | 'lease_lost';
+type InterruptionReason = 'batch_control' | 'lease_lost' | 'superseded';
 
 /**
  * 领取并执行一轮可执行任务(受控 worker pool)。
@@ -122,6 +122,7 @@ async function executeOne(
   let lastProgressWrite = 0;
   const lastProgress: BatchTaskProgress = { phase: 'starting' };
   let interruptionReason: InterruptionReason | null = null;
+  let discardUnacceptedResult: (() => Promise<void> | void) | undefined;
   const interrupt = (reason: InterruptionReason): void => {
     interruptionReason ??= reason;
     controller.abort();
@@ -153,11 +154,22 @@ async function executeOne(
       return;
     }
     const control = db.prepare(`
-      SELECT p.controlState, t.expectedState FROM batch_tasks t
+      SELECT p.controlState, t.expectedState,
+        CASE
+          WHEN t.workType <> 'render' OR t.targetKind <> 'output_version' THEN 1
+          WHEN EXISTS (
+            SELECT 1 FROM batch_output_versions o
+            JOIN batch_output_plans plan ON plan.id = o.planId
+            WHERE o.id = t.targetId AND plan.currentVersionId = o.id
+          ) THEN 1 ELSE 0
+        END AS targetIsCurrent
+      FROM batch_tasks t
       JOIN batch_productions p ON p.id = t.batchId
       WHERE t.id = ?
-    `).get(claim.task.id) as { controlState: string; expectedState: string } | undefined;
-    if (control && (control.controlState !== 'running' || control.expectedState !== 'running')) {
+    `).get(claim.task.id) as { controlState: string; expectedState: string; targetIsCurrent: number } | undefined;
+    if (control?.targetIsCurrent === 0) {
+      interrupt('superseded');
+    } else if (control && (control.controlState !== 'running' || control.expectedState !== 'running')) {
       interrupt('batch_control');
     }
   }, heartbeatMs);
@@ -171,45 +183,67 @@ async function executeOne(
     const signals = [controller.signal, options.signal, options.shutdownSignal]
       .filter((signal): signal is AbortSignal => Boolean(signal));
     const executorSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]!;
-    const { resultJson } = await executor.execute({
+    const { resultJson, discard } = await executor.execute({
       db,
       claim,
       signal: executorSignal,
       reportProgress,
     });
+    discardUnacceptedResult = discard;
     // 执行器可能没有及时响应 AbortSignal。结果发布前必须重新核对持久化
     // 控制状态,不能让 pause/stop 之后的迟到回调提交 succeeded。
-    const completionState = db.prepare(`
-      SELECT t.expectedState, p.controlState
-      FROM batch_tasks t
-      JOIN batch_productions p ON p.id = t.batchId
-      WHERE t.id = ?
-    `).get(claim.task.id) as { expectedState: string; controlState: string } | undefined;
-    if (
-      executorSignal.aborted
-      || completionState?.expectedState !== 'running'
-      || completionState.controlState !== 'running'
-    ) {
-      interrupt('batch_control');
-      throw new Error('任务已被暂停或停止,不能提交结果');
-    }
-    // 只有租约仍然有效才能提交成功结果
-    if (!hasValidLease(db, claim.attempt.id, workerId, now)) {
-      interrupt('lease_lost');
-      throw new Error('任务租约已到期,不能提交结果');
-    }
-    db.prepare(`
-      UPDATE batch_task_attempts SET progressJson = ? WHERE id = ? AND claimedBy = ?
-    `).run(JSON.stringify(lastProgress), claim.attempt.id, workerId);
-    completeTaskAttempt(db, claim.attempt.id, {
-      workerId,
-      status: 'succeeded',
-      progressJson: lastProgress,
-      resultJson,
-      now,
-    });
+    // 指针、控制态、租约和成功落账必须在同一 SQLite 事务内检查，避免
+    // 重分配刚切换 currentVersionId 时旧 render 仍提交迟到候选。
+    db.transaction(() => {
+      const completionState = db.prepare(`
+        SELECT t.expectedState, p.controlState,
+          CASE
+            WHEN t.workType <> 'render' OR t.targetKind <> 'output_version' THEN 1
+            WHEN EXISTS (
+              SELECT 1 FROM batch_output_versions o
+              JOIN batch_output_plans plan ON plan.id = o.planId
+              WHERE o.id = t.targetId AND plan.currentVersionId = o.id
+            ) THEN 1 ELSE 0
+          END AS targetIsCurrent
+        FROM batch_tasks t
+        JOIN batch_productions p ON p.id = t.batchId
+        WHERE t.id = ?
+      `).get(claim.task.id) as { expectedState: string; controlState: string; targetIsCurrent: number } | undefined;
+      if (completionState?.targetIsCurrent === 0) {
+        interrupt('superseded');
+        throw new Error('渲染目标已被新成片版本替代,不能提交结果');
+      }
+      if (
+        !completionState
+        || executorSignal.aborted
+        || completionState.expectedState !== 'running'
+        || completionState.controlState !== 'running'
+      ) {
+        interrupt('batch_control');
+        throw new Error('任务已被暂停或停止,不能提交结果');
+      }
+      if (!hasValidLease(db, claim.attempt.id, workerId, now)) {
+        interrupt('lease_lost');
+        throw new Error('任务租约已到期,不能提交结果');
+      }
+      db.prepare(`
+        UPDATE batch_task_attempts SET progressJson = ? WHERE id = ? AND claimedBy = ?
+      `).run(JSON.stringify(lastProgress), claim.attempt.id, workerId);
+      completeTaskAttempt(db, claim.attempt.id, {
+        workerId,
+        status: 'succeeded',
+        progressJson: lastProgress,
+        resultJson,
+        now,
+      });
+    }).immediate();
+    discardUnacceptedResult = undefined;
     return 'completed';
   } catch (error) {
+    if (discardUnacceptedResult) {
+      await Promise.resolve(discardUnacceptedResult()).catch(() => undefined);
+      discardUnacceptedResult = undefined;
+    }
     // 用信号状态判定中止来源,不靠错误消息猜测:
     // 外部停止信号 → 停止终态;内部控制检查(批次暂停/停止) → 按批次期望落账
     const abortedByUserStop = Boolean(options.signal?.aborted);
@@ -220,6 +254,8 @@ async function executeOne(
     } else if (abortedBySchedulerShutdown) {
       // 应用/调度器关闭不是用户停止:尝试结束,任务保持 running 期望并可恢复。
       settleInterruptedTask(db, claim.attempt.id, now, 'scheduler_shutdown');
+    } else if (interruptionReason === 'superseded') {
+      settleInterruptedTask(db, claim.attempt.id, now, 'superseded');
     } else if (interruptionReason === 'lease_lost' || !hasValidLease(db, claim.attempt.id, workerId, now)) {
       // 租约丢失不是用户暂停。只做过期恢复,保留 expectedState=running;
       // 如果尝试已被其他恢复流程处理,这里不会覆盖其结果。

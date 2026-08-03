@@ -92,6 +92,20 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 - 控制与进度 API：`GET /api/batch-production/batches/[id]/tasks`（任务/尝试/真实进度）、`POST .../control`（pause/resume/stop）、`POST /api/batch-production/tasks/[taskId]/retry`，全部经 readiness 门禁。
 - 未实现（后续阶段）：真实供应商取消/远端确认、磁盘/内存红线自动保护、跨平台进程树回收、正式渲染执行器（Phase E）。
 
+### Phase D 媒体准备（已完成本地实现与自动化验收）
+
+- v14–v15 建立 LUT 目录、完整色彩快照、稳定代理请求和可安全清理的共享代理缓存；代理进入 Phase C 调度器并支持任务级暂停、继续、取消和失败重试。
+- 原片、冻结 LUT 与代理均重新核验内容指纹；预览可诚实回退原片，正式输出前检从不回退代理。
+
+### Phase E 联合分配与导出（已完成本地实现与自动化验收）
+
+- v16 建立 `batch_allocation_runs`、批次版本素材排除与成片版本分配谱系；纯 `BatchAllocator` 一次读取全部冻结计划和素材，确定性输出差异事实、降级原因、锁定冲突与逐条 arrangement。
+- 启动 API 可在冻结点后幂等恢复：分配成功后每个当前候选只建立一个稳定 requestKey 的 render 任务，仍由 Phase C 的唯一 batch scheduler 领取、续租、暂停、停止和重试。
+- 正式 renderer 只读取完整指纹一致的原片及冻结 LUT，复用 Phase D `ColorPipeline`；真实 FFmpeg 输出 24fps H.264/AAC 候选与配对封面，使用任务专属临时目录和原子发布，失败／中止不影响历史产物。
+- 口播保留 provider-independent 本地 seam：没有真实音频时生成明确的 `silent_placeholder` 视觉候选，`productionReady=false`，正式发布强制拦截；本地已核验音频与对齐 timing 可进入 narration 模式。本阶段没有调用真实 TTS 或公司供应商。
+- 正式发布按项目／批次独立目录追加视频与封面，重复导出使用新序号、不覆盖旧文件；实体与指纹核验成功后才在一个数据库事务中登记配对 artifact 并切换当前视频。
+- 第五步工作区从 SQLite 聚合卡片状态，支持筛选、预览、历史提示、任务重试、单条重分配、批次控制和选中正式导出；新版失败仍显示旧正式成片。
+
 ## 后续阶段
 
 | 阶段 | 可见结果 | 关键门禁 |

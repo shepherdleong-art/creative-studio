@@ -285,12 +285,14 @@ export function recoverInterruptedWork(
  * - batch_control:按持久控制状态落成 paused 可继续或 stopped 终态;
  * - scheduler_shutdown:应用退出,任务回 queued 且保持 running 期望;
  * - user_stop:调用方明确停止全部工作,任务进入 cancelled 终态。
+ * - superseded:render 目标不再是计划当前版本,任务进入 cancelled 终态。
  * 尝试本身结束为 interrupted,保留可追溯记录。
  */
 export type BatchTaskInterruptionReason =
   | 'batch_control'
   | 'scheduler_shutdown'
-  | 'user_stop';
+  | 'user_stop'
+  | 'superseded';
 
 export function settleInterruptedTask(
   db: Database.Database,
@@ -322,6 +324,7 @@ export function settleInterruptedTask(
     } | undefined;
     if (
       reason === 'user_stop'
+      || reason === 'superseded'
       || batch?.controlState === 'stopped'
       || batch?.expectedState === 'stopped'
     ) {

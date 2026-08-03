@@ -345,6 +345,7 @@ export function startBatchProduction(
   projectId: string,
   batchId: string,
   now?: () => Date,
+  options: { allowUnavailableAssets?: boolean } = {},
 ): void {
   db.transaction(() => {
     const batch = db.prepare(`
@@ -386,7 +387,7 @@ export function startBatchProduction(
       WHERE pool.batchVersionId = ? AND assets.status <> 'online'
       LIMIT 1
     `).get(batch.currentVersionId) as { status: 'offline' | 'archived' } | undefined;
-    if (unavailablePoolItem) {
+    if (unavailablePoolItem && !options.allowUnavailableAssets) {
       throw new BatchDomainError(
         'conflict',
         unavailablePoolItem.status === 'archived' ? '批次包含已归档素材,不能启动' : '批次包含离线素材,不能启动',

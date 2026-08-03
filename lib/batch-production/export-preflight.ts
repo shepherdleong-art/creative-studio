@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { supportsFilter } from '../ffmpeg.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
-import { resolveSourceFilePath } from './media-catalog.ts';
+import { listAssetSources, resolveSourceFilePath } from './media-catalog.ts';
 import { resolveManagedLutPath } from './lut-catalog.ts';
 import { upgradeColorSnapshot } from './color-pipeline.ts';
 
@@ -31,13 +31,13 @@ async function verifyOriginalSource(
   db: Database.Database,
   item: PoolItemForPreflight,
 ): Promise<ExportPreflightBlocker | null> {
-  const sources = db.prepare(`
-    SELECT locationJson FROM batch_asset_sources WHERE assetId = ?
-  `).all(item.assetId) as Array<{ locationJson: string }>;
+  // 统一走目录读取 seam，它会把 v10 以前没有 kind 的受管 locationJson
+  // 恢复为 dataRoot()/storage/batch-media 下的安全路径。
+  const sources = listAssetSources(db, item.assetId);
   let anyFileExists = false;
   for (const { locationJson } of sources) {
     try {
-      const filePath = resolveSourceFilePath(JSON.parse(locationJson));
+      const filePath = resolveSourceFilePath(locationJson);
       if (!existsSync(filePath)) continue;
       anyFileExists = true;
       const fingerprint = await computeFingerprintFromFile(filePath);
@@ -108,6 +108,7 @@ async function verifyFrozenLut(
 export async function checkFormalExportPreflight(
   db: Database.Database,
   batchVersionId: string,
+  options: { assetIds?: string[] } = {},
 ): Promise<ExportPreflightResult> {
   const version = db.prepare(`
     SELECT inputState FROM batch_production_versions WHERE id = ?
@@ -119,11 +120,23 @@ export async function checkFormalExportPreflight(
     };
   }
 
-  const poolItems = db.prepare(`
+  const allPoolItems = db.prepare(`
     SELECT assetId, colorJson, (SELECT contentFingerprint FROM batch_assets WHERE id = pool.assetId) AS contentFingerprint
     FROM batch_asset_pool_items pool
     WHERE pool.batchVersionId = ?
   `).all(batchVersionId) as PoolItemForPreflight[];
+  const requestedAssetIds = options.assetIds
+    ? new Set(options.assetIds.filter((assetId) => typeof assetId === 'string' && assetId.trim()))
+    : null;
+  const poolItems = requestedAssetIds
+    ? allPoolItems.filter(({ assetId }) => requestedAssetIds.has(assetId))
+    : allPoolItems;
+  if (requestedAssetIds && poolItems.length !== requestedAssetIds.size) {
+    return {
+      ready: false,
+      blockers: [{ assetId: '', code: 'source_offline', message: '成片安排引用了不属于该冻结素材池的原片' }],
+    };
+  }
 
   const blockers: ExportPreflightBlocker[] = [];
   const usesLut = poolItems.some((item) => {

@@ -1,20 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { startOrResumePhaseE } from '@/lib/batch-production/phase-e';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
+import { reallocateAndScheduleOutput } from '@/lib/batch-production/phase-e';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
-} from '../../response';
+} from '../../../../response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** 冻结输入、执行幂等的全批联合分配，并把每条候选接入同一持久调度器。 */
-export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
-  const { id } = await context.params;
+/** 只重分配目标计划；其他计划的候选版本和正式产物保持不变。 */
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ id: string; planId: string }> },
+) {
+  const { id: batchId, planId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
     return NextResponse.json({ error: 'missing_project_id', message: '缺少 projectId 参数' }, {
@@ -22,20 +25,23 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
       headers: BATCH_NO_STORE_HEADERS,
     });
   }
+  const body = await request.json().catch(() => null) as { reason?: unknown } | null;
+  const reason = typeof body?.reason === 'string' && body.reason.trim()
+    ? body.reason.trim().slice(0, 200)
+    : 'manual';
   try {
     await assertBatchApiReady();
-    const result = startOrResumePhaseE(getDb(), projectId, id);
+    const result = reallocateAndScheduleOutput(getDb(), projectId, batchId, planId, reason);
     ensureBatchSchedulerStarted();
     return NextResponse.json({
-      batchId: id,
-      status: 'running',
-      batchVersionId: result.batchVersionId,
+      batchId,
+      planId,
       allocationRunId: result.allocationRunId,
       allocationStatus: result.allocationStatus,
-      outputCount: Object.keys(result.outputVersionIds).length,
-      taskCount: Object.keys(result.taskIds).length,
+      outputVersionId: result.outputVersionIds[planId] ?? null,
+      taskId: result.taskIds[planId] ?? null,
     }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
-    return batchRouteErrorResponse(error, 'batch_start_failed', '批次启动失败');
+    return batchRouteErrorResponse(error, 'batch_reallocation_failed', '单条重新分配失败');
   }
 }

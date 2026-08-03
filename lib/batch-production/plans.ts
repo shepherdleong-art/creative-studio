@@ -17,6 +17,8 @@ export interface BatchOutputVersionRow {
   planId: string;
   versionNumber: number;
   arrangementJson: string;
+  /** Phase E 联合分配运行谱系;旧的手工版本可为空。 */
+  allocationRunId: string | null;
   createdAt: string;
 }
 

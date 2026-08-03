@@ -31,7 +31,7 @@ assert.match(snapshotRoute, /scriptSelections 不能为空/);
 assert.match(snapshotRoute, /assetSelections 不能为空/);
 assert.match(snapshotRoute, /batch_snapshot_failed/);
 assert.match(startRoute, /export async function PUT/);
-assert.match(startRoute, /startBatchProduction/);
+assert.match(startRoute, /startOrResumePhaseE/);
 assert.match(startRoute, /ensureBatchSchedulerStarted/);
 assert.match(startRoute, /ensureBatchSchedulerStarted\(\)/, '开跑建立任务后必须唤醒进程内调度器');
 assert.match(startRoute, /batch_start_failed/);

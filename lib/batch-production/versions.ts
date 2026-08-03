@@ -24,6 +24,8 @@ export interface BatchProductionVersionRow {
   copyCount: number;
   defaultsJson: string;
   inputState: 'draft' | 'frozen';
+  /** Phase E 当前激活的联合分配运行；可重新指向历史确定性运行。 */
+  currentAllocationRunId: string | null;
   frozenAt: string | null;
   createdAt: string;
 }

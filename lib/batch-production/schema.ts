@@ -778,6 +778,56 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
       DROP TABLE batch_lut_identity_map;
     `,
   },
+  {
+    version: 16,
+    sql: `
+      -- Phase E v16:联合分配运行与批次版本素材排除。
+      -- 分配结果是可追溯的领域事实,不与代理缓存或渲染任务绑定。
+      CREATE TABLE IF NOT EXISTS batch_allocation_runs (
+        id TEXT PRIMARY KEY,
+        batchVersionId TEXT NOT NULL,
+        ruleVersion TEXT NOT NULL,
+        seed TEXT NOT NULL,
+        inputFingerprint TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'completed'
+          CHECK(status IN ('completed', 'partial', 'blocked', 'failed')),
+        resultJson TEXT NOT NULL DEFAULT '{}',
+        createdAt TEXT NOT NULL,
+        UNIQUE(batchVersionId, ruleVersion, seed, inputFingerprint),
+        FOREIGN KEY(batchVersionId) REFERENCES batch_production_versions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_batch_allocation_runs_version
+        ON batch_allocation_runs(batchVersionId, createdAt, id);
+
+      -- 当前激活运行不能仅由 createdAt 推断：排除恢复可能重新激活一个历史
+      -- 确定性运行，而单条重分配又会形成新的运行。
+      ALTER TABLE batch_production_versions
+        ADD COLUMN currentAllocationRunId TEXT
+        REFERENCES batch_allocation_runs(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_batch_versions_current_allocation
+        ON batch_production_versions(currentAllocationRunId);
+
+      CREATE TABLE IF NOT EXISTS batch_asset_exclusions (
+        id TEXT PRIMARY KEY,
+        batchVersionId TEXT NOT NULL,
+        assetId TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        createdAt TEXT NOT NULL,
+        UNIQUE(batchVersionId, assetId),
+        FOREIGN KEY(batchVersionId) REFERENCES batch_production_versions(id) ON DELETE CASCADE,
+        FOREIGN KEY(assetId) REFERENCES batch_assets(id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS idx_batch_asset_exclusions_version
+        ON batch_asset_exclusions(batchVersionId, assetId);
+
+      -- 旧版本允许为空;新分配写入后必须指向同一批次版本的真实运行。
+      ALTER TABLE batch_output_versions
+        ADD COLUMN allocationRunId TEXT
+        REFERENCES batch_allocation_runs(id) ON DELETE RESTRICT;
+      CREATE INDEX IF NOT EXISTS idx_batch_output_versions_allocation
+        ON batch_output_versions(allocationRunId);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -1752,6 +1802,173 @@ function validateProxyRequestTables(db: Database.Database): void {
   }
 }
 
+/** v16 联合分配运行、批次版本内素材排除与成片版本谱系。 */
+function validateAllocationTables(db: Database.Database): void {
+  const runColumns = db.prepare(`PRAGMA table_info(batch_allocation_runs)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const runByName = new Map(runColumns.map((column) => [column.name, column]));
+  if (runByName.get('id')?.pk !== 1) {
+    throw new Error('联合分配运行表主键检查未通过');
+  }
+  for (const name of ['batchVersionId', 'ruleVersion', 'seed', 'inputFingerprint', 'status', 'resultJson', 'createdAt']) {
+    if (runByName.get(name)?.notnull !== 1) {
+      throw new Error(`联合分配运行表缺少必填列 ${name}`);
+    }
+  }
+  const runForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_allocation_runs)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!runForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_production_versions'
+    && foreignKey.from === 'batchVersionId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'CASCADE'
+  ))) {
+    throw new Error('联合分配运行表批次版本外键检查未通过');
+  }
+  const runIndexes = db.prepare(`PRAGMA index_list(batch_allocation_runs)`).all() as Array<{ name: string }>;
+  if (!runIndexes.some(({ name }) => name === 'idx_batch_allocation_runs_version')) {
+    throw new Error('联合分配运行表版本索引检查未通过');
+  }
+
+  const versionColumns = db.prepare(`PRAGMA table_info(batch_production_versions)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const currentRunColumn = versionColumns.find(({ name }) => name === 'currentAllocationRunId');
+  if (!currentRunColumn || currentRunColumn.notnull !== 0) {
+    throw new Error('批次版本缺少可空的当前联合分配运行指针');
+  }
+  const versionForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_production_versions)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!versionForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_allocation_runs'
+    && foreignKey.from === 'currentAllocationRunId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'SET NULL'
+  ))) {
+    throw new Error('批次版本当前联合分配运行外键检查未通过');
+  }
+  const versionIndexes = db.prepare(`PRAGMA index_list(batch_production_versions)`).all() as Array<{ name: string }>;
+  if (!versionIndexes.some(({ name }) => name === 'idx_batch_versions_current_allocation')) {
+    throw new Error('批次版本当前联合分配运行索引检查未通过');
+  }
+
+  const exclusionColumns = db.prepare(`PRAGMA table_info(batch_asset_exclusions)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const exclusionByName = new Map(exclusionColumns.map((column) => [column.name, column]));
+  if (exclusionByName.get('id')?.pk !== 1) {
+    throw new Error('批次素材排除表主键检查未通过');
+  }
+  for (const name of ['batchVersionId', 'assetId', 'reason', 'createdAt']) {
+    if (exclusionByName.get(name)?.notnull !== 1) {
+      throw new Error(`批次素材排除表缺少必填列 ${name}`);
+    }
+  }
+  const exclusionForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_asset_exclusions)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!exclusionForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_production_versions'
+    && foreignKey.from === 'batchVersionId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'CASCADE'
+  ))) {
+    throw new Error('批次素材排除表版本外键检查未通过');
+  }
+  if (!exclusionForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_assets'
+    && foreignKey.from === 'assetId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'RESTRICT'
+  ))) {
+    throw new Error('批次素材排除表素材外键检查未通过');
+  }
+  const exclusionIndexes = db.prepare(`PRAGMA index_list(batch_asset_exclusions)`).all() as Array<{ name: string }>;
+  if (!exclusionIndexes.some(({ name }) => name === 'idx_batch_asset_exclusions_version')) {
+    throw new Error('批次素材排除表版本索引检查未通过');
+  }
+
+  const outputVersionColumns = db.prepare(`PRAGMA table_info(batch_output_versions)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const allocationColumn = outputVersionColumns.find(({ name }) => name === 'allocationRunId');
+  if (!allocationColumn || allocationColumn.notnull !== 0) {
+    throw new Error('成片版本缺少可空的联合分配运行追踪列');
+  }
+  const outputVersionForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_output_versions)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  if (!outputVersionForeignKeys.some((foreignKey) => (
+    foreignKey.table === 'batch_allocation_runs'
+    && foreignKey.from === 'allocationRunId'
+    && foreignKey.to === 'id'
+    && foreignKey.on_delete.toUpperCase() === 'RESTRICT'
+  ))) {
+    throw new Error('成片版本联合分配运行外键检查未通过');
+  }
+  const outputVersionIndexes = db.prepare(`PRAGMA index_list(batch_output_versions)`).all() as Array<{ name: string }>;
+  if (!outputVersionIndexes.some(({ name }) => name === 'idx_batch_output_versions_allocation')) {
+    throw new Error('成片版本联合分配索引检查未通过');
+  }
+
+  // batch_allocation_runs.batchVersionId 的外键已经确保批次版本仍存在；
+  // 逻辑删除批次不应抹掉历史分配运行，故这里不按 deletedAt 拒绝历史行。
+  const invalidExclusionLineage = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_asset_exclusions e
+    JOIN batch_production_versions v ON v.id = e.batchVersionId
+    JOIN batch_productions b ON b.id = v.batchId
+    JOIN batch_assets a ON a.id = e.assetId
+    LEFT JOIN batch_asset_pool_items pool
+      ON pool.batchVersionId = e.batchVersionId AND pool.assetId = e.assetId
+    WHERE a.projectId <> b.projectId OR pool.id IS NULL
+  `).get() as { n: number };
+  if (invalidExclusionLineage.n > 0) {
+    throw new Error('批次素材排除存在跨项目谱系');
+  }
+  const invalidOutputLineage = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_output_versions o
+    JOIN batch_output_plans p ON p.id = o.planId
+    JOIN batch_production_versions v ON v.id = p.batchVersionId
+    JOIN batch_allocation_runs r ON r.id = o.allocationRunId
+    WHERE r.batchVersionId <> v.id
+  `).get() as { n: number };
+  if (invalidOutputLineage.n > 0) {
+    throw new Error('成片版本联合分配运行谱系不一致');
+  }
+  const invalidCurrentRun = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_production_versions v
+    JOIN batch_allocation_runs r ON r.id = v.currentAllocationRunId
+    WHERE r.batchVersionId <> v.id
+  `).get() as { n: number };
+  if (invalidCurrentRun.n > 0) {
+    throw new Error('批次版本当前联合分配运行谱系不一致');
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -1768,6 +1985,7 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateSchedulerColumns,
   validateProxyAndColorTables,
   validateProxyRequestTables,
+  validateAllocationTables,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

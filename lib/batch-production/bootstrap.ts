@@ -1,6 +1,7 @@
 import { getDb } from '../db.ts';
 import { analyzeAssetExecutor } from './executors.ts';
 import { proxyGenerateExecutor } from './proxy-executor.ts';
+import { batchRenderExecutor } from './batch-render-executor.ts';
 import { completePendingProxyDeletions } from './proxy-cache.ts';
 import { assertBatchApiReady } from './runtime-readiness.ts';
 import { startBatchScheduler, type SchedulerController } from './runner.ts';
@@ -19,7 +20,7 @@ export function ensureBatchSchedulerStarted(): SchedulerController {
   return startBatchScheduler({
     db,
     workerId: 'batch-scheduler',
-    executors: [analyzeAssetExecutor, proxyGenerateExecutor],
+    executors: [analyzeAssetExecutor, proxyGenerateExecutor, batchRenderExecutor],
     intervalMs: 2_000,
   });
 }

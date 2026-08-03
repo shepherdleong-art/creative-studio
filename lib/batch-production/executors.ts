@@ -28,7 +28,11 @@ export interface BatchTaskExecutionContext {
 export interface BatchTaskExecutor {
   /** 该执行器接受的任务种类 */
   workTypes: BatchTaskWorkType[];
-  execute(context: BatchTaskExecutionContext): Promise<{ resultJson?: unknown }>;
+  execute(context: BatchTaskExecutionContext): Promise<{
+    resultJson?: unknown;
+    /** 成功执行后若调度器拒绝迟到结果，用于删除本次未被接受的候选。 */
+    discard?: () => Promise<void> | void;
+  }>;
 }
 
 function assertNotAborted(signal: AbortSignal): void {
