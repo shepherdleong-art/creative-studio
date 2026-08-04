@@ -103,9 +103,39 @@ try {
   addAssetToPool(db, versionId, { assetId: offlineAssetId, analysisId: offlineAnalysisId });
   db.prepare(`UPDATE batch_assets SET status = 'offline' WHERE id = ?`).run(offlineAssetId);
 
+  db.exec(`
+    CREATE TABLE final_edit_bgm_tracks (
+      id TEXT PRIMARY KEY, relativePath TEXT NOT NULL, fileFingerprint TEXT NOT NULL,
+      durationUs INTEGER NOT NULL DEFAULT 0, format TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+      errorMessage TEXT, scannedAt TEXT NOT NULL, UNIQUE(fileFingerprint)
+    );
+    INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt)
+    VALUES
+      ('bgm-a', 'bgm/track-a.mp3', 'bgm-fingerprint-a', 12_000_000, 'mp3', 'ready', datetime('now')),
+      ('bgm-b', 'bgm/track-b.mp3', 'bgm-fingerprint-b', 12_000_000, 'mp3', 'ready', datetime('now')),
+      ('bgm-c', 'bgm/track-c.mp3', 'bgm-fingerprint-c', 12_000_000, 'mp3', 'ready', datetime('now'));
+  `);
+  fs.mkdirSync(path.join(storageRoot, 'bgm'), { recursive: true });
+  for (const [id, fingerprint] of [['bgm-a', 'bgm-fingerprint-a'], ['bgm-b', 'bgm-fingerprint-b'], ['bgm-c', 'bgm-fingerprint-c']] as const) {
+    fs.writeFileSync(path.join(storageRoot, 'bgm', `${id}.mp3`), Buffer.from(fingerprint));
+  }
+
   const started = startOrResumePhaseE(db, 'project-1', batchId);
   assert.equal(Object.keys(started.outputVersionIds).length, 2);
-  assert.equal(Object.keys(started.taskIds).length, 2);
+  assert.equal(Object.keys(started.taskIds).length, 3, '每份脚本快照一条口播任务 + 每条成片一条渲染任务');
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'narration'`).get() as { n: number }).n,
+    1,
+    '同脚本多份成片只建立一条口播任务',
+  );
+  const frozenPool = JSON.parse((db.prepare(`SELECT defaultsJson FROM batch_production_versions WHERE id = ?`).get(versionId) as { defaultsJson: string }).defaultsJson).batchMusicPool as Array<{ trackId: string }>;
+  assert.equal(frozenPool.length, 3, '锁定时曲库池必须冻结进批次版本');
+  const allocationArrangements = (db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE allocationRunId = ?`).all(started.allocationRunId) as Array<{ arrangementJson: string }>).map(({ arrangementJson }) => JSON.parse(arrangementJson));
+  assert.deepEqual(
+    allocationArrangements.map(({ music }) => music.trackId),
+    [frozenPool[0].trackId, frozenPool[1].trackId],
+    '两条成片依序分配不同的 BGM',
+  );
   assert.equal((db.prepare(`SELECT inputState FROM batch_production_versions WHERE id = ?`).get(versionId) as { inputState: string }).inputState, 'frozen');
   assert.ok(
     (db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE allocationRunId = ?`).all(started.allocationRunId) as Array<{ arrangementJson: string }>)

@@ -11,6 +11,7 @@ import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 }
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { listAssetSources, resolveSourceFilePath } from './media-catalog.ts';
 import { resolveManagedLutPath } from './lut-catalog.ts';
+import { readFrozenMusicPool } from './bgm.ts';
 
 export const BATCH_OUTPUT_PRESETS = {
   '3:4': { width: 1080, height: 1440 },
@@ -59,6 +60,7 @@ export interface BatchRenderArrangementInput {
   subtitle?: {
     cues?: unknown[];
   };
+  music?: { trackId?: unknown };
   /** Optional already-prepared local narration seam (never a provider request). */
   narration?: {
     relativePath?: string;
@@ -239,6 +241,7 @@ interface Snapshot {
   planSeq: number;
   outputVersionNumber: number;
   arrangement: BatchRenderArrangementInput;
+  versionDefaultsJson: Record<string, unknown>;
   clips: ResolvedClip[];
   coverClip: ResolvedClip;
 }
@@ -401,7 +404,7 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
     SELECT
       p.id AS planId, p.batchVersionId, p.seq,
       o.id AS outputVersionId, o.versionNumber, o.arrangementJson,
-      v.id AS versionId, v.batchId, v.inputState,
+      v.id AS versionId, v.batchId, v.inputState, v.defaultsJson,
       b.id AS productionBatchId, b.projectId, b.deletedAt
     FROM batch_output_versions o
     JOIN batch_output_plans p ON p.id = o.planId
@@ -410,7 +413,8 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
     WHERE o.id = ? AND p.id = ? AND v.id = ? AND b.id = ? AND b.projectId = ?
   `).get(input.outputVersionId, input.planId, input.batchVersionId, input.batchId, input.projectId) as {
     planId: string; batchVersionId: string; seq: number; outputVersionId: string; versionNumber: number;
-    arrangementJson: string; versionId: string; batchId: string; inputState: 'draft' | 'frozen'; productionBatchId: string; projectId: string; deletedAt: string | null;
+    arrangementJson: string; versionId: string; batchId: string; inputState: 'draft' | 'frozen';
+    defaultsJson: string; productionBatchId: string; projectId: string; deletedAt: string | null;
   } | undefined;
   if (!row) throw error('project → batch → version → plan → outputVersion 谱系校验失败');
   if (row.deletedAt) throw error('批次已删除,不能正式渲染');
@@ -481,9 +485,46 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
     projectId: input.projectId, batchId: input.batchId, batchVersionId: input.batchVersionId,
     planId: input.planId, outputVersionId: input.outputVersionId, planSeq: row.seq,
     outputVersionNumber: row.versionNumber, arrangement: normalized.arrangement,
+    versionDefaultsJson: parseJson(row.defaultsJson, 'defaultsJson') as Record<string, unknown>,
     clips: resolvedClips,
     coverClip,
   };
+}
+
+interface ResolvedBgm {
+  trackId: string;
+  absolutePath: string;
+}
+
+/**
+ * 解析成片分配的 BGM:只读冻结曲库池(锁定时快照),校验相对路径安全、
+ * 文件存在且内容指纹与冻结池一致。曲库池缺失或曲目不在池中时视为分配异常;
+ * 没有分配任何曲目(旧批次)返回 null,不混音。
+ */
+export async function resolveBatchBgm(
+  arrangement: BatchRenderArrangementInput,
+  versionDefaultsJson: unknown,
+  storageRoot: string,
+): Promise<ResolvedBgm | null> {
+  const trackId = arrangement.music && typeof arrangement.music === 'object'
+    ? (arrangement.music as { trackId?: unknown }).trackId
+    : null;
+  if (!trackId || typeof trackId !== 'string' || !trackId) return null;
+  const pool = readFrozenMusicPool(versionDefaultsJson);
+  const entry = pool.find((item) => item.trackId === trackId);
+  if (!entry) throw error(`成片分配的 BGM（${trackId.slice(0, 8)}）不在冻结曲库中`);
+  let filePath: string;
+  try {
+    filePath = resolveStoragePath(storageRoot, entry.relativePath);
+    assertNoStorageSymlink(storageRoot, entry.relativePath);
+  } catch {
+    throw error('冻结 BGM 路径不安全');
+  }
+  const stat = fs.lstatSync(filePath);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0) throw error('冻结 BGM 文件缺失或不是普通文件');
+  const fingerprint = await computeFingerprintFromFile(filePath);
+  if (!fingerprintsEqual(fingerprint, entry.fileFingerprint)) throw error('冻结 BGM 文件内容已变化');
+  return { trackId, absolutePath: filePath };
 }
 
 function clipFilter(inputIndex: number, clip: ResolvedClip, width: number, height: number, timelineDurationSec: number): string {
@@ -519,7 +560,7 @@ export function buildBatchRenderColorFilterFragments(input: { colorSnapshot: Col
 
 function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderAudioMode): string {
   const source = `[${audioInput}:a]aresample=48000`;
-  if (mode === 'narration') return `${source},atrim=duration=${durationSec.toFixed(6)},apad,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[aout]`;
+  if (mode === 'narration') return `${source},atrim=duration=${durationSec.toFixed(6)},apad,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`;
   return `${source},anullsrc=channel_layout=stereo:sample_rate=48000`; // replaced by caller for silent lavfi input
 }
 
@@ -631,13 +672,16 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
   const coverFinal = path.join(jobDir, 'cover.jpg');
   const subtitleDir = path.join(jobDir, '.subtitle-overlays');
   try {
+    const audioInput = snapshot.clips.length;
+    const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot);
     const args: string[] = [];
     snapshot.clips.forEach((clip) => {
       args.push('-ss', (clip.sourceStartUs / 1_000_000).toFixed(6), '-t', ((clip.sourceEndUs - clip.sourceStartUs) / 1_000_000).toFixed(6), '-i', clip.sourcePath);
     });
-    const audioInput = snapshot.clips.length;
     if (narrationPath) args.push('-i', narrationPath);
     else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+    const bgmInput = bgm ? audioInput + 1 : null;
+    if (bgm) args.push('-stream_loop', '-1', '-i', bgm.absolutePath);
     const subtitlePaths = await materializeSubtitleOverlays({
       directory: subtitleDir,
       cues: subtitleCues,
@@ -650,19 +694,34 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     if (targetDurationSec > visualDurationUs / 1_000_000 + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(targetDurationSec - visualDurationUs / 1_000_000).toFixed(6)},trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
     else filters.push(`[vconcat]trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
     let currentVideoLabel = 'vbase';
-    const subtitleStartInput = audioInput + 1;
+    const subtitleStartInput = audioInput + 1 + (bgm ? 1 : 0);
     subtitleCues.forEach((cue, index) => {
       const nextVideoLabel = `vsubtitle${index}`;
       filters.push(`[${currentVideoLabel}][${subtitleStartInput + index}:v]overlay=0:0:enable='gte(t,${(cue.startUs / 1_000_000).toFixed(6)})*lt(t,${(cue.endUs / 1_000_000).toFixed(6)})'[${nextVideoLabel}]`);
       currentVideoLabel = nextVideoLabel;
     });
     filters.push(`[${currentVideoLabel}]null[vout]`);
+    const voiceLabel = narrationPath ? 'narration' : 'silence';
     if (narrationPath) filters.push(audioFilter(audioInput, targetDurationSec, 'narration'));
-    else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[aout]`);
+    else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[silence]`);
+    if (bgm && bgmInput != null) {
+      // 混音链:响度归一化 → 增益 → 裁到成片时长 → 淡入淡出 → 与口播 amix。
+      const fadeInSec = Math.min(1.0, targetDurationSec);
+      const fadeOutSec = Math.min(1.5, targetDurationSec);
+      const fadeStartSec = Math.max(0, targetDurationSec - fadeOutSec);
+      const fades = [
+        fadeInSec > 0 ? `afade=t=in:st=0:d=${fadeInSec.toFixed(6)}` : '',
+        fadeOutSec > 0 ? `afade=t=out:st=${fadeStartSec.toFixed(6)}:d=${fadeOutSec.toFixed(6)}` : '',
+      ].filter(Boolean).join(',');
+      filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=-18dB,atrim=duration=${targetDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      filters.push(`[${voiceLabel}][music]amix=inputs=2:duration=longest:dropout_transition=0,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[aout]`);
+    } else {
+      filters.push(`[${voiceLabel}]anull[aout]`);
+    }
     report({
       phase: 'rendering', completed: 0, total: targetDurationSec, percent: 0,
       description: audioMode === 'narration'
-        ? `渲染画面、口播与 ${subtitleCues.length} 条字幕`
+        ? `渲染画面、口播与 ${subtitleCues.length} 条字幕${bgm ? '及背景音乐' : ''}`
         : `渲染静音视觉候选与 ${subtitleCues.length} 条预计字幕`,
     });
     assertSignal(signal);

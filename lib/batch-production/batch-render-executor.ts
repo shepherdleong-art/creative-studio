@@ -49,7 +49,7 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
             db, projectId: task.projectId, batchId: task.batchId,
             batchVersionId: lineage.batchVersionId, planId: lineage.planId, outputVersionId: lineage.outputVersionId,
           })
-        : resolveNarrationFromArrangement(db, lineage.outputVersionId);
+        : resolveNarrationFromArrangement(db, lineage.outputVersionId, lineage.planId, lineage.batchVersionId);
       const renderInput: BatchRenderInput = {
         db,
         projectId: task.projectId,
@@ -86,8 +86,11 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
 /**
  * Default persisted narration seam. Only a storage-relative path is accepted;
  * browser-provided absolute paths are rejected before renderer invocation.
+ * Priority: current arrangement seam first (already frozen into the version),
+ * then the authoritative per-script-snapshot narration — so candidates created
+ * by a later reallocation still render with the same verified voice.
  */
-export function resolveNarrationFromArrangement(db: Database.Database, outputVersionId: string): BatchRenderNarrationInput | undefined {
+export function resolveNarrationFromArrangement(db: Database.Database, outputVersionId: string, planId?: string, batchVersionId?: string): BatchRenderNarrationInput | undefined {
   const row = db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = ?`).get(outputVersionId) as { arrangementJson: string } | undefined;
   if (!row) throw new Error('outputVersion 不存在');
   let arrangement: unknown;
@@ -95,7 +98,16 @@ export function resolveNarrationFromArrangement(db: Database.Database, outputVer
   const value = arrangement && typeof arrangement === 'object' && !Array.isArray(arrangement)
     ? (arrangement as Record<string, unknown>).narration
     : undefined;
-  return resolveBatchArrangementNarration(value);
+  const fromArrangement = resolveBatchArrangementNarration(value);
+  if (fromArrangement || !planId || !batchVersionId) return fromArrangement;
+  const stored = db.prepare(`
+    SELECT narrationJson FROM batch_script_narrations
+    WHERE scriptSnapshotId = (SELECT scriptSnapshotId FROM batch_output_plans WHERE id = ? AND batchVersionId = ?)
+  `).get(planId, batchVersionId) as { narrationJson: string } | undefined;
+  if (!stored) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(stored.narrationJson) as unknown; } catch { return undefined; }
+  return resolveBatchArrangementNarration(parsed);
 }
 
 export const batchRenderExecutor = createBatchRenderExecutor();

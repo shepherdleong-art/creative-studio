@@ -182,3 +182,17 @@ export function assertNarrationPublishable(snapshot: BatchNarrationSnapshot): as
     throw new Error('当前成片只有静音视觉候选，尚未准备可正式发布的口播音频');
   }
 }
+
+/**
+ * 把冻结脚本正文拆成 TTS 适配器可直接消费的句段请求。
+ * 句段 id 与 createSilentNarrationPlaceholder/createLocalNarrationSnapshot
+ * 使用同一稳定算法（快照 id + 序号 + 正文），保证对齐结果能落回同一身份。
+ */
+export function buildBatchNarrationSegments(scriptSnapshotId: string, bodyText: string): Array<{ segmentId: string; narration: string }> {
+  const texts = splitScript(bodyText);
+  if (texts.length === 0) throw new Error('口播正文不能为空');
+  return texts.map((text, index) => ({
+    segmentId: stableSegmentId(scriptSnapshotId, index, text),
+    narration: text,
+  }));
+}

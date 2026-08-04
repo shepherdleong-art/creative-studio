@@ -17,6 +17,7 @@ import {
   type BatchExportRenderContract,
 } from './batch-export.ts';
 import { startBatchProduction } from './batch-flow.ts';
+import { freezeBatchMusicPool, readBatchBgmPool } from './bgm.ts';
 import { BatchDomainError } from './errors.ts';
 import { checkFormalExportPreflight } from './export-preflight.ts';
 import { registerArtifact } from './artifacts.ts';
@@ -92,6 +93,22 @@ function scheduleAllocationRenderTasks(
     `).run((now ?? (() => new Date()))().toISOString(), projectId, batchId, output.planId);
   }
   const taskIds: Record<string, string> = {};
+  // 配音任务:每份脚本快照一条(同脚本 N 条成片共用),排在渲染之前领取。
+  const narrationSnapshotIds = new Set(
+    allocation.result.outputs
+      .map(({ scriptSnapshotId }) => scriptSnapshotId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  for (const snapshotId of narrationSnapshotIds) {
+    taskIds[`narration:${snapshotId}`] = createBatchTask(db, projectId, {
+      batchId,
+      workType: 'narration',
+      targetKind: 'script_snapshot',
+      targetId: snapshotId,
+      requestKey: `narration:${allocation.batchVersionId}:${snapshotId}`,
+      now,
+    });
+  }
   for (const [planId, outputVersionId] of Object.entries(allocation.outputVersionIds)) {
     taskIds[planId] = createBatchTask(db, projectId, {
       batchId,
@@ -110,6 +127,10 @@ function scheduleAllocationRenderTasks(
  * one idempotent batch-wide allocation, and enqueue exactly one render task per
  * newly/currently allocated output version. A failure after the freeze point
  * can therefore be retried without trying to unfreeze immutable input.
+ *
+ * BGM is a required output component: the shared library is snapshotted into
+ * the frozen version at lock time, so later library changes never mutate an
+ * already-locked batch. An empty library blocks start with a readable reason.
  */
 export function startOrResumePhaseE(
   db: Database.Database,
@@ -129,6 +150,12 @@ export function startOrResumePhaseE(
     lineage = getBatchLineage(db, projectId, batchId);
   }
   const batchVersionId = lineage.currentVersionId!;
+  // 曲库在锁定时快照进冻结版本;同一批次版本的重跑/重分配复用同一份池。
+  const musicPool = readBatchBgmPool(db);
+  if (musicPool.length === 0) {
+    throw new BatchDomainError('conflict', '曲库为空：请先把背景音乐放入 storage/bgm/ 目录并重新扫描后再开始批量生产');
+  }
+  freezeBatchMusicPool(db, batchVersionId, musicPool);
   const allocation = persistBatchAllocation(db, projectId, batchVersionId, { now });
   const taskIds = db.transaction(() => scheduleAllocationRenderTasks(
     db,
