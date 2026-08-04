@@ -129,6 +129,22 @@ const CARD_STATUS_LABELS: Record<BatchOutputCardStatus, string> = {
   stopped: '已停止',
 };
 
+/** 后端原始错误 → 用户可读文案。匹配用 includes，避免依赖完整字符串。 */
+const EXPORT_SKIP_REASONS: Array<{ match: string; text: string }> = [
+  { match: 'productionReady', text: '还没有配音' },
+  { match: 'narration', text: '还没有配音' },
+  { match: '原片来源', text: '找不到原始素材文件' },
+  { match: '内容指纹', text: '原始素材已被修改' },
+  { match: 'LUT', text: '调色滤镜已丢失或被修改' },
+  { match: '已存在', text: '成品文件已存在，不覆盖' },
+];
+
+function humanizeSkipReason(reason: string | undefined): string {
+  if (!reason) return '未知原因';
+  const hit = EXPORT_SKIP_REASONS.find(({ match }) => reason.includes(match));
+  return hit ? hit.text : '导出前检查未通过';
+}
+
 export default function BatchPreparationPanel({ projectId }: BatchPreparationPanelProps) {
   const [preparation, setPreparation] = useState<BatchPreparationResult | null>(null);
   const [batches, setBatches] = useState<BatchListItem[]>([]);
@@ -144,7 +160,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [busy, setBusy] = useState<'create' | 'snapshot' | 'start' | null>(null);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  /** 当前 UI 选择是否与已确认的批次版本一致;修改脚本/素材/分析版本/LUT 后必须重新确认 */
+  /** 当前 UI 选择是否与已确认的批次版本一致；修改脚本/素材/分析版本/LUT 后必须重新确认 */
   const [inputConfirmed, setInputConfirmed] = useState(false);
 
   const [luts, setLuts] = useState<BatchLutRow[]>([]);
@@ -241,7 +257,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         [assetId, { analysisId, lutId: colorSnapshot.lutId }]
       ))));
       setFrozenScriptSnapshots(detail.version.inputState === 'frozen' ? detail.scriptSnapshots : []);
-      // 从已确认版本详情恢复的选择与快照一致,标记为已确认;
+      // 从已确认版本详情恢复的选择与快照一致，标记为已确认；
       // 用户随后任何修改都会通过 markInputChanged 取消该标记。
       setInputConfirmed(true);
     } catch (detailError) {
@@ -262,7 +278,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       ));
       setLuts(result.luts);
     } catch {
-      // LUT 列表读取失败不阻塞批量准备区其他功能,保留上一次的列表。
+      // LUT 列表读取失败不阻塞批量准备区其他功能，保留上一次的列表。
     }
   }, [projectId]);
 
@@ -274,7 +290,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       ));
       setCacheUsage(usage);
     } catch {
-      // 用量查询失败不阻塞清理操作本身,只是暂时不显示预计释放空间。
+      // 用量查询失败不阻塞清理操作本身，只是暂时不显示预计释放空间。
     }
   }, [projectId]);
 
@@ -301,7 +317,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           attempts: task.attempts,
         })));
     } catch {
-      // 任务状态轮询失败不阻塞其他操作,下一轮轮询会自动重试。
+      // 任务状态轮询失败不阻塞其他操作，下一轮轮询会自动重试。
     }
   }, [projectId]);
 
@@ -746,11 +762,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
 
   async function requestProxies(assetIds: string[] | undefined, busyMarker: string | null): Promise<void> {
     if (!selectedBatchId || !hasConfirmedVersion) {
-      setFeedback({ kind: 'error', message: '请先确认整体输入,代理请求需要读取已确认的色彩快照。' });
+      setFeedback({ kind: 'error', message: '请先确认整体输入，代理请求需要读取已确认的色彩快照。' });
       return;
     }
     if (!inputConfirmed) {
-      setFeedback({ kind: 'error', message: '整体输入已修改但尚未重新确认,不能请求代理;请先确认当前输入。' });
+      setFeedback({ kind: 'error', message: '整体输入已修改但尚未重新确认，不能请求代理；请先确认当前输入。' });
       return;
     }
     if (busyMarker) setProxyBusyAssetId(busyMarker); else setProxyBatchBusy(true);
@@ -776,7 +792,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         `/api/batch-production/luts?projectId=${encodeURIComponent(projectId)}`,
         { method: 'POST', body: form },
       ));
-      setFeedback({ kind: 'success', message: result.reused ? 'LUT 内容已存在,复用既有记录' : 'LUT 导入成功' });
+      setFeedback({ kind: 'success', message: result.reused ? 'LUT 内容已存在，复用既有记录' : 'LUT 导入成功' });
       await loadLuts();
     } catch (importError) {
       setFeedback({ kind: 'error', message: importError instanceof Error ? importError.message : 'LUT 导入失败' });
@@ -853,7 +869,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       const freedMb = (result.freedBytes / (1024 * 1024)).toFixed(1);
       setFeedback({
         kind: 'success',
-        message: `已清理 ${result.deletedCount} 个代理,释放 ${freedMb}MB${result.skippedCount > 0 ? `,跳过 ${result.skippedCount} 个使用中的文件` : ''}`,
+        message: `已清理 ${result.deletedCount} 个代理，释放 ${freedMb}MB${result.skippedCount > 0 ? `，跳过 ${result.skippedCount} 个使用中的文件` : ''}`,
       });
       await loadCacheUsage();
     } catch (cleanupError) {
@@ -949,10 +965,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           body: JSON.stringify({ planIds: selectedPlanIds }),
         },
       ));
-      const skippedReasons = result.items.filter(({ status }) => status === 'skipped').map(({ reason }) => reason).filter(Boolean);
+      const skipped = result.items.filter(({ status }) => status === 'skipped');
+      const grouped = new Map<string, number>();
+      for (const item of skipped) {
+        const text = humanizeSkipReason(item.reason);
+        grouped.set(text, (grouped.get(text) ?? 0) + 1);
+      }
+      const detail = [...grouped].map(([text, count]) => `${count} 条${text}`).join('；');
       setFeedback({
         kind: result.published > 0 ? 'success' : 'error',
-        message: `已发布 ${result.published} 条，跳过 ${result.skipped} 条${skippedReasons.length ? `：${skippedReasons.join('；')}` : ''}`,
+        message: `已导出 ${result.published} 条${result.skipped > 0 ? `，跳过 ${result.skipped} 条：${detail}` : ''}`,
       });
       setSelectedPlanIds([]);
       await loadWorkspace(selectedBatchId);
@@ -1058,7 +1080,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           )}
         </div>
         {info.kind === 'proxy' && !info.originalOnline && (
-          <p className="text-xs text-fail">原片离线,当前播放已生成的代理;正式导出仍要求原片在线且内容指纹一致。</p>
+          <p className="text-xs text-fail">原片离线，当前播放已生成的代理；正式导出仍要求原片在线且内容指纹一致。</p>
         )}
       </div>
     );
@@ -1068,11 +1090,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     const proxyButtonsDisabled = !hasConfirmedVersion || proxyBatchBusy;
     const proxyButtonsBlockedByUnconfirmed = !inputConfirmed && hasConfirmedVersion;
     return (
-      <section className="card space-y-4 p-5" aria-label="媒体准备:代理与 LUT">
+      <section className="card space-y-4 p-5" aria-label="媒体准备：代理与 LUT">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">Phase D · 媒体准备</p>
-          <h3 className="mt-1 font-semibold text-ink">代理与 LUT</h3>
-          <p className="mt-1 text-sm text-ink-secondary">默认直接预览原片;卡顿时再按需生成代理。LUT 默认关闭,选择后对应素材会额外请求一份色彩代理。最终导出始终读取原片。</p>
+          <h3 className="mt-1 font-semibold text-ink">画质与调色</h3>
+          <p className="mt-1 text-sm text-ink-secondary">默认直接预览原片；卡顿时再按需生成代理。LUT 默认关闭，选择后对应素材会额外请求一份色彩代理。最终导出始终读取原片。</p>
         </div>
 
         <div className="tile space-y-3 p-4">
@@ -1136,9 +1157,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             >为当前批次全部素材生成代理</button>
           </div>
           {proxyButtonsBlockedByUnconfirmed && (
-            <p className="text-xs text-warn">脚本、素材、分析版本或 LUT 已修改,重新确认整体输入后代理请求才会匹配新快照。</p>
+            <p className="text-xs text-warn">脚本、素材、分析版本或 LUT 已修改，重新确认整体输入后代理请求才会匹配新快照。</p>
           )}
-          {!hasConfirmedVersion && <p className="text-xs text-ink-tertiary">先确认整体输入,代理才能对应到已锁定的色彩快照。</p>}
+          {!hasConfirmedVersion && <p className="text-xs text-ink-tertiary">先确认整体输入，代理才能对应到已锁定的色彩快照。</p>}
           {proxyTasks.length > 0 && (
             <ul className="space-y-1.5">
               {proxyTasks.map((task) => {
@@ -1241,7 +1262,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onClick={() => void cleanupProxies('project')}
             >{cleanupBusy === 'project' ? '清理中…' : '清理当前项目代理'}</button>
           </div>
-          <p className="text-xs text-ink-tertiary">清理不影响原片、分析结果、批次快照和正式成片;清理后预览自动回退原片,可随时重新生成。正在使用中的文件会自动延后删除,不需要再次点击清理。</p>
+          <p className="text-xs text-ink-tertiary">清理不影响原片、分析结果、批次快照和正式成片；清理后预览自动回退原片，可随时重新生成。正在使用中的文件会自动延后删除，不需要再次点击清理。</p>
         </div>
       </section>
     );
@@ -1251,9 +1272,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     <section className="space-y-5" aria-label="批量生产准备区">
       <header className="card flex flex-wrap items-center justify-between gap-4 p-5">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">Phase A · 项目输入</p>
-          <h2 className="mt-1 text-lg font-semibold text-ink">批量生产准备区</h2>
-          <p className="mt-1 text-sm text-ink-secondary">项目脚本和成功视频会继续自动同步；选定输入后可建立 Phase B 批次快照。</p>
+          <h2 className="text-lg font-semibold text-ink">批量生产准备区</h2>
+          <p className="mt-1 text-sm text-ink-secondary">项目脚本和成功视频会继续自动同步；选定输入后可锁定为一个批次。</p>
         </div>
         <button type="button" className="btn-secondary" onClick={() => void load()}>重新同步</button>
       </header>
@@ -1275,8 +1295,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       <section className="card space-y-4 p-5" aria-label="批次管理">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">Phase B · 批次快照</p>
-            <h3 className="mt-1 font-semibold text-ink">创建或选择批次</h3>
+            <h3 className="font-semibold text-ink">创建或选择批次</h3>
             <p className="mt-1 text-sm text-ink-secondary">批次保留已确认的脚本、素材分析版本和成片数量。</p>
           </div>
           <span className="rounded-full bg-surface-subtle px-3 py-1 text-xs text-ink-secondary">
@@ -1525,7 +1544,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 <h3 className="font-semibold text-ink">确认整体输入</h3>
                 <p className="mt-1 text-sm text-ink-secondary">将 {selectedScriptEntries.length} 份脚本、{Object.keys(selectedAssets).length} 条素材与 {plannedCount} 条成片计划作为可检查的 draft 快照；点击开始时再同步最新脚本并冻结。</p>
                 {!inputConfirmed && hasConfirmedVersion && (
-                  <p className="mt-1 text-xs text-warn">输入已修改,重新确认后才会覆盖当前批次版本。</p>
+                  <p className="mt-1 text-xs text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</p>
                 )}
               </div>
               <div className="grid w-full gap-3 sm:grid-cols-2">
@@ -1620,11 +1639,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       )}
 
       {workspace && workspace.cards.length > 0 ? (
-        <section className="space-y-4" aria-label="Phase E 成片工作区">
+        <section className="space-y-4" aria-label="成片工作区">
           <div className="card space-y-4 p-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">Phase E · 联合分配与正式导出</p>
                 <h3 className="mt-1 font-semibold text-ink">批次成片工作区</h3>
                 <p className="mt-1 text-sm text-ink-secondary">状态来自持久任务、候选版本和正式产物聚合；新版失败不会隐藏旧成片。</p>
               </div>
@@ -1642,6 +1660,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                   {phaseEBusy === 'export' ? '发布中…' : `正式导出选中项（${selectedPlanIds.length}）`}
                 </button>
               </div>
+              {workspace.counts.publishable === 0 && workspace.counts.total > 0 && (
+                <p className="w-full text-xs text-warn">
+                  当前没有可导出的成片 —— 批量生产尚未接入配音，成片只有画面和字幕。配音打通后即可导出。
+                </p>
+              )}
             </div>
             <div className="grid gap-3 sm:grid-cols-5">
               <div className="tile p-3"><p className="text-xs text-ink-tertiary">全部</p><strong className="text-xl text-ink">{workspace.counts.total}</strong></div>
@@ -1691,10 +1714,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                         type="checkbox"
                         aria-label={`选择成片 ${card.seq}`}
                         checked={selectedPlanIds.includes(card.planId)}
+                        disabled={!card.publishable}
+                        title={card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
                         onChange={(event) => setSelectedPlanIds((current) => (
                           event.target.checked ? [...new Set([...current, card.planId])] : current.filter((id) => id !== card.planId)
                         ))}
-                        className="mt-1"
+                        className="mt-1 disabled:opacity-40"
                       />
                       <span className="min-w-0">
                         <span className="block text-xs text-ink-tertiary">成片 {String(card.seq).padStart(2, '0')} · v{card.versionNumber ?? '—'}</span>
@@ -1730,7 +1755,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                     </div>
                   )}
                   {card.candidate?.audioMode === 'silent_placeholder' && (
-                    <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">当前为静音视觉候选；需要已核验本地口播与时间信息后才可正式发布。</p>
+                    <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">无配音样片 —— 仅供检查画面，不能导出。</p>
                   )}
                   {progress && (
                     <div className="text-xs text-ink-secondary">
@@ -1788,10 +1813,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           </div>
         </section>
       )}
-
-      <footer className="rounded-2xl border border-dashed border-hairline p-4 text-sm text-ink-secondary">
-        Phase E 已接入内容分析结果、预计字幕烧录、候选封面预览、原片与冻结 LUT 渲染及不覆盖发布。真实供应商口播仍需单独准备；静音候选即使带预计字幕也不能正式发布。
-      </footer>
     </section>
   );
 }
