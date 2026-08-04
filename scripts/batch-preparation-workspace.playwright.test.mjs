@@ -76,11 +76,13 @@ try {
     INSERT INTO projects (id, name, providerId, model, prompt, workflowType, productCode)
     VALUES ('batch-ui-project', '批量准备区验收项目', 'batch-ui-provider', 'smoke', 'smoke', 'complex_product', 'BATCHUI')
   `).run();
-  // 配音供应商(用于开启开始按钮;baseUrl 指向本地拒绝端口,口播任务快速失败,不影响本测试断言)
+  // 配音供应商(用于开启开始按钮;baseUrl 指向本地拒绝端口,口播任务快速失败,不影响本测试断言)。
+  // 注意:服务启动时 getDb 已把内置 vapi-qwen3-tts 插入(INSERT OR IGNORE),这里必须 upsert 而不是 INSERT。
   db.prepare(`
     INSERT INTO final_edit_tts_providers
       (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
     VALUES ('vapi-qwen3-tts', 'V-API Qwen3 TTS Flash', 'vapi-qwen-json-url', 'http://127.0.0.1:1', 'smoke-key', '', 'qwen3-tts-flash', 1, 1, datetime('now'), datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET baseUrl = excluded.baseUrl, apiKey = excluded.apiKey, keyEnv = excluded.keyEnv, enabled = 1, updatedAt = excluded.updatedAt
   `).run();
   // BGM 曲库:BGM 是必选项,空曲库会禁用开始按钮
   fs.mkdirSync(path.join(dataRoot, 'storage', 'bgm'), { recursive: true });
@@ -385,26 +387,29 @@ try {
   await reallocateRequest;
   await page.getByText(/已为这一条建立新候选|本次没有得到不同的合法安排/).waitFor();
 
-  await page.getByRole('checkbox', { name: '选择成片 1' }).check();
+  // 无配音样片不可勾选(正式发布门禁),导出按钮随之禁用;跳过原因在卡片上说明。
+  const exportCheckbox = page.getByRole('checkbox', { name: '选择成片 1' });
+  await exportCheckbox.waitFor();
+  assert.equal(await exportCheckbox.isDisabled(), true, '无配音样片的导出勾选框必须禁用');
+  assert.equal(await exportCheckbox.getAttribute('title'), '这条成片还没有配音，暂时无法导出', '无配音样片必须给出可读的禁用原因');
   // 第 4 步 · 导出成片
   await page.getByRole('button', { name: /导出成片/ }).click();
-  const exportRequest = page.waitForRequest((request) => (
-    request.method() === 'POST'
-    && /\/api\/batch-production\/batches\/[^/]+\/exports$/.test(new URL(request.url()).pathname)
-  ));
-  await page.getByRole('button', { name: '正式导出选中项（1）', exact: true }).click();
-  await exportRequest;
-  await page.getByText(/已导出 0 条，跳过 1 条/).waitFor();
+  const exportButton = page.getByRole('button', { name: '正式导出选中项（0）', exact: true });
+  await exportButton.waitFor();
+  assert.equal(await exportButton.isDisabled(), true, '没有可导出成片时正式导出按钮必须禁用');
+  await page.getByText('当前没有可导出的成片', { exact: false }).waitFor();
 
   // (i) frozen 批次仍能查看和管理该版本的代理:画质与调色折叠区必须可见、可请求低清预览片。
   await page.getByRole('button', { name: /准备素材/ }).click();
-  await page.getByRole('button', { name: '画质与调色（进阶）', exact: true }).click();
+  await page.getByRole('button', { name: /画质与调色（进阶）/ }).click();
   const generateProxyButton = page.getByRole('button', { name: '为当前批次全部素材生成低清预览片', exact: true });
   await generateProxyButton.waitFor();
   await generateProxyButton.click();
   await page.getByText('已为 1 条素材请求代理').waitFor();
   // 真实视频应完成代理生成，并只显示中文状态（不泄漏内部枚举值）。
+  // 已完成/已取消任务默认收起，先展开历史再确认中文状态文本。
   const mediaPrepSection = page.getByRole('region', { name: '画质与调色' });
+  await mediaPrepSection.getByRole('button', { name: /显示全部/ }).click();
   await mediaPrepSection.getByText('已完成', { exact: true }).first().waitFor({ timeout: 20_000 });
   assert.equal(await page.getByText('succeeded', { exact: true }).count(), 0, '不得直接显示内部状态值 succeeded');
   assert.equal(await page.getByText('failed', { exact: true }).count(), 0, '不得直接显示内部状态值 failed');
@@ -412,7 +417,7 @@ try {
   assert.equal(await page.getByText('running', { exact: true }).count(), 0, '不得直接显示内部状态值 running');
   // 统一素材区:素材卡可直接预览原片/低清预览片,不再有第二个固定高度的批次素材池。
   assert.equal(await page.getByTestId('media-prep-asset-pool').count(), 0, '不得再出现旧的固定高度批次素材池');
-  await page.getByRole('button', { name: '预览素材 已分析素材' }).click();
+  await page.getByRole('button', { name: '播放锁定素材 已分析素材' }).click();
   await page.getByTestId(`asset-preview-modal-${readyAsset.assetId}`).waitFor();
   assert.ok(
     batchRequests.some(({ url }) => url.includes(`/api/batch-production/preview/${readyAsset.assetId}`)),
@@ -422,14 +427,15 @@ try {
   // 未确认前不得请求代理:切回草稿编辑(基于当前项目输入)后,任何输入变化都会
   // 标记"未重新确认",代理按钮必须禁用直到再次确认。
   await page.getByRole('button', { name: '基于当前项目输入创建新版本' }).click();
+  // 创建新版本后回到第 1 步且素材选择被清空;未选中素材时第 2 步不可进入
+  await page.getByRole('checkbox', { name: '选择素材 已分析素材' }).check();
   await page.getByRole('button', { name: /脚本与口播/ }).click();
   await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).check();
   await page.getByLabel('口播 A 生成份数').fill('2');
   await page.getByRole('checkbox', { name: '选择脚本 口播 B' }).check();
   await page.getByLabel('口播 B 生成份数').fill('1');
-  await page.getByRole('button', { name: /准备素材/ }).click();
-  await page.getByRole('checkbox', { name: '选择素材 已分析素材' }).check();
   // 修改输入后尚未重新确认:代理按钮必须禁用,不能请求旧 currentVersion 的快照
+  await page.getByRole('button', { name: /准备素材/ }).click();
   const unconfirmedProxyButton = page.getByRole('button', { name: '为当前批次全部素材生成低清预览片', exact: true });
   assert.equal(await unconfirmedProxyButton.isDisabled(), true, '未重新确认输入时代理按钮必须禁用');
   await page.getByRole('button', { name: /脚本与口播/ }).click();
@@ -484,6 +490,7 @@ try {
   }
   throw error;
 } finally {
+  if (page) await page.unrouteAll({ behavior: 'ignoreErrors' });
   await browser?.close();
   try {
     await fetch(`${baseUrl}/api/shutdown`, { method: 'POST' });

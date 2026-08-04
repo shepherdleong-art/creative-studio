@@ -200,63 +200,121 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
   function renderBgmSection() {
     const manualCount = bgmSelection.mode === 'manual' ? bgmSelection.trackIds.length : 0;
+    const sliderRow = (label: string, ariaLabel: string, children: React.ReactNode, value: string) => (
+      <div className="flex items-center gap-3">
+        <span className="w-9 shrink-0 text-xs text-ink-secondary">{label}</span>
+        <div className="flex min-w-0 flex-1 items-center gap-3">{children}</div>
+        <span className="w-14 shrink-0 text-right text-xs tabular-nums text-ink-secondary">{value}</span>
+      </div>
+    );
     return (
-      <div className="border-t border-hairline pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-ink">背景音乐</p>
-            <p className="mt-1 text-xs text-ink-secondary">
-              {bgmLibrary.length === 0
-                ? '曲库为空 —— 请把音频文件放进 storage/bgm/ 文件夹后点击重新扫描（与单条模式共用曲库，无需导入）'
-                : manualCount > 0
+      <section className="card space-y-4 p-5" aria-label="背景音乐">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Icon name="music" size={15} />
+            <h3 className="font-semibold text-ink">背景音乐</h3>
+            <span className="rounded-full bg-surface-subtle px-2.5 py-0.5 text-[11px] text-ink-secondary">曲库 {bgmLibrary.length} 首</span>
+          </div>
+          <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={bgmRescanning} onClick={onRescanBgm}>
+            {bgmRescanning ? '扫描中…' : '重新扫描'}
+          </button>
+        </div>
+        {bgmLibrary.length === 0 ? (
+          <div className="rounded-xl bg-warn/10 px-4 py-3 text-xs leading-5 text-warn">
+            曲库为空 —— 请把音频文件放进 storage/bgm/ 文件夹，然后点击「重新扫描」。曲库与单条模式共用，无需导入。
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-ink-secondary">
+                {manualCount > 0
                   ? `已指定 ${manualCount} 首 · ${plannedCount} 条成片轮流使用`
                   : `曲库 ${bgmLibrary.length} 首 · ${plannedCount} 条成片将自动分配`}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={bgmRescanning} onClick={onRescanBgm}>
-              {bgmRescanning ? '扫描中…' : '重新扫描'}
-            </button>
-            <button
-              type="button"
-              className="btn-secondary h-8 px-3 text-xs"
-              disabled={bgmLibrary.length === 0}
-              onClick={() => setBgmListOpen((value) => !value)}
-            >{bgmListOpen ? '收起曲目' : '曲目（可手动指定）'}</button>
-          </div>
-        </div>
-        {bgmListOpen && bgmLibrary.length > 0 && (
-          <ul className="mt-3 grid gap-1.5 sm:grid-cols-2">
-            {bgmLibrary.map((track) => (
-              <li key={track.id} className="flex items-center gap-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
-                <input
-                  type="checkbox"
-                  aria-label={`手动指定 ${track.filename}`}
-                  checked={bgmSelection.trackIds.includes(track.id)}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    const trackIds = checked
-                      ? [...new Set([...bgmSelection.trackIds, track.id])]
-                      : bgmSelection.trackIds.filter((id) => id !== track.id);
-                    onBgmSelectionChange({ mode: trackIds.length > 0 ? 'manual' : 'auto', trackIds });
-                  }}
-                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
-                />
-                <span className="min-w-0 flex-1 truncate text-ink-secondary" title={track.filename}>{track.filename}</span>
-                <span className="shrink-0 text-ink-tertiary">{formatDuration(track.durationUs)}</span>
-                <button type="button" className="shrink-0 text-accent underline" onClick={() => auditionBgm(track.id)}>
-                  {auditioningTrackId === track.id ? '播放中…' : '试听'}
-                </button>
-              </li>
-            ))}
-            {bgmSelection.mode === 'manual' && bgmSelection.trackIds.length > 0 && (
-              <li className="flex items-center gap-2 rounded-xl bg-accent/5 px-3 py-2 text-[11px] text-ink-secondary">
-                已手动指定 {bgmSelection.trackIds.length} 首，成片只在这几首之间轮流使用；取消全部勾选恢复自动分配。
-              </li>
+              </p>
+              <button
+                type="button"
+                className="btn-secondary h-8 px-3 text-xs"
+                onClick={() => setBgmListOpen((value) => !value)}
+              >{bgmListOpen ? '收起曲目' : '曲目（可手动指定）'}</button>
+            </div>
+            {bgmListOpen && (
+              <ul className="grid gap-1.5 sm:grid-cols-2">
+                {bgmLibrary.map((track) => (
+                  <li key={track.id} className="flex items-center gap-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
+                    <input
+                      type="checkbox"
+                      aria-label={`手动指定 ${track.filename}`}
+                      checked={bgmSelection.trackIds.includes(track.id)}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        const trackIds = checked
+                          ? [...new Set([...bgmSelection.trackIds, track.id])]
+                          : bgmSelection.trackIds.filter((id) => id !== track.id);
+                        onBgmSelectionChange({ mode: trackIds.length > 0 ? 'manual' : 'auto', trackIds });
+                      }}
+                      className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-ink-secondary" title={track.filename}>{track.filename}</span>
+                    <span className="shrink-0 tabular-nums text-ink-tertiary">{formatDuration(track.durationUs)}</span>
+                    <button
+                      type="button"
+                      className="flex shrink-0 items-center gap-1 text-accent underline"
+                      onClick={() => auditionBgm(track.id)}
+                      aria-pressed={auditioningTrackId === track.id}
+                    >
+                      <Icon name={auditioningTrackId === track.id ? 'stop' : 'play'} size={10} />
+                      {auditioningTrackId === track.id ? '停止' : '试听'}
+                    </button>
+                  </li>
+                ))}
+                {bgmSelection.mode === 'manual' && bgmSelection.trackIds.length > 0 && (
+                  <li className="flex items-center gap-2 rounded-xl bg-accent/5 px-3 py-2 text-[11px] text-ink-secondary">
+                    已手动指定 {bgmSelection.trackIds.length} 首，成片只在这几首之间轮流使用；取消全部勾选恢复自动分配。
+                  </li>
+                )}
+              </ul>
             )}
-          </ul>
+          </>
         )}
-      </div>
+        <div className="space-y-2.5 border-t border-hairline pt-4">
+          {sliderRow('音量', '背景音乐音量增益', (
+            <input
+              type="range"
+              min={-60}
+              max={0}
+              step={1}
+              aria-label="背景音乐音量增益"
+              value={bgmParams.gainDb}
+              onChange={(event) => onBgmParamsChange({ ...bgmParams, gainDb: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-[var(--color-accent)]"
+            />
+          ), `${bgmParams.gainDb} dB`)}
+          {sliderRow('淡入', '背景音乐淡入', (
+            <input
+              type="range"
+              min={0}
+              max={10}
+              step={0.5}
+              aria-label="背景音乐淡入"
+              value={bgmParams.fadeInSec}
+              onChange={(event) => onBgmParamsChange({ ...bgmParams, fadeInSec: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-[var(--color-accent)]"
+            />
+          ), `${bgmParams.fadeInSec.toFixed(1)}s`)}
+          {sliderRow('淡出', '背景音乐淡出', (
+            <input
+              type="range"
+              min={0}
+              max={10}
+              step={0.5}
+              aria-label="背景音乐淡出"
+              value={bgmParams.fadeOutSec}
+              onChange={(event) => onBgmParamsChange({ ...bgmParams, fadeOutSec: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-[var(--color-accent)]"
+            />
+          ), `${bgmParams.fadeOutSec.toFixed(1)}s`)}
+        </div>
+      </section>
     );
   }
 
@@ -443,7 +501,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-2">
+    <div className="min-h-0 flex-1 space-y-4 p-2">
       {frozen && (
         <div className="card flex flex-wrap items-center justify-between gap-4 p-5">
           <div>
@@ -603,81 +661,37 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
             <div>
               <h3 className="font-semibold text-ink">输出设置</h3>
               <p className="mt-1 text-sm text-ink-secondary">
-                画幅 {outputPreset.label}（顶栏统一设置）；背景音乐音量、淡入淡出整批统一。时长不提供修改 —— 脚本在第 3 步生成时已按档位约束字数。
+                画幅 {outputPreset.label}（顶栏统一设置）；背景音乐在下方卡片中设置。时长不提供修改 —— 脚本在第 3 步生成时已按档位约束字数。
               </p>
               {inputChangedWarning && (
                 <p className="mt-1 text-xs text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</p>
               )}
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className="btn-secondary" disabled={busy !== null} onClick={onConfirmSnapshot}>
-                {busy === 'snapshot' ? '确认中…' : '确认整体输入'}
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                disabled={busy !== null || Boolean(startDisabledReason)}
-                onClick={onStartBatch}
-              >{busy === 'start' ? '启动中…' : '开始批量生产'}</button>
+            <div className="flex flex-col items-end gap-2">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={`btn-secondary ${startDisabledReason === '请先确认整体输入' ? 'btn-callout' : ''}`}
+                  disabled={busy !== null}
+                  onClick={onConfirmSnapshot}
+                >
+                  {busy === 'snapshot' ? '确认中…' : '确认整体输入'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={busy !== null || Boolean(startDisabledReason)}
+                  onClick={onStartBatch}
+                >{busy === 'start' ? '启动中…' : '开始批量生产'}</button>
+              </div>
+              {startDisabledReason && (
+                <p className="max-w-80 text-right text-xs leading-5 text-warn">
+                  {startDisabledReason === '请先确认整体输入' ? '还差一步：请先点击「确认整体输入」' : `暂时无法开始：${startDisabledReason}`}
+                  {onlineAssets === 0 && '；当前项目没有在线素材。'}
+                </p>
+              )}
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label className="text-sm text-ink-secondary">
-              <span className="mb-1 block">背景音乐音量</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={-60}
-                  max={0}
-                  step={1}
-                  aria-label="背景音乐音量增益"
-                  value={bgmParams.gainDb}
-                  onChange={(event) => onBgmParamsChange({ ...bgmParams, gainDb: Number(event.target.value) })}
-                  className="w-full accent-[var(--color-accent)]"
-                />
-                <span className="w-12 text-right text-xs text-ink-secondary">{bgmParams.gainDb.toFixed(0)}dB</span>
-              </div>
-            </label>
-            <label className="text-sm text-ink-secondary">
-              <span className="mb-1 block">淡入（秒）</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={0}
-                  max={10}
-                  step={0.5}
-                  aria-label="背景音乐淡入"
-                  value={bgmParams.fadeInSec}
-                  onChange={(event) => onBgmParamsChange({ ...bgmParams, fadeInSec: Number(event.target.value) })}
-                  className="w-full accent-[var(--color-accent)]"
-                />
-                <span className="w-12 text-right text-xs text-ink-secondary">{bgmParams.fadeInSec.toFixed(1)}s</span>
-              </div>
-            </label>
-            <label className="text-sm text-ink-secondary">
-              <span className="mb-1 block">淡出（秒）</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={0}
-                  max={10}
-                  step={0.5}
-                  aria-label="背景音乐淡出"
-                  value={bgmParams.fadeOutSec}
-                  onChange={(event) => onBgmParamsChange({ ...bgmParams, fadeOutSec: Number(event.target.value) })}
-                  className="w-full accent-[var(--color-accent)]"
-                />
-                <span className="w-12 text-right text-xs text-ink-secondary">{bgmParams.fadeOutSec.toFixed(1)}s</span>
-              </div>
-            </label>
-          </div>
-          {renderBgmSection()}
-          {startDisabledReason && (
-            <p className="text-xs text-warn">
-              暂时无法开始：{startDisabledReason}
-              {onlineAssets === 0 && '；当前项目没有在线素材。'}
-            </p>
-          )}
           {scriptCount > 0 && (
             <p className="text-xs text-ink-tertiary">
               确认信息：{scriptCount} 份脚本 × 各自份数 = {plannedCount} 条成片，{onlineAssets} 条在线素材，画幅 {outputPreset.label}。
@@ -686,6 +700,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
           )}
         </section>
       )}
+      {renderBgmSection()}
     </div>
   );
 }

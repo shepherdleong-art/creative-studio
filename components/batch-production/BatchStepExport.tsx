@@ -45,7 +45,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-2">
+    <div className="min-h-0 flex-1 space-y-4 p-2">
       <div className="card space-y-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

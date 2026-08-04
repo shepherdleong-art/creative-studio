@@ -112,6 +112,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
     }
   });
   const lutFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [showFinishedTasks, setShowFinishedTasks] = useState(false);
   const {
     prep,
     assetCards,
@@ -160,7 +161,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   const unanalyzedCount = onlineAssetCount - selectableAssets;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-2">
+    <div className="min-h-0 flex-1 space-y-4 p-2">
       {frozen && (
         <div className="card flex flex-wrap items-center justify-between gap-4 p-5">
           <div>
@@ -230,7 +231,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
           )}
         </div>
         {frozen && (
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]" aria-label="已锁定素材列表">
+          <div className="h-[clamp(400px,56vh,760px)] overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]" aria-label="已锁定素材列表">
             <p className="mb-2 px-1 text-sm font-medium text-ink">已锁定素材 · {Object.keys(selectedAssets).length} 条</p>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {Object.entries(selectedAssets).map(([assetId, selection]) => {
@@ -293,7 +294,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
           </div>
         )}
         {!frozen && (
-          <div className="min-h-[520px] flex-1 overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]" aria-label="素材列表">
+          <div className="h-[clamp(400px,56vh,760px)] overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]" aria-label="素材列表">
           {assetCards.length > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {assetCards.map((asset) => {
@@ -407,41 +408,79 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 <p className="text-xs text-warn">脚本、素材、分析版本或调色滤镜已修改，重新确认整体输入后预览片请求才会匹配新快照。</p>
               )}
               {!hasConfirmedVersion && <p className="text-xs text-ink-tertiary">先确认整体输入，预览片才能对应到已锁定的设置。</p>}
-              {assetPrepareTasks.length > 0 && (
-                <ul className="space-y-1.5">
-                  {assetPrepareTasks.map((task) => {
-                    const progress = task.progressJson as { phase?: string; percent?: number | null; description?: string } | null;
-                    const percent = typeof progress?.percent === 'number' ? `${Math.round(progress.percent * 100)}%` : '';
-                    const phaseLabel = progress?.phase ? TASK_PHASE_LABELS[progress.phase] : undefined;
-                    const statusLabel = TASK_STATUS_LABELS[task.status] ?? task.status;
-                    return (
-                      <li key={task.id} className="flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
-                        <span className="min-w-0 truncate text-ink-secondary">
-                          {phaseLabel || progress?.description || statusLabel} {percent}
-                          {(task.attemptCount ?? 0) > 1 && ` · 第 ${task.attemptCount} 次尝试`}
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span className={`rounded-full px-2 py-0.5 ${task.status === 'failed' ? 'bg-fail/10 text-fail' : task.status === 'succeeded' ? 'bg-ok/10 text-ok' : task.status === 'cancelled' ? 'bg-surface-subtle text-ink-tertiary' : 'bg-accent/10 text-accent'}`}>
-                            {statusLabel}
-                          </span>
-                          {task.status === 'failed' && (
-                            <button type="button" className="text-accent underline" onClick={() => props.onProxyRetry(task.id)}>重试</button>
-                          )}
-                          {(task.status === 'queued' || task.status === 'running') && (
-                            <button type="button" className="text-ink-tertiary underline" onClick={() => props.onProxyControl(task.id, 'pause')}>暂停</button>
-                          )}
-                          {task.status === 'queued' && (
-                            <button type="button" className="text-accent underline" onClick={() => props.onProxyControl(task.id, 'resume')}>继续</button>
-                          )}
-                          {(task.status === 'queued' || task.status === 'running') && (
-                            <button type="button" className="text-fail underline" onClick={() => props.onProxyControl(task.id, 'cancel')}>取消</button>
-                          )}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
+              {assetPrepareTasks.length > 0 && (() => {
+                const activeTasks = assetPrepareTasks.filter((task) => task.status === 'queued' || task.status === 'running' || task.status === 'failed');
+                const finishedTasks = assetPrepareTasks.filter((task) => task.status === 'succeeded' || task.status === 'cancelled');
+                const visibleTasks = showFinishedTasks ? assetPrepareTasks : activeTasks;
+                const taskAssetLabel = (task: AssetPrepareTaskView): string => {
+                  const asset = prep.assets.find((item) => item.id === task.targetId);
+                  return asset?.media.displayName || asset?.media.filename || `素材 ${task.targetId.slice(0, 8)}`;
+                };
+                return (
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs text-ink-secondary">
+                        进行中 {activeTasks.length} 条{finishedTasks.length > 0 && ` · 已完成 ${finishedTasks.length} 条`}
+                      </p>
+                      <div className="flex items-center gap-3">
+                        {finishedTasks.length > 0 && (
+                          <button
+                            type="button"
+                            className="text-xs text-accent underline"
+                            onClick={() => setShowFinishedTasks((value) => !value)}
+                          >{showFinishedTasks ? '收起已完成' : `显示全部（${finishedTasks.length}）`}</button>
+                        )}
+                        {showFinishedTasks && visibleTasks.some((task) => task.status === 'succeeded' || task.status === 'cancelled') && (
+                          <button
+                            type="button"
+                            className="text-xs text-ink-tertiary underline"
+                            onClick={() => setShowFinishedTasks(false)}
+                          >清除已完成</button>
+                        )}
+                      </div>
+                    </div>
+                    <ul className="space-y-1.5">
+                      {visibleTasks.map((task) => {
+                        const progress = task.progressJson as { phase?: string; percent?: number | null; description?: string } | null;
+                        const percent = typeof progress?.percent === 'number' ? `${Math.round(progress.percent * 100)}%` : '';
+                        const phaseLabel = progress?.phase ? TASK_PHASE_LABELS[progress.phase] : undefined;
+                        const statusLabel = TASK_STATUS_LABELS[task.status] ?? task.status;
+                        return (
+                          <li key={task.id} className="flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="shrink-0 truncate font-medium text-ink" title={taskAssetLabel(task)}>{taskAssetLabel(task)}</span>
+                              {(phaseLabel || progress?.description) && (
+                                <span className="shrink-0 text-ink-tertiary">
+                                  {phaseLabel || progress?.description}
+                                  {percent ? ` ${percent}` : ''}
+                                  {(task.attemptCount ?? 0) > 1 && ` · 第 ${task.attemptCount} 次尝试`}
+                                </span>
+                              )}
+                            </span>
+                            <span className="flex shrink-0 items-center gap-2">
+                              <span className={`rounded-full px-2 py-0.5 ${task.status === 'failed' ? 'bg-fail/10 text-fail' : task.status === 'succeeded' ? 'bg-ok/10 text-ok' : task.status === 'cancelled' ? 'bg-surface-subtle text-ink-tertiary' : 'bg-accent/10 text-accent'}`}>
+                                {statusLabel}
+                              </span>
+                              {task.status === 'failed' && (
+                                <button type="button" className="text-accent underline" onClick={() => props.onProxyRetry(task.id)}>重试</button>
+                              )}
+                              {(task.status === 'queued' || task.status === 'running') && (
+                                <button type="button" className="text-ink-tertiary underline" onClick={() => props.onProxyControl(task.id, 'pause')}>暂停</button>
+                              )}
+                              {task.status === 'queued' && (
+                                <button type="button" className="text-accent underline" onClick={() => props.onProxyControl(task.id, 'resume')}>继续</button>
+                              )}
+                              {(task.status === 'queued' || task.status === 'running') && (
+                                <button type="button" className="text-fail underline" onClick={() => props.onProxyControl(task.id, 'cancel')}>取消</button>
+                              )}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="tile space-y-3 p-4">

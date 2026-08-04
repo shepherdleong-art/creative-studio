@@ -146,7 +146,13 @@ function matchesCurrentInput(
   const version = db.prepare(`
     SELECT defaultsJson FROM batch_production_versions WHERE id = ?
   `).get(batchVersionId) as { defaultsJson: string } | undefined;
-  if (!version || canonicalJson(parseJsonOrRaw(version.defaultsJson)) !== canonicalJson(input.defaultsJson ?? {})) {
+  if (!version) return false;
+  // 冻结时写入的 batchMusicPool 是服务端运行期快照(锁定时曲库池),不是客户端提交的输入,
+  // 不参与"整体输入是否变化"的身份比对(否则批次开始后任何重新确认都会误判为新输入)。
+  const storedDefaults = parseJsonOrRaw(version.defaultsJson) as Record<string, unknown> | null;
+  const identityDefaults = storedDefaults && typeof storedDefaults === 'object' ? { ...storedDefaults } : storedDefaults;
+  if (identityDefaults && typeof identityDefaults === 'object') delete identityDefaults.batchMusicPool;
+  if (canonicalJson(identityDefaults) !== canonicalJson(input.defaultsJson ?? {})) {
     return false;
   }
 

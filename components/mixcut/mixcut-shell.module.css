@@ -56,8 +56,16 @@
   min-height: 560px;
   max-height: none;
 }
+/* 按钮重置(仅服务单条模式的 CSS Module 按钮)。批量生产面板使用全局 btn-primary/btn-secondary/btn-danger,
+ * 会被 .shell button 的重置命中而丢掉背景与边框(历史回归),这里按全局工具类的同值显式恢复。
+ * 注意:不能用 :not([class*="btn-"]) 改重置 —— 那会把优先级抬到 (0,2,1),
+ * 反压过单条模式 styles.btn + styles.primary 组合的 (0,2,0),让单条主按钮失去底色;
+ * 也不能用 revert —— 非分层规则里的 revert 会回退到 UA 默认而不是本项目的 utilities 层。 */
 .shell button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 .shell button:disabled { cursor: not-allowed; }
+.shell :global(.btn-primary) { background: var(--color-accent); color: #fff; }
+.shell :global(.btn-secondary) { background: var(--color-surface-subtle); color: var(--color-ink); }
+.shell :global(.btn-danger) { background: transparent; color: var(--color-fail); border: 1px solid var(--color-hairline); }
 .mono, .shell select, .dur, .tc, .cd, .val { font-variant-numeric: tabular-nums; }
 
 /* ---- 顶栏 ---- */

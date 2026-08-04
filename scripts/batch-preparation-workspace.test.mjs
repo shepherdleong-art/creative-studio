@@ -59,10 +59,10 @@ assert.match(scripts, /narration-config/);
 assert.match(scripts, /确认整体输入/);
 assert.match(scripts, /开始批量生产/);
 assert.match(scripts, /配音供应商/);
-// BGM 参数整批统一可调(FR-S2-45)
-assert.match(scripts, /背景音乐音量/);
-assert.match(scripts, /淡入（秒）/);
-assert.match(scripts, /淡出（秒）/);
+// BGM 参数整批统一可调(FR-S2-45):音量/淡入/淡出 滑杆带可读 aria 标签
+assert.match(scripts, /背景音乐音量增益/);
+assert.match(scripts, /背景音乐淡入/);
+assert.match(scripts, /背景音乐淡出/);
 // BGM 曲库区(FR-S2-40/41/42/44/47):空曲库提示 + 重新扫描 + 手动指定
 assert.match(scripts, /曲库为空 —— 请把音频文件放进 storage\/bgm\//);
 assert.match(scripts, /重新扫描/);
@@ -86,8 +86,8 @@ assert.match(review, /版本切换/);
 assert.match(review, /查看版本/);
 assert.match(review, /batch-output-cover-/);
 assert.match(review, /subtitleCueCount/);
-// 第 1 步:素材池最小高度 + 响应式列数 + 锁定后缩略图网格(FR-S1-11, 问题 1/2-B)
-assert.match(materials, /min-h-\[520px\]/);
+// 第 1 步:素材池自适应固定高度(clamp,不再 min-h + flex-1 混用) + 响应式列数 + 锁定后缩略图网格(FR-S1-11, 问题 1/2-B)
+assert.match(materials, /h-\[clamp\(400px,56vh,760px\)\]/);
 assert.match(materials, /sm:grid-cols-2 xl:grid-cols-3/);
 assert.match(materials, /已锁定素材列表/);
 assert.match(materials, /播放锁定素材/);
