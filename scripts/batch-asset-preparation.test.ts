@@ -39,6 +39,11 @@ db.exec(`
     durationSec INTEGER NOT NULL DEFAULT 5, status TEXT NOT NULL DEFAULT 'pending',
     localVideoPath TEXT, filename TEXT, createdAt TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE TABLE script_providers (
+    id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
+    supportsVision INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '', defaultModel TEXT NOT NULL DEFAULT ''
+  );
   INSERT INTO projects VALUES ('project-1', '一号项目');
   INSERT INTO projects VALUES ('project-2', '二号项目');
 `);
@@ -141,13 +146,67 @@ try {
   assert.equal(ready.items[0]?.ready, true);
   assert.equal(ready.items[0]?.analysisLevel, 'technical');
 
+  db.prepare(`INSERT INTO script_providers (id, enabled, supportsVision, model) VALUES ('vision-provider', 1, 1, 'vision-model')`).run();
+  const contentQueued = preparation.queueAssetPreparation(
+    db,
+    'project-1',
+    batchId,
+    [assetId],
+    undefined,
+    { mode: 'content', providerId: 'vision-provider', model: 'vision-model' },
+  );
+  assert.equal(contentQueued.items[0]?.ready, false, 'technical 结果不能冒充内容分析');
+  const contentRequest = db.prepare(`
+    SELECT assetId, contentFingerprint, providerId, model
+    FROM batch_asset_analysis_requests WHERE taskId = ?
+  `).get(contentQueued.items[0]!.taskId!) as {
+    assetId: string;
+    contentFingerprint: string;
+    providerId: string;
+    model: string;
+  };
+  assert.deepEqual(contentRequest, {
+    assetId,
+    contentFingerprint: `sha256:${fingerprint}`,
+    providerId: 'vision-provider',
+    model: 'vision-model',
+  }, '内容分析任务必须冻结素材指纹和供应商模型');
+  const contentExecutor = executors.createAnalyzeAssetExecutor({
+    analyzeContent: async () => ({
+      summary: '红色视频素材',
+      sellingPoints: ['红色'],
+      semanticTags: ['产品'],
+      usableRanges: [{ startUs: 0, endUs: 400_000, qualityScore: 0.9 }],
+      qualityIssues: [],
+      coverFrameTimesUs: [120_000],
+      scenes: [{ startUs: 0, endUs: 400_000, description: '红色画面', labels: ['产品'], qualityScore: 0.9 }],
+    }),
+  });
+  for (let index = 0; index < 4; index += 1) {
+    await runner.runPendingOnce({
+      db,
+      workerId: 'asset-content-analysis-test',
+      executors: [contentExecutor],
+      concurrency: 1,
+      progressThrottleMs: 0,
+    });
+    if (preparation.getCurrentAssetAnalysis(db, 'project-1', assetId)?.analysisLevel === 'content') break;
+  }
+  const contentReady = preparation.getCurrentAssetAnalysis(db, 'project-1', assetId);
+  assert.equal(contentReady?.analysisLevel, 'content');
+  assert.deepEqual(
+    (contentReady?.analysisJson as { semanticTags?: string[] }).semanticTags,
+    ['产品'],
+    '内容分析结果必须成为素材当前分析版本',
+  );
+
   const scriptId = scripts.createProjectScript(db, 'project-1', {
     sourceKind: 'script_draft', sourceId: 'fixture-script', title: '素材分析脚本', bodyText: '正文', sourceVersion: '1',
   });
   const snapshotBatch = versions.createBatchProduction(db, 'project-1', '已分析批次');
   const snapshot = flow.createBatchSnapshot(db, 'project-1', snapshotBatch, {
     scriptSelections: [{ scriptId, copyCount: 1 }],
-    assetSelections: [{ assetId, analysisId: ready.items[0]!.analysisId! }],
+    assetSelections: [{ assetId, analysisId: contentReady!.id }],
   });
   flow.startBatchProduction(db, 'project-1', snapshotBatch);
   assert.equal(
@@ -159,7 +218,7 @@ try {
 
   const prepared = await prepare.prepareBatchProductionInputs(db, 'project-1');
   const preparedAsset = prepared.assets.find(({ id }) => id === assetId)!;
-  assert.equal(preparedAsset.analysisLevel, 'technical');
+  assert.equal(preparedAsset.analysisLevel, 'content');
   assert.match(preparedAsset.thumbnailUrl, new RegExp(`/api/batch-production/assets/${assetId}/thumbnail`));
   assert.match(preparedAsset.previewUrl, new RegExp(`/api/batch-production/assets/${assetId}/preview`));
   assert.equal('location' in preparedAsset.sources[0]!, false, '准备接口不得返回任何本地来源路径');

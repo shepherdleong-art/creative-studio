@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import { queueAssetPreparation } from '@/lib/batch-production/asset-preparation';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
+import { getAvailableProviders } from '@/lib/script-providers';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -28,7 +29,11 @@ export async function POST(
       headers: BATCH_NO_STORE_HEADERS,
     });
   }
-  const body = await request.json().catch(() => null) as { assetIds?: unknown } | null;
+  const body = await request.json().catch(() => null) as {
+    assetIds?: unknown;
+    mode?: unknown;
+    providerId?: unknown;
+  } | null;
   if (!Array.isArray(body?.assetIds) || body.assetIds.length === 0 || body.assetIds.some((id) => typeof id !== 'string')) {
     return NextResponse.json({
       error: 'invalid_input',
@@ -36,10 +41,42 @@ export async function POST(
       message: 'assetIds 必须是非空字符串数组',
     }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
   }
+  const mode = body?.mode === 'content' ? 'content' : 'technical';
+  let contentProvider: ReturnType<typeof getAvailableProviders>[number] | undefined;
+  if (mode === 'content') {
+    if (typeof body?.providerId !== 'string' || !body.providerId.trim()) {
+      return NextResponse.json({
+        error: 'invalid_input',
+        code: 'invalid_input',
+        message: '内容分析必须选择视觉分析供应商',
+      }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+    }
+    contentProvider = getAvailableProviders().find((provider) => (
+      provider.id === body.providerId
+      && provider.configured
+      && provider.supportsVision
+    ));
+    if (!contentProvider) {
+      return NextResponse.json({
+        error: 'analysis_provider_unavailable',
+        code: 'analysis_provider_unavailable',
+        message: '视觉分析供应商不存在、未配置或不支持图片理解',
+      }, { status: 409, headers: BATCH_NO_STORE_HEADERS });
+    }
+  }
 
   try {
     await assertBatchApiReady();
-    const result = queueAssetPreparation(getDb(), projectId, batchId, body.assetIds as string[]);
+    const result = queueAssetPreparation(
+      getDb(),
+      projectId,
+      batchId,
+      body.assetIds as string[],
+      undefined,
+      mode === 'content'
+        ? { mode, providerId: contentProvider!.id, model: contentProvider!.model }
+        : { mode },
+    );
     // 只有任务写入成功后才唤醒单例调度器；重复调用仍然幂等。
     ensureBatchSchedulerStarted();
     return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });

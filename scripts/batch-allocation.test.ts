@@ -63,6 +63,10 @@ assert.ok(first.outputs.every((output) => output.arrangement.clips.every((clip) 
 assert.ok(first.outputs.every((output) => output.arrangement.clips.every((clip) => clip.contentFingerprint)));
 assert.ok(first.outputs.every((output) => output.arrangement.clips.every((clip) => clip.sourceEndUs > clip.sourceStartUs && clip.timelineEndUs > clip.timelineStartUs)));
 assert.ok(first.outputs.every((output) => output.arrangement.narration.ready === false && output.arrangement.narration.productionReady === false));
+assert.ok(first.outputs.every((output) => output.arrangement.subtitle.ready === true));
+assert.ok(first.outputs.every((output) => output.arrangement.subtitle.productionReady === false));
+assert.ok(first.outputs.every((output) => output.arrangement.subtitle.cues.length === 2));
+assert.equal(first.outputs[0]?.arrangement.subtitle.cues[0]?.text, '产品开场');
 assert.equal(first.outputs[0]?.arrangement.clips[0]?.sourceSegmentId, 'source-a-1');
 assert.equal(first.outputs[0]?.title, first.outputs[1]?.title, '同一脚本多份不得自动修改标题');
 

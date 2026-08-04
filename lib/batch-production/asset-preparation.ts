@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { BatchDomainError } from './errors.ts';
 import {
@@ -9,7 +10,7 @@ import {
   type BatchTaskStatus,
 } from './tasks.ts';
 
-/** 当前已完成分析的能力级别。内容分析尚未由本地 FFprobe 执行器提供。 */
+/** 素材分析能力级别：technical 为本地媒体参数，content 为视觉模型语义结果。 */
 export type AssetAnalysisLevel = 'none' | 'technical' | 'content';
 
 export interface CurrentAssetAnalysis {
@@ -17,6 +18,14 @@ export interface CurrentAssetAnalysis {
   status: BatchAssetAnalysisStatus;
   analysisLevel: AssetAnalysisLevel;
   analysisJson: unknown;
+  providerId: string;
+  model: string;
+}
+
+export interface QueueAssetPreparationOptions {
+  mode?: 'technical' | 'content';
+  providerId?: string;
+  model?: string;
 }
 
 export interface AssetPreparationQueueItem {
@@ -43,9 +52,9 @@ function parseJson(value: string): unknown {
 }
 
 /**
- * 读取素材当前分析的能力级别。
- * 当前实现唯一会生成的分析是 FFprobe 技术分析；历史测试/旧库中的分析行
- * 没有显式 level 时也只能诚实地归为 technical，不把技术字段冒充语义内容。
+ * 读取素材当前分析的能力级别。只有内容分析 Adapter 显式写入
+ * analysisLevel=content 时才按语义分析使用；历史行和纯 FFprobe 结果
+ * 都保守归为 technical，不靠字段形状猜测能力。
  */
 export function getCurrentAssetAnalysis(
   db: Database.Database,
@@ -53,7 +62,7 @@ export function getCurrentAssetAnalysis(
   assetId: string,
 ): CurrentAssetAnalysis | null {
   const row = db.prepare(`
-    SELECT a.currentAnalysisId AS id, aa.status, aa.analysisJson
+    SELECT a.currentAnalysisId AS id, aa.status, aa.analysisJson, aa.providerId, aa.model
     FROM batch_assets a
     LEFT JOIN batch_asset_analysis aa ON aa.id = a.currentAnalysisId AND aa.assetId = a.id
     WHERE a.id = ? AND a.projectId = ?
@@ -61,6 +70,8 @@ export function getCurrentAssetAnalysis(
     id: string | null;
     status: BatchAssetAnalysisStatus | null;
     analysisJson: string | null;
+    providerId: string | null;
+    model: string | null;
   } | undefined;
   if (!row?.id || !row.status) return null;
 
@@ -76,6 +87,8 @@ export function getCurrentAssetAnalysis(
     status: row.status,
     analysisLevel,
     analysisJson: parsed,
+    providerId: row.providerId ?? '',
+    model: row.model ?? '',
   };
 }
 
@@ -112,7 +125,19 @@ function assertOnlineProjectAsset(
   return asset;
 }
 
-function requestKey(batchId: string, assetId: string): string {
+function stableDigest(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 20);
+}
+
+function requestKey(
+  batchId: string,
+  assetId: string,
+  contentFingerprint: string,
+  options: QueueAssetPreparationOptions,
+): string {
+  if (options.mode === 'content') {
+    return `asset_content:${batchId}:${assetId}:${stableDigest(contentFingerprint)}:${stableDigest(`${options.providerId}\u0000${options.model}`)}`;
+  }
   return `asset_prepare:${batchId}:${assetId}`;
 }
 
@@ -134,7 +159,7 @@ function findExistingTask(
 }
 
 /**
- * 在快照前排队项目素材技术分析。
+ * 在快照前排队项目素材技术分析或内容分析。
  * 素材分析版本属于项目素材库，因此已有 currentAnalysisId 时无需为每个批次
  * 再建任务；没有当前分析时才使用所选 draft batch 作为调度/恢复载体。
  * 同一批次+素材的 requestKey 稳定，失败任务原地回 queued，取消任务由
@@ -146,6 +171,7 @@ export function queueAssetPreparation(
   batchId: string,
   assetIds: string[],
   now?: () => Date,
+  options: QueueAssetPreparationOptions = {},
 ): QueueAssetPreparationResult {
   if (!Array.isArray(assetIds) || assetIds.length === 0) {
     throw new BatchDomainError('invalid_input', 'assetIds 不能为空');
@@ -153,6 +179,10 @@ export function queueAssetPreparation(
   const uniqueAssetIds = [...new Set(assetIds)];
   if (uniqueAssetIds.some((assetId) => typeof assetId !== 'string' || !assetId)) {
     throw new BatchDomainError('invalid_input', 'assetIds 必须是非空字符串');
+  }
+  const mode = options.mode ?? 'technical';
+  if (mode === 'content' && (!options.providerId?.trim() || !options.model?.trim())) {
+    throw new BatchDomainError('invalid_input', '内容分析必须指定已配置的视觉供应商与模型');
   }
 
   assertBatchAndProject(db, projectId, batchId);
@@ -167,10 +197,10 @@ export function queueAssetPreparation(
     const items = uniqueAssetIds.map((assetId): AssetPreparationQueueItem => {
       const asset = assets.get(assetId)!;
       const current = getCurrentAssetAnalysis(db, projectId, assetId);
-      const key = requestKey(batchId, assetId);
+      const key = requestKey(batchId, assetId, asset.contentFingerprint, { ...options, mode });
       const existing = findExistingTask(db, projectId, key);
 
-      if (current?.status === 'ready') {
+      if (current?.status === 'ready' && (mode === 'technical' || current.analysisLevel === 'content')) {
         // 如果本批次曾经有对应任务，保留其稳定 taskId 供 UI 追踪；否则
         // ready 素材可以跨批次复用而不制造第二条无意义任务。
         return {
@@ -208,6 +238,23 @@ export function queueAssetPreparation(
         requestKey: key,
         now,
       });
+      if (mode === 'content') {
+        const createdAt = (now ?? (() => new Date()))().toISOString();
+        db.prepare(`
+          INSERT OR IGNORE INTO batch_asset_analysis_requests
+            (taskId, projectId, batchId, assetId, contentFingerprint, providerId, model, analysisMode, createdAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'content', ?)
+        `).run(
+          taskId,
+          projectId,
+          batchId,
+          assetId,
+          asset.contentFingerprint,
+          options.providerId!.trim(),
+          options.model!.trim(),
+          createdAt,
+        );
+      }
       const task = findExistingTask(db, projectId, key);
       return {
         assetId,

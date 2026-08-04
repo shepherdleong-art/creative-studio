@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { splitNarrationForDisplay } from '../subtitle-display.ts';
 
 /**
  * Phase E 联合分配器。
@@ -161,7 +162,19 @@ export interface AllocationArrangement {
   audio: { ready: false; productionReady: false; status: 'pending'; reason: string };
   /** 仅占位:分配阶段不合成或验证口播。 */
   narration: { ready: false; productionReady: false; status: 'pending'; durationUs: null; reason: string };
-  subtitle: { ready: false; productionReady: false; status: 'pending'; cues: [] };
+  subtitle: {
+    ready: boolean;
+    productionReady: false;
+    status: 'estimated' | 'pending';
+    cues: Array<{
+      id: string;
+      sourceSegmentId: string;
+      text: string;
+      startUs: number;
+      endUs: number;
+      timingSource: 'estimated';
+    }>;
+  };
   /** 先保留轨道事实,不存路径或代理身份。 */
   music: { trackId: string | null };
   warnings: string[];
@@ -616,6 +629,35 @@ function createArrangement(
   const preset = normalized.preset;
   const uniqueWarnings = [...new Set(warnings)].sort();
   const uniqueBlockers = [...new Set(blockers)].sort();
+  const segmentById = new Map(plan.segments.flatMap((segment) => [
+    [segment.id, segment] as const,
+    [segment.sourceSegmentId, segment] as const,
+  ]));
+  const subtitleCues = clips.flatMap((clip) => {
+    const segment = segmentById.get(clip.sourceSegmentId) ?? segmentById.get(clip.segmentId);
+    if (!segment?.text.trim()) return [];
+    const parts = splitNarrationForDisplay(segment.text, { maxContentCharacters: 16 });
+    if (parts.length === 0) return [];
+    const weights = parts.map((part) => Math.max(1, Array.from(part.displayText.replace(/\s+/gu, '')).length));
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    const durationUs = clip.timelineEndUs - clip.timelineStartUs;
+    let cursorUs = clip.timelineStartUs;
+    return parts.map((part, index) => {
+      const endUs = index === parts.length - 1
+        ? clip.timelineEndUs
+        : Math.max(cursorUs + 1, Math.round(cursorUs + durationUs * weights[index]! / totalWeight));
+      const cue = {
+        id: `subtitle:${clip.clipId}:${index + 1}`,
+        sourceSegmentId: clip.sourceSegmentId,
+        text: part.displayText,
+        startUs: cursorUs,
+        endUs,
+        timingSource: 'estimated' as const,
+      };
+      cursorUs = endUs;
+      return cue;
+    });
+  });
   return {
     schemaVersion: BATCH_ALLOCATION_SCHEMA_VERSION,
     preset,
@@ -628,7 +670,12 @@ function createArrangement(
       .map((asset) => [asset.assetId, asset.colorSnapshot])),
     audio: { ready: false, productionReady: false, status: 'pending', reason: '联合分配只登记画面，尚未合成口播音频' },
     narration: { ready: false, productionReady: false, status: 'pending', durationUs: null, reason: '联合分配只登记画面，尚未合成或核验口播时长' },
-    subtitle: { ready: false, productionReady: false, status: 'pending', cues: [] },
+    subtitle: {
+      ready: subtitleCues.length > 0,
+      productionReady: false,
+      status: subtitleCues.length > 0 ? 'estimated' : 'pending',
+      cues: subtitleCues,
+    },
     music: { trackId: musicTrackId },
     warnings: uniqueWarnings,
     blockers: uniqueBlockers,

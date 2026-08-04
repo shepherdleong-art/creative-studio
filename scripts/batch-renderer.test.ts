@@ -93,6 +93,19 @@ async function run(): Promise<void> {
       contentFingerprint: fingerprint,
     }],
     cover: { assetId: 'asset-1', timeUs: 1_100_000 },
+    subtitle: {
+      ready: true,
+      productionReady: false,
+      status: 'estimated',
+      cues: [{
+        id: 'estimated-1',
+        sourceSegmentId: 'segment-1',
+        text: '预计字幕',
+        startUs: 0,
+        endUs: 500_000,
+        timingSource: 'estimated',
+      }],
+    },
   };
   const { db, ids } = await setupDatabase(videoPath, arrangement);
   db.prepare(`INSERT INTO batch_assets (id, projectId, sourceKind, locationJson, contentFingerprint, mediaKind, mediaJson, status, currentAnalysisId, createdAt, updatedAt) VALUES (?, 'project-1', 'linked', ?, ?, 'video', '{}', 'online', NULL, ?, ?)`).run(ids.assetId, JSON.stringify({ kind: 'linked', absolutePath: videoPath }), fingerprint, new Date().toISOString(), new Date().toISOString());
@@ -119,6 +132,9 @@ async function run(): Promise<void> {
   assert.equal(result.fps, 24);
   assert.equal(result.audioMode, 'silent_placeholder');
   assert.equal(result.productionReady, false);
+  assert.deepEqual(result.subtitleCues, [
+    { id: 'estimated-1', sourceSegmentId: 'segment-1', text: '预计字幕', startUs: 0, endUs: 500_000 },
+  ], '静音视觉候选也必须烧录并回报预计字幕，但不能因此变为 productionReady');
   assert.deepEqual(
     result.clips.map(({ clipId, sourceStartUs, sourceEndUs, timelineStartUs, timelineEndUs }) => (
       { clipId, sourceStartUs, sourceEndUs, timelineStartUs, timelineEndUs }

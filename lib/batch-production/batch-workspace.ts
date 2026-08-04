@@ -44,6 +44,8 @@ export interface BatchWorkspaceCandidateView {
   audioMode: 'narration' | 'silent_placeholder';
   productionReady: boolean;
   durationUs: number;
+  subtitleCueCount: number;
+  coverAvailable: boolean;
 }
 
 export interface BatchOutputCardView {
@@ -146,6 +148,8 @@ function renderCandidate(value: unknown, outputVersionId: string | null): BatchW
     audioMode: record.audioMode,
     productionReady: record.productionReady,
     durationUs: Number(record.durationUs),
+    subtitleCueCount: Array.isArray(record.subtitleCues) ? record.subtitleCues.length : 0,
+    coverAvailable: true,
   };
 }
 

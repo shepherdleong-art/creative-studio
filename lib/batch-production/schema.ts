@@ -828,6 +828,33 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         ON batch_output_versions(allocationRunId);
     `,
   },
+  {
+    version: 17,
+    sql: `
+      -- 内容分析请求必须冻结素材指纹与视觉供应商身份。任务仍以 asset 为目标，
+      -- 这张表只保存该次 asset_prepare 的不可变请求参数，避免重试时悄悄换模型。
+      CREATE TABLE IF NOT EXISTS batch_asset_analysis_requests (
+        taskId TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT NOT NULL,
+        assetId TEXT NOT NULL,
+        contentFingerprint TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        analysisMode TEXT NOT NULL DEFAULT 'content'
+          CHECK(analysisMode IN ('content')),
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY(taskId) REFERENCES batch_tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE,
+        FOREIGN KEY(assetId) REFERENCES batch_assets(id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS idx_batch_asset_analysis_requests_asset
+        ON batch_asset_analysis_requests(projectId, assetId, createdAt);
+      CREATE INDEX IF NOT EXISTS idx_batch_asset_analysis_requests_batch
+        ON batch_asset_analysis_requests(batchId, createdAt);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -1969,6 +1996,70 @@ function validateAllocationTables(db: Database.Database): void {
   }
 }
 
+/** v17 冻结视觉内容分析的素材、供应商与模型身份。 */
+function validateAssetAnalysisRequestTables(db: Database.Database): void {
+  const columns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{
+    name: string;
+    notnull: number;
+    pk: number;
+  }>;
+  const byName = new Map(columns.map((column) => [column.name, column]));
+  if (byName.get('taskId')?.pk !== 1) {
+    throw new Error('内容分析请求表主键检查未通过');
+  }
+  for (const name of ['projectId', 'batchId', 'assetId', 'contentFingerprint', 'providerId', 'model', 'analysisMode', 'createdAt']) {
+    if (byName.get(name)?.notnull !== 1) {
+      throw new Error(`内容分析请求表缺少必填列 ${name}`);
+    }
+  }
+  const foreignKeys = db.prepare(`PRAGMA foreign_key_list(batch_asset_analysis_requests)`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+  const requiredForeignKeys = [
+    ['batch_tasks', 'taskId', 'id', 'CASCADE'],
+    ['projects', 'projectId', 'id', 'CASCADE'],
+    ['batch_productions', 'batchId', 'id', 'CASCADE'],
+    ['batch_assets', 'assetId', 'id', 'RESTRICT'],
+  ] as const;
+  for (const [table, from, to, onDelete] of requiredForeignKeys) {
+    if (!foreignKeys.some((foreignKey) => (
+      foreignKey.table === table
+      && foreignKey.from === from
+      && foreignKey.to === to
+      && foreignKey.on_delete.toUpperCase() === onDelete
+    ))) {
+      throw new Error(`内容分析请求表外键 ${from} 检查未通过`);
+    }
+  }
+  const indexes = db.prepare(`PRAGMA index_list(batch_asset_analysis_requests)`).all() as Array<{ name: string }>;
+  for (const name of ['idx_batch_asset_analysis_requests_asset', 'idx_batch_asset_analysis_requests_batch']) {
+    if (!indexes.some((index) => index.name === name)) {
+      throw new Error(`内容分析请求表索引 ${name} 检查未通过`);
+    }
+  }
+  const invalidLineage = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_asset_analysis_requests r
+    JOIN batch_tasks t ON t.id = r.taskId
+    JOIN batch_productions b ON b.id = r.batchId
+    JOIN batch_assets a ON a.id = r.assetId
+    WHERE t.projectId <> r.projectId
+       OR t.batchId <> r.batchId
+       OR t.workType <> 'asset_prepare'
+       OR t.targetKind <> 'asset'
+       OR t.targetId <> r.assetId
+       OR b.projectId <> r.projectId
+       OR a.projectId <> r.projectId
+       OR a.contentFingerprint <> r.contentFingerprint
+  `).get() as { n: number };
+  if (invalidLineage.n > 0) {
+    throw new Error('内容分析请求存在跨项目、跨批次或过期素材谱系');
+  }
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -1986,6 +2077,7 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateProxyAndColorTables,
   validateProxyRequestTables,
   validateAllocationTables,
+  validateAssetAnalysisRequestTables,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

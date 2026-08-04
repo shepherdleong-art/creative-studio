@@ -269,6 +269,22 @@ try {
   await page.getByRole('heading', { name: '口播 A' }).waitFor();
   await page.getByRole('heading', { name: '已分析素材' }).waitFor();
   await page.getByRole('img', { name: '待分析素材 缩略图' }).waitFor();
+  await page.setViewportSize({ width: 900, height: 1000 });
+  const assetPoolScroll = page.getByTestId('batch-asset-pool-scroll');
+  const scrollMetrics = await assetPoolScroll.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  assert.ok(
+    scrollMetrics.scrollHeight > scrollMetrics.clientHeight,
+    `窄屏素材池必须在内部滚动：${JSON.stringify(scrollMetrics)}`,
+  );
+  const scrollTop = await assetPoolScroll.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  assert.ok(scrollTop > 0, `窄屏素材池滚动到底部后 scrollTop 必须大于 0，实际为 ${scrollTop}`);
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const previewDialog = page.getByRole('dialog');
   await page.getByRole('img', { name: '待分析素材 缩略图' }).click();
   await previewDialog.waitFor();
@@ -284,11 +300,21 @@ try {
     request.method() === 'POST'
     && /\/api\/batch-production\/batches\/[^/]+\/assets\/analyze\?projectId=batch-ui-project$/.test(request.url())
   ));
-  await page.getByRole('button', { name: '分析全部待分析（1）', exact: true }).click();
+  await page.getByRole('button', { name: '基础分析（1）', exact: true }).click();
   const analysisRequest = await analyzeRequest;
-  assert.deepEqual(analysisRequest.postDataJSON(), { assetIds: [pendingAsset.assetId] });
+  assert.deepEqual(analysisRequest.postDataJSON(), { assetIds: [pendingAsset.assetId], mode: 'technical' });
   const pendingAssetCheckbox = page.getByRole('checkbox', { name: '选择素材 待分析素材' });
   await playwrightExpect(pendingAssetCheckbox).toBeEnabled({ timeout: 10_000 });
+
+  const selectAllAssetsButton = page.getByRole('button', { name: '一键全选', exact: true });
+  await playwrightExpect(selectAllAssetsButton).toBeEnabled();
+  await selectAllAssetsButton.click();
+  await playwrightExpect(page.getByRole('checkbox', { name: '选择素材 已分析素材' })).toBeChecked();
+  await playwrightExpect(pendingAssetCheckbox).toBeChecked();
+  const cancelSelectAllAssetsButton = page.getByRole('button', { name: '取消全选', exact: true });
+  await cancelSelectAllAssetsButton.click();
+  await playwrightExpect(page.getByRole('checkbox', { name: '选择素材 已分析素材' })).not.toBeChecked();
+  await playwrightExpect(pendingAssetCheckbox).not.toBeChecked();
 
   await page.getByRole('checkbox', { name: '选择脚本 口播 A' }).check();
   await page.getByLabel('口播 A 生成份数').fill('2');
@@ -368,12 +394,21 @@ try {
   assert.equal(await page.getByText('failed', { exact: true }).count(), 0, '不得直接显示内部状态值 failed');
   assert.equal(await page.getByText('queued', { exact: true }).count(), 0, '不得直接显示内部状态值 queued');
   assert.equal(await page.getByText('running', { exact: true }).count(), 0, '不得直接显示内部状态值 running');
-  // 预览:冻结版本的素材必须渲染真实 preview API 驱动的可播放 video 元素
-  await page.getByTestId(`asset-preview-${readyAsset.assetId}`).waitFor();
+  // Phase D 是固定高度素材池；点击缩略图后才加载真实 preview API，
+  // 不再把每条素材渲染成全宽纵向 video。
+  const mediaPrepPool = page.getByTestId('media-prep-asset-pool');
+  await mediaPrepPool.waitFor();
+  await page.getByTestId(`media-prep-asset-tile-${readyAsset.assetId}`).waitFor();
+  assert.equal(await mediaPrepPool.evaluate((element) => Math.round(element.getBoundingClientRect().height)), 620, '素材池外框必须保持固定高度');
+  assert.equal(await mediaPrepPool.locator(':scope > div:last-child').evaluate((element) => getComputedStyle(element).overflowY), 'auto', '素材列表必须在池内纵向滚动');
+  assert.equal(await mediaPrepPool.locator('video').count(), 0, '素材池内不得纵向堆叠全宽 video');
+  await page.getByRole('button', { name: '播放批次素材 已分析素材' }).click();
+  await page.getByTestId(`asset-preview-modal-${readyAsset.assetId}`).waitFor();
   assert.ok(
     batchRequests.some(({ url }) => url.includes(`/api/batch-production/preview/${readyAsset.assetId}`)),
     '素材预览必须真实请求 /api/batch-production/preview/[assetId]',
   );
+  await page.getByRole('button', { name: '关闭素材预览' }).click();
   // 未确认前不得请求代理:切回草稿编辑(基于当前项目输入)后,任何输入变化都会
   // 标记"未重新确认",代理按钮必须禁用直到再次确认。
   await page.getByRole('button', { name: '基于当前项目输入创建新版本' }).click();

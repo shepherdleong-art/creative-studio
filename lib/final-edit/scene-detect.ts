@@ -36,8 +36,13 @@ export function detectVideoScenes(input: {
   threshold?: number;
   minimumDurationUs?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<DetectedSceneRange[]> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    if (input.signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
     const threshold = Math.max(0, Math.min(100, input.threshold ?? 20)) / 100;
     const child = spawn(resolveFfmpegPath(), [
       '-i', input.filePath,
@@ -51,8 +56,18 @@ export function detectVideoScenes(input: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      input.signal?.removeEventListener('abort', onAbort);
       resolve(ranges.length ? ranges : [{ startUs: 0, endUs: input.durationUs }]);
     };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGKILL');
+      input.signal?.removeEventListener('abort', onAbort);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    input.signal?.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish([{ startUs: 0, endUs: input.durationUs }]);

@@ -162,6 +162,7 @@ export function BatchAssetSelectionCard({
   proxyBusy,
   analysisTask,
   onAnalyze,
+  onAnalyzeContent,
   onRetryAnalyze,
   onResync,
   analyzeBusy,
@@ -177,6 +178,7 @@ export function BatchAssetSelectionCard({
   proxyBusy?: boolean;
   analysisTask?: AssetPrepareTaskView;
   onAnalyze?: () => void;
+  onAnalyzeContent?: () => void;
   onRetryAnalyze?: () => void;
   onResync?: () => void;
   analyzeBusy?: boolean;
@@ -193,6 +195,7 @@ export function BatchAssetSelectionCard({
   const phaseLabels: Record<string, string> = {
     locating: '定位来源',
     probing: '探测媒体',
+    content_analyzing: '画面内容分析',
     verified: '媒体核验完成',
     analyzed: '基础分析完成',
   };
@@ -213,9 +216,18 @@ export function BatchAssetSelectionCard({
     }
     if (asset.currentAnalysisId) {
       return (
-        <div className="mt-3 space-y-1 rounded-xl bg-ok/10 px-3 py-2 text-xs text-ink-secondary" role="status">
+        <div className="mt-3 space-y-2 rounded-xl bg-ok/10 px-3 py-2 text-xs text-ink-secondary" role="status">
           <p className="font-medium text-ok">{analysisLabel}</p>
-          {analysisLevel !== 'content' && <p>智能内容理解尚未启用，联合分配将使用基础时长回退。</p>}
+          {analysisLevel !== 'content' && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p>当前只有媒体参数；内容分析后才能按画面语义分配。</p>
+              {onAnalyzeContent && (
+                <button type="button" className="text-accent underline" disabled={analyzeBusy} onClick={onAnalyzeContent}>
+                  {analyzeBusy ? '分析中…' : '补充内容分析'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       );
     }

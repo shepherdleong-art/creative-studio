@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { runFfmpeg, probeDurationSec } from '../../ffmpeg';
-import { completeJson } from '../../script-providers';
+import { runFfmpeg, probeDurationSec } from '../../ffmpeg.ts';
+import { completeJson } from '../../script-providers/index.ts';
 import { detectVideoScenes } from '../scene-detect.ts';
 import { buildVideoAnalysisPrompt } from './video-analysis-prompt.ts';
 
@@ -23,17 +23,19 @@ export async function analyzeVideoWithVision(input: {
   videoJobId: string;
   providerId: string;
   cacheDir: string;
+  signal?: AbortSignal;
 }) {
   const durationSec = await probeDurationSec(input.filePath);
   const durationUs = Math.round(durationSec * 1_000_000);
-  const detectedScenes = await detectVideoScenes({ filePath: input.filePath, durationUs });
+  const detectedScenes = await detectVideoScenes({ filePath: input.filePath, durationUs, signal: input.signal });
   fs.mkdirSync(input.cacheDir, { recursive: true });
   const images: Array<{ mimeType: string; imageBase64: string }> = [];
   for (let index = 0; index < detectedScenes.length; index += 1) {
+    if (input.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const scene = detectedScenes[index];
     const timeSec = Math.min(durationSec - 0.05, Math.max(0.05, (scene.startUs + (scene.endUs - scene.startUs) * 0.3) / 1_000_000));
     const output = path.join(input.cacheDir, `${Math.round(timeSec * 1_000_000)}.jpg`);
-    await runFfmpeg(['-ss', timeSec.toFixed(6), '-i', input.filePath, '-frames:v', '1', '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease', '-q:v', '3', '-y', output], { timeoutMs: 60_000 });
+    await runFfmpeg(['-ss', timeSec.toFixed(6), '-i', input.filePath, '-frames:v', '1', '-vf', 'scale=1280:1280:force_original_aspect_ratio=decrease', '-q:v', '3', '-y', output], { timeoutMs: 60_000, signal: input.signal });
     images.push({ mimeType: 'image/jpeg', imageBase64: fs.readFileSync(output).toString('base64') });
   }
   const result = await completeJson<RawAnalysis>({
@@ -42,6 +44,7 @@ export async function analyzeVideoWithVision(input: {
     userPrompt: buildVideoAnalysisPrompt(detectedScenes, durationSec),
     temperature: 0.2,
     images,
+    signal: input.signal,
   });
   const rawScenes = Array.isArray(result.scenes) ? result.scenes : [];
   const scenes = detectedScenes.map((range, index) => {

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import sharp from 'sharp';
 import { dataRoot } from '../data-root.ts';
 import { probeDurationSec, probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
@@ -55,6 +56,9 @@ export interface BatchRenderArrangementInput {
   fps?: number;
   targetDurationUs?: number;
   cover?: BatchRenderCoverInput;
+  subtitle?: {
+    cues?: unknown[];
+  };
   /** Optional already-prepared local narration seam (never a provider request). */
   narration?: {
     relativePath?: string;
@@ -99,6 +103,13 @@ function normalizeNarrationSegments(value: unknown, durationUs: number): BatchRe
     previousEndUs = endUs;
     return { id, sourceSegmentId, text, startUs, endUs };
   });
+}
+
+function normalizeArrangementSubtitleCues(value: unknown, durationUs: number): BatchRenderNarrationSegment[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const cues = (value as Record<string, unknown>).cues;
+  if (!Array.isArray(cues)) return [];
+  return normalizeNarrationSegments(cues, durationUs);
 }
 
 /** Parse the persisted arrangement narration seam without accepting browser absolute paths. */
@@ -512,6 +523,40 @@ function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderA
   return `${source},anullsrc=channel_layout=stereo:sample_rate=48000`; // replaced by caller for silent lavfi input
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;')
+    .replace(/'/gu, '&apos;');
+}
+
+async function materializeSubtitleOverlays(input: {
+  directory: string;
+  cues: BatchRenderNarrationSegment[];
+  width: number;
+  height: number;
+}): Promise<string[]> {
+  if (input.cues.length === 0) return [];
+  await fsp.mkdir(input.directory, { recursive: true });
+  const fontSize = Math.max(34, Math.round(input.width * (input.width > input.height ? 0.042 : 0.055)));
+  const baselineY = Math.round(input.height * 0.86);
+  const strokeWidth = Math.max(3, Math.round(fontSize * 0.09));
+  return Promise.all(input.cues.map(async (cue, index) => {
+    const target = path.join(input.directory, `cue-${String(index + 1).padStart(3, '0')}.png`);
+    const svg = `
+      <svg width="${input.width}" height="${input.height}" viewBox="0 0 ${input.width} ${input.height}" xmlns="http://www.w3.org/2000/svg">
+        <text x="${Math.round(input.width / 2)}" y="${baselineY}" text-anchor="middle"
+          font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif"
+          font-size="${fontSize}" font-weight="600" fill="#ffffff" stroke="#111111"
+          stroke-width="${strokeWidth}" stroke-linejoin="round" paint-order="stroke fill">${escapeXml(cue.text)}</text>
+      </svg>`;
+    await sharp(Buffer.from(svg)).png().toFile(target);
+    return target;
+  }));
+}
+
 function outputDirectory(input: BatchRenderInput): { storageRoot: string; renderRoot: string; jobDir: string } {
   const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
   const renderRoot = path.resolve(input.renderRoot ?? path.join(storageRoot, 'batch-renders'));
@@ -575,12 +620,16 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const measuredDuration = await probeDurationSec(narrationPath);
     if (!narrationInput || !Number.isFinite(measuredDuration) || Math.abs(measuredDuration - narrationInput.durationUs / 1_000_000) > 0.1) throw error('narration 实际时长与冻结时长不一致');
   }
+  const subtitleCues = narrationSegments.length > 0
+    ? narrationSegments
+    : normalizeArrangementSubtitleCues(snapshot.arrangement.subtitle, targetDurationUs);
   const targetDurationSec = targetDurationUs / 1_000_000;
   const { storageRoot, jobDir } = outputDirectory(input);
   const videoTemp = path.join(jobDir, `.video-${crypto.randomUUID()}.mp4.tmp`);
   const videoFinal = path.join(jobDir, 'video.mp4');
   const coverTemp = path.join(jobDir, `.cover-${crypto.randomUUID()}.jpg.tmp`);
   const coverFinal = path.join(jobDir, 'cover.jpg');
+  const subtitleDir = path.join(jobDir, '.subtitle-overlays');
   try {
     const args: string[] = [];
     snapshot.clips.forEach((clip) => {
@@ -589,13 +638,33 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const audioInput = snapshot.clips.length;
     if (narrationPath) args.push('-i', narrationPath);
     else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+    const subtitlePaths = await materializeSubtitleOverlays({
+      directory: subtitleDir,
+      cues: subtitleCues,
+      width: outputSize.width,
+      height: outputSize.height,
+    });
+    subtitlePaths.forEach((subtitlePath) => args.push('-loop', '1', '-framerate', '24', '-i', subtitlePath));
     const filters = snapshot.clips.map((clip, index) => clipFilter(index, clip, outputSize.width, outputSize.height, (clip.timelineEndUs - clip.timelineStartUs) / 1_000_000));
     filters.push(`${snapshot.clips.map((_, index) => `[clip${index}]`).join('')}concat=n=${snapshot.clips.length}:v=1:a=0[vconcat]`);
-    if (targetDurationSec > visualDurationUs / 1_000_000 + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(targetDurationSec - visualDurationUs / 1_000_000).toFixed(6)},trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vout]`);
-    else filters.push(`[vconcat]trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vout]`);
+    if (targetDurationSec > visualDurationUs / 1_000_000 + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(targetDurationSec - visualDurationUs / 1_000_000).toFixed(6)},trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
+    else filters.push(`[vconcat]trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
+    let currentVideoLabel = 'vbase';
+    const subtitleStartInput = audioInput + 1;
+    subtitleCues.forEach((cue, index) => {
+      const nextVideoLabel = `vsubtitle${index}`;
+      filters.push(`[${currentVideoLabel}][${subtitleStartInput + index}:v]overlay=0:0:enable='gte(t,${(cue.startUs / 1_000_000).toFixed(6)})*lt(t,${(cue.endUs / 1_000_000).toFixed(6)})'[${nextVideoLabel}]`);
+      currentVideoLabel = nextVideoLabel;
+    });
+    filters.push(`[${currentVideoLabel}]null[vout]`);
     if (narrationPath) filters.push(audioFilter(audioInput, targetDurationSec, 'narration'));
     else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[aout]`);
-    report({ phase: 'rendering', completed: 0, total: targetDurationSec, percent: 0, description: audioMode === 'narration' ? '渲染画面与已核验 narration' : '渲染视觉候选与静音占位轨' });
+    report({
+      phase: 'rendering', completed: 0, total: targetDurationSec, percent: 0,
+      description: audioMode === 'narration'
+        ? `渲染画面、口播与 ${subtitleCues.length} 条字幕`
+        : `渲染静音视觉候选与 ${subtitleCues.length} 条预计字幕`,
+    });
     assertSignal(signal);
     await runFfmpeg([
       ...args,
@@ -612,6 +681,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         report({ phase: 'rendering', completed, total: targetDurationSec, percent: targetDurationSec > 0 ? completed / targetDurationSec : null, description: 'FFmpeg 实际媒体时间' });
       },
     });
+    await fsp.rm(subtitleDir, { recursive: true, force: true });
     report({ phase: 'cover', completed: null, total: null, percent: null, description: '生成第一镜头冻结时间点封面' });
     assertSignal(signal);
     const first = snapshot.coverClip;
@@ -658,7 +728,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       outputVersionNumber: snapshot.outputVersionNumber, preset: normalizedPreset,
       width: outputSize.width, height: outputSize.height, fps: 24, durationUs: probe.durationUs,
       audioMode, productionReady: audioMode === 'narration',
-      subtitleCues: narrationSegments,
+      subtitleCues,
       videoAbsolutePath: videoFinal, coverAbsolutePath: coverFinal,
       videoRelativePath: toStorageRelativePath(storageRoot, videoFinal), coverRelativePath: toStorageRelativePath(storageRoot, coverFinal),
       videoChecksum, coverChecksum,
