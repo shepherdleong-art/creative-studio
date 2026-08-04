@@ -347,6 +347,7 @@ try {
     versionDefaults,
     storageRoot,
   );
+  assert.ok(resolved, '曲库池内曲目必须能被渲染前检解析');
   assert.equal(resolved.absolutePath, path.join(storageRoot, firstTrack.relativePath));
   fs.appendFileSync(path.join(storageRoot, firstTrack.relativePath), Buffer.from('changed'));
   await assert.rejects(
