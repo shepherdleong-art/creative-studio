@@ -13,6 +13,8 @@ export interface BatchProductionRow {
   currentVersionId: string | null;
   progressJson: string;
   deletedAt: string | null;
+  /** 归档时间(独立维度,不影响状态与产物);NULL 表示未归档 */
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

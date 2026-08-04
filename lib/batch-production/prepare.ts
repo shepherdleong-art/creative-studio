@@ -6,6 +6,7 @@ import {
   type BatchAssetSourceKind,
   type BatchAssetStatus,
 } from './assets.ts';
+import { parseStoredNarrationConfig } from './scripts.ts';
 import {
   listAssetSources,
   registerModule4Video,
@@ -27,6 +28,8 @@ export interface PrepareScriptView {
   updatedAt: string;
   /** 脚本自身设定的目标成片时长(秒);旧脚本可能没有,展示层回落 15 */
   targetDurationSec?: number | null;
+  /** 已存储的口播配置(服务商/音色/语速);无配置时为 null */
+  narrationConfig?: import('./scripts.ts').BatchNarrationConfig | null;
 }
 
 export interface PrepareCoverTitle {
@@ -149,6 +152,7 @@ export async function prepareBatchProductionInputs(
     contentRevision: row.contentRevision,
     updatedAt: row.updatedAt,
     targetDurationSec: row.targetDurationSec,
+    narrationConfig: parseStoredNarrationConfig(row.narrationConfigJson),
   }));
 
   const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId).map((row: BatchAssetRow) => {

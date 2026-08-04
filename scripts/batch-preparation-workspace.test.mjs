@@ -49,12 +49,20 @@ assert.match(materials, /画质与调色（进阶）/);
 assert.match(preparation, /batch-vision-provider/);
 assert.match(materials, /\.name\} · \{provider\.model\}/);
 assert.match(materials, /没有开启图片理解的供应商/);
-// 第 2 步:时长只读、份数、确认与开始(FR-S2-20/20a/20b/22)
-assert.match(scripts, /目标时长/);
-assert.match(scripts, /默认 15 秒/);
+// 第 2 步:时长只读、份数、配音配置、确认与开始(FR-S2-20/20a/20b/22)
+assert.match(scripts, /（默认 15 秒）/);
+assert.match(scripts, /生成份数/);
+assert.match(scripts, /配音服务商/);
+assert.match(scripts, /语速/);
+assert.match(scripts, /应用到全部脚本/);
+assert.match(scripts, /narration-config/);
 assert.match(scripts, /确认整体输入/);
 assert.match(scripts, /开始批量生产/);
 assert.match(scripts, /配音供应商/);
+// BGM 参数整批统一可调(FR-S2-45)
+assert.match(scripts, /背景音乐音量/);
+assert.match(scripts, /淡入（秒）/);
+assert.match(scripts, /淡出（秒）/);
 // 第 3 步:按钮化操作 + 版本信息(FR-S3-08/13/15)
 assert.doesNotMatch(review, /只重新分配这一条/);
 assert.match(review, /换一批画面/);

@@ -496,6 +496,39 @@ interface ResolvedBgm {
   absolutePath: string;
 }
 
+export interface BatchBgmParams {
+  gainDb: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+}
+
+export const BATCH_BGM_DEFAULT_PARAMS: BatchBgmParams = { gainDb: -18, fadeInSec: 1.0, fadeOutSec: 1.5 };
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * 从锁定快照的 defaultsJson 解析整批统一的 BGM 混音参数(音量增益/淡入/淡出)。
+ * 锁定时快照,渲染只读;缺字段时回落默认值 -18dB / 1.0s / 1.5s。
+ */
+export function resolveBatchBgmParams(versionDefaultsJson: unknown): BatchBgmParams {
+  if (!versionDefaultsJson || typeof versionDefaultsJson !== 'object' || Array.isArray(versionDefaultsJson)) {
+    return BATCH_BGM_DEFAULT_PARAMS;
+  }
+  const raw = (versionDefaultsJson as Record<string, unknown>).batchBgmParams;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return BATCH_BGM_DEFAULT_PARAMS;
+  const record = raw as Record<string, unknown>;
+  const gainDb = Number(record.gainDb);
+  const fadeInSec = Number(record.fadeInSec);
+  const fadeOutSec = Number(record.fadeOutSec);
+  return {
+    gainDb: Number.isFinite(gainDb) ? clamp(gainDb, -60, 0) : BATCH_BGM_DEFAULT_PARAMS.gainDb,
+    fadeInSec: Number.isFinite(fadeInSec) ? clamp(fadeInSec, 0, 30) : BATCH_BGM_DEFAULT_PARAMS.fadeInSec,
+    fadeOutSec: Number.isFinite(fadeOutSec) ? clamp(fadeOutSec, 0, 30) : BATCH_BGM_DEFAULT_PARAMS.fadeOutSec,
+  };
+}
+
 /**
  * 解析成片分配的 BGM:只读冻结曲库池(锁定时快照),校验相对路径安全、
  * 文件存在且内容指纹与冻结池一致。曲库池缺失或曲目不在池中时视为分配异常;
@@ -706,14 +739,16 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[silence]`);
     if (bgm && bgmInput != null) {
       // 混音链:响度归一化 → 增益 → 裁到成片时长 → 淡入淡出 → 与口播 amix。
-      const fadeInSec = Math.min(1.0, targetDurationSec);
-      const fadeOutSec = Math.min(1.5, targetDurationSec);
+      // 音量/淡入/淡出来自锁定快照(整批统一),渲染只读不重选。
+      const bgmParams = resolveBatchBgmParams(snapshot.versionDefaultsJson);
+      const fadeInSec = Math.min(bgmParams.fadeInSec, targetDurationSec);
+      const fadeOutSec = Math.min(bgmParams.fadeOutSec, targetDurationSec);
       const fadeStartSec = Math.max(0, targetDurationSec - fadeOutSec);
       const fades = [
         fadeInSec > 0 ? `afade=t=in:st=0:d=${fadeInSec.toFixed(6)}` : '',
         fadeOutSec > 0 ? `afade=t=out:st=${fadeStartSec.toFixed(6)}:d=${fadeOutSec.toFixed(6)}` : '',
       ].filter(Boolean).join(',');
-      filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=-18dB,atrim=duration=${targetDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${targetDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
       filters.push(`[${voiceLabel}][music]amix=inputs=2:duration=longest:dropout_transition=0,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[aout]`);
     } else {
       filters.push(`[${voiceLabel}]anull[aout]`);

@@ -16,11 +16,13 @@ import {
   getProjectScript,
   getScriptSnapshot,
   listProjectScripts,
+  parseStoredNarrationConfig,
   saveExternalScriptAsProjectScript,
   listScriptSnapshots,
   snapshotScriptIntoBatch,
   updateBatchExternalScript,
   updateProjectScript,
+  updateProjectScriptNarrationConfig,
 } from '../lib/batch-production/scripts.ts';
 
 function createLegacyDatabase(root: string, name: string): { db: Database.Database; databasePath: string } {
@@ -271,6 +273,37 @@ try {
     '批次开始后不得向既有批次版本追加脚本快照',
   );
   assert.equal(listScriptSnapshots(db, version2).length, 0);
+
+  // --- 配音配置按脚本单独存储(FR-S2-14) ---
+  db.exec(`
+    CREATE TABLE final_edit_tts_providers (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, baseUrl TEXT NOT NULL,
+      apiKey TEXT NOT NULL DEFAULT '', keyEnv TEXT NOT NULL DEFAULT '', model TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1, isBuiltin INTEGER NOT NULL DEFAULT 1,
+      createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+    );
+    INSERT INTO final_edit_tts_providers
+      (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
+    VALUES ('vapi-qwen3-tts', 'V-API Qwen3 TTS Flash', 'vapi-qwen-json-url', 'https://api.v3.cm', 'k', '', 'qwen3-tts-flash', 1, 1, datetime('now'), datetime('now'));
+  `);
+  updateProjectScriptNarrationConfig(db, 'project-1', scriptId, { providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1.3 }, () => new Date('2026-08-02T10:00:00.000Z'));
+  const stored = parseStoredNarrationConfig(getProjectScript(db, 'project-1', scriptId)?.narrationConfigJson);
+  assert.deepEqual(stored, { providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1.3 }, '配音配置必须按脚本单独持久化');
+  assert.throws(
+    () => updateProjectScriptNarrationConfig(db, 'project-1', scriptId, { providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 3 }),
+    /0\.5x–2\.0x/,
+    '语速超出 0.5–2.0 范围必须拒绝',
+  );
+  assert.throws(
+    () => updateProjectScriptNarrationConfig(db, 'project-1', scriptId, { providerId: 'missing-provider', voice: 'Cherry', speed: 1 }),
+    /供应商/,
+    '未启用的配音供应商必须拒绝',
+  );
+  assert.throws(
+    () => updateProjectScriptNarrationConfig(db, 'project-1', externalId, { providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+    /项目脚本不存在/,
+    '外部文案不能通过项目脚本配置接口修改',
+  );
 
   db.close();
   console.log('batch domain scripts tests passed');

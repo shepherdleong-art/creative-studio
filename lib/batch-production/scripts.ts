@@ -232,6 +232,69 @@ export function updateProjectScript(
   }
 }
 
+export interface BatchNarrationConfig {
+  providerId: string;
+  voice: string;
+  speed: number;
+}
+
+/**
+ * 更新项目脚本的口播配置(服务商/音色/语速),按脚本单独存储。
+ * 批次快照会在确认时冻结这份配置;开跑刷新也会把最新配置带进快照,
+ * 因此同一脚本的 N 条成片共用同一音色,改动只影响该脚本。
+ */
+export function updateProjectScriptNarrationConfig(
+  db: Database.Database,
+  projectId: string,
+  scriptId: string,
+  config: BatchNarrationConfig,
+  now?: () => Date,
+): void {
+  if (!config.providerId || !config.voice) {
+    throw new Error('配音配置必须包含服务商与音色');
+  }
+  const speed = Number(config.speed);
+  if (!Number.isFinite(speed) || speed < 0.5 || speed > 2) {
+    throw new Error('语速必须在 0.5x–2.0x 之间');
+  }
+  const provider = db.prepare(`
+    SELECT id FROM final_edit_tts_providers WHERE id = ? AND enabled = 1
+  `).get(config.providerId) as { id: string } | undefined;
+  if (!provider) {
+    throw new Error('口播配音供应商未启用或不存在');
+  }
+  const result = db.prepare(`
+    UPDATE batch_scripts
+    SET narrationConfigJson = ?, updatedAt = ?
+    WHERE id = ? AND projectId = ? AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
+  `).run(
+    JSON.stringify({ providerId: config.providerId, voice: config.voice, speed }),
+    nowIso(now),
+    scriptId,
+    projectId,
+  );
+  if (result.changes === 0) {
+    throw new Error('项目脚本不存在');
+  }
+}
+
+/** 从脚本行的 narrationConfigJson 解析出可用的配音配置;无配置或损坏时返回 null。 */
+export function parseStoredNarrationConfig(raw: string | null | undefined): BatchNarrationConfig | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const providerId = typeof record.providerId === 'string' ? record.providerId : '';
+    const voice = typeof record.voice === 'string' ? record.voice : '';
+    const speed = typeof record.speed === 'number' && Number.isFinite(record.speed) ? record.speed : 1;
+    if (!providerId || !voice) return null;
+    return { providerId, voice, speed };
+  } catch {
+    return null;
+  }
+}
+
 /** 只修改所属批次版本内、尚未冻结的外部文案。 */
 export function updateBatchExternalScript(
   db: Database.Database,

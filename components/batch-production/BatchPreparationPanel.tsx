@@ -16,7 +16,11 @@ import {
 } from './BatchInputSelectionCards';
 import BatchProductionSidebar, { type BatchSidebarItem } from './BatchProductionSidebar';
 import BatchStepMaterials, { type AssetSelectionState, type VisionProviderView } from './BatchStepMaterials';
-import BatchStepScripts, { type OutputPresetLabel } from './BatchStepScripts';
+import BatchStepScripts, {
+  type BatchBgmParamsDraft,
+  type BatchTtsProviderView,
+  type OutputPresetLabel,
+} from './BatchStepScripts';
 import BatchStepReview, { type CardFilter } from './BatchStepReview';
 import BatchStepExport from './BatchStepExport';
 
@@ -59,7 +63,10 @@ interface PreviewAsset {
 
 interface TtsProviderView {
   id: string;
+  name: string;
+  model: string;
   configured: boolean;
+  voices: Array<{ id: string; label: string }>;
 }
 
 interface BatchPreparationPanelProps {
@@ -142,7 +149,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [previewAsset, setPreviewAsset] = useState<PreviewAsset | null>(null);
   const [visionProviders, setVisionProviders] = useState<VisionProviderView[]>([]);
   const [visionProviderId, setVisionProviderId] = useState('');
+  const [ttsProviders, setTtsProviders] = useState<BatchTtsProviderView[]>([]);
   const [ttsConfigured, setTtsConfigured] = useState(false);
+  const [bgmParams, setBgmParams] = useState<BatchBgmParamsDraft>({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
@@ -182,6 +191,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setPreparation(result);
       setBatches(batchResult.batches);
       setVisionProviders(providerResult);
+      setTtsProviders(ttsResult);
       setTtsConfigured(ttsResult.some((provider) => provider.configured));
       // 分析模型选择持久化:沿用上次显式选择;仅当该供应商已不存在或不再可用时才回落默认
       setVisionProviderId((current) => {
@@ -629,6 +639,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               preset: outputPreset,
               fps: 24,
               targetDurationSec: 15,
+              batchBgmParams: bgmParams,
             },
           }),
         },
@@ -1314,6 +1325,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               outputPlans={outputPlans}
               batchStatus={batchStatus}
               ttsConfigured={ttsConfigured}
+              ttsProviders={ttsProviders}
+              bgmParams={bgmParams}
+              onBgmParamsChange={(params) => {
+                setBgmParams(params);
+                markInputChanged();
+              }}
+              onNarrationConfigTouched={markInputChanged}
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
