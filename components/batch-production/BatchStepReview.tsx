@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
 
 export type CardFilter = 'all' | BatchWorkspaceView['cards'][number]['status'];
@@ -58,12 +59,21 @@ const FILTERS: Array<[CardFilter, string]> = [
 
 /**
  * 第 3 步 · 检查成片:统计条 + 状态筛选 + 卡片网格。
- * 卡片操作一律是按钮;默认只展示最新版本,版本历史数量就地标注。
+ * 卡片操作一律是按钮;默认只展示最新版本,可切换到历史版本查看(FR-S3-13/14)。
  */
 export default function BatchStepReview(props: BatchStepReviewProps) {
   const { workspace, cardFilter, onCardFilterChange, selectedPlanIds, onTogglePlan, phaseEBusy, onRetryRender, onReallocate, onControlBatch } = props;
   const visibleCards = workspace.cards.filter(({ status }) => cardFilter === 'all' || status === cardFilter);
   const { counts } = workspace;
+  // 每张卡片当前查看的成片版本(缺省 = 最新版本);切换只影响本卡的预览媒体
+  const [viewedVersionIds, setViewedVersionIds] = useState<Record<string, string>>({});
+
+  function mediaUrlFn(card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover', source: 'candidate' | 'artifact', outputVersionId: string | null): string | null {
+    if (!props.selectedBatchId) return null;
+    const params = new URLSearchParams({ projectId: props.projectId, kind, source });
+    if (outputVersionId) params.set('outputVersionId', outputVersionId);
+    return `/api/batch-production/batches/${encodeURIComponent(props.selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?${params.toString()}`;
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 p-2">
@@ -107,14 +117,22 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
 
       <div className="grid gap-4 lg:grid-cols-2">
         {visibleCards.map((card) => {
-          const mediaSource = card.candidate ? 'candidate' : card.currentVideo ? 'artifact' : null;
-          const mediaUrl = mediaSource && props.selectedBatchId
-            ? `/api/batch-production/batches/${encodeURIComponent(props.selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(props.projectId)}&kind=video&source=${mediaSource}`
+          const viewedVersionId = viewedVersionIds[card.planId] ?? card.versionId;
+          const viewedVersion = card.versions.find((version) => version.id === viewedVersionId) ?? null;
+          const isCurrentView = !viewedVersionId || viewedVersionId === card.versionId;
+          const mediaSource = isCurrentView
+            ? (card.candidate ? 'candidate' : card.currentVideo ? 'artifact' : null)
+            : viewedVersion
+              ? (viewedVersion.hasCandidate ? 'candidate' : viewedVersion.hasArtifact ? 'artifact' : null)
+              : null;
+          const mediaUrl = mediaSource
+            ? mediaUrlFn(card, 'video', mediaSource, isCurrentView ? null : viewedVersionId)
             : null;
-          const coverSource = card.candidate?.coverAvailable ? 'candidate' : card.currentCover ? 'artifact' : null;
-          const coverUrl = coverSource && props.selectedBatchId
-            ? `/api/batch-production/batches/${encodeURIComponent(props.selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(props.projectId)}&kind=cover&source=${coverSource}`
-            : null;
+          const coverUrl = mediaSource && mediaSource === 'candidate'
+            ? mediaUrlFn(card, 'cover', 'candidate', isCurrentView ? null : viewedVersionId)
+            : mediaSource === 'artifact'
+              ? mediaUrlFn(card, 'cover', 'artifact', isCurrentView ? null : viewedVersionId)
+              : null;
           const progress = card.task?.progress as { phase?: string; percent?: number | null; description?: string } | null;
           const historyCount = Math.max(0, card.history.length > 0 ? card.history.length / 2 : 0);
           return (
@@ -142,10 +160,27 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                   {CARD_STATUS_LABELS[card.status]}
                 </span>
               </div>
+              {card.versions.length > 1 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-2">
+                  <span className="text-[11px] text-ink-tertiary">查看版本（默认最新）</span>
+                  <select
+                    aria-label={`成片 ${card.seq} 版本切换`}
+                    value={viewedVersionId ?? ''}
+                    onChange={(event) => setViewedVersionIds((current) => ({ ...current, [card.planId]: event.target.value }))}
+                    className="h-8 max-w-32 rounded-lg border border-hairline bg-white px-2 text-xs text-ink"
+                  >
+                    {card.versions.map((version) => (
+                      <option key={version.id} value={version.id} disabled={!version.hasCandidate && !version.hasArtifact}>
+                        v{version.versionNumber}{!version.hasCandidate && !version.hasArtifact ? '（无预览）' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {(mediaUrl || coverUrl) && (
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
                   {mediaUrl && (
-                    <video key={`${card.versionId}-${mediaSource}`} controls preload="metadata" className="aspect-video w-full rounded-xl bg-black" data-testid={`batch-output-preview-${card.planId}`}>
+                    <video key={`${viewedVersionId}-${mediaSource}`} controls preload="metadata" className="aspect-video w-full rounded-xl bg-black" data-testid={`batch-output-preview-${card.planId}`}>
                       <source src={mediaUrl} type="video/mp4" />
                     </video>
                   )}

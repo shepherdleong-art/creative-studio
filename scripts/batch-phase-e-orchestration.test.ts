@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { createAsset, createAnalysisVersion } from '../lib/batch-production/assets.ts';
 import { computeFingerprintFromFile } from '../lib/batch-production/fingerprint.ts';
-import { createOutputPlansForSnapshot } from '../lib/batch-production/plans.ts';
+import { createOutputPlansForSnapshot, createOutputVersion } from '../lib/batch-production/plans.ts';
+import { createBatchTask } from '../lib/batch-production/tasks.ts';
 import {
   publishSelectedBatchOutputs,
   reallocateAndScheduleOutput,
@@ -321,6 +322,43 @@ try {
     (db.prepare(`SELECT COUNT(*) AS n FROM batch_artifacts WHERE outputPlanId = ?`).get(publishPlanId) as { n: number }).n,
     4,
     '最新分配已阻塞时不得绕过门禁重复发布旧候选',
+  );
+
+  // 历史版本媒体(FR-S3-14):为计划新建 v2 并伪造成功渲染,可按 outputVersionId 读取任一版本
+  const historicalPlanId = planIds[0];
+  const historicalOldVersion = (db.prepare(`SELECT currentVersionId FROM batch_output_plans WHERE id = ?`).get(historicalPlanId) as { currentVersionId: string }).currentVersionId;
+  const historicalNewVersion = createOutputVersion(db, historicalPlanId, { arrangementJson: { clips: [] } });
+  const historicalTaskId = createBatchTask(db, 'project-1', {
+    batchId,
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: historicalNewVersion,
+    requestKey: `render:${historicalNewVersion}:historical-fixture`,
+  });
+  db.prepare(`
+    INSERT INTO batch_task_attempts
+      (id, taskId, attemptNumber, status, progressJson, resultJson, startedAt, finishedAt, createdAt)
+    VALUES (?, ?, 1, 'succeeded', '{}', ?, ?, ?, ?)
+  `).run(
+    randomUUID(),
+    historicalTaskId,
+    JSON.stringify({
+      projectId: 'project-1', batchId, batchVersionId: versionId, planId: historicalPlanId,
+      outputVersionId: historicalNewVersion, planSeq: 1, outputVersionNumber: 2,
+      videoRelativePath, coverRelativePath, videoChecksum, coverChecksum, durationUs: 4_000_000,
+      audioMode: 'narration', productionReady: true,
+    }),
+    new Date().toISOString(), new Date().toISOString(), new Date().toISOString(),
+  );
+  db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(historicalTaskId);
+  const oldVersionMedia = resolveBatchOutputMedia(db, 'project-1', batchId, historicalPlanId, 'video', 'candidate', storageRoot, historicalOldVersion);
+  assert.equal(oldVersionMedia.absolutePath, videoPath, '按 outputVersionId 必须能读取历史版本的候选媒体');
+  const newVersionMedia = resolveBatchOutputMedia(db, 'project-1', batchId, historicalPlanId, 'video', 'candidate', storageRoot, historicalNewVersion);
+  assert.equal(newVersionMedia.absolutePath, videoPath, '新版本的候选媒体同样可读');
+  assert.throws(
+    () => resolveBatchOutputMedia(db, 'project-1', batchId, historicalPlanId, 'video', 'candidate', storageRoot, 'ghost-version'),
+    /版本不存在/,
+    '指定不存在的版本必须拒绝',
   );
 
   db.close();

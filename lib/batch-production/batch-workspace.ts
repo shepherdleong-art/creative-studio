@@ -48,6 +48,13 @@ export interface BatchWorkspaceCandidateView {
   coverAvailable: boolean;
 }
 
+export interface BatchOutputVersionListItem {
+  id: string;
+  versionNumber: number;
+  hasCandidate: boolean;
+  hasArtifact: boolean;
+}
+
 export interface BatchOutputCardView {
   planId: string;
   seq: number;
@@ -55,6 +62,8 @@ export interface BatchOutputCardView {
   scriptTitle: string;
   versionId: string | null;
   versionNumber: number | null;
+  /** 该计划全部成片版本(按版本号倒序),供历史版本切换 */
+  versions: BatchOutputVersionListItem[];
   status: BatchOutputCardStatus;
   nextAction: string;
   exportable: boolean;
@@ -250,6 +259,31 @@ export function getBatchWorkspace(
 
   const cards = plans.map((plan): BatchOutputCardView => {
     const arrangement = parseJson(plan.arrangementJson);
+    const versionRows = db.prepare(`
+      SELECT o.id, o.versionNumber,
+        EXISTS(
+          SELECT 1 FROM batch_tasks t
+          WHERE t.targetKind = 'output_version' AND t.targetId = o.id
+            AND t.workType = 'render' AND t.status = 'succeeded'
+        ) AS hasCandidate,
+        EXISTS(
+          SELECT 1 FROM batch_artifacts a WHERE a.outputVersionId = o.id
+        ) AS hasArtifact
+      FROM batch_output_versions o
+      WHERE o.planId = ?
+      ORDER BY o.versionNumber DESC
+    `).all(plan.id) as Array<{
+      id: string;
+      versionNumber: number;
+      hasCandidate: number;
+      hasArtifact: number;
+    }>;
+    const versions: BatchOutputVersionListItem[] = versionRows.map(({ id, versionNumber, hasCandidate, hasArtifact }) => ({
+      id,
+      versionNumber,
+      hasCandidate: hasCandidate === 1,
+      hasArtifact: hasArtifact === 1,
+    }));
     const latestAllocationOutput = allocationOutput(allocationReport, plan.id);
     const latestArrangement = latestAllocationOutput && typeof latestAllocationOutput === 'object' && !Array.isArray(latestAllocationOutput)
       ? (latestAllocationOutput as Record<string, unknown>).arrangement
@@ -330,6 +364,7 @@ export function getBatchWorkspace(
       scriptTitle: plan.scriptTitle,
       versionId: plan.currentVersionId,
       versionNumber: plan.versionNumber,
+      versions,
       status: state.status,
       nextAction: state.nextAction,
       exportable: Boolean(currentVideo),

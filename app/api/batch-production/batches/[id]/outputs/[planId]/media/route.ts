@@ -81,6 +81,7 @@ export async function GET(
   }
   const kind = request.nextUrl.searchParams.get('kind') ?? 'video';
   const source = request.nextUrl.searchParams.get('source') ?? 'candidate';
+  const outputVersionId = request.nextUrl.searchParams.get('outputVersionId') ?? undefined;
   if ((kind !== 'video' && kind !== 'cover') || (source !== 'candidate' && source !== 'artifact')) {
     return NextResponse.json({ error: 'invalid_media_query', message: 'kind 或 source 参数无效' }, {
       status: 400,
@@ -89,7 +90,7 @@ export async function GET(
   }
   try {
     await assertBatchApiReady();
-    const media = resolveBatchOutputMedia(getDb(), projectId, batchId, planId, kind, source);
+    const media = resolveBatchOutputMedia(getDb(), projectId, batchId, planId, kind, source, undefined, outputVersionId);
     return serveMedia(request, media.absolutePath, media.contentType, {
       'X-Batch-Media-Source': media.source,
       'X-Batch-Production-Ready': media.productionReady ? '1' : '0',

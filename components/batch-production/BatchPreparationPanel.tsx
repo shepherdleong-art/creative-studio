@@ -18,6 +18,9 @@ import BatchProductionSidebar, { type BatchSidebarItem } from './BatchProduction
 import BatchStepMaterials, { type AssetSelectionState, type VisionProviderView } from './BatchStepMaterials';
 import BatchStepScripts, {
   type BatchBgmParamsDraft,
+  type BatchBgmTrackView,
+  type BatchMusicSelectionDraft,
+  type BatchProgressView,
   type BatchTtsProviderView,
   type OutputPresetLabel,
 } from './BatchStepScripts';
@@ -152,6 +155,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [ttsProviders, setTtsProviders] = useState<BatchTtsProviderView[]>([]);
   const [ttsConfigured, setTtsConfigured] = useState(false);
   const [bgmParams, setBgmParams] = useState<BatchBgmParamsDraft>({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
+  const [bgmLibrary, setBgmLibrary] = useState<BatchBgmTrackView[]>([]);
+  const [bgmRescanning, setBgmRescanning] = useState(false);
+  const [bgmSelection, setBgmSelection] = useState<BatchMusicSelectionDraft>({ mode: 'auto', trackIds: [] });
+  const [batchTasks, setBatchTasks] = useState<BatchTasksView['tasks']>([]);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
@@ -357,10 +364,46 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     setPreviewInfos(Object.fromEntries(entries));
   }, [projectId]);
 
+  const loadBgmLibrary = useCallback(async () => {
+    try {
+      const result = await readJson<{ tracks: BatchBgmTrackView[] }>(await fetch(
+        '/api/batch-production/bgm',
+        { cache: 'no-store' },
+      ));
+      setBgmLibrary(result.tracks);
+      setBgmSelection((current) => ({
+        mode: current.mode,
+        trackIds: current.trackIds.filter((id) => result.tracks.some((track) => track.id === id)),
+      }));
+    } catch {
+      // 曲库读取失败不阻塞其他功能,保留上一次的列表。
+    }
+  }, []);
+
+  const rescanBgmLibrary = useCallback(async () => {
+    setBgmRescanning(true);
+    try {
+      const result = await readJson<{ tracks: BatchBgmTrackView[] }>(await fetch('/api/batch-production/bgm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-creative-studio-action': 'rescan' },
+      }));
+      setBgmLibrary(result.tracks);
+      setBgmSelection((current) => ({
+        mode: current.mode,
+        trackIds: current.trackIds.filter((id) => result.tracks.some((track) => track.id === id)),
+      }));
+      setFeedback({ kind: 'success', message: `曲库重新扫描完成，共 ${result.tracks.length} 首。` });
+    } catch (rescanError) {
+      setFeedback({ kind: 'error', message: rescanError instanceof Error ? rescanError.message : '曲库重新扫描失败' });
+    } finally {
+      setBgmRescanning(false);
+    }
+  }, []);
+
   useEffect(() => {
-    const timer = window.setTimeout(() => { void load(); void loadLuts(); void loadCacheUsage(); }, 0);
+    const timer = window.setTimeout(() => { void load(); void loadLuts(); void loadCacheUsage(); void loadBgmLibrary(); }, 0);
     return () => window.clearTimeout(timer);
-  }, [load, loadLuts, loadCacheUsage]);
+  }, [load, loadLuts, loadCacheUsage, loadBgmLibrary]);
 
   useEffect(() => {
     if (!selectedBatchId) return;
@@ -377,20 +420,95 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }, [selectedBatchId, loadProxyTasks, proxyTasks, assetPrepareTasks]);
 
   useEffect(() => {
+    if (!selectedBatchId) return;
     const initial = window.setTimeout(() => void loadWorkspace(selectedBatchId), 0);
-    if (!selectedBatchId) return () => window.clearTimeout(initial);
+    // 只在还有进行中任务时轮询(全部结束后停止,避免无谓重渲染导致画面闪烁)
+    const processing = (workspace?.counts.processing ?? 0) > 0;
+    if (!processing) return () => window.clearTimeout(initial);
     const interval = window.setInterval(() => void loadWorkspace(selectedBatchId), 3_000);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(interval);
     };
-  }, [selectedBatchId, loadWorkspace]);
+  }, [selectedBatchId, loadWorkspace, workspace]);
 
   useEffect(() => {
     if (!selectedBatchId) return;
     const timer = window.setTimeout(() => void loadBatchDetail(selectedBatchId), 0);
     return () => window.clearTimeout(timer);
   }, [loadBatchDetail, selectedBatchId]);
+
+  const loadBatchTasks = useCallback(async (batchId: string) => {
+    if (!batchId) {
+      setBatchTasks([]);
+      return;
+    }
+    try {
+      const view = await readJson<BatchTasksView>(await fetch(
+        `/api/batch-production/batches/${encodeURIComponent(batchId)}/tasks?projectId=${encodeURIComponent(projectId)}`,
+        { cache: 'no-store' },
+      ));
+      setBatchTasks(view.tasks);
+    } catch {
+      // 任务列表读取失败保留上一次结果,下一轮轮询自动重试。
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!selectedBatchId) return;
+    const initial = window.setTimeout(() => void loadBatchTasks(selectedBatchId), 0);
+    // 与 workspace 轮询同条件:有进行中任务或批次仍在生产时持续刷新,结束后自动停止。
+    const processing = (workspace?.counts.processing ?? 0) > 0 || batchStatus === 'running';
+    if (!processing) return () => window.clearTimeout(initial);
+    const interval = window.setInterval(() => void loadBatchTasks(selectedBatchId), 3_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [selectedBatchId, loadBatchTasks, workspace, batchStatus]);
+
+  const progressView = useMemo<BatchProgressView | null>(() => {
+    if (!['running', 'partially_completed', 'completed', 'failed'].includes(batchStatus)) return null;
+    const narration = batchTasks.filter((task) => task.workType === 'narration');
+    const renders = batchTasks.filter((task) => task.workType === 'render');
+    const renderSucceeded = renders.filter((task) => task.status === 'succeeded').length;
+    const renderFailed = renders.filter((task) => task.status === 'failed').length;
+    const renderActive = renders.filter((task) => task.status === 'running' || task.status === 'queued').length;
+    const narrationSucceeded = narration.filter((task) => task.status === 'succeeded').length;
+    const narrationFailed = narration.filter((task) => task.status === 'failed').length;
+    const narrationActive = narration.filter((task) => task.status === 'running' || task.status === 'queued').length;
+    const allocationDone = workspace?.allocationReport != null || (workspace?.cards.length ?? 0) > 0;
+    const startedAtMs = batchTasks.length > 0
+      ? Math.min(...batchTasks.map((task) => new Date(task.createdAt).getTime()))
+      : null;
+    const totalRenders = renders.length;
+    const stage = (label: string, status: BatchProgressView['stages'][number]['status'], detail?: string, percent?: number) => ({ label, status, detail, percent });
+    return {
+      overallPercent: totalRenders > 0 ? renderSucceeded / totalRenders : 0,
+      elapsedSec: startedAtMs ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)) : 0,
+      stages: [
+        stage('锁定设置', 'done'),
+        stage('自动配画面', allocationDone ? 'done' : 'running'),
+        stage(
+          '生成口播',
+          narration.length === 0 ? 'waiting' : narrationFailed > 0 ? 'failed' : narrationActive > 0 ? 'running' : 'done',
+          narration.length > 0 ? `${narrationSucceeded}/${narration.length}` : undefined,
+          narration.length > 0 ? narrationSucceeded / narration.length : undefined,
+        ),
+        stage(
+          '渲染成片',
+          renders.length === 0 ? 'waiting' : renderFailed > 0 ? 'failed' : renderActive > 0 ? 'running' : 'done',
+          totalRenders > 0 ? `${renderSucceeded}/${totalRenders}` : undefined,
+          totalRenders > 0 ? renderSucceeded / totalRenders : undefined,
+        ),
+        stage(
+          '生成封面',
+          totalRenders === 0 ? 'waiting' : renderSucceeded === totalRenders && renderFailed === 0 ? 'done' : 'running',
+          totalRenders > 0 ? `${renderSucceeded}/${totalRenders}` : undefined,
+        ),
+      ],
+    };
+  }, [batchStatus, batchTasks, workspace]);
 
   const currentBatch = batches.find(({ id }) => id === selectedBatchId);
   const currentVersionId = currentBatch?.currentVersionId ?? null;
@@ -465,6 +583,23 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       id: asset.id,
       title: asset.media.displayName || asset.media.filename || '视频素材',
       url: asset.previewUrl,
+    });
+  }
+
+  function previewUrl(assetId: string): string {
+    if (!selectedBatchId || !currentVersionId) return '';
+    return `/api/batch-production/preview/${encodeURIComponent(assetId)}?projectId=${encodeURIComponent(projectId)}`
+      + `&batchId=${encodeURIComponent(selectedBatchId)}&batchVersionId=${encodeURIComponent(currentVersionId)}`;
+  }
+
+  function openPreparedAssetPreview(assetId: string): void {
+    const asset = preparation?.assets.find((item) => item.id === assetId);
+    const url = previewUrl(assetId);
+    if (!asset || !url) return;
+    setPreviewAsset({
+      id: assetId,
+      title: asset.media.displayName || asset.media.filename || '视频素材',
+      url,
     });
   }
 
@@ -640,6 +775,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               fps: 24,
               targetDurationSec: 15,
               batchBgmParams: bgmParams,
+              batchMusicSelection: bgmSelection,
             },
           }),
         },
@@ -1023,6 +1159,43 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
+  // useCallback + 稳定的 previewInfos 依赖:轮询重渲染期间保持徽标引用稳定,
+  // 避免素材卡因徽标变化而整卡重渲染(分析时的画面闪烁)。
+  const renderPreviewBadge = useCallback((assetId: string) => {
+    const info = previewInfos[assetId];
+    if (!info) return null;
+    if (info.kind === 'unavailable') {
+      return <p className="text-xs text-fail">{info.warning ?? '预览不可用'}</p>;
+    }
+    const badges: Array<{ text: string; tone: string }> = [];
+    if (info.kind === 'proxy') {
+      badges.push({ text: '低清预览片', tone: 'bg-ok/10 text-ok' });
+      if (!info.originalOnline) {
+        badges.push({ text: '原片离线', tone: 'bg-fail/10 text-fail' });
+      }
+    } else if (info.kind === 'original_pending_lut') {
+      badges.push({ text: '原片预览', tone: 'bg-warn/20 text-warn' });
+      badges.push({ text: 'LUT 代理未就绪', tone: 'bg-warn/20 text-warn' });
+    } else {
+      badges.push({ text: '原片预览', tone: 'bg-surface-subtle text-ink-secondary' });
+    }
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {badges.map((badge) => (
+            <span key={badge.text} className={`rounded-full px-2 py-0.5 text-[11px] ${badge.tone}`}>{badge.text}</span>
+          ))}
+          {info.kind === 'proxy' && !info.originalOnline && (
+            <span className="text-[11px] text-fail">正式导出不可用</span>
+          )}
+        </div>
+        {info.kind === 'proxy' && !info.originalOnline && (
+          <p className="text-xs text-fail">原片离线，当前播放已生成的代理；正式导出仍要求原片在线且内容指纹一致。</p>
+        )}
+      </div>
+    );
+  }, [previewInfos]);
+
   if (loading) {
     return <div className="card p-8 text-center text-sm text-ink-secondary">正在同步项目脚本和素材…</div>;
   }
@@ -1065,41 +1238,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         return next;
       }, { ...current });
     });
-  }
-
-  function renderPreviewBadge(assetId: string) {
-    const info = previewInfos[assetId];
-    if (!info) return null;
-    if (info.kind === 'unavailable') {
-      return <p className="text-xs text-fail">{info.warning ?? '预览不可用'}</p>;
-    }
-    const badges: Array<{ text: string; tone: string }> = [];
-    if (info.kind === 'proxy') {
-      badges.push({ text: '低清预览片', tone: 'bg-ok/10 text-ok' });
-      if (!info.originalOnline) {
-        badges.push({ text: '原片离线', tone: 'bg-fail/10 text-fail' });
-      }
-    } else if (info.kind === 'original_pending_lut') {
-      badges.push({ text: '原片预览', tone: 'bg-warn/20 text-warn' });
-      badges.push({ text: 'LUT 代理未就绪', tone: 'bg-warn/20 text-warn' });
-    } else {
-      badges.push({ text: '原片预览', tone: 'bg-surface-subtle text-ink-secondary' });
-    }
-    return (
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          {badges.map((badge) => (
-            <span key={badge.text} className={`rounded-full px-2 py-0.5 text-[11px] ${badge.tone}`}>{badge.text}</span>
-          ))}
-          {info.kind === 'proxy' && !info.originalOnline && (
-            <span className="text-[11px] text-fail">正式导出不可用</span>
-          )}
-        </div>
-        {info.kind === 'proxy' && !info.originalOnline && (
-          <p className="text-xs text-fail">原片离线，当前播放已生成的代理；正式导出仍要求原片在线且内容指纹一致。</p>
-        )}
-      </div>
-    );
   }
 
   const selectBatch = (batchId: string) => {
@@ -1273,6 +1411,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onImportLutFile={(file) => void importLutFile(file)}
               onResync={() => void load()}
               onPreviewAsset={openAssetPreview}
+              onPreviewFrozenAsset={openPreparedAssetPreview}
               onToggleAssetExclusion={(assetId, excluded) => void toggleAssetExclusion(assetId, excluded)}
               onStartBatch={() => void startBatch()}
               onCreateVersionFromCurrent={() => {
@@ -1327,14 +1466,23 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               ttsConfigured={ttsConfigured}
               ttsProviders={ttsProviders}
               bgmParams={bgmParams}
+              bgmLibrary={bgmLibrary}
+              bgmRescanning={bgmRescanning}
+              bgmSelection={bgmSelection}
               onBgmParamsChange={(params) => {
                 setBgmParams(params);
+                markInputChanged();
+              }}
+              onRescanBgm={() => void rescanBgmLibrary()}
+              onBgmSelectionChange={(selection) => {
+                setBgmSelection(selection);
                 markInputChanged();
               }}
               onNarrationConfigTouched={markInputChanged}
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
+              progress={progressView}
             />
           );
         }

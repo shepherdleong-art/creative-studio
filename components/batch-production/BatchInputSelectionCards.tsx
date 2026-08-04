@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { PrepareAssetView, PrepareScriptView, PrepareSourceView } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
@@ -151,7 +151,7 @@ export function BatchFrozenScriptCard({
   );
 }
 
-export function BatchAssetSelectionCard({
+export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   asset,
   selected,
   onSelectedChange,
@@ -353,7 +353,7 @@ export function BatchAssetSelectionCard({
                   type="button"
                   className="btn-secondary h-9 self-end px-3 text-xs"
                   disabled={proxyBusy}
-                  onClick={onRequestProxy}
+                   onClick={onRequestProxy}
                 >{proxyBusy ? '请求中…' : '为当前素材生成代理'}</button>
               )}
             </div>
@@ -363,4 +363,4 @@ export function BatchAssetSelectionCard({
       </div>
     </article>
   );
-}
+});

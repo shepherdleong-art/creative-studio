@@ -20,6 +20,29 @@ export interface BatchBgmParamsDraft {
   fadeOutSec: number;
 }
 
+export interface BatchBgmTrackView {
+  id: string;
+  relativePath: string;
+  filename: string;
+  durationUs: number;
+}
+
+export interface BatchMusicSelectionDraft {
+  mode: 'auto' | 'manual';
+  trackIds: string[];
+}
+
+export interface BatchProgressView {
+  overallPercent: number;
+  elapsedSec: number;
+  stages: Array<{
+    label: string;
+    status: 'waiting' | 'running' | 'done' | 'failed';
+    detail?: string;
+    percent?: number;
+  }>;
+}
+
 export interface BatchStepScriptsProps {
   prep: BatchPreparationResult;
   selectedScripts: Record<string, number>;
@@ -35,12 +58,19 @@ export interface BatchStepScriptsProps {
   ttsConfigured: boolean;
   ttsProviders: BatchTtsProviderView[];
   bgmParams: BatchBgmParamsDraft;
+  bgmLibrary: BatchBgmTrackView[];
+  bgmRescanning: boolean;
+  bgmSelection: BatchMusicSelectionDraft;
   onBgmParamsChange: (params: BatchBgmParamsDraft) => void;
+  onRescanBgm: () => void;
+  onBgmSelectionChange: (selection: BatchMusicSelectionDraft) => void;
   /** 配音配置变化时通知容器标记输入已修改 */
   onNarrationConfigTouched: () => void;
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
   inputChangedWarning: boolean;
+  /** 开跑后的分阶段进度(锁定→配画面→口播→渲染→封面);未开跑时为 null */
+  progress: BatchProgressView | null;
 }
 
 export interface OutputPresetLabel {
@@ -90,11 +120,17 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     ttsConfigured,
     ttsProviders,
     bgmParams,
+    bgmLibrary,
+    bgmRescanning,
+    bgmSelection,
     onBgmParamsChange,
+    onRescanBgm,
+    onBgmSelectionChange,
     onNarrationConfigTouched,
     onConfirmSnapshot,
     onStartBatch,
     inputChangedWarning,
+    progress,
   } = props;
 
   const configuredProvider = useMemo(
@@ -120,6 +156,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [voiceQuery, setVoiceQuery] = useState<Record<string, string>>({});
   const [showAllVoices, setShowAllVoices] = useState<Record<string, boolean>>({});
   const [previewing, setPreviewing] = useState<Record<string, string | null>>({});
+  const [bgmListOpen, setBgmListOpen] = useState(false);
+  const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
+  const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
   const saveQueueRef = useRef<Record<string, Promise<void>>>({});
 
   const scriptCount = Object.keys(selectedScripts).length;
@@ -133,7 +172,93 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         ? '批次已开始生产'
         : !ttsConfigured
           ? '尚未配置口播配音供应商，请在设置中配置'
-          : undefined;
+          : bgmLibrary.length === 0
+            ? '背景音乐曲库为空，请先放入音频并重新扫描'
+            : undefined;
+
+  function formatDuration(durationUs: number): string {
+    const totalSec = Math.max(0, Math.round(durationUs / 1_000_000));
+    const minutes = Math.floor(totalSec / 60);
+    const seconds = totalSec % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  function auditionBgm(trackId: string): void {
+    if (auditioningTrackId === trackId) {
+      auditionAudioRef.current?.pause();
+      setAuditioningTrackId(null);
+      return;
+    }
+    auditionAudioRef.current?.pause();
+    const audio = new Audio(`/api/final-edit-bgm/${encodeURIComponent(trackId)}/file`);
+    auditionAudioRef.current = audio;
+    setAuditioningTrackId(trackId);
+    audio.addEventListener('ended', () => setAuditioningTrackId(null), { once: true });
+    audio.addEventListener('error', () => setAuditioningTrackId(null), { once: true });
+    void audio.play();
+  }
+
+  function renderBgmSection() {
+    const manualCount = bgmSelection.mode === 'manual' ? bgmSelection.trackIds.length : 0;
+    return (
+      <div className="border-t border-hairline pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-ink">背景音乐</p>
+            <p className="mt-1 text-xs text-ink-secondary">
+              {bgmLibrary.length === 0
+                ? '曲库为空 —— 请把音频文件放进 storage/bgm/ 文件夹后点击重新扫描（与单条模式共用曲库，无需导入）'
+                : manualCount > 0
+                  ? `已指定 ${manualCount} 首 · ${plannedCount} 条成片轮流使用`
+                  : `曲库 ${bgmLibrary.length} 首 · ${plannedCount} 条成片将自动分配`}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={bgmRescanning} onClick={onRescanBgm}>
+              {bgmRescanning ? '扫描中…' : '重新扫描'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary h-8 px-3 text-xs"
+              disabled={bgmLibrary.length === 0}
+              onClick={() => setBgmListOpen((value) => !value)}
+            >{bgmListOpen ? '收起曲目' : '曲目（可手动指定）'}</button>
+          </div>
+        </div>
+        {bgmListOpen && bgmLibrary.length > 0 && (
+          <ul className="mt-3 grid gap-1.5 sm:grid-cols-2">
+            {bgmLibrary.map((track) => (
+              <li key={track.id} className="flex items-center gap-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
+                <input
+                  type="checkbox"
+                  aria-label={`手动指定 ${track.filename}`}
+                  checked={bgmSelection.trackIds.includes(track.id)}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    const trackIds = checked
+                      ? [...new Set([...bgmSelection.trackIds, track.id])]
+                      : bgmSelection.trackIds.filter((id) => id !== track.id);
+                    onBgmSelectionChange({ mode: trackIds.length > 0 ? 'manual' : 'auto', trackIds });
+                  }}
+                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                />
+                <span className="min-w-0 flex-1 truncate text-ink-secondary" title={track.filename}>{track.filename}</span>
+                <span className="shrink-0 text-ink-tertiary">{formatDuration(track.durationUs)}</span>
+                <button type="button" className="shrink-0 text-accent underline" onClick={() => auditionBgm(track.id)}>
+                  {auditioningTrackId === track.id ? '播放中…' : '试听'}
+                </button>
+              </li>
+            ))}
+            {bgmSelection.mode === 'manual' && bgmSelection.trackIds.length > 0 && (
+              <li className="flex items-center gap-2 rounded-xl bg-accent/5 px-3 py-2 text-[11px] text-ink-secondary">
+                已手动指定 {bgmSelection.trackIds.length} 首，成片只在这几首之间轮流使用；取消全部勾选恢复自动分配。
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
+    );
+  }
 
   async function persistConfig(scriptId: string, config: NarrationConfigDraft): Promise<void> {
     const queued = saveQueueRef.current[scriptId] ?? Promise.resolve();
@@ -429,6 +554,49 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         </div>
       )}
 
+      {progress && (
+        <section className="card space-y-3 p-5" aria-label="批量生产进度">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-ink">生产进度</h3>
+              <p className="mt-1 text-xs text-ink-secondary">
+                已用时 {Math.floor(progress.elapsedSec / 60)} 分 {progress.elapsedSec % 60} 秒 · 刷新页面不丢失进度
+              </p>
+            </div>
+            <div className="w-40">
+              <div className="h-2 overflow-hidden rounded-full bg-surface-subtle" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.overallPercent * 100)}>
+                <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.round(progress.overallPercent * 100)}%` }} />
+              </div>
+              <p className="mt-1 text-right text-[11px] text-ink-tertiary">{Math.round(progress.overallPercent * 100)}%</p>
+            </div>
+          </div>
+          <ul className="space-y-1.5">
+            {progress.stages.map((stage) => (
+              <li key={stage.label} className="flex items-center gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
+                <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${
+                  stage.status === 'done' ? 'bg-ok/15 text-ok'
+                    : stage.status === 'failed' ? 'bg-fail/15 text-fail'
+                      : stage.status === 'running' ? 'bg-accent text-white'
+                        : 'bg-surface-subtle text-ink-tertiary'
+                }`}>
+                  {stage.status === 'done' ? '✓' : stage.status === 'failed' ? '!' : ''}
+                </span>
+                <span className={`flex-1 font-medium ${stage.status === 'running' ? 'text-accent' : stage.status === 'failed' ? 'text-fail' : stage.status === 'waiting' ? 'text-ink-tertiary' : 'text-ink'}`}>
+                  {stage.label}
+                </span>
+                {typeof stage.percent === 'number' && stage.status === 'running' && (
+                  <span className="shrink-0 text-ink-tertiary">{Math.round(stage.percent * 100)}%</span>
+                )}
+                <span className={`shrink-0 ${stage.status === 'failed' ? 'text-fail' : stage.status === 'waiting' ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>
+                  {stage.status === 'waiting' ? '等待' : stage.status === 'failed' ? '失败' : stage.status === 'running' ? '进行中' : '已完成'}
+                  {stage.detail ? ` · ${stage.detail}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {!frozen && (
         <section className="card space-y-4 p-5" aria-label="输出设置与开始">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -503,6 +671,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               </div>
             </label>
           </div>
+          {renderBgmSection()}
           {startDisabledReason && (
             <p className="text-xs text-warn">
               暂时无法开始：{startDisabledReason}

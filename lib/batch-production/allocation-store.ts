@@ -10,7 +10,7 @@ import {
 } from './allocator.ts';
 import { BatchDomainError } from './errors.ts';
 import { BATCH_ALLOCATION_RULE_VERSION } from './allocator.ts';
-import { readFrozenMusicPool } from './bgm.ts';
+import { resolveAllocationMusicTrackIds } from './bgm.ts';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -227,7 +227,7 @@ function buildFrozenInput(
   }
 
   const defaults = parseJson(version.defaultsJson);
-  const musicTrackIds = readFrozenMusicPool(defaults).map(({ trackId }) => trackId);
+  const musicTrackIds = resolveAllocationMusicTrackIds(defaults);
   const input: FrozenBatchInput = {
     projectId,
     batchId: owner.batchId,

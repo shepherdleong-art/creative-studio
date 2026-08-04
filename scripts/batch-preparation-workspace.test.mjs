@@ -63,13 +63,34 @@ assert.match(scripts, /配音供应商/);
 assert.match(scripts, /背景音乐音量/);
 assert.match(scripts, /淡入（秒）/);
 assert.match(scripts, /淡出（秒）/);
-// 第 3 步:按钮化操作 + 版本信息(FR-S3-08/13/15)
+// BGM 曲库区(FR-S2-40/41/42/44/47):空曲库提示 + 重新扫描 + 手动指定
+assert.match(scripts, /曲库为空 —— 请把音频文件放进 storage\/bgm\//);
+assert.match(scripts, /重新扫描/);
+assert.match(scripts, /曲目（可手动指定）/);
+assert.match(scripts, /手动指定/);
+assert.match(scripts, /成片将自动分配/);
+// 生产进度卡(FR-S2-30~34):阶段标签在状态容器里计算
+assert.match(scripts, /生产进度/);
+assert.match(scripts, /已用时/);
+assert.match(preparation, /锁定设置/);
+assert.match(preparation, /自动配画面/);
+assert.match(preparation, /生成口播/);
+assert.match(preparation, /渲染成片/);
+assert.match(preparation, /生成封面/);
+// 第 3 步:按钮化操作 + 版本信息 + 历史版本切换(FR-S3-08/13/14/15)
 assert.doesNotMatch(review, /只重新分配这一条/);
 assert.match(review, /换一批画面/);
 assert.match(review, /重新渲染/);
 assert.match(review, /另有 .* 个历史版本/);
+assert.match(review, /版本切换/);
+assert.match(review, /查看版本/);
 assert.match(review, /batch-output-cover-/);
 assert.match(review, /subtitleCueCount/);
+// 第 1 步:素材池最小高度 + 响应式列数 + 锁定后缩略图网格(FR-S1-11, 问题 1/2-B)
+assert.match(materials, /min-h-\[520px\]/);
+assert.match(materials, /sm:grid-cols-2 xl:grid-cols-3/);
+assert.match(materials, /已锁定素材列表/);
+assert.match(materials, /播放锁定素材/);
 assert.match(exportStep, /打开文件夹/);
 assert.match(exportStep, /已导出/);
 assert.match(selectionCards, /thumbnailUrl/);

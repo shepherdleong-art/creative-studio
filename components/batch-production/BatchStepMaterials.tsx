@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
@@ -52,6 +52,8 @@ export interface BatchStepMaterialsProps {
   onImportLutFile: (file: File) => void;
   onResync: () => void;
   onPreviewAsset: (asset: PrepareAssetCardView) => void;
+  /** 锁定后素材卡点击播放(走批次版本预览接口) */
+  onPreviewFrozenAsset: (assetId: string) => void;
   onToggleAssetExclusion: (assetId: string, excluded: boolean) => void;
   onStartBatch: () => void;
   onCreateVersionFromCurrent: () => void;
@@ -113,6 +115,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   const {
     prep,
     assetCards,
+    renderPreviewBadge,
     selectableAssets,
     allSelectableAssetsSelected,
     selectedAssets,
@@ -143,6 +146,12 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
 
   const analysisCandidates = (prep.assets ?? []).filter(({ status, currentAnalysisId }) => status === 'online' && !currentAnalysisId);
   const contentAnalysisCandidates = (prep.assets ?? []).filter(({ status, analysisLevel }) => status === 'online' && analysisLevel !== 'content');
+
+  // 徽标按素材缓存:轮询重渲染期间引用保持稳定,配合 memo 卡片避免整卡重渲染
+  const previewBadges = useMemo(
+    () => Object.fromEntries(assetCards.map((asset) => [asset.id, renderPreviewBadge(asset.id)])),
+    [assetCards, renderPreviewBadge],
+  );
 
   const proxyButtonsDisabled = !hasConfirmedVersion || proxyBatchBusy;
   const proxyButtonsBlockedByUnconfirmed = !inputConfirmed && hasConfirmedVersion;
@@ -221,38 +230,72 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
           )}
         </div>
         {frozen && (
-          <div className="tile p-4 text-sm text-ink-secondary">
-            <p className="font-medium text-ink">已锁定素材 · {Object.keys(selectedAssets).length} 条</p>
-            <ul className="mt-2 space-y-1 text-xs text-ink-tertiary">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]" aria-label="已锁定素材列表">
+            <p className="mb-2 px-1 text-sm font-medium text-ink">已锁定素材 · {Object.keys(selectedAssets).length} 条</p>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {Object.entries(selectedAssets).map(([assetId, selection]) => {
+                const asset = prep.assets.find((item) => item.id === assetId);
                 const exclusion = workspace?.exclusions.find((item) => item.assetId === assetId);
+                const displayName = asset?.media.displayName || asset?.media.filename || `素材 ${assetId.slice(0, 8)}`;
+                const lutName = selection.lutId ? luts.find((lut) => lut.id === selection.lutId)?.displayName : null;
                 return (
-                  <li key={assetId} className="flex flex-wrap items-center justify-between gap-2">
-                    <span>
-                      素材 {assetId.slice(0, 8)} · 分析版本 {selection.analysisId.slice(0, 8)}
-                      {selection.lutId && <> · 调色滤镜 {luts.find((lut) => lut.id === selection.lutId)?.displayName ?? selection.lutId.slice(0, 8)}</>}
-                      {exclusion && <> · 已排除:{exclusion.reason || '未填写原因'}</>}
-                    </span>
-                    {workspace && workspace.batch.controlState !== 'stopped' && (
-                      <button
-                        type="button"
-                        className="text-xs text-accent underline"
-                        disabled={phaseEBusy !== null}
-                        onClick={() => props.onToggleAssetExclusion(assetId, !exclusion)}
-                      >
-                        {phaseEBusy === `exclude:${assetId}` ? '处理中…' : exclusion ? '恢复参与分配' : '从后续分配排除'}
-                      </button>
-                    )}
-                  </li>
+                  <article key={assetId} className="overflow-hidden rounded-2xl border border-accent/30 bg-white shadow-sm">
+                    <button
+                      type="button"
+                      className="group relative block aspect-video w-full overflow-hidden bg-black text-left"
+                      aria-label={`播放锁定素材 ${displayName}`}
+                      onClick={() => props.onPreviewFrozenAsset(assetId)}
+                    >
+                      {asset?.thumbnailUrl ? (
+                        <>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={asset.thumbnailUrl}
+                            alt={`${displayName} 缩略图`}
+                            loading="lazy"
+                            className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+                          />
+                          <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/15">
+                            <span className="rounded-full bg-black/65 px-3 py-1.5 text-xs font-medium text-white">播放</span>
+                          </span>
+                        </>
+                      ) : (
+                        <span className="flex h-full w-full items-center justify-center text-xs text-ink-tertiary">缩略图暂不可用</span>
+                      )}
+                    </button>
+                    <div className="space-y-2 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="min-w-0 truncate text-xs font-medium text-ink">{displayName}</p>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${exclusion ? 'bg-warn/20 text-warn' : 'bg-ok/10 text-ok'}`}>
+                          {exclusion ? '已排除' : '已锁定'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-ink-tertiary">
+                        分析版本 {selection.analysisId.slice(0, 8)}
+                        {lutName && <> · 调色 {lutName}</>}
+                        {exclusion && <span className="block">已排除:{exclusion.reason || '未填写原因'}</span>}
+                      </p>
+                      {workspace && workspace.batch.controlState !== 'stopped' && (
+                        <button
+                          type="button"
+                          className="btn-secondary h-8 px-3 text-xs"
+                          disabled={phaseEBusy !== null}
+                          onClick={() => props.onToggleAssetExclusion(assetId, !exclusion)}
+                        >
+                          {phaseEBusy === `exclude:${assetId}` ? '处理中…' : exclusion ? '恢复参与分配' : '从后续分配排除'}
+                        </button>
+                      )}
+                    </div>
+                  </article>
                 );
               })}
-            </ul>
+            </div>
           </div>
         )}
         {!frozen && (
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]" aria-label="素材列表">
+          <div className="min-h-[520px] flex-1 overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]" aria-label="素材列表">
           {assetCards.length > 0 ? (
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {assetCards.map((asset) => {
                 const analysisTask = analysisTaskByAsset.get(asset.id);
                 const assetAnalysisBusy = analysisBusy === asset.id
@@ -278,7 +321,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                     onResync={props.onResync}
                     analyzeBusy={assetAnalysisBusy}
                     onPreview={() => props.onPreviewAsset(asset)}
-                    previewBadge={props.renderPreviewBadge(asset.id)}
+                    previewBadge={previewBadges[asset.id]}
                   />
                 );
               })}

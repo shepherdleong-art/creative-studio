@@ -76,6 +76,24 @@ try {
     INSERT INTO projects (id, name, providerId, model, prompt, workflowType, productCode)
     VALUES ('batch-ui-project', '批量准备区验收项目', 'batch-ui-provider', 'smoke', 'smoke', 'complex_product', 'BATCHUI')
   `).run();
+  // 配音供应商(用于开启开始按钮;baseUrl 指向本地拒绝端口,口播任务快速失败,不影响本测试断言)
+  db.prepare(`
+    INSERT INTO final_edit_tts_providers
+      (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
+    VALUES ('vapi-qwen3-tts', 'V-API Qwen3 TTS Flash', 'vapi-qwen-json-url', 'http://127.0.0.1:1', 'smoke-key', '', 'qwen3-tts-flash', 1, 1, datetime('now'), datetime('now'))
+  `).run();
+  // BGM 曲库:BGM 是必选项,空曲库会禁用开始按钮
+  fs.mkdirSync(path.join(dataRoot, 'storage', 'bgm'), { recursive: true });
+  const bgmPath = path.join(dataRoot, 'storage', 'bgm', 'smoke-bgm.mp3');
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'sine=frequency=220:duration=2',
+    '-ar', '44100', '-ac', '2', '-c:a', 'libmp3lame', '-y', bgmPath,
+  ]);
+  const bgmFingerprint = createHash('sha256').update(fs.readFileSync(bgmPath)).digest('hex');
+  db.prepare(`
+    INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt)
+    VALUES ('smoke-bgm', 'bgm/smoke-bgm.mp3', ?, 2_000_000, 'mp3', 'ready', datetime('now'))
+  `).run(bgmFingerprint);
 
   const scriptAId = createProjectScript(db, 'batch-ui-project', {
     sourceKind: 'script_draft',

@@ -12,6 +12,7 @@ import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-produ
 import { createOutputPlansForSnapshot } from '../lib/batch-production/plans.ts';
 import { createBatchTask } from '../lib/batch-production/tasks.ts';
 import { allocateBatch, type FrozenBatchInput } from '../lib/batch-production/allocator.ts';
+import { resolveAllocationMusicTrackIds } from '../lib/batch-production/bgm.ts';
 import { startOrResumePhaseE } from '../lib/batch-production/phase-e.ts';
 import { createBatchNarrationExecutor } from '../lib/batch-production/narration-executor.ts';
 import { resolveBatchBgm } from '../lib/batch-production/batch-renderer.ts';
@@ -357,6 +358,34 @@ try {
   );
   fs.writeFileSync(path.join(storageRoot, firstTrack.relativePath), Buffer.from(`bgm-content:${firstTrack.trackId.replace('track-', '')}.mp3`));
 
+  // 手动指定:只在这几首之间分配;取消全部勾选恢复全库自动
+  const manualBatchId = createBatchProduction(db, 'project-1', '手动指定批次');
+  const manualVersionId = createBatchProductionVersion(db, manualBatchId, {
+    copyCount: 3,
+    defaultsJson: {
+      batchMusicSelection: { mode: 'manual', trackIds: [bgmTracks[0]!.trackId] },
+    },
+  });
+  const manualScriptId = createProjectScript(db, 'project-1', {
+    sourceKind: 'script_draft',
+    sourceId: 'script-source-manual',
+    title: '手动BGM脚本',
+    bodyText: '第一句。第二句！第三句。',
+    sourceVersion: 'v1',
+    metadata: { targetDurationSec: 15 },
+  });
+  const manualSnapshotId = snapshotScriptIntoBatch(db, manualVersionId, { scriptId: manualScriptId, copyCount: 3 });
+  createOutputPlansForSnapshot(db, manualVersionId, manualSnapshotId);
+  await addAssetPoolItem(db, manualVersionId, 'manual-asset');
+  const manualStarted = startOrResumePhaseE(db, 'project-1', manualBatchId);
+  const manualArrangements = (db.prepare(`SELECT arrangementJson FROM batch_output_versions o WHERE o.allocationRunId = ?`).all(manualStarted.allocationRunId) as Array<{ arrangementJson: string }>)
+    .map(({ arrangementJson }) => JSON.parse(arrangementJson) as { music?: { trackId?: string | null } });
+  assert.equal(manualArrangements.length, 3);
+  assert.ok(
+    manualArrangements.every(({ music }) => music?.trackId === bgmTracks[0]!.trackId),
+    '手动指定 1 首时,全部成片只能使用这一首',
+  );
+
   // 曲库为空 → 禁止启动
   const emptyBatchId = createBatchProduction(db, 'project-1', '空曲库批次');
   const emptyVersionId = createBatchProductionVersion(db, emptyBatchId, { copyCount: 1, defaultsJson: {} });
@@ -377,6 +406,20 @@ try {
     /曲库为空/,
     '曲库为空时必须拦住启动并给出可读原因',
   );
+
+  // 分配范围解析:手动指定 ∩ 冻结池;池外 id 被忽略;自动模式 = 全池
+  {
+    const pool = [{ trackId: 'a', relativePath: 'bgm/a.mp3', fileFingerprint: 'f1', durationUs: 1_000_000 }];
+    const defaults = { batchMusicPool: pool, batchMusicSelection: { mode: 'manual', trackIds: ['a', 'ghost'] } };
+    const resolved = resolveAllocationMusicTrackIds(defaults);
+    assert.deepEqual(resolved, ['a'], '手动指定中的池外曲目必须被忽略');
+    assert.deepEqual(
+      resolveAllocationMusicTrackIds({ batchMusicPool: pool, batchMusicSelection: { mode: 'auto', trackIds: [] } }),
+      ['a'],
+      '自动模式必须使用整个冻结池',
+    );
+    assert.deepEqual(resolveAllocationMusicTrackIds({ batchMusicPool: pool }), ['a'], '未设置选择时默认全库自动');
+  }
 
   db.close();
   console.log('batch M2 narration/bgm tests passed');
