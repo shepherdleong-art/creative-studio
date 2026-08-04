@@ -12,6 +12,8 @@ import {
   getBatchProduction,
   getBatchVersion,
   listPoolItems,
+  listProjectBatchProductions,
+  setBatchProductionArchived,
   updateBatchProductionStatus,
 } from '../lib/batch-production/versions.ts';
 
@@ -261,6 +263,27 @@ try {
   assert.equal(again.state, 'current');
   assert.deepEqual(again.appliedVersions, []);
   assert.equal(getBatchVersion(db, batchId, version2)?.copyCount, 5, '幂等升级不得改动业务数据');
+
+  // --- 归档/恢复是独立维度,不删除任何数据 ---
+  const secondBatchId = createBatchProduction(db, 'project-1', '第二个批次');
+  assert.equal(listProjectBatchProductions(db, 'project-1').length, 2);
+  setBatchProductionArchived(db, 'project-1', secondBatchId, true, () => new Date('2026-08-01T11:10:00.000Z'));
+  assert.equal(
+    listProjectBatchProductions(db, 'project-1').length,
+    1,
+    '归档批次默认从列表消失',
+  );
+  assert.equal(
+    listProjectBatchProductions(db, 'project-1', { includeArchived: true }).length,
+    2,
+    'includeArchived 能看到归档批次',
+  );
+  const archivedRow = getBatchProduction(db, 'project-1', secondBatchId);
+  assert.ok(archivedRow?.archivedAt, '归档必须写入 archivedAt');
+  setBatchProductionArchived(db, 'project-1', secondBatchId, false, () => new Date('2026-08-01T11:11:00.000Z'));
+  assert.equal(listProjectBatchProductions(db, 'project-1').length, 2, '恢复后批次回到默认列表');
+  assert.equal(getBatchProduction(db, 'project-1', secondBatchId)?.archivedAt, null, '恢复后 archivedAt 清空');
+  assert.equal(getBatchVersion(db, batchId, version2)?.copyCount, 5, '归档不影响批次版本与成片数据');
 
   db.close();
   console.log('batch domain versions tests passed');

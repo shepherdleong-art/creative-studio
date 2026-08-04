@@ -46,7 +46,8 @@ export async function GET(request: NextRequest) {
   try {
     await assertBatchApiReady();
     const db = getDb();
-    const batches = listProjectBatchProductions(db, projectId);
+    const includeArchived = request.nextUrl.searchParams.get('includeArchived') === '1';
+    const batches = listProjectBatchProductions(db, projectId, { includeArchived });
     return NextResponse.json({ projectId, batches }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'list_batches_failed', '批次列表读取失败');

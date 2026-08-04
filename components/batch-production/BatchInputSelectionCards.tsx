@@ -129,7 +129,7 @@ export function BatchFrozenScriptCard({
     <article className="rounded-2xl border border-accent/30 bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-medium text-accent">冻结脚本快照</p>
+          <p className="text-xs font-medium text-accent">已锁定的脚本快照</p>
           <h3 className="mt-1 font-semibold text-ink">{snapshot.title || '未命名脚本'}</h3>
         </div>
         <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">
@@ -167,6 +167,7 @@ export function BatchAssetSelectionCard({
   onResync,
   analyzeBusy,
   onPreview,
+  previewBadge,
 }: {
   asset: PrepareAssetCardView;
   selected: boolean;
@@ -183,6 +184,8 @@ export function BatchAssetSelectionCard({
   onResync?: () => void;
   analyzeBusy?: boolean;
   onPreview?: () => void;
+  /** 预览来源信息(低清预览片/原片/LUT 待生成警告等) */
+  previewBadge?: React.ReactNode;
 }) {
   const displayName = asset.media.displayName || asset.media.filename || '视频素材';
   const selectable = asset.status === 'online' && Boolean(asset.currentAnalysisId);
@@ -324,6 +327,7 @@ export function BatchAssetSelectionCard({
             {typeof asset.media.durationSec === 'number' && <span>{asset.media.durationSec.toFixed(1)} 秒</span>}
             {asset.media.width && asset.media.height && <span>{asset.media.width}×{asset.media.height}</span>}
           </div>
+          {previewBadge}
           {renderAnalysisAction()}
           <div className="mt-4 space-y-2">
             {asset.sources.map((source) => <SourceRow key={source.id} source={source} />)}

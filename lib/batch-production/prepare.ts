@@ -25,6 +25,8 @@ export interface PrepareScriptView {
   sourceVersion: string;
   contentRevision: string;
   updatedAt: string;
+  /** 脚本自身设定的目标成片时长(秒);旧脚本可能没有,展示层回落 15 */
+  targetDurationSec?: number | null;
 }
 
 export interface PrepareCoverTitle {
@@ -146,6 +148,7 @@ export async function prepareBatchProductionInputs(
     sourceVersion: row.sourceVersion,
     contentRevision: row.contentRevision,
     updatedAt: row.updatedAt,
+    targetDurationSec: row.targetDurationSec,
   }));
 
   const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId).map((row: BatchAssetRow) => {

@@ -84,12 +84,39 @@ export function getBatchProduction(
   return { ...row, progressJson: JSON.parse(row.progressJson) };
 }
 
-export function listProjectBatchProductions(db: Database.Database, projectId: string): BatchProductionRow[] {
+export function listProjectBatchProductions(
+  db: Database.Database,
+  projectId: string,
+  options: { includeArchived?: boolean } = {},
+): BatchProductionRow[] {
   return db.prepare(`
     SELECT * FROM batch_productions
     WHERE projectId = ? AND deletedAt IS NULL
+      AND (${options.includeArchived ? '1' : 'archivedAt IS NULL'})
     ORDER BY createdAt, id
   `).all(projectId) as BatchProductionRow[];
+}
+
+/**
+ * 归档/恢复批次:archivedAt 是独立维度,不影响 status、成片与已导出文件。
+ * 归档批次从默认列表消失;恢复后原样回到列表,产物完好。
+ */
+export function setBatchProductionArchived(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  archived: boolean,
+  now?: () => Date,
+): void {
+  const updatedAt = nowIso(now);
+  const result = db.prepare(`
+    UPDATE batch_productions
+    SET archivedAt = ?, updatedAt = ?
+    WHERE id = ? AND projectId = ? AND deletedAt IS NULL
+  `).run(archived ? updatedAt : null, updatedAt, batchId, projectId);
+  if (result.changes === 0) {
+    throw new Error('批次不存在');
+  }
 }
 
 export function updateBatchProductionStatus(

@@ -1,24 +1,24 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
+import MixcutShell, { type MixcutStepDef } from '@/components/mixcut/MixcutShell';
+import shellStyles from '@/components/mixcut/mixcut-shell.module.css';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail, BatchSnapshotResult } from '@/lib/batch-production/batch-flow';
-import type { BatchProductionRow, BatchProductionStatus } from '@/lib/batch-production/versions';
+import type { BatchProductionStatus } from '@/lib/batch-production/versions';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
-import type { BatchOutputCardStatus, BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
 import {
   type AssetPrepareTaskView,
-  BatchAssetSelectionCard,
-  BatchFrozenScriptCard,
-  BatchScriptSelectionCard,
   type PrepareAssetCardView,
 } from './BatchInputSelectionCards';
-
-interface AssetSelectionState {
-  analysisId: string;
-  lutId: string | null;
-}
+import BatchProductionSidebar, { type BatchSidebarItem } from './BatchProductionSidebar';
+import BatchStepMaterials, { type AssetSelectionState, type VisionProviderView } from './BatchStepMaterials';
+import BatchStepScripts, { type OutputPresetLabel } from './BatchStepScripts';
+import BatchStepReview, { type CardFilter } from './BatchStepReview';
+import BatchStepExport from './BatchStepExport';
 
 interface ReadinessResponse {
   available: boolean;
@@ -26,11 +26,9 @@ interface ReadinessResponse {
   code?: string;
 }
 
-type BatchListItem = Pick<BatchProductionRow, 'id' | 'projectId' | 'name' | 'status' | 'currentVersionId'>;
-
 interface BatchListResponse {
   projectId: string;
-  batches: BatchListItem[];
+  batches: BatchSidebarItem[];
 }
 
 interface BatchCreateResponse {
@@ -59,12 +57,9 @@ interface PreviewAsset {
   url: string;
 }
 
-interface VisionProviderView {
+interface TtsProviderView {
   id: string;
-  name: string;
-  model: string;
   configured: boolean;
-  supportsVision?: boolean;
 }
 
 interface BatchPreparationPanelProps {
@@ -77,7 +72,6 @@ interface Feedback {
 }
 
 type OutputPreset = '3:4' | '9:16' | '16:9';
-type CardFilter = 'all' | BatchOutputCardStatus;
 
 async function readJson<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
@@ -96,39 +90,6 @@ const BATCH_STATUS_LABELS: Record<BatchProductionStatus, string> = {
   failed: '失败',
 };
 
-const TASK_STATUS_LABELS: Record<string, string> = {
-  queued: '排队中',
-  running: '生成中',
-  succeeded: '已完成',
-  failed: '失败',
-  cancelled: '已取消',
-};
-
-const TASK_PHASE_LABELS: Record<string, string> = {
-  starting: '准备中',
-  running: '执行中',
-  locating: '定位来源',
-  preflight: '环境检查',
-  probing: '探测媒体',
-  content_analyzing: '画面内容分析',
-  verifying_lut: '核验 LUT',
-  encoding: '编码中',
-  verifying: '核验产物',
-  ready: '已就绪',
-  rendering: '渲染中',
-  cover: '生成封面',
-};
-
-const CARD_STATUS_LABELS: Record<BatchOutputCardStatus, string> = {
-  completed: '已完成',
-  needs_attention: '需处理',
-  processing: '渲染中',
-  waiting: '等待中',
-  paused: '已暂停',
-  retryable_failed: '可重试',
-  stopped: '已停止',
-};
-
 /** 后端原始错误 → 用户可读文案。匹配用 includes，避免依赖完整字符串。 */
 const EXPORT_SKIP_REASONS: Array<{ match: string; text: string }> = [
   { match: 'productionReady', text: '还没有配音' },
@@ -145,9 +106,19 @@ function humanizeSkipReason(reason: string | undefined): string {
   return hit ? hit.text : '导出前检查未通过';
 }
 
+const OUTPUT_PRESET_LABELS: Record<OutputPreset, string> = {
+  '3:4': '3:4 · 1080×1440',
+  '9:16': '9:16 · 1080×1920',
+  '16:9': '16:9 · 1920×1080',
+};
+
+function visionProviderStorageKey(projectId: string): string {
+  return `batch-vision-provider:${projectId}`;
+}
+
 export default function BatchPreparationPanel({ projectId }: BatchPreparationPanelProps) {
   const [preparation, setPreparation] = useState<BatchPreparationResult | null>(null);
-  const [batches, setBatches] = useState<BatchListItem[]>([]);
+  const [batches, setBatches] = useState<BatchSidebarItem[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [newBatchName, setNewBatchName] = useState('');
   const [selectedScripts, setSelectedScripts] = useState<Record<string, number>>({});
@@ -165,13 +136,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
 
   const [luts, setLuts] = useState<BatchLutRow[]>([]);
   const [lutImporting, setLutImporting] = useState(false);
-  const lutFileInputRef = useRef<HTMLInputElement | null>(null);
   const [proxyTasks, setProxyTasks] = useState<BatchTasksView['tasks']>([]);
   const [assetPrepareTasks, setAssetPrepareTasks] = useState<AssetPrepareTaskView[]>([]);
   const [analysisBusy, setAnalysisBusy] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<PreviewAsset | null>(null);
   const [visionProviders, setVisionProviders] = useState<VisionProviderView[]>([]);
   const [visionProviderId, setVisionProviderId] = useState('');
+  const [ttsConfigured, setTtsConfigured] = useState(false);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
@@ -180,11 +151,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [cleanupBusy, setCleanupBusy] = useState<'selected' | 'project' | null>(null);
   const [previewInfos, setPreviewInfos] = useState<Record<string, PreviewInfo>>({});
   const [outputPreset, setOutputPreset] = useState<OutputPreset>('3:4');
-  const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [workspace, setWorkspace] = useState<BatchWorkspaceView | null>(null);
   const [cardFilter, setCardFilter] = useState<CardFilter>('all');
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   const [phaseEBusy, setPhaseEBusy] = useState<'export' | 'control' | string | null>(null);
+  const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
+  const [folderRelativePath, setFolderRelativePath] = useState<string | null>(null);
+  const [revealBusy, setRevealBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -192,7 +165,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try {
       const readiness = await readJson<ReadinessResponse>(await fetch('/api/batch-production/readiness', { cache: 'no-store' }));
       if (!readiness.available) throw new Error(readiness.message || '批量生产暂不可用');
-      const [result, batchResult, providerResult] = await Promise.all([
+      const [result, batchResult, providerResult, ttsResult] = await Promise.all([
         readJson<BatchPreparationResult>(await fetch(
           `/api/batch-production/prepare?projectId=${encodeURIComponent(projectId)}`,
           { cache: 'no-store' },
@@ -203,15 +176,27 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         )),
         readJson<VisionProviderView[]>(await fetch('/api/providers/script', { cache: 'no-store' }))
           .catch(() => []),
+        readJson<TtsProviderView[]>(await fetch('/api/providers/tts', { cache: 'no-store' }))
+          .catch(() => []),
       ]);
       setPreparation(result);
       setBatches(batchResult.batches);
       setVisionProviders(providerResult);
-      setVisionProviderId((current) => (
-        providerResult.some((provider) => provider.id === current && provider.configured && provider.supportsVision)
-          ? current
-          : providerResult.find((provider) => provider.configured && provider.supportsVision)?.id ?? ''
-      ));
+      setTtsConfigured(ttsResult.some((provider) => provider.configured));
+      // 分析模型选择持久化:沿用上次显式选择;仅当该供应商已不存在或不再可用时才回落默认
+      setVisionProviderId((current) => {
+        if (providerResult.some((provider) => provider.id === current && provider.configured && provider.supportsVision)) {
+          return current;
+        }
+        let remembered = '';
+        try {
+          remembered = localStorage.getItem(visionProviderStorageKey(projectId)) ?? '';
+        } catch { /* 隐私模式忽略 */ }
+        if (providerResult.some((provider) => provider.id === remembered && provider.configured && provider.supportsVision)) {
+          return remembered;
+        }
+        return providerResult.find((provider) => provider.configured && provider.supportsVision)?.id ?? '';
+      });
       if (batchResult.batches.length === 0) {
         setOutputPlans([]);
         setBatchStatus('draft');
@@ -439,32 +424,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     for (const task of assetPrepareTasks) byAsset.set(task.targetId, task);
     return byAsset;
   }, [assetPrepareTasks]);
-  const analysisCandidates = useMemo(
-    () => (preparation?.assets ?? []).filter(({ status, currentAnalysisId }) => status === 'online' && !currentAnalysisId),
-    [preparation],
-  );
-  const contentAnalysisCandidates = useMemo(
-    () => (preparation?.assets ?? []).filter(({ status, analysisLevel }) => status === 'online' && analysisLevel !== 'content'),
-    [preparation],
-  );
   const plannedCount = useMemo(
     () => selectedScriptEntries.reduce((sum, [, copyCount]) => sum + copyCount, 0),
     [selectedScriptEntries],
   );
-  const visibleCards = useMemo(() => (
-    workspace?.cards.filter(({ status }) => cardFilter === 'all' || status === cardFilter) ?? []
-  ), [workspace, cardFilter]);
+  const hasConfirmedVersion = Boolean(currentVersionId);
 
   function markInputChanged(): void {
     setOutputPlans([]);
     setInputConfirmed(false);
     setFeedback(null);
-  }
-
-  function previewUrl(assetId: string): string {
-    if (!selectedBatchId || !currentVersionId) return '';
-    return `/api/batch-production/preview/${encodeURIComponent(assetId)}?projectId=${encodeURIComponent(projectId)}`
-      + `&batchId=${encodeURIComponent(selectedBatchId)}&batchVersionId=${encodeURIComponent(currentVersionId)}`;
   }
 
   useEffect(() => {
@@ -486,17 +455,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       id: asset.id,
       title: asset.media.displayName || asset.media.filename || '视频素材',
       url: asset.previewUrl,
-    });
-  }
-
-  function openPreparedAssetPreview(assetId: string): void {
-    const asset = preparation?.assets.find((item) => item.id === assetId);
-    const url = previewUrl(assetId);
-    if (!asset || !url) return;
-    setPreviewAsset({
-      id: assetId,
-      title: asset.media.displayName || asset.media.filename || '视频素材',
-      url,
     });
   }
 
@@ -587,10 +545,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId, name }),
       }));
-      const batch: BatchListItem = {
+      const batch: BatchSidebarItem = {
         ...created,
         status: 'draft',
         currentVersionId: null,
+        archivedAt: null,
       };
       setBatches((current) => [...current, batch]);
       setSelectedBatchId(created.id);
@@ -605,11 +564,33 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setFrozenScriptSnapshots([]);
       setBatchStatus('draft');
       setInputConfirmed(false);
+      setActiveStep(0);
       setFeedback({ kind: 'success', message: `批次已创建：${created.name}` });
     } catch (createError) {
       setFeedback({ kind: 'error', message: createError instanceof Error ? createError.message : '批次创建失败' });
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function archiveBatch(batchId: string, archived: boolean): Promise<void> {
+    setFeedback(null);
+    try {
+      await readJson(await fetch(
+        `/api/batch-production/batches/${encodeURIComponent(batchId)}/archive?projectId=${encodeURIComponent(projectId)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ archived }),
+        },
+      ));
+      setBatches((current) => current.map((batch) => batch.id === batchId
+        ? { ...batch, archivedAt: archived ? new Date().toISOString() : null }
+        : batch));
+      setFeedback({ kind: 'success', message: archived ? '批次已归档，成片与导出文件完好保留。' : '批次已恢复。' });
+      void load();
+    } catch (archiveError) {
+      setFeedback({ kind: 'error', message: archiveError instanceof Error ? archiveError.message : '批次归档失败' });
     }
   }
 
@@ -647,7 +628,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               outputPreset,
               preset: outputPreset,
               fps: 24,
-              targetDurationSec,
+              targetDurationSec: 15,
             },
           }),
         },
@@ -732,19 +713,18 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setFeedback({
         kind: result.allocationStatus === 'blocked' ? 'error' : 'success',
         message: result.allocationStatus === 'blocked'
-          ? '联合分配被阻塞，请查看成片卡片中的原因。'
-          : `联合分配完成，已建立 ${result.outputCount} 条渲染候选。`,
+          ? '自动配画面被阻塞，请查看成片卡片中的原因。'
+          : `自动配画面完成，已建立 ${result.outputCount} 条渲染候选。`,
       });
       await loadBatchDetail(selectedBatchId);
       await loadWorkspace(selectedBatchId);
+      setActiveStep(2);
     } catch (startError) {
       setFeedback({ kind: 'error', message: startError instanceof Error ? startError.message : '批次启动失败' });
     } finally {
       setBusy(null);
     }
   }
-
-  const hasConfirmedVersion = Boolean(currentVersionId);
 
   async function submitProxyRequests(batchId: string, assetIds: string[] | undefined): Promise<number> {
     if (assetIds && assetIds.length === 0) return 0;
@@ -798,7 +778,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setFeedback({ kind: 'error', message: importError instanceof Error ? importError.message : 'LUT 导入失败' });
     } finally {
       setLutImporting(false);
-      if (lutFileInputRef.current) lutFileInputRef.current.value = '';
     }
   }
 
@@ -935,7 +914,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       ));
       setFeedback({
         kind: 'success',
-        message: excluded ? '已从后续联合分配排除该素材；旧正式成片保持不变。' : '该素材已恢复参与后续联合分配。',
+        message: excluded ? '已从后续自动配画面排除该素材；旧正式成片保持不变。' : '该素材已恢复参与后续自动配画面。',
       });
       await loadWorkspace(selectedBatchId);
     } catch (exclusionError) {
@@ -956,7 +935,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       const result = await readJson<{
         published: number;
         skipped: number;
-        items: Array<{ status: 'published' | 'skipped'; reason?: string }>;
+        items: Array<{ status: 'published' | 'skipped'; reason?: string; videoRelativePath?: string }>;
       }>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/exports?projectId=${encodeURIComponent(projectId)}`,
         {
@@ -976,6 +955,14 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         kind: result.published > 0 ? 'success' : 'error',
         message: `已导出 ${result.published} 条${result.skipped > 0 ? `，跳过 ${result.skipped} 条：${detail}` : ''}`,
       });
+      const firstPublished = result.items.find(({ status }) => status === 'published' && result.published > 0 && result.skipped === 0);
+      const exported = result.items.find(({ status }) => status === 'published');
+      if (exported?.videoRelativePath) {
+        const folder = exported.videoRelativePath.split('/').slice(0, -1).join('/');
+        setFolderRelativePath(`storage/${folder}`);
+      } else if (firstPublished) {
+        setFolderRelativePath(null);
+      }
       setSelectedPlanIds([]);
       await loadWorkspace(selectedBatchId);
     } catch (publishError) {
@@ -1006,6 +993,25 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
+  async function revealFolder(): Promise<void> {
+    if (!selectedBatchId) return;
+    setRevealBusy(true);
+    setFeedback(null);
+    try {
+      await readJson(await fetch(
+        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/exports/reveal?projectId=${encodeURIComponent(projectId)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-creative-studio-action': 'reveal' },
+        },
+      ));
+    } catch (revealError) {
+      setFeedback({ kind: 'error', message: revealError instanceof Error ? revealError.message : '打开文件夹失败' });
+    } finally {
+      setRevealBusy(false);
+    }
+  }
+
   if (loading) {
     return <div className="card p-8 text-center text-sm text-ink-secondary">正在同步项目脚本和素材…</div>;
   }
@@ -1024,7 +1030,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const prep = preparation;
   const assetCards = prep.assets as PrepareAssetCardView[];
 
-  const onlineAssets = prep.assets.filter(({ status }) => status === 'online').length;
   const selectableAssetCards = assetCards.filter(({ status, currentAnalysisId }) => status === 'online' && Boolean(currentAnalysisId));
   const selectableAssets = selectableAssetCards.length;
   const allSelectableAssetsSelected = selectableAssetCards.length > 0
@@ -1059,7 +1064,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
     const badges: Array<{ text: string; tone: string }> = [];
     if (info.kind === 'proxy') {
-      badges.push({ text: '代理预览', tone: 'bg-ok/10 text-ok' });
+      badges.push({ text: '低清预览片', tone: 'bg-ok/10 text-ok' });
       if (!info.originalOnline) {
         badges.push({ text: '原片离线', tone: 'bg-fail/10 text-fail' });
       }
@@ -1086,522 +1091,308 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     );
   }
 
-  function renderMediaPrepSection() {
-    const proxyButtonsDisabled = !hasConfirmedVersion || proxyBatchBusy;
-    const proxyButtonsBlockedByUnconfirmed = !inputConfirmed && hasConfirmedVersion;
-    return (
-      <section className="card space-y-4 p-5" aria-label="媒体准备：代理与 LUT">
-        <div>
-          <h3 className="mt-1 font-semibold text-ink">画质与调色</h3>
-          <p className="mt-1 text-sm text-ink-secondary">默认直接预览原片；卡顿时再按需生成代理。LUT 默认关闭，选择后对应素材会额外请求一份色彩代理。最终导出始终读取原片。</p>
-        </div>
+  const selectBatch = (batchId: string) => {
+    setSelectedBatchId(batchId);
+    setProxyTasks([]);
+    setAssetPrepareTasks([]);
+    analysisReloadedTaskIdsRef.current.clear();
+    setSelectedScripts({});
+    setSelectedAssets({});
+    setOutputPlans([]);
+    setBatchInputState(null);
+    setFrozenScriptSnapshots([]);
+    setBatchStatus(batches.find(({ id }) => id === batchId)?.status ?? 'draft');
+    setInputConfirmed(false);
+    setFeedback(null);
+    setActiveStep(0);
+  };
 
-        <div className="tile space-y-3 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm font-medium text-ink">LUT 列表</p>
-            <div className="flex items-center gap-2">
+  const frozen = batchInputState === 'frozen';
+  const visionProviderOptions = visionProviders.filter((provider) => provider.configured && provider.supportsVision);
+  const visionProviderMissing = visionProviderOptions.length === 0;
+
+  const changeVisionProvider = (providerId: string) => {
+    setVisionProviderId(providerId);
+    try { localStorage.setItem(visionProviderStorageKey(projectId), providerId); } catch { /* 隐私模式忽略 */ }
+  };
+
+  const overview = [
+    { label: '已选素材', value: Object.keys(selectedAssets).length },
+    { label: '脚本份数', value: selectedScriptEntries.length },
+    { label: '目标成片', value: plannedCount, accent: true },
+    { label: '已完成', value: workspace?.counts.publishable ?? 0 },
+  ];
+
+  const steps: MixcutStepDef[] = [
+    { label: '准备素材', hint: '勾选素材·分析·调色', icon: 'folder', enabled: true },
+    { label: '脚本与口播', hint: '份数·配音·确认锁定', icon: 'sparkle', enabled: true },
+    { label: '检查成片', hint: '播放·重试·换画面', icon: 'play-circle', enabled: true },
+    { label: '导出成片', hint: '正式导出·打开文件夹', icon: 'download', enabled: true },
+  ];
+
+  const outputPresetLabel: OutputPresetLabel = { id: outputPreset, label: OUTPUT_PRESET_LABELS[outputPreset] };
+
+  return (
+    <MixcutShell
+      steps={steps}
+      activeStep={activeStep}
+      onStepSelect={(index) => setActiveStep(index as 0 | 1 | 2 | 3)}
+      stepDisabled={(index) => (
+        !selectedBatchId
+        || (index === 1 && Object.keys(selectedAssets).length === 0)
+        || (index === 2 && outputPlans.length === 0)
+        || (index === 3 && (!workspace || workspace.cards.length === 0))
+      )}
+      stepsAriaLabel="批量生产步骤"
+      topbarLeft={(
+        <div className="flex min-w-0 flex-1 items-center gap-3 px-1">
+          <strong className="truncate text-ink">{currentBatch?.name ?? '未选择批次'}</strong>
+          {selectedBatchId && (
+            <span className={`rounded-full px-2.5 py-0.5 text-[11px] ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : batchStatus === 'failed' ? 'bg-fail/10 text-fail' : batchStatus === 'completed' ? 'bg-ok/10 text-ok' : 'bg-surface-subtle text-ink-secondary'}`}>
+              {BATCH_STATUS_LABELS[batchStatus]}
+            </span>
+          )}
+          {frozen && <span className="rounded-full bg-accent/10 px-2.5 py-0.5 text-[11px] text-accent">已锁定</span>}
+        </div>
+      )}
+      topbarRight={(
+        <>
+          <span className={shellStyles.segLabel}>画幅</span>
+          <span className={shellStyles.seg} role="group" aria-label="全局画幅">
+            {(['3:4', '9:16', '16:9'] as const).map((preset) => (
+              <button type="button" key={preset} className={outputPreset === preset ? shellStyles.segOn : ''} onClick={() => setOutputPreset(preset)}>{preset}</button>
+            ))}
+          </span>
+        </>
+      )}
+      sidebar={(
+        <div className="space-y-3">
+          <div className={shellStyles.panel}>
+            <h3 className="mb-2 flex items-center gap-2 text-[13px] font-semibold"><Icon name="plus" size={15} />新建批次</h3>
+            <div className="flex gap-2">
               <input
-                ref={lutFileInputRef}
-                type="file"
-                accept=".cube"
-                aria-label="导入 LUT 文件"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) void importLutFile(file);
+                type="text"
+                aria-label="新批次名称"
+                value={newBatchName}
+                onChange={(event) => setNewBatchName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && busy === null) void createBatch();
                 }}
+                placeholder="例如：8 月产品口播"
+                className="h-9 min-w-0 flex-1 rounded-xl border border-hairline bg-white px-3 text-sm text-ink"
               />
               <button
                 type="button"
-                className="btn-secondary text-xs"
-                disabled={lutImporting}
-                onClick={() => lutFileInputRef.current?.click()}
-              >{lutImporting ? '导入中…' : '导入 .cube LUT'}</button>
+                className="btn-primary h-9 px-3 text-sm"
+                disabled={busy !== null}
+                onClick={() => void createBatch()}
+              >{busy === 'create' ? '创建中…' : '创建'}</button>
             </div>
           </div>
-          {luts.length === 0
-            ? <p className="text-xs text-ink-tertiary">尚未导入任何 LUT。</p>
-            : <ul className="space-y-2">
-              {luts.map((lut) => (
-                <li key={lut.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
-                  <span className="min-w-0 truncate text-ink-secondary">
-                    {lut.displayName}{lut.status === 'archived' && <span className="ml-2 text-ink-tertiary">已归档</span>}
-                  </span>
-                  <span className="flex gap-2">
-                    {lut.status === 'active'
-                      ? <button type="button" className="text-ink-tertiary underline" onClick={() => void lutAction(lut.id, 'archive')}>归档</button>
-                      : <>
-                        <button type="button" className="text-ink-tertiary underline" onClick={() => void lutAction(lut.id, 'restore')}>恢复</button>
-                        <button type="button" className="text-fail underline" onClick={() => void lutAction(lut.id, 'delete')}>清理</button>
-                      </>}
-                  </span>
-                </li>
-              ))}
-            </ul>}
-        </div>
-
-        <div className="tile space-y-3 p-4">
-          <p className="text-sm font-medium text-ink">代理生成</p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="btn-secondary text-xs"
-              disabled={proxyButtonsDisabled || proxyButtonsBlockedByUnconfirmed || Object.keys(selectedAssets).length === 0}
-              onClick={() => void requestProxies(Object.keys(selectedAssets), null)}
-            >{proxyBatchBusy ? '请求中…' : '为选中素材生成代理'}</button>
-            <button
-              type="button"
-              className="btn-secondary text-xs"
-              disabled={proxyButtonsDisabled || proxyButtonsBlockedByUnconfirmed}
-              onClick={() => void requestProxies(undefined, null)}
-            >为当前批次全部素材生成代理</button>
-          </div>
-          {proxyButtonsBlockedByUnconfirmed && (
-            <p className="text-xs text-warn">脚本、素材、分析版本或 LUT 已修改，重新确认整体输入后代理请求才会匹配新快照。</p>
-          )}
-          {!hasConfirmedVersion && <p className="text-xs text-ink-tertiary">先确认整体输入，代理才能对应到已锁定的色彩快照。</p>}
-          {proxyTasks.length > 0 && (
-            <ul className="space-y-1.5">
-              {proxyTasks.map((task) => {
-                const progress = task.progressJson as { phase?: string; percent?: number | null; description?: string } | null;
-                const percent = typeof progress?.percent === 'number' ? `${Math.round(progress.percent * 100)}%` : '';
-                const phaseLabel = progress?.phase ? TASK_PHASE_LABELS[progress.phase] : undefined;
-                const statusLabel = TASK_STATUS_LABELS[task.status] ?? task.status;
-                return (
-                  <li key={task.id} className="flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
-                    <span className="min-w-0 truncate text-ink-secondary">
-                      {phaseLabel || progress?.description || statusLabel} {percent}
-                      {task.attemptCount > 1 && ` · 第 ${task.attemptCount} 次尝试`}
-                    </span>
-                    <span className="flex items-center gap-2">
-                      <span className={`rounded-full px-2 py-0.5 ${task.status === 'failed' ? 'bg-fail/10 text-fail' : task.status === 'succeeded' ? 'bg-ok/10 text-ok' : task.status === 'cancelled' ? 'bg-surface-subtle text-ink-tertiary' : 'bg-accent/10 text-accent'}`}>
-                        {statusLabel}
-                      </span>
-                      {task.status === 'failed' && (
-                        <button type="button" className="text-accent underline" onClick={() => void retryProxyTask(task.id)}>重试</button>
-                      )}
-                      {(task.status === 'queued' || task.status === 'running') && task.expectedState === 'running' && (
-                        <button type="button" className="text-ink-tertiary underline" onClick={() => void controlProxyTask(task.id, 'pause')}>暂停</button>
-                      )}
-                      {task.status === 'queued' && task.expectedState === 'paused' && (
-                        <button type="button" className="text-accent underline" onClick={() => void controlProxyTask(task.id, 'resume')}>继续</button>
-                      )}
-                      {(task.status === 'queued' || task.status === 'running') && (
-                        <button type="button" className="text-fail underline" onClick={() => void controlProxyTask(task.id, 'cancel')}>取消</button>
-                      )}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        <div className="tile flex h-[620px] min-h-0 flex-col gap-3 p-4" data-testid="media-prep-asset-pool">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-medium text-ink">批次素材池</p>
-              <p className="mt-1 text-xs text-ink-tertiary">固定区域内浏览；点击缩略图播放代理或原片。</p>
-            </div>
-            <span className="text-xs text-ink-tertiary">{Object.keys(selectedAssets).length} 条</span>
-          </div>
-          {Object.keys(selectedAssets).length === 0
-            ? <p className="text-xs text-ink-tertiary">选择素材后这里会显示可播放的预览(代理或原片)。</p>
-            : <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]">
-              <ul className="grid content-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {Object.entries(selectedAssets).map(([assetId, selection]) => {
-                const asset = prep.assets.find((item) => item.id === assetId);
-                const displayName = asset?.media.displayName
-                  ?? asset?.media.filename
-                  ?? `素材 ${assetId.slice(0, 8)}`;
-                const lutName = selection.lutId ? luts.find((lut) => lut.id === selection.lutId)?.displayName : null;
-                return (
-                  <li key={assetId} data-testid={`media-prep-asset-tile-${assetId}`} className="overflow-hidden rounded-xl border border-hairline bg-white">
-                    <button
-                      type="button"
-                      className="group relative block aspect-video w-full overflow-hidden bg-black text-left"
-                      aria-label={`播放批次素材 ${displayName}`}
-                      onClick={() => openPreparedAssetPreview(assetId)}
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={asset?.thumbnailUrl} alt={`${displayName} 缩略图`} loading="lazy" className="h-full w-full object-cover transition group-hover:scale-[1.02]" />
-                      <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/15">
-                        <span className="rounded-full bg-black/65 px-3 py-1.5 text-xs font-medium text-white">播放</span>
-                      </span>
-                    </button>
-                    <div className="space-y-2 p-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="min-w-0 truncate text-xs font-medium text-ink">{displayName}</p>
-                        <p className="shrink-0 text-[11px] text-ink-tertiary">{lutName ? `LUT：${lutName}` : 'LUT：关闭'}</p>
-                      </div>
-                      {renderPreviewBadge(assetId)}
-                    </div>
-                  </li>
-                );
-                })}
-              </ul>
-            </div>}
-        </div>
-
-        <div className="tile space-y-3 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm font-medium text-ink">代理缓存清理</p>
-            {cacheUsage && <span className="text-xs text-ink-tertiary">当前项目占用 {(cacheUsage.totalBytes / (1024 * 1024)).toFixed(1)}MB · {cacheUsage.count} 个文件</span>}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="btn-secondary text-xs"
-              disabled={cleanupBusy !== null || Object.keys(selectedAssets).length === 0}
-              onClick={() => void cleanupProxies('selected')}
-            >{cleanupBusy === 'selected' ? '清理中…' : '清理选中素材代理'}</button>
-            <button
-              type="button"
-              className="btn-secondary text-xs"
-              disabled={cleanupBusy !== null}
-              onClick={() => void cleanupProxies('project')}
-            >{cleanupBusy === 'project' ? '清理中…' : '清理当前项目代理'}</button>
-          </div>
-          <p className="text-xs text-ink-tertiary">清理不影响原片、分析结果、批次快照和正式成片；清理后预览自动回退原片，可随时重新生成。正在使用中的文件会自动延后删除，不需要再次点击清理。</p>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section className="space-y-5" aria-label="批量生产准备区">
-      <header className="card flex flex-wrap items-center justify-between gap-4 p-5">
-        <div>
-          <h2 className="text-lg font-semibold text-ink">批量生产准备区</h2>
-          <p className="mt-1 text-sm text-ink-secondary">项目脚本和成功视频会继续自动同步；选定输入后可锁定为一个批次。</p>
-        </div>
-        <button type="button" className="btn-secondary" onClick={() => void load()}>重新同步</button>
-      </header>
-
-      <div className="grid gap-3 sm:grid-cols-4">
-        <div className="tile p-4"><p className="text-xs text-ink-tertiary">项目脚本</p><strong className="mt-1 block text-2xl text-ink">{prep.scripts.length}</strong></div>
-        <div className="tile p-4"><p className="text-xs text-ink-tertiary">项目素材</p><strong className="mt-1 block text-2xl text-ink">{prep.assets.length}</strong></div>
-        <div className="tile p-4"><p className="text-xs text-ink-tertiary">当前在线</p><strong className="mt-1 block text-2xl text-ok">{onlineAssets}</strong></div>
-        <div className="tile p-4"><p className="text-xs text-ink-tertiary">可入池素材</p><strong className="mt-1 block text-2xl text-ok">{selectableAssets}</strong></div>
-      </div>
-
-      {prep.warnings.length > 0 && (
-        <div className="rounded-2xl border border-warn/30 bg-warn-tint p-4 text-sm text-ink-secondary">
-          <p className="font-medium text-ink">需要留意</p>
-          <ul className="mt-2 list-disc space-y-1 pl-5">{prep.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+          <BatchProductionSidebar
+            batches={batches}
+            selectedBatchId={selectedBatchId}
+            onSelect={selectBatch}
+            onArchive={(batchId, archived) => void archiveBatch(batchId, archived)}
+            busy={busy !== null}
+            overview={overview}
+          />
         </div>
       )}
-
-      <section className="card space-y-4 p-5" aria-label="批次管理">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="font-semibold text-ink">创建或选择批次</h3>
-            <p className="mt-1 text-sm text-ink-secondary">批次保留已确认的脚本、素材分析版本和成片数量。</p>
-          </div>
-          <span className="rounded-full bg-surface-subtle px-3 py-1 text-xs text-ink-secondary">
-            {selectedBatchId ? BATCH_STATUS_LABELS[batchStatus] : '未选择批次'}
-          </span>
-        </div>
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-          <label className="text-sm text-ink-secondary">
-            <span className="mb-1.5 block">当前批次</span>
-            <select
-              aria-label="当前批次"
-              value={selectedBatchId}
-              onChange={(event) => {
-                setSelectedBatchId(event.target.value);
-                setProxyTasks([]);
-                setAssetPrepareTasks([]);
-                analysisReloadedTaskIdsRef.current.clear();
+      previewActive={false}
+      main={() => {
+        const commonMain = (content: React.ReactNode) => (
+          <main className={shellStyles.mainCol}>
+            {feedback && (
+              <div
+                role={feedback.kind === 'error' ? 'alert' : 'status'}
+                aria-live="polite"
+                className={`mb-2 rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
+              >{feedback.message}</div>
+            )}
+            {content}
+          </main>
+        );
+        if (activeStep === 0) {
+          return commonMain(
+            <BatchStepMaterials
+              prep={prep}
+              assetCards={assetCards}
+              selectableAssets={selectableAssets}
+              allSelectableAssetsSelected={allSelectableAssetsSelected}
+              selectedAssets={selectedAssets}
+              luts={luts}
+              previewInfos={previewInfos}
+              analysisBusy={analysisBusy}
+              assetPrepareTasks={assetPrepareTasks}
+              analysisTaskByAsset={analysisTaskByAsset}
+              visionProviderId={visionProviderId}
+              visionProviderOptions={visionProviderOptions}
+              visionProviderMissing={visionProviderMissing}
+              onVisionProviderChange={changeVisionProvider}
+              onToggleSelectAllAssets={toggleSelectAllAssets}
+              onToggleAsset={(assetId) => {
+                const asset = assetCards.find((item) => item.id === assetId);
+                if (!asset) return;
+                markInputChanged();
+                setSelectedAssets((current) => {
+                  if (current[assetId]) {
+                    return Object.fromEntries(Object.entries(current).filter(([id]) => id !== assetId));
+                  }
+                  if (asset.currentAnalysisId) {
+                    return { ...current, [assetId]: { analysisId: asset.currentAnalysisId, lutId: null } };
+                  }
+                  return current;
+                });
+              }}
+              onLutChange={(assetId, lutId) => {
+                markInputChanged();
+                setSelectedAssets((current) => (
+                  current[assetId] ? { ...current, [assetId]: { ...current[assetId], lutId } } : current
+                ));
+              }}
+              onAnalyze={(assetIds) => void analyzeAssets(assetIds)}
+              onAnalyzeContent={(assetIds) => void analyzeAssets(assetIds, 'content')}
+              onRetryAnalyze={(taskId) => void retryAssetAnalysis(taskId)}
+              onRequestProxy={(assetIds, busyMarker) => void requestProxies(assetIds, busyMarker)}
+              onProxyControl={(taskId, action) => void controlProxyTask(taskId, action)}
+              onProxyRetry={(taskId) => void retryProxyTask(taskId)}
+              onCleanupProxies={(scope) => void cleanupProxies(scope)}
+              onLutAction={(lutId, action) => void lutAction(lutId, action)}
+              onImportLutFile={(file) => void importLutFile(file)}
+              onResync={() => void load()}
+              onPreviewAsset={openAssetPreview}
+              onToggleAssetExclusion={(assetId, excluded) => void toggleAssetExclusion(assetId, excluded)}
+              onStartBatch={() => void startBatch()}
+              onCreateVersionFromCurrent={() => {
+                setBatchInputState('draft');
+                setFrozenScriptSnapshots([]);
                 setSelectedScripts({});
                 setSelectedAssets({});
                 setOutputPlans([]);
-                setBatchInputState(null);
-                setFrozenScriptSnapshots([]);
-                setBatchStatus(batches.find(({ id }) => id === event.target.value)?.status ?? 'draft');
+                setWorkspace(null);
+                setSelectedPlanIds([]);
                 setInputConfirmed(false);
-                setFeedback(null);
+                setActiveStep(0);
+                setFeedback({ kind: 'success', message: '请选择当前项目输入并确认，新输入会形成批次新版本。' });
               }}
-              className="h-10 w-full rounded-xl border border-hairline bg-white px-3 text-ink"
-            >
-              <option value="">尚未选择</option>
-              {batches.map((batch) => <option key={batch.id} value={batch.id}>{batch.name} · {BATCH_STATUS_LABELS[batch.status]}</option>)}
-            </select>
-          </label>
-          <label className="text-sm text-ink-secondary">
-            <span className="mb-1.5 block">新批次名称</span>
-            <input
-              type="text"
-              aria-label="新批次名称"
-              value={newBatchName}
-              onChange={(event) => setNewBatchName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && busy === null) void createBatch();
-              }}
-              placeholder="例如：8 月产品口播"
-              className="h-10 w-full rounded-xl border border-hairline bg-white px-3 text-ink"
+              renderPreviewBadge={renderPreviewBadge}
+              frozen={frozen}
+              hasConfirmedVersion={hasConfirmedVersion}
+              inputConfirmed={inputConfirmed}
+              workspace={workspace}
+              proxyBusyAssetId={proxyBusyAssetId}
+              proxyBatchBusy={proxyBatchBusy}
+              cleanupBusy={cleanupBusy}
+              cacheUsage={cacheUsage}
+              lutImporting={lutImporting}
+              phaseEBusy={phaseEBusy}
             />
-          </label>
-          <button
-            type="button"
-            className="btn-secondary self-end"
-            disabled={busy !== null}
-            onClick={() => void createBatch()}
-          >{busy === 'create' ? '创建中…' : '创建批次'}</button>
-        </div>
-      </section>
-
-      {batchInputState === 'frozen' ? (
-        <section className="space-y-4" aria-label="冻结批次输入">
-          <div className="card flex flex-wrap items-center justify-between gap-4 p-5">
-            <div>
-              <h3 className="font-semibold text-ink">已冻结的批次输入</h3>
-              <p className="mt-1 text-sm text-ink-secondary">以下正文、标题、份数和素材分析版本来自开跑快照，不随项目当前内容变化。冻结版本仍可查看和管理该版本的代理与 LUT 预览。</p>
-              <p className="mt-1 text-xs text-ink-tertiary">如需补充画面语义、镜头标签和可用区间，请创建新版本后在“项目素材池”运行内容分析；旧版本的分析身份不会被覆盖。</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {workspace && workspace.cards.some(({ versionId }) => !versionId) && (
-                <button type="button" className="btn-primary" disabled={busy !== null} onClick={() => void startBatch()}>
-                  {busy === 'start' ? '继续中…' : '继续联合分配'}
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => {
-                  setBatchInputState('draft');
-                  setFrozenScriptSnapshots([]);
-                  setSelectedScripts({});
-                  setSelectedAssets({});
-                  setOutputPlans([]);
-                  setWorkspace(null);
-                  setSelectedPlanIds([]);
-                  setInputConfirmed(false);
-                  setFeedback({ kind: 'success', message: '请选择当前项目输入并确认，新输入会形成批次新版本。' });
-                }}
-              >基于当前项目输入创建新版本</button>
-            </div>
-          </div>
-          <div className="grid gap-3 lg:grid-cols-2">
-            {frozenScriptSnapshots.map((snapshot) => <BatchFrozenScriptCard key={snapshot.id} snapshot={snapshot} />)}
-          </div>
-          <div className="tile p-4 text-sm text-ink-secondary">
-            <p className="font-medium text-ink">冻结素材池 · {Object.keys(selectedAssets).length} 条</p>
-            <ul className="mt-2 space-y-1 text-xs text-ink-tertiary">
-              {Object.entries(selectedAssets).map(([assetId, selection]) => {
-                const exclusion = workspace?.exclusions.find((item) => item.assetId === assetId);
-                return (
-                  <li key={assetId} className="flex flex-wrap items-center justify-between gap-2">
-                    <span>
-                      素材 {assetId.slice(0, 8)} · 分析版本 {selection.analysisId.slice(0, 8)}
-                      {selection.lutId && <> · LUT {luts.find((lut) => lut.id === selection.lutId)?.displayName ?? selection.lutId.slice(0, 8)}</>}
-                      {exclusion && <> · 已排除：{exclusion.reason || '未填写原因'}</>}
-                    </span>
-                    {workspace && workspace.batch.controlState !== 'stopped' && (
-                      <button
-                        type="button"
-                        className="text-xs text-accent underline"
-                        disabled={phaseEBusy !== null}
-                        onClick={() => void toggleAssetExclusion(assetId, !exclusion)}
-                      >
-                        {phaseEBusy === `exclude:${assetId}` ? '处理中…' : exclusion ? '恢复参与分配' : '从后续分配排除'}
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-          {renderMediaPrepSection()}
-        </section>
-      ) : (
-        <>
-          <section>
-            <div className="mb-3 flex items-end justify-between gap-3">
-              <div><h3 className="font-semibold text-ink">项目脚本</h3><p className="mt-1 text-sm text-ink-secondary">选择本批次使用的脚本，并为每份设置生成份数。</p></div>
-              <span className="text-sm text-ink-secondary">已选 {selectedScriptEntries.length} 份 · 计划 {plannedCount} 条</span>
-            </div>
-            {prep.scripts.length > 0
-              ? <div className="grid gap-3 lg:grid-cols-2">{prep.scripts.map((script) => (
-                <BatchScriptSelectionCard
-                  key={script.id}
-                  script={script}
-                  selected={selectedScripts[script.id] !== undefined}
-                  copyCount={selectedScripts[script.id] ?? 1}
-                  onSelectedChange={(selected) => {
-                    markInputChanged();
-                    setSelectedScripts((current) => {
-                      if (selected) return { ...current, [script.id]: current[script.id] ?? 1 };
-                      return Object.fromEntries(Object.entries(current).filter(([id]) => id !== script.id));
-                    });
-                  }}
-                  onCopyCountChange={(copyCount) => {
-                    markInputChanged();
-                    setSelectedScripts((current) => ({ ...current, [script.id]: copyCount }));
-                  }}
-                />
-              ))}</div>
-              : <div className="tile p-6 text-sm text-ink-secondary">暂无可用项目脚本，请先在第 3 步保存脚本。</div>}
-          </section>
-
-          <section className="card flex h-[820px] min-h-0 flex-col space-y-4 p-5" aria-label="项目素材池">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h3 className="font-semibold text-ink">项目素材池</h3>
-                <p className="mt-1 text-sm text-ink-secondary">只有当前在线且已有可用分析版本的素材才能进入批次素材池。</p>
-                {!selectedBatchId && <p className="mt-1 text-xs text-warn">请先创建或选择批次，才能开始素材基础分析。</p>}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm text-ink-secondary">已选 {Object.keys(selectedAssets).length} / 可选 {selectableAssets} 条</span>
-                <select
-                  aria-label="内容分析供应商"
-                  value={visionProviderId}
-                  onChange={(event) => setVisionProviderId(event.target.value)}
-                  className="h-10 max-w-52 rounded-xl border border-hairline bg-white px-3 text-sm text-ink"
-                >
-                  <option value="">未配置视觉供应商</option>
-                  {visionProviders.filter((provider) => provider.configured && provider.supportsVision).map((provider) => (
-                    <option key={provider.id} value={provider.id}>{provider.name}</option>
+          );
+        }
+        if (activeStep === 1) {
+          return commonMain(
+            <BatchStepScripts
+              prep={prep}
+              selectedScripts={selectedScripts}
+              onToggleScript={(scriptId, selected) => {
+                markInputChanged();
+                setSelectedScripts((current) => {
+                  if (selected) return { ...current, [scriptId]: current[scriptId] ?? 1 };
+                  return Object.fromEntries(Object.entries(current).filter(([id]) => id !== scriptId));
+                });
+              }}
+              onCopyCountChange={(scriptId, copyCount) => {
+                markInputChanged();
+                setSelectedScripts((current) => ({ ...current, [scriptId]: copyCount }));
+              }}
+              plannedCount={plannedCount}
+              outputPreset={outputPresetLabel}
+              frozen={frozen}
+              frozenScriptSnapshots={frozenScriptSnapshots}
+              busy={busy}
+              outputPlans={outputPlans}
+              batchStatus={batchStatus}
+              ttsConfigured={ttsConfigured}
+              onConfirmSnapshot={() => void confirmSnapshot()}
+              onStartBatch={() => void startBatch()}
+              inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
+            />
+          );
+        }
+        if (activeStep === 2) {
+          if (!workspace && outputPlans.length === 0) {
+            return commonMain(<div className={shellStyles.emptyState}><strong>还没有成片</strong><span>先完成第 1、2 步确认并开始生产。</span></div>);
+          }
+          if (!workspace) {
+            return commonMain(
+              <section aria-label="成片计划">
+                <div className="mb-3 flex items-end justify-between gap-3">
+                  <div><h3 className="font-semibold text-ink">待生成成片</h3><p className="mt-1 text-sm text-ink-secondary">一张卡片对应一条目标成片，重试不会增加卡片数量。</p></div>
+                  <strong className="text-sm text-ink">共 {outputPlans.length} 张</strong>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {outputPlans.map((plan, index) => (
+                    <article key={plan.id} data-testid="batch-output-card" className="tile p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs text-ink-tertiary">待生成成片</p>
+                          <h4 className="mt-1 font-semibold text-ink">成片 {String(plan.seq || index + 1).padStart(2, '0')}</h4>
+                        </div>
+                        <span className={`rounded-full px-2 py-1 text-[11px] ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : 'bg-surface-subtle text-ink-secondary'}`}>
+                          {batchStatus === 'running' ? '等待调度' : BATCH_STATUS_LABELS[batchStatus]}
+                        </span>
+                      </div>
+                    </article>
                   ))}
-                </select>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  disabled={!selectedBatchId || analysisCandidates.length === 0 || analysisBusy !== null}
-                  onClick={() => void analyzeAssets(analysisCandidates.map((asset) => asset.id))}
-                >{analysisBusy === '__all__' ? '分析中…' : `基础分析（${analysisCandidates.length}）`}</button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  disabled={!selectedBatchId || !visionProviderId || contentAnalysisCandidates.length === 0 || analysisBusy !== null}
-                  onClick={() => void analyzeAssets(contentAnalysisCandidates.map((asset) => asset.id), 'content')}
-                >{analysisBusy === '__all__' ? '分析中…' : `内容分析待补齐（${contentAnalysisCandidates.length}）`}</button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  aria-label={allSelectableAssetsSelected ? '取消全选' : '一键全选'}
-                  disabled={selectableAssetCards.length === 0}
-                  onClick={toggleSelectAllAssets}
-                >{allSelectableAssetsSelected ? '取消全选' : '一键全选'}</button>
-              </div>
-            </div>
-            <div
-              data-testid="batch-asset-pool-scroll"
-              aria-label="项目素材列表"
-              className="min-h-0 flex-1 overflow-x-hidden overflow-y-scroll overscroll-contain rounded-2xl bg-surface-subtle p-3 [scrollbar-gutter:stable]"
-            >
-              {assetCards.length > 0
-                ? <div className="grid gap-3 lg:grid-cols-2">{assetCards.map((asset) => {
-                const analysisTask = analysisTaskByAsset.get(asset.id);
-                const assetAnalysisBusy = analysisBusy === asset.id
-                  || analysisBusy === analysisTask?.id
-                  || analysisBusy === '__all__';
-                return (
-                <BatchAssetSelectionCard
-                  key={asset.id}
-                  asset={asset}
-                  selected={selectedAssets[asset.id] !== undefined}
-                  onSelectedChange={(selected) => {
-                    markInputChanged();
-                    setSelectedAssets((current) => {
-                      if (selected && asset.currentAnalysisId) {
-                        return { ...current, [asset.id]: { analysisId: asset.currentAnalysisId, lutId: null } };
-                      }
-                      return Object.fromEntries(Object.entries(current).filter(([id]) => id !== asset.id));
-                    });
-                  }}
-                  luts={luts}
-                  lutId={selectedAssets[asset.id]?.lutId ?? null}
-                  onLutChange={(lutId) => {
-                    markInputChanged();
-                    setSelectedAssets((current) => (
-                      current[asset.id] ? { ...current, [asset.id]: { ...current[asset.id], lutId } } : current
-                    ));
-                  }}
-                  onRequestProxy={hasConfirmedVersion && inputConfirmed ? () => void requestProxies([asset.id], asset.id) : undefined}
-                  proxyBusy={proxyBusyAssetId === asset.id}
-                  analysisTask={analysisTask}
-                  onAnalyze={() => void analyzeAssets([asset.id])}
-                  onAnalyzeContent={asset.analysisLevel !== 'content' && visionProviderId
-                    ? () => void analyzeAssets([asset.id], 'content')
-                    : undefined}
-                  onRetryAnalyze={analysisTask?.status === 'failed' ? () => void retryAssetAnalysis(analysisTask.id) : undefined}
-                  onResync={() => void load()}
-                  analyzeBusy={assetAnalysisBusy}
-                  onPreview={() => openAssetPreview(asset)}
-                />
-                );
-                })}</div>
-                : <div className="tile p-6 text-sm text-ink-secondary">暂无可用视频素材，请先在第 4 步完成视频生成。</div>}
-            </div>
-          </section>
-
-          {renderMediaPrepSection()}
-
-          <section className="card space-y-4 p-5" aria-label="批次确认与开始">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h3 className="font-semibold text-ink">确认整体输入</h3>
-                <p className="mt-1 text-sm text-ink-secondary">将 {selectedScriptEntries.length} 份脚本、{Object.keys(selectedAssets).length} 条素材与 {plannedCount} 条成片计划作为可检查的 draft 快照；点击开始时再同步最新脚本并冻结。</p>
-                {!inputConfirmed && hasConfirmedVersion && (
-                  <p className="mt-1 text-xs text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</p>
-                )}
-              </div>
-              <div className="grid w-full gap-3 sm:grid-cols-2">
-                <label className="text-sm text-ink-secondary">
-                  <span className="mb-1.5 block">输出比例</span>
-                  <select
-                    aria-label="批量输出比例"
-                    value={outputPreset}
-                    onChange={(event) => { setOutputPreset(event.target.value as OutputPreset); markInputChanged(); }}
-                    className="h-10 w-full rounded-xl border border-hairline bg-white px-3 text-ink"
-                  >
-                    <option value="3:4">3:4 · 1080×1440</option>
-                    <option value="9:16">9:16 · 1080×1920</option>
-                    <option value="16:9">16:9 · 1920×1080</option>
-                  </select>
-                </label>
-                <label className="text-sm text-ink-secondary">
-                  <span className="mb-1.5 block">视觉候选目标时长（秒）</span>
-                  <input
-                    type="number"
-                    min={3}
-                    max={300}
-                    step={1}
-                    aria-label="批量目标时长"
-                    value={targetDurationSec}
-                    onChange={(event) => {
-                      setTargetDurationSec(Math.max(3, Math.min(300, Number(event.target.value) || 15)));
-                      markInputChanged();
-                    }}
-                    className="h-10 w-full rounded-xl border border-hairline bg-white px-3 text-ink"
-                  />
-                </label>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" className="btn-secondary" disabled={busy !== null} onClick={() => void confirmSnapshot()}>
-                  {busy === 'snapshot' ? '确认中…' : '确认整体输入'}
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  disabled={busy !== null || outputPlans.length === 0 || batchStatus !== 'draft'}
-                  onClick={() => void startBatch()}
-                >{busy === 'start' ? '启动中…' : '开始批量生产'}</button>
-              </div>
-            </div>
-          </section>
-        </>
-      )}
-
-      {feedback && (
-        <div
-          role={feedback.kind === 'error' ? 'alert' : 'status'}
-          aria-live="polite"
-          className={`rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
-        >{feedback.message}</div>
-      )}
-
+                </div>
+              </section>,
+            );
+          }
+          return commonMain(
+            <BatchStepReview
+              workspace={workspace}
+              cardFilter={cardFilter}
+              onCardFilterChange={setCardFilter}
+              selectedPlanIds={selectedPlanIds}
+              onTogglePlan={(planId, checked) => setSelectedPlanIds((current) => (
+                checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
+              ))}
+              phaseEBusy={phaseEBusy}
+              onRetryRender={(taskId) => void retryRenderTask(taskId)}
+              onReallocate={(planId) => void reallocateOutput(planId)}
+              onControlBatch={(action) => void controlBatch(action)}
+              projectId={projectId}
+              selectedBatchId={selectedBatchId}
+              busy={busy}
+              onStartBatch={() => void startBatch()}
+            />
+          );
+        }
+        return commonMain(
+          <BatchStepExport
+            workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', counts: { total: 0, exportable: 0, publishable: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
+            selectedPlanIds={selectedPlanIds}
+            onTogglePlan={(planId, checked) => setSelectedPlanIds((current) => (
+              checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
+            ))}
+            onSelectAll={() => {
+              const selectable = (workspace?.cards ?? []).filter(({ publishable }) => publishable);
+              const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
+              setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
+            }}
+            phaseEBusy={phaseEBusy}
+            onPublish={() => void publishSelected()}
+            onRevealFolder={() => void revealFolder()}
+            revealAvailable
+            revealBusy={revealBusy}
+            folderRelativePath={folderRelativePath}
+            projectId={projectId}
+            selectedBatchId={selectedBatchId}
+          />
+        );
+      }}
+    >
       {previewAsset && (
         <div
           role="dialog"
@@ -1612,7 +1403,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           <div className="w-full max-w-3xl rounded-2xl bg-white p-4 shadow-xl">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">项目素材预览</p>
                 <h3 id="batch-asset-preview-title" className="mt-1 font-semibold text-ink">
                   {previewAsset.title}
                 </h3>
@@ -1637,182 +1427,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           </div>
         </div>
       )}
-
-      {workspace && workspace.cards.length > 0 ? (
-        <section className="space-y-4" aria-label="成片工作区">
-          <div className="card space-y-4 p-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <h3 className="mt-1 font-semibold text-ink">批次成片工作区</h3>
-                <p className="mt-1 text-sm text-ink-secondary">状态来自持久任务、候选版本和正式产物聚合；新版失败不会隐藏旧成片。</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {workspace.batch.controlState === 'running' && (
-                  <button type="button" className="btn-secondary text-xs" disabled={phaseEBusy !== null} onClick={() => void controlBatch('pause')}>暂停批次</button>
-                )}
-                {workspace.batch.controlState === 'paused' && (
-                  <button type="button" className="btn-secondary text-xs" disabled={phaseEBusy !== null} onClick={() => void controlBatch('resume')}>继续批次</button>
-                )}
-                {workspace.batch.controlState !== 'stopped' && (
-                  <button type="button" className="btn-secondary text-xs text-fail" disabled={phaseEBusy !== null} onClick={() => void controlBatch('stop')}>停止批次</button>
-                )}
-                <button type="button" className="btn-primary text-xs" disabled={phaseEBusy !== null || selectedPlanIds.length === 0} onClick={() => void publishSelected()}>
-                  {phaseEBusy === 'export' ? '发布中…' : `正式导出选中项（${selectedPlanIds.length}）`}
-                </button>
-              </div>
-              {workspace.counts.publishable === 0 && workspace.counts.total > 0 && (
-                <p className="w-full text-xs text-warn">
-                  当前没有可导出的成片 —— 批量生产尚未接入配音，成片只有画面和字幕。配音打通后即可导出。
-                </p>
-              )}
-            </div>
-            <div className="grid gap-3 sm:grid-cols-5">
-              <div className="tile p-3"><p className="text-xs text-ink-tertiary">全部</p><strong className="text-xl text-ink">{workspace.counts.total}</strong></div>
-              <div className="tile p-3"><p className="text-xs text-ink-tertiary">可正式发布</p><strong className="text-xl text-ok">{workspace.counts.publishable}</strong></div>
-              <div className="tile p-3"><p className="text-xs text-ink-tertiary">处理中</p><strong className="text-xl text-accent">{workspace.counts.processing}</strong></div>
-              <div className="tile p-3"><p className="text-xs text-ink-tertiary">需处理</p><strong className="text-xl text-warn">{workspace.counts.needsAttention}</strong></div>
-              <div className="tile p-3"><p className="text-xs text-ink-tertiary">可重试失败</p><strong className="text-xl text-fail">{workspace.counts.failed}</strong></div>
-            </div>
-            <div className="flex flex-wrap gap-2" aria-label="成片状态筛选">
-              {([
-                ['all', '全部'],
-                ['completed', '已完成'],
-                ['needs_attention', '需处理'],
-                ['processing', '渲染中'],
-                ['waiting', '等待中'],
-                ['paused', '已暂停'],
-                ['retryable_failed', '可重试'],
-                ['stopped', '已停止'],
-              ] as Array<[CardFilter, string]>).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`rounded-full px-3 py-1 text-xs ${cardFilter === value ? 'bg-accent text-white' : 'bg-surface-subtle text-ink-secondary'}`}
-                  onClick={() => setCardFilter(value)}
-                >{label}</button>
-              ))}
-            </div>
-            <p className="text-xs text-ink-tertiary">没有真实口播时会先生成静音视觉候选供检查，但不会被冒充为可正式发布成片。</p>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            {visibleCards.map((card) => {
-              const mediaSource = card.candidate ? 'candidate' : card.currentVideo ? 'artifact' : null;
-              const mediaUrl = mediaSource && selectedBatchId
-                ? `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=video&source=${mediaSource}`
-                : null;
-              const coverSource = card.candidate?.coverAvailable ? 'candidate' : card.currentCover ? 'artifact' : null;
-              const coverUrl = coverSource && selectedBatchId
-                ? `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=cover&source=${coverSource}`
-                : null;
-              const progress = card.task?.progress as { phase?: string; percent?: number | null; description?: string } | null;
-              return (
-                <article key={card.planId} data-testid="batch-output-card" className="tile space-y-3 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <label className="flex min-w-0 items-start gap-3">
-                      <input
-                        type="checkbox"
-                        aria-label={`选择成片 ${card.seq}`}
-                        checked={selectedPlanIds.includes(card.planId)}
-                        disabled={!card.publishable}
-                        title={card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
-                        onChange={(event) => setSelectedPlanIds((current) => (
-                          event.target.checked ? [...new Set([...current, card.planId])] : current.filter((id) => id !== card.planId)
-                        ))}
-                        className="mt-1 disabled:opacity-40"
-                      />
-                      <span className="min-w-0">
-                        <span className="block text-xs text-ink-tertiary">成片 {String(card.seq).padStart(2, '0')} · v{card.versionNumber ?? '—'}</span>
-                        <strong className="mt-1 block truncate text-ink">{card.scriptTitle || '未命名脚本'}</strong>
-                      </span>
-                    </label>
-                    <span className={`rounded-full px-2 py-1 text-[11px] ${card.status === 'completed' ? 'bg-ok/10 text-ok' : card.status === 'retryable_failed' || card.status === 'stopped' ? 'bg-fail/10 text-fail' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-accent/10 text-accent'}`}>
-                      {CARD_STATUS_LABELS[card.status]}
-                    </span>
-                  </div>
-                  {(mediaUrl || coverUrl) && (
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
-                      {mediaUrl && (
-                        <video key={`${card.versionId}-${mediaSource}`} controls preload="metadata" className="aspect-video w-full rounded-xl bg-black" data-testid={`batch-output-preview-${card.planId}`}>
-                          <source src={mediaUrl} type="video/mp4" />
-                        </video>
-                      )}
-                      {coverUrl && (
-                        <figure className="overflow-hidden rounded-xl border border-hairline bg-surface-subtle" data-testid={`batch-output-cover-${card.planId}`}>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={coverUrl} alt={`成片 ${card.seq} 封面`} className="aspect-[3/4] h-full w-full object-cover" />
-                          <figcaption className="border-t border-hairline px-2 py-1.5 text-center text-[11px] text-ink-secondary">封面已生成</figcaption>
-                        </figure>
-                      )}
-                    </div>
-                  )}
-                  {card.candidate && (
-                    <div className="flex flex-wrap gap-2 text-[11px]">
-                      <span className="rounded-full bg-ok/10 px-2 py-1 text-ok">封面已生成</span>
-                      <span className={`rounded-full px-2 py-1 ${card.candidate.subtitleCueCount > 0 ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}`}>
-                        {card.candidate.subtitleCueCount > 0 ? `字幕 ${card.candidate.subtitleCueCount} 条` : '字幕待生成'}
-                      </span>
-                    </div>
-                  )}
-                  {card.candidate?.audioMode === 'silent_placeholder' && (
-                    <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">无配音样片 —— 仅供检查画面，不能导出。</p>
-                  )}
-                  {progress && (
-                    <div className="text-xs text-ink-secondary">
-                      <p>{(progress.phase && TASK_PHASE_LABELS[progress.phase]) || progress.description || card.nextAction}{typeof progress.percent === 'number' ? ` · ${Math.round(progress.percent * 100)}%` : ''}</p>
-                      {typeof progress.percent === 'number' && <progress className="mt-1 w-full" max={1} value={progress.percent} />}
-                    </div>
-                  )}
-                  {(card.blockers.length > 0 || card.warnings.length > 0 || card.task?.errorMessage) && (
-                    <ul className="space-y-1 text-xs text-warn">
-                      {card.blockers.map((message) => <li key={`b-${message}`}>阻塞：{message}</li>)}
-                      {card.warnings.map((message) => <li key={`w-${message}`}>提醒：{message}</li>)}
-                      {card.task?.errorMessage && <li>任务失败：{card.task.errorMessage}</li>}
-                    </ul>
-                  )}
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-3">
-                    <span className="text-xs text-ink-tertiary">历史产物 {card.history.length} 项 · {card.nextAction}</span>
-                    <span className="flex flex-wrap gap-2">
-                      {card.task?.status === 'failed' && (
-                        <button type="button" className="text-xs text-accent underline" disabled={phaseEBusy !== null} onClick={() => void retryRenderTask(card.task!.id)}>重试渲染</button>
-                      )}
-                      {workspace.batch.controlState !== 'stopped' && (
-                        <button type="button" className="text-xs text-ink-secondary underline" disabled={phaseEBusy !== null} onClick={() => void reallocateOutput(card.planId)}>
-                          {phaseEBusy === card.planId ? '重新分配中…' : '只重新分配这一条'}
-                        </button>
-                      )}
-                    </span>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-          {visibleCards.length === 0 && <div className="tile p-6 text-sm text-ink-secondary">当前筛选下没有成片。</div>}
-        </section>
-      ) : outputPlans.length > 0 && (
-        <section aria-label="成片计划">
-          <div className="mb-3 flex items-end justify-between gap-3">
-            <div><h3 className="font-semibold text-ink">成片计划</h3><p className="mt-1 text-sm text-ink-secondary">一张卡片对应一条目标成片，重试不会增加卡片数量。</p></div>
-            <strong className="text-sm text-ink">共 {outputPlans.length} 张</strong>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {outputPlans.map((plan, index) => (
-              <article key={plan.id} data-testid="batch-output-card" className="tile p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs text-ink-tertiary">成片计划</p>
-                    <h4 className="mt-1 font-semibold text-ink">成片 {String(plan.seq || index + 1).padStart(2, '0')}</h4>
-                  </div>
-                  <span className={`rounded-full px-2 py-1 text-[11px] ${batchStatus === 'running' ? 'bg-accent/10 text-accent' : 'bg-surface-subtle text-ink-secondary'}`}>
-                    {batchStatus === 'running' ? '等待调度' : BATCH_STATUS_LABELS[batchStatus]}
-                  </span>
-                </div>
-                <p className="mt-3 truncate text-xs text-ink-tertiary">计划 {plan.id.slice(0, 8)}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-    </section>
+    </MixcutShell>
   );
 }
