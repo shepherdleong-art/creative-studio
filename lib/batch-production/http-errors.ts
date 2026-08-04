@@ -1,4 +1,5 @@
 import { BatchApiUnavailableError, BatchDomainError } from './errors.ts';
+import { ProviderExecutionGateError } from '../provider-execution-gate.ts';
 
 export interface BatchHttpErrorFallback {
   error: string;
@@ -35,6 +36,12 @@ export function batchErrorResponse(error: unknown, fallback: BatchHttpErrorFallb
     }
     return {
       status,
+      body: { error: fallback.error, code: error.code, message: error.message },
+    };
+  }
+  if (error instanceof ProviderExecutionGateError) {
+    return {
+      status: 409,
       body: { error: fallback.error, code: error.code, message: error.message },
     };
   }

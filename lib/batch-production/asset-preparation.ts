@@ -26,6 +26,7 @@ export interface QueueAssetPreparationOptions {
   mode?: 'technical' | 'content';
   providerId?: string;
   model?: string;
+  executionScope?: 'external' | 'company';
 }
 
 export interface AssetPreparationQueueItem {
@@ -136,7 +137,12 @@ function requestKey(
   options: QueueAssetPreparationOptions,
 ): string {
   if (options.mode === 'content') {
-    return `asset_content:${batchId}:${assetId}:${stableDigest(contentFingerprint)}:${stableDigest(`${options.providerId}\u0000${options.model}`)}`;
+    // v17 已发布的 external key 只包含 provider+model；继续沿用它，避免旧任务在
+    // v18 升级后因 key 漂移而重复排队。company scope 使用独立后缀隔离路由身份。
+    const providerIdentity = options.executionScope === 'company'
+      ? `${options.providerId}\u0000${options.model}\u0000company`
+      : `${options.providerId}\u0000${options.model}`;
+    return `asset_content:${batchId}:${assetId}:${stableDigest(contentFingerprint)}:${stableDigest(providerIdentity)}`;
   }
   return `asset_prepare:${batchId}:${assetId}`;
 }
@@ -183,6 +189,10 @@ export function queueAssetPreparation(
   const mode = options.mode ?? 'technical';
   if (mode === 'content' && (!options.providerId?.trim() || !options.model?.trim())) {
     throw new BatchDomainError('invalid_input', '内容分析必须指定已配置的视觉供应商与模型');
+  }
+  if (mode === 'content' && options.executionScope !== undefined
+    && options.executionScope !== 'external' && options.executionScope !== 'company') {
+    throw new BatchDomainError('invalid_input', '供应商执行作用域无效');
   }
 
   assertBatchAndProject(db, projectId, batchId);
@@ -242,8 +252,8 @@ export function queueAssetPreparation(
         const createdAt = (now ?? (() => new Date()))().toISOString();
         db.prepare(`
           INSERT OR IGNORE INTO batch_asset_analysis_requests
-            (taskId, projectId, batchId, assetId, contentFingerprint, providerId, model, analysisMode, createdAt)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'content', ?)
+            (taskId, projectId, batchId, assetId, contentFingerprint, providerId, model, executionScope, analysisMode, createdAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'content', ?)
         `).run(
           taskId,
           projectId,
@@ -252,6 +262,7 @@ export function queueAssetPreparation(
           asset.contentFingerprint,
           options.providerId!.trim(),
           options.model!.trim(),
+          options.executionScope ?? 'external',
           createdAt,
         );
       }

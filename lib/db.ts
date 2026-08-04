@@ -246,7 +246,9 @@ function initTables(db: Database.Database) {
       enabled INTEGER NOT NULL DEFAULT 1,
       isBuiltin INTEGER NOT NULL DEFAULT 1,
       supportsVision INTEGER NOT NULL DEFAULT 0,
-      visionCostPerRequest REAL NOT NULL DEFAULT 0
+      visionCostPerRequest REAL NOT NULL DEFAULT 0,
+      executionScope TEXT NOT NULL DEFAULT 'external'
+        CHECK(executionScope IN ('external','company'))
     );
 
     CREATE TABLE IF NOT EXISTS video_prompt_templates (

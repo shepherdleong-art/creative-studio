@@ -30,6 +30,11 @@ import {
 import { geminiAnalyzeSellingPoints, geminiCompleteJson } from './gemini';
 import { toScriptProviderMeta } from './config';
 import {
+  ProviderExecutionGateError,
+  assertProviderExecutionAvailable,
+  evaluateProviderExecutionGate,
+} from '../provider-execution-gate';
+import {
   listScriptProviderMeta,
   resolveStoredScriptProvider,
   getScriptProviderDefaults,
@@ -77,6 +82,28 @@ function checkConfigured(providerId: string): void {
   }
 }
 
+export async function assertStoredScriptProviderExecutionAvailable(
+  providerId: string,
+  options: {
+    capability: 'model' | 'media';
+    mediaTransportAvailable?: boolean;
+  },
+): Promise<void> {
+  checkConfigured(providerId);
+  const runtime = resolveStoredScriptProvider(providerId);
+  await assertProviderExecutionAvailable(runtime, options);
+}
+
+function assertExternalProviderExecutionAvailable(
+  runtime: ReturnType<typeof resolveStoredScriptProvider>,
+  capability: 'model' | 'media',
+): void {
+  const result = evaluateProviderExecutionGate({ provider: runtime, capability });
+  if (!result.allowed) {
+    throw new ProviderExecutionGateError(result.code, result.message, result.executionScope);
+  }
+}
+
 export async function completeJson<T>(input: {
   providerId: string;
   systemPrompt: string;
@@ -89,6 +116,17 @@ export async function completeJson<T>(input: {
 }): Promise<T> {
   checkConfigured(input.providerId);
   const runtime = resolveStoredScriptProvider(input.providerId);
+  const capability = input.images?.length ? 'media' : 'model';
+  if (runtime.executionScope === 'company') {
+    await assertProviderExecutionAvailable(runtime, {
+      capability,
+      // URL/租约型 MediaTransport 尚未接入脚本供应商输入；公司视觉调用必须失败关闭。
+      mediaTransportAvailable: false,
+    });
+  } else {
+    // 保持直连路径同步：创建请求后立即 abort 时，供应商 Adapter 必须已经接管 signal。
+    assertExternalProviderExecutionAvailable(runtime, capability);
+  }
   const options = {
     systemPrompt: input.systemPrompt,
     userPrompt: input.userPrompt,
@@ -120,6 +158,11 @@ export async function analyzeSellingPoints(
 ): Promise<AnalysisResult> {
   checkConfigured(providerId);
   const runtime = resolveStoredScriptProvider(providerId);
+  if (runtime.executionScope === 'company') {
+    await assertProviderExecutionAvailable(runtime, { capability: 'model' });
+  } else {
+    assertExternalProviderExecutionAvailable(runtime, 'model');
+  }
 
   const systemPrompt =
     'You are a professional e-commerce content strategist. Always respond with valid JSON only, no markdown fences.';

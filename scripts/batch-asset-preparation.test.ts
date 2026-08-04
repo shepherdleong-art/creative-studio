@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { runFfmpeg } from '../lib/ffmpeg.ts';
+import type { MediaTransport } from '../lib/media-transport.ts';
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-asset-prep-data-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
@@ -22,6 +24,7 @@ const runner = await import('../lib/batch-production/runner.ts');
 const tasks = await import('../lib/batch-production/tasks.ts');
 const media = await import('../lib/batch-production/project-asset-media.ts');
 const mediaResponse = await import('../lib/batch-production/project-asset-media-response.ts');
+const providerGate = await import('../lib/provider-execution-gate.ts');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-asset-prep-'));
 const db = new Database(path.join(root, 'workbench.db'));
@@ -42,7 +45,10 @@ db.exec(`
   CREATE TABLE script_providers (
     id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
     supportsVision INTEGER NOT NULL DEFAULT 0,
-    model TEXT NOT NULL DEFAULT '', defaultModel TEXT NOT NULL DEFAULT ''
+    model TEXT NOT NULL DEFAULT '', defaultModel TEXT NOT NULL DEFAULT '',
+    baseUrl TEXT NOT NULL DEFAULT '', defaultBaseUrl TEXT NOT NULL DEFAULT '',
+    apiKey TEXT NOT NULL DEFAULT '',
+    executionScope TEXT NOT NULL DEFAULT 'external'
   );
   INSERT INTO projects VALUES ('project-1', '一号项目');
   INSERT INTO projects VALUES ('project-2', '二号项目');
@@ -146,32 +152,52 @@ try {
   assert.equal(ready.items[0]?.ready, true);
   assert.equal(ready.items[0]?.analysisLevel, 'technical');
 
-  db.prepare(`INSERT INTO script_providers (id, enabled, supportsVision, model) VALUES ('vision-provider', 1, 1, 'vision-model')`).run();
+  db.prepare(`
+    INSERT INTO script_providers (id, enabled, supportsVision, model, baseUrl, apiKey, executionScope)
+    VALUES ('vision-provider', 1, 1, 'vision-model', 'https://vision.example/v1', 'vision-key', 'external')
+  `).run();
   const contentQueued = preparation.queueAssetPreparation(
     db,
     'project-1',
     batchId,
     [assetId],
     undefined,
-    { mode: 'content', providerId: 'vision-provider', model: 'vision-model' },
+    { mode: 'content', providerId: 'vision-provider', model: 'vision-model', executionScope: 'external' },
   );
   assert.equal(contentQueued.items[0]?.ready, false, 'technical 结果不能冒充内容分析');
+  const oldDirectIdentity = createHash('sha256')
+    .update('vision-provider\u0000vision-model')
+    .digest('hex')
+    .slice(0, 20);
+  assert.equal(
+    (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(contentQueued.items[0]!.taskId!) as { requestKey: string }).requestKey,
+    `asset_content:${batchId}:${assetId}:${createHash('sha256').update(`sha256:${fingerprint}`).digest('hex').slice(0, 20)}:${oldDirectIdentity}`,
+    'v18 仍须沿用 v17 直连 requestKey，避免旧任务升级后重复排队',
+  );
   const contentRequest = db.prepare(`
-    SELECT assetId, contentFingerprint, providerId, model
+    SELECT assetId, contentFingerprint, providerId, model, executionScope
     FROM batch_asset_analysis_requests WHERE taskId = ?
   `).get(contentQueued.items[0]!.taskId!) as {
     assetId: string;
     contentFingerprint: string;
     providerId: string;
     model: string;
+    executionScope: string;
   };
   assert.deepEqual(contentRequest, {
     assetId,
     contentFingerprint: `sha256:${fingerprint}`,
     providerId: 'vision-provider',
     model: 'vision-model',
+    executionScope: 'external',
   }, '内容分析任务必须冻结素材指纹和供应商模型');
+  let directGateCalls = 0;
   const contentExecutor = executors.createAnalyzeAssetExecutor({
+    assertProviderReady: async (provider, options) => {
+      directGateCalls += 1;
+      assert.equal(provider.executionScope, 'external');
+      assert.equal(options.capability, 'media');
+    },
     analyzeContent: async () => ({
       summary: '红色视频素材',
       sellingPoints: ['红色'],
@@ -193,11 +219,155 @@ try {
     if (preparation.getCurrentAssetAnalysis(db, 'project-1', assetId)?.analysisLevel === 'content') break;
   }
   const contentReady = preparation.getCurrentAssetAnalysis(db, 'project-1', assetId);
+  assert.equal(directGateCalls, 1, '内容分析必须在调用视觉 Adapter 前经过统一供应商门禁');
   assert.equal(contentReady?.analysisLevel, 'content');
   assert.deepEqual(
     (contentReady?.analysisJson as { semanticTags?: string[] }).semanticTags,
     ['产品'],
     '内容分析结果必须成为素材当前分析版本',
+  );
+
+  const companySourcePath = path.join(root, 'company-source.mp4');
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'color=c=magenta:duration=0.6:size=80x64:rate=12',
+    '-pix_fmt', 'yuv420p', '-y', companySourcePath,
+  ]);
+  const companyFingerprint = await mediaCatalog.computeFileSha256(companySourcePath);
+  const companyAsset = assets.createAsset(db, {
+    projectId: 'project-1', sourceKind: 'linked',
+    locationJson: { kind: 'linked', absolutePath: companySourcePath },
+    contentFingerprint: `sha256:${companyFingerprint}`, mediaKind: 'video',
+  });
+  db.prepare(`
+    INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
+    VALUES ('company-source', ?, 'linked', ?, 'healthy', ?)
+  `).run(companyAsset, JSON.stringify({ kind: 'linked', absolutePath: companySourcePath }), new Date().toISOString());
+  db.prepare(`
+    INSERT INTO script_providers (id, enabled, supportsVision, model, baseUrl, apiKey, executionScope)
+    VALUES ('company-vision', 1, 1, 'company-model', 'http://127.0.0.1:4000/v1', 'company-key', 'company')
+  `).run();
+  const companyQueued = preparation.queueAssetPreparation(
+    db,
+    'project-1',
+    batchId,
+    [companyAsset],
+    undefined,
+    { mode: 'content', providerId: 'company-vision', model: 'company-model', executionScope: 'company' },
+  );
+  let companyAnalyzeCalls = 0;
+  const blockedCompanyExecutor = executors.createAnalyzeAssetExecutor({
+    assertProviderReady: async () => {
+      throw new Error('公司媒体传输未就绪');
+    },
+    analyzeContent: async () => {
+      companyAnalyzeCalls += 1;
+      throw new Error('供应商调用不应发生');
+    },
+  });
+  await runner.runPendingOnce({
+    db,
+    workerId: 'company-content-gate-test',
+    executors: [blockedCompanyExecutor],
+    concurrency: 1,
+    progressThrottleMs: 0,
+  });
+  assert.equal(companyAnalyzeCalls, 0, '公司门禁失败时不得调用视觉供应商');
+  assert.deepEqual(
+    db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(companyQueued.items[0]!.taskId!),
+    { status: 'failed' },
+  );
+  const companyRetried = preparation.queueAssetPreparation(
+    db,
+    'project-1',
+    batchId,
+    [companyAsset],
+    undefined,
+    { mode: 'content', providerId: 'company-vision', model: 'company-model', executionScope: 'company' },
+  );
+  assert.equal(companyRetried.items[0]!.taskId, companyQueued.items[0]!.taskId);
+  db.prepare(`UPDATE script_providers SET apiKey = '' WHERE id = 'company-vision'`).run();
+  const transportEvents: string[] = [];
+  const fixtureTransport: MediaTransport = {
+    id: 'fixture-transport',
+    async prepare(input) {
+      transportEvents.push(`prepare:${input.attemptId}`);
+      assert.equal(input.projectId, 'project-1');
+      assert.equal(input.batchId, batchId);
+      assert.equal(input.assetId, companyAsset);
+      assert.equal(input.absolutePath, companySourcePath);
+      assert.equal(input.contentFingerprint, `sha256:${companyFingerprint}`);
+      const issuedAt = Date.now() - 60_000;
+      return {
+        id: 'company-media-lease',
+        transportId: 'fixture-transport',
+        opaqueUrl: 'https://media.invalid/company-media-lease',
+        contentFingerprint: input.contentFingerprint,
+        issuedAt: new Date(issuedAt).toISOString(),
+        expiresAt: new Date(issuedAt + 5 * 60_000).toISOString(),
+      };
+    },
+    async release(lease) {
+      transportEvents.push(`release:${lease.id}`);
+    },
+  };
+  const transportedCompanyExecutor = executors.createAnalyzeAssetExecutor({
+    mediaTransport: fixtureTransport,
+    assertProviderReady: async (provider, options) => {
+      await providerGate.assertProviderExecutionAvailable(provider, {
+        ...options,
+        inspectRuntime: async () => ({
+          status: 'ready', reason: 'fixture ready', proxyAvailable: true, tunnelAvailable: true,
+          startedAt: null, tunnelEngine: 'cloudflared',
+        }),
+      });
+    },
+    analyzeContent: async (input) => {
+      assert.equal(input.mediaLease?.opaqueUrl, 'https://media.invalid/company-media-lease');
+      return {
+        summary: '公司供应商分析结果',
+        sellingPoints: ['公司分析'],
+        semanticTags: ['租约'],
+        usableRanges: [{ startUs: 0, endUs: 400_000, qualityScore: 0.8 }],
+        qualityIssues: [],
+        coverFrameTimesUs: [100_000],
+        scenes: [{ startUs: 0, endUs: 400_000, description: '租约画面', labels: ['租约'], qualityScore: 0.8 }],
+      };
+    },
+  });
+  await runner.runPendingOnce({
+    db,
+    workerId: 'company-content-transport-test',
+    executors: [transportedCompanyExecutor],
+    concurrency: 1,
+    progressThrottleMs: 0,
+  });
+  assert.deepEqual(transportEvents, [], 'API Key 被清空后必须在 prepare 媒体租约前失败');
+  assert.deepEqual(
+    db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(companyQueued.items[0]!.taskId!),
+    { status: 'failed' },
+  );
+  db.prepare(`UPDATE script_providers SET apiKey = 'company-key' WHERE id = 'company-vision'`).run();
+  preparation.queueAssetPreparation(
+    db,
+    'project-1',
+    batchId,
+    [companyAsset],
+    undefined,
+    { mode: 'content', providerId: 'company-vision', model: 'company-model', executionScope: 'company' },
+  );
+  await runner.runPendingOnce({
+    db,
+    workerId: 'company-content-transport-test-2',
+    executors: [transportedCompanyExecutor],
+    concurrency: 1,
+    progressThrottleMs: 0,
+  });
+  assert.match(transportEvents[0] ?? '', /^prepare:/);
+  assert.equal(transportEvents[1], 'release:company-media-lease');
+  assert.deepEqual(
+    db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(companyQueued.items[0]!.taskId!),
+    { status: 'succeeded' },
+    '注入受控 MediaTransport 后公司内容分析才允许完成',
   );
 
   const scriptId = scripts.createProjectScript(db, 'project-1', {

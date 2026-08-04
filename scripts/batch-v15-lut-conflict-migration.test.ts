@@ -329,7 +329,7 @@ try {
     now: () => new Date('2026-08-02T00:00:00.000Z'),
   });
   assert.equal(revalidate.state, 'ready', 'v15 旧库必须继续升级到当前 schema 并通过完整校验');
-  assert.deepEqual(revalidate.appliedVersions, [16, 17], '完整升级路径必须依次应用 Phase E v16 与分析请求 v17');
+  assert.deepEqual(revalidate.appliedVersions, [16, 17, 18], '完整升级路径必须依次应用 Phase E v16、分析请求 v17 与供应商作用域 v18');
   assert.equal(
     (db.prepare(`SELECT MAX(version) AS version FROM batch_schema_migrations`).get() as { version: number }).version,
     schemaModule.BATCH_SCHEMA_MIGRATIONS.at(-1)?.version,

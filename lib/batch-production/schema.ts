@@ -855,6 +855,16 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         ON batch_asset_analysis_requests(batchId, createdAt);
     `,
   },
+  {
+    version: 18,
+    sql: `
+      -- 内容分析重试必须保持创建时选择的供应商执行作用域；用户后来把同一
+      -- provider 从直连改成公司（或反向）时，旧任务不得静默换路由。
+      ALTER TABLE batch_asset_analysis_requests
+        ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external'
+        CHECK(executionScope IN ('external','company'));
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -2060,6 +2070,22 @@ function validateAssetAnalysisRequestTables(db: Database.Database): void {
   }
 }
 
+/** v18 冻结内容分析供应商的直连／公司执行作用域。 */
+function validateAssetAnalysisExecutionScope(db: Database.Database): void {
+  const columns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  if (columns.find((column) => column.name === 'executionScope')?.notnull !== 1) {
+    throw new Error('内容分析请求表缺少必填列 executionScope');
+  }
+  const invalid = db.prepare(`
+    SELECT COUNT(*) AS n FROM batch_asset_analysis_requests
+    WHERE executionScope NOT IN ('external','company')
+  `).get() as { n: number };
+  if (invalid.n > 0) throw new Error('内容分析请求存在无效供应商执行作用域');
+}
+
 const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateBatchProductionTable,
   validateAssetsTables,
@@ -2078,6 +2104,7 @@ const SCHEMA_VALIDATORS: ReadonlyArray<(db: Database.Database) => void> = [
   validateProxyRequestTables,
   validateAllocationTables,
   validateAssetAnalysisRequestTables,
+  validateAssetAnalysisExecutionScope,
 ];
 
 function validateBatchSchema(db: Database.Database): void {

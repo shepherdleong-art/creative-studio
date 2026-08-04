@@ -1,11 +1,23 @@
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
+import {
+  assertProviderExecutionAvailable,
+  type ProviderExecutionIdentity,
+  type AssertProviderExecutionAvailableOptions,
+} from '../provider-execution-gate.ts';
 import { createAnalysisVersionAndSetCurrent } from './assets.ts';
 import {
   assertProjectAssetFileIdentity,
+  projectAssetMimeType,
   resolveVerifiedProjectAssetMedia,
 } from './project-asset-media.ts';
+import {
+  withPreparedMediaLease,
+  type MediaTransport,
+  type PreparedMediaLease,
+} from '../media-transport.ts';
+import { isConfiguredScriptProviderValue } from '../script-providers/config.ts';
 import type { BatchTaskWorkType, ClaimedBatchTask } from './tasks.ts';
 
 /**
@@ -72,7 +84,13 @@ export interface AnalyzeAssetExecutorOptions {
     model: string;
     cacheDir: string;
     signal: AbortSignal;
+    mediaLease?: PreparedMediaLease;
   }) => Promise<BatchContentAnalysisResult>;
+  assertProviderReady?: (
+    provider: ProviderExecutionIdentity,
+    options: AssertProviderExecutionAvailableOptions,
+  ) => Promise<void>;
+  mediaTransport?: MediaTransport;
 }
 
 function assertNotAborted(signal: AbortSignal): void {
@@ -97,6 +115,8 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
       signal: input.signal,
     });
   });
+  const assertProviderReady = options.assertProviderReady ?? assertProviderExecutionAvailable;
+  const mediaTransport = options.mediaTransport;
   return {
     workTypes: ['asset_prepare'],
     async execute(context) {
@@ -111,7 +131,7 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
     `).get(claim.task.targetId) as { projectId: string } | undefined)?.projectId;
     if (!projectId) throw new Error('素材不存在');
     const contentRequest = db.prepare(`
-      SELECT projectId, batchId, assetId, contentFingerprint, providerId, model, analysisMode
+      SELECT projectId, batchId, assetId, contentFingerprint, providerId, model, executionScope, analysisMode
       FROM batch_asset_analysis_requests WHERE taskId = ?
     `).get(claim.task.id) as {
       projectId: string;
@@ -120,6 +140,7 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
       contentFingerprint: string;
       providerId: string;
       model: string;
+      executionScope: 'external' | 'company';
       analysisMode: 'content';
     } | undefined;
     if (contentRequest && (
@@ -142,11 +163,16 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
     if (contentRequest) {
       const provider = db.prepare(`
         SELECT enabled, supportsVision,
+               COALESCE(NULLIF(baseUrl, ''), NULLIF(defaultBaseUrl, ''), '') AS baseUrl,
+               apiKey, executionScope,
                COALESCE(NULLIF(model, ''), NULLIF(defaultModel, ''), '') AS model
         FROM script_providers WHERE id = ?
       `).get(contentRequest.providerId) as {
         enabled: number;
         supportsVision: number;
+        baseUrl: string;
+        apiKey: string;
+        executionScope: 'external' | 'company';
         model: string;
       } | undefined;
       if (!provider || provider.enabled !== 1 || provider.supportsVision !== 1) {
@@ -155,15 +181,46 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
       if (provider.model !== contentRequest.model) {
         throw new Error('视觉分析模型配置已变化，请重新发起内容分析');
       }
+      if (provider.executionScope !== contentRequest.executionScope) {
+        throw new Error('视觉分析供应商运行方式已变化，请重新发起内容分析');
+      }
+      await assertProviderReady({
+        id: contentRequest.providerId,
+        executionScope: contentRequest.executionScope,
+        baseUrl: provider.baseUrl,
+        enabled: provider.enabled === 1,
+        configured: isConfiguredScriptProviderValue(provider.baseUrl)
+          && isConfiguredScriptProviderValue(provider.apiKey)
+          && isConfiguredScriptProviderValue(provider.model),
+      }, {
+        root: dataRoot(),
+        capability: 'media',
+        mediaTransportAvailable: Boolean(mediaTransport),
+      });
       context.reportProgress({ phase: 'content_analyzing', description: '抽帧并进行画面内容分析', percent: null });
-      contentAnalysis = await analyzeContent({
+      const analyze = (mediaLease?: PreparedMediaLease) => analyzeContent({
         filePath: verified.filePath,
         assetId: claim.task.targetId,
         providerId: contentRequest.providerId,
         model: contentRequest.model,
         cacheDir: path.join(dataRoot(), 'storage', 'batch-analysis', claim.task.targetId, claim.task.id),
         signal,
+        mediaLease,
       });
+      contentAnalysis = contentRequest.executionScope === 'company'
+        ? await withPreparedMediaLease(mediaTransport!, {
+            projectId,
+            batchId: claim.task.batchId,
+            taskId: claim.task.id,
+            attemptId: claim.attempt.id,
+            assetId: claim.task.targetId,
+            mediaKind: verified.asset.mediaKind,
+            absolutePath: verified.filePath,
+            contentFingerprint: verified.asset.contentFingerprint,
+            mimeType: projectAssetMimeType(verified.filePath),
+            sizeBytes: verified.fileIdentity.size,
+          }, analyze, { signal })
+        : await analyze();
       assertNotAborted(signal);
     }
     context.reportProgress({ phase: 'verified', description: '媒体核验完成，正在发布', percent: null });

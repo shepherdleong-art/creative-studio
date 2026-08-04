@@ -1,4 +1,4 @@
-import type { ApiStyle, ProviderConfig, ProviderMeta } from './types';
+import type { ApiStyle, ProviderConfig, ProviderExecutionScope, ProviderMeta } from './types';
 
 type EnvMap = Record<string, string | undefined>;
 
@@ -11,6 +11,7 @@ export interface ScriptProviderDbConfig {
   maxTokens?: number | null;
   supportsVision?: number | boolean | null;
   visionCostPerRequest?: number | null;
+  executionScope?: ProviderExecutionScope | string | null;
 }
 
 export interface ScriptProviderRuntimeConfig {
@@ -27,6 +28,7 @@ export interface ScriptProviderRuntimeConfig {
   hasApiKey: boolean;
   supportsVision: boolean;
   visionCostPerRequest: number;
+  executionScope: ProviderExecutionScope;
 }
 
 export const scriptProviderApiStyleOptions: ReadonlyArray<{
@@ -97,7 +99,7 @@ function clean(value: string | null | undefined): string {
   return (value || '').trim();
 }
 
-function isReal(value: string | null | undefined): boolean {
+export function isConfiguredScriptProviderValue(value: string | null | undefined): boolean {
   const s = clean(value);
   return Boolean(s) && !['your_', 'xxx', 'placeholder', 'todo'].some((marker) =>
     s.toLowerCase().includes(marker)
@@ -115,6 +117,10 @@ function supportsVisionValue(value: number | boolean | null | undefined): boolea
   return typeof value === 'boolean' ? value : value === 1;
 }
 
+function executionScopeValue(value: string | null | undefined): ProviderExecutionScope {
+  return value === 'company' ? 'company' : 'external';
+}
+
 export function resolveScriptProviderRuntimeConfig(
   defaults: ProviderConfig,
   dbConfig: ScriptProviderDbConfig | undefined,
@@ -129,11 +135,12 @@ export function resolveScriptProviderRuntimeConfig(
   const enabled = enabledValue(dbConfig?.enabled);
   const supportsVision = supportsVisionValue(dbConfig?.supportsVision);
   const visionCostPerRequest = Math.max(0, Number(dbConfig?.visionCostPerRequest || 0));
+  const executionScope = executionScopeValue(dbConfig?.executionScope);
   const missing: string[] = [];
 
-  if (!isReal(baseUrl)) missing.push('Base URL');
-  if (!isReal(apiKey)) missing.push('API Key');
-  if (!isReal(model)) missing.push('模型');
+  if (!isConfiguredScriptProviderValue(baseUrl)) missing.push('Base URL');
+  if (!isConfiguredScriptProviderValue(apiKey)) missing.push('API Key');
+  if (!isConfiguredScriptProviderValue(model)) missing.push('模型');
 
   return {
     id: defaults.id,
@@ -146,9 +153,10 @@ export function resolveScriptProviderRuntimeConfig(
     enabled,
     configured: enabled && missing.length === 0,
     missing,
-    hasApiKey: isReal(apiKey),
+    hasApiKey: isConfiguredScriptProviderValue(apiKey),
     supportsVision,
     visionCostPerRequest,
+    executionScope,
   };
 }
 
@@ -167,5 +175,6 @@ export function toScriptProviderMeta(runtime: ScriptProviderRuntimeConfig): Prov
     missing: runtime.missing,
     maxTokens: runtime.maxTokens,
     visionCostPerRequest: runtime.visionCostPerRequest,
+    executionScope: runtime.executionScope,
   };
 }

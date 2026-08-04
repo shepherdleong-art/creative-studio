@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { BatchApiUnavailableError, BatchDomainError } from '../lib/batch-production/errors.ts';
 import { batchErrorResponse } from '../lib/batch-production/http-errors.ts';
+import { ProviderExecutionGateError } from '../lib/provider-execution-gate.ts';
 import { createBatchProduction } from '../lib/batch-production/versions.ts';
 import { createProjectScript } from '../lib/batch-production/scripts.ts';
 import { createAsset, createAnalysisVersion } from '../lib/batch-production/assets.ts';
@@ -64,6 +65,18 @@ try {
   assert.equal(unavailable.body.error, 'batch_api_unavailable', '503 响应必须带 batch_api_unavailable');
   assert.equal(unavailable.body.code, 'migration_failed', '503 必须保留具体错误码');
   assert.equal(notFound.body.error, 'test_error', '领域错误响应带 fallback 错误码');
+  const companyUnavailable = batchErrorResponse(
+    new ProviderExecutionGateError('transport_unavailable', '公司供应商的受控媒体传输尚未就绪', 'company'),
+    fallback,
+  );
+  assert.deepEqual(companyUnavailable, {
+    status: 409,
+    body: {
+      error: 'test_error',
+      code: 'transport_unavailable',
+      message: '公司供应商的受控媒体传输尚未就绪',
+    },
+  }, '公司供应商门禁失败必须返回可诊断 409，而不是泄露为 500');
 
   // --- 准备:批次 + 快照 + 开跑 ---
   const dbRoot = path.join(root, 'db');

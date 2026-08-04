@@ -18,9 +18,11 @@ try {
     now: () => new Date('2026-08-03T00:00:00.000Z'),
   });
   assert.equal(result.state, 'ready');
-  assert.equal(result.targetVersion, 17);
-  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 17);
+  assert.equal(result.targetVersion, 18);
+  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 18);
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_asset_analysis_requests'`).get());
+  const requestColumns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{ name: string }>;
+  assert.ok(requestColumns.some((column) => column.name === 'executionScope'));
 
   for (const table of ['batch_allocation_runs', 'batch_asset_exclusions']) {
     assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table));

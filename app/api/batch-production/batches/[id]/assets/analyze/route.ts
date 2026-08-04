@@ -3,7 +3,10 @@ import { getDb } from '@/lib/db';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import { queueAssetPreparation } from '@/lib/batch-production/asset-preparation';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
-import { getAvailableProviders } from '@/lib/script-providers';
+import {
+  assertStoredScriptProviderExecutionAvailable,
+  getAvailableProviders,
+} from '@/lib/script-providers';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -67,6 +70,12 @@ export async function POST(
 
   try {
     await assertBatchApiReady();
+    if (mode === 'content') {
+      await assertStoredScriptProviderExecutionAvailable(contentProvider!.id, {
+        capability: 'media',
+        mediaTransportAvailable: false,
+      });
+    }
     const result = queueAssetPreparation(
       getDb(),
       projectId,
@@ -74,7 +83,12 @@ export async function POST(
       body.assetIds as string[],
       undefined,
       mode === 'content'
-        ? { mode, providerId: contentProvider!.id, model: contentProvider!.model }
+        ? {
+            mode,
+            providerId: contentProvider!.id,
+            model: contentProvider!.model,
+            executionScope: contentProvider!.executionScope,
+          }
         : { mode },
     );
     // 只有任务写入成功后才唤醒单例调度器；重复调用仍然幂等。

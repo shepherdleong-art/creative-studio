@@ -43,6 +43,7 @@ assert.deepEqual(
       apiKey: 'db-key',
       model: 'db-model',
       enabled: 1,
+      executionScope: 'company',
     },
     {
       GEMINI_API_KEY: 'env-key',
@@ -64,6 +65,7 @@ assert.deepEqual(
     hasApiKey: true,
     supportsVision: false,
     visionCostPerRequest: 0,
+    executionScope: 'company',
   }
 );
 
@@ -109,6 +111,7 @@ assert.deepEqual(toScriptProviderMeta(scriptEnvFallback), {
   missing: ['API Key'],
   maxTokens: 2048,
   visionCostPerRequest: 0,
+  executionScope: 'external',
 });
 
 assert.deepEqual(

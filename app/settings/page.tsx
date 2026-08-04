@@ -8,7 +8,7 @@ import {
   scriptProviderApiStyleOptions,
   scriptProviderProtocolFields,
 } from '@/lib/script-providers/config';
-import type { ApiStyle } from '@/lib/script-providers/types';
+import type { ApiStyle, ProviderExecutionScope } from '@/lib/script-providers/types';
 
 type Category = 'image' | 'script' | 'video' | 'tts' | 'storage';
 
@@ -37,6 +37,7 @@ interface ScriptProvider {
   hasApiKey: boolean;
   maxTokens?: number;
   visionCostPerRequest?: number;
+  executionScope: ProviderExecutionScope;
 }
 
 interface VideoProvider {
@@ -69,6 +70,7 @@ type ProviderFormState = {
   defaultDurationSec: number;
   maxTokens: number;
   visionCostPerRequest: number;
+  executionScope: ProviderExecutionScope;
 };
 
 const KEY_PLACEHOLDER = '••••••••';
@@ -88,6 +90,7 @@ const emptyForm: ProviderFormState = {
   defaultDurationSec: 5,
   maxTokens: 8192,
   visionCostPerRequest: 0,
+  executionScope: 'external',
 };
 
 const sections: Array<{ id: Category; title: string; description: string; icon: IconName }> = [
@@ -166,6 +169,7 @@ export default function SettingsPage() {
       defaultDurationSec: 'defaultDurationSec' in provider ? provider.defaultDurationSec || 5 : 5,
       maxTokens: 'maxTokens' in provider ? (provider as ScriptProvider).maxTokens || 8192 : 8192,
       visionCostPerRequest: 'visionCostPerRequest' in provider ? provider.visionCostPerRequest || 0 : 0,
+      executionScope: 'executionScope' in provider ? provider.executionScope : 'external',
       apiKey: hasKey && provider.type !== 'kling' ? KEY_PLACEHOLDER : '',
       accessKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
       secretKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
@@ -232,6 +236,7 @@ export default function SettingsPage() {
         maxTokens: form.maxTokens,
         supportsVision: form.supportsVision,
         visionCostPerRequest: form.visionCostPerRequest,
+        executionScope: form.executionScope,
         ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
       };
     }
@@ -409,6 +414,11 @@ function ProviderCard({
               {configured ? '已配置' : '未配置'}
             </span>
             {!provider.enabled && <span className="status-badge status-canceled">已禁用</span>}
+            {category === 'script' && 'executionScope' in provider && (
+              <span className="status-badge status-canceled">
+                {provider.executionScope === 'company' ? '公司 LiteLLM' : '外部直连'}
+              </span>
+            )}
           </div>
           <div className="grid grid-cols-1 gap-x-8 gap-y-1 text-sm text-ink-secondary sm:grid-cols-2">
             {baseUrl && (
@@ -500,6 +510,19 @@ function ProviderForm({
             {scriptProviderApiStyleOptions.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
+          </select>
+        </Field>
+      )}
+
+      {category === 'script' && (
+        <Field label="运行方式">
+          <select
+            value={form.executionScope}
+            onChange={(e) => onChange({ ...form, executionScope: e.target.value as ProviderExecutionScope })}
+            className="input-field"
+          >
+            <option value="external">外部供应商（直连）</option>
+            <option value="company">公司供应商（本机 LiteLLM）</option>
           </select>
         </Field>
       )}

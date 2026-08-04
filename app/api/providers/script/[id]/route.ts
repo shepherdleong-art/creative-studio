@@ -22,6 +22,13 @@ export async function PUT(
         values.push(body[field]);
       }
     }
+    if (body.executionScope !== undefined) {
+      if (body.executionScope !== 'external' && body.executionScope !== 'company') {
+        return NextResponse.json({ error: 'Invalid execution scope' }, { status: 400 });
+      }
+      updates.push('executionScope = ?');
+      values.push(body.executionScope);
+    }
     if (body.enabled !== undefined) {
       updates.push('enabled = ?');
       values.push(body.enabled ? 1 : 0);

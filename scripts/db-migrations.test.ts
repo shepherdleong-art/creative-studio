@@ -63,7 +63,7 @@ for (const sql of CORE_DB_MIGRATIONS) {
 
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId)`,
+  `ALTER TABLE script_providers ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external' CHECK(executionScope IN ('external','company'))`,
   'new core migrations must be appended without rewriting published entries',
 );
 const shotIndexes = db.prepare(`PRAGMA index_list(shots)`).all() as Array<{ name: string }>;
@@ -115,6 +115,17 @@ assert.deepEqual(
   db.prepare(`SELECT supportsVision FROM script_providers WHERE id = 'script-provider'`).get(),
   { supportsVision: 0 },
   'existing script_providers rows default supportsVision to 0 after migration',
+);
+assert.deepEqual(
+  db.prepare(`SELECT executionScope FROM script_providers WHERE id = 'script-provider'`).get(),
+  { executionScope: 'external' },
+  '旧供应商迁移后必须默认保持直连，不能被公司运行环境故障影响',
+);
+db.prepare(`UPDATE script_providers SET executionScope = 'company' WHERE id = 'script-provider'`).run();
+assert.deepEqual(
+  db.prepare(`SELECT executionScope FROM script_providers WHERE id = 'script-provider'`).get(),
+  { executionScope: 'company' },
+  '公司供应商作用域必须显式持久化',
 );
 db.prepare(`UPDATE script_providers SET supportsVision = 1 WHERE id = 'script-provider'`).run();
 assert.deepEqual(
