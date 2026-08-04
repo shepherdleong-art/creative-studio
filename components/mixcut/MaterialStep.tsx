@@ -1,7 +1,7 @@
 import { useRef, useState, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react';
 import Image from 'next/image';
 import { Icon } from '@/components/ui/Icon';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 export interface MaterialCardView {
   key: string;

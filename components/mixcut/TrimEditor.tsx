@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { FINAL_EDIT_FPS, type FinalEditAssetView, type TimelineClip } from '@/lib/final-edit/types';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 const FPS = FINAL_EDIT_FPS;
 const TRIM_PX_PER_SEC = 90; // 对标 AI-remix TrimEditor 的胶片密度

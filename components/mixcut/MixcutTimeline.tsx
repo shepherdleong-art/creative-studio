@@ -8,7 +8,7 @@ import type { GroupCommandInput, VariantCommandInput } from '@/components/final-
 import { planSubtitleCueSplit, type SubtitleCueSplitPlan } from '@/components/final-edit/subtitle-split';
 import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 const FPS = FINAL_EDIT_FPS;
 const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES;

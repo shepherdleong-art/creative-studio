@@ -6,7 +6,7 @@ import { Icon } from '@/components/ui/Icon';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { OUTPUT_PRESETS, type CoverEditorDraft, type CoverPresetV2, type FinalEditGroupView, type FinalEditVariantView, type OutputPresetId, type TextStyle } from '@/lib/final-edit/types';
 import { drawText, fitTextStyleToSingleLine, horizontalTextBounds, isTextStyleWithinSafeArea, measureSingleLineText, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 interface CoverPresetView extends CoverPresetV2 {
   id: string;

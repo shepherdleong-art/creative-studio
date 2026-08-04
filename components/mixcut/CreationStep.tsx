@@ -9,7 +9,7 @@ import {
   countScriptContentCharacters,
   estimateNarrationDurationSec,
 } from '@/lib/script-duration-policy';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 type Draft = MixcutContextResponse['drafts'][number];
 

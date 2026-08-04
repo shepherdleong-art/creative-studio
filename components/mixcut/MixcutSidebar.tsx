@@ -1,6 +1,6 @@
 import { Icon } from '@/components/ui/Icon';
 import type { MixcutContextResponse } from '@/lib/final-edit/types';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-shell.module.css';
 
 type ShotSet = MixcutContextResponse['shotSets'][number];
 
