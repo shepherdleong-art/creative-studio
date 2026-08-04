@@ -159,9 +159,27 @@ export interface AllocationArrangement {
   /** 只保存冻结色彩身份,不保存 LUT/代理路径。 */
   colorSnapshots: Record<string, unknown>;
   /** 仅占位:分配阶段不合成或验证口播。 */
-  audio: { ready: false; productionReady: false; status: 'pending'; reason: string };
-  /** 仅占位:分配阶段不合成或验证口播。 */
-  narration: { ready: false; productionReady: false; status: 'pending'; durationUs: null; reason: string };
+  audio: { ready: boolean; productionReady: boolean; status: 'pending' | 'ready'; reason: string };
+  /** 配音执行器会把占位升级为 productionReady=true 的已核验本地口播快照。 */
+  narration: {
+    ready: boolean;
+    productionReady: boolean;
+    status: 'pending' | 'ready';
+    durationUs: number | null;
+    reason: string;
+    schemaVersion?: string;
+    mode?: 'silent_placeholder' | 'local_ready';
+    audioRelativePath?: string;
+    audioFingerprint?: string;
+    segments?: Array<{
+      id: string;
+      sourceSegmentId: string;
+      text: string;
+      startUs: number;
+      endUs: number;
+      timingSource?: 'estimated' | 'aligned';
+    }>;
+  };
   subtitle: {
     ready: boolean;
     productionReady: false;
@@ -267,6 +285,7 @@ interface NormalizedPlan {
   planId: string;
   scriptSnapshotId: string | null;
   title: string;
+  targetDurationUs: number;
   segments: NormalizedSegment[];
   locks: AllocationLockInput[];
   coverAssetIds: string[];
@@ -491,11 +510,19 @@ function normalizeSegment(raw: unknown, index: number, targetDurationUs: number,
   };
 }
 
+/** 从计划自身的脚本快照读目标时长；整批默认值只作兜底，历史快照没有该字段时回落默认。 */
+function scriptTargetDurationUs(rawPlan: AllocationPlanInput, fallbackUs: number): number {
+  const script = asRecord(rawPlan.script ?? rawPlan.scriptSnapshot);
+  const targetDurationSec = finite(script.targetDurationSec, 0);
+  return targetDurationSec > 0 ? Math.max(1, Math.round(targetDurationSec * 1_000_000)) : fallbackUs;
+}
+
 function normalizePlan(rawPlan: AllocationPlanInput, index: number, targetDurationUs: number): NormalizedPlan {
   const planJson = asRecord(parseJson(rawPlan.planJson));
   const planId = nonEmptyString(rawPlan.planId ?? rawPlan.id, `plan-${index + 1}`);
   const scriptSnapshotId = nonEmptyString(rawPlan.scriptSnapshotId, '') || null;
-  const segments = segmentCandidates(rawPlan).map((segment, segmentIndex, all) => normalizeSegment(segment, segmentIndex, targetDurationUs, all.length, planId));
+  const planTargetDurationUs = scriptTargetDurationUs(rawPlan, targetDurationUs);
+  const segments = segmentCandidates(rawPlan).map((segment, segmentIndex, all) => normalizeSegment(segment, segmentIndex, planTargetDurationUs, all.length, planId));
   // renderer 只接受连续时间线。保留显式合法时间，否则按句段时长稳定地
   // 从 0 累加，避免数据库里的旧脚本空白/重叠把不合法 arrangement 传下去。
   const explicitTimelineIsContinuous = segments.length > 0
@@ -513,6 +540,7 @@ function normalizePlan(rawPlan: AllocationPlanInput, index: number, targetDurati
     planId,
     scriptSnapshotId,
     title: nonEmptyString(rawPlan.title, ''),
+    targetDurationUs: planTargetDurationUs,
     segments: normalizedSegments,
     locks,
     coverAssetIds: arrayFrom(rawPlan.coverAssetIds ?? planJson.coverAssetIds).map(String).filter(Boolean),
@@ -662,7 +690,7 @@ function createArrangement(
     schemaVersion: BATCH_ALLOCATION_SCHEMA_VERSION,
     preset,
     fps: normalized.fps,
-    targetDurationUs: normalized.targetDurationUs,
+    targetDurationUs: plan.targetDurationUs,
     clips,
     cover,
     colorSnapshots: Object.fromEntries(normalized.assets

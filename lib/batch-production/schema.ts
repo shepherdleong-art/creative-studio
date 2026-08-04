@@ -865,6 +865,111 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         CHECK(executionScope IN ('external','company'));
     `,
   },
+  {
+    version: 19,
+    sql: `
+      -- M2:每份脚本自己的目标成片时长(默认 15s,与单条模式的时长档位默认一致);
+      -- 快照必须冻结该值,否则改脚本时长会静默改变已锁定批次。
+      ALTER TABLE batch_scripts ADD COLUMN targetDurationSec INTEGER NOT NULL DEFAULT 15;
+      ALTER TABLE batch_script_snapshots ADD COLUMN targetDurationSec INTEGER NOT NULL DEFAULT 15;
+
+      -- 批次归档是独立维度,不塞进 status 枚举;只建字段,UI 层在后续步骤使用。
+      ALTER TABLE batch_productions ADD COLUMN archivedAt TEXT;
+    `,
+  },
+  {
+    version: 20,
+    sql: `
+      -- M2:每份脚本的配音配置(服务商/音色/语速)。'{}' 表示未设置,
+      -- 执行时解析为当前第一个已启用 TTS 供应商的默认音色与 1.0 语速;
+      -- 快照必须冻结该配置,否则改音色会静默改变已锁定批次的口播。
+      ALTER TABLE batch_scripts ADD COLUMN narrationConfigJson TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE batch_script_snapshots ADD COLUMN narrationConfigJson TEXT NOT NULL DEFAULT '{}';
+
+      -- 每份脚本快照的已核验本地口播快照。同脚本 N 条成片共用同一条配音:
+      -- 渲染 seam 优先读 arrangement,新分配的候选版本回落到这张权威表。
+      CREATE TABLE IF NOT EXISTS batch_script_narrations (
+        scriptSnapshotId TEXT PRIMARY KEY,
+        batchVersionId TEXT NOT NULL,
+        narrationJson TEXT NOT NULL,
+        audioRelativePath TEXT NOT NULL,
+        audioFingerprint TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY(scriptSnapshotId) REFERENCES batch_script_snapshots(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchVersionId) REFERENCES batch_production_versions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_batch_script_narrations_version
+        ON batch_script_narrations(batchVersionId);
+    `,
+  },
+  {
+    version: 21,
+    sql: `
+      -- M2:batch_tasks.workType 的 CHECK 约束加入 narration 任务类型。
+      -- SQLite 不能改 CHECK,按 v14 的安全模式重建两张表:
+      -- 先 DROP 叶子表 batch_task_attempts,再 DROP batch_tasks(此时无人引用),
+      -- 最后把新表改名到位,外键引用由改名自动重写。
+      CREATE TABLE batch_tasks_v21 (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT NOT NULL,
+        workType TEXT NOT NULL CHECK(workType IN ('asset_prepare', 'render', 'proxy_generate', 'narration')),
+        targetKind TEXT NOT NULL,
+        targetId TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+        requestKey TEXT,
+        expectedState TEXT NOT NULL DEFAULT 'running' CHECK(expectedState IN ('running', 'paused', 'stopped')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        attemptCount INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_tasks_v21
+        (id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt)
+      SELECT id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt
+      FROM batch_tasks;
+
+      CREATE TABLE batch_task_attempts_v21 (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        attemptNumber INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        resultJson TEXT,
+        errorCode TEXT,
+        errorMessage TEXT,
+        claimedBy TEXT,
+        leaseExpiresAt TEXT,
+        heartbeatAt TEXT,
+        adapterVersion TEXT,
+        remoteTaskId TEXT,
+        startedAt TEXT NOT NULL,
+        finishedAt TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(taskId, attemptNumber),
+        FOREIGN KEY(taskId) REFERENCES batch_tasks_v21(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_task_attempts_v21
+        (id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt)
+      SELECT id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt
+      FROM batch_task_attempts;
+
+      DROP TABLE batch_task_attempts;
+      DROP TABLE batch_tasks;
+      ALTER TABLE batch_tasks_v21 RENAME TO batch_tasks;
+      ALTER TABLE batch_task_attempts_v21 RENAME TO batch_task_attempts;
+
+      CREATE INDEX IF NOT EXISTS idx_batch_tasks_batch
+        ON batch_tasks(batchId, status, createdAt);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_tasks_request_key
+        ON batch_tasks(requestKey) WHERE requestKey IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_batch_task_attempts_task
+        ON batch_task_attempts(taskId, attemptNumber);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =

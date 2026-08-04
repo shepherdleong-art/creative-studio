@@ -104,6 +104,7 @@ export function syncProjectScripts(
           coverTitleJson: coverTitleOf(script),
           shotSetId: script.shotSetId,
           contentRevision: contentRevisionOf(row.outputJson),
+          targetDurationSec: script.targetDurationSec,
         },
         catalogManaged: true,
         now,

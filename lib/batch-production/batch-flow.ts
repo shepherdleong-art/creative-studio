@@ -152,7 +152,7 @@ function matchesCurrentInput(
 
   const snapshots = db.prepare(`
     SELECT sourceScriptId, copyCount, title, bodyText, sourceVersion,
-           coverTitleJson, shotSetId, contentRevision
+           targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision
     FROM batch_script_snapshots WHERE batchVersionId = ?
   `).all(batchVersionId) as Array<{
     sourceScriptId: string;
@@ -160,6 +160,8 @@ function matchesCurrentInput(
     title: string;
     bodyText: string;
     sourceVersion: string;
+    targetDurationSec: number;
+    narrationConfigJson: string;
     coverTitleJson: string;
     shotSetId: string;
     contentRevision: string;
@@ -170,12 +172,15 @@ function matchesCurrentInput(
     const snapshot = snapshotBySource.get(selection.scriptId);
     if (!snapshot || snapshot.copyCount !== selection.copyCount) return false;
     const source = db.prepare(`
-      SELECT title, bodyText, sourceVersion, coverTitleJson, shotSetId, contentRevision, sourceAvailable
+      SELECT title, bodyText, sourceVersion, targetDurationSec, narrationConfigJson,
+             coverTitleJson, shotSetId, contentRevision, sourceAvailable
       FROM batch_scripts WHERE id = ?
     `).get(selection.scriptId) as {
       title: string;
       bodyText: string;
       sourceVersion: string;
+      targetDurationSec: number;
+      narrationConfigJson: string;
       coverTitleJson: string;
       shotSetId: string;
       contentRevision: string;
@@ -186,6 +191,8 @@ function matchesCurrentInput(
       snapshot.title !== source.title
       || snapshot.bodyText !== source.bodyText
       || snapshot.sourceVersion !== source.sourceVersion
+      || snapshot.targetDurationSec !== source.targetDurationSec
+      || canonicalJson(parseJsonOrRaw(snapshot.narrationConfigJson)) !== canonicalJson(parseJsonOrRaw(source.narrationConfigJson))
       || canonicalJson(parseJsonOrRaw(snapshot.coverTitleJson)) !== canonicalJson(parseJsonOrRaw(source.coverTitleJson))
       || snapshot.shotSetId !== source.shotSetId
       || snapshot.contentRevision !== source.contentRevision
@@ -426,6 +433,7 @@ export function startBatchProduction(
       SELECT snapshots.id AS snapshotId,
              scripts.projectId, scripts.sourceKind, scripts.ownerBatchVersionId,
              scripts.title, scripts.bodyText, scripts.sourceVersion,
+             scripts.targetDurationSec, scripts.narrationConfigJson,
              scripts.coverTitleJson, scripts.shotSetId, scripts.contentRevision,
              scripts.sourceAvailable
       FROM batch_script_snapshots snapshots
@@ -439,6 +447,8 @@ export function startBatchProduction(
       title: string;
       bodyText: string;
       sourceVersion: string;
+      targetDurationSec: number;
+      narrationConfigJson: string;
       coverTitleJson: string;
       shotSetId: string;
       contentRevision: string;
@@ -459,13 +469,15 @@ export function startBatchProduction(
       }
       db.prepare(`
         UPDATE batch_script_snapshots
-        SET title = ?, bodyText = ?, sourceVersion = ?, coverTitleJson = ?,
-            shotSetId = ?, contentRevision = ?
+        SET title = ?, bodyText = ?, sourceVersion = ?, targetDurationSec = ?,
+            narrationConfigJson = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?
         WHERE id = ? AND batchVersionId = ?
       `).run(
         source.title,
         source.bodyText,
         source.sourceVersion,
+        source.targetDurationSec,
+        source.narrationConfigJson,
         source.coverTitleJson,
         source.shotSetId,
         source.contentRevision,

@@ -18,11 +18,47 @@ try {
     now: () => new Date('2026-08-03T00:00:00.000Z'),
   });
   assert.equal(result.state, 'ready');
-  assert.equal(result.targetVersion, 18);
-  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 18);
+  assert.equal(result.targetVersion, 21);
+  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 21);
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_asset_analysis_requests'`).get());
   const requestColumns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{ name: string }>;
   assert.ok(requestColumns.some((column) => column.name === 'executionScope'));
+  const scriptColumns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{ name: string; dflt_value: string | null }>;
+  assert.equal(scriptColumns.find((column) => column.name === 'targetDurationSec')?.dflt_value, '15');
+  assert.equal(scriptColumns.find((column) => column.name === 'narrationConfigJson')?.dflt_value, "'{}'");
+  const snapshotColumns = db.prepare(`PRAGMA table_info(batch_script_snapshots)`).all() as Array<{ name: string; dflt_value: string | null }>;
+  assert.equal(snapshotColumns.find((column) => column.name === 'targetDurationSec')?.dflt_value, '15');
+  const productionColumns = db.prepare(`PRAGMA table_info(batch_productions)`).all() as Array<{ name: string }>;
+  assert.ok(productionColumns.some((column) => column.name === 'archivedAt'));
+  assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_script_narrations'`).get());
+  const taskColumns = db.prepare(`PRAGMA table_info(batch_tasks)`).all() as Array<{ name: string }>;
+  assert.ok(taskColumns.some((column) => column.name === 'workType'));
+  const insertNarrationTask = db.prepare(`
+    INSERT INTO batch_productions
+      (id, projectId, name, status, progressJson, controlState, createdAt, updatedAt)
+    VALUES ('task-batch', 'project-1', '任务批次', 'running', '{}', 'running', ?, ?)
+  `);
+  insertNarrationTask.run('2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z');
+  db.prepare(`
+    INSERT INTO batch_production_versions
+      (id, batchId, versionNumber, copyCount, defaultsJson, inputState, frozenAt, createdAt)
+    VALUES ('task-version', 'task-batch', 1, 1, '{}', 'frozen', ?, ?)
+  `).run('2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z');
+  db.prepare(`
+    INSERT INTO batch_scripts
+      (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion, createdAt, updatedAt)
+    VALUES ('task-script', 'project-1', 'script_draft', 'task-source', '脚本', '正文', 'v1', ?, ?)
+  `).run('2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z');
+  db.prepare(`
+    INSERT INTO batch_script_snapshots
+      (id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion, copyCount, createdAt)
+    VALUES ('task-snapshot', 'task-version', 'task-script', '脚本', '正文', 'v1', 1, ?)
+  `).run('2026-08-03T00:00:00.000Z');
+  db.prepare(`
+    INSERT INTO batch_tasks
+      (id, projectId, batchId, workType, targetKind, targetId, status, createdAt, updatedAt)
+    VALUES ('task-narration', 'project-1', 'task-batch', 'narration', 'script_snapshot', 'task-snapshot', 'queued', ?, ?)
+  `).run('2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z');
 
   for (const table of ['batch_allocation_runs', 'batch_asset_exclusions']) {
     assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table));

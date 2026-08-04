@@ -10,6 +10,7 @@ import {
 } from './allocator.ts';
 import { BatchDomainError } from './errors.ts';
 import { BATCH_ALLOCATION_RULE_VERSION } from './allocator.ts';
+import { readFrozenMusicPool } from './bgm.ts';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -129,7 +130,7 @@ function buildFrozenInput(
   }>;
   const plans = db.prepare(`
     SELECT p.id AS planId, p.scriptSnapshotId, p.seq, p.planJson,
-           s.title, s.bodyText, s.coverTitleJson, s.copyCount,
+           s.title, s.bodyText, s.coverTitleJson, s.copyCount, s.targetDurationSec,
            bs.projectId AS sourceProjectId, bs.sourceKind, bs.ownerBatchVersionId,
            ov.arrangementJson AS currentArrangementJson
     FROM batch_output_plans p
@@ -147,6 +148,7 @@ function buildFrozenInput(
     bodyText: string;
     coverTitleJson: string;
     copyCount: number;
+    targetDurationSec: number;
     currentArrangementJson: string | null;
     sourceProjectId: string;
     sourceKind: string;
@@ -225,6 +227,7 @@ function buildFrozenInput(
   }
 
   const defaults = parseJson(version.defaultsJson);
+  const musicTrackIds = readFrozenMusicPool(defaults).map(({ trackId }) => trackId);
   const input: FrozenBatchInput = {
     projectId,
     batchId: owner.batchId,
@@ -232,6 +235,7 @@ function buildFrozenInput(
     ruleVersion: options.ruleVersion ?? BATCH_ALLOCATION_RULE_VERSION,
     seed: options.seed ?? '0',
     defaultsJson: defaults,
+    musicTrackIds,
     plans: plans.map((plan) => {
       const planJson = asRecord(parseJson(plan.planJson));
       const segments = planSegments(planJson);
@@ -242,6 +246,7 @@ function buildFrozenInput(
         bodyText: segments.length ? undefined : plan.bodyText,
         segments: segments.length ? segments as AllocationSegmentInput[] : undefined,
         planJson,
+        scriptSnapshot: { targetDurationSec: plan.targetDurationSec },
       };
     }),
     assets: poolRows.map((row) => ({

@@ -12,6 +12,8 @@ export interface BatchScriptRow {
   title: string;
   bodyText: string;
   sourceVersion: string;
+  targetDurationSec: number;
+  narrationConfigJson: string;
   coverTitleJson: string;
   shotSetId: string;
   contentRevision: string;
@@ -30,6 +32,8 @@ export interface BatchScriptSnapshotRow {
   title: string;
   bodyText: string;
   sourceVersion: string;
+  targetDurationSec: number;
+  narrationConfigJson: string;
   coverTitleJson: string;
   shotSetId: string;
   contentRevision: string;
@@ -37,11 +41,13 @@ export interface BatchScriptSnapshotRow {
   createdAt: string;
 }
 
-/** 脚本同步元数据:结构化封面标题、分镜组归属与内容修订身份 */
+/** 脚本同步元数据:结构化封面标题、分镜组归属、内容修订身份与目标时长 */
 export interface BatchScriptMetadata {
   coverTitleJson?: unknown;
   shotSetId?: string;
   contentRevision?: string;
+  targetDurationSec?: number;
+  narrationConfigJson?: unknown;
 }
 
 function nowIso(now?: () => Date): string {
@@ -71,6 +77,8 @@ export function createProjectScript(
   const coverTitleJson = JSON.stringify(input.metadata?.coverTitleJson ?? {});
   const shotSetId = input.metadata?.shotSetId ?? '';
   const contentRevision = input.metadata?.contentRevision ?? '';
+  const targetDurationSec = Math.max(1, Math.round(input.metadata?.targetDurationSec ?? 15));
+  const narrationConfigJson = JSON.stringify(input.metadata?.narrationConfigJson ?? {});
   const catalogManaged = input.catalogManaged ? 1 : 0;
   if (input.sourceKind !== 'script_draft') {
     throw new Error('外部文案必须在批次版本内创建');
@@ -83,18 +91,18 @@ export function createProjectScript(
     db.prepare(`
       UPDATE batch_scripts
       SET title = ?, bodyText = ?, sourceVersion = ?, coverTitleJson = ?, shotSetId = ?, contentRevision = ?,
-          sourceAvailable = 1, catalogManaged = ?, updatedAt = ?
+          targetDurationSec = ?, narrationConfigJson = ?, sourceAvailable = 1, catalogManaged = ?, updatedAt = ?
       WHERE id = ?
-    `).run(input.title, input.bodyText, input.sourceVersion, coverTitleJson, shotSetId, contentRevision, catalogManaged, updatedAt, existing.id);
+    `).run(input.title, input.bodyText, input.sourceVersion, coverTitleJson, shotSetId, contentRevision, targetDurationSec, narrationConfigJson, catalogManaged, updatedAt, existing.id);
     return existing.id;
   }
   const id = randomUUID();
   db.prepare(`
     INSERT INTO batch_scripts
       (id, projectId, sourceKind, sourceId, title, bodyText, sourceVersion,
-       coverTitleJson, shotSetId, contentRevision,
+       targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision,
        sourceAvailable, catalogManaged, ownerBatchVersionId, externalSourceId, createdAt, updatedAt)
-    VALUES (?, ?, 'script_draft', ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
+    VALUES (?, ?, 'script_draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?)
   `).run(
     id,
     projectId,
@@ -102,6 +110,8 @@ export function createProjectScript(
     input.title,
     input.bodyText,
     input.sourceVersion,
+    targetDurationSec,
+    narrationConfigJson,
     coverTitleJson,
     shotSetId,
     contentRevision,
@@ -301,12 +311,13 @@ export function snapshotScriptIntoBatch(
     const owner = assertBatchVersionEditable(db, batchVersionId);
     const script = db.prepare(`
       SELECT id, projectId, sourceKind, ownerBatchVersionId, title, bodyText, sourceVersion,
-             coverTitleJson, shotSetId, contentRevision, sourceAvailable
+             targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision, sourceAvailable
       FROM batch_scripts WHERE id = ?
     `).get(input.scriptId) as Pick<
       BatchScriptRow,
       | 'id' | 'projectId' | 'sourceKind' | 'ownerBatchVersionId' | 'title'
-      | 'bodyText' | 'sourceVersion' | 'coverTitleJson' | 'shotSetId' | 'contentRevision'
+      | 'bodyText' | 'sourceVersion' | 'targetDurationSec' | 'narrationConfigJson'
+      | 'coverTitleJson' | 'shotSetId' | 'contentRevision'
       | 'sourceAvailable'
     > | undefined;
     if (!script) {
@@ -331,8 +342,8 @@ export function snapshotScriptIntoBatch(
     db.prepare(`
       INSERT INTO batch_script_snapshots
         (id, batchVersionId, sourceScriptId, title, bodyText, sourceVersion,
-         coverTitleJson, shotSetId, contentRevision, copyCount, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         targetDurationSec, narrationConfigJson, coverTitleJson, shotSetId, contentRevision, copyCount, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       batchVersionId,
@@ -340,6 +351,8 @@ export function snapshotScriptIntoBatch(
       script.title,
       script.bodyText,
       script.sourceVersion,
+      script.targetDurationSec,
+      script.narrationConfigJson,
       script.coverTitleJson,
       script.shotSetId,
       script.contentRevision,

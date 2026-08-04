@@ -69,13 +69,25 @@ try {
   const after = fingerprintLegacyTables(copiedDb);
   // batch_luts: v15 迁移的受管内容指纹归一化目标(裸 hex → sha256:hex),
   // 行数必须不变,内容指纹必须带上 sha256: 前缀——这一处有意变化。
-  // batch_schema_migrations: 升级版本记账表,追加 v15 记录是预期行为。
+  // batch_schema_migrations: 升级版本记账表,追加迁移记录是预期行为。
+  // batch_scripts / batch_script_snapshots / batch_productions:
+  // v19/v20 追加 targetDurationSec / narrationConfigJson / archivedAt 列,
+  // 既有行被补默认值,SELECT * 内容随之变化——这一处有意变化。
+  const columnGrowthTables = new Set([
+    'batch_scripts',
+    'batch_script_snapshots',
+    'batch_productions',
+  ]);
   for (const [tableName, expected] of before) {
     if (tableName === 'batch_luts') {
       assert.equal(after.get(tableName)?.rowCount, expected.rowCount, 'batch_luts 行数在迁移中不得变化');
       continue;
     }
     if (tableName === 'batch_schema_migrations') {
+      continue;
+    }
+    if (columnGrowthTables.has(tableName)) {
+      assert.equal(after.get(tableName)?.rowCount, expected.rowCount, `${tableName} 行数在迁移中不得变化`);
       continue;
     }
     assert.deepEqual(
