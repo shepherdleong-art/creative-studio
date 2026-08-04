@@ -107,6 +107,13 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 - 正式发布按项目／批次独立目录追加视频与封面，重复导出使用新序号、不覆盖旧文件；实体与指纹核验成功后才在一个数据库事务中登记配对 artifact 并切换当前视频。
 - 第五步工作区从 SQLite 聚合卡片状态，支持筛选、预览、历史提示、任务重试、单条重分配、批次控制和选中正式导出；新版失败仍显示旧正式成片。
 
+### Phase F 公司供应商（已完成第一段本地故障隔离与健康状态）
+
+- `lib/company-provider-runtime.ts` 只读检查可选公司供应商运行环境：未配置、未启动、当前不可用、可用。健康检查仅访问固定的本机 LiteLLM liveliness，不请求公司中转站、模型、隧道公网地址或媒体端点，状态响应不回传密钥、PID 或隧道 URL。
+- `GET /api/company-provider/health` 从 `dataRoot()` 读取受控 `stack.json`，显式 `no-store`；设置页显示 LiteLLM 与媒体传输是否可用及脱敏原因，网页不能借此启动进程。
+- Windows 开发启动器把公司 sidecar 失败降级为警告，继续启动 Creative Studio 和外部供应商；`start-stack.ps1 -SkipApp` 不再错误依赖 standalone app，失败会清除本轮状态文件，避免残留隧道被误报为可用。
+- 本切片没有实现腾讯云媒体传输、公司模型路由或真实供应商验收。公司侧约束未确认前不猜测传输实现；真实请求仍需逐次说明数据范围、目标服务、费用与持久影响并取得授权。
+
 ## 后续阶段
 
 | 阶段 | 可见结果 | 关键门禁 |
@@ -116,13 +123,13 @@ ensureBatchSchemaReady(db, backupRoot) -> current | ready | compatibility_only
 | Phase C 持久调度 | 刷新或重启后继续，分析与导出显示真实进度 | 原子领取、租约、暂停、停止、资源保护 |
 | Phase D 媒体准备 | 用户按需批量开代理、选择 LUT 并安全清理 | 原片不改、代理集中、导出读原片 |
 | Phase E 联合分配与导出 | 多脚本和多素材联合生成差异成片 | 用户锁定优先、素材不足可解释降级、正式产物不覆盖 |
-| Phase F 公司供应商 | 一键联动 LiteLLM；失败只影响公司供应商 | 等腾讯云约束、受控临时媒体、真实调用逐次授权 |
+| Phase F 公司供应商 | 已有本机健康状态与 sidecar 故障隔离；后续补受控媒体传输 | 等腾讯云约束、受控临时媒体、真实调用逐次授权 |
 | Phase G 桌面交付 | Electron、macOS 与 Windows 候选安装包 | 核心稳定后实施、双平台真实规模验收 |
 
 ## 当前不做
 
 - 不实现 Cloudflare 到腾讯云的替换。
-- 不改当前一键启动脚本。
+- 不做跨平台安装版一键启动重构；本阶段只修 Windows 开发启动器的可选 sidecar 隔离。
 - 不发起真实 AI、TTS 或媒体网关请求。
 - 不新增 Electron 依赖或构建安装包。
 - 不重写或迁移现有单条精准混剪。

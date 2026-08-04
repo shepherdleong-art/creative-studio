@@ -321,7 +321,7 @@ try {
     '无法回溯时不得伪造错误版本的代理请求',
   );
 
-  // 11. 走完整 schema 路径：v15 已应用，当前版本会继续追加 v16 并完成全量校验。
+  // 11. 走完整 schema 路径：v15 已应用，当前版本会继续追加后续迁移并完成全量校验。
   const schemaModule = await import('../lib/batch-production/schema.ts');
   const revalidate = await schemaModule.ensureBatchSchemaReady({
     db,
@@ -329,10 +329,11 @@ try {
     now: () => new Date('2026-08-02T00:00:00.000Z'),
   });
   assert.equal(revalidate.state, 'ready', 'v15 旧库必须继续升级到当前 schema 并通过完整校验');
+  assert.deepEqual(revalidate.appliedVersions, [16, 17], '完整升级路径必须依次应用 Phase E v16 与分析请求 v17');
   assert.equal(
     (db.prepare(`SELECT MAX(version) AS version FROM batch_schema_migrations`).get() as { version: number }).version,
-    16,
-    '完整校验路径必须追加 Phase E v16',
+    schemaModule.BATCH_SCHEMA_MIGRATIONS.at(-1)?.version,
+    '完整校验路径必须升级到当前最新版本',
   );
 
   db.close();

@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
+import CompanyProviderRuntimeStatus from '@/components/company-provider/CompanyProviderRuntimeStatus';
 import {
   scriptProviderApiStyleOptions,
   scriptProviderProtocolFields,
@@ -292,6 +293,10 @@ export default function SettingsPage() {
         {active !== 'tts' && active !== 'storage' && <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
           <Icon name="plus" size={15} /> 添加供应商
         </button>}
+      </div>
+
+      <div className="mb-5">
+        <CompanyProviderRuntimeStatus />
       </div>
 
       <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-4">

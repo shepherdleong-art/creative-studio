@@ -14,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $LogDir = Join-Path $Root 'storage\logs'
 $RunDir = Join-Path $Root 'storage\run'
+$stackFile = Join-Path $RunDir 'stack.json'
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
 
 $litellmExe = Join-Path $Root '.venv-litellm\Scripts\litellm.exe'
@@ -21,7 +22,12 @@ $cloudflaredExe = Join-Path $Root '.cache\cloudflared\cloudflared.exe'
 $nodeExe = Join-Path $Root '.cache\windows-installer\node-v22.22.3-win-x64\node.exe'
 $standaloneDir = Join-Path $Root '.next\standalone'
 
-foreach ($f in @($litellmExe, $cloudflaredExe, $nodeExe, (Join-Path $standaloneDir 'server.js'), (Join-Path $Root 'config.yaml'))) {
+$requiredFiles = @($litellmExe, $cloudflaredExe, (Join-Path $Root 'config.yaml'))
+if (-not $SkipApp) {
+  $requiredFiles += $nodeExe
+  $requiredFiles += (Join-Path $standaloneDir 'server.js')
+}
+foreach ($f in $requiredFiles) {
   if (-not (Test-Path $f)) { Write-Host "缺少文件: $f" -ForegroundColor Red; exit 1 }
 }
 
@@ -32,6 +38,9 @@ foreach ($port in @($AppPort, $ProxyPort)) {
     exit 1
   }
 }
+
+# 只有端口确认空闲后才清理陈旧状态；若旧 sidecar 仍在运行，必须保留其停止依据。
+if (Test-Path $stackFile) { Remove-Item $stackFile -Force -ErrorAction SilentlyContinue }
 
 $started = @{}
 
@@ -117,7 +126,7 @@ try {
     $started.proxyPort = $ProxyPort
     $started.stopScript = Join-Path $Root 'scripts\stop-stack.ps1'
     $started.startedAt = (Get-Date).ToString('s')
-    [System.IO.File]::WriteAllText((Join-Path $RunDir 'stack.json'), ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
+    [System.IO.File]::WriteAllText($stackFile, ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
     Write-Host "      公司网关组件就绪（代理 :$ProxyPort，隧道 $tunnelEngine）"
     exit 0
   }
@@ -148,7 +157,7 @@ try {
   $started.proxyPort = $ProxyPort
   $started.stopScript = Join-Path $Root 'scripts\stop-stack.ps1'
   $started.startedAt = (Get-Date).ToString('s')
-  [System.IO.File]::WriteAllText((Join-Path $RunDir 'stack.json'), ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
+  [System.IO.File]::WriteAllText($stackFile, ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
 
   Write-Host ''
   Write-Host '========================================' -ForegroundColor Green
@@ -172,5 +181,6 @@ try {
   foreach ($k in 'appCmdPid', 'cloudflaredPid', 'pinggyPid', 'litellmPid') {
     if ($started[$k]) { Stop-Process -Id $started[$k] -Force -ErrorAction SilentlyContinue }
   }
+  if (Test-Path $stackFile) { Remove-Item $stackFile -Force -ErrorAction SilentlyContinue }
   exit 1
 }
