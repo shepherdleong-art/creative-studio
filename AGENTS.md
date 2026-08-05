@@ -28,13 +28,14 @@ npm run build                # 生产构建：next build + scripts/sync-standalo
 npm run start                # 启动生产服务器
 npm run lint                 # ESLint（eslint.config.mjs，eslint-config-next core-web-vitals + typescript）
 npm run icons                # 从源图重新生成应用图标
+npm run create:provision -- provisioning/company-profile.local.json config.yaml company-profile.provision
 npm run build:win-installer  # Windows 安装包（PowerShell + Inno Setup，须在 Windows 上跑）
 npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Node 22.x + Xcode CLT）
 ```
 
 终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS）、`start-windows.cmd` / `stop-windows.cmd`（Windows），会检查 Node、装依赖、起服务并打开浏览器。
 
-公司网关联动（Windows）：`start-windows.cmd` 检测到联动组件（`.venv-litellm`、`config.yaml`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000，仅监听 127.0.0.1）再起 dev server；组件缺失则保持原行为不动。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起 `scripts/stop-stack.ps1`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
+公司网关联动（Windows）：开发态 `start-windows.cmd` 检测到联动组件（`.venv-litellm`、`config.yaml`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000，仅监听 127.0.0.1）再起 dev server；组件缺失则保持原行为不动。Windows 安装版内置固定版本的私有 CPython/LiteLLM sidecar，首启可在设置页导入 AES-256-GCM 加密的 `.provision`；导入把 `config.yaml` 与受管运行参数写到 `dataRoot()`，再次导入用于 Key 轮换。管理员制作流程见 `provisioning/README.md`。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起相应停止脚本）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 与 `installer/windows/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
 
 ## 测试
 
@@ -131,6 +132,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ## 安全注意事项
 
 - `.env.local` 存放 LLM API Key（Gemini、Qwen、Kimi、GPT 等）与腾讯云 COS 密钥（`CREATIVE_STUDIO_COS_*`），**绝不提交**；`.gitignore` 已排除 `.env*`。
+- 公司统一配置的 `provisioning/*.local.json`、根目录 `config.yaml` 和 `*.provision` 同样包含或封装密钥，已 gitignore，绝不提交或打入安装包。
 - 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示"是否已配置"，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
 - 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点时不要打印请求头、密钥或完整鉴权串。
@@ -139,5 +141,5 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ## 桌面打包与部署
 
 - `next.config.ts` 使用 `output: 'standalone'`，并通过 `outputFileTracingExcludes` 排除数据/文档/脚本目录；`ffmpeg-static`、`ffprobe-static` 在 `serverExternalPackages` 中，由 `scripts/sync-standalone-assets.mjs` 强制拷入 standalone（`npm run build` 会自动执行）。
-- **Windows**：`scripts/build-win-installer.ps1` 跑生产构建、下载配套私有 Node 运行时、用 Inno Setup（`installer/windows/CreativeStudio.iss`）组装，输出 `dist/windows/CreativeStudioSetup.exe`。默认卸载保留本地数据。
+- **Windows**：`scripts/build-win-installer.ps1` 跑生产构建、下载配套私有 Node 与固定 LiteLLM 1.89.2/CPython sidecar、用 Inno Setup（`installer/windows/CreativeStudio.iss`）组装，输出 `dist/windows/CreativeStudioSetup.exe`。安装包拒绝真实 `config.yaml`、`.env*`、`.provision` 和本地 authoring profile；默认卸载保留本地数据。
 - **macOS**：`scripts/build-mac-installer.sh` 输出 `dist/macos/产品素材工作台-<version>.dmg`，仅 Apple Silicon。构建机必须用 arm64 Node 22.x（内置运行时锁定 Node 22.22.3），主版本或架构不一致会导致 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；还需要 Xcode Command Line Tools。脚本会校验 FFmpeg 为 arm64，并移除错误标为 arm64 的 x86_64 `ffprobe-static`，由已测试的 FFmpeg 元数据探测回退接管。用户侧说明见 `MACOS.md`。

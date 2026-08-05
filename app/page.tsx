@@ -79,7 +79,7 @@ export default function HomePage() {
   const isFirstUse = !loading && !hasProjects && providerStatus.configured === 0;
 
   const steps = [
-    { n: 1, title: '配置供应商', body: (<>在「<Link href="/settings" className="link-accent">供应商配置</Link>」填入中转站 Base URL 和 API Key</>) },
+    { n: 1, title: '优先导入统一配置', body: (<>在「<Link href="/settings#provisioning" className="link-accent">统一配置导入</Link>」选择管理员提供的加密文件并输入一次密码</>) },
     { n: 2, title: '上传图片', body: '上传参考图和待编辑图，写一条统一的提示词' },
     { n: 3, title: '开始编辑', body: '点击运行，系统自动并发处理、保存结果、导出报告' },
   ];

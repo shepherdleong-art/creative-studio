@@ -24,4 +24,9 @@ for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {
   copyDirectory(join(root, 'node_modules', pkg), join(standaloneDir, 'node_modules', pkg));
 }
 
+// Next/NFT may trace the sharp native .node file but omit its adjacent libvips
+// DLLs. Copy the installed platform-specific @img packages as one unit. This
+// stays cross-platform because npm only installs packages for the build host.
+copyDirectory(join(root, 'node_modules', '@img'), join(standaloneDir, 'node_modules', '@img'));
+
 console.log('Standalone static assets synced.');

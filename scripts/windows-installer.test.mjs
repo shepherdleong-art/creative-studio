@@ -15,6 +15,7 @@ for (const path of [
 }
 
 const build = read('scripts/build-win-installer.ps1');
+const nextConfig = read('next.config.ts');
 assert.match(build, /\[string\]\$NodeVersion = '22\.22\.3'/);
 assert.match(build, /\$NodeName = "node-v\$NodeVersion-win-x64"/);
 assert.match(build, /nodejs\.org\/dist\/v\$NodeVersion\/\$NodeName\.zip/);
@@ -26,10 +27,22 @@ assert.match(build, /\$HostNodePlatform -ne 'win32'/);
 assert.match(build, /\$HostNodeArch -ne 'x64'/);
 assert.match(build, /npm\.cmd ci/);
 assert.match(build, /npm\.cmd run build/);
+assert.match(nextConfig, /outputFileTracingExcludes:\s*\{\s*'\/\*':/);
+assert.match(nextConfig, /'\.\/provisioning\/\*\*\/\*'/);
+assert.match(build, /Turbopack\/NFT must never see a previous assembled payload/);
+assert.match(build, /Remove-Item -LiteralPath \$AppDir -Recurse -Force/);
 assert.match(build, /node_modules\\ffmpeg-static\\ffmpeg\.exe/);
 assert.match(build, /node_modules\\ffprobe-static\\bin\\win32\\x64\\ffprobe\.exe/);
+assert.match(build, /node_modules\\@img\\sharp-win32-x64\\lib\\libvips-42\.dll/);
+assert.match(build, /sharp-win32-x64\*\.node/);
+assert.match(build, /libvips-cpp-\*\.dll/);
+assert.match(build, /node_modules\\better-sqlite3\\build\\Release\\better_sqlite3\.node/);
+assert.match(build, /Bundled sharp\/better-sqlite3 native runtime self-check failed/);
 for (const forbidden of ['data', 'storage', 'outputs', '.env.local', '.git', '.claude']) {
   assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
+}
+for (const forbiddenName of ['config.yaml', 'litellm-config.yaml', 'runtime.env']) {
+  assert.match(build, new RegExp(forbiddenName.replace('.', '\\.')));
 }
 
 const launcher = read('installer/windows/launcher.cs');

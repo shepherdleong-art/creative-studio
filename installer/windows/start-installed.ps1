@@ -1,5 +1,6 @@
-param(
-  [int]$Port = $(if ($env:CREATIVE_STUDIO_PORT) { [int]$env:CREATIVE_STUDIO_PORT } else { 3000 })
+﻿param(
+  [int]$Port = $(if ($env:CREATIVE_STUDIO_PORT) { [int]$env:CREATIVE_STUDIO_PORT } else { 3000 }),
+  [int]$ProxyPort = $(if ($env:CREATIVE_STUDIO_PROXY_PORT) { [int]$env:CREATIVE_STUDIO_PROXY_PORT } else { 4000 })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,19 @@ if (-not (Test-Path $NodeExe)) {
 if (-not (Test-Path $ServerJs)) {
   Write-Host "Missing standalone server file: $ServerJs" -ForegroundColor Red
   exit 1
+}
+
+$sidecarStartScript = Join-Path $ScriptDir 'start-company-sidecar.ps1'
+if (Test-Path -LiteralPath $sidecarStartScript) {
+  try {
+    # Start-Process joins string[] arguments without reliably quoting paths on
+    # Windows PowerShell 5.1. Both the default install root and script path
+    # contain spaces, so quote them explicitly in one argument string.
+    $sidecarArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$sidecarStartScript`" -Root `"$Root`" -ProxyPort $ProxyPort"
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $sidecarArguments -WorkingDirectory $Root -WindowStyle Hidden | Out-Null
+  } catch {
+    Write-Host 'LiteLLM sidecar could not be started; the workbench will continue.' -ForegroundColor Yellow
+  }
 }
 
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null

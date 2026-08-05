@@ -10,11 +10,12 @@ npm run dev:win              # Dev server at 127.0.0.1 (Windows)
 npm run build                # Production build (next build + sync standalone assets)
 npm run lint                 # ESLint
 npm run icons                # Regenerate app icons from source art
+npm run create:provision -- provisioning/company-profile.local.json config.yaml company-profile.provision
 npm run build:win-installer  # Build Windows installer (PowerShell/Inno Setup; run on Windows)
 npm run build:mac-installer  # Build macOS DMG (bash; Apple Silicon host, requires Node 22.x)
 ```
 
-Company-gateway local stack (Windows): when `.venv-litellm` and `config.yaml` are present, `start-windows.cmd` first runs `scripts/start-stack.ps1 -SkipApp` to bring up the LiteLLM proxy (port 4000, bound to 127.0.0.1), then starts the dev server as before; without those components it behaves exactly as before. Public delivery of reference images goes through Tencent COS (`CREATIVE_STUDIO_COS_*`, see `lib/cos-media.ts`). Security constraint: local services (app and proxy) must never be exposed to the public internet — COS is the only public delivery path. `stop-windows.cmd`, Ctrl+C in the start window, and the UI shutdown button (`/api/shutdown` reads `storage/run/stack.json`'s `stopScript` and runs `scripts/stop-stack.ps1`) all tear down the proxy too. `storage/run/stack.json` is BOM-less JSON; `scripts/*.ps1` MUST stay UTF-8 **with BOM** — PS 5.1 misreads BOM-less Chinese and fails to parse.
+Company-gateway local stack (Windows): in development, when `.venv-litellm` and `config.yaml` are present, `start-windows.cmd` first runs `scripts/start-stack.ps1 -SkipApp` to bring up the LiteLLM proxy (port 4000, bound to 127.0.0.1), then starts the dev server. The installed app bundles a pinned private CPython/LiteLLM sidecar and accepts a first-run AES-256-GCM `.provision` package; re-import rotates the managed provider keys. The administrator workflow is documented in `provisioning/README.md`. Public delivery of reference images goes through Tencent COS (`CREATIVE_STUDIO_COS_*`, see `lib/cos-media.ts`). Local services must never be public. Stop commands and `/api/shutdown` use the controlled `storage/run/stack.json` stop script. The state file is BOM-less JSON; every `scripts/*.ps1` and `installer/windows/*.ps1` file MUST stay UTF-8 **with BOM** for PowerShell 5.1.
 
 There is no `npm test` script. Tests are standalone files under `scripts/*.test.ts` and `scripts/*.test.mjs`, run directly via Node's native TypeScript support (Node 22+):
 
@@ -66,7 +67,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
 
 ### Desktop packaging
 
-- `scripts/build-win-installer.ps1` and `scripts/build-mac-installer.sh` each run the production build, download a matching private Node runtime, and assemble a self-contained installer from `installer/windows/` (Inno Setup script + launcher) or `installer/macos/` (`.app` bundle template + launcher).
+- `scripts/build-win-installer.ps1` runs the production build and bundles private Node plus pinned LiteLLM 1.89.2/CPython runtimes; `scripts/build-mac-installer.sh` assembles the Apple Silicon app/runtime. Windows explicitly rejects real `config.yaml`, `.env*`, `.provision`, and local authoring profiles from the payload.
 - macOS builds are Apple Silicon-only and must run on an arm64 Node 22.x host — the bundled runtime is pinned to a specific Node 22 build, and a mismatched major version or x64 Node under Rosetta breaks the native module ABI for `better-sqlite3`/`sharp`.
 - Installer payloads must not leak dev-only paths (`data/`, `storage/`, `outputs/`, `docs/`, `scripts/`, `.git/`); the build scripts prune them and then assert none remain before packaging. Both platforms require bundled FFmpeg. On macOS the installer verifies an arm64 FFmpeg and removes the currently mislabeled x86_64 `ffprobe-static` payload, relying on the tested FFmpeg metadata-probe fallback; Windows still requires its native ffprobe binary.
 - `app/api/shutdown` exposes a graceful `POST` shutdown endpoint that installed-app stop scripts/launchers call instead of killing the process directly.
@@ -78,6 +79,6 @@ node scripts/<name>.test.ts          # pattern for any other test file
 - **Database migrations**: Keep published `CORE_DB_MIGRATIONS` and `FINAL_EDIT_MIGRATIONS` entries unchanged. Existing core tables retain the append-only legacy stream; final edit and batch production have separate versioned streams. Batch migrations and the legacy video-provider table rebuild must pass the shared lock, validated-backup, and audit gate; never place them in the legacy catch-and-continue core runner.
 - **Cost tracking**: Each job stores estimated cost; providers expose a cost calculation method.
 - **`projects.concurrency`** controls max parallel job submissions per project.
-- **`.env.local`** holds LLM API keys (Gemini, Qwen, Kimi, GPT) and the Tencent COS credentials (`CREATIVE_STUDIO_COS_*`) — never commit this file.
+- **`.env.local`**, root `config.yaml`, `provisioning/*.local.json`, and generated `*.provision` files hold or encapsulate credentials — never commit or bundle them.
 - **`docs/`** holds design/review/session-summary records; `outputs/` holds phase specs, test checklists, and delivery records; `docs/superpowers/{specs,plans}/` holds spec-driven planning docs for larger features.
 - UI language is Chinese; key domain terms: 项目 (project), 分镜 (shot/storyboard), 场景图 (scene image), 脚本 (script).

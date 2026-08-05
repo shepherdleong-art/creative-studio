@@ -49,6 +49,10 @@ class CreativeStudioLauncher
         string serverJs, nodeExe, root, launcherHtml, storageBase;
         DetectLayout(out serverJs, out nodeExe, out root, out launcherHtml, out storageBase);
 
+        // Start the optional company LiteLLM sidecar without blocking the workbench.
+        // Missing configuration/runtime or a sidecar failure must never block the UI.
+        StartCompanySidecar(storageBase);
+
         string logDir  = Path.Combine(storageBase, "storage", "logs");
         string runDir  = Path.Combine(storageBase, "storage", "run");
         string stdoutLog = Path.Combine(logDir, "server.out.log");
@@ -201,6 +205,42 @@ class CreativeStudioLauncher
             if (File.Exists(candidate)) return candidate;
         }
         return null;
+    }
+
+    static void StartCompanySidecar(string storageBase)
+    {
+        try
+        {
+            string scriptPath = Path.Combine(storageBase, "scripts", "start-company-sidecar.ps1");
+            if (!File.Exists(scriptPath)) return;
+
+            string proxyPort = Environment.GetEnvironmentVariable("CREATIVE_STUDIO_PROXY_PORT");
+            int parsedPort;
+            if (!Int32.TryParse(proxyPort, out parsedPort) || parsedPort < 1 || parsedPort > 65535)
+                proxyPort = "4000";
+
+            string arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " +
+                QuoteArgument(scriptPath) + " -Root " + QuoteArgument(storageBase) +
+                " -ProxyPort " + QuoteArgument(proxyPort);
+            var psi = new ProcessStartInfo("powershell.exe", arguments)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = storageBase,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            Process.Start(psi);
+        }
+        catch
+        {
+            // Sidecar startup is best effort. The main app remains usable offline.
+        }
+    }
+
+    static string QuoteArgument(string value)
+    {
+        if (value == null) return "\"\"";
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 
     // ── Helpers ──

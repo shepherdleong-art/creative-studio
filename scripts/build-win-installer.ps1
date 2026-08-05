@@ -1,7 +1,12 @@
-param(
+﻿param(
   [string]$NodeVersion = '22.22.3',
   [string]$InnoSetupCompiler = '',
-  [switch]$SkipNpmCi
+  [switch]$SkipNpmCi,
+  [string]$LiteLLMRuntimeDir = '',
+  [switch]$SkipLiteLLMSidecarBuild,
+  [string]$NodeRuntimeSha256 = '6c8d54f635feff4df76c2ca80f45332eb2ff57d25226edce36592e51a177ee33',
+  [string]$PythonEmbeddableSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3',
+  [string]$PipWheelSha256 = '382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +22,9 @@ $NodeName = "node-v$NodeVersion-win-x64"
 $NodeZip = Join-Path $CacheDir "$NodeName.zip"
 $NodeExtracted = Join-Path $CacheDir $NodeName
 $NodeUrl = "https://nodejs.org/dist/v$NodeVersion/$NodeName.zip"
+$LiteLLMVersion = '1.89.2'
+$LiteLLMCacheDir = Join-Path $CacheDir 'litellm'
+$LiteLLMDefaultRuntimeDir = Join-Path $LiteLLMCacheDir 'runtime-litellm'
 $IssPath = Join-Path $Root 'installer\windows\CreativeStudio.iss'
 
 function Copy-DirectoryContent {
@@ -28,7 +36,7 @@ function Copy-DirectoryContent {
     throw "Missing required path: $Source"
   }
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  Copy-Item -Path (Join-Path $Source '*') -Destination $Destination -Recurse -Force
+  Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $Destination -Recurse -Force
 }
 
 function Resolve-InnoCompiler {
@@ -88,6 +96,12 @@ if ($SkipNpmCi) {
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
+# Turbopack/NFT must never see a previous assembled payload. Otherwise broad
+# runtime file patterns can recursively trace dist/windows/CreativeStudio back
+# into the next standalone output.
+if (Test-Path -LiteralPath $AppDir) {
+  Remove-Item -LiteralPath $AppDir -Recurse -Force
+}
 Remove-Item -LiteralPath (Join-Path $Root '.next\dev') -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host 'Building Next.js standalone app...'
@@ -96,9 +110,40 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 New-Item -ItemType Directory -Force -Path $CacheDir, $DistRoot | Out-Null
 
+if (-not $LiteLLMRuntimeDir) { $LiteLLMRuntimeDir = $LiteLLMDefaultRuntimeDir }
+$LiteLLMRuntimeDir = [IO.Path]::GetFullPath($LiteLLMRuntimeDir)
+if (-not $SkipLiteLLMSidecarBuild) {
+  $sidecarBuilder = Join-Path $Root 'scripts\build-litellm-sidecar.ps1'
+  if (-not (Test-Path -LiteralPath $sidecarBuilder)) { throw "Missing LiteLLM sidecar builder: $sidecarBuilder" }
+  Write-Host "Building private LiteLLM $LiteLLMVersion runtime..."
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sidecarBuilder -LiteLLMVersion $LiteLLMVersion -CacheRoot $LiteLLMCacheDir -OutputRoot $LiteLLMRuntimeDir -PythonEmbeddableSha256 $PythonEmbeddableSha256 -PipWheelSha256 $PipWheelSha256
+  if ($LASTEXITCODE -ne 0) { throw "LiteLLM sidecar build failed with exit code $LASTEXITCODE; installer assembly aborted." }
+} else {
+  Write-Host 'Skipping LiteLLM sidecar build; a previously validated runtime is required.' -ForegroundColor Yellow
+}
+
+$requiredSidecarFiles = @(
+  'python.exe',
+  'python312._pth',
+  'manifest.json',
+  'Lib\site-packages\litellm'
+)
+foreach ($relativePath in $requiredSidecarFiles) {
+  $sidecarPath = Join-Path $LiteLLMRuntimeDir $relativePath
+  if (-not (Test-Path -LiteralPath $sidecarPath)) { throw "LiteLLM runtime is incomplete; missing $sidecarPath" }
+}
+$sidecarManifest = Get-Content -LiteralPath (Join-Path $LiteLLMRuntimeDir 'manifest.json') -Raw | ConvertFrom-Json
+if ($sidecarManifest.litellmVersion -ne $LiteLLMVersion -or $sidecarManifest.architecture -ne 'x64') {
+  throw "LiteLLM runtime manifest does not match pinned $LiteLLMVersion x64 runtime."
+}
+
 if (-not (Test-Path $NodeZip)) {
   Write-Host "Downloading private Node.js runtime: $NodeUrl"
   Invoke-WebRequest -Uri $NodeUrl -OutFile $NodeZip
+}
+$actualNodeRuntimeSha256 = (Get-FileHash -LiteralPath $NodeZip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualNodeRuntimeSha256 -ne $NodeRuntimeSha256.Trim().ToLowerInvariant()) {
+  throw "Node.js runtime SHA-256 mismatch. Expected $NodeRuntimeSha256, received $actualNodeRuntimeSha256."
 }
 
 if (-not (Test-Path $NodeExtracted)) {
@@ -117,6 +162,9 @@ foreach ($relativePath in @(
   'data',
   'storage',
   'outputs',
+  'dist',
+  '.cache',
+  'provisioning',
   'installer',
   'docs',
   'scripts',
@@ -138,13 +186,17 @@ foreach ($relativePath in @(
   'start.sh',
   'stop.sh',
   'launcher.vbs',
-  'video-panel-mockup.html'
+  'video-panel-mockup.html',
+  'config.yaml',
+  'litellm-config.yaml',
+  'data\provisioning',
+  'runtime.env'
 )) {
   Remove-PayloadPath -RelativePath $relativePath
 }
-Get-ChildItem -LiteralPath $AppDir -Force -Filter '.env*' | Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath $AppDir -Recurse -Force -File -Filter '.env*' -ErrorAction SilentlyContinue | Remove-Item -Force
 
-$forbiddenPayload = @('data', 'storage', 'outputs', '.env.local')
+$forbiddenPayload = @('data', 'storage', 'outputs', 'dist', '.cache', 'provisioning', '.env.local', 'config.yaml', 'litellm-config.yaml', 'data\provisioning', 'runtime.env')
 foreach ($relativePath in $forbiddenPayload) {
   $target = Join-Path $AppDir $relativePath
   if (Test-Path $target) {
@@ -152,26 +204,68 @@ foreach ($relativePath in $forbiddenPayload) {
   }
 }
 
-$ffmpegBinaries = @(
+$requiredRuntimeFiles = @(
   'node_modules\ffmpeg-static\ffmpeg.exe',
-  'node_modules\ffprobe-static\bin\win32\x64\ffprobe.exe'
+  'node_modules\ffprobe-static\bin\win32\x64\ffprobe.exe',
+  'node_modules\@img\sharp-win32-x64\lib\libvips-42.dll',
+  'node_modules\better-sqlite3\build\Release\better_sqlite3.node'
 )
-foreach ($relativePath in $ffmpegBinaries) {
+foreach ($relativePath in $requiredRuntimeFiles) {
   $target = Join-Path $AppDir $relativePath
   if (-not (Test-Path $target)) {
-    throw "Installer payload missing bundled ffmpeg binary: $target"
+    throw "Installer payload missing required runtime file: $target"
   }
+}
+
+$sharpRuntimeDir = Join-Path $AppDir 'node_modules\@img\sharp-win32-x64\lib'
+$sharpNativeModules = @(Get-ChildItem -LiteralPath $sharpRuntimeDir -File -Filter 'sharp-win32-x64*.node' -ErrorAction SilentlyContinue)
+$libvipsCppLibraries = @(Get-ChildItem -LiteralPath $sharpRuntimeDir -File -Filter 'libvips-cpp-*.dll' -ErrorAction SilentlyContinue)
+if ($sharpNativeModules.Count -ne 1) {
+  throw "Installer payload must contain exactly one Sharp win32-x64 native module under $sharpRuntimeDir."
+}
+if ($libvipsCppLibraries.Count -ne 1) {
+  throw "Installer payload must contain exactly one versioned libvips C++ runtime under $sharpRuntimeDir."
 }
 
 Copy-DirectoryContent -Source (Join-Path $Root '.next\static') -Destination (Join-Path $AppDir '.next\static')
 Copy-DirectoryContent -Source (Join-Path $Root 'public') -Destination (Join-Path $AppDir 'public')
 Copy-DirectoryContent -Source $NodeExtracted -Destination (Join-Path $AppDir 'runtime')
+Copy-DirectoryContent -Source $LiteLLMRuntimeDir -Destination (Join-Path $AppDir 'runtime-litellm')
+
+$runtimeManifest = Join-Path $AppDir 'runtime-litellm\manifest.json'
+if (-not (Test-Path -LiteralPath $runtimeManifest)) { throw "Installer payload missing LiteLLM manifest: $runtimeManifest" }
+if (-not (Test-Path -LiteralPath (Join-Path $AppDir 'runtime-litellm\Lib\site-packages\litellm'))) {
+  throw 'Installer payload is missing vendored LiteLLM package.'
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'scripts') | Out-Null
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-installed.ps1') -Destination (Join-Path $AppDir 'scripts\stop-installed.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\clear-user-data.ps1') -Destination (Join-Path $AppDir 'scripts\clear-user-data.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\start-installed.ps1') -Destination (Join-Path $AppDir 'scripts\start-installed.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\start-company-sidecar.ps1') -Destination (Join-Path $AppDir 'scripts\start-company-sidecar.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-company-sidecar.ps1') -Destination (Join-Path $AppDir 'scripts\stop-company-sidecar.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'launcher.html') -Destination (Join-Path $AppDir 'launcher.html') -Force
-Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination (Join-Path $AppDir 'README.md') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\README-INSTALLED.md') -Destination (Join-Path $AppDir 'README.md') -Force
+
+$nativeRuntimeCheck = "const sharp=require('sharp');const Database=require('better-sqlite3');const db=new Database(':memory:');db.prepare('SELECT 1').get();db.close();if(!sharp)process.exit(1);"
+Push-Location $AppDir
+try {
+  & (Join-Path $AppDir 'runtime\node.exe') -e $nativeRuntimeCheck
+  if ($LASTEXITCODE -ne 0) { throw 'Bundled sharp/better-sqlite3 native runtime self-check failed.' }
+} finally {
+  Pop-Location
+}
+
+$forbiddenConfigurationFiles = @(Get-ChildItem -LiteralPath $AppDir -Recurse -Force -File -ErrorAction SilentlyContinue | Where-Object {
+  $_.Name -like '*.provision' -or
+  $_.Name -like 'company-profile*.json' -or
+  $_.Name -like '.env*' -or
+  $_.Name -in @('config.yaml', 'litellm-config.yaml', 'runtime.env')
+})
+if ($forbiddenConfigurationFiles.Count -gt 0) {
+  $paths = ($forbiddenConfigurationFiles | ForEach-Object { $_.FullName }) -join ', '
+  throw "Installer payload contains forbidden provisioning delivery files: $paths"
+}
 
 # ── Compile CreativeStudio.exe launcher ──
 $cscCandidates = @(

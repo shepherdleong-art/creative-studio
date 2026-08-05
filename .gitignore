@@ -70,3 +70,7 @@ next-env.d.ts
 /config.yaml
 /litellm-config.yaml
 /.venv-litellm/
+/provisioning/*.local.json
+/provisioning/*.provision
+/*.provision
+/CreativeStudio.exe

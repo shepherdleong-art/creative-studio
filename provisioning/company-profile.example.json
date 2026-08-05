@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "profileName": "公司内部示例",
+  "gatewayApiKey": "REPLACE_WITH_GATEWAY_KEY",
+  "image": {
+    "id": "company-image2-medium",
+    "name": "公司 image2-medium",
+    "type": "gateway-task-image",
+    "apiStyle": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:4000",
+    "model": "image2-medium",
+    "enabled": true
+  },
+  "script": {
+    "id": "company-gpt5-5",
+    "name": "公司 GPT-5.5",
+    "type": "openai-compatible",
+    "apiStyle": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:4000",
+    "model": "GPT-5-5",
+    "enabled": true,
+    "executionScope": "company",
+    "supportsVision": true,
+    "maxTokens": 16384
+  },
+  "videos": [
+    {
+      "id": "company-kling-3",
+      "name": "公司可灵 3.0",
+      "type": "openai-video",
+      "apiStyle": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:4000",
+      "model": "kling-3.0",
+      "enabled": true,
+      "defaultDurationSec": 5
+    },
+    {
+      "id": "company-jimeng-2-0",
+      "name": "公司即梦 2.0",
+      "type": "openai-video",
+      "apiStyle": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:4000",
+      "model": "doubao-seedance-2-0-260128",
+      "enabled": true,
+      "defaultDurationSec": 5
+    }
+  ],
+  "tts": {
+    "id": "doubao-seed-tts-2",
+    "name": "豆包语音合成 2.0",
+    "type": "doubao-http-chunked",
+    "apiStyle": "doubao-http-chunked",
+    "baseUrl": "https://openspeech.bytedance.com",
+    "model": "seed-tts-2.0",
+    "enabled": true,
+    "apiKey": "REPLACE_WITH_DOUBAO_TTS_API_KEY"
+  },
+  "cos": {
+    "secretId": "REPLACE_WITH_COS_SECRET_ID",
+    "secretKey": "REPLACE_WITH_COS_SECRET_KEY",
+    "domain": "bucket.cos.example.invalid",
+    "prefix": "ref-images/",
+    "ttlSec": 86400
+  }
+}

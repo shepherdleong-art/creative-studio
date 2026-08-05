@@ -3,13 +3,13 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: 'standalone',
   outputFileTracingIncludes: {
-    '/**': [
+    '/*': [
       './node_modules/next/dist/compiled/next-server/*.runtime.prod.js',
       './node_modules/next/dist/compiled/react/**/*',
     ],
   },
   outputFileTracingExcludes: {
-    '*': [
+    '/*': [
       './.cache/**/*',
       './.git/**/*',
       './data/**/*',
@@ -17,6 +17,7 @@ const nextConfig: NextConfig = {
       './docs/**/*',
       './installer/**/*',
       './outputs/**/*',
+      './provisioning/**/*',
       './scripts/**/*',
       './storage/**/*',
     ],

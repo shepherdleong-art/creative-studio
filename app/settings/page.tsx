@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
 import CompanyProviderRuntimeStatus from '@/components/company-provider/CompanyProviderRuntimeStatus';
+import ProvisioningImportCard from '@/components/provisioning/ProvisioningImportCard';
 import {
   scriptProviderApiStyleOptions,
   scriptProviderProtocolFields,
@@ -302,6 +303,10 @@ export default function SettingsPage() {
 
       <div className="mb-5">
         <CompanyProviderRuntimeStatus />
+      </div>
+
+      <div className="mb-5">
+        <ProvisioningImportCard onImported={loadAll} />
       </div>
 
       <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-4">

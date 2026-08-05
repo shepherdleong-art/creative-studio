@@ -1,4 +1,4 @@
-param(
+﻿param(
   [int]$Port = $(if ($env:CREATIVE_STUDIO_PORT) { [int]$env:CREATIVE_STUDIO_PORT } else { 3000 })
 )
 
@@ -48,4 +48,14 @@ foreach ($listener in $listeners) {
 
 Stop-TrackedProcess
 Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+
+$sidecarStopScript = Join-Path $ScriptDir 'stop-company-sidecar.ps1'
+if (Test-Path -LiteralPath $sidecarStopScript) {
+  try {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $sidecarStopScript -Root $Root
+  } catch {
+    Write-Host 'LiteLLM sidecar stop command failed; no unrelated process was terminated.' -ForegroundColor Yellow
+  }
+}
+
 Write-Host 'Stop command finished.'

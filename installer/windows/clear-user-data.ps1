@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$Force
 )
 
@@ -11,7 +11,10 @@ $Root = Split-Path -Parent $ScriptDir
 $Targets = @(
   (Join-Path $Root 'data'),
   (Join-Path $Root 'storage'),
-  (Join-Path $Root '.env.local')
+  (Join-Path $Root '.env.local'),
+  (Join-Path $Root 'config.yaml'),
+  (Join-Path $Root 'data\provisioning'),
+  (Join-Path $Root 'storage\run\stack.json')
 )
 
 Write-Host 'This will permanently delete Creative Studio user data from:'
