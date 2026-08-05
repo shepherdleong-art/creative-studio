@@ -55,13 +55,13 @@ if (-not $needsInstall -and (-not (Test-Path $sharpWin) -or -not (Test-Path $sql
   $needsInstall = $true
 }
 
-# ── 公司网关联动：组件齐备时自动拉起 litellm 代理 + 隧道，并把隧道地址注入环境 ──
+# ── 公司网关联动：组件齐备时自动拉起 litellm 代理（仅 127.0.0.1）──
+# 参考图公网交付走腾讯云 COS（见 .env.local 的 CREATIVE_STUDIO_COS_*）；本机服务不得暴露到公网。
 $stackStarted = $false
 $hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
-                      (Test-Path (Join-Path $Root 'config.yaml')) -and
-                      (Test-Path (Join-Path $Root '.cache\cloudflared\cloudflared.exe'))
+                      (Test-Path (Join-Path $Root 'config.yaml'))
 if ($hasStackComponents) {
-  Write-Host '检测到公司网关组件，启动 litellm 代理与隧道（约半分钟）...'
+  Write-Host '检测到公司网关组件，启动 litellm 代理...'
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') -SkipApp
   if ($LASTEXITCODE -ne 0) {
     Write-Host '公司网关组件启动失败，工作台未启动。可删除 .venv-litellm 或 config.yaml 后跳过联动。' -ForegroundColor Red
@@ -69,10 +69,8 @@ if ($hasStackComponents) {
   }
   $stackFile = Join-Path $Root 'storage\run\stack.json'
   if (Test-Path $stackFile) {
-    $stack = Get-Content $stackFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    $env:CREATIVE_STUDIO_PUBLIC_BASE_URL = $stack.tunnelUrl
     $stackStarted = $true
-    Write-Host "参考图公网地址: $($stack.tunnelUrl) ($($stack.tunnelEngine))"
+    Write-Host '公司网关代理就绪: http://127.0.0.1:4000'
   }
 }
 
@@ -98,7 +96,7 @@ try {
 } finally {
   if ($stackStarted) {
     Write-Host ''
-    Write-Host '正在关闭 litellm 代理与隧道...'
+    Write-Host '正在关闭 litellm 代理...'
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
   }
 }

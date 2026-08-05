@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
+import { _resetCosMediaCacheForTest } from '../lib/cos-media.ts';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openai-video-adapter-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = tmpDir;
@@ -176,6 +177,35 @@ try {
     'http://192.168.1.10:3000/api/images/sources/source.png',
   ]);
 
+  // 配置 COS 后：即使没有任何公网基础地址，首帧图也走 COS 预签名 URL
+  // （mock 对 HEAD 一律 200，视为对象已存在，跳过 PUT）
+  delete process.env.CREATIVE_STUDIO_PUBLIC_BASE_URL;
+  process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'test-cos-id';
+  process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'test-cos-key';
+  process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.example.com';
+  _resetCosMediaCacheForTest();
+  await openaiVideoAdapter.submit(
+    {
+      model: 'kling-3.0',
+      prompt: 'test',
+      sourceImagePath: imagePath,
+      sourceMimeType: 'image/png',
+      durationSec: 5,
+    },
+    'gateway-key',
+    'https://llm-gateway.example.com',
+  );
+  const cosImages = capturedBody?.images as string[];
+  assert.equal(cosImages.length, 1);
+  assert.ok(cosImages[0].startsWith('https://cos.example.com/ref-images/'), cosImages[0]);
+  assert.match(cosImages[0], /q-sign-algorithm=sha1/);
+  assert.match(cosImages[0], /q-signature=[0-9a-f]{40}/);
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+  delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
+  _resetCosMediaCacheForTest();
+  process.env.CREATIVE_STUDIO_PUBLIC_BASE_URL = 'http://192.168.1.10:3000';
+
   const pollResult = await openaiVideoAdapter.poll(
     'video_xxx',
     'gateway-key',
@@ -266,6 +296,10 @@ try {
   os.networkInterfaces = originalNetworkInterfaces;
   delete process.env.CREATIVE_STUDIO_PUBLIC_BASE_URL;
   delete process.env.CREATIVE_STUDIO_DATA_ROOT;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+  delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
+  _resetCosMediaCacheForTest();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }
 

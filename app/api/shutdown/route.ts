@@ -11,7 +11,7 @@ export async function POST() {
   // Delay exit slightly to let the response flush
   setTimeout(() => {
     // 若当前是由一键联动脚本启动的（存在 storage/run/stack.json），
-    // UI 关闭按钮连同 litellm 代理与隧道一起停止；普通安装包没有该文件，不受影响。
+    // UI 关闭按钮连同 litellm 代理一起停止；普通安装包没有该文件，不受影响。
     try {
       const stackFile = path.join(dataRoot(), 'storage', 'run', 'stack.json');
       if (fs.existsSync(stackFile)) {

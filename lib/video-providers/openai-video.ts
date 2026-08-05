@@ -3,6 +3,7 @@ import {
   isPrivateOrLocalHttpUrl,
   resolvePublicImageUrlWithSource,
 } from '../local-image-url.ts';
+import { isCosMediaConfigured, tryUploadToCosAndSign } from '../cos-media.ts';
 import { normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../gateway-media-url.ts';
 import { companyVideoCapsForModel, snapCompanyVideoSize } from '../company-gateway-size.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
@@ -98,18 +99,29 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos`;
 
-    // 网关的 images 字段映射到上游首帧/参考图。上游（腾讯等）只接受可访问的真实 URL；
-    // 自动探测到的私网地址不可用时，要求用户显式配置对网关可达的公开地址。
-    const imageResolution = resolvePublicImageUrlWithSource(request.sourceImagePath);
-    if (
-      !imageResolution
-      || (imageResolution.source === 'network' && isPrivateOrLocalHttpUrl(imageResolution.url))
-    ) {
-      throw new Error(
-        '视频首帧图片没有可供上游访问的公网 URL，请设置 CREATIVE_STUDIO_PUBLIC_BASE_URL 为网关可访问的地址后重试。',
-      );
+    // 网关的 images 字段映射到上游首帧/参考图。上游（腾讯等）只接受可访问的真实 URL。
+    // 优先上传腾讯云 COS 返回 24h 预签名 URL（配置 CREATIVE_STUDIO_COS_* 时）；
+    // 否则回退本机 HTTP URL——自动探测到的私网地址不可用时，要求用户显式配置公开地址。
+    let imageRef: string | null = null;
+    if (isCosMediaConfigured()) {
+      try {
+        imageRef = await tryUploadToCosAndSign(request.sourceImagePath);
+      } catch (error) {
+        console.warn('[cos-media] 首帧图上传 COS 失败，回退本机 URL：', error instanceof Error ? error.message : error);
+      }
     }
-    const imageRef = imageResolution.url;
+    if (!imageRef) {
+      const imageResolution = resolvePublicImageUrlWithSource(request.sourceImagePath);
+      if (
+        !imageResolution
+        || (imageResolution.source === 'network' && isPrivateOrLocalHttpUrl(imageResolution.url))
+      ) {
+        throw new Error(
+          '视频首帧图片没有可供上游访问的公网 URL，请设置 CREATIVE_STUDIO_PUBLIC_BASE_URL 为网关可访问的地址，或配置 CREATIVE_STUDIO_COS_* 使用腾讯云 COS 中转后重试。',
+        );
+      }
+      imageRef = imageResolution.url;
+    }
 
     const body: Record<string, unknown> = {
       model: request.model,

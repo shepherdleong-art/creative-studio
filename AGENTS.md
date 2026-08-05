@@ -26,7 +26,7 @@ npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Nod
 
 终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS）、`start-windows.cmd` / `stop-windows.cmd`（Windows），会检查 Node、装依赖、起服务并打开浏览器。
 
-公司网关联动（Windows）：`start-windows.cmd` 检测到联动组件（`.venv-litellm`、`config.yaml`、`.cache/cloudflared/cloudflared.exe`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000）和隧道（优先 cloudflared，不通自动换 pinggy），把隧道公网地址注入 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 后再起 dev server；组件缺失则保持原行为不动。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起 `scripts/stop-stack.ps1`）都会把代理与隧道一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
+公司网关联动（Windows）：`start-windows.cmd` 检测到联动组件（`.venv-litellm`、`config.yaml`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000，仅监听 127.0.0.1）再起 dev server；组件缺失则保持原行为不动。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起 `scripts/stop-stack.ps1`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
 
 ## 测试
 
@@ -80,6 +80,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `db.ts` / `db-migrations.ts` — SQLite 初始化（WAL 模式、外键开启）。`CORE_DB_MIGRATIONS` 是扁平的 `ALTER TABLE` / `UPDATE` 语句列表，每次启动逐条执行并 try/catch 跳过已应用的列；新增字段就往后追加，不要改已有条目。
 - `data-root.ts` — 解析本地数据根目录：优先 `CREATIVE_STUDIO_DATA_ROOT` 环境变量，否则 `process.cwd()`。`data/`、`storage/` 都挂在它下面，写路径时一律走 `dataRoot()`。
 - `local-image-url.ts` — 把 `storage/` 下的本地图片转成 `/api/images/...` 的 HTTP URL，供只接受真实 URL 的网关上游（腾讯等）拉取；地址默认自动探测（第一张非内部 IPv4 + `PORT`/3000），可用 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 覆盖，探测不到时调用方回退 data URL。
+- `cos-media.ts` — 腾讯云 COS 参考图中转。配置 `CREATIVE_STUDIO_COS_SECRET_ID` / `CREATIVE_STUDIO_COS_SECRET_KEY` / `CREATIVE_STUDIO_COS_DOMAIN`（可选 `CREATIVE_STUDIO_COS_PREFIX` 默认 `ref-images/`、`CREATIVE_STUDIO_COS_URL_TTL_SEC` 默认 86400、`CREATIVE_STUDIO_COS_SIGN_HOST`）后，`gateway-task-image` / `openai-video` 适配器提交任务时把参考图按内容 SHA-256 命名上传（GET `Range: bytes=0-0` 查重跳过重复上传）并生成 24h 预签名 GET URL 传给网关；手写 `q-sign-algorithm=sha1` 签名（`node:crypto`，零新增依赖），上传/下载都走配置的自定义域名。注意 CDN 自定义域名回源会把 Host 改写成源站默认端点（如 `<bucket>.cos.ap-guangzhou.myqcloud.com`），且会把 HEAD 改写为 GET——此时必须把 `CREATIVE_STUDIO_COS_SIGN_HOST` 设为源站端点用于签名，查重不能用 HEAD。COS 未配置或上传失败时适配器回退 `local-image-url` 的本机 URL 逻辑。密钥只放 `.env.local`，日志不得打印签名参数。
 - `gateway-media-url.ts` — 网关结果 URL 归一化（把网关误配的 localhost/相对路径结果地址改写到网关 origin）与带鉴权下载（仅当目标指向网关 origin 才附 Bearer）。
 - `queue.ts` / `video-queue.ts` — 图片/视频任务的内存中队列：向供应商提交任务、轮询状态、下载结果、失败重试；支持暂停/恢复。视频并发由 `VIDEO_CONCURRENCY` 环境变量控制（1–6，默认 3）。
 - `providers/` — 图片生成适配器：`openai-compatible`、`packy-images`、`packy-gemini-image`、`geekai-json`、`gateway-task-image`（New API 类中转网关把图片模型挂在 `/v1/videos` 异步任务协议下的场景，与 geekai-json 同为提交→轮询→下载三段式）。
@@ -116,7 +117,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 ## 安全注意事项
 
-- `.env.local` 存放 LLM API Key（Gemini、Qwen、Kimi、GPT 等），**绝不提交**；`.gitignore` 已排除 `.env*`。
+- `.env.local` 存放 LLM API Key（Gemini、Qwen、Kimi、GPT 等）与腾讯云 COS 密钥（`CREATIVE_STUDIO_COS_*`），**绝不提交**；`.gitignore` 已排除 `.env*`。
 - 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示"是否已配置"，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
 - 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点时不要打印请求头、密钥或完整鉴权串。
