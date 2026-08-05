@@ -4,11 +4,14 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../data-root.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
+import { projectExportFolderSegment } from '../project-export-folder.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
 
 /** Export metadata supplied by the batch integration layer. */
 export interface BatchExportIdentity {
   projectId: string;
+  /** 项目名，用于生成可读的成片导出目录（`项目名-短ID`）。 */
+  projectName: string;
   batchId: string;
   productCode: string;
   /** Date/time or an already formatted Shanghai date (`YYYYMMDD`). */
@@ -143,9 +146,9 @@ export function reserveBatchExportTarget(input: BatchExportIdentity & { storageR
   assertSafePathSegment(input.batchId, '批次标识');
   const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
   const baseName = buildBaseName(input);
-  // 与单条模式同一个成品目录:一个项目的成片(不论单条还是批量)集中存放。
+  // 与单条模式同一个成品目录(`项目名-短ID`):一个项目的成片(不论单条还是批量)集中存放。
   // 重名由下面的占位循环 + .lock 独占创建保证不会互相覆盖。
-  const relativeDir = path.join('projects', input.projectId, '成片');
+  const relativeDir = path.join('projects', projectExportFolderSegment({ id: input.projectId, name: input.projectName }), '成片');
   const exportDir = ensureDirectory(storageRoot, relativeDir);
 
   for (let exportSequence = 1; exportSequence < 100_000; exportSequence += 1) {

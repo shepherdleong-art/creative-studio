@@ -13,6 +13,7 @@ import { FinalEditError } from '../lib/final-edit/workspace.ts';
 import { buildPublishedJobOutput, registerPublishedArtifacts } from '../lib/final-edit/project-artifacts.ts';
 import { initFinalEditSchema } from '../lib/final-edit/schema.ts';
 import type { ExportIdentity } from '../lib/final-edit/types.ts';
+import { projectExportFolderSegment } from '../lib/project-export-folder.ts';
 
 assert.equal(formatShanghaiTaskDate('2026-07-23 15:59:59'), '20260723', 'SQLite UTC 时间必须按上海时区转换');
 assert.equal(formatShanghaiTaskDate('2026-07-23 16:00:00'), '20260724', '上海日期跨日边界必须稳定');
@@ -34,10 +35,11 @@ try {
     productCode: 'JSQ-A1',
     taskDate: '20260724',
   };
+  const projectFolder = projectExportFolderSegment({ id: identity.projectId, name: identity.taskName });
   const first = reserveProjectExportTarget(storageRoot, identity);
   assert.equal(first.videoFilename, '成片-JSQ-A1-20260724.mp4');
   assert.equal(first.coverFilename, '成片-JSQ-A1-20260724-封面.jpg');
-  assert.equal(first.displayDirectory, '工作台/净水器主图任务/成片/');
+  assert.equal(first.displayDirectory, `工作台/${projectFolder}/成片/`);
   assert.equal(fs.existsSync(path.join(storageRoot, first.videoRelativePath)), false, '入队时不得暴露零字节假成片');
   assert.equal(fs.existsSync(path.join(storageRoot, first.coverRelativePath)), false, '入队时不得暴露零字节假封面');
   assert.ok(fs.existsSync(path.join(storageRoot, first.reservationRelativePath)), '成对预留必须只持有隐藏独占锁');
@@ -46,7 +48,7 @@ try {
   assert.equal(second.videoFilename, '成片-JSQ-A1-20260724-02.mp4');
   assert.equal(second.coverFilename, '成片-JSQ-A1-20260724-02-封面.jpg');
 
-  const blocked = new Set([path.join('projects', identity.projectId, '成片', '成片-JSQ-A1-20260724-03.mp4')]);
+  const blocked = new Set([path.join('projects', projectFolder, '成片', '成片-JSQ-A1-20260724-03.mp4')]);
   const third = reserveProjectExportTarget(storageRoot, identity, { blockedRelativePaths: blocked });
   assert.equal(third.videoFilename, '成片-JSQ-A1-20260724-04.mp4', '数据库仍登记的缺失文件也必须占用命名序号');
 
@@ -104,10 +106,11 @@ try {
   assert.equal(fs.existsSync(path.join(storageRoot, second.reservationRelativePath)), false);
 
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-export-outside-'));
-  const unsafeProjectDir = path.join(storageRoot, 'projects', 'project-symlink');
+  const symlinkIdentity: ExportIdentity = { ...identity, projectId: 'project-symlink', taskName: '链接任务' };
+  const unsafeProjectDir = path.join(storageRoot, 'projects', projectExportFolderSegment({ id: symlinkIdentity.projectId, name: symlinkIdentity.taskName }));
   fs.mkdirSync(unsafeProjectDir, { recursive: true });
   fs.symlinkSync(outside, path.join(unsafeProjectDir, '成片'));
-  assert.throws(() => reserveProjectExportTarget(storageRoot, { ...identity, projectId: 'project-symlink' }), /符号链接|unsafe/i);
+  assert.throws(() => reserveProjectExportTarget(storageRoot, symlinkIdentity), /符号链接|unsafe/i);
   fs.rmSync(outside, { recursive: true, force: true });
 } finally {
   fs.rmSync(storageRoot, { recursive: true, force: true });

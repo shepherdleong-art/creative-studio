@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { projectExportFolderSegment } from '../project-export-folder.ts';
 import { FinalEditError } from './errors.ts';
 import { previewExportBaseName } from './export-identity.ts';
 import { assertNoStorageSymlink } from './storage-path.ts';
@@ -56,7 +57,7 @@ export function reserveExportPath(storageRoot: string, identity: ExportIdentity,
   assertSafeProjectId(identity.projectId);
   const normalizedExtension = normalizeExtension(extension);
   const resolvedStorageRoot = path.resolve(storageRoot);
-  const exportDir = path.resolve(resolvedStorageRoot, 'projects', identity.projectId, '成片');
+  const exportDir = path.resolve(resolvedStorageRoot, 'projects', projectExportFolderSegment({ id: identity.projectId, name: identity.taskName }), '成片');
   if (!exportDir.startsWith(`${resolvedStorageRoot}${path.sep}`)) {
     throw new FinalEditError('unsafe_path', '导出目录不在 storage 内');
   }
@@ -88,7 +89,8 @@ export function reserveExportPath(storageRoot: string, identity: ExportIdentity,
 export function reserveProjectExportTarget(storageRoot: string, identity: ExportIdentity, options: { blockedRelativePaths?: ReadonlySet<string> } = {}): ReservedProjectExportTarget {
   assertSafeProjectId(identity.projectId);
   const resolvedStorageRoot = path.resolve(storageRoot);
-  const exportDir = path.resolve(resolvedStorageRoot, 'projects', identity.projectId, '成片');
+  const projectFolder = projectExportFolderSegment({ id: identity.projectId, name: identity.taskName });
+  const exportDir = path.resolve(resolvedStorageRoot, 'projects', projectFolder, '成片');
   if (!exportDir.startsWith(`${resolvedStorageRoot}${path.sep}`)) throw new FinalEditError('unsafe_path', '导出目录不在 storage 内');
   assertNoStorageSymlink(resolvedStorageRoot, exportDir, { allowAbsolute: true });
   fs.mkdirSync(exportDir, { recursive: true });
@@ -118,7 +120,7 @@ export function reserveProjectExportTarget(storageRoot: string, identity: Export
         reservationRelativePath: path.relative(resolvedStorageRoot, reservationAbsolutePath),
         videoFilename,
         coverFilename,
-        displayDirectory: `工作台/${identity.taskName}/成片/`,
+        displayDirectory: `工作台/${projectFolder}/成片/`,
       };
     } catch (error) {
       const ownsReservation = reservationDescriptor != null;

@@ -354,7 +354,8 @@ export async function publishSelectedBatchOutputs(
   if (lineage.inputState !== 'frozen') {
     throw new BatchDomainError('conflict', '批次输入尚未冻结,不能正式导出');
   }
-  const project = db.prepare(`SELECT productCode, createdAt FROM projects WHERE id = ?`).get(projectId) as {
+  const project = db.prepare(`SELECT name, productCode, createdAt FROM projects WHERE id = ?`).get(projectId) as {
+    name: string;
     productCode: string | null;
     createdAt: string | null;
   } | undefined;
@@ -448,6 +449,7 @@ export async function publishSelectedBatchOutputs(
       const target = reserveBatchExportTarget({
         storageRoot,
         projectId,
+        projectName: project.name,
         batchId,
         productCode: project.productCode,
         taskDate: taskDate ?? options.now?.() ?? new Date(),

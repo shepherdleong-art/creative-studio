@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FinalEditError } from '../lib/final-edit/workspace.ts';
 import type { ExportIdentity, MixcutErrorCode } from '../lib/final-edit/types.ts';
+import { projectExportFolderSegment } from '../lib/project-export-folder.ts';
 
 // ---------------------------------------------------------------------------
 // Contract test for `lib/final-edit/export-naming.ts`.
@@ -50,7 +51,7 @@ function isProductCodeRequiredError(error: unknown): boolean {
 //
 // Fields are inferred from §11.3's physical-layout example (a base name +
 // extension resolves to one absolute file under
-// `<storageRoot>/projects/<projectId>/成片/`) plus the `relativePath`
+// `<storageRoot>/projects/<项目名-短ID>/成片/`) plus the `relativePath`
 // convention already used elsewhere in this module family for
 // storage-relative paths (e.g. `FinalEditGroupView.bgmTracks[].relativePath`
 // and the `NarrationArtifact.relativePath` in workspace.ts, and
@@ -98,6 +99,11 @@ function makeIdentity(overrides: Partial<ExportIdentity> = {}): ExportIdentity {
     taskDate: '20260723',
     ...overrides,
   };
+}
+
+// 导出目录段与批量模式共用同一合约:<项目名>-<项目ID前6位>
+function exportFolderOf(identity: ExportIdentity): string {
+  return projectExportFolderSegment({ id: identity.projectId, name: identity.taskName });
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +188,7 @@ assert.throws(
 // behavior against a real temp directory. One storageRoot is shared below;
 // each sub-test uses its own projectId so their `成片/` directories can't
 // collide with one another (plan §11.3:
-// <storageRoot>/projects/<projectId>/成片/).
+// <storageRoot>/projects/<项目名-短ID>/成片/).
 // ---------------------------------------------------------------------------
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-export-naming-'));
 
@@ -202,8 +208,8 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
 //    no directory traversal, no arbitrary local file access/writes)
 // ---------------------------------------------------------------------------
 {
-  const traversalProjectId = 'proj-traversal';
-  const exportDir = path.join(storageRoot, 'projects', traversalProjectId, '成片');
+  const traversalIdentity = makeIdentity({ projectId: 'traversal-1' });
+  const exportDir = path.join(storageRoot, 'projects', exportFolderOf(traversalIdentity), '成片');
   fs.mkdirSync(exportDir, { recursive: true });
 
   // POSIX-style traversal. `/` is one of the stripped characters, so this
@@ -211,7 +217,7 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
   // in addition to guarding the path-join/resolve logic itself.
   const posixTraversal = reserveExportPath(
     storageRoot,
-    makeIdentity({ projectId: traversalProjectId, productCode: '../../../../etc/passwd' }),
+    makeIdentity({ projectId: 'traversal-1', productCode: '../../../../etc/passwd' }),
     MP4_EXTENSION,
   );
   assertUnderRoot(storageRoot, posixTraversal.absolutePath);
@@ -238,7 +244,7 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
   // Windows-style traversal. `\` is also one of the stripped characters.
   const windowsTraversal = reserveExportPath(
     storageRoot,
-    makeIdentity({ projectId: traversalProjectId, productCode: '..\\..\\..\\windows\\system32\\config' }),
+    makeIdentity({ projectId: 'traversal-1', productCode: '..\\..\\..\\windows\\system32\\config' }),
     MP4_EXTENSION,
   );
   assertUnderRoot(storageRoot, windowsTraversal.absolutePath);
@@ -264,10 +270,9 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
 //    (plan §11.2: "冲突时按 -02 起递增")
 // ---------------------------------------------------------------------------
 {
-  const collisionProjectId = 'proj-collision';
-  const exportDir = path.join(storageRoot, 'projects', collisionProjectId, '成片');
+  const collisionIdentity = makeIdentity({ projectId: 'collision-1' });
+  const exportDir = path.join(storageRoot, 'projects', exportFolderOf(collisionIdentity), '成片');
   fs.mkdirSync(exportDir, { recursive: true });
-  const collisionIdentity = makeIdentity({ projectId: collisionProjectId });
 
   const basePath = path.join(exportDir, '成片-JSQ-A1-20260723.mp4');
   fs.writeFileSync(basePath, '');
@@ -288,11 +293,11 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
 //    (product spec §7.5.2: "示例：成片-JSQ-A1-20260723.mp4")
 // ---------------------------------------------------------------------------
 {
-  const cleanProjectId = 'proj-clean';
-  const exportDir = path.join(storageRoot, 'projects', cleanProjectId, '成片');
+  const cleanIdentity = makeIdentity({ projectId: 'clean-1' });
+  const exportDir = path.join(storageRoot, 'projects', exportFolderOf(cleanIdentity), '成片');
   fs.mkdirSync(exportDir, { recursive: true });
 
-  const reserved = reserveExportPath(storageRoot, makeIdentity({ projectId: cleanProjectId }), MP4_EXTENSION);
+  const reserved = reserveExportPath(storageRoot, cleanIdentity, MP4_EXTENSION);
   assert.equal(reserved.filename, '成片-JSQ-A1-20260723.mp4');
   assert.equal(path.resolve(reserved.absolutePath), path.resolve(exportDir, '成片-JSQ-A1-20260723.mp4'));
   // relativePath was previously never asserted — an implementation returning
@@ -301,7 +306,7 @@ function assertUnderRoot(root: string, candidateAbsolutePath: string) {
   // toStorageRelativePath()'s path.relative() output on any platform).
   assert.equal(
     reserved.relativePath,
-    path.join('projects', cleanProjectId, '成片', '成片-JSQ-A1-20260723.mp4'),
+    path.join('projects', exportFolderOf(cleanIdentity), '成片', '成片-JSQ-A1-20260723.mp4'),
     'relativePath 必须是 storageRoot 相对路径，不能复读 absolutePath',
   );
 }

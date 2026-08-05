@@ -9,10 +9,14 @@ import {
   releaseBatchExportReservation,
   reserveBatchExportTarget,
 } from '../lib/batch-production/batch-export.ts';
+import { projectExportFolderSegment } from '../lib/project-export-folder.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-export-'));
 const storageRoot = path.join(root, 'storage');
 fs.mkdirSync(storageRoot, { recursive: true });
+
+// 导出目录与单条模式一致:storage/projects/<项目名-短ID>/成片
+const projectFolder = projectExportFolderSegment({ id: 'project-1', name: '测试项目' });
 
 async function run(): Promise<void> {
   const videoSource = path.join(storageRoot, 'rendered.mp4');
@@ -23,6 +27,7 @@ async function run(): Promise<void> {
   const target = reserveBatchExportTarget({
     storageRoot,
     projectId: 'project-1',
+    projectName: '测试项目',
     batchId: 'batch-1',
     productCode: '床垫 A',
     taskDate: '2026-08-03T00:00:00.000Z',
@@ -56,7 +61,7 @@ async function run(): Promise<void> {
     productionReady: true,
   });
   // 与单条模式同一个成品目录
-  assert.ok(published.videoRelativePath.startsWith(path.join('projects', 'project-1', '成片')));
+  assert.ok(published.videoRelativePath.startsWith(path.join('projects', projectFolder, '成片')));
   assert.equal(published.videoChecksum, await computeFingerprintFromFile(videoSource));
   assert.equal(published.coverChecksum, await computeFingerprintFromFile(coverSource));
   assert.ok(fs.statSync(published.videoAbsolutePath).size > 0);
@@ -66,6 +71,7 @@ async function run(): Promise<void> {
   const second = reserveBatchExportTarget({
     storageRoot,
     projectId: 'project-1',
+    projectName: '测试项目',
     batchId: 'batch-1',
     productCode: '床垫 A',
     taskDate: '20260803',
@@ -79,27 +85,28 @@ async function run(): Promise<void> {
   assert.ok(fs.existsSync(published.coverAbsolutePath), 're-export must not overwrite old cover');
 
   const sanitizedTraversal = reserveBatchExportTarget({
-    storageRoot, projectId: 'project-1', batchId: 'batch-1', productCode: '../../escape',
+    storageRoot, projectId: 'project-1', projectName: '测试项目', batchId: 'batch-1', productCode: '../../escape',
     taskDate: '20260803', planSeq: 1, outputVersion: 1,
   });
-  assert.equal(path.dirname(sanitizedTraversal.videoAbsolutePath), path.join(storageRoot, 'projects', 'project-1', '成片'));
+  assert.equal(path.dirname(sanitizedTraversal.videoAbsolutePath), path.join(storageRoot, 'projects', projectFolder, '成片'));
   assert.equal(sanitizedTraversal.videoFilename, '成片-....escape-20260803-01.mp4');
   assert.ok(!sanitizedTraversal.videoRelativePath.split(/[\\/]/).includes('..'));
   releaseBatchExportReservation(storageRoot, sanitizedTraversal);
 
-  const symlinkDir = path.join(storageRoot, 'projects', 'project-symlink', '成片');
+  const symlinkFolder = projectExportFolderSegment({ id: 'project-symlink', name: '链接项目' });
+  const symlinkDir = path.join(storageRoot, 'projects', symlinkFolder, '成片');
   fs.mkdirSync(path.dirname(symlinkDir), { recursive: true });
   fs.symlinkSync(root, symlinkDir, 'dir');
   await assert.rejects(
     Promise.resolve().then(() => reserveBatchExportTarget({
-      storageRoot, projectId: 'project-symlink', batchId: 'batch-1', productCode: 'safe',
+      storageRoot, projectId: 'project-symlink', projectName: '链接项目', batchId: 'batch-1', productCode: 'safe',
       planSeq: 1, outputVersion: 1,
     })),
     /符号链接|symlink|路径/i,
   );
 
   const released = reserveBatchExportTarget({
-    storageRoot, projectId: 'project-2', batchId: 'batch-2', productCode: 'safe',
+    storageRoot, projectId: 'project-2', projectName: '测试项目', batchId: 'batch-2', productCode: 'safe',
     planSeq: 1, outputVersion: 1,
   });
   releaseBatchExportReservation(storageRoot, released);

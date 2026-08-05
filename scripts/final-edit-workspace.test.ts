@@ -571,7 +571,7 @@ assert.equal(renderJob.target.taskName, '沙发任务');
 assert.equal(renderJob.target.productCode, 'SF-A1');
 assert.equal(renderJob.target.taskDate, '20260724');
 assert.equal(renderJob.target.videoFilename, '成片-SF-A1-20260724.mp4');
-assert.equal(renderJob.target.displayDirectory, '工作台/沙发任务/成片/');
+assert.equal(renderJob.target.displayDirectory, '工作台/沙发任务-p1/成片/');
 const renderSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(renderJob.id) as { inputSnapshotJson: string }).inputSnapshotJson) as {
   exportIdentity: { productCode: string; taskDate: string };
   exportTarget: ReservedProjectExportTarget;
