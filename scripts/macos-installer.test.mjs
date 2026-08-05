@@ -72,7 +72,7 @@ assert.match(build, /osascript/);
 assert.match(build, /set background picture/);
 assert.match(build, /set icon size of viewOptions to 96/);
 assert.match(build, /hdiutil convert/);
-for (const forbidden of ['data', 'storage', 'outputs', '.env.local']) {
+  for (const forbidden of ['data', 'storage', 'outputs', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml']) {
   assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
 }
 

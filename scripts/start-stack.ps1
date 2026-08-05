@@ -48,7 +48,7 @@ try {
   Write-Host '[1/2] 启动 litellm 代理...'
   $env:PYTHONUTF8 = '1'
   $p = Start-Process -FilePath $litellmExe `
-    -ArgumentList '--config', 'config.yaml', '--port', "$ProxyPort" `
+    -ArgumentList '--config', 'config.yaml', '--port', "$ProxyPort", '--host', '127.0.0.1' `
     -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $LogDir 'litellm.out.log') `
     -RedirectStandardError (Join-Path $LogDir 'litellm.err.log')

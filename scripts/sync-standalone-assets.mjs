@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.cwd();
@@ -22,6 +22,38 @@ copyDirectory(join(root, 'public'), join(standaloneDir, 'public'));
 // ffmpeg/ffprobe 静态二进制不会被 Next 的文件追踪收录，强制拷入 standalone
 for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {
   copyDirectory(join(root, 'node_modules', pkg), join(standaloneDir, 'node_modules', pkg));
+}
+
+// Next output tracing can conservatively copy the project root when a route has
+// dynamic filesystem access. Strip local data, credentials and development
+// paths even if a stale standalone directory survived from an earlier build.
+const localOnlyRoots = [
+  '.cache',
+  '.git',
+  '.venv-litellm',
+  'config.yaml',
+  'data',
+  'dist',
+  'docs',
+  'installer',
+  'litellm-config.yaml',
+  'outputs',
+  'scripts',
+  'storage',
+];
+for (const relativePath of localOnlyRoots) {
+  rmSync(join(standaloneDir, relativePath), { recursive: true, force: true });
+}
+for (const entry of readdirSync(standaloneDir)) {
+  if (entry === '.env' || entry.startsWith('.env.')) {
+    rmSync(join(standaloneDir, entry), { recursive: true, force: true });
+  }
+}
+
+for (const forbidden of [...localOnlyRoots, '.env.local']) {
+  if (existsSync(join(standaloneDir, forbidden))) {
+    throw new Error(`Standalone output contains local secret path: ${forbidden}`);
+  }
 }
 
 console.log('Standalone static assets synced.');

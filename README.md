@@ -88,16 +88,31 @@ CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
 - 真机验证（配好密钥后）：`COS_LIVE_TEST=1 node scripts/cos-media.test.ts`，做一次真实上传 + 下载比对。
 - 建议给 bucket 配生命周期规则（如 7 天自动删除），存储量不随时间累积。
 
-## 公司网关联动（可选，Windows）
+## 公司网关联动（可选，macOS / Windows 源码运行）
 
 适用：模型走公司统一网关（`llm-gateway-idc.linshimuye.com`），经本地 LiteLLM 代理转发。
 
-1. 仓库根目录放置 `config.yaml`（LiteLLM 配置，含网关 Key——**绝不提交**，`.gitignore` 已排除）。
-2. 准备 `.venv-litellm`：Python 虚拟环境安装 `litellm`，含 `.venv-litellm/Scripts/litellm.exe`。
-3. 双击 `start-windows.cmd`：检测到上述组件后自动经 `scripts/start-stack.ps1 -SkipApp` 拉起代理（`http://127.0.0.1:4000`）再启动 dev server；`stop-windows.cmd`、启动窗口 Ctrl+C、UI 关闭按钮都会把代理一并关闭。
-4. 在 `/settings` 添加供应商：Base URL 填 `http://127.0.0.1:4000`，图片选 `gateway-task-image` 类型，视频选 `openai-video` 类型。
+1. 安装 Python 3.10–3.13（推荐 3.12），在仓库根目录准备 `.venv-litellm`：
 
-注意：代理仅监听 `127.0.0.1`，请勿将本服务暴露到公网。`scripts/*.ps1` 必须保持 UTF-8 带 BOM，否则 PS 5.1 解析中文会失败。
+   macOS：
+
+   ```bash
+   python3.12 -m venv .venv-litellm
+   .venv-litellm/bin/python -m pip install -r requirements-litellm.txt
+   ```
+
+   Windows PowerShell：
+
+   ```powershell
+   py -3.12 -m venv .venv-litellm
+   .\.venv-litellm\Scripts\python.exe -m pip install -r requirements-litellm.txt
+   ```
+
+2. 仓库根目录放置 `config.yaml`（LiteLLM 配置，含网关 Key——**绝不提交**，`.gitignore` 已排除）。
+3. macOS 双击 `start.command`，Windows 双击 `start-windows.cmd`：检测到虚拟环境与配置后，会先把 LiteLLM 强制绑定到 `http://127.0.0.1:4000`，再启动 dev server；对应停止脚本、启动窗口 Ctrl+C、UI 关闭按钮都会把代理一并关闭。
+4. 在 `/settings` 添加供应商：Base URL 填 `http://127.0.0.1:4000`，执行范围选“公司”；图片选 `gateway-task-image` 类型，视频选 `openai-video` 类型。
+
+注意：两个平台的启动命令都显式传入 `--host 127.0.0.1`；请勿改成 `0.0.0.0` 或将本服务暴露到公网。`scripts/*.ps1` 必须保持 UTF-8 带 BOM，否则 PS 5.1 解析中文会失败。
 
 ## Windows 快速启动
 

@@ -16,12 +16,21 @@ export async function POST() {
       const stackFile = path.join(dataRoot(), 'storage', 'run', 'stack.json');
       if (fs.existsSync(stackFile)) {
         const stack = JSON.parse(fs.readFileSync(stackFile, 'utf-8').replace(/^﻿/, '')) as { stopScript?: string };
-        if (stack.stopScript && fs.existsSync(stack.stopScript)) {
-          spawn(
-            'powershell.exe',
-            ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', stack.stopScript],
-            { detached: true, stdio: 'ignore' }
-          ).unref();
+        const scriptsDir = path.resolve(dataRoot(), 'scripts');
+        const stopScript = typeof stack.stopScript === 'string' ? path.resolve(stack.stopScript) : '';
+        const stopScriptName = path.basename(stopScript);
+        const isControlledStopScript = path.dirname(stopScript) === scriptsDir
+          && (stopScriptName === 'stop-stack.ps1' || stopScriptName === 'stop-litellm.sh');
+        if (isControlledStopScript && fs.existsSync(stopScript)) {
+          if (process.platform === 'win32' && stopScriptName === 'stop-stack.ps1') {
+            spawn(
+              'powershell.exe',
+              ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', stopScript],
+              { detached: true, stdio: 'ignore' }
+            ).unref();
+          } else if (process.platform !== 'win32' && stopScriptName === 'stop-litellm.sh') {
+            spawn('/bin/bash', [stopScript], { detached: true, stdio: 'ignore' }).unref();
+          }
         }
       }
     } catch {

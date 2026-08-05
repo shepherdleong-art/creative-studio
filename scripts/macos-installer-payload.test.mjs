@@ -43,7 +43,7 @@ if (fs.existsSync(ffprobe)) {
 run('codesign', ['--verify', '--deep', '--strict', appPath]);
 run('hdiutil', ['verify', dmgPath]);
 
-for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.claude']) {
+for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.claude', '.venv-litellm', 'config.yaml', 'litellm-config.yaml']) {
   assert.equal(fs.existsSync(path.join(payload, forbidden)), false, `payload contains forbidden root: ${forbidden}`);
 }
 

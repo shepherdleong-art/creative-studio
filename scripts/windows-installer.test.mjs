@@ -28,7 +28,7 @@ assert.match(build, /npm\.cmd ci/);
 assert.match(build, /npm\.cmd run build/);
 assert.match(build, /node_modules\\ffmpeg-static\\ffmpeg\.exe/);
 assert.match(build, /node_modules\\ffprobe-static\\bin\\win32\\x64\\ffprobe\.exe/);
-for (const forbidden of ['data', 'storage', 'outputs', '.env.local', '.git', '.claude']) {
+  for (const forbidden of ['data', 'storage', 'outputs', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml', '.git', '.claude']) {
   assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
 }
 

@@ -1,0 +1,4 @@
+# LiteLLM sidecar runtime. Tested on macOS arm64 with Python 3.12.
+litellm[proxy]==1.89.2
+# The local machine exports a SOCKS proxy; httpx needs this optional transport.
+socksio==1.0.0

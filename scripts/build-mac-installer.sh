@@ -147,6 +147,10 @@ for relative in \
   scripts \
   .git \
   .claude \
+  .venv-litellm \
+  config.yaml \
+  litellm-config.yaml \
+  requirements-litellm.txt \
   .next/cache \
   .next/dev \
   node_modules/.cache \
@@ -169,7 +173,7 @@ find "$PAYLOAD" -maxdepth 1 \( \
   -name 'stop-*.ps1' \
 \) -exec rm -rf {} +
 
-for forbidden in data storage outputs .env.local; do
+for forbidden in data storage outputs .env.local .venv-litellm config.yaml litellm-config.yaml; do
   if [ -e "$PAYLOAD/$forbidden" ]; then
     echo "Installer payload still contains forbidden local data path: $PAYLOAD/$forbidden" >&2
     exit 1

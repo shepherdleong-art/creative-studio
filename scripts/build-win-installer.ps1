@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$NodeVersion = '22.22.3',
   [string]$InnoSetupCompiler = '',
   [switch]$SkipNpmCi
@@ -122,6 +122,10 @@ foreach ($relativePath in @(
   'scripts',
   '.claude',
   '.git',
+  '.venv-litellm',
+  'config.yaml',
+  'litellm-config.yaml',
+  'requirements-litellm.txt',
   '.next\cache',
   '.next\dev',
   'node_modules\.cache',
@@ -144,7 +148,7 @@ foreach ($relativePath in @(
 }
 Get-ChildItem -LiteralPath $AppDir -Force -Filter '.env*' | Remove-Item -Recurse -Force
 
-$forbiddenPayload = @('data', 'storage', 'outputs', '.env.local')
+$forbiddenPayload = @('data', 'storage', 'outputs', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml')
 foreach ($relativePath in $forbiddenPayload) {
   $target = Join-Path $AppDir $relativePath
   if (Test-Path $target) {

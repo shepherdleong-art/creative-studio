@@ -11,11 +11,16 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     '*': [
       './.cache/**/*',
+      './.env',
+      './.env.*',
       './.git/**/*',
+      './.venv-litellm/**/*',
+      './config.yaml',
       './data/**/*',
       './dist/**/*',
       './docs/**/*',
       './installer/**/*',
+      './litellm-config.yaml',
       './outputs/**/*',
       './scripts/**/*',
       './storage/**/*',
