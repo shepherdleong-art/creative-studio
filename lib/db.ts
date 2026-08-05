@@ -1,9 +1,9 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { CORE_DB_MIGRATIONS } from './db-migrations';
-import { dataRoot } from './data-root';
-import { initFinalEditSchema } from './final-edit/schema';
+import { CORE_DB_MIGRATIONS } from './db-migrations.ts';
+import { dataRoot } from './data-root.ts';
+import { initFinalEditSchema } from './final-edit/schema.ts';
 
 const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
 
@@ -27,7 +27,7 @@ export function getDb(): Database.Database {
   return db;
 }
 
-import { seedAllVideo } from './seed';
+import { seedAllVideo } from './seed.ts';
 
 function initTables(db: Database.Database) {
   db.exec(`
@@ -246,7 +246,9 @@ function initTables(db: Database.Database) {
       enabled INTEGER NOT NULL DEFAULT 1,
       isBuiltin INTEGER NOT NULL DEFAULT 1,
       supportsVision INTEGER NOT NULL DEFAULT 0,
-      visionCostPerRequest REAL NOT NULL DEFAULT 0
+      visionCostPerRequest REAL NOT NULL DEFAULT 0,
+      executionScope TEXT NOT NULL DEFAULT 'external'
+        CHECK(executionScope IN ('external','company'))
     );
 
     CREATE TABLE IF NOT EXISTS video_prompt_templates (
@@ -280,7 +282,7 @@ function initTables(db: Database.Database) {
       localVideoPath TEXT,
       filename TEXT,
       attempt INTEGER NOT NULL DEFAULT 0,
-      maxAttempts INTEGER NOT NULL DEFAULT 1,
+      maxAttempts INTEGER NOT NULL DEFAULT 2,
       errorMessage TEXT,
       startedAt TEXT,
       finishedAt TEXT,
@@ -316,48 +318,6 @@ function initTables(db: Database.Database) {
   // a fresh database because this legacy runner intentionally catches errors.
   for (const sql of CORE_DB_MIGRATIONS) {
     try { db.exec(sql); } catch { /* Column already exists */ }
-  }
-
-  // Older databases created video_providers with CHECK(type IN ('kling','jimeng')),
-  // which rejects the 'openai-video' gateway adapter type. SQLite cannot alter a
-  // CHECK constraint, so rebuild the table once. Build the replacement under a
-  // temp name and drop the original (rather than renaming the original first):
-  // renaming rewrites video_jobs' FK to the temp name and would leave it dangling.
-  // foreign_keys must be off during the swap and cannot be toggled inside a
-  // transaction.
-  const videoProvidersSql = db
-    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'video_providers'`)
-    .get() as { sql: string } | undefined;
-  if (videoProvidersSql && !videoProvidersSql.sql.includes('openai-video')) {
-    db.pragma('foreign_keys = OFF');
-    const rebuild = db.transaction(() => {
-      db.exec(`
-        CREATE TABLE video_providers_new (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN ('kling','jimeng','openai-video')),
-          baseUrlEnv TEXT NOT NULL,
-          apiKeyEnv TEXT NOT NULL,
-          modelEnv TEXT NOT NULL,
-          defaultModel TEXT NOT NULL,
-          enabled INTEGER NOT NULL DEFAULT 1,
-          defaultDurationSec INTEGER NOT NULL DEFAULT 5,
-          defaultCostPerVideo REAL,
-          baseUrl TEXT NOT NULL DEFAULT '',
-          apiKey TEXT NOT NULL DEFAULT '',
-          accessKey TEXT NOT NULL DEFAULT '',
-          secretKey TEXT NOT NULL DEFAULT ''
-        );
-        INSERT INTO video_providers_new SELECT * FROM video_providers;
-        DROP TABLE video_providers;
-        ALTER TABLE video_providers_new RENAME TO video_providers;
-      `);
-    });
-    try {
-      rebuild();
-    } finally {
-      db.pragma('foreign_keys = ON');
-    }
   }
 
   const videoJobMigrations = [

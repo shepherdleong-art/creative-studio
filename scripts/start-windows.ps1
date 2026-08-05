@@ -55,25 +55,6 @@ if (-not $needsInstall -and (-not (Test-Path $sharpWin) -or -not (Test-Path $sql
   $needsInstall = $true
 }
 
-# ── 公司网关联动：组件齐备时自动拉起 litellm 代理（仅 127.0.0.1）──
-# 参考图公网交付走腾讯云 COS（见 .env.local 的 CREATIVE_STUDIO_COS_*）；本机服务不得暴露到公网。
-$stackStarted = $false
-$hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
-                      (Test-Path (Join-Path $Root 'config.yaml'))
-if ($hasStackComponents) {
-  Write-Host '检测到公司网关组件，启动 litellm 代理...'
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') -SkipApp
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host '公司网关组件启动失败，工作台未启动。可删除 .venv-litellm 或 config.yaml 后跳过联动。' -ForegroundColor Red
-    exit 1
-  }
-  $stackFile = Join-Path $Root 'storage\run\stack.json'
-  if (Test-Path $stackFile) {
-    $stackStarted = $true
-    Write-Host '公司网关代理就绪: http://127.0.0.1:4000'
-  }
-}
-
 if ($needsInstall) {
   Write-Host '正在安装依赖，请保持联网...'
   & npm.cmd ci
@@ -82,6 +63,33 @@ if ($needsInstall) {
     exit $LASTEXITCODE
   }
   Write-Host ''
+}
+
+# ── 公司网关联动：依赖就绪后再拉起可选 sidecar，失败不能阻塞工作台 ──
+# 参考图公网交付走腾讯云 COS（见 .env.local 的 CREATIVE_STUDIO_COS_*）；本机服务不得暴露到公网。
+$stackStarted = $false
+$hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
+                      (Test-Path (Join-Path $Root 'config.yaml'))
+if ($hasStackComponents) {
+  Write-Host '检测到公司网关组件，启动 litellm 代理...'
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') -SkipApp
+  if ($LASTEXITCODE -ne 0) {
+    # 公司 sidecar 是可选运行环境；失败只禁用公司供应商，工作台和外部供应商照常启动。
+    Write-Host '公司网关组件启动失败，继续启动工作台。' -ForegroundColor Yellow
+  } else {
+    $stackFile = Join-Path $Root 'storage\run\stack.json'
+    if (Test-Path $stackFile) {
+      $stackStarted = $true
+      Write-Host '公司网关代理就绪: http://127.0.0.1:4000'
+    }
+  }
+} else {
+  $stackFile = Join-Path $Root 'storage\run\stack.json'
+  if (Test-Path $stackFile) {
+    # 新一轮启动缺少 sidecar 组件时，回收上次崩溃可能遗留的受控进程与状态。
+    Write-Host '公司网关组件不完整，正在清理旧 sidecar 状态并继续启动工作台。' -ForegroundColor Yellow
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
+  }
 }
 
 $url = "http://127.0.0.1:$Port"

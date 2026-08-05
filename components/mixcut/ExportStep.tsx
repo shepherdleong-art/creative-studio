@@ -6,7 +6,7 @@ import { ProjectInfoDialog, type ProjectInfoDialogIntent, type ProjectInfoValue 
 import { createOverlayBundlePayload, TextOverflowError } from '@/components/final-edit/text-canvas-renderer';
 import { previewExportBaseName } from '@/lib/final-edit/export-identity';
 import { OUTPUT_PRESETS, type ExportTargetView, type FinalEditGroupView, type MixcutContextResponse, type RenderJobRef } from '@/lib/final-edit/types';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 type ExportOutput = {
   videoFilename: string;

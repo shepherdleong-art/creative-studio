@@ -68,6 +68,13 @@ body {
   .btn-primary:disabled, .btn-secondary:disabled, .btn-danger:disabled { opacity: .45; cursor: not-allowed; }
   .btn-sm { padding: .35rem .8rem; font-size: .8rem; }
 
+  /* 引导提示:提醒用户下一步该点的按钮(批量生产第 2 步「确认整体输入」) */
+  @keyframes btn-callout-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(0, 113, 227, .3); }
+    50% { box-shadow: 0 0 0 9px rgba(0, 113, 227, .06); }
+  }
+  .btn-callout { animation: btn-callout-pulse 1.8s ease-in-out infinite; }
+
   /* inputs */
   .input-field {
     width: 100%; background: var(--color-surface);

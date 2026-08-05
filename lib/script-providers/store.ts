@@ -1,6 +1,6 @@
 import { getDb } from '@/lib/db';
 import { seedScriptProviders } from '@/lib/seed';
-import type { ApiStyle, ProviderConfig } from './types';
+import type { ApiStyle, ProviderConfig, ProviderExecutionScope } from './types';
 import {
   defaultScriptProviderConfigs,
   resolveScriptProviderRuntimeConfig,
@@ -26,6 +26,7 @@ export interface ScriptProviderRow {
   isBuiltin: number;
   supportsVision: number;
   visionCostPerRequest: number;
+  executionScope: ProviderExecutionScope;
 }
 
 export function getScriptProviderRows(): ScriptProviderRow[] {

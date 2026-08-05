@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
+import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 import { v4 as uuidv4 } from 'uuid';
 
 function safeVideoProvider(provider: {
@@ -67,10 +68,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const db = getDb();
     const body = await request.json();
     const id = uuidv4();
     const type = body.type || 'jimeng';
+    if (type === 'openai-video') {
+      const readiness = await getVideoProviderGatewayReadiness();
+      if (!readiness.available) {
+        return NextResponse.json({
+          error: 'video_provider_schema_unavailable',
+          message: readiness.message,
+        }, { status: 503 });
+      }
+    }
+    const db = getDb();
 
     db.prepare(`
       INSERT INTO video_providers

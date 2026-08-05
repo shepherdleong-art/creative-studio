@@ -28,6 +28,7 @@ const runtime: ScriptProviderRuntimeConfig = {
   hasApiKey: true,
   supportsVision: true,
   visionCostPerRequest: 0,
+  executionScope: 'external',
 };
 
 const originalFetch = globalThis.fetch;

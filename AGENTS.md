@@ -11,6 +11,14 @@
 - UI 语言为中文。核心领域术语：项目（project）、场景图（scene image）、分镜（shot/storyboard）、脚本（script）、视频任务（video job）、成片剪辑（final edit）。
 - 许可证：GPL-3.0-only。
 
+## Sol + Luna 子代理协作
+
+- 主代理 Sol 负责理解需求、澄清边界、思考与拆解任务、协调执行，并对交付做独立最终审核；不得把 Luna 的完成声明直接当作最终验收。
+- 自定义代理 `luna_worker` 是本项目的默认执行代理。凡适合委派的实现、测试、机械修改、证据收集或只读核验，Sol 默认先拆成边界明确的任务交给 `luna_worker`；不适合并行或委派会增加冲突时，由 Sol 保持串行协调。
+- 生成执行代理时必须选择自定义 `luna_worker`，设置 `fork_turns="none"`，且不在生成调用中显式传入 `model` 或推理强度；模型、Max 推理强度与 `workspace-write` 沙箱统一由 `.codex/agents/luna_worker.toml` 提供。不要设置 `agents.default_subagent_model`。
+- 因为 `luna_worker` 不继承主线程历史，Sol 的任务说明必须自包含，至少写明目标、范围、相关路径、约束、验证方式和停止点；只读任务必须显式禁止修改文件与外部状态。
+- Luna 返回结果后，Sol 必须检查实际 diff 和工作树边界，按风险独立复跑必要验证，再由 Sol 给出最终审核结论与用户答复。
+
 ## 常用命令
 
 ```bash
@@ -78,6 +86,11 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ### `lib/` 核心模块
 
 - `db.ts` / `db-migrations.ts` — SQLite 初始化（WAL 模式、外键开启）。`CORE_DB_MIGRATIONS` 是扁平的 `ALTER TABLE` / `UPDATE` 语句列表，每次启动逐条执行并 try/catch 跳过已应用的列；新增字段就往后追加，不要改已有条目。
+- `schema-upgrade/` — 共享数据库安全升级基础设施：SQLite Online Backup、磁盘预检、跨进程 SQLite 写锁、可修复尾部中断的 JSONL 审计、统一 gate 和恢复候选重验。锁数据库与审计文件均基于 `dataRoot()`，升级失败不得阻塞不依赖新结构的旧功能。
+- `batch-production/` — 新批量生产 Module；`schema.ts` 使用独立版本表和逐版本 `IMMEDIATE` 事务，`readiness.ts` 通过共享 gate 执行备份、迁移和持久审计。已发布 migration v1–v9：v1 批次身份表，v2 项目素材 `batch_assets` + 素材分析版本 `batch_asset_analysis`（素材身份是内容指纹、不依赖路径），v3 批次版本 `batch_production_versions` + 素材池 `batch_asset_pool_items`，v4 项目脚本 `batch_scripts` + 脚本快照 `batch_script_snapshots`，v5 成片计划 `batch_output_plans` + 成片版本 `batch_output_versions`（份数决定 N 条计划），v6 生产任务 `batch_tasks` + 任务尝试 `batch_task_attempts`（重试只增加尝试），v7 正式产物 `batch_artifacts` + 计划当前成片指向，v8 将正式产物改为按计划与路径追加保存并保护其批次谱系不被物理删除，v9 增加批次逻辑删除、批次版本不可逆冻结以及批次内外部文案所有权。整体输入以版本的 `inputState` 为准：首次开跑后旧版本永久冻结，修改必须新建版本；外部文案只能在所属批次版本内快照，显式保存到项目时复制成独立项目脚本。领域接口在 `assets.ts`/`versions.ts`/`scripts.ts`/`plans.ts`/`tasks.ts`/`artifacts.ts`。v10 新增素材来源表 `batch_asset_sources`；v11 给脚本和快照追加结构化封面标题、shotSetId 与内容修订身份；v12 增加项目脚本来源可用性和目录同步所有权：有修订身份或当前仍存在上游草稿的同步项会被正向认领，后续失效或删除时退出准备区；无法与独立项目脚本可靠区分的更早历史行保守保留，历史快照始终不变。素材来源类型 `BatchAssetSourceKind` 只在 `assets.ts` 定义，来源表是多来源权威数据；读取端兼容 v10 无 `kind` 的旧位置 JSON，旧托管来源按 `dataRoot()/storage/batch-media` 根恢复。`media-catalog.ts` 只信 `video_jobs` 权威记录，验证项目/shotSet、受控路径、真实视频容器和完整 SHA-256；托管目录由 `dataRoot()` 推导，linked 重新定位必须指定来源 id 且内容完全一致。`prepare.ts` + `GET /api/batch-production/prepare` 在 readiness gate 后自动同步输入；`components/mixcut/MixcutWorkspace.tsx` 提供“单条精准混剪/批量生产”模式入口。Phase B 在 `batch-flow.ts` 中以单事务确认 draft 整体输入，相同输入幂等，输入变化才新建版本；`startBatchProduction` 在开跑事务中同步最新项目脚本、校验素材池与精确 N 条计划并永久冻结。第五步可创建/选择批次、设置每脚本份数、选择带分析版本的素材、检查 N 张卡片并开跑；API 为 `POST/GET /api/batch-production/batches`、`GET /api/batch-production/batches/[id]`、`POST .../[id]/snapshot` 和 `PUT .../[id]/start`。Phase C 在 `scheduler.ts` 提供原子领取、有限租约、控制态感知的过期/启动恢复、失败重试与暂停/继续/停止；`executors.ts` 提供统一任务执行 Adapter 与真实进度报告（不可测阶段不伪造百分比）；`runner.ts` 提供领取-执行-落账循环和进程内单例调度，应用关闭与用户停止是不同中断语义。v13 给尝试加租约与 interrupted、任务加 requestKey/expectedState、批次加 controlState。`instrumentation.ts` 在 Node 启动时通过 readiness gate 恢复调度，开跑和任务读取 API 幂等兜底；进度与控制 API 为 `GET .../[id]/tasks`、`POST .../[id]/control` 与 `POST /api/batch-production/tasks/[taskId]/retry`。`GET /api/batch-production/recovery` 只列出并重新验证恢复候选；运行中的 API 禁止覆盖主数据库。未就绪时只关闭批量入口，不能阻塞旧项目与单条精准混剪。Phase D（媒体准备）在 v14 新增 LUT/代理缓存与 `proxy_generate`，v15 进一步规范化 LUT 指纹和完整色彩快照，并新增带批次版本外键的稳定 `batch_proxy_requests`，使任务不再指向可删除的 cache 行。LUT 色彩快照（关闭或引用一个已验证 LUT）纳入 `createBatchSnapshot`/`addAssetToPool`/`matchesCurrentInput` 的冻结输入身份；代理是否已生成不参与这个身份。`lib/ffmpeg.ts` 的 `runFfmpeg` 新增可选 `signal`，真正终止子进程并等 `close` 事件后才 reject 可区分的 AbortError。`scheduler.ts` 新增单任务级 `pauseTask`/`resumeTask`/`cancelTask`（不影响同批次其他任务或批次 controlState），`runner.ts` 心跳同时检查任务级 `expectedState`；`createBatchTask` 同时验证 project→batch→version→proxy request 谱系，并释放已经失效的历史 requestKey。新增 `lut-catalog.ts`（导入用真实 FFmpeg `lut3d` 验证损坏内容、按内容指纹去重、归档与安全物理清理）、`color-pipeline.ts`（完整色彩快照 → 显式 SDR FFmpeg filter）、`proxy-cache.ts`（稳定请求、全局 proxyKey 复用、安全路径、进程内读写租约、pending-delete 释放后自动完成）、`proxy-executor.ts`（按请求冻结的原片/LUT 指纹重验、磁盘预检、进程内单并发、合作取消、临时文件+原子发布、真实 FFmpeg 进度）、`preview.ts`（安全解析匹配代理/原片与 LUT 等待警告）、`export-preflight.ts`（正式输出只读前检，绝不回退代理）。API 新增 LUT、代理请求、任务控制、缓存用量/清理、Range 预览与导出前检；`BatchPreparationPanel.tsx` 提供 LUT、代理、任务、预览和清理入口，设置页提供全局代理缓存清理。
+- Phase E（联合分配与正式导出）在 v16 增加联合分配运行和批次内素材排除；`allocator.ts` 是一次读取全部冻结输入的纯确定性分配器，`allocation-store.ts` 保留运行谱系并保证单条重分配不改其他计划。`batch-renderer.ts` 只读指纹一致的原片和冻结 LUT，复用 `ColorPipeline`，通过原有 batch scheduler 真实渲染；`batch-export.ts` 成对追加发布视频/封面并拒绝覆盖。`phase-e.ts` 负责可恢复启动、任务接线和逐条正式发布，`batch-workspace.ts` 聚合卡片状态，输出媒体 route 只接受稳定 ID。没有真实口播时仅生成显式静音候选，正式发布门禁必须要求已核验的 storage 相对口播快照。
+- Phase A 的项目素材卡在快照前通过 `asset-preparation.ts` 使用既有 batch scheduler 排队本地 FFprobe 基础分析；结果明确标记为 `technical`，不冒充内容理解。`project-asset-media.ts` 只按 `projectId + assetId` 解析并重验权威来源、完整 SHA-256 与真实容器，生成受控 960×540 JPEG 缩略图并提供原片 Range 预览；`startBatchProduction` 不再重复创建素材分析任务。
+- `video-provider-schema.ts` — 旧 `video_providers` CHECK 约束的安全升级；只有新增或改为 `openai-video` 供应商时才在共享锁内先备份再重建，普通数据库启动不得直接重建旧表。
 - `data-root.ts` — 解析本地数据根目录：优先 `CREATIVE_STUDIO_DATA_ROOT` 环境变量，否则 `process.cwd()`。`data/`、`storage/` 都挂在它下面，写路径时一律走 `dataRoot()`。
 - `local-image-url.ts` — 把 `storage/` 下的本地图片转成 `/api/images/...` 的 HTTP URL，供只接受真实 URL 的网关上游（腾讯等）拉取；地址默认自动探测（第一张非内部 IPv4 + `PORT`/3000），可用 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 覆盖，探测不到时调用方回退 data URL。
 - `cos-media.ts` — 腾讯云 COS 参考图中转。配置 `CREATIVE_STUDIO_COS_SECRET_ID` / `CREATIVE_STUDIO_COS_SECRET_KEY` / `CREATIVE_STUDIO_COS_DOMAIN`（可选 `CREATIVE_STUDIO_COS_PREFIX` 默认 `ref-images/`、`CREATIVE_STUDIO_COS_URL_TTL_SEC` 默认 86400、`CREATIVE_STUDIO_COS_SIGN_HOST`）后，`gateway-task-image` / `openai-video` 适配器提交任务时把参考图按内容 SHA-256 命名上传（GET `Range: bytes=0-0` 查重跳过重复上传）并生成 24h 预签名 GET URL 传给网关；手写 `q-sign-algorithm=sha1` 签名（`node:crypto`，零新增依赖），上传/下载都走配置的自定义域名。注意 CDN 自定义域名回源会把 Host 改写成源站默认端点（如 `<bucket>.cos.ap-guangzhou.myqcloud.com`），且会把 HEAD 改写为 GET——此时必须把 `CREATIVE_STUDIO_COS_SIGN_HOST` 设为源站端点用于签名，查重不能用 HEAD。COS 未配置或上传失败时适配器回退 `local-image-url` 的本机 URL 逻辑。密钥只放 `.env.local`，日志不得打印签名参数。
@@ -107,7 +120,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ## 开发约定
 
 - **供应商适配器模式**：图片/脚本/视频三层都用适配器。新增供应商时实现对应 adapter 接口并注册，不要改动队列等核心逻辑。
-- **数据库迁移**：核心表走 `CORE_DB_MIGRATIONS` 追加式 `ALTER TABLE`（启动时逐条 try/catch）；成片剪辑模块在 `lib/final-edit/schema.ts` 用 `{version, sql}` 的版本化迁移。两种都不要修改已发布条目。
+- **数据库迁移**：既有核心表继续走 `CORE_DB_MIGRATIONS` 追加式 `ALTER TABLE`（启动时逐条 try/catch）；成片剪辑在 `lib/final-edit/schema.ts`、批量生产在 `lib/batch-production/schema.ts` 分别使用独立 `{version, sql}` 迁移。批量迁移和旧供应商表重建前必须经 `lib/schema-upgrade/` 完成已验证的一致备份、跨进程锁和审计。三种迁移流都不要修改已发布条目，也不要把批量复杂迁移塞回会吞掉错误的旧 core runner。
 - **路径**：所有本地文件路径基于 `dataRoot()`，不要硬编码 `data/`、`storage/` 相对路径。
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。

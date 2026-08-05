@@ -151,6 +151,9 @@ export type ApiStyle =
   | 'openai-responses'
   | 'anthropic-messages';
 
+/** 外部供应商直连；公司供应商必须经本机 LiteLLM 可选运行环境。 */
+export type ProviderExecutionScope = 'external' | 'company';
+
 export interface ProviderConfig {
   id: string;
   name: string;
@@ -177,4 +180,5 @@ export interface ProviderMeta {
   missing?: string[];
   maxTokens?: number;
   visionCostPerRequest?: number;
+  executionScope: ProviderExecutionScope;
 }

@@ -45,7 +45,8 @@ db.exec(`
     providerId TEXT NOT NULL,
     model TEXT NOT NULL,
     productCode TEXT DEFAULT '',
-    productName TEXT DEFAULT ''
+    productName TEXT DEFAULT '',
+    productCategory TEXT DEFAULT ''
   );
 
   CREATE TABLE shot_sets (

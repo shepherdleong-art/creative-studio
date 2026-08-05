@@ -33,6 +33,7 @@ const runtime: ScriptProviderRuntimeConfig = {
   hasApiKey: true,
   supportsVision: true,
   visionCostPerRequest: 0,
+  executionScope: 'external',
 };
 
 const originalFetch = globalThis.fetch;
@@ -126,6 +127,16 @@ try {
       assert.equal(urls.some((url) => url.endsWith('/v1/chat/completions')), true);
       assert.equal(urls.some((url) => url.includes(':generateContent')), true);
       assert.equal(urls.some((url) => url.includes('/responses')), false);
+      const requestCountBeforeCompanyGate = urls.length;
+      db.prepare("UPDATE script_providers SET executionScope='company', baseUrl=? WHERE id='qwen'")
+        .run('http://127.0.0.1:4000/v1');
+      await assert.rejects(
+        completeJson({ providerId: 'qwen', systemPrompt: 'system', userPrompt: 'user' }),
+        /尚未配置公司供应商/,
+      );
+      assert.equal(urls.length, requestCountBeforeCompanyGate, '公司运行环境门禁失败时不得调用供应商');
+      db.prepare("UPDATE script_providers SET executionScope='external', baseUrl=? WHERE id='qwen'")
+        .run('https://chat.example/v1');
       closeDb();
     `);
     const routingResult = spawnSync(process.execPath, [

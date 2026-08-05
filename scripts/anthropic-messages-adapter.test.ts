@@ -92,7 +92,7 @@ try {
         id: 'kimi', name: 'Kimi（月之暗面）', apiStyle: 'anthropic-messages',
         baseUrl: 'https://anthropic.example', apiKey: 'anthropic-key', model: 'kimi-k2.6',
         maxTokens: 8192, enabled: true, configured: true, missing: [], hasApiKey: true,
-        supportsVision: true, visionCostPerRequest: 0,
+        supportsVision: true, visionCostPerRequest: 0, executionScope: 'external',
       }),
       /请求超时/,
     );

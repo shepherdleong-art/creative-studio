@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import type { VariantCommandInput } from '@/components/final-edit/command-types';
 import { Icon } from '@/components/ui/Icon';
 import type { FinalEditBgmTrackView, FinalEditVariantView } from '@/lib/final-edit/types';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 const ACCEPTED_AUDIO = '.mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*';
 

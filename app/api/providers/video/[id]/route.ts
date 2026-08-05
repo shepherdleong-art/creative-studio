@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
+import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 
 function safeVideoProvider(provider: Record<string, unknown>) {
   const runtime = resolveVideoProviderRuntimeConfig(provider as never);
@@ -29,6 +30,15 @@ export async function PUT(
     const body = await request.json();
     const existing = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     if (!existing) return NextResponse.json({ error: 'Video provider not found' }, { status: 404 });
+    if (body.type === 'openai-video') {
+      const readiness = await getVideoProviderGatewayReadiness();
+      if (!readiness.available) {
+        return NextResponse.json({
+          error: 'video_provider_schema_unavailable',
+          message: readiness.message,
+        }, { status: 503 });
+      }
+    }
 
     const updates: string[] = [];
     const values: unknown[] = [];

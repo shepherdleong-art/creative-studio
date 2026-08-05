@@ -9,7 +9,7 @@ import {
   NARRATION_PLAYBACK_RATE_STEP,
   normalizeNarrationPlaybackRate,
 } from './narration-playback-rate';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 export function NarrationPlaybackRateControl({
   idPrefix,

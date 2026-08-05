@@ -1,0 +1,230 @@
+/* 混剪工作台共用骨架 — Apple 风设计系统
+ * 规格：docs/superpowers/specs/2026-07-25-mixcut-v2-ui-spec.md
+ * 本文件：shell/topbar/步骤条/侧栏/主区骨架 + 通用原语（按钮/芯片/面板/状态/对话框）。
+ * 单条专有内容（素材池、卡片、预览三栏、时间轴、封面抽屉）在 mixcut-content.module.css。
+ * 注意：骨架列模型为 CSS 变量驱动（--navw/--repw/--rgtw），预览态网格定义必须在 .colOffA 之后且不受其影响（规格 §8.1）。
+ * 设计变量统一引用 globals.css 的 @theme（--ink/--sub/--faint/--line/--blue），取值与旧内联一致。
+ */
+
+.shell {
+  --bg: #f5f5f7;
+  --paper: #ffffff;
+  --line: var(--color-hairline);
+  --line-soft: var(--color-hairline-soft);
+  --ink: var(--color-ink);
+  --sub: var(--color-ink-secondary);
+  --faint: var(--color-ink-tertiary);
+  --blue: var(--color-accent);
+  --blue-hover: var(--color-accent-hover);
+  --blue-wash: rgba(0, 113, 227, .08);
+  --green: #34c759;
+  --green-ink: #248a3d;
+  --orange: #ff9f0a;
+  --red: #ff3b30;
+  --seg: #e8e8ed;
+  --sh-sm: 0 1px 2px rgba(0, 0, 0, .05);
+  --sh-md: 0 2px 8px rgba(0, 0, 0, .04), 0 10px 28px rgba(0, 0, 0, .06);
+  --sh-lg: 0 24px 70px rgba(0, 0, 0, .09);
+  --mixcut-blue: var(--color-accent); /* 兼容旧引用 */
+  --mixcut-ink: var(--color-ink);
+  --mixcut-secondary: var(--color-ink-secondary);
+  --mixcut-line: var(--color-hairline);
+}
+
+.shell {
+  display: flex;
+  width: min(1440px, calc(100vw - 48px));
+  /* 父容器是全局 980px 居中栏，混剪工作台按视口宽度居中突破（不用 transform，避免影响 fixed 抽屉） */
+  margin-left: calc((100% - min(1440px, calc(100vw - 48px))) / 2);
+  height: calc(100dvh - 230px);
+  min-height: 560px;
+  max-height: calc(100dvh - 120px);
+  flex-direction: column;
+  overflow: hidden;
+  border: .5px solid var(--line);
+  border-radius: 18px;
+  background: var(--bg);
+  color: var(--ink);
+  box-shadow: var(--sh-lg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.shell[data-active-step='2'] {
+  height: calc(100dvh - 32px);
+  min-height: 560px;
+  max-height: none;
+}
+/* 按钮重置(仅服务单条模式的 CSS Module 按钮)。批量生产面板使用全局 btn-primary/btn-secondary/btn-danger,
+ * 会被 .shell button 的重置命中而丢掉背景与边框(历史回归),这里按全局工具类的同值显式恢复。
+ * 注意:不能用 :not([class*="btn-"]) 改重置 —— 那会把优先级抬到 (0,2,1),
+ * 反压过单条模式 styles.btn + styles.primary 组合的 (0,2,0),让单条主按钮失去底色;
+ * 也不能用 revert —— 非分层规则里的 revert 会回退到 UA 默认而不是本项目的 utilities 层。 */
+.shell button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+.shell button:disabled { cursor: not-allowed; }
+.shell :global(.btn-primary) { background: var(--color-accent); color: #fff; }
+.shell :global(.btn-secondary) { background: var(--color-surface-subtle); color: var(--color-ink); }
+.shell :global(.btn-danger) { background: transparent; color: var(--color-fail); border: 1px solid var(--color-hairline); }
+.mono, .shell select, .dur, .tc, .cd, .val { font-variant-numeric: tabular-nums; }
+
+/* ---- 顶栏 ---- */
+.topbar { display: flex; height: 56px; flex-shrink: 0; align-items: center; gap: 12px; padding: 0 16px; border-bottom: .5px solid var(--line); background: rgba(255, 255, 255, .85); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); }
+.topbar > div { display: flex; align-items: center; gap: 10px; }
+.topbar strong { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.topbar small { color: var(--faint); font-size: 11px; }
+.projectContext { display: flex; flex: 1; flex-direction: column; align-items: center; gap: 0 !important; line-height: 1.3; text-align: center; }
+.projectContext b { font-size: 13px; font-weight: 600; }
+.topbarRight { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--sub); }
+
+/* ---- 通用控件：按钮 / 芯片 / 分段控件 / 表单 ---- */
+.btn { display: inline-flex; height: 34px; align-items: center; justify-content: center; gap: 6px; padding: 0 16px; border-radius: 99px; background: var(--seg); color: var(--ink); font-size: 13px; font-weight: 500; letter-spacing: -.01em; transition: background .15s, transform .05s; text-decoration: none; }
+.btn:hover { background: #e0e0e6; }
+.btn:active { transform: scale(.98); }
+.btn.primary, .primaryButton { background: var(--blue); color: #fff; }
+.btn.primary:hover, .primaryButton:hover { background: var(--blue-hover); }
+.btn.small { height: 28px; padding: 0 12px; font-size: 12px; }
+.btn.big { height: 48px; padding: 0 30px; border-radius: 99px; font-size: 15px; box-shadow: 0 6px 18px rgba(0, 113, 227, .25); }
+.btn:disabled, .primaryButton:disabled, .secondaryButton:disabled { opacity: .5; }
+.primaryButton, .secondaryButton { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; gap: 6px; padding: 0 16px; border-radius: 99px; font-size: 13px; font-weight: 500; cursor: pointer; text-decoration: none; }
+.secondaryButton { background: var(--seg); color: var(--ink); }
+.secondaryButton:hover { background: #e0e0e6; }
+.linkBtn, .textButton { border: 0; background: transparent; color: var(--blue); font-size: 12px; font-weight: 500; cursor: pointer; padding: 0; }
+.linkBtn:disabled, .textButton:disabled { opacity: .42; cursor: default; }
+
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 99px; background: var(--seg); color: var(--ink); font-size: 11px; font-weight: 500; }
+.chip svg { width: 11px; height: 11px; }
+.chipBlue { background: var(--blue-wash); color: var(--blue); }
+.chipGreen { background: rgba(52, 199, 89, .14); color: var(--green-ink); }
+.chipGrey { background: var(--seg); color: var(--sub); }
+
+.seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--seg); }
+.seg button { padding: 4px 12px; border-radius: 7px; color: var(--sub); font-size: 12px; font-weight: 500; white-space: nowrap; transition: all .15s; }
+.seg button.segOn { background: #fff; color: var(--ink); box-shadow: var(--sh-sm); }
+.segTag { display: inline-flex; height: 26px; align-items: center; gap: 5px; padding: 0 12px; border: .5px solid var(--line); border-radius: 99px; background: #fff; color: var(--sub); font-size: 12px; font-weight: 500; }
+.segTag.segTagOn { border-color: rgba(0, 113, 227, .3); background: var(--blue-wash); color: var(--blue); }
+.segLabel { font-size: 12px; color: var(--sub); }
+
+.shell select, .shell input[type='text'], .shell input[type='number'], .shell textarea {
+  box-sizing: border-box; border: .5px solid var(--line); border-radius: 8px; outline: none;
+  background: #fff; color: var(--ink); box-shadow: var(--sh-sm);
+  font: 400 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  padding: 7px 12px; transition: border-color .15s, box-shadow .15s;
+}
+.shell select { appearance: none; -webkit-appearance: none; padding-right: 26px; background: #fff url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 10px center; }
+.shell textarea { box-shadow: none; line-height: 1.7; }
+.shell select:focus, .shell input[type='text']:focus, .shell input[type='number']:focus, .shell textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3.5px rgba(0, 113, 227, .15); }
+.shell input[type='range'] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 99px; background: #d2d2d7; outline: none; }
+.shell input[type='range']::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border: .5px solid rgba(0, 0, 0, .08); border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .18); cursor: pointer; }
+.shell input[type='range']::-moz-range-thumb { width: 16px; height: 16px; border: .5px solid rgba(0, 0, 0, .08); border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .18); cursor: pointer; }
+
+.hiddenInput { display: none; }
+.eyebrow { margin: 0; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.flowHint { color: var(--faint); font-size: 12px; }
+.spacer { flex: 1; }
+
+/* ---- 骨架 ---- */
+.body { display: grid; flex: 1; min-height: 0; grid-template-columns: var(--navw, 208px) 280px minmax(0, 1fr); }
+.colOffA { grid-template-columns: var(--navw, 208px) 36px minmax(0, 1fr); }
+.bodyPreview { grid-template-columns: var(--navw, 208px) var(--repw, 244px) 6px minmax(0, 1fr) 6px var(--rgtw, 320px); }
+.bodyPreview .sideCol { display: none; }
+.navOff { --navw: 64px; }
+
+/* ---- 左步骤条 ---- */
+.stepNav { display: flex; flex-direction: column; gap: 6px; padding: 14px 12px; overflow-y: auto; border-right: .5px solid var(--line); }
+.navRow { display: flex; align-items: center; padding-right: 2px; }
+.navRow .eyebrow { flex: 1; padding: 0 10px 4px; }
+.navToggle { display: grid; width: 20px; height: 20px; flex-shrink: 0; place-items: center; border-radius: 6px; color: var(--faint); font-size: 13px; }
+.navToggle:hover { background: rgba(0, 0, 0, .06); color: var(--ink); }
+.snav { position: relative; display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px; text-align: left; transition: background .15s; }
+.snav:hover { background: rgba(0, 0, 0, .04); }
+.snav:disabled { opacity: .45; }
+.snav:disabled:hover { background: none; }
+.snavBar { position: absolute; top: 10px; bottom: 10px; left: 0; width: 3px; border-radius: 99px; background: var(--blue); opacity: 0; transition: opacity .15s; }
+.snavOn { background: #fff; box-shadow: var(--sh-sm); }
+.snavOn .snavBar { opacity: 1; }
+.snavIco { display: grid; width: 32px; height: 32px; flex-shrink: 0; place-items: center; border: .5px solid var(--line); border-radius: 50%; background: #fff; color: var(--sub); transition: all .15s; }
+.snavOn .snavIco { border-color: var(--blue); background: var(--blue); color: #fff; }
+.snavDone .snavIco { color: var(--green-ink); }
+.snavTx { display: flex; min-width: 0; flex-direction: column; }
+.snavLb { color: var(--ink); font-size: 13px; white-space: nowrap; }
+.snavOn .snavLb { color: var(--blue); font-weight: 600; }
+.snavHint { color: var(--faint); font-size: 11px; white-space: nowrap; }
+.stepNavFoot { display: flex; align-items: center; gap: 6px; margin-top: auto; padding: 8px 10px 0; color: var(--faint); font-size: 11px; }
+.navOff .stepNav { align-items: center; padding: 14px 8px; }
+.navOff .snav { justify-content: center; padding: 9px 6px; }
+.navOff .snavTx, .navOff .eyebrow, .navOff .stepNavFoot span, .navOff .snavBar { display: none; }
+
+/* ---- 侧栏（非预览步骤）与折叠 ---- */
+.sideCol { position: relative; display: flex; min-height: 0; flex-direction: column; gap: 10px; padding: 10px; overflow-y: auto; }
+.colOffA .sideCol .panel, .colOffA .sideCol .collapseBtn { display: none; }
+.colOffA .sideCol { padding: 0; overflow: hidden; }
+.collapseBtn { position: absolute; z-index: 2; top: 16px; right: 16px; display: grid; width: 22px; height: 22px; place-items: center; border: .5px solid var(--line); border-radius: 7px; background: #fff; box-shadow: var(--sh-sm); color: var(--sub); font-size: 12px; }
+.collapseBtn:hover { color: var(--ink); }
+.expandBtn { display: none; width: 22px; height: 22px; margin: 10px auto 0; place-items: center; border: .5px solid var(--line); border-radius: 7px; background: #fff; box-shadow: var(--sh-sm); color: var(--sub); font-size: 12px; }
+.colOffA .sideCol .expandBtn { display: grid; }
+
+/* ---- 侧栏面板原语 ---- */
+.panel { display: flex; min-height: 0; flex-shrink: 0; flex-direction: column; padding: 14px; border-radius: 14px; background: var(--paper); box-shadow: var(--sh-sm); }
+.panel > h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+.panel > h3 svg { color: var(--sub); }
+.hintLine { margin-top: 8px; color: var(--faint); font-size: 11px; line-height: 1.5; }
+.statGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat { padding: 10px 12px; border-radius: 12px; background: var(--bg); }
+.stat b { display: block; font-size: 19px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
+.stat span { display: block; margin-top: 4px; color: var(--sub); font-size: 11px; }
+.statAccent b { color: var(--blue); }
+.notice { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 12px; background: var(--bg); color: var(--sub); font-size: 11px; line-height: 1.5; }
+.notice svg { flex-shrink: 0; margin-top: 1px; }
+.session { margin-bottom: 6px; padding: 8px 10px; border-radius: 12px; background: var(--bg); text-align: left; cursor: pointer; transition: background .15s; }
+.session:hover { background: #ececf0; }
+.sessionActive { background: var(--blue-wash); box-shadow: inset 0 0 0 1px rgba(0, 113, 227, .22); }
+.sessionActive:hover { background: var(--blue-wash); }
+.session:disabled { opacity: .6; cursor: default; }
+.sessionT { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.sessionT span { margin-left: 6px; color: var(--blue); font-size: 10px; font-weight: 600; }
+.sessionM { margin-top: 2px; color: var(--faint); font-size: 11px; }
+/* 矮窗口也要保留标题和至少一条可回退记录，不能让 flex 把列表压成 0 高。 */
+.panelGrow { flex: 1 0 132px; min-height: 132px; }
+.panelGrow .panelList { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* ---- 主区 ---- */
+/* 第 3 步把外层页面滚动封顶在编辑正文，同时保留右侧属性栏的独立滚动。 */
+.mainCol { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 12px 12px 12px 0; overflow-y: auto; }
+.bodyPreview .mainCol { padding-left: 0; }
+.mainCol > .errorBanner { display: flex; flex: none; }
+.stepWrap { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.stepHidden { display: none !important; }
+.stepScroll { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 16px; padding: 2px 2px 12px; overflow-y: auto; }
+.stepScrollGap24 { gap: 24px; }
+.stepHead { display: flex; flex-shrink: 0; align-items: flex-end; justify-content: space-between; gap: 14px; padding: 14px 6px 12px; }
+.stepTitle { margin-top: 2px; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+.stepTitle .eyebrow { color: var(--blue); }
+.stepSub { margin-top: 4px; color: var(--sub); font-size: 12px; }
+.stepActions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+.stepFoot { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 6px 2px; }
+.stepFootMsg { color: var(--sub); font-size: 12px; }
+
+/* ---- 状态/横幅/对话框 ---- */
+.emptyState, .loadingState { display: grid; min-height: 280px; place-items: center; align-content: center; gap: 9px; color: var(--faint); text-align: center; }
+.emptyState strong, .loadingState strong { color: var(--ink); font-size: 13px; }
+.emptyState span { max-width: 360px; font-size: 12px; line-height: 1.6; }
+.loadingState > span { width: 24px; height: 24px; border: 2px solid #d7e9fb; border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; }
+.errorBanner { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; padding: 10px 12px; border-radius: 10px; background: #fff0f0; color: #a42b2b; font-size: 12px; }
+.importNotice { display: flex; align-items: center; gap: 7px; padding: 10px 12px; border-radius: 10px; background: #fff7ed; color: #9a5b13; font-size: 12px; }
+.warningNotice, .errorNotice, .successNotice { display: flex; align-items: center; gap: 7px; padding: 10px 12px; border-radius: 10px; background: #fff7ed; color: #9a5b13; font-size: 12px; }
+.errorNotice { margin-top: 12px; background: #fff0f0; color: #a42b2b; }
+.successNotice { margin-top: 12px; background: #eef9f2; color: var(--green-ink); }
+.switchDialogBackdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(20, 20, 23, .28); backdrop-filter: blur(6px); }
+.switchDialog { width: min(440px, 100%); padding: 22px; border: .5px solid var(--line); border-radius: 18px; background: #fff; box-shadow: 0 28px 80px rgba(0, 0, 0, .2); }
+.switchDialog h2 { margin: 0; font-size: 17px; }
+.switchDialog p { margin: 10px 0 18px; color: var(--sub); font-size: 12px; line-height: 1.6; }
+.switchDialog > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.switchDialog .textButton { margin: 0; padding: 0 10px; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 1120px) {
+  .body { grid-template-columns: var(--navw, 190px) 244px minmax(0, 1fr); }
+  .bodyPreview { grid-template-columns: var(--navw, 190px) var(--repw, 200px) 6px minmax(0, 1fr) 6px var(--rgtw, 280px); }
+}

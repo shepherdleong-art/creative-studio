@@ -65,4 +65,5 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE script_providers ADD COLUMN supportsVision INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE script_providers ADD COLUMN visionCostPerRequest REAL NOT NULL DEFAULT 0`,
   `CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId)`,
+  `ALTER TABLE script_providers ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external' CHECK(executionScope IN ('external','company'))`,
 ];

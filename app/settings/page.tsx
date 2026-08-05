@@ -2,13 +2,15 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
+import CompanyProviderRuntimeStatus from '@/components/company-provider/CompanyProviderRuntimeStatus';
 import {
   scriptProviderApiStyleOptions,
   scriptProviderProtocolFields,
 } from '@/lib/script-providers/config';
-import type { ApiStyle } from '@/lib/script-providers/types';
+import type { ApiStyle, ProviderExecutionScope } from '@/lib/script-providers/types';
 
-type Category = 'image' | 'script' | 'video' | 'tts';
+type Category = 'image' | 'script' | 'video' | 'tts' | 'storage';
 
 interface ImageProvider {
   id: string;
@@ -35,6 +37,7 @@ interface ScriptProvider {
   hasApiKey: boolean;
   maxTokens?: number;
   visionCostPerRequest?: number;
+  executionScope: ProviderExecutionScope;
 }
 
 interface VideoProvider {
@@ -67,6 +70,7 @@ type ProviderFormState = {
   defaultDurationSec: number;
   maxTokens: number;
   visionCostPerRequest: number;
+  executionScope: ProviderExecutionScope;
 };
 
 const KEY_PLACEHOLDER = '••••••••';
@@ -86,6 +90,7 @@ const emptyForm: ProviderFormState = {
   defaultDurationSec: 5,
   maxTokens: 8192,
   visionCostPerRequest: 0,
+  executionScope: 'external',
 };
 
 const sections: Array<{ id: Category; title: string; description: string; icon: IconName }> = [
@@ -93,6 +98,7 @@ const sections: Array<{ id: Category; title: string; description: string; icon: 
   { id: 'script', title: '脚本生成', description: '卖点分析和短视频脚本文案模型', icon: 'file-text' },
   { id: 'video', title: '视频生成', description: '可灵、即梦等图生视频供应商', icon: 'video' },
   { id: 'tts', title: '口播配音', description: '成片剪辑的 V-API Qwen3 TTS', icon: 'monitor' },
+  { id: 'storage', title: '存储管理', description: '批量生产代理缓存占用与清理', icon: 'folder' },
 ];
 
 export default function SettingsPage() {
@@ -163,6 +169,7 @@ export default function SettingsPage() {
       defaultDurationSec: 'defaultDurationSec' in provider ? provider.defaultDurationSec || 5 : 5,
       maxTokens: 'maxTokens' in provider ? (provider as ScriptProvider).maxTokens || 8192 : 8192,
       visionCostPerRequest: 'visionCostPerRequest' in provider ? provider.visionCostPerRequest || 0 : 0,
+      executionScope: 'executionScope' in provider ? provider.executionScope : 'external',
       apiKey: hasKey && provider.type !== 'kling' ? KEY_PLACEHOLDER : '',
       accessKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
       secretKey: hasKey && provider.type === 'kling' ? KEY_PLACEHOLDER : '',
@@ -229,6 +236,7 @@ export default function SettingsPage() {
         maxTokens: form.maxTokens,
         supportsVision: form.supportsVision,
         visionCostPerRequest: form.visionCostPerRequest,
+        executionScope: form.executionScope,
         ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
       };
     }
@@ -287,9 +295,13 @@ export default function SettingsPage() {
             管理图片、脚本和视频生成模型。所有密钥统一从这里配置，避免和环境变量产生冲突。
           </p>
         </div>
-        {active !== 'tts' && <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
+        {active !== 'tts' && active !== 'storage' && <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
           <Icon name="plus" size={15} /> 添加供应商
         </button>}
+      </div>
+
+      <div className="mb-5">
+        <CompanyProviderRuntimeStatus />
       </div>
 
       <div className="mb-5 grid grid-cols-1 gap-2 md:grid-cols-4">
@@ -316,6 +328,7 @@ export default function SettingsPage() {
         <div className="py-12 text-center text-sm text-ink-tertiary">加载中...</div>
       ) : (
         <div className="space-y-4">
+          {active === 'storage' && <ProxyCacheSettingsSection />}
           {active === 'tts' && <TtsSettingsCard />}
           {(creating === active || editing?.category === active) && (
             <div className="card border-accent/30 bg-accent/[0.04] p-5">
@@ -347,7 +360,7 @@ export default function SettingsPage() {
             />
           ))}
 
-          {active !== 'tts' && currentProviders.length === 0 && (
+          {active !== 'tts' && active !== 'storage' && currentProviders.length === 0 && (
             <div className="flex flex-col items-center py-12 text-center text-ink-tertiary">
               <Icon name="settings" size={34} className="mb-2" />
               <p>暂无供应商配置</p>
@@ -401,6 +414,11 @@ function ProviderCard({
               {configured ? '已配置' : '未配置'}
             </span>
             {!provider.enabled && <span className="status-badge status-canceled">已禁用</span>}
+            {category === 'script' && 'executionScope' in provider && (
+              <span className="status-badge status-canceled">
+                {provider.executionScope === 'company' ? '公司 LiteLLM' : '外部直连'}
+              </span>
+            )}
           </div>
           <div className="grid grid-cols-1 gap-x-8 gap-y-1 text-sm text-ink-secondary sm:grid-cols-2">
             {baseUrl && (
@@ -492,6 +510,19 @@ function ProviderForm({
             {scriptProviderApiStyleOptions.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
+          </select>
+        </Field>
+      )}
+
+      {category === 'script' && (
+        <Field label="运行方式">
+          <select
+            value={form.executionScope}
+            onChange={(e) => onChange({ ...form, executionScope: e.target.value as ProviderExecutionScope })}
+            className="input-field"
+          >
+            <option value="external">外部供应商（直连）</option>
+            <option value="company">公司供应商（本机 LiteLLM）</option>
           </select>
         </Field>
       )}

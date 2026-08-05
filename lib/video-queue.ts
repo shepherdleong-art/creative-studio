@@ -1,14 +1,14 @@
-import { getDb } from './db';
-import { getVideoAdapter } from './video-providers/index';
+import { getDb } from './db.ts';
+import { getVideoAdapter } from './video-providers/index.ts';
 import { redactMediaUrlForLog } from './gateway-media-url.ts';
 import { describeGatewayDownloadFailure, downloadVideoMediaForProvider } from './media-download-policy.ts';
-import { resolveVideoProviderRuntimeConfig } from './video-auth';
-import { writeLog } from './logger';
+import { resolveVideoProviderRuntimeConfig } from './video-auth.ts';
+import { writeLog } from './logger.ts';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
-import { dataRoot } from './data-root';
-import { resolveVideoPollingTimeoutMs } from './video-polling-policy';
+import { dataRoot } from './data-root.ts';
+import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
 
 export interface VideoQueueOptions {
   projectId: string;
@@ -21,7 +21,31 @@ export interface VideoQueueOptions {
 const raw = process.env.VIDEO_CONCURRENCY;
 const envConcurrency = (raw !== undefined && raw !== '') ? Number(raw) : NaN;
 export const DEFAULT_VIDEO_CONCURRENCY = Math.max(1, Math.min(6, Number.isFinite(envConcurrency) ? envConcurrency : 3));
-export const DEFAULT_VIDEO_TIMEOUT_MS = 300_000;
+
+// 轮询窗口:供应商任务积压时单次轮询可等待多久,超时后任务转 needs_check。
+// 默认 15 分钟(旧值 5 分钟在任务积压时频繁掉出自动化管线);用
+// VIDEO_TIMEOUT_MS 覆盖,钳制在 1 分钟到 24 小时之间。
+const rawTimeout = process.env.VIDEO_TIMEOUT_MS;
+const envTimeout = (rawTimeout !== undefined && rawTimeout !== '') ? Number(rawTimeout) : NaN;
+export const DEFAULT_VIDEO_TIMEOUT_MS = Number.isFinite(envTimeout) && envTimeout > 0
+  ? Math.max(60_000, Math.min(24 * 3_600_000, Math.floor(envTimeout)))
+  : 15 * 60_000;
+
+// 视频任务的运行时重试上限。video_jobs.maxAttempts 默认 1(存量库旧行也是 1),
+// 这里在失败分支做兜底,与图片队列 `job.maxAttempts || maxAttempts || 2` 同款写法;
+// 新建库的建表默认值同步改为 2(见 lib/db.ts),让两处口径一致。
+export const DEFAULT_VIDEO_MAX_ATTEMPTS = 2;
+
+// 每供应商并发闸门:同时处于 running 的本地任务数上限,按供应商类型配置、
+// 按 providerId(具体供应商行)跨项目统计——队列按项目隔离,但远端并发是
+// 供应商维度的,多项目并行时闸门依然生效。未列出的供应商类型不限速。
+const VIDEO_PROVIDER_CONCURRENCY_LIMITS: Readonly<Record<string, number>> = {
+  kling: 2,
+};
+
+export function providerConcurrencyLimit(providerType: string): number | null {
+  return VIDEO_PROVIDER_CONCURRENCY_LIMITS[providerType] ?? null;
+}
 
 interface VideoJobRecord {
   id: string;
@@ -105,17 +129,31 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
           continue;
         }
 
-        const job = claimNextVideoJob(projectId);
-        if (!job) {
-          const runningCount = db
-            .prepare(`SELECT COUNT(*) as count FROM video_jobs WHERE projectId = ? AND status = 'running'`)
-            .get(projectId) as { count: number };
-          if (runningCount.count === 0) break;
-          await sleep(500);
+        const claimed = claimNextVideoJob(projectId);
+        if (claimed.job) {
+          await runVideoJob(claimed.job, { timeoutMs, abort: abort.signal });
+          continue;
+        }
+        // 没有新任务时,自动续跑已掉出轮询窗口的 needs_check 任务(它们持有
+        // 远端 task_id,只是轮询超时,不能丢出自动化管线)。
+        const needsCheck = claimNeedsCheckVideoJob(projectId);
+        if (needsCheck) {
+          await runVideoJob(needsCheck, { timeoutMs, abort: abort.signal });
+          continue;
+        }
+        if (claimed.gated) {
+          // 被每供应商闸门挡住:等待其他 running 任务释放名额,不能视为无活退出,
+          // 否则 pending 任务会留在库里没人跑。
+          await sleep(1000);
           continue;
         }
 
-        await runVideoJob(job, { timeoutMs, abort: abort.signal });
+        const runningCount = db
+          .prepare(`SELECT COUNT(*) as count FROM video_jobs WHERE projectId = ? AND status = 'running'`)
+          .get(projectId) as { count: number };
+        if (runningCount.count === 0) break;
+        await sleep(500);
+        continue;
       }
     }
 
@@ -139,6 +177,10 @@ async function runVideoJob(
   if (abort.aborted) return;
 
   const attempt = job.attempt;
+  // 存量库旧行 maxAttempts 默认是 1(建表默认值也长期是 1),实际等于“无自动
+  // 重试”;这里把 <= 1 的值统一视为未配置,兜底到运行时上限 2,让旧库也能
+  // 自动重试一次。显式配置 > 1 的值(如 3)保持原样。
+  const effectiveMaxAttempts = job.maxAttempts > 1 ? job.maxAttempts : DEFAULT_VIDEO_MAX_ATTEMPTS;
   const logInfo = (msg: string) =>
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message: msg, attempt });
   const logError = (msg: string) =>
@@ -146,7 +188,7 @@ async function runVideoJob(
   const logWarn = (msg: string) =>
     writeLog({ jobId: job.id, projectId: job.projectId, level: 'warn', message: msg, attempt });
 
-  logInfo(`Video job started (attempt ${attempt}/${job.maxAttempts})`);
+  logInfo(`Video job started (attempt ${attempt}/${effectiveMaxAttempts})`);
 
   try {
     // Load provider
@@ -180,7 +222,7 @@ async function runVideoJob(
 
     // Kling uses access_key + secret_key to generate a short-lived JWT.
     if (provider.type === 'kling') {
-      const { getKlingToken } = await import('./video-providers/kling');
+      const { getKlingToken } = await import('./video-providers/kling.ts');
       apiKey = getKlingToken(runtime.accessKey, runtime.secretKey);
     }
 
@@ -207,31 +249,43 @@ async function runVideoJob(
     const onAbort = () => reqAbort.abort();
     abort.addEventListener('abort', onAbort, { once: true });
 
-    // Step 1: Submit
-    logInfo('Submitting video generation task...');
-    const submitResult = await adapter.submit(
-      {
-        model: job.model,
-        prompt: job.prompt,
-        sourceImagePath: imagePath,
-        sourceMimeType: mimeType,
-        durationSec: job.durationSec,
-      },
-      apiKey,
-      runtime.baseUrl,
-      reqAbort.signal
-    );
+    // Step 1: Submit — 只在还没有远端 task_id 时执行。已持有 task_id 的
+    // 任务(needs_check 自动续跑、崩溃后恢复为 pending 的旧任务)直接进入
+    // 轮询;重新 submit 会在供应商侧产生第二条付费任务,违反防重复扣费纪律。
+    const existingTaskId = (db.prepare(`
+      SELECT providerTaskId FROM video_jobs WHERE id = ?
+    `).get(job.id) as { providerTaskId: string | null } | undefined)?.providerTaskId ?? null;
 
-    if (!submitResult.providerTaskId) {
-      throw new Error('Video provider did not return a task_id');
+    let taskId: string;
+    if (existingTaskId) {
+      taskId = existingTaskId;
+      logInfo(`Resuming polling for existing task_id=${taskId}`);
+    } else {
+      logInfo('Submitting video generation task...');
+      const submitResult = await adapter.submit(
+        {
+          model: job.model,
+          prompt: job.prompt,
+          sourceImagePath: imagePath,
+          sourceMimeType: mimeType,
+          durationSec: job.durationSec,
+        },
+        apiKey,
+        runtime.baseUrl,
+        reqAbort.signal
+      );
+
+      if (!submitResult.providerTaskId) {
+        throw new Error('Video provider did not return a task_id');
+      }
+
+      taskId = submitResult.providerTaskId;
+      db.prepare(
+        `UPDATE video_jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, startedAt = datetime('now')
+         WHERE id = ?`
+      ).run(taskId, safeJson(submitResult.rawResponse), job.id);
+      logInfo(`Video task submitted, task_id=${taskId}`);
     }
-
-    const taskId = submitResult.providerTaskId;
-    db.prepare(
-      `UPDATE video_jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, startedAt = datetime('now')
-       WHERE id = ?`
-    ).run(taskId, safeJson(submitResult.rawResponse), job.id);
-    logInfo(`Video task submitted, task_id=${taskId}`);
 
     // Step 2: Poll with graduated intervals
     let polled = false;
@@ -311,7 +365,14 @@ async function runVideoJob(
       }
 
       if (pollResult.status === 'failed') {
-        throw new Error(`Video generation failed: ${pollResult.errorMessage || 'unknown'}`);
+        // 供应商明确失败:终态,不补抓、不自动重试(避免无意义的重复提交)。
+        const failureMessage = pollResult.errorMessage || 'unknown';
+        logError(`Video generation failed: ${failureMessage}`);
+        db.prepare(
+          `UPDATE video_jobs SET status = 'failed', errorMessage = ?, providerStatus = 'failed', finishedAt = datetime('now')
+           WHERE id = ? AND status = 'running'`
+        ).run(`Video generation failed: ${failureMessage}`, job.id);
+        return;
       }
     }
 
@@ -324,7 +385,10 @@ async function runVideoJob(
       ).run(`Polling timeout (${Math.round((Date.now() - pollStartedAt) / 1000)}s). task_id=${taskId} may still be running.`, job.id);
     }
   } catch (err: unknown) {
-    if (abort.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+    // 只有队列级 abort(用户取消)才是取消;适配器内部超时(如 kling 的 120s
+    // 提交/30s 轮询)产生的是 AbortError,但远端任务可能仍在跑,绝不能误判为
+    // canceled——按下面的失败分支处理。
+    if (abort.aborted) {
       db.prepare(
         `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'
          WHERE id = ? AND status = 'running'`
@@ -335,7 +399,21 @@ async function runVideoJob(
     const errorMessage = (err instanceof Error ? err.message : String(err)).slice(0, 2000);
     logError(`Video job failed: ${errorMessage}`);
 
-    if (attempt >= job.maxAttempts) {
+    // 防重复扣费纪律:已经拿到供应商 task_id 的失败不允许重新 submit(重交
+    // 会在远端产生第二条付费任务),一律转 needs_check,由队列自动续跑或用户
+    // 手动补抓;只有提交前/未拿到 task_id 的失败才走自动重试。
+    const submitted = db.prepare(`
+      SELECT providerTaskId FROM video_jobs WHERE id = ?
+    `).get(job.id) as { providerTaskId: string | null } | undefined;
+    if (submitted?.providerTaskId) {
+      db.prepare(
+        `UPDATE video_jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'needs_check', finishedAt = datetime('now')
+         WHERE id = ? AND status = 'running'`
+      ).run(errorMessage, job.id);
+      return;
+    }
+
+    if (attempt >= effectiveMaxAttempts) {
       db.prepare(
         `UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
          WHERE id = ? AND status = 'running'`
@@ -349,12 +427,62 @@ async function runVideoJob(
   }
 }
 
-function claimNextVideoJob(projectId: string): (VideoJobRecord & { attempt: number }) | null {
+interface ClaimedVideoJob extends VideoJobRecord {
+  attempt: number;
+}
+
+export interface ClaimVideoJobResult {
+  job: ClaimedVideoJob | null;
+  /** 队列里还有 pending 任务,但被每供应商闸门挡住(不能据此认为没活了) */
+  gated: boolean;
+}
+
+/**
+ * 原子领取下一条 pending 视频任务。领取顺序与 UI 的 createdAt 一致,
+ * 避免“后面的任务先跑”的混乱观感。若该任务所属供应商已达并发上限,
+ * 不领取并标记 gated(跨项目统计 running,闸门在多项目并行时依然生效)。
+ */
+export function claimNextVideoJob(projectId: string): ClaimVideoJobResult {
   const db = getDb();
   const job = db.prepare(`
     SELECT * FROM video_jobs
     WHERE projectId = ? AND status = 'pending'
-    ORDER BY id LIMIT 1
+    ORDER BY createdAt, id LIMIT 1
+  `).get(projectId) as VideoJobRecord | undefined;
+
+  if (!job) return { job: null, gated: false };
+
+  const providerRow = db.prepare(`
+    SELECT type FROM video_providers WHERE id = ?
+  `).get(job.providerId) as { type: string } | undefined;
+  const limit = providerRow ? providerConcurrencyLimit(providerRow.type) : null;
+  if (limit !== null) {
+    const running = db.prepare(`
+      SELECT COUNT(*) AS count FROM video_jobs WHERE providerId = ? AND status = 'running'
+    `).get(job.providerId) as { count: number };
+    if (running.count >= limit) return { job: null, gated: true };
+  }
+
+  const nextAttempt = job.attempt + 1;
+  const result = db.prepare(`
+    UPDATE video_jobs SET status = 'running', attempt = ?, startedAt = datetime('now'), errorMessage = NULL
+    WHERE id = ? AND status = 'pending'
+  `).run(nextAttempt, job.id);
+
+  if (result.changes !== 1) return { job: null, gated: false };
+  return { job: { ...job, status: 'running', attempt: nextAttempt }, gated: false };
+}
+
+/**
+ * 原子领取一条 needs_check 任务继续轮询(自动续跑)。只有持有远端 task_id
+ * 的任务才会进入 needs_check,续跑不会重新提交、不会重复扣费。
+ */
+export function claimNeedsCheckVideoJob(projectId: string): ClaimedVideoJob | null {
+  const db = getDb();
+  const job = db.prepare(`
+    SELECT * FROM video_jobs
+    WHERE projectId = ? AND status = 'needs_check' AND providerTaskId IS NOT NULL
+    ORDER BY createdAt, id LIMIT 1
   `).get(projectId) as VideoJobRecord | undefined;
 
   if (!job) return null;
@@ -362,7 +490,7 @@ function claimNextVideoJob(projectId: string): (VideoJobRecord & { attempt: numb
   const nextAttempt = job.attempt + 1;
   const result = db.prepare(`
     UPDATE video_jobs SET status = 'running', attempt = ?, startedAt = datetime('now'), errorMessage = NULL
-    WHERE id = ? AND status = 'pending'
+    WHERE id = ? AND status = 'needs_check'
   `).run(nextAttempt, job.id);
 
   if (result.changes !== 1) return null;

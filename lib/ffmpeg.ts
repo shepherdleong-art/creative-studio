@@ -58,21 +58,47 @@ export interface RunFfmpegOptions {
   /** 每次解析到 -progress 输出时回调（已换算为秒） */
   onProgressSec?: (outTimeSec: number) => void;
   timeoutMs?: number;
+  /** 中止直接 FFmpeg 子进程；等子进程真正退出后才 reject 一个可区分的 AbortError */
+  signal?: AbortSignal;
+}
+
+function makeAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
 }
 
 /** 运行 ffmpeg，非零退出码时用 stderr 尾部报错。args 必须含 -y 与输出路径。 */
 export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (opts.signal?.aborted) {
+      reject(makeAbortError('ffmpeg aborted before start'));
+      return;
+    }
     const child = spawn(resolveFfmpegPath(), args, { windowsHide: true });
     let stderrTail = '';
     let settled = false;
+    let aborted = false;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+    };
     const done = (err?: Error) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      cleanup();
       if (err) reject(err);
       else resolve();
     };
+    // 只标记 aborted 并终止子进程，不在这里直接 settle——真正的 reject 要等
+    // 'close' 事件确认子进程已经退出，避免"以为终止了但进程其实还在跑"。
+    const onAbort = () => {
+      if (settled || aborted) return;
+      aborted = true;
+      child.kill('SIGKILL');
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+
     const timer = opts.timeoutMs
       ? setTimeout(() => {
           child.kill('SIGKILL');
@@ -92,8 +118,9 @@ export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<
     child.stderr.on('data', (buf: Buffer) => {
       stderrTail = (stderrTail + buf.toString()).slice(-4000);
     });
-    child.on('error', (err) => done(err));
+    child.on('error', (err) => done(aborted ? makeAbortError(`ffmpeg aborted: ${err.message}`) : err));
     child.on('close', (code) => {
+      if (aborted) { done(makeAbortError('ffmpeg aborted')); return; }
       if (code === 0) done();
       else done(new Error(`ffmpeg exited with code ${code}: ${stderrTail.slice(-1500)}`));
     });
@@ -201,6 +228,12 @@ export interface VideoMediaProbe {
   /** 显示高（同上） */
   height: number;
   fps: number;
+  /** Whether metadata contains at least one audio stream. */
+  hasAudio?: boolean;
+  videoCodec?: string;
+  pixelFormat?: string;
+  audioCodec?: string;
+  audioSampleRate?: number;
   format?: string;
   errorMessage?: string;
 }
@@ -225,7 +258,7 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
     try {
       const child = spawn(
         resolveFfprobeCandidatePath(),
-        ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,r_frame_rate:stream_tags=rotate:stream_side_data=rotation:format=duration,format_name', '-of', 'json', filePath],
+        ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt,sample_rate,width,height,r_frame_rate:stream_tags=rotate:stream_side_data=rotation:format=duration,format_name', '-of', 'json', filePath],
         { windowsHide: true }
       );
       let out = '';
@@ -263,8 +296,10 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
         if (settled || fallbackStarted) return;
         if (code !== 0) { fallbackToFfmpeg(); return; }
         try {
-          const parsed = JSON.parse(out) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
-          const stream = parsed.streams?.[0];
+          const parsed = JSON.parse(out) as { streams?: Array<{ codec_type?: string; codec_name?: string; pix_fmt?: string; sample_rate?: string; width?: number; height?: number; r_frame_rate?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
+          const stream = parsed.streams?.find(({ codec_type }) => codec_type === 'video')
+            ?? parsed.streams?.find(({ width, height }) => Number(width) > 0 && Number(height) > 0);
+          const audioStream = parsed.streams?.find(({ codec_type }) => codec_type === 'audio');
           const durationSec = parseFloat(parsed.format?.duration ?? '');
           if (!stream || !Number.isFinite(durationSec) || !Number(stream.width) || !Number(stream.height)) { fallbackToFfmpeg(); return; }
           // §7.3 要求读取旋转信息：displaymatrix side data（如 -90）优先，legacy rotate tag 兜底。
@@ -276,6 +311,11 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
             width: Number(swap ? stream.height : stream.width) || 0,
             height: Number(swap ? stream.width : stream.height) || 0,
             fps: parseFrameRateFraction(stream.r_frame_rate),
+            hasAudio: Boolean(audioStream),
+            videoCodec: stream.codec_name || '',
+            pixelFormat: stream.pix_fmt || '',
+            audioCodec: audioStream?.codec_name || '',
+            audioSampleRate: Number(audioStream?.sample_rate) || 0,
             format: parsed.format?.format_name || '',
           });
         } catch {
@@ -318,6 +358,7 @@ function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Prom
       const durationMatch = stderrTail.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
       const formatMatch = stderrTail.match(/Input #0,\s*(.+?),\s+from /);
       const videoLine = stderrTail.split(/\r?\n/).find((line) => /Stream .*Video:/.test(line)) || '';
+      const audioLine = stderrTail.split(/\r?\n/).find((line) => /Stream .*Audio:/.test(line)) || '';
       const dimensionsMatch = videoLine.match(/Video:[^\n]*?(?:,|\s)(\d{2,6})x(\d{2,6})(?=[,\s\[]|$)/);
       if (!durationMatch || !dimensionsMatch) { failed('ffmpeg metadata output did not contain a readable video stream'); return; }
       const durationSec = Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3]);
@@ -331,6 +372,11 @@ function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Prom
         width: Number(dimensionsMatch[swap ? 2 : 1]) || 0,
         height: Number(dimensionsMatch[swap ? 1 : 2]) || 0,
         fps: fpsMatch ? Number(fpsMatch[1]) || 0 : 0,
+        hasAudio: Boolean(audioLine),
+        videoCodec: videoLine.match(/Video:\s*([^,\s]+)/)?.[1] || '',
+        pixelFormat: videoLine.match(/Video:[^\n]*?,\s*([A-Za-z0-9_]+)(?:\([^)]*\))?,\s*\d{2,6}x\d{2,6}/)?.[1] || '',
+        audioCodec: audioLine.match(/Audio:\s*([^,\s]+)/)?.[1] || '',
+        audioSampleRate: Number(audioLine.match(/,\s*(\d+)\s*Hz/)?.[1]) || 0,
         format: formatMatch?.[1]?.trim() || '',
       });
     });

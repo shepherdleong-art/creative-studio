@@ -16,7 +16,7 @@ import { TrimEditor } from './TrimEditor';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
-import styles from './MixcutPanel.module.css';
+import styles from './mixcut-content.module.css';
 
 const FPS = FINAL_EDIT_FPS;
 

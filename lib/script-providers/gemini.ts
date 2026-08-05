@@ -79,6 +79,7 @@ export function getGeminiMeta(): ProviderMeta {
     configured: isGeminiConfigured(),
     apiStyle: 'openai-compatible',
     supportsVision,
+    executionScope: 'external',
   };
 }
 
