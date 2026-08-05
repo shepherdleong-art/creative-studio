@@ -108,8 +108,7 @@ const response = await generateAndPersistScriptV3({
   createId: () => 'draft-v3',
   providerMeta: () => ({
     id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
-    apiStyle: 'openai-compatible', supportsVision: true,
-  }),
+    apiStyle: 'openai-compatible', supportsVision: true, executionScope: 'external',  }),
   completeJson: async () => ({}),
   prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
     imageBuffer,
@@ -175,8 +174,7 @@ const nonVisionResponse = await generateAndPersistScriptV3({
   completeJson: async () => ({}),
   providerMeta: () => ({
     id: 'text-only', name: 'Text only', model: 'text-model', configured: true,
-    apiStyle: 'openai-compatible', supportsVision: false,
-  }),
+    apiStyle: 'openai-compatible', supportsVision: false, executionScope: 'external',  }),
   generate: async () => {
     nonVisionGenerateCalled = true;
     return { script, attempts: 1 };
@@ -200,8 +198,7 @@ await assert.rejects(
     completeJson: async () => ({}),
     providerMeta: () => ({
       id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
-      apiStyle: 'openai-compatible', supportsVision: true,
-    }),
+      apiStyle: 'openai-compatible', supportsVision: true, executionScope: 'external',    }),
     prepareVisualImage: async () => {
       cancelledPrepareCalls += 1;
       preprocessingCancellation.abort();
@@ -226,8 +223,7 @@ const emptyResponse = await generateAndPersistScriptV3({
   completeJson: async () => ({}),
   providerMeta: () => ({
     id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
-    apiStyle: 'openai-compatible', supportsVision: true,
-  }),
+    apiStyle: 'openai-compatible', supportsVision: true, executionScope: 'external',  }),
   generate: async () => ({ script, attempts: 1 }),
 });
 assert.equal(emptyResponse.status, 400);
