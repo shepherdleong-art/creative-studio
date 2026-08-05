@@ -3,11 +3,12 @@ set -u
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 project_root="$(cd "$script_dir/.." && pwd)"
+data_root="${CREATIVE_STUDIO_DATA_ROOT:-$project_root}"
 proxy_port="${CREATIVE_STUDIO_LITELLM_PORT:-4000}"
 litellm_exe="$project_root/.venv-litellm/bin/litellm"
 config_file="$project_root/config.yaml"
-log_dir="$project_root/storage/logs"
-run_dir="$project_root/storage/run"
+log_dir="$data_root/storage/logs"
+run_dir="$data_root/storage/run"
 stack_file="$run_dir/stack.json"
 health_url="http://127.0.0.1:$proxy_port/health/liveliness"
 

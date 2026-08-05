@@ -50,7 +50,7 @@ echo "🚀 正在启动服务..."
 echo ""
 
 # Start dev server
-npm run dev &
+npm run dev -- --hostname 127.0.0.1 &
 SERVER_PID=$!
 
 # Wait for server to be ready

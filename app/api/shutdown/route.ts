@@ -16,10 +16,15 @@ export async function POST() {
       const stackFile = path.join(dataRoot(), 'storage', 'run', 'stack.json');
       if (fs.existsSync(stackFile)) {
         const stack = JSON.parse(fs.readFileSync(stackFile, 'utf-8').replace(/^﻿/, '')) as { stopScript?: string };
-        const scriptsDir = path.resolve(dataRoot(), 'scripts');
+        // 状态文件跟随 dataRoot；源码启动脚本则仍位于项目 cwd 下。
+        // 两个目录都必须是精确受控目录，不能执行状态文件给出的任意路径。
+        const controlledScriptsDirs = new Set([
+          path.resolve(process.cwd(), 'scripts'),
+          path.resolve(dataRoot(), 'scripts'),
+        ]);
         const stopScript = typeof stack.stopScript === 'string' ? path.resolve(stack.stopScript) : '';
         const stopScriptName = path.basename(stopScript);
-        const isControlledStopScript = path.dirname(stopScript) === scriptsDir
+        const isControlledStopScript = controlledScriptsDirs.has(path.dirname(stopScript))
           && (stopScriptName === 'stop-stack.ps1' || stopScriptName === 'stop-litellm.sh');
         if (isControlledStopScript && fs.existsSync(stopScript)) {
           if (process.platform === 'win32' && stopScriptName === 'stop-stack.ps1') {

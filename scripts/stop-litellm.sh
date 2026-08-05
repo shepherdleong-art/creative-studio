@@ -3,7 +3,8 @@ set -u
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 project_root="$(cd "$script_dir/.." && pwd)"
-stack_file="$project_root/storage/run/stack.json"
+data_root="${CREATIVE_STUDIO_DATA_ROOT:-$project_root}"
+stack_file="$data_root/storage/run/stack.json"
 
 if [ ! -f "$stack_file" ]; then
     echo "没有发现由本项目启动的 LiteLLM。"

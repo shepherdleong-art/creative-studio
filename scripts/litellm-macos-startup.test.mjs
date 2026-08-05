@@ -29,6 +29,25 @@ test('macOS 工作台启动和停止入口共同看管 LiteLLM sidecar', () => {
   assert.match(stopCommand, /scripts\/stop-litellm\.sh/);
 });
 
+test('macOS 源码启动的 Next dev 仅绑定 loopback', () => {
+  const startCommand = read('start.command');
+
+  assert.match(startCommand, /npm run dev -- --hostname 127\.0\.0\.1/);
+  assert.doesNotMatch(startCommand, /--hostname\s+0\.0\.0\.0/);
+});
+
+test('LiteLLM 日志和状态文件跟随自定义 CREATIVE_STUDIO_DATA_ROOT', () => {
+  const startLiteLlm = read('scripts/start-litellm.sh');
+  const stopLiteLlm = read('scripts/stop-litellm.sh');
+
+  assert.match(startLiteLlm, /data_root="\$\{CREATIVE_STUDIO_DATA_ROOT:-\$project_root\}"/);
+  assert.match(startLiteLlm, /log_dir="\$data_root\/storage\/logs"/);
+  assert.match(startLiteLlm, /run_dir="\$data_root\/storage\/run"/);
+  assert.match(startLiteLlm, /stack_file="\$run_dir\/stack\.json"/);
+  assert.match(stopLiteLlm, /data_root="\$\{CREATIVE_STUDIO_DATA_ROOT:-\$project_root\}"/);
+  assert.match(stopLiteLlm, /stack_file="\$data_root\/storage\/run\/stack\.json"/);
+});
+
 test('UI 关闭端点按平台执行受控的 PowerShell 或 shell 停止脚本', () => {
   const shutdownRoute = read('app/api/shutdown/route.ts');
 
@@ -36,6 +55,7 @@ test('UI 关闭端点按平台执行受控的 PowerShell 或 shell 停止脚本'
   assert.match(shutdownRoute, /powershell\.exe/);
   assert.match(shutdownRoute, /\/bin\/bash/);
   assert.match(shutdownRoute, /stop-litellm\.sh/);
+  assert.match(shutdownRoute, /path\.resolve\(process\.cwd\(\), 'scripts'\)/);
 });
 
 test('LiteLLM 运行依赖锁定到已验证版本并包含 SOCKS 支持', () => {
