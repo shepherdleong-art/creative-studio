@@ -48,9 +48,9 @@ function storageRoot(): string {
 }
 
 function thumbnailRelativePath(projectId: string, assetId: string, fingerprint: string): string {
-  const safeProject = createHash('sha256').update(projectId).digest('hex');
-  const safeAsset = createHash('sha256').update(assetId).digest('hex');
-  return path.join('batch-media', 'thumbnails', safeProject, safeAsset, `${fingerprint.slice(0, 64)}.jpg`);
+  const safeProject = createHash('sha256').update(projectId).digest('hex').slice(0, 12);
+  const safeAsset = createHash('sha256').update(assetId).digest('hex').slice(0, 12);
+  return path.join('batch-media', 'thumbnails', safeProject, safeAsset, `${fingerprint.slice(0, 24)}.jpg`);
 }
 
 function assertRegularFile(filePath: string): fs.Stats {
