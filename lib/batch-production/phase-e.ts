@@ -3,6 +3,8 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../final-edit/storage-path.ts';
+// 命名合约与单条模式共用同一处纯函数,避免两边各写一份后慢慢漂移。
+import { formatShanghaiTaskDate } from '../final-edit/export-identity.ts';
 import {
   clearBatchAssetExclusion,
   persistBatchAllocation,
@@ -352,9 +354,15 @@ export async function publishSelectedBatchOutputs(
   if (lineage.inputState !== 'frozen') {
     throw new BatchDomainError('conflict', '批次输入尚未冻结,不能正式导出');
   }
-  const project = db.prepare(`SELECT productCode FROM projects WHERE id = ?`).get(projectId) as { productCode: string | null } | undefined;
+  const project = db.prepare(`SELECT productCode, createdAt FROM projects WHERE id = ?`).get(projectId) as {
+    productCode: string | null;
+    createdAt: string | null;
+  } | undefined;
   if (!project) throw new BatchDomainError('not_found', '项目不存在');
   if (!project.productCode?.trim()) throw new BatchDomainError('conflict', '请先在项目信息中填写产品编码再正式导出');
+  // 与单条模式一致:文件名里的日期取项目创建日期(上海时区),不是导出当天,
+  // 这样同一项目的单条与批量成片落在同一个日期前缀下,重复导出也不会变名。
+  const taskDate = formatShanghaiTaskDate(project.createdAt ?? '') || undefined;
 
   const storageRoot = path.resolve(options.storageRoot ?? path.join(dataRoot(), 'storage'));
   const items: BatchPublishItemResult[] = [];
@@ -442,8 +450,7 @@ export async function publishSelectedBatchOutputs(
         projectId,
         batchId,
         productCode: project.productCode,
-        taskDate: options.now?.() ?? new Date(),
-        scriptStableId: row.scriptSnapshotId,
+        taskDate: taskDate ?? options.now?.() ?? new Date(),
         planSeq: row.seq,
         outputVersion: row.versionNumber,
       });

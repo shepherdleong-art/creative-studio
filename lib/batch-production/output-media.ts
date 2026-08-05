@@ -34,8 +34,14 @@ function safeMediaPath(storageRoot: string, relativePath: string): string {
   return absolutePath;
 }
 
+/**
+ * 视频与封面的配对键。命名合约里封面比视频多一个「-封面」后缀
+ * (`成片-<编码>-<日期>-<序号>.mp4` / `...-封面.jpg`),所以去掉扩展名后
+ * 还要去掉这个后缀,两者才归到同一个键。旧命名(视频封面同名不同扩展)
+ * 不含该后缀,行为不变。
+ */
 function mediaPairKey(relativePath: string): string {
-  return relativePath.replace(/\.[^./\\]+$/u, '');
+  return relativePath.replace(/\.[^./\\]+$/u, '').replace(/-封面$/u, '');
 }
 
 function parseCandidate(raw: string | null, expected: {

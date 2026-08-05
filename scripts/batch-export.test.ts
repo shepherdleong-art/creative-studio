@@ -26,12 +26,12 @@ async function run(): Promise<void> {
     batchId: 'batch-1',
     productCode: '床垫 A',
     taskDate: '2026-08-03T00:00:00.000Z',
-    scriptStableId: 'script-稳定-id',
     planSeq: 2,
     outputVersion: 3,
   });
-  assert.match(target.videoFilename, /床垫 A-20260803-script-稳定-id-plan2-v3-export1\.mp4/);
-  assert.equal(path.basename(target.coverFilename, '.jpg'), path.basename(target.videoFilename, '.mp4'));
+  // 命名合约与单条模式一致:成片-<产品编码>-<YYYYMMDD>-<两位成片序号>,首次导出不带重复后缀
+  assert.equal(target.videoFilename, '成片-床垫 A-20260803-02.mp4');
+  assert.equal(target.coverFilename, '成片-床垫 A-20260803-02-封面.jpg');
   assert.ok(fs.existsSync(target.reservationAbsolutePath));
 
   await assert.rejects(
@@ -55,7 +55,8 @@ async function run(): Promise<void> {
     renderResult: { audioMode: 'narration', productionReady: true },
     productionReady: true,
   });
-  assert.ok(published.videoRelativePath.startsWith(path.join('projects', 'project-1', '批量成片', 'batch-1')));
+  // 与单条模式同一个成品目录
+  assert.ok(published.videoRelativePath.startsWith(path.join('projects', 'project-1', '成片')));
   assert.equal(published.videoChecksum, await computeFingerprintFromFile(videoSource));
   assert.equal(published.coverChecksum, await computeFingerprintFromFile(coverSource));
   assert.ok(fs.statSync(published.videoAbsolutePath).size > 0);
@@ -68,38 +69,38 @@ async function run(): Promise<void> {
     batchId: 'batch-1',
     productCode: '床垫 A',
     taskDate: '20260803',
-    scriptStableId: 'script-稳定-id',
     planSeq: 2,
     outputVersion: 3,
   });
   assert.equal(second.exportSequence, 2, 're-export must use a new export sequence');
+  assert.equal(second.videoFilename, '成片-床垫 A-20260803-02-02.mp4', '重复导出同一条成片才往后排序号');
   await publishBatchExportTarget({ storageRoot, target: second, videoSource, coverSource, productionReady: true, renderResult: { audioMode: 'narration', productionReady: true } });
   assert.ok(fs.existsSync(published.videoAbsolutePath), 're-export must not overwrite old video');
   assert.ok(fs.existsSync(published.coverAbsolutePath), 're-export must not overwrite old cover');
 
   const sanitizedTraversal = reserveBatchExportTarget({
     storageRoot, projectId: 'project-1', batchId: 'batch-1', productCode: '../../escape',
-    taskDate: '20260803', scriptStableId: 'script', planSeq: 1, outputVersion: 1,
+    taskDate: '20260803', planSeq: 1, outputVersion: 1,
   });
-  assert.equal(path.dirname(sanitizedTraversal.videoAbsolutePath), path.join(storageRoot, 'projects', 'project-1', '批量成片', 'batch-1'));
-  assert.equal(sanitizedTraversal.videoFilename, '....escape-20260803-script-plan1-v1-export1.mp4');
+  assert.equal(path.dirname(sanitizedTraversal.videoAbsolutePath), path.join(storageRoot, 'projects', 'project-1', '成片'));
+  assert.equal(sanitizedTraversal.videoFilename, '成片-....escape-20260803-01.mp4');
   assert.ok(!sanitizedTraversal.videoRelativePath.split(/[\\/]/).includes('..'));
   releaseBatchExportReservation(storageRoot, sanitizedTraversal);
 
-  const symlinkDir = path.join(storageRoot, 'projects', 'project-symlink', '批量成片');
+  const symlinkDir = path.join(storageRoot, 'projects', 'project-symlink', '成片');
   fs.mkdirSync(path.dirname(symlinkDir), { recursive: true });
   fs.symlinkSync(root, symlinkDir, 'dir');
   await assert.rejects(
     Promise.resolve().then(() => reserveBatchExportTarget({
       storageRoot, projectId: 'project-symlink', batchId: 'batch-1', productCode: 'safe',
-      scriptStableId: 'script', planSeq: 1, outputVersion: 1,
+      planSeq: 1, outputVersion: 1,
     })),
     /符号链接|symlink|路径/i,
   );
 
   const released = reserveBatchExportTarget({
     storageRoot, projectId: 'project-2', batchId: 'batch-2', productCode: 'safe',
-    scriptStableId: 'script', planSeq: 1, outputVersion: 1,
+    planSeq: 1, outputVersion: 1,
   });
   releaseBatchExportReservation(storageRoot, released);
   assert.ok(!fs.existsSync(released.reservationAbsolutePath));

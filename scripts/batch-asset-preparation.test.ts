@@ -30,7 +30,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-asset-prep-'
 const db = new Database(path.join(root, 'workbench.db'));
 db.pragma('foreign_keys = ON');
 db.exec(`
-  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')));
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE script_drafts (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, provider TEXT NOT NULL DEFAULT 'gemini', model TEXT,
@@ -50,8 +50,8 @@ db.exec(`
     apiKey TEXT NOT NULL DEFAULT '',
     executionScope TEXT NOT NULL DEFAULT 'external'
   );
-  INSERT INTO projects VALUES ('project-1', '一号项目');
-  INSERT INTO projects VALUES ('project-2', '二号项目');
+  INSERT INTO projects (id, name) VALUES ('project-1', '一号项目');
+  INSERT INTO projects (id, name) VALUES ('project-2', '二号项目');
 `);
 
 try {

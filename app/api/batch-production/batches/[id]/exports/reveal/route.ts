@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { NextRequest, NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
@@ -55,8 +56,21 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   }
   try {
     await assertBatchApiReady();
+    // 成品目录已是项目级(与单条模式共用),路径里不再含 batchId,所以归属
+    // 校验必须显式做一次,否则任何 projectId 都能被打开。
+    const owned = getDb().prepare(`
+      SELECT id FROM batch_productions WHERE id = ? AND projectId = ? AND deletedAt IS NULL
+    `).get(id, projectId);
+    if (!owned) {
+      return NextResponse.json({ error: 'batch_not_found', message: '批次不存在' }, {
+        status: 404,
+        headers: BATCH_NO_STORE_HEADERS,
+      });
+    }
     const storageRoot = path.join(dataRoot(), 'storage');
-    const relativeDir = path.join('projects', projectId, '批量成片', id);
+    // 与 reserveBatchExportTarget 同一个成品目录(和单条模式共用)。
+    // 改导出路径时这里必须一起改,否则桌面版会打不开目录。
+    const relativeDir = path.join('projects', projectId, '成片');
     const directory = assertNoStorageSymlink(storageRoot, relativeDir);
     const stat = fs.statSync(directory);
     if (!stat.isDirectory()) throw new Error('批次成品目录不存在');

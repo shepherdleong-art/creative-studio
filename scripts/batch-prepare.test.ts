@@ -20,7 +20,8 @@ function createLegacyDatabase(root: string, name: string): Database.Database {
   db.exec(`
     CREATE TABLE projects (
       id TEXT PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      productCode TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE shot_sets (
       id TEXT PRIMARY KEY,
@@ -62,7 +63,7 @@ function createLegacyDatabase(root: string, name: string): Database.Database {
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE SET NULL
     );
-    INSERT INTO projects (id, name) VALUES ('project-1', '项目一');
+    INSERT INTO projects (id, name, productCode) VALUES ('project-1', '项目一', 'RQ5A');
     INSERT INTO projects (id, name) VALUES ('project-2', '项目二');
     INSERT INTO shot_sets (id, projectId, name, createdAt) VALUES ('ss-1', 'project-1', '分镜组A', '2026-08-02T00:00:00.000Z');
     INSERT INTO shot_sets (id, projectId, name, createdAt) VALUES ('ss-2', 'project-2', '分镜组B', '2026-08-02T00:00:00.000Z');
@@ -130,6 +131,10 @@ try {
   // --- 从业务入口进入:脚本和素材自动出现在批量准备区 ---
   const preparation = await prepareModule.prepareBatchProductionInputs(db, 'project-1');
   assert.equal(preparation.project.id, 'project-1');
+  // productCode 参与正式导出的文件名;导出页据此提前挡住空编码,不能丢
+  assert.equal(preparation.project.productCode, 'RQ5A', '准备区带出产品编码');
+  const preparation2 = await prepareModule.prepareBatchProductionInputs(db, 'project-2');
+  assert.equal(preparation2.project.productCode, '', '未填写产品编码时归一化为空串而不是 null');
 
   // 脚本:只有项目 1 的有效草稿;无效草稿跳过;项目 2 的脚本不出现
   assert.deepEqual(preparation.scripts.map(({ title }) => title), ['口播A'], '有效脚本自动进入准备区');

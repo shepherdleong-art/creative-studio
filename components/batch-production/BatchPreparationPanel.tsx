@@ -174,6 +174,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
   const [folderRelativePath, setFolderRelativePath] = useState<string | null>(null);
   const [revealBusy, setRevealBusy] = useState(false);
+  // 「打开文件夹」只有桌面安装版能用(服务端同样门禁)。与单条模式取同一个
+  // 能力端点,不可用时直接隐藏按钮,而不是摆一个点了必然失败的按钮。
+  const [revealAvailable, setRevealAvailable] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -408,6 +411,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     const timer = window.setTimeout(() => { void load(); void loadLuts(); void loadCacheUsage(); void loadBgmLibrary(); }, 0);
     return () => window.clearTimeout(timer);
   }, [load, loadLuts, loadCacheUsage, loadBgmLibrary]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const value = await readJson<{ revealInFolder: boolean }>(await fetch('/api/final-edit/capabilities'));
+        setRevealAvailable(value.revealInFolder);
+      } catch {
+        setRevealAvailable(false);
+      }
+    })();
+  }, []);
 
   // 稳定布尔:是否有活跃生产任务(queued/running 且未被暂停)。
   // 只允许布尔量进入周期轮询 effect 的依赖数组——数组/对象状态既是依赖
@@ -1687,11 +1701,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             phaseEBusy={phaseEBusy}
             onPublish={() => void publishSelected()}
             onRevealFolder={() => void revealFolder()}
-            revealAvailable
+            revealAvailable={revealAvailable}
             revealBusy={revealBusy}
             folderRelativePath={folderRelativePath}
             projectId={projectId}
             selectedBatchId={selectedBatchId}
+            productCode={prep.project.productCode}
           />
         );
       }}

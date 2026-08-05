@@ -15,6 +15,8 @@ export interface BatchStepExportProps {
   folderRelativePath: string | null;
   projectId: string;
   selectedBatchId: string;
+  /** 项目产品编码:参与正式导出的文件名,为空时服务端会拒绝导出 */
+  productCode: string;
 }
 
 /**
@@ -35,8 +37,17 @@ export default function BatchStepExport(props: BatchStepExportProps) {
     folderRelativePath,
     projectId,
     selectedBatchId,
+    productCode,
   } = props;
   const { counts } = workspace;
+  // 服务端硬门禁:productCode 参与导出文件名,为空则整批导出被拒。
+  // 提前在这里挡住并指路,避免用户点下去才看到一句错误。
+  const productCodeMissing = !productCode.trim();
+  // folderRelativePath 只在本次会话导出成功后才有值;刷新后就没了。已经有正式
+  // 产物时按导出命名合约回落到确定路径,避免用户刷新一次就找不到文件在哪。
+  const hasPublished = workspace.cards.some(({ currentVideo }) => Boolean(currentVideo));
+  const exportFolder = folderRelativePath
+    ?? (hasPublished ? `storage/projects/${projectId}/成片` : null);
   // 可导出 = 技术上可发布 && 已审核通过(审核门禁是服务端单点判断,UI 同步过滤)
   const selectable = workspace.cards.filter(({ publishable, approved }) => publishable && approved);
   const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
@@ -49,8 +60,8 @@ export default function BatchStepExport(props: BatchStepExportProps) {
       .flatMap((card) => card.blockers),
   )];
 
-  const mediaUrl = (card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover', source: 'candidate' | 'artifact') => (
-    `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=${kind}&source=${source}`
+  const mediaUrl = (card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover', source: 'candidate' | 'artifact', download = false) => (
+    `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=${kind}&source=${source}${download ? '&download=1' : ''}`
   );
 
   return (
@@ -70,11 +81,18 @@ export default function BatchStepExport(props: BatchStepExportProps) {
             <button
               type="button"
               className="btn-primary text-xs"
-              disabled={phaseEBusy !== null || selectedPlanIds.length === 0}
+              disabled={phaseEBusy !== null || selectedPlanIds.length === 0 || productCodeMissing}
+              title={productCodeMissing ? '请先在项目信息中填写产品编码' : undefined}
               onClick={onPublish}
-            >{phaseEBusy === 'export' ? '导出中…' : `正式导出选中项（${selectedPlanIds.length}）`}</button>
+            >{phaseEBusy === 'export' ? '导出中…' : productCodeMissing ? '请先填写产品编码' : `正式导出选中项（${selectedPlanIds.length}）`}</button>
           </div>
         </div>
+        {productCodeMissing && (
+          <div className="rounded-xl bg-warn/10 px-4 py-3 text-xs leading-5 text-warn" role="alert">
+            <strong className="font-medium">还差一步：本项目还没有产品编码。</strong>
+            <span className="ml-1">正式导出的文件名是「产品编码-日期-脚本-plan序号-版本」，缺了它服务端会拒绝整批导出。请回到项目信息补上产品编码后再来导出。</span>
+          </div>
+        )}
         {counts.publishable === 0 && counts.total > 0 && (
           <div className="w-full space-y-1 text-xs text-warn" role="status">
             {silentCount > 0 && (
@@ -97,17 +115,25 @@ export default function BatchStepExport(props: BatchStepExportProps) {
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">需处理</p><strong className="text-xl text-warn">{counts.needsAttention}</strong></div>
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">可重试失败</p><strong className="text-xl text-fail">{counts.failed}</strong></div>
         </div>
-        {folderRelativePath && (
+        {exportFolder && (
           <div className="rounded-xl bg-ok/10 px-4 py-3 text-sm text-ink" role="status">
-            <p className="font-medium text-ok">已导出到成品文件夹</p>
-            <p className="mt-1 break-all text-xs text-ink-secondary">{folderRelativePath}</p>
-            <button
-              type="button"
-              className="btn-secondary mt-2 text-xs"
-              disabled={!revealAvailable || revealBusy}
-              title={revealAvailable ? undefined : '仅在桌面安装版可用'}
-              onClick={onRevealFolder}
-            >{revealBusy ? '打开中…' : '打开文件夹'}</button>
+            <p className="font-medium text-ok">{folderRelativePath ? '已导出到成品文件夹' : '成品文件夹'}</p>
+            <p className="mt-1 break-all text-xs text-ink-secondary">{exportFolder}</p>
+            {/* 「打开文件夹」要调用系统文件管理器,只有桌面安装版有这个权限,
+                服务端同样门禁。不可用时直接不渲染按钮,并指向卡片上的下载入口,
+                而不是留一个点了没反应的按钮。 */}
+            {revealAvailable ? (
+              <button
+                type="button"
+                className="btn-secondary mt-2 text-xs"
+                disabled={revealBusy}
+                onClick={onRevealFolder}
+              >{revealBusy ? '打开中…' : '打开文件夹'}</button>
+            ) : (
+              <p className="mt-2 text-xs text-ink-tertiary">
+                浏览器里打不开本地文件夹（「打开文件夹」仅桌面安装版可用）。用下方每条成片的「下载视频 / 下载封面」取文件，保存位置和文件名可自选。
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -147,7 +173,19 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                 <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">无配音样片 —— 仅供检查画面，不能导出。</p>
               )}
               {published && (
-                <p className="text-xs text-ok">已导出过正式成片，重复导出会追加新文件、不会覆盖旧文件。</p>
+                <div className="space-y-2">
+                  <p className="text-xs text-ok">已导出过正式成片，重复导出会追加新文件、不会覆盖旧文件。</p>
+                  {/* 下载走浏览器「另存为」,用户自己选保存位置与文件名(与单条模式一致)。
+                      文件名默认用导出命名合约生成的名字。 */}
+                  <div className="flex flex-wrap gap-2">
+                    <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'video', 'artifact', true)} download>
+                      下载视频
+                    </a>
+                    <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', 'artifact', true)} download>
+                      下载封面
+                    </a>
+                  </div>
+                </div>
               )}
               {(card.blockers.length > 0 || card.warnings.length > 0) && (
                 <ul className="space-y-1 text-xs text-warn">

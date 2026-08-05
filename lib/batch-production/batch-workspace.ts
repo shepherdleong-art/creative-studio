@@ -177,8 +177,9 @@ function arrangementCoverRange(value: unknown): BatchCoverRangeView | null {
   return { startUs, endUs, currentUs };
 }
 
+/** 与 output-media.ts 同一套配对规则:封面比视频多一个「-封面」后缀 */
 function mediaPairKey(relativePath: string): string {
-  return relativePath.replace(/\.[^./\\]+$/u, '');
+  return relativePath.replace(/\.[^./\\]+$/u, '').replace(/-封面$/u, '');
 }
 
 function diagnosticMessages(value: unknown, key: 'warnings' | 'blockers'): string[] {

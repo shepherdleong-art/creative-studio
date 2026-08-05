@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
@@ -91,10 +92,18 @@ export async function GET(
   try {
     await assertBatchApiReady();
     const media = resolveBatchOutputMedia(getDb(), projectId, batchId, planId, kind, source, undefined, outputVersionId);
-    return serveMedia(request, media.absolutePath, media.contentType, {
+    const extra: Record<string, string> = {
       'X-Batch-Media-Source': media.source,
       'X-Batch-Production-Ready': media.productionReady ? '1' : '0',
-    });
+    };
+    // download=1:让浏览器走「另存为」而不是内联播放,用户可自行选择保存位置
+    // 与文件名(与单条模式的「下载视频/下载封面」一致)。文件名取自产物自身的
+    // basename——它由服务端的导出命名合约生成,不接受任何浏览器传入的名字。
+    if (request.nextUrl.searchParams.get('download') === '1') {
+      const filename = path.basename(media.absolutePath);
+      extra['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`;
+    }
+    return serveMedia(request, media.absolutePath, media.contentType, extra);
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_output_media_failed', '成片媒体读取失败');
   }

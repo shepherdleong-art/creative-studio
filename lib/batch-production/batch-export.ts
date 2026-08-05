@@ -13,8 +13,6 @@ export interface BatchExportIdentity {
   productCode: string;
   /** Date/time or an already formatted Shanghai date (`YYYYMMDD`). */
   taskDate?: Date | string;
-  /** Stable script snapshot/source identity; not a mutable title. */
-  scriptStableId: string;
   planSeq: number;
   outputVersion: number;
 }
@@ -123,12 +121,16 @@ function assertTargetPathsUnderStorage(storageRoot: string, target: BatchExportT
   }
 }
 
+/**
+ * 与单条模式同一套命名合约(`lib/final-edit/export-naming.ts` 的
+ * `成片-<产品编码>-<YYYYMMDD>`),后面接两位成片序号以区分同批次的多条成片。
+ * 序号与检查页的「成片 01/02」一一对应。
+ */
 function buildBaseName(identity: BatchExportIdentity): string {
   if (!Number.isInteger(identity.planSeq) || identity.planSeq < 1) throw new Error('plan 序号必须是正整数');
   if (!Number.isInteger(identity.outputVersion) || identity.outputVersion < 1) throw new Error('output version 必须是正整数');
   const productCode = safeFilenameSegment(identity.productCode, 'productCode');
-  const scriptId = safeFilenameSegment(identity.scriptStableId, '脚本稳定标识');
-  return `${productCode}-${dateInShanghai(identity.taskDate)}-${scriptId}-plan${identity.planSeq}-v${identity.outputVersion}`;
+  return `成片-${productCode}-${dateInShanghai(identity.taskDate)}-${String(identity.planSeq).padStart(2, '0')}`;
 }
 
 /**
@@ -141,14 +143,17 @@ export function reserveBatchExportTarget(input: BatchExportIdentity & { storageR
   assertSafePathSegment(input.batchId, '批次标识');
   const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
   const baseName = buildBaseName(input);
-  const relativeDir = path.join('projects', input.projectId, '批量成片', input.batchId);
+  // 与单条模式同一个成品目录:一个项目的成片(不论单条还是批量)集中存放。
+  // 重名由下面的占位循环 + .lock 独占创建保证不会互相覆盖。
+  const relativeDir = path.join('projects', input.projectId, '成片');
   const exportDir = ensureDirectory(storageRoot, relativeDir);
 
   for (let exportSequence = 1; exportSequence < 100_000; exportSequence += 1) {
-    const sequenceSuffix = `-export${exportSequence}`;
+    // 首次导出不带后缀;重复导出同一条成片才往后排 -02、-03(与单条一致)
+    const sequenceSuffix = exportSequence === 1 ? '' : `-${String(exportSequence).padStart(2, '0')}`;
     const candidateBase = `${baseName}${sequenceSuffix}`;
     const videoFilename = `${candidateBase}.mp4`;
-    const coverFilename = `${candidateBase}.jpg`;
+    const coverFilename = `${candidateBase}-封面.jpg`;
     const reservationFilename = `.${candidateBase}.publish.lock`;
     const videoAbsolutePath = path.join(exportDir, videoFilename);
     const coverAbsolutePath = path.join(exportDir, coverFilename);

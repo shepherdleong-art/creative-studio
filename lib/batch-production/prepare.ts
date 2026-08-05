@@ -70,7 +70,8 @@ export interface PrepareAssetView {
 }
 
 export interface BatchPreparationResult {
-  project: { id: string; name: string };
+  /** productCode 参与正式导出的文件名,为空时批量导出会被服务端拒绝 */
+  project: { id: string; name: string; productCode: string };
   scripts: PrepareScriptView[];
   assets: PrepareAssetView[];
   /** 单条模块 4 产物登记失败等非致命问题,逐条说明,不阻塞整体展示 */
@@ -111,8 +112,8 @@ export async function prepareBatchProductionInputs(
   projectId: string,
 ): Promise<BatchPreparationResult> {
   const project = db.prepare(`
-    SELECT id, name FROM projects WHERE id = ?
-  `).get(projectId) as { id: string; name: string } | undefined;
+    SELECT id, name, productCode FROM projects WHERE id = ?
+  `).get(projectId) as { id: string; name: string; productCode: string | null } | undefined;
   if (!project) {
     throw new Error('项目不存在');
   }
@@ -189,7 +190,7 @@ export async function prepareBatchProductionInputs(
   });
 
   return {
-    project: { id: project.id, name: project.name },
+    project: { id: project.id, name: project.name, productCode: project.productCode ?? '' },
     scripts,
     assets: assetViews,
     warnings,

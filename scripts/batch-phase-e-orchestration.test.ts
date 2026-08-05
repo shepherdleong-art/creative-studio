@@ -30,7 +30,7 @@ try {
   const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
   db.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '');
+    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE TABLE shot_sets (
       id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL,
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
@@ -40,7 +40,7 @@ try {
       inputSnapshot TEXT NOT NULL, outputJson TEXT NOT NULL, createdAt TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
     );
-    INSERT INTO projects (id, name, productCode) VALUES ('project-1', '测试项目', 'SKU/E');
+    INSERT INTO projects (id, name, productCode, createdAt) VALUES ('project-1', '测试项目', 'SKU/E', '2026-08-03T00:00:00.000Z');
   `);
   const ready = await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
   assert.notEqual(ready.state, 'compatibility_only');
@@ -279,8 +279,9 @@ try {
   const latestFormalVideo = resolveBatchOutputMedia(db, 'project-1', batchId, publishPlanId, 'video', 'artifact', storageRoot);
   const latestFormalCover = resolveBatchOutputMedia(db, 'project-1', batchId, publishPlanId, 'cover', 'artifact', storageRoot);
   assert.equal(latestFormalVideo.absolutePath, path.join(storageRoot, secondPublish.items[0]!.videoRelativePath!));
+  // 命名合约:封面比视频多一个「-封面」后缀,去掉后必须落到同一个发布序号
   assert.equal(
-    latestFormalCover.absolutePath.replace(/\.jpg$/u, ''),
+    latestFormalCover.absolutePath.replace(/-封面\.jpg$/u, ''),
     latestFormalVideo.absolutePath.replace(/\.mp4$/u, ''),
     '当前视频必须精确解析到同一发布序号的配对封面',
   );
