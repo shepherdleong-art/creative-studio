@@ -9,6 +9,16 @@ import {
   type CompanyProviderRuntimeStatus,
 } from '../lib/company-provider-runtime.ts';
 
+const COS_ENV_KEYS = [
+  'CREATIVE_STUDIO_COS_SECRET_ID',
+  'CREATIVE_STUDIO_COS_SECRET_KEY',
+  'CREATIVE_STUDIO_COS_DOMAIN',
+];
+
+function clearCosEnv(): void {
+  for (const key of COS_ENV_KEYS) delete process.env[key];
+}
+
 function makeRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-company-provider-'));
   fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
@@ -42,7 +52,6 @@ test('未配置公司运行环境时不探测网络', async () => {
 
     assert.equal(status.status, 'not_configured');
     assert.equal(status.proxyAvailable, false);
-    assert.equal(status.tunnelAvailable, false);
     assert.equal(calls, 0);
     assertSafeStatus(status);
   } finally {
@@ -65,21 +74,17 @@ test('已配置但没有 stack 状态时报告 stopped 且不探测网络', asyn
 
     assert.equal(status.status, 'stopped');
     assert.equal(status.proxyAvailable, false);
-    assert.equal(status.tunnelAvailable, false);
     assert.equal(calls, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('LiteLLM loop回健康且有隧道状态时报告 ready，但不回传隧道地址', async () => {
+test('LiteLLM 健康时报告 ready，只访问本机 loopback 地址', async () => {
   const root = makeRoot();
   writeConfiguredRoot(root, {
-    tunnelUrl: 'https://fixture.trycloudflare.com',
-    tunnelEngine: 'cloudflared',
     startedAt: '2026-08-04T12:00:00',
     litellmPid: 101,
-    cloudflaredPid: 102,
   });
   const requests: Array<{ input: string; signal?: AbortSignal }> = [];
   try {
@@ -94,8 +99,6 @@ test('LiteLLM loop回健康且有隧道状态时报告 ready，但不回传隧�
 
     assert.equal(status.status, 'ready');
     assert.equal(status.proxyAvailable, true);
-    assert.equal(status.tunnelAvailable, true);
-    assert.equal(status.tunnelEngine, 'cloudflared');
     assert.equal(status.startedAt, '2026-08-04T12:00:00');
     assert.deepEqual(requests.map(({ input }) => input), [COMPANY_PROVIDER_HEALTH_URL]);
     assertSafeStatus(status);
@@ -107,11 +110,8 @@ test('LiteLLM loop回健康且有隧道状态时报告 ready，但不回传隧�
 test('受控状态指定合法端口时仍只访问对应的本机 LiteLLM 地址', async () => {
   const root = makeRoot();
   writeConfiguredRoot(root, {
-    tunnelUrl: 'https://fixture.trycloudflare.com',
-    tunnelEngine: 'cloudflared',
     proxyPort: 4100,
     litellmPid: 101,
-    cloudflaredPid: 102,
   });
   let requested = '';
   try {
@@ -132,14 +132,9 @@ test('受控状态指定合法端口时仍只访问对应的本机 LiteLLM 地�
   }
 });
 
-test('LiteLLM 健康检查失败时报告 unavailable 并保留脱敏的隧道可用性', async () => {
+test('LiteLLM 健康检查失败时报告 unavailable', async () => {
   const root = makeRoot();
-  writeConfiguredRoot(root, {
-    tunnelUrl: 'https://fixture.run.pinggy-free.link',
-    tunnelEngine: 'pinggy',
-    litellmPid: 101,
-    pinggyPid: 102,
-  });
+  writeConfiguredRoot(root, { litellmPid: 101 });
   try {
     const status = await inspectCompanyProviderRuntime({
       root,
@@ -149,8 +144,6 @@ test('LiteLLM 健康检查失败时报告 unavailable 并保留脱敏的隧道�
 
     assert.equal(status.status, 'unavailable');
     assert.equal(status.proxyAvailable, false);
-    assert.equal(status.tunnelAvailable, true);
-    assert.equal(status.tunnelEngine, 'pinggy');
     assert.doesNotMatch(status.reason, /secret|example\.invalid/);
     assertSafeStatus(status);
   } finally {
@@ -160,12 +153,7 @@ test('LiteLLM 健康检查失败时报告 unavailable 并保留脱敏的隧道�
 
 test('LiteLLM liveliness 只有 200 才算健康', async () => {
   const root = makeRoot();
-  writeConfiguredRoot(root, {
-    tunnelUrl: 'https://fixture.trycloudflare.com',
-    tunnelEngine: 'cloudflared',
-    litellmPid: 101,
-    cloudflaredPid: 102,
-  });
+  writeConfiguredRoot(root, { litellmPid: 101 });
   try {
     const status = await inspectCompanyProviderRuntime({
       root,
@@ -175,7 +163,6 @@ test('LiteLLM liveliness 只有 200 才算健康', async () => {
 
     assert.equal(status.status, 'unavailable');
     assert.equal(status.proxyAvailable, false);
-    assert.equal(status.tunnelAvailable, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -183,12 +170,7 @@ test('LiteLLM liveliness 只有 200 才算健康', async () => {
 
 test('健康检查超时只访问固定 loopback 地址并报告 unavailable', async () => {
   const root = makeRoot();
-  writeConfiguredRoot(root, {
-    tunnelUrl: 'https://fixture.trycloudflare.com',
-    tunnelEngine: 'cloudflared',
-    litellmPid: 101,
-    cloudflaredPid: 102,
-  });
+  writeConfiguredRoot(root, { litellmPid: 101 });
   let requested = '';
   try {
     const status = await inspectCompanyProviderRuntime({
@@ -210,71 +192,18 @@ test('健康检查超时只访问固定 loopback 地址并报告 unavailable', a
   }
 });
 
-test('没有受控隧道状态时不会把 LiteLLM 健康误报为 ready', async () => {
+test('LiteLLM 进程已退出时不会把陈旧 stack 状态误报为 ready', async () => {
   const root = makeRoot();
-  writeConfiguredRoot(root, {
-    tunnelEngine: 'cloudflared',
-    litellmPid: 101,
-    cloudflaredPid: 102,
-  });
+  writeConfiguredRoot(root, { litellmPid: 101 });
   try {
     const status = await inspectCompanyProviderRuntime({
       root,
-      processCheck: processIsAlive,
+      processCheck: (pid) => pid !== 101,
       fetchImpl: async () => new Response('ok', { status: 200 }),
     });
 
     assert.equal(status.status, 'unavailable');
-    assert.equal(status.proxyAvailable, true);
-    assert.equal(status.tunnelAvailable, false);
-    assert.match(status.reason, /隧道/);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('隧道进程已退出时不会把陈旧 stack 状态误报为 ready', async () => {
-  const root = makeRoot();
-  writeConfiguredRoot(root, {
-    tunnelUrl: 'https://fixture.trycloudflare.com',
-    tunnelEngine: 'cloudflared',
-    litellmPid: 101,
-    cloudflaredPid: 102,
-  });
-  try {
-    const status = await inspectCompanyProviderRuntime({
-      root,
-      processCheck: (pid) => pid === 101,
-      fetchImpl: async () => new Response('ok', { status: 200 }),
-    });
-
-    assert.equal(status.status, 'unavailable');
-    assert.equal(status.proxyAvailable, true);
-    assert.equal(status.tunnelAvailable, false);
-    assert.match(status.reason, /隧道/);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('非受控 HTTPS 域名不能成为媒体传输隧道', async () => {
-  const root = makeRoot();
-  writeConfiguredRoot(root, {
-    tunnelUrl: 'https://example.invalid/looks-valid',
-    tunnelEngine: 'cloudflared',
-    litellmPid: 101,
-    cloudflaredPid: 102,
-  });
-  try {
-    const status = await inspectCompanyProviderRuntime({
-      root,
-      processCheck: processIsAlive,
-      fetchImpl: async () => new Response('ok', { status: 200 }),
-    });
-
-    assert.equal(status.status, 'unavailable');
-    assert.equal(status.proxyAvailable, true);
-    assert.equal(status.tunnelAvailable, false);
+    assert.equal(status.proxyAvailable, false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -283,7 +212,7 @@ test('非受控 HTTPS 域名不能成为媒体传输隧道', async () => {
 test('损坏的 stack 状态不泄露原始解析错误', async () => {
   const root = makeRoot();
   fs.writeFileSync(path.join(root, 'config.yaml'), 'model_list: []\n', 'utf8');
-  fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), '{"tunnelUrl":"secret\n', 'utf8');
+  fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), '{"litellmPid":101\n', 'utf8');
   let calls = 0;
   try {
     const status = await inspectCompanyProviderRuntime({
@@ -296,10 +225,39 @@ test('损坏的 stack 状态不泄露原始解析错误', async () => {
 
     assert.equal(status.status, 'unavailable');
     assert.equal(status.proxyAvailable, false);
-    assert.equal(status.tunnelAvailable, false);
     assert.equal(calls, 0);
     assert.doesNotMatch(status.reason, /SyntaxError|secret/);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cosConfigured 反映 CREATIVE_STUDIO_COS_* 是否配置，不影响 ready 判定', async () => {
+  const root = makeRoot();
+  writeConfiguredRoot(root, { litellmPid: 101 });
+  const savedEnv = { ...process.env };
+  try {
+    clearCosEnv();
+    const withoutCos = await inspectCompanyProviderRuntime({
+      root,
+      processCheck: processIsAlive,
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+    });
+    assert.equal(withoutCos.status, 'ready');
+    assert.equal(withoutCos.cosConfigured, false);
+
+    process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'id';
+    process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'key';
+    process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.example.com';
+    const withCos = await inspectCompanyProviderRuntime({
+      root,
+      processCheck: processIsAlive,
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+    });
+    assert.equal(withCos.status, 'ready');
+    assert.equal(withCos.cosConfigured, true);
+  } finally {
+    process.env = savedEnv;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

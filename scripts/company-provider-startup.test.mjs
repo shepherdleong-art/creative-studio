@@ -23,16 +23,14 @@ test('Windows 启动器把公司 sidecar 失败降级为警告并继续启动工
   assert.match(companyBlock, /start-stack\.ps1'\)/);
   assert.match(companyBlock, /公司网关组件启动失败，继续启动工作台/);
   assert.doesNotMatch(companyBlock, /exit\s+1/);
-  assert.match(companyBlock, /ConvertFrom-Json[\s\S]*?catch\s*\{/);
-  assert.match(companyBlock, /公司网关状态无效，正在清理 sidecar 并继续启动工作台/);
+  assert.match(companyBlock, /公司网关状态文件缺失，正在清理 sidecar 并继续启动工作台/);
   assert.match(companyBlock, /stop-stack\.ps1/);
-  assert.match(companyBlock, /trycloudflare/);
-  assert.match(companyBlock, /pinggy-free/);
+  assert.doesNotMatch(companyBlock, /cloudflared|pinggy|trycloudflare/i);
   assert.match(companyBlock, /公司网关组件不完整，正在清理旧 sidecar 状态并继续启动工作台/);
   assert.match(startWindows, /npm\.cmd run dev/);
 });
 
-test('start-stack 在失败时清理本轮受控状态文件，避免残留隧道地址', () => {
+test('start-stack 在失败时清理本轮受控状态文件，避免残留 sidecar 状态', () => {
   assert.match(startStack, /\$stackFile\s*=\s*Join-Path\s+\$RunDir\s+'stack\.json'/);
   assert.match(startStack, /Remove-Item\s+\$stackFile[^\n]*-Force/);
   assert.match(startStack, /catch\s*\{[\s\S]*?Remove-Item\s+\$stackFile/);
@@ -48,7 +46,7 @@ test('-SkipApp 只要求公司 sidecar 文件，不把 standalone app 当成 sid
   assert.ok(portCheckStart > requiredFilesStart, '必需文件列表位置异常');
   const requiredFilesBlock = startStack.slice(requiredFilesStart, portCheckStart);
   assert.match(requiredFilesBlock, /\$litellmExe/);
-  assert.match(requiredFilesBlock, /\$cloudflaredExe/);
+  assert.doesNotMatch(requiredFilesBlock, /cloudflared/i);
   assert.match(requiredFilesBlock, /config\.yaml/);
   assert.match(requiredFilesBlock, /if \(-not \$SkipApp\)/);
   assert.match(requiredFilesBlock, /\$nodeExe/);
@@ -57,7 +55,6 @@ test('-SkipApp 只要求公司 sidecar 文件，不把 standalone app 当成 sid
 
 test('启动脚本健康检查只使用本机 LiteLLM，并且状态文件不含认证密钥', () => {
   assert.match(startStack, /http:\/\/127\.0\.0\.1:\$ProxyPort\/health\/liveliness/);
-  assert.match(startStack, /tunnelUrl/);
   assert.match(startStack, /startedAt/);
   assert.doesNotMatch(startStack, /started\.(?:apiKey|masterKey)|started\[['"](?:apiKey|masterKey)['"]\]/);
 });

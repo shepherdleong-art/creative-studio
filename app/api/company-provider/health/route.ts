@@ -6,9 +6,8 @@ const FALLBACK_STATUS = {
   status: 'unavailable' as const,
   reason: '公司供应商状态暂时不可用',
   proxyAvailable: false,
-  tunnelAvailable: false,
+  cosConfigured: false,
   startedAt: null,
-  tunnelEngine: null,
 };
 
 /** Read-only local runtime status; it never starts a process or calls a model. */

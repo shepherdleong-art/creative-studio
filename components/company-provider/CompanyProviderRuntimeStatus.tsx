@@ -22,9 +22,8 @@ const EMPTY_STATUS: RuntimeStatus = {
   status: 'unavailable',
   reason: '公司供应商状态暂时不可用',
   proxyAvailable: false,
-  tunnelAvailable: false,
+  cosConfigured: false,
   startedAt: null,
-  tunnelEngine: null,
 };
 
 async function fetchRuntimeStatus(signal?: AbortSignal): Promise<RuntimeStatus> {
@@ -104,14 +103,11 @@ export default function CompanyProviderRuntimeStatus() {
           </span>
         </div>
         <div>
-          <span className="text-ink-tertiary">媒体传输隧道：</span>
-          <span className={current.tunnelAvailable ? 'text-ok' : 'text-ink-tertiary'}>
-            {current.tunnelAvailable ? '可用' : '不可用'}
+          <span className="text-ink-tertiary">参考图公网中转（COS）：</span>
+          <span className={current.cosConfigured ? 'text-ok' : 'text-ink-tertiary'}>
+            {current.cosConfigured ? '已配置' : '未配置'}
           </span>
         </div>
-        {current.tunnelEngine && (
-          <div><span className="text-ink-tertiary">隧道引擎：</span>{current.tunnelEngine}</div>
-        )}
         {current.startedAt && (
           <div><span className="text-ink-tertiary">启动时间：</span>{current.startedAt}</div>
         )}
