@@ -1,4 +1,4 @@
-﻿# 一键停止：关闭 Creative Studio app、litellm 代理、cloudflared 隧道
+﻿# 一键停止：关闭 Creative Studio app、litellm 代理
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 
@@ -12,7 +12,7 @@ $appPort = if ($stack.appPort) { [int]$stack.appPort } else { 3000 }
 $proxyPort = if ($stack.proxyPort) { [int]$stack.proxyPort } else { 4000 }
 
 # ── 1. app：先走优雅停机端点，再按进程特征兜底 ──
-Write-Host '[1/3] 停止 Creative Studio...'
+Write-Host '[1/2] 停止 Creative Studio...'
 try {
   Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$appPort/api/shutdown" -TimeoutSec 5 | Out-Null
   Start-Sleep -Seconds 2
@@ -22,17 +22,10 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyCon
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 # ── 2. litellm 代理：按端口属主精确停止 ──
-Write-Host '[2/3] 停止 litellm 代理...'
+Write-Host '[2/2] 停止 litellm 代理...'
 Get-NetTCPConnection -LocalPort $proxyPort -State Listen -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty OwningProcess -Unique |
   ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-
-# ── 3. 隧道（cloudflared / pinggy）──
-Write-Host '[3/3] 停止隧道...'
-Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.CommandLine -match 'pinggy' } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 if (Test-Path $stackFile) { Remove-Item $stackFile -Force -ErrorAction SilentlyContinue }
 Write-Host '已全部停止。'

@@ -8,6 +8,7 @@ import {
   downloadGatewayTaskImage,
   summarizeGatewayTaskResponse,
 } from '../lib/providers/gateway-task-image.ts';
+import { _resetCosMediaCacheForTest } from '../lib/cos-media.ts';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-task-image-'));
 const inputPath = path.join(tmpDir, 'input.png');
@@ -167,8 +168,43 @@ try {
   );
   assert.equal(capturedBody?.size, '2304x1728');
   assert.equal(capturedBody?.response_format, undefined);
+
+  // 配置 COS 后：images 使用 COS 预签名 URL（mock 对 HEAD 一律 200，视为对象已存在，跳过 PUT）
+  process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'test-cos-id';
+  process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'test-cos-key';
+  process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.example.com';
+  _resetCosMediaCacheForTest();
+  await submitGatewayTaskImage(
+    {
+      model: 'image2-medium',
+      prompt: '把产品放到大理石台面上',
+      inputImagePath: inputPath,
+      inputMimeType: 'image/png',
+      referenceImagePaths: [refPath],
+      referenceMimeTypes: ['image/png'],
+      size: '1024x1024',
+      quality: 'high',
+    },
+    'gateway-key',
+    'https://llm-gateway.example.com',
+  );
+  const cosImages = capturedBody?.images as string[];
+  assert.equal(cosImages.length, 2);
+  for (const imageRef of cosImages) {
+    assert.ok(imageRef.startsWith('https://cos.example.com/ref-images/'), imageRef);
+    assert.match(imageRef, /q-sign-algorithm=sha1/);
+    assert.match(imageRef, /q-signature=[0-9a-f]{40}/);
+  }
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+  delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
+  _resetCosMediaCacheForTest();
 } finally {
   globalThis.fetch = originalFetch;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+  delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
+  _resetCosMediaCacheForTest();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }
 

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { resolvePublicImageUrl } from '../local-image-url.ts';
+import { isCosMediaConfigured, tryUploadToCosAndSign } from '../cos-media.ts';
 import { companyImageCapsForModel, snapCompanyImageSize } from '../company-gateway-size.ts';
 import {
   normalizeGatewayResultUrl,
@@ -110,9 +111,18 @@ function fileToDataUrl(filePath: string, mimeType: string): string {
 
 /**
  * 网关上游（腾讯等）只接受真实 URL 且限制 ~8KB 长度，data URL 会被 400 拒绝。
- * 配置了 CREATIVE_STUDIO_PUBLIC_BASE_URL 时优先用本机 HTTP URL，否则回退 data URL。
+ * 优先上传腾讯云 COS 返回 24h 预签名 URL（配置 CREATIVE_STUDIO_COS_* 时）；
+ * COS 失败或未配置时回退 CREATIVE_STUDIO_PUBLIC_BASE_URL 本机 HTTP URL，最后退 data URL。
  */
-function toGatewayImageRef(filePath: string, mimeType: string): string {
+async function toGatewayImageRefAsync(filePath: string, mimeType: string): Promise<string> {
+  if (isCosMediaConfigured()) {
+    try {
+      const cosUrl = await tryUploadToCosAndSign(filePath, mimeType);
+      if (cosUrl) return cosUrl;
+    } catch (error) {
+      console.warn('[cos-media] 参考图上传 COS 失败，回退本机 URL：', error instanceof Error ? error.message : error);
+    }
+  }
   return resolvePublicImageUrl(filePath) ?? fileToDataUrl(filePath, mimeType);
 }
 
@@ -150,10 +160,10 @@ export async function submitGatewayTaskImage(
   const imageUrls: string[] = [];
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
     imageUrls.push(
-      toGatewayImageRef(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png')
+      await toGatewayImageRefAsync(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png')
     );
   }
-  imageUrls.push(toGatewayImageRef(request.inputImagePath, request.inputMimeType));
+  imageUrls.push(await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType));
 
   let prompt = request.prompt;
   const shouldUseSubjectGuidance =

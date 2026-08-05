@@ -66,34 +66,24 @@ if ($needsInstall) {
 }
 
 # ── 公司网关联动：依赖就绪后再拉起可选 sidecar，失败不能阻塞工作台 ──
+# 参考图公网交付走腾讯云 COS（见 .env.local 的 CREATIVE_STUDIO_COS_*）；本机服务不得暴露到公网。
 $stackStarted = $false
 $hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
-                      (Test-Path (Join-Path $Root 'config.yaml')) -and
-                      (Test-Path (Join-Path $Root '.cache\cloudflared\cloudflared.exe'))
+                      (Test-Path (Join-Path $Root 'config.yaml'))
 if ($hasStackComponents) {
-  Write-Host '检测到公司网关组件，启动 litellm 代理与隧道（约半分钟）...'
+  Write-Host '检测到公司网关组件，启动 litellm 代理...'
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') -SkipApp
   if ($LASTEXITCODE -ne 0) {
     # 公司 sidecar 是可选运行环境；失败只禁用公司供应商，工作台和外部供应商照常启动。
     Write-Host '公司网关组件启动失败，继续启动工作台。' -ForegroundColor Yellow
   } else {
     $stackFile = Join-Path $Root 'storage\run\stack.json'
-    try {
-      if (-not (Test-Path $stackFile)) { throw '公司网关状态文件不存在' }
-      $stack = Get-Content $stackFile -Raw -Encoding UTF8 | ConvertFrom-Json
-      $tunnelUrl = [string]$stack.tunnelUrl
-      $tunnelEngine = [string]$stack.tunnelEngine
-      $isControlledTunnel = ($tunnelEngine -eq 'cloudflared' -and
-          $tunnelUrl -match '^https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com$') -or
-        ($tunnelEngine -eq 'pinggy' -and
-          $tunnelUrl -match '^https://[a-z0-9-]+\.(run\.pinggy-free\.link|free\.pinggy\.net)$')
-      if (-not $isControlledTunnel) { throw '公司网关状态不属于受控隧道' }
-      $env:CREATIVE_STUDIO_PUBLIC_BASE_URL = $tunnelUrl
+    if (Test-Path $stackFile) {
       $stackStarted = $true
-      Write-Host "参考图公网地址: $tunnelUrl ($tunnelEngine)"
-    } catch {
-      # 已成功启动却无法验证状态时，必须回收本轮 sidecar 后再降级启动工作台。
-      Write-Host '公司网关状态无效，正在清理 sidecar 并继续启动工作台。' -ForegroundColor Yellow
+      Write-Host '公司网关代理就绪: http://127.0.0.1:4000'
+    } else {
+      # 已报告成功却查不到状态文件时，必须回收本轮 sidecar 后再降级启动工作台。
+      Write-Host '公司网关状态文件缺失，正在清理 sidecar 并继续启动工作台。' -ForegroundColor Yellow
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
     }
   }
@@ -118,7 +108,7 @@ try {
 } finally {
   if ($stackStarted) {
     Write-Host ''
-    Write-Host '正在关闭 litellm 代理与隧道...'
+    Write-Host '正在关闭 litellm 代理...'
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
   }
 }
