@@ -856,4 +856,148 @@ function resolveNarrationPath(input: BatchRenderNarrationInput, storageRoot: str
   return filePath;
 }
 
+export interface BatchCoverRegenerationInput {
+  db: Database.Database;
+  projectId: string;
+  batchId: string;
+  planId: string;
+  /** 封面抽帧时间点(微秒),必须落在封面取材 clip 的原片区间内 */
+  timeUs: number;
+  storageRoot?: string;
+  dataRootPath?: string;
+  signal?: AbortSignal;
+}
+
+export interface BatchCoverRegenerationResult {
+  planId: string;
+  outputVersionId: string;
+  timeUs: number;
+  coverRelativePath: string;
+  coverChecksum: string;
+}
+
+/**
+ * 换封面(简化版,问题 6/8):改写当前成片版本 arrangement.cover.timeUs 后,
+ * 仍然从原片(第一镜头或显式封面 clip)按新时间点重新抽帧,复用同一套冻结
+ * 色彩管线。绝不从成片抽帧——成片不是 original-media,从成片取材会同时
+ * 打破 original-media-only 不变量与正式导出预检。
+ *
+ * 产物原子覆盖既有候选封面文件,并把最新渲染尝试的 coverChecksum 同步
+ * 更新,让工作区预览与正式导出的指纹校验保持一致;导出仍走 renderer 产物
+ * 的封面相对路径,发布链路无需改动。
+ */
+export async function regenerateBatchOutputCover(input: BatchCoverRegenerationInput): Promise<BatchCoverRegenerationResult> {
+  const { db, projectId, batchId, planId, timeUs } = input;
+  if (!Number.isSafeInteger(timeUs) || timeUs < 0) throw error('封面抽帧时间点必须是安全整数');
+  const signal = input.signal ?? new AbortController().signal;
+  const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
+  const dataRootPath = path.resolve(input.dataRootPath ?? dataRoot());
+
+  const lineage = db.prepare(`
+    SELECT p.batchVersionId, p.currentVersionId
+    FROM batch_output_plans p
+    JOIN batch_production_versions v ON v.id = p.batchVersionId
+    JOIN batch_productions b ON b.id = v.batchId
+    LEFT JOIN batch_output_versions o ON o.id = p.currentVersionId
+    WHERE p.id = ? AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
+  `).get(planId, batchId, projectId) as {
+    batchVersionId: string;
+    currentVersionId: string | null;
+  } | undefined;
+  if (!lineage) throw error('plan 不属于该批次');
+  if (!lineage.currentVersionId) throw error('当前成片版本还没有渲染候选,不能换封面');
+
+  // 解析并重新核验冻结谱系(原片完整指纹 + LUT),拿到封面取材 clip 与色彩快照。
+  const snapshot = await loadSnapshot({
+    db,
+    projectId,
+    batchId,
+    batchVersionId: lineage.batchVersionId,
+    planId,
+    outputVersionId: lineage.currentVersionId,
+    storageRoot,
+    dataRootPath,
+    signal,
+  });
+  const coverClip = snapshot.coverClip;
+  if (timeUs < coverClip.sourceStartUs || timeUs >= coverClip.sourceEndUs) {
+    throw error('封面冻结时间点不在第一镜头原片区间内');
+  }
+
+  // 1. 就地改写 arrangement.cover.timeUs(与 narration 就地升级同一套 json_set)。
+  db.prepare(`
+    UPDATE batch_output_versions
+    SET arrangementJson = json_set(arrangementJson, '$.cover.timeUs', ?)
+    WHERE id = ?
+  `).run(timeUs, lineage.currentVersionId);
+
+  // 2. 定位最新成功渲染候选的封面产物(工作区预览与导出都从这里取材)。
+  const candidate = db.prepare(`
+    SELECT a.id AS attemptId, a.resultJson
+    FROM batch_tasks t
+    JOIN batch_task_attempts a ON a.taskId = t.id AND a.attemptNumber = t.attemptCount
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+      AND t.targetKind = 'output_version' AND t.targetId = ? AND t.status = 'succeeded'
+      AND a.status = 'succeeded'
+    ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
+  `).get(projectId, batchId, lineage.currentVersionId) as {
+    attemptId: string;
+    resultJson: string | null;
+  } | undefined;
+  if (!candidate?.resultJson) throw error('当前成片版本没有可用的渲染候选');
+  const record = parseJson(candidate.resultJson, '渲染候选结果') as Record<string, unknown> | null;
+  const coverRelativePath = record && typeof record.coverRelativePath === 'string' ? record.coverRelativePath : '';
+  if (!coverRelativePath) throw error('渲染候选缺少封面产物路径');
+  let coverAbsolutePath: string;
+  try {
+    coverAbsolutePath = resolveStoragePath(storageRoot, coverRelativePath);
+    assertNoStorageSymlink(storageRoot, coverRelativePath);
+  } catch {
+    throw error('候选封面路径不安全');
+  }
+  const coverStat = fs.lstatSync(coverAbsolutePath);
+  if (coverStat.isSymbolicLink() || !coverStat.isFile()) throw error('候选封面文件缺失');
+
+  // 3. 从原片按新时间点抽帧,临时文件 + 原子覆盖候选封面。
+  const outputSize = BATCH_OUTPUT_PRESETS[coverClip.preset] ?? BATCH_OUTPUT_PRESETS['3:4'];
+  const coverTemp = `${coverAbsolutePath}.${crypto.randomUUID()}.tmp.jpg`;
+  try {
+    assertSignal(signal);
+    const colorFragments = buildBatchRenderColorFilterFragments({ colorSnapshot: coverClip.colorSnapshot, lutPath: coverClip.lutPath });
+    await runFfmpeg([
+      '-ss', (timeUs / 1_000_000).toFixed(6), '-i', coverClip.sourcePath,
+      '-frames:v', '1', '-vf', [
+        'fps=24', `scale=${outputSize.width}:${outputSize.height}:force_original_aspect_ratio=increase`,
+        `crop=${outputSize.width}:${outputSize.height}`, 'setsar=1', ...colorFragments, 'format=yuv420p',
+      ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
+    ], { signal });
+    assertSignal(signal);
+    const regeneratedStat = fs.lstatSync(coverTemp);
+    if (regeneratedStat.isSymbolicLink() || !regeneratedStat.isFile() || regeneratedStat.size <= 0) {
+      throw error('封面抽帧产物为空');
+    }
+    const coverChecksum = await computeFingerprintFromFile(coverTemp);
+    await fsp.rename(coverTemp, coverAbsolutePath);
+
+    // 4. 同步渲染尝试的封面指纹:导出发布时会按渲染结果里的 checksum 复核。
+    db.prepare(`
+      UPDATE batch_task_attempts
+      SET resultJson = json_set(resultJson, '$.coverChecksum', ?)
+      WHERE id = ?
+    `).run(coverChecksum, candidate.attemptId);
+
+    return {
+      planId,
+      outputVersionId: lineage.currentVersionId,
+      timeUs,
+      coverRelativePath,
+      coverChecksum,
+    };
+  } catch (caught) {
+    await fsp.unlink(coverTemp).catch(() => undefined);
+    if (signal.aborted) throw error('任务已中止');
+    throw caught;
+  }
+}
+
 export { normalizeArrangement as normalizeBatchRenderArrangement };

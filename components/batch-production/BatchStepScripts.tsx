@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
 import { BatchFrozenScriptCard } from './BatchInputSelectionCards';
+import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 
 export interface BatchTtsProviderView {
   id: string;
@@ -30,17 +31,6 @@ export interface BatchBgmTrackView {
 export interface BatchMusicSelectionDraft {
   mode: 'auto' | 'manual';
   trackIds: string[];
-}
-
-export interface BatchProgressView {
-  overallPercent: number;
-  elapsedSec: number;
-  stages: Array<{
-    label: string;
-    status: 'waiting' | 'running' | 'done' | 'failed';
-    detail?: string;
-    percent?: number;
-  }>;
 }
 
 export interface BatchStepScriptsProps {
@@ -69,7 +59,7 @@ export interface BatchStepScriptsProps {
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
   inputChangedWarning: boolean;
-  /** 开跑后的分阶段进度(锁定→配画面→口播→渲染→封面);未开跑时为 null */
+  /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下) */
   progress: BatchProgressView | null;
 }
 
@@ -612,48 +602,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         </div>
       )}
 
-      {progress && (
-        <section className="card space-y-3 p-5" aria-label="批量生产进度">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="font-semibold text-ink">生产进度</h3>
-              <p className="mt-1 text-xs text-ink-secondary">
-                已用时 {Math.floor(progress.elapsedSec / 60)} 分 {progress.elapsedSec % 60} 秒 · 刷新页面不丢失进度
-              </p>
-            </div>
-            <div className="w-40">
-              <div className="h-2 overflow-hidden rounded-full bg-surface-subtle" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.overallPercent * 100)}>
-                <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.round(progress.overallPercent * 100)}%` }} />
-              </div>
-              <p className="mt-1 text-right text-[11px] text-ink-tertiary">{Math.round(progress.overallPercent * 100)}%</p>
-            </div>
-          </div>
-          <ul className="space-y-1.5">
-            {progress.stages.map((stage) => (
-              <li key={stage.label} className="flex items-center gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
-                <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${
-                  stage.status === 'done' ? 'bg-ok/15 text-ok'
-                    : stage.status === 'failed' ? 'bg-fail/15 text-fail'
-                      : stage.status === 'running' ? 'bg-accent text-white'
-                        : 'bg-surface-subtle text-ink-tertiary'
-                }`}>
-                  {stage.status === 'done' ? '✓' : stage.status === 'failed' ? '!' : ''}
-                </span>
-                <span className={`flex-1 font-medium ${stage.status === 'running' ? 'text-accent' : stage.status === 'failed' ? 'text-fail' : stage.status === 'waiting' ? 'text-ink-tertiary' : 'text-ink'}`}>
-                  {stage.label}
-                </span>
-                {typeof stage.percent === 'number' && stage.status === 'running' && (
-                  <span className="shrink-0 text-ink-tertiary">{Math.round(stage.percent * 100)}%</span>
-                )}
-                <span className={`shrink-0 ${stage.status === 'failed' ? 'text-fail' : stage.status === 'waiting' ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>
-                  {stage.status === 'waiting' ? '等待' : stage.status === 'failed' ? '失败' : stage.status === 'running' ? '进行中' : '已完成'}
-                  {stage.detail ? ` · ${stage.detail}` : ''}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      {renderBgmSection()}
 
       {!frozen && (
         <section className="card space-y-4 p-5" aria-label="输出设置与开始">
@@ -661,7 +610,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
             <div>
               <h3 className="font-semibold text-ink">输出设置</h3>
               <p className="mt-1 text-sm text-ink-secondary">
-                画幅 {outputPreset.label}（顶栏统一设置）；背景音乐在下方卡片中设置。时长不提供修改 —— 脚本在第 3 步生成时已按档位约束字数。
+                画幅 {outputPreset.label}（顶栏统一设置）；背景音乐在上方卡片中设置。时长不提供修改 —— 脚本在第 3 步生成时已按档位约束字数。
               </p>
               {inputChangedWarning && (
                 <p className="mt-1 text-xs text-warn">输入已修改，重新确认后才会覆盖当前批次版本。</p>
@@ -700,7 +649,8 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
           )}
         </section>
       )}
-      {renderBgmSection()}
+      {/* 进度卡放在本步最末:BGM 是开跑前的输入,必须排在进度之上 */}
+      {progress && <BatchProductionProgressCard progress={progress} variant="full" />}
     </div>
   );
 }

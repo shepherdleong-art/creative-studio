@@ -422,7 +422,12 @@ export async function publishSelectedBatchOutputs(
       const arrangement = JSON.parse(row.arrangementJson) as {
         clips?: Array<{ assetId?: unknown }>;
         cover?: { assetId?: unknown };
+        review?: { decision?: unknown };
       };
+      // 审核门禁:正式导出只接受用户已标记「通过」的成片(权威的服务端单点判断)。
+      if (arrangement.review?.decision !== 'approved') {
+        throw new BatchDomainError('conflict', '该成片尚未审核通过,请先在检查页标记「通过」后再导出');
+      }
       const usedAssetIds = [...new Set([
         ...(Array.isArray(arrangement.clips) ? arrangement.clips.map(({ assetId }) => assetId) : []),
         arrangement.cover?.assetId,

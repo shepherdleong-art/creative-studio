@@ -399,6 +399,9 @@ try {
   assert.equal(thumbnailMetadata.format, 'jpeg', '缩略图必须是 JPEG');
   assert.equal(thumbnailMetadata.width, 960, '缩略图宽度必须稳定为 960');
   assert.equal(thumbnailMetadata.height, 540, '缩略图高度必须稳定为 540');
+  const thumbnailAgain = await media.materializeProjectAssetThumbnail(db, 'project-1', assetId);
+  assert.equal(thumbnailAgain.absolutePath, thumbnail.absolutePath, '缓存命中必须复用同一确定性缩略图');
+  assert.equal(thumbnailAgain.fingerprint, thumbnail.fingerprint, '缓存命中必须复用同一内容指纹');
   const preview = await media.resolveVerifiedProjectAssetMedia(db, 'project-1', assetId);
   await assert.rejects(
     () => media.resolveVerifiedProjectAssetMedia(db, 'project-2', assetId),

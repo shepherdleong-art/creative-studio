@@ -259,14 +259,93 @@ async function materializeThumbnail(
 }
 
 /**
+ * 缩略图确定性缓存探测:对每个来源做一次完整 SHA-256 内容核验(不能省——
+ * 省了就会在原片被替换后继续吐旧缩略图),但不跑 ffprobe、不做第二遍全量
+ * 哈希;命中已发布的缓存文件时直接返回。未命中返回 null,由调用方走完整
+ * 核验并生成。核验失败时的报错语义与 resolveVerifiedProjectAssetMedia 一致。
+ */
+async function resolvePublishedAssetThumbnail(
+  db: Database.Database,
+  projectId: string,
+  assetId: string,
+): Promise<MaterializedAssetThumbnail | null> {
+  const asset = getAsset(db, projectId, assetId);
+  if (!asset) throw new BatchDomainError('not_found', '素材不存在');
+  if (asset.status !== 'online') {
+    throw new BatchDomainError(
+      'conflict',
+      asset.status === 'archived' ? '素材已归档' : '素材来源离线,请先重新同步或定位原片',
+    );
+  }
+
+  const sources = listAssetSources(db, assetId);
+  let sawChanged = false;
+  let sawOffline = false;
+  for (const source of sources) {
+    let filePath: string;
+    try {
+      filePath = resolveSourceFilePath(source.locationJson);
+      assertRegularFile(filePath);
+    } catch {
+      sawOffline = true;
+      markSourceHealth(db, source, 'offline');
+      continue;
+    }
+
+    let fingerprint: string;
+    try {
+      fingerprint = await computeFileSha256(filePath);
+    } catch {
+      sawOffline = true;
+      markSourceHealth(db, source, 'offline');
+      continue;
+    }
+    if (asset.contentFingerprint !== `sha256:${fingerprint}`) {
+      sawChanged = true;
+      markSourceHealth(db, source, 'changed');
+      continue;
+    }
+
+    const relativePath = thumbnailRelativePath(projectId, assetId, fingerprint);
+    const absolutePath = assertNoStorageSymlink(storageRoot(), relativePath);
+    if (!absolutePath.startsWith(`${path.resolve(storageRoot())}${path.sep}`)) {
+      throw new Error('缩略图缓存路径越界');
+    }
+    if (fs.existsSync(absolutePath)) {
+      assertRegularFile(absolutePath);
+      markSourceHealth(db, source, 'healthy');
+      return { absolutePath, relativePath, fingerprint };
+    }
+    // 缓存键只由内容指纹决定:首个内容匹配的来源已确定唯一缓存路径,不存在
+    // “别的来源命中另一个缓存文件”的可能,直接回退到完整生成路径。
+    return null;
+  }
+
+  syncAssetStatusFromSources(db, assetId);
+  if (sawChanged) {
+    throw new BatchDomainError('conflict', '素材内容已变化,请重新登记素材');
+  }
+  if (sawOffline || sources.length === 0) {
+    throw new BatchDomainError('conflict', '素材来源离线或不可读,请重新定位原片');
+  }
+  throw new BatchDomainError('conflict', '素材没有可用来源');
+}
+
+/**
  * 生成受控、稳定身份的缩略图。缓存 key 只依赖项目/素材/完整指纹，临时
  * 文件原子发布，原片永远不被改写。
+ *
+ * 快速路径:确定性缓存已发布时,只做一次内容 SHA-256 核验(替换原片会得到
+ * 新指纹、落新缓存键),跳过 ffprobe 与第二遍全量哈希;未命中再走完整核验。
  */
 export async function materializeProjectAssetThumbnail(
   db: Database.Database,
   projectId: string,
   assetId: string,
 ): Promise<MaterializedAssetThumbnail> {
+  const published = await resolvePublishedAssetThumbnail(db, projectId, assetId);
+  if (published) return published;
+
   const source = await resolveVerifiedProjectAssetMedia(db, projectId, assetId);
   const relativePath = thumbnailRelativePath(projectId, assetId, source.fingerprint);
   const absolutePath = assertNoStorageSymlink(storageRoot(), relativePath);

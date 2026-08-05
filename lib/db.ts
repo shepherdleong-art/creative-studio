@@ -1,9 +1,9 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { CORE_DB_MIGRATIONS } from './db-migrations';
-import { dataRoot } from './data-root';
-import { initFinalEditSchema } from './final-edit/schema';
+import { CORE_DB_MIGRATIONS } from './db-migrations.ts';
+import { dataRoot } from './data-root.ts';
+import { initFinalEditSchema } from './final-edit/schema.ts';
 
 const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
 
@@ -27,7 +27,7 @@ export function getDb(): Database.Database {
   return db;
 }
 
-import { seedAllVideo } from './seed';
+import { seedAllVideo } from './seed.ts';
 
 function initTables(db: Database.Database) {
   db.exec(`
@@ -282,7 +282,7 @@ function initTables(db: Database.Database) {
       localVideoPath TEXT,
       filename TEXT,
       attempt INTEGER NOT NULL DEFAULT 0,
-      maxAttempts INTEGER NOT NULL DEFAULT 1,
+      maxAttempts INTEGER NOT NULL DEFAULT 2,
       errorMessage TEXT,
       startedAt TEXT,
       finishedAt TEXT,

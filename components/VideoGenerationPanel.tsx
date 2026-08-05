@@ -218,17 +218,20 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       if (data.jobs) {
         setVideoJobs(data.jobs);
         syncPreviewSelection(data.jobs);
-        // Auto-start video queue when pending jobs are detected
-        if (data.jobs.some((j: { status: string }) => j.status === 'pending')) {
+        // Auto-start video queue when pending jobs are detected; needs_check
+        // jobs are also resumed automatically (they hold a remote task_id and
+        // must not be left behind just because a poll window elapsed).
+        if (data.jobs.some((j: { status: string }) => j.status === 'pending' || j.status === 'needs_check')) {
           ensureVideoQueueRunning(projectId);
         }
       }
     } catch { /* ignore */ }
   };
 
-  // Poll video job status every 3s while any job is still active
+  // Poll video job status every 3s while any job is still active. needs_check
+  // is included: those jobs hold a remote task_id and the queue resumes them.
   const hasActiveVideoJobs = useMemo(
-    () => videoJobs.some((j) => j.status === 'pending' || j.status === 'running'),
+    () => videoJobs.some((j) => j.status === 'pending' || j.status === 'running' || j.status === 'needs_check'),
     [videoJobs]
   );
   useEffect(() => {

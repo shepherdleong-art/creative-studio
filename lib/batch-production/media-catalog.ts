@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, lstatSync } from 'node:fs';
+import { createReadStream, existsSync, lstatSync, type Stats } from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
@@ -48,6 +48,7 @@ export interface BatchAssetSourceRow {
   sourceKind: BatchAssetSourceKind;
   locationJson: string;
   health: BatchAssetSourceHealth;
+  lastVerifiedIdentityJson: string | null;
   createdAt: string;
 }
 
@@ -58,7 +59,52 @@ export interface BatchAssetSourceView {
   sourceKind: BatchAssetSourceKind;
   locationJson: BatchAssetSourceLocation;
   health: BatchAssetSourceHealth;
+  /** 最近一次完整核验时的文件身份 JSON(dev/ino/size/mtimeMs);未核验过为 null */
+  lastVerifiedIdentityJson: string | null;
   createdAt: string;
+}
+
+export interface FileStatIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+}
+
+/** 把文件身份序列化为可持久化的 JSON 字符串。 */
+export function statIdentityJson(stat: Stats): string {
+  return JSON.stringify({
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+  });
+}
+
+export function parseStatIdentityJson(value: string | null): FileStatIdentity | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (
+      typeof record.dev !== 'number' || typeof record.ino !== 'number'
+      || typeof record.size !== 'number' || typeof record.mtimeMs !== 'number'
+    ) return null;
+    return { dev: record.dev, ino: record.ino, size: record.size, mtimeMs: record.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/** 当前文件 stat 是否与持久化的核验身份一致(快速路径的核心判定)。 */
+export function statMatchesIdentityJson(stat: Stats, identityJson: string | null): boolean {
+  const expected = parseStatIdentityJson(identityJson);
+  if (!expected) return false;
+  return stat.dev === expected.dev
+    && stat.ino === expected.ino
+    && stat.size === expected.size
+    && stat.mtimeMs === expected.mtimeMs;
 }
 
 function nowIso(now?: () => Date): string {
@@ -276,6 +322,40 @@ export async function registerModule4Video(
   if (!shotSet) {
     throw new Error('视频任务的分镜组不属于当前项目');
   }
+
+  // P0-a 快速路径:同一视频任务已登记过 module4 来源,且来源仍健康、文件身份
+  // 与最近一次完整核验一致时直接复用既有素材身份,跳过 ffprobe 与全量哈希。
+  // 身份缺失/变化、来源健康异常都会落到下方的完整核验,行为与升级前一致。
+  const registered = db.prepare(`
+    SELECT s.id AS sourceId, s.assetId, s.locationJson, s.health, s.lastVerifiedIdentityJson, a.projectId, a.status
+    FROM batch_asset_sources s
+    JOIN batch_assets a ON a.id = s.assetId
+    WHERE s.sourceKind = 'module4'
+  `).all() as Array<{
+    sourceId: string;
+    assetId: string;
+    locationJson: string;
+    health: string;
+    lastVerifiedIdentityJson: string | null;
+    projectId: string;
+    status: string;
+  }>;
+  const existing = registered.find((entry) => {
+    const location = parseSourceLocation('module4', entry.locationJson);
+    return location.kind === 'module4' && location.videoJobId === row.id;
+  });
+  if (existing && existing.projectId === row.projectId && existing.status === 'online' && existing.health === 'healthy') {
+    try {
+      const filePath = resolveSourceFilePath(parseSourceLocation('module4', existing.locationJson));
+      const stat = lstatSync(filePath);
+      if (stat.isFile() && !stat.isSymbolicLink() && statMatchesIdentityJson(stat, existing.lastVerifiedIdentityJson)) {
+        return { assetId: existing.assetId, projectId: row.projectId };
+      }
+    } catch {
+      // 文件缺失或不可读:不命中快速路径,走完整核验(会如实报登记失败)。
+    }
+  }
+
   const absolutePath = resolveSafeStoragePath(row.localVideoPath);
   const media = await inspectVideoFile(absolutePath);
   const createdAt = nowIso();
@@ -293,6 +373,16 @@ export async function registerModule4Video(
     height: media.height,
     format: media.format ?? '',
   }, createdAt);
+  // 记录本次核验的文件身份,供后续 prepare 快速路径跳过重复 ffprobe 与哈希。
+  try {
+    const stat = lstatSync(absolutePath);
+    db.prepare(`
+      UPDATE batch_asset_sources SET lastVerifiedIdentityJson = ?
+      WHERE assetId = ? AND sourceKind = 'module4' AND locationJson = ?
+    `).run(statIdentityJson(stat), assetId, JSON.stringify(location));
+  } catch {
+    // 身份记录失败不阻塞登记本身;后续核验会回退到完整路径。
+  }
   return { assetId, projectId: row.projectId };
 }
 
@@ -374,14 +464,26 @@ export function listAssetSources(db: Database.Database, assetId: string): BatchA
     sourceKind: row.sourceKind,
     locationJson: parseSourceLocation(row.sourceKind, row.locationJson),
     health: row.health,
+    lastVerifiedIdentityJson: row.lastVerifiedIdentityJson ?? null,
     createdAt: row.createdAt,
   }));
+}
+
+/** 持久化某来源最近一次完整核验时的文件身份。 */
+function persistSourceIdentity(db: Database.Database, sourceId: string, stat: Stats): void {
+  db.prepare(`
+    UPDATE batch_asset_sources SET lastVerifiedIdentityJson = ? WHERE id = ?
+  `).run(statIdentityJson(stat), sourceId);
 }
 
 /**
  * 核验素材各来源的健康状态并聚合主素材可用状态:
  * 文件不存在标记 offline;内容与登记指纹不一致标记 changed(禁止冒充旧素材);
  * 至少一个来源 healthy 时素材可用,全部离线/变化时素材不可用。
+ *
+ * 快速路径:来源记录了最近一次完整核验的文件身份,且当前 stat(dev/ino/
+ * size/mtimeMs)与之完全一致时,信任上次核验结论,不再完整读盘计算 SHA-256;
+ * 身份缺失或不一致(文件被替换、改写过)才重新完整核验并刷新身份记录。
  */
 export async function verifyAssetSources(db: Database.Database, assetId: string): Promise<void> {
   const rows = listAssetSources(db, assetId);
@@ -392,9 +494,16 @@ export async function verifyAssetSources(db: Database.Database, assetId: string)
     let health: BatchAssetSourceHealth = 'offline';
     try {
       const filePath = resolveSourceFilePath(row.locationJson);
-      if (filePath && existsSync(filePath) && lstatSync(filePath).isFile()) {
-        const fingerprint = await computeFileSha256(filePath);
-        health = assetFingerprint === `sha256:${fingerprint}` ? 'healthy' : 'changed';
+      if (filePath && existsSync(filePath)) {
+        const stat = lstatSync(filePath);
+        if (stat.isFile() && !stat.isSymbolicLink()) {
+          if (statMatchesIdentityJson(stat, row.lastVerifiedIdentityJson)) {
+            continue;
+          }
+          const fingerprint = await computeFileSha256(filePath);
+          health = assetFingerprint === `sha256:${fingerprint}` ? 'healthy' : 'changed';
+          persistSourceIdentity(db, row.id, stat);
+        }
       }
     } catch {
       health = 'offline';

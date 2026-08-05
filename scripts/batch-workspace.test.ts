@@ -54,7 +54,7 @@ try {
   assert.equal(view.cards[3]?.status, 'needs_attention', '新版失败不能隐藏旧正式产物');
   assert.equal(view.cards[3]?.exportable, true);
   assert.match(view.cards[3]?.nextAction ?? '', /旧版仍可/);
-  assert.deepEqual(view.counts, { total: 4, exportable: 2, publishable: 0, processing: 0, needsAttention: 2, failed: 1 });
+  assert.deepEqual(view.counts, { total: 4, exportable: 2, publishable: 0, approved: 0, processing: 0, needsAttention: 2, failed: 1 });
   assert.equal(view.phase, 'review');
   db.prepare(`
     INSERT INTO batch_allocation_runs

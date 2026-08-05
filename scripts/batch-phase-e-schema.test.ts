@@ -18,11 +18,13 @@ try {
     now: () => new Date('2026-08-03T00:00:00.000Z'),
   });
   assert.equal(result.state, 'ready');
-  assert.equal(result.targetVersion, 21);
-  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 21);
+  assert.equal(result.targetVersion, 22);
+  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 22);
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_asset_analysis_requests'`).get());
   const requestColumns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{ name: string }>;
   assert.ok(requestColumns.some((column) => column.name === 'executionScope'));
+  const sourceColumns = db.prepare(`PRAGMA table_info(batch_asset_sources)`).all() as Array<{ name: string }>;
+  assert.ok(sourceColumns.some((column) => column.name === 'lastVerifiedIdentityJson'), '素材来源表必须有最近核验身份列');
   const scriptColumns = db.prepare(`PRAGMA table_info(batch_scripts)`).all() as Array<{ name: string; dflt_value: string | null }>;
   assert.equal(scriptColumns.find((column) => column.name === 'targetDurationSec')?.dflt_value, '15');
   assert.equal(scriptColumns.find((column) => column.name === 'narrationConfigJson')?.dflt_value, "'{}'");

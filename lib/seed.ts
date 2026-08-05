@@ -1,7 +1,7 @@
-import { getDb } from '@/lib/db';
-import { GPTGE_GPT_IMAGE_2_PROVIDER } from '@/lib/image-provider-presets';
-import { isPlaceholderValue } from '@/lib/video-auth';
-import { defaultScriptProviderConfigs } from '@/lib/script-providers/config';
+import { getDb } from './db.ts';
+import { GPTGE_GPT_IMAGE_2_PROVIDER } from './image-provider-presets.ts';
+import { isPlaceholderValue } from './video-auth.ts';
+import { defaultScriptProviderConfigs } from './script-providers/config.ts';
 import { v4 as uuidv4 } from 'uuid';
 
 export function seedProviders() {

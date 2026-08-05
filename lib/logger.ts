@@ -1,8 +1,8 @@
-import { getDb } from './db';
+import { getDb } from './db.ts';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
-import { dataRoot } from './data-root';
+import { dataRoot } from './data-root.ts';
 
 const LOG_DIR = path.join(dataRoot(), 'storage', 'logs');
 

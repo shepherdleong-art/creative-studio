@@ -379,6 +379,7 @@ export interface BatchTaskAttemptView {
   attemptNumber: number;
   status: BatchTaskAttemptStatus;
   progressJson: unknown;
+  resultJson: unknown;
   errorCode: string | null;
   errorMessage: string | null;
   startedAt: string;
@@ -443,7 +444,7 @@ export function getBatchTasksView(
     createdAt: string;
   }>;
   const attemptRows = db.prepare(`
-    SELECT id, taskId, attemptNumber, status, progressJson, errorCode, errorMessage, startedAt, finishedAt
+    SELECT id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, startedAt, finishedAt
     FROM batch_task_attempts WHERE taskId IN (${taskRows.map(() => '?').join(',') || "''"})
     ORDER BY attemptNumber
   `).all(...taskRows.map(({ id }) => id)) as Array<{
@@ -452,6 +453,7 @@ export function getBatchTasksView(
     attemptNumber: number;
     status: BatchTaskAttemptStatus;
     progressJson: string;
+    resultJson: string | null;
     errorCode: string | null;
     errorMessage: string | null;
     startedAt: string;
@@ -465,6 +467,7 @@ export function getBatchTasksView(
       attemptNumber: row.attemptNumber,
       status: row.status,
       progressJson: JSON.parse(row.progressJson),
+      resultJson: row.resultJson ? JSON.parse(row.resultJson) : null,
       errorCode: row.errorCode,
       errorMessage: row.errorMessage,
       startedAt: row.startedAt,

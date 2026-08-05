@@ -55,6 +55,24 @@ export function claimNextTask(
         AND t.expectedState = 'running'
         AND p.controlState = 'running'
         AND p.deletedAt IS NULL
+        -- 渲染闸门:render 必须等口播。plan 的脚本快照还有未成功的 narration
+        -- 任务(queued/running/failed)时,render 不可领取;cancelled 不挡
+        -- (旧版本被取代时取消的口播任务不该继续挡新版本的渲染);
+        -- scriptSnapshotId 为 NULL 的无口播计划不受闸门影响。
+        AND NOT EXISTS (
+          SELECT 1
+          FROM batch_output_versions ov
+          JOIN batch_output_plans op ON op.id = ov.planId
+          JOIN batch_tasks nt
+            ON nt.batchId = t.batchId
+           AND nt.workType = 'narration'
+           AND nt.targetKind = 'script_snapshot'
+           AND nt.targetId = op.scriptSnapshotId
+          WHERE t.workType = 'render'
+            AND t.targetKind = 'output_version'
+            AND ov.id = t.targetId
+            AND nt.status IN ('queued', 'running', 'failed')
+        )
       ORDER BY t.createdAt, t.id
       LIMIT 1
     `).get() as {
@@ -414,7 +432,7 @@ export function retryTask(
     if (task.controlState === 'stopped') {
       throw new BatchDomainError('conflict', '已停止批次中的任务是终态,不能重试');
     }
-    if (task.status !== 'failed') {
+    if (task.status !== 'failed' && !(task.status === 'succeeded' && task.targetKind === 'output_version')) {
       throw new BatchDomainError('conflict', '任务不是失败状态,不能重试');
     }
     db.prepare(`

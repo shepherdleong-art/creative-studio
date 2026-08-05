@@ -37,8 +37,17 @@ export default function BatchStepExport(props: BatchStepExportProps) {
     selectedBatchId,
   } = props;
   const { counts } = workspace;
-  const selectable = workspace.cards.filter(({ publishable }) => publishable);
+  // 可导出 = 技术上可发布 && 已审核通过(审核门禁是服务端单点判断,UI 同步过滤)
+  const selectable = workspace.cards.filter(({ publishable, approved }) => publishable && approved);
   const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
+
+  const awaitingReview = workspace.cards.filter(({ publishable, approved }) => publishable && !approved).length;
+  const silentCount = workspace.cards.filter((card) => card.candidate?.audioMode === 'silent_placeholder').length;
+  const blockedReasons = [...new Set(
+    workspace.cards
+      .filter((card) => !card.publishable && card.candidate?.audioMode !== 'silent_placeholder')
+      .flatMap((card) => card.blockers),
+  )];
 
   const mediaUrl = (card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover', source: 'candidate' | 'artifact') => (
     `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=${kind}&source=${source}`
@@ -67,8 +76,18 @@ export default function BatchStepExport(props: BatchStepExportProps) {
           </div>
         </div>
         {counts.publishable === 0 && counts.total > 0 && (
-          <p className="w-full text-xs text-warn">
-            当前没有可导出的成片 —— 成片需要配音、字幕、封面与背景音乐齐全。请在检查页确认渲染完成后重试。
+          <div className="w-full space-y-1 text-xs text-warn" role="status">
+            {silentCount > 0 && (
+              <p>{silentCount} 条成片的配音尚未完成或失败：请到「检查成片」确认配音状态，必要时重试配音。</p>
+            )}
+            {blockedReasons.length > 0 && (
+              <p>另有 {blockedReasons.length} 类阻塞原因：{blockedReasons.join('；')}</p>
+            )}
+          </div>
+        )}
+        {awaitingReview > 0 && (
+          <p className="w-full text-xs text-warn" role="status">
+            {awaitingReview} 条成片可发布但尚未审核：请到「检查成片」勾选后点「通过」，审核通过后才能导出。
           </p>
         )}
         <div className="grid gap-3 sm:grid-cols-5">
@@ -105,8 +124,8 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     type="checkbox"
                     aria-label={`选择成片 ${card.seq}`}
                     checked={selectedPlanIds.includes(card.planId)}
-                    disabled={!card.publishable}
-                    title={card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
+                    disabled={!card.publishable || !card.approved}
+                    title={card.publishable && !card.approved ? '这条成片尚未审核通过，请先到检查页点「通过」' : card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
                     onChange={(event) => onTogglePlan(card.planId, event.target.checked)}
                     className="mt-1 disabled:opacity-40"
                   />
@@ -115,8 +134,8 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     <strong className="mt-1 block truncate text-ink">{card.scriptTitle || '未命名脚本'}</strong>
                   </span>
                 </label>
-                <span className={`rounded-full px-2 py-1 text-[11px] ${card.publishable ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
-                  {card.publishable ? '可导出' : '不可导出'}
+                <span className={`rounded-full px-2 py-1 text-[11px] ${card.publishable && card.approved ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
+                  {card.publishable && card.approved ? '可导出' : card.publishable ? '待审核' : '不可导出'}
                 </span>
               </div>
               {mediaSource && (

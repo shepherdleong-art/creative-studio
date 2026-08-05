@@ -11,6 +11,14 @@ export const PROJECT_ASSET_MEDIA_HEADERS = {
 };
 
 /**
+ * 缩略图响应头:URL 已按内容指纹版本化(见 prepare 的 thumbnailUrl v 参数),
+ * 缓存文件确定性发布后不可变,浏览器可以放心长缓存。
+ */
+export const PROJECT_ASSET_THUMBNAIL_HEADERS = {
+  'Cache-Control': 'public, max-age=31536000, immutable',
+};
+
+/**
  * 以 ReadableStream 流式服务项目素材，不把整段视频读入内存。
  * Range 解析只接受单一 bytes=start-end 区间，非法范围返回 416。
  */

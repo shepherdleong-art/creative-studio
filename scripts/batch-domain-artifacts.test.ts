@@ -13,6 +13,8 @@ import {
 } from '../lib/batch-production/versions.ts';
 import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
 import { createOutputPlan, createOutputVersion } from '../lib/batch-production/plans.ts';
+import { createBatchTask, finishTaskAttempt, startTaskAttempt } from '../lib/batch-production/tasks.ts';
+import { resolveBatchOutputMedia } from '../lib/batch-production/output-media.ts';
 import {
   getArtifact,
   getCurrentArtifactId,
@@ -200,6 +202,41 @@ try {
     '当前成片不能指向封面',
   );
   assert.equal(getCurrentArtifactId(db, planId), artifact1);
+
+  // 候选口径(问题 3-C):同一 render 任务 attempt#1 成功、attempt#2 失败时,
+  // 候选仍解析出 attempt#1 的产物——重渲染期间与失败后,老版本始终可播放。
+  {
+    const renderTaskId = createBatchTask(db, 'project-1', {
+      batchId,
+      workType: 'render',
+      targetKind: 'output_version',
+      targetId: outputVersionId,
+      requestKey: `render:${outputVersionId}:candidate-fixture`,
+    });
+    const renderResult = {
+      projectId: 'project-1', batchId, batchVersionId: version1, planId,
+      outputVersionId, planSeq: 1, outputVersionNumber: 1,
+      videoRelativePath: 'batch-renders/candidate/video.mp4',
+      coverRelativePath: 'batch-renders/candidate/cover.jpg',
+      videoChecksum: 'sha256:video', coverChecksum: 'sha256:cover',
+      durationUs: 4_000_000, audioMode: 'narration', productionReady: true,
+    };
+    const attempt1 = startTaskAttempt(db, renderTaskId);
+    finishTaskAttempt(db, renderTaskId, attempt1, { status: 'succeeded', resultJson: renderResult });
+    // 重试:任务打回 queued 后产生失败的 attempt#2(任务汇总状态 failed)
+    const attempt2 = startTaskAttempt(db, renderTaskId);
+    finishTaskAttempt(db, renderTaskId, attempt2, { status: 'failed', errorMessage: '重渲染失败' });
+    assert.equal((db.prepare(`SELECT status, attemptCount FROM batch_tasks WHERE id = ?`).get(renderTaskId) as { status: string; attemptCount: number }).status, 'failed', '任务汇总状态应为 failed');
+    const candidateRoot = path.join(root, 'storage', 'batch-renders', 'candidate');
+    fs.mkdirSync(candidateRoot, { recursive: true });
+    fs.writeFileSync(path.join(candidateRoot, 'video.mp4'), Buffer.from('candidate-video'));
+    fs.writeFileSync(path.join(candidateRoot, 'cover.jpg'), Buffer.from('candidate-cover'));
+    const stillPlayable = resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'video', 'candidate', path.join(root, 'storage'));
+    assert.equal(stillPlayable.absolutePath, path.join(root, 'storage', 'batch-renders', 'candidate', 'video.mp4'), '重渲染失败后老候选仍可播放');
+    assert.equal(stillPlayable.productionReady, true, '老候选的 productionReady 校验不变');
+    const coverStill = resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'cover', 'candidate', path.join(root, 'storage'));
+    assert.equal(coverStill.absolutePath, path.join(root, 'storage', 'batch-renders', 'candidate', 'cover.jpg'), '封面候选同样回落到最近一次成功尝试');
+  }
 
   // --- 用户删除批次是逻辑删除:列表隐藏，但正式产物及谱系继续保留 ---
   deleteBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-01T12:00:00.000Z'));

@@ -114,13 +114,18 @@ export function resolveBatchOutputMedia(
   let productionReady = true;
   if (source === 'candidate') {
     if (!targetVersionId) throw new BatchDomainError('conflict', '成片计划还没有当前候选版本');
+    // 候选一律取"最近一次成功的尝试",不要求任务当前处于 succeeded:
+    // 重渲染(queued/running/failed)期间与之后,老版本仍然可播放、可预览。
     const attempt = db.prepare(`
       SELECT a.resultJson
       FROM batch_tasks t
-      JOIN batch_task_attempts a ON a.taskId = t.id
-        AND a.attemptNumber = t.attemptCount AND a.status = 'succeeded'
+      JOIN batch_task_attempts a ON a.id = (
+        SELECT id FROM batch_task_attempts
+        WHERE taskId = t.id AND status = 'succeeded'
+        ORDER BY attemptNumber DESC LIMIT 1
+      )
       WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-        AND t.targetKind = 'output_version' AND t.targetId = ? AND t.status = 'succeeded'
+        AND t.targetKind = 'output_version' AND t.targetId = ?
       ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
     `).get(projectId, batchId, targetVersionId) as { resultJson: string | null } | undefined;
     const candidate = parseCandidate(attempt?.resultJson ?? null, {

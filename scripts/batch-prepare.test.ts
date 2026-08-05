@@ -198,6 +198,40 @@ try {
     '重复进入准备区不新增来源行',
   );
 
+  // P0-a 快速路径:登记时持久化文件身份,stat 未变时重复 prepare 直接复用
+  // (不重复 ffprobe/全量哈希);stat 变化后重新完整核验并刷新身份。
+  const module4SourceRow = (() => {
+    const rows = db.prepare(`
+      SELECT s.id, s.lastVerifiedIdentityJson
+      FROM batch_asset_sources s
+      JOIN batch_assets a ON a.id = s.assetId
+      WHERE s.sourceKind = 'module4' AND a.projectId = 'project-1'
+    `).all() as Array<{ id: string; lastVerifiedIdentityJson: string | null }>;
+    assert.equal(rows.length, 1, 'project-1 的 module4 来源只有一行');
+    assert.ok(rows[0]?.lastVerifiedIdentityJson, '登记后必须持久化最近核验身份');
+    return rows[0]!;
+  })();
+  await prepareModule.prepareBatchProductionInputs(db, 'project-1');
+  const afterFastPath = db.prepare(`
+    SELECT lastVerifiedIdentityJson FROM batch_asset_sources WHERE id = ?
+  `).get(module4SourceRow.id) as { lastVerifiedIdentityJson: string | null };
+  assert.equal(
+    afterFastPath.lastVerifiedIdentityJson,
+    module4SourceRow.lastVerifiedIdentityJson,
+    'stat 未变时快速路径必须命中,不重写核验身份',
+  );
+  const touchedAt = new Date(Date.now() + 5_000);
+  fs.utimesSync(videoFile, touchedAt, touchedAt);
+  await prepareModule.prepareBatchProductionInputs(db, 'project-1');
+  const afterTouch = db.prepare(`
+    SELECT lastVerifiedIdentityJson FROM batch_asset_sources WHERE id = ?
+  `).get(module4SourceRow.id) as { lastVerifiedIdentityJson: string | null };
+  assert.notEqual(
+    afterTouch.lastVerifiedIdentityJson,
+    module4SourceRow.lastVerifiedIdentityJson,
+    'stat 变化后必须重新完整核验并刷新身份',
+  );
+
   // 不存在的项目
   await assert.rejects(
     () => prepareModule.prepareBatchProductionInputs(db, 'no-such-project'),

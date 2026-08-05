@@ -15,6 +15,7 @@ import {
   updateBatchAssetExclusionAndSchedule,
 } from '../lib/batch-production/phase-e.ts';
 import { resolveBatchOutputMedia } from '../lib/batch-production/output-media.ts';
+import { setBatchPlanReviews, readBatchPlanReview } from '../lib/batch-production/review.ts';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-production/scripts.ts';
 import { addAssetToPool, createBatchProduction, createBatchProductionVersion } from '../lib/batch-production/versions.ts';
@@ -250,6 +251,17 @@ try {
   );
   db.prepare(`UPDATE batch_task_attempts SET resultJson = ? WHERE taskId = ? AND attemptNumber = 1`).run(resultJson, renderTask.id);
 
+  // 审核门禁:未审核的成片即使渲染就绪也不能正式导出
+  const reviewBefore = readBatchPlanReview(db, 'project-1', batchId, publishPlanId);
+  assert.equal(reviewBefore.decision, null, '新渲染候选默认处于未审核态');
+  const unapprovedPublish = await publishSelectedBatchOutputs(db, 'project-1', batchId, [publishPlanId], { storageRoot });
+  assert.equal(unapprovedPublish.published, 0);
+  assert.equal(unapprovedPublish.skipped, 1);
+  assert.match(unapprovedPublish.items[0]?.reason ?? '', /审核/);
+  const reviewWrite = setBatchPlanReviews(db, 'project-1', batchId, { planIds: [publishPlanId], decision: 'approved' });
+  assert.deepEqual(reviewWrite.planIds, [publishPlanId]);
+  assert.equal(readBatchPlanReview(db, 'project-1', batchId, publishPlanId).decision, 'approved');
+
   const published = await publishSelectedBatchOutputs(db, 'project-1', batchId, [publishPlanId], { storageRoot });
   assert.equal(published.published, 1);
   assert.equal(published.skipped, 0);
@@ -324,6 +336,7 @@ try {
     '最新分配已阻塞时不得绕过门禁重复发布旧候选',
   );
 
+
   // 历史版本媒体(FR-S3-14):为计划新建 v2 并伪造成功渲染,可按 outputVersionId 读取任一版本
   const historicalPlanId = planIds[0];
   const historicalOldVersion = (db.prepare(`SELECT currentVersionId FROM batch_output_plans WHERE id = ?`).get(historicalPlanId) as { currentVersionId: string }).currentVersionId;
@@ -360,6 +373,24 @@ try {
     /版本不存在/,
     '指定不存在的版本必须拒绝',
   );
+
+  // 审核态随版本重置:返工换画面后新版本没有 review 字段,必须回到未审核态。
+  // 放在历史版本断言之后:恢复素材排除会重算联合分配,不应影响前面的发布断言。
+  updateBatchAssetExclusionAndSchedule(db, 'project-1', batchId, assetId, false);
+  setBatchPlanReviews(db, 'project-1', batchId, { planIds: [silentPlanId], decision: 'approved' });
+  assert.equal(readBatchPlanReview(db, 'project-1', batchId, silentPlanId).decision, 'approved');
+  const reviewResetVersion = reallocateAndScheduleOutput(db, 'project-1', batchId, silentPlanId, '审核返工换画面');
+  assert.ok(reviewResetVersion.outputVersionIds[silentPlanId], '返工必须建立新候选版本');
+  assert.equal(
+    readBatchPlanReview(db, 'project-1', batchId, silentPlanId).decision,
+    null,
+    '换画面后新候选必须回到未审核态,需要重新审核',
+  );
+  // 撤销审核:已通过的成片可以撤销回到未审核态
+  setBatchPlanReviews(db, 'project-1', batchId, { planIds: [publishPlanId], decision: 'approved' });
+  setBatchPlanReviews(db, 'project-1', batchId, { planIds: [publishPlanId], decision: 'cancelled' });
+  assert.equal(readBatchPlanReview(db, 'project-1', batchId, publishPlanId).decision, null, '撤销审核后回到未审核态');
+  setBatchPlanReviews(db, 'project-1', batchId, { planIds: [publishPlanId], decision: 'approved' });
 
   db.close();
   console.log('batch Phase E orchestration tests passed');

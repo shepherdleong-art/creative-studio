@@ -159,6 +159,11 @@ export async function prepareBatchProductionInputs(
     const current = getCurrentAssetAnalysis(db, projectId, row.id);
     const encodedProjectId = encodeURIComponent(projectId);
     const encodedAssetId = encodeURIComponent(row.id);
+    // 缩略图 URL 携带登记指纹前 16 位作为缓存版本:内容不变时 URL 稳定,
+    // 内容替换后指纹变化,URL 变化,配合 immutable 长缓存不会吐旧图。
+    const fingerprintVersion = (row.contentFingerprint.startsWith('sha256:')
+      ? row.contentFingerprint.slice('sha256:'.length)
+      : row.contentFingerprint).slice(0, 16);
     const media = JSON.parse(row.mediaJson) as PrepareAssetMedia;
     return {
       id: row.id,
@@ -166,7 +171,7 @@ export async function prepareBatchProductionInputs(
       mediaKind: row.mediaKind,
       currentAnalysisId: current?.status === 'ready' ? current.id : null,
       analysisLevel: current?.status === 'ready' ? current.analysisLevel : 'none',
-      thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}`,
+      thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion)}`,
       previewUrl: `/api/batch-production/assets/${encodedAssetId}/preview?projectId=${encodedProjectId}`,
       media,
       sources: listAssetSources(db, row.id).map((source) => {

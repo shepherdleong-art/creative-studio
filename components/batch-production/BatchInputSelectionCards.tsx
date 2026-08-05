@@ -30,6 +30,7 @@ export interface AssetPrepareTaskView {
     status: string;
     errorMessage: string | null;
     progressJson?: unknown;
+    resultJson?: unknown;
   }>;
 }
 
@@ -161,7 +162,6 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   onRequestProxy,
   proxyBusy,
   analysisTask,
-  onAnalyze,
   onAnalyzeContent,
   onRetryAnalyze,
   onResync,
@@ -178,7 +178,6 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   onRequestProxy?: () => void;
   proxyBusy?: boolean;
   analysisTask?: AssetPrepareTaskView;
-  onAnalyze?: () => void;
   onAnalyzeContent?: () => void;
   onRetryAnalyze?: () => void;
   onResync?: () => void;
@@ -200,12 +199,11 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     probing: '探测媒体',
     content_analyzing: '画面内容分析',
     verified: '媒体核验完成',
-    analyzed: '基础分析完成',
+    analyzed: '分析完成',
   };
   const taskStatus = analysisTask?.status;
   const taskError = analysisTask?.attempts?.at(-1)?.errorMessage;
   const analysisLevel = asset.analysisLevel ?? (asset.currentAnalysisId ? 'technical' : 'none');
-  const analysisLabel = analysisLevel === 'content' ? '内容分析可用' : '基础分析可用';
   const previewAvailable = Boolean(asset.status === 'online' && asset.previewUrl && onPreview);
 
   function renderAnalysisAction() {
@@ -220,7 +218,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     if (asset.currentAnalysisId) {
       return (
         <div className="mt-3 space-y-2 rounded-xl bg-ok/10 px-3 py-2 text-xs text-ink-secondary" role="status">
-          <p className="font-medium text-ok">{analysisLabel}</p>
+          <p className="font-medium text-ok">{analysisLevel === 'content' ? '内容分析可用' : '可参与分配，建议补内容分析'}</p>
           {analysisLevel !== 'content' && (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p>当前只有媒体参数；内容分析后才能按画面语义分配。</p>
@@ -247,19 +245,19 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     if (taskStatus === 'failed') {
       return (
         <div className="mt-3 space-y-2 rounded-xl bg-fail/10 px-3 py-2 text-xs text-fail" role="alert">
-          <p className="font-medium">基础分析失败</p>
+          <p className="font-medium">分析失败</p>
           <p>{taskError || '未能完成媒体探测，请重试。'}</p>
           {onRetryAnalyze && <button type="button" className="underline" disabled={analyzeBusy} onClick={onRetryAnalyze}>{analyzeBusy ? '重试中…' : '重试'}</button>}
         </div>
       );
     }
     if (taskStatus === 'succeeded') {
-      return <p className="mt-3 rounded-xl bg-accent/10 px-3 py-2 text-xs text-accent" role="status">基础分析已完成，正在同步素材状态…</p>;
+      return <p className="mt-3 rounded-xl bg-accent/10 px-3 py-2 text-xs text-accent" role="status">内容分析已完成，正在同步素材状态…</p>;
     }
     return (
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-warn-tint px-3 py-2 text-xs text-ink-secondary">
-        <span>尚未完成基础分析，暂不可选。</span>
-        {onAnalyze && <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={analyzeBusy} onClick={onAnalyze}>{analyzeBusy ? '分析中…' : '开始分析'}</button>}
+        <span>未分析，暂不可选。</span>
+        {onAnalyzeContent && <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={analyzeBusy} onClick={onAnalyzeContent}>{analyzeBusy ? '分析中…' : '开始内容分析'}</button>}
       </div>
     );
   }
@@ -320,7 +318,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
               <h3 className="mt-1 font-semibold text-ink">{displayName}</h3>
             </div>
             <span className={`rounded-full px-2 py-1 text-[11px] ${selectable ? 'bg-ok/10 text-ok' : 'bg-fail/10 text-fail'}`}>
-              {asset.status === 'online' ? (asset.currentAnalysisId ? analysisLabel : '待分析') : asset.status === 'archived' ? '已归档' : '离线'}
+              {asset.status === 'online' ? (analysisLevel === 'content' ? '内容分析可用' : '未内容分析') : asset.status === 'archived' ? '已归档' : '离线'}
             </span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-xs text-ink-secondary">

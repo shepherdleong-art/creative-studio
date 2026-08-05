@@ -260,6 +260,17 @@ try {
   reusedExecution.commit?.();
   assert.equal(synthesizeCalls.length, 1, '复用键范围内音频已存在时不得重复调用 TTS');
 
+  // 渲染闸门(问题 3-A)取代了"口播落账后自动补排重渲染"的事后补丁:
+  // 口播落账只升级 arrangement seam,不再创建任何 narration-upgrade 渲染任务,
+  // render 由领取端闸门在口播成功后自动放行。
+  {
+    const upgradeTasks = db.prepare(`
+      SELECT id FROM batch_tasks
+      WHERE workType = 'render' AND requestKey LIKE '%narration-upgrade%'
+    `).all() as Array<{ id: string }>;
+    assert.equal(upgradeTasks.length, 0, '口播落账不得再自动补排重渲染(领取端闸门负责顺序)');
+  }
+
   // 按脚本设置音色:第二份脚本用不同音色
   const scriptBId = createProjectScript(db, 'project-1', {
     sourceKind: 'script_draft',

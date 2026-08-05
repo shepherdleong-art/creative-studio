@@ -9,6 +9,7 @@ import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { computeFingerprintFromFile } from '../lib/batch-production/fingerprint.ts';
 import { resolveFfmpegPath, probeVideoMedia, runFfmpeg } from '../lib/ffmpeg.ts';
 import {
+  regenerateBatchOutputCover,
   renderBatchOutputVersion,
 } from '../lib/batch-production/batch-renderer.ts';
 
@@ -229,6 +230,59 @@ async function run(): Promise<void> {
     { id: 'aligned-1', sourceSegmentId: 'source-1', text: '本地对齐字幕', startUs: 0, endUs: 1_200_000 },
   ]);
   assert.equal(persistedNarrationResult.productionReady, true);
+
+  // 换封面(问题 6/8):改写 arrangement.cover.timeUs 后从原片重新抽帧,
+  // 同步渲染尝试的封面指纹;越界时间点必须拒绝且不产生半成品。
+  {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO batch_tasks (id, projectId, batchId, workType, targetKind, targetId, status, progressJson, attemptCount, createdAt, updatedAt)
+      VALUES ('render-task-cover', 'project-1', ?, 'render', 'output_version', ?, 'succeeded', '{}', 1, ?, ?)
+    `).run(ids.batchId, ids.outputVersionId, now, now);
+    db.prepare(`
+      INSERT INTO batch_task_attempts (id, taskId, attemptNumber, status, progressJson, resultJson, startedAt, finishedAt, createdAt)
+      VALUES ('attempt-cover', 'render-task-cover', 1, 'succeeded', '{}', ?, ?, ?, ?)
+    `).run(JSON.stringify({
+      projectId: 'project-1', batchId: ids.batchId, batchVersionId: ids.batchVersionId, planId: ids.planId,
+      outputVersionId: ids.outputVersionId, planSeq: 1, outputVersionNumber: 1,
+      videoRelativePath: persistedNarrationResult.videoRelativePath,
+      coverRelativePath: persistedNarrationResult.coverRelativePath,
+      videoChecksum: persistedNarrationResult.videoChecksum,
+      coverChecksum: persistedNarrationResult.coverChecksum,
+      durationUs: persistedNarrationResult.durationUs,
+      audioMode: 'narration', productionReady: true,
+    }), now, now, now);
+    const coverBefore = await computeFingerprintFromFile(persistedNarrationResult.coverAbsolutePath);
+    const regen = await regenerateBatchOutputCover({
+      db, projectId: 'project-1', batchId: ids.batchId, planId: ids.planId,
+      timeUs: 250_000, storageRoot, dataRootPath: dataRoot,
+    });
+    assert.equal(regen.coverRelativePath, persistedNarrationResult.coverRelativePath, '换封面必须原位更新候选封面产物');
+    assert.equal(
+      await computeFingerprintFromFile(persistedNarrationResult.coverAbsolutePath),
+      regen.coverChecksum,
+      '换封面后候选封面文件指纹必须与返回一致',
+    );
+    assert.notEqual(regen.coverChecksum, coverBefore, '换封面必须真的换成另一帧画面');
+    const arrangementAfterCover = JSON.parse(
+      (db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = ?`).get(ids.outputVersionId) as { arrangementJson: string }).arrangementJson,
+    );
+    assert.equal(arrangementAfterCover.cover.timeUs, 250_000, '换封面必须就地改写 cover.timeUs');
+    const attemptAfterCover = JSON.parse(
+      (db.prepare(`SELECT resultJson FROM batch_task_attempts WHERE id = 'attempt-cover'`).get() as { resultJson: string }).resultJson,
+    );
+    assert.equal(attemptAfterCover.coverChecksum, regen.coverChecksum, '渲染尝试的封面指纹必须同步,导出复核才能通过');
+    await assert.rejects(
+      regenerateBatchOutputCover({ db, projectId: 'project-1', batchId: ids.batchId, planId: ids.planId, timeUs: 1_500_000, storageRoot, dataRootPath: dataRoot }),
+      /原片区间/,
+      '越界封面时间点必须拒绝,不产生半成品',
+    );
+    await assert.rejects(
+      regenerateBatchOutputCover({ db, projectId: 'project-1', batchId: ids.batchId, planId: ids.planId, timeUs: 250_250.5, storageRoot, dataRootPath: dataRoot }),
+      /安全整数/,
+      '非整数时间点必须拒绝',
+    );
+  }
 
   // A changed source is rejected against the frozen content identity.
   fs.appendFileSync(videoPath, Buffer.from('changed'));

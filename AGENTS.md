@@ -11,6 +11,14 @@
 - UI 语言为中文。核心领域术语：项目（project）、场景图（scene image）、分镜（shot/storyboard）、脚本（script）、视频任务（video job）、成片剪辑（final edit）。
 - 许可证：GPL-3.0-only。
 
+## Sol + Luna 子代理协作
+
+- 主代理 Sol 负责理解需求、澄清边界、思考与拆解任务、协调执行，并对交付做独立最终审核；不得把 Luna 的完成声明直接当作最终验收。
+- 自定义代理 `luna_worker` 是本项目的默认执行代理。凡适合委派的实现、测试、机械修改、证据收集或只读核验，Sol 默认先拆成边界明确的任务交给 `luna_worker`；不适合并行或委派会增加冲突时，由 Sol 保持串行协调。
+- 生成执行代理时必须选择自定义 `luna_worker`，设置 `fork_turns="none"`，且不在生成调用中显式传入 `model` 或推理强度；模型、Max 推理强度与 `workspace-write` 沙箱统一由 `.codex/agents/luna_worker.toml` 提供。不要设置 `agents.default_subagent_model`。
+- 因为 `luna_worker` 不继承主线程历史，Sol 的任务说明必须自包含，至少写明目标、范围、相关路径、约束、验证方式和停止点；只读任务必须显式禁止修改文件与外部状态。
+- Luna 返回结果后，Sol 必须检查实际 diff 和工作树边界，按风险独立复跑必要验证，再由 Sol 给出最终审核结论与用户答复。
+
 ## 常用命令
 
 ```bash

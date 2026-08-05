@@ -970,6 +970,15 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         ON batch_task_attempts(taskId, attemptNumber);
     `,
   },
+  {
+    version: 22,
+    sql: `
+      -- 素材来源核验快速路径:记录最近一次完整核验时的文件身份(dev/ino/size/mtime),
+      -- 身份未变时 prepare 与缩略图端点信任上次核验结论,跳过重复的全量 SHA-256。
+      -- 旧行该列为 NULL,仍走完整核验并就地补齐。
+      ALTER TABLE batch_asset_sources ADD COLUMN lastVerifiedIdentityJson TEXT;
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
