@@ -1,19 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isCosMediaConfigured } from './cos-media.ts';
 
 export const COMPANY_PROVIDER_HEALTH_URL = 'http://127.0.0.1:4000/health/liveliness';
 export const COMPANY_PROVIDER_HEALTH_TIMEOUT_MS = 1500;
 
 export type CompanyProviderStatus = 'not_configured' | 'stopped' | 'unavailable' | 'ready';
-export type CompanyProviderTunnelEngine = 'cloudflared' | 'pinggy';
 
 export interface CompanyProviderRuntimeStatus {
   status: CompanyProviderStatus;
   reason: string;
   proxyAvailable: boolean;
-  tunnelAvailable: boolean;
+  /** 参考图公网中转（腾讯云 COS）是否已配置；未配置时图片任务回退本机 URL。 */
+  cosConfigured: boolean;
   startedAt: string | null;
-  tunnelEngine: CompanyProviderTunnelEngine | null;
 }
 
 export type CompanyProviderFetch = (
@@ -34,29 +34,22 @@ export interface InspectCompanyProviderRuntimeOptions {
 }
 
 type StackState = {
-  tunnelUrl?: unknown;
-  tunnelEngine?: unknown;
   startedAt?: unknown;
   proxyPort?: unknown;
   litellmPid?: unknown;
-  cloudflaredPid?: unknown;
-  pinggyPid?: unknown;
 };
-
-const SAFE_ENGINE_VALUES: ReadonlySet<CompanyProviderTunnelEngine> = new Set(['cloudflared', 'pinggy']);
 
 function result(
   status: CompanyProviderStatus,
   reason: string,
-  extras: Partial<Pick<CompanyProviderRuntimeStatus, 'proxyAvailable' | 'tunnelAvailable' | 'startedAt' | 'tunnelEngine'>> = {},
+  extras: Partial<Pick<CompanyProviderRuntimeStatus, 'proxyAvailable' | 'startedAt'>> = {},
 ): CompanyProviderRuntimeStatus {
   return {
     status,
     reason,
     proxyAvailable: extras.proxyAvailable ?? false,
-    tunnelAvailable: extras.tunnelAvailable ?? false,
+    cosConfigured: isCosMediaConfigured(),
     startedAt: extras.startedAt ?? null,
-    tunnelEngine: extras.tunnelEngine ?? null,
   };
 }
 
@@ -71,35 +64,6 @@ function readStackState(stackFile: string): StackState | null {
   } catch {
     return null;
   }
-}
-
-function isSafeTunnelUrl(value: unknown, engine: CompanyProviderTunnelEngine | null): boolean {
-  if (!engine) return false;
-  if (typeof value !== 'string' || value.length === 0 || value.length > 2048) return false;
-  try {
-    const parsed = new URL(value);
-    if (
-      parsed.protocol !== 'https:'
-      || parsed.username
-      || parsed.password
-      || parsed.port
-      || parsed.pathname !== '/'
-      || parsed.search
-      || parsed.hash
-    ) return false;
-    if (engine === 'cloudflared') {
-      return /^(?!api\.)[a-z0-9-]+\.trycloudflare\.com$/i.test(parsed.hostname);
-    }
-    return /^[a-z0-9-]+\.(?:run\.pinggy-free\.link|free\.pinggy\.net)$/i.test(parsed.hostname);
-  } catch {
-    return false;
-  }
-}
-
-function safeTunnelEngine(value: unknown): CompanyProviderTunnelEngine | null {
-  return typeof value === 'string' && SAFE_ENGINE_VALUES.has(value as CompanyProviderTunnelEngine)
-    ? value as CompanyProviderTunnelEngine
-    : null;
 }
 
 function safeStartedAt(value: unknown): string | null {
@@ -170,8 +134,10 @@ async function isProxyReady(
  * Read-only company provider runtime inspection.
  *
  * This deliberately checks exactly one local LiteLLM liveliness URL. It does
- * not probe the company transit, Tencent, Cloudflare/Pinggy, or any model
- * endpoint, and it never returns credentials, process IDs, or tunnel URLs.
+ * not probe the company transit, Tencent, or any model endpoint, and it
+ * never returns credentials or process IDs. Reference-image public delivery
+ * (Tencent COS) is a per-request concern handled by the provider adapters,
+ * not a persistent process this inspects — see `cosConfigured` on the result.
  */
 export async function inspectCompanyProviderRuntime({
   root,
@@ -195,14 +161,6 @@ export async function inspectCompanyProviderRuntime({
     return result('unavailable', '公司供应商运行状态无效，请重新启动工作台');
   }
 
-  const tunnelEngine = safeTunnelEngine(stack.tunnelEngine);
-  const tunnelPid = tunnelEngine === 'cloudflared'
-    ? safePid(stack.cloudflaredPid)
-    : tunnelEngine === 'pinggy'
-      ? safePid(stack.pinggyPid)
-      : null;
-  const tunnelAvailable = isSafeTunnelUrl(stack.tunnelUrl, tunnelEngine)
-    && hasLiveProcess(processCheck, tunnelPid);
   const startedAt = safeStartedAt(stack.startedAt);
   const proxyPort = safeProxyPort(stack.proxyPort);
   const proxyProcessAvailable = hasLiveProcess(processCheck, safePid(stack.litellmPid));
@@ -212,27 +170,8 @@ export async function inspectCompanyProviderRuntime({
     : false;
 
   if (!proxyAvailable) {
-    return result('unavailable', 'LiteLLM 本机健康检查失败', {
-      proxyAvailable: false,
-      tunnelAvailable,
-      startedAt,
-      tunnelEngine,
-    });
+    return result('unavailable', 'LiteLLM 本机健康检查失败', { proxyAvailable: false, startedAt });
   }
 
-  if (!tunnelAvailable) {
-    return result('unavailable', '媒体传输隧道不可用', {
-      proxyAvailable: true,
-      tunnelAvailable: false,
-      startedAt,
-      tunnelEngine,
-    });
-  }
-
-  return result('ready', 'LiteLLM 与媒体传输已就绪', {
-    proxyAvailable: true,
-    tunnelAvailable: true,
-    startedAt,
-    tunnelEngine,
-  });
+  return result('ready', 'LiteLLM 已就绪', { proxyAvailable: true, startedAt });
 }

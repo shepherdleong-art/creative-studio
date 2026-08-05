@@ -42,7 +42,7 @@ export interface EvaluateProviderExecutionGateInput {
   provider: ProviderExecutionIdentity;
   capability: ProviderExecutionCapability;
   companyRuntime?: CompanyProviderRuntimeStatus;
-  /** 只有真实任务级 MediaTransport 接入后才能设为 true；开发期整站隧道不算。 */
+  /** 只有真实任务级 MediaTransport（见 lib/media-transport.ts）接入后才能设为 true；adapter 内部的 COS 直传不算。 */
   mediaTransportAvailable?: boolean;
 }
 
@@ -105,7 +105,7 @@ export function evaluateProviderExecutionGate(
   if (!runtime.proxyAvailable) {
     return denied(provider, 'runtime_unavailable', runtime.reason || 'LiteLLM 本机健康检查失败');
   }
-  if (input.capability === 'media' && (!runtime.tunnelAvailable || !input.mediaTransportAvailable)) {
+  if (input.capability === 'media' && !input.mediaTransportAvailable) {
     return denied(provider, 'transport_unavailable', '公司供应商的受控媒体传输尚未就绪');
   }
   return { allowed: true, code: 'ready', executionScope: 'company', message: '公司供应商运行环境可用' };

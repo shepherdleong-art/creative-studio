@@ -316,8 +316,8 @@ try {
       await providerGate.assertProviderExecutionAvailable(provider, {
         ...options,
         inspectRuntime: async () => ({
-          status: 'ready', reason: 'fixture ready', proxyAvailable: true, tunnelAvailable: true,
-          startedAt: null, tunnelEngine: 'cloudflared',
+          status: 'ready', reason: 'fixture ready', proxyAvailable: true, cosConfigured: true,
+          startedAt: null,
         }),
       });
     },

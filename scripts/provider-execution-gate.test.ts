@@ -45,8 +45,7 @@ assert.deepEqual(
     provider: { ...companyProvider, baseUrl: 'https://provider.example/v1' },
     capability: 'model',
     companyRuntime: {
-      status: 'ready', reason: 'ready', proxyAvailable: true, tunnelAvailable: true,
-      startedAt: null, tunnelEngine: 'cloudflared',
+      status: 'ready', reason: 'ready', proxyAvailable: true, cosConfigured: true, startedAt: null,
     },
   }),
   {
@@ -59,12 +58,11 @@ assert.deepEqual(
 );
 
 const proxyOnlyRuntime = {
-  status: 'unavailable' as const,
-  reason: '媒体传输隧道不可用',
+  status: 'ready' as const,
+  reason: 'LiteLLM 已就绪',
   proxyAvailable: true,
-  tunnelAvailable: false,
+  cosConfigured: false,
   startedAt: null,
-  tunnelEngine: null,
 };
 assert.equal(
   evaluateProviderExecutionGate({
@@ -88,6 +86,17 @@ assert.deepEqual(
     executionScope: 'company',
     message: '公司供应商的受控媒体传输尚未就绪',
   },
+  '公司运行环境就绪但没有真实任务级 MediaTransport 时，media 能力仍必须拒绝',
+);
+assert.equal(
+  evaluateProviderExecutionGate({
+    provider: companyProvider,
+    capability: 'media',
+    companyRuntime: proxyOnlyRuntime,
+    mediaTransportAvailable: true,
+  }).allowed,
+  true,
+  '真实任务级 MediaTransport 就绪时，media 能力不应再被旧的隧道概念误伤',
 );
 
 await assert.rejects(
@@ -96,7 +105,7 @@ await assert.rejects(
     capability: 'model',
     inspectRuntime: async () => ({
       status: 'stopped', reason: '公司供应商已配置但当前未启动',
-      proxyAvailable: false, tunnelAvailable: false, startedAt: null, tunnelEngine: null,
+      proxyAvailable: false, cosConfigured: false, startedAt: null,
     }),
   }),
   (error: unknown) => (
