@@ -17,6 +17,7 @@ import {
   type MediaTransport,
   type PreparedMediaLease,
 } from '../media-transport.ts';
+import { isCosMediaConfigured } from '../cos-media.ts';
 import { isConfiguredScriptProviderValue } from '../script-providers/config.ts';
 import type { BatchTaskWorkType, ClaimedBatchTask } from './tasks.ts';
 
@@ -195,7 +196,9 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
       }, {
         root: dataRoot(),
         capability: 'media',
-        mediaTransportAvailable: Boolean(mediaTransport),
+        // 优先显式注入的任务级 MediaTransport；未注入时默认 analyzeContent 会把
+        // 抽帧图片交给 completeJson 的 COS 受控传输，因此 COS 已配置同样满足 media 能力。
+        mediaTransportAvailable: Boolean(mediaTransport) || isCosMediaConfigured(),
       });
       context.reportProgress({ phase: 'content_analyzing', description: '抽帧并进行画面内容分析', percent: null });
       const analyze = (mediaLease?: PreparedMediaLease) => analyzeContent({
@@ -207,8 +210,8 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
         signal,
         mediaLease,
       });
-      contentAnalysis = contentRequest.executionScope === 'company'
-        ? await withPreparedMediaLease(mediaTransport!, {
+      contentAnalysis = contentRequest.executionScope === 'company' && mediaTransport
+        ? await withPreparedMediaLease(mediaTransport, {
             projectId,
             batchId: claim.task.batchId,
             taskId: claim.task.id,

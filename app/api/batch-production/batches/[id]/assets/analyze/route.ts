@@ -7,6 +7,7 @@ import {
   assertStoredScriptProviderExecutionAvailable,
   getAvailableProviders,
 } from '@/lib/script-providers';
+import { isCosMediaConfigured } from '@/lib/cos-media';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -73,7 +74,8 @@ export async function POST(
     if (mode === 'content') {
       await assertStoredScriptProviderExecutionAvailable(contentProvider!.id, {
         capability: 'media',
-        mediaTransportAvailable: false,
+        // 公司供应商的抽帧图片经 completeJson 的 COS 受控传输发送（同执行器门禁口径）。
+        mediaTransportAvailable: isCosMediaConfigured(),
       });
     }
     const result = queueAssetPreparation(

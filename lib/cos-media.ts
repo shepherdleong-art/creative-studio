@@ -53,6 +53,12 @@ const MIME_BY_EXT: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
+const EXT_BY_MIME: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+};
+
 type CosConfig = {
   secretId: string;
   secretKey: string;
@@ -214,8 +220,22 @@ export async function tryUploadToCosAndSign(filePath: string, mimeType?: string)
   const ext = path.extname(filePath).toLowerCase();
   const mime = mimeType ?? MIME_BY_EXT[ext] ?? 'application/octet-stream';
   const buffer = await fs.promises.readFile(filePath);
+  return uploadBufferAndSign(config, buffer, ext || '.jpg', mime);
+}
+
+/**
+ * 内存图片（如视频抽帧的 base64）直接上传 COS 并返回预签名 GET URL；
+ * 未配置 COS 时返回 null。与文件版本共用同一内容指纹去重空间。
+ */
+export async function tryUploadBufferToCosAndSign(buffer: Buffer<ArrayBuffer>, mimeType: string): Promise<string | null> {
+  const config = loadCosConfig();
+  if (!config) return null;
+  return uploadBufferAndSign(config, buffer, EXT_BY_MIME[mimeType] ?? '.jpg', mimeType);
+}
+
+async function uploadBufferAndSign(config: CosConfig, buffer: Buffer<ArrayBuffer>, ext: string, mime: string): Promise<string> {
   const hash = crypto.createHash('sha256').update(buffer).digest('hex');
-  const objectKey = `${config.prefix}${hash}${ext || '.jpg'}`;
+  const objectKey = `${config.prefix}${hash}${ext}`;
   const pathname = `/${objectKey.split('/').map(encodeURIComponent).join('/')}`;
 
   const cached = signedUrlCache.get(objectKey);

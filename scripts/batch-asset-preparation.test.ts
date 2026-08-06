@@ -524,6 +524,132 @@ try {
     /内容已变化/,
     '内容指纹变化必须拒绝媒体访问',
   );
+
+  // ── 公司供应商 + 未注入任务级 MediaTransport：回退 completeJson 的 COS 受控传输 ──
+  const COS_ENV_KEYS = [
+    'CREATIVE_STUDIO_COS_SECRET_ID',
+    'CREATIVE_STUDIO_COS_SECRET_KEY',
+    'CREATIVE_STUDIO_COS_DOMAIN',
+    'CREATIVE_STUDIO_COS_SIGN_HOST',
+    'CREATIVE_STUDIO_COS_PREFIX',
+    'CREATIVE_STUDIO_COS_URL_TTL_SEC',
+  ];
+  const savedCosEnv = new Map(COS_ENV_KEYS.map((key) => [key, process.env[key]]));
+  const setFixtureCosEnv = () => {
+    process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'fixture-cos-id';
+    process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'fixture-cos-key';
+    process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.fixture.invalid';
+  };
+  const clearFixtureCosEnv = () => {
+    for (const key of COS_ENV_KEYS) delete process.env[key];
+  };
+  const registerCompanyCosAsset = async (name: string, color: string) => {
+    const assetPath = path.join(root, `${name}.mp4`);
+    await runFfmpeg([
+      '-f', 'lavfi', '-i', `color=c=${color}:duration=0.6:size=80x64:rate=12`,
+      '-pix_fmt', 'yuv420p', '-y', assetPath,
+    ]);
+    const assetFingerprint = await mediaCatalog.computeFileSha256(assetPath);
+    const companyCosAsset = assets.createAsset(db, {
+      projectId: 'project-1', sourceKind: 'linked',
+      locationJson: { kind: 'linked', absolutePath: assetPath },
+      contentFingerprint: `sha256:${assetFingerprint}`, mediaKind: 'video',
+    });
+    db.prepare(`
+      INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
+      VALUES (?, ?, 'linked', ?, 'healthy', ?)
+    `).run(`${name}-source`, companyCosAsset, JSON.stringify({ kind: 'linked', absolutePath: assetPath }), new Date().toISOString());
+    return companyCosAsset;
+  };
+  db.prepare(`
+    INSERT INTO script_providers (id, enabled, supportsVision, model, baseUrl, apiKey, executionScope)
+    VALUES ('company-vision-cos', 1, 1, 'company-model', 'http://127.0.0.1:4000/v1', 'company-key', 'company')
+  `).run();
+  const companyCosResult = () => ({
+    summary: '公司 COS 分析结果',
+    sellingPoints: ['公司分析'],
+    semanticTags: ['cos'],
+    usableRanges: [{ startUs: 0, endUs: 400_000, qualityScore: 0.8 }],
+    qualityIssues: [],
+    coverFrameTimesUs: [100_000],
+    scenes: [{ startUs: 0, endUs: 400_000, description: 'cos 画面', labels: ['cos'], qualityScore: 0.8 }],
+  });
+  try {
+    // COS 已配置：无任务级 MediaTransport 也满足 media 能力，且 analyzeContent 不拿租约
+    setFixtureCosEnv();
+    const cosReadyAsset = await registerCompanyCosAsset('company-cos-ready', 'cyan');
+    const cosReadyQueued = preparation.queueAssetPreparation(
+      db, 'project-1', batchId, [cosReadyAsset], undefined,
+      { mode: 'content', providerId: 'company-vision-cos', model: 'company-model', executionScope: 'company' },
+    );
+    let cosReadyTransportFlag: boolean | undefined;
+    const cosReadyExecutor = executors.createAnalyzeAssetExecutor({
+      assertProviderReady: async (provider, options) => {
+        cosReadyTransportFlag = options.mediaTransportAvailable;
+        await providerGate.assertProviderExecutionAvailable(provider, {
+          ...options,
+          inspectRuntime: async () => ({
+            status: 'ready', reason: 'fixture ready', proxyAvailable: true, cosConfigured: true,
+            startedAt: null,
+          }),
+        });
+      },
+      analyzeContent: async (input) => {
+        assert.equal(input.mediaLease, undefined, '未注入 MediaTransport 时不得伪造媒体租约');
+        return companyCosResult();
+      },
+    });
+    await runner.runPendingOnce({
+      db, workerId: 'company-cos-ready-test', executors: [cosReadyExecutor], concurrency: 1, progressThrottleMs: 0,
+    });
+    assert.equal(cosReadyTransportFlag, true, 'COS 已配置时执行器门禁必须放行 media 能力');
+    assert.deepEqual(
+      db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(cosReadyQueued.items[0]!.taskId!),
+      { status: 'succeeded' },
+      'COS 已配置且无 MediaTransport 时公司内容分析必须能完成',
+    );
+
+    // COS 未配置：门禁失败关闭，不得调用视觉供应商
+    clearFixtureCosEnv();
+    const cosBlockedAsset = await registerCompanyCosAsset('company-cos-blocked', 'white');
+    const cosBlockedQueued = preparation.queueAssetPreparation(
+      db, 'project-1', batchId, [cosBlockedAsset], undefined,
+      { mode: 'content', providerId: 'company-vision-cos', model: 'company-model', executionScope: 'company' },
+    );
+    let cosBlockedTransportFlag: boolean | undefined;
+    let cosBlockedAnalyzeCalls = 0;
+    const cosBlockedExecutor = executors.createAnalyzeAssetExecutor({
+      assertProviderReady: async (provider, options) => {
+        cosBlockedTransportFlag = options.mediaTransportAvailable;
+        await providerGate.assertProviderExecutionAvailable(provider, {
+          ...options,
+          inspectRuntime: async () => ({
+            status: 'ready', reason: 'fixture ready', proxyAvailable: true, cosConfigured: false,
+            startedAt: null,
+          }),
+        });
+      },
+      analyzeContent: async () => {
+        cosBlockedAnalyzeCalls += 1;
+        throw new Error('供应商调用不应发生');
+      },
+    });
+    await runner.runPendingOnce({
+      db, workerId: 'company-cos-blocked-test', executors: [cosBlockedExecutor], concurrency: 1, progressThrottleMs: 0,
+    });
+    assert.equal(cosBlockedTransportFlag, false, 'COS 未配置时执行器门禁必须关闭 media 能力');
+    assert.equal(cosBlockedAnalyzeCalls, 0, 'COS 未配置时不得调用视觉供应商');
+    assert.deepEqual(
+      db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(cosBlockedQueued.items[0]!.taskId!),
+      { status: 'failed' },
+    );
+  } finally {
+    clearFixtureCosEnv();
+    for (const [key, value] of savedCosEnv) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  }
+
   console.log('batch asset preparation tests passed');
 } finally {
   db.close();

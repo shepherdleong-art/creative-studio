@@ -106,7 +106,7 @@ export function evaluateProviderExecutionGate(
     return denied(provider, 'runtime_unavailable', runtime.reason || 'LiteLLM 本机健康检查失败');
   }
   if (input.capability === 'media' && !input.mediaTransportAvailable) {
-    return denied(provider, 'transport_unavailable', '公司供应商的受控媒体传输尚未就绪');
+    return denied(provider, 'transport_unavailable', '公司供应商的受控媒体传输尚未就绪：请在 .env.local 配置 CREATIVE_STUDIO_COS_SECRET_ID / CREATIVE_STUDIO_COS_SECRET_KEY / CREATIVE_STUDIO_COS_DOMAIN 后重启');
   }
   return { allowed: true, code: 'ready', executionScope: 'company', message: '公司供应商运行环境可用' };
 }

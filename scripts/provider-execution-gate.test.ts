@@ -84,7 +84,7 @@ assert.deepEqual(
     allowed: false,
     code: 'transport_unavailable',
     executionScope: 'company',
-    message: '公司供应商的受控媒体传输尚未就绪',
+    message: '公司供应商的受控媒体传输尚未就绪：请在 .env.local 配置 CREATIVE_STUDIO_COS_SECRET_ID / CREATIVE_STUDIO_COS_SECRET_KEY / CREATIVE_STUDIO_COS_DOMAIN 后重启',
   },
   '公司运行环境就绪但没有真实任务级 MediaTransport 时，media 能力仍必须拒绝',
 );

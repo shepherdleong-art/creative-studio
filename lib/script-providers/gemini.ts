@@ -24,6 +24,7 @@ import {
   chatCompletion,
   parseJsonResponse,
   buildAnalysisPrompt,
+  type ChatImagePart,
 } from './openai-compatible';
 import { createScriptProviderRequestControl } from './request-control.ts';
 
@@ -34,7 +35,7 @@ interface GeminiCallOptions {
   maxTokens?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
-  images?: Array<{ mimeType: string; imageBase64: string }>;
+  images?: ChatImagePart[];
 }
 
 // ── Provider Config ──
@@ -106,6 +107,8 @@ async function geminiNativeCall(
 
   const parts: Array<Record<string, unknown>> = [{ text: prompt }];
   for (const image of options?.images ?? []) {
+    // Gemini 原生 generateContent 只接受 inlineData；公司供应商的 COS URL 传输不适用于此适配器。
+    if (!image.imageBase64) throw new Error('Gemini 原生接口只支持 base64 图片输入');
     parts.push({ inlineData: { mimeType: image.mimeType, data: image.imageBase64 } });
   }
 
@@ -193,7 +196,7 @@ export async function geminiCompleteJson<T>(input: {
   maxTokens?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
-  images?: Array<{ mimeType: string; imageBase64: string }>;
+  images?: ChatImagePart[];
 }, runtime?: ScriptProviderRuntimeConfig): Promise<T> {
   const rawText = await geminiCall(
     input.systemPrompt,
