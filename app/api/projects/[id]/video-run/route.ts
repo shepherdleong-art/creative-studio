@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cancelVideoQueue, getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const body = await request.json().catch(() => ({})) as { action?: string };

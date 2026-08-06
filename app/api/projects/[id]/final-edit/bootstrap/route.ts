@@ -6,8 +6,11 @@ import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 import { isFinalEditAlignmentConfigured, recoverFinalEditPrepareJobs } from '@/lib/final-edit/runtime';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id: projectId } = await params;
     recoverFinalEditPrepareJobs();

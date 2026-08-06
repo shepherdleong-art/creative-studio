@@ -6,8 +6,11 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 import { mediaResponse } from '@/lib/final-edit/media-response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const adapter = getFinalEditTtsAdapter(id);

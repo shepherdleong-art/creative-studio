@@ -9,6 +9,7 @@ import {
   BATCH_NO_STORE_HEADERS,
   batchRouteErrorResponse,
 } from '../batches/response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,6 +27,8 @@ export async function GET() {
 
 /** 重新扫描 storage/bgm/ 目录(用户放完文件无需重启应用)。 */
 export async function POST(request: NextRequest) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   if (request.headers.get('x-creative-studio-action') !== 'rescan') {
     return NextResponse.json({ error: 'invalid_rescan_request', message: '曲库扫描请求缺少工作台标记' }, {
       status: 403,

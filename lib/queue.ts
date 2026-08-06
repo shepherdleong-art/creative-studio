@@ -1,29 +1,47 @@
-import { getDb } from './db';
-import { editImage as editImageOpenAI, EditImageRequest } from './providers/openai-compatible';
-import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
-import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image';
+import { getDb } from './db.ts';
+import { editImage as editImageOpenAI } from './providers/openai-compatible.ts';
+import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json.ts';
+import { submitGatewayTaskImage, pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskResponse } from './providers/gateway-task-image.ts';
 import { redactMediaUrlForLog } from './gateway-media-url.ts';
-import { describeGatewayDownloadFailure } from './media-download-policy.ts';
-import { editImagePacky } from './providers/packy-images';
-import { editImagePackyGemini } from './providers/packy-gemini-image';
-import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors';
-import { getEffectiveImageConcurrency } from './provider-concurrency';
-import { calculateEstimatedCost } from './cost';
-import { normalizeGeneratedImageToSize } from './image-output-normalize';
-import { isPlaceholderValue } from './video-auth';
-import { getEffectiveProjectFinalStatus } from './project-status';
-import { writeLog } from './logger';
-import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames';
+import type * as PackyImages from './providers/packy-images.ts';
+import { editImagePackyGemini } from './providers/packy-gemini-image.ts';
+import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors.ts';
+import { getEffectiveImageConcurrency } from './provider-concurrency.ts';
+import { calculateEstimatedCost } from './cost.ts';
+import { normalizeGeneratedImageToSize } from './image-output-normalize.ts';
+import { isPlaceholderValue } from './video-auth.ts';
+import { getEffectiveProjectFinalStatus } from './project-status.ts';
+import { writeLog } from './logger.ts';
+import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames.ts';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
-import { dataRoot } from './data-root';
+import { dataRoot } from './data-root.ts';
+import { isManagedDeployment } from './managed-deployment.ts';
+import { assertProviderExecutionAvailable, assertProviderExecutionIdentityStable, readManagedExecutionGeneration, ProviderExecutionGateError } from './provider-execution-gate.ts';
+import type { AssertProviderExecutionAvailableOptions } from './provider-execution-gate.ts';
 import fs from 'fs';
+
+export interface ImageQueueAdapterOverrides {
+  submitGeekAITask?: typeof submitGeekAITask;
+  pollGeekAITask?: typeof pollGeekAITask;
+  downloadGeekAIImage?: typeof downloadGeekAIImage;
+  submitGatewayTaskImage?: typeof submitGatewayTaskImage;
+  pollGatewayTaskImage?: typeof pollGatewayTaskImage;
+  downloadGatewayTaskImage?: typeof downloadGatewayTaskImage;
+  editImagePacky?: typeof PackyImages.editImagePacky;
+  editImagePackyGemini?: typeof editImagePackyGemini;
+  editImageOpenAI?: typeof editImageOpenAI;
+}
 
 export interface QueueOptions {
   projectId: string;
   concurrency: number;
   maxAttempts: number;
   timeoutMs: number;
+  /** Test seam for keeping provider execution tests completely offline. */
+  adapters?: ImageQueueAdapterOverrides;
+  /** Test seam for injecting managed runtime/allowlist state. */
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
 }
 
 interface JobRecord {
@@ -46,6 +64,8 @@ interface JobRecord {
 type QueueStatus = 'idle' | 'running' | 'paused';
 
 const runningQueues = new Map<string, { abort: AbortController; status: QueueStatus }>();
+const REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE = 'Remote image ready but local download failed; manual inspection required';
+const REMOTE_IMAGE_EXECUTION_FAILURE_MESSAGE = 'Remote image task may still be running; manual inspection required';
 
 export function getQueueStatus(projectId: string): QueueStatus {
   return runningQueues.get(projectId)?.status ?? 'idle';
@@ -122,9 +142,20 @@ export async function runQueue(options: QueueOptions): Promise<void> {
   concurrency = effectiveConcurrency;
 
   // Recover any stuck "running" jobs from a previous crash
+  // Recover interrupted jobs conservatively: once a provider task or remote
+  // result URL exists, retrying could submit a second paid task. Those jobs
+  // require explicit inspection; only jobs with no remote identity may retry.
+  db.prepare(
+    `UPDATE jobs SET status = 'needs_check', errorMessage = 'Recovered remote image task; manual inspection required'
+     WHERE projectId = ? AND status IN ('pending', 'retrying', 'running')
+       AND (length(trim(COALESCE(providerTaskId, ''))) > 0
+         OR length(trim(COALESCE(remoteImageUrl, ''))) > 0)`
+  ).run(projectId);
   db.prepare(
     `UPDATE jobs SET status = 'retrying', errorMessage = 'Recovered from interrupted run'
-     WHERE projectId = ? AND status = 'running'`
+     WHERE projectId = ? AND status = 'running'
+       AND length(trim(COALESCE(providerTaskId, ''))) = 0
+       AND length(trim(COALESCE(remoteImageUrl, ''))) = 0`
   ).run(projectId);
 
   try {
@@ -152,7 +183,7 @@ export async function runQueue(options: QueueOptions): Promise<void> {
           continue;
         }
 
-        await runJob(job, { timeoutMs, maxAttempts, abort: abort.signal });
+        await runJob(job, { timeoutMs, maxAttempts, abort: abort.signal, adapters: options.adapters, executionGate: options.executionGate });
       }
     }
 
@@ -177,10 +208,10 @@ export async function runQueue(options: QueueOptions): Promise<void> {
  */
 async function runJob(
   job: JobRecord,
-  options: { timeoutMs: number; maxAttempts: number; abort: AbortSignal }
+  options: { timeoutMs: number; maxAttempts: number; abort: AbortSignal; adapters?: ImageQueueAdapterOverrides; executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'> }
 ): Promise<void> {
   const db = getDb();
-  const { timeoutMs, maxAttempts, abort } = options;
+  const { timeoutMs, maxAttempts, abort, adapters, executionGate } = options;
 
   if (abort.aborted) return;
 
@@ -255,6 +286,7 @@ async function runJob(
       model: string;
       name: string;
       type: string;
+      enabled: number;
       defaultCostPerImage?: number;
     } | undefined;
 
@@ -263,11 +295,49 @@ async function runJob(
     }
 
     const apiKey = (provider.apiKey || '').trim();
+    const providerType = provider.type || 'openai-compatible';
+    const managedExecution = isManagedDeployment(executionGate?.env ?? process.env);
+    const imageProviderIdentity = {
+      id: provider.id,
+      type: providerType,
+      apiKeyEnv: provider.apiKeyEnv,
+      executionScope: managedExecution ? 'company' as const : 'external' as const,
+      baseUrl: provider.baseUrl,
+      enabled: provider.enabled === 1,
+      configured: Boolean(apiKey && !isPlaceholderValue(apiKey) && provider.baseUrl && job.model),
+      apiKey,
+      model: provider.model,
+      managedGeneration: managedExecution
+        ? readManagedExecutionGeneration(executionGate?.root ?? dataRoot())
+        : undefined,
+    };
+    const assertImageExecution = async () => {
+      await assertProviderExecutionAvailable(imageProviderIdentity, {
+        root: dataRoot(),
+        ...executionGate,
+        capability: 'model',
+        kind: 'image',
+      });
+       if (!managedExecution) return;
+      const current = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(provider.id) as typeof provider | undefined;
+      const currentApiKey = (current?.apiKey || '').trim();
+      assertProviderExecutionIdentityStable(imageProviderIdentity, {
+        id: current?.id || provider.id,
+        type: current?.type || '',
+        apiKeyEnv: current?.apiKeyEnv || '',
+        executionScope: 'company',
+        baseUrl: current?.baseUrl || '',
+        enabled: current?.enabled === 1,
+        configured: Boolean(currentApiKey && !isPlaceholderValue(currentApiKey) && current?.baseUrl && job.model),
+         apiKey: currentApiKey,
+         model: current?.model || '',
+         managedGeneration: readManagedExecutionGeneration(executionGate?.root ?? dataRoot()),
+       });
+    };
+    await assertImageExecution();
     if (isPlaceholderValue(apiKey)) {
       throw new Error('API key not configured. Please set it in Settings.');
     }
-
-    const providerType = provider.type || 'openai-compatible';
 
     logInfo(`Calling API: ${provider.baseUrl} (type=${providerType}, model=${job.model}, size=${job.size})`);
     const multipartImageField =
@@ -296,7 +366,8 @@ async function runJob(
 
       // Step 1: Submit task
       logInfo('提交任务到 GeekAI...');
-      const submitResult = await submitGeekAITask(
+      await assertImageExecution();
+      const submitResult = await (adapters?.submitGeekAITask ?? submitGeekAITask)(
         {
           model: job.model,
           prompt: job.prompt,
@@ -318,8 +389,23 @@ async function runJob(
         if (submitResult.immediateImageBase64) {
           buf = Buffer.from(submitResult.immediateImageBase64, 'base64');
         } else {
-          const imgRes = await fetch(submitResult.immediateImageUrl!);
-          buf = Buffer.from(await imgRes.arrayBuffer());
+          const immediateUrl = submitResult.immediateImageUrl;
+          if (!immediateUrl) throw new Error('GeekAI immediate response did not include an image');
+          db.prepare(
+            `UPDATE jobs SET providerStatus = 'succeeded', remoteImageUrl = ?, providerRawResponse = ? WHERE id = ?`
+          ).run(immediateUrl, summarizeGeekAIResponse(submitResult.rawResponse), job.id);
+          await assertImageExecution();
+          try {
+            const imgRes = await fetch(immediateUrl);
+            if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
+            buf = Buffer.from(await imgRes.arrayBuffer());
+          } catch {
+            db.prepare(
+              `UPDATE jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'download_failed', finishedAt = datetime('now')
+               WHERE id = ? AND status = 'running'`
+            ).run(REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE, job.id);
+            return;
+          }
         }
         result = {
           imageBuffer: buf,
@@ -343,7 +429,8 @@ async function runJob(
         while (Date.now() - geekaiStart < maxPollMs) {
           if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-          const pollResult = await pollGeekAITask(
+          await assertImageExecution();
+          const pollResult = await (adapters?.pollGeekAITask ?? pollGeekAITask)(
             taskId,
             apiKey,
             provider.baseUrl,
@@ -359,8 +446,9 @@ async function runJob(
 
           if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
             // Step 4: Download image
-            logInfo(`远端生成成功，下载图片: ${pollResult.imageUrl}`);
-            const imgBuffer = await downloadGeekAIImage(pollResult.imageUrl);
+            logInfo(`远端生成成功，下载图片: ${redactMediaUrlForLog(pollResult.imageUrl, apiKey)}`);
+            await assertImageExecution();
+            const imgBuffer = await (adapters?.downloadGeekAIImage ?? downloadGeekAIImage)(pollResult.imageUrl);
 
             if (imgBuffer) {
               db.prepare(
@@ -375,11 +463,11 @@ async function runJob(
               break;
             } else {
               // Remote success, local download failed
-              logError(`远端成功但本地下载失败: ${pollResult.imageUrl}`);
+              logError(REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE);
               db.prepare(
-                `UPDATE jobs SET status = 'failed', errorMessage = ?, providerStatus = 'download_failed', remoteImageUrl = ?
+                `UPDATE jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'download_failed', remoteImageUrl = ?
                  WHERE id = ? AND status = 'running'`
-              ).run(`远端图片已生成但本地下载失败。远端URL: ${pollResult.imageUrl}`, pollResult.imageUrl, job.id);
+              ).run(REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE, pollResult.imageUrl, job.id);
               return; // Don't retry — the money was already spent
             }
           }
@@ -409,7 +497,8 @@ async function runJob(
       const gatewayStart = Date.now();
 
       logInfo('提交任务到网关（异步任务协议）...');
-      const submitResult = await submitGatewayTaskImage(
+      await assertImageExecution();
+      const submitResult = await (adapters?.submitGatewayTaskImage ?? submitGatewayTaskImage)(
         {
           model: job.model,
           prompt: job.prompt,
@@ -426,21 +515,25 @@ async function runJob(
       );
 
       if (submitResult.immediateImageUrl) {
-        const downloadResult = await downloadGatewayTaskImage(submitResult.immediateImageUrl, provider.baseUrl, apiKey);
+        const immediateUrl = submitResult.immediateImageUrl;
+        db.prepare(
+          `UPDATE jobs SET providerStatus = 'succeeded', remoteImageUrl = ?, providerRawResponse = ? WHERE id = ?`
+        ).run(immediateUrl, summarizeGatewayTaskResponse(submitResult.rawResponse, apiKey), job.id);
+        await assertImageExecution();
+        const downloadResult = await (adapters?.downloadGatewayTaskImage ?? downloadGatewayTaskImage)(immediateUrl, provider.baseUrl, apiKey);
         if (!downloadResult.ok) {
-          const failure = describeGatewayDownloadFailure('image', submitResult.immediateImageUrl, downloadResult, apiKey);
-          logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
+          logError(REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE);
           db.prepare(
-            `UPDATE jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
+            `UPDATE jobs SET status = 'needs_check', errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
              WHERE id = ? AND status = 'running'`
-          ).run(failure.status, failure.errorMessage, failure.providerStatus, submitResult.immediateImageUrl, job.id);
+          ).run(REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE, 'download_failed', immediateUrl, job.id);
           return;
         }
         result = {
           imageBuffer: downloadResult.buffer,
           latencyMs: Date.now() - gatewayStart,
           rawResponse: submitResult.rawResponse,
-          remoteImageUrl: submitResult.immediateImageUrl,
+          remoteImageUrl: immediateUrl,
         };
         logInfo('网关任务同步返回结果');
       } else if (submitResult.taskId) {
@@ -457,7 +550,8 @@ async function runJob(
         while (Date.now() - gatewayStart < maxPollMs) {
           if (reqAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-          const pollResult = await pollGatewayTaskImage(
+          await assertImageExecution();
+          const pollResult = await (adapters?.pollGatewayTaskImage ?? pollGatewayTaskImage)(
             taskId,
             apiKey,
             provider.baseUrl,
@@ -473,7 +567,8 @@ async function runJob(
 
           if (pollResult.status === 'succeeded' && pollResult.imageUrl) {
             logInfo(`远端生成成功，下载图片: ${redactMediaUrlForLog(pollResult.imageUrl, apiKey)}`);
-            const downloadResult = await downloadGatewayTaskImage(pollResult.imageUrl, provider.baseUrl, apiKey);
+            await assertImageExecution();
+            const downloadResult = await (adapters?.downloadGatewayTaskImage ?? downloadGatewayTaskImage)(pollResult.imageUrl, provider.baseUrl, apiKey);
 
             if (downloadResult.ok) {
               db.prepare(
@@ -488,12 +583,11 @@ async function runJob(
               polled = true;
               break;
             } else {
-              const failure = describeGatewayDownloadFailure('image', pollResult.imageUrl, downloadResult, apiKey);
-              logError(`${failure.errorMessage} URL: ${failure.logUrl}`);
+              logError(REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE);
               db.prepare(
-                `UPDATE jobs SET status = ?, errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
+                `UPDATE jobs SET status = 'needs_check', errorMessage = ?, providerStatus = ?, remoteImageUrl = ?, finishedAt = datetime('now')
                  WHERE id = ? AND status = 'running'`
-              ).run(failure.status, failure.errorMessage, failure.providerStatus, pollResult.imageUrl, job.id);
+              ).run(REMOTE_IMAGE_DOWNLOAD_FAILURE_MESSAGE, 'download_failed', pollResult.imageUrl, job.id);
               return; // Don't retry — the money was already spent
             }
           }
@@ -533,9 +627,10 @@ async function runJob(
       const stopHeartbeat = startPackyHeartbeat(logInfo);
 
       try {
+        await assertImageExecution();
         const packyRequest =
           providerType === 'packy-gemini-image'
-            ? editImagePackyGemini(
+            ? (adapters?.editImagePackyGemini ?? editImagePackyGemini)(
                 {
                   model: job.model,
                   prompt: job.prompt,
@@ -549,7 +644,7 @@ async function runJob(
                 provider.baseUrl,
                 reqAbort.signal
               )
-            : editImagePacky(
+            : (adapters?.editImagePacky ?? (await import('./providers/packy-images.ts')).editImagePacky)(
                 {
                   model: job.model,
                   prompt: job.prompt,
@@ -588,8 +683,9 @@ async function runJob(
       logInfo(`${providerLabel} 同步请求已开始，等待服务端返回...`);
       const stopHeartbeat = startRequestHeartbeat(`${providerLabel} 同步请求`, logInfo);
       try {
+        await assertImageExecution();
         result = await withTimeout(
-          editImageOpenAI(
+          (adapters?.editImageOpenAI ?? editImageOpenAI)(
             {
               provider: {
                 id: provider.id,
@@ -718,6 +814,25 @@ async function runJob(
     let errorMessage = err instanceof Error ? err.message : String(err);
 
     // If aborted by user, mark as canceled — never retry
+    if (err instanceof ProviderExecutionGateError) {
+      const gateMessage = `[${err.code}] ${err.message}`;
+      const submitted = db.prepare(`SELECT providerTaskId, remoteImageUrl FROM jobs WHERE id = ?`).get(job.id) as { providerTaskId: string | null; remoteImageUrl: string | null } | undefined;
+      const hasRemoteIdentity = Boolean(
+        submitted
+        && ((typeof submitted.providerTaskId === 'string' && submitted.providerTaskId.trim().length > 0)
+          || (typeof submitted.remoteImageUrl === 'string' && submitted.remoteImageUrl.trim().length > 0)),
+      );
+      if (hasRemoteIdentity) {
+        // A remote task may still be running. Do not turn a mid-flight gate
+        // failure into an ordinary retry that could submit a second task.
+        db.prepare(`UPDATE jobs SET status = 'needs_check', providerStatus = ?, finishedAt = datetime('now'), errorMessage = ? WHERE id = ? AND status = 'running'`).run(err.code, gateMessage, job.id);
+      } else {
+        db.prepare(`UPDATE jobs SET status = 'failed', providerStatus = ?, finishedAt = datetime('now'), errorMessage = ? WHERE id = ? AND status = 'running'`).run(err.code, gateMessage, job.id);
+      }
+      logError(`Job blocked by provider execution gate: ${gateMessage}`);
+      return;
+    }
+
     if (abort.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
       errorMessage = 'Canceled by user';
       db.prepare(
@@ -725,6 +840,24 @@ async function runJob(
          WHERE id = ? AND status = 'running'`
       ).run(errorMessage, job.id);
       logWarn('Job canceled by user');
+      return;
+    }
+
+    // Any non-cancellation error after a remote identity was persisted must
+    // stop here. Retrying would submit a second paid task even when the
+    // provider merely timed out or returned an ambiguous failure.
+    const submitted = db.prepare(`SELECT providerTaskId, remoteImageUrl FROM jobs WHERE id = ?`).get(job.id) as { providerTaskId: string | null; remoteImageUrl: string | null } | undefined;
+    const hasRemoteIdentity = Boolean(
+      submitted
+      && ((typeof submitted.providerTaskId === 'string' && submitted.providerTaskId.trim().length > 0)
+        || (typeof submitted.remoteImageUrl === 'string' && submitted.remoteImageUrl.trim().length > 0)),
+    );
+    if (hasRemoteIdentity) {
+      db.prepare(
+        `UPDATE jobs SET status = 'needs_check', finishedAt = datetime('now'), errorMessage = ?
+         WHERE id = ? AND status = 'running'`
+      ).run(REMOTE_IMAGE_EXECUTION_FAILURE_MESSAGE, job.id);
+      logError(REMOTE_IMAGE_EXECUTION_FAILURE_MESSAGE);
       return;
     }
 

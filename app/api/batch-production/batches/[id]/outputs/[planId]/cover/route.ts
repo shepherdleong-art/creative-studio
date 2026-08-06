@@ -7,12 +7,15 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 换封面:改写 arrangement.cover.timeUs 后从原片重新抽帧,仍走原片不变量。 */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id, planId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

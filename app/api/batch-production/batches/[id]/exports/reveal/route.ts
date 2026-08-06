@@ -11,6 +11,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,6 +28,8 @@ function revealCommand(platform: NodeJS.Platform, directory: string): { command:
 
 /** 导出完成后在系统文件管理器中打开批次成品文件夹。 */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

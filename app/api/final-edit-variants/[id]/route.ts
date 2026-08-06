@@ -3,8 +3,11 @@ import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import type { FinalEditCommand } from '@/lib/final-edit/workspace';
 import { getDb } from '@/lib/db';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const body = await request.json() as Omit<Extract<FinalEditCommand, { scope: 'variant' }>, 'scope' | 'variantId'>;
@@ -13,6 +16,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 }
 
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const rendered = getDb().prepare(`SELECT 1 FROM final_edit_jobs WHERE variantId=? AND kind='render' AND status='succeeded' LIMIT 1`).get(id);

@@ -8,12 +8,15 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 冻结输入、执行幂等的全批联合分配，并把每条候选接入同一持久调度器。 */
 export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

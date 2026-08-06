@@ -3,12 +3,15 @@ import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { createBatchProduction, listProjectBatchProductions } from '@/lib/batch-production/versions';
 import { BATCH_NO_STORE_HEADERS, batchRouteErrorResponse } from './response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 创建一次批量生产工作单(批次);列表按 projectId 查询当前项目批次。 */
 export async function POST(request: NextRequest) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const body = await request.json().catch(() => null) as { projectId?: unknown; name?: unknown } | null;
   const projectId = typeof body?.projectId === 'string' && body.projectId ? body.projectId : null;
   const name = typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : null;

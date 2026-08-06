@@ -4,11 +4,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
+import { assertManagedProviderAllowed, loadManagedProviderAllowlist, ManagedProviderPolicyError } from '@/lib/managed-provider-policy';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id: shotSetId } = await params;
     const db = getDb();
@@ -33,9 +38,23 @@ export async function POST(
 
     // Validate provider
     const provider = db.prepare(`SELECT * FROM video_providers WHERE id = ? AND enabled = 1`).get(providerId) as {
-      id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; defaultModel: string;
+      id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; baseUrl: string; defaultModel: string;
     } | undefined;
     if (!provider) return NextResponse.json({ error: 'Video provider not found or disabled' }, { status: 400 });
+
+    // The selected provider identity must match the trusted managed allowlist
+    // before inserting a job or starting the queue. Unrestricted deployments
+    // pass a null allowlist and retain their historical provider behavior.
+    assertManagedProviderAllowed(
+      'video',
+      {
+        id: provider.id,
+        type: provider.type,
+        baseUrl: provider.baseUrl,
+        apiKeyEnv: provider.apiKeyEnv,
+      },
+      isManagedDeployment() ? loadManagedProviderAllowlist() : null,
+    );
     const providerConfig = getVideoProviderConfigState(provider);
     if (!providerConfig.configured) {
       return NextResponse.json(
@@ -73,6 +92,9 @@ export async function POST(
 
     return NextResponse.json({ success: true, videoJobId });
   } catch (err) {
+    if (err instanceof ManagedProviderPolicyError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: 403 });
+    }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

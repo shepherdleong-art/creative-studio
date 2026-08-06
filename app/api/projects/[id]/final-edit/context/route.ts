@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getFinalEditWorkspace, recoverFinalEditPrepareJobs } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 // docs/superpowers/plans/2026-07-23-mixcut-technical-execution.md §5.1 /
 // §3.1's app/api/projects/[id]/final-edit/context/route.ts. Thin wrapper per
@@ -8,6 +9,8 @@ import { finalEditErrorResponse } from '@/lib/final-edit/http';
 // FinalEditWorkspace.getMixcutContext (lib/final-edit/workspace.ts), which
 // delegates to the pure, independently-testable lib/final-edit/mixcut-context.ts.
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     recoverFinalEditPrepareJobs();
     const { id: projectId } = await params;

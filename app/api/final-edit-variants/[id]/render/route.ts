@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id: variantId } = await params;
     const body = await request.json() as { groupId?: string; expectedGroupRevision?: number; expectedVariantRevision?: number; overlayBundleId?: string };

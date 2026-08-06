@@ -8,6 +8,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../../response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,8 @@ export async function POST(
   request: NextRequest,
   context: { params: Promise<{ id: string; planId: string }> },
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id: batchId, planId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

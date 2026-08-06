@@ -7,12 +7,15 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 发布选中且已具备真实 narration 的渲染候选；无效卡片逐条跳过并说明。 */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id: batchId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

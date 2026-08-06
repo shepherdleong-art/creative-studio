@@ -10,6 +10,7 @@ import {
   analyzeScriptStrategyV3,
   ScriptGenerationV3Error,
 } from '@/lib/script-generation-v3';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 import { generateAndPersistScriptV3 } from '@/lib/script-generation-v3-service';
 import {
   cancelScriptGeneration,
@@ -25,6 +26,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id: projectId } = await params;
     const db = getDb();

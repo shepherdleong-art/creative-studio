@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 function toImageUrl(storageRoot: string, imagePath: string | null | undefined): string {
   return imagePath ? `/api/images/${path.relative(storageRoot, path.resolve(imagePath)).split(path.sep).join('/')}` : '';
@@ -114,6 +115,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const db = getDb();
@@ -164,6 +167,8 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const db = getDb();

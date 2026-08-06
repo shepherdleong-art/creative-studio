@@ -7,6 +7,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,6 +17,8 @@ export const dynamic = 'force-dynamic';
  * 引用时物理清理(仍被引用时安全拒绝,只能归档——见 deleteLutIfUnreferenced)。
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id: lutId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { importShotSetExternalAssetsFromFormData } from '@/lib/final-edit/material-import-http';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 
@@ -21,6 +22,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string; shotSetId: string }> },
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id: projectId, shotSetId } = await params;
     const workspace = getFinalEditWorkspace();

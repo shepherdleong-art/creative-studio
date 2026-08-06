@@ -6,11 +6,14 @@ import {
   type ImageReferenceCounts,
 } from '@/lib/image-delete-policy';
 import fs from 'fs';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const db = getDb();

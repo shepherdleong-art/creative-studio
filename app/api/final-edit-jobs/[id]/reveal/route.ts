@@ -3,8 +3,11 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { desktopRevealAvailable, resolvePublishedVideoForReveal, revealPublishedVideo } from '@/lib/final-edit/desktop-reveal';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   if (!desktopRevealAvailable()) return NextResponse.json({ error: 'desktop_reveal_unavailable', message: '当前运行方式不支持在文件夹中查看' }, { status: 403 });
   if (request.headers.get('x-creative-studio-action') !== 'reveal') return NextResponse.json({ error: 'invalid_reveal_request', message: '文件定位请求缺少工作台标记' }, { status: 403 });
   const origin = request.headers.get('origin');

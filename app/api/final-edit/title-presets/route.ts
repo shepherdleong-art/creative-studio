@@ -2,12 +2,15 @@ import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '@/lib/db';
 import { normalizeCoverPreset } from '@/lib/final-edit/title-presets';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function GET() {
   const rows = getDb().prepare(`SELECT id, name, stylesByPresetJson, createdAt, updatedAt FROM final_edit_title_presets ORDER BY updatedAt DESC`).all() as Array<{ id: string; name: string; stylesByPresetJson: string; createdAt: string; updatedAt: string }>;
   return NextResponse.json(rows.map((row) => ({ id: row.id, name: row.name, ...normalizeCoverPreset(JSON.parse(row.stylesByPresetJson)), createdAt: row.createdAt, updatedAt: row.updatedAt })));
 }
 export async function POST(request: Request) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const body = await request.json() as { name?: string; version?: unknown; stylesByPreset?: unknown };
     const name = String(body.name || '').trim().slice(0, 80);

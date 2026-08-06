@@ -7,8 +7,11 @@ import { dataRoot } from '@/lib/data-root';
 import { getAvailableProviders } from '@/lib/script-providers';
 import { analyzeVideoWithVision } from '@/lib/final-edit/adapters/video-analysis';
 import { resolveStoragePath } from '@/lib/final-edit/storage-path';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(request: Request, { params }: { params: Promise<{ videoJobId: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { videoJobId } = await params;
     const body = await request.json().catch(() => ({})) as { providerId?: string };

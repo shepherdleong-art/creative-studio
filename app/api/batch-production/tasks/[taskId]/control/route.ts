@@ -8,6 +8,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,14 +18,6 @@ export const dynamic = 'force-dynamic';
  * 或整个批次的 controlState。与批次级 .../batches/[id]/control 是不同的 seam。
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ taskId: string }> }) {
-  const { taskId } = await context.params;
-  const projectId = batchProjectIdFromRequest(request);
-  if (!projectId) {
-    return NextResponse.json({
-      error: 'missing_project_id',
-      message: '缺少 projectId 参数',
-    }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
-  }
   const body = await request.json().catch(() => null) as { action?: unknown } | null;
   const action = body?.action;
   if (action !== 'pause' && action !== 'resume' && action !== 'cancel') {
@@ -33,14 +26,26 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ta
       message: 'action 必须是 pause、resume 或 cancel',
     }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
   }
+  if (action === 'resume') {
+    const managedGuard = await guardManagedWorkbench();
+    if (managedGuard) return managedGuard;
+  }
+  const { taskId } = await context.params;
+  const projectId = batchProjectIdFromRequest(request);
+  if (!projectId) {
+    return NextResponse.json({
+      error: 'missing_project_id',
+      message: '缺少 projectId 参数',
+    }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+  }
   try {
     await assertBatchApiReady();
-    ensureBatchSchedulerStarted();
     const db = getDb();
     if (action === 'pause') {
       pauseTask(db, projectId, taskId);
     } else if (action === 'resume') {
       resumeTask(db, projectId, taskId);
+      ensureBatchSchedulerStarted();
     } else {
       cancelTask(db, projectId, taskId);
     }

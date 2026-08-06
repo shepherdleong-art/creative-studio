@@ -6,12 +6,15 @@ import {
   BATCH_NO_STORE_HEADERS,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 按脚本单独保存配音配置(服务商/音色/语速);快照确认时冻结这份配置。 */
 export async function PUT(request: NextRequest, context: { params: Promise<{ scriptId: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { scriptId } = await context.params;
   const projectId = request.nextUrl.searchParams.get('projectId');
   if (!projectId) {

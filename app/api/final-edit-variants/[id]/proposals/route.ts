@@ -4,12 +4,15 @@ import { getDb } from '@/lib/db';
 import { timelineGaps } from '@/lib/final-edit/domain';
 import { findAvailableSourceWindow } from '@/lib/final-edit/proposal';
 import type { VideoTimeline } from '@/lib/final-edit/types';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 const MIN_AUTO_CLIP_FRAMES = 24;
 
 function parse<T>(value: string, fallback: T): T { try { return JSON.parse(value) as T; } catch { return fallback; } }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const variantId = (await params).id;
     const body = await request.json().catch(() => ({})) as { kind?: string };

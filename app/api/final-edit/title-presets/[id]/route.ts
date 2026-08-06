@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeCoverPreset } from '@/lib/final-edit/title-presets';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const current = getDb().prepare(`SELECT name, stylesByPresetJson FROM final_edit_title_presets WHERE id=?`).get(id) as { name: string; stylesByPresetJson: string } | undefined;
@@ -19,6 +22,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   } catch (error) { return NextResponse.json({ error: 'invalid_title_preset', message: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
 }
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const result = getDb().prepare(`DELETE FROM final_edit_title_presets WHERE id=?`).run((await params).id);
   return result.changes ? new NextResponse(null, { status: 204 }) : NextResponse.json({ error: 'preset_not_found' }, { status: 404 });
 }

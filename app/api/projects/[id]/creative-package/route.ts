@@ -6,6 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 
@@ -13,6 +14,8 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id: projectId } = await params;
     const db = getDb();

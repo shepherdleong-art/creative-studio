@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ videoJobId: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { videoJobId } = await params;
   const current = getDb().prepare(`SELECT manualOverrideJson, autoUseDisabled FROM final_edit_asset_analysis WHERE videoJobId=?`).get(videoJobId) as { manualOverrideJson: string; autoUseDisabled: number } | undefined;
   if (!current) return NextResponse.json({ error: 'analysis_not_found' }, { status: 404 });

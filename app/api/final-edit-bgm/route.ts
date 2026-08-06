@@ -9,10 +9,13 @@ import {
   importFinalEditBgmFromFormData,
 } from '@/lib/final-edit/bgm-import-http';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const db = getDb();
     const storageRoot = path.join(dataRoot(), 'storage');

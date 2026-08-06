@@ -7,6 +7,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../batches/response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,6 +36,8 @@ export async function GET(request: NextRequest) {
 
 /** 导入一份 LUT(浏览器文件选择上传);服务端不接受任意本机绝对路径。 */
 export async function POST(request: NextRequest) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {
     return NextResponse.json({

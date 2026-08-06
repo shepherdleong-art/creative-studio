@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
 import { parseProjectInfoUpdate, ProjectInfoValidationError } from '@/lib/project-info';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function GET(
   _request: NextRequest,
@@ -66,6 +67,8 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const db = getDb();
@@ -124,6 +127,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const db = getDb();

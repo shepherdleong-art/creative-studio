@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id } = await params;
   const job = getDb().prepare(`SELECT kind FROM final_edit_jobs WHERE id=? AND status='failed'`).get(id) as { kind: string } | undefined;
   if (!job) return NextResponse.json({ error: 'job_not_retryable' }, { status: 409 });

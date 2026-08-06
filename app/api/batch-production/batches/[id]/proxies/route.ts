@@ -11,6 +11,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,6 +28,8 @@ interface PoolAssetRow {
  * 代理必须匹配已确认的色彩快照,不能被页面伪造成任意 LUT 组合。
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { id: batchId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

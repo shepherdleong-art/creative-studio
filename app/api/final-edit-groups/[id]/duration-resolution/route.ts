@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import type { DurationResolutionInput } from '@/lib/final-edit/workspace';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const body = await request.json() as Omit<DurationResolutionInput, 'groupId'>;

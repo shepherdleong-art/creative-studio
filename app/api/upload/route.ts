@@ -5,6 +5,7 @@ import { preprocessImage, DEFAULT_OPTIONS } from '@/lib/image-preprocess';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 /** Allowed image MIME types and their extensions. */
 const ALLOWED_MIME: Record<string, string> = {
@@ -43,6 +44,8 @@ function detectMimeByMagic(buffer: Buffer): string | null {
 }
 
 export async function POST(request: NextRequest) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];

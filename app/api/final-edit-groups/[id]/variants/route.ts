@@ -3,8 +3,11 @@ import { getDb } from '@/lib/db';
 import { getFinalEditWorkspace } from '@/lib/final-edit/runtime';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import type { OutputPresetId } from '@/lib/final-edit/types';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const group = getDb().prepare(`SELECT projectId, scriptDraftId, narrationConfigJson, analysisProviderId FROM final_edit_groups WHERE id=?`).get(id) as { projectId: string; scriptDraftId: string; narrationConfigJson: string; analysisProviderId: string } | undefined;

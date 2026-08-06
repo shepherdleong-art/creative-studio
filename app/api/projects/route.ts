@@ -4,6 +4,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
+import { resolveImageJobProvider } from '@/lib/image-provider-selection';
+import { ManagedProviderPolicyError } from '@/lib/managed-provider-policy';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 function isRealApiKey(value: string | null | undefined): boolean {
   const trimmed = (value || '').trim();
@@ -65,6 +69,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const db = getDb();
     const body = await request.json();
@@ -75,6 +81,28 @@ export async function POST(request: NextRequest) {
       id: string; enabled: number; apiKey: string; apiKeyEnv: string; type: string;
     } | undefined;
     if (!provider) return NextResponse.json({ error: 'Provider not found' }, { status: 400 });
+
+    // Re-resolve the exact selected row through the trusted image-provider
+    // policy before any project, image binding, or job write. In managed mode
+    // a hidden/rotated provider must be rejected even when its local row still
+    // looks enabled and configured; unrestricted mode keeps the historical
+    // validation and body.model selection below unchanged.
+    let resolvedProvider: ReturnType<typeof resolveImageJobProvider>;
+    try {
+      resolvedProvider = resolveImageJobProvider(db, provider.id, {
+        providerId: provider.id,
+        model: body.model || 'gpt-image-2',
+      });
+    } catch (err) {
+      if (err instanceof ManagedProviderPolicyError) {
+        return NextResponse.json({ error: err.message, code: err.code }, { status: 403 });
+      }
+      // Preserve the existing unrestricted validation messages while ensuring
+      // no resolver failure can fall through to a project/job INSERT.
+      if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
+      if (!isRealApiKey(provider.apiKey)) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
+      return NextResponse.json({ error: 'Provider validation failed', code: 'provider_validation_failed' }, { status: 400 });
+    }
     if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
     if (!isRealApiKey(provider.apiKey)) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
 
@@ -90,7 +118,9 @@ export async function POST(request: NextRequest) {
     }
 
     const projectId = uuidv4();
-    const model = body.model || 'gpt-image-2';
+    // Managed provisioning owns the model as well as provider identity;
+    // unrestricted projects retain the caller's historical model choice.
+    const model = isManagedDeployment() ? resolvedProvider.model : (body.model || 'gpt-image-2');
     const quality = body.quality || 'medium';
     const timeoutMs = body.timeoutMs || 600000;
     const maxAttempts = body.maxAttempts || 2;

@@ -3,6 +3,9 @@ import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
+import { assertManagedProviderAllowed, loadManagedProviderAllowlist, ManagedProviderPolicyError } from '@/lib/managed-provider-policy';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 const MAX_ITEMS = 10;
 
@@ -20,6 +23,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id: shotSetId } = await params;
     const db = getDb();
@@ -57,9 +62,22 @@ export async function POST(
     const providerCache = new Map<string, { model: string }>();
     for (const pid of uniqueProviderIds) {
       const prov = db.prepare(`SELECT * FROM video_providers WHERE id = ? AND enabled = 1`).get(pid) as {
-        id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; defaultModel: string;
+        id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; baseUrl: string; defaultModel: string;
       } | undefined;
       if (!prov) return NextResponse.json({ error: `视频供应商 ${pid} 未找到或已禁用` }, { status: 400 });
+      // Validate every unique provider before opening the transaction. This
+      // keeps a hidden or role-invalid provider from allowing any batch job
+      // INSERT, while unrestricted mode remains unchanged.
+      assertManagedProviderAllowed(
+        'video',
+        {
+          id: prov.id,
+          type: prov.type,
+          baseUrl: prov.baseUrl,
+          apiKeyEnv: prov.apiKeyEnv,
+        },
+        isManagedDeployment() ? loadManagedProviderAllowlist() : null,
+      );
       const providerConfig = getVideoProviderConfigState(prov);
       if (!providerConfig.configured) {
         return NextResponse.json(
@@ -108,6 +126,9 @@ export async function POST(
 
     return NextResponse.json({ success: true, videoJobIds });
   } catch (err) {
+    if (err instanceof ManagedProviderPolicyError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: 403 });
+    }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

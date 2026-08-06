@@ -8,12 +8,15 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../../batches/response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** 把失败的单个任务重新放入可领取队列;重试只增加任务尝试,不增加成片计划。 */
 export async function POST(request: NextRequest, context: { params: Promise<{ taskId: string }> }) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const { taskId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
   if (!projectId) {

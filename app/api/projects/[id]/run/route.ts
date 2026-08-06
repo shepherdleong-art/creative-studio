@@ -5,11 +5,14 @@ import { cancelVideoQueue } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
 import { getEffectiveImageConcurrency } from '@/lib/provider-concurrency';
 import { v4 as uuidv4 } from 'uuid';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   try {
     const { id } = await params;
     const db = getDb();

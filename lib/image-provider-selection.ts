@@ -1,4 +1,9 @@
 import type Database from 'better-sqlite3';
+import {
+  assertManagedProviderAllowed,
+  loadManagedProviderAllowlist,
+} from './managed-provider-policy.ts';
+import { isManagedDeployment } from './managed-deployment.ts';
 
 interface ImageProviderRow {
   id: string;
@@ -6,6 +11,8 @@ interface ImageProviderRow {
   apiKeyEnv: string;
   enabled: number;
   model: string;
+  type: string;
+  baseUrl: string;
 }
 
 interface ImageProviderDefaults {
@@ -31,6 +38,20 @@ function isPlaceholderValue(value: string): boolean {
   return false;
 }
 
+function assertImageProviderPolicy(provider: ImageProviderRow): void {
+  if (!isManagedDeployment()) return;
+  assertManagedProviderAllowed(
+    'image',
+    {
+      id: provider.id,
+      type: provider.type,
+      baseUrl: provider.baseUrl,
+      apiKeyEnv: provider.apiKeyEnv,
+    },
+    loadManagedProviderAllowlist(),
+  );
+}
+
 export function resolveImageJobProvider(
   db: Database.Database,
   requestedProviderId: unknown,
@@ -42,12 +63,15 @@ export function resolveImageJobProvider(
       : defaults.providerId;
 
   const provider = db.prepare(`
-    SELECT id, apiKey, apiKeyEnv, enabled, model
+    SELECT id, apiKey, apiKeyEnv, enabled, model, type, baseUrl
     FROM providers
     WHERE id = ?
   `).get(providerId) as ImageProviderRow | undefined;
 
   if (!provider) throw new Error('供应商不存在');
+  // Keep the exact provider identity selected by the caller. In managed mode
+  // a rotated/hidden id must fail here rather than silently falling back.
+  assertImageProviderPolicy(provider);
   if (!provider.enabled) throw new Error('供应商已禁用');
   if (!hasUsableKey(provider)) throw new Error('供应商 API Key 未配置');
 

@@ -9,11 +9,16 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from './data-root.ts';
 import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
+import { isManagedDeployment } from './managed-deployment.ts';
+import { assertProviderExecutionAvailable, assertProviderExecutionIdentityStable, readManagedExecutionGeneration, ProviderExecutionGateError } from './provider-execution-gate.ts';
+import type { AssertProviderExecutionAvailableOptions } from './provider-execution-gate.ts';
 
 export interface VideoQueueOptions {
   projectId: string;
   concurrency: number;
   timeoutMs: number;
+  /** Test seam for injecting managed runtime/allowlist state. */
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
 }
 
 // Number of video jobs to run concurrently per project. Override with the
@@ -131,14 +136,14 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
 
         const claimed = claimNextVideoJob(projectId);
         if (claimed.job) {
-          await runVideoJob(claimed.job, { timeoutMs, abort: abort.signal });
+          await runVideoJob(claimed.job, { timeoutMs, abort: abort.signal, executionGate: options.executionGate });
           continue;
         }
         // 没有新任务时,自动续跑已掉出轮询窗口的 needs_check 任务(它们持有
         // 远端 task_id,只是轮询超时,不能丢出自动化管线)。
         const needsCheck = claimNeedsCheckVideoJob(projectId);
         if (needsCheck) {
-          await runVideoJob(needsCheck, { timeoutMs, abort: abort.signal });
+          await runVideoJob(needsCheck, { timeoutMs, abort: abort.signal, executionGate: options.executionGate });
           continue;
         }
         if (claimed.gated) {
@@ -169,10 +174,10 @@ export async function runVideoQueue(options: VideoQueueOptions): Promise<void> {
 
 async function runVideoJob(
   job: VideoJobRecord,
-  options: { timeoutMs: number; abort: AbortSignal }
+  options: { timeoutMs: number; abort: AbortSignal; executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'> }
 ): Promise<void> {
   const db = getDb();
-  const { timeoutMs, abort } = options;
+  const { timeoutMs, abort, executionGate } = options;
 
   if (abort.aborted) return;
 
@@ -207,18 +212,53 @@ async function runVideoJob(
       accessKey: string;
       secretKey: string;
       defaultDurationSec: number;
+      enabled: number;
     } | undefined;
 
     if (!provider) throw new Error('Video provider not found');
 
     const runtime = resolveVideoProviderRuntimeConfig(provider);
     let apiKey = runtime.apiKey;
-    if (!runtime.enabled) {
-      throw new Error('Video provider is disabled. Enable it in Settings before running jobs.');
-    }
-    if (!runtime.configured) {
-      throw new Error(`Video provider not configured. Set ${runtime.missing.join(', ')}`);
-    }
+    const managedExecution = isManagedDeployment(executionGate?.env ?? process.env);
+
+    const videoProviderIdentity = {
+      id: provider.id,
+      type: provider.type,
+      apiKeyEnv: provider.apiKeyEnv,
+      executionScope: managedExecution ? 'company' as const : 'external' as const,
+      baseUrl: runtime.baseUrl,
+      enabled: runtime.enabled,
+      configured: runtime.configured,
+      apiKey: runtime.apiKey,
+      model: runtime.model,
+      managedGeneration: managedExecution
+        ? readManagedExecutionGeneration(executionGate?.root ?? dataRoot())
+        : undefined,
+    };
+    const assertVideoExecution = async () => {
+      await assertProviderExecutionAvailable(videoProviderIdentity, {
+        root: dataRoot(),
+        ...executionGate,
+        capability: 'model',
+        kind: 'video',
+      });
+       if (!managedExecution) return;
+      const current = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(provider.id) as typeof provider | undefined;
+      const currentRuntime = current ? resolveVideoProviderRuntimeConfig(current) : null;
+      assertProviderExecutionIdentityStable(videoProviderIdentity, {
+        id: current?.id || provider.id,
+        type: current?.type || '',
+        apiKeyEnv: current?.apiKeyEnv || '',
+        executionScope: 'company',
+        baseUrl: currentRuntime?.baseUrl || '',
+        enabled: currentRuntime?.enabled === true,
+        configured: currentRuntime?.configured === true,
+         apiKey: currentRuntime?.apiKey || '',
+         model: currentRuntime?.model || '',
+         managedGeneration: readManagedExecutionGeneration(executionGate?.root ?? dataRoot()),
+       });
+    };
+    await assertVideoExecution();
 
     // Kling uses access_key + secret_key to generate a short-lived JWT.
     if (provider.type === 'kling') {
@@ -262,6 +302,7 @@ async function runVideoJob(
       logInfo(`Resuming polling for existing task_id=${taskId}`);
     } else {
       logInfo('Submitting video generation task...');
+      await assertVideoExecution();
       const submitResult = await adapter.submit(
         {
           model: job.model,
@@ -310,6 +351,7 @@ async function runVideoJob(
         return;
       }
 
+      await assertVideoExecution();
       const pollResult = await adapter.poll(taskId, apiKey, runtime.baseUrl, reqAbort.signal);
 
       const elapsedSec = Math.round((Date.now() - pollStartedAt) / 1000);
@@ -322,6 +364,7 @@ async function runVideoJob(
       if (pollResult.status === 'succeeded' && pollResult.videoUrl) {
         // Step 3: Download video
         logInfo(`Video generation succeeded, downloading: ${redactMediaUrlForLog(pollResult.videoUrl, apiKey)}`);
+        await assertVideoExecution();
         const downloadResult = await downloadVideoMediaForProvider({
           providerType: provider.type,
           url: pollResult.videoUrl,
@@ -388,6 +431,13 @@ async function runVideoJob(
     // 只有队列级 abort(用户取消)才是取消;适配器内部超时(如 kling 的 120s
     // 提交/30s 轮询)产生的是 AbortError,但远端任务可能仍在跑,绝不能误判为
     // canceled——按下面的失败分支处理。
+    if (err instanceof ProviderExecutionGateError) {
+      const gateMessage = `provider_execution_gate:${err.code}${err.message ? ` ${err.message}` : ''}`;
+      db.prepare(`UPDATE video_jobs SET status = 'failed', providerStatus = ?, finishedAt = datetime('now'), errorMessage = ? WHERE id = ? AND status = 'running'`).run(err.code, gateMessage, job.id);
+      logError(`Video job blocked by provider execution gate: ${gateMessage}`);
+      return;
+    }
+
     if (abort.aborted) {
       db.prepare(
         `UPDATE video_jobs SET status = 'canceled', errorMessage = 'Canceled by user'

@@ -7,6 +7,7 @@ import {
   batchProjectIdFromRequest,
   batchRouteErrorResponse,
 } from '../../batches/response';
+import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,8 @@ export const dynamic = 'force-dynamic';
  * 正在使用中的代理会被跳过并标记 pending-delete,不会一边使用一边删除。
  */
 export async function POST(request: NextRequest) {
+  const managedGuard = await guardManagedWorkbench();
+  if (managedGuard) return managedGuard;
   const projectId = batchProjectIdFromRequest(request);
   const body = await request.json().catch(() => ({})) as { assetIds?: unknown };
   const assetIds = Array.isArray(body.assetIds)
