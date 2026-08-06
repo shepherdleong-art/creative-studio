@@ -78,6 +78,16 @@ function isPlaceholder(value: string): boolean {
     || lower === 'todo';
 }
 
+function hasForbiddenRawUrlSyntax(value: string): boolean {
+  if (value.includes('?') || value.includes('#')) return true;
+  const schemeSeparator = value.indexOf('://');
+  if (schemeSeparator < 0) return false;
+  const authorityStart = schemeSeparator + 3;
+  const pathStart = value.indexOf('/', authorityStart);
+  const authorityEnd = pathStart < 0 ? value.length : pathStart;
+  return value.slice(authorityStart, authorityEnd).includes('@');
+}
+
 function validateLoopbackBaseUrl(value: unknown): string {
   const raw = stringValue(value, MAX_PROVIDER_STRING_LENGTH);
   let parsed: URL;
@@ -86,7 +96,12 @@ function validateLoopbackBaseUrl(value: unknown): string {
   } catch {
     fail();
   }
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) fail();
+  if (parsed.protocol !== 'http:'
+    || hasForbiddenRawUrlSyntax(raw)
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash) fail();
   if (!LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) fail();
   return parsed.toString().replace(/\/$/, '');
 }
@@ -95,7 +110,10 @@ function validateTtsBaseUrl(value: unknown): string {
   const raw = stringValue(value, MAX_PROVIDER_STRING_LENGTH);
   try {
     const parsed = new URL(raw);
-    if (parsed.username || parsed.password) fail();
+    if (hasForbiddenRawUrlSyntax(raw)
+      || parsed.username
+      || parsed.password
+      || parsed.origin !== 'https://openspeech.bytedance.com') fail();
     return getFinalEditTtsAdapter('doubao-seed-tts-2').validateBaseUrl(raw);
   } catch {
     fail();

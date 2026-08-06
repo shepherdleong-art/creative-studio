@@ -34,15 +34,13 @@ export type ManagedProviderPolicyVerdict =
   };
 
 export interface EvaluateManagedProviderInput {
-  managed?: boolean;
-  env?: NodeJS.ProcessEnv;
+  managed: boolean;
   kind: ManagedProviderKind;
   allowlist?: ManagedProviderAllowlist | null;
   provider: ManagedProviderIdentity;
 }
 
 export interface ManagedProviderPolicyOptions {
-  managed?: boolean;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -160,6 +158,15 @@ function isSafeUrl(value: string, protocol: 'http:' | 'https:', loopbackOnly: bo
   return true;
 }
 
+function isOfficialDoubaoTtsUrl(value: string): boolean {
+  if (!isSafeUrl(value, 'https:', false, ['/', '/api/v3/tts/unidirectional'])) return false;
+  try {
+    return new URL(value).origin === 'https://openspeech.bytedance.com';
+  } catch {
+    return false;
+  }
+}
+
 function hasValidRoleShape(
   kind: ManagedProviderKind,
   provider: unknown,
@@ -185,7 +192,7 @@ function hasValidRoleShape(
       return candidate.id === 'doubao-seed-tts-2'
         && candidate.type === 'doubao-http-chunked'
         && candidate.keyEnv === DOUBAO_TTS_KEY_ENV
-        && isSafeUrl(candidate.baseUrl, 'https:', false, ['/', '/api/v3/tts/unidirectional']);
+        && isOfficialDoubaoTtsUrl(candidate.baseUrl);
     default:
       return false;
   }
@@ -197,8 +204,7 @@ function hasValidRoleShape(
  * mode behavior even for legacy rows.
  */
 export function evaluateManagedProvider(input: EvaluateManagedProviderInput): ManagedProviderPolicyVerdict {
-  const managed = input.managed ?? isManagedDeployment(input.env);
-  if (!managed) return { allowed: true, mode: 'unrestricted' };
+  if (!input.managed) return { allowed: true, mode: 'unrestricted' };
 
   const candidateAllowlist = input.allowlist;
   if (!isProviderKind(input.kind) || !isValidManagedAllowlist(candidateAllowlist)) {
@@ -225,9 +231,8 @@ export class ManagedProviderPolicyError extends Error {
   }
 }
 
-function optionsManaged(options?: ManagedProviderPolicyOptions): boolean | undefined {
-  if (!options) return undefined;
-  return options.managed ?? isManagedDeployment(options.env);
+function isManagedForHelper(options?: ManagedProviderPolicyOptions): boolean {
+  return isManagedDeployment(options?.env ?? process.env);
 }
 
 export function assertManagedProviderAllowed(
@@ -236,24 +241,20 @@ export function assertManagedProviderAllowed(
   allowlist: ManagedProviderAllowlist | null | undefined,
   options?: ManagedProviderPolicyOptions,
 ): void;
-export function assertManagedProviderAllowed(input: EvaluateManagedProviderInput): void;
 export function assertManagedProviderAllowed(
-  kindOrInput: ManagedProviderKind | EvaluateManagedProviderInput,
-  provider?: ManagedProviderIdentity,
-  allowlist?: ManagedProviderAllowlist | null,
+  kind: ManagedProviderKind,
+  provider: ManagedProviderIdentity,
+  allowlist: ManagedProviderAllowlist | null | undefined,
   options?: ManagedProviderPolicyOptions,
 ): void {
-  const input: EvaluateManagedProviderInput = typeof kindOrInput === 'object'
-    ? kindOrInput
-    : {
-      kind: kindOrInput,
-      provider: provider as ManagedProviderIdentity,
-      allowlist,
-      managed: optionsManaged(options),
-      env: options?.env,
-    };
+  const input: EvaluateManagedProviderInput = {
+    kind,
+    provider,
+    allowlist,
+    managed: isManagedForHelper(options),
+  };
   const verdict = evaluateManagedProvider(input);
-  if (!verdict.allowed) throw new ManagedProviderPolicyError(verdict.code, input.kind, verdict.message);
+  if (!verdict.allowed) throw new ManagedProviderPolicyError(verdict.code, kind, verdict.message);
 }
 
 export function filterManagedProviders<T extends ManagedProviderIdentity>(
@@ -262,40 +263,17 @@ export function filterManagedProviders<T extends ManagedProviderIdentity>(
   allowlist: ManagedProviderAllowlist | null | undefined,
   options?: ManagedProviderPolicyOptions,
 ): T[];
-export function filterManagedProviders<T extends ManagedProviderIdentity>(input: {
-  kind: ManagedProviderKind;
-  providers: T[];
-  allowlist?: ManagedProviderAllowlist | null;
-  managed?: boolean;
-  env?: NodeJS.ProcessEnv;
-}): T[];
 export function filterManagedProviders<T extends ManagedProviderIdentity>(
-  kindOrInput: ManagedProviderKind | {
-    kind: ManagedProviderKind;
-    providers: T[];
-    allowlist?: ManagedProviderAllowlist | null;
-    managed?: boolean;
-    env?: NodeJS.ProcessEnv;
-  },
-  providersArg?: T[],
-  allowlistArg?: ManagedProviderAllowlist | null,
+  kind: ManagedProviderKind,
+  providers: T[],
+  allowlist: ManagedProviderAllowlist | null | undefined,
   options?: ManagedProviderPolicyOptions,
 ): T[] {
-  const input = typeof kindOrInput === 'object'
-    ? kindOrInput
-    : {
-      kind: kindOrInput,
-      providers: providersArg as T[],
-      allowlist: allowlistArg,
-      managed: optionsManaged(options),
-      env: options?.env,
-    };
-  const managed = input.managed ?? isManagedDeployment(input.env);
-  if (!managed) return input.providers;
-  return input.providers.filter((provider) => evaluateManagedProvider({
+  if (!isManagedForHelper(options)) return providers;
+  return providers.filter((provider) => evaluateManagedProvider({
     managed: true,
-    kind: input.kind,
-    allowlist: input.allowlist,
+    kind,
+    allowlist,
     provider,
   }).allowed);
 }

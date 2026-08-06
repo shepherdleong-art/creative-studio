@@ -100,8 +100,25 @@ test('unmanaged policy is explicitly unrestricted and does not inspect state or 
   assert.deepEqual(verdict, { allowed: true, mode: 'unrestricted' });
 
   const providers = [imageProvider, { ...imageProvider, id: 'legacy' }];
-  const filtered = filterManagedProviders('image', providers, null, { managed: false });
+  const filtered = filterManagedProviders('image', providers, null, { env: unrestrictedEnv });
   assert.equal(filtered, providers, 'unmanaged filtering must preserve the input array');
+});
+
+test('provider helpers derive managed mode from env and cannot be disabled by an extra managed:false field', () => {
+  const bypassAttempt = { env: managedEnv, managed: false } as unknown as { env: NodeJS.ProcessEnv };
+  assert.throws(
+    () => assertManagedProviderAllowed('image', { ...imageProvider, id: 'hidden' }, allowlist, bypassAttempt),
+    (error: unknown) => error instanceof ManagedProviderPolicyError
+      && error.code === 'managed_provider_not_allowed',
+  );
+
+  const providers = [imageProvider, { ...imageProvider, id: 'hidden' }];
+  const filtered = filterManagedProviders('image', providers, allowlist, bypassAttempt);
+  assert.deepEqual(filtered, [imageProvider]);
+  assert.notEqual(filtered, providers);
+
+  const unrestricted = filterManagedProviders('image', providers, allowlist, { env: unrestrictedEnv });
+  assert.equal(unrestricted, providers, 'unmanaged helper keeps historical array behavior');
 });
 
 test('managed deployment without a valid allowlist rejects every provider kind', () => {
@@ -117,7 +134,7 @@ test('managed deployment without a valid allowlist rejects every provider kind',
       { allowed: false, code: 'managed_state_missing', message: '公司受管配置尚未导入' },
     );
   }
-  assert.deepEqual(filterManagedProviders('image', [imageProvider], null, { managed: true }), []);
+  assert.deepEqual(filterManagedProviders('image', [imageProvider], null, { env: managedEnv }), []);
 });
 
 test('managed policy rejects any malformed full allowlist before checking a provider role', () => {
@@ -244,12 +261,17 @@ test('managed video providers require openai-video, company key env, and HTTP lo
 
 test('managed Doubao TTS requires its fixed identity, type, key env, HTTPS, and safe endpoint path', () => {
   assert.equal(evaluate('tts', ttsProvider).allowed, true);
+  assert.equal(evaluate('tts', { ...ttsProvider, baseUrl: 'https://openspeech.bytedance.com:443/' }).allowed, true);
   assert.equal(evaluate('tts', { ...ttsProvider, baseUrl: 'https://openspeech.bytedance.com' }).allowed, true);
   assert.equal(verdictCode(evaluate('tts', { ...ttsProvider, id: 'other-tts' })), 'managed_provider_not_allowed');
   for (const provider of [
     { ...ttsProvider, type: 'other' },
     { ...ttsProvider, keyEnv: 'OTHER_KEY' },
     { ...ttsProvider, baseUrl: 'http://openspeech.bytedance.com' },
+    { ...ttsProvider, baseUrl: 'https://evil.example/' },
+    { ...ttsProvider, baseUrl: 'https://1.2.3.4/' },
+    { ...ttsProvider, baseUrl: 'https://api.openspeech.bytedance.com/' },
+    { ...ttsProvider, baseUrl: 'https://openspeech.bytedance.com:8443/' },
     { ...ttsProvider, baseUrl: 'https://user:pass@openspeech.bytedance.com' },
     { ...ttsProvider, baseUrl: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional?x=1' },
     { ...ttsProvider, baseUrl: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional#x' },
@@ -265,7 +287,7 @@ test('filterManagedProviders reuses policy and keeps only valid allowlisted role
     { ...imageProvider, id: 'legacy-image' },
     { ...imageProvider, type: 'wrong' },
   ];
-  const filtered = filterManagedProviders('image', providers, allowlist, { managed: true });
+  const filtered = filterManagedProviders('image', providers, allowlist, { env: managedEnv });
   assert.deepEqual(filtered, [imageProvider]);
   assert.notEqual(filtered, providers);
   assert.deepEqual(providers, [
@@ -276,9 +298,9 @@ test('filterManagedProviders reuses policy and keeps only valid allowlisted role
 });
 
 test('assertManagedProviderAllowed throws a stable, non-secret policy error', () => {
-  assert.doesNotThrow(() => assertManagedProviderAllowed('image', imageProvider, allowlist, { managed: true }));
+  assert.doesNotThrow(() => assertManagedProviderAllowed('image', imageProvider, allowlist, { env: managedEnv }));
   assert.throws(
-    () => assertManagedProviderAllowed('video', { ...videoProvider, id: 'hidden' }, allowlist, { managed: true }),
+    () => assertManagedProviderAllowed('video', { ...videoProvider, id: 'hidden' }, allowlist, { env: managedEnv }),
     (error: unknown) => error instanceof ManagedProviderPolicyError
       && error.code === 'managed_provider_not_allowed'
       && error.kind === 'video'

@@ -127,9 +127,34 @@ test('schema rejects oversized content, placeholders and non-loopback company UR
   assert.throws(() => validateProvisioningPayload({ ...payload(), gatewayApiKey: 'sk-xxxx' }));
   const badScript = { ...(payload().script as Record<string, unknown>), baseUrl: 'https://company.example.com' };
   assert.throws(() => validateProvisioningPayload({ ...payload(), script: badScript }));
+  for (const ttsBaseUrl of [
+    'https://evil.example/',
+    'https://1.2.3.4/',
+    'https://api.openspeech.bytedance.com/',
+    'https://openspeech.bytedance.com:8443/',
+  ]) {
+    const badTts = { ...(payload().tts as Record<string, unknown>), baseUrl: ttsBaseUrl };
+    assert.throws(() => validateProvisioningPayload({ ...payload(), tts: badTts }), `non-official TTS URL must be rejected: ${ttsBaseUrl}`);
+  }
+  assert.equal(
+    validateProvisioningPayload({
+      ...payload(),
+      tts: { ...(payload().tts as Record<string, unknown>), baseUrl: 'https://openspeech.bytedance.com:443/' },
+    }).tts.baseUrl,
+    'https://openspeech.bytedance.com',
+  );
   const responsesScript = { ...(payload().script as Record<string, unknown>), type: 'openai-responses', apiStyle: 'openai-responses' };
   assert.equal((validateProvisioningPayload({ ...payload(), script: responsesScript }).script).apiStyle, 'openai-responses');
   assert.throws(() => validateProvisioningPayload({ ...payload(), image: { ...(payload().image as Record<string, unknown>), id: '../escape' } }));
+});
+
+test('schema rejects HTTPS loopback endpoints for all company provider roles', () => {
+  const badImage = { ...(payload().image as Record<string, unknown>), baseUrl: 'https://127.0.0.1:4000' };
+  const badScript = { ...(payload().script as Record<string, unknown>), baseUrl: 'https://127.0.0.1:4000' };
+  const badVideo = { ...(payload().videos as Array<Record<string, unknown>>)[0], baseUrl: 'https://127.0.0.1:4000' };
+  assert.throws(() => validateProvisioningPayload({ ...payload(), image: badImage }), 'HTTPS image loopback must be rejected');
+  assert.throws(() => validateProvisioningPayload({ ...payload(), script: badScript }), 'HTTPS script loopback must be rejected');
+  assert.throws(() => validateProvisioningPayload({ ...payload(), videos: [badVideo] }), 'HTTPS video loopback must be rejected');
 });
 
 test('first import, repeated rotation, process env and rollback are safe', () => {
