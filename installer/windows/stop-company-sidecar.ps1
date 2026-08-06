@@ -1,6 +1,5 @@
 ﻿param(
-  [string]$Root = '',
-  [switch]$SkipStartLock
+  [string]$Root = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,12 +166,10 @@ function Stop-PinnedOwnedProcess {
 
 try {
   New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
-  if (-not $SkipStartLock) {
-    $script:lockStream = Acquire-StartLock
-    if ($null -eq $script:lockStream) {
-      Write-SafeDiagnostic 'Timed out waiting for the LiteLLM start lock; no process or stack state was changed.'
-      $script:exitCode = 1
-    }
+  $script:lockStream = Acquire-StartLock
+  if ($null -eq $script:lockStream) {
+    Write-SafeDiagnostic 'Timed out waiting for the LiteLLM start lock; no process or stack state was changed.'
+    $script:exitCode = 1
   }
 
   if ($script:exitCode -eq 0) {

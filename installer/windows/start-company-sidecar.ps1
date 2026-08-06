@@ -1,5 +1,6 @@
 ﻿param(
-  [string]$Root = ''
+  [string]$Root = '',
+  [switch]$ForceRestart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,16 @@ function Write-SafeDiagnostic {
   } catch { }
 }
 
+function Get-BytesSha256Hex {
+  param([byte[]]$Bytes)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
 function Write-AtomicUtf8Json {
   param([string]$Path, [object]$Value)
   $tempPath = "$Path.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
@@ -72,9 +83,10 @@ function Write-AtomicUtf8Json {
     if ([IO.File]::Exists($Path)) {
       try {
         [IO.File]::Replace($tempPath, $Path, $backupPath, $true)
-        if ([IO.File]::Exists($backupPath)) { [IO.File]::Delete($backupPath) }
-        $backupPath = $null
       } catch { throw 'Atomic status replacement failed.' }
+      try {
+        if ([IO.File]::Exists($backupPath)) { [IO.File]::Delete($backupPath) }
+      } catch { }
     } else {
       [IO.File]::Move($tempPath, $Path)
     }
@@ -271,8 +283,13 @@ function Read-ValidatedProvisioningState {
   try {
     $configBytes = [IO.File]::ReadAllBytes($ConfigPath)
     if ($configBytes.Length -le 0 -or $configBytes.Length -gt (512 * 1024)) { return $null }
-    $null = [Text.UTF8Encoding]::new($false, $true).GetString($configBytes)
-    $state = Read-Utf8Json -Path $ProvisioningStatePath -MaxBytes 128KB
+    $configText = [Text.UTF8Encoding]::new($false, $true).GetString($configBytes)
+    $provisionStateBytes = [IO.File]::ReadAllBytes($ProvisioningStatePath)
+    if ($provisionStateBytes.Length -le 0 -or $provisionStateBytes.Length -gt (128 * 1024)) { return $null }
+    if ($provisionStateBytes.Length -ge 3 -and $provisionStateBytes[0] -eq 0xef -and $provisionStateBytes[1] -eq 0xbb -and $provisionStateBytes[2] -eq 0xbf) { return $null }
+    $provisionStateText = [Text.UTF8Encoding]::new($false, $true).GetString($provisionStateBytes)
+    $provisionStateHash = Get-BytesSha256Hex -Bytes $provisionStateBytes
+    $state = $provisionStateText | ConvertFrom-Json -ErrorAction Stop
     if (-not (Test-ExactProperties -Value $state -Expected @('schemaVersion', 'profileName', 'importedAt', 'configHash', 'managedProviders'))) { return $null }
     $schemaTypeValid = $state.schemaVersion -isnot [string] -and $state.schemaVersion -isnot [bool]
     $schemaTypeValid = $schemaTypeValid -and ($state.schemaVersion -is [int] -or $state.schemaVersion -is [long] -or $state.schemaVersion -is [double] -or $state.schemaVersion -is [decimal])
@@ -289,8 +306,9 @@ function Read-ValidatedProvisioningState {
     $configHash = $state.configHash
     if ($configHash -isnot [string] -or -not [regex]::IsMatch($configHash, '^[a-f0-9]{64}$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)) { return $null }
     if (-not (Test-ProviderIds -Providers $state.managedProviders)) { return $null }
-    $actualHash = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash
+    $actualHash = Get-BytesSha256Hex -Bytes $configBytes
     if (-not [string]::Equals($actualHash, $configHash, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    $state | Add-Member -NotePropertyName provisionStateHash -NotePropertyValue ([string]$provisionStateHash) -Force
     return $state
   } catch {
     Write-SafeDiagnostic 'LiteLLM provisioning state is not a valid schema v2 UTF-8 document.'
@@ -314,12 +332,13 @@ function Test-ControlledStack {
 function Test-StackMatchesState {
   param($Stack, $State)
   if (-not (Test-ControlledStack -Stack $Stack) -or $null -eq $State) { return $false }
-  if ($Stack.configHash -isnot [string]) { return $false }
-  return [string]::Equals($Stack.configHash, [string]$State.configHash, [StringComparison]::OrdinalIgnoreCase)
+  if ($Stack.configHash -isnot [string] -or $Stack.provisionStateHash -isnot [string]) { return $false }
+  return [string]::Equals($Stack.configHash, [string]$State.configHash, [StringComparison]::OrdinalIgnoreCase) -and
+    [string]::Equals($Stack.provisionStateHash, [string]$State.provisionStateHash, [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Write-Stack {
-  param([int]$ProcessId, [string]$ConfigHash, [string]$StartedAt = '')
+  param([int]$ProcessId, [string]$ConfigHash, [string]$ProvisionStateHash, [string]$StartedAt = '')
   if ($StartedAt -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$') {
     $StartedAt = [DateTime]::Now.ToString('yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
   }
@@ -336,6 +355,7 @@ function Write-Stack {
     runtimeRelativePath = 'runtime-litellm\python.exe'
     configRelativePath = 'config.yaml'
     configHash = $ConfigHash
+    provisionStateHash = $ProvisionStateHash
   }
   Write-AtomicUtf8Json -Path $StackPath -Value $stack
 }
@@ -398,7 +418,8 @@ function Stop-OwnedProcess {
     if (-not (Test-OwnedLiteLLMProcess -ProcessRecord $recordAgain)) { return $false }
     if ($pinned.HasExited) { return $false }
     $null = $pinned.Kill()
-    $null = $pinned.WaitForExit(5000)
+    $waited = [bool]$pinned.WaitForExit(5000)
+    if (-not $waited -and -not $pinned.HasExited) { return $false }
     return $true
   } catch {
     return $false
@@ -440,10 +461,10 @@ try {
     $pidIsNumber = $pidValue -is [ValueType] -and $pidValue -isnot [bool] -and $pidValue -isnot [string]
     if ($pidIsNumber -and [double]$pidValue -eq [Math]::Truncate([double]$pidValue) -and [double]$pidValue -gt 0 -and [double]$pidValue -le 2147483647) { $existingPid = [int]$pidValue }
     $existingRecord = Get-ProcessRecord -ProcessId $existingPid
-    if ($existingRecord -and (Test-OwnedLiteLLMProcess -ProcessRecord $existingRecord) -and (Test-StackMatchesState -Stack $existingStack -State $state)) {
+    if (-not $ForceRestart -and $existingRecord -and (Test-OwnedLiteLLMProcess -ProcessRecord $existingRecord) -and (Test-StackMatchesState -Stack $existingStack -State $state)) {
       $existingResult = Wait-ForHealthy -ProcessId $existingPid -TimeoutSeconds 30
       if ($existingResult -eq 'ready') {
-        Write-Stack -ProcessId $existingPid -ConfigHash ([string]$state.configHash) -StartedAt ([string]$existingStack.startedAt)
+        Write-Stack -ProcessId $existingPid -ConfigHash ([string]$state.configHash) -ProvisionStateHash ([string]$state.provisionStateHash) -StartedAt ([string]$existingStack.startedAt)
         Write-SidecarStatus -Status 'ready' -Code 'ready'
         $ready = $true
       } elseif ($existingResult -eq 'health_timeout') {
@@ -497,7 +518,7 @@ try {
       foreach ($name in $controlledNames) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
     }
     if ($null -eq $process) { Fail-Sidecar -Code 'start_failed' -Diagnostic 'Start-Process did not return a LiteLLM process.' }
-    Write-Stack -ProcessId $process.Id -ConfigHash ([string]$state.configHash)
+    Write-Stack -ProcessId $process.Id -ConfigHash ([string]$state.configHash) -ProvisionStateHash ([string]$state.provisionStateHash)
     $result = Wait-ForHealthy -ProcessId $process.Id -TimeoutSeconds 30
     if ($result -eq 'ready') {
       Write-SidecarStatus -Status 'ready' -Code 'ready'

@@ -99,9 +99,12 @@ assert.match(start, /COMPANY_GATEWAY_API_KEY/);
 assert.match(start, /GATEWAY_API_KEY/);
 assert.match(start, /CREATIVE_STUDIO_COS_SECRET_KEY/);
 assert.match(start, /ConvertFrom-Json/);
-assert.match(start, /Get-FileHash/);
+assert.match(start, /Get-BytesSha256Hex/);
 assert.match(start, /configHash/);
 assert.match(start, /Read-ValidatedProvisioningState/);
+assert.match(start, /provisionStateHash/, 'stack identity must include the exact provisioning state hash');
+assert.match(start, /Get-BytesSha256Hex[\s\S]*provisionStateBytes/, 'provision state hash must be derived from the exact state.json bytes');
+assert.match(start, /Test-StackMatchesState[\s\S]*provisionStateHash/, 'reuse must require both config and provisioning state hashes');
 assert.match(start, /Test-ProxyListenerOwnedByProcess/);
 assert.match(start, /RuntimeEnvValueMaxChars/);
 assert.match(start, /RuntimeEnvMaxBytes/);
@@ -121,13 +124,11 @@ assert.match(start, /yyyy-MM-ddTHH:mm:ss/);
 assert.doesNotMatch(start, /CREATIVE_STUDIO_COS_SECRET_KEY\s*=\s*[^\r\n]/i);
 
 const restart = read(restartPath);
-assert.match(restart, /Test-ControlledStack/);
-assert.match(restart, /Test-Owned(?:LiteLLM)?Process/);
-assert.match(restart, /stop-company-sidecar\.ps1/);
 assert.match(restart, /start-company-sidecar\.ps1/);
-assert.match(restart, /-File \$StopScript/);
 assert.match(restart, /-File \$StartScript/);
-assert.match(restart, /--port.*4000/s);
+assert.match(restart, /-ForceRestart/);
+assert.doesNotMatch(restart, /-File \$StopScript/);
+assert.doesNotMatch(restart, /company-sidecar-start\.lock|Acquire-StartLock|SkipStartLock/);
 assert.doesNotMatch(restart, /Stop-Process/);
 assert.doesNotMatch(restart, /CREATIVE_STUDIO_PROXY_PORT|-ProxyPort\b/);
 
@@ -175,9 +176,10 @@ assert.match(start, /FileShare\]::None/);
 assert.doesNotMatch(start, /catch\s*\{\s*Move-Item\s+-LiteralPath\s+\$tempPath[^\n]*-Force/, 'existing status replacement must not fall back to destructive Move-Item');
 assert.match(start, /File\]::Replace[\s\S]*throw/, 'Replace failure must fail closed after cleaning the temp file');
 assert.match(start, /-MaximumRedirection\s+0/, 'health check must reject redirects');
-assert.match(restart, /company-sidecar-start\.lock/);
-assert.match(restart, /Acquire-StartLock/);
-assert.match(restart, /lockStream/);
+assert.match(start, /company-sidecar-start\.lock/);
+assert.match(start, /Acquire-StartLock/);
+assert.match(start, /lockStream/);
+assert.doesNotMatch(restart, /company-sidecar-start\.lock|Acquire-StartLock/);
 assert.match(stop, /GetProcessById/);
 assert.match(start, /GetProcessById/);
 assert.doesNotMatch(stop, /Stop-Process/);
@@ -193,10 +195,18 @@ assert.match(start, /\[Array\]/);
 assert.match(start, /\{0,63\}/);
 assert.match(start, /-ceq\s+'company-litellm'/);
 assert.match(start, /portIsNumber[\s\S]*proxyPort[\s\S]*-isnot\s+\[string\]/i);
-assert.match(restart, /-ceq\s+'company-litellm'/);
+assert.match(restart, /-ForceRestart/);
+assert.ok(restart.indexOf('-File $StartScript') >= 0, 'restart must invoke start');
+assert.match(start, /Acquire-StartLock/);
+assert.match(start, /ForceRestart/);
+assert.doesNotMatch(start, /SkipStartLock/);
+assert.doesNotMatch(stop, /SkipStartLock/);
 assert.match(start, /configHash/);
 assert.match(start, /Write-Stack[\s\S]*configHash/);
 assert.match(start, /configHash[^\n]*OrdinalIgnoreCase/);
+assert.match(start, /\[switch\]\$ForceRestart/, 'start must expose an explicit force-restart mode');
+assert.match(start, /WaitForExit\(5000\)[\s\S]*HasExited/, 'kill success must require an exited process');
+assert.match(start, /File\]::Replace[\s\S]*catch \{ throw 'Atomic status replacement failed\.' \}[\s\S]*File\]::Delete[\s\S]*catch \{ \}/, 'backup cleanup failure must not turn a successful replace into failure');
 
 function writeJson(filePath, value) {
   writeFileSync(filePath, `${JSON.stringify(value)}\n`, 'utf8');
@@ -244,10 +254,32 @@ if (process.platform === 'win32' && existsSync('installer/windows/start-company-
   try {
     createProvisionFixture(root);
     const valid = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Root', root], { encoding: 'utf8', timeout: 20_000 });
+    if (valid.error?.code === 'EPERM') {
+      console.warn('PowerShell child process blocked by the current sandbox; rerun litellm-sidecar.test.mjs in an external Windows sandbox.');
+    } else {
     assert.notEqual(valid.status, 0, 'dummy runtime must fail without reaching a real model');
     const validStatus = JSON.parse(readFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), 'utf8'));
     assert.equal(validStatus.status, 'failed');
     assert.notEqual(validStatus.code, 'provision_invalid', 'valid UTF-8 v2 state must pass provisioning validation');
+
+    // PowerShell must reject the old public lock-bypass switch before the
+    // controller can touch a sentinel stack/status file.
+    const sentinelStack = {
+      sidecarKind: 'company-litellm',
+      runtimeRelativePath: 'runtime-litellm\\python.exe',
+      configRelativePath: 'config.yaml',
+      proxyPort: 4000,
+      litellmPid: 2147483647,
+    };
+    const stackPath = path.join(root, 'storage', 'run', 'stack.json');
+    writeJson(stackPath, sentinelStack);
+    const nakedStart = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Root', root, '-SkipStartLock'], { encoding: 'utf8', timeout: 20_000 });
+    assert.notEqual(nakedStart.status, 0, 'naked -SkipStartLock must be rejected by parameter binding');
+    assert.match(`${nakedStart.stdout ?? ''}${nakedStart.stderr ?? ''}`, /SkipStartLock|parameter/i);
+    assert.deepEqual(JSON.parse(readFileSync(stackPath, 'utf8')), sentinelStack, 'rejected bypass must not touch stack state');
+    const nakedStop = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.resolve(stopPath), '-Root', root, '-SkipStartLock'], { encoding: 'utf8', timeout: 20_000 });
+    assert.notEqual(nakedStop.status, 0, 'stop must reject a naked -SkipStartLock too');
+    assert.deepEqual(JSON.parse(readFileSync(stackPath, 'utf8')), sentinelStack, 'rejected stop bypass must not touch stack state');
 
     const cases = [
       ['schema string', { schemaVersion: '2' }],
@@ -276,6 +308,7 @@ if (process.platform === 'win32' && existsSync('installer/windows/start-company-
     assert.notEqual(oversized.status, 0);
     const oversizedStatus = JSON.parse(readFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), 'utf8'));
     assert.equal(oversizedStatus.code, 'provision_invalid');
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
