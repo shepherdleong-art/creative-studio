@@ -211,7 +211,7 @@ test('first import, repeated rotation, process env and rollback are safe', () =>
     liteLlmConfigYaml: 'model_list:\n  - model_name: rotated\n',
     videos: [
       {
-        id: 'company-video-new', name: '鏂版祴璇曡棰?', type: 'openai-video', apiStyle: 'openai-compatible',
+        id: 'company-video-new', name: '新测试视频', type: 'openai-video', apiStyle: 'openai-compatible',
         baseUrl: 'http://127.0.0.1:4000', model: 'new-video-model', enabled: true,
       },
     ],
@@ -268,21 +268,23 @@ test('state fsync failure closes the handle and rolls back every import artifact
   const originalCloseSync = fs.closeSync;
   const originalUnlinkSync = fs.unlinkSync;
   let fsyncCount = 0;
-  let stateTempHandleOpen = false;
+  let stateFailureFd: number | null = null;
+  const closedFds = new Set<number>();
   fs.fsyncSync = ((fd: number) => {
     fsyncCount += 1;
     if (fsyncCount === 3) {
-      stateTempHandleOpen = true;
+      stateFailureFd = fd;
       throw new Error('state fsync failed');
     }
     return originalFsyncSync(fd);
   }) as typeof fs.fsyncSync;
   fs.closeSync = ((fd: number) => {
-    if (stateTempHandleOpen) stateTempHandleOpen = false;
+    closedFds.add(fd);
     return originalCloseSync(fd);
   }) as typeof fs.closeSync;
   fs.unlinkSync = ((target: Parameters<typeof fs.unlinkSync>[0]) => {
-    if (stateTempHandleOpen && typeof target === 'string' && target.endsWith('.tmp')) {
+    if (stateFailureFd !== null && !closedFds.has(stateFailureFd)
+      && typeof target === 'string' && target.endsWith('.tmp')) {
       throw new Error('state temp handle is still open');
     }
     return originalUnlinkSync(target);
@@ -295,6 +297,57 @@ test('state fsync failure closes the handle and rolls back every import artifact
     fs.unlinkSync = originalUnlinkSync;
   }
   assert.equal(fsyncCount, 3);
+  assert.equal(stateFailureFd !== null, true);
+  if (stateFailureFd !== null) assert.equal(closedFds.has(stateFailureFd), true);
+  assert.equal(fs.existsSync(path.join(root, 'config.yaml')), false);
+  assert.equal(fs.existsSync(path.join(root, 'data', 'provisioning', 'runtime.env')), false);
+  assert.equal(fs.existsSync(path.join(root, 'data', 'provisioning', 'state.json')), false);
+  assert.deepEqual({
+    providers: db.prepare('SELECT * FROM providers ORDER BY id').all(),
+    scripts: db.prepare('SELECT * FROM script_providers ORDER BY id').all(),
+    videos: db.prepare('SELECT * FROM video_providers ORDER BY id').all(),
+    tts: db.prepare('SELECT * FROM final_edit_tts_providers ORDER BY id').all(),
+  }, beforeDb);
+  assertNoProvisioningTempFiles(root);
+  db.close();
+});
+
+test('state temp close failure does not retry a potentially reused descriptor', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-provisioning-state-close-'));
+  const db = testDb();
+  const beforeDb = {
+    providers: db.prepare('SELECT * FROM providers ORDER BY id').all(),
+    scripts: db.prepare('SELECT * FROM script_providers ORDER BY id').all(),
+    videos: db.prepare('SELECT * FROM video_providers ORDER BY id').all(),
+    tts: db.prepare('SELECT * FROM final_edit_tts_providers ORDER BY id').all(),
+  };
+  const originalFsyncSync = fs.fsyncSync;
+  const originalCloseSync = fs.closeSync;
+  let fsyncCount = 0;
+  let stateTempFd: number | null = null;
+  let stateCloseCalls = 0;
+  fs.fsyncSync = ((fd: number) => {
+    fsyncCount += 1;
+    if (fsyncCount === 3) stateTempFd = fd;
+    return originalFsyncSync(fd);
+  }) as typeof fs.fsyncSync;
+  fs.closeSync = ((fd: number) => {
+    if (fd === stateTempFd) {
+      stateCloseCalls += 1;
+      const result = originalCloseSync(fd);
+      if (stateCloseCalls === 1) throw new Error('state close failed after close');
+      return result;
+    }
+    return originalCloseSync(fd);
+  }) as typeof fs.closeSync;
+  try {
+    assert.throws(() => applyProvisioningPayload(payload(), { root, db }));
+  } finally {
+    fs.fsyncSync = originalFsyncSync;
+    fs.closeSync = originalCloseSync;
+  }
+  assert.equal(stateTempFd === null, false);
+  assert.equal(stateCloseCalls, 1);
   assert.equal(fs.existsSync(path.join(root, 'config.yaml')), false);
   assert.equal(fs.existsSync(path.join(root, 'data', 'provisioning', 'runtime.env')), false);
   assert.equal(fs.existsSync(path.join(root, 'data', 'provisioning', 'state.json')), false);
@@ -318,6 +371,51 @@ test('state preserves schema-valid internal profile whitespace', () => {
   assert.ok(state);
   assert.equal(state.profileName, profileName);
   assert.equal(readProvisioningStatus(root).profileName, profileName);
+  db.close();
+});
+
+test('state requires a present and complete runtime credential file', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-provisioning-runtime-state-'));
+  const db = testDb();
+  applyProvisioningPayload(payload(), { root, db, now: new Date('2026-08-06T00:01:00.000Z') });
+  const runtimePath = path.join(root, 'data', 'provisioning', 'runtime.env');
+  const validRuntime = fs.readFileSync(runtimePath);
+  const validRuntimeText = validRuntime.toString('utf8');
+  const requiredKeys = [
+    'CREATIVE_STUDIO_GATEWAY_API_KEY',
+    'COMPANY_GATEWAY_API_KEY',
+    'GATEWAY_API_KEY',
+    'CREATIVE_STUDIO_COS_SECRET_ID',
+    'CREATIVE_STUDIO_COS_SECRET_KEY',
+    'CREATIVE_STUDIO_COS_DOMAIN',
+  ];
+
+  fs.unlinkSync(runtimePath);
+  assert.equal(readProvisioningState(root), null);
+  assert.equal(readProvisioningStatus(root).configured, false);
+
+  fs.writeFileSync(runtimePath, Buffer.alloc(128 * 1024 + 1, 0x41));
+  assert.equal(readProvisioningState(root), null);
+  assert.equal(readProvisioningStatus(root).configured, false);
+
+  for (const requiredKey of requiredKeys) {
+    const withoutKey = validRuntimeText
+      .split(/\r?\n/)
+      .filter((line) => !line.startsWith(`${requiredKey}=`))
+      .join('\n');
+    fs.writeFileSync(runtimePath, withoutKey);
+    assert.equal(readProvisioningState(root), null);
+    assert.equal(readProvisioningStatus(root).configured, false);
+  }
+
+  const blankGateway = validRuntimeText.replace(/^CREATIVE_STUDIO_GATEWAY_API_KEY=.*$/m, 'CREATIVE_STUDIO_GATEWAY_API_KEY="');
+  fs.writeFileSync(runtimePath, blankGateway);
+  assert.equal(readProvisioningState(root), null);
+  assert.equal(readProvisioningStatus(root).configured, false);
+
+  fs.writeFileSync(runtimePath, validRuntime);
+  assert.ok(readProvisioningState(root));
+  assert.equal(readProvisioningStatus(root).configured, true);
   db.close();
 });
 

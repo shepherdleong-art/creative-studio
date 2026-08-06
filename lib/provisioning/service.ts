@@ -44,6 +44,15 @@ const RUNTIME_ENV_KEYS = [
   'CREATIVE_STUDIO_COS_URL_TTL_SEC',
 ] as const;
 
+const REQUIRED_RUNTIME_ENV_KEYS = [
+  'CREATIVE_STUDIO_GATEWAY_API_KEY',
+  'COMPANY_GATEWAY_API_KEY',
+  'GATEWAY_API_KEY',
+  'CREATIVE_STUDIO_COS_SECRET_ID',
+  'CREATIVE_STUDIO_COS_SECRET_KEY',
+  'CREATIVE_STUDIO_COS_DOMAIN',
+] as const;
+
 const MAX_PROVISIONING_STATE_FILE_BYTES = 128 * 1024;
 const SAFE_PROVIDER_ID = new RegExp(`^[a-z0-9](?:[a-z0-9._-]{0,${MAX_PROVIDER_ID_LENGTH - 1}})$`);
 
@@ -154,15 +163,11 @@ function safeTempPath(target: string, suffix: string): string {
   return `${target}.${process.pid}.${Date.now()}.${crypto.randomBytes(8).toString('hex')}.${suffix}`;
 }
 
-function writeTemp(target: string, bytes: Buffer): string {
-  ensureParent(target);
-  const temp = safeTempPath(target, 'tmp');
+function writeTemp(temp: string, bytes: Buffer): void {
   let handle: number | undefined;
-  let opened = false;
   let failure: unknown;
   try {
     handle = fs.openSync(temp, 'wx', 0o600);
-    opened = true;
     fs.writeFileSync(handle, bytes);
     fs.fsyncSync(handle);
   } catch (error) {
@@ -172,20 +177,13 @@ function writeTemp(target: string, bytes: Buffer): string {
     try {
       fs.closeSync(handle);
     } catch (closeError) {
-      // Preserve a write/fsync error when one already occurred. A second close
-      // attempt covers platforms that report an error after closing the handle.
+      // Preserve a write/fsync error when one already occurred. The caller
+      // owns cleanup of the recorded temp path after this single close call.
       if (failure === undefined) failure = closeError;
-      try { fs.closeSync(handle); } catch { /* best effort */ }
     }
     handle = undefined;
   }
-  if (failure !== undefined) {
-    if (opened) {
-      try { fs.unlinkSync(temp); } catch { /* preserve the original error */ }
-    }
-    throw failure;
-  }
-  return temp;
+  if (failure !== undefined) throw failure;
 }
 
 function snapshot(filePath: string): FileSnapshot {
@@ -196,7 +194,11 @@ function snapshot(filePath: string): FileSnapshot {
 function installFiles(writes: Array<{ path: string; bytes: Buffer }>, snapshots: FileSnapshot[]): void {
   const temps: Array<{ path: string; bytes: Buffer; temp: string }> = [];
   try {
-    for (const write of writes) temps.push({ ...write, temp: writeTemp(write.path, write.bytes) });
+    for (const write of writes) {
+      ensureParent(write.path);
+      temps.push({ ...write, temp: safeTempPath(write.path, 'tmp') });
+    }
+    for (const item of temps) writeTemp(item.temp, item.bytes);
     for (const item of temps) {
       const old = snapshots.find((entry) => entry.path === item.path);
       if (!old) throw new Error('file snapshot missing');
@@ -481,6 +483,10 @@ export function readProvisioningState(root = dataRoot()): ProvisioningStateV2 | 
     if (stateBytes.length > MAX_PROVISIONING_STATE_FILE_BYTES) return null;
     const parsed = parseProvisioningState(JSON.parse(stateBytes.toString('utf8')));
     if (!parsed) return null;
+    const runtimeBytes = fs.readFileSync(paths.runtimeEnvPath);
+    if (runtimeBytes.length > 128 * 1024) return null;
+    const runtimeValues = parseRuntimeEnv(runtimeBytes.toString('utf8'));
+    if (REQUIRED_RUNTIME_ENV_KEYS.some((key) => !runtimeValues[key] || !runtimeValues[key].trim())) return null;
     const configBytes = fs.readFileSync(paths.configPath);
     if (configBytes.length > MAX_LITE_LLM_CONFIG_BYTES) return null;
     const actualHash = crypto.createHash('sha256').update(configBytes).digest('hex');
