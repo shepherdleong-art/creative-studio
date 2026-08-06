@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { seedProviders } from '@/lib/seed';
 import { isPlaceholderValue } from '@/lib/video-auth';
+import { filterManagedProviders, loadManagedProviderAllowlist, managedProviderMutationResponse } from '@/lib/managed-provider-policy';
+import type { ManagedProviderIdentity } from '@/lib/managed-provider-policy';
+import { isManagedDeployment } from '@/lib/managed-deployment';
 import { v4 as uuidv4 } from 'uuid';
 
 function isRealKey(value: string | undefined | null): boolean {
@@ -9,22 +12,37 @@ function isRealKey(value: string | undefined | null): boolean {
   return !!s && !isPlaceholderValue(s);
 }
 
+type ImageProviderRow = ManagedProviderIdentity & {
+  name: string;
+  apiKey: string;
+  model: string;
+  enabled: number;
+  defaultCostPerImage: number | null;
+};
+
+function safeImageProvider(provider: ImageProviderRow) {
+  const configured = isRealKey(provider.apiKey as string);
+  return {
+    ...provider,
+    category: 'image',
+    configured,
+    missing: configured ? [] : ['API Key'],
+    apiKeyEnv: undefined,
+    apiKey: undefined,
+    hasApiKey: configured,
+  };
+}
+
 export async function GET() {
   try {
     seedProviders();
     const db = getDb();
-    const providers = db.prepare(`SELECT * FROM providers ORDER BY name`).all();
+    const providers = db.prepare(`SELECT * FROM providers ORDER BY name`).all() as ImageProviderRow[];
+    const allowlist = isManagedDeployment() ? loadManagedProviderAllowlist() : null;
+    const visible = filterManagedProviders('image', providers, allowlist);
 
     // Don't expose apiKey or apiKeyEnv; just indicate if configured
-    const safe = (providers as Array<Record<string, unknown>>).map((p) => ({
-      ...p,
-      category: 'image',
-      configured: isRealKey(p.apiKey as string),
-      missing: isRealKey(p.apiKey as string) ? [] : ['API Key'],
-      apiKeyEnv: undefined,
-      apiKey: undefined,
-      hasApiKey: isRealKey(p.apiKey as string),
-    }));
+    const safe = visible.map(safeImageProvider);
 
     return NextResponse.json(safe);
   } catch (err) {
@@ -33,6 +51,10 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const db = getDb();
     const body = await request.json();
@@ -51,16 +73,8 @@ export async function POST(request: Request) {
       body.defaultCostPerImage || null
     );
 
-    const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) as Record<string, unknown>;
-    const safe = {
-      ...provider,
-      category: 'image',
-      configured: isRealKey(provider.apiKey as string),
-      missing: isRealKey(provider.apiKey as string) ? [] : ['API Key'],
-      apiKeyEnv: undefined,
-      apiKey: undefined,
-      hasApiKey: isRealKey(provider.apiKey as string),
-    };
+    const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) as ImageProviderRow;
+    const safe = safeImageProvider(provider);
 
     return NextResponse.json(safe);
   } catch (err) {

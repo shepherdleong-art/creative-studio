@@ -1,11 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { isPlaceholderValue } from '@/lib/video-auth';
+import { filterManagedProviders, loadManagedProviderAllowlist, managedProviderMutationResponse } from '@/lib/managed-provider-policy';
+import type { ManagedProviderIdentity } from '@/lib/managed-provider-policy';
+import { isManagedDeployment } from '@/lib/managed-deployment';
 
 function isRealKey(value: string | undefined | null): boolean {
   const s = (value || '').trim();
   return !!s && !isPlaceholderValue(s);
 }
+
+type ImageProviderRow = ManagedProviderIdentity & {
+  name: string;
+  apiKey: string;
+  model: string;
+  enabled: number;
+  defaultCostPerImage: number | null;
+};
 
 export async function GET(
   _request: NextRequest,
@@ -15,9 +26,14 @@ export async function GET(
     const { id } = await params;
     const db = getDb();
 
-    const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(id) as ImageProviderRow | undefined;
 
     if (!provider) {
+      return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
+    }
+
+    const allowlist = isManagedDeployment() ? loadManagedProviderAllowlist() : null;
+    if (filterManagedProviders('image', [provider], allowlist).length === 0) {
       return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
     }
 
@@ -27,6 +43,7 @@ export async function GET(
       category: 'image',
       configured: isRealKey(provider.apiKey as string),
       missing: isRealKey(provider.apiKey as string) ? [] : ['API Key'],
+      apiKeyEnv: undefined,
       apiKey: undefined,
       hasApiKey: isRealKey(provider.apiKey as string),
     };
@@ -41,6 +58,10 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const { id } = await params;
     const db = getDb();
@@ -112,6 +133,10 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const { id } = await params;
     const db = getDb();

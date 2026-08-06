@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { listScriptProviderMeta } from '@/lib/script-providers/store';
+import { managedProviderMutationResponse } from '@/lib/managed-provider-policy';
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const { id } = await params;
     const db = getDb();
@@ -66,6 +71,10 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const { id } = await params;
     const db = getDb();

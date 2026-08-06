@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
+import { managedProviderMutationResponse } from '@/lib/managed-provider-policy';
 
 function safeVideoProvider(provider: Record<string, unknown>) {
   const runtime = resolveVideoProviderRuntimeConfig(provider as never);
@@ -24,6 +25,10 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const { id } = await params;
     const db = getDb();
@@ -77,6 +82,10 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const { id } = await params;
     const db = getDb();

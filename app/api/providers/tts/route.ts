@@ -1,10 +1,25 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
+import { filterManagedProviders, loadManagedProviderAllowlist } from '@/lib/managed-provider-policy';
+import type { ManagedProviderIdentity } from '@/lib/managed-provider-policy';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+
+type TtsProviderRow = ManagedProviderIdentity & {
+  name: string;
+  keyEnv: string;
+  model: string;
+  enabled: number;
+  isBuiltin: number;
+  apiKey: string;
+  costPerThousandCharacters: number;
+};
 
 export async function GET() {
-  const rows = getDb().prepare(`SELECT id, name, type, baseUrl, keyEnv, model, enabled, isBuiltin, apiKey, costPerThousandCharacters FROM final_edit_tts_providers ORDER BY name`).all() as Array<Record<string, unknown>>;
-  const providers = rows.map(({ apiKey, ...row }) => {
+  const rows = getDb().prepare(`SELECT id, name, type, baseUrl, keyEnv, model, enabled, isBuiltin, apiKey, costPerThousandCharacters FROM final_edit_tts_providers ORDER BY name`).all() as TtsProviderRow[];
+  const allowlist = isManagedDeployment() ? loadManagedProviderAllowlist() : null;
+  const visible = filterManagedProviders('tts', rows, allowlist);
+  const providers = visible.map(({ apiKey, ...row }) => {
     const adapter = getFinalEditTtsAdapter(String(row.id));
     const hasApiKey = Boolean(String(apiKey || '').trim() || (row.keyEnv && process.env[String(row.keyEnv)]));
     return {

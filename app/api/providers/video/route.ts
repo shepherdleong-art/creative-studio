@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
+import { filterManagedProviders, loadManagedProviderAllowlist, managedProviderMutationResponse } from '@/lib/managed-provider-policy';
+import { isManagedDeployment } from '@/lib/managed-deployment';
 import { v4 as uuidv4 } from 'uuid';
 
 function safeVideoProvider(provider: {
@@ -60,13 +62,19 @@ export async function GET(request: Request) {
       accessKey: string;
       secretKey: string;
     }>;
-    return NextResponse.json(providers.map(safeVideoProvider));
+    const allowlist = isManagedDeployment() ? loadManagedProviderAllowlist() : null;
+    const visible = filterManagedProviders('video', providers, allowlist);
+    return NextResponse.json(visible.map(safeVideoProvider));
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const body = await request.json();
     const id = uuidv4();

@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
+import { managedProviderMutationResponse } from '@/lib/managed-provider-policy';
 
 const KEY_PLACEHOLDER = '••••••••';
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   const { id } = await params;
   let adapter: ReturnType<typeof getFinalEditTtsAdapter>;
   try { adapter = getFinalEditTtsAdapter(id); } catch { return NextResponse.json({ error: 'provider_not_found' }, { status: 404 }); }

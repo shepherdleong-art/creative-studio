@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { listScriptProviderMeta } from '@/lib/script-providers/store';
+import { managedProviderMutationResponse } from '@/lib/managed-provider-policy';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function GET() {
@@ -12,6 +13,10 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const db = getDb();
     const body = await request.json();

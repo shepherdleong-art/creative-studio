@@ -5,6 +5,21 @@ import type { ManagedProviderAllowlist } from './provisioning/types.ts';
 
 export type ManagedProviderKind = 'image' | 'script' | 'video' | 'tts';
 
+/** Stable response body used by every managed provider CRUD guard. */
+export function managedProviderReadOnlyBody(): { error: string; code: 'managed_provider_read_only' } {
+  return {
+    error: '\u53d7\u7ba1\u5b89\u88c5\u7248\u53ea\u80fd\u901a\u8fc7\u7edf\u4e00\u914d\u7f6e\u5bfc\u5165\u66f4\u65b0\u4f9b\u5e94\u5546',
+    code: 'managed_provider_read_only',
+  };
+}
+
+/** Return the read-only denial body only in managed mode; unrestricted is null. */
+export function managedProviderMutationResponse(
+  env: NodeJS.ProcessEnv = process.env,
+): ReturnType<typeof managedProviderReadOnlyBody> | null {
+  return isManagedDeployment(env) ? managedProviderReadOnlyBody() : null;
+}
+
 /**
  * The policy deliberately accepts only the provider fields it needs. Database
  * rows may carry many more fields, but those fields are not trusted by this

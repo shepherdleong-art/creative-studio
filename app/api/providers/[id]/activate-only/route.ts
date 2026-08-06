@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { managedProviderMutationResponse } from '@/lib/managed-provider-policy';
 
 export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const managedError = managedProviderMutationResponse();
+  if (managedError) {
+    return NextResponse.json(managedError, { status: 403 });
+  }
   try {
     const { id } = await params;
     const db = getDb();
