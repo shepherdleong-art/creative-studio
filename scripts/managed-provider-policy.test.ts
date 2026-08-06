@@ -120,6 +120,52 @@ test('managed deployment without a valid allowlist rejects every provider kind',
   assert.deepEqual(filterManagedProviders('image', [imageProvider], null, { managed: true }), []);
 });
 
+test('managed policy rejects any malformed full allowlist before checking a provider role', () => {
+  const validProviders: Array<[ManagedProviderKind, ManagedProviderIdentity]> = [
+    ['image', imageProvider],
+    ['script', scriptProvider],
+    ['video', videoProvider],
+    ['tts', ttsProvider],
+  ];
+  const malformedAllowlists: unknown[] = [
+    { image: ['company-image'], script: null, video: 'bad', tts: ['wrong'] },
+    [],
+    { ...allowlist, extra: ['unexpected'] },
+    { ...allowlist, image: [] },
+    { ...allowlist, script: [] },
+    { ...allowlist, video: [] },
+    { ...allowlist, image: ['company-image', 'company-image-2'] },
+    { ...allowlist, script: ['company-script', 'company-script-2'] },
+    { ...allowlist, video: Array.from({ length: 9 }, (_, index) => `company-video-${index}`) },
+    { ...allowlist, image: ['company-image', 'company-image'] },
+    { ...allowlist, script: ['company-script', 'company-script'] },
+    { ...allowlist, video: ['company-video', 'company-video'] },
+    { ...allowlist, image: ['company image'] },
+    { ...allowlist, script: ['Company-script'] },
+    { ...allowlist, video: ['company/video'] },
+    { ...allowlist, image: [''] },
+    { ...allowlist, script: ['a'.repeat(65)] },
+    { ...allowlist, tts: ['other-tts'] },
+    { ...allowlist, tts: ['doubao-seed-tts-2', 'other-tts'] },
+  ];
+
+  for (const malformed of malformedAllowlists) {
+    for (const [kind, provider] of validProviders) {
+      const verdict = evaluateManagedProvider({
+        managed: true,
+        kind,
+        allowlist: malformed as ManagedProviderAllowlist,
+        provider,
+      });
+      assert.deepEqual(
+        verdict,
+        { allowed: false, code: 'managed_state_missing', message: '公司受管配置尚未导入' },
+        `malformed allowlist must be rejected for requested role ${kind}`,
+      );
+    }
+  }
+});
+
 test('provider IDs outside their role allowlist are rejected without fallback', () => {
   assert.equal(verdictCode(evaluate('image', { ...imageProvider, id: 'rotated-image' })), 'managed_provider_not_allowed');
   assert.equal(verdictCode(evaluate('script', { ...scriptProvider, id: 'rotated-script' })), 'managed_provider_not_allowed');
@@ -153,7 +199,10 @@ test('managed image providers require the gateway adapter, company key env, and 
     { ...imageProvider, baseUrl: 'https://127.0.0.1:4000/v1' },
     { ...imageProvider, baseUrl: 'http://remote.example/v1' },
     { ...imageProvider, baseUrl: 'http://127.0.0.1:4000/v1?x=1' },
+    { ...imageProvider, baseUrl: 'http://127.0.0.1:4000/v1?' },
+    { ...imageProvider, baseUrl: 'http://127.0.0.1:4000/v1#' },
     { ...imageProvider, baseUrl: 'http://user:pass@127.0.0.1:4000/v1' },
+    { ...imageProvider, baseUrl: 'http://@127.0.0.1:4000/v1' },
   ]) {
     assert.equal(verdictCode(evaluate('image', provider)), 'managed_provider_role_invalid');
   }

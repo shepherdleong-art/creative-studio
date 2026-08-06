@@ -54,6 +54,7 @@ const SCRIPT_PROTOCOLS = new Set([
   'anthropic-messages',
 ]);
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+const SAFE_PROVIDER_ID = /^[a-z0-9](?:[a-z0-9._-]{0,63})$/;
 const ROLE_INVALID_MESSAGE = '该供应商不符合公司受管配置';
 const STATE_MISSING_MESSAGE = '公司受管配置尚未导入';
 const NOT_ALLOWED_MESSAGE = '该供应商不在公司受管配置中';
@@ -77,17 +78,39 @@ function isProviderKind(value: unknown): value is ManagedProviderKind {
   return value === 'image' || value === 'script' || value === 'video' || value === 'tts';
 }
 
+function isValidProviderId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length <= 64
+    && SAFE_PROVIDER_ID.test(value);
+}
+
+function isValidProviderIdArray(value: unknown, minLength: number, maxLength: number): value is string[] {
+  if (!Array.isArray(value) || value.length < minLength || value.length > maxLength) return false;
+  const seen = new Set<string>();
+  for (const id of value) {
+    if (!isValidProviderId(id) || seen.has(id)) return false;
+    seen.add(id);
+  }
+  return true;
+}
+
 /**
  * A state object normally comes from readProvisioningState, which already
- * validates this shape. Keeping this small guard here prevents an accidental
- * caller-supplied object from being treated as an allowlist.
+ * validates this shape. The policy repeats the complete guard so callers
+ * cannot accidentally bypass a malformed role by requesting another role.
  */
-function hasAllowlistRole(allowlist: ManagedProviderAllowlist | null | undefined, kind: ManagedProviderKind): boolean {
-  if (!allowlist || !isRecord(allowlist)) return false;
-  const ids = allowlist[kind];
-  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) return false;
-  if (kind === 'tts') return ids.length === 1 && ids[0] === 'doubao-seed-tts-2';
-  return true;
+function isValidManagedAllowlist(value: unknown): value is ManagedProviderAllowlist {
+  if (!isRecord(value) || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 4 || !keys.every((key) => (
+    key === 'image' || key === 'script' || key === 'video' || key === 'tts'
+  ))) return false;
+  if (!isValidProviderIdArray(value.image, 1, 1)) return false;
+  if (!isValidProviderIdArray(value.script, 1, 1)) return false;
+  if (!isValidProviderIdArray(value.video, 1, 8)) return false;
+  return Array.isArray(value.tts)
+    && value.tts.length === 1
+    && value.tts[0] === 'doubao-seed-tts-2';
 }
 
 function providerId(provider: unknown): string | null {
@@ -108,7 +131,23 @@ function hasRequiredProviderStrings(provider: unknown): provider is ManagedProvi
     && provider.baseUrl.length > 0;
 }
 
+function hasForbiddenRawUrlSyntax(value: string): boolean {
+  // URL normalizes a bare trailing '?'/'#' away, so inspect the original
+  // spelling before relying on URL.search/URL.hash.
+  if (value.includes('?') || value.includes('#')) return true;
+
+  // Only an '@' in the authority is userinfo. Colons in an IPv6 authority
+  // are valid and must not be treated as credentials.
+  const schemeSeparator = value.indexOf('://');
+  if (schemeSeparator < 0) return false;
+  const authorityStart = schemeSeparator + 3;
+  const pathStart = value.indexOf('/', authorityStart);
+  const authorityEnd = pathStart < 0 ? value.length : pathStart;
+  return value.slice(authorityStart, authorityEnd).includes('@');
+}
+
 function isSafeUrl(value: string, protocol: 'http:' | 'https:', loopbackOnly: boolean, paths?: readonly string[]): boolean {
+  if (hasForbiddenRawUrlSyntax(value)) return false;
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -161,12 +200,13 @@ export function evaluateManagedProvider(input: EvaluateManagedProviderInput): Ma
   const managed = input.managed ?? isManagedDeployment(input.env);
   if (!managed) return { allowed: true, mode: 'unrestricted' };
 
-  if (!isProviderKind(input.kind) || !hasAllowlistRole(input.allowlist, input.kind)) {
+  const candidateAllowlist = input.allowlist;
+  if (!isProviderKind(input.kind) || !isValidManagedAllowlist(candidateAllowlist)) {
     return denied('managed_state_missing');
   }
 
   const id = providerId(input.provider);
-  const ids: readonly string[] = input.allowlist![input.kind];
+  const ids: readonly string[] = candidateAllowlist[input.kind];
   if (!id || !ids.includes(id)) return denied('managed_provider_not_allowed');
 
   if (!hasValidRoleShape(input.kind, input.provider)) return denied('managed_provider_role_invalid');
