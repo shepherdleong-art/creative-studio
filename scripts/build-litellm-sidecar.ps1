@@ -14,6 +14,11 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
+# Build self-checks must be offline-deterministic: force LiteLLM to use its bundled
+# model cost map. Otherwise a slow or blocked fetch of the remote cost map prints a
+# stderr warning that Windows PowerShell 5.1 promotes to a terminating error.
+$env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
+
 if ($LiteLLMVersion -ne '1.89.2') {
   throw "The packaged LiteLLM version is pinned to 1.89.2; received $LiteLLMVersion."
 }

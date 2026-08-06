@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import { MAX_PROVISIONING_FILE_BYTES } from '@/lib/provisioning/crypto';
-import { importProvisioningPackage, readProvisioningStatus } from '@/lib/provisioning/service';
+import { MAX_PROVISIONING_FILE_BYTES, decryptProvisioningPayload } from '@/lib/provisioning/crypto';
+import { applyProvisioningPayload, readProvisioningStatus } from '@/lib/provisioning/service';
+import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 
 export const runtime = 'nodejs';
 
@@ -24,7 +25,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '统一配置导入失败' }, { status: 400 });
     }
     const bytes = Buffer.from(await fileValue.arrayBuffer());
-    const status = importProvisioningPackage(bytes, passwordValue);
+    if (bytes.byteLength > MAX_PROVISIONING_FILE_BYTES) {
+      return NextResponse.json({ error: '统一配置导入失败' }, { status: 400 });
+    }
+    // Authenticate the package before touching any local state.
+    const payload = decryptProvisioningPayload(bytes, passwordValue);
+    // The import upserts openai-video providers; on databases created by older
+    // builds the video_providers CHECK constraint still rejects that type, so
+    // run the safe (backup + cross-process lock + audit) schema upgrade first.
+    const readiness = await getVideoProviderGatewayReadiness();
+    if (!readiness.available) {
+      return NextResponse.json({ error: '统一配置导入失败' }, { status: 400 });
+    }
+    const status = applyProvisioningPayload(payload);
     return NextResponse.json({ ...status, message: '统一配置已导入，公司网关需启动，可能需要重启' });
   } catch {
     // Authentication, schema and persistence failures deliberately share one

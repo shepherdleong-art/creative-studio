@@ -224,9 +224,14 @@ foreach ($name in $environmentKeysToControl) {
 
 $sidecarArguments = "-m litellm.proxy.proxy_cli --host 127.0.0.1 --port $proxyPortNumber --num_workers 1 --config `"$ConfigPath`" --telemetry false"
 $process = $null
+# Keep the proxy on the bundled model cost map: on networks where the remote cost-map
+# URL is unreachable the fetch stalls startup and can exceed the health-check window.
+$previousCostMapEnv = [Environment]::GetEnvironmentVariable('LITELLM_LOCAL_MODEL_COST_MAP', 'Process')
+[Environment]::SetEnvironmentVariable('LITELLM_LOCAL_MODEL_COST_MAP', 'True', 'Process')
 try {
   $process = Start-Process -FilePath $PythonExe -ArgumentList $sidecarArguments -WorkingDirectory $Root -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog -PassThru
 } finally {
+  [Environment]::SetEnvironmentVariable('LITELLM_LOCAL_MODEL_COST_MAP', $previousCostMapEnv, 'Process')
   foreach ($name in $environmentKeysToControl) {
     [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process')
   }

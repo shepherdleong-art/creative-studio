@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { decryptProvisioningPayload, encryptProvisioningPayload } from '../lib/provisioning/crypto.ts';
 import { applyProvisioningPayload, importProvisioningPackage, readProvisioningStatus } from '../lib/provisioning/service.ts';
 import { validateProvisioningPayload } from '../lib/provisioning/schema.ts';
+import { checkVideoProviderGatewayReadiness } from '../lib/video-provider-schema-readiness.ts';
 
 function payload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -187,4 +188,67 @@ test('admin CLI combines a separate config.yaml without exposing secrets', () =>
   const decrypted = decryptProvisioningPayload(fs.readFileSync(outputPath), 'a-long-cli-password');
   assert.equal(decrypted.liteLlmConfigYaml, configYaml.trim());
   assert.equal(decrypted.gatewayApiKey, 'gateway-secret-123456');
+});
+
+test('import on a legacy CHECK-constraint database upgrades the video provider schema first', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-provisioning-legacy-schema-'));
+  const db = new Database(path.join(root, 'workbench.db'));
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE providers (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, baseUrl TEXT NOT NULL,
+      apiKeyEnv TEXT NOT NULL DEFAULT '', apiKey TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL DEFAULT 'openai-compatible', enabled INTEGER NOT NULL DEFAULT 1,
+      defaultCostPerImage REAL
+    );
+    CREATE TABLE script_providers (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, apiStyle TEXT NOT NULL,
+      baseUrl TEXT NOT NULL, apiKey TEXT NOT NULL, model TEXT NOT NULL, keyEnv TEXT NOT NULL,
+      baseUrlEnv TEXT NOT NULL, modelEnv TEXT NOT NULL, defaultBaseUrl TEXT NOT NULL,
+      defaultModel TEXT NOT NULL, maxTokens INTEGER NOT NULL, enabled INTEGER NOT NULL,
+      isBuiltin INTEGER NOT NULL, supportsVision INTEGER NOT NULL, visionCostPerRequest REAL NOT NULL,
+      executionScope TEXT NOT NULL
+    );
+    CREATE TABLE video_providers (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('kling','jimeng')),
+      baseUrlEnv TEXT NOT NULL, apiKeyEnv TEXT NOT NULL, modelEnv TEXT NOT NULL,
+      defaultModel TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+      defaultDurationSec INTEGER NOT NULL DEFAULT 5, defaultCostPerVideo REAL,
+      baseUrl TEXT NOT NULL DEFAULT '', apiKey TEXT NOT NULL DEFAULT '',
+      accessKey TEXT NOT NULL DEFAULT '', secretKey TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE final_edit_tts_providers (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, baseUrl TEXT NOT NULL,
+      apiKey TEXT NOT NULL, keyEnv TEXT NOT NULL, model TEXT NOT NULL, enabled INTEGER NOT NULL,
+      isBuiltin INTEGER NOT NULL, costPerThousandCharacters REAL NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+    );
+    INSERT INTO final_edit_tts_providers
+      (id,name,type,baseUrl,apiKey,keyEnv,model,enabled,isBuiltin,costPerThousandCharacters,createdAt,updatedAt)
+      VALUES ('doubao-seed-tts-2','豆包','doubao-http-chunked','https://old.example.invalid','','DOUBAO_TTS_API_KEY','old',1,1,0,'now','now');
+    INSERT INTO video_providers (
+      id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel,
+      enabled, defaultDurationSec, baseUrl, apiKey, accessKey, secretKey
+    ) VALUES ('legacy-kling', '旧可灵', 'kling', '', '', '', 'kling-1.6', 1, 5, '', 'legacy-secret', '', '');
+  `);
+
+  // Without the readiness gate the import fails on the legacy CHECK constraint.
+  assert.throws(() => applyProvisioningPayload(payload(), { root, db }));
+
+  // The provisioning route runs the safe schema upgrade before applying.
+  const readiness = await checkVideoProviderGatewayReadiness({
+    db,
+    backupRoot: path.join(root, 'data', 'backups', 'schema-upgrades'),
+    lockDatabasePath: path.join(root, 'data', 'schema-upgrade.lock.db'),
+    auditFilePath: path.join(root, 'storage', 'logs', 'schema-upgrades.jsonl'),
+  });
+  assert.equal(readiness.available, true);
+
+  const status = applyProvisioningPayload(payload(), { root, db });
+  assert.equal(status.configured, true);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM video_providers WHERE id IN (?, ?)').get('company-kling-3', 'company-jimeng-2') as { count: number }).count, 2);
+  assert.equal((db.prepare('SELECT apiKey FROM video_providers WHERE id=?').get('legacy-kling') as { apiKey: string }).apiKey, 'legacy-secret');
+  assert.ok((db.prepare(`SELECT sql FROM sqlite_master WHERE name='video_providers'`).get() as { sql: string }).sql.includes('openai-video'));
+  db.close();
 });

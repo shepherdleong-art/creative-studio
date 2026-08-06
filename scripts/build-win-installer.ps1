@@ -194,6 +194,27 @@ foreach ($relativePath in @(
 )) {
   Remove-PayloadPath -RelativePath $relativePath
 }
+# Turbopack NFT traces the whole project into standalone because several modules
+# perform dynamic fs reads (provisioning status, final-edit exports). Prune the
+# traced repository metadata that is not part of the runtime payload.
+foreach ($relativePath in @(
+  'app',
+  'components',
+  'lib',
+  'types',
+  'output',
+  'preview',
+  'icon-check',
+  'icon-check-installed',
+  'image.png',
+  'instrumentation.ts',
+  'next.config.ts',
+  'tsconfig.json',
+  'CreativeStudio.exe'
+)) {
+  Remove-PayloadPath -RelativePath $relativePath
+}
+Get-ChildItem -LiteralPath $AppDir -File -Filter '*.md' -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem -LiteralPath $AppDir -Recurse -Force -File -Filter '.env*' -ErrorAction SilentlyContinue | Remove-Item -Force
 
 $forbiddenPayload = @('data', 'storage', 'outputs', 'dist', '.cache', 'provisioning', '.env.local', 'config.yaml', 'litellm-config.yaml', 'data\provisioning', 'runtime.env')
