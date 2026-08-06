@@ -21,19 +21,21 @@ Windows 安装包（Inno Setup）路线暂停，改为同事从 GitHub `linsygro
    - 公司网络下 `npm ci` 可能卡在 ffmpeg-static 从 GitHub 下载二进制超时；先设镜像再装：
      `set FFMPEG_BINARIES_URL=https://cdn.npmmirror.com/binaries/ffmpeg-static`（PowerShell 用 `$env:FFMPEG_BINARIES_URL='https://cdn.npmmirror.com/binaries/ffmpeg-static'`）。
 4. 打开「设置 → 统一配置导入」，选择管理员分发的 `.provision` 文件并输入导入密码（密码与文件分开渠道分发）。
+   - 新部署不预置任何第三方供应商（GeekAI/Packy/GPT.ge、可灵/即梦直连、Gemini/Qwen/Kimi/GPT 直连、V-API TTS 均已移除）；导入后只有公司供应商和豆包语音。
 5. 导入成功后重启工作台，公司网关（LiteLLM sidecar，`127.0.0.1:4000`）随启动拉起；网关异常只禁用公司供应商，不阻塞主应用。
 6. 轮换 Key：管理员重新生成 `.provision`，同事再次导入即可覆盖受管供应商；自行添加的供应商不受影响。
 
-### 公司网关 sidecar（源码部署额外一步）
+### 公司网关 sidecar（源码部署额外一步，必做）
 
-源码部署时 LiteLLM 运行时不随仓库分发，需本机有 Python 3.10+ 后执行一次：
+源码部署时 LiteLLM 运行时不随仓库分发，但**不需要安装 Python**。在仓库根目录执行一次：
 
 ```powershell
-python -m venv .venv-litellm
-.venv-litellm\Scripts\pip install "litellm[proxy]==1.89.2"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\setup-company-gateway.ps1
 ```
 
-`.venv-litellm` 与导入生成的 `config.yaml` 齐备后，`start-windows.cmd` 会自动先拉起 LiteLLM 代理再启动应用；缺失时应用照常可用，仅公司供应商不可用。sidecar 启动已内置 `LITELLM_LOCAL_MODEL_COST_MAP=True`，不依赖访问 GitHub。
+脚本会按固定版本（CPython 3.12.10 + LiteLLM 1.89.2，离线 wheel + SHA-256 校验 + 自检）组装私有运行时到 `.litellm-runtime\`，与安装包内置的完全相同。
+
+`.litellm-runtime`（或开发机的 `.venv-litellm`）与导入生成的 `config.yaml` 齐备后，`start-windows.cmd` 会自动先拉起 LiteLLM 代理再启动应用；两者都缺失时应用照常可用，但**公司供应商不可用**。sidecar 启动已内置 `LITELLM_LOCAL_MODEL_COST_MAP=True`，不依赖访问 GitHub。
 
 ## 本次修复：全新部署无法导入统一配置
 

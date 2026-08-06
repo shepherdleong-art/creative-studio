@@ -35,7 +35,7 @@ npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Nod
 
 终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS）、`start-windows.cmd` / `stop-windows.cmd`（Windows），会检查 Node、装依赖、起服务并打开浏览器。
 
-公司网关联动（Windows）：开发态 `start-windows.cmd` 检测到联动组件（`.venv-litellm`、`config.yaml`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000，仅监听 127.0.0.1）再起 dev server；组件缺失则保持原行为不动。Windows 安装版内置固定版本的私有 CPython/LiteLLM sidecar，首启可在设置页导入 AES-256-GCM 加密的 `.provision`；导入把 `config.yaml` 与受管运行参数写到 `dataRoot()`，再次导入用于 Key 轮换。管理员制作流程见 `provisioning/README.md`。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起相应停止脚本）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 与 `installer/windows/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
+公司网关联动（Windows）：开发态 `start-windows.cmd` 检测到联动组件（`.venv-litellm` 或 `.litellm-runtime`，加上 `config.yaml`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000，仅监听 127.0.0.1）再起 dev server；组件缺失则保持原行为不动。`.litellm-runtime` 由 `scripts/setup-company-gateway.ps1` 一键组装（固定 CPython 3.12.10 + LiteLLM 1.89.2 私有运行时，无需安装 Python，与安装包内置 sidecar 相同）；sidecar 启动均内置 `LITELLM_LOCAL_MODEL_COST_MAP=True` 避免公司网络下拉取远程 cost map 超时。Windows 安装版内置固定版本的私有 CPython/LiteLLM sidecar，首启可在设置页导入 AES-256-GCM 加密的 `.provision`；导入把 `config.yaml` 与受管运行参数写到 `dataRoot()`，再次导入用于 Key 轮换。管理员制作流程见 `provisioning/README.md`。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起相应停止脚本）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 与 `installer/windows/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
 
 ## 测试
 
@@ -106,7 +106,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `logger.ts` — 同时写数据库和 `storage/logs/` 文件；会主动脱敏 API Key，不要在日志里打印密钥。
 - `provider-concurrency.ts` / `cost.ts` — 每供应商并发上限；每个 job 记录预估成本。
 - `image-output-normalize.ts` — 生成图与目标尺寸不一致时用 sharp 居中裁切并记日志。
-- `seed.ts` — 启动时向 `video_providers` 等表写入内置供应商预设。
+- `seed.ts` — 启动播种只保留镜头运动模板等内置数据；不再预置第三方供应商（GeekAI/Packy/GPT.ge、可灵/即梦直连、Gemini/Qwen/Kimi/GPT 直连、V-API TTS）。内部部署的公司供应商统一由 `.provision` 导入写入；既有本地库中的历史供应商保留不动。
 
 ### 数据流
 

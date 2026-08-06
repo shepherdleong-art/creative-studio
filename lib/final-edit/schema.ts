@@ -214,11 +214,6 @@ export function initFinalEditSchema(db: Database.Database): void {
   db.prepare(`
     INSERT OR IGNORE INTO final_edit_tts_providers
       (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
-    VALUES ('vapi-qwen3-tts', 'V-API Qwen3 TTS Flash', 'vapi-qwen-json-url', 'https://api.v3.cm', '', 'VAPI_TTS_API_KEY', 'qwen3-tts-flash', 1, 1, ?, ?)
-  `).run(now, now);
-  db.prepare(`
-    INSERT OR IGNORE INTO final_edit_tts_providers
-      (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
     VALUES ('doubao-seed-tts-2', '豆包语音合成 2.0', 'doubao-http-chunked', 'https://openspeech.bytedance.com', '', 'DOUBAO_TTS_API_KEY', 'seed-tts-2.0', 1, 1, ?, ?)
   `).run(now, now);
 }

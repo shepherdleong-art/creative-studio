@@ -81,6 +81,14 @@ db.exec(`
 `);
 initFinalEditSchema(db);
 
+// The schema no longer seeds the third-party V-API TTS provider; this suite
+// exercises the V-API adapter, so insert the provider row explicitly.
+db.prepare(`
+  INSERT INTO final_edit_tts_providers
+    (id, name, type, baseUrl, apiKey, keyEnv, model, enabled, isBuiltin, createdAt, updatedAt)
+  VALUES ('vapi-qwen3-tts', 'V-API Qwen3 TTS Flash', 'vapi-qwen-json-url', 'https://api.v3.cm', '', 'VAPI_TTS_API_KEY', 'qwen3-tts-flash', 1, 1, 'now', 'now')
+`).run();
+
 db.prepare(`INSERT INTO projects (id, name, model, productCode, createdAt) VALUES ('p1', '沙发任务', 'gpt-image-2-not-product-code', 'SF-A1', '2026-07-23 16:00:00')`).run();
 db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set-a', 'p1', '客厅'), ('set-b', 'p1', '卧室')`).run();
 for (const [id, setId, index] of [['s1', 'set-a', 1], ['s2', 'set-a', 2], ['s3', 'set-b', 1]] as const) {

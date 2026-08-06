@@ -45,6 +45,8 @@ dev-server.*.log
 next-env.d.ts
 
 # local data (database, uploads, outputs, logs)
+/output/
+/.playwright-cli/
 /data/
 /storage/
 /outputs/
@@ -70,6 +72,7 @@ next-env.d.ts
 /config.yaml
 /litellm-config.yaml
 /.venv-litellm/
+/.litellm-runtime/
 /provisioning/*.local.json
 /provisioning/*.provision
 /*.provision

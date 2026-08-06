@@ -17,10 +17,25 @@ $RunDir = Join-Path $Root 'storage\run'
 $stackFile = Join-Path $RunDir 'stack.json'
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
 
-$litellmExe = Join-Path $Root '.venv-litellm\Scripts\litellm.exe'
+# 公司网关运行时二选一：本地 venv（开发机）或 setup-company-gateway.ps1 组装的私有运行时
+$venvLiteLLM = Join-Path $Root '.venv-litellm\Scripts\litellm.exe'
+$embeddedPython = Join-Path $Root '.litellm-runtime\python.exe'
+$litellmExe = $null
+$litellmArgs = $null
+if (Test-Path -LiteralPath $venvLiteLLM) {
+  $litellmExe = $venvLiteLLM
+  $litellmArgs = @('--config', 'config.yaml', '--port', "$ProxyPort")
+} elseif (Test-Path -LiteralPath $embeddedPython) {
+  $litellmExe = $embeddedPython
+  $litellmArgs = @('-m', 'litellm.proxy.proxy_cli', '--config', 'config.yaml', '--host', '127.0.0.1', '--port', "$ProxyPort", '--num_workers', '1', '--telemetry', 'false')
+}
 $nodeExe = Join-Path $Root '.cache\windows-installer\node-v22.22.3-win-x64\node.exe'
 $standaloneDir = Join-Path $Root '.next\standalone'
 
+if (-not $litellmExe) {
+  Write-Host "缺少公司网关运行时：请运行 scripts\setup-company-gateway.ps1（或创建 .venv-litellm）" -ForegroundColor Red
+  exit 1
+}
 $requiredFiles = @($litellmExe, (Join-Path $Root 'config.yaml'))
 if (-not $SkipApp) {
   $requiredFiles += $nodeExe
@@ -47,8 +62,10 @@ try {
   # ── 1. litellm 代理 ──
   Write-Host '[1/2] 启动 litellm 代理...'
   $env:PYTHONUTF8 = '1'
+  # 不联网拉取远程 model cost map：公司网络访问 GitHub 会超时，拖慢启动并污染 stderr。
+  $env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
   $p = Start-Process -FilePath $litellmExe `
-    -ArgumentList '--config', 'config.yaml', '--port', "$ProxyPort" `
+    -ArgumentList $litellmArgs `
     -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $LogDir 'litellm.out.log') `
     -RedirectStandardError (Join-Path $LogDir 'litellm.err.log')

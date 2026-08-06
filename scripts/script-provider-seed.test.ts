@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const childFlag = 'CREATIVE_STUDIO_SCRIPT_PROVIDER_SEED_TEST_CHILD';
 
@@ -11,7 +11,7 @@ if (process.env[childFlag] !== '1') {
   const result = spawnSync(process.execPath, [
     '--no-warnings',
     '--experimental-loader',
-    path.resolve('scripts/typescript-extension-loader.mjs'),
+    pathToFileURL(path.resolve('scripts/typescript-extension-loader.mjs')).href,
     '--experimental-strip-types',
     fileURLToPath(import.meta.url),
   ], {
@@ -34,28 +34,11 @@ if (process.env[childFlag] !== '1') {
 
     seedScriptProviders();
     const db = getDb();
-    db.prepare(`
-      UPDATE script_providers
-      SET type = ?, apiStyle = ?, model = ?, maxTokens = ?
-      WHERE id = 'kimi'
-    `).run('anthropic-messages', 'anthropic-messages', 'kimi-k2.6', 8192);
 
-    seedScriptProviders();
-
-    assert.deepEqual(
-      db.prepare(`
-        SELECT type, apiStyle, model, maxTokens
-        FROM script_providers
-        WHERE id = 'kimi'
-      `).get(),
-      {
-        type: 'anthropic-messages',
-        apiStyle: 'anthropic-messages',
-        model: 'kimi-k2.6',
-        maxTokens: 8192,
-      },
-      '内置供应商播种不得覆盖用户保存的协议、模型或最大输出 Token',
-    );
+    // 内部部署不再预置第三方脚本供应商（Gemini/Qwen/Kimi/GPT 直连）；
+    // 公司 GPT-5.5 由统一配置导入写入。新数据库必须保持为空。
+    const count = (db.prepare('SELECT COUNT(*) AS count FROM script_providers').get() as { count: number }).count;
+    assert.equal(count, 0, 'script_providers 不得预置任何第三方供应商');
 
   } finally {
     closeDatabase?.();

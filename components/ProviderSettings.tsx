@@ -55,7 +55,7 @@ export default function ProviderSettings({ selectedId, onSelect }: Props) {
           </a>
         </div>
         <div className="rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm text-warn">
-          当前没有启用的供应商。请先到供应商配置里启用 GeekAI、Packy 或其他 API。
+          当前没有启用的供应商。请先到「设置 → 统一配置导入」导入公司配置，或在供应商配置里启用供应商。
         </div>
       </div>
     );
