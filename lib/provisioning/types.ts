@@ -8,6 +8,24 @@
 
 export const PROVISIONING_SCHEMA_VERSION = 1 as const;
 
+/** Version of the local, non-secret state published after a successful import. */
+export const PROVISIONING_STATE_SCHEMA_VERSION = 2 as const;
+
+export interface ManagedProviderAllowlist {
+  image: string[];
+  script: string[];
+  video: string[];
+  tts: ['doubao-seed-tts-2'];
+}
+
+export interface ProvisioningStateV2 {
+  schemaVersion: typeof PROVISIONING_STATE_SCHEMA_VERSION;
+  profileName: string;
+  importedAt: string;
+  configHash: string;
+  managedProviders: ManagedProviderAllowlist;
+}
+
 export type ProvisioningApiStyle =
   | 'openai-compatible'
   | 'openai-responses'

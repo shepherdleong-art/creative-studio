@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import Database from 'better-sqlite3';
 import { decryptProvisioningPayload, encryptProvisioningPayload } from '../lib/provisioning/crypto.ts';
-import { applyProvisioningPayload, importProvisioningPackage, readProvisioningStatus } from '../lib/provisioning/service.ts';
+import { applyProvisioningPayload, importProvisioningPackage, readProvisioningState, readProvisioningStatus } from '../lib/provisioning/service.ts';
 import { validateProvisioningPayload } from '../lib/provisioning/schema.ts';
 import { checkVideoProviderGatewayReadiness } from '../lib/video-provider-schema-readiness.ts';
 
@@ -85,6 +85,25 @@ function testDb(): Database.Database {
   return db;
 }
 
+function readStateFile(root: string): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(path.join(root, 'data', 'provisioning', 'state.json'), 'utf8')) as Record<string, unknown>;
+}
+
+function assertNoProvisioningTempFiles(root: string): void {
+  const pending: string[] = [root];
+  const residues: string[] = [];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) continue;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) pending.push(absolute);
+      else if (/\.(?:tmp|bak)$/.test(entry.name)) residues.push(absolute);
+    }
+  }
+  assert.deepEqual(residues, []);
+}
+
 test('AES-GCM provisioning encryption authenticates and does not expose plaintext', () => {
   const secretPayload = payload();
   assert.throws(() => encryptProvisioningPayload(secretPayload, 'short'));
@@ -121,6 +140,15 @@ test('first import, repeated rotation, process env and rollback are safe', () =>
   const first = payload();
   const firstStatus = applyProvisioningPayload(first, { root, db, now: new Date('2026-08-05T00:00:00.000Z') });
   assert.equal(firstStatus.configured, true);
+  const firstState = readProvisioningState(root);
+  assert.ok(firstState);
+  assert.equal(firstState.schemaVersion, 2);
+  assert.deepEqual(firstState.managedProviders, {
+    image: ['company-image2-medium'],
+    script: ['company-gpt5-5'],
+    video: ['company-kling-3', 'company-jimeng-2'],
+    tts: ['doubao-seed-tts-2'],
+  });
   assert.equal(readProvisioningStatus(root).configHashPrefix, firstStatus.configHashPrefix);
   assert.equal(process.env.CREATIVE_STUDIO_GATEWAY_API_KEY, 'gateway-secret-123456');
   assert.equal((db.prepare('SELECT apiKey FROM providers WHERE id=?').get('company-image2-medium') as { apiKey: string }).apiKey, 'gateway-secret-123456');
@@ -131,23 +159,95 @@ test('first import, repeated rotation, process env and rollback are safe', () =>
   assert.equal(fs.existsSync(path.join(root, 'data', 'provisioning', 'runtime.env')), true);
   assert.equal(fs.readFileSync(path.join(root, 'data', 'provisioning', 'runtime.env'), 'utf8').includes('doubao-tts-secret-123456'), false);
 
+  const stateText = fs.readFileSync(path.join(root, 'data', 'provisioning', 'state.json'), 'utf8');
+  assert.equal(stateText.includes('gateway-secret-123456'), false);
+  assert.equal(stateText.includes('doubao-tts-secret-123456'), false);
+  assert.equal(stateText.includes('cos-secret-id-123'), false);
+  assert.equal(stateText.includes('cos-secret-key-456'), false);
+  assert.equal(stateText.includes('model_list:'), false);
+  assert.equal(stateText.includes('a-long-test-password'), false);
+
+  const validStateBytes = fs.readFileSync(path.join(root, 'data', 'provisioning', 'state.json'));
+  const validState = readStateFile(root);
+  const invalidStates: Record<string, unknown>[] = [
+    { ...validState, schemaVersion: 1 },
+    { ...validState, configHash: '0'.repeat(64) },
+    {
+      ...validState,
+      managedProviders: {
+        ...(validState.managedProviders as Record<string, unknown>),
+        video: ['company-kling-3', 'company-kling-3'],
+      },
+    },
+    {
+      ...validState,
+      managedProviders: {
+        ...(validState.managedProviders as Record<string, unknown>),
+        image: 'company-image2-medium',
+      },
+    },
+    {
+      ...validState,
+      managedProviders: {
+        ...(validState.managedProviders as Record<string, unknown>),
+        tts: ['other-tts'],
+      },
+    },
+  ];
+  for (const invalidState of invalidStates) {
+    fs.writeFileSync(path.join(root, 'data', 'provisioning', 'state.json'), `${JSON.stringify(invalidState)}\n`);
+    assert.equal(readProvisioningState(root), null);
+    assert.deepEqual(readProvisioningStatus(root), {
+      configured: false,
+      profileName: null,
+      importedAt: null,
+      configHashPrefix: null,
+    });
+  }
+  fs.writeFileSync(path.join(root, 'data', 'provisioning', 'state.json'), validStateBytes);
+
   const rotated = payload({
     gatewayApiKey: 'rotated-gateway-secret-987654',
     liteLlmConfigYaml: 'model_list:\n  - model_name: rotated\n',
+    videos: [
+      {
+        id: 'company-video-new', name: '鏂版祴璇曡棰?', type: 'openai-video', apiStyle: 'openai-compatible',
+        baseUrl: 'http://127.0.0.1:4000', model: 'new-video-model', enabled: true,
+      },
+    ],
   });
   applyProvisioningPayload(rotated, { root, db, now: new Date('2026-08-05T01:00:00.000Z') });
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM providers WHERE id=?').get('company-image2-medium') as { count: number }).count, 1);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM providers WHERE id=?').get('user-provider') as { count: number }).count, 1);
-  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM video_providers WHERE id IN (?, ?)').get('company-kling-3', 'company-jimeng-2') as { count: number }).count, 2);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM video_providers WHERE id=?').get('company-video-new') as { count: number }).count, 1);
+  const rotatedState = readProvisioningState(root);
+  assert.ok(rotatedState);
+  assert.deepEqual(rotatedState.managedProviders.video, ['company-video-new']);
+  assert.equal(rotatedState.managedProviders.video.includes('company-kling-3'), false);
   assert.equal((db.prepare('SELECT apiKey FROM script_providers WHERE id=?').get('company-gpt5-5') as { apiKey: string }).apiKey, 'rotated-gateway-secret-987654');
   assert.equal((db.prepare('SELECT apiKey FROM final_edit_tts_providers WHERE id=?').get('doubao-seed-tts-2') as { apiKey: string }).apiKey, 'doubao-tts-secret-123456');
 
   const beforeConfig = fs.readFileSync(path.join(root, 'config.yaml'));
   const beforeEnv = fs.readFileSync(path.join(root, 'data', 'provisioning', 'runtime.env'));
+  const beforeState = fs.readFileSync(path.join(root, 'data', 'provisioning', 'state.json'));
   db.prepare(`DELETE FROM final_edit_tts_providers WHERE id=?`).run('doubao-seed-tts-2');
+  const beforeDb = {
+    providers: db.prepare('SELECT * FROM providers ORDER BY id').all(),
+    scripts: db.prepare('SELECT * FROM script_providers ORDER BY id').all(),
+    videos: db.prepare('SELECT * FROM video_providers ORDER BY id').all(),
+    tts: db.prepare('SELECT * FROM final_edit_tts_providers ORDER BY id').all(),
+  };
   assert.throws(() => applyProvisioningPayload(payload({ gatewayApiKey: 'failed-secret-000000' }), { root, db }));
   assert.deepEqual(fs.readFileSync(path.join(root, 'config.yaml')), beforeConfig);
   assert.deepEqual(fs.readFileSync(path.join(root, 'data', 'provisioning', 'runtime.env')), beforeEnv);
+  assert.deepEqual(fs.readFileSync(path.join(root, 'data', 'provisioning', 'state.json')), beforeState);
+  assert.deepEqual({
+    providers: db.prepare('SELECT * FROM providers ORDER BY id').all(),
+    scripts: db.prepare('SELECT * FROM script_providers ORDER BY id').all(),
+    videos: db.prepare('SELECT * FROM video_providers ORDER BY id').all(),
+    tts: db.prepare('SELECT * FROM final_edit_tts_providers ORDER BY id').all(),
+  }, beforeDb);
+  assertNoProvisioningTempFiles(root);
   assert.equal(process.env.CREATIVE_STUDIO_GATEWAY_API_KEY, 'rotated-gateway-secret-987654');
   assert.equal(Buffer.from(JSON.stringify(readProvisioningStatus(root))).includes(Buffer.from('rotated-gateway-secret')), false);
   fs.appendFileSync(path.join(root, 'config.yaml'), '# tamper');

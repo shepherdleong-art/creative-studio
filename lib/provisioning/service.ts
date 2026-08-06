@@ -5,8 +5,22 @@ import type Database from 'better-sqlite3';
 import { getDb } from '../db.ts';
 import { dataRoot } from '../data-root.ts';
 import { decryptProvisioningPayload, MAX_PROVISIONING_FILE_BYTES } from './crypto.ts';
-import { configHashPrefix, validateProvisioningPayload } from './schema.ts';
-import type { ProvisioningPayload, ProvisioningStatus } from './types.ts';
+import {
+  configHashPrefix,
+  MAX_LITE_LLM_CONFIG_BYTES,
+  MAX_PROFILE_NAME_LENGTH,
+  MAX_PROVIDER_ID_LENGTH,
+  validateProvisioningPayload,
+} from './schema.ts';
+import {
+  PROVISIONING_STATE_SCHEMA_VERSION,
+} from './types.ts';
+import type {
+  ManagedProviderAllowlist,
+  ProvisioningPayload,
+  ProvisioningStateV2,
+  ProvisioningStatus,
+} from './types.ts';
 
 /**
  * Deliberate boundary: the encrypted file is only a delivery mechanism.
@@ -29,6 +43,9 @@ const RUNTIME_ENV_KEYS = [
   'CREATIVE_STUDIO_COS_PREFIX',
   'CREATIVE_STUDIO_COS_URL_TTL_SEC',
 ] as const;
+
+const MAX_PROVISIONING_STATE_FILE_BYTES = 128 * 1024;
+const SAFE_PROVIDER_ID = new RegExp(`^[a-z0-9](?:[a-z0-9._-]{0,${MAX_PROVIDER_ID_LENGTH - 1}})$`);
 
 type ProvisioningPaths = {
   root: string;
@@ -55,6 +72,80 @@ function pathsFor(root: string): ProvisioningPaths {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  if (Object.keys(value).length !== expected.length) return false;
+  const allowed = new Set(expected);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isSafeProviderId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length <= MAX_PROVIDER_ID_LENGTH
+    && SAFE_PROVIDER_ID.test(value);
+}
+
+function parseAllowlistIds(
+  value: unknown,
+  minLength: number,
+  maxLength: number,
+): string[] | null {
+  if (!Array.isArray(value) || value.length < minLength || value.length > maxLength) return null;
+  if (!value.every((item) => isSafeProviderId(item))) return null;
+  const ids = value as string[];
+  return new Set(ids).size === ids.length ? ids : null;
+}
+
+function parseProvisioningState(value: unknown): ProvisioningStateV2 | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['schemaVersion', 'profileName', 'importedAt', 'configHash', 'managedProviders'])) {
+    return null;
+  }
+  if (value.schemaVersion !== PROVISIONING_STATE_SCHEMA_VERSION) return null;
+  if (typeof value.profileName !== 'string'
+    || value.profileName.length < 1
+    || value.profileName.length > MAX_PROFILE_NAME_LENGTH
+    || value.profileName.trim() !== value.profileName
+    || /[\u0000-\u001f\u007f]/.test(value.profileName)) {
+    return null;
+  }
+  if (typeof value.importedAt !== 'string'
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.importedAt)) {
+    return null;
+  }
+  const importedAt = new Date(value.importedAt);
+  if (Number.isNaN(importedAt.getTime()) || importedAt.toISOString() !== value.importedAt) return null;
+  if (typeof value.configHash !== 'string' || !/^[a-f0-9]{64}$/i.test(value.configHash)) return null;
+  if (!isRecord(value.managedProviders)
+    || !hasExactKeys(value.managedProviders, ['image', 'script', 'video', 'tts'])) {
+    return null;
+  }
+  const image = parseAllowlistIds(value.managedProviders.image, 1, 1);
+  const script = parseAllowlistIds(value.managedProviders.script, 1, 1);
+  const video = parseAllowlistIds(value.managedProviders.video, 1, 8);
+  const tts = value.managedProviders.tts;
+  if (!image || !script || !video
+    || !Array.isArray(tts)
+    || tts.length !== 1
+    || tts[0] !== 'doubao-seed-tts-2') {
+    return null;
+  }
+  return {
+    schemaVersion: PROVISIONING_STATE_SCHEMA_VERSION,
+    profileName: value.profileName,
+    importedAt: value.importedAt,
+    configHash: value.configHash.toLowerCase(),
+    managedProviders: {
+      image,
+      script,
+      video,
+      tts: ['doubao-seed-tts-2'],
+    },
+  };
+}
+
 function ensureParent(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -66,14 +157,18 @@ function safeTempPath(target: string, suffix: string): string {
 function writeTemp(target: string, bytes: Buffer): string {
   ensureParent(target);
   const temp = safeTempPath(target, 'tmp');
-  const handle = fs.openSync(temp, 'wx', 0o600);
+  let handle: number | undefined;
   try {
+    handle = fs.openSync(temp, 'wx', 0o600);
     fs.writeFileSync(handle, bytes);
     fs.fsyncSync(handle);
+    return temp;
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch { /* best effort */ }
+    throw error;
   } finally {
-    fs.closeSync(handle);
+    if (handle !== undefined) fs.closeSync(handle);
   }
-  return temp;
 }
 
 function snapshot(filePath: string): FileSnapshot {
@@ -82,8 +177,9 @@ function snapshot(filePath: string): FileSnapshot {
 }
 
 function installFiles(writes: Array<{ path: string; bytes: Buffer }>, snapshots: FileSnapshot[]): void {
-  const temps = writes.map((write) => ({ ...write, temp: writeTemp(write.path, write.bytes) }));
+  const temps: Array<{ path: string; bytes: Buffer; temp: string }> = [];
   try {
+    for (const write of writes) temps.push({ ...write, temp: writeTemp(write.path, write.bytes) });
     for (const item of temps) {
       const old = snapshots.find((entry) => entry.path === item.path);
       if (!old) throw new Error('file snapshot missing');
@@ -160,8 +256,7 @@ function upsertDatabase(payload: ProvisioningPayload, db: Database.Database, now
   if (!payload.tts.apiKey) throw new Error('tts credential missing');
   const ttsKey = payload.tts.apiKey;
 
-  db.transaction(() => {
-    db.prepare(`
+  db.prepare(`
       INSERT INTO providers (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
@@ -254,7 +349,15 @@ function upsertDatabase(payload: ProvisioningPayload, db: Database.Database, now
       now,
       'doubao-seed-tts-2',
     );
-  })();
+}
+
+function managedProvidersFromPayload(payload: ProvisioningPayload): ManagedProviderAllowlist {
+  return {
+    image: [payload.image.id],
+    script: [payload.script.id],
+    video: Array.from(new Set(payload.videos.map((provider) => provider.id))),
+    tts: ['doubao-seed-tts-2'],
+  };
 }
 
 export function applyProvisioningPayload(input: unknown, options: ApplyProvisioningOptions = {}): ProvisioningStatus {
@@ -262,11 +365,13 @@ export function applyProvisioningPayload(input: unknown, options: ApplyProvision
   const root = options.root || dataRoot();
   const paths = pathsFor(root);
   const importedAt = (options.now || new Date()).toISOString();
+  const configHash = crypto.createHash('sha256').update(payload.liteLlmConfigYaml, 'utf8').digest('hex');
   const state = Buffer.from(JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: PROVISIONING_STATE_SCHEMA_VERSION,
     profileName: payload.profileName,
     importedAt,
-    configHash: crypto.createHash('sha256').update(payload.liteLlmConfigYaml, 'utf8').digest('hex'),
+    configHash,
+    managedProviders: managedProvidersFromPayload(payload),
   }) + '\n', 'utf8');
   const writes = [
     { path: paths.configPath, bytes: Buffer.from(payload.liteLlmConfigYaml, 'utf8') },
@@ -274,9 +379,14 @@ export function applyProvisioningPayload(input: unknown, options: ApplyProvision
     { path: paths.statePath, bytes: state },
   ];
   const snapshots = writes.map((write) => snapshot(write.path));
+  const db = options.db || getDb();
   try {
-    installFiles(writes, snapshots);
-    upsertDatabase(payload, options.db || getDb(), importedAt);
+    db.transaction(() => {
+      // Publish config and runtime credentials first; state is the final commit point.
+      installFiles(writes.slice(0, 2), snapshots);
+      upsertDatabase(payload, db, importedAt);
+      installFiles([writes[2]], snapshots);
+    })();
     removeBackups(snapshots);
     applyProvisionedRuntimeEnvFromPayload(payload);
   } catch {
@@ -347,24 +457,30 @@ function applyProvisionedRuntimeEnvFromPayload(payload: ProvisioningPayload): vo
   if (payload.cos.ttlSec !== undefined) process.env.CREATIVE_STUDIO_COS_URL_TTL_SEC = String(payload.cos.ttlSec);
 }
 
-export function readProvisioningStatus(root = dataRoot()): ProvisioningStatus {
+export function readProvisioningState(root = dataRoot()): ProvisioningStateV2 | null {
   const paths = pathsFor(root);
-  const statePath = paths.statePath;
-  if (!fs.existsSync(statePath) || !fs.existsSync(paths.configPath) || !fs.existsSync(paths.runtimeEnvPath)) {
-    return { configured: false, profileName: null, importedAt: null, configHashPrefix: null };
-  }
   try {
-    const value: unknown = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
-    const row = value as Record<string, unknown>;
-    const profileName = typeof row.profileName === 'string' && row.profileName.length <= 128 ? row.profileName : null;
-    const importedAt = typeof row.importedAt === 'string' && row.importedAt.length <= 64 ? row.importedAt : null;
-    const configHash = typeof row.configHash === 'string' && /^[a-f0-9]{64}$/i.test(row.configHash) ? row.configHash : '';
-    if (!profileName || !importedAt || !configHash) return { configured: false, profileName: null, importedAt: null, configHashPrefix: null };
-    const actualHash = crypto.createHash('sha256').update(fs.readFileSync(paths.configPath)).digest('hex');
-    if (actualHash.toLowerCase() !== configHash.toLowerCase()) return { configured: false, profileName: null, importedAt: null, configHashPrefix: null };
-    return { configured: true, profileName, importedAt, configHashPrefix: configHash.slice(0, 12) };
+    const stateBytes = fs.readFileSync(paths.statePath);
+    if (stateBytes.length > MAX_PROVISIONING_STATE_FILE_BYTES) return null;
+    const parsed = parseProvisioningState(JSON.parse(stateBytes.toString('utf8')));
+    if (!parsed) return null;
+    const configBytes = fs.readFileSync(paths.configPath);
+    if (configBytes.length > MAX_LITE_LLM_CONFIG_BYTES) return null;
+    const actualHash = crypto.createHash('sha256').update(configBytes).digest('hex');
+    if (actualHash !== parsed.configHash) return null;
+    return parsed;
   } catch {
-    return { configured: false, profileName: null, importedAt: null, configHashPrefix: null };
+    return null;
   }
+}
+
+export function readProvisioningStatus(root = dataRoot()): ProvisioningStatus {
+  const state = readProvisioningState(root);
+  if (!state) return { configured: false, profileName: null, importedAt: null, configHashPrefix: null };
+  return {
+    configured: true,
+    profileName: state.profileName,
+    importedAt: state.importedAt,
+    configHashPrefix: state.configHash.slice(0, 12),
+  };
 }
