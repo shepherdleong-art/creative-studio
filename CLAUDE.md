@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev                  # Dev server at localhost:3000
+npm run dev                  # Dev server at localhost:3000; predev first tries to start the LiteLLM sidecar (failure only disables company providers, never blocks dev)
 npm run dev:win              # Dev server at 127.0.0.1 (Windows)
 npm run build                # Production build (next build + sync standalone assets)
 npm run lint                 # ESLint
@@ -14,7 +14,7 @@ npm run build:win-installer  # Build Windows installer (PowerShell/Inno Setup; r
 npm run build:mac-installer  # Build macOS DMG (bash; Apple Silicon host, requires Node 22.x)
 ```
 
-Company-gateway local stack (macOS / Windows source runs): when `.venv-litellm` and `config.yaml` are present, `start.command` uses `scripts/start-litellm.sh` on macOS and `start-windows.cmd` uses `scripts/start-stack.ps1 -SkipApp` on Windows to bring up the LiteLLM proxy before the dev server. Both launch commands must explicitly pass `--host 127.0.0.1`; dependencies are pinned in `requirements-litellm.txt`, and a missing or failed sidecar only disables company-scoped providers. Public delivery of reference images goes through Tencent COS (`CREATIVE_STUDIO_COS_*`, see `lib/cos-media.ts`). Security constraint: local services (app and proxy) must never be exposed to the public internet — COS is the only public delivery path. Platform stop scripts, Ctrl+C in the start window, and the UI shutdown button (`/api/shutdown` reads the controlled `stopScript` in `storage/run/stack.json`) all tear down the proxy too. `storage/run/stack.json` is BOM-less JSON; `scripts/*.ps1` MUST stay UTF-8 **with BOM** — PS 5.1 misreads BOM-less Chinese and fails to parse.
+Company-gateway local stack (macOS / Windows source runs): when `.venv-litellm` and `config.yaml` are present, `start.command` and the `npm run dev` `predev` hook both use `scripts/start-litellm.sh` on macOS and `start-windows.cmd` uses `scripts/start-stack.ps1 -SkipApp` on Windows to bring up the LiteLLM proxy before the dev server. Both launch commands must explicitly pass `--host 127.0.0.1`; dependencies are pinned in `requirements-litellm.txt`, and a missing or failed sidecar only disables company-scoped providers. Public delivery of reference images goes through Tencent COS (`CREATIVE_STUDIO_COS_*`, see `lib/cos-media.ts`). Security constraint: local services (app and proxy) must never be exposed to the public internet — COS is the only public delivery path. Platform stop scripts, Ctrl+C in the start window, and the UI shutdown button (`/api/shutdown` reads the controlled `stopScript` in `storage/run/stack.json`) all tear down the proxy too. `storage/run/stack.json` is BOM-less JSON; `scripts/*.ps1` MUST stay UTF-8 **with BOM** — PS 5.1 misreads BOM-less Chinese and fails to parse.
 
 There is no `npm test` script. Tests are standalone files under `scripts/*.test.ts` and `scripts/*.test.mjs`, run directly via Node's native TypeScript support (Node 22+):
 

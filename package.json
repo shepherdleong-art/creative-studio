@@ -4,6 +4,7 @@
   "license": "GPL-3.0-only",
   "private": true,
   "scripts": {
+    "predev": "bash scripts/start-litellm.sh || echo '⚠️  LiteLLM 未启动，公司供应商暂不可用（不影响工作台）'",
     "dev": "next dev",
     "dev:win": "next dev --hostname 127.0.0.1",
     "build": "next build && node scripts/sync-standalone-assets.mjs",
