@@ -133,6 +133,8 @@ assert.doesNotMatch(restart, /Stop-Process/);
 assert.doesNotMatch(restart, /CREATIVE_STUDIO_PROXY_PORT|-ProxyPort\b/);
 
 const stop = read(stopPath);
+assert.match(restart, /\[CmdletBinding\(\)\]\s*param\(/);
+assert.match(stop, /\[CmdletBinding\(\)\]\s*param\(/);
 assert.match(stop, /Win32_Process/);
 assert.match(stop, /ExecutablePath/);
 assert.match(stop, /litellm\.proxy\.proxy_cli/);
@@ -201,6 +203,7 @@ assert.match(start, /Acquire-StartLock/);
 assert.match(start, /ForceRestart/);
 assert.doesNotMatch(start, /SkipStartLock/);
 assert.doesNotMatch(stop, /SkipStartLock/);
+assert.match(start, /\[CmdletBinding\(\)\]\s*param\(/);
 assert.match(start, /configHash/);
 assert.match(start, /Write-Stack[\s\S]*configHash/);
 assert.match(start, /configHash[^\n]*OrdinalIgnoreCase/);
@@ -258,7 +261,8 @@ if (process.platform === 'win32' && existsSync('installer/windows/start-company-
       console.warn('PowerShell child process blocked by the current sandbox; rerun litellm-sidecar.test.mjs in an external Windows sandbox.');
     } else {
     assert.notEqual(valid.status, 0, 'dummy runtime must fail without reaching a real model');
-    const validStatus = JSON.parse(readFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), 'utf8'));
+    const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
+    const validStatus = JSON.parse(readFileSync(statusPath, 'utf8'));
     assert.equal(validStatus.status, 'failed');
     assert.notEqual(validStatus.code, 'provision_invalid', 'valid UTF-8 v2 state must pass provisioning validation');
 
@@ -273,13 +277,17 @@ if (process.platform === 'win32' && existsSync('installer/windows/start-company-
     };
     const stackPath = path.join(root, 'storage', 'run', 'stack.json');
     writeJson(stackPath, sentinelStack);
+    const sentinelStackBytes = readFileSync(stackPath);
+    const sentinelStatusBytes = Buffer.from('{"schemaVersion":1,"status":"sentinel","code":"sentinel","reason":"sentinel","updatedAt":"2026-08-06T00:00:00.000Z"}\n', 'utf8');
+    writeFileSync(statusPath, sentinelStatusBytes);
     const nakedStart = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Root', root, '-SkipStartLock'], { encoding: 'utf8', timeout: 20_000 });
     assert.notEqual(nakedStart.status, 0, 'naked -SkipStartLock must be rejected by parameter binding');
-    assert.match(`${nakedStart.stdout ?? ''}${nakedStart.stderr ?? ''}`, /SkipStartLock|parameter/i);
-    assert.deepEqual(JSON.parse(readFileSync(stackPath, 'utf8')), sentinelStack, 'rejected bypass must not touch stack state');
+    assert.deepEqual(readFileSync(stackPath), sentinelStackBytes, 'rejected start bypass must not touch stack bytes');
+    assert.deepEqual(readFileSync(statusPath), sentinelStatusBytes, 'rejected start bypass must not touch status bytes');
     const nakedStop = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.resolve(stopPath), '-Root', root, '-SkipStartLock'], { encoding: 'utf8', timeout: 20_000 });
     assert.notEqual(nakedStop.status, 0, 'stop must reject a naked -SkipStartLock too');
-    assert.deepEqual(JSON.parse(readFileSync(stackPath, 'utf8')), sentinelStack, 'rejected stop bypass must not touch stack state');
+    assert.deepEqual(readFileSync(stackPath), sentinelStackBytes, 'rejected stop bypass must not touch stack bytes');
+    assert.deepEqual(readFileSync(statusPath), sentinelStatusBytes, 'rejected stop bypass must not touch status bytes');
 
     const cases = [
       ['schema string', { schemaVersion: '2' }],
