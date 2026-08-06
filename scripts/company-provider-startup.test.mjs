@@ -100,8 +100,9 @@ test('受管 sidecar 固定以 UTF-8、127.0.0.1:4000 启动并发布窄状态',
   assert.match(installedSidecar, /PYTHONUTF8/);
   assert.match(installedSidecar, /PYTHONIOENCODING/);
   assert.match(installedSidecar, /LITELLM_LOCAL_MODEL_COST_MAP/);
-  assert.match(installedSidecar, /schemaVersion\s*=\s*1/);
+  assert.match(installedSidecar, /schemaVersion\s*=\s*2/);
   assert.match(installedSidecar, /company-sidecar-status\.json/);
+  assert.match(installedSidecar, /requestId/);
   assert.match(installedSidecar, /company-sidecar-start\.lock/);
   assert.match(installedSidecar, /provisioning state.*schema.*2|schemaVersion.*2/i);
   assert.match(installedSidecar, /health\/liveliness/);

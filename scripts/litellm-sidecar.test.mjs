@@ -74,6 +74,8 @@ assert.match(build, /README-INSTALLED\.md/);
 assert.match(build, /restart-company-sidecar\.ps1/);
 
 const start = read(startPath);
+const sidecarArgumentsBlock = start.slice(start.indexOf('$sidecarArguments = @('), start.indexOf('$quotedConfigPath'));
+assert.doesNotMatch(sidecarArgumentsBlock, /SIDECAR_REQUEST_ID/);
 assert.match(start, /config\.yaml/);
 assert.match(start, /runtime-litellm\\python\.exe/);
 assert.match(start, /data\\provisioning\\runtime\.env/);
@@ -100,6 +102,10 @@ assert.match(start, /GATEWAY_API_KEY/);
 assert.match(start, /CREATIVE_STUDIO_COS_SECRET_KEY/);
 assert.match(start, /ConvertFrom-Json/);
 assert.match(start, /Get-BytesSha256Hex/);
+assert.match(start, /requestId\s*=\s*\$SidecarRequestId/);
+assert.match(start, /SidecarRequestId/);
+assert.match(start, /CREATIVE_STUDIO_SIDECAR_REQUEST_ID/);
+assert.match(start, /CanonicalRequestIdPattern|-cmatch/);
 assert.match(start, /configHash/);
 assert.match(start, /Read-ValidatedProvisioningState/);
 assert.match(start, /provisionStateHash/, 'stack identity must include the exact provisioning state hash');
@@ -110,7 +116,7 @@ assert.match(start, /RuntimeEnvValueMaxChars/);
 assert.match(start, /RuntimeEnvMaxBytes/);
 assert.match(start, /company-sidecar-start\.lock/);
 assert.match(start, /FileShare\]::None/);
-assert.match(start, /schemaVersion\s*=\s*1/);
+assert.match(start, /schemaVersion\s*=\s*2/);
 assert.match(start, /schemaTypeValid|schemaValueValid/);
 for (const code of ['runtime_missing', 'provision_invalid', 'port_in_use', 'process_exited', 'health_timeout', 'start_failed']) {
   assert.match(start, new RegExp(code));
@@ -127,6 +133,7 @@ const restart = read(restartPath);
 assert.match(restart, /start-company-sidecar\.ps1/);
 assert.match(restart, /-File \$StartScript/);
 assert.match(restart, /-ForceRestart/);
+assert.doesNotMatch(restart, /SIDECAR_REQUEST_ID/);
 assert.doesNotMatch(restart, /-File \$StopScript/);
 assert.doesNotMatch(restart, /company-sidecar-start\.lock|Acquire-StartLock|SkipStartLock/);
 assert.doesNotMatch(restart, /Stop-Process/);
@@ -149,6 +156,7 @@ assert.doesNotMatch(stop, /Get-NetTCPConnection/);
 const installedStart = read('installer/windows/start-installed.ps1');
 assert.match(installedStart, /\$sidecarArguments\s*=.*-File `"\$sidecarStartScript`".*-Root `"\$Root`"/);
 assert.match(installedStart, /-ArgumentList \$sidecarArguments/);
+assert.doesNotMatch(installedStart, /SIDECAR_REQUEST_ID/);
 assert.match(installedStart, /CREATIVE_STUDIO_DATA_ROOT/);
 assert.match(installedStart, /CREATIVE_STUDIO_MANAGED_DEPLOYMENT/);
 assert.doesNotMatch(installedStart, /-ProxyPort\b|CREATIVE_STUDIO_PROXY_PORT/);
@@ -265,6 +273,23 @@ if (process.platform === 'win32' && existsSync('installer/windows/start-company-
     const validStatus = JSON.parse(readFileSync(statusPath, 'utf8'));
     assert.equal(validStatus.status, 'failed');
     assert.notEqual(validStatus.code, 'provision_invalid', 'valid UTF-8 v2 state must pass provisioning validation');
+    const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    assert.equal(validStatus.schemaVersion, 2);
+    assert.deepEqual(Object.keys(validStatus).sort(), ['code', 'reason', 'requestId', 'schemaVersion', 'status', 'updatedAt'].sort());
+    assert.match(validStatus.requestId, requestIdPattern);
+    const inheritedRequestId = '123e4567-e89b-42d3-a456-426614174000';
+    const inherited = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Root', root], { env: { ...process.env, CREATIVE_STUDIO_SIDECAR_REQUEST_ID: inheritedRequestId }, encoding: 'utf8', timeout: 20_000 });
+    assert.notEqual(inherited.status, 0);
+    const inheritedStatus = JSON.parse(readFileSync(statusPath, 'utf8'));
+    assert.equal(inheritedStatus.schemaVersion, 2);
+    assert.equal(inheritedStatus.requestId, inheritedRequestId);
+    const invalidRequestId = 'not-a-canonical-request-id';
+    const invalidInherited = spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Root', root], { env: { ...process.env, CREATIVE_STUDIO_SIDECAR_REQUEST_ID: invalidRequestId }, encoding: 'utf8', timeout: 20_000 });
+    assert.notEqual(invalidInherited.status, 0);
+    const invalidStatus = JSON.parse(readFileSync(statusPath, 'utf8'));
+    assert.equal(invalidStatus.schemaVersion, 2);
+    assert.match(invalidStatus.requestId, requestIdPattern);
+    assert.notEqual(invalidStatus.requestId, invalidRequestId);
 
     // PowerShell must reject the old public lock-bypass switch before the
     // controller can touch a sentinel stack/status file.

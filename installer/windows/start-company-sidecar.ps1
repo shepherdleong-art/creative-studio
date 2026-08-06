@@ -11,6 +11,14 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 if (-not $Root) { $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
 $Root = [IO.Path]::GetFullPath($Root)
 
+$CanonicalRequestIdPattern = '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+$inheritedRequestId = [Environment]::GetEnvironmentVariable('CREATIVE_STUDIO_SIDECAR_REQUEST_ID', 'Process')
+if ($inheritedRequestId -is [string] -and $inheritedRequestId -cmatch $CanonicalRequestIdPattern) {
+  $SidecarRequestId = $inheritedRequestId
+} else {
+  $SidecarRequestId = [Guid]::NewGuid().ToString('D').ToLowerInvariant()
+}
+
 $ProxyPortNumber = 4000
 $ConfigPath = [IO.Path]::GetFullPath((Join-Path $Root 'config.yaml'))
 $PythonExe = [IO.Path]::GetFullPath((Join-Path $Root 'runtime-litellm\python.exe'))
@@ -102,7 +110,8 @@ function Write-AtomicUtf8Json {
 function Write-SidecarStatus {
   param([string]$Status, [string]$Code)
   $record = [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
+    requestId = $SidecarRequestId
     status = $Status
     code = $Code
     reason = $Code
@@ -506,7 +515,7 @@ try {
     )
     $quotedConfigPath = [char]34 + $ConfigPath + [char]34
     $startArguments = @($sidecarArguments | ForEach-Object { if ([string]$_ -eq $ConfigPath) { $quotedConfigPath } else { [string]$_ } })
-    $controlledNames = @($AllowedRuntimeEnvKeys + 'PYTHONUTF8', 'PYTHONIOENCODING', 'LITELLM_LOCAL_MODEL_COST_MAP')
+    $controlledNames = @($AllowedRuntimeEnvKeys + 'PYTHONUTF8', 'PYTHONIOENCODING', 'LITELLM_LOCAL_MODEL_COST_MAP', 'CREATIVE_STUDIO_SIDECAR_REQUEST_ID')
     $previousEnvironment = @{}
     foreach ($name in $controlledNames) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     try {
@@ -514,6 +523,7 @@ try {
       [Environment]::SetEnvironmentVariable('PYTHONUTF8', '1', 'Process')
      [Environment]::SetEnvironmentVariable('PYTHONIOENCODING', 'utf-8', 'Process')
      [Environment]::SetEnvironmentVariable('LITELLM_LOCAL_MODEL_COST_MAP', 'True', 'Process')
+     [Environment]::SetEnvironmentVariable('CREATIVE_STUDIO_SIDECAR_REQUEST_ID', $SidecarRequestId, 'Process')
       $process = Start-Process -FilePath $PythonExe -ArgumentList $startArguments -WorkingDirectory $Root -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog -PassThru
     } finally {
       foreach ($name in $controlledNames) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
