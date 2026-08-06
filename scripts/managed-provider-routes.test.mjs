@@ -67,6 +67,53 @@ test('image item policy runs before safe projection and hidden rows map to 404',
   assert.match(text, /status:\s*404/);
 });
 
+test('provider response projections never return credential values or credential locator fields', () => {
+  const imageCollectionProjection = source.imageCollection.slice(
+    source.imageCollection.indexOf('function safeImageProvider'),
+    source.imageCollection.indexOf('export async function GET'),
+  );
+  assert.match(imageCollectionProjection, /apiKeyEnv:\s*undefined/);
+  assert.match(imageCollectionProjection, /apiKey:\s*undefined/);
+  assert.doesNotMatch(imageCollectionProjection, /\b(?:accessKey|secretKey|keyEnv)\s*:/);
+
+  const imageItemGetSafeStart = source.imageItem.indexOf('const safe =');
+  const imageItemGetSafe = source.imageItem.slice(imageItemGetSafeStart, source.imageItem.indexOf('return NextResponse.json(safe)', imageItemGetSafeStart));
+  assert.match(imageItemGetSafe, /apiKeyEnv:\s*undefined/);
+  assert.match(imageItemGetSafe, /apiKey:\s*undefined/);
+  assert.doesNotMatch(imageItemGetSafe, /\b(?:accessKey|secretKey|keyEnv)\s*:/);
+
+  const imageItemPut = source.imageItem.slice(source.imageItem.indexOf('export async function PUT'));
+  const imageItemSafe = imageItemPut.slice(imageItemPut.indexOf('const safe ='), imageItemPut.indexOf('return NextResponse.json(safe)'));
+  assert.match(imageItemSafe, /apiKeyEnv:\s*undefined/);
+  assert.match(imageItemSafe, /apiKey:\s*undefined/);
+  assert.doesNotMatch(imageItemSafe, /\b(?:accessKey|secretKey|keyEnv)\s*:/);
+
+  const videoProjectionStart = source.videoCollection.indexOf('function safeVideoProvider');
+  const videoProjection = source.videoCollection.slice(
+    source.videoCollection.indexOf('return {', videoProjectionStart),
+    source.videoCollection.indexOf('  };', videoProjectionStart),
+  );
+  assert.doesNotMatch(videoProjection, /\b(?:apiKey|apiKeyEnv|accessKey|secretKey|keyEnv)\b/);
+  const videoItemProjectionStart = source.videoItem.indexOf('function safeVideoProvider');
+  const videoItemProjection = source.videoItem.slice(
+    source.videoItem.indexOf('return {', videoItemProjectionStart),
+    source.videoItem.indexOf('  };', videoItemProjectionStart),
+  );
+  assert.doesNotMatch(videoItemProjection, /\b(?:apiKey|apiKeyEnv|accessKey|secretKey|keyEnv)\b/);
+
+  const ttsProjection = source.ttsCollection.slice(
+    source.ttsCollection.indexOf('const providers ='),
+    source.ttsCollection.indexOf('providers.sort'),
+  );
+  assert.match(ttsProjection, /map\(\(\{\s*apiKey,\s*keyEnv,\s*\.\.\.row\s*\}\)/);
+  assert.match(ttsProjection, /String\(keyEnv\)/);
+  assert.doesNotMatch(ttsProjection, /\bkeyEnv\s*:/);
+  assert.doesNotMatch(ttsProjection, /\bapiKey\s*:/);
+
+  const scriptMeta = fs.readFileSync('lib/script-providers/config.ts', 'utf8');
+  const scriptProjection = scriptMeta.slice(scriptMeta.indexOf('export function toScriptProviderMeta'));
+  assert.doesNotMatch(scriptProjection, /\b(?:apiKey|keyEnv|baseUrlEnv|modelEnv)\s*:/);
+});
 test('all provider mutations guard before params, body readers, database, readiness, or adapters', () => {
   const mutationRoutes = [
     ['imageCollection', ['POST']], ['imageItem', ['PUT', 'DELETE']], ['imageActivate', ['POST']],

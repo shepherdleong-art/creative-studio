@@ -19,9 +19,9 @@ export async function GET() {
   const rows = getDb().prepare(`SELECT id, name, type, baseUrl, keyEnv, model, enabled, isBuiltin, apiKey, costPerThousandCharacters FROM final_edit_tts_providers ORDER BY name`).all() as TtsProviderRow[];
   const allowlist = isManagedDeployment() ? loadManagedProviderAllowlist() : null;
   const visible = filterManagedProviders('tts', rows, allowlist);
-  const providers = visible.map(({ apiKey, ...row }) => {
+  const providers = visible.map(({ apiKey, keyEnv, ...row }) => {
     const adapter = getFinalEditTtsAdapter(String(row.id));
-    const hasApiKey = Boolean(String(apiKey || '').trim() || (row.keyEnv && process.env[String(row.keyEnv)]));
+    const hasApiKey = Boolean(String(apiKey || '').trim() || (keyEnv && process.env[String(keyEnv)]));
     return {
       ...row,
       id: String(row.id),

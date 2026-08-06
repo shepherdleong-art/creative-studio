@@ -119,6 +119,7 @@ export async function PUT(
       category: 'image',
       configured: isRealKey(updated.apiKey as string),
       missing: isRealKey(updated.apiKey as string) ? [] : ['API Key'],
+      apiKeyEnv: undefined,
       apiKey: undefined,
       hasApiKey: isRealKey(updated.apiKey as string),
     };
