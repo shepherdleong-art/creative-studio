@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -278,11 +279,14 @@ function writeManagedFixture(
     litellmPid: 101,
   },
   reason: string = code,
+  configBytes: string | Buffer = 'model_list: []\n',
 ): void {
   fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
   fs.mkdirSync(path.join(root, 'runtime-litellm'), { recursive: true });
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'config.yaml'), 'model_list: []\n', 'utf8');
+  const configBuffer = Buffer.isBuffer(configBytes) ? configBytes : Buffer.from(configBytes, 'utf8');
+  const configHash = createHash('sha256').update(configBuffer).digest('hex');
+  fs.writeFileSync(path.join(root, 'config.yaml'), configBuffer);
   fs.writeFileSync(path.join(root, 'runtime-litellm', 'python.exe'), 'test-runtime', 'utf8');
   fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
   fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
@@ -292,7 +296,12 @@ function writeManagedFixture(
     reason,
     updatedAt: '2026-08-06T00:00:00.000Z',
   }), 'utf8');
-  if (stack) fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), JSON.stringify(stack), 'utf8');
+  if (stack) {
+    const stackWithHash = Object.prototype.hasOwnProperty.call(stack, 'configHash')
+      ? stack
+      : { ...stack, configHash };
+    fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), JSON.stringify(stackWithHash), 'utf8');
+  }
 }
 
 async function inspectManagedFixture(
@@ -476,6 +485,43 @@ test('netstat parser preserves loopback, wildcard, and listener ownership fields
   });
   assert.equal(parseNetstatListenerLine('UDP    127.0.0.1:4000    *:*    101'), null);
 });
+
+test('managed ready requires a current bounded config hash before health probing', async () => {
+  const baseStack = {
+    sidecarKind: 'company-litellm',
+    runtimeRelativePath: 'runtime-litellm/python.exe',
+    configRelativePath: 'config.yaml',
+    proxyPort: 4000,
+    litellmPid: 101,
+  };
+  const cases: Array<{ name: string; stack: Record<string, unknown>; rewriteConfig?: Buffer | string }> = [
+    { name: 'missing hash', stack: { ...baseStack, configHash: undefined } },
+    { name: 'wrong hash', stack: { ...baseStack, configHash: '0'.repeat(64) } },
+    { name: 'changed config', stack: baseStack, rewriteConfig: 'model_list: [changed]\n' },
+    { name: 'oversized config', stack: baseStack, rewriteConfig: Buffer.alloc(512 * 1024 + 1, 0x61) },
+  ];
+
+  for (const item of cases) {
+    const root = makeRoot();
+    let healthCalls = 0;
+    try {
+      writeManagedFixture(root, 'ready', 'ready', item.stack);
+      if (item.rewriteConfig !== undefined) fs.writeFileSync(path.join(root, 'config.yaml'), item.rewriteConfig);
+      const status = await inspectManagedFixture(root, {
+        fetchImpl: async () => {
+          healthCalls += 1;
+          return new Response('ok', { status: 200 });
+        },
+      });
+      assert.equal(status.status, 'unavailable', item.name);
+      assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.provision_invalid, item.name);
+      assert.equal(healthCalls, 0, item.name);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('managed ready requires live PID, owned listener, and exactly HTTP 200', async () => {
   const root = makeRoot();
   const checks: string[] = [];

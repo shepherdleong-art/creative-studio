@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataRoot } from './data-root.ts';
@@ -80,6 +81,7 @@ interface StackState {
   sidecarKind?: unknown;
   runtimeRelativePath?: unknown;
   configRelativePath?: unknown;
+  configHash?: unknown;
 }
 
 interface SafeSidecarStatus {
@@ -96,7 +98,9 @@ export interface NetstatListenerRecord {
 
 const MAX_STACK_FILE_BYTES = 128 * 1024;
 const MAX_STATUS_FILE_BYTES = 16 * 1024;
+const MAX_CONFIG_FILE_BYTES = 512 * 1024;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const CONFIG_HASH = /^[a-f0-9]{64}$/i;
 const SAFE_STATUS_CODES = new Set<CompanyProviderStatusCode>([
   'starting',
   'ready',
@@ -145,6 +149,23 @@ function readUtf8Json(filePath: string, maxBytes: number): unknown | null {
 function readStackState(stackFile: string): StackState | null {
   const parsed = readUtf8Json(stackFile, MAX_STACK_FILE_BYTES);
   return isRecord(parsed) ? parsed : null;
+}
+
+function readConfigHash(configFile: string): string | null {
+  try {
+    const bytes = fs.readFileSync(configFile);
+    if (bytes.length <= 0 || bytes.length > MAX_CONFIG_FILE_BYTES) return null;
+    return createHash('sha256').update(bytes).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function hasCurrentConfigHash(stack: StackState, configHash: string | null): boolean {
+  return configHash !== null
+    && typeof stack.configHash === 'string'
+    && CONFIG_HASH.test(stack.configHash)
+    && stack.configHash.toLowerCase() === configHash.toLowerCase();
 }
 
 function safeStartedAt(value: unknown): string | null {
@@ -454,6 +475,10 @@ export async function inspectCompanyProviderRuntime({
   }
   const stack = readStackState(stackFile);
   if (!stack || (managed && !isControlledStack(stack))) {
+    return result('unavailable', safeReasonForCode('provision_invalid'));
+  }
+
+  if (managed && !hasCurrentConfigHash(stack, readConfigHash(configFile))) {
     return result('unavailable', safeReasonForCode('provision_invalid'));
   }
 

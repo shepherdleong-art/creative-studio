@@ -41,6 +41,7 @@ interface SidecarRequestContext {
   rootKey: string;
   token: number;
   startedAtMs: number;
+  startingUpdatedAtMs: number | null;
 }
 
 interface NarrowSidecarStatus {
@@ -56,6 +57,7 @@ const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const inFlight = new Map<CompanySidecarAction, Promise<CompanySidecarRequestResult>>();
 const latestRequestTokenByRoot = new Map<string, number>();
 let nextRequestToken = 0;
+let nextStatusTempToken = 0;
 
 function isAction(value: unknown): value is CompanySidecarAction {
   return value === 'start' || value === 'restart';
@@ -82,6 +84,7 @@ function beginRequest(options: CompanySidecarRequestOptions): SidecarRequestCont
     rootKey: rootKey(root),
     token: ++nextRequestToken,
     startedAtMs: Date.now(),
+    startingUpdatedAtMs: null,
   };
   latestRequestTokenByRoot.set(context.rootKey, context.token);
   return context;
@@ -114,53 +117,69 @@ function parseNarrowStatus(value: unknown): NarrowSidecarStatus | null {
   return record as unknown as NarrowSidecarStatus;
 }
 
-function readStatusUpdatedAt(filePath: string): number | null {
+function readNarrowStatus(filePath: string): NarrowSidecarStatus | null {
   try {
     const bytes = fs.readFileSync(filePath);
     if (bytes.length <= 0 || bytes.length > MAX_STATUS_FILE_BYTES) return null;
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    const parsed = parseNarrowStatus(JSON.parse(text) as unknown);
-    return parsed ? new Date(parsed.updatedAt).getTime() : null;
+    return parseNarrowStatus(JSON.parse(text) as unknown);
   } catch {
     return null;
   }
 }
 
-function shouldPublishFailure(context: SidecarRequestContext, filePath: string): boolean {
-  if (!isCurrentRequest(context)) return false;
-  const currentUpdatedAt = readStatusUpdatedAt(filePath);
-  return currentUpdatedAt === null || currentUpdatedAt < context.startedAtMs;
+function shouldPublishStarting(context: SidecarRequestContext): boolean {
+  return isCurrentRequest(context);
 }
 
-function publishSafeFailure(context: SidecarRequestContext): void {
+function shouldPublishFailure(context: SidecarRequestContext, filePath: string): boolean {
+  if (!isCurrentRequest(context)) return false;
+  const current = readNarrowStatus(filePath);
+  if (!current) return true;
+  const currentUpdatedAt = new Date(current.updatedAt).getTime();
+  if (context.startingUpdatedAtMs !== null
+    && current.status === 'starting'
+    && current.code === 'starting'
+    && currentUpdatedAt === context.startingUpdatedAtMs) return true;
+  return currentUpdatedAt < context.startedAtMs;
+}
+
+function publishAtomicStatus(
+  context: SidecarRequestContext,
+  status: NarrowSidecarStatus['status'],
+  code: keyof typeof COMPANY_PROVIDER_SAFE_REASONS,
+  canPublish: (filePath: string) => boolean,
+): number | null {
   const filePath = statusFilePath(context.root);
   let tempPath: string | null = null;
   let descriptor = -1;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    if (!shouldPublishFailure(context, filePath)) return;
+    if (!canPublish(filePath)) return null;
 
     const updatedAt = new Date().toISOString();
-    const status: NarrowSidecarStatus = {
+    const statusRecord: NarrowSidecarStatus = {
       schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
-      status: 'failed',
-      code: 'start_failed',
-      reason: COMPANY_PROVIDER_SAFE_REASONS.start_failed,
+      status,
+      code,
+      reason: COMPANY_PROVIDER_SAFE_REASONS[code],
       updatedAt,
     };
-    const bytes = `${JSON.stringify(status)}\n`;
-    tempPath = `${filePath}.${process.pid}.${context.token}.tmp`;
+    const bytes = `${JSON.stringify(statusRecord)}\n`;
+    tempPath = `${filePath}.${process.pid}.${context.token}.${++nextStatusTempToken}.tmp`;
     descriptor = fs.openSync(tempPath, 'wx', 0o600);
     fs.writeFileSync(descriptor, bytes, { encoding: 'utf8' });
     fs.fsyncSync(descriptor);
     try { fs.closeSync(descriptor); } finally { descriptor = -1; }
 
     // Recheck both ownership and freshness immediately before the atomic publish.
-    if (!shouldPublishFailure(context, filePath)) return;
+    if (!canPublish(filePath)) return null;
     fs.renameSync(tempPath, filePath);
     tempPath = null;
+    return new Date(updatedAt).getTime();
   } catch {
     // Status publication is best effort; never leak a filesystem diagnostic.
+    return null;
   } finally {
     if (descriptor !== -1) {
       try { fs.closeSync(descriptor); } catch { /* best effort */ }
@@ -169,6 +188,14 @@ function publishSafeFailure(context: SidecarRequestContext): void {
       try { fs.unlinkSync(tempPath); } catch { /* best effort */ }
     }
   }
+}
+
+function publishStarting(context: SidecarRequestContext): void {
+  context.startingUpdatedAtMs = publishAtomicStatus(context, 'starting', 'starting', () => shouldPublishStarting(context));
+}
+
+function publishSafeFailure(context: SidecarRequestContext): void {
+  publishAtomicStatus(context, 'failed', 'start_failed', (filePath) => shouldPublishFailure(context, filePath));
 }
 
 type EventListener = (...args: unknown[]) => void;
@@ -274,6 +301,7 @@ export function requestCompanySidecar(
   const existing = inFlight.get(action);
   if (existing) return existing;
   const context = beginRequest(options);
+  publishStarting(context);
   const request = Promise.resolve().then(() => spawnSidecar(action, options, context));
   inFlight.set(action, request);
   void request.finally(() => {

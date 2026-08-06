@@ -88,6 +88,7 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
   const root = makeRoot();
   const calls: Array<{ command: string; args: readonly string[]; options: Parameters<CompanySidecarSpawn>[2] }> = [];
   const child = { unrefCalled: 0, unref() { this.unrefCalled += 1; } };
+  let startingObservedDuringSpawn: Record<string, unknown> | null = null;
   try {
     fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
     fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
@@ -95,6 +96,8 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
     resetCompanySidecarControllerForTests();
     const spawnImpl = (command: string, args: readonly string[], options: Parameters<CompanySidecarSpawn>[2]) => {
       calls.push({ command, args, options });
+      const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
+      if (fs.existsSync(statusPath)) startingObservedDuringSpawn = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
       return child;
     };
     await Promise.all([
@@ -103,6 +106,8 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
     ]);
     assert.equal(calls.length, 1);
     assert.equal(child.unrefCalled, 1);
+    const startingSnapshot = startingObservedDuringSpawn as Record<string, unknown> | null;
+    assert.equal(startingSnapshot?.status, 'starting');
     assert.equal(calls[0]?.command, 'powershell.exe');
     assert.deepEqual(calls[0]?.args, [
       '-NoProfile',
@@ -158,6 +163,43 @@ test('asynchronous spawn errors reject and publish safe failure', async () => {
     assert.equal(status.status, 'failed');
     assert.equal(status.code, 'start_failed');
     assert.equal(status.reason, 'LiteLLM 启动失败，请重试');
+    assert.equal(fs.readdirSync(path.join(root, 'storage', 'run')).some((name) => name.endsWith('.tmp')), false);
+  } finally {
+    resetCompanySidecarControllerForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('restart publishes starting before invoking the fixed script', async () => {
+  const root = makeRoot();
+  const child = { unref() {} };
+  let observedStatus: Record<string, unknown> | null = null;
+  try {
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'restart-company-sidecar.ps1'), '# test', 'utf8');
+    fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
+      schemaVersion: 1,
+      status: 'ready',
+      code: 'ready',
+      reason: COMPANY_PROVIDER_SAFE_REASONS.ready,
+      updatedAt: new Date(Date.now() - 60_000).toISOString(),
+    }), 'utf8');
+    resetCompanySidecarControllerForTests();
+    await requestCompanySidecar('restart', {
+      root,
+      spawnImpl: () => {
+        observedStatus = JSON.parse(fs.readFileSync(
+          path.join(root, 'storage', 'run', 'company-sidecar-status.json'), 'utf8',
+        )) as Record<string, unknown>;
+        return child;
+      },
+    });
+    const restartSnapshot = observedStatus as Record<string, unknown> | null;
+    assert.equal(restartSnapshot?.status, 'starting');
+    assert.equal(restartSnapshot?.code, 'starting');
+    assert.equal(restartSnapshot?.reason, COMPANY_PROVIDER_SAFE_REASONS.starting);
+    assert.equal(fs.readdirSync(path.join(root, 'storage', 'run')).some((name) => name.endsWith('.tmp')), false);
   } finally {
     resetCompanySidecarControllerForTests();
     fs.rmSync(root, { recursive: true, force: true });
@@ -182,7 +224,10 @@ test('late asynchronous spawn errors after success stay owned by the controller'
       },
     });
     assert.deepEqual(accepted, { accepted: true, action: 'start' });
-    assert.equal(fs.existsSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json')), false);
+    const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(status.status, 'starting');
+    assert.equal(fs.readdirSync(path.dirname(statusPath)).some((name) => name.endsWith('.tmp')), false);
   } finally {
     resetCompanySidecarControllerForTests();
     fs.rmSync(root, { recursive: true, force: true });
@@ -268,11 +313,13 @@ test('an older synchronous failure cannot overwrite a newer ready status', async
     fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
     fs.mkdirSync(path.dirname(statusPath), { recursive: true });
     fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
-    fs.writeFileSync(statusPath, JSON.stringify(newer), 'utf8');
     resetCompanySidecarControllerForTests();
     await assert.rejects(() => requestCompanySidecar('start', {
       root,
-      spawnImpl: () => { throw new Error('old synchronous error'); },
+      spawnImpl: () => {
+        fs.writeFileSync(statusPath, JSON.stringify(newer), 'utf8');
+        throw new Error('old synchronous error');
+      },
     }));
     assert.deepEqual(JSON.parse(fs.readFileSync(statusPath, 'utf8')), newer);
   } finally {
