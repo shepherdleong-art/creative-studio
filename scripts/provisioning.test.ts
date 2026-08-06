@@ -255,6 +255,72 @@ test('first import, repeated rotation, process env and rollback are safe', () =>
   db.close();
 });
 
+test('state fsync failure closes the handle and rolls back every import artifact', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-provisioning-state-fsync-'));
+  const db = testDb();
+  const beforeDb = {
+    providers: db.prepare('SELECT * FROM providers ORDER BY id').all(),
+    scripts: db.prepare('SELECT * FROM script_providers ORDER BY id').all(),
+    videos: db.prepare('SELECT * FROM video_providers ORDER BY id').all(),
+    tts: db.prepare('SELECT * FROM final_edit_tts_providers ORDER BY id').all(),
+  };
+  const originalFsyncSync = fs.fsyncSync;
+  const originalCloseSync = fs.closeSync;
+  const originalUnlinkSync = fs.unlinkSync;
+  let fsyncCount = 0;
+  let stateTempHandleOpen = false;
+  fs.fsyncSync = ((fd: number) => {
+    fsyncCount += 1;
+    if (fsyncCount === 3) {
+      stateTempHandleOpen = true;
+      throw new Error('state fsync failed');
+    }
+    return originalFsyncSync(fd);
+  }) as typeof fs.fsyncSync;
+  fs.closeSync = ((fd: number) => {
+    if (stateTempHandleOpen) stateTempHandleOpen = false;
+    return originalCloseSync(fd);
+  }) as typeof fs.closeSync;
+  fs.unlinkSync = ((target: Parameters<typeof fs.unlinkSync>[0]) => {
+    if (stateTempHandleOpen && typeof target === 'string' && target.endsWith('.tmp')) {
+      throw new Error('state temp handle is still open');
+    }
+    return originalUnlinkSync(target);
+  }) as typeof fs.unlinkSync;
+  try {
+    assert.throws(() => applyProvisioningPayload(payload(), { root, db }));
+  } finally {
+    fs.fsyncSync = originalFsyncSync;
+    fs.closeSync = originalCloseSync;
+    fs.unlinkSync = originalUnlinkSync;
+  }
+  assert.equal(fsyncCount, 3);
+  assert.equal(fs.existsSync(path.join(root, 'config.yaml')), false);
+  assert.equal(fs.existsSync(path.join(root, 'data', 'provisioning', 'runtime.env')), false);
+  assert.equal(fs.existsSync(path.join(root, 'data', 'provisioning', 'state.json')), false);
+  assert.deepEqual({
+    providers: db.prepare('SELECT * FROM providers ORDER BY id').all(),
+    scripts: db.prepare('SELECT * FROM script_providers ORDER BY id').all(),
+    videos: db.prepare('SELECT * FROM video_providers ORDER BY id').all(),
+    tts: db.prepare('SELECT * FROM final_edit_tts_providers ORDER BY id').all(),
+  }, beforeDb);
+  assertNoProvisioningTempFiles(root);
+  db.close();
+});
+
+test('state preserves schema-valid internal profile whitespace', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-provisioning-profile-whitespace-'));
+  const db = testDb();
+  const profileName = '公司\t统一\n配置\r轮换';
+  assert.equal(validateProvisioningPayload(payload({ profileName })).profileName, profileName);
+  applyProvisioningPayload(payload({ profileName }), { root, db, now: new Date('2026-08-06T00:00:00.000Z') });
+  const state = readProvisioningState(root);
+  assert.ok(state);
+  assert.equal(state.profileName, profileName);
+  assert.equal(readProvisioningStatus(root).profileName, profileName);
+  db.close();
+});
+
 test('oversized encrypted files are rejected before decryption', () => {
   const oversized = Buffer.alloc(2 * 1024 * 1024 + 1, 0x41);
   assert.throws(() => importProvisioningPackage(oversized, 'a-long-test-password'), /统一配置导入失败|无法解密/);

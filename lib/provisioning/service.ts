@@ -108,7 +108,7 @@ function parseProvisioningState(value: unknown): ProvisioningStateV2 | null {
     || value.profileName.length < 1
     || value.profileName.length > MAX_PROFILE_NAME_LENGTH
     || value.profileName.trim() !== value.profileName
-    || /[\u0000-\u001f\u007f]/.test(value.profileName)) {
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.profileName)) {
     return null;
   }
   if (typeof value.importedAt !== 'string'
@@ -158,17 +158,34 @@ function writeTemp(target: string, bytes: Buffer): string {
   ensureParent(target);
   const temp = safeTempPath(target, 'tmp');
   let handle: number | undefined;
+  let opened = false;
+  let failure: unknown;
   try {
     handle = fs.openSync(temp, 'wx', 0o600);
+    opened = true;
     fs.writeFileSync(handle, bytes);
     fs.fsyncSync(handle);
-    return temp;
   } catch (error) {
-    try { fs.unlinkSync(temp); } catch { /* best effort */ }
-    throw error;
-  } finally {
-    if (handle !== undefined) fs.closeSync(handle);
+    failure = error;
   }
+  if (handle !== undefined) {
+    try {
+      fs.closeSync(handle);
+    } catch (closeError) {
+      // Preserve a write/fsync error when one already occurred. A second close
+      // attempt covers platforms that report an error after closing the handle.
+      if (failure === undefined) failure = closeError;
+      try { fs.closeSync(handle); } catch { /* best effort */ }
+    }
+    handle = undefined;
+  }
+  if (failure !== undefined) {
+    if (opened) {
+      try { fs.unlinkSync(temp); } catch { /* preserve the original error */ }
+    }
+    throw failure;
+  }
+  return temp;
 }
 
 function snapshot(filePath: string): FileSnapshot {
