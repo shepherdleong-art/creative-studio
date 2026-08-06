@@ -82,6 +82,7 @@ interface StackState {
   runtimeRelativePath?: unknown;
   configRelativePath?: unknown;
   configHash?: unknown;
+  provisionStateHash?: unknown;
 }
 
 interface SafeSidecarStatus {
@@ -99,6 +100,7 @@ export interface NetstatListenerRecord {
 const MAX_STACK_FILE_BYTES = 128 * 1024;
 const MAX_STATUS_FILE_BYTES = 16 * 1024;
 const MAX_CONFIG_FILE_BYTES = 512 * 1024;
+const MAX_PROVISION_STATE_FILE_BYTES = 128 * 1024;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const CONFIG_HASH = /^[a-f0-9]{64}$/i;
 const SAFE_STATUS_CODES = new Set<CompanyProviderStatusCode>([
@@ -151,14 +153,22 @@ function readStackState(stackFile: string): StackState | null {
   return isRecord(parsed) ? parsed : null;
 }
 
-function readConfigHash(configFile: string): string | null {
+function readFileHash(filePath: string, maxBytes: number): string | null {
   try {
-    const bytes = fs.readFileSync(configFile);
-    if (bytes.length <= 0 || bytes.length > MAX_CONFIG_FILE_BYTES) return null;
+    const bytes = fs.readFileSync(filePath);
+    if (bytes.length <= 0 || bytes.length > maxBytes) return null;
     return createHash('sha256').update(bytes).digest('hex');
   } catch {
     return null;
   }
+}
+
+function readConfigHash(configFile: string): string | null {
+  return readFileHash(configFile, MAX_CONFIG_FILE_BYTES);
+}
+
+function readProvisionStateHash(stateFile: string): string | null {
+  return readFileHash(stateFile, MAX_PROVISION_STATE_FILE_BYTES);
 }
 
 function hasCurrentConfigHash(stack: StackState, configHash: string | null): boolean {
@@ -166,6 +176,13 @@ function hasCurrentConfigHash(stack: StackState, configHash: string | null): boo
     && typeof stack.configHash === 'string'
     && CONFIG_HASH.test(stack.configHash)
     && stack.configHash.toLowerCase() === configHash.toLowerCase();
+}
+
+function hasCurrentProvisionStateHash(stack: StackState, provisionStateHash: string | null): boolean {
+  return provisionStateHash !== null
+    && typeof stack.provisionStateHash === 'string'
+    && CONFIG_HASH.test(stack.provisionStateHash)
+    && stack.provisionStateHash.toLowerCase() === provisionStateHash.toLowerCase();
 }
 
 function safeStartedAt(value: unknown): string | null {
@@ -382,6 +399,7 @@ async function isProxyReady(
       method: 'GET',
       headers: { Accept: 'application/json' },
       signal: controller.signal,
+      redirect: 'error',
     });
     return response.status === 200;
   } catch {
@@ -428,6 +446,7 @@ export async function inspectCompanyProviderRuntime({
   managed = isManagedDeployment(),
 }: InspectCompanyProviderRuntimeOptions = {}): Promise<CompanyProviderRuntimeStatus> {
   const configFile = path.join(root, 'config.yaml');
+  const provisioningStateFile = path.join(root, 'data', 'provisioning', 'state.json');
   const stackFile = path.join(root, 'storage', 'run', 'stack.json');
   const sidecarStatusFile = path.join(root, 'storage', 'run', COMPANY_PROVIDER_STATUS_FILE_NAME);
   const sidecarStartScript = path.join(root, 'scripts', 'start-company-sidecar.ps1');
@@ -479,6 +498,9 @@ export async function inspectCompanyProviderRuntime({
   }
 
   if (managed && !hasCurrentConfigHash(stack, readConfigHash(configFile))) {
+    return result('unavailable', safeReasonForCode('provision_invalid'));
+  }
+  if (managed && !hasCurrentProvisionStateHash(stack, readProvisionStateHash(provisioningStateFile))) {
     return result('unavailable', safeReasonForCode('provision_invalid'));
   }
 

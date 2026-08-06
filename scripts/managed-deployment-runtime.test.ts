@@ -363,6 +363,66 @@ test('a late asynchronous failure cannot overwrite a concurrently published read
   }
 });
 
+test('a same-millisecond PowerShell starting status is not claimed by the current failure', async () => {
+  const root = makeRoot();
+  const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
+  try {
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.dirname(statusPath), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
+    resetCompanySidecarControllerForTests();
+    await assert.rejects(() => requestCompanySidecar('start', {
+      root,
+      spawnImpl: () => {
+        const ownStarting = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
+        const powershellStarting = { ...ownStarting, reason: 'starting' };
+        fs.writeFileSync(statusPath, JSON.stringify(powershellStarting), 'utf8');
+        throw new Error('same-millisecond old failure');
+      },
+    }));
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(status.status, 'starting');
+    assert.equal(status.code, 'starting');
+    assert.equal(status.reason, 'starting');
+    assert.equal(fs.readdirSync(path.dirname(statusPath)).some((name) => name.endsWith('.tmp')), false);
+  } finally {
+    resetCompanySidecarControllerForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a same-millisecond external starting payload with reordered fields is not claimed', async () => {
+  const root = makeRoot();
+  const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
+  let externalBytes: Buffer | null = null;
+  try {
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.dirname(statusPath), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
+    resetCompanySidecarControllerForTests();
+    await assert.rejects(() => requestCompanySidecar('start', {
+      root,
+      spawnImpl: () => {
+        const ownStarting = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
+        const externalStarting = {
+          schemaVersion: ownStarting.schemaVersion,
+          status: ownStarting.status,
+          code: ownStarting.code,
+          updatedAt: ownStarting.updatedAt,
+          reason: ownStarting.reason,
+        };
+        externalBytes = Buffer.from(`${JSON.stringify(externalStarting)}\n`, 'utf8');
+        fs.writeFileSync(statusPath, externalBytes);
+        throw new Error('same-millisecond external failure');
+      },
+    }));
+    assert.deepEqual(fs.readFileSync(statusPath), externalBytes);
+  } finally {
+    resetCompanySidecarControllerForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('locked workbench throws a stable error', async () => {
   await assert.rejects(
     () => assertManagedWorkbenchReady({

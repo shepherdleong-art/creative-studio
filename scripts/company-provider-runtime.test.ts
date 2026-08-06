@@ -91,13 +91,17 @@ test('LiteLLM 健康时报告 ready，只访问本机 loopback 地址', async ()
     startedAt: '2026-08-04T12:00:00',
     litellmPid: 101,
   });
-  const requests: Array<{ input: string; signal?: AbortSignal }> = [];
+  const requests: Array<{ input: string; signal?: AbortSignal; redirect?: RequestInit['redirect'] }> = [];
   try {
     const status = await inspectCompanyProviderRuntime({
       root,
       processCheck: processIsAlive,
       fetchImpl: async (input, init) => {
-        requests.push({ input: String(input), signal: init?.signal ?? undefined });
+        requests.push({
+          input: String(input),
+          signal: init?.signal ?? undefined,
+          redirect: init?.redirect,
+        });
         return new Response('ok', { status: 200 });
       },
     });
@@ -106,6 +110,7 @@ test('LiteLLM 健康时报告 ready，只访问本机 loopback 地址', async ()
     assert.equal(status.proxyAvailable, true);
     assert.equal(status.startedAt, '2026-08-04T12:00:00');
     assert.deepEqual(requests.map(({ input }) => input), [COMPANY_PROVIDER_HEALTH_URL]);
+    assert.equal(requests[0]?.redirect, 'error');
     assertSafeStatus(status);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -158,16 +163,21 @@ test('LiteLLM 健康检查失败时报告 unavailable', async () => {
 
 test('LiteLLM liveliness 只有 200 才算健康', async () => {
   const root = makeRoot();
+  let redirect: RequestInit['redirect'] | undefined;
   writeConfiguredRoot(root, { litellmPid: 101 });
   try {
     const status = await inspectCompanyProviderRuntime({
       root,
       processCheck: processIsAlive,
-      fetchImpl: async () => new Response(null, { status: 204 }),
+      fetchImpl: async (_input, init) => {
+        redirect = init?.redirect;
+        return new Response(null, { status: 302, headers: { location: 'https://private.invalid' } });
+      },
     });
 
     assert.equal(status.status, 'unavailable');
     assert.equal(status.proxyAvailable, false);
+    assert.equal(redirect, 'error');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -280,13 +290,18 @@ function writeManagedFixture(
   },
   reason: string = code,
   configBytes: string | Buffer = 'model_list: []\n',
+  stateBytes: string | Buffer = JSON.stringify({ schemaVersion: 2 }) + '\n',
 ): void {
   fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
   fs.mkdirSync(path.join(root, 'runtime-litellm'), { recursive: true });
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
   const configBuffer = Buffer.isBuffer(configBytes) ? configBytes : Buffer.from(configBytes, 'utf8');
+  const stateBuffer = Buffer.isBuffer(stateBytes) ? stateBytes : Buffer.from(stateBytes, 'utf8');
   const configHash = createHash('sha256').update(configBuffer).digest('hex');
+  const provisionStateHash = createHash('sha256').update(stateBuffer).digest('hex');
   fs.writeFileSync(path.join(root, 'config.yaml'), configBuffer);
+  fs.mkdirSync(path.join(root, 'data', 'provisioning'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'data', 'provisioning', 'state.json'), stateBuffer);
   fs.writeFileSync(path.join(root, 'runtime-litellm', 'python.exe'), 'test-runtime', 'utf8');
   fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
   fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
@@ -297,10 +312,13 @@ function writeManagedFixture(
     updatedAt: '2026-08-06T00:00:00.000Z',
   }), 'utf8');
   if (stack) {
-    const stackWithHash = Object.prototype.hasOwnProperty.call(stack, 'configHash')
+    const stackWithConfigHash = Object.prototype.hasOwnProperty.call(stack, 'configHash')
       ? stack
       : { ...stack, configHash };
-    fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), JSON.stringify(stackWithHash), 'utf8');
+    const stackWithHashes = Object.prototype.hasOwnProperty.call(stackWithConfigHash, 'provisionStateHash')
+      ? stackWithConfigHash
+      : { ...stackWithConfigHash, provisionStateHash };
+    fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), JSON.stringify(stackWithHashes), 'utf8');
   }
 }
 
@@ -507,6 +525,51 @@ test('managed ready requires a current bounded config hash before health probing
     try {
       writeManagedFixture(root, 'ready', 'ready', item.stack);
       if (item.rewriteConfig !== undefined) fs.writeFileSync(path.join(root, 'config.yaml'), item.rewriteConfig);
+      const status = await inspectManagedFixture(root, {
+        fetchImpl: async () => {
+          healthCalls += 1;
+          return new Response('ok', { status: 200 });
+        },
+      });
+      assert.equal(status.status, 'unavailable', item.name);
+      assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.provision_invalid, item.name);
+      assert.equal(healthCalls, 0, item.name);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('managed ready requires a current bounded provision state hash before health probing', async () => {
+  const baseStack = {
+    sidecarKind: 'company-litellm',
+    runtimeRelativePath: 'runtime-litellm/python.exe',
+    configRelativePath: 'config.yaml',
+    proxyPort: 4000,
+    litellmPid: 101,
+  };
+  const cases: Array<{
+    name: string;
+    stack: Record<string, unknown>;
+    rewriteState?: Buffer | string;
+    removeState?: boolean;
+  }> = [
+    { name: 'missing hash', stack: { ...baseStack, provisionStateHash: undefined } },
+    { name: 'wrong hash', stack: { ...baseStack, provisionStateHash: '0'.repeat(64) } },
+    { name: 'changed state', stack: baseStack, rewriteState: JSON.stringify({ schemaVersion: 2, changed: true }) + '\n' },
+    { name: 'oversized state', stack: baseStack, rewriteState: Buffer.alloc(128 * 1024 + 1, 0x61) },
+    { name: 'empty state', stack: baseStack, rewriteState: Buffer.alloc(0) },
+    { name: 'absent state', stack: baseStack, removeState: true },
+  ];
+
+  for (const item of cases) {
+    const root = makeRoot();
+    let healthCalls = 0;
+    try {
+      writeManagedFixture(root, 'ready', 'ready', item.stack);
+      const statePath = path.join(root, 'data', 'provisioning', 'state.json');
+      if (item.rewriteState !== undefined) fs.writeFileSync(statePath, item.rewriteState);
+      if (item.removeState) fs.unlinkSync(statePath);
       const status = await inspectManagedFixture(root, {
         fetchImpl: async () => {
           healthCalls += 1;

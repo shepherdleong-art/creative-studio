@@ -42,6 +42,7 @@ interface SidecarRequestContext {
   token: number;
   startedAtMs: number;
   startingUpdatedAtMs: number | null;
+  startingBytes: Buffer | null;
 }
 
 interface NarrowSidecarStatus {
@@ -50,6 +51,11 @@ interface NarrowSidecarStatus {
   code: keyof typeof COMPANY_PROVIDER_SAFE_REASONS;
   reason: string;
   updatedAt: string;
+}
+
+interface AtomicStatusPublication {
+  updatedAtMs: number;
+  bytes: Buffer;
 }
 
 const MAX_STATUS_FILE_BYTES = 16 * 1024;
@@ -85,6 +91,7 @@ function beginRequest(options: CompanySidecarRequestOptions): SidecarRequestCont
     token: ++nextRequestToken,
     startedAtMs: Date.now(),
     startingUpdatedAtMs: null,
+    startingBytes: null,
   };
   latestRequestTokenByRoot.set(context.rootKey, context.token);
   return context;
@@ -117,10 +124,18 @@ function parseNarrowStatus(value: unknown): NarrowSidecarStatus | null {
   return record as unknown as NarrowSidecarStatus;
 }
 
-function readNarrowStatus(filePath: string): NarrowSidecarStatus | null {
+function readStatusBytes(filePath: string): Buffer | null {
   try {
     const bytes = fs.readFileSync(filePath);
     if (bytes.length <= 0 || bytes.length > MAX_STATUS_FILE_BYTES) return null;
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function parseNarrowStatusBytes(bytes: Buffer): NarrowSidecarStatus | null {
+  try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     return parseNarrowStatus(JSON.parse(text) as unknown);
   } catch {
@@ -134,13 +149,18 @@ function shouldPublishStarting(context: SidecarRequestContext): boolean {
 
 function shouldPublishFailure(context: SidecarRequestContext, filePath: string): boolean {
   if (!isCurrentRequest(context)) return false;
-  const current = readNarrowStatus(filePath);
+  const currentBytes = readStatusBytes(filePath);
+  const current = currentBytes ? parseNarrowStatusBytes(currentBytes) : null;
   if (!current) return true;
   const currentUpdatedAt = new Date(current.updatedAt).getTime();
   if (context.startingUpdatedAtMs !== null
+    && context.startingBytes !== null
     && current.status === 'starting'
     && current.code === 'starting'
-    && currentUpdatedAt === context.startingUpdatedAtMs) return true;
+    && current.reason === COMPANY_PROVIDER_SAFE_REASONS.starting
+    && currentUpdatedAt === context.startingUpdatedAtMs
+    && currentBytes !== null
+    && currentBytes.equals(context.startingBytes)) return true;
   return currentUpdatedAt < context.startedAtMs;
 }
 
@@ -149,7 +169,7 @@ function publishAtomicStatus(
   status: NarrowSidecarStatus['status'],
   code: keyof typeof COMPANY_PROVIDER_SAFE_REASONS,
   canPublish: (filePath: string) => boolean,
-): number | null {
+): AtomicStatusPublication | null {
   const filePath = statusFilePath(context.root);
   let tempPath: string | null = null;
   let descriptor = -1;
@@ -165,10 +185,10 @@ function publishAtomicStatus(
       reason: COMPANY_PROVIDER_SAFE_REASONS[code],
       updatedAt,
     };
-    const bytes = `${JSON.stringify(statusRecord)}\n`;
+    const bytes = Buffer.from(`${JSON.stringify(statusRecord)}\n`, 'utf8');
     tempPath = `${filePath}.${process.pid}.${context.token}.${++nextStatusTempToken}.tmp`;
     descriptor = fs.openSync(tempPath, 'wx', 0o600);
-    fs.writeFileSync(descriptor, bytes, { encoding: 'utf8' });
+    fs.writeFileSync(descriptor, bytes);
     fs.fsyncSync(descriptor);
     try { fs.closeSync(descriptor); } finally { descriptor = -1; }
 
@@ -176,7 +196,7 @@ function publishAtomicStatus(
     if (!canPublish(filePath)) return null;
     fs.renameSync(tempPath, filePath);
     tempPath = null;
-    return new Date(updatedAt).getTime();
+    return { updatedAtMs: new Date(updatedAt).getTime(), bytes };
   } catch {
     // Status publication is best effort; never leak a filesystem diagnostic.
     return null;
@@ -191,7 +211,9 @@ function publishAtomicStatus(
 }
 
 function publishStarting(context: SidecarRequestContext): void {
-  context.startingUpdatedAtMs = publishAtomicStatus(context, 'starting', 'starting', () => shouldPublishStarting(context));
+  const publication = publishAtomicStatus(context, 'starting', 'starting', () => shouldPublishStarting(context));
+  context.startingUpdatedAtMs = publication?.updatedAtMs ?? null;
+  context.startingBytes = publication?.bytes ?? null;
 }
 
 function publishSafeFailure(context: SidecarRequestContext): void {
