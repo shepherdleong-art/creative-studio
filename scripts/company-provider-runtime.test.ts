@@ -20,6 +20,9 @@ const COS_ENV_KEYS = [
   'CREATIVE_STUDIO_COS_DOMAIN',
 ];
 
+const TEST_REQUEST_ID = '00000000-0000-4000-8000-000000000001';
+const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 function clearCosEnv(): void {
   for (const key of COS_ENV_KEYS) delete process.env[key];
 }
@@ -39,6 +42,7 @@ function assertSafeStatus(status: CompanyProviderRuntimeStatus): void {
   assert.equal('apiKey' in status, false);
   assert.equal('pid' in status, false);
   assert.equal('tunnelUrl' in status, false);
+  assert.equal('requestId' in status, false);
 }
 
 const processIsAlive = () => true;
@@ -291,6 +295,7 @@ function writeManagedFixture(
   reason: string = code,
   configBytes: string | Buffer = 'model_list: []\n',
   stateBytes: string | Buffer = JSON.stringify({ schemaVersion: 2 }) + '\n',
+  requestId: string = TEST_REQUEST_ID,
 ): void {
   fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
   fs.mkdirSync(path.join(root, 'runtime-litellm'), { recursive: true });
@@ -306,6 +311,7 @@ function writeManagedFixture(
   fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
   fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
     schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+    requestId,
     status,
     code,
     reason,
@@ -469,6 +475,7 @@ test('unmanaged inspection ignores stale managed status files', async () => {
     writeConfiguredRoot(root, { litellmPid: 101 });
     fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
       schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+      requestId: TEST_REQUEST_ID,
       status: 'starting',
       code: 'starting',
       reason: COMPANY_PROVIDER_SAFE_REASONS.starting,
@@ -709,10 +716,12 @@ test('managed failed status codes map to fixed reasons without echoing status te
 
 test('malformed status files fail closed and never echo arbitrary reason or secret', async () => {
   const cases: Array<{ bytes: Buffer | string; marker: string }> = [
-    { bytes: JSON.stringify({ schemaVersion: 1, status: 'ready', code: 'ready', reason: 'SECRET_REASON', updatedAt: '2026-08-06T00:00:00.000Z', extra: 'key' }), marker: 'SECRET_REASON' },
-    { bytes: JSON.stringify({ schemaVersion: 1, status: 'ready', code: 'ready', reason: 'SECRET_REASON', updatedAt: '2026-08-06T00:00:00.000Z' }), marker: 'SECRET_REASON' },
+    { bytes: JSON.stringify({ schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION, requestId: TEST_REQUEST_ID, status: 'ready', code: 'ready', reason: 'SECRET_REASON', updatedAt: '2026-08-06T00:00:00.000Z', extra: 'key' }), marker: 'SECRET_REASON' },
+    { bytes: JSON.stringify({ schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION, requestId: TEST_REQUEST_ID, status: 'ready', code: 'ready', reason: 'SECRET_REASON', updatedAt: '2026-08-06T00:00:00.000Z' }), marker: 'SECRET_REASON' },
     { bytes: Buffer.from([0xff, 0xfe, 0xfd]), marker: '' },
-    { bytes: JSON.stringify({ schemaVersion: 1, status: 'ready', code: 'ready', reason: 'ready', updatedAt: 'not-a-timestamp' }), marker: 'not-a-timestamp' },
+    { bytes: JSON.stringify({ schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION, requestId: TEST_REQUEST_ID, status: 'ready', code: 'ready', reason: 'ready', updatedAt: 'not-a-timestamp' }), marker: 'not-a-timestamp' },
+    { bytes: JSON.stringify({ schemaVersion: 1, requestId: TEST_REQUEST_ID, status: 'ready', code: 'ready', reason: 'ready', updatedAt: '2026-08-06T00:00:00.000Z' }), marker: 'schema' },
+    { bytes: JSON.stringify({ schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION, requestId: 'not-a-uuid', status: 'ready', code: 'ready', reason: 'ready', updatedAt: '2026-08-06T00:00:00.000Z' }), marker: 'uuid' },
   ];
   for (const item of cases) {
     const root = makeRoot();

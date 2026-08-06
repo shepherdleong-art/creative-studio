@@ -10,7 +10,7 @@ export const COMPANY_PROVIDER_PROXY_PORT = 4000;
 export const COMPANY_PROVIDER_HEALTH_URL = `http://127.0.0.1:${COMPANY_PROVIDER_PROXY_PORT}/health/liveliness`;
 export const COMPANY_PROVIDER_HEALTH_TIMEOUT_MS = 1500;
 export const COMPANY_PROVIDER_STATUS_FILE_NAME = 'company-sidecar-status.json';
-export const COMPANY_PROVIDER_STATUS_SCHEMA_VERSION = 1 as const;
+export const COMPANY_PROVIDER_STATUS_SCHEMA_VERSION = 2 as const;
 
 export type CompanyProviderStatus = 'not_configured' | 'stopped' | 'starting' | 'unavailable' | 'ready';
 
@@ -103,6 +103,7 @@ const MAX_CONFIG_FILE_BYTES = 512 * 1024;
 const MAX_PROVISION_STATE_FILE_BYTES = 128 * 1024;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const CONFIG_HASH = /^[a-f0-9]{64}$/i;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SAFE_STATUS_CODES = new Set<CompanyProviderStatusCode>([
   'starting',
   'ready',
@@ -362,8 +363,9 @@ function safeReasonForCode(code: CompanyProviderStatusCode): string {
 
 function parseSafeSidecarStatus(value: unknown): SafeSidecarStatus | null {
   if (!isRecord(value)
-    || !hasExactKeys(value, ['schemaVersion', 'status', 'code', 'reason', 'updatedAt'])) return null;
+    || !hasExactKeys(value, ['schemaVersion', 'status', 'code', 'reason', 'updatedAt', 'requestId'])) return null;
   if (value.schemaVersion !== COMPANY_PROVIDER_STATUS_SCHEMA_VERSION) return null;
+  if (typeof value.requestId !== 'string' || !REQUEST_ID.test(value.requestId)) return null;
   if (value.status !== 'starting' && value.status !== 'ready' && value.status !== 'failed') return null;
   if (typeof value.code !== 'string' || !SAFE_STATUS_CODES.has(value.code as CompanyProviderStatusCode)) return null;
   const code = value.code as CompanyProviderStatusCode;

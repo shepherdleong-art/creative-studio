@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataRoot } from './data-root.ts';
@@ -40,6 +41,7 @@ interface SidecarRequestContext {
   root: string;
   rootKey: string;
   token: number;
+  requestId: string;
   startedAtMs: number;
   startingUpdatedAtMs: number | null;
   startingBytes: Buffer | null;
@@ -47,6 +49,7 @@ interface SidecarRequestContext {
 
 interface NarrowSidecarStatus {
   schemaVersion: typeof COMPANY_PROVIDER_STATUS_SCHEMA_VERSION;
+  requestId: string;
   status: 'starting' | 'ready' | 'failed';
   code: keyof typeof COMPANY_PROVIDER_SAFE_REASONS;
   reason: string;
@@ -60,6 +63,7 @@ interface AtomicStatusPublication {
 
 const MAX_STATUS_FILE_BYTES = 16 * 1024;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const inFlight = new Map<CompanySidecarAction, Promise<CompanySidecarRequestResult>>();
 const latestRequestTokenByRoot = new Map<string, number>();
 let nextRequestToken = 0;
@@ -89,6 +93,7 @@ function beginRequest(options: CompanySidecarRequestOptions): SidecarRequestCont
     root,
     rootKey: rootKey(root),
     token: ++nextRequestToken,
+    requestId: randomUUID(),
     startedAtMs: Date.now(),
     startingUpdatedAtMs: null,
     startingBytes: null,
@@ -108,10 +113,11 @@ function statusFilePath(root: string): string {
 function parseNarrowStatus(value: unknown): NarrowSidecarStatus | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const expectedKeys = ['schemaVersion', 'status', 'code', 'reason', 'updatedAt'];
+  const expectedKeys = ['schemaVersion', 'requestId', 'status', 'code', 'reason', 'updatedAt'];
   const keys = Object.keys(record);
   if (keys.length !== expectedKeys.length || keys.some((key) => !expectedKeys.includes(key))) return null;
   if (record.schemaVersion !== COMPANY_PROVIDER_STATUS_SCHEMA_VERSION) return null;
+  if (typeof record.requestId !== 'string' || !REQUEST_ID.test(record.requestId)) return null;
   if (record.status !== 'starting' && record.status !== 'ready' && record.status !== 'failed') return null;
   if (typeof record.code !== 'string' || !Object.hasOwn(COMPANY_PROVIDER_SAFE_REASONS, record.code)) return null;
   const code = record.code as keyof typeof COMPANY_PROVIDER_SAFE_REASONS;
@@ -157,6 +163,7 @@ function shouldPublishFailure(context: SidecarRequestContext, filePath: string):
     && context.startingBytes !== null
     && current.status === 'starting'
     && current.code === 'starting'
+    && current.requestId === context.requestId
     && current.reason === COMPANY_PROVIDER_SAFE_REASONS.starting
     && currentUpdatedAt === context.startingUpdatedAtMs
     && currentBytes !== null
@@ -180,6 +187,7 @@ function publishAtomicStatus(
     const updatedAt = new Date().toISOString();
     const statusRecord: NarrowSidecarStatus = {
       schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+      requestId: context.requestId,
       status,
       code,
       reason: COMPANY_PROVIDER_SAFE_REASONS[code],
@@ -288,6 +296,10 @@ function spawnSidecar(
         detached: true,
         stdio: 'ignore',
         cwd: context.root,
+        env: {
+          ...process.env,
+          CREATIVE_STUDIO_SIDECAR_REQUEST_ID: context.requestId,
+        },
       });
       if (!child || typeof child.unref !== 'function') throw new Error('spawn failed');
       eventChild = child as EventfulChild;

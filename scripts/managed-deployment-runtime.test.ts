@@ -11,6 +11,7 @@ import {
 } from '../lib/managed-workbench.ts';
 import {
   COMPANY_PROVIDER_SAFE_REASONS,
+  COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
   type CompanyProviderRuntimeStatus,
 } from '../lib/company-provider-runtime.ts';
 import {
@@ -22,6 +23,9 @@ import {
   resetCompanySidecarControllerForTests,
   type CompanySidecarSpawn,
 } from '../lib/company-sidecar-control.ts';
+
+const TEST_REQUEST_ID_A = '00000000-0000-4000-8000-000000000001';
+const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-managed-runtime-'));
@@ -108,6 +112,10 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
     assert.equal(child.unrefCalled, 1);
     const startingSnapshot = startingObservedDuringSpawn as Record<string, unknown> | null;
     assert.equal(startingSnapshot?.status, 'starting');
+    assert.equal(startingSnapshot?.schemaVersion, COMPANY_PROVIDER_STATUS_SCHEMA_VERSION);
+    assert.match(String(startingSnapshot?.requestId), REQUEST_ID_PATTERN);
+    assert.equal(calls[0]?.options.env?.CREATIVE_STUDIO_SIDECAR_REQUEST_ID, startingSnapshot?.requestId);
+    assert.equal(calls[0]?.options.env?.PATH, process.env.PATH);
     assert.equal(calls[0]?.command, 'powershell.exe');
     assert.deepEqual(calls[0]?.args, [
       '-NoProfile',
@@ -116,7 +124,12 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
       '-File', path.join(root, 'scripts', 'start-company-sidecar.ps1'),
       '-Root', root,
     ]);
-    assert.deepEqual(calls[0]?.options, {
+    assert.deepEqual({
+      windowsHide: calls[0]?.options.windowsHide,
+      detached: calls[0]?.options.detached,
+      stdio: calls[0]?.options.stdio,
+      cwd: calls[0]?.options.cwd,
+    }, {
       windowsHide: true,
       detached: true,
       stdio: 'ignore',
@@ -174,12 +187,14 @@ test('restart publishes starting before invoking the fixed script', async () => 
   const root = makeRoot();
   const child = { unref() {} };
   let observedStatus: Record<string, unknown> | null = null;
+  let observedEnvRequestId: string | undefined;
   try {
     fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
     fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
     fs.writeFileSync(path.join(root, 'scripts', 'restart-company-sidecar.ps1'), '# test', 'utf8');
     fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+      requestId: TEST_REQUEST_ID_A,
       status: 'ready',
       code: 'ready',
       reason: COMPANY_PROVIDER_SAFE_REASONS.ready,
@@ -188,17 +203,21 @@ test('restart publishes starting before invoking the fixed script', async () => 
     resetCompanySidecarControllerForTests();
     await requestCompanySidecar('restart', {
       root,
-      spawnImpl: () => {
+      spawnImpl: (_command: string, _args: readonly string[], options: Parameters<CompanySidecarSpawn>[2]) => {
         observedStatus = JSON.parse(fs.readFileSync(
           path.join(root, 'storage', 'run', 'company-sidecar-status.json'), 'utf8',
         )) as Record<string, unknown>;
+        observedEnvRequestId = options.env?.CREATIVE_STUDIO_SIDECAR_REQUEST_ID;
         return child;
       },
     });
     const restartSnapshot = observedStatus as Record<string, unknown> | null;
     assert.equal(restartSnapshot?.status, 'starting');
+    assert.equal(restartSnapshot?.schemaVersion, COMPANY_PROVIDER_STATUS_SCHEMA_VERSION);
     assert.equal(restartSnapshot?.code, 'starting');
     assert.equal(restartSnapshot?.reason, COMPANY_PROVIDER_SAFE_REASONS.starting);
+    assert.match(String(restartSnapshot?.requestId), REQUEST_ID_PATTERN);
+    assert.equal(observedEnvRequestId, restartSnapshot?.requestId);
     assert.equal(fs.readdirSync(path.join(root, 'storage', 'run')).some((name) => name.endsWith('.tmp')), false);
   } finally {
     resetCompanySidecarControllerForTests();
@@ -227,6 +246,8 @@ test('late asynchronous spawn errors after success stay owned by the controller'
     const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
     const status = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
     assert.equal(status.status, 'starting');
+    assert.equal(status.schemaVersion, COMPANY_PROVIDER_STATUS_SCHEMA_VERSION);
+    assert.match(String(status.requestId), REQUEST_ID_PATTERN);
     assert.equal(fs.readdirSync(path.dirname(statusPath)).some((name) => name.endsWith('.tmp')), false);
   } finally {
     resetCompanySidecarControllerForTests();
@@ -252,13 +273,15 @@ test('controller publishes a safe failure when the fixed script cannot spawn', a
       path.join(root, 'storage', 'run', 'company-sidecar-status.json'), 'utf8',
     )) as Record<string, unknown>;
     assert.deepEqual(status, {
-      schemaVersion: 1,
+      schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+      requestId: status.requestId,
       status: 'failed',
       code: 'start_failed',
       reason: 'LiteLLM 启动失败，请重试',
       updatedAt: status.updatedAt,
     });
     assert.equal(typeof status.updatedAt, 'string');
+    assert.match(String(status.requestId), REQUEST_ID_PATTERN);
     assert.doesNotMatch(JSON.stringify(status), /root|command|private|secret|key/i);
     const runDir = path.join(root, 'storage', 'run');
     const leftovers = fs.readdirSync(runDir).filter((name) => name.includes('company-sidecar-status.json.') && name.endsWith('.tmp'));
@@ -288,10 +311,11 @@ test('controller publishes a safe failure when its fixed script is missing', asy
     const status = JSON.parse(fs.readFileSync(
       path.join(root, 'storage', 'run', 'company-sidecar-status.json'), 'utf8',
     )) as Record<string, unknown>;
-    assert.equal(status.schemaVersion, 1);
+    assert.equal(status.schemaVersion, COMPANY_PROVIDER_STATUS_SCHEMA_VERSION);
     assert.equal(status.status, 'failed');
     assert.equal(status.code, 'start_failed');
     assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.start_failed);
+    assert.match(String(status.requestId), REQUEST_ID_PATTERN);
     assert.match(String(status.updatedAt), /^\d{4}-\d{2}-\d{2}T/);
     assert.doesNotMatch(JSON.stringify(status), /root|command|secret|key/i);
   } finally {
@@ -303,7 +327,8 @@ test('an older synchronous failure cannot overwrite a newer ready status', async
   const root = makeRoot();
   const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
   const newer = {
-    schemaVersion: 1,
+    schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+    requestId: TEST_REQUEST_ID_A,
     status: 'ready',
     code: 'ready',
     reason: COMPANY_PROVIDER_SAFE_REASONS.ready,
@@ -332,7 +357,8 @@ test('a late asynchronous failure cannot overwrite a concurrently published read
   const root = makeRoot();
   const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
   const newer = {
-    schemaVersion: 1,
+    schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+    requestId: TEST_REQUEST_ID_A,
     status: 'ready',
     code: 'ready',
     reason: COMPANY_PROVIDER_SAFE_REASONS.ready,
@@ -384,6 +410,8 @@ test('a same-millisecond PowerShell starting status is not claimed by the curren
     assert.equal(status.status, 'starting');
     assert.equal(status.code, 'starting');
     assert.equal(status.reason, 'starting');
+    assert.equal(status.schemaVersion, COMPANY_PROVIDER_STATUS_SCHEMA_VERSION);
+    assert.match(String(status.requestId), REQUEST_ID_PATTERN);
     assert.equal(fs.readdirSync(path.dirname(statusPath)).some((name) => name.endsWith('.tmp')), false);
   } finally {
     resetCompanySidecarControllerForTests();
@@ -406,6 +434,7 @@ test('a same-millisecond external starting payload with reordered fields is not 
         const ownStarting = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
         const externalStarting = {
           schemaVersion: ownStarting.schemaVersion,
+          requestId: ownStarting.requestId,
           status: ownStarting.status,
           code: ownStarting.code,
           updatedAt: ownStarting.updatedAt,
@@ -419,6 +448,71 @@ test('a same-millisecond external starting payload with reordered fields is not 
     assert.deepEqual(fs.readFileSync(statusPath), externalBytes);
   } finally {
     resetCompanySidecarControllerForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('independent controller instances do not overwrite a same-millisecond newer request', async () => {
+  const root = makeRoot();
+  const statusPath = path.join(root, 'storage', 'run', 'company-sidecar-status.json');
+  const moduleUrl = new URL('../lib/company-sidecar-control.ts', import.meta.url).href;
+  const importSuffix = `${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const [controllerA, controllerB] = await Promise.all([
+    import(`${moduleUrl}?controller-a-${importSuffix}`),
+    import(`${moduleUrl}?controller-b-${importSuffix}`),
+  ]);
+  const realDate = globalThis.Date;
+  const fixedMs = realDate.now();
+  class FixedDate extends realDate {
+    constructor(value?: string | number | Date) {
+      super(value === undefined ? fixedMs : value instanceof realDate ? value.getTime() : value);
+    }
+
+    static now(): number {
+      return fixedMs;
+    }
+  }
+  globalThis.Date = FixedDate as unknown as DateConstructor;
+  let bPromise: Promise<unknown> | null = null;
+  let aStartingAt: string | null = null;
+  let bStartingAt: string | null = null;
+  let bRequestId: string | null = null;
+  try {
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.dirname(statusPath), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
+    controllerA.resetCompanySidecarControllerForTests();
+    controllerB.resetCompanySidecarControllerForTests();
+    await assert.rejects(() => controllerA.requestCompanySidecar('start', {
+      root,
+      spawnImpl: () => {
+        const aStarting = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
+        aStartingAt = String(aStarting.updatedAt);
+        bPromise = controllerB.requestCompanySidecar('start', {
+          root,
+          spawnImpl: (_command: string, _args: readonly string[], options: Parameters<CompanySidecarSpawn>[2]) => {
+            bRequestId = String(options.env?.CREATIVE_STUDIO_SIDECAR_REQUEST_ID);
+            return { unref() {} };
+          },
+        });
+        const bStarting = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
+        bStartingAt = String(bStarting.updatedAt);
+        throw new Error('old controller failure');
+      },
+    }));
+    assert.ok(bPromise);
+    await bPromise;
+    assert.equal(bStartingAt, aStartingAt);
+    const finalBytes = fs.readFileSync(statusPath);
+    const finalStatus = JSON.parse(finalBytes.toString('utf8')) as Record<string, unknown>;
+    assert.equal(finalStatus.schemaVersion, COMPANY_PROVIDER_STATUS_SCHEMA_VERSION);
+    assert.equal(finalStatus.status, 'starting');
+    assert.equal(finalStatus.requestId, bRequestId);
+    assert.match(String(finalStatus.requestId), REQUEST_ID_PATTERN);
+  } finally {
+    globalThis.Date = realDate;
+    controllerA.resetCompanySidecarControllerForTests();
+    controllerB.resetCompanySidecarControllerForTests();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
