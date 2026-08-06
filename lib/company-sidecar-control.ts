@@ -194,7 +194,6 @@ function spawnSidecar(
     '-WindowStyle', 'Hidden',
     '-File', startScript,
     '-Root', context.root,
-    '-ProxyPort', '4000',
   ] as const;
   const spawnImpl = options.spawnImpl || ((command, spawnArgs, spawnOptions) => (
     nodeSpawn(command, spawnArgs, spawnOptions) as ChildProcess

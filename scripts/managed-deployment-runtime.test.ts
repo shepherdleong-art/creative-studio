@@ -110,7 +110,6 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
       '-WindowStyle', 'Hidden',
       '-File', path.join(root, 'scripts', 'start-company-sidecar.ps1'),
       '-Root', root,
-      '-ProxyPort', '4000',
     ]);
     assert.deepEqual(calls[0]?.options, {
       windowsHide: true,
