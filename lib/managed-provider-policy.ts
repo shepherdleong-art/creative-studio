@@ -1,0 +1,273 @@
+import { dataRoot } from './data-root.ts';
+import { isManagedDeployment } from './managed-deployment.ts';
+import { readProvisioningState } from './provisioning/service.ts';
+import type { ManagedProviderAllowlist } from './provisioning/types.ts';
+
+export type ManagedProviderKind = 'image' | 'script' | 'video' | 'tts';
+
+/**
+ * The policy deliberately accepts only the provider fields it needs. Database
+ * rows may carry many more fields, but those fields are not trusted by this
+ * boundary and are ignored.
+ */
+export interface ManagedProviderIdentity {
+  id: string;
+  type: string;
+  baseUrl: string;
+  apiStyle?: string;
+  executionScope?: string;
+  apiKeyEnv?: string;
+  keyEnv?: string;
+}
+
+export type ManagedProviderPolicyCode =
+  | 'managed_state_missing'
+  | 'managed_provider_not_allowed'
+  | 'managed_provider_role_invalid';
+
+export type ManagedProviderPolicyVerdict =
+  | { allowed: true; mode: 'unrestricted' | 'managed' }
+  | {
+    allowed: false;
+    code: ManagedProviderPolicyCode;
+    message: string;
+  };
+
+export interface EvaluateManagedProviderInput {
+  managed?: boolean;
+  env?: NodeJS.ProcessEnv;
+  kind: ManagedProviderKind;
+  allowlist?: ManagedProviderAllowlist | null;
+  provider: ManagedProviderIdentity;
+}
+
+export interface ManagedProviderPolicyOptions {
+  managed?: boolean;
+  env?: NodeJS.ProcessEnv;
+}
+
+const COMPANY_GATEWAY_KEY_ENV = 'CREATIVE_STUDIO_GATEWAY_API_KEY';
+const DOUBAO_TTS_KEY_ENV = 'DOUBAO_TTS_API_KEY';
+const SCRIPT_PROTOCOLS = new Set([
+  'openai-compatible',
+  'openai-responses',
+  'anthropic-messages',
+]);
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+const ROLE_INVALID_MESSAGE = '该供应商不符合公司受管配置';
+const STATE_MISSING_MESSAGE = '公司受管配置尚未导入';
+const NOT_ALLOWED_MESSAGE = '该供应商不在公司受管配置中';
+
+function denied(
+  code: ManagedProviderPolicyCode,
+): Extract<ManagedProviderPolicyVerdict, { allowed: false }> {
+  const message = code === 'managed_state_missing'
+    ? STATE_MISSING_MESSAGE
+    : code === 'managed_provider_not_allowed'
+      ? NOT_ALLOWED_MESSAGE
+      : ROLE_INVALID_MESSAGE;
+  return { allowed: false, code, message };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isProviderKind(value: unknown): value is ManagedProviderKind {
+  return value === 'image' || value === 'script' || value === 'video' || value === 'tts';
+}
+
+/**
+ * A state object normally comes from readProvisioningState, which already
+ * validates this shape. Keeping this small guard here prevents an accidental
+ * caller-supplied object from being treated as an allowlist.
+ */
+function hasAllowlistRole(allowlist: ManagedProviderAllowlist | null | undefined, kind: ManagedProviderKind): boolean {
+  if (!allowlist || !isRecord(allowlist)) return false;
+  const ids = allowlist[kind];
+  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) return false;
+  if (kind === 'tts') return ids.length === 1 && ids[0] === 'doubao-seed-tts-2';
+  return true;
+}
+
+function providerId(provider: unknown): string | null {
+  if (!isRecord(provider) || typeof provider.id !== 'string') return null;
+  return provider.id;
+}
+
+function hasRequiredProviderStrings(provider: unknown): provider is ManagedProviderIdentity {
+  if (!isRecord(provider)) return false;
+  return typeof provider.id === 'string'
+    && provider.id.trim() === provider.id
+    && provider.id.length > 0
+    && typeof provider.type === 'string'
+    && provider.type.trim() === provider.type
+    && provider.type.length > 0
+    && typeof provider.baseUrl === 'string'
+    && provider.baseUrl.trim() === provider.baseUrl
+    && provider.baseUrl.length > 0;
+}
+
+function isSafeUrl(value: string, protocol: 'http:' | 'https:', loopbackOnly: boolean, paths?: readonly string[]): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== protocol || parsed.username || parsed.password || parsed.search || parsed.hash) return false;
+  if (loopbackOnly && !LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) return false;
+  if (paths && !paths.includes(parsed.pathname)) return false;
+  return true;
+}
+
+function hasValidRoleShape(
+  kind: ManagedProviderKind,
+  provider: unknown,
+): provider is ManagedProviderIdentity {
+  if (!hasRequiredProviderStrings(provider)) return false;
+  const candidate = provider;
+  switch (kind) {
+    case 'image':
+      return candidate.type === 'gateway-task-image'
+        && candidate.apiKeyEnv === COMPANY_GATEWAY_KEY_ENV
+        && isSafeUrl(candidate.baseUrl, 'http:', true);
+    case 'script':
+      return candidate.executionScope === 'company'
+        && typeof candidate.apiStyle === 'string'
+        && candidate.type === candidate.apiStyle
+        && SCRIPT_PROTOCOLS.has(candidate.type)
+        && isSafeUrl(candidate.baseUrl, 'http:', true);
+    case 'video':
+      return candidate.type === 'openai-video'
+        && candidate.apiKeyEnv === COMPANY_GATEWAY_KEY_ENV
+        && isSafeUrl(candidate.baseUrl, 'http:', true);
+    case 'tts':
+      return candidate.id === 'doubao-seed-tts-2'
+        && candidate.type === 'doubao-http-chunked'
+        && candidate.keyEnv === DOUBAO_TTS_KEY_ENV
+        && isSafeUrl(candidate.baseUrl, 'https:', false, ['/', '/api/v3/tts/unidirectional']);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Pure role and identity policy. In unrestricted mode this returns before
+ * reading or validating any allowlist/provider fields, preserving development
+ * mode behavior even for legacy rows.
+ */
+export function evaluateManagedProvider(input: EvaluateManagedProviderInput): ManagedProviderPolicyVerdict {
+  const managed = input.managed ?? isManagedDeployment(input.env);
+  if (!managed) return { allowed: true, mode: 'unrestricted' };
+
+  if (!isProviderKind(input.kind) || !hasAllowlistRole(input.allowlist, input.kind)) {
+    return denied('managed_state_missing');
+  }
+
+  const id = providerId(input.provider);
+  const ids: readonly string[] = input.allowlist![input.kind];
+  if (!id || !ids.includes(id)) return denied('managed_provider_not_allowed');
+
+  if (!hasValidRoleShape(input.kind, input.provider)) return denied('managed_provider_role_invalid');
+  return { allowed: true, mode: 'managed' };
+}
+
+export class ManagedProviderPolicyError extends Error {
+  readonly code: ManagedProviderPolicyCode;
+  readonly kind: ManagedProviderKind;
+
+  constructor(code: ManagedProviderPolicyCode, kind: ManagedProviderKind, message: string) {
+    super(message);
+    this.name = 'ManagedProviderPolicyError';
+    this.code = code;
+    this.kind = kind;
+  }
+}
+
+function optionsManaged(options?: ManagedProviderPolicyOptions): boolean | undefined {
+  if (!options) return undefined;
+  return options.managed ?? isManagedDeployment(options.env);
+}
+
+export function assertManagedProviderAllowed(
+  kind: ManagedProviderKind,
+  provider: ManagedProviderIdentity,
+  allowlist: ManagedProviderAllowlist | null | undefined,
+  options?: ManagedProviderPolicyOptions,
+): void;
+export function assertManagedProviderAllowed(input: EvaluateManagedProviderInput): void;
+export function assertManagedProviderAllowed(
+  kindOrInput: ManagedProviderKind | EvaluateManagedProviderInput,
+  provider?: ManagedProviderIdentity,
+  allowlist?: ManagedProviderAllowlist | null,
+  options?: ManagedProviderPolicyOptions,
+): void {
+  const input: EvaluateManagedProviderInput = typeof kindOrInput === 'object'
+    ? kindOrInput
+    : {
+      kind: kindOrInput,
+      provider: provider as ManagedProviderIdentity,
+      allowlist,
+      managed: optionsManaged(options),
+      env: options?.env,
+    };
+  const verdict = evaluateManagedProvider(input);
+  if (!verdict.allowed) throw new ManagedProviderPolicyError(verdict.code, input.kind, verdict.message);
+}
+
+export function filterManagedProviders<T extends ManagedProviderIdentity>(
+  kind: ManagedProviderKind,
+  providers: T[],
+  allowlist: ManagedProviderAllowlist | null | undefined,
+  options?: ManagedProviderPolicyOptions,
+): T[];
+export function filterManagedProviders<T extends ManagedProviderIdentity>(input: {
+  kind: ManagedProviderKind;
+  providers: T[];
+  allowlist?: ManagedProviderAllowlist | null;
+  managed?: boolean;
+  env?: NodeJS.ProcessEnv;
+}): T[];
+export function filterManagedProviders<T extends ManagedProviderIdentity>(
+  kindOrInput: ManagedProviderKind | {
+    kind: ManagedProviderKind;
+    providers: T[];
+    allowlist?: ManagedProviderAllowlist | null;
+    managed?: boolean;
+    env?: NodeJS.ProcessEnv;
+  },
+  providersArg?: T[],
+  allowlistArg?: ManagedProviderAllowlist | null,
+  options?: ManagedProviderPolicyOptions,
+): T[] {
+  const input = typeof kindOrInput === 'object'
+    ? kindOrInput
+    : {
+      kind: kindOrInput,
+      providers: providersArg as T[],
+      allowlist: allowlistArg,
+      managed: optionsManaged(options),
+      env: options?.env,
+    };
+  const managed = input.managed ?? isManagedDeployment(input.env);
+  if (!managed) return input.providers;
+  return input.providers.filter((provider) => evaluateManagedProvider({
+    managed: true,
+    kind: input.kind,
+    allowlist: input.allowlist,
+    provider,
+  }).allowed);
+}
+
+/** Read the sole authoritative v2 allowlist and isolate the caller from it. */
+export function loadManagedProviderAllowlist(root = dataRoot()): ManagedProviderAllowlist | null {
+  const state = readProvisioningState(root);
+  if (!state) return null;
+  return {
+    image: state.managedProviders.image.slice(),
+    script: state.managedProviders.script.slice(),
+    video: state.managedProviders.video.slice(),
+    tts: ['doubao-seed-tts-2'],
+  };
+}
