@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import type { CompanyProviderRuntimeStatus as RuntimeStatus } from '@/lib/company-provider-runtime';
 
 const STATUS_LABELS: Record<RuntimeStatus['status'], string> = {
+  starting: '正在启动',
   not_configured: '未配置',
   stopped: '未启动',
   unavailable: '当前不可用',
@@ -12,6 +13,7 @@ const STATUS_LABELS: Record<RuntimeStatus['status'], string> = {
 };
 
 const STATUS_CLASSES: Record<RuntimeStatus['status'], string> = {
+  starting: 'status-pending',
   not_configured: 'status-pending',
   stopped: 'status-canceled',
   unavailable: 'status-failed',

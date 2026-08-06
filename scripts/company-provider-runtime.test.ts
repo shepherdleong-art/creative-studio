@@ -5,7 +5,11 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   COMPANY_PROVIDER_HEALTH_URL,
+  COMPANY_PROVIDER_SAFE_REASONS,
+  COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
   inspectCompanyProviderRuntime,
+  isOwnedCompanyProviderProcessRecord,
+  parseNetstatListenerLine,
   type CompanyProviderRuntimeStatus,
 } from '../lib/company-provider-runtime.ts';
 
@@ -259,5 +263,359 @@ test('cosConfigured 反映 CREATIVE_STUDIO_COS_* 是否配置，不影响 ready 
   } finally {
     process.env = savedEnv;
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function writeManagedFixture(
+  root: string,
+  status: 'starting' | 'ready' | 'failed',
+  code: string = status,
+  stack: Record<string, unknown> | null = {
+    sidecarKind: 'company-litellm',
+    runtimeRelativePath: 'runtime-litellm/python.exe',
+    configRelativePath: 'config.yaml',
+    proxyPort: 4000,
+    litellmPid: 101,
+  },
+  reason: string = code,
+): void {
+  fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'runtime-litellm'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'config.yaml'), 'model_list: []\n', 'utf8');
+  fs.writeFileSync(path.join(root, 'runtime-litellm', 'python.exe'), 'test-runtime', 'utf8');
+  fs.writeFileSync(path.join(root, 'scripts', 'start-company-sidecar.ps1'), '# test', 'utf8');
+  fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
+    schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+    status,
+    code,
+    reason,
+    updatedAt: '2026-08-06T00:00:00.000Z',
+  }), 'utf8');
+  if (stack) fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), JSON.stringify(stack), 'utf8');
+}
+
+async function inspectManagedFixture(
+  root: string,
+  overrides: Partial<Parameters<typeof inspectCompanyProviderRuntime>[0]> = {},
+): Promise<CompanyProviderRuntimeStatus> {
+  return inspectCompanyProviderRuntime({
+    root,
+    managed: true,
+    processCheck: () => true,
+    listenerCheck: () => true,
+    fetchImpl: async () => new Response('ok', { status: 200 }),
+    ...overrides,
+  });
+}
+
+test('managed starting status does not probe process, listener, or health', async () => {
+  const root = makeRoot();
+  let fetchCalls = 0;
+  try {
+    writeManagedFixture(root, 'starting');
+    const status = await inspectCompanyProviderRuntime({
+      root,
+      managed: true,
+      processCheck: () => { throw new Error('must not check'); },
+      listenerCheck: () => { throw new Error('must not check'); },
+      fetchImpl: async () => { fetchCalls += 1; throw new Error('must not fetch'); },
+    });
+    assert.equal(status.status, 'starting');
+    assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.starting);
+    assert.equal(fetchCalls, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('missing status only starts without a stack, never hides a stale managed stack', async () => {
+  const noStackRoot = makeRoot();
+  try {
+    writeManagedFixture(noStackRoot, 'starting', 'starting', null);
+    fs.unlinkSync(path.join(noStackRoot, 'storage', 'run', 'company-sidecar-status.json'));
+    const status = await inspectManagedFixture(noStackRoot, {
+      processCheck: () => { throw new Error('no stack must remain transient'); },
+      listenerCheck: () => { throw new Error('no stack must remain transient'); },
+      fetchImpl: async () => { throw new Error('no stack must remain transient'); },
+    });
+    assert.equal(status.status, 'starting');
+  } finally { fs.rmSync(noStackRoot, { recursive: true, force: true }); }
+
+  const cases: Array<{
+    stack: Record<string, unknown>;
+    processCheck?: (pid: number) => boolean;
+    expectedStatus: CompanyProviderRuntimeStatus['status'];
+    expectedReason: string;
+  }> = [
+    {
+      stack: { sidecarKind: 'company-litellm', runtimeRelativePath: 'runtime-litellm/python.exe', configRelativePath: 'config.yaml', proxyPort: 4100, litellmPid: 101 },
+      expectedStatus: 'unavailable',
+      expectedReason: COMPANY_PROVIDER_SAFE_REASONS.port_in_use,
+    },
+    {
+      stack: { sidecarKind: 'company-litellm', runtimeRelativePath: 'runtime-litellm/python.exe', configRelativePath: 'config.yaml', proxyPort: 4000, litellmPid: 101 },
+      processCheck: () => false,
+      expectedStatus: 'unavailable',
+      expectedReason: COMPANY_PROVIDER_SAFE_REASONS.process_exited,
+    },
+    {
+      stack: { sidecarKind: 'other', runtimeRelativePath: 'runtime-litellm/python.exe', configRelativePath: 'config.yaml', proxyPort: 4000, litellmPid: 101 },
+      expectedStatus: 'unavailable',
+      expectedReason: COMPANY_PROVIDER_SAFE_REASONS.provision_invalid,
+    },
+    {
+      stack: { sidecarKind: 'company-litellm', runtimeRelativePath: 'runtime-litellm/python.exe', configRelativePath: 'config.yaml', proxyPort: 4000, litellmPid: 101 },
+      expectedStatus: 'ready',
+      expectedReason: COMPANY_PROVIDER_SAFE_REASONS.ready,
+    },
+  ];
+
+  for (const item of cases) {
+    const root = makeRoot();
+    try {
+      writeManagedFixture(root, 'starting', 'starting', item.stack);
+      fs.unlinkSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'));
+      const status = await inspectManagedFixture(root, {
+        processCheck: item.processCheck ?? (() => true),
+        listenerCheck: () => true,
+        fetchImpl: async () => new Response('ok', { status: 200 }),
+      });
+      assert.equal(status.status, item.expectedStatus);
+      assert.equal(status.reason, item.expectedReason);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+test('managed health 200 must recheck owned process before ready', async () => {
+  const root = makeRoot();
+  let processCalls = 0;
+  let listenerCalls = 0;
+  try {
+    writeManagedFixture(root, 'ready', 'ready');
+    const status = await inspectCompanyProviderRuntime({
+      root,
+      managed: true,
+      processCheck: () => {
+        processCalls += 1;
+        return processCalls < 2;
+      },
+      listenerCheck: () => {
+        listenerCalls += 1;
+        return true;
+      },
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+    });
+    assert.equal(status.status, 'unavailable');
+    assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.process_exited);
+    assert.ok(processCalls >= 2);
+    assert.ok(listenerCalls >= 2);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('managed health 200 must recheck listener ownership before ready', async () => {
+  const root = makeRoot();
+  let processCalls = 0;
+  let listenerCalls = 0;
+  try {
+    writeManagedFixture(root, 'ready', 'ready');
+    const status = await inspectCompanyProviderRuntime({
+      root,
+      managed: true,
+      processCheck: () => {
+        processCalls += 1;
+        return true;
+      },
+      listenerCheck: () => {
+        listenerCalls += 1;
+        return listenerCalls < 2;
+      },
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+    });
+    assert.equal(status.status, 'unavailable');
+    assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.start_failed);
+    assert.ok(processCalls >= 2);
+    assert.ok(listenerCalls >= 2);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('unmanaged inspection ignores stale managed status files', async () => {
+  const root = makeRoot();
+  try {
+    writeConfiguredRoot(root, { litellmPid: 101 });
+    fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), JSON.stringify({
+      schemaVersion: COMPANY_PROVIDER_STATUS_SCHEMA_VERSION,
+      status: 'starting',
+      code: 'starting',
+      reason: COMPANY_PROVIDER_SAFE_REASONS.starting,
+      updatedAt: '2026-08-06T00:00:00.000Z',
+    }), 'utf8');
+    const status = await inspectCompanyProviderRuntime({
+      root,
+      managed: false,
+      processCheck: () => true,
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+    });
+    assert.equal(status.status, 'ready');
+    assert.equal(status.proxyAvailable, true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+test('process ownership predicate requires the bundled command and exact paths', () => {
+  const root = 'C:/Creative Studio';
+  const executable = path.join(root, 'runtime-litellm', 'python.exe');
+  const config = path.join(root, 'config.yaml');
+  const commandLine = `"${executable}" -m litellm.proxy.proxy_cli --config "${config}" --host 127.0.0.1 --port 4000`;
+  assert.equal(isOwnedCompanyProviderProcessRecord({ ExecutablePath: executable, CommandLine: commandLine }, root), true);
+  assert.equal(isOwnedCompanyProviderProcessRecord({ ExecutablePath: executable, CommandLine: commandLine.replace('--port 4000', '--port 4001') }, root), false);
+  assert.equal(isOwnedCompanyProviderProcessRecord({ ExecutablePath: path.join(root, 'other.exe'), CommandLine: commandLine }, root), false);
+});
+
+test('netstat parser preserves loopback, wildcard, and listener ownership fields', () => {
+  assert.deepEqual(parseNetstatListenerLine('  TCP    127.0.0.1:4000    0.0.0.0:0    LISTENING    101'), {
+    localAddress: '127.0.0.1', port: 4000, state: 'LISTENING', pid: 101,
+  });
+  assert.deepEqual(parseNetstatListenerLine('TCP    0.0.0.0:4000    0.0.0.0:0    LISTENING    202'), {
+    localAddress: '0.0.0.0', port: 4000, state: 'LISTENING', pid: 202,
+  });
+  assert.equal(parseNetstatListenerLine('UDP    127.0.0.1:4000    *:*    101'), null);
+});
+test('managed ready requires live PID, owned listener, and exactly HTTP 200', async () => {
+  const root = makeRoot();
+  const checks: string[] = [];
+  try {
+    writeManagedFixture(root, 'ready', 'ready');
+    const status = await inspectCompanyProviderRuntime({
+      root,
+      managed: true,
+      processCheck: (pid) => { checks.push(`pid:${pid}`); return pid === 101; },
+      listenerCheck: (pid, port) => { checks.push(`listener:${pid}:${port}`); return pid === 101 && port === 4000; },
+      fetchImpl: async (input) => { checks.push(String(input)); return new Response('ok', { status: 200 }); },
+    });
+    assert.equal(status.status, 'ready');
+    assert.equal(status.proxyAvailable, true);
+    assert.deepEqual(checks, ['pid:101', 'listener:101:4000', COMPANY_PROVIDER_HEALTH_URL, 'pid:101', 'listener:101:4000']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('managed stale PID and wrong listener fail closed without health fetch', async () => {
+  const staleRoot = makeRoot();
+  const listenerRoot = makeRoot();
+  try {
+    writeManagedFixture(staleRoot, 'ready', 'ready');
+    let staleFetches = 0;
+    const stale = await inspectManagedFixture(staleRoot, {
+      processCheck: () => false,
+      fetchImpl: async () => { staleFetches += 1; return new Response('ok', { status: 200 }); },
+    });
+    assert.equal(stale.status, 'unavailable');
+    assert.equal(stale.reason, COMPANY_PROVIDER_SAFE_REASONS.process_exited);
+    assert.equal(staleFetches, 0);
+
+    writeManagedFixture(listenerRoot, 'ready', 'ready');
+    const wrong = await inspectManagedFixture(listenerRoot, {
+      listenerCheck: () => false,
+      fetchImpl: async () => { throw new Error('must not fetch'); },
+    });
+    assert.equal(wrong.status, 'unavailable');
+    assert.equal(wrong.reason, COMPANY_PROVIDER_SAFE_REASONS.start_failed);
+  } finally {
+    fs.rmSync(staleRoot, { recursive: true, force: true });
+    fs.rmSync(listenerRoot, { recursive: true, force: true });
+  }
+});
+
+test('managed listener reports port ownership conflicts with a fixed safe reason', async () => {
+  const root = makeRoot();
+  try {
+    writeManagedFixture(root, 'ready', 'ready');
+    const status = await inspectManagedFixture(root, {
+      listenerCheck: () => ({ owned: false, inUse: true }),
+      fetchImpl: async () => { throw new Error('must not fetch'); },
+    });
+    assert.equal(status.status, 'unavailable');
+    assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.port_in_use);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('managed health 204 or rejection is unavailable with health_timeout', async () => {
+  for (const fetchImpl of [
+    async () => new Response(null, { status: 204 }),
+    async () => { throw new Error('private network diagnostic'); },
+  ]) {
+    const root = makeRoot();
+    try {
+      writeManagedFixture(root, 'ready', 'ready');
+      const status = await inspectManagedFixture(root, { fetchImpl });
+      assert.equal(status.status, 'unavailable');
+      assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.health_timeout);
+      assert.doesNotMatch(status.reason, /private|diagnostic/);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test('managed stack identity, fixed port, and runtime/script presence are mandatory', async () => {
+  const cases: Array<{ stack: Record<string, unknown> | null; expected: string }> = [
+    { stack: null, expected: COMPANY_PROVIDER_SAFE_REASONS.provision_invalid },
+    { stack: { sidecarKind: 'other', runtimeRelativePath: 'runtime-litellm/python.exe', configRelativePath: 'config.yaml', proxyPort: 4000, litellmPid: 101 }, expected: COMPANY_PROVIDER_SAFE_REASONS.provision_invalid },
+    { stack: { sidecarKind: 'company-litellm', runtimeRelativePath: 'runtime-litellm/python.exe', configRelativePath: 'config.yaml', proxyPort: 4100, litellmPid: 101 }, expected: COMPANY_PROVIDER_SAFE_REASONS.port_in_use },
+  ];
+  for (const item of cases) {
+    const root = makeRoot();
+    try {
+      writeManagedFixture(root, 'ready', 'ready', item.stack);
+      const status = await inspectManagedFixture(root, { fetchImpl: async () => new Response('ok', { status: 200 }) });
+      assert.equal(status.status, 'unavailable');
+      assert.equal(status.reason, item.expected);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+
+  const missingRuntime = makeRoot();
+  try {
+    writeManagedFixture(missingRuntime, 'ready', 'ready');
+    fs.unlinkSync(path.join(missingRuntime, 'runtime-litellm', 'python.exe'));
+    const status = await inspectCompanyProviderRuntime({ root: missingRuntime, managed: true });
+    assert.equal(status.status, 'unavailable');
+    assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.runtime_missing);
+  } finally { fs.rmSync(missingRuntime, { recursive: true, force: true }); }
+
+  const missingScript = makeRoot();
+  try {
+    writeManagedFixture(missingScript, 'starting');
+    fs.unlinkSync(path.join(missingScript, 'scripts', 'start-company-sidecar.ps1'));
+    const status = await inspectCompanyProviderRuntime({ root: missingScript, managed: true });
+    assert.equal(status.status, 'unavailable');
+    assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.start_failed);
+  } finally { fs.rmSync(missingScript, { recursive: true, force: true }); }
+});
+
+test('managed failed status codes map to fixed reasons without echoing status text', async () => {
+  const codes = ['runtime_missing', 'port_in_use', 'process_exited', 'health_timeout', 'start_failed'] as const;
+  for (const code of codes) {
+    const root = makeRoot();
+    try {
+      writeManagedFixture(root, 'failed', code, null, code);
+      const status = await inspectManagedFixture(root);
+      assert.equal(status.status, 'unavailable');
+      assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS[code]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test('malformed status files fail closed and never echo arbitrary reason or secret', async () => {
+  const cases: Array<{ bytes: Buffer | string; marker: string }> = [
+    { bytes: JSON.stringify({ schemaVersion: 1, status: 'ready', code: 'ready', reason: 'SECRET_REASON', updatedAt: '2026-08-06T00:00:00.000Z', extra: 'key' }), marker: 'SECRET_REASON' },
+    { bytes: JSON.stringify({ schemaVersion: 1, status: 'ready', code: 'ready', reason: 'SECRET_REASON', updatedAt: '2026-08-06T00:00:00.000Z' }), marker: 'SECRET_REASON' },
+    { bytes: Buffer.from([0xff, 0xfe, 0xfd]), marker: '' },
+    { bytes: JSON.stringify({ schemaVersion: 1, status: 'ready', code: 'ready', reason: 'ready', updatedAt: 'not-a-timestamp' }), marker: 'not-a-timestamp' },
+  ];
+  for (const item of cases) {
+    const root = makeRoot();
+    try {
+      writeManagedFixture(root, 'ready', 'ready');
+      fs.writeFileSync(path.join(root, 'storage', 'run', 'company-sidecar-status.json'), item.bytes);
+      const status = await inspectManagedFixture(root);
+      assert.equal(status.status, 'unavailable');
+      assert.equal(status.reason, COMPANY_PROVIDER_SAFE_REASONS.provision_invalid);
+      if (item.marker) assert.doesNotMatch(status.reason, new RegExp(item.marker));
+      const serialized = JSON.stringify(status);
+      assert.doesNotMatch(serialized, /root|PID|SECRET_REASON|command|key|log/i);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   }
 });
