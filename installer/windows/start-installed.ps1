@@ -1,6 +1,5 @@
 ﻿param(
-  [int]$Port = $(if ($env:CREATIVE_STUDIO_PORT) { [int]$env:CREATIVE_STUDIO_PORT } else { 3000 }),
-  [int]$ProxyPort = $(if ($env:CREATIVE_STUDIO_PROXY_PORT) { [int]$env:CREATIVE_STUDIO_PROXY_PORT } else { 4000 })
+  [int]$Port = $(if ($env:CREATIVE_STUDIO_PORT) { [int]$env:CREATIVE_STUDIO_PORT } else { 3000 })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,10 +63,10 @@ if (Test-Path -LiteralPath $sidecarStartScript) {
     # Start-Process joins string[] arguments without reliably quoting paths on
     # Windows PowerShell 5.1. Both the default install root and script path
     # contain spaces, so quote them explicitly in one argument string.
-    $sidecarArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$sidecarStartScript`" -Root `"$Root`" -ProxyPort $ProxyPort"
+    $sidecarArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$sidecarStartScript`" -Root `"$Root`""
     Start-Process -FilePath 'powershell.exe' -ArgumentList $sidecarArguments -WorkingDirectory $Root -WindowStyle Hidden | Out-Null
   } catch {
-    Write-Host 'LiteLLM sidecar could not be started; the workbench will continue.' -ForegroundColor Yellow
+    Write-Host 'LiteLLM sidecar start request failed; managed production remains locked.' -ForegroundColor Yellow
   }
 }
 
@@ -104,6 +103,8 @@ $serverCommand = @"
 `$env:HOSTNAME = '127.0.0.1'
 `$env:NODE_ENV = 'production'
 `$env:CREATIVE_STUDIO_DESKTOP = '1'
+`$env:CREATIVE_STUDIO_DATA_ROOT = '$escapedRoot'
+`$env:CREATIVE_STUDIO_MANAGED_DEPLOYMENT = '1'
 Set-Location -LiteralPath '$escapedRoot'
 & '$escapedNode' 'server.js' 1>> '$escapedStdout' 2>> '$escapedStderr'
 "@

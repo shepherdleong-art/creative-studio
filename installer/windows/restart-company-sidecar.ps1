@@ -1,6 +1,5 @@
 ﻿param(
-  [string]$Root = '',
-  [switch]$SkipStartLock
+  [string]$Root = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +14,8 @@ $ConfigPath = [IO.Path]::GetFullPath((Join-Path $Root 'config.yaml'))
 $StackPath = Join-Path $Root 'storage\run\stack.json'
 $RunDir = Join-Path $Root 'storage\run'
 $StartLockPath = Join-Path $RunDir 'company-sidecar-start.lock'
+$StopScript = [IO.Path]::GetFullPath((Join-Path $Root 'scripts\stop-company-sidecar.ps1'))
+$StartScript = [IO.Path]::GetFullPath((Join-Path $Root 'scripts\start-company-sidecar.ps1'))
 $LogPath = Join-Path $Root 'storage\logs\litellm.err.log'
 $StackMaxBytes = 16 * 1024
 $script:lockStream = $null
@@ -129,6 +130,25 @@ function Test-OwnedLiteLLMProcess {
     (Test-TokenPair -Tokens $tokens -Flag '--port' -Expected '4000')
 }
 
+function Test-PinnedOwnedProcess {
+  param([int]$ProcessId)
+  $pinned = Get-PinnedProcess -ProcessId $ProcessId
+  if ($null -eq $pinned) { return $false }
+  try {
+    if ($pinned.HasExited) { return $false }
+    $record = Get-ProcessRecord -ProcessId $ProcessId
+    if (-not (Test-OwnedLiteLLMProcess -ProcessRecord $record)) { return $false }
+    if ($pinned.HasExited) { return $false }
+    $recordAgain = Get-ProcessRecord -ProcessId $ProcessId
+    if (-not (Test-OwnedLiteLLMProcess -ProcessRecord $recordAgain)) { return $false }
+    return -not $pinned.HasExited
+  } catch {
+    return $false
+  } finally {
+    try { $pinned.Dispose() } catch { }
+  }
+}
+
 function Acquire-StartLock {
   New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -144,68 +164,38 @@ function Acquire-StartLock {
   return $null
 }
 
-function Stop-PinnedOwnedProcess {
-  param([int]$ProcessId)
-  $pinned = Get-PinnedProcess -ProcessId $ProcessId
-  if ($null -eq $pinned) { return $false }
-  try {
-    if ($pinned.HasExited) { return $false }
-    $record = Get-ProcessRecord -ProcessId $ProcessId
-    if (-not (Test-OwnedLiteLLMProcess -ProcessRecord $record)) { return $false }
-    if ($pinned.HasExited) { return $false }
-    $recordAgain = Get-ProcessRecord -ProcessId $ProcessId
-    if (-not (Test-OwnedLiteLLMProcess -ProcessRecord $recordAgain)) { return $false }
-    if ($pinned.HasExited) { return $false }
-    $null = $pinned.Kill()
-    return [bool]$pinned.WaitForExit(5000)
-  } catch {
-    return $false
-  } finally {
-    try { $pinned.Dispose() } catch { }
-  }
-}
-
+$shouldStart = $false
 try {
   New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
-  if (-not $SkipStartLock) {
-    $script:lockStream = Acquire-StartLock
-    if ($null -eq $script:lockStream) {
-      Write-SafeDiagnostic 'Timed out waiting for the LiteLLM start lock; no process or stack state was changed.'
-      $script:exitCode = 1
-    }
-  }
-
-  if ($script:exitCode -eq 0) {
+  $script:lockStream = Acquire-StartLock
+  if ($null -eq $script:lockStream) {
+    Write-SafeDiagnostic 'Timed out waiting for the LiteLLM start lock; no stop or start action was taken.'
+    $script:exitCode = 1
+  } else {
     $stack = Read-Stack
+    $canStop = $false
     if (Test-ControlledStack -Stack $stack) {
       $processId = Get-StackProcessId -Stack $stack
-      if ($processId -le 0) {
-        Write-SafeDiagnostic 'Controlled LiteLLM stack has an invalid PID; it was left untouched.'
-        $script:exitCode = 1
-      } else {
+      if ($processId -gt 0) {
         $record = Get-ProcessRecord -ProcessId $processId
-        if (-not $record) {
-          Remove-Item -LiteralPath $StackPath -Force -ErrorAction SilentlyContinue
-        } elseif (Test-OwnedLiteLLMProcess -ProcessRecord $record) {
-          if (Stop-PinnedOwnedProcess -ProcessId $processId) {
-            Remove-Item -LiteralPath $StackPath -Force -ErrorAction SilentlyContinue
-            Write-Host "Stopped Creative Studio LiteLLM sidecar PID: $processId" -ForegroundColor Green
-          } else {
-            Write-SafeDiagnostic 'Controlled LiteLLM process identity changed or could not be terminated; it was left untouched.'
-            $script:exitCode = 1
-          }
-        } else {
-          Write-Host 'LiteLLM state did not match the bundled runtime and exact command line; it was left untouched.' -ForegroundColor Yellow
-          $script:exitCode = 1
-        }
+        $canStop = $record -and (Test-OwnedLiteLLMProcess -ProcessRecord $record) -and (Test-PinnedOwnedProcess -ProcessId $processId)
       }
     }
+    if ($canStop -and (Test-Path -LiteralPath $StopScript)) {
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $StopScript -Root $Root -SkipStartLock
+      if ($LASTEXITCODE -ne 0) { Write-SafeDiagnostic 'Controlled sidecar stop returned a non-zero status; start will revalidate ownership.' }
+    }
+    $shouldStart = $true
   }
 } catch {
-  Write-SafeDiagnostic 'LiteLLM stop controller failed closed.'
+  Write-SafeDiagnostic 'LiteLLM restart controller failed closed.'
   $script:exitCode = 1
 } finally {
   if ($null -ne $script:lockStream) { try { $script:lockStream.Dispose() } catch { } }
 }
 
-exit $script:exitCode
+if ($script:exitCode -ne 0 -or -not $shouldStart) { exit 1 }
+if (-not (Test-Path -LiteralPath $StartScript)) { exit 1 }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $StartScript -Root $Root
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+exit 0

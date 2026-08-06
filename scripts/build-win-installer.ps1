@@ -202,6 +202,7 @@ foreach ($relativePath in @(
   'components',
   'lib',
   'types',
+  '.tmp-pdf-text',
   'output',
   'preview',
   'icon-check',
@@ -217,7 +218,7 @@ foreach ($relativePath in @(
 Get-ChildItem -LiteralPath $AppDir -File -Filter '*.md' -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem -LiteralPath $AppDir -Recurse -Force -File -Filter '.env*' -ErrorAction SilentlyContinue | Remove-Item -Force
 
-$forbiddenPayload = @('data', 'storage', 'outputs', 'dist', '.cache', 'provisioning', '.env.local', 'config.yaml', 'litellm-config.yaml', 'data\provisioning', 'runtime.env')
+$forbiddenPayload = @('data', 'storage', 'outputs', 'dist', '.cache', 'provisioning', '.env.local', '.tmp-pdf-text', 'config.yaml', 'litellm-config.yaml', 'data\provisioning', 'runtime.env')
 foreach ($relativePath in $forbiddenPayload) {
   $target = Join-Path $AppDir $relativePath
   if (Test-Path $target) {
@@ -264,6 +265,7 @@ Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-installed.ps1') 
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\clear-user-data.ps1') -Destination (Join-Path $AppDir 'scripts\clear-user-data.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\start-installed.ps1') -Destination (Join-Path $AppDir 'scripts\start-installed.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\start-company-sidecar.ps1') -Destination (Join-Path $AppDir 'scripts\start-company-sidecar.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\restart-company-sidecar.ps1') -Destination (Join-Path $AppDir 'scripts\restart-company-sidecar.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-company-sidecar.ps1') -Destination (Join-Path $AppDir 'scripts\stop-company-sidecar.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'launcher.html') -Destination (Join-Path $AppDir 'launcher.html') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\README-INSTALLED.md') -Destination (Join-Path $AppDir 'README.md') -Force

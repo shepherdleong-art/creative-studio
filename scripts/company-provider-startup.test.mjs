@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const startWindows = fs.readFileSync(path.join(root, 'scripts', 'start-windows.ps1'), 'utf8');
 const startStack = fs.readFileSync(path.join(root, 'scripts', 'start-stack.ps1'), 'utf8');
+const installedLauncher = fs.readFileSync(path.join(root, 'installer', 'windows', 'launcher.cs'), 'utf8');
+const installedStart = fs.readFileSync(path.join(root, 'installer', 'windows', 'start-installed.ps1'), 'utf8');
+const installedSidecar = fs.readFileSync(path.join(root, 'installer', 'windows', 'start-company-sidecar.ps1'), 'utf8');
+const installedRestart = fs.readFileSync(path.join(root, 'installer', 'windows', 'restart-company-sidecar.ps1'), 'utf8');
 const configExample = fs.readFileSync(path.join(root, 'litellm-config.example.yaml'), 'utf8');
 const healthRoute = fs.readFileSync(path.join(root, 'app', 'api', 'company-provider', 'health', 'route.ts'), 'utf8');
 const runtimeComponent = fs.readFileSync(path.join(root, 'components', 'company-provider', 'CompanyProviderRuntimeStatus.tsx'), 'utf8');
@@ -75,4 +79,33 @@ test('设置页状态刷新使用请求序号与卸载守卫，旧响应不能�
 test('LiteLLM 配置模板名称与一键启动脚本一致', () => {
   assert.match(configExample, /复制为 config\.yaml/);
   assert.match(startStack, /'config\.yaml'/);
+});
+
+test('已安装布局才开启受管信号并自动 ensure sidecar，开发布局保持 unrestricted', () => {
+  assert.match(installedLauncher, /bool\s+isInstalled/);
+  assert.match(installedLauncher, /DetectLayout\([^\n]*isInstalled/);
+  assert.match(installedLauncher, /isInstalled\s*\?\s*StartCompanySidecar|if\s*\(isInstalled\)[\s\S]*StartCompanySidecar/);
+  assert.match(installedLauncher, /CREATIVE_STUDIO_MANAGED_DEPLOYMENT.*1/);
+  assert.doesNotMatch(installedLauncher, /CREATIVE_STUDIO_PROXY_PORT/);
+  assert.doesNotMatch(installedLauncher, /optional|offline/i);
+  assert.match(installedStart, /CREATIVE_STUDIO_DATA_ROOT/);
+  assert.match(installedStart, /CREATIVE_STUDIO_MANAGED_DEPLOYMENT/);
+});
+
+test('受管 sidecar 固定以 UTF-8、127.0.0.1:4000 启动并发布窄状态', () => {
+  assert.match(installedSidecar, /\$sidecarArguments\s*=\s*@\(/);
+  for (const token of ['-X', 'utf8', '-m', 'litellm.proxy.proxy_cli', '--host', '127.0.0.1', '--port', '4000', '--num_workers', '1', '--config', '--telemetry', 'false']) {
+    assert.match(installedSidecar, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.match(installedSidecar, /PYTHONUTF8/);
+  assert.match(installedSidecar, /PYTHONIOENCODING/);
+  assert.match(installedSidecar, /LITELLM_LOCAL_MODEL_COST_MAP/);
+  assert.match(installedSidecar, /schemaVersion\s*=\s*1/);
+  assert.match(installedSidecar, /company-sidecar-status\.json/);
+  assert.match(installedSidecar, /company-sidecar-start\.lock/);
+  assert.match(installedSidecar, /provisioning state.*schema.*2|schemaVersion.*2/i);
+  assert.match(installedSidecar, /health\/liveliness/);
+  assert.match(installedSidecar, /StatusCode\)\s*-eq\s*200|StatusCode\s*-eq\s*200/);
+  assert.match(installedRestart, /stop-company-sidecar\.ps1/);
+  assert.match(installedRestart, /start-company-sidecar\.ps1/);
 });

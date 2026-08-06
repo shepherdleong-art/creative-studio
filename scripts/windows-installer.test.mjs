@@ -8,6 +8,7 @@ for (const path of [
   'scripts/build-win-installer.ps1',
   'installer/windows/CreativeStudio.iss',
   'installer/windows/launcher.cs',
+  'installer/windows/restart-company-sidecar.ps1',
   'installer/windows/stop-installed.ps1',
   'installer/windows/clear-user-data.ps1',
 ]) {
@@ -38,7 +39,8 @@ assert.match(build, /sharp-win32-x64\*\.node/);
 assert.match(build, /libvips-cpp-\*\.dll/);
 assert.match(build, /node_modules\\better-sqlite3\\build\\Release\\better_sqlite3\.node/);
 assert.match(build, /Bundled sharp\/better-sqlite3 native runtime self-check failed/);
-for (const forbidden of ['data', 'storage', 'outputs', '.env.local', '.git', '.claude']) {
+assert.match(build, /restart-company-sidecar\.ps1/);
+for (const forbidden of ['data', 'storage', 'outputs', '.env.local', '.git', '.claude', '.tmp-pdf-text']) {
   assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
 }
 for (const forbiddenName of ['config.yaml', 'litellm-config.yaml', 'runtime.env']) {
@@ -49,6 +51,12 @@ const launcher = read('installer/windows/launcher.cs');
 assert.match(launcher, /runtime", "node\.exe/);
 assert.match(launcher, /EnvironmentVariables\["CREATIVE_STUDIO_DATA_ROOT"\] = storageBase/);
 assert.match(launcher, /EnvironmentVariables\["CREATIVE_STUDIO_DESKTOP"\] = "1"/);
+assert.match(launcher, /bool isInstalled/);
+assert.match(launcher, /out bool isInstalled/);
+assert.match(launcher, /StartCompanySidecar\(storageBase\)/);
+assert.match(launcher, /EnvironmentVariables\["CREATIVE_STUDIO_MANAGED_DEPLOYMENT"\] = "1"/);
+assert.doesNotMatch(launcher, /CREATIVE_STUDIO_PROXY_PORT|-ProxyPort\b/);
+assert.doesNotMatch(launcher, /optional|offline|best[- ]effort/i);
 
 const pkg = JSON.parse(read('package.json'));
 const iss = read('installer/windows/CreativeStudio.iss');
@@ -59,6 +67,7 @@ assert.match(iss, /Source: "\.\.\\\.\.\\dist\\windows\\CreativeStudio\\\*"/);
 assert.match(iss, /Name: "\{autodesktop\}\\产品素材工作台"/);
 assert.match(iss, /scripts\\stop-installed\.ps1/);
 assert.match(iss, /scripts\\clear-user-data\.ps1/);
+assert.match(iss, /scripts\\restart-company-sidecar\.ps1/);
 
 const stop = read('installer/windows/stop-installed.ps1');
 assert.match(stop, /CommandLine\)\.Contains\(\$Root\)/);

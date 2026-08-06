@@ -47,11 +47,16 @@ class CreativeStudioLauncher
 
         // ── Detect layout (installed vs dev) ──
         string serverJs, nodeExe, root, launcherHtml, storageBase;
-        DetectLayout(out serverJs, out nodeExe, out root, out launcherHtml, out storageBase);
+        bool isInstalled;
+        DetectLayout(out serverJs, out nodeExe, out root, out launcherHtml, out storageBase, out isInstalled);
 
-        // Start the optional company LiteLLM sidecar without blocking the workbench.
-        // Missing configuration/runtime or a sidecar failure must never block the UI.
-        StartCompanySidecar(storageBase);
+        // The installed payload owns the managed deployment contract. Start the
+        // fixed-port sidecar asynchronously so the Node/UI can show onboarding
+        // immediately; the server-side status gate remains locked until ready.
+        if (isInstalled)
+        {
+            StartCompanySidecar(storageBase);
+        }
 
         string logDir  = Path.Combine(storageBase, "storage", "logs");
         string runDir  = Path.Combine(storageBase, "storage", "run");
@@ -120,7 +125,10 @@ class CreativeStudioLauncher
         // Overrides process.cwd() for data/storage paths (server.js does process.chdir(__dirname)
         // which would otherwise point cwd at .next/standalone in dev mode).
         psi.EnvironmentVariables["CREATIVE_STUDIO_DATA_ROOT"] = storageBase;
-
+        if (isInstalled)
+        {
+            psi.EnvironmentVariables["CREATIVE_STUDIO_MANAGED_DEPLOYMENT"] = "1";
+        }
         var wrapper = Process.Start(psi);
         if (wrapper == null)
         {
@@ -138,7 +146,7 @@ class CreativeStudioLauncher
             Environment.Exit(1);
         }
 
-        // ── Write PID file (best-effort) ──
+        // ── Write PID file ──
         WritePidFile(pidFile, nodeExe, wrapper.Id);
 
         // ── Open brand launch page immediately; launcher.html polls for readiness ──
@@ -152,7 +160,8 @@ class CreativeStudioLauncher
         out string nodeExe,
         out string root,
         out string launcherHtml,
-        out string storageBase)
+        out string storageBase,
+        out bool isInstalled)
     {
         string exeDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\', '/');
 
@@ -167,6 +176,7 @@ class CreativeStudioLauncher
             root        = exeDir;
             launcherHtml = Path.Combine(exeDir, "launcher.html");
             storageBase  = exeDir;
+            isInstalled  = true;
             return;
         }
 
@@ -188,6 +198,7 @@ class CreativeStudioLauncher
             root         = standaloneDir;
             launcherHtml = Path.Combine(exeDir, "launcher.html");
             storageBase  = exeDir;   // logs → project-root\storage\logs
+            isInstalled  = false;
             return;
         }
 
@@ -214,14 +225,9 @@ class CreativeStudioLauncher
             string scriptPath = Path.Combine(storageBase, "scripts", "start-company-sidecar.ps1");
             if (!File.Exists(scriptPath)) return;
 
-            string proxyPort = Environment.GetEnvironmentVariable("CREATIVE_STUDIO_PROXY_PORT");
-            int parsedPort;
-            if (!Int32.TryParse(proxyPort, out parsedPort) || parsedPort < 1 || parsedPort > 65535)
-                proxyPort = "4000";
-
+            // fixed managed port is supplied by the controller
             string arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " +
-                QuoteArgument(scriptPath) + " -Root " + QuoteArgument(storageBase) +
-                " -ProxyPort " + QuoteArgument(proxyPort);
+                QuoteArgument(scriptPath) + " -Root " + QuoteArgument(storageBase);
             var psi = new ProcessStartInfo("powershell.exe", arguments)
             {
                 UseShellExecute = false,
@@ -233,7 +239,8 @@ class CreativeStudioLauncher
         }
         catch
         {
-            // Sidecar startup is best effort. The main app remains usable offline.
+            // Node/UI startup remains non-fatal; the managed runtime status is
+            // published by the PowerShell controller and keeps production locked.
         }
     }
 

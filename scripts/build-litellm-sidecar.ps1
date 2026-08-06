@@ -79,7 +79,7 @@ function Get-Sha256 {
 
 function Invoke-EmbeddedImportCheck {
   $code = "import sys, importlib.metadata as metadata; sys.path.insert(0, r'$SitePackages'); import litellm, litellm.proxy.proxy_cli; assert metadata.version('litellm') == '$LiteLLMVersion'"
-  & $PythonExe -I -S -c $code 2>$null
+  & $PythonExe -X utf8 -I -S -c $code 2>$null
   return ($LASTEXITCODE -eq 0)
 }
 
@@ -87,7 +87,7 @@ function Invoke-EmbeddedCliCheck {
   # Include the production flags so Click rejects an invalid invocation during the build.
   # LiteLLM 1.89.2 imports proxy_cli from litellm.proxy.__init__ before runpy executes
   # the module, which emits a harmless RuntimeWarning that PowerShell 5.1 promotes.
-  & $PythonExe -I -S -W ignore::RuntimeWarning -m litellm.proxy.proxy_cli --host 127.0.0.1 --port 4000 --num_workers 1 --config config.yaml --telemetry false --help 2>$null
+  & $PythonExe -X utf8 -I -S -W ignore::RuntimeWarning -m litellm.proxy.proxy_cli --host 127.0.0.1 --port 4000 --num_workers 1 --config config.yaml --telemetry false --help 2>$null
   return ($LASTEXITCODE -eq 0)
 }
 

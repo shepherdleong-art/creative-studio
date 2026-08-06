@@ -98,6 +98,7 @@ Source: "..\..\dist\windows\CreativeStudio\*"; DestDir: "{app}"; Flags: ignoreve
 [Icons]
 Name: "{autoprograms}\产品素材工作台\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"
 Name: "{autoprograms}\产品素材工作台\停止产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\stop-installed.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
+Name: "{autoprograms}\产品素材工作台\重启公司模型服务"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\restart-company-sidecar.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
 Name: "{autoprograms}\产品素材工作台\彻底删除用户数据"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\clear-user-data.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
 Name: "{autoprograms}\产品素材工作台\卸载产品素材工作台"; Filename: "{uninstallexe}"; IconFilename: "{app}\CreativeStudio.exe"
 Name: "{autodesktop}\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"; Tasks: desktopicon
