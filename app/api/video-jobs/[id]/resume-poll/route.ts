@@ -226,6 +226,16 @@ export async function POST(
       if (!managedExecution && code === 'provider_unconfigured') {
         return NextResponse.json({ error: `Provider not configured. Set ${runtime.missing.join(', ')}` }, { status: 400 });
       }
+      if (managedExecution) {
+        const policyDenied = code === 'managed_provider_not_allowed' || code === 'managed_provider_role_invalid';
+        const message = code === 'managed_provider_not_allowed'
+          ? '该供应商不在公司受管配置中'
+          : (error instanceof ProviderExecutionGateError ? error.message : '受管工作台暂不可执行生产');
+        return NextResponse.json(
+          { error: 'provider_execution_unavailable', code, message },
+          { status: policyDenied ? 403 : 423, headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
       const failure = await gateFailure(error);
       return NextResponse.json({ error: 'provider_execution_unavailable', code: failure.code, message: failure.message }, { status: 423 });
     }

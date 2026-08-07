@@ -5,6 +5,8 @@ import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
 import { parseProjectInfoUpdate, ProjectInfoValidationError } from '@/lib/project-info';
 import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+import { filterManagedProviders, loadManagedProviderAllowlist } from '@/lib/managed-provider-policy';
 
 export async function GET(
   _request: NextRequest,
@@ -17,6 +19,31 @@ export async function GET(
     const project = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     if (!project) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+
+    // A retained legacy project may still point at a historical provider row.
+    // In managed mode reject before loading jobs/assets or returning any
+    // provider/model metadata; never substitute a different provider.
+    const providerIdentity = db.prepare(`
+      SELECT id, type, baseUrl, apiKeyEnv FROM providers WHERE id = ?
+    `).get(project.providerId as string) as {
+      id: string;
+      type: string;
+      baseUrl: string;
+      apiKeyEnv: string;
+    } | undefined;
+    const managed = isManagedDeployment();
+    const managedAllowlist = managed ? loadManagedProviderAllowlist() : null;
+    if (managed
+      && (!providerIdentity || filterManagedProviders('image', [providerIdentity], managedAllowlist).length !== 1)) {
+      return NextResponse.json(
+        {
+          error: 'managed_provider_not_allowed',
+          code: 'managed_provider_not_allowed',
+          message: '该供应商不在公司受管配置中',
+        },
+        { status: 403, headers: { 'Cache-Control': 'no-store' } },
+      );
     }
 
     // Get images with computed imageUrl
@@ -35,16 +62,40 @@ export async function GET(
     });
 
     // Get jobs with input filenames
-    const jobs = db.prepare(`
+    const rawJobs = db.prepare(`
       SELECT j.*, ia.filename as inputFilename, oa.filename as outputFilename
       FROM jobs j
       LEFT JOIN image_assets ia ON j.inputImageId = ia.id
       LEFT JOIN image_assets oa ON j.outputImageId = oa.id
       WHERE j.projectId = ?
       ORDER BY j.id
-    `).all(id);
+    `).all(id) as Array<Record<string, unknown>>;
+    const jobs = managed
+      ? (() => {
+        const providerRows = db.prepare(`
+          SELECT id, type, baseUrl, apiKeyEnv FROM providers
+        `).all() as Array<{ id: string; type: string; baseUrl: string; apiKeyEnv: string }>;
+        const allowedProviderIds = new Set(
+          filterManagedProviders('image', providerRows, managedAllowlist).map((item) => item.id),
+        );
+        return rawJobs.map((job) => {
+          const providerId = typeof job.providerId === 'string' ? job.providerId : '';
+          if (!providerId || allowedProviderIds.has(providerId)) return job;
+          return {
+            ...job,
+            providerId: undefined,
+            providerTaskId: undefined,
+            remoteImageUrl: undefined,
+            model: undefined,
+            providerRawResponse: undefined,
+            providerStatus: 'managed_provider_not_allowed',
+          };
+        });
+      })()
+      : rawJobs;
 
-    // Get provider info
+    // Only an allowed provider reaches the full read used by the legacy
+    // unrestricted response shape.
     const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(project.providerId as string) as Record<string, unknown> | undefined;
 
     return NextResponse.json({

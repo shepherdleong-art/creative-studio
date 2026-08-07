@@ -6,6 +6,44 @@ import { writeLog } from '@/lib/logger';
 import { getEffectiveImageConcurrency } from '@/lib/provider-concurrency';
 import { v4 as uuidv4 } from 'uuid';
 import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+import {
+  filterManagedProviders,
+  loadManagedProviderAllowlist,
+} from '@/lib/managed-provider-policy';
+
+type ProjectImageProvider = {
+  id: string;
+  name: string;
+  type: string;
+  baseUrl: string;
+  apiKeyEnv: string;
+};
+
+function loadProjectProvider(
+  db: ReturnType<typeof getDb>,
+  providerId: string,
+): ProjectImageProvider | undefined {
+  return db.prepare(`
+    SELECT id, name, type, baseUrl, apiKeyEnv FROM providers WHERE id = ?
+  `).get(providerId) as ProjectImageProvider | undefined;
+}
+
+function managedProjectProviderDenied(provider: ProjectImageProvider | undefined): boolean {
+  return isManagedDeployment()
+    && (!provider || filterManagedProviders('image', [provider], loadManagedProviderAllowlist()).length !== 1);
+}
+
+function managedProviderDeniedResponse() {
+  return NextResponse.json(
+    {
+      error: 'managed_provider_not_allowed',
+      code: 'managed_provider_not_allowed',
+      message: '该供应商不在公司受管配置中',
+    },
+    { status: 403, headers: { 'Cache-Control': 'no-store' } },
+  );
+}
 
 export async function POST(
   request: NextRequest,
@@ -35,6 +73,10 @@ export async function POST(
 
     switch (action) {
       case 'start': {
+        // Fail before queue state, logs, runId, or any database mutation. A
+        // retained legacy provider must never be silently replaced.
+        const provider = loadProjectProvider(db, project.providerId);
+        if (managedProjectProviderDenied(provider)) return managedProviderDeniedResponse();
         // Prevent duplicate start
         const currentStatus = getQueueStatus(id);
         if (currentStatus !== 'idle') {
@@ -45,12 +87,6 @@ export async function POST(
         }
 
         const requestedConcurrency = body.concurrency || project.concurrency || 3;
-        const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
-          id?: string;
-          name?: string;
-          type?: string;
-          baseUrl?: string;
-        } | undefined;
         const concurrency = getEffectiveImageConcurrency(provider || {}, requestedConcurrency);
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
         const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;
@@ -89,6 +125,8 @@ export async function POST(
         return NextResponse.json({ status: 'paused' });
       }
       case 'resume': {
+        const provider = loadProjectProvider(db, project.providerId);
+        if (managedProjectProviderDenied(provider)) return managedProviderDeniedResponse();
         const currentStatus = getQueueStatus(id);
         if (currentStatus !== 'paused') {
           return NextResponse.json(
@@ -98,12 +136,6 @@ export async function POST(
         }
 
         const requestedConcurrency = body.concurrency || project.concurrency || 3;
-        const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
-          id?: string;
-          name?: string;
-          type?: string;
-          baseUrl?: string;
-        } | undefined;
         const concurrency = getEffectiveImageConcurrency(provider || {}, requestedConcurrency);
         const maxAttempts = body.maxAttempts || project.maxAttempts || 2;
         const timeoutMs = body.timeoutMs || project.timeoutMs || 600000;

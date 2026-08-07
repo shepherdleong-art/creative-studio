@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+import {
+  filterManagedProviders,
+  loadManagedProviderAllowlist,
+} from '@/lib/managed-provider-policy';
 
 export async function POST(
   _request: NextRequest,
@@ -15,6 +20,7 @@ export async function POST(
     const job = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(id) as {
       id: string;
       projectId: string;
+      providerId: string;
       status: string;
       providerTaskId: string | null;
       remoteImageUrl: string | null;
@@ -26,6 +32,22 @@ export async function POST(
 
     if (!['failed', 'canceled'].includes(job.status)) {
       return NextResponse.json({ error: 'Only failed or canceled jobs can be retried' }, { status: 400 });
+    }
+
+    if (isManagedDeployment()) {
+      const provider = db.prepare(`
+        SELECT id, type, baseUrl, apiKeyEnv FROM providers WHERE id = ?
+      `).get(job.providerId) as { id: string; type: string; baseUrl: string; apiKeyEnv: string } | undefined;
+      if (!provider || filterManagedProviders('image', [provider], loadManagedProviderAllowlist()).length !== 1) {
+        return NextResponse.json(
+          {
+            error: 'managed_provider_not_allowed',
+            code: 'managed_provider_not_allowed',
+            message: '该供应商不在公司受管配置中',
+          },
+          { status: 403, headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
     }
 
     const hasRemoteIdentity = Boolean(job.providerTaskId?.trim() || job.remoteImageUrl?.trim());
