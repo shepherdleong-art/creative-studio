@@ -67,10 +67,10 @@ function redact(value) {
   return text.length > 4000 ? `${text.slice(-4000)}\n[truncated]` : text;
 }
 function run(command, args, options = {}) {
-  const { cwd = REPO_ROOT, env = minimalEnv(), timeoutMs = 60_000 } = options;
+  const { cwd = REPO_ROOT, env = minimalEnv(), timeoutMs = 60_000, ignoreStdio = false } = options;
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ignoreStdio ? 'ignore' : ['ignore', 'pipe', 'pipe'] }); }
     catch (error) { resolve({ error, code: null, signal: null, stdout: '', stderr: '', timedOut: false }); return; }
     let stdout = ''; let stderr = ''; let timedOut = false; let done = false;
     const append = (current, chunk) => { const value = current + chunk.toString('utf8'); return value.length > MAX_OUTPUT ? value.slice(-MAX_OUTPUT) : value; };
@@ -79,6 +79,10 @@ function run(command, args, options = {}) {
     const timer = setTimeout(() => {
       timedOut = true;
       try { child.kill(); } catch { /* best effort */ }
+      // A survived grandchild (e.g. the installed server) can inherit and hold
+      // the pipes, which would otherwise keep 'close' pending forever.
+      try { child.stdout?.destroy(); } catch { /* best effort */ }
+      try { child.stderr?.destroy(); } catch { /* best effort */ }
       if (isWindows() && child.pid) {
         try { const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', env: minimalEnv() }); killer.unref(); } catch { /* best effort */ }
       }
@@ -416,7 +420,7 @@ async function main() {
     const launcherExe = path.join(installRoot, 'CreativeStudio.exe');
     const baseUrl = 'http://127.0.0.1:' + appPort;
     appLaunchAttempted = true; sidecarMayRun = true;
-    const started = await run(launcherExe, [], { cwd: installRoot, env: minimalEnv({ CREATIVE_STUDIO_PORT: String(appPort), CREATIVE_STUDIO_DATA_ROOT: dataRoot }), timeoutMs: 30_000 });
+    const started = await run(launcherExe, [], { cwd: installRoot, env: minimalEnv({ CREATIVE_STUDIO_PORT: String(appPort), CREATIVE_STUDIO_DATA_ROOT: dataRoot }), timeoutMs: 30_000, ignoreStdio: true });
     expectZero(started, launcherExe, []);
     await waitUntil('installed Node HTTP listener', async () => { try { const response = await fetch(baseUrl + '/', { redirect: 'error' }); return response.status >= 200 && response.status < 500; } catch { return false; } }, 60_000, 300);
     await assertLoopback(appPort, 'Creative Studio'); await initialLocked(baseUrl);
@@ -436,7 +440,7 @@ async function main() {
     await stopApp(installRoot, appPort);
     const secondPhases = [];
     appLaunchAttempted = true; sidecarMayRun = true;
-    const restarted = await run(launcherExe, [], { cwd: installRoot, env: minimalEnv({ CREATIVE_STUDIO_PORT: String(appPort), CREATIVE_STUDIO_DATA_ROOT: dataRoot }), timeoutMs: 30_000 });
+    const restarted = await run(launcherExe, [], { cwd: installRoot, env: minimalEnv({ CREATIVE_STUDIO_PORT: String(appPort), CREATIVE_STUDIO_DATA_ROOT: dataRoot }), timeoutMs: 30_000, ignoreStdio: true });
     expectZero(restarted, launcherExe, []);
     await waitUntil('restarted installed Node HTTP listener', async () => {
       try {
