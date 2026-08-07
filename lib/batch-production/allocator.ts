@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { splitNarrationForDisplay } from '../subtitle-display.ts';
+import { splitBatchScriptSentences } from './script-sentences.ts';
 
 /**
  * Phase E 联合分配器。
@@ -461,10 +462,9 @@ function normalizeAsset(rawAsset: AllocationAssetInput): NormalizedAsset {
 
 /** 分配器的脚本断句唯一实现；语义匹配句段构造也用它，保证两侧句段完全一致。 */
 export function splitAllocationScriptBody(body: string): string[] {
-  return body
-    .split(/(?:[。！？!?；;]\s*|\n+|\r+)/u)
-    .map((part) => part.trim())
-    .filter(Boolean);
+  // 去标点形态:给分配与语义匹配;句界与口播侧出自同一次切分,
+  // 句数不可能再分叉(连续终止标点归前一句)。
+  return splitBatchScriptSentences(body).map(({ text }) => text);
 }
 
 function splitBody(body: string): string[] {

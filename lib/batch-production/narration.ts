@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { isNormalizedFingerprint, normalizeFingerprint } from './fingerprint.ts';
+import { splitBatchScriptSentences } from './script-sentences.ts';
 
 export const BATCH_NARRATION_SCHEMA_VERSION = 'batch-narration-v1';
 
@@ -54,13 +55,9 @@ function stableSegmentId(scriptSnapshotId: string, index: number, text: string):
 }
 
 function splitScript(bodyText: string): string[] {
-  const normalized = bodyText.replace(/\r\n?/g, '\n').trim();
-  if (!normalized) return [];
-  const sentences = normalized
-    .split(/(?<=[。！？!?；;])|\n+/u)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return sentences.length > 0 ? sentences : [normalized];
+  // 带标点形态:给 TTS 朗读与句段 id;句界与分配侧出自同一次切分,
+  // 句数不可能再分叉(连续终止标点归前一句)。
+  return splitBatchScriptSentences(bodyText).map(({ textWithPunctuation }) => textWithPunctuation);
 }
 
 function visibleWeight(text: string): number {
