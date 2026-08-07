@@ -208,9 +208,9 @@ export default function NewProjectPage() {
             <input
               type="number"
               min={1}
-              max={8}
+              max={10}
               value={concurrency}
-              onChange={(e) => setConcurrency(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
+              onChange={(e) => setConcurrency(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
               className={modelControlClass}
             />
             <p className="mt-1 text-xs text-ink-tertiary">失败或限流时调回 1。</p>
@@ -301,7 +301,7 @@ export default function NewProjectPage() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">并发数</label>
-              <input type="number" min={1} max={8} value={legacyConcurrency} onChange={(e) => setLegacyConcurrency(Number(e.target.value))} className="input-field" />
+              <input type="number" min={1} max={10} value={legacyConcurrency} onChange={(e) => setLegacyConcurrency(Number(e.target.value))} className="input-field" />
             </div>
             <div>
               <label className="label">重试次数</label>

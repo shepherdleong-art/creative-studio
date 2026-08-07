@@ -17,10 +17,10 @@ export interface VideoQueueOptions {
 }
 
 // Number of video jobs to run concurrently per project. Override with the
-// VIDEO_CONCURRENCY env var; clamped to 1–6 to respect provider rate limits.
+// VIDEO_CONCURRENCY env var; clamped to 1–10.
 const raw = process.env.VIDEO_CONCURRENCY;
 const envConcurrency = (raw !== undefined && raw !== '') ? Number(raw) : NaN;
-export const DEFAULT_VIDEO_CONCURRENCY = Math.max(1, Math.min(6, Number.isFinite(envConcurrency) ? envConcurrency : 3));
+export const DEFAULT_VIDEO_CONCURRENCY = Math.max(1, Math.min(10, Number.isFinite(envConcurrency) ? envConcurrency : 10));
 
 // 轮询窗口:供应商任务积压时单次轮询可等待多久,超时后任务转 needs_check。
 // 默认 15 分钟(旧值 5 分钟在任务积压时频繁掉出自动化管线);用

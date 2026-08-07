@@ -888,7 +888,7 @@ function SceneResultsSection({
 }
 
 function clampImageConcurrency(value: number): number {
-  return Math.max(1, Math.min(8, Math.floor(value) || 1));
+  return Math.max(1, Math.min(10, Math.floor(value) || 1));
 }
 
 function getSelectableImageProviders(providers: ImageProvider[]): ImageProvider[] {
@@ -947,7 +947,7 @@ function ImageConcurrencyField({
       <input
         type="number"
         min={1}
-        max={8}
+        max={10}
         value={concurrency}
         onChange={(e) => onConcurrencyChange(clampImageConcurrency(Number(e.target.value)))}
         className="input-field generation-control generation-number"

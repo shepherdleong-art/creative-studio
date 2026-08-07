@@ -35,6 +35,22 @@ db.exec(`
     name TEXT NOT NULL
   );
 
+  CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+    providerId TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    negativePrompt TEXT DEFAULT '',
+    size TEXT NOT NULL DEFAULT '1024x1024',
+    quality TEXT NOT NULL DEFAULT 'standard',
+    concurrency INTEGER NOT NULL DEFAULT 3,
+    videoConcurrency INTEGER NOT NULL DEFAULT 10,
+    maxAttempts INTEGER NOT NULL DEFAULT 2,
+    status TEXT NOT NULL DEFAULT 'draft'
+  );
+
   CREATE TABLE shots (
     id TEXT PRIMARY KEY,
     shotSetId TEXT NOT NULL
@@ -63,8 +79,13 @@ for (const sql of CORE_DB_MIGRATIONS) {
 
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE script_providers ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external' CHECK(executionScope IN ('external','company'))`,
+  `ALTER TABLE projects ADD COLUMN videoConcurrency INTEGER NOT NULL DEFAULT 10`,
   'new core migrations must be appended without rewriting published entries',
+);
+const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
+assert.ok(
+  projectColumns.some((column) => column.name === 'videoConcurrency'),
+  'projects.videoConcurrency should be added when migrating older installed databases',
 );
 const shotIndexes = db.prepare(`PRAGMA index_list(shots)`).all() as Array<{ name: string }>;
 assert.ok(

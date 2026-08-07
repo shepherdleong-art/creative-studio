@@ -62,9 +62,11 @@ export async function POST(
     // Auto-start video queue if idle
     const qStatus = getVideoQueueStatus(shotSet.projectId);
     if (qStatus === 'idle') {
+      const projectRow = db.prepare(`SELECT videoConcurrency FROM projects WHERE id = ?`).get(shotSet.projectId) as { videoConcurrency?: number } | undefined;
+      const concurrency = Math.max(1, Math.min(10, Number(projectRow?.videoConcurrency) || DEFAULT_VIDEO_CONCURRENCY));
       runVideoQueue({
         projectId: shotSet.projectId,
-        concurrency: DEFAULT_VIDEO_CONCURRENCY,
+        concurrency,
         timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS,
       }).catch((err) => {
         console.error(`[VideoQueue] Auto-start failed:`, err);
