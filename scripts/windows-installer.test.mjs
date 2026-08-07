@@ -60,6 +60,14 @@ assert.doesNotMatch(launcher, /optional|offline|best[- ]effort/i);
 
 const pkg = JSON.parse(read('package.json'));
 const iss = read('installer/windows/CreativeStudio.iss');
+const sectionEntries = (name, entryPrefix) => {
+  const match = iss.match(new RegExp(`\\[${name}\\]\\r?\\n([\\s\\S]*?)(?=\\r?\\n\\[|$)`));
+  assert.ok(match, `missing [${name}] section`);
+  return match[1]
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(entryPrefix));
+};
 assert.match(iss, new RegExp(`#define MyAppVersion "${pkg.version.replaceAll('.', '\\.')}"`));
 assert.match(iss, /ArchitecturesAllowed=x64compatible/);
 assert.match(iss, /ArchitecturesInstallIn64BitMode=x64compatible/);
@@ -68,6 +76,16 @@ assert.match(iss, /Name: "\{autodesktop\}\\产品素材工作台"/);
 assert.match(iss, /scripts\\stop-installed\.ps1/);
 assert.match(iss, /scripts\\clear-user-data\.ps1/);
 assert.match(iss, /scripts\\restart-company-sidecar\.ps1/);
+assert.match(iss, /^Uninstallable=not IsManagedSmokeInstall$/m);
+assert.match(iss, /^CreateUninstallRegKey=not IsManagedSmokeInstall$/m);
+assert.match(iss, /function IsManagedSmokeInstall\(\): Boolean;[\s\S]*?ExpandConstant\('\{param:MANAGEDSMOKE\|0\}'\) = '1';/);
+assert.doesNotMatch(iss, /\{param:MANAGEDSMOKE\|1\}/);
+const iconEntries = sectionEntries('Icons', 'Name:');
+assert.equal(iconEntries.length, 6);
+for (const entry of iconEntries) assert.match(entry, /; Check: not IsManagedSmokeInstall$/);
+const runEntries = sectionEntries('Run', 'Filename:');
+assert.equal(runEntries.length, 2);
+for (const entry of runEntries) assert.match(entry, /; Check: not IsManagedSmokeInstall$/);
 
 const stop = read('installer/windows/stop-installed.ps1');
 assert.match(stop, /CommandLine\)\.Contains\(\$Root\)/);

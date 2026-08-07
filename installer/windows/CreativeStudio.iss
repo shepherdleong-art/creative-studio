@@ -21,6 +21,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\CreativeStudio.exe
+Uninstallable=not IsManagedSmokeInstall
+CreateUninstallRegKey=not IsManagedSmokeInstall
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
@@ -96,21 +98,27 @@ UninstalledMost=%1 卸载完成。%n%n有些项目无法移除，你可以手动
 Source: "..\..\dist\windows\CreativeStudio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\产品素材工作台\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"
-Name: "{autoprograms}\产品素材工作台\停止产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\stop-installed.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
-Name: "{autoprograms}\产品素材工作台\重启公司模型服务"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\restart-company-sidecar.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
-Name: "{autoprograms}\产品素材工作台\彻底删除用户数据"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\clear-user-data.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"
-Name: "{autoprograms}\产品素材工作台\卸载产品素材工作台"; Filename: "{uninstallexe}"; IconFilename: "{app}\CreativeStudio.exe"
-Name: "{autodesktop}\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"; Tasks: desktopicon
+Name: "{autoprograms}\产品素材工作台\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"; Check: not IsManagedSmokeInstall
+Name: "{autoprograms}\产品素材工作台\停止产品素材工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\stop-installed.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"; Check: not IsManagedSmokeInstall
+Name: "{autoprograms}\产品素材工作台\重启公司模型服务"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\restart-company-sidecar.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"; Check: not IsManagedSmokeInstall
+Name: "{autoprograms}\产品素材工作台\彻底删除用户数据"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\clear-user-data.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CreativeStudio.exe"; Check: not IsManagedSmokeInstall
+Name: "{autoprograms}\产品素材工作台\卸载产品素材工作台"; Filename: "{uninstallexe}"; IconFilename: "{app}\CreativeStudio.exe"; Check: not IsManagedSmokeInstall
+Name: "{autodesktop}\产品素材工作台"; Filename: "{app}\CreativeStudio.exe"; IconFilename: "{app}\CreativeStudio.exe"; Tasks: desktopicon; Check: not IsManagedSmokeInstall
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: checkedonce
 
 [Run]
-Filename: "ie4uinit.exe"; Parameters: "-ClearIconCache"; Flags: runhidden waituntilterminated
-Filename: "{app}\CreativeStudio.exe"; Description: "安装完成后启动产品素材工作台"; Flags: nowait postinstall skipifsilent
+Filename: "ie4uinit.exe"; Parameters: "-ClearIconCache"; Flags: runhidden waituntilterminated; Check: not IsManagedSmokeInstall
+Filename: "{app}\CreativeStudio.exe"; Description: "安装完成后启动产品素材工作台"; Flags: nowait postinstall skipifsilent; Check: not IsManagedSmokeInstall
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\stop-installed.ps1"""; Flags: runhidden waituntilterminated; RunOnceId: "StopCreativeStudio"
 
 [UninstallDelete]
 Type: files; Name: "{app}\storage\run\server.pid"
+
+[Code]
+function IsManagedSmokeInstall(): Boolean;
+begin
+  Result := ExpandConstant('{param:MANAGEDSMOKE|0}') = '1';
+end;
