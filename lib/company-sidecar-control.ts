@@ -293,7 +293,11 @@ function spawnSidecar(
     try {
       child = spawnImpl('powershell.exe', args, {
         windowsHide: true,
-        detached: true,
+        // Do NOT use `detached: true` here: on Windows it maps to
+        // DETACHED_PROCESS, and a console-less powershell.exe then exits 0
+        // immediately without ever executing the -File script (verified
+        // against the packaged install). stdio 'ignore' + unref() already
+        // decouple the controller from this Node process.
         stdio: 'ignore',
         cwd: context.root,
         env: {

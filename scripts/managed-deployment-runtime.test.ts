@@ -127,12 +127,14 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
     ]);
     assert.deepEqual({
       windowsHide: calls[0]?.options.windowsHide,
-      detached: calls[0]?.options.detached,
+      detached: calls[0]?.options.detached ?? false,
       stdio: calls[0]?.options.stdio,
       cwd: calls[0]?.options.cwd,
     }, {
       windowsHide: true,
-      detached: true,
+      // detached must stay off: DETACHED_PROCESS makes powershell.exe exit
+      // without running the script on Windows.
+      detached: false,
       stdio: 'ignore',
       cwd: root,
     });

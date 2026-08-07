@@ -343,7 +343,7 @@ export async function assertManagedWorkbenchReady(): Promise<void>;
 
 - [ ] **Step 5：实现固定参数 sidecar 控制器**
 
-`lib/company-sidecar-control.ts` 使用 `spawn('powershell.exe', args, { windowsHide: true, detached: true, stdio: 'ignore' })`，确认返回 ChildProcess 后调用 `unref()`；脚本路径只能由 `dataRoot()` 下的安装布局推导。允许 action 只有 `start` 和 `restart`；任何用户输入都不得进入命令行。
+`lib/company-sidecar-control.ts` 使用 `spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore' })`，确认返回 ChildProcess 后调用 `unref()`；脚本路径只能由 `dataRoot()` 下的安装布局推导。允许 action 只有 `start` 和 `restart`；任何用户输入都不得进入命令行。**不得使用 `detached: true`**：它在 Windows 上映射为 `DETACHED_PROCESS`，无控制台的 powershell.exe 会立即以退出码 0 退出而不执行 `-File` 脚本（2026-08-07 在安装版上实测确认）。
 
 - [ ] **Step 6：接入 API、导入和开机**
 
