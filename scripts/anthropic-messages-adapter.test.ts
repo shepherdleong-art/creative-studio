@@ -19,8 +19,8 @@ try {
 
     getAvailableProviders();
     const db = getDb();
-    db.prepare("UPDATE script_providers SET type=?, apiStyle=?, baseUrl=?, apiKey=?, model=?, enabled=1, supportsVision=1 WHERE id=?")
-      .run('anthropic-messages', 'anthropic-messages', 'https://anthropic.example/v1', 'anthropic-key', 'kimi-k2.6', 'kimi');
+    db.prepare("INSERT INTO script_providers (id,name,type,apiStyle,baseUrl,apiKey,model,keyEnv,baseUrlEnv,modelEnv,defaultBaseUrl,defaultModel,maxTokens,enabled,isBuiltin,supportsVision,visionCostPerRequest,executionScope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run('kimi', 'Kimi（月之暗面）', 'anthropic-messages', 'anthropic-messages', 'https://anthropic.example/v1', 'anthropic-key', 'kimi-k2.6', '', '', '', 'https://anthropic.example/v1', 'kimi-k2.6', 8192, 1, 0, 1, 0, 'external');
 
     let requestedUrl = '';
     let requestedInit;
@@ -126,7 +126,7 @@ try {
 
   const result = spawnSync(process.execPath, [
     '--no-warnings',
-    '--experimental-loader', path.resolve('scripts/typescript-extension-loader.mjs'),
+    '--experimental-loader', pathToFileURL(path.resolve('scripts/typescript-extension-loader.mjs')).href,
     '--experimental-strip-types',
     childPath,
   ], {

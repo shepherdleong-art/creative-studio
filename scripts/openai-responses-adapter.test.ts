@@ -108,10 +108,10 @@ try {
       const { closeDb, getDb } = await import(${JSON.stringify(dbUrl)});
       getAvailableProviders();
       const db = getDb();
-      db.prepare("UPDATE script_providers SET baseUrl=?, apiKey=?, model=?, apiStyle=?, enabled=1 WHERE id=?")
-        .run('https://chat.example/v1', 'chat-key', 'chat-model', 'openai-compatible', 'qwen');
-      db.prepare("UPDATE script_providers SET baseUrl=?, apiKey=?, model=?, apiStyle=?, enabled=1 WHERE id=?")
-        .run('https://gemini.example', 'gemini-key', 'gemini-model', 'native-gemini', 'gemini');
+      db.prepare("INSERT INTO script_providers (id,name,type,apiStyle,baseUrl,apiKey,model,keyEnv,baseUrlEnv,modelEnv,defaultBaseUrl,defaultModel,maxTokens,enabled,isBuiltin,supportsVision,visionCostPerRequest,executionScope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run('qwen', 'Qwen', 'openai-compatible', 'openai-compatible', 'https://chat.example/v1', 'chat-key', 'chat-model', '', '', '', 'https://chat.example/v1', 'chat-model', 8192, 1, 0, 0, 0, 'external');
+      db.prepare("INSERT INTO script_providers (id,name,type,apiStyle,baseUrl,apiKey,model,keyEnv,baseUrlEnv,modelEnv,defaultBaseUrl,defaultModel,maxTokens,enabled,isBuiltin,supportsVision,visionCostPerRequest,executionScope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run('gemini', 'Gemini', 'native-gemini', 'native-gemini', 'https://gemini.example', 'gemini-key', 'gemini-model', '', '', '', 'https://gemini.example', 'gemini-model', 8192, 1, 0, 0, 0, 'external');
       const urls = [];
       globalThis.fetch = async (input) => {
         const url = String(input);
@@ -132,7 +132,7 @@ try {
         .run('http://127.0.0.1:4000/v1');
       await assert.rejects(
         completeJson({ providerId: 'qwen', systemPrompt: 'system', userPrompt: 'user' }),
-        /尚未配置公司供应商/,
+        /公司配置无效，请重新导入/,
       );
       assert.equal(urls.length, requestCountBeforeCompanyGate, '公司运行环境门禁失败时不得调用供应商');
       db.prepare("UPDATE script_providers SET executionScope='external', baseUrl=? WHERE id='qwen'")
@@ -141,7 +141,7 @@ try {
     `);
     const routingResult = spawnSync(process.execPath, [
       '--no-warnings',
-      '--experimental-loader', path.resolve('scripts/typescript-extension-loader.mjs'),
+      '--experimental-loader', pathToFileURL(path.resolve('scripts/typescript-extension-loader.mjs')).href,
       '--experimental-strip-types',
       childPath,
     ], {

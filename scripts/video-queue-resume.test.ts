@@ -260,4 +260,5 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
 
 console.log('video queue resume tests passed');
 
+dbModule.closeDb();
 fs.rmSync(externalDataRoot, { recursive: true, force: true });
