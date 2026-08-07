@@ -6,6 +6,8 @@ import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { getAvailableProviders } from '@/lib/script-providers';
 import { analyzeVideoWithVision } from '@/lib/final-edit/adapters/video-analysis';
+import { assertFinalEditAnalysisExecutionAvailable } from '@/lib/final-edit/runtime';
+import { ProviderExecutionGateError } from '@/lib/provider-execution-gate';
 import { resolveStoragePath } from '@/lib/final-edit/storage-path';
 import { guardManagedWorkbench } from '@/app/api/managed-deployment/guard';
 
@@ -22,6 +24,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ vid
     if (!row?.localVideoPath) return NextResponse.json({ error: 'video_not_found', message: '视频素材不存在' }, { status: 404 });
     const storageRoot = path.join(dataRoot(), 'storage');
     const filePath = resolveStoragePath(storageRoot, row.localVideoPath, { allowAbsolute: true });
+    await assertFinalEditAnalysisExecutionAvailable(provider.id);
     const result = await analyzeVideoWithVision({ filePath, videoJobId, providerId: provider.id, cacheDir: path.join(storageRoot, 'final-edits', 'analysis', videoJobId) });
     const fingerprint = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
     const timestamp = new Date().toISOString();
@@ -32,5 +35,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ vid
         status='succeeded', generatedJson=excluded.generatedJson, errorCode=NULL, errorMessage=NULL, updatedAt=excluded.updatedAt, analyzedAt=excluded.analyzedAt
     `).run(videoJobId, row.shotSetId, fingerprint, provider.id, provider.model, JSON.stringify(result), timestamp, timestamp);
     return NextResponse.json({ success: true, analysis: result });
-  } catch (error) { return NextResponse.json({ error: 'reanalyze_failed', message: error instanceof Error ? error.message : String(error) }, { status: 400 }); }
+  } catch (error) {
+    if (error instanceof ProviderExecutionGateError) {
+      const status = error.code === 'managed_workbench_locked' ? 423 : 409;
+      return NextResponse.json({ error: error.code, message: error.message }, { status });
+    }
+    return NextResponse.json({ error: 'reanalyze_failed', message: error instanceof Error ? error.message : String(error) }, { status: 400 });
+  }
 }

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAvailableProviders } from '@/lib/script-providers';
+import { isManagedDeployment } from '@/lib/managed-deployment';
+import { filterManagedProviders, loadManagedProviderAllowlist } from '@/lib/managed-provider-policy';
 import { OUTPUT_PRESETS } from '@/lib/final-edit/types';
 import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 import { isFinalEditAlignmentConfigured, recoverFinalEditPrepareJobs } from '@/lib/final-edit/runtime';
@@ -26,7 +28,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       } catch { return []; }
     });
     const groups = db.prepare(`SELECT g.id, g.scriptDraftId, g.status, g.phase, g.narrationDurationUs, g.revision, g.createdAt, g.updatedAt, (SELECT COUNT(*) FROM final_edit_variants v WHERE v.groupId=g.id) AS variantCount FROM final_edit_groups g WHERE g.projectId=? ORDER BY g.createdAt DESC`).all(projectId);
-    const tts = db.prepare(`SELECT id, name, baseUrl, model, enabled, apiKey, keyEnv FROM final_edit_tts_providers WHERE enabled=1 ORDER BY isBuiltin DESC, name LIMIT 1`).get() as { id: string; name: string; baseUrl: string; model: string; enabled: number; apiKey: string; keyEnv: string } | undefined;
+    type TtsRow = { id: string; name: string; type: string; baseUrl: string; model: string; enabled: number; apiKey: string; keyEnv: string };
+    const ttsRows = db.prepare(`
+      SELECT id, name, type, baseUrl, model, enabled, apiKey, keyEnv
+      FROM final_edit_tts_providers WHERE enabled=1 ORDER BY isBuiltin DESC, name
+    `).all() as TtsRow[];
+    const tts = isManagedDeployment()
+      ? filterManagedProviders('tts', ttsRows, loadManagedProviderAllowlist())[0]
+      : ttsRows[0];
     if (!tts) return NextResponse.json({ error: 'tts_provider_unavailable', message: '没有已启用的口播配音供应商' }, { status: 409 });
     const ttsAdapter = getFinalEditTtsAdapter(tts.id);
     const visionProviders = getAvailableProviders().filter((provider) => provider.supportsVision).map((provider) => ({ id: provider.id, name: provider.name, model: provider.model, configured: provider.configured }));

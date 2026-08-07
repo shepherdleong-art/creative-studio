@@ -23,6 +23,7 @@ fs.mkdirSync(storageRoot, { recursive: true });
 fs.mkdirSync(path.join(storageRoot, 'bgm'), { recursive: true });
 const previousDataRoot = process.env.CREATIVE_STUDIO_DATA_ROOT;
 process.env.CREATIVE_STUDIO_DATA_ROOT = root;
+let db: Database.Database | undefined;
 
 function setupDb(dbPath: string): Database.Database {
   const db = new Database(dbPath);
@@ -146,7 +147,7 @@ try {
   }
 
   // ---------- B. 配音执行器:同脚本 N 份共用一条配音;按脚本音色 ----------
-  const db = setupDb(path.join(root, 'workbench.db'));
+  db = setupDb(path.join(root, 'workbench.db'));
   await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
 
   const batchId = createBatchProduction(db, 'project-1', '配音批次');
@@ -236,7 +237,10 @@ try {
   assert.equal(narrationJson.productionReady, true, '口播快照必须是 productionReady');
   assert.equal(narrationJson.mode, 'local_ready');
   assert.equal(narrationJson.durationUs, 15_000_000);
-  assert.ok(storedNarration.audioRelativePath.startsWith('batch-narration/'));
+  assert.ok(
+    storedNarration.audioRelativePath.replaceAll('\\', '/').startsWith('batch-narration/'),
+    '配音产物必须位于 batch-narration 受控目录（兼容 Windows 路径分隔符）',
+  );
   assert.ok(storedNarration.audioFingerprint.startsWith('sha256:'));
 
   const arrangementRows = db.prepare(`
@@ -258,6 +262,44 @@ try {
     reportProgress: () => undefined,
   });
   reusedExecution.commit?.();
+  // Managed batch narration must reject legacy/non-provisioned TTS rows before
+  // resolving or invoking the adapter. The production gate is injected with a
+  // ready local runtime seam so this test never reaches a real network.
+  let managedSynthesizeCalls = 0;
+  const managedNarrationExecutor = createBatchNarrationExecutor({
+    storageRoot,
+    executionGate: {
+      env: { ...process.env, CREATIVE_STUDIO_MANAGED_DEPLOYMENT: '1' },
+      allowlist: {
+        image: ['company-image'],
+        script: ['company-script'],
+        video: ['company-video'],
+        tts: ['doubao-seed-tts-2'],
+      },
+      inspectRuntime: async () => ({
+        status: 'ready',
+        reason: 'fixture ready',
+        proxyAvailable: true,
+        cosConfigured: true,
+        startedAt: null,
+      }),
+    },
+    synthesize: async () => {
+      managedSynthesizeCalls += 1;
+      throw new Error('managed adapter must not run');
+    },
+  });
+  await assert.rejects(
+    managedNarrationExecutor.execute({
+      db,
+      claim,
+      signal: new AbortController().signal,
+      reportProgress: () => undefined,
+    }),
+    (error: unknown) => (error as { code?: string })?.code === 'managed_provider_not_allowed',
+    '受管批量口播不得绕过 TTS allowlist',
+  );
+  assert.equal(managedSynthesizeCalls, 0, '受管拒绝必须发生在 adapter 调用之前');
   assert.equal(synthesizeCalls.length, 1, '复用键范围内音频已存在时不得重复调用 TTS');
 
   // 渲染闸门(问题 3-A)取代了"口播落账后自动补排重渲染"的事后补丁:
@@ -413,7 +455,7 @@ try {
   await addAssetPoolItem(db, emptyVersionId, 'empty-asset');
   db.prepare(`DELETE FROM final_edit_bgm_tracks`).run();
   assert.throws(
-    () => startOrResumePhaseE(db, 'project-1', emptyBatchId),
+    () => startOrResumePhaseE(db!, 'project-1', emptyBatchId),
     /曲库为空/,
     '曲库为空时必须拦住启动并给出可读原因',
   );
@@ -432,10 +474,13 @@ try {
     assert.deepEqual(resolveAllocationMusicTrackIds({ batchMusicPool: pool }), ['a'], '未设置选择时默认全库自动');
   }
 
-  db.close();
   console.log('batch M2 narration/bgm tests passed');
 } finally {
-  if (previousDataRoot === undefined) delete process.env.CREATIVE_STUDIO_DATA_ROOT;
-  else process.env.CREATIVE_STUDIO_DATA_ROOT = previousDataRoot;
-  fs.rmSync(root, { recursive: true, force: true });
+  try {
+    db?.close();
+  } finally {
+    if (previousDataRoot === undefined) delete process.env.CREATIVE_STUDIO_DATA_ROOT;
+    else process.env.CREATIVE_STUDIO_DATA_ROOT = previousDataRoot;
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 }

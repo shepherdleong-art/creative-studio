@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { createAsset } from '../lib/batch-production/assets.ts';
@@ -14,6 +15,8 @@ import {
   startTaskAttempt,
 } from '../lib/batch-production/tasks.ts';
 import { claimNextTask } from '../lib/batch-production/scheduler.ts';
+import { assertManagedWorkbenchReady, runPendingOnce } from '../lib/batch-production/runner.ts';
+import { ProviderExecutionGateError } from '../lib/provider-execution-gate.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-render-narration-gate-'));
 const db = new Database(path.join(root, 'workbench.db'));
@@ -158,6 +161,113 @@ function finishWithStatus(taskId: string, status: 'succeeded' | 'failed' | 'canc
   });
   const claimedPrepare = claimNextTask(db, { workerId: 'w2' });
   assert.equal(claimedPrepare?.task.id, assetPrepareId, '被挡住的 render 不得让整批停摆,应跳过领取下一条可执行任务');
+}
+
+// 7. 受管工作台 locked 时,即使任务没有 provider identity (render),
+// runner 也必须在执行器前阻断,不能让本地副作用越过全局门禁。
+{
+  const { batchId, outputVersionIds } = createBatchFixture();
+  const renderTaskId = createRenderTask(batchId, outputVersionIds[0]!, 'case-7-locked');
+  let executeCalls = 0;
+  const handled = await runPendingOnce({
+    db,
+    workerId: 'managed-lock-worker',
+    concurrency: 1,
+    executors: [{
+      workTypes: ['render'],
+      execute: async () => {
+        executeCalls += 1;
+        return {};
+      },
+    }],
+    executionGate: {
+      env: { ...process.env, CREATIVE_STUDIO_MANAGED_DEPLOYMENT: '1' },
+    },
+    assertWorkbenchReady: async () => {
+      throw new ProviderExecutionGateError('managed_workbench_locked', 'managed_workbench_locked', 'company');
+    },
+  });
+  assert.equal(handled, 1);
+  assert.equal(executeCalls, 0, 'managed locked 必须在 render executor 前阻断');
+  const attempt = db.prepare(`
+    SELECT a.status, a.errorCode
+    FROM batch_task_attempts a WHERE a.taskId = ? ORDER BY a.startedAt DESC LIMIT 1
+  `).get(renderTaskId) as { status: string; errorCode: string | null };
+  assert.equal(attempt.status, 'failed');
+  assert.equal(attempt.errorCode, 'provider_execution_gate:managed_workbench_locked');
+}
+
+// 8. 真实全局 gate 必须要求 provisioning generation，并核验 runtime；
+// 测试 seam 不能成为唯一覆盖。
+{
+  const managedEnv = { ...process.env, CREATIVE_STUDIO_MANAGED_DEPLOYMENT: '1' };
+  const readyRuntime = {
+    status: 'ready' as const,
+    reason: 'ready',
+    proxyAvailable: true,
+    cosConfigured: false,
+    startedAt: null,
+  };
+  await assert.rejects(
+    assertManagedWorkbenchReady({ executionGate: { env: managedEnv, root, companyRuntime: readyRuntime } }),
+    (error: unknown) => error instanceof ProviderExecutionGateError && error.code === 'managed_workbench_locked',
+    '缺少 provisioning generation 时真实 runner gate 必须拒绝',
+  );
+
+  const stateDir = path.join(root, 'data', 'provisioning');
+  const statePath = path.join(stateDir, 'state.json');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const configText = 'model_list: []\n';
+  fs.writeFileSync(path.join(root, 'config.yaml'), configText, 'utf8');
+  fs.writeFileSync(path.join(stateDir, 'runtime.env'), [
+    'CREATIVE_STUDIO_GATEWAY_API_KEY=fixture',
+    'COMPANY_GATEWAY_API_KEY=fixture',
+    'GATEWAY_API_KEY=fixture',
+    'CREATIVE_STUDIO_COS_SECRET_ID=fixture',
+    'CREATIVE_STUDIO_COS_SECRET_KEY=fixture',
+    'CREATIVE_STUDIO_COS_DOMAIN=fixture.example.com',
+  ].join('\n') + '\n', 'utf8');
+  const state = {
+    schemaVersion: 2,
+    profileName: 'Runner Gate Fixture',
+    importedAt: '2026-08-06T00:00:00.000Z',
+    configHash: createHash('sha256').update(configText).digest('hex'),
+    managedProviders: {
+      image: ['fixture-image'],
+      script: ['fixture-script'],
+      video: ['fixture-video'],
+      tts: ['doubao-seed-tts-2'],
+    },
+  };
+  fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+  await assert.doesNotReject(
+    assertManagedWorkbenchReady({ executionGate: { env: managedEnv, root, companyRuntime: readyRuntime } }),
+  );
+  await assert.rejects(
+    assertManagedWorkbenchReady({
+      executionGate: {
+        env: managedEnv,
+        root,
+        companyRuntime: { ...readyRuntime, status: 'unavailable', proxyAvailable: false },
+      },
+    }),
+    (error: unknown) => error instanceof ProviderExecutionGateError && error.code === 'managed_workbench_locked',
+    'runtime 不可用时真实 runner gate 必须拒绝',
+  );
+  await assert.rejects(
+    assertManagedWorkbenchReady({
+      executionGate: {
+        env: managedEnv,
+        root,
+        inspectRuntime: async () => {
+          fs.writeFileSync(statePath, JSON.stringify({ ...state, importedAt: '2026-08-06T00:00:01.000Z' }), 'utf8');
+          return readyRuntime;
+        },
+      },
+    }),
+    (error: unknown) => error instanceof ProviderExecutionGateError && error.code === 'managed_provider_not_allowed',
+    'runtime 检查期间 generation 变化必须拒绝',
+  );
 }
 
 db.close();

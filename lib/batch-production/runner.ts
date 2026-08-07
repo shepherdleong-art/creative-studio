@@ -1,5 +1,21 @@
 import type Database from 'better-sqlite3';
-import { findExecutor, type BatchTaskExecutor, type BatchTaskProgress } from './executors.ts';
+import {
+  findExecutor,
+  type BatchTaskExecutor,
+  type BatchTaskProgress,
+} from './executors.ts';
+import {
+  ProviderExecutionGateError,
+  readManagedExecutionGeneration,
+  type AssertProviderExecutionAvailableOptions,
+} from '../provider-execution-gate.ts';
+import { isManagedDeployment } from '../managed-deployment.ts';
+import type { MediaTransport } from '../media-transport.ts';
+import {
+  inspectCompanyProviderRuntime,
+  type CompanyProviderRuntimeStatus,
+} from '../company-provider-runtime.ts';
+import { dataRoot } from '../data-root.ts';
 import {
   claimNextTask,
   completeTaskAttempt,
@@ -24,6 +40,12 @@ export interface SchedulerRunOptions {
   now?: () => Date;
   /** 调用方主动停止全部工作;属于用户停止语义。 */
   signal?: AbortSignal;
+  /** Managed runtime/allowlist seam; provider checks are repeated per claim. */
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
+  /** A real task-level media transport, when available for company vision calls. */
+  mediaTransport?: MediaTransport;
+  /** Test seam for the process-wide managed-workbench readiness boundary. */
+  assertWorkbenchReady?: () => Promise<void>;
   /** 进程内调度器关闭;任务应可在下次启动恢复。 */
   shutdownSignal?: AbortSignal;
 }
@@ -87,6 +109,9 @@ export async function runPendingOnce(options: SchedulerRunOptions): Promise<numb
         now,
         signal: options.signal,
         shutdownSignal: options.shutdownSignal,
+        executionGate: options.executionGate,
+        mediaTransport: options.mediaTransport,
+        assertWorkbenchReady: options.assertWorkbenchReady,
       });
       if (outcome === 'lease_lost') {
         // 本 worker 已失去提交资格。本轮不要立即重新领取同一任务;
@@ -110,6 +135,87 @@ interface ExecuteOneOptions {
   now?: () => Date;
   signal?: AbortSignal;
   shutdownSignal?: AbortSignal;
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
+  mediaTransport?: MediaTransport;
+  assertWorkbenchReady?: () => Promise<void>;
+}
+
+export interface ManagedWorkbenchReadyOptions {
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
+  assertWorkbenchReady?: () => Promise<void>;
+}
+
+/**
+ * Managed production has one process-wide readiness boundary. It runs for
+ * every work type, including local render and proxy tasks that have no model
+ * identity of their own. Providers perform their own identity/allowlist gate
+ * immediately before remote adapter calls.
+ */
+export async function assertManagedWorkbenchReady(
+  options: ManagedWorkbenchReadyOptions = {},
+): Promise<void> {
+  const gate = options.executionGate;
+  const env = gate?.env ?? process.env;
+  if (!isManagedDeployment(env)) return;
+  if (options.assertWorkbenchReady) {
+    await options.assertWorkbenchReady();
+    return;
+  }
+  const root = gate?.root ?? dataRoot();
+  let beforeGeneration: string | null;
+  try {
+    beforeGeneration = readManagedExecutionGeneration(root);
+  } catch {
+    throw new ProviderExecutionGateError(
+      'managed_workbench_locked',
+      '\u53d7\u7ba1\u5de5\u4f5c\u53f0\u5c1a\u672a\u5c31\u7eea\uff0c\u65e0\u6cd5\u6267\u884c\u751f\u4ea7',
+      'company',
+    );
+  }
+  let runtime: CompanyProviderRuntimeStatus;
+  try {
+    runtime = gate?.companyRuntime ?? await (gate?.inspectRuntime ?? inspectCompanyProviderRuntime)({
+      root,
+      managed: true,
+    });
+  } catch {
+    throw new ProviderExecutionGateError(
+      'managed_workbench_locked',
+      '\u53d7\u7ba1\u5de5\u4f5c\u53f0\u5c1a\u672a\u5c31\u7eea\uff0c\u65e0\u6cd5\u6267\u884c\u751f\u4ea7',
+      'company',
+    );
+  }
+  const afterGeneration = readManagedExecutionGeneration(root);
+  if (beforeGeneration === null || afterGeneration === null) {
+    throw new ProviderExecutionGateError(
+      'managed_workbench_locked',
+      '\u53d7\u7ba1\u5de5\u4f5c\u53f0\u5c1a\u672a\u5c31\u7eea\uff0c\u65e0\u6cd5\u6267\u884c\u751f\u4ea7',
+      'company',
+    );
+  }
+  if (beforeGeneration !== afterGeneration) {
+    throw new ProviderExecutionGateError(
+      'managed_provider_not_allowed',
+      '\u53d7\u7ba1\u4f9b\u5e94\u5546\u914d\u7f6e\u5df2\u53d8\u66f4\uff0c\u8bf7\u91cd\u8bd5',
+      'company',
+    );
+  }
+  if (runtime.status !== 'ready' || !runtime.proxyAvailable) {
+    throw new ProviderExecutionGateError(
+      'managed_workbench_locked',
+      runtime.reason || '\u53d7\u7ba1\u5de5\u4f5c\u53f0\u5c1a\u672a\u5c31\u7eea\uff0c\u65e0\u6cd5\u6267\u884c\u751f\u4ea7',
+      'company',
+    );
+  }
+}
+
+/** Compatibility name retained for callers that need a per-claim boundary. */
+export async function assertBatchTaskExecutionAvailable(
+  _db: Database.Database,
+  _claim: NonNullable<Awaited<ReturnType<typeof claimNextTask>>>,
+  options: ManagedWorkbenchReadyOptions = {},
+): Promise<void> {
+  await assertManagedWorkbenchReady(options);
 }
 
 async function executeOne(
@@ -183,11 +289,18 @@ async function executeOne(
     const signals = [controller.signal, options.signal, options.shutdownSignal]
       .filter((signal): signal is AbortSignal => Boolean(signal));
     const executorSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]!;
+    await assertBatchTaskExecutionAvailable(db, claim, {
+      executionGate: options.executionGate,
+      assertWorkbenchReady: options.assertWorkbenchReady,
+    });
+    if (executorSignal.aborted) throw new Error('task_aborted');
     const execution = await executor.execute({
       db,
       claim,
       signal: executorSignal,
       reportProgress,
+      executionGate: options.executionGate,
+      mediaTransport: options.mediaTransport,
     });
     let resultJson = execution.resultJson;
     discardUnacceptedResult = execution.discard;
@@ -277,6 +390,15 @@ async function executeOne(
     } else if (controller.signal.aborted) {
       // 批次暂停/停止(内部控制检查):按批次期望落成可继续或终态
       settleInterruptedTask(db, claim.attempt.id, now, 'batch_control');
+    } else if (error instanceof ProviderExecutionGateError) {
+      completeTaskAttempt(db, claim.attempt.id, {
+        workerId,
+        status: 'failed',
+        errorCode: `provider_execution_gate:${error.code}`,
+        errorMessage: error.message,
+        progressJson: lastProgress,
+        now,
+      });
     } else {
       completeTaskAttempt(db, claim.attempt.id, {
         workerId,

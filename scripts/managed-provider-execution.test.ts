@@ -98,6 +98,18 @@ const imageProvider = {
   configured: true,
 };
 
+const doubaoTtsProvider = {
+  id: 'doubao-seed-tts-2',
+  type: 'doubao-http-chunked',
+  keyEnv: 'DOUBAO_TTS_API_KEY',
+  executionScope: 'external' as const,
+  baseUrl: 'https://openspeech.bytedance.com',
+  enabled: true,
+  configured: true,
+  apiKey: 'fixture-doubao-key',
+  model: 'seed-tts-2.0',
+};
+
 async function executeImage(
   provider: typeof imageProvider,
   env: NodeJS.ProcessEnv,
@@ -117,6 +129,24 @@ async function executeImage(
     inspectRuntime: options.inspectRuntime,
   });
   await adapter();
+}
+
+async function executeTts(
+  provider: typeof doubaoTtsProvider,
+  adapter: (baseUrl: string) => Promise<void> | void,
+  options: {
+    allowlist?: ManagedProviderAllowlist | null;
+    runtime?: CompanyProviderRuntimeStatus;
+  } = {},
+): Promise<void> {
+  await assertProviderExecutionAvailable(provider, {
+    capability: 'model',
+    kind: 'tts',
+    env: managedEnv,
+    allowlist: options.allowlist ?? allowlistFor(),
+    companyRuntime: options.runtime ?? runtimeFixture(),
+  });
+  await adapter(provider.baseUrl);
 }
 
 test('managed gate blocks a locked workbench and never invokes its adapter', async () => {
@@ -190,6 +220,38 @@ test('unrestricted external providers keep their direct execution semantics', as
     },
   });
   assert.equal(inspectCalls, 0);
+});
+
+test('managed Doubao TTS stays globally locked while LiteLLM is unavailable', async () => {
+  let adapterCalls = 0;
+  await assert.rejects(
+    executeTts(doubaoTtsProvider, () => { adapterCalls += 1; }, {
+      runtime: runtimeFixture('unavailable', false),
+    }),
+    (error: unknown) => error instanceof ProviderExecutionGateError
+      && error.code === 'managed_workbench_locked',
+  );
+  assert.equal(adapterCalls, 0);
+});
+
+test('managed TTS permits only fixed official Doubao and keeps its direct HTTPS route', async () => {
+  for (const provider of [
+    { ...doubaoTtsProvider, id: 'vapi-qwen3-tts', type: 'vapi-qwen-json-url' },
+    { ...doubaoTtsProvider, baseUrl: 'http://127.0.0.1:4000/v1' },
+  ]) {
+    let adapterCalls = 0;
+    await assert.rejects(
+      executeTts(provider, () => { adapterCalls += 1; }),
+      (error: unknown) => error instanceof ProviderExecutionGateError
+        && (error.code === 'managed_provider_not_allowed' || error.code === 'managed_provider_role_invalid'),
+    );
+    assert.equal(adapterCalls, 0);
+  }
+
+  let requestedBaseUrl = '';
+  await executeTts(doubaoTtsProvider, (baseUrl) => { requestedBaseUrl = baseUrl; });
+  assert.equal(requestedBaseUrl, 'https://openspeech.bytedance.com');
+  assert.doesNotMatch(requestedBaseUrl, /127\.0\.0\.1|localhost|:4000/);
 });
 
 test('image queue places an execution gate before the GeekAI immediate download', () => {

@@ -3,6 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
+import {
+  assertProviderExecutionAvailable,
+  assertProviderExecutionIdentityStable,
+  readManagedExecutionGeneration,
+  type AssertProviderExecutionAvailableOptions,
+  type ProviderExecutionIdentity,
+} from '../provider-execution-gate.ts';
+import { isManagedDeployment } from '../managed-deployment.ts';
 import { probeDurationSec } from '../ffmpeg.ts';
 import { createOpenAiAlignmentAdapter } from '../final-edit/adapters/alignment.ts';
 import {
@@ -20,6 +28,8 @@ import type { BatchTaskExecutor } from './executors.ts';
 export const BATCH_NARRATION_ADAPTER_VERSION = 'batch-narration-v1';
 
 interface TtsProviderRow {
+  id: string;
+  type: string;
   baseUrl: string;
   apiKey: string;
   keyEnv: string;
@@ -36,6 +46,11 @@ export interface BatchNarrationSynthesisResult {
 
 export interface BatchNarrationExecutorOptions {
   storageRoot?: string;
+  assertProviderReady?: (
+    provider: ProviderExecutionIdentity,
+    options: AssertProviderExecutionAvailableOptions,
+  ) => Promise<void>;
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
   /** 测试用:替换真实 TTS 适配器调用。 */
   synthesize?: (providerId: string, input: TtsAdapterInput) => Promise<BatchNarrationSynthesisResult>;
 }
@@ -56,8 +71,8 @@ function parseNarrationConfig(raw: string | null | undefined): { providerId?: st
   }
 }
 
-function resolveProviderApiKey(provider: Pick<TtsProviderRow, 'apiKey' | 'keyEnv'>): string {
-  return provider.apiKey.trim() || (provider.keyEnv ? (process.env[provider.keyEnv] || '').trim() : '');
+function resolveProviderApiKey(provider: Pick<TtsProviderRow, 'apiKey' | 'keyEnv'>, env: NodeJS.ProcessEnv = process.env): string {
+  return provider.apiKey.trim() || (provider.keyEnv ? (env[provider.keyEnv] || '').trim() : '');
 }
 
 /**
@@ -67,25 +82,51 @@ function resolveProviderApiKey(provider: Pick<TtsProviderRow, 'apiKey' | 'keyEnv
 function resolveBatchNarrationConfig(
   db: Database.Database,
   configJson: string,
-): { providerId: string; voice: string; speed: number; row: TtsProviderRow } {
+  managed = isManagedDeployment(),
+  env: NodeJS.ProcessEnv = process.env,
+): { providerId: string; voice?: string; speed: number; row: TtsProviderRow } {
   const config = parseNarrationConfig(configJson);
   let providerId = config.providerId ?? '';
   if (!providerId) {
-    const first = db.prepare(`
-      SELECT id FROM final_edit_tts_providers WHERE enabled = 1 ORDER BY isBuiltin DESC, name, id LIMIT 1
-    `).get() as { id: string } | undefined;
-    providerId = first?.id ?? '';
+    if (managed) {
+      providerId = 'doubao-seed-tts-2';
+    } else {
+      const first = db.prepare(`
+        SELECT id FROM final_edit_tts_providers WHERE enabled = 1 ORDER BY isBuiltin DESC, name, id LIMIT 1
+      `).get() as { id: string } | undefined;
+      providerId = first?.id ?? '';
+    }
   }
   if (!providerId) throw new Error('尚未启用任何口播配音供应商，请在设置中配置');
   const row = db.prepare(`
-    SELECT baseUrl, apiKey, keyEnv, model, enabled FROM final_edit_tts_providers WHERE id = ?
+    SELECT id, type, baseUrl, apiKey, keyEnv, model, enabled FROM final_edit_tts_providers WHERE id = ?
   `).get(providerId) as TtsProviderRow | undefined;
   if (!row || row.enabled !== 1) throw new Error('口播配音供应商已停用');
-  if (!resolveProviderApiKey(row)) throw new Error('口播配音供应商 API Key 未配置');
-  const adapter = getFinalEditTtsAdapter(providerId);
-  const voice = config.voice ?? adapter.defaultVoice;
+  if (!resolveProviderApiKey(row, env)) throw new Error('口播配音供应商 API Key 未配置');
   const speed = Math.max(0.5, Math.min(2, config.speed ?? 1));
-  return { providerId, voice, speed, row };
+  return { providerId, voice: config.voice, speed, row };
+}
+
+function ttsProviderIdentity(
+  row: TtsProviderRow,
+  options: { env?: NodeJS.ProcessEnv; root?: string } = {},
+): ProviderExecutionIdentity {
+  const env = options.env ?? process.env;
+  const managed = isManagedDeployment(env);
+  const apiKey = resolveProviderApiKey(row, env);
+  return {
+    id: row.id,
+    type: row.type,
+    executionScope: 'external',
+    baseUrl: row.baseUrl,
+    keyEnv: row.keyEnv,
+    apiKey,
+    model: row.model,
+    enabled: row.enabled === 1,
+    configured: Boolean(row.baseUrl.trim() && apiKey && row.model.trim()),
+    configSignature: [row.type, row.keyEnv, row.enabled].join('\u0000'),
+    managedGeneration: managed ? readManagedExecutionGeneration(options.root ?? dataRoot()) : undefined,
+  };
 }
 
 /** 同一脚本快照的复用键:正文 + 服务商 + 音色 + 语速 四者一致才共用一条配音。 */
@@ -138,6 +179,8 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
     workTypes: ['narration'],
     async execute(context) {
       const { db, claim, signal } = context;
+      const executionGate = options.executionGate ?? context.executionGate;
+      const managed = isManagedDeployment(executionGate?.env ?? process.env);
       if (claim.task.targetKind !== 'script_snapshot') throw new Error('口播任务的目标必须是脚本快照');
       const snapshot = db.prepare(`
         SELECT s.id, s.batchVersionId, s.bodyText, s.narrationConfigJson
@@ -153,7 +196,61 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
       if (!snapshot) throw new Error('口播任务的目标脚本快照不存在');
       if (signal.aborted) throw new Error('任务已中止');
       context.reportProgress({ phase: 'locating', description: '读取冻结脚本与配音配置', percent: null });
-      const { providerId, voice, speed, row } = resolveBatchNarrationConfig(db, snapshot.narrationConfigJson);
+      const resolvedConfig = resolveBatchNarrationConfig(
+        db,
+        snapshot.narrationConfigJson,
+        managed,
+        executionGate?.env ?? process.env,
+      );
+      const { providerId, speed, row } = resolvedConfig;
+      const providerIdentity = ttsProviderIdentity(row, {
+        env: executionGate?.env,
+        root: executionGate?.root,
+      });
+      const assertProviderReady = options.assertProviderReady ?? assertProviderExecutionAvailable;
+      await assertProviderReady(providerIdentity, {
+        ...executionGate,
+        root: executionGate?.root ?? dataRoot(),
+        capability: 'media',
+        kind: 'tts',
+      });
+      const assertTtsExecutionStable = async (): Promise<TtsProviderRow> => {
+        const currentRow = db.prepare(`
+          SELECT id, type, baseUrl, apiKey, keyEnv, model, enabled
+          FROM final_edit_tts_providers WHERE id = ?
+        `).get(providerId) as TtsProviderRow | undefined;
+        if (!currentRow) throw new Error('tts_provider_not_found');
+        const currentIdentity = ttsProviderIdentity(currentRow, {
+          env: executionGate?.env,
+          root: executionGate?.root,
+        });
+        if (managed) assertProviderExecutionIdentityStable(providerIdentity, currentIdentity);
+        await assertProviderReady(currentIdentity, {
+          ...executionGate,
+          root: executionGate?.root ?? dataRoot(),
+          capability: 'media',
+          kind: 'tts',
+        });
+        if (managed) {
+          const finalRow = db.prepare(`
+            SELECT id, type, baseUrl, apiKey, keyEnv, model, enabled
+            FROM final_edit_tts_providers WHERE id = ?
+          `).get(providerId) as TtsProviderRow | undefined;
+          if (!finalRow) throw new Error('tts_provider_not_found');
+          assertProviderExecutionIdentityStable(
+            currentIdentity,
+            ttsProviderIdentity(finalRow, {
+              env: executionGate?.env,
+              root: executionGate?.root,
+            }),
+          );
+          return finalRow;
+        }
+        return currentRow;
+      };
+      await assertTtsExecutionStable();
+      const adapter = getFinalEditTtsAdapter(providerId);
+      const voice = resolvedConfig.voice ?? adapter.defaultVoice;
       const segments = buildBatchNarrationSegments(snapshot.id, snapshot.bodyText);
       const reuseKey = narrationReuseKey({
         scriptSnapshotId: snapshot.id,
@@ -182,15 +279,20 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
           description: `生成口播（${segments.length} 句 · ${voice}）`,
           percent: null,
         });
-        const adapter = getFinalEditTtsAdapter(providerId);
+        // Re-read provider identity immediately before the remote TTS call.
+        const stableRow = await assertTtsExecutionStable();
         const alignment = createOpenAiAlignmentAdapter(
-          process.env,
+          executionGate?.env ?? process.env,
           adapter.alignmentModel
-            ? { baseUrl: row.baseUrl, apiKey: resolveProviderApiKey(row), model: adapter.alignmentModel }
+            ? { baseUrl: stableRow.baseUrl, apiKey: resolveProviderApiKey(stableRow, executionGate?.env), model: adapter.alignmentModel }
             : undefined,
         );
         const synthesized = await synthesize(providerId, {
-          provider: { baseUrl: row.baseUrl, apiKey: resolveProviderApiKey(row), model: row.model },
+          provider: {
+            baseUrl: stableRow.baseUrl,
+            apiKey: resolveProviderApiKey(stableRow, executionGate?.env),
+            model: stableRow.model,
+          },
           voice,
           speed,
           segments,

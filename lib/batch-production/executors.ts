@@ -3,9 +3,13 @@ import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import {
   assertProviderExecutionAvailable,
+  assertProviderExecutionIdentityStable,
+  ProviderExecutionGateError,
+  readManagedExecutionGeneration,
   type ProviderExecutionIdentity,
   type AssertProviderExecutionAvailableOptions,
 } from '../provider-execution-gate.ts';
+import { isManagedDeployment } from '../managed-deployment.ts';
 import { createAnalysisVersionAndSetCurrent } from './assets.ts';
 import {
   assertProjectAssetFileIdentity,
@@ -37,6 +41,9 @@ export interface BatchTaskExecutionContext {
   db: Database.Database;
   claim: ClaimedBatchTask;
   signal: AbortSignal;
+  /** Optional execution seams propagated by the scheduler for managed runs. */
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
+  mediaTransport?: MediaTransport;
   /** 报告当前阶段与真实进度(调度器负责节流落库) */
   reportProgress(progress: BatchTaskProgress): void;
 }
@@ -91,6 +98,78 @@ export interface AnalyzeAssetExecutorOptions {
     options: AssertProviderExecutionAvailableOptions,
   ) => Promise<void>;
   mediaTransport?: MediaTransport;
+  executionGate?: Omit<AssertProviderExecutionAvailableOptions, 'capability'>;
+}
+
+interface ScriptProviderDbRow {
+  id: string;
+  enabled: number;
+  supportsVision: number;
+  type?: string;
+  apiStyle?: string;
+  baseUrl: string;
+  defaultBaseUrl?: string;
+  apiKey: string;
+  keyEnv?: string;
+  model: string;
+  defaultModel?: string;
+  maxTokens?: number;
+  visionCostPerRequest?: number;
+  executionScope: 'external' | 'company';
+}
+
+function scriptProviderIdentity(
+  provider: ScriptProviderDbRow,
+  request: { providerId: string; model: string; executionScope: 'external' | 'company' },
+  options: { env?: NodeJS.ProcessEnv; root?: string } = {},
+): ProviderExecutionIdentity {
+  const baseUrl = provider.baseUrl || provider.defaultBaseUrl || '';
+  const model = provider.model || provider.defaultModel || '';
+  const type = provider.type || provider.apiStyle || 'openai-compatible';
+  const apiStyle = provider.apiStyle || type;
+  const keyEnv = provider.keyEnv || '';
+  const managed = isManagedDeployment(options.env ?? process.env);
+  return {
+    id: request.providerId,
+    type,
+    apiStyle,
+    executionScope: provider.executionScope,
+    baseUrl,
+    apiKeyEnv: keyEnv,
+    keyEnv,
+    apiKey: provider.apiKey.trim(),
+    model,
+    enabled: provider.enabled === 1,
+    configured: isConfiguredScriptProviderValue(baseUrl)
+      && isConfiguredScriptProviderValue(provider.apiKey)
+      && isConfiguredScriptProviderValue(model),
+    configSignature: [
+      type,
+      apiStyle,
+      keyEnv,
+      provider.defaultBaseUrl,
+      provider.defaultModel,
+      provider.maxTokens,
+      provider.enabled,
+      provider.supportsVision,
+      provider.visionCostPerRequest,
+      provider.executionScope,
+    ].map((value) => String(value ?? '')).join('\u0000'),
+    managedGeneration: managed ? readManagedExecutionGeneration(options.root ?? dataRoot()) : undefined,
+  };
+}
+
+function assertCompanyMediaTransportAvailable(
+  provider: ProviderExecutionIdentity,
+  available: boolean,
+): void {
+  if (provider.executionScope === 'company' && !available) {
+    throw new ProviderExecutionGateError(
+      'transport_unavailable',
+      'transport_unavailable',
+      provider.executionScope,
+    );
+  }
 }
 
 function assertNotAborted(signal: AbortSignal): void {
@@ -121,6 +200,8 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
     workTypes: ['asset_prepare'],
     async execute(context) {
     const { db, claim, signal } = context;
+    const executionGate = options.executionGate ?? context.executionGate;
+    const activeMediaTransport = mediaTransport ?? context.mediaTransport;
     if (claim.task.targetKind !== 'asset') {
       throw new Error('素材分析任务的目标必须是素材');
     }
@@ -162,53 +243,83 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
     let contentAnalysis: BatchContentAnalysisResult | null = null;
     if (contentRequest) {
       const provider = db.prepare(`
-        SELECT enabled, supportsVision,
-               COALESCE(NULLIF(baseUrl, ''), NULLIF(defaultBaseUrl, ''), '') AS baseUrl,
-               apiKey, executionScope,
-               COALESCE(NULLIF(model, ''), NULLIF(defaultModel, ''), '') AS model
-        FROM script_providers WHERE id = ?
-      `).get(contentRequest.providerId) as {
-        enabled: number;
-        supportsVision: number;
-        baseUrl: string;
-        apiKey: string;
-        executionScope: 'external' | 'company';
-        model: string;
-      } | undefined;
+        SELECT * FROM script_providers WHERE id = ?
+      `).get(contentRequest.providerId) as ScriptProviderDbRow | undefined;
       if (!provider || provider.enabled !== 1 || provider.supportsVision !== 1) {
         throw new Error('视觉分析供应商已停用或不支持图片理解');
       }
-      if (provider.model !== contentRequest.model) {
+      const currentModel = provider.model || provider.defaultModel || '';
+      if (currentModel !== contentRequest.model) {
         throw new Error('视觉分析模型配置已变化，请重新发起内容分析');
       }
       if (provider.executionScope !== contentRequest.executionScope) {
         throw new Error('视觉分析供应商运行方式已变化，请重新发起内容分析');
       }
-      await assertProviderReady({
-        id: contentRequest.providerId,
-        executionScope: contentRequest.executionScope,
-        baseUrl: provider.baseUrl,
-        enabled: provider.enabled === 1,
-        configured: isConfiguredScriptProviderValue(provider.baseUrl)
-          && isConfiguredScriptProviderValue(provider.apiKey)
-          && isConfiguredScriptProviderValue(provider.model),
-      }, {
-        root: dataRoot(),
+      const providerIdentity = scriptProviderIdentity(provider, contentRequest, {
+        env: executionGate?.env,
+        root: executionGate?.root,
+      });
+      await assertProviderReady(providerIdentity, {
+        ...executionGate,
+        root: executionGate?.root ?? dataRoot(),
         capability: 'media',
-        mediaTransportAvailable: Boolean(mediaTransport),
+        mediaTransportAvailable: Boolean(activeMediaTransport),
+        kind: 'script',
       });
+      assertCompanyMediaTransportAvailable(providerIdentity, Boolean(activeMediaTransport));
+      const assertContentExecutionStable = async (): Promise<void> => {
+        const currentRow = db.prepare(`SELECT * FROM script_providers WHERE id = ?`).get(contentRequest.providerId) as ScriptProviderDbRow | undefined;
+        if (!currentRow || currentRow.enabled !== 1 || currentRow.supportsVision !== 1) {
+          throw new Error('content_provider_unavailable');
+        }
+        const currentModel = currentRow.model || currentRow.defaultModel || '';
+        if (currentModel !== contentRequest.model || currentRow.executionScope !== contentRequest.executionScope) {
+          throw new Error('content_provider_identity_changed');
+        }
+        const currentIdentity = scriptProviderIdentity(currentRow, contentRequest, {
+          env: executionGate?.env,
+          root: executionGate?.root,
+        });
+        if (isManagedDeployment(executionGate?.env ?? process.env)) {
+          assertProviderExecutionIdentityStable(providerIdentity, currentIdentity);
+        }
+        await assertProviderReady(currentIdentity, {
+          ...executionGate,
+          root: executionGate?.root ?? dataRoot(),
+          capability: 'media',
+          mediaTransportAvailable: Boolean(activeMediaTransport),
+          kind: 'script',
+        });
+        assertCompanyMediaTransportAvailable(currentIdentity, Boolean(activeMediaTransport));
+        if (isManagedDeployment(executionGate?.env ?? process.env)) {
+          const finalRow = db.prepare(`SELECT * FROM script_providers WHERE id = ?`).get(contentRequest.providerId) as ScriptProviderDbRow | undefined;
+          if (!finalRow) throw new Error('content_provider_unavailable');
+          assertProviderExecutionIdentityStable(
+            currentIdentity,
+            scriptProviderIdentity(finalRow, contentRequest, {
+              env: executionGate?.env,
+              root: executionGate?.root,
+            }),
+          );
+        }
+      };
       context.reportProgress({ phase: 'content_analyzing', description: '抽帧并进行画面内容分析', percent: null });
-      const analyze = (mediaLease?: PreparedMediaLease) => analyzeContent({
-        filePath: verified.filePath,
-        assetId: claim.task.targetId,
-        providerId: contentRequest.providerId,
-        model: contentRequest.model,
-        cacheDir: path.join(dataRoot(), 'storage', 'batch-analysis', claim.task.targetId, claim.task.id),
-        signal,
-        mediaLease,
-      });
+      const analyze = async (mediaLease?: PreparedMediaLease): Promise<BatchContentAnalysisResult> => {
+        // Re-read provider identity after prepare and immediately before the
+        // adapter call; this closes the provisioning/DB TOCTOU window.
+        await assertContentExecutionStable();
+        return analyzeContent({
+          filePath: verified.filePath,
+          assetId: claim.task.targetId,
+          providerId: contentRequest.providerId,
+          model: contentRequest.model,
+          cacheDir: path.join(dataRoot(), 'storage', 'batch-analysis', claim.task.targetId, claim.task.id),
+          signal,
+          mediaLease,
+        });
+      };
       contentAnalysis = contentRequest.executionScope === 'company'
-        ? await withPreparedMediaLease(mediaTransport!, {
+        ? await withPreparedMediaLease(activeMediaTransport!, {
             projectId,
             batchId: claim.task.batchId,
             taskId: claim.task.id,

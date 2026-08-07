@@ -7,6 +7,7 @@ import { formatShanghaiTaskDate } from './export-identity';
 import { publishReservedExportTarget, reserveProjectExportTarget, restorePublishedExportReservation } from './export-naming';
 import { buildPublishedJobOutput, registerPublishedArtifacts } from './project-artifacts';
 import { FinalEditError } from './errors';
+import { assertFinalEditRenderExecutionAvailable } from './runtime';
 
 let running = false;
 let recovered = false;
@@ -21,11 +22,12 @@ async function drain() {
       recovered = true;
     }
     while (true) {
-      const job = db.prepare(`SELECT id, projectId, inputSnapshotJson FROM final_edit_jobs WHERE kind='render' AND status='queued' ORDER BY createdAt LIMIT 1`).get() as { id: string; projectId: string; inputSnapshotJson: string } | undefined;
+      const job = db.prepare(`SELECT id, projectId, groupId, inputSnapshotJson FROM final_edit_jobs WHERE kind='render' AND status='queued' ORDER BY createdAt LIMIT 1`).get() as { id: string; projectId: string; groupId: string | null; inputSnapshotJson: string } | undefined;
       if (!job) break;
       const claimed = db.prepare(`UPDATE final_edit_jobs SET status='running', phase='preflight', progress=0, startedAt=? WHERE id=? AND status='queued'`).run(new Date().toISOString(), job.id);
       if (!claimed.changes) continue;
       try {
+        await assertFinalEditRenderExecutionAvailable(db, job.groupId || '');
         let snapshot = JSON.parse(job.inputSnapshotJson) as FinalEditRenderSnapshot;
         if (!snapshot.exportIdentity || !snapshot.exportTarget) {
           const project = db.prepare(`SELECT name, productCode, createdAt FROM projects WHERE id=?`).get(job.projectId) as { name: string; productCode: string | null; createdAt: string } | undefined;
