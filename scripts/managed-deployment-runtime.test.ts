@@ -115,7 +115,8 @@ test('sidecar controller accepts only fixed start/restart actions and coalesces 
     assert.equal(startingSnapshot?.schemaVersion, COMPANY_PROVIDER_STATUS_SCHEMA_VERSION);
     assert.match(String(startingSnapshot?.requestId), REQUEST_ID_PATTERN);
     assert.equal(calls[0]?.options.env?.CREATIVE_STUDIO_SIDECAR_REQUEST_ID, startingSnapshot?.requestId);
-    assert.equal(calls[0]?.options.env?.PATH, process.env.PATH);
+    const childEnvPathKey = Object.keys(calls[0]?.options.env ?? {}).find((key) => key.toLowerCase() === 'path');
+    assert.equal(childEnvPathKey === undefined ? undefined : (calls[0]?.options.env as Record<string, string>)[childEnvPathKey], process.env.PATH);
     assert.equal(calls[0]?.command, 'powershell.exe');
     assert.deepEqual(calls[0]?.args, [
       '-NoProfile',
