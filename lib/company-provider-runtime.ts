@@ -286,7 +286,9 @@ function defaultProcessCheck(pid: number, root = dataRoot()): boolean {
     ], {
       windowsHide: true,
       encoding: 'utf8',
-      timeout: 1500,
+      // PowerShell + CIM startup on a loaded machine exceeds 1.5 s, which
+      // produced false process_exited reports for a healthy sidecar.
+      timeout: 8000,
       maxBuffer: 128 * 1024,
     });
     if (completed.error || completed.status !== 0 || typeof completed.stdout !== 'string') return false;
@@ -328,7 +330,7 @@ function defaultListenerCheck(pid: number, port: number): CompanyProviderListene
     const completed = spawnSync('netstat.exe', ['-ano', '-p', 'tcp'], {
       windowsHide: true,
       encoding: 'utf8',
-      timeout: 1500,
+      timeout: 5000,
       maxBuffer: 512 * 1024,
     });
     if (completed.error || completed.status !== 0 || typeof completed.stdout !== 'string') {
