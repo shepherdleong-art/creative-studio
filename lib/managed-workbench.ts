@@ -47,6 +47,32 @@ export interface InspectManagedWorkbenchOptions {
 const UNRESTRICTED_REASON = '开发模式不受公司网关限制';
 const UNCONFIGURED_REASON = '请先导入公司配置';
 
+/**
+ * The managed runtime inspect shells out to PowerShell/CIM via spawnSync,
+ * which blocks the whole event loop for seconds on a real machine. A 1 s UI
+ * poll would otherwise pile up queued inspects faster than they finish and
+ * wedge the server. Coalesce concurrent production inspects and reuse the
+ * result for a short TTL. Test-injected calls always bypass both mechanisms.
+ */
+const PRODUCTION_INSPECT_TTL_MS = 2500;
+const productionInspectCache = new Map<string, { at: number; status: ManagedWorkbenchStatus }>();
+const productionInspectInFlight = new Map<string, Promise<ManagedWorkbenchStatus>>();
+
+/** Drop the cached production verdict, e.g. right after a provision import. */
+export function invalidateManagedWorkbenchStatus(root?: string): void {
+  if (root) {
+    productionInspectCache.delete(root);
+    return;
+  }
+  productionInspectCache.clear();
+}
+
+/** Test-only hook to reset memoization between scenarios. */
+export function resetManagedWorkbenchInspectMemoForTests(): void {
+  productionInspectCache.clear();
+  productionInspectInFlight.clear();
+}
+
 function statusBase(managed: boolean, phase: ManagedWorkbenchPhase, reason: string): ManagedWorkbenchStatus {
   return {
     managed,
@@ -153,6 +179,31 @@ export async function inspectManagedWorkbench(
   const env = options.env ?? process.env;
   if (!isManagedDeployment(env as NodeJS.ProcessEnv)) return statusBase(false, 'unrestricted', UNRESTRICTED_REASON);
 
+  const root = options.root ?? dataRoot();
+  const hasTestInjection = Boolean(options.root || options.env || options.readState
+    || options.readProvisioningState || options.stateReader || options.inspectRuntime || options.runtimeInspector);
+  if (!hasTestInjection) {
+    const cached = productionInspectCache.get(root);
+    if (cached && Date.now() - cached.at < PRODUCTION_INSPECT_TTL_MS) return cached.status;
+    const pending = productionInspectInFlight.get(root);
+    if (pending) return pending;
+    const shared = inspectManagedWorkbenchUncached(options)
+      .then((status) => {
+        productionInspectCache.set(root, { at: Date.now(), status });
+        return status;
+      })
+      .finally(() => {
+        if (productionInspectInFlight.get(root) === shared) productionInspectInFlight.delete(root);
+      });
+    productionInspectInFlight.set(root, shared);
+    return shared;
+  }
+  return inspectManagedWorkbenchUncached(options);
+}
+
+async function inspectManagedWorkbenchUncached(
+  options: InspectManagedWorkbenchOptions,
+): Promise<ManagedWorkbenchStatus> {
   const root = options.root ?? dataRoot();
   const stateReader = options.readState ?? options.readProvisioningState ?? options.stateReader ?? ((stateRoot: string) => readProvisioningState(stateRoot));
   const state = await readStateSafely(stateReader, root);

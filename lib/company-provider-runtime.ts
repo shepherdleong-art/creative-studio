@@ -8,7 +8,7 @@ import { isCosMediaConfigured } from './cos-media.ts';
 
 export const COMPANY_PROVIDER_PROXY_PORT = 4000;
 export const COMPANY_PROVIDER_HEALTH_URL = `http://127.0.0.1:${COMPANY_PROVIDER_PROXY_PORT}/health/liveliness`;
-export const COMPANY_PROVIDER_HEALTH_TIMEOUT_MS = 1500;
+export const COMPANY_PROVIDER_HEALTH_TIMEOUT_MS = 5000;
 export const COMPANY_PROVIDER_STATUS_FILE_NAME = 'company-sidecar-status.json';
 export const COMPANY_PROVIDER_STATUS_SCHEMA_VERSION = 2 as const;
 

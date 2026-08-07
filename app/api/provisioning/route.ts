@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { MAX_PROVISIONING_FILE_BYTES, decryptProvisioningPayload } from '@/lib/provisioning/crypto';
-import { applyProvisioningPayload, readProvisioningStatus } from '@/lib/provisioning/service';
-import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 import { isManagedDeployment } from '@/lib/managed-deployment';
 import { requestCompanySidecar } from '@/lib/company-sidecar-control';
+import { invalidateManagedWorkbenchStatus } from '@/lib/managed-workbench';
+import { applyProvisioningPayload, readProvisioningStatus } from '@/lib/provisioning/service';
+import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 
 export const runtime = 'nodejs';
 
@@ -41,6 +42,7 @@ export async function POST(request: Request) {
     }
     const status = applyProvisioningPayload(payload);
     if (isManagedDeployment()) {
+      invalidateManagedWorkbenchStatus();
       // Import is already atomically committed. A controller failure must not
       // turn a successful import into an HTTP import failure.
       void requestCompanySidecar('restart').catch(() => { /* state endpoint reports failure */ });
