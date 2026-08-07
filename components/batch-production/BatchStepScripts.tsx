@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
-import type { BatchTaskView } from '@/lib/batch-production/tasks';
 import { defaultTextStyle } from '@/lib/final-edit/domain';
 import {
   OUTPUT_PRESETS,
@@ -22,13 +21,6 @@ export interface BatchTtsProviderView {
   model: string;
   configured: boolean;
   voices: Array<{ id: string; label: string }>;
-}
-
-/** 语义匹配打分供应商选项:纯文本调用,只需已配置,不要求视觉能力 */
-export interface SemanticScoreProviderView {
-  id: string;
-  name: string;
-  model: string;
 }
 
 export interface BatchBgmParamsDraft {
@@ -102,13 +94,6 @@ export interface BatchStepScriptsProps {
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
   inputChangedWarning: boolean;
-  /** 语义匹配任务(容器任务轮询派生的 semantic_score 视图,可能跨历史版本) */
-  semanticTasks: BatchTaskView[];
-  semanticProviderId: string;
-  semanticProviderOptions: SemanticScoreProviderView[];
-  semanticBusy: boolean;
-  onSemanticProviderChange: (providerId: string) => void;
-  onRegenerateSemanticScore: () => void;
   /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下) */
   progress: BatchProgressView | null;
 }
@@ -172,12 +157,6 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onConfirmSnapshot,
     onStartBatch,
     inputChangedWarning,
-    semanticTasks,
-    semanticProviderId,
-    semanticProviderOptions,
-    semanticBusy,
-    onSemanticProviderChange,
-    onRegenerateSemanticScore,
     progress,
   } = props;
 
@@ -566,84 +545,6 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     );
   }
 
-  /**
-   * 语义匹配状态区:聚合 semantic_score 任务(可能跨历史版本)。
-   * 活跃优先,其次失败,再全部跳过,最后完成;冻结后整区只读。
-   */
-  function renderSemanticScoreSection() {
-    const succeeded = semanticTasks.filter((task) => task.status === 'succeeded');
-    const skippedCount = succeeded.filter((task) => (
-      (task.progressJson as { skipped?: unknown } | null)?.skipped === 'no-content-analysis'
-    )).length;
-    const failedCount = semanticTasks.filter((task) => task.status === 'failed').length;
-    const activeCount = semanticTasks.filter((task) => task.status === 'queued' || task.status === 'running').length;
-    const lastFailedError = semanticTasks.filter((task) => task.status === 'failed').at(-1)?.attempts.at(-1)?.errorMessage;
-
-    let statusText = '未进行';
-    let statusTone = 'bg-surface-subtle text-ink-tertiary';
-    if (semanticTasks.length > 0) {
-      if (activeCount > 0) {
-        statusText = `进行中 · 已完成 ${succeeded.length}/${semanticTasks.length}`;
-        statusTone = 'bg-accent/10 text-accent';
-      } else if (failedCount > 0) {
-        statusText = `${succeeded.length > 0 ? `已完成 ${succeeded.length}/${semanticTasks.length} · ` : ''}失败 ${failedCount} 个（可重试）`;
-        statusTone = 'bg-fail/10 text-fail';
-      } else if (succeeded.length > 0 && skippedCount === succeeded.length) {
-        statusText = '已跳过（素材未完成内容分析）';
-        statusTone = 'bg-surface-subtle text-ink-secondary';
-      } else {
-        statusText = `已完成 ${succeeded.length}/${semanticTasks.length}${skippedCount > 0 ? ` · ${skippedCount} 个已跳过（素材未完成内容分析）` : ''}`;
-        statusTone = succeeded.length > 0 ? 'bg-ok/10 text-ok' : 'bg-surface-subtle text-ink-secondary';
-      }
-    }
-    // 未确认整体输入时没有脚本快照可打分;输入修改后也先禁用,打分应对最新确认的版本。
-    const regenerateDisabled = frozen || semanticBusy || activeCount > 0 || !semanticProviderId
-      || (!frozen && outputPlans.length === 0);
-    return (
-      <section className="card space-y-3 p-5" aria-label="语义匹配">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Icon name="sparkle" size={15} />
-            <h3 className="font-semibold text-ink">语义匹配</h3>
-            <span className={`rounded-full px-2.5 py-0.5 text-[11px] ${statusTone}`}>{statusText}</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {semanticProviderOptions.length > 0 && (
-              <select
-                aria-label="语义匹配模型"
-                value={semanticProviderId}
-                disabled={frozen}
-                onChange={(event) => onSemanticProviderChange(event.target.value)}
-                className="h-8 max-w-56 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
-              >
-                {semanticProviderOptions.map((provider) => (
-                  <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>
-                ))}
-              </select>
-            )}
-            <button
-              type="button"
-              className="btn-secondary h-8 px-3 text-xs"
-              disabled={regenerateDisabled}
-              onClick={onRegenerateSemanticScore}
-            >{semanticBusy ? '提交中…' : activeCount > 0 ? '打分中…' : '重新打分'}</button>
-          </div>
-        </div>
-        <p className="text-xs text-ink-tertiary">
-          {semanticTasks.length === 0
-            ? '确认整体输入后会自动按画面内容给每句口播打分（素材画面分析已在第一步完成，此处不重复分析）。'
-            : '打分用于自动配画面按口播语义选择素材；换供应商会重新打分，同供应商重复触发不会重复打分。'}
-        </p>
-        {semanticProviderOptions.length === 0 && (
-          <p className="text-xs text-warn">没有已配置的脚本供应商 —— 请到「供应商设置」配置后再进行语义匹配。</p>
-        )}
-        {!frozen && outputPlans.length === 0 && semanticProviderOptions.length > 0 && (
-          <p className="text-xs text-ink-tertiary">请先确认整体输入，再生成语义匹配。</p>
-        )}
-        {lastFailedError && <p className="text-xs text-fail">{lastFailedError}</p>}
-      </section>
-    );
-  }
 
   const coverPresetId = outputPreset.id.replace(':', 'x') as OutputPresetId;
 
@@ -1112,8 +1013,6 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
       {renderBgmSection()}
 
       {renderCoverTitleSection()}
-
-      {renderSemanticScoreSection()}
 
       {!frozen && (
         <section className="card space-y-4 p-5" aria-label="输出设置与开始">
