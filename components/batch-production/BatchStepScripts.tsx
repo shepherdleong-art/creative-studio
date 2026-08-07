@@ -1,9 +1,18 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
+import type { BatchTaskView } from '@/lib/batch-production/tasks';
+import { defaultTextStyle } from '@/lib/final-edit/domain';
+import {
+  OUTPUT_PRESETS,
+  type CoverFraming,
+  type CoverPresetV2,
+  type OutputPresetId,
+  type TextStyle,
+} from '@/lib/final-edit/types';
 import { BatchFrozenScriptCard } from './BatchInputSelectionCards';
 import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 
@@ -13,6 +22,13 @@ export interface BatchTtsProviderView {
   model: string;
   configured: boolean;
   voices: Array<{ id: string; label: string }>;
+}
+
+/** 语义匹配打分供应商选项:纯文本调用,只需已配置,不要求视觉能力 */
+export interface SemanticScoreProviderView {
+  id: string;
+  name: string;
+  model: string;
 }
 
 export interface BatchBgmParamsDraft {
@@ -31,6 +47,30 @@ export interface BatchBgmTrackView {
 export interface BatchMusicSelectionDraft {
   mode: 'auto' | 'manual';
   trackIds: string[];
+}
+
+/** 封面标题设置草稿:与 defaultsJson 写入形状一致(样式已按当前画幅解析)。 */
+export interface BatchCoverTitleDraft {
+  mode: 'none' | 'preset' | 'custom';
+  presetId: string | null;
+  styles: { primary: TextStyle; secondary: TextStyle } | null;
+  framing: CoverFraming | null;
+}
+
+export interface CoverPresetView extends CoverPresetV2 {
+  id: string;
+  name: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+async function readJson<T>(response: Response): Promise<T> {
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = typeof body.message === 'string' ? body.message : `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return body as T;
 }
 
 export interface BatchStepScriptsProps {
@@ -56,9 +96,19 @@ export interface BatchStepScriptsProps {
   onBgmSelectionChange: (selection: BatchMusicSelectionDraft) => void;
   /** 配音配置变化时通知容器标记输入已修改 */
   onNarrationConfigTouched: () => void;
+  /** 封面标题设置(容器持有草稿,写入 defaultsJson) */
+  coverTitle: BatchCoverTitleDraft;
+  onCoverTitleChange: (draft: BatchCoverTitleDraft) => void;
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
   inputChangedWarning: boolean;
+  /** 语义匹配任务(容器任务轮询派生的 semantic_score 视图,可能跨历史版本) */
+  semanticTasks: BatchTaskView[];
+  semanticProviderId: string;
+  semanticProviderOptions: SemanticScoreProviderView[];
+  semanticBusy: boolean;
+  onSemanticProviderChange: (providerId: string) => void;
+  onRegenerateSemanticScore: () => void;
   /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下) */
   progress: BatchProgressView | null;
 }
@@ -117,9 +167,17 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onRescanBgm,
     onBgmSelectionChange,
     onNarrationConfigTouched,
+    coverTitle,
+    onCoverTitleChange,
     onConfirmSnapshot,
     onStartBatch,
     inputChangedWarning,
+    semanticTasks,
+    semanticProviderId,
+    semanticProviderOptions,
+    semanticBusy,
+    onSemanticProviderChange,
+    onRegenerateSemanticScore,
     progress,
   } = props;
 
@@ -150,6 +208,24 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
   const saveQueueRef = useRef<Record<string, Promise<void>>>({});
+  const [coverPresets, setCoverPresets] = useState<CoverPresetView[]>([]);
+  const [systemFonts, setSystemFonts] = useState<string[]>(['PingFang SC']);
+  const [presetName, setPresetName] = useState('');
+  const [coverTitleError, setCoverTitleError] = useState('');
+
+  // 封面标题预设与系统字体来自全局(与单条共用),一次拉取,失败不阻塞其他输入。
+  useEffect(() => {
+    void Promise.all([
+      fetch('/api/system-fonts').then((response) => response.json()),
+      fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response)),
+    ]).then(([fontBody, presetBody]) => {
+      const values = Array.isArray(fontBody) ? fontBody : fontBody.fonts;
+      if (Array.isArray(values)) {
+        setSystemFonts([...new Set(['PingFang SC', ...values.map((item) => typeof item === 'string' ? item : item.family).filter(Boolean)])]);
+      }
+      setCoverPresets(presetBody);
+    }).catch((error) => setCoverTitleError(error instanceof Error ? error.message : String(error)));
+  }, []);
 
   const scriptCount = Object.keys(selectedScripts).length;
   const onlineAssets = prep.assets.filter(({ status }) => status === 'online').length;
@@ -490,6 +566,437 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     );
   }
 
+  /**
+   * 语义匹配状态区:聚合 semantic_score 任务(可能跨历史版本)。
+   * 活跃优先,其次失败,再全部跳过,最后完成;冻结后整区只读。
+   */
+  function renderSemanticScoreSection() {
+    const succeeded = semanticTasks.filter((task) => task.status === 'succeeded');
+    const skippedCount = succeeded.filter((task) => (
+      (task.progressJson as { skipped?: unknown } | null)?.skipped === 'no-content-analysis'
+    )).length;
+    const failedCount = semanticTasks.filter((task) => task.status === 'failed').length;
+    const activeCount = semanticTasks.filter((task) => task.status === 'queued' || task.status === 'running').length;
+    const lastFailedError = semanticTasks.filter((task) => task.status === 'failed').at(-1)?.attempts.at(-1)?.errorMessage;
+
+    let statusText = '未进行';
+    let statusTone = 'bg-surface-subtle text-ink-tertiary';
+    if (semanticTasks.length > 0) {
+      if (activeCount > 0) {
+        statusText = `进行中 · 已完成 ${succeeded.length}/${semanticTasks.length}`;
+        statusTone = 'bg-accent/10 text-accent';
+      } else if (failedCount > 0) {
+        statusText = `${succeeded.length > 0 ? `已完成 ${succeeded.length}/${semanticTasks.length} · ` : ''}失败 ${failedCount} 个（可重试）`;
+        statusTone = 'bg-fail/10 text-fail';
+      } else if (succeeded.length > 0 && skippedCount === succeeded.length) {
+        statusText = '已跳过（素材未完成内容分析）';
+        statusTone = 'bg-surface-subtle text-ink-secondary';
+      } else {
+        statusText = `已完成 ${succeeded.length}/${semanticTasks.length}${skippedCount > 0 ? ` · ${skippedCount} 个已跳过（素材未完成内容分析）` : ''}`;
+        statusTone = succeeded.length > 0 ? 'bg-ok/10 text-ok' : 'bg-surface-subtle text-ink-secondary';
+      }
+    }
+    // 未确认整体输入时没有脚本快照可打分;输入修改后也先禁用,打分应对最新确认的版本。
+    const regenerateDisabled = frozen || semanticBusy || activeCount > 0 || !semanticProviderId
+      || (!frozen && outputPlans.length === 0);
+    return (
+      <section className="card space-y-3 p-5" aria-label="语义匹配">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Icon name="sparkle" size={15} />
+            <h3 className="font-semibold text-ink">语义匹配</h3>
+            <span className={`rounded-full px-2.5 py-0.5 text-[11px] ${statusTone}`}>{statusText}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {semanticProviderOptions.length > 0 && (
+              <select
+                aria-label="语义匹配模型"
+                value={semanticProviderId}
+                disabled={frozen}
+                onChange={(event) => onSemanticProviderChange(event.target.value)}
+                className="h-8 max-w-56 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+              >
+                {semanticProviderOptions.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              className="btn-secondary h-8 px-3 text-xs"
+              disabled={regenerateDisabled}
+              onClick={onRegenerateSemanticScore}
+            >{semanticBusy ? '提交中…' : activeCount > 0 ? '打分中…' : '重新打分'}</button>
+          </div>
+        </div>
+        <p className="text-xs text-ink-tertiary">
+          {semanticTasks.length === 0
+            ? '确认整体输入后会自动按画面内容给每句口播打分（素材画面分析已在第一步完成，此处不重复分析）。'
+            : '打分用于自动配画面按口播语义选择素材；换供应商会重新打分，同供应商重复触发不会重复打分。'}
+        </p>
+        {semanticProviderOptions.length === 0 && (
+          <p className="text-xs text-warn">没有已配置的脚本供应商 —— 请到「供应商设置」配置后再进行语义匹配。</p>
+        )}
+        {!frozen && outputPlans.length === 0 && semanticProviderOptions.length > 0 && (
+          <p className="text-xs text-ink-tertiary">请先确认整体输入，再生成语义匹配。</p>
+        )}
+        {lastFailedError && <p className="text-xs text-fail">{lastFailedError}</p>}
+      </section>
+    );
+  }
+
+  const coverPresetId = outputPreset.id.replace(':', 'x') as OutputPresetId;
+
+  /**
+   * 封面标题草稿更新:进入「使用预设/自定义」时补齐已解析的当前画幅样式与
+   * 默认 framing,保证 defaultsJson 始终是稳定完整形状(不选也为 none + null)。
+   */
+  function updateCoverTitle(patch: Partial<BatchCoverTitleDraft>): void {
+    const next: BatchCoverTitleDraft = {
+      mode: patch.mode ?? coverTitle.mode,
+      presetId: patch.presetId !== undefined ? patch.presetId : coverTitle.presetId,
+      styles: patch.styles !== undefined ? patch.styles : coverTitle.styles,
+      framing: patch.framing !== undefined ? patch.framing : coverTitle.framing,
+    };
+    if (next.mode === 'preset' || next.mode === 'custom') {
+      if (!next.styles) {
+        next.styles = {
+          primary: defaultTextStyle('coverPrimary', OUTPUT_PRESETS[coverPresetId].width),
+          secondary: defaultTextStyle('coverSecondary', OUTPUT_PRESETS[coverPresetId].width),
+        };
+      }
+      if (!next.framing) next.framing = { scale: 1, offsetX: 0, offsetY: 0 };
+    }
+    onCoverTitleChange(next);
+  }
+
+  function updateCoverStyle(kind: 'primary' | 'secondary', patch: Partial<TextStyle>): void {
+    if (!coverTitle.styles) return;
+    onCoverTitleChange({
+      ...coverTitle,
+      styles: { ...coverTitle.styles, [kind]: { ...coverTitle.styles[kind], ...patch } },
+    });
+  }
+
+  function applyCoverPreset(preset: CoverPresetView): void {
+    const value = preset.stylesByPreset[coverPresetId];
+    if (!value) return;
+    updateCoverTitle({
+      mode: 'preset',
+      presetId: preset.id,
+      styles: { primary: value.primary, secondary: value.secondary },
+      framing: { ...value.framing },
+    });
+  }
+
+  async function saveCoverPreset(): Promise<void> {
+    const name = presetName.trim();
+    if (!name) {
+      setCoverTitleError('请输入预设名称。');
+      return;
+    }
+    if (!coverTitle.styles) {
+      setCoverTitleError('请先选择「使用预设」或「自定义」并调整样式，再保存为新预设。');
+      return;
+    }
+    setCoverTitleError('');
+    try {
+      // 当前画幅写当前样式,其余比例用默认样式补齐,满足 CoverPresetV2 三比例形状。
+      const stylesByPreset = Object.fromEntries((Object.keys(OUTPUT_PRESETS) as OutputPresetId[]).map((preset) => [
+        preset,
+        {
+          primary: preset === coverPresetId
+            ? coverTitle.styles!.primary
+            : defaultTextStyle('coverPrimary', OUTPUT_PRESETS[preset].width),
+          secondary: preset === coverPresetId
+            ? coverTitle.styles!.secondary
+            : defaultTextStyle('coverSecondary', OUTPUT_PRESETS[preset].width),
+          framing: preset === coverPresetId
+            ? { ...(coverTitle.framing ?? { scale: 1, offsetX: 0, offsetY: 0 }) }
+            : { scale: 1, offsetX: 0, offsetY: 0 },
+        },
+      ])) as CoverPresetV2['stylesByPreset'];
+      const created = await readJson<CoverPresetView>(await fetch('/api/final-edit/title-presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, version: 2, stylesByPreset }),
+      }));
+      setCoverPresets((items) => [...items, created]);
+      setPresetName('');
+    } catch (error) {
+      setCoverTitleError(error instanceof Error ? error.message : '预设保存失败');
+    }
+  }
+
+  async function deleteCoverPreset(presetId: string): Promise<void> {
+    setCoverTitleError('');
+    try {
+      const response = await fetch(`/api/final-edit/title-presets/${encodeURIComponent(presetId)}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || body.error || '预设删除失败');
+      }
+      setCoverPresets((items) => items.filter((item) => item.id !== presetId));
+    } catch (error) {
+      setCoverTitleError(error instanceof Error ? error.message : '预设删除失败');
+    }
+  }
+
+  function renderCoverTextStyleEditor(kind: 'primary' | 'secondary', style: TextStyle) {
+    const smallInput = 'h-7 rounded-lg border border-hairline bg-white px-2 text-xs text-ink';
+    const smallColor = 'h-7 w-10 rounded border border-hairline bg-white p-0.5';
+    return (
+      <div className="rounded-xl bg-surface-subtle p-3">
+        <p className="mb-1.5 text-xs font-medium text-ink">{kind === 'primary' ? '主标题样式' : '副标题样式'}</p>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字体</span>
+            <select
+              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}字体`}
+              value={style.fontFamily}
+              disabled={frozen}
+              onChange={(event) => updateCoverStyle(kind, { fontFamily: event.target.value })}
+              className={smallInput}
+            >
+              {systemFonts.map((font) => <option key={font} value={font}>{font}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字号</span>
+            <input
+              type="number"
+              min={8}
+              max={400}
+              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}字号`}
+              value={style.fontSizePx}
+              disabled={frozen}
+              onChange={(event) => updateCoverStyle(kind, { fontSizePx: Math.max(8, Number.parseInt(event.target.value, 10) || 8) })}
+              className={smallInput}
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">颜色</span>
+            <span className="flex items-center gap-1.5">
+              <input
+                type="color"
+                aria-label={`${kind === 'primary' ? '主标题' : '副标题'}颜色`}
+                value={style.color}
+                disabled={frozen}
+                onChange={(event) => updateCoverStyle(kind, { color: event.target.value })}
+                className={smallColor}
+              />
+              <span className="text-[11px] tabular-nums text-ink-tertiary">{style.color}</span>
+            </span>
+          </label>
+          <label className="flex items-end gap-2 pb-1.5">
+            <span className="flex items-center gap-1.5 text-xs text-ink-secondary">
+              <input
+                type="checkbox"
+                aria-label={`${kind === 'primary' ? '主标题' : '副标题'}斜体`}
+                checked={style.italic}
+                disabled={frozen}
+                onChange={(event) => updateCoverStyle(kind, { italic: event.target.checked })}
+                className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              />
+              斜体
+            </span>
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
+              <span className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边`}
+                  checked={style.stroke.enabled}
+                  disabled={frozen}
+                  onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, enabled: event.target.checked } })}
+                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                />
+                描边
+              </span>
+              <span className="flex items-center gap-1">
+                <input
+                  type="color"
+                  aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边颜色`}
+                  value={style.stroke.color}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, color: event.target.value } })}
+                  className={smallColor}
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={40}
+                  aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边宽度`}
+                  value={style.stroke.widthPx}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, widthPx: Math.max(0, Number.parseInt(event.target.value, 10) || 0) } })}
+                  className="h-7 w-14 rounded-lg border border-hairline bg-white px-2 text-xs text-ink"
+                />
+              </span>
+            </span>
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
+              <span>纵向位置</span>
+              <span className="tabular-nums">{Math.round(style.y * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}纵向位置`}
+              value={Math.round(style.y * 100)}
+              disabled={frozen}
+              onChange={(event) => updateCoverStyle(kind, { y: Number(event.target.value) / 100 })}
+              className="w-full accent-[var(--color-accent)]"
+            />
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  /** 封面标题卡:统一选择预设/自定义样式,批量成片共用;冻结后整卡只读。 */
+  function renderCoverTitleSection() {
+    const hasTitle = coverTitle.mode !== 'none' && coverTitle.styles !== null;
+    const coverStyles = coverTitle.styles;
+    const previewSource = frozen
+      ? frozenScriptSnapshots[0]?.coverTitle
+      : prep.scripts.find((script) => selectedScripts[script.id] !== undefined)?.coverTitle;
+    const primaryText = previewSource?.primary?.trim() || '示例主标题';
+    const secondaryText = previewSource?.secondary?.trim() || '示例副标题';
+    const preset = coverPresets.find((item) => item.id === coverTitle.presetId);
+    const previewScale = coverPresetId === '16x9' ? 1 / 8.5 : 1 / 5;
+    const previewStyle = (style: TextStyle) => ({
+      fontFamily: style.fontFamily,
+      fontSize: `${Math.max(8, Math.round(style.fontSizePx * previewScale))}px`,
+      color: style.color,
+      fontStyle: style.italic ? 'italic' : 'normal',
+      WebkitTextStroke: style.stroke.enabled ? `${style.stroke.widthPx * previewScale * 2}px ${style.stroke.color}` : undefined,
+      textShadow: style.shadow.enabled ? `${style.shadow.distancePx * previewScale * 2}px ${style.shadow.distancePx * previewScale * 2}px ${style.shadow.blurPx * previewScale}px ${style.shadow.color}` : undefined,
+    }) as React.CSSProperties;
+
+    return (
+      <section className={`card space-y-3 p-5 ${frozen ? 'border-accent/30' : ''}`} aria-label="封面标题">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Icon name="text" size={15} />
+            <h3 className="font-semibold text-ink">封面标题</h3>
+            {frozen && <span className="rounded-full bg-surface-subtle px-2.5 py-0.5 text-[11px] text-ink-tertiary">已锁定</span>}
+          </div>
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-ink-secondary">模式</span>
+            <select
+              aria-label="封面标题模式"
+              value={coverTitle.mode}
+              disabled={frozen}
+              onChange={(event) => updateCoverTitle({ mode: event.target.value as BatchCoverTitleDraft['mode'] })}
+              className="h-8 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+            >
+              <option value="none">无标题</option>
+              <option value="preset">使用预设</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+        </div>
+
+        <p className="text-xs text-ink-tertiary">
+          标题文字来自各脚本的封面标题（第 3 步生成），此处统一控制样式与位置；确认整体输入后随版本冻结，改样式会形成批次新版本。
+        </p>
+
+        {hasTitle && coverStyles && (
+          <div className="flex flex-wrap gap-4">
+            <div className="grid min-w-64 flex-1 gap-2.5 lg:grid-cols-2">
+              {renderCoverTextStyleEditor('primary', coverStyles.primary)}
+              {renderCoverTextStyleEditor('secondary', coverStyles.secondary)}
+            </div>
+            <div className="flex min-w-56 flex-1 flex-col gap-2">
+              <div
+                className="relative w-full overflow-hidden rounded-xl bg-gradient-to-br from-slate-600 via-slate-700 to-slate-900"
+                style={{ aspectRatio: coverPresetId === '9x16' ? '9 / 16' : coverPresetId === '16x9' ? '16 / 9' : '3 / 4', maxHeight: 220 }}
+              >
+                <div className="absolute inset-0 flex flex-col items-center gap-1 px-6 pt-6 text-center">
+                  {primaryText && <span className="font-bold" style={previewStyle(coverStyles.primary)}>{primaryText}</span>}
+                  {secondaryText && <span style={previewStyle(coverStyles.secondary)}>{secondaryText}</span>}
+                </div>
+              </div>
+              <p className="text-[11px] text-ink-tertiary">
+                预览仅为样式近似；<span className="text-ink-secondary">{frozen ? '当前快照' : '第一份已选脚本'}</span>的标题：{primaryText} / {secondaryText}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {coverTitle.mode === 'preset' && (
+          <div className="space-y-2">
+            <label className="flex items-center gap-2">
+              <span className="text-xs text-ink-secondary">预设</span>
+              <select
+                aria-label="选择封面标题预设"
+                value={coverTitle.presetId ?? ''}
+                disabled={frozen}
+                onChange={(event) => {
+                  const chosen = coverPresets.find((item) => item.id === event.target.value);
+                  if (chosen) applyCoverPreset(chosen);
+                }}
+                className="h-8 min-w-52 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+              >
+                <option value="">{coverPresets.length === 0 ? '暂无预设' : '选择一个预设…'}</option>
+                {coverPresets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              {coverTitle.presetId && (
+                <span className="text-[11px] text-ink-tertiary">已应用「{preset?.name ?? '已删除的预设'}」</span>
+              )}
+            </label>
+            {coverPresets.length === 0 && (
+              <p className="text-xs text-ink-tertiary">还没有保存的预设 —— 可在「自定义」下调整后点「存为预设」。</p>
+            )}
+          </div>
+        )}
+
+        {!frozen && (
+          <div className="space-y-2 border-t border-hairline pt-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                aria-label="新预设名称"
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') void saveCoverPreset(); }}
+                placeholder="把当前样式存为预设…"
+                className="h-8 min-w-48 flex-1 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+              />
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={!hasTitle} onClick={() => void saveCoverPreset()}>
+                存为预设
+              </button>
+            </div>
+            {coverPresets.length > 0 && (
+              <ul className="flex flex-wrap gap-1.5">
+                {coverPresets.map((item) => (
+                  <li key={item.id} className="flex items-center gap-1 rounded-full bg-surface-subtle py-1 pl-3 pr-1 text-xs text-ink-secondary">
+                    <button
+                      type="button"
+                      className="underline-offset-2 hover:text-accent hover:underline"
+                      onClick={() => applyCoverPreset(item)}
+                    >{item.name}</button>
+                    <button
+                      type="button"
+                      aria-label={`删除预设 ${item.name}`}
+                      className="grid h-5 w-5 place-items-center rounded-full text-ink-tertiary hover:bg-fail/10 hover:text-fail"
+                      onClick={() => void deleteCoverPreset(item.id)}
+                    ><Icon name="close" size={10} /></button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {coverTitleError && <p className="text-xs text-fail">{coverTitleError}</p>}
+          </div>
+        )}
+      </section>
+    );
+  }
+
   return (
     <div className="min-h-0 flex-1 space-y-4 p-2">
       {frozen && (
@@ -603,6 +1110,10 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
       )}
 
       {renderBgmSection()}
+
+      {renderCoverTitleSection()}
+
+      {renderSemanticScoreSection()}
 
       {!frozen && (
         <section className="card space-y-4 p-5" aria-label="输出设置与开始">

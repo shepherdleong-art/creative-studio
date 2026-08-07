@@ -11,6 +11,15 @@ import {
 import { BatchDomainError } from './errors.ts';
 import { BATCH_ALLOCATION_RULE_VERSION } from './allocator.ts';
 import { resolveAllocationMusicTrackIds } from './bgm.ts';
+import { extractMatchKeywords } from '../final-edit/match-keywords.ts';
+import {
+  buildBatchScenes,
+  buildBatchSentences,
+  batchSemanticPoolKey,
+  batchSemanticScriptKey,
+  readBatchSemanticMatrix,
+  type BatchSemanticMatrixRecord,
+} from './semantic-match.ts';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -228,6 +237,19 @@ function buildFrozenInput(
 
   const defaults = parseJson(version.defaultsJson);
   const musicTrackIds = resolveAllocationMusicTrackIds(defaults);
+  // 语义矩阵按内容指纹同步读取(打分已在快照确认后由 semantic_score 任务落库);
+  // 这里是同步装配路径,绝不发起 LLM 调用。无矩阵时仅挂 keywords,
+  // 分配器自动退到关键词重合 + 质量兜底。
+  const semanticScenes = buildBatchScenes(poolRows);
+  const semanticPoolKey = semanticScenes.length ? batchSemanticPoolKey(semanticScenes) : null;
+  const semanticMatrixCache = new Map<string, BatchSemanticMatrixRecord | undefined>();
+  const semanticMatrixFor = (scriptKey: string | null): BatchSemanticMatrixRecord | undefined => {
+    if (!scriptKey || !semanticPoolKey) return undefined;
+    if (!semanticMatrixCache.has(scriptKey)) {
+      semanticMatrixCache.set(scriptKey, readBatchSemanticMatrix(db, projectId, scriptKey, semanticPoolKey));
+    }
+    return semanticMatrixCache.get(scriptKey);
+  };
   const input: FrozenBatchInput = {
     projectId,
     batchId: owner.batchId,
@@ -238,13 +260,49 @@ function buildFrozenInput(
     musicTrackIds,
     plans: plans.map((plan) => {
       const planJson = asRecord(parseJson(plan.planJson));
-      const segments = planSegments(planJson);
+      const segmentsFromPlanJson = planSegments(planJson);
+      const bodyRecord = asRecord(parseJson(plan.bodyText));
+      const segmentsFromBody = Array.isArray(bodyRecord.segments) && bodyRecord.segments.length
+        ? bodyRecord.segments
+        : [];
+      const historicalSegments = segmentsFromPlanJson.length ? segmentsFromPlanJson : segmentsFromBody;
+      // 句段与 scriptKey 必须和打分 executor 完全一致(同一 bodyText、同一断句)。
+      const sentences = buildBatchSentences(plan.bodyText);
+      const matrix = semanticMatrixFor(sentences.length ? batchSemanticScriptKey(sentences) : null);
+      const matrixScoresAt = (index: number) => matrix?.scores[`segment-${index + 1}`] ?? {};
+      if (historicalSegments.length) {
+        // 历史路径:planJson/bodyText 自带 segments,保留原 id 与时间字段,
+        // 按数组 index 对齐补 keywords 与语义分。
+        return {
+          planId: plan.planId,
+          scriptSnapshotId: plan.scriptSnapshotId,
+          title: plan.title,
+          segments: historicalSegments.map((segment, index) => {
+            const record = asRecord(segment);
+            const text = [record.text, record.narration, record.subtitle]
+              .find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? '';
+            const hasKeywords = Array.isArray(record.keywords) && record.keywords.length > 0;
+            return {
+              ...record,
+              ...(hasKeywords ? {} : { keywords: extractMatchKeywords(text) }),
+              ...(matrix ? { semanticScores: matrixScoresAt(index), hookScores: matrix.hooks } : {}),
+            };
+          }) as AllocationSegmentInput[],
+          planJson,
+          scriptSnapshot: { targetDurationSec: plan.targetDurationSec },
+        };
+      }
       return {
         planId: plan.planId,
         scriptSnapshotId: plan.scriptSnapshotId,
         title: plan.title,
-        bodyText: segments.length ? undefined : plan.bodyText,
-        segments: segments.length ? segments as AllocationSegmentInput[] : undefined,
+        // 显式 segments:不传 id,分配器仍按 `${planId}:segment:<i+1>` 生成,
+        // 与改动前的句段身份完全一致(既有锁定/封面引用不受影响)。
+        segments: sentences.map((sentence, index) => ({
+          text: sentence.text,
+          keywords: sentence.keywords,
+          ...(matrix ? { semanticScores: matrixScoresAt(index), hookScores: matrix.hooks } : {}),
+        })),
         planJson,
         scriptSnapshot: { targetDurationSec: plan.targetDurationSec },
       };

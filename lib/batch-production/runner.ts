@@ -278,10 +278,13 @@ async function executeOne(
       // 批次暂停/停止(内部控制检查):按批次期望落成可继续或终态
       settleInterruptedTask(db, claim.attempt.id, now, 'batch_control');
     } else {
+      // 执行器抛出的带 code 错误(如 semantic_fallback)保留机器可读错误码,
+      // 供重试入口与界面区分失败原因;其余维持 executor_error。
+      const executorErrorCode = (error as { code?: unknown } | null)?.code;
       completeTaskAttempt(db, claim.attempt.id, {
         workerId,
         status: 'failed',
-        errorCode: 'executor_error',
+        errorCode: typeof executorErrorCode === 'string' && executorErrorCode ? executorErrorCode : 'executor_error',
         errorMessage: error instanceof Error ? error.message : String(error),
         progressJson: lastProgress,
         now,

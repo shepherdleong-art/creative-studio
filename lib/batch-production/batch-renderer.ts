@@ -8,9 +8,11 @@ import { dataRoot } from '../data-root.ts';
 import { probeDurationSec, probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
 import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
+import { applyFrozenCoverTitleToFile, escapeXml } from './cover-title.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { listAssetSources, resolveSourceFilePath } from './media-catalog.ts';
 import { resolveManagedLutPath } from './lut-catalog.ts';
+import { buildBatchNarrationSubtitleCues } from './subtitle-cues.ts';
 import { readFrozenMusicPool } from './bgm.ts';
 
 export const BATCH_OUTPUT_PRESETS = {
@@ -597,15 +599,6 @@ function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderA
   return `${source},anullsrc=channel_layout=stereo:sample_rate=48000`; // replaced by caller for silent lavfi input
 }
 
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/gu, '&amp;')
-    .replace(/</gu, '&lt;')
-    .replace(/>/gu, '&gt;')
-    .replace(/"/gu, '&quot;')
-    .replace(/'/gu, '&apos;');
-}
-
 async function materializeSubtitleOverlays(input: {
   directory: string;
   cues: BatchRenderNarrationSegment[];
@@ -695,7 +688,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     if (!narrationInput || !Number.isFinite(measuredDuration) || Math.abs(measuredDuration - narrationInput.durationUs / 1_000_000) > 0.1) throw error('narration 实际时长与冻结时长不一致');
   }
   const subtitleCues = narrationSegments.length > 0
-    ? narrationSegments
+    ? buildBatchNarrationSubtitleCues(narrationSegments)
     : normalizeArrangementSubtitleCues(snapshot.arrangement.subtitle, targetDurationUs);
   const targetDurationSec = targetDurationUs / 1_000_000;
   const { storageRoot, jobDir } = outputDirectory(input);
@@ -791,6 +784,9 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         `crop=${outputSize.width}:${outputSize.height}`, 'setsar=1', ...coverColorFragments, 'format=yuv420p',
       ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
     ], { signal });
+    // 冻结的封面标题设置随版本 defaultsJson 锁定:抽帧+色彩链之后合成主/副标题,
+    // 再校验与算指纹,保证导出指纹校验与工作区预览一致。
+    await applyFrozenCoverTitleToFile(input.db, input.planId, coverTemp, outputSize);
     report({ phase: 'verifying', completed: null, total: null, percent: null, description: '校验正式渲染产物' });
     assertSignal(signal);
     const probe = await probeVideoMedia(videoTemp);
@@ -972,6 +968,8 @@ export async function regenerateBatchOutputCover(input: BatchCoverRegenerationIn
       ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
     ], { signal });
     assertSignal(signal);
+    // 换封面抽帧后重放同一套冻结标题合成,保证"换封面不丢标题"。
+    await applyFrozenCoverTitleToFile(db, planId, coverTemp, outputSize);
     const regeneratedStat = fs.lstatSync(coverTemp);
     if (regeneratedStat.isSymbolicLink() || !regeneratedStat.isFile() || regeneratedStat.size <= 0) {
       throw error('封面抽帧产物为空');

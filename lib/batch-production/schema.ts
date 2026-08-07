@@ -979,6 +979,90 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
       ALTER TABLE batch_asset_sources ADD COLUMN lastVerifiedIdentityJson TEXT;
     `,
   },
+  {
+    version: 23,
+    sql: `
+      -- 语义匹配:batch_tasks.workType 的 CHECK 约束加入 semantic_score 任务类型。
+      -- SQLite 不能改 CHECK,按 v14/v21 的安全模式重建两张表:
+      -- 先 DROP 叶子表 batch_task_attempts,再 DROP batch_tasks(此时无人引用),
+      -- 最后把新表改名到位,外键引用由改名自动重写。
+      CREATE TABLE batch_tasks_v23 (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT NOT NULL,
+        workType TEXT NOT NULL CHECK(workType IN ('asset_prepare', 'render', 'proxy_generate', 'narration', 'semantic_score')),
+        targetKind TEXT NOT NULL,
+        targetId TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+        requestKey TEXT,
+        expectedState TEXT NOT NULL DEFAULT 'running' CHECK(expectedState IN ('running', 'paused', 'stopped')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        attemptCount INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_tasks_v23
+        (id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt)
+      SELECT id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt
+      FROM batch_tasks;
+
+      CREATE TABLE batch_task_attempts_v23 (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        attemptNumber INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        resultJson TEXT,
+        errorCode TEXT,
+        errorMessage TEXT,
+        claimedBy TEXT,
+        leaseExpiresAt TEXT,
+        heartbeatAt TEXT,
+        adapterVersion TEXT,
+        remoteTaskId TEXT,
+        startedAt TEXT NOT NULL,
+        finishedAt TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(taskId, attemptNumber),
+        FOREIGN KEY(taskId) REFERENCES batch_tasks_v23(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_task_attempts_v23
+        (id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt)
+      SELECT id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt
+      FROM batch_task_attempts;
+
+      DROP TABLE batch_task_attempts;
+      DROP TABLE batch_tasks;
+      ALTER TABLE batch_tasks_v23 RENAME TO batch_tasks;
+      ALTER TABLE batch_task_attempts_v23 RENAME TO batch_task_attempts;
+
+      CREATE INDEX IF NOT EXISTS idx_batch_tasks_batch
+        ON batch_tasks(batchId, status, createdAt);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_tasks_request_key
+        ON batch_tasks(requestKey) WHERE requestKey IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_batch_task_attempts_task
+        ON batch_task_attempts(taskId, attemptNumber);
+
+      -- 句段 × 素材池场景的语义矩阵打分结果。绑定内容指纹(脚本句段 hash +
+      -- 素材池场景 hash)而非批次版本:同一内容换版本/重跑直接复用。
+      -- fallback(0.6 均匀矩阵)不落库,与单条侧自愈语义一致。
+      CREATE TABLE IF NOT EXISTS batch_semantic_matrices (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        scriptKey TEXT NOT NULL,
+        poolKey TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        promptVersion TEXT NOT NULL,
+        matrixJson TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_batch_semantic_matrices_lookup
+        ON batch_semantic_matrices(projectId, scriptKey, poolKey, createdAt);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =

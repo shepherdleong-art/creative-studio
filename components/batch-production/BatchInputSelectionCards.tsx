@@ -200,6 +200,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     content_analyzing: '画面内容分析',
     verified: '媒体核验完成',
     analyzed: '分析完成',
+    semantic_score: '语义匹配',
   };
   const taskStatus = analysisTask?.status;
   const taskError = analysisTask?.attempts?.at(-1)?.errorMessage;

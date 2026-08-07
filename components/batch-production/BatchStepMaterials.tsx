@@ -96,6 +96,7 @@ const TASK_PHASE_LABELS: Record<string, string> = {
   ready: '已就绪',
   rendering: '渲染中',
   cover: '生成封面',
+  semantic_score: '语义匹配',
 };
 
 /**
@@ -195,6 +196,9 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
             </p>
             {!frozen && (
               <p className="mt-1 text-xs text-ink-tertiary">勾选进入本批次的素材；未完成分析的素材不可勾选，请先发起分析。</p>
+            )}
+            {!frozen && (
+              <p className="mt-1 text-xs text-ink-tertiary">内容分析完成后，确认脚本输入时会自动进行语义匹配打分。</p>
             )}
             {!frozen && analysisActive > 0 && (
               <div className="mt-2">

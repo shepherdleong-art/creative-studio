@@ -20,6 +20,7 @@ import BatchStepMaterials, { type AssetSelectionState, type VisionProviderView }
 import BatchStepScripts, {
   type BatchBgmParamsDraft,
   type BatchBgmTrackView,
+  type BatchCoverTitleDraft,
   type BatchMusicSelectionDraft,
   type BatchTtsProviderView,
   type OutputPresetLabel,
@@ -158,9 +159,23 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [bgmLibrary, setBgmLibrary] = useState<BatchBgmTrackView[]>([]);
   const [bgmRescanning, setBgmRescanning] = useState(false);
   const [bgmSelection, setBgmSelection] = useState<BatchMusicSelectionDraft>({ mode: 'auto', trackIds: [] });
+  // 封面标题设置草稿:mode none 时为完整稳定形状(其余字段 null),避免 canonical 比对抖动。
+  const [coverTitle, setCoverTitle] = useState<BatchCoverTitleDraft>({
+    mode: 'none',
+    presetId: null,
+    styles: null,
+    framing: null,
+  });
   const [batchTasks, setBatchTasks] = useState<BatchTasksView['tasks']>([]);
+  /** 语义匹配打分供应商:空串表示沿用默认(最近一次内容分析供应商 → 第一个已配置) */
+  const [semanticProviderId, setSemanticProviderId] = useState('');
+  const [semanticBusy, setSemanticBusy] = useState(false);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
+  // 开跑被语义匹配延迟时置位,打分全部终态后自动续跑;startBatchRef 避免把
+  // 非 useCallback 的 startBatch 塞进 effect 依赖。
+  const autoStartAfterSemanticRef = useRef(false);
+  const startBatchRef = useRef<() => Promise<void>>(async () => undefined);
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
   const [proxyBatchBusy, setProxyBatchBusy] = useState(false);
   const [cacheUsage, setCacheUsage] = useState<{ count: number; totalBytes: number } | null>(null);
@@ -443,6 +458,20 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     const timer = window.setTimeout(() => void loadTasks(selectedBatchId), 0);
     return () => window.clearTimeout(timer);
   }, [selectedBatchId, loadTasks]);
+
+  useEffect(() => {
+    startBatchRef.current = startBatch;
+  });
+
+  // 开跑被语义匹配延迟时:打分任务全部进入终态后自动续跑(PUT /start 幂等)。
+  useEffect(() => {
+    if (!selectedBatchId || !autoStartAfterSemanticRef.current) return;
+    const incomplete = batchTasks.filter((task) => task.workType === 'semantic_score'
+      && (task.status === 'queued' || task.status === 'running')).length;
+    if (incomplete > 0) return;
+    autoStartAfterSemanticRef.current = false;
+    void startBatchRef.current();
+  }, [batchTasks, selectedBatchId]);
 
   // 有活跃任务、或批次仍自称 running 时才周期轮询,全部结束后立即停止。
   useEffect(() => {
@@ -817,6 +846,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               targetDurationSec: 15,
               batchBgmParams: bgmParams,
               batchMusicSelection: bgmSelection,
+              coverTitleMode: coverTitle.mode,
+              coverTitlePresetId: coverTitle.presetId,
+              coverTitleStyles: coverTitle.styles,
+              coverTitleFraming: coverTitle.framing,
             },
           }),
         },
@@ -877,6 +910,38 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
+  // 手动(重)触发语义匹配打分:换供应商会形成新打分,同供应商幂等;
+  // 成功后立即补拉一次任务列表,周期轮询闸门会随活跃任务自动挂上。
+  async function regenerateSemanticScore(): Promise<void> {
+    if (!selectedBatchId) {
+      setFeedback({ kind: 'error', message: '请先创建或选择一个批次。' });
+      return;
+    }
+    setSemanticBusy(true);
+    setFeedback(null);
+    try {
+      const result = await readJson<{ created: string[]; skipped: string[] }>(await fetch(
+        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/semantic-score?projectId=${encodeURIComponent(projectId)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(effectiveSemanticProviderId ? { providerId: effectiveSemanticProviderId } : {}),
+        },
+      ));
+      await loadTasks(selectedBatchId);
+      setFeedback({
+        kind: 'success',
+        message: result.created.length > 0
+          ? `已提交 ${result.created.length} 份脚本的语义匹配打分。`
+          : '语义匹配已是最新，无需重新打分。',
+      });
+    } catch (semanticError) {
+      setFeedback({ kind: 'error', message: semanticError instanceof Error ? semanticError.message : '语义匹配触发失败' });
+    } finally {
+      setSemanticBusy(false);
+    }
+  }
+
   async function startBatch(): Promise<void> {
     if (!selectedBatchId || outputPlans.length === 0) {
       setFeedback({ kind: 'error', message: '请先确认整体输入并建立成片计划。' });
@@ -887,13 +952,24 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try {
       const result = await readJson<{
         batchId: string;
-        status: 'running';
-        allocationStatus: 'completed' | 'partial' | 'blocked';
-        outputCount: number;
+        status: 'running' | 'semantic_scoring';
+        semanticScorePending?: number;
+        allocationStatus?: 'completed' | 'partial' | 'blocked';
+        outputCount?: number;
       }>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/start?projectId=${encodeURIComponent(projectId)}`,
         { method: 'PUT' },
       ));
+      if (result.status === 'semantic_scoring') {
+        autoStartAfterSemanticRef.current = true;
+        setFeedback({
+          kind: 'success',
+          message: `正在按画面内容为口播句段打分（还差 ${result.semanticScorePending ?? 0} 份），完成后自动继续生产，无需再点。`,
+        });
+        await loadTasks(selectedBatchId);
+        return;
+      }
+      autoStartAfterSemanticRef.current = false;
       setBatchStatus('running');
       setBatches((current) => current.map((batch) => batch.id === selectedBatchId
         ? { ...batch, status: 'running' }
@@ -1391,6 +1467,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const visionProviderOptions = visionProviders.filter((provider) => provider.configured && provider.supportsVision);
   const visionProviderMissing = visionProviderOptions.length === 0;
 
+  // 语义匹配打分是纯文本调用,只需已配置,不要求视觉能力;
+  // 默认选中沿用最近一次内容分析供应商(与后端解析顺序一致),拿不到回落第一个已配置。
+  const semanticTasks = batchTasks.filter((task) => task.workType === 'semantic_score');
+  const semanticProviderOptions = visionProviders.filter((provider) => provider.configured);
+  const effectiveSemanticProviderId = semanticProviderOptions.some((provider) => provider.id === semanticProviderId)
+    ? semanticProviderId
+    : semanticProviderOptions.some((provider) => provider.id === visionProviderId)
+      ? visionProviderId
+      : semanticProviderOptions[0]?.id ?? '';
+
   const changeVisionProvider = (providerId: string) => {
     setVisionProviderId(providerId);
     try { localStorage.setItem(visionProviderStorageKey(projectId), providerId); } catch { /* 隐私模式忽略 */ }
@@ -1620,10 +1706,21 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 setBgmSelection(selection);
                 markInputChanged();
               }}
+              coverTitle={coverTitle}
+              onCoverTitleChange={(draft) => {
+                setCoverTitle(draft);
+                markInputChanged();
+              }}
               onNarrationConfigTouched={markInputChanged}
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
+              semanticTasks={semanticTasks}
+              semanticProviderId={effectiveSemanticProviderId}
+              semanticProviderOptions={semanticProviderOptions}
+              semanticBusy={semanticBusy}
+              onSemanticProviderChange={setSemanticProviderId}
+              onRegenerateSemanticScore={() => void regenerateSemanticScore()}
               progress={progressView}
             />
           );

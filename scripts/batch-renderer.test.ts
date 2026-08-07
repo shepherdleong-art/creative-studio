@@ -227,7 +227,7 @@ async function run(): Promise<void> {
   });
   assert.equal(persistedNarrationResult.audioMode, 'narration');
   assert.deepEqual(persistedNarrationResult.subtitleCues, [
-    { id: 'aligned-1', sourceSegmentId: 'source-1', text: '本地对齐字幕', startUs: 0, endUs: 1_200_000 },
+    { id: 'aligned-1:cue:1', sourceSegmentId: 'source-1', text: '本地对齐字幕', startUs: 0, endUs: 1_200_000 },
   ]);
   assert.equal(persistedNarrationResult.productionReady, true);
 

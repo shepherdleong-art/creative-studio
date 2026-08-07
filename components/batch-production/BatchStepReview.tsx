@@ -49,6 +49,7 @@ const TASK_PHASE_LABELS: Record<string, string> = {
   ready: '已就绪',
   rendering: '渲染中',
   cover: '生成封面',
+  semantic_score: '语义匹配',
 };
 
 const FILTERS: Array<[CardFilter, string]> = [

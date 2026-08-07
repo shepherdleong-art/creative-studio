@@ -459,11 +459,16 @@ function normalizeAsset(rawAsset: AllocationAssetInput): NormalizedAsset {
   };
 }
 
-function splitBody(body: string): string[] {
+/** 分配器的脚本断句唯一实现；语义匹配句段构造也用它，保证两侧句段完全一致。 */
+export function splitAllocationScriptBody(body: string): string[] {
   return body
     .split(/(?:[。！？!?；;]\s*|\n+|\r+)/u)
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function splitBody(body: string): string[] {
+  return splitAllocationScriptBody(body);
 }
 
 function segmentCandidates(plan: AllocationPlanInput): unknown[] {
@@ -618,6 +623,22 @@ function intervalOverlaps(interval: { assetId: string; startUs: number; endUs: n
   return used.filter((entry) => entry.assetId === interval.assetId && overlapLength(interval.startUs, interval.endUs, entry.startUs, entry.endUs) > 0);
 }
 
+/** 场景范围内未被已用区间占用的空闲子区间(按起点升序)。 */
+function freeSubIntervals(scene: NormalizedScene, used: UsedInterval[]): Array<[number, number]> {
+  const free: Array<[number, number]> = [];
+  let cursor = scene.startUs;
+  for (const entry of used
+    .filter((entry) => overlapLength(scene.startUs, scene.endUs, entry.startUs, entry.endUs) > 0)
+    .sort((a, b) => a.startUs - b.startUs || a.endUs - b.endUs)) {
+    const start = Math.max(scene.startUs, entry.startUs);
+    const end = Math.min(scene.endUs, entry.endUs);
+    if (start > cursor) free.push([cursor, start]);
+    cursor = Math.max(cursor, end);
+  }
+  if (scene.endUs > cursor) free.push([cursor, scene.endUs]);
+  return free.filter(([start, end]) => end - start > 0);
+}
+
 function lockForSegment(plan: NormalizedPlan, segment: NormalizedSegment, globalLocks: AllocationLockInput[]): AllocationLockInput | undefined {
   return [...plan.locks, ...globalLocks].find((lock) => {
     const lockPlanId = lock.planId ?? lock.outputPlanId;
@@ -661,22 +682,32 @@ function createArrangement(
     [segment.id, segment] as const,
     [segment.sourceSegmentId, segment] as const,
   ]));
-  const subtitleCues = clips.flatMap((clip) => {
-    const segment = segmentById.get(clip.sourceSegmentId) ?? segmentById.get(clip.segmentId);
+  const clipsBySegment = new Map<string, AllocationClip[]>();
+  for (const clip of clips) {
+    const group = clipsBySegment.get(clip.sourceSegmentId) ?? [];
+    group.push(clip);
+    clipsBySegment.set(clip.sourceSegmentId, group);
+  }
+  // 字幕按句段切一次:同一 sourceSegmentId 的多个 clip(句段内拼接)合并
+  // timeline 窗口,整句只切一次 cue,不会按 chunk 重复显示整句。
+  const subtitleCues = [...clipsBySegment.entries()].flatMap(([sourceSegmentId, segmentClips]) => {
+    const segment = segmentById.get(sourceSegmentId) ?? segmentById.get(segmentClips[0]!.segmentId);
     if (!segment?.text.trim()) return [];
     const parts = splitNarrationForDisplay(segment.text, { maxContentCharacters: 16 });
     if (parts.length === 0) return [];
     const weights = parts.map((part) => Math.max(1, Array.from(part.displayText.replace(/\s+/gu, '')).length));
     const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
-    const durationUs = clip.timelineEndUs - clip.timelineStartUs;
-    let cursorUs = clip.timelineStartUs;
+    const windowStartUs = Math.min(...segmentClips.map((clip) => clip.timelineStartUs));
+    const windowEndUs = Math.max(...segmentClips.map((clip) => clip.timelineEndUs));
+    const durationUs = windowEndUs - windowStartUs;
+    let cursorUs = windowStartUs;
     return parts.map((part, index) => {
       const endUs = index === parts.length - 1
-        ? clip.timelineEndUs
+        ? windowEndUs
         : Math.max(cursorUs + 1, Math.round(cursorUs + durationUs * weights[index]! / totalWeight));
       const cue = {
-        id: `subtitle:${clip.clipId}:${index + 1}`,
-        sourceSegmentId: clip.sourceSegmentId,
+        id: `subtitle:${segmentClips[0]!.clipId}:${index + 1}`,
+        sourceSegmentId,
         text: part.displayText,
         startUs: cursorUs,
         endUs,
@@ -708,6 +739,99 @@ function createArrangement(
     warnings: uniqueWarnings,
     blockers: uniqueBlockers,
   };
+}
+
+interface StitchCandidate {
+  asset: NormalizedAsset;
+  scene: NormalizedScene;
+  startUs: number;
+  lengthUs: number;
+  score: number;
+  tie: number;
+}
+
+/**
+ * 句段内拼接兜底:单区间装不下句段时,用语义最佳的场景 chunk 连续填满句段
+ * 时间线(与单条混剪的多镜头拼接一致)。打分沿用单区间公式;空闲区间耗尽
+ * 后允许一轮重叠兜底,与单区间路径的容忍语义一致。只在素材池有场景时调用,
+ * 因此总能填满;填满后登记 stitched-segment 警告。
+ */
+function stitchSegment(
+  normalized: NormalizedInput,
+  plan: NormalizedPlan,
+  segment: NormalizedSegment,
+  segmentIndex: number,
+  availableAssets: NormalizedAsset[],
+  usedIntervals: UsedInterval[],
+  usedOpeningAssets: Set<string>,
+  clips: AllocationClip[],
+  warnings: string[],
+): void {
+  const durationUs = Math.max(1, segment.endUs - segment.startUs);
+  let filledUs = 0;
+  let part = 0;
+  let overlapFallbackUsed = false;
+  while (filledUs < durationUs) {
+    const remainingUs = durationUs - filledUs;
+    const candidates: StitchCandidate[] = [];
+    for (const ignoreUsed of [false, true]) {
+      if (ignoreUsed && overlapFallbackUsed) continue;
+      for (const asset of availableAssets) {
+        for (const scene of asset.scenes) {
+          const used = ignoreUsed ? [] : usedIntervals.filter((entry) => entry.assetId === asset.assetId);
+          for (const [subStartUs, subEndUs] of freeSubIntervals(scene, used)) {
+            const lengthUs = Math.min(remainingUs, subEndUs - subStartUs);
+            if (lengthUs <= 0) continue;
+            const overlap = ignoreUsed
+              ? intervalOverlaps({ assetId: asset.assetId, startUs: subStartUs, endUs: subStartUs + lengthUs }, usedIntervals)
+                .reduce((sum, entry) => sum + overlapLength(subStartUs, subStartUs + lengthUs, entry.startUs, entry.endUs), 0)
+              : 0;
+            const semantic = semanticScore(segment, asset, scene);
+            const hook = segmentIndex === 0 && part === 0 ? hookScore(segment, asset, scene) : 0;
+            const sameOpening = segmentIndex === 0 && part === 0 && usedOpeningAssets.has(asset.assetId);
+            const reuseCount = usedIntervals.filter((entry) => entry.assetId === asset.assetId).length;
+            candidates.push({
+              asset,
+              scene,
+              startUs: subStartUs,
+              lengthUs,
+              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0),
+              tie: stableHash(`${normalized.seed}:${plan.planId}:${segment.id}:${asset.assetId}:${scene.index}:part:${part}`),
+            });
+          }
+        }
+      }
+      if (candidates.length) {
+        if (ignoreUsed) overlapFallbackUsed = true;
+        break;
+      }
+    }
+    if (!candidates.length) break;
+    candidates.sort((a, b) => b.score - a.score || b.lengthUs - a.lengthUs || a.tie - b.tie || a.asset.assetId.localeCompare(b.asset.assetId) || a.startUs - b.startUs);
+    const chunk = candidates[0]!;
+    part += 1;
+    const clip: AllocationClip = {
+      clipId: `${plan.planId}:clip:${segment.id}:part:${part}`,
+      segmentId: segment.id,
+      sourceSegmentId: segment.sourceSegmentId,
+      assetId: chunk.asset.assetId,
+      contentFingerprint: chunk.asset.fingerprint,
+      sourceStartUs: chunk.startUs,
+      sourceEndUs: chunk.startUs + chunk.lengthUs,
+      timelineStartUs: segment.startUs + filledUs,
+      timelineEndUs: segment.startUs + filledUs + chunk.lengthUs,
+      locked: false,
+      reason: 'semantic_stitch_fallback',
+      semanticScore: semanticScore(segment, chunk.asset, chunk.scene),
+      sceneIndex: chunk.scene.index,
+    };
+    clips.push(clip);
+    usedIntervals.push({ assetId: chunk.asset.assetId, startUs: clip.sourceStartUs, endUs: clip.sourceEndUs, planId: plan.planId, segmentId: segment.id });
+    if (segmentIndex === 0) usedOpeningAssets.add(chunk.asset.assetId);
+    filledUs += chunk.lengthUs;
+  }
+  if (overlapFallbackUsed) warnings.push(`source-overlap:${segment.id}`);
+  if (filledUs >= durationUs) warnings.push(`stitched-segment:${segment.id}`);
 }
 
 function assignOne(
@@ -828,7 +952,13 @@ function assignOne(
     candidates.sort((a, b) => b.score - a.score || a.overlap - b.overlap || a.tie - b.tie || a.asset.assetId.localeCompare(b.asset.assetId) || a.startUs - b.startUs);
     const candidate = candidates.find((entry) => entry.overlap === 0) ?? candidates[0];
     if (!candidate) {
-      blockers.push(`no-legal-media:${segment.id}`);
+      // 单区间装不下句段:素材池全空/无场景才保留 blocker,否则句段内拼接兜底。
+      const poolEmpty = availableAssets.length === 0 || availableAssets.every((asset) => asset.scenes.length === 0);
+      if (poolEmpty) {
+        blockers.push(`no-legal-media:${segment.id}`);
+        continue;
+      }
+      stitchSegment(normalized, plan, segment, segmentIndex, availableAssets, usedIntervals, usedOpeningAssets, clips, warnings);
       continue;
     }
     const semantic = semanticScore(segment, candidate.asset, candidate.scene);

@@ -8,7 +8,7 @@ function cleanStyle(raw: unknown, kind: 'coverPrimary' | 'coverSecondary', prese
   return normalizeTextStyle(raw, defaultTextStyle(kind, OUTPUT_PRESETS[preset].width));
 }
 
-function cleanFraming(raw: unknown): CoverFraming {
+export function cleanFraming(raw: unknown): CoverFraming {
   const value = raw && typeof raw === 'object' ? raw as Partial<CoverFraming> : {};
   const finite = (candidate: unknown, fallback: number) => Number.isFinite(candidate) ? Number(candidate) : fallback;
   return {
