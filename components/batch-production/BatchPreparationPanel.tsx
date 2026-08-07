@@ -1785,7 +1785,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         }
         return commonMain(
           <BatchStepExport
-            workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
+            workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', exportDirName: '', counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
             selectedPlanIds={selectedPlanIds}
             onTogglePlan={(planId, checked) => setSelectedPlanIds((current) => (
               checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)

@@ -33,6 +33,7 @@ try {
     taskName: '净水器主图任务',
     productCode: 'JSQ-A1',
     taskDate: '20260724',
+    exportDirName: 'project-a',
   };
   const first = reserveProjectExportTarget(storageRoot, identity);
   assert.equal(first.videoFilename, '成片-JSQ-A1-20260724.mp4');
@@ -46,7 +47,7 @@ try {
   assert.equal(second.videoFilename, '成片-JSQ-A1-20260724-02.mp4');
   assert.equal(second.coverFilename, '成片-JSQ-A1-20260724-02-封面.jpg');
 
-  const blocked = new Set([path.join('projects', identity.projectId, '成片', '成片-JSQ-A1-20260724-03.mp4')]);
+  const blocked = new Set([path.join('projects', identity.exportDirName, '成片', '成片-JSQ-A1-20260724-03.mp4')]);
   const third = reserveProjectExportTarget(storageRoot, identity, { blockedRelativePaths: blocked });
   assert.equal(third.videoFilename, '成片-JSQ-A1-20260724-04.mp4', '数据库仍登记的缺失文件也必须占用命名序号');
 
@@ -107,7 +108,7 @@ try {
   const unsafeProjectDir = path.join(storageRoot, 'projects', 'project-symlink');
   fs.mkdirSync(unsafeProjectDir, { recursive: true });
   fs.symlinkSync(outside, path.join(unsafeProjectDir, '成片'));
-  assert.throws(() => reserveProjectExportTarget(storageRoot, { ...identity, projectId: 'project-symlink' }), /符号链接|unsafe/i);
+  assert.throws(() => reserveProjectExportTarget(storageRoot, { ...identity, projectId: 'project-symlink', exportDirName: 'project-symlink' }), /符号链接|unsafe/i);
   fs.rmSync(outside, { recursive: true, force: true });
 } finally {
   fs.rmSync(storageRoot, { recursive: true, force: true });

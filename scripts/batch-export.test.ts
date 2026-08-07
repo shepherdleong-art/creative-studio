@@ -28,6 +28,7 @@ async function run(): Promise<void> {
     taskDate: '2026-08-03T00:00:00.000Z',
     planSeq: 2,
     outputVersion: 3,
+    exportDirName: 'project-1',
   });
   // 命名合约与单条模式一致:成片-<产品编码>-<YYYYMMDD>-<两位成片序号>,首次导出不带重复后缀
   assert.equal(target.videoFilename, '成片-床垫 A-20260803-02.mp4');
@@ -71,6 +72,7 @@ async function run(): Promise<void> {
     taskDate: '20260803',
     planSeq: 2,
     outputVersion: 3,
+    exportDirName: 'project-1',
   });
   assert.equal(second.exportSequence, 2, 're-export must use a new export sequence');
   assert.equal(second.videoFilename, '成片-床垫 A-20260803-02-02.mp4', '重复导出同一条成片才往后排序号');
@@ -80,7 +82,7 @@ async function run(): Promise<void> {
 
   const sanitizedTraversal = reserveBatchExportTarget({
     storageRoot, projectId: 'project-1', batchId: 'batch-1', productCode: '../../escape',
-    taskDate: '20260803', planSeq: 1, outputVersion: 1,
+    taskDate: '20260803', planSeq: 1, outputVersion: 1, exportDirName: 'project-1',
   });
   assert.equal(path.dirname(sanitizedTraversal.videoAbsolutePath), path.join(storageRoot, 'projects', 'project-1', '成片'));
   assert.equal(sanitizedTraversal.videoFilename, '成片-....escape-20260803-01.mp4');
@@ -93,17 +95,26 @@ async function run(): Promise<void> {
   await assert.rejects(
     Promise.resolve().then(() => reserveBatchExportTarget({
       storageRoot, projectId: 'project-symlink', batchId: 'batch-1', productCode: 'safe',
-      planSeq: 1, outputVersion: 1,
+      planSeq: 1, outputVersion: 1, exportDirName: 'project-symlink',
     })),
     /符号链接|symlink|路径/i,
   );
 
   const released = reserveBatchExportTarget({
     storageRoot, projectId: 'project-2', batchId: 'batch-2', productCode: 'safe',
-    planSeq: 1, outputVersion: 1,
+    planSeq: 1, outputVersion: 1, exportDirName: 'project-2',
   });
   releaseBatchExportReservation(storageRoot, released);
   assert.ok(!fs.existsSync(released.reservationAbsolutePath));
+
+  // 导出目录名由调用方解析(<产品编码>-<日期>),不在本模块内重算
+  const namedDir = reserveBatchExportTarget({
+    storageRoot, projectId: 'project-3', batchId: 'batch-3', productCode: 'G564',
+    taskDate: '20260807', planSeq: 1, outputVersion: 1, exportDirName: 'G564-20260807',
+  });
+  assert.equal(path.dirname(namedDir.videoAbsolutePath), path.join(storageRoot, 'projects', 'G564-20260807', '成片'));
+  assert.equal(namedDir.videoFilename, '成片-G564-20260807-01.mp4');
+  releaseBatchExportReservation(storageRoot, namedDir);
 
   console.log('batch-export tests passed');
 }

@@ -67,4 +67,5 @@ export const CORE_DB_MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId)`,
   `ALTER TABLE script_providers ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external' CHECK(executionScope IN ('external','company'))`,
   `ALTER TABLE projects ADD COLUMN videoConcurrency INTEGER NOT NULL DEFAULT 10`,
+  `ALTER TABLE projects ADD COLUMN exportDirName TEXT NOT NULL DEFAULT ''`,
 ];

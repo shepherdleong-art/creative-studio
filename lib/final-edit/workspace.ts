@@ -36,6 +36,7 @@ import { normalizeCoverPreset } from './title-presets.ts';
 import { CoverFrameError, materializeCoverFrame, resolveCoverFrameSource } from './cover-frame.ts';
 import { FinalEditError } from './errors.ts';
 import { formatShanghaiTaskDate } from './export-identity.ts';
+import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { releaseReservedExportTarget, reserveProjectExportTarget } from './export-naming.ts';
 import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts';
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
@@ -2053,6 +2054,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       taskName: project.name,
       productCode: project.productCode || '',
       taskDate: formatShanghaiTaskDate(project.createdAt),
+      exportDirName: resolveProjectExportDirName(db, group.projectId),
     };
     const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(group.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
     const exportTarget = reserveProjectExportTarget(storageRoot, exportIdentity, { blockedRelativePaths });

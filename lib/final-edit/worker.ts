@@ -4,6 +4,7 @@ import { dataRoot } from '../data-root';
 import { renderFinalEditSnapshot, type FinalEditRenderSnapshot } from './renderer';
 import { runFinalEditHeavyJob } from './heavy-job-lock';
 import { formatShanghaiTaskDate } from './export-identity';
+import { resolveProjectExportDirName } from '../project-export-dir';
 import { publishReservedExportTarget, reserveProjectExportTarget, restorePublishedExportReservation } from './export-naming';
 import { buildPublishedJobOutput, registerPublishedArtifacts } from './project-artifacts';
 import { FinalEditError } from './errors';
@@ -35,6 +36,7 @@ async function drain() {
             taskName: project.name,
             productCode: project.productCode || '',
             taskDate: formatShanghaiTaskDate(project.createdAt),
+            exportDirName: resolveProjectExportDirName(db, job.projectId),
           };
           const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(job.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
           snapshot = { ...snapshot, exportIdentity, exportTarget: reserveProjectExportTarget(path.join(dataRoot(), 'storage'), exportIdentity, { blockedRelativePaths }) };

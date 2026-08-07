@@ -268,6 +268,11 @@ export interface ExportIdentity {
    */
   productCode: string;
   taskDate: string;
+  /**
+   * 成片导出目录名(`<产品编码>-<YYYYMMDD>`),由 `resolveProjectExportDirName`
+   * 解析后传入,调用方负责落库。空字符串会被当作 `projectId` 处理。
+   */
+  exportDirName: string;
 }
 
 export interface FinalEditBgmTrackView {

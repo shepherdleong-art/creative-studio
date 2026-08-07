@@ -79,13 +79,17 @@ for (const sql of CORE_DB_MIGRATIONS) {
 
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE projects ADD COLUMN videoConcurrency INTEGER NOT NULL DEFAULT 10`,
+  `ALTER TABLE projects ADD COLUMN exportDirName TEXT NOT NULL DEFAULT ''`,
   'new core migrations must be appended without rewriting published entries',
 );
 const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
 assert.ok(
   projectColumns.some((column) => column.name === 'videoConcurrency'),
   'projects.videoConcurrency should be added when migrating older installed databases',
+);
+assert.ok(
+  projectColumns.some((column) => column.name === 'exportDirName'),
+  'projects.exportDirName should be added when migrating older installed databases',
 );
 const shotIndexes = db.prepare(`PRAGMA index_list(shots)`).all() as Array<{ name: string }>;
 assert.ok(

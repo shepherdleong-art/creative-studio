@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
+import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../final-edit/storage-path.ts';
 // 命名合约与单条模式共用同一处纯函数,避免两边各写一份后慢慢漂移。
 import { formatShanghaiTaskDate } from '../final-edit/export-identity.ts';
@@ -453,6 +454,7 @@ export async function publishSelectedBatchOutputs(
         taskDate: taskDate ?? options.now?.() ?? new Date(),
         planSeq: row.seq,
         outputVersion: row.versionNumber,
+        exportDirName: resolveProjectExportDirName(db, projectId),
       });
       let output;
       try {
