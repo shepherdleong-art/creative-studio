@@ -6,6 +6,7 @@ import type Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { dataRoot } from '../data-root.ts';
 import { probeDurationSec, probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
+import { writeLog } from '../logger.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
 import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
 import { applyFrozenCoverTitleToFile, escapeXml } from './cover-title.ts';
@@ -717,7 +718,17 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     subtitlePaths.forEach((subtitlePath) => args.push('-loop', '1', '-framerate', '24', '-i', subtitlePath));
     const filters = snapshot.clips.map((clip, index) => clipFilter(index, clip, outputSize.width, outputSize.height, (clip.timelineEndUs - clip.timelineStartUs) / 1_000_000));
     filters.push(`${snapshot.clips.map((_, index) => `[clip${index}]`).join('')}concat=n=${snapshot.clips.length}:v=1:a=0[vconcat]`);
-    if (targetDurationSec > visualDurationUs / 1_000_000 + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(targetDurationSec - visualDurationUs / 1_000_000).toFixed(6)},trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
+    // 回归探针:画面与口播对齐后,下面的 tpad/trim 应是 no-op;偏差超过
+    // 0.15 秒说明"声画又各走各的"了,记 warning 供排查,不阻塞渲染。
+    const visualDurationSec = visualDurationUs / 1_000_000;
+    if (Math.abs(targetDurationSec - visualDurationSec) > 0.15) {
+      writeLog({
+        projectId: input.projectId,
+        level: 'warn',
+        message: `渲染对齐偏差过大:画面 ${visualDurationSec.toFixed(3)}s vs 口播 ${targetDurationSec.toFixed(3)}s（偏差 ${Math.abs(targetDurationSec - visualDurationSec).toFixed(3)}s）batch=${input.batchId} plan=${input.planId} outputVersion=${input.outputVersionId}`,
+      });
+    }
+    if (targetDurationSec > visualDurationSec + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(targetDurationSec - visualDurationSec).toFixed(6)},trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
     else filters.push(`[vconcat]trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
     let currentVideoLabel = 'vbase';
     const subtitleStartInput = audioInput + 1 + (bgm ? 1 : 0);

@@ -548,13 +548,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           semantic.length > 0 ? `${semanticSucceeded}/${semantic.length}` : undefined,
           semantic.length > 0 ? semanticSucceeded / semantic.length : undefined,
         ),
-        stage('自动配画面', allocationDone ? 'done' : 'running'),
         stage(
           '生成口播',
           narration.length === 0 ? 'waiting' : narrationFailed > 0 ? 'failed' : narrationActive > 0 ? 'running' : 'done',
           narration.length > 0 ? `${narrationSucceeded}/${narration.length}` : undefined,
           narration.length > 0 ? narrationSucceeded / narration.length : undefined,
         ),
+        stage('自动配画面', allocationDone ? 'done' : 'running'),
         stage(
           '渲染成片',
           renders.length === 0 ? 'waiting' : renderFailed > 0 ? 'failed' : renderActive > 0 ? 'running' : 'done',
