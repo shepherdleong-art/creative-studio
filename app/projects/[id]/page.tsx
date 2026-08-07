@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
+import ManagedDeploymentNotice from '@/components/managed-deployment/ManagedDeploymentNotice';
+import { useManagedDeployment } from '@/components/managed-deployment/ManagedDeploymentProvider';
 import JobQueueTable from '@/components/JobQueueTable';
 import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
 import SceneReferencePanel from '@/components/SceneReferencePanel';
@@ -105,6 +107,15 @@ function toAssetGridItem(img: ImageAsset): AssetGridItem {
 }
 
 export default function ProjectDetailPage() {
+  const deployment = useManagedDeployment();
+  if (deployment.loading) {
+    return <div className='mx-auto max-w-5xl animate-pulse rounded-[22px] bg-surface-subtle py-24' aria-busy='true' />;
+  }
+  if (deployment.locked) return <ManagedDeploymentNotice status={deployment.status} />;
+  return <ProjectDetailWorkspace />;
+}
+
+function ProjectDetailWorkspace() {
   const params = useParams();
   const searchParams = useSearchParams();
   const id = params.id as string;
@@ -113,6 +124,7 @@ export default function ProjectDetailPage() {
   type QueueStatus = 'idle' | 'running' | 'paused';
 
   const [project, setProject] = useState<Project | null>(null);
+  const [projectProviderBlocked, setProjectProviderBlocked] = useState('');
   const [providers, setProviders] = useState<ImageProvider[]>([]);
   const [loading, setLoading] = useState(true);
   const [queueStatus, setQueueStatus] = useState<QueueStatus>('idle');
@@ -143,10 +155,18 @@ export default function ProjectDetailPage() {
     try {
       const res = await fetch(`/api/projects/${id}`);
       const data = await res.json();
+      if (!res.ok && data?.code === 'managed_provider_not_allowed') {
+        setProject(null);
+        setProjectProviderBlocked(typeof data.message === 'string'
+          ? data.message
+          : '该供应商不在公司受管配置中');
+        return;
+      }
       if (data.error) {
         console.error(data.error);
         return;
       }
+      setProjectProviderBlocked('');
       setProject(data);
       if (!editingShotPromptRef.current) setShotPromptDraft(data.shotPrompt || '');
 
@@ -448,6 +468,22 @@ export default function ProjectDetailPage() {
         <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent" />
         <p className="text-ink-tertiary">加载项目...</p>
       </div>
+    );
+  }
+
+  if (projectProviderBlocked) {
+    return (
+      <section className='card border-warn/25 bg-warn/[0.04] p-6' role='alert'>
+        <div className='flex items-start gap-3'>
+          <Icon name='lock' size={20} className='mt-0.5 shrink-0 text-warn' />
+          <div>
+            <h1 className='text-lg font-semibold text-ink'>历史供应商不可用</h1>
+            <p className='mt-1 text-sm text-ink-secondary'>{projectProviderBlocked}</p>
+            <p className='mt-1 text-sm text-ink-secondary'>此项目不会自动改用其他供应商。请新建项目并显式选择公司供应商。</p>
+            <Link href='/projects/new' className='btn-primary btn-sm mt-4 inline-flex'>新建项目</Link>
+          </div>
+        </div>
+      </section>
     );
   }
 
@@ -899,7 +935,7 @@ function resolveSelectableImageProviderId(providers: ImageProvider[], providerId
   const selectableProviders = getSelectableImageProviders(providers);
   return selectableProviders.some((provider) => provider.id === providerId)
     ? providerId
-    : selectableProviders[0]?.id || '';
+    : '';
 }
 
 function ImageProviderSelect({

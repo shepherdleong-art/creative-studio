@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import ManagedDeploymentNotice from '@/components/managed-deployment/ManagedDeploymentNotice';
+import { useManagedDeployment } from '@/components/managed-deployment/ManagedDeploymentProvider';
 
 interface Provider {
   id: string;
@@ -20,10 +22,12 @@ interface Props {
 }
 
 export default function ProviderSettings({ selectedId, onSelect }: Props) {
+  const deployment = useManagedDeployment();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (deployment.loading || deployment.locked) return;
     fetch('/api/providers')
       .then((r) => r.json())
       .then((data: Provider[]) => {
@@ -35,7 +39,10 @@ export default function ProviderSettings({ selectedId, onSelect }: Props) {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
+  }, [deployment.loading, deployment.locked]);
+
+  if (deployment.loading) return <div className='py-4 text-sm text-ink-secondary'>正在读取工作台状态…</div>;
+  if (deployment.locked) return <ManagedDeploymentNotice status={deployment.status} compact />;
 
   if (loading) {
     return <div className="py-4 text-sm text-ink-secondary">加载供应商列表...</div>;

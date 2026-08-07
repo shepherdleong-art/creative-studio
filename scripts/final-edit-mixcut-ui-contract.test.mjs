@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const panel = fs.readFileSync('components/mixcut/MixcutPanel.tsx', 'utf8');
+const shell = fs.readFileSync('components/mixcut/MixcutShell.tsx', 'utf8');
 const sidebar = fs.readFileSync('components/mixcut/MixcutSidebar.tsx', 'utf8');
 const materialStep = fs.readFileSync('components/mixcut/MaterialStep.tsx', 'utf8');
 const creationStep = fs.readFileSync('components/mixcut/CreationStep.tsx', 'utf8');
@@ -12,7 +13,10 @@ const timeline = fs.readFileSync('components/mixcut/MixcutTimeline.tsx', 'utf8')
 const narrationSpeedControl = fs.readFileSync('components/mixcut/NarrationPlaybackRateControl.tsx', 'utf8');
 const finalPreview = fs.readFileSync('components/final-edit/FinalEditPreview.tsx', 'utf8');
 const exportStep = fs.readFileSync('components/mixcut/ExportStep.tsx', 'utf8');
-const styles = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
+const styles = [
+  fs.readFileSync('components/mixcut/mixcut-shell.module.css', 'utf8'),
+  fs.readFileSync('components/mixcut/mixcut-content.module.css', 'utf8'),
+].join('\n');
 const workspace = fs.readFileSync('components/mixcut/MixcutWorkspace.tsx', 'utf8');
 const page = fs.readFileSync('app/projects/[id]/page.tsx', 'utf8');
 const workbenchTabs = fs.readFileSync('components/ProjectWorkbenchTabs.tsx', 'utf8');
@@ -191,7 +195,10 @@ assert.match(styles, /\.narrationSpeedPresets\s*{[^}]*grid-template-columns:\s*r
 assert.match(finalPreview, /narration\.playbackRate = narrationPlaybackRate/, '成片预览必须把保存的倍速应用到真实 audio 元素');
 assert.match(styles, /\.tlLabels\s*{[^}]*flex-shrink:\s*0/s, '轨道标签必须位于横向滚动容器外并保持可见');
 assert.match(styles, /\.tlScroll\s*{[^}]*overflow-x:\s*auto/s, '正式时间轴必须允许横向滚动');
-assert.deepEqual([...new Set([...panel.matchAll(/localStorage\.(?:getItem|setItem)\('([^']+)'/g)].map((match) => match[1]))], ['mixcut-layout-v2'], '浏览器 storage 只能保存无业务含义的布局偏好');
+assert.match(shell, /layoutStorageKey = 'mixcut-layout-v2'/, '单条混剪必须沿用唯一的布局偏好 key');
+assert.match(shell, /localStorage\.getItem\(layoutStorageKey\)/);
+assert.match(shell, /localStorage\.setItem\(layoutStorageKey/);
+assert.doesNotMatch([panel, materialStep, creationStep, previewStep, timeline, exportStep].join('\n'), /localStorage|sessionStorage/, '业务组件不得写浏览器 storage');
 assert.doesNotMatch(previewStep, /localStorage|sessionStorage/, '正式编辑和运行态不得落浏览器 storage');
 assert.match(panel, /<ExportStep/, '正式 MixcutPanel 必须挂载 ExportStep');
 assert.match(exportStep, /导出并写回项目/);

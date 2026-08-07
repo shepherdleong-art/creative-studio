@@ -3,10 +3,13 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
+import { useManagedDeployment } from '@/components/managed-deployment/ManagedDeploymentProvider';
 
 export default function Header() {
+  const deployment = useManagedDeployment();
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const newProjectLocked = deployment.loading || deployment.locked;
 
   const handleStop = async () => {
     setStopping(true);
@@ -28,10 +31,22 @@ export default function Header() {
       </Link>
       <nav className="ml-auto flex items-center gap-4">
         <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
-        <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
-        <Link href="/projects/new" className="btn-primary btn-sm">
-          <Icon name="plus" size={15} /> 新建项目
+        <Link href='/settings' className='text-ink-secondary transition-colors hover:text-ink'>
+          {deployment.status?.managed ? '公司配置' : '供应商'}
         </Link>
+        {newProjectLocked ? (
+          <span
+            className='btn-secondary btn-sm cursor-not-allowed opacity-60'
+            aria-disabled='true'
+            title={deployment.loading ? '正在读取工作台状态' : '请先导入公司配置并等待 LiteLLM 就绪'}
+          >
+            <Icon name='lock' size={14} /> 新建项目
+          </span>
+        ) : (
+          <Link href='/projects/new' className='btn-primary btn-sm'>
+            <Icon name='plus' size={15} /> 新建项目
+          </Link>
+        )}
         <button
           onClick={() => setShowStopConfirm(true)}
           className="icon-btn text-ink-tertiary hover:text-fail"

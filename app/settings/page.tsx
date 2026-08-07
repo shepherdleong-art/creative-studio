@@ -10,6 +10,8 @@ import {
   scriptProviderProtocolFields,
 } from '@/lib/script-providers/config';
 import type { ApiStyle, ProviderExecutionScope } from '@/lib/script-providers/types';
+import ManagedProviderSettings from '@/components/managed-deployment/ManagedProviderSettings';
+import { useManagedDeployment } from '@/components/managed-deployment/ManagedDeploymentProvider';
 
 type Category = 'image' | 'script' | 'video' | 'tts' | 'storage';
 
@@ -103,6 +105,15 @@ const sections: Array<{ id: Category; title: string; description: string; icon: 
 ];
 
 export default function SettingsPage() {
+  const deployment = useManagedDeployment();
+  if (deployment.loading) {
+    return <div className='mx-auto max-w-5xl animate-pulse rounded-[22px] bg-surface-subtle py-24' aria-busy='true' />;
+  }
+  if (deployment.status?.phase === 'unrestricted') return <UnrestrictedSettingsPage />;
+  return <ManagedProviderSettings />;
+}
+
+function UnrestrictedSettingsPage() {
   const [active, setActive] = useState<Category>('image');
   const [imageProviders, setImageProviders] = useState<ImageProvider[]>([]);
   const [scriptProviders, setScriptProviders] = useState<ScriptProvider[]>([]);

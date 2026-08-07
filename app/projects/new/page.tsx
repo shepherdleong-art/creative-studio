@@ -6,6 +6,8 @@ import Link from 'next/link';
 import ProviderSettings from '@/components/ProviderSettings';
 import ImageUploader from '@/components/ImageUploader';
 import type { UploadedFile } from '@/components/ImageUploader';
+import ManagedDeploymentNotice from '@/components/managed-deployment/ManagedDeploymentNotice';
+import { useManagedDeployment } from '@/components/managed-deployment/ManagedDeploymentProvider';
 import {
   getImageModelCapabilities,
 } from '@/lib/image-model-capabilities';
@@ -47,6 +49,15 @@ interface Provider {
 }
 
 export default function NewProjectPage() {
+  const deployment = useManagedDeployment();
+  if (deployment.loading) {
+    return <div className='mx-auto max-w-3xl animate-pulse rounded-[22px] bg-surface-subtle py-24' aria-busy='true' />;
+  }
+  if (deployment.locked) return <ManagedDeploymentNotice status={deployment.status} />;
+  return <NewProjectWorkspace />;
+}
+
+function NewProjectWorkspace() {
   const router = useRouter();
 
   // ── Project info ──

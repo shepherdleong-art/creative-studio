@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import Header from "@/components/Header";
+import { ManagedDeploymentProvider } from "@/components/managed-deployment/ManagedDeploymentProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,16 +25,18 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" className="h-full antialiased">
       <body className="min-h-full flex flex-col bg-surface text-ink">
-        <Header />
-        <main className="flex-1 w-full max-w-[980px] mx-auto px-6 py-10">
-          <Suspense fallback={
-            <div className="flex items-center justify-center py-20">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-            </div>
-          }>
-            {children}
-          </Suspense>
-        </main>
+        <ManagedDeploymentProvider>
+          <Header />
+          <main className="flex-1 w-full max-w-[980px] mx-auto px-6 py-10">
+            <Suspense fallback={
+              <div className="flex items-center justify-center py-20">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+              </div>
+            }>
+              {children}
+            </Suspense>
+          </main>
+        </ManagedDeploymentProvider>
       </body>
     </html>
   );

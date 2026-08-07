@@ -233,7 +233,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
     ? regenProviderId
     : (selectableProviders.some((provider) => provider.id === selectedJob?.providerId)
       ? selectedJob?.providerId || ''
-      : selectableProviders[0]?.id || '');
+      : '');
   const selectedProvider = selectableProviders.find((provider) => provider.id === selectedProviderId);
 
   const getImageUrl = (asset: ImageAsset | undefined): string | null => asset?.imageUrl || null;
@@ -322,7 +322,9 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
     if (!selectedJob) return;
     setRegenPrompt(selectedJob.prompt || '');
     setRegenInputSource('original');
-    setRegenProviderId(selectedJob.providerId || selectableProviders[0]?.id || '');
+    setRegenProviderId(selectableProviders.some((provider) => provider.id === selectedJob.providerId)
+      ? selectedJob.providerId || ''
+      : '');
     setExtraUploads([]);
 
     // Default base = original → exclude original from refs
@@ -377,6 +379,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
   const handleSubmitRegen = () => {
     if (!selectedJob) return;
     if (!regenPrompt.trim()) { alert('请输入提示词'); return; }
+    if (!selectedProviderId) { alert('请显式选择可用的公司供应商'); return; }
     // Normalize: ensure base image is NOT in reference list
     const normalizedRefIds = selectedReferenceIds.filter((id) => id !== baseImageId);
     onRegenerate(selectedJob.id, {
@@ -567,6 +570,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                               onChange={(e) => setRegenProviderId(e.target.value)}
                               className="input-field text-sm"
                             >
+                              <option value="" disabled>请选择公司供应商</option>
                               {selectableProviders.map((provider) => (
                                 <option key={provider.id} value={provider.id}>
                                   {provider.name} ({provider.model})
@@ -574,7 +578,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                               ))}
                             </select>
                             <p className="mt-1 text-xs text-ink-tertiary">
-                              本次重新生成会使用：{selectedProvider?.model || selectedJob.model || '原任务模型'}
+                              本次重新生成会使用：{selectedProvider?.model || '请先选择供应商'}
                             </p>
                           </div>
                         )}
@@ -657,7 +661,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
 
                         <div className="flex gap-2">
                           <button onClick={() => setRegenOpen(false)} className="btn-secondary btn-sm">取消</button>
-                          <button onClick={handleSubmitRegen} disabled={!regenPrompt.trim()} className="btn-primary btn-sm">创建并开始重新生成</button>
+                          <button onClick={handleSubmitRegen} disabled={!regenPrompt.trim() || !selectedProviderId} className="btn-primary btn-sm">创建并开始重新生成</button>
                         </div>
                       </div>
                     )}

@@ -17,7 +17,7 @@ const EMPTY_STATUS: ProvisioningStatus = {
   configHashPrefix: null,
 };
 
-export default function ProvisioningImportCard({ onImported }: { onImported?: () => Promise<void> }) {
+export default function ProvisioningImportCard({ onImported }: { onImported?: (status: ProvisioningStatus) => Promise<void> | void }) {
   const [status, setStatus] = useState<ProvisioningStatus>(EMPTY_STATUS);
   const [file, setFile] = useState<File | null>(null);
   const [password, setPassword] = useState('');
@@ -61,10 +61,10 @@ export default function ProvisioningImportCard({ onImported }: { onImported?: ()
       const value = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof value?.error === 'string' ? value.error : '统一配置导入失败');
       setStatus(value as ProvisioningStatus);
-      setMessage('导入成功。请关闭并重新打开工作台，使公司网关加载新配置。');
+      setMessage('导入成功，公司模型服务正在启动。');
       setPassword('');
       setFile(null);
-      await onImported?.();
+      await onImported?.(value as ProvisioningStatus);
       const input = document.getElementById('provisioning-file') as HTMLInputElement | null;
       if (input) input.value = '';
     } catch (cause) {

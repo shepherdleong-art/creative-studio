@@ -256,11 +256,11 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     redoInitKeyRef.current = nextInitKey;
     const selectedCandidate = getSelectedResultCandidate(shot);
     if (shot && selectedCandidate) {
-      applyRedoDefaultsFromCandidate(selectedCandidate, shot, selectableProviders[0]?.id || '');
+      applyRedoDefaultsFromCandidate(selectedCandidate, shot, '');
       return;
     }
     if (shot) {
-      const defaults = getRedoFormDefaults(shot, selectableProviders[0]?.id || '');
+      const defaults = getRedoFormDefaults(shot, '');
       setRedoInputSource(defaults.inputSource);
       setRedoReferenceIds(defaults.referenceIds);
       setRedoProviderId(defaults.providerId);
@@ -270,8 +270,8 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     setRedoPrompt('');
     setRedoInputSource('original');
     setRedoReferenceIds([]);
-    setRedoProviderId(selectableProviders[0]?.id || '');
-  }, [applyRedoDefaultsFromCandidate, getSelectedResultCandidate, selectableProviders]);
+    setRedoProviderId('');
+  }, [applyRedoDefaultsFromCandidate, getSelectedResultCandidate]);
 
   const openPreview = (setId: string, idx: number) => {
     const nextShots = shotsBySet[setId] || [];
@@ -325,7 +325,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     ? redoProviderId
     : (selectableProviders.some((provider) => provider.id === currentPreviewShot?.providerId)
       ? currentPreviewShot?.providerId || ''
-      : selectableProviders[0]?.id || '');
+      : '');
   const selectedRedoProvider = selectableProviders.find((provider) => provider.id === selectedRedoProviderId);
   const redoReferenceCandidates = (() => {
     if (!currentPreviewShot) return [];
@@ -398,7 +398,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     if (selectingResultId) return;
     if (!previewSetId || previewIndex === null || !currentPreviewShot) return;
     if (candidate.imageAssetId === currentPreviewShot.latestGeneratedImageId) {
-      applyRedoDefaultsFromCandidate(candidate, currentPreviewShot, selectableProviders[0]?.id || '');
+      applyRedoDefaultsFromCandidate(candidate, currentPreviewShot, '');
       return;
     }
     const previousShot = currentPreviewShot;
@@ -423,7 +423,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
         } : shot),
       };
     });
-    applyRedoDefaultsFromCandidate(candidate, previousShot, selectableProviders[0]?.id || '');
+    applyRedoDefaultsFromCandidate(candidate, previousShot, '');
     try {
       const res = await fetch(`/api/shot-sets/${previewSetId}`, {
         method: 'PATCH',
@@ -470,6 +470,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     const shot = previewShots[previewIndex];
     if (!shot?.latestJobId) { alert('该分镜还没有可重做的生成任务'); return; }
     if (!redoPrompt.trim()) { alert('请填写提示词'); return; }
+    if (!selectedRedoProviderId) { alert('请显式选择可用的公司供应商'); return; }
     if (!REDOABLE_STATUSES.has(shot.jobStatus || '')) { alert('当前任务尚在生成中，请稍后再重做'); return; }
     setRedoing(true);
     try {
@@ -828,6 +829,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                             onChange={(e) => setRedoProviderId(e.target.value)}
                             className="input-field text-xs"
                           >
+                            <option value="" disabled>请选择公司供应商</option>
                             {selectableProviders.map((provider) => (
                               <option key={provider.id} value={provider.id}>
                                 {provider.name} ({provider.model})
@@ -835,7 +837,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                             ))}
                           </select>
                           <div className="mt-1 text-[11px] text-white/45">
-                            本次使用：{selectedRedoProvider?.model || selectedResult?.model || shot.model || '原任务模型'}
+                            本次使用：{selectedRedoProvider?.model || '请先选择供应商'}
                           </div>
                         </section>
                       )}
@@ -876,7 +878,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                       </section>
 
                       <div className="flex flex-col items-stretch gap-2">
-                        <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-primary btn-sm w-full text-xs">{redoing ? '提交中…' : '重新生成'}</button>
+                        <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim() || !selectedRedoProviderId} className="btn-primary btn-sm w-full text-xs">{redoing ? '提交中…' : '重新生成'}</button>
                         {!canRedo && <span className="text-[11px] text-ink-tertiary">{shot.latestJobId ? '任务生成中，完成后可重做' : '该分镜尚未生成，无法重做'}</span>}
                       </div>
                     </div>
@@ -889,7 +891,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                 <button onClick={() => goPreview(-1)} disabled={isFirst} className="btn-secondary btn-sm text-xs disabled:opacity-40"><Icon name="chevron-left" size={13} /> 上一张</button>
                 <button onClick={() => goPreview(1)} disabled={isLast} className="btn-secondary btn-sm text-xs disabled:opacity-40">下一张 <Icon name="chevron-right" size={13} /></button>
                 <span className="mx-1 text-white/20">|</span>
-                <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim()} className="btn-secondary btn-sm text-xs text-accent"><Icon name="retry" size={13} /> {redoing ? '提交中…' : '重新生成'}</button>
+                <button onClick={handleRedo} disabled={redoing || !canRedo || !redoPrompt.trim() || !selectedRedoProviderId} className="btn-secondary btn-sm text-xs text-accent"><Icon name="retry" size={13} /> {redoing ? '提交中…' : '重新生成'}</button>
                 {genUrl && <a href={genUrl} download className="btn-primary btn-sm text-xs sm:ml-auto"><Icon name="download" size={13} /> 下载</a>}
               </div>
             </div>

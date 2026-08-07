@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
+import ManagedDeploymentNotice from '@/components/managed-deployment/ManagedDeploymentNotice';
+import { useManagedDeployment } from '@/components/managed-deployment/ManagedDeploymentProvider';
 
 interface Project {
   id: string;
@@ -43,6 +45,20 @@ const STATUS_CLASS: Record<string, string> = {
 };
 
 export default function HomePage() {
+  const deployment = useManagedDeployment();
+  if (deployment.loading) {
+    return (
+      <div className='space-y-8' aria-busy='true'>
+        <div className='mx-auto h-12 w-72 animate-pulse rounded-2xl bg-surface-subtle' />
+        <div className='mx-auto h-5 w-96 max-w-full animate-pulse rounded-xl bg-surface-subtle' />
+        <div className='h-32 animate-pulse rounded-[22px] bg-surface-subtle' />
+      </div>
+    );
+  }
+  return <HomeContent locked={deployment.locked} status={deployment.status} />;
+}
+
+function HomeContent({ locked, status }: { locked: boolean; status: Parameters<typeof ManagedDeploymentNotice>[0]['status'] }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus>({ total: 0, configured: 0 });
   const [loading, setLoading] = useState(true);
@@ -57,6 +73,7 @@ export default function HomePage() {
 
   useEffect(() => {
     loadProjects();
+    if (locked) return;
     fetch('/api/providers')
       .then((r) => r.json())
       .then((data: Array<{ hasApiKey: boolean; enabled: number }>) => {
@@ -67,7 +84,7 @@ export default function HomePage() {
         });
       })
       .catch(() => {});
-  }, []);
+  }, [locked]);
 
   const handleDelete = async (id: string) => {
     if (!confirm('确定删除此项目？所有关联的图片和任务将被清除。')) return;
@@ -76,7 +93,7 @@ export default function HomePage() {
   };
 
   const hasProjects = projects.length > 0;
-  const isFirstUse = !loading && !hasProjects && providerStatus.configured === 0;
+  const isFirstUse = !locked && !loading && !hasProjects && providerStatus.configured === 0;
 
   const steps = [
     { n: 1, title: '优先导入统一配置', body: (<>在「<Link href="/settings#provisioning" className="link-accent">统一配置导入</Link>」选择管理员提供的加密文件并输入一次密码</>) },
@@ -95,10 +112,16 @@ export default function HomePage() {
           场景图生产 · 分镜管理 · 视频任务准备。从一张场景图出发，自动并发、保存、导出。
         </p>
         <div className="mt-7 flex items-center justify-center gap-5">
-          <Link href="/projects/new" className="btn-primary px-6 py-3 text-base">新建项目</Link>
-          {!isFirstUse && <Link href="/settings" className="link-accent text-base">供应商配置 ›</Link>}
+          {locked ? (
+            <span className='btn-secondary px-6 py-3 text-base opacity-60' aria-disabled='true'>新建项目（等待配置）</span>
+          ) : (
+            <Link href='/projects/new' className='btn-primary px-6 py-3 text-base'>新建项目</Link>
+          )}
+          {(!isFirstUse || locked) && <Link href='/settings#provisioning' className='link-accent text-base'>统一配置设置 ›</Link>}
         </div>
       </section>
+
+      {locked && status && <ManagedDeploymentNotice status={status} />}
 
       {/* First-use guide */}
       {isFirstUse && (
@@ -155,7 +178,7 @@ export default function HomePage() {
             </div>
             <h3 className="mb-2 text-lg font-medium text-ink">暂无项目</h3>
             <p className="mb-5 text-sm text-ink-tertiary">创建第一个批量图片编辑项目</p>
-            <Link href="/projects/new" className="btn-primary">新建项目</Link>
+            {!locked && <Link href='/projects/new' className='btn-primary'>新建项目</Link>}
           </div>
         ) : hasProjects ? (
           <div className="space-y-3">
@@ -197,14 +220,14 @@ export default function HomePage() {
                     </div>
                   )}
                 </div>
-                <button
+                {!locked && <button
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDelete(p.id); }}
                   className="icon-btn shrink-0 text-ink-tertiary hover:text-fail"
                   title="删除"
                   aria-label="删除"
                 >
                   <Icon name="trash" size={17} />
-                </button>
+                </button>}
                 <Icon name="chevron-right" size={20} className="shrink-0 text-ink-tertiary" />
               </Link>
             ))}
