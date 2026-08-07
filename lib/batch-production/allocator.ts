@@ -82,6 +82,20 @@ export interface AllocationLockInput {
   endUs?: number;
 }
 
+export interface AllocationNarrationInput {
+  durationUs: number;
+  audioFingerprint: string;
+  segments: Array<{
+    id: string;
+    sourceSegmentId: string;
+    text: string;
+    startUs: number;
+    endUs: number;
+    timingSource?: 'estimated' | 'aligned';
+  }>;
+  wordTimings?: Array<{ text: string; startUs: number; endUs: number }>;
+}
+
 export interface AllocationPlanInput {
   planId?: string;
   id?: string;
@@ -97,6 +111,8 @@ export interface AllocationPlanInput {
   locks?: AllocationLockInput[];
   coverAssetIds?: string[];
   musicTrackIds?: string[];
+  /** 口播先于分配后由 buildFrozenInput 挂上的已核验口播(句段时间与身份的权威来源) */
+  narration?: AllocationNarrationInput;
 }
 
 export interface AllocationPresetInput {
@@ -288,6 +304,7 @@ interface NormalizedPlan {
   title: string;
   targetDurationUs: number;
   segments: NormalizedSegment[];
+  narration?: AllocationNarrationInput;
   locks: AllocationLockInput[];
   coverAssetIds: string[];
   musicTrackIds: string[];
@@ -522,6 +539,48 @@ function scriptTargetDurationUs(rawPlan: AllocationPlanInput, fallbackUs: number
   return targetDurationSec > 0 ? Math.max(1, Math.round(targetDurationSec * 1_000_000)) : fallbackUs;
 }
 
+/**
+ * 规范化已核验口播。句段数量必须与分配句段一致(断句出自同一次切分,
+ * 结构上一致);数量对不上或字段非法时整体放弃,退回估算路径,绝不半套。
+ * 时长必须是正数,否则无法作为时间线基准。
+ */
+function normalizePlanNarration(raw: unknown, segments: NormalizedSegment[]): AllocationNarrationInput | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as JsonRecord;
+  const durationUs = Math.round(finite(record.durationUs, 0));
+  if (durationUs <= 0) return undefined;
+  const audioFingerprint = typeof record.audioFingerprint === 'string' && record.audioFingerprint.trim() ? record.audioFingerprint.trim() : '';
+  if (!audioFingerprint) return undefined;
+  if (!Array.isArray(record.segments) || record.segments.length !== segments.length) return undefined;
+  const narrationSegments = record.segments.map((entry): AllocationNarrationInput['segments'][number] | null => {
+    const item = asRecord(entry);
+    const id = typeof item.id === 'string' && item.id.trim() ? item.id.trim() : '';
+    const sourceSegmentId = typeof item.sourceSegmentId === 'string' && item.sourceSegmentId.trim() ? item.sourceSegmentId.trim() : id;
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    const startUs = Math.round(finite(item.startUs, 0));
+    const endUs = Math.round(finite(item.endUs, 0));
+    if (!id || !sourceSegmentId || !text || !Number.isSafeInteger(startUs) || !Number.isSafeInteger(endUs) || endUs <= startUs || endUs > durationUs) return null;
+    return { id, sourceSegmentId, text, startUs, endUs, timingSource: item.timingSource === 'estimated' ? 'estimated' : 'aligned' };
+  });
+  if (narrationSegments.some((segment) => segment === null)) return undefined;
+  const wordTimings = Array.isArray(record.wordTimings)
+    ? record.wordTimings.flatMap((entry): Array<{ text: string; startUs: number; endUs: number }> => {
+      const item = asRecord(entry);
+      const startUs = Math.round(finite(item.startUs, 0));
+      const endUs = Math.round(finite(item.endUs, 0));
+      return typeof item.text === 'string' && item.text.trim() && Number.isSafeInteger(startUs) && Number.isSafeInteger(endUs) && endUs > startUs
+        ? [{ text: item.text.trim(), startUs, endUs }]
+        : [];
+    })
+    : undefined;
+  return {
+    durationUs,
+    audioFingerprint,
+    segments: narrationSegments as AllocationNarrationInput['segments'],
+    ...(wordTimings && wordTimings.length ? { wordTimings } : {}),
+  };
+}
+
 function normalizePlan(rawPlan: AllocationPlanInput, index: number, targetDurationUs: number): NormalizedPlan {
   const planJson = asRecord(parseJson(rawPlan.planJson));
   const planId = nonEmptyString(rawPlan.planId ?? rawPlan.id, `plan-${index + 1}`);
@@ -540,13 +599,22 @@ function normalizePlan(rawPlan: AllocationPlanInput, index: number, targetDurati
       result.push({ ...segment, startUs, endUs: startUs + Math.max(1, segment.endUs - segment.startUs) });
       return result;
     }, []);
+  // 有口播时句段时间取真实对齐时间(按序号映射,句数出自同一次切分不会分叉),
+  // 目标时长取口播时长——声画同源,不再各走各的;无口播保留估算路径(老版本兼容)。
+  const narration = normalizePlanNarration(rawPlan.narration, normalizedSegments);
   const locks = [...arrayFrom(rawPlan.lockedSegments), ...arrayFrom(rawPlan.locks), ...arrayFrom(planJson.lockedSegments), ...arrayFrom(planJson.locks)] as AllocationLockInput[];
   return {
     planId,
     scriptSnapshotId,
     title: nonEmptyString(rawPlan.title, ''),
-    targetDurationUs: planTargetDurationUs,
-    segments: normalizedSegments,
+    targetDurationUs: narration ? narration.durationUs : planTargetDurationUs,
+    segments: narration
+      ? normalizedSegments.map((segment, segmentIndex) => {
+        const timing = narration.segments[segmentIndex];
+        return timing ? { ...segment, startUs: timing.startUs, endUs: timing.endUs } : segment;
+      })
+      : normalizedSegments,
+    ...(narration ? { narration } : {}),
     locks,
     coverAssetIds: arrayFrom(rawPlan.coverAssetIds ?? planJson.coverAssetIds).map(String).filter(Boolean),
     musicTrackIds: arrayFrom(rawPlan.musicTrackIds ?? planJson.musicTrackIds).map(String).filter(Boolean),

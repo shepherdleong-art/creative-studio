@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import {
   allocateBatch,
   reallocateOutput,
+  type AllocationNarrationInput,
   type AllocationSegmentInput,
   type AllocationOutput,
   type AllocationResult,
@@ -237,6 +238,49 @@ function buildFrozenInput(
 
   const defaults = parseJson(version.defaultsJson);
   const musicTrackIds = resolveAllocationMusicTrackIds(defaults);
+  // 口播先于分配:已核验口播(按 scriptSnapshotId 权威表)随冻结输入挂到
+  // 每个 plan,分配器据此取真实对齐时间;无口播(失败/未生成)不挂,走估算。
+  const narrationRows = db.prepare(`
+    SELECT n.scriptSnapshotId, n.narrationJson
+    FROM batch_script_narrations n
+    JOIN batch_script_snapshots s ON s.id = n.scriptSnapshotId
+    WHERE s.batchVersionId = ?
+  `).all(batchVersionId) as Array<{ scriptSnapshotId: string; narrationJson: string }>;
+  const narrationBySnapshot = new Map(narrationRows.map((row) => [row.scriptSnapshotId, parseJson(row.narrationJson)]));
+  const narrationFor = (scriptSnapshotId: string): AllocationNarrationInput | undefined => {
+    const snap = asRecord(narrationBySnapshot.get(scriptSnapshotId));
+    if (snap.productionReady !== true || snap.mode !== 'local_ready') return undefined;
+    const durationUs = Math.round(numberFrom(snap.durationUs, 0));
+    const audioFingerprint = typeof snap.audioFingerprint === 'string' && snap.audioFingerprint.trim() ? snap.audioFingerprint.trim() : '';
+    if (durationUs <= 0 || !audioFingerprint) return undefined;
+    const segments = arrayOfRecords(snap.segments)
+      .map((entry): AllocationNarrationInput['segments'][number] | null => {
+        const id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : '';
+        const sourceSegmentId = typeof entry.sourceSegmentId === 'string' && entry.sourceSegmentId.trim() ? entry.sourceSegmentId.trim() : id;
+        const text = typeof entry.text === 'string' ? entry.text.trim() : '';
+        const startUs = Math.round(numberFrom(entry.startUs, 0));
+        const endUs = Math.round(numberFrom(entry.endUs, 0));
+        if (!id || !sourceSegmentId || !text || !Number.isSafeInteger(startUs) || !Number.isSafeInteger(endUs) || endUs <= startUs || endUs > durationUs) return null;
+        return { id, sourceSegmentId, text, startUs, endUs, timingSource: entry.timingSource === 'estimated' ? 'estimated' as const : 'aligned' as const };
+      });
+    if (segments.length === 0 || segments.some((segment) => segment === null)) return undefined;
+    const wordTimings = Array.isArray(snap.wordTimings)
+      ? snap.wordTimings.flatMap((entry): Array<{ text: string; startUs: number; endUs: number }> => {
+        const record = asRecord(entry);
+        const startUs = Math.round(numberFrom(record.startUs, 0));
+        const endUs = Math.round(numberFrom(record.endUs, 0));
+        return typeof record.text === 'string' && record.text.trim() && Number.isSafeInteger(startUs) && Number.isSafeInteger(endUs) && endUs > startUs
+          ? [{ text: record.text.trim(), startUs, endUs }]
+          : [];
+      })
+      : undefined;
+    return {
+      durationUs,
+      audioFingerprint,
+      segments: segments.filter((segment): segment is AllocationNarrationInput['segments'][number] => segment !== null),
+      ...(wordTimings && wordTimings.length ? { wordTimings } : {}),
+    };
+  };
   // 语义矩阵按内容指纹同步读取(打分已在快照确认后由 semantic_score 任务落库);
   // 这里是同步装配路径,绝不发起 LLM 调用。无矩阵时仅挂 keywords,
   // 分配器自动退到关键词重合 + 质量兜底。
@@ -290,6 +334,7 @@ function buildFrozenInput(
           }) as AllocationSegmentInput[],
           planJson,
           scriptSnapshot: { targetDurationSec: plan.targetDurationSec },
+          narration: narrationFor(plan.scriptSnapshotId),
         };
       }
       return {
@@ -305,6 +350,7 @@ function buildFrozenInput(
         })),
         planJson,
         scriptSnapshot: { targetDurationSec: plan.targetDurationSec },
+        narration: narrationFor(plan.scriptSnapshotId),
       };
     }),
     assets: poolRows.map((row) => ({
