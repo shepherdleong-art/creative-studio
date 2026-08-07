@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -274,25 +274,60 @@ export function isOwnedCompanyProviderProcessRecord(value: unknown, root: string
     && commandPair(tokens, '--port', String(COMPANY_PROVIDER_PROXY_PORT));
 }
 
-function defaultProcessCheck(pid: number, root = dataRoot()): boolean {
-  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== 'win32') return false;
-  try {
-    const processIdLiteral = String(pid);
-    const completed = spawnSync('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `$ErrorActionPreference = 'Stop'; $p = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${processIdLiteral}' | Select-Object -First 1 ExecutablePath,CommandLine; if ($null -eq $p) { exit 1 }; $p | ConvertTo-Json -Compress`,
-    ], {
-      windowsHide: true,
-      encoding: 'utf8',
-      // PowerShell + CIM startup on a loaded machine exceeds 1.5 s, which
-      // produced false process_exited reports for a healthy sidecar.
-      timeout: 8000,
-      maxBuffer: 128 * 1024,
+/**
+ * Async probe runner: never blocks the event loop the way spawnSync did.
+ * A synchronous spawnSync here froze the whole server for seconds per call,
+ * which made concurrent status polls and execution gates pile up and wedge
+ * the workbench. Output beyond maxBuffer fails closed (returns null).
+ */
+function runProbe(command: string, args: readonly string[], timeoutMs: number, maxBuffer: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(command, args as string[], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let stdout = '';
+    let overflow = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* best effort */ }
+      try { child.stdout?.destroy(); } catch { /* best effort */ }
+      done(null);
+    }, timeoutMs);
+    const done = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (stdout.length + chunk.length > maxBuffer) {
+        overflow = true;
+        try { child.kill(); } catch { /* best effort */ }
+        return;
+      }
+      stdout += chunk.toString('utf8');
     });
-    if (completed.error || completed.status !== 0 || typeof completed.stdout !== 'string') return false;
-    return isOwnedCompanyProviderProcessRecord(JSON.parse(completed.stdout) as unknown, root);
+    child.on('error', () => done(null));
+    child.on('close', (code) => done(code === 0 && !overflow ? stdout : null));
+  });
+}
+
+async function defaultProcessCheck(pid: number, root = dataRoot()): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== 'win32') return false;
+  const processIdLiteral = String(pid);
+  const stdout = await runProbe('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `$ErrorActionPreference = 'Stop'; $p = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${processIdLiteral}' | Select-Object -First 1 ExecutablePath,CommandLine; if ($null -eq $p) { exit 1 }; $p | ConvertTo-Json -Compress`,
+  ], 8000, 128 * 1024);
+  if (stdout === null) return false;
+  try {
+    return isOwnedCompanyProviderProcessRecord(JSON.parse(stdout) as unknown, root);
   } catch {
     return false;
   }
@@ -324,30 +359,19 @@ function defaultUnmanagedProcessCheck(pid: number): boolean {
 }
 
 /** Read-only Windows listener ownership check using fixed command arguments. */
-function defaultListenerCheck(pid: number, port: number): CompanyProviderListenerCheckResult {
+async function defaultListenerCheck(pid: number, port: number): Promise<CompanyProviderListenerCheckResult> {
   if (process.platform !== 'win32') return { owned: false, inUse: false };
-  try {
-    const completed = spawnSync('netstat.exe', ['-ano', '-p', 'tcp'], {
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 5000,
-      maxBuffer: 512 * 1024,
-    });
-    if (completed.error || completed.status !== 0 || typeof completed.stdout !== 'string') {
-      return { owned: false, inUse: false };
-    }
-    let owned = false;
-    let inUse = false;
-    for (const line of completed.stdout.split(/\r?\n/)) {
-      const record = parseNetstatListenerLine(line);
-      if (!record || (record.state !== 'LISTENING' && record.state !== 'LISTEN') || record.port !== port) continue;
-      if (record.localAddress === '127.0.0.1' && record.pid === pid) owned = true;
-      else inUse = true;
-    }
-    return { owned, inUse };
-  } catch {
-    return { owned: false, inUse: false };
+  const stdout = await runProbe('netstat.exe', ['-ano', '-p', 'tcp'], 5000, 512 * 1024);
+  if (stdout === null) return { owned: false, inUse: false };
+  let owned = false;
+  let inUse = false;
+  for (const line of stdout.split(/\r?\n/)) {
+    const record = parseNetstatListenerLine(line);
+    if (!record || (record.state !== 'LISTENING' && record.state !== 'LISTEN') || record.port !== port) continue;
+    if (record.localAddress === '127.0.0.1' && record.pid === pid) owned = true;
+    else inUse = true;
   }
+  return { owned, inUse };
 }
 
 function hasLiveProcess(processCheck: CompanyProviderProcessCheck, pid: number | null, root: string): Promise<boolean> {
@@ -440,8 +464,60 @@ function unavailableForListener(
   return result('unavailable', safeReasonForCode(listenerIsInUse(listener) ? 'port_in_use' : 'start_failed'), { startedAt });
 }
 
+/**
+ * Production callers share one in-flight inspection and a short result cache:
+ * each inspection spawns PowerShell/netstat probes, and uncoalesced callers
+ * (1 s status polling plus per-task execution gates) otherwise multiply that
+ * cost until health checks start timing out spuriously. Calls with injected
+ * seams (tests) always bypass the cache.
+ */
+const RUNTIME_INSPECT_TTL_MS = 2000;
+const runtimeInspectCache = new Map<string, { at: number; status: CompanyProviderRuntimeStatus }>();
+const runtimeInspectInFlight = new Map<string, Promise<CompanyProviderRuntimeStatus>>();
+
+/** Drop cached runtime verdicts, e.g. right after an import or sidecar request. */
+export function invalidateCompanyProviderRuntimeInspection(root?: string): void {
+  if (root) {
+    const prefix = `${root}|`;
+    for (const key of runtimeInspectCache.keys()) if (key.startsWith(prefix)) runtimeInspectCache.delete(key);
+    return;
+  }
+  runtimeInspectCache.clear();
+}
+
+/** Test-only hook to reset memoization between scenarios. */
+export function resetCompanyProviderRuntimeInspectionForTests(): void {
+  runtimeInspectCache.clear();
+  runtimeInspectInFlight.clear();
+}
+
 /** Read-only company provider runtime inspection; no upstream model probes. */
-export async function inspectCompanyProviderRuntime({
+export function inspectCompanyProviderRuntime(
+  options: InspectCompanyProviderRuntimeOptions = {},
+): Promise<CompanyProviderRuntimeStatus> {
+  const hasInjection = Boolean(options.fetchImpl || options.processCheck || options.listenerCheck
+    || options.timeoutMs !== undefined);
+  if (hasInjection) return inspectCompanyProviderRuntimeUncached(options);
+  const root = options.root ?? dataRoot();
+  const managed = options.managed ?? isManagedDeployment();
+  const key = `${root}|${managed}`;
+  const cached = runtimeInspectCache.get(key);
+  if (cached && Date.now() - cached.at < RUNTIME_INSPECT_TTL_MS) return Promise.resolve(cached.status);
+  const pending = runtimeInspectInFlight.get(key);
+  if (pending) return pending;
+  const shared = inspectCompanyProviderRuntimeUncached(options)
+    .then((status) => {
+      runtimeInspectCache.set(key, { at: Date.now(), status });
+      return status;
+    })
+    .finally(() => {
+      if (runtimeInspectInFlight.get(key) === shared) runtimeInspectInFlight.delete(key);
+    });
+  runtimeInspectInFlight.set(key, shared);
+  return shared;
+}
+
+async function inspectCompanyProviderRuntimeUncached({
   root = dataRoot(),
   fetchImpl = globalThis.fetch.bind(globalThis),
   processCheck,

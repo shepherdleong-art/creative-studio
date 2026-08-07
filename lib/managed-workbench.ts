@@ -1,6 +1,7 @@
 import { dataRoot } from './data-root.ts';
 import {
   inspectCompanyProviderRuntime,
+  invalidateCompanyProviderRuntimeInspection,
   COMPANY_PROVIDER_SAFE_REASONS,
   type CompanyProviderRuntimeStatus,
   type InspectCompanyProviderRuntimeOptions,
@@ -60,6 +61,7 @@ const productionInspectInFlight = new Map<string, Promise<ManagedWorkbenchStatus
 
 /** Drop the cached production verdict, e.g. right after a provision import. */
 export function invalidateManagedWorkbenchStatus(root?: string): void {
+  invalidateCompanyProviderRuntimeInspection(root);
   if (root) {
     productionInspectCache.delete(root);
     return;
