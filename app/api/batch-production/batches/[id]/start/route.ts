@@ -47,6 +47,14 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
     }
     const result = startOrResumePhaseE(db, projectId, id);
     ensureBatchSchedulerStarted();
+    if (result.status === 'narration_pending') {
+      // 口播未齐:批次已冻结、口播任务已排队,前端在任务终态后自动续跑。
+      return NextResponse.json({
+        batchId: id,
+        status: 'narration_pending',
+        narrationPending: result.narrationPending,
+      }, { headers: BATCH_NO_STORE_HEADERS });
+    }
     return NextResponse.json({
       batchId: id,
       status: 'running',

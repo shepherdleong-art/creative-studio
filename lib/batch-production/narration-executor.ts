@@ -315,6 +315,9 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
             now,
           );
           // 当前成片版本的 arrangement 就地升级,渲染与工作区聚合直接读到真实口播。
+          // 注:口播先于分配(phase-e 反转)后,这条 UPDATE 只对反转前建立的版本
+          // 有意义——新流程下分配发生在口播之后,口播会直接烤进 arrangement,
+          // 此处保留仅为老版本兼容。
           db.prepare(`
             UPDATE batch_output_versions
             SET arrangementJson = json_set(arrangementJson, '$.narration', json(?))

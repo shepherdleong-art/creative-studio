@@ -169,9 +169,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [batchTasks, setBatchTasks] = useState<BatchTasksView['tasks']>([]);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
-  // 开跑被语义匹配延迟时置位,打分全部终态后自动续跑;startBatchRef 避免把
-  // 非 useCallback 的 startBatch 塞进 effect 依赖。
-  const autoStartAfterSemanticRef = useRef(false);
+  // 开跑被语义匹配/口播门禁延迟时置位,相关任务全部终态后自动续跑;
+  // startBatchRef 避免把非 useCallback 的 startBatch 塞进 effect 依赖。
+  const autoStartAfterGatesRef = useRef(false);
   const startBatchRef = useRef<() => Promise<void>>(async () => undefined);
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
   const [proxyBatchBusy, setProxyBatchBusy] = useState(false);
@@ -460,13 +460,15 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     startBatchRef.current = startBatch;
   });
 
-  // 开跑被语义匹配延迟时:打分任务全部进入终态后自动续跑(PUT /start 幂等)。
+  // 开跑被语义匹配/口播门禁延迟时:相关任务全部进入终态后自动续跑(PUT /start 幂等)。
   useEffect(() => {
-    if (!selectedBatchId || !autoStartAfterSemanticRef.current) return;
-    const incomplete = batchTasks.filter((task) => task.workType === 'semantic_score'
-      && (task.status === 'queued' || task.status === 'running')).length;
+    if (!selectedBatchId || !autoStartAfterGatesRef.current) return;
+    const incomplete = batchTasks.filter((task) => (
+      (task.workType === 'semantic_score' || task.workType === 'narration')
+      && (task.status === 'queued' || task.status === 'running')
+    )).length;
     if (incomplete > 0) return;
-    autoStartAfterSemanticRef.current = false;
+    autoStartAfterGatesRef.current = false;
     void startBatchRef.current();
   }, [batchTasks, selectedBatchId]);
 
@@ -927,8 +929,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try {
       const result = await readJson<{
         batchId: string;
-        status: 'running' | 'semantic_scoring';
+        status: 'running' | 'semantic_scoring' | 'narration_pending';
         semanticScorePending?: number;
+        narrationPending?: number;
         allocationStatus?: 'completed' | 'partial' | 'blocked';
         outputCount?: number;
       }>(await fetch(
@@ -938,7 +941,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       if (result.status === 'semantic_scoring') {
         // 语义打分由后端在快照确认后自动排队,这里只负责显示与自动续跑;
         // 直接进入"生产中",不再让界面停留在"没开始"的样子。
-        autoStartAfterSemanticRef.current = true;
+        autoStartAfterGatesRef.current = true;
         setBatchStatus('running');
         setBatches((current) => current.map((batch) => batch.id === selectedBatchId
           ? { ...batch, status: 'running' }
@@ -950,7 +953,21 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         await loadTasks(selectedBatchId);
         return;
       }
-      autoStartAfterSemanticRef.current = false;
+      if (result.status === 'narration_pending') {
+        // 口播由后端在冻结后自动排队,同样直接进入"生产中",终态后自动续跑。
+        autoStartAfterGatesRef.current = true;
+        setBatchStatus('running');
+        setBatches((current) => current.map((batch) => batch.id === selectedBatchId
+          ? { ...batch, status: 'running' }
+          : batch));
+        setFeedback({
+          kind: 'success',
+          message: `正在生成口播…（还差 ${result.narrationPending ?? 0} 份），完成后自动继续生产，无需再点。`,
+        });
+        await loadTasks(selectedBatchId);
+        return;
+      }
+      autoStartAfterGatesRef.current = false;
       setBatchStatus('running');
       setBatches((current) => current.map((batch) => batch.id === selectedBatchId
         ? { ...batch, status: 'running' }

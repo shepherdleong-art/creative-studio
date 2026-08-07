@@ -29,6 +29,7 @@ import { createBatchTask } from './tasks.ts';
 export const BATCH_RENDER_ADAPTER_VERSION = 'batch-render-v1';
 
 export interface BatchAllocationSchedulingResult {
+  status: 'running';
   batchId: string;
   batchVersionId: string;
   allocationRunId: string;
@@ -37,6 +38,15 @@ export interface BatchAllocationSchedulingResult {
   outputVersionIds: Record<string, string>;
   taskIds: Record<string, string>;
 }
+
+export interface BatchNarrationPendingResult {
+  status: 'narration_pending';
+  batchId: string;
+  batchVersionId: string;
+  narrationPending: number;
+}
+
+export type BatchPhaseEStartResult = BatchNarrationPendingResult | BatchAllocationSchedulingResult;
 
 interface BatchLineageRow {
   currentVersionId: string | null;
@@ -60,6 +70,44 @@ function getBatchLineage(
     throw new BatchDomainError('conflict', '批次还没有任何输入快照,不能启动');
   }
   return row;
+}
+
+/** 该批次版本仍未完成(queued/running)的口播任务数。 */
+function countIncompleteBatchNarrationTasks(db: Database.Database, batchVersionId: string): number {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_tasks t
+    JOIN batch_script_snapshots s ON s.id = t.targetId
+    WHERE t.workType = 'narration' AND t.targetKind = 'script_snapshot'
+      AND s.batchVersionId = ?
+      AND t.status IN ('queued', 'running')
+  `).get(batchVersionId) as { n: number };
+  return row.n;
+}
+
+/** 冻结后为版本内每份脚本快照建一条口播任务(同脚本 N 条成片共用一条)。 */
+function scheduleNarrationTasks(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  batchVersionId: string,
+  now?: () => Date,
+): Record<string, string> {
+  const snapshotIds = db.prepare(`
+    SELECT id FROM batch_script_snapshots WHERE batchVersionId = ? ORDER BY createdAt, id
+  `).all(batchVersionId) as Array<{ id: string }>;
+  const taskIds: Record<string, string> = {};
+  for (const { id: snapshotId } of snapshotIds) {
+    taskIds[`narration:${snapshotId}`] = createBatchTask(db, projectId, {
+      batchId,
+      workType: 'narration',
+      targetKind: 'script_snapshot',
+      targetId: snapshotId,
+      requestKey: `narration:${batchVersionId}:${snapshotId}`,
+      now,
+    });
+  }
+  return taskIds;
 }
 
 function scheduleAllocationRenderTasks(
@@ -96,22 +144,7 @@ function scheduleAllocationRenderTasks(
     `).run((now ?? (() => new Date()))().toISOString(), projectId, batchId, output.planId);
   }
   const taskIds: Record<string, string> = {};
-  // 配音任务:每份脚本快照一条(同脚本 N 条成片共用),排在渲染之前领取。
-  const narrationSnapshotIds = new Set(
-    allocation.result.outputs
-      .map(({ scriptSnapshotId }) => scriptSnapshotId)
-      .filter((id): id is string => Boolean(id)),
-  );
-  for (const snapshotId of narrationSnapshotIds) {
-    taskIds[`narration:${snapshotId}`] = createBatchTask(db, projectId, {
-      batchId,
-      workType: 'narration',
-      targetKind: 'script_snapshot',
-      targetId: snapshotId,
-      requestKey: `narration:${allocation.batchVersionId}:${snapshotId}`,
-      now,
-    });
-  }
+  // 口播任务已在冻结后建立(先于分配),这里只建渲染任务。
   for (const [planId, outputVersionId] of Object.entries(allocation.outputVersionIds)) {
     taskIds[planId] = createBatchTask(db, projectId, {
       batchId,
@@ -126,10 +159,16 @@ function scheduleAllocationRenderTasks(
 }
 
 /**
- * Freeze a draft batch (or resume a previously frozen start request), perform
- * one idempotent batch-wide allocation, and enqueue exactly one render task per
- * newly/currently allocated output version. A failure after the freeze point
- * can therefore be retried without trying to unfreeze immutable input.
+ * Freeze a draft batch (or resume a previously frozen start request), then run
+ * the production pipeline in order: 口播 → 分配 → 渲染。
+ *
+ * After the freeze point only narration tasks are enqueued; the batch-wide
+ * allocation and render tasks are deferred until every narration task of this
+ * version has reached a terminal state. An unfinished narration returns
+ * `narration_pending` (same resume mechanism as semantic scoring: PUT /start
+ * is idempotent and re-entered by the frontend once tasks settle). Failed
+ * narrations still proceed to allocation so silent preview candidates can be
+ * rendered; formal publishing stays behind `assertNarrationPublishable`.
  *
  * BGM is a required output component: the shared library is snapshotted into
  * the frozen version at lock time, so later library changes never mutate an
@@ -140,7 +179,7 @@ export function startOrResumePhaseE(
   projectId: string,
   batchId: string,
   now?: () => Date,
-): BatchAllocationSchedulingResult {
+): BatchPhaseEStartResult {
   let lineage = getBatchLineage(db, projectId, batchId);
   if (lineage.controlState === 'stopped') {
     throw new BatchDomainError('conflict', '批次已停止,不能再次启动生产');
@@ -159,6 +198,17 @@ export function startOrResumePhaseE(
     throw new BatchDomainError('conflict', '曲库为空：请先把背景音乐放入 storage/bgm/ 目录并重新扫描后再开始批量生产');
   }
   freezeBatchMusicPool(db, batchVersionId, musicPool);
+  // 口播先于分配:冻结后只建口播任务,不再立即调 persistBatchAllocation。
+  scheduleNarrationTasks(db, projectId, batchId, batchVersionId, now);
+  const narrationPending = countIncompleteBatchNarrationTasks(db, batchVersionId);
+  if (narrationPending > 0) {
+    return {
+      status: 'narration_pending',
+      batchId,
+      batchVersionId,
+      narrationPending,
+    };
+  }
   const allocation = persistBatchAllocation(db, projectId, batchVersionId, { now });
   const taskIds = db.transaction(() => scheduleAllocationRenderTasks(
     db,
@@ -168,6 +218,7 @@ export function startOrResumePhaseE(
     now,
   ))();
   return {
+    status: 'running',
     batchId,
     batchVersionId,
     allocationRunId: allocation.runId,
@@ -211,6 +262,7 @@ export function reallocateAndScheduleOutput(
     now,
   ))();
   return {
+    status: 'running' as const,
     batchId,
     batchVersionId,
     allocationRunId: allocation.runId,
@@ -259,6 +311,7 @@ export function updateBatchAssetExclusionAndSchedule(
     now,
   ))();
   return {
+    status: 'running' as const,
     batchId,
     batchVersionId,
     allocationRunId: allocation.runId,

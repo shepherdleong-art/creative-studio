@@ -321,7 +321,26 @@ try {
   assert.equal(bgmPlanIds.length, 9, '一份脚本 9 份 = 9 张成片计划');
   await addAssetPoolItem(db, bgmVersionId, 'bgm-asset');
 
+  // 口播先于分配:首次 start 只建口播任务,返回 narration_pending;
+  // 口播完成后重入才做联合分配(见 T6 顺序反转)。
+  const firstStart = startOrResumePhaseE(db, 'project-1', bgmBatchId);
+  assert.equal(firstStart.status, 'narration_pending', '口播未完成时 start 必须返回 narration_pending');
+  const bgmNarrationTask = db.prepare(`SELECT id FROM batch_tasks WHERE workType = 'narration' AND targetId = ?`).get(bgmSnapshotId) as { id: string };
+  await executor.execute({
+    db,
+    claim: {
+      task: { id: bgmNarrationTask.id, batchId: bgmBatchId, workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: bgmSnapshotId },
+      attempt: { id: 'attempt-bgm', attemptNumber: 1 },
+    },
+    signal: new AbortController().signal,
+    reportProgress: () => undefined,
+  }).then((executionBgm) => executionBgm.commit?.());
+  // 手动执行 executor 不会经过 runner 的状态流转,这里补上终态;
+  // 真实链路由 runner 在 commit 后统一置 succeeded。
+  db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(bgmNarrationTask.id);
+
   const started = startOrResumePhaseE(db, 'project-1', bgmBatchId);
+  assert.equal(started.status, 'running', '口播全部终态后重入 start 必须产出分配');
   const versionDefaults = JSON.parse(
     (db.prepare(`SELECT defaultsJson FROM batch_production_versions WHERE id = ?`).get(bgmVersionId) as { defaultsJson: string }).defaultsJson,
   ) as { batchMusicPool?: Array<{ trackId: string; relativePath: string; fileFingerprint: string }> };
@@ -343,6 +362,7 @@ try {
   );
 
   const resumed = startOrResumePhaseE(db, 'project-1', bgmBatchId);
+  if (resumed.status !== 'running') throw new Error(`expected running, got ${resumed.status}`);
   assert.equal(resumed.allocationRunId, started.allocationRunId, '同种子重跑必须命中同一确定性分配运行');
   const resumedArrangements = (db.prepare(`SELECT arrangementJson FROM batch_output_versions o WHERE o.allocationRunId = ?`).all(resumed.allocationRunId) as Array<{ arrangementJson: string }>).map(({ arrangementJson }) => JSON.parse(arrangementJson) as { music?: { trackId?: string | null } });
   assert.deepEqual(
@@ -388,7 +408,21 @@ try {
   const manualSnapshotId = snapshotScriptIntoBatch(db, manualVersionId, { scriptId: manualScriptId, copyCount: 3 });
   createOutputPlansForSnapshot(db, manualVersionId, manualSnapshotId);
   await addAssetPoolItem(db, manualVersionId, 'manual-asset');
+  const manualFirst = startOrResumePhaseE(db, 'project-1', manualBatchId);
+  assert.equal(manualFirst.status, 'narration_pending');
+  const manualNarrationTask = db.prepare(`SELECT id FROM batch_tasks WHERE workType = 'narration' AND targetId = ?`).get(manualSnapshotId) as { id: string };
+  await executor.execute({
+    db,
+    claim: {
+      task: { id: manualNarrationTask.id, batchId: manualBatchId, workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: manualSnapshotId },
+      attempt: { id: 'attempt-manual', attemptNumber: 1 },
+    },
+    signal: new AbortController().signal,
+    reportProgress: () => undefined,
+  }).then((executionManual) => executionManual.commit?.());
+  db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(manualNarrationTask.id);
   const manualStarted = startOrResumePhaseE(db, 'project-1', manualBatchId);
+  assert.equal(manualStarted.status, 'running');
   const manualArrangements = (db.prepare(`SELECT arrangementJson FROM batch_output_versions o WHERE o.allocationRunId = ?`).all(manualStarted.allocationRunId) as Array<{ arrangementJson: string }>)
     .map(({ arrangementJson }) => JSON.parse(arrangementJson) as { music?: { trackId?: string | null } });
   assert.equal(manualArrangements.length, 3);

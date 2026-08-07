@@ -30,7 +30,7 @@ try {
   const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
   db.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '', exportDirName TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE TABLE shot_sets (
       id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL,
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
@@ -122,9 +122,32 @@ try {
     fs.writeFileSync(path.join(storageRoot, 'bgm', `${id}.mp3`), Buffer.from(fingerprint));
   }
 
+  // 口播先于分配(T6):首次 start 冻结并只建口播任务,口播未齐返回 narration_pending;
+  // 口播全部终态后重入 start 才做联合分配并建渲染任务。
+  const pendingStart = startOrResumePhaseE(db, 'project-1', batchId);
+  assert.equal(pendingStart.status, 'narration_pending');
+  assert.equal(pendingStart.narrationPending, 1, '版本内 1 份脚本快照 = 1 条未完成口播任务');
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS n FROM batch_output_versions`).get() as { n: number }).n,
+    0,
+    '口播未齐时不得先建成片版本(不冻结分配运行)',
+  );
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render'`).get() as { n: number }).n,
+    0,
+    '口播未齐时不得建渲染任务',
+  );
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'narration'`).get() as { n: number }).n,
+    1,
+    '冻结后必须建一条口播任务',
+  );
+  // 口播失败或完成都能让 start 继续:这里先标记成功,重入应产出分配与渲染任务。
+  db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE workType = 'narration' AND targetId = ?`).run(snapshotId);
   const started = startOrResumePhaseE(db, 'project-1', batchId);
+  assert.equal(started.status, 'running', '口播全部终态后重入 start 必须产出分配');
   assert.equal(Object.keys(started.outputVersionIds).length, 2);
-  assert.equal(Object.keys(started.taskIds).length, 3, '每份脚本快照一条口播任务 + 每条成片一条渲染任务');
+  assert.equal(Object.keys(started.taskIds).length, 2, '口播任务已在冻结后建立,此处只建每条成片的渲染任务');
   assert.equal(
     (db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'narration'`).get() as { n: number }).n,
     1,
@@ -147,6 +170,7 @@ try {
   const firstVersionCount = (db.prepare(`SELECT COUNT(*) AS n FROM batch_output_versions`).get() as { n: number }).n;
   const firstTaskCount = (db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render'`).get() as { n: number }).n;
   const resumed = startOrResumePhaseE(db, 'project-1', batchId);
+  if (resumed.status !== 'running') throw new Error(`expected running, got ${resumed.status}`);
   assert.equal(resumed.allocationRunId, started.allocationRunId);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM batch_output_versions`).get() as { n: number }).n, firstVersionCount);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render'`).get() as { n: number }).n, firstTaskCount);
