@@ -3,7 +3,7 @@ import path from 'node:path';
 import { isNormalizedFingerprint, normalizeFingerprint } from './fingerprint.ts';
 import { splitBatchScriptSentences } from './script-sentences.ts';
 
-export const BATCH_NARRATION_SCHEMA_VERSION = 'batch-narration-v1';
+export const BATCH_NARRATION_SCHEMA_VERSION = 'batch-narration-v2';
 
 export interface BatchNarrationSegment {
   id: string;
@@ -26,11 +26,19 @@ export interface BatchSilentNarrationSnapshot extends BatchNarrationBase {
   warningCode: 'narration_provider_not_run';
 }
 
+export interface BatchNarrationWordTiming {
+  text: string;
+  startUs: number;
+  endUs: number;
+}
+
 export interface BatchLocalNarrationSnapshot extends BatchNarrationBase {
   mode: 'local_ready';
   productionReady: true;
   audioRelativePath: string;
   audioFingerprint: string;
+  /** 词级时间戳(可选):TTS 适配器返回时随快照落库;老快照没有该字段 */
+  wordTimings?: BatchNarrationWordTiming[];
 }
 
 export type BatchNarrationSnapshot = BatchSilentNarrationSnapshot | BatchLocalNarrationSnapshot;
@@ -44,6 +52,8 @@ export interface BatchLocalNarrationArtifact {
     startUs: number;
     endUs: number;
   }>;
+  /** 词级时间戳(可选):来自 TTS 适配器,命中缓存复用时可一并复用 */
+  wordTimings?: BatchNarrationWordTiming[];
 }
 
 function stableSegmentId(scriptSnapshotId: string, index: number, text: string): string {
@@ -117,6 +127,21 @@ export function createSilentNarrationPlaceholder(input: {
   };
 }
 
+function parseWordTimings(raw: unknown): BatchNarrationWordTiming[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const timings: BatchNarrationWordTiming[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const startUs = typeof record.startUs === 'number' ? record.startUs : Number(record.startUs);
+    const endUs = typeof record.endUs === 'number' ? record.endUs : Number(record.endUs);
+    if (typeof record.text !== 'string' || !record.text) continue;
+    if (!Number.isSafeInteger(startUs) || !Number.isSafeInteger(endUs) || endUs <= startUs) continue;
+    timings.push({ text: record.text, startUs, endUs });
+  }
+  return timings.length > 0 ? timings : undefined;
+}
+
 /**
  * 把已由受信本地流程准备的音频和对齐结果固定成 renderer 可消费的快照。
  * 这里只接受 storage 相对路径与完整指纹，不允许任意绝对路径进入 arrangement。
@@ -125,6 +150,8 @@ export function createLocalNarrationSnapshot(input: {
   scriptSnapshotId: string;
   bodyText: string;
   artifact: BatchLocalNarrationArtifact;
+  /** 复用既有音频且拿不到真实对齐时的标注:默认 aligned */
+  timingSource?: 'aligned' | 'estimated';
 }): BatchLocalNarrationSnapshot {
   assertPositiveDuration(input.artifact.durationUs);
   if (!isSafeStorageRelativePath(input.artifact.audioRelativePath)) {
@@ -138,6 +165,7 @@ export function createLocalNarrationSnapshot(input: {
     throw new Error('口播对齐句段数量与脚本不一致');
   }
   let previousEndUs = 0;
+  const timingSource = input.timingSource ?? 'aligned';
   const segments = texts.map((text, index): BatchNarrationSegment => {
     const expectedSourceSegmentId = stableSegmentId(input.scriptSnapshotId, index, text);
     const timing = input.artifact.segmentTimings[index];
@@ -160,9 +188,10 @@ export function createLocalNarrationSnapshot(input: {
       text,
       startUs: timing.startUs,
       endUs: timing.endUs,
-      timingSource: 'aligned',
+      timingSource,
     };
   });
+  const wordTimings = parseWordTimings(input.artifact.wordTimings);
   return {
     schemaVersion: BATCH_NARRATION_SCHEMA_VERSION,
     mode: 'local_ready',
@@ -171,6 +200,7 @@ export function createLocalNarrationSnapshot(input: {
     audioFingerprint: fingerprint,
     durationUs: input.artifact.durationUs,
     segments,
+    ...(wordTimings ? { wordTimings } : {}),
   };
 }
 
