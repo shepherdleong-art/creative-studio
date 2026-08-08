@@ -1564,16 +1564,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 className={`mb-2 rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
               >{feedback.message}</div>
             )}
-            {/* 第 3、4 步:紧凑进度条置顶,保证“做的时候看得见”。
-                第 2 步不置顶——那里 BGM 是开跑前的输入,进度条压在它上面会
-                重现“BGM 在进度条下面”的观感;完整进度卡由 BatchStepScripts
-                渲染在它自己的内容栈末尾。
+            {/* 进度卡一律置顶,保证“做的时候看得见”——点开始的那一步(脚本步)
+                尤其不能例外:它的内容栈很长,进度卡挂在末尾就落到首屏之外,
+                用户点下去只看到一条提示。开跑前 progressView 恒为 null,所以
+                BGM 等输入不会被压在进度条下面,无需再按步骤排除。
+                脚本步刚点下开始,用完整阶段卡;后续步骤用紧凑条。
                 注意:不要在 {content} 之后再挂同级节点——.mainCol 是 flex
                 column,而各步根节点是 min-h-0 flex-1,会被压缩到容器高度、
                 内容溢出并盖住后面的兄弟节点(表现为卡片叠在一起)。 */}
-            {progressView && activeStep > 1 && (
+            {progressView && (
               <div className="mb-4">
-                <BatchProductionProgressCard progress={progressView} variant="compact" />
+                <BatchProductionProgressCard progress={progressView} variant={activeStep === 1 ? 'full' : 'compact'} />
               </div>
             )}
             {content}
@@ -1703,7 +1704,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
-              progress={progressView}
             />
           );
         }

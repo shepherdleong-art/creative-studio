@@ -5,6 +5,8 @@ import { Icon } from '@/components/ui/Icon';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
 import { defaultTextStyle } from '@/lib/final-edit/domain';
+// 纯字符串模块(无 sharp/fs 依赖),与渲染端封面合成共用同一份 SVG 构造。
+import { textStyleToSvgElements } from '@/lib/final-edit/title-svg';
 import {
   OUTPUT_PRESETS,
   type CoverFraming,
@@ -13,7 +15,6 @@ import {
   type TextStyle,
 } from '@/lib/final-edit/types';
 import { BatchFrozenScriptCard } from './BatchInputSelectionCards';
-import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 
 export interface BatchTtsProviderView {
   id: string;
@@ -94,8 +95,6 @@ export interface BatchStepScriptsProps {
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
   inputChangedWarning: boolean;
-  /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下) */
-  progress: BatchProgressView | null;
 }
 
 export interface OutputPresetLabel {
@@ -157,7 +156,6 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onConfirmSnapshot,
     onStartBatch,
     inputChangedWarning,
-    progress,
   } = props;
 
   const configuredProvider = useMemo(
@@ -644,13 +642,15 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   }
 
   function renderCoverTextStyleEditor(kind: 'primary' | 'secondary', style: TextStyle) {
-    const smallInput = 'h-7 rounded-lg border border-hairline bg-white px-2 text-xs text-ink';
-    const smallColor = 'h-7 w-10 rounded border border-hairline bg-white p-0.5';
+    // min-w-0:grid 子项默认 min-width:auto,内容比列宽长时会顶破列宽,
+    // 表现为标签竖排折行、相邻控件互相重叠。
+    const smallInput = 'h-7 w-full min-w-0 rounded-lg border border-hairline bg-white px-2 text-xs text-ink';
+    const smallColor = 'h-7 w-10 shrink-0 rounded border border-hairline bg-white p-0.5';
     return (
       <div className="rounded-xl bg-surface-subtle p-3">
         <p className="mb-1.5 text-xs font-medium text-ink">{kind === 'primary' ? '主标题样式' : '副标题样式'}</p>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-          <label className="flex flex-col gap-0.5">
+          <label className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[11px] text-ink-tertiary">字体</span>
             <select
               aria-label={`${kind === 'primary' ? '主标题' : '副标题'}字体`}
@@ -662,7 +662,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               {systemFonts.map((font) => <option key={font} value={font}>{font}</option>)}
             </select>
           </label>
-          <label className="flex flex-col gap-0.5">
+          <label className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[11px] text-ink-tertiary">字号</span>
             <input
               type="number"
@@ -675,9 +675,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               className={smallInput}
             />
           </label>
-          <label className="flex flex-col gap-0.5">
+          <label className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[11px] text-ink-tertiary">颜色</span>
-            <span className="flex items-center gap-1.5">
+            <span className="flex min-w-0 items-center gap-1.5">
               <input
                 type="color"
                 aria-label={`${kind === 'primary' ? '主标题' : '副标题'}颜色`}
@@ -686,7 +686,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 onChange={(event) => updateCoverStyle(kind, { color: event.target.value })}
                 className={smallColor}
               />
-              <span className="text-[11px] tabular-nums text-ink-tertiary">{style.color}</span>
+              <span className="truncate text-[11px] tabular-nums text-ink-tertiary">{style.color}</span>
             </span>
           </label>
           <label className="flex items-end gap-2 pb-1.5">
@@ -702,9 +702,11 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               斜体
             </span>
           </label>
-          <label className="flex flex-col gap-0.5">
-            <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
-              <span className="flex items-center gap-1.5">
+          {/* 描边是 4 个控件的一行(开关+标签+颜色+宽度),占满整行才不会把
+              「描边」二字挤成竖排、并把相邻格子的滑块顶歪。 */}
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
+            <span className="flex min-w-0 items-center justify-between gap-2 text-[11px] text-ink-tertiary">
+              <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                 <input
                   type="checkbox"
                   aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边`}
@@ -715,7 +717,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 />
                 描边
               </span>
-              <span className="flex items-center gap-1">
+              <span className="flex shrink-0 items-center gap-1">
                 <input
                   type="color"
                   aria-label={`${kind === 'primary' ? '主标题' : '副标题'}描边颜色`}
@@ -732,12 +734,12 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                   value={style.stroke.widthPx}
                   disabled={frozen || !style.stroke.enabled}
                   onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, widthPx: Math.max(0, Number.parseInt(event.target.value, 10) || 0) } })}
-                  className="h-7 w-14 rounded-lg border border-hairline bg-white px-2 text-xs text-ink"
+                  className="h-7 w-14 shrink-0 rounded-lg border border-hairline bg-white px-2 text-xs text-ink"
                 />
               </span>
             </span>
           </label>
-          <label className="flex flex-col gap-0.5">
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
             <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
               <span>纵向位置</span>
               <span className="tabular-nums">{Math.round(style.y * 100)}%</span>
@@ -768,15 +770,15 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     const primaryText = previewSource?.primary?.trim() || '示例主标题';
     const secondaryText = previewSource?.secondary?.trim() || '示例副标题';
     const preset = coverPresets.find((item) => item.id === coverTitle.presetId);
-    const previewScale = coverPresetId === '16x9' ? 1 / 8.5 : 1 / 5;
-    const previewStyle = (style: TextStyle) => ({
-      fontFamily: style.fontFamily,
-      fontSize: `${Math.max(8, Math.round(style.fontSizePx * previewScale))}px`,
-      color: style.color,
-      fontStyle: style.italic ? 'italic' : 'normal',
-      WebkitTextStroke: style.stroke.enabled ? `${style.stroke.widthPx * previewScale * 2}px ${style.stroke.color}` : undefined,
-      textShadow: style.shadow.enabled ? `${style.shadow.distancePx * previewScale * 2}px ${style.shadow.distancePx * previewScale * 2}px ${style.shadow.blurPx * previewScale}px ${style.shadow.color}` : undefined,
-    }) as React.CSSProperties;
+    // 预览与成片同构:viewBox 用真实输出尺寸,字号/描边/纵向位置全部按输出
+    // 像素写,缩放交给浏览器——不需要任何预览缩放系数。文字层复用渲染端那份
+    // textStyleToSvgElements(paint-order="stroke fill",描边在填充之下),
+    // 而不是 CSS WebkitTextStroke(描边压在填充之上,小字号下会吃掉填充色)。
+    const previewSize = OUTPUT_PRESETS[coverPresetId] ?? OUTPUT_PRESETS['3x4'];
+    const previewTitleSvg = [
+      primaryText ? textStyleToSvgElements(coverStyles?.primary ?? defaultTextStyle('coverPrimary', previewSize.width), primaryText, previewSize) : '',
+      secondaryText ? textStyleToSvgElements(coverStyles?.secondary ?? defaultTextStyle('coverSecondary', previewSize.width), secondaryText, previewSize) : '',
+    ].join('');
 
     return (
       <section className={`card space-y-3 p-5 ${frozen ? 'border-accent/30' : ''}`} aria-label="封面标题">
@@ -808,22 +810,29 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
         {hasTitle && coverStyles && (
           <div className="flex flex-wrap gap-4">
-            <div className="grid min-w-64 flex-1 gap-2.5 lg:grid-cols-2">
+            {/* 两个样式编辑器竖排:再切一次两列会让每个字段只剩约 95px,
+                标签折行、控件互相重叠。宽度让给字段本身。 */}
+            <div className="grid min-w-64 flex-1 gap-2.5">
               {renderCoverTextStyleEditor('primary', coverStyles.primary)}
               {renderCoverTextStyleEditor('secondary', coverStyles.secondary)}
             </div>
             <div className="flex min-w-56 flex-1 flex-col gap-2">
               <div
                 className="relative w-full overflow-hidden rounded-xl bg-gradient-to-br from-slate-600 via-slate-700 to-slate-900"
-                style={{ aspectRatio: coverPresetId === '9x16' ? '9 / 16' : coverPresetId === '16x9' ? '16 / 9' : '3 / 4', maxHeight: 220 }}
+                style={{ aspectRatio: `${previewSize.width} / ${previewSize.height}`, maxHeight: 260 }}
               >
-                <div className="absolute inset-0 flex flex-col items-center gap-1 px-6 pt-6 text-center">
-                  {primaryText && <span className="font-bold" style={previewStyle(coverStyles.primary)}>{primaryText}</span>}
-                  {secondaryText && <span style={previewStyle(coverStyles.secondary)}>{secondaryText}</span>}
-                </div>
+                <svg
+                  viewBox={`0 0 ${previewSize.width} ${previewSize.height}`}
+                  xmlns="http://www.w3.org/2000/svg"
+                  role="img"
+                  aria-label="封面标题预览"
+                  className="absolute inset-0 h-full w-full"
+                  // 内容由 textStyleToSvgElements 生成,文本与属性都过 escapeXml。
+                  dangerouslySetInnerHTML={{ __html: previewTitleSvg }}
+                />
               </div>
               <p className="text-[11px] text-ink-tertiary">
-                预览仅为样式近似；<span className="text-ink-secondary">{frozen ? '当前快照' : '第一份已选脚本'}</span>的标题：{primaryText} / {secondaryText}
+                预览按成片尺寸等比缩放，样式与合成一致（底图为示意色块）；<span className="text-ink-secondary">{frozen ? '当前快照' : '第一份已选脚本'}</span>的标题：{primaryText} / {secondaryText}
               </p>
             </div>
           </div>
@@ -1059,8 +1068,6 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
           )}
         </section>
       )}
-      {/* 进度卡放在本步最末:BGM 是开跑前的输入,必须排在进度之上 */}
-      {progress && <BatchProductionProgressCard progress={progress} variant="full" />}
     </div>
   );
 }
