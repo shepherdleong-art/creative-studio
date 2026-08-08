@@ -441,7 +441,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                   className="w-full"
                 />
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs text-ink-tertiary">封面始终从原片抽帧，不裁剪成片画面；应用后需要重新导出才会更新成品。</p>
+                  <p className="text-xs text-ink-tertiary">封面始终从原片抽帧，不裁剪成片画面。封面同时是成片开头的片头静帧，所以应用后会重新渲染这一条成片，再重新导出才会更新成品。</p>
                   <button
                     type="button"
                     className="btn-primary h-9 px-3 text-xs"

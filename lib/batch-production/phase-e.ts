@@ -26,7 +26,52 @@ import { checkFormalExportPreflight } from './export-preflight.ts';
 import { registerArtifact } from './artifacts.ts';
 import { createBatchTask } from './tasks.ts';
 
-export const BATCH_RENDER_ADAPTER_VERSION = 'batch-render-v1';
+// v2:成片开头加入 20 帧封面片头(与单条剪辑同一契约),渲染产物形状变了,
+// 所以幂等身份必须换代——旧的 succeeded 渲染任务不该再挡住重渲染。
+export const BATCH_RENDER_ADAPTER_VERSION = 'batch-render-v2';
+
+/**
+ * 渲染任务的幂等身份。封面被烤进片头之后,封面抽帧时间点就是成片内容的一部分,
+ * 所以必须进 requestKey——否则换封面命中既有 succeeded 任务,成片开头会一直
+ * 停留在旧封面。
+ */
+function renderRequestKey(db: Database.Database, outputVersionId: string): string {
+  const row = db.prepare(`
+    SELECT COALESCE(json_extract(arrangementJson, '$.cover.timeUs'), -1) AS coverTimeUs
+    FROM batch_output_versions WHERE id = ?
+  `).get(outputVersionId) as { coverTimeUs: number } | undefined;
+  const coverTimeUs = Number.isFinite(Number(row?.coverTimeUs)) ? Number(row?.coverTimeUs) : -1;
+  return `render:${outputVersionId}:${BATCH_RENDER_ADAPTER_VERSION}:cover:${coverTimeUs}`;
+}
+
+/**
+ * 换封面之后重排一次渲染。封面是片头的一部分,只换那张独立封面图会让成片
+ * 开头与封面不一致。requestKey 含封面时间点,所以同一封面重复触发是幂等的。
+ */
+export function scheduleRenderAfterCoverChange(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  planId: string,
+  now?: () => Date,
+): string | null {
+  const plan = db.prepare(`
+    SELECT p.currentVersionId AS outputVersionId
+    FROM batch_output_plans p
+    JOIN batch_production_versions v ON v.id = p.batchVersionId
+    JOIN batch_productions b ON b.id = v.batchId
+    WHERE p.id = ? AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
+  `).get(planId, batchId, projectId) as { outputVersionId: string | null } | undefined;
+  if (!plan?.outputVersionId) return null;
+  return createBatchTask(db, projectId, {
+    batchId,
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: plan.outputVersionId,
+    requestKey: renderRequestKey(db, plan.outputVersionId),
+    now,
+  });
+}
 
 export interface BatchAllocationSchedulingResult {
   status: 'running';
@@ -151,7 +196,7 @@ function scheduleAllocationRenderTasks(
       workType: 'render',
       targetKind: 'output_version',
       targetId: outputVersionId,
-      requestKey: `render:${outputVersionId}:${BATCH_RENDER_ADAPTER_VERSION}`,
+      requestKey: renderRequestKey(db, outputVersionId),
       now,
     });
   }

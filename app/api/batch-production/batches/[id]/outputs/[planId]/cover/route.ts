@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { regenerateBatchOutputCover } from '@/lib/batch-production/batch-renderer';
+import { scheduleRenderAfterCoverChange } from '@/lib/batch-production/phase-e';
+import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -30,14 +32,19 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         message: '封面抽帧时间点必须是安全整数(微秒)',
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
+    const db = getDb();
     const result = await regenerateBatchOutputCover({
-      db: getDb(),
+      db,
       projectId,
       batchId: id,
       planId,
       timeUs: body.timeUs,
     });
-    return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
+    // 封面是成片片头的一部分,换封面必须重渲染这一条,否则成片开头留在旧封面。
+    // requestKey 含封面时间点,所以同一封面重复触发不会重复排队。
+    const renderTaskId = scheduleRenderAfterCoverChange(db, projectId, id, planId);
+    if (renderTaskId) ensureBatchSchedulerStarted();
+    return NextResponse.json({ ...result, renderTaskId }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_cover_failed', '换封面失败');
   }

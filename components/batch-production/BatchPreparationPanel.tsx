@@ -1242,7 +1242,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           body: JSON.stringify({ timeUs }),
         },
       ));
-      setFeedback({ kind: 'success', message: `封面已更新为 ${(result.timeUs / 1_000_000).toFixed(2)} 秒处画面；重新导出后成品使用新封面。` });
+      setFeedback({ kind: 'success', message: `封面已更新为 ${(result.timeUs / 1_000_000).toFixed(2)} 秒处画面；封面同时是成片片头，正在重新渲染这一条，完成后需重新导出。` });
       await loadWorkspace(selectedBatchId);
     } catch (coverError) {
       setFeedback({ kind: 'error', message: coverError instanceof Error ? coverError.message : '换封面失败' });
