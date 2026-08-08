@@ -121,7 +121,7 @@ function assertNotAborted(signal: AbortSignal): void {
  */
 export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions = {}): BatchTaskExecutor {
   const analyzeContent = options.analyzeContent ?? (async (input) => {
-    const { analyzeVideoWithVision } = await import('../final-edit/adapters/video-analysis.ts');
+    const { analyzeVideoWithVision } = await import('../media-core/adapters/video-analysis.ts');
     return analyzeVideoWithVision({
       filePath: input.filePath,
       videoJobId: input.assetId,

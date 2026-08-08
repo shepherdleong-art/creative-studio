@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { splitNarrationForDisplay } from '../subtitle-display.ts';
-import { buildTtsAwareMatchSentences } from '../final-edit/match-sentence-refinement.ts';
+import { buildTtsAwareMatchSentences } from '../media-core/match-sentence-refinement.ts';
 import { splitBatchScriptSentences } from './script-sentences.ts';
 
 /**

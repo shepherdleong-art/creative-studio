@@ -68,4 +68,5 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE script_providers ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external' CHECK(executionScope IN ('external','company'))`,
   `ALTER TABLE projects ADD COLUMN videoConcurrency INTEGER NOT NULL DEFAULT 10`,
   `ALTER TABLE projects ADD COLUMN exportDirName TEXT NOT NULL DEFAULT ''`,
+  `UPDATE projects SET workflowType = 'complex_product' WHERE workflowType = 'legacy_batch_edit'`,
 ];

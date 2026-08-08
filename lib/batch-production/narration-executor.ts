@@ -4,12 +4,12 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { probeDurationSec } from '../ffmpeg.ts';
-import { createOpenAiAlignmentAdapter } from '../final-edit/adapters/alignment.ts';
+import { createOpenAiAlignmentAdapter } from '../media-core/adapters/alignment.ts';
 import {
   getFinalEditTtsAdapter,
   type TtsAdapterInput,
-} from '../final-edit/adapters/tts-registry.ts';
-import { assertNoStorageSymlink } from '../final-edit/storage-path.ts';
+} from '../media-core/adapters/tts-registry.ts';
+import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
 import {
   buildBatchNarrationSegments,

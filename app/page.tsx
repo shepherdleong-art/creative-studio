@@ -15,7 +15,6 @@ interface Project {
   completedJobs: number;
   failedJobs: number;
   totalCost: number;
-  workflowType?: string;
   thumbnailImageUrl?: string;
 }
 
@@ -175,7 +174,6 @@ export default function HomePage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2.5">
                     <h3 className="truncate font-semibold text-ink">{p.name}</h3>
-                    {p.workflowType === 'complex_product' && <span className="pill bg-check-tint text-check">复杂产品</span>}
                     <span className={`status-badge ${STATUS_CLASS[p.status] ?? 'status-pending'}`}>{STATUS_LABELS[p.status] ?? p.status}</span>
                   </div>
                   <div className="mt-1.5 flex flex-wrap gap-3.5 text-xs text-ink-secondary">

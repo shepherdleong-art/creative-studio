@@ -12,7 +12,7 @@ import {
 import { BatchDomainError } from './errors.ts';
 import { BATCH_ALLOCATION_RULE_VERSION } from './allocator.ts';
 import { resolveAllocationMusicTrackIds } from './bgm.ts';
-import { extractMatchKeywords } from '../final-edit/match-keywords.ts';
+import { extractMatchKeywords } from '../media-core/match-keywords.ts';
 import {
   buildBatchScenes,
   buildBatchSentences,

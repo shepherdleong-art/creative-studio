@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../data-root.ts';
-import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
 
 /** Export metadata supplied by the batch integration layer. */

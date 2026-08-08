@@ -1,11 +1,11 @@
 import fsp from 'node:fs/promises';
 import type Database from 'better-sqlite3';
 import sharp from 'sharp';
-import { coverFramingGeometry } from '../final-edit/cover-framing.ts';
-import { defaultTextStyle, normalizeTextStyle } from '../final-edit/domain.ts';
-import { cleanFraming } from '../final-edit/title-presets.ts';
-import { textStyleToSvgElements } from '../final-edit/title-svg.ts';
-import type { CoverFraming, OutputPresetId, TextStyle } from '../final-edit/types.ts';
+import { coverFramingGeometry } from '../media-core/cover-framing.ts';
+import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
+import { cleanFraming } from '../media-core/cover-title-presets.ts';
+import { textStyleToSvgElements } from '../media-core/cover-title-svg.ts';
+import type { CoverFraming, OutputPresetId, TextStyle } from '../media-core/cover-types.ts';
 
 /** 批量输出比例键(冒号/双写两种写法) → 标题预设 stylesByPreset 键。 */
 export const BATCH_PRESET_TO_COVER_PRESET_ID: Readonly<Record<string, OutputPresetId>> = {
@@ -17,9 +17,9 @@ export const BATCH_PRESET_TO_COVER_PRESET_ID: Readonly<Record<string, OutputPres
   '16x9': '16x9',
 };
 
-// SVG 文本构造搬到 lib/final-edit/title-svg.ts(纯字符串、无 Node 依赖),
+// SVG 文本构造搬到 lib/media-core/cover-title-svg.ts(纯字符串、无 Node 依赖),
 // 让封面预览组件也能 import 同一份实现;这里原样再导出,保持既有引用不变。
-export { escapeXml, textStyleToSvgElements } from '../final-edit/title-svg.ts';
+export { escapeXml, textStyleToSvgElements } from '../media-core/cover-title-svg.ts';
 
 export type BatchCoverTitleMode = 'none' | 'preset' | 'custom';
 

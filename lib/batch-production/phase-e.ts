@@ -3,9 +3,9 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
-import { assertNoStorageSymlink, resolveStoragePath } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 // 命名合约与单条模式共用同一处纯函数,避免两边各写一份后慢慢漂移。
-import { formatShanghaiTaskDate } from '../final-edit/export-identity.ts';
+import { formatShanghaiTaskDate } from '../media-core/export-identity.ts';
 import {
   clearBatchAssetExclusion,
   persistBatchAllocation,

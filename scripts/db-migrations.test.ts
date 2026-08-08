@@ -79,7 +79,7 @@ for (const sql of CORE_DB_MIGRATIONS) {
 
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE projects ADD COLUMN exportDirName TEXT NOT NULL DEFAULT ''`,
+  `UPDATE projects SET workflowType = 'complex_product' WHERE workflowType = 'legacy_batch_edit'`,
   'new core migrations must be appended without rewriting published entries',
 );
 const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;

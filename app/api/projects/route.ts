@@ -15,7 +15,7 @@ function asStringArray(value: unknown): string[] {
   return value.filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
-function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, projectId: string, role: 'input' | 'reference') {
+function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, projectId: string, role: 'input') {
   const result = db.prepare(`
     UPDATE image_assets
     SET projectId = ?, role = ?
@@ -68,7 +68,6 @@ export async function POST(request: NextRequest) {
   try {
     const db = getDb();
     const body = await request.json();
-    const workflowType = body.workflowType || 'complex_product';
 
     // Validate provider
     const provider = db.prepare(`SELECT id, enabled, apiKey, apiKeyEnv, type FROM providers WHERE id = ?`).get(body.providerId) as {
@@ -95,42 +94,6 @@ export async function POST(request: NextRequest) {
     const timeoutMs = body.timeoutMs || 600000;
     const maxAttempts = body.maxAttempts || 2;
     const concurrency = body.concurrency || 3;
-
-    if (workflowType === 'legacy_batch_edit') {
-      // ── Legacy: batch edit with reference + input images ──
-      const prompt = body.prompt?.trim();
-      if (!prompt) return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
-
-      const referenceImageIds = asStringArray(body.referenceImageIds);
-      const inputImageIds = asStringArray(body.inputImageIds);
-
-      db.transaction(() => {
-        db.prepare(`
-          INSERT INTO projects (id, name, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
-        `).run(projectId, body.name, body.providerId, model, prompt, body.negativePrompt || '',
-          resolvedSize, quality, concurrency, maxAttempts, 'none', timeoutMs, 'legacy_batch_edit');
-
-        for (const imageId of referenceImageIds) {
-          bindProjectImage(db, imageId, projectId, 'reference');
-        }
-
-        const refIdsJson = JSON.stringify(referenceImageIds);
-        const count = Math.max(1, Math.min(10, Number(body.generationCount) || 1));
-        const insertJob = db.prepare(`
-          INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
-        `);
-        for (const imageId of inputImageIds) {
-          bindProjectImage(db, imageId, projectId, 'input');
-          for (let g = 0; g < count; g++) {
-            insertJob.run(uuidv4(), projectId, imageId, refIdsJson, body.providerId, model, prompt, resolvedSize, quality, maxAttempts, 'none');
-          }
-        }
-      })();
-
-      return NextResponse.json({ id: projectId, workflowType: 'legacy_batch_edit' });
-    }
 
     // ── Complex product workflow ──
     const sceneSeedImageId: string | undefined = body.sceneSeedImageId;

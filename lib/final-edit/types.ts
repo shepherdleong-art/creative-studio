@@ -1,13 +1,9 @@
 import type { MatchDiagnostics } from './audio-first-matcher.ts';
 import type { FinalEditDurationGateStateV1 } from './duration-gate.ts';
 
-export type OutputPresetId = '3x4' | '9x16' | '16x9';
-
-export const OUTPUT_PRESETS = {
-  '3x4': { width: 1080, height: 1440, fps: 24 },
-  '9x16': { width: 1080, height: 1920, fps: 24 },
-  '16x9': { width: 1920, height: 1080, fps: 24 },
-} as const;
+export { OUTPUT_PRESETS } from '../media-core/cover-types.ts';
+export type { OutputPresetId, TextStyle, CoverFraming, CoverPresetV2 } from '../media-core/cover-types.ts';
+import type { OutputPresetId, TextStyle, CoverFraming } from '../media-core/cover-types.ts';
 
 export const FINAL_EDIT_FPS = 24 as const;
 export const FINAL_EDIT_INTRO_FRAMES = 20 as const;
@@ -42,37 +38,6 @@ export interface SubtitleCue {
   endUs: number;
   textSource: 'script' | 'manual';
   timingSource: 'aligned' | 'proportional' | 'manual';
-}
-
-export interface TextStyle {
-  fontFamily: string;
-  fontPostscriptName?: string;
-  fontSizePx: number;
-  italic: boolean;
-  x: number;
-  y: number;
-  scale: number;
-  color: string;
-  align: 'left' | 'center' | 'right';
-  boxWidthPx: number;
-  lineHeight: number;
-  stroke: { enabled: boolean; color: string; widthPx: number };
-  shadow: { enabled: boolean; color: string; opacity: number; blurPx: number; distancePx: number; angleDeg: number };
-}
-
-export interface CoverFraming {
-  scale: number;
-  offsetX: number;
-  offsetY: number;
-}
-
-export interface CoverPresetV2 {
-  version: 2;
-  stylesByPreset: Record<OutputPresetId, {
-    primary: TextStyle;
-    secondary: TextStyle;
-    framing: CoverFraming;
-  }>;
 }
 
 export interface CoverEditorDraft {

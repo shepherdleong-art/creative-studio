@@ -17,7 +17,7 @@ import {
   type BatchAssetSourceView,
 } from './media-catalog.ts';
 import { getAsset, syncAssetStatusFromSources, type BatchAssetRow } from './assets.ts';
-import { assertNoStorageSymlink } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
 
 export interface VerifiedProjectAssetMedia {
   asset: BatchAssetRow;

@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { splitAllocationScriptBody } from './allocator.ts';
-import { extractMatchKeywords } from '../final-edit/match-keywords.ts';
+import { extractMatchKeywords } from '../media-core/match-keywords.ts';
 import {
   SEMANTIC_MATRIX_PROMPT_VERSION,
   buildSemanticMatrixPrompt,
   scoreSemanticMatrixWithRetry,
   type SemanticScene,
   type SemanticSentence,
-} from '../final-edit/semantic-matrix.ts';
+} from '../media-core/semantic-matrix.ts';
 import { createBatchTask } from './tasks.ts';
 
 /**
