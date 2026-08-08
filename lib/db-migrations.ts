@@ -69,4 +69,5 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE projects ADD COLUMN videoConcurrency INTEGER NOT NULL DEFAULT 10`,
   `ALTER TABLE projects ADD COLUMN exportDirName TEXT NOT NULL DEFAULT ''`,
   `UPDATE projects SET workflowType = 'complex_product' WHERE workflowType = 'legacy_batch_edit'`,
+  `CREATE TRIGGER IF NOT EXISTS projects_default_workflow_type AFTER INSERT ON projects WHEN NEW.workflowType = 'legacy_batch_edit' BEGIN UPDATE projects SET workflowType = 'complex_product' WHERE id = NEW.id; END`,
 ];

@@ -79,9 +79,11 @@ for (const sql of CORE_DB_MIGRATIONS) {
 
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `UPDATE projects SET workflowType = 'complex_product' WHERE workflowType = 'legacy_batch_edit'`,
+  `CREATE TRIGGER IF NOT EXISTS projects_default_workflow_type AFTER INSERT ON projects WHEN NEW.workflowType = 'legacy_batch_edit' BEGIN UPDATE projects SET workflowType = 'complex_product' WHERE id = NEW.id; END`,
   'new core migrations must be appended without rewriting published entries',
 );
+const workflowTrigger = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'projects_default_workflow_type'`).get() as { name?: string } | undefined;
+assert.equal(workflowTrigger?.name, 'projects_default_workflow_type', 'new projects must not default back to legacy workflow');
 const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
 assert.ok(
   projectColumns.some((column) => column.name === 'videoConcurrency'),
