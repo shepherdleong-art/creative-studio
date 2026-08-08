@@ -18,6 +18,7 @@ import BatchProductionSidebar, { type BatchSidebarItem } from './BatchProduction
 import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 import BatchStepMaterials, { type AssetSelectionState, type VisionProviderView } from './BatchStepMaterials';
 import BatchStepScripts, {
+  BATCH_PROGRESS_ANCHOR_ID,
   type BatchBgmParamsDraft,
   type BatchBgmTrackView,
   type BatchCoverTitleDraft,
@@ -173,6 +174,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   // startBatchRef 避免把非 useCallback 的 startBatch 塞进 effect 依赖。
   const autoStartAfterGatesRef = useRef(false);
   const startBatchRef = useRef<() => Promise<void>>(async () => undefined);
+  // 点开跑后把进度卡滚进视野。进度卡在脚本步内容栈末尾(「开始」按钮之下),
+  // 不置顶是有意的——置顶会落在按钮的视线之外(实测用户点完看不到它)。
+  const scrollToProgressRef = useRef(false);
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
   const [proxyBatchBusy, setProxyBatchBusy] = useState(false);
   const [cacheUsage, setCacheUsage] = useState<{ count: number; totalBytes: number } | null>(null);
@@ -570,6 +574,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     };
   }, [batchStatus, batchTasks, workspace, hasActiveBatchTask, nowMs]);
 
+  // 开跑后滚到进度卡。progressView 只在 setBatchStatus('running') 之后才非空,
+  // 所以不能在 startBatch 里同步滚(那时元素还不存在);等它出现再用 rAF 滚。
+  useEffect(() => {
+    if (!scrollToProgressRef.current || !progressView) return;
+    scrollToProgressRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(BATCH_PROGRESS_ANCHOR_ID)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [progressView]);
+
   const currentBatch = batches.find(({ id }) => id === selectedBatchId);
   const currentVersionId = currentBatch?.currentVersionId ?? null;
 
@@ -942,6 +957,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         // 语义打分由后端在快照确认后自动排队,这里只负责显示与自动续跑;
         // 直接进入"生产中",不再让界面停留在"没开始"的样子。
         autoStartAfterGatesRef.current = true;
+        scrollToProgressRef.current = true;
         setBatchStatus('running');
         setBatches((current) => current.map((batch) => batch.id === selectedBatchId
           ? { ...batch, status: 'running' }
@@ -956,6 +972,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       if (result.status === 'narration_pending') {
         // 口播由后端在冻结后自动排队,同样直接进入"生产中",终态后自动续跑。
         autoStartAfterGatesRef.current = true;
+        scrollToProgressRef.current = true;
         setBatchStatus('running');
         setBatches((current) => current.map((batch) => batch.id === selectedBatchId
           ? { ...batch, status: 'running' }
@@ -968,6 +985,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         return;
       }
       autoStartAfterGatesRef.current = false;
+      scrollToProgressRef.current = true;
       setBatchStatus('running');
       setBatches((current) => current.map((batch) => batch.id === selectedBatchId
         ? { ...batch, status: 'running' }
@@ -1564,17 +1582,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 className={`mb-2 rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
               >{feedback.message}</div>
             )}
-            {/* 进度卡一律置顶,保证“做的时候看得见”——点开始的那一步(脚本步)
-                尤其不能例外:它的内容栈很长,进度卡挂在末尾就落到首屏之外,
-                用户点下去只看到一条提示。开跑前 progressView 恒为 null,所以
-                BGM 等输入不会被压在进度条下面,无需再按步骤排除。
-                脚本步刚点下开始,用完整阶段卡;后续步骤用紧凑条。
+            {/* 第 3、4 步:紧凑进度条置顶,保证“做的时候看得见”。
+                脚本步(activeStep === 1)不置顶——「开始」按钮在该步内容栈底部,
+                进度卡置顶会落在用户视线之外(实测:点完按钮看不到它,等滚上去
+                语义打分已经跑完)。那一步的完整进度卡由 BatchStepScripts 渲染在
+                自己的内容栈末尾,点开跑后由 scrollToProgressRef 滚进视野。
                 注意:不要在 {content} 之后再挂同级节点——.mainCol 是 flex
                 column,而各步根节点是 min-h-0 flex-1,会被压缩到容器高度、
                 内容溢出并盖住后面的兄弟节点(表现为卡片叠在一起)。 */}
-            {progressView && (
+            {progressView && activeStep > 1 && (
               <div className="mb-4">
-                <BatchProductionProgressCard progress={progressView} variant={activeStep === 1 ? 'full' : 'compact'} />
+                <BatchProductionProgressCard progress={progressView} variant="compact" />
               </div>
             )}
             {content}
@@ -1704,6 +1722,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
+              progress={progressView}
             />
           );
         }

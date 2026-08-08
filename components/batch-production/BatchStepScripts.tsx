@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
 import { defaultTextStyle } from '@/lib/final-edit/domain';
@@ -66,6 +67,9 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+/** 开跑后滚进视野的进度卡锚点。容器按 id 找它，避免跨组件传 ref。 */
+export const BATCH_PROGRESS_ANCHOR_ID = 'batch-production-progress';
+
 export interface BatchStepScriptsProps {
   prep: BatchPreparationResult;
   selectedScripts: Record<string, number>;
@@ -95,6 +99,9 @@ export interface BatchStepScriptsProps {
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
   inputChangedWarning: boolean;
+  /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下),
+      点开跑后由容器滚进视野——置顶会落在「开始」按钮的视线之外。 */
+  progress: BatchProgressView | null;
 }
 
 export interface OutputPresetLabel {
@@ -156,6 +163,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onConfirmSnapshot,
     onStartBatch,
     inputChangedWarning,
+    progress,
   } = props;
 
   const configuredProvider = useMemo(
@@ -1067,6 +1075,14 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
             </p>
           )}
         </section>
+      )}
+      {/* 进度卡放在本步最末:BGM 是开跑前的输入,必须排在进度之上。
+          id 是容器点开跑后滚进视野的锚点(见 BatchPreparationPanel 的
+          scrollToProgressRef)——置顶会落在「开始」按钮的视线之外。 */}
+      {progress && (
+        <div id={BATCH_PROGRESS_ANCHOR_ID}>
+          <BatchProductionProgressCard progress={progress} variant="full" />
+        </div>
       )}
     </div>
   );
