@@ -49,13 +49,13 @@ test('LiteLLM 日志和状态文件跟随自定义 CREATIVE_STUDIO_DATA_ROOT', (
 });
 
 test('UI 关闭端点按平台执行受控的 PowerShell 或 shell 停止脚本', () => {
-  const shutdownRoute = read('app/api/shutdown/route.ts');
+  const shutdown = read('lib/shutdown.ts');
 
-  assert.match(shutdownRoute, /process\.platform === 'win32'/);
-  assert.match(shutdownRoute, /powershell\.exe/);
-  assert.match(shutdownRoute, /\/bin\/bash/);
-  assert.match(shutdownRoute, /stop-litellm\.sh/);
-  assert.match(shutdownRoute, /path\.resolve\(process\.cwd\(\), 'scripts'\)/);
+  assert.match(shutdown, /process\.platform === 'win32'/);
+  assert.match(shutdown, /powershell\.exe/);
+  assert.match(shutdown, /\/bin\/bash/);
+  assert.match(shutdown, /stop-litellm\.sh/);
+  assert.match(shutdown, /path\.resolve\(process\.cwd\(\), 'scripts'\)/);
 });
 
 test('LiteLLM 运行依赖锁定到已验证版本并包含 SOCKS 支持', () => {

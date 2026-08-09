@@ -56,12 +56,21 @@ export function subtitleOverlayEnableExpression(startSec: number, endSec: number
   return 'gte(t,' + startSec.toFixed(6) + ')*lt(t,' + endSec.toFixed(6) + ')';
 }
 
+function assertNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('成片渲染已中止');
+  error.name = 'AbortError';
+  throw error;
+}
+
 export async function renderFinalEditSnapshot(input: {
   jobId: string;
   storageRoot: string;
   snapshot: FinalEditRenderSnapshot;
   onProgress?: (progress: number) => void;
+  signal?: AbortSignal;
 }) {
+  assertNotAborted(input.signal);
   const { snapshot, storageRoot } = input;
   const narrationPlaybackRate = Number.isFinite(snapshot.group.narrationPlaybackRate)
     ? Math.max(0.5, Math.min(2, Number(snapshot.group.narrationPlaybackRate)))
@@ -159,11 +168,14 @@ export async function renderFinalEditSnapshot(input: {
   fs.writeFileSync(filterFile, filters.join(';\n'));
   const tempVideo = path.join(jobDir, 'final.mp4.tmp');
   const finalVideo = path.join(jobDir, 'final.mp4');
+  assertNotAborted(input.signal);
   await runFfmpeg([...args, '-filter_complex_script', filterFile, '-map', `[${currentVideo}]`, '-map', '[audio]', '-t', totalSec.toFixed(6), '-r', '24', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-movflags', '+faststart', '-f', 'mp4', '-progress', 'pipe:1', '-y', tempVideo], {
     timeoutMs: 30 * 60_000,
     onProgressSec: (outTimeSec) => input.onProgress?.(Math.max(0, Math.min(1, outTimeSec / totalSec))),
+    signal: input.signal,
   });
   const actualDuration = await probeDurationSec(tempVideo);
+  assertNotAborted(input.signal);
   if (Math.abs(actualDuration - totalSec) > 1 / 24 + 0.01) throw new Error(`产物时长校验失败：${actualDuration.toFixed(3)}s，预期 ${totalSec.toFixed(3)}s`);
   fs.renameSync(tempVideo, finalVideo);
   return { videoRelativePath: path.join(jobRelativeDir, 'final.mp4'), coverRelativePath: path.join(jobRelativeDir, 'cover.jpg'), durationSec: actualDuration, width: output.width, height: output.height, fps: 24 };

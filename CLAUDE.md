@@ -50,7 +50,8 @@ node scripts/<name>.test.ts          # pattern for any other test file
   - `final-edit/` — Versioned final-edit schema, group/variant workspace, external-material import, timeline planning and FFmpeg rendering. Shared media foundations (storage paths, matching, cover title types/rendering, scene detection, video analysis, TTS and alignment adapters, and the `render-contract.ts` 24fps / 20-frame cover-intro constants) live in `media-core/` and are re-exported from the legacy final-edit paths for compatibility; `batch-production/` imports only from `media-core/`, never from `final-edit/`. Mixcut context and external assets are scoped by `projectId + shotSetId`; never infer grouping from filenames or timestamps
   - `image-output-normalize.ts` — Sharp-based crop/resize to target dimensions
   - `provider-concurrency.ts` — Per-provider concurrency limits
-  - `ffmpeg.ts` — resolves ffmpeg/ffprobe (env → static package → PATH), probes media with an asynchronous fallback, and runs final-edit renders with progress/timeout/error-tail handling
+  - `ffmpeg.ts` — resolves ffmpeg/ffprobe (env → static package → PATH), probes media with an asynchronous fallback, runs final-edit renders with progress/timeout/error-tail handling and AbortSignal support, and exposes direct-process shutdown broadcast/waiting
+  - `shutdown.ts` — the single idempotent graceful-shutdown orchestrator shared by the UI endpoint and SIGTERM/SIGINT handlers; it stops batch scheduling, drains direct FFmpeg, closes SQLite, and runs only the controlled LiteLLM stop script
 - **`components/`** — React UI (workbench tabs, shot panels, video panels); `components/mixcut/` is the formal fifth-step “智能混剪” workspace, while `components/final-edit/` retains shared preview, inspector, and Canvas editing primitives
 - **`data/`** — Local SQLite DB (`workbench.db`, gitignored)
 - **`storage/`** — Uploaded assets & generated outputs (gitignored)
@@ -70,7 +71,7 @@ node scripts/<name>.test.ts          # pattern for any other test file
 - `scripts/build-win-installer.ps1` and `scripts/build-mac-installer.sh` each run the production build, download a matching private Node runtime, and assemble a self-contained installer from `installer/windows/` (Inno Setup script + launcher) or `installer/macos/` (`.app` bundle template + launcher).
 - macOS builds are Apple Silicon-only and must run on an arm64 Node 22.x host — the bundled runtime is pinned to a specific Node 22 build, and a mismatched major version or x64 Node under Rosetta breaks the native module ABI for `better-sqlite3`/`sharp`.
 - Installer payloads must not leak local data, credentials, or dev-only paths (`data/`, `storage/`, `outputs/`, `docs/`, `scripts/`, `.git/`, `.env*`, `config.yaml`, `.venv-litellm/`); the build scripts prune them and then assert none remain before packaging. Both platforms require bundled FFmpeg. On macOS the installer verifies an arm64 FFmpeg and removes the currently mislabeled x86_64 `ffprobe-static` payload, relying on the tested FFmpeg metadata-probe fallback; Windows still requires its native ffprobe binary.
-- `app/api/shutdown` exposes a graceful `POST` shutdown endpoint that installed-app stop scripts/launchers call instead of killing the process directly.
+- `app/api/shutdown` exposes a graceful `POST` shutdown endpoint that installed-app stop scripts/launchers call instead of killing the process directly; process SIGTERM/SIGINT use the same orchestrator.
 - `MACOS.md` covers the macOS installer's user-facing install/uninstall/data-location instructions.
 
 ### Key conventions
