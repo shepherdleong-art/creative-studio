@@ -1,25 +1,8 @@
-export const DESKTOP_IPC_CHANNELS = {
-  getServiceStatus: 'desktop:get-service-status',
-  openExternal: 'desktop:open-external',
-} as const;
-
-export type DesktopServiceState =
-  | 'starting'
-  | 'ready'
-  | 'stopping'
-  | 'stopped'
-  | 'error';
-
-export interface DesktopServiceStatus {
-  state: DesktopServiceState;
-  origin?: string;
-  instanceId?: string;
-  error?: string;
-}
-
 export interface DesktopBridge {
-  getServiceStatus(): Promise<DesktopServiceStatus>;
-  openExternal(url: string): Promise<void>;
+  platform(): Promise<'macos' | 'windows'>;
+  chooseMediaFiles(): Promise<{ requestId: string; count: number }>;
+  chooseFolder(): Promise<{ requestId: string; count: number } | null>;
+  getAppVersion(): Promise<string>;
 }
 
 declare global {

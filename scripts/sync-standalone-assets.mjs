@@ -21,12 +21,16 @@ copyDirectory(join(root, 'public'), join(standaloneDir, 'public'));
 
 // The standalone server is launched through this tiny wrapper so the Electron
 // main process can learn the OS-assigned port and launch identity.
-const serverEntrySource = join(root, 'desktop', 'server-entry.js');
+// Keep the Next-starting wrapper outside desktop/ so the desktop shell's
+// dependency boundary cannot transitively include the business/native graph.
+const serverEntrySource = join(root, 'runtime', 'server-entry.js');
 if (!existsSync(serverEntrySource)) {
-  throw new Error(`Missing required desktop server entry: ${serverEntrySource}`);
+  throw new Error(`Missing required runtime server entry: ${serverEntrySource}`);
 }
-mkdirSync(join(standaloneDir, 'desktop'), { recursive: true });
-copyFileSync(serverEntrySource, join(standaloneDir, 'desktop', 'server-entry.js'));
+rmSync(join(standaloneDir, 'desktop'), { recursive: true, force: true });
+rmSync(join(standaloneDir, 'runtime'), { recursive: true, force: true });
+mkdirSync(join(standaloneDir, 'runtime'), { recursive: true });
+copyFileSync(serverEntrySource, join(standaloneDir, 'runtime', 'server-entry.js'));
 
 // ffmpeg/ffprobe 静态二进制不会被 Next 的文件追踪收录，强制拷入 standalone
 for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {

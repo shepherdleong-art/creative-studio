@@ -1,18 +1,33 @@
-import { ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 
-import {
-  DESKTOP_IPC_CHANNELS,
-  type DesktopServiceStatus,
-} from './bridge-types';
+import type { DesktopBridge } from './bridge-types';
 
-export interface DesktopServiceController {
-  getStatus(): DesktopServiceStatus;
+const CHANNELS = {
+  platform: 'desktop:platform',
+  chooseMediaFiles: 'desktop:choose-media-files',
+  chooseFolder: 'desktop:choose-folder',
+  getAppVersion: 'desktop:get-app-version',
+} as const;
+
+export type DesktopPlatform = Awaited<ReturnType<DesktopBridge['platform']>>;
+export type MediaSelectionResult = Awaited<
+  ReturnType<DesktopBridge['chooseMediaFiles']>
+>;
+export type FolderSelectionResult = Awaited<
+  ReturnType<DesktopBridge['chooseFolder']>
+>;
+
+export interface DesktopIpcHandlers {
+  platform(): DesktopPlatform;
+  chooseMediaFiles(): Promise<MediaSelectionResult>;
+  chooseFolder(): Promise<FolderSelectionResult>;
+  getAppVersion(): string;
 }
 
 interface RegisterIpcOptions {
   window: BrowserWindow;
   origin: string;
-  service: DesktopServiceController;
+  handlers: DesktopIpcHandlers;
 }
 
 function sameOrigin(left: string, right: string): boolean {
@@ -44,32 +59,34 @@ function assertAllowedSender(
 }
 
 export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
-  const getServiceStatus = (event: IpcMainInvokeEvent): DesktopServiceStatus => {
-    assertAllowedSender(event, options);
-    return options.service.getStatus();
-  };
+  const protectedHandler = <TArgs extends unknown[], TResult>(
+    handler: (...args: TArgs) => TResult,
+  ) =>
+    (event: IpcMainInvokeEvent, ...args: TArgs): TResult => {
+      assertAllowedSender(event, options);
+      return handler(...args);
+    };
 
-  const openExternal = async (
-    event: IpcMainInvokeEvent,
-    value: unknown,
-  ): Promise<void> => {
-    assertAllowedSender(event, options);
-    if (typeof value !== 'string') {
-      throw new TypeError('外部链接必须是字符串');
-    }
-
-    const url = new URL(value);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new Error('只允许打开 HTTP(S) 外部链接');
-    }
-    await shell.openExternal(url.toString());
-  };
-
-  ipcMain.handle(DESKTOP_IPC_CHANNELS.getServiceStatus, getServiceStatus);
-  ipcMain.handle(DESKTOP_IPC_CHANNELS.openExternal, openExternal);
+  ipcMain.handle(
+    CHANNELS.platform,
+    protectedHandler(() => options.handlers.platform()),
+  );
+  ipcMain.handle(
+    CHANNELS.chooseMediaFiles,
+    protectedHandler(() => options.handlers.chooseMediaFiles()),
+  );
+  ipcMain.handle(
+    CHANNELS.chooseFolder,
+    protectedHandler(() => options.handlers.chooseFolder()),
+  );
+  ipcMain.handle(
+    CHANNELS.getAppVersion,
+    protectedHandler(() => options.handlers.getAppVersion()),
+  );
 
   return () => {
-    ipcMain.removeHandler(DESKTOP_IPC_CHANNELS.getServiceStatus);
-    ipcMain.removeHandler(DESKTOP_IPC_CHANNELS.openExternal);
+    for (const channel of Object.values(CHANNELS)) {
+      ipcMain.removeHandler(channel);
+    }
   };
 }

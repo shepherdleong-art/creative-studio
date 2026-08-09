@@ -3,8 +3,6 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 
-import type { DesktopServiceStatus } from './bridge-types';
-
 const READY_PREFIX = '__CREATIVE_STUDIO_READY__';
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
@@ -31,6 +29,20 @@ export interface DesktopService {
   readonly instanceId: string;
   getStatus(): DesktopServiceStatus;
   stop(): Promise<void>;
+}
+
+export type DesktopServiceState =
+  | 'starting'
+  | 'ready'
+  | 'stopping'
+  | 'stopped'
+  | 'error';
+
+export interface DesktopServiceStatus {
+  state: DesktopServiceState;
+  origin?: string;
+  instanceId?: string;
+  error?: string;
 }
 
 export class DesktopServiceError extends Error {

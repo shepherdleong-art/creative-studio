@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { delimiter, join, resolve } from 'node:path';
 
-import { registerIpcHandlers } from './ipc';
+import { registerIpcHandlers, type DesktopIpcHandlers } from './ipc';
 import {
   startService,
   type DesktopService,
@@ -17,6 +17,25 @@ let service: DesktopService | null = null;
 let removeIpcHandlers: (() => void) | null = null;
 let shutdownPromise: Promise<void> | null = null;
 
+const desktopIpcHandlers: DesktopIpcHandlers = {
+  platform: () => {
+    if (process.platform === 'darwin') {
+      return 'macos';
+    }
+    if (process.platform === 'win32') {
+      return 'windows';
+    }
+    throw new Error(`不支持的桌面平台：${process.platform}`);
+  },
+  chooseMediaFiles: async () => {
+    throw new Error('原生素材选择将在 Phase 2 接入');
+  },
+  chooseFolder: async () => {
+    throw new Error('原生文件夹选择将在 Phase 2 接入');
+  },
+  getAppVersion: () => app.getVersion(),
+};
+
 function focusMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
@@ -26,20 +45,6 @@ function focusMainWindow(): void {
   }
   mainWindow.show();
   mainWindow.focus();
-}
-
-function exactOrigin(left: string, right: string): boolean {
-  try {
-    const leftUrl = new URL(left);
-    const rightUrl = new URL(right);
-    return (
-      leftUrl.protocol === rightUrl.protocol &&
-      leftUrl.hostname === rightUrl.hostname &&
-      leftUrl.port === rightUrl.port
-    );
-  } catch {
-    return false;
-  }
 }
 
 function resolveNodeExecutable(): string {
@@ -86,8 +91,8 @@ function resolveServicePaths(): Pick<StartServiceOptions, 'serverRoot' | 'server
   const standaloneRoot =
     process.env.CREATIVE_STUDIO_STANDALONE_ROOT ??
     join(projectRoot, '.next', 'standalone');
-  const bundledEntry = join(standaloneRoot, 'desktop', 'server-entry.js');
-  const sourceEntry = join(projectRoot, 'desktop', 'server-entry.js');
+  const bundledEntry = join(standaloneRoot, 'runtime', 'server-entry.js');
+  const sourceEntry = join(projectRoot, 'runtime', 'server-entry.js');
 
   if (existsSync(bundledEntry)) {
     return { serverRoot: standaloneRoot, serverEntry: bundledEntry };
@@ -115,15 +120,14 @@ function createWindow(currentService: DesktopService): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      webviewTag: false,
     },
   });
 
-  let initialNavigationConsumed = false;
-  window.webContents.on('will-navigate', (event, url) => {
-    if (!initialNavigationConsumed && exactOrigin(url, origin)) {
-      initialNavigationConsumed = true;
-      return;
-    }
+  // Electron's programmatic loadURL() does not emit will-navigate. Therefore
+  // the initial load needs no exception here; every renderer-initiated
+  // top-level navigation is denied, including same-origin navigations.
+  window.webContents.on('will-navigate', (event) => {
     event.preventDefault();
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -135,7 +139,7 @@ function createWindow(currentService: DesktopService): BrowserWindow {
   removeIpcHandlers = registerIpcHandlers({
     window,
     origin,
-    service: currentService,
+    handlers: desktopIpcHandlers,
   });
 
   window.once('ready-to-show', () => window.show());
