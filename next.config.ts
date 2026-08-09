@@ -18,6 +18,7 @@ const nextConfig: NextConfig = {
       './config.yaml',
       './data/**/*',
       './dist/**/*',
+      './dist-desktop/**/*',
       './docs/**/*',
       './installer/**/*',
       './litellm-config.yaml',

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = process.cwd();
@@ -18,6 +18,15 @@ if (!existsSync(standaloneDir)) {
 
 copyDirectory(join(root, '.next', 'static'), join(standaloneDir, '.next', 'static'));
 copyDirectory(join(root, 'public'), join(standaloneDir, 'public'));
+
+// The standalone server is launched through this tiny wrapper so the Electron
+// main process can learn the OS-assigned port and launch identity.
+const serverEntrySource = join(root, 'desktop', 'server-entry.js');
+if (!existsSync(serverEntrySource)) {
+  throw new Error(`Missing required desktop server entry: ${serverEntrySource}`);
+}
+mkdirSync(join(standaloneDir, 'desktop'), { recursive: true });
+copyFileSync(serverEntrySource, join(standaloneDir, 'desktop', 'server-entry.js'));
 
 // ffmpeg/ffprobe 静态二进制不会被 Next 的文件追踪收录，强制拷入 standalone
 for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {

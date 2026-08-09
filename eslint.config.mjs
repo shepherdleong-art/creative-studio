@@ -12,6 +12,7 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "dist/**",
+    "dist-desktop/**",
     "next-env.d.ts",
     // 本地 LiteLLM Python 环境包含其自带的前端构建产物，不属于本仓库源码：
     ".venv-litellm/**",

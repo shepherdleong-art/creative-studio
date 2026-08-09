@@ -20,6 +20,7 @@
 # production
 /build
 /dist
+/dist-desktop
 /.cache
 
 # misc
