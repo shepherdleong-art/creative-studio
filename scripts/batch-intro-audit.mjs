@@ -24,7 +24,7 @@ import Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { resolveFfmpegPath } from '../lib/ffmpeg.ts';
 import { dataRoot } from '../lib/data-root.ts';
-import { FINAL_EDIT_INTRO_DURATION_US } from '../lib/final-edit/types.ts';
+import { FINAL_EDIT_INTRO_DURATION_US } from '../lib/media-core/render-contract.ts';
 
 const run = promisify(execFile);
 const INTRO_SEC = FINAL_EDIT_INTRO_DURATION_US / 1_000_000;

@@ -57,6 +57,7 @@ db.exec(`
   CREATE TABLE projects (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
     productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL,
+    exportDirName TEXT NOT NULL DEFAULT '',
     finalEditAutoUseLimit INTEGER DEFAULT 2
   );
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);

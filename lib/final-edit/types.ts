@@ -5,9 +5,7 @@ export { OUTPUT_PRESETS } from '../media-core/cover-types.ts';
 export type { OutputPresetId, TextStyle, CoverFraming, CoverPresetV2 } from '../media-core/cover-types.ts';
 import type { OutputPresetId, TextStyle, CoverFraming } from '../media-core/cover-types.ts';
 
-export const FINAL_EDIT_FPS = 24 as const;
-export const FINAL_EDIT_INTRO_FRAMES = 20 as const;
-export const FINAL_EDIT_INTRO_DURATION_US = 833_333;
+export { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
 export const FINAL_EDIT_MIN_CLIP_FRAMES = 12 as const;
 
 export interface TimelineClip {

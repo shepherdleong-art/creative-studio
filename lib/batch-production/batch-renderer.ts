@@ -8,7 +8,7 @@ import { dataRoot } from '../data-root.ts';
 import { probeDurationSec, probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { writeLog } from '../logger.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
-import { FINAL_EDIT_INTRO_DURATION_US } from '../final-edit/types.ts';
+import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
 import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
 import { applyFrozenCoverTitleToFile, escapeXml } from './cover-title.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';

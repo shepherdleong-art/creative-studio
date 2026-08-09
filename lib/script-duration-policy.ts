@@ -1,4 +1,4 @@
-import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from './final-edit/types.ts';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from './media-core/render-contract.ts';
 
 export const SCRIPT_DURATION_POLICY_VERSION = 'zh-tts-budget-v1' as const;
 export const SCRIPT_DURATION_OPTIONS = [15, 20, 30, 45, 60] as const;

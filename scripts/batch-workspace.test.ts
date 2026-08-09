@@ -10,7 +10,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-worksp
 try {
   const db = new Database(path.join(root, 'workspace.db'));
   db.pragma('foreign_keys = ON');
-  db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL); INSERT INTO projects VALUES ('p1', '项目一'), ('p2', '项目二');`);
+  db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT '', exportDirName TEXT NOT NULL DEFAULT ''); INSERT INTO projects (id, name) VALUES ('p1', '项目一'), ('p2', '项目二');`);
   const ready = await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
   assert.notEqual(ready.state, 'compatibility_only');
   const now = '2026-08-03T10:00:00.000Z';

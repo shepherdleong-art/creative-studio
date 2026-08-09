@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { computeFingerprintFromFile } from '../lib/batch-production/fingerprint.ts';
 import { resolveFfmpegPath, probeVideoMedia, runFfmpeg } from '../lib/ffmpeg.ts';
-import { FINAL_EDIT_INTRO_DURATION_US } from '../lib/final-edit/types.ts';
+import { FINAL_EDIT_INTRO_DURATION_US } from '../lib/media-core/render-contract.ts';
 import {
   regenerateBatchOutputCover,
   renderBatchOutputVersion,
