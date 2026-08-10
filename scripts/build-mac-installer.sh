@@ -116,11 +116,18 @@ if [ "$SKIP_NPM_CI" -eq 1 ]; then
 else
   echo "Installing npm dependencies..."
   npm ci
+  if [ ! -d "$ELECTRON_APP" ]; then
+    echo "Electron runtime was not installed by npm ci; running Electron installer..."
+    if ! node "$ROOT/node_modules/electron/install.js"; then
+      echo "Electron runtime installer failed." >&2
+      exit 1
+    fi
+  fi
 fi
 
 if [ ! -d "$ELECTRON_APP" ]; then
   echo "Missing Electron runtime: $ELECTRON_APP" >&2
-  echo "Run npm ci before building the macOS installer." >&2
+  echo "Run npm ci and the Electron installer before building the macOS installer." >&2
   exit 1
 fi
 

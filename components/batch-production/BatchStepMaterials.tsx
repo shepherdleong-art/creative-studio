@@ -454,7 +454,9 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                       : undefined}
                     onRetryAnalyze={analysisTask?.status === 'failed' ? () => props.onRetryAnalyze(analysisTask.id) : undefined}
                     onResync={props.onResync}
-                    onRelocateLinkedSource={(sourceId) => void relocateLinked(asset.id, sourceId)}
+                    onRelocateLinkedSource={desktopAvailable
+                      ? (sourceId) => void relocateLinked(asset.id, sourceId)
+                      : undefined}
                     relocatingSourceId={linkedRelocateBusy?.startsWith(`${asset.id}:`) ? linkedRelocateBusy.slice(asset.id.length + 1) : null}
                     analyzeBusy={assetAnalysisBusy}
                     onPreview={() => props.onPreviewAsset(asset)}

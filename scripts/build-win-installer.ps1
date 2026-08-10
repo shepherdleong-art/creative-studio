@@ -87,10 +87,15 @@ if ($SkipNpmCi) {
   Write-Host 'Installing npm dependencies...'
   & npm.cmd ci
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  if (-not (Test-Path (Join-Path $ElectronDist 'electron.exe'))) {
+    Write-Host 'Electron runtime was not installed by npm ci; running Electron installer...'
+    & node.exe (Join-Path $Root 'node_modules\electron\install.js')
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
 }
 
 if (-not (Test-Path (Join-Path $ElectronDist 'electron.exe'))) {
-  throw "Electron runtime was not found at $ElectronDist. Run npm ci on the Windows build host."
+  throw "Electron runtime was not found at $ElectronDist. Run npm ci and the Electron installer on the Windows build host."
 }
 
 Remove-Item -LiteralPath (Join-Path $Root '.next\dev') -Recurse -Force -ErrorAction SilentlyContinue

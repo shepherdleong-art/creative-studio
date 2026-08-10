@@ -14,12 +14,15 @@ for (const path of [
   exists(path);
 }
 
-const build = read('scripts/build-win-installer.ps1');
+const build = read('scripts/build-win-installer.ps1').replaceAll('\r\n', '\n');
 const desktopService = read('desktop/service.ts');
 const buildBytes = readFileSync('scripts/build-win-installer.ps1');
 const stopBytes = readFileSync('installer/windows/stop-installed.ps1');
 assert.deepEqual([...buildBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'PowerShell build script must remain UTF-8 with BOM');
 assert.deepEqual([...stopBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'Installed stop script must remain UTF-8 with BOM');
+const hasOnlyCrLf = (bytes) => bytes.every((byte, index) => byte !== 0x0a || (index > 0 && bytes[index - 1] === 0x0d));
+assert.ok(hasOnlyCrLf(buildBytes), 'PowerShell build script must remain CRLF');
+assert.ok(hasOnlyCrLf(stopBytes), 'Installed stop script must remain CRLF');
 assert.match(build, /\[string\]\$NodeVersion = '22\.22\.3'/);
 assert.match(build, /\$NodeName = "node-v\$NodeVersion-win-x64"/);
 assert.match(build, /nodejs\.org\/dist\/v\$NodeVersion\/\$NodeName\.zip/);
@@ -31,8 +34,19 @@ assert.match(build, /\$HostNodePlatform -ne 'win32'/);
 assert.match(build, /\$HostNodeArch -ne 'x64'/);
 assert.match(build, /npm\.cmd ci/);
 const windowsNpmCiCommand = build.indexOf('& npm.cmd ci');
+const windowsElectronInstallCommand = build.indexOf("& node.exe (Join-Path $Root 'node_modules\\electron\\install.js')");
+const windowsMissingRuntime = build.indexOf('\n  throw "Electron runtime was not found at');
 assert.notEqual(windowsNpmCiCommand, -1);
-assert.ok(windowsNpmCiCommand < build.indexOf('Electron runtime was not found'), 'Windows 必须在 npm ci 后检查 Electron runtime');
+assert.notEqual(windowsElectronInstallCommand, -1);
+assert.notEqual(windowsMissingRuntime, -1);
+assert.ok(windowsNpmCiCommand < windowsElectronInstallCommand, 'Windows 必须在 npm ci 后按需执行 Electron installer');
+assert.ok(windowsElectronInstallCommand < windowsMissingRuntime, 'Windows 必须在 Electron installer 后硬失败检查 runtime');
+const windowsNpmCiBlockStart = build.indexOf('if ($SkipNpmCi) {');
+const windowsNpmCiElse = build.indexOf('\n} else {', windowsNpmCiBlockStart);
+const windowsNpmCiBlockEnd = build.indexOf('\n}\n\nif (-not (Test-Path (Join-Path $ElectronDist', windowsNpmCiElse);
+assert.ok(windowsNpmCiBlockStart >= 0 && windowsNpmCiElse > windowsNpmCiBlockStart && windowsNpmCiBlockEnd > windowsNpmCiElse);
+assert.doesNotMatch(build.slice(windowsNpmCiBlockStart, windowsNpmCiElse), /electron\\install\.js/, 'Windows skip 分支不得自动安装 Electron');
+assert.match(build.slice(windowsNpmCiElse, windowsNpmCiBlockEnd), /npm\.cmd ci[\s\S]*if \(-not \(Test-Path \(Join-Path \$ElectronDist 'electron\.exe'\)\)\)[\s\S]*node\.exe \(Join-Path \$Root 'node_modules\\electron\\install\.js'\)/);
 assert.match(build, /npm\.cmd run build/);
 assert.match(build, /npm\.cmd run build:desktop/);
 assert.match(build, /\$ElectronDist = Join-Path \$Root 'node_modules\\electron\\dist'/);
