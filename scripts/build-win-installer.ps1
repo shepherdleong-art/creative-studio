@@ -183,10 +183,12 @@ foreach ($relativePath in @(
   'start-windows.cmd',
   'stop-windows.cmd',
   'start.command',
+  'start-desktop.command',
   'stop.command',
   'start.sh',
   'stop.sh',
   'launcher.vbs',
+  'launcher.html',
   'video-panel-mockup.html'
 )) {
   Remove-PayloadPath -RelativePath $relativePath
