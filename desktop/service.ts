@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 
 const READY_PREFIX = '__CREATIVE_STUDIO_READY__';
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
@@ -18,6 +18,7 @@ export interface StartServiceOptions {
   serverRoot: string;
   dataRoot: string;
   instanceId?: string;
+  desktopSecret?: string;
   startupTimeoutMs?: number;
   healthTimeoutMs?: number;
   healthIntervalMs?: number;
@@ -87,6 +88,14 @@ function wait(milliseconds: number): Promise<void> {
 
 function isAlive(child: ChildProcess): boolean {
   return child.exitCode === null && child.signalCode === null;
+}
+
+function forceTerminateWindowsTree(pid: number): Promise<void> {
+  return new Promise((resolve) => {
+    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+      windowsHide: true,
+    }, () => resolve());
+  });
 }
 
 function requestTimeoutSignal(milliseconds: number): {
@@ -322,11 +331,11 @@ class ManagedDesktopService implements DesktopService {
       }
       await this.waitForExit(GRACEFUL_EXIT_TIMEOUT_MS);
       if (isAlive(this.child)) {
-        this.kill('SIGTERM');
+        await this.kill('SIGTERM');
         await this.waitForExit(FORCE_EXIT_TIMEOUT_MS);
       }
       if (isAlive(this.child)) {
-        this.kill('SIGKILL');
+        await this.kill('SIGKILL');
         await this.waitForExit(FORCE_EXIT_TIMEOUT_MS);
       }
     } finally {
@@ -367,11 +376,25 @@ class ManagedDesktopService implements DesktopService {
     });
   }
 
-  private kill(signal: NodeJS.Signals): void {
+  private async kill(signal: NodeJS.Signals): Promise<void> {
+    const pid = this.child.pid;
+    if (!pid) return;
+    if (process.platform === 'win32') {
+      // Windows has no POSIX process groups. taskkill /T /F is the bounded
+      // fallback that also reaches ffmpeg descendants of the service.
+      await forceTerminateWindowsTree(pid);
+      return;
+    }
     try {
-      this.child.kill(signal);
+      // The child is detached on Unix, so its negative pid addresses the
+      // complete service process group rather than leaving ffmpeg orphaned.
+      process.kill(-pid, signal);
     } catch {
-      // The process may have exited between isAlive() and kill().
+      try {
+        this.child.kill(signal);
+      } catch {
+        // The process may have exited between isAlive() and kill().
+      }
     }
   }
 
@@ -427,6 +450,7 @@ export async function startService(
       HOSTNAME: '127.0.0.1',
       NODE_ENV: 'production',
       CREATIVE_STUDIO_INSTANCE_ID: instanceId,
+      ...(options.desktopSecret ? { CREATIVE_STUDIO_DESKTOP_SECRET: options.desktopSecret } : {}),
       CREATIVE_STUDIO_DATA_ROOT: options.dataRoot,
       CREATIVE_STUDIO_SERVER_ROOT: options.serverRoot,
       CREATIVE_STUDIO_STANDALONE_SERVER: join(options.serverRoot, 'server.js'),
@@ -434,6 +458,7 @@ export async function startService(
       NEXT_TELEMETRY_DISABLED: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
     windowsHide: true,
   });
 

@@ -68,10 +68,10 @@ node scripts/<name>.test.ts          # pattern for any other test file
 
 ### Desktop packaging
 
-- `scripts/build-win-installer.ps1` and `scripts/build-mac-installer.sh` each run the production build, download a matching private Node runtime, and assemble a self-contained installer from `installer/windows/` (Inno Setup script + launcher) or `installer/macos/` (`.app` bundle template + launcher).
-- macOS builds are Apple Silicon-only and must run on an arm64 Node 22.x host — the bundled runtime is pinned to a specific Node 22 build, and a mismatched major version or x64 Node under Rosetta breaks the native module ABI for `better-sqlite3`/`sharp`.
+- `scripts/build-win-installer.ps1` and `scripts/build-mac-installer.sh` each run the production build, compile the Electron main/preload payload, download a matching private Node runtime, and assemble a self-contained Electron installer. Windows keeps the Inno Setup wrapper; macOS copies the Electron runtime and uses `installer/macos/Info.plist` as metadata. The legacy launcher sources remain only as historical/dev resources and are not packaged.
+- macOS builds are Apple Silicon-only and must run on an arm64 Node 22.x host — the bundled runtime is pinned to a specific Node 22 build, and a mismatched major version or x64 Node under Rosetta breaks the native module ABI for `better-sqlite3`/`sharp`. Release builds require a Developer ID identity plus a `notarytool` keychain profile; `--allow-adhoc` is explicitly local-only.
 - Installer payloads must not leak local data, credentials, or dev-only paths (`data/`, `storage/`, `outputs/`, `docs/`, `scripts/`, `.git/`, `.env*`, `config.yaml`, `.venv-litellm/`); the build scripts prune them and then assert none remain before packaging. Both platforms require bundled FFmpeg. On macOS the installer verifies an arm64 FFmpeg and removes the currently mislabeled x86_64 `ffprobe-static` payload, relying on the tested FFmpeg metadata-probe fallback; Windows still requires its native ffprobe binary.
-- `app/api/shutdown` exposes a graceful `POST` shutdown endpoint that installed-app stop scripts/launchers call instead of killing the process directly; process SIGTERM/SIGINT use the same orchestrator.
+- `app/api/shutdown` exposes a graceful `POST` shutdown endpoint used by the Electron service supervisor; explicit app quit stops the service and then falls back to process-group/tree termination. Windows' installed stop script targets only the matching `CreativeStudio.exe` path, and user data lives below `CREATIVE_STUDIO_DATA_ROOT` or the platform app-data directory.
 - `MACOS.md` covers the macOS installer's user-facing install/uninstall/data-location instructions.
 
 ### Key conventions

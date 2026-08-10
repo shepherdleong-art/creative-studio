@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog } from 'electron';
 import { accessSync, constants, existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-import { delimiter, join, resolve } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { delimiter, extname, join, resolve } from 'node:path';
 
 import { registerIpcHandlers, type DesktopIpcHandlers } from './ipc';
 import {
@@ -14,27 +15,142 @@ const singleInstanceLock = app.requestSingleInstanceLock();
 
 let mainWindow: BrowserWindow | null = null;
 let service: DesktopService | null = null;
+let desktopSecret: string | null = null;
 let removeIpcHandlers: (() => void) | null = null;
 let shutdownPromise: Promise<void> | null = null;
+let explicitQuitRequested = false;
+let closeNoticeShown = false;
 
-const desktopIpcHandlers: DesktopIpcHandlers = {
-  platform: () => {
-    if (process.platform === 'darwin') {
-      return 'macos';
+const LINKED_MEDIA_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.webm']);
+const MAX_LINKED_IMPORT_FILES = 500;
+
+interface LinkedImportResponse {
+  assetIds: string[];
+  errors: Array<{ index: number; message: string }>;
+}
+
+function isLinkedImportResponse(value: unknown): value is LinkedImportResponse {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return Array.isArray(candidate.assetIds)
+    && candidate.assetIds.every((assetId) => typeof assetId === 'string')
+    && Array.isArray(candidate.errors);
+}
+
+function currentProjectId(window: BrowserWindow): string {
+  try {
+    const pathname = new URL(window.webContents.getURL()).pathname;
+    const segments = pathname.split('/').filter(Boolean);
+    if (segments[0] === 'projects' && segments[1]) {
+      return decodeURIComponent(segments[1]);
     }
-    if (process.platform === 'win32') {
-      return 'windows';
+  } catch {
+    // Treat a missing or malformed renderer URL as an unavailable project context.
+  }
+  throw new Error('请先在工作台中打开一个项目');
+}
+
+async function collectFolderMediaFiles(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (currentDirectory: string): Promise<void> => {
+    const entries = await readdir(currentDirectory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === '.' || entry.name === '..' || entry.isSymbolicLink()) {
+        continue;
+      }
+      const absolutePath = join(currentDirectory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+      } else if (entry.isFile() && LINKED_MEDIA_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        files.push(absolutePath);
+        if (files.length > MAX_LINKED_IMPORT_FILES) return;
+      }
     }
-    throw new Error(`不支持的桌面平台：${process.platform}`);
-  },
-  chooseMediaFiles: async () => {
-    throw new Error('原生素材选择将在 Phase 2 接入');
-  },
-  chooseFolder: async () => {
-    throw new Error('原生文件夹选择将在 Phase 2 接入');
-  },
-  getAppVersion: () => app.getVersion(),
-};
+  };
+  await walk(resolve(directory));
+  if (files.length > MAX_LINKED_IMPORT_FILES) {
+    throw new Error(`文件夹内视频超过 ${MAX_LINKED_IMPORT_FILES} 条，请分批选择`);
+  }
+  return files.sort((left, right) => left.localeCompare(right));
+}
+
+async function postLinkedFiles(
+  window: BrowserWindow,
+  currentService: DesktopService,
+  desktopSecret: string,
+  filePaths: string[],
+): Promise<{ requestId: string; count: number }> {
+  const projectId = currentProjectId(window);
+  const response = await fetch(`${currentService.origin}/api/desktop/import-linked`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-creative-studio-desktop-secret': desktopSecret,
+    },
+    body: JSON.stringify({ projectId, filePaths }),
+    redirect: 'error',
+  });
+  if (!response.ok) {
+    throw new Error(`原片登记失败（HTTP ${response.status}）`);
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  if (!isLinkedImportResponse(payload)) {
+    throw new Error('原片登记服务返回了无效结果');
+  }
+  return { requestId: randomUUID(), count: payload.assetIds.length };
+}
+
+function createDesktopIpcHandlers(
+  window: BrowserWindow,
+  currentService: DesktopService,
+  desktopSecret: string,
+): DesktopIpcHandlers {
+  return {
+    platform: () => {
+      if (process.platform === 'darwin') {
+        return 'macos';
+      }
+      if (process.platform === 'win32') {
+        return 'windows';
+      }
+      throw new Error(`不支持的桌面平台：${process.platform}`);
+    },
+    chooseMediaFiles: async () => {
+      const selection = await dialog.showOpenDialog(window, {
+        title: '选择本机原片',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: '视频', extensions: ['mp4', 'mov', 'avi', 'webm'] }],
+      });
+      if (selection.canceled || selection.filePaths.length === 0) {
+        return { requestId: randomUUID(), count: 0 };
+      }
+      return postLinkedFiles(window, currentService, desktopSecret, selection.filePaths);
+    },
+    chooseFolder: async () => {
+      const selection = await dialog.showOpenDialog(window, {
+        title: '选择原片文件夹',
+        properties: ['openDirectory'],
+      });
+      if (selection.canceled || selection.filePaths.length === 0) {
+        return null;
+      }
+      let filePaths: string[];
+      try {
+        filePaths = await collectFolderMediaFiles(selection.filePaths[0]);
+      } catch (error: unknown) {
+        if (error instanceof Error && error.message.startsWith('文件夹内视频超过')) {
+          throw error;
+        }
+        throw new Error('无法读取所选文件夹');
+      }
+      if (filePaths.length === 0) {
+        return { requestId: randomUUID(), count: 0 };
+      }
+      return postLinkedFiles(window, currentService, desktopSecret, filePaths);
+    },
+    getAppVersion: () => app.getVersion(),
+  };
+}
 
 function focusMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -47,10 +163,87 @@ function focusMainWindow(): void {
   mainWindow.focus();
 }
 
+async function activeWorkState(
+  currentService: DesktopService,
+  currentSecret: string,
+): Promise<boolean | null> {
+  try {
+    const response = await fetch(`${currentService.origin}/api/desktop/activity`, {
+      method: 'GET',
+      headers: { 'x-creative-studio-desktop-secret': currentSecret },
+      redirect: 'error',
+    });
+    if (!response.ok) return null;
+    const payload: unknown = await response.json().catch(() => null);
+    if (!payload || typeof payload !== 'object' || typeof (payload as { active?: unknown }).active !== 'boolean') {
+      return null;
+    }
+    return (payload as { active: boolean }).active;
+  } catch {
+    return null;
+  }
+}
+
+async function confirmQuitAndShutdown(): Promise<void> {
+  const currentService = service;
+  const currentSecret = desktopSecret;
+  // Freeze new desktop operations while the quit decision and shutdown
+  // orchestration are in flight. If the user cancels, restore the same
+  // handlers against the still-running window and service.
+  const currentWindow = mainWindow;
+  removeIpcHandlers?.();
+  removeIpcHandlers = null;
+  const active = currentService && currentSecret
+    ? await activeWorkState(currentService, currentSecret)
+    : null;
+  if (active !== false) {
+    const options = {
+      type: 'warning' as const,
+      title: '确认退出产品素材工作台',
+      message: active === true
+        ? '当前仍有任务在后台运行。退出会停止当前运行，已持久化的任务可在下次启动后恢复。'
+        : '无法确认任务状态。若仍有任务，退出后会由持久化状态在下次启动时恢复。',
+      buttons: ['暂停任务并退出', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+    if (result.response !== 0) {
+      explicitQuitRequested = false;
+      if (currentWindow && !currentWindow.isDestroyed() && currentService && currentSecret) {
+        removeIpcHandlers = registerIpcHandlers({
+          window: currentWindow,
+          origin: currentService.origin,
+          handlers: createDesktopIpcHandlers(currentWindow, currentService, currentSecret),
+        });
+      }
+      return;
+    }
+  }
+  await shutdown();
+}
+
 function resolveNodeExecutable(): string {
   const explicitNode = process.env.CREATIVE_STUDIO_NODE;
   if (explicitNode) {
     return explicitNode;
+  }
+
+  if (app.isPackaged) {
+    const bundledNode = join(
+      process.resourcesPath,
+      'app',
+      'runtime',
+      'bin',
+      process.platform === 'win32' ? 'node.exe' : 'node',
+    );
+    if (existsSync(bundledNode)) {
+      return bundledNode;
+    }
+    throw new Error(`安装包缺少私有 Node 运行时：${bundledNode}`);
   }
 
   const npmNode = process.env.npm_node_execpath;
@@ -105,7 +298,20 @@ function resolveServicePaths(): Pick<StartServiceOptions, 'serverRoot' | 'server
   );
 }
 
-function createWindow(currentService: DesktopService): BrowserWindow {
+function installIpcHandlers(
+  window: BrowserWindow,
+  currentService: DesktopService,
+  currentSecret: string,
+): void {
+  removeIpcHandlers?.();
+  removeIpcHandlers = registerIpcHandlers({
+    window,
+    origin: currentService.origin,
+    handlers: createDesktopIpcHandlers(window, currentService, currentSecret),
+  });
+}
+
+function createWindow(currentService: DesktopService, desktopSecret: string): BrowserWindow {
   const preloadPath = join(__dirname, 'preload.js');
   const origin = currentService.origin;
   const window = new BrowserWindow({
@@ -135,12 +341,20 @@ function createWindow(currentService: DesktopService): BrowserWindow {
     event.preventDefault();
   });
 
-  removeIpcHandlers?.();
-  removeIpcHandlers = registerIpcHandlers({
-    window,
-    origin,
-    handlers: desktopIpcHandlers,
+  window.on('close', (event) => {
+    if (explicitQuitRequested) return;
+    event.preventDefault();
+    window.hide();
+    if (closeNoticeShown) return;
+    closeNoticeShown = true;
+    void dialog.showMessageBox({
+      type: 'info',
+      title: '产品素材工作台仍在运行',
+      message: '窗口已隐藏，后台任务会继续运行。点击程序图标可恢复窗口；请使用“退出”结束任务并关闭服务。',
+    });
   });
+
+  installIpcHandlers(window, currentService, desktopSecret);
 
   window.once('ready-to-show', () => window.show());
   window.on('closed', () => {
@@ -157,18 +371,22 @@ function createWindow(currentService: DesktopService): BrowserWindow {
 async function boot(): Promise<void> {
   const projectRoot = resolve(__dirname, '..');
   const paths = resolveServicePaths();
+  // Keep packaged data in the documented stable user directory instead of
+  // the install bundle or Electron's package-name-derived default.
   const dataRoot =
     process.env.CREATIVE_STUDIO_DATA_ROOT ??
-    (app.isPackaged ? app.getPath('userData') : projectRoot);
+    (app.isPackaged ? join(app.getPath('appData'), 'CreativeStudio') : projectRoot);
+  desktopSecret = randomBytes(32).toString('hex');
   const launchOptions: StartServiceOptions = {
     ...paths,
     nodePath: resolveNodeExecutable(),
     dataRoot,
     instanceId: randomUUID(),
+    desktopSecret,
   };
 
   service = await startService(launchOptions);
-  mainWindow = createWindow(service);
+  mainWindow = createWindow(service, desktopSecret);
 }
 
 async function shutdown(): Promise<void> {
@@ -182,6 +400,7 @@ async function shutdown(): Promise<void> {
     const currentService = service;
     service = null;
     await currentService?.stop();
+    desktopSecret = null;
     app.exit(0);
   })();
 
@@ -204,21 +423,23 @@ if (!singleInstanceLock) {
   });
 
   app.on('before-quit', (event) => {
+    explicitQuitRequested = true;
     if (!shutdownPromise) {
       event.preventDefault();
-      void shutdown();
+      void confirmQuitAndShutdown();
     }
   });
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
-      app.quit();
-    }
+    // Closing the only window is a hide operation on both supported platforms.
+    // The service remains alive until the user explicitly chooses Quit.
   });
 
   app.on('activate', () => {
-    if (!mainWindow && service) {
-      mainWindow = createWindow(service);
+    if (!mainWindow && service && desktopSecret) {
+      // The launch secret remains process-local and is never exposed to the renderer.
+      // It is regenerated only on the next application launch, not on window restore.
+      mainWindow = createWindow(service, desktopSecret);
     } else {
       focusMainWindow();
     }

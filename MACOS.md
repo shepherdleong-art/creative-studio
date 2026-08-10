@@ -1,10 +1,10 @@
 # macOS 安装包
 
-Creative Studio 的 macOS 安装包是 Apple Silicon 专用的未签名 DMG。安装后应用显示为 `产品素材工作台.app`，内置私有 Node.js 运行时，用户不需要单独安装 Node/npm，也不需要 Rosetta。
+Creative Studio 的 macOS 安装包是 Apple Silicon 专用的 Electron DMG。安装后应用显示为 `产品素材工作台.app`，内置私有 Node.js 运行时，用户不需要单独安装 Node/npm，也不需要 Rosetta。
 
 ## 前置条件
 
-- macOS 11 或更高版本，Apple Silicon。
+- macOS 12 或更高版本，Apple Silicon（Electron 运行时最低版本）。
 - 构建机使用 Node 22.x。打包内置运行时是 Node 22.22.3，构建机 Node 主版本必须一致，避免 `better-sqlite3` 或 `sharp` 原生模块 ABI 不匹配。
 - Xcode Command Line Tools，提供 `clang`、`iconutil`、`codesign`、`hdiutil` 和 `sips`。
 
@@ -18,6 +18,20 @@ xcode-select --install
 
 ```bash
 npm run build:mac-installer
+```
+
+正式分发必须提供 Developer ID 签名身份和已保存的 `notarytool` keychain profile：
+
+```bash
+CREATIVE_STUDIO_MAC_SIGNING_IDENTITY="Developer ID Application: <团队> (<TeamID>)" \
+CREATIVE_STUDIO_MAC_NOTARY_PROFILE="<notarytool-profile>" \
+npm run build:mac-installer
+```
+
+仅用于本机验证载荷时，可显式允许未公证构建（不能用于外发）：
+
+```bash
+bash scripts/build-mac-installer.sh --skip-npm-ci --allow-adhoc
 ```
 
 输出文件：
@@ -38,9 +52,9 @@ bash scripts/build-mac-installer.sh --skip-npm-ci
 2. 把 `产品素材工作台.app` 拖到 Applications。
 3. 双击应用，默认浏览器会打开 `http://127.0.0.1:3000`。
 
-## 首次启动
+## 首次启动（仅本机未公证包）
 
-当前 DMG 是未 notarize 的本机安装包。首次启动可能被 Gatekeeper 拦截，可任选一种方式：
+未公证的本机验证包首次启动可能被 Gatekeeper 拦截，可任选一种方式：
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/产品素材工作台.app"
@@ -50,17 +64,7 @@ xattr -dr com.apple.quarantine "/Applications/产品素材工作台.app"
 
 ## 停止服务
 
-优先使用应用自带的优雅关闭接口：
-
-```bash
-curl -X POST http://127.0.0.1:3000/api/shutdown
-```
-
-如果服务没有响应，可以按 PID 文件停止：
-
-```bash
-kill "$(cat ~/Library/Application\ Support/CreativeStudio/storage/run/server.pid)"
-```
+Electron 窗口关闭只会隐藏窗口，任务仍在后台运行。请从应用菜单选择“退出 Creative Studio”以触发服务优雅关闭和进程树回收；如果应用已经失去响应，可在“活动监视器”中强制退出应用，下次启动时持久化租约会负责恢复任务状态。
 
 ## 数据位置
 
@@ -75,7 +79,6 @@ macOS 安装版不会把数据库、上传文件、日志写进 `.app` 包内。
 ```text
 data/workbench.db
 storage/logs/
-storage/run/server.pid
 ```
 
 ## 卸载

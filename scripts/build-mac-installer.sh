@@ -5,10 +5,14 @@ NODE_VERSION=22.22.3
 ARCH=darwin-arm64
 APP_NAME="产品素材工作台"
 SKIP_NPM_CI=0
+ALLOW_ADHOC=0
+MAC_SIGNING_IDENTITY="${CREATIVE_STUDIO_MAC_SIGNING_IDENTITY:--}"
+MAC_NOTARY_PROFILE="${CREATIVE_STUDIO_MAC_NOTARY_PROFILE:-}"
 
 for arg in "$@"; do
   case "$arg" in
     --skip-npm-ci) SKIP_NPM_CI=1 ;;
+    --allow-adhoc) ALLOW_ADHOC=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -20,6 +24,8 @@ VERSION="$(node -p "require('./package.json').version")"
 DIST_ROOT="dist/macos"
 APP="$DIST_ROOT/$APP_NAME.app"
 PAYLOAD="$APP/Contents/Resources/app"
+STANDALONE_PAYLOAD="$PAYLOAD/.next/standalone"
+ELECTRON_APP="$ROOT/node_modules/electron/dist/Electron.app"
 CACHE_DIR=".cache/macos-installer"
 NODE_NAME="node-v$NODE_VERSION-$ARCH"
 NODE_TARBALL="$CACHE_DIR/$NODE_NAME.tar.gz"
@@ -28,6 +34,16 @@ NODE_URL="https://nodejs.org/dist/v$NODE_VERSION/$NODE_NAME.tar.gz"
 DMG_STAGE="$DIST_ROOT/dmg"
 DMG_PATH="$DIST_ROOT/$APP_NAME-$VERSION.dmg"
 DMG_RW_PATH="$DIST_ROOT/$APP_NAME-$VERSION.rw.dmg"
+
+if [ "$ALLOW_ADHOC" -eq 0 ] && { [ "$MAC_SIGNING_IDENTITY" = "-" ] || [ -z "$MAC_NOTARY_PROFILE" ]; }; then
+  echo "Release packaging requires a Developer ID signing identity and notarization keychain profile." >&2
+  echo "Set CREATIVE_STUDIO_MAC_SIGNING_IDENTITY and CREATIVE_STUDIO_MAC_NOTARY_PROFILE, or pass --allow-adhoc for a local-only build." >&2
+  exit 1
+fi
+if [ "$MAC_SIGNING_IDENTITY" = "-" ] && [ -n "$MAC_NOTARY_PROFILE" ]; then
+  echo "CREATIVE_STUDIO_MAC_NOTARY_PROFILE requires a real Developer ID signing identity." >&2
+  exit 1
+fi
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -51,6 +67,9 @@ copy_dir_contents() {
 remove_payload_path() {
   local relative="$1"
   local target="$PAYLOAD/$relative"
+  if [ ! -e "$target" ]; then
+    return 0
+  fi
   case "$(cd "$(dirname "$target")" 2>/dev/null && pwd -P)/$(basename "$target")" in
     "$(cd "$PAYLOAD" && pwd -P)"/*) rm -rf "$target" ;;
     *) echo "Refusing to prune outside installer payload: $target" >&2; exit 1 ;;
@@ -88,9 +107,15 @@ if [ "$HOST_ARCH" != "arm64" ]; then
   exit 1
 fi
 
-for command in iconutil codesign hdiutil sips curl tar npm node clang lipo osascript SetFile; do
+for command in iconutil codesign hdiutil sips curl tar npm node lipo osascript SetFile; do
   require_command "$command"
 done
+
+if [ ! -d "$ELECTRON_APP" ]; then
+  echo "Missing Electron runtime: $ELECTRON_APP" >&2
+  echo "Run npm ci before building the macOS installer." >&2
+  exit 1
+fi
 
 if [ "$SKIP_NPM_CI" -eq 1 ]; then
   echo "Skipping npm ci because --skip-npm-ci was provided."
@@ -103,6 +128,9 @@ rm -rf .next/dev
 
 echo "Building Next.js standalone app..."
 npm run build
+
+echo "Building Electron main/preload payload..."
+npm run build:desktop
 
 echo "Refreshing app icons..."
 npm run icons
@@ -120,22 +148,31 @@ fi
 
 echo "Building .app skeleton..."
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$PAYLOAD"
+mkdir -p "$DIST_ROOT"
+copy_dir_contents "$ELECTRON_APP" "$APP"
+if [ ! -x "$APP/Contents/MacOS/Electron" ]; then
+  echo "Electron.app is missing its main executable: $APP/Contents/MacOS/Electron" >&2
+  exit 1
+fi
+mv "$APP/Contents/MacOS/Electron" "$APP/Contents/MacOS/CreativeStudio"
+rm -f "$APP/Contents/Resources/default_app.asar"
+if ! binary_has_arch "$APP/Contents/MacOS/CreativeStudio" arm64; then
+  echo "Electron executable is not arm64: $APP/Contents/MacOS/CreativeStudio" >&2
+  exit 1
+fi
+mkdir -p "$PAYLOAD"
 sed "s/__VERSION__/$VERSION/g" installer/macos/Info.plist >"$APP/Contents/Info.plist"
-cp installer/macos/launcher.sh "$APP/Contents/Resources/launcher.sh"
-chmod +x "$APP/Contents/Resources/launcher.sh"
-clang -arch arm64 -mmacosx-version-min=11.0 -O2 \
-  installer/macos/launcher.c \
-  -o "$APP/Contents/MacOS/CreativeStudio"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 
 echo "Assembling installer payload..."
-copy_dir_contents ".next/standalone" "$PAYLOAD"
+copy_dir_contents ".next/standalone" "$STANDALONE_PAYLOAD"
 mkdir -p "$PAYLOAD/.next"
 copy_dir_contents ".next/static" "$PAYLOAD/.next/static"
 copy_dir_contents "public" "$PAYLOAD/public"
 copy_dir_contents "$NODE_EXTRACTED" "$PAYLOAD/runtime"
-cp launcher.html "$PAYLOAD/"
+copy_dir_contents "dist-desktop" "$PAYLOAD/dist-desktop"
+node -e "const fs=require('node:fs'); const target=process.argv[1]; const version=process.argv[2]; fs.writeFileSync(target, JSON.stringify({name:'creative-studio',version,private:true,main:'dist-desktop/main.js'}, null, 2)+'\\n')" \
+  "$PAYLOAD/package.json" "$VERSION"
 
 echo "Pruning local-only and development paths..."
 for relative in \
@@ -145,6 +182,7 @@ for relative in \
   installer \
   docs \
   scripts \
+  desktop \
   .git \
   .claude \
   .venv-litellm \
@@ -161,7 +199,14 @@ for relative in \
   remove_payload_path "$relative"
 done
 
-find "$PAYLOAD" -maxdepth 1 \( \
+# The standalone build is copied under .next/standalone so desktop/main.ts can
+# use it as the service cwd. Keep this second guard independent of Next's
+# tracing cleanup in case a stale standalone directory is reused.
+for relative in data storage outputs installer docs scripts desktop .git .claude .venv-litellm config.yaml litellm-config.yaml; do
+  remove_payload_path ".next/standalone/$relative"
+done
+
+find "$PAYLOAD" \( \
   -name '.env' -o \
   -name '.env.*' -o \
   -name '*.lock' -o \
@@ -173,15 +218,40 @@ find "$PAYLOAD" -maxdepth 1 \( \
   -name 'stop-*.ps1' \
 \) -exec rm -rf {} +
 
-for forbidden in data storage outputs .env.local .venv-litellm config.yaml litellm-config.yaml; do
-  if [ -e "$PAYLOAD/$forbidden" ]; then
-    echo "Installer payload still contains forbidden local data path: $PAYLOAD/$forbidden" >&2
+for forbidden in data storage outputs docs scripts installer .git .claude .venv-litellm config.yaml litellm-config.yaml; do
+  if [ -e "$PAYLOAD/$forbidden" ] || [ -e "$STANDALONE_PAYLOAD/$forbidden" ]; then
+    echo "Installer payload still contains forbidden local or development path: $forbidden" >&2
+    exit 1
+  fi
+done
+for forbidden in .env.local .env .env.*; do
+  if find "$PAYLOAD" -name "$forbidden" -print -quit | grep -q .; then
+    echo "Installer payload still contains forbidden environment path: $forbidden" >&2
     exit 1
   fi
 done
 
-BUNDLED_FFMPEG="$PAYLOAD/node_modules/ffmpeg-static/ffmpeg"
-BUNDLED_FFPROBE="$PAYLOAD/node_modules/ffprobe-static/bin/darwin/arm64/ffprobe"
+find "$PAYLOAD/dist-desktop" -type f \( -name '*.map' -o -name '*.ts' -o -name '*.tsx' \) -delete
+if find "$PAYLOAD/dist-desktop" -type f \( -name '*.map' -o -name '*.ts' -o -name '*.tsx' \) -print -quit | grep -q .; then
+  echo "Installer payload contains desktop source or sourcemap files under dist-desktop." >&2
+  exit 1
+fi
+
+BUNDLED_NODE="$PAYLOAD/runtime/bin/node"
+BUNDLED_FFMPEG="$STANDALONE_PAYLOAD/node_modules/ffmpeg-static/ffmpeg"
+BUNDLED_FFPROBE="$STANDALONE_PAYLOAD/node_modules/ffprobe-static/bin/darwin/arm64/ffprobe"
+if [ ! -x "$BUNDLED_NODE" ]; then
+  echo "Installer payload missing private Node runtime: $BUNDLED_NODE" >&2
+  exit 1
+fi
+if ! binary_has_arch "$BUNDLED_NODE" arm64; then
+  echo "Installer payload contains a non-arm64 private Node runtime: $BUNDLED_NODE" >&2
+  exit 1
+fi
+if ! "$BUNDLED_NODE" -p "process.versions.node.split('.')[0]" | grep -qx 22; then
+  echo "Installer payload private Node runtime is not Node 22.x: $BUNDLED_NODE" >&2
+  exit 1
+fi
 if [ ! -x "$BUNDLED_FFMPEG" ]; then
   echo "Installer payload missing bundled ffmpeg binary: $BUNDLED_FFMPEG" >&2
   exit 1
@@ -208,9 +278,31 @@ fi
 echo "Generating macOS icon..."
 bash scripts/generate-icns.sh "$APP/Contents/Resources/app.icns"
 
-echo "Signing app bundle ad-hoc..."
-codesign --force --deep --sign - "$APP"
-codesign -dv "$APP" >/dev/null
+sign_macos_bundle() {
+  local identity="$1"
+  local sign_args=(--force --deep --sign "$identity")
+  if [ "$identity" != "-" ]; then
+    sign_args+=(--options runtime --timestamp)
+  fi
+
+  # Electron ships helper apps/frameworks inside Contents/Frameworks. Sign
+  # those code bundles explicitly before signing the outer product bundle.
+  if [ -d "$APP/Contents/Frameworks" ]; then
+    while IFS= read -r -d '' nested; do
+      codesign "${sign_args[@]}" "$nested"
+    done < <(find "$APP/Contents/Frameworks" -type d \( -name '*.framework' -o -name '*.app' -o -name '*.xpc' \) -print0)
+  fi
+  codesign "${sign_args[@]}" "$APP"
+}
+
+if [ "$MAC_SIGNING_IDENTITY" = "-" ] || [ -z "$MAC_NOTARY_PROFILE" ]; then
+  echo "Building a local-only Electron package without a complete signing/notarization release identity."
+  echo "The resulting app/DMG is not notarized and is for local testing only."
+else
+  echo "Signing Electron app with identity: $MAC_SIGNING_IDENTITY"
+fi
+sign_macos_bundle "$MAC_SIGNING_IDENTITY"
+codesign --verify --deep --strict "$APP"
 
 echo "Creating DMG..."
 rm -rf "$DMG_STAGE"
@@ -264,6 +356,21 @@ trap - EXIT
 rm -rf "$MOUNT_DIR"
 hdiutil convert "$DMG_RW_PATH" -format UDZO -imagekey zlib-level=9 -o "$DMG_PATH" >/dev/null
 rm -f "$DMG_RW_PATH"
+
+if [ -n "$MAC_NOTARY_PROFILE" ]; then
+  if [ "$MAC_SIGNING_IDENTITY" = "-" ]; then
+    echo "CREATIVE_STUDIO_MAC_NOTARY_PROFILE requires a real Developer ID signing identity." >&2
+    exit 1
+  fi
+  require_command xcrun
+  echo "Submitting DMG for notarization with keychain profile: $MAC_NOTARY_PROFILE"
+  xcrun notarytool submit "$DMG_PATH" --keychain-profile "$MAC_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+  echo "Notarization completed and stapled."
+else
+  echo "Notarization skipped: CREATIVE_STUDIO_MAC_NOTARY_PROFILE is unset."
+fi
 
 SIZE="$(du -h "$DMG_PATH" | awk '{print $1}')"
 echo ""

@@ -22,6 +22,7 @@ assert.match(plist, /<key>CFBundleName<\/key>\s*<string>产品素材工作台<\/
 assert.match(plist, /<key>CFBundleIdentifier<\/key>\s*<string>com\.creativestudio\.workbench<\/string>/);
 assert.match(plist, /<key>CFBundleExecutable<\/key>\s*<string>CreativeStudio<\/string>/);
 assert.match(plist, /<key>CFBundleIconFile<\/key>\s*<string>app\.icns<\/string>/);
+assert.match(plist, /<key>NSPrincipalClass<\/key>\s*<string>AtomApplication<\/string>/);
 assert.match(plist, /<string>__VERSION__<\/string>/);
 
 const launcher = read('installer/macos/launcher.sh');
@@ -46,6 +47,7 @@ assert.match(icns, /writing ICNS container directly/);
 assert.match(icns, /chunk\.writeUInt32BE/);
 
 const build = read('scripts/build-mac-installer.sh');
+const desktopService = read('desktop/service.ts');
 assert.match(build, /NODE_VERSION=22\.22\.3/);
 assert.match(build, /ARCH=darwin-arm64/);
 assert.match(build, /HOST_PLATFORM="\$\(node -p "process\.platform"\)"/);
@@ -56,23 +58,37 @@ assert.match(build, /NODE_NAME="node-v\$NODE_VERSION-\$ARCH"/);
 assert.match(build, /NODE_URL="https:\/\/nodejs\.org\/dist\/v\$NODE_VERSION\/\$NODE_NAME\.tar\.gz"/);
 assert.match(build, /npm ci/);
 assert.match(build, /npm run build/);
+assert.match(build, /npm run build:desktop/);
 assert.match(build, /npm run icons/);
-assert.match(build, /clang -arch arm64/);
+assert.match(build, /ELECTRON_APP="\$ROOT\/node_modules\/electron\/dist\/Electron\.app"/);
+assert.match(build, /copy_dir_contents "\$ELECTRON_APP" "\$APP"/);
+assert.match(build, /mv "\$APP\/Contents\/MacOS\/Electron" "\$APP\/Contents\/MacOS\/CreativeStudio"/);
+assert.match(build, /copy_dir_contents "\.next\/standalone" "\$STANDALONE_PAYLOAD"/);
+assert.match(build, /copy_dir_contents "dist-desktop" "\$PAYLOAD\/dist-desktop"/);
+assert.match(build, /main:'dist-desktop\/main\.js'/);
+assert.match(desktopService, /CREATIVE_STUDIO_DESKTOP: '1'/);
 assert.match(build, /for command in [^\n]*\blipo\b/);
 assert.match(build, /binary_has_arch/);
 assert.match(build, /binary_has_arch "\$BUNDLED_FFMPEG" arm64/);
 assert.match(build, /if ! "\$BUNDLED_FFMPEG" -version/);
 assert.match(build, /! binary_has_arch "\$BUNDLED_FFPROBE" arm64/);
 assert.match(build, /rm -f "\$BUNDLED_FFPROBE"/);
-assert.match(build, /Contents\/Resources\/launcher\.sh/);
-assert.match(build, /codesign --force --deep --sign - "\$APP"/);
+assert.match(build, /BUNDLED_NODE="\$PAYLOAD\/runtime\/bin\/node"/);
+assert.match(build, /dist-desktop.*-name '\*\.map'/s);
+assert.match(build, /MAC_SIGNING_IDENTITY/);
+assert.match(build, /MAC_NOTARY_PROFILE/);
+assert.match(build, /--allow-adhoc/);
+assert.match(build, /Release packaging requires a Developer ID signing identity/);
+assert.match(build, /notarytool submit/);
+assert.match(build, /notarized and is for local testing only/);
+assert.doesNotMatch(build, /installer\/macos\/launcher\.(?:c|sh)|Contents\/Resources\/launcher\.sh/);
 assert.match(build, /hdiutil create/);
 assert.match(build, /generate-dmg-background\.mjs/);
 assert.match(build, /osascript/);
 assert.match(build, /set background picture/);
 assert.match(build, /set icon size of viewOptions to 96/);
 assert.match(build, /hdiutil convert/);
-  for (const forbidden of ['data', 'storage', 'outputs', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml']) {
+for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', 'desktop', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml']) {
   assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
 }
 
@@ -89,7 +105,7 @@ assert.match(macos, /npm run build:mac-installer/);
 assert.match(macos, /产品素材工作台-\<version\>\.dmg/);
 assert.match(macos, /xattr -dr com\.apple\.quarantine/);
 assert.match(macos, /Library\/Application Support\/CreativeStudio/);
-assert.match(macos, /curl -X POST http:\/\/127\.0\.0\.1:3000\/api\/shutdown/);
+assert.match(macos, /退出 Creative Studio/);
 
 const readme = read('README.md');
 assert.match(readme, /## macOS 安装包/);

@@ -110,6 +110,3 @@ Filename: "{app}\CreativeStudio.exe"; Description: "安装完成后启动产品�
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\stop-installed.ps1"""; Flags: runhidden waituntilterminated; RunOnceId: "StopCreativeStudio"
-
-[UninstallDelete]
-Type: files; Name: "{app}\storage\run\server.pid"

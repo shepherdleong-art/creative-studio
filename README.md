@@ -214,13 +214,13 @@ npm run build:win-installer
 
 ## macOS 安装包
 
-提供 Apple Silicon 专用的 DMG，内置私有 Node.js 运行时，用户拖到 Applications 后即可从 Finder 启动。
+提供 Apple Silicon 专用的 Electron DMG，内置私有 Node.js 运行时，用户拖到 Applications 后即可从 Finder 启动。
 
 ```bash
 npm run build:mac-installer
 ```
 
-安装包输出到 `dist/macos/产品素材工作台-<version>.dmg`。详细说明见 [MACOS.md](./MACOS.md)。
+安装包输出到 `dist/macos/产品素材工作台-<version>.dmg`。正式分发需要 Developer ID 签名与公证；详细说明见 [MACOS.md](./MACOS.md)。
 
 ## 目录结构
 
@@ -229,7 +229,7 @@ app/                    Next.js 页面和 API 路由
 components/             工作台 UI 组件（components/mixcut/ 为第五步智能混剪）
 components/ui/          通用 UI 原语和图标
 installer/windows/      Windows 安装包脚本和配置
-installer/macos/        macOS .app bundle 模板和启动脚本
+installer/macos/        macOS .app 元数据与历史启动资源
 lib/                    数据库、队列、供应商适配器、文件导出等核心逻辑
 lib/final-edit/         智能混剪后端（时间线、TTS、字幕对齐、ffmpeg 渲染）
 lib/providers/          图片生成供应商适配器
