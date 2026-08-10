@@ -27,7 +27,6 @@ const serverEntrySource = join(root, 'runtime', 'server-entry.js');
 if (!existsSync(serverEntrySource)) {
   throw new Error(`Missing required runtime server entry: ${serverEntrySource}`);
 }
-rmSync(join(standaloneDir, 'desktop'), { recursive: true, force: true });
 rmSync(join(standaloneDir, 'runtime'), { recursive: true, force: true });
 mkdirSync(join(standaloneDir, 'runtime'), { recursive: true });
 copyFileSync(serverEntrySource, join(standaloneDir, 'runtime', 'server-entry.js'));
@@ -42,6 +41,8 @@ for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {
 // paths even if a stale standalone directory survived from an earlier build.
 const localOnlyRoots = [
   '.cache',
+  'desktop',
+  'dist-desktop',
   '.git',
   '.venv-litellm',
   'config.yaml',
@@ -65,7 +66,7 @@ for (const entry of readdirSync(standaloneDir)) {
 
 for (const forbidden of [...localOnlyRoots, '.env.local']) {
   if (existsSync(join(standaloneDir, forbidden))) {
-    throw new Error(`Standalone output contains local secret path: ${forbidden}`);
+    throw new Error(`Standalone output contains forbidden path: ${forbidden}`);
   }
 }
 
