@@ -50,7 +50,16 @@ if (fs.existsSync(ffprobe)) {
 run('codesign', ['--verify', '--deep', '--strict', appPath]);
 run('hdiutil', ['verify', dmgPath]);
 
-for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.claude', '.venv-litellm', 'config.yaml', 'litellm-config.yaml']) {
+// Kept in sync with PRUNE_RELATIVE_PATHS in scripts/build-mac-installer.sh and
+// the Windows installer's prune list. Both levels are checked because Next's
+// output tracing can copy the project root into .next/standalone.
+for (const forbidden of [
+  'data', 'storage', 'outputs', 'docs', 'scripts', 'installer', 'desktop',
+  '.git', '.claude', '.venv-litellm', 'config.yaml', 'litellm-config.yaml',
+  'requirements-litellm.txt', '.next/cache', '.next/dev', 'node_modules/.cache',
+  'tsconfig.tsbuildinfo', 'package-lock.json', 'eslint.config.mjs',
+  'postcss.config.mjs', 'video-panel-mockup.html', 'WINDOWS.md',
+]) {
   assert.equal(fs.existsSync(path.join(payload, forbidden)), false, `payload contains forbidden root: ${forbidden}`);
   assert.equal(fs.existsSync(path.join(standalone, forbidden)), false, `standalone contains forbidden root: ${forbidden}`);
 }

@@ -182,34 +182,41 @@ node -e "const fs=require('node:fs'); const target=process.argv[1]; const versio
   "$PAYLOAD/package.json" "$VERSION"
 
 echo "Pruning local-only and development paths..."
-for relative in \
-  data \
-  storage \
-  outputs \
-  installer \
-  docs \
-  scripts \
-  desktop \
-  .git \
-  .claude \
-  .venv-litellm \
-  config.yaml \
-  litellm-config.yaml \
-  requirements-litellm.txt \
-  .next/cache \
-  .next/dev \
-  node_modules/.cache \
-  tsconfig.tsbuildinfo \
-  package-lock.json \
-  launcher.vbs \
-  WINDOWS.md; do
-  remove_payload_path "$relative"
-done
+# Kept in sync with the Windows installer's prune list. Next's output tracing
+# can copy the whole project root into .next/standalone, so every entry has to
+# be pruned at both levels — pruning only the payload root used to leave build
+# caches and dev configs behind inside the standalone directory.
+PRUNE_RELATIVE_PATHS=(
+  data
+  storage
+  outputs
+  installer
+  docs
+  scripts
+  desktop
+  .git
+  .claude
+  .venv-litellm
+  config.yaml
+  litellm-config.yaml
+  requirements-litellm.txt
+  .next/cache
+  .next/dev
+  node_modules/.cache
+  tsconfig.tsbuildinfo
+  package-lock.json
+  eslint.config.mjs
+  postcss.config.mjs
+  video-panel-mockup.html
+  launcher.vbs
+  WINDOWS.md
+)
 
 # The standalone build is copied under .next/standalone so desktop/main.ts can
-# use it as the service cwd. Keep this second guard independent of Next's
-# tracing cleanup in case a stale standalone directory is reused.
-for relative in data storage outputs installer docs scripts desktop .git .claude .venv-litellm config.yaml litellm-config.yaml; do
+# use it as the service cwd. The second pass keeps that guard independent of
+# Next's tracing cleanup in case a stale standalone directory is reused.
+for relative in "${PRUNE_RELATIVE_PATHS[@]}"; do
+  remove_payload_path "$relative"
   remove_payload_path ".next/standalone/$relative"
 done
 
@@ -241,7 +248,7 @@ for pattern in 'start*.command' 'start*.sh' 'stop*.command' 'stop*.sh' 'launcher
   fi
 done
 
-for forbidden in data storage outputs docs scripts installer .git .claude .venv-litellm config.yaml litellm-config.yaml; do
+for forbidden in "${PRUNE_RELATIVE_PATHS[@]}"; do
   if [ -e "$PAYLOAD/$forbidden" ] || [ -e "$STANDALONE_PAYLOAD/$forbidden" ]; then
     echo "Installer payload still contains forbidden local or development path: $forbidden" >&2
     exit 1
