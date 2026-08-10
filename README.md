@@ -149,7 +149,7 @@ start.command
 如果 macOS 提示没有执行权限，可以在终端运行一次：
 
 ```bash
-chmod +x start.command start-desktop.command stop.command start.sh stop.sh
+chmod +x start.command start-desktop.command stop.command stop-desktop.command start.sh stop.sh
 ```
 
 然后再次双击 `start.command`，或在终端运行：
@@ -192,7 +192,14 @@ start-desktop.command
 - 组件齐备时同样会先拉起 LiteLLM 代理，因此公司供应商可用（这一点与安装版不同，见 [MACOS.md](./MACOS.md)）。
 - 数据根仍是本项目目录，与网页版共用同一个 `data/workbench.db`；脚本检测到 3000 端口被占用时会提示先停掉网页版，请不要同时运行两者。
 
-退出请从应用菜单选择「退出」（关闭窗口只是隐藏）。直接关闭启动它的终端窗口也会触发优雅退出，私有 Node 服务会被一并回收。
+退出方式（任选其一）：
+
+- 应用菜单选择「退出」——关闭窗口只是隐藏，不会结束后台任务。
+- 界面右上角的电源按钮「停止服务并退出」——服务停止后应用会自动退出。
+- 直接关闭启动它的终端窗口，或按 `Ctrl+C`。
+- 双击 `stop-desktop.command`——用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它同时覆盖源码态和安装版，会先校验实例身份再请求优雅关闭，之后才做有界的兜底回收。
+
+注意 `stop.command` 只负责网页版（3000 端口），停不了桌面版监听随机端口的私有服务。
 
 ## 首次使用
 

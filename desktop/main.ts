@@ -463,6 +463,14 @@ async function boot(): Promise<void> {
     dataRoot,
     instanceId: randomUUID(),
     desktopSecret,
+    // The in-app shutdown button exits the Node service directly. Without this
+    // the window would survive as a dead shell pointing at a closed port, so
+    // the whole application follows the service down. The quit confirmation is
+    // skipped on purpose: the user already confirmed inside the workbench.
+    onUnexpectedExit: () => {
+      explicitQuitRequested = true;
+      void shutdown();
+    },
   };
 
   service = await startService(launchOptions);

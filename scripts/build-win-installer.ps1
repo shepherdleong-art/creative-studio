@@ -185,6 +185,7 @@ foreach ($relativePath in @(
   'start.command',
   'start-desktop.command',
   'stop.command',
+  'stop-desktop.command',
   'start.sh',
   'stop.sh',
   'launcher.vbs',

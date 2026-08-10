@@ -27,6 +27,13 @@ export interface StartServiceOptions {
   healthTimeoutMs?: number;
   healthIntervalMs?: number;
   environment?: NodeJS.ProcessEnv;
+  /**
+   * Called once when the service exits on its own after becoming ready — the
+   * in-app shutdown button exits the Node process, and a crash looks the same
+   * from here. Either way the shell has nothing left to display, so the caller
+   * is expected to tear the whole application down.
+   */
+  onUnexpectedExit?: () => void;
 }
 
 export interface DesktopService {
@@ -156,6 +163,7 @@ class ManagedDesktopService implements DesktopService {
   private readonly healthTimeoutMs: number;
   private readonly healthIntervalMs: number;
   private readonly stateFile: string;
+  private readonly onUnexpectedExit: (() => void) | undefined;
   private stdoutBuffer = '';
   private stderrBuffer = '';
   private readyMessage: ReadyMessage | null = null;
@@ -203,6 +211,10 @@ class ManagedDesktopService implements DesktopService {
     if (this.state !== 'stopping' && this.state !== 'stopped') {
       this.state = 'error';
       this.error = `私有 Node 服务意外退出（${signal ? `signal=${signal}` : `code=${String(code)}`}）`;
+      // Fires for the in-app shutdown button as well as for a genuine crash.
+      // stop() never reaches here because it moves the state to 'stopping'
+      // first, so this cannot re-enter an already-running teardown.
+      this.onUnexpectedExit?.();
     }
   };
 
@@ -212,12 +224,14 @@ class ManagedDesktopService implements DesktopService {
     healthTimeoutMs: number,
     healthIntervalMs: number,
     stateFile: string,
+    onUnexpectedExit?: () => void,
   ) {
     this.child = child;
     this.instanceId = instanceId;
     this.healthTimeoutMs = healthTimeoutMs;
     this.healthIntervalMs = healthIntervalMs;
     this.stateFile = stateFile;
+    this.onUnexpectedExit = onUnexpectedExit;
     this.readyPromise = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
@@ -517,6 +531,7 @@ export async function startService(
     options.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
     options.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS,
     serviceStatePath(options.dataRoot),
+    options.onUnexpectedExit,
   );
 
   try {

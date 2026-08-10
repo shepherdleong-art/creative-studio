@@ -86,7 +86,16 @@ start-desktop.command
 
 ## 停止服务
 
-Electron 窗口关闭只会隐藏窗口，任务仍在后台运行。请从应用菜单选择“退出 Creative Studio”以触发服务优雅关闭和进程树回收；如果应用已经失去响应，可在“活动监视器”中强制退出应用，下次启动时持久化租约会负责恢复任务状态。
+Electron 窗口关闭只会隐藏窗口，任务仍在后台运行。以下任一方式都会触发服务优雅关闭和进程树回收：
+
+- 应用菜单选择“退出 Creative Studio”。
+- 界面右上角的电源按钮“停止服务并退出”：服务停止后应用会自动退出，不会留下指向已关闭端口的空窗口。
+- 从源码运行时，关闭启动窗口或按 `Ctrl+C`。
+- 双击仓库根目录的 `stop-desktop.command`。
+
+`stop-desktop.command` 用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它会依次检查 `CREATIVE_STUDIO_DATA_ROOT`、项目目录和 `~/Library/Application Support/CreativeStudio` 三个受控数据根，用 `/api/desktop/health` 校验 `instanceId` 与状态文件一致后才请求 `/api/shutdown`，最后才按可执行文件绝对路径做有界兜底回收——不会按端口或进程名误杀其他进程。
+
+如果应用已经完全失去响应，也可在“活动监视器”中强制退出，下次启动时持久化租约会负责恢复任务状态。
 
 ## 数据位置
 
