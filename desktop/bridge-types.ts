@@ -3,6 +3,7 @@ export interface DesktopBridge {
   chooseMediaFiles(): Promise<{ requestId: string; count: number }>;
   chooseFolder(): Promise<{ requestId: string; count: number } | null>;
   getAppVersion(): Promise<string>;
+  relocateLinkedSource(assetId: string, sourceId: string): Promise<{ relocated: boolean }>;
 }
 
 declare global {

@@ -116,6 +116,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   const lutFileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFinishedTasks, setShowFinishedTasks] = useState(false);
   const [linkedImportBusy, setLinkedImportBusy] = useState<'files' | 'folder' | null>(null);
+  const [linkedImportProgress, setLinkedImportProgress] = useState<{ requestId: string; completed: number; total: number } | null>(null);
+  const [linkedRelocateBusy, setLinkedRelocateBusy] = useState<string | null>(null);
   const [linkedImportFeedback, setLinkedImportFeedback] = useState<string | null>(null);
   const desktopAvailable = useSyncExternalStore(
     subscribeToDesktopBridge,
@@ -123,10 +125,28 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
     readDesktopBridgeOnServer,
   );
 
+  useEffect(() => {
+    const onProgress = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (!detail || typeof detail !== 'object') return;
+      const candidate = detail as Partial<{ requestId: string; completed: number; total: number }>;
+      const { requestId, completed, total } = candidate;
+      if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 128) return;
+      if (typeof completed !== 'number' || typeof total !== 'number') return;
+      if (!Number.isInteger(completed) || !Number.isInteger(total)) return;
+      if (completed < 0 || total < completed || total > 500) return;
+      setLinkedImportProgress({ requestId, completed, total });
+      setLinkedImportFeedback(`正在校验 ${completed}/${total}`);
+    };
+    window.addEventListener('creative-studio:linked-import-progress', onProgress);
+    return () => window.removeEventListener('creative-studio:linked-import-progress', onProgress);
+  }, []);
+
   async function importLinked(kind: 'files' | 'folder'): Promise<void> {
     const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
     if (!bridge) return;
     setLinkedImportBusy(kind);
+    setLinkedImportProgress(null);
     setLinkedImportFeedback(null);
     try {
       const result = kind === 'files'
@@ -144,6 +164,24 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
       setLinkedImportFeedback(error instanceof Error ? error.message : '原片登记失败');
     } finally {
       setLinkedImportBusy(null);
+      setLinkedImportProgress(null);
+    }
+  }
+
+  async function relocateLinked(assetId: string, sourceId: string): Promise<void> {
+    const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
+    if (!bridge) return;
+    const busyKey = `${assetId}:${sourceId}`;
+    setLinkedRelocateBusy(busyKey);
+    setLinkedImportFeedback(null);
+    try {
+      const result = await bridge.relocateLinkedSource(assetId, sourceId);
+      setLinkedImportFeedback(result.relocated ? '原片已重新定位并恢复在线' : '已取消重新定位');
+      if (result.relocated) props.onResync();
+    } catch (error: unknown) {
+      setLinkedImportFeedback(error instanceof Error ? error.message : '原片重新定位失败');
+    } finally {
+      setLinkedRelocateBusy(null);
     }
   }
 
@@ -296,13 +334,17 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                     className="btn-secondary"
                     disabled={linkedImportBusy !== null}
                     onClick={() => void importLinked('files')}
-                  >{linkedImportBusy === 'files' ? '登记中…' : '从本机选择原片（不复制）'}</button>
+                  >{linkedImportBusy === 'files'
+                    ? linkedImportProgress ? `正在校验 ${linkedImportProgress.completed}/${linkedImportProgress.total}` : '准备校验…'
+                    : '从本机选择原片（不复制）'}</button>
                   <button
                     type="button"
                     className="btn-secondary"
                     disabled={linkedImportBusy !== null}
                     onClick={() => void importLinked('folder')}
-                  >{linkedImportBusy === 'folder' ? '登记中…' : '选择原片文件夹'}</button>
+                  >{linkedImportBusy === 'folder'
+                    ? linkedImportProgress ? `正在校验 ${linkedImportProgress.completed}/${linkedImportProgress.total}` : '准备校验…'
+                    : '选择原片文件夹'}</button>
                 </>
               )}
             </div>
@@ -402,6 +444,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                       : undefined}
                     onRetryAnalyze={analysisTask?.status === 'failed' ? () => props.onRetryAnalyze(analysisTask.id) : undefined}
                     onResync={props.onResync}
+                    onRelocateLinkedSource={(sourceId) => void relocateLinked(asset.id, sourceId)}
+                    relocatingSourceId={linkedRelocateBusy?.startsWith(`${asset.id}:`) ? linkedRelocateBusy.slice(asset.id.length + 1) : null}
                     analyzeBusy={assetAnalysisBusy}
                     onPreview={() => props.onPreviewAsset(asset)}
                     previewBadge={previewBadges[asset.id]}

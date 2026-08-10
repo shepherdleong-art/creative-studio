@@ -52,13 +52,15 @@ interface SynthesisInput {
   relativeOutputPath: string;
   alignment: AlignmentAdapter;
   onSegmentComplete?: (completed: number, total: number) => void;
+  signal?: AbortSignal;
 }
 
-export async function requestVapiAudio(config: VapiProviderConfig, voice: string, input: string, destination: string): Promise<void> {
+export async function requestVapiAudio(config: VapiProviderConfig, voice: string, input: string, destination: string, signal?: AbortSignal): Promise<void> {
   const response = await fetch(speechUrl(config.baseUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
     body: JSON.stringify({ model: config.model, input, voice }),
+    signal,
   });
   const raw = await response.text();
   let payload: { output?: { audio?: { data?: string; url?: string } }; error?: { message?: string } } = {};
@@ -70,7 +72,7 @@ export async function requestVapiAudio(config: VapiProviderConfig, voice: string
     return;
   }
   if (!audio?.url) throw new Error('V-API TTS 响应缺少 output.audio.url/data');
-  const audioResponse = await fetch(validateVapiAudioUrl(audio.url));
+  const audioResponse = await fetch(validateVapiAudioUrl(audio.url), { signal });
   if (!audioResponse.ok) throw new Error(`下载 V-API TTS 音频失败：HTTP ${audioResponse.status}`);
   fs.writeFileSync(destination, Buffer.from(await audioResponse.arrayBuffer()));
 }
@@ -94,11 +96,11 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
       const normalizedPath = path.join(input.outputDir, `segment-${segmentIndex}-${chunkIndex}.wav`);
       const reusableChunk = await isReusableNarrationChunk(normalizedPath);
       if (!reusableChunk) {
-        await requestVapiAudio(input.provider, input.voice, chunks[chunkIndex], rawPath);
+        await requestVapiAudio(input.provider, input.voice, chunks[chunkIndex], rawPath, input.signal);
         const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
         const temporaryPath = `${normalizedPath}.${process.pid}-${Date.now()}.tmp.wav`;
         try {
-          await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', temporaryPath], { timeoutMs: 180_000 });
+          await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', temporaryPath], { timeoutMs: 180_000, signal: input.signal });
           if (!await isReusableNarrationChunk(temporaryPath)) throw new Error('TTS 分段音频标准化后不可读取');
           fs.rmSync(normalizedPath, { force: true });
           fs.renameSync(temporaryPath, normalizedPath);
@@ -109,7 +111,7 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
       chunkFiles.push(normalizedPath);
     }
     const segmentPath = path.join(input.outputDir, `segment-${segmentIndex}.wav`);
-    await concatWavFiles(chunkFiles, segmentPath);
+    await concatWavFiles(chunkFiles, segmentPath, input.signal);
     const durationUs = Math.round(await probeDurationSec(segmentPath) * 1_000_000);
     const aligned = await alignOrProportionallyTime({
       alignment: input.alignment,
@@ -127,17 +129,17 @@ export async function synthesizeVapiNarration(input: SynthesisInput) {
   }
 
   const outputPath = path.join(input.outputDir, 'narration.wav');
-  await concatWavFiles(segmentFiles, outputPath);
+  await concatWavFiles(segmentFiles, outputPath, input.signal);
   return { relativePath: input.relativeOutputPath, absolutePath: outputPath, durationUs: cursorUs, segmentTimings, wordTimings, alignmentDegradedSegmentIds };
 }
 
-export async function synthesizeVapiPreview(input: { provider: VapiProviderConfig; voice: string; speed: number; text: string; outputPath: string }): Promise<void> {
+export async function synthesizeVapiPreview(input: { provider: VapiProviderConfig; voice: string; speed: number; text: string; outputPath: string; signal?: AbortSignal }): Promise<void> {
   if (!VAPI_VOICES.some((voice) => voice.id === input.voice)) throw new Error('不支持的 V-API 音色');
   assertTtsSpeed(input.speed);
   fs.mkdirSync(path.dirname(input.outputPath), { recursive: true });
   const rawPath = `${input.outputPath}.raw.wav`;
-  await requestVapiAudio(input.provider, input.voice, input.text, rawPath);
+  await requestVapiAudio(input.provider, input.voice, input.text, rawPath, input.signal);
   const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
-  await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', input.outputPath], { timeoutMs: 180_000 });
+  await runFfmpeg(['-i', rawPath, '-vn', '-af', filters.join(','), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', input.outputPath], { timeoutMs: 180_000, signal: input.signal });
   fs.rmSync(rawPath, { force: true });
 }

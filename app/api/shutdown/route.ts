@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { gracefulShutdown } from '@/lib/shutdown';
 
-const SHUTDOWN_TIMEOUT_MS = 15_000;
+const SHUTDOWN_TIMEOUT_MS = 12_000;
 
 export async function POST() {
   const result = await gracefulShutdown({ timeoutMs: SHUTDOWN_TIMEOUT_MS });

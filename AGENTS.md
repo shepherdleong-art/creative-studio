@@ -75,8 +75,8 @@ lib/                    核心业务逻辑（见下）
 data/                   本地 SQLite 库 workbench.db（gitignored）
 storage/                上传素材、生成产物、日志（gitignored；含 bgm/final-edits/videos 等子目录）
 scripts/                测试文件、安装包构建脚本、启停辅助脚本、资源同步脚本
-installer/windows/      Inno Setup 脚本 + C# 启动器 + 启停 PS 脚本
-installer/macos/        .app bundle 模板（Info.plist、launcher.c、launcher.sh）
+installer/windows/      Electron 安装包脚本（Inno Setup）+ 安装停止/清理 PS 脚本；`launcher.cs` 仅保留为历史/开发资源，不打包
+installer/macos/        .app bundle 元数据模板（Info.plist）；launcher.c/launcher.sh 仅历史/开发资源，不打包
 docs/                   设计/评审/会话记录，按日期前缀命名；
                         docs/superpowers/{specs,plans}/ 放较大功能的规格与计划文档
 outputs/                阶段性规格、测试清单、交付记录（gitignored）
@@ -143,3 +143,4 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `next.config.ts` 使用 `output: 'standalone'`，并通过 `outputFileTracingExcludes` 排除数据/文档/脚本目录；`ffmpeg-static`、`ffprobe-static` 在 `serverExternalPackages` 中，由 `scripts/sync-standalone-assets.mjs` 强制拷入 standalone（`npm run build` 会自动执行）。
 - **Windows**：`scripts/build-win-installer.ps1` 跑生产构建、下载配套私有 Node 运行时、用 Inno Setup（`installer/windows/CreativeStudio.iss`）组装，输出 `dist/windows/CreativeStudioSetup.exe`。默认卸载保留本地数据。
 - **macOS**：`scripts/build-mac-installer.sh` 输出 `dist/macos/产品素材工作台-<version>.dmg`，仅 Apple Silicon。构建机必须用 arm64 Node 22.x（内置运行时锁定 Node 22.22.3），主版本或架构不一致会导致 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；还需要 Xcode Command Line Tools。脚本会校验 FFmpeg 为 arm64，并移除错误标为 arm64 的 x86_64 `ffprobe-static`，由已测试的 FFmpeg 元数据探测回退接管。用户侧说明见 `MACOS.md`。
+- **Electron 发版顺序与本地服务状态**：macOS/Windows 打包脚本先完成 `npm ci`（除非显式跳过）再检查 `node_modules/electron`；macOS ATS 只允许 `NSAllowsLocalNetworking`。桌面服务在 `CREATIVE_STUDIO_DATA_ROOT/storage/run/electron-service.json` 记录当前 `http://127.0.0.1:<port>` 与 instance，正常退出时清理；Windows 安装停止脚本必须先校验该状态与 `/api/desktop/health` 的 instance，再有限 POST `/api/shutdown`，超时才按安装路径使用 `taskkill /T /F`。

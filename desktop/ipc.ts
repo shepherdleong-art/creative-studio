@@ -2,11 +2,13 @@ import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 
 import type { DesktopBridge } from './bridge-types';
 
-const CHANNELS = {
+export const CHANNELS = {
   platform: 'desktop:platform',
   chooseMediaFiles: 'desktop:choose-media-files',
   chooseFolder: 'desktop:choose-folder',
   getAppVersion: 'desktop:get-app-version',
+  relocateLinkedSource: 'desktop:relocate-linked-source',
+  linkedImportProgress: 'desktop:linked-import-progress',
 } as const;
 
 export type DesktopPlatform = Awaited<ReturnType<DesktopBridge['platform']>>;
@@ -16,12 +18,16 @@ export type MediaSelectionResult = Awaited<
 export type FolderSelectionResult = Awaited<
   ReturnType<DesktopBridge['chooseFolder']>
 >;
+export type RelocateLinkedSourceResult = Awaited<
+  ReturnType<DesktopBridge['relocateLinkedSource']>
+>;
 
 export interface DesktopIpcHandlers {
   platform(): DesktopPlatform;
   chooseMediaFiles(): Promise<MediaSelectionResult>;
   chooseFolder(): Promise<FolderSelectionResult>;
   getAppVersion(): string;
+  relocateLinkedSource(assetId: string, sourceId: string): Promise<RelocateLinkedSourceResult>;
 }
 
 interface RegisterIpcOptions {
@@ -30,7 +36,7 @@ interface RegisterIpcOptions {
   handlers: DesktopIpcHandlers;
 }
 
-function sameOrigin(left: string, right: string): boolean {
+export function sameOrigin(left: string, right: string): boolean {
   try {
     const leftUrl = new URL(left);
     const rightUrl = new URL(right);
@@ -82,6 +88,10 @@ export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
   ipcMain.handle(
     CHANNELS.getAppVersion,
     protectedHandler(() => options.handlers.getAppVersion()),
+  );
+  ipcMain.handle(
+    CHANNELS.relocateLinkedSource,
+    protectedHandler((assetId: string, sourceId: string) => options.handlers.relocateLinkedSource(assetId, sourceId)),
   );
 
   return () => {

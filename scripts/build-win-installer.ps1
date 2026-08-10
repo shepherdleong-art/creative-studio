@@ -81,16 +81,16 @@ if ($HostNodePlatform -ne 'win32') {
 if ($HostNodeArch -ne 'x64') {
   throw "Creative Studio Windows packaging requires an x64 Node build host; detected $HostNodeArch. Native modules must match the bundled win-x64 runtime."
 }
-if (-not (Test-Path (Join-Path $ElectronDist 'electron.exe'))) {
-  throw "Electron runtime was not found at $ElectronDist. Run npm ci on the Windows build host."
-}
-
 if ($SkipNpmCi) {
   Write-Host 'Skipping npm ci because -SkipNpmCi was provided.'
 } else {
   Write-Host 'Installing npm dependencies...'
   & npm.cmd ci
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+if (-not (Test-Path (Join-Path $ElectronDist 'electron.exe'))) {
+  throw "Electron runtime was not found at $ElectronDist. Run npm ci on the Windows build host."
 }
 
 Remove-Item -LiteralPath (Join-Path $Root '.next\dev') -Recurse -Force -ErrorAction SilentlyContinue

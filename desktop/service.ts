@@ -1,16 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 
 const READY_PREFIX = '__CREATIVE_STUDIO_READY__';
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
 const DEFAULT_HEALTH_INTERVAL_MS = 150;
-const SHUTDOWN_REQUEST_TIMEOUT_MS = 2_000;
-const GRACEFUL_EXIT_TIMEOUT_MS = 8_000;
+// The shell's graceful wait window must stay strictly longer than the
+// service's total shutdown budget, so the service can finish its own cleanup
+// before the shell escalates to process-group termination.
+const SHUTDOWN_REQUEST_TIMEOUT_MS = 15_000;
+const GRACEFUL_EXIT_TIMEOUT_MS = 20_000;
 const FORCE_EXIT_TIMEOUT_MS = 2_000;
 const STDERR_TAIL_LIMIT = 12_000;
+const SERVICE_STATE_FILENAME = 'electron-service.json';
 
 export interface StartServiceOptions {
   nodePath: string;
@@ -59,6 +63,39 @@ export class DesktopServiceError extends Error {
 interface ReadyMessage {
   port: number;
   instanceId: string;
+}
+
+interface PersistedServiceState {
+  version: 1;
+  origin: string;
+  instanceId: string;
+}
+
+function serviceStatePath(dataRoot: string): string {
+  return join(dataRoot, 'storage', 'run', SERVICE_STATE_FILENAME);
+}
+
+function persistServiceState(filePath: string, state: PersistedServiceState): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.${state.instanceId}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(state)}\n`, { encoding: 'utf8', mode: 0o600 });
+  try {
+    renameSync(temporaryPath, filePath);
+  } catch {
+    // Windows cannot replace an existing file with rename. The target is the
+    // exact controlled state path and is removed only for this atomic update.
+    try { unlinkSync(filePath); } catch { /* stale state may already be gone */ }
+    renameSync(temporaryPath, filePath);
+  }
+}
+
+function clearServiceState(filePath: string, instanceId: string): void {
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Partial<PersistedServiceState>;
+    if (parsed.instanceId === instanceId) unlinkSync(filePath);
+  } catch {
+    // Stale or already-removed state must not prevent process shutdown.
+  }
 }
 
 type InternalState = DesktopServiceStatus['state'];
@@ -118,6 +155,7 @@ class ManagedDesktopService implements DesktopService {
   private readonly child: ChildProcess;
   private readonly healthTimeoutMs: number;
   private readonly healthIntervalMs: number;
+  private readonly stateFile: string;
   private stdoutBuffer = '';
   private stderrBuffer = '';
   private readyMessage: ReadyMessage | null = null;
@@ -173,11 +211,13 @@ class ManagedDesktopService implements DesktopService {
     instanceId: string,
     healthTimeoutMs: number,
     healthIntervalMs: number,
+    stateFile: string,
   ) {
     this.child = child;
     this.instanceId = instanceId;
     this.healthTimeoutMs = healthTimeoutMs;
     this.healthIntervalMs = healthIntervalMs;
+    this.stateFile = stateFile;
     this.readyPromise = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
@@ -216,6 +256,14 @@ class ManagedDesktopService implements DesktopService {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  persistState(): void {
+    persistServiceState(this.stateFile, {
+      version: 1,
+      origin: this.origin,
+      instanceId: this.instanceId,
+    });
   }
 
   async stop(): Promise<void> {
@@ -340,6 +388,7 @@ class ManagedDesktopService implements DesktopService {
       }
     } finally {
       this.removeListeners();
+      clearServiceState(this.stateFile, this.instanceId);
       this.state = 'stopped';
     }
   }
@@ -467,10 +516,12 @@ export async function startService(
     instanceId,
     options.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
     options.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS,
+    serviceStatePath(options.dataRoot),
   );
 
   try {
     await service.start(options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS);
+    service.persistState();
     return service;
   } catch (error: unknown) {
     await service.stop();

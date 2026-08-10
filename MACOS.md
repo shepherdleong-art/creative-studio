@@ -50,7 +50,7 @@ bash scripts/build-mac-installer.sh --skip-npm-ci
 
 1. 打开 `dist/macos/产品素材工作台-<version>.dmg`。
 2. 把 `产品素材工作台.app` 拖到 Applications。
-3. 双击应用，默认浏览器会打开 `http://127.0.0.1:3000`。
+3. 双击应用，Electron 窗口会连接本机 loopback 上的随机服务端口；服务不会监听公网地址。
 
 ## 首次启动（仅本机未公证包）
 
@@ -79,7 +79,13 @@ macOS 安装版不会把数据库、上传文件、日志写进 `.app` 包内。
 ```text
 data/workbench.db
 storage/logs/
+storage/run/electron-service.json  # 当前 loopback origin/instance，退出时清理
 ```
+
+## 已知行为差异
+
+- Electron 窗口内点击 `ResultGallery` 的参考图会直接下载文件，不会像浏览器标签页那样打开新标签；这是桌面壳的安全下载策略。
+- 首次登记链接原片会完整读取文件做内容校验；大素材需要等待，过程中不会复制原文件。
 
 ## 卸载
 

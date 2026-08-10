@@ -40,7 +40,7 @@ export async function isReusableNarrationChunk(filePath: string): Promise<boolea
   }
 }
 
-export async function concatWavFiles(inputs: string[], output: string): Promise<void> {
+export async function concatWavFiles(inputs: string[], output: string, signal?: AbortSignal): Promise<void> {
   if (inputs.length === 1) {
     fs.copyFileSync(inputs[0], output);
     return;
@@ -51,7 +51,7 @@ export async function concatWavFiles(inputs: string[], output: string): Promise<
     ...args,
     '-filter_complex', `${labels}concat=n=${inputs.length}:v=0:a=1[outa]`,
     '-map', '[outa]', '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', '-y', output,
-  ], { timeoutMs: 180_000 });
+  ], { timeoutMs: 180_000, signal });
 }
 
 export function countTtsContent(value: string): number {

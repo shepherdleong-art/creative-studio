@@ -24,6 +24,8 @@ assert.match(plist, /<key>CFBundleExecutable<\/key>\s*<string>CreativeStudio<\/s
 assert.match(plist, /<key>CFBundleIconFile<\/key>\s*<string>app\.icns<\/string>/);
 assert.match(plist, /<key>NSPrincipalClass<\/key>\s*<string>AtomApplication<\/string>/);
 assert.match(plist, /<string>__VERSION__<\/string>/);
+assert.match(plist, /<key>NSAllowsLocalNetworking<\/key>\s*<true\/>/);
+assert.doesNotMatch(plist, /NSAllowsArbitraryLoads/);
 
 const launcher = read('installer/macos/launcher.sh');
 assert.match(launcher, /DATA_ROOT="\$\{CREATIVE_STUDIO_DATA_ROOT:-\$HOME\/Library\/Application Support\/CreativeStudio\}"/);
@@ -60,6 +62,9 @@ assert.match(build, /npm ci/);
 assert.match(build, /npm run build/);
 assert.match(build, /npm run build:desktop/);
 assert.match(build, /npm run icons/);
+const macNpmCiCommand = build.indexOf('\n  npm ci\n');
+assert.notEqual(macNpmCiCommand, -1);
+assert.ok(macNpmCiCommand < build.indexOf('Missing Electron runtime'), 'macOS 必须在 npm ci 后检查 Electron runtime');
 assert.match(build, /ELECTRON_APP="\$ROOT\/node_modules\/electron\/dist\/Electron\.app"/);
 assert.match(build, /copy_dir_contents "\$ELECTRON_APP" "\$APP"/);
 assert.match(build, /mv "\$APP\/Contents\/MacOS\/Electron" "\$APP\/Contents\/MacOS\/CreativeStudio"/);

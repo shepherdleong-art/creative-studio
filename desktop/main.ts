@@ -4,7 +4,7 @@ import { readdir } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { delimiter, extname, join, resolve } from 'node:path';
 
-import { registerIpcHandlers, type DesktopIpcHandlers } from './ipc';
+import { CHANNELS, registerIpcHandlers, sameOrigin, type DesktopIpcHandlers } from './ipc';
 import {
   startService,
   type DesktopService,
@@ -29,12 +29,24 @@ interface LinkedImportResponse {
   errors: Array<{ index: number; message: string }>;
 }
 
+interface RelocateLinkedSourceResponse {
+  relocated: boolean;
+}
+
 function isLinkedImportResponse(value: unknown): value is LinkedImportResponse {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
   return Array.isArray(candidate.assetIds)
     && candidate.assetIds.every((assetId) => typeof assetId === 'string')
     && Array.isArray(candidate.errors);
+}
+
+function isRelocateLinkedSourceResponse(value: unknown): value is RelocateLinkedSourceResponse {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof (value as { relocated?: unknown }).relocated === 'boolean',
+  );
 }
 
 function currentProjectId(window: BrowserWindow): string {
@@ -81,23 +93,65 @@ async function postLinkedFiles(
   filePaths: string[],
 ): Promise<{ requestId: string; count: number }> {
   const projectId = currentProjectId(window);
-  const response = await fetch(`${currentService.origin}/api/desktop/import-linked`, {
+  const requestId = randomUUID();
+  let count = 0;
+  for (let index = 0; index < filePaths.length; index += 1) {
+    const response = await fetch(`${currentService.origin}/api/desktop/import-linked`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-creative-studio-desktop-secret': desktopSecret,
+      },
+      // Keep the HTTP contract unchanged; one selected path is sent per
+      // request so the renderer can show honest N/M progress.
+      body: JSON.stringify({ projectId, filePaths: [filePaths[index]] }),
+      redirect: 'error',
+    });
+    if (!response.ok) {
+      throw new Error(`原片登记失败（HTTP ${response.status}）`);
+    }
+    const payload: unknown = await response.json().catch(() => null);
+    if (!isLinkedImportResponse(payload)) {
+      throw new Error('原片登记服务返回了无效结果');
+    }
+    count += payload.assetIds.length;
+    if (!window.isDestroyed()) {
+      window.webContents.send(CHANNELS.linkedImportProgress, {
+        requestId,
+        completed: index + 1,
+        total: filePaths.length,
+      });
+    }
+  }
+  return { requestId, count };
+}
+
+async function postRelocatedSource(
+  window: BrowserWindow,
+  currentService: DesktopService,
+  desktopSecret: string,
+  assetId: string,
+  sourceId: string,
+  filePath: string,
+): Promise<RelocateLinkedSourceResponse> {
+  const projectId = currentProjectId(window);
+  const response = await fetch(`${currentService.origin}/api/desktop/relocate-linked`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-creative-studio-desktop-secret': desktopSecret,
     },
-    body: JSON.stringify({ projectId, filePaths }),
+    body: JSON.stringify({ projectId, assetId, sourceId, filePath }),
     redirect: 'error',
   });
   if (!response.ok) {
-    throw new Error(`原片登记失败（HTTP ${response.status}）`);
+    throw new Error(`原片重新定位失败（HTTP ${response.status}）`);
   }
   const payload: unknown = await response.json().catch(() => null);
-  if (!isLinkedImportResponse(payload)) {
-    throw new Error('原片登记服务返回了无效结果');
+  if (!isRelocateLinkedSourceResponse(payload)) {
+    throw new Error('原片重新定位服务返回了无效结果');
   }
-  return { requestId: randomUUID(), count: payload.assetIds.length };
+  return payload;
 }
 
 function createDesktopIpcHandlers(
@@ -147,6 +201,25 @@ function createDesktopIpcHandlers(
         return { requestId: randomUUID(), count: 0 };
       }
       return postLinkedFiles(window, currentService, desktopSecret, filePaths);
+    },
+    relocateLinkedSource: async (assetId, sourceId) => {
+      const selection = await dialog.showOpenDialog(window, {
+        title: '重新定位原片',
+        properties: ['openFile'],
+        filters: [{ name: '视频', extensions: ['mp4', 'mov', 'avi', 'webm'] }],
+      });
+      const filePath = selection.filePaths[0];
+      if (selection.canceled || !filePath) {
+        return { relocated: false };
+      }
+      return postRelocatedSource(
+        window,
+        currentService,
+        desktopSecret,
+        assetId,
+        sourceId,
+        filePath,
+      );
     },
     getAppVersion: () => app.getVersion(),
   };
@@ -331,12 +404,19 @@ function createWindow(currentService: DesktopService, desktopSecret: string): Br
   });
 
   // Electron's programmatic loadURL() does not emit will-navigate. Therefore
-  // the initial load needs no exception here; every renderer-initiated
-  // top-level navigation is denied, including same-origin navigations.
-  window.webContents.on('will-navigate', (event) => {
-    event.preventDefault();
+  // the initial load needs no exception here; same-origin renderer navigation
+  // is allowed while cross-origin navigation remains blocked.
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!sameOrigin(url, origin)) {
+      event.preventDefault();
+    }
   });
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.setWindowOpenHandler((details) => {
+    if (sameOrigin(details.url, origin)) {
+      window.webContents.downloadURL(details.url);
+    }
+    return { action: 'deny' };
+  });
   window.webContents.on('will-attach-webview', (event) => {
     event.preventDefault();
   });

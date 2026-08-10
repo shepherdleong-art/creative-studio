@@ -181,6 +181,7 @@ export interface FinalEditWorkspaceDependencies {
     speed: number;
     narrationHash: string;
     onSegmentComplete?: (completed: number, total: number) => void;
+    signal?: AbortSignal;
   }): Promise<NarrationArtifact>;
   fitNarrationDuration?(input: {
     providerId: string;
@@ -195,7 +196,10 @@ export interface FinalEditWorkspaceDependencies {
     sources: Array<{ videoJobId: string; absolutePath: string }>;
     narrationAbsolutePath: string;
     relativePath: string;
+    signal?: AbortSignal;
   }): Promise<{ relativePath: string }>;
+  /** Registers a prepare job in the same application-stop controller set as render jobs. */
+  createJobController?(): { signal: AbortSignal; release(): void };
   estimateAnalysisCost?(input: { providerId: string; requestCount: number }): number;
   validateAnalysisProvider?(providerId: string): boolean;
   validateTtsProvider?(providerId: string): boolean;
@@ -372,6 +376,17 @@ function flattenPreparedSemanticScenes(assets: PreparedAsset[]): SemanticScene[]
 }
 
 function now() { return new Date().toISOString(); }
+function makePrepareAbortError(): Error {
+  const error = new Error('成片准备任务因服务停机而中止');
+  error.name = 'AbortError';
+  return error;
+}
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw makePrepareAbortError();
+}
 function parseJson<T>(value: string, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
@@ -993,7 +1008,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     }
   };
 
-  const prepare = async (jobId: string, groupId: string, input: StartFinalEditInput, script: ScriptSnapshot): Promise<void> => {
+  const prepare = async (jobId: string, groupId: string, input: StartFinalEditInput, script: ScriptSnapshot, signal?: AbortSignal): Promise<void> => {
     const phaseRank = (phase: string) => ['analyzing', 'synthesizing', 'duration_check', 'matching', 'previewing'].indexOf(phase);
     const updateJob = (phase: string, progress: number) => {
       const current = db.prepare(`SELECT phase, progress FROM final_edit_jobs WHERE id=? AND status='running'`).get(jobId) as { phase: string; progress: number } | undefined;
@@ -1005,10 +1020,12 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       })();
     };
     try {
+      assertNotAborted(signal);
       updateJob('analyzing', 0);
       const rows = selectedAssets(db, storageRoot, input.projectId, script.shotSetId, input.selectedMaterialKeys);
       const prepared: PreparedAsset[] = [];
       for (const row of rows) {
+        assertNotAborted(signal);
         const fingerprint = sha256(fs.readFileSync(row.localVideoPath));
         const media = await deps.probeVideo({ filePath: row.localVideoPath, videoJobId: row.videoJobId });
         let analysis: VideoAnalysisResult;
@@ -1072,6 +1089,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       }
       if (prepared.length === 0) throw new FinalEditError('no_succeeded_videos', '没有可读取的视频素材');
 
+      assertNotAborted(signal);
       updateJob('synthesizing', 0.3);
       const narrationHash = String((db.prepare(`SELECT narrationHash FROM final_edit_groups WHERE id = ?`).get(groupId) as { narrationHash: string }).narrationHash);
       const normalizedSegments = script.segments.map((segment, index) => ({ segmentId: segment.id || `segment-${index + 1}`, narration: segment.narration }));
@@ -1093,8 +1111,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         : await deps.synthesize({
             scriptDraftId: String(input.scriptDraftId || ''), segments: normalizedSegments,
             providerId: input.providerId, voice: input.voice, speed: input.speed, narrationHash,
+            signal,
             onSegmentComplete: (completed, total) => updateJob('synthesizing', 0.3 + completed / Math.max(1, total) * 0.25),
           });
+      assertNotAborted(signal);
       if (!(narration.alignmentDegradedSegmentIds || []).length) {
         validateNarrationAlignment(narration, script.segments.map((segment) => segment.narration).join(''));
       }
@@ -1335,6 +1355,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         ? sha256(fs.readFileSync(narrationAbsolutePath))
         : sha256(JSON.stringify({ segments: normalizedSegments, providerId: input.providerId, voice: input.voice, speed: input.speed, durationUs: narration.durationUs }));
       for (let index = 0; index < variants.length; index += 1) {
+        assertNotAborted(signal);
         const variant = variants[index];
         if (deps.warmPreview && variant.timeline.clips.length > 0) {
           try {
@@ -1353,9 +1374,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
               sources: prepared.filter((asset) => usedVideoJobIds.has(asset.videoJobId)).map((asset) => ({ videoJobId: asset.videoJobId, absolutePath: asset.localVideoPath })),
               narrationAbsolutePath,
               relativePath,
+              signal,
             });
             previewPaths.set(variant.id, warmed.relativePath);
-          } catch {
+          } catch (error) {
+            if (signal?.aborted || isAbortError(error)) throw error;
             variant.issues.push({ code: 'preview_failed', severity: 'warning', message: '低清预览生成失败，时间线已保留，可稍后重试' });
           }
         }
@@ -1382,6 +1405,13 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       });
       transaction();
     } catch (error) {
+      if (signal?.aborted || isAbortError(error)) {
+        db.transaction(() => {
+          db.prepare(`UPDATE final_edit_groups SET status='queued', phase='validating', updatedAt=? WHERE id=?`).run(now(), groupId);
+          db.prepare(`UPDATE final_edit_jobs SET status='queued', phase='recovered_after_shutdown', progress=0, errorCode=NULL, errorMessage=NULL, startedAt=NULL, finishedAt=NULL WHERE id=? AND status='running'`).run(jobId);
+        })();
+        return;
+      }
       const code = error instanceof FinalEditError ? error.code : 'prepare_failed';
       const message = error instanceof Error ? error.message : String(error);
       db.prepare(`UPDATE final_edit_groups SET status='failed', updatedAt=? WHERE id=?`).run(now(), groupId);
@@ -1613,7 +1643,15 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const claimed = db.prepare(`UPDATE final_edit_jobs SET status='running', phase='analyzing', progress=0, attempt=attempt+1, startedAt=?, finishedAt=NULL WHERE id=? AND kind='prepare' AND status='queued'`).run(now(), jobId);
     if (!claimed.changes) return;
     db.prepare(`UPDATE final_edit_groups SET status='running', phase='analyzing', updatedAt=? WHERE id=?`).run(now(), row.groupId);
-    await runFinalEditHeavyJob(() => prepare(jobId, row.groupId, input!, script!));
+    const registration = deps.createJobController?.() || (() => {
+      const controller = new AbortController();
+      return { signal: controller.signal, release: () => undefined };
+    })();
+    try {
+      await runFinalEditHeavyJob(() => prepare(jobId, row.groupId, input!, script!, registration.signal));
+    } finally {
+      registration.release();
+    }
   };
 
   const apply = (command: FinalEditCommand): MutationResult => {

@@ -15,13 +15,15 @@ const excludedDirectories = new Set([
 // Fixed literals from the execution document; never derive expected values
 // from the implementation under test.
 const expectedBridgeMethods = [
-  'platform', 'chooseMediaFiles', 'chooseFolder', 'getAppVersion',
+  'platform', 'chooseMediaFiles', 'chooseFolder', 'getAppVersion', 'relocateLinkedSource',
 ];
 const expectedChannels = [
   'desktop:platform',
   'desktop:choose-media-files',
   'desktop:choose-folder',
   'desktop:get-app-version',
+  'desktop:relocate-linked-source',
+  'desktop:linked-import-progress',
 ];
 
 function read(relativePath) {
@@ -155,7 +157,8 @@ for (const [name, pattern] of [
   assert.match(preferences.source, pattern, `webPreferences 必须显式包含 ${name}`);
 }
 
-// C. The bridge exposes exactly the four named methods and no raw Node/IPC API.
+// C. The bridge exposes exactly the five named methods. Progress is a
+// separately fixed main→preload event and never becomes a renderer method.
 const typeBlock = braceBlock(bridgeTypes, 'interface DesktopBridge');
 const typeMethods = [...typeBlock.source.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*\(/gm)].map(
   (match) => match[1],
@@ -174,25 +177,33 @@ assert.equal(
 assert.match(preload, /contextBridge\.exposeInMainWorld\(\s*['"]desktopBridge['"]\s*,\s*desktopBridge\s*\)/);
 assert.doesNotMatch(preload, /contextBridge\.exposeInMainWorld\([^)]*,\s*ipcRenderer\b/);
 assert.doesNotMatch(preload, /\b(?:fs|path|child_process)\b/);
-assert.doesNotMatch(preload, /\bipcRenderer\.(?:on|once|send|sendSync|postMessage|removeListener)\b/);
+assert.doesNotMatch(preload, /\bipcRenderer\.(?:once|send|sendSync|postMessage|removeListener)\b/);
+assert.equal((preload.match(/\bipcRenderer\.on\(/g) ?? []).length, 1);
+assert.match(preload, /ipcRenderer\.on\(\s*LINKED_IMPORT_PROGRESS_CHANNEL\s*,/);
+assert.match(preload, /creative-studio:linked-import-progress/);
 assert.doesNotMatch(preload, /\bipcRenderer\.invoke\(\s*channel\b/);
-assert.equal((preload.match(/ipcRenderer\.invoke\(/g) ?? []).length, 4);
+assert.equal((preload.match(/ipcRenderer\.invoke\(/g) ?? []).length, 5);
 assert.equal(
   [...preload.matchAll(/ipcRenderer\.invoke\(\s*([A-Z][A-Z0-9_]*_CHANNEL)\s*\)/g)].length,
   4,
-  '每个 preload invoke 必须使用固定 channel 常量',
+  '四个无参 preload invoke 必须使用固定 channel 常量',
+);
+assert.match(
+  preload,
+  /ipcRenderer\.invoke\(\s*RELOCATE_LINKED_SOURCE_CHANNEL\s*,\s*assetId\s*,\s*sourceId\s*,?\s*\)/,
+  '重新定位 bridge 必须精确传递 assetId 与 sourceId',
 );
 
-// D. All four handlers use the one protected wrapper and validate frame/origin.
+// D. All five handlers use the one protected wrapper and validate frame/origin.
 const allHandlers = production.flatMap((file) => {
   const source = fs.readFileSync(file.absolutePath, 'utf8');
   return [...source.matchAll(/ipcMain\.handle\(/g)].map(() => file);
 });
-assert.equal(allHandlers.length, 4, '生产源码必须恰好注册四个 ipcMain.handle');
+assert.equal(allHandlers.length, 5, '生产源码必须恰好注册五个 ipcMain.handle');
 assert.ok(allHandlers.every((file) => file.relativePath === path.join('desktop', 'ipc.ts')));
 assert.equal(
   (ipc.match(/ipcMain\.handle\(\s*[^,]+,\s*protectedHandler\(/g) ?? []).length,
-  4,
+  5,
   '每个 ipcMain.handle 必须直接通过 protectedHandler',
 );
 assert.match(ipc, /const\s+senderFrame\s*=\s*event\.senderFrame/);
@@ -208,9 +219,14 @@ assert.doesNotMatch(ipc, /\.startsWith\s*\(/, 'IPC sender URL 校验不得使用
 
 // E. Renderer navigation and window opening are deny-by-default.
 const navigation = braceBlock(main, "webContents.on('will-navigate'");
+assert.match(navigation.source, /\bsameOrigin\s*\(/);
 assert.match(navigation.source, /\bevent\.preventDefault\(\)/);
-assert.doesNotMatch(navigation.source, /\bif\s*\(/);
-assert.match(main, /setWindowOpenHandler\(\s*\(\)\s*=>\s*\(\{\s*action\s*:\s*['"]deny['"]\s*\}\)\s*\)/);
+assert.doesNotMatch(navigation.source, /\.startsWith\s*\(/);
+const windowOpenHandler = braceBlock(main, 'setWindowOpenHandler');
+assert.match(windowOpenHandler.source, /sameOrigin\(\s*details\.url\s*,\s*origin\s*\)/);
+assert.match(windowOpenHandler.source, /webContents\.downloadURL\(\s*details\.url\s*\)/);
+assert.match(windowOpenHandler.source, /action\s*:\s*['"]deny['"]/);
+assert.doesNotMatch(windowOpenHandler.source, /action\s*:\s*['"]allow['"]/);
 
 // F. The top-level single-instance lock precedes service/window side effects.
 const lock = main.indexOf('app.requestSingleInstanceLock()');

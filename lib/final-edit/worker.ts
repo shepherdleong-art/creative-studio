@@ -32,6 +32,27 @@ export function abortRunningFinalEditJobs(): number {
   return runningControllers.length;
 }
 
+export interface FinalEditJobControllerRegistration {
+  controller: AbortController;
+  release(): void;
+}
+
+/** Registers both render and prepare work in the process-wide shutdown set. */
+export function createFinalEditJobController(): FinalEditJobControllerRegistration {
+  const controller = new AbortController();
+  activeFinalEditControllers.add(controller);
+  if (shutdownRequested) controller.abort();
+  let released = false;
+  return {
+    controller,
+    release: () => {
+      if (released) return;
+      released = true;
+      activeFinalEditControllers.delete(controller);
+    },
+  };
+}
+
 /** 返回超时后仍未从成片 worker 收尾的任务数。 */
 export async function waitForFinalEditJobsIdle(timeoutMs: number): Promise<number> {
   const deadline = Date.now() + Math.max(0, timeoutMs);
@@ -55,8 +76,8 @@ async function drain() {
       if (!job) break;
       const claimed = db.prepare(`UPDATE final_edit_jobs SET status='running', phase='preflight', progress=0, startedAt=? WHERE id=? AND status='queued'`).run(new Date().toISOString(), job.id);
       if (!claimed.changes) continue;
-      const controller = new AbortController();
-      activeFinalEditControllers.add(controller);
+      const registration = createFinalEditJobController();
+      const controller = registration.controller;
       try {
         if (controller.signal.aborted) throw makeAbortError();
         let snapshot = JSON.parse(job.inputSnapshotJson) as FinalEditRenderSnapshot;
@@ -110,7 +131,7 @@ async function drain() {
         }
         db.prepare(`UPDATE final_edit_jobs SET status='failed', phase='failed', errorCode=?, errorMessage=?, finishedAt=? WHERE id=?`).run(error instanceof FinalEditError ? error.code : 'render_failed', error instanceof Error ? error.message.slice(0, 1500) : String(error).slice(0, 1500), new Date().toISOString(), job.id);
       } finally {
-        activeFinalEditControllers.delete(controller);
+        registration.release();
       }
     }
   } finally { running = false; }

@@ -111,17 +111,17 @@ for command in iconutil codesign hdiutil sips curl tar npm node lipo osascript S
   require_command "$command"
 done
 
-if [ ! -d "$ELECTRON_APP" ]; then
-  echo "Missing Electron runtime: $ELECTRON_APP" >&2
-  echo "Run npm ci before building the macOS installer." >&2
-  exit 1
-fi
-
 if [ "$SKIP_NPM_CI" -eq 1 ]; then
   echo "Skipping npm ci because --skip-npm-ci was provided."
 else
   echo "Installing npm dependencies..."
   npm ci
+fi
+
+if [ ! -d "$ELECTRON_APP" ]; then
+  echo "Missing Electron runtime: $ELECTRON_APP" >&2
+  echo "Run npm ci before building the macOS installer." >&2
+  exit 1
 fi
 
 rm -rf .next/dev

@@ -11,6 +11,7 @@ export interface TtsAdapterInput {
   relativeOutputPath: string;
   alignment: AlignmentAdapter;
   onSegmentComplete?: (completed: number, total: number) => void;
+  signal?: AbortSignal;
 }
 
 export interface FinalEditTtsAdapter {
@@ -23,7 +24,7 @@ export interface FinalEditTtsAdapter {
   defaultVoice: string;
   previewText: string;
   validateBaseUrl(value: string): string;
-  synthesizePreview(input: { provider: { baseUrl: string; apiKey: string; model: string }; voice: string; speed: number; text: string; outputPath: string }): Promise<void>;
+  synthesizePreview(input: { provider: { baseUrl: string; apiKey: string; model: string }; voice: string; speed: number; text: string; outputPath: string; signal?: AbortSignal }): Promise<void>;
   synthesize(input: TtsAdapterInput): Promise<{ relativePath: string; absolutePath: string; durationUs: number; segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>; wordTimings: Array<{ text: string; startUs: number; endUs: number }>; alignmentDegradedSegmentIds?: string[] }>;
   estimateCost(input: { text: string; costPerThousandCharacters: number }): number;
 }

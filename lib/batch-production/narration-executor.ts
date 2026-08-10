@@ -255,6 +255,7 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
           outputDir,
           relativeOutputPath,
           alignment,
+          signal,
         });
         if (signal.aborted) throw new Error('任务已中止');
         if (!fs.existsSync(synthesized.absolutePath)) throw new Error('口播合成没有产出音频文件');

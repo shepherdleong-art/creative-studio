@@ -55,6 +55,21 @@ function waitForStep(promise: Promise<void>, timeoutMs: number): Promise<boolean
   });
 }
 
+async function waitForCountStep(
+  operation: (timeoutMs: number) => Promise<number>,
+  timeoutMs: number,
+  fallbackCount: number,
+): Promise<number> {
+  let value = 0;
+  const completed = await waitForStep(
+    Promise.resolve().then(() => operation(timeoutMs)).then((result) => {
+      value = result;
+    }),
+    timeoutMs,
+  );
+  return completed ? Math.max(0, value) : Math.max(1, fallbackCount);
+}
+
 /**
  * 停止源码启动时受控的 LiteLLM sidecar。
  *
@@ -97,7 +112,8 @@ async function performGracefulShutdown(
   timeoutMs: number,
   dependencies: GracefulShutdownDependencies,
 ): Promise<GracefulShutdownResult> {
-  const stepTimeoutMs = Math.max(1, Math.floor(timeoutMs));
+  const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
+  const remainingBudget = (): number => Math.max(0, deadline - Date.now());
   let pendingTasks = 0;
 
   const scheduler = 'scheduler' in dependencies
@@ -134,27 +150,36 @@ async function performGracefulShutdown(
     pendingTasks += 1;
   }
 
-  if (schedulerStop && !(await waitForStep(schedulerStop, stepTimeoutMs))) {
+  if (schedulerStop && !(await waitForStep(schedulerStop, remainingBudget()))) {
     pendingTasks += 1;
   }
 
   try {
-    const remainingBatchTasks = await (dependencies.waitForBatchTasks ?? waitForBatchTasksIdle)(stepTimeoutMs);
-    pendingTasks += Math.max(0, remainingBatchTasks);
+    pendingTasks += await waitForCountStep(
+      dependencies.waitForBatchTasks ?? waitForBatchTasksIdle,
+      remainingBudget(),
+      abortedBatchTaskCount,
+    );
   } catch {
     pendingTasks += Math.max(1, abortedBatchTaskCount);
   }
 
   try {
-    const remainingFinalEdit = await (dependencies.waitForFinalEdit ?? waitForFinalEditJobsIdle)(stepTimeoutMs);
-    pendingTasks += Math.max(0, remainingFinalEdit);
+    pendingTasks += await waitForCountStep(
+      dependencies.waitForFinalEdit ?? waitForFinalEditJobsIdle,
+      remainingBudget(),
+      abortedFinalEditCount,
+    );
   } catch {
     pendingTasks += Math.max(1, abortedFinalEditCount);
   }
 
   try {
-    const remainingFfmpeg = await (dependencies.waitForFfmpeg ?? waitForFfmpegIdle)(stepTimeoutMs);
-    pendingTasks += Math.max(0, remainingFfmpeg);
+    pendingTasks += await waitForCountStep(
+      dependencies.waitForFfmpeg ?? waitForFfmpegIdle,
+      remainingBudget(),
+      abortedFfmpegCount,
+    );
   } catch {
     pendingTasks += Math.max(1, abortedFfmpegCount);
   }
@@ -168,7 +193,7 @@ async function performGracefulShutdown(
 
   try {
     const stopSidecar = dependencies.stopSidecar ?? stopControlledSidecar;
-    if (!(await waitForStep(Promise.resolve().then(stopSidecar), stepTimeoutMs))) {
+    if (!(await waitForStep(Promise.resolve().then(stopSidecar), remainingBudget()))) {
       pendingTasks += 1;
     }
   } catch {
