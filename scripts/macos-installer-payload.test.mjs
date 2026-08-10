@@ -70,6 +70,12 @@ while (stack.length) {
       entry.name === 'workbench.db'
       || entry.name === '.env'
       || entry.name.startsWith('.env.')
+      // Source-run entry points are meaningless in an installed app. The globs
+      // used to require a hyphen, so start.command/start.sh/stop.command/stop.sh
+      // and the legacy launcher helpers shipped inside the payload.
+      || /^(?:start|stop).*\.(?:command|sh|cmd|ps1)$/.test(entry.name)
+      || /^launcher\.(?:vbs|html)$/.test(entry.name)
+      || entry.name.startsWith('create-desktop-shortcut.')
       || (absolute.includes(`${path.sep}dist-desktop${path.sep}`) && (entry.name.endsWith('.map') || entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')))
     ) leaked.push(absolute);
   }

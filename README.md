@@ -109,7 +109,7 @@ CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
    ```
 
 2. 仓库根目录放置 `config.yaml`（LiteLLM 配置，含网关 Key——**绝不提交**，`.gitignore` 已排除）。
-3. macOS 双击 `start.command`，Windows 双击 `start-windows.cmd`：检测到虚拟环境与配置后，会先把 LiteLLM 强制绑定到 `http://127.0.0.1:4000`，再启动 dev server；对应停止脚本、启动窗口 Ctrl+C、UI 关闭按钮都会把代理一并关闭。
+3. macOS 双击 `start.command`（网页版）或 `start-desktop.command`（桌面版），Windows 双击 `start-windows.cmd`：检测到虚拟环境与配置后，会先把 LiteLLM 强制绑定到 `http://127.0.0.1:4000`，再启动工作台；对应停止脚本、启动窗口 Ctrl+C、桌面版退出、UI 关闭按钮都会把代理一并关闭。注意 macOS 安装版（DMG）的载荷不含 `config.yaml` 与 `.venv-litellm`，因此**安装版不支持公司供应商**。
 4. 在 `/settings` 添加供应商：Base URL 填 `http://127.0.0.1:4000`，执行范围选“公司”；图片选 `gateway-task-image` 类型，视频选 `openai-video` 类型。
 
 注意：两个平台的启动命令都显式传入 `--host 127.0.0.1`；请勿改成 `0.0.0.0` 或将本服务暴露到公网。`scripts/*.ps1` 必须保持 UTF-8 带 BOM，否则 PS 5.1 解析中文会失败。
@@ -149,7 +149,7 @@ start.command
 如果 macOS 提示没有执行权限，可以在终端运行一次：
 
 ```bash
-chmod +x start.command stop.command start.sh stop.sh
+chmod +x start.command start-desktop.command stop.command start.sh stop.sh
 ```
 
 然后再次双击 `start.command`，或在终端运行：
@@ -171,6 +171,28 @@ stop.command
 ```
 
 也可以在启动窗口按 `Ctrl+C` 停止。
+
+### 桌面版（Electron，源码运行）
+
+不想装 DMG、又要用桌面壳的原生能力（本机原片登记、原生文件选择）时，双击：
+
+```text
+start-desktop.command
+```
+
+与 `start.command` 的区别：
+
+- 启动的是 Electron 桌面壳 + 私有 Node 服务跑 **production standalone 构建**，不是 dev server；服务监听 `127.0.0.1` 的随机端口，不占用 3000。
+- 首次运行会自动执行一次 `npm run build`（需要几分钟）。之后复用已有产物，**代码更新后要显式重建**：
+
+  ```bash
+  ./start-desktop.command --rebuild
+  ```
+
+- 组件齐备时同样会先拉起 LiteLLM 代理，因此公司供应商可用（这一点与安装版不同，见 [MACOS.md](./MACOS.md)）。
+- 数据根仍是本项目目录，与网页版共用同一个 `data/workbench.db`；脚本检测到 3000 端口被占用时会提示先停掉网页版，请不要同时运行两者。
+
+退出请从应用菜单选择「退出」（关闭窗口只是隐藏）。直接关闭启动它的终端窗口也会触发优雅退出，私有 Node 服务会被一并回收。
 
 ## 首次使用
 

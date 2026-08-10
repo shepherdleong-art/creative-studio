@@ -62,6 +62,28 @@ xattr -dr com.apple.quarantine "/Applications/产品素材工作台.app"
 
 或在 Finder 中右键 `产品素材工作台.app`，选择“打开”，确认一次。
 
+## 从源码启动桌面版（不装 DMG）
+
+开发或需要公司供应商时，可以直接从仓库运行桌面壳，双击：
+
+```text
+start-desktop.command
+```
+
+脚本会依次确认 Node、依赖和 Electron 运行时，检测 3000 端口冲突，拉起可选的 LiteLLM sidecar，确保 `.next/standalone` 产物存在（缺失时自动 `npm run build`），编译桌面壳后启动 Electron。
+
+代码更新后需要显式重建 standalone 产物：
+
+```bash
+./start-desktop.command --rebuild
+```
+
+与安装版的关键差异：
+
+- 数据根是**项目目录**（`data/`、`storage/`），不是 `~/Library/Application Support/CreativeStudio`；与网页版共用同一个 `data/workbench.db`，不要和 `start.command` 同时运行。
+- 依赖本机 Node 和 `node_modules`，不使用打包的私有运行时。
+- 支持公司供应商（见下）。
+
 ## 停止服务
 
 Electron 窗口关闭只会隐藏窗口，任务仍在后台运行。请从应用菜单选择“退出 Creative Studio”以触发服务优雅关闭和进程树回收；如果应用已经失去响应，可在“活动监视器”中强制退出应用，下次启动时持久化租约会负责恢复任务状态。
@@ -84,6 +106,7 @@ storage/run/electron-service.json  # 当前 loopback origin/instance，退出时
 
 ## 已知行为差异
 
+- **安装版不支持公司供应商网关。** 安装包载荷有意剪除了 `config.yaml` 和 `.venv-litellm/`（连同 `data/`、`storage/`、`.env*` 等本地数据与凭据），因此 `.app` 不会拉起 LiteLLM 代理，`/settings` 里执行范围为「公司」的供应商不可用。需要公司模型时，请用源码态 `start-desktop.command`。
 - Electron 窗口内点击 `ResultGallery` 的参考图会直接下载文件，不会像浏览器标签页那样打开新标签；这是桌面壳的安全下载策略。
 - 首次登记链接原片会完整读取文件做内容校验；大素材需要等待，过程中不会复制原文件。
 

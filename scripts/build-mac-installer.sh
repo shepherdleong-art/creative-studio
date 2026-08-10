@@ -213,17 +213,33 @@ for relative in data storage outputs installer docs scripts desktop .git .claude
   remove_payload_path ".next/standalone/$relative"
 done
 
+# The start*/stop* globs must not require a hyphen: start.command, start.sh,
+# stop.command and stop.sh are source-run entry points that are meaningless in
+# an installed app. The legacy launcher and shortcut helpers are documented as
+# historical/dev resources that are not packaged.
 find "$PAYLOAD" \( \
   -name '.env' -o \
   -name '.env.*' -o \
   -name '*.lock' -o \
-  -name 'start-*.cmd' -o \
-  -name 'start-*.ps1' -o \
-  -name 'start-*.sh' -o \
-  -name 'start-*.command' -o \
-  -name 'stop-*.cmd' -o \
-  -name 'stop-*.ps1' \
+  -name 'start*.cmd' -o \
+  -name 'start*.ps1' -o \
+  -name 'start*.sh' -o \
+  -name 'start*.command' -o \
+  -name 'stop*.cmd' -o \
+  -name 'stop*.ps1' -o \
+  -name 'stop*.sh' -o \
+  -name 'stop*.command' -o \
+  -name 'create-desktop-shortcut.*' -o \
+  -name 'launcher.vbs' -o \
+  -name 'launcher.html' \
 \) -exec rm -rf {} +
+
+for pattern in 'start*.command' 'start*.sh' 'stop*.command' 'stop*.sh' 'launcher.*' 'create-desktop-shortcut.*'; do
+  if find "$PAYLOAD" -name "$pattern" -print -quit | grep -q .; then
+    echo "Installer payload still contains a source-run launcher: $pattern" >&2
+    exit 1
+  fi
+done
 
 for forbidden in data storage outputs docs scripts installer .git .claude .venv-litellm config.yaml litellm-config.yaml; do
   if [ -e "$PAYLOAD/$forbidden" ] || [ -e "$STANDALONE_PAYLOAD/$forbidden" ]; then

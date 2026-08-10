@@ -524,4 +524,15 @@ if (!singleInstanceLock) {
       focusMainWindow();
     }
   });
+
+  // A terminal-launched shell dies on SIGHUP (window closed) or SIGINT (Ctrl+C).
+  // The private Node service is detached, so it must be reaped through the same
+  // shutdown chain or it outlives Electron and keeps holding SQLite. A signal is
+  // not a user decision, so this path skips the quit confirmation dialog.
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(signal, () => {
+      explicitQuitRequested = true;
+      void shutdown();
+    });
+  }
 }

@@ -21,11 +21,16 @@ test('macOS 公司供应商运行环境只把 LiteLLM 绑定到 loopback', () =>
 
 test('macOS 工作台启动和停止入口共同看管 LiteLLM sidecar', () => {
   const startCommand = read('start.command');
+  const startDesktopCommand = read('start-desktop.command');
   const stopCommand = read('stop.command');
 
   assert.match(startCommand, /scripts\/start-litellm\.sh/);
   assert.match(startCommand, /scripts\/stop-litellm\.sh/);
   assert.match(startCommand, /trap[\s\S]*cleanup/);
+  // 桌面版入口和网页版入口是并列的两个启动路径，sidecar 看管方式必须一致。
+  assert.match(startDesktopCommand, /scripts\/start-litellm\.sh/);
+  assert.match(startDesktopCommand, /scripts\/stop-litellm\.sh/);
+  assert.match(startDesktopCommand, /trap[\s\S]*cleanup/);
   assert.match(stopCommand, /scripts\/stop-litellm\.sh/);
 });
 
