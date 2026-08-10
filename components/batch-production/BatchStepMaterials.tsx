@@ -117,6 +117,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   const [showFinishedTasks, setShowFinishedTasks] = useState(false);
   const [linkedImportBusy, setLinkedImportBusy] = useState<'files' | 'folder' | null>(null);
   const [linkedImportProgress, setLinkedImportProgress] = useState<{ requestId: string; completed: number; total: number } | null>(null);
+  const linkedImportProgressRef = useRef<{ active: boolean; requestId: string | null }>({ active: false, requestId: null });
   const [linkedRelocateBusy, setLinkedRelocateBusy] = useState<string | null>(null);
   const [linkedImportFeedback, setLinkedImportFeedback] = useState<string | null>(null);
   const desktopAvailable = useSyncExternalStore(
@@ -127,6 +128,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
 
   useEffect(() => {
     const onProgress = (event: Event) => {
+      const progressState = linkedImportProgressRef.current;
+      if (!progressState.active) return;
       const detail = (event as CustomEvent<unknown>).detail;
       if (!detail || typeof detail !== 'object') return;
       const candidate = detail as Partial<{ requestId: string; completed: number; total: number }>;
@@ -135,6 +138,11 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
       if (typeof completed !== 'number' || typeof total !== 'number') return;
       if (!Number.isInteger(completed) || !Number.isInteger(total)) return;
       if (completed < 0 || total < completed || total > 500) return;
+      if (progressState.requestId === null) {
+        progressState.requestId = requestId;
+      } else if (progressState.requestId !== requestId) {
+        return;
+      }
       setLinkedImportProgress({ requestId, completed, total });
       setLinkedImportFeedback(`正在校验 ${completed}/${total}`);
     };
@@ -145,6 +153,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   async function importLinked(kind: 'files' | 'folder'): Promise<void> {
     const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
     if (!bridge) return;
+    linkedImportProgressRef.current = { active: true, requestId: null };
     setLinkedImportBusy(kind);
     setLinkedImportProgress(null);
     setLinkedImportFeedback(null);
@@ -163,6 +172,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
     } catch (error: unknown) {
       setLinkedImportFeedback(error instanceof Error ? error.message : '原片登记失败');
     } finally {
+      linkedImportProgressRef.current = { active: false, requestId: null };
       setLinkedImportBusy(null);
       setLinkedImportProgress(null);
     }

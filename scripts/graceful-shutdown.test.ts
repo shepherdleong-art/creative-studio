@@ -79,19 +79,19 @@ try {
 
   // timeoutMs is the total shutdown budget, not a fresh budget per wait step.
   {
-    const waitUntilBudgetExpires = async (timeoutMs: number): Promise<number> =>
-      new Promise((resolve) => setTimeout(() => resolve(1), timeoutMs));
+    const waitForever = async (): Promise<number> =>
+      new Promise(() => undefined);
     const dependencies: GracefulShutdownDependencies = {
       scheduler: {
         running: true,
         stop: () => undefined,
       },
       abortBatchTasks: () => 1,
-      waitForBatchTasks: waitUntilBudgetExpires,
+      waitForBatchTasks: waitForever,
       abortFinalEdit: () => 1,
-      waitForFinalEdit: waitUntilBudgetExpires,
+      waitForFinalEdit: waitForever,
       abortFfmpeg: () => 1,
-      waitForFfmpeg: waitUntilBudgetExpires,
+      waitForFfmpeg: waitForever,
       closeDatabase: () => undefined,
       stopSidecar: () => undefined,
     };
