@@ -172,13 +172,27 @@ if ($Rebuild -or -not (Test-Path $standaloneServer) -or -not (Test-Path $standal
   Write-Host ''
 }
 
-Write-Host '正在编译桌面壳...'
-& npm.cmd run build:desktop
-if ($LASTEXITCODE -ne 0) {
-  Write-Host '桌面壳编译失败，请查看上方错误输出。' -ForegroundColor Red
-  exit $LASTEXITCODE
+# 桌面壳源码没变化时跳过 tsc 编译（每次白等约 10 秒）
+$desktopBuiltEntry = Join-Path $Root 'dist-desktop\main.js'
+$desktopNeedsBuild = $true
+if (Test-Path $desktopBuiltEntry) {
+  $builtAt = (Get-Item $desktopBuiltEntry).LastWriteTime
+  $newestSource = Get-ChildItem (Join-Path $Root 'desktop') -Filter '*.ts' -File |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  $desktopNeedsBuild = (-not $newestSource) -or ($newestSource.LastWriteTime -gt $builtAt)
 }
-Write-Host ''
+if ($desktopNeedsBuild) {
+  Write-Host '正在编译桌面壳...'
+  & npm.cmd run build:desktop
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host '桌面壳编译失败，请查看上方错误输出。' -ForegroundColor Red
+    exit $LASTEXITCODE
+  }
+  Write-Host ''
+} else {
+  Write-Host '桌面壳源码无变化，跳过编译。'
+  Write-Host ''
+}
 
 Write-Host '正在启动桌面版...'
 Write-Host ''

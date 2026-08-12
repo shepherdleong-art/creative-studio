@@ -110,7 +110,9 @@ export function recoverFinalEditPrepareJobs() {
 }
 
 export function isFinalEditAlignmentConfigured(): boolean {
-  const provider = getDb().prepare(`SELECT id, baseUrl, apiKey, keyEnv FROM final_edit_tts_providers WHERE enabled=1 ORDER BY isBuiltin DESC, name LIMIT 1`).get() as AlignmentFallbackProvider | undefined;
+  // 逐行解析 Key，跳过"启用了但没配 Key"的供应商，避免选到必然不可用的行。
+  const candidates = getDb().prepare(`SELECT id, baseUrl, apiKey, keyEnv FROM final_edit_tts_providers WHERE enabled=1 ORDER BY isBuiltin DESC, name`).all() as AlignmentFallbackProvider[];
+  const provider = candidates.find((candidate) => resolveProviderApiKey(candidate));
   if (provider && getFinalEditTtsAdapter(provider.id).providesWordTimings) return true;
   return createFinalEditAlignmentAdapter(provider).configured;
 }

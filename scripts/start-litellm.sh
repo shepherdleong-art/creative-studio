@@ -50,7 +50,8 @@ fi
 rm -f "$stack_file"
 
 echo "正在启动 LiteLLM（仅监听 127.0.0.1:${proxy_port}）..."
-PYTHONUTF8=1 "$litellm_exe" \
+# 离线加载模型价格表：避免启动时拉取 remote cost map 超时拖慢启动
+LITELLM_LOCAL_MODEL_COST_MAP=True PYTHONUTF8=1 "$litellm_exe" \
     --config "$config_file" \
     --host 127.0.0.1 \
     --port "$proxy_port" \

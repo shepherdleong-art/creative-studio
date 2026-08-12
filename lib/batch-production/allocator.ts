@@ -951,25 +951,32 @@ function buildPlanMatchUnits(plan: NormalizedPlan, normalized: NormalizedInput):
     (max, asset) => Math.max(max, ...asset.scenes.map((scene) => scene.endUs - scene.startUs)),
     0,
   );
-  const refined = buildTtsAwareMatchSentences({
-    segments: plan.segments.map((segment) => ({
-      id: segment.id,
-      sourceSegmentId: segment.sourceSegmentId,
-      text: segment.text,
-      startUs: segment.startUs,
-      endUs: segment.endUs,
-    })),
-    wordTimings,
-    maxSceneDurationUs,
-    availableSceneCount: sceneCount,
-  });
+  // 必须逐句调用：全局一次性重排会在词边界上另起新边界，与未拆分句的原始
+  // 口播窗口不重合，混用两套边界必然产生缺口/重叠（renderer 会拒绝）。
+  // 逐句调用时单元窗口铺满该句自身区间，句间连续性由句段边界天然保证。
+  const refinedBySegment = new Map(
+    plan.segments.map((segment) => [
+      segment.id,
+      buildTtsAwareMatchSentences({
+        segments: [{
+          id: segment.id,
+          text: segment.text,
+          startUs: segment.startUs,
+          endUs: segment.endUs,
+        }],
+        wordTimings,
+        maxSceneDurationUs,
+        availableSceneCount: sceneCount,
+      }),
+    ] as const),
+  );
   const units: PlanMatchUnit[] = [];
   for (const [segmentIndex, segment] of plan.segments.entries()) {
     if (lockedSegmentIds.has(segment.id) || lockedSegmentIds.has(segment.sourceSegmentId)) {
       pushWhole(units, segment, segmentIndex);
       continue;
     }
-    const matching = refined
+    const matching = (refinedBySegment.get(segment.id) ?? [])
       .filter((unit) => unit.sourceSegmentId === segment.id)
       .sort((left, right) => left.startUs - right.startUs);
     if (matching.length <= 1) {

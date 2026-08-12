@@ -25,6 +25,7 @@ export interface ClaimedBatchTask {
   task: {
     id: string;
     batchId: string;
+    projectId: string;
     workType: BatchTaskWorkType;
     targetKind: BatchTaskTargetKind;
     targetId: string;

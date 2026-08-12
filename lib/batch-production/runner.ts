@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { writeLog } from '../logger.ts';
 import { findExecutor, type BatchTaskExecutor, type BatchTaskProgress } from './executors.ts';
 import {
   claimNextTask,
@@ -301,13 +302,23 @@ async function executeOne(
       // 执行器抛出的带 code 错误(如 semantic_fallback)保留机器可读错误码,
       // 供重试入口与界面区分失败原因;其余维持 executor_error。
       const executorErrorCode = (error as { code?: unknown } | null)?.code;
+      const failureMessage = error instanceof Error ? error.message : String(error);
       completeTaskAttempt(db, claim.attempt.id, {
         workerId,
         status: 'failed',
         errorCode: typeof executorErrorCode === 'string' && executorErrorCode ? executorErrorCode : 'executor_error',
-        errorMessage: error instanceof Error ? error.message : String(error),
+        errorMessage: failureMessage,
         progressJson: lastProgress,
         now,
+      });
+      // 批量任务失败同步进项目日志:此前只落在 batch_task_attempts,
+      // 界面上完全不可见。
+      writeLog({
+        jobId: claim.task.id,
+        projectId: claim.task.projectId,
+        level: 'error',
+        message: `[批量生产] ${claim.task.workType} 任务失败（第 ${claim.attempt.attemptNumber} 次）: ${failureMessage}`,
+        attempt: claim.attempt.attemptNumber,
       });
     }
     return 'completed';

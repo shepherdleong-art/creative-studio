@@ -323,9 +323,6 @@ export function seedScriptProviders() {
 export function seedMotionTemplates() {
   const db = getDb();
 
-  const existing = db.prepare(`SELECT COUNT(*) as count FROM video_prompt_templates`).get() as { count: number };
-  if (existing.count > 0) return;
-
   const templates = [
     {
       id: 'slow-push-in',
@@ -357,10 +354,17 @@ export function seedMotionTemplates() {
       description: '轻微靠近材质细节，适合表现面料、皮质、金属等。',
       prompt: '以当前图片为首帧，镜头缓慢靠近产品材质细节，突出纹理和质感。保持产品结构、材质、比例和颜色真实稳定，不要添加文字，不要让主体变形。',
     },
+    {
+      id: 'steady-pull-back',
+      name: '镜头平稳后拉',
+      description: '镜头匀速远离主体，逐渐展现整体环境，适合收尾或空间感展示。',
+      prompt: '以当前图片为首帧，镜头平稳缓慢向后拉远，逐渐展现主体与整体环境的关系，运动匀速自然。保持产品结构、材质、比例、颜色和画面构图稳定，不要添加文字，不要让主体变形。',
+    },
   ];
 
+  // 逐行幂等插入（而非空表才种子），让老库也能拿到后续新增的模板。
   const insert = db.prepare(
-    `INSERT INTO video_prompt_templates (id, name, description, prompt, category, isBuiltin)
+    `INSERT OR IGNORE INTO video_prompt_templates (id, name, description, prompt, category, isBuiltin)
      VALUES (?, ?, ?, ?, 'camera_motion', 1)`
   );
 

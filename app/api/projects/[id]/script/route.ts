@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { writeLog } from '@/lib/logger';
 import {
   completeJson,
   getAvailableProviders,
@@ -21,12 +22,32 @@ import type { ScriptGenerationProgress } from '@/lib/script-generation-v3';
 
 // ── POST: analyze | generate ──
 
+/** 脚本生成/分析的失败此前只回给前端，服务端无迹可查；统一落项目日志。 */
+function logScriptFailure(projectId: string, stage: string, detail: unknown): void {
+  const body = detail as { message?: unknown; error?: unknown } | null;
+  const message = detail instanceof Error
+    ? detail.message
+    : typeof body?.message === 'string'
+      ? body.message
+      : typeof body?.error === 'string'
+        ? body.error
+        : String(detail);
+  writeLog({ projectId, level: 'error', message: `[脚本生成] ${stage}: ${message}` });
+}
+
+/** 关键节点信息日志：让生成过程在日志抽屉里可见（开始/完成、选用的模型）。 */
+function logScriptInfo(projectId: string, message: string): void {
+  writeLog({ projectId, level: 'info', message: `[脚本生成] ${message}` });
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let projectIdForLog = '';
   try {
     const { id: projectId } = await params;
+    projectIdForLog = projectId;
     const db = getDb();
 
     const project = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(projectId) as Record<string, unknown> | undefined;
@@ -51,6 +72,9 @@ export async function POST(
     return await handleGenerate(projectId, project, body, request.signal);
   } catch (err) {
     const failure = scriptGenerationFailure(err);
+    if (failure.status !== 499) {
+      logScriptFailure(projectIdForLog, '分析/生成异常', failure.body);
+    }
     return NextResponse.json(failure.body, { status: failure.status });
   }
 }
@@ -117,9 +141,11 @@ async function handleAnalyze(
   }
 
   const input: AnalysisInput = { sellingPoints, targetAudience, platform };
+  logScriptInfo(projectId, `开始分析卖点（${sellingPoints.length} 条，模型 ${providerId}，平台 ${platform}）`);
   const result = await analyzeScriptStrategyV3(input, {
     completeJson: (request) => completeJson({ providerId, ...request }),
   });
+  logScriptInfo(projectId, `卖点分析完成（模型 ${providerId}）`);
 
   // Persist analysis to DB
   const analysisJson = JSON.stringify({
@@ -144,12 +170,18 @@ async function handleGenerate(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ) {
+  logScriptInfo(projectId, `开始生成脚本（模型 ${(body.providerId as string) || '默认'}）`);
   const result = await generateAndPersistScriptV3({ projectId, project, body }, {
     db: getDb(),
     completeJson: (providerId, request) => completeJson({ providerId, ...request }),
     providerMeta: getProviderMeta,
     signal,
   });
+  if (result.status >= 400) {
+    logScriptFailure(projectId, '脚本生成失败', result.body);
+  } else {
+    logScriptInfo(projectId, '脚本生成完成');
+  }
   return NextResponse.json(result.body, { status: result.status });
 }
 
@@ -201,6 +233,7 @@ function handleGenerateStream(
       const onProgress = (progress: ScriptGenerationProgress) => send({ type: 'progress', progress });
 
       void (async () => {
+        logScriptInfo(projectId, `开始生成脚本（模型 ${(body.providerId as string) || '默认'}，流式）`);
         try {
           const result = await generateAndPersistScriptV3({ projectId, project, body }, {
             db: getDb(),
@@ -209,6 +242,11 @@ function handleGenerateStream(
             signal: generationController.signal,
             onProgress,
           });
+          if (result.status >= 400) {
+            logScriptFailure(projectId, '脚本生成失败', result.body);
+          } else {
+            logScriptInfo(projectId, '脚本生成完成');
+          }
           send({
             type: result.status >= 400 ? 'error' : 'result',
             status: result.status,
@@ -216,6 +254,9 @@ function handleGenerateStream(
           });
         } catch (error) {
           const failure = scriptGenerationFailure(error);
+          if (failure.status !== 499) {
+            logScriptFailure(projectId, '脚本生成异常', failure.body);
+          }
           send({ type: 'error', status: failure.status, body: failure.body });
         } finally {
           finishScriptGeneration(generationId, generationController);

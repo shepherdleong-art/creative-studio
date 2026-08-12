@@ -87,12 +87,16 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
   const configuredProviders = providers.filter((provider) => provider.configured !== false);
 
-  // Effective provider id for a row: fall back to the first available provider
+  // Effective provider id for a row: fall back to a preferred provider
   // when the row was created before providers had loaded.
+  // 偏好可灵（kling）：团队的主力视频模型，避免每次手动切换。
+  const preferredProvider = configuredProviders.find((provider) =>
+    /kling/i.test(provider.defaultModel ?? '') || /kling/i.test(provider.name ?? ''),
+  ) ?? configuredProviders[0];
   const getRowProviderId = (row: { providerId: string }): string =>
     (row.providerId && configuredProviders.some((provider) => provider.id === row.providerId))
       ? row.providerId
-      : configuredProviders[0]?.id || '';
+      : preferredProvider?.id || '';
 
   const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
     key: crypto.randomUUID(), prompt: '', templateId: '', providerId: '', durationSec: defaultDuration,

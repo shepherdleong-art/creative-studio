@@ -66,6 +66,8 @@ try {
   # ── 1. litellm 代理 ──
   Write-Host '[1/2] 启动 litellm 代理...'
   $env:PYTHONUTF8 = '1'
+  # 离线加载模型价格表：避免启动时拉取 remote cost map 超时拖慢启动
+  $env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
   $p = Start-Process -FilePath $litellmExe `
     -ArgumentList '--config', 'config.yaml', '--port', "$ProxyPort", '--host', '127.0.0.1' `
     -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
