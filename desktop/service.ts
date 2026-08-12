@@ -16,6 +16,32 @@ const FORCE_EXIT_TIMEOUT_MS = 2_000;
 const STDERR_TAIL_LIMIT = 12_000;
 const SERVICE_STATE_FILENAME = 'electron-service.json';
 
+// The standalone server never loads .env files itself, so the shell injects
+// <dataRoot>/.env.local (COS credentials, etc.) into the child environment.
+// Explicit process env always wins over file values, mirroring Next.js dev.
+function loadEnvFile(filePath: string): Record<string, string> {
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, 'utf8');
+  } catch {
+    return {};
+  }
+  const env: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!match) continue;
+    let value = match[2];
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    env[match[1]] = value;
+  }
+  return env;
+}
+
 export interface StartServiceOptions {
   nodePath: string;
   serverEntry: string;
@@ -507,6 +533,7 @@ export async function startService(
   const child = spawn(options.nodePath, [options.serverEntry], {
     cwd: options.serverRoot,
     env: {
+      ...loadEnvFile(join(options.dataRoot, '.env.local')),
       ...process.env,
       ...options.environment,
       PORT: '0',

@@ -350,6 +350,70 @@ try {
     }
   });
 
+  await test('retries transient network failures and eventually succeeds', async () => {
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount += 1;
+      if (callCount < 3) {
+        throw new Error('read ECONNRESET');
+      }
+      return new Response(new Uint8Array([9, 9, 9]), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await downloadGatewayMedia(
+      'https://cdn.example.com/result.mp4',
+      'https://gateway.example.com',
+      'gateway-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(callCount, 3);
+    if (result.ok) {
+      assert.deepEqual([...result.buffer], [9, 9, 9]);
+    }
+  });
+
+  await test('gives up after bounded retries on persistent network failures', async () => {
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount += 1;
+      throw new Error('read ECONNRESET');
+    }) as typeof fetch;
+
+    const result = await downloadGatewayMedia(
+      'https://cdn.example.com/result.mp4',
+      'https://gateway.example.com',
+      'gateway-key',
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(callCount, 3);
+    if (!result.ok) {
+      assert.equal(result.status, undefined);
+      assert.match(result.errorMessage, /network error/i);
+    }
+  });
+
+  await test('does not retry deterministic HTTP failures', async () => {
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount += 1;
+      return new Response('denied', { status: 403 });
+    }) as typeof fetch;
+
+    const result = await downloadGatewayMedia(
+      'https://cdn.example.com/result.mp4',
+      'https://gateway.example.com',
+      'gateway-key',
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(callCount, 1);
+    if (!result.ok) {
+      assert.equal(result.status, 403);
+    }
+  });
+
   await test('redacts media URL queries while retaining origin and path', () => {
     assert.equal(
       redactMediaUrlForLog(

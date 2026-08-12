@@ -30,6 +30,25 @@ foreach ($f in $requiredFiles) {
   if (-not (Test-Path $f)) { Write-Host "缺少文件: $f" -ForegroundColor Red; exit 1 }
 }
 
+# ── 已有受控 sidecar 且健康时直接复用（与 scripts/start-litellm.sh 语义一致）──
+if ($SkipApp -and (Test-Path $stackFile)) {
+  try {
+    $existing = Get-Content $stackFile -Raw | ConvertFrom-Json
+    $existingPid = [int]$existing.litellmPid
+    $existingPort = [int]$existing.proxyPort
+    if ($existingPid -gt 0 -and $existingPort -eq $ProxyPort -and
+        (Get-Process -Id $existingPid -ErrorAction SilentlyContinue)) {
+      try {
+        $r = Invoke-RestMethod -Uri "http://127.0.0.1:$ProxyPort/health/liveliness" -TimeoutSec 2
+        if ($r) {
+          Write-Host "LiteLLM 已在运行（PID $existingPid），复用现有代理: http://127.0.0.1:$ProxyPort"
+          exit 0
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
 # ── 端口占用检查 ──
 foreach ($port in @($AppPort, $ProxyPort)) {
   if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {

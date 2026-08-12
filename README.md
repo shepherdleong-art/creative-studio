@@ -116,21 +116,21 @@ CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
 
 ## Windows 快速启动
 
-推荐直接双击：
+推荐直接双击（桌面版，Electron 壳）：
 
 ```text
 start-windows.cmd
 ```
 
-启动脚本会检查 Node.js、安装依赖、（组件齐备时拉起公司网关代理）启动本地服务，并尝试打开浏览器。
+启动脚本（`scripts/start-desktop-windows.ps1`）会检查 Node.js、安装依赖、（组件齐备时拉起公司网关代理）、缺少 standalone 产物时先执行生产构建，然后启动 Electron 桌面壳；壳内私有服务监听 `127.0.0.1` 随机端口，不占用 3000。代码更新后用 `start-windows.cmd -Rebuild` 强制重建。桌面版从应用菜单「退出」即可结束后台任务。
 
-默认访问地址：
+如需网页版（dev server + 浏览器，默认 http://127.0.0.1:3000），运行：
 
-```text
-http://127.0.0.1:3000
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-windows.ps1
 ```
 
-停止服务：
+网页版停止服务：
 
 ```text
 stop-windows.cmd

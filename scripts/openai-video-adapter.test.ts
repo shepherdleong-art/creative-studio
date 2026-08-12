@@ -169,10 +169,8 @@ try {
   );
   assert.equal(capturedMethods.length, fetchCountBeforeConfiguredPrivateSubmit + 1);
   assert.equal(capturedUrl, 'https://llm-gateway.example.com/v1/videos');
-  // seedance 同属公司网关：补 response_format 与吸附 size，但不开智能分镜
-  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'response_format', 'seconds', 'size']);
-  assert.equal(capturedBody?.response_format, 'mp4');
-  assert.equal(capturedBody?.size, '1366x1024');
+  // seedance 同属公司网关，但省略 response_format 与 size（上游对 Kling 表尺寸 400），也不开智能分镜
+  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds']);
   assert.deepEqual(capturedBody?.images, [
     'http://192.168.1.10:3000/api/images/sources/source.png',
   ]);

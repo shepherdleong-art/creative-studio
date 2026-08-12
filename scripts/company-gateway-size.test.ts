@@ -16,7 +16,9 @@ assert.equal(companyImageCapsForModel('nano-banana-2.5'), null);
 
 assert.ok(companyVideoCapsForModel('kling-3.0'));
 assert.ok(companyVideoCapsForModel('kling-3.0-Omni'));
-assert.ok(companyVideoCapsForModel('doubao-seedance-2-0-260128'));
+// seedance 省略 size（上游对 Kling 表尺寸 400），由网关按首帧默认处理
+assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-260128'), null);
+assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-fast-260128'), null);
 assert.equal(companyVideoCapsForModel('sora-2'), null);
 
 // ── 图片 size 吸附 ──
