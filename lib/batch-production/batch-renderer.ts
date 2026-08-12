@@ -789,7 +789,10 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         fadeInSec > 0 ? `afade=t=in:st=0:d=${fadeInSec.toFixed(6)}` : '',
         fadeOutSec > 0 ? `afade=t=out:st=${fadeStartSec.toFixed(6)}:d=${fadeOutSec.toFixed(6)}` : '',
       ].filter(Boolean).join(',');
-      filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      // 不上 loudnorm:单遍动态模式会给音频流附加异常时间基准,下游 adelay
+      // 插入的片头静音会被吞掉,造成音画不同步(2026-08-12 实测复现)。
+      // 音乐电平由 volume 增益与淡入淡出控制。
+      filters.push(`[${bgmInput}:a]aresample=48000,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
       filters.push(`[${voiceLabel}][music]amix=inputs=2:duration=longest:dropout_transition=0,apad,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[abody]`);
     } else {
       filters.push(`[${voiceLabel}]anull[abody]`);

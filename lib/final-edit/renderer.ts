@@ -149,7 +149,9 @@ export async function renderFinalEditSnapshot(input: {
     currentVideo = next;
   });
   const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;
-  filters.push(`[${narrationInput}:a]${narrationTempo}aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
+  // 不上 loudnorm:单遍动态模式会给音频流附加异常时间基准,下游 adelay
+  // 插入的片头静音会被吞掉,造成音画不同步(2026-08-12 实测复现)。
+  filters.push(`[${narrationInput}:a]${narrationTempo}aresample=48000,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
   if (snapshot.bgm && bgmInput != null) {
     const fadeInDuration = Math.min(Math.max(0, snapshot.bgm.fadeInSec), bodySec);
     const fadeOutDuration = Math.min(Math.max(0, snapshot.bgm.fadeOutSec), bodySec);
@@ -158,7 +160,7 @@ export async function renderFinalEditSnapshot(input: {
       fadeInDuration > 0 ? `afade=t=in:st=0:d=${fadeInDuration.toFixed(6)}` : '',
       fadeOutDuration > 0 ? `afade=t=out:st=${fadeStart.toFixed(6)}:d=${fadeOutDuration.toFixed(6)}` : '',
     ].filter(Boolean).join(',');
-    filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+    filters.push(`[${bgmInput}:a]aresample=48000,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
     filters.push(`[narration][music]amix=inputs=2:duration=longest:dropout_transition=0[bodyaudio]`);
   } else {
     filters.push('[narration]anull[bodyaudio]');

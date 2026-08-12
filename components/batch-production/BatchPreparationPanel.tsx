@@ -511,7 +511,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }, [hasActiveBatchTask]);
 
   const progressView = useMemo<BatchProgressView | null>(() => {
-    if (!['running', 'partially_completed', 'completed', 'failed'].includes(batchStatus)) return null;
+    // 语义匹配/口播排队期间，服务端批次状态还不是 running，但生产任务已经
+    // 排队——此时也必须显示进度卡，否则开跑后只剩顶部横幅、下方一片空白。
+    const productionTaskCount = batchTasks.filter((task) => task.workType === 'narration' || task.workType === 'render' || task.workType === 'semantic_score').length;
+    if (!['running', 'partially_completed', 'completed', 'failed'].includes(batchStatus) && productionTaskCount === 0) return null;
     const narration = batchTasks.filter((task) => task.workType === 'narration');
     const renders = batchTasks.filter((task) => task.workType === 'render');
     const semantic = batchTasks.filter((task) => task.workType === 'semantic_score');
@@ -558,7 +561,22 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           narration.length > 0 ? `${narrationSucceeded}/${narration.length}` : undefined,
           narration.length > 0 ? narrationSucceeded / narration.length : undefined,
         ),
-        stage('自动配画面', allocationDone ? 'done' : 'running'),
+        // 自动配画面不能以"工作区里存在分配报告"为准——那可能是确认输入时
+        // 遗留的旧结果。本轮有语义任务时，必须等语义全部成功后再看分配状态。
+        stage(
+          '自动配画面',
+          semantic.length > 0
+            ? semanticFailed > 0
+              ? 'failed'
+              : semanticActive > 0
+                ? 'waiting'
+                : allocationDone
+                  ? 'done'
+                  : 'running'
+            : allocationDone
+              ? 'done'
+              : 'running',
+        ),
         stage(
           '渲染成片',
           renders.length === 0 ? 'waiting' : renderFailed > 0 ? 'failed' : renderActive > 0 ? 'running' : 'done',

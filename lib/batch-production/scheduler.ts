@@ -56,7 +56,7 @@ export function claimNextTask(
   const startedAt = nowIso(options.now);
   return db.transaction(() => {
     const candidate = db.prepare(`
-      SELECT t.id, t.batchId, t.workType, t.targetKind, t.targetId, t.attemptCount
+      SELECT t.id, t.batchId, t.projectId, t.workType, t.targetKind, t.targetId, t.attemptCount
       FROM batch_tasks t
       JOIN batch_productions p ON p.id = t.batchId
       WHERE t.status = 'queued'
@@ -86,6 +86,7 @@ export function claimNextTask(
     `).get() as {
       id: string;
       batchId: string;
+      projectId: string;
       workType: BatchTaskWorkType;
       targetKind: BatchTaskTargetKind;
       targetId: string;
@@ -117,6 +118,7 @@ export function claimNextTask(
       task: {
         id: candidate.id,
         batchId: candidate.batchId,
+        projectId: candidate.projectId,
         workType: candidate.workType,
         targetKind: candidate.targetKind,
         targetId: candidate.targetId,

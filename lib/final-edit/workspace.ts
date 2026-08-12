@@ -1233,7 +1233,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             providerId: semanticInput.providerId,
             ...prompt,
             temperature: 0.2,
-            maxTokens: 1500,
+            // 推理型模型（GPT-5-5 等）的思考过程会吃 max_tokens 预算：1500 会被
+            // 思考占满、可见输出为空（finish_reason=length），矩阵解析必败。
+            maxTokens: 8000,
           }),
           sleep: deps.semanticRetrySleep,
           onRetry: ({ attempt, maxAttempts, delayMs, error }) => deps.log?.({

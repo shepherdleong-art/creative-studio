@@ -4,6 +4,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { probeDurationSec } from '../ffmpeg.ts';
+import { writeLog } from '../logger.ts';
 import { createOpenAiAlignmentAdapter } from '../media-core/adapters/alignment.ts';
 import {
   getFinalEditTtsAdapter,
@@ -73,10 +74,12 @@ function resolveBatchNarrationConfig(
   const config = parseNarrationConfig(configJson);
   let providerId = config.providerId ?? '';
   if (!providerId) {
-    const first = db.prepare(`
-      SELECT id FROM final_edit_tts_providers WHERE enabled = 1 ORDER BY isBuiltin DESC, name, id LIMIT 1
-    `).get() as { id: string } | undefined;
-    providerId = first?.id ?? '';
+    // 默认供应商必须真的可用：逐行解析 Key（DB 值或 keyEnv 环境变量），
+    // 跳过"启用了但没配 Key"的行，避免选中一个必然失败的供应商。
+    const candidates = db.prepare(`
+      SELECT id, apiKey, keyEnv FROM final_edit_tts_providers WHERE enabled = 1 ORDER BY isBuiltin DESC, name, id
+    `).all() as Array<{ id: string } & Pick<TtsProviderRow, 'apiKey' | 'keyEnv'>>;
+    providerId = candidates.find((candidate) => resolveProviderApiKey(candidate))?.id ?? '';
   }
   if (!providerId) throw new Error('尚未启用任何口播配音供应商，请在设置中配置');
   const row = db.prepare(`
@@ -195,6 +198,15 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
       if (signal.aborted) throw new Error('任务已中止');
       context.reportProgress({ phase: 'locating', description: '读取冻结脚本与配音配置', percent: null });
       const { providerId, voice, speed, row } = resolveBatchNarrationConfig(db, snapshot.narrationConfigJson);
+      // 关键决策进项目日志:界面显示的兜底供应商与执行器实际选用曾经不一致,
+      // 留下记录便于对质(2026-08-12 口播供应商选取缺陷)。
+      writeLog({
+        jobId: claim.task.id,
+        projectId: claim.task.projectId,
+        level: 'info',
+        message: `[批量生产] 口播配音: 供应商=${providerId} 音色=${voice} 语速=${speed}x${snapshot.narrationConfigJson === '{}' ? '（脚本未保存配音配置，按默认供应商回落）' : ''}`,
+        attempt: claim.attempt.attemptNumber,
+      });
       const segments = buildBatchNarrationSegments(snapshot.id, snapshot.bodyText);
       const reuseKey = narrationReuseKey({
         scriptSnapshotId: snapshot.id,
