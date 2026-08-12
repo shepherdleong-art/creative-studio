@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "../dist-desktop",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "types": ["node", "electron"]
+  },
+  "include": ["./*.ts"],
+  "exclude": ["../node_modules", "../dist-desktop"]
+}

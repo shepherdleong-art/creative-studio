@@ -66,4 +66,8 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE script_providers ADD COLUMN visionCostPerRequest REAL NOT NULL DEFAULT 0`,
   `CREATE INDEX IF NOT EXISTS idx_shots_shotset ON shots(shotSetId)`,
   `ALTER TABLE script_providers ADD COLUMN executionScope TEXT NOT NULL DEFAULT 'external' CHECK(executionScope IN ('external','company'))`,
+  `ALTER TABLE projects ADD COLUMN videoConcurrency INTEGER NOT NULL DEFAULT 10`,
+  `ALTER TABLE projects ADD COLUMN exportDirName TEXT NOT NULL DEFAULT ''`,
+  `UPDATE projects SET workflowType = 'complex_product' WHERE workflowType = 'legacy_batch_edit'`,
+  `CREATE TRIGGER IF NOT EXISTS projects_default_workflow_type AFTER INSERT ON projects WHEN NEW.workflowType = 'legacy_batch_edit' BEGIN UPDATE projects SET workflowType = 'complex_product' WHERE id = NEW.id; END`,
 ];

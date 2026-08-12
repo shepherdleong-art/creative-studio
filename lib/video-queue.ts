@@ -17,10 +17,10 @@ export interface VideoQueueOptions {
 }
 
 // Number of video jobs to run concurrently per project. Override with the
-// VIDEO_CONCURRENCY env var; clamped to 1–6 to respect provider rate limits.
+// VIDEO_CONCURRENCY env var; clamped to 1–10.
 const raw = process.env.VIDEO_CONCURRENCY;
 const envConcurrency = (raw !== undefined && raw !== '') ? Number(raw) : NaN;
-export const DEFAULT_VIDEO_CONCURRENCY = Math.max(1, Math.min(6, Number.isFinite(envConcurrency) ? envConcurrency : 3));
+export const DEFAULT_VIDEO_CONCURRENCY = Math.max(1, Math.min(10, Number.isFinite(envConcurrency) ? envConcurrency : 10));
 
 // 轮询窗口:供应商任务积压时单次轮询可等待多久,超时后任务转 needs_check。
 // 默认 15 分钟(旧值 5 分钟在任务积压时频繁掉出自动化管线);用
@@ -39,12 +39,45 @@ export const DEFAULT_VIDEO_MAX_ATTEMPTS = 2;
 // 每供应商并发闸门:同时处于 running 的本地任务数上限,按供应商类型配置、
 // 按 providerId(具体供应商行)跨项目统计——队列按项目隔离,但远端并发是
 // 供应商维度的,多项目并行时闸门依然生效。未列出的供应商类型不限速。
-const VIDEO_PROVIDER_CONCURRENCY_LIMITS: Readonly<Record<string, number>> = {
-  kling: 2,
-};
+// 当前无内置限速:原 kling=2 是针对可灵官方直连账号的保守默认值,未经实测;
+// 经公司网关(openai-video)的调用本就不命中此闸门。需要限速时在此按类型加回。
+const VIDEO_PROVIDER_CONCURRENCY_LIMITS: Readonly<Record<string, number>> = {};
 
 export function providerConcurrencyLimit(providerType: string): number | null {
   return VIDEO_PROVIDER_CONCURRENCY_LIMITS[providerType] ?? null;
+}
+
+// ── 提交限流退避 ──
+// 网关限流(429)或过载(5xx)时,提交失败的任务打回 pending 会被 worker 立刻
+// 重新领走、反复撞墙。这里按 providerId 记一段冷却期,冷却内 claim 视同被
+// 闸门挡住(gated),让重试自然错开。内存状态即可:进程重启只是提前结束冷却,
+// 任务不丢(pending 持久化在库里)。
+const RATE_LIMIT_SUBMIT_PATTERN = /submit error (429|5\d\d)\b/i;
+/** 逐级退避的冷却时长;测试可直接 splice 缩短。 */
+export const RATE_LIMIT_COOLDOWN_MS = [30_000, 60_000, 120_000];
+/** 同一任务的限流重排上限(不消耗 maxAttempts),超过则标失败。 */
+export const RATE_LIMIT_MAX_REQUEUES = 5;
+
+const providerCooldownUntil = new Map<string, number>();
+const providerCooldownStreak = new Map<string, number>();
+const jobRateLimitRequeues = new Map<string, number>();
+
+export function isRateLimitedSubmitError(message: string): boolean {
+  return RATE_LIMIT_SUBMIT_PATTERN.test(message);
+}
+
+function noteRateLimitCooldown(providerId: string): void {
+  const streak = (providerCooldownStreak.get(providerId) ?? 0) + 1;
+  providerCooldownStreak.set(providerId, streak);
+  const delay = RATE_LIMIT_COOLDOWN_MS[Math.min(streak - 1, RATE_LIMIT_COOLDOWN_MS.length - 1)] ?? 120_000;
+  providerCooldownUntil.set(providerId, Date.now() + delay);
+}
+
+/** 测试钩子:清空限流冷却/重排状态。 */
+export function _resetRateLimitStateForTest(): void {
+  providerCooldownUntil.clear();
+  providerCooldownStreak.clear();
+  jobRateLimitRequeues.clear();
 }
 
 interface VideoJobRecord {
@@ -284,6 +317,9 @@ async function runVideoJob(
         `UPDATE video_jobs SET providerTaskId = ?, providerStatus = 'submitted', providerRawResponse = ?, startedAt = datetime('now')
          WHERE id = ?`
       ).run(taskId, safeJson(submitResult.rawResponse), job.id);
+      // 提交成功:解除该供应商的限流退避计数与任务的重排计数
+      providerCooldownStreak.delete(job.providerId);
+      jobRateLimitRequeues.delete(job.id);
       logInfo(`Video task submitted, task_id=${taskId}`);
     }
 
@@ -399,6 +435,27 @@ async function runVideoJob(
     const errorMessage = (err instanceof Error ? err.message : String(err)).slice(0, 2000);
     logError(`Video job failed: ${errorMessage}`);
 
+    // 网关限流/过载(提交阶段 429/5xx):不消耗 maxAttempts,按供应商记冷却
+    // 退避(30s/60s/120s 逐级),冷却内 claim 视同 gated;同一任务重排超过
+    // RATE_LIMIT_MAX_REQUEUES 次才标失败。
+    if (isRateLimitedSubmitError(errorMessage)) {
+      noteRateLimitCooldown(job.providerId);
+      const requeues = (jobRateLimitRequeues.get(job.id) ?? 0) + 1;
+      jobRateLimitRequeues.set(job.id, requeues);
+      if (requeues > RATE_LIMIT_MAX_REQUEUES) {
+        db.prepare(
+          `UPDATE video_jobs SET status = 'failed', finishedAt = datetime('now'), errorMessage = ?
+           WHERE id = ? AND status = 'running'`
+        ).run(`网关持续限流，退避重试 ${RATE_LIMIT_MAX_REQUEUES} 次后仍失败：${errorMessage}`, job.id);
+      } else {
+        db.prepare(
+          `UPDATE video_jobs SET status = 'pending', errorMessage = ?
+           WHERE id = ? AND status = 'running'`
+        ).run(`网关限流，退避后自动重试（第 ${requeues}/${RATE_LIMIT_MAX_REQUEUES} 次）：${errorMessage}`, job.id);
+      }
+      return;
+    }
+
     // 防重复扣费纪律:已经拿到供应商 task_id 的失败不允许重新 submit(重交
     // 会在远端产生第二条付费任务),一律转 needs_check,由队列自动续跑或用户
     // 手动补抓;只有提交前/未拿到 task_id 的失败才走自动重试。
@@ -461,6 +518,13 @@ export function claimNextVideoJob(projectId: string): ClaimVideoJobResult {
       SELECT COUNT(*) AS count FROM video_jobs WHERE providerId = ? AND status = 'running'
     `).get(job.providerId) as { count: number };
     if (running.count >= limit) return { job: null, gated: true };
+  }
+
+  // 限流冷却期内视同被闸门挡住:pending 还在,但不能领(避免立刻重新撞墙)。
+  const cooldownUntil = providerCooldownUntil.get(job.providerId);
+  if (cooldownUntil !== undefined) {
+    if (cooldownUntil > Date.now()) return { job: null, gated: true };
+    providerCooldownUntil.delete(job.providerId);
   }
 
   const nextAttempt = job.attempt + 1;

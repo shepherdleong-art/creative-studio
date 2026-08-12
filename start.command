@@ -24,11 +24,33 @@ if [ ! -d "node_modules" ]; then
     echo ""
 fi
 
+# 公司供应商运行环境是可选 sidecar；失败只禁用公司供应商，不阻塞工作台。
+STACK_STARTED=0
+if [ -x ".venv-litellm/bin/litellm" ] && [ -f "config.yaml" ]; then
+    if bash scripts/start-litellm.sh; then
+        STACK_STARTED=1
+    else
+        echo "⚠️  LiteLLM 启动失败，继续启动工作台；公司供应商暂不可用。"
+    fi
+fi
+
+cleanup() {
+    if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    if [ "$STACK_STARTED" -eq 1 ]; then
+        bash scripts/stop-litellm.sh
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
 echo "🚀 正在启动服务..."
 echo ""
 
 # Start dev server
-npm run dev &
+npm run dev -- --hostname 127.0.0.1 &
 SERVER_PID=$!
 
 # Wait for server to be ready

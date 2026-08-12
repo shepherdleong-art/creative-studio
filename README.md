@@ -1,6 +1,6 @@
 # Creative Studio
 
-Creative Studio 是一个本地优先的 AI 素材生产工作台，把一张产品素材图推进到「场景图 → 分镜图 → 口播脚本 → 视频任务 → 智能混剪成片 → ZIP 导出包」的完整流水线。
+Creative Studio 是一个本地优先的 AI 素材生产工作台，把产品素材图推进到「场景图 → 分镜图 → 口播脚本 → 视频任务 → 智能混剪成片 → ZIP 导出包」的完整流水线；在“智能混剪”入口下，既可单条精调并导出，也可按批次批量产出多条成片。
 
 它基于 Next.js 构建，适合在 Windows 和 macOS 本地运行。API Key、项目数据、生成结果默认保存在本机；需要公网交付给上游模型的参考图走腾讯云 COS 中转（可配置）。
 
@@ -15,10 +15,10 @@ Creative Studio 是一个本地优先的 AI 素材生产工作台，把一张产
 - **脚本生成**：围绕卖点、人群、平台、语气和分镜组生成口播脚本，并支持图文审阅和复制。
 - **视频任务准备**：基于分镜创建视频任务，支持视频供应商配置、任务轮询、重试和结果预览。
 - **智能混剪成片**：分析视频素材（本地抽帧 + 视觉模型）、TTS 生成配音与字幕对齐、组时间线、ffmpeg 渲染最终成片。
+- **批量生产**：与单条智能混剪共用同一个“智能混剪”入口，提供“单条精调”和“批量成片”两种模式；单条模式用于逐条调整并导出，批量模式用于按批次组织素材和脚本、一次产出多条成片。
 - **公司网关接入**：可选联动本地 LiteLLM 代理（127.0.0.1:4000）接入公司模型网关，可灵、Seedance、image2、nano-banana 等模型走统一任务协议。
 - **腾讯云 COS 参考图中转**：参考图按内容哈希上传 COS 并生成 24h 预签名 URL 传给网关上游。
 - **供应商切换与故障转移**：重新生成时可选择不同供应商，支持进度中的故障切换控制。供应商预设有 GPT.ge 等内置选项。
-- **批量编辑兼容模式**：保留旧版批量图片编辑流程，可上传参考图和待处理图后并发生成结果。
 - **图片输出尺寸规整**：生成结果自动检测与目标尺寸是否一致，不一致时通过 sharp 居中裁切至目标尺寸并记录日志。
 - **本地导出**：支持下载项目产物、创意包、脚本和生成素材，便于交付或二次编辑。下载 zip 包含分镜的全部历史候选结果。
 
@@ -88,34 +88,49 @@ CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
 - 真机验证（配好密钥后）：`COS_LIVE_TEST=1 node scripts/cos-media.test.ts`，做一次真实上传 + 下载比对。
 - 建议给 bucket 配生命周期规则（如 7 天自动删除），存储量不随时间累积。
 
-## 公司网关联动（可选，Windows）
+## 公司网关联动（可选，macOS / Windows 源码运行）
 
 适用：模型走公司统一网关（`llm-gateway-idc.linshimuye.com`），经本地 LiteLLM 代理转发。
 
-1. 仓库根目录放置 `config.yaml`（LiteLLM 配置，含网关 Key——**绝不提交**，`.gitignore` 已排除）。
-2. 准备 `.venv-litellm`：Python 虚拟环境安装 `litellm`，含 `.venv-litellm/Scripts/litellm.exe`。
-3. 双击 `start-windows.cmd`：检测到上述组件后自动经 `scripts/start-stack.ps1 -SkipApp` 拉起代理（`http://127.0.0.1:4000`）再启动 dev server；`stop-windows.cmd`、启动窗口 Ctrl+C、UI 关闭按钮都会把代理一并关闭。
-4. 在 `/settings` 添加供应商：Base URL 填 `http://127.0.0.1:4000`，图片选 `gateway-task-image` 类型，视频选 `openai-video` 类型。
+1. 安装 Python 3.10–3.13（推荐 3.12），在仓库根目录准备 `.venv-litellm`：
 
-注意：代理仅监听 `127.0.0.1`，请勿将本服务暴露到公网。`scripts/*.ps1` 必须保持 UTF-8 带 BOM，否则 PS 5.1 解析中文会失败。
+   macOS：
+
+   ```bash
+   python3.12 -m venv .venv-litellm
+   .venv-litellm/bin/python -m pip install -r requirements-litellm.txt
+   ```
+
+   Windows PowerShell：
+
+   ```powershell
+   py -3.12 -m venv .venv-litellm
+   .\.venv-litellm\Scripts\python.exe -m pip install -r requirements-litellm.txt
+   ```
+
+2. 仓库根目录放置 `config.yaml`（LiteLLM 配置，含网关 Key——**绝不提交**，`.gitignore` 已排除）。
+3. macOS 双击 `start.command`（网页版）或 `start-desktop.command`（桌面版），Windows 双击 `start-windows.cmd`：检测到虚拟环境与配置后，会先把 LiteLLM 强制绑定到 `http://127.0.0.1:4000`，再启动工作台；对应停止脚本、启动窗口 Ctrl+C、桌面版退出、UI 关闭按钮都会把代理一并关闭。注意 macOS 安装版（DMG）的载荷不含 `config.yaml` 与 `.venv-litellm`，因此**安装版不支持公司供应商**。
+4. 在 `/settings` 添加供应商：Base URL 填 `http://127.0.0.1:4000`，执行范围选“公司”；图片选 `gateway-task-image` 类型，视频选 `openai-video` 类型。
+
+注意：两个平台的启动命令都显式传入 `--host 127.0.0.1`；请勿改成 `0.0.0.0` 或将本服务暴露到公网。`scripts/*.ps1` 必须保持 UTF-8 带 BOM，否则 PS 5.1 解析中文会失败。
 
 ## Windows 快速启动
 
-推荐直接双击：
+推荐直接双击（桌面版，Electron 壳）：
 
 ```text
 start-windows.cmd
 ```
 
-启动脚本会检查 Node.js、安装依赖、（组件齐备时拉起公司网关代理）启动本地服务，并尝试打开浏览器。
+启动脚本（`scripts/start-desktop-windows.ps1`）会检查 Node.js、安装依赖、（组件齐备时拉起公司网关代理）、缺少 standalone 产物时先执行生产构建，然后启动 Electron 桌面壳；壳内私有服务监听 `127.0.0.1` 随机端口，不占用 3000。代码更新后用 `start-windows.cmd -Rebuild` 强制重建。桌面版从应用菜单「退出」即可结束后台任务。
 
-默认访问地址：
+如需网页版（dev server + 浏览器，默认 http://127.0.0.1:3000），运行：
 
-```text
-http://127.0.0.1:3000
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-windows.ps1
 ```
 
-停止服务：
+网页版停止服务：
 
 ```text
 stop-windows.cmd
@@ -134,7 +149,7 @@ start.command
 如果 macOS 提示没有执行权限，可以在终端运行一次：
 
 ```bash
-chmod +x start.command stop.command start.sh stop.sh
+chmod +x start.command start-desktop.command stop.command stop-desktop.command start.sh stop.sh
 ```
 
 然后再次双击 `start.command`，或在终端运行：
@@ -157,13 +172,42 @@ stop.command
 
 也可以在启动窗口按 `Ctrl+C` 停止。
 
+### 桌面版（Electron，源码运行）
+
+不想装 DMG、又要用桌面壳的原生能力（本机原片登记、原生文件选择）时，双击：
+
+```text
+start-desktop.command
+```
+
+与 `start.command` 的区别：
+
+- 启动的是 Electron 桌面壳 + 私有 Node 服务跑 **production standalone 构建**，不是 dev server；服务监听 `127.0.0.1` 的随机端口，不占用 3000。
+- 首次运行会自动执行一次 `npm run build`（需要几分钟）。之后复用已有产物，**代码更新后要显式重建**：
+
+  ```bash
+  ./start-desktop.command --rebuild
+  ```
+
+- 组件齐备时同样会先拉起 LiteLLM 代理，因此公司供应商可用（这一点与安装版不同，见 [MACOS.md](./MACOS.md)）。
+- 数据根仍是本项目目录，与网页版共用同一个 `data/workbench.db`；脚本检测到 3000 端口被占用时会提示先停掉网页版，请不要同时运行两者。
+
+退出方式（任选其一）：
+
+- 应用菜单选择「退出」——关闭窗口只是隐藏，不会结束后台任务。
+- 界面右上角的电源按钮「停止服务并退出」——服务停止后应用会自动退出。
+- 直接关闭启动它的终端窗口，或按 `Ctrl+C`。
+- 双击 `stop-desktop.command`——用于应用失去响应，或从 Finder 启动后没有终端窗口可用的情况。它同时覆盖源码态和安装版，会先校验实例身份再请求优雅关闭，之后才做有界的兜底回收。
+
+注意 `stop.command` 只负责网页版（3000 端口），停不了桌面版监听随机端口的私有服务。
+
 ## 首次使用
 
 1. 打开 `/settings`。
 2. 添加图片供应商：公司网关场景填 `http://127.0.0.1:4000` + `gateway-task-image` 类型；其他场景可用 Packy、GeekAI 或 OpenAI-compatible 图片接口。
 3. 填写 Base URL、API Key、模型名和默认单图成本。
 4. 只启用当前要测试的供应商，避免误用其他余额。
-5. 返回首页，新建复杂结构产品项目或旧版批量编辑项目。
+5. 返回首页，新建复杂结构产品项目。
 
 API Key 会存储在本地 SQLite 数据库中，前端列表只显示是否已配置，不显示明文 Key。
 
@@ -199,13 +243,13 @@ npm run build:win-installer
 
 ## macOS 安装包
 
-提供 Apple Silicon 专用的 DMG，内置私有 Node.js 运行时，用户拖到 Applications 后即可从 Finder 启动。
+提供 Apple Silicon 专用的 Electron DMG，内置私有 Node.js 运行时，用户拖到 Applications 后即可从 Finder 启动。
 
 ```bash
 npm run build:mac-installer
 ```
 
-安装包输出到 `dist/macos/产品素材工作台-<version>.dmg`。详细说明见 [MACOS.md](./MACOS.md)。
+安装包输出到 `dist/macos/产品素材工作台-<version>.dmg`。正式分发需要 Developer ID 签名与公证；详细说明见 [MACOS.md](./MACOS.md)。
 
 ## 目录结构
 
@@ -214,7 +258,7 @@ app/                    Next.js 页面和 API 路由
 components/             工作台 UI 组件（components/mixcut/ 为第五步智能混剪）
 components/ui/          通用 UI 原语和图标
 installer/windows/      Windows 安装包脚本和配置
-installer/macos/        macOS .app bundle 模板和启动脚本
+installer/macos/        macOS .app 元数据与历史启动资源
 lib/                    数据库、队列、供应商适配器、文件导出等核心逻辑
 lib/final-edit/         智能混剪后端（时间线、TTS、字幕对齐、ffmpeg 渲染）
 lib/providers/          图片生成供应商适配器
@@ -262,7 +306,7 @@ config.yaml
 
 ## 状态
 
-当前项目仍在快速迭代中，重点方向是复杂结构产品的图片生产、分镜管理、脚本生成、视频任务与智能混剪成片链路。旧版批量图片编辑流程仍保留，作为兼容模式使用。
+当前项目仍在快速迭代中，重点方向是复杂结构产品的图片生产、分镜管理、脚本生成、视频任务与智能混剪成片链路。
 
 ## 许可证
 

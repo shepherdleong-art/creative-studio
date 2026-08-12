@@ -19,6 +19,7 @@ import {
   renewLease,
   resumeBatch,
   retryTask,
+  setBatchSchedulerDraining,
   stopBatch,
 } from '../lib/batch-production/scheduler.ts';
 
@@ -125,6 +126,11 @@ try {
     now: () => new Date('2026-08-02T09:16:00.000Z'),
   });
   startBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-02T09:20:00.000Z'));
+
+  // --- 停机闸门:draining 时 claim 入口不得领取新任务 ---
+  setBatchSchedulerDraining(true);
+  assert.equal(claimNextTask(db, { workerId: 'draining-worker' }), null, 'draining 时不得领取新任务');
+  setBatchSchedulerDraining(false);
 
   // --- 场景 1:两个 worker 竞争,只有一个获得租约 ---
   const claimedByWorker1 = claimNextTask(db, {

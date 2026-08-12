@@ -21,6 +21,9 @@ for PID in $NODE_PIDS; do
     kill "$PID" 2>/dev/null && echo "✅ 已关闭 Next.js 进程 PID: $PID"
 done
 
+# 只关闭由本项目状态文件记录的 LiteLLM sidecar，不按端口误杀其他服务。
+bash "$(dirname "$0")/scripts/stop-litellm.sh"
+
 echo ""
 echo "👋 服务已停止"
 echo ""

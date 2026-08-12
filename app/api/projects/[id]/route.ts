@@ -146,6 +146,10 @@ export async function PATCH(
     if (typeof body.scriptPlatform === 'string') { updates.push('scriptPlatform = ?'); values.push(body.scriptPlatform); }
     if (typeof body.sellingPointsJson === 'string') { updates.push('sellingPointsJson = ?'); values.push(body.sellingPointsJson); }
     if (typeof body.sellingPointAnalysisJson === 'string') { updates.push('sellingPointAnalysisJson = ?'); values.push(body.sellingPointAnalysisJson); }
+    if (Number.isFinite(Number(body.videoConcurrency))) {
+      updates.push('videoConcurrency = ?');
+      values.push(Math.max(1, Math.min(10, Math.floor(Number(body.videoConcurrency)))));
+    }
 
     if (updates.length === 0) return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
 

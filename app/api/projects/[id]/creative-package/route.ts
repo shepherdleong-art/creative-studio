@@ -5,6 +5,7 @@ import type { ZipImageEntry } from '@/lib/zip-download';
 import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
+import { resolveProjectExportDirName } from '@/lib/project-export-dir';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
 
 export const runtime = 'nodejs';
@@ -89,11 +90,17 @@ export async function GET(
 
     const manifestArtifacts: Array<{ kind: string; filename: string; sourceJobId: string | null }> = [];
     const storageRoot = path.join(dataRoot(), 'storage');
-    const projectArtifactRoot = path.join('projects', projectId, '成片');
+    // 新目录:projects/<产品编码-日期>/成片;历史成片仍在旧 UUID 目录里,
+    // 打包导出两者都收,不能把老文件漏掉。
+    const exportDirName = resolveProjectExportDirName(db, projectId);
+    const projectArtifactRoot = path.join('projects', exportDirName, '成片');
+    const legacyProjectArtifactRoot = path.join('projects', projectId, '成片');
     for (const artifact of projectArtifacts) {
       let filePath: string;
       try {
-        if (!artifact.relativePath.startsWith(`${projectArtifactRoot}${path.sep}`) && !artifact.relativePath.startsWith(`${projectArtifactRoot}/`)) continue;
+        const underNewRoot = artifact.relativePath.startsWith(`${projectArtifactRoot}${path.sep}`) || artifact.relativePath.startsWith(`${projectArtifactRoot}/`);
+        const underLegacyRoot = artifact.relativePath.startsWith(`${legacyProjectArtifactRoot}${path.sep}`) || artifact.relativePath.startsWith(`${legacyProjectArtifactRoot}/`);
+        if (!underNewRoot && !underLegacyRoot) continue;
         filePath = assertNoStorageSymlink(storageRoot, artifact.relativePath);
       }
       catch { continue; }

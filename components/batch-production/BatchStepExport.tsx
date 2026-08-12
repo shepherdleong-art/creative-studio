@@ -44,10 +44,10 @@ export default function BatchStepExport(props: BatchStepExportProps) {
   // 提前在这里挡住并指路,避免用户点下去才看到一句错误。
   const productCodeMissing = !productCode.trim();
   // folderRelativePath 只在本次会话导出成功后才有值;刷新后就没了。已经有正式
-  // 产物时按导出命名合约回落到确定路径,避免用户刷新一次就找不到文件在哪。
+  // 产物时按工作区返回的 exportDirName 回落,避免用户刷新一次就找不到文件在哪。
   const hasPublished = workspace.cards.some(({ currentVideo }) => Boolean(currentVideo));
   const exportFolder = folderRelativePath
-    ?? (hasPublished ? `storage/projects/${projectId}/成片` : null);
+    ?? (hasPublished && workspace.exportDirName ? `storage/projects/${workspace.exportDirName}/成片` : null);
   // 可导出 = 技术上可发布 && 已审核通过(审核门禁是服务端单点判断,UI 同步过滤)
   const selectable = workspace.cards.filter(({ publishable, approved }) => publishable && approved);
   const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));

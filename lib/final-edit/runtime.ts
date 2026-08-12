@@ -11,6 +11,7 @@ import { getFinalEditTtsAdapter, listFinalEditTtsAdapters } from './adapters/tts
 import { warmPreparePreview } from './prepare-preview';
 import { detectBeatPoints } from './beat-detect';
 import { writeLog } from '../logger';
+import { createFinalEditJobController } from './worker';
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
@@ -72,7 +73,7 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
     },
     validateAnalysisProvider: (providerId) => getAvailableProviders().some((provider) => provider.id === providerId && provider.configured && provider.supportsVision),
     estimateAnalysisCost: ({ providerId, requestCount }) => estimateVisionAnalysisCost(providerId, requestCount),
-    synthesize: async ({ segments, providerId, voice, speed, narrationHash, onSegmentComplete }) => {
+    synthesize: async ({ segments, providerId, voice, speed, narrationHash, onSegmentComplete, signal }) => {
       const row = db.prepare(`SELECT * FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { baseUrl: string; apiKey: string; keyEnv: string; model: string } | undefined;
       if (!row) throw new Error('口播配音供应商未启用');
       const apiKey = resolveProviderApiKey(row);
@@ -86,9 +87,14 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
         relativeOutputPath,
         alignment,
         onSegmentComplete,
+        signal,
       });
     },
-    warmPreview: ({ variant, sources, narrationAbsolutePath, relativePath }) => warmPreparePreview({ storageRoot, variant, sources, narrationAbsolutePath, relativePath }),
+    warmPreview: ({ variant, sources, narrationAbsolutePath, relativePath, signal }) => warmPreparePreview({ storageRoot, variant, sources, narrationAbsolutePath, relativePath, signal }),
+    createJobController: () => {
+      const registration = createFinalEditJobController();
+      return { signal: registration.controller.signal, release: registration.release };
+    },
   });
   return workspace;
 }

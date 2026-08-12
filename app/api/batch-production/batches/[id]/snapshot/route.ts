@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { createBatchSnapshot } from '@/lib/batch-production/batch-flow';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
+import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
+import { queueBatchSemanticScoreTasks } from '@/lib/batch-production/semantic-match';
+import { writeLog } from '@/lib/logger';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -52,6 +55,18 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       assetSelections,
       defaultsJson: body.defaultsJson,
     });
+    // 快照确认后对该版本每个脚本快照幂等排队语义矩阵打分;失败/无供应商/
+    // 无内容分析都不阻塞快照响应(分配有现成关键词+质量兜底)。
+    try {
+      const queued = await queueBatchSemanticScoreTasks(getDb(), projectId, id, result.batchVersionId, {});
+      if (queued.created.length > 0) ensureBatchSchedulerStarted();
+    } catch (error) {
+      writeLog({
+        projectId,
+        level: 'warn',
+        message: `语义匹配任务创建失败(快照不受影响): ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
     return NextResponse.json({ batchId: id, ...result }, { status: 201, headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_snapshot_failed', '批次快照建立失败');

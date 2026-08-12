@@ -59,6 +59,12 @@ test('启动脚本健康检查只使用本机 LiteLLM，并且状态文件不含
   assert.doesNotMatch(startStack, /started\.(?:apiKey|masterKey)|started\[['"](?:apiKey|masterKey)['"]\]/);
 });
 
+test('LiteLLM 启动参数明确绑定 loopback，不能回归到公网监听', () => {
+  const litellmStart = startStack.slice(startStack.indexOf('$p = Start-Process -FilePath $litellmExe'));
+  assert.match(litellmStart, /'--host',\s+'127\.0\.0\.1'/);
+  assert.doesNotMatch(litellmStart, /0\.0\.0\.0/);
+});
+
 test('公司健康 API 从 dataRoot 读取并明确禁止缓存', () => {
   assert.match(healthRoute, /inspectCompanyProviderRuntime\(\{ root: dataRoot\(\) \}\)/);
   assert.match(healthRoute, /Cache-Control.*no-store/);

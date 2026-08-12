@@ -11,8 +11,22 @@
   <key>CFBundleIconFile</key>              <string>app.icns</string>
   <key>CFBundlePackageType</key>           <string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
-  <key>LSMinimumSystemVersion</key>        <string>11.0</string>
+  <key>LSMinimumSystemVersion</key>        <string>12.0</string>
   <key>NSHighResolutionCapable</key>       <true/>
   <key>LSApplicationCategoryType</key>     <string>public.app-category.graphics-design</string>
+  <key>NSPrincipalClass</key>              <string>AtomApplication</string>
+  <key>NSMainNibFile</key>                 <string>MainMenu</string>
+  <key>NSRequiresAquaSystemAppearance</key> <false/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key> <true/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <key>LSEnvironment</key>
+  <dict>
+    <key>MallocNanoZone</key>
+    <string>0</string>
+  </dict>
 </dict>
 </plist>

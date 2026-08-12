@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { DesktopBridge } from '@/desktop/bridge-types';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
@@ -96,7 +97,14 @@ const TASK_PHASE_LABELS: Record<string, string> = {
   ready: '已就绪',
   rendering: '渲染中',
   cover: '生成封面',
+  semantic_score: '语义匹配',
 };
+
+const subscribeToDesktopBridge = () => () => undefined;
+const readDesktopBridge = (): boolean => Boolean(
+  (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge,
+);
+const readDesktopBridgeOnServer = (): boolean => false;
 
 /**
  * 第 1 步 · 准备素材:统一的素材区 + 工具行的「画质与调色」弹窗入口。
@@ -107,6 +115,85 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   const prepCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const lutFileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFinishedTasks, setShowFinishedTasks] = useState(false);
+  const [linkedImportBusy, setLinkedImportBusy] = useState<'files' | 'folder' | null>(null);
+  const [linkedImportProgress, setLinkedImportProgress] = useState<{ requestId: string; completed: number; total: number } | null>(null);
+  const linkedImportProgressRef = useRef<{ active: boolean; requestId: string | null }>({ active: false, requestId: null });
+  const [linkedRelocateBusy, setLinkedRelocateBusy] = useState<string | null>(null);
+  const [linkedImportFeedback, setLinkedImportFeedback] = useState<string | null>(null);
+  const desktopAvailable = useSyncExternalStore(
+    subscribeToDesktopBridge,
+    readDesktopBridge,
+    readDesktopBridgeOnServer,
+  );
+
+  useEffect(() => {
+    const onProgress = (event: Event) => {
+      const progressState = linkedImportProgressRef.current;
+      if (!progressState.active) return;
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (!detail || typeof detail !== 'object') return;
+      const candidate = detail as Partial<{ requestId: string; completed: number; total: number }>;
+      const { requestId, completed, total } = candidate;
+      if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 128) return;
+      if (typeof completed !== 'number' || typeof total !== 'number') return;
+      if (!Number.isInteger(completed) || !Number.isInteger(total)) return;
+      if (completed < 0 || total < completed || total > 500) return;
+      if (progressState.requestId === null) {
+        progressState.requestId = requestId;
+      } else if (progressState.requestId !== requestId) {
+        return;
+      }
+      setLinkedImportProgress({ requestId, completed, total });
+      setLinkedImportFeedback(`正在校验 ${completed}/${total}`);
+    };
+    window.addEventListener('creative-studio:linked-import-progress', onProgress);
+    return () => window.removeEventListener('creative-studio:linked-import-progress', onProgress);
+  }, []);
+
+  async function importLinked(kind: 'files' | 'folder'): Promise<void> {
+    const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
+    if (!bridge) return;
+    linkedImportProgressRef.current = { active: true, requestId: null };
+    setLinkedImportBusy(kind);
+    setLinkedImportProgress(null);
+    setLinkedImportFeedback(null);
+    try {
+      const result = kind === 'files'
+        ? await bridge.chooseMediaFiles()
+        : await bridge.chooseFolder();
+      if (result === null) {
+        setLinkedImportFeedback('已取消选择文件夹');
+        return;
+      }
+      setLinkedImportFeedback(result.count > 0
+        ? `已登记 ${result.count} 条原片（不复制原文件）`
+        : '没有登记新的原片，请确认选择的是支持的视频文件');
+      props.onResync();
+    } catch (error: unknown) {
+      setLinkedImportFeedback(error instanceof Error ? error.message : '原片登记失败');
+    } finally {
+      linkedImportProgressRef.current = { active: false, requestId: null };
+      setLinkedImportBusy(null);
+      setLinkedImportProgress(null);
+    }
+  }
+
+  async function relocateLinked(assetId: string, sourceId: string): Promise<void> {
+    const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
+    if (!bridge) return;
+    const busyKey = `${assetId}:${sourceId}`;
+    setLinkedRelocateBusy(busyKey);
+    setLinkedImportFeedback(null);
+    try {
+      const result = await bridge.relocateLinkedSource(assetId, sourceId);
+      setLinkedImportFeedback(result.relocated ? '原片已重新定位并恢复在线' : '已取消重新定位');
+      if (result.relocated) props.onResync();
+    } catch (error: unknown) {
+      setLinkedImportFeedback(error instanceof Error ? error.message : '原片重新定位失败');
+    } finally {
+      setLinkedRelocateBusy(null);
+    }
+  }
 
   useEffect(() => {
     if (!prepOpen) return;
@@ -196,6 +283,9 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
             {!frozen && (
               <p className="mt-1 text-xs text-ink-tertiary">勾选进入本批次的素材；未完成分析的素材不可勾选，请先发起分析。</p>
             )}
+            {!frozen && (
+              <p className="mt-1 text-xs text-ink-tertiary">内容分析完成后，确认脚本输入时会自动进行语义匹配打分。</p>
+            )}
             {!frozen && analysisActive > 0 && (
               <div className="mt-2">
                 <p className="text-xs text-ink-secondary" role="status" aria-live="polite">
@@ -247,9 +337,34 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 className="btn-secondary"
                 onClick={() => setPrepOpen(true)}
               >画质与调色</button>
+              {desktopAvailable && (
+                <>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={linkedImportBusy !== null}
+                    onClick={() => void importLinked('files')}
+                  >{linkedImportBusy === 'files'
+                    ? linkedImportProgress ? `正在校验 ${linkedImportProgress.completed}/${linkedImportProgress.total}` : '准备校验…'
+                    : '从本机选择原片（不复制）'}</button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={linkedImportBusy !== null}
+                    onClick={() => void importLinked('folder')}
+                  >{linkedImportBusy === 'folder'
+                    ? linkedImportProgress ? `正在校验 ${linkedImportProgress.completed}/${linkedImportProgress.total}` : '准备校验…'
+                    : '选择原片文件夹'}</button>
+                </>
+              )}
             </div>
           )}
         </div>
+        {linkedImportFeedback && (
+          <p className="rounded-xl bg-surface-subtle px-3 py-2 text-xs text-ink-secondary" role="status" aria-live="polite">
+            {linkedImportFeedback}
+          </p>
+        )}
         {frozen && (
           <div className="rounded-2xl bg-surface-subtle p-3" aria-label="已锁定素材列表">
             <p className="mb-2 px-1 text-sm font-medium text-ink">已锁定素材 · {Object.keys(selectedAssets).length} 条</p>
@@ -339,6 +454,10 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                       : undefined}
                     onRetryAnalyze={analysisTask?.status === 'failed' ? () => props.onRetryAnalyze(analysisTask.id) : undefined}
                     onResync={props.onResync}
+                    onRelocateLinkedSource={desktopAvailable
+                      ? (sourceId) => void relocateLinked(asset.id, sourceId)
+                      : undefined}
+                    relocatingSourceId={linkedRelocateBusy?.startsWith(`${asset.id}:`) ? linkedRelocateBusy.slice(asset.id.length + 1) : null}
                     analyzeBusy={assetAnalysisBusy}
                     onPreview={() => props.onPreviewAsset(asset)}
                     previewBadge={previewBadges[asset.id]}

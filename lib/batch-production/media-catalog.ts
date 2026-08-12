@@ -4,7 +4,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, type VideoMediaProbe } from '../ffmpeg.ts';
-import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
 import {
   isDetectedVideoContainerCompatible,
   SUPPORTED_VIDEO_MIME_BY_EXTENSION,

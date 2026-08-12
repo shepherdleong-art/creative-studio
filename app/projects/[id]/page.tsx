@@ -4,9 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
-import JobQueueTable from '@/components/JobQueueTable';
 import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
-import SceneReferencePanel from '@/components/SceneReferencePanel';
 import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
 import ScriptPanel from '@/components/ScriptPanel';
@@ -36,7 +34,6 @@ interface Project {
   concurrency: number;
   maxAttempts: number;
   timeoutMs?: number;
-  workflowType?: string;
   scenePrompt?: string;
   shotPrompt?: string;
   images: ImageAsset[];
@@ -462,8 +459,6 @@ export default function ProjectDetailPage() {
 
   const succeededJobs = project.jobs.filter((j) => j.status === 'succeeded');
   const hasPendingJobs = project.jobs.some((j) => ['pending', 'retrying'].includes(j.status));
-  const hasActiveJobs = project.jobs.some((j) => ['pending', 'running', 'retrying', 'needs_check'].includes(j.status));
-  const isComplex = project.workflowType === 'complex_product';
 
   const projectInfo: ProjectInfoValue = {
     id: project.id,
@@ -540,8 +535,8 @@ export default function ProjectDetailPage() {
         </div>
       )}
 
-      {isComplex && <ProjectWorkbenchTabs projectId={project.id} activeTab={activeTab} />}
-      {isComplex && activeTab !== 'final-edit' && project.jobs.length > 0 && (
+      <ProjectWorkbenchTabs projectId={project.id} activeTab={activeTab} />
+      {activeTab !== 'final-edit' && project.jobs.length > 0 && (
         <div data-section="jobs">
         <QueueCompactBar
           jobs={project.jobs}
@@ -557,8 +552,7 @@ export default function ProjectDetailPage() {
       )}
 
       <div className="space-y-6">
-        {isComplex ? (
-          <>
+        <>
             {activeTab === 'scene' && (
               <SceneWorkspace
                 project={project}
@@ -615,26 +609,7 @@ export default function ProjectDetailPage() {
                 onProjectInfoChange={handleProjectInfoSaved}
               />
             )}
-          </>
-        ) : (
-          <LegacyProjectContent
-            project={project}
-            providers={providers}
-            queueStatus={queueStatus}
-            running={running}
-            hasPendingJobs={hasPendingJobs}
-            succeededJobs={succeededJobs}
-            onRetry={handleRetry}
-            onMark={handleMark}
-            onRegenerate={handleRegenerate}
-            onSetSceneRef={handleSetSceneRef}
-            onAction={handleAction}
-            onApplyScene={openApplySceneModal}
-            onImagesUploaded={loadProject}
-            onShotChanged={handleShotChanged}
-            sceneReferenceByImageId={sceneReferenceByImageId}
-          />
-        )}
+        </>
       </div>
 
       <LogDrawer open={logOpen} projectId={project.id} autoRefresh={logOpen} onClose={() => setLogOpen(false)} />
@@ -888,7 +863,7 @@ function SceneResultsSection({
 }
 
 function clampImageConcurrency(value: number): number {
-  return Math.max(1, Math.min(8, Math.floor(value) || 1));
+  return Math.max(1, Math.min(10, Math.floor(value) || 1));
 }
 
 function getSelectableImageProviders(providers: ImageProvider[]): ImageProvider[] {
@@ -947,7 +922,7 @@ function ImageConcurrencyField({
       <input
         type="number"
         min={1}
-        max={8}
+        max={10}
         value={concurrency}
         onChange={(e) => onConcurrencyChange(clampImageConcurrency(Number(e.target.value)))}
         className="input-field generation-control generation-number"
@@ -1212,64 +1187,5 @@ function StoryboardGroupCreator({ projectId, selectedImageIds, onCreated }: { pr
       </div>
       <p className="mt-2 text-xs text-ink-tertiary">已选择 {selectedImageIds.length}/9 张。点击宫格图片可调整选择和顺序。</p>
     </div>
-  );
-}
-
-function LegacyProjectContent({
-  project,
-  providers,
-  queueStatus,
-  running,
-  hasPendingJobs,
-  succeededJobs,
-  onRetry,
-  onMark,
-  onRegenerate,
-  onSetSceneRef,
-  onAction,
-  onApplyScene,
-  onImagesUploaded,
-  onShotChanged,
-  sceneReferenceByImageId,
-}: {
-  project: Project;
-  providers: ImageProvider[];
-  queueStatus: 'idle' | 'running' | 'paused';
-  running: boolean;
-  hasPendingJobs: boolean;
-  succeededJobs: Job[];
-  onRetry: (jobId: string) => void;
-  onMark: (jobId: string, mark: string) => void;
-  onRegenerate: (jobId: string, payload: RegeneratePayload) => void;
-  onSetSceneRef: (jobId: string, imageAssetId: string) => void;
-  onAction: (action: string) => void;
-  onApplyScene: (shotSetId: string) => void;
-  onImagesUploaded: () => void;
-  onShotChanged: () => void | Promise<void>;
-  sceneReferenceByImageId: Map<string, SceneReferenceSummary>;
-}) {
-  return (
-    <>
-      {project.jobs.length > 0 && (
-        <div className="card p-4" data-section="jobs">
-          <h2 className="mb-4 font-semibold">任务队列</h2>
-          <JobQueueTable
-            jobs={project.jobs}
-            queueStatus={queueStatus}
-            onRetry={onRetry}
-            onPause={running ? () => onAction('pause') : undefined}
-            onResume={queueStatus === 'paused' ? () => onAction('resume') : !running && hasPendingJobs ? () => onAction('start') : undefined}
-            onCancel={(running || queueStatus === 'paused') ? () => onAction('cancel') : undefined}
-            running={running}
-          />
-        </div>
-      )}
-      <div className="card p-4">
-        <h2 className="mb-4 font-semibold">结果预览 {succeededJobs.length > 0 && <span className="ml-2 text-sm font-normal text-ink-tertiary">({succeededJobs.length} 张)</span>}</h2>
-        <ResultGallery jobs={project.jobs} images={project.images} providers={providers} onRetry={onRetry} onMark={onMark} onRegenerate={onRegenerate} onSetSceneRef={onSetSceneRef} projectId={project.id} sceneReferenceByImageId={sceneReferenceByImageId} />
-      </div>
-      <SceneReferencePanel projectId={project.id} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} />
-      <ShotSetPanel projectId={project.id} providers={providers} images={project.images.map((img) => ({ id: img.id, imageUrl: img.imageUrl, filename: img.filename, role: img.role, usage: img.usage }))} jobs={project.jobs} onApplyScene={onApplyScene} onImagesUploaded={onImagesUploaded} onShotChanged={onShotChanged} />
-    </>
   );
 }

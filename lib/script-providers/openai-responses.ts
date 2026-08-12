@@ -5,7 +5,7 @@
 
 import type { ScriptProviderRuntimeConfig } from './config.ts';
 import type { ChatOptions } from './openai-compatible.ts';
-import { parseJsonResponse } from './openai-compatible.ts';
+import { parseJsonResponse, resolveImageUrl } from './openai-compatible.ts';
 import { createScriptProviderRequestControl } from './request-control.ts';
 import type { ApiStyle, ProviderConfig } from './types.ts';
 
@@ -118,7 +118,7 @@ export async function chatCompletion(
     { type: 'input_text', text: options.userPrompt },
     ...(options.images || []).map((image) => ({
       type: 'input_image',
-      image_url: `data:${image.mimeType};base64,${image.imageBase64}`,
+      image_url: resolveImageUrl(image),
     })),
   ];
   const body: Record<string, unknown> = {

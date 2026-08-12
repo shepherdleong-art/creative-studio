@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../data-root.ts';
-import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
 
 /** Export metadata supplied by the batch integration layer. */
@@ -15,6 +15,8 @@ export interface BatchExportIdentity {
   taskDate?: Date | string;
   planSeq: number;
   outputVersion: number;
+  /** 成片导出目录名(`<产品编码>-<YYYYMMDD>`),由调用方解析后传入。 */
+  exportDirName: string;
 }
 
 export interface BatchExportTarget {
@@ -141,11 +143,12 @@ function buildBaseName(identity: BatchExportIdentity): string {
 export function reserveBatchExportTarget(input: BatchExportIdentity & { storageRoot?: string }): BatchExportTarget {
   assertSafePathSegment(input.projectId, '项目标识');
   assertSafePathSegment(input.batchId, '批次标识');
+  assertSafePathSegment(input.exportDirName, '导出目录名');
   const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
   const baseName = buildBaseName(input);
   // 与单条模式同一个成品目录:一个项目的成片(不论单条还是批量)集中存放。
   // 重名由下面的占位循环 + .lock 独占创建保证不会互相覆盖。
-  const relativeDir = path.join('projects', input.projectId, '成片');
+  const relativeDir = path.join('projects', input.exportDirName, '成片');
   const exportDir = ensureDirectory(storageRoot, relativeDir);
 
   for (let exportSequence = 1; exportSequence < 100_000; exportSequence += 1) {

@@ -70,10 +70,13 @@ export function companyImageCapsForModel(model: string): CompanyModelCaps | null
 export function companyVideoCapsForModel(model: string): CompanyModelCaps | null {
   const m = model.toLowerCase();
   if (m.includes('kling') && m.includes('omni')) return KLING_OMNI_CAPS;
-  // 文档只列了 Kling 3.0 系列的尺寸组合；其余 kling 型号与 doubao-seedance
-  // 未在文档中列出，按同一表做最大努力吸附（代理侧 drop_params 会兜底未知参数）。
+  // 文档只列了 Kling 3.0 系列的尺寸组合；其余 kling 型号按同一表做最大努力
+  // 吸附（代理侧 drop_params 会兜底未知参数）。
   if (m.startsWith('kling-')) return KLING_3_CAPS;
-  if (m.startsWith('doubao-seedance')) return KLING_3_CAPS;
+  // doubao-seedance 未在文档尺寸表中，且实测（2026-08-12，seedance-2.0-fast
+  // r2v）套用 Kling 表会被上游 400 拒绝（resolution 不合法）；省略 size，
+  // 由网关/上游按首帧图默认处理。
+  if (m.startsWith('doubao-seedance')) return null;
   return null;
 }
 

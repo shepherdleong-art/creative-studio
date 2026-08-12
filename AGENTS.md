@@ -22,7 +22,7 @@
 ## 常用命令
 
 ```bash
-npm run dev                  # 开发服务器，localhost:3000（需 Node.js 20+）
+npm run dev                  # 开发服务器，localhost:3000（需 Node.js 20+）；predev 会先尝试拉起 LiteLLM sidecar（失败只禁用公司供应商，不阻塞 dev）
 npm run dev:win              # 开发服务器绑定 127.0.0.1（Windows）
 npm run build                # 生产构建：next build + scripts/sync-standalone-assets.mjs
 npm run start                # 启动生产服务器
@@ -32,9 +32,9 @@ npm run build:win-installer  # Windows 安装包（PowerShell + Inno Setup，须
 npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Node 22.x + Xcode CLT）
 ```
 
-终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS）、`start-windows.cmd` / `stop-windows.cmd`（Windows），会检查 Node、装依赖、起服务并打开浏览器。
+终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd`（Windows 桌面版：Electron 壳 + standalone 生产构建，经 `scripts/start-desktop-windows.ps1`）、`stop-windows.cmd`（Windows 网页版）；Windows 网页版入口是 `scripts/start-windows.ps1`（dev server + 浏览器，默认 3000 端口）。
 
-公司网关联动（Windows）：`start-windows.cmd` 检测到联动组件（`.venv-litellm`、`config.yaml`）齐备时，会先经 `scripts/start-stack.ps1 -SkipApp` 拉起 litellm 代理（端口 4000，仅监听 127.0.0.1）再起 dev server；组件缺失则保持原行为不动。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。`stop-windows.cmd`、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读 `storage/run/stack.json` 里的 `stopScript` 并拉起 `scripts/stop-stack.ps1`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
+公司网关联动（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，macOS 的 `start.command` 与 `npm run dev` 的 `predev` 钩子都经 `scripts/start-litellm.sh`、Windows 的 `start-windows.cmd`（桌面壳）与 `scripts/start-windows.ps1`（dev server）都经 `scripts/start-stack.ps1 -SkipApp` 拉起 LiteLLM（端口 4000，启动参数必须显式 `--host 127.0.0.1`）；依赖锁定在 `requirements-litellm.txt`，组件缺失或 sidecar 失败只禁用公司供应商，不阻塞工作台。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。两平台停止脚本、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读取 `storage/run/stack.json` 的受控 `stopScript`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
 
 ## 测试
 
@@ -75,8 +75,8 @@ lib/                    核心业务逻辑（见下）
 data/                   本地 SQLite 库 workbench.db（gitignored）
 storage/                上传素材、生成产物、日志（gitignored；含 bgm/final-edits/videos 等子目录）
 scripts/                测试文件、安装包构建脚本、启停辅助脚本、资源同步脚本
-installer/windows/      Inno Setup 脚本 + C# 启动器 + 启停 PS 脚本
-installer/macos/        .app bundle 模板（Info.plist、launcher.c、launcher.sh）
+installer/windows/      Electron 安装包脚本（Inno Setup）+ 安装停止/清理 PS 脚本；`launcher.cs` 仅保留为历史/开发资源，不打包
+installer/macos/        .app bundle 元数据模板（Info.plist）；launcher.c/launcher.sh 仅历史/开发资源，不打包
 docs/                   设计/评审/会话记录，按日期前缀命名；
                         docs/superpowers/{specs,plans}/ 放较大功能的规格与计划文档
 outputs/                阶段性规格、测试清单、交付记录（gitignored）
@@ -90,18 +90,20 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `batch-production/` — 新批量生产 Module；`schema.ts` 使用独立版本表和逐版本 `IMMEDIATE` 事务，`readiness.ts` 通过共享 gate 执行备份、迁移和持久审计。已发布 migration v1–v9：v1 批次身份表，v2 项目素材 `batch_assets` + 素材分析版本 `batch_asset_analysis`（素材身份是内容指纹、不依赖路径），v3 批次版本 `batch_production_versions` + 素材池 `batch_asset_pool_items`，v4 项目脚本 `batch_scripts` + 脚本快照 `batch_script_snapshots`，v5 成片计划 `batch_output_plans` + 成片版本 `batch_output_versions`（份数决定 N 条计划），v6 生产任务 `batch_tasks` + 任务尝试 `batch_task_attempts`（重试只增加尝试），v7 正式产物 `batch_artifacts` + 计划当前成片指向，v8 将正式产物改为按计划与路径追加保存并保护其批次谱系不被物理删除，v9 增加批次逻辑删除、批次版本不可逆冻结以及批次内外部文案所有权。整体输入以版本的 `inputState` 为准：首次开跑后旧版本永久冻结，修改必须新建版本；外部文案只能在所属批次版本内快照，显式保存到项目时复制成独立项目脚本。领域接口在 `assets.ts`/`versions.ts`/`scripts.ts`/`plans.ts`/`tasks.ts`/`artifacts.ts`。v10 新增素材来源表 `batch_asset_sources`；v11 给脚本和快照追加结构化封面标题、shotSetId 与内容修订身份；v12 增加项目脚本来源可用性和目录同步所有权：有修订身份或当前仍存在上游草稿的同步项会被正向认领，后续失效或删除时退出准备区；无法与独立项目脚本可靠区分的更早历史行保守保留，历史快照始终不变。素材来源类型 `BatchAssetSourceKind` 只在 `assets.ts` 定义，来源表是多来源权威数据；读取端兼容 v10 无 `kind` 的旧位置 JSON，旧托管来源按 `dataRoot()/storage/batch-media` 根恢复。`media-catalog.ts` 只信 `video_jobs` 权威记录，验证项目/shotSet、受控路径、真实视频容器和完整 SHA-256；托管目录由 `dataRoot()` 推导，linked 重新定位必须指定来源 id 且内容完全一致。`prepare.ts` + `GET /api/batch-production/prepare` 在 readiness gate 后自动同步输入；`components/mixcut/MixcutWorkspace.tsx` 提供“单条精准混剪/批量生产”模式入口。Phase B 在 `batch-flow.ts` 中以单事务确认 draft 整体输入，相同输入幂等，输入变化才新建版本；`startBatchProduction` 在开跑事务中同步最新项目脚本、校验素材池与精确 N 条计划并永久冻结。第五步可创建/选择批次、设置每脚本份数、选择带分析版本的素材、检查 N 张卡片并开跑；API 为 `POST/GET /api/batch-production/batches`、`GET /api/batch-production/batches/[id]`、`POST .../[id]/snapshot` 和 `PUT .../[id]/start`。Phase C 在 `scheduler.ts` 提供原子领取、有限租约、控制态感知的过期/启动恢复、失败重试与暂停/继续/停止；`executors.ts` 提供统一任务执行 Adapter 与真实进度报告（不可测阶段不伪造百分比）；`runner.ts` 提供领取-执行-落账循环和进程内单例调度，应用关闭与用户停止是不同中断语义。v13 给尝试加租约与 interrupted、任务加 requestKey/expectedState、批次加 controlState。`instrumentation.ts` 在 Node 启动时通过 readiness gate 恢复调度，开跑和任务读取 API 幂等兜底；进度与控制 API 为 `GET .../[id]/tasks`、`POST .../[id]/control` 与 `POST /api/batch-production/tasks/[taskId]/retry`。`GET /api/batch-production/recovery` 只列出并重新验证恢复候选；运行中的 API 禁止覆盖主数据库。未就绪时只关闭批量入口，不能阻塞旧项目与单条精准混剪。Phase D（媒体准备）在 v14 新增 LUT/代理缓存与 `proxy_generate`，v15 进一步规范化 LUT 指纹和完整色彩快照，并新增带批次版本外键的稳定 `batch_proxy_requests`，使任务不再指向可删除的 cache 行。LUT 色彩快照（关闭或引用一个已验证 LUT）纳入 `createBatchSnapshot`/`addAssetToPool`/`matchesCurrentInput` 的冻结输入身份；代理是否已生成不参与这个身份。`lib/ffmpeg.ts` 的 `runFfmpeg` 新增可选 `signal`，真正终止子进程并等 `close` 事件后才 reject 可区分的 AbortError。`scheduler.ts` 新增单任务级 `pauseTask`/`resumeTask`/`cancelTask`（不影响同批次其他任务或批次 controlState），`runner.ts` 心跳同时检查任务级 `expectedState`；`createBatchTask` 同时验证 project→batch→version→proxy request 谱系，并释放已经失效的历史 requestKey。新增 `lut-catalog.ts`（导入用真实 FFmpeg `lut3d` 验证损坏内容、按内容指纹去重、归档与安全物理清理）、`color-pipeline.ts`（完整色彩快照 → 显式 SDR FFmpeg filter）、`proxy-cache.ts`（稳定请求、全局 proxyKey 复用、安全路径、进程内读写租约、pending-delete 释放后自动完成）、`proxy-executor.ts`（按请求冻结的原片/LUT 指纹重验、磁盘预检、进程内单并发、合作取消、临时文件+原子发布、真实 FFmpeg 进度）、`preview.ts`（安全解析匹配代理/原片与 LUT 等待警告）、`export-preflight.ts`（正式输出只读前检，绝不回退代理）。API 新增 LUT、代理请求、任务控制、缓存用量/清理、Range 预览与导出前检；`BatchPreparationPanel.tsx` 提供 LUT、代理、任务、预览和清理入口，设置页提供全局代理缓存清理。
 - Phase E（联合分配与正式导出）在 v16 增加联合分配运行和批次内素材排除；`allocator.ts` 是一次读取全部冻结输入的纯确定性分配器，`allocation-store.ts` 保留运行谱系并保证单条重分配不改其他计划。`batch-renderer.ts` 只读指纹一致的原片和冻结 LUT，复用 `ColorPipeline`，通过原有 batch scheduler 真实渲染；`batch-export.ts` 成对追加发布视频/封面并拒绝覆盖。`phase-e.ts` 负责可恢复启动、任务接线和逐条正式发布，`batch-workspace.ts` 聚合卡片状态，输出媒体 route 只接受稳定 ID。没有真实口播时仅生成显式静音候选，正式发布门禁必须要求已核验的 storage 相对口播快照。
 - Phase A 的项目素材卡在快照前通过 `asset-preparation.ts` 使用既有 batch scheduler 排队本地 FFprobe 基础分析；结果明确标记为 `technical`，不冒充内容理解。`project-asset-media.ts` 只按 `projectId + assetId` 解析并重验权威来源、完整 SHA-256 与真实容器，生成受控 960×540 JPEG 缩略图并提供原片 Range 预览；`startBatchProduction` 不再重复创建素材分析任务。
+- 语义优先分配与封面标题在 v17–v23 落地：v17 内容分析请求 `batch_asset_analysis_requests`（冻结素材指纹与视觉供应商身份），v18 补执行作用域，v19 脚本/快照目标成片时长，v20 脚本/快照配音配置，v21 任务表 workType 加 `narration`，v22 素材来源核验快速路径，v23 任务表 workType 加 `semantic_score` + 新表 `batch_semantic_matrices`。`semantic-match.ts` 做「句段 × 素材池场景」LLM 语义矩阵打分：按内容指纹落库（不绑版本），确认整体输入后幂等排队，`POST .../semantic-score` 可手动触发或换供应商；失败/未打分时分配器走关键词+质量兜底不阻塞开跑。`executors.ts` 的 `createSemanticScoreExecutor` 无内容分析时 completed+skipped，LLM 失败回 failed code `semantic_fallback`；打分与分配共用 `allocator.ts` 导出的 `splitAllocationScriptBody` 断句。`cover-title.ts` 复用全局 `final_edit_title_presets` 预设：批次设置以 `coverTitleMode('none'|'preset'|'custom')`/`coverTitlePresetId`/`coverTitleStyles`/`coverTitleFraming` 四字段写入版本 `defaultsJson`（UI 稳定写完整形状、样式按当前画幅解析，canonical 比对自动纳入输入身份），`batch-renderer.ts` 渲染封面时按冻结样式 sharp SVG 合成主/副标题，换封面抽帧同样保留标题。分配器单区间装不下句段（句段估算时长超过所有场景）时走句段内多镜头拼接兜底 `stitchSegment`（reason `semantic_stitch_fallback`、chunk clipId 带 `:part:<k>`、警告 `stitched-segment:<id>`，素材池全空才保留 `no-legal-media`），字幕 cue 按句段整切一次不按 chunk 重复；`subtitle-cues.ts` 把口播对齐句段经 `splitNarrationForDisplay` 清洗标点并按 ≤16 字切分（段内按字数权重比例分配，与估算路径同款）；`PUT .../start` 对草稿版本先经 `prepareBatchSemanticScoreBeforeStart` 幂等排队语义打分，有未完成打分时返回 `semantic_scoring` 不冻结，前端在任务终态后自动续跑，打分失败/不可用不阻塞开跑。批量成片开头与单条剪辑同契约加 20 帧封面片头（`FINAL_EDIT_INTRO_DURATION_US`）：带标题的封面先于视频生成以作片头静帧输入，音轨整体 `adelay`、字幕叠加窗口整体后移，产物时长校验按「片头 + 正文」——`script-duration-policy` 本来就为片头扣了这 20 帧，不加片头会让每条批量成片系统性短一个封面。因为封面被烤进成片，`BATCH_RENDER_ADAPTER_VERSION` 升为 `batch-render-v2`，渲染任务 requestKey 纳入 `cover.timeUs`，换封面走 `scheduleRenderAfterCoverChange` 重渲染该条成片，而不是只改那张独立封面图。
 - `video-provider-schema.ts` — 旧 `video_providers` CHECK 约束的安全升级；只有新增或改为 `openai-video` 供应商时才在共享锁内先备份再重建，普通数据库启动不得直接重建旧表。
 - `data-root.ts` — 解析本地数据根目录：优先 `CREATIVE_STUDIO_DATA_ROOT` 环境变量，否则 `process.cwd()`。`data/`、`storage/` 都挂在它下面，写路径时一律走 `dataRoot()`。
 - `local-image-url.ts` — 把 `storage/` 下的本地图片转成 `/api/images/...` 的 HTTP URL，供只接受真实 URL 的网关上游（腾讯等）拉取；地址默认自动探测（第一张非内部 IPv4 + `PORT`/3000），可用 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 覆盖，探测不到时调用方回退 data URL。
-- `cos-media.ts` — 腾讯云 COS 参考图中转。配置 `CREATIVE_STUDIO_COS_SECRET_ID` / `CREATIVE_STUDIO_COS_SECRET_KEY` / `CREATIVE_STUDIO_COS_DOMAIN`（可选 `CREATIVE_STUDIO_COS_PREFIX` 默认 `ref-images/`、`CREATIVE_STUDIO_COS_URL_TTL_SEC` 默认 86400、`CREATIVE_STUDIO_COS_SIGN_HOST`）后，`gateway-task-image` / `openai-video` 适配器提交任务时把参考图按内容 SHA-256 命名上传（GET `Range: bytes=0-0` 查重跳过重复上传）并生成 24h 预签名 GET URL 传给网关；手写 `q-sign-algorithm=sha1` 签名（`node:crypto`，零新增依赖），上传/下载都走配置的自定义域名。注意 CDN 自定义域名回源会把 Host 改写成源站默认端点（如 `<bucket>.cos.ap-guangzhou.myqcloud.com`），且会把 HEAD 改写为 GET——此时必须把 `CREATIVE_STUDIO_COS_SIGN_HOST` 设为源站端点用于签名，查重不能用 HEAD。COS 未配置或上传失败时适配器回退 `local-image-url` 的本机 URL 逻辑。密钥只放 `.env.local`，日志不得打印签名参数。
+- `cos-media.ts` — 腾讯云 COS 参考图中转。配置 `CREATIVE_STUDIO_COS_SECRET_ID` / `CREATIVE_STUDIO_COS_SECRET_KEY` / `CREATIVE_STUDIO_COS_DOMAIN`（可选 `CREATIVE_STUDIO_COS_PREFIX` 默认 `ref-images/`、`CREATIVE_STUDIO_COS_URL_TTL_SEC` 默认 86400、`CREATIVE_STUDIO_COS_SIGN_HOST`）后，`gateway-task-image` / `openai-video` 适配器提交任务时把参考图按内容 SHA-256 命名上传（GET `Range: bytes=0-0` 查重跳过重复上传）并生成 24h 预签名 GET URL 传给网关；手写 `q-sign-algorithm=sha1` 签名（`node:crypto`，零新增依赖），上传/下载都走配置的自定义域名。注意 CDN 自定义域名回源会把 Host 改写成源站默认端点（如 `<bucket>.cos.ap-guangzhou.myqcloud.com`），且会把 HEAD 改写为 GET——此时必须把 `CREATIVE_STUDIO_COS_SIGN_HOST` 设为源站端点用于签名，查重不能用 HEAD。COS 未配置或上传失败时适配器回退 `local-image-url` 的本机 URL 逻辑。密钥只放 `.env.local`，日志不得打印签名参数。公司供应商的脚本视觉调用（`completeJson` 带图片）也走这条受控传输：`tryUploadBufferToCosAndSign` 把内存图片上传 COS 后改用预签名 URL 发给模型，不内联 base64；COS 未配置时门禁（`provider-execution-gate.ts` 的 `transport_unavailable`）失败关闭。
 - `gateway-media-url.ts` — 网关结果 URL 归一化（把网关误配的 localhost/相对路径结果地址改写到网关 origin）与带鉴权下载（仅当目标指向网关 origin 才附 Bearer）。
-- `queue.ts` / `video-queue.ts` — 图片/视频任务的内存中队列：向供应商提交任务、轮询状态、下载结果、失败重试；支持暂停/恢复。视频并发由 `VIDEO_CONCURRENCY` 环境变量控制（1–6，默认 3）。
+- `queue.ts` / `video-queue.ts` — 图片/视频任务的内存中队列：向供应商提交任务、轮询状态、下载结果、失败重试；支持暂停/恢复。视频并发由 `VIDEO_CONCURRENCY` 环境变量控制（1–10，默认 10，可在视频生成面板按项目调整）。
 - `providers/` — 图片生成适配器：`openai-compatible`、`packy-images`、`packy-gemini-image`、`geekai-json`、`gateway-task-image`（New API 类中转网关把图片模型挂在 `/v1/videos` 异步任务协议下的场景，与 geekai-json 同为提交→轮询→下载三段式）。
 - `script-providers/` — 脚本（LLM）生成：`gemini`、`openai-compatible`（Chat Completions）、`openai-responses`（Responses/SSE，覆盖 Packy GPT 等）与 `anthropic-messages`（`/v1/messages`，覆盖 Packy Kimi 等），配置存库并由 `apiStyle` 选择协议。
 - `video-providers/` — 视频生成适配器：`kling`（可灵）、`jimeng`（即梦）、`openai-video`（New API 类统一中转网关的 OpenAI 风格 `/v1/videos` 协议，Bearer Key 鉴权）。
 - `company-gateway-size.ts` — 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并补 `response_format`；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。
 - `final-edit/` — “智能混剪”正式第五步的后端：`schema.ts`（独立版本化迁移）、`domain.ts`/`types.ts`（时间线、字幕、文字样式等领域模型）、`renderer.ts`（ffmpeg 渲染成片）、`worker.ts`（渲染任务 drain 循环，重启时把 running 任务恢复为 queued）、`workspace.ts`、`proposal.ts`、`bgm.ts`，以及 `adapters/`（视频分析 `video-analysis.ts`、TTS `tts-registry.ts`/`vapi-qwen-tts.ts`/`doubao-tts.ts`、字幕对齐 `alignment.ts`）。Mixcut 上下文与外部素材必须按 `projectId + shotSetId` 隔离。
-- `ffmpeg.ts` — 解析 ffmpeg/ffprobe 二进制：环境变量 `CREATIVE_STUDIO_FFMPEG`/`CREATIVE_STUDIO_FFPROBE` → ffmpeg-static/ffprobe-static → PATH；封装 `runFfmpeg`（带进度回调、超时、stderr 尾部报错）和 `probeDurationSec`（ffprobe 失败时回退 ffmpeg 解析）。
+- `ffmpeg.ts` — 解析 ffmpeg/ffprobe 二进制：环境变量 `CREATIVE_STUDIO_FFMPEG`/`CREATIVE_STUDIO_FFPROBE` → ffmpeg-static/ffprobe-static → PATH；封装 `runFfmpeg`（带进度回调、超时、stderr 尾部报错和 AbortSignal），并提供直接 FFmpeg 子进程的停机广播/等待；`probeDurationSec` 在 ffprobe 失败时回退 ffmpeg 解析。
+- `shutdown.ts` — 唯一的进程级优雅停机编排：停止批量调度器、广播并等待直接 FFmpeg、关闭 SQLite、按 `stack.json` 受控停止 LiteLLM；UI 关闭端点与 SIGTERM/SIGINT 共用且幂等。
 - `logger.ts` — 同时写数据库和 `storage/logs/` 文件；会主动脱敏 API Key，不要在日志里打印密钥。
 - `provider-concurrency.ts` / `cost.ts` — 每供应商并发上限；每个 job 记录预估成本。
 - `image-output-normalize.ts` — 生成图与目标尺寸不一致时用 sharp 居中裁切并记日志。
@@ -125,7 +127,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。
 - **文档**：设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`。
-- **关闭端点**：`POST /api/shutdown` 会延迟 500ms 后 `process.exit(0)`，供安装版启停脚本调用，不要在开发流程里误触。
+- **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。Node 进程的 SIGTERM/SIGINT 也走同一入口。
 - 仓库另有一份 `CLAUDE.md`，内容与本文件类似；若改动了架构或命令，两处都要同步。
 
 ## 安全注意事项
@@ -134,10 +136,11 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示"是否已配置"，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
 - 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点时不要打印请求头、密钥或完整鉴权串。
-- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/` 等开发路径；改动打包逻辑时保留这些断言。
+- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/` 等本机数据、密钥或开发路径；改动打包逻辑时保留这些断言。
 
 ## 桌面打包与部署
 
 - `next.config.ts` 使用 `output: 'standalone'`，并通过 `outputFileTracingExcludes` 排除数据/文档/脚本目录；`ffmpeg-static`、`ffprobe-static` 在 `serverExternalPackages` 中，由 `scripts/sync-standalone-assets.mjs` 强制拷入 standalone（`npm run build` 会自动执行）。
 - **Windows**：`scripts/build-win-installer.ps1` 跑生产构建、下载配套私有 Node 运行时、用 Inno Setup（`installer/windows/CreativeStudio.iss`）组装，输出 `dist/windows/CreativeStudioSetup.exe`。默认卸载保留本地数据。
 - **macOS**：`scripts/build-mac-installer.sh` 输出 `dist/macos/产品素材工作台-<version>.dmg`，仅 Apple Silicon。构建机必须用 arm64 Node 22.x（内置运行时锁定 Node 22.22.3），主版本或架构不一致会导致 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；还需要 Xcode Command Line Tools。脚本会校验 FFmpeg 为 arm64，并移除错误标为 arm64 的 x86_64 `ffprobe-static`，由已测试的 FFmpeg 元数据探测回退接管。用户侧说明见 `MACOS.md`。
+- **Electron 发版顺序与本地服务状态**：macOS/Windows 打包脚本先完成 `npm ci`（除非显式跳过）；若目标 `node_modules/electron` runtime 仍缺失，普通分支再用当前 Node 显式执行 `node_modules/electron/install.js`，随后统一做存在性硬断言，显式跳过分支不自动安装。macOS ATS 只允许 `NSAllowsLocalNetworking`。桌面服务在 `CREATIVE_STUDIO_DATA_ROOT/storage/run/electron-service.json` 记录当前 `http://127.0.0.1:<port>` 与 instance，正常退出时清理；Windows 安装停止脚本必须先校验该状态与 `/api/desktop/health` 的 instance，再有限 POST `/api/shutdown`，超时才按安装路径使用 `taskkill /T /F`。

@@ -25,15 +25,8 @@ import type { MixcutContextResponse } from './types.ts';
  * V2 and V3 are both first-class Mixcut inputs. Older unversioned/V1 rows
  * remain on the existing legacy read path and are never rewritten here.
  */
-export function isUsableMixcutScriptDraft(parsed: unknown): boolean {
-  if (typeof parsed !== 'object' || parsed === null) return false;
-  const value = parsed as Record<string, unknown>;
-  return (value.version === 2 || value.version === 3)
-    && typeof value.shotSetId === 'string'
-    && value.shotSetId.length > 0
-    && Array.isArray(value.segments)
-    && value.segments.length > 0;
-}
+import { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
+export { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
 
 interface ProjectRow {
   id: string;

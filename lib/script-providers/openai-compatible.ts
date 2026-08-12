@@ -15,7 +15,17 @@ const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
 export interface ChatImagePart {
   mimeType: string;
-  imageBase64: string;
+  /** 直连供应商：base64 内联。与 imageUrl 至少提供一个。 */
+  imageBase64?: string;
+  /** 公司供应商：受控媒体传输产出的预签名 URL（见 lib/cos-media.ts）。 */
+  imageUrl?: string;
+}
+
+/** 公司供应商走 URL 传输；直连供应商内联 base64 data URL。 */
+export function resolveImageUrl(image: ChatImagePart): string {
+  if (image.imageUrl) return image.imageUrl;
+  if (image.imageBase64) return `data:${image.mimeType};base64,${image.imageBase64}`;
+  throw new Error('图片输入缺少可用内容（imageBase64 / imageUrl 均为空）');
 }
 
 export interface ChatOptions {
@@ -59,7 +69,7 @@ export async function chatCompletion(
         { type: 'text', text: options.userPrompt },
         ...options.images.map((image) => ({
           type: 'image_url',
-          image_url: { url: `data:${image.mimeType};base64,${image.imageBase64}` },
+          image_url: { url: resolveImageUrl(image) },
         })),
       ]
     : options.userPrompt;

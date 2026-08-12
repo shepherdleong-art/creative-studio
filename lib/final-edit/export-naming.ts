@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FinalEditError } from './errors.ts';
 import { previewExportBaseName } from './export-identity.ts';
+import { assertSafeExportDirName } from '../project-export-dir.ts';
 import { assertNoStorageSymlink } from './storage-path.ts';
 import type { ExportIdentity } from './types.ts';
 
@@ -54,9 +55,10 @@ export function buildExportBaseName(identity: ExportIdentity): string {
 
 export function reserveExportPath(storageRoot: string, identity: ExportIdentity, extension: string): ReservedPath {
   assertSafeProjectId(identity.projectId);
+  assertSafeExportDirName(identity.exportDirName || identity.projectId);
   const normalizedExtension = normalizeExtension(extension);
   const resolvedStorageRoot = path.resolve(storageRoot);
-  const exportDir = path.resolve(resolvedStorageRoot, 'projects', identity.projectId, '成片');
+  const exportDir = path.resolve(resolvedStorageRoot, 'projects', identity.exportDirName || identity.projectId, '成片');
   if (!exportDir.startsWith(`${resolvedStorageRoot}${path.sep}`)) {
     throw new FinalEditError('unsafe_path', '导出目录不在 storage 内');
   }
@@ -87,8 +89,9 @@ export function reserveExportPath(storageRoot: string, identity: ExportIdentity,
 
 export function reserveProjectExportTarget(storageRoot: string, identity: ExportIdentity, options: { blockedRelativePaths?: ReadonlySet<string> } = {}): ReservedProjectExportTarget {
   assertSafeProjectId(identity.projectId);
+  assertSafeExportDirName(identity.exportDirName || identity.projectId);
   const resolvedStorageRoot = path.resolve(storageRoot);
-  const exportDir = path.resolve(resolvedStorageRoot, 'projects', identity.projectId, '成片');
+  const exportDir = path.resolve(resolvedStorageRoot, 'projects', identity.exportDirName || identity.projectId, '成片');
   if (!exportDir.startsWith(`${resolvedStorageRoot}${path.sep}`)) throw new FinalEditError('unsafe_path', '导出目录不在 storage 内');
   assertNoStorageSymlink(resolvedStorageRoot, exportDir, { allowAbsolute: true });
   fs.mkdirSync(exportDir, { recursive: true });

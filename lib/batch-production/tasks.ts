@@ -8,7 +8,7 @@ import type { BatchProductionStatus } from './versions.ts';
  * scheduler.ts / runner.ts / batch-flow.ts 一律从这里导入,不得重新定义
  * 漂移的裸 string 状态。
  */
-export type BatchTaskWorkType = 'asset_prepare' | 'render' | 'proxy_generate' | 'narration';
+export type BatchTaskWorkType = 'asset_prepare' | 'render' | 'proxy_generate' | 'narration' | 'semantic_score';
 // legacy_proxy_cache 只可能由 v15 把无法回溯谱系的 v14 异常任务隔离成 cancelled
 // 历史记录；createBatchTask 的判别联合不接受它，运行时不能创建或调度这种目标。
 export type BatchTaskTargetKind = 'asset' | 'output_version' | 'proxy_request' | 'script_snapshot' | 'legacy_proxy_cache';
@@ -120,6 +120,14 @@ export function createBatchTask(
     workType: 'narration';
     targetKind: 'script_snapshot';
     /** 必须是该批次当前版本内的 batch_script_snapshots.id(配音按脚本快照复用) */
+    targetId: string;
+    requestKey?: string;
+    now?: () => Date;
+  } | {
+    batchId: string;
+    workType: 'semantic_score';
+    targetKind: 'script_snapshot';
+    /** 必须是该批次当前版本内的 batch_script_snapshots.id(语义矩阵按内容指纹复用) */
     targetId: string;
     requestKey?: string;
     now?: () => Date;
@@ -261,6 +269,23 @@ export function createBatchTask(
       }
       if (snapshot.batchId !== input.batchId) {
         throw new Error('narration 任务的目标脚本快照不属于该批次谱系');
+      }
+    } else if (input.workType === 'semantic_score') {
+      if (input.targetKind !== 'script_snapshot') {
+        throw new Error('semantic_score 任务的目标类型必须是 script_snapshot');
+      }
+      // 与 narration 同一谱系校验:快照必须经 batchVersionId 属于该批次。
+      const snapshot = db.prepare(`
+        SELECT s.batchVersionId, v.batchId
+        FROM batch_script_snapshots s
+        JOIN batch_production_versions v ON v.id = s.batchVersionId
+        WHERE s.id = ?
+      `).get(input.targetId) as { batchVersionId: string; batchId: string } | undefined;
+      if (!snapshot) {
+        throw new Error('semantic_score 任务的目标脚本快照不存在');
+      }
+      if (snapshot.batchId !== input.batchId) {
+        throw new Error('semantic_score 任务的目标脚本快照不属于该批次谱系');
       }
     }
     const id = randomUUID();

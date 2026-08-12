@@ -12,6 +12,11 @@ const {
   MIXCUT_PREPARE_PHASE_RANGES,
   buildAlignedSubtitleCues,
 } = await import('../lib/final-edit/workspace.ts');
+const {
+  abortRunningFinalEditJobs,
+  createFinalEditJobController,
+  waitForFinalEditJobsIdle,
+} = await import('../lib/final-edit/worker.ts');
 const { initFinalEditSchema } = await import('../lib/final-edit/schema.ts');
 
 const automaticCueFixture = buildAlignedSubtitleCues({
@@ -57,6 +62,7 @@ db.exec(`
   CREATE TABLE projects (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
     productCode TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL,
+    exportDirName TEXT NOT NULL DEFAULT '',
     finalEditAutoUseLimit INTEGER DEFAULT 2
   );
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);
@@ -117,6 +123,9 @@ let degradeAlignment = false;
 let analyzeVideoCalls = 0;
 let failPreview = false;
 let failSemanticScore = false;
+let abortNextPrepare = false;
+let holdPrepareSynthesis = false;
+let releaseHeldPrepareSynthesis: (() => void) | null = null;
 const semanticLogs: Array<{ level: string; message: string; attempt: number }> = [];
 const workspace = createFinalEditWorkspace({
   db,
@@ -159,6 +168,9 @@ const workspace = createFinalEditWorkspace({
     };
   },
   synthesize: async ({ segments }) => {
+    if (holdPrepareSynthesis) {
+      await new Promise<void>((resolve) => { releaseHeldPrepareSynthesis = resolve; });
+    }
     synthesizedNarrations.push(segments.map((segment) => segment.narration));
     return ({
     relativePath: 'final-edits/test/narration.wav',
@@ -175,6 +187,14 @@ const workspace = createFinalEditWorkspace({
     })),
     alignmentDegradedSegmentIds: degradeAlignment ? segments.map((segment) => segment.segmentId) : [],
   }); },
+  createJobController: () => {
+    const registration = createFinalEditJobController();
+    if (abortNextPrepare) {
+      abortNextPrepare = false;
+      registration.controller.abort();
+    }
+    return { signal: registration.controller.signal, release: registration.release };
+  },
 });
 
 const capacity = await workspace.preflight({ projectId: 'p1', scriptDraftId: 'script-1', count: 2, outputPreset: '3x4' });
@@ -315,6 +335,18 @@ assert.ok(slightlyLongGroup.subtitleCues.length > 0, '真实 TTS 字幕必须正
 assert.ok(slightlyLongGroup.variants[0].issues.some((issue) => issue.code === 'duration_target_overridden' && issue.severity === 'warning'));
 await workspace.resumePrepareJob(slightlyLongJob.id);
 assert.equal((db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(slightlyLongJob.id) as { status: string }).status, 'succeeded', '已完成任务不得被恢复逻辑重新排队');
+
+abortNextPrepare = true;
+const shutdownPrepareJob = await workspace.start(durationStartInput);
+assert.equal(shutdownPrepareJob.status, 'queued', '停机中止 prepare 不得谎报 succeeded');
+assert.deepEqual(
+  db.prepare(`SELECT status, phase, errorCode FROM final_edit_jobs WHERE id=?`).get(shutdownPrepareJob.id),
+  { status: 'queued', phase: 'recovered_after_shutdown', errorCode: null },
+  '停机中止 prepare 必须落为可恢复 queued，而非 failed',
+);
+assert.equal(workspace.load(shutdownPrepareJob.groupId).status, 'queued', '停机中止 prepare 的成片组也必须可恢复');
+await workspace.resumePrepareJob(shutdownPrepareJob.id);
+assert.equal((db.prepare(`SELECT status FROM final_edit_jobs WHERE id=?`).get(shutdownPrepareJob.id) as { status: string }).status, 'succeeded');
 
 synthesizedDurationUs = 24_766_667;
 const synthesizedCountBeforeLongRun = synthesizedNarrations.length;
@@ -858,6 +890,29 @@ assert.throws(() => workspace.apply({
   },
 }), (error: unknown) => error instanceof FinalEditError && error.code === 'source_fingerprint_changed', '来源文件变化后 apply 必须复用抽帧级别的完整指纹校验');
 assert.deepEqual(workspace.load(group.id), beforeChangedCoverSource, '来源文件失效时不得写入任何 group 或 variant 状态');
+
+// The public shutdown broadcast must reach prepare work, not only render
+// drain. Hold the TTS seam until the controller is registered, broadcast the
+// process-wide abort, then let the seam return so workspace can persist the
+// recoverable state before the idle wait completes.
+holdPrepareSynthesis = true;
+releaseHeldPrepareSynthesis = null;
+const broadcastPreparePromise = workspace.start(durationStartInput);
+while (!releaseHeldPrepareSynthesis) {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+assert.equal(await waitForFinalEditJobsIdle(100), 1, 'prepare 必须登记到 final-edit 停机等待集合');
+assert.equal(abortRunningFinalEditJobs(), 1, '停机广播必须命中正在运行的 prepare');
+releaseHeldPrepareSynthesis();
+const broadcastPrepareJob = await broadcastPreparePromise;
+holdPrepareSynthesis = false;
+releaseHeldPrepareSynthesis = null;
+assert.equal(broadcastPrepareJob.status, 'queued', '停机广播中止 prepare 后必须保持可恢复 queued');
+assert.deepEqual(
+  db.prepare(`SELECT status, phase, errorCode FROM final_edit_jobs WHERE id=?`).get(broadcastPrepareJob.id),
+  { status: 'queued', phase: 'recovered_after_shutdown', errorCode: null },
+);
+assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从停机等待集合释放');
 
 db.close();
 fs.rmSync(root, { recursive: true, force: true });

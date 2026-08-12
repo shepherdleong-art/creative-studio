@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
-import { assertNoStorageSymlink, resolveStoragePath } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 import { BatchDomainError } from './errors.ts';
 
 export type BatchOutputMediaKind = 'video' | 'cover';

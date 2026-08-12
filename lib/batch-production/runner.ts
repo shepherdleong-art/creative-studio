@@ -7,6 +7,7 @@ import {
   hasValidLease,
   recoverInterruptedWork,
   renewLease,
+  setBatchSchedulerDraining,
   settleInterruptedTask,
 } from './scheduler.ts';
 
@@ -30,6 +31,24 @@ export interface SchedulerRunOptions {
 
 function nowIso(now?: () => Date): string {
   return (now ?? (() => new Date()))().toISOString();
+}
+
+const activeBatchTaskControllers = new Set<AbortController>();
+
+/** 广播停机到不一定已经拿到 scheduler controller 的批量执行器。 */
+export function abortRunningBatchTasks(): number {
+  const running = [...activeBatchTaskControllers];
+  for (const controller of running) controller.abort();
+  return running.length;
+}
+
+/** 返回超时后仍在执行的批量任务数。 */
+export async function waitForBatchTasksIdle(timeoutMs: number): Promise<number> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (activeBatchTaskControllers.size > 0 && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  return activeBatchTaskControllers.size;
 }
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -118,6 +137,7 @@ async function executeOne(
   options: ExecuteOneOptions,
 ): Promise<ExecuteOneOutcome> {
   const { db, workerId, executors, leaseDurationMs, heartbeatMs, progressThrottleMs, now } = options;
+  activeBatchTaskControllers.add(controller);
   const executor = findExecutor(executors, claim.task.workType);
   let lastProgressWrite = 0;
   const lastProgress: BatchTaskProgress = { phase: 'starting' };
@@ -278,10 +298,13 @@ async function executeOne(
       // 批次暂停/停止(内部控制检查):按批次期望落成可继续或终态
       settleInterruptedTask(db, claim.attempt.id, now, 'batch_control');
     } else {
+      // 执行器抛出的带 code 错误(如 semantic_fallback)保留机器可读错误码,
+      // 供重试入口与界面区分失败原因;其余维持 executor_error。
+      const executorErrorCode = (error as { code?: unknown } | null)?.code;
       completeTaskAttempt(db, claim.attempt.id, {
         workerId,
         status: 'failed',
-        errorCode: 'executor_error',
+        errorCode: typeof executorErrorCode === 'string' && executorErrorCode ? executorErrorCode : 'executor_error',
         errorMessage: error instanceof Error ? error.message : String(error),
         progressJson: lastProgress,
         now,
@@ -290,6 +313,7 @@ async function executeOne(
     return 'completed';
   } finally {
     clearInterval(heartbeat);
+    activeBatchTaskControllers.delete(controller);
   }
 }
 
@@ -319,6 +343,7 @@ export function startBatchScheduler(
   if (schedulerInstance && schedulerController) {
     return schedulerController;
   }
+  setBatchSchedulerDraining(false);
   const { db, intervalMs = 2_000 } = options;
   recoverInterruptedWork(db, { now: options.now });
   const state: SchedulerState = {
@@ -345,6 +370,7 @@ export function startBatchScheduler(
   schedulerInstance = state;
   const controller: SchedulerController = {
     async stop() {
+      setBatchSchedulerDraining(true);
       if (!state.stopped) {
         state.stopped = true;
         state.stopController.abort();
@@ -364,11 +390,17 @@ export function startBatchScheduler(
   return controller;
 }
 
+/** 返回当前进程的批量调度器；未启动时为 null。 */
+export function getBatchSchedulerController(): SchedulerController | null {
+  return schedulerController;
+}
+
 /** 测试用:重置进程内单例状态。 */
 export async function resetSchedulerSingletonForTests(): Promise<void> {
   await schedulerController?.stop();
   schedulerInstance = null;
   schedulerController = null;
+  setBatchSchedulerDraining(false);
 }
 
 export { nowIso };

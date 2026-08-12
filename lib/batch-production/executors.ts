@@ -17,7 +17,20 @@ import {
   type MediaTransport,
   type PreparedMediaLease,
 } from '../media-transport.ts';
+import { isCosMediaConfigured } from '../cos-media.ts';
 import { isConfiguredScriptProviderValue } from '../script-providers/config.ts';
+import {
+  buildBatchScenes,
+  buildBatchSentences,
+  batchSemanticPoolKey,
+  batchSemanticScriptKey,
+  persistBatchSemanticMatrix,
+  readBatchSemanticMatrix,
+  resolveBatchSemanticProvider,
+  scoreBatchSemanticMatrix,
+  type BatchSemanticPoolRow,
+  type BatchSemanticProviderMetaLike,
+} from './semantic-match.ts';
 import type { BatchTaskWorkType, ClaimedBatchTask } from './tasks.ts';
 
 /**
@@ -31,6 +44,8 @@ export interface BatchTaskProgress {
   total?: number;
   /** 0–1;不可测时为 null */
   percent?: number | null;
+  /** 任务以成功收场但实际跳过执行时给出机器可读原因(如 no-content-analysis) */
+  skipped?: string;
 }
 
 export interface BatchTaskExecutionContext {
@@ -106,7 +121,7 @@ function assertNotAborted(signal: AbortSignal): void {
  */
 export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions = {}): BatchTaskExecutor {
   const analyzeContent = options.analyzeContent ?? (async (input) => {
-    const { analyzeVideoWithVision } = await import('../final-edit/adapters/video-analysis.ts');
+    const { analyzeVideoWithVision } = await import('../media-core/adapters/video-analysis.ts');
     return analyzeVideoWithVision({
       filePath: input.filePath,
       videoJobId: input.assetId,
@@ -195,7 +210,9 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
       }, {
         root: dataRoot(),
         capability: 'media',
-        mediaTransportAvailable: Boolean(mediaTransport),
+        // 优先显式注入的任务级 MediaTransport；未注入时默认 analyzeContent 会把
+        // 抽帧图片交给 completeJson 的 COS 受控传输，因此 COS 已配置同样满足 media 能力。
+        mediaTransportAvailable: Boolean(mediaTransport) || isCosMediaConfigured(),
       });
       context.reportProgress({ phase: 'content_analyzing', description: '抽帧并进行画面内容分析', percent: null });
       const analyze = (mediaLease?: PreparedMediaLease) => analyzeContent({
@@ -207,8 +224,8 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
         signal,
         mediaLease,
       });
-      contentAnalysis = contentRequest.executionScope === 'company'
-        ? await withPreparedMediaLease(mediaTransport!, {
+      contentAnalysis = contentRequest.executionScope === 'company' && mediaTransport
+        ? await withPreparedMediaLease(mediaTransport, {
             projectId,
             batchId: claim.task.batchId,
             taskId: claim.task.id,
@@ -273,6 +290,148 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
 }
 
 export const analyzeAssetExecutor = createAnalyzeAssetExecutor();
+
+/** 带机器可读 code 的执行器错误;runner 落账时优先采用 code 作为 errorCode。 */
+export class BatchExecutorError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'BatchExecutorError';
+    this.code = code;
+  }
+}
+
+export interface SemanticScoreExecutorOptions {
+  /** 测试注入;默认真实 LLM 打分(completeJson)。 */
+  scoreBatch?: typeof scoreBatchSemanticMatrix;
+  /** 测试注入;默认 getAvailableProviders()。 */
+  listProviders?: () => BatchSemanticProviderMetaLike[];
+}
+
+/**
+ * 语义匹配执行器(semantic_score):对一份脚本快照做 句段 × 素材池场景
+ * 的 LLM 语义矩阵打分,结果按内容指纹(scriptKey + poolKey)落库,
+ * 分配装配(buildFrozenInput)同步读出挂到每个 segment 上。
+ * 无内容分析场景 → 成功跳过;矩阵已存在 → 幂等复用;
+ * 打分 fallback → failed(errorCode semantic_fallback,可经现有 retry API 重试),不落库。
+ */
+export function createSemanticScoreExecutor(options: SemanticScoreExecutorOptions = {}): BatchTaskExecutor {
+  const scoreBatch = options.scoreBatch ?? scoreBatchSemanticMatrix;
+  return {
+    workTypes: ['semantic_score'],
+    async execute(context) {
+      const { db, claim, signal } = context;
+      if (claim.task.targetKind !== 'script_snapshot') throw new Error('语义匹配任务的目标必须是脚本快照');
+      const snapshot = db.prepare(`
+        SELECT s.id, s.batchVersionId, s.bodyText
+        FROM batch_script_snapshots s
+        JOIN batch_production_versions v ON v.id = s.batchVersionId
+        WHERE s.id = ? AND v.batchId = ?
+      `).get(claim.task.targetId, claim.task.batchId) as {
+        id: string;
+        batchVersionId: string;
+        bodyText: string;
+      } | undefined;
+      if (!snapshot) throw new Error('语义匹配任务的目标脚本快照不存在');
+      const projectId = (db.prepare(`
+        SELECT projectId FROM batch_productions WHERE id = ?
+      `).get(claim.task.batchId) as { projectId: string } | undefined)?.projectId;
+      if (!projectId) throw new Error('语义匹配任务的批次不存在');
+      assertNotAborted(signal);
+      context.reportProgress({ phase: 'locating', description: '读取冻结脚本与素材池场景', percent: null });
+      const sentences = buildBatchSentences(snapshot.bodyText);
+      // SQL 与 allocation-store.buildFrozenInput 的素材池读取保持一致;
+      // 只取语义场景构造所需的三列。
+      const poolRows = db.prepare(`
+        SELECT pool.assetId, assets.contentFingerprint, analysis.analysisJson
+        FROM batch_asset_pool_items pool
+        JOIN batch_assets assets ON assets.id = pool.assetId
+        JOIN batch_asset_analysis analysis ON analysis.id = pool.analysisId
+        WHERE pool.batchVersionId = ?
+        ORDER BY pool.createdAt, pool.id
+      `).all(snapshot.batchVersionId) as BatchSemanticPoolRow[];
+      const scenes = buildBatchScenes(poolRows);
+      if (!scenes.length) {
+        return {
+          resultJson: { scriptSnapshotId: snapshot.id, skipped: 'no-content-analysis' },
+          commit: () => ({
+            resultJson: { scriptSnapshotId: snapshot.id, skipped: 'no-content-analysis' },
+            progress: {
+              phase: 'semantic_score',
+              description: '素材池没有内容分析场景，跳过语义匹配（分配将使用关键词兜底）',
+              percent: 1,
+              skipped: 'no-content-analysis',
+            },
+          }),
+        };
+      }
+      const scriptKey = batchSemanticScriptKey(sentences);
+      const poolKey = batchSemanticPoolKey(scenes);
+      if (readBatchSemanticMatrix(db, projectId, scriptKey, poolKey)) {
+        return {
+          resultJson: { scriptSnapshotId: snapshot.id, scriptKey, poolKey, reused: true },
+          commit: () => ({
+            resultJson: { scriptSnapshotId: snapshot.id, scriptKey, poolKey, reused: true },
+            progress: { phase: 'semantic_score', description: '语义矩阵已存在，直接复用', percent: 1 },
+          }),
+        };
+      }
+      const provider = await resolveBatchSemanticProvider(db, {
+        batchVersionId: snapshot.batchVersionId,
+        listProviders: options.listProviders,
+      });
+      if (!provider) {
+        throw new BatchExecutorError('no_provider', '没有可用的脚本供应商，无法进行语义匹配打分');
+      }
+      context.reportProgress({
+        phase: 'semantic_score',
+        description: `语义矩阵打分（${sentences.length} 句 × ${scenes.length} 场景）`,
+        percent: null,
+      });
+      const outcome = await scoreBatch({
+        sentences,
+        scenes,
+        providerId: provider.providerId,
+        model: provider.model,
+      });
+      assertNotAborted(signal);
+      if (outcome.fallback) {
+        throw new BatchExecutorError('semantic_fallback', '语义矩阵打分未得到有效结果，可重试；分配将使用关键词兜底');
+      }
+      return {
+        commit: () => {
+          assertNotAborted(signal);
+          const persisted = persistBatchSemanticMatrix(db, {
+            projectId,
+            scriptKey,
+            poolKey,
+            providerId: provider.providerId,
+            model: outcome.model,
+            scores: outcome.scores,
+            hooks: outcome.hooks,
+          });
+          return {
+            resultJson: {
+              scriptSnapshotId: snapshot.id,
+              scriptKey,
+              poolKey,
+              matrixId: persisted.id,
+              created: persisted.created,
+            },
+            progress: {
+              phase: 'semantic_score',
+              description: `语义匹配完成（${sentences.length} 句 × ${scenes.length} 场景）`,
+              percent: 1,
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+export const semanticScoreExecutor = createSemanticScoreExecutor();
 
 /** 按任务种类选择执行器;没有注册执行器的任务种类返回 null。 */
 export function findExecutor(

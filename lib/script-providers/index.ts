@@ -16,6 +16,7 @@ import {
   buildAnalysisPrompt,
   completeOpenAiCompatibleJson,
   parseJsonResponse,
+  type ChatImagePart,
 } from './openai-compatible';
 import {
   chatCompletion as responsesChatCompletion,
@@ -29,6 +30,7 @@ import {
 } from './anthropic-messages';
 import { geminiAnalyzeSellingPoints, geminiCompleteJson } from './gemini';
 import { toScriptProviderMeta } from './config';
+import { isCosMediaConfigured, tryUploadBufferToCosAndSign } from '../cos-media.ts';
 import {
   ProviderExecutionGateError,
   assertProviderExecutionAvailable,
@@ -117,12 +119,23 @@ export async function completeJson<T>(input: {
   checkConfigured(input.providerId);
   const runtime = resolveStoredScriptProvider(input.providerId);
   const capability = input.images?.length ? 'media' : 'model';
+  let images: ChatImagePart[] | undefined = input.images;
   if (runtime.executionScope === 'company') {
+    // 公司视觉调用的图片必须经受控媒体传输（COS 上传 + 预签名 URL），不内联 base64；
+    // COS 未配置时门禁失败关闭。
     await assertProviderExecutionAvailable(runtime, {
       capability,
-      // URL/租约型 MediaTransport 尚未接入脚本供应商输入；公司视觉调用必须失败关闭。
-      mediaTransportAvailable: false,
+      mediaTransportAvailable: isCosMediaConfigured(),
     });
+    if (input.images?.length) {
+      images = await Promise.all(input.images.map(async (image) => {
+        const imageUrl = await tryUploadBufferToCosAndSign(Buffer.from(image.imageBase64, 'base64'), image.mimeType);
+        if (!imageUrl) {
+          throw new Error('公司供应商的视觉媒体传输未配置：请在 .env.local 配置 CREATIVE_STUDIO_COS_SECRET_ID / CREATIVE_STUDIO_COS_SECRET_KEY / CREATIVE_STUDIO_COS_DOMAIN 后重启');
+        }
+        return { mimeType: image.mimeType, imageUrl };
+      }));
+    }
   } else {
     // 保持直连路径同步：创建请求后立即 abort 时，供应商 Adapter 必须已经接管 signal。
     assertExternalProviderExecutionAvailable(runtime, capability);
@@ -134,7 +147,7 @@ export async function completeJson<T>(input: {
     maxTokens: input.maxTokens,
     timeoutMs: input.timeoutMs,
     signal: input.signal,
-    images: input.images,
+    images,
   };
 
   if (runtime.apiStyle === 'native-gemini') {

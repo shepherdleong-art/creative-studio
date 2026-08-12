@@ -4,12 +4,12 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { probeDurationSec } from '../ffmpeg.ts';
-import { createOpenAiAlignmentAdapter } from '../final-edit/adapters/alignment.ts';
+import { createOpenAiAlignmentAdapter } from '../media-core/adapters/alignment.ts';
 import {
   getFinalEditTtsAdapter,
   type TtsAdapterInput,
-} from '../final-edit/adapters/tts-registry.ts';
-import { assertNoStorageSymlink } from '../final-edit/storage-path.ts';
+} from '../media-core/adapters/tts-registry.ts';
+import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
 import { computeFingerprintFromFile } from './fingerprint.ts';
 import {
   buildBatchNarrationSegments,
@@ -32,6 +32,8 @@ export interface BatchNarrationSynthesisResult {
   absolutePath: string;
   durationUs: number;
   segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>;
+  /** 词级时间戳(可选):适配器返回时随快照落库,供 TTS 感知再切分 */
+  wordTimings?: Array<{ text: string; startUs: number; endUs: number }>;
 }
 
 export interface BatchNarrationExecutorOptions {
@@ -123,6 +125,45 @@ function proportionalTimings(
   });
 }
 
+/** 解析既有口播快照的可复用对齐(含词级时间戳);无法使用返回 null。 */
+function parseStoredNarration(
+  raw: string | null | undefined,
+  segments: Array<{ segmentId: string }>,
+  probedDurationUs: number,
+): { segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>; wordTimings: Array<{ text: string; startUs: number; endUs: number }> | undefined } | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    const durationUs = typeof value.durationUs === 'number' ? value.durationUs : Number(value.durationUs);
+    // 复用前先核对时长:文件被替换/截断时降级,不能把旧对齐硬套到新文件上。
+    if (!Number.isSafeInteger(durationUs) || durationUs <= 0 || Math.abs(durationUs - probedDurationUs) > 200_000) return null;
+    if (!Array.isArray(value.segments) || value.segments.length !== segments.length) return null;
+    const segmentTimings = value.segments.map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+      const record = entry as Record<string, unknown>;
+      const startUs = typeof record.startUs === 'number' ? record.startUs : Number(record.startUs);
+      const endUs = typeof record.endUs === 'number' ? record.endUs : Number(record.endUs);
+      const sourceSegmentId = typeof record.sourceSegmentId === 'string' ? record.sourceSegmentId : typeof record.id === 'string' ? record.id : '';
+      if (!sourceSegmentId || !Number.isSafeInteger(startUs) || !Number.isSafeInteger(endUs)) return null;
+      return { segmentId: sourceSegmentId, startUs, endUs };
+    });
+    if (segmentTimings.some((entry) => entry === null)) return null;
+    const wordTimings = Array.isArray(value.wordTimings)
+      ? value.wordTimings.flatMap((entry): Array<{ text: string; startUs: number; endUs: number }> => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+        const record = entry as Record<string, unknown>;
+        const startUs = typeof record.startUs === 'number' ? record.startUs : Number(record.startUs);
+        const endUs = typeof record.endUs === 'number' ? record.endUs : Number(record.endUs);
+        if (typeof record.text !== 'string' || !record.text || !Number.isSafeInteger(startUs) || !Number.isSafeInteger(endUs) || endUs <= startUs) return [];
+        return [{ text: record.text, startUs, endUs }];
+      })
+      : undefined;
+    return { segmentTimings: segmentTimings as Array<{ segmentId: string; startUs: number; endUs: number }>, wordTimings: wordTimings && wordTimings.length > 0 ? wordTimings : undefined };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 口播执行器(narration):目标是一份冻结的脚本快照,同脚本的 N 条成片
  * 共用同一条配音。产物写入 batch_script_narrations 权威表,并把当前
@@ -169,13 +210,30 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
       let audioFingerprint: string;
       let durationUs: number;
       let segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>;
+      let wordTimings: Array<{ text: string; startUs: number; endUs: number }> | undefined;
+      let timingSource: 'aligned' | 'estimated' = 'aligned';
       if (fs.existsSync(absolutePath)) {
         const stat = fs.lstatSync(absolutePath);
         if (stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0) throw new Error('口播缓存文件无效，请重试');
         context.reportProgress({ phase: 'running', description: '复用既有口播音频', percent: null });
         audioFingerprint = await computeFingerprintFromFile(absolutePath);
         durationUs = Math.round((await probeDurationSec(absolutePath)) * 1_000_000);
-        segmentTimings = proportionalTimings(segments, durationUs);
+        // 优先复用权威表里的真实对齐(连同词级时间戳),避免把已对齐的句时间
+        // 又平均切回去;跨批次拿不到该脚本快照的对齐时才回落等分估算。
+        const stored = parseStoredNarration(
+          (db.prepare(`SELECT narrationJson FROM batch_script_narrations WHERE scriptSnapshotId = ?`).get(snapshot.id) as { narrationJson: string } | undefined)?.narrationJson,
+          segments,
+          durationUs,
+        );
+        if (stored) {
+          segmentTimings = stored.segmentTimings;
+          wordTimings = stored.wordTimings;
+          timingSource = 'aligned';
+        } else {
+          segmentTimings = proportionalTimings(segments, durationUs);
+          wordTimings = undefined;
+          timingSource = 'estimated';
+        }
       } else {
         context.reportProgress({
           phase: 'content_analyzing',
@@ -197,6 +255,7 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
           outputDir,
           relativeOutputPath,
           alignment,
+          signal,
         });
         if (signal.aborted) throw new Error('任务已中止');
         if (!fs.existsSync(synthesized.absolutePath)) throw new Error('口播合成没有产出音频文件');
@@ -205,6 +264,8 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         audioFingerprint = await computeFingerprintFromFile(synthesized.absolutePath);
         durationUs = synthesized.durationUs;
         segmentTimings = synthesized.segmentTimings;
+        wordTimings = synthesized.wordTimings;
+        timingSource = 'aligned';
       }
       const narrationSnapshot = createLocalNarrationSnapshot({
         scriptSnapshotId: snapshot.id,
@@ -218,7 +279,9 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
             startUs: timing.startUs,
             endUs: timing.endUs,
           })),
+          ...(wordTimings ? { wordTimings } : {}),
         },
+        timingSource,
       });
       const snapshotJson = JSON.stringify(narrationSnapshot);
       context.reportProgress({ phase: 'verified', description: '口播核验完成，正在发布', percent: null });
@@ -253,6 +316,9 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
             now,
           );
           // 当前成片版本的 arrangement 就地升级,渲染与工作区聚合直接读到真实口播。
+          // 注:口播先于分配(phase-e 反转)后,这条 UPDATE 只对反转前建立的版本
+          // 有意义——新流程下分配发生在口播之后,口播会直接烤进 arrangement,
+          // 此处保留仅为老版本兼容。
           db.prepare(`
             UPDATE batch_output_versions
             SET arrangementJson = json_set(arrangementJson, '$.narration', json(?))

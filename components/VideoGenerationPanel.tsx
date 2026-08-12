@@ -75,6 +75,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
   const [videoPreviewPlaySignal, setVideoPreviewPlaySignal] = useState(0);
   const previewSuppressedRef = useRef(false);
+  const [videoConcurrency, setVideoConcurrency] = useState(10);
 
   const selectVideoPreview = (jobId: string) => {
     previewSuppressedRef.current = false;
@@ -114,6 +115,31 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     })();
     return () => { active = false; };
   }, []);
+
+  // Load project video concurrency once
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}`);
+        const data = await res.json();
+        if (active && Number.isFinite(Number(data.videoConcurrency))) {
+          setVideoConcurrency(Math.max(1, Math.min(10, Math.floor(Number(data.videoConcurrency)))));
+        }
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, [projectId]);
+
+  const handleVideoConcurrencyChange = (value: number) => {
+    const clamped = Math.max(1, Math.min(10, Math.floor(value) || 1));
+    setVideoConcurrency(clamped);
+    fetch(`/api/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ videoConcurrency: clamped }),
+    }).catch(() => { /* best-effort */ });
+  };
 
   // Load shot sets for selector
   useEffect(() => {
@@ -499,6 +525,18 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 <button onClick={addMotionRow} className="btn-secondary btn-sm w-full video-add-action">
                   <Icon name="plus" size={12} /> 添加描述
                 </button>
+                <div>
+                  <label className="label generation-label">并发数</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={videoConcurrency}
+                    onChange={(e) => handleVideoConcurrencyChange(Number(e.target.value))}
+                    className="input-field generation-control generation-number"
+                  />
+                  <p className="generation-helper">失败或限流时调回 1。</p>
+                </div>
                 <button
                   onClick={() => handleCreateVideos(selectedShot)}
                   disabled={creating || configuredProviders.length === 0 || motionRows.every((r) => !r.prompt.trim())}

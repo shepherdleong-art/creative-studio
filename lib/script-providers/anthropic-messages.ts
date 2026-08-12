@@ -35,14 +35,19 @@ export async function chatCompletion(
 
   const userContent = options.images?.length
     ? [
-        ...options.images.map((image) => ({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: image.mimeType,
-            data: image.imageBase64,
-          },
-        })),
+        ...options.images.map((image) => (image.imageUrl
+          ? {
+              type: 'image',
+              source: { type: 'url', url: image.imageUrl },
+            }
+          : {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: image.mimeType,
+                data: image.imageBase64,
+              },
+            })),
         { type: 'text', text: options.userPrompt },
       ]
     : options.userPrompt;

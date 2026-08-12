@@ -54,6 +54,8 @@ function initTables(db: Database.Database) {
       size TEXT NOT NULL DEFAULT '1024x1024',
       quality TEXT NOT NULL DEFAULT 'standard',
       concurrency INTEGER NOT NULL DEFAULT 3,
+      videoConcurrency INTEGER NOT NULL DEFAULT 10,
+      exportDirName TEXT NOT NULL DEFAULT '',
       maxAttempts INTEGER NOT NULL DEFAULT 2,
       status TEXT NOT NULL DEFAULT 'draft',
       runId TEXT,

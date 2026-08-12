@@ -18,8 +18,8 @@ try {
     now: () => new Date('2026-08-03T00:00:00.000Z'),
   });
   assert.equal(result.state, 'ready');
-  assert.equal(result.targetVersion, 22);
-  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 22);
+  assert.equal(result.targetVersion, 23);
+  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 23);
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_asset_analysis_requests'`).get());
   const requestColumns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{ name: string }>;
   assert.ok(requestColumns.some((column) => column.name === 'executionScope'));
@@ -61,6 +61,14 @@ try {
       (id, projectId, batchId, workType, targetKind, targetId, status, createdAt, updatedAt)
     VALUES ('task-narration', 'project-1', 'task-batch', 'narration', 'script_snapshot', 'task-snapshot', 'queued', ?, ?)
   `).run('2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z');
+  db.prepare(`
+    INSERT INTO batch_tasks
+      (id, projectId, batchId, workType, targetKind, targetId, status, createdAt, updatedAt)
+    VALUES ('task-semantic', 'project-1', 'task-batch', 'semantic_score', 'script_snapshot', 'task-snapshot', 'queued', ?, ?)
+  `).run('2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z');
+  assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_semantic_matrices'`).get());
+  const matrixIndexes = db.prepare(`PRAGMA index_list(batch_semantic_matrices)`).all() as Array<{ name: string }>;
+  assert.ok(matrixIndexes.some(({ name }) => name === 'idx_batch_semantic_matrices_lookup'));
 
   for (const table of ['batch_allocation_runs', 'batch_asset_exclusions']) {
     assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table));

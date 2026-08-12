@@ -68,6 +68,31 @@ function makeAbortError(message: string): Error {
   return error;
 }
 
+interface ActiveFfmpegProcess {
+  abort(): void;
+}
+
+const activeFfmpegProcesses = new Set<ActiveFfmpegProcess>();
+
+/** 广播应用关闭到所有直接由 runFfmpeg 启动的子进程。 */
+export function abortRunningFfmpegProcesses(): number {
+  const running = [...activeFfmpegProcesses];
+  for (const entry of running) entry.abort();
+  return running.length;
+}
+
+/**
+ * 等待已广播中止的 FFmpeg 真正退出。
+ * 返回超时后仍存活的直接 FFmpeg 数量，调用方可据此报告未收尾工作。
+ */
+export async function waitForFfmpegIdle(timeoutMs: number): Promise<number> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (activeFfmpegProcesses.size > 0 && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  return activeFfmpegProcesses.size;
+}
+
 /** 运行 ffmpeg，非零退出码时用 stderr 尾部报错。args 必须含 -y 与输出路径。 */
 export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -79,9 +104,20 @@ export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<
     let stderrTail = '';
     let settled = false;
     let aborted = false;
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const activeProcess: ActiveFfmpegProcess = {
+      abort: () => {
+        if (settled || aborted) return;
+        aborted = true;
+        child.kill('SIGKILL');
+      },
+    };
+    activeFfmpegProcesses.add(activeProcess);
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       opts.signal?.removeEventListener('abort', onAbort);
+      activeFfmpegProcesses.delete(activeProcess);
     };
     const done = (err?: Error) => {
       if (settled) return;
@@ -93,16 +129,16 @@ export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<
     // 只标记 aborted 并终止子进程，不在这里直接 settle——真正的 reject 要等
     // 'close' 事件确认子进程已经退出，避免"以为终止了但进程其实还在跑"。
     const onAbort = () => {
-      if (settled || aborted) return;
-      aborted = true;
-      child.kill('SIGKILL');
+      activeProcess.abort();
     };
     opts.signal?.addEventListener('abort', onAbort, { once: true });
+    if (opts.signal?.aborted) onAbort();
 
-    const timer = opts.timeoutMs
+    timer = opts.timeoutMs
       ? setTimeout(() => {
+          if (settled || aborted) return;
+          timedOut = true;
           child.kill('SIGKILL');
-          done(new Error(`ffmpeg timeout after ${opts.timeoutMs}ms: ${stderrTail.slice(-500)}`));
         }, opts.timeoutMs)
       : null;
 
@@ -118,9 +154,17 @@ export function runFfmpeg(args: string[], opts: RunFfmpegOptions = {}): Promise<
     child.stderr.on('data', (buf: Buffer) => {
       stderrTail = (stderrTail + buf.toString()).slice(-4000);
     });
-    child.on('error', (err) => done(aborted ? makeAbortError(`ffmpeg aborted: ${err.message}`) : err));
+    child.on('error', (err) => {
+      if (aborted) done(makeAbortError(`ffmpeg aborted: ${err.message}`));
+      else if (timedOut) done(new Error(`ffmpeg timeout after ${opts.timeoutMs}ms: ${stderrTail.slice(-500)}`));
+      else done(err);
+    });
     child.on('close', (code) => {
       if (aborted) { done(makeAbortError('ffmpeg aborted')); return; }
+      if (timedOut) {
+        done(new Error(`ffmpeg timeout after ${opts.timeoutMs}ms: ${stderrTail.slice(-500)}`));
+        return;
+      }
       if (code === 0) done();
       else done(new Error(`ffmpeg exited with code ${code}: ${stderrTail.slice(-1500)}`));
     });

@@ -82,7 +82,7 @@ if ($hasStackComponents) {
       $stackStarted = $true
       Write-Host '公司网关代理就绪: http://127.0.0.1:4000'
     } else {
-      # 已成功启动却查不到状态文件时，回收本轮 sidecar 后再降级启动工作台。
+      # 已报告成功却查不到状态文件时，必须回收本轮 sidecar 后再降级启动工作台。
       Write-Host '公司网关状态文件缺失，正在清理 sidecar 并继续启动工作台。' -ForegroundColor Yellow
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
     }

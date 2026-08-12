@@ -7,6 +7,7 @@ import {
   cosSign,
   isCosMediaConfigured,
   tryUploadToCosAndSign,
+  tryUploadBufferToCosAndSign,
   _resetCosMediaCacheForTest,
 } from '../lib/cos-media.ts';
 
@@ -199,6 +200,36 @@ try {
   }
   assert.ok(headError, 'exists-check 403 should throw');
   assert.match(headError.message, /HTTP 403/);
+
+  // buffer 上传：未配置 COS → null 且零请求
+  clearCosEnv();
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  const pngContent = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 8, 7]);
+  assert.equal(await tryUploadBufferToCosAndSign(pngContent, 'image/png'), null);
+  assert.equal(captured.length, 0);
+
+  // buffer 上传：按 MIME 推断扩展名，内容指纹与文件版本同一去重空间
+  setCosEnv();
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const bufferUrl = await tryUploadBufferToCosAndSign(pngContent, 'image/png');
+  assert.ok(bufferUrl);
+  const expectedPngHash = crypto.createHash('sha256').update(pngContent).digest('hex');
+  assert.ok(bufferUrl.startsWith(`https://cos.example.com/ref-images/${expectedPngHash}.png?`), bufferUrl);
+  assert.equal(captured.length, 2);
+  assert.equal(captured[1].method, 'PUT');
+  assert.ok(captured[1].body?.equals(pngContent), 'PUT body should be the buffer bytes');
+  assert.equal(captured[1].headers.get('content-type'), 'image/png');
+
+  // buffer 上传：未知 MIME 回退 .jpg 扩展名
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  const fallbackUrl = await tryUploadBufferToCosAndSign(pngContent, 'application/octet-stream');
+  assert.ok(fallbackUrl);
+  assert.ok(fallbackUrl.startsWith(`https://cos.example.com/ref-images/${expectedPngHash}.jpg?`), fallbackUrl);
 
   console.log('cos-media unit tests passed');
 } finally {

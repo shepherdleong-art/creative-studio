@@ -18,8 +18,10 @@ import BatchProductionSidebar, { type BatchSidebarItem } from './BatchProduction
 import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 import BatchStepMaterials, { type AssetSelectionState, type VisionProviderView } from './BatchStepMaterials';
 import BatchStepScripts, {
+  BATCH_PROGRESS_ANCHOR_ID,
   type BatchBgmParamsDraft,
   type BatchBgmTrackView,
+  type BatchCoverTitleDraft,
   type BatchMusicSelectionDraft,
   type BatchTtsProviderView,
   type OutputPresetLabel,
@@ -158,9 +160,23 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [bgmLibrary, setBgmLibrary] = useState<BatchBgmTrackView[]>([]);
   const [bgmRescanning, setBgmRescanning] = useState(false);
   const [bgmSelection, setBgmSelection] = useState<BatchMusicSelectionDraft>({ mode: 'auto', trackIds: [] });
+  // 封面标题设置草稿:mode none 时为完整稳定形状(其余字段 null),避免 canonical 比对抖动。
+  const [coverTitle, setCoverTitle] = useState<BatchCoverTitleDraft>({
+    mode: 'none',
+    presetId: null,
+    styles: null,
+    framing: null,
+  });
   const [batchTasks, setBatchTasks] = useState<BatchTasksView['tasks']>([]);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
+  // 开跑被语义匹配/口播门禁延迟时置位,相关任务全部终态后自动续跑;
+  // startBatchRef 避免把非 useCallback 的 startBatch 塞进 effect 依赖。
+  const autoStartAfterGatesRef = useRef(false);
+  const startBatchRef = useRef<() => Promise<void>>(async () => undefined);
+  // 点开跑后把进度卡滚进视野。进度卡在脚本步内容栈末尾(「开始」按钮之下),
+  // 不置顶是有意的——置顶会落在按钮的视线之外(实测用户点完看不到它)。
+  const scrollToProgressRef = useRef(false);
   const [proxyBusyAssetId, setProxyBusyAssetId] = useState<string | null>(null);
   const [proxyBatchBusy, setProxyBatchBusy] = useState(false);
   const [cacheUsage, setCacheUsage] = useState<{ count: number; totalBytes: number } | null>(null);
@@ -444,6 +460,22 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     return () => window.clearTimeout(timer);
   }, [selectedBatchId, loadTasks]);
 
+  useEffect(() => {
+    startBatchRef.current = startBatch;
+  });
+
+  // 开跑被语义匹配/口播门禁延迟时:相关任务全部进入终态后自动续跑(PUT /start 幂等)。
+  useEffect(() => {
+    if (!selectedBatchId || !autoStartAfterGatesRef.current) return;
+    const incomplete = batchTasks.filter((task) => (
+      (task.workType === 'semantic_score' || task.workType === 'narration')
+      && (task.status === 'queued' || task.status === 'running')
+    )).length;
+    if (incomplete > 0) return;
+    autoStartAfterGatesRef.current = false;
+    void startBatchRef.current();
+  }, [batchTasks, selectedBatchId]);
+
   // 有活跃任务、或批次仍自称 running 时才周期轮询,全部结束后立即停止。
   useEffect(() => {
     if (!selectedBatchId || !shouldPollBatch) return;
@@ -482,14 +514,18 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     if (!['running', 'partially_completed', 'completed', 'failed'].includes(batchStatus)) return null;
     const narration = batchTasks.filter((task) => task.workType === 'narration');
     const renders = batchTasks.filter((task) => task.workType === 'render');
-    // 起点只算本次生产的任务(口播 + 渲染),不包括第 1 步的素材分析/代理生成。
-    const productionTasks = batchTasks.filter((task) => task.workType === 'narration' || task.workType === 'render');
+    const semantic = batchTasks.filter((task) => task.workType === 'semantic_score');
+    // 起点只算本次生产的任务(语义打分 + 口播 + 渲染),不包括第 1 步的素材分析/代理生成。
+    const productionTasks = batchTasks.filter((task) => task.workType === 'narration' || task.workType === 'render' || task.workType === 'semantic_score');
     const renderSucceeded = renders.filter((task) => task.status === 'succeeded').length;
     const renderFailed = renders.filter((task) => task.status === 'failed').length;
     const renderActive = renders.filter((task) => task.status === 'running' || task.status === 'queued').length;
     const narrationSucceeded = narration.filter((task) => task.status === 'succeeded').length;
     const narrationFailed = narration.filter((task) => task.status === 'failed').length;
     const narrationActive = narration.filter((task) => task.status === 'running' || task.status === 'queued').length;
+    const semanticSucceeded = semantic.filter((task) => task.status === 'succeeded').length;
+    const semanticFailed = semantic.filter((task) => task.status === 'failed').length;
+    const semanticActive = semantic.filter((task) => task.status === 'running' || task.status === 'queued').length;
     const allocationDone = workspace?.allocationReport != null || (workspace?.cards.length ?? 0) > 0;
     const startedAtMs = productionTasks.length > 0
       ? Math.min(...productionTasks.map((task) => new Date(task.createdAt).getTime()))
@@ -510,13 +546,19 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       finished,
       stages: [
         stage('锁定设置', 'done'),
-        stage('自动配画面', allocationDone ? 'done' : 'running'),
+        stage(
+          '匹配画面语义',
+          semantic.length === 0 ? 'waiting' : semanticFailed > 0 ? 'failed' : semanticActive > 0 ? 'running' : 'done',
+          semantic.length > 0 ? `${semanticSucceeded}/${semantic.length}` : undefined,
+          semantic.length > 0 ? semanticSucceeded / semantic.length : undefined,
+        ),
         stage(
           '生成口播',
           narration.length === 0 ? 'waiting' : narrationFailed > 0 ? 'failed' : narrationActive > 0 ? 'running' : 'done',
           narration.length > 0 ? `${narrationSucceeded}/${narration.length}` : undefined,
           narration.length > 0 ? narrationSucceeded / narration.length : undefined,
         ),
+        stage('自动配画面', allocationDone ? 'done' : 'running'),
         stage(
           '渲染成片',
           renders.length === 0 ? 'waiting' : renderFailed > 0 ? 'failed' : renderActive > 0 ? 'running' : 'done',
@@ -531,6 +573,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       ],
     };
   }, [batchStatus, batchTasks, workspace, hasActiveBatchTask, nowMs]);
+
+  // 开跑后滚到进度卡。progressView 只在 setBatchStatus('running') 之后才非空,
+  // 所以不能在 startBatch 里同步滚(那时元素还不存在);等它出现再用 rAF 滚。
+  useEffect(() => {
+    if (!scrollToProgressRef.current || !progressView) return;
+    scrollToProgressRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(BATCH_PROGRESS_ANCHOR_ID)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [progressView]);
 
   const currentBatch = batches.find(({ id }) => id === selectedBatchId);
   const currentVersionId = currentBatch?.currentVersionId ?? null;
@@ -817,6 +870,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               targetDurationSec: 15,
               batchBgmParams: bgmParams,
               batchMusicSelection: bgmSelection,
+              coverTitleMode: coverTitle.mode,
+              coverTitlePresetId: coverTitle.presetId,
+              coverTitleStyles: coverTitle.styles,
+              coverTitleFraming: coverTitle.framing,
             },
           }),
         },
@@ -887,13 +944,48 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try {
       const result = await readJson<{
         batchId: string;
-        status: 'running';
-        allocationStatus: 'completed' | 'partial' | 'blocked';
-        outputCount: number;
+        status: 'running' | 'semantic_scoring' | 'narration_pending';
+        semanticScorePending?: number;
+        narrationPending?: number;
+        allocationStatus?: 'completed' | 'partial' | 'blocked';
+        outputCount?: number;
       }>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/start?projectId=${encodeURIComponent(projectId)}`,
         { method: 'PUT' },
       ));
+      if (result.status === 'semantic_scoring') {
+        // 语义打分由后端在快照确认后自动排队,这里只负责显示与自动续跑;
+        // 直接进入"生产中",不再让界面停留在"没开始"的样子。
+        autoStartAfterGatesRef.current = true;
+        scrollToProgressRef.current = true;
+        setBatchStatus('running');
+        setBatches((current) => current.map((batch) => batch.id === selectedBatchId
+          ? { ...batch, status: 'running' }
+          : batch));
+        setFeedback({
+          kind: 'success',
+          message: `正在按画面内容匹配素材…（还差 ${result.semanticScorePending ?? 0} 份），完成后自动继续生产，无需再点。`,
+        });
+        await loadTasks(selectedBatchId);
+        return;
+      }
+      if (result.status === 'narration_pending') {
+        // 口播由后端在冻结后自动排队,同样直接进入"生产中",终态后自动续跑。
+        autoStartAfterGatesRef.current = true;
+        scrollToProgressRef.current = true;
+        setBatchStatus('running');
+        setBatches((current) => current.map((batch) => batch.id === selectedBatchId
+          ? { ...batch, status: 'running' }
+          : batch));
+        setFeedback({
+          kind: 'success',
+          message: `正在生成口播…（还差 ${result.narrationPending ?? 0} 份），完成后自动继续生产，无需再点。`,
+        });
+        await loadTasks(selectedBatchId);
+        return;
+      }
+      autoStartAfterGatesRef.current = false;
+      scrollToProgressRef.current = true;
       setBatchStatus('running');
       setBatches((current) => current.map((batch) => batch.id === selectedBatchId
         ? { ...batch, status: 'running' }
@@ -1168,7 +1260,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           body: JSON.stringify({ timeUs }),
         },
       ));
-      setFeedback({ kind: 'success', message: `封面已更新为 ${(result.timeUs / 1_000_000).toFixed(2)} 秒处画面；重新导出后成品使用新封面。` });
+      setFeedback({ kind: 'success', message: `封面已更新为 ${(result.timeUs / 1_000_000).toFixed(2)} 秒处画面；封面同时是成片片头，正在重新渲染这一条，完成后需重新导出。` });
       await loadWorkspace(selectedBatchId);
     } catch (coverError) {
       setFeedback({ kind: 'error', message: coverError instanceof Error ? coverError.message : '换封面失败' });
@@ -1491,9 +1583,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               >{feedback.message}</div>
             )}
             {/* 第 3、4 步:紧凑进度条置顶,保证“做的时候看得见”。
-                第 2 步不置顶——那里 BGM 是开跑前的输入,进度条压在它上面会
-                重现“BGM 在进度条下面”的观感;完整进度卡由 BatchStepScripts
-                渲染在它自己的内容栈末尾。
+                脚本步(activeStep === 1)不置顶——「开始」按钮在该步内容栈底部,
+                进度卡置顶会落在用户视线之外(实测:点完按钮看不到它,等滚上去
+                语义打分已经跑完)。那一步的完整进度卡由 BatchStepScripts 渲染在
+                自己的内容栈末尾,点开跑后由 scrollToProgressRef 滚进视野。
                 注意:不要在 {content} 之后再挂同级节点——.mainCol 是 flex
                 column,而各步根节点是 min-h-0 flex-1,会被压缩到容器高度、
                 内容溢出并盖住后面的兄弟节点(表现为卡片叠在一起)。 */}
@@ -1620,6 +1713,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 setBgmSelection(selection);
                 markInputChanged();
               }}
+              coverTitle={coverTitle}
+              onCoverTitleChange={(draft) => {
+                setCoverTitle(draft);
+                markInputChanged();
+              }}
               onNarrationConfigTouched={markInputChanged}
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
@@ -1688,7 +1786,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         }
         return commonMain(
           <BatchStepExport
-            workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
+            workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', exportDirName: '', counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
             selectedPlanIds={selectedPlanIds}
             onTogglePlan={(planId, checked) => setSelectedPlanIds((current) => (
               checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)

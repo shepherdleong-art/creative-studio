@@ -89,7 +89,7 @@ async function waitForStatus(id: string, statuses: string[], timeoutMs: number):
 // 基础钳制与默认值
 assert.equal(queueModule.DEFAULT_VIDEO_TIMEOUT_MS, 15 * 60_000, '默认轮询窗口应提高到 15 分钟');
 assert.equal(queueModule.DEFAULT_VIDEO_MAX_ATTEMPTS, 2, '运行时重试上限默认 2');
-assert.equal(queueModule.providerConcurrencyLimit('kling'), 2, 'kling 默认并发闸门 2');
+assert.equal(queueModule.providerConcurrencyLimit('kling'), null, '内置 kling 闸门已移除，默认不限速');
 assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的供应商不限速');
 
 // VIDEO_TIMEOUT_MS 环境变量覆盖与钳制(子进程验证,避免污染本进程模块缓存)
@@ -126,25 +126,6 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
   assert.equal(second.job?.id, 'job-new', '第二条领取紧随其后');
   // 释放这两个 running 名额,避免影响后续闸门测试的计数
   db.prepare(`UPDATE video_jobs SET status = 'succeeded' WHERE id IN ('job-old', 'job-new')`).run();
-}
-
-// 每供应商闸门:跨项目统计 running;被挡住的 pending 不能吞掉
-{
-  insertProject('project-gate-a');
-  insertProject('project-gate-b');
-  insertImageAsset('img-project-gate-a', 'project-gate-a');
-  insertImageAsset('img-project-gate-b', 'project-gate-b');
-  // 两个项目各一条 running kling(kling 闸门 = 2,已满)
-  insertVideoJob('gate-running-1', 'project-gate-a', { status: 'running' });
-  insertVideoJob('gate-running-2', 'project-gate-b', { status: 'running' });
-  insertVideoJob('gate-pending', 'project-gate-a', { status: 'pending' });
-  const gated = queueModule.claimNextVideoJob('project-gate-a');
-  assert.equal(gated.job, null, '闸门已满时必须不领取');
-  assert.equal(gated.gated, true, '必须区分“被闸门挡住”与“没有任务”');
-  // 一条 running 结束后名额释放
-  db.prepare(`UPDATE video_jobs SET status = 'succeeded' WHERE id = 'gate-running-2'`).run();
-  const released = queueModule.claimNextVideoJob('project-gate-a');
-  assert.equal(released.job?.id, 'gate-pending', '名额释放后 pending 必须能领取');
 }
 
 // needs_check 自动续跑领取:持有远端 task_id 的任务转 running 继续轮询
@@ -256,6 +237,42 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
   });
   assert.equal(videoJobStatus('retry-job'), 'failed', '最终失败');
   assert.equal(videoJobAttempt('retry-job'), 2, 'maxAttempts=1 的旧行也必须重试一次(运行时兜底到 2)');
+}
+
+// --- 提交限流退避:429/5xx 不消耗 maxAttempts,冷却退避,重排有界 ---
+{
+  assert.equal(queueModule.isRateLimitedSubmitError('Video gateway submit error 429: rate limited'), true);
+  assert.equal(queueModule.isRateLimitedSubmitError('Video gateway submit error 503: overloaded'), true);
+  assert.equal(queueModule.isRateLimitedSubmitError('Video gateway submit error 400: bad request'), false);
+
+  insertProject('project-ratelimit');
+  insertImageAsset('img-project-ratelimit', 'project-ratelimit');
+  insertProvider('ratelimit-provider', 'kling');
+  insertVideoJob('ratelimit-job', 'project-ratelimit', { providerId: 'ratelimit-provider' });
+  let rlSubmitCalls = 0;
+  providersModule.registerTestVideoAdapter('kling', {
+    submit: async () => { rlSubmitCalls += 1; throw new Error('Video gateway submit error 429: rate limited'); },
+    poll: async () => { throw new Error('unreachable'); },
+    minimumPollingTimeoutMs: () => 0,
+  });
+  queueModule._resetRateLimitStateForTest();
+  // 缩短冷却,避免测试等待真实的 30s 退避
+  const savedCooldowns = [...queueModule.RATE_LIMIT_COOLDOWN_MS];
+  queueModule.RATE_LIMIT_COOLDOWN_MS.splice(0, queueModule.RATE_LIMIT_COOLDOWN_MS.length, 10);
+  try {
+    await queueModule.runVideoQueue({
+      projectId: 'project-ratelimit',
+      concurrency: 1,
+      timeoutMs: 60_000,
+    });
+  } finally {
+    queueModule.RATE_LIMIT_COOLDOWN_MS.splice(0, queueModule.RATE_LIMIT_COOLDOWN_MS.length, ...savedCooldowns);
+  }
+  assert.equal(rlSubmitCalls, queueModule.RATE_LIMIT_MAX_REQUEUES + 1, '限流重排必须有界(初始提交 + 5 次重排)');
+  assert.equal(videoJobStatus('ratelimit-job'), 'failed', '持续限流最终标失败');
+  const rlRow = db.prepare(`SELECT errorMessage, attempt FROM video_jobs WHERE id = 'ratelimit-job'`).get() as { errorMessage: string; attempt: number };
+  assert.ok(rlRow.errorMessage.includes('网关持续限流'), '失败信息须说明是持续限流');
+  assert.ok(rlRow.attempt > 2, '限流重试不消耗 maxAttempts(默认 2 次外仍重排)');
 }
 
 console.log('video queue resume tests passed');

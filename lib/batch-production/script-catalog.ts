@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { splitCoverTitle } from '../final-edit/domain.ts';
-import { isUsableMixcutScriptDraft } from '../final-edit/mixcut-context.ts';
+import { splitCoverTitle } from '../media-core/cover-domain.ts';
+import { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
 import type { StoredScriptOutput } from '../script-providers/types.ts';
 import { createProjectScript } from './scripts.ts';
 

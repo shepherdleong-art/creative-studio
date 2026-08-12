@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$NodeVersion = '22.22.3',
   [string]$InnoSetupCompiler = '',
   [switch]$SkipNpmCi
@@ -12,6 +12,8 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Split-Path -Parent $ScriptDir
 $DistRoot = Join-Path $Root 'dist\windows'
 $AppDir = Join-Path $DistRoot 'CreativeStudio'
+$Payload = Join-Path $AppDir 'resources\app'
+$ElectronDist = Join-Path $Root 'node_modules\electron\dist'
 $CacheDir = Join-Path $Root '.cache\windows-installer'
 $NodeName = "node-v$NodeVersion-win-x64"
 $NodeZip = Join-Path $CacheDir "$NodeName.zip"
@@ -56,10 +58,10 @@ function Resolve-InnoCompiler {
 
 function Remove-PayloadPath {
   param([string]$RelativePath)
-  $target = Join-Path $AppDir $RelativePath
-  $resolvedApp = [System.IO.Path]::GetFullPath($AppDir)
+  $target = Join-Path $Payload $RelativePath
+  $resolvedPayload = [System.IO.Path]::GetFullPath($Payload)
   $resolvedTarget = [System.IO.Path]::GetFullPath($target)
-  if (-not $resolvedTarget.StartsWith($resolvedApp, [System.StringComparison]::OrdinalIgnoreCase)) {
+  if (-not $resolvedTarget.StartsWith($resolvedPayload + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to prune outside installer payload: $resolvedTarget"
   }
   Remove-Item -LiteralPath $resolvedTarget -Recurse -Force -ErrorAction SilentlyContinue
@@ -79,19 +81,31 @@ if ($HostNodePlatform -ne 'win32') {
 if ($HostNodeArch -ne 'x64') {
   throw "Creative Studio Windows packaging requires an x64 Node build host; detected $HostNodeArch. Native modules must match the bundled win-x64 runtime."
 }
-
 if ($SkipNpmCi) {
   Write-Host 'Skipping npm ci because -SkipNpmCi was provided.'
 } else {
   Write-Host 'Installing npm dependencies...'
   & npm.cmd ci
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  if (-not (Test-Path (Join-Path $ElectronDist 'electron.exe'))) {
+    Write-Host 'Electron runtime was not installed by npm ci; running Electron installer...'
+    & node.exe (Join-Path $Root 'node_modules\electron\install.js')
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
+}
+
+if (-not (Test-Path (Join-Path $ElectronDist 'electron.exe'))) {
+  throw "Electron runtime was not found at $ElectronDist. Run npm ci and the Electron installer on the Windows build host."
 }
 
 Remove-Item -LiteralPath (Join-Path $Root '.next\dev') -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host 'Building Next.js standalone app...'
 & npm.cmd run build
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host 'Building Electron main/preload payload...'
+& npm.cmd run build:desktop
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 New-Item -ItemType Directory -Force -Path $CacheDir, $DistRoot | Out-Null
@@ -111,8 +125,38 @@ if (Test-Path $AppDir) {
 }
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
 
-Write-Host 'Assembling installer payload...'
-Copy-DirectoryContent -Source (Join-Path $Root '.next\standalone') -Destination $AppDir
+Write-Host 'Assembling Electron runtime...'
+Copy-DirectoryContent -Source $ElectronDist -Destination $AppDir
+$electronExe = Join-Path $AppDir 'electron.exe'
+$productExe = Join-Path $AppDir 'CreativeStudio.exe'
+if (-not (Test-Path $electronExe)) {
+  throw "Electron runtime did not contain electron.exe: $electronExe"
+}
+Move-Item -LiteralPath $electronExe -Destination $productExe -Force
+Remove-Item -LiteralPath (Join-Path $AppDir 'resources\default_app.asar') -Force -ErrorAction SilentlyContinue
+
+Write-Host 'Assembling Electron app payload...'
+New-Item -ItemType Directory -Force -Path $Payload | Out-Null
+Copy-DirectoryContent -Source (Join-Path $Root '.next\standalone') -Destination (Join-Path $Payload '.next\standalone')
+Copy-DirectoryContent -Source (Join-Path $Root '.next\static') -Destination (Join-Path $Payload '.next\static')
+Copy-DirectoryContent -Source (Join-Path $Root 'public') -Destination (Join-Path $Payload 'public')
+Copy-DirectoryContent -Source (Join-Path $Root 'dist-desktop') -Destination (Join-Path $Payload 'dist-desktop')
+Copy-DirectoryContent -Source $NodeExtracted -Destination (Join-Path $Payload 'runtime')
+$packageJson = Get-Content -LiteralPath (Join-Path $Root 'package.json') -Raw | ConvertFrom-Json
+$payloadPackage = [ordered]@{
+  name = $packageJson.name
+  version = $packageJson.version
+  private = $true
+  main = 'dist-desktop/main.js'
+}
+$jsonEncoding = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText(
+  (Join-Path $Payload 'package.json'),
+  (($payloadPackage | ConvertTo-Json -Depth 4) + [Environment]::NewLine),
+  $jsonEncoding
+)
+
+Write-Host 'Pruning local-only and development paths from Electron payload...'
 foreach ($relativePath in @(
   'data',
   'storage',
@@ -120,8 +164,13 @@ foreach ($relativePath in @(
   'installer',
   'docs',
   'scripts',
+  'desktop',
   '.claude',
   '.git',
+  '.venv-litellm',
+  'config.yaml',
+  'litellm-config.yaml',
+  'requirements-litellm.txt',
   '.next\cache',
   '.next\dev',
   'node_modules\.cache',
@@ -134,22 +183,60 @@ foreach ($relativePath in @(
   'start-windows.cmd',
   'stop-windows.cmd',
   'start.command',
+  'start-desktop.command',
   'stop.command',
+  'stop-desktop.command',
   'start.sh',
   'stop.sh',
   'launcher.vbs',
+  'launcher.html',
   'video-panel-mockup.html'
 )) {
   Remove-PayloadPath -RelativePath $relativePath
 }
-Get-ChildItem -LiteralPath $AppDir -Force -Filter '.env*' | Remove-Item -Recurse -Force
 
-$forbiddenPayload = @('data', 'storage', 'outputs', '.env.local')
+foreach ($relativePath in @(
+  'data',
+  'storage',
+  'outputs',
+  'installer',
+  'docs',
+  'scripts',
+  'desktop',
+  '.claude',
+  '.git',
+  '.venv-litellm',
+  'config.yaml',
+  'litellm-config.yaml'
+)) {
+  Remove-PayloadPath -RelativePath (Join-Path '.next\standalone' $relativePath)
+}
+Get-ChildItem -LiteralPath $Payload -Force -Recurse -Filter '.env*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+if (Get-ChildItem -LiteralPath $Payload -Force -Recurse -Filter '.env*' -ErrorAction SilentlyContinue) {
+  throw "Installer payload still contains environment files under $Payload."
+}
+Get-ChildItem -LiteralPath (Join-Path $Payload 'dist-desktop') -Force -Recurse -File -Include '*.map', '*.ts', '*.tsx' -ErrorAction SilentlyContinue | Remove-Item -Force
+if (Get-ChildItem -LiteralPath (Join-Path $Payload 'dist-desktop') -Force -Recurse -File -Include '*.map', '*.ts', '*.tsx' -ErrorAction SilentlyContinue) {
+  throw "Installer payload contains desktop source or sourcemap files under $(Join-Path $Payload 'dist-desktop')."
+}
+
+$forbiddenPayload = @('data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.claude', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml')
 foreach ($relativePath in $forbiddenPayload) {
-  $target = Join-Path $AppDir $relativePath
-  if (Test-Path $target) {
-    throw "Installer payload still contains forbidden local data path: $target"
+  $targets = @(
+    Join-Path $Payload $relativePath
+    Join-Path $Payload (Join-Path '.next\standalone' $relativePath)
+  )
+  foreach ($target in $targets) {
+    if (Test-Path $target) {
+      throw "Installer payload still contains forbidden local or development path: $target"
+    }
   }
+}
+if (Test-Path (Join-Path $Payload 'desktop')) {
+  throw "Installer payload still contains desktop shell source: $(Join-Path $Payload 'desktop')"
+}
+if (Test-Path (Join-Path $Payload '.next\standalone\desktop')) {
+  throw "Standalone payload still contains desktop shell source: $(Join-Path $Payload '.next\standalone\desktop')"
 }
 
 $ffmpegBinaries = @(
@@ -157,49 +244,29 @@ $ffmpegBinaries = @(
   'node_modules\ffprobe-static\bin\win32\x64\ffprobe.exe'
 )
 foreach ($relativePath in $ffmpegBinaries) {
-  $target = Join-Path $AppDir $relativePath
+  $target = Join-Path (Join-Path $Payload '.next\standalone') $relativePath
   if (-not (Test-Path $target)) {
     throw "Installer payload missing bundled ffmpeg binary: $target"
   }
 }
 
-Copy-DirectoryContent -Source (Join-Path $Root '.next\static') -Destination (Join-Path $AppDir '.next\static')
-Copy-DirectoryContent -Source (Join-Path $Root 'public') -Destination (Join-Path $AppDir 'public')
-Copy-DirectoryContent -Source $NodeExtracted -Destination (Join-Path $AppDir 'runtime')
+$runtimeNode = Join-Path $Payload 'runtime\node.exe'
+if (-not (Test-Path $runtimeNode)) {
+  throw "Installer payload missing private Node runtime: $runtimeNode"
+}
+$runtimeNodeVersion = (& $runtimeNode -p "process.versions.node.split('.')[0]").Trim()
+if ($runtimeNodeVersion -ne '22') {
+  throw "Installer payload private Node runtime is not Node 22.x: $runtimeNodeVersion"
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'scripts') | Out-Null
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-installed.ps1') -Destination (Join-Path $AppDir 'scripts\stop-installed.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\clear-user-data.ps1') -Destination (Join-Path $AppDir 'scripts\clear-user-data.ps1') -Force
-Copy-Item -LiteralPath (Join-Path $Root 'launcher.html') -Destination (Join-Path $AppDir 'launcher.html') -Force
-Copy-Item -LiteralPath (Join-Path $Root 'README.md') -Destination (Join-Path $AppDir 'README.md') -Force
 
-# ── Compile CreativeStudio.exe launcher ──
-$cscCandidates = @(
-  Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-  Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
-)
-$csc = $null
-foreach ($candidate in $cscCandidates) {
-  if (Test-Path $candidate) { $csc = $candidate; break }
+if (-not (Test-Path $productExe)) {
+  throw "Electron executable was not produced at $productExe"
 }
-if (-not $csc) {
-  throw 'csc.exe (C# compiler) not found. .NET Framework 4.x is required.'
-}
-$launcherCs = Join-Path $Root 'installer\windows\launcher.cs'
-$iconPath = Join-Path $Root 'app\favicon.ico'
-$exeOut = Join-Path $AppDir 'CreativeStudio.exe'
-Write-Host "Compiling CreativeStudio.exe from $launcherCs ..."
-& $csc /nologo /target:winexe /optimize+ /win32icon:"$iconPath" /out:"$exeOut" "$launcherCs"
-if ($LASTEXITCODE -ne 0) { throw 'csc.exe failed to compile launcher.cs' }
-if (-not (Test-Path $exeOut)) { throw "CreativeStudio.exe was not produced at $exeOut" }
-Write-Host 'CreativeStudio.exe compiled successfully.' -ForegroundColor Green
-
-# ── Also copy EXE to project root for dev-mode testing ──
-# Running CreativeStudio.exe from I:\creative-studio\ will use .next\standalone for the server
-# and .cache\windows-installer for the node runtime (dev layout detection in launcher.cs).
-$rootExe = Join-Path $Root 'CreativeStudio.exe'
-Copy-Item -LiteralPath $exeOut -Destination $rootExe -Force
-Write-Host "Dev copy: $rootExe" -ForegroundColor Cyan
+Write-Host 'Electron application runtime assembled successfully.' -ForegroundColor Green
 
 $iscc = Resolve-InnoCompiler -ExplicitPath $InnoSetupCompiler
 Write-Host "Compiling installer with Inno Setup: $iscc"

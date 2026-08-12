@@ -4,7 +4,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { runFfmpeg } from '../ffmpeg.ts';
-import { assertNoStorageSymlink, resolveStoragePath } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 import {
   buildLutVerificationArgs,
   COLOR_SNAPSHOT_OFF,

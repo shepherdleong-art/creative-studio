@@ -34,6 +34,13 @@ function nowIso(now?: () => Date): string {
   return (now ?? (() => new Date()))().toISOString();
 }
 
+let schedulerDraining = false;
+
+/** 进程停机时先关闭 claim 闸门，再等待已领取任务收尾。 */
+export function setBatchSchedulerDraining(draining: boolean): void {
+  schedulerDraining = draining;
+}
+
 /**
  * 原子领取一个可执行任务(生产任务)。
  * 只有任务处于 queued、用户期望运行,且批次未被暂停/停止时才可领取;
@@ -44,6 +51,7 @@ export function claimNextTask(
   db: Database.Database,
   options: ClaimTaskOptions,
 ): ClaimedBatchTask | null {
+  if (schedulerDraining) return null;
   const { workerId, leaseDurationMs = 5 * 60_000 } = options;
   const startedAt = nowIso(options.now);
   return db.transaction(() => {

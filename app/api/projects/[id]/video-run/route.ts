@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
 import { cancelVideoQueue, getVideoQueueStatus, runVideoQueue, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { writeLog } from '@/lib/logger';
 
@@ -23,9 +24,12 @@ export async function POST(
 
     writeLog({ jobId: '', projectId: id, level: 'info', message: 'Video queue auto-started from frontend' });
 
+    const projectRow = getDb().prepare(`SELECT videoConcurrency FROM projects WHERE id = ?`).get(id) as { videoConcurrency?: number } | undefined;
+    const concurrency = Math.max(1, Math.min(10, Number(projectRow?.videoConcurrency) || DEFAULT_VIDEO_CONCURRENCY));
+
     runVideoQueue({
       projectId: id,
-      concurrency: DEFAULT_VIDEO_CONCURRENCY,
+      concurrency,
       timeoutMs: DEFAULT_VIDEO_TIMEOUT_MS,
     }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);

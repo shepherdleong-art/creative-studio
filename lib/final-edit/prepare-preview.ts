@@ -26,6 +26,7 @@ export interface PreparePreviewInput {
   variant: FinalEditVariantView;
   sources: Array<{ videoJobId: string; absolutePath: string }>;
   narrationAbsolutePath: string;
+  signal?: AbortSignal;
 }
 
 const PREVIEW_SIZE = {
@@ -67,7 +68,7 @@ export async function warmPreparePreview(input: PreparePreviewInput): Promise<{ 
       '-map', '[video]', '-map', `${clips.length}:a`, '-shortest',
       '-r', '12', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '32',
       '-c:a', 'aac', '-movflags', '+faststart', '-y', temporaryPath,
-    ], { timeoutMs: 5 * 60_000 });
+    ], { timeoutMs: 5 * 60_000, signal: input.signal });
     fs.renameSync(temporaryPath, outputPath);
   } finally {
     fs.rmSync(temporaryPath, { force: true });

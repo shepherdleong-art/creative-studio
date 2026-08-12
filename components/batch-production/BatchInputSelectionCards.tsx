@@ -52,12 +52,30 @@ function sourcePresentation(source: PrepareSourceView): { label: string; detail:
   }
 }
 
-function SourceRow({ source }: { source: PrepareSourceView }) {
+function SourceRow({
+  source,
+  onRelocate,
+  relocating,
+}: {
+  source: PrepareSourceView;
+  onRelocate?: (sourceId: string) => void;
+  relocating?: boolean;
+}) {
   const presentation = sourcePresentation(source);
   return (
     <div className="flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-xs">
       <span className="min-w-0 truncate text-ink-secondary">{presentation.label} · {presentation.detail}</span>
-      <span className={source.health === 'healthy' ? 'text-ok' : 'text-fail'}>{presentation.health}</span>
+      <span className="flex shrink-0 items-center gap-2">
+        <span className={source.health === 'healthy' ? 'text-ok' : 'text-fail'}>{presentation.health}</span>
+        {source.sourceKind === 'linked' && source.health !== 'healthy' && onRelocate && (
+          <button
+            type="button"
+            className="text-accent underline"
+            disabled={relocating}
+            onClick={() => onRelocate(source.id)}
+          >{relocating ? '定位中…' : '重新定位'}</button>
+        )}
+      </span>
     </div>
   );
 }
@@ -165,6 +183,8 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   onAnalyzeContent,
   onRetryAnalyze,
   onResync,
+  onRelocateLinkedSource,
+  relocatingSourceId,
   analyzeBusy,
   onPreview,
   previewBadge,
@@ -181,6 +201,8 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   onAnalyzeContent?: () => void;
   onRetryAnalyze?: () => void;
   onResync?: () => void;
+  onRelocateLinkedSource?: (sourceId: string) => void;
+  relocatingSourceId?: string | null;
   analyzeBusy?: boolean;
   onPreview?: () => void;
   /** 预览来源信息(低清预览片/原片/LUT 待生成警告等) */
@@ -200,6 +222,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     content_analyzing: '画面内容分析',
     verified: '媒体核验完成',
     analyzed: '分析完成',
+    semantic_score: '语义匹配',
   };
   const taskStatus = analysisTask?.status;
   const taskError = analysisTask?.attempts?.at(-1)?.errorMessage;
@@ -328,7 +351,14 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
           {previewBadge}
           {renderAnalysisAction()}
           <div className="mt-4 space-y-2">
-            {asset.sources.map((source) => <SourceRow key={source.id} source={source} />)}
+            {asset.sources.map((source) => (
+              <SourceRow
+                key={source.id}
+                source={source}
+                onRelocate={onRelocateLinkedSource}
+                relocating={relocatingSourceId === source.id}
+              />
+            ))}
           </div>
           {selected && luts && onLutChange && (
             <div className="mt-3 flex flex-wrap items-center gap-2">

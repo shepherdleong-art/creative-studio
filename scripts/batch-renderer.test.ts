@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { computeFingerprintFromFile } from '../lib/batch-production/fingerprint.ts';
 import { resolveFfmpegPath, probeVideoMedia, runFfmpeg } from '../lib/ffmpeg.ts';
+import { FINAL_EDIT_INTRO_DURATION_US } from '../lib/media-core/render-contract.ts';
 import {
   regenerateBatchOutputCover,
   renderBatchOutputVersion,
@@ -153,7 +154,13 @@ async function run(): Promise<void> {
   assert.equal(renderedProbe.width, 1080);
   assert.equal(renderedProbe.height, 1440);
   assert.ok(Math.abs(renderedProbe.fps - 24) < 0.2);
-  assert.ok(Math.abs(renderedProbe.durationUs / 1_000_000 - 1) < 0.1);
+  // 成片 = 20 帧片头封面 + 正文(与单条剪辑同一个契约)。脚本时长预算本来就为
+  // 片头扣掉了这 20 帧,所以少了它成片会系统性短一个封面的长度。
+  assert.ok(
+    Math.abs(renderedProbe.durationUs / 1_000_000 - (FINAL_EDIT_INTRO_DURATION_US / 1_000_000 + 1)) < 0.1,
+    `成片时长必须是片头 + 正文，实际 ${(renderedProbe.durationUs / 1_000_000).toFixed(3)}s`,
+  );
+  assert.equal(result.durationUs, renderedProbe.durationUs, '回报时长必须是含片头的实际成片时长');
   assert.equal(renderedProbe.hasAudio, true);
   assert.equal(renderedProbe.videoCodec, 'h264');
   assert.equal(renderedProbe.pixelFormat, 'yuv420p');
@@ -186,7 +193,7 @@ async function run(): Promise<void> {
     const ratioProbe = await probeVideoMedia(ratioResult.videoAbsolutePath);
     assert.deepEqual([ratioProbe.width, ratioProbe.height], [width, height]);
     assert.ok(Math.abs(ratioProbe.fps - 24) < 0.2);
-    assert.ok(Math.abs(ratioProbe.durationUs / 1_000_000 - 1) < 0.1);
+    assert.ok(Math.abs(ratioProbe.durationUs / 1_000_000 - (FINAL_EDIT_INTRO_DURATION_US / 1_000_000 + 1)) < 0.1);
   }
 
   // A locally prepared narration path is accepted only with a matching full
@@ -203,7 +210,8 @@ async function run(): Promise<void> {
   });
   assert.equal(narrationResult.audioMode, 'narration');
   assert.equal(narrationResult.productionReady, true);
-  assert.ok(Math.abs(narrationResult.durationUs / 1_000_000 - 1.2) < 0.1);
+  // 口播驱动的是「正文」时长；成片还要加上片头封面。
+  assert.ok(Math.abs(narrationResult.durationUs / 1_000_000 - (FINAL_EDIT_INTRO_DURATION_US / 1_000_000 + 1.2)) < 0.1);
 
   // The persisted arrangement seam uses the project narration module's
   // storage-relative names and is accepted without any browser absolute path.
@@ -227,7 +235,7 @@ async function run(): Promise<void> {
   });
   assert.equal(persistedNarrationResult.audioMode, 'narration');
   assert.deepEqual(persistedNarrationResult.subtitleCues, [
-    { id: 'aligned-1', sourceSegmentId: 'source-1', text: '本地对齐字幕', startUs: 0, endUs: 1_200_000 },
+    { id: 'aligned-1:cue:1', sourceSegmentId: 'source-1', text: '本地对齐字幕', startUs: 0, endUs: 1_200_000 },
   ]);
   assert.equal(persistedNarrationResult.productionReady, true);
 

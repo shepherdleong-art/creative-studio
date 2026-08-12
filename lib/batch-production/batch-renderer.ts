@@ -6,11 +6,15 @@ import type Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { dataRoot } from '../data-root.ts';
 import { probeDurationSec, probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
-import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../final-edit/storage-path.ts';
+import { writeLog } from '../logger.ts';
+import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
+import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
 import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
+import { applyFrozenCoverTitleToFile, escapeXml } from './cover-title.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { listAssetSources, resolveSourceFilePath } from './media-catalog.ts';
 import { resolveManagedLutPath } from './lut-catalog.ts';
+import { buildBatchNarrationSubtitleCues } from './subtitle-cues.ts';
 import { readFrozenMusicPool } from './bgm.ts';
 
 export const BATCH_OUTPUT_PRESETS = {
@@ -597,15 +601,6 @@ function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderA
   return `${source},anullsrc=channel_layout=stereo:sample_rate=48000`; // replaced by caller for silent lavfi input
 }
 
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/gu, '&amp;')
-    .replace(/</gu, '&lt;')
-    .replace(/>/gu, '&gt;')
-    .replace(/"/gu, '&quot;')
-    .replace(/'/gu, '&apos;');
-}
-
 async function materializeSubtitleOverlays(input: {
   directory: string;
   cues: BatchRenderNarrationSegment[];
@@ -695,9 +690,16 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     if (!narrationInput || !Number.isFinite(measuredDuration) || Math.abs(measuredDuration - narrationInput.durationUs / 1_000_000) > 0.1) throw error('narration 实际时长与冻结时长不一致');
   }
   const subtitleCues = narrationSegments.length > 0
-    ? narrationSegments
+    ? buildBatchNarrationSubtitleCues(narrationSegments)
     : normalizeArrangementSubtitleCues(snapshot.arrangement.subtitle, targetDurationUs);
-  const targetDurationSec = targetDurationUs / 1_000_000;
+  // 片头封面:与单条剪辑同一个契约(FINAL_EDIT_INTRO_DURATION_US = 20 帧),
+  // 带标题的封面静帧接在正文之前,音频与字幕整体后移同样时长。脚本时长预算
+  // (script-duration-policy)本来就为它扣掉了这 20 帧,不加片头成片会系统性
+  // 短一个封面的长度。
+  const bodyDurationUs = targetDurationUs;
+  const bodyDurationSec = bodyDurationUs / 1_000_000;
+  const introDurationSec = FINAL_EDIT_INTRO_DURATION_US / 1_000_000;
+  const totalDurationSec = introDurationSec + bodyDurationSec;
   const { storageRoot, jobDir } = outputDirectory(input);
   const videoTemp = path.join(jobDir, `.video-${crypto.randomUUID()}.mp4.tmp`);
   const videoFinal = path.join(jobDir, 'video.mp4');
@@ -705,77 +707,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
   const coverFinal = path.join(jobDir, 'cover.jpg');
   const subtitleDir = path.join(jobDir, '.subtitle-overlays');
   try {
-    const audioInput = snapshot.clips.length;
-    const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot);
-    const args: string[] = [];
-    snapshot.clips.forEach((clip) => {
-      args.push('-ss', (clip.sourceStartUs / 1_000_000).toFixed(6), '-t', ((clip.sourceEndUs - clip.sourceStartUs) / 1_000_000).toFixed(6), '-i', clip.sourcePath);
-    });
-    if (narrationPath) args.push('-i', narrationPath);
-    else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
-    const bgmInput = bgm ? audioInput + 1 : null;
-    if (bgm) args.push('-stream_loop', '-1', '-i', bgm.absolutePath);
-    const subtitlePaths = await materializeSubtitleOverlays({
-      directory: subtitleDir,
-      cues: subtitleCues,
-      width: outputSize.width,
-      height: outputSize.height,
-    });
-    subtitlePaths.forEach((subtitlePath) => args.push('-loop', '1', '-framerate', '24', '-i', subtitlePath));
-    const filters = snapshot.clips.map((clip, index) => clipFilter(index, clip, outputSize.width, outputSize.height, (clip.timelineEndUs - clip.timelineStartUs) / 1_000_000));
-    filters.push(`${snapshot.clips.map((_, index) => `[clip${index}]`).join('')}concat=n=${snapshot.clips.length}:v=1:a=0[vconcat]`);
-    if (targetDurationSec > visualDurationUs / 1_000_000 + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(targetDurationSec - visualDurationUs / 1_000_000).toFixed(6)},trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
-    else filters.push(`[vconcat]trim=duration=${targetDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbase]`);
-    let currentVideoLabel = 'vbase';
-    const subtitleStartInput = audioInput + 1 + (bgm ? 1 : 0);
-    subtitleCues.forEach((cue, index) => {
-      const nextVideoLabel = `vsubtitle${index}`;
-      filters.push(`[${currentVideoLabel}][${subtitleStartInput + index}:v]overlay=0:0:enable='gte(t,${(cue.startUs / 1_000_000).toFixed(6)})*lt(t,${(cue.endUs / 1_000_000).toFixed(6)})'[${nextVideoLabel}]`);
-      currentVideoLabel = nextVideoLabel;
-    });
-    filters.push(`[${currentVideoLabel}]null[vout]`);
-    const voiceLabel = narrationPath ? 'narration' : 'silence';
-    if (narrationPath) filters.push(audioFilter(audioInput, targetDurationSec, 'narration'));
-    else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[silence]`);
-    if (bgm && bgmInput != null) {
-      // 混音链:响度归一化 → 增益 → 裁到成片时长 → 淡入淡出 → 与口播 amix。
-      // 音量/淡入/淡出来自锁定快照(整批统一),渲染只读不重选。
-      const bgmParams = resolveBatchBgmParams(snapshot.versionDefaultsJson);
-      const fadeInSec = Math.min(bgmParams.fadeInSec, targetDurationSec);
-      const fadeOutSec = Math.min(bgmParams.fadeOutSec, targetDurationSec);
-      const fadeStartSec = Math.max(0, targetDurationSec - fadeOutSec);
-      const fades = [
-        fadeInSec > 0 ? `afade=t=in:st=0:d=${fadeInSec.toFixed(6)}` : '',
-        fadeOutSec > 0 ? `afade=t=out:st=${fadeStartSec.toFixed(6)}:d=${fadeOutSec.toFixed(6)}` : '',
-      ].filter(Boolean).join(',');
-      filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${targetDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
-      filters.push(`[${voiceLabel}][music]amix=inputs=2:duration=longest:dropout_transition=0,apad,atrim=duration=${targetDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[aout]`);
-    } else {
-      filters.push(`[${voiceLabel}]anull[aout]`);
-    }
-    report({
-      phase: 'rendering', completed: 0, total: targetDurationSec, percent: 0,
-      description: audioMode === 'narration'
-        ? `渲染画面、口播与 ${subtitleCues.length} 条字幕${bgm ? '及背景音乐' : ''}`
-        : `渲染静音视觉候选与 ${subtitleCues.length} 条预计字幕`,
-    });
-    assertSignal(signal);
-    await runFfmpeg([
-      ...args,
-      '-filter_complex', filters.join(';'),
-      '-map', '[vout]', '-map', '[aout]',
-      '-t', targetDurationSec.toFixed(6), '-r', '24',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac', '-ar', '48000', '-ac', '2',
-      '-movflags', '+faststart', '-progress', 'pipe:1', '-f', 'mp4', '-y', videoTemp,
-    ], {
-      signal,
-      onProgressSec: (seconds) => {
-        const completed = Math.max(0, Math.min(targetDurationSec, seconds));
-        report({ phase: 'rendering', completed, total: targetDurationSec, percent: targetDurationSec > 0 ? completed / targetDurationSec : null, description: 'FFmpeg 实际媒体时间' });
-      },
-    });
-    await fsp.rm(subtitleDir, { recursive: true, force: true });
+    // 封面必须先于视频生成:带标题的封面就是片头那 20 帧静帧的输入源。
     report({ phase: 'cover', completed: null, total: null, percent: null, description: '生成第一镜头冻结时间点封面' });
     assertSignal(signal);
     const first = snapshot.coverClip;
@@ -791,6 +723,103 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         `crop=${outputSize.width}:${outputSize.height}`, 'setsar=1', ...coverColorFragments, 'format=yuv420p',
       ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
     ], { signal });
+    // 冻结的封面标题设置随版本 defaultsJson 锁定:抽帧+色彩链之后合成主/副标题,
+    // 再校验与算指纹,保证导出指纹校验与工作区预览一致。片头用的就是这张成品。
+    await applyFrozenCoverTitleToFile(input.db, input.planId, coverTemp, outputSize);
+    const audioInput = snapshot.clips.length;
+    const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot);
+    const args: string[] = [];
+    snapshot.clips.forEach((clip) => {
+      args.push('-ss', (clip.sourceStartUs / 1_000_000).toFixed(6), '-t', ((clip.sourceEndUs - clip.sourceStartUs) / 1_000_000).toFixed(6), '-i', clip.sourcePath);
+    });
+    if (narrationPath) args.push('-i', narrationPath);
+    else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+    const bgmInput = bgm ? audioInput + 1 : null;
+    if (bgm) args.push('-stream_loop', '-1', '-i', bgm.absolutePath);
+    const subtitleStartInput = audioInput + 1 + (bgm ? 1 : 0);
+    const subtitlePaths = await materializeSubtitleOverlays({
+      directory: subtitleDir,
+      cues: subtitleCues,
+      width: outputSize.width,
+      height: outputSize.height,
+    });
+    subtitlePaths.forEach((subtitlePath) => args.push('-loop', '1', '-framerate', '24', '-i', subtitlePath));
+    // 片头封面挂在最后一个输入位:这样 clip / 音频 / BGM / 字幕的既有下标全部不变。
+    const coverInput = subtitleStartInput + subtitlePaths.length;
+    args.push('-loop', '1', '-framerate', '24', '-i', coverTemp);
+    const filters = snapshot.clips.map((clip, index) => clipFilter(index, clip, outputSize.width, outputSize.height, (clip.timelineEndUs - clip.timelineStartUs) / 1_000_000));
+    filters.push(`${snapshot.clips.map((_, index) => `[clip${index}]`).join('')}concat=n=${snapshot.clips.length}:v=1:a=0[vconcat]`);
+    // 回归探针:画面与口播对齐后,下面的 tpad/trim 应是 no-op;偏差超过
+    // 0.15 秒说明"声画又各走各的"了,记 warning 供排查,不阻塞渲染。
+    const visualDurationSec = visualDurationUs / 1_000_000;
+    if (Math.abs(bodyDurationSec - visualDurationSec) > 0.15) {
+      writeLog({
+        projectId: input.projectId,
+        level: 'warn',
+        message: `渲染对齐偏差过大:画面 ${visualDurationSec.toFixed(3)}s vs 口播 ${bodyDurationSec.toFixed(3)}s（偏差 ${Math.abs(bodyDurationSec - visualDurationSec).toFixed(3)}s）batch=${input.batchId} plan=${input.planId} outputVersion=${input.outputVersionId}`,
+      });
+    }
+    if (bodyDurationSec > visualDurationSec + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(bodyDurationSec - visualDurationSec).toFixed(6)},trim=duration=${bodyDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbody]`);
+    else filters.push(`[vconcat]trim=duration=${bodyDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbody]`);
+    // 片头静帧接在正文之前。setsar=1 与 clipFilter 一致,否则 concat 会因
+    // SAR 不一致失败。
+    filters.push(`[${coverInput}:v]trim=duration=${introDurationSec.toFixed(6)},setpts=PTS-STARTPTS,scale=${outputSize.width}:${outputSize.height},crop=${outputSize.width}:${outputSize.height},setsar=1,fps=24,format=yuv420p[intro]`);
+    filters.push(`[intro][vbody]concat=n=2:v=1:a=0[vbase]`);
+    let currentVideoLabel = 'vbase';
+    // 字幕时间是正文内的时间,叠加时整体后移一个片头。
+    subtitleCues.forEach((cue, index) => {
+      const nextVideoLabel = `vsubtitle${index}`;
+      const startSec = introDurationSec + cue.startUs / 1_000_000;
+      const endSec = introDurationSec + cue.endUs / 1_000_000;
+      filters.push(`[${currentVideoLabel}][${subtitleStartInput + index}:v]overlay=0:0:enable='gte(t,${startSec.toFixed(6)})*lt(t,${endSec.toFixed(6)})'[${nextVideoLabel}]`);
+      currentVideoLabel = nextVideoLabel;
+    });
+    filters.push(`[${currentVideoLabel}]null[vout]`);
+    const voiceLabel = narrationPath ? 'narration' : 'silence';
+    if (narrationPath) filters.push(audioFilter(audioInput, bodyDurationSec, 'narration'));
+    else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[silence]`);
+    if (bgm && bgmInput != null) {
+      // 混音链:响度归一化 → 增益 → 裁到正文时长 → 淡入淡出 → 与口播 amix。
+      // 音量/淡入/淡出来自锁定快照(整批统一),渲染只读不重选。
+      const bgmParams = resolveBatchBgmParams(snapshot.versionDefaultsJson);
+      const fadeInSec = Math.min(bgmParams.fadeInSec, bodyDurationSec);
+      const fadeOutSec = Math.min(bgmParams.fadeOutSec, bodyDurationSec);
+      const fadeStartSec = Math.max(0, bodyDurationSec - fadeOutSec);
+      const fades = [
+        fadeInSec > 0 ? `afade=t=in:st=0:d=${fadeInSec.toFixed(6)}` : '',
+        fadeOutSec > 0 ? `afade=t=out:st=${fadeStartSec.toFixed(6)}:d=${fadeOutSec.toFixed(6)}` : '',
+      ].filter(Boolean).join(',');
+      filters.push(`[${bgmInput}:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      filters.push(`[${voiceLabel}][music]amix=inputs=2:duration=longest:dropout_transition=0,apad,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[abody]`);
+    } else {
+      filters.push(`[${voiceLabel}]anull[abody]`);
+    }
+    // 音轨整体后移一个片头,片头期间静音(与单条 renderer 的 adelay 一致)。
+    const introDelayMs = (FINAL_EDIT_INTRO_DURATION_US / 1000).toFixed(3);
+    filters.push(`[abody]adelay=${introDelayMs}|${introDelayMs},apad,atrim=duration=${totalDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[aout]`);
+    report({
+      phase: 'rendering', completed: 0, total: totalDurationSec, percent: 0,
+      description: audioMode === 'narration'
+        ? `渲染画面、口播与 ${subtitleCues.length} 条字幕${bgm ? '及背景音乐' : ''}`
+        : `渲染静音视觉候选与 ${subtitleCues.length} 条预计字幕`,
+    });
+    assertSignal(signal);
+    await runFfmpeg([
+      ...args,
+      '-filter_complex', filters.join(';'),
+      '-map', '[vout]', '-map', '[aout]',
+      '-t', totalDurationSec.toFixed(6), '-r', '24',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-ar', '48000', '-ac', '2',
+      '-movflags', '+faststart', '-progress', 'pipe:1', '-f', 'mp4', '-y', videoTemp,
+    ], {
+      signal,
+      onProgressSec: (seconds) => {
+        const completed = Math.max(0, Math.min(totalDurationSec, seconds));
+        report({ phase: 'rendering', completed, total: totalDurationSec, percent: totalDurationSec > 0 ? completed / totalDurationSec : null, description: 'FFmpeg 实际媒体时间' });
+      },
+    });
+    await fsp.rm(subtitleDir, { recursive: true, force: true });
     report({ phase: 'verifying', completed: null, total: null, percent: null, description: '校验正式渲染产物' });
     assertSignal(signal);
     const probe = await probeVideoMedia(videoTemp);
@@ -800,7 +829,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       || probe.height !== outputSize.height
       || Math.abs(probe.fps - 24) > 0.2
       || probe.durationUs <= 0
-      || Math.abs(probe.durationUs / 1_000_000 - targetDurationSec) > 0.12
+      || Math.abs(probe.durationUs / 1_000_000 - totalDurationSec) > 0.12
       || probe.hasAudio !== true
       || probe.videoCodec !== 'h264'
       || probe.pixelFormat !== 'yuv420p'
@@ -815,7 +844,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     assertSignal(signal);
     await atomicRenameNoReplace(videoTemp, videoFinal);
     await atomicRenameNoReplace(coverTemp, coverFinal);
-    report({ phase: 'ready', completed: targetDurationSec, total: targetDurationSec, percent: 1, description: '正式渲染完成' });
+    report({ phase: 'ready', completed: totalDurationSec, total: totalDurationSec, percent: 1, description: '正式渲染完成' });
     return {
       projectId: snapshot.projectId, batchId: snapshot.batchId, batchVersionId: snapshot.batchVersionId,
       planId: snapshot.planId, outputVersionId: snapshot.outputVersionId, planSeq: snapshot.planSeq,
@@ -972,6 +1001,8 @@ export async function regenerateBatchOutputCover(input: BatchCoverRegenerationIn
       ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
     ], { signal });
     assertSignal(signal);
+    // 换封面抽帧后重放同一套冻结标题合成,保证"换封面不丢标题"。
+    await applyFrozenCoverTitleToFile(db, planId, coverTemp, outputSize);
     const regeneratedStat = fs.lstatSync(coverTemp);
     if (regeneratedStat.isSymbolicLink() || !regeneratedStat.isFile() || regeneratedStat.size <= 0) {
       throw error('封面抽帧产物为空');

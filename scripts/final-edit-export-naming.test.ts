@@ -91,13 +91,16 @@ type ExportNamingModule = {
 const { buildExportBaseName, reserveExportPath } = (await import('../lib/final-edit/export-naming.ts')) as unknown as ExportNamingModule;
 
 function makeIdentity(overrides: Partial<ExportIdentity> = {}): ExportIdentity {
-  return {
+  const base = {
     projectId: 'proj-basic',
     taskName: '样例任务',
     productCode: 'JSQ-A1',
     taskDate: '20260723',
-    ...overrides,
   };
+  const merged = { ...base, ...overrides };
+  // 默认导出目录名跟随 projectId:旧断言里的物理目录都是按 projectId 建的,
+  // 显式传 exportDirName 的用例才真正偏离。
+  return { ...merged, exportDirName: merged.exportDirName ?? merged.projectId };
 }
 
 // ---------------------------------------------------------------------------

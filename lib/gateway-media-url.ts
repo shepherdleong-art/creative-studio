@@ -72,7 +72,31 @@ function extractJsonErrorBody(contentType: string | null, buffer: Buffer): strin
   }
 }
 
+const MAX_NETWORK_ATTEMPTS = 3;
+const NETWORK_RETRY_DELAYS_MS = [1_000, 2_000];
+
+/**
+ * 带有限重试的下载入口。CDN 边缘偶发 ECONNRESET（大体积视频传输尤其容易
+ * 命中），网络层失败（无 HTTP 状态码）重试；HTTP 状态错误、重定向上限、
+ * JSON 错误体属于确定性结果，不重试。
+ */
 export async function downloadGatewayMedia(
+  url: string,
+  baseUrl: string,
+  apiKey: string
+): Promise<GatewayMediaDownloadResult> {
+  for (let attempt = 0; ; attempt += 1) {
+    const result = await downloadGatewayMediaOnce(url, baseUrl, apiKey);
+    if (result.ok || result.status !== undefined || attempt >= MAX_NETWORK_ATTEMPTS - 1) {
+      return result;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, NETWORK_RETRY_DELAYS_MS[attempt] ?? 2_000),
+    );
+  }
+}
+
+async function downloadGatewayMediaOnce(
   url: string,
   baseUrl: string,
   apiKey: string

@@ -4,7 +4,7 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
-import { assertNoStorageSymlink, resolveStoragePath } from '../final-edit/storage-path.ts';
+import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 import { buildColorFilterFragments, COLOR_PIPELINE_VERSION, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { resolveSourceFilePath } from './media-catalog.ts';
