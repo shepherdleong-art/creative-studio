@@ -68,6 +68,71 @@ if ($webListener) {
   Write-Host ''
 }
 
+# venv 不可移植（pyvenv.cfg 写死创建机路径）：整个文件夹被拷贝到新机器后
+# litellm.exe 可能已失效。先探测，坏了就用本机 Python 3.12 自动重建。
+# 注意脚本全局 $ErrorActionPreference='Stop'，原生命令的 stderr 输出会变成
+# 致命错误，调用前必须局部降为 Continue。
+function Test-LitellmUsable {
+  param([string]$Exe)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & $Exe --version *> $null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
+$litellmExe = Join-Path $Root '.venv-litellm\Scripts\litellm.exe'
+if ((Test-Path $litellmExe) -and -not (Test-LitellmUsable $litellmExe)) {
+  Write-Host '检测到 LiteLLM 环境已失效（venv 是从其他机器拷贝的），尝试自动重建...' -ForegroundColor Yellow
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & py -3.12 --version *> $null
+    $pyOk = $LASTEXITCODE -eq 0
+    if (-not $pyOk) {
+      # 保留损坏的 venv：这样下次启动（装了 Python 之后）还会走自动重建。
+      Write-Host '未找到 Python 3.12，无法自动重建。公司供应商将不可用；安装 Python 3.12 后重开本脚本即可自动修复。' -ForegroundColor Yellow
+    } else {
+      # 重建前先停掉可能正在运行的受控 sidecar（运行中的 exe 删不掉）。
+      if (Test-Path (Join-Path $Root 'storage\run\stack.json')) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'stop-stack.ps1')
+      }
+      # 兜底：stack.json 缺失/失效时仍可能有残留进程占用 venv 文件，按路径清理。
+      $venvPrefix = (Join-Path $Root '.venv-litellm') + '\'
+      Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='litellm.exe'" |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [StringComparison]::OrdinalIgnoreCase) } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+      Start-Sleep -Seconds 1
+      try {
+        Remove-Item (Join-Path $Root '.venv-litellm') -Recurse -Force -ErrorAction Stop
+      } catch {
+        Write-Host "无法删除旧的 .venv-litellm（仍有进程占用），请关闭相关程序后重开本脚本。公司供应商暂不可用。" -ForegroundColor Yellow
+        Write-Host ''
+        # 跳过重建，继续启动工作台
+        $pyOk = $false
+      }
+      if ($pyOk) {
+        & py -3.12 -m venv .venv-litellm
+        & (Join-Path $Root '.venv-litellm\Scripts\python.exe') -m pip install -r requirements-litellm.txt
+        if (-not (Test-LitellmUsable $litellmExe)) {
+          Write-Host 'LiteLLM 环境重建失败，公司供应商将不可用；工作台其他功能不受影响。' -ForegroundColor Yellow
+          Remove-Item (Join-Path $Root '.venv-litellm') -Recurse -Force -ErrorAction SilentlyContinue
+        } else {
+          Write-Host 'LiteLLM 环境重建完成。'
+        }
+      }
+    }
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  Write-Host ''
+}
+
 # 公司供应商运行环境是可选 sidecar；失败只禁用公司供应商，不阻塞工作台。
 $stackStarted = $false
 $hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
