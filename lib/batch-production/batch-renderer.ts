@@ -743,7 +743,10 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       width: outputSize.width,
       height: outputSize.height,
     });
-    subtitlePaths.forEach((subtitlePath) => args.push('-loop', '1', '-framerate', '24', '-i', subtitlePath));
+    // 字幕是静态 PNG，单帧输入即可：overlay 用 eof_action=repeat 重复最后一帧，
+    // 可见性由 enable 时间窗控制。-loop 1 会让每条 cue 全程持续解码，
+    // 几十条 cue 时内存/CPU 随 cue 数线性膨胀，16GB 机器上实测会 OOM。
+    subtitlePaths.forEach((subtitlePath) => args.push('-i', subtitlePath));
     // 片头封面挂在最后一个输入位:这样 clip / 音频 / BGM / 字幕的既有下标全部不变。
     const coverInput = subtitleStartInput + subtitlePaths.length;
     args.push('-loop', '1', '-framerate', '24', '-i', coverTemp);
@@ -771,7 +774,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       const nextVideoLabel = `vsubtitle${index}`;
       const startSec = introDurationSec + cue.startUs / 1_000_000;
       const endSec = introDurationSec + cue.endUs / 1_000_000;
-      filters.push(`[${currentVideoLabel}][${subtitleStartInput + index}:v]overlay=0:0:enable='gte(t,${startSec.toFixed(6)})*lt(t,${endSec.toFixed(6)})'[${nextVideoLabel}]`);
+      filters.push(`[${currentVideoLabel}][${subtitleStartInput + index}:v]overlay=0:0:eof_action=repeat:enable='gte(t,${startSec.toFixed(6)})*lt(t,${endSec.toFixed(6)})'[${nextVideoLabel}]`);
       currentVideoLabel = nextVideoLabel;
     });
     filters.push(`[${currentVideoLabel}]null[vout]`);
