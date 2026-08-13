@@ -156,20 +156,23 @@ export async function submitGatewayTaskImage(
 ): Promise<GatewayTaskSubmitResult> {
   const cleanBase = baseUrl.replace(/\/$/, '');
 
-  // 与 geekai-json 一致的图片顺序约定：参考图在前，待编辑底图在最后。
-  const imageUrls: string[] = [];
+  // 与 packy-images / openai-compatible 一致的图片顺序约定：待编辑底图在前（图1），参考图在后（图2-N）。
+  // 项目默认提示词与存量项目提示词均按「图1=底图、图2=参考图」书写。
+  const imageUrls: string[] = [
+    await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType),
+  ];
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
     imageUrls.push(
       await toGatewayImageRefAsync(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png')
     );
   }
-  imageUrls.push(await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType));
 
   let prompt = request.prompt;
   const shouldUseSubjectGuidance =
     request.referenceGuidanceMode !== 'none' && request.referenceImagePaths.length > 0;
   if (shouldUseSubjectGuidance) {
-    prompt = `图1-${request.referenceImagePaths.length}是风格/场景参考图，最后一张是需要编辑的原图。保持最后一张图的产品主体、比例、材质不变，参考前面图片调整场景、光线和布置。\n${request.prompt}`;
+    const refRange = request.referenceImagePaths.length === 1 ? '图2' : `图2-${request.referenceImagePaths.length + 1}`;
+    prompt = `图1是需要编辑的原图，${refRange}是风格/场景参考图。保持图1的产品主体、比例、材质不变，参考后面的图片调整场景、光线和布置。\n${request.prompt}`;
   }
 
   const body: Record<string, unknown> = {
