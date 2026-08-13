@@ -22,16 +22,49 @@ Write-Host '  批量图片编辑工作台 - Windows 桌面版'
 Write-Host '========================================'
 Write-Host ''
 
-$node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) {
-  Write-Host '未找到 Node.js。请先安装 Node.js LTS: https://nodejs.org' -ForegroundColor Red
-  exit 1
+# 免安装包内置便携 Node（node-runtime\node.exe，v22.22.3 / ABI 127），与包内
+# 预编译原生模块（better-sqlite3）绑定；存在则优先使用，本机无需安装 Node。
+$bundledNode = Join-Path $Root 'node-runtime\node.exe'
+if (Test-Path $bundledNode) {
+  $nodeExe = $bundledNode
+  Write-Host "使用包内 Node 运行时: $(& $nodeExe --version)"
+} else {
+  $node = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $node) {
+    Write-Host '未找到 Node.js，包内也没有 node-runtime\node.exe。请安装 Node.js 22.x 或重新完整拷贝免安装包。' -ForegroundColor Red
+    exit 1
+  }
+  $nodeExe = $node.Source
 }
 
 # 显式锁定私有 Node 服务使用的运行时，双击启动环境的 PATH 未必与开发终端一致。
-$env:CREATIVE_STUDIO_NODE = $node.Source
+$env:CREATIVE_STUDIO_NODE = $nodeExe
+
+# 预编译原生模块（better-sqlite3）与 Node 大版本绑定，先用选定的 Node 试加载，
+# 避免 Node 24 之类的版本错配到服务启动后才炸。
+if (Test-Path (Join-Path $Root 'node_modules\better-sqlite3')) {
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & $nodeExe -e "require('better-sqlite3')" *> $null
+  $nativeOk = ($LASTEXITCODE -eq 0)
+  $ErrorActionPreference = $prevEap
+  if (-not $nativeOk) {
+    Write-Host '当前 Node 运行时无法加载包内预编译的 better-sqlite3（免安装包按 Node 22 编译）。' -ForegroundColor Red
+    Write-Host '请安装 Node.js 22.x，或使用含 node-runtime\node.exe 的完整免安装包。' -ForegroundColor Red
+    exit 1
+  }
+}
+
+# 需要 npm 的步骤（装依赖/构建）只在免安装包内容缺失时触发；npm 不存在时给出明确指引。
+function Assert-NpmAvailable {
+  if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+    Write-Host '需要执行 npm，但本机未安装 Node.js。免安装包应自带依赖与构建产物，请重新完整拷贝。' -ForegroundColor Red
+    exit 1
+  }
+}
 
 if (-not (Test-Path (Join-Path $Root 'node_modules'))) {
+  Assert-NpmAvailable
   Write-Host '首次运行，正在安装依赖，请保持联网...'
   & npm.cmd ci
   if ($LASTEXITCODE -ne 0) {
@@ -50,7 +83,7 @@ if (-not (Test-Path $electronBinary)) {
     Write-Host '缺少 electron 依赖，请先运行 npm ci。' -ForegroundColor Red
     exit 1
   }
-  & node $electronInstall
+  & $nodeExe $electronInstall
   if (-not (Test-Path $electronBinary)) {
     Write-Host "Electron 运行时安装失败：$electronBinary" -ForegroundColor Red
     exit 1
@@ -156,6 +189,7 @@ if ($hasStackComponents) {
 $standaloneServer = Join-Path $Root '.next\standalone\server.js'
 $standaloneEntry = Join-Path $Root '.next\standalone\runtime\server-entry.js'
 if ($Rebuild -or -not (Test-Path $standaloneServer) -or -not (Test-Path $standaloneEntry)) {
+  Assert-NpmAvailable
   if ($Rebuild) {
     Write-Host '正在重新构建工作台（-Rebuild）...'
   } else {
@@ -182,6 +216,7 @@ if (Test-Path $desktopBuiltEntry) {
   $desktopNeedsBuild = (-not $newestSource) -or ($newestSource.LastWriteTime -gt $builtAt)
 }
 if ($desktopNeedsBuild) {
+  Assert-NpmAvailable
   Write-Host '正在编译桌面壳...'
   & npm.cmd run build:desktop
   if ($LASTEXITCODE -ne 0) {

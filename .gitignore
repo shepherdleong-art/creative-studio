@@ -51,6 +51,9 @@ next-env.d.ts
 /outputs/
 !/storage/.gitkeep
 
+# 免安装包内置的便携 Node 运行时（87MB 二进制，不进仓库）
+/node-runtime/
+
 # brainstorming visual-companion workspace (generated mockups, not source)
 /.superpowers/
 .tmp-pdf-text/

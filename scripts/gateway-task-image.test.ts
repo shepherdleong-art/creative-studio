@@ -99,14 +99,16 @@ try {
   // 公司模型：size 吸附到文档白名单（1024x1024 本身是 1K 1:1，原样保留），并补 response_format
   assert.equal(capturedBody?.size, '1024x1024');
   assert.equal(capturedBody?.response_format, 'jpeg');
-  // prompt 带参考图引导前缀
-  assert.ok(String(capturedBody?.prompt).includes('最后一张是需要编辑的原图'));
+  // prompt 带参考图引导前缀（底图=图1，参考图=图2）
+  assert.ok(String(capturedBody?.prompt).includes('图1是需要编辑的原图'));
+  assert.ok(String(capturedBody?.prompt).includes('图2是风格/场景参考图'));
   assert.ok(String(capturedBody?.prompt).includes('把产品放到大理石台面上'));
-  // images：参考图在前，底图在最后（未配置公共地址时回退 data URL）
+  // images：底图在前（图1），参考图在后（图2）（未配置公共地址时回退 data URL）
   const images = capturedBody?.images as string[];
   assert.equal(images.length, 2);
-  assert.ok(images[0].startsWith('data:image/png;base64,'));
-  assert.ok(images[1].startsWith('data:image/png;base64,'));
+  const decodeImage = (dataUrl: string) => Buffer.from(dataUrl.split(',')[1], 'base64');
+  assert.deepEqual(decodeImage(images[0]), Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'images[0] 必须是底图');
+  assert.deepEqual(decodeImage(images[1]), Buffer.from([0x89, 0x50, 0x4e, 0x48]), 'images[1] 必须是参考图');
 
   const pollResult = await pollGatewayTaskImage(
     'task-1',

@@ -129,7 +129,10 @@ export async function renderFinalEditSnapshot(input: {
   for (const cue of snapshot.group.subtitleCues) {
     const subtitlePath = path.join(overlayDir, `subtitle-${cue.id}.png`);
     if (!fs.existsSync(subtitlePath)) throw new Error(`字幕图层缺失：${cue.id}`);
-    args.push('-loop', '1', '-framerate', '24', '-i', subtitlePath);
+    // 字幕是静态 PNG，单帧输入即可：overlay 默认 eof_action=repeat 会重复最后一帧，
+    // 可见性由 enable 时间窗控制。-loop 1 会让每条 cue 在整个时长内持续解码，
+    // 几十条 cue 时内存/CPU 随 cue 数线性膨胀，16GB 机器上实测会 OOM。
+    args.push('-i', subtitlePath);
   }
 
   const filters: string[] = [];
@@ -145,7 +148,7 @@ export async function renderFinalEditSnapshot(input: {
     const next = `subtitle${index}`;
     const start = (FINAL_EDIT_INTRO_DURATION_US + cue.startUs / narrationPlaybackRate) / 1_000_000;
     const end = (FINAL_EDIT_INTRO_DURATION_US + cue.endUs / narrationPlaybackRate) / 1_000_000;
-    filters.push(`[${currentVideo}][${subtitleStartInput + index}:v]overlay=0:0:enable='${subtitleOverlayEnableExpression(start, end)}'[${next}]`);
+    filters.push(`[${currentVideo}][${subtitleStartInput + index}:v]overlay=0:0:eof_action=repeat:enable='${subtitleOverlayEnableExpression(start, end)}'[${next}]`);
     currentVideo = next;
   });
   const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;

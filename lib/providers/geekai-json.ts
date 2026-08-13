@@ -134,19 +134,20 @@ export async function submitGeekAITask(
 ): Promise<GeekAISubmitResult> {
   const cleanBase = baseUrl.replace(/\/$/, '');
 
-  const imageUrls: string[] = [];
+  // 与 packy-images / openai-compatible 一致的图片顺序约定：待编辑底图在前（图1），参考图在后（图2-N）。
+  const imageUrls: string[] = [fileToDataUrl(request.inputImagePath, request.inputMimeType)];
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
     imageUrls.push(
       fileToDataUrl(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png')
     );
   }
-  imageUrls.push(fileToDataUrl(request.inputImagePath, request.inputMimeType));
 
   let prompt = request.prompt;
   const shouldUseSubjectGuidance =
     request.referenceGuidanceMode !== 'none' && request.referenceImagePaths.length > 0;
   if (shouldUseSubjectGuidance) {
-    prompt = `图1-${request.referenceImagePaths.length}是风格/场景参考图，最后一张是需要编辑的原图。保持最后一张图的产品主体、比例、材质不变，参考前面图片调整场景、光线和布置。\n${request.prompt}`;
+    const refRange = request.referenceImagePaths.length === 1 ? '图2' : `图2-${request.referenceImagePaths.length + 1}`;
+    prompt = `图1是需要编辑的原图，${refRange}是风格/场景参考图。保持图1的产品主体、比例、材质不变，参考后面的图片调整场景、光线和布置。\n${request.prompt}`;
   }
 
   const body = {

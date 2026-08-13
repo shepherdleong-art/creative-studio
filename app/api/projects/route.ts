@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
     const genCount = Math.max(1, Math.min(9, Number(body.generationCount) || 4));
     const hasFullCreation = sceneSeedImageId && scenePrompt && shotImageIds.length > 0;
 
-    const defaultScenePrompt = '基于图1生成新的室内产品场景图。保留适合家居产品展示的空间关系，重构墙面、软装、灯光、窗帘、地面和整体氛围，使画面更适合电商生活方式图。不要添加文字。';
+    const defaultScenePrompt = '保持图中床的一致性不变，更换其他家具和软装布置，风格参考原图，让卧室温馨舒适，全景图';
     const defaultShotPrompt = `图1 是待编辑分镜图，是本次修改的主要对象。
 图2 是场景参考图。
 请参考图2的空间风格、光线、墙面、软装和布置，重绘图1的场景。
