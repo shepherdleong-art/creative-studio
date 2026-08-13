@@ -32,7 +32,7 @@ npm run build:win-installer  # Windows 安装包（PowerShell + Inno Setup，须
 npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Node 22.x + Xcode CLT）
 ```
 
-终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd`（Windows 桌面版：Electron 壳 + standalone 生产构建，经 `scripts/start-desktop-windows.ps1`）、`stop-windows.cmd`（Windows 网页版）；Windows 网页版入口是 `scripts/start-windows.ps1`（dev server + 浏览器，默认 3000 端口）。
+终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd`（Windows 桌面版：Electron 壳 + standalone 生产构建，经 `scripts/start-desktop-windows.ps1`）、`stop-windows.cmd`（Windows 网页版）；Windows 网页版入口是 `scripts/start-windows.ps1`（dev server + 浏览器，默认 3000 端口）。Windows 桌面启动脚本优先使用 `node-runtime\node.exe`（免安装包内置的便携 Node 22，gitignored；与包内预编译 better-sqlite3 的 ABI 绑定），缺失才回退系统 Node 并试加载原生模块做版本硬校验。
 
 公司网关联动（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，macOS 的 `start.command` 与 `npm run dev` 的 `predev` 钩子都经 `scripts/start-litellm.sh`、Windows 的 `start-windows.cmd`（桌面壳）与 `scripts/start-windows.ps1`（dev server）都经 `scripts/start-stack.ps1 -SkipApp` 拉起 LiteLLM（端口 4000，启动参数必须显式 `--host 127.0.0.1`）；依赖锁定在 `requirements-litellm.txt`，组件缺失或 sidecar 失败只禁用公司供应商，不阻塞工作台。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。两平台停止脚本、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读取 `storage/run/stack.json` 的受控 `stopScript`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
 
@@ -140,7 +140,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 ## 桌面打包与部署
 
-- `next.config.ts` 使用 `output: 'standalone'`，并通过 `outputFileTracingExcludes` 排除数据/文档/脚本目录；`ffmpeg-static`、`ffprobe-static` 在 `serverExternalPackages` 中，由 `scripts/sync-standalone-assets.mjs` 强制拷入 standalone（`npm run build` 会自动执行）。
+- `next.config.ts` 使用 `output: 'standalone'`，并通过 `outputFileTracingExcludes` 排除数据/文档/脚本目录；`ffmpeg-static`、`ffprobe-static` 在 `serverExternalPackages` 中，由 `scripts/sync-standalone-assets.mjs` 强制拷入 standalone（`npm run build` 会自动执行）；sharp 的原生运行时目录 `node_modules/@img` 同样强制拷入（Next 文件追踪只收录 `.node` 会漏掉同目录的 libvips DLL，导致 `ERR_DLOPEN_FAILED`）。
 - **Windows**：`scripts/build-win-installer.ps1` 跑生产构建、下载配套私有 Node 运行时、用 Inno Setup（`installer/windows/CreativeStudio.iss`）组装，输出 `dist/windows/CreativeStudioSetup.exe`。默认卸载保留本地数据。
 - **macOS**：`scripts/build-mac-installer.sh` 输出 `dist/macos/产品素材工作台-<version>.dmg`，仅 Apple Silicon。构建机必须用 arm64 Node 22.x（内置运行时锁定 Node 22.22.3），主版本或架构不一致会导致 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；还需要 Xcode Command Line Tools。脚本会校验 FFmpeg 为 arm64，并移除错误标为 arm64 的 x86_64 `ffprobe-static`，由已测试的 FFmpeg 元数据探测回退接管。用户侧说明见 `MACOS.md`。
 - **Electron 发版顺序与本地服务状态**：macOS/Windows 打包脚本先完成 `npm ci`（除非显式跳过）；若目标 `node_modules/electron` runtime 仍缺失，普通分支再用当前 Node 显式执行 `node_modules/electron/install.js`，随后统一做存在性硬断言，显式跳过分支不自动安装。macOS ATS 只允许 `NSAllowsLocalNetworking`。桌面服务在 `CREATIVE_STUDIO_DATA_ROOT/storage/run/electron-service.json` 记录当前 `http://127.0.0.1:<port>` 与 instance，正常退出时清理；Windows 安装停止脚本必须先校验该状态与 `/api/desktop/health` 的 instance，再有限 POST `/api/shutdown`，超时才按安装路径使用 `taskkill /T /F`。

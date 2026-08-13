@@ -30,6 +30,8 @@ try {
   writeFixture('runtime/server-entry.js', 'module.exports = "fixture-runtime";\n');
   writeFixture('node_modules/ffmpeg-static/package.json', '{}\n');
   writeFixture('node_modules/ffprobe-static/package.json', '{}\n');
+  writeFixture('node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node');
+  writeFixture('node_modules/@img/sharp-win32-x64/lib/libvips-42.dll');
   writeFixture('.next/standalone/desktop/main.js');
   writeFixture('.next/standalone/dist-desktop/main.js');
   writeFixture('.next/standalone/app/api/desktop/health/route.js');
@@ -55,6 +57,10 @@ try {
     'app/api/desktop 是允许保留的 Next API 路由',
   );
   assert.ok(existsSync(runtimeCopy), `缺少 standalone runtime wrapper：${runtimeCopy}`);
+  assert.ok(
+    existsSync(path.join(standalone, 'node_modules', '@img', 'sharp-win32-x64', 'lib', 'libvips-42.dll')),
+    'standalone 必须包含 @img 完整目录（sharp 的 .node 依赖同目录 libvips DLL）',
+  );
   assert.equal(
     readFileSync(runtimeCopy, 'utf8'),
     readFileSync(runtimeSource, 'utf8'),

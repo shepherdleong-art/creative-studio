@@ -36,6 +36,10 @@ for (const pkg of ['ffmpeg-static', 'ffprobe-static']) {
   copyDirectory(join(root, 'node_modules', pkg), join(standaloneDir, 'node_modules', pkg));
 }
 
+// sharp 的原生运行时在 @img/ 下：.node 依赖同目录的 libvips DLL，
+// Next 文件追踪只收录 .node 会漏掉 DLL（ERR_DLOPEN_FAILED），整个 @img 目录强制拷入
+copyDirectory(join(root, 'node_modules', '@img'), join(standaloneDir, 'node_modules', '@img'));
+
 // Next output tracing can conservatively copy the project root when a route has
 // dynamic filesystem access. Strip local data, credentials and development
 // paths even if a stale standalone directory survived from an earlier build.
