@@ -1,8 +1,9 @@
 // 分发环境自检（只读）：打印脱敏诊断信息，供同事机器排查后回传。
 // 用法：在项目根目录执行 node scripts/diagnose-local-env.mjs（或双击 环境自检.cmd）
-import { existsSync, statSync, readdirSync } from 'node:fs';
+import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 
 const root = process.cwd();
 const require = createRequire(join(root, 'package.json'));
@@ -24,6 +25,10 @@ for (const f of [
   'config.yaml',
   '.env.local',
   'node-runtime/node.exe',
+  'python-runtime/python.exe',
+  'python-runtime/runtime-manifest.json',
+  'portable-manifest.json',
+  'scripts/start-litellm-proxy.py',
   '.next/standalone/server.js',
   '.next/standalone/runtime/server-entry.js',
   'node_modules/.bin/electron.cmd',
@@ -66,6 +71,36 @@ if (Database && existsSync(join(root, 'data', 'workbench.db'))) {
   } catch (e) {
     console.log('读取失败:', String(e).split('\n')[0]);
   }
+}
+
+console.log('\n== 内置 Python 运行时（免安装包公司网关组件）==');
+const portableMode = existsSync(join(root, 'portable-manifest.json'));
+console.log('免安装包模式:', portableMode ? '是（检测到 portable-manifest.json）' : '否（源码开发目录）');
+const pyExe = join(root, 'python-runtime', 'python.exe');
+if (!existsSync(pyExe)) {
+  console.log('python-runtime\\python.exe: 缺失' + (portableMode ? '（免安装包不完整，请重新完整复制）' : '（源码目录可用 .venv-litellm 代替）'));
+} else {
+  const pyManifestPath = join(root, 'python-runtime', 'runtime-manifest.json');
+  try {
+    const m = JSON.parse(readFileSync(pyManifestPath, 'utf8').replace(/^﻿/, ''));
+    console.log(`runtime-manifest.json: 可解析（Python ${m.pythonVersion} / LiteLLM ${m.litellmVersion} / ${m.targetTriple}）`);
+  } catch {
+    console.log('runtime-manifest.json: 缺失或无法解析');
+  }
+  const runPy = (args) => spawnSync(pyExe, args, { encoding: 'utf8', timeout: 120000 });
+  const pyVer = runPy(['--version']);
+  console.log('实际 Python 版本:', pyVer.status === 0 ? String(pyVer.stdout).trim() : `探测失败（退出码 ${pyVer.status}）`);
+  const liteVer = runPy(['-c', "from importlib.metadata import version; print(version('litellm'))"]);
+  console.log('实际 LiteLLM 版本:', liteVer.status === 0 ? String(liteVer.stdout).trim() : `探测失败（退出码 ${liteVer.status}）`);
+  const entry = runPy(['-c', 'from litellm import run_server']);
+  console.log('from litellm import run_server:', entry.status === 0 ? 'OK' : `失败（退出码 ${entry.status}）`);
+}
+if (existsSync(join(root, '.venv-litellm'))) {
+  console.log(
+    portableMode
+      ? '警告: 免安装包中意外存在 .venv-litellm（新方案不应携带该目录，请重新从共享盘完整复制）'
+      : '.venv-litellm: 存在（源码开发目录属正常）',
+  );
 }
 
 console.log('\n== LiteLLM 代理 ==');

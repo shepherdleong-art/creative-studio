@@ -5,7 +5,9 @@ param(
   [int]$AppPort = 3000,
   [int]$ProxyPort = 4000,
   # 只启动代理并写 stack.json（供 start-windows.ps1 调用，app 由调用方自己起）
-  [switch]$SkipApp
+  [switch]$SkipApp,
+  # 免安装包模式：只使用包内 python-runtime，损坏即报包不完整，禁止联网修复或回退
+  [switch]$Portable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +20,72 @@ $stackFile = Join-Path $RunDir 'stack.json'
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
 
 $litellmExe = Join-Path $Root '.venv-litellm\Scripts\litellm.exe'
+$litellmRuntimeKind = 'venv-litellm'
+$litellmInterpreter = $litellmExe
+$litellmArgs = @('--config', 'config.yaml', '--port', "$ProxyPort", '--host', '127.0.0.1')
+
+if ($Portable) {
+  # 免安装模式：只允许包内 python-runtime。缺失、损坏或哈希不符时不删除、
+  # 不联网修复、不回退源码 venv 或系统 Python，明确报告包不完整后退出。
+  $runtimePython = Join-Path $Root 'python-runtime\python.exe'
+  $runtimeManifestFile = Join-Path $Root 'python-runtime\runtime-manifest.json'
+  $portableManifestFile = Join-Path $Root 'portable-manifest.json'
+  $portableError = $null
+  do {
+    if (-not (Test-Path $runtimePython)) { $portableError = '缺少 python-runtime\python.exe'; break }
+    if (-not (Test-Path $runtimeManifestFile)) { $portableError = '缺少 python-runtime\runtime-manifest.json'; break }
+    if (-not (Test-Path $portableManifestFile)) { $portableError = '缺少 portable-manifest.json'; break }
+    try {
+      $runtimeManifest = Get-Content $runtimeManifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch { $portableError = 'runtime-manifest.json 无法解析'; break }
+    if ([int]$runtimeManifest.schemaVersion -ne 1 -or
+        $runtimeManifest.pythonVersion -ne '3.12.10' -or
+        $runtimeManifest.litellmVersion -ne '1.89.2' -or
+        $runtimeManifest.targetTriple -ne 'x86_64-pc-windows-msvc') {
+      $portableError = 'runtime-manifest.json 与锁定基线（Python 3.12.10 / LiteLLM 1.89.2 / win-x64）不符'
+      break
+    }
+    try {
+      $portableManifest = Get-Content $portableManifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch { $portableError = 'portable-manifest.json 无法解析'; break }
+    if ([int]$portableManifest.schemaVersion -ne 1 -or
+        $portableManifest.mode -ne 'windows-portable-v1' -or
+        -not $portableManifest.files) {
+      $portableError = 'portable-manifest.json 模式不是 windows-portable-v1'
+      break
+    }
+    # 关键文件 SHA-256 必须与 portable-manifest.json 记录一致
+    foreach ($rel in @('python-runtime/python.exe', 'python-runtime/runtime-manifest.json')) {
+      $entry = @($portableManifest.files | Where-Object { $_.path -eq $rel })[0]
+      if (-not $entry) { $portableError = "portable-manifest.json 缺少关键文件条目 $rel"; break }
+      $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $Root ($rel -replace '/', '\'))).Hash.ToLowerInvariant()
+      if ($actual -ne ([string]$entry.sha256).ToLowerInvariant()) {
+        $portableError = "关键文件哈希不符：$rel"
+        break
+      }
+    }
+    if ($portableError) { break }
+    # 实测解释器与 LiteLLM 版本，禁止仅凭文件名信任
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      $pyVer = (& $runtimePython --version 2>&1 | Out-String).Trim()
+      if ($pyVer -ne 'Python 3.12.10') { $portableError = "python-runtime 实际版本不符：$pyVer"; break }
+      $liteVer = (& $runtimePython -c "from importlib.metadata import version; print(version('litellm'))" 2>&1 | Out-String).Trim()
+      if ($liteVer -ne '1.89.2') { $portableError = "LiteLLM 实际版本不符：$liteVer"; break }
+    } finally {
+      $ErrorActionPreference = $prevEap
+    }
+  } while ($false)
+  if ($portableError) {
+    Write-Host "免安装包不完整，请重新复制（$portableError）。公司网关组件不可用；不执行任何下载、修复或回退。" -ForegroundColor Red
+    exit 1
+  }
+  $litellmExe = $runtimePython
+  $litellmRuntimeKind = 'python-runtime'
+  $litellmInterpreter = $runtimePython
+  $litellmArgs = @('scripts\start-litellm-proxy.py', '--config', 'config.yaml', '--host', '127.0.0.1', '--port', "$ProxyPort")
+}
 $nodeExe = Join-Path $Root '.cache\windows-installer\node-v22.22.3-win-x64\node.exe'
 $standaloneDir = Join-Path $Root '.next\standalone'
 
@@ -69,7 +137,7 @@ try {
   # 离线加载模型价格表：避免启动时拉取 remote cost map 超时拖慢启动
   $env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
   $p = Start-Process -FilePath $litellmExe `
-    -ArgumentList '--config', 'config.yaml', '--port', "$ProxyPort", '--host', '127.0.0.1' `
+    -ArgumentList $litellmArgs `
     -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $LogDir 'litellm.out.log') `
     -RedirectStandardError (Join-Path $LogDir 'litellm.err.log')
@@ -90,6 +158,8 @@ try {
   if ($SkipApp) {
     $started.appPort = $AppPort
     $started.proxyPort = $ProxyPort
+    $started.litellmRuntime = $litellmRuntimeKind
+    $started.litellmInterpreter = $litellmInterpreter
     $started.stopScript = Join-Path $Root 'scripts\stop-stack.ps1'
     $started.startedAt = (Get-Date).ToString('s')
     [System.IO.File]::WriteAllText($stackFile, ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
@@ -118,6 +188,8 @@ try {
   # ── 记录状态供停止脚本使用 ──
   $started.appPort = $AppPort
   $started.proxyPort = $ProxyPort
+  $started.litellmRuntime = $litellmRuntimeKind
+  $started.litellmInterpreter = $litellmInterpreter
   $started.stopScript = Join-Path $Root 'scripts\stop-stack.ps1'
   $started.startedAt = (Get-Date).ToString('s')
   [System.IO.File]::WriteAllText($stackFile, ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))

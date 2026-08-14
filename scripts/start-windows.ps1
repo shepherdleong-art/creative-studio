@@ -67,8 +67,10 @@ if ($needsInstall) {
 
 # ── 公司网关联动：依赖就绪后再拉起可选 sidecar，失败不能阻塞工作台 ──
 # 参考图公网交付走腾讯云 COS（见 .env.local 的 CREATIVE_STUDIO_COS_*）；本机服务不得暴露到公网。
+# 公司组件检测同时识别免安装包内置 python-runtime 与源码开发环境的 .venv-litellm。
 $stackStarted = $false
-$hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
+$hasStackComponents = ((Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -or
+                      (Test-Path (Join-Path $Root 'python-runtime\python.exe'))) -and
                       (Test-Path (Join-Path $Root 'config.yaml'))
 if ($hasStackComponents) {
   Write-Host '检测到公司网关组件，启动 litellm 代理...'

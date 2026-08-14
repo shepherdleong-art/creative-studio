@@ -21,11 +21,47 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyCon
   Where-Object { $_.ExecutablePath -like '*windows-installer*' -and $_.CommandLine -match 'server\.js' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-# ── 2. litellm 代理：按端口属主精确停止 ──
+# ── 2. litellm 代理：优先按状态文件 PID 停止，并校验可执行路径属于本项目运行时 ──
+# 不得仅凭端口杀死未知进程：只有可执行路径位于本项目 python-runtime\ 或
+# .venv-litellm\ 下的进程才允许停止，其余一律跳过并明示。
 Write-Host '[2/2] 停止 litellm 代理...'
-Get-NetTCPConnection -LocalPort $proxyPort -State Listen -ErrorAction SilentlyContinue |
-  Select-Object -ExpandProperty OwningProcess -Unique |
-  ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+$ownedPrefixes = @(
+  ((Join-Path $Root 'python-runtime') + '\'),
+  ((Join-Path $Root '.venv-litellm') + '\')
+)
+function Test-OwnedProcess {
+  param([int]$TargetPid)
+  $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$TargetPid" -ErrorAction SilentlyContinue
+  if (-not $proc -or -not $proc.ExecutablePath) { return $false }
+  foreach ($prefix in $ownedPrefixes) {
+    if ($proc.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+$litellmStopped = $false
+if ($stack -and $stack.litellmPid) {
+  $litellmPid = [int]$stack.litellmPid
+  if (Get-Process -Id $litellmPid -ErrorAction SilentlyContinue) {
+    if (Test-OwnedProcess $litellmPid) {
+      Stop-Process -Id $litellmPid -Force -ErrorAction SilentlyContinue
+      $litellmStopped = $true
+    } else {
+      Write-Host "状态文件中的 PID $litellmPid 不属于本项目运行时，跳过（不误杀未知进程）。" -ForegroundColor Yellow
+    }
+  }
+}
+if (-not $litellmStopped) {
+  # 兜底：端口属主中只停止可执行路径属于本项目的进程，其余不动。
+  Get-NetTCPConnection -LocalPort $proxyPort -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique |
+    ForEach-Object {
+      if (Test-OwnedProcess $_) {
+        Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+      } else {
+        Write-Host "端口 $proxyPort 的占用进程（PID $_）不属于本项目运行时，未停止。" -ForegroundColor Yellow
+      }
+    }
+}
 
 if (Test-Path $stackFile) { Remove-Item $stackFile -Force -ErrorAction SilentlyContinue }
 Write-Host '已全部停止。'

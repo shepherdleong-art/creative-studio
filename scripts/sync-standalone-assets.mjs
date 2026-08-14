@@ -56,6 +56,7 @@ const localOnlyRoots = [
   'installer',
   'litellm-config.yaml',
   'outputs',
+  'python-runtime',
   'scripts',
   'storage',
 ];

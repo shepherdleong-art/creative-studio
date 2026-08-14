@@ -60,7 +60,7 @@ assert.match(desktopService, /CREATIVE_STUDIO_DESKTOP: '1'/);
 assert.match(build, /node_modules\\ffmpeg-static\\ffmpeg\.exe/);
 assert.match(build, /node_modules\\ffprobe-static\\bin\\win32\\x64\\ffprobe\.exe/);
 assert.match(build, /dist-desktop.*-Include '\*\.map', '\*\.ts', '\*\.tsx'/s);
-for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml', '.git', '.claude', 'desktop']) {
+for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.env.local', '.venv-litellm', 'python-runtime', 'config.yaml', 'litellm-config.yaml', '.git', '.claude', 'desktop']) {
   assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
 }
 assert.doesNotMatch(build, /launcher\.cs|csc\.exe|Compile.*launcher/i, 'Windows packaging must not compile the legacy launcher');

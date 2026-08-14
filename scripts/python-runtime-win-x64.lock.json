@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "comment": "Windows x64 python-runtime 构建输入锁。所有值必须是不可变事实：禁止浮动版本与空哈希。archiveSha256 已与 astral-sh/python-build-standalone release 20250529 官方 .sha256 伴随文件逐字节核对（2026-08-14）。",
+  "pythonVersion": "3.12.10",
+  "pythonBuildStandaloneRelease": "20250529",
+  "targetTriple": "x86_64-pc-windows-msvc",
+  "archiveUrl": "https://github.com/astral-sh/python-build-standalone/releases/download/20250529/cpython-3.12.10%2B20250529-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+  "archiveSha256": "ca22a9a9e64ecab6d0b5de7cdf8b679ccaa41e9def6aaa2b4aaa6bb23ec7aaba",
+  "litellmVersion": "1.89.2",
+  "dependencyLockFile": "requirements-litellm-win-x64.lock.txt",
+  "dependencyLockSha256": "a7683e0fabbf38fb655023f2ec3bcb7550f22d390a9276757db8c8232ef516fa",
+  "buildScriptVersion": 1
+}

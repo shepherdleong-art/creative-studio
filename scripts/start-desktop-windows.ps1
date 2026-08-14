@@ -6,7 +6,9 @@
 # 停止：在应用菜单选择「退出」，或关闭本窗口。本机服务不得暴露到公网。
 param(
   # 强制重新执行 npm run build（代码更新后使用）
-  [switch]$Rebuild
+  [switch]$Rebuild,
+  # 免安装包模式：只使用包内 node-runtime/python-runtime，禁止任何联网修复或构建
+  [switch]$Portable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +23,52 @@ Write-Host '========================================'
 Write-Host '  批量图片编辑工作台 - Windows 桌面版'
 Write-Host '========================================'
 Write-Host ''
+
+# 免安装模式收到 -Rebuild 直接拒绝：终端用户机器不得执行 Next/Electron 构建。
+if ($Portable -and $Rebuild) {
+  Write-Host '免安装模式不支持 -Rebuild。请由发布者重新生成免安装包后完整复制，本机不执行任何构建。' -ForegroundColor Red
+  exit 1
+}
+
+# 免安装包完整性预检：校验根目录 portable-manifest.json 的 schema、模式
+# windows-portable-v1 与关键文件清单。manifest 缺失或无效即报告包损坏，
+# 公司网关组件不可用；无论 manifest 状态如何都不得降级为源码分支。
+$portableManifestOk = $false
+if ($Portable) {
+  $portableManifestFile = Join-Path $Root 'portable-manifest.json'
+  $portableRequiredFiles = @(
+    'node-runtime/node.exe',
+    'node_modules/.bin/electron.cmd',
+    'node_modules/electron/dist/electron.exe',
+    '.next/standalone/server.js',
+    '.next/standalone/runtime/server-entry.js',
+    'python-runtime/python.exe',
+    'python-runtime/runtime-manifest.json',
+    'scripts/start-desktop-windows.ps1',
+    'scripts/start-stack.ps1',
+    'scripts/start-litellm-proxy.py',
+    'config.yaml'
+  )
+  do {
+    if (-not (Test-Path $portableManifestFile)) { break }
+    try { $pm = Get-Content $portableManifestFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { break }
+    if ([int]$pm.schemaVersion -ne 1 -or $pm.mode -ne 'windows-portable-v1' -or -not $pm.files) { break }
+    $manifestPaths = @($pm.files | ForEach-Object { [string]$_.path })
+    $incomplete = $false
+    foreach ($rel in $portableRequiredFiles) {
+      if ($manifestPaths -notcontains $rel -or -not (Test-Path (Join-Path $Root ($rel -replace '/', '\')))) {
+        $incomplete = $true
+        break
+      }
+    }
+    if ($incomplete) { break }
+    $portableManifestOk = $true
+  } while ($false)
+  if (-not $portableManifestOk) {
+    Write-Host '免安装包不完整，请重新复制（portable-manifest.json 缺失、无效或关键文件缺失）。公司网关组件将不可用，工作台其余功能继续启动。' -ForegroundColor Red
+    Write-Host ''
+  }
+}
 
 # 免安装包内置便携 Node（node-runtime\node.exe，v22.22.3 / ABI 127），与包内
 # 预编译原生模块（better-sqlite3）绑定；存在则优先使用，本机无需安装 Node。
@@ -64,6 +112,10 @@ function Assert-NpmAvailable {
 }
 
 if (-not (Test-Path (Join-Path $Root 'node_modules'))) {
+  if ($Portable) {
+    Write-Host '免安装包缺少 node_modules，请重新完整复制免安装包；免安装模式不执行 npm 安装。' -ForegroundColor Red
+    exit 1
+  }
   Assert-NpmAvailable
   Write-Host '首次运行，正在安装依赖，请保持联网...'
   & npm.cmd ci
@@ -77,6 +129,10 @@ if (-not (Test-Path (Join-Path $Root 'node_modules'))) {
 # Electron 运行时二进制不随 npm 包元数据安装，缺失时显式补装后硬断言。
 $electronBinary = Join-Path $Root 'node_modules\electron\dist\electron.exe'
 if (-not (Test-Path $electronBinary)) {
+  if ($Portable) {
+    Write-Host '免安装包缺少 Electron 运行时，请重新完整复制免安装包；免安装模式不执行下载。' -ForegroundColor Red
+    exit 1
+  }
   Write-Host '正在安装 Electron 运行时...'
   $electronInstall = Join-Path $Root 'node_modules\electron\install.js'
   if (-not (Test-Path $electronInstall)) {
@@ -103,8 +159,10 @@ if ($webListener) {
 
 # venv 不可移植（pyvenv.cfg 写死创建机路径）：整个文件夹被拷贝到新机器后
 # litellm.exe 可能已失效。先探测，坏了就用本机 Python 3.12 自动重建。
+# 免安装模式（-Portable）禁止使用 venv，也禁止任何联网重建/修复，该逻辑仅源码态保留。
 # 注意脚本全局 $ErrorActionPreference='Stop'，原生命令的 stderr 输出会变成
 # 致命错误，调用前必须局部降为 Continue。
+if (-not $Portable) {
 function Test-LitellmUsable {
   param([string]$Exe)
   $prev = $ErrorActionPreference
@@ -165,14 +223,24 @@ if ((Test-Path $litellmExe) -and -not (Test-LitellmUsable $litellmExe)) {
   }
   Write-Host ''
 }
+}
 
 # 公司供应商运行环境是可选 sidecar；失败只禁用公司供应商，不阻塞工作台。
+# 免安装模式只认包内 python-runtime 且要求 manifest 预检通过，绝不回退 venv。
 $stackStarted = $false
-$hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
-                      (Test-Path (Join-Path $Root 'config.yaml'))
+if ($Portable) {
+  $hasStackComponents = $portableManifestOk -and
+                        (Test-Path (Join-Path $Root 'python-runtime\python.exe')) -and
+                        (Test-Path (Join-Path $Root 'config.yaml'))
+} else {
+  $hasStackComponents = (Test-Path (Join-Path $Root '.venv-litellm\Scripts\litellm.exe')) -and
+                        (Test-Path (Join-Path $Root 'config.yaml'))
+}
 if ($hasStackComponents) {
   Write-Host '检测到公司网关组件，启动 litellm 代理...'
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') -SkipApp
+  $stackArgs = @('-SkipApp')
+  if ($Portable) { $stackArgs += '-Portable' }
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'start-stack.ps1') @stackArgs
   if ($LASTEXITCODE -ne 0) {
     Write-Host '公司网关组件启动失败，继续启动工作台。' -ForegroundColor Yellow
   } elseif (Test-Path (Join-Path $Root 'storage\run\stack.json')) {
@@ -189,6 +257,10 @@ if ($hasStackComponents) {
 $standaloneServer = Join-Path $Root '.next\standalone\server.js'
 $standaloneEntry = Join-Path $Root '.next\standalone\runtime\server-entry.js'
 if ($Rebuild -or -not (Test-Path $standaloneServer) -or -not (Test-Path $standaloneEntry)) {
+  if ($Portable) {
+    Write-Host '免安装包缺少 standalone 构建产物，请重新完整复制免安装包；免安装模式不执行构建。' -ForegroundColor Red
+    exit 1
+  }
   Assert-NpmAvailable
   if ($Rebuild) {
     Write-Host '正在重新构建工作台（-Rebuild）...'
@@ -206,16 +278,22 @@ if ($Rebuild -or -not (Test-Path $standaloneServer) -or -not (Test-Path $standal
   Write-Host ''
 }
 
-# 桌面壳源码没变化时跳过 tsc 编译（每次白等约 10 秒）
+# 桌面壳源码没变化时跳过 tsc 编译（每次白等约 10 秒）；免安装包不携带 desktop/ 源码目录。
 $desktopBuiltEntry = Join-Path $Root 'dist-desktop\main.js'
 $desktopNeedsBuild = $true
 if (Test-Path $desktopBuiltEntry) {
   $builtAt = (Get-Item $desktopBuiltEntry).LastWriteTime
-  $newestSource = Get-ChildItem (Join-Path $Root 'desktop') -Filter '*.ts' -File |
+  $newestSource = Get-ChildItem (Join-Path $Root 'desktop') -Filter '*.ts' -File -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
   $desktopNeedsBuild = (-not $newestSource) -or ($newestSource.LastWriteTime -gt $builtAt)
+  # 免安装包不携带 desktop/ 源码：无法判断新旧且禁止重建，编译产物在就视为就绪。
+  if ($Portable -and -not $newestSource) { $desktopNeedsBuild = $false }
 }
 if ($desktopNeedsBuild) {
+  if ($Portable) {
+    Write-Host '免安装包缺少桌面壳编译产物 dist-desktop\main.js，请重新完整复制免安装包；免安装模式不执行编译。' -ForegroundColor Red
+    exit 1
+  }
   Assert-NpmAvailable
   Write-Host '正在编译桌面壳...'
   & npm.cmd run build:desktop

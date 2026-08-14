@@ -92,6 +92,11 @@ CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
 
 适用：模型走公司统一网关（`llm-gateway-idc.linshimuye.com`），经本地 LiteLLM 代理转发。
 
+LiteLLM 运行时有两种形态，不要混淆：
+
+- **Windows 免安装包（终端用户）**：包内自带 `python-runtime/`（便携 Python 3.12.10 + LiteLLM 1.89.2 及全部依赖，由 `scripts/build-python-runtime-windows.ps1` 构建）。终端用户不安装 Python、不创建 venv、不执行 pip；`start-windows.cmd` 经 `-Portable` 模式只使用包内 runtime，损坏时提示重新复制，绝不联网修复。
+- **源码开发（macOS / Windows 开发者）**：继续使用 `.venv-litellm`，按下文步骤准备。
+
 1. 安装 Python 3.10–3.13（推荐 3.12），在仓库根目录准备 `.venv-litellm`：
 
    macOS：
@@ -136,7 +141,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-windows.ps1
 stop-windows.cmd
 ```
 
-详细说明见 [WINDOWS.md](./WINDOWS.md)。
+详细说明见 [docs/2026-08-13-新电脑部署指南.md](./docs/2026-08-13-新电脑部署指南.md)。
 
 ## macOS 快速启动
 
@@ -282,6 +287,7 @@ storage/
 .env.local
 config.yaml
 .venv-litellm/
+python-runtime/
 ```
 
 原因：
@@ -291,7 +297,7 @@ config.yaml
 - `data/` 包含本地 SQLite 数据库，保存供应商配置与 API Key。
 - `storage/` 包含上传素材、生成图片、视频和日志。
 - `.env.local` 包含 LLM API Key 与腾讯云 COS 密钥。
-- `config.yaml` 包含公司网关 API Key；`.venv-litellm/` 是本地 Python 环境。
+- `config.yaml` 包含公司网关 API Key；`.venv-litellm/` 是源码开发用的本地 Python 环境；`python-runtime/` 是免安装包内置的便携 Python 运行时（本机构建产物，数百 MB，不进 Git 也不进 Inno/DMG 安装包）。
 
 干净迁移方式：从 GitHub 下载源码，在目标机器运行 `npm ci`、`start-windows.cmd` 或 `start.command`，重新放置 `.env.local` 与 `config.yaml`，再到 `/settings` 重新配置供应商。
 

@@ -54,6 +54,10 @@ next-env.d.ts
 # 免安装包内置的便携 Node 运行时（87MB 二进制，不进仓库）
 /node-runtime/
 
+# 免安装包内置的便携 Python 运行时（本机构建产物，约数百 MB，不进仓库）
+/python-runtime/
+/.cache/python-runtime/
+
 # brainstorming visual-companion workspace (generated mockups, not source)
 /.superpowers/
 .tmp-pdf-text/
@@ -72,5 +76,6 @@ next-env.d.ts
 
 # company gateway local stack (litellm proxy config holds real API keys; venv is local tooling)
 /config.yaml
+/config.yaml.backup-*
 /litellm-config.yaml
 /.venv-litellm/

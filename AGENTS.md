@@ -32,9 +32,9 @@ npm run build:win-installer  # Windows 安装包（PowerShell + Inno Setup，须
 npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Node 22.x + Xcode CLT）
 ```
 
-终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd`（Windows 桌面版：Electron 壳 + standalone 生产构建，经 `scripts/start-desktop-windows.ps1`）、`stop-windows.cmd`（Windows 网页版）；Windows 网页版入口是 `scripts/start-windows.ps1`（dev server + 浏览器，默认 3000 端口）。Windows 桌面启动脚本优先使用 `node-runtime\node.exe`（免安装包内置的便携 Node 22，gitignored；与包内预编译 better-sqlite3 的 ABI 绑定），缺失才回退系统 Node 并试加载原生模块做版本硬校验。
+终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd`（Windows 桌面版：Electron 壳 + standalone 生产构建，经 `scripts/start-desktop-windows.ps1`）、`stop-windows.cmd`（Windows 网页版）；Windows 网页版入口是 `scripts/start-windows.ps1`（dev server + 浏览器，默认 3000 端口）。Windows 桌面启动脚本优先使用 `node-runtime\node.exe`（免安装包内置的便携 Node 22，gitignored；与包内预编译 better-sqlite3 的 ABI 绑定），缺失才回退系统 Node 并试加载原生模块做版本硬校验。Windows 免安装包由 `scripts/build-windows-portable.ps1 -OutputPath <新目录>` 按显式白名单装配（同盘临时目录完成后改名发布，目标已存在拒绝覆盖），成品根 `start-windows.cmd` 由 `installer/windows/start-windows-portable.cmd` 模板生成并固定传 `-Portable`：免安装模式只认包内 `python-runtime/`（便携 Python 3.12.10 + LiteLLM 1.89.2，gitignored），先校验根目录 `portable-manifest.json`（schemaVersion 1 / `windows-portable-v1` / 关键文件清单）再启动 sidecar，损坏时提示重新复制，禁止联网修复、禁止回退 `.venv-litellm` 或系统 Python；`-Rebuild` 在免安装模式直接拒绝。
 
-公司网关联动（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，macOS 的 `start.command` 与 `npm run dev` 的 `predev` 钩子都经 `scripts/start-litellm.sh`、Windows 的 `start-windows.cmd`（桌面壳）与 `scripts/start-windows.ps1`（dev server）都经 `scripts/start-stack.ps1 -SkipApp` 拉起 LiteLLM（端口 4000，启动参数必须显式 `--host 127.0.0.1`）；依赖锁定在 `requirements-litellm.txt`，组件缺失或 sidecar 失败只禁用公司供应商，不阻塞工作台。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。两平台停止脚本、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读取 `storage/run/stack.json` 的受控 `stopScript`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
+公司网关联动（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，macOS 的 `start.command` 与 `npm run dev` 的 `predev` 钩子都经 `scripts/start-litellm.sh`、Windows 的 `start-windows.cmd`（桌面壳）与 `scripts/start-windows.ps1`（dev server）都经 `scripts/start-stack.ps1 -SkipApp` 拉起 LiteLLM（端口 4000，启动参数必须显式 `--host 127.0.0.1`）；依赖锁定在 `requirements-litellm.txt`，组件缺失或 sidecar 失败只禁用公司供应商，不阻塞工作台。Windows 免安装包不走 venv：`start-stack.ps1 -Portable` 用包内 `python-runtime\python.exe scripts\start-litellm-proxy.py --config config.yaml --host 127.0.0.1 --port 4000` 启动，`stack.json` 记录 `litellmRuntime` 与实际解释器路径，`stop-stack.ps1` 按 PID + 路径归属停止。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。两平台停止脚本、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读取 `storage/run/stack.json` 的受控 `stopScript`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
 
 ## 测试
 
@@ -53,6 +53,7 @@ node scripts/<name>.test.ts             # 其余测试同理
 - 部分测试（如 `final-edit-render.test.ts`）会真实调用 ffmpeg/sharp 合成测试素材，依赖本机 ffmpeg 可用（见下文 `lib/ffmpeg.ts` 的解析顺序）。
 - `scripts/final-edit-canvas.playwright.test.mjs` 是 Playwright 浏览器测试，运行方式与其他测试不同，参与前先看文件头部的说明。
 - 改动某个模块时，优先跑与它同名的测试文件（如改 `lib/db-migrations.ts` 就跑 `db-migrations.test.ts`）。
+- 免安装包与打包边界相关测试：`node scripts/python-runtime-windows.test.mjs`（runtime 锁与构建/验证脚本合同）、`node scripts/company-provider-startup.test.mjs`（启停与 -Portable 模式）、`node scripts/windows-portable-payload.test.mjs`（免安装装配白名单与 manifest）、`node scripts/standalone-desktop-boundary.test.mjs`、`node scripts/windows-installer.test.mjs`。`scripts/macos-installer-payload.test.mjs` 依赖 macOS 工具链，只能在 Apple Silicon 构建机上跑。
 
 ## 目录结构与代码组织
 
@@ -80,6 +81,8 @@ installer/macos/        .app bundle 元数据模板（Info.plist）；launcher.c
 docs/                   设计/评审/会话记录，按日期前缀命名；
                         docs/superpowers/{specs,plans}/ 放较大功能的规格与计划文档
 outputs/                阶段性规格、测试清单、交付记录（gitignored）
+python-runtime/         免安装包内置便携 Python + LiteLLM（gitignored；由
+                        scripts/build-python-runtime-windows.ps1 构建，只进 Windows 免安装包）
 types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ```
 
@@ -136,7 +139,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示"是否已配置"，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
 - 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点时不要打印请求头、密钥或完整鉴权串。
-- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/` 等本机数据、密钥或开发路径；改动打包逻辑时保留这些断言。
+- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/` 等本机数据、密钥或开发路径；改动打包逻辑时保留这些断言。`python-runtime/` 只进 Windows 免安装包（白名单装配），不进 Git，也不进 Inno/DMG 安装包与 standalone。
 
 ## 桌面打包与部署
 

@@ -34,6 +34,7 @@ try {
   writeFixture('node_modules/@img/sharp-win32-x64/lib/libvips-42.dll');
   writeFixture('.next/standalone/desktop/main.js');
   writeFixture('.next/standalone/dist-desktop/main.js');
+  writeFixture('.next/standalone/python-runtime/python.exe');
   writeFixture('.next/standalone/app/api/desktop/health/route.js');
   writeFixture('.next/standalone/runtime/stale-entry.js');
 
@@ -44,11 +45,11 @@ try {
   );
   assert.equal(sync.status, 0, `standalone 资源同步失败：\n${sync.stderr}\n${sync.stdout}`);
 
-  for (const forbiddenRoot of ['desktop', 'dist-desktop']) {
+  for (const forbiddenRoot of ['desktop', 'dist-desktop', 'python-runtime']) {
     assert.equal(
       existsSync(path.join(standalone, forbiddenRoot)),
       false,
-      `standalone 根目录不得包含桌面源码或编译副本：${forbiddenRoot}`,
+      `standalone 根目录不得包含桌面源码、编译副本或便携 Python 运行时：${forbiddenRoot}`,
     );
   }
 
