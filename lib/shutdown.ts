@@ -17,6 +17,10 @@ import {
   abortRunningFinalEditJobs,
   waitForFinalEditJobsIdle,
 } from './final-edit/worker.ts';
+import {
+  beginScriptGenerationShutdown,
+  waitForScriptGenerationsIdle,
+} from './script-generation-manager.ts';
 
 export interface GracefulShutdownResult {
   stopped: boolean;
@@ -30,6 +34,8 @@ export interface GracefulShutdownDependencies {
   waitForBatchTasks?: (timeoutMs: number) => Promise<number>;
   abortFinalEdit?: () => number;
   waitForFinalEdit?: (timeoutMs: number) => Promise<number>;
+  abortScriptGenerations?: () => number;
+  waitForScriptGenerations?: (timeoutMs: number) => Promise<number>;
   abortFfmpeg?: () => number;
   waitForFfmpeg?: (timeoutMs: number) => Promise<number>;
   closeDatabase?: () => void;
@@ -129,6 +135,14 @@ async function performGracefulShutdown(
   }
 
   // 先让调度器停止领取，再广播到各执行层及其直接 FFmpeg 子进程。
+  // 脚本生成管理器紧随停止领取：拒绝新任务并以 shutdown 原因取消运行中任务。
+  let abortedScriptGenerationCount = 0;
+  try {
+    abortedScriptGenerationCount = dependencies.abortScriptGenerations?.() ?? beginScriptGenerationShutdown();
+  } catch {
+    pendingTasks += 1;
+  }
+
   let abortedBatchTaskCount = 0;
   try {
     abortedBatchTaskCount = dependencies.abortBatchTasks?.() ?? abortRunningBatchTasks();
@@ -182,6 +196,17 @@ async function performGracefulShutdown(
     );
   } catch {
     pendingTasks += Math.max(1, abortedFfmpegCount);
+  }
+
+  // 等待脚本生成任务收尾后再关闭数据库（任务终态只写内存，但执行器落草稿要用 DB）。
+  try {
+    pendingTasks += await waitForCountStep(
+      dependencies.waitForScriptGenerations ?? waitForScriptGenerationsIdle,
+      remainingBudget(),
+      abortedScriptGenerationCount,
+    );
+  } catch {
+    pendingTasks += Math.max(1, abortedScriptGenerationCount);
   }
 
   try {

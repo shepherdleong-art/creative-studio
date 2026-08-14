@@ -238,7 +238,15 @@ export async function generateAndPersistScriptV3(
     onProgress: dependencies.onProgress,
   };
   const result = await (dependencies.generate || generateScriptV3)(generationInput, generatorDependencies);
+  // 迟到结果门禁：上游忽略 abort 稍后才返回时，不得继续落库。
   if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+  // 项目在生成中可能已被删除：持久化前重验，避免写入已删除项目或触发外键级联。
+  const projectStillExists = dependencies.db.prepare(
+    `SELECT id FROM projects WHERE id = ?`,
+  ).get(projectId);
+  if (!projectStillExists) {
+    return { status: 422, body: { error: 'project_deleted', message: '项目已被删除，脚本未保存' } };
+  }
   dependencies.onProgress?.({ phase: 'saving', percent: 92, message: '正在保存脚本草稿' });
   const model = provider.model || '';
   const draftId = (dependencies.createId || uuidv4)();

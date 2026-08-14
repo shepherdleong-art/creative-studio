@@ -14,10 +14,6 @@ import {
   getDefaultSelectedSellingPointKeys,
   resolveSelectedSellingPoints,
 } from '@/lib/script-strategy';
-import {
-  readScriptGenerationStream,
-  ScriptGenerationStreamError,
-} from '@/lib/script-generation-stream';
 import type { ScriptGenerationProgress } from '@/lib/script-generation-v3';
 import type {
   AnalysisResult,
@@ -72,27 +68,19 @@ const INITIAL_GENERATION_PROGRESS: ScriptGenerationProgress = {
   message: '正在保存脚本设置',
 };
 
-function formatGenerationFailure(data: Record<string, unknown>): string {
-  const details = data.details as {
-    contentCharacterCount?: number;
-    targetCharacterRange?: [number, number];
-    estimatedNarrationSec?: number;
-    targetNarrationSec?: number;
-    unsupportedNarrativeBeats?: string[];
-    materialReason?: string;
-  } | undefined;
-  const unsupportedNarrativeBeats = Array.isArray(details?.unsupportedNarrativeBeats)
-    ? details.unsupportedNarrativeBeats.filter(Boolean)
-    : [];
-  const actionable = data.error === 'script_material_mismatch'
-    ? [
-        details?.materialReason ? `\n原因：${details.materialReason}` : '',
-        unsupportedNarrativeBeats.length > 0 ? `\n缺少画面承接：${unsupportedNarrativeBeats.join('；')}` : '',
-      ].join('')
-    : details
-      ? `\n当前 ${details.contentCharacterCount ?? '-'} 字 / 目标 ${details.targetCharacterRange?.join('～') ?? '-'} 字；预计 ${details.estimatedNarrationSec?.toFixed(2) ?? '-'} 秒 / 目标正文 ${details.targetNarrationSec?.toFixed(2) ?? '-'} 秒。`
-      : '';
-  return String(data.message || data.error || '未知错误') + actionable;
+/** GET /api/projects/[id]/script-generation 返回的任务快照（服务端管理器 §A3）。 */
+type ScriptGenerationState = 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+interface ScriptGenerationSnapshot {
+  generationId: string;
+  projectId: string;
+  state: ScriptGenerationState;
+  progress: ScriptGenerationProgress;
+  draftId: string | null;
+  error: { code: string; message: string } | null;
+  cancellationReason: 'user' | 'shutdown' | null;
+  startedAt: string;
+  finishedAt: string | null;
 }
 
 /** 旧版（v1）草稿是 {shots, duration}，没有 segments/version，直接 render 会在 .segments.map 上炸整页。 */
@@ -204,10 +192,15 @@ export default function ScriptPanel({ projectId }: Props) {
 
   // Refs
   const initialLoadDone = useRef(false);
-  const generationAbortRef = useRef<AbortController | null>(null);
   const generationIdRef = useRef<string | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => () => generationAbortRef.current?.abort(), []);
+  // 卸载只取消状态查询轮询，绝不取消服务端生成任务
+  useEffect(() => () => {
+    pollAbortRef.current?.abort();
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+  }, []);
 
   const hydrateStrategyFromDraft = useCallback((
     draft: ScriptDraft,
@@ -275,25 +268,108 @@ export default function ScriptPanel({ projectId }: Props) {
     } catch { /* ignore */ }
   }, [projectId]);
 
+  // ── Terminal state handling（轮询/取消共用）──
+  const applyTerminalSnapshot = useCallback(async (snapshot: ScriptGenerationSnapshot) => {
+    if (snapshot.state === 'succeeded') {
+      // 成功后重新加载草稿，按服务端返回的 draftId 选中结果
+      const listRes = await fetch(`/api/projects/${projectId}/script`);
+      const listData = await listRes.json().catch(() => ({ drafts: [] }));
+      if (listData.drafts?.length > 0) {
+        const freshDrafts = listData.drafts as ScriptDraft[];
+        setDrafts(freshDrafts);
+        const produced = freshDrafts.find((d) => d.id === snapshot.draftId) ?? freshDrafts[0];
+        setSelectedDraftId(produced.id);
+        hydrateStrategyFromDraft(produced, { restoreSellingPoints: false });
+        try {
+          const parsed = JSON.parse(produced.outputJson) as unknown;
+          if (isSupportedScriptOutput(parsed)) {
+            setLegacyDraftNotice(false);
+            setScript(parsed);
+            setStep(3);
+            if (parsed.version === 2 && parsed.shotSetId) {
+              void loadShotImages(parsed.shotSetId);
+            }
+          }
+        } catch { /* ignore corrupt draft */ }
+      }
+    } else if (snapshot.state === 'failed') {
+      alert('生成失败: ' + (snapshot.error?.message || '未知错误'));
+    }
+    // cancelled：静默恢复按钮状态，不弹失败提示
+    generationIdRef.current = null;
+    setGenerating(false);
+    setCancellingGeneration(false);
+  }, [projectId, hydrateStrategyFromDraft, loadShotImages]);
+
+  // ── 轮询任务状态（组件自己的查询 AbortController；卸载只取消查询，不取消服务端任务）──
+  const pollGeneration = useCallback((generationId: string) => {
+    pollAbortRef.current?.abort();
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/script-generation`, {
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        const data = await res.json().catch(() => ({}));
+        const snapshot = data.generation as ScriptGenerationSnapshot | null;
+        if (controller.signal.aborted) return;
+        if (!snapshot || snapshot.generationId !== generationId) {
+          // 任务已过期或进程重启：恢复按钮状态
+          generationIdRef.current = null;
+          setGenerating(false);
+          setCancellingGeneration(false);
+          return;
+        }
+        if (snapshot.state === 'running') {
+          setGenerationProgress(snapshot.progress);
+          pollTimerRef.current = setTimeout(() => { void poll(); }, 1000);
+          return;
+        }
+        await applyTerminalSnapshot(snapshot);
+      } catch {
+        if (controller.signal.aborted) return;
+        // 查询失败（网络抖动等）：继续轮询，不影响服务端任务
+        pollTimerRef.current = setTimeout(() => { void poll(); }, 1000);
+      }
+    };
+    void poll();
+  }, [projectId, applyTerminalSnapshot]);
+
   // ── Initial load ──
   useEffect(() => {
     let active = true;
 
     const run = async () => {
       try {
-        const [projRes, draftRes, modelRes, shotSetRes] = await Promise.all([
+        const [projRes, draftRes, modelRes, shotSetRes, generationRes] = await Promise.all([
           fetch(`/api/projects/${projectId}`),
           fetch(`/api/projects/${projectId}/script`),
           fetch(`/api/projects/${projectId}/script?action=models`),
           fetch(`/api/projects/${projectId}/shot-sets`),
+          fetch(`/api/projects/${projectId}/script-generation`, { cache: 'no-store' }),
         ]);
 
         const projData = await projRes.json().catch(() => ({}));
         const draftData = await draftRes.json().catch(() => ({ drafts: [], analysis: null }));
         const modelData = await modelRes.json().catch(() => ({ providers: [] }));
         const shotSetData = await shotSetRes.json().catch(() => []);
+        const generationData = await generationRes.json().catch(() => ({ generation: null }));
 
         if (!active) return;
+
+        // 恢复进行中的生成任务（步骤切换/刷新后回到本面板）
+        const snapshot = generationData.generation as ScriptGenerationSnapshot | null;
+        if (snapshot?.state === 'running') {
+          generationIdRef.current = snapshot.generationId;
+          setGenerationProgress(snapshot.progress);
+          setCancellingGeneration(false);
+          setGenerating(true);
+          pollGeneration(snapshot.generationId);
+        }
 
         // Brief
         setAudience(projData.targetAudience || '');
@@ -371,7 +447,7 @@ export default function ScriptPanel({ projectId }: Props) {
 
     run();
     return () => { active = false; };
-  }, [projectId, hydrateStrategyFromDraft, loadShotImages]);
+  }, [projectId, hydrateStrategyFromDraft, loadShotImages, pollGeneration]);
 
   // ── Save brief ──
   const saveBrief = useCallback(async () => {
@@ -443,13 +519,17 @@ export default function ScriptPanel({ projectId }: Props) {
     if (!generationId || cancellingGeneration) return;
     setCancellingGeneration(true);
     setGenerationProgress((current) => ({ ...current, message: '正在取消生成…' }));
-    void fetch(`/api/projects/${projectId}/script`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'cancel', generationId }),
-    }).catch(() => undefined);
-    generationAbortRef.current?.abort();
-  }, [cancellingGeneration, projectId]);
+    // 显式取消走 DELETE；轮询会跟进到 cancelled 终态，请求失败时由轮询兜底
+    void fetch(`/api/projects/${projectId}/script-generation?generationId=${encodeURIComponent(generationId)}`, {
+      method: 'DELETE',
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        const snapshot = data.generation as ScriptGenerationSnapshot | null;
+        if (snapshot && snapshot.state !== 'running') await applyTerminalSnapshot(snapshot);
+      })
+      .catch(() => undefined);
+  }, [cancellingGeneration, projectId, applyTerminalSnapshot]);
 
   const handleGenerate = useCallback(async () => {
     if (!selectedShotSetId) {
@@ -467,22 +547,16 @@ export default function ScriptPanel({ projectId }: Props) {
     }
 
     const generationId = crypto.randomUUID();
-    const generationController = new AbortController();
     generationIdRef.current = generationId;
-    generationAbortRef.current = generationController;
     setGenerationProgress(INITIAL_GENERATION_PROGRESS);
     setCancellingGeneration(false);
     setGenerating(true);
     try {
       await saveBrief();
-      if (generationController.signal.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
-
-      const res = await fetch(`/api/projects/${projectId}/script`, {
+      const res = await fetch(`/api/projects/${projectId}/script-generation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'generate',
-          stream: true,
           generationId,
           shotSetId: selectedShotSetId,
           selectedSellingPoints: spWithData,
@@ -493,46 +567,27 @@ export default function ScriptPanel({ projectId }: Props) {
           tone,
           platform,
         }),
-        signal: generationController.signal,
       });
-      const streamed = await readScriptGenerationStream(res, setGenerationProgress);
-      const data = streamed.body;
-      if (streamed.status < 400) {
-        if (!isSupportedScriptOutput(data.script)) throw new Error('服务端返回了无法识别的脚本结构');
-        setScript(data.script);
-        setStep(3);
-        setLegacyDraftNotice(false);
-
-        // Reload drafts
-        const listRes = await fetch(`/api/projects/${projectId}/script`);
-        const listData = await listRes.json().catch(() => ({ drafts: [] }));
-        if (listData.drafts?.length > 0) {
-          setDrafts(listData.drafts);
-          setSelectedDraftId(listData.drafts[0].id);
-        }
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 202) {
+        // 以服务端返回的权威任务 ID 为准开始轮询（同项目已有活动任务时复用）
+        const authoritativeId = (data.generation?.generationId as string) || generationId;
+        generationIdRef.current = authoritativeId;
+        pollGeneration(authoritativeId);
       } else {
-        alert('生成失败: ' + formatGenerationFailure(data));
+        alert('生成失败: ' + String(data.message || data.error || `HTTP ${res.status}`));
+        generationIdRef.current = null;
+        setGenerating(false);
       }
     } catch (err) {
-      if (generationController.signal.aborted) return;
-      if (err instanceof ScriptGenerationStreamError) {
-        if (err.body.error === 'script_generation_cancelled') return;
-        alert('生成失败: ' + formatGenerationFailure(err.body));
-      } else {
-        alert('生成失败: ' + String(err));
-      }
-    } finally {
-      if (generationIdRef.current === generationId) {
-        generationIdRef.current = null;
-        generationAbortRef.current = null;
-        setGenerating(false);
-        setCancellingGeneration(false);
-      }
+      alert('生成失败: ' + String(err));
+      generationIdRef.current = null;
+      setGenerating(false);
     }
   }, [
     projectId, selectedShotSetId, selectedSellingPointKeys, analysis,
     templateId, templateName, targetDurationSec, generateProviderId,
-    tone, platform, saveBrief,
+    tone, platform, saveBrief, pollGeneration,
   ]);
 
   // ── Handle selecting a draft ──

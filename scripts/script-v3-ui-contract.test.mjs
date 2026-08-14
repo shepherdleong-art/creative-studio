@@ -30,12 +30,23 @@ assert.match(panel, /spWithData\.length !== selectedSellingPointKeys\.length/, '
 assert.match(strategy, /getSellingPointSelectionKey\(r\)/, '卖点勾选状态必须使用稳定 ID 作为身份键');
 assert.match(panel, /hydrateStrategyFromDraft\(first, \{ restoreSellingPoints: false \}\)/, '初次加载最新草稿不得覆盖分析排名前三');
 assert.doesNotMatch(panel, /filter\(\(ranking\) => ranking\.priority === 'highest'\)\.slice\(0, 1\)/, '不得退回只选择唯一 highest');
-assert.match(panel, /script_material_mismatch/, '模板与图片不匹配时必须展示专用提示，不能误报为时长问题');
 assert.match(panel, /data\.message \|\| data\.error/, '策略分析合同失败时必须优先展示服务端中文说明，而不是只显示错误码');
 assert.match(panel, /请先填写目标人群/, '没有目标人群时必须在调用模型前阻止泛化分析');
-assert.match(panel, /materialReason/, '素材不匹配提示必须展示模型给出的图片不足原因');
-assert.match(panel, /unsupportedNarrativeBeats/, '素材不匹配提示必须说明模板中缺少画面承接的阶段');
-assert.match(panel, /readScriptGenerationStream/, '正式脚本生成必须消费服务端真实进度流');
+
+// ── 工作流 A 任务 A3：脚本生成任务化后的前端恢复合同 ──
+assert.doesNotMatch(panel, /generationAbortRef/, '组件卸载不得再持有或中止生成请求；服务端任务生命周期由 script-generation 任务接口拥有');
+assert.doesNotMatch(panel, /readScriptGenerationStream|script-generation-stream/, '旧流式生成通道已删除，前端不得再消费客户端拥有的生成流');
+assert.doesNotMatch(panel, /action:\s*'generate'|action:\s*'cancel'/, '旧 /script 路由的生成/取消分支已返回 410，前端不得再调用');
+assert.match(panel, /\/api\/projects\/\$\{projectId\}\/script-generation/, '挂载时必须并行 GET 项目级 script-generation 任务状态');
+assert.match(panel, /state === 'running'/, '发现 running 任务时必须恢复生成中状态');
+assert.match(panel, /setTimeout\([^\n]*,\s*1000\)/, 'running 状态下必须约 1 秒轮询一次任务状态');
+assert.match(panel, /method:\s*'DELETE'/, '取消生成必须调用 DELETE，不得用 abort 查询请求代替服务端取消');
+assert.match(panel, /script-generation\?generationId=/, 'DELETE 取消必须携带 generationId 查询参数');
+assert.match(panel, /'succeeded'/, '必须处理 succeeded 终态');
+assert.match(panel, /snapshot\.draftId/, 'succeeded 后必须按返回的 draftId 重新加载并选中草稿');
+assert.match(panel, /setSelectedDraftId\(/, 'succeeded 后必须选中结果草稿');
+assert.match(panel, /snapshot\.error\?\.message/, 'failed 必须展示服务端返回的中文错误说明并允许重试');
+assert.match(panel, /'cancelled'/, '必须处理 cancelled 终态并恢复按钮状态，不弹失败提示');
 assert.match(panel, /role="progressbar"/, '生成中必须显示可访问的进度条');
 assert.match(panel, /aria-valuenow=\{generationProgress\.percent\}/, '进度条必须暴露当前进度值');
 assert.match(panel, /handleCancelGeneration/, '生成中必须提供取消处理器');

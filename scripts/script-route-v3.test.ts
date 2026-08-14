@@ -20,6 +20,7 @@ fs.writeFileSync(generatedImagePath, Buffer.from('generated-image'));
 
 const db = new Database(':memory:');
 db.exec(`
+  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
   CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL);
   CREATE TABLE image_assets (
     id TEXT PRIMARY KEY, filename TEXT NOT NULL, path TEXT NOT NULL, mimeType TEXT NOT NULL
@@ -37,6 +38,7 @@ db.exec(`
     ('set-owned', 'project-a', '当前分镜组'),
     ('set-empty', 'project-a', '空分镜组'),
     ('set-foreign', 'project-b', '其他项目');
+  INSERT INTO projects (id, name) VALUES ('project-a', '项目A'), ('project-b', '项目B');
 `);
 db.prepare(`INSERT INTO image_assets (id, filename, path, mimeType) VALUES (?, ?, ?, ?)`).run(
   'image-source', 'source.png', sourceImagePath, 'image/png',
@@ -245,6 +247,68 @@ const foreignResponse = await generateAndPersistScriptV3({
 });
 assert.equal(foreignResponse.status, 400);
 assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM script_drafts`).get() as { count: number }).count, 1);
+
+// 迟到结果不落库：上游忽略 abort、稍后才正常返回时，服务层门禁必须拦截，不写草稿。
+const lateController = new AbortController();
+await assert.rejects(
+  generateAndPersistScriptV3({
+    projectId: 'project-a', project,
+    body: { shotSetId: 'set-owned', templateId: 'scene_seeding', targetDurationSec: 15, providerId: 'fake-provider' },
+  }, {
+    db,
+    storageRoot,
+    signal: lateController.signal,
+    completeJson: async () => ({}),
+    providerMeta: () => ({
+      id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
+      apiStyle: 'openai-compatible', supportsVision: true,
+    }),
+    prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
+      imageBuffer, mimeType: mimeType as 'image/jpeg', width: 1, height: 1,
+      originalSizeBytes: imageBuffer.length, processedSizeBytes: imageBuffer.length,
+    }),
+    generate: async () => {
+      lateController.abort(); // 模拟取消发生在模型调用期间，但上游忽略 abort 正常返回
+      return { script, attempts: 1 };
+    },
+  }),
+  (error: unknown) => error instanceof Error && error.name === 'AbortError',
+);
+assert.equal(
+  (db.prepare(`SELECT COUNT(*) AS count FROM script_drafts`).get() as { count: number }).count,
+  1,
+  '上游忽略 abort 的迟到结果不得写入草稿',
+);
+
+// 项目在生成中被删除：持久化前重验发现项目不存在，返回稳定错误码且不写草稿。
+const deletedProjectResponse = await generateAndPersistScriptV3({
+  projectId: 'project-a', project,
+  body: { shotSetId: 'set-owned', templateId: 'scene_seeding', targetDurationSec: 15, providerId: 'fake-provider' },
+}, {
+  db,
+  storageRoot,
+  completeJson: async () => ({}),
+  providerMeta: () => ({
+    id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
+    apiStyle: 'openai-compatible', supportsVision: true,
+  }),
+  prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
+    imageBuffer, mimeType: mimeType as 'image/jpeg', width: 1, height: 1,
+    originalSizeBytes: imageBuffer.length, processedSizeBytes: imageBuffer.length,
+  }),
+  generate: async () => {
+    db.prepare(`DELETE FROM projects WHERE id = 'project-a'`).run(); // 模拟生成期间项目被删除
+    return { script, attempts: 1 };
+  },
+});
+assert.equal(deletedProjectResponse.status, 422);
+assert.equal(deletedProjectResponse.body.error, 'project_deleted');
+assert.equal(
+  (db.prepare(`SELECT COUNT(*) AS count FROM script_drafts`).get() as { count: number }).count,
+  1,
+  '项目已删除时不得写入草稿',
+);
+db.prepare(`INSERT INTO projects (id, name) VALUES ('project-a', '项目A')`).run();
 
 db.close();
 fs.rmSync(tempRoot, { recursive: true, force: true });
