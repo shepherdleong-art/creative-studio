@@ -16,6 +16,7 @@ import {
   type TextStyle,
 } from '@/lib/final-edit/types';
 import { BatchFrozenScriptCard } from './BatchInputSelectionCards';
+import { BatchScriptImportDialog, type ManualScriptDraft } from './BatchScriptImportDialog';
 
 export interface BatchTtsProviderView {
   id: string;
@@ -98,6 +99,10 @@ export interface BatchStepScriptsProps {
   onCoverTitleChange: (draft: BatchCoverTitleDraft) => void;
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
+  /** 手动脚本导入/编辑/删除后通知容器刷新准备区(容器决定是否强制重新确认) */
+  onScriptCreated: () => void;
+  onScriptUpdated: (scriptId: string) => void;
+  onScriptDeleted: (scriptId: string) => void;
   inputChangedWarning: boolean;
   /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下),
       点开跑后由容器滚进视野——置顶会落在「开始」按钮的视线之外。 */
@@ -162,6 +167,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onCoverTitleChange,
     onConfirmSnapshot,
     onStartBatch,
+    onScriptCreated,
+    onScriptUpdated,
+    onScriptDeleted,
     inputChangedWarning,
     progress,
   } = props;
@@ -197,6 +205,11 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [systemFonts, setSystemFonts] = useState<string[]>(['PingFang SC']);
   const [presetName, setPresetName] = useState('');
   const [coverTitleError, setCoverTitleError] = useState('');
+  // 手动脚本导入/编辑弹窗与删除进行中状态。
+  const [scriptDialogOpen, setScriptDialogOpen] = useState(false);
+  const [editingScript, setEditingScript] = useState<ManualScriptDraft | null>(null);
+  const [deletingScriptId, setDeletingScriptId] = useState<string | null>(null);
+  const [scriptActionError, setScriptActionError] = useState('');
 
   // 封面标题预设与系统字体来自全局(与单条共用),一次拉取,失败不阻塞其他输入。
   useEffect(() => {
@@ -411,6 +424,40 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     for (const script of prep.scripts) {
       void persistConfig(script.id, { ...source }).catch(() => undefined);
     }
+  }
+
+  async function deleteManualScript(script: BatchPreparationResult['scripts'][number]): Promise<void> {
+    const title = script.title || '未命名脚本';
+    const selected = selectedScripts[script.id] !== undefined;
+    // 已勾选的脚本删除后会改变批次输入,必须二次确认并说明后果。
+    const message = selected
+      ? `确定删除手动脚本「${title}」吗？该脚本已在本批次选中，删除后需要重新确认输入。`
+      : `确定删除手动脚本「${title}」吗？`;
+    if (!confirm(message)) return;
+    setDeletingScriptId(script.id);
+    setScriptActionError('');
+    try {
+      await readJson<unknown>(await fetch(
+        `/api/batch-production/scripts/${encodeURIComponent(script.id)}?projectId=${encodeURIComponent(prep.project.id)}`,
+        { method: 'DELETE' },
+      ));
+      onScriptDeleted(script.id);
+    } catch (deleteError) {
+      setScriptActionError(deleteError instanceof Error ? deleteError.message : '脚本删除失败');
+    } finally {
+      setDeletingScriptId(null);
+    }
+  }
+
+  function openEditScriptDialog(script: BatchPreparationResult['scripts'][number]): void {
+    setScriptActionError('');
+    setEditingScript({
+      id: script.id,
+      title: script.title,
+      bodyText: script.bodyText,
+      targetDurationSec: script.targetDurationSec ?? 15,
+    });
+    setScriptDialogOpen(true);
   }
 
   async function auditionVoice(scriptId: string, providerId: string, voice: string, speed: number): Promise<void> {
@@ -940,8 +987,17 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               <h3 className="font-semibold text-ink">脚本</h3>
               <p className="mt-1 text-sm text-ink-secondary">每份脚本是一个独立创作单元：各自份数出 N 条成片，共用同一条配音，只有画面不同。时长来自脚本自身设定，此处只读。</p>
             </div>
-            <span className="text-sm text-ink-secondary">已选 {scriptCount} 份 · 目标成片 {plannedCount} 条</span>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+              <button
+                type="button"
+                className="btn-secondary h-8 px-3 text-xs"
+                aria-label="导入自定义脚本"
+                onClick={() => { setScriptActionError(''); setEditingScript(null); setScriptDialogOpen(true); }}
+              >+ 导入自定义脚本</button>
+              <span className="text-sm text-ink-secondary">已选 {scriptCount} 份 · 目标成片 {plannedCount} 条</span>
+            </div>
           </div>
+          {scriptActionError && <p className="mb-3 text-xs text-fail" role="alert">{scriptActionError}</p>}
           {prep.scripts.length > 0 ? (
             <div className="grid gap-3 lg:grid-cols-2">
               {prep.scripts.map((script) => {
@@ -965,10 +1021,30 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                             <h4 className="mt-1 font-semibold text-ink">{title}</h4>
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
+                            {script.manual && (
+                              <span className="rounded-full bg-accent/10 px-2 py-1 text-[11px] text-accent">手动</span>
+                            )}
                             <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">V{script.sourceVersion}</span>
                             <span className="rounded-full bg-surface-subtle px-2 py-1 text-[11px] text-ink-secondary">
                               {durationSec} 秒{durationSec === 15 && !script.targetDurationSec ? '（默认 15 秒）' : ''}
                             </span>
+                            {script.manual && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="text-xs text-accent underline"
+                                  aria-label={`编辑手动脚本 ${title}`}
+                                  onClick={() => openEditScriptDialog(script)}
+                                >编辑</button>
+                                <button
+                                  type="button"
+                                  className="text-xs text-fail underline"
+                                  aria-label={`删除手动脚本 ${title}`}
+                                  disabled={deletingScriptId === script.id}
+                                  onClick={() => void deleteManualScript(script)}
+                                >{deletingScriptId === script.id ? '删除中…' : '删除'}</button>
+                              </>
+                            )}
                           </div>
                         </div>
                         <p className="mt-2 line-clamp-2 whitespace-pre-wrap text-sm leading-6 text-ink-secondary">{script.bodyText}</p>
@@ -1084,6 +1160,14 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
           <BatchProductionProgressCard progress={progress} variant="full" />
         </div>
       )}
+      <BatchScriptImportDialog
+        open={scriptDialogOpen}
+        projectId={prep.project.id}
+        editScript={editingScript}
+        onClose={() => setScriptDialogOpen(false)}
+        onCreated={() => { setScriptDialogOpen(false); onScriptCreated(); }}
+        onUpdated={(scriptId) => { setScriptDialogOpen(false); onScriptUpdated(scriptId); }}
+      />
     </div>
   );
 }

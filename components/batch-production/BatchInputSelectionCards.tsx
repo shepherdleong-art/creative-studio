@@ -162,10 +162,13 @@ export function BatchFrozenScriptCard({
         <p className="mt-1 text-xs text-ink-secondary">{snapshot.coverTitle.secondary}</p>
       )}
       <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-ink-secondary">{snapshot.bodyText}</p>
-      <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-ink-tertiary">
-        <span>分镜组 {snapshot.shotSetId}</span>
-        <span>修订 {snapshot.contentRevision.slice(0, 8)}</span>
-      </div>
+      {/* 手动脚本没有分镜组与上游修订身份(均为空串),非空才渲染,避免孤零零的空标签(§6.6)。 */}
+      {(snapshot.shotSetId || snapshot.contentRevision) && (
+        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-ink-tertiary">
+          {snapshot.shotSetId && <span>分镜组 {snapshot.shotSetId}</span>}
+          {snapshot.contentRevision && <span>修订 {snapshot.contentRevision.slice(0, 8)}</span>}
+        </div>
+      )}
     </article>
   );
 }

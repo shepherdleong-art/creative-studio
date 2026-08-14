@@ -30,6 +30,8 @@ export interface PrepareScriptView {
   targetDurationSec?: number | null;
   /** 已存储的口播配置(服务商/音色/语速);无配置时为 null */
   narrationConfig?: import('./scripts.ts').BatchNarrationConfig | null;
+  /** 手动导入的自定义脚本(sourceId 为 manual: 命名空间);只暴露语义,不泄露 sourceId/sourceKind */
+  manual: boolean;
 }
 
 export interface PrepareCoverTitle {
@@ -154,6 +156,7 @@ export async function prepareBatchProductionInputs(
     updatedAt: row.updatedAt,
     targetDurationSec: row.targetDurationSec,
     narrationConfig: parseStoredNarrationConfig(row.narrationConfigJson),
+    manual: row.sourceId.startsWith('manual:'),
   }));
 
   const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId).map((row: BatchAssetRow) => {
