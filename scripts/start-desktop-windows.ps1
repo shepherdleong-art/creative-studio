@@ -88,6 +88,13 @@ if (Test-Path $bundledNode) {
 # 显式锁定私有 Node 服务使用的运行时，双击启动环境的 PATH 未必与开发终端一致。
 $env:CREATIVE_STUDIO_NODE = $nodeExe
 
+# 把选定 Node 所在目录提到 PATH 最前：npm 的 electron.cmd 等 .cmd 垫片内部按
+# 裸 `node` 调用，同事机器没装系统 Node 时会报「node 不是内部或外部命令」。
+$nodeDir = Split-Path -Parent $nodeExe
+if (($env:PATH -split ';') -notcontains $nodeDir) {
+  $env:PATH = "$nodeDir;$env:PATH"
+}
+
 # 预编译原生模块（better-sqlite3）与 Node 大版本绑定，先用选定的 Node 试加载，
 # 避免 Node 24 之类的版本错配到服务启动后才炸。
 if (Test-Path (Join-Path $Root 'node_modules\better-sqlite3')) {
