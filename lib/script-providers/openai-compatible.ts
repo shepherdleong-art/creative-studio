@@ -11,6 +11,13 @@ import { createScriptProviderRequestControl } from './request-control.ts';
 
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
+/**
+ * 进程内记忆：某些公司网关模型（如 GPT-5-6-Luna-Standard）只接受默认 temperature，
+ * 显式传值会被 400 拒绝。首次命中拒绝后记下 `${baseUrl}|${model}`，
+ * 之后调用直接不带 temperature，避免每次都先挨一次 400。
+ */
+const temperatureUnsupportedModels = new Set<string>();
+
 // ── Low-level chat completion ──
 
 export interface ChatImagePart {
@@ -74,15 +81,18 @@ export async function chatCompletion(
       ]
     : options.userPrompt;
 
+  const modelKey = `${baseUrl}|${model}`;
   const body: Record<string, unknown> = {
     model,
     messages: [
       { role: 'system', content: options.systemPrompt },
       { role: 'user', content: userContent },
     ],
-    temperature: options.temperature ?? 0.7,
     max_tokens: options.maxTokens ?? runtime?.maxTokens ?? config.maxTokens,
   };
+  if (!temperatureUnsupportedModels.has(modelKey)) {
+    body.temperature = options.temperature ?? 0.7;
+  }
 
   if (options.responseFormat === 'json_object') {
     body.response_format = { type: 'json_object' };
@@ -95,19 +105,36 @@ export async function chatCompletion(
     timeoutMessage: (timeoutMs) => `${config.name} (openai-compatible) 请求超时（${timeoutMs}ms）`,
   });
   try {
-    const res = await fetch(chatUrl, {
+    // 部分公司网关模型（如推理型 GPT-5-6-Luna-Standard）只接受默认 temperature，
+    // 显式传值会被上游 400 拒绝。命中该特征错误时摘掉 temperature 重试一次，
+    // 并记入进程内名单，后续调用直接跳过该参数。
+    const send = async (requestBody: Record<string, unknown>) => fetch(chatUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
       signal: requestControl.signal,
     });
 
+    let res = await send(body);
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`${config.name} (openai-compatible) error ${res.status}: ${errText.slice(0, 500)}`);
+      const temperatureRejected = res.status === 400
+        && 'temperature' in body
+        && /temperature/i.test(errText)
+        && /does not support|unsupported value|not supported/i.test(errText);
+      if (temperatureRejected) {
+        temperatureUnsupportedModels.add(modelKey);
+        const fallbackBody = { ...body };
+        delete fallbackBody.temperature;
+        res = await send(fallbackBody);
+      }
+      if (!res.ok) {
+        const fallbackErrText = temperatureRejected ? await res.text() : errText;
+        throw new Error(`${config.name} (openai-compatible) error ${res.status}: ${fallbackErrText.slice(0, 500)}`);
+      }
     }
 
     const data = await res.json() as {
