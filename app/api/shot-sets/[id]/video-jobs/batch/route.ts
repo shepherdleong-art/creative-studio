@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
+import { validateVideoTailFrameAsset } from '@/lib/video-tail-frame';
 
 const MAX_ITEMS = 10;
 
@@ -11,6 +12,7 @@ interface BatchItem {
   templateId: string | null;
   providerId: string;
   durationSec: number;
+  tailImageId: string | null;
 }
 
 // Create multiple "运镜" video jobs for a single shot in one call, then start
@@ -37,6 +39,9 @@ export async function POST(
           templateId: (obj.templateId as string) || null,
           providerId: (obj.providerId as string) || '',
           durationSec: (() => { const v = Number(obj.durationSec); const sec = (Number.isFinite(v) && v > 0) ? v : 5; return Math.max(2, Math.min(15, sec)); })(),
+          tailImageId: typeof obj.tailImageId === 'string' && obj.tailImageId.trim()
+            ? obj.tailImageId.trim()
+            : null,
         };
       })
       .filter((it) => it.prompt.length > 0);
@@ -54,7 +59,7 @@ export async function POST(
 
     // Pre-validate all unique providers and resolve models
     const uniqueProviderIds = [...new Set(items.map((it) => it.providerId))];
-    const providerCache = new Map<string, { model: string }>();
+    const providerCache = new Map<string, { model: string; type: string }>();
     for (const pid of uniqueProviderIds) {
       const prov = db.prepare(`SELECT * FROM video_providers WHERE id = ? AND enabled = 1`).get(pid) as {
         id: string; name: string; type: string; baseUrlEnv: string; apiKeyEnv: string; defaultModel: string;
@@ -67,7 +72,7 @@ export async function POST(
           { status: 400 }
         );
       }
-      providerCache.set(pid, { model: prov.defaultModel });
+      providerCache.set(pid, { model: prov.defaultModel, type: prov.type });
     }
 
     // Get project ID from shot set
@@ -76,19 +81,34 @@ export async function POST(
     } | undefined;
     if (!shotSet) return NextResponse.json({ error: 'Shot set not found' }, { status: 404 });
 
+    for (const item of items) {
+      const provider = providerCache.get(item.providerId)!;
+      const tailFrameValidation = validateVideoTailFrameAsset({
+        db,
+        tailImageId: item.tailImageId,
+        projectId: shotSet.projectId,
+        providerType: provider.type,
+        model: provider.model,
+      });
+      if (!tailFrameValidation.ok) {
+        return NextResponse.json({ error: tailFrameValidation.error }, { status: 400 });
+      }
+    }
+
     // Use latest generated image, fallback to source image
     const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
 
     const insert = db.prepare(`
-      INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, templateId, prompt, durationSec)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO video_jobs
+        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const videoJobIds: string[] = [];
     const createAll = db.transaction(() => {
       for (const item of items) {
         const videoJobId = uuidv4();
         const p = providerCache.get(item.providerId)!;
-        insert.run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.providerId, p.model, item.templateId, item.prompt, item.durationSec);
+        insert.run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId, item.providerId, p.model, item.templateId, item.prompt, item.durationSec);
         videoJobIds.push(videoJobId);
       }
     });

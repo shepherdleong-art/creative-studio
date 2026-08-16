@@ -5,6 +5,10 @@ import { preprocessImage, DEFAULT_OPTIONS } from '@/lib/image-preprocess';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import {
+  validateVideoTailFrameUpload,
+  VIDEO_TAIL_FRAME_USAGE,
+} from '@/lib/video-tail-frame';
 
 /** Allowed image MIME types and their extensions. */
 const ALLOWED_MIME: Record<string, string> = {
@@ -49,7 +53,7 @@ export async function POST(request: NextRequest) {
     const role = (formData.get('role') as string) || 'input';
     const projectId = (formData.get('projectId') as string) || null;
     const usage = (formData.get('usage') as string) || '';
-    const allowedUsage = ['', 'scene_seed', 'shot_source'];
+    const allowedUsage = ['', 'scene_seed', 'shot_source', VIDEO_TAIL_FRAME_USAGE];
     if (!allowedUsage.includes(usage)) return NextResponse.json({ error: '非法的 usage 值' }, { status: 400 });
     const preprocessEnabled = formData.get('preprocessEnabled') !== 'false'; // default true
     const targetMaxSide = parseInt(formData.get('targetMaxSide') as string) || DEFAULT_OPTIONS.targetMaxSide;
@@ -61,6 +65,18 @@ export async function POST(request: NextRequest) {
 
     if (!['input', 'reference'].includes(role)) {
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
+    }
+
+    const db = getDb();
+    const tailFrameUploadError = validateVideoTailFrameUpload({
+      db,
+      usage,
+      role,
+      projectId,
+      fileCount: files.length,
+    });
+    if (tailFrameUploadError) {
+      return NextResponse.json({ error: tailFrameUploadError }, { status: 400 });
     }
 
     const maxFiles = role === 'reference' ? MAX_REFERENCE_FILES : MAX_INPUT_FILES;
@@ -77,7 +93,6 @@ export async function POST(request: NextRequest) {
       if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
     }
 
-    const db = getDb();
     const insertAsset = db.prepare(`
       INSERT INTO image_assets
         (id, projectId, role, filename, path, originalPath, processedPath, mimeType,
