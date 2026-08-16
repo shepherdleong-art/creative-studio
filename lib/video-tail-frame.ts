@@ -28,6 +28,15 @@ export type VideoTailFrameValidation =
   | { ok: true; asset: VideoTailFrameAsset | null }
   | { ok: false; error: string };
 
+export function validateVideoTailFrameBatchDrafts(
+  items: Array<{ prompt: string; tailImageId: string | null }>,
+): string | null {
+  if (items.some((item) => item.tailImageId && !item.prompt.trim())) {
+    return '已添加尾帧的运镜必须填写提示词';
+  }
+  return null;
+}
+
 export function validateVideoTailFrameUpload(params: {
   db: Pick<Database.Database, 'prepare'>;
   usage: string;

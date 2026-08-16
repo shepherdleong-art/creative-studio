@@ -9,6 +9,7 @@ import {
   validateVideoTailFrameUpload,
   VIDEO_TAIL_FRAME_USAGE,
 } from '@/lib/video-tail-frame';
+import { validateUploadedImageBuffer } from '@/lib/image-upload-validation';
 
 /** Allowed image MIME types and their extensions. */
 const ALLOWED_MIME: Record<string, string> = {
@@ -131,6 +132,9 @@ export async function POST(request: NextRequest) {
       const detectedMime = detectMimeByMagic(buffer);
       if (!detectedMime) {
         return NextResponse.json({ error: `无法识别的图片格式: ${file.name}` }, { status: 400 });
+      }
+      if (!(await validateUploadedImageBuffer(buffer, detectedMime))) {
+        return NextResponse.json({ error: `图片文件已损坏或不完整: ${file.name}` }, { status: 400 });
       }
 
       const mimeType = detectedMime;

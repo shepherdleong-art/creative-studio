@@ -52,6 +52,16 @@ export function removeVideoMotionRowByKey(rows: VideoMotionRow[], key: string): 
   return rows.filter((row) => row.key !== key);
 }
 
+export function collectVideoMotionTailImageIds(rowGroups: Iterable<VideoMotionRow[]>): string[] {
+  const ids = new Set<string>();
+  for (const rows of rowGroups) {
+    for (const row of rows) {
+      if (row.tailImageId) ids.add(row.tailImageId);
+    }
+  }
+  return [...ids];
+}
+
 export function getVideoMotionRowIssue(
   row: VideoMotionRow,
   capability: VideoTailFrameCapability | undefined,

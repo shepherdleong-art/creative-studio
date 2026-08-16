@@ -6,6 +6,7 @@ import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
 import { Icon } from '@/components/ui/Icon';
 import {
+  collectVideoMotionTailImageIds,
   createVideoMotionRow,
   getVideoMotionRowIssue,
   removeVideoMotionRowByKey,
@@ -13,6 +14,15 @@ import {
   type VideoMotionRow,
   type VideoTailFrameCapability,
 } from '@/components/video-tail-frame-state';
+
+function releaseDraftTailFrameAssets(rowGroups: Iterable<VideoMotionRow[]>): void {
+  for (const assetId of collectVideoMotionTailImageIds(rowGroups)) {
+    fetch(`/api/images/${encodeURIComponent(assetId)}`, {
+      method: 'DELETE',
+      keepalive: true,
+    }).catch(() => undefined);
+  }
+}
 
 interface VideoProvider {
   id: string;
@@ -123,6 +133,16 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     motionRowsRef.current = rows;
     setMotionRows(rows);
   };
+
+  useEffect(() => () => {
+    releaseDraftTailFrameAssets([
+      motionRowsRef.current,
+      ...perShotMotionCache.current.values(),
+    ]);
+    selectedShotRef.current = null;
+    motionRowsRef.current = [];
+    perShotMotionCache.current.clear();
+  }, []);
 
   const updateRowsForShot = (
     shotId: string,
@@ -236,6 +256,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   const handleSelectSet = (setId: string) => {
+    releaseDraftTailFrameAssets([
+      motionRowsRef.current,
+      ...perShotMotionCache.current.values(),
+    ]);
     setSelectedSetId(setId);
     selectedSetIdRef.current = setId;
     replaceSelectedShot(null);
@@ -661,7 +685,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         <span className="text-ink-tertiary">首帧使用当前分镜</span>
                       </div>
                       {row.tailImageId ? (
-                        <div className="flex h-14 items-center gap-2 rounded-md border border-hairline bg-white p-1.5">
+                        <div className="flex h-14 items-center gap-2 rounded-md border border-hairline bg-white p-1.5" aria-live="polite">
                           {row.tailImageUrl ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={row.tailImageUrl} alt="尾帧预览" className="h-11 w-11 shrink-0 rounded object-cover" />
@@ -695,12 +719,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                             disabled={tailBusy}
                             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-surface-subtle hover:text-fail disabled:opacity-40"
                             title="移除尾帧"
+                            aria-label="移除尾帧"
                           >
                             <Icon name="close" size={13} />
                           </button>
                         </div>
                       ) : tailCapability?.supported ? (
-                        <label className={`flex h-14 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-hairline bg-white text-[11px] transition-colors hover:border-accent/40 hover:text-accent ${tailBusy ? 'pointer-events-none opacity-50' : 'text-ink-tertiary'}`}>
+                        <label className={`flex h-14 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-hairline bg-white text-[11px] transition-colors hover:border-accent/40 hover:text-accent ${tailBusy ? 'pointer-events-none opacity-50' : 'text-ink-tertiary'}`} aria-live="polite">
                           <Icon name="upload" size={15} />
                           {row.tailUploadState === 'uploading' ? '上传中…' : '上传尾帧'}
                           <input
@@ -722,7 +747,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         </div>
                       )}
                       {tailIssue && (row.tailImageId || row.tailUploadState === 'failed') && (
-                        <p className="mt-1.5 flex items-start gap-1 rounded bg-warn-tint px-2 py-1 text-[10px] leading-4 text-warn">
+                        <p className="mt-1.5 flex items-start gap-1 rounded bg-warn-tint px-2 py-1 text-[10px] leading-4 text-warn" role="status">
                           <Icon name="alert" size={11} className="mt-0.5 shrink-0" />
                           {tailIssue}
                         </p>

@@ -57,23 +57,27 @@ export async function POST(
     } | undefined;
     if (!shotSet) return NextResponse.json({ error: 'Shot set not found' }, { status: 404 });
 
-    const tailFrameValidation = validateVideoTailFrameAsset({
-      db,
-      tailImageId,
-      projectId: shotSet.projectId,
-      providerType: provider.type,
-      model: provider.defaultModel,
-    });
-    if (!tailFrameValidation.ok) {
-      return NextResponse.json({ error: tailFrameValidation.error }, { status: 400 });
-    }
-
     const videoJobId = uuidv4();
-    db.prepare(`
-      INSERT INTO video_jobs
-        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, provider.defaultModel, templateId, prompt, durationSec);
+    const createResult = db.transaction(() => {
+      const tailFrameValidation = validateVideoTailFrameAsset({
+        db,
+        tailImageId,
+        projectId: shotSet.projectId,
+        providerType: provider.type,
+        model: provider.defaultModel,
+      });
+      if (!tailFrameValidation.ok) return tailFrameValidation;
+
+      db.prepare(`
+        INSERT INTO video_jobs
+          (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, provider.defaultModel, templateId, prompt, durationSec);
+      return { ok: true as const };
+    })();
+    if (!createResult.ok) {
+      return NextResponse.json({ error: createResult.error }, { status: 400 });
+    }
 
     // Auto-start video queue if idle
     const qStatus = getVideoQueueStatus(shotSet.projectId);

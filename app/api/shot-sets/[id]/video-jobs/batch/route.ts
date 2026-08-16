@@ -3,7 +3,7 @@ import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
-import { validateVideoTailFrameAsset } from '@/lib/video-tail-frame';
+import { validateVideoTailFrameAsset, validateVideoTailFrameBatchDrafts } from '@/lib/video-tail-frame';
 
 const MAX_ITEMS = 10;
 
@@ -31,20 +31,23 @@ export async function POST(
 
     // Normalize items: each must have prompt + providerId + optional templateId/durationSec
     const rawItems = Array.isArray(body.items) ? (body.items as unknown[]) : [];
-    const items: BatchItem[] = rawItems
-      .map((it) => {
-        const obj = (it ?? {}) as Record<string, unknown>;
-        return {
-          prompt: (obj.prompt as string)?.trim() || '',
-          templateId: (obj.templateId as string) || null,
-          providerId: (obj.providerId as string) || '',
-          durationSec: (() => { const v = Number(obj.durationSec); const sec = (Number.isFinite(v) && v > 0) ? v : 5; return Math.max(2, Math.min(15, sec)); })(),
-          tailImageId: typeof obj.tailImageId === 'string' && obj.tailImageId.trim()
-            ? obj.tailImageId.trim()
-            : null,
-        };
-      })
-      .filter((it) => it.prompt.length > 0);
+    const normalizedItems: BatchItem[] = rawItems.map((it) => {
+      const obj = (it ?? {}) as Record<string, unknown>;
+      return {
+        prompt: (obj.prompt as string)?.trim() || '',
+        templateId: (obj.templateId as string) || null,
+        providerId: (obj.providerId as string) || '',
+        durationSec: (() => { const v = Number(obj.durationSec); const sec = (Number.isFinite(v) && v > 0) ? v : 5; return Math.max(2, Math.min(15, sec)); })(),
+        tailImageId: typeof obj.tailImageId === 'string' && obj.tailImageId.trim()
+          ? obj.tailImageId.trim()
+          : null,
+      };
+    });
+    const tailFrameDraftError = validateVideoTailFrameBatchDrafts(normalizedItems);
+    if (tailFrameDraftError) {
+      return NextResponse.json({ error: tailFrameDraftError }, { status: 400 });
+    }
+    const items = normalizedItems.filter((it) => it.prompt.length > 0);
 
     if (!shotId) return NextResponse.json({ error: 'shotId is required' }, { status: 400 });
     if (items.length === 0) return NextResponse.json({ error: 'at least one prompt is required' }, { status: 400 });
@@ -81,20 +84,6 @@ export async function POST(
     } | undefined;
     if (!shotSet) return NextResponse.json({ error: 'Shot set not found' }, { status: 404 });
 
-    for (const item of items) {
-      const provider = providerCache.get(item.providerId)!;
-      const tailFrameValidation = validateVideoTailFrameAsset({
-        db,
-        tailImageId: item.tailImageId,
-        projectId: shotSet.projectId,
-        providerType: provider.type,
-        model: provider.model,
-      });
-      if (!tailFrameValidation.ok) {
-        return NextResponse.json({ error: tailFrameValidation.error }, { status: 400 });
-      }
-    }
-
     // Use latest generated image, fallback to source image
     const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
 
@@ -106,13 +95,29 @@ export async function POST(
     const videoJobIds: string[] = [];
     const createAll = db.transaction(() => {
       for (const item of items) {
+        const provider = providerCache.get(item.providerId)!;
+        const tailFrameValidation = validateVideoTailFrameAsset({
+          db,
+          tailImageId: item.tailImageId,
+          projectId: shotSet.projectId,
+          providerType: provider.type,
+          model: provider.model,
+        });
+        if (!tailFrameValidation.ok) return tailFrameValidation;
+      }
+
+      for (const item of items) {
         const videoJobId = uuidv4();
         const p = providerCache.get(item.providerId)!;
         insert.run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId, item.providerId, p.model, item.templateId, item.prompt, item.durationSec);
         videoJobIds.push(videoJobId);
       }
+      return { ok: true as const };
     });
-    createAll();
+    const createResult = createAll();
+    if (!createResult.ok) {
+      return NextResponse.json({ error: createResult.error }, { status: 400 });
+    }
 
     // Auto-start video queue if idle (multi-worker so 运镜 jobs run concurrently)
     const qStatus = getVideoQueueStatus(shotSet.projectId);

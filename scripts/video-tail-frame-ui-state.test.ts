@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  collectVideoMotionTailImageIds,
   createVideoMotionRow,
   getVideoMotionRowIssue,
   removeVideoMotionRowByKey,
@@ -32,6 +33,17 @@ const second = createVideoMotionRow('row-b', 8);
 {
   const rows = removeVideoMotionRowByKey([first, second], 'row-a');
   assert.deepEqual(rows.map((row) => row.key), ['row-b']);
+}
+
+{
+  const tailA = { ...first, tailImageId: 'tail-a' };
+  const tailADuplicate = { ...second, tailImageId: 'tail-a' };
+  const tailB = { ...second, key: 'row-c', tailImageId: 'tail-b' };
+  assert.deepEqual(
+    collectVideoMotionTailImageIds([[tailA], [tailADuplicate, tailB]]).sort(),
+    ['tail-a', 'tail-b'],
+    '切换分镜组或卸载时应收集并去重全部未提交尾帧',
+  );
 }
 
 {

@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 
 const {
   getVideoTailFrameCapability,
+  validateVideoTailFrameBatchDrafts,
   validateVideoTailFrameAsset,
   validateVideoTailFrameUpload,
   VIDEO_TAIL_FRAME_USAGE,
@@ -74,6 +75,15 @@ assert.equal(validateVideoTailFrameUpload({
 }), '当前项目不存在');
 
 assert.equal(VIDEO_TAIL_FRAME_USAGE, 'video_tail_frame');
+
+assert.equal(validateVideoTailFrameBatchDrafts([
+  { prompt: '', tailImageId: 'tail-ok' },
+  { prompt: '正常行', tailImageId: null },
+]), '已添加尾帧的运镜必须填写提示词');
+assert.equal(validateVideoTailFrameBatchDrafts([
+  { prompt: '', tailImageId: null },
+  { prompt: '正常行', tailImageId: 'tail-ok' },
+]), null);
 
 assert.deepEqual(
   getVideoTailFrameCapability('jimeng', 'doubao-seedance-2-0-260128'),
