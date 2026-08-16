@@ -8,7 +8,8 @@ export type IconName =
   | "skip-back" | "skip-forward" | "maximize"
   | "cpu" | "sparkle" | "users" | "monitor" | "film" | "search"
   | "mic" | "speaker" | "music" | "scissors" | "text"
-  | "play-circle" | "check-circle" | "upload";
+  | "play-circle" | "check-circle" | "upload"
+  | "grid" | "table";
 
 const PATHS: Record<IconName, ReactNode> = {
   "chevron-left": <polyline points="15 18 9 12 15 6" />,
@@ -51,6 +52,8 @@ const PATHS: Record<IconName, ReactNode> = {
   "play-circle": (<><circle cx="12" cy="12" r="10" /><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none" /></>),
   "check-circle": (<><circle cx="12" cy="12" r="10" /><polyline points="8 12.5 10.8 15.3 16 9.5" /></>),
   upload: (<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>),
+  grid: (<><rect x="3" y="3" width="7.5" height="7.5" rx="1.6" /><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6" /><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6" /><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6" /></>),
+  table: (<><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="3" y1="9.5" x2="21" y2="9.5" /><line x1="3" y1="14.75" x2="21" y2="14.75" /><line x1="9.5" y1="9.5" x2="9.5" y2="20" /></>),
 };
 
 export function Icon({

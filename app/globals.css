@@ -83,6 +83,12 @@ body {
     transition: border-color .15s ease, box-shadow .15s ease;
   }
   .input-field::placeholder { color: var(--color-ink-tertiary); }
+  /* 前置图标 + 清除按钮的搜索框:左右让出图标位置。必须写成类 —— Tailwind 的
+     水平 padding 工具类与 .input-field 同层同特异性,会被源码顺序压掉。 */
+  .search-field { padding-left: 2rem; padding-right: 2rem; }
+  /* 去掉 WebKit 给 type="search" 的原生清除按钮,否则会和自绘的清除按钮叠成两个 ✕ */
+  .search-field::-webkit-search-cancel-button,
+  .search-field::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
   .input-field:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px rgba(0,113,227,.35); }
   .label { display: block; font-size: .72rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--color-ink-tertiary); margin-bottom: .4rem; }
 
@@ -279,7 +285,9 @@ body {
   /* segmented control */
   .segmented { display: inline-flex; gap: 2px; padding: 3px; background: var(--color-surface-subtle); border-radius: 11px; }
   .segmented > button { border: none; background: transparent; cursor: pointer; font-size: .82rem; font-weight: 500; color: var(--color-ink-secondary); padding: .35rem 1rem; border-radius: 8px; transition: background .15s ease, color .15s ease; }
-  .segmented > button[aria-selected="true"] { background: var(--color-surface); color: var(--color-ink); box-shadow: 0 1px 3px rgba(0,0,0,.13); }
+  /* aria-selected 供 tab 语义使用;aria-pressed 供 toggle button 语义使用(首页视图切换) */
+  .segmented > button[aria-selected="true"],
+  .segmented > button[aria-pressed="true"] { background: var(--color-surface); color: var(--color-ink); box-shadow: 0 1px 3px rgba(0,0,0,.13); }
 
 	  /* frosted toolbar */
 	  .toolbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; background: rgba(255,255,255,.72); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid rgba(0,0,0,.08); }
