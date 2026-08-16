@@ -29,6 +29,7 @@ const STATUS_LABELS: Record<string, string> = {
   running: '运行中',
   completed: '已完成',
   partial_failed: '部分失败',
+  failed: '全部失败',
   canceled: '已取消',
   needs_check: '待补抓',
 };
@@ -37,7 +38,8 @@ const STATUS_CLASS: Record<string, string> = {
   draft: 'status-pending',
   running: 'status-running',
   completed: 'status-succeeded',
-  partial_failed: 'status-failed',
+  partial_failed: 'status-partial_failed',
+  failed: 'status-failed',
   canceled: 'status-canceled',
   needs_check: 'status-needs_check',
 };
@@ -83,7 +85,9 @@ function writeViewMode(mode: ViewMode): void {
 
 function progressClass(status: string): string {
   if (status === 'completed') return 'bg-dot-ok';
-  if (status === 'failed' || status === 'partial_failed') return 'bg-fail';
+  // 部分失败 = 黄:还有成果在。只有全军覆没才是红的。
+  if (status === 'partial_failed') return 'bg-dot-warn';
+  if (status === 'failed') return 'bg-fail';
   return 'bg-accent';
 }
 

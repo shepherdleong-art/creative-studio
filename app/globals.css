@@ -279,6 +279,8 @@ body {
   .status-succeeded   { background: var(--color-ok-tint);    color: var(--color-ok); }
   .status-failed      { background: var(--color-fail-tint);  color: var(--color-fail); }
   .status-retrying    { background: var(--color-warn-tint);  color: var(--color-warn); }
+  /* 部分失败用黄色而不是红色:还有成果在,和「全部失败」不是一回事 */
+  .status-partial_failed { background: var(--color-warn-tint); color: var(--color-warn); }
   .status-canceled    { background: var(--color-idle-tint);  color: var(--color-ink-tertiary); text-decoration: line-through; }
   .status-needs_check { background: var(--color-check-tint); color: var(--color-check); }
 
