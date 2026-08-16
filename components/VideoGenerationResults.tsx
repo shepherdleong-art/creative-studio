@@ -20,6 +20,7 @@ interface VideoJob {
   providerName?: string;
   templateName?: string;
   posterImageUrl?: string;
+  tailImageId?: string | null;
 }
 
 interface Props {
@@ -99,6 +100,11 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                 <span className={`status-badge result-status status-${isSucceeded ? 'succeeded' : isFailed ? 'failed' : isRunning ? 'running' : 'pending'}`}>
                   {STATUS_LABELS[job.status] || job.status}
                 </span>
+                {job.tailImageId && (
+                  <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-ink-secondary">
+                    首尾帧
+                  </span>
+                )}
                 <span className="result-meta">
                   {job.providerName || '-'} / {job.templateName || '自定义'} / {job.durationSec}s
                 </span>

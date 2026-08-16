@@ -5,6 +5,14 @@ import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
 import { Icon } from '@/components/ui/Icon';
+import {
+  createVideoMotionRow,
+  getVideoMotionRowIssue,
+  removeVideoMotionRowByKey,
+  updateVideoMotionRowByKey,
+  type VideoMotionRow,
+  type VideoTailFrameCapability,
+} from '@/components/video-tail-frame-state';
 
 interface VideoProvider {
   id: string;
@@ -14,6 +22,7 @@ interface VideoProvider {
   defaultDurationSec: number;
   configured?: boolean;
   missing?: string[];
+  tailFrameCapability?: VideoTailFrameCapability;
 }
 
 interface MotionTemplate {
@@ -40,6 +49,7 @@ interface VideoJob {
   providerName?: string;
   templateName?: string;
   posterImageUrl?: string;
+  tailImageId?: string | null;
 }
 
 interface Props {
@@ -69,7 +79,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   // Per-shot form state (one active shot at a time)
   const [selectedShot, setSelectedShot] = useState<string | null>(null);
-  const [motionRows, setMotionRows] = useState<Array<{ key: string; prompt: string; templateId: string; providerId: string; durationSec: number }>>([]);
+  const selectedShotRef = useRef<string | null>(null);
+  const [motionRows, setMotionRows] = useState<VideoMotionRow[]>([]);
+  const motionRowsRef = useRef<VideoMotionRow[]>([]);
   const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
   const [creating, setCreating] = useState(false);
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
@@ -97,10 +109,35 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     (row.providerId && configuredProviders.some((provider) => provider.id === row.providerId))
       ? row.providerId
       : preferredProvider?.id || '';
+  const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability | undefined =>
+    providers.find((provider) => provider.id === getRowProviderId(row))?.tailFrameCapability;
 
-  const makeEmptyRow = (): { key: string; prompt: string; templateId: string; providerId: string; durationSec: number } => ({
-    key: crypto.randomUUID(), prompt: '', templateId: '', providerId: '', durationSec: defaultDuration,
-  });
+  const makeEmptyRow = (): VideoMotionRow => createVideoMotionRow(crypto.randomUUID(), defaultDuration);
+
+  const replaceSelectedShot = (shotId: string | null) => {
+    selectedShotRef.current = shotId;
+    setSelectedShot(shotId);
+  };
+
+  const replaceActiveMotionRows = (rows: VideoMotionRow[]) => {
+    motionRowsRef.current = rows;
+    setMotionRows(rows);
+  };
+
+  const updateRowsForShot = (
+    shotId: string,
+    rowKey: string,
+    update: (row: VideoMotionRow) => VideoMotionRow,
+  ): boolean => {
+    const isActive = selectedShotRef.current === shotId;
+    const currentRows = isActive ? motionRowsRef.current : perShotMotionCache.current.get(shotId);
+    if (!currentRows) return false;
+    const result = updateVideoMotionRowByKey(currentRows, rowKey, update);
+    if (!result.updated) return false;
+    if (isActive) replaceActiveMotionRows(result.rows);
+    else perShotMotionCache.current.set(shotId, result.rows);
+    return true;
+  };
 
   // Load providers and templates once
   useEffect(() => {
@@ -184,8 +221,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         }));
         setSelectedSetShots(loadedShots);
         if (loadedShots.length > 0) {
-          setSelectedShot(loadedShots[0].id);
-          setMotionRows([makeEmptyRow()]);
+          replaceSelectedShot(loadedShots[0].id);
+          replaceActiveMotionRows([makeEmptyRow()]);
         }
       }
       // Load video jobs
@@ -201,8 +238,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const handleSelectSet = (setId: string) => {
     setSelectedSetId(setId);
     selectedSetIdRef.current = setId;
-    setSelectedShot(null);
-    setMotionRows([]);
+    replaceSelectedShot(null);
+    replaceActiveMotionRows([]);
     previewSuppressedRef.current = false;
     setVideoPreviewJobId(null);
     // Clear per-shot motion cache — switching sets resets all motion form state
@@ -277,25 +314,30 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     if (selectedShot !== shotId) {
       // Save current rows before switching away
       if (selectedShot) {
-        perShotMotionCache.current.set(selectedShot, motionRows);
+        perShotMotionCache.current.set(selectedShot, motionRowsRef.current);
       }
-      setSelectedShot(shotId);
+      replaceSelectedShot(shotId);
       // Restore cached rows or start fresh
       const cached = perShotMotionCache.current.get(shotId);
-      setMotionRows(cached ? [...cached] : [makeEmptyRow()]);
+      replaceActiveMotionRows(cached ? [...cached] : [makeEmptyRow()]);
     }
   };
 
-  const addMotionRow = () => setMotionRows((rows) => {
-    return [...rows, makeEmptyRow()];
-  });
-  const removeMotionRow = (idx: number) =>
-    setMotionRows((rows) => (rows.length <= 1 ? rows : rows.filter((_, i) => i !== idx)));
-  const updateRowPrompt = (idx: number, value: string) =>
-    setMotionRows((rows) => rows.map((r, i) => (i === idx ? { ...r, prompt: value } : r)));
-  const updateRowTemplate = (idx: number, templateId: string) =>
-    setMotionRows((rows) => rows.map((r, i) => {
-      if (i !== idx) return r;
+  const addMotionRow = () => replaceActiveMotionRows([...motionRowsRef.current, makeEmptyRow()]);
+  const removeMotionRow = (rowKey: string) => {
+    if (motionRowsRef.current.length <= 1) return;
+    const removed = motionRowsRef.current.find((row) => row.key === rowKey);
+    replaceActiveMotionRows(removeVideoMotionRowByKey(motionRowsRef.current, rowKey));
+    if (removed?.tailImageId) {
+      fetch(`/api/images/${encodeURIComponent(removed.tailImageId)}`, { method: 'DELETE' }).catch(() => undefined);
+    }
+  };
+  const updateRowPrompt = (rowKey: string, value: string) => {
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, prompt: value }));
+    replaceActiveMotionRows(result.rows);
+  };
+  const updateRowTemplate = (rowKey: string, templateId: string) => {
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
       const oldTmpl = r.templateId ? templates.find((t) => t.id === r.templateId) : null;
       const newTmpl = templates.find((t) => t.id === templateId);
       // Update prompt when: prompt is empty (first selection), or the current
@@ -304,23 +346,125 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       const isAutoFilled = !r.prompt.trim() || (oldTmpl ? r.prompt.trim() === oldTmpl.prompt.trim() : false);
       const nextPrompt = (isAutoFilled && newTmpl) ? newTmpl.prompt : r.prompt;
       return { ...r, templateId, prompt: nextPrompt };
-    }));
-  const updateRowProvider = (idx: number, providerId: string) =>
-    setMotionRows((rows) => rows.map((r, i) => (i === idx ? { ...r, providerId } : r)));
-  const updateRowDuration = (idx: number, raw: number) =>
-    setMotionRows((rows) => rows.map((r, i) => {
-      if (i !== idx) return r;
+    });
+    replaceActiveMotionRows(result.rows);
+  };
+  const updateRowProvider = (rowKey: string, providerId: string) => {
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, providerId }));
+    replaceActiveMotionRows(result.rows);
+  };
+  const updateRowDuration = (rowKey: string, raw: number) => {
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
       const v = Number.isFinite(raw) && raw > 0 ? raw : 5;
       return { ...r, durationSec: Math.max(2, Math.min(15, v)) };
+    });
+    replaceActiveMotionRows(result.rows);
+  };
+
+  const deleteTailFrameAsset = async (assetId: string): Promise<void> => {
+    const response = await fetch(`/api/images/${encodeURIComponent(assetId)}`, { method: 'DELETE' });
+    if (!response.ok && response.status !== 404) {
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+  };
+
+  const handleTailFrameUpload = async (shotId: string, rowKey: string, file: File) => {
+    const currentRows = selectedShotRef.current === shotId
+      ? motionRowsRef.current
+      : perShotMotionCache.current.get(shotId);
+    const previousTailId = currentRows?.find((row) => row.key === rowKey)?.tailImageId ?? null;
+    if (!updateRowsForShot(shotId, rowKey, (row) => ({
+      ...row,
+      tailUploadState: 'uploading',
+      tailUploadError: null,
+    }))) return;
+
+    let uploadedId: string | null = null;
+    try {
+      const formData = new FormData();
+      formData.append('files', file);
+      formData.append('role', 'input');
+      formData.append('projectId', projectId);
+      formData.append('usage', 'video_tail_frame');
+      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      const data = await response.json().catch(() => ({})) as {
+        error?: string;
+        files?: Array<{ id: string; filename: string; imageUrl: string }>;
+      };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const uploaded = data.files?.[0];
+      if (!uploaded) throw new Error('上传接口没有返回尾帧图片');
+      uploadedId = uploaded.id;
+
+      const attached = updateRowsForShot(shotId, rowKey, (row) => ({
+        ...row,
+        tailImageId: uploaded.id,
+        tailImageUrl: uploaded.imageUrl,
+        tailImageName: uploaded.filename,
+        tailUploadState: 'idle',
+        tailUploadError: null,
+      }));
+      if (!attached) {
+        await deleteTailFrameAsset(uploaded.id).catch(() => undefined);
+        return;
+      }
+      if (previousTailId && previousTailId !== uploaded.id) {
+        await deleteTailFrameAsset(previousTailId).catch(() => undefined);
+      }
+    } catch (error) {
+      if (uploadedId) await deleteTailFrameAsset(uploadedId).catch(() => undefined);
+      updateRowsForShot(shotId, rowKey, (row) => ({
+        ...row,
+        tailUploadState: 'failed',
+        tailUploadError: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  };
+
+  const handleTailFrameRemove = async (shotId: string, rowKey: string) => {
+    const currentRows = selectedShotRef.current === shotId
+      ? motionRowsRef.current
+      : perShotMotionCache.current.get(shotId);
+    const tailImageId = currentRows?.find((row) => row.key === rowKey)?.tailImageId;
+    if (!tailImageId) return;
+    updateRowsForShot(shotId, rowKey, (row) => ({
+      ...row,
+      tailUploadState: 'deleting',
+      tailUploadError: null,
     }));
+    try {
+      await deleteTailFrameAsset(tailImageId);
+      updateRowsForShot(shotId, rowKey, (row) => ({
+        ...row,
+        tailImageId: null,
+        tailImageUrl: null,
+        tailImageName: null,
+        tailUploadState: 'idle',
+        tailUploadError: null,
+      }));
+    } catch (error) {
+      updateRowsForShot(shotId, rowKey, (row) => ({
+        ...row,
+        tailUploadState: 'failed',
+        tailUploadError: `移除尾帧失败：${error instanceof Error ? error.message : String(error)}`,
+      }));
+    }
+  };
 
   const handleCreateVideos = async (shotId: string) => {
+    const blockedRow = motionRows.find((row) => getVideoMotionRowIssue(row, getRowTailCapability(row)));
+    if (blockedRow) {
+      alert(getVideoMotionRowIssue(blockedRow, getRowTailCapability(blockedRow)));
+      return;
+    }
     const items = motionRows
       .map((r) => ({
         prompt: r.prompt.trim(),
         templateId: r.templateId || null,
         providerId: getRowProviderId(r),
         durationSec: r.durationSec,
+        tailImageId: r.tailImageId,
       }))
       .filter((r) => r.prompt.length > 0);
     if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
@@ -336,7 +480,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       if (res.ok) {
         await refreshJobs();
         perShotMotionCache.current.delete(shotId);
-        setMotionRows([makeEmptyRow()]);
+        replaceActiveMotionRows([makeEmptyRow()]);
       } else {
         alert('创建视频任务失败: ' + (data.error || '未知错误'));
       }
@@ -465,13 +609,17 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           {selectedShot && (
             <div className="panel-scroll-area">
               <div className="space-y-3">
-                {motionRows.map((row, idx) => (
+                {motionRows.map((row, idx) => {
+                  const tailCapability = getRowTailCapability(row);
+                  const tailIssue = getVideoMotionRowIssue(row, tailCapability);
+                  const tailBusy = row.tailUploadState === 'uploading' || row.tailUploadState === 'deleting';
+                  return (
                   <div key={row.key} className="video-motion-card">
                     <span className="video-motion-label">描述 {idx + 1}</span>
 
                     <select
                       value={getRowProviderId(row)}
-                      onChange={(e) => updateRowProvider(idx, e.target.value)}
+                      onChange={(e) => updateRowProvider(row.key, e.target.value)}
                       className="input-field video-control"
                       disabled={configuredProviders.length === 0}
                     >
@@ -492,7 +640,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     <div className="grid grid-cols-2 gap-2">
                       <select
                         value={row.templateId}
-                        onChange={(e) => updateRowTemplate(idx, e.target.value)}
+                        onChange={(e) => updateRowTemplate(row.key, e.target.value)}
                         className="input-field video-control"
                       >
                         <option value="">模板（可选）</option>
@@ -501,28 +649,103 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       <input
                         type="number" min={2} max={15}
                         value={row.durationSec}
-                        onChange={(e) => updateRowDuration(idx, Number(e.target.value))}
+                        onChange={(e) => updateRowDuration(row.key, Number(e.target.value))}
                         className="input-field video-control text-center"
                         title="秒数"
                       />
                     </div>
 
+                    <div className="rounded-lg border border-hairline bg-surface-subtle p-2">
+                      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] leading-4">
+                        <span className="font-medium text-ink-secondary">尾帧（可选）</span>
+                        <span className="text-ink-tertiary">首帧使用当前分镜</span>
+                      </div>
+                      {row.tailImageId ? (
+                        <div className="flex h-14 items-center gap-2 rounded-md border border-hairline bg-white p-1.5">
+                          {row.tailImageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={row.tailImageUrl} alt="尾帧预览" className="h-11 w-11 shrink-0 rounded object-cover" />
+                          ) : (
+                            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded bg-surface-subtle text-ink-tertiary">
+                              <Icon name="image" size={17} />
+                            </span>
+                          )}
+                          <span className="min-w-0 flex-1 truncate text-[11px] text-ink-secondary">
+                            {tailBusy ? (row.tailUploadState === 'deleting' ? '移除中…' : '更换中…') : (row.tailImageName || '已添加尾帧')}
+                          </span>
+                          {tailCapability?.supported && (
+                            <label className="inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-[10px] text-accent hover:bg-accent/5">
+                              更换
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/webp"
+                                className="sr-only"
+                                disabled={tailBusy}
+                                onChange={(event) => {
+                                  const file = event.currentTarget.files?.[0];
+                                  event.currentTarget.value = '';
+                                  if (file && selectedShot) void handleTailFrameUpload(selectedShot, row.key, file);
+                                }}
+                              />
+                            </label>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => selectedShot && void handleTailFrameRemove(selectedShot, row.key)}
+                            disabled={tailBusy}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-surface-subtle hover:text-fail disabled:opacity-40"
+                            title="移除尾帧"
+                          >
+                            <Icon name="close" size={13} />
+                          </button>
+                        </div>
+                      ) : tailCapability?.supported ? (
+                        <label className={`flex h-14 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-hairline bg-white text-[11px] transition-colors hover:border-accent/40 hover:text-accent ${tailBusy ? 'pointer-events-none opacity-50' : 'text-ink-tertiary'}`}>
+                          <Icon name="upload" size={15} />
+                          {row.tailUploadState === 'uploading' ? '上传中…' : '上传尾帧'}
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="sr-only"
+                            disabled={tailBusy}
+                            onChange={(event) => {
+                              const file = event.currentTarget.files?.[0];
+                              event.currentTarget.value = '';
+                              if (file && selectedShot) void handleTailFrameUpload(selectedShot, row.key, file);
+                            }}
+                          />
+                        </label>
+                      ) : (
+                        <div className="flex h-8 items-center gap-1.5 rounded-md border border-dashed border-hairline bg-white px-2 text-[10px] text-ink-tertiary">
+                          <Icon name="image" size={13} />
+                          当前模型暂不支持尾帧
+                        </div>
+                      )}
+                      {tailIssue && (row.tailImageId || row.tailUploadState === 'failed') && (
+                        <p className="mt-1.5 flex items-start gap-1 rounded bg-warn-tint px-2 py-1 text-[10px] leading-4 text-warn">
+                          <Icon name="alert" size={11} className="mt-0.5 shrink-0" />
+                          {tailIssue}
+                        </p>
+                      )}
+                    </div>
+
                     <textarea
                       value={row.prompt}
-                      onChange={(e) => updateRowPrompt(idx, e.target.value)}
+                      onChange={(e) => updateRowPrompt(row.key, e.target.value)}
                       rows={3}
                       className="input-field video-prompt-field"
                       placeholder="运镜描述（提示词）"
                     />
 
                     <button
-                      onClick={() => removeMotionRow(idx)}
+                      onClick={() => removeMotionRow(row.key)}
                       disabled={motionRows.length <= 1}
                       className="video-motion-delete"
                       title="删除该描述"
                     ><Icon name="trash" size={12} /></button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="flex flex-col gap-2">
@@ -543,7 +766,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 </div>
                 <button
                   onClick={() => handleCreateVideos(selectedShot)}
-                  disabled={creating || configuredProviders.length === 0 || motionRows.every((r) => !r.prompt.trim())}
+                  disabled={creating
+                    || configuredProviders.length === 0
+                    || motionRows.every((r) => !r.prompt.trim())
+                    || motionRows.some((r) => Boolean(getVideoMotionRowIssue(r, getRowTailCapability(r))))}
                   className="btn-primary btn-sm w-full video-create-action"
                 >
                   {creating
