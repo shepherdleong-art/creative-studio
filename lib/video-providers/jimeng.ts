@@ -1,5 +1,11 @@
 import fs from 'fs';
-import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
+import type {
+  VideoProviderAdapter,
+  SubmitVideoRequest,
+  SubmitVideoResult,
+  PollVideoResult,
+  TailFrameCapability,
+} from './types';
 
 /**
  * Read a local image file and return as a Base64 data URL.
@@ -19,6 +25,22 @@ function normalizeJimengDuration(durationSec: number, maxSec = 12): number {
 
 function isSeedance2(model: string): boolean {
   return /seedance-2[-.]/.test(model);
+}
+
+const SEEDANCE_2_TAIL_FRAME_MODEL = 'doubao-seedance-2-0-260128';
+
+function getTailFrameCapability(model: string): TailFrameCapability {
+  if (model === SEEDANCE_2_TAIL_FRAME_MODEL) {
+    return {
+      supported: true,
+      protocol: 'ark-content-roles',
+    };
+  }
+
+  return {
+    supported: false,
+    reason: 'unsupported_model',
+  };
 }
 
 type ArkTaskResponse = {
@@ -53,6 +75,10 @@ const POLL_TIMEOUT_MS = 30_000;
 const JIMENG_2_LONG_VIDEO_MIN_POLLING_MS = 15 * 60_000;
 
 export const jimengAdapter: VideoProviderAdapter = {
+  tailFrameCapability(model) {
+    return getTailFrameCapability(model);
+  },
+
   minimumPollingTimeoutMs(request) {
     if (isSeedance2(request.model) && request.durationSec === 15) {
       return JIMENG_2_LONG_VIDEO_MIN_POLLING_MS;
@@ -69,6 +95,15 @@ export const jimengAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/contents/generations/tasks`;
 
+    const hasTailImagePath = request.tailImagePath !== undefined;
+    const hasTailMimeType = request.tailMimeType !== undefined;
+    if (hasTailImagePath !== hasTailMimeType) {
+      throw new Error('Jimeng tail frame requires tailImagePath and tailMimeType together');
+    }
+    if (hasTailImagePath && !getTailFrameCapability(request.model).supported) {
+      throw new Error(`Jimeng tail frame unsupported for model ${request.model}`);
+    }
+
     const imageDataUrl = fileToBase64DataUrl(request.sourceImagePath, request.sourceMimeType);
 
     // Seedance accepts public HTTPS/TOS/asset URLs. We use a data URL here because
@@ -76,18 +111,29 @@ export const jimengAdapter: VideoProviderAdapter = {
     console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
 
     const seedance2 = isSeedance2(request.model);
+    const content: Array<Record<string, unknown>> = [
+      {
+        type: 'text',
+        text: normalizeJimengPrompt(request.prompt),
+      },
+      {
+        type: 'image_url',
+        image_url: { url: imageDataUrl },
+        ...(hasTailImagePath ? { role: 'first_frame' } : {}),
+      },
+    ];
+    if (hasTailImagePath) {
+      const tailImageDataUrl = fileToBase64DataUrl(request.tailImagePath!, request.tailMimeType!);
+      content.push({
+        type: 'image_url',
+        image_url: { url: tailImageDataUrl },
+        role: 'last_frame',
+      });
+    }
+
     const body: Record<string, unknown> = {
       model: request.model,
-      content: [
-        {
-          type: 'text',
-          text: normalizeJimengPrompt(request.prompt),
-        },
-        {
-          type: 'image_url',
-          image_url: { url: imageDataUrl },
-        },
-      ],
+      content,
       resolution: '1080p',
       ratio: 'adaptive',
       duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),

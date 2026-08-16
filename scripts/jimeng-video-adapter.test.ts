@@ -6,7 +6,9 @@ import { jimengAdapter } from '../lib/video-providers/jimeng.ts';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jimeng-adapter-'));
 const imagePath = path.join(tmpDir, 'source.png');
+const tailImagePath = path.join(tmpDir, 'tail.png');
 fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+fs.writeFileSync(tailImagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]));
 
 let capturedUrl = '';
 let capturedBody: Record<string, unknown> | undefined;
@@ -31,6 +33,19 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 try {
+  assert.deepEqual(jimengAdapter.tailFrameCapability?.('doubao-seedance-2-0-260128'), {
+    supported: true,
+    protocol: 'ark-content-roles',
+  });
+  assert.deepEqual(jimengAdapter.tailFrameCapability?.('doubao-seedance-2-0-260128-fast'), {
+    supported: false,
+    reason: 'unsupported_model',
+  });
+  assert.deepEqual(jimengAdapter.tailFrameCapability?.('doubao-seedance-1-5-pro-251215'), {
+    supported: false,
+    reason: 'unsupported_model',
+  });
+
   const result = await jimengAdapter.submit(
     {
       model: 'doubao-seedance-1-5-pro-251215',
@@ -84,6 +99,49 @@ try {
   assert.equal(capturedUrl, 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task-1');
   assert.equal(capturedHeaders?.get('content-type'), 'application/json');
   assert.equal(capturedHeaders?.get('authorization'), 'Bearer ark-key');
+
+  const tailResult = await jimengAdapter.submit(
+    {
+      model: 'doubao-seedance-2-0-260128',
+      prompt: '从首帧自然过渡到尾帧',
+      sourceImagePath: imagePath,
+      sourceMimeType: 'image/png',
+      tailImagePath,
+      tailMimeType: 'image/png',
+      durationSec: 5,
+    },
+    'ark-key',
+    'https://ark.cn-beijing.volces.com/api/v3',
+  );
+
+  assert.equal(tailResult.providerTaskId, 'task-1');
+  const tailContent = capturedBody?.content as Array<Record<string, unknown>>;
+  assert.equal(tailContent.length, 3);
+  assert.equal(tailContent[0].type, 'text');
+  assert.equal(tailContent[0].text, '从首帧自然过渡到尾帧');
+  assert.equal(tailContent[1].type, 'image_url');
+  assert.equal((tailContent[1].image_url as { url: string }).url.startsWith('data:image/png;base64,'), true);
+  assert.equal(tailContent[1].role, 'first_frame');
+  assert.equal(tailContent[2].type, 'image_url');
+  assert.equal((tailContent[2].image_url as { url: string }).url.startsWith('data:image/png;base64,'), true);
+  assert.equal(tailContent[2].role, 'last_frame');
+
+  await assert.rejects(
+    () => jimengAdapter.submit(
+      {
+        model: 'doubao-seedance-2-0-260128-fast',
+        prompt: '不支持的尾帧模型',
+        sourceImagePath: imagePath,
+        sourceMimeType: 'image/png',
+        tailImagePath,
+        tailMimeType: 'image/png',
+        durationSec: 5,
+      },
+      'ark-key',
+      'https://ark.cn-beijing.volces.com/api/v3',
+    ),
+    /tail frame.*unsupported/i,
+  );
 } finally {
   globalThis.fetch = originalFetch;
   fs.rmSync(tmpDir, { recursive: true, force: true });
