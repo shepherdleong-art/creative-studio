@@ -104,6 +104,77 @@
 - [x] 视频素材栏使用两列大卡片和固定高度内部滚动，十条素材不会撑高编辑器。
 
 final result: passed
+
+---
+
+# Seedance 2.0 尾帧拖拽与悬浮预览 — Design QA
+
+## Evidence
+
+- Source visual truth: `/var/folders/4y/v3q6w0gn7v7f4r79h9gjjk3r0000gn/T/codex-clipboard-0d9eda1a-3a8c-45a6-b359-117ca8cfd488.png`
+- Browser-rendered loaded state: `/tmp/seedance-tail-loaded.png`
+- Browser-rendered hover state: `/tmp/seedance-tail-drag-hover-active.png`
+- Browser-rendered empty state: `/tmp/seedance-tail-drag-empty.png`
+- Combined comparison input opened for review: `/tmp/tail-frame-drag-comparison.png`
+- Route: `http://127.0.0.1:3019/projects/c44a2df5-1ce1-4331-8117-556a63183b6e?tab=video`
+- Browser viewport for the matched loaded and hover states: `1280 × 720 CSS px`, screenshot output `1280 × 720 px`.
+- Source pixels: `802 × 404 px`. For the focused comparison, its `692 × 375 px` frame region was normalized to `306px` width; the implementation region is `306 × 172 px`. The combined comparison is `636 × 172 px` with a `24px` neutral gutter.
+- State: Seedance 2.0 selected; a real project image was temporarily uploaded as the tail frame, inspected, hovered, and then removed. Both temporary uploaded assets were deleted through the product UI after QA.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- The accepted two-frame composition is unchanged. The empty tail tile now explicitly says `可选 · 点击或拖入`, while the loaded tile remains visually quiet until hover/focus.
+- Drag-enter state uses the existing accent blue, a dashed inner boundary, and explicit `松开添加尾帧` / `松开替换尾帧` copy. It does not cover or alter the default state when no drag is active.
+- The loaded tail frame now uses the same `HoverZoomImage` implementation, maximum preview size, keyboard behavior, and `zoom-in` cursor as the first frame.
+
+## Full-view comparison
+
+- The combined source/implementation image confirms the same equal-width first/tail tiles, center time-direction marker, top-left frame chips, bottom-right replace/remove controls, and warning bar placement.
+- The implementation retains the Creative Studio light surfaces and project tokens established in the preceding accepted Seedance QA. Different scene imagery is expected because QA uses the current project's real frame.
+- No layout, crop, padding, radius, or text-wrapping regression was introduced by the drag target.
+
+## Focused region comparison
+
+- The hover screenshot visibly shows the enlarged tail image beside the frame pair. Its dimensions and caption treatment match the first-frame preview because both are rendered by the same shared component.
+- A separate focused drag comparison was not fabricated: the in-app browser supports the real file-chooser flow but does not expose an operating-system file drag source. Drag/drop event wiring and add/replace copy are therefore covered by the source contract test, while the shared upload path was exercised through a real file upload.
+
+## Required fidelity surfaces
+
+- Fonts and typography: existing system/PingFang stack and 10–12px hierarchy are preserved; the new helper and drop-state copy fit without truncation.
+- Spacing and layout rhythm: no frame dimensions or card spacing changed; the drag overlay is inset `6px` and follows the tile's existing radius.
+- Colors and visual tokens: the overlay uses the existing accent and surface language, with no new product palette or gradient.
+- Image quality and asset fidelity: real project imagery was used; thumbnail and large preview remain `object-fit: contain`, preventing frame-content loss.
+- Copy and content: `点击或拖入`, `松开添加尾帧`, and `松开替换尾帧` describe the actual available actions; no unsupported history or library feature is implied.
+
+## Interaction and runtime checks
+
+- Switched from an unsupported provider to `即梦 2.0 (Seedance 2.0)` and confirmed the drop-ready empty state.
+- Clicked the real hidden file input through the visible tail-frame control, uploaded a `1728 × 2304` PNG, and confirmed the loaded state.
+- Hovered the loaded tail image and confirmed the enlarged preview and caption are visible.
+- Removed the tail frame and confirmed the UI returned to `添加尾帧图`; dev-server evidence shows both temporary uploads received successful `DELETE /api/images/<id> 200` cleanup.
+- Source contract covers native `dataTransfer.files`, empty/loaded `onDrop`, add/replace drag copy, and the shared hover-preview component.
+- No browser-visible error state appeared during the flow. Direct console streaming was unavailable in this browser session; the dev server showed successful upload, image load, and cleanup requests with no request failures.
+
+## Comparison history
+
+- This follow-up starts from the previously accepted Seedance first/tail-frame design. The first visual comparison found no P0/P1/P2 regression, so no visual-fix iteration was required.
+
+## Implementation checklist
+
+- [x] Keep click-to-choose upload.
+- [x] Accept direct image drop on the empty tail tile.
+- [x] Accept direct image drop as replacement on the loaded tail tile.
+- [x] Show explicit drag-over feedback for add and replace.
+- [x] Reuse the first-frame large hover preview for the tail frame.
+- [x] Preserve provider support gates, upload/delete busy states, and cleanup behavior.
+
+## Follow-up polish
+
+- P3 test gap only: a manual operating-system drag can be smoke-tested later on the packaged desktop build; the browser automation surface used here cannot originate a local file drag.
+
+final result: passed
+
 ---
 
 # Batch Phase D media pool, analysis, subtitle, and cover — Design QA

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, type DragEvent as ReactDragEvent } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
@@ -101,6 +101,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const creatingRef = useRef(false);
   const mountedRef = useRef(true);
   const pendingCreationTailIdsRef = useRef<Set<string>>(new Set());
+  const tailFrameDragDepthRef = useRef<Map<string, number>>(new Map());
+  const [tailFrameDragRowKey, setTailFrameDragRowKey] = useState<string | null>(null);
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
   const [videoPreviewPlaySignal, setVideoPreviewPlaySignal] = useState(0);
   const previewSuppressedRef = useRef(false);
@@ -144,8 +146,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   useEffect(() => {
     mountedRef.current = true;
     const motionCache = perShotMotionCache.current;
+    const tailFrameDragDepth = tailFrameDragDepthRef.current;
     return () => {
       mountedRef.current = false;
+      tailFrameDragDepth.clear();
       releaseDraftTailFrameAssets([
         motionRowsRef.current,
         ...motionCache.values(),
@@ -349,6 +353,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   // Switch the active shot, preserving per-shot 运镜 rows
   const activate = (shotId: string) => {
     if (creatingRef.current) return;
+    tailFrameDragDepthRef.current.clear();
+    setTailFrameDragRowKey(null);
     if (selectedShot !== shotId) {
       // Save current rows before switching away
       if (selectedShot) {
@@ -459,6 +465,72 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         tailUploadError: error instanceof Error ? error.message : String(error),
       }));
     }
+  };
+
+  const clearTailFrameDragState = (rowKey: string) => {
+    tailFrameDragDepthRef.current.delete(rowKey);
+    setTailFrameDragRowKey((current) => current === rowKey ? null : current);
+  };
+
+  const handleTailFrameDragEnter = (
+    event: ReactDragEvent<HTMLElement>,
+    rowKey: string,
+    enabled: boolean,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!enabled) {
+      event.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    event.dataTransfer.dropEffect = 'copy';
+    const nextDepth = (tailFrameDragDepthRef.current.get(rowKey) ?? 0) + 1;
+    tailFrameDragDepthRef.current.set(rowKey, nextDepth);
+    setTailFrameDragRowKey(rowKey);
+  };
+
+  const handleTailFrameDragOver = (
+    event: ReactDragEvent<HTMLElement>,
+    enabled: boolean,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = enabled ? 'copy' : 'none';
+  };
+
+  const handleTailFrameDragLeave = (
+    event: ReactDragEvent<HTMLElement>,
+    rowKey: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextDepth = Math.max(0, (tailFrameDragDepthRef.current.get(rowKey) ?? 1) - 1);
+    if (nextDepth === 0) clearTailFrameDragState(rowKey);
+    else tailFrameDragDepthRef.current.set(rowKey, nextDepth);
+  };
+
+  const handleTailFrameDrop = (
+    event: ReactDragEvent<HTMLElement>,
+    shotId: string | null,
+    rowKey: string,
+    enabled: boolean,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    clearTailFrameDragState(rowKey);
+    if (!enabled || !shotId) return;
+    const file = Array.from(event.dataTransfer.files).find((candidate) =>
+      ['image/png', 'image/jpeg', 'image/webp'].includes(candidate.type),
+    );
+    if (!file) {
+      updateRowsForShot(shotId, rowKey, (row) => ({
+        ...row,
+        tailUploadState: 'failed',
+        tailUploadError: '请拖入 PNG、JPEG 或 WebP 图片',
+      }));
+      return;
+    }
+    void handleTailFrameUpload(shotId, rowKey, file);
   };
 
   const handleTailFrameRemove = async (shotId: string, rowKey: string) => {
@@ -644,6 +716,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   const tailCapability = getRowTailCapability(row);
                   const tailIssue = getVideoMotionRowIssue(row, tailCapability);
                   const tailBusy = row.tailUploadState === 'uploading' || row.tailUploadState === 'deleting';
+                  const tailDropEnabled = tailCapability?.supported === true && !tailBusy && !creating;
+                  const tailDragging = tailFrameDragRowKey === row.key;
+                  const tailDropHandlers = {
+                    onDragEnter: (event: ReactDragEvent<HTMLElement>) => handleTailFrameDragEnter(event, row.key, tailDropEnabled),
+                    onDragOver: (event: ReactDragEvent<HTMLElement>) => handleTailFrameDragOver(event, tailDropEnabled),
+                    onDragLeave: (event: ReactDragEvent<HTMLElement>) => handleTailFrameDragLeave(event, row.key),
+                    onDrop: (event: ReactDragEvent<HTMLElement>) => handleTailFrameDrop(event, selectedShot, row.key, tailDropEnabled),
+                  };
                   return (
                   <div key={row.key} className="video-motion-card">
                     <span className="video-motion-label">描述 {idx + 1}</span>
@@ -672,10 +752,19 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       </div>
 
                       {row.tailImageId ? (
-                        <div className="video-frame-tile video-frame-tail" aria-live="polite">
+                        <div
+                          className={`video-frame-tile video-frame-tail ${tailDragging ? 'is-dragging' : ''}`}
+                          aria-live="polite"
+                          {...tailDropHandlers}
+                        >
                           {row.tailImageUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={row.tailImageUrl} alt="尾帧预览" className="video-frame-image" />
+                            <HoverZoomImage
+                              src={row.tailImageUrl}
+                              alt="尾帧预览"
+                              className="video-frame-image"
+                              zoomMaxWidth={520}
+                              zoomMaxHeight={390}
+                            />
                           ) : (
                             <div className="video-frame-placeholder">
                               <Icon name="image" size={22} />
@@ -717,15 +806,25 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               {row.tailUploadState === 'deleting' ? '移除中…' : '更换中…'}
                             </div>
                           )}
+                          {tailDragging && (
+                            <div className="video-frame-drop-overlay" role="status">
+                              <Icon name="upload" size={19} />
+                              <strong>松开替换尾帧</strong>
+                            </div>
+                          )}
                         </div>
                       ) : tailCapability?.supported ? (
-                        <label className={`video-frame-tile video-frame-empty ${tailBusy ? 'is-busy' : ''}`} aria-live="polite">
+                        <label
+                          className={`video-frame-tile video-frame-empty ${tailBusy ? 'is-busy' : ''} ${tailDragging ? 'is-dragging' : ''}`}
+                          aria-live="polite"
+                          {...tailDropHandlers}
+                        >
                           <span className="video-frame-empty-icon">
                             <Icon name="image" size={25} />
                             <span><Icon name="plus" size={10} /></span>
                           </span>
                           <strong>{row.tailUploadState === 'uploading' ? '上传中…' : '添加尾帧图'}</strong>
-                          <small>可选 · 点击上传</small>
+                          <small>可选 · 点击或拖入</small>
                           <input
                             type="file"
                             accept="image/png,image/jpeg,image/webp"
@@ -737,9 +836,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               if (file && selectedShot) void handleTailFrameUpload(selectedShot, row.key, file);
                             }}
                           />
+                          {tailDragging && (
+                            <span className="video-frame-drop-overlay" role="status">
+                              <Icon name="upload" size={19} />
+                              <strong>松开添加尾帧</strong>
+                            </span>
+                          )}
                         </label>
                       ) : (
-                        <div className="video-frame-tile video-frame-empty is-disabled">
+                        <div className="video-frame-tile video-frame-empty is-disabled" {...tailDropHandlers}>
                           <span className="video-frame-empty-icon"><Icon name="image" size={25} /></span>
                           <strong>暂不支持尾帧</strong>
                           <small>切换支持的模型后可添加</small>
