@@ -56,6 +56,11 @@ db.exec(`
     shotSetId TEXT NOT NULL
   );
 
+  CREATE TABLE video_jobs (
+    id TEXT PRIMARY KEY,
+    sourceImageId TEXT
+  );
+
   INSERT INTO providers (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled)
   VALUES ('image-provider', 'Image Provider', 'https://old.image', 'IMAGE_API_KEY', '', 'gpt-image-2', 'openai-compatible', 1);
 
@@ -77,9 +82,15 @@ for (const sql of CORE_DB_MIGRATIONS) {
   }
 }
 
+assert.ok(
+  CORE_DB_MIGRATIONS.includes(
+    `CREATE TRIGGER IF NOT EXISTS projects_default_workflow_type AFTER INSERT ON projects WHEN NEW.workflowType = 'legacy_batch_edit' BEGIN UPDATE projects SET workflowType = 'complex_product' WHERE id = NEW.id; END`,
+  ),
+  'the workflow default trigger must remain in the append-only core migration stream',
+);
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `CREATE TRIGGER IF NOT EXISTS projects_default_workflow_type AFTER INSERT ON projects WHEN NEW.workflowType = 'legacy_batch_edit' BEGIN UPDATE projects SET workflowType = 'complex_product' WHERE id = NEW.id; END`,
+  `ALTER TABLE video_jobs ADD COLUMN tailImageId TEXT`,
   'new core migrations must be appended without rewriting published entries',
 );
 const workflowTrigger = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'projects_default_workflow_type'`).get() as { name?: string } | undefined;
@@ -92,6 +103,11 @@ assert.ok(
 assert.ok(
   projectColumns.some((column) => column.name === 'exportDirName'),
   'projects.exportDirName should be added when migrating older installed databases',
+);
+const videoJobColumns = db.prepare(`PRAGMA table_info(video_jobs)`).all() as Array<{ name: string }>;
+assert.ok(
+  videoJobColumns.some((column) => column.name === 'tailImageId'),
+  'video_jobs.tailImageId should be added when migrating older installed databases',
 );
 const shotIndexes = db.prepare(`PRAGMA index_list(shots)`).all() as Array<{ name: string }>;
 assert.ok(
