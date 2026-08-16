@@ -15,8 +15,12 @@ import {
   type VideoTailFrameCapability,
 } from '@/components/video-tail-frame-state';
 
-function releaseDraftTailFrameAssets(rowGroups: Iterable<VideoMotionRow[]>): void {
+function releaseDraftTailFrameAssets(
+  rowGroups: Iterable<VideoMotionRow[]>,
+  protectedIds: ReadonlySet<string> = new Set(),
+): void {
   for (const assetId of collectVideoMotionTailImageIds(rowGroups)) {
+    if (protectedIds.has(assetId)) continue;
     fetch(`/api/images/${encodeURIComponent(assetId)}`, {
       method: 'DELETE',
       keepalive: true,
@@ -94,6 +98,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const motionRowsRef = useRef<VideoMotionRow[]>([]);
   const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
   const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const pendingCreationTailIdsRef = useRef<Set<string>>(new Set());
   const [videoPreviewJobId, setVideoPreviewJobId] = useState<string | null>(null);
   const [videoPreviewPlaySignal, setVideoPreviewPlaySignal] = useState(0);
   const previewSuppressedRef = useRef(false);
@@ -134,14 +141,19 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     setMotionRows(rows);
   };
 
-  useEffect(() => () => {
-    releaseDraftTailFrameAssets([
-      motionRowsRef.current,
-      ...perShotMotionCache.current.values(),
-    ]);
-    selectedShotRef.current = null;
-    motionRowsRef.current = [];
-    perShotMotionCache.current.clear();
+  useEffect(() => {
+    mountedRef.current = true;
+    const motionCache = perShotMotionCache.current;
+    return () => {
+      mountedRef.current = false;
+      releaseDraftTailFrameAssets([
+        motionRowsRef.current,
+        ...motionCache.values(),
+      ], pendingCreationTailIdsRef.current);
+      selectedShotRef.current = null;
+      motionRowsRef.current = [];
+      motionCache.clear();
+    };
   }, []);
 
   const updateRowsForShot = (
@@ -256,6 +268,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   const handleSelectSet = (setId: string) => {
+    if (creatingRef.current) return;
     releaseDraftTailFrameAssets([
       motionRowsRef.current,
       ...perShotMotionCache.current.values(),
@@ -335,6 +348,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   // Switch the active shot, preserving per-shot 运镜 rows
   const activate = (shotId: string) => {
+    if (creatingRef.current) return;
     if (selectedShot !== shotId) {
       // Save current rows before switching away
       if (selectedShot) {
@@ -394,6 +408,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   const handleTailFrameUpload = async (shotId: string, rowKey: string, file: File) => {
+    if (creatingRef.current) return;
     const currentRows = selectedShotRef.current === shotId
       ? motionRowsRef.current
       : perShotMotionCache.current.get(shotId);
@@ -447,6 +462,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   const handleTailFrameRemove = async (shotId: string, rowKey: string) => {
+    if (creatingRef.current) return;
     const currentRows = selectedShotRef.current === shotId
       ? motionRowsRef.current
       : perShotMotionCache.current.get(shotId);
@@ -493,6 +509,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       .filter((r) => r.prompt.length > 0);
     if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
     if (configuredProviders.length === 0) { alert('请先配置视频供应商'); return; }
+    const submittedTailIds = new Set(items.flatMap((item) => item.tailImageId ? [item.tailImageId] : []));
+    pendingCreationTailIdsRef.current = submittedTailIds;
+    creatingRef.current = true;
     setCreating(true);
     try {
       const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs/batch`, {
@@ -502,16 +521,22 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       });
       const data = await res.json();
       if (res.ok) {
-        await refreshJobs();
-        perShotMotionCache.current.delete(shotId);
-        replaceActiveMotionRows([makeEmptyRow()]);
+        if (mountedRef.current) {
+          await refreshJobs();
+          perShotMotionCache.current.delete(shotId);
+          replaceActiveMotionRows([makeEmptyRow()]);
+        }
       } else {
-        alert('创建视频任务失败: ' + (data.error || '未知错误'));
+        if (mountedRef.current) alert('创建视频任务失败: ' + (data.error || '未知错误'));
+        else for (const assetId of submittedTailIds) await deleteTailFrameAsset(assetId).catch(() => undefined);
       }
     } catch (err) {
-      alert('创建失败: ' + String(err));
+      if (mountedRef.current) alert('创建失败: ' + String(err));
+      else for (const assetId of submittedTailIds) await deleteTailFrameAsset(assetId).catch(() => undefined);
     } finally {
-      setCreating(false);
+      pendingCreationTailIdsRef.current = new Set();
+      creatingRef.current = false;
+      if (mountedRef.current) setCreating(false);
     }
   };
 
@@ -556,7 +581,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const shotSetSelector = !shotSetId ? (
     <div className="mb-4">
       <label className="label">选择分镜组</label>
-      <select value={selectedSetId} onChange={(e) => handleSelectSet(e.target.value)} className="input-field text-sm">
+      <select value={selectedSetId} onChange={(e) => handleSelectSet(e.target.value)} className="input-field text-sm" disabled={creating}>
         <option value="">-- 选择分镜组 --</option>
         {availableSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
       </select>
@@ -601,6 +626,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     key={shot.id}
                     type="button"
                     onClick={() => activate(shot.id)}
+                    disabled={creating}
                     className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
                   >
                     分镜 {shot.indexNum}
@@ -645,7 +671,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       value={getRowProviderId(row)}
                       onChange={(e) => updateRowProvider(row.key, e.target.value)}
                       className="input-field video-control"
-                      disabled={configuredProviders.length === 0}
+                      disabled={creating || configuredProviders.length === 0}
                     >
                       {providers.length === 0 && <option value="">暂无供应商</option>}
                       {providers.length > 0 && configuredProviders.length === 0 && <option value="">暂无可用供应商</option>}
@@ -666,6 +692,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         value={row.templateId}
                         onChange={(e) => updateRowTemplate(row.key, e.target.value)}
                         className="input-field video-control"
+                        disabled={creating}
                       >
                         <option value="">模板（可选）</option>
                         {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
@@ -676,6 +703,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         onChange={(e) => updateRowDuration(row.key, Number(e.target.value))}
                         className="input-field video-control text-center"
                         title="秒数"
+                        disabled={creating}
                       />
                     </div>
 
@@ -704,7 +732,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                                 type="file"
                                 accept="image/png,image/jpeg,image/webp"
                                 className="sr-only"
-                                disabled={tailBusy}
+                                disabled={tailBusy || creating}
                                 onChange={(event) => {
                                   const file = event.currentTarget.files?.[0];
                                   event.currentTarget.value = '';
@@ -716,7 +744,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                           <button
                             type="button"
                             onClick={() => selectedShot && void handleTailFrameRemove(selectedShot, row.key)}
-                            disabled={tailBusy}
+                            disabled={tailBusy || creating}
                             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-surface-subtle hover:text-fail disabled:opacity-40"
                             title="移除尾帧"
                             aria-label="移除尾帧"
@@ -732,7 +760,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                             type="file"
                             accept="image/png,image/jpeg,image/webp"
                             className="sr-only"
-                            disabled={tailBusy}
+                            disabled={tailBusy || creating}
                             onChange={(event) => {
                               const file = event.currentTarget.files?.[0];
                               event.currentTarget.value = '';
@@ -760,11 +788,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       rows={3}
                       className="input-field video-prompt-field"
                       placeholder="运镜描述（提示词）"
+                      disabled={creating}
                     />
 
                     <button
                       onClick={() => removeMotionRow(row.key)}
-                      disabled={motionRows.length <= 1}
+                      disabled={creating || motionRows.length <= 1}
                       className="video-motion-delete"
                       title="删除该描述"
                     ><Icon name="trash" size={12} /></button>
@@ -774,7 +803,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               </div>
 
               <div className="flex flex-col gap-2">
-                <button onClick={addMotionRow} className="btn-secondary btn-sm w-full video-add-action">
+                <button onClick={addMotionRow} disabled={creating} className="btn-secondary btn-sm w-full video-add-action">
                   <Icon name="plus" size={12} /> 添加描述
                 </button>
                 <div>
