@@ -104,7 +104,6 @@
 - [x] 视频素材栏使用两列大卡片和固定高度内部滚动，十条素材不会撑高编辑器。
 
 final result: passed
-
 ---
 
 # Batch Phase D media pool, analysis, subtitle, and cover — Design QA
@@ -273,5 +272,105 @@ final result: passed
 ## Follow-up Polish
 
 - P3: the selected implementation uses the closest existing check-circle icon for the select tool instead of the concept image's dashed selection icon, avoiding a new one-off icon asset.
+
+final result: passed
+
+---
+
+# Seedance 2.0 首尾帧界面 Design QA
+
+## 对照目标与证据
+
+- Source visual truth:
+  - `/var/folders/4y/v3q6w0gn7v7f4r79h9gjjk3r0000gn/T/codex-clipboard-11f452f8-9ce4-4911-9f41-0630f6429af8.png`（尾帧空态）
+  - `/var/folders/4y/v3q6w0gn7v7f4r79h9gjjk3r0000gn/T/codex-clipboard-6a8d430c-21db-42aa-bffd-b82126f511fd.png`（尾帧完成态）
+- Browser-rendered implementation:
+  - `outputs/design-qa/seedance-tail-viewport-1280x1000-final.png`（空态全视图）
+  - `outputs/design-qa/seedance-tail-loaded-rest.png`（完成态全视图）
+  - `outputs/design-qa/seedance-tail-loaded-hover.png`（完成态悬停操作）
+- Combined comparison input:
+  - `outputs/design-qa/seedance-tail-empty-comparison.png`
+  - `outputs/design-qa/seedance-tail-loaded-comparison-final.png`
+- Route: `http://127.0.0.1:3019/projects/c44a2df5-1ce1-4331-8117-556a63183b6e?tab=video`
+
+## 视口与归一化
+
+- 两张源图均为 `920 x 780 px`。
+- 实现全视图为 `1280 x 1000 CSS px`；浏览器报告 `devicePixelRatio = 2`，IAB 截图输出已归一化为 `1280 x 1000 px`，即每个 CSS px 对应一个截图像素。
+- 聚焦对照使用源图 `878 x 405 px` 顶部首尾帧区域；实现首尾帧组件为 `314 x 137 CSS px`，等比放大至 `878 x 383 px` 后上下补白到 `878 x 405 px`。最终并排比较图为 `1756 x 405 px`。
+- 对照状态：Seedance 2.0 供应商已选中；分别检查未添加尾帧和已添加尾帧。完成态使用现有分镜图做一次临时真实上传，截图后已删除测试资产。
+
+## Full-view comparison
+
+- 信息顺序与参考一致：首帧/尾帧双画面位于描述卡顶部，模型与模板参数在其后，运镜描述继续位于下方。
+- 左侧编辑列从 `300–340px` 调整为 `380–420px`，双画面在桌面宽度下不再退化为附件缩略条，同时中间视频预览仍保持主视觉。
+- 实现沿用 Creative Studio 的浅色、Apple 式表面和现有字体系统；没有照搬参考图的黑色主题。这是产品设计系统约束，不是结构偏差。
+
+## Focused region comparison
+
+- 空态：右侧整块画面作为上传入口，包含图片图标、`添加尾帧图` 和 `可选 · 点击上传`；与参考中的整块空态层级一致。
+- 完成态：两张画面等宽等高，首尾帧均使用 `object-fit: contain` 展示完整内容；默认不显示操作按钮，悬停或键盘聚焦尾帧后显示“更换/移除”。
+- 中央关系标识使用现有 Icon 库的右向 chevron，表达首帧到尾帧的时间方向。参考图是双向换图符号；为避免引入手写 SVG，这是可接受的 P3 差异。
+
+## Required fidelity surfaces
+
+- Fonts and typography: 继续使用项目 `--font-sans` 与现有 10–13px 控件层级；空态主文案 12px/600，辅助文案 10px，未出现截断或拥挤。
+- Spacing and layout rhythm: 双列 `1fr 1fr`、10px 间距、10:9 画面比例、13px 圆角；中央 38px 圆形标识压在两画面接缝上，布局重心与参考一致。
+- Colors and visual tokens: 使用项目已有 surface、ink、accent、warn token；只在图片标签和浮层操作上使用深色半透明玻璃，以保持画面可读性。
+- Image quality and asset fidelity: 首尾帧均显示真实项目图片，不使用占位画、CSS 图形或生成素材替代；`contain` 防止裁掉首尾帧关键内容。
+- Copy and content: 使用 `首帧`、`尾帧`、`添加尾帧图`、`可选 · 点击上传`，没有添加当前产品不具备的“历史创作”假入口。
+
+## Interaction and responsiveness
+
+- 已测试：不支持尾帧模型空态、切换 Seedance 2.0 后的可上传空态、真实临时上传、完成态、悬停显示更换/移除、提示词补全后门禁提示消失。
+- 1024px：双画面容器 `896px`，两格各 `443px`，页面 `scrollWidth = 1024px`。
+- 640px：双画面容器 `516px`，两格各 `253px`，页面 `scrollWidth = 640px`。
+- 390px：双画面容器 `266px`，两格各 `128px`，页面 `scrollWidth = 390px`。
+- 浏览器 console errors: 0。
+
+## Comparison history
+
+### Iteration 1 — blocked
+
+- [P2] 中央两个 chevron 重叠后视觉上接近“X”，不能清晰表达首帧到尾帧关系。
+- [P2] 初版 `object-fit: cover` 可能裁掉首尾帧内容，不适合精确预览生成边界。
+- [P2] 完成态“更换/移除”常驻，遮挡尾帧并弱化双画面主体。
+
+Fixes:
+
+- 中央标识改为现有 Icon 库的单一右向 chevron。
+- 首尾帧图片改为 `object-fit: contain`。
+- 操作按钮改为尾帧 hover / focus-within 时显示。
+
+Post-fix evidence:
+
+- `outputs/design-qa/seedance-tail-empty-comparison.png`
+- `outputs/design-qa/seedance-tail-loaded-comparison-final.png`
+- `outputs/design-qa/seedance-tail-loaded-hover.png`
+
+### Iteration 2 — passed
+
+- 无剩余可执行的 P0/P1/P2 问题。
+- P3：中央标识是单向 chevron，不是参考图的双向换图图标；保持现有图标库与时间方向清晰度，接受该差异。
+
+## Findings
+
+- 无 P0/P1/P2 findings。
+
+## Open Questions
+
+- 无。
+
+## Implementation Checklist
+
+- [x] 首帧/尾帧并排成为描述卡主视觉。
+- [x] 空态整块可上传，完成态整块展示图片。
+- [x] 更换/移除不遮挡默认画面，并保留键盘聚焦可见性。
+- [x] 保留不支持模型门禁、上传中、删除中和错误提示。
+- [x] 通过桌面、平板和窄屏检查。
+
+## Follow-up Polish
+
+- P3：如果未来 Icon 库补充官方 `arrow-left-right`，可替换中央单向 chevron，进一步贴近参考图。
 
 final result: passed

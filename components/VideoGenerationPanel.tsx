@@ -634,25 +634,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 ))}
               </div>
             )}
-
-            {/* Source image preview */}
-            {selectedShotData?.imageUrl ? (
-              <HoverZoomImage
-                src={selectedShotData.imageUrl}
-                alt={`分镜 ${selectedShotData.indexNum}`}
-                className="w-full aspect-[4/3] cursor-pointer rounded-lg border border-hairline object-cover bg-surface-subtle transition-colors hover:border-accent/40"
-                zoomMaxWidth={520}
-                zoomMaxHeight={390}
-              />
-            ) : selectedShotData ? (
-              <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
-                源图不可用
-              </div>
-            ) : safeShots.length > 0 ? (
-              <div className="flex aspect-[4/3] items-center justify-center rounded-lg border border-hairline bg-surface-subtle text-xs text-ink-tertiary">
-                请选择一个分镜
-              </div>
-            ) : null}
           </div>
 
           {/* Motion form — scrollable independently */}
@@ -666,6 +647,112 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   return (
                   <div key={row.key} className="video-motion-card">
                     <span className="video-motion-label">描述 {idx + 1}</span>
+
+                    <div className="video-frame-pair" data-testid="video-frame-pair">
+                      <div className="video-frame-tile video-frame-source">
+                        {selectedShotData?.imageUrl ? (
+                          <HoverZoomImage
+                            src={selectedShotData.imageUrl}
+                            alt={`分镜 ${selectedShotData.indexNum} 首帧`}
+                            className="video-frame-image"
+                            zoomMaxWidth={520}
+                            zoomMaxHeight={390}
+                          />
+                        ) : (
+                          <div className="video-frame-placeholder">
+                            <Icon name="image" size={22} />
+                            <span>首帧不可用</span>
+                          </div>
+                        )}
+                        <span className="video-frame-chip">首帧</span>
+                      </div>
+
+                      <div className="video-frame-bridge" aria-hidden="true">
+                        <Icon name="chevron-right" size={18} />
+                      </div>
+
+                      {row.tailImageId ? (
+                        <div className="video-frame-tile video-frame-tail" aria-live="polite">
+                          {row.tailImageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={row.tailImageUrl} alt="尾帧预览" className="video-frame-image" />
+                          ) : (
+                            <div className="video-frame-placeholder">
+                              <Icon name="image" size={22} />
+                              <span className="max-w-full truncate px-2">{row.tailImageName || '已添加尾帧'}</span>
+                            </div>
+                          )}
+                          <span className="video-frame-chip">尾帧</span>
+                          <div className="video-frame-actions">
+                            {tailCapability?.supported && (
+                              <label className="video-frame-action">
+                                <Icon name="upload" size={12} />
+                                更换
+                                <input
+                                  type="file"
+                                  accept="image/png,image/jpeg,image/webp"
+                                  className="sr-only"
+                                  disabled={tailBusy || creating}
+                                  onChange={(event) => {
+                                    const file = event.currentTarget.files?.[0];
+                                    event.currentTarget.value = '';
+                                    if (file && selectedShot) void handleTailFrameUpload(selectedShot, row.key, file);
+                                  }}
+                                />
+                              </label>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => selectedShot && void handleTailFrameRemove(selectedShot, row.key)}
+                              disabled={tailBusy || creating}
+                              className="video-frame-action video-frame-remove"
+                              title="移除尾帧"
+                              aria-label="移除尾帧"
+                            >
+                              <Icon name="close" size={12} />
+                            </button>
+                          </div>
+                          {tailBusy && (
+                            <div className="video-frame-busy">
+                              {row.tailUploadState === 'deleting' ? '移除中…' : '更换中…'}
+                            </div>
+                          )}
+                        </div>
+                      ) : tailCapability?.supported ? (
+                        <label className={`video-frame-tile video-frame-empty ${tailBusy ? 'is-busy' : ''}`} aria-live="polite">
+                          <span className="video-frame-empty-icon">
+                            <Icon name="image" size={25} />
+                            <span><Icon name="plus" size={10} /></span>
+                          </span>
+                          <strong>{row.tailUploadState === 'uploading' ? '上传中…' : '添加尾帧图'}</strong>
+                          <small>可选 · 点击上传</small>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="sr-only"
+                            disabled={tailBusy || creating}
+                            onChange={(event) => {
+                              const file = event.currentTarget.files?.[0];
+                              event.currentTarget.value = '';
+                              if (file && selectedShot) void handleTailFrameUpload(selectedShot, row.key, file);
+                            }}
+                          />
+                        </label>
+                      ) : (
+                        <div className="video-frame-tile video-frame-empty is-disabled">
+                          <span className="video-frame-empty-icon"><Icon name="image" size={25} /></span>
+                          <strong>暂不支持尾帧</strong>
+                          <small>切换支持的模型后可添加</small>
+                        </div>
+                      )}
+                    </div>
+
+                    {tailIssue && (row.tailImageId || row.tailUploadState === 'failed') && (
+                      <p className="video-tail-frame-warning" role="status">
+                        <Icon name="alert" size={12} className="mt-0.5 shrink-0" />
+                        {tailIssue}
+                      </p>
+                    )}
 
                     <select
                       value={getRowProviderId(row)}
@@ -705,81 +792,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         title="秒数"
                         disabled={creating}
                       />
-                    </div>
-
-                    <div className="rounded-lg border border-hairline bg-surface-subtle p-2">
-                      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] leading-4">
-                        <span className="font-medium text-ink-secondary">尾帧（可选）</span>
-                        <span className="text-ink-tertiary">首帧使用当前分镜</span>
-                      </div>
-                      {row.tailImageId ? (
-                        <div className="flex h-14 items-center gap-2 rounded-md border border-hairline bg-white p-1.5" aria-live="polite">
-                          {row.tailImageUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={row.tailImageUrl} alt="尾帧预览" className="h-11 w-11 shrink-0 rounded object-cover" />
-                          ) : (
-                            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded bg-surface-subtle text-ink-tertiary">
-                              <Icon name="image" size={17} />
-                            </span>
-                          )}
-                          <span className="min-w-0 flex-1 truncate text-[11px] text-ink-secondary">
-                            {tailBusy ? (row.tailUploadState === 'deleting' ? '移除中…' : '更换中…') : (row.tailImageName || '已添加尾帧')}
-                          </span>
-                          {tailCapability?.supported && (
-                            <label className="inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-[10px] text-accent hover:bg-accent/5">
-                              更换
-                              <input
-                                type="file"
-                                accept="image/png,image/jpeg,image/webp"
-                                className="sr-only"
-                                disabled={tailBusy || creating}
-                                onChange={(event) => {
-                                  const file = event.currentTarget.files?.[0];
-                                  event.currentTarget.value = '';
-                                  if (file && selectedShot) void handleTailFrameUpload(selectedShot, row.key, file);
-                                }}
-                              />
-                            </label>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => selectedShot && void handleTailFrameRemove(selectedShot, row.key)}
-                            disabled={tailBusy || creating}
-                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-surface-subtle hover:text-fail disabled:opacity-40"
-                            title="移除尾帧"
-                            aria-label="移除尾帧"
-                          >
-                            <Icon name="close" size={13} />
-                          </button>
-                        </div>
-                      ) : tailCapability?.supported ? (
-                        <label className={`flex h-14 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-hairline bg-white text-[11px] transition-colors hover:border-accent/40 hover:text-accent ${tailBusy ? 'pointer-events-none opacity-50' : 'text-ink-tertiary'}`} aria-live="polite">
-                          <Icon name="upload" size={15} />
-                          {row.tailUploadState === 'uploading' ? '上传中…' : '上传尾帧'}
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            className="sr-only"
-                            disabled={tailBusy || creating}
-                            onChange={(event) => {
-                              const file = event.currentTarget.files?.[0];
-                              event.currentTarget.value = '';
-                              if (file && selectedShot) void handleTailFrameUpload(selectedShot, row.key, file);
-                            }}
-                          />
-                        </label>
-                      ) : (
-                        <div className="flex h-8 items-center gap-1.5 rounded-md border border-dashed border-hairline bg-white px-2 text-[10px] text-ink-tertiary">
-                          <Icon name="image" size={13} />
-                          当前模型暂不支持尾帧
-                        </div>
-                      )}
-                      {tailIssue && (row.tailImageId || row.tailUploadState === 'failed') && (
-                        <p className="mt-1.5 flex items-start gap-1 rounded bg-warn-tint px-2 py-1 text-[10px] leading-4 text-warn" role="status">
-                          <Icon name="alert" size={11} className="mt-0.5 shrink-0" />
-                          {tailIssue}
-                        </p>
-                      )}
                     </div>
 
                     <textarea
