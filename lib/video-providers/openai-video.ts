@@ -191,7 +191,9 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         const aspectRatio = sourceDims
           ? snapCompanyVideoAspectRatio(sourceDims.width, sourceDims.height, companyCaps)
           : null;
-        if (aspectRatio) body.OutputConfig = { AspectRatio: aspectRatio };
+        // Resolution 1080P 已经真实任务验证（2026-08-17）：不加时上游按默认档
+        // 出 828x1108，加了出 1244x1660；末帧收束不受影响。
+        if (aspectRatio) body.OutputConfig = { AspectRatio: aspectRatio, Resolution: '1080P' };
       } else {
         const snappedSize = sourceDims
           ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)

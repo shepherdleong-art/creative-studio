@@ -53,7 +53,7 @@ const body = {
   seconds: '5',
   images: [firstUrl],
   LastFrameUrl: tailUrl,
-  OutputConfig: { AspectRatio: ASPECT },
+  OutputConfig: { AspectRatio: ASPECT, Resolution: '1080P' },
   response_format: 'mp4',
   multi_shot: true,
   shot_type: 'intelligence',
