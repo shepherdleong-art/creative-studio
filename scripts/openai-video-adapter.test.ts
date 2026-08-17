@@ -271,7 +271,7 @@ try {
   assert.notEqual(klingTailImages[0], klingLastFrameUrl);
   assert.equal(capturedBody?.response_format, 'mp4');
   assert.equal(capturedBody?.size, undefined);
-  assert.deepEqual(capturedBody?.OutputConfig, { AspectRatio: '4:3' });
+  assert.deepEqual(capturedBody?.OutputConfig, { AspectRatio: '4:3', Resolution: '1080P' });
   // aspect_ratio 探测被网关 400 拒绝（UnknownParameter，2026-08-17），不得再发送
   assert.equal(capturedBody?.aspect_ratio, undefined);
 
