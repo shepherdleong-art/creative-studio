@@ -181,6 +181,16 @@ export function snapCompanyImageSize(size: string | null | undefined, caps: Comp
 }
 
 /**
+ * 按源图宽高吸附公司视频模型的比例（如 '3:4'）；返回 caps.ratios 中的最接近项。
+ * 用于可灵首尾帧模式的 OutputConfig.AspectRatio：实测（2026-08-17 真实任务验证）
+ * 该模式下网关忽略 size、落回 16:9 默认比例，必须显式传比例。
+ */
+export function snapCompanyVideoAspectRatio(width: number, height: number, caps: CompanyModelCaps): string | null {
+  if (!(width > 0) || !(height > 0)) return null;
+  return nearestRatio(width, height, caps.ratios);
+}
+
+/**
  * 按源图宽高吸附公司视频模型的 size 组合；无法确定比例时返回 null（调用方省略 size）。
  * 档位固定按 VIDEO_TIER_PREFERENCE 取第一个允许的，不随源图分辨率上浮。
  */

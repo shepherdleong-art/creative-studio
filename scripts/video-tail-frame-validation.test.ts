@@ -95,6 +95,18 @@ assert.deepEqual(
 );
 assert.deepEqual(
   getVideoTailFrameCapability('openai-video', 'doubao-seedance-2-0-260128'),
+  { supported: true, protocol: 'company-gateway-seedance' },
+);
+assert.deepEqual(
+  getVideoTailFrameCapability('openai-video', 'doubao-seedance-2-0-fast-260128'),
+  { supported: true, protocol: 'company-gateway-seedance' },
+);
+assert.deepEqual(
+  getVideoTailFrameCapability('openai-video', 'kling-3.0'),
+  { supported: true, protocol: 'company-gateway-kling' },
+);
+assert.deepEqual(
+  getVideoTailFrameCapability('openai-video', 'kling-2.5'),
   { supported: false, reason: 'contract_unverified' },
 );
 
