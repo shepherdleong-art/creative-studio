@@ -4,6 +4,13 @@ import { isPlaceholderValue } from './video-auth.ts';
 import { defaultScriptProviderConfigs } from './script-providers/config.ts';
 import { v4 as uuidv4 } from 'uuid';
 
+// 公司供应商统一经本机 LiteLLM 代理（127.0.0.1:4000）转发；代理不校验调用方
+// Bearer（上游真实 Key 由包内 config.yaml 持有），所以种子里的 apiKey 只需非空
+// 且不被占位清理识别——不能含 'example.com' / 'your-'（见 video-auth.ts）。
+// 这两项只在新库首次播种时写入；已有库的用户配置不会被覆盖。
+export const COMPANY_LITELLM_BASE_URL = 'http://127.0.0.1:4000';
+const COMPANY_LITELLM_PLACEHOLDER_KEY = 'litellm-local-passthrough';
+
 export function seedProviders() {
   const db = getDb();
 
@@ -77,17 +84,6 @@ export function seedProviders() {
         enabled: 0,
         defaultCostPerImage: 0.7,
       },
-      {
-        id: uuidv4(),
-        name: '公司现有 API',
-        baseUrl: 'https://company-gateway.example.com',
-        apiKeyEnv: 'COMPANY_API_KEY',
-        apiKey: '',
-        model: 'gpt-image-2',
-        type: 'openai-compatible',
-        enabled: 0,
-        defaultCostPerImage: 1.2,
-      },
     ];
 
     const insert = db.prepare(
@@ -105,6 +101,28 @@ export function seedProviders() {
   cleanPlaceholderKeys(db);
   ensurePackyImageProviders(db);
   ensureGptGeImageProvider(db);
+  ensureCompanyImageProvider(db);
+}
+
+/**
+ * 公司图片供应商（image2-medium，经本机 LiteLLM）开箱即用补种。
+ * 只在没有任何同模型 gateway-task-image 配置时插入，避免与手工配置的
+ * 公司供应商重复；已有库同样生效（同 ensurePackyImageProviders 的模式）。
+ */
+function ensureCompanyImageProvider(db: ReturnType<typeof getDb>) {
+  db.prepare(`
+    INSERT INTO providers
+      (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
+    SELECT
+      'company-gateway-image2-medium', '公司网关 image2-medium', ?, 'COMPANY_API_KEY', ?, 'image2-medium', 'gateway-task-image', 1, 1.05
+    WHERE NOT EXISTS (
+      SELECT 1 FROM providers
+      WHERE type = 'gateway-task-image' AND model = 'image2-medium'
+    )
+  `).run(
+    COMPANY_LITELLM_BASE_URL,
+    COMPANY_LITELLM_PLACEHOLDER_KEY
+  );
 }
 
 function cleanPlaceholderKeys(db: ReturnType<typeof getDb>) {
@@ -209,8 +227,7 @@ export function seedVideoProviders() {
   const db = getDb();
 
   const existing = db.prepare(`SELECT COUNT(*) as count FROM video_providers`).get() as { count: number };
-  if (existing.count > 0) return;
-
+  if (existing.count === 0) {
   const providers = [
     {
       id: 'kling-3',
@@ -282,15 +299,58 @@ export function seedVideoProviders() {
   for (const p of providers) {
     insert.run(p.id, p.name, p.type, p.baseUrlEnv, p.apiKeyEnv, p.modelEnv, p.defaultModel, p.enabled, p.defaultDurationSec, p.baseUrl, p.apiKey, p.accessKey, p.secretKey);
   }
+  }
+
+  ensureCompanyVideoProviders(db);
+}
+
+/**
+ * 公司视频供应商（可灵 3.0 / 即梦 Seedance 2.0 Fast，经本机 LiteLLM）开箱即用补种。
+ * 别名必须与 config.yaml 的 model_name 一致；尾帧 allowlist 见
+ * lib/company-gateway-tail-frame.ts。只在没有任何同模型 openai-video 配置时插入，
+ * 避免与手工配置的公司供应商重复；已有库同样生效。
+ */
+function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
+  const companyProviders = [
+    {
+      id: 'company-kling-3-0',
+      name: '公司可灵 3.0',
+      modelEnv: 'COMPANY_KLING_VIDEO_MODEL',
+      defaultModel: 'kling-3.0',
+    },
+    {
+      id: 'company-seedance-2-0-fast',
+      name: '公司即梦 Seedance 2.0 Fast',
+      modelEnv: 'COMPANY_SEEDANCE_VIDEO_MODEL',
+      defaultModel: 'doubao-seedance-2-0-fast-260128',
+    },
+  ];
+
+  const insert = db.prepare(`
+    INSERT INTO video_providers
+      (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, defaultDurationSec, baseUrl, apiKey, accessKey, secretKey)
+    SELECT ?, ?, 'openai-video', 'COMPANY_VIDEO_BASE_URL', 'COMPANY_VIDEO_API_KEY', ?, ?, 1, 5, ?, ?, '', ''
+    WHERE NOT EXISTS (
+      SELECT 1 FROM video_providers
+      WHERE type = 'openai-video' AND defaultModel = ?
+    )
+  `);
+
+  for (const p of companyProviders) {
+    insert.run(p.id, p.name, p.modelEnv, p.defaultModel, COMPANY_LITELLM_BASE_URL, COMPANY_LITELLM_PLACEHOLDER_KEY, p.defaultModel);
+  }
 }
 
 export function seedScriptProviders() {
   const db = getDb();
 
+  // 新库首次播种时，GPT 直接指向公司供应商（本机 LiteLLM + 公司模型），
+  // 开箱即用；ON CONFLICT 不更新 baseUrl/apiKey/model/executionScope/
+  // supportsVision，已有库的用户配置保持不变。
   const insert = db.prepare(`
     INSERT INTO script_providers
-      (id, name, type, apiStyle, baseUrl, apiKey, model, keyEnv, baseUrlEnv, modelEnv, defaultBaseUrl, defaultModel, maxTokens, enabled, isBuiltin)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+      (id, name, type, apiStyle, baseUrl, apiKey, model, keyEnv, baseUrlEnv, modelEnv, defaultBaseUrl, defaultModel, maxTokens, enabled, isBuiltin, executionScope, supportsVision)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       keyEnv = excluded.keyEnv,
@@ -302,20 +362,23 @@ export function seedScriptProviders() {
   `);
 
   for (const config of defaultScriptProviderConfigs) {
+    const isCompanyGpt = config.id === 'gpt';
     insert.run(
       config.id,
       config.name,
       config.id === 'gemini' ? 'gemini' : 'openai-compatible',
       config.apiStyle,
-      '',
-      '',
-      '',
+      isCompanyGpt ? COMPANY_LITELLM_BASE_URL : '',
+      isCompanyGpt ? COMPANY_LITELLM_PLACEHOLDER_KEY : '',
+      isCompanyGpt ? 'GPT-5-6-Luna-Standard' : '',
       config.keyEnv,
       config.baseUrlEnv,
       config.modelEnv,
       config.defaultBaseUrl,
       config.defaultModel,
-      config.maxTokens
+      config.maxTokens,
+      isCompanyGpt ? 'company' : 'external',
+      isCompanyGpt ? 1 : 0
     );
   }
 }
