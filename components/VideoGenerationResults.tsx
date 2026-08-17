@@ -101,7 +101,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                   {STATUS_LABELS[job.status] || job.status}
                 </span>
                 {job.tailImageId && (
-                  <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-ink-secondary">
+                  <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-ink-secondary">
                     首尾帧
                   </span>
                 )}
