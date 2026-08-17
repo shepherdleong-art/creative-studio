@@ -8,7 +8,7 @@ assert.match(page, /video-generation-section/, 'video tab should use its dedicat
 assert.doesNotMatch(page, /video-generation-section card p-5/, 'video tab should not render as a generic nested card');
 
 assert.match(css, /\.video-workspace\s*{[^}]*display:\s*grid/s, 'video workspace should use explicit grid columns');
-assert.match(css, /grid-template-columns:\s*minmax\(300px,\s*340px\)\s*minmax\(620px,\s*1fr\)\s*minmax\(220px,\s*260px\)/s, 'video workspace should reserve a roomy left editor and dominant center preview');
+assert.match(css, /grid-template-columns:\s*minmax\(380px,\s*420px\)\s*minmax\(540px,\s*1fr\)\s*minmax\(220px,\s*260px\)/s, 'video workspace should reserve room for the paired first/tail-frame editor and a dominant center preview');
 assert.doesNotMatch(css, /left-col\s*{[^}]*max-width:\s*230px/s, 'left video editor must not be capped at 230px');
 assert.match(css, /\.video-preview-fit\s*{[^}]*max-width:\s*100%/s, 'center preview should be allowed to fill its dominant column');
 assert.match(css, /\.video-workspace\s+\.video-prompt-field\.input-field\s*{[^}]*min-height:\s*150px/s, 'motion prompt textarea should be tall enough for real descriptions');

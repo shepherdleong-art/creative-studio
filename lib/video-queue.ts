@@ -9,6 +9,7 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from './data-root.ts';
 import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
+import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 
 export interface VideoQueueOptions {
   projectId: string;
@@ -86,6 +87,7 @@ interface VideoJobRecord {
   shotSetId: string | null;
   shotId: string | null;
   sourceImageId: string;
+  tailImageId: string | null;
   providerId: string;
   model: string;
   prompt: string;
@@ -294,6 +296,17 @@ async function runVideoJob(
       taskId = existingTaskId;
       logInfo(`Resuming polling for existing task_id=${taskId}`);
     } else {
+      const tailValidation = validateVideoTailFrameAsset({
+        db,
+        tailImageId: job.tailImageId,
+        projectId: job.projectId,
+        providerType: provider.type,
+        model: job.model,
+      });
+      if (!tailValidation.ok) throw new Error(tailValidation.error);
+      const tailImage = tailValidation.asset;
+      const tailMimeType = tailImage?.mimeType as 'image/png' | 'image/jpeg' | 'image/webp' | undefined;
+
       logInfo('Submitting video generation task...');
       const submitResult = await adapter.submit(
         {
@@ -301,6 +314,8 @@ async function runVideoJob(
           prompt: job.prompt,
           sourceImagePath: imagePath,
           sourceMimeType: mimeType,
+          tailImagePath: tailImage ? (tailImage.processedPath || tailImage.path) : undefined,
+          tailMimeType,
           durationSec: job.durationSec,
         },
         apiKey,

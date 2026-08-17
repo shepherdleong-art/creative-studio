@@ -32,14 +32,27 @@ db.exec(`
   CREATE TABLE jobs (inputImageId TEXT, outputImageId TEXT, referenceImageIds TEXT NOT NULL DEFAULT '[]');
   CREATE TABLE scene_references (imageAssetId TEXT);
   CREATE TABLE shots (sourceImageId TEXT, latestGeneratedImageId TEXT);
-  CREATE TABLE video_jobs (sourceImageId TEXT);
+  CREATE TABLE video_jobs (sourceImageId TEXT, tailImageId TEXT);
   INSERT INTO jobs VALUES ('asset-1', NULL, '[]');
   INSERT INTO jobs VALUES ('other', NULL, '["asset-1"]');
   INSERT INTO shots VALUES ('asset-1', NULL);
-  INSERT INTO video_jobs VALUES ('asset-1');
+  INSERT INTO video_jobs (sourceImageId, tailImageId) VALUES ('asset-1', NULL);
+  INSERT INTO video_jobs (sourceImageId, tailImageId) VALUES (NULL, 'tail-only-asset');
 `);
 
 assert.deepEqual(
   db.prepare(IMAGE_REFERENCE_COUNTS_SQL).get({ id: 'asset-1' }),
   { jobRefs: 2, sceneRefs: 0, shotRefs: 1, videoRefs: 1 }
+);
+
+const tailOnlyRefs = db.prepare(IMAGE_REFERENCE_COUNTS_SQL).get({ id: 'tail-only-asset' });
+assert.deepEqual(
+  tailOnlyRefs,
+  { jobRefs: 0, sceneRefs: 0, shotRefs: 0, videoRefs: 1 },
+  'a tail-only video reference must count as an image deletion reference',
+);
+assert.deepEqual(
+  getImageDeleteBlockers(tailOnlyRefs),
+  ['1 个视频任务'],
+  'a tail-only video reference must block image deletion',
 );

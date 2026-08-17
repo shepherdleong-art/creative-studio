@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { splitCoverTitle } from '../media-core/cover-domain.ts';
+import { BatchDomainError } from './errors.ts';
+import { normalizeManualScriptInput, type ManualScriptDraftInput } from './manual-script-import.ts';
 import { assertBatchVersionEditable } from './versions.ts';
 
 export type BatchScriptSourceKind = 'script_draft' | 'external';
@@ -169,6 +172,112 @@ export function createBatchExternalScript(
     );
     return id;
   })();
+}
+
+/**
+ * 登记一条手动导入的项目脚本(自定义脚本)。
+ * 它直接成为项目级脚本:sourceKind 复用 'script_draft',sourceId 使用独立的
+ * 'manual:' 命名空间——这是承重设计,保证 syncProjectScripts 的认领语句
+ * (按 sourceId 是否是真草稿提权 catalogManaged)永远扫不到它,手动脚本
+ * 不会被同步器软删。shotSetId 与 contentRevision 留空:手动脚本没有分镜组
+ * 归属,也没有上游草稿修订身份。
+ */
+export function createManualProjectScript(
+  db: Database.Database,
+  projectId: string,
+  input: ManualScriptDraftInput & { now?: () => Date },
+): string {
+  const normalized = normalizeManualScriptInput(input);
+  return createProjectScript(db, projectId, {
+    sourceKind: 'script_draft',
+    sourceId: `manual:${randomUUID()}`,
+    title: normalized.title,
+    bodyText: normalized.bodyText,
+    sourceVersion: '1',
+    metadata: {
+      coverTitleJson: splitCoverTitle(normalized.title),
+      shotSetId: '',
+      contentRevision: '',
+      targetDurationSec: normalized.targetDurationSec,
+    },
+    now: input.now,
+  });
+}
+
+/**
+ * 编辑一条手动脚本。单条 UPDATE 同时写封面标题拆分与目标时长(两者都参与
+ * matchesCurrentInput 输入身份比对,且封面标题会烤进 20 帧片头),不碰
+ * narrationConfigJson(用户已配置的音色必须保留)。sourceVersion 递增 1。
+ * 只允许改 manual: 命名空间的项目脚本;已被软删的目标报 conflict。
+ */
+export function updateManualProjectScript(
+  db: Database.Database,
+  projectId: string,
+  scriptId: string,
+  input: ManualScriptDraftInput & { now?: () => Date },
+): void {
+  const normalized = normalizeManualScriptInput(input);
+  const result = db.prepare(`
+    UPDATE batch_scripts
+    SET title = ?, bodyText = ?, coverTitleJson = ?, targetDurationSec = ?,
+        sourceVersion = CAST(sourceVersion AS INTEGER) + 1, updatedAt = ?
+    WHERE id = ? AND projectId = ?
+      AND sourceId LIKE 'manual:%' AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
+      AND sourceAvailable = 1
+  `).run(
+    normalized.title,
+    normalized.bodyText,
+    JSON.stringify(splitCoverTitle(normalized.title)),
+    normalized.targetDurationSec,
+    nowIso(input.now),
+    scriptId,
+    projectId,
+  );
+  if (result.changes > 0) return;
+  const existing = db.prepare(`
+    SELECT id FROM batch_scripts
+    WHERE id = ? AND projectId = ?
+      AND sourceId LIKE 'manual:%' AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
+  `).get(scriptId, projectId);
+  if (existing) {
+    throw new BatchDomainError('conflict', '该脚本已被删除');
+  }
+  throw new BatchDomainError('not_found', '手动脚本不存在');
+}
+
+/**
+ * 删除一条手动脚本。整体包在 immediate 事务内(身份校验 + 引用查询 + 删除):
+ * batch_script_snapshots.sourceScriptId 外键 ON DELETE RESTRICT,已被批次快照
+ * 引用的脚本不能物理删除,只能软删(sourceAvailable = 0,从列表消失,历史快照保留);
+ * 未被引用的物理删。
+ */
+export function deleteManualProjectScript(
+  db: Database.Database,
+  projectId: string,
+  scriptId: string,
+): { mode: 'hard' | 'soft' } {
+  return db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT id FROM batch_scripts
+      WHERE id = ? AND projectId = ?
+        AND sourceId LIKE 'manual:%' AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
+        AND sourceAvailable = 1
+    `).get(scriptId, projectId) as { id: string } | undefined;
+    if (!existing) {
+      throw new BatchDomainError('not_found', '手动脚本不存在');
+    }
+    const referenced = db.prepare(`
+      SELECT 1 FROM batch_script_snapshots WHERE sourceScriptId = ? LIMIT 1
+    `).get(scriptId);
+    if (!referenced) {
+      db.prepare(`DELETE FROM batch_scripts WHERE id = ?`).run(scriptId);
+      return { mode: 'hard' as const };
+    }
+    db.prepare(`
+      UPDATE batch_scripts SET sourceAvailable = 0, updatedAt = ? WHERE id = ?
+    `).run(nowIso(), scriptId);
+    return { mode: 'soft' as const };
+  }).immediate();
 }
 
 export function getProjectScript(

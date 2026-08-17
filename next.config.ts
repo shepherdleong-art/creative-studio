@@ -24,6 +24,7 @@ const nextConfig: NextConfig = {
       './installer/**/*',
       './litellm-config.yaml',
       './outputs/**/*',
+      './python-runtime/**/*',
       './runtime/**/*',
       './scripts/**/*',
       './storage/**/*',

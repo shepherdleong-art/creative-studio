@@ -197,6 +197,7 @@ PRUNE_RELATIVE_PATHS=(
   .git
   .claude
   .venv-litellm
+  python-runtime
   config.yaml
   litellm-config.yaml
   requirements-litellm.txt

@@ -87,6 +87,7 @@ const STATUS_LABELS: Record<string, string> = {
   running: '运行中',
   completed: '已完成',
   partial_failed: '部分失败',
+  failed: '全部失败',
   canceled: '已取消',
   needs_check: '待补抓',
 };
@@ -476,7 +477,7 @@ export default function ProjectDetailPage() {
               <Icon name="chevron-left" size={16} /> 返回
             </Link>
             <h1 className="text-xl font-semibold tracking-[-0.01em]">{project.name}</h1>
-            <span className={`status-badge status-${project.status === 'partial_failed' ? 'failed' : project.status}`}>
+            <span className={`status-badge status-${project.status}`}>
               {STATUS_LABELS[project.status] || project.status}
             </span>
           </div>

@@ -38,5 +38,25 @@ assert.equal(getEffectiveProjectFinalStatus(db, 'project-3'), 'needs_check');
 insert.run('legacy-success', 'project-4', 'succeeded', '', null);
 assert.equal(getEffectiveProjectFinalStatus(db, 'project-4'), 'completed');
 
+// 全军覆没:有效任务全部失败、没有成功也没有在跑 → failed(UI 红),不是 partial_failed(UI 黄)
+insert.run('all-failed-1', 'project-5', 'failed', '', null);
+insert.run('all-failed-2', 'project-5', 'failed', '', null);
+assert.equal(getEffectiveProjectFinalStatus(db, 'project-5'), 'failed');
+
+// 只要有一条成功就退回 partial_failed
+insert.run('some-success', 'project-5', 'succeeded', '', null);
+assert.equal(getEffectiveProjectFinalStatus(db, 'project-5'), 'partial_failed');
+
+// 还有任务在跑时不下「全灭」的定论
+insert.run('running-failed', 'project-6', 'failed', '', null);
+insert.run('running-active', 'project-6', 'running', '', null);
+assert.equal(getEffectiveProjectFinalStatus(db, 'project-6'), 'partial_failed');
+
+// 被 rework 标记/已被重试取代的失败任务不算数:全灭判定与 partial 用的是同一批有效任务
+insert.run('reworked-failed', 'project-7', 'failed', 'rework', null);
+insert.run('superseded-failed', 'project-7', 'failed', '', null);
+insert.run('retry-success', 'project-7', 'succeeded', '', 'superseded-failed');
+assert.equal(getEffectiveProjectFinalStatus(db, 'project-7'), 'completed');
+
 db.close();
 console.log('project-final-status tests passed');

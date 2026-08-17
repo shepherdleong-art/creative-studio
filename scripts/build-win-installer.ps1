@@ -168,6 +168,7 @@ foreach ($relativePath in @(
   '.claude',
   '.git',
   '.venv-litellm',
+  'python-runtime',
   'config.yaml',
   'litellm-config.yaml',
   'requirements-litellm.txt',
@@ -206,6 +207,7 @@ foreach ($relativePath in @(
   '.claude',
   '.git',
   '.venv-litellm',
+  'python-runtime',
   'config.yaml',
   'litellm-config.yaml'
 )) {
@@ -220,7 +222,7 @@ if (Get-ChildItem -LiteralPath (Join-Path $Payload 'dist-desktop') -Force -Recur
   throw "Installer payload contains desktop source or sourcemap files under $(Join-Path $Payload 'dist-desktop')."
 }
 
-$forbiddenPayload = @('data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.claude', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml')
+$forbiddenPayload = @('data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.claude', '.env.local', '.venv-litellm', 'python-runtime', 'config.yaml', 'litellm-config.yaml')
 foreach ($relativePath in $forbiddenPayload) {
   $targets = @(
     Join-Path $Payload $relativePath

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
+import { getVideoTailFrameCapability } from '@/lib/video-tail-frame';
 import { v4 as uuidv4 } from 'uuid';
 
 function safeVideoProvider(provider: {
@@ -32,6 +33,7 @@ function safeVideoProvider(provider: {
     configured: runtime.configured,
     missing: runtime.missing,
     hasApiKey: runtime.hasApiKey,
+    tailFrameCapability: getVideoTailFrameCapability(provider.type, runtime.model),
   };
 }
 

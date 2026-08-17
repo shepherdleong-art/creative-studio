@@ -253,6 +253,26 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }, [projectId]);
 
+  /**
+   * 只刷新准备区(脚本/素材列表),不复用 load():load() 会 setBatches,
+   * 连锁触发批次详情重载,把用户尚未确认的份数/素材/LUT 选择冲掉(见方案 §6.7)。
+   * 失败只提示,不清空已有 preparation。
+   */
+  const reloadPreparation = useCallback(async () => {
+    try {
+      const result = await readJson<BatchPreparationResult>(await fetch(
+        `/api/batch-production/prepare?projectId=${encodeURIComponent(projectId)}`,
+        { cache: 'no-store' },
+      ));
+      setPreparation(result);
+    } catch (reloadError) {
+      setFeedback({
+        kind: 'error',
+        message: reloadError instanceof Error ? reloadError.message : '脚本列表刷新失败',
+      });
+    }
+  }, [projectId]);
+
   const loadBatchDetail = useCallback(async (batchId: string) => {
     const batch = batches.find(({ id }) => id === batchId);
     setBatchStatus(batch?.status ?? 'draft');
@@ -678,6 +698,40 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     setOutputPlans([]);
     setInputConfirmed(false);
     setFeedback(null);
+  }
+
+  /** 手动脚本 CRUD 的状态迁移(方案 §7.5):三个操作各自独立,不合并。 */
+  function handleScriptCreated(): void {
+    // 新脚本默认未勾选,当前输入不受影响,不调 markInputChanged()。
+    void reloadPreparation();
+    setFeedback({ kind: 'success', message: '自定义脚本已导入，勾选后确认整体输入即可参与生产。' });
+  }
+
+  function handleScriptUpdated(scriptId: string): void {
+    void reloadPreparation();
+    // 已勾选的脚本内容变了:强制重新确认,避免「旧正文打分、新正文生产」(§6.7)。
+    if (selectedScripts[scriptId] !== undefined) {
+      markInputChanged();
+      setFeedback({ kind: 'success', message: '脚本已更新；该脚本已在本批次选中，请重新确认整体输入。' });
+    } else {
+      setFeedback({ kind: 'success', message: '脚本已更新。' });
+    }
+  }
+
+  function handleScriptDeleted(scriptId: string): void {
+    void reloadPreparation();
+    // markInputChanged 不碰 selectedScripts,必须无条件移除该 ID,
+    // 否则卡片消失后野 ID 仍会随确认提交。
+    const wasSelected = selectedScripts[scriptId] !== undefined;
+    setSelectedScripts((current) => (
+      Object.fromEntries(Object.entries(current).filter(([id]) => id !== scriptId))
+    ));
+    if (wasSelected) {
+      markInputChanged();
+      setFeedback({ kind: 'success', message: '脚本已删除；它此前已在本批次选中，请重新确认整体输入。' });
+    } else {
+      setFeedback({ kind: 'success', message: '脚本已删除。' });
+    }
   }
 
   useEffect(() => {
@@ -1737,6 +1791,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 markInputChanged();
               }}
               onNarrationConfigTouched={markInputChanged}
+              onScriptCreated={handleScriptCreated}
+              onScriptUpdated={handleScriptUpdated}
+              onScriptDeleted={handleScriptDeleted}
               onConfirmSnapshot={() => void confirmSnapshot()}
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}

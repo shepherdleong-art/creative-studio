@@ -25,18 +25,18 @@ function insertProject(id: string): void {
   `).run(id);
 }
 
-function insertImageAsset(id: string, projectId: string): void {
+function insertImageAsset(id: string, projectId: string, usage = ''): void {
   db.prepare(`
-    INSERT INTO image_assets (id, projectId, role, filename, path, mimeType)
-    VALUES (?, ?, 'input', ?, ?, 'image/png')
-  `).run(id, projectId, `${id}.png`, `/tmp/${id}.png`);
+    INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage)
+    VALUES (?, ?, 'input', ?, ?, 'image/png', ?)
+  `).run(id, projectId, `${id}.png`, `/tmp/${id}.png`, usage);
 }
 
-function insertProvider(id: string, type: string): void {
+function insertProvider(id: string, type: string, model = 'model-a'): void {
   db.prepare(`
     INSERT INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled, baseUrl, apiKey, accessKey, secretKey)
-    VALUES (?, ?, ?, '', '', '', 'model-a', 1, 'http://fake.example', 'fake-key', 'ak', 'sk')
-  `).run(id, `${id} 名称`, type);
+    VALUES (?, ?, ?, '', '', '', ?, 1, 'http://fake.example', 'fake-key', 'ak', 'sk')
+  `).run(id, `${id} 名称`, type, model);
 }
 
 function insertVideoJob(
@@ -45,22 +45,91 @@ function insertVideoJob(
   overrides: {
     status?: string;
     providerId?: string;
+    model?: string;
+    tailImageId?: string | null;
     maxAttempts?: number;
     createdAt?: string;
   } = {},
 ): void {
   db.prepare(`
-    INSERT INTO video_jobs (id, projectId, sourceImageId, providerId, model, prompt, durationSec, status, maxAttempts, createdAt)
-    VALUES (?, ?, ?, ?, 'model-a', 'prompt', 5, ?, ?, ?)
+    INSERT INTO video_jobs (id, projectId, sourceImageId, tailImageId, providerId, model, prompt, durationSec, status, maxAttempts, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, 'prompt', 5, ?, ?, ?)
   `).run(
     id,
     projectId,
     'img-' + projectId,
+    overrides.tailImageId ?? null,
     overrides.providerId ?? 'fake-kling',
+    overrides.model ?? 'model-a',
     overrides.status ?? 'pending',
     overrides.maxAttempts ?? 1,
     overrides.createdAt ?? new Date().toISOString(),
   );
+}
+
+// 首次提交必须把同项目、专用 usage 的尾帧路径与 MIME 传给适配器。
+{
+  insertProject('project-tail-submit');
+  insertImageAsset('img-project-tail-submit', 'project-tail-submit');
+  insertImageAsset('tail-project-tail-submit', 'project-tail-submit', 'video_tail_frame');
+  insertProvider('tail-submit-provider', 'jimeng', 'doubao-seedance-2-0-260128');
+  insertVideoJob('tail-submit-job', 'project-tail-submit', {
+    providerId: 'tail-submit-provider',
+    model: 'doubao-seedance-2-0-260128',
+    tailImageId: 'tail-project-tail-submit',
+  });
+  let tailSubmitCalls = 0;
+  let submittedTailPath: string | undefined;
+  let submittedTailMime: string | undefined;
+  providersModule.registerTestVideoAdapter('jimeng', {
+    tailFrameCapability: () => ({ supported: true, protocol: 'ark-content-roles' }),
+    submit: async (request) => {
+      tailSubmitCalls += 1;
+      submittedTailPath = request.tailImagePath;
+      submittedTailMime = request.tailMimeType;
+      return { providerTaskId: 'remote-tail-submit-1', rawResponse: null };
+    },
+    poll: async () => ({ status: 'failed', errorMessage: 'test complete', rawResponse: null }),
+    minimumPollingTimeoutMs: () => 0,
+  });
+  await queueModule.runVideoQueue({
+    projectId: 'project-tail-submit',
+    concurrency: 1,
+    timeoutMs: 60_000,
+  });
+  assert.equal(tailSubmitCalls, 1, 'tail-frame job must submit exactly once');
+  assert.equal(submittedTailPath, '/tmp/tail-project-tail-submit.png');
+  assert.equal(submittedTailMime, 'image/png');
+}
+
+// 已有远端 task_id 时只补抓结果；即使本地尾帧资产已经不在，也不得重新 submit。
+{
+  insertProject('project-tail-resume');
+  insertImageAsset('img-project-tail-resume', 'project-tail-resume');
+  insertProvider('tail-resume-provider', 'jimeng', 'doubao-seedance-2-0-260128');
+  insertVideoJob('tail-resume-job', 'project-tail-resume', {
+    status: 'needs_check',
+    providerId: 'tail-resume-provider',
+    model: 'doubao-seedance-2-0-260128',
+    tailImageId: 'already-removed-tail',
+  });
+  db.prepare(`UPDATE video_jobs SET providerTaskId = 'remote-tail-resume-1' WHERE id = 'tail-resume-job'`).run();
+  let resumeSubmitCalls = 0;
+  providersModule.registerTestVideoAdapter('jimeng', {
+    tailFrameCapability: () => ({ supported: true, protocol: 'ark-content-roles' }),
+    submit: async () => {
+      resumeSubmitCalls += 1;
+      return { providerTaskId: 'must-not-exist', rawResponse: null };
+    },
+    poll: async () => ({ status: 'failed', errorMessage: 'test complete', rawResponse: null }),
+    minimumPollingTimeoutMs: () => 0,
+  });
+  await queueModule.runVideoQueue({
+    projectId: 'project-tail-resume',
+    concurrency: 1,
+    timeoutMs: 60_000,
+  });
+  assert.equal(resumeSubmitCalls, 0, '持有 task_id 的尾帧任务不得因本地资产缺失而重新提交');
 }
 
 function videoJobStatus(id: string): string {

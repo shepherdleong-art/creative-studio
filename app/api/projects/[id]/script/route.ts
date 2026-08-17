@@ -4,25 +4,16 @@ import { writeLog } from '@/lib/logger';
 import {
   completeJson,
   getAvailableProviders,
-  getProviderMeta,
 } from '@/lib/script-providers';
 import type { AnalysisInput } from '@/lib/script-providers';
 import {
   analyzeScriptStrategyV3,
   ScriptGenerationV3Error,
 } from '@/lib/script-generation-v3';
-import { generateAndPersistScriptV3 } from '@/lib/script-generation-v3-service';
-import {
-  cancelScriptGeneration,
-  finishScriptGeneration,
-  registerScriptGeneration,
-} from '@/lib/script-generation-control';
-import { encodeScriptGenerationStreamEvent } from '@/lib/script-generation-stream';
-import type { ScriptGenerationProgress } from '@/lib/script-generation-v3';
 
-// ── POST: analyze | generate ──
+// ── POST: 只保留 analyze；生成/取消已迁移到 /script-generation（任务化接口）──
 
-/** 脚本生成/分析的失败此前只回给前端，服务端无迹可查；统一落项目日志。 */
+/** 脚本分析的失败此前只回给前端，服务端无迹可查；统一落项目日志。 */
 function logScriptFailure(projectId: string, stage: string, detail: unknown): void {
   const body = detail as { message?: unknown; error?: unknown } | null;
   const message = detail instanceof Error
@@ -35,10 +26,15 @@ function logScriptFailure(projectId: string, stage: string, detail: unknown): vo
   writeLog({ projectId, level: 'error', message: `[脚本生成] ${stage}: ${message}` });
 }
 
-/** 关键节点信息日志：让生成过程在日志抽屉里可见（开始/完成、选用的模型）。 */
+/** 关键节点信息日志：让分析过程在日志抽屉里可见（开始/完成、选用的模型）。 */
 function logScriptInfo(projectId: string, message: string): void {
   writeLog({ projectId, level: 'info', message: `[脚本生成] ${message}` });
 }
+
+const ENDPOINT_MOVED = {
+  error: 'script_generation_endpoint_moved',
+  message: '脚本生成/取消接口已迁移，请刷新页面后重试',
+};
 
 export async function POST(
   request: NextRequest,
@@ -56,25 +52,16 @@ export async function POST(
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     const action = (body.action as string) || 'generate';
 
-    if (action === 'cancel') {
-      const generationId = typeof body.generationId === 'string' ? body.generationId : '';
-      if (!generationId) return NextResponse.json({ error: '缺少生成任务 ID' }, { status: 400 });
-      return NextResponse.json({ cancelled: cancelScriptGeneration(generationId, projectId) });
+    if (action !== 'analyze') {
+      // 旧的 generate/cancel 生命周期已整体迁移到 /script-generation；
+      // 不得转发或暗中产生第二种任务生命周期。
+      return NextResponse.json(ENDPOINT_MOVED, { status: 410 });
     }
 
-    if (action === 'analyze') {
-      return await handleAnalyze(projectId, project, body);
-    }
-
-    if (body.stream === true) {
-      return handleGenerateStream(projectId, project, body, request.signal);
-    }
-    return await handleGenerate(projectId, project, body, request.signal);
+    return await handleAnalyze(projectId, project, body);
   } catch (err) {
-    const failure = scriptGenerationFailure(err);
-    if (failure.status !== 499) {
-      logScriptFailure(projectIdForLog, '分析/生成异常', failure.body);
-    }
+    const failure = scriptAnalysisFailure(err);
+    logScriptFailure(projectIdForLog, '分析异常', failure.body);
     return NextResponse.json(failure.body, { status: failure.status });
   }
 }
@@ -162,122 +149,15 @@ async function handleAnalyze(
   return NextResponse.json({ analysis: result });
 }
 
-// ── Action: Generate Script ──
-
-async function handleGenerate(
-  projectId: string,
-  project: Record<string, unknown>,
-  body: Record<string, unknown>,
-  signal?: AbortSignal,
-) {
-  logScriptInfo(projectId, `开始生成脚本（模型 ${(body.providerId as string) || '默认'}）`);
-  const result = await generateAndPersistScriptV3({ projectId, project, body }, {
-    db: getDb(),
-    completeJson: (providerId, request) => completeJson({ providerId, ...request }),
-    providerMeta: getProviderMeta,
-    signal,
-  });
-  if (result.status >= 400) {
-    logScriptFailure(projectId, '脚本生成失败', result.body);
-  } else {
-    logScriptInfo(projectId, '脚本生成完成');
-  }
-  return NextResponse.json(result.body, { status: result.status });
-}
-
-function scriptGenerationFailure(error: unknown): { status: number; body: Record<string, unknown> } {
+function scriptAnalysisFailure(error: unknown): { status: number; body: Record<string, unknown> } {
   if (error instanceof ScriptGenerationV3Error) {
     return {
       status: 422,
       body: { error: error.code, message: error.message, details: error.details },
     };
   }
-  if ((error instanceof Error && error.name === 'AbortError')
-    || (error instanceof Error && error.message === '脚本生成已取消')) {
-    return { status: 499, body: { error: 'script_generation_cancelled', message: '脚本生成已取消' } };
-  }
   return {
     status: 500,
     body: { error: error instanceof Error ? error.message : String(error) },
   };
-}
-
-function handleGenerateStream(
-  projectId: string,
-  project: Record<string, unknown>,
-  body: Record<string, unknown>,
-  requestSignal: AbortSignal,
-): Response {
-  const generationId = typeof body.generationId === 'string' ? body.generationId : '';
-  if (!generationId) {
-    return NextResponse.json({ error: '缺少生成任务 ID' }, { status: 400 });
-  }
-
-  const generationController = registerScriptGeneration(generationId, projectId);
-  const abortFromDisconnect = () => generationController.abort();
-  requestSignal.addEventListener('abort', abortFromDisconnect, { once: true });
-  if (requestSignal.aborted) generationController.abort();
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(streamController) {
-      let streamOpen = true;
-      const send = (event: Parameters<typeof encodeScriptGenerationStreamEvent>[0]) => {
-        if (!streamOpen) return;
-        try {
-          streamController.enqueue(encodeScriptGenerationStreamEvent(event));
-        } catch {
-          streamOpen = false;
-          generationController.abort();
-        }
-      };
-      const onProgress = (progress: ScriptGenerationProgress) => send({ type: 'progress', progress });
-
-      void (async () => {
-        logScriptInfo(projectId, `开始生成脚本（模型 ${(body.providerId as string) || '默认'}，流式）`);
-        try {
-          const result = await generateAndPersistScriptV3({ projectId, project, body }, {
-            db: getDb(),
-            completeJson: (providerId, request) => completeJson({ providerId, ...request }),
-            providerMeta: getProviderMeta,
-            signal: generationController.signal,
-            onProgress,
-          });
-          if (result.status >= 400) {
-            logScriptFailure(projectId, '脚本生成失败', result.body);
-          } else {
-            logScriptInfo(projectId, '脚本生成完成');
-          }
-          send({
-            type: result.status >= 400 ? 'error' : 'result',
-            status: result.status,
-            body: result.body,
-          });
-        } catch (error) {
-          const failure = scriptGenerationFailure(error);
-          if (failure.status !== 499) {
-            logScriptFailure(projectId, '脚本生成异常', failure.body);
-          }
-          send({ type: 'error', status: failure.status, body: failure.body });
-        } finally {
-          finishScriptGeneration(generationId, generationController);
-          requestSignal.removeEventListener('abort', abortFromDisconnect);
-          if (streamOpen) {
-            try {
-              streamController.close();
-            } catch { /* client disconnected */ }
-          }
-        }
-      })();
-    },
-    cancel() {
-      generationController.abort();
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'application/x-ndjson; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-    },
-  });
 }

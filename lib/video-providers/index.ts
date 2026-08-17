@@ -25,4 +25,11 @@ export function getVideoAdapter(type: string): VideoProviderAdapter | undefined 
 }
 
 export { klingAdapter, jimengAdapter, openaiVideoAdapter };
-export type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types.ts';
+export type {
+  VideoProviderAdapter,
+  SubmitVideoRequest,
+  SubmitVideoResult,
+  PollVideoResult,
+  TailFrameCapability,
+  TailFrameProtocol,
+} from './types.ts';

@@ -55,7 +55,7 @@ run('hdiutil', ['verify', dmgPath]);
 // output tracing can copy the project root into .next/standalone.
 for (const forbidden of [
   'data', 'storage', 'outputs', 'docs', 'scripts', 'installer', 'desktop',
-  '.git', '.claude', '.venv-litellm', 'config.yaml', 'litellm-config.yaml',
+  '.git', '.claude', '.venv-litellm', 'python-runtime', 'config.yaml', 'litellm-config.yaml',
   'requirements-litellm.txt', '.next/cache', '.next/dev', 'node_modules/.cache',
   'tsconfig.tsbuildinfo', 'package-lock.json', 'eslint.config.mjs',
   'postcss.config.mjs', 'video-panel-mockup.html', 'WINDOWS.md',

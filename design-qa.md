@@ -107,6 +107,76 @@ final result: passed
 
 ---
 
+# Seedance 2.0 尾帧拖拽与悬浮预览 — Design QA
+
+## Evidence
+
+- Source visual truth: `/var/folders/4y/v3q6w0gn7v7f4r79h9gjjk3r0000gn/T/codex-clipboard-0d9eda1a-3a8c-45a6-b359-117ca8cfd488.png`
+- Browser-rendered loaded state: `/tmp/seedance-tail-loaded.png`
+- Browser-rendered hover state: `/tmp/seedance-tail-drag-hover-active.png`
+- Browser-rendered empty state: `/tmp/seedance-tail-drag-empty.png`
+- Combined comparison input opened for review: `/tmp/tail-frame-drag-comparison.png`
+- Route: `http://127.0.0.1:3019/projects/c44a2df5-1ce1-4331-8117-556a63183b6e?tab=video`
+- Browser viewport for the matched loaded and hover states: `1280 × 720 CSS px`, screenshot output `1280 × 720 px`.
+- Source pixels: `802 × 404 px`. For the focused comparison, its `692 × 375 px` frame region was normalized to `306px` width; the implementation region is `306 × 172 px`. The combined comparison is `636 × 172 px` with a `24px` neutral gutter.
+- State: Seedance 2.0 selected; a real project image was temporarily uploaded as the tail frame, inspected, hovered, and then removed. Both temporary uploaded assets were deleted through the product UI after QA.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- The accepted two-frame composition is unchanged. The empty tail tile now explicitly says `可选 · 点击或拖入`, while the loaded tile remains visually quiet until hover/focus.
+- Drag-enter state uses the existing accent blue, a dashed inner boundary, and explicit `松开添加尾帧` / `松开替换尾帧` copy. It does not cover or alter the default state when no drag is active.
+- The loaded tail frame now uses the same `HoverZoomImage` implementation, maximum preview size, keyboard behavior, and `zoom-in` cursor as the first frame.
+
+## Full-view comparison
+
+- The combined source/implementation image confirms the same equal-width first/tail tiles, center time-direction marker, top-left frame chips, bottom-right replace/remove controls, and warning bar placement.
+- The implementation retains the Creative Studio light surfaces and project tokens established in the preceding accepted Seedance QA. Different scene imagery is expected because QA uses the current project's real frame.
+- No layout, crop, padding, radius, or text-wrapping regression was introduced by the drag target.
+
+## Focused region comparison
+
+- The hover screenshot visibly shows the enlarged tail image beside the frame pair. Its dimensions and caption treatment match the first-frame preview because both are rendered by the same shared component.
+- A separate focused drag comparison was not fabricated: the in-app browser supports the real file-chooser flow but does not expose an operating-system file drag source. Drag/drop event wiring and add/replace copy are therefore covered by the source contract test, while the shared upload path was exercised through a real file upload.
+
+## Required fidelity surfaces
+
+- Fonts and typography: existing system/PingFang stack and 10–12px hierarchy are preserved; the new helper and drop-state copy fit without truncation.
+- Spacing and layout rhythm: no frame dimensions or card spacing changed; the drag overlay is inset `6px` and follows the tile's existing radius.
+- Colors and visual tokens: the overlay uses the existing accent and surface language, with no new product palette or gradient.
+- Image quality and asset fidelity: real project imagery was used; thumbnail and large preview remain `object-fit: contain`, preventing frame-content loss.
+- Copy and content: `点击或拖入`, `松开添加尾帧`, and `松开替换尾帧` describe the actual available actions; no unsupported history or library feature is implied.
+
+## Interaction and runtime checks
+
+- Switched from an unsupported provider to `即梦 2.0 (Seedance 2.0)` and confirmed the drop-ready empty state.
+- Clicked the real hidden file input through the visible tail-frame control, uploaded a `1728 × 2304` PNG, and confirmed the loaded state.
+- Hovered the loaded tail image and confirmed the enlarged preview and caption are visible.
+- Removed the tail frame and confirmed the UI returned to `添加尾帧图`; dev-server evidence shows both temporary uploads received successful `DELETE /api/images/<id> 200` cleanup.
+- Source contract covers native `dataTransfer.files`, empty/loaded `onDrop`, add/replace drag copy, and the shared hover-preview component.
+- No browser-visible error state appeared during the flow. Direct console streaming was unavailable in this browser session; the dev server showed successful upload, image load, and cleanup requests with no request failures.
+
+## Comparison history
+
+- This follow-up starts from the previously accepted Seedance first/tail-frame design. The first visual comparison found no P0/P1/P2 regression, so no visual-fix iteration was required.
+
+## Implementation checklist
+
+- [x] Keep click-to-choose upload.
+- [x] Accept direct image drop on the empty tail tile.
+- [x] Accept direct image drop as replacement on the loaded tail tile.
+- [x] Show explicit drag-over feedback for add and replace.
+- [x] Reuse the first-frame large hover preview for the tail frame.
+- [x] Preserve provider support gates, upload/delete busy states, and cleanup behavior.
+
+## Follow-up polish
+
+- P3 test gap only: a manual operating-system drag can be smoke-tested later on the packaged desktop build; the browser automation surface used here cannot originate a local file drag.
+
+final result: passed
+
+---
+
 # Batch Phase D media pool, analysis, subtitle, and cover — Design QA
 
 ## Evidence
@@ -273,5 +343,105 @@ final result: passed
 ## Follow-up Polish
 
 - P3: the selected implementation uses the closest existing check-circle icon for the select tool instead of the concept image's dashed selection icon, avoiding a new one-off icon asset.
+
+final result: passed
+
+---
+
+# Seedance 2.0 首尾帧界面 Design QA
+
+## 对照目标与证据
+
+- Source visual truth:
+  - `/var/folders/4y/v3q6w0gn7v7f4r79h9gjjk3r0000gn/T/codex-clipboard-11f452f8-9ce4-4911-9f41-0630f6429af8.png`（尾帧空态）
+  - `/var/folders/4y/v3q6w0gn7v7f4r79h9gjjk3r0000gn/T/codex-clipboard-6a8d430c-21db-42aa-bffd-b82126f511fd.png`（尾帧完成态）
+- Browser-rendered implementation:
+  - `outputs/design-qa/seedance-tail-viewport-1280x1000-final.png`（空态全视图）
+  - `outputs/design-qa/seedance-tail-loaded-rest.png`（完成态全视图）
+  - `outputs/design-qa/seedance-tail-loaded-hover.png`（完成态悬停操作）
+- Combined comparison input:
+  - `outputs/design-qa/seedance-tail-empty-comparison.png`
+  - `outputs/design-qa/seedance-tail-loaded-comparison-final.png`
+- Route: `http://127.0.0.1:3019/projects/c44a2df5-1ce1-4331-8117-556a63183b6e?tab=video`
+
+## 视口与归一化
+
+- 两张源图均为 `920 x 780 px`。
+- 实现全视图为 `1280 x 1000 CSS px`；浏览器报告 `devicePixelRatio = 2`，IAB 截图输出已归一化为 `1280 x 1000 px`，即每个 CSS px 对应一个截图像素。
+- 聚焦对照使用源图 `878 x 405 px` 顶部首尾帧区域；实现首尾帧组件为 `314 x 137 CSS px`，等比放大至 `878 x 383 px` 后上下补白到 `878 x 405 px`。最终并排比较图为 `1756 x 405 px`。
+- 对照状态：Seedance 2.0 供应商已选中；分别检查未添加尾帧和已添加尾帧。完成态使用现有分镜图做一次临时真实上传，截图后已删除测试资产。
+
+## Full-view comparison
+
+- 信息顺序与参考一致：首帧/尾帧双画面位于描述卡顶部，模型与模板参数在其后，运镜描述继续位于下方。
+- 左侧编辑列从 `300–340px` 调整为 `380–420px`，双画面在桌面宽度下不再退化为附件缩略条，同时中间视频预览仍保持主视觉。
+- 实现沿用 Creative Studio 的浅色、Apple 式表面和现有字体系统；没有照搬参考图的黑色主题。这是产品设计系统约束，不是结构偏差。
+
+## Focused region comparison
+
+- 空态：右侧整块画面作为上传入口，包含图片图标、`添加尾帧图` 和 `可选 · 点击上传`；与参考中的整块空态层级一致。
+- 完成态：两张画面等宽等高，首尾帧均使用 `object-fit: contain` 展示完整内容；默认不显示操作按钮，悬停或键盘聚焦尾帧后显示“更换/移除”。
+- 中央关系标识使用现有 Icon 库的右向 chevron，表达首帧到尾帧的时间方向。参考图是双向换图符号；为避免引入手写 SVG，这是可接受的 P3 差异。
+
+## Required fidelity surfaces
+
+- Fonts and typography: 继续使用项目 `--font-sans` 与现有 10–13px 控件层级；空态主文案 12px/600，辅助文案 10px，未出现截断或拥挤。
+- Spacing and layout rhythm: 双列 `1fr 1fr`、10px 间距、10:9 画面比例、13px 圆角；中央 38px 圆形标识压在两画面接缝上，布局重心与参考一致。
+- Colors and visual tokens: 使用项目已有 surface、ink、accent、warn token；只在图片标签和浮层操作上使用深色半透明玻璃，以保持画面可读性。
+- Image quality and asset fidelity: 首尾帧均显示真实项目图片，不使用占位画、CSS 图形或生成素材替代；`contain` 防止裁掉首尾帧关键内容。
+- Copy and content: 使用 `首帧`、`尾帧`、`添加尾帧图`、`可选 · 点击上传`，没有添加当前产品不具备的“历史创作”假入口。
+
+## Interaction and responsiveness
+
+- 已测试：不支持尾帧模型空态、切换 Seedance 2.0 后的可上传空态、真实临时上传、完成态、悬停显示更换/移除、提示词补全后门禁提示消失。
+- 1024px：双画面容器 `896px`，两格各 `443px`，页面 `scrollWidth = 1024px`。
+- 640px：双画面容器 `516px`，两格各 `253px`，页面 `scrollWidth = 640px`。
+- 390px：双画面容器 `266px`，两格各 `128px`，页面 `scrollWidth = 390px`。
+- 浏览器 console errors: 0。
+
+## Comparison history
+
+### Iteration 1 — blocked
+
+- [P2] 中央两个 chevron 重叠后视觉上接近“X”，不能清晰表达首帧到尾帧关系。
+- [P2] 初版 `object-fit: cover` 可能裁掉首尾帧内容，不适合精确预览生成边界。
+- [P2] 完成态“更换/移除”常驻，遮挡尾帧并弱化双画面主体。
+
+Fixes:
+
+- 中央标识改为现有 Icon 库的单一右向 chevron。
+- 首尾帧图片改为 `object-fit: contain`。
+- 操作按钮改为尾帧 hover / focus-within 时显示。
+
+Post-fix evidence:
+
+- `outputs/design-qa/seedance-tail-empty-comparison.png`
+- `outputs/design-qa/seedance-tail-loaded-comparison-final.png`
+- `outputs/design-qa/seedance-tail-loaded-hover.png`
+
+### Iteration 2 — passed
+
+- 无剩余可执行的 P0/P1/P2 问题。
+- P3：中央标识是单向 chevron，不是参考图的双向换图图标；保持现有图标库与时间方向清晰度，接受该差异。
+
+## Findings
+
+- 无 P0/P1/P2 findings。
+
+## Open Questions
+
+- 无。
+
+## Implementation Checklist
+
+- [x] 首帧/尾帧并排成为描述卡主视觉。
+- [x] 空态整块可上传，完成态整块展示图片。
+- [x] 更换/移除不遮挡默认画面，并保留键盘聚焦可见性。
+- [x] 保留不支持模型门禁、上传中、删除中和错误提示。
+- [x] 通过桌面、平板和窄屏检查。
+
+## Follow-up Polish
+
+- P3：如果未来 Icon 库补充官方 `arrow-left-right`，可替换中央单向 chevron，进一步贴近参考图。
 
 final result: passed

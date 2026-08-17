@@ -11,7 +11,7 @@ export const IMAGE_REFERENCE_COUNTS_SQL = `
            OR referenceImageIds LIKE '%"' || @id || '"%') as jobRefs,
     (SELECT COUNT(*) FROM scene_references WHERE imageAssetId = @id) as sceneRefs,
     (SELECT COUNT(*) FROM shots WHERE sourceImageId = @id OR latestGeneratedImageId = @id) as shotRefs,
-    (SELECT COUNT(*) FROM video_jobs WHERE sourceImageId = @id) as videoRefs
+    (SELECT COUNT(*) FROM video_jobs WHERE sourceImageId = @id OR tailImageId = @id) as videoRefs
 `;
 
 const REF_LABELS: Array<[keyof ImageReferenceCounts, string]> = [

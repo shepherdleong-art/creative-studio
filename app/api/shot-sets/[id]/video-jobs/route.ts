@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
+import { validateVideoTailFrameAsset } from '@/lib/video-tail-frame';
 
 export async function POST(
   request: NextRequest,
@@ -19,6 +20,9 @@ export async function POST(
     const templateId = (body.templateId as string) || null;
     const prompt = (body.prompt as string)?.trim();
     const durationSec = Number(body.durationSec) || 5;
+    const tailImageId = typeof body.tailImageId === 'string' && body.tailImageId.trim()
+      ? body.tailImageId.trim()
+      : null;
 
     if (!shotId) return NextResponse.json({ error: 'shotId is required' }, { status: 400 });
     if (!providerId) return NextResponse.json({ error: 'providerId is required' }, { status: 400 });
@@ -54,10 +58,26 @@ export async function POST(
     if (!shotSet) return NextResponse.json({ error: 'Shot set not found' }, { status: 404 });
 
     const videoJobId = uuidv4();
-    db.prepare(`
-      INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, templateId, prompt, durationSec)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, providerId, provider.defaultModel, templateId, prompt, durationSec);
+    const createResult = db.transaction(() => {
+      const tailFrameValidation = validateVideoTailFrameAsset({
+        db,
+        tailImageId,
+        projectId: shotSet.projectId,
+        providerType: provider.type,
+        model: provider.defaultModel,
+      });
+      if (!tailFrameValidation.ok) return tailFrameValidation;
+
+      db.prepare(`
+        INSERT INTO video_jobs
+          (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, provider.defaultModel, templateId, prompt, durationSec);
+      return { ok: true as const };
+    })();
+    if (!createResult.ok) {
+      return NextResponse.json({ error: createResult.error }, { status: 400 });
+    }
 
     // Auto-start video queue if idle
     const qStatus = getVideoQueueStatus(shotSet.projectId);

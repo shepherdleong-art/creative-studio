@@ -23,6 +23,7 @@ async function nextTick(): Promise<void> {
 
 try {
   // 编排顺序是公开停机契约:先停止领取/中止媒体,再等待,最后关闭数据库与 sidecar。
+  // 脚本生成管理器紧随调度器停止领取：拒绝新任务并以 shutdown 取消；其等待在关库前完成。
   {
     const events: string[] = [];
     const dependencies: GracefulShutdownDependencies = {
@@ -31,6 +32,14 @@ try {
         async stop() {
           events.push('scheduler.stop');
         },
+      },
+      abortScriptGenerations: () => {
+        events.push('scriptgen.begin');
+        return 1;
+      },
+      waitForScriptGenerations: async () => {
+        events.push('scriptgen.wait');
+        return 0;
       },
       abortFfmpeg: () => {
         events.push('ffmpeg.abort');
@@ -47,8 +56,10 @@ try {
     const result = await gracefulShutdown({ timeoutMs: 100 }, dependencies);
     assert.deepEqual(events, [
       'scheduler.stop',
+      'scriptgen.begin',
       'ffmpeg.abort',
       'ffmpeg.wait',
+      'scriptgen.wait',
       'db.close',
       'sidecar.stop',
     ]);

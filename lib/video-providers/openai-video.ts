@@ -5,7 +5,12 @@ import {
 } from '../local-image-url.ts';
 import { isCosMediaConfigured, tryUploadToCosAndSign } from '../cos-media.ts';
 import { normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../gateway-media-url.ts';
-import { companyVideoCapsForModel, snapCompanyVideoSize } from '../company-gateway-size.ts';
+import { companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../company-gateway-size.ts';
+import {
+  assertCompanyTailFrameTransport,
+  companyGatewayTailFrameCapability,
+  uploadCompanyTailFrameImages,
+} from '../company-gateway-tail-frame.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -90,6 +95,10 @@ async function probeImageDimensions(imagePath: string): Promise<{ width: number;
 }
 
 export const openaiVideoAdapter: VideoProviderAdapter = {
+  tailFrameCapability(model) {
+    return companyGatewayTailFrameCapability(model);
+  },
+
   async submit(
     request: SubmitVideoRequest,
     apiKey: string,
@@ -99,11 +108,31 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos`;
 
+    const hasTailImagePath = request.tailImagePath !== undefined;
+    const hasTailMimeType = request.tailMimeType !== undefined;
+    if (hasTailImagePath !== hasTailMimeType) {
+      throw new Error('OpenAI-video tail frame requires tailImagePath and tailMimeType together');
+    }
+    const tailCapability = hasTailImagePath ? companyGatewayTailFrameCapability(request.model) : null;
+    if (tailCapability && !tailCapability.supported) {
+      throw new Error(`模型 ${request.model} 不支持首尾帧（不在公司网关尾帧已核验别名内），请移除尾帧图或更换模型`);
+    }
+
     // 网关的 images 字段映射到上游首帧/参考图。上游（腾讯等）只接受可访问的真实 URL。
     // 优先上传腾讯云 COS 返回 24h 预签名 URL（配置 CREATIVE_STUDIO_COS_* 时）；
     // 否则回退本机 HTTP URL——自动探测到的私网地址不可用时，要求用户显式配置公开地址。
     let imageRef: string | null = null;
-    if (isCosMediaConfigured()) {
+    let tailImageRef: string | null = null;
+    if (hasTailImagePath) {
+      // 公司尾帧（D9 硬门禁）：只允许本机回环 LiteLLM + COS 预签名 URL，
+      // 首帧尾帧都走 COS，禁止回退本机/公网 URL；门禁或上传失败时不得发出 POST。
+      await assertCompanyTailFrameTransport(cleanBase);
+      [imageRef, tailImageRef] = await uploadCompanyTailFrameImages(
+        request.sourceImagePath,
+        request.tailImagePath!,
+        request.tailMimeType,
+      );
+    } else if (isCosMediaConfigured()) {
       try {
         imageRef = await tryUploadToCosAndSign(request.sourceImagePath);
       } catch (error) {
@@ -123,12 +152,21 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       imageRef = imageResolution.url;
     }
 
+    // 公司尾帧合同（2026-08-17 免费字段探测 + 真实任务双重验证）：
+    // - 可灵（company-gateway-kling）：images 只放首帧，尾帧走腾讯原生
+    //   LastFrameUrl；images[1] 会被下游当参考图且比例落回 16:9 默认值。
+    // - 公司 Seedance（company-gateway-seedance）：images[1] 双图，
+    //   比例与末帧收束均已实测正确。
+    const tailProtocol = tailImageRef ? tailCapability?.protocol : undefined;
     const body: Record<string, unknown> = {
       model: request.model,
       prompt: request.prompt || 'gentle camera movement, stable product detail',
       seconds: String(request.durationSec),
-      images: [imageRef],
+      images: tailProtocol === 'company-gateway-seedance' ? [imageRef, tailImageRef] : [imageRef],
     };
+    if (tailProtocol === 'company-gateway-kling') {
+      body.LastFrameUrl = tailImageRef;
+    }
 
     // 可灵 3.x 的智能分镜（multi_shot）：网关把 multi_shot / shot_type 透传到
     // 上游 ExtInfo.AdditionalParameters。与原生 kling 适配器一致，仅对 v3/3.0
@@ -141,14 +179,25 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
 
     // 公司网关要求 response_format=mp4，size 取文档白名单内的像素组合
     // （按首帧图比例吸附，档位偏好 1K）。首帧尺寸读不出来时省略 size。
+    // 例外：可灵首尾帧模式（LastFrameUrl）下网关忽略 size、落回 16:9 默认值，
+    // 比例必须改走 OutputConfig.AspectRatio（2026-08-17 实测合同）；
+    // 网关透传的字段按腾讯原名 PascalCase，aspect_ratio 等 snake_case 变体
+    // 会被 400 UnknownParameter 拒绝，禁止再猜字段。
     const companyCaps = companyVideoCapsForModel(request.model);
     if (companyCaps) {
       body.response_format = 'mp4';
       const sourceDims = await probeImageDimensions(request.sourceImagePath);
-      const snappedSize = sourceDims
-        ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
-        : null;
-      if (snappedSize) body.size = snappedSize;
+      if (tailProtocol === 'company-gateway-kling') {
+        const aspectRatio = sourceDims
+          ? snapCompanyVideoAspectRatio(sourceDims.width, sourceDims.height, companyCaps)
+          : null;
+        if (aspectRatio) body.OutputConfig = { AspectRatio: aspectRatio };
+      } else {
+        const snappedSize = sourceDims
+          ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
+          : null;
+        if (snappedSize) body.size = snappedSize;
+      }
     }
 
     const controller = new AbortController();
