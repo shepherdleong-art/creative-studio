@@ -110,7 +110,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - `logger.ts` — 同时写数据库和 `storage/logs/` 文件；会主动脱敏 API Key，不要在日志里打印密钥。
 - `provider-concurrency.ts` / `cost.ts` — 每供应商并发上限；每个 job 记录预估成本。
 - `image-output-normalize.ts` — 生成图与目标尺寸不一致时用 sharp 居中裁切并记日志。
-- `seed.ts` — 启动时向 `video_providers` 等表写入内置供应商预设。
+- `seed.ts` — 启动时向 `video_providers` 等表写入内置供应商预设。公司供应商（图片 `image2-medium`、视频 `kling-3.0` / `doubao-seedance-2-0-fast-260128`、脚本 `GPT-5-6-Luna-Standard`）以 `http://127.0.0.1:4000` + 占位 Key 开箱即用补种（本机 LiteLLM 不校验调用方 Bearer，上游真实 Key 由 `config.yaml` 持有）；已有同模型手工配置时不重复补种，已有用户配置不被覆盖。
 
 ### 数据流
 

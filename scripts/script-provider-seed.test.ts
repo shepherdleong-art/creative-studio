@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const childFlag = 'CREATIVE_STUDIO_SCRIPT_PROVIDER_SEED_TEST_CHILD';
 
@@ -11,7 +11,7 @@ if (process.env[childFlag] !== '1') {
   const result = spawnSync(process.execPath, [
     '--no-warnings',
     '--experimental-loader',
-    path.resolve('scripts/typescript-extension-loader.mjs'),
+    pathToFileURL(path.resolve('scripts/typescript-extension-loader.mjs')).href,
     '--experimental-strip-types',
     fileURLToPath(import.meta.url),
   ], {
