@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import ImageUploader, { UploadedFile } from '@/components/ImageUploader';
 import { Icon } from '@/components/ui/Icon';
+import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 
 export interface AssetGridItem {
   id: string;
@@ -100,7 +101,7 @@ export default function AssetUploadGrid({
             usage={usage}
             label=""
             hint=""
-            maxFiles={usage === 'scene_seed' ? 1 : 9}
+            maxFiles={usage === 'scene_seed' ? 1 : MAX_SHOTS_PER_SET}
             files={[]}
             onUploaded={onUploaded}
             onRemove={() => {}}

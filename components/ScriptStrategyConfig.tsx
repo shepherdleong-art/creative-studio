@@ -8,6 +8,7 @@ import {
   getSellingPointSelectionKey,
   isCompleteScriptStrategyAnalysisV3,
 } from '@/lib/script-strategy';
+import { SHOT_VISION_FULL_QUALITY_MAX } from '@/lib/shot-set-domain';
 
 interface ShotSetOption {
   id: string;
@@ -63,6 +64,9 @@ export default function ScriptStrategyConfig({
   const selectedProvider = providers.find((p) => p.id === providerId);
   const canGenerateWithSelectedProvider = Boolean(selectedProvider?.configured && selectedProvider.supportsVision);
   const hasShotSets = shotSets.length > 0;
+  const selectedShotSet = shotSets.find((ss) => ss.id === selectedShotSetId);
+  const shotVisionDowngraded =
+    !!selectedShotSet && selectedShotSet.shotCount > SHOT_VISION_FULL_QUALITY_MAX;
   const budget = SCRIPT_DURATION_BUDGETS[targetDurationSec as keyof typeof SCRIPT_DURATION_BUDGETS]
     || SCRIPT_DURATION_BUDGETS[20];
   const suggestedSellingPointCount = Math.max(1, Math.floor(budget.maxContentCharacters / 18));
@@ -224,18 +228,27 @@ export default function ScriptStrategyConfig({
         <div>
           <label className="label">🎯 素材隔离分镜组</label>
           {hasShotSets ? (
-            <select
-              value={selectedShotSetId}
-              onChange={(e) => onShotSetIdChange(e.target.value)}
-              className="input-field text-sm"
-            >
-              <option value="">-- 选择分镜组 --</option>
-              {shotSets.map((ss) => (
-                <option key={ss.id} value={ss.id}>
-                  {ss.name}（{ss.shotCount} 个分镜）
-                </option>
-              ))}
-            </select>
+            <>
+              <select
+                value={selectedShotSetId}
+                onChange={(e) => onShotSetIdChange(e.target.value)}
+                className="input-field text-sm"
+              >
+                <option value="">-- 选择分镜组 --</option>
+                {shotSets.map((ss) => (
+                  <option key={ss.id} value={ss.id}>
+                    {ss.name}（{ss.shotCount} 个分镜）
+                  </option>
+                ))}
+              </select>
+              {shotVisionDowngraded && (
+                <p className="mt-2 rounded-lg bg-warn-tint px-2.5 py-2 text-xs text-warn">
+                  这个分镜组有 {selectedShotSet?.shotCount} 张分镜，超过 {SHOT_VISION_FULL_QUALITY_MAX} 张后
+                  脚本生成会自动压低每张图的画质来控制请求体积，AI 对细节的判断会变弱。
+                  不影响生成，介意的话可以拆成更小的分镜组。
+                </p>
+              )}
+            </>
           ) : (
             <p className="text-xs text-ink-tertiary">
               暂无分镜组。请先创建分镜组，用于模块 3、4 与智能混剪的素材隔离。

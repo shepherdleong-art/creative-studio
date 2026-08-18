@@ -458,6 +458,12 @@ body {
   .result-empty { flex: 1; min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 1px dashed var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface-subtle); color: var(--color-ink-tertiary); font-size: .78rem; text-align: center; }
   .shot-tab-row { display: flex; gap: 6px; overflow-x: auto; padding: 3px; border-radius: 13px; background: rgba(0,0,0,.045); }
   .shot-tab-item { flex: 1; text-align: center; padding: 8px 10px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; cursor: pointer; border: 0; background: transparent; color: var(--color-ink-secondary); transition: background .15s, color .15s, box-shadow .15s; white-space: nowrap; min-width: 66px; }
+  .shot-tab-add { flex: 0 0 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px; color: var(--color-accent); cursor: pointer; }
+  .shot-tab-add.is-busy { opacity: .55; cursor: progress; }
+  .free-shot-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--color-ink-tertiary); }
+  .free-shot-delete { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 4px 6px; border-radius: 8px; color: var(--color-ink-tertiary); font-family: inherit; font-size: 12px; cursor: pointer; transition: background .15s ease, color .15s ease; }
+  .free-shot-delete:hover:not(:disabled) { background: var(--color-fail-tint); color: var(--color-fail); }
+  .free-shot-delete:disabled { opacity: .4; cursor: not-allowed; }
   .shot-tab-item.active { background: rgba(255,255,255,.94); color: var(--color-ink); box-shadow: 0 1px 4px rgba(0,0,0,.12); }
   .shot-tab-item:hover:not(.active) { background: rgba(255,255,255,.56); }
   .video-motion-card { position: relative; display: flex; flex-direction: column; gap: 10px; border: 1px solid rgba(0,0,0,.06); border-radius: 16px; background: rgba(255,255,255,.82); padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }

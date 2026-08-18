@@ -4,15 +4,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
+import { normalizeShotImageIds } from '@/lib/shot-set-domain';
 
 function isRealApiKey(value: string | null | undefined): boolean {
   const trimmed = (value || '').trim();
   return !!trimmed && !isPlaceholderValue(trimmed);
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
 function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, projectId: string, role: 'input') {
@@ -98,7 +94,14 @@ export async function POST(request: NextRequest) {
     // ── Complex product workflow ──
     const sceneSeedImageId: string | undefined = body.sceneSeedImageId;
     const scenePrompt: string = (body.scenePrompt || '').trim();
-    const shotImageIds = asStringArray(body.shotImageIds);
+    // 这条路径历史上既不去重也不限张数,和独立建组接口不一致。统一走共享
+    // 领域函数;allowEmpty 覆盖「新建空项目根本不发 shotImageIds」的情况
+    // (见 app/projects/new/page.tsx)。
+    const normalizedShotImageIds = normalizeShotImageIds(body.shotImageIds, { allowEmpty: true });
+    if (!normalizedShotImageIds.ok) {
+      return NextResponse.json({ error: normalizedShotImageIds.error }, { status: 400 });
+    }
+    const shotImageIds = normalizedShotImageIds.ids;
     const shotPrompt: string = (body.shotPrompt || '').trim();
     const genCount = Math.max(1, Math.min(9, Number(body.generationCount) || 4));
     const hasFullCreation = sceneSeedImageId && scenePrompt && shotImageIds.length > 0;

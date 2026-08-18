@@ -10,6 +10,7 @@ import {
   parseRedoReferenceIds,
   shouldInitializeRedoForm,
 } from '@/lib/shot-redo-state';
+import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 
 interface Shot {
   id: string;
@@ -60,6 +61,7 @@ interface ShotSet {
   generatedCount: number;
   approvedCount: number;
   status: string;
+  kind?: string;
   sceneReferenceId?: string;
   createdAt: string;
 }
@@ -118,7 +120,10 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
     try {
       const res = await fetch(`/api/projects/${projectId}/shot-sets`);
       const data = await res.json();
-      if (Array.isArray(data)) setSets(data);
+      // 自由素材工位没有「用场景参考图生成分镜图」这个动作,不属于本工位。
+      // 它只在第 3 步(脚本)、第 4 步(视频生成)、第 5 步(智能混剪)和
+      // 批量生产里出现;删除入口在第 4 步(见卡 C15)。
+      if (Array.isArray(data)) setSets((data as ShotSet[]).filter((set) => set.kind !== 'free'));
     } catch { /* ignore */ }
     return undefined;
   }, [projectId]);
@@ -189,7 +194,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
 
   const toggleImage = (imgId: string) => {
     setSelectedImageIds((prev) =>
-      prev.includes(imgId) ? prev.filter((id) => id !== imgId) : prev.length < 9 ? [...prev, imgId] : prev
+      prev.includes(imgId) ? prev.filter((id) => id !== imgId) : prev.length < MAX_SHOTS_PER_SET ? [...prev, imgId] : prev
     );
   };
 
@@ -209,7 +214,12 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
 
   const handleDelete = async (setId: string) => {
     if (!confirm('确定删除此分镜组？')) return;
-    await fetch(`/api/shot-sets/${setId}`, { method: 'DELETE' });
+    const res = await fetch(`/api/shot-sets/${setId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert('删除失败：' + (data.error || `HTTP ${res.status}`));
+      return;
+    }
     const next = expandedIds.filter((id) => id !== setId);
     expandedIdsRef.current = new Set(next);
     setExpandedIds(next);
@@ -510,7 +520,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
         <div className="flex items-center gap-2">
           <h2 className="font-semibold">新分镜图</h2>
           {showUploader && (
-            <ImageUploader role="input" usage="shot_source" label="" maxFiles={9}
+            <ImageUploader role="input" usage="shot_source" label="" maxFiles={MAX_SHOTS_PER_SET}
               files={[]} onUploaded={async () => { await onImagesUploaded?.(); await loadSets(); }} onRemove={() => {}}
               preprocessEnabled={true} targetMaxSide={1536} jpegQuality={85} projectId={projectId} />
           )}
@@ -527,7 +537,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
             <input value={newName} onChange={(e) => setNewName(e.target.value)} className="input-field text-sm" placeholder="例如: 卧室场景分镜 1-6" />
           </div>
           <div>
-            <label className="label">选择分镜图（1-9 张，顺序无所谓）</label>
+            <label className="label">{`选择分镜图（1-${MAX_SHOTS_PER_SET} 张，顺序无所谓）`}</label>
             <div className="grid grid-cols-5 sm:grid-cols-6 gap-2 mt-1">
               {images.filter((img) => img.role === 'input' && img.usage === 'shot_source').map((img) => (
                 <div key={img.id} onClick={() => toggleImage(img.id)}
@@ -545,7 +555,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                 </div>
               ))}
             </div>
-            <p className="mt-1 text-[10px] text-ink-tertiary">已选 {selectedImageIds.length}/9 张，顺序由脚本决定，这里随便点</p>
+            <p className="mt-1 text-[10px] text-ink-tertiary">已选 {selectedImageIds.length}/{MAX_SHOTS_PER_SET} 张，顺序由脚本决定，这里随便点</p>
           </div>
           <div className="flex gap-2">
             <button onClick={handleCreate} disabled={!newName.trim() || selectedImageIds.length === 0 || saving}
@@ -558,7 +568,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
       {loading ? (
         <p className="text-sm text-ink-tertiary">加载中...</p>
       ) : sets.length === 0 ? (
-        <p className="text-sm text-ink-tertiary">暂无分镜组。选择 1-9 张原始分镜图创建分镜组，配合场景参考图批量生成。</p>
+        <p className="text-sm text-ink-tertiary">{`暂无分镜组。选择 1-${MAX_SHOTS_PER_SET} 张原始分镜图创建分镜组，配合场景参考图批量生成。`}</p>
       ) : (
         <div className="space-y-2">
           {sets.map((set) => {

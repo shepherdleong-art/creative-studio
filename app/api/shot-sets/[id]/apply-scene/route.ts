@@ -20,9 +20,14 @@ export async function POST(
 
     // Validate shot set
     const set = db.prepare(`SELECT ss.*, p.providerId, p.model, p.size, p.quality, p.maxAttempts FROM shot_sets ss JOIN projects p ON ss.projectId = p.id WHERE ss.id = ?`).get(id) as {
-      projectId: string; status: string; providerId: string; model: string; size: string; quality: string; maxAttempts: number;
+      projectId: string; status: string; kind?: string; providerId: string; model: string; size: string; quality: string; maxAttempts: number;
     } | undefined;
     if (!set) return NextResponse.json({ error: '分镜组不存在' }, { status: 404 });
+    // 自由素材工位没有「用场景参考图重绘分镜图」这个动作。前端已经不展示
+    // 入口,这里是服务端兜底:直接打接口不能把自由工位推进 generating。
+    if (set.kind === 'free') {
+      return NextResponse.json({ error: '自由素材工位不支持分镜生成' }, { status: 400 });
+    }
 
     let jobProvider: { providerId: string; model: string };
     try {

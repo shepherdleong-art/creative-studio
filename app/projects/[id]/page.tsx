@@ -14,6 +14,7 @@ import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
 import ProjectWorkbenchTabs, { WorkbenchTabId } from '@/components/ProjectWorkbenchTabs';
 import LogDrawer from '@/components/LogDrawer';
 import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
+import { MAX_SHOTS_PER_SET } from '@/lib/shot-set-domain';
 import {
   buildSceneReferenceByImageId,
   getActiveSceneReferences,
@@ -1094,7 +1095,7 @@ function StoryboardWorkspace({
       <section className="card p-5">
         <div className="mb-4">
           <h2 className="text-base font-semibold tracking-[-0.01em]">新分镜图</h2>
-          <p className="mt-1 text-sm text-ink-secondary">上传后在宫格里按顺序选择 1-9 张，再创建分镜组。</p>
+          <p className="mt-1 text-sm text-ink-secondary">{`上传后在宫格里按顺序选择 1-${MAX_SHOTS_PER_SET} 张，再创建分镜组。`}</p>
         </div>
         <AssetUploadGrid
           projectId={project.id}
@@ -1105,7 +1106,7 @@ function StoryboardWorkspace({
           uploadHint="拖拽或点击上传。上传成功后会出现在右侧宫格。"
           emptyText="还没有原始分镜图。上传后会在这里显示缩略图。"
           selectionLabel="点击图片选择，选择顺序就是分镜顺序。"
-          maxSelection={9}
+          maxSelection={MAX_SHOTS_PER_SET}
           onSelectionChange={onSelectShotSources}
           onUploaded={onUploaded}
           onDelete={onDeleteAsset}
@@ -1186,7 +1187,7 @@ function StoryboardGroupCreator({ projectId, selectedImageIds, onCreated }: { pr
           {saving ? '创建中...' : `创建分镜组 (${selectedImageIds.length})`}
         </button>
       </div>
-      <p className="mt-2 text-xs text-ink-tertiary">已选择 {selectedImageIds.length}/9 张。点击宫格图片可调整选择和顺序。</p>
+      <p className="mt-2 text-xs text-ink-tertiary">已选择 {selectedImageIds.length}/{MAX_SHOTS_PER_SET} 张。点击宫格图片可调整选择和顺序。</p>
     </div>
   );
 }

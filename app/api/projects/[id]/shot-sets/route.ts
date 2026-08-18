@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { v4 as uuidv4 } from 'uuid';
+import { createShotSet } from '@/lib/shot-set-service';
 
 export async function GET(
   _request: NextRequest,
@@ -30,48 +30,20 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const db = getDb();
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
 
-    const name = (body.name as string)?.trim();
-    const rawIds = body.shotImageIds;
-
-    if (!name) return NextResponse.json({ error: '名称不能为空' }, { status: 400 });
-    if (!Array.isArray(rawIds)) return NextResponse.json({ error: 'shotImageIds 必须是数组' }, { status: 400 });
-
-    const shotImageIds: string[] = [...new Set(
-      rawIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
-    )];
-
-    if (shotImageIds.length === 0) return NextResponse.json({ error: '至少需要1张分镜图' }, { status: 400 });
-    if (shotImageIds.length > 9) return NextResponse.json({ error: '分镜图最多9张' }, { status: 400 });
-
-    // Validate all images exist and belong to this project
-    const placeholders = shotImageIds.map(() => '?').join(',');
-    const validCount = db.prepare(
-      `SELECT COUNT(*) as cnt FROM image_assets WHERE id IN (${placeholders}) AND projectId = ?`
-    ).get(...shotImageIds, id) as { cnt: number };
-    if (validCount.cnt !== shotImageIds.length) {
-      return NextResponse.json({ error: '部分图片不存在或不属于当前项目' }, { status: 400 });
+    const result = createShotSet(getDb(), {
+      projectId: id,
+      name: body.name,
+      shotImageIds: body.shotImageIds,
+      kind: body.kind,
+      productCode: body.productCode,
+      category: body.category,
+    });
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
     }
-
-    const setId = uuidv4();
-    db.transaction(() => {
-      db.prepare(`
-        INSERT INTO shot_sets (id, projectId, name, productCode, category)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(setId, id, name, (body.productCode as string) || '', (body.category as string) || '');
-
-      const insertShot = db.prepare(`
-        INSERT INTO shots (id, shotSetId, indexNum, sourceImageId)
-        VALUES (?, ?, ?, ?)
-      `);
-      shotImageIds.forEach((imgId, i) => {
-        insertShot.run(uuidv4(), setId, i + 1, imgId);
-      });
-    })();
-
-    return NextResponse.json({ id: setId, name });
+    return NextResponse.json({ id: result.id, name: result.name, kind: result.kind });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

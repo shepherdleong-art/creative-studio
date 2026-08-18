@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo, type DragEvent as ReactDragEvent } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, type DragEvent as ReactDragEvent } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
@@ -78,6 +78,8 @@ interface Props {
   }>;
 }
 
+const FREE_HEAD_FRAME_DRAG_KEY = '__free-head-frame__';
+
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
   const [templates, setTemplates] = useState<MotionTemplate[]>([]);
@@ -85,7 +87,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [loading, setLoading] = useState(true);
 
   // Shot set selection (for top-level Panel 4)
-  const [availableSets, setAvailableSets] = useState<Array<{ id: string; name: string; shotCount: number }>>([]);
+  const [availableSets, setAvailableSets] = useState<Array<{ id: string; name: string; shotCount: number; kind?: string }>>([]);
+  const [deletingSet, setDeletingSet] = useState(false);
   const [selectedSetId, setSelectedSetId] = useState<string>(shotSetId || '');
   const selectedSetIdRef = useRef<string>(shotSetId || '');
   const [selectedSetShots, setSelectedSetShots] = useState<typeof shots>(shots);
@@ -99,6 +102,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
+  const [headFrameBusy, setHeadFrameBusy] = useState(false);
+  const [freeHeadFrameSlotOpen, setFreeHeadFrameSlotOpen] = useState(false);
+  const [deletingShot, setDeletingShot] = useState(false);
   const mountedRef = useRef(true);
   const pendingCreationTailIdsRef = useRef<Set<string>>(new Set());
   const tailFrameDragDepthRef = useRef<Map<string, number>>(new Map());
@@ -219,19 +225,26 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   // Load shot sets for selector
+  const loadAvailableSets = useCallback(async () => {
+    const res = await fetch(`/api/projects/${projectId}/shot-sets`);
+    const data = await res.json();
+    return Array.isArray(data)
+      ? data as Array<{ id: string; name: string; shotCount: number; kind?: string }>
+      : [];
+  }, [projectId]);
+
   useEffect(() => {
     if (shotSetId) return; // Already have a specific set
     let active = true;
     (async () => {
       try {
-        const res = await fetch(`/api/projects/${projectId}/shot-sets`);
-        const data = await res.json();
-        if (active && Array.isArray(data)) setAvailableSets(data);
+        const sets = await loadAvailableSets();
+        if (active) setAvailableSets(sets);
       } catch { /* ignore */ }
       finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
-  }, [projectId, shotSetId]);
+  }, [loadAvailableSets, shotSetId]);
 
   // Load shots when set is selected (with race guard)
   const getDefaultPreviewJobId = (jobs: VideoJob[]) =>
@@ -259,6 +272,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         if (loadedShots.length > 0) {
           replaceSelectedShot(loadedShots[0].id);
           replaceActiveMotionRows([makeEmptyRow()]);
+        } else {
+          replaceSelectedShot(null);
+          replaceActiveMotionRows([]);
         }
       }
       // Load video jobs
@@ -281,6 +297,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     selectedSetIdRef.current = setId;
     replaceSelectedShot(null);
     replaceActiveMotionRows([]);
+    setFreeHeadFrameSlotOpen(false);
     previewSuppressedRef.current = false;
     setVideoPreviewJobId(null);
     // Clear per-shot motion cache — switching sets resets all motion form state
@@ -292,6 +309,59 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       else window.localStorage.removeItem(storageKey);
     }
     if (setId) loadShotsForSet(setId);
+  };
+
+  // 下拉里的「自由素材工位」用一个固定的哨兵值。真正的 shotSetId 要等
+  // 后端 get-or-create 之后才知道(D15:一个项目一个)。
+  const FREE_SET_OPTION = '__free__';
+
+  const handleSelectFreeSet = async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/free-shot-set`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('打开自由素材工位失败：' + (data.error || `HTTP ${res.status}`)); return; }
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* ignore */ }
+      handleSelectSet(String(data.id));
+    } catch (err) {
+      alert('打开自由素材工位失败：' + String(err));
+    }
+  };
+
+  const selectedSetMeta = availableSets.find((set) => set.id === selectedSetId);
+  const isFreeSet = selectedSetMeta?.kind === 'free';
+  const canDeleteSelectedSet = !shotSetId && isFreeSet;
+  const selectorLocked = creating || deletingSet || headFrameBusy;
+
+  const handleDeleteFreeSet = async () => {
+    if (!canDeleteSelectedSet || !selectedSetMeta || selectorLocked) return;
+    // 记住目标 id:删除是异步的,期间用户可能已经切到别的组。
+    const targetId = selectedSetId;
+    const confirmed = window.confirm(
+      `删除自由素材工位「${selectedSetMeta.name}」？\n\n` +
+      '· 视频文件保留在本地磁盘上，不会被删除\n' +
+      '· 已经登记到批量生产素材库的视频会继续保留\n' +
+      '· 尚未登记的视频将无法再登记，也不再出现在第 5 步智能混剪里\n' +
+      '· 这个操作不可撤销',
+    );
+    if (!confirmed) return;
+    setDeletingSet(true);
+    try {
+      const res = await fetch(`/api/shot-sets/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // 还有任务没跑完时服务端返回 409(D14),把原因原样告诉用户。
+        alert('删除失败：' + (data.error || `HTTP ${res.status}`));
+        return;
+      }
+      // 只有当前仍停在被删的那个组时才清空选择,否则会把用户刚切过去的
+      // 新组一起清掉。selectedSetIdRef 在 handleSelectSet 里是同步更新的。
+      if (selectedSetIdRef.current === targetId) handleSelectSet('');
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* ignore */ }
+    } catch (err) {
+      alert('删除失败：' + String(err));
+    } finally {
+      setDeletingSet(false);
+    }
   };
 
   // Restore the last selected shot set after tab remounts.
@@ -311,6 +381,97 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const effectiveSetId = shotSetId || selectedSetId;
   const effectiveShots = shots || selectedSetShots;
   const safeShots = effectiveShots || [];
+
+  /**
+   * 自由素材工位专用：上传一张图并作为新的一「张」加进工位。
+   * 上传走和尾帧同一条 /api/upload，只是 usage 用 video_source(D6)，
+   * 这样它不会跑到第 2 步的原始分镜图宫格里。
+   */
+  const handleAppendFreeShot = async (file: File) => {
+    if (!effectiveSetId || headFrameBusy || creatingRef.current) return;
+    const targetSetId = effectiveSetId;
+    setHeadFrameBusy(true);
+    let uploadedId: string | null = null;
+    try {
+      const formData = new FormData();
+      formData.append('files', file);
+      formData.append('role', 'input');
+      formData.append('projectId', projectId);
+      formData.append('usage', 'video_source');
+      const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+      const uploadData = await uploadRes.json().catch(() => ({})) as {
+        error?: string;
+        files?: Array<{ id: string }>;
+      };
+      if (!uploadRes.ok) throw new Error(uploadData.error || `HTTP ${uploadRes.status}`);
+      const uploaded = uploadData.files?.[0];
+      if (!uploaded) throw new Error('上传接口没有返回图片');
+      uploadedId = uploaded.id;
+
+      const appendRes = await fetch(`/api/shot-sets/${encodeURIComponent(targetSetId)}/shots`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageId: uploaded.id }),
+      });
+      const appendData = await appendRes.json().catch(() => ({}));
+      if (!appendRes.ok) throw new Error(appendData.error || `HTTP ${appendRes.status}`);
+
+      // 重新拉一次分镜列表，新的一张会作为最后一个 tab 出现并自动选中。
+      await loadShotsForSet(targetSetId);
+      const newShotId = String(appendData.shotId);
+      if (selectedSetIdRef.current === targetSetId) {
+        replaceSelectedShot(newShotId);
+        replaceActiveMotionRows([makeEmptyRow()]);
+        setFreeHeadFrameSlotOpen(false);
+      }
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* keep the active workspace usable */ }
+    } catch (error) {
+      // 挂载失败就把刚上传的图删掉，不留孤儿资源（和尾帧同一套处理）。
+      if (uploadedId) {
+        await fetch(`/api/images/${encodeURIComponent(uploadedId)}`, { method: 'DELETE' }).catch(() => undefined);
+      }
+      alert('添加图片失败：' + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setHeadFrameBusy(false);
+    }
+  };
+
+  // D21：只有 failed / canceled 不算数。和服务端 DISCARDABLE_VIDEO_JOB_STATUSES
+  // 必须保持一致；服务端仍会再判一次，这里只是把按钮先禁掉。
+  const DISCARDABLE_JOB_STATUSES = new Set(['failed', 'canceled']);
+  const canDeleteShot = (shotId: string) =>
+    Boolean(isFreeSet) && !videoJobs.some((job) => job.shotId === shotId && !DISCARDABLE_JOB_STATUSES.has(job.status));
+
+  const handleDeleteFreeShot = async (shotId: string) => {
+    if (!effectiveSetId || !canDeleteShot(shotId) || deletingShot || creatingRef.current) return;
+    if (!window.confirm('删掉这张图？它下面还没生成过视频，删了不影响其他图。')) return;
+    setDeletingShot(true);
+    try {
+      const res = await fetch(
+        `/api/shot-sets/${encodeURIComponent(effectiveSetId)}/shots/${encodeURIComponent(shotId)}`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 前端算完到点下去这段时间里任务可能已经跑起来了，服务端会返回 409。
+        alert('删除失败：' + (data.error || `HTTP ${res.status}`));
+        return;
+      }
+      // best-effort 清掉上传的图片资源。还被别处引用时接口会返回 409，忽略即可。
+      // —— 和尾帧的 deleteTailFrameAsset 同一套处理。
+      if (data.sourceImageId) {
+        await fetch(`/api/images/${encodeURIComponent(String(data.sourceImageId))}`, { method: 'DELETE' })
+          .catch(() => undefined);
+      }
+      perShotMotionCache.current.delete(shotId);
+      await loadShotsForSet(effectiveSetId);
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* keep the active workspace usable */ }
+    } catch (err) {
+      alert('删除失败：' + String(err));
+    } finally {
+      setDeletingShot(false);
+    }
+  };
 
   const ensureVideoQueueRunning = async (projectIdToUse: string) => {
     try {
@@ -353,6 +514,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   // Switch the active shot, preserving per-shot 运镜 rows
   const activate = (shotId: string) => {
     if (creatingRef.current) return;
+    const leavingFreeHeadFrameSlot = Boolean(
+      isFreeSet && freeHeadFrameSlotOpen && selectedShot === null,
+    );
     tailFrameDragDepthRef.current.clear();
     setTailFrameDragRowKey(null);
     if (selectedShot !== shotId) {
@@ -364,7 +528,31 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       // Restore cached rows or start fresh
       const cached = perShotMotionCache.current.get(shotId);
       replaceActiveMotionRows(cached ? [...cached] : [makeEmptyRow()]);
+      if (leavingFreeHeadFrameSlot) {
+        const shotPreviewJobId = videoJobs.find((j) => (
+          j.shotId === shotId && j.status === 'succeeded' && j.filename
+        ))?.id || null;
+        previewSuppressedRef.current = !shotPreviewJobId;
+        setVideoPreviewJobId(shotPreviewJobId);
+      }
     }
+  };
+
+  // “添加图片”只创建一个客户端空槽位，不直接打开系统文件选择器。
+  // 空槽位没有 sourceImageId，不能提前写入 shots；图片拖入或在首帧格点击
+  // 选择成功后，handleAppendFreeShot 才把它转成正式 shot。
+  const activateFreeHeadFrameSlot = () => {
+    if (creatingRef.current || headFrameBusy) return;
+    tailFrameDragDepthRef.current.clear();
+    setTailFrameDragRowKey(null);
+    if (selectedShot) {
+      perShotMotionCache.current.set(selectedShot, motionRowsRef.current);
+    }
+    setFreeHeadFrameSlotOpen(true);
+    replaceSelectedShot(null);
+    replaceActiveMotionRows([]);
+    previewSuppressedRef.current = true;
+    setVideoPreviewJobId(null);
   };
 
   const addMotionRow = () => replaceActiveMotionRows([...motionRowsRef.current, makeEmptyRow()]);
@@ -533,6 +721,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     void handleTailFrameUpload(shotId, rowKey, file);
   };
 
+  const handleFreeHeadFrameDrop = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    clearTailFrameDragState(FREE_HEAD_FRAME_DRAG_KEY);
+    if (headFrameBusy || creating) return;
+    const file = Array.from(event.dataTransfer.files).find((candidate) =>
+      ['image/png', 'image/jpeg', 'image/webp'].includes(candidate.type),
+    );
+    if (!file) {
+      alert('请拖入 PNG、JPEG 或 WebP 图片');
+      return;
+    }
+    void handleAppendFreeShot(file);
+  };
+
   const handleTailFrameRemove = async (shotId: string, rowKey: string) => {
     if (creatingRef.current) return;
     const currentRows = selectedShotRef.current === shotId
@@ -650,14 +853,49 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   if (loading) return <p className="text-xs text-ink-tertiary">加载视频功能...</p>;
+  const storyboardSets = availableSets.filter((s) => s.kind !== 'free');
+  const freeSet = availableSets.find((s) => s.kind === 'free');
+
   const shotSetSelector = !shotSetId ? (
     <div className="mb-4">
       <label className="label">选择分镜组</label>
-      <select value={selectedSetId} onChange={(e) => handleSelectSet(e.target.value)} className="input-field text-sm" disabled={creating}>
-        <option value="">-- 选择分镜组 --</option>
-        {availableSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
-      </select>
-      {availableSets.length === 0 && <p className="mt-1 text-xs text-ink-tertiary">暂无分镜组，请先在分镜生成中创建。</p>}
+      <div className="flex items-center gap-2">
+        <select
+          value={selectedSetId}
+          onChange={(e) => {
+            const value = e.target.value;
+            if (value === FREE_SET_OPTION) { void handleSelectFreeSet(); return; }
+            handleSelectSet(value);
+          }}
+          className="input-field text-sm"
+          disabled={selectorLocked}
+        >
+          <option value="">-- 选择分镜组 --</option>
+          {storyboardSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
+          {/* D15:一个项目一个自由工位。已经建过就直接列出来,没建过用哨兵值,
+              选中时才 get-or-create。 */}
+          {freeSet
+            ? <option value={freeSet.id}>＋ 自由素材工位（{freeSet.shotCount} 张）</option>
+            : <option value={FREE_SET_OPTION}>＋ 自由素材工位（直接传图做视频）</option>}
+        </select>
+        {canDeleteSelectedSet && (
+          <button
+            type="button"
+            onClick={handleDeleteFreeSet}
+            disabled={selectorLocked}
+            className="icon-btn text-ink-tertiary hover:text-fail"
+            title="删除这个自由素材工位"
+            aria-label="删除这个自由素材工位"
+          >
+            <Icon name="trash" size={14} />
+          </button>
+        )}
+      </div>
+      {availableSets.length === 0 && (
+        <p className="mt-1 text-xs text-ink-tertiary">
+          还没有分镜组。可以在分镜生成里创建，也可以直接选「自由素材工位」传图做视频。
+        </p>
+      )}
     </div>
   ) : null;
 
@@ -672,6 +910,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   }
 
   const selectedShotData = safeShots.find((s) => s.id === selectedShot);
+  const pendingFreeShotIndex = safeShots.reduce(
+    (maxIndex, shot) => Math.max(maxIndex, shot.indexNum),
+    0,
+  ) + 1;
+  const freeHeadFrameSlotSelected = Boolean(
+    isFreeSet
+    && selectedShot === null
+    && (safeShots.length === 0 || freeHeadFrameSlotOpen),
+  );
   const previewVideoUrl = (() => {
     if (!videoPreviewJobId) return null;
     const job = videoJobs.find((j) => j.id === videoPreviewJobId);
@@ -691,7 +938,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         <div className="panel-col left-col">
           <div className="panel-col-header">
             {/* Shot tabs */}
-            {safeShots.length > 0 && (
+            {(safeShots.length > 0 || isFreeSet) && (
               <div className="shot-tab-row">
                 {safeShots.map((shot) => (
                   <button
@@ -701,14 +948,144 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     disabled={creating}
                     className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
                   >
-                    分镜 {shot.indexNum}
+                    {isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}
                   </button>
                 ))}
+                {isFreeSet && freeHeadFrameSlotOpen && (
+                  <button
+                    type="button"
+                    onClick={activateFreeHeadFrameSlot}
+                    disabled={headFrameBusy || creating}
+                    className={`shot-tab-item ${freeHeadFrameSlotSelected ? 'active' : ''}`}
+                    title="等待拖入首帧图片"
+                  >
+                    图 {pendingFreeShotIndex}
+                  </button>
+                )}
+                {isFreeSet && (
+                  <button
+                    type="button"
+                    onClick={activateFreeHeadFrameSlot}
+                    disabled={headFrameBusy || creating}
+                    className={`shot-tab-item shot-tab-add ${headFrameBusy ? 'is-busy' : ''}`}
+                    title={freeHeadFrameSlotOpen ? '回到待添加图片槽位' : '增加一个空图片槽位'}
+                  >
+                    <Icon name="plus" size={13} />
+                    {headFrameBusy ? '上传中…' : '添加图片'}
+                  </button>
+                )}
+              </div>
+            )}
+            {isFreeSet && selectedShot && (
+              <div className="free-shot-actions">
+                <span>当前：图 {selectedShotData?.indexNum}</span>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteFreeShot(selectedShot)}
+                  disabled={!canDeleteShot(selectedShot) || deletingShot || creating}
+                  title={canDeleteShot(selectedShot)
+                    ? '删掉这张图'
+                    : '这张图已经生成过视频了，不能删除'}
+                  className="free-shot-delete"
+                >
+                  <Icon name="trash" size={12} /> {deletingShot ? '删除中…' : '删掉这张图'}
+                </button>
               </div>
             )}
           </div>
 
           {/* Motion form — scrollable independently */}
+          {freeHeadFrameSlotSelected && (
+            <div className="panel-scroll-area">
+              <div className="space-y-3">
+                <div className="video-motion-card">
+                  <span className="video-motion-label">描述 1</span>
+
+                  <div className="video-frame-pair" data-testid="video-frame-pair">
+                    <label
+                      className={`video-frame-tile video-frame-empty ${headFrameBusy ? 'is-busy' : ''} ${tailFrameDragRowKey === FREE_HEAD_FRAME_DRAG_KEY ? 'is-dragging' : ''}`}
+                      aria-live="polite"
+                      onDragEnter={(event) => handleTailFrameDragEnter(event, FREE_HEAD_FRAME_DRAG_KEY, !headFrameBusy && !creating)}
+                      onDragOver={(event) => handleTailFrameDragOver(event, !headFrameBusy && !creating)}
+                      onDragLeave={(event) => handleTailFrameDragLeave(event, FREE_HEAD_FRAME_DRAG_KEY)}
+                      onDrop={handleFreeHeadFrameDrop}
+                    >
+                      <span className="video-frame-empty-icon">
+                        <Icon name="image" size={25} />
+                        <span><Icon name="plus" size={10} /></span>
+                      </span>
+                      <strong>{headFrameBusy ? '上传中…' : '添加首帧图'}</strong>
+                      <small>点击或拖入</small>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="sr-only"
+                        disabled={headFrameBusy || creating}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = '';
+                          if (file) void handleAppendFreeShot(file);
+                        }}
+                      />
+                      {tailFrameDragRowKey === FREE_HEAD_FRAME_DRAG_KEY && (
+                        <span className="video-frame-drop-overlay" role="status">
+                          <Icon name="upload" size={19} />
+                          <strong>松开添加首帧</strong>
+                        </span>
+                      )}
+                    </label>
+
+                    <div className="video-frame-bridge" aria-hidden="true">
+                      <Icon name="chevron-right" size={18} />
+                    </div>
+
+                    <div className="video-frame-tile video-frame-empty is-disabled">
+                      <span className="video-frame-empty-icon"><Icon name="image" size={25} /></span>
+                      <strong>先添加首帧</strong>
+                      <small>添加后可选</small>
+                    </div>
+                  </div>
+
+                  {/* 这三块继续占据原位置；没有真实 shot 前禁用，不提交草稿。 */}
+                  <select className="input-field video-control" disabled>
+                    <option>选择视频供应商</option>
+                  </select>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select className="input-field video-control" disabled>
+                      <option>模板（可选）</option>
+                    </select>
+                    <input className="input-field video-control text-center" value={5} disabled readOnly />
+                  </div>
+                  <textarea
+                    className="input-field video-prompt-field"
+                    placeholder="运镜描述（提示词）"
+                    disabled
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <button className="btn-secondary btn-sm w-full video-add-action" disabled>
+                  <Icon name="plus" size={12} /> 添加描述
+                </button>
+                <div>
+                  <label className="label generation-label">并发数</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={videoConcurrency}
+                    onChange={(event) => handleVideoConcurrencyChange(Number(event.target.value))}
+                    className="input-field generation-control generation-number"
+                  />
+                  <p className="generation-helper">失败或限流时调回 1。</p>
+                </div>
+                <button className="btn-primary btn-sm w-full video-create-action" disabled>
+                  生成 0 条视频
+                </button>
+              </div>
+            </div>
+          )}
           {selectedShot && (
             <div className="panel-scroll-area">
               <div className="space-y-3">
@@ -957,7 +1334,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           <VideoGenerationPreview
             videoUrl={previewVideoUrl}
             posterUrl={previewPosterUrl}
-            placeholderText={safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
+            placeholderText={freeHeadFrameSlotSelected
+              ? '添加首帧图后开始生成'
+              : safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
             videoJobs={videoJobs}
             currentJobId={videoPreviewJobId}
             playSignal={videoPreviewPlaySignal}
@@ -984,7 +1363,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         </div>
       </div>
 
-      {safeShots.length === 0 && (
+      {safeShots.length === 0 && !isFreeSet && (
         <p className="text-xs text-ink-tertiary mt-3">分镜组中没有分镜。</p>
       )}
     </div>

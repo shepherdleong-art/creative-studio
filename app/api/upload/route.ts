@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
     const role = (formData.get('role') as string) || 'input';
     const projectId = (formData.get('projectId') as string) || null;
     const usage = (formData.get('usage') as string) || '';
-    const allowedUsage = ['', 'scene_seed', 'shot_source', VIDEO_TAIL_FRAME_USAGE];
+    const allowedUsage = ['', 'scene_seed', 'shot_source', 'video_source', VIDEO_TAIL_FRAME_USAGE];
     if (!allowedUsage.includes(usage)) return NextResponse.json({ error: '非法的 usage 值' }, { status: 400 });
     const preprocessEnabled = formData.get('preprocessEnabled') !== 'false'; // default true
     const targetMaxSide = parseInt(formData.get('targetMaxSide') as string) || DEFAULT_OPTIONS.targetMaxSide;
