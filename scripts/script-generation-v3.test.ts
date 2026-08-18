@@ -512,6 +512,99 @@ assert.deepEqual(
 
 {
   let calls = 0;
+  const prompts: string[] = [];
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async (request) => {
+      calls += 1;
+      prompts.push(request.userPrompt);
+      return feasibleResult({
+        title: '标题依据与正文不交汇',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+      }, calls === 1
+        ? { ...validCoverTitleParts, visualRefs: ['visual-2'] }
+        : validCoverTitleParts);
+    },
+  });
+  assert.equal(calls, 2, '标题依据与正文段落不交汇时必须定点修正后通过');
+  const secondPrompt = JSON.parse(prompts[1]) as { validationIssues?: string[]; requirements?: string[] };
+  assert.ok(
+    secondPrompt.validationIssues?.some((issue) => issue.includes('「沙发」') && issue.includes('visualKeywords')),
+    '修正提示词必须指出品类词缺少正文承接的具体规则',
+  );
+  assert.ok(
+    secondPrompt.validationIssues?.some((issue) => issue.includes('「客厅」') && issue.includes('visualKeywords')),
+    '修正提示词必须指出场景词缺少正文承接的具体规则',
+  );
+  assert.equal(
+    secondPrompt.requirements?.[0],
+    '逐项修复 validationIssues 列出的全部问题，其余已合规内容保持不变',
+    '有具体失配明细时必须要求定点修复',
+  );
+  assert.equal(result.script.coverTitleParts.primary, '松弛感软弹沙发');
+}
+
+{
+  let calls = 0;
+  await assert.rejects(
+    generateScriptV3(baseInput, {
+      completeJson: async () => {
+        calls += 1;
+        return feasibleResult({
+          title: '始终不交汇',
+          segments: [{
+            narration: `${'舒适承托'.repeat(13)}安心。`,
+            sellingPointRefs: ['112°承托'],
+            visualIntent: '附图中可见的客厅沙发使用场景',
+            visualKeywords: ['沙发', '客厅'],
+            visualRefs: ['visual-1'],
+          }],
+        }, { ...validCoverTitleParts, visualRefs: ['visual-2'] });
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ScriptGenerationV3Error);
+      assert.equal(error.code, 'script_contract_invalid');
+      const issues = (error.details as { validationIssues?: string[] }).validationIssues;
+      assert.ok(
+        Array.isArray(issues) && issues.some((issue) => issue.includes('「沙发」')),
+        '最终错误必须携带逐条校验明细，供服务端日志定位',
+      );
+      return true;
+    },
+  );
+  assert.equal(calls, 3, '三次都失配时按既有上限放弃');
+}
+
+{
+  let calls = 0;
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('GPT / OpenAI 返回了无效 JSON。原始回复: {"materialAssessment":...');
+      return feasibleResult({
+        title: '截断后重试',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+      });
+    },
+  });
+  assert.equal(calls, 2, '模型返回截断/非法 JSON 时必须消耗一次修正机会重试，而不是直接终止');
+  assert.equal(result.attempts, 2);
+}
+
+{
+  let calls = 0;
   const result = await generateScriptV3(baseInput, {
     completeJson: async () => {
       calls += 1;

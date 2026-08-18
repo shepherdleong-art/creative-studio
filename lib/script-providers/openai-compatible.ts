@@ -12,11 +12,17 @@ import { createScriptProviderRequestControl } from './request-control.ts';
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
 /**
- * 进程内记忆：某些公司网关模型（如 GPT-5-6-Luna-Standard）只接受默认 temperature，
- * 显式传值会被 400 拒绝。首次命中拒绝后记下 `${baseUrl}|${model}`，
- * 之后调用直接不带 temperature，避免每次都先挨一次 400。
+ * 只接受默认 temperature 的模型：公司网关推理模型 GPT-5-6-Luna-Standard 显式传其他值
+ * 会被上游 400 拒绝，固定 temperature=1 功能才正常。已知模型名直接强制；
+ * 其他模型首次命中 400 特征错误后记入进程内名单（`${baseUrl}|${model}`），
+ * 之后调用同样固定 temperature=1，避免每次都先挨一次 400。
  */
-const temperatureUnsupportedModels = new Set<string>();
+const defaultTemperatureOnlyModels = new Set<string>();
+
+/** 已知只接受默认 temperature 的模型名（前缀匹配，覆盖 GPT-5-6-Luna 各变体）。 */
+function isDefaultTemperatureOnlyModel(model: string): boolean {
+  return /^GPT-5-6-Luna/i.test(model);
+}
 
 // ── Low-level chat completion ──
 
@@ -90,7 +96,9 @@ export async function chatCompletion(
     ],
     max_tokens: options.maxTokens ?? runtime?.maxTokens ?? config.maxTokens,
   };
-  if (!temperatureUnsupportedModels.has(modelKey)) {
+  if (isDefaultTemperatureOnlyModel(model) || defaultTemperatureOnlyModels.has(modelKey)) {
+    body.temperature = 1;
+  } else {
     body.temperature = options.temperature ?? 0.7;
   }
 
@@ -105,9 +113,9 @@ export async function chatCompletion(
     timeoutMessage: (timeoutMs) => `${config.name} (openai-compatible) 请求超时（${timeoutMs}ms）`,
   });
   try {
-    // 部分公司网关模型（如推理型 GPT-5-6-Luna-Standard）只接受默认 temperature，
-    // 显式传值会被上游 400 拒绝。命中该特征错误时摘掉 temperature 重试一次，
-    // 并记入进程内名单，后续调用直接跳过该参数。
+    // 部分公司网关模型（如推理型 GPT-5-6-Luna-Standard）只接受默认 temperature=1，
+    // 显式传其他值会被上游 400 拒绝。命中该特征错误时改传 temperature=1 重试一次，
+    // 并记入进程内名单，后续调用直接固定 temperature=1。
     const send = async (requestBody: Record<string, unknown>) => fetch(chatUrl, {
       method: 'POST',
       headers: {
@@ -126,9 +134,8 @@ export async function chatCompletion(
         && /temperature/i.test(errText)
         && /does not support|unsupported value|not supported/i.test(errText);
       if (temperatureRejected) {
-        temperatureUnsupportedModels.add(modelKey);
-        const fallbackBody = { ...body };
-        delete fallbackBody.temperature;
+        defaultTemperatureOnlyModels.add(modelKey);
+        const fallbackBody = { ...body, temperature: 1 };
         res = await send(fallbackBody);
       }
       if (!res.ok) {

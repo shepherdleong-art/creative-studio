@@ -80,6 +80,8 @@ interface ScriptDurationErrorDetails {
 
 interface ScriptContractErrorDetails extends Omit<ScriptDurationErrorDetails, 'kind'> {
   kind: 'contract';
+  /** 最后一次校验失败的逐条可操作原因（已随修正提示词反馈给模型，也供服务端日志排查）。 */
+  validationIssues?: string[];
 }
 
 interface ScriptMaterialMismatchErrorDetails {
@@ -136,6 +138,21 @@ class ScriptMaterialMismatchError extends Error {
     this.name = 'ScriptMaterialMismatchError';
     this.unsupportedNarrativeBeats = unsupportedNarrativeBeats;
     this.materialReason = materialReason;
+  }
+}
+
+/**
+ * 模型输出未通过结构校验。issues 是面向模型的具体可操作中文描述，
+ * 会原样进入下一次修正提示词（rewritePrompt 的 validationIssues），
+ * 否则修正循环只能盲目重试，同类失配会反复踩同一条规则。
+ */
+class ScriptOutputValidationError extends Error {
+  readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(issues.join('；'));
+    this.name = 'ScriptOutputValidationError';
+    this.issues = issues;
   }
 }
 
@@ -303,8 +320,66 @@ function normalizeTitleParts(
       sellingPointIds.length > 0
       && sellingPointIds.every((sellingPointId) => sellingPointById.has(sellingPointId))
     ));
-  if (!valid) throw new Error('cover_title_contract_invalid');
-  return { primary, secondary, source: 'model' };
+  if (valid) return { primary, secondary, source: 'model' };
+
+  // 与上面的 valid 链逐条对应；失配原因必须具体可操作，随修正提示词反馈给模型。
+  const issues: string[] = [];
+  if (!titleFits(primary, [4, 12])) issues.push(`主标题「${primary}」有效字数需在 4-12 字`);
+  if (!titleFits(secondary, [4, 10])) issues.push(`副标题「${secondary}」有效字数需在 4-10 字`);
+  if (!hasNoSentencePunctuation(primary)) issues.push(`主标题「${primary}」不能包含句读标点`);
+  if (!hasNoSentencePunctuation(secondary)) issues.push(`副标题「${secondary}」不能包含句读标点`);
+  if (!/^[\p{L}\p{N}]{1,6}$/u.test(productCategoryTerm) || GENERIC_PRODUCT_CATEGORY_TERMS.has(categoryKey)) {
+    issues.push(`productCategoryTerm「${productCategoryTerm}」必须是 1-6 字的具体品类词，不能用泛称`);
+  }
+  if (!COVER_TITLE_STYLE_MODIFIERS.has(primaryStyleModifier)) {
+    issues.push(`primaryStyleModifier「${primaryStyleModifier}」不在允许列表内，可留空`);
+  }
+  if (titleContentLength(primaryEvidenceTerm) < 2 || titleContentLength(primaryEvidenceTerm) > 6) {
+    issues.push(`primaryEvidenceTerm「${primaryEvidenceTerm}」有效字数需在 2-6 字`);
+  }
+  if (primary !== `${primaryStyleModifier}${primaryEvidenceTerm}${productCategoryTerm}`) {
+    issues.push(`主标题「${primary}」必须严格等于 primaryStyleModifier + primaryEvidenceTerm + productCategoryTerm 的拼接`);
+  }
+  if (!titlePartsDoNotOverlap([primaryStyleModifier, primaryEvidenceTerm, productCategoryTerm])) {
+    issues.push('主标题的 styleModifier / evidenceTerm / categoryTerm 不得互相包含');
+  }
+  if (!titleCategoryIsGrounded) {
+    issues.push(`封面标题的品类词「${productCategoryTerm}」缺少正文承接：请把「${productCategoryTerm}」原样加入某一段的 visualKeywords，且该段的 visualRefs 要与封面标题 visualRefs（${visualRefs.join('、')}）至少命中同一张图`);
+  }
+  if (!sellingPointRefs.some((reference) => titleKey(reference).includes(primaryEvidenceKey))) {
+    issues.push(`primaryEvidenceTerm「${primaryEvidenceTerm}」必须原样出现在封面标题所引用卖点的 title 中`);
+  }
+  if (!titlesAreComplementary(primary, secondary)) issues.push('主标题与副标题不得相同或互相包含');
+  if (titleKey(secondary).includes(categoryKey)) issues.push(`副标题「${secondary}」不能包含品类词「${productCategoryTerm}」`);
+  if (GENERIC_COVER_TITLE_KEYS.has(titleKey(primary)) || GENERIC_COVER_TITLE_KEYS.has(titleKey(secondary))) {
+    issues.push('禁止使用无具体信息的万能标题');
+  }
+  if (!COVER_TITLE_SECONDARY_ROLES.has(secondaryRole)) issues.push(`secondaryRole「${secondaryRole}」不在允许列表内`);
+  if (!COVER_TITLE_SECONDARY_QUALIFIERS.has(secondaryQualifier)) {
+    issues.push(`secondaryQualifier「${secondaryQualifier}」不在允许列表内，可留空`);
+  }
+  if (titleContentLength(secondarySceneTerm) < 2 || titleContentLength(secondarySceneTerm) > 5 || GENERIC_SECONDARY_SCENE_TERMS.has(secondarySceneKey)) {
+    issues.push(`secondarySceneTerm「${secondarySceneTerm}」必须是 2-5 字的具体场景词，不能用泛称`);
+  }
+  if (!titleSceneIsGrounded) {
+    issues.push(`封面标题的场景词「${secondarySceneTerm}」缺少正文承接：请把「${secondarySceneTerm}」原样加入某一段的 visualKeywords，且该段的 visualRefs 要与封面标题 visualRefs（${visualRefs.join('、')}）至少命中同一张图`);
+  }
+  if (!COVER_TITLE_SECONDARY_VALUE_PHRASES.has(secondaryValuePhrase)) {
+    issues.push(`secondaryValuePhrase「${secondaryValuePhrase}」不在允许列表内`);
+  }
+  if (secondary !== `${secondaryQualifier}${secondarySceneTerm}${secondaryValuePhrase}`) {
+    issues.push(`副标题「${secondary}」必须严格等于 secondaryQualifier + secondarySceneTerm + secondaryValuePhrase 的拼接`);
+  }
+  if (!titlePartsDoNotOverlap([secondaryQualifier, secondarySceneTerm, secondaryValuePhrase])) {
+    issues.push('副标题的 qualifier / sceneTerm / valuePhrase 不得互相包含');
+  }
+  if (visualRefs.length === 0 || !visualRefs.every((visualRef) => allowedVisualRefs.has(visualRef))) {
+    issues.push(`coverTitleParts.visualRefs 只能引用 ${Array.from(allowedVisualRefs).join('、')} 中真实存在的 visualRef`);
+  }
+  if (sellingPoints.length > 0 && (sellingPointIds.length === 0 || !sellingPointIds.every((sellingPointId) => sellingPointById.has(sellingPointId)))) {
+    issues.push('coverTitleParts.sellingPointIds 必须原样引用 selectedSellingPoints 中的 sellingPointId');
+  }
+  throw new ScriptOutputValidationError(issues);
 }
 
 function normalizeSegments(
@@ -326,7 +401,9 @@ function normalizeSegments(
     usedIds.add(id);
     const sellingPointIds = stringArray(source.sellingPointIds);
     if (sellingPointIds.some((sellingPointId) => !sellingPointById.has(sellingPointId))) {
-      throw new Error('segment_selling_point_ids_invalid');
+      throw new ScriptOutputValidationError([
+        `第 ${index + 1} 段引用了不存在的卖点 ID：只能原样引用 selectedSellingPoints 中的 sellingPointId（${sellingPoints.map((point) => point.sellingPointId).join('、')}），未使用卖点时返回空数组`,
+      ]);
     }
     const sellingPointRefs = sellingPointIds.map((sellingPointId) => sellingPointById.get(sellingPointId)!.title);
     const visualKeywords = stringArray(source.visualKeywords)
@@ -335,9 +412,13 @@ function normalizeSegments(
     const visualRefs = Array.isArray(source.visualRefs)
       ? source.visualRefs.map(string).filter(Boolean).filter((item, itemIndex, values) => values.indexOf(item) === itemIndex)
       : [];
-    if (!visualIntent || visualKeywords.length === 0) throw new Error('segment_visual_grounding_required');
+    if (!visualIntent || visualKeywords.length === 0) {
+      throw new ScriptOutputValidationError([`第 ${index + 1} 段缺少 visualIntent 或 visualKeywords，两者都必须非空`]);
+    }
     if (visualRefs.length === 0 || visualRefs.some((visualRef) => !allowedVisualRefs.has(visualRef))) {
-      throw new Error('segment_visual_refs_invalid');
+      throw new ScriptOutputValidationError([
+        `第 ${index + 1} 段的 visualRefs 为空或含非法引用：只能引用 ${Array.from(allowedVisualRefs).join('、')} 中真实存在的 visualRef`,
+      ]);
     }
     segments.push({
       segment: {
@@ -384,7 +465,9 @@ function normalizeSellingPointUsage(
       || (status !== 'used' && status !== 'omitted_no_visual_support')
       || (status === 'used' && (!isUsed || !hasMatchingVisual))
       || (status === 'omitted_no_visual_support' && (isUsed || visualRefs.some((visualRef) => !allowedVisualRefs.has(visualRef))))) {
-      throw new Error('selling_point_usage_invalid');
+      throw new ScriptOutputValidationError([
+        `sellingPointUsage 中卖点 ${sellingPointId} 的登记不合法：status=used 要求该卖点出现在某段 sellingPointIds 中、且本条 visualRefs 与该段 visualRefs 至少命中同一张图；status=omitted_no_visual_support 要求正文全部段落都未引用该卖点；reason 不得为空`,
+      ]);
     }
     normalizedById.set(sellingPointId, {
       sellingPointId,
@@ -395,7 +478,9 @@ function normalizeSellingPointUsage(
   });
   if (normalizedById.size !== sellingPoints.length
     || sellingPoints.some((point) => !normalizedById.has(point.sellingPointId))) {
-    throw new Error('selling_point_usage_incomplete');
+    throw new ScriptOutputValidationError([
+      `sellingPointUsage 必须恰好覆盖全部 ${sellingPoints.length} 个已选卖点，每个 sellingPointId 出现且只出现一次`,
+    ]);
   }
   return sellingPoints.map((point) => normalizedById.get(point.sellingPointId)!);
 }
@@ -407,7 +492,9 @@ function assertMaterialFeasible(raw: JsonObject, input: ScriptGenerationInputV3)
     const unsupportedNarrativeBeats = stringArray(assessment.unsupportedNarrativeBeats);
     if (unsupportedNarrativeBeats.length === 0
       || unsupportedNarrativeBeats.some((beat) => !allowedNarrativeBeats.has(beat))) {
-      throw new Error('material_assessment_unsupported_beats_required');
+      throw new ScriptOutputValidationError([
+        'templateFeasible=false 时，unsupportedNarrativeBeats 必须从 template.narrativeStructure 中原样复制所有无法由图片承接的阶段',
+      ]);
     }
     throw new ScriptMaterialMismatchError(
       unsupportedNarrativeBeats,
@@ -415,7 +502,9 @@ function assertMaterialFeasible(raw: JsonObject, input: ScriptGenerationInputV3)
     );
   }
   if (assessment.templateFeasible !== true || stringArray(assessment.unsupportedNarrativeBeats).length > 0) {
-    throw new Error('material_assessment_invalid');
+    throw new ScriptOutputValidationError([
+      'materialAssessment.templateFeasible 必须是布尔值 true 或 false；为 true 时 unsupportedNarrativeBeats 必须返回空数组',
+    ]);
   }
 }
 
@@ -427,7 +516,9 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
   assertMaterialFeasible(raw, input);
   const sellingPoints = generationSellingPoints(input);
   const groundedSegments = normalizeSegments(raw, input, sellingPoints);
-  if (groundedSegments.length === 0) throw new Error('segments_required');
+  if (groundedSegments.length === 0) {
+    throw new ScriptOutputValidationError(['segments 至少要有一段非空 narration']);
+  }
   const segments = groundedSegments.map(({ segment }) => segment);
   const sellingPointUsage = normalizeSellingPointUsage(raw, input, sellingPoints, groundedSegments);
   const title = string(raw.title) || `${input.productName || input.projectName || '产品'}口播脚本`;
@@ -579,6 +670,7 @@ function rewritePrompt(
   issue: 'too_short' | 'too_long' | 'contract_invalid',
   previousResult: unknown,
   currentScript?: ScriptOutputV3,
+  validationIssues?: string[],
 ): string {
   const budget = buildScriptDurationBudget(input.targetDurationSec);
   return JSON.stringify({
@@ -592,9 +684,15 @@ function rewritePrompt(
     selectedSellingPoints: generationSellingPoints(input),
     visualMaterials: promptVisualMaterials(input),
     previousResult,
+    // 结构失配时给出逐条可操作的失配原因，让模型定点修复而不是盲改。
+    ...(validationIssues?.length ? { validationIssues } : {}),
     outputContract: SCRIPT_OUTPUT_CONTRACT,
     requirements: [
-      ...(issue === 'contract_invalid' ? ['修复所有缺失或非法字段，至少返回一个非空 narration 段落'] : ['完整重写自然句并达到目标字数']),
+      ...(issue === 'contract_invalid'
+        ? [validationIssues?.length
+          ? '逐项修复 validationIssues 列出的全部问题，其余已合规内容保持不变'
+          : '修复所有缺失或非法字段，至少返回一个非空 narration 段落']
+        : ['完整重写自然句并达到目标字数']),
       ...scriptRequirements(true),
     ],
   });
@@ -841,6 +939,7 @@ export async function generateScriptV3(
   let prompt = generationPrompt(input);
   let lastScript: ScriptOutputV3 | null = null;
   let lastQualification: 'too_short' | 'too_long' | 'contract_invalid' = 'contract_invalid';
+  let lastValidationIssues: string[] = [];
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
@@ -850,13 +949,24 @@ export async function generateScriptV3(
       message: attempt === 1 ? '模型正在生成脚本' : `模型正在进行第 ${attempt - 1} 次修正`,
       attempt,
     });
-    const raw = await dependencies.completeJson({
-      systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，并遵循两段式封面标题结构；不能承接时明确返回素材不匹配。禁止把不同模板写成同一种通用卖点罗列，也禁止返回截断句或万能标题。',
-      userPrompt: prompt,
-      temperature: attempt === 1 ? 0.7 : 0.4,
-      images,
-      signal: dependencies.signal,
-    });
+    let raw: unknown;
+    try {
+      raw = await dependencies.completeJson({
+        systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，并遵循两段式封面标题结构；不能承接时明确返回素材不匹配。禁止把不同模板写成同一种通用卖点罗列，也禁止返回截断句或万能标题。',
+        userPrompt: prompt,
+        temperature: attempt === 1 ? 0.7 : 0.4,
+        images,
+        signal: dependencies.signal,
+      });
+    } catch (error) {
+      if (dependencies.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      if (!(error instanceof Error) || !/返回了无效 JSON|返回了空响应/.test(error.message)) throw error;
+      // 解析级失败（截断/空响应/夹带文字）此前会直接终止生成；记为一次可修正失败继续循环。
+      lastQualification = 'contract_invalid';
+      lastValidationIssues = ['上次返回不是可解析的完整 JSON（可能中途截断或夹带多余文字）：请只返回一个完整 JSON 对象，不要输出 markdown 代码块或其他文字'];
+      prompt = rewritePrompt(input, 'contract_invalid', undefined, undefined, lastValidationIssues);
+      continue;
+    }
     dependencies.onProgress?.({
       phase: 'validating',
       percent: 45 + ((attempt - 1) * 20),
@@ -883,7 +993,10 @@ export async function generateScriptV3(
         );
       }
       lastQualification = 'contract_invalid';
-      prompt = rewritePrompt(input, 'contract_invalid', raw);
+      lastValidationIssues = error instanceof ScriptOutputValidationError
+        ? error.issues
+        : [error instanceof Error ? error.message : String(error)];
+      prompt = rewritePrompt(input, 'contract_invalid', raw, undefined, lastValidationIssues);
     }
   }
 
@@ -898,6 +1011,7 @@ export async function generateScriptV3(
     throw new ScriptGenerationV3Error('script_contract_invalid', '模型两次修正后仍未返回有效脚本结构', {
       kind: 'contract',
       ...durationDetails,
+      validationIssues: lastValidationIssues,
     });
   }
   throw new ScriptGenerationV3Error('script_duration_unresolved', '模型两次修正后仍未达到时长要求', {

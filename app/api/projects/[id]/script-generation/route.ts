@@ -22,13 +22,20 @@ export const dynamic = 'force-dynamic';
 /** 脚本生成的失败此前只回给前端，服务端无迹可查；统一落项目日志。 */
 function logScriptFailure(projectId: string, stage: string, detail: unknown): void {
   const body = detail as { message?: unknown; error?: unknown } | null;
-  const message = detail instanceof Error
+  let message = detail instanceof Error
     ? detail.message
     : typeof body?.message === 'string'
       ? body.message
       : typeof body?.error === 'string'
         ? body.error
         : String(detail);
+  // 结构校验失败时附上逐条失配原因，否则日志里只有一句笼统结论，无法定位。
+  const issues = detail instanceof Error
+    ? (detail as { details?: { validationIssues?: unknown } }).details?.validationIssues
+    : undefined;
+  if (Array.isArray(issues) && issues.length > 0) {
+    message += `｜校验明细：${issues.slice(0, 5).map(String).join('；')}`;
+  }
   writeLog({ projectId, level: 'error', message: `[脚本生成] ${stage}: ${message}` });
 }
 
