@@ -529,12 +529,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       const cached = perShotMotionCache.current.get(shotId);
       replaceActiveMotionRows(cached ? [...cached] : [makeEmptyRow()]);
       if (leavingFreeHeadFrameSlot) {
-        previewSuppressedRef.current = false;
-        setVideoPreviewJobId(
-          videoJobs.find((j) => (
-            j.shotId === shotId && j.status === 'succeeded' && j.filename
-          ))?.id || null,
-        );
+        const shotPreviewJobId = videoJobs.find((j) => (
+          j.shotId === shotId && j.status === 'succeeded' && j.filename
+        ))?.id || null;
+        previewSuppressedRef.current = !shotPreviewJobId;
+        setVideoPreviewJobId(shotPreviewJobId);
       }
     }
   };

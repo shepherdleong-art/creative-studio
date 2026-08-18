@@ -23,6 +23,11 @@ assert.match(
 );
 assert.match(
   panel,
+  /<select[\s\S]{0,500}disabled=\{selectorLocked\}/,
+  '分镜组选择器必须实际绑定上传锁定状态',
+);
+assert.match(
+  panel,
   /const targetSetId = effectiveSetId;[\s\S]*selectedSetIdRef\.current === targetSetId[\s\S]*replaceSelectedShot\(newShotId\)/,
   '异步上传回写前必须确认用户仍位于目标分镜组',
 );
@@ -30,6 +35,11 @@ assert.match(
   panel,
   /const leavingFreeHeadFrameSlot =[\s\S]{0,1200}j\.shotId === shotId[\s\S]{0,160}j\.status === 'succeeded'/,
   '只有离开空槽位时才恢复当前图片对应的成功视频预览',
+);
+assert.match(
+  panel,
+  /const shotPreviewJobId =[\s\S]{0,360}previewSuppressedRef\.current = !shotPreviewJobId/,
+  '当前图片没有成功视频时必须继续抑制预览，避免轮询带回其他图片的视频',
 );
 assert.doesNotMatch(
   panel,
