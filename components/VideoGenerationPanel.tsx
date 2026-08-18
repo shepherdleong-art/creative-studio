@@ -330,7 +330,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const selectedSetMeta = availableSets.find((set) => set.id === selectedSetId);
   const isFreeSet = selectedSetMeta?.kind === 'free';
   const canDeleteSelectedSet = !shotSetId && isFreeSet;
-  const selectorLocked = creating || deletingSet;
+  const selectorLocked = creating || deletingSet || headFrameBusy;
 
   const handleDeleteFreeSet = async () => {
     if (!canDeleteSelectedSet || !selectedSetMeta || selectorLocked) return;
@@ -389,6 +389,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
    */
   const handleAppendFreeShot = async (file: File) => {
     if (!effectiveSetId || headFrameBusy || creatingRef.current) return;
+    const targetSetId = effectiveSetId;
     setHeadFrameBusy(true);
     let uploadedId: string | null = null;
     try {
@@ -407,7 +408,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       if (!uploaded) throw new Error('上传接口没有返回图片');
       uploadedId = uploaded.id;
 
-      const appendRes = await fetch(`/api/shot-sets/${encodeURIComponent(effectiveSetId)}/shots`, {
+      const appendRes = await fetch(`/api/shot-sets/${encodeURIComponent(targetSetId)}/shots`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageId: uploaded.id }),
@@ -416,11 +417,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       if (!appendRes.ok) throw new Error(appendData.error || `HTTP ${appendRes.status}`);
 
       // 重新拉一次分镜列表，新的一张会作为最后一个 tab 出现并自动选中。
-      await loadShotsForSet(effectiveSetId);
+      await loadShotsForSet(targetSetId);
       const newShotId = String(appendData.shotId);
-      replaceSelectedShot(newShotId);
-      replaceActiveMotionRows([makeEmptyRow()]);
-      setFreeHeadFrameSlotOpen(false);
+      if (selectedSetIdRef.current === targetSetId) {
+        replaceSelectedShot(newShotId);
+        replaceActiveMotionRows([makeEmptyRow()]);
+        setFreeHeadFrameSlotOpen(false);
+      }
       try { setAvailableSets(await loadAvailableSets()); } catch { /* keep the active workspace usable */ }
     } catch (error) {
       // 挂载失败就把刚上传的图删掉，不留孤儿资源（和尾帧同一套处理）。
@@ -511,6 +514,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   // Switch the active shot, preserving per-shot 运镜 rows
   const activate = (shotId: string) => {
     if (creatingRef.current) return;
+    const leavingFreeHeadFrameSlot = Boolean(
+      isFreeSet && freeHeadFrameSlotOpen && selectedShot === null,
+    );
     tailFrameDragDepthRef.current.clear();
     setTailFrameDragRowKey(null);
     if (selectedShot !== shotId) {
@@ -522,8 +528,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       // Restore cached rows or start fresh
       const cached = perShotMotionCache.current.get(shotId);
       replaceActiveMotionRows(cached ? [...cached] : [makeEmptyRow()]);
-      previewSuppressedRef.current = false;
-      setVideoPreviewJobId((current) => current ?? getDefaultPreviewJobId(videoJobs));
+      if (leavingFreeHeadFrameSlot) {
+        previewSuppressedRef.current = false;
+        setVideoPreviewJobId(
+          videoJobs.find((j) => (
+            j.shotId === shotId && j.status === 'succeeded' && j.filename
+          ))?.id || null,
+        );
+      }
     }
   };
 
