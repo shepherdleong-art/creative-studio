@@ -3,8 +3,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import {
   cosSign,
+  getCosVideoCompressOptions,
   isCosMediaConfigured,
   tryUploadToCosAndSign,
   tryUploadBufferToCosAndSign,
@@ -18,6 +20,13 @@ const COS_ENV_KEYS = [
   'CREATIVE_STUDIO_COS_SIGN_HOST',
   'CREATIVE_STUDIO_COS_PREFIX',
   'CREATIVE_STUDIO_COS_URL_TTL_SEC',
+  'CREATIVE_STUDIO_COS_COMPRESS',
+  'CREATIVE_STUDIO_COS_MAX_BYTES',
+  'CREATIVE_STUDIO_COS_MAX_DIM',
+  'CREATIVE_STUDIO_COS_QUALITY',
+  'CREATIVE_STUDIO_COS_VIDEO_MAX_BYTES',
+  'CREATIVE_STUDIO_COS_VIDEO_MAX_DIM',
+  'CREATIVE_STUDIO_COS_VIDEO_QUALITY',
 ];
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-media-'));
@@ -230,6 +239,142 @@ try {
   const fallbackUrl = await tryUploadBufferToCosAndSign(pngContent, 'application/octet-stream');
   assert.ok(fallbackUrl);
   assert.ok(fallbackUrl.startsWith(`https://cos.example.com/ref-images/${expectedPngHash}.jpg?`), fallbackUrl);
+
+  // ── 上传前压缩：超过阈值的大图压缩后上传，对象键为压缩内容的 sha256 ──
+  process.env.CREATIVE_STUDIO_COS_MAX_BYTES = '1';
+  process.env.CREATIVE_STUDIO_COS_MAX_DIM = '512';
+  process.env.CREATIVE_STUDIO_COS_QUALITY = '90';
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const noise = crypto.randomBytes(1024 * 1024 * 3);
+  const bigJpeg = await sharp(noise, { raw: { width: 1024, height: 1024, channels: 3 } })
+    .jpeg({ quality: 100 })
+    .toBuffer();
+  const bigPath = path.join(tmpDir, 'big-noise.jpg');
+  fs.writeFileSync(bigPath, bigJpeg);
+  const bigUrl = await tryUploadToCosAndSign(bigPath);
+  assert.ok(bigUrl, 'compressed upload should return signed url');
+  const compressedPut = captured.find((r) => r.method === 'PUT');
+  assert.ok(compressedPut?.body, 'compression path should PUT compressed body');
+  assert.ok(!compressedPut.body.equals(bigJpeg), 'PUT body should not be the original file bytes');
+  assert.ok(compressedPut.body.byteLength < bigJpeg.byteLength, 'compressed body should be smaller');
+  assert.equal(compressedPut.headers.get('content-type'), 'image/jpeg');
+  const compressedHash = crypto.createHash('sha256').update(compressedPut.body).digest('hex');
+  assert.ok(bigUrl.startsWith(`https://cos.example.com/ref-images/${compressedHash}.jpg?`), bigUrl);
+  const compressedMeta = await sharp(compressedPut.body).metadata();
+  assert.ok(
+    compressedMeta.width && compressedMeta.width <= 512
+      && compressedMeta.height && compressedMeta.height <= 512,
+    'compressed image should be resized within maxDim',
+  );
+
+  // ── compress:false 覆盖：即使触发阈值成立，也必须上传原始字节 ──
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const exactUrl = await tryUploadToCosAndSign(bigPath, undefined, { compress: false });
+  assert.ok(exactUrl, 'compress:false should still upload');
+  const exactPut = captured.find((r) => r.method === 'PUT');
+  assert.ok(exactPut?.body, 'compress:false should PUT');
+  assert.ok(exactPut.body.equals(bigJpeg), 'compress:false must upload original bytes');
+  const exactHash = crypto.createHash('sha256').update(bigJpeg).digest('hex');
+  assert.ok(exactUrl.startsWith(`https://cos.example.com/ref-images/${exactHash}.jpg?`), exactUrl);
+
+  // ── 单次调用参数覆盖：视频首帧/尾帧按预处理参数（maxDim/quality）压缩 ──
+  process.env.CREATIVE_STUDIO_COS_MAX_DIM = '4096';
+  process.env.CREATIVE_STUDIO_COS_MAX_BYTES = '1';
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const overrideUrl = await tryUploadToCosAndSign(bigPath, undefined, { maxDim: 512, quality: 60 });
+  assert.ok(overrideUrl, 'per-call override should still upload');
+  const overridePut = captured.find((r) => r.method === 'PUT');
+  assert.ok(overridePut?.body, 'per-call override should PUT');
+  assert.ok(!overridePut.body.equals(bigJpeg), 'per-call override should compress');
+  const overrideMeta = await sharp(overridePut.body).metadata();
+  assert.ok(
+    overrideMeta.width && overrideMeta.width <= 512
+      && overrideMeta.height && overrideMeta.height <= 512,
+    'per-call maxDim should win over env maxDim',
+  );
+
+  // ── PNG 带 alpha：压缩后转为 webp，对象键与 content-type 跟随输出格式 ──
+  const pngNoise = crypto.randomBytes(256 * 256 * 4);
+  const pngAlpha = (await sharp(pngNoise, { raw: { width: 256, height: 256, channels: 4 } })
+    .png()
+    .toBuffer()) as Buffer<ArrayBuffer>;
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const webpUrl = await tryUploadBufferToCosAndSign(pngAlpha, 'image/png');
+  assert.ok(webpUrl, 'png alpha should upload as webp');
+  const webpPut = captured.find((r) => r.method === 'PUT');
+  assert.ok(webpPut?.body, 'png alpha should PUT');
+  assert.equal(webpPut.headers.get('content-type'), 'image/webp');
+  const webpHash = crypto.createHash('sha256').update(webpPut.body).digest('hex');
+  assert.ok(webpUrl.startsWith(`https://cos.example.com/ref-images/${webpHash}.webp?`), webpUrl);
+
+  // ── 小图（未超阈值）保持原样：与既有 fake jpeg 断言一致 ──
+  delete process.env.CREATIVE_STUDIO_COS_MAX_BYTES;
+  delete process.env.CREATIVE_STUDIO_COS_MAX_DIM;
+  delete process.env.CREATIVE_STUDIO_COS_QUALITY;
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const smallUrl = await tryUploadBufferToCosAndSign(pngContent, 'image/png');
+  assert.ok(smallUrl);
+  const smallPut = captured.find((r) => r.method === 'PUT');
+  assert.ok(smallPut?.body, 'small image should PUT');
+  assert.ok(smallPut.body.equals(pngContent), 'small image must stay byte-identical');
+
+  // ── 视频参数：默认 >4.8MB 才压缩（腾讯尾帧限 5M/首帧限 10M）、质量 95、最大边 4096，且可独立调节 ──
+  const videoDefaults = getCosVideoCompressOptions();
+  assert.equal(videoDefaults.maxBytes, 4_800_000);
+  assert.equal(videoDefaults.maxDim, 4_096);
+  assert.equal(videoDefaults.quality, 95);
+
+  // 默认 4.8MB 阈值：1.4MB 大图必须原样上传，不动画质
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const videoUrl = await tryUploadToCosAndSign(bigPath, undefined, getCosVideoCompressOptions());
+  assert.ok(videoUrl, 'video upload should return signed url');
+  const videoPut = captured.find((r) => r.method === 'PUT');
+  assert.ok(videoPut?.body, 'video upload should PUT');
+  assert.ok(
+    videoPut.body.equals(bigJpeg),
+    'video options default: <4.8MB must stay byte-identical',
+  );
+
+  // 调低视频阈值/最大边后，才触发视频压缩
+  process.env.CREATIVE_STUDIO_COS_VIDEO_MAX_BYTES = '1';
+  process.env.CREATIVE_STUDIO_COS_VIDEO_MAX_DIM = '512';
+  process.env.CREATIVE_STUDIO_COS_VIDEO_QUALITY = '95';
+  _resetCosMediaCacheForTest();
+  captured.length = 0;
+  existsCheckStatus = 404;
+  putStatus = 200;
+  const videoCompressedUrl = await tryUploadToCosAndSign(bigPath, undefined, getCosVideoCompressOptions());
+  assert.ok(videoCompressedUrl, 'video compression override should upload');
+  const videoCompressedPut = captured.find((r) => r.method === 'PUT');
+  assert.ok(videoCompressedPut?.body, 'video compression override should PUT');
+  assert.ok(!videoCompressedPut.body.equals(bigJpeg), 'video threshold override should compress');
+  const videoCompressedMeta = await sharp(videoCompressedPut.body).metadata();
+  assert.ok(
+    videoCompressedMeta.width && videoCompressedMeta.width <= 512
+      && videoCompressedMeta.height && videoCompressedMeta.height <= 512,
+    'video maxDim override should apply',
+  );
+  delete process.env.CREATIVE_STUDIO_COS_VIDEO_MAX_BYTES;
+  delete process.env.CREATIVE_STUDIO_COS_VIDEO_MAX_DIM;
+  delete process.env.CREATIVE_STUDIO_COS_VIDEO_QUALITY;
 
   console.log('cos-media unit tests passed');
 } finally {

@@ -245,6 +245,8 @@ try {
 
   // 可灵 3.0 尾帧（2026-08-17 实测合同）：images 只放首帧，尾帧走腾讯原生
   // LastFrameUrl，比例走 OutputConfig.AspectRatio，size 在首尾帧模式被忽略不发送；
+  // 时长走 OutputConfig.Duration（2026-08-18 实测：网关 LastFrameUrl 分支不透传
+  // seconds，OutputConfig 字段会原样透传腾讯，Duration=10 产出 10.042s）；
   // 两张图都是 COS 预签名 URL，POST 只发回本机 LiteLLM
   const tailSubmit = await openaiVideoAdapter.submit(
     {
@@ -271,7 +273,7 @@ try {
   assert.notEqual(klingTailImages[0], klingLastFrameUrl);
   assert.equal(capturedBody?.response_format, 'mp4');
   assert.equal(capturedBody?.size, undefined);
-  assert.deepEqual(capturedBody?.OutputConfig, { AspectRatio: '4:3', Resolution: '1080P' });
+  assert.deepEqual(capturedBody?.OutputConfig, { AspectRatio: '4:3', Resolution: '1080P', Duration: 5 });
   // aspect_ratio 探测被网关 400 拒绝（UnknownParameter，2026-08-17），不得再发送
   assert.equal(capturedBody?.aspect_ratio, undefined);
 

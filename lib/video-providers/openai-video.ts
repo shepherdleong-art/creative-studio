@@ -3,7 +3,11 @@ import {
   isPrivateOrLocalHttpUrl,
   resolvePublicImageUrlWithSource,
 } from '../local-image-url.ts';
-import { isCosMediaConfigured, tryUploadToCosAndSign } from '../cos-media.ts';
+import {
+  getCosVideoCompressOptions,
+  isCosMediaConfigured,
+  tryUploadToCosAndSign,
+} from '../cos-media.ts';
 import { normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../gateway-media-url.ts';
 import { companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../company-gateway-size.ts';
 import {
@@ -134,7 +138,13 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       );
     } else if (isCosMediaConfigured()) {
       try {
-        imageRef = await tryUploadToCosAndSign(request.sourceImagePath);
+        // 视频首帧默认 >4.8MB 才压缩（质量 95）：腾讯首帧限 10M、尾帧限 5M，
+        // 阈值以下原样上传，不动视频生成起点画质。
+        imageRef = await tryUploadToCosAndSign(
+          request.sourceImagePath,
+          undefined,
+          getCosVideoCompressOptions(),
+        );
       } catch (error) {
         console.warn('[cos-media] 首帧图上传 COS 失败，回退本机 URL：', error instanceof Error ? error.message : error);
       }
@@ -193,7 +203,16 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
           : null;
         // Resolution 1080P 已经真实任务验证（2026-08-17）：不加时上游按默认档
         // 出 828x1108，加了出 1244x1660；末帧收束不受影响。
-        if (aspectRatio) body.OutputConfig = { AspectRatio: aspectRatio, Resolution: '1080P' };
+        // Duration 必须走 OutputConfig：网关 LastFrameUrl 分支不透传 seconds
+        // （2026-08-18 实测落缺省 5s），而 OutputConfig 字段会原样透传给腾讯
+        // （腾讯 Kling Duration 3-15，默认 5）；同日首尾帧真实任务验证
+        // Duration=10 产出 10.042s 生效。
+        const outputConfig: Record<string, unknown> = { Duration: request.durationSec };
+        if (aspectRatio) {
+          outputConfig.AspectRatio = aspectRatio;
+          outputConfig.Resolution = '1080P';
+        }
+        body.OutputConfig = outputConfig;
       } else {
         const snappedSize = sourceDims
           ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)

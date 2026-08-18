@@ -1,4 +1,8 @@
-import { isCosMediaConfigured, tryUploadToCosAndSign } from './cos-media.ts';
+import {
+  getCosVideoCompressOptions,
+  isCosMediaConfigured,
+  tryUploadToCosAndSign,
+} from './cos-media.ts';
 import {
   assertProviderExecutionAvailable,
 } from './provider-execution-gate.ts';
@@ -17,7 +21,10 @@ import type { TailFrameCapability, TailFrameProtocol } from './video-providers/t
  * - 网关把未翻译的字段原样透传给腾讯校验，参数错误在任务创建前 400 返回；
  *   因此腾讯原生 PascalCase 参数可直接使用。
  * - 可灵（kling-3.0）：首帧 images[0]，尾帧 LastFrameUrl，比例
- *   OutputConfig.AspectRatio。images[1] 会被下游当参考图（Reference），
+ *   OutputConfig.AspectRatio，时长 OutputConfig.Duration（2026-08-18 实测：
+ *   网关 LastFrameUrl 分支不透传 seconds、落缺省 5s；OutputConfig 字段
+ *   原样透传腾讯，Duration=10 真实任务产出 10.042s 生效）。
+ *   images[1] 会被下游当参考图（Reference），
  *   比例落回 16:9 默认值且末帧不收束——禁止用 images 双图表达可灵尾帧。
  * - 公司 Seedance（doubao-seedance-2-0(-fast)-260128）：images[1] 即尾帧，
  *   比例跟随图片，末帧收束，实测正确。
@@ -86,7 +93,11 @@ export async function uploadCompanyTailFrameImages(
 ): Promise<[string, string]> {
   let firstRef: string | null = null;
   try {
-    firstRef = await tryUploadToCosAndSign(sourceImagePath);
+    // 首帧/尾帧默认 >4.8MB 才压缩（质量 95）：腾讯尾帧 LastFrameUrl 限 5M、
+    // 首帧 FileInfos 限 10M。压缩只影响发给上游的 COS 中转副本；
+    // 本地文件与最终成片仍以原始质量保存。
+    const videoOptions = getCosVideoCompressOptions();
+    firstRef = await tryUploadToCosAndSign(sourceImagePath, undefined, videoOptions);
   } catch (error) {
     throw new Error(`首帧图上传 COS 失败，公司尾帧任务未提交：${error instanceof Error ? error.message : error}`);
   }
@@ -96,7 +107,8 @@ export async function uploadCompanyTailFrameImages(
 
   let tailRef: string | null = null;
   try {
-    tailRef = await tryUploadToCosAndSign(tailImagePath, tailMimeType);
+    const videoOptions = getCosVideoCompressOptions();
+    tailRef = await tryUploadToCosAndSign(tailImagePath, tailMimeType, videoOptions);
   } catch (error) {
     throw new Error(`尾帧图上传 COS 失败，公司尾帧任务未提交：${error instanceof Error ? error.message : error}`);
   }

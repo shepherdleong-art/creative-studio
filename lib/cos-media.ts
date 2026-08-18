@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 
 /**
  * 腾讯云 COS 参考图中转。
@@ -29,6 +30,18 @@ import path from 'node:path';
  *                                   默认与 DOMAIN 一致
  *   CREATIVE_STUDIO_COS_PREFIX      可选，对象名前缀，默认 ref-images/
  *   CREATIVE_STUDIO_COS_URL_TTL_SEC 可选，预签名有效期秒数，默认 86400
+ *   CREATIVE_STUDIO_COS_COMPRESS    可选，上传前压缩开关，'0'/'false' 关闭，
+ *                                   默认开启（为 14 人团队控制流量）
+ *   CREATIVE_STUDIO_COS_MAX_BYTES   可选，超过该字节数才压缩，默认 2097152（2MB）
+ *   CREATIVE_STUDIO_COS_MAX_DIM     可选，宽或高超过该像素才压缩，默认 4096
+ *   CREATIVE_STUDIO_COS_QUALITY     可选，压缩质量 1-100，默认 90
+ *   CREATIVE_STUDIO_COS_VIDEO_MAX_BYTES 可选，视频首帧/尾帧压缩阈值，
+ *                                   默认 4800000（4.8MB）：腾讯 CreateAigcVideoTask
+ *                                   尾帧（LastFrameUrl）图片需小于 5M、首帧
+ *                                   （FileInfos）不超过 10M，超过在创建前 400；
+ *                                   取更小者并留余量，同时尽量不压画质
+ *   CREATIVE_STUDIO_COS_VIDEO_MAX_DIM   可选，视频首帧/尾帧最大边，默认 4096
+ *   CREATIVE_STUDIO_COS_VIDEO_QUALITY   可选，视频首帧/尾帧压缩质量，默认 95
  */
 
 const ENV_SECRET_ID = 'CREATIVE_STUDIO_COS_SECRET_ID';
@@ -36,11 +49,24 @@ const ENV_SECRET_KEY = 'CREATIVE_STUDIO_COS_SECRET_KEY';
 const ENV_DOMAIN = 'CREATIVE_STUDIO_COS_DOMAIN';
 const ENV_PREFIX = 'CREATIVE_STUDIO_COS_PREFIX';
 const ENV_URL_TTL = 'CREATIVE_STUDIO_COS_URL_TTL_SEC';
+const ENV_COMPRESS = 'CREATIVE_STUDIO_COS_COMPRESS';
+const ENV_MAX_BYTES = 'CREATIVE_STUDIO_COS_MAX_BYTES';
+const ENV_MAX_DIM = 'CREATIVE_STUDIO_COS_MAX_DIM';
+const ENV_QUALITY = 'CREATIVE_STUDIO_COS_QUALITY';
+const ENV_VIDEO_MAX_BYTES = 'CREATIVE_STUDIO_COS_VIDEO_MAX_BYTES';
+const ENV_VIDEO_MAX_DIM = 'CREATIVE_STUDIO_COS_VIDEO_MAX_DIM';
+const ENV_VIDEO_QUALITY = 'CREATIVE_STUDIO_COS_VIDEO_QUALITY';
 
 const ENV_SIGN_HOST = 'CREATIVE_STUDIO_COS_SIGN_HOST';
 
 const DEFAULT_PREFIX = 'ref-images/';
 const DEFAULT_URL_TTL_SEC = 86_400;
+const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_DIM = 4_096;
+const DEFAULT_QUALITY = 90;
+const DEFAULT_VIDEO_MAX_BYTES = 4_800_000;
+const DEFAULT_VIDEO_MAX_DIM = 4_096;
+const DEFAULT_VIDEO_QUALITY = 95;
 const EXISTS_CHECK_TIMEOUT_MS = 30_000;
 const PUT_TIMEOUT_MS = 120_000;
 // 缓存的签名 URL 提前 1h 视为过期，避免边界时刻拿到刚失效的 URL
@@ -66,7 +92,47 @@ type CosConfig = {
   signHost: string;
   prefix: string;
   urlTtlSec: number;
+  compressEnabled: boolean;
+  maxBytes: number;
+  maxDim: number;
+  quality: number;
+  videoMaxBytes: number;
+  videoMaxDim: number;
+  videoQuality: number;
 };
+
+type CosUploadOptions = {
+  /** 关闭本次上传的压缩，保证上传字节与本地文件完全一致。 */
+  compress?: boolean;
+  /** 本次上传的压缩阈值覆盖（默认取 CREATIVE_STUDIO_COS_MAX_BYTES）。 */
+  maxBytes?: number;
+  /** 本次上传的最大边覆盖（默认取 CREATIVE_STUDIO_COS_MAX_DIM）。 */
+  maxDim?: number;
+  /** 本次上传的压缩质量覆盖（默认取 CREATIVE_STUDIO_COS_QUALITY）。 */
+  quality?: number;
+};
+
+/**
+ * 视频首帧/尾帧上传使用的压缩参数：默认只有超过 4.8MB 才压缩（腾讯
+ * CreateAigcVideoTask 尾帧 LastFrameUrl 图片需小于 5M、首帧 FileInfos
+ * 不超过 10M，超过会在任务创建前 400 拒绝），质量 95、最长边 4096，
+ * 对视频生成起点画质透明；可用 CREATIVE_STUDIO_COS_VIDEO_* 环境变量单独调节。
+ */
+export function getCosVideoCompressOptions(): CosUploadOptions {
+  const config = loadCosConfig();
+  if (!config) {
+    return {
+      maxBytes: DEFAULT_VIDEO_MAX_BYTES,
+      maxDim: DEFAULT_VIDEO_MAX_DIM,
+      quality: DEFAULT_VIDEO_QUALITY,
+    };
+  }
+  return {
+    maxBytes: config.videoMaxBytes,
+    maxDim: config.videoMaxDim,
+    quality: config.videoQuality,
+  };
+}
 
 function loadCosConfig(): CosConfig | null {
   const secretId = (process.env[ENV_SECRET_ID] || '').trim();
@@ -89,7 +155,50 @@ function loadCosConfig(): CosConfig | null {
   const ttl = Number.parseInt((process.env[ENV_URL_TTL] || '').trim(), 10);
   const urlTtlSec = Number.isInteger(ttl) && ttl > 0 ? ttl : DEFAULT_URL_TTL_SEC;
 
-  return { secretId, secretKey, domain, signHost, prefix, urlTtlSec };
+  const rawCompress = (process.env[ENV_COMPRESS] || '').trim().toLowerCase();
+  const compressEnabled = rawCompress !== '0' && rawCompress !== 'false';
+
+  const rawMaxBytes = Number.parseInt((process.env[ENV_MAX_BYTES] || '').trim(), 10);
+  const maxBytes = Number.isInteger(rawMaxBytes) && rawMaxBytes > 0 ? rawMaxBytes : DEFAULT_MAX_BYTES;
+
+  const rawMaxDim = Number.parseInt((process.env[ENV_MAX_DIM] || '').trim(), 10);
+  const maxDim = Number.isInteger(rawMaxDim) && rawMaxDim > 0 ? rawMaxDim : DEFAULT_MAX_DIM;
+
+  const rawQuality = Number.parseInt((process.env[ENV_QUALITY] || '').trim(), 10);
+  const quality = Number.isInteger(rawQuality)
+    ? Math.min(100, Math.max(1, rawQuality))
+    : DEFAULT_QUALITY;
+
+  const rawVideoMaxBytes = Number.parseInt((process.env[ENV_VIDEO_MAX_BYTES] || '').trim(), 10);
+  const videoMaxBytes = Number.isInteger(rawVideoMaxBytes) && rawVideoMaxBytes > 0
+    ? rawVideoMaxBytes
+    : DEFAULT_VIDEO_MAX_BYTES;
+
+  const rawVideoMaxDim = Number.parseInt((process.env[ENV_VIDEO_MAX_DIM] || '').trim(), 10);
+  const videoMaxDim = Number.isInteger(rawVideoMaxDim) && rawVideoMaxDim > 0
+    ? rawVideoMaxDim
+    : DEFAULT_VIDEO_MAX_DIM;
+
+  const rawVideoQuality = Number.parseInt((process.env[ENV_VIDEO_QUALITY] || '').trim(), 10);
+  const videoQuality = Number.isInteger(rawVideoQuality)
+    ? Math.min(100, Math.max(1, rawVideoQuality))
+    : DEFAULT_VIDEO_QUALITY;
+
+  return {
+    secretId,
+    secretKey,
+    domain,
+    signHost,
+    prefix,
+    urlTtlSec,
+    compressEnabled,
+    maxBytes,
+    maxDim,
+    quality,
+    videoMaxBytes,
+    videoMaxDim,
+    videoQuality,
+  };
 }
 
 export function isCosMediaConfigured(): boolean {
@@ -213,27 +322,120 @@ function cosErrorHint(status: number): string {
  * 把本地图片上传 COS 并返回预签名 GET URL；未配置 COS 时返回 null。
  * 上传/查询失败抛中文可操作错误（不含密钥与签名），由调用方决定回退。
  */
-export async function tryUploadToCosAndSign(filePath: string, mimeType?: string): Promise<string | null> {
+export async function tryUploadToCosAndSign(
+  filePath: string,
+  mimeType?: string,
+  options?: CosUploadOptions,
+): Promise<string | null> {
   const config = loadCosConfig();
   if (!config) return null;
 
   const ext = path.extname(filePath).toLowerCase();
   const mime = mimeType ?? MIME_BY_EXT[ext] ?? 'application/octet-stream';
   const buffer = await fs.promises.readFile(filePath);
-  return uploadBufferAndSign(config, buffer, ext || '.jpg', mime);
+  return uploadBufferAndSign(config, buffer, ext || '.jpg', mime, options);
 }
 
 /**
  * 内存图片（如视频抽帧的 base64）直接上传 COS 并返回预签名 GET URL；
  * 未配置 COS 时返回 null。与文件版本共用同一内容指纹去重空间。
  */
-export async function tryUploadBufferToCosAndSign(buffer: Buffer<ArrayBuffer>, mimeType: string): Promise<string | null> {
+export async function tryUploadBufferToCosAndSign(
+  buffer: Buffer<ArrayBuffer>,
+  mimeType: string,
+  options?: CosUploadOptions,
+): Promise<string | null> {
   const config = loadCosConfig();
   if (!config) return null;
-  return uploadBufferAndSign(config, buffer, EXT_BY_MIME[mimeType] ?? '.jpg', mimeType);
+  return uploadBufferAndSign(config, buffer, EXT_BY_MIME[mimeType] ?? '.jpg', mimeType, options);
 }
 
-async function uploadBufferAndSign(config: CosConfig, buffer: Buffer<ArrayBuffer>, ext: string, mime: string): Promise<string> {
+/**
+ * 上传前压缩：只处理 jpeg/png/webp；sharp 解析失败、结果不比原图小或
+ * options.compress === false 时一律原样上传，绝不让压缩导致上传失败。
+ */
+async function prepareUploadBuffer(
+  config: CosConfig,
+  buffer: Buffer<ArrayBuffer>,
+  ext: string,
+  mime: string,
+  options?: CosUploadOptions,
+): Promise<{ buffer: Buffer<ArrayBuffer>; ext: string; mime: string }> {
+  const compress = options?.compress ?? config.compressEnabled;
+  if (!compress || (mime !== 'image/jpeg' && mime !== 'image/png' && mime !== 'image/webp')) {
+    return { buffer, ext, mime };
+  }
+
+  try {
+    const metadata = await sharp(buffer).metadata();
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (!width || !height) return { buffer, ext, mime };
+
+    const maxBytes = options?.maxBytes ?? config.maxBytes;
+    const maxDim = options?.maxDim ?? config.maxDim;
+    const quality = options?.quality ?? config.quality;
+    const needResize = width > maxDim || height > maxDim;
+    const needCompress = buffer.byteLength > maxBytes;
+    if (!needResize && !needCompress) return { buffer, ext, mime };
+
+    let pipeline = sharp(buffer)
+      .rotate()
+      .resize({
+        width: maxDim,
+        height: maxDim,
+        fit: 'inside',
+        withoutEnlargement: true,
+      });
+
+    let outMime = mime;
+    let outExt = ext;
+    if (mime === 'image/jpeg') {
+      pipeline = pipeline.jpeg({ quality, mozjpeg: true });
+    } else if (mime === 'image/webp') {
+      pipeline = pipeline.webp({ quality });
+    } else if (metadata.hasAlpha) {
+      pipeline = pipeline.webp({ quality, alphaQuality: quality });
+      outMime = 'image/webp';
+      outExt = '.webp';
+    } else {
+      pipeline = pipeline.jpeg({ quality, mozjpeg: true });
+      outMime = 'image/jpeg';
+      outExt = '.jpg';
+    }
+
+    const compressed = (await pipeline.toBuffer()) as Buffer<ArrayBuffer>;
+    if (compressed.byteLength >= buffer.byteLength) {
+      return { buffer, ext, mime };
+    }
+
+    const percent = Math.round((1 - compressed.byteLength / buffer.byteLength) * 100);
+    console.log(
+      `[cos-media] 压缩参考图：orig=${(buffer.byteLength / 1024).toFixed(0)}KB ` +
+        `→ out=${(compressed.byteLength / 1024).toFixed(0)}KB（约 ${percent}%）`,
+    );
+    return { buffer: compressed, ext: outExt, mime: outMime };
+  } catch (error) {
+    console.warn(
+      '[cos-media] 参考图压缩失败，按原图上传：',
+      error instanceof Error ? error.message : error,
+    );
+    return { buffer, ext, mime };
+  }
+}
+
+async function uploadBufferAndSign(
+  config: CosConfig,
+  buffer: Buffer<ArrayBuffer>,
+  ext: string,
+  mime: string,
+  options?: CosUploadOptions,
+): Promise<string> {
+  const prepared = await prepareUploadBuffer(config, buffer, ext, mime, options);
+  buffer = prepared.buffer;
+  ext = prepared.ext;
+  mime = prepared.mime;
+
   const hash = crypto.createHash('sha256').update(buffer).digest('hex');
   const objectKey = `${config.prefix}${hash}${ext}`;
   const pathname = `/${objectKey.split('/').map(encodeURIComponent).join('/')}`;
