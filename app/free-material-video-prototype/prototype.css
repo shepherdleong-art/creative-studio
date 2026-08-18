@@ -1,0 +1,52 @@
+.free-material-prototype {
+  min-width: 0;
+  margin-top: -30px;
+}
+
+.free-material-prototype .video-generation-section {
+  padding: 18px;
+}
+
+.free-material-prototype .panel-col-header {
+  margin-bottom: 16px;
+}
+
+.free-material-add-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--color-accent);
+}
+
+.free-material-head-upload {
+  color: var(--color-accent);
+}
+
+.free-material-player {
+  width: min(100%, 500px);
+}
+
+.free-material-player .video-stage {
+  aspect-ratio: 3 / 4;
+}
+
+.free-material-player .video-stage img {
+  object-fit: cover;
+}
+
+.free-material-result-thumb {
+  width: 100%;
+  border: 0;
+  padding: 0;
+}
+
+@media (max-width: 1024px) {
+  .free-material-prototype {
+    margin-top: -24px;
+  }
+
+  .free-material-player {
+    width: min(100%, 520px);
+  }
+}
