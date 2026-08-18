@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo, type DragEvent as ReactDragEvent } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, type DragEvent as ReactDragEvent } from 'react';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
@@ -85,7 +85,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [loading, setLoading] = useState(true);
 
   // Shot set selection (for top-level Panel 4)
-  const [availableSets, setAvailableSets] = useState<Array<{ id: string; name: string; shotCount: number }>>([]);
+  const [availableSets, setAvailableSets] = useState<Array<{ id: string; name: string; shotCount: number; kind?: string }>>([]);
+  const [deletingSet, setDeletingSet] = useState(false);
   const [selectedSetId, setSelectedSetId] = useState<string>(shotSetId || '');
   const selectedSetIdRef = useRef<string>(shotSetId || '');
   const [selectedSetShots, setSelectedSetShots] = useState<typeof shots>(shots);
@@ -219,19 +220,26 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   // Load shot sets for selector
+  const loadAvailableSets = useCallback(async () => {
+    const res = await fetch(`/api/projects/${projectId}/shot-sets`);
+    const data = await res.json();
+    return Array.isArray(data)
+      ? data as Array<{ id: string; name: string; shotCount: number; kind?: string }>
+      : [];
+  }, [projectId]);
+
   useEffect(() => {
     if (shotSetId) return; // Already have a specific set
     let active = true;
     (async () => {
       try {
-        const res = await fetch(`/api/projects/${projectId}/shot-sets`);
-        const data = await res.json();
-        if (active && Array.isArray(data)) setAvailableSets(data);
+        const sets = await loadAvailableSets();
+        if (active) setAvailableSets(sets);
       } catch { /* ignore */ }
       finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
-  }, [projectId, shotSetId]);
+  }, [loadAvailableSets, shotSetId]);
 
   // Load shots when set is selected (with race guard)
   const getDefaultPreviewJobId = (jobs: VideoJob[]) =>
@@ -292,6 +300,59 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       else window.localStorage.removeItem(storageKey);
     }
     if (setId) loadShotsForSet(setId);
+  };
+
+  // 下拉里的「自由素材工位」用一个固定的哨兵值。真正的 shotSetId 要等
+  // 后端 get-or-create 之后才知道(D15:一个项目一个)。
+  const FREE_SET_OPTION = '__free__';
+
+  const handleSelectFreeSet = async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/free-shot-set`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('打开自由素材工位失败：' + (data.error || `HTTP ${res.status}`)); return; }
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* ignore */ }
+      handleSelectSet(String(data.id));
+    } catch (err) {
+      alert('打开自由素材工位失败：' + String(err));
+    }
+  };
+
+  const selectedSetMeta = availableSets.find((set) => set.id === selectedSetId);
+  const isFreeSet = selectedSetMeta?.kind === 'free';
+  const canDeleteSelectedSet = !shotSetId && isFreeSet;
+  const selectorLocked = creating || deletingSet;
+
+  const handleDeleteFreeSet = async () => {
+    if (!canDeleteSelectedSet || !selectedSetMeta || selectorLocked) return;
+    // 记住目标 id:删除是异步的,期间用户可能已经切到别的组。
+    const targetId = selectedSetId;
+    const confirmed = window.confirm(
+      `删除自由素材工位「${selectedSetMeta.name}」？\n\n` +
+      '· 视频文件保留在本地磁盘上，不会被删除\n' +
+      '· 已经登记到批量生产素材库的视频会继续保留\n' +
+      '· 尚未登记的视频将无法再登记，也不再出现在第 5 步智能混剪里\n' +
+      '· 这个操作不可撤销',
+    );
+    if (!confirmed) return;
+    setDeletingSet(true);
+    try {
+      const res = await fetch(`/api/shot-sets/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // 还有任务没跑完时服务端返回 409(D14),把原因原样告诉用户。
+        alert('删除失败：' + (data.error || `HTTP ${res.status}`));
+        return;
+      }
+      // 只有当前仍停在被删的那个组时才清空选择,否则会把用户刚切过去的
+      // 新组一起清掉。selectedSetIdRef 在 handleSelectSet 里是同步更新的。
+      if (selectedSetIdRef.current === targetId) handleSelectSet('');
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* ignore */ }
+    } catch (err) {
+      alert('删除失败：' + String(err));
+    } finally {
+      setDeletingSet(false);
+    }
   };
 
   // Restore the last selected shot set after tab remounts.
@@ -650,14 +711,49 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   if (loading) return <p className="text-xs text-ink-tertiary">加载视频功能...</p>;
+  const storyboardSets = availableSets.filter((s) => s.kind !== 'free');
+  const freeSet = availableSets.find((s) => s.kind === 'free');
+
   const shotSetSelector = !shotSetId ? (
     <div className="mb-4">
       <label className="label">选择分镜组</label>
-      <select value={selectedSetId} onChange={(e) => handleSelectSet(e.target.value)} className="input-field text-sm" disabled={creating}>
-        <option value="">-- 选择分镜组 --</option>
-        {availableSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
-      </select>
-      {availableSets.length === 0 && <p className="mt-1 text-xs text-ink-tertiary">暂无分镜组，请先在分镜生成中创建。</p>}
+      <div className="flex items-center gap-2">
+        <select
+          value={selectedSetId}
+          onChange={(e) => {
+            const value = e.target.value;
+            if (value === FREE_SET_OPTION) { void handleSelectFreeSet(); return; }
+            handleSelectSet(value);
+          }}
+          className="input-field text-sm"
+          disabled={selectorLocked}
+        >
+          <option value="">-- 选择分镜组 --</option>
+          {storyboardSets.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.shotCount} 张)</option>))}
+          {/* D15:一个项目一个自由工位。已经建过就直接列出来,没建过用哨兵值,
+              选中时才 get-or-create。 */}
+          {freeSet
+            ? <option value={freeSet.id}>＋ 自由素材工位（{freeSet.shotCount} 张）</option>
+            : <option value={FREE_SET_OPTION}>＋ 自由素材工位（直接传图做视频）</option>}
+        </select>
+        {canDeleteSelectedSet && (
+          <button
+            type="button"
+            onClick={handleDeleteFreeSet}
+            disabled={selectorLocked}
+            className="icon-btn text-ink-tertiary hover:text-fail"
+            title="删除这个自由素材工位"
+            aria-label="删除这个自由素材工位"
+          >
+            <Icon name="trash" size={14} />
+          </button>
+        )}
+      </div>
+      {availableSets.length === 0 && (
+        <p className="mt-1 text-xs text-ink-tertiary">
+          还没有分镜组。可以在分镜生成里创建，也可以直接选「自由素材工位」传图做视频。
+        </p>
+      )}
     </div>
   ) : null;
 
