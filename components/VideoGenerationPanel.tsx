@@ -78,6 +78,8 @@ interface Props {
   }>;
 }
 
+const FREE_HEAD_FRAME_DRAG_KEY = '__free-head-frame__';
+
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
   const [templates, setTemplates] = useState<MotionTemplate[]>([]);
@@ -100,6 +102,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
+  const [headFrameBusy, setHeadFrameBusy] = useState(false);
+  const [deletingShot, setDeletingShot] = useState(false);
   const mountedRef = useRef(true);
   const pendingCreationTailIdsRef = useRef<Set<string>>(new Set());
   const tailFrameDragDepthRef = useRef<Map<string, number>>(new Map());
@@ -267,6 +271,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         if (loadedShots.length > 0) {
           replaceSelectedShot(loadedShots[0].id);
           replaceActiveMotionRows([makeEmptyRow()]);
+        } else {
+          replaceSelectedShot(null);
+          replaceActiveMotionRows([]);
         }
       }
       // Load video jobs
@@ -372,6 +379,93 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const effectiveSetId = shotSetId || selectedSetId;
   const effectiveShots = shots || selectedSetShots;
   const safeShots = effectiveShots || [];
+
+  /**
+   * 自由素材工位专用：上传一张图并作为新的一「张」加进工位。
+   * 上传走和尾帧同一条 /api/upload，只是 usage 用 video_source(D6)，
+   * 这样它不会跑到第 2 步的原始分镜图宫格里。
+   */
+  const handleAppendFreeShot = async (file: File) => {
+    if (!effectiveSetId || headFrameBusy || creatingRef.current) return;
+    setHeadFrameBusy(true);
+    let uploadedId: string | null = null;
+    try {
+      const formData = new FormData();
+      formData.append('files', file);
+      formData.append('role', 'input');
+      formData.append('projectId', projectId);
+      formData.append('usage', 'video_source');
+      const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+      const uploadData = await uploadRes.json().catch(() => ({})) as {
+        error?: string;
+        files?: Array<{ id: string }>;
+      };
+      if (!uploadRes.ok) throw new Error(uploadData.error || `HTTP ${uploadRes.status}`);
+      const uploaded = uploadData.files?.[0];
+      if (!uploaded) throw new Error('上传接口没有返回图片');
+      uploadedId = uploaded.id;
+
+      const appendRes = await fetch(`/api/shot-sets/${encodeURIComponent(effectiveSetId)}/shots`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageId: uploaded.id }),
+      });
+      const appendData = await appendRes.json().catch(() => ({}));
+      if (!appendRes.ok) throw new Error(appendData.error || `HTTP ${appendRes.status}`);
+
+      // 重新拉一次分镜列表，新的一张会作为最后一个 tab 出现并自动选中。
+      await loadShotsForSet(effectiveSetId);
+      const newShotId = String(appendData.shotId);
+      replaceSelectedShot(newShotId);
+      replaceActiveMotionRows([makeEmptyRow()]);
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* keep the active workspace usable */ }
+    } catch (error) {
+      // 挂载失败就把刚上传的图删掉，不留孤儿资源（和尾帧同一套处理）。
+      if (uploadedId) {
+        await fetch(`/api/images/${encodeURIComponent(uploadedId)}`, { method: 'DELETE' }).catch(() => undefined);
+      }
+      alert('添加图片失败：' + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setHeadFrameBusy(false);
+    }
+  };
+
+  // D21：只有 failed / canceled 不算数。和服务端 DISCARDABLE_VIDEO_JOB_STATUSES
+  // 必须保持一致；服务端仍会再判一次，这里只是把按钮先禁掉。
+  const DISCARDABLE_JOB_STATUSES = new Set(['failed', 'canceled']);
+  const canDeleteShot = (shotId: string) =>
+    Boolean(isFreeSet) && !videoJobs.some((job) => job.shotId === shotId && !DISCARDABLE_JOB_STATUSES.has(job.status));
+
+  const handleDeleteFreeShot = async (shotId: string) => {
+    if (!effectiveSetId || !canDeleteShot(shotId) || deletingShot || creatingRef.current) return;
+    if (!window.confirm('删掉这张图？它下面还没生成过视频，删了不影响其他图。')) return;
+    setDeletingShot(true);
+    try {
+      const res = await fetch(
+        `/api/shot-sets/${encodeURIComponent(effectiveSetId)}/shots/${encodeURIComponent(shotId)}`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 前端算完到点下去这段时间里任务可能已经跑起来了，服务端会返回 409。
+        alert('删除失败：' + (data.error || `HTTP ${res.status}`));
+        return;
+      }
+      // best-effort 清掉上传的图片资源。还被别处引用时接口会返回 409，忽略即可。
+      // —— 和尾帧的 deleteTailFrameAsset 同一套处理。
+      if (data.sourceImageId) {
+        await fetch(`/api/images/${encodeURIComponent(String(data.sourceImageId))}`, { method: 'DELETE' })
+          .catch(() => undefined);
+      }
+      perShotMotionCache.current.delete(shotId);
+      await loadShotsForSet(effectiveSetId);
+      try { setAvailableSets(await loadAvailableSets()); } catch { /* keep the active workspace usable */ }
+    } catch (err) {
+      alert('删除失败：' + String(err));
+    } finally {
+      setDeletingShot(false);
+    }
+  };
 
   const ensureVideoQueueRunning = async (projectIdToUse: string) => {
     try {
@@ -594,6 +688,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     void handleTailFrameUpload(shotId, rowKey, file);
   };
 
+  const handleFreeHeadFrameDrop = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    clearTailFrameDragState(FREE_HEAD_FRAME_DRAG_KEY);
+    if (headFrameBusy || creating) return;
+    const file = Array.from(event.dataTransfer.files).find((candidate) =>
+      ['image/png', 'image/jpeg', 'image/webp'].includes(candidate.type),
+    );
+    if (!file) {
+      alert('请拖入 PNG、JPEG 或 WebP 图片');
+      return;
+    }
+    void handleAppendFreeShot(file);
+  };
+
   const handleTailFrameRemove = async (shotId: string, rowKey: string) => {
     if (creatingRef.current) return;
     const currentRows = selectedShotRef.current === shotId
@@ -787,7 +896,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         <div className="panel-col left-col">
           <div className="panel-col-header">
             {/* Shot tabs */}
-            {safeShots.length > 0 && (
+            {(safeShots.length > 0 || isFreeSet) && (
               <div className="shot-tab-row">
                 {safeShots.map((shot) => (
                   <button
@@ -797,14 +906,141 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     disabled={creating}
                     className={`shot-tab-item ${selectedShot === shot.id ? 'active' : ''}`}
                   >
-                    分镜 {shot.indexNum}
+                    {isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}
                   </button>
                 ))}
+                {isFreeSet && (
+                  <label
+                    className={`shot-tab-item shot-tab-add ${headFrameBusy ? 'is-busy' : ''}`}
+                    title="再加一张图"
+                  >
+                    <Icon name="plus" size={13} />
+                    {headFrameBusy ? '上传中…' : '添加图片'}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="sr-only"
+                      disabled={headFrameBusy || creating}
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        event.currentTarget.value = '';
+                        if (file) void handleAppendFreeShot(file);
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            )}
+            {isFreeSet && selectedShot && (
+              <div className="free-shot-actions">
+                <span>当前：图 {selectedShotData?.indexNum}</span>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteFreeShot(selectedShot)}
+                  disabled={!canDeleteShot(selectedShot) || deletingShot || creating}
+                  title={canDeleteShot(selectedShot)
+                    ? '删掉这张图'
+                    : '这张图已经生成过视频了，不能删除'}
+                  className="free-shot-delete"
+                >
+                  <Icon name="trash" size={12} /> {deletingShot ? '删除中…' : '删掉这张图'}
+                </button>
               </div>
             )}
           </div>
 
           {/* Motion form — scrollable independently */}
+          {isFreeSet && safeShots.length === 0 && (
+            <div className="panel-scroll-area">
+              <div className="space-y-3">
+                <div className="video-motion-card">
+                  <span className="video-motion-label">描述 1</span>
+
+                  <div className="video-frame-pair" data-testid="video-frame-pair">
+                    <label
+                      className={`video-frame-tile video-frame-empty ${headFrameBusy ? 'is-busy' : ''} ${tailFrameDragRowKey === FREE_HEAD_FRAME_DRAG_KEY ? 'is-dragging' : ''}`}
+                      aria-live="polite"
+                      onDragEnter={(event) => handleTailFrameDragEnter(event, FREE_HEAD_FRAME_DRAG_KEY, !headFrameBusy && !creating)}
+                      onDragOver={(event) => handleTailFrameDragOver(event, !headFrameBusy && !creating)}
+                      onDragLeave={(event) => handleTailFrameDragLeave(event, FREE_HEAD_FRAME_DRAG_KEY)}
+                      onDrop={handleFreeHeadFrameDrop}
+                    >
+                      <span className="video-frame-empty-icon">
+                        <Icon name="image" size={25} />
+                        <span><Icon name="plus" size={10} /></span>
+                      </span>
+                      <strong>{headFrameBusy ? '上传中…' : '添加首帧图'}</strong>
+                      <small>点击或拖入</small>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="sr-only"
+                        disabled={headFrameBusy || creating}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = '';
+                          if (file) void handleAppendFreeShot(file);
+                        }}
+                      />
+                      {tailFrameDragRowKey === FREE_HEAD_FRAME_DRAG_KEY && (
+                        <span className="video-frame-drop-overlay" role="status">
+                          <Icon name="upload" size={19} />
+                          <strong>松开添加首帧</strong>
+                        </span>
+                      )}
+                    </label>
+
+                    <div className="video-frame-bridge" aria-hidden="true">
+                      <Icon name="chevron-right" size={18} />
+                    </div>
+
+                    <div className="video-frame-tile video-frame-empty is-disabled">
+                      <span className="video-frame-empty-icon"><Icon name="image" size={25} /></span>
+                      <strong>先添加首帧</strong>
+                      <small>添加后可选</small>
+                    </div>
+                  </div>
+
+                  {/* 这三块继续占据原位置；没有真实 shot 前禁用，不提交草稿。 */}
+                  <select className="input-field video-control" disabled>
+                    <option>选择视频供应商</option>
+                  </select>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select className="input-field video-control" disabled>
+                      <option>模板（可选）</option>
+                    </select>
+                    <input className="input-field video-control text-center" value={5} disabled readOnly />
+                  </div>
+                  <textarea
+                    className="input-field video-prompt-field"
+                    placeholder="运镜描述（提示词）"
+                    disabled
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <button className="btn-secondary btn-sm w-full video-add-action" disabled>
+                  <Icon name="plus" size={12} /> 添加描述
+                </button>
+                <div>
+                  <label className="label generation-label">并发数</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={videoConcurrency}
+                    onChange={(event) => handleVideoConcurrencyChange(Number(event.target.value))}
+                    className="input-field generation-control generation-number"
+                  />
+                  <p className="generation-helper">失败或限流时调回 1。</p>
+                </div>
+                <button className="btn-primary btn-sm w-full video-create-action" disabled>
+                  生成 0 条视频
+                </button>
+              </div>
+            </div>
+          )}
           {selectedShot && (
             <div className="panel-scroll-area">
               <div className="space-y-3">
@@ -1053,7 +1289,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           <VideoGenerationPreview
             videoUrl={previewVideoUrl}
             posterUrl={previewPosterUrl}
-            placeholderText={safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
+            placeholderText={isFreeSet && safeShots.length === 0
+              ? '添加首帧图后开始生成'
+              : safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
             videoJobs={videoJobs}
             currentJobId={videoPreviewJobId}
             playSignal={videoPreviewPlaySignal}
@@ -1080,7 +1318,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         </div>
       </div>
 
-      {safeShots.length === 0 && (
+      {safeShots.length === 0 && !isFreeSet && (
         <p className="text-xs text-ink-tertiary mt-3">分镜组中没有分镜。</p>
       )}
     </div>
