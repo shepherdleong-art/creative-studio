@@ -81,7 +81,15 @@ export function createShotSet(
   }
 
   const setId = uuidv4();
-  db.transaction(() => {
+  const inserted = db.transaction(() => {
+    // D15 的单例约束必须落在服务层，而不能只靠 get-or-create 先查一次。
+    // immediate 让不同进程同时建自由工位时串行经过这次检查；普通组不受限。
+    if (kind === 'free') {
+      const existingFreeSet = db.prepare(
+        `SELECT id FROM shot_sets WHERE projectId = ? AND kind = 'free' LIMIT 1`,
+      ).get(input.projectId);
+      if (existingFreeSet) return false;
+    }
     db.prepare(`
       INSERT INTO shot_sets (id, projectId, name, productCode, category, kind, status)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -93,7 +101,12 @@ export function createShotSet(
       kind === 'free' ? 'approved' : 'draft',
     );
     insertShots(db, setId, shotImageIds, 1);
-  })();
+    return true;
+  }).immediate();
+
+  if (!inserted) {
+    return { ok: false, status: 409, error: '一个项目只能有一个自由素材工位' };
+  }
 
   return { ok: true, id: setId, name, kind };
 }
@@ -121,7 +134,18 @@ export function getOrCreateFreeShotSet(db: Database.Database, projectId: string)
     shotImageIds: [],
     kind: 'free',
   });
-  if (!created.ok) return created;
+  if (!created.ok) {
+    // 另一个本机进程可能在上面的查询之后先完成了创建。服务层的
+    // IMMEDIATE 单例检查会让本次得到 409；回读胜出的那一行即可保持
+    // get-or-create 的幂等合同，而不是把正常竞态暴露给前端。
+    if (created.status === 409) {
+      const winner = db.prepare(`
+        SELECT id FROM shot_sets WHERE projectId = ? AND kind = 'free' ORDER BY createdAt LIMIT 1
+      `).get(projectId) as { id: string } | undefined;
+      if (winner) return { ok: true, id: winner.id, created: false };
+    }
+    return created;
+  }
   return { ok: true, id: created.id, created: true };
 }
 

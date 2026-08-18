@@ -132,6 +132,16 @@ function freshDb(): Database.Database {
   assert.equal(b.id, a.id, '必须返回同一个工位');
   assert.equal((db.prepare(`SELECT COUNT(*) c FROM shot_sets WHERE kind='free'`).get() as { c: number }).c, 1);
 
+  const duplicate = createShotSet(db, {
+    projectId: 'p1',
+    name: FREE_SHOT_SET_NAME,
+    shotImageIds: [],
+    kind: 'free',
+  });
+  assert.equal(duplicate.ok, false, '通用建组服务也不能绕过自由工位单例');
+  assert.equal(duplicate.ok === false && duplicate.status, 409);
+  assert.equal((db.prepare(`SELECT COUNT(*) c FROM shot_sets WHERE kind='free'`).get() as { c: number }).c, 1);
+
   const other = getOrCreateFreeShotSet(db, 'p2');
   assert.ok(other.ok);
   assert.notEqual(other.id, a.id, '不同项目各有各的自由工位');
