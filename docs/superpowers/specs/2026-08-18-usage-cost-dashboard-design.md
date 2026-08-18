@@ -1,153 +1,214 @@
-# 消耗看板（费控）设计
+# 核心模型消耗看板设计
 
 日期：2026-08-18
 
 ## 目标
 
-- 新增独立页面 `/usage`，与「项目」「供应商」并列为顶部导航 tab，集中展示预估消耗。
-- 页面包含：今日/本周/本月汇总卡片、按类别构成、近 30 天逐日柱图、可筛选分页的完整流水表。
-- 全链路记账：图片生成、视频生成、LLM 文本调用、LLM 视觉调用、TTS 配音五类计费事件全部落流水。
-- LLM 按真实 token 记账（读取适配器响应中的 `usage`），不按次估算。
-- 所有数字为「单价 × 用量」的预估值，页面明确标注非上游真实账单。
+- 新增独立页面 `/usage`，与「项目」「供应商」并列为顶部导航 tab。
+- 只展示当前实际使用的公司 API 模型与豆包 TTS，不让外接、测试供应商污染统计。
+- 以「供应商 + 模型」为主维度，展示今日、本周、本月预估消耗、模型排行、用量、调用次数、占比、近 30 天趋势和调用流水。
+- 公司 LLM 优先按响应中的真实 token usage 计量；图片、视频和 TTS 按各自可获得的真实用量或既有预估口径计量。
+- 所有金额均为「配置单价 × 记录用量」的预估值，页面固定标注“非上游真实账单”。
 
 ## 当前事实
 
-### 已有记账
+### 已有成本数据
 
-- 图片：`providers.defaultCostPerImage`（设置页可改），任务成功时 `lib/queue.ts` 写入 `jobs.estimatedCost = 单价 × (attempt+1)`；失败不写，retry 置 NULL。
-- 成片剪辑：`final_edit_jobs.estimatedCost` = TTS（`final_edit_tts_providers.costPerThousandCharacters` × 字符数）+ 视觉分析（`script_providers.visionCostPerRequest` × 素材数）的**预估值**；渲染任务写 0。
-- 首页项目列表已聚合 `SUM(jobs.estimatedCost)` 展示项目总成本（只含图片）。
+- 图片任务成功时，`lib/queue.ts` 会把 `providers.defaultCostPerImage × 尝试次数` 写入 `jobs.estimatedCost`。
+- 首页项目列表会聚合 `jobs.estimatedCost`，但只覆盖图片任务。
+- `video_providers.defaultCostPerVideo` 已存在，但视频队列尚未使用。
+- `final_edit_tts_providers.costPerThousandCharacters` 已存在，用于成片准备阶段的成本预估。
 
-### 缺口
+### 尚未覆盖
 
-- 视频生成：`video_providers.defaultCostPerVideo` 列存在但无任何代码读写（死列）；`lib/video-queue.ts` 无成本逻辑。视频是成本大头。
-- LLM 调用：脚本生成（`lib/script-generation-v3.ts`）、卖点分析（`lib/script-providers/index.ts` 的 `analyzeSellingPoints`）、语义矩阵打分（`lib/batch-production/semantic-match.ts`、`lib/final-edit/runtime.ts`）、视频内容分析（`lib/media-core/adapters/video-analysis.ts`，视觉）全部经 `completeJson` / `analyzeSellingPoints` 统一入口，但四个适配器（`openai-compatible.ts`、`openai-responses.ts`、`anthropic-messages.ts`、`gemini.ts`）的 `chatCompletion` 只返回文本，丢弃了响应中的 `usage` token 数；也没有任何成本落库。
-- 批量生产（`lib/batch-production/`）：无任何成本列。其计费构成 = 口播 TTS + 语义打分 LLM + 内容分析视觉 LLM，代理生成与渲染为本地任务不花钱。
-- `script_providers.visionCostPerRequest` 只用于成片剪辑的成本预估，未实际记账。
-- 无统计/聚合 API 路由；无 dashboard 组件。
+- 公司可灵和公司 Seedance 视频任务没有成本流水。
+- 公司 `GPT-5-6-Luna-Standard` 的 OpenAI-compatible 响应中可能带 `usage`，当前适配器只返回文本，未保留 token 数据。
+- 豆包 TTS 的真实合成、批量口播和设置页试听均未写统一流水。
+- 当前没有按模型聚合的 API 和看板页面。
 
-### 时间字段现状（聚合的坑）
+### 时间格式
 
-- 存储全部为 UTC，但格式混合：`jobs.submittedAt/startedAt` 与 `video_jobs.createdAt` 用 SQLite `datetime('now')`（`YYYY-MM-DD HH:MM:SS`），`jobs.finishedAt`、`final_edit_*`、`batch_*` 用 JS `toISOString()`（带 `T`/`Z`）。
-- 结论：新流水表统一用 `toISOString()`；回填历史数据时归一化两种格式。
+- 现有任务时间同时存在 SQLite `datetime('now')` 和 JS `toISOString()` 两种格式。
+- 新流水统一使用 `new Date().toISOString()`。历史图片回填时把旧格式按 UTC 归一化。
 
-## 定价配置（已与用户对齐）
+## 统计范围
 
-| 项目 | 模式 | 默认单价 | 存放 |
+v1 允许统计的范围固定为下列五个内置供应商：
+
+| 供应商表 | 内置供应商 ID | 模型 | 类型 |
 |---|---|---|---|
-| 公司 image2-medium | 按张 | ¥1.05 | `providers.defaultCostPerImage`（现状已一致，不动） |
-| 公司 kling-3.0 | 按请求 | ¥0.798/次 | `video_providers`：`costMode='per_request'` + 复用死列 `defaultCostPerVideo=0.798` |
-| 公司 seedance-2.0-fast | 按秒估算 | ¥0.8/秒（待用户拿真实账单校准） | `video_providers`：`costMode='per_second'` + 新列 `costPerSecond=0.8` |
-| 直连可灵/即梦 | 按秒 | 0（用户自用自填） | 同上 |
-| 公司 GPT-5-6-Luna-Standard | 按 token | 入 ¥2.8878 / 出 ¥12.9952 / 缓存读 ¥0.28878（每 1M tokens） | `script_providers` 新增三列 |
-| 其他 LLM 供应商 | 按 token | 0（自填） | 同上 |
-| 豆包语音合成 2.0（seed-tts-2.0） | 按字符 | ¥0.28/千字符（资源包口径 2.8 元/万字符，以实际购买为准） | `final_edit_tts_providers.costPerThousandCharacters`（已有列，补默认值） |
-| V-API Qwen3 TTS | 按字符 | 0（第三方网关价自填） | 同上 |
+| `providers` | `company-gateway-image2-medium` | `image2-medium` | 公司图片 |
+| `video_providers` | `company-kling-3-0` | `kling-3.0` | 公司视频 |
+| `video_providers` | `company-seedance-2-0-fast` | `doubao-seedance-2-0-fast-260128` | 公司视频 |
+| `script_providers` | `gpt` | `GPT-5-6-Luna-Standard` | 公司 LLM |
+| `final_edit_tts_providers` | `doubao-seed-tts-2` | `seed-tts-2.0` | 豆包 TTS |
 
-定价事实来源：公司网关模型页截图（2026-08-18，image2-medium ¥1.05/次、kling-3.0 ¥0.798/次、GPT-5-6 token 价、seedance-2.0-fast ¥36.96/1M tokens）；火山引擎 TTS 计费文档（豆包语音合成 2.0 资源包 28 元/10 万字符）；seedance 按秒折算自公开数据（标准版 ¥46/1M ≈ 720p ¥1/秒，fast 约 0.8 倍），视频轮询响应拿不到 token 数，只能按秒估算。
+Packy、Gemini、Anthropic、V-API、直连可灵、直连即梦以及其他测试或外接供应商不统计，也不在看板中出现。
 
-所有单价都在设置页可编辑（沿用现有单价编辑同款交互，新增视频与 LLM 单价字段）。seed 对已有库的补默认值一律用「仅当目标列为空/0 才 UPDATE」的条件写入，不覆盖用户手改。
+### 显式统计开关
+
+- `providers`、`video_providers`、`script_providers` 和 `final_edit_tts_providers` 增加 `usageTrackingEnabled INTEGER NOT NULL DEFAULT 0`。
+- 记账只认数据库中的开关，不通过供应商名称或模型名称正则判断。
+- 新库 seed 仅给上表五个内置供应商写入 `usageTrackingEnabled=1`，其他供应商保持 0。
+- 老库通过一次性初始化标记为这五个精确 ID 开启统计。初始化完成后不再重写，用户后续关闭开关不会被下次启动重新开启。
+- 设置页只在上述五个供应商卡片提供“计入消耗看板”开关。其他供应商不提供开启入口，v1 不能把它们加入统计。
+
+`final_edit_tts_providers` 的新列走 `lib/final-edit/schema.ts` 独立迁移；其余三张表的列追加到 `CORE_DB_MIGRATIONS`。一次性默认初始化由消耗模块自己的迁移标记控制。
+
+## 定价配置
+
+| 模型 | 计价方式 | 默认单价 | 配置位置 |
+|---|---|---|---|
+| `image2-medium` | 按张 | ¥1.05/张 | `providers.defaultCostPerImage` |
+| `kling-3.0` | 按成功请求 | ¥0.798/次 | `video_providers.defaultCostPerVideo` |
+| `doubao-seedance-2-0-fast-260128` | 按成片时长 | ¥0.8/秒，待账单校准 | 新增 `video_providers.costPerSecond` |
+| `GPT-5-6-Luna-Standard` | 按 token | 输入 ¥2.8878、输出 ¥12.9952、缓存读 ¥0.28878/1M tokens | `script_providers` 新增三列 |
+| `seed-tts-2.0` | 按字符 | ¥0.28/千字符 | `final_edit_tts_providers.costPerThousandCharacters` |
+
+视频供应商增加 `costMode='per_request' | 'per_second'`。脚本供应商增加 `inputCostPerMillionTokens`、`outputCostPerMillionTokens` 和 `cachedInputCostPerMillionTokens`。
+
+所有单价在设置页可编辑。新库直接使用 seed 默认值；老库的默认单价补种和统计开关初始化都只执行一次，不覆盖用户后续修改。
 
 ## 设计
 
 ### 流水表 `usage_ledger`
 
-核心表新建（`lib/db.ts` 的 CREATE TABLE IF NOT EXISTS 区域），其余新列走 `lib/db-migrations.ts` 追加式 `ALTER TABLE`：
-
 ```sql
 CREATE TABLE IF NOT EXISTS usage_ledger (
   id TEXT PRIMARY KEY,
-  category TEXT NOT NULL,        -- image | video | llm_text | llm_vision | tts | final_edit_legacy
-  providerId TEXT NOT NULL DEFAULT '',
+  eventKey TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL,
+  providerId TEXT NOT NULL,
   providerName TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  quantity REAL NOT NULL DEFAULT 0,   -- 张 / 秒 / 次 / token / 千字符
-  unit TEXT NOT NULL DEFAULT '',      -- image | second | request | token | kchar
-  unitPrice REAL NOT NULL DEFAULT 0,  -- 展示用；LLM 行存混合价（cost/quantity×1M）
-  cost REAL NOT NULL DEFAULT 0,       -- 金额（元），聚合只信这一列
-  detailJson TEXT NOT NULL DEFAULT '',-- LLM token 明细、回填标记等
-  projectId TEXT,                  -- 可空：拿不到项目归属的调用留空
-  refType TEXT NOT NULL DEFAULT '',   -- job | video_job | llm_call | tts_call | backfill
+  model TEXT NOT NULL,
+  callCount INTEGER NOT NULL DEFAULT 1,
+  quantity REAL NOT NULL DEFAULT 0,
+  unit TEXT NOT NULL DEFAULT '',
+  unitPrice REAL NOT NULL DEFAULT 0,
+  cost REAL NOT NULL DEFAULT 0,
+  detailJson TEXT NOT NULL DEFAULT '{}',
+  projectId TEXT,
+  refType TEXT NOT NULL DEFAULT '',
   refId TEXT NOT NULL DEFAULT '',
-  createdAt TEXT NOT NULL             -- 统一 new Date().toISOString()，UTC
+  createdAt TEXT NOT NULL
 );
 CREATE INDEX idx_usage_ledger_createdAt ON usage_ledger(createdAt);
-CREATE INDEX idx_usage_ledger_category ON usage_ledger(category);
+CREATE INDEX idx_usage_ledger_model_createdAt ON usage_ledger(providerId, model, createdAt);
+CREATE INDEX idx_usage_ledger_category_createdAt ON usage_ledger(category, createdAt);
 ```
 
-写入帮助函数 `lib/usage-ledger.ts`：`recordUsage({...})` 单点封装（生成 id、写库、失败只记日志不阻塞业务——记账绝不能拖垮主流程）。
+`category` 仅使用 `image | video | llm_text | llm_vision | tts`。类别用于筛选；看板的主要聚合键是 `providerId + model`。
 
-### 五个写入点
+`lib/usage-ledger.ts` 提供 `recordUsage()`。它先检查调用开始时快照的 `usageTrackingEnabled`，再用 `INSERT OR IGNORE` 写入稳定的 `eventKey`，避免任务恢复、重复完成回调或页面重试产生重复流水。
 
-1. **图片**：`lib/queue.ts` 任务成功写 `jobs.estimatedCost` 的同一位置，追加写 ledger（category=image，quantity=attempt+1，unit=image，unitPrice=defaultCostPerImage，cost 与 estimatedCost 同值，projectId/refId=jobId）。口径不变：成功才计，含失败尝试累乘。
-2. **视频**：`lib/video-queue.ts` 任务成功处写 ledger。`costMode='per_request'` → quantity=1、unit=request、unitPrice=defaultCostPerVideo；`per_second` → quantity=durationSec、unit=second、unitPrice=costPerSecond。成功才计，单价 0 也记行（流水完整、金额 0）。
-3. **LLM（文本+视觉）**：四个适配器的 `chatCompletion` 返回值由 `string` 改为 `{ text, usage: { promptTokens, completionTokens, cachedTokens? } }`，各自从协议响应提取：
-   - openai-compatible：`usage.prompt_tokens` / `completion_tokens` / `prompt_tokens_details.cached_tokens`
-   - openai-responses：`usage.input_tokens` / `output_tokens` / `input_tokens_details.cached_tokens`
-   - anthropic-messages：`usage.input_tokens` / `output_tokens` / `cache_read_input_tokens`
-   - gemini：`usageMetadata.promptTokenCount` / `candidatesTokenCount` / `cachedContentTokenCount`
+供应商名称、模型、单价和统计开关都在调用开始时形成快照。调用期间修改设置不会追溯改变该次流水。
 
-   在 `completeJson` 与 `analyzeSellingPoints`（`lib/script-providers/index.ts`）统一写 ledger：category 按是否带图分 `llm_vision`/`llm_text`；cost = 输入价×promptTokens/1M + 输出价×completionTokens/1M + 缓存读价×cachedTokens/1M（缓存列未配置时按输入价）；quantity=总 token，unit=token，unitPrice=混合价，明细进 detailJson。**上游未返回 usage 时**按字符数估算（prompt/completion 字符 ÷ 4）并标 `detailJson.estimated=true`，保证流水不缺。调用失败不记（上游失败不产出 usage、一般不扣费，与「发出即计」的实际扣费结果一致）。
-   - 归因：`completeJson`/`analyzeSellingPoints` 入参增加可选 `usageContext?: { projectId?, refType?, refId? }`，拿得到的调用点都传（脚本生成传 projectId、语义打分传批次/矩阵 id、视频分析传素材 id）；拿不到的留空。
-   - 视觉调用按 token 记账后，`visionCostPerRequest` 保留但只用于成片剪辑的成本**预估**，不再作为实际记账依据。
-4. **TTS**：在 TTS 实际执行处写 ledger（成片剪辑的配音执行、批量生产的 narration 任务执行，实现时定位两处共用适配器调用点）：quantity=字符数/1000、unit=kchar、unitPrice=costPerThousandCharacters。`final_edit_jobs.estimatedCost` 预估逻辑保持不变（预估与实际各记各的）。
-5. **批量生产**：不加独立写入点——口播走 TTS 写入点、语义打分/内容分析走 LLM 写入点、代理与渲染本地免费不记。
+### 写入点
+
+#### 公司图片
+
+- 只处理 `usageTrackingEnabled=1` 的图片供应商。
+- 在图片任务成功并写入 `jobs.estimatedCost` 后记录流水，沿用现有尝试次数口径。
+- `eventKey=image-job:<jobId>:succeeded`，`quantity` 和 `callCount` 为现有成本口径对应的计费张数，`unit=image`。
+
+#### 公司视频
+
+- 在 `lib/video-queue.ts` 把视频任务原子更新为成功后记录一次。
+- 可灵：`quantity=1`、`callCount=1`、`unit=request`。
+- Seedance Fast：`quantity=durationSec`、`callCount=1`、`unit=second`。
+- `eventKey=video-job:<videoJobId>:succeeded`。失败或 `needs_check` 不记；恢复后重复进入完成分支也不会重复。
+
+#### 公司 LLM
+
+- 只改造公司 GPT 使用的 OpenAI-compatible 响应解析，不要求 OpenAI Responses、Anthropic Messages 或原生 Gemini 适配器提供 usage。
+- 适配器保留 `usage.prompt_tokens`、`usage.completion_tokens` 和 `usage.prompt_tokens_details.cached_tokens`。
+- 归一化为 `uncachedInputTokens=max(promptTokens-cachedReadTokens, 0)`、`cachedReadTokens` 和 `outputTokens`，避免缓存 token 同时按输入价和缓存价重复计算。
+- 成本为三类 token 分别乘对应单价后求和；`detailJson` 保存原始及归一化 token 明细。
+- `quantity=uncachedInputTokens+cachedReadTokens+outputTokens`、`unit=token`、`callCount=1`；`unitPrice` 保存按总 token 折算的每 1M token 混合价。
+- 已收到成功响应时，在业务 JSON 解析前记账。即使模型返回的 JSON 无效，该次上游调用仍进入流水。
+- HTTP、网络或中止错误且没有成功响应时不记。若成功响应缺少 usage，则按提示词与输出字符数估算并标记 `detailJson.estimated=true`。
+- 每次真实上游请求都有独立调用 ID，`eventKey=llm-call:<callId>`。业务重试若再次请求上游，应作为新的真实消耗记录。
+- `completeJson` 和 `analyzeSellingPoints` 增加可选 `usageContext`，尽可能携带 `projectId`、业务引用类型和引用 ID。
+
+#### 豆包 TTS
+
+- 只在 `doubao-seed-tts-2` 真实调用供应商并成功得到音频后记录。
+- 成片剪辑已有口播、批量生产复用 `batch-narration` 音频时不记账。
+- 设置页试听会真实调用豆包，因此也记录；试听允许 `projectId` 为空。
+- `quantity=字符数/1000`、`unit=kchar`、`callCount=1`。每次真实合成使用稳定的任务尝试或调用 ID 组成 `eventKey`。
+
+本地代理生成、FFmpeg 渲染、字幕、LUT、封面和文件导出不调用计费模型，不写流水。
 
 ### 历史回填
 
-启动时一次性幂等回填（标记 `refType='backfill'`，已回填则跳过）：
+- 只回填能精确关联到 `company-gateway-image2-medium`、`status='succeeded'` 且 `jobs.estimatedCost IS NOT NULL` 的历史图片任务。
+- 回填使用与实时写入相同的 `eventKey=image-job:<jobId>:succeeded`，即使启动边界重叠也不会重复。
+- 消耗模块写入 `image-backfill-v1` 一次性完成标记。已完成后不再扫描，避免未来的新任务被当成历史记录。
+- 历史视频、LLM 和 TTS 没有可靠用量，从功能上线后开始统计。
+- 不回填 `final_edit_jobs.estimatedCost`，因为其中混合了 TTS 与视觉分析预估，无法可靠归属到指定模型。
 
-- `jobs` 中 `estimatedCost` 非空的行 → category=image，时间取 `COALESCE(finishedAt, startedAt, submittedAt)` 并归一化为 ISO UTC（`replace(substr(col,1,19),'T',' ')` 后按 UTC 处理）。
-- `final_edit_jobs` 中 `estimatedCost > 0` 的行 → category=`final_edit_legacy`（历史预估混合口径，不在新写入中使用；页面类别显示为「剪辑（历史预估）」）。
-- 视频/LLM/TTS 无历史数据，从上线起记。
+## 聚合 API
 
-### 聚合 API
+### `GET /api/usage`
 
-- `GET /api/usage`：汇总卡片数据。今日/本周/本月的总额 + 按类别小计 + 近 30 天逐日序列。
-  - 日=本地自然日，周=周一至周日，月=自然月；本地偏移固定 +8。
-  - 实现：在 JS 侧算好本地日/周/月的边界再转 UTC 做 `WHERE createdAt BETWEEN`，逐日序列用 `date(datetime(createdAt, '+8 hours'))` 分组。
-- `GET /api/usage/records?from&to&category&page&pageSize`：流水分页查询，按时间倒序。
-- 写法参照 `app/api/projects/route.ts` 的聚合子查询模式。
+返回：
 
-### 页面与导航
+- 今日、本周和本月预估总额；
+- 当前筛选周期内按 `providerId + model` 聚合的金额、调用次数、原生用量和占比；
+- 近 30 个上海自然日按模型拆分的逐日金额序列；
+- 可选的类别小计，供筛选和辅助展示使用。
 
-- `app/usage/page.tsx`（client component）：自上而下——
-  1. 三张汇总卡：今日 / 本周（周一至周日）/ 本月预估消耗（金额 + 环比小字）。
-  2. 类别构成条：五类占比（含 final_edit_legacy 时六段）。
-  3. 近 30 天逐日柱图（纯 CSS 柱，跟首页 Stats 同款 tile 风格）。
-  4. 流水表：日期范围 + 类别筛选 + 分页；列：时间、类别、供应商、模型、用量、单价、金额、项目。LLM 行单价列显示「¥x/1M tok（混合）」，hover/展开可见 token 明细。
-  5. 页面顶部固定标注：「预估消耗 = 单价 × 用量，非上游真实账单」。
-- `components/Header.tsx` 导航在「项目」与「供应商」之间加「消耗」。
-- 设置页：视频供应商卡片增加计费模式（按次/按秒）与单价编辑；脚本供应商卡片增加输入/输出/缓存读 token 单价编辑；TTS 单价编辑已有，仅补默认值。
+本地日按 UTC+8 自然日计算，周从周一开始。JS 先计算 UTC 边界再查询 ISO 时间；逐日序列补齐没有流水的日期为 0。
+
+### `GET /api/usage/records`
+
+支持 `from`、`to`、`providerId`、`model`、`category`、`page` 和 `pageSize`。结果按 `createdAt DESC, id DESC` 稳定分页，`pageSize` 设置上限。
+
+## 页面与导航
+
+- `components/Header.tsx` 在「项目」和「供应商」之间增加「消耗」。
+- `app/usage/page.tsx` 顶部固定说明：“仅统计已开启的核心模型；预估消耗 = 配置单价 × 记录用量，非上游真实账单。”
+- 第一屏展示今日、本周、本月三张总额卡片。
+- 主区域展示模型消耗排行，列出供应商、模型、类型、调用次数、原生用量、预估金额和占比。
+- 近 30 天图表按模型区分颜色，支持只查看某个模型。
+- 流水表提供日期、模型和类别筛选；LLM 行可展开查看输入、输出、缓存读 token。
+- 金额为 0 的已追踪调用仍展示，便于发现单价未配置。
 
 ## 数据流
 
-1. 各计费事件发生（图片/视频任务成功、LLM 调用返回、TTS 合成完成）→ 写入点向 `usage_ledger` 插一行，失败只记日志。
-2. 用户打开「消耗」tab → `/usage` 页调 `/api/usage` 与 `/api/usage/records`。
-3. API 按 +8 本地边界聚合与筛选，返回卡片数据与流水分页。
+1. 调用开始时读取供应商、模型、单价和 `usageTrackingEnabled` 快照。
+2. 未开启统计的供应商正常执行，但不创建流水。
+3. 已开启统计的图片/视频/TTS 在规定成功点写入；公司 LLM 在收到成功响应后、业务解析前写入。
+4. `eventKey` 冲突视为已记录，不重复累计。
+5. `/usage` 页面请求模型聚合与流水 API，并按上海本地时间展示。
 
 ## 错误与兼容性
 
-- 记账写库失败只记日志、绝不阻塞或失败化业务任务。
-- 单价为 0 的供应商照常记流水（金额 0），不产生脏数据问题。
-- 既有 `jobs.estimatedCost`、`final_edit_jobs.estimatedCost` 及其 UI（项目总成本、任务表）完全不动；看板是新口径的独立视图。
-- 适配器 `chatCompletion` 返回类型变更涉及所有调用方同步调整（`parseJsonResponse` 等下游只接 text 部分）；不改变任何提示词与协议行为。
-- 缓存 token 价未配置时按输入价计；usage 缺失时估算并标记，不虚报精确。
-- 桌面打包断言不受影响（无新依赖、无新本机数据目录）。
+- 流水写入失败只记录脱敏日志，不把已经成功的模型任务改成失败。
+- 唯一 `eventKey` 保证相同计费事件最多记一次；真正再次调用上游必须使用新的调用或尝试 ID。
+- 关闭统计只影响之后的新调用，不删除或隐藏已经产生的历史流水。
+- 删除供应商后，流水中的名称、模型和金额快照仍可独立展示。
+- 既有 `jobs.estimatedCost`、`final_edit_jobs.estimatedCost` 及其 UI 保持不变。
+- 不新增图表依赖和本机数据目录，不改变桌面打包边界。
 
 ## 测试与验收
 
-- `scripts/usage-ledger.test.ts`：写入、聚合（日/周/月 +8 边界、周一起算）、类别小计、30 天序列、幂等回填（jobs/final_edit_jobs、混合时间格式归一化）。
-- 适配器 usage 提取测试：四个适配器各自响应形状 → 正确 token 数；缺 usage → 估算路径标记 estimated。
-- 视频成本测试：per_request（kling-3.0 ¥0.798 与时长无关）与 per_second（seedance 0.8×durationSec）两种模式。
-- API 测试：`/api/usage` 汇总与 `/api/usage/records` 筛选分页。
-- UI 合同测试：`/usage` 页面版块与 Header 新 tab。
-- 迁移测试：新列/新表存在、seed 条件更新不覆盖用户值。
+- 迁移测试：四类供应商表均有 `usageTrackingEnabled`；老库默认初始化只执行一次，用户关闭后重启不会被重新开启。
+- 范围测试：五个指定内置供应商默认开启；Packy、Gemini、Anthropic、V-API 和直连视频供应商默认关闭且不写流水。
+- 幂等测试：相同 `eventKey` 重复写入只保留一行，不重复累计金额和调用次数。
+- 图片测试：公司 `image2-medium` 成功任务写流水；一次性历史回填只处理精确供应商且不会与实时写入重复。
+- 视频测试：可灵按 ¥0.798/成功请求；公司 Seedance Fast 按 `0.8 × durationSec`；重复完成回调不重复。
+- LLM 测试：公司 OpenAI-compatible usage 正确拆分非缓存输入、缓存读和输出；缺 usage 标为估算；JSON 解析失败仍保留调用流水。
+- TTS 测试：真实豆包合成和试听写流水；成片或批量口播命中缓存时不写。
+- 聚合测试：UTC+8 今日/周/月边界、周一起算、模型排行、占比、30 天补零和多模型序列正确。
+- API/UI 合同测试：模型与日期筛选、稳定分页、顶部范围说明、三张汇总卡、模型排行、趋势和流水存在。
 - 运行相关独立测试与 ESLint。
 
 ## 非目标
 
-- 不对接上游真实账单对账；不做预算告警或限额熔断。
-- v1 不做按项目维度的深度分析（流水表保留 projectId 列，归因齐全的调用自然可见）。
-- 不做 CSV 导出按钮（`lib/cost.ts` 的 `generateCSV` 留待后续接）。
-- 不改造既有 `estimatedCost` 预估口径与展示。
+- 不统计外接或测试供应商，v1 不提供把它们加入看板的入口。
+- 不对接或核对上游真实账单，不保证与供应商最终结算完全一致。
+- 不做预算告警、额度限制或自动熔断。
+- v1 不做项目维度的深度成本分析。
+- 不做 CSV 导出。
+- 不改造 OpenAI Responses、Anthropic Messages、原生 Gemini 等无关适配器的 usage 链路。
