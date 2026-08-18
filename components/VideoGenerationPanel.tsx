@@ -103,6 +103,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
   const [headFrameBusy, setHeadFrameBusy] = useState(false);
+  const [freeHeadFrameSlotOpen, setFreeHeadFrameSlotOpen] = useState(false);
   const [deletingShot, setDeletingShot] = useState(false);
   const mountedRef = useRef(true);
   const pendingCreationTailIdsRef = useRef<Set<string>>(new Set());
@@ -296,6 +297,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     selectedSetIdRef.current = setId;
     replaceSelectedShot(null);
     replaceActiveMotionRows([]);
+    setFreeHeadFrameSlotOpen(false);
     previewSuppressedRef.current = false;
     setVideoPreviewJobId(null);
     // Clear per-shot motion cache — switching sets resets all motion form state
@@ -418,6 +420,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       const newShotId = String(appendData.shotId);
       replaceSelectedShot(newShotId);
       replaceActiveMotionRows([makeEmptyRow()]);
+      setFreeHeadFrameSlotOpen(false);
       try { setAvailableSets(await loadAvailableSets()); } catch { /* keep the active workspace usable */ }
     } catch (error) {
       // 挂载失败就把刚上传的图删掉，不留孤儿资源（和尾帧同一套处理）。
@@ -519,7 +522,26 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       // Restore cached rows or start fresh
       const cached = perShotMotionCache.current.get(shotId);
       replaceActiveMotionRows(cached ? [...cached] : [makeEmptyRow()]);
+      previewSuppressedRef.current = false;
+      setVideoPreviewJobId((current) => current ?? getDefaultPreviewJobId(videoJobs));
     }
+  };
+
+  // “添加图片”只创建一个客户端空槽位，不直接打开系统文件选择器。
+  // 空槽位没有 sourceImageId，不能提前写入 shots；图片拖入或在首帧格点击
+  // 选择成功后，handleAppendFreeShot 才把它转成正式 shot。
+  const activateFreeHeadFrameSlot = () => {
+    if (creatingRef.current || headFrameBusy) return;
+    tailFrameDragDepthRef.current.clear();
+    setTailFrameDragRowKey(null);
+    if (selectedShot) {
+      perShotMotionCache.current.set(selectedShot, motionRowsRef.current);
+    }
+    setFreeHeadFrameSlotOpen(true);
+    replaceSelectedShot(null);
+    replaceActiveMotionRows([]);
+    previewSuppressedRef.current = true;
+    setVideoPreviewJobId(null);
   };
 
   const addMotionRow = () => replaceActiveMotionRows([...motionRowsRef.current, makeEmptyRow()]);
@@ -877,6 +899,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   }
 
   const selectedShotData = safeShots.find((s) => s.id === selectedShot);
+  const pendingFreeShotIndex = safeShots.reduce(
+    (maxIndex, shot) => Math.max(maxIndex, shot.indexNum),
+    0,
+  ) + 1;
+  const freeHeadFrameSlotSelected = Boolean(
+    isFreeSet
+    && selectedShot === null
+    && (safeShots.length === 0 || freeHeadFrameSlotOpen),
+  );
   const previewVideoUrl = (() => {
     if (!videoPreviewJobId) return null;
     const job = videoJobs.find((j) => j.id === videoPreviewJobId);
@@ -909,25 +940,28 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     {isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}
                   </button>
                 ))}
+                {isFreeSet && freeHeadFrameSlotOpen && (
+                  <button
+                    type="button"
+                    onClick={activateFreeHeadFrameSlot}
+                    disabled={headFrameBusy || creating}
+                    className={`shot-tab-item ${freeHeadFrameSlotSelected ? 'active' : ''}`}
+                    title="等待拖入首帧图片"
+                  >
+                    图 {pendingFreeShotIndex}
+                  </button>
+                )}
                 {isFreeSet && (
-                  <label
+                  <button
+                    type="button"
+                    onClick={activateFreeHeadFrameSlot}
+                    disabled={headFrameBusy || creating}
                     className={`shot-tab-item shot-tab-add ${headFrameBusy ? 'is-busy' : ''}`}
-                    title="再加一张图"
+                    title={freeHeadFrameSlotOpen ? '回到待添加图片槽位' : '增加一个空图片槽位'}
                   >
                     <Icon name="plus" size={13} />
                     {headFrameBusy ? '上传中…' : '添加图片'}
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      className="sr-only"
-                      disabled={headFrameBusy || creating}
-                      onChange={(event) => {
-                        const file = event.currentTarget.files?.[0];
-                        event.currentTarget.value = '';
-                        if (file) void handleAppendFreeShot(file);
-                      }}
-                    />
-                  </label>
+                  </button>
                 )}
               </div>
             )}
@@ -950,7 +984,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           </div>
 
           {/* Motion form — scrollable independently */}
-          {isFreeSet && safeShots.length === 0 && (
+          {freeHeadFrameSlotSelected && (
             <div className="panel-scroll-area">
               <div className="space-y-3">
                 <div className="video-motion-card">
@@ -1289,7 +1323,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           <VideoGenerationPreview
             videoUrl={previewVideoUrl}
             posterUrl={previewPosterUrl}
-            placeholderText={isFreeSet && safeShots.length === 0
+            placeholderText={freeHeadFrameSlotSelected
               ? '添加首帧图后开始生成'
               : safeShots.length > 0 ? '选择左侧分镜并生成视频' : '暂无分镜'}
             videoJobs={videoJobs}
