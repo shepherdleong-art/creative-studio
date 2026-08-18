@@ -20,6 +20,7 @@ export interface VideoTailFrameAsset {
   role: string;
   usage: string;
   path: string;
+  originalPath: string | null;
   processedPath: string | null;
   mimeType: string;
 }
@@ -82,7 +83,7 @@ export function validateVideoTailFrameAsset(params: {
   }
 
   const asset = params.db.prepare(`
-    SELECT id, projectId, role, usage, path, processedPath, mimeType
+    SELECT id, projectId, role, usage, path, originalPath, processedPath, mimeType
     FROM image_assets
     WHERE id = ?
   `).get(tailImageId) as VideoTailFrameAsset | undefined;

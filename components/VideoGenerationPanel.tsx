@@ -595,7 +595,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const deleteTailFrameAsset = async (assetId: string): Promise<void> => {
     const response = await fetch(`/api/images/${encodeURIComponent(assetId)}`, { method: 'DELETE' });
-    if (!response.ok && response.status !== 404) {
+    // 404 视为已删除；409 表示素材仍被已提交的视频任务引用——文件必须保留，
+    // 但调用方照常把它从编辑行里摘掉即可，这两种都不算失败。
+    if (!response.ok && response.status !== 404 && response.status !== 409) {
       const data = await response.json().catch(() => ({})) as { error?: string };
       throw new Error(data.error || `HTTP ${response.status}`);
     }
@@ -798,8 +800,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       if (res.ok) {
         if (mountedRef.current) {
           await refreshJobs();
-          perShotMotionCache.current.delete(shotId);
-          replaceActiveMotionRows([makeEmptyRow()]);
+          // 运镜行（含尾帧、供应商、时长、提示词）在提交后保留：用户通常
+          // 要基于同一组首尾帧改提示词连出多条，清空只会逼人重新传图。
+          // 已提交的尾帧素材已被 video_jobs 引用，删除接口会 409 保护，
+          // 卸载/切组时的草稿清理不会误删它。
         }
       } else {
         if (mountedRef.current) alert('创建视频任务失败: ' + (data.error || '未知错误'));

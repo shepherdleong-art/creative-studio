@@ -18,6 +18,7 @@ db.exec(`
     role TEXT NOT NULL,
     usage TEXT NOT NULL DEFAULT '',
     path TEXT NOT NULL,
+    originalPath TEXT,
     processedPath TEXT,
     mimeType TEXT NOT NULL
   );

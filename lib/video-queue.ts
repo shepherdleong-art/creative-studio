@@ -37,6 +37,23 @@ export const DEFAULT_VIDEO_TIMEOUT_MS = Number.isFinite(envTimeout) && envTimeou
 // 新建库的建表默认值同步改为 2(见 lib/db.ts),让两处口径一致。
 export const DEFAULT_VIDEO_MAX_ATTEMPTS = 2;
 
+type VideoFrameMime = 'image/png' | 'image/jpeg' | 'image/webp';
+
+/**
+ * 按实际发给供应商的文件路径推 mime——image_assets.mimeType 记录的是预处理
+ * 副本的格式，与原图可能不同（如 PNG 原图 → JPEG 副本），给错 mime 会让
+ * 按文件组 data URL 的适配器（jimeng）产出坏请求。
+ */
+function videoFrameMimeFromPath(imagePath: string, fallback: string | null | undefined): VideoFrameMime {
+  const ext = path.extname(imagePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  return fallback === 'image/png' || fallback === 'image/jpeg' || fallback === 'image/webp'
+    ? fallback
+    : 'image/png';
+}
+
 // 每供应商并发闸门:同时处于 running 的本地任务数上限,按供应商类型配置、
 // 按 providerId(具体供应商行)跨项目统计——队列按项目隔离,但远端并发是
 // 供应商维度的,多项目并行时闸门依然生效。未列出的供应商类型不限速。
@@ -269,14 +286,18 @@ async function runVideoJob(
       .prepare(`SELECT * FROM image_assets WHERE id = ?`)
       .get(job.sourceImageId) as {
       path: string;
+      originalPath: string | null;
       processedPath: string | null;
       mimeType: string;
     } | undefined;
 
     if (!sourceImage) throw new Error('Source image not found');
 
-    const imagePath = sourceImage.processedPath || sourceImage.path;
-    const mimeType = (sourceImage.mimeType || 'image/png') as 'image/png' | 'image/jpeg' | 'image/webp';
+    // 首帧优先用未压缩的原图：上传预处理（最长边 1536、JPEG q85）是给图片
+    // 生成 API 省流量的，压过再给视频模型会直接拉低成片起点画质；生成的
+    // 分镜图没有 originalPath，自然回退到原有路径。
+    const imagePath = sourceImage.originalPath || sourceImage.processedPath || sourceImage.path;
+    const mimeType = videoFrameMimeFromPath(imagePath, sourceImage.mimeType);
 
     logInfo(`Calling video API: ${runtime.baseUrl} (type=${provider.type}, model=${job.model}, duration=${job.durationSec}s)`);
 
@@ -305,7 +326,11 @@ async function runVideoJob(
       });
       if (!tailValidation.ok) throw new Error(tailValidation.error);
       const tailImage = tailValidation.asset;
-      const tailMimeType = tailImage?.mimeType as 'image/png' | 'image/jpeg' | 'image/webp' | undefined;
+      // 尾帧同首帧：优先未压缩原图，保住末帧收束的画质。
+      const tailPath = tailImage
+        ? (tailImage.originalPath || tailImage.processedPath || tailImage.path)
+        : undefined;
+      const tailMimeType = tailPath ? videoFrameMimeFromPath(tailPath, tailImage?.mimeType) : undefined;
 
       logInfo('Submitting video generation task...');
       const submitResult = await adapter.submit(
@@ -314,7 +339,7 @@ async function runVideoJob(
           prompt: job.prompt,
           sourceImagePath: imagePath,
           sourceMimeType: mimeType,
-          tailImagePath: tailImage ? (tailImage.processedPath || tailImage.path) : undefined,
+          tailImagePath: tailPath,
           tailMimeType,
           durationSec: job.durationSec,
         },
