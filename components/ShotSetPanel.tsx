@@ -209,7 +209,12 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
 
   const handleDelete = async (setId: string) => {
     if (!confirm('确定删除此分镜组？')) return;
-    await fetch(`/api/shot-sets/${setId}`, { method: 'DELETE' });
+    const res = await fetch(`/api/shot-sets/${setId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert('删除失败：' + (data.error || `HTTP ${res.status}`));
+      return;
+    }
     const next = expandedIds.filter((id) => id !== setId);
     expandedIdsRef.current = new Set(next);
     setExpandedIds(next);

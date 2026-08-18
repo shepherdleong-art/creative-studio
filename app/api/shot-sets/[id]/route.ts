@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import { deleteShotSet } from '@/lib/shot-set-service';
 
 function toImageUrl(storageRoot: string, imagePath: string | null | undefined): string {
   return imagePath ? `/api/images/${path.relative(storageRoot, path.resolve(imagePath)).split(path.sep).join('/')}` : '';
@@ -166,8 +167,10 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const db = getDb();
-    db.prepare(`DELETE FROM shot_sets WHERE id = ?`).run(id);
+    const result = deleteShotSet(getDb(), id);
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
