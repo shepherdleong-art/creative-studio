@@ -56,6 +56,17 @@ db.exec(`
     shotSetId TEXT NOT NULL
   );
 
+  CREATE TABLE shot_sets (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    name TEXT NOT NULL,
+    productCode TEXT DEFAULT '',
+    category TEXT DEFAULT '',
+    sceneReferenceId TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE video_jobs (
     id TEXT PRIMARY KEY,
     sourceImageId TEXT
@@ -72,6 +83,9 @@ db.exec(`
 
   INSERT INTO script_providers (id, name)
   VALUES ('script-provider', 'Script Provider');
+
+  INSERT INTO shot_sets (id, projectId, name)
+  VALUES ('legacy-set', 'legacy-project', '历史分镜组');
 `);
 
 for (const sql of CORE_DB_MIGRATIONS) {
@@ -90,8 +104,12 @@ assert.ok(
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE video_jobs ADD COLUMN tailImageId TEXT`,
+  `ALTER TABLE shot_sets ADD COLUMN kind TEXT NOT NULL DEFAULT 'storyboard' CHECK(kind IN ('storyboard','free'))`,
   'new core migrations must be appended without rewriting published entries',
+);
+assert.ok(
+  CORE_DB_MIGRATIONS.includes(`ALTER TABLE video_jobs ADD COLUMN tailImageId TEXT`),
+  'the tail-frame migration must remain in the append-only core migration stream',
 );
 const workflowTrigger = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'projects_default_workflow_type'`).get() as { name?: string } | undefined;
 assert.equal(workflowTrigger?.name, 'projects_default_workflow_type', 'new projects must not default back to legacy workflow');
@@ -175,6 +193,44 @@ assert.deepEqual(
   db.prepare(`SELECT supportsVision FROM script_providers WHERE id = 'script-provider'`).get(),
   { supportsVision: 1 },
   'supportsVision should accept and persist an explicit opt-in',
+);
+
+// ── shot_sets.kind:新增列、历史数据回填、CHECK 生效、迁移幂等 ──
+const shotSetColumns = db.prepare(`PRAGMA table_info(shot_sets)`).all() as Array<{ name: string }>;
+assert.ok(
+  shotSetColumns.some((column) => column.name === 'kind'),
+  'shot_sets.kind should be added when migrating older installed databases',
+);
+
+const legacySet = db.prepare(`SELECT kind FROM shot_sets WHERE id = ?`).get('legacy-set') as
+  | { kind: string }
+  | undefined;
+assert.equal(legacySet?.kind, 'storyboard', '历史分镜组必须回填成 storyboard,不能是 NULL');
+
+assert.throws(
+  () => db.prepare(
+    `INSERT INTO shot_sets (id, projectId, name, kind) VALUES ('bogus-set', 'legacy-project', 'x', 'bogus')`,
+  ).run(),
+  /CHECK constraint failed/,
+  'shot_sets.kind 必须被 CHECK 挡住非法值',
+);
+db.prepare(
+  `INSERT INTO shot_sets (id, projectId, name, kind) VALUES ('free-set', 'legacy-project', '自由素材', 'free')`,
+).run();
+
+// 生产环境每次启动都会整条重跑迁移流,必须幂等且不改动已有数据。
+for (const sql of CORE_DB_MIGRATIONS) {
+  try { db.exec(sql); } catch { /* Match production migration behavior. */ }
+}
+assert.equal(
+  (db.prepare(`SELECT kind FROM shot_sets WHERE id = ?`).get('legacy-set') as { kind: string }).kind,
+  'storyboard',
+  '重复执行迁移不得改变已有 shot_sets 数据',
+);
+assert.equal(
+  (db.prepare(`SELECT kind FROM shot_sets WHERE id = ?`).get('free-set') as { kind: string }).kind,
+  'free',
+  '重复执行迁移不得改变自由工位数据',
 );
 
 db.close();
