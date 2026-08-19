@@ -565,13 +565,15 @@ export function persistOutputReallocation(
       WHERE v.id = ? AND r.batchVersionId = v.id
     `).get(batchVersionId) as { id: string; resultJson: string; ruleVersion: string; seed: string; inputFingerprint: string } | undefined;
     if (!currentRunRow) throw new BatchDomainError('conflict', '批次版本尚未有联合分配运行');
-    const targetPlan = db.prepare(`SELECT id FROM batch_output_plans WHERE id = ? AND batchVersionId = ?`).get(targetPlanId, batchVersionId);
+    const targetPlan = db.prepare(`SELECT id, currentVersionId FROM batch_output_plans WHERE id = ? AND batchVersionId = ?`).get(targetPlanId, batchVersionId) as { id: string; currentVersionId: string | null } | undefined;
     if (!targetPlan) throw new BatchDomainError('not_found', '成片计划不属于该批次版本');
-    // Reallocation seeds derive from the original run seed. Reading the
-    // latest run is necessary for the current arrangement, but recursively
-    // appending this suffix would create a new run on every identical retry.
+    // Reallocation seeds derive from the original run seed plus the target plan's
+    // current version pointer. A retry from the same state (network retry / double
+    // click) still hits the same run idempotently; once a reallocation succeeds the
+    // pointer has advanced, so the next「换一批画面」click derives a fresh seed and
+    // must produce a new run instead of replaying the previous footage.
     const baseSeed = currentRunRow.seed.split(':reallocate:')[0] ?? currentRunRow.seed;
-    const seed = String(options.seed ?? `${baseSeed}:reallocate:${targetPlanId}:${reason}`);
+    const seed = String(options.seed ?? `${baseSeed}:reallocate:${targetPlanId}:${reason}:${targetPlan.currentVersionId ?? 'none'}`);
     const result = reallocateOutput({ ...input, seed }, parseJson(currentRunRow.resultJson), targetPlanId, reason);
     const existing = readExistingRun(db, batchVersionId, result.ruleVersion, result.seed, result.inputFingerprint);
     if (existing) {

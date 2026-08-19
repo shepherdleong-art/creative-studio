@@ -135,4 +135,26 @@ assert.deepEqual(
 );
 assert.ok(reallocated.outputs.some((output) => output.planId === 'plan-a-1'));
 
+// 「换一批画面」必须真正换画面:素材池有替代时,重分配避开当前版本用过的素材与封面。
+const firstTargetClips = first.outputs.find((output) => output.planId === 'plan-a-1')!.arrangement.clips;
+const firstTargetAssetIds = new Set(firstTargetClips.map((clip) => clip.assetId));
+const reallocatedTarget = reallocated.outputs.find((output) => output.planId === 'plan-a-1')!;
+assert.ok(reallocatedTarget.arrangement.clips.length > 0);
+assert.ok(
+  reallocatedTarget.arrangement.clips.every((clip) => !firstTargetAssetIds.has(clip.assetId)),
+  '素材池有替代时,换一批画面必须避开当前版本用过的素材',
+);
+assert.ok(
+  reallocatedTarget.arrangement.cover.assetId === null || !firstTargetAssetIds.has(reallocatedTarget.arrangement.cover.assetId),
+  '换一批画面时封面同样避开当前版本素材',
+);
+// 再次换一批以上一版为基准避让:素材集合必须继续变化(在 a/b 与 c 之间轮转)。
+const reallocatedAgain = reallocateOutput(baseInput, reallocated, 'plan-a-1', '再换一次');
+const reallocatedAgainTarget = reallocatedAgain.outputs.find((output) => output.planId === 'plan-a-1')!;
+const reallocatedAssetIds = new Set(reallocatedTarget.arrangement.clips.map((clip) => clip.assetId));
+assert.ok(
+  reallocatedAgainTarget.arrangement.clips.every((clip) => !reallocatedAssetIds.has(clip.assetId)),
+  '连续换一批画面必须持续避开上一批素材',
+);
+
 console.log('batch allocation tests passed');

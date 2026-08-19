@@ -15,6 +15,13 @@ import { splitBatchScriptSentences } from './script-sentences.ts';
 export const BATCH_ALLOCATION_RULE_VERSION = 'batch-allocation-v1';
 export const BATCH_ALLOCATION_SCHEMA_VERSION = 'batch-arrangement-v1';
 
+/**
+ * 单条重分配(换一批画面)的避让惩罚。必须压过语义分(×100)+钩子(×8)+质量(×2)
+ * 的最大正向差,素材池有替代时当前版本用过的素材必然让位;池子耗尽时所有
+ * 候选被同等惩罚、相对排序不变,自然回退复用,不会卡死。
+ */
+const REALLOCATION_AVOID_PENALTY = 150;
+
 type JsonRecord = Record<string, unknown>;
 
 export interface AllocationSceneInput {
@@ -324,6 +331,8 @@ interface NormalizedInput {
   assets: NormalizedAsset[];
   exclusions: AllocationExclusion[];
   excludedAssetIds: string[];
+  /** 仅单条重分配非空:目标计划当前版本用过的素材,候选打分避让,保证换一批真的换。 */
+  avoidAssetIds: Set<string>;
   locks: AllocationLockInput[];
   musicTrackIds: string[];
 }
@@ -662,6 +671,7 @@ function normalizeInput(input: FrozenBatchInput): NormalizedInput {
     assets: normalizedAssets,
     exclusions,
     excludedAssetIds,
+    avoidAssetIds: new Set(),
     locks: [...arrayFrom(input.lockedSegments), ...arrayFrom(input.locks)] as AllocationLockInput[],
     musicTrackIds: arrayFrom(input.musicTrackIds ?? input.bgmTrackIds).map(String).filter(Boolean).sort(),
   };
@@ -864,7 +874,7 @@ function stitchSegment(
               scene,
               startUs: subStartUs,
               lengthUs,
-              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0),
+              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0),
               tie: stableHash(`${normalized.seed}:${plan.planId}:${segment.id}:${asset.assetId}:${scene.index}:part:${part}`),
             });
           }
@@ -1111,7 +1121,7 @@ function assignOne(
             scene,
             startUs,
             endUs,
-            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0),
+            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0),
             overlap,
             sameOpening,
             tie: stableHash(`${normalized.seed}:${plan.planId}:${unit.unitId}:${asset.assetId}:${scene.index}:${startUs}`),
@@ -1132,14 +1142,18 @@ function assignOne(
       continue;
     }
     const semantic = semanticScore(segment, candidate.asset, candidate.scene);
+    const avoided = normalized.avoidAssetIds.has(candidate.asset.assetId);
     const reason = candidate.overlap > 0
       ? 'reuse-overlap-fallback'
-      : semantic < 0.35
-        ? 'semantic-backoff'
-        : candidate.sameOpening
-          ? 'opening-reuse-fallback'
-          : 'semantic_primary';
+      : avoided
+        ? 'previous-version-reuse-fallback'
+        : semantic < 0.35
+          ? 'semantic-backoff'
+          : candidate.sameOpening
+            ? 'opening-reuse-fallback'
+            : 'semantic_primary';
     if (candidate.overlap > 0) warnings.push(`source-overlap:${unit.unitId}`);
+    if (avoided) warnings.push(`previous-version-reused:${unit.unitId}`);
     if (semantic < 0.35) warnings.push(`semantic-degraded:${unit.unitId}`);
     if (candidate.sameOpening) warnings.push(`opening-reused:${unit.unitId}`);
     const clip: AllocationClip = {
@@ -1169,7 +1183,7 @@ function assignOne(
   }
 
   const coverCandidates = plan.coverAssetIds.length ? plan.coverAssetIds : availableAssets.map((asset) => asset.assetId);
-  const coverPool = coverCandidates
+  const coverPoolAll = coverCandidates
     .map((assetId) => assetById.get(assetId))
     .filter((asset): asset is NormalizedAsset => Boolean(asset))
     .sort((a, b) => {
@@ -1177,6 +1191,11 @@ function assignOne(
       const bUsed = usedOpeningAssets.has(b.assetId) ? 1 : 0;
       return aUsed - bUsed || a.assetId.localeCompare(b.assetId);
     });
+  // 换一批画面时封面同样避开当前版本素材;池子耗尽才回退全池。
+  const preferredCoverPool = normalized.avoidAssetIds.size
+    ? coverPoolAll.filter((asset) => !normalized.avoidAssetIds.has(asset.assetId))
+    : coverPoolAll;
+  const coverPool = preferredCoverPool.length ? preferredCoverPool : coverPoolAll;
   const coverAsset = coverPool.length ? coverPool[planIndex % coverPool.length] : undefined;
   const coverTimeUs = coverAsset
     ? (coverAsset.coverFrameTimesUs[planIndex % Math.max(1, coverAsset.coverFrameTimesUs.length)] ?? Math.min(coverAsset.durationUs, Math.max(0, Math.round(coverAsset.durationUs * 0.15))))
@@ -1383,7 +1402,9 @@ export function reallocateOutput(
   void reason;
   const currentOutputs = normalizeExistingOutputs(currentAllocation);
   const targetCurrentOutput = currentOutputs.find((output) => output.planId === targetOutputPlanId);
-  const retainedLocks = (targetCurrentOutput?.arrangement?.clips ?? targetCurrentOutput?.clips ?? [])
+  const currentClips = (targetCurrentOutput?.arrangement?.clips ?? targetCurrentOutput?.clips ?? [])
+    .filter((clip) => clip && typeof clip.assetId === 'string' && Boolean(clip.assetId));
+  const retainedLocks = currentClips
     .filter((clip) => clip.locked)
     .map((clip) => ({
       planId: targetOutputPlanId,
@@ -1393,10 +1414,16 @@ export function reallocateOutput(
       sourceStartUs: clip.sourceStartUs,
       sourceEndUs: clip.sourceEndUs,
     }));
+  // 「换一批画面」语义:当前版本用过的非锁定素材进避让集、已用区间登记占用,
+  // 候选打分与开窗都绕开它们,素材池有替代时必然换画面;池子耗尽时打分自然
+  // 回退复用,不会卡死。锁定句段由 retainedLocks 原样保留,不参与避让。
+  const lockedAssetIds = new Set(retainedLocks.map((lock) => lock.assetId));
+  const avoidClips = currentClips.filter((clip) => !clip.locked && !lockedAssetIds.has(clip.assetId));
   const normalized = normalizeInput({
     ...input,
     lockedSegments: [...(input.lockedSegments ?? input.locks ?? []), ...retainedLocks],
   });
+  normalized.avoidAssetIds = new Set(avoidClips.map((clip) => clip.assetId));
   const fixedOutputs = currentOutputs.filter((output) => output.planId !== targetOutputPlanId);
   const targetPlans = normalized.plans.filter((plan) => plan.planId === targetOutputPlanId);
   if (!targetPlans.length) {
@@ -1409,12 +1436,18 @@ export function reallocateOutput(
   }
   const usedIntervals: UsedInterval[] = [];
   const usedOpeningAssets = new Set<string>();
-  // 其他计划固定,不让目标计划的旧版本再额外占用一次区间。
+  // 其他计划固定,沿用既有占用。
   for (const output of fixedOutputs) {
     for (const clip of output.arrangement?.clips ?? output.clips ?? []) {
       usedIntervals.push({ assetId: clip.assetId, startUs: clip.sourceStartUs, endUs: clip.sourceEndUs, planId: output.planId ?? '', segmentId: clip.segmentId });
       if (clip.timelineStartUs === 0) usedOpeningAssets.add(clip.assetId);
     }
+  }
+  // 目标计划当前版本的非锁定区间也登记占用:即使素材池耗尽被迫复用同一素材,
+  // 相同窗口也会受 overlap 惩罚挤开,不会产出肉眼相同的一条。
+  for (const clip of avoidClips) {
+    usedIntervals.push({ assetId: clip.assetId, startUs: clip.sourceStartUs, endUs: clip.sourceEndUs, planId: targetOutputPlanId, segmentId: clip.segmentId });
+    if (clip.timelineStartUs === 0) usedOpeningAssets.add(clip.assetId);
   }
   const target = assignOne(normalized, targetPlans[0], normalized.plans.findIndex((plan) => plan.planId === targetOutputPlanId), usedIntervals, usedOpeningAssets, []);
   const outputs = normalized.plans

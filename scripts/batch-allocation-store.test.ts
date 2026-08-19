@@ -97,8 +97,11 @@ try {
   );
   const automatic = persistOutputReallocation(db, 'project-1', versionId, plans[0], '自动重试', { now: () => new Date('2026-08-03T04:02:00.000Z') });
   const repeatedAutomatic = persistOutputReallocation(db, 'project-1', versionId, plans[0], '自动重试', { now: () => new Date('2026-08-03T04:03:00.000Z') });
-  assert.equal(repeatedAutomatic.created, false, '未指定 seed 的相同重分配重试也必须保持幂等');
-  assert.equal(repeatedAutomatic.runId, automatic.runId);
+  assert.equal(repeatedAutomatic.created, true, '换一批成功后再次点击必须产生新运行,画面必须继续变化');
+  assert.notEqual(repeatedAutomatic.runId, automatic.runId);
+  const repeatedSameState = persistOutputReallocation(db, 'project-1', versionId, plans[0], '自动重试', { seed: repeatedAutomatic.result.seed, now: () => new Date('2026-08-03T04:04:00.000Z') });
+  assert.equal(repeatedSameState.created, false, '同一状态下显式同 seed 的重试仍必须幂等');
+  assert.equal(repeatedSameState.runId, repeatedAutomatic.runId);
 
   console.log('batch allocation store tests passed');
 } finally {

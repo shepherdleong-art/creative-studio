@@ -125,7 +125,7 @@ export default function ProjectDetailPage() {
   const [sceneRefs, setSceneRefs] = useState<SceneReferenceRecord[]>([]);
   const [applySceneModal, setApplySceneModal] = useState<string | null>(null);
   const [applySceneRefId, setApplySceneRefId] = useState('');
-  const [applyScenePrompt, setApplyScenePrompt] = useState('图1 是待编辑分镜图。图2 是场景参考图。请参考图2的空间风格、光线、墙面、软装和布置，重绘图1的场景。保持图1中的产品结构、模特姿态、主体位置和画面构图尽量一致。不要改变产品结构，不要添加文字。');
+  const [applyScenePrompt, setApplyScenePrompt] = useState('图1 是待编辑分镜图，是本次修改的主要对象。图2 是场景参考图。参考图2，修改图1，保持图中床和模特的一致性不变，更换卧室的其他家具和软装布置，构图参考图1。不要改变产品结构，不要添加文字。');
   const [applySceneProviderId, setApplySceneProviderId] = useState('');
   const [applySceneConcurrency, setApplySceneConcurrency] = useState(3);
   const [logOpen, setLogOpen] = useState(false);
