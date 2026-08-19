@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
 import { getVideoTailFrameCapability } from '@/lib/video-tail-frame';
+import { isCompanyKlingMultiShotTarget } from '@/lib/video-multi-shot';
 import { v4 as uuidv4 } from 'uuid';
 
 function safeVideoProvider(provider: {
@@ -21,6 +22,9 @@ function safeVideoProvider(provider: {
   secretKey?: string;
 }) {
   const runtime = resolveVideoProviderRuntimeConfig(provider);
+  const multiShotCapability = isCompanyKlingMultiShotTarget(provider.type, runtime.model)
+    ? { supported: true, defaultEnabled: true }
+    : undefined;
   return {
     id: provider.id,
     name: provider.name,
@@ -34,6 +38,7 @@ function safeVideoProvider(provider: {
     missing: runtime.missing,
     hasApiKey: runtime.hasApiKey,
     tailFrameCapability: getVideoTailFrameCapability(provider.type, runtime.model),
+    ...(multiShotCapability ? { multiShotCapability } : {}),
   };
 }
 

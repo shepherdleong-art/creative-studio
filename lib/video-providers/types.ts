@@ -17,6 +17,8 @@ export interface SubmitVideoRequest {
   tailImagePath?: string;
   tailMimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
   durationSec: number;
+  /** Company gateway Kling 3.0 intelligent storyboard; omitted for other jobs. */
+  multiShot?: boolean;
 }
 
 export interface SubmitVideoResult {

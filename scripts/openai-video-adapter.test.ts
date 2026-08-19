@@ -92,6 +92,7 @@ try {
       sourceImagePath: imagePath,
       sourceMimeType: 'image/png',
       durationSec: 5,
+      multiShot: true,
     },
     'gateway-key',
     'https://llm-gateway.example.com',
@@ -127,6 +128,56 @@ try {
     'https://llm-gateway.example.com',
   );
   assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'response_format', 'seconds', 'size']);
+  assert.equal(capturedBody?.multi_shot, undefined);
+  assert.equal(capturedBody?.shot_type, undefined);
+
+  // 智能分镜只受精确的公司 kling-3.0 管理；相近模型名不得注入字段。
+  await openaiVideoAdapter.submit(
+    {
+      model: 'kling-v3',
+      prompt: 'legacy v3 must not opt in',
+      sourceImagePath: imagePath,
+      sourceMimeType: 'image/png',
+      durationSec: 5,
+    },
+    'gateway-key',
+    'https://llm-gateway.example.com',
+  );
+  assert.equal(capturedBody?.multi_shot, undefined);
+  assert.equal(capturedBody?.shot_type, undefined);
+
+  // 只有精确的 kling-3.0 才受公司智能分镜开关管理；相近/大小写变体与 Seedance
+  // 都必须同时省略 multi_shot 与 shot_type。
+  for (const model of ['kling-v3.0', 'kling-3.0-fast', 'KLING-3.0', 'doubao-seedance-2-0-260128']) {
+    await openaiVideoAdapter.submit(
+      {
+        model,
+        prompt: `negative multi-shot model: ${model}`,
+        sourceImagePath: imagePath,
+        sourceMimeType: 'image/png',
+        durationSec: 5,
+      },
+      'gateway-key',
+      'https://llm-gateway.example.com',
+    );
+    assert.equal(capturedBody?.multi_shot, undefined, `${model} must not receive multi_shot`);
+    assert.equal(capturedBody?.shot_type, undefined, `${model} must not receive shot_type`);
+  }
+
+  // 数据库存储的 0 会通过队列映射为 false，适配器必须尊重关闭开关。
+  const disabledMultiShotRequest = {
+    model: 'kling-3.0',
+    prompt: 'explicitly disabled',
+    sourceImagePath: imagePath,
+    sourceMimeType: 'image/png' as const,
+    durationSec: 5,
+    multiShot: false,
+  };
+  await openaiVideoAdapter.submit(
+    disabledMultiShotRequest,
+    'gateway-key',
+    'https://llm-gateway.example.com',
+  );
   assert.equal(capturedBody?.multi_shot, undefined);
   assert.equal(capturedBody?.shot_type, undefined);
 

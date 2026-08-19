@@ -12,6 +12,7 @@ export interface VideoMotionRow {
   templateId: string;
   providerId: string;
   durationSec: number;
+  multiShot: boolean;
   tailImageId: string | null;
   tailImageUrl: string | null;
   tailImageName: string | null;
@@ -26,6 +27,7 @@ export function createVideoMotionRow(key: string, durationSec: number): VideoMot
     templateId: '',
     providerId: '',
     durationSec,
+    multiShot: true,
     tailImageId: null,
     tailImageUrl: null,
     tailImageName: null,

@@ -37,6 +37,10 @@ interface VideoProvider {
   configured?: boolean;
   missing?: string[];
   tailFrameCapability?: VideoTailFrameCapability;
+  multiShotCapability?: {
+    supported: boolean;
+    defaultEnabled: boolean;
+  };
 }
 
 interface MotionTemplate {
@@ -136,6 +140,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       : preferredProvider?.id || '';
   const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability | undefined =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.tailFrameCapability;
+  const getRowMultiShotCapability = (row: { providerId: string }): VideoProvider['multiShotCapability'] =>
+    providers.find((provider) => provider.id === getRowProviderId(row))?.multiShotCapability;
 
   const makeEmptyRow = (): VideoMotionRow => createVideoMotionRow(crypto.randomUUID(), defaultDuration);
 
@@ -585,6 +591,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, providerId }));
     replaceActiveMotionRows(result.rows);
   };
+  const updateRowMultiShot = (rowKey: string, multiShot: boolean) => {
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, multiShot }));
+    replaceActiveMotionRows(result.rows);
+  };
   const updateRowDuration = (rowKey: string, raw: number) => {
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
       const v = Number.isFinite(raw) && raw > 0 ? raw : 5;
@@ -782,6 +792,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         providerId: getRowProviderId(r),
         durationSec: r.durationSec,
         tailImageId: r.tailImageId,
+        ...(getRowMultiShotCapability(r)?.supported === true ? { multiShot: r.multiShot } : {}),
       }))
       .filter((r) => r.prompt.length > 0);
     if (items.length === 0) { alert('请至少填写一条描述提示词'); return; }
@@ -1095,6 +1106,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               <div className="space-y-3">
                 {motionRows.map((row, idx) => {
                   const tailCapability = getRowTailCapability(row);
+                  const multiShotCapability = getRowMultiShotCapability(row);
                   const tailIssue = getVideoMotionRowIssue(row, tailCapability);
                   const tailBusy = row.tailUploadState === 'uploading' || row.tailUploadState === 'deleting';
                   const tailDropEnabled = tailCapability?.supported === true && !tailBusy && !creating;
@@ -1260,7 +1272,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       </p>
                     )}
 
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className={`grid gap-2 ${multiShotCapability?.supported === true ? 'grid-cols-[1fr_72px_auto]' : 'grid-cols-2'}`}>
                       <select
                         value={row.templateId}
                         onChange={(e) => updateRowTemplate(row.key, e.target.value)}
@@ -1278,6 +1290,23 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         title="秒数"
                         disabled={creating}
                       />
+                      {multiShotCapability?.supported === true && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={row.multiShot}
+                          aria-label="智能分镜"
+                          title="智能分镜：可灵自动拆分多镜头"
+                          onClick={() => updateRowMultiShot(row.key, !row.multiShot)}
+                          disabled={creating}
+                          className={`video-multishot-toggle${row.multiShot ? ' is-on' : ''}`}
+                        >
+                          <span className="video-multishot-toggle-label">智能分镜</span>
+                          <span className="video-multishot-toggle-track" aria-hidden="true">
+                            <span className="video-multishot-toggle-thumb" />
+                          </span>
+                        </button>
+                      )}
                     </div>
 
                     <textarea

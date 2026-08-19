@@ -5,6 +5,7 @@ import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
 import { validateVideoTailFrameAsset } from '@/lib/video-tail-frame';
+import { normalizeVideoMultiShotForStorage } from '@/lib/video-multi-shot';
 
 export async function POST(
   request: NextRequest,
@@ -47,6 +48,7 @@ export async function POST(
         { status: 400 }
       );
     }
+    const model = (provider.defaultModel || '').trim();
 
     // Use latest generated image, fallback to source image
     const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;
@@ -58,21 +60,26 @@ export async function POST(
     if (!shotSet) return NextResponse.json({ error: 'Shot set not found' }, { status: 404 });
 
     const videoJobId = uuidv4();
+    const multiShot = normalizeVideoMultiShotForStorage(
+      provider.type,
+      model,
+      body.multiShot,
+    );
     const createResult = db.transaction(() => {
       const tailFrameValidation = validateVideoTailFrameAsset({
         db,
         tailImageId,
         projectId: shotSet.projectId,
         providerType: provider.type,
-        model: provider.defaultModel,
+        model,
       });
       if (!tailFrameValidation.ok) return tailFrameValidation;
 
       db.prepare(`
         INSERT INTO video_jobs
-          (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, provider.defaultModel, templateId, prompt, durationSec);
+          (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot);
       return { ok: true as const };
     })();
     if (!createResult.ok) {

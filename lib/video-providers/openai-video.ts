@@ -15,6 +15,7 @@ import {
   companyGatewayTailFrameCapability,
   uploadCompanyTailFrameImages,
 } from '../company-gateway-tail-frame.ts';
+import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -178,11 +179,9 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       body.LastFrameUrl = tailImageRef;
     }
 
-    // 可灵 3.x 的智能分镜（multi_shot）：网关把 multi_shot / shot_type 透传到
-    // 上游 ExtInfo.AdditionalParameters。与原生 kling 适配器一致，仅对 v3/3.0
-    // 模型开启；网关协议里 multi_shot 是 JSON boolean（原生接口是字符串 "true"）。
-    // Kling 3.0 Omni 不支持智能分镜，不能传这两个字段（公司文档 §5.1）。
-    if (/v3|3\.0/i.test(request.model) && !/omni/i.test(request.model)) {
+    // 公司网关可灵 3.0 智能分镜：只接受精确模型名，且显式 false 必须关闭。
+    // 网关协议里 multi_shot 是 JSON boolean（原生直连接口是字符串 "true"）。
+    if (shouldInjectCompanyKlingMultiShot(request.model, request.multiShot)) {
       body.multi_shot = true;
       body.shot_type = 'intelligence';
     }

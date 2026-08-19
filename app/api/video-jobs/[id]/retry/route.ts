@@ -10,12 +10,11 @@ export async function POST(
     const { id } = await params;
     const db = getDb();
     const job = db.prepare(`
-      SELECT vj.*, vp.defaultModel
+      SELECT vj.*
       FROM video_jobs vj
-      LEFT JOIN video_providers vp ON vp.id = vj.providerId
       WHERE vj.id = ?
     `).get(id) as {
-      id: string; status: string; projectId: string; defaultModel?: string | null;
+      id: string; status: string; projectId: string;
     } | undefined;
     if (!job) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
 
@@ -23,12 +22,9 @@ export async function POST(
       return NextResponse.json({ error: 'Only failed or canceled video jobs can be retried' }, { status: 400 });
     }
 
-    const model = (job.defaultModel || '').trim();
-    if (model) {
-      db.prepare(`UPDATE video_jobs SET status = 'pending', model = ?, errorMessage = NULL WHERE id = ?`).run(model, id);
-    } else {
-      db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL WHERE id = ?`).run(id);
-    }
+    // Retry only resets execution state. The task's frozen model and
+    // multiShot choice must survive provider setting changes and retries.
+    db.prepare(`UPDATE video_jobs SET status = 'pending', errorMessage = NULL WHERE id = ?`).run(id);
 
     // Auto-start video queue if idle so the retried job gets picked up
     const qStatus = getVideoQueueStatus(job.projectId);

@@ -498,6 +498,14 @@ body {
   .video-frame-busy { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; background: rgba(22,22,24,.5); color: #fff; font-size: 11px; font-weight: 600; backdrop-filter: blur(3px); }
   .video-tail-frame-warning { display: flex; align-items: flex-start; gap: 5px; margin: 0; border-radius: 8px; background: var(--color-warn-tint); padding: 6px 8px; color: var(--color-warn); font-size: 10.5px; line-height: 1.45; }
   .video-workspace .video-control.input-field { height: 40px !important; padding: 0 12px !important; border-radius: 11px; background: rgba(255,255,255,.94); font-size: 13px !important; line-height: 1.2; }
+  .video-multishot-toggle { display: inline-flex; align-items: center; gap: 7px; height: 40px; padding: 0 10px 0 12px; border: 1px solid var(--color-hairline-soft); border-radius: 11px; background: rgba(255,255,255,.94); color: var(--color-ink-tertiary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.2; white-space: nowrap; cursor: pointer; transition: border-color .15s ease, color .15s ease, background .15s ease; }
+  .video-multishot-toggle:hover:not(:disabled) { border-color: rgba(0,113,227,.35); }
+  .video-multishot-toggle:disabled { opacity: .5; cursor: not-allowed; }
+  .video-multishot-toggle-track { position: relative; flex: none; width: 28px; height: 16px; border-radius: 999px; background: rgba(0,0,0,.14); transition: background .18s ease; }
+  .video-multishot-toggle-thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.22); transition: transform .18s ease; }
+  .video-multishot-toggle.is-on { border-color: rgba(0,113,227,.45); background: rgba(0,113,227,.06); color: var(--color-ink); }
+  .video-multishot-toggle.is-on .video-multishot-toggle-track { background: var(--color-accent); }
+  .video-multishot-toggle.is-on .video-multishot-toggle-thumb { transform: translateX(12px); }
   .video-workspace .video-prompt-field.input-field { min-height: 150px !important; resize: vertical; padding: 12px 13px !important; border-radius: 13px; background: rgba(255,255,255,.96); font-family: var(--font-sans); font-size: 13.5px !important; line-height: 1.55 !important; }
   .video-motion-delete { position: absolute; top: 10px; right: 10px; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 1px solid var(--color-hairline-soft); border-radius: 50%; background: rgba(255,255,255,.78); color: var(--color-ink-tertiary); cursor: pointer; transition: background .15s ease, color .15s ease, border-color .15s ease; }
   .video-motion-delete:hover { border-color: rgba(215,55,43,.22); background: var(--color-fail-tint); color: var(--color-fail); }

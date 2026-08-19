@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_VIDEO_TIMEOUT_MS } from '@/lib/video-queue';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
 import { validateVideoTailFrameAsset, validateVideoTailFrameBatchDrafts } from '@/lib/video-tail-frame';
+import { normalizeVideoMultiShotForStorage } from '@/lib/video-multi-shot';
 
 const MAX_ITEMS = 10;
 
@@ -13,6 +14,7 @@ interface BatchItem {
   providerId: string;
   durationSec: number;
   tailImageId: string | null;
+  multiShot: unknown;
 }
 
 // Create multiple "运镜" video jobs for a single shot in one call, then start
@@ -41,6 +43,7 @@ export async function POST(
         tailImageId: typeof obj.tailImageId === 'string' && obj.tailImageId.trim()
           ? obj.tailImageId.trim()
           : null,
+        multiShot: obj.multiShot,
       };
     });
     const tailFrameDraftError = validateVideoTailFrameBatchDrafts(normalizedItems);
@@ -75,7 +78,8 @@ export async function POST(
           { status: 400 }
         );
       }
-      providerCache.set(pid, { model: prov.defaultModel, type: prov.type });
+      const model = (prov.defaultModel || '').trim();
+      providerCache.set(pid, { model, type: prov.type });
     }
 
     // Get project ID from shot set
@@ -89,8 +93,8 @@ export async function POST(
 
     const insert = db.prepare(`
       INSERT INTO video_jobs
-        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const videoJobIds: string[] = [];
     const createAll = db.transaction(() => {
@@ -109,7 +113,8 @@ export async function POST(
       for (const item of items) {
         const videoJobId = uuidv4();
         const p = providerCache.get(item.providerId)!;
-        insert.run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId, item.providerId, p.model, item.templateId, item.prompt, item.durationSec);
+        const multiShot = normalizeVideoMultiShotForStorage(p.type, p.model, item.multiShot);
+        insert.run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId, item.providerId, p.model, item.templateId, item.prompt, item.durationSec, multiShot);
         videoJobIds.push(videoJobId);
       }
       return { ok: true as const };
