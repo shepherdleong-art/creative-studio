@@ -574,7 +574,12 @@ export function persistOutputReallocation(
     // must produce a new run instead of replaying the previous footage.
     const baseSeed = currentRunRow.seed.split(':reallocate:')[0] ?? currentRunRow.seed;
     const seed = String(options.seed ?? `${baseSeed}:reallocate:${targetPlanId}:${reason}:${targetPlan.currentVersionId ?? 'none'}`);
-    const result = reallocateOutput({ ...input, seed }, parseJson(currentRunRow.resultJson), targetPlanId, reason);
+    // 避让集覆盖本计划历史所有版本(含当前版本)用过的素材与封面:连续点击
+    // 「换一批画面」持续换新,不会在两批画面之间来回切换。
+    const historyArrangements = (db.prepare(`
+      SELECT arrangementJson FROM batch_output_versions WHERE planId = ? ORDER BY versionNumber
+    `).all(targetPlanId) as Array<{ arrangementJson: string }>).map((row) => parseJson(row.arrangementJson));
+    const result = reallocateOutput({ ...input, seed }, parseJson(currentRunRow.resultJson), targetPlanId, reason, historyArrangements);
     const existing = readExistingRun(db, batchVersionId, result.ruleVersion, result.seed, result.inputFingerprint);
     if (existing) {
       restoreRunCurrentVersions(db, existing);

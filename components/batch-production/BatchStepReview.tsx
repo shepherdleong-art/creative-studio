@@ -86,8 +86,14 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   } = props;
   const visibleCards = workspace.cards.filter(({ status }) => cardFilter === 'all' || status === cardFilter);
   const { counts } = workspace;
-  // 每张卡片当前查看的成片版本(缺省 = 最新版本);切换只影响弹窗预览的媒体
-  const [viewedVersionIds, setViewedVersionIds] = useState<Record<string, string>>({});
+  // 每张卡片当前查看的成片版本(缺省 = 最新版本);切换只影响卡片封面与弹窗预览的媒体。
+  // 钉选绑定当时的当前版本:换一批画面/重新渲染推进版本后自动回到最新,
+  // 不会一直停在旧版本上让人以为「还是同一条片子」。
+  const [viewedVersions, setViewedVersions] = useState<Record<string, { base: string | null; viewed: string }>>({});
+  function viewedVersionIdOf(card: BatchWorkspaceView['cards'][number]): string | null {
+    const pinned = viewedVersions[card.planId];
+    return pinned && pinned.base === (card.versionId ?? null) ? pinned.viewed : card.versionId;
+  }
   const [previewCard, setPreviewCard] = useState<BatchWorkspaceView['cards'][number] | null>(null);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const [coverDraftUs, setCoverDraftUs] = useState<number | null>(null);
@@ -146,13 +152,13 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   }
 
   function openPreview(card: BatchWorkspaceView['cards'][number]): void {
-    const viewedVersionId = viewedVersionIds[card.planId] ?? card.versionId;
+    const viewedVersionId = viewedVersionIdOf(card);
     if (!mediaSourceOf(card, viewedVersionId)) return;
     setPreviewCard(card);
   }
 
   function previewMediaUrl(card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover'): string | null {
-    const viewedVersionId = viewedVersionIds[card.planId] ?? card.versionId;
+    const viewedVersionId = viewedVersionIdOf(card);
     const source = mediaSourceOf(card, viewedVersionId);
     if (!source) return null;
     const isCurrentView = !viewedVersionId || viewedVersionId === card.versionId;
@@ -241,7 +247,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {visibleCards.map((card) => {
-          const viewedVersionId = viewedVersionIds[card.planId] ?? card.versionId;
+          const viewedVersionId = viewedVersionIdOf(card);
           const isCurrentView = !viewedVersionId || viewedVersionId === card.versionId;
           const coverSource = mediaSourceOf(card, viewedVersionId);
           const coverUrl = coverSource ? mediaUrlFn(card, 'cover', coverSource, isCurrentView ? null : viewedVersionId) : null;
@@ -310,7 +316,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                   <select
                     aria-label={`成片 ${card.seq} 版本切换`}
                     value={viewedVersionId ?? ''}
-                    onChange={(event) => setViewedVersionIds((current) => ({ ...current, [card.planId]: event.target.value }))}
+                    onChange={(event) => setViewedVersions((current) => ({ ...current, [card.planId]: { base: card.versionId ?? null, viewed: event.target.value } }))}
                     className="h-8 max-w-32 rounded-lg border border-hairline bg-white px-2 text-xs text-ink"
                   >
                     {card.versions.map((version) => (

@@ -149,6 +149,8 @@ assert.ok(
   '换一批画面时封面同样避开当前版本素材',
 );
 // 再次换一批以上一版为基准避让:素材集合必须继续变化(在 a/b 与 c 之间轮转)。
+// 注意:不传历史版本时只避让当前版本,连续两次会轮换回第一批——
+// 真实持久化链路(allocation-store)总是传入历史版本,避免这种来回切换。
 const reallocatedAgain = reallocateOutput(baseInput, reallocated, 'plan-a-1', '再换一次');
 const reallocatedAgainTarget = reallocatedAgain.outputs.find((output) => output.planId === 'plan-a-1')!;
 const reallocatedAssetIds = new Set(reallocatedTarget.arrangement.clips.map((clip) => clip.assetId));
@@ -156,5 +158,73 @@ assert.ok(
   reallocatedAgainTarget.arrangement.clips.every((clip) => !reallocatedAssetIds.has(clip.assetId)),
   '连续换一批画面必须持续避开上一批素材',
 );
+
+// 传入历史版本时避让集覆盖历史所有版本(素材+封面):连续换一批不会在
+// 两批画面之间来回切换,直到素材池耗尽才回退复用。
+const historyInput: FrozenBatchInput = {
+  projectId: 'project-hist',
+  batchId: 'batch-hist',
+  batchVersionId: 'version-hist',
+  ruleVersion: 'rules-v1',
+  seed: 'seed-hist',
+  fps: 24,
+  preset: 'vertical-1080x1920',
+  targetDurationUs: 4_000_000,
+  plans: [
+    {
+      planId: 'plan-h-1',
+      scriptSnapshotId: 'script-h',
+      title: '历史避让',
+      segments: [
+        { id: 'h-1', text: '开场', startUs: 0, endUs: 2_000_000, semanticScores: { 'hist-a': 0.95, 'hist-c': 0.9, 'hist-e': 0.85, 'hist-b': 0.4, 'hist-d': 0.4, 'hist-f': 0.4 } },
+        { id: 'h-2', text: '细节', startUs: 2_000_000, endUs: 4_000_000, semanticScores: { 'hist-b': 0.95, 'hist-d': 0.9, 'hist-f': 0.85, 'hist-a': 0.4, 'hist-c': 0.4, 'hist-e': 0.4 } },
+      ],
+      musicTrackIds: ['music-1'],
+    },
+  ],
+  assets: ['hist-a', 'hist-b', 'hist-c', 'hist-d', 'hist-e', 'hist-f'].map((assetId, index) => ({
+    assetId,
+    contentFingerprint: `sha256:${assetId}`,
+    durationUs: 8_000_000,
+    analysisJson: { durationUs: 8_000_000, usableRanges: [{ startUs: 0, endUs: 8_000_000, qualityScore: 1 }], coverFrameTimesUs: [500_000 + index * 100_000] },
+  })),
+};
+const historyFirst = allocateBatch(historyInput);
+const historyFirstTarget = historyFirst.outputs.find((output) => output.planId === 'plan-h-1')!;
+assert.deepEqual(
+  historyFirstTarget.arrangement.clips.map((clip) => clip.assetId),
+  ['hist-a', 'hist-b'],
+  '初始分配按语义分取最优素材',
+);
+const historySecond = reallocateOutput(historyInput, historyFirst, 'plan-h-1', '第一次换');
+const historySecondTarget = historySecond.outputs.find((output) => output.planId === 'plan-h-1')!;
+assert.deepEqual(
+  historySecondTarget.arrangement.clips.map((clip) => clip.assetId),
+  ['hist-c', 'hist-d'],
+  '第一次换一批避开初始素材',
+);
+// 不传历史:避让集只有上一版,确定性轮换回第一批素材(遗留行为,仅作对照)。
+const pingPong = reallocateOutput(historyInput, historySecond, 'plan-h-1', '第二次换');
+assert.deepEqual(
+  pingPong.outputs.find((output) => output.planId === 'plan-h-1')!.arrangement.clips.map((clip) => clip.assetId),
+  ['hist-a', 'hist-b'],
+  '不传历史版本时只避让当前版本,会轮换回第一批(对照组)',
+);
+// 传入历史:避让集覆盖两批旧素材,必须选出从未用过的素材,封面也不能重复。
+const historyThird = reallocateOutput(
+  historyInput,
+  historySecond,
+  'plan-h-1',
+  '第二次换',
+  [historyFirstTarget.arrangement, historySecondTarget.arrangement],
+);
+const historyThirdTarget = historyThird.outputs.find((output) => output.planId === 'plan-h-1')!;
+assert.deepEqual(
+  historyThirdTarget.arrangement.clips.map((clip) => clip.assetId),
+  ['hist-e', 'hist-f'],
+  '传入历史版本后,换一批必须避开所有历史素材,不再来回切换',
+);
+const historyCovers = [historyFirstTarget, historySecondTarget, historyThirdTarget].map((output) => output.arrangement.cover.assetId);
+assert.equal(new Set(historyCovers).size, 3, '换一批画面时封面同样逐次避开历史封面素材');
 
 console.log('batch allocation tests passed');

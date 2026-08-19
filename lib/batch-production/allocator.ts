@@ -17,7 +17,7 @@ export const BATCH_ALLOCATION_SCHEMA_VERSION = 'batch-arrangement-v1';
 
 /**
  * 单条重分配(换一批画面)的避让惩罚。必须压过语义分(×100)+钩子(×8)+质量(×2)
- * 的最大正向差,素材池有替代时当前版本用过的素材必然让位;池子耗尽时所有
+ * 的最大正向差,素材池有替代时历史版本用过的素材必然让位;池子耗尽时所有
  * 候选被同等惩罚、相对排序不变,自然回退复用,不会卡死。
  */
 const REALLOCATION_AVOID_PENALTY = 150;
@@ -331,7 +331,7 @@ interface NormalizedInput {
   assets: NormalizedAsset[];
   exclusions: AllocationExclusion[];
   excludedAssetIds: string[];
-  /** 仅单条重分配非空:目标计划当前版本用过的素材,候选打分避让,保证换一批真的换。 */
+  /** 仅单条重分配非空:目标计划历史版本用过的素材与封面,候选打分避让,保证换一批真的换。 */
   avoidAssetIds: Set<string>;
   locks: AllocationLockInput[];
   musicTrackIds: string[];
@@ -1390,12 +1390,15 @@ export function allocateBatch(input: FrozenBatchInput): AllocationResult {
 /**
  * 单条重分配:currentAllocation 中的非目标计划作为固定占用,只重算目标计划。
  * 返回仍包含完整批次结果,便于页面显示差异;持久化 seam 只应写入 targetOutputPlanId。
+ * historyArrangements 应传目标计划历史所有版本的 arrangement(含当前版本):
+ * 避让集覆盖这些版本用过的素材与封面,连续「换一批画面」不会在两批画面间来回切换。
  */
 export function reallocateOutput(
   input: FrozenBatchInput,
   currentAllocation: AllocationResult | unknown,
   targetOutputPlanId: string,
   reason?: string,
+  historyArrangements?: unknown[],
 ): AllocationResult {
   // The reason is audit context owned by the persistence layer; allocation
   // remains a pure function of the frozen input and seed.
@@ -1414,16 +1417,30 @@ export function reallocateOutput(
       sourceStartUs: clip.sourceStartUs,
       sourceEndUs: clip.sourceEndUs,
     }));
-  // 「换一批画面」语义:当前版本用过的非锁定素材进避让集、已用区间登记占用,
-  // 候选打分与开窗都绕开它们,素材池有替代时必然换画面;池子耗尽时打分自然
-  // 回退复用,不会卡死。锁定句段由 retainedLocks 原样保留,不参与避让。
+  // 「换一批画面」语义:本计划历史所有版本(含当前版本)用过的非锁定素材与封面
+  // 都进避让集,已用区间登记占用;连续点击持续换新,直到素材池耗尽才自然回退
+  // 复用并显式提醒,既不会卡死,也不会在两批画面之间来回切换。锁定句段由
+  // retainedLocks 原样保留,锁定素材不参与避让。
   const lockedAssetIds = new Set(retainedLocks.map((lock) => lock.assetId));
   const avoidClips = currentClips.filter((clip) => !clip.locked && !lockedAssetIds.has(clip.assetId));
+  const historyClips: AllocationClip[] = [];
+  const historyCoverAssetIds: string[] = [];
+  for (const rawArrangement of historyArrangements ?? []) {
+    const arrangement = asRecord(rawArrangement);
+    for (const clip of arrayFrom(arrangement.clips) as AllocationClip[]) {
+      if (clip && typeof clip.assetId === 'string' && Boolean(clip.assetId)) historyClips.push(clip);
+    }
+    const coverAssetId = nonEmptyString(asRecord(arrangement.cover).assetId);
+    if (coverAssetId) historyCoverAssetIds.push(coverAssetId);
+  }
   const normalized = normalizeInput({
     ...input,
     lockedSegments: [...(input.lockedSegments ?? input.locks ?? []), ...retainedLocks],
   });
-  normalized.avoidAssetIds = new Set(avoidClips.map((clip) => clip.assetId));
+  normalized.avoidAssetIds = new Set(
+    [...avoidClips.map((clip) => clip.assetId), ...historyClips.map((clip) => clip.assetId), ...historyCoverAssetIds]
+      .filter((assetId) => !lockedAssetIds.has(assetId)),
+  );
   const fixedOutputs = currentOutputs.filter((output) => output.planId !== targetOutputPlanId);
   const targetPlans = normalized.plans.filter((plan) => plan.planId === targetOutputPlanId);
   if (!targetPlans.length) {
@@ -1443,9 +1460,14 @@ export function reallocateOutput(
       if (clip.timelineStartUs === 0) usedOpeningAssets.add(clip.assetId);
     }
   }
-  // 目标计划当前版本的非锁定区间也登记占用:即使素材池耗尽被迫复用同一素材,
+  // 目标计划历史版本的非锁定区间也登记占用:即使素材池耗尽被迫复用同一素材,
   // 相同窗口也会受 overlap 惩罚挤开,不会产出肉眼相同的一条。
-  for (const clip of avoidClips) {
+  const seenAvoidIntervals = new Set<string>();
+  for (const clip of [...avoidClips, ...historyClips]) {
+    if (!Number.isFinite(clip.sourceStartUs) || !Number.isFinite(clip.sourceEndUs)) continue;
+    const intervalKey = `${clip.assetId}:${clip.sourceStartUs}:${clip.sourceEndUs}`;
+    if (seenAvoidIntervals.has(intervalKey)) continue;
+    seenAvoidIntervals.add(intervalKey);
     usedIntervals.push({ assetId: clip.assetId, startUs: clip.sourceStartUs, endUs: clip.sourceEndUs, planId: targetOutputPlanId, segmentId: clip.segmentId });
     if (clip.timelineStartUs === 0) usedOpeningAssets.add(clip.assetId);
   }
