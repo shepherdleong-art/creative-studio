@@ -14,6 +14,7 @@ import { isPlaceholderValue } from './video-auth';
 import { getEffectiveProjectFinalStatus } from './project-status';
 import { writeLog } from './logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from './output-filenames';
+import { persistImageJobUsageSnapshot, recordImageJobUsage } from './usage-async-jobs.ts';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { dataRoot } from './data-root';
@@ -41,6 +42,7 @@ interface JobRecord {
   maxAttempts: number;
   revision?: number;
   referenceGuidanceMode?: string;
+  usageSnapshotJson?: string | null;
 }
 
 type QueueStatus = 'idle' | 'running' | 'paused';
@@ -289,6 +291,7 @@ async function runJob(
 
     // ── Route to correct adapter ──
     let result: { imageBuffer: Buffer; latencyMs: number; rawResponse?: unknown; remoteImageUrl?: string } | undefined;
+    let usageSnapshot: string | null = null;
 
     if (providerType === 'geekai-json') {
       // ── GeekAI async flow: submit → poll → download ──
@@ -408,6 +411,78 @@ async function runJob(
       // ── 网关异步任务流（/v1/videos 协议）: submit → poll → download ──
       const gatewayStart = Date.now();
 
+      // A claimed/retried job may already have been submitted before a crash or
+      // timeout. Never create another billable remote task; hand it to the
+      // explicit resume-poll flow instead.
+      let existingTaskId: string | null = null;
+      let taskLookupFailed = false;
+      try {
+        const existingTask = db.prepare(`SELECT providerTaskId FROM jobs WHERE id = ?`).get(job.id) as
+          { providerTaskId?: unknown } | undefined;
+        if (typeof existingTask?.providerTaskId === 'string' && existingTask.providerTaskId.trim()) {
+          existingTaskId = existingTask.providerTaskId.trim();
+        }
+      } catch {
+        // Fail closed if the task identity cannot be read: submitting would be
+        // unsafe because the remote request may already exist.
+        taskLookupFailed = true;
+      }
+
+      const enterImageResumeCheck = (resumeMessage: string) => {
+        logWarn(resumeMessage);
+        try {
+          db.prepare(
+            `UPDATE jobs SET status = 'needs_check', errorMessage = ?, providerStatus = 'needs_check', finishedAt = datetime('now')
+             WHERE id = ? AND status = 'running'`
+          ).run(resumeMessage, job.id);
+        } catch (stateError) {
+          logError(`无法记录 needs_check 状态: ${stateError instanceof Error ? stateError.message : String(stateError)}`);
+        }
+      };
+
+      if (taskLookupFailed) {
+        enterImageResumeCheck('无法确认远端图片任务身份，已暂停提交，请点“补抓结果”重试。');
+        return;
+      }
+      if (existingTaskId) {
+        enterImageResumeCheck(`已有远端图片任务 ${existingTaskId}，请点“补抓结果”继续查询。`);
+        return;
+      }
+
+      usageSnapshot = persistImageJobUsageSnapshot(db, {
+        jobId: job.id,
+        projectId: job.projectId,
+        requestModel: job.model,
+        provider: {
+          id: provider.id,
+          name: provider.name,
+          type: provider.type,
+          model: provider.model,
+        },
+        refType: 'job',
+        refId: job.id,
+        startedAt,
+      });
+      if (!usageSnapshot) {
+        // Snapshot persistence deliberately remains fail-open when the usage
+        // schema is unavailable. Re-read the remote identity, however, so a
+        // providerTaskId created between the preflight SELECT and the guarded
+        // snapshot UPDATE can never lead to a duplicate submit.
+        try {
+          const racedTask = db.prepare(`SELECT providerTaskId FROM jobs WHERE id = ?`).get(job.id) as
+            { providerTaskId?: unknown } | undefined;
+          const racedTaskId = typeof racedTask?.providerTaskId === 'string'
+            ? racedTask.providerTaskId.trim()
+            : '';
+          if (racedTaskId) {
+            enterImageResumeCheck(`已有远端图片任务 ${racedTaskId}，请点“补抓结果”继续查询。`);
+            return;
+          }
+        } catch {
+          enterImageResumeCheck('无法确认远端图片任务身份，已暂停提交，请点“补抓结果”重试。');
+          return;
+        }
+      }
       logInfo('提交任务到网关（异步任务协议）...');
       const submitResult = await submitGatewayTaskImage(
         {
@@ -691,6 +766,16 @@ async function runJob(
     ).run(finishedAt, result.latencyMs, estimatedCost, outputImageId, result.remoteImageUrl || null, result.rawResponse ? safeJsonForDB(result.rawResponse) : null, job.id);
 
     if (completeResult.changes === 1) {
+      const usageResult = recordImageJobUsage(db, {
+        jobId: job.id,
+        projectId: job.projectId,
+        attempt,
+        snapshot: usageSnapshot,
+        finishedAt,
+      });
+      if (!usageResult.ok) {
+        logWarn(`实时 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})`);
+      }
       logInfo(`任务完成 (成本: ¥${estimatedCost.toFixed(4)})`);
       // Sync shot candidates even if a newer redo job already replaced latestJobId.
       const linkedShots = db.prepare(`

@@ -75,7 +75,12 @@ export async function PUT(
       updates.push('enabled = ?');
       values.push(body.enabled ? 1 : 0);
     }
-    if (body.defaultCostPerImage !== undefined) {
+    const effectiveType = typeof body.type === 'string' ? body.type.trim() : String(provider.type || '').trim();
+    const effectiveModel = typeof body.model === 'string' ? body.model.trim() : String(provider.model || '').trim();
+    const isFixedImageIdentity = id === 'company-gateway-image2-medium'
+      && effectiveType === 'gateway-task-image'
+      && effectiveModel === 'image2-medium';
+    if (body.defaultCostPerImage !== undefined && !isFixedImageIdentity) {
       updates.push('defaultCostPerImage = ?');
       values.push(body.defaultCostPerImage);
     }

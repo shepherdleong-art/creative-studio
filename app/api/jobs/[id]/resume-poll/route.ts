@@ -5,6 +5,7 @@ import { pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskRes
 import { describeGatewayDownloadFailure } from '@/lib/media-download-policy';
 import { writeLog } from '@/lib/logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from '@/lib/output-filenames';
+import { recordImageJobUsage } from '@/lib/usage-async-jobs';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
@@ -26,7 +27,7 @@ export async function POST(
       FROM jobs j LEFT JOIN providers p ON j.providerId = p.id WHERE j.id = ?`).get(id) as {
       id: string; projectId: string; providerId: string; providerTaskId: string;
       model: string; prompt: string; inputImageId: string; referenceImageIds: string;
-      size: string; quality: string; status: string;
+      size: string; quality: string; status: string; attempt: number; usageSnapshotJson: string | null;
       baseUrl: string; apiKey: string; apiKeyEnv: string; type: string;
     } | undefined;
 
@@ -106,7 +107,20 @@ export async function POST(
               const outputImageId = uuidv4();
               db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, createdAt) VALUES (?, ?, 'output', ?, ?, 'image/png', ?, datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath, outputUsage);
 
-              db.prepare(`UPDATE jobs SET status = 'succeeded', providerStatus = 'succeeded', remoteImageUrl = ?, outputImageId = ?, finishedAt = datetime('now'), latencyMs = ? WHERE id = ?`).run(pollResult.imageUrl, outputImageId, Date.now() - startedAt, job.id);
+              const finishedAt = new Date().toISOString();
+              const completeResult = db.prepare(`UPDATE jobs SET status = 'succeeded', providerStatus = 'succeeded', remoteImageUrl = ?, outputImageId = ?, finishedAt = ?, latencyMs = ? WHERE id = ? AND status = 'running'`).run(pollResult.imageUrl, outputImageId, finishedAt, Date.now() - startedAt, job.id);
+              if (completeResult.changes === 1) {
+                const usageResult = recordImageJobUsage(db, {
+                  jobId: job.id,
+                  projectId: job.projectId,
+                  attempt: job.attempt,
+                  snapshot: job.usageSnapshotJson,
+                  finishedAt,
+                });
+                if (!usageResult.ok) {
+                  writeLog({ jobId: job.id, projectId: job.projectId, level: 'warn', message: `补抓成功后的 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})` });
+                }
+              }
               writeLog({ jobId: job.id, projectId: job.projectId, level: 'info', message: '补抓成功，图片已保存' });
               return;
             }

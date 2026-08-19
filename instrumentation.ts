@@ -28,6 +28,17 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
   const { gracefulShutdown } = await import('./lib/shutdown');
   registerProcessShutdownHandlers(gracefulShutdown);
+  try {
+    const [{ getDb }, { reconcileUsageLedger }] = await Promise.all([
+      import('./lib/db'),
+      import('./lib/usage-ledger'),
+    ]);
+    reconcileUsageLedger(getDb());
+  } catch {
+    // Usage accounting is deliberately best-effort at startup; it must never
+    // prevent the existing batch scheduler from recovering its work.
+    console.error('[usage-ledger] startup reconciliation skipped');
+  }
   const { startBatchSchedulerAfterReadiness } = await import('./lib/batch-production/bootstrap');
   void startBatchSchedulerAfterReadiness();
 }

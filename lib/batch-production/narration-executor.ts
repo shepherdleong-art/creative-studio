@@ -21,6 +21,9 @@ import type { BatchTaskExecutor } from './executors.ts';
 export const BATCH_NARRATION_ADAPTER_VERSION = 'batch-narration-v1';
 
 interface TtsProviderRow {
+  id: string;
+  name: string;
+  type: string;
   baseUrl: string;
   apiKey: string;
   keyEnv: string;
@@ -83,7 +86,7 @@ function resolveBatchNarrationConfig(
   }
   if (!providerId) throw new Error('尚未启用任何口播配音供应商，请在设置中配置');
   const row = db.prepare(`
-    SELECT baseUrl, apiKey, keyEnv, model, enabled FROM final_edit_tts_providers WHERE id = ?
+    SELECT id, name, type, baseUrl, apiKey, keyEnv, model, enabled FROM final_edit_tts_providers WHERE id = ?
   `).get(providerId) as TtsProviderRow | undefined;
   if (!row || row.enabled !== 1) throw new Error('口播配音供应商已停用');
   if (!resolveProviderApiKey(row)) throw new Error('口播配音供应商 API Key 未配置');
@@ -98,6 +101,9 @@ function narrationReuseKey(input: {
   scriptSnapshotId: string;
   bodyText: string;
   providerId: string;
+  providerType: string;
+  model: string;
+  baseUrl: string;
   voice: string;
   speed: number;
 }): string {
@@ -106,6 +112,9 @@ function narrationReuseKey(input: {
       scriptSnapshotId: input.scriptSnapshotId,
       bodyText: input.bodyText,
       providerId: input.providerId,
+      providerType: input.providerType,
+      model: input.model,
+      baseUrl: input.baseUrl,
       voice: input.voice,
       speed: input.speed,
       adapterVersion: BATCH_NARRATION_ADAPTER_VERSION,
@@ -212,6 +221,9 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         scriptSnapshotId: snapshot.id,
         bodyText: snapshot.bodyText,
         providerId,
+        providerType: row.type,
+        model: row.model,
+        baseUrl: row.baseUrl,
         voice,
         speed,
       });
@@ -260,7 +272,16 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
             : undefined,
         );
         const synthesized = await synthesize(providerId, {
-          provider: { baseUrl: row.baseUrl, apiKey: resolveProviderApiKey(row), model: row.model },
+          provider: {
+            providerId: row.id,
+            providerName: row.name,
+            providerType: row.type,
+            configuredModel: row.model,
+            requestModel: row.model,
+            baseUrl: row.baseUrl,
+            apiKey: resolveProviderApiKey(row),
+            model: row.model,
+          },
           voice,
           speed,
           segments,
@@ -268,6 +289,15 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
           relativeOutputPath,
           alignment,
           signal,
+          usageContext: {
+            projectId: claim.task.projectId,
+            refType: 'batch-narration',
+            refId: claim.task.id,
+            detail: {
+              attempt: claim.attempt.attemptNumber,
+              scriptSnapshotId: snapshot.id,
+            },
+          },
         });
         if (signal.aborted) throw new Error('任务已中止');
         if (!fs.existsSync(synthesized.absolutePath)) throw new Error('口播合成没有产出音频文件');

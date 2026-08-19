@@ -8,6 +8,7 @@ import {
   shouldPersistVideoResumeDownloadFailure,
 } from '@/lib/media-download-policy';
 import { writeLog } from '@/lib/logger';
+import { recordVideoJobUsage } from '@/lib/usage-async-jobs';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
@@ -26,6 +27,9 @@ export async function POST(
       providerId: string;
       providerTaskId: string | null;
       status: string;
+      attempt: number;
+      durationSec: number;
+      usageSnapshotJson: string | null;
     } | undefined;
 
     if (!job) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
@@ -36,6 +40,8 @@ export async function POST(
 
     // Load provider
     const provider = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(job.providerId) as {
+      id: string;
+      name: string;
       type: string;
       baseUrlEnv: string;
       apiKeyEnv: string;
@@ -66,6 +72,13 @@ export async function POST(
 
     const adapter = getVideoAdapter(provider.type);
     if (!adapter) return NextResponse.json({ error: `Unknown provider type: ${provider.type}` }, { status: 400 });
+
+    // Manual recovery participates in the same running → succeeded atomic
+    // transition as the main queue.
+    db.prepare(`
+      UPDATE video_jobs SET status = 'running', errorMessage = NULL
+      WHERE id = ? AND status IN ('needs_check', 'pending')
+    `).run(job.id);
 
     // Poll
     const result = await adapter.poll(job.providerTaskId!, apiKey, runtime.baseUrl);
@@ -117,7 +130,8 @@ export async function POST(
       const videoPath = path.join(videosDir, videoFilename);
       fs.writeFileSync(videoPath, videoBuffer);
 
-      db.prepare(`
+      const finishedAt = new Date().toISOString();
+      const completeResult = db.prepare(`
         UPDATE video_jobs SET
           status = 'succeeded',
           providerStatus = 'succeeded',
@@ -125,11 +139,29 @@ export async function POST(
           remoteVideoUrl = ?,
           localVideoPath = ?,
           filename = ?,
-          finishedAt = datetime('now'),
+          finishedAt = ?,
           lastPolledAt = datetime('now'),
           pollCount = pollCount + 1
-        WHERE id = ?
-      `).run(result.videoUrl, videoPath, videoFilename, job.id);
+        WHERE id = ? AND status = 'running'
+      `).run(result.videoUrl, videoPath, videoFilename, finishedAt, job.id);
+
+      if (completeResult.changes === 1) {
+        const usageResult = recordVideoJobUsage(db, {
+          jobId: job.id,
+          projectId: job.projectId,
+          durationSec: job.durationSec,
+          snapshot: job.usageSnapshotJson,
+          finishedAt,
+        });
+        if (!usageResult.ok) {
+          writeLog({
+            jobId: job.id,
+            projectId: job.projectId,
+            level: 'warn',
+            message: `补抓成功后的 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})`,
+          });
+        }
+      }
 
       return NextResponse.json({ success: true, status: 'succeeded', filename: videoFilename });
     }

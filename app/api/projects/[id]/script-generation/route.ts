@@ -59,7 +59,15 @@ function buildDeps(projectId: string, project: Record<string, unknown>) {
         try {
           const result = await generateAndPersistScriptV3({ projectId, project, body }, {
             db: getDb(),
-            completeJson: (providerId, request) => completeJson({ providerId, ...request }),
+            completeJson: (providerId, request) => completeJson({
+              providerId,
+              ...request,
+              usageContext: {
+                projectId,
+                refType: 'script-generation',
+                refId: String(body.generationId),
+              },
+            }),
             providerMeta: getProviderMeta,
             signal,
             onProgress,

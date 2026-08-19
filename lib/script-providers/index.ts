@@ -31,6 +31,7 @@ import {
 import { geminiAnalyzeSellingPoints, geminiCompleteJson } from './gemini';
 import { toScriptProviderMeta } from './config';
 import { isCosMediaConfigured, tryUploadBufferToCosAndSign } from '../cos-media.ts';
+import type { LlmUsageContext, LlmUsageContextInput } from '../usage-llm.ts';
 import {
   ProviderExecutionGateError,
   assertProviderExecutionAvailable,
@@ -115,6 +116,7 @@ export async function completeJson<T>(input: {
   timeoutMs?: number;
   signal?: AbortSignal;
   images?: Array<{ mimeType: string; imageBase64: string }>;
+  usageContext?: LlmUsageContextInput;
 }): Promise<T> {
   checkConfigured(input.providerId);
   const runtime = resolveStoredScriptProvider(input.providerId);
@@ -140,7 +142,11 @@ export async function completeJson<T>(input: {
     // 保持直连路径同步：创建请求后立即 abort 时，供应商 Adapter 必须已经接管 signal。
     assertExternalProviderExecutionAvailable(runtime, capability);
   }
+  const defaultOptions = {
+    usageContext: { enabled: true } satisfies LlmUsageContext,
+  };
   const options = {
+    ...defaultOptions,
     systemPrompt: input.systemPrompt,
     userPrompt: input.userPrompt,
     temperature: input.temperature,
@@ -148,6 +154,11 @@ export async function completeJson<T>(input: {
     timeoutMs: input.timeoutMs,
     signal: input.signal,
     images,
+    usageContext: {
+      ...defaultOptions.usageContext,
+      ...(input.usageContext ?? {}),
+      enabled: true,
+    } satisfies LlmUsageContext,
   };
 
   if (runtime.apiStyle === 'native-gemini') {
@@ -167,7 +178,8 @@ export async function completeJson<T>(input: {
 
 export async function analyzeSellingPoints(
   input: AnalysisInput,
-  providerId: string
+  providerId: string,
+  usageContext?: LlmUsageContextInput,
 ): Promise<AnalysisResult> {
   checkConfigured(providerId);
   const runtime = resolveStoredScriptProvider(providerId);
@@ -191,13 +203,25 @@ export async function analyzeSellingPoints(
     : usesAnthropicMessages(runtime.apiStyle)
       ? anthropicChatCompletion
       : chatCompletion;
-  const rawText = await completion(config, {
+  const defaultCompletionOptions = {
+    usageContext: { enabled: true } satisfies LlmUsageContext,
+  };
+  const completionOptions = {
+    ...defaultCompletionOptions,
     systemPrompt,
     userPrompt,
     temperature: 0.7,
     maxTokens: runtime.maxTokens,
     responseFormat: 'json_object',
-  }, runtime);
+    usageContext: {
+      ...defaultCompletionOptions.usageContext,
+      ...(usageContext ?? {}),
+      enabled: true,
+    } satisfies LlmUsageContext,
+  } as const;
+  const rawText = runtime.apiStyle === 'openai-compatible'
+    ? await chatCompletion(config, completionOptions, runtime)
+    : await completion(config, completionOptions, runtime);
 
   return parseJsonResponse<AnalysisResult>(rawText, config.name);
 }

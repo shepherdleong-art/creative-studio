@@ -106,8 +106,8 @@ export function seedProviders() {
 
 /**
  * 公司图片供应商（image2-medium，经本机 LiteLLM）开箱即用补种。
- * 只在没有任何同模型 gateway-task-image 配置时插入，避免与手工配置的
- * 公司供应商重复；已有库同样生效（同 ensurePackyImageProviders 的模式）。
+ * 只在 canonical ID 缺失时插入；同模型的手工/公网配置仍可并存，且已有
+ * canonical 行的用户配置不会被覆盖。
  */
 function ensureCompanyImageProvider(db: ReturnType<typeof getDb>) {
   db.prepare(`
@@ -117,7 +117,7 @@ function ensureCompanyImageProvider(db: ReturnType<typeof getDb>) {
       'company-gateway-image2-medium', '公司网关 image2-medium', ?, 'COMPANY_API_KEY', ?, 'image2-medium', 'gateway-task-image', 1, 1.05
     WHERE NOT EXISTS (
       SELECT 1 FROM providers
-      WHERE type = 'gateway-task-image' AND model = 'image2-medium'
+      WHERE id = 'company-gateway-image2-medium'
     )
   `).run(
     COMPANY_LITELLM_BASE_URL,
@@ -307,8 +307,8 @@ export function seedVideoProviders() {
 /**
  * 公司视频供应商（可灵 3.0 / 即梦 Seedance 2.0 Fast，经本机 LiteLLM）开箱即用补种。
  * 别名必须与 config.yaml 的 model_name 一致；尾帧 allowlist 见
- * lib/company-gateway-tail-frame.ts。只在没有任何同模型 openai-video 配置时插入，
- * 避免与手工配置的公司供应商重复；已有库同样生效。
+ * lib/company-gateway-tail-frame.ts。只在 canonical ID 缺失时插入；同模型的手工/公网
+ * 配置仍可并存，且已有 canonical 行的用户配置不会被覆盖。
  */
 function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
   const companyProviders = [
@@ -332,12 +332,12 @@ function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
     SELECT ?, ?, 'openai-video', 'COMPANY_VIDEO_BASE_URL', 'COMPANY_VIDEO_API_KEY', ?, ?, 1, 5, ?, ?, '', ''
     WHERE NOT EXISTS (
       SELECT 1 FROM video_providers
-      WHERE type = 'openai-video' AND defaultModel = ?
+      WHERE id = ?
     )
   `);
 
   for (const p of companyProviders) {
-    insert.run(p.id, p.name, p.modelEnv, p.defaultModel, COMPANY_LITELLM_BASE_URL, COMPANY_LITELLM_PLACEHOLDER_KEY, p.defaultModel);
+    insert.run(p.id, p.name, p.modelEnv, p.defaultModel, COMPANY_LITELLM_BASE_URL, COMPANY_LITELLM_PLACEHOLDER_KEY, p.id);
   }
 }
 

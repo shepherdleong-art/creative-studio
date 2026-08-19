@@ -73,21 +73,43 @@ export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
     },
     validateAnalysisProvider: (providerId) => getAvailableProviders().some((provider) => provider.id === providerId && provider.configured && provider.supportsVision),
     estimateAnalysisCost: ({ providerId, requestCount }) => estimateVisionAnalysisCost(providerId, requestCount),
-    synthesize: async ({ segments, providerId, voice, speed, narrationHash, onSegmentComplete, signal }) => {
-      const row = db.prepare(`SELECT * FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as { baseUrl: string; apiKey: string; keyEnv: string; model: string } | undefined;
+    synthesize: async ({ projectId, segments, providerId, voice, speed, narrationHash, onSegmentComplete, signal }) => {
+      const row = db.prepare(`SELECT * FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId) as {
+        id: string;
+        name: string;
+        type: string;
+        baseUrl: string;
+        apiKey: string;
+        keyEnv: string;
+        model: string;
+      } | undefined;
       if (!row) throw new Error('口播配音供应商未启用');
       const apiKey = resolveProviderApiKey(row);
       if (!apiKey) throw new Error('口播配音供应商 API Key 未配置');
-      const alignment = createFinalEditAlignmentAdapter({ id: providerId, ...row });
+      const alignment = createFinalEditAlignmentAdapter(row);
       const relativeOutputPath = path.join('final-edits', 'narration', narrationHash, 'narration.wav');
       return getFinalEditTtsAdapter(providerId).synthesize({
-        provider: { baseUrl: row.baseUrl, apiKey, model: row.model },
+        provider: {
+          providerId: row.id,
+          providerName: row.name,
+          providerType: row.type,
+          configuredModel: row.model,
+          requestModel: row.model,
+          baseUrl: row.baseUrl,
+          apiKey,
+          model: row.model,
+        },
         voice, speed, segments,
         outputDir: path.join(storageRoot, 'final-edits', 'narration', narrationHash),
         relativeOutputPath,
         alignment,
         onSegmentComplete,
         signal,
+        usageContext: {
+          projectId,
+          refType: 'final-edit-narration',
+          refId: narrationHash,
+        },
       });
     },
     warmPreview: ({ variant, sources, narrationAbsolutePath, relativePath, signal }) => warmPreparePreview({ storageRoot, variant, sources, narrationAbsolutePath, relativePath, signal }),

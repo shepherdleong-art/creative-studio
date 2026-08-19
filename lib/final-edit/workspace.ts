@@ -174,6 +174,7 @@ export interface FinalEditWorkspaceDependencies {
   detectBeatPoints?(input: { audioPath: string; durationUs: number }): Promise<BeatDetectionResult>;
   materializeCoverFrame?(input: { sourcePath: string; cacheNamespace: string; cacheKey: string; frameUs: number }): Promise<void>;
   synthesize(input: {
+    projectId: string;
     scriptDraftId: string;
     segments: Array<{ segmentId: string; narration: string }>;
     providerId: string;
@@ -1109,6 +1110,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             alignmentDegradedSegmentIds: storedTimings.alignmentDegradedSegmentIds,
           }
         : await deps.synthesize({
+            projectId: input.projectId,
             scriptDraftId: String(input.scriptDraftId || ''), segments: normalizedSegments,
             providerId: input.providerId, voice: input.voice, speed: input.speed, narrationHash,
             signal,

@@ -1,9 +1,19 @@
 import type { AlignmentAdapter } from './alignment.ts';
-import { DOUBAO_PREVIEW_TEXT, DOUBAO_VOICES, doubaoSpeechUrl, synthesizeDoubaoNarration, synthesizeDoubaoPreview } from './doubao-tts.ts';
+import { DOUBAO_PREVIEW_TEXT, DOUBAO_VOICES, doubaoSpeechUrl, synthesizeDoubaoNarration, synthesizeDoubaoPreview, type DoubaoProviderConfig } from './doubao-tts.ts';
 import { speechUrl, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_PREVIEW_TEXT, VAPI_VOICES } from './vapi-qwen-tts.ts';
+import type { TtsUsageContext } from '../../usage-tts.ts';
 
 export interface TtsAdapterInput {
-  provider: { baseUrl: string; apiKey: string; model: string };
+  provider: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    providerId?: string;
+    providerName?: string;
+    providerType?: string;
+    configuredModel?: string;
+    requestModel?: string;
+  };
   voice: string;
   speed: number;
   segments: Array<{ segmentId: string; narration: string }>;
@@ -12,6 +22,7 @@ export interface TtsAdapterInput {
   alignment: AlignmentAdapter;
   onSegmentComplete?: (completed: number, total: number) => void;
   signal?: AbortSignal;
+  usageContext?: TtsUsageContext;
 }
 
 export interface FinalEditTtsAdapter {
@@ -24,7 +35,7 @@ export interface FinalEditTtsAdapter {
   defaultVoice: string;
   previewText: string;
   validateBaseUrl(value: string): string;
-  synthesizePreview(input: { provider: { baseUrl: string; apiKey: string; model: string }; voice: string; speed: number; text: string; outputPath: string; signal?: AbortSignal }): Promise<void>;
+  synthesizePreview(input: { provider: TtsAdapterInput['provider']; voice: string; speed: number; text: string; outputPath: string; signal?: AbortSignal; usageContext?: TtsUsageContext }): Promise<void>;
   synthesize(input: TtsAdapterInput): Promise<{ relativePath: string; absolutePath: string; durationUs: number; segmentTimings: Array<{ segmentId: string; startUs: number; endUs: number }>; wordTimings: Array<{ text: string; startUs: number; endUs: number }>; alignmentDegradedSegmentIds?: string[] }>;
   estimateCost(input: { text: string; costPerThousandCharacters: number }): number;
 }
@@ -32,6 +43,21 @@ export interface FinalEditTtsAdapter {
 const estimateCharacterCost: FinalEditTtsAdapter['estimateCost'] = ({ text, costPerThousandCharacters }) => (
   Number((Array.from(text).length / 1000 * Math.max(0, costPerThousandCharacters)).toFixed(6))
 );
+
+function withDoubaoIdentity(
+  provider: TtsAdapterInput['provider'],
+  usageContext?: TtsUsageContext,
+): DoubaoProviderConfig {
+  return {
+    ...provider,
+    providerId: provider.providerId ?? '',
+    providerName: provider.providerName ?? '',
+    providerType: provider.providerType ?? '',
+    configuredModel: provider.configuredModel ?? provider.model,
+    requestModel: provider.requestModel ?? provider.model,
+    usageContext,
+  };
+}
 
 const adapters: FinalEditTtsAdapter[] = [
   {
@@ -74,8 +100,14 @@ const adapters: FinalEditTtsAdapter[] = [
       void doubaoSpeechUrl(normalized);
       return normalized;
     },
-    synthesize: synthesizeDoubaoNarration,
-    synthesizePreview: synthesizeDoubaoPreview,
+    synthesize: (input) => synthesizeDoubaoNarration({
+      ...input,
+      provider: withDoubaoIdentity(input.provider, input.usageContext),
+    }),
+    synthesizePreview: (input) => synthesizeDoubaoPreview({
+      ...input,
+      provider: withDoubaoIdentity(input.provider, input.usageContext),
+    }),
     estimateCost: estimateCharacterCost,
   },
 ];

@@ -130,7 +130,15 @@ async function handleAnalyze(
   const input: AnalysisInput = { sellingPoints, targetAudience, platform };
   logScriptInfo(projectId, `开始分析卖点（${sellingPoints.length} 条，模型 ${providerId}，平台 ${platform}）`);
   const result = await analyzeScriptStrategyV3(input, {
-    completeJson: (request) => completeJson({ providerId, ...request }),
+    completeJson: (request) => completeJson({
+      providerId,
+      ...request,
+      usageContext: {
+        projectId,
+        refType: 'script-analysis',
+        refId: projectId,
+      },
+    }),
   });
   logScriptInfo(projectId, `卖点分析完成（模型 ${providerId}）`);
 

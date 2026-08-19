@@ -72,4 +72,7 @@ export const CORE_DB_MIGRATIONS = [
   `CREATE TRIGGER IF NOT EXISTS projects_default_workflow_type AFTER INSERT ON projects WHEN NEW.workflowType = 'legacy_batch_edit' BEGIN UPDATE projects SET workflowType = 'complex_product' WHERE id = NEW.id; END`,
   `ALTER TABLE video_jobs ADD COLUMN tailImageId TEXT`,
   `ALTER TABLE shot_sets ADD COLUMN kind TEXT NOT NULL DEFAULT 'storyboard' CHECK(kind IN ('storyboard','free'))`,
+  `ALTER TABLE video_jobs ADD COLUMN multiShot INTEGER`,
+  `ALTER TABLE jobs ADD COLUMN usageSnapshotJson TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN usageSnapshotJson TEXT`,
 ];

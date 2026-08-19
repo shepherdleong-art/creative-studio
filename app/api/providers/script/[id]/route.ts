@@ -10,8 +10,24 @@ export async function PUT(
     const { id } = await params;
     const db = getDb();
     const body = await request.json();
-    const existing = db.prepare(`SELECT id FROM script_providers WHERE id = ?`).get(id);
+    const existing = db.prepare(`SELECT id, type, apiStyle, model, executionScope FROM script_providers WHERE id = ?`).get(id) as {
+      id: string;
+      type?: string;
+      apiStyle?: string;
+      model?: string;
+      executionScope?: string;
+    } | undefined;
     if (!existing) return NextResponse.json({ error: 'Script provider not found' }, { status: 404 });
+
+    const effectiveExecutionScope = body.executionScope !== undefined ? body.executionScope : existing.executionScope;
+    const effectiveApiStyle = typeof body.apiStyle === 'string' ? body.apiStyle.trim() : (existing.apiStyle || '').trim();
+    const effectiveModel = typeof body.model === 'string' ? body.model.trim() : (existing.model || '').trim();
+    const effectiveType = typeof body.type === 'string' ? body.type.trim() : (existing.type || '').trim();
+    const isFixedCompanyLuna = id === 'gpt'
+      && effectiveExecutionScope === 'company'
+      && effectiveApiStyle === 'openai-compatible'
+      && effectiveModel === 'GPT-5-6-Luna-Standard'
+      && effectiveType === 'openai-compatible';
 
     const updates: string[] = [];
     const values: unknown[] = [];
@@ -41,7 +57,7 @@ export async function PUT(
       updates.push('maxTokens = ?');
       values.push(Number(body.maxTokens) || 8192);
     }
-    if (body.visionCostPerRequest !== undefined) {
+    if ((id !== 'gpt' || !isFixedCompanyLuna) && body.visionCostPerRequest !== undefined) {
       const cost = Number(body.visionCostPerRequest);
       if (!Number.isFinite(cost) || cost < 0) return NextResponse.json({ error: 'Invalid vision cost' }, { status: 400 });
       updates.push('visionCostPerRequest = ?');

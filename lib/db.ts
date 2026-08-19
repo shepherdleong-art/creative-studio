@@ -4,6 +4,7 @@ import fs from 'fs';
 import { CORE_DB_MIGRATIONS } from './db-migrations.ts';
 import { dataRoot } from './data-root.ts';
 import { initFinalEditSchema } from './final-edit/schema.ts';
+import { initUsageSchema, markUsageSchemaUnavailable } from './usage-schema.ts';
 
 const DB_PATH = path.join(dataRoot(), 'data', 'workbench.db');
 
@@ -21,6 +22,15 @@ export function getDb(): Database.Database {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initTables(db);
+    try {
+      const usageReadiness = initUsageSchema(db);
+      if (!usageReadiness.available) {
+        console.error('[usage-schema] disabled; usage accounting is unavailable');
+      }
+    } catch (error) {
+      markUsageSchemaUnavailable(db, error);
+      console.error('[usage-schema] disabled; usage accounting is unavailable');
+    }
     initFinalEditSchema(db);
     seedAllVideo();
   }

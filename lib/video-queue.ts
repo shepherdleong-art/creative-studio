@@ -10,6 +10,9 @@ import fs from 'fs';
 import { dataRoot } from './data-root.ts';
 import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
+import { videoMultiShotFromStorage } from './video-multi-shot.ts';
+import type { SubmitVideoRequest } from './video-providers/types.ts';
+import { persistVideoJobUsageSnapshot, recordVideoJobUsage } from './usage-async-jobs.ts';
 
 export interface VideoQueueOptions {
   projectId: string;
@@ -112,6 +115,8 @@ interface VideoJobRecord {
   status: string;
   attempt: number;
   maxAttempts: number;
+  multiShot: number | null;
+  usageSnapshotJson?: string | null;
 }
 
 type QueueStatus = 'idle' | 'running' | 'paused';
@@ -311,6 +316,7 @@ async function runVideoJob(
     const existingTaskId = (db.prepare(`
       SELECT providerTaskId FROM video_jobs WHERE id = ?
     `).get(job.id) as { providerTaskId: string | null } | undefined)?.providerTaskId ?? null;
+    let usageSnapshot: string | null = job.usageSnapshotJson ?? null;
 
     let taskId: string;
     if (existingTaskId) {
@@ -333,16 +339,33 @@ async function runVideoJob(
       const tailMimeType = tailPath ? videoFrameMimeFromPath(tailPath, tailImage?.mimeType) : undefined;
 
       logInfo('Submitting video generation task...');
-      const submitResult = await adapter.submit(
-        {
-          model: job.model,
-          prompt: job.prompt,
-          sourceImagePath: imagePath,
-          sourceMimeType: mimeType,
-          tailImagePath: tailPath,
-          tailMimeType,
-          durationSec: job.durationSec,
+      const submitRequest: SubmitVideoRequest = {
+        model: job.model,
+        prompt: job.prompt,
+        sourceImagePath: imagePath,
+        sourceMimeType: mimeType,
+        tailImagePath: tailPath,
+        tailMimeType,
+        durationSec: job.durationSec,
+      };
+      const multiShot = videoMultiShotFromStorage(job.multiShot);
+      if (multiShot !== undefined) submitRequest.multiShot = multiShot;
+
+      usageSnapshot = persistVideoJobUsageSnapshot(db, {
+        jobId: job.id,
+        projectId: job.projectId,
+        requestModel: job.model,
+        provider: {
+          id: provider.id,
+          name: provider.name,
+          type: provider.type,
+          model: provider.defaultModel,
         },
+        refType: 'video-job',
+        refId: job.id,
+      });
+      const submitResult = await adapter.submit(
+        submitRequest,
         apiKey,
         runtime.baseUrl,
         reqAbort.signal
@@ -424,16 +447,30 @@ async function runVideoJob(
         const videoPath = path.join(videosDir, videoFilename);
         fs.writeFileSync(videoPath, videoBuffer);
 
-        db.prepare(
+        const finishedAt = new Date().toISOString();
+        const completeResult = db.prepare(
           `UPDATE video_jobs SET
             status = 'succeeded',
             providerStatus = 'succeeded',
             remoteVideoUrl = ?,
             localVideoPath = ?,
             filename = ?,
-            finishedAt = datetime('now')
+            finishedAt = ?
            WHERE id = ? AND status = 'running'`
-        ).run(pollResult.videoUrl, videoPath, videoFilename, job.id);
+         ).run(pollResult.videoUrl, videoPath, videoFilename, finishedAt, job.id);
+
+        if (completeResult.changes === 1) {
+          const usageResult = recordVideoJobUsage(db, {
+            jobId: job.id,
+            projectId: job.projectId,
+            durationSec: job.durationSec,
+            snapshot: usageSnapshot,
+            finishedAt,
+          });
+          if (!usageResult.ok) {
+            logWarn(`实时 usage 记账失败，将由 reconciler 补记 (${usageResult.reason ?? 'unknown'})`);
+          }
+        }
 
         logInfo(`Video job completed, saved as ${videoFilename}`);
         polled = true;

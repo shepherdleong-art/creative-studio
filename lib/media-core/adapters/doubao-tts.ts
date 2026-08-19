@@ -5,6 +5,11 @@ import { probeDurationSec, runFfmpeg } from '../../ffmpeg.ts';
 import { assertTtsSpeed } from '../tts-speed.ts';
 import type { AlignmentAdapter, AlignmentWordTiming } from './alignment.ts';
 import { alignOrProportionallyTime, concatWavFiles, countTtsContent, isReusableNarrationChunk, splitTtsInput } from './tts-common.ts';
+import {
+  beginDoubaoTtsUsage,
+  markDoubaoTtsUsageBillable,
+  type TtsUsageContext,
+} from '../../usage-tts.ts';
 
 export const DOUBAO_PREVIEW_TEXT = '你好，我是豆包语音助手，这是当前音色和语速的试听效果。';
 
@@ -19,10 +24,16 @@ export const DOUBAO_VOICES = [
   { id: 'zh_female_xueayi_saturn_bigtts', label: '儿童绘本' },
 ] as const;
 
-interface DoubaoProviderConfig {
+export interface DoubaoProviderConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  providerId?: string;
+  providerName?: string;
+  providerType?: string;
+  configuredModel?: string;
+  requestModel?: string;
+  usageContext?: TtsUsageContext;
 }
 
 interface DoubaoChunk {
@@ -96,6 +107,7 @@ export async function requestDoubaoAudio(
   destination: string,
   signal?: AbortSignal,
 ): Promise<{ wordTimings: AlignmentWordTiming[] }> {
+  const usage = beginDoubaoTtsUsage(config, config.usageContext);
   const response = await fetch(doubaoSpeechUrl(config.baseUrl), {
     method: 'POST',
     headers: {
@@ -130,6 +142,11 @@ export async function requestDoubaoAudio(
     throw new Error(`豆包 TTS 响应没有音频数据${logId ? `（Log ID: ${logId}）` : ''}`);
   }
   fs.writeFileSync(destination, Buffer.concat(audio));
+  if (usage.enabled && !await isReusableNarrationChunk(destination)) {
+    fs.rmSync(destination, { force: true });
+    throw new Error(`豆包 TTS 响应音频不可读取${logId ? `（Log ID: ${logId}）` : ''}`);
+  }
+  markDoubaoTtsUsageBillable(usage, text, config.usageContext);
   const seen = new Set<string>();
   const wordTimings = chunks.flatMap((chunk) => chunk.sentence?.words || []).flatMap((word) => {
     const textValue = String(word.word || '').trim();
@@ -197,7 +214,20 @@ export async function synthesizeDoubaoNarration(input: DoubaoSynthesisInput) {
       let chunkWords = reusable ? readCachedWordTimings(timingPath) : [];
       if (!reusable) {
         fs.rmSync(timingPath, { force: true });
-        const synthesis = await requestDoubaoAudio(input.provider, input.voice, chunks[chunkIndex], rawPath, input.signal);
+        const synthesis = await requestDoubaoAudio({
+          ...input.provider,
+          usageContext: {
+            ...(input.provider.usageContext ?? {}),
+            refType: input.provider.usageContext?.refType ?? 'tts-narration',
+            refId: input.provider.usageContext?.refId ?? input.relativeOutputPath,
+            detail: {
+              ...(input.provider.usageContext?.detail ?? {}),
+              segmentId: segment.segmentId,
+              segmentIndex,
+              chunkIndex,
+            },
+          },
+        }, input.voice, chunks[chunkIndex], rawPath, input.signal);
         const filters = input.speed === 1 ? ['aresample=48000'] : [`atempo=${input.speed.toFixed(2)}`, 'aresample=48000'];
         const temporaryPath = `${normalizedPath}.${process.pid}-${Date.now()}.tmp.wav`;
         const temporaryTimingPath = `${timingPath}.${process.pid}-${Date.now()}.tmp`;

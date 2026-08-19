@@ -115,6 +115,7 @@ const script = {
 db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson) VALUES ('script-1', 'p1', 'fake', 'fake', '{}', ?)`).run(JSON.stringify(script));
 
 const synthesizedNarrations: string[][] = [];
+let lastSynthesisProjectId: string | undefined;
 let synthesizedDurationUs = 18_500_000;
 const warmedPreviewPaths: string[] = [];
 let semanticScoreCalls = 0;
@@ -167,7 +168,9 @@ const workspace = createFinalEditWorkspace({
         .join('\n'),
     };
   },
-  synthesize: async ({ segments }) => {
+  synthesize: async (input) => {
+    const { segments } = input;
+    lastSynthesisProjectId = (input as unknown as { projectId?: string }).projectId;
     if (holdPrepareSynthesis) {
       await new Promise<void>((resolve) => { releaseHeldPrepareSynthesis = resolve; });
     }
@@ -210,6 +213,7 @@ const job = await workspace.start({
   providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1, analysisProviderId: 'vision',
 });
 assert.equal(job.status, 'succeeded');
+assert.equal(lastSynthesisProjectId, 'p1', '成片 TTS usage 必须沿 seam 传递 projectId');
 assert.equal((db.prepare(`SELECT estimatedCost FROM final_edit_jobs WHERE id=?`).get(job.id) as { estimatedCost: number }).estimatedCost, 0.2);
 assert.equal(semanticScoreCalls, 1, '一次 prepare 只能生成一次句段 × 场景语义矩阵');
 

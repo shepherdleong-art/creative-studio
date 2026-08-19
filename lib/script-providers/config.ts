@@ -6,6 +6,8 @@ export interface ScriptProviderDbConfig {
   baseUrl?: string | null;
   apiKey?: string | null;
   model?: string | null;
+  /** The persisted adapter identity; do not derive usage identity from apiStyle. */
+  type?: string | null;
   apiStyle?: ApiStyle | null;
   enabled?: number | boolean | null;
   maxTokens?: number | null;
@@ -17,6 +19,8 @@ export interface ScriptProviderDbConfig {
 export interface ScriptProviderRuntimeConfig {
   id: string;
   name: string;
+  /** The database's real provider type, kept separate from the transport protocol. */
+  type?: string;
   apiStyle: ApiStyle;
   baseUrl: string;
   apiKey: string;
@@ -130,6 +134,7 @@ export function resolveScriptProviderRuntimeConfig(
   const baseUrl = clean(dbConfig?.baseUrl) || defaults.defaultBaseUrl;
   const apiKey = clean(dbConfig?.apiKey);
   const model = clean(dbConfig?.model) || defaults.defaultModel;
+  const type = clean(dbConfig?.type);
   const apiStyle = dbConfig?.apiStyle || defaults.apiStyle;
   const maxTokens = Number(dbConfig?.maxTokens || defaults.maxTokens);
   const enabled = enabledValue(dbConfig?.enabled);
@@ -145,6 +150,7 @@ export function resolveScriptProviderRuntimeConfig(
   return {
     id: defaults.id,
     name: defaults.name,
+    type,
     apiStyle,
     baseUrl,
     apiKey,
@@ -165,11 +171,11 @@ export function toScriptProviderMeta(runtime: ScriptProviderRuntimeConfig): Prov
     id: runtime.id,
     name: runtime.name,
     model: runtime.model,
+    type: runtime.type || '',
     configured: runtime.configured,
     apiStyle: runtime.apiStyle,
     supportsVision: runtime.supportsVision,
     category: 'script',
-    type: runtime.apiStyle,
     enabled: runtime.enabled ? 1 : 0,
     hasApiKey: runtime.hasApiKey,
     missing: runtime.missing,

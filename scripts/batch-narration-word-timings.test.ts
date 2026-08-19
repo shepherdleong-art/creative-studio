@@ -98,10 +98,12 @@ try {
   }
 
   let synthesizeCount = 0;
+  let lastProviderIdentity: Record<string, unknown> = {};
   const executor = createBatchNarrationExecutor({
     storageRoot,
     synthesize: async (providerId, input) => {
       synthesizeCount += 1;
+      lastProviderIdentity = { ...(input.provider as unknown as Record<string, unknown>) };
       fs.mkdirSync(path.dirname(path.join(input.outputDir, 'narration.wav')), { recursive: true });
       fs.writeFileSync(path.join(input.outputDir, 'narration.wav'), silentWavBytes(8.31));
       const result: BatchNarrationSynthesisResult = {
@@ -121,7 +123,7 @@ try {
   });
 
   const claim = {
-    task: { id: 'task-1', batchId, workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: snapshotId },
+    task: { id: 'task-1', batchId, projectId: 'project-1', workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: snapshotId },
     attempt: { id: 'attempt-1', attemptNumber: 1 },
   };
   const signal = new AbortController().signal;
@@ -130,6 +132,11 @@ try {
   const first = await executor.execute({ db, claim, signal, reportProgress: () => undefined });
   first.commit?.();
   assert.equal(synthesizeCount, 1);
+  assert.equal(lastProviderIdentity.providerId, 'vapi-qwen3-tts', '批量 TTS 必须透传数据库 provider id');
+  assert.equal(lastProviderIdentity.providerType, 'vapi-qwen-json-url', '批量 TTS 必须透传数据库 provider type');
+  assert.equal(lastProviderIdentity.configuredModel, 'qwen3-tts-flash', '批量 TTS 必须透传配置模型');
+  assert.equal(lastProviderIdentity.requestModel, 'qwen3-tts-flash', '批量 TTS 必须透传请求模型');
+  assert.equal(lastProviderIdentity.baseUrl, 'https://api.v3.cm', '批量 TTS 必须透传 base URL');
   const stored = db.prepare(`SELECT narrationJson FROM batch_script_narrations WHERE scriptSnapshotId = ?`).get(snapshotId) as { narrationJson: string };
   const storedSnap = JSON.parse(stored.narrationJson) as { schemaVersion: string; wordTimings?: Array<{ text: string; startUs: number; endUs: number }>; segments: Array<{ startUs: number; endUs: number; timingSource: string }> };
   assert.equal(storedSnap.schemaVersion, BATCH_NARRATION_SCHEMA_VERSION);
@@ -190,6 +197,17 @@ try {
   ], '拿不到真实对齐时必须回落到等分');
   assert.ok(estimatedSnap.segments.every((segment) => segment.timingSource === 'estimated'), '回落对齐必须标注 timingSource=estimated');
   assert.equal('wordTimings' in estimatedSnap, false, '回落路径没有词级时间戳可复用');
+
+  // Changing any effective provider identity must invalidate the narration cache.
+  db.prepare(`UPDATE final_edit_tts_providers SET model=? WHERE id=?`).run('qwen3-tts-flash-v2', 'vapi-qwen3-tts');
+  await (await executor.execute({ db, claim, signal, reportProgress: () => undefined })).commit?.();
+  assert.equal(synthesizeCount, 2, '修改模型后不得复用旧口播缓存');
+  db.prepare(`UPDATE final_edit_tts_providers SET baseUrl=? WHERE id=?`).run('https://api.v3.cm/v2', 'vapi-qwen3-tts');
+  await (await executor.execute({ db, claim, signal, reportProgress: () => undefined })).commit?.();
+  assert.equal(synthesizeCount, 3, '修改 base URL 后不得复用旧口播缓存');
+  db.prepare(`UPDATE final_edit_tts_providers SET type=? WHERE id=?`).run('vapi-qwen-json-url-v2', 'vapi-qwen3-tts');
+  await (await executor.execute({ db, claim, signal, reportProgress: () => undefined })).commit?.();
+  assert.equal(synthesizeCount, 4, '修改 provider type 后不得复用旧口播缓存');
 
   db.close();
   console.log('batch narration word-timings tests passed');

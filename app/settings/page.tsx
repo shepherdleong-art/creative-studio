@@ -74,6 +74,44 @@ type ProviderFormState = {
 };
 
 const KEY_PLACEHOLDER = '••••••••';
+const FIXED_IMAGE_PROVIDER_ID = 'company-gateway-image2-medium';
+const FIXED_GPT_PROVIDER_ID = 'gpt';
+const FIXED_GPT_MODEL = 'GPT-5-6-Luna-Standard';
+const FIXED_TTS_PROVIDER_ID = 'doubao-seed-tts-2';
+
+function isFixedImageProvider(
+  providerId: string | null | undefined,
+  type: string,
+  model: string,
+): boolean {
+  return providerId === FIXED_IMAGE_PROVIDER_ID
+    && type.trim() === 'gateway-task-image'
+    && model.trim() === 'image2-medium';
+}
+
+function isFixedCompanyLuna(
+  providerId: string | null | undefined,
+  executionScope: ProviderExecutionScope,
+  model: string,
+  apiStyle: ApiStyle,
+  type: string,
+): boolean {
+  return providerId === FIXED_GPT_PROVIDER_ID
+    && executionScope === 'company'
+    && apiStyle === 'openai-compatible'
+    && type.trim() === 'openai-compatible'
+    && model.trim() === FIXED_GPT_MODEL;
+}
+
+function isFixedDoubaoTts(
+  providerId: string | null | undefined,
+  type: string,
+  model: string,
+): boolean {
+  return providerId === FIXED_TTS_PROVIDER_ID
+    && type.trim() === 'doubao-http-chunked'
+    && model.trim() === 'seed-tts-2.0';
+}
 
 const emptyForm: ProviderFormState = {
   name: '',
@@ -223,7 +261,7 @@ export default function SettingsPage() {
         ...base,
         baseUrl: form.baseUrl,
         model: form.model,
-        defaultCostPerImage: form.defaultCostPerImage,
+        ...(isFixedImageProvider(editing?.id, form.type, form.model) ? {} : { defaultCostPerImage: form.defaultCostPerImage }),
         ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
       };
     }
@@ -235,7 +273,7 @@ export default function SettingsPage() {
         model: form.model,
         maxTokens: form.maxTokens,
         supportsVision: form.supportsVision,
-        visionCostPerRequest: form.visionCostPerRequest,
+        ...(isFixedCompanyLuna(editing?.id, form.executionScope, form.model, form.apiStyle, form.type) ? {} : { visionCostPerRequest: form.visionCostPerRequest }),
         executionScope: form.executionScope,
         ...(realKey(form.apiKey) || clearSecret ? { apiKey: clearSecret ? '' : realKey(form.apiKey) } : {}),
       };
@@ -333,7 +371,7 @@ export default function SettingsPage() {
           {(creating === active || editing?.category === active) && (
             <div className="card border-accent/30 bg-accent/[0.04] p-5">
               <h3 className="mb-4 font-semibold">{creating ? '新建供应商' : '编辑供应商'}</h3>
-              <ProviderForm category={active} form={form} onChange={setForm} />
+              <ProviderForm category={active} providerId={editing?.id ?? null} form={form} onChange={setForm} />
               <div className="mt-4 flex flex-wrap justify-end gap-2">
                 {editing && (
                   <button onClick={() => void saveProvider(true)} disabled={saving} className="btn-secondary btn-sm text-fail">
@@ -402,6 +440,10 @@ function ProviderCard({
   const missing = 'missing' in provider ? provider.missing || [] : [];
   const model = 'model' in provider ? provider.model : provider.defaultModel;
   const baseUrl = 'baseUrl' in provider ? provider.baseUrl : '';
+  const fixedImagePrice = category === 'image' && isFixedImageProvider(provider.id, provider.type, model);
+  const fixedCompanyLuna = category === 'script'
+    && 'executionScope' in provider
+    && isFixedCompanyLuna(provider.id, provider.executionScope, provider.model, provider.apiStyle, provider.type);
 
   return (
     <div className={`card p-5 ${editing ? 'border-accent/40' : ''}`}>
@@ -429,10 +471,10 @@ function ProviderCard({
             )}
             <div><span className="text-ink-tertiary">模型:</span> {model || '-'}</div>
             <div><span className="text-ink-tertiary">类型:</span> {provider.type}</div>
-            {category === 'image' && 'defaultCostPerImage' in provider && (
+            {category === 'image' && 'defaultCostPerImage' in provider && !fixedImagePrice && (
               <div><span className="text-ink-tertiary">成本:</span> ¥{provider.defaultCostPerImage || 0}/张</div>
             )}
-            {category === 'script' && 'visionCostPerRequest' in provider && provider.supportsVision && (
+            {category === 'script' && 'visionCostPerRequest' in provider && provider.supportsVision && !fixedCompanyLuna && (
               <div><span className="text-ink-tertiary">视觉分析成本:</span> ¥{provider.visionCostPerRequest || 0}/次</div>
             )}
             {category === 'video' && 'defaultDurationSec' in provider && (
@@ -441,6 +483,9 @@ function ProviderCard({
           </div>
           {missing.length > 0 && (
             <p className="mt-2 text-xs text-fail">缺少配置：{missing.join(', ')}</p>
+          )}
+          {(fixedImagePrice || fixedCompanyLuna) && (
+            <p className="mt-2 text-xs text-ink-tertiary">固定单价由后台计算</p>
           )}
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
@@ -459,14 +504,18 @@ function ProviderCard({
 
 function ProviderForm({
   category,
+  providerId,
   form,
   onChange,
 }: {
   category: Category;
+  providerId: string | null;
   form: ProviderFormState;
   onChange: (form: ProviderFormState) => void;
 }) {
   const isVideoKling = category === 'video' && form.type === 'kling';
+  const fixedImagePrice = category === 'image' && isFixedImageProvider(providerId, form.type, form.model);
+  const fixedCompanyLuna = category === 'script' && isFixedCompanyLuna(providerId, form.executionScope, form.model, form.apiStyle, form.type);
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -564,14 +613,18 @@ function ProviderForm({
         </Field>
       )}
 
-      {category === 'image' && (
+      {category === 'image' && !fixedImagePrice && (
         <Field label="预估单张成本 (¥)">
           <input type="number" min="0" step="0.01" value={form.defaultCostPerImage} onChange={(e) => onChange({ ...form, defaultCostPerImage: Number(e.target.value) || 0 })} className="input-field" />
         </Field>
       )}
 
+      {fixedImagePrice && (
+        <p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">固定单价由后台计算</p>
+      )}
+
       {category === 'script' && (
-        <><Field label="最大输出 Token"><input type="number" min="512" step="512" value={form.maxTokens} onChange={(e) => onChange({ ...form, maxTokens: Number(e.target.value) || 8192 })} className="input-field" /></Field><Field label="视觉分析成本（元 / 次）"><input type="number" min="0" step="0.0001" value={form.visionCostPerRequest} onChange={(e) => onChange({ ...form, visionCostPerRequest: Math.max(0, Number(e.target.value) || 0) })} className="input-field" /></Field></>
+        <><Field label="最大输出 Token"><input type="number" min="512" step="512" value={form.maxTokens} onChange={(e) => onChange({ ...form, maxTokens: Number(e.target.value) || 8192 })} className="input-field" /></Field>{fixedCompanyLuna ? <p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">固定单价由后台计算</p> : <Field label="视觉分析成本（元 / 次）"><input type="number" min="0" step="0.0001" value={form.visionCostPerRequest} onChange={(e) => onChange({ ...form, visionCostPerRequest: Math.max(0, Number(e.target.value) || 0) })} className="input-field" /></Field>}</>
       )}
 
       {category === 'video' && (
@@ -602,6 +655,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 interface TtsProviderSettings {
   id: string;
   name: string;
+  type: string;
   baseUrl: string;
   model: string;
   enabled: number;
@@ -639,13 +693,19 @@ function TtsProviderSettingsCard({ provider, onSaved }: { provider: TtsProviderS
   const [costPerThousandCharacters, setCostPerThousandCharacters] = useState(provider.costPerThousandCharacters || 0);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const fixedPrice = isFixedDoubaoTts(provider.id, provider.type, provider.model);
 
   const save = async (clear = false) => {
     setSaving(true); setMessage('');
     try {
       const response = await fetch(`/api/providers/tts/${provider.id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled, baseUrl, apiKey: clear ? '' : apiKey, costPerThousandCharacters }),
+        body: JSON.stringify({
+          enabled,
+          baseUrl,
+          apiKey: clear ? '' : apiKey,
+          ...(fixedPrice ? {} : { costPerThousandCharacters }),
+        }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.message || body.error || '保存失败');
@@ -667,7 +727,7 @@ function TtsProviderSettingsCard({ provider, onSaved }: { provider: TtsProviderS
       <Field label="Base URL"><input className="input-field font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
       <Field label="模型（只读）"><input className="input-field bg-surface-subtle" value={provider.model} readOnly /></Field>
       <Field label="API Key"><input type="password" className="input-field font-mono" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="留空则不修改" autoComplete="off" /></Field>
-      <Field label="成本（元 / 千字符）"><input type="number" min="0" step="0.0001" className="input-field" value={costPerThousandCharacters} onChange={(event) => setCostPerThousandCharacters(Math.max(0, Number(event.target.value) || 0))} /></Field>
+      {fixedPrice ? <p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">固定单价由后台计算</p> : <Field label="成本（元 / 千字符）"><input type="number" min="0" step="0.0001" className="input-field" value={costPerThousandCharacters} onChange={(event) => setCostPerThousandCharacters(Math.max(0, Number(event.target.value) || 0))} /></Field>}
       <div><label className="label">固定音色</label><p className="rounded-xl bg-surface-subtle px-3 py-2.5 text-sm text-ink-secondary">{provider.voices.length} 项 · 含 {voiceExamples} 等</p></div>
     </div>
     <div className="mt-4 flex items-center justify-between"><p className={`text-sm ${message === '已保存' ? 'text-success' : 'text-fail'}`}>{message}</p><div className="flex gap-2"><button type="button" className="btn-secondary btn-sm text-fail" disabled={saving} onClick={() => void save(true)}>清除密钥</button><button type="button" className="btn-primary btn-sm" disabled={saving} onClick={() => void save(false)}>{saving ? '保存中…' : '保存'}</button></div></div>

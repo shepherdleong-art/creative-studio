@@ -72,6 +72,15 @@ db.exec(`
     sourceImageId TEXT
   );
 
+  CREATE TABLE jobs (
+    id TEXT PRIMARY KEY
+  );
+
+  INSERT INTO jobs (id) VALUES ('legacy-image-job');
+
+  INSERT INTO video_jobs (id, sourceImageId)
+  VALUES ('legacy-video-job', 'legacy-image');
+
   INSERT INTO providers (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled)
   VALUES ('image-provider', 'Image Provider', 'https://old.image', 'IMAGE_API_KEY', '', 'gpt-image-2', 'openai-compatible', 1);
 
@@ -104,7 +113,7 @@ assert.ok(
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE shot_sets ADD COLUMN kind TEXT NOT NULL DEFAULT 'storyboard' CHECK(kind IN ('storyboard','free'))`,
+  `ALTER TABLE video_jobs ADD COLUMN usageSnapshotJson TEXT`,
   'new core migrations must be appended without rewriting published entries',
 );
 assert.ok(
@@ -127,6 +136,48 @@ assert.ok(
   videoJobColumns.some((column) => column.name === 'tailImageId'),
   'video_jobs.tailImageId should be added when migrating older installed databases',
 );
+const multiShotColumn = videoJobColumns.find((column) => column.name === 'multiShot') as
+  | { name: string; type?: string; notnull?: number; dflt_value?: string | null }
+  | undefined;
+assert.equal(multiShotColumn?.type, 'INTEGER', 'video_jobs.multiShot must be an INTEGER column');
+assert.equal(multiShotColumn?.notnull, 0, 'video_jobs.multiShot must remain nullable');
+assert.equal(multiShotColumn?.dflt_value, null, 'video_jobs.multiShot must not have a default');
+assert.deepEqual(
+  db.prepare(`SELECT multiShot FROM video_jobs WHERE id = 'legacy-video-job'`).get(),
+  { multiShot: null },
+  '历史 video_jobs 行升级后必须保持 multiShot 为 NULL',
+);
+const usageSnapshotColumn = videoJobColumns.find((column) => column.name === 'usageSnapshotJson') as
+  | { name: string; type?: string; notnull?: number; dflt_value?: string | null }
+  | undefined;
+assert.equal(usageSnapshotColumn?.type, 'TEXT', 'video_jobs.usageSnapshotJson must be TEXT');
+assert.equal(usageSnapshotColumn?.notnull, 0, 'video_jobs.usageSnapshotJson must remain nullable');
+assert.equal(usageSnapshotColumn?.dflt_value, null, 'video_jobs.usageSnapshotJson must not have a default');
+const jobColumns = db.prepare(`PRAGMA table_info(jobs)`).all() as Array<{ name: string }>;
+const jobUsageSnapshotColumn = jobColumns.find((column) => column.name === 'usageSnapshotJson') as
+  | { name: string; type?: string; notnull?: number; dflt_value?: string | null }
+  | undefined;
+assert.equal(jobUsageSnapshotColumn?.type, 'TEXT', 'jobs.usageSnapshotJson must be TEXT');
+assert.equal(jobUsageSnapshotColumn?.notnull, 0, 'jobs.usageSnapshotJson must remain nullable');
+assert.equal(jobUsageSnapshotColumn?.dflt_value, null, 'jobs.usageSnapshotJson must not have a default');
+assert.deepEqual(
+  db.prepare(`SELECT usageSnapshotJson FROM jobs WHERE id = 'legacy-image-job'`).get(),
+  { usageSnapshotJson: null },
+  '历史 jobs 行升级后必须保持 usageSnapshotJson 为 NULL',
+);
+assert.deepEqual(
+  db.prepare(`SELECT usageSnapshotJson FROM video_jobs WHERE id = 'legacy-video-job'`).get(),
+  { usageSnapshotJson: null },
+  '历史 video_jobs 行升级后必须保持 usageSnapshotJson 为 NULL',
+);
+for (const table of ['providers', 'video_providers', 'script_providers']) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  assert.equal(
+    columns.some((column) => column.name === 'usageSnapshotJson'),
+    false,
+    `${table} must not gain a usage snapshot column`,
+  );
+}
 const shotIndexes = db.prepare(`PRAGMA index_list(shots)`).all() as Array<{ name: string }>;
 assert.ok(
   shotIndexes.some((index) => index.name === 'idx_shots_shotset'),

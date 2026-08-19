@@ -8,6 +8,11 @@
 import type { ProviderConfig, AnalysisInput } from './types';
 import type { ScriptProviderRuntimeConfig } from './config';
 import { createScriptProviderRequestControl } from './request-control.ts';
+import {
+  beginLlmUsageCall,
+  finishLlmUsageCall,
+  type LlmUsageContext,
+} from '../usage-llm.ts';
 
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
@@ -51,6 +56,8 @@ export interface ChatOptions {
   signal?: AbortSignal;
   /** 非空时，user message 变成多模态 content 数组（文本在前、图片在后）。 */
   images?: ChatImagePart[];
+  /** 仅由脚本注册入口为精确公司 GPT 调用启用的内部 usage 记账标记。 */
+  usageContext?: LlmUsageContext;
 }
 
 /** Normalizes a (trailing-slash-stripped) base URL to the /chat/completions endpoint. */
@@ -116,17 +123,26 @@ export async function chatCompletion(
     // 部分公司网关模型（如推理型 GPT-5-6-Luna-Standard）只接受默认 temperature=1，
     // 显式传其他值会被上游 400 拒绝。命中该特征错误时改传 temperature=1 重试一次，
     // 并记入进程内名单，后续调用直接固定 temperature=1。
-    const send = async (requestBody: Record<string, unknown>) => fetch(chatUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-      signal: requestControl.signal,
-    });
+    const serializedPrompt = JSON.stringify(body.messages);
+    const send = async (requestBody: Record<string, unknown>) => {
+      const usageAttempt = runtime
+        ? beginLlmUsageCall(runtime, String(requestBody.model || model), options.usageContext)
+        : null;
+      const response = await fetch(chatUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: requestControl.signal,
+      });
+      return { response, usageAttempt };
+    };
 
-    let res = await send(body);
+    const firstResponse = await send(body);
+    let res = firstResponse.response;
+    let usageAttempt = firstResponse.usageAttempt;
     if (!res.ok) {
       const errText = await res.text();
       const temperatureRejected = res.status === 400
@@ -136,18 +152,45 @@ export async function chatCompletion(
       if (temperatureRejected) {
         defaultTemperatureOnlyModels.add(modelKey);
         const fallbackBody = { ...body, temperature: 1 };
-        res = await send(fallbackBody);
+        const fallbackResponse = await send(fallbackBody);
+        res = fallbackResponse.response;
+        usageAttempt = fallbackResponse.usageAttempt;
       }
       if (!res.ok) {
-        const fallbackErrText = temperatureRejected ? await res.text() : errText;
-        throw new Error(`${config.name} (openai-compatible) error ${res.status}: ${fallbackErrText.slice(0, 500)}`);
+        if (temperatureRejected) await res.text();
+        // The upstream body may echo prompts or credentials. Keep it out of
+        // thrown errors because project-level callers persist these messages.
+        throw new Error(`${config.name} (openai-compatible) 请求失败（HTTP ${res.status}）`);
       }
     }
 
-    const data = await res.json() as {
+    const rawResponse = await res.text();
+    let data: {
       choices?: Array<{ message?: { content?: string } }>;
+      usage?: unknown;
     };
-    const rawText = data.choices?.[0]?.message?.content || '';
+    try {
+      const parsed: unknown = JSON.parse(rawResponse);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('response body is not an object');
+      data = parsed as typeof data;
+    } catch {
+      finishLlmUsageCall(usageAttempt, {
+        usage: undefined,
+        serializedPrompt,
+        rawOutput: rawResponse,
+        hasImages: Boolean(options.images?.length),
+      });
+      throw new Error(`${config.name} 返回了无效响应 JSON`);
+    }
+    const rawText = typeof data.choices?.[0]?.message?.content === 'string'
+      ? data.choices[0].message.content
+      : '';
+    finishLlmUsageCall(usageAttempt, {
+      usage: data.usage,
+      serializedPrompt,
+      rawOutput: rawText,
+      hasImages: Boolean(options.images?.length),
+    });
     if (!rawText.trim()) throw new Error(`${config.name} 返回了空响应`);
     return rawText;
   } catch (error) {
@@ -173,7 +216,7 @@ export function parseJsonResponse<T>(rawText: string, providerName: string): T {
   try {
     return JSON.parse(jsonText) as T;
   } catch {
-    throw new Error(`${providerName} 返回了无效 JSON。原始回复: ${rawText.slice(0, 500)}`);
+    throw new Error(`${providerName} 返回了无效 JSON`);
   }
 }
 

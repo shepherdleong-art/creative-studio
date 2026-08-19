@@ -42,6 +42,7 @@ export default function Header() {
       </Link>
       <nav className="ml-auto flex items-center gap-4">
         <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
+        <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
         <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
         <Link href="/projects/new" className="btn-primary btn-sm">
           <Icon name="plus" size={15} /> 新建项目

@@ -13,6 +13,7 @@ export async function POST(
       id: string;
       projectId: string;
       status: string;
+      providerTaskId?: string | null;
     } | undefined;
 
     if (!job) {
@@ -21,6 +22,20 @@ export async function POST(
 
     if (!['failed', 'canceled'].includes(job.status)) {
       return NextResponse.json({ error: 'Only failed or canceled jobs can be retried' }, { status: 400 });
+    }
+
+    const existingTaskId = typeof job.providerTaskId === 'string' ? job.providerTaskId.trim() : '';
+    if (existingTaskId) {
+      // The remote task may already be billable. Preserve its identity and
+      // route the user to polling instead of creating a second task.
+      const message = `已有远端图片任务 ${existingTaskId}，请点“补抓结果”继续查询。`;
+      db.prepare(`
+        UPDATE jobs SET status = 'needs_check', providerStatus = 'needs_check', errorMessage = ?,
+          startedAt = NULL, finishedAt = NULL
+        WHERE id = ?
+      `).run(message, id);
+
+      return NextResponse.json({ success: true, status: 'needs_check', resumeRequired: true });
     }
 
     db.prepare(`
