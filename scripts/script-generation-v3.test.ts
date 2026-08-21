@@ -393,7 +393,7 @@ assert.deepEqual(
       });
     },
   });
-  assert.equal(result.attempts, 2, '缺少真实画面语义的首稿必须按结构错误完整重写');
+  assert.equal(result.attempts, 3, '缺少真实画面语义的首稿必须按结构错误完整重写；未采用卖点继续触发 advisory 修正');
 }
 
 {
@@ -427,7 +427,7 @@ assert.deepEqual(
       });
     },
   });
-  assert.equal(result.attempts, 2, '引用不存在图片的首稿必须按结构错误完整重写');
+  assert.equal(result.attempts, 3, '引用不存在图片的首稿必须按结构错误完整重写；未采用卖点继续触发 advisory 修正');
   assert.ok(result.script.segments.every((segment) => !('visualRefs' in segment)), '校验通过后仍不能持久化图片引用');
 }
 
@@ -504,7 +504,7 @@ assert.deepEqual(
         title: '降级出稿',
         segments: [{
           narration: `${'舒适承托'.repeat(13)}安心。`,
-          sellingPointRefs: ['112°承托'],
+          sellingPointRefs: ['112°承托', '5芯软弹'],
           visualIntent: '附图中可见的客厅沙发使用场景',
           visualKeywords: ['沙发', '客厅'],
           visualRefs: ['visual-1'],
@@ -539,7 +539,7 @@ assert.deepEqual(
         title: '非法建议被丢弃',
         segments: [{
           narration: `${'舒适承托'.repeat(13)}安心。`,
-          sellingPointRefs: ['112°承托'],
+          sellingPointRefs: ['112°承托', '5芯软弹'],
           visualIntent: '附图中可见的客厅沙发使用场景',
           visualKeywords: ['沙发', '客厅'],
           visualRefs: ['visual-1'],
@@ -573,7 +573,7 @@ assert.deepEqual(
           title: 'qualified 带 advisory',
           segments: [{
             narration: `${'舒适承托'.repeat(13)}安心。`,
-            sellingPointRefs: ['112°承托'],
+            sellingPointRefs: ['112°承托', '5芯软弹'],
             visualIntent: '附图中可见的客厅沙发使用场景',
             visualKeywords: ['沙发', '客厅'],
             visualRefs: ['visual-1'],
@@ -589,7 +589,7 @@ assert.deepEqual(
         title: 'qualified 无 advisory',
         segments: [{
           narration: `${'舒适承托'.repeat(13)}安心。`,
-          sellingPointRefs: ['112°承托'],
+          sellingPointRefs: ['112°承托', '5芯软弹'],
           visualIntent: '附图中可见的客厅沙发使用场景',
           visualKeywords: ['沙发', '客厅'],
           visualRefs: ['visual-1'],
@@ -623,7 +623,7 @@ assert.deepEqual(
         title: '云感沙发推荐',
         segments: [{
           narration: `${'舒适承托'.repeat(13)}安心。`,
-          sellingPointRefs: ['112°承托'],
+          sellingPointRefs: ['112°承托', '5芯软弹'],
           visualIntent: '产品使用场景',
           visualKeywords: ['产品'],
         }],
@@ -701,7 +701,7 @@ assert.deepEqual(
         title: '标题依据与正文不交汇',
         segments: [{
           narration: `${'舒适承托'.repeat(13)}安心。`,
-          sellingPointRefs: ['112°承托'],
+          sellingPointRefs: ['112°承托', '5芯软弹'],
           visualIntent: '附图中可见的客厅沙发使用场景',
           visualKeywords: ['沙发', '客厅'],
           visualRefs: ['visual-1'],
@@ -836,7 +836,7 @@ assert.deepEqual(
         title: '截断后重试',
         segments: [{
           narration: `${'舒适承托'.repeat(13)}安心。`,
-          sellingPointRefs: ['112°承托'],
+          sellingPointRefs: ['112°承托', '5芯软弹'],
           visualIntent: '附图中可见的客厅沙发使用场景',
           visualKeywords: ['沙发', '客厅'],
           visualRefs: ['visual-1'],
@@ -878,18 +878,60 @@ assert.deepEqual(
       });
     },
   });
-  assert.equal(calls, 2, '卖点采用状态与正文引用不一致时必须重写');
+  assert.equal(calls, 3, '卖点采用由服务端推导，模型乱填不阻断；未采用卖点仍触发 advisory 重写');
+  assert.equal(result.attempts, 3);
   assert.deepEqual(result.script.sellingPointUsage, [{
     sellingPointId: 'selling-point-1',
     title: '112°承托',
-    status: 'omitted_no_visual_support',
-    reason: '当前分镜图片没有清晰呈现该卖点',
+    status: 'omitted',
+    reason: '声称正文已经采用',
   }, {
     sellingPointId: 'selling-point-2',
     title: '5芯软弹',
     status: 'used',
-    reason: '卖点与对应图片细节一致',
+    reason: '声称正文没有采用',
   }]);
+  assert.ok(
+    result.script.warnings?.some((warning) => warning.code === 'selling_point_derived'),
+    '未采用卖点必须产出卖点警告',
+  );
+}
+
+{
+  let calls = 0;
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => {
+      calls += 1;
+      return feasibleResult({
+        title: '无卖点登记',
+        segments: [{
+          narration: `${'柔软坐感'.repeat(13)}安心。`,
+          sellingPointRefs: ['5芯软弹'],
+          visualIntent: '附图中的沙发坐垫和客厅环境',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+        sellingPointUsage: [],
+      });
+    },
+  });
+  assert.equal(calls, 3, '模型完全不返回 sellingPointUsage 时也必须能出稿');
+  assert.equal(result.attempts, 3);
+  assert.deepEqual(result.script.sellingPointUsage, [{
+    sellingPointId: 'selling-point-1',
+    title: '112°承托',
+    status: 'omitted',
+    reason: '正文未引用该卖点',
+  }, {
+    sellingPointId: 'selling-point-2',
+    title: '5芯软弹',
+    status: 'used',
+    reason: '正文已引用该卖点',
+  }]);
+  const warning = result.script.warnings?.find((item) => item.code === 'selling_point_derived');
+  assert.ok(warning, '卖点未采用必须留痕');
+  assert.match(warning?.message || '', /112°承托/);
+  assert.equal(/画面证据|图片/.test(warning?.message || ''), false, '未采用警告不得断言图片缺少证据');
 }
 
 {

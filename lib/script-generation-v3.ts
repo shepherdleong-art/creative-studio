@@ -562,52 +562,50 @@ function normalizeSegments(
   return segments;
 }
 
-function normalizeSellingPointUsage(
+interface RawSellingPointUsageEntry {
+  status: string;
+  reason: string;
+}
+
+/**
+ * 卖点采用表由服务端推导：status 完全由「该卖点是否出现在某段 sellingPointIds 中」决定；
+ * 模型返回的 sellingPointUsage 只作为 reason 的来源，以及「明确声称图片无画面证据」时的
+ * omitted_no_visual_support 判断来源。登记缺失/乱填一律不阻断。
+ */
+function deriveSellingPointUsage(
   raw: JsonObject,
-  input: ScriptGenerationInputV3,
   sellingPoints: GenerationSellingPoint[],
   groundedSegments: GroundedScriptSegment[],
 ): NonNullable<ScriptOutputV3['sellingPointUsage']> {
-  const allowedVisualRefs = new Set<string>(input.visuals.map((_, index) => visualRefForIndex(index)));
-  const sellingPointById = new Map(sellingPoints.map((point) => [point.sellingPointId, point]));
-  const rawUsage = Array.isArray(raw.sellingPointUsage) ? raw.sellingPointUsage : [];
-  const normalizedById = new Map<string, NonNullable<ScriptOutputV3['sellingPointUsage']>[number]>();
-  rawUsage.forEach((value) => {
-    const usage = object(value);
-    const sellingPointId = string(usage.sellingPointId);
-    const status = string(usage.status);
-    const reason = string(usage.reason);
-    const visualRefs = stringArray(usage.visualRefs);
-    const supportingSegments = groundedSegments.filter((segment) => segment.sellingPointIds.includes(sellingPointId));
-    const isUsed = supportingSegments.length > 0;
-    const hasMatchingVisual = visualRefs.some((visualRef) => (
-      allowedVisualRefs.has(visualRef)
-      && supportingSegments.some((segment) => segment.visualRefs.includes(visualRef))
-    ));
-    if (!sellingPointById.has(sellingPointId)
-      || normalizedById.has(sellingPointId)
-      || !reason
-      || (status !== 'used' && status !== 'omitted_no_visual_support')
-      || (status === 'used' && (!isUsed || !hasMatchingVisual))
-      || (status === 'omitted_no_visual_support' && (isUsed || visualRefs.some((visualRef) => !allowedVisualRefs.has(visualRef))))) {
-      throw new ScriptOutputValidationError([
-        `sellingPointUsage 中卖点 ${sellingPointId} 的登记不合法：status=used 要求该卖点出现在某段 sellingPointIds 中、且本条 visualRefs 与该段 visualRefs 至少命中同一张图；status=omitted_no_visual_support 要求正文全部段落都未引用该卖点；reason 不得为空`,
-      ]);
-    }
-    normalizedById.set(sellingPointId, {
-      sellingPointId,
-      title: sellingPointById.get(sellingPointId)!.title,
-      status: status as 'used' | 'omitted_no_visual_support',
-      reason,
+  const rawUsage = new Map<string, RawSellingPointUsageEntry>();
+  if (Array.isArray(raw.sellingPointUsage)) {
+    raw.sellingPointUsage.forEach((value) => {
+      const usage = object(value);
+      const sellingPointId = string(usage.sellingPointId);
+      if (!sellingPointId) return;
+      rawUsage.set(sellingPointId, {
+        status: string(usage.status),
+        reason: string(usage.reason),
+      });
     });
-  });
-  if (normalizedById.size !== sellingPoints.length
-    || sellingPoints.some((point) => !normalizedById.has(point.sellingPointId))) {
-    throw new ScriptOutputValidationError([
-      `sellingPointUsage 必须恰好覆盖全部 ${sellingPoints.length} 个已选卖点，每个 sellingPointId 出现且只出现一次`,
-    ]);
   }
-  return sellingPoints.map((point) => normalizedById.get(point.sellingPointId)!);
+  return sellingPoints.map((point) => {
+    const used = groundedSegments.some((segment) => segment.sellingPointIds.includes(point.sellingPointId));
+    const modelEntry = rawUsage.get(point.sellingPointId);
+    const modelSaysNoVisualSupport = modelEntry?.status === 'omitted_no_visual_support' && Boolean(modelEntry.reason);
+    const status: 'used' | 'omitted' | 'omitted_no_visual_support' = used
+      ? 'used'
+      : modelSaysNoVisualSupport
+        ? 'omitted_no_visual_support'
+        : 'omitted';
+    const reason = modelEntry?.reason || (used ? '正文已引用该卖点' : '正文未引用该卖点');
+    return {
+      sellingPointId: point.sellingPointId,
+      title: point.title,
+      status,
+      reason,
+    };
+  });
 }
 
 interface MaterialAssessment {
@@ -683,7 +681,17 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
     });
   }
   const segments = groundedSegments.map(({ segment }) => segment);
-  const sellingPointUsage = normalizeSellingPointUsage(raw, input, sellingPoints, groundedSegments);
+  const sellingPointUsage = deriveSellingPointUsage(raw, sellingPoints, groundedSegments);
+  const unusedSellingPoints = sellingPointUsage.filter((usage) => usage.status !== 'used');
+  const usageAdvisories: string[] = unusedSellingPoints.length > 0
+    ? [`有 ${unusedSellingPoints.length} 个已选卖点未写入正文：${unusedSellingPoints.map((usage) => usage.title).join('、')}；若当前图片确有支撑，请把该卖点写入对应段落`]
+    : [];
+  if (unusedSellingPoints.length > 0) {
+    warnings.push({
+      code: 'selling_point_derived',
+      message: `${unusedSellingPoints.length} 个已选卖点未写入正文：${unusedSellingPoints.map((usage) => usage.title).join('、')}`,
+    });
+  }
   const title = string(raw.title) || `${input.productName || input.projectName || '产品'}口播脚本`;
   const titleResolution = resolveTitleParts(raw, input, groundedSegments, sellingPoints, title);
   if (titleResolution.coverTitleParts.source !== 'model') {
@@ -702,7 +710,7 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
     : contentCharacterCount > budget.maxContentCharacters ? 'too_long' : 'qualified';
   return {
     qualification,
-    advisories: [...material.advisories, ...titleResolution.advisories],
+    advisories: [...material.advisories, ...titleResolution.advisories, ...usageAdvisories],
     script: {
       version: 3,
       title,
@@ -789,10 +797,10 @@ const SCRIPT_OUTPUT_CONTRACT = {
     visualRefs: 'string[]；只允许 visualMaterials 中的 visualRef',
   }],
   sellingPointUsage: [{
-    sellingPointId: 'string；每个 selectedSellingPoints 的 sellingPointId 必须且只能出现一次',
-    status: '只能是 used 或 omitted_no_visual_support；正文引用时为 used，图片不能承接且正文未引用时为 omitted_no_visual_support',
-    reason: 'string；具体说明在哪些图片中看到了支撑，或为什么当前图片无法证明该卖点，不得为空',
-    visualRefs: 'string[]；used 时必须引用实际承接该卖点的图片；omitted_no_visual_support 时可为空',
+    sellingPointId: 'string；已选卖点的 sellingPointId；尽量逐项说明',
+    status: '只能是 used、omitted 或 omitted_no_visual_support；正文引用时为 used，图片不能承接且正文未引用时为 omitted_no_visual_support，其余未引用时为 omitted',
+    reason: 'string；具体说明在哪些图片中看到了支撑，或为什么当前图片无法证明该卖点；可为空，服务端会补默认文案',
+    visualRefs: 'string[]；used 时建议列出实际承接该卖点的图片；其余可为空',
   }],
 } as const;
 
@@ -808,7 +816,7 @@ function scriptRequirements(rewrite = false): string[] {
     '只生成带自然标点的口播，不选择或绑定具体图片、shotId 或素材顺序；visualRefs 仅用于证明内容有输入图片承接',
     '返回独立主标题和副标题，正文只能使用已选卖点中的事实',
     '每段返回 narration、sellingPointIds、visualIntent、visualKeywords、visualRefs；不要复述卖点标题作为关联键',
-    'sellingPointUsage 必须逐项覆盖全部已选卖点；已采用卖点必须与正文 sellingPointIds 和承接图片一致，未采用卖点必须明确说明当前图片缺少什么证据',
+    'sellingPointUsage 尽量逐项说明卖点采用情况，重点写清未采用卖点的原因；正文引用与采用状态以正文为准',
     rewrite ? '返回完整重写后的 JSON，不返回 diff，不截断字符串末尾' : '返回完整 JSON；字幕、全文、时长和 ID 由服务端派生',
   ];
 }

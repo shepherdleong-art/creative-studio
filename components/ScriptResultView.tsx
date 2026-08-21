@@ -68,7 +68,7 @@ function buildV3Txt(script: ScriptOutputV3): string {
     ...(script.sellingPointUsage?.length ? [
       '## 卖点采用情况',
       ...script.sellingPointUsage.map((usage) => (
-        `${usage.status === 'used' ? '已采用' : '图片暂不支持'}：${usage.title}｜${usage.reason}`
+        `${usage.status === 'used' ? '已采用' : usage.status === 'omitted' ? '未写入正文' : '图片暂不支持'}：${usage.title}｜${usage.reason}`
       )),
       '',
     ] : []),
@@ -179,7 +179,7 @@ export default function ScriptResultView({ script, getShotImageUrl }: Props) {
                     <span className={`rounded-full px-2 py-0.5 text-[0.65rem] font-semibold ${
                       usage.status === 'used' ? 'bg-ok-tint text-ok' : 'bg-warn-tint text-warn'
                     }`}>
-                      {usage.status === 'used' ? '已采用' : '图片暂不支持'}
+                      {usage.status === 'used' ? '已采用' : usage.status === 'omitted' ? '未写入正文' : '图片暂不支持'}
                     </span>
                     <span className="text-sm font-medium text-ink">{usage.title}</span>
                   </div>

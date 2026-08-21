@@ -111,7 +111,7 @@ export interface ScriptSegmentV3 {
 export interface ScriptSellingPointUsageV3 {
   sellingPointId: string;
   title: string;
-  status: 'used' | 'omitted_no_visual_support';
+  status: 'used' | 'omitted' | 'omitted_no_visual_support';
   reason: string;
 }
 
