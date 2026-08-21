@@ -386,54 +386,141 @@ export function seedScriptProviders() {
 export function seedMotionTemplates() {
   const db = getDb();
 
-  const templates = [
+  // 池子里现在清一色是运镜，category 恒为 camera_motion，不再逐条声明。
+  const templates: Array<{
+    id: string;
+    name: string;
+    description: string;
+    prompt: string;
+  }> = [
+    // ── 以下 10 条直接对齐视频模型自带的运镜词表 ──────────────────────
+    // 用模型训练过的词（推进 / 拉远 / 右摇 / 上摇…），比自造措辞可靠得多。
     {
       id: 'slow-push-in',
-      name: '慢速推进',
-      description: '镜头缓慢推近主体，适合突出产品质感。',
-      prompt: '以当前图片为首帧，镜头缓慢向主体推进，运动平稳自然。保持产品结构、材质、比例、颜色和画面构图稳定，不要添加文字，不要让主体变形。',
-    },
-    {
-      id: 'gentle-static',
-      name: '稳定氛围镜头',
-      description: '画面基本静止，只保留轻微光影和布料动感。',
-      prompt: '以当前图片为首帧，保持固定机位，画面几乎静止，仅有轻微自然光影变化和柔和环境微动。保持产品结构、材质、比例、颜色和构图稳定，不要添加文字。',
-    },
-    {
-      id: 'left-to-right-slide',
-      name: '横向滑动',
-      description: '镜头从左向右平滑移动，适合展示空间关系。',
-      prompt: '以当前图片为首帧，镜头从左向右缓慢平滑滑动，主体始终完整清晰。保持产品结构、材质、比例、颜色和空间关系稳定，不要添加文字，不要产生畸变。',
-    },
-    {
-      id: 'subtle-orbit',
-      name: '轻微环绕',
-      description: '轻微侧向环绕，增强立体感。',
-      prompt: '以当前图片为首帧，镜头围绕主体做非常轻微的侧向环绕，幅度小、速度慢、运动平稳。保持产品结构、材质、比例、颜色和构图稳定，不要添加文字。',
-    },
-    {
-      id: 'detail-push',
-      name: '材质细节推进',
-      description: '轻微靠近材质细节，适合表现面料、皮质、金属等。',
-      prompt: '以当前图片为首帧，镜头缓慢靠近产品材质细节，突出纹理和质感。保持产品结构、材质、比例和颜色真实稳定，不要添加文字，不要让主体变形。',
+      name: '推进',
+      description: '镜头向主体缓慢靠近，突出产品质感。',
+      prompt: '以当前图片为首帧，镜头推进，向主体缓慢靠近，运动平稳自然。保持产品结构、材质、比例、颜色和画面构图稳定，不要添加文字，不要让主体变形。',
     },
     {
       id: 'steady-pull-back',
-      name: '镜头平稳后拉',
-      description: '镜头匀速远离主体，逐渐展现整体环境，适合收尾或空间感展示。',
-      prompt: '以当前图片为首帧，镜头平稳缓慢向后拉远，逐渐展现主体与整体环境的关系，运动匀速自然。保持产品结构、材质、比例、颜色和画面构图稳定，不要添加文字，不要让主体变形。',
+      name: '拉远',
+      description: '镜头匀速退离主体，交代整体环境，适合收尾。',
+      prompt: '以当前图片为首帧，镜头拉远，缓慢退离主体，逐渐展现主体与整体环境的关系，运动匀速自然。保持产品结构、材质、比例、颜色和画面构图稳定，不要添加文字，不要让主体变形。',
+    },
+    {
+      id: 'gentle-static',
+      name: '固定镜头',
+      description: '机位和光线都不动，只有极轻微的环境微动。',
+      prompt: '以当前图片为首帧，固定镜头，机位与镜头全程不动，光线保持恒定，仅有布料、蒸汽、微尘一类极轻微的环境微动。保持产品结构、材质、比例、颜色和构图稳定，不要添加文字。',
+    },
+    {
+      id: 'handheld-drift',
+      name: '手持镜头',
+      description: '模拟手持呼吸感，给静物加一点活气。',
+      prompt: '以当前图片为首帧，手持镜头，画面带有轻微的呼吸感和自然晃动，不产生明显位移。保持产品结构、材质、比例、颜色和构图稳定，不要添加文字，不要让主体变形。',
+    },
+    {
+      id: 'subtle-orbit',
+      name: '环绕',
+      // 和 orbit-subject 的分别写死在措辞里：这条是「一小段弧线」。
+      description: '绕主体走一小段侧向弧线，增强立体感。',
+      prompt: '以当前图片为首帧，镜头环绕，绕主体走一小段侧向弧线，幅度小、速度慢、运动平稳。保持产品结构、材质、比例、颜色和构图稳定，不要添加文字。',
+    },
+    {
+      id: 'orbit-subject',
+      name: '围绕主体运镜',
+      description: '以主体为圆心持续绕行，比「环绕」幅度大。',
+      prompt: '以当前图片为首帧，围绕主体运镜，镜头以主体为圆心持续绕行，始终把主体保持在画面中心，运动连贯平稳。保持产品结构、材质、比例、颜色稳定，不要添加文字，不要让主体变形。',
+    },
+    {
+      id: 'follow-subject',
+      name: '跟随',
+      description: '镜头与主体保持固定距离一路跟着走。',
+      prompt: '以当前图片为首帧，跟随镜头，镜头与主体保持相对稳定的距离一路跟随移动，主体始终完整清晰地留在画面内。保持产品结构、材质、比例、颜色稳定，不要添加文字，不要产生畸变。',
+    },
+    {
+      id: 'pan-right',
+      name: '右摇',
+      description: '机位不动，镜头原地向右转。',
+      prompt: '以当前图片为首帧，镜头右摇，机位固定不动，只让镜头原地向右转动，不做任何平移。保持产品结构、材质、比例、颜色稳定，不要添加文字，不要产生畸变。',
+    },
+    {
+      id: 'tilt-up',
+      name: '上摇',
+      description: '机位不动，镜头由下往上摇起，突出体量感。',
+      prompt: '以当前图片为首帧，镜头上摇，机位固定不动，镜头由下向上缓慢摇起，突出主体的体量与气势。保持产品结构、材质、比例、颜色稳定，不要添加文字，不要让主体变形。',
+    },
+    {
+      id: 'tilt-down',
+      name: '下摇',
+      description: '机位不动，镜头由上往下摇落，交代主体与台面的关系。',
+      prompt: '以当前图片为首帧，镜头下摇，机位固定不动，镜头由上向下缓慢摇落，逐渐显露主体与台面的关系。保持产品结构、材质、比例、颜色稳定，不要添加文字，不要让主体变形。',
+    },
+
+    // ── 词表之外只补这一条 ──────────────────────────────────────────
+    {
+      id: 'pan-left',
+      name: '左摇',
+      // 词表里只给了右摇，左摇是同一个动作的反向，白送的变体。
+      description: '右摇的反向，用来错开重复感。',
+      prompt: '以当前图片为首帧，镜头左摇，机位固定不动，只让镜头原地向左转动，不做任何平移。保持产品结构、材质、比例、颜色稳定，不要添加文字，不要产生畸变。',
     },
   ];
 
-  // 逐行幂等插入（而非空表才种子），让老库也能拿到后续新增的模板。
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO video_prompt_templates (id, name, description, prompt, category, isBuiltin)
-     VALUES (?, ?, ?, ?, 'camera_motion', 1)`
+  // 逐行幂等写入（而非空表才种子），让老库也能拿到后续新增的模板。
+  // 这里用 upsert 而不是 INSERT OR IGNORE：detail-push 原先的措辞和 slow-push-in
+  // 是同一个镜头动作（六条里有两条是推进），老库必须能拿到修正后的文案，否则
+  // 批量填充洗出来的画面还是三分之一在推镜头。DO UPDATE 上的 WHERE 保证只改
+  // 内置行，用户自建模板（isBuiltin = 0）永远不会被种子覆盖。
+  const upsert = db.prepare(
+    `INSERT INTO video_prompt_templates (id, name, description, prompt, category, isBuiltin)
+     VALUES (@id, @name, @description, @prompt, 'camera_motion', 1)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       description = excluded.description,
+       prompt = excluded.prompt,
+       category = excluded.category
+     WHERE video_prompt_templates.isBuiltin = 1`
   );
 
-  for (const t of templates) {
-    insert.run(t.id, t.name, t.description, t.prompt);
-  }
+  // 退役的内置模板：措辞和别的条目撞脸（detail-push 是推进、横移和左右摇
+  // 分不开、升降和上下摇分不开），留着只会让批量填充洗出重复画面。
+  const retiredBuiltinIds = [
+    'detail-push',
+    'left-to-right-slide',
+    'right-to-left-slide',
+    'slow-pan',
+    'pedestal-up',
+    'pedestal-down',
+    'tilt-up-hero',
+    'tilt-down-overview',
+    // 这两条不是运镜（一个动焦点一个动光），不在词表里，去掉。
+    'rack-focus',
+    'light-drift',
+  ];
+
+  // video_jobs.templateId 有外键指向这张表，被历史任务引用的行删不掉、也不该
+  // 删——那是那条视频的出处。所以只清理没人引用的内置行；仍被引用的留在库里，
+  // 代价只是选择器里多一个旧条目。用户自建模板（isBuiltin = 0）一律不碰。
+  const retire = db.prepare(
+    `DELETE FROM video_prompt_templates
+     WHERE id = ?
+       AND isBuiltin = 1
+       AND NOT EXISTS (SELECT 1 FROM video_jobs WHERE video_jobs.templateId = ?)`
+  );
+
+  const writeAll = db.transaction(() => {
+    for (const t of templates) {
+      upsert.run({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        prompt: t.prompt,
+      });
+    }
+    for (const id of retiredBuiltinIds) retire.run(id, id);
+  });
+  writeAll();
 }
 
 export function seedAllVideo() {
