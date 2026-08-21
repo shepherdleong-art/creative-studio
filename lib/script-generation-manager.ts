@@ -15,6 +15,8 @@ export interface ScriptGenerationErrorDetails {
   suggestedTemplateId?: string;
   suggestedTemplateName?: string;
   validationIssues?: string[];
+  contentCharacterCount?: number;
+  targetCharacterRange?: [number, number];
 }
 
 export interface ScriptGenerationSnapshot {
@@ -155,6 +157,19 @@ function sanitizeError(body: Record<string, unknown>): {
     ? rawDetails.validationIssues.filter((item): item is string => typeof item === 'string').slice(0, 5)
     : [];
   if (issues.length > 0) details.validationIssues = issues;
+  if (typeof rawDetails.contentCharacterCount === 'number' && Number.isFinite(rawDetails.contentCharacterCount)) {
+    details.contentCharacterCount = rawDetails.contentCharacterCount;
+  }
+  if (
+    Array.isArray(rawDetails.targetCharacterRange)
+    && rawDetails.targetCharacterRange.length === 2
+    && rawDetails.targetCharacterRange.every((value) => typeof value === 'number' && Number.isFinite(value))
+  ) {
+    details.targetCharacterRange = [
+      rawDetails.targetCharacterRange[0] as number,
+      rawDetails.targetCharacterRange[1] as number,
+    ];
+  }
   return {
     code: rawCode || 'script_generation_failed',
     message: rawMessage || rawCode || '脚本生成失败',

@@ -176,6 +176,8 @@ try {
             suggestedTemplateId: 'scene_seeding',
             suggestedTemplateName: '场景种草',
             validationIssues: issues,
+            contentCharacterCount: 42,
+            targetCharacterRange: [54, 59],
             authorization: 'Bearer sk-secret',
             internal: 'upstream-raw-response',
           },
@@ -194,6 +196,8 @@ try {
         suggestedTemplateId: 'scene_seeding',
         suggestedTemplateName: '场景种草',
         validationIssues: issues.slice(0, 5),
+        contentCharacterCount: 42,
+        targetCharacterRange: [54, 59],
       },
     });
     assert.equal(JSON.stringify(snapshot).includes('sk-secret'), false, 'details 白名单不得透传密钥');

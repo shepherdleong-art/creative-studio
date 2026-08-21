@@ -287,7 +287,7 @@ const deletedProjectResponse = await generateAndPersistScriptV3({
   completeJson: async () => ({}),
   providerMeta: () => ({
     id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
-    apiStyle: 'openai-compatible', supportsVision: true,
+    apiStyle: 'openai-compatible', supportsVision: true, executionScope: 'external',
   }),
   prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
     imageBuffer, mimeType: mimeType as 'image/jpeg', width: 1, height: 1,
@@ -316,7 +316,7 @@ const domainErrorResponse = await generateAndPersistScriptV3({
   completeJson: async () => ({}),
   providerMeta: () => ({
     id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
-    apiStyle: 'openai-compatible', supportsVision: true,
+    apiStyle: 'openai-compatible', supportsVision: true, executionScope: 'external',
   }),
   prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
     imageBuffer, mimeType: mimeType as 'image/jpeg', width: 1, height: 1,
@@ -338,8 +338,12 @@ const domainErrorResponse = await generateAndPersistScriptV3({
 assert.equal(domainErrorResponse.status, 422);
 assert.equal(domainErrorResponse.body.error, 'script_material_mismatch');
 assert.equal(domainErrorResponse.body.message, '当前分镜图片无法承接所选模板，请补充对应素材或更换模板');
-assert.deepEqual(domainErrorResponse.body.details.unsupportedNarrativeBeats, ['从收到产品或准备开箱的第一时刻开始']);
-assert.equal(domainErrorResponse.body.details.materialReason, '附图只展示成品，没有包装或拆包过程');
+const domainErrorDetails = domainErrorResponse.body.details as {
+  unsupportedNarrativeBeats?: string[];
+  materialReason?: string;
+};
+assert.deepEqual(domainErrorDetails.unsupportedNarrativeBeats, ['从收到产品或准备开箱的第一时刻开始']);
+assert.equal(domainErrorDetails.materialReason, '附图只展示成品，没有包装或拆包过程');
 
 db.prepare(`INSERT INTO projects (id, name) VALUES ('project-a', '项目A')`).run();
 

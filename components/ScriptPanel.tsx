@@ -86,6 +86,8 @@ interface ScriptGenerationSnapshot {
       suggestedTemplateId?: string;
       suggestedTemplateName?: string;
       validationIssues?: string[];
+      contentCharacterCount?: number;
+      targetCharacterRange?: [number, number];
     };
   } | null;
   cancellationReason: 'user' | 'shutdown' | null;
@@ -158,6 +160,84 @@ function buildDraftLabels(drafts: ScriptDraft[], shotSets: ShotSetOption[]): Map
     })
   );
 }
+
+interface GenerationFailurePanelProps {
+  failure: NonNullable<ScriptGenerationSnapshot['error']>;
+  onRetry: () => void;
+  onSwitchTemplate: (templateId: string, templateName: string) => void;
+  onBackToShotSets: () => void;
+  onChangeDuration: () => void;
+}
+
+/** 生成失败后的可操作面板：按错误码给下一步，替代原来的 alert 死胡同。 */
+function GenerationFailurePanel({
+  failure,
+  onRetry,
+  onSwitchTemplate,
+  onBackToShotSets,
+  onChangeDuration,
+}: GenerationFailurePanelProps) {
+  const details = failure.details;
+  const suggestedTemplateId = details?.suggestedTemplateId;
+  const suggestedTemplateName = details?.suggestedTemplateName;
+  const hasSuggestedTemplate = Boolean(suggestedTemplateId && suggestedTemplateName);
+
+  return (
+    <div className="mt-4 rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm" role="alert">
+      <div className="flex items-start gap-2">
+        <Icon name="alert" size={13} />
+        <div className="flex-1 space-y-3">
+          <p className="font-medium text-ink">脚本生成失败：{failure.message || '未知错误'}</p>
+
+          {failure.code === 'script_material_mismatch' && (
+            <>
+              {details?.unsupportedNarrativeBeats && details.unsupportedNarrativeBeats.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs text-ink-secondary">当前图片缺少以下叙事阶段的画面承接：</p>
+                  <ul className="list-inside list-disc space-y-0.5 text-xs text-ink-secondary">
+                    {details.unsupportedNarrativeBeats.map((beat) => <li key={beat}>{beat}</li>)}
+                  </ul>
+                </div>
+              )}
+              {details?.materialReason && <p className="text-xs text-ink-secondary">{details.materialReason}</p>}
+            </>
+          )}
+
+          {failure.code === 'script_contract_invalid' && details?.validationIssues && details.validationIssues.length > 0 && (
+            <ul className="list-inside list-disc space-y-0.5 text-xs text-ink-secondary">
+              {details.validationIssues.slice(0, 3).map((issue, index) => <li key={`${index}-${issue}`}>{issue}</li>)}
+            </ul>
+          )}
+
+          {failure.code === 'script_duration_unresolved' && (
+            <p className="text-xs text-ink-secondary">
+              当前内容 {details?.contentCharacterCount ?? '—'} 字，目标区间 {details?.targetCharacterRange?.[0] ?? '—'}-{details?.targetCharacterRange?.[1] ?? '—'} 字。
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={onRetry} className="btn-secondary btn-sm text-xs">重新生成</button>
+            {hasSuggestedTemplate && (
+              <button
+                type="button"
+                onClick={() => onSwitchTemplate(suggestedTemplateId!, suggestedTemplateName!)}
+                className="btn-primary btn-sm text-xs"
+              >
+                改用《{suggestedTemplateName}》重新生成
+              </button>
+            )}
+            {failure.code === 'script_material_mismatch' && (
+              <button type="button" onClick={onBackToShotSets} className="btn-secondary btn-sm text-xs">返回上一步补素材</button>
+            )}
+            {failure.code === 'script_duration_unresolved' && (
+              <button type="button" onClick={onChangeDuration} className="btn-secondary btn-sm text-xs">换个目标时长</button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 // ── Component ──
 
 export default function ScriptPanel({ projectId }: Props) {
@@ -167,6 +247,7 @@ export default function ScriptPanel({ projectId }: Props) {
   const [generating, setGenerating] = useState(false);
   const [cancellingGeneration, setCancellingGeneration] = useState(false);
   const [generationProgress, setGenerationProgress] = useState<ScriptGenerationProgress>(INITIAL_GENERATION_PROGRESS);
+  const [generationFailure, setGenerationFailure] = useState<ScriptGenerationSnapshot['error'] | null>(null);
 
   // Brief (from project)
   const [audience, setAudience] = useState('');
@@ -281,6 +362,7 @@ export default function ScriptPanel({ projectId }: Props) {
   // ── Terminal state handling（轮询/取消共用）──
   const applyTerminalSnapshot = useCallback(async (snapshot: ScriptGenerationSnapshot) => {
     if (snapshot.state === 'succeeded') {
+      setGenerationFailure(null);
       // 成功后重新加载草稿，按服务端返回的 draftId 选中结果
       const listRes = await fetch(`/api/projects/${projectId}/script`);
       const listData = await listRes.json().catch(() => ({ drafts: [] }));
@@ -303,7 +385,7 @@ export default function ScriptPanel({ projectId }: Props) {
         } catch { /* ignore corrupt draft */ }
       }
     } else if (snapshot.state === 'failed') {
-      alert('生成失败: ' + (snapshot.error?.message || '未知错误'));
+      setGenerationFailure(snapshot.error);
     }
     // cancelled：静默恢复按钮状态，不弹失败提示
     generationIdRef.current = null;
@@ -541,7 +623,7 @@ export default function ScriptPanel({ projectId }: Props) {
       .catch(() => undefined);
   }, [cancellingGeneration, projectId, applyTerminalSnapshot]);
 
-  const handleGenerate = useCallback(async () => {
+  const handleGenerate = useCallback(async (override?: { templateId?: string; templateName?: string }) => {
     if (!selectedShotSetId) {
       alert('请选择一个分镜组');
       return;
@@ -555,9 +637,12 @@ export default function ScriptPanel({ projectId }: Props) {
       alert('选中的卖点与当前策略分析不一致，请重新分析后再生成');
       return;
     }
+    setGenerationFailure(null);
 
     const generationId = crypto.randomUUID();
     generationIdRef.current = generationId;
+    const resolvedTemplateId = override?.templateId ?? templateId;
+    const resolvedTemplateName = override?.templateName ?? templateName;
     setGenerationProgress(INITIAL_GENERATION_PROGRESS);
     setCancellingGeneration(false);
     setGenerating(true);
@@ -570,8 +655,8 @@ export default function ScriptPanel({ projectId }: Props) {
           generationId,
           shotSetId: selectedShotSetId,
           selectedSellingPoints: spWithData,
-          templateId,
-          templateName,
+          templateId: resolvedTemplateId,
+          templateName: resolvedTemplateName,
           targetDurationSec,
           providerId: generateProviderId,
           tone,
@@ -585,12 +670,15 @@ export default function ScriptPanel({ projectId }: Props) {
         generationIdRef.current = authoritativeId;
         pollGeneration(authoritativeId);
       } else {
-        alert('生成失败: ' + String(data.message || data.error || `HTTP ${res.status}`));
+        setGenerationFailure({
+          code: String(data.error || 'script_generation_failed'),
+          message: String(data.message || data.error || `HTTP ${res.status}`),
+        });
         generationIdRef.current = null;
         setGenerating(false);
       }
     } catch (err) {
-      alert('生成失败: ' + String(err));
+      setGenerationFailure({ code: 'script_generation_failed', message: String(err) });
       generationIdRef.current = null;
       setGenerating(false);
     }
@@ -821,6 +909,24 @@ export default function ScriptPanel({ projectId }: Props) {
               </button>
             </div>
           </div>
+        )}
+
+        {generationFailure && (
+          <GenerationFailurePanel
+            failure={generationFailure}
+            onRetry={() => {
+              setGenerationFailure(null);
+              void handleGenerate();
+            }}
+            onSwitchTemplate={(templateId, templateName) => {
+              setTemplateId(templateId);
+              setTemplateName(templateName);
+              setGenerationFailure(null);
+              void handleGenerate({ templateId, templateName });
+            }}
+            onBackToShotSets={() => setStep(2)}
+            onChangeDuration={() => setStep(2)}
+          />
         )}
       </div>
     </div>

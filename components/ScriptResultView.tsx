@@ -148,6 +148,21 @@ export default function ScriptResultView({ script, getShotImageUrl }: Props) {
           </div>
         </div>
 
+        {script.warnings && script.warnings.length > 0 && (
+          <div className="space-y-2">
+            {script.warnings.map((warning) => (
+              <p
+                key={warning.code}
+                className={`rounded-lg bg-warn-tint px-3 py-2 text-xs text-warn ${
+                  warning.code === 'cover_title_fallback' ? 'font-medium' : ''
+                }`}
+              >
+                ⚠️ {warning.message}
+              </p>
+            ))}
+          </div>
+        )}
+
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-[14px] border border-hairline bg-surface-subtle p-4">
             <div className="text-[0.7rem] text-ink-tertiary">封面主标题</div>
