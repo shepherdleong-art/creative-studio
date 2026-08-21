@@ -564,6 +564,57 @@ assert.deepEqual(
 {
   let calls = 0;
   const prompts: string[] = [];
+  const result = await generateScriptV3({ ...baseInput, templateId: 'unboxing', templateName: '开箱体验' }, {
+    completeJson: async (request) => {
+      calls += 1;
+      prompts.push(request.userPrompt);
+      if (calls === 1) {
+        return feasibleResult({
+          title: 'qualified 带 advisory',
+          segments: [{
+            narration: `${'舒适承托'.repeat(13)}安心。`,
+            sellingPointRefs: ['112°承托'],
+            visualIntent: '附图中可见的客厅沙发使用场景',
+            visualKeywords: ['沙发', '客厅'],
+            visualRefs: ['visual-1'],
+          }],
+          materialAssessment: {
+            templateFeasible: true,
+            unsupportedNarrativeBeats: ['从收到产品或准备开箱的第一时刻开始', '模板中不存在的阶段'],
+            reason: '大部分阶段可承接',
+          },
+        });
+      }
+      return feasibleResult({
+        title: 'qualified 无 advisory',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+      });
+    },
+  });
+  assert.equal(calls, 2, 'qualified 但带 advisory 时必须重写而不是立即返回');
+  const secondPrompt = JSON.parse(prompts[1]) as { issue?: string; validationIssues?: string[]; requirements?: string[] };
+  assert.equal(secondPrompt.issue, 'advisory', 'qualified+advisory 的重写提示词必须使用 advisory 语义');
+  assert.ok(
+    secondPrompt.validationIssues?.some((item) => item.includes('unsupportedNarrativeBeats')),
+    '重写提示词必须携带逐条 advisory',
+  );
+  assert.equal(
+    secondPrompt.requirements?.[0],
+    '逐项修复 validationIssues 列出的全部问题，其余已合规内容保持不变',
+    '有 advisory 时必须要求定点修正',
+  );
+  assert.equal(result.attempts, 2);
+}
+
+{
+  let calls = 0;
+  const prompts: string[] = [];
   const result = await generateScriptV3(baseInput, {
     completeJson: async (request) => {
       calls += 1;

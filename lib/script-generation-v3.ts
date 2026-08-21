@@ -747,7 +747,7 @@ function generationPrompt(input: ScriptGenerationInputV3): string {
 
 function rewritePrompt(
   input: ScriptGenerationInputV3,
-  issue: 'too_short' | 'too_long' | 'contract_invalid',
+  issue: 'too_short' | 'too_long' | 'contract_invalid' | 'advisory',
   previousResult: unknown,
   currentScript?: ScriptOutputV3,
   validationIssues?: string[],
@@ -773,7 +773,7 @@ function rewritePrompt(
     ...(validationIssues?.length ? { validationIssues } : {}),
     outputContract: SCRIPT_OUTPUT_CONTRACT,
     requirements: [
-      ...(issue === 'contract_invalid'
+      ...(issue === 'contract_invalid' || issue === 'advisory'
         ? [validationIssues?.length
           ? '逐项修复 validationIssues 列出的全部问题，其余已合规内容保持不变'
           : '修复所有缺失或非法字段，至少返回一个非空 narration 段落']
@@ -1023,7 +1023,7 @@ export async function generateScriptV3(
   }));
   let prompt = generationPrompt(input);
   let lastScript: ScriptOutputV3 | null = null;
-  let lastQualification: 'too_short' | 'too_long' | 'contract_invalid' = 'contract_invalid';
+  let lastQualification: 'too_short' | 'too_long' | 'contract_invalid' | 'qualified' = 'contract_invalid';
   let lastValidationIssues: string[] = [];
   let bestCandidate: ScriptCandidate | null = null;
   let materialMismatchSeen = false;
@@ -1070,7 +1070,7 @@ export async function generateScriptV3(
       lastQualification = normalized.qualification;
       prompt = rewritePrompt(
         input,
-        normalized.qualification,
+        normalized.qualification === 'qualified' ? 'advisory' : normalized.qualification,
         raw,
         normalized.script,
         normalized.advisories.length > 0 ? normalized.advisories : undefined,
