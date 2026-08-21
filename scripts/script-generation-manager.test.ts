@@ -156,6 +156,52 @@ try {
 
   resetScriptGenerationManagerForTests();
 
+  // ── 失败：details 按白名单透传并截断，上游原文/密钥绝不外泄 ──
+  {
+    const beats = Array.from({ length: 12 }, (_, index) => `阶段-${index + 1}`);
+    const issues = Array.from({ length: 6 }, (_, index) => `问题-${index + 1}`);
+    startScriptGeneration({
+      projectId: 'project-a',
+      generationId: 'gen-1',
+      execute: async () => ({
+        status: 422,
+        body: {
+          error: 'script_material_mismatch',
+          message: '当前分镜图片无法承接所选模板',
+          details: {
+            kind: 'material_mismatch',
+            attempts: 2,
+            unsupportedNarrativeBeats: beats,
+            materialReason: '附图只展示成品',
+            suggestedTemplateId: 'scene_seeding',
+            suggestedTemplateName: '场景种草',
+            validationIssues: issues,
+            authorization: 'Bearer sk-secret',
+            internal: 'upstream-raw-response',
+          },
+        },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const snapshot = getProjectScriptGeneration('project-a');
+    assert.equal(snapshot?.state, 'failed');
+    assert.deepEqual(snapshot?.error, {
+      code: 'script_material_mismatch',
+      message: '当前分镜图片无法承接所选模板',
+      details: {
+        unsupportedNarrativeBeats: beats.slice(0, 10),
+        materialReason: '附图只展示成品',
+        suggestedTemplateId: 'scene_seeding',
+        suggestedTemplateName: '场景种草',
+        validationIssues: issues.slice(0, 5),
+      },
+    });
+    assert.equal(JSON.stringify(snapshot).includes('sk-secret'), false, 'details 白名单不得透传密钥');
+    assert.equal(JSON.stringify(snapshot).includes('upstream-raw-response'), false, 'details 白名单不得透传上游原文');
+  }
+
+  resetScriptGenerationManagerForTests();
+
   // ── 执行器抛错 → failed；AbortError 但管理器未取消 → failed（取消只能来自管理器）──
   {
     startScriptGeneration({

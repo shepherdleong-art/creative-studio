@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import {
   generateScriptV3,
+  ScriptGenerationV3Error,
   type CompleteJsonRequest,
   type ScriptGenerationV3Dependencies,
   type ScriptGenerationProgress,
@@ -237,7 +238,16 @@ export async function generateAndPersistScriptV3(
     signal: dependencies.signal,
     onProgress: dependencies.onProgress,
   };
-  const result = await (dependencies.generate || generateScriptV3)(generationInput, generatorDependencies);
+  let result;
+  try {
+    result = await (dependencies.generate || generateScriptV3)(generationInput, generatorDependencies);
+  } catch (error) {
+    if (error instanceof ScriptGenerationV3Error) {
+      // 领域错误转成带稳定错误码与 details 的 422 body，否则 manager 会吞成 script_generation_error。
+      return { status: 422, body: { error: error.code, message: error.message, details: error.details } };
+    }
+    throw error; // AbortError / 其它异常必须原样往上抛，不能吞。
+  }
   // 迟到结果门禁：上游忽略 abort 稍后才返回时，不得继续落库。
   if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
   // 项目在生成中可能已被删除：持久化前重验，避免写入已删除项目或触发外键级联。

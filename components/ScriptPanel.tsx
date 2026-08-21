@@ -77,7 +77,17 @@ interface ScriptGenerationSnapshot {
   state: ScriptGenerationState;
   progress: ScriptGenerationProgress;
   draftId: string | null;
-  error: { code: string; message: string } | null;
+  error: {
+    code: string;
+    message: string;
+    details?: {
+      unsupportedNarrativeBeats?: string[];
+      materialReason?: string;
+      suggestedTemplateId?: string;
+      suggestedTemplateName?: string;
+      validationIssues?: string[];
+    };
+  } | null;
   cancellationReason: 'user' | 'shutdown' | null;
   startedAt: string;
   finishedAt: string | null;

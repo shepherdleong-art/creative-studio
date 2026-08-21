@@ -8,13 +8,22 @@ export type ScriptGenerationState =
   | 'failed'
   | 'cancelled';
 
+/** 允许透传到前端的错误明细白名单；其余 details 一律丢弃。 */
+export interface ScriptGenerationErrorDetails {
+  unsupportedNarrativeBeats?: string[];
+  materialReason?: string;
+  suggestedTemplateId?: string;
+  suggestedTemplateName?: string;
+  validationIssues?: string[];
+}
+
 export interface ScriptGenerationSnapshot {
   generationId: string;
   projectId: string;
   state: ScriptGenerationState;
   progress: ScriptGenerationProgress;
   draftId: string | null;
-  error: { code: string; message: string } | null;
+  error: { code: string; message: string; details?: ScriptGenerationErrorDetails } | null;
   cancellationReason: 'user' | 'shutdown' | null;
   startedAt: string;
   finishedAt: string | null;
@@ -118,12 +127,38 @@ function toSnapshot(record: ScriptGenerationTaskRecord): ScriptGenerationSnapsho
   };
 }
 
-function sanitizeError(body: Record<string, unknown>): { code: string; message: string } {
+function sanitizeError(body: Record<string, unknown>): {
+  code: string;
+  message: string;
+  details?: ScriptGenerationErrorDetails;
+} {
   const rawCode = typeof body.error === 'string' ? body.error : '';
   const rawMessage = typeof body.message === 'string' ? body.message : '';
+  const rawDetails = body.details && typeof body.details === 'object'
+    ? body.details as Record<string, unknown>
+    : {};
+  const details: ScriptGenerationErrorDetails = {};
+  const beats = Array.isArray(rawDetails.unsupportedNarrativeBeats)
+    ? rawDetails.unsupportedNarrativeBeats.filter((item): item is string => typeof item === 'string').slice(0, 10)
+    : [];
+  if (beats.length > 0) details.unsupportedNarrativeBeats = beats;
+  if (typeof rawDetails.materialReason === 'string' && rawDetails.materialReason) {
+    details.materialReason = rawDetails.materialReason;
+  }
+  if (typeof rawDetails.suggestedTemplateId === 'string' && rawDetails.suggestedTemplateId) {
+    details.suggestedTemplateId = rawDetails.suggestedTemplateId;
+  }
+  if (typeof rawDetails.suggestedTemplateName === 'string' && rawDetails.suggestedTemplateName) {
+    details.suggestedTemplateName = rawDetails.suggestedTemplateName;
+  }
+  const issues = Array.isArray(rawDetails.validationIssues)
+    ? rawDetails.validationIssues.filter((item): item is string => typeof item === 'string').slice(0, 5)
+    : [];
+  if (issues.length > 0) details.validationIssues = issues;
   return {
     code: rawCode || 'script_generation_failed',
     message: rawMessage || rawCode || '脚本生成失败',
+    ...(Object.keys(details).length > 0 ? { details } : {}),
   };
 }
 

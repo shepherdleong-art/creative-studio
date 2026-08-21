@@ -30,9 +30,11 @@ function logScriptFailure(projectId: string, stage: string, detail: unknown): vo
         ? body.error
         : String(detail);
   // 结构校验失败时附上逐条失配原因，否则日志里只有一句笼统结论，无法定位。
-  const issues = detail instanceof Error
-    ? (detail as { details?: { validationIssues?: unknown } }).details?.validationIssues
-    : undefined;
+  // 服务层已把 ScriptGenerationV3Error 转成 422 body，这里要同时兼容 Error 与 body 两种形态。
+  const rawDetails = detail instanceof Error
+    ? (detail as { details?: { validationIssues?: unknown } }).details
+    : (body as { details?: { validationIssues?: unknown } } | null)?.details;
+  const issues = rawDetails?.validationIssues;
   if (Array.isArray(issues) && issues.length > 0) {
     message += `｜校验明细：${issues.slice(0, 5).map(String).join('；')}`;
   }
