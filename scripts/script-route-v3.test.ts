@@ -258,7 +258,7 @@ await assert.rejects(
     completeJson: async () => ({}),
     providerMeta: () => ({
       id: 'fake-provider', name: 'Fake', model: 'fake-model', configured: true,
-      apiStyle: 'openai-compatible', supportsVision: true,
+      apiStyle: 'openai-compatible', supportsVision: true, executionScope: 'external',
     }),
     prepareVisualImage: async ({ imageBuffer, mimeType }) => ({
       imageBuffer, mimeType: mimeType as 'image/jpeg', width: 1, height: 1,

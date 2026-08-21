@@ -214,7 +214,7 @@ try {
   );
 
   const claim = {
-    task: { id: taskId, batchId, workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: snapshotId },
+    task: { id: taskId, batchId, projectId: 'project-1', workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: snapshotId },
     attempt: { id: 'attempt-1', attemptNumber: 1 },
   };
   const execution = await executor.execute({
@@ -294,7 +294,7 @@ try {
   await executor.execute({
     db,
     claim: {
-      task: { id: taskBId, batchId, workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: snapshotBId },
+      task: { id: taskBId, batchId, projectId: 'project-1', workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: snapshotBId },
       attempt: { id: 'attempt-b', attemptNumber: 1 },
     },
     signal: new AbortController().signal,
@@ -329,7 +329,7 @@ try {
   await executor.execute({
     db,
     claim: {
-      task: { id: bgmNarrationTask.id, batchId: bgmBatchId, workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: bgmSnapshotId },
+      task: { id: bgmNarrationTask.id, batchId: bgmBatchId, projectId: 'project-1', workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: bgmSnapshotId },
       attempt: { id: 'attempt-bgm', attemptNumber: 1 },
     },
     signal: new AbortController().signal,
@@ -414,7 +414,7 @@ try {
   await executor.execute({
     db,
     claim: {
-      task: { id: manualNarrationTask.id, batchId: manualBatchId, workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: manualSnapshotId },
+      task: { id: manualNarrationTask.id, batchId: manualBatchId, projectId: 'project-1', workType: 'narration' as const, targetKind: 'script_snapshot' as const, targetId: manualSnapshotId },
       attempt: { id: 'attempt-manual', attemptNumber: 1 },
     },
     signal: new AbortController().signal,
@@ -471,5 +471,10 @@ try {
 } finally {
   if (previousDataRoot === undefined) delete process.env.CREATIVE_STUDIO_DATA_ROOT;
   else process.env.CREATIVE_STUDIO_DATA_ROOT = previousDataRoot;
-  fs.rmSync(root, { recursive: true, force: true });
+  // Windows 上 WAL 句柄释放有延迟，清理失败不得掩盖测试体的真实断言结果。
+  try {
+    fs.rmSync(root, { recursive: true, force: true });
+  } catch (cleanupError) {
+    console.warn('临时目录清理失败（不影响测试结果）:', cleanupError instanceof Error ? cleanupError.message : cleanupError);
+  }
 }

@@ -41,7 +41,7 @@ db.close();
 const PROMPT = '请逐字转写这张图片里的所有中文文字，不要遗漏、不要改写、不要推断。只输出转写结果。';
 
 async function transcribe(label: string, image: Buffer, detail?: 'high'): Promise<void> {
-  const url = await tryUploadBufferToCosAndSign(image, 'image/jpeg');
+  const url = await tryUploadBufferToCosAndSign(image as Buffer<ArrayBuffer>, 'image/jpeg');
   if (!url) throw new Error('COS 上传失败');
   const startedAt = Date.now();
   const response = await fetch(`${provider.baseUrl.replace(/\/$/, '')}/v1/chat/completions`, {

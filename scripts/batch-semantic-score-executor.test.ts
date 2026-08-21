@@ -30,7 +30,7 @@ db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL); INSERT
 
 function claimFor(taskId: string, batchId: string, snapshotId: string): ClaimedBatchTask {
   return {
-    task: { id: taskId, batchId, workType: 'semantic_score', targetKind: 'script_snapshot', targetId: snapshotId },
+    task: { id: taskId, batchId, projectId: 'project-1', workType: 'semantic_score', targetKind: 'script_snapshot', targetId: snapshotId },
     attempt: { id: `attempt-${taskId}`, attemptNumber: 1 },
   };
 }

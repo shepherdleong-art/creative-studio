@@ -95,7 +95,7 @@ try {
     const dependencies: GracefulShutdownDependencies = {
       scheduler: {
         running: true,
-        stop: () => undefined,
+        stop: () => Promise.resolve(),
       },
       abortBatchTasks: () => 1,
       waitForBatchTasks: waitForever,
@@ -199,7 +199,7 @@ try {
     assert.equal(claimed?.task.id, taskId);
 
     const result = await gracefulShutdown({ timeoutMs: 100 }, {
-      scheduler: { running: true, stop: () => undefined },
+      scheduler: { running: true, stop: () => Promise.resolve() },
       abortBatchTasks: () => 0,
       waitForBatchTasks: async () => 1,
       abortFinalEdit: () => 0,

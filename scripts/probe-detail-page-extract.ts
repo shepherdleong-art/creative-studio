@@ -65,7 +65,7 @@ function tileTops(height: number): number[] {
   return Array.from({ length: count }, (_, i) => Math.min(i * STRIDE, height - TILE_HEIGHT));
 }
 
-type Tile = { id: string; page: number; top: number; buffer: Buffer };
+type Tile = { id: string; page: number; top: number; buffer: Buffer<ArrayBuffer> };
 
 async function cutTiles(page: number, file: string): Promise<Tile[]> {
   const meta = await sharp(file).metadata();
@@ -92,7 +92,7 @@ async function cutTiles(page: number, file: string): Promise<Tile[]> {
     })
       .extract({ left: 0, top, width: info.width, height })
       .jpeg({ quality: JPEG_QUALITY })
-      .toBuffer();
+      .toBuffer() as Buffer<ArrayBuffer>;
     const id = `p${page}-t${String(index + 1).padStart(2, '0')}`;
     fs.writeFileSync(path.join(outDir, 'tiles', `${id}.jpg`), buffer);
     tiles.push({ id, page, top, buffer });

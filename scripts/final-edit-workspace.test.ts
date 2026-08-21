@@ -900,7 +900,7 @@ assert.deepEqual(workspace.load(group.id), beforeChangedCoverSource, '来源文�
 // process-wide abort, then let the seam return so workspace can persist the
 // recoverable state before the idle wait completes.
 holdPrepareSynthesis = true;
-releaseHeldPrepareSynthesis = null;
+releaseHeldPrepareSynthesis = null as (() => void) | null;
 const broadcastPreparePromise = workspace.start(durationStartInput);
 while (!releaseHeldPrepareSynthesis) {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
