@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback, type DragEvent as ReactDragEvent } from 'react';
+import { createPortal } from 'react-dom';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
@@ -14,6 +15,13 @@ import {
   type VideoMotionRow,
   type VideoTailFrameCapability,
 } from '@/components/video-tail-frame-state';
+import {
+  MAX_ROWS_PER_SHOT,
+  isPromptReplaceable,
+  materializeShotDrafts,
+  planBulkPromptFill,
+  planBulkVideoGeneration,
+} from '@/components/video-bulk-prompt';
 
 function releaseDraftTailFrameAssets(
   rowGroups: Iterable<VideoMotionRow[]>,
@@ -104,6 +112,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [motionRows, setMotionRows] = useState<VideoMotionRow[]>([]);
   const motionRowsRef = useRef<VideoMotionRow[]>([]);
   const perShotMotionCache = useRef<Map<string, typeof motionRows>>(new Map());
+  const [draftRevision, setDraftRevision] = useState(0);
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
   const [headFrameBusy, setHeadFrameBusy] = useState(false);
@@ -117,6 +126,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [videoPreviewPlaySignal, setVideoPreviewPlaySignal] = useState(0);
   const previewSuppressedRef = useRef(false);
   const [videoConcurrency, setVideoConcurrency] = useState(10);
+  const [bulkStatus, setBulkStatus] = useState<string | null>(null);
+  const [bulkProgress, setBulkProgress] = useState<{ submitted: number; total: number } | null>(null);
+  const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
+  const [bulkProviderId, setBulkProviderId] = useState('');
+  const [bulkDuration, setBulkDuration] = useState(5);
 
   const selectVideoPreview = (jobId: string) => {
     previewSuppressedRef.current = false;
@@ -155,6 +169,17 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     setMotionRows(rows);
   };
 
+  const getShotRows = (shotId: string): VideoMotionRow[] => {
+    if (selectedShotRef.current === shotId) return motionRowsRef.current;
+    return perShotMotionCache.current.get(shotId) || [];
+  };
+
+  const setShotRows = (shotId: string, rows: VideoMotionRow[]) => {
+    if (selectedShotRef.current === shotId) replaceActiveMotionRows(rows);
+    else perShotMotionCache.current.set(shotId, rows);
+    setDraftRevision((value) => value + 1);
+  };
+
   useEffect(() => {
     mountedRef.current = true;
     const motionCache = perShotMotionCache.current;
@@ -183,7 +208,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     const result = updateVideoMotionRowByKey(currentRows, rowKey, update);
     if (!result.updated) return false;
     if (isActive) replaceActiveMotionRows(result.rows);
-    else perShotMotionCache.current.set(shotId, result.rows);
+    else setShotRows(shotId, result.rows);
     return true;
   };
 
@@ -387,6 +412,16 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const effectiveSetId = shotSetId || selectedSetId;
   const effectiveShots = shots || selectedSetShots;
   const safeShots = effectiveShots || [];
+
+  const materializeAllDrafts = () => {
+    const drafts = materializeShotDrafts(
+      safeShots.map((shot) => shot.id),
+      (shotId) => getShotRows(shotId),
+      makeEmptyRow,
+    );
+    for (const draft of drafts) setShotRows(draft.shotId, draft.rows);
+    return drafts;
+  };
 
   /**
    * 自由素材工位专用：上传一张图并作为新的一「张」加进工位。
@@ -830,6 +865,191 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
 
+  const handleBulkFillPrompts = () => {
+    if (creatingRef.current) return;
+    if (templates.length === 0) {
+      setBulkProgress(null);
+      setBulkStatus('模板池为空，未填充任何提示词。');
+      return;
+    }
+    const drafts = materializeAllDrafts();
+    const plan = planBulkPromptFill(drafts, templates);
+    for (const shot of plan.shots) setShotRows(shot.shotId, shot.rows);
+    setBulkProgress(null);
+    setBulkStatus(`已填 ${plan.filledRows} 条，保留 ${plan.keptRows} 条手写没动。`);
+  };
+
+  const handleGenerateAll = async () => {
+    if (creatingRef.current) return;
+    if (!effectiveSetId) {
+      setBulkStatus('还没有选中的分镜组，无法批量生成。');
+      return;
+    }
+    if (configuredProviders.length === 0) {
+      setBulkStatus('请先配置视频供应商，再批量生成。');
+      return;
+    }
+
+    const shotsWithExistingJobs = new Set(
+      videoJobs
+        .filter((job) => !DISCARDABLE_JOB_STATUSES.has(job.status))
+        .map((job) => job.shotId),
+    );
+    const plan = planBulkVideoGeneration(
+      safeShots.map((shot) => ({ shotId: shot.id, rows: getShotRows(shot.id) })),
+      {
+        shotsWithExistingJobs,
+        rowIssue: (row) => getVideoMotionRowIssue(row, getRowTailCapability(row)),
+      },
+    );
+
+    if (plan.ready.length === 0) {
+      if (plan.skippedExisting.length === safeShots.length && safeShots.length > 0) {
+        setBulkStatus('全部分镜都已有任务，未提交新任务。');
+      } else {
+        setBulkStatus(
+          `没有可提交的分镜：${plan.skippedExisting.length} 个已有任务、` +
+          `${plan.skippedEmpty.length} 个未填写、${plan.blocked.length} 个有问题、` +
+          `${plan.overflow.length} 个超过 ${MAX_ROWS_PER_SHOT} 条上限。`,
+        );
+      }
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `将为 ${plan.ready.length} 个分镜提交 ${plan.totalClips} 条视频；` +
+      `跳过 ${plan.skippedExisting.length} 个已有任务、${plan.skippedEmpty.length} 个未填写、` +
+      `${plan.blocked.length + plan.overflow.length} 个有问题。`,
+    );
+    if (!confirmed) {
+      setBulkStatus('已取消批量生成，未提交新任务。');
+      return;
+    }
+
+    const submittedTailIds = new Set(
+      plan.ready.flatMap((shot) => shot.rows.flatMap((row) => row.tailImageId ? [row.tailImageId] : [])),
+    );
+    pendingCreationTailIdsRef.current = submittedTailIds;
+    creatingRef.current = true;
+    setCreating(true);
+    setBulkProgress({ submitted: 0, total: plan.totalClips });
+    setBulkStatus(`批量提交中：已提交 0/${plan.totalClips}`);
+
+    let processedClips = 0;
+    let successClips = 0;
+    const failures: string[] = [];
+    try {
+      for (const shot of plan.ready) {
+        const items = shot.rows.map((row) => ({
+          prompt: row.prompt.trim(),
+          templateId: row.templateId || null,
+          providerId: getRowProviderId(row),
+          durationSec: row.durationSec,
+          tailImageId: row.tailImageId,
+          ...(getRowMultiShotCapability(row)?.supported === true ? { multiShot: row.multiShot } : {}),
+        }));
+        try {
+          const res = await fetch(`/api/shot-sets/${effectiveSetId}/video-jobs/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shotId: shot.shotId, items }),
+          });
+          const data = await res.json().catch(() => ({})) as {
+            error?: string;
+            videoJobIds?: string[];
+          };
+          if (!res.ok) {
+            const shotNumber = safeShots.find((item) => item.id === shot.shotId)?.indexNum ?? shot.shotId;
+            failures.push(`分镜 ${shotNumber}：${data.error || `HTTP ${res.status}`}`);
+          } else {
+            // 以服务端真正建出来的任务数为准：它会再过滤一次空提示词，
+            // 按提交条数乐观计数会把汇报数字说大。
+            successClips += data.videoJobIds?.length ?? shot.rows.length;
+          }
+        } catch (error) {
+          const shotNumber = safeShots.find((item) => item.id === shot.shotId)?.indexNum ?? shot.shotId;
+          failures.push(`分镜 ${shotNumber}：${error instanceof Error ? error.message : String(error)}`);
+        }
+        processedClips += shot.rows.length;
+        setBulkProgress({ submitted: processedClips, total: plan.totalClips });
+        setBulkStatus(`批量提交中：已提交 ${processedClips}/${plan.totalClips}`);
+      }
+      await refreshJobs();
+      setBulkProgress(null);
+      setBulkStatus(
+        `批量生成完成：成功 ${successClips} 条，失败 ${failures.length} 个分镜。` +
+        (failures.length > 0 ? ` ${failures.join('；')}` : ''),
+      );
+    } catch (error) {
+      setBulkProgress(null);
+      setBulkStatus(`批量生成未完成：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      pendingCreationTailIdsRef.current = new Set();
+      creatingRef.current = false;
+      if (mountedRef.current) setCreating(false);
+    }
+  };
+
+  const handleOpenBulkDrawer = () => {
+    if (creatingRef.current || safeShots.length === 0) return;
+    materializeAllDrafts();
+    setBulkDrawerOpen(true);
+  };
+
+  const updateBulkRowPrompt = (shotId: string, rowKey: string, prompt: string) => {
+    if (creatingRef.current) return;
+    const rows = getShotRows(shotId);
+    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, prompt } : row));
+  };
+
+  const updateBulkRowTemplate = (shotId: string, rowKey: string, templateId: string) => {
+    if (creatingRef.current) return;
+    const rows = getShotRows(shotId);
+    setShotRows(shotId, rows.map((row) => {
+      if (row.key !== rowKey) return row;
+      const oldTemplate = row.templateId ? templates.find((template) => template.id === row.templateId) : null;
+      const newTemplate = templates.find((template) => template.id === templateId);
+      const isAutoFilled = !row.prompt.trim()
+        || (oldTemplate ? row.prompt.trim() === oldTemplate.prompt.trim() : false);
+      return {
+        ...row,
+        templateId,
+        prompt: isAutoFilled && newTemplate ? newTemplate.prompt : row.prompt,
+      };
+    }));
+  };
+
+  const updateBulkRowDuration = (shotId: string, rowKey: string, raw: number) => {
+    if (creatingRef.current) return;
+    const value = Number.isFinite(raw) && raw > 0 ? raw : 5;
+    const durationSec = Math.max(2, Math.min(15, value));
+    const rows = getShotRows(shotId);
+    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, durationSec } : row));
+  };
+
+  const applyBulkProvider = () => {
+    if (creatingRef.current) return;
+    const providerId = bulkProviderId || preferredProvider?.id || configuredProviders[0]?.id || '';
+    if (!providerId) {
+      setBulkStatus('暂无可用的视频供应商。');
+      return;
+    }
+    for (const shot of safeShots) {
+      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, providerId })));
+    }
+    setBulkStatus(`已将供应商应用到 ${safeShots.length} 个分镜。`);
+  };
+
+  const applyBulkDuration = () => {
+    if (creatingRef.current) return;
+    const durationSec = Math.max(2, Math.min(15, Number(bulkDuration) || 5));
+    setBulkDuration(durationSec);
+    for (const shot of safeShots) {
+      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, durationSec })));
+    }
+    setBulkStatus(`已将时长 ${durationSec} 秒应用到 ${safeShots.length} 个分镜。`);
+  };
+
   const handleRetry = async (jobId: string) => {
     try {
       const res = await fetch(`/api/video-jobs/${jobId}/retry`, { method: 'POST' });
@@ -989,6 +1209,26 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     {headFrameBusy ? '上传中…' : '添加图片'}
                   </button>
                 )}
+              </div>
+            )}
+            {safeShots.length > 0 && (
+              <div className="video-bulk-toolbar">
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  onClick={handleBulkFillPrompts}
+                  disabled={creating}
+                >
+                  一键填充提示词
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  onClick={handleOpenBulkDrawer}
+                  disabled={creating}
+                >
+                  批量检查 {safeShots.length} 个分镜
+                </button>
               </div>
             )}
             {isFreeSet && selectedShot && (
@@ -1395,6 +1635,189 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           </div>
         </div>
       </div>
+
+      {/* 必须 portal 到 body：外层 .video-generation-section 用 transform: translateX(-50%)
+          做全宽布局，而 transform 会给后代的 position: fixed 造一个包含块，抽屉会跟着被
+          按在页面流里——1440×780 这类笔记本视口下，底部的「全部生成」直接掉到屏幕外。 */}
+      {bulkDrawerOpen && typeof document !== 'undefined' && createPortal((
+        <div className="video-bulk-drawer" role="dialog" aria-modal="true" aria-label="批量检查分镜">
+          <div className="video-bulk-drawer-panel" data-draft-revision={draftRevision}>
+            <div className="video-bulk-drawer-header">
+              <div>
+                <p className="video-bulk-eyebrow">第四步 · 视频生成</p>
+                <h2>批量检查 {safeShots.length} 个分镜</h2>
+                <p>逐条扫一遍提示词、模板和时长；尾帧请回到单个分镜编辑。</p>
+              </div>
+              <button
+                type="button"
+                className="video-bulk-close"
+                onClick={() => setBulkDrawerOpen(false)}
+                disabled={creating}
+                aria-label="关闭批量检查"
+              >
+                <Icon name="close" size={16} />
+              </button>
+            </div>
+
+            <div className="video-bulk-global-controls">
+              <div className="video-bulk-global-control">
+                <label htmlFor="bulk-provider">供应商</label>
+                <div className="video-bulk-global-control-row">
+                  <select
+                    id="bulk-provider"
+                    className="input-field video-control"
+                    value={bulkProviderId || preferredProvider?.id || ''}
+                    onChange={(event) => setBulkProviderId(event.target.value)}
+                    disabled={creating || configuredProviders.length === 0}
+                  >
+                    {providers.length === 0 && <option value="">暂无供应商</option>}
+                    {providers.map((provider) => (
+                      <option key={provider.id} value={provider.id} disabled={provider.configured === false}>
+                        {provider.name}{provider.configured === false ? '（未配置）' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={applyBulkProvider}
+                    disabled={creating || safeShots.length === 0 || configuredProviders.length === 0}
+                  >
+                    应用到全部
+                  </button>
+                </div>
+              </div>
+              <div className="video-bulk-global-control">
+                <label htmlFor="bulk-duration">时长</label>
+                <div className="video-bulk-global-control-row">
+                  <input
+                    id="bulk-duration"
+                    type="number"
+                    min={2}
+                    max={15}
+                    className="input-field video-control text-center"
+                    value={bulkDuration}
+                    onChange={(event) => setBulkDuration(Number(event.target.value))}
+                    disabled={creating}
+                  />
+                  <span className="video-bulk-unit">秒</span>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={applyBulkDuration}
+                    disabled={creating || safeShots.length === 0}
+                  >
+                    应用到全部
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="video-bulk-list">
+              {safeShots.map((shot) => {
+                const rows = getShotRows(shot.id);
+                const shotHasExistingJobs = videoJobs.some((job) => (
+                  job.shotId === shot.id && !DISCARDABLE_JOB_STATUSES.has(job.status)
+                ));
+                return (
+                  <section key={shot.id} className="video-bulk-shot">
+                    <div className="video-bulk-shot-heading">
+                      <div className="video-bulk-shot-image">
+                        {shot.imageUrl ? (
+                          <HoverZoomImage
+                            src={shot.imageUrl}
+                            alt={`分镜 ${shot.indexNum} 缩略图`}
+                            className="video-bulk-shot-thumb"
+                            zoomMaxWidth={520}
+                            zoomMaxHeight={390}
+                          />
+                        ) : <Icon name="image" size={16} />}
+                      </div>
+                      <strong>{isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}</strong>
+                      {shotHasExistingJobs && <span className="video-bulk-badge is-existing">已有视频</span>}
+                    </div>
+
+                    <div className="video-bulk-shot-rows">
+                      {rows.map((row, rowIndex) => {
+                        const rowIssue = getVideoMotionRowIssue(row, getRowTailCapability(row));
+                        const manualLocked = Boolean(row.prompt.trim()) && !isPromptReplaceable(row, templates);
+                        return (
+                          <div key={row.key} className="video-bulk-row">
+                            <span className="video-bulk-row-number">运镜 {rowIndex + 1}</span>
+                            <select
+                              className="input-field video-control video-bulk-template"
+                              value={row.templateId}
+                              onChange={(event) => updateBulkRowTemplate(shot.id, row.key, event.target.value)}
+                              disabled={creating}
+                            >
+                              <option value="">模板（可选）</option>
+                              {templates.map((template) => (
+                                <option key={template.id} value={template.id}>{template.name}</option>
+                              ))}
+                            </select>
+                            <textarea
+                              className="input-field video-bulk-prompt-input"
+                              value={row.prompt}
+                              onChange={(event) => updateBulkRowPrompt(shot.id, row.key, event.target.value)}
+                              placeholder="运镜描述（提示词）"
+                              rows={2}
+                              disabled={creating}
+                            />
+                            <input
+                              type="number"
+                              min={2}
+                              max={15}
+                              className="input-field video-control video-bulk-duration"
+                              value={row.durationSec}
+                              onChange={(event) => updateBulkRowDuration(shot.id, row.key, Number(event.target.value))}
+                              title="秒数"
+                              disabled={creating}
+                            />
+                            <div className="video-bulk-row-status" aria-label="运镜状态">
+                              {shotHasExistingJobs && <span className="video-bulk-badge is-existing">已有视频</span>}
+                              {!row.prompt.trim() && <span className="video-bulk-badge is-empty">未填写</span>}
+                              {manualLocked && <span className="video-bulk-badge is-locked">手写已锁定</span>}
+                              {row.tailImageId && <span className="video-bulk-badge is-tail">带尾帧</span>}
+                              {rowIssue && (
+                                <span className="video-bulk-badge is-problem video-bulk-row-issue" title={rowIssue}>{rowIssue}</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+
+            <div className="video-bulk-drawer-footer">
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                onClick={handleBulkFillPrompts}
+                disabled={creating}
+              >
+                一键填充提示词
+              </button>
+              <button
+                type="button"
+                className="btn-primary btn-sm video-create-action"
+                onClick={() => void handleGenerateAll()}
+                disabled={creating || configuredProviders.length === 0 || safeShots.length === 0}
+              >
+                {creating ? '批量生成中…' : '全部生成'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ), document.body)}
+
+      {bulkStatus && (
+        <div className="video-bulk-status-bar" role="status" aria-live="polite">
+          <span>{bulkProgress ? `批量提交中：已提交 ${bulkProgress.submitted}/${bulkProgress.total}` : bulkStatus}</span>
+        </div>
+      )}
 
       {safeShots.length === 0 && !isFreeSet && (
         <p className="text-xs text-ink-tertiary mt-3">分镜组中没有分镜。</p>
