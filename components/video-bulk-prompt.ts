@@ -140,25 +140,38 @@ export function materializeShotDrafts<T>(
   });
 }
 
+export interface BulkPromptTemplateSets {
+  /** 参与随机的模板池（关掉「参与随机」的不在里面）。 */
+  pool: readonly BulkPromptTemplate[];
+  /**
+   * 全部模板，只用于判断某一行是不是「自动填的」。
+   *
+   * 这两份必须分开：某条模板被移出池子之后，之前用它填过的行仍然应当被认作
+   * 自动填充、可以被重新洗过；只拿 pool 判断的话，那些行会被误当成手写而永久
+   * 冻住。
+   */
+  all: readonly BulkPromptTemplate[];
+}
+
 export function planBulkPromptFill<Row extends BulkPromptRow>(
   shots: readonly BulkPromptShot<Row>[],
-  templates: readonly BulkPromptTemplate[],
+  templates: BulkPromptTemplateSets,
   options: BulkPromptFillOptions = {},
 ): BulkPromptFillPlan<Row> {
   const overwriteEdited = options.overwriteEdited === true;
-  const fillableCount = templates.length === 0
+  const fillableCount = templates.pool.length === 0
     ? 0
     : shots.reduce((count, shot) => count + shot.rows.filter((row) => (
-      overwriteEdited || isPromptReplaceable(row, templates)
+      overwriteEdited || isPromptReplaceable(row, templates.all)
     )).length, 0);
-  const sequence = buildTemplateSequence(templates, fillableCount, options.random);
+  const sequence = buildTemplateSequence(templates.pool, fillableCount, options.random);
   let sequenceIndex = 0;
   let filledRows = 0;
   let keptRows = 0;
 
   const plannedShots = shots.map((shot) => {
     const rows = shot.rows.map((row) => {
-      const replaceable = overwriteEdited || isPromptReplaceable(row, templates);
+      const replaceable = overwriteEdited || isPromptReplaceable(row, templates.all);
       if (!replaceable || sequenceIndex >= sequence.length) {
         keptRows += 1;
         return row;

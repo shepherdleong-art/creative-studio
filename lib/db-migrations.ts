@@ -75,4 +75,7 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE video_jobs ADD COLUMN multiShot INTEGER`,
   `ALTER TABLE jobs ADD COLUMN usageSnapshotJson TEXT`,
   `ALTER TABLE video_jobs ADD COLUMN usageSnapshotJson TEXT`,
+  // 是否参与「一键随机填充」。自建模板默认入池；关掉之后模板仍留在下拉里
+  // 供手动选，只是不再被洗牌抽到——避免某个产品线的专用提示词污染别的项目。
+  `ALTER TABLE video_prompt_templates ADD COLUMN inRandomPool INTEGER NOT NULL DEFAULT 1`,
 ];

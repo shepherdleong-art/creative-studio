@@ -136,7 +136,7 @@ const fillInput = [
     rows: [makeRow('blank-2')],
   },
 ];
-const fillPlan = planBulkPromptFill(fillInput, templates, {
+const fillPlan = planBulkPromptFill(fillInput, { pool: templates, all: templates }, {
   random: seededRandom(7),
 });
 assert.equal(fillPlan.filledRows, 3, 'only replaceable rows must be filled');
@@ -178,7 +178,7 @@ assert.notEqual(
 
 const editedFill = planBulkPromptFill(
   [{ shotId: 'shot-edited', rows: [makeRow('edited-row', '用户手写内容')] }],
-  templates,
+  { pool: templates, all: templates },
   { overwriteEdited: true, random: () => 0.1 },
 );
 assert.equal(editedFill.filledRows, 1, 'overwriteEdited must include manual rows');
@@ -193,12 +193,39 @@ assert.ok(
 assert.deepEqual(
   planBulkPromptFill(
     [{ shotId: 'empty-templates', rows: [makeRow('empty-template-row')] }],
-    [],
+    { pool: [], all: [] },
     { random: () => 0.5 },
   ).shots[0]?.rows[0],
   makeRow('empty-template-row'),
   'an empty template pool must not write an empty prompt',
 );
+
+// ── pool 与 all 必须分开 ─────────────────────────────────────────────
+{
+  // 用某条模板填过的行，在那条模板被移出随机池之后仍然是「自动填的」。
+  // 只拿 pool 判断的话，这些行会被误当成用户手写而永久冻住，再也洗不动。
+  const retired = templates[0]!;
+  const pool = templates.slice(1);
+  const plan = planBulkPromptFill(
+    [{ shotId: 'shot-retired', rows: [makeRow('retired-row', retired.prompt, retired.id)] }],
+    { pool, all: templates },
+    { random: seededRandom(3) },
+  );
+  assert.equal(plan.filledRows, 1, '被移出池子的模板填过的行仍应可以重新洗');
+  assert.equal(plan.keptRows, 0);
+  assert.ok(
+    pool.some((template) => template.id === plan.shots[0]!.rows[0]!.templateId),
+    '重新洗出来的必须取自当前池子，不得再抽到已移出的模板',
+  );
+
+  // 反过来：拿 pool 当 all 用就会出上面说的错，这条钉住两者不能混用。
+  const wrong = planBulkPromptFill(
+    [{ shotId: 'shot-retired', rows: [makeRow('retired-row', retired.prompt, retired.id)] }],
+    { pool, all: pool },
+    { random: seededRandom(3) },
+  );
+  assert.equal(wrong.keptRows, 1, 'all 传错成 pool 时那一行会被误判为手写——这正是不能混用的原因');
+}
 
 const overflowRows = Array.from({ length: MAX_ROWS_PER_SHOT + 1 }, (_, index) => makeRow(`overflow-${index}`, `片段 ${index}`));
 const generationShots = [

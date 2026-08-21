@@ -95,6 +95,19 @@ db.exec(`
 
   INSERT INTO shot_sets (id, projectId, name)
   VALUES ('legacy-set', 'legacy-project', '历史分镜组');
+
+  CREATE TABLE video_prompt_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    prompt TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'camera_motion',
+    isBuiltin INTEGER NOT NULL DEFAULT 0,
+    createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  INSERT INTO video_prompt_templates (id, name, prompt, isBuiltin)
+  VALUES ('legacy-template', '历史模板', '以当前图片为首帧，推进。不要添加文字。', 1);
 `);
 
 for (const sql of CORE_DB_MIGRATIONS) {
@@ -113,9 +126,19 @@ assert.ok(
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE video_jobs ADD COLUMN usageSnapshotJson TEXT`,
+  `ALTER TABLE video_prompt_templates ADD COLUMN inRandomPool INTEGER NOT NULL DEFAULT 1`,
   'new core migrations must be appended without rewriting published entries',
 );
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-2),
+  `ALTER TABLE video_jobs ADD COLUMN usageSnapshotJson TEXT`,
+  'the previously published tail migration must keep its position',
+);
+// 老库里已有的模板必须自动入池，否则升级后一键随机填充会突然填不出东西。
+const legacyTemplate = db.prepare(
+  `SELECT inRandomPool FROM video_prompt_templates WHERE id = 'legacy-template'`,
+).get() as { inRandomPool?: number } | undefined;
+assert.equal(legacyTemplate?.inRandomPool, 1, '历史运镜模板升级后应默认参与随机填充');
 assert.ok(
   CORE_DB_MIGRATIONS.includes(`ALTER TABLE video_jobs ADD COLUMN tailImageId TEXT`),
   'the tail-frame migration must remain in the append-only core migration stream',

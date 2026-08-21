@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
+import MotionTemplateSettings from '@/components/MotionTemplateSettings';
 import CompanyProviderRuntimeStatus from '@/components/company-provider/CompanyProviderRuntimeStatus';
 import {
   scriptProviderApiStyleOptions,
@@ -10,7 +11,7 @@ import {
 } from '@/lib/script-providers/config';
 import type { ApiStyle, ProviderExecutionScope } from '@/lib/script-providers/types';
 
-type Category = 'image' | 'script' | 'video' | 'tts' | 'storage';
+type Category = 'image' | 'script' | 'video' | 'tts' | 'storage' | 'motion-template';
 
 interface ImageProvider {
   id: string;
@@ -137,6 +138,7 @@ const sections: Array<{ id: Category; title: string; description: string; icon: 
   { id: 'video', title: '视频生成', description: '可灵、即梦等图生视频供应商', icon: 'video' },
   { id: 'tts', title: '口播配音', description: '成片剪辑的 V-API Qwen3 TTS', icon: 'monitor' },
   { id: 'storage', title: '存储管理', description: '批量生产代理缓存占用与清理', icon: 'folder' },
+  { id: 'motion-template', title: '运镜模板', description: '视频提示词模板与随机填充池', icon: 'film' },
 ];
 
 export default function SettingsPage() {
@@ -333,7 +335,7 @@ export default function SettingsPage() {
             管理图片、脚本和视频生成模型。所有密钥统一从这里配置，避免和环境变量产生冲突。
           </p>
         </div>
-        {active !== 'tts' && active !== 'storage' && <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
+        {active !== 'tts' && active !== 'storage' && active !== 'motion-template' && <button onClick={() => beginCreate(active)} className="btn-primary shrink-0">
           <Icon name="plus" size={15} /> 添加供应商
         </button>}
       </div>
@@ -368,6 +370,7 @@ export default function SettingsPage() {
         <div className="space-y-4">
           {active === 'storage' && <ProxyCacheSettingsSection />}
           {active === 'tts' && <TtsSettingsCard />}
+          {active === 'motion-template' && <MotionTemplateSettings />}
           {(creating === active || editing?.category === active) && (
             <div className="card border-accent/30 bg-accent/[0.04] p-5">
               <h3 className="mb-4 font-semibold">{creating ? '新建供应商' : '编辑供应商'}</h3>

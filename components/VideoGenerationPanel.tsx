@@ -56,6 +56,9 @@ interface MotionTemplate {
   name: string;
   description: string;
   prompt: string;
+  isBuiltin?: number;
+  /** 0 表示只在下拉里供手动选，不参与一键随机填充。 */
+  inRandomPool?: number;
 }
 
 interface VideoJob {
@@ -865,6 +868,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
 
+  // 只有「参与随机」的模板会被洗牌抽到；关掉开关的仍留在下拉里供手动选。
+  const randomPoolTemplates = templates.filter((template) => template.inRandomPool !== 0);
+
   const handleBulkFillPrompts = () => {
     if (creatingRef.current) return;
     if (templates.length === 0) {
@@ -872,8 +878,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       setBulkStatus('模板池为空，未填充任何提示词。');
       return;
     }
+    if (randomPoolTemplates.length === 0) {
+      setBulkProgress(null);
+      setBulkStatus('所有模板都关掉了「参与随机」，没有可用来填充的模板。可在设置 › 运镜模板里打开。');
+      return;
+    }
     const drafts = materializeAllDrafts();
-    const plan = planBulkPromptFill(drafts, templates);
+    const plan = planBulkPromptFill(drafts, { pool: randomPoolTemplates, all: templates });
     for (const shot of plan.shots) setShotRows(shot.shotId, shot.rows);
     setBulkProgress(null);
     setBulkStatus(`已填 ${plan.filledRows} 条，保留 ${plan.keptRows} 条手写没动。`);
