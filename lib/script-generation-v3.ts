@@ -15,6 +15,7 @@ import type {
   ScriptOutputV3,
   ScriptSegmentV3,
   ScriptStrategyAnalysisV3,
+  ScriptWarningV3,
   SelectedSellingPoint,
 } from './script-providers/types.ts';
 import type { MixcutTaskScriptSnapshot } from './final-edit/mixcut-script.ts';
@@ -89,6 +90,8 @@ interface ScriptMaterialMismatchErrorDetails {
   attempts: number;
   unsupportedNarrativeBeats: string[];
   materialReason: string;
+  suggestedTemplateId?: string;
+  suggestedTemplateName?: string;
 }
 
 interface ScriptAnalysisContractErrorDetails {
@@ -132,12 +135,21 @@ function visualRefForIndex(index: number): VisualRef {
 class ScriptMaterialMismatchError extends Error {
   readonly unsupportedNarrativeBeats: string[];
   readonly materialReason: string;
+  readonly suggestedTemplateId?: string;
+  readonly suggestedTemplateName?: string;
 
-  constructor(unsupportedNarrativeBeats: string[], materialReason: string) {
+  constructor(
+    unsupportedNarrativeBeats: string[],
+    materialReason: string,
+    suggestedTemplateId?: string,
+    suggestedTemplateName?: string,
+  ) {
     super('script_material_mismatch');
     this.name = 'ScriptMaterialMismatchError';
     this.unsupportedNarrativeBeats = unsupportedNarrativeBeats;
     this.materialReason = materialReason;
+    this.suggestedTemplateId = suggestedTemplateId;
+    this.suggestedTemplateName = suggestedTemplateName;
   }
 }
 
@@ -507,36 +519,77 @@ function normalizeSellingPointUsage(
   return sellingPoints.map((point) => normalizedById.get(point.sellingPointId)!);
 }
 
-function assertMaterialFeasible(raw: JsonObject, input: ScriptGenerationInputV3): void {
+interface MaterialAssessment {
+  templateFeasible: boolean;
+  unsupportedNarrativeBeats: string[];
+  reason: string;
+  suggestedTemplate?: { id: string; name: string };
+  advisories: string[];
+}
+
+function readMaterialAssessment(raw: JsonObject, input: ScriptGenerationInputV3): MaterialAssessment {
   const assessment = object(raw.materialAssessment);
-  if (assessment.templateFeasible === false) {
-    const allowedNarrativeBeats = new Set(promptTemplate(input).narrativeStructure);
-    const unsupportedNarrativeBeats = stringArray(assessment.unsupportedNarrativeBeats);
-    if (unsupportedNarrativeBeats.length === 0
-      || unsupportedNarrativeBeats.some((beat) => !allowedNarrativeBeats.has(beat))) {
-      throw new ScriptOutputValidationError([
-        'templateFeasible=false 时，unsupportedNarrativeBeats 必须从 template.narrativeStructure 中原样复制所有无法由图片承接的阶段',
-      ]);
-    }
-    throw new ScriptMaterialMismatchError(
-      unsupportedNarrativeBeats,
-      string(assessment.reason) || '当前图片无法承接所选模板的核心叙事阶段',
+  const template = promptTemplate(input);
+  const allowedNarrativeBeats = new Set(template.narrativeStructure);
+  const rawBeats = stringArray(assessment.unsupportedNarrativeBeats);
+  const unsupportedNarrativeBeats = rawBeats.filter((beat) => allowedNarrativeBeats.has(beat));
+  const invalidBeatCount = rawBeats.length - unsupportedNarrativeBeats.length;
+  const advisories: string[] = [];
+  if (invalidBeatCount > 0 && unsupportedNarrativeBeats.length > 0) {
+    advisories.push(
+      `materialAssessment.unsupportedNarrativeBeats 中存在 ${invalidBeatCount} 条不在 template.narrativeStructure 中的阶段，已忽略；必须原样列出模板阶段文案`,
     );
   }
-  if (assessment.templateFeasible !== true || stringArray(assessment.unsupportedNarrativeBeats).length > 0) {
+  let suggestedTemplate: { id: string; name: string } | undefined;
+  const suggestedTemplateId = string(assessment.suggestedTemplateId);
+  if (suggestedTemplateId) {
+    const suggested = getScriptTemplate(suggestedTemplateId);
+    if (suggested) suggestedTemplate = { id: suggested.id, name: suggested.name };
+  }
+  const templateFeasible = assessment.templateFeasible;
+  if (typeof templateFeasible !== 'boolean') {
     throw new ScriptOutputValidationError([
-      'materialAssessment.templateFeasible 必须是布尔值 true 或 false；为 true 时 unsupportedNarrativeBeats 必须返回空数组',
+      'materialAssessment.templateFeasible 必须是布尔值 true 或 false',
     ]);
   }
+  return {
+    templateFeasible,
+    unsupportedNarrativeBeats,
+    reason: string(assessment.reason) || '当前图片无法承接所选模板的核心叙事阶段',
+    suggestedTemplate,
+    advisories,
+  };
 }
 
 function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): ScriptCandidate {
   const raw = object(rawValue);
-  assertMaterialFeasible(raw, input);
+  const material = readMaterialAssessment(raw, input);
   const sellingPoints = generationSellingPoints(input);
   const groundedSegments = normalizeSegments(raw, input, sellingPoints);
+  if (material.templateFeasible === false && groundedSegments.length === 0) {
+    throw new ScriptMaterialMismatchError(
+      material.unsupportedNarrativeBeats,
+      material.reason,
+      material.suggestedTemplate?.id,
+      material.suggestedTemplate?.name,
+    );
+  }
   if (groundedSegments.length === 0) {
     throw new ScriptOutputValidationError(['segments 至少要有一段非空 narration']);
+  }
+  const warnings: ScriptWarningV3[] = [];
+  if (material.unsupportedNarrativeBeats.length > 0) {
+    warnings.push({
+      code: 'unsupported_narrative_beats',
+      message: `当前分镜图片没有覆盖《${input.templateName}》的 ${material.unsupportedNarrativeBeats.length} 个叙事阶段，已按可承接的部分改写。${material.suggestedTemplate ? `更契合这批图片的模板是《${material.suggestedTemplate.name}》。` : ''}`,
+      unsupportedNarrativeBeats: material.unsupportedNarrativeBeats,
+      ...(material.suggestedTemplate
+        ? {
+            suggestedTemplateId: material.suggestedTemplate.id,
+            suggestedTemplateName: material.suggestedTemplate.name,
+          }
+        : {}),
+    });
   }
   const segments = groundedSegments.map(({ segment }) => segment);
   const sellingPointUsage = normalizeSellingPointUsage(raw, input, sellingPoints, groundedSegments);
@@ -551,7 +604,7 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
     : contentCharacterCount > budget.maxContentCharacters ? 'too_long' : 'qualified';
   return {
     qualification,
-    advisories: [],
+    advisories: material.advisories,
     script: {
       version: 3,
       title,
@@ -568,6 +621,7 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
       durationStatus: 'qualified',
       durationPolicyVersion: budget.policyVersion,
       sellingPointUsage,
+      ...(warnings.length > 0 ? { warnings } : {}),
       segments,
       fullScript,
       fullSubtitle,
@@ -604,7 +658,7 @@ const SCRIPT_VISUAL_REQUIREMENTS = [
 ] as const;
 
 const SCRIPT_TEMPLATE_REQUIREMENTS = [
-  '先判断全部 template.narrativeStructure 是否都有附图承接；若任一核心阶段缺少画面，返回 templateFeasible=false 和空 segments，禁止硬写',
+  '若部分叙事阶段缺少画面承接：仍必须产出完整脚本，把缺失阶段合并或跳过、其余阶段照常推进，并在 unsupportedNarrativeBeats 中原样列出被跳过的阶段；同时在 suggestedTemplateId 给出 allowedTemplates 中更契合当前图片的模板 id。只有全部叙事阶段都无任何画面承接时，才返回 templateFeasible=false 和空 segments。',
   '只有 templateFeasible=true 时才严格按 template.narrativeStructure 的顺序推进；阶段可以合并到同一段，但不得颠倒或省略核心转折',
   '逐条遵循 template.writingRules，让所选模板在开头、展开方式和结尾上形成明确差异',
 ] as const;
@@ -614,6 +668,7 @@ const SCRIPT_OUTPUT_CONTRACT = {
     templateFeasible: 'boolean；全部核心叙事阶段均有图片承接时才为 true',
     unsupportedNarrativeBeats: 'string[]；必须从 template.narrativeStructure 中原样复制所有无法由图片承接的阶段；可行时返回空数组',
     reason: 'string；说明图片为什么足够或不足',
+    suggestedTemplateId: 'string；可为空；当前图片更契合的模板 id，只能取自 allowedTemplates',
   },
   coverTitleParts: {
     primary: '4-12 字；结构必须是“可见气质/材质/核心特征 + 具体产品品类”，例如“温润黑胡桃木床”“松弛感真皮沙发”“轻盈岩板餐桌”',
@@ -673,6 +728,11 @@ function generationPrompt(input: ScriptGenerationInputV3): string {
     platform: input.platform,
     tone: input.tone,
     template: promptTemplate(input),
+    allowedTemplates: SCRIPT_TEMPLATES.map((template) => ({
+      id: template.id,
+      name: template.name,
+      suitable: template.suitable,
+    })),
     selectedSellingPoints: generationSellingPoints(input),
     visualMaterials: promptVisualMaterials(input),
     duration: {
@@ -701,6 +761,11 @@ function rewritePrompt(
     currentContentCharacterCount: currentScript?.contentCharacterCount,
     currentEstimatedNarrationSec: currentScript?.estimatedNarrationDurationSec,
     template: promptTemplate(input),
+    allowedTemplates: SCRIPT_TEMPLATES.map((template) => ({
+      id: template.id,
+      name: template.name,
+      suitable: template.suitable,
+    })),
     selectedSellingPoints: generationSellingPoints(input),
     visualMaterials: promptVisualMaterials(input),
     previousResult,
@@ -961,6 +1026,7 @@ export async function generateScriptV3(
   let lastQualification: 'too_short' | 'too_long' | 'contract_invalid' = 'contract_invalid';
   let lastValidationIssues: string[] = [];
   let bestCandidate: ScriptCandidate | null = null;
+  let materialMismatchSeen = false;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
@@ -973,7 +1039,7 @@ export async function generateScriptV3(
     let raw: unknown;
     try {
       raw = await dependencies.completeJson({
-        systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，并遵循两段式封面标题结构；不能承接时明确返回素材不匹配。禁止把不同模板写成同一种通用卖点罗列，也禁止返回截断句或万能标题。',
+        systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，并遵循两段式封面标题结构；部分阶段不能承接时降级出稿并列出缺失阶段。禁止把不同模板写成同一种通用卖点罗列，也禁止返回截断句或万能标题。',
         userPrompt: prompt,
         temperature: attempt === 1 ? 0.7 : 0.4,
         images,
@@ -1011,16 +1077,28 @@ export async function generateScriptV3(
       );
     } catch (error) {
       if (error instanceof ScriptMaterialMismatchError) {
-        throw new ScriptGenerationV3Error(
-          'script_material_mismatch',
-          '当前分镜图片无法承接所选模板，请补充对应素材或更换模板',
-          {
-            kind: 'material_mismatch',
-            attempts: attempt,
-            unsupportedNarrativeBeats: error.unsupportedNarrativeBeats,
-            materialReason: error.materialReason,
-          },
-        );
+        if (materialMismatchSeen) {
+          throw new ScriptGenerationV3Error(
+            'script_material_mismatch',
+            '当前分镜图片无法承接所选模板，请补充对应素材或更换模板',
+            {
+              kind: 'material_mismatch',
+              attempts: attempt,
+              unsupportedNarrativeBeats: error.unsupportedNarrativeBeats,
+              materialReason: error.materialReason,
+              ...(error.suggestedTemplateId ? { suggestedTemplateId: error.suggestedTemplateId } : {}),
+              ...(error.suggestedTemplateName ? { suggestedTemplateName: error.suggestedTemplateName } : {}),
+            },
+          );
+        }
+        materialMismatchSeen = true;
+        lastQualification = 'contract_invalid';
+        lastValidationIssues = [
+          '必须降级出稿，不得返回空 segments：若部分叙事阶段缺少画面承接，仍要产出完整脚本，把缺失阶段合并或跳过并在 unsupportedNarrativeBeats 中原样列出，只有全部阶段都无法承接时才返回 templateFeasible=false 和空 segments',
+          `当前材料原因：${error.materialReason}`,
+        ];
+        prompt = rewritePrompt(input, 'contract_invalid', raw, undefined, lastValidationIssues);
+        continue;
       }
       lastQualification = 'contract_invalid';
       lastValidationIssues = error instanceof ScriptOutputValidationError

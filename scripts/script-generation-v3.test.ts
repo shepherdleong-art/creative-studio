@@ -263,6 +263,7 @@ assert.deepEqual(
       writingRules: string[];
       desiredAudienceResponse: string;
     };
+    allowedTemplates?: Array<{ id: string; name: string; suitable: string }>;
     visualMaterials: Array<{ visualRef: string; imageOrder: number; shotIndex: number }>;
     outputContract: {
       coverTitleParts: {
@@ -304,8 +305,17 @@ assert.deepEqual(
     { visualRef: 'visual-1', imageOrder: 1, shotIndex: 1 },
     { visualRef: 'visual-2', imageOrder: 2, shotIndex: 2 },
   ]);
+  assert.deepEqual(
+    initialPrompt.allowedTemplates?.map((template) => template.id),
+    ['pain_point', 'scene_seeding', 'feature_showcase', 'emotional', 'comparison', 'unboxing', 'problem_solving'],
+    '生成提示词必须把 allowedTemplates 全部传下去，模型才有依据推荐更契合的模板',
+  );
+  assert.ok(
+    initialPrompt.allowedTemplates?.every((template) => template.name && template.suitable),
+    'allowedTemplates 必须带 name 和 suitable',
+  );
   assert.ok(initialPrompt.requirements.includes(
-    '先判断全部 template.narrativeStructure 是否都有附图承接；若任一核心阶段缺少画面，返回 templateFeasible=false 和空 segments，禁止硬写',
+    '若部分叙事阶段缺少画面承接：仍必须产出完整脚本，把缺失阶段合并或跳过、其余阶段照常推进，并在 unsupportedNarrativeBeats 中原样列出被跳过的阶段；同时在 suggestedTemplateId 给出 allowedTemplates 中更契合当前图片的模板 id。只有全部叙事阶段都无任何画面承接时，才返回 templateFeasible=false 和空 segments。',
   ));
   assert.ok(initialPrompt.requirements.includes(
     '每段必须返回至少一个 visualRefs，并且只能引用 visualMaterials 中真实存在的 visualRef',
@@ -423,10 +433,12 @@ assert.deepEqual(
 
 {
   let calls = 0;
+  const prompts: string[] = [];
   await assert.rejects(
     generateScriptV3({ ...baseInput, templateId: 'unboxing', templateName: '开箱体验' }, {
-      completeJson: async () => {
+      completeJson: async (request) => {
         calls += 1;
+        prompts.push(request.userPrompt);
         return {
           materialAssessment: {
             templateFeasible: false,
@@ -444,11 +456,12 @@ assert.deepEqual(
       assert.equal(error.code, 'script_material_mismatch');
       assert.deepEqual(error.details.unsupportedNarrativeBeats, ['按顺序呈现拆包、取出产品与关键细节']);
       assert.equal(error.details.materialReason, '附图只展示成品，没有包装或拆包过程');
-      assert.equal(error.details.attempts, 1);
+      assert.equal(error.details.attempts, 2);
       return true;
     },
   );
-  assert.equal(calls, 1, '模板和素材不匹配时应立即停止，不能盲目重试');
+  assert.equal(calls, 2, '模板和素材完全不匹配时第 1 次必须按 blocking 重写，第 2 次仍空才抛');
+  assert.match(prompts[1] || '', /必须降级出稿，不得返回空 segments/, '重写提示词必须要求模型降级出稿而不是继续返回空 segments');
 }
 
 {
@@ -475,11 +488,77 @@ assert.deepEqual(
       assert.ok(error instanceof ScriptGenerationV3Error);
       assert.equal(error.code, 'script_material_mismatch');
       assert.deepEqual(error.details.unsupportedNarrativeBeats, ['按顺序呈现拆包、取出产品与关键细节']);
-      assert.equal(error.details.attempts, 3);
+      assert.equal(error.details.attempts, 2, '第 2 次仍返回空 segments 时必须在当次抛出');
       return true;
     },
   );
-  assert.equal(calls, 3, '缺少或混入非法模板阶段的 mismatch 响应必须先修正，不能返回信息不完整的错误');
+  assert.equal(calls, 2, '非法模板阶段必须被过滤而不是抛错，二次仍空 segments 即判真失败');
+}
+
+{
+  let calls = 0;
+  const result = await generateScriptV3({ ...baseInput, templateId: 'unboxing', templateName: '开箱体验' }, {
+    completeJson: async () => {
+      calls += 1;
+      return feasibleResult({
+        title: '降级出稿',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+        materialAssessment: {
+          templateFeasible: false,
+          unsupportedNarrativeBeats: ['从收到产品或准备开箱的第一时刻开始'],
+          reason: '附图没有包装或拆包过程，但能承接其余阶段',
+          suggestedTemplateId: 'scene_seeding',
+        },
+      });
+    },
+  });
+  assert.equal(calls, 1, '部分阶段缺少画面但正文非空时必须降级出稿而不是重试');
+  assert.equal(result.attempts, 1);
+  assert.ok(result.script.warnings?.some((warning) => (
+    warning.code === 'unsupported_narrative_beats'
+    && warning.unsupportedNarrativeBeats?.[0] === '从收到产品或准备开箱的第一时刻开始'
+    && warning.suggestedTemplateId === 'scene_seeding'
+    && warning.suggestedTemplateName === '场景种草'
+    && /开箱体验/.test(warning.message)
+    && /场景种草/.test(warning.message)
+  )), '降级出稿必须携带缺失阶段与建议模板的警告');
+}
+
+{
+  let calls = 0;
+  const result = await generateScriptV3({ ...baseInput, templateId: 'unboxing', templateName: '开箱体验' }, {
+    completeJson: async () => {
+      calls += 1;
+      return feasibleResult({
+        title: '非法建议被丢弃',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+        materialAssessment: {
+          templateFeasible: false,
+          unsupportedNarrativeBeats: ['从收到产品或准备开箱的第一时刻开始'],
+          reason: '附图没有包装或拆包过程',
+          suggestedTemplateId: 'not-a-real-template',
+        },
+      });
+    },
+  });
+  assert.equal(calls, 1);
+  const warning = result.script.warnings?.find((item) => item.code === 'unsupported_narrative_beats');
+  assert.ok(warning, '非法 suggestedTemplateId 不影响降级出稿');
+  assert.equal(warning?.suggestedTemplateId, undefined, '非法模板建议必须被丢弃');
+  assert.equal(warning?.suggestedTemplateName, undefined);
+  assert.equal(/更契合/.test(warning?.message || ''), false, '没有合法建议时不得编造模板名');
 }
 
 {
