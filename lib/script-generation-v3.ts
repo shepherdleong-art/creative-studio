@@ -148,12 +148,34 @@ class ScriptMaterialMismatchError extends Error {
  */
 class ScriptOutputValidationError extends Error {
   readonly issues: string[];
+  readonly severity: 'blocking' | 'advisory';
 
-  constructor(issues: string[]) {
+  constructor(issues: string[], severity: 'blocking' | 'advisory' = 'blocking') {
     super(issues.join('；'));
     this.name = 'ScriptOutputValidationError';
     this.issues = issues;
+    this.severity = severity;
   }
+}
+
+export interface ScriptCandidate {
+  script: ScriptOutputV3;
+  qualification: 'qualified' | 'too_short' | 'too_long';
+  /** 未阻断但已降级的原因，逐条可读；卡 3/4 开始填充。 */
+  advisories: string[];
+}
+
+/**
+ * 候选比较必须稳定且确定：qualified 优先 → advisories 少优先 → 保留先出现；
+ * 两个都非 qualified 时也保留先出现，不比较 too_short/too_long 的先后。
+ */
+export function betterCandidate(best: ScriptCandidate | null, candidate: ScriptCandidate): ScriptCandidate {
+  if (!best) return candidate;
+  const bestQualified = best.qualification === 'qualified';
+  const candidateQualified = candidate.qualification === 'qualified';
+  if (candidateQualified !== bestQualified) return candidateQualified ? candidate : best;
+  if (candidate.advisories.length < best.advisories.length) return candidate;
+  return best;
 }
 
 function object(value: unknown): JsonObject {
@@ -508,10 +530,7 @@ function assertMaterialFeasible(raw: JsonObject, input: ScriptGenerationInputV3)
   }
 }
 
-function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): {
-  script: ScriptOutputV3;
-  qualification: 'qualified' | 'too_short' | 'too_long';
-} {
+function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): ScriptCandidate {
   const raw = object(rawValue);
   assertMaterialFeasible(raw, input);
   const sellingPoints = generationSellingPoints(input);
@@ -532,6 +551,7 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
     : contentCharacterCount > budget.maxContentCharacters ? 'too_long' : 'qualified';
   return {
     qualification,
+    advisories: [],
     script: {
       version: 3,
       title,
@@ -940,6 +960,7 @@ export async function generateScriptV3(
   let lastScript: ScriptOutputV3 | null = null;
   let lastQualification: 'too_short' | 'too_long' | 'contract_invalid' = 'contract_invalid';
   let lastValidationIssues: string[] = [];
+  let bestCandidate: ScriptCandidate | null = null;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
@@ -975,10 +996,19 @@ export async function generateScriptV3(
     });
     try {
       const normalized = normalizeCandidate(raw, input);
+      if (normalized.advisories.length === 0 && normalized.qualification === 'qualified') {
+        return { script: normalized.script, attempts: attempt };
+      }
+      bestCandidate = betterCandidate(bestCandidate, normalized);
       lastScript = normalized.script;
-      if (normalized.qualification === 'qualified') return { script: normalized.script, attempts: attempt };
       lastQualification = normalized.qualification;
-      prompt = rewritePrompt(input, normalized.qualification, raw, normalized.script);
+      prompt = rewritePrompt(
+        input,
+        normalized.qualification,
+        raw,
+        normalized.script,
+        normalized.advisories.length > 0 ? normalized.advisories : undefined,
+      );
     } catch (error) {
       if (error instanceof ScriptMaterialMismatchError) {
         throw new ScriptGenerationV3Error(
@@ -1000,10 +1030,13 @@ export async function generateScriptV3(
     }
   }
 
+  if (bestCandidate?.qualification === 'qualified') {
+    return { script: bestCandidate.script, attempts: 3 };
+  }
   const durationDetails: Omit<ScriptDurationErrorDetails, 'kind'> = {
     targetNarrationSec: budget.targetNarrationSec,
-    estimatedNarrationSec: lastScript?.estimatedNarrationDurationSec || 0,
-    contentCharacterCount: lastScript?.contentCharacterCount || 0,
+    estimatedNarrationSec: bestCandidate?.script.estimatedNarrationDurationSec || lastScript?.estimatedNarrationDurationSec || 0,
+    contentCharacterCount: bestCandidate?.script.contentCharacterCount || lastScript?.contentCharacterCount || 0,
     targetCharacterRange: [budget.minContentCharacters, budget.maxContentCharacters],
     attempts: 3,
   };

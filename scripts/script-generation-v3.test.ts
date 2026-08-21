@@ -1,10 +1,60 @@
 import assert from 'node:assert/strict';
 import {
+  betterCandidate,
   ScriptGenerationV3Error,
+  type ScriptCandidate,
   analyzeScriptStrategyV3,
   generateScriptV3,
 } from '../lib/script-generation-v3.ts';
 import { buildScriptDurationAdvisory, buildScriptDurationBudget } from '../lib/script-duration-policy.ts';
+import type { ScriptOutputV3 } from '../lib/script-providers/types.ts';
+
+function candidate(
+  qualification: ScriptCandidate['qualification'],
+  advisories: string[] = [],
+  marker = '',
+): ScriptCandidate {
+  return {
+    qualification,
+    advisories,
+    script: { version: 3, marker } as unknown as ScriptOutputV3,
+  };
+}
+
+{
+  const firstQualified = candidate('qualified', ['标题兜底'], 'first');
+  const secondQualified = candidate('qualified', ['标题兜底'], 'second');
+  const fewerAdvisories = candidate('qualified', [], 'fewer');
+  const tooShort = candidate('too_short', [], 'short');
+  const tooLong = candidate('too_long', [], 'long');
+
+  assert.equal(betterCandidate(null, firstQualified), firstQualified, '无既有候选时直接采用当前候选');
+  assert.equal(
+    betterCandidate(firstQualified, tooShort),
+    firstQualified,
+    'qualified 必须优先于非 qualified，即使非 qualified 没有 advisories',
+  );
+  assert.equal(
+    betterCandidate(tooShort, firstQualified),
+    firstQualified,
+    '后出现 qualified 时必须覆盖先出现的非 qualified',
+  );
+  assert.equal(
+    betterCandidate(firstQualified, fewerAdvisories),
+    fewerAdvisories,
+    '同为 qualified 时 advisories 少者胜',
+  );
+  assert.equal(
+    betterCandidate(firstQualified, secondQualified),
+    firstQualified,
+    'advisories 数量相同时必须保留先出现的候选，不能漂移',
+  );
+  assert.equal(
+    betterCandidate(tooShort, tooLong),
+    tooShort,
+    '两个都非 qualified 时保留先出现的，不比较 too_short/too_long 的先后',
+  );
+}
 
 const baseInput = {
   projectName: '任务 A',
