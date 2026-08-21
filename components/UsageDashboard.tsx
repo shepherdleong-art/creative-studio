@@ -10,6 +10,7 @@ import type {
 
 const MODEL_KEYS: readonly CoreUsageModelKey[] = [
   'company-image2-medium',
+  'company-qiniuyun-gpt-image-2-medium',
   'company-kling-3-0',
   'company-seedance-fast',
   'company-gpt-5-6-luna',
@@ -18,6 +19,7 @@ const MODEL_KEYS: readonly CoreUsageModelKey[] = [
 
 const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
   'company-image2-medium': 'image2-medium',
+  'company-qiniuyun-gpt-image-2-medium': 'gpt-image-2-medium',
   'company-kling-3-0': 'kling-3.0',
   'company-seedance-fast': 'Seedance 2.0 Fast',
   'company-gpt-5-6-luna': 'GPT-5-6-Luna-Standard',
@@ -26,6 +28,7 @@ const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
 
 const MODEL_COLORS: Record<CoreUsageModelKey, string> = {
   'company-image2-medium': '#0071e3',
+  'company-qiniuyun-gpt-image-2-medium': '#06b6d4',
   'company-kling-3-0': '#8b5cf6',
   'company-seedance-fast': '#0f9d8a',
   'company-gpt-5-6-luna': '#f59e0b',

@@ -9,7 +9,8 @@ import { editImagePackyGemini } from './providers/packy-gemini-image';
 import { getNonRetryablePackyAdvice, isNonRetryablePackyError, isTimeoutLikeError } from './packy-errors';
 import { getEffectiveImageConcurrency } from './provider-concurrency';
 import { calculateEstimatedCost } from './cost';
-import { normalizeGeneratedImageToSize } from './image-output-normalize';
+import { normalizeGeneratedImageToSize, normalizeGeneratedImageToNativeRatio } from './image-output-normalize';
+import { companyImageCapsForModel, companyImageDeliverySize } from './company-gateway-size.ts';
 import { isPlaceholderValue } from './video-auth';
 import { getEffectiveProjectFinalStatus } from './project-status';
 import { writeLog } from './logger';
@@ -736,7 +737,15 @@ async function runJob(
     const preferredOutputName = `${filePrefix}${inputBase}${revSuffix}.png`;
     const outputFilename = ensureUniqueFilename(outputsDir, preferredOutputName, job.id.slice(0, 6));
     const outputPath = path.join(outputsDir, outputFilename);
-    const normalizedImage = await normalizeGeneratedImageToSize(result.imageBuffer, job.size);
+    // 逐格实测可原生交付的公司模型（nativeDelivery，qiniuyun/* 与 image2）：只按
+    // 名义格比例居中裁切、绝不缩放——同比例原样交付网关原生像素（image2 常返回
+    // 比名义格更大的图，白赚像素），比例略偏的裁齐（1K 3:4 实返 1024x1376 →
+    // 1024x1366）；排除格 donor 图裁回名义格比例（2160x3840 → 2160x2880）。
+    // 其余模型维持规整到 job.size。
+    const jobCompanyCaps = companyImageCapsForModel(job.model);
+    const normalizedImage = jobCompanyCaps?.nativeDelivery
+      ? await normalizeGeneratedImageToNativeRatio(result.imageBuffer, companyImageDeliverySize(job.size, jobCompanyCaps))
+      : await normalizeGeneratedImageToSize(result.imageBuffer, job.size);
     if (normalizedImage.changed) {
       logWarn(`输出尺寸与任务尺寸不一致，已自动规整: ${normalizedImage.reason}`);
     }

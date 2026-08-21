@@ -7,6 +7,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const CORE_USAGE_MODEL_KEYS: readonly CoreUsageModelKey[] = [
   'company-image2-medium',
+  'company-qiniuyun-gpt-image-2-medium',
   'company-kling-3-0',
   'company-seedance-fast',
   'company-gpt-5-6-luna',
@@ -291,6 +292,7 @@ function uncertainCount(db: Database.Database, filters: UsageQueryFilters): numb
         CASE WHEN json_valid(usageJson) THEN json_extract(usageJson, '$.category') ELSE NULL END,
         CASE CASE WHEN json_valid(snapshotJson) THEN json_extract(snapshotJson, '$.coreModelKey') ELSE NULL END
           WHEN 'company-image2-medium' THEN 'image'
+          WHEN 'company-qiniuyun-gpt-image-2-medium' THEN 'image'
           WHEN 'company-kling-3-0' THEN 'video'
           WHEN 'company-seedance-fast' THEN 'video'
           WHEN 'company-gpt-5-6-luna' THEN 'llm_text'
@@ -460,4 +462,18 @@ export function listUsageRecords(
     pageSize,
     totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
   };
+}
+
+/**
+ * Sum committed ledger cost per project for the project list. Callers must
+ * gate on usage schema availability before querying.
+ */
+export function sumUsageCostByProject(db: Database.Database): Map<string, number> {
+  const rows = db.prepare(`
+    SELECT projectId, SUM(costMicros) AS costMicros
+    FROM usage_ledger
+    WHERE projectId IS NOT NULL
+    GROUP BY projectId
+  `).all() as Array<{ projectId: string; costMicros: number }>;
+  return new Map(rows.map((row) => [row.projectId, Number(row.costMicros || 0)]));
 }

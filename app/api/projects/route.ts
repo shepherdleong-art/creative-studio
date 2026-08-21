@@ -5,6 +5,9 @@ import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-si
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { normalizeShotImageIds } from '@/lib/shot-set-domain';
+import { getUsageSchemaReadiness } from '@/lib/usage-schema';
+import { reconcileUsageLedger } from '@/lib/usage-ledger';
+import { sumUsageCostByProject } from '@/lib/usage-query';
 
 function isRealApiKey(value: string | null | undefined): boolean {
   const trimmed = (value || '').trim();
@@ -25,6 +28,17 @@ function bindProjectImage(db: ReturnType<typeof getDb>, imageId: string, project
 export async function GET() {
   try {
     const db = getDb();
+    // 项目总成本以 usage ledger 为准（覆盖图片/视频/脚本/TTS 的核心模型用量）；
+    // ledger 不可用或项目无 ledger 记录时回退旧的 jobs.estimatedCost 图片成本，
+    // 消耗统计故障不得拖垮项目列表。
+    let usageCostByProject: Map<string, number> | null = null;
+    try {
+      if (getUsageSchemaReadiness(db).available && reconcileUsageLedger(db).reason !== 'schema_unavailable') {
+        usageCostByProject = sumUsageCostByProject(db);
+      }
+    } catch {
+      usageCostByProject = null;
+    }
     const projects = (db.prepare(`
       SELECT p.*,
         (SELECT COUNT(*) FROM jobs WHERE projectId = p.id) as totalJobs,
@@ -48,9 +62,15 @@ export async function GET() {
       ORDER BY p.createdAt DESC
     `).all() as Array<Record<string, unknown>>).map((project) => {
       const thumbnailPath = typeof project.thumbnailPath === 'string' ? project.thumbnailPath : '';
+      const legacyCostMicros = Math.round(Number(project.totalCost || 0) * 1_000_000);
+      const usageCostMicros = usageCostByProject?.get(String(project.id)) ?? 0;
       const rest = { ...project };
       delete rest.thumbnailPath;
-      return { ...rest, thumbnailImageUrl: toStorageImageUrl(thumbnailPath) };
+      return {
+        ...rest,
+        totalUsageCostMicros: usageCostMicros > 0 ? usageCostMicros : legacyCostMicros,
+        thumbnailImageUrl: toStorageImageUrl(thumbnailPath),
+      };
     });
     return NextResponse.json(projects);
   } catch (err) {

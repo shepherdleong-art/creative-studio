@@ -35,6 +35,26 @@ assert.deepEqual(imagePlan.priceComponents, [
 ]);
 assert.equal(calculateUsageCostMicros(imagePlan, { image: 1 }), 1_050_000);
 
+// qiniuyun/gpt-image-2-medium：粗略估算 ¥0.5/张（2026-08-21 与用户确认，真实定价待公布）
+const qiniuyunPlan = mustPlan(snapshot({
+  providerId: 'company-gateway-qiniuyun-gpt-image-2-medium',
+  configuredModel: 'qiniuyun/gpt-image-2-medium',
+  requestModel: 'qiniuyun/gpt-image-2-medium',
+}));
+assert.equal(qiniuyunPlan.coreModelKey, 'company-qiniuyun-gpt-image-2-medium');
+assert.equal(qiniuyunPlan.category, 'image');
+assert.equal(qiniuyunPlan.pricingVersion, CORE_USAGE_PRICING_VERSION);
+assert.deepEqual(qiniuyunPlan.priceComponents, [
+  { key: 'image', unit: 'image', unitPriceMicros: 500_000, priceScale: 1 },
+]);
+assert.equal(calculateUsageCostMicros(qiniuyunPlan, { image: 1 }), 500_000);
+// 身份必须精确匹配：同 id 不同模型不给价
+assert.equal(resolveCoreUsagePlan(snapshot({
+  providerId: 'company-gateway-qiniuyun-gpt-image-2-medium',
+  configuredModel: 'qiniuyun/gpt-image-2',
+  requestModel: 'qiniuyun/gpt-image-2',
+})), null);
+
 const klingPlan = mustPlan(snapshot({
   providerTable: 'video_providers',
   providerId: 'company-kling-3-0',

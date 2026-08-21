@@ -7,6 +7,7 @@ import {
   listUsageRecords,
   parseUsageBoundary,
   queryUsageDashboard,
+  sumUsageCostByProject,
 } from '../lib/usage-query.ts';
 
 const periods = getShanghaiUsagePeriods(new Date('2026-08-18T01:23:45.000Z'));
@@ -162,6 +163,23 @@ assert.deepEqual(firstPage.items[0].detail, { estimated: false });
 
 const capped = listUsageRecords(db, { page: 1, pageSize: 500 });
 assert.equal(capped.pageSize, 100);
+
+// 既有行 projectId 均为 NULL，不应出现在按项目聚合里
+assert.equal(sumUsageCostByProject(db).size, 0);
+db.prepare(`
+  INSERT INTO usage_ledger (
+    id, eventKey, coreModelKey, category, providerId, model,
+    pricingVersion, callCount, quantity, unit, priceScale, unitPriceMicros,
+    costMicros, projectId, refType, refId, createdAt
+  ) VALUES
+    ('pa-1', 'event:pa-1', 'company-image2-medium', 'image', 'p', 'image2-medium', 'v1', 1, 1, 'image', 1, 0, 1050000, 'proj-a', 'test', 'pa-1', '2026-08-18T05:00:00.000Z'),
+    ('pa-2', 'event:pa-2', 'company-kling-3-0', 'video', 'p', 'kling-3.0', 'v1', 1, 10, 'second', 1, 0, 5980000, 'proj-a', 'test', 'pa-2', '2026-08-18T05:01:00.000Z'),
+    ('pb-1', 'event:pb-1', 'doubao-seed-tts-2', 'tts', 'p', 'seed-tts-2.0', 'v1', 1, 100, 'character', 1, 0, 28000, 'proj-b', 'test', 'pb-1', '2026-08-18T05:02:00.000Z')
+`).run();
+const byProject = sumUsageCostByProject(db);
+assert.equal(byProject.get('proj-a'), 7_030_000, 'same project must sum across categories');
+assert.equal(byProject.get('proj-b'), 28_000);
+assert.equal(byProject.size, 2);
 
 db.close();
 console.log('usage-query tests passed');

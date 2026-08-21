@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { resolvePublicImageUrl } from '../local-image-url.ts';
-import { isCosMediaConfigured, tryUploadToCosAndSign } from '../cos-media.ts';
+import { isCosMediaConfigured, tryUploadToCosAndSign, compressImageToBudget } from '../cos-media.ts';
 import { companyImageCapsForModel, snapCompanyImageSize } from '../company-gateway-size.ts';
 import {
   normalizeGatewayResultUrl,
@@ -110,11 +110,51 @@ function fileToDataUrl(filePath: string, mimeType: string): string {
 }
 
 /**
+ * 公司网关七牛云下游（qiniuyun/*）的免 COS 通道：实测该链路接受 data URL
+ * 参考图（2026-08-21 经公司网关全链路验证 15KB~28MB body 成功）。瓶颈是网关
+ * nginx 请求体上限（28.3MB 通过、40.8MB 被 413），因此 ≤20MB 的原图不压缩
+ * 直接内联（保画面细节），>20MB 才压到 ≤6MB/4096px/q92 再内联；压缩失败
+ * （如 gif 超限）返回 null，由调用方回退既有 COS/本机 URL 通道。
+ * 阈值可用 CREATIVE_STUDIO_INLINE_RAW_MAX_BYTES / INLINE_TARGET_BYTES /
+ * INLINE_TARGET_DIM / INLINE_TARGET_QUALITY 覆盖。
+ */
+const INLINE_DATAURL_MODEL = /^qiniuyun\//i;
+
+function inlineIntEnv(name: string, fallback: number): number {
+  const v = Number.parseInt((process.env[name] || '').trim(), 10);
+  return Number.isInteger(v) && v > 0 ? v : fallback;
+}
+
+async function toInlineDataUrl(filePath: string, mimeType: string): Promise<string | null> {
+  const raw = (await fs.promises.readFile(filePath)) as Buffer<ArrayBuffer>;
+  const rawMaxBytes = inlineIntEnv('CREATIVE_STUDIO_INLINE_RAW_MAX_BYTES', 20 * 1024 * 1024);
+  if (raw.byteLength <= rawMaxBytes) {
+    return `data:${mimeType};base64,${raw.toString('base64')}`;
+  }
+  const compressed = await compressImageToBudget(raw, mimeType, {
+    maxBytes: inlineIntEnv('CREATIVE_STUDIO_INLINE_TARGET_BYTES', 6 * 1024 * 1024),
+    maxDim: inlineIntEnv('CREATIVE_STUDIO_INLINE_TARGET_DIM', 4096),
+    quality: inlineIntEnv('CREATIVE_STUDIO_INLINE_TARGET_QUALITY', 92),
+  });
+  if (!compressed) return null;
+  return `data:${compressed.mime};base64,${compressed.buffer.toString('base64')}`;
+}
+
+/**
  * 网关上游（腾讯等）只接受真实 URL 且限制 ~8KB 长度，data URL 会被 400 拒绝。
  * 优先上传腾讯云 COS 返回 24h 预签名 URL（配置 CREATIVE_STUDIO_COS_* 时）；
  * COS 失败或未配置时回退 CREATIVE_STUDIO_PUBLIC_BASE_URL 本机 HTTP URL，最后退 data URL。
+ * qiniuyun/* 模型例外：见 toInlineDataUrl 的免 COS 内联通道。
  */
-async function toGatewayImageRefAsync(filePath: string, mimeType: string): Promise<string> {
+async function toGatewayImageRefAsync(filePath: string, mimeType: string, model: string): Promise<string> {
+  if (INLINE_DATAURL_MODEL.test(model)) {
+    try {
+      const inline = await toInlineDataUrl(filePath, mimeType);
+      if (inline) return inline;
+    } catch (error) {
+      console.warn('[gateway-task-image] 参考图内联失败，回退 URL 通道：', error instanceof Error ? error.message : error);
+    }
+  }
   if (isCosMediaConfigured()) {
     try {
       const cosUrl = await tryUploadToCosAndSign(filePath, mimeType);
@@ -159,11 +199,11 @@ export async function submitGatewayTaskImage(
   // 与 packy-images / openai-compatible 一致的图片顺序约定：待编辑底图在前（图1），参考图在后（图2-N）。
   // 项目默认提示词与存量项目提示词均按「图1=底图、图2=参考图」书写。
   const imageUrls: string[] = [
-    await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType),
+    await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType, request.model),
   ];
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
     imageUrls.push(
-      await toGatewayImageRefAsync(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png')
+      await toGatewayImageRefAsync(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png', request.model)
     );
   }
 

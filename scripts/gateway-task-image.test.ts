@@ -201,6 +201,37 @@ try {
   delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
   delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
   _resetCosMediaCacheForTest();
+
+  // qiniuyun/* 模型：免 COS 内联通道——即使配置了 COS 也用 data URL；≤20MB 原图原样内联不压缩
+  process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'test-cos-id';
+  process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'test-cos-key';
+  process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.example.com';
+  _resetCosMediaCacheForTest();
+  await submitGatewayTaskImage(
+    {
+      model: 'qiniuyun/gpt-image-2-medium',
+      prompt: '换背景',
+      inputImagePath: inputPath,
+      inputMimeType: 'image/png',
+      referenceImagePaths: [],
+      referenceMimeTypes: [],
+      size: '1024x1024',
+      quality: 'high',
+    },
+    'gateway-key',
+    'https://llm-gateway.example.com',
+  );
+  const inlineImages = capturedBody?.images as string[];
+  assert.equal(inlineImages.length, 1);
+  assert.ok(inlineImages[0].startsWith('data:image/png;base64,'), inlineImages[0].slice(0, 60));
+  assert.deepEqual(decodeImage(inlineImages[0]), Buffer.from([0x89, 0x50, 0x4e, 0x47]), '原图必须原样内联、不压缩');
+  // size 吸附到 qiniuyun 白名单（1K 档映射坏，1K 预设钳到 2K），公司模型补 response_format
+  assert.equal(capturedBody?.size, '1440x1440');
+  assert.equal(capturedBody?.response_format, 'jpeg');
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;
+  delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+  delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
+  _resetCosMediaCacheForTest();
 } finally {
   globalThis.fetch = originalFetch;
   delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;

@@ -3,7 +3,7 @@
  *
  * The dashboard deliberately does not read a provider's editable cost fields.
  * A provider is eligible only when its complete runtime identity matches one
- * of the five entries below, and every amount is kept in integer micros.
+ * of the six entries below, and every amount is kept in integer micros.
  */
 
 export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-v1';
@@ -19,6 +19,7 @@ export type CoreUsageCategory = 'image' | 'video' | 'llm_text' | 'llm_vision' | 
 
 export type CoreUsageModelKey =
   | 'company-image2-medium'
+  | 'company-qiniuyun-gpt-image-2-medium'
   | 'company-kling-3-0'
   | 'company-seedance-fast'
   | 'company-gpt-5-6-luna'
@@ -103,6 +104,13 @@ const IMAGE_COMPONENT: CoreUsagePriceComponentV1 = {
   unitPriceMicros: 1_050_000,
   priceScale: 1,
 };
+// qiniuyun/gpt-image-2-medium：真实定价未公布，2026-08-21 与用户确认的粗略估算 ¥0.5/张
+const QINIUYUN_IMAGE_COMPONENT: CoreUsagePriceComponentV1 = {
+  key: 'image',
+  unit: 'image',
+  unitPriceMicros: 500_000,
+  priceScale: 1,
+};
 const KLING_COMPONENT: CoreUsagePriceComponentV1 = {
   key: 'second',
   unit: 'second',
@@ -154,6 +162,7 @@ function createPlan(
 /** The fixed registry is exported for read-only consumers and tests. */
 export const CORE_USAGE_PRICING = Object.freeze({
   image: Object.freeze({ unitPriceMicros: IMAGE_COMPONENT.unitPriceMicros, priceScale: IMAGE_COMPONENT.priceScale }),
+  qiniuyunImage: Object.freeze({ unitPriceMicros: QINIUYUN_IMAGE_COMPONENT.unitPriceMicros, priceScale: QINIUYUN_IMAGE_COMPONENT.priceScale }),
   kling: Object.freeze({ unitPriceMicros: KLING_COMPONENT.unitPriceMicros, priceScale: KLING_COMPONENT.priceScale }),
   seedance: Object.freeze({ unitPriceMicros: SEEDANCE_COMPONENT.unitPriceMicros, priceScale: SEEDANCE_COMPONENT.priceScale }),
   gptInput: Object.freeze({ unitPriceMicros: GPT_COMPONENTS[0].unitPriceMicros, priceScale: GPT_COMPONENTS[0].priceScale }),
@@ -216,6 +225,21 @@ export function resolveCoreUsagePlan(
     requestModel: 'image2-medium',
   })) {
     return createPlan('company-image2-medium', 'image', 'image2-medium', [IMAGE_COMPONENT]);
+  }
+
+  if (matchesIdentity(provider, {
+    providerTable: 'providers',
+    providerId: 'company-gateway-qiniuyun-gpt-image-2-medium',
+    providerType: 'gateway-task-image',
+    configuredModel: 'qiniuyun/gpt-image-2-medium',
+    requestModel: 'qiniuyun/gpt-image-2-medium',
+  })) {
+    return createPlan(
+      'company-qiniuyun-gpt-image-2-medium',
+      'image',
+      'qiniuyun/gpt-image-2-medium',
+      [QINIUYUN_IMAGE_COMPONENT],
+    );
   }
 
   if (matchesIdentity(provider, {

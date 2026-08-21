@@ -14,6 +14,15 @@ import { GPT_IMAGE_2_SIZE_MAP } from './gpt-image-2-size-presets.ts';
 export interface CompanyModelCaps {
   tiers: string[];
   ratios: string[];
+  /** 矩阵中单独坏掉的格子（'档位:比例'）；吸附命中坏格时优先在同档位找能居中裁切覆盖目标框的跨比例好格（真分辨率裁切映射），没有可裁格才同比例就近换档 */
+  exclude?: string[];
+  /**
+   * 交付端是否按原生像素交付（只裁齐名义格比例、绝不缩放）。开启前提：
+   * qiniuyun/* 逐格实测按 canonical 表原样出图；image2 实测返回更大尺寸
+   *（2K 3:4 实返 1920x2560），原生交付可白赚像素，比例略偏的由交付端裁齐
+   *（1K 3:4 实返 1024x1376 → 1024x1366）。缺省 false：仍规整到 job.size。
+   */
+  nativeDelivery?: boolean;
 }
 
 /** 文档 §6.1 图片模型尺寸表：档位 → 比例 → 宽x高 */
@@ -39,6 +48,24 @@ const VIDEO_TIER_PREFERENCE = ['1K', '720P', '4K'];
 const IMAGE2_CAPS: CompanyModelCaps = {
   tiers: ['1K', '2K', '4K'],
   ratios: ['1:1', '3:4', '4:3', '16:9', '3:2', '2:3', '21:9'], // 文档 §2.1：image2 不支持 9:16
+  // 实测（2026-08-21 真实任务）：返回尺寸偏离名义格但更大（2K 3:4 → 1920x2560，
+  // 1K 3:4 → 1024x1376），原生像素交付白赚像素，比例偏差由交付端裁齐
+  nativeDelivery: true,
+};
+// qiniuyun/gpt-image-2-medium（2026-08-21 真实任务逐格探测）：网关 canonical 表只收
+// 1:1/3:4/4:3/16:9/9:16 五种比例（3:2、2:3、21:9 与 3K 档提交时即拒）；网关下游
+// 映射有两处 bug——1K 档全部映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，
+// 均不满足上游「宽高 16 整除」被 BadRequestError 拒绝。其余格子逐格验证真实出图：
+// 2K×5 种比例 + 4K×{1:1,4:3,16:9,9:16}（1440x1440/1920x1440/1440x1920/2560x1440/
+// 1440x2560/2160x2160/2880x2160/3840x2160/2160x3840）。故放行 2K+4K 并单格排除
+// 4K 3:4；排除格走裁切映射——用同档位 4K 9:16（2160x3840）生成后由
+// image-output-normalize 居中裁回 3:4，真 4K 级画质（2026-08-21 与用户确认）。
+// 逐格实测返回尺寸与 canonical 表一致，开启原生像素交付（nativeDelivery）。
+const QINIUYUN_GPT_IMAGE_2_CAPS: CompanyModelCaps = {
+  tiers: ['2K', '4K'],
+  ratios: ['1:1', '3:4', '4:3', '16:9', '9:16'],
+  exclude: ['4K:3:4'],
+  nativeDelivery: true,
 };
 const SEEDREAM_LITE_CAPS: CompanyModelCaps = {
   tiers: ['2K', '3K', '4K'],
@@ -60,6 +87,7 @@ const KLING_OMNI_CAPS: CompanyModelCaps = {
 /** 返回图片模型在公司网关的能力约束；非公司图片模型返回 null */
 export function companyImageCapsForModel(model: string): CompanyModelCaps | null {
   const m = model.toLowerCase();
+  if (m.startsWith('qiniuyun/gpt-image-2')) return QINIUYUN_GPT_IMAGE_2_CAPS;
   if (m.startsWith('image2-')) return IMAGE2_CAPS;
   if (m.includes('seedream') && m.includes('pro')) return SEEDREAM_PRO_CAPS;
   if (m.includes('seedream')) return SEEDREAM_LITE_CAPS;
@@ -147,10 +175,10 @@ function clampTier(tier: string, allowed: string[], order: string[]): string {
 }
 
 /**
- * 把应用请求的图片尺寸吸附到公司网关白名单组合。
+ * 计算吸附后的名义格子（档位+比例，含档位钳制；不做排除格替换）。
  * size 无法解析（如 'auto'）时默认 1:1，档位取 2K（不允许则就近钳制）。
  */
-export function snapCompanyImageSize(size: string | null | undefined, caps: CompanyModelCaps): string {
+function snapCompanyImageCell(size: string | null | undefined, caps: CompanyModelCaps): { tier: string; ratio: string } {
   const parsed = parseSize(size);
   const ratio = parsed
     ? nearestRatio(parsed.width, parsed.height, caps.ratios)
@@ -175,6 +203,50 @@ export function snapCompanyImageSize(size: string | null | undefined, caps: Comp
     }
   } else {
     tier = caps.tiers.includes('2K') ? '2K' : clampTier('2K', caps.tiers, IMAGE_TIER_ORDER);
+  }
+  return { tier, ratio };
+}
+
+/**
+ * 公司模型的交付尺寸（名义格子像素，2026-08-21 起公司模型按网关原生像素交付，
+ * 不再放大回应用预设）：普通格子 = 生成尺寸本身；排除格 = 名义格子尺寸——
+ * 生成走裁切映射的 donor 格（如 4K 9:16 的 2160x3840），交付端 normalize 按
+ * 本尺寸居中裁回（如 4K 3:4 的 2160x2880），全程零放大。
+ */
+export function companyImageDeliverySize(size: string | null | undefined, caps: CompanyModelCaps): string {
+  const cell = snapCompanyImageCell(size, caps);
+  return IMAGE_SIZE_TABLE[cell.tier][cell.ratio];
+}
+
+/**
+ * 把应用请求的图片尺寸吸附到公司网关白名单组合（实际提交给网关的生成尺寸）。
+ * size 无法解析（如 'auto'）时默认 1:1，档位取 2K（不允许则就近钳制）。
+ */
+export function snapCompanyImageSize(size: string | null | undefined, caps: CompanyModelCaps): string {
+  const cell = snapCompanyImageCell(size, caps);
+  const { ratio } = cell;
+  let { tier } = cell;
+
+  // 单格排除：命中坏格时优先「裁切映射」——同档位找一个能完整覆盖目标框的
+  // 跨比例好格（居中裁切零放大，如 qiniuyun 4K 3:4 → 4K 9:16 的 2160x3840），
+  // 交付端 image-output-normalize 按 companyImageDeliverySize 居中裁回名义格子；
+  // 同档位没有可裁格才回退同比例就近换档。
+  if (caps.exclude?.length && caps.exclude.includes(`${tier}:${ratio}`)) {
+    const donors = caps.ratios
+      .filter((r) => r !== ratio && !caps.exclude!.includes(`${tier}:${r}`))
+      .map((r) => ({ ratio: r, size: parseSize(IMAGE_SIZE_TABLE[tier][r]) }))
+      .filter((d): d is { ratio: string; size: { width: number; height: number } } => {
+        const target = parseSize(IMAGE_SIZE_TABLE[tier][ratio])!;
+        return !!d.size && d.size.width >= target.width && d.size.height >= target.height;
+      })
+      .sort((a, b) =>
+        Math.abs(Math.log(ratioValue(a.ratio) / ratioValue(ratio))) -
+        Math.abs(Math.log(ratioValue(b.ratio) / ratioValue(ratio))));
+    if (donors.length > 0) return IMAGE_SIZE_TABLE[tier][donors[0].ratio];
+    const candidates = caps.tiers.filter((t) => !caps.exclude!.includes(`${t}:${ratio}`));
+    if (candidates.length > 0) {
+      tier = clampTier(tier, candidates, IMAGE_TIER_ORDER);
+    }
   }
 
   return IMAGE_SIZE_TABLE[tier][ratio];

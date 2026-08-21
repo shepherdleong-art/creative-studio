@@ -350,6 +350,70 @@ export async function tryUploadBufferToCosAndSign(
   return uploadBufferAndSign(config, buffer, EXT_BY_MIME[mimeType] ?? '.jpg', mimeType, options);
 }
 
+export type ImageBudgetLimits = { maxBytes: number; maxDim: number; quality: number };
+
+/**
+ * 把图片压到预算内：仅处理 jpeg/png/webp，且只在字节数或边长超预算时动手。
+ * sharp 解析失败、压缩结果不更小、格式不适用时返回 null（调用方按原图处理），
+ * 绝不让压缩导致主流程失败。png 有透明通道时转 webp 保透明，否则转 jpeg。
+ */
+export async function compressImageToBudget(
+  buffer: Buffer<ArrayBuffer>,
+  mime: string,
+  limits: ImageBudgetLimits,
+): Promise<{ buffer: Buffer<ArrayBuffer>; mime: string } | null> {
+  if (mime !== 'image/jpeg' && mime !== 'image/png' && mime !== 'image/webp') return null;
+
+  try {
+    const metadata = await sharp(buffer).metadata();
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (!width || !height) return null;
+
+    const needResize = width > limits.maxDim || height > limits.maxDim;
+    const needCompress = buffer.byteLength > limits.maxBytes;
+    if (!needResize && !needCompress) return null;
+
+    let pipeline = sharp(buffer)
+      .rotate()
+      .resize({
+        width: limits.maxDim,
+        height: limits.maxDim,
+        fit: 'inside',
+        withoutEnlargement: true,
+      });
+
+    let outMime = mime;
+    if (mime === 'image/jpeg') {
+      pipeline = pipeline.jpeg({ quality: limits.quality, mozjpeg: true });
+    } else if (mime === 'image/webp') {
+      pipeline = pipeline.webp({ quality: limits.quality });
+    } else if (metadata.hasAlpha) {
+      pipeline = pipeline.webp({ quality: limits.quality, alphaQuality: limits.quality });
+      outMime = 'image/webp';
+    } else {
+      pipeline = pipeline.jpeg({ quality: limits.quality, mozjpeg: true });
+      outMime = 'image/jpeg';
+    }
+
+    const compressed = (await pipeline.toBuffer()) as Buffer<ArrayBuffer>;
+    if (compressed.byteLength >= buffer.byteLength) return null;
+
+    const percent = Math.round((1 - compressed.byteLength / buffer.byteLength) * 100);
+    console.log(
+      `[cos-media] 压缩参考图：orig=${(buffer.byteLength / 1024).toFixed(0)}KB ` +
+        `→ out=${(compressed.byteLength / 1024).toFixed(0)}KB（约 ${percent}%）`,
+    );
+    return { buffer: compressed, mime: outMime };
+  } catch (error) {
+    console.warn(
+      '[cos-media] 参考图压缩失败，按原图处理：',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
+
 /**
  * 上传前压缩：只处理 jpeg/png/webp；sharp 解析失败、结果不比原图小或
  * options.compress === false 时一律原样上传，绝不让压缩导致上传失败。
@@ -362,66 +426,21 @@ async function prepareUploadBuffer(
   options?: CosUploadOptions,
 ): Promise<{ buffer: Buffer<ArrayBuffer>; ext: string; mime: string }> {
   const compress = options?.compress ?? config.compressEnabled;
-  if (!compress || (mime !== 'image/jpeg' && mime !== 'image/png' && mime !== 'image/webp')) {
+  if (!compress) {
     return { buffer, ext, mime };
   }
 
-  try {
-    const metadata = await sharp(buffer).metadata();
-    const width = metadata.width ?? 0;
-    const height = metadata.height ?? 0;
-    if (!width || !height) return { buffer, ext, mime };
-
-    const maxBytes = options?.maxBytes ?? config.maxBytes;
-    const maxDim = options?.maxDim ?? config.maxDim;
-    const quality = options?.quality ?? config.quality;
-    const needResize = width > maxDim || height > maxDim;
-    const needCompress = buffer.byteLength > maxBytes;
-    if (!needResize && !needCompress) return { buffer, ext, mime };
-
-    let pipeline = sharp(buffer)
-      .rotate()
-      .resize({
-        width: maxDim,
-        height: maxDim,
-        fit: 'inside',
-        withoutEnlargement: true,
-      });
-
-    let outMime = mime;
-    let outExt = ext;
-    if (mime === 'image/jpeg') {
-      pipeline = pipeline.jpeg({ quality, mozjpeg: true });
-    } else if (mime === 'image/webp') {
-      pipeline = pipeline.webp({ quality });
-    } else if (metadata.hasAlpha) {
-      pipeline = pipeline.webp({ quality, alphaQuality: quality });
-      outMime = 'image/webp';
-      outExt = '.webp';
-    } else {
-      pipeline = pipeline.jpeg({ quality, mozjpeg: true });
-      outMime = 'image/jpeg';
-      outExt = '.jpg';
-    }
-
-    const compressed = (await pipeline.toBuffer()) as Buffer<ArrayBuffer>;
-    if (compressed.byteLength >= buffer.byteLength) {
-      return { buffer, ext, mime };
-    }
-
-    const percent = Math.round((1 - compressed.byteLength / buffer.byteLength) * 100);
-    console.log(
-      `[cos-media] 压缩参考图：orig=${(buffer.byteLength / 1024).toFixed(0)}KB ` +
-        `→ out=${(compressed.byteLength / 1024).toFixed(0)}KB（约 ${percent}%）`,
-    );
-    return { buffer: compressed, ext: outExt, mime: outMime };
-  } catch (error) {
-    console.warn(
-      '[cos-media] 参考图压缩失败，按原图上传：',
-      error instanceof Error ? error.message : error,
-    );
-    return { buffer, ext, mime };
-  }
+  const result = await compressImageToBudget(buffer, mime, {
+    maxBytes: options?.maxBytes ?? config.maxBytes,
+    maxDim: options?.maxDim ?? config.maxDim,
+    quality: options?.quality ?? config.quality,
+  });
+  if (!result) return { buffer, ext, mime };
+  return {
+    buffer: result.buffer,
+    ext: result.mime === mime ? ext : (EXT_BY_MIME[result.mime] ?? ext),
+    mime: result.mime,
+  };
 }
 
 async function uploadBufferAndSign(

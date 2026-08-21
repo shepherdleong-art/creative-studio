@@ -16,6 +16,8 @@ interface Project {
   completedJobs: number;
   failedJobs: number;
   totalCost: number;
+  // 全口径总成本（微元）：来自 usage ledger，无 ledger 记录时回退图片任务估算
+  totalUsageCostMicros: number;
   thumbnailImageUrl?: string;
 }
 
@@ -109,6 +111,10 @@ function formatCompactTime(value: string): string {
   });
 }
 
+function projectCostYuan(p: Project): number {
+  return (p.totalUsageCostMicros || 0) / 1_000_000;
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -168,7 +174,7 @@ export default function HomePage() {
     return [...filteredProjects].sort((a, b) => {
       if (sortKey === 'name') return a.name.localeCompare(b.name, 'zh-CN') * dir;
       if (sortKey === 'totalJobs') return (a.totalJobs - b.totalJobs) * dir;
-      if (sortKey === 'totalCost') return (a.totalCost - b.totalCost) * dir;
+      if (sortKey === 'totalCost') return (a.totalUsageCostMicros - b.totalUsageCostMicros) * dir;
       return a.createdAt.localeCompare(b.createdAt) * dir;
     });
   }, [filteredProjects, sortKey, sortDir]);
@@ -422,7 +428,7 @@ export default function HomePage() {
                         )}
                       </td>
                       <td className="whitespace-nowrap px-4 py-2.5 text-right text-ink-secondary">
-                        {p.totalCost > 0 ? `¥${p.totalCost.toFixed(4)}` : <span className="text-ink-tertiary">—</span>}
+                        {projectCostYuan(p) > 0 ? `¥${projectCostYuan(p).toFixed(4)}` : <span className="text-ink-tertiary">—</span>}
                       </td>
                       <td className="whitespace-nowrap px-4 py-2.5 text-xs text-ink-secondary">{formatCompactTime(p.createdAt)}</td>
                       <td className="px-4 py-2.5">
@@ -475,7 +481,7 @@ export default function HomePage() {
                   <div className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-ink-tertiary">
                     <span className="truncate">
                       {p.totalJobs > 0 ? `${p.completedJobs}/${p.totalJobs} 任务` : '暂无任务'}
-                      {p.totalCost > 0 && ` · ¥${p.totalCost.toFixed(2)}`}
+                      {projectCostYuan(p) > 0 && ` · ¥${projectCostYuan(p).toFixed(2)}`}
                     </span>
                     <span className="shrink-0">{formatDateOnly(p.createdAt)}</span>
                   </div>

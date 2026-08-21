@@ -13,6 +13,7 @@ import {
   GPT_IMAGE_2_SIZE_MAP,
   resolveGptImage2Size,
 } from '@/lib/gpt-image-2-size-presets';
+import { companyImageCapsForModel } from '@/lib/company-gateway-size';
 
 interface Provider {
   id: string; name: string; model: string; type: string; hasApiKey?: boolean;
@@ -42,6 +43,9 @@ export default function NewProjectPage() {
   }, [aspectRatio, resolution]);
   const modelCapabilities = useMemo(() => getImageModelCapabilities(model), [model]);
   const supportsQuality = modelCapabilities.supportsQuality;
+  // 原生像素交付的公司模型（qiniuyun/* 与 image2）只承诺档位与比例，标签不展示像素
+  const companyCaps = useMemo(() => companyImageCapsForModel(model), [model]);
+  const nativePixelUi = !!companyCaps?.nativeDelivery;
 
   // ── Preprocessing ──
   const [preprocessEnabled, setPreprocessEnabled] = useState(true);
@@ -108,10 +112,16 @@ export default function NewProjectPage() {
         <div>
           <label className="label">清晰度</label>
           <select value={resolution} onChange={(e) => setResolution(e.target.value)} className={modelControlClass}>
-            {GPT_IMAGE_2_RESOLUTIONS.map((r) => (
-              <option key={r} value={r} disabled={!(GPT_IMAGE_2_SIZE_MAP[aspectRatio] || {})[r]}>{r}{GPT_IMAGE_2_SIZE_MAP[aspectRatio]?.[r] ? ` → ${GPT_IMAGE_2_SIZE_MAP[aspectRatio][r]}` : ' — 不支持'}</option>
-            ))}
+            {GPT_IMAGE_2_RESOLUTIONS.map((r) => {
+              const presetSize = GPT_IMAGE_2_SIZE_MAP[aspectRatio]?.[r];
+              // 原生像素交付的公司模型只承诺档位与比例，不展示具体像素
+              const label = !presetSize ? `${r} — 不支持` : (nativePixelUi ? r : `${r} → ${presetSize}`);
+              return <option key={r} value={r} disabled={!presetSize}>{label}</option>;
+            })}
           </select>
+          {nativePixelUi && (
+            <p className="mt-1 text-xs text-ink-tertiary">公司网关按原生像素交付，保证比例与清晰度档位，具体像素以实际交付为准。</p>
+          )}
         </div>
         )}
         {supportsQuality && (

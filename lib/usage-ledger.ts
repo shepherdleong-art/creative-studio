@@ -143,6 +143,7 @@ interface LegacyImageBackfillRow {
 
 const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
   'company-image2-medium': 'image',
+  'company-qiniuyun-gpt-image-2-medium': 'image',
   'company-kling-3-0': 'video',
   'company-seedance-fast': 'video',
   'company-gpt-5-6-luna': 'llm_text',
@@ -151,6 +152,7 @@ const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
 
 const COMPONENT_KEYS_BY_CORE_MODEL: Readonly<Record<string, readonly string[]>> = {
   'company-image2-medium': ['image'],
+  'company-qiniuyun-gpt-image-2-medium': ['image'],
   'company-kling-3-0': ['second'],
   'company-seedance-fast': ['second'],
   'company-gpt-5-6-luna': ['input_token', 'output_token', 'cached_input_token'],

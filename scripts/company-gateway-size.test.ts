@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   companyImageCapsForModel,
+  companyImageDeliverySize,
   companyVideoCapsForModel,
   snapCompanyImageSize,
   snapCompanyVideoSize,
@@ -46,6 +47,47 @@ assert.equal(snapCompanyImageSize('1440x2560', seedreamLiteCaps), '1440x2560');
 // seedream-pro 最高 2K：应用 4K 预设被钳制到 2K
 const seedreamProCaps = companyImageCapsForModel('doubao-seedream-5-0-pro-image')!;
 assert.equal(snapCompanyImageSize('2880x2880', seedreamProCaps), '1440x1440');
+
+// qiniuyun/gpt-image-2-medium：逐格实测放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}
+// （1K 档被网关映射成 1080 类坏尺寸、3K 与 3:2/2:3/21:9 被拒、4K 3:4 映射坏被单格排除）
+const qiniuyunCaps = companyImageCapsForModel('qiniuyun/gpt-image-2-medium')!;
+assert.ok(qiniuyunCaps);
+// 应用 1K 预设 → 钳制到 2K，避开网关 1K 下游映射 bug
+assert.equal(snapCompanyImageSize('1024x1024', qiniuyunCaps), '1440x1440');
+// 2K 4:3 恰好在白名单 → 原样
+assert.equal(snapCompanyImageSize('1920x1440', qiniuyunCaps), '1920x1440');
+// 应用 4K 9:16 预设 → 原样（4K 9:16 实测可用）
+assert.equal(snapCompanyImageSize('2160x3840', qiniuyunCaps), '2160x3840');
+// 应用 4K 1:1 预设 → 4K 1:1
+assert.equal(snapCompanyImageSize('2880x2880', qiniuyunCaps), '2160x2160');
+// 应用 4K 3:4 预设 → 坏格排除，优先裁切映射到同档位 4K 9:16（2160x3840 可完整
+// 居中裁出 2160x2880，真 4K 级画质；交付端 normalize 按 companyImageDeliverySize
+// 名义格裁回 3:4）
+assert.equal(snapCompanyImageSize('2448x3264', qiniuyunCaps), '2160x3840');
+// 应用 2K 3:2 预设 → 比例吸附到最近的 4:3
+assert.equal(snapCompanyImageSize('2496x1664', qiniuyunCaps), '1920x1440');
+// 应用 4K 21:9 预设 → 比例吸附到 16:9、保持 4K
+assert.equal(snapCompanyImageSize('3696x1584', qiniuyunCaps), '3840x2160');
+// auto → 默认 1:1 2K
+assert.equal(snapCompanyImageSize('auto', qiniuyunCaps), '1440x1440');
+
+// ── 公司模型交付尺寸（2026-08-21 起按网关原生像素交付，不再放大回应用预设）──
+// 原生交付开关：qiniuyun（逐格实测按名义格出图）与 image2（实测返回更大尺寸，
+// 白赚像素，比例偏差由交付端裁齐）都开启；其余公司模型（seedream 等）保持默认
+assert.equal(qiniuyunCaps.nativeDelivery, true);
+assert.equal(image2Caps.nativeDelivery, true);
+assert.ok(!companyImageCapsForModel('doubao-seedream-5-0-image')!.nativeDelivery);
+// 同比例：交付尺寸 = 生成原尺寸，交付端规整为 no-op
+assert.equal(companyImageDeliverySize('1728x2304', qiniuyunCaps), '1440x1920');
+assert.equal(companyImageDeliverySize('2048x2048', qiniuyunCaps), '1440x1440');
+// 排除格：交付尺寸 = 名义格子（生成 donor 2160x3840 居中裁回 2160x2880，零放大）
+assert.equal(companyImageDeliverySize('2448x3264', qiniuyunCaps), '2160x2880');
+// 档位钳制：应用 1K 预设交付 2K 格（避开网关 1K 下游映射 bug）
+assert.equal(companyImageDeliverySize('1024x1024', qiniuyunCaps), '1440x1440');
+// image2-medium：应用 4K 4:3 预设 → 公司 4K 4:3 格
+assert.equal(companyImageDeliverySize('3264x2448', image2Caps), '2880x2160');
+// auto → 默认 1:1 2K 格
+assert.equal(companyImageDeliverySize('auto', qiniuyunCaps), '1440x1440');
 
 // ── 视频 size 吸附 ──
 const klingCaps = companyVideoCapsForModel('kling-3.0')!;
