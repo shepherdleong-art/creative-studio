@@ -1147,7 +1147,9 @@ export async function generateScriptV3(
       raw = await dependencies.completeJson({
         systemPrompt: '你是电商短视频口播编剧。只返回完整 JSON，不绑定固定素材顺序。必须查看随用户消息附带的全部候选分镜图。先判断图片能否承接模板；能承接时必须严格遵循用户消息中的 template 叙事结构和写作规则，并遵循两段式封面标题结构；部分阶段不能承接时降级出稿并列出缺失阶段。禁止把不同模板写成同一种通用卖点罗列，也禁止返回截断句或万能标题。',
         userPrompt: prompt,
-        temperature: attempt === 1 ? 0.7 : 0.4,
+        // 公司网关推理模型（GPT-5-6-Luna-Standard）只接受默认 temperature=1，
+        // 显式传其他值会被上游 400 拒绝；统一固定 1 避免与适配层强制作双份约定。
+        temperature: 1,
         images,
         signal: dependencies.signal,
       });

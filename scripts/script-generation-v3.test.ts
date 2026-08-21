@@ -365,6 +365,27 @@ assert.deepEqual(
 }
 
 {
+  const temperatures: Array<number | undefined> = [];
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async (request) => {
+      temperatures.push(request.temperature);
+      return feasibleResult({
+        title: '温度固定',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托', '5芯软弹'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+      });
+    },
+  });
+  assert.equal(result.attempts, 1);
+  assert.equal(temperatures[0], 1, '公司网关模型只接受默认温度，脚本生成必须固定 temperature=1');
+}
+
+{
   let calls = 0;
   const result = await generateScriptV3(baseInput, {
     completeJson: async () => {
