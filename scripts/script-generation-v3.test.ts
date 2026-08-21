@@ -731,34 +731,99 @@ assert.deepEqual(
 
 {
   let calls = 0;
-  await assert.rejects(
-    generateScriptV3(baseInput, {
-      completeJson: async () => {
-        calls += 1;
-        return feasibleResult({
-          title: '始终不交汇',
-          segments: [{
-            narration: `${'舒适承托'.repeat(13)}安心。`,
-            sellingPointRefs: ['112°承托'],
-            visualIntent: '附图中可见的客厅沙发使用场景',
-            visualKeywords: ['沙发', '客厅'],
-            visualRefs: ['visual-1'],
-          }],
-        }, { ...validCoverTitleParts, visualRefs: ['visual-2'] });
-      },
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof ScriptGenerationV3Error);
-      assert.equal(error.code, 'script_contract_invalid');
-      const issues = (error.details as { validationIssues?: string[] }).validationIssues;
-      assert.ok(
-        Array.isArray(issues) && issues.some((issue) => issue.includes('「沙发」')),
-        '最终错误必须携带逐条校验明细，供服务端日志定位',
-      );
-      return true;
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => {
+      calls += 1;
+      return feasibleResult({
+        title: '始终不交汇',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+      }, { ...validCoverTitleParts, visualRefs: ['visual-2'] });
     },
+  });
+  assert.equal(calls, 3, '三次都失配时降级出稿而不是整份失败');
+  assert.equal(result.attempts, 3);
+  assert.equal(result.script.coverTitleParts.source, 'system_composed', '三次不合规必须落到服务端兜底标题');
+  assert.ok(
+    result.script.warnings?.some((warning) => warning.code === 'cover_title_fallback'),
+    '兜底标题必须产生 cover_title_fallback 警告',
   );
-  assert.equal(calls, 3, '三次都失配时按既有上限放弃');
+}
+
+{
+  let calls = 0;
+  const result = await generateScriptV3({ ...baseInput, productCategory: '手机', productName: '钛金属手机' }, {
+    completeJson: async () => {
+      calls += 1;
+      return feasibleResult({
+        title: '非家居品类',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托'],
+          visualIntent: '附图中可见的手机使用场景',
+          visualKeywords: ['手机', '通勤'],
+          visualRefs: ['visual-1'],
+        }],
+      }, {
+        primary: '轻薄钛金属手机',
+        secondary: '通勤随身必备',
+        productCategoryTerm: '手机',
+        primaryStyleModifier: '轻薄',
+        primaryEvidenceTerm: '钛金属',
+        secondaryRole: 'scene_aspiration',
+        secondaryQualifier: '通勤',
+        secondarySceneTerm: '通勤',
+        secondaryValuePhrase: '随身必备',
+        visualRefs: ['visual-1'],
+        sellingPointIds: ['selling-point-1'],
+      });
+    },
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.script.coverTitleParts.source, 'system_composed', '非家居品类必须能出稿并走兜底标题');
+  assert.ok(
+    result.script.warnings?.some((warning) => warning.code === 'cover_title_fallback'),
+    '非家居品类必须带封面标题兜底警告',
+  );
+}
+
+{
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => feasibleResult({
+      title: '软',
+      segments: [{
+        narration: `${'舒适承托'.repeat(13)}安心。`,
+        sellingPointRefs: ['112°承托'],
+        visualIntent: '附图中可见的客厅沙发使用场景',
+        visualKeywords: ['沙发', '客厅'],
+        visualRefs: ['visual-1'],
+      }],
+    }, {
+      primary: '软',
+      secondary: '理想客厅必备',
+      productCategoryTerm: '沙发',
+      primaryStyleModifier: '',
+      primaryEvidenceTerm: '软',
+      secondaryRole: 'scene_aspiration',
+      secondaryQualifier: '理想',
+      secondarySceneTerm: '客厅',
+      secondaryValuePhrase: '必备',
+      visualRefs: ['visual-1'],
+      sellingPointIds: ['selling-point-2'],
+    }),
+  });
+  assert.equal(result.script.coverTitleParts.source, 'system_composed');
+  assert.equal(result.script.coverTitleParts.primary, '112承托沙发', '证据词+品类词合成主标题');
+  assert.equal(result.script.coverTitleParts.secondary, '理想生活之选', '拆分不出副标题时使用固定安全短语');
+  assert.ok(
+    result.script.warnings?.some((warning) => warning.code === 'cover_title_fallback'),
+    '服务端合成标题必须留痕',
+  );
 }
 
 {

@@ -9,6 +9,7 @@ import {
   SCRIPT_TEMPLATES,
 } from './script-templates.ts';
 import { normalizeAutomaticSubtitleText } from './subtitle-display.ts';
+import { splitCoverTitle } from './media-core/cover-domain.ts';
 import { getScriptStrategyAnalysisV3ValidationIssues } from './script-strategy.ts';
 import type {
   AnalysisInput,
@@ -286,12 +287,82 @@ function generationSellingPoints(input: ScriptGenerationInputV3): GenerationSell
   });
 }
 
-function normalizeTitleParts(
+const FALLBACK_SECONDARY_TITLE = '理想生活之选';
+
+/** 封面标题第 2 级安全底线：长度、标点、万能词、互补性。 */
+function titleSafetyPasses(primary: string, secondary: string): boolean {
+  return titleFits(primary, [2, 16])
+    && titleFits(secondary, [2, 16])
+    && hasNoSentencePunctuation(primary)
+    && hasNoSentencePunctuation(secondary)
+    && !GENERIC_COVER_TITLE_KEYS.has(titleKey(primary))
+    && !GENERIC_COVER_TITLE_KEYS.has(titleKey(secondary))
+    && titlesAreComplementary(primary, secondary);
+}
+
+function pickTitleProductCategoryTerm(
+  rawParts: JsonObject,
+  input: ScriptGenerationInputV3,
+  groundedSegments: GroundedScriptSegment[],
+): string {
+  for (const candidate of [string(rawParts.productCategoryTerm), string(input.productCategory)]) {
+    if (candidate
+      && /^[\p{L}\p{N}]{1,6}$/u.test(candidate)
+      && !GENERIC_PRODUCT_CATEGORY_TERMS.has(titleKey(candidate))) {
+      return candidate;
+    }
+  }
+  return groundedSegments
+    .flatMap(({ segment }) => segment.visualKeywords)
+    .find((keyword) => keyword
+      && /^[\p{L}\p{N}]{1,6}$/u.test(keyword)
+      && !GENERIC_PRODUCT_CATEGORY_TERMS.has(titleKey(keyword)))
+    || '';
+}
+
+/** 从排名第 1 的卖点标题截取 2-6 个内容字符作证据词。 */
+function pickTitleEvidenceTerm(sellingPoints: GenerationSellingPoint[]): string {
+  const content = Array.from(sellingPoints[0]?.title || '')
+    .filter((character) => /[\p{L}\p{N}]/u.test(character))
+    .slice(0, 6);
+  return content.length >= 2 ? content.join('') : '';
+}
+
+/** 第 3 级：服务端合成标题；任何输入下都返回非空主副标题。 */
+function composeFallbackTitle(
+  rawParts: JsonObject,
+  input: ScriptGenerationInputV3,
+  groundedSegments: GroundedScriptSegment[],
+  sellingPoints: GenerationSellingPoint[],
+  scriptTitle: string,
+): { primary: string; secondary: string } {
+  const category = pickTitleProductCategoryTerm(rawParts, input, groundedSegments);
+  const evidence = pickTitleEvidenceTerm(sellingPoints);
+  const primary = evidence && titlePartsDoNotOverlap([evidence, category].filter(Boolean))
+    ? `${evidence}${category}`
+    : category;
+  const secondary = splitCoverTitle(scriptTitle).secondary || FALLBACK_SECONDARY_TITLE;
+  if (titleSafetyPasses(primary, secondary)) return { primary, secondary };
+  const split = splitCoverTitle(scriptTitle);
+  if (split.primary && split.secondary) return split;
+  return {
+    primary: category || input.productName || '产品',
+    secondary: FALLBACK_SECONDARY_TITLE,
+  };
+}
+
+interface ResolvedTitleParts {
+  coverTitleParts: ScriptOutputV3['coverTitleParts'];
+  advisories: string[];
+}
+
+function resolveTitleParts(
   raw: JsonObject,
   input: ScriptGenerationInputV3,
   groundedSegments: GroundedScriptSegment[],
   sellingPoints: GenerationSellingPoint[],
-): ScriptOutputV3['coverTitleParts'] {
+  scriptTitle: string,
+): ResolvedTitleParts {
   const rawParts = object(raw.coverTitleParts);
   const primary = string(rawParts.primary);
   const secondary = string(rawParts.secondary);
@@ -354,7 +425,7 @@ function normalizeTitleParts(
       sellingPointIds.length > 0
       && sellingPointIds.every((sellingPointId) => sellingPointById.has(sellingPointId))
     ));
-  if (valid) return { primary, secondary, source: 'model' };
+  if (valid) return { coverTitleParts: { primary, secondary, source: 'model' }, advisories: [] };
 
   // 与上面的 valid 链逐条对应；失配原因必须具体可操作，随修正提示词反馈给模型。
   const issues: string[] = [];
@@ -407,13 +478,33 @@ function normalizeTitleParts(
   if (!titlePartsDoNotOverlap([secondaryQualifier, secondarySceneTerm, secondaryValuePhrase])) {
     issues.push('副标题的 qualifier / sceneTerm / valuePhrase 不得互相包含');
   }
-  if (visualRefs.length === 0 || !visualRefs.every((visualRef) => allowedVisualRefs.has(visualRef))) {
+  const refsValid = visualRefs.length > 0
+    && visualRefs.every((visualRef) => allowedVisualRefs.has(visualRef));
+  const sellingPointRefsValid = sellingPoints.length === 0 || (
+    sellingPointIds.length > 0
+    && sellingPointIds.every((sellingPointId) => sellingPointById.has(sellingPointId))
+  );
+  if (!refsValid) {
     issues.push(`coverTitleParts.visualRefs 只能引用 ${Array.from(allowedVisualRefs).join('、')} 中真实存在的 visualRef`);
   }
-  if (sellingPoints.length > 0 && (sellingPointIds.length === 0 || !sellingPointIds.every((sellingPointId) => sellingPointById.has(sellingPointId)))) {
+  if (!sellingPointRefsValid) {
     issues.push('coverTitleParts.sellingPointIds 必须原样引用 selectedSellingPoints 中的 sellingPointId');
   }
-  throw new ScriptOutputValidationError(issues);
+  if (!refsValid || !sellingPointRefsValid) {
+    // 「不许编造」红线：标题必须引用真实存在的图片与已选卖点，这条保持 blocking。
+    throw new ScriptOutputValidationError(issues);
+  }
+  if (titleSafetyPasses(primary, secondary)) {
+    return {
+      coverTitleParts: { primary, secondary, source: 'system_composed' },
+      advisories: ['封面标题未满足结构规则，已沿用模型措辞', ...issues],
+    };
+  }
+  const composed = composeFallbackTitle(rawParts, input, groundedSegments, sellingPoints, scriptTitle);
+  return {
+    coverTitleParts: { primary: composed.primary, secondary: composed.secondary, source: 'system_composed' },
+    advisories: ['封面标题未满足结构规则，已使用服务端合成标题', ...issues],
+  };
 }
 
 function normalizeSegments(
@@ -594,6 +685,13 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
   const segments = groundedSegments.map(({ segment }) => segment);
   const sellingPointUsage = normalizeSellingPointUsage(raw, input, sellingPoints, groundedSegments);
   const title = string(raw.title) || `${input.productName || input.projectName || '产品'}口播脚本`;
+  const titleResolution = resolveTitleParts(raw, input, groundedSegments, sellingPoints, title);
+  if (titleResolution.coverTitleParts.source !== 'model') {
+    warnings.push({
+      code: 'cover_title_fallback',
+      message: '封面标题未通过结构校验，已使用兜底标题，建议进入智能混剪前手动确认。',
+    });
+  }
   const fullScript = segments.map((segment) => segment.narration).join('\n');
   const fullSubtitle = segments.map((segment) => segment.subtitle).join('\n');
   const contentCharacterCount = countScriptContentCharacters(fullScript);
@@ -604,11 +702,11 @@ function normalizeCandidate(rawValue: unknown, input: ScriptGenerationInputV3): 
     : contentCharacterCount > budget.maxContentCharacters ? 'too_long' : 'qualified';
   return {
     qualification,
-    advisories: material.advisories,
+    advisories: [...material.advisories, ...titleResolution.advisories],
     script: {
       version: 3,
       title,
-      coverTitleParts: normalizeTitleParts(raw, input, groundedSegments, sellingPoints),
+      coverTitleParts: titleResolution.coverTitleParts,
       platform: input.platform,
       tone: input.tone,
       templateId: input.templateId,

@@ -134,7 +134,7 @@ export interface ScriptOutputV3 {
   coverTitleParts: {
     primary: string;
     secondary: string;
-    source: 'model' | 'system_split';
+    source: 'model' | 'system_split' | 'system_composed';
   };
   platform: string;
   tone: string;

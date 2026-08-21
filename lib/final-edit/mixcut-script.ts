@@ -15,7 +15,7 @@ export interface MixcutSourceSegment {
 export interface MixcutSourceScript {
   version: number;
   title?: string;
-  coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' };
+  coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' | 'system_composed' };
   targetDurationSec?: number;
   shotSetId: string;
   segments: MixcutSourceSegment[];
@@ -39,7 +39,7 @@ export interface MixcutTaskScriptSnapshot {
   sourceScriptUpdatedAt: string | null;
   sourceScriptVersion: number | null;
   title: string;
-  coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' };
+  coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' | 'system_composed' };
   targetDurationSec: number;
   shotSetId: string;
   sourceNarrationText: string;

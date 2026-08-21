@@ -158,8 +158,8 @@ export default function ScriptResultView({ script, getShotImageUrl }: Props) {
             <div className="mt-1 text-lg font-semibold text-ink">{script.coverTitleParts.secondary}</div>
           </div>
         </div>
-        {script.coverTitleParts.source === 'system_split' && (
-          <p className="rounded-lg bg-warn-tint px-3 py-2 text-xs text-warn">主副标题由系统拆分，建议检查后再进入智能混剪。</p>
+        {script.coverTitleParts.source !== 'model' && (
+          <p className="rounded-lg bg-warn-tint px-3 py-2 text-xs text-warn">主副标题由系统拆分或兜底生成，建议检查后再进入智能混剪。</p>
         )}
 
         <div className="flex flex-wrap gap-3 rounded-[14px] border border-hairline p-3 text-xs text-ink-secondary">
