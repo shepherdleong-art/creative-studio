@@ -95,6 +95,9 @@ interface Props {
 
 const FREE_HEAD_FRAME_DRAG_KEY = '__free-head-frame__';
 
+/** 首尾帧（带尾帧）运镜的默认提示词：空提示词时自动补这句，批量生成不再算它「未填写」。 */
+const TAIL_TRANSITION_DEFAULT_PROMPT = '从首帧丝滑转场到尾帧';
+
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
   const [templates, setTemplates] = useState<MotionTemplate[]>([]);
@@ -426,6 +429,19 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return drafts;
   };
 
+  /** 带尾帧但提示词为空的行，自动补上首尾帧转场提示词（用户再手改的内容不动）。 */
+  const autoFillTailTransitionPrompts = () => {
+    for (const shot of safeShots) {
+      const rows = getShotRows(shot.id);
+      if (!rows.some((row) => row.tailImageId && !row.prompt.trim())) continue;
+      setShotRows(shot.id, rows.map((row) => (
+        row.tailImageId && !row.prompt.trim()
+          ? { ...row, prompt: TAIL_TRANSITION_DEFAULT_PROMPT }
+          : row
+      )));
+    }
+  };
+
   /**
    * 自由素材工位专用：上传一张图并作为新的一「张」加进工位。
    * 上传走和尾帧同一条 /api/upload，只是 usage 用 video_source(D6)，
@@ -687,6 +703,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         tailImageName: uploaded.filename,
         tailUploadState: 'idle',
         tailUploadError: null,
+        // 首尾帧视频：提示词为空时自动补转场提示词
+        ...(row.prompt.trim() ? {} : { prompt: TAIL_TRANSITION_DEFAULT_PROMPT }),
       }));
       if (!attached) {
         await deleteTailFrameAsset(uploaded.id).catch(() => undefined);
@@ -883,6 +901,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       setBulkStatus('所有模板都关掉了「参与随机」，没有可用来填充的模板。可在设置 › 运镜模板里打开。');
       return;
     }
+    autoFillTailTransitionPrompts();
     const drafts = materializeAllDrafts();
     const plan = planBulkPromptFill(drafts, { pool: randomPoolTemplates, all: templates });
     for (const shot of plan.shots) setShotRows(shot.shotId, shot.rows);
@@ -906,6 +925,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         .filter((job) => !DISCARDABLE_JOB_STATUSES.has(job.status))
         .map((job) => job.shotId),
     );
+    // 带尾帧的空提示词行先补转场提示词，别让它们被当成「未填写」跳过
+    autoFillTailTransitionPrompts();
     const plan = planBulkVideoGeneration(
       safeShots.map((shot) => ({ shotId: shot.id, rows: getShotRows(shot.id) })),
       {
@@ -1004,6 +1025,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const handleOpenBulkDrawer = () => {
     if (creatingRef.current || safeShots.length === 0) return;
     materializeAllDrafts();
+    autoFillTailTransitionPrompts();
     setBulkDrawerOpen(true);
   };
 
@@ -1727,31 +1749,54 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             <div className="video-bulk-list">
               {safeShots.map((shot) => {
                 const rows = getShotRows(shot.id);
+                // 尾帧是行级数据；标题行只取第一条带尾帧的运镜做预览，与首帧并排
+                const tailPreviewRow = rows.find((row) => row.tailImageId);
                 const shotHasExistingJobs = videoJobs.some((job) => (
                   job.shotId === shot.id && !DISCARDABLE_JOB_STATUSES.has(job.status)
                 ));
                 return (
                   <section key={shot.id} className="video-bulk-shot">
                     <div className="video-bulk-shot-heading">
-                      <div className="video-bulk-shot-image">
-                        {shot.imageUrl ? (
-                          <HoverZoomImage
-                            src={shot.imageUrl}
-                            alt={`分镜 ${shot.indexNum} 缩略图`}
-                            className="video-bulk-shot-thumb"
-                            zoomMaxWidth={520}
-                            zoomMaxHeight={390}
-                          />
-                        ) : <Icon name="image" size={16} />}
+                      <div className="video-bulk-frames">
+                        <div className="video-bulk-shot-image">
+                          {shot.imageUrl ? (
+                            <HoverZoomImage
+                              src={shot.imageUrl}
+                              alt={`分镜 ${shot.indexNum} 缩略图`}
+                              className="video-bulk-shot-thumb"
+                              zoomMaxWidth={520}
+                              zoomMaxHeight={390}
+                            />
+                          ) : <Icon name="image" size={16} />}
+                          <span className="video-bulk-frame-chip">首帧</span>
+                        </div>
+                        {tailPreviewRow && (
+                          <div className="video-bulk-shot-image">
+                            {tailPreviewRow.tailImageUrl ? (
+                              <HoverZoomImage
+                                src={tailPreviewRow.tailImageUrl}
+                                alt={`分镜 ${shot.indexNum} 尾帧`}
+                                className="video-bulk-shot-thumb"
+                                zoomMaxWidth={520}
+                                zoomMaxHeight={390}
+                              />
+                            ) : <Icon name="image" size={16} />}
+                            <span className="video-bulk-frame-chip">尾帧</span>
+                          </div>
+                        )}
                       </div>
                       <strong>{isFreeSet ? `图 ${shot.indexNum}` : `分镜 ${shot.indexNum}`}</strong>
                       {shotHasExistingJobs && <span className="video-bulk-badge is-existing">已有视频</span>}
+                      <span className="video-bulk-shot-meta">{rows.length} 条运镜</span>
                     </div>
 
                     <div className="video-bulk-shot-rows">
                       {rows.map((row, rowIndex) => {
                         const rowIssue = getVideoMotionRowIssue(row, getRowTailCapability(row));
-                        const manualLocked = Boolean(row.prompt.trim()) && !isPromptReplaceable(row, templates);
+                        const isAutoTransition = Boolean(row.tailImageId)
+                          && row.prompt.trim() === TAIL_TRANSITION_DEFAULT_PROMPT;
+                        const manualLocked = !isAutoTransition
+                          && Boolean(row.prompt.trim()) && !isPromptReplaceable(row, templates);
                         return (
                           <div key={row.key} className="video-bulk-row">
                             <span className="video-bulk-row-number">运镜 {rowIndex + 1}</span>
@@ -1785,10 +1830,10 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               disabled={creating}
                             />
                             <div className="video-bulk-row-status" aria-label="运镜状态">
-                              {shotHasExistingJobs && <span className="video-bulk-badge is-existing">已有视频</span>}
+                              {row.tailImageId && <span className="video-bulk-badge is-tail">带尾帧</span>}
+                              {isAutoTransition && <span className="video-bulk-badge is-tail">转场提示词</span>}
                               {!row.prompt.trim() && <span className="video-bulk-badge is-empty">未填写</span>}
                               {manualLocked && <span className="video-bulk-badge is-locked">手写已锁定</span>}
-                              {row.tailImageId && <span className="video-bulk-badge is-tail">带尾帧</span>}
                               {rowIssue && (
                                 <span className="video-bulk-badge is-problem video-bulk-row-issue" title={rowIssue}>{rowIssue}</span>
                               )}
