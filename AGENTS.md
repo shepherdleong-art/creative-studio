@@ -2,13 +2,19 @@
 
 本文件面向 AI 编码代理，介绍本仓库的结构、命令与约定。阅读前默认你对项目一无所知。
 
+> **维护约定（先读这条）**
+> - 本文件只写「**读代码读不出来、不写就会踩坑**」的约定与红线。
+> - 实现细节写进 `docs/reference/` 并在这里留一行指针；**单条 bullet 超过 3 行就是该下沉的信号**。
+> - 变更日志式的「这次 PR 改了什么」不属于本文件——那是 commit message 和 `docs/` 的活。
+> - 仓库唯一的说明书就是本文件；`CLAUDE.md` 只是一行 `@AGENTS.md` 引用，**不要在那边另写一份**。
+
 ## 项目概览
 
 **Creative Studio（产品素材工作台）** 是一个本地优先的 AI 素材生产工作台：把一张产品素材图推进到「场景图 → 分镜图 → 口播脚本 → 视频任务 → 成片剪辑 → ZIP 导出包」的完整流水线。API Key、项目数据、生成结果全部保存在本机，不依赖外部后台。
 
 - 技术栈：Next.js 16（App Router）+ React 19 + TypeScript（strict）+ Tailwind CSS 4 + SQLite（`better-sqlite3`）+ `sharp`（图片处理）+ `archiver`（ZIP 导出）+ `ffmpeg-static`/`ffprobe-static`（成片渲染）。
 - 运行形态：既能 `npm run dev` 作为普通 Web 应用跑，也能打包成带私有 Node 运行时的 Windows（Inno Setup）/ macOS（DMG，仅 Apple Silicon）桌面安装包。
-- UI 语言为中文。核心领域术语：项目（project）、场景图（scene image）、分镜（shot/storyboard）、脚本（script）、视频任务（video job）、成片剪辑（final edit）。
+- UI 语言为中文。核心领域术语：项目（project）、场景图（scene image）、分镜（shot/storyboard）、脚本（script）、视频任务（video job）、成片剪辑（final edit）。领域词汇表见 `CONTEXT.md`。
 - 许可证：GPL-3.0-only。
 
 ## Sol + Luna 子代理协作
@@ -24,6 +30,7 @@
 ```bash
 npm run dev                  # 开发服务器，localhost:3000（需 Node.js 20+）；predev 会先尝试拉起 LiteLLM sidecar（失败只禁用公司供应商，不阻塞 dev）
 npm run dev:win              # 开发服务器绑定 127.0.0.1（Windows）
+npm run dev:desktop          # 编译 Electron 负载并对既有 standalone 产物跑桌面壳
 npm run build                # 生产构建：next build + scripts/sync-standalone-assets.mjs
 npm run start                # 启动生产服务器
 npm run lint                 # ESLint（eslint.config.mjs，eslint-config-next core-web-vitals + typescript）
@@ -32,9 +39,9 @@ npm run build:win-installer  # Windows 安装包（PowerShell + Inno Setup，须
 npm run build:mac-installer  # macOS DMG（bash；须 Apple Silicon 主机 + Node 22.x + Xcode CLT）
 ```
 
-终端用户快启脚本（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd`（Windows 桌面版：Electron 壳 + standalone 生产构建，经 `scripts/start-desktop-windows.ps1`）、`stop-windows.cmd`（Windows 网页版）；Windows 网页版入口是 `scripts/start-windows.ps1`（dev server + 浏览器，默认 3000 端口）。Windows 桌面启动脚本优先使用 `node-runtime\node.exe`（免安装包内置的便携 Node 22，gitignored；与包内预编译 better-sqlite3 的 ABI 绑定），缺失才回退系统 Node 并试加载原生模块做版本硬校验。Windows 免安装包由 `scripts/build-windows-portable.ps1 -OutputPath <新目录>` 按显式白名单装配（同盘临时目录完成后改名发布，目标已存在拒绝覆盖），成品根 `start-windows.cmd` 由 `installer/windows/start-windows-portable.cmd` 模板生成并固定传 `-Portable`：免安装模式只认包内 `python-runtime/`（便携 Python 3.12.10 + LiteLLM 1.89.2，gitignored），先校验根目录 `portable-manifest.json`（schemaVersion 1 / `windows-portable-v1` / 关键文件清单）再启动 sidecar，损坏时提示重新复制，禁止联网修复、禁止回退 `.venv-litellm` 或系统 Python；`-Rebuild` 在免安装模式直接拒绝。
+**终端用户快启脚本**（非开发用途）：`start.command` / `stop.command`（macOS 网页版）、`start-desktop.command` / `stop-desktop.command`（macOS 桌面版）、`start-windows.cmd` / `stop-windows.cmd`（Windows）。两个 macOS 入口共用同一数据根，**不能同时跑**（桌面入口在 3000 被占用时会告警）；`start-desktop.command --rebuild` 强制重跑一次 `npm run build`。免安装包装配、便携 Node/Python 运行时与 manifest 校验见 `docs/reference/打包与桌面运行.md`。
 
-公司网关联动（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，macOS 的 `start.command` 与 `npm run dev` 的 `predev` 钩子都经 `scripts/start-litellm.sh`、Windows 的 `start-windows.cmd`（桌面壳）与 `scripts/start-windows.ps1`（dev server）都经 `scripts/start-stack.ps1 -SkipApp` 拉起 LiteLLM（端口 4000，启动参数必须显式 `--host 127.0.0.1`）；依赖锁定在 `requirements-litellm.txt`，组件缺失或 sidecar 失败只禁用公司供应商，不阻塞工作台。Windows 免安装包不走 venv：`start-stack.ps1 -Portable` 用包内 `python-runtime\python.exe scripts\start-litellm-proxy.py --config config.yaml --host 127.0.0.1 --port 4000` 启动，`stack.json` 记录 `litellmRuntime` 与实际解释器路径，`stop-stack.ps1` 按 PID + 路径归属停止。参考图的公网交付走腾讯云 COS（`CREATIVE_STUDIO_COS_*`，见 `lib/cos-media.ts`）。安全约束：本机服务（app 与代理）不得暴露到公网，公网交付只走 COS。两平台停止脚本、启动窗口 Ctrl+C、以及 UI 的关闭按钮（`/api/shutdown` 读取 `storage/run/stack.json` 的受控 `stopScript`）都会把代理一并关闭。状态文件：`storage/run/stack.json`（无 BOM JSON）。注意 `scripts/*.ps1` 必须保存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 的中文会解析失败）。
+**公司网关联动**（macOS / Windows 源码运行）：`.venv-litellm` 与 `config.yaml` 齐备时，各启动入口会先拉起本机 LiteLLM 代理（端口 4000，启动参数**必须显式 `--host 127.0.0.1`**）。组件缺失或 sidecar 失败**只禁用公司供应商，不阻塞工作台**。停止脚本、启动窗口 Ctrl+C、UI 关闭按钮都会把代理一并关掉。完整启停链路与免安装模式差异见 `docs/reference/公司网关与COS中转.md`。
 
 ## 测试
 
@@ -45,15 +52,13 @@ node scripts/db-migrations.test.ts      # 运行单个测试文件
 node scripts/<name>.test.ts             # 其余测试同理
 ```
 
-测试约定：
-
 - 测试文件为 `scripts/*.test.ts`（少量 `*.test.mjs`），用 `node:assert/strict` 断言，无测试框架。
 - 从 `lib/` 导入时带 `.ts` 扩展名（tsconfig 开了 `allowImportingTsExtensions`）。
 - 数据库测试用 `better-sqlite3` 的 `:memory:` 实例；文件类测试用 `os.tmpdir()` 下 `fs.mkdtempSync` 的临时目录。
-- 部分测试（如 `final-edit-render.test.ts`）会真实调用 ffmpeg/sharp 合成测试素材，依赖本机 ffmpeg 可用（见下文 `lib/ffmpeg.ts` 的解析顺序）。
-- `scripts/final-edit-canvas.playwright.test.mjs` 是 Playwright 浏览器测试，运行方式与其他测试不同，参与前先看文件头部的说明。
-- 改动某个模块时，优先跑与它同名的测试文件（如改 `lib/db-migrations.ts` 就跑 `db-migrations.test.ts`）。
-- 免安装包与打包边界相关测试：`node scripts/python-runtime-windows.test.mjs`（runtime 锁与构建/验证脚本合同）、`node scripts/company-provider-startup.test.mjs`（启停与 -Portable 模式）、`node scripts/windows-portable-payload.test.mjs`（免安装装配白名单与 manifest）、`node scripts/standalone-desktop-boundary.test.mjs`、`node scripts/windows-installer.test.mjs`。`scripts/macos-installer-payload.test.mjs` 依赖 macOS 工具链，只能在 Apple Silicon 构建机上跑。
+- 部分测试（如 `final-edit-render.test.ts`）会真实调用 ffmpeg/sharp 合成素材，依赖本机 ffmpeg 可用。
+- `scripts/final-edit-canvas.playwright.test.mjs` 是 Playwright 浏览器测试，运行方式不同，动它前先看文件头。
+- **改动某个模块时，优先跑与它同名的测试文件**（改 `lib/db-migrations.ts` 就跑 `db-migrations.test.ts`）。
+- 打包边界测试：`python-runtime-windows.test.mjs`、`company-provider-startup.test.mjs`、`windows-portable-payload.test.mjs`、`standalone-desktop-boundary.test.mjs`、`windows-installer.test.mjs`。`macos-installer-payload.test.mjs` 只能在 Apple Silicon 构建机上跑。
 
 ## 目录结构与代码组织
 
@@ -76,41 +81,63 @@ lib/                    核心业务逻辑（见下）
 data/                   本地 SQLite 库 workbench.db（gitignored）
 storage/                上传素材、生成产物、日志（gitignored；含 bgm/final-edits/videos 等子目录）
 scripts/                测试文件、安装包构建脚本、启停辅助脚本、资源同步脚本
-installer/windows/      Electron 安装包脚本（Inno Setup）+ 安装停止/清理 PS 脚本；`launcher.cs` 仅保留为历史/开发资源，不打包
-installer/macos/        .app bundle 元数据模板（Info.plist）；launcher.c/launcher.sh 仅历史/开发资源，不打包
+installer/windows/      Electron 安装包脚本（Inno Setup）+ 安装停止/清理 PS 脚本；`launcher.cs` 仅历史资源，不打包
+installer/macos/        .app bundle 元数据模板（Info.plist）；launcher.c/launcher.sh 仅历史资源，不打包
 docs/                   设计/评审/会话记录，按日期前缀命名；
+                        docs/reference/ 放常驻参考（架构细节，见下）；
                         docs/superpowers/{specs,plans}/ 放较大功能的规格与计划文档
 outputs/                阶段性规格、测试清单、交付记录（gitignored）
-python-runtime/         免安装包内置便携 Python + LiteLLM（gitignored；由
-                        scripts/build-python-runtime-windows.ps1 构建，只进 Windows 免安装包）
+python-runtime/         免安装包内置便携 Python + LiteLLM（gitignored，只进 Windows 免安装包）
 types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ```
 
+### `docs/reference/` — 深水区参考
+
+细节多、变动频繁的模块已下沉到这四份文档。**动到对应代码前先读它**，别只看下面的一句话摘要：
+
+| 文档 | 什么时候读 |
+| --- | --- |
+| `docs/reference/批量生产模块.md` | 改 `lib/batch-production/` 任何东西 |
+| `docs/reference/公司网关与COS中转.md` | 改公司网关、尺寸吸附、参考图交付、尾帧、COS |
+| `docs/reference/供应商与队列.md` | 新增/修改图片、脚本、视频供应商适配器 |
+| `docs/reference/打包与桌面运行.md` | 改打包脚本、快启脚本、Electron 桌面壳 |
+
 ### `lib/` 核心模块
 
-- `db.ts` / `db-migrations.ts` — SQLite 初始化（WAL 模式、外键开启）。`CORE_DB_MIGRATIONS` 是扁平的 `ALTER TABLE` / `UPDATE` 语句列表，每次启动逐条执行并 try/catch 跳过已应用的列；新增字段就往后追加，不要改已有条目。
-- `schema-upgrade/` — 共享数据库安全升级基础设施：SQLite Online Backup、磁盘预检、跨进程 SQLite 写锁、可修复尾部中断的 JSONL 审计、统一 gate 和恢复候选重验。锁数据库与审计文件均基于 `dataRoot()`，升级失败不得阻塞不依赖新结构的旧功能。
-- `batch-production/` — 新批量生产 Module；`schema.ts` 使用独立版本表和逐版本 `IMMEDIATE` 事务，`readiness.ts` 通过共享 gate 执行备份、迁移和持久审计。已发布 migration v1–v9：v1 批次身份表，v2 项目素材 `batch_assets` + 素材分析版本 `batch_asset_analysis`（素材身份是内容指纹、不依赖路径），v3 批次版本 `batch_production_versions` + 素材池 `batch_asset_pool_items`，v4 项目脚本 `batch_scripts` + 脚本快照 `batch_script_snapshots`，v5 成片计划 `batch_output_plans` + 成片版本 `batch_output_versions`（份数决定 N 条计划），v6 生产任务 `batch_tasks` + 任务尝试 `batch_task_attempts`（重试只增加尝试），v7 正式产物 `batch_artifacts` + 计划当前成片指向，v8 将正式产物改为按计划与路径追加保存并保护其批次谱系不被物理删除，v9 增加批次逻辑删除、批次版本不可逆冻结以及批次内外部文案所有权。整体输入以版本的 `inputState` 为准：首次开跑后旧版本永久冻结，修改必须新建版本；外部文案只能在所属批次版本内快照，显式保存到项目时复制成独立项目脚本。领域接口在 `assets.ts`/`versions.ts`/`scripts.ts`/`plans.ts`/`tasks.ts`/`artifacts.ts`。v10 新增素材来源表 `batch_asset_sources`；v11 给脚本和快照追加结构化封面标题、shotSetId 与内容修订身份；v12 增加项目脚本来源可用性和目录同步所有权：有修订身份或当前仍存在上游草稿的同步项会被正向认领，后续失效或删除时退出准备区；无法与独立项目脚本可靠区分的更早历史行保守保留，历史快照始终不变。素材来源类型 `BatchAssetSourceKind` 只在 `assets.ts` 定义，来源表是多来源权威数据；读取端兼容 v10 无 `kind` 的旧位置 JSON，旧托管来源按 `dataRoot()/storage/batch-media` 根恢复。`media-catalog.ts` 只信 `video_jobs` 权威记录，验证项目/shotSet、受控路径、真实视频容器和完整 SHA-256；托管目录由 `dataRoot()` 推导，linked 重新定位必须指定来源 id 且内容完全一致。`prepare.ts` + `GET /api/batch-production/prepare` 在 readiness gate 后自动同步输入；`components/mixcut/MixcutWorkspace.tsx` 提供“单条精准混剪/批量生产”模式入口。Phase B 在 `batch-flow.ts` 中以单事务确认 draft 整体输入，相同输入幂等，输入变化才新建版本；`startBatchProduction` 在开跑事务中同步最新项目脚本、校验素材池与精确 N 条计划并永久冻结。第五步可创建/选择批次、设置每脚本份数、选择带分析版本的素材、检查 N 张卡片并开跑；API 为 `POST/GET /api/batch-production/batches`、`GET /api/batch-production/batches/[id]`、`POST .../[id]/snapshot` 和 `PUT .../[id]/start`。Phase C 在 `scheduler.ts` 提供原子领取、有限租约、控制态感知的过期/启动恢复、失败重试与暂停/继续/停止；`executors.ts` 提供统一任务执行 Adapter 与真实进度报告（不可测阶段不伪造百分比）；`runner.ts` 提供领取-执行-落账循环和进程内单例调度，应用关闭与用户停止是不同中断语义。v13 给尝试加租约与 interrupted、任务加 requestKey/expectedState、批次加 controlState。`instrumentation.ts` 在 Node 启动时通过 readiness gate 恢复调度，开跑和任务读取 API 幂等兜底；进度与控制 API 为 `GET .../[id]/tasks`、`POST .../[id]/control` 与 `POST /api/batch-production/tasks/[taskId]/retry`。`GET /api/batch-production/recovery` 只列出并重新验证恢复候选；运行中的 API 禁止覆盖主数据库。未就绪时只关闭批量入口，不能阻塞旧项目与单条精准混剪。Phase D（媒体准备）在 v14 新增 LUT/代理缓存与 `proxy_generate`，v15 进一步规范化 LUT 指纹和完整色彩快照，并新增带批次版本外键的稳定 `batch_proxy_requests`，使任务不再指向可删除的 cache 行。LUT 色彩快照（关闭或引用一个已验证 LUT）纳入 `createBatchSnapshot`/`addAssetToPool`/`matchesCurrentInput` 的冻结输入身份；代理是否已生成不参与这个身份。`lib/ffmpeg.ts` 的 `runFfmpeg` 新增可选 `signal`，真正终止子进程并等 `close` 事件后才 reject 可区分的 AbortError。`scheduler.ts` 新增单任务级 `pauseTask`/`resumeTask`/`cancelTask`（不影响同批次其他任务或批次 controlState），`runner.ts` 心跳同时检查任务级 `expectedState`；`createBatchTask` 同时验证 project→batch→version→proxy request 谱系，并释放已经失效的历史 requestKey。新增 `lut-catalog.ts`（导入用真实 FFmpeg `lut3d` 验证损坏内容、按内容指纹去重、归档与安全物理清理）、`color-pipeline.ts`（完整色彩快照 → 显式 SDR FFmpeg filter）、`proxy-cache.ts`（稳定请求、全局 proxyKey 复用、安全路径、进程内读写租约、pending-delete 释放后自动完成）、`proxy-executor.ts`（按请求冻结的原片/LUT 指纹重验、磁盘预检、进程内单并发、合作取消、临时文件+原子发布、真实 FFmpeg 进度）、`preview.ts`（安全解析匹配代理/原片与 LUT 等待警告）、`export-preflight.ts`（正式输出只读前检，绝不回退代理）。API 新增 LUT、代理请求、任务控制、缓存用量/清理、Range 预览与导出前检；`BatchPreparationPanel.tsx` 提供 LUT、代理、任务、预览和清理入口，设置页提供全局代理缓存清理。
-- Phase E（联合分配与正式导出）在 v16 增加联合分配运行和批次内素材排除；`allocator.ts` 是一次读取全部冻结输入的纯确定性分配器，`allocation-store.ts` 保留运行谱系并保证单条重分配不改其他计划。单条重分配（换一批画面）把目标计划**历史所有版本**用过的非锁定素材、区间与封面都纳入避让（打分惩罚 + overlap 惩罚），派生 seed 纳入当前版本指针：连续点击持续换新、不会在两批画面间来回切换，同状态重试仍幂等，锁定句段不受避让影响，素材池耗尽才回退复用并给出 `previous-version-reused` 提醒。`batch-renderer.ts` 只读指纹一致的原片和冻结 LUT，复用 `ColorPipeline`，通过原有 batch scheduler 真实渲染；`batch-export.ts` 成对追加发布视频/封面并拒绝覆盖。`phase-e.ts` 负责可恢复启动、任务接线和逐条正式发布，`batch-workspace.ts` 聚合卡片状态，输出媒体 route 只接受稳定 ID。没有真实口播时仅生成显式静音候选，正式发布门禁必须要求已核验的 storage 相对口播快照。
-- Phase A 的项目素材卡在快照前通过 `asset-preparation.ts` 使用既有 batch scheduler 排队本地 FFprobe 基础分析；结果明确标记为 `technical`，不冒充内容理解。`project-asset-media.ts` 只按 `projectId + assetId` 解析并重验权威来源、完整 SHA-256 与真实容器，生成受控 960×540 JPEG 缩略图并提供原片 Range 预览；`startBatchProduction` 不再重复创建素材分析任务。
-- 语义优先分配与封面标题在 v17–v23 落地：v17 内容分析请求 `batch_asset_analysis_requests`（冻结素材指纹与视觉供应商身份），v18 补执行作用域，v19 脚本/快照目标成片时长，v20 脚本/快照配音配置，v21 任务表 workType 加 `narration`，v22 素材来源核验快速路径，v23 任务表 workType 加 `semantic_score` + 新表 `batch_semantic_matrices`。`semantic-match.ts` 做「句段 × 素材池场景」LLM 语义矩阵打分：按内容指纹落库（不绑版本），确认整体输入后幂等排队，`POST .../semantic-score` 可手动触发或换供应商；失败/未打分时分配器走关键词+质量兜底不阻塞开跑。`executors.ts` 的 `createSemanticScoreExecutor` 无内容分析时 completed+skipped，LLM 失败回 failed code `semantic_fallback`；打分与分配共用 `allocator.ts` 导出的 `splitAllocationScriptBody` 断句。`cover-title.ts` 复用全局 `final_edit_title_presets` 预设：批次设置以 `coverTitleMode('none'|'preset'|'custom')`/`coverTitlePresetId`/`coverTitleStyles`/`coverTitleFraming` 四字段写入版本 `defaultsJson`（UI 稳定写完整形状、样式按当前画幅解析，canonical 比对自动纳入输入身份），`batch-renderer.ts` 渲染封面时按冻结样式 sharp SVG 合成主/副标题，换封面抽帧同样保留标题。分配器单区间装不下句段（句段估算时长超过所有场景）时走句段内多镜头拼接兜底 `stitchSegment`（reason `semantic_stitch_fallback`、chunk clipId 带 `:part:<k>`、警告 `stitched-segment:<id>`，素材池全空才保留 `no-legal-media`），字幕 cue 按句段整切一次不按 chunk 重复；`subtitle-cues.ts` 把口播对齐句段经 `splitNarrationForDisplay` 清洗标点并按 ≤16 字切分（段内按字数权重比例分配，与估算路径同款）；`PUT .../start` 对草稿版本先经 `prepareBatchSemanticScoreBeforeStart` 幂等排队语义打分，有未完成打分时返回 `semantic_scoring` 不冻结，前端在任务终态后自动续跑，打分失败/不可用不阻塞开跑。批量成片开头与单条剪辑同契约加 20 帧封面片头（`FINAL_EDIT_INTRO_DURATION_US`）：带标题的封面先于视频生成以作片头静帧输入，音轨整体 `adelay`、字幕叠加窗口整体后移，产物时长校验按「片头 + 正文」——`script-duration-policy` 本来就为片头扣了这 20 帧，不加片头会让每条批量成片系统性短一个封面。因为封面被烤进成片，`BATCH_RENDER_ADAPTER_VERSION` 升为 `batch-render-v2`，渲染任务 requestKey 纳入 `cover.timeUs`，换封面走 `scheduleRenderAfterCoverChange` 重渲染该条成片，而不是只改那张独立封面图。
-- `video-provider-schema.ts` — 旧 `video_providers` CHECK 约束的安全升级；只有新增或改为 `openai-video` 供应商时才在共享锁内先备份再重建，普通数据库启动不得直接重建旧表。
-- `data-root.ts` — 解析本地数据根目录：优先 `CREATIVE_STUDIO_DATA_ROOT` 环境变量，否则 `process.cwd()`。`data/`、`storage/` 都挂在它下面，写路径时一律走 `dataRoot()`。
-- `local-image-url.ts` — 把 `storage/` 下的本地图片转成 `/api/images/...` 的 HTTP URL，供只接受真实 URL 的网关上游（腾讯等）拉取；地址默认自动探测（第一张非内部 IPv4 + `PORT`/3000），可用 `CREATIVE_STUDIO_PUBLIC_BASE_URL` 覆盖，探测不到时调用方回退 data URL。
-- `cos-media.ts` — 腾讯云 COS 参考图中转。配置 `CREATIVE_STUDIO_COS_SECRET_ID` / `CREATIVE_STUDIO_COS_SECRET_KEY` / `CREATIVE_STUDIO_COS_DOMAIN`（可选 `CREATIVE_STUDIO_COS_PREFIX` 默认 `ref-images/`、`CREATIVE_STUDIO_COS_URL_TTL_SEC` 默认 86400、`CREATIVE_STUDIO_COS_SIGN_HOST`）后，`gateway-task-image` / `openai-video` 适配器提交任务时把参考图按内容 SHA-256 命名上传（GET `Range: bytes=0-0` 查重跳过重复上传）并生成 24h 预签名 GET URL 传给网关；手写 `q-sign-algorithm=sha1` 签名（`node:crypto`，零新增依赖），上传/下载都走配置的自定义域名。上传前默认压缩（`CREATIVE_STUDIO_COS_COMPRESS=0` 关闭；`CREATIVE_STUDIO_COS_MAX_BYTES` / `MAX_DIM` / `QUALITY` 可调，默认 2MB / 4096px / 90）；视频首帧/尾帧默认只有超过 4.8MB 才压缩（`CREATIVE_STUDIO_COS_VIDEO_MAX_BYTES` / `VIDEO_MAX_DIM` / `VIDEO_QUALITY` 可调，默认 4.8MB / 4096px / q95，经 `getCosVideoCompressOptions()` 读取；腾讯尾帧 LastFrameUrl 图片限 5M、首帧 FileInfos 限 10M，超过会在任务创建前 400，阈值取更小者留余量），避免视频生成起点糊掉；压缩只影响发给上游的 COS 中转副本，本地成品文件不受影响。注意 CDN 自定义域名回源会把 Host 改写成源站默认端点（如 `<bucket>.cos.ap-guangzhou.myqcloud.com`），且会把 HEAD 改写为 GET——此时必须把 `CREATIVE_STUDIO_COS_SIGN_HOST` 设为源站端点用于签名，查重不能用 HEAD。COS 未配置或上传失败时适配器回退 `local-image-url` 的本机 URL 逻辑。压缩核心导出为 `compressImageToBudget`，供 `gateway-task-image` 的 qiniuyun 免 COS 内联通道复用。密钥只放 `.env.local`，日志不得打印签名参数。公司供应商的脚本视觉调用（`completeJson` 带图片）也走这条受控传输：`tryUploadBufferToCosAndSign` 把内存图片上传 COS 后改用预签名 URL 发给模型，不内联 base64；COS 未配置时门禁（`provider-execution-gate.ts` 的 `transport_unavailable`）失败关闭。
-- `gateway-media-url.ts` — 网关结果 URL 归一化（把网关误配的 localhost/相对路径结果地址改写到网关 origin）与带鉴权下载（仅当目标指向网关 origin 才附 Bearer）。
-- `queue.ts` / `video-queue.ts` — 图片/视频任务的内存中队列：向供应商提交任务、轮询状态、下载结果、失败重试；支持暂停/恢复。视频并发由 `VIDEO_CONCURRENCY` 环境变量控制（1–10，默认 10，可在视频生成面板按项目调整）。
-- `providers/` — 图片生成适配器：`openai-compatible`、`packy-images`、`packy-gemini-image`、`geekai-json`、`gateway-task-image`（New API 类中转网关把图片模型挂在 `/v1/videos` 异步任务协议下的场景，与 geekai-json 同为提交→轮询→下载三段式）。多图编辑的图片顺序统一约定为**待编辑底图在前（图1）、参考图在后（图2-N）**，与项目默认提示词「图1=分镜图/底图、图2=场景参考图」一致；`geekai-json` 与 `gateway-task-image` 的参考图引导前缀也按此编号。`gateway-task-image` 对公司 `qiniuyun/*` 模型的参考图走免 COS 内联通道：≤20MB 原样转 data URL 不压缩（保细节），超出压到 ≤6MB/4096px/q92，压缩失败回退 COS/本机 URL 链；瓶颈是网关 nginx 请求体上限（2026-08-21 实测 28.3MB 通过、40.8MB 413），阈值见 `CREATIVE_STUDIO_INLINE_*`。
-- `script-providers/` — 脚本（LLM）生成：`gemini`、`openai-compatible`（Chat Completions）、`openai-responses`（Responses/SSE，覆盖 Packy GPT 等）与 `anthropic-messages`（`/v1/messages`，覆盖 Packy Kimi 等），配置存库并由 `apiStyle` 选择协议。
-- `video-providers/` — 视频生成适配器：`kling`（可灵）、`jimeng`（即梦）、`openai-video`（New API 类统一中转网关的 OpenAI 风格 `/v1/videos` 协议，Bearer Key 鉴权）。视频尾帧（`video_jobs.tailImageId`）能力由各适配器 `tailFrameCapability(model)` 按精确模型 allowlist 声明：`jimeng` 仅直连 `doubao-seedance-2-0-260128`（Ark `first_frame`/`last_frame` role）；`openai-video` 仅 `lib/company-gateway-tail-frame.ts` 里已核验的公司别名——可灵 `kling-3.0` 尾帧走腾讯原生 `LastFrameUrl` + `OutputConfig.AspectRatio`/`Resolution='1080P'`（时长走 `OutputConfig.Duration`：网关 LastFrameUrl 分支不透传 `seconds` 落缺省 5s，`OutputConfig` 字段原样透传腾讯，2026-08-18 真实任务验证 10s 生效）（`images[1]` 会被当参考图，已证伪），Seedance `doubao-seedance-2-0(-fast)-260128` 尾帧走 `images[1]`；公司尾帧强制本机回环 LiteLLM + 首帧尾帧双 COS 预签名 URL，门禁或上传失败一律在 POST 前失败关闭。
-- `company-gateway-size.ts` — 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并补 `response_format`；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。`qiniuyun/gpt-image-2-medium`（2026-08-21 逐格真实任务探测）放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}，并经 `CompanyModelCaps.exclude` 单格排除 4K 3:4：1K 档被网关映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，均不满足上游「宽高 16 整除」被拒；3K 档与 3:2/2:3/21:9 提交即拒。命中排除格时优先「裁切映射」——同档位找能居中裁切覆盖目标框的跨比例好格（4K 3:4 → 4K 9:16 的 2160x3840，交付端 normalize 裁回 3:4 名义格 2160x2880，真 4K 级画质），没有可裁格才同比例就近换档。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
-- `final-edit/` — “智能混剪”正式第五步的后端：`schema.ts`（独立版本化迁移）、`domain.ts`/`types.ts`（时间线、字幕、文字样式等领域模型）、`renderer.ts`（ffmpeg 渲染成片）、`worker.ts`（渲染任务 drain 循环，重启时把 running 任务恢复为 queued）、`workspace.ts`、`proposal.ts`、`bgm.ts`，以及 `adapters/`（视频分析 `video-analysis.ts`、TTS `tts-registry.ts`/`vapi-qwen-tts.ts`/`doubao-tts.ts`、字幕对齐 `alignment.ts`）。Mixcut 上下文与外部素材必须按 `projectId + shotSetId` 隔离。
-- `ffmpeg.ts` — 解析 ffmpeg/ffprobe 二进制：环境变量 `CREATIVE_STUDIO_FFMPEG`/`CREATIVE_STUDIO_FFPROBE` → ffmpeg-static/ffprobe-static → PATH；封装 `runFfmpeg`（带进度回调、超时、stderr 尾部报错和 AbortSignal），并提供直接 FFmpeg 子进程的停机广播/等待；`probeDurationSec` 在 ffprobe 失败时回退 ffmpeg 解析。
-- `shutdown.ts` — 唯一的进程级优雅停机编排：停止批量调度器、广播并等待直接 FFmpeg、关闭 SQLite、按 `stack.json` 受控停止 LiteLLM；UI 关闭端点与 SIGTERM/SIGINT 共用且幂等。
-- `logger.ts` — 同时写数据库和 `storage/logs/` 文件；会主动脱敏 API Key，不要在日志里打印密钥。
+**数据库**
+
+- `db.ts` / `db-migrations.ts` — SQLite 初始化（WAL、外键）。`CORE_DB_MIGRATIONS` 是扁平 SQL 列表，启动时逐条执行并 try/catch 跳过已应用项。**新增字段往后追加，不要改已有条目。**
+- `schema-upgrade/` — 共享安全升级设施：SQLite Online Backup、磁盘预检、跨进程写锁、可修复 JSONL 审计、统一 gate 与恢复候选重验。路径全部基于 `dataRoot()`；升级失败不得阻塞不依赖新结构的旧功能。
+- `video-provider-schema.ts` — 旧 `video_providers` CHECK 约束的安全升级。**只有新增或改为 `openai-video` 供应商时**才在共享锁内先备份再重建；普通数据库启动不得重建旧表。
+
+**批量生产** — 细节见 `docs/reference/批量生产模块.md`
+
+- `batch-production/` — 独立的批量生产 Module，自带 `{version, sql}` 迁移流（v1–v23，权威清单直接看 `schema.ts`）和 `readiness.ts` 闸门。红线：迁移只能追加；批量迁移必须过共享备份/锁/审计 gate，不许塞回会吞错误的旧 core runner；**只从 `media-core/` 导入，绝不从 `final-edit/` 导入**；静音占位素材只能预览，不得通过正式发布。
+
+**供应商与队列** — 细节见 `docs/reference/供应商与队列.md`
+
+- `queue.ts` / `video-queue.ts` — 提交 → 轮询 → 下载 → 重试的内存队列，支持暂停/恢复。视频并发由 `VIDEO_CONCURRENCY` 控制（1–10，默认 10，可按项目在面板调整）。
+- `providers/` — 图片生成适配器。多图编辑的图片顺序统一约定为**待编辑底图在前（图1）、参考图在后（图2-N）**。
+- `script-providers/` — 脚本（LLM）生成适配器，按持久化的 `apiStyle` 选择协议。
+- `video-providers/` — 视频生成适配器。尾帧能力由各适配器 `tailFrameCapability(model)` 按**精确模型 allowlist** 声明，不许放宽成前缀匹配。
 - `provider-concurrency.ts` / `cost.ts` — 每供应商并发上限；每个 job 记录预估成本。
-- `image-output-normalize.ts` — 生成图与目标尺寸不一致时用 sharp 居中裁切并记日志。开启 `nativeDelivery` 的公司模型（qiniuyun/* 与 image2-*）只按 `companyImageDeliverySize` 推出的名义格比例居中裁切、绝不缩放：同比例即原样交付（image2 常返回比名义格更大的图，白赚像素），比例略偏的裁齐（image2 1K 3:4 实返 1024x1376 → 1024x1366），排除格 donor 裁回名义格比例；其余模型（seedream 等）仍规整到 `job.size`。
-- `seed.ts` — 启动时向 `video_providers` 等表写入内置供应商预设。公司供应商（图片 `image2-medium`、视频 `kling-3.0` / `doubao-seedance-2-0-fast-260128`、脚本 `GPT-5-6-Luna-Standard`）以 `http://127.0.0.1:4000` + 占位 Key 开箱即用补种（本机 LiteLLM 不校验调用方 Bearer，上游真实 Key 由 `config.yaml` 持有）；已有同模型手工配置时不重复补种，已有用户配置不被覆盖。
+
+**公司网关与素材交付** — 细节见 `docs/reference/公司网关与COS中转.md`
+
+- `company-gateway-size.ts`（size 白名单与吸附/裁切映射）、`cos-media.ts`（腾讯云 COS 参考图中转）、`local-image-url.ts`（COS 未配置时的本地 URL 回退）、`gateway-media-url.ts`（结果 URL 归一化与带鉴权下载）、`image-output-normalize.ts`（产出图规整；公司 `nativeDelivery` 模型只裁不缩）、`seed.ts`（内置与公司供应商补种）。
+- 红线：**本机服务（app 与代理）不得暴露到公网，公网交付只走 COS**；COS 密钥只在 `.env.local`，签名参数绝不进日志；公司尾帧两帧都必须走 COS 预签名 URL，任一 gate 失败在 POST 前 fail closed。
+
+**成片与媒体**
+
+- `final-edit/` — “智能混剪”第五步的后端：版本化 schema、时间线/字幕领域模型、ffmpeg 渲染、渲染 worker（重启把 running 恢复为 queued）、工作区/提案/BGM，以及视频分析、TTS、对齐等 `adapters/`。共享媒体基础（存储路径、匹配、封面标题、场景检测、TTS 与对齐、`render-contract.ts` 的 24fps / 20 帧片头常量）在 `media-core/`，旧路径只做兼容再导出。**混剪上下文与外部素材按 `projectId + shotSetId` 隔离，不许从文件名或时间戳推断归属。**
+- `ffmpeg.ts` — 解析 ffmpeg/ffprobe（`CREATIVE_STUDIO_FFMPEG`/`_FFPROBE` → static 包 → PATH），封装带进度回调、超时、stderr 尾部报错和 AbortSignal 的 `runFfmpeg`，并提供直接子进程的停机广播/等待；`probeDurationSec` 在 ffprobe 失败时回退 ffmpeg 解析。
+- `shutdown.ts` — **唯一**的进程级优雅停机编排：停批量调度、广播并排空直接 FFmpeg、关闭 SQLite、按 `stack.json` 受控停 LiteLLM。UI 关闭端点与 SIGTERM/SIGINT 共用且幂等。
+- **停机信号契约**：成片 prepare 与批量口播任务向停机 worker 注册**同一个** AbortController；TTS 归一化/拼接与五分钟 prepare 预览都接收任务信号，被打断的 prepare 行退回 `queued` 走租约式恢复。另有三处**按策略保留的信号缺口**（都是有意为之的短调用，靠进程级 FFmpeg 停机兜底）：`lut-catalog.ts`（10s）、`project-asset-media.ts`（60s）、`final-edit/video-frame.ts`（30s）——动它们之前先确认是否还需要保持缺口。
+
+**其他**
+
+- `data-root.ts` — 本地数据根解析（`CREATIVE_STUDIO_DATA_ROOT` 优先，否则 `process.cwd()`）。**所有本地路径一律走 `dataRoot()`，不要硬编码 `data/`、`storage/`。**
+- `logger.ts` — 同时写数据库与 `storage/logs/`，主动脱敏 API Key。新增日志点不要打印请求头、密钥或完整鉴权串。
 
 ### 数据流
 
@@ -125,25 +152,29 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 ## 开发约定
 
 - **供应商适配器模式**：图片/脚本/视频三层都用适配器。新增供应商时实现对应 adapter 接口并注册，不要改动队列等核心逻辑。
-- **数据库迁移**：既有核心表继续走 `CORE_DB_MIGRATIONS` 追加式 `ALTER TABLE`（启动时逐条 try/catch）；成片剪辑在 `lib/final-edit/schema.ts`、批量生产在 `lib/batch-production/schema.ts` 分别使用独立 `{version, sql}` 迁移。批量迁移和旧供应商表重建前必须经 `lib/schema-upgrade/` 完成已验证的一致备份、跨进程锁和审计。三种迁移流都不要修改已发布条目，也不要把批量复杂迁移塞回会吞掉错误的旧 core runner。
-- **路径**：所有本地文件路径基于 `dataRoot()`，不要硬编码 `data/`、`storage/` 相对路径。
+- **数据库迁移**：核心表继续走 `CORE_DB_MIGRATIONS` 追加式 `ALTER TABLE`；成片剪辑在 `lib/final-edit/schema.ts`（`FINAL_EDIT_MIGRATIONS`）、批量生产在 `lib/batch-production/schema.ts` 各自使用独立 `{version, sql}` 流。批量迁移和旧供应商表重建前必须经 `lib/schema-upgrade/` 完成已验证备份、跨进程锁和审计。**三种流都不许修改已发布条目**，也不许把批量复杂迁移塞回会吞掉错误的旧 core runner。
+- **并发**：`projects.concurrency` 控制单个项目的最大并行任务提交数。
+- **路径**：所有本地文件路径基于 `dataRoot()`。
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。
-- **文档**：设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/specs/` 和 `docs/superpowers/plans/`。
-- **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。Node 进程的 SIGTERM/SIGINT 也走同一入口。
-- 仓库另有一份 `CLAUDE.md`，内容与本文件类似；若改动了架构或命令，两处都要同步。
+- **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`。
+- **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。SIGTERM/SIGINT 也走同一入口。
 
 ## 安全注意事项
 
 - `.env.local` 存放 LLM API Key（Gemini、Qwen、Kimi、GPT 等）与腾讯云 COS 密钥（`CREATIVE_STUDIO_COS_*`），**绝不提交**；`.gitignore` 已排除 `.env*`。
-- 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示"是否已配置"，不回显明文——保持这个约束。
+- 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示「是否已配置」，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
-- 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点时不要打印请求头、密钥或完整鉴权串。
-- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/` 等本机数据、密钥或开发路径；改动打包逻辑时保留这些断言。`python-runtime/` 只进 Windows 免安装包（白名单装配），不进 Git，也不进 Inno/DMG 安装包与 standalone。
+- 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点不要打印请求头、密钥或完整鉴权串。
+- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/`；**改动打包逻辑时保留这些断言**。`python-runtime/` 只进 Windows 免安装包，不进 Git、Inno/DMG 安装包与 standalone。
+- 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 
 ## 桌面打包与部署
 
-- `next.config.ts` 使用 `output: 'standalone'`，并通过 `outputFileTracingExcludes` 排除数据/文档/脚本目录；`ffmpeg-static`、`ffprobe-static` 在 `serverExternalPackages` 中，由 `scripts/sync-standalone-assets.mjs` 强制拷入 standalone（`npm run build` 会自动执行）；sharp 的原生运行时目录 `node_modules/@img` 同样强制拷入（Next 文件追踪只收录 `.node` 会漏掉同目录的 libvips DLL，导致 `ERR_DLOPEN_FAILED`）。
-- **Windows**：`scripts/build-win-installer.ps1` 跑生产构建、下载配套私有 Node 运行时、用 Inno Setup（`installer/windows/CreativeStudio.iss`）组装，输出 `dist/windows/CreativeStudioSetup.exe`。默认卸载保留本地数据。
-- **macOS**：`scripts/build-mac-installer.sh` 输出 `dist/macos/产品素材工作台-<version>.dmg`，仅 Apple Silicon。构建机必须用 arm64 Node 22.x（内置运行时锁定 Node 22.22.3），主版本或架构不一致会导致 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；还需要 Xcode Command Line Tools。脚本会校验 FFmpeg 为 arm64，并移除错误标为 arm64 的 x86_64 `ffprobe-static`，由已测试的 FFmpeg 元数据探测回退接管。用户侧说明见 `MACOS.md`。
-- **Electron 发版顺序与本地服务状态**：macOS/Windows 打包脚本先完成 `npm ci`（除非显式跳过）；若目标 `node_modules/electron` runtime 仍缺失，普通分支再用当前 Node 显式执行 `node_modules/electron/install.js`，随后统一做存在性硬断言，显式跳过分支不自动安装。macOS ATS 只允许 `NSAllowsLocalNetworking`。桌面服务在 `CREATIVE_STUDIO_DATA_ROOT/storage/run/electron-service.json` 记录当前 `http://127.0.0.1:<port>` 与 instance，正常退出时清理；Windows 安装停止脚本必须先校验该状态与 `/api/desktop/health` 的 instance，再有限 POST `/api/shutdown`，超时才按安装路径使用 `taskkill /T /F`。
+完整流程、脚本参数与 Electron 状态文件契约见 `docs/reference/打包与桌面运行.md`。必须记住的几条：
+
+- `next.config.ts` 用 `output: 'standalone'`；`ffmpeg-static`/`ffprobe-static` 与 sharp 的 `node_modules/@img` 由 `scripts/sync-standalone-assets.mjs` **强制拷入**（Next 文件追踪只收 `.node`，会漏掉同目录 libvips DLL 导致 `ERR_DLOPEN_FAILED`）。
+- **macOS 构建机必须是 arm64 Node 22.x**，主版本或架构不一致会让 `better-sqlite3`/`sharp` 原生模块 ABI 不匹配；另需 Xcode CLT。发版还需 Developer ID + notarytool 配置，`--allow-adhoc` 仅限本地。
+- `scripts/*.ps1` 必须存为 **UTF-8 带 BOM**（PS 5.1 按 ANSI 读无 BOM 中文会解析失败）；`storage/run/stack.json` 则是**无 BOM** JSON。
+- 打包出的 `.app` 不含 `config.yaml` 与 `.venv-litellm/`，所以**公司供应商只在源码运行时可用，安装版永远没有**。
+- 用户侧 macOS 安装/卸载/数据位置说明见 `MACOS.md`。
