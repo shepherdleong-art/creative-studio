@@ -10,6 +10,8 @@ const progressCard = fs.readFileSync('components/batch-production/BatchProductio
 const review = fs.readFileSync('components/batch-production/BatchStepReview.tsx', 'utf8');
 const exportStep = fs.readFileSync('components/batch-production/BatchStepExport.tsx', 'utf8');
 const selectionCards = fs.readFileSync('components/batch-production/BatchInputSelectionCards.tsx', 'utf8');
+const startRoute = fs.readFileSync('app/api/batch-production/batches/[id]/start/route.ts', 'utf8');
+const scheduler = fs.readFileSync('lib/batch-production/scheduler.ts', 'utf8');
 
 assert.match(projectPage, /MixcutWorkspace/);
 assert.match(workspace, /单条精准混剪/);
@@ -84,6 +86,27 @@ assert.match(progressCard, /已用时/);
 assert.match(progressCard, /已完成/);
 assert.match(progressCard, /compact/);
 assert.match(preparation, /BatchProductionProgressCard/);
+// 进度卡批次控制(2026-08-23):full/compact 两个变体头部都能 暂停/继续/停止 批次,
+// 已停止/已暂停有专属文案,卡住时不再只能干等。
+assert.match(progressCard, /onControl/);
+assert.match(progressCard, /暂停批次/);
+assert.match(progressCard, /继续批次/);
+assert.match(progressCard, /停止批次/);
+assert.match(progressCard, /已停止/);
+assert.match(scripts, /onControlBatch/);
+assert.equal(
+  preparation.match(/controlState=\{workspace\?\.batch\.controlState\}/g)?.length,
+  2,
+  '进度卡 full(BatchStepScripts)与 compact(容器)两处都必须传 controlState',
+);
+// 批次控制后补刷任务列表:停止后轮询即停,阶段列表要立刻落到 已停止/cancelled
+assert.match(preparation, /Promise\.all\(\[loadWorkspace\(selectedBatchId\), loadTasks\(selectedBatchId\)\]\)/);
+// 停止后再开跑(2026-08-23 反馈):显式开跑必须把 已停止/已暂停 批次重新激活,
+// 否则语义门禁排队的任务永不被领取,界面呈现"已停止但进度条还在走"的僵尸态;
+// 已停止批次的计时器不再空转。
+assert.match(scheduler, /export function reactivateBatchForStart/);
+assert.match(startRoute, /reactivateBatchForStart\(db, projectId, id\)/);
+assert.match(preparation, /batchStopped/);
 // 第 2 步顺序:脚本 → 背景音乐 → 输出设置(问题 2),BGM 必须在开始按钮之前
 assert.ok(scripts.indexOf('renderBgmSection()') < scripts.indexOf('aria-label="输出设置与开始"'), 'BGM 区块必须在输出设置之前');
 assert.match(scripts, /背景音乐在上方卡片中设置/);

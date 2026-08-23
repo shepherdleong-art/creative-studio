@@ -107,6 +107,10 @@ export interface BatchStepScriptsProps {
   /** 开跑后的分阶段进度;未开跑时为 null。渲染在本步内容栈末尾(BGM 之下),
       点开跑后由容器滚进视野——置顶会落在「开始」按钮的视线之外。 */
   progress: BatchProgressView | null;
+  /** 批次控制态;与 onControlBatch 一起传入时,进度卡头部显示 暂停/继续/停止 按钮 */
+  controlState?: 'running' | 'paused' | 'stopped';
+  controlBusy?: boolean;
+  onControlBatch?: (action: 'pause' | 'resume' | 'stop') => void;
 }
 
 export interface OutputPresetLabel {
@@ -172,6 +176,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onScriptDeleted,
     inputChangedWarning,
     progress,
+    controlState,
+    controlBusy,
+    onControlBatch,
   } = props;
 
   const configuredProvider = useMemo(
@@ -796,6 +803,22 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
           </label>
           <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
             <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
+              <span>横向位置</span>
+              <span className="tabular-nums">{Math.round(style.x * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}横向位置`}
+              value={Math.round(style.x * 100)}
+              disabled={frozen}
+              onChange={(event) => updateCoverStyle(kind, { x: Number(event.target.value) / 100 })}
+              className="w-full accent-[var(--color-accent)]"
+            />
+          </label>
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary">
               <span>纵向位置</span>
               <span className="tabular-nums">{Math.round(style.y * 100)}%</span>
             </span>
@@ -872,9 +895,15 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               {renderCoverTextStyleEditor('secondary', coverStyles.secondary)}
             </div>
             <div className="flex min-w-56 flex-1 flex-col gap-2">
+              {/* 宽度按「高度上限 320px × 画幅比」反推、再封顶 560px,配合 aspectRatio
+                  让三种画幅的预览框都保持真实比例(旧版 w-full + maxHeight 会把竖版
+                  压成宽扁条,SVG letterbox 后看起来就是"没有比例")。 */}
               <div
-                className="relative w-full overflow-hidden rounded-xl bg-gradient-to-br from-slate-600 via-slate-700 to-slate-900"
-                style={{ aspectRatio: `${previewSize.width} / ${previewSize.height}`, maxHeight: 260 }}
+                className="relative mx-auto overflow-hidden rounded-xl bg-gradient-to-br from-slate-600 via-slate-700 to-slate-900"
+                style={{
+                  aspectRatio: `${previewSize.width} / ${previewSize.height}`,
+                  width: `min(100%, ${Math.round((320 * previewSize.width) / previewSize.height)}px, 560px)`,
+                }}
               >
                 <svg
                   viewBox={`0 0 ${previewSize.width} ${previewSize.height}`}
@@ -885,9 +914,11 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                   // 内容由 textStyleToSvgElements 生成,文本与属性都过 escapeXml。
                   dangerouslySetInnerHTML={{ __html: previewTitleSvg }}
                 />
+                {/* 与混剪封面编辑器一致的四边 4% 导出安全区虚线框。 */}
+                <div className="pointer-events-none absolute border border-dashed border-white/70" style={{ inset: '4%' }} aria-label="4% 导出安全区" />
               </div>
               <p className="text-[11px] text-ink-tertiary">
-                预览按成片尺寸等比缩放，样式与合成一致（底图为示意色块）；<span className="text-ink-secondary">{frozen ? '当前快照' : '第一份已选脚本'}</span>的标题：{primaryText} / {secondaryText}
+                预览按成片尺寸等比缩放，样式与合成一致（底图为示意色块，虚线框为四边 4% 导出安全区）；<span className="text-ink-secondary">{frozen ? '当前快照' : '第一份已选脚本'}</span>的标题：{primaryText} / {secondaryText}
               </p>
             </div>
           </div>
@@ -1157,7 +1188,13 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
           scrollToProgressRef)——置顶会落在「开始」按钮的视线之外。 */}
       {progress && (
         <div id={BATCH_PROGRESS_ANCHOR_ID}>
-          <BatchProductionProgressCard progress={progress} variant="full" />
+          <BatchProductionProgressCard
+            progress={progress}
+            variant="full"
+            controlState={controlState}
+            controlBusy={controlBusy}
+            onControl={onControlBatch}
+          />
         </div>
       )}
       <BatchScriptImportDialog

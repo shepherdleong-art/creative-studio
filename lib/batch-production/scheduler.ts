@@ -520,6 +520,28 @@ export function resumeBatch(
   })();
 }
 
+/**
+ * 显式开跑前的控制态修复:用户点击「开始批量生产」就是明确要这个批次跑起来。
+ * 停止/暂停只约束调度器不得擅自领取(claimNextTask 只看 controlState='running'),
+ * 不应挡住用户手动再开跑——否则开跑前由语义/口播门禁排队的任务会永远 queued,
+ * UI 呈现"已停止但进度条还在走"的僵尸态。与 resumeBatch 不同:这里允许从
+ * stopped 重新激活,因为这是用户的显式新动作,不是调度器的擅自恢复。
+ */
+export function reactivateBatchForStart(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  now?: () => Date,
+): void {
+  db.transaction(() => {
+    assertBatchOwnership(db, projectId, batchId);
+    db.prepare(`
+      UPDATE batch_productions SET controlState = 'running', updatedAt = ?
+      WHERE id = ? AND controlState IN ('paused', 'stopped')
+    `).run(nowIso(now), batchId);
+  })();
+}
+
 function assertTaskOwnership(
   db: Database.Database,
   projectId: string,

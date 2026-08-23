@@ -522,13 +522,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     return () => window.clearTimeout(timer);
   }, [loadBatchDetail, selectedBatchId]);
 
-  // 计时 tick:只在有活跃任务时每秒跳动一次,终态后不再更新。
+  // 计时 tick:只在有活跃任务且批次未被停止时每秒跳动一次,终态后不再更新。
+  // 已停止批次里可能残留 expectedState=running 的 queued 任务(停止前排队的),
+  // 没有 stopped 闸门的话,一打开页面计时器就永远空转,看起来像"还在跑"。
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const batchStopped = workspace?.batch.controlState === 'stopped';
   useEffect(() => {
-    if (!hasActiveBatchTask) return;
+    if (!hasActiveBatchTask || batchStopped) return;
     const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [hasActiveBatchTask]);
+  }, [hasActiveBatchTask, batchStopped]);
 
   const progressView = useMemo<BatchProgressView | null>(() => {
     // 语义匹配/口播排队期间，服务端批次状态还不是 running，但生产任务已经
@@ -582,17 +585,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           narration.length > 0 ? narrationSucceeded / narration.length : undefined,
         ),
         // 自动配画面不能以"工作区里存在分配报告"为准——那可能是确认输入时
-        // 遗留的旧结果。本轮有语义任务时，必须等语义全部成功后再看分配状态。
+        // 遗留的旧结果。本轮有语义任务时，等语义任务结束(成功或失败)再看分配状态;
+        // 语义失败不再传染本阶段——开跑流程会走关键词兜底继续分配,失败由
+        // 「匹配画面语义」阶段自己如实展示。
         stage(
           '自动配画面',
-          semantic.length > 0
-            ? semanticFailed > 0
-              ? 'failed'
-              : semanticActive > 0
-                ? 'waiting'
-                : allocationDone
-                  ? 'done'
-                  : 'running'
+          semantic.length > 0 && semanticActive > 0
+            ? 'waiting'
             : allocationDone
               ? 'done'
               : 'running',
@@ -1427,7 +1426,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           body: JSON.stringify({ action }),
         },
       ));
-      await loadWorkspace(selectedBatchId);
+      // 停止/暂停后轮询会随活跃任务消失而停,这里一次性补刷任务与 workspace,
+      // 让阶段列表立刻落到 cancelled/已停止,而不是停留在「进行中」。
+      await Promise.all([loadWorkspace(selectedBatchId), loadTasks(selectedBatchId)]);
     } catch (controlError) {
       setFeedback({ kind: 'error', message: controlError instanceof Error ? controlError.message : '批次控制失败' });
     } finally {
@@ -1664,7 +1665,13 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 内容溢出并盖住后面的兄弟节点(表现为卡片叠在一起)。 */}
             {progressView && activeStep > 1 && (
               <div className="mb-4">
-                <BatchProductionProgressCard progress={progressView} variant="compact" />
+                <BatchProductionProgressCard
+                  progress={progressView}
+                  variant="compact"
+                  controlState={workspace?.batch.controlState}
+                  controlBusy={phaseEBusy !== null}
+                  onControl={(action) => void controlBatch(action)}
+                />
               </div>
             )}
             {content}
@@ -1798,6 +1805,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onStartBatch={() => void startBatch()}
               inputChangedWarning={!inputConfirmed && hasConfirmedVersion}
               progress={progressView}
+              controlState={workspace?.batch.controlState}
+              controlBusy={phaseEBusy !== null}
+              onControlBatch={(action) => void controlBatch(action)}
             />
           );
         }

@@ -310,8 +310,17 @@ export interface QueueBatchSemanticScoreResult {
 }
 
 /**
+ * 开跑门禁自动复活失败打分任务的尝试上限:门禁会被前端自动续跑反复触发,
+ * 没有上限时供应商持续失败会形成无限重试循环。手动「重新生成语义匹配」
+ * 不受此限(用户在显式动作里已经知道自己在重试)。
+ */
+export const SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS = 3;
+
+/**
  * 对一个批次版本的每份脚本快照幂等创建 semantic_score 任务。
  * 无内容分析场景或解析不到供应商时静默返回空结果(分配有兜底)。
+ * reviveFailed: 'always'(默认,手动入口)无条件复活失败任务;
+ * 'auto'(开跑门禁)在尝试次数达上限后保留 failed,让开跑走关键词兜底。
  */
 export async function queueBatchSemanticScoreTasks(
   db: Database.Database,
@@ -322,6 +331,7 @@ export async function queueBatchSemanticScoreTasks(
     explicitProviderId?: string;
     listProviders?: () => BatchSemanticProviderMetaLike[];
     now?: () => Date;
+    reviveFailed?: 'always' | 'auto';
   } = {},
 ): Promise<QueueBatchSemanticScoreResult> {
   const result: QueueBatchSemanticScoreResult = { created: [], skipped: [] };
@@ -371,15 +381,40 @@ export async function queueBatchSemanticScoreTasks(
       SELECT id, status FROM batch_tasks WHERE requestKey = ? AND projectId = ?
     `).get(requestKey, projectId) as { id: string; status: string } | undefined;
     if (existingTask?.status === 'failed') {
-      // 与素材准备任务同语义:同 requestKey 的失败任务原地回 queued,
-      // 「重新生成语义匹配」不换供应商也能恢复失败。
-      const updatedAt = (options.now ?? (() => new Date()))().toISOString();
-      db.prepare(`
-        UPDATE batch_tasks
-        SET status = 'queued', expectedState = 'running', updatedAt = ?
-        WHERE id = ? AND projectId = ? AND status = 'failed'
-      `).run(updatedAt, existingTask.id, projectId);
-      result.created.push(existingTask.id);
+      // 失败任务的复活分两档:
+      // - always(手动「重新生成语义匹配」/确认快照):无条件原地回 queued;
+      // - auto(开跑前门禁):只有尝试次数低于上限才复活。门禁会被前端自动续跑
+      //   反复触发,无条件复活 + 供应商持续失败 = 无限重试循环(实测 21 分钟
+      //   白打 306 次供应商 API);达到上限后保留 failed,由开跑流程走关键词兜底。
+      const reviveFailed = options.reviveFailed ?? 'always';
+      const autoAttempts = db.prepare(`
+        SELECT COUNT(*) AS n FROM batch_task_attempts WHERE taskId = ?
+      `).get(existingTask.id) as { n: number };
+      if (reviveFailed === 'always' || autoAttempts.n < SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS) {
+        const updatedAt = (options.now ?? (() => new Date()))().toISOString();
+        db.prepare(`
+          UPDATE batch_tasks
+          SET status = 'queued', expectedState = 'running', updatedAt = ?
+          WHERE id = ? AND projectId = ? AND status = 'failed'
+        `).run(updatedAt, existingTask.id, projectId);
+        result.created.push(existingTask.id);
+      } else {
+        result.skipped.push(snapshot.id);
+      }
+      continue;
+    }
+    if (existingTask?.status === 'cancelled') {
+      // 已取消是死路(典型场景:停止批次后再开跑同一版本)。交给 createBatchTask
+      // 释放旧 requestKey 并重建新任务,而不是被下面的幂等跳过吞掉。
+      const taskId = createBatchTask(db, projectId, {
+        batchId,
+        workType: 'semantic_score',
+        targetKind: 'script_snapshot',
+        targetId: snapshot.id,
+        requestKey,
+        now: options.now,
+      });
+      result.created.push(taskId);
       continue;
     }
     if (existingTask) {
@@ -428,6 +463,8 @@ export async function prepareBatchSemanticScoreBeforeStart(
     now?: () => Date;
   } = {},
 ): Promise<{ pending: number }> {
-  await queueBatchSemanticScoreTasks(db, projectId, batchId, batchVersionId, options);
+  // 门禁会被前端自动续跑反复触发:失败复活走 auto 档(尝试上限 3 次),
+  // 超过上限保留 failed,让开跑按设计意图走关键词兜底,而不是无限重试。
+  await queueBatchSemanticScoreTasks(db, projectId, batchId, batchVersionId, { ...options, reviveFailed: 'auto' });
   return { pending: countIncompleteBatchSemanticScoreTasks(db, batchVersionId) };
 }

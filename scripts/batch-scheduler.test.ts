@@ -15,6 +15,7 @@ import {
   completeTaskAttempt,
   expireStaleLeases,
   pauseBatch,
+  reactivateBatchForStart,
   recoverInterruptedWork,
   renewLease,
   resumeBatch,
@@ -340,6 +341,47 @@ try {
     getBatchProduction(db, 'project-1', batch3)?.progressJson,
     { succeeded: 0, failed: 2, total: 2 },
     '停止后批次汇总必须立即反映全部未完成任务已终结',
+  );
+
+  // --- 场景 6b:停止后用户显式再开跑,批次被重新激活,新排队任务可领取 ---
+  assert.throws(
+    () => resumeBatch(db, 'project-1', batch3),
+    /终态/,
+    'resumeBatch 不允许恢复已停止批次(调度器不得擅自复活)',
+  );
+  reactivateBatchForStart(db, 'project-1', batch3, () => new Date('2026-08-02T11:11:00.000Z'));
+  assert.equal(
+    (db.prepare(`SELECT controlState FROM batch_productions WHERE id = ?`).get(batch3) as { controlState: string }).controlState,
+    'running',
+    '显式开跑必须把已停止批次重新激活为 running',
+  );
+  const taskAfterRestart = (() => {
+    db.prepare(`
+      INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
+      VALUES (?, ?, 2, '{}', '2026-08-02T11:11:30.000Z')
+    `).run(`ov-b3-restart`, snapshot3.planIds[0]!);
+    return createBatchTask(db, 'project-1', {
+      batchId: batch3,
+      workType: 'render',
+      targetKind: 'output_version',
+      targetId: 'ov-b3-restart',
+      now: () => new Date('2026-08-02T11:12:00.000Z'),
+    });
+  })();
+  const restartClaim = claimNextTask(db, { workerId: 'worker-1', now: () => new Date('2026-08-02T11:13:00.000Z') });
+  assert.equal(restartClaim?.task.id, taskAfterRestart, '重新激活后新排队任务必须可被领取');
+  completeTaskAttempt(db, restartClaim!.attempt.id, {
+    workerId: 'worker-1',
+    status: 'succeeded',
+    now: () => new Date('2026-08-02T11:14:00.000Z'),
+  });
+  // 暂停中的批次显式开跑同样恢复 running
+  pauseBatch(db, 'project-1', batch3, () => new Date('2026-08-02T11:15:00.000Z'));
+  reactivateBatchForStart(db, 'project-1', batch3, () => new Date('2026-08-02T11:16:00.000Z'));
+  assert.equal(
+    (db.prepare(`SELECT controlState FROM batch_productions WHERE id = ?`).get(batch3) as { controlState: string }).controlState,
+    'running',
+    '显式开跑也必须把已暂停批次恢复为 running',
   );
 
   // --- 场景 7:失败重试 ---

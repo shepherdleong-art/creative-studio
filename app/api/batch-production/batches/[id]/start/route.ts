@@ -4,6 +4,7 @@ import { startOrResumePhaseE } from '@/lib/batch-production/phase-e';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { prepareBatchSemanticScoreBeforeStart } from '@/lib/batch-production/semantic-match';
+import { reactivateBatchForStart } from '@/lib/batch-production/scheduler';
 import {
   BATCH_NO_STORE_HEADERS,
   batchProjectIdFromRequest,
@@ -26,6 +27,9 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
   try {
     await assertBatchApiReady();
     const db = getDb();
+    // 显式开跑 = 用户明确要批次运行:已停止/已暂停的批次在此重新激活。
+    // 必须放在语义门禁之前——否则已停止批次里新排队的打分任务永远不会被领取。
+    reactivateBatchForStart(db, projectId, id);
     // 开跑前的语义匹配保证:草稿版本先幂等排队打分,仍有未完成的打分时不冻结,
     // 返回 semantic_scoring 由前端在打分完成后自动续跑;打分失败/不可用不阻塞开跑。
     const lineage = db.prepare(`

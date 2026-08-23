@@ -19,6 +19,7 @@ import {
   readBatchSemanticMatrix,
   resolveBatchSemanticProvider,
   scoreBatchSemanticMatrix,
+  SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS,
 } from '../lib/batch-production/semantic-match.ts';
 import { splitAllocationScriptBody } from '../lib/batch-production/allocator.ts';
 
@@ -283,6 +284,71 @@ try {
     now: () => new Date('2026-08-06T05:02:00.000Z'),
   });
   assert.equal(prep3.pending, 0, '打分终态后不得再阻塞开跑');
+
+  // 开跑门禁的失败复活有自动上限(2026-08-23):门禁会被前端自动续跑反复触发,
+  // 无条件复活 + 供应商持续失败 = 无限重试循环(每 2-4 秒白打一次供应商 API)。
+  const batchId3 = createBatchProduction(db, 'project-1', '门禁上限批次');
+  const versionId3 = createBatchProductionVersion(db, batchId3, { copyCount: 1 });
+  const snapshotId3 = snapshotScriptIntoBatch(db, versionId3, { scriptId, copyCount: 1 });
+  addAssetToPool(db, versionId3, { assetId, analysisId });
+  const prepA = await prepareBatchSemanticScoreBeforeStart(db, 'project-1', batchId3, versionId3, {
+    listProviders: () => providers,
+    now: () => new Date('2026-08-06T06:00:00.000Z'),
+  });
+  assert.equal(prepA.pending, 1);
+  const gateTaskId = (db.prepare(`
+    SELECT t.id FROM batch_tasks t JOIN batch_script_snapshots s ON s.id = t.targetId
+    WHERE t.workType = 'semantic_score' AND s.batchVersionId = ?
+  `).get(versionId3) as { id: string }).id;
+  // 尝试次数低于上限:失败后门禁复活
+  db.prepare(`UPDATE batch_tasks SET status = 'failed' WHERE id = ?`).run(gateTaskId);
+  db.prepare(`
+    INSERT INTO batch_task_attempts (id, taskId, attemptNumber, status, startedAt, createdAt)
+    VALUES ('att-1', ?, 1, 'failed', '2026-08-06T06:01:00.000Z', '2026-08-06T06:01:00.000Z')
+  `).run(gateTaskId);
+  const prepB = await prepareBatchSemanticScoreBeforeStart(db, 'project-1', batchId3, versionId3, {
+    listProviders: () => providers,
+    now: () => new Date('2026-08-06T06:02:00.000Z'),
+  });
+  assert.equal(prepB.pending, 1, '尝试次数低于上限时门禁必须复活失败任务');
+  // 尝试次数达到上限:门禁不再复活,pending 归零,开跑走关键词兜底
+  db.prepare(`UPDATE batch_tasks SET status = 'failed' WHERE id = ?`).run(gateTaskId);
+  for (let n = 2; n <= SEMANTIC_SCORE_MAX_AUTO_ATTEMPTS; n++) {
+    db.prepare(`
+      INSERT INTO batch_task_attempts (id, taskId, attemptNumber, status, startedAt, createdAt)
+      VALUES (?, ?, ?, 'failed', '2026-08-06T06:03:00.000Z', '2026-08-06T06:03:00.000Z')
+    `).run(`att-${n}`, gateTaskId, n);
+  }
+  const prepC = await prepareBatchSemanticScoreBeforeStart(db, 'project-1', batchId3, versionId3, {
+    listProviders: () => providers,
+    now: () => new Date('2026-08-06T06:04:00.000Z'),
+  });
+  assert.equal(prepC.pending, 0, '达到自动尝试上限后不得再复活,开跑走关键词兜底');
+  assert.equal(
+    (db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(gateTaskId) as { status: string }).status,
+    'failed',
+    '达到上限后任务保持 failed 终态',
+  );
+  // 手动「重新生成语义匹配」不受自动上限约束
+  const manualRevive = await queueBatchSemanticScoreTasks(db, 'project-1', batchId3, versionId3, {
+    listProviders: () => providers,
+    now: () => new Date('2026-08-06T06:05:00.000Z'),
+  });
+  assert.deepEqual(manualRevive.created, [gateTaskId], '手动重新生成必须无条件复活失败任务');
+  // 已取消任务(停止批次后再开跑同一版本)必须经 createBatchTask 释放 requestKey 重建,
+  // 不能被幂等跳过吞掉
+  db.prepare(`UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped' WHERE id = ?`).run(gateTaskId);
+  const prepD = await prepareBatchSemanticScoreBeforeStart(db, 'project-1', batchId3, versionId3, {
+    listProviders: () => providers,
+    now: () => new Date('2026-08-06T06:06:00.000Z'),
+  });
+  assert.equal(prepD.pending, 1, '已取消任务必须被重建为新的可领取任务');
+  const recreated = db.prepare(`
+    SELECT t.id, t.status FROM batch_tasks t JOIN batch_script_snapshots s ON s.id = t.targetId
+    WHERE t.workType = 'semantic_score' AND s.batchVersionId = ? AND t.status IN ('queued', 'running')
+  `).get(versionId3) as { id: string; status: string };
+  assert.notEqual(recreated.id, gateTaskId, '重建必须是新任务而不是复活已取消任务');
+  assert.equal(recreated.status, 'queued');
 
   console.log('batch semantic match tests passed');
 } finally {
