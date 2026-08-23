@@ -41,7 +41,7 @@ export default function ImagePickerGrid({ items, selectedId, onSelect, emptyText
               onMouseEnter={(e) => setPreview({ item, x: e.clientX, y: e.clientY })}
               onMouseMove={(e) => setPreview({ item, x: e.clientX, y: e.clientY })}
               onMouseLeave={() => setPreview(null)}
-              className={`overflow-hidden rounded-lg border-2 bg-white text-left transition-all ${
+              className={`overflow-hidden rounded-lg border-2 bg-surface text-left transition-all ${
                 selected
                   ? 'border-accent ring-2 ring-accent/20'
                   : 'border-hairline hover:border-accent/40'

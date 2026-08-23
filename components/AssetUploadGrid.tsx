@@ -113,7 +113,7 @@ export default function AssetUploadGrid({
           </div>
         </div>
 
-        <div className="rounded-[18px] border border-hairline bg-white p-4">
+        <div className="rounded-[18px] border border-hairline bg-surface p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-ink">已上传素材</h3>
@@ -188,7 +188,7 @@ export default function AssetUploadGrid({
                       }}
                       onMouseLeave={() => setPreview(null)}
                       className={`w-full rounded-[18px] border p-2 text-left transition ${
-                        selected ? 'border-accent bg-white shadow-sm ring-2 ring-accent/20' : 'border-transparent bg-surface-subtle hover:border-accent/30 hover:bg-white hover:shadow-sm'
+                        selected ? 'border-accent bg-surface shadow-sm ring-2 ring-accent/20' : 'border-transparent bg-surface-subtle hover:border-accent/30 hover:bg-surface hover:shadow-sm'
                       }`}
                     >
                       <div className="relative aspect-[4/3] overflow-hidden rounded-[14px] bg-surface">

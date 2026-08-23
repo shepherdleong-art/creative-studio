@@ -34,10 +34,10 @@ interface CreatedResponse {
   message?: string;
 }
 
-const inputClass = 'h-9 w-full rounded-xl border border-hairline bg-white px-3 text-sm text-ink';
+const inputClass = 'h-9 w-full rounded-xl border border-hairline bg-surface px-3 text-sm text-ink';
 // components/batch-production/ 下第一个 textarea:样式沿用本区输入框惯例,
 // 去掉 h-9、补 py-2(参考 components/ScriptSellingPointInput.tsx 的排版)。
-const textareaClass = 'w-full rounded-xl border border-hairline bg-white px-3 py-2 text-sm leading-6 text-ink';
+const textareaClass = 'w-full rounded-xl border border-hairline bg-surface px-3 py-2 text-sm leading-6 text-ink';
 
 export function BatchScriptImportDialog(props: BatchScriptImportDialogProps) {
   if (!props.open) return null;
@@ -181,7 +181,7 @@ function BatchScriptImportDialogContent({
         role="dialog"
         aria-modal="true"
         aria-labelledby="batch-script-import-title"
-        className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white shadow-xl"
+        className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-surface shadow-xl"
       >
         <form onSubmit={(event) => void submit(event)}>
           <header className="flex items-start justify-between gap-4 px-5 pb-4 pt-5">

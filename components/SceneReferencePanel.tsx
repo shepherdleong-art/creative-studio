@@ -116,7 +116,7 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
           onClick={closeCreate}
         >
           <div
-            className="flex max-h-[86vh] w-full max-w-4xl flex-col rounded-[18px] bg-white shadow-xl"
+            className="flex max-h-[86vh] w-full max-w-4xl flex-col rounded-[18px] bg-surface shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b p-4">
@@ -156,7 +156,7 @@ export default function SceneReferencePanel({ projectId, images, onApplyToShotSe
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 border-t bg-white p-4">
+            <div className="flex justify-end gap-2 border-t bg-surface p-4">
               <button onClick={closeCreate} className="btn-secondary btn-sm">取消</button>
               <button
                 onClick={handleCreate}

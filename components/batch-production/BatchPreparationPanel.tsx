@@ -1623,7 +1623,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                   if (event.key === 'Enter' && busy === null) void createBatch();
                 }}
                 placeholder="例如：8 月产品口播"
-                className="h-9 min-w-0 flex-1 rounded-xl border border-hairline bg-white px-3 text-sm text-ink"
+                className="h-9 min-w-0 flex-1 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
               />
               <button
                 type="button"
@@ -1891,7 +1891,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           aria-labelledby="batch-asset-preview-title"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
         >
-          <div className="w-full max-w-3xl rounded-2xl bg-white p-4 shadow-xl">
+          <div className="w-full max-w-3xl rounded-2xl bg-surface p-4 shadow-xl">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h3 id="batch-asset-preview-title" className="mt-1 font-semibold text-ink">

@@ -96,7 +96,7 @@ export function BatchScriptSelectionCard({
   const cover = script.coverTitle;
   const title = script.title || '未命名脚本';
   return (
-    <article className={`rounded-2xl border bg-white p-4 shadow-sm transition ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
+    <article className={`rounded-2xl border bg-surface p-4 shadow-sm transition ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
       <div className="flex items-start gap-3">
         <input
           type="checkbox"
@@ -130,7 +130,7 @@ export function BatchScriptSelectionCard({
               aria-label={`${title} 生成份数`}
               value={copyCount}
               onChange={(event) => onCopyCountChange(Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
-              className="w-20 rounded-lg border border-hairline bg-white px-2 py-1 text-right text-ink disabled:opacity-50"
+              className="w-20 rounded-lg border border-hairline bg-surface px-2 py-1 text-right text-ink disabled:opacity-50"
             />
           </label>
         </div>
@@ -145,7 +145,7 @@ export function BatchFrozenScriptCard({
   snapshot: BatchSnapshotDetail['scriptSnapshots'][number];
 }) {
   return (
-    <article className="rounded-2xl border border-accent/30 bg-white p-4 shadow-sm">
+    <article className="rounded-2xl border border-accent/30 bg-surface p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-medium text-accent">已锁定的脚本快照</p>
@@ -289,7 +289,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   }
 
   return (
-    <article className={`rounded-2xl border bg-white p-4 shadow-sm transition ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
+    <article className={`rounded-2xl border bg-surface p-4 shadow-sm transition ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
       <div className="space-y-3">
         <div className="relative aspect-video overflow-hidden rounded-xl border border-hairline bg-surface-subtle">
           {asset.thumbnailUrl && !thumbnailFailed ? (
@@ -371,7 +371,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
                   aria-label={`${displayName} 的 LUT`}
                   value={lutId ?? ''}
                   onChange={(event) => onLutChange(event.target.value || null)}
-                  className="h-9 w-full rounded-lg border border-hairline bg-white px-2 text-ink"
+                  className="h-9 w-full rounded-lg border border-hairline bg-surface px-2 text-ink"
                 >
                   <option value="">关闭</option>
                   {luts.filter((lut) => lut.status === 'active').map((lut) => (

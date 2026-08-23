@@ -104,7 +104,7 @@ function ProjectInfoDialogContent({
         role="dialog"
         aria-modal="true"
         aria-labelledby="project-info-dialog-title"
-        className="card w-full max-w-xl overflow-hidden border-black/10 bg-white shadow-[0_24px_70px_rgba(0,0,0,.22)]"
+        className="card w-full max-w-xl overflow-hidden border-black/10 bg-surface shadow-[0_24px_70px_rgba(0,0,0,.22)]"
       >
         <form onSubmit={(event) => void submit(event)}>
           <header className="flex items-start justify-between gap-5 px-6 pb-5 pt-6">
@@ -182,10 +182,10 @@ function ProjectInfoDialogContent({
           </div>
 
           <footer className="flex items-center justify-end gap-3 border-t border-hairline px-6 py-4">
-            <button type="button" className="h-10 min-w-20 rounded-full px-4 text-[14px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45" style={{ border: '1px solid #dedee3', background: '#fff', color: '#1d1d1f' }} disabled={saving} onClick={onClose}>
+            <button type="button" className="btn-secondary h-10 min-w-20 px-4 text-[14px]" disabled={saving} onClick={onClose}>
               取消
             </button>
-            <button type="submit" className="h-10 min-w-24 rounded-full px-4 text-[14px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45" style={{ background: '#1d1d1f', color: '#fff' }} disabled={saving}>
+            <button type="submit" className="btn-primary h-10 min-w-24 px-4 text-[14px]" disabled={saving}>
               {saving ? '保存中…' : exportIntent ? '保存并开始导出' : '保存'}
             </button>
           </footer>

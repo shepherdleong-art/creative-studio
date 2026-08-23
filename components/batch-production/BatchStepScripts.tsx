@@ -514,7 +514,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 aria-label={`${scriptId} 配音服务商`}
                 value={config.providerId}
                 onChange={(event) => updateConfig(scriptId, { providerId: event.target.value, voice: ttsProviders.find((item) => item.id === event.target.value)?.voices[0]?.id ?? '' })}
-                className="h-9 min-w-44 rounded-xl border border-hairline bg-white px-3 text-sm text-ink"
+                className="h-9 min-w-44 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
               >
                 {ttsProviders.filter((item) => item.configured || item.id === config.providerId).map((item) => (
                   <option key={item.id} value={item.id}>{item.name} · {item.model}</option>
@@ -554,7 +554,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 key={item.id}
                 role="button"
                 tabIndex={0}
-                className={`relative cursor-pointer rounded-xl border p-2 text-center transition ${item.id === effectiveVoice ? 'border-accent bg-accent/5' : 'border-hairline bg-white'}`}
+                className={`relative cursor-pointer rounded-xl border p-2 text-center transition ${item.id === effectiveVoice ? 'border-accent bg-accent/5' : 'border-hairline bg-surface'}`}
                 onClick={() => updateConfig(scriptId, { voice: item.id })}
                 onKeyDown={(event) => {
                   if ((event.key === 'Enter' || event.key === ' ') && !previewing[scriptId]) updateConfig(scriptId, { voice: item.id });
@@ -584,7 +584,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               value={voiceQuery[scriptId] ?? ''}
               onChange={(event) => setVoiceQuery((current) => ({ ...current, [scriptId]: event.target.value }))}
               placeholder="搜索更多音色（名称或 ID）"
-              className="h-8 min-w-40 flex-1 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+              className="h-8 min-w-40 flex-1 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
             />
             {allVoices.length > FEATURED_VOICE_COUNT && !query && (
               <button type="button" className="text-xs text-accent underline" onClick={() => setShowAllVoices((current) => ({ ...current, [scriptId]: !current[scriptId] }))}>
@@ -699,8 +699,8 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   function renderCoverTextStyleEditor(kind: 'primary' | 'secondary', style: TextStyle) {
     // min-w-0:grid 子项默认 min-width:auto,内容比列宽长时会顶破列宽,
     // 表现为标签竖排折行、相邻控件互相重叠。
-    const smallInput = 'h-7 w-full min-w-0 rounded-lg border border-hairline bg-white px-2 text-xs text-ink';
-    const smallColor = 'h-7 w-10 shrink-0 rounded border border-hairline bg-white p-0.5';
+    const smallInput = 'h-7 w-full min-w-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink';
+    const smallColor = 'h-7 w-10 shrink-0 rounded border border-hairline bg-surface p-0.5';
     return (
       <div className="rounded-xl bg-surface-subtle p-3">
         <p className="mb-1.5 text-xs font-medium text-ink">{kind === 'primary' ? '主标题样式' : '副标题样式'}</p>
@@ -789,7 +789,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                   value={style.stroke.widthPx}
                   disabled={frozen || !style.stroke.enabled}
                   onChange={(event) => updateCoverStyle(kind, { stroke: { ...style.stroke, widthPx: Math.max(0, Number.parseInt(event.target.value, 10) || 0) } })}
-                  className="h-7 w-14 shrink-0 rounded-lg border border-hairline bg-white px-2 text-xs text-ink"
+                  className="h-7 w-14 shrink-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
                 />
               </span>
             </span>
@@ -850,7 +850,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               value={coverTitle.mode}
               disabled={frozen}
               onChange={(event) => updateCoverTitle({ mode: event.target.value as BatchCoverTitleDraft['mode'] })}
-              className="h-8 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+              className="h-8 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
             >
               <option value="none">无标题</option>
               <option value="preset">使用预设</option>
@@ -905,7 +905,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                   const chosen = coverPresets.find((item) => item.id === event.target.value);
                   if (chosen) applyCoverPreset(chosen);
                 }}
-                className="h-8 min-w-52 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+                className="h-8 min-w-52 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
               >
                 <option value="">{coverPresets.length === 0 ? '暂无预设' : '选择一个预设…'}</option>
                 {coverPresets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -930,7 +930,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 onChange={(event) => setPresetName(event.target.value)}
                 onKeyDown={(event) => { if (event.key === 'Enter') void saveCoverPreset(); }}
                 placeholder="把当前样式存为预设…"
-                className="h-8 min-w-48 flex-1 rounded-xl border border-hairline bg-white px-3 text-xs text-ink"
+                className="h-8 min-w-48 flex-1 rounded-xl border border-hairline bg-surface px-3 text-xs text-ink"
               />
               <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={!hasTitle} onClick={() => void saveCoverPreset()}>
                 存为预设
@@ -1005,7 +1005,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 const durationSec = script.targetDurationSec ?? 15;
                 const title = script.title || '未命名脚本';
                 return selected ? (
-                  <article key={script.id} className={`rounded-2xl border bg-white p-4 shadow-sm ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
+                  <article key={script.id} className={`rounded-2xl border bg-surface p-4 shadow-sm ${selected ? 'border-accent ring-2 ring-accent/10' : 'border-hairline'}`}>
                     <div className="flex items-start gap-3">
                       <input
                         type="checkbox"
@@ -1058,7 +1058,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                             aria-label={`${title} 生成份数`}
                             value={selectedScripts[script.id] ?? 1}
                             onChange={(event) => onCopyCountChange(script.id, Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
-                            className="w-20 rounded-lg border border-hairline bg-white px-2 py-1 text-right text-ink"
+                            className="w-20 rounded-lg border border-hairline bg-surface px-2 py-1 text-right text-ink"
                           />
                         </label>
                         {renderNarrationConfig(script.id)}
@@ -1069,7 +1069,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                   <button
                     key={script.id}
                     type="button"
-                    className="flex items-center gap-3 rounded-2xl border border-hairline bg-white px-4 py-3 text-left shadow-sm transition hover:border-accent/40"
+                    className="flex items-center gap-3 rounded-2xl border border-hairline bg-surface px-4 py-3 text-left shadow-sm transition hover:border-accent/40"
                     onClick={() => onToggleScript(script.id, true)}
                   >
                     <input

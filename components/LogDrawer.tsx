@@ -15,7 +15,7 @@ export default function LogDrawer({ open, projectId, autoRefresh, onClose }: Pro
   return (
     <div className="fixed inset-0 z-[110]">
       <div className="absolute inset-0 bg-black/35" onClick={onClose} />
-      <aside className="absolute right-0 top-0 flex h-full w-full max-w-[640px] flex-col bg-white shadow-2xl sm:border-l sm:border-hairline lg:max-w-[720px]">
+      <aside className="absolute right-0 top-0 flex h-full w-full max-w-[640px] flex-col bg-surface shadow-2xl sm:border-l sm:border-hairline lg:max-w-[720px]">
         <div className="flex items-center justify-between border-b border-hairline px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold text-ink">运行日志</h2>

@@ -606,7 +606,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
               {expanded && (
                 <div className="mb-2 ml-6 rounded-lg bg-surface-subtle p-3">
                   {!loadingShots && sceneRefInfo && (
-                    <div className="mb-3 flex items-center gap-3 rounded border border-hairline bg-white p-2">
+                    <div className="mb-3 flex items-center gap-3 rounded border border-hairline bg-surface p-2">
                       <HoverZoomImage
                         src={sceneRefInfo.imageUrl}
                         alt={sceneRefInfo.name}
@@ -628,7 +628,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-3">
                       {setShots.map((shot, idx) => (
                         <div key={shot.id} onClick={() => openPreview(set.id, idx)}
-                          className="cursor-pointer overflow-hidden rounded border border-hairline bg-white transition hover:border-accent/40 hover:shadow-[0_8px_28px_rgba(0,0,0,.08)]">
+                          className="cursor-pointer overflow-hidden rounded border border-hairline bg-surface transition hover:border-accent/40 hover:shadow-[0_8px_28px_rgba(0,0,0,.08)]">
                           <div className="px-3 pt-2 text-xs text-ink-tertiary">分镜 {shot.indexNum}</div>
                           <div className="grid grid-cols-2 gap-px">
                             <div>

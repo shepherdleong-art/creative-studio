@@ -157,6 +157,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - **路径**：所有本地文件路径基于 `dataRoot()`。
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。
+- **外观主题**：全局三态（浅色/深色/跟随系统）由 `html[data-theme="dark"]` 驱动——暗色令牌与组件覆盖集中在 `app/globals.css` 末尾，mixcut 两个 CSS module 各自带暗色覆盖块；偏好存 `localStorage["creative-studio-theme"]`，水合前初始化脚本在 `app/layout.tsx`，切换按钮是 `components/ThemeToggle.tsx`。新增 UI 颜色一律走设计令牌，不要新增硬编码浅色值（深色覆盖只补丁存量）。
 - **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`。
 - **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。SIGTERM/SIGINT 也走同一入口。
 

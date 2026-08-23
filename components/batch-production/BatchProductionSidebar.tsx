@@ -76,7 +76,7 @@ export default function BatchProductionSidebar({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="搜索批次…"
-          className="h-9 w-full rounded-xl border border-hairline bg-white px-3 text-sm text-ink"
+          className="h-9 w-full rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
         />
         <div className={`${shellStyles.panelList} mt-2 space-y-1`}>
           {visibleBatches.length === 0 && (

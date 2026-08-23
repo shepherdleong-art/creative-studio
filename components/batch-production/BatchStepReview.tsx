@@ -317,7 +317,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                     aria-label={`成片 ${card.seq} 版本切换`}
                     value={viewedVersionId ?? ''}
                     onChange={(event) => setViewedVersions((current) => ({ ...current, [card.planId]: { base: card.versionId ?? null, viewed: event.target.value } }))}
-                    className="h-8 max-w-32 rounded-lg border border-hairline bg-white px-2 text-xs text-ink"
+                    className="h-8 max-w-32 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
                   >
                     {card.versions.map((version) => (
                       <option key={version.id} value={version.id} disabled={!version.hasCandidate && !version.hasArtifact}>
@@ -383,7 +383,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
           aria-labelledby="batch-output-preview-title"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
         >
-          <div className="max-h-[90vh] w-full max-w-3xl space-y-4 overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+          <div className="max-h-[90vh] w-full max-w-3xl space-y-4 overflow-y-auto rounded-2xl bg-surface p-5 shadow-xl">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3 id="batch-output-preview-title" className="font-semibold text-ink">

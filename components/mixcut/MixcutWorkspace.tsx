@@ -22,14 +22,14 @@ export default function MixcutWorkspace(props: MixcutWorkspaceProps) {
             type="button"
             role="tab"
             aria-selected={mode === 'single'}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${mode === 'single' ? 'bg-white text-accent shadow-sm' : 'text-ink-secondary'}`}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${mode === 'single' ? 'bg-surface text-accent shadow-sm' : 'text-ink-secondary'}`}
             onClick={() => setMode('single')}
           >单条精准混剪</button>
           <button
             type="button"
             role="tab"
             aria-selected={mode === 'batch'}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${mode === 'batch' ? 'bg-white text-accent shadow-sm' : 'text-ink-secondary'}`}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${mode === 'batch' ? 'bg-surface text-accent shadow-sm' : 'text-ink-secondary'}`}
             onClick={() => setMode('batch')}
           >批量生产</button>
         </div>

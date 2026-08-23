@@ -311,7 +311,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                   aria-label="内容分析模型"
                   value={visionProviderId}
                   onChange={(event) => props.onVisionProviderChange(event.target.value)}
-                  className="h-10 max-w-60 rounded-xl border border-hairline bg-white px-3 text-sm text-ink"
+                  className="h-10 max-w-60 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
                 >
                   {visionProviderOptions.length === 0 && <option value="">未配置视觉供应商</option>}
                   {visionProviderOptions.map((provider) => (
@@ -375,7 +375,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 const displayName = asset?.media.displayName || asset?.media.filename || `素材 ${assetId.slice(0, 8)}`;
                 const lutName = selection.lutId ? luts.find((lut) => lut.id === selection.lutId)?.displayName : null;
                 return (
-                  <article key={assetId} className="overflow-hidden rounded-2xl border border-accent/30 bg-white shadow-sm">
+                  <article key={assetId} className="overflow-hidden rounded-2xl border border-accent/30 bg-surface shadow-sm">
                     <button
                       type="button"
                       className="group relative block aspect-video w-full overflow-hidden bg-black text-left"
@@ -479,7 +479,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
           aria-labelledby="batch-media-prep-title"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
         >
-          <div className="max-h-[85vh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+          <div className="max-h-[85vh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-2xl bg-surface p-5 shadow-xl">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3 id="batch-media-prep-title" className="font-semibold text-ink">画质与调色（进阶）</h3>

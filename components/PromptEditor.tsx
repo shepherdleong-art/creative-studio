@@ -68,7 +68,7 @@ export default function PromptEditor({
         <div className="rounded-lg bg-run-tint p-3 text-xs text-accent">
           <span className="font-medium">检测到变量：</span>
           {uniqueVars.map((v) => (
-            <code key={v} className="mx-1 rounded bg-white px-1">{`{${v}}`}</code>
+            <code key={v} className="mx-1 rounded bg-surface px-1">{`{${v}}`}</code>
           ))}
           <span className="ml-1 text-accent">
             — 每张图会替换为对应的值

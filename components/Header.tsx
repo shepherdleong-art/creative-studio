@@ -3,6 +3,7 @@
 import { useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
+import ThemeToggle from '@/components/ThemeToggle';
 
 // Read-only probe for the desktop shell. The bridge is injected by the preload
 // before any React code runs and never changes afterwards, so the subscription
@@ -47,6 +48,7 @@ export default function Header() {
         <Link href="/projects/new" className="btn-primary btn-sm">
           <Icon name="plus" size={15} /> 新建项目
         </Link>
+        <ThemeToggle />
         <button
           onClick={() => setShowStopConfirm(true)}
           className="icon-btn text-ink-tertiary hover:text-fail"

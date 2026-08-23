@@ -9,7 +9,7 @@ export type IconName =
   | "cpu" | "sparkle" | "users" | "monitor" | "film" | "search"
   | "mic" | "speaker" | "music" | "scissors" | "text"
   | "play-circle" | "check-circle" | "upload"
-  | "grid" | "table";
+  | "grid" | "table" | "sun" | "moon";
 
 const PATHS: Record<IconName, ReactNode> = {
   "chevron-left": <polyline points="15 18 9 12 15 6" />,
@@ -54,6 +54,8 @@ const PATHS: Record<IconName, ReactNode> = {
   upload: (<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>),
   grid: (<><rect x="3" y="3" width="7.5" height="7.5" rx="1.6" /><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6" /><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6" /><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6" /></>),
   table: (<><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="3" y1="9.5" x2="21" y2="9.5" /><line x1="3" y1="14.75" x2="21" y2="14.75" /><line x1="9.5" y1="9.5" x2="9.5" y2="20" /></>),
+  sun: (<><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22" /><line x1="4.93" y1="4.93" x2="6.34" y2="6.34" /><line x1="17.66" y1="17.66" x2="19.07" y2="19.07" /><line x1="2" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22" y2="12" /><line x1="4.93" y1="19.07" x2="6.34" y2="17.66" /><line x1="17.66" y1="6.34" x2="19.07" y2="4.93" /></>),
+  moon: <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />,
 };
 
 export function Icon({

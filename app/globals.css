@@ -123,7 +123,7 @@ body {
     line-height: 20px;
     box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 1px 2px rgba(0,0,0,.015);
   }
-  .generation-control.input-field:hover { border-color: #c6c6cc; background: #fff; }
+  .generation-control.input-field:hover { border-color: #c6c6cc; background-color: #fff; }
   .generation-control.input-field:focus { border-color: rgba(0,113,227,.7); box-shadow: 0 0 0 4px rgba(0,113,227,.14); }
   .generation-textarea.input-field {
     min-height: 126px;
@@ -757,4 +757,196 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ===== 全局夜间模式（html[data-theme="dark"]，三态切换见 ThemeToggle） =====
+ * 令牌覆盖放在 @layer 之外：非分层规则天然压过 @theme 生成的 :root 与
+ * @layer utilities 里的组件类，不需要拼特异性。浅色即默认值，无需显式作用域。 */
+html[data-theme='dark'] {
+  color-scheme: dark;
+  /* surfaces：不用纯黑，深灰底长看更柔和 */
+  --color-surface: #161617;
+  --color-surface-subtle: #232325;
+  --color-surface-hover: #2c2c2e;
+  /* ink (text) */
+  --color-ink: #f5f5f7;
+  --color-ink-secondary: #98989d;
+  --color-ink-tertiary: #636366;
+  /* hairlines */
+  --color-hairline: #38383a;
+  --color-hairline-soft: #2c2c2e;
+  /* accent：暗色下用亮一点的蓝保证对比度 */
+  --color-accent: #0a84ff;
+  --color-accent-hover: #409cff;
+  /* status: 文字提亮 + tint 改半透明深色 */
+  --color-run: #409cff;   --color-run-tint: rgba(64, 156, 255, .16);
+  --color-ok: #32d74b;    --color-ok-tint: rgba(50, 215, 75, .15);
+  --color-fail: #ff6961;  --color-fail-tint: rgba(255, 105, 97, .15);
+  --color-warn: #ffb340;  --color-warn-tint: rgba(255, 179, 64, .15);
+  --color-idle: #98989d;  --color-idle-tint: rgba(152, 152, 157, .16);
+  --color-check: #7d7aff; --color-check-tint: rgba(125, 122, 255, .18);
+}
+
+/* --- 以下为组件类里硬编码浅色值的暗色覆盖 --- */
+html[data-theme='dark'] body {
+  background: var(--color-surface);
+}
+
+html[data-theme='dark'] .btn-secondary:hover { background: rgba(255, 255, 255, .12); }
+
+html[data-theme='dark'] .input-field:focus { box-shadow: 0 0 0 3px rgba(10, 132, 255, .4); }
+
+html[data-theme='dark'] .generation-card {
+  border-color: var(--color-hairline);
+  background: var(--color-surface-subtle);
+  box-shadow: none;
+}
+html[data-theme='dark'] .generation-control.input-field {
+  border-color: var(--color-hairline);
+  /* 只能用 background-color：background 简写会重置 repeat/position，把 -select 的箭头图平铺成一片 */
+  background-color: rgba(255, 255, 255, .06);
+  box-shadow: none;
+}
+html[data-theme='dark'] .generation-control.input-field:hover { border-color: #48484a; background-color: rgba(255, 255, 255, .09); }
+html[data-theme='dark'] .generation-control.input-field:focus { border-color: rgba(10, 132, 255, .7); box-shadow: 0 0 0 4px rgba(10, 132, 255, .18); }
+html[data-theme='dark'] .generation-select.input-field {
+  /* repeat/position/size 必须一并钉住:hover 基础规则的 background 简写会把它们重置成平铺 */
+  background-image: url("data:image/svg+xml,%3Csvg width='14' height='16' viewBox='0 0 14 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.25 6.25L7 2.5L10.75 6.25' stroke='%2398989D' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M10.75 9.75L7 13.5L3.25 9.75' stroke='%2398989D' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 13px 15px;
+}
+html[data-theme='dark'] .generation-empty-provider {
+  border-color: rgba(255, 179, 64, .3);
+  background: rgba(255, 179, 64, .12);
+}
+html[data-theme='dark'] .generation-label.label { color: var(--color-ink-tertiary); }
+
+html[data-theme='dark'] .script-control.input-field {
+  border-color: var(--color-hairline);
+  background-color: rgba(255, 255, 255, .06);
+  box-shadow: none;
+}
+html[data-theme='dark'] .script-control.input-field::placeholder { color: var(--color-ink-tertiary); }
+html[data-theme='dark'] .script-control.input-field:hover { border-color: #48484a; background-color: rgba(255, 255, 255, .09); }
+html[data-theme='dark'] .script-control.input-field:focus { border-color: rgba(10, 132, 255, .72); box-shadow: 0 0 0 4px rgba(10, 132, 255, .18); }
+html[data-theme='dark'] .script-select.input-field {
+  /* 同上:hover 态下 background 简写会重置 repeat/position/size，必须一并钉住 */
+  background-image: url("data:image/svg+xml,%3Csvg width='14' height='16' viewBox='0 0 14 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.25 6.25L7 2.5L10.75 6.25' stroke='%2398989D' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M10.75 9.75L7 13.5L3.25 9.75' stroke='%2398989D' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 14px 16px;
+}
+
+html[data-theme='dark'] .segmented > button[aria-selected="true"],
+html[data-theme='dark'] .segmented > button[aria-pressed="true"] {
+  background: var(--color-surface-hover);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+}
+
+/* frosted toolbar */
+html[data-theme='dark'] .toolbar {
+  background: rgba(22, 22, 23, .72);
+  border-bottom-color: rgba(255, 255, 255, .09);
+}
+
+/* video workspace */
+html[data-theme='dark'] .video-generation-section {
+  border-color: rgba(255, 255, 255, .09);
+  background:
+    linear-gradient(180deg, rgba(44, 44, 46, .55), rgba(28, 28, 30, .75)),
+    var(--color-surface);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, .5);
+}
+html[data-theme='dark'] .video-workspace > .panel-col {
+  background: rgba(255, 255, 255, .05);
+  border-color: rgba(255, 255, 255, .08);
+  box-shadow: none;
+}
+html[data-theme='dark'] .video-workspace > .video-preview-col {
+  background: rgba(255, 255, 255, .04);
+  border-color: rgba(255, 255, 255, .08);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .45);
+}
+html[data-theme='dark'] .video-stage {
+  background: rgba(0, 0, 0, .4);
+  border-color: rgba(255, 255, 255, .1);
+}
+html[data-theme='dark'] .video-stage video,
+html[data-theme='dark'] .video-stage img,
+html[data-theme='dark'] .video-stage .video-player { background: rgba(0, 0, 0, .4); }
+html[data-theme='dark'] .stage-controls {
+  background: rgba(35, 35, 37, .94);
+  border-color: rgba(255, 255, 255, .1);
+  box-shadow: none;
+}
+html[data-theme='dark'] .stage-controls button:hover:not(:disabled) { background: rgba(255, 255, 255, .12); }
+html[data-theme='dark'] .sc-progress {
+  background: linear-gradient(to right, var(--color-accent) 0%, var(--color-accent) var(--pct, 0%), rgba(255, 255, 255, .18) var(--pct, 0%), rgba(255, 255, 255, .18) 100%);
+}
+html[data-theme='dark'] .sc-shot-label { background: rgba(255, 255, 255, .09); }
+html[data-theme='dark'] .result-card { border-color: rgba(255, 255, 255, .08); background: rgba(35, 35, 37, .82); box-shadow: none; }
+html[data-theme='dark'] .shot-tab-row { background: rgba(255, 255, 255, .07); }
+html[data-theme='dark'] .shot-tab-item.active { background: rgba(255, 255, 255, .16); box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
+html[data-theme='dark'] .shot-tab-item:hover:not(.active) { background: rgba(255, 255, 255, .1); }
+html[data-theme='dark'] .video-motion-card { border-color: rgba(255, 255, 255, .08); background: rgba(35, 35, 37, .82); box-shadow: none; }
+html[data-theme='dark'] .video-frame-tile { border-color: rgba(255, 255, 255, .09); background: rgba(255, 255, 255, .05); }
+html[data-theme='dark'] .video-frame-image { background: rgba(255, 255, 255, .05); }
+html[data-theme='dark'] .video-workspace .video-control.input-field { background: rgba(255, 255, 255, .07); }
+html[data-theme='dark'] .video-multishot-toggle { background: rgba(255, 255, 255, .07); }
+html[data-theme='dark'] .video-multishot-toggle-track { background: rgba(255, 255, 255, .22); }
+html[data-theme='dark'] .video-workspace .video-prompt-field.input-field { background: rgba(255, 255, 255, .07); }
+html[data-theme='dark'] .video-motion-delete { background: rgba(44, 44, 46, .9); }
+html[data-theme='dark'] .video-workspace .video-add-action { background: rgba(255, 255, 255, .08); }
+
+/* bulk drawer */
+html[data-theme='dark'] .video-bulk-drawer { background: rgba(0, 0, 0, .55); }
+html[data-theme='dark'] .video-bulk-drawer-panel {
+  border-color: rgba(255, 255, 255, .1);
+  background: rgba(28, 28, 30, .98);
+  box-shadow: 0 32px 96px rgba(0, 0, 0, .6);
+}
+html[data-theme='dark'] .video-bulk-close { background: rgba(255, 255, 255, .08); }
+html[data-theme='dark'] .video-bulk-close:hover:not(:disabled) { background: rgba(255, 255, 255, .14); }
+html[data-theme='dark'] .video-bulk-global-controls { background: rgba(255, 255, 255, .04); }
+html[data-theme='dark'] .video-bulk-global-control-row .video-control { background: rgba(255, 255, 255, .07); }
+html[data-theme='dark'] .video-bulk-list { background: rgba(255, 255, 255, .03); }
+html[data-theme='dark'] .video-bulk-shot { border-color: rgba(255, 255, 255, .08); background: var(--color-surface); box-shadow: none; }
+html[data-theme='dark'] .video-bulk-shot:hover { border-color: rgba(255, 255, 255, .14); box-shadow: 0 6px 18px rgba(0, 0, 0, .4); }
+html[data-theme='dark'] .video-bulk-shot-image { border-color: rgba(255, 255, 255, .08); }
+html[data-theme='dark'] .video-bulk-row:hover { background: rgba(255, 255, 255, .04); }
+html[data-theme='dark'] .video-bulk-prompt-input { background: rgba(255, 255, 255, .07); }
+html[data-theme='dark'] .video-bulk-drawer-footer { background: rgba(28, 28, 30, .92); }
+html[data-theme='dark'] .video-bulk-status-bar {
+  border-color: rgba(64, 156, 255, .28);
+  background: rgba(64, 156, 255, .13);
+  box-shadow: none;
+}
+
+/* dialog */
+html[data-theme='dark'] .apply-scene-dialog {
+  border-color: rgba(255, 255, 255, .1);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .6);
+}
+
+/* scene result */
+html[data-theme='dark'] .scene-result-state-active { background: rgba(64, 156, 255, .12); }
+
+/* --- 状态类补丁：上面的非分层覆盖会压过 @layer 里的 hover/active/is-on 态，这里按状态补回 --- */
+html[data-theme='dark'] .result-card:hover { border-color: rgba(64, 156, 255, .5); }
+html[data-theme='dark'] .result-card.active { border-color: rgba(64, 156, 255, .72); box-shadow: 0 0 0 2px rgba(64, 156, 255, .22), 0 12px 26px rgba(0, 0, 0, .4); }
+html[data-theme='dark'] .video-frame-tile.is-dragging { border-color: rgba(64, 156, 255, .72); box-shadow: inset 0 0 0 2px rgba(64, 156, 255, .2), 0 8px 20px rgba(0, 0, 0, .4); }
+html[data-theme='dark'] .video-frame-empty:hover:not(.is-disabled):not(.is-busy) { border-color: rgba(64, 156, 255, .5); background: rgba(64, 156, 255, .1); }
+html[data-theme='dark'] .video-motion-delete:hover { border-color: rgba(255, 105, 97, .3); background: var(--color-fail-tint); color: var(--color-fail); }
+html[data-theme='dark'] .video-multishot-toggle.is-on {
+  border-color: rgba(10, 132, 255, .5);
+  background: rgba(10, 132, 255, .16);
+}
+html[data-theme='dark'] .video-multishot-toggle.is-on .video-multishot-toggle-track { background: var(--color-accent); }
+
+/* sc-play-btn 基值带 !important：important 声明里"分层"反而压过"非分层"，
+ * 所以暗色覆盖必须回到同一个 @layer utilities 里写。 */
+@layer utilities {
+  html[data-theme='dark'] .sc-play-btn { background: rgba(255, 255, 255, .16) !important; }
+  html[data-theme='dark'] .sc-play-btn:hover:not(:disabled) { background: rgba(255, 255, 255, .22) !important; }
 }

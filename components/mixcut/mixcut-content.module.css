@@ -440,3 +440,78 @@
   .coverDrawer { width: 72vw; min-width: min(680px, 100vw); }
   .coverDrawerBody { grid-template-columns: 160px minmax(280px, 1fr) 230px; }
 }
+
+/* ===== 夜间模式覆盖：重定义局部变量 + 补丁硬编码浅色值 =====
+ * 视频/封面内容面（#000/#111/渐变缩略图/.subPreview）是有意的深色画布，两态通用，不覆盖。 */
+:global(html[data-theme='dark']) .coverDrawerBackdrop,
+:global(html[data-theme='dark']) .timelineContextLayer {
+  --bg: #161617;
+  --paper: #232325;
+  --seg: #2c2c2e;
+  --blue-wash: rgba(10, 132, 255, .16);
+  --green-ink: #32d74b;
+  --sh-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --sh-md: 0 2px 8px rgba(0, 0, 0, .35), 0 10px 28px rgba(0, 0, 0, .4);
+  --sh-lg: 0 24px 70px rgba(0, 0, 0, .55);
+}
+:global(html[data-theme='dark']) .btn:hover,
+:global(html[data-theme='dark']) .secondaryButton:hover { background: #3a3a3c; }
+:global(html[data-theme='dark']) .collapseBtn,
+:global(html[data-theme='dark']) .expandBtn { background: var(--paper); }
+:global(html[data-theme='dark']) .errorBanner,
+:global(html[data-theme='dark']) .errorNotice { background: rgba(255, 105, 97, .14); color: #ff6961; }
+:global(html[data-theme='dark']) .importNotice,
+:global(html[data-theme='dark']) .warningNotice { background: rgba(255, 179, 64, .13); color: #ffb340; }
+:global(html[data-theme='dark']) .successNotice { background: rgba(50, 215, 75, .13); }
+:global(html[data-theme='dark']) .switchDialogBackdrop { background: rgba(0, 0, 0, .5); }
+:global(html[data-theme='dark']) .switchDialog { background: var(--paper); box-shadow: 0 28px 80px rgba(0, 0, 0, .6); }
+:global(html[data-theme='dark']) .rep:hover { background: rgba(255, 255, 255, .06); }
+:global(html[data-theme='dark']) .bgmAuditionButton { background: var(--paper); }
+:global(html[data-theme='dark']) .bgmAuditionActive { border-color: var(--ink) !important; background: var(--ink); color: var(--bg); }
+:global(html[data-theme='dark']) .bgmAuditionActive:hover { background: var(--ink); }
+:global(html[data-theme='dark']) .dropzone { border-color: rgba(255, 255, 255, .18); background: rgba(255, 255, 255, .04); }
+:global(html[data-theme='dark']) .mat { background: var(--paper); }
+:global(html[data-theme='dark']) .matBadge { background: rgba(44, 44, 46, .92); }
+:global(html[data-theme='dark']) .matBadge:hover { background: #3a3a3c; }
+:global(html[data-theme='dark']) .matExcluded { border-color: rgba(255, 255, 255, .2); }
+:global(html[data-theme='dark']) .metaWarning { color: #ffb340; }
+:global(html[data-theme='dark']) .softDurationWarning { color: #ffb340; }
+:global(html[data-theme='dark']) .voice { background: var(--paper); }
+:global(html[data-theme='dark']) .ctrlIcBtn,
+:global(html[data-theme='dark']) .tlToolButton { background: var(--paper); }
+:global(html[data-theme='dark']) .tlToolHint { background: rgba(255, 255, 255, .06); }
+:global(html[data-theme='dark']) .tlLabels,
+:global(html[data-theme='dark']) .tlRuler { background: var(--paper); }
+:global(html[data-theme='dark']) .tlTick { border-left-color: rgba(255, 255, 255, .12); }
+:global(html[data-theme='dark']) .tlTickMinor { border-left-color: rgba(255, 255, 255, .07); }
+:global(html[data-theme='dark']) .subclip { background: var(--paper); }
+:global(html[data-theme='dark']) .wfLabel { background: rgba(44, 44, 46, .85); }
+:global(html[data-theme='dark']) .timelineContextMenu {
+  border-color: rgba(255, 255, 255, .12);
+  background: rgba(35, 35, 37, .96);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+}
+:global(html[data-theme='dark']) .timelineContextMenu button:hover { background: rgba(255, 255, 255, .08); }
+:global(html[data-theme='dark']) .timelineSpeedRow input[type='range'] { background: #48484a; }
+:global(html[data-theme='dark']) .timelineSpeedRow input[type='number'] {
+  border-color: rgba(255, 255, 255, .14);
+  background: rgba(255, 255, 255, .07);
+  box-shadow: none;
+}
+:global(html[data-theme='dark']) .narrationSpeedPresets button:hover:not(:disabled) { background: rgba(255, 255, 255, .14); }
+:global(html[data-theme='dark']) .exportBlocker { color: #ff6961; }
+:global(html[data-theme='dark']) .coverDrawerHeader { background: var(--paper); }
+:global(html[data-theme='dark']) .coverSourcePanel,
+:global(html[data-theme='dark']) .coverControlsPanel { background: var(--paper); }
+:global(html[data-theme='dark']) .coverSourceList img { background: rgba(255, 255, 255, .1); }
+:global(html[data-theme='dark']) .coverControlsPanel select,
+:global(html[data-theme='dark']) .coverControlsPanel section > input,
+:global(html[data-theme='dark']) .coverPresetSave input {
+  background: rgba(255, 255, 255, .07);
+  color: var(--ink);
+}
+:global(html[data-theme='dark']) .coverInlineControls input { background: rgba(255, 255, 255, .07); color: var(--ink); }
+:global(html[data-theme='dark']) .coverControlHeading button,
+:global(html[data-theme='dark']) .coverPresetRow button:last-child { color: #ff6961; }
+:global(html[data-theme='dark']) .coverTextOverflow { border-color: rgba(255, 105, 97, .4) !important; background: rgba(255, 105, 97, .12) !important; }
+:global(html[data-theme='dark']) .coverDrawerFooter { background: var(--paper); box-shadow: 0 -8px 24px rgba(0, 0, 0, .3); }

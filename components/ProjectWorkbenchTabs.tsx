@@ -29,8 +29,8 @@ export default function ProjectWorkbenchTabs({ projectId, activeTab }: Props) {
               href={`/projects/${projectId}?tab=${tab.id}`}
               className={`rounded-lg border px-4 py-3 transition ${
                 active
-                  ? 'border-accent bg-white text-accent shadow-sm'
-                  : 'border-transparent text-ink-secondary hover:border-hairline hover:bg-white/70'
+                  ? 'border-accent bg-surface text-accent shadow-sm'
+                  : 'border-transparent text-ink-secondary hover:border-hairline hover:bg-surface-hover'
               }`}
             >
               <div className="flex items-center gap-2">
