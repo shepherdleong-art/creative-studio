@@ -27,6 +27,8 @@ export interface BatchCoverTitleSettings {
   mode: BatchCoverTitleMode;
   presetId: string | null;
   styles: { primary: TextStyle; secondary: TextStyle } | null;
+  /** 按脚本覆盖(sourceScriptId → 完整样式);缺省/无条目时回落 styles。 */
+  stylesByScript: Record<string, { primary: TextStyle; secondary: TextStyle }>;
   framing: CoverFraming | null;
 }
 
@@ -42,7 +44,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  */
 export function resolveBatchCoverTitleSettings(defaults: unknown): BatchCoverTitleSettings {
   const root = asRecord(defaults);
-  if (!root) return { mode: 'none', presetId: null, styles: null, framing: null };
+  if (!root) return { mode: 'none', presetId: null, styles: null, stylesByScript: {}, framing: null };
   const mode: BatchCoverTitleMode = root.coverTitleMode === 'preset' || root.coverTitleMode === 'custom'
     ? root.coverTitleMode
     : 'none';
@@ -54,8 +56,22 @@ export function resolveBatchCoverTitleSettings(defaults: unknown): BatchCoverTit
     primary: normalizeTextStyle(stylesRaw.primary, defaultTextStyle('coverPrimary', 1080)),
     secondary: normalizeTextStyle(stylesRaw.secondary, defaultTextStyle('coverSecondary', 1080)),
   } : null;
+  const byScriptRaw = asRecord(root.coverTitleStylesByScript);
+  const stylesByScript: BatchCoverTitleSettings['stylesByScript'] = {};
+  if (byScriptRaw) {
+    for (const [scriptId, entry] of Object.entries(byScriptRaw)) {
+      if (!scriptId) continue;
+      const record = asRecord(entry);
+      // 坏条目必须跳过,不能被 normalize 成全默认而遮蔽基准样式。
+      if (!record || (!asRecord(record.primary) && !asRecord(record.secondary))) continue;
+      stylesByScript[scriptId] = {
+        primary: normalizeTextStyle(record.primary, defaultTextStyle('coverPrimary', 1080)),
+        secondary: normalizeTextStyle(record.secondary, defaultTextStyle('coverSecondary', 1080)),
+      };
+    }
+  }
   const framing = root.coverTitleFraming == null ? null : cleanFraming(root.coverTitleFraming);
-  return { mode, presetId, styles, framing };
+  return { mode, presetId, styles, stylesByScript, framing };
 }
 
 /**
@@ -126,20 +142,21 @@ function parseJsonObject(value: string): Record<string, unknown> | null {
  */
 export function loadFrozenCoverTitleConfig(db: Database.Database, planId: string): FrozenBatchCoverTitleConfig | null {
   const row = db.prepare(`
-    SELECT s.coverTitleJson AS coverTitleJson, v.defaultsJson AS defaultsJson
+    SELECT s.coverTitleJson AS coverTitleJson, s.sourceScriptId AS sourceScriptId, v.defaultsJson AS defaultsJson
     FROM batch_output_plans p
     JOIN batch_script_snapshots s ON s.id = p.scriptSnapshotId
     JOIN batch_production_versions v ON v.id = p.batchVersionId
     WHERE p.id = ?
-  `).get(planId) as { coverTitleJson: string; defaultsJson: string } | undefined;
+  `).get(planId) as { coverTitleJson: string; sourceScriptId: string; defaultsJson: string } | undefined;
   if (!row) return null;
   const settings = resolveBatchCoverTitleSettings(parseJsonObject(row.defaultsJson));
-  if (settings.mode === 'none' || !settings.styles) return null;
+  const styles = settings.stylesByScript[row.sourceScriptId] ?? settings.styles;
+  if (settings.mode === 'none' || !styles) return null;
   const coverTitle = parseJsonObject(row.coverTitleJson);
   const primary = typeof coverTitle?.primary === 'string' ? coverTitle.primary.trim() : '';
   if (!primary) return null;
   const secondary = typeof coverTitle?.secondary === 'string' ? coverTitle.secondary : '';
-  return { primary, secondary, styles: settings.styles, framing: settings.framing };
+  return { primary, secondary, styles, framing: settings.framing };
 }
 
 /**

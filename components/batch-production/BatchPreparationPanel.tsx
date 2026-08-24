@@ -166,6 +166,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     mode: 'none',
     presetId: null,
     styles: null,
+    stylesByScript: {},
     framing: null,
   });
   const [batchTasks, setBatchTasks] = useState<BatchTasksView['tasks']>([]);
@@ -948,6 +949,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               coverTitlePresetId: coverTitle.presetId,
               coverTitleStyles: coverTitle.styles,
               coverTitleFraming: coverTitle.framing,
+              ...(Object.keys(coverTitle.stylesByScript).length > 0
+                ? { coverTitleStylesByScript: coverTitle.stylesByScript }
+                : {}),
             },
           }),
         },

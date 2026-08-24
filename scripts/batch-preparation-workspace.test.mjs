@@ -75,6 +75,14 @@ assert.match(scripts, /配音供应商/);
 assert.match(scripts, /预览脚本/);
 assert.match(scripts, /aria-label="封面标题预览脚本"/);
 assert.match(scripts, /coverPreviewScriptId/);
+// 封面标题按脚本单独设置(2026-08-24):覆盖写入 defaultsJson 新字段,可恢复基准、可一键同步全部
+assert.match(scripts, /coverTitleStylesByScript/);
+assert.match(scripts, /恢复基准样式/);
+assert.match(scripts, /已单独调整/);
+assert.match(scripts, /applyCoverStyleToAllScripts/);
+// 「应用到全部脚本」会清掉其他脚本的单独调整:界面必须先报份数、再内联二次确认
+assert.match(scripts, /份单独调整/);
+assert.match(scripts, /确认清除其他/);
 // BGM 参数整批统一可调(FR-S2-45):音量/淡入/淡出 滑杆带可读 aria 标签
 assert.match(scripts, /背景音乐音量增益/);
 assert.match(scripts, /背景音乐淡入/);

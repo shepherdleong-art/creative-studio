@@ -29,7 +29,7 @@ assert.equal(BATCH_PRESET_TO_COVER_PRESET_ID['16x9'], '16x9');
 
 // ---------- resolveBatchCoverTitleSettings:缺省与非法回落 ----------
 
-const emptySettings = { mode: 'none', presetId: null, styles: null, framing: null };
+const emptySettings = { mode: 'none', presetId: null, styles: null, stylesByScript: {}, framing: null };
 assert.deepEqual(resolveBatchCoverTitleSettings(undefined), emptySettings);
 assert.deepEqual(resolveBatchCoverTitleSettings(null), emptySettings);
 assert.deepEqual(resolveBatchCoverTitleSettings('not-an-object'), emptySettings);
@@ -62,6 +62,46 @@ assert.deepEqual(
   '非法 framing 必须按 cleanFraming 语义回落默认',
 );
 assert.equal(resolveBatchCoverTitleSettings({ coverTitleMode: 'custom', coverTitleStyles: 'garbage' }).styles, null, '非法 styles 必须为 null');
+
+const stylesByScriptResolved = resolveBatchCoverTitleSettings({
+  coverTitleStylesByScript: {
+    'script-a': {
+      primary: { fontSizePx: 1, x: 2 },
+      secondary: { fontSizePx: 1, y: -1 },
+    },
+    'script-b': {
+      primary: { scale: 99 },
+      secondary: { scale: 0.1 },
+    },
+  },
+});
+assert.equal(stylesByScriptResolved.stylesByScript['script-a'].primary.fontSizePx, 8, '脚本覆盖主标题必须过 normalizeTextStyle');
+assert.equal(stylesByScriptResolved.stylesByScript['script-a'].secondary.fontSizePx, 8, '脚本覆盖副标题必须过 normalizeTextStyle');
+assert.equal(stylesByScriptResolved.stylesByScript['script-a'].primary.x, 1, '脚本覆盖主标题位置必须按 normalizeTextStyle 钳制');
+assert.equal(stylesByScriptResolved.stylesByScript['script-a'].secondary.y, 0, '脚本覆盖副标题位置必须按 normalizeTextStyle 钳制');
+assert.equal(stylesByScriptResolved.stylesByScript['script-b'].primary.scale, 4, '脚本覆盖主标题缩放必须按 normalizeTextStyle 钳制');
+assert.equal(stylesByScriptResolved.stylesByScript['script-b'].secondary.scale, 0.25, '脚本覆盖副标题缩放必须按 normalizeTextStyle 钳制');
+
+const invalidStylesByScript = resolveBatchCoverTitleSettings({
+  coverTitleStylesByScript: {
+    nullEntry: null,
+    stringEntry: 'garbage',
+    invalidPrimary: { primary: 42 },
+    invalidSecondary: { secondary: false },
+    valid: { primary: { fontSizePx: 1 } },
+  },
+});
+assert.deepEqual(Object.keys(invalidStylesByScript.stylesByScript).sort(), ['valid'], '非法脚本覆盖条目必须跳过');
+assert.deepEqual(
+  invalidStylesByScript.stylesByScript.valid.secondary,
+  defaultTextStyle('coverSecondary', 1080),
+  '合法但缺失副标题的脚本覆盖必须补副标题默认样式',
+);
+assert.deepEqual(
+  resolveBatchCoverTitleSettings({ coverTitleStylesByScript: 'garbage' }).stylesByScript,
+  {},
+  '非对象脚本覆盖映射必须回落为空映射',
+);
 
 // ---------- textStyleToSvgElements ----------
 
@@ -196,6 +236,44 @@ try {
   assert.equal(config.secondary, '副标题');
   assert.equal(config.styles.primary.color, '#ff0000');
   assert.deepEqual(config.framing, { scale: 2, offsetX: 0.5, offsetY: 0 });
+
+  // v1b:同一版本挂两份脚本快照,按 sourceScriptId 命中脚本覆盖或回落基准样式;
+  // 不存在脚本的残留覆盖条目不能影响任何实际计划。
+  const scriptIdMultiA = createProjectScript(db, 'project-1', {
+    sourceKind: 'script_draft', sourceId: 'script-multi-a', title: '脚本 A', bodyText: '正文 A', sourceVersion: 'v1',
+    metadata: { coverTitleJson: { primary: '脚本 A 主标题', secondary: '脚本 A 副标题' } },
+  });
+  const scriptIdMultiB = createProjectScript(db, 'project-1', {
+    sourceKind: 'script_draft', sourceId: 'script-multi-b', title: '脚本 B', bodyText: '正文 B', sourceVersion: 'v1',
+    metadata: { coverTitleJson: { primary: '脚本 B 主标题', secondary: '脚本 B 副标题' } },
+  });
+  const versionIdMulti = createBatchProductionVersion(db, batchId, {
+    copyCount: 1,
+    defaultsJson: {
+      coverTitleMode: 'custom',
+      coverTitleStyles: frozenStyles,
+      coverTitleStylesByScript: {
+        [scriptIdMultiA]: {
+          primary: { ...frozenStyles.primary, color: '#00ff00' },
+          secondary: { ...frozenStyles.secondary, color: '#00ff00' },
+        },
+        'missing-script-id': {
+          primary: { ...frozenStyles.primary, color: '#0000ff' },
+          secondary: { ...frozenStyles.secondary, color: '#0000ff' },
+        },
+      },
+    },
+  });
+  const snapshotIdMultiA = snapshotScriptIntoBatch(db, versionIdMulti, { scriptId: scriptIdMultiA, copyCount: 1 });
+  const snapshotIdMultiB = snapshotScriptIntoBatch(db, versionIdMulti, { scriptId: scriptIdMultiB, copyCount: 1 });
+  const [planIdMultiA] = createOutputPlansForSnapshot(db, versionIdMulti, snapshotIdMultiA);
+  const [planIdMultiB] = createOutputPlansForSnapshot(db, versionIdMulti, snapshotIdMultiB);
+  const configMultiA = loadFrozenCoverTitleConfig(db, planIdMultiA);
+  const configMultiB = loadFrozenCoverTitleConfig(db, planIdMultiB);
+  assert.ok(configMultiA);
+  assert.ok(configMultiB);
+  assert.equal(configMultiA.styles.primary.color, '#00ff00', '脚本 A 的计划必须命中脚本覆盖色');
+  assert.equal(configMultiB.styles.primary.color, '#ff0000', '脚本 B 的计划必须回落基准色');
 
   // v2:defaultsJson 完全缺封面字段 → mode none → null(读取端必须容忍缺省)
   const versionId2 = createBatchProductionVersion(db, batchId, { copyCount: 1, defaultsJson: {} });

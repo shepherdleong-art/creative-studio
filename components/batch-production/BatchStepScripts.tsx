@@ -49,6 +49,8 @@ export interface BatchCoverTitleDraft {
   mode: 'none' | 'preset' | 'custom';
   presetId: string | null;
   styles: { primary: TextStyle; secondary: TextStyle } | null;
+  /** defaultsJson.coverTitleStylesByScript:按 sourceScriptId 的完整样式覆盖;无条目时回落 styles。 */
+  stylesByScript: Record<string, { primary: TextStyle; secondary: TextStyle }>;
   framing: CoverFraming | null;
 }
 
@@ -212,9 +214,13 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [systemFonts, setSystemFonts] = useState<string[]>(['PingFang SC']);
   const [presetName, setPresetName] = useState('');
   const [coverTitleError, setCoverTitleError] = useState('');
-  // 封面标题预览当前选中的脚本/快照 id:只影响右侧预览显示哪一份的标题文字,
-  // 样式仍是整批统一;选中项失效(取消勾选/删脚本)时渲染层回落第一条,无需清理。
+  // 封面标题预览当前选中的脚本/快照 id:选中项失效(取消勾选/删脚本)时
+  // 渲染层回落第一条,无需清理。
   const [coverPreviewScriptId, setCoverPreviewScriptId] = useState<string | null>(null);
+  // 「应用到全部脚本」会连带清掉其他脚本的单独调整,而当前脚本没单独调整时这一步
+  // 在界面上看不出任何变化(基准 → 基准),所以按批量提交同款做内联二次确认。
+  // 存的是「举起确认时要销毁的目标集合」指纹,目标或集合一变就自动失效。
+  const [coverApplyAllArmedFor, setCoverApplyAllArmedFor] = useState<string | null>(null);
   // 手动脚本导入/编辑弹窗与删除进行中状态。
   const [scriptDialogOpen, setScriptDialogOpen] = useState(false);
   const [editingScript, setEditingScript] = useState<ManualScriptDraft | null>(null);
@@ -610,6 +616,25 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
 
   const coverPresetId = outputPreset.id.replace(':', 'x') as OutputPresetId;
+  const coverPreviewSources = frozen
+    ? frozenScriptSnapshots.map((snapshot) => ({ id: snapshot.id, title: snapshot.title, coverTitle: snapshot.coverTitle }))
+    : prep.scripts
+        .filter((script) => selectedScripts[script.id] !== undefined)
+        .map((script) => ({ id: script.id, title: script.title, coverTitle: script.coverTitle }));
+  const coverPreview = coverPreviewSources.find((source) => source.id === coverPreviewScriptId) ?? coverPreviewSources[0] ?? null;
+  // 冻结态整卡只读,不存在编辑目标;草稿态用预览下拉选中的脚本,
+  // 没有已选脚本时编辑整批基准样式。
+  const coverEditScriptId = !frozen && coverPreview ? coverPreview.id : null;
+  const coverEffectiveStyles = coverEditScriptId
+    ? coverTitle.stylesByScript[coverEditScriptId] ?? coverTitle.styles
+    : coverTitle.styles;
+  // 只统计当前可见(已勾选/已冻结)的脚本:界面上数得出来的份数才拿去提示用户。
+  const coverOverrideScriptIds = coverPreviewSources
+    .filter((source) => coverTitle.stylesByScript[source.id])
+    .map((source) => source.id);
+  const coverApplyAllVictimIds = coverOverrideScriptIds.filter((id) => id !== coverEditScriptId);
+  const coverApplyAllArmKey = coverEditScriptId ? `${coverEditScriptId}|${coverApplyAllVictimIds.join(',')}` : '';
+  const coverApplyAllArmed = coverApplyAllVictimIds.length > 0 && coverApplyAllArmedFor === coverApplyAllArmKey;
 
   /**
    * 封面标题草稿更新:进入「使用预设/自定义」时补齐已解析的当前画幅样式与
@@ -620,6 +645,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
       mode: patch.mode ?? coverTitle.mode,
       presetId: patch.presetId !== undefined ? patch.presetId : coverTitle.presetId,
       styles: patch.styles !== undefined ? patch.styles : coverTitle.styles,
+      stylesByScript: patch.stylesByScript !== undefined ? patch.stylesByScript : coverTitle.stylesByScript,
       framing: patch.framing !== undefined ? patch.framing : coverTitle.framing,
     };
     if (next.mode === 'preset' || next.mode === 'custom') {
@@ -636,6 +662,17 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
   function updateCoverStyle(kind: 'primary' | 'secondary', patch: Partial<TextStyle>): void {
     if (!coverTitle.styles) return;
+    if (coverEditScriptId) {
+      const base = coverTitle.stylesByScript[coverEditScriptId] ?? coverTitle.styles;
+      onCoverTitleChange({
+        ...coverTitle,
+        stylesByScript: {
+          ...coverTitle.stylesByScript,
+          [coverEditScriptId]: { ...base, [kind]: { ...base[kind], ...patch } },
+        },
+      });
+      return;
+    }
     onCoverTitleChange({
       ...coverTitle,
       styles: { ...coverTitle.styles, [kind]: { ...coverTitle.styles[kind], ...patch } },
@@ -649,8 +686,31 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
       mode: 'preset',
       presetId: preset.id,
       styles: { primary: value.primary, secondary: value.secondary },
+      stylesByScript: {},
       framing: { ...value.framing },
     });
+  }
+
+  function applyCoverStyleToAllScripts(): void {
+    if (!coverEditScriptId || !coverEffectiveStyles) return;
+    // 会清掉其他脚本的单独调整;从当前脚本视角看不出损失,先举起确认再执行。
+    if (coverApplyAllVictimIds.length > 0 && !coverApplyAllArmed) {
+      setCoverApplyAllArmedFor(coverApplyAllArmKey);
+      return;
+    }
+    setCoverApplyAllArmedFor(null);
+    onCoverTitleChange({
+      ...coverTitle,
+      styles: coverEffectiveStyles,
+      stylesByScript: {},
+    });
+  }
+
+  function restoreCoverStyleToBaseline(): void {
+    if (!coverEditScriptId || !coverTitle.stylesByScript[coverEditScriptId]) return;
+    const stylesByScript = { ...coverTitle.stylesByScript };
+    delete stylesByScript[coverEditScriptId];
+    onCoverTitleChange({ ...coverTitle, stylesByScript });
   }
 
   async function saveCoverPreset(): Promise<void> {
@@ -659,7 +719,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
       setCoverTitleError('请输入预设名称。');
       return;
     }
-    if (!coverTitle.styles) {
+    if (!coverEffectiveStyles) {
       setCoverTitleError('请先选择「使用预设」或「自定义」并调整样式，再保存为新预设。');
       return;
     }
@@ -670,10 +730,10 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         preset,
         {
           primary: preset === coverPresetId
-            ? coverTitle.styles!.primary
+            ? coverEffectiveStyles.primary
             : defaultTextStyle('coverPrimary', OUTPUT_PRESETS[preset].width),
           secondary: preset === coverPresetId
-            ? coverTitle.styles!.secondary
+            ? coverEffectiveStyles.secondary
             : defaultTextStyle('coverSecondary', OUTPUT_PRESETS[preset].width),
           framing: preset === coverPresetId
             ? { ...(coverTitle.framing ?? { scale: 1, offsetX: 0, offsetY: 0 }) }
@@ -841,18 +901,10 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     );
   }
 
-  /** 封面标题卡:统一选择预设/自定义样式,批量成片共用;冻结后整卡只读。 */
+  /** 封面标题卡:预设与 framing 整批统一,样式可按脚本覆盖;冻结后整卡只读。 */
   function renderCoverTitleSection() {
-    const hasTitle = coverTitle.mode !== 'none' && coverTitle.styles !== null;
-    const coverStyles = coverTitle.styles;
-    // 预览来源清单:未冻结按已勾选脚本(卡片顺序),已冻结按锁定快照;样式整批统一,
-    // 切换只改变右侧预览显示哪一份的标题文字。
-    const coverPreviewSources = frozen
-      ? frozenScriptSnapshots.map((snapshot) => ({ id: snapshot.id, title: snapshot.title, coverTitle: snapshot.coverTitle }))
-      : prep.scripts
-          .filter((script) => selectedScripts[script.id] !== undefined)
-          .map((script) => ({ id: script.id, title: script.title, coverTitle: script.coverTitle }));
-    const coverPreview = coverPreviewSources.find((source) => source.id === coverPreviewScriptId) ?? coverPreviewSources[0] ?? null;
+    const hasTitle = coverTitle.mode !== 'none' && coverEffectiveStyles !== null;
+    const coverStyles = coverEffectiveStyles;
     const primaryText = coverPreview?.coverTitle.primary?.trim() || '示例主标题';
     const secondaryText = coverPreview?.coverTitle.secondary?.trim() || '示例副标题';
     const preset = coverPresets.find((item) => item.id === coverTitle.presetId);
@@ -891,7 +943,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         </div>
 
         <p className="text-xs text-ink-tertiary">
-          标题文字来自各脚本的封面标题（第 3 步生成），此处统一控制样式与位置，右侧预览可切换脚本逐份核对；确认整体输入后随版本冻结，改样式会形成批次新版本。
+          标题文字来自各脚本的封面标题（第 3 步生成）。样式与位置按脚本单独设置：预览下拉选择当前调整的脚本，未单独调整的脚本沿用整批基准；应用预设会把整批重置为预设样式。确认整体输入后随版本冻结，改样式会形成批次新版本。
         </p>
 
         {hasTitle && coverStyles && (
@@ -899,26 +951,72 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
             {/* 两个样式编辑器竖排:再切一次两列会让每个字段只剩约 95px,
                 标签折行、控件互相重叠。宽度让给字段本身。 */}
             <div className="grid min-w-64 flex-1 gap-2.5">
+              {!frozen && (
+                <p className="text-xs text-ink-secondary">
+                  {coverEditScriptId && coverPreview
+                    ? `正在调整：脚本 ${coverPreviewSources.findIndex((source) => source.id === coverPreview.id) + 1} · ${coverPreview.coverTitle.primary.trim() || coverPreview.title || '未命名脚本'}（仅对这份脚本生效）`
+                    : '未勾选脚本时，调整的是整批基准样式'}
+                  {coverOverrideScriptIds.length > 0 && `；本批已有 ${coverOverrideScriptIds.length} 份单独调整`}
+                </p>
+              )}
               {renderCoverTextStyleEditor('primary', coverStyles.primary)}
               {renderCoverTextStyleEditor('secondary', coverStyles.secondary)}
             </div>
             <div className="flex min-w-56 flex-1 flex-col gap-2">
-              {coverPreviewSources.length > 1 && (
-                <label className="flex items-center gap-2 text-[11px] text-ink-tertiary">
-                  <span className="shrink-0">预览脚本</span>
-                  <select
-                    aria-label="封面标题预览脚本"
-                    value={coverPreview?.id ?? ''}
-                    onChange={(event) => setCoverPreviewScriptId(event.target.value)}
-                    className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
-                  >
-                    {coverPreviewSources.map((source, index) => (
-                      <option key={source.id} value={source.id}>
-                        脚本 {index + 1} · {source.coverTitle.primary.trim() || source.title || '未命名脚本'}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              {coverPreviewSources.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-tertiary">
+                  <label className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="shrink-0">预览脚本</span>
+                    <select
+                      aria-label="封面标题预览脚本"
+                      value={coverPreview?.id ?? ''}
+                      onChange={(event) => setCoverPreviewScriptId(event.target.value)}
+                      className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+                    >
+                      {coverPreviewSources.map((source, index) => (
+                        <option key={source.id} value={source.id}>
+                          脚本 {index + 1} · {source.coverTitle.primary.trim() || source.title || '未命名脚本'}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {coverEditScriptId && coverTitle.stylesByScript[coverEditScriptId] && (
+                    <>
+                      <span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent">已单独调整</span>
+                      <button
+                        type="button"
+                        className="text-accent underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={frozen}
+                        onClick={restoreCoverStyleToBaseline}
+                      >
+                        恢复基准样式
+                      </button>
+                    </>
+                  )}
+                  {coverEditScriptId && (
+                    <>
+                      <button
+                        type="button"
+                        className={`underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${coverApplyAllArmed ? 'text-warn' : 'text-accent'}`}
+                        disabled={frozen}
+                        onClick={applyCoverStyleToAllScripts}
+                      >
+                        {coverApplyAllArmed
+                          ? `确认清除其他 ${coverApplyAllVictimIds.length} 份单独调整`
+                          : '应用到全部脚本'}
+                      </button>
+                      {coverApplyAllArmed && (
+                        <button
+                          type="button"
+                          className="text-ink-tertiary underline underline-offset-2"
+                          onClick={() => setCoverApplyAllArmedFor(null)}
+                        >
+                          取消
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               )}
               {/* 宽度按「高度上限 320px × 画幅比」反推、再封顶 560px,配合 aspectRatio
                   让三种画幅的预览框都保持真实比例(旧版 w-full + maxHeight 会把竖版
