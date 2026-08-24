@@ -734,9 +734,6 @@ async function runJob(
 
     const inputBase = sanitizeFilenameBase(inputImage.filename || inputImage.path);
     const revSuffix = (job.revision && job.revision > 0) ? `-r${job.revision}` : '';
-    const preferredOutputName = `${filePrefix}${inputBase}${revSuffix}.png`;
-    const outputFilename = ensureUniqueFilename(outputsDir, preferredOutputName, job.id.slice(0, 6));
-    const outputPath = path.join(outputsDir, outputFilename);
     // 逐格实测可原生交付的公司模型（nativeDelivery，qiniuyun/* 与 image2）：只按
     // 名义格比例居中裁切、绝不缩放——同比例原样交付网关原生像素（image2 常返回
     // 比名义格更大的图，白赚像素），比例略偏的裁齐（1K 3:4 实返 1024x1376 →
@@ -749,14 +746,20 @@ async function runJob(
     if (normalizedImage.changed) {
       logWarn(`输出尺寸与任务尺寸不一致，已自动规整: ${normalizedImage.reason}`);
     }
+    // 原生交付原样保留网关字节，落盘扩展名与落库 MIME 必须按产物真实格式
+    //（qiniuyun 请求 png、image2 仍为 jpeg），不能一律写 .png。
+    const outputExt = normalizedImage.format === 'jpeg' ? '.jpg' : normalizedImage.format === 'webp' ? '.webp' : '.png';
+    const outputMimeType = outputExt === '.jpg' ? 'image/jpeg' : outputExt === '.webp' ? 'image/webp' : 'image/png';
+    const outputFilename = ensureUniqueFilename(outputsDir, `${filePrefix}${inputBase}${revSuffix}${outputExt}`, job.id.slice(0, 6));
+    const outputPath = path.join(outputsDir, outputFilename);
     fs.writeFileSync(outputPath, normalizedImage.imageBuffer);
 
     // Save output image asset (tag with usage so tabs can filter)
     const outputImageId = uuidv4();
     db.prepare(
       `INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, width, height, createdAt)
-       VALUES (?, ?, 'output', ?, ?, 'image/png', ?, ?, ?, datetime('now'))`
-    ).run(outputImageId, job.projectId, outputFilename, outputPath, outputUsage, normalizedImage.width, normalizedImage.height);
+       VALUES (?, ?, 'output', ?, ?, ?, ?, ?, ?, datetime('now'))`
+    ).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
 
     const finishedAt = new Date().toISOString();
     const estimatedCost = calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);

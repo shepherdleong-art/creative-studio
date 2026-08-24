@@ -9,6 +9,8 @@ export interface NormalizedGeneratedImage {
   imageBuffer: Buffer;
   width: number;
   height: number;
+  /** 输出字节的真实图片格式（sharp metadata.format；凡经 sharp 重编码恒为 'png'） */
+  format: string;
   changed: boolean;
   reason?: string;
 }
@@ -42,6 +44,7 @@ export async function normalizeGeneratedImageToSize(
       imageBuffer,
       width: sourceWidth,
       height: sourceHeight,
+      format: metadata.format || 'png',
       changed: false,
     };
   }
@@ -51,6 +54,7 @@ export async function normalizeGeneratedImageToSize(
       imageBuffer,
       width: sourceWidth,
       height: sourceHeight,
+      format: metadata.format || 'png',
       changed: false,
     };
   }
@@ -67,6 +71,7 @@ export async function normalizeGeneratedImageToSize(
     imageBuffer: normalizedBuffer,
     width: target.width,
     height: target.height,
+    format: 'png',
     changed: true,
     reason: `${sourceWidth}x${sourceHeight} -> ${target.width}x${target.height}`,
   };
@@ -88,7 +93,7 @@ export async function normalizeGeneratedImageToNativeRatio(
   const target = parseImageTargetSize(ratioOf);
 
   if (!target || sourceWidth <= 0 || sourceHeight <= 0) {
-    return { imageBuffer, width: sourceWidth, height: sourceHeight, changed: false };
+    return { imageBuffer, width: sourceWidth, height: sourceHeight, format: metadata.format || 'png', changed: false };
   }
 
   const targetRatio = target.width / target.height;
@@ -102,7 +107,7 @@ export async function normalizeGeneratedImageToNativeRatio(
   }
 
   if (cropWidth === sourceWidth && cropHeight === sourceHeight) {
-    return { imageBuffer, width: sourceWidth, height: sourceHeight, changed: false };
+    return { imageBuffer, width: sourceWidth, height: sourceHeight, format: metadata.format || 'png', changed: false };
   }
 
   const croppedBuffer = await sharp(imageBuffer)
@@ -119,6 +124,7 @@ export async function normalizeGeneratedImageToNativeRatio(
     imageBuffer: croppedBuffer,
     width: cropWidth,
     height: cropHeight,
+    format: 'png',
     changed: true,
     reason: `${sourceWidth}x${sourceHeight} -> ${cropWidth}x${cropHeight}（仅裁齐比例，未缩放）`,
   };

@@ -9,7 +9,7 @@
 
 ## `company-gateway-size.ts` — size 白名单、吸附与裁切映射
 
-- `company-gateway-size.ts` — 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并补 `response_format`；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。`qiniuyun/gpt-image-2-medium`（2026-08-21 逐格真实任务探测）放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}，并经 `CompanyModelCaps.exclude` 单格排除 4K 3:4：1K 档被网关映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，均不满足上游「宽高 16 整除」被拒；3K 档与 3:2/2:3/21:9 提交即拒。命中排除格时优先「裁切映射」——同档位找能居中裁切覆盖目标框的跨比例好格（4K 3:4 → 4K 9:16 的 2160x3840，交付端 normalize 裁回 3:4 名义格 2160x2880，真 4K 级画质），没有可裁格才同比例就近换档。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
+- `company-gateway-size.ts` — 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并补 `response_format`（qiniuyun/* 实测收 `png` 并回无损 PNG——2K 3:4 约 2.8MB，而 jpeg 仅 ~300KB 压缩发糊，2026-08-21 真实任务验证；image2/seedream 维持历史 `jpeg`）；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。`qiniuyun/gpt-image-2-medium`（2026-08-21 逐格真实任务探测）放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}，并经 `CompanyModelCaps.exclude` 单格排除 4K 3:4：1K 档被网关映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，均不满足上游「宽高 16 整除」被拒；3K 档与 3:2/2:3/21:9 提交即拒。命中排除格时优先「裁切映射」——同档位找能居中裁切覆盖目标框的跨比例好格（4K 3:4 → 4K 9:16 的 2160x3840，交付端 normalize 裁回 3:4 名义格 2160x2880，真 4K 级画质），没有可裁格才同比例就近换档。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
 
 ## `cos-media.ts` — 腾讯云 COS 参考图中转
 
@@ -17,7 +17,7 @@
 
 ## `image-output-normalize.ts` — 原生像素交付
 
-- `image-output-normalize.ts` — 生成图与目标尺寸不一致时用 sharp 居中裁切并记日志。开启 `nativeDelivery` 的公司模型（qiniuyun/* 与 image2-*）只按 `companyImageDeliverySize` 推出的名义格比例居中裁切、绝不缩放：同比例即原样交付（image2 常返回比名义格更大的图，白赚像素），比例略偏的裁齐（image2 1K 3:4 实返 1024x1376 → 1024x1366），排除格 donor 裁回名义格比例；其余模型（seedream 等）仍规整到 `job.size`。
+- `image-output-normalize.ts` — 生成图与目标尺寸不一致时用 sharp 居中裁切并记日志。开启 `nativeDelivery` 的公司模型（qiniuyun/* 与 image2-*）只按 `companyImageDeliverySize` 推出的名义格比例居中裁切、绝不缩放：同比例即原样交付（image2 常返回比名义格更大的图，白赚像素），比例略偏的裁齐（image2 1K 3:4 实返 1024x1376 → 1024x1366），排除格 donor 裁回名义格比例；其余模型（seedream 等）仍规整到 `job.size`。normalize 结果带 `format`（原样交付为源格式如 jpeg，重编码后恒为 png），`queue.ts` 按它定落盘扩展名与落库 MIME——原生交付不再把 jpeg 字节写成 .png 文件。
 
 ## `local-image-url.ts` — 本地图片转 HTTP URL（COS 未配置时的回退）
 

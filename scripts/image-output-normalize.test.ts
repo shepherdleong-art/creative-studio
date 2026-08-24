@@ -72,4 +72,12 @@ assert.equal(wide.height, 1024);
 const auto = await normalizeGeneratedImageToNativeRatio(await makeJpeg(800, 600), 'auto');
 assert.equal(auto.changed, false);
 
+// ── 交付格式透传：原样交付时回报源格式，经 sharp 重编码后恒为 png ──
+assert.equal(normalized.format, 'png');
+assert.equal(unchanged.format, 'png');
+assert.equal(exact.format, 'jpeg');
+assert.equal(cropped.format, 'png');
+assert.equal(donor.format, 'png');
+assert.equal(auto.format, 'jpeg');
+
 console.log('image-output-normalize tests passed');

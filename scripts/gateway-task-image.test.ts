@@ -225,9 +225,10 @@ try {
   assert.equal(inlineImages.length, 1);
   assert.ok(inlineImages[0].startsWith('data:image/png;base64,'), inlineImages[0].slice(0, 60));
   assert.deepEqual(decodeImage(inlineImages[0]), Buffer.from([0x89, 0x50, 0x4e, 0x47]), '原图必须原样内联、不压缩');
-  // size 吸附到 qiniuyun 白名单（1K 档映射坏，1K 预设钳到 2K），公司模型补 response_format
+  // size 吸附到 qiniuyun 白名单（1K 档映射坏，1K 预设钳到 2K）；qiniuyun 实测接受
+  // response_format=png（2026-08-21 真实任务验证：无损 PNG 约 2.8MB vs jpeg ~300KB）
   assert.equal(capturedBody?.size, '1440x1440');
-  assert.equal(capturedBody?.response_format, 'jpeg');
+  assert.equal(capturedBody?.response_format, 'png');
   delete process.env.CREATIVE_STUDIO_COS_SECRET_ID;
   delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
   delete process.env.CREATIVE_STUDIO_COS_DOMAIN;
