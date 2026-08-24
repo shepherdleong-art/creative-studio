@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import type {
   BatchOutputClipEditResult,
@@ -29,7 +29,12 @@ interface EditFeedback {
 
 /**
  * 「检查成片」片段编辑面板:左侧实时预览 + 下方时间轴,右侧冻结素材池。
- * 自身拉取 arrangement 视图;编辑生效后静默重拉本视图并回调 onChanged 让外层刷 workspace。
+ * 自身拉取 arrangement 视图;编辑生效后静默重拉本视图。
+ *
+ * 渲染时机:编辑期一次都不排渲染(POST 带 deferRender),退出这一轮调整时再
+ * commit_render 一次性提交。本面板的预览是客户端实时合成的,不看渲染产物,
+ * 而每次微调排一次整片重渲染要 4~7 秒,还会经 renderBusy 把编辑器整个锁死——
+ * 用户实测「调一下等一下」就是这么来的。commit 幂等,重复提交不会多排任务。
  */
 export default function BatchOutputEditor({
   projectId,
@@ -50,6 +55,19 @@ export default function BatchOutputEditor({
   const [submitting, setSubmitting] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
   const [editWarnings, setEditWarnings] = useState<string[]>([]);
+  // 这一轮调整里有画面变化尚未提交渲染。卸载兜底要读最新值,但 effect 不能依赖它
+  // (依赖它就会在编辑中途重跑、提前提交),所以 state 与 ref 并存。
+  const [pendingRender, setPendingRender] = useState(false);
+  const pendingRenderRef = useRef(false);
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => { onChangedRef.current = onChanged; });
+
+  const clipsUrl = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
+
+  const markRenderPending = useCallback((pending: boolean) => {
+    pendingRenderRef.current = pending;
+    setPendingRender(pending);
+  }, []);
 
   const loadView = useCallback(async (silent = false) => {
     if (!silent) {
@@ -86,6 +104,22 @@ export default function BatchOutputEditor({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadView]);
+
+  useEffect(() => {
+    // 退出这一轮调整(关闭弹窗/换成片/切步骤)时才把欠着的重渲染一次性提交。
+    // url 按当次的 projectId/batchId/planId 固化:换成片时提交的必须是上一条的渲染。
+    const url = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
+    return () => {
+      if (!pendingRenderRef.current) return;
+      pendingRenderRef.current = false;
+      void fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'commit_render' }),
+        keepalive: true,
+      }).then(() => onChangedRef.current?.()).catch(() => undefined);
+    };
+  }, [projectId, batchId, planId]);
 
   const clips = useMemo(() => view?.clips ?? [], [view]);
   const poolAssets = useMemo(() => view?.poolAssets ?? [], [view]);
@@ -126,14 +160,11 @@ export default function BatchOutputEditor({
     setEditFeedback(null);
     setEditWarnings([]);
     try {
-      const response = await fetch(
-        `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        },
-      );
+      const response = await fetch(clipsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, deferRender: true }),
+      });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(typeof result.message === 'string' ? result.message : `HTTP ${response.status}`);
@@ -143,8 +174,8 @@ export default function BatchOutputEditor({
       if (editResult.changed && !editResult.visualChanged) {
         setEditFeedback({ kind: 'success', message: '修改已保存，片段已分割，画面总长不变，无需重新渲染。' });
       } else if (editResult.changed) {
-        setEditFeedback({ kind: 'success', message: '修改已保存，正在按新画面重新渲染，完成后以新成片为准。' });
-        onChanged?.();
+        markRenderPending(true);
+        setEditFeedback({ kind: 'success', message: '修改已保存。退出片段调整后会按新画面重新渲染，期间可以接着调。' });
       } else {
         setEditFeedback({ kind: 'success', message: '片段画面没有变化，已保持当前安排。' });
       }
@@ -156,6 +187,25 @@ export default function BatchOutputEditor({
       return false;
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  /** 手动提交这一轮调整的重渲染(不必等退出)。幂等:同一 editRevision 不会重复排队。 */
+  async function commitPendingRender(): Promise<void> {
+    if (!pendingRenderRef.current) return;
+    markRenderPending(false);
+    try {
+      const response = await fetch(clipsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'commit_render' }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setEditFeedback({ kind: 'success', message: '已排队重新渲染，完成后以新成片为准。' });
+      onChangedRef.current?.();
+    } catch {
+      markRenderPending(true);
+      setEditFeedback({ kind: 'error', message: '提交重新渲染失败，请重试。' });
     }
   }
 
@@ -234,6 +284,16 @@ export default function BatchOutputEditor({
           本片使用 {usedHere}/{poolAssets.length} 条素材 · 本批次还有 {neverUsed} 条素材从未被任何成片使用
           · 画面 {visualSec.toFixed(1)} 秒{narrationSec != null ? ` / 口播 ${narrationSec.toFixed(1)} 秒` : ''}
         </p>
+        {pendingRender && (
+          <span className="flex items-center gap-2 text-[11px] text-warn">
+            修改尚未渲染成成片
+            <button
+              type="button"
+              className="btn-secondary h-7 shrink-0 whitespace-nowrap px-2 text-[11px]"
+              onClick={() => void commitPendingRender()}
+            >立即重新渲染</button>
+          </span>
+        )}
         {view.versionNumber != null && (
           <span className="text-[11px] text-ink-tertiary">
             当前 v{view.versionNumber}{view.editRevision > 0 ? ` · 已调整 ${view.editRevision} 次` : ''}
@@ -331,18 +391,20 @@ export default function BatchOutputEditor({
                   ? `用「${pendingReplaceAsset.displayName}」替换片段 #${clips.findIndex((clip) => clip.clipId === selectedClip.clipId) + 1}？画面窗口将从素材开头起播，替换后可再用「修剪」调整入点。`
                   : `把「${pendingReplaceAsset.displayName}」追加到末尾？默认插入 3 秒，插入后可再用「修剪」调整长度。`}
               </p>
-              <div className="flex gap-2">
+              {/* 素材池是窄列,四个按钮排不下:必须让整行换行 + 每颗按钮 nowrap/不压缩。
+                  .btn-* 基类是 line-height:1,一旦折行文字就会顶出 h-8 的胶囊。 */}
+              <div className="flex flex-wrap gap-2">
                 {selectedClip && (
                   <>
                     <button
                       type="button"
-                      className="btn-primary h-8 px-3 text-xs"
+                      className="btn-primary h-8 shrink-0 whitespace-nowrap px-3 text-xs"
                       disabled={submitting}
                       onClick={() => void confirmReplace()}
                     >{submitting ? '处理中…' : '替换当前片段'}</button>
                     <button
                       type="button"
-                      className="btn-secondary h-8 px-3 text-xs"
+                      className="btn-secondary h-8 shrink-0 whitespace-nowrap px-3 text-xs"
                       disabled={submitting}
                       onClick={() => void confirmInsertAfter()}
                     >{submitting ? '处理中…' : '插入到选中片段之后'}</button>
@@ -350,13 +412,13 @@ export default function BatchOutputEditor({
                 )}
                 <button
                   type="button"
-                  className="btn-secondary h-8 px-3 text-xs"
+                  className="btn-secondary h-8 shrink-0 whitespace-nowrap px-3 text-xs"
                   disabled={submitting || clips.length === 0}
                   onClick={() => void confirmAppendToEnd()}
                 >{submitting ? '处理中…' : '追加到末尾'}</button>
                 <button
                   type="button"
-                  className="btn-secondary h-8 px-3 text-xs"
+                  className="btn-secondary h-8 shrink-0 whitespace-nowrap px-3 text-xs"
                   disabled={submitting}
                   onClick={() => setReplaceCandidateId(null)}
                 >取消</button>

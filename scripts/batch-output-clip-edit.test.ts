@@ -409,6 +409,36 @@ try {
   assert.equal(requestKey2, `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:4`);
   console.log('✓ 11. requestKey 含 editRevision:新编辑产生新任务,同 key 去重');
 
+  // 11b. 延迟提交模型(2026-08-25):编辑期不排渲染,退出这一轮调整时一次性提交。
+  // 旧行为是每次微调排一条整片重渲染(实测 4~7 秒),期间 renderBusy 把编辑器锁死,
+  // 用户体感就是"调一下等一下"。这里锁定"N 次编辑只排 1 条、且指向最终 revision"。
+  const renderTaskCount = () => (db.prepare(
+    `SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render' AND targetId = ?`,
+  ).get(outputVersionId) as { n: number }).n;
+  const tasksBeforeDeferred = renderTaskCount();
+  for (const [startUs, endUs] of [[100_000, 2_100_000], [200_000, 2_200_000], [300_000, 2_300_000]] as const) {
+    const deferred = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+      type: 'trim', clipId: 'clip-1', sourceStartUs: startUs, sourceEndUs: endUs,
+    });
+    assert.equal(deferred.visualChanged, true);
+  }
+  assert.equal(renderTaskCount(), tasksBeforeDeferred, '编辑期只改 arrangement,一条渲染任务都不该建');
+  const committedTaskId = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
+  assert.ok(committedTaskId);
+  assert.equal(renderTaskCount(), tasksBeforeDeferred + 1, '退出时一次性提交:3 次编辑只排 1 条渲染');
+  const committedKey = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(committedTaskId) as { requestKey: string }).requestKey;
+  assert.equal(
+    committedKey,
+    `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:7`,
+    '提交的必须是最终 editRevision,不是中间态',
+  );
+  assert.equal(
+    scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]),
+    committedTaskId,
+    '手动「立即重新渲染」与卸载兜底可能都提交一次,必须幂等',
+  );
+  console.log('✓ 11b. 延迟提交:编辑期零渲染,退出时按最终 revision 只排一条');
+
   // 12. 口播音频解析:有口播出绝对路径,无口播 404
   const narrationDir = path.join(storageRoot, 'batch-narration', 'test');
   fs.mkdirSync(narrationDir, { recursive: true });

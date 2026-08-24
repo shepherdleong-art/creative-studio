@@ -20,6 +20,12 @@ export const dynamic = 'force-dynamic';
  * 片段级编辑（等长 trim/replace、变长修剪、删除、插入、分割）：就地改写当前
  * 候选版本 arrangement，只在画面变化时递增 editRevision 并重渲染同一版本。
  * 分割是纯结构操作，不递增 revision、不触发重渲染。
+ *
+ * `deferRender: true` 只写 arrangement 不排渲染：编辑器里的预览是客户端实时合成，
+ * 不看渲染产物，每次微调都排一次整片重渲染（实测 4~7 秒）纯属白烧 CPU，还会经
+ * renderBusy 把编辑器锁死。编辑器改为退出这一轮调整时用 `type: 'commit_render'`
+ * 一次性提交——requestKey 含 editRevision 且 createBatchTask 按 key 幂等，
+ * 所以重复提交、以及「已经渲染过的 revision」都不会多排任务。
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
   const { id, planId } = await context.params;
@@ -41,8 +47,19 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       afterClipId?: unknown;
       durationUs?: unknown;
       offsetUs?: unknown;
+      deferRender?: unknown;
     };
     const clipId = typeof body.clipId === 'string' ? body.clipId.trim() : '';
+
+    // 提交这一轮片段调整:只排渲染,不改 arrangement。当前 editRevision 已经排过
+    // (或正在渲染)时命中同一 requestKey,原样返回既有任务,不会重复排队。
+    if (body.type === 'commit_render') {
+      const db = getDb();
+      const renderTaskId = scheduleRenderAfterClipEdit(db, projectId, id, planId);
+      if (renderTaskId) ensureBatchSchedulerStarted();
+      return NextResponse.json({ committed: true, renderTaskId }, { headers: BATCH_NO_STORE_HEADERS });
+    }
+
     let edit: BatchOutputClipEdit;
 
     if (body.type === 'trim' || body.type === 'trim_variable') {
@@ -113,7 +130,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     } else {
       return NextResponse.json({
         error: 'invalid_clip_edit',
-        message: '片段编辑需要 type(trim/replace/trim_variable/delete/insert/split)',
+        message: '片段编辑需要 type(trim/replace/trim_variable/delete/insert/split/commit_render)',
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
 
@@ -121,9 +138,14 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const result = applyBatchOutputClipEdit(db, projectId, id, planId, edit);
     // 视觉变化才重渲染这一条；requestKey 含 editRevision，同一次编辑重复提交
     // 不会重复排队，无变化(unchanged)与纯结构分割(split)都不排队。
-    const renderTaskId = result.visualChanged ? scheduleRenderAfterClipEdit(db, projectId, id, planId) : null;
+    // deferRender 时把这次渲染欠着，等调用方 commit_render 一次性结清。
+    const deferRender = body.deferRender === true;
+    const renderDeferred = result.visualChanged && deferRender;
+    const renderTaskId = result.visualChanged && !deferRender
+      ? scheduleRenderAfterClipEdit(db, projectId, id, planId)
+      : null;
     if (renderTaskId) ensureBatchSchedulerStarted();
-    return NextResponse.json({ ...result, renderTaskId }, { headers: BATCH_NO_STORE_HEADERS });
+    return NextResponse.json({ ...result, renderTaskId, renderDeferred }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_clip_edit_failed', '编辑成片片段失败');
   }

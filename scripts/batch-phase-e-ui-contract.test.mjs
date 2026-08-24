@@ -12,6 +12,7 @@ const exportRoute = fs.readFileSync('app/api/batch-production/batches/[id]/expor
 const exclusionRoute = fs.readFileSync('app/api/batch-production/batches/[id]/assets/[assetId]/exclusion/route.ts', 'utf8');
 const outputEditor = fs.readFileSync('components/batch-production/BatchOutputEditor.tsx', 'utf8');
 const batchTimeline = fs.readFileSync('components/batch-production/BatchTimeline.tsx', 'utf8');
+const clipsRoute = fs.readFileSync('app/api/batch-production/batches/[id]/outputs/[planId]/clips/route.ts', 'utf8');
 const timelineCss = fs.readFileSync('components/mixcut/mixcut-content.module.css', 'utf8');
 
 // 界面不得出现研发术语(Phase/联合分配/代理 等)与内部状态值
@@ -55,3 +56,12 @@ assert.match(batchTimeline, /data-tool/);
 assert.match(timelineCss, /\.tlInner \.tlPlayhead \{/);
 
 console.log('batch Phase E UI contract tests passed');
+
+// 片段调整期不排重渲染(2026-08-25):每次微调排一条整片渲染要 4~7 秒,还会经
+// renderBusy 把编辑器锁死。编辑一律带 deferRender,退出这一轮时 commit_render 一次性提交。
+assert.match(clipsRoute, /commit_render/);
+assert.match(clipsRoute, /deferRender/);
+assert.match(outputEditor, /deferRender: true/);
+assert.match(outputEditor, /'commit_render'/);
+assert.match(outputEditor, /修改尚未渲染成成片/);
+assert.match(outputEditor, /立即重新渲染/);
