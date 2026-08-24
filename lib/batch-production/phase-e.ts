@@ -33,22 +33,24 @@ export const BATCH_RENDER_ADAPTER_VERSION = 'batch-render-v2';
 /**
  * 渲染任务的幂等身份。封面被烤进片头之后,封面抽帧时间点就是成片内容的一部分,
  * 所以必须进 requestKey——否则换封面命中既有 succeeded 任务,成片开头会一直
- * 停留在旧封面。
+ * 停留在旧封面。片段级编辑(trim/replace)就地改 clips,同理必须把 editRevision
+ * 放进 key——否则编辑后的重渲染会被幂等去重跳过。
  */
 function renderRequestKey(db: Database.Database, outputVersionId: string): string {
   const row = db.prepare(`
-    SELECT COALESCE(json_extract(arrangementJson, '$.cover.timeUs'), -1) AS coverTimeUs
+    SELECT COALESCE(json_extract(arrangementJson, '$.cover.timeUs'), -1) AS coverTimeUs,
+           COALESCE(json_extract(arrangementJson, '$.editRevision'), 0) AS editRevision
     FROM batch_output_versions WHERE id = ?
-  `).get(outputVersionId) as { coverTimeUs: number } | undefined;
+  `).get(outputVersionId) as { coverTimeUs: number; editRevision: number } | undefined;
   const coverTimeUs = Number.isFinite(Number(row?.coverTimeUs)) ? Number(row?.coverTimeUs) : -1;
-  return `render:${outputVersionId}:${BATCH_RENDER_ADAPTER_VERSION}:cover:${coverTimeUs}`;
+  const editRevision = Number.isSafeInteger(Number(row?.editRevision)) && Number(row?.editRevision) > 0
+    ? Number(row?.editRevision)
+    : 0;
+  return `render:${outputVersionId}:${BATCH_RENDER_ADAPTER_VERSION}:cover:${coverTimeUs}:edit:${editRevision}`;
 }
 
-/**
- * 换封面之后重排一次渲染。封面是片头的一部分,只换那张独立封面图会让成片
- * 开头与封面不一致。requestKey 含封面时间点,所以同一封面重复触发是幂等的。
- */
-export function scheduleRenderAfterCoverChange(
+/** 就地改写 arrangement(换封面/片段编辑)后,重排当前候选版本的渲染。 */
+function scheduleRenderForCurrentOutputVersion(
   db: Database.Database,
   projectId: string,
   batchId: string,
@@ -71,6 +73,35 @@ export function scheduleRenderAfterCoverChange(
     requestKey: renderRequestKey(db, plan.outputVersionId),
     now,
   });
+}
+
+/**
+ * 换封面之后重排一次渲染。封面是片头的一部分,只换那张独立封面图会让成片
+ * 开头与封面不一致。requestKey 含封面时间点,所以同一封面重复触发是幂等的。
+ */
+export function scheduleRenderAfterCoverChange(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  planId: string,
+  now?: () => Date,
+): string | null {
+  return scheduleRenderForCurrentOutputVersion(db, projectId, batchId, planId, now);
+}
+
+/**
+ * 片段级编辑(trim/replace)之后重排一次渲染。requestKey 含 editRevision,
+ * 每次生效的编辑都会产生新 key,既有 succeeded 任务不会吞掉这次重渲染;
+ * 同一次编辑重复提交则命中同一 key 幂等去重。
+ */
+export function scheduleRenderAfterClipEdit(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  planId: string,
+  now?: () => Date,
+): string | null {
+  return scheduleRenderForCurrentOutputVersion(db, projectId, batchId, planId, now);
 }
 
 export interface BatchAllocationSchedulingResult {

@@ -1,8 +1,8 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import { accessSync, constants, existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { delimiter, extname, join, resolve } from 'node:path';
+import { delimiter, extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { CHANNELS, registerIpcHandlers, sameOrigin, type DesktopIpcHandlers } from './ipc';
 import {
@@ -16,6 +16,7 @@ const singleInstanceLock = app.requestSingleInstanceLock();
 let mainWindow: BrowserWindow | null = null;
 let service: DesktopService | null = null;
 let desktopSecret: string | null = null;
+let dataRoot: string | null = null;
 let removeIpcHandlers: (() => void) | null = null;
 let shutdownPromise: Promise<void> | null = null;
 let explicitQuitRequested = false;
@@ -222,6 +223,30 @@ function createDesktopIpcHandlers(
       );
     },
     getAppVersion: () => app.getVersion(),
+    openFolder: async (relativePath) => {
+      const root = dataRoot;
+      if (!root) {
+        throw new Error('桌面数据目录尚未就绪');
+      }
+      // 只接受工作台存储目录内的相对路径：拒绝绝对路径、`..` 段与非 storage 前缀，
+      // resolve 之后再做一次 containment 断言兜底。
+      if (
+        typeof relativePath !== 'string'
+        || relativePath.length === 0
+        || isAbsolute(relativePath)
+        || relativePath.split(/[\\/]+/).includes('..')
+        || !(relativePath === 'storage' || relativePath.startsWith('storage/') || relativePath.startsWith('storage\\'))
+      ) {
+        throw new Error('只允许打开工作台存储目录内的文件夹');
+      }
+      const absolute = resolve(root, relativePath);
+      const contained = relative(root, absolute);
+      if (contained === '' || contained.startsWith('..') || isAbsolute(contained)) {
+        throw new Error('只允许打开工作台存储目录内的文件夹');
+      }
+      const failure = await shell.openPath(absolute);
+      return failure ? { opened: false, message: failure } : { opened: true };
+    },
   };
 }
 
@@ -453,7 +478,7 @@ async function boot(): Promise<void> {
   const paths = resolveServicePaths();
   // Keep packaged data in the documented stable user directory instead of
   // the install bundle or Electron's package-name-derived default.
-  const dataRoot =
+  dataRoot =
     process.env.CREATIVE_STUDIO_DATA_ROOT ??
     (app.isPackaged ? join(app.getPath('appData'), 'CreativeStudio') : projectRoot);
   desktopSecret = randomBytes(32).toString('hex');

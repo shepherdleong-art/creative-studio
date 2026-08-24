@@ -10,6 +10,9 @@ const startRoute = fs.readFileSync('app/api/batch-production/batches/[id]/start/
 const workspaceRoute = fs.readFileSync('app/api/batch-production/batches/[id]/workspace/route.ts', 'utf8');
 const exportRoute = fs.readFileSync('app/api/batch-production/batches/[id]/exports/route.ts', 'utf8');
 const exclusionRoute = fs.readFileSync('app/api/batch-production/batches/[id]/assets/[assetId]/exclusion/route.ts', 'utf8');
+const outputEditor = fs.readFileSync('components/batch-production/BatchOutputEditor.tsx', 'utf8');
+const batchTimeline = fs.readFileSync('components/batch-production/BatchTimeline.tsx', 'utf8');
+const timelineCss = fs.readFileSync('components/mixcut/mixcut-content.module.css', 'utf8');
 
 // 界面不得出现研发术语(Phase/联合分配/代理 等)与内部状态值
 for (const source of [panel, materials, review, exportStep]) {
@@ -37,5 +40,18 @@ assert.match(startRoute, /startOrResumePhaseE/);
 assert.match(workspaceRoute, /getBatchWorkspace/);
 assert.match(exportRoute, /publishSelectedBatchOutputs/);
 assert.match(exclusionRoute, /updateBatchAssetExclusionAndSchedule/);
+// 截取/修剪合并为一个入口:编辑器不再出现「截取」按钮与旧 TrimEditor 复用
+assert.doesNotMatch(outputEditor, />截取</);
+assert.doesNotMatch(outputEditor, /mixcut\/TrimEditor/);
+// 时间轴替换片段卡片条:比例时间轴存在且带错位可视区与工具模式标记
+assert.match(outputEditor, /BatchTimeline/);
+assert.match(batchTimeline, /batch-output-timeline/);
+assert.match(batchTimeline, /末帧延长/);
+assert.match(batchTimeline, /超出裁掉/);
+assert.match(batchTimeline, /口播（锁定）/);
+assert.match(batchTimeline, /data-tool/);
+// 播放头竖线回归(2026-08-24):.shell button 重置(0,1,1)会洗掉单类 .tlPlayhead(0,1,0)
+// 的 background/cursor,只剩 ::before 抓手点;规则必须挂在 .tlInner 下抬到 (0,2,0)。
+assert.match(timelineCss, /\.tlInner \.tlPlayhead \{/);
 
 console.log('batch Phase E UI contract tests passed');

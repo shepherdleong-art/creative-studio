@@ -318,7 +318,10 @@
 .wfBgm { color: #7d7d85; }
 .tlTrackNarration { cursor: context-menu; }
 .wfLabel { position: absolute; z-index: 1; top: 50%; left: 8px; transform: translateY(-50%); padding: 1px 7px; border-radius: 99px; background: rgba(255, 255, 255, .85); color: var(--sub); font-size: 10px; font-weight: 500; }
-.tlPlayhead { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; background: var(--orange); cursor: ew-resize; touch-action: none; }
+/* 播放头必须挂在 .tlInner 下:mixcut-shell 的 .shell button 重置(0,1,1)会压过单类
+   选择器(0,1,0),把按钮自身的 background/cursor 洗掉、只剩 ::before 抓手点可见。
+   两条时间轴(单条/批量)的播放头都是 .tlInner 的直接子节点。 */
+.tlInner .tlPlayhead { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; background: var(--orange); cursor: ew-resize; touch-action: none; }
 .tlPlayhead::before { position: absolute; top: 0; left: -3px; width: 8px; height: 8px; border-radius: 0 0 3px 3px; background: var(--orange); content: ''; }
 .timelineContextLayer { position: fixed; z-index: 1300; inset: 0; }
 .timelineContextMenu { position: fixed; display: grid; width: 176px; overflow: hidden; padding: 5px; border: .5px solid rgba(0,0,0,.12); border-radius: 10px; background: rgba(255,255,255,.96); box-shadow: 0 12px 36px rgba(0,0,0,.18); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif; backdrop-filter: blur(18px); }

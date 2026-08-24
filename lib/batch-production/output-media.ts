@@ -15,6 +15,11 @@ export interface BatchOutputMediaFile {
   productionReady: boolean;
 }
 
+export interface BatchOutputNarrationFile {
+  absolutePath: string;
+  contentType: 'audio/wav';
+}
+
 function safeMediaPath(storageRoot: string, relativePath: string): string {
   let absolutePath: string;
   let stat: fs.Stats;
@@ -192,4 +197,42 @@ export function resolveBatchOutputMedia(
     source,
     productionReady,
   };
+}
+
+/**
+ * 口播音频(检查成片实时预览的数据源):相对路径就地存在当前候选版本
+ * arrangement 的 narration.audioRelativePath(口播执行器写入)。
+ * 正式产物不单独交付口播,所以只按 arrangement 当前值解析,无 artifact 形态。
+ */
+export function resolveBatchOutputNarrationAudio(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  planId: string,
+  storageRootInput?: string,
+): BatchOutputNarrationFile {
+  const storageRoot = path.resolve(storageRootInput ?? path.join(dataRoot(), 'storage'));
+  const plan = db.prepare(`
+    SELECT p.currentVersionId
+    FROM batch_output_plans p
+    JOIN batch_production_versions v ON v.id = p.batchVersionId
+    JOIN batch_productions b ON b.id = v.batchId
+    WHERE p.id = ? AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
+  `).get(planId, batchId, projectId) as { currentVersionId: string | null } | undefined;
+  if (!plan) throw new BatchDomainError('not_found', '成片计划不存在');
+  if (!plan.currentVersionId) throw new BatchDomainError('conflict', '成片计划还没有当前候选版本');
+  const version = db.prepare(`
+    SELECT arrangementJson FROM batch_output_versions WHERE id = ? AND planId = ?
+  `).get(plan.currentVersionId, planId) as { arrangementJson: string } | undefined;
+  if (!version) throw new BatchDomainError('not_found', '成片版本不存在');
+  let audioRelativePath: string | null = null;
+  try {
+    const arrangement = JSON.parse(version.arrangementJson) as { narration?: { audioRelativePath?: unknown } };
+    const value = arrangement?.narration?.audioRelativePath;
+    if (typeof value === 'string' && value.trim()) audioRelativePath = value.trim();
+  } catch {
+    audioRelativePath = null;
+  }
+  if (!audioRelativePath) throw new BatchDomainError('not_found', '该成片版本还没有可用的口播音频');
+  return { absolutePath: safeMediaPath(storageRoot, audioRelativePath), contentType: 'audio/wav' };
 }

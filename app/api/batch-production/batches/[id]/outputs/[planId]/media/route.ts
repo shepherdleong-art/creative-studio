@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { resolveBatchOutputMedia } from '@/lib/batch-production/output-media';
+import { resolveBatchOutputMedia, resolveBatchOutputNarrationAudio } from '@/lib/batch-production/output-media';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import {
   BATCH_NO_STORE_HEADERS,
@@ -83,14 +83,27 @@ export async function GET(
   const kind = request.nextUrl.searchParams.get('kind') ?? 'video';
   const source = request.nextUrl.searchParams.get('source') ?? 'candidate';
   const outputVersionId = request.nextUrl.searchParams.get('outputVersionId') ?? undefined;
-  if ((kind !== 'video' && kind !== 'cover') || (source !== 'candidate' && source !== 'artifact')) {
+  if ((kind !== 'video' && kind !== 'cover' && kind !== 'narration') || (source !== 'candidate' && source !== 'artifact')) {
     return NextResponse.json({ error: 'invalid_media_query', message: 'kind 或 source 参数无效' }, {
+      status: 400,
+      headers: BATCH_NO_STORE_HEADERS,
+    });
+  }
+  // 口播音频只按当前候选版本 arrangement 的值解析;正式产物没有独立的口播概念。
+  if (kind === 'narration' && source !== 'candidate') {
+    return NextResponse.json({ error: 'invalid_media_query', message: '口播音频只支持候选来源(source=candidate)' }, {
       status: 400,
       headers: BATCH_NO_STORE_HEADERS,
     });
   }
   try {
     await assertBatchApiReady();
+    if (kind === 'narration') {
+      const narration = resolveBatchOutputNarrationAudio(getDb(), projectId, batchId, planId);
+      return serveMedia(request, narration.absolutePath, narration.contentType, {
+        'X-Batch-Media-Source': 'candidate',
+      });
+    }
     const media = resolveBatchOutputMedia(getDb(), projectId, batchId, planId, kind, source, undefined, outputVersionId);
     const extra: Record<string, string> = {
       'X-Batch-Media-Source': media.source,

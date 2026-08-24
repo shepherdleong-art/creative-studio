@@ -179,7 +179,7 @@ async function run(): Promise<void> {
     const nextArrangement = {
       ...arrangement,
       preset,
-      clips: [{ ...arrangement.clips[0], preset }],
+      clips: arrangement.clips.map((clip) => ({ ...clip, preset })),
       targetDurationUs: 1_000_000,
       cover: { clipId: 'clip-1', timeUs: 250_000 },
     };

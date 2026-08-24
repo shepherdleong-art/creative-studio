@@ -8,6 +8,7 @@ export const CHANNELS = {
   chooseFolder: 'desktop:choose-folder',
   getAppVersion: 'desktop:get-app-version',
   relocateLinkedSource: 'desktop:relocate-linked-source',
+  openFolder: 'desktop:open-folder',
   linkedImportProgress: 'desktop:linked-import-progress',
 } as const;
 
@@ -21,6 +22,9 @@ export type FolderSelectionResult = Awaited<
 export type RelocateLinkedSourceResult = Awaited<
   ReturnType<DesktopBridge['relocateLinkedSource']>
 >;
+export type OpenFolderResult = Awaited<
+  ReturnType<DesktopBridge['openFolder']>
+>;
 
 export interface DesktopIpcHandlers {
   platform(): DesktopPlatform;
@@ -28,6 +32,7 @@ export interface DesktopIpcHandlers {
   chooseFolder(): Promise<FolderSelectionResult>;
   getAppVersion(): string;
   relocateLinkedSource(assetId: string, sourceId: string): Promise<RelocateLinkedSourceResult>;
+  openFolder(relativePath: string): Promise<OpenFolderResult>;
 }
 
 interface RegisterIpcOptions {
@@ -92,6 +97,10 @@ export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
   ipcMain.handle(
     CHANNELS.relocateLinkedSource,
     protectedHandler((assetId: string, sourceId: string) => options.handlers.relocateLinkedSource(assetId, sourceId)),
+  );
+  ipcMain.handle(
+    CHANNELS.openFolder,
+    protectedHandler((relativePath: string) => options.handlers.openFolder(relativePath)),
   );
 
   return () => {

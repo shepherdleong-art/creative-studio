@@ -212,6 +212,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [systemFonts, setSystemFonts] = useState<string[]>(['PingFang SC']);
   const [presetName, setPresetName] = useState('');
   const [coverTitleError, setCoverTitleError] = useState('');
+  // 封面标题预览当前选中的脚本/快照 id:只影响右侧预览显示哪一份的标题文字,
+  // 样式仍是整批统一;选中项失效(取消勾选/删脚本)时渲染层回落第一条,无需清理。
+  const [coverPreviewScriptId, setCoverPreviewScriptId] = useState<string | null>(null);
   // 手动脚本导入/编辑弹窗与删除进行中状态。
   const [scriptDialogOpen, setScriptDialogOpen] = useState(false);
   const [editingScript, setEditingScript] = useState<ManualScriptDraft | null>(null);
@@ -842,11 +845,16 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   function renderCoverTitleSection() {
     const hasTitle = coverTitle.mode !== 'none' && coverTitle.styles !== null;
     const coverStyles = coverTitle.styles;
-    const previewSource = frozen
-      ? frozenScriptSnapshots[0]?.coverTitle
-      : prep.scripts.find((script) => selectedScripts[script.id] !== undefined)?.coverTitle;
-    const primaryText = previewSource?.primary?.trim() || '示例主标题';
-    const secondaryText = previewSource?.secondary?.trim() || '示例副标题';
+    // 预览来源清单:未冻结按已勾选脚本(卡片顺序),已冻结按锁定快照;样式整批统一,
+    // 切换只改变右侧预览显示哪一份的标题文字。
+    const coverPreviewSources = frozen
+      ? frozenScriptSnapshots.map((snapshot) => ({ id: snapshot.id, title: snapshot.title, coverTitle: snapshot.coverTitle }))
+      : prep.scripts
+          .filter((script) => selectedScripts[script.id] !== undefined)
+          .map((script) => ({ id: script.id, title: script.title, coverTitle: script.coverTitle }));
+    const coverPreview = coverPreviewSources.find((source) => source.id === coverPreviewScriptId) ?? coverPreviewSources[0] ?? null;
+    const primaryText = coverPreview?.coverTitle.primary?.trim() || '示例主标题';
+    const secondaryText = coverPreview?.coverTitle.secondary?.trim() || '示例副标题';
     const preset = coverPresets.find((item) => item.id === coverTitle.presetId);
     // 预览与成片同构:viewBox 用真实输出尺寸,字号/描边/纵向位置全部按输出
     // 像素写,缩放交给浏览器——不需要任何预览缩放系数。文字层复用渲染端那份
@@ -883,7 +891,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         </div>
 
         <p className="text-xs text-ink-tertiary">
-          标题文字来自各脚本的封面标题（第 3 步生成），此处统一控制样式与位置；确认整体输入后随版本冻结，改样式会形成批次新版本。
+          标题文字来自各脚本的封面标题（第 3 步生成），此处统一控制样式与位置，右侧预览可切换脚本逐份核对；确认整体输入后随版本冻结，改样式会形成批次新版本。
         </p>
 
         {hasTitle && coverStyles && (
@@ -895,6 +903,23 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               {renderCoverTextStyleEditor('secondary', coverStyles.secondary)}
             </div>
             <div className="flex min-w-56 flex-1 flex-col gap-2">
+              {coverPreviewSources.length > 1 && (
+                <label className="flex items-center gap-2 text-[11px] text-ink-tertiary">
+                  <span className="shrink-0">预览脚本</span>
+                  <select
+                    aria-label="封面标题预览脚本"
+                    value={coverPreview?.id ?? ''}
+                    onChange={(event) => setCoverPreviewScriptId(event.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+                  >
+                    {coverPreviewSources.map((source, index) => (
+                      <option key={source.id} value={source.id}>
+                        脚本 {index + 1} · {source.coverTitle.primary.trim() || source.title || '未命名脚本'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {/* 宽度按「高度上限 320px × 画幅比」反推、再封顶 560px,配合 aspectRatio
                   让三种画幅的预览框都保持真实比例(旧版 w-full + maxHeight 会把竖版
                   压成宽扁条,SVG letterbox 后看起来就是"没有比例")。 */}
@@ -918,7 +943,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 <div className="pointer-events-none absolute border border-dashed border-white/70" style={{ inset: '4%' }} aria-label="4% 导出安全区" />
               </div>
               <p className="text-[11px] text-ink-tertiary">
-                预览按成片尺寸等比缩放，样式与合成一致（底图为示意色块，虚线框为四边 4% 导出安全区）；<span className="text-ink-secondary">{frozen ? '当前快照' : '第一份已选脚本'}</span>的标题：{primaryText} / {secondaryText}
+                预览按成片尺寸等比缩放，样式与合成一致（底图为示意色块，虚线框为四边 4% 导出安全区）；{coverPreview ? <>当前预览 <span className="text-ink-secondary">{coverPreview.title || '未命名脚本'}</span> 的标题：{primaryText} / {secondaryText}</> : '暂无已选脚本，显示示例文字'}
               </p>
             </div>
           </div>

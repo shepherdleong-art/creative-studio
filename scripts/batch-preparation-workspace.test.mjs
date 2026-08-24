@@ -70,6 +70,11 @@ assert.match(scripts, /narration-config/);
 assert.match(scripts, /确认整体输入/);
 assert.match(scripts, /开始批量生产/);
 assert.match(scripts, /配音供应商/);
+// 封面标题预览可按脚本切换(2026-08-24):样式整批统一,但各脚本标题文字长短不一,
+// 需要逐份核对入口,不再只能看「第一份已选脚本」。
+assert.match(scripts, /预览脚本/);
+assert.match(scripts, /aria-label="封面标题预览脚本"/);
+assert.match(scripts, /coverPreviewScriptId/);
 // BGM 参数整批统一可调(FR-S2-45):音量/淡入/淡出 滑杆带可读 aria 标签
 assert.match(scripts, /背景音乐音量增益/);
 assert.match(scripts, /背景音乐淡入/);

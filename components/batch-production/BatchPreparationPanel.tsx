@@ -10,6 +10,7 @@ import type { BatchProductionStatus } from '@/lib/batch-production/versions';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import type { DesktopBridge } from '@/desktop/bridge-types';
 import {
   type AssetPrepareTaskView,
   type PrepareAssetCardView,
@@ -190,6 +191,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
   const [folderRelativePath, setFolderRelativePath] = useState<string | null>(null);
   const [revealBusy, setRevealBusy] = useState(false);
+  // 「打开文件夹」的结果反馈渲染在第 4 步按钮旁,不再挤到面板顶部的公共错误条。
+  const [revealFeedback, setRevealFeedback] = useState<{ kind: 'ok' | 'error'; message: string } | null>(null);
   // 「打开文件夹」只有桌面安装版能用(服务端同样门禁)。与单条模式取同一个
   // 能力端点,不可用时直接隐藏按钮,而不是摆一个点了必然失败的按钮。
   const [revealAvailable, setRevealAvailable] = useState(false);
@@ -1439,8 +1442,21 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   async function revealFolder(): Promise<void> {
     if (!selectedBatchId) return;
     setRevealBusy(true);
-    setFeedback(null);
+    setRevealFeedback(null);
     try {
+      // 桌面安装版优先走 Electron 主进程 shell.openPath:资源管理器前台弹出、
+      // 失败带系统错误串;服务端 reveal 端点(隐藏控制台子进程 spawn)留作兜底。
+      const bridge = (window as Window & { desktopBridge?: DesktopBridge }).desktopBridge;
+      const exportDirName = workspace?.exportDirName;
+      if (bridge?.openFolder && exportDirName) {
+        const result = await bridge.openFolder(`storage/projects/${exportDirName}/成片`);
+        if (result.opened) {
+          setRevealFeedback({ kind: 'ok', message: '已请求系统打开文件夹' });
+        } else {
+          setRevealFeedback({ kind: 'error', message: result.message ?? '打开文件夹失败' });
+        }
+        return;
+      }
       await readJson(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/exports/reveal?projectId=${encodeURIComponent(projectId)}`,
         {
@@ -1448,8 +1464,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           headers: { 'Content-Type': 'application/json', 'x-creative-studio-action': 'reveal' },
         },
       ));
+      setRevealFeedback({ kind: 'ok', message: '已请求系统打开文件夹' });
     } catch (revealError) {
-      setFeedback({ kind: 'error', message: revealError instanceof Error ? revealError.message : '打开文件夹失败' });
+      setRevealFeedback({ kind: 'error', message: revealError instanceof Error ? revealError.message : '打开文件夹失败' });
     } finally {
       setRevealBusy(false);
     }
@@ -1576,6 +1593,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   ];
 
   const outputPresetLabel: OutputPresetLabel = { id: outputPreset, label: OUTPUT_PRESET_LABELS[outputPreset] };
+  // 检查成片的片段编辑预览用成片画幅 ID(3:4 → 3x4),与批量输出预设一一对应。
+  const reviewOutputPreset = outputPreset.replace(':', 'x') as '3x4' | '9x16' | '16x9';
 
   return (
     <MixcutShell
@@ -1864,6 +1883,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onControlBatch={(action) => void controlBatch(action)}
               projectId={projectId}
               selectedBatchId={selectedBatchId}
+              outputPreset={reviewOutputPreset}
+              onOutputChanged={() => {
+                // 片段编辑就地改当前版本并重渲染:刷新 workspace,卡片进入渲染中。
+                if (selectedBatchId) void loadWorkspace(selectedBatchId);
+              }}
               busy={busy}
               onStartBatch={() => void startBatch()}
             />
@@ -1886,6 +1910,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             onRevealFolder={() => void revealFolder()}
             revealAvailable={revealAvailable}
             revealBusy={revealBusy}
+            revealFeedback={revealFeedback}
             folderRelativePath={folderRelativePath}
             projectId={projectId}
             selectedBatchId={selectedBatchId}

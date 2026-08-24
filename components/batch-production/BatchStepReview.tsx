@@ -2,8 +2,30 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import type { OutputPresetId } from '@/lib/final-edit/types';
+import BatchOutputEditor from './BatchOutputEditor';
 
 export type CardFilter = 'all' | BatchWorkspaceView['cards'][number]['status'];
+
+/**
+ * 分配器已知警告码 → 用户可读文案(卡片提醒与预览弹窗两处共用)。
+ * 带冒号的按前缀匹配(码后面跟着 segment/asset 等内部 ID),其余精确匹配;未知码原样显示。
+ */
+const BATCH_WARNING_TEXTS: Array<{ code: string; text: string; prefix: boolean }> = [
+  { code: 'previous-version-reused:', text: '换一批画面后素材池不足，沿用了上一版的部分画面', prefix: true },
+  { code: 'stitched-segment:', text: '单条素材装不下这段口播，已自动拼接多个镜头', prefix: true },
+  { code: 'source-overlap:', text: '部分画面区间与其他片段重复', prefix: true },
+  { code: 'analysis-fallback:', text: '该素材没有画面分析，使用了兜底匹配', prefix: true },
+  { code: 'semantic-degraded:', text: '该片段语义匹配度较低', prefix: true },
+  { code: 'opening-reused:', text: '开头画面与其他成片重复', prefix: true },
+  { code: 'no-legal-media:', text: '没有可用素材', prefix: true },
+  { code: 'cover-unavailable', text: '封面抽帧不可用', prefix: false },
+];
+
+export function humanizeBatchWarning(warning: string): string {
+  const hit = BATCH_WARNING_TEXTS.find(({ code, prefix }) => (prefix ? warning.startsWith(code) : warning === code));
+  return hit ? hit.text : warning;
+}
 
 export interface BatchStepReviewProps {
   workspace: BatchWorkspaceView;
@@ -22,6 +44,10 @@ export interface BatchStepReviewProps {
   onControlBatch: (action: 'pause' | 'resume' | 'stop') => void;
   projectId: string;
   selectedBatchId: string;
+  /** 批量输出画幅,供片段编辑的实时预览画布与字幕参数使用 */
+  outputPreset: OutputPresetId;
+  /** 片段编辑生效后回调(外层刷新 workspace,卡片进入渲染中) */
+  onOutputChanged?: () => void;
   busy: 'create' | 'snapshot' | 'start' | null;
   onStartBatch: () => void;
 }
@@ -97,6 +123,8 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   const [previewCard, setPreviewCard] = useState<BatchWorkspaceView['cards'][number] | null>(null);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const [coverDraftUs, setCoverDraftUs] = useState<number | null>(null);
+  // 片段编辑模式:弹窗加宽并嵌入编辑器;打开/切换预览时一律退回普通预览。
+  const [editingClips, setEditingClips] = useState(false);
 
   useEffect(() => {
     if (!previewCard) return;
@@ -154,6 +182,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   function openPreview(card: BatchWorkspaceView['cards'][number]): void {
     const viewedVersionId = viewedVersionIdOf(card);
     if (!mediaSourceOf(card, viewedVersionId)) return;
+    setEditingClips(false);
     setPreviewCard(card);
   }
 
@@ -165,8 +194,16 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
     return mediaUrlFn(card, kind, source, isCurrentView ? null : viewedVersionId);
   }
 
-  const previewVideo = previewCard ? previewMediaUrl(previewCard, 'video') : null;
-  const previewCover = previewCard ? previewMediaUrl(previewCard, 'cover') : null;
+  // 弹窗内始终读 workspace 里的实时卡片:片段编辑就地改同一版本、versionId 不变,
+  // 只有实时卡片才能反映编辑后的渲染中状态与最新提醒。
+  const modalCard = previewCard ? workspace.cards.find((card) => card.planId === previewCard.planId) ?? previewCard : null;
+  const previewVideo = modalCard ? previewMediaUrl(modalCard, 'video') : null;
+  const previewCover = modalCard ? previewMediaUrl(modalCard, 'cover') : null;
+  const modalViewedVersionId = modalCard ? viewedVersionIdOf(modalCard) : null;
+  const modalIsCurrentVersion = !modalViewedVersionId || modalViewedVersionId === modalCard?.versionId;
+  // 「调整片段」入口:仅当前查看的是当前版本且批次非 stopped 时显示。
+  const canEditClips = Boolean(modalCard?.versionId) && modalIsCurrentVersion && workspace.batch.controlState !== 'stopped';
+  const modalRenderBusy = modalCard?.task?.status === 'running' || modalCard?.task?.status === 'queued';
 
   return (
     <div className="min-h-0 flex-1 space-y-4 p-2">
@@ -342,8 +379,8 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
               )}
               {(card.blockers.length > 0 || card.warnings.length > 0 || card.task?.errorMessage) && (
                 <ul className="space-y-1 text-xs text-warn">
-                  {card.blockers.map((message) => <li key={`b-${message}`}>无法继续：{message}</li>)}
-                  {card.warnings.map((message) => <li key={`w-${message}`}>提醒：{message}</li>)}
+                  {card.blockers.map((message) => <li key={`b-${message}`}>无法继续：{humanizeBatchWarning(message)}</li>)}
+                  {card.warnings.map((message) => <li key={`w-${message}`}>提醒：{humanizeBatchWarning(message)}</li>)}
                   {card.task?.errorMessage && <li>任务失败：{card.task.errorMessage}</li>}
                 </ul>
               )}
@@ -376,86 +413,111 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
       </div>
       {visibleCards.length === 0 && <div className="tile p-6 text-sm text-ink-secondary">当前筛选下没有成片。</div>}
 
-      {previewCard && (
+      {previewCard && modalCard && (
         <div
           role="dialog"
           aria-modal="true"
           aria-labelledby="batch-output-preview-title"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
         >
-          <div className="max-h-[90vh] w-full max-w-3xl space-y-4 overflow-y-auto rounded-2xl bg-surface p-5 shadow-xl">
+          <div className={`max-h-[90vh] w-full space-y-4 overflow-y-auto rounded-2xl bg-surface p-5 shadow-xl ${editingClips ? 'max-w-6xl' : 'max-w-3xl'}`}>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3 id="batch-output-preview-title" className="font-semibold text-ink">
-                  成片 {String(previewCard.seq).padStart(2, '0')} · {previewCard.scriptTitle || '未命名脚本'}
+                  成片 {String(modalCard.seq).padStart(2, '0')} · {modalCard.scriptTitle || '未命名脚本'}
                 </h3>
                 <p className="mt-1 text-xs text-ink-secondary">
-                  {CARD_STATUS_LABELS[previewCard.status]} · {previewCard.nextAction}
-                  {previewCard.publishable && (previewCard.approved ? ' · 已通过审核' : ' · 待审核')}
+                  {CARD_STATUS_LABELS[modalCard.status]} · {modalCard.nextAction}
+                  {modalCard.publishable && (modalCard.approved ? ' · 已通过审核' : ' · 待审核')}
                 </p>
               </div>
-              <button
-                ref={previewCloseButtonRef}
-                type="button"
-                className="btn-secondary text-xs"
-                aria-label="关闭成片预览"
-                onClick={() => setPreviewCard(null)}
-              >关闭</button>
-            </div>
-            {previewVideo && (
-              <video
-                key={`${previewCard.planId}-${previewCard.versionId}`}
-                className="aspect-video w-full rounded-xl bg-black"
-                controls
-                autoFocus
-                preload="metadata"
-                data-testid={`batch-output-preview-${previewCard.planId}`}
-              >
-                <source src={previewVideo} type="video/mp4" />
-              </video>
-            )}
-            {(previewCard.blockers.length > 0 || previewCard.warnings.length > 0 || previewCard.task?.errorMessage) && (
-              <ul className="space-y-1 text-xs text-warn">
-                {previewCard.blockers.map((message) => <li key={`b-${message}`}>无法继续：{message}</li>)}
-                {previewCard.warnings.map((message) => <li key={`w-${message}`}>提醒：{message}</li>)}
-                {previewCard.task?.errorMessage && <li>任务失败：{previewCard.task.errorMessage}</li>}
-              </ul>
-            )}
-            {previewCover && (
-              <figure className="overflow-hidden rounded-xl border border-hairline bg-surface-subtle">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={previewCover} alt={`成片 ${previewCard.seq} 封面`} className="aspect-[3/4] w-full max-w-56 object-cover" />
-              </figure>
-            )}
-            {previewCard.coverRange && (
-              <div className="tile space-y-3 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-ink">封面抽帧时间</p>
-                  <span className="text-xs text-ink-secondary">
-                    {coverDraftUs == null ? '—' : `${(coverDraftUs / 1_000_000).toFixed(2)} 秒`}
-                    <span className="text-ink-tertiary">（第一镜头原片区间 {(previewCard.coverRange.startUs / 1_000_000).toFixed(1)}–{(previewCard.coverRange.endUs / 1_000_000).toFixed(1)} 秒）</span>
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  aria-label="封面抽帧时间"
-                  min={previewCard.coverRange.startUs}
-                  max={Math.max(previewCard.coverRange.startUs, previewCard.coverRange.endUs - 1)}
-                  step={100_000}
-                  value={coverDraftUs ?? previewCard.coverRange.currentUs}
-                  onChange={(event) => setCoverDraftUs(Number(event.target.value))}
-                  className="w-full"
-                />
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs text-ink-tertiary">封面始终从原片抽帧，不裁剪成片画面。封面同时是成片开头的片头静帧，所以应用后会重新渲染这一条成片，再重新导出才会更新成品。</p>
+              <span className="flex shrink-0 gap-2">
+                {canEditClips && (
                   <button
                     type="button"
-                    className="btn-primary h-9 px-3 text-xs"
-                    disabled={coverBusy === previewCard.planId || coverDraftUs == null || coverDraftUs === previewCard.coverRange.currentUs}
-                    onClick={() => onChangeCover(previewCard.planId, coverDraftUs!)}
-                  >{coverBusy === previewCard.planId ? '生成中…' : '应用新封面'}</button>
-                </div>
-              </div>
+                    className="btn-secondary text-xs"
+                    onClick={() => setEditingClips((current) => !current)}
+                  >{editingClips ? '返回预览' : '调整片段'}</button>
+                )}
+                <button
+                  ref={previewCloseButtonRef}
+                  type="button"
+                  className="btn-secondary text-xs"
+                  aria-label="关闭成片预览"
+                  onClick={() => setPreviewCard(null)}
+                >关闭</button>
+              </span>
+            </div>
+            {modalRenderBusy && (
+              <p className="tile p-3 text-xs text-accent" role="status">正在按最新画面重新渲染，完成后以新成片为准。</p>
+            )}
+            {editingClips ? (
+              <BatchOutputEditor
+                projectId={props.projectId}
+                batchId={props.selectedBatchId}
+                planId={modalCard.planId}
+                outputPreset={props.outputPreset}
+                renderBusy={modalRenderBusy}
+                onChanged={props.onOutputChanged}
+              />
+            ) : (
+              <>
+                {previewVideo && (
+                  <video
+                    key={`${modalCard.planId}-${modalCard.versionId}`}
+                    className="aspect-video w-full rounded-xl bg-black"
+                    controls
+                    autoFocus
+                    preload="metadata"
+                    data-testid={`batch-output-preview-${modalCard.planId}`}
+                  >
+                    <source src={previewVideo} type="video/mp4" />
+                  </video>
+                )}
+                {previewCover && (
+                  <figure className="overflow-hidden rounded-xl border border-hairline bg-surface-subtle">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={previewCover} alt={`成片 ${modalCard.seq} 封面`} className="aspect-[3/4] w-full max-w-56 object-cover" />
+                  </figure>
+                )}
+                {modalCard.coverRange && (
+                  <div className="tile space-y-3 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-ink">封面抽帧时间</p>
+                      <span className="text-xs text-ink-secondary">
+                        {coverDraftUs == null ? '—' : `${(coverDraftUs / 1_000_000).toFixed(2)} 秒`}
+                        <span className="text-ink-tertiary">（第一镜头原片区间 {(modalCard.coverRange.startUs / 1_000_000).toFixed(1)}–{(modalCard.coverRange.endUs / 1_000_000).toFixed(1)} 秒）</span>
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      aria-label="封面抽帧时间"
+                      min={modalCard.coverRange.startUs}
+                      max={Math.max(modalCard.coverRange.startUs, modalCard.coverRange.endUs - 1)}
+                      step={100_000}
+                      value={coverDraftUs ?? modalCard.coverRange.currentUs}
+                      onChange={(event) => setCoverDraftUs(Number(event.target.value))}
+                      className="w-full"
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs text-ink-tertiary">封面始终从原片抽帧，不裁剪成片画面。封面同时是成片开头的片头静帧，所以应用后会重新渲染这一条成片，再重新导出才会更新成品。</p>
+                      <button
+                        type="button"
+                        className="btn-primary h-9 px-3 text-xs"
+                        disabled={coverBusy === modalCard.planId || coverDraftUs == null || coverDraftUs === modalCard.coverRange.currentUs}
+                        onClick={() => onChangeCover(modalCard.planId, coverDraftUs!)}
+                      >{coverBusy === modalCard.planId ? '生成中…' : '应用新封面'}</button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            {(modalCard.blockers.length > 0 || modalCard.warnings.length > 0 || modalCard.task?.errorMessage) && (
+              <ul className="space-y-1 text-xs text-warn">
+                {modalCard.blockers.map((message) => <li key={`b-${message}`}>无法继续：{humanizeBatchWarning(message)}</li>)}
+                {modalCard.warnings.map((message) => <li key={`w-${message}`}>提醒：{humanizeBatchWarning(message)}</li>)}
+                {modalCard.task?.errorMessage && <li>任务失败：{modalCard.task.errorMessage}</li>}
+              </ul>
             )}
           </div>
         </div>

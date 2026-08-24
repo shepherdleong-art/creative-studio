@@ -12,6 +12,7 @@ export interface BatchStepExportProps {
   onRevealFolder: () => void;
   revealAvailable: boolean;
   revealBusy: boolean;
+  revealFeedback: { kind: 'ok' | 'error'; message: string } | null;
   folderRelativePath: string | null;
   projectId: string;
   selectedBatchId: string;
@@ -34,6 +35,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
     onRevealFolder,
     revealAvailable,
     revealBusy,
+    revealFeedback,
     folderRelativePath,
     projectId,
     selectedBatchId,
@@ -123,12 +125,19 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                 服务端同样门禁。不可用时直接不渲染按钮,并指向卡片上的下载入口,
                 而不是留一个点了没反应的按钮。 */}
             {revealAvailable ? (
-              <button
-                type="button"
-                className="btn-secondary mt-2 text-xs"
-                disabled={revealBusy}
-                onClick={onRevealFolder}
-              >{revealBusy ? '打开中…' : '打开文件夹'}</button>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="btn-secondary text-xs"
+                  disabled={revealBusy}
+                  onClick={onRevealFolder}
+                >{revealBusy ? '打开中…' : '打开文件夹'}</button>
+                {revealFeedback && (
+                  <p className={`text-xs ${revealFeedback.kind === 'ok' ? 'text-ok' : 'text-fail'}`} role="status">
+                    {revealFeedback.message}
+                  </p>
+                )}
+              </div>
             ) : (
               <p className="mt-2 text-xs text-ink-tertiary">
                 浏览器里打不开本地文件夹（「打开文件夹」仅桌面安装版可用）。用下方每条成片的「下载视频 / 下载封面」取文件，保存位置和文件名可自选。

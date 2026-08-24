@@ -669,10 +669,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
   const presetSize = BATCH_OUTPUT_PRESETS[normalizedPreset];
   const outputSize = input.outputSize ?? presetSize;
   if (!Number.isInteger(outputSize.width) || !Number.isInteger(outputSize.height) || outputSize.width <= 0 || outputSize.height <= 0) throw error('输出尺寸无效');
-  const arrangementTargetDurationUs = snapshot.arrangement.targetDurationUs == null
-    ? 0
-    : finiteInteger(snapshot.arrangement.targetDurationUs, 'targetDurationUs');
-  const visualDurationUs = Math.max(snapshot.clips.at(-1)!.timelineEndUs, arrangementTargetDurationUs);
+  const visualDurationUs = snapshot.clips.at(-1)!.timelineEndUs;
   const resolvedStorageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
   const narrationInput = input.narration ?? resolveBatchArrangementNarration(snapshot.arrangement.narration);
   const narrationSegments = narrationInput
