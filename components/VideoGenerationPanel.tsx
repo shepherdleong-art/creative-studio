@@ -137,6 +137,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
   const [bulkProviderId, setBulkProviderId] = useState('');
   const [bulkDuration, setBulkDuration] = useState(5);
+  const [bulkConfirmText, setBulkConfirmText] = useState<string | null>(null);
+
+  // 运镜行被改过（draftRevision 递增）或抽屉开关变化后，批量提交的内联二次确认
+  // 自动失效，避免用户看着旧摘要确认提交。
+  useEffect(() => {
+    setBulkConfirmText(null);
+  }, [draftRevision, bulkDrawerOpen]);
 
   const selectVideoPreview = (jobId: string) => {
     previewSuppressedRef.current = false;
@@ -948,15 +955,18 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       return;
     }
 
-    const confirmed = window.confirm(
-      `将为 ${plan.ready.length} 个分镜提交 ${plan.totalClips} 条视频；` +
-      `跳过 ${plan.skippedExisting.length} 个已有任务、${plan.skippedEmpty.length} 个未填写、` +
-      `${plan.blocked.length + plan.overflow.length} 个有问题。`,
-    );
-    if (!confirmed) {
-      setBulkStatus('已取消批量生成，未提交新任务。');
+    // 不能用原生同步确认弹窗（confirm）：它会吞掉点击的 mouseup，之后页面里的
+    // 原生 <select> 下拉会点不开，要切到别的应用再切回来才恢复。改为抽屉内联
+    // 二次确认（第一次点击在底栏展示摘要，再点「确认提交」才真正提交）。
+    if (!bulkConfirmText) {
+      setBulkConfirmText(
+        `将为 ${plan.ready.length} 个分镜提交 ${plan.totalClips} 条视频；` +
+        `跳过 ${plan.skippedExisting.length} 个已有任务、${plan.skippedEmpty.length} 个未填写、` +
+        `${plan.blocked.length + plan.overflow.length} 个有问题。`,
+      );
       return;
     }
+    setBulkConfirmText(null);
 
     const submittedTailIds = new Set(
       plan.ready.flatMap((shot) => shot.rows.flatMap((row) => row.tailImageId ? [row.tailImageId] : [])),
@@ -1848,6 +1858,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             </div>
 
             <div className="video-bulk-drawer-footer">
+              {bulkConfirmText && (
+                <span className="video-bulk-confirm-text">{bulkConfirmText}</span>
+              )}
               <button
                 type="button"
                 className="btn-secondary btn-sm"
@@ -1856,13 +1869,26 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               >
                 一键填充提示词
               </button>
+              {bulkConfirmText && (
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  onClick={() => {
+                    setBulkConfirmText(null);
+                    setBulkStatus('已取消批量生成，未提交新任务。');
+                  }}
+                  disabled={creating}
+                >
+                  取消
+                </button>
+              )}
               <button
                 type="button"
                 className="btn-primary btn-sm video-create-action"
                 onClick={() => void handleGenerateAll()}
                 disabled={creating || configuredProviders.length === 0 || safeShots.length === 0}
               >
-                {creating ? '批量生成中…' : '全部生成'}
+                {creating ? '批量生成中…' : bulkConfirmText ? '确认提交' : '全部生成'}
               </button>
             </div>
           </div>
