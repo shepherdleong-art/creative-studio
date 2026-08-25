@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
+  calculateComponentCostMicros,
   calculateUsageCostMicros,
+  CORE_USAGE_PRICING,
+  CORE_USAGE_PRICING_VERSION,
   resolveCoreUsagePlan,
   type CoreUsageCategory,
   type CoreUsagePriceComponentV1,
@@ -141,6 +144,17 @@ interface LegacyImageBackfillRow {
   startedAt: string | null;
 }
 
+interface LegacyVideoBackfillRow {
+  id: string;
+  projectId: string | null;
+  durationSec: number | null;
+  providerId: string;
+  providerName: string;
+  model: string;
+  finishedAt: string | null;
+  startedAt: string | null;
+}
+
 const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
   'company-image2-medium': 'image',
   'company-qiniuyun-gpt-image-2-medium': 'image',
@@ -256,8 +270,10 @@ function snapshotProvider(value: unknown): CoreUsageSnapshotV1['provider'] | nul
   };
   const executionScope = asNonEmptyString(value.executionScope);
   const apiStyle = asNonEmptyString(value.apiStyle);
+  const baseUrl = asNonEmptyString(value.baseUrl);
   if (executionScope) provider.executionScope = executionScope as 'company' | 'external';
   if (apiStyle) provider.apiStyle = apiStyle;
+  if (baseUrl) provider.baseUrl = baseUrl;
   return provider;
 }
 
@@ -904,10 +920,136 @@ function runLegacyImageBackfill(db: Database.Database): LegacyBackfillResult {
   }
 }
 
+const LEGACY_VIDEO_BACKFILL_MODELS = {
+  'kling-3.0': { coreModelKey: 'company-kling-3-0', pricing: CORE_USAGE_PRICING.kling },
+  'doubao-seedance-2-0-fast-260128': { coreModelKey: 'company-seedance-fast', pricing: CORE_USAGE_PRICING.seedance },
+} as const;
+
+/**
+ * 一次性视频回填：身份门禁放宽前，走公司网关但 providerId 非 canonical 的
+ * 存量成功任务没有冻结快照。video_jobs 没有 estimatedCost 列，金额按固定价
+ * durationSec ÷ 5 × 单价 线性折算，与实时记账的计价规则一致。
+ */
+function queryLegacyVideoBackfill(db: Database.Database): { rows: LegacyVideoBackfillRow[]; failed: boolean } {
+  if (
+    !tableExists(db, 'video_providers')
+    || !tableExists(db, 'video_jobs')
+    || !requiredColumnsExist(db, 'video_providers', ['id', 'name', 'type', 'defaultModel', 'baseUrl'])
+    || !requiredColumnsExist(db, 'video_jobs', ['id', 'projectId', 'providerId', 'model', 'status', 'durationSec', 'finishedAt', 'startedAt', 'usageSnapshotJson'])
+  ) {
+    return { rows: [], failed: false };
+  }
+  try {
+    const rows = db.prepare(`
+      SELECT j.id, j.projectId, j.durationSec, p.id AS providerId, p.name AS providerName,
+             j.model, j.finishedAt, j.startedAt
+      FROM video_jobs j
+      JOIN video_providers p ON p.id = j.providerId
+      LEFT JOIN usage_ledger l
+        ON l.eventKey = 'video-job:' || j.id || ':succeeded'
+      WHERE p.type = 'openai-video'
+        AND p.defaultModel = j.model
+        AND j.model IN ('kling-3.0', 'doubao-seedance-2-0-fast-260128')
+        AND (
+          p.id IN ('company-kling-3-0', 'company-seedance-2-0-fast')
+          OR p.baseUrl LIKE 'http://127.0.0.1%'
+          OR p.baseUrl LIKE 'https://127.0.0.1%'
+          OR p.baseUrl LIKE 'http://localhost%'
+          OR p.baseUrl LIKE 'https://localhost%'
+          OR p.baseUrl LIKE 'http://[::1]%'
+          OR p.baseUrl LIKE 'https://[::1]%'
+        )
+        AND j.status = 'succeeded'
+        AND j.durationSec IS NOT NULL
+        AND (j.usageSnapshotJson IS NULL OR TRIM(j.usageSnapshotJson) = '')
+        AND l.eventKey IS NULL
+      ORDER BY j.id
+    `).all() as LegacyVideoBackfillRow[];
+    return { rows, failed: false };
+  } catch {
+    console.error('[usage-ledger] legacy video backfill scan failed; usage accounting skipped');
+    return { rows: [], failed: true };
+  }
+}
+
+function legacyVideoLedgerFields(row: LegacyVideoBackfillRow): ReturnType<typeof usageLedgerFields> | null {
+  const model = asNonEmptyString(row.model);
+  const config = model
+    ? LEGACY_VIDEO_BACKFILL_MODELS[model as keyof typeof LEGACY_VIDEO_BACKFILL_MODELS]
+    : undefined;
+  if (!config) return null;
+  const durationSec = typeof row.durationSec === 'number' && Number.isFinite(row.durationSec)
+    ? Math.max(0, row.durationSec)
+    : 0;
+  const component: CoreUsagePriceComponentV1 = {
+    key: 'second',
+    unit: 'second',
+    unitPriceMicros: config.pricing.unitPriceMicros,
+    priceScale: config.pricing.priceScale,
+  };
+  return {
+    id: randomUUID(),
+    eventKey: `video-job:${row.id}:succeeded`,
+    coreModelKey: config.coreModelKey,
+    category: 'video',
+    providerId: row.providerId,
+    providerName: row.providerName,
+    model: row.model,
+    pricingVersion: CORE_USAGE_PRICING_VERSION,
+    callCount: 1,
+    quantity: durationSec,
+    unit: 'second',
+    priceScale: config.pricing.priceScale,
+    unitPriceMicros: config.pricing.unitPriceMicros,
+    costMicros: calculateComponentCostMicros(durationSec, component),
+    detailJson: JSON.stringify({ source: 'video-backfill-v1', durationSec }),
+    projectId: row.projectId,
+    refType: 'video-job',
+    refId: row.id,
+    createdAt: preferredLedgerTimestamp(row.finishedAt, row.startedAt),
+  };
+}
+
+function runLegacyVideoBackfill(db: Database.Database): LegacyBackfillResult {
+  const empty: LegacyBackfillResult = {
+    ok: true, candidates: 0, inserted: 0, markerPresent: false, markerWritten: false,
+  };
+  if (!tableExists(db, 'usage_backfill_state')) return { ...empty, ok: false };
+  try {
+    const marker = db.prepare(`SELECT 1 AS present FROM usage_backfill_state WHERE marker = ?`).get('video-backfill-v1') as { present?: number } | undefined;
+    if (marker?.present === 1) return { ...empty, markerPresent: true };
+  } catch {
+    console.error('[usage-ledger] legacy video backfill marker read failed; usage accounting skipped');
+    return { ...empty, ok: false };
+  }
+
+  const query = queryLegacyVideoBackfill(db);
+  if (query.failed) return { ...empty, ok: false };
+  const candidates = query.rows.length;
+  try {
+    let inserted = 0;
+    db.transaction(() => {
+      for (const row of query.rows) {
+        const fields = legacyVideoLedgerFields(row);
+        if (fields && insertLedgerRow(db, fields)) inserted += 1;
+      }
+      db.prepare(`
+        INSERT OR IGNORE INTO usage_backfill_state (marker, completedAt)
+        VALUES (?, ?)
+      `).run('video-backfill-v1', new Date().toISOString());
+    })();
+    return { ok: true, candidates, inserted, markerPresent: true, markerWritten: true };
+  } catch {
+    console.error('[usage-ledger] legacy video backfill failed; usage accounting skipped');
+    return { ok: false, candidates, inserted: 0, markerPresent: false, markerWritten: false };
+  }
+}
+
 /**
  * Recover abandoned call evidence, drain billable calls, replay successful
  * async jobs from their frozen snapshots, and perform the one-time legacy
- * image migration. Every step is best-effort and never throws into startup.
+ * image and video migrations. Every step is best-effort and never throws
+ * into startup.
  */
 export function reconcileUsageLedger(db: Database.Database, currentOwner = USAGE_INSTANCE_ID): UsageReconcileResult {
   const empty: UsageReconcileResult = {
@@ -955,6 +1097,10 @@ export function reconcileUsageLedger(db: Database.Database, currentOwner = USAGE
   const backfill = runLegacyImageBackfill(db);
   if (!backfill.ok) failed += 1;
   recorded += backfill.inserted;
+
+  const videoBackfill = runLegacyVideoBackfill(db);
+  if (!videoBackfill.ok) failed += 1;
+  recorded += videoBackfill.inserted;
   const uncertain = recoveredResult.uncertain + drainedResult.uncertain;
   return {
     ok: failed === 0,

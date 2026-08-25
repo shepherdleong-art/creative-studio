@@ -360,6 +360,7 @@ async function runVideoJob(
           name: provider.name,
           type: provider.type,
           model: provider.defaultModel,
+          baseUrl: runtime.baseUrl,
         },
         refType: 'video-job',
         refId: job.id,

@@ -31,13 +31,21 @@ function createDb(): Database.Database {
   return db;
 }
 
-const klingProvider = {
+interface TestVideoProvider {
+  id: string;
+  name?: string;
+  type?: string;
+  model?: string;
+  baseUrl?: string | null;
+}
+
+const klingProvider: TestVideoProvider = {
   id: 'company-kling-3-0',
   name: '公司网关可灵 3.0',
   type: 'openai-video',
   model: 'kling-3.0',
 };
-const seedanceProvider = {
+const seedanceProvider: TestVideoProvider = {
   id: 'company-seedance-2-0-fast',
   name: '公司网关 Seedance 2.0 Fast',
   type: 'openai-video',
@@ -48,7 +56,7 @@ function insertJob(
   db: Database.Database,
   input: {
     id: string;
-    provider: typeof klingProvider | typeof seedanceProvider;
+    provider: TestVideoProvider;
     model?: string;
     durationSec?: number;
     attempt?: number;
@@ -79,8 +87,8 @@ function snapshotFor(db: Database.Database, jobId: string): string | null {
 function freeze(
   db: Database.Database,
   jobId: string,
-  provider: typeof klingProvider | typeof seedanceProvider,
-  requestModel = provider.model,
+  provider: TestVideoProvider,
+  requestModel = provider.model ?? '',
 ): string | null {
   return persistVideoJobUsageSnapshot(db, {
     jobId,
@@ -138,11 +146,49 @@ for (const [jobId, provider, requestModel] of [
   ['video-wrong-configured-model', { ...klingProvider, model: 'kling-v3' }, 'kling-v3'],
   ['video-wrong-request-model', klingProvider, 'kling-v3'],
   ['video-public', { ...seedanceProvider, id: 'manual-company-seedance' }, seedanceProvider.model],
+  ['video-public-baseurl', { ...klingProvider, id: 'kling-2-5', baseUrl: 'https://api.klingai.com' }, 'kling-3.0'],
 ] as const) {
   const db = createDb();
   insertJob(db, { id: jobId, provider, model: requestModel });
   assert.equal(freeze(db, jobId, provider, requestModel), null, `${jobId} must not freeze usage`);
   assert.equal(snapshotFor(db, jobId), null);
+  db.close();
+}
+
+// A manually added company-gateway row (non-canonical id + loopback baseUrl) is billable too.
+{
+  const db = createDb();
+  const gatewayKling: TestVideoProvider = {
+    id: 'kling-2-5',
+    name: 'kling-3.0',
+    type: 'openai-video',
+    model: 'kling-3.0',
+    baseUrl: 'http://127.0.0.1:4000',
+  };
+  insertJob(db, { id: 'video-gateway-kling', provider: gatewayKling });
+  const snapshot = freeze(db, 'video-gateway-kling', gatewayKling);
+  assert.ok(snapshot, 'gateway-routed manual provider must freeze a usage snapshot');
+  const parsed = parseUsageSnapshot(snapshot);
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.parsed.snapshot.coreModelKey, 'company-kling-3-0');
+    assert.equal(parsed.parsed.snapshot.provider.baseUrl, 'http://127.0.0.1:4000', 'snapshot must keep the gateway baseUrl for replay revalidation');
+  }
+  const result = recordVideoJobUsage(db, {
+    jobId: 'video-gateway-kling',
+    projectId: 'project-1',
+    durationSec: 5,
+    snapshot,
+    finishedAt: '2026-08-25T06:00:05.000Z',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.inserted, true);
+  const row = db.prepare(`SELECT coreModelKey, quantity, costMicros FROM usage_ledger`).get() as {
+    coreModelKey: string;
+    quantity: number;
+    costMicros: number;
+  };
+  assert.deepEqual(row, { coreModelKey: 'company-kling-3-0', quantity: 5, costMicros: 2_990_000 });
   db.close();
 }
 

@@ -72,6 +72,8 @@ interface CoreUsageProviderSnapshot {
 
 身份字段全部使用大小写敏感的精确字符串比较，不做 trim 之外的别名、大小写或正则归一化。`configuredModel` 来自调用开始时解析完成的供应商运行配置，`requestModel` 是本次真正传给适配器的模型；两者都必须等于表中规定的精确模型。图片和视频任务使用任务行冻结的 `model` 作为 `requestModel`，公司 GPT 使用 `resolveStoredScriptProvider()` 得到的运行时模型。
 
+> **修订（2026-08-25）**：视频两项的 providerId 条件放宽为「canonical 行 id，**或** baseUrl 指向本机回环地址（`127.0.0.1`/`localhost`/`[::1]`，即公司 LiteLLM 网关）」。用户在设置页手工配置的公司网关行（如 `kling-2-5`）与 canonical 行同网关同模型，属于公司消耗；公网直连行的 baseUrl 是公网域名，依旧被排除。为此 `CoreUsageProviderSnapshot` 新增可选 `baseUrl` 字段并随视频快照持久化（reconcile 回放要用它重新过门禁）。配套新增一次性 `video-backfill-v1` 回填：存量无快照的公司视频任务按固定价 `durationSec ÷ 5 × 单价` 补记。图片/LLM/TTS 身份规则不变。
+
 ## 后端固定计价
 
 五个核心模型的价格集中定义在 `lib/usage-pricing.ts`，设置页不读取、不展示、也不更新这些价格。

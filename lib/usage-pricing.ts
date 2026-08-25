@@ -45,6 +45,12 @@ export interface CoreUsageProviderSnapshot {
   apiStyle?: string;
   configuredModel: string;
   requestModel: string;
+  /**
+   * 公司网关判定依据（回环地址）。视频快照需要持久化它：reconcile 回放时会
+   * 用快照里的身份重新过一遍 resolveCoreUsagePlan 门禁，缺了 baseUrl 的
+   * 非 canonical 网关行将无法通过复核。
+   */
+  baseUrl?: string;
 }
 
 export interface CoreUsagePriceComponentV1 {
@@ -206,6 +212,50 @@ function matchesIdentity(
 }
 
 /**
+ * 公司视频网关只跑在本机回环地址（LiteLLM 代理）。baseUrl 指向回环即视为
+ * 公司网关路由；公网域名（直连可灵/即梦、测试供应商）一律不通过。
+ */
+function isLoopbackHttpBaseUrl(value: unknown): boolean {
+  const raw = trimmed(value);
+  if (!raw) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  const hostname = url.hostname.toLowerCase();
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '[::1]';
+}
+
+/**
+ * 视频供应商的身份匹配：表、类型、配置模型与请求模型仍精确相等；
+ * providerId 放宽为「canonical 行 id，或 baseUrl 指向本机公司网关」——
+ * 用户在设置页手工配置的网关行（id 不是 canonical）同样是公司消耗。
+ */
+function matchesVideoIdentity(
+  provider: Partial<CoreUsageProviderSnapshot>,
+  expected: {
+    canonicalProviderId: string;
+    providerType: string;
+    configuredModel: string;
+    requestModel: string;
+  },
+): boolean {
+  if (
+    trimmed(provider.providerTable) !== 'video_providers'
+    || trimmed(provider.providerType) !== expected.providerType
+    || trimmed(provider.configuredModel) !== expected.configuredModel
+    || trimmed(provider.requestModel) !== expected.requestModel
+  ) {
+    return false;
+  }
+  if (trimmed(provider.providerId) === expected.canonicalProviderId) return true;
+  return isLoopbackHttpBaseUrl(provider.baseUrl);
+}
+
+/**
  * Resolve the fixed plan for a complete provider identity.
  *
  * Every comparison is exact after trimming the individual input field. No
@@ -242,9 +292,8 @@ export function resolveCoreUsagePlan(
     );
   }
 
-  if (matchesIdentity(provider, {
-    providerTable: 'video_providers',
-    providerId: 'company-kling-3-0',
+  if (matchesVideoIdentity(provider, {
+    canonicalProviderId: 'company-kling-3-0',
     providerType: 'openai-video',
     configuredModel: 'kling-3.0',
     requestModel: 'kling-3.0',
@@ -252,9 +301,8 @@ export function resolveCoreUsagePlan(
     return createPlan('company-kling-3-0', 'video', 'kling-3.0', [KLING_COMPONENT]);
   }
 
-  if (matchesIdentity(provider, {
-    providerTable: 'video_providers',
-    providerId: 'company-seedance-2-0-fast',
+  if (matchesVideoIdentity(provider, {
+    canonicalProviderId: 'company-seedance-2-0-fast',
     providerType: 'openai-video',
     configuredModel: 'doubao-seedance-2-0-fast-260128',
     requestModel: 'doubao-seedance-2-0-fast-260128',
@@ -397,6 +445,7 @@ function snapshotProvider(provider: CoreUsageProviderSnapshot): CoreUsageProvide
   };
   if (provider.executionScope !== undefined) normalized.executionScope = trimmed(provider.executionScope) as 'company' | 'external';
   if (provider.apiStyle !== undefined) normalized.apiStyle = trimmed(provider.apiStyle);
+  if (provider.baseUrl !== undefined) normalized.baseUrl = trimmed(provider.baseUrl);
   return normalized;
 }
 

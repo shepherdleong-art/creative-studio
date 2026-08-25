@@ -41,6 +41,8 @@ export interface VideoUsageProviderIdentity {
   name?: string | null;
   type?: string | null;
   model?: string | null;
+  /** 解析期身份辅助：用于公司网关（回环地址）判定，不写入持久化快照。 */
+  baseUrl?: string | null;
 }
 
 export interface PersistVideoJobUsageSnapshotInput {
@@ -214,6 +216,7 @@ export function persistVideoJobUsageSnapshot(
     providerType: input.provider.type ?? '',
     configuredModel: input.provider.model ?? '',
     requestModel: input.requestModel,
+    baseUrl: input.provider.baseUrl ?? '',
   };
   const plan = resolveCoreUsagePlan(provider);
   if (!plan) return null;

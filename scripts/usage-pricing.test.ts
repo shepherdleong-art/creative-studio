@@ -159,6 +159,71 @@ for (const overrides of negativeCases) {
   assert.equal(resolveCoreUsagePlan(snapshot(overrides)), null, `must reject ${JSON.stringify(overrides)}`);
 }
 
+// 视频身份放宽：非 canonical providerId + 本机回环 baseUrl（公司网关）同样计价
+const gatewayKlingPlan = mustPlan(snapshot({
+  providerTable: 'video_providers',
+  providerId: 'kling-2-5',
+  providerName: 'kling-3.0',
+  providerType: 'openai-video',
+  configuredModel: 'kling-3.0',
+  requestModel: 'kling-3.0',
+  baseUrl: 'http://127.0.0.1:4000',
+}));
+assert.equal(gatewayKlingPlan.coreModelKey, 'company-kling-3-0');
+const gatewaySeedancePlan = mustPlan(snapshot({
+  providerTable: 'video_providers',
+  providerId: 'jimeng-2-0',
+  providerType: 'openai-video',
+  configuredModel: 'doubao-seedance-2-0-fast-260128',
+  requestModel: 'doubao-seedance-2-0-fast-260128',
+  baseUrl: 'http://localhost:4000/',
+}));
+assert.equal(gatewaySeedancePlan.coreModelKey, 'company-seedance-fast');
+
+// canonical id 不带 baseUrl 依旧命中（保持原门禁行为）
+assert.ok(resolveCoreUsagePlan(snapshot({
+  providerTable: 'video_providers',
+  providerId: 'company-kling-3-0',
+  providerType: 'openai-video',
+  configuredModel: 'kling-3.0',
+  requestModel: 'kling-3.0',
+})));
+
+// 视频门禁负向：非 canonical id 时 baseUrl 必须是回环地址，且模型仍须精确
+const videoGatewayNegativeCases: Array<Partial<CoreUsageProviderSnapshot>> = [
+  // 直连可灵（公网域名）永不入看板
+  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-3.0', requestModel: 'kling-3.0', baseUrl: 'https://api.klingai.com' },
+  // 非 canonical id 且没有 baseUrl
+  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-3.0', requestModel: 'kling-3.0' },
+  // baseUrl 不是合法 URL
+  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-3.0', requestModel: 'kling-3.0', baseUrl: 'not a url' },
+  // 回环 baseUrl 但模型不符
+  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-2.5', requestModel: 'kling-2.5', baseUrl: 'http://127.0.0.1:4000' },
+  // 回环 baseUrl 但请求模型与配置模型不一致
+  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-3.0', requestModel: 'kling-3.0-pro', baseUrl: 'http://127.0.0.1:4000' },
+  // 非 http(s) 协议的回环地址不算网关
+  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-3.0', requestModel: 'kling-3.0', baseUrl: 'ftp://127.0.0.1:4000' },
+];
+for (const overrides of videoGatewayNegativeCases) {
+  assert.equal(resolveCoreUsagePlan(snapshot(overrides)), null, `must reject ${JSON.stringify(overrides)}`);
+}
+
+// baseUrl 必须随快照持久化：reconcile 回放时要用它重新过身份门禁
+const videoSnapshot = createCoreUsageSnapshot(
+  snapshot({
+    providerTable: 'video_providers',
+    providerId: 'kling-2-5',
+    providerType: 'openai-video',
+    configuredModel: 'kling-3.0',
+    requestModel: 'kling-3.0',
+    baseUrl: 'http://127.0.0.1:4000',
+  }),
+  gatewayKlingPlan,
+  { startedAt: '2026-08-25T00:00:00.000Z', refType: 'video-job', refId: 'video-job-1' },
+);
+assert.equal(videoSnapshot.provider.baseUrl, 'http://127.0.0.1:4000');
+assert.equal(videoSnapshot.provider.providerId, 'kling-2-5');
+
 const snapshotValue = createCoreUsageSnapshot(
   snapshot(),
   imagePlan,

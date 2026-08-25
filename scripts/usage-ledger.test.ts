@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import {
+  CORE_USAGE_PRICING_VERSION,
   createCoreUsageSnapshot,
   resolveCoreUsagePlan,
   type CoreUsageProviderSnapshot,
@@ -84,6 +85,13 @@ function setupCoreTables(db: Database.Database): void {
       createdAt TEXT,
       usageSnapshotJson TEXT
     );
+    CREATE TABLE video_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      defaultModel TEXT NOT NULL,
+      baseUrl TEXT
+    );
   `);
 }
 
@@ -147,6 +155,25 @@ function insertVideoJob(db: Database.Database, input: {
     input.finishedAt ?? '2026-08-18 01:02:03',
     input.createdAt ?? '2026-08-18 00:00:00',
     input.snapshot === undefined ? null : typeof input.snapshot === 'string' ? input.snapshot : JSON.stringify(input.snapshot),
+  );
+}
+
+function insertVideoProvider(db: Database.Database, input: {
+  id: string;
+  name?: string;
+  type?: string;
+  defaultModel?: string;
+  baseUrl?: string | null;
+}): void {
+  db.prepare(`
+    INSERT INTO video_providers (id, name, type, defaultModel, baseUrl)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    input.id,
+    input.name ?? input.id,
+    input.type ?? 'openai-video',
+    input.defaultModel ?? 'kling-3.0',
+    input.baseUrl === undefined ? 'http://127.0.0.1:4000' : input.baseUrl,
   );
 }
 
@@ -468,10 +495,72 @@ function insertVideoJob(db: Database.Database, input: {
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'image-job:image-public:%'`).get(), { count: 0 });
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'image-job:image-mismatched-model:%'`).get(), { count: 0 });
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'image-job:image-failed:%'`).get(), { count: 0 });
-  assert.deepEqual(db.prepare(`SELECT marker FROM usage_backfill_state`).all(), [{ marker: 'image-backfill-v1' }]);
+  assert.deepEqual(db.prepare(`SELECT marker FROM usage_backfill_state ORDER BY marker`).all(), [{ marker: 'image-backfill-v1' }, { marker: 'video-backfill-v1' }]);
   const second = reconcileUsageLedger(db);
   assert.equal(second.backfilled, 0);
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 2 });
+  db.close();
+}
+
+// The one-time legacy video backfill charges company-gateway rows (canonical id or
+// loopback baseUrl) at the fixed per-second price; public direct rows stay excluded.
+{
+  const db = setupDb();
+  setupCoreTables(db);
+  insertVideoProvider(db, { id: 'kling-2-5', name: 'kling-3.0' });
+  insertVideoProvider(db, { id: 'jimeng-2-0', name: '即梦', defaultModel: 'doubao-seedance-2-0-fast-260128' });
+  insertVideoProvider(db, { id: 'public-kling', name: '直连可灵', baseUrl: 'https://api.klingai.com' });
+  const liveGatewaySnapshot = snapshot({
+    providerTable: 'video_providers',
+    providerId: 'kling-2-5',
+    providerName: 'kling-3.0',
+    providerType: 'openai-video',
+    configuredModel: 'kling-3.0',
+    requestModel: 'kling-3.0',
+    baseUrl: 'http://127.0.0.1:4000',
+  }, { projectId: 'project-1', refType: 'video-job', refId: 'video-legacy-live' });
+  insertVideoJob(db, { id: 'video-legacy-kling', providerId: 'kling-2-5', durationSec: 5 });
+  insertVideoJob(db, { id: 'video-legacy-kling-7s', providerId: 'kling-2-5', durationSec: 7 });
+  insertVideoJob(db, { id: 'video-legacy-seedance', providerId: 'jimeng-2-0', model: 'doubao-seedance-2-0-fast-260128', durationSec: 5 });
+  insertVideoJob(db, { id: 'video-legacy-public', providerId: 'public-kling', durationSec: 5 });
+  insertVideoJob(db, { id: 'video-legacy-failed', providerId: 'kling-2-5', status: 'failed' });
+  insertVideoJob(db, { id: 'video-legacy-live', providerId: 'kling-2-5', snapshot: liveGatewaySnapshot });
+
+  const first = reconcileUsageLedger(db);
+  assert.equal(first.ok, true);
+  assert.deepEqual(db.prepare(`SELECT coreModelKey, pricingVersion, quantity, callCount, unit, unitPriceMicros, priceScale, costMicros, createdAt FROM usage_ledger WHERE eventKey='video-job:video-legacy-kling:succeeded'`).get(), {
+    coreModelKey: 'company-kling-3-0',
+    pricingVersion: CORE_USAGE_PRICING_VERSION,
+    quantity: 5,
+    callCount: 1,
+    unit: 'second',
+    unitPriceMicros: 2_990_000,
+    priceScale: 5,
+    costMicros: 2_990_000,
+    createdAt: '2026-08-18T01:02:03.000Z',
+  });
+  assert.deepEqual(db.prepare(`SELECT costMicros FROM usage_ledger WHERE eventKey='video-job:video-legacy-kling-7s:succeeded'`).get(), { costMicros: 4_186_000 });
+  assert.deepEqual(db.prepare(`SELECT coreModelKey, costMicros FROM usage_ledger WHERE eventKey='video-job:video-legacy-seedance:succeeded'`).get(), {
+    coreModelKey: 'company-seedance-fast',
+    costMicros: 11_730_000,
+  });
+  assert.deepEqual(JSON.parse((db.prepare(`SELECT detailJson FROM usage_ledger WHERE eventKey='video-job:video-legacy-kling:succeeded'`).get() as { detailJson: string }).detailJson), {
+    source: 'video-backfill-v1',
+    durationSec: 5,
+  });
+  // 直连公网与失败任务不回填；带快照的任务由 replay 入账而不是 backfill
+  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'video-job:video-legacy-public:%'`).get(), { count: 0 });
+  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'video-job:video-legacy-failed:%'`).get(), { count: 0 });
+  assert.deepEqual(JSON.parse((db.prepare(`SELECT detailJson FROM usage_ledger WHERE eventKey='video-job:video-legacy-live:succeeded'`).get() as { detailJson: string }).detailJson), {
+    source: 'reconcile',
+    taskType: 'video-job',
+    priceComponents: [{ key: 'second', unit: 'second', quantity: 5, unitPriceMicros: 2_990_000, priceScale: 5, componentCostMicros: 2_990_000 }],
+  });
+  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 4 });
+  assert.deepEqual(db.prepare(`SELECT marker FROM usage_backfill_state ORDER BY marker`).all(), [{ marker: 'image-backfill-v1' }, { marker: 'video-backfill-v1' }]);
+  const second = reconcileUsageLedger(db);
+  assert.equal(second.recorded, 0);
+  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 4 });
   db.close();
 }
 
@@ -494,7 +583,7 @@ function insertVideoJob(db: Database.Database, input: {
   const recovered = reconcileUsageLedger(db);
   assert.equal(recovered.ok, true);
   assert.equal(recovered.backfilled, 1);
-  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_backfill_state`).get(), { count: 1 });
+  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_backfill_state`).get(), { count: 2 });
   db.close();
 }
 
