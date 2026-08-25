@@ -41,9 +41,13 @@ export async function GET() {
     }
     const projects = (db.prepare(`
       SELECT p.*,
-        (SELECT COUNT(*) FROM jobs WHERE projectId = p.id) as totalJobs,
-        (SELECT COUNT(*) FROM jobs WHERE projectId = p.id AND status = 'succeeded') as completedJobs,
-        (SELECT COUNT(*) FROM jobs WHERE projectId = p.id AND status = 'failed') as failedJobs,
+        -- 任务计数 = 图片任务 + 视频任务，与下方金额的全口径（usage ledger 含视频/LLM/TTS）保持一致
+        (SELECT COUNT(*) FROM jobs WHERE projectId = p.id)
+          + (SELECT COUNT(*) FROM video_jobs WHERE projectId = p.id) as totalJobs,
+        (SELECT COUNT(*) FROM jobs WHERE projectId = p.id AND status = 'succeeded')
+          + (SELECT COUNT(*) FROM video_jobs WHERE projectId = p.id AND status = 'succeeded') as completedJobs,
+        (SELECT COUNT(*) FROM jobs WHERE projectId = p.id AND status = 'failed')
+          + (SELECT COUNT(*) FROM video_jobs WHERE projectId = p.id AND status = 'failed') as failedJobs,
         (SELECT COALESCE(SUM(estimatedCost), 0) FROM jobs WHERE projectId = p.id) as totalCost,
         thumb.path as thumbnailPath
       FROM projects p
