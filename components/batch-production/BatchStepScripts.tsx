@@ -965,16 +965,27 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
             <div className="flex min-w-56 flex-1 flex-col gap-2">
               {coverPreviewSources.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-tertiary">
-                  <label className="flex min-w-0 flex-1 items-center gap-2">
+                  {/* 预览下拉独占一整行：与右侧按钮同行时标题长一点就会被原生
+                      select 截断省略。title 作为悬停兜底。 */}
+                  <label className="flex min-w-0 basis-full items-center gap-2">
                     <span className="shrink-0">预览脚本</span>
                     <select
                       aria-label="封面标题预览脚本"
                       value={coverPreview?.id ?? ''}
                       onChange={(event) => setCoverPreviewScriptId(event.target.value)}
+                      title={
+                        coverPreview
+                          ? `脚本 ${coverPreviewSources.findIndex((source) => source.id === coverPreview.id) + 1} · ${coverPreview.coverTitle.primary.trim() || coverPreview.title || '未命名脚本'}`
+                          : undefined
+                      }
                       className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
                     >
                       {coverPreviewSources.map((source, index) => (
-                        <option key={source.id} value={source.id}>
+                        <option
+                          key={source.id}
+                          value={source.id}
+                          title={`脚本 ${index + 1} · ${source.coverTitle.primary.trim() || source.title || '未命名脚本'}`}
+                        >
                           脚本 {index + 1} · {source.coverTitle.primary.trim() || source.title || '未命名脚本'}
                         </option>
                       ))}
