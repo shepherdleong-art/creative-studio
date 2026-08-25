@@ -118,7 +118,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 - `queue.ts` / `video-queue.ts` — 提交 → 轮询 → 下载 → 重试的内存队列，支持暂停/恢复。视频并发由 `VIDEO_CONCURRENCY` 控制（1–10，默认 10，可按项目在面板调整）。
 - `providers/` — 图片生成适配器。多图编辑的图片顺序统一约定为**待编辑底图在前（图1）、参考图在后（图2-N）**。
-- `script-providers/` — 脚本（LLM）生成适配器，按持久化的 `apiStyle` 选择协议。
+- `script-providers/` — 脚本（LLM）生成适配器，按持久化的 `apiStyle` 选择协议。公司 `GPT-5-6-Luna-*` **只接受 `temperature=1`**，三层保障与连带影响见参考文档。
 - `video-providers/` — 视频生成适配器。尾帧能力由各适配器 `tailFrameCapability(model)` 按**精确模型 allowlist** 声明，不许放宽成前缀匹配。
 - `provider-concurrency.ts` / `cost.ts` — 每供应商并发上限；每个 job 记录预估成本。
 
