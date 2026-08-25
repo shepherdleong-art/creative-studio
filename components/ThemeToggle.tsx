@@ -64,6 +64,9 @@ export default function ThemeToggle() {
 
   useEffect(() => {
     applyPreference(pref);
+    // 桌面壳：原生控件（select 弹出列表、右键菜单）主题由主进程 nativeTheme 决定，
+    // 不吃页面 CSS 的 color-scheme，偏好变化时同步过去；浏览器环境无 bridge，忽略即可。
+    window.desktopBridge?.setThemePreference(pref).catch(() => {});
     if (pref !== 'system') return;
     // 自动模式：监听系统外观变化实时切换
     const media = window.matchMedia('(prefers-color-scheme: dark)');

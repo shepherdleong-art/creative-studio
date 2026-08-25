@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, shell } from 'electron';
 import { accessSync, constants, existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -246,6 +246,14 @@ function createDesktopIpcHandlers(
       }
       const failure = await shell.openPath(absolute);
       return failure ? { opened: false, message: failure } : { opened: true };
+    },
+    setThemePreference: (preference) => {
+      if (preference !== 'light' && preference !== 'dark' && preference !== 'system') {
+        throw new Error(`未知的外观偏好：${String(preference)}`);
+      }
+      // 原生控件（select 弹出列表、右键菜单、滚动条）的主题由主进程 nativeTheme
+      // 决定，不跟随页面 CSS 的 color-scheme。'system' 保持跟随系统，显式偏好则钉住。
+      nativeTheme.themeSource = preference;
     },
   };
 }

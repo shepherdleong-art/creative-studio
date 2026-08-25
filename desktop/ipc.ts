@@ -1,6 +1,6 @@
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 
-import type { DesktopBridge } from './bridge-types';
+import type { DesktopBridge, ThemePreference } from './bridge-types';
 
 export const CHANNELS = {
   platform: 'desktop:platform',
@@ -10,6 +10,7 @@ export const CHANNELS = {
   relocateLinkedSource: 'desktop:relocate-linked-source',
   openFolder: 'desktop:open-folder',
   linkedImportProgress: 'desktop:linked-import-progress',
+  setThemePreference: 'desktop:set-theme-preference',
 } as const;
 
 export type DesktopPlatform = Awaited<ReturnType<DesktopBridge['platform']>>;
@@ -33,6 +34,7 @@ export interface DesktopIpcHandlers {
   getAppVersion(): string;
   relocateLinkedSource(assetId: string, sourceId: string): Promise<RelocateLinkedSourceResult>;
   openFolder(relativePath: string): Promise<OpenFolderResult>;
+  setThemePreference(preference: ThemePreference): void;
 }
 
 interface RegisterIpcOptions {
@@ -101,6 +103,10 @@ export function registerIpcHandlers(options: RegisterIpcOptions): () => void {
   ipcMain.handle(
     CHANNELS.openFolder,
     protectedHandler((relativePath: string) => options.handlers.openFolder(relativePath)),
+  );
+  ipcMain.handle(
+    CHANNELS.setThemePreference,
+    protectedHandler((preference: ThemePreference) => options.handlers.setThemePreference(preference)),
   );
 
   return () => {

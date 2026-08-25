@@ -16,6 +16,7 @@ const excludedDirectories = new Set([
 // from the implementation under test.
 const expectedBridgeMethods = [
   'platform', 'chooseMediaFiles', 'chooseFolder', 'getAppVersion', 'relocateLinkedSource', 'openFolder',
+  'setThemePreference',
 ];
 const expectedChannels = [
   'desktop:platform',
@@ -25,6 +26,7 @@ const expectedChannels = [
   'desktop:relocate-linked-source',
   'desktop:open-folder',
   'desktop:linked-import-progress',
+  'desktop:set-theme-preference',
 ];
 
 function read(relativePath) {
@@ -158,7 +160,7 @@ for (const [name, pattern] of [
   assert.match(preferences.source, pattern, `webPreferences 必须显式包含 ${name}`);
 }
 
-// C. The bridge exposes exactly the six named methods. Progress is a
+// C. The bridge exposes exactly the seven named methods. Progress is a
 // separately fixed main→preload event and never becomes a renderer method.
 const typeBlock = braceBlock(bridgeTypes, 'interface DesktopBridge');
 const typeMethods = [...typeBlock.source.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*\(/gm)].map(
@@ -183,7 +185,7 @@ assert.equal((preload.match(/\bipcRenderer\.on\(/g) ?? []).length, 1);
 assert.match(preload, /ipcRenderer\.on\(\s*LINKED_IMPORT_PROGRESS_CHANNEL\s*,/);
 assert.match(preload, /creative-studio:linked-import-progress/);
 assert.doesNotMatch(preload, /\bipcRenderer\.invoke\(\s*channel\b/);
-assert.equal((preload.match(/ipcRenderer\.invoke\(/g) ?? []).length, 6);
+assert.equal((preload.match(/ipcRenderer\.invoke\(/g) ?? []).length, 7);
 assert.equal(
   [...preload.matchAll(/ipcRenderer\.invoke\(\s*([A-Z][A-Z0-9_]*_CHANNEL)\s*\)/g)].length,
   4,
@@ -200,16 +202,16 @@ assert.match(
   '打开文件夹 bridge 必须精确传递 relativePath',
 );
 
-// D. All six handlers use the one protected wrapper and validate frame/origin.
+// D. All seven handlers use the one protected wrapper and validate frame/origin.
 const allHandlers = production.flatMap((file) => {
   const source = fs.readFileSync(file.absolutePath, 'utf8');
   return [...source.matchAll(/ipcMain\.handle\(/g)].map(() => file);
 });
-assert.equal(allHandlers.length, 6, '生产源码必须恰好注册六个 ipcMain.handle');
+assert.equal(allHandlers.length, 7, '生产源码必须恰好注册七个 ipcMain.handle');
 assert.ok(allHandlers.every((file) => file.relativePath === path.join('desktop', 'ipc.ts')));
 assert.equal(
   (ipc.match(/ipcMain\.handle\(\s*[^,]+,\s*protectedHandler\(/g) ?? []).length,
-  6,
+  7,
   '每个 ipcMain.handle 必须直接通过 protectedHandler',
 );
 assert.match(ipc, /const\s+senderFrame\s*=\s*event\.senderFrame/);

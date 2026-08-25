@@ -38,6 +38,12 @@
 }
 
 /* ===== Base ===== */
+/* 显式声明浅色为默认外观：系统深色 + 应用浅色时，原生控件（select 弹层、滚动条、
+   日期控件）不会被 UA 按 'normal' 解析成深色。深色由 html[data-theme='dark'] 覆盖。 */
+:root {
+  color-scheme: light;
+}
+
 body {
   background: var(--color-surface);
   color: var(--color-ink);
@@ -791,6 +797,13 @@ html[data-theme='dark'] {
 /* --- 以下为组件类里硬编码浅色值的暗色覆盖 --- */
 html[data-theme='dark'] body {
   background: var(--color-surface);
+}
+
+/* 原生 select 的弹出列表由 Chromium 单独绘制：桌面壳经 nativeTheme 同步主题
+   （desktop/main.ts），纯浏览器下靠 option 显式配色保证弹层可读。 */
+html[data-theme='dark'] option {
+  background-color: var(--color-surface-subtle);
+  color: var(--color-ink);
 }
 
 html[data-theme='dark'] .btn-secondary:hover { background: rgba(255, 255, 255, .12); }
