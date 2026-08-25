@@ -868,6 +868,53 @@ function clampImageConcurrency(value: number): number {
   return Math.max(1, Math.min(10, Math.floor(value) || 1));
 }
 
+/**
+ * 受限数字输入：点击聚焦时全选现有值，输入过程中不逐键夹取，失焦才夹到 [min, max]。
+ * 直接受控 + 逐键 clamp 会让「在 2 后面接着敲 5」变成 25 → 上限值，
+ * 用户体验就是"点一下数字自己跳成了 9/10"。
+ */
+function ClampedNumberInput({
+  value,
+  min,
+  max,
+  onCommit,
+  ariaLabel,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (value: number) => void;
+  ariaLabel?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const clampDraft = (raw: string): number | null => {
+    const parsed = Math.floor(Number(raw));
+    if (!raw.trim() || !Number.isFinite(parsed)) return null;
+    return Math.max(min, Math.min(max, parsed));
+  };
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      aria-label={ariaLabel}
+      value={draft ?? String(value)}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        const next = clampDraft(e.target.value);
+        if (next !== null) onCommit(next);
+      }}
+      onBlur={() => {
+        const next = clampDraft(draft ?? '');
+        if (next !== null && next !== value) onCommit(next);
+        setDraft(null);
+      }}
+      className="input-field generation-control generation-number"
+    />
+  );
+}
+
 function getSelectableImageProviders(providers: ImageProvider[]): ImageProvider[] {
   return providers.filter((provider) => provider.enabled && provider.hasApiKey);
 }
@@ -921,13 +968,12 @@ function ImageConcurrencyField({
   return (
     <div>
       <label className="label generation-label">并发数</label>
-      <input
-        type="number"
+      <ClampedNumberInput
+        value={concurrency}
         min={1}
         max={10}
-        value={concurrency}
-        onChange={(e) => onConcurrencyChange(clampImageConcurrency(Number(e.target.value)))}
-        className="input-field generation-control generation-number"
+        onCommit={onConcurrencyChange}
+        ariaLabel="并发数"
       />
       <p className="generation-helper">失败或限流时调回 1。</p>
     </div>
@@ -1016,7 +1062,14 @@ function SceneGenerationForm({
         <div className="generation-side-stack">
           <div>
             <label className="label generation-label">数量</label>
-            <input type="number" min={1} max={9} value={count} onChange={(e) => setCount(Math.max(1, Math.min(9, Number(e.target.value) || 1)))} className="input-field generation-control generation-number" />
+            <ClampedNumberInput
+              value={count}
+              min={1}
+              max={9}
+              onCommit={setCount}
+              ariaLabel="生成数量"
+            />
+            <p className="generation-helper">一次最多 9 张。</p>
           </div>
           <ImageConcurrencyField
             concurrency={concurrency}
