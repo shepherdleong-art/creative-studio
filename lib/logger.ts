@@ -14,6 +14,23 @@ function ensureLogDir() {
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
+/**
+ * Format a Date as local time with timezone offset, e.g. 2026-08-25T09:25:35.203+08:00.
+ * Log files are read by humans during troubleshooting, so they use local time;
+ * the DB `createdAt` column stays in UTC (the frontend renders it as local).
+ */
+function formatLocalTimestamp(date: Date): string {
+  const pad = (value: number, width = 2) => String(value).padStart(width, '0');
+  const offsetMin = -date.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMin);
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  );
+}
+
 export interface JobLogEntry {
   id: string;
   jobId: string;
@@ -54,9 +71,10 @@ export function writeLog(params: {
   // Write to file
   try {
     ensureLogDir();
-    const dateStr = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const dateStr = formatLocalTimestamp(now).slice(0, 10);
     const logFile = path.join(LOG_DIR, `workbench-${dateStr}.log`);
-    const timestamp = new Date().toISOString();
+    const timestamp = formatLocalTimestamp(now);
     const jobLabel = jobId ? `[job:${jobId.slice(0, 8)}] ` : '';
     const line = `[${timestamp}] [${level.toUpperCase()}] ${jobLabel}[attempt:${attempt}] ${sanitized}\n`;
     fs.appendFileSync(logFile, line, 'utf-8');
