@@ -656,7 +656,8 @@ export default function ScriptPanel({ projectId }: Props) {
     const resolvedTemplateName = override?.templateName ?? templateName;
     setGenerationProgress(INITIAL_GENERATION_PROGRESS);
     setGenerationStartedAt(new Date().toISOString());
-    setLastGenerationDurationMs(null);
+    // 保留 lastGenerationDurationMs：生成中 LiveView 要把上一稿耗时作为「上次约 X」参照展示，
+    // 新一轮落库后由 applyTerminalSnapshot 刷新。
     setCancellingGeneration(false);
     setGenerating(true);
     try {

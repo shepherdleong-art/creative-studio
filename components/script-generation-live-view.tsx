@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ScriptGenerationProgress } from '@/lib/script-generation-v3';
+import { SCRIPT_CALIBRATED_CHARS_PER_SECOND } from '@/lib/script-duration-policy';
 import { parseScriptStreamPreview, type StreamPreviewText } from '@/lib/script-stream-preview';
 
 interface ScriptGenerationLiveViewProps {
@@ -63,26 +64,27 @@ function validationMessage(
   validation: NonNullable<ScriptGenerationProgress['validation']>,
 ): { kind: 'ok' | 'warn'; title: string; detail?: string; summary?: string } {
   const target = validation.targetCharacterRange;
-  const targetSeconds = target[1] / 4.2;
+  const lowerSeconds = target[0] / SCRIPT_CALIBRATED_CHARS_PER_SECOND;
+  const upperSeconds = target[1] / SCRIPT_CALIBRATED_CHARS_PER_SECOND;
   if (validation.qualification === 'qualified') {
     return {
       kind: 'ok',
       title: `第 ${validation.attempt} 次校验通过`,
-      detail: `预计口播 ${validation.estimatedNarrationDurationSec.toFixed(1)}s / 目标 ${targetSeconds.toFixed(1)}s`,
+      detail: `预计口播 ${validation.estimatedNarrationDurationSec.toFixed(1)}s / 目标区间 ${lowerSeconds.toFixed(1)}–${upperSeconds.toFixed(1)}s`,
     };
   }
   if (validation.qualification === 'too_long') {
     return {
       kind: 'warn',
       title: `第 ${validation.attempt} 次校验未通过：口播偏长`,
-      detail: `预计 ${validation.estimatedNarrationDurationSec.toFixed(1)}s，目标 ${targetSeconds.toFixed(1)}s，上限 ${(target[1] / 4.2).toFixed(1)}s → 已发起修正`,
+      detail: `预计 ${validation.estimatedNarrationDurationSec.toFixed(1)}s，超出上限 ${upperSeconds.toFixed(1)}s → 已发起修正`,
     };
   }
   if (validation.qualification === 'too_short') {
     return {
       kind: 'warn',
       title: `第 ${validation.attempt} 次校验未通过：口播偏短`,
-      detail: `预计 ${validation.estimatedNarrationDurationSec.toFixed(1)}s，目标 ${targetSeconds.toFixed(1)}s，下限 ${(target[0] / 4.2).toFixed(1)}s → 已发起修正`,
+      detail: `预计 ${validation.estimatedNarrationDurationSec.toFixed(1)}s，低于下限 ${lowerSeconds.toFixed(1)}s → 已发起修正`,
     };
   }
   return {
@@ -125,7 +127,7 @@ export default function ScriptGenerationLiveView({
   const thoughtText = useTypewriter(progress.reasoningTail || '');
   const coverText = useTypewriter(
     preview.coverTitleParts
-      ? `${preview.coverTitleParts.primary?.text || ''}${preview.coverTitleParts.primary || preview.coverTitleParts.secondary ? '｜' : ''}${preview.coverTitleParts.secondary?.text || ''}`
+      ? `${preview.coverTitleParts.primary?.text || ''}${preview.coverTitleParts.primary && preview.coverTitleParts.secondary ? '｜' : ''}${preview.coverTitleParts.secondary?.text || ''}`
       : '',
   );
 
