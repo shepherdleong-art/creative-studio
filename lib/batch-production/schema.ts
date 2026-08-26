@@ -1063,6 +1063,32 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         ON batch_semantic_matrices(projectId, scriptKey, poolKey, createdAt);
     `,
   },
+  {
+    version: 24,
+    sql: `
+      -- 口播先于分配(b38fb1c)的反转曾让预览口播丢失:口播执行时成片版本尚不
+      -- 存在,事后写死的 arrangement 占位符从未被升级。这里把权威表
+      -- batch_script_narrations 里已核验(mode=local_ready, productionReady=true,
+      -- 含 audioRelativePath)的口播快照回填进同一脚本快照的全部成片版本,
+      -- 预览端点与编辑视图只读 arrangement seam,回填后立即恢复有声预览。
+      -- 只覆盖仍是占位(productionReady<>true)的版本,已就地升级过的老版本不动。
+      -- 快照文本是 JSON:audioRelativePath 里的反斜杠以转义形式「\\\\」(两个
+      -- 反斜杠字符)出现,把这两个字符替换成一个正斜杠即为路径规整;口播正文
+      -- 与指纹是纯中文/hex,不含双反斜杠序列,不会误伤。
+      UPDATE batch_output_versions
+      SET arrangementJson = json_set(
+        arrangementJson,
+        '$.narration',
+        json(replace(n.narrationJson, char(92) || char(92), '/'))
+      )
+      FROM batch_script_narrations n
+      JOIN batch_output_plans p ON p.scriptSnapshotId = n.scriptSnapshotId
+      WHERE batch_output_versions.planId = p.id
+        AND json_extract(n.narrationJson, '$.mode') = 'local_ready'
+        AND json_extract(n.narrationJson, '$.productionReady') = 1
+        AND COALESCE(json_extract(arrangementJson, '$.narration.productionReady'), 0) <> 1;
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =

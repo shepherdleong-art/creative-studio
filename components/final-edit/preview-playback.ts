@@ -25,6 +25,22 @@ export function expectedVideoTimeSec(sourceInFrame: number, timelineInFrame: num
   return sourceInFrame / fps + Math.max(0, bodyFrame - timelineInFrame) / fps;
 }
 
+/**
+ * Seek coalescing: while a seek is still in flight we never write currentTime
+ * again — the pending target is remembered by the caller and re-applied from a
+ * persistent `seeked` listener. This keeps `seeked` fireable even when the
+ * playhead moves every frame (scrubbing), instead of being cancelled by the
+ * next assignment before it ever completes.
+ */
+export function shouldIssueSeek(
+  video: { seeking: boolean; currentTime: number },
+  targetSec: number,
+  toleranceSec: number,
+): boolean {
+  if (video.seeking) return false;
+  return Math.abs(video.currentTime - targetSec) > toleranceSec;
+}
+
 export function bgmGainAtTime({ bodyTimeSec, bodyDurationSec, gainDb, fadeInSec, fadeOutSec }: {
   bodyTimeSec: number;
   bodyDurationSec: number;

@@ -55,6 +55,7 @@ function makeInput(overrides: { narration?: unknown; targetDurationSec?: number 
 const narrationA = {
   durationUs: 13_370_000,
   audioFingerprint: 'sha256:' + 'c'.repeat(64),
+  audioRelativePath: 'batch-narration/reuse/narration.wav',
   segments: ALIGNED.map((timing, index) => ({ id: `nar-${index + 1}`, sourceSegmentId: `nar-${index + 1}`, text: `句${index + 1}`, ...timing })),
   wordTimings: WORD_TIMINGS,
 };
@@ -75,10 +76,36 @@ try {
   );
   assert.equal(arrangement.clips.length, 3);
 
+  // 已核验口播(带 storage 相对路径)必须烤进 arrangement.narration,
+  // 预览/编辑视图与渲染 seam 读到同一份 productionReady 快照。
+  assert.equal(arrangement.narration.productionReady, true, '有路径的已核验口播必须烤成 productionReady 快照');
+  assert.equal(arrangement.narration.mode, 'local_ready');
+  assert.equal(arrangement.narration.audioRelativePath, 'batch-narration/reuse/narration.wav');
+  assert.equal(arrangement.narration.audioFingerprint, 'sha256:' + 'c'.repeat(64));
+  assert.equal(arrangement.narration.durationUs, 13_370_000);
+  assert.deepEqual(
+    arrangement.narration.segments?.map((segment) => [segment.startUs, segment.endUs]),
+    ALIGNED.map((timing) => [timing.startUs, timing.endUs]),
+    '烤入快照的句段时间必须等于真实对齐时间',
+  );
+  // Windows path.join 产物(反斜杠)必须规整成正斜杠后烤入。
+  const windowsPathNarration = allocateBatch(makeInput({
+    narration: { ...narrationA, audioRelativePath: 'batch-narration\\reuse\\narration.wav' },
+  }));
+  assert.equal(windowsPathNarration.outputs[0]!.arrangement.narration.audioRelativePath, 'batch-narration/reuse/narration.wav', '反斜杠路径必须规整为正斜杠');
+  // 绝对路径/越界路径不烤快照,但仍吃真实对齐时间。
+  const absolutePathNarration = allocateBatch(makeInput({
+    narration: { ...narrationA, audioRelativePath: 'C:\\storage\\batch-narration\\narration.wav' },
+  }));
+  assert.equal(absolutePathNarration.outputs[0]!.arrangement.narration.productionReady, false, '绝对路径不得烤成 productionReady');
+  assert.equal(absolutePathNarration.outputs[0]!.arrangement.clips[0]?.timelineStartUs, 0, '非法路径仍吃真实对齐时间');
+
   // 无口播:保留等分估算路径(3 句 15 秒 = 每句 5 秒)
   const withoutNarration = allocateBatch(makeInput({}));
   const estimatedArrangement = withoutNarration.outputs[0]!.arrangement;
   assert.equal(estimatedArrangement.targetDurationUs, 15_000_000, '无口播时目标时长仍用脚本设定值');
+  assert.equal(estimatedArrangement.narration.productionReady, false, '无口播仍是占位');
+  assert.equal(estimatedArrangement.narration.durationUs, null);
   assert.deepEqual(
     estimatedArrangement.clips.map((clip) => [clip.timelineStartUs, clip.timelineEndUs]),
     [[0, 5_000_000], [5_000_000, 10_000_000], [10_000_000, 15_000_000]],
@@ -166,6 +193,12 @@ try {
     assert.equal(first.created, true);
     const arrangement = JSON.parse((db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE allocationRunId = ?`).get(first.runId) as { arrangementJson: string }).arrangementJson);
     assert.equal(arrangement.targetDurationUs, 13_370_000, '落库的成片版本目标时长必须取口播时长');
+    // 权威表已核验口播必须连同 audioRelativePath 一起烤进落库的 arrangement,
+    // 预览端点(resolveBatchOutputNarrationAudio)只读这个 seam。
+    assert.equal(arrangement.narration.productionReady, true, '落库 arrangement.narration 必须是已核验快照');
+    assert.equal(arrangement.narration.mode, 'local_ready');
+    assert.equal(arrangement.narration.audioRelativePath, 'batch-narration/reuse/narration.wav');
+    assert.equal(arrangement.narration.durationUs, 13_370_000);
     assert.deepEqual(
       arrangement.clips.map((clip: { timelineStartUs: number; timelineEndUs: number }) => [clip.timelineStartUs, clip.timelineEndUs]),
       ALIGNED.map((timing) => [timing.startUs, timing.endUs]),

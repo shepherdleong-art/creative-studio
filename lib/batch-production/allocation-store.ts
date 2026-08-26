@@ -253,6 +253,10 @@ function buildFrozenInput(
     const durationUs = Math.round(numberFrom(snap.durationUs, 0));
     const audioFingerprint = typeof snap.audioFingerprint === 'string' && snap.audioFingerprint.trim() ? snap.audioFingerprint.trim() : '';
     if (durationUs <= 0 || !audioFingerprint) return undefined;
+    // 已核验快照的音频路径(口播先于分配:分配时烤进 arrangement.narration,
+    // 预览/编辑视图直接可读)。反斜杠统一规整成正斜杠,跨平台 JSON 一致。
+    const rawAudioPath = typeof snap.audioRelativePath === 'string' ? snap.audioRelativePath.trim() : '';
+    const audioRelativePath = rawAudioPath ? rawAudioPath.replace(/\\/g, '/') : '';
     const segments = arrayOfRecords(snap.segments)
       .map((entry): AllocationNarrationInput['segments'][number] | null => {
         const id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : '';
@@ -277,6 +281,7 @@ function buildFrozenInput(
     return {
       durationUs,
       audioFingerprint,
+      ...(audioRelativePath ? { audioRelativePath } : {}),
       segments: segments.filter((segment): segment is AllocationNarrationInput['segments'][number] => segment !== null),
       ...(wordTimings && wordTimings.length ? { wordTimings } : {}),
     };

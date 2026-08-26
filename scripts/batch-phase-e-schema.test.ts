@@ -18,8 +18,8 @@ try {
     now: () => new Date('2026-08-03T00:00:00.000Z'),
   });
   assert.equal(result.state, 'ready');
-  assert.equal(result.targetVersion, 23);
-  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 23);
+  assert.equal(result.targetVersion, 24);
+  assert.equal(BATCH_SCHEMA_MIGRATIONS.at(-1)?.version, 24);
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_asset_analysis_requests'`).get());
   const requestColumns = db.prepare(`PRAGMA table_info(batch_asset_analysis_requests)`).all() as Array<{ name: string }>;
   assert.ok(requestColumns.some((column) => column.name === 'executionScope'));
@@ -107,6 +107,60 @@ try {
   assert.equal(current.state, 'current');
   assert.deepEqual(current.appliedVersions, []);
   assert.equal(fs.readdirSync(path.join(root, 'backups')).filter((name) => !name.startsWith('.')).length, 1, 'schema 已当前时不得重复备份');
+
+  // v24 回填:权威表已核验口播(含 Windows 反斜杠路径)烤进仍为占位的成片版本,
+  // 已升级过的版本不被覆盖。模拟「口播先于分配」反转后的存量数据形状。
+  {
+    db.prepare(`
+      INSERT INTO batch_output_plans
+        (id, batchVersionId, scriptSnapshotId, seq, currentVersionId, createdAt)
+      VALUES ('task-plan', 'task-version', 'task-snapshot', 1, NULL, ?)
+    `).run(now);
+    const narrationSnapshot = JSON.stringify({
+      schemaVersion: 'batch-narration-v2',
+      mode: 'local_ready',
+      productionReady: true,
+      audioRelativePath: 'batch-narration\\abc123\\narration.wav',
+      audioFingerprint: 'sha256:' + 'c'.repeat(64),
+      durationUs: 9_000_000,
+      segments: [{ id: 's1', sourceSegmentId: 's1', text: '句一', startUs: 0, endUs: 9_000_000, timingSource: 'aligned' }],
+    });
+    db.prepare(`
+      INSERT INTO batch_script_narrations
+        (scriptSnapshotId, batchVersionId, narrationJson, audioRelativePath, audioFingerprint, createdAt, updatedAt)
+      VALUES ('task-snapshot', 'task-version', ?, 'batch-narration\\abc123\\narration.wav', ?, ?, ?)
+    `).run(narrationSnapshot, 'sha256:' + 'c'.repeat(64), now, now);
+    const placeholderArrangement = JSON.stringify({
+      narration: { ready: false, productionReady: false, status: 'pending', durationUs: null, reason: '联合分配只登记画面，尚未合成或核验口播时长' },
+      clips: [],
+    });
+    const upgradedArrangement = JSON.stringify({
+      narration: { ready: true, productionReady: true, status: 'ready', durationUs: 9_000_000, reason: '', audioRelativePath: 'old-upgraded.wav' },
+      clips: [],
+    });
+    db.prepare(`
+      INSERT INTO batch_output_versions
+        (id, planId, versionNumber, arrangementJson, createdAt)
+      VALUES ('task-version-placeholder', 'task-plan', 1, ?, ?)
+    `).run(placeholderArrangement, now);
+    db.prepare(`
+      INSERT INTO batch_output_versions
+        (id, planId, versionNumber, arrangementJson, createdAt)
+      VALUES ('task-version-upgraded', 'task-plan', 2, ?, ?)
+    `).run(upgradedArrangement, now);
+    // 模拟 v23 状态:删掉 v24 记录后重跑迁移,回填只应命中占位版本。
+    db.prepare(`DELETE FROM batch_schema_migrations WHERE version = 24`).run();
+    const backfill = await ensureBatchSchemaReady({ db, backupRoot: path.join(root, 'backups') });
+    assert.equal(backfill.state, 'ready');
+    assert.deepEqual(backfill.appliedVersions, [24]);
+    const filled = JSON.parse((db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = 'task-version-placeholder'`).get() as { arrangementJson: string }).arrangementJson);
+    assert.equal(filled.narration.productionReady, true, '占位版本必须回填为已核验口播');
+    assert.equal(filled.narration.mode, 'local_ready');
+    assert.equal(filled.narration.audioRelativePath, 'batch-narration/abc123/narration.wav', 'Windows 反斜杠路径必须规整为正斜杠');
+    assert.equal(filled.narration.durationUs, 9_000_000);
+    const untouched = JSON.parse((db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = 'task-version-upgraded'`).get() as { arrangementJson: string }).arrangementJson);
+    assert.equal(untouched.narration.audioRelativePath, 'old-upgraded.wav', '已升级版本不得被回填覆盖');
+  }
 
   console.log('batch phase E schema tests passed');
 } finally {

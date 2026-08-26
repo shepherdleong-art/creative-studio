@@ -642,6 +642,8 @@ try {
 
   console.log('batch-proxy-lifecycle-regression (real ffmpeg) tests passed');
 } finally {
-  fs.rmSync(workRoot, { recursive: true, force: true });
-  fs.rmSync(externalDataRoot, { recursive: true, force: true });
+  // Windows 上 SQLite/媒体句柄释放有延迟,临时目录清理失败不遮蔽真实断言
+  // (与 batch-render-smoke 同一处理)。
+  try { fs.rmSync(workRoot, { recursive: true, force: true }); } catch { /* 清理锁,忽略 */ }
+  try { fs.rmSync(externalDataRoot, { recursive: true, force: true }); } catch { /* 清理锁,忽略 */ }
 }

@@ -103,8 +103,11 @@ try {
   assert.equal(repeatedSameState.created, false, '同一状态下显式同 seed 的重试仍必须幂等');
   assert.equal(repeatedSameState.runId, repeatedAutomatic.runId);
 
-  // 历史避让端到端:6 素材 1 计划,连续「换一批画面」必须持续换新素材与封面,
+  // 历史避让端到端:7 素材 1 计划,连续「换一批画面」必须持续换新素材与封面,
   // 不会在两批画面之间来回切换(素材池耗尽才回退复用,由单测覆盖)。
+  // 注:封面与画面共用同一素材池。3 批画面占 6 个素材位,若前两批封面又各占 1 个
+  // 非画面素材,第 3 批封面必然撞上耗尽回退(设计如此)——6 素材时本断言等价于
+  // 抽签(取决于随机素材 id 排序),7 素材才能在任何 id 排序下保证封面也避得开。
   const histBatchId = createBatchProduction(db, 'project-1', 'E2');
   const histVersionId = createBatchProductionVersion(db, histBatchId, { copyCount: 1 });
   const histScriptId = createProjectScript(db, 'project-1', {
@@ -119,7 +122,7 @@ try {
   });
   const histSnapshotId = snapshotScriptIntoBatch(db, histVersionId, { scriptId: histScriptId, copyCount: 1 });
   const histPlans = createOutputPlansForSnapshot(db, histVersionId, histSnapshotId);
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 7; index += 1) {
     const histAsset = createAsset(db, { projectId: 'project-1', sourceKind: 'managed', locationJson: { key: `hist-${index}` }, contentFingerprint: `sha256:hist-${index}`, mediaKind: 'video' });
     const histAnalysis = createAnalysisVersion(db, { assetId: histAsset, analyzerVersion: 'test', providerId: 'test', model: 'test', analysisJson: { durationUs: 8_000_000, usableRanges: [{ startUs: 0, endUs: 8_000_000, qualityScore: 1 }], coverFrameTimesUs: [500_000] } });
     addAssetToPool(db, histVersionId, { assetId: histAsset, analysisId: histAnalysis });

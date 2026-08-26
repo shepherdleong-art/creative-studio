@@ -227,7 +227,10 @@ export function createBatchNarrationExecutor(options: BatchNarrationExecutorOpti
         voice,
         speed,
       });
-      const relativeOutputPath = path.join('batch-narration', reuseKey, 'narration.wav');
+      // 落库的相对路径必须是正斜杠:这是 JSON 里的跨平台标识,预览端点与
+      // arrangement seam 都按 storage 相对路径解析;path.join 在 Windows 上
+      // 会产出反斜杠,导致数据库断言与跨平台数据不一致。
+      const relativeOutputPath = ['batch-narration', reuseKey, 'narration.wav'].join('/');
       const outputDir = path.join(storageRoot, 'batch-narration', reuseKey);
       const absolutePath = path.join(outputDir, 'narration.wav');
       assertNoStorageSymlink(storageRoot, relativeOutputPath);

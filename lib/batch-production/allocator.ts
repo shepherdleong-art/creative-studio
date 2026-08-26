@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import { splitNarrationForDisplay } from '../subtitle-display.ts';
 import { buildTtsAwareMatchSentences } from '../media-core/match-sentence-refinement.ts';
 import { splitBatchScriptSentences } from './script-sentences.ts';
+import { BATCH_NARRATION_SCHEMA_VERSION } from './narration.ts';
 
 /**
  * Phase E 联合分配器。
@@ -93,6 +95,12 @@ export interface AllocationLockInput {
 export interface AllocationNarrationInput {
   durationUs: number;
   audioFingerprint: string;
+  /**
+   * 已核验口播音频的 storage 相对路径。口播先于分配的反转后,权威表快照
+   * 会带路径随冻结输入挂进 plan;分配时把它烤进 arrangement.narration,
+   * 预览/编辑视图直接读到,渲染与导出闸门不再依赖就地升级。
+   */
+  audioRelativePath?: string;
   segments: Array<{
     id: string;
     sourceSegmentId: string;
@@ -183,9 +191,13 @@ export interface AllocationArrangement {
   cover: { assetId: string | null; timeUs: number | null };
   /** 只保存冻结色彩身份,不保存 LUT/代理路径。 */
   colorSnapshots: Record<string, unknown>;
-  /** 仅占位:分配阶段不合成或验证口播。 */
+  /** 仅占位:分配阶段不合成音频,混音在渲染时发生。 */
   audio: { ready: boolean; productionReady: boolean; status: 'pending' | 'ready'; reason: string };
-  /** 配音执行器会把占位升级为 productionReady=true 的已核验本地口播快照。 */
+  /**
+   * 口播先于分配:权威表已有已核验口播时,分配直接烤入 productionReady=true 的
+   * 本地口播快照(含 audioRelativePath);无已核验口播(失败/未生成/无路径)保留占位。
+   * 反转前的老版本由口播执行器事后就地升级(见 narration-executor)。
+   */
   narration: {
     ready: boolean;
     productionReady: boolean;
@@ -553,6 +565,8 @@ function scriptTargetDurationUs(rawPlan: AllocationPlanInput, fallbackUs: number
  * 规范化已核验口播。句段数量必须与分配句段一致(断句出自同一次切分,
  * 结构上一致);数量对不上或字段非法时整体放弃,退回估算路径,绝不半套。
  * 时长必须是正数,否则无法作为时间线基准。
+ * audioRelativePath 只接受 storage 相对路径(与 renderer 的 arrangement
+ * seam 校验同一契约);缺路径的旧输入仍可吃真实对齐时间,只是不烤快照。
  */
 function normalizePlanNarration(raw: unknown, segments: NormalizedSegment[]): AllocationNarrationInput | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
@@ -561,6 +575,13 @@ function normalizePlanNarration(raw: unknown, segments: NormalizedSegment[]): Al
   if (durationUs <= 0) return undefined;
   const audioFingerprint = typeof record.audioFingerprint === 'string' && record.audioFingerprint.trim() ? record.audioFingerprint.trim() : '';
   if (!audioFingerprint) return undefined;
+  const rawAudioPath = typeof record.audioRelativePath === 'string' ? record.audioRelativePath.trim() : '';
+  const audioRelativePath = rawAudioPath
+    && !path.isAbsolute(rawAudioPath)
+    && !path.win32.isAbsolute(rawAudioPath)
+    && !rawAudioPath.split(/[\\/]+/).includes('..')
+    ? rawAudioPath.replace(/\\/g, '/')
+    : '';
   if (!Array.isArray(record.segments) || record.segments.length !== segments.length) return undefined;
   const narrationSegments = record.segments.map((entry): AllocationNarrationInput['segments'][number] | null => {
     const item = asRecord(entry);
@@ -586,6 +607,7 @@ function normalizePlanNarration(raw: unknown, segments: NormalizedSegment[]): Al
   return {
     durationUs,
     audioFingerprint,
+    ...(audioRelativePath ? { audioRelativePath } : {}),
     segments: narrationSegments as AllocationNarrationInput['segments'],
     ...(wordTimings && wordTimings.length ? { wordTimings } : {}),
   };
@@ -807,7 +829,24 @@ function createArrangement(
       .filter((asset) => clips.some((clip) => clip.assetId === asset.assetId))
       .map((asset) => [asset.assetId, asset.colorSnapshot])),
     audio: { ready: false, productionReady: false, status: 'pending', reason: '联合分配只登记画面，尚未合成口播音频' },
-    narration: { ready: false, productionReady: false, status: 'pending', durationUs: null, reason: '联合分配只登记画面，尚未合成或核验口播时长' },
+    // 口播先于分配:权威表已核验的口播(含 storage 相对路径)直接烤进
+    // arrangement,预览/编辑视图与渲染 seam 读到同一份快照,不再依赖
+    // 执行器事后就地升级。无已核验口播(失败/未生成/无路径)保留占位。
+    narration: plan.narration?.audioRelativePath
+      ? {
+        ready: true,
+        productionReady: true,
+        status: 'ready',
+        durationUs: plan.narration.durationUs,
+        reason: '',
+        schemaVersion: BATCH_NARRATION_SCHEMA_VERSION,
+        mode: 'local_ready' as const,
+        audioRelativePath: plan.narration.audioRelativePath,
+        audioFingerprint: plan.narration.audioFingerprint,
+        segments: plan.narration.segments,
+        ...(plan.narration.wordTimings?.length ? { wordTimings: plan.narration.wordTimings } : {}),
+      }
+      : { ready: false, productionReady: false, status: 'pending', durationUs: null, reason: '联合分配只登记画面，尚未合成或核验口播时长' },
     subtitle: {
       ready: subtitleCues.length > 0,
       productionReady: false,

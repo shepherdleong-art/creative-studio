@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { OUTPUT_PRESETS, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView } from '@/lib/final-edit/types';
 import type { StyleTarget } from './FinalEditInspector';
-import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime } from './preview-playback';
+import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime, shouldIssueSeek } from './preview-playback';
 import { drawEditorOverlay, textStyleFont } from './text-canvas-renderer';
 import styles from './FinalEditEditor.module.css';
 
@@ -65,6 +65,8 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const audioStartTimerRef = useRef(0);
   const playingRef = useRef(false);
   const lastStartedClipRef = useRef('');
+  /** seek 合流:两 slot 各自的最新 seek 目标;seek 在途时只记录不写入,seeked 后补齐最新目标。 */
+  const seekTargetRef = useRef<[number | null, number | null]>([null, null]);
   const emittedPlayheadsRef = useRef<number[]>([]);
   const lastSeekRequestIdRef = useRef<string | number | undefined>(seekRequestId);
   const lastStopRequestIdRef = useRef<string | number | undefined>(stopRequestId);
@@ -89,7 +91,15 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
   const activeAsset = activeClip ? assets.find((asset) => asset.videoJobId === activeClip.videoJobId) || null : null;
   const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);
-  const slotClips = slotPlan.clipIndexes.map((index) => index == null ? null : sortedClips[index]) as [typeof activeClip, typeof activeClip];
+  const slotIndexA = slotPlan.clipIndexes[0];
+  const slotIndexB = slotPlan.clipIndexes[1];
+  const slotClips = useMemo(
+    () => [
+      slotIndexA == null ? null : sortedClips[slotIndexA],
+      slotIndexB == null ? null : sortedClips[slotIndexB],
+    ] as [typeof activeClip, typeof activeClip],
+    [slotIndexA, slotIndexB, sortedClips],
+  );
   const slotAssets = slotClips.map((clip) => clip ? assets.find((asset) => asset.videoJobId === clip.videoJobId) || null : null) as [FinalEditAssetView | null, FinalEditAssetView | null];
   const activeSlot = slotPlan.activeSlot;
   const slotAClipId = slotClips[0]?.id || '';
@@ -202,6 +212,27 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     return () => { cancelled = true; };
   }, [previewSize.height, previewSize.width, variant.cover.framing, variant.cover.sourceUrl]);
 
+  // 常驻 seeked 监听:seek 在途期间被跳过的最新目标,在 seeked 后补一次赋值,实现「最新目标获胜」。
+  useEffect(() => {
+    const videos = [videoARef.current, videoBRef.current] as const;
+    const listeners = videos.map((video, slot) => {
+      const onSeeked = () => {
+        const target = seekTargetRef.current[slot];
+        if (target == null || !video) return;
+        if (shouldIssueSeek(video, target, 1 / FPS)) {
+          try {
+            video.currentTime = target;
+          } catch {
+            // A media source can disappear while switching groups; the next prop sync retries.
+          }
+        }
+      };
+      video?.addEventListener('seeked', onSeeked);
+      return () => video?.removeEventListener('seeked', onSeeked);
+    });
+    return () => listeners.forEach((cleanup) => cleanup());
+  }, []);
+
   useEffect(() => {
     const videos = [videoARef.current, videoBRef.current] as const;
     const cleanups: Array<() => void> = [];
@@ -212,21 +243,22 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
         ? expectedVideoTimeSec(clip.sourceInFrame, clip.timelineInFrame, bodyFrame, FPS)
         : clip.sourceInFrame / FPS;
       const synchronize = () => {
+        seekTargetRef.current[slot] = expected;
         if (slot !== activeSlot) {
           video.pause();
-          if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
           return;
         }
         if (frozenVideoTail) {
           video.pause();
-          if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
           return;
         }
         if (!activeAsset || showSelectedMaterial) { video.pause(); return; }
         if (!playing) {
           lastStartedClipRef.current = '';
           video.pause();
-          if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
           return;
         }
         if (lastStartedClipRef.current === clip.id) return;
@@ -248,12 +280,16 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     return () => cleanups.forEach((cleanup) => cleanup());
   }, [activeAsset, activeClip, activeSlot, bodyFrame, frozenVideoTail, playing, showSelectedMaterial, slotAClipId, slotASourceInFrame, slotBClipId, slotBSourceInFrame, slotClips]);
 
+  // 帧上屏:优先 requestVideoFrameCallback——只在解码器提交新帧时画,且暂停态 seek 完成时也会触发,
+  // 拖动进度条画面能持续跟随;回退到 rAF 循环 + seeked/loadeddata 补帧。多画一次无害,少画一次是黑屏。
   useEffect(() => {
     const canvas = foregroundCanvasRef.current;
     if (!canvas) return;
     const context = canvas.getContext('2d');
     if (!context) return;
     let frame = 0;
+    let videoFrameHandle = 0;
+    let videoFrameActive = false;
     const paint = () => {
       const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
       if (activeAsset && video) paintDecodedVideoFrame(context, canvas, video, variant.outputPreset, {
@@ -264,11 +300,23 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     };
     const loop = () => { paint(); frame = requestAnimationFrame(loop); };
     const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+    if (video && typeof video.requestVideoFrameCallback === 'function') {
+      videoFrameActive = true;
+      const scheduleVideoFrame = () => {
+        videoFrameHandle = video.requestVideoFrameCallback(() => {
+          paint();
+          // 播放中持续排下一帧;暂停/seek 态画完即止,新帧提交时自然再触发。
+          if (playing) scheduleVideoFrame();
+        });
+      };
+      scheduleVideoFrame();
+    }
     video?.addEventListener('loadeddata', paint);
     video?.addEventListener('seeked', paint);
     if (playing) loop(); else paint();
     return () => {
       cancelAnimationFrame(frame);
+      if (videoFrameActive) video?.cancelVideoFrameCallback(videoFrameHandle);
       video?.removeEventListener('loadeddata', paint);
       video?.removeEventListener('seeked', paint);
     };

@@ -6,6 +6,7 @@ import {
   getVideoSlotPlan,
   paintDecodedVideoFrame,
   previewAudioLevelsAtTime,
+  shouldIssueSeek,
 } from '@/components/final-edit/preview-playback';
 import {
   FINAL_EDIT_FPS,
@@ -125,6 +126,8 @@ export default function BatchTimelinePreview({
   const lastStartedClipRef = useRef('');
   const lastDrivenSecRef = useRef(0);
   const externalSeekUntilRef = useRef(0);
+  /** seek 合流:两 slot 各自的最新 seek 目标;seek 在途时只记录不写入,seeked 后补齐最新目标。 */
+  const seekTargetRef = useRef<[number | null, number | null]>([null, null]);
   const drivePlayhead = useCallback((sec: number) => {
     lastDrivenSecRef.current = sec;
     onSeek(sec);
@@ -141,7 +144,15 @@ export default function BatchTimelinePreview({
     : -1;
   const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
   const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);
-  const slotClips = slotPlan.clipIndexes.map((index) => (index == null ? null : sortedClips[index])) as [BatchTimelinePreviewClip | null, BatchTimelinePreviewClip | null];
+  const slotIndexA = slotPlan.clipIndexes[0];
+  const slotIndexB = slotPlan.clipIndexes[1];
+  const slotClips = useMemo(
+    () => [
+      slotIndexA == null ? null : sortedClips[slotIndexA],
+      slotIndexB == null ? null : sortedClips[slotIndexB],
+    ] as [BatchTimelinePreviewClip | null, BatchTimelinePreviewClip | null],
+    [slotIndexA, slotIndexB, sortedClips],
+  );
   const activeSlot = slotPlan.activeSlot;
   const bodyTimeUs = Math.max(0, (playheadSec - INTRO_SEC) * 1_000_000);
   const activeCue = playheadSec >= INTRO_SEC
@@ -166,7 +177,29 @@ export default function BatchTimelinePreview({
     setPlaying(false);
   }, [pauseAllMedia]);
 
+  // 常驻 seeked 监听:seek 在途期间被跳过的最新目标,在 seeked 后补一次赋值,实现「最新目标获胜」。
+  useEffect(() => {
+    const videos = [videoARef.current, videoBRef.current] as const;
+    const listeners = videos.map((video, slot) => {
+      const onSeeked = () => {
+        const target = seekTargetRef.current[slot];
+        if (target == null || !video) return;
+        if (shouldIssueSeek(video, target, 1 / FPS)) {
+          try {
+            video.currentTime = target;
+          } catch {
+            // 媒体源切换瞬间 currentTime 可能不可写,下一轮同步会补上。
+          }
+        }
+      };
+      video?.addEventListener('seeked', onSeeked);
+      return () => video?.removeEventListener('seeked', onSeeked);
+    });
+    return () => listeners.forEach((cleanup) => cleanup());
+  }, []);
+
   // 双 slot 同步:活跃 slot 按源区间期望时间播放,备用 slot 预停在自身入点。
+  // seek 写入经 shouldIssueSeek 合流:在途 seek 期间只更新 seekTargetRef,不打断在途 seek。
   useEffect(() => {
     const videos = [videoARef.current, videoBRef.current] as const;
     const cleanups: Array<() => void> = [];
@@ -178,9 +211,10 @@ export default function BatchTimelinePreview({
         ? expectedVideoTimeSec(sourceInFrame, usToFrame(clip.timelineStartUs), bodyFrame, FPS)
         : sourceInFrame / FPS;
       const synchronize = () => {
+        seekTargetRef.current[slot] = expected;
         if (slot !== activeSlot || frozenVideoTail || !playing) {
           video.pause();
-          if (Math.abs(video.currentTime - expected) > 1 / FPS) video.currentTime = expected;
+          if (shouldIssueSeek(video, expected, 1 / FPS)) video.currentTime = expected;
           if (!playing) lastStartedClipRef.current = '';
           return;
         }
@@ -203,12 +237,15 @@ export default function BatchTimelinePreview({
     return () => cleanups.forEach((cleanup) => cleanup());
   }, [activeClip, activeSlot, bodyFrame, frozenVideoTail, playing, slotClips]);
 
-  // 帧上屏:播放中每 rAF 重绘,暂停时在 seeked/loadeddata 后补一帧。
+  // 帧上屏:优先 requestVideoFrameCallback——只在解码器提交新帧时画(24fps 源从 60Hz rAF 降到 24 次/秒),
+  // 且暂停态 seek 完成时也会触发,拖动进度条画面能持续跟随。回退到 rAF 循环 + seeked/loadeddata 补帧。
   useEffect(() => {
     const canvas = frameCanvasRef.current;
     const context = canvas?.getContext('2d');
     if (!canvas || !context) return;
     let frame = 0;
+    let videoFrameHandle = 0;
+    let videoFrameActive = false;
     const paint = () => {
       const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
       if (activeClip && video) {
@@ -219,11 +256,23 @@ export default function BatchTimelinePreview({
     };
     const loop = () => { paint(); frame = requestAnimationFrame(loop); };
     const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+    if (video && typeof video.requestVideoFrameCallback === 'function') {
+      videoFrameActive = true;
+      const scheduleVideoFrame = () => {
+        videoFrameHandle = video.requestVideoFrameCallback(() => {
+          paint();
+          // 播放中持续排下一帧;暂停/seek 态画完即止,新帧提交时自然再触发。
+          if (playing) scheduleVideoFrame();
+        });
+      };
+      scheduleVideoFrame();
+    }
     video?.addEventListener('loadeddata', paint);
     video?.addEventListener('seeked', paint);
     if (playing) loop(); else paint();
     return () => {
       cancelAnimationFrame(frame);
+      if (videoFrameActive) video?.cancelVideoFrameCallback(videoFrameHandle);
       video?.removeEventListener('loadeddata', paint);
       video?.removeEventListener('seeked', paint);
     };
@@ -306,14 +355,24 @@ export default function BatchTimelinePreview({
     }, delayMs);
   }, [bgm, bodyDurationSec, narrationUrl]);
 
+  /** 暂停态音频 seek debounce:拖动每格都 seek 口播/BGM 是无用功(暂停的音频不发声),~120ms 内只做最后一次。 */
+  const pausedAudioSeekTimerRef = useRef(0);
+  useEffect(() => () => {
+    if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
+  }, []);
+
   const synchronizePausedAudio = useCallback((timeSec: number) => {
-    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, timeSec - INTRO_SEC));
-    seekMedia(narrationRef.current, bodyOffset);
-    const bgmElement = bgmRef.current;
-    if (bgmElement) {
-      const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
-      seekMedia(bgmElement, bodyOffset % Math.max(0.1, loopDuration));
-    }
+    if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
+    pausedAudioSeekTimerRef.current = window.setTimeout(() => {
+      pausedAudioSeekTimerRef.current = 0;
+      const bodyOffset = Math.max(0, Math.min(bodyDurationSec, timeSec - INTRO_SEC));
+      seekMedia(narrationRef.current, bodyOffset);
+      const bgmElement = bgmRef.current;
+      if (bgmElement) {
+        const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
+        seekMedia(bgmElement, bodyOffset % Math.max(0.1, loopDuration));
+      }
+    }, 120);
   }, [bodyDurationSec]);
 
   // 外部 seek（时间轴）与自有时钟驱动的区分:时钟驱动会先写 lastDrivenSecRef,差值≈0;
@@ -353,7 +412,8 @@ export default function BatchTimelinePreview({
 
   const seek = (next: number) => {
     const clamped = Math.max(0, Math.min(totalSec, next));
-    stopPlayback();
+    // 已暂停且没有在途 rAF/音频定时器时,跳过 stopPlayback 的全套 pauseAllMedia,避免拖动每格重复做无用功。
+    if (playing || animationRef.current || audioStartTimerRef.current) stopPlayback();
     synchronizePausedAudio(clamped);
     drivePlayhead(clamped);
   };

@@ -258,5 +258,5 @@ try {
 } finally {
   if (previousDataRoot === undefined) delete process.env.CREATIVE_STUDIO_DATA_ROOT;
   else process.env.CREATIVE_STUDIO_DATA_ROOT = previousDataRoot;
-  fs.rmSync(root, { recursive: true, force: true });
+  try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* Windows 临时目录清理锁,不遮蔽真实断言 */ }
 }

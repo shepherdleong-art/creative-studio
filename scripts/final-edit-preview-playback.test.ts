@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { bgmGainAtTime, expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime } from '../components/final-edit/preview-playback.ts';
+import { bgmGainAtTime, expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime, shouldIssueSeek } from '../components/final-edit/preview-playback.ts';
 
 assert.deepEqual(
   getVideoSlotPlan(-1, 4),
@@ -59,5 +59,21 @@ const decodedVideo = { ...seekingVideo, seeking: false } as HTMLVideoElement;
 assert.equal(paintDecodedVideoFrame(context, canvas, decodedVideo, '3x4', { scale: 1, offsetX: 0, offsetY: 0 }), true);
 assert.ok(paintCalls.includes('clear'));
 assert.ok(paintCalls.includes('draw'));
+
+assert.equal(
+  shouldIssueSeek({ seeking: true, currentTime: 1 }, 2, 1 / 24),
+  false,
+  'seek 在途时不得再写 currentTime,否则 seeked 永远不会触发',
+);
+assert.equal(
+  shouldIssueSeek({ seeking: false, currentTime: 2 }, 2 + 0.5 / 24, 1 / 24),
+  false,
+  '目标与当前时间差在一帧容差内时无需 seek',
+);
+assert.equal(
+  shouldIssueSeek({ seeking: false, currentTime: 2 }, 2.5, 1 / 24),
+  true,
+  '空闲且容差外必须真的写 currentTime',
+);
 
 console.log('final-edit preview playback tests passed');
