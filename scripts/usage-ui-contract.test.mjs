@@ -22,6 +22,9 @@ assert.match(dashboard, /\/api\/usage\/records/, 'dashboard must load paged reco
 assert.match(dashboard, /type=["']date["']/, 'dashboard must provide a date filter');
 assert.match(dashboard, /coreModelKey/, 'dashboard must provide a core-model filter');
 assert.match(dashboard, /category/, 'dashboard must provide a category filter');
+assert.match(dashboard, /'company-image2-medium': 'image2-medium'/, 'dashboard must keep image2-medium as its own series');
+assert.match(dashboard, /company-qiniuyun-gpt-image-2-medium/, 'dashboard must include the qiniuyun image model series');
+assert.match(dashboard, /qiniuyun\/gpt-image-2-medium/, 'dashboard must label the qiniuyun series with its provider prefix');
 assert.match(dashboard, /<svg/, '30-day trend must use dependency-free SVG');
 assert.match(dashboard, /input_token|inputTokens/, 'LLM rows must expose input token details');
 assert.match(dashboard, /cached_input_token|cachedReadTokens/, 'LLM rows must expose cached token details');

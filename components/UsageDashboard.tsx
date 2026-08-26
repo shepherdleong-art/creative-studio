@@ -19,7 +19,7 @@ const MODEL_KEYS: readonly CoreUsageModelKey[] = [
 
 const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
   'company-image2-medium': 'image2-medium',
-  'company-qiniuyun-gpt-image-2-medium': 'gpt-image-2-medium',
+  'company-qiniuyun-gpt-image-2-medium': 'qiniuyun/gpt-image-2-medium',
   'company-kling-3-0': 'kling-3.0',
   'company-seedance-fast': 'Seedance 2.0 Fast',
   'company-gpt-5-6-luna': 'GPT-5-6-Luna-Standard',
