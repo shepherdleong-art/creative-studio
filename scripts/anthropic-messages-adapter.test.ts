@@ -126,7 +126,7 @@ try {
 
   const result = spawnSync(process.execPath, [
     '--no-warnings',
-    '--experimental-loader', path.resolve('scripts/typescript-extension-loader.mjs'),
+    '--experimental-loader', pathToFileURL(path.resolve('scripts/typescript-extension-loader.mjs')).href,
     '--experimental-strip-types',
     childPath,
   ], {

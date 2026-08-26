@@ -13,6 +13,7 @@ import {
   finishLlmUsageCall,
   type LlmUsageContext,
 } from '../usage-llm.ts';
+import { readSseStream } from './sse.ts';
 
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
 
@@ -54,6 +55,12 @@ export interface ChatOptions {
   responseFormat?: 'json_object' | 'text';
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** 显式启用 SSE 流式；未设置时若提供 delta 回调也会自动启用。 */
+  stream?: boolean;
+  /** 回调累积正文全文，不是增量。 */
+  onTextDelta?: (accumulated: string) => void;
+  /** 回调累积推理全文，不是增量。 */
+  onReasoningDelta?: (accumulated: string) => void;
   /** 非空时，user message 变成多模态 content 数组（文本在前、图片在后）。 */
   images?: ChatImagePart[];
   /** 仅由脚本注册入口为精确公司 GPT 调用启用的内部 usage 记账标记。 */
@@ -112,6 +119,11 @@ export async function chatCompletion(
   if (options.responseFormat === 'json_object') {
     body.response_format = { type: 'json_object' };
   }
+  const streaming = Boolean(options.stream || options.onTextDelta || options.onReasoningDelta);
+  if (streaming) {
+    body.stream = true;
+    body.stream_options = { include_usage: true };
+  }
 
   const requestControl = createScriptProviderRequestControl({
     externalSignal: options.signal,
@@ -164,6 +176,22 @@ export async function chatCompletion(
       }
     }
 
+    if (streaming) {
+      if (!res.body) throw new Error(`${config.name} 返回了空响应流`);
+      const streamed = await readStreamingChatResponse(res.body, requestControl.signal, {
+        onTextDelta: options.onTextDelta,
+        onReasoningDelta: options.onReasoningDelta,
+      });
+      finishLlmUsageCall(usageAttempt, {
+        usage: streamed.usage,
+        serializedPrompt,
+        rawOutput: streamed.text,
+        hasImages: Boolean(options.images?.length),
+      });
+      if (!streamed.text.trim()) throw new Error(`${config.name} 返回了空响应`);
+      return streamed.text;
+    }
+
     const rawResponse = await res.text();
     let data: {
       choices?: Array<{ message?: { content?: string } }>;
@@ -200,6 +228,45 @@ export async function chatCompletion(
   }
 }
 
+async function readStreamingChatResponse(
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  callbacks: {
+    onTextDelta?: (accumulated: string) => void;
+    onReasoningDelta?: (accumulated: string) => void;
+  },
+): Promise<{ text: string; usage: unknown }> {
+  let text = '';
+  let reasoning = '';
+  let usage: unknown;
+  await readSseStream(body, signal, {
+    onLine(payload) {
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(payload) as Record<string, unknown>;
+      } catch {
+        throw new Error(`OpenAI Compatible 返回了无效 SSE JSON: ${payload.slice(0, 300)}`);
+      }
+      const choices = Array.isArray(event.choices) ? event.choices : [];
+      const delta = choices[0] && typeof choices[0] === 'object'
+        ? (choices[0] as { delta?: Record<string, unknown> }).delta
+        : undefined;
+      const content = typeof delta?.content === 'string' ? delta.content : '';
+      const reasoningContent = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : '';
+      if (content) {
+        text += content;
+        callbacks.onTextDelta?.(text);
+      }
+      if (reasoningContent) {
+        reasoning += reasoningContent;
+        callbacks.onReasoningDelta?.(reasoning);
+      }
+      if (event.usage && typeof event.usage === 'object') usage = event.usage;
+    },
+  });
+  return { text, usage };
+}
+
 // ── JSON extraction ──
 
 export function extractJson(rawText: string): string {
@@ -225,7 +292,15 @@ export async function completeOpenAiCompatibleJson<T>(
   options: Omit<ChatOptions, 'responseFormat'>,
   runtime?: ScriptProviderRuntimeConfig
 ): Promise<T> {
-  const rawText = await chatCompletion(config, { ...options, responseFormat: 'json_object' }, runtime);
+  const rawText = await chatCompletion(
+    config,
+    {
+      ...options,
+      responseFormat: 'json_object',
+      stream: Boolean(options.stream || options.onTextDelta || options.onReasoningDelta),
+    },
+    runtime,
+  );
   return parseJsonResponse<T>(rawText, config.name);
 }
 

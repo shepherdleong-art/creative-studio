@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const panel = fs.readFileSync(new URL('../components/ScriptPanel.tsx', import.meta.url), 'utf8');
+const liveView = fs.readFileSync(new URL('../components/script-generation-live-view.tsx', import.meta.url), 'utf8');
 const strategy = fs.readFileSync(new URL('../components/ScriptStrategyConfig.tsx', import.meta.url), 'utf8');
 const result = fs.readFileSync(new URL('../components/ScriptResultView.tsx', import.meta.url), 'utf8');
 const picker = fs.readFileSync(new URL('../components/ScriptTemplatePicker.tsx', import.meta.url), 'utf8');
@@ -39,7 +40,7 @@ assert.doesNotMatch(panel, /readScriptGenerationStream|script-generation-stream/
 assert.doesNotMatch(panel, /action:\s*'generate'|action:\s*'cancel'/, '旧 /script 路由的生成/取消分支已返回 410，前端不得再调用');
 assert.match(panel, /\/api\/projects\/\$\{projectId\}\/script-generation/, '挂载时必须并行 GET 项目级 script-generation 任务状态');
 assert.match(panel, /state === 'running'/, '发现 running 任务时必须恢复生成中状态');
-assert.match(panel, /setTimeout\([^\n]*,\s*1000\)/, 'running 状态下必须约 1 秒轮询一次任务状态');
+assert.match(panel, /setTimeout\([^\n]*,\s*400\)/, 'running 状态下必须约 400ms 轮询一次任务状态');
 assert.match(panel, /method:\s*'DELETE'/, '取消生成必须调用 DELETE，不得用 abort 查询请求代替服务端取消');
 assert.match(panel, /script-generation\?generationId=/, 'DELETE 取消必须携带 generationId 查询参数');
 assert.match(panel, /'succeeded'/, '必须处理 succeeded 终态');
@@ -55,10 +56,16 @@ assert.match(panel, /改用《/, '素材不匹配且服务端给出建议模板�
 assert.match(panel, /返回上一步补素材/, '素材不匹配时必须提供返回补素材入口');
 assert.match(panel, /setGenerationFailure\(null\)/, '重新生成时必须清空旧失败面板');
 assert.match(panel, /'cancelled'/, '必须处理 cancelled 终态并恢复按钮状态，不弹失败提示');
-assert.match(panel, /role="progressbar"/, '生成中必须显示可访问的进度条');
-assert.match(panel, /aria-valuenow=\{generationProgress\.percent\}/, '进度条必须暴露当前进度值');
+assert.match(panel, /ScriptGenerationLiveView/, '生成过程必须接入 LiveView 组件');
+assert.match(liveView, /role="status"/, '阶段指示必须提供 status 语义');
+assert.match(liveView, /aria-live="polite"/, '生成过程播报语义不能随进度条删除');
+assert.match(liveView, /已用/, '生成中必须显示已用时长');
+assert.match(liveView, /reasoningTail/, '思考块必须消费推理流尾部');
+assert.match(liveView, /preparedImages/, '图片准备段必须显示确定态计数');
+assert.match(liveView, /parseScriptStreamPreview/, '正文预览必须使用增量 JSON 解析器');
+assert.doesNotMatch(panel, /role="progressbar"/, '不得重新引入伪进度条语义');
 assert.match(panel, /handleCancelGeneration/, '生成中必须提供取消处理器');
-assert.match(panel, /取消生成/, '生成中必须显示取消按钮');
+assert.match(liveView, /取消生成/, '生成中必须显示取消按钮');
 assert.match(result, /复制字幕稿/);
 assert.match(result, /复制配音稿/);
 assert.match(result, /完整字幕稿/);

@@ -190,6 +190,7 @@ export async function generateAndPersistScriptV3(
     WHERE ss.projectId = ? AND ss.id = ?
     ORDER BY s.indexNum
   `).all(projectId, shotSetId) as ShotVisualRow[];
+  const generationStartedAt = Date.now();
   dependencies.onProgress?.({
     phase: 'preparing', percent: 5, message: '正在准备分镜图片',
   });
@@ -203,6 +204,7 @@ export async function generateAndPersistScriptV3(
       phase: 'preparing',
       percent: Math.round(5 + ((completed / Math.max(1, total)) * 22)),
       message: `正在处理分镜图片（${completed}/${total}）`,
+      preparedImages: [completed, total],
     }),
   );
   if (visuals.length === 0) {
@@ -260,9 +262,10 @@ export async function generateAndPersistScriptV3(
   dependencies.onProgress?.({ phase: 'saving', percent: 92, message: '正在保存脚本草稿' });
   const model = provider.model || '';
   const draftId = (dependencies.createId || uuidv4)();
+  const generationDurationMs = Date.now() - generationStartedAt;
   dependencies.db.prepare(`
-    INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson, generationDurationMs)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     draftId,
     projectId,
@@ -289,6 +292,7 @@ export async function generateAndPersistScriptV3(
       attempts: result.attempts,
     }),
     JSON.stringify(result.script),
+    generationDurationMs,
   );
   dependencies.onProgress?.({ phase: 'completed', percent: 100, message: '脚本生成完成' });
   return {

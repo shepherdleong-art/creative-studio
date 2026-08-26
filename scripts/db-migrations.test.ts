@@ -35,6 +35,16 @@ db.exec(`
     name TEXT NOT NULL
   );
 
+  CREATE TABLE script_drafts (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'gemini',
+    model TEXT NOT NULL,
+    inputSnapshot TEXT NOT NULL,
+    outputJson TEXT NOT NULL,
+    createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -93,6 +103,9 @@ db.exec(`
   INSERT INTO script_providers (id, name)
   VALUES ('script-provider', 'Script Provider');
 
+  INSERT INTO script_drafts (id, projectId, provider, model, inputSnapshot, outputJson)
+  VALUES ('legacy-script', 'legacy-project', 'gemini', 'legacy-model', '{}', '{}');
+
   INSERT INTO shot_sets (id, projectId, name)
   VALUES ('legacy-set', 'legacy-project', '历史分镜组');
 
@@ -126,12 +139,12 @@ assert.ok(
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE video_prompt_templates ADD COLUMN inRandomPool INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
   'new core migrations must be appended without rewriting published entries',
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-2),
-  `ALTER TABLE video_jobs ADD COLUMN usageSnapshotJson TEXT`,
+  `ALTER TABLE video_prompt_templates ADD COLUMN inRandomPool INTEGER NOT NULL DEFAULT 1`,
   'the previously published tail migration must keep its position',
 );
 // 老库里已有的模板必须自动入池，否则升级后一键随机填充会突然填不出东西。
@@ -245,6 +258,16 @@ const scriptProviderColumns = db.prepare(`PRAGMA table_info(script_providers)`).
 assert.ok(
   scriptProviderColumns.some((column) => column.name === 'supportsVision'),
   'script_providers.supportsVision should be added when migrating older installed databases',
+);
+const scriptDraftColumns = db.prepare(`PRAGMA table_info(script_drafts)`).all() as Array<{ name: string }>;
+assert.ok(
+  scriptDraftColumns.some((column) => column.name === 'generationDurationMs'),
+  'script_drafts.generationDurationMs should be added when migrating older installed databases',
+);
+assert.deepEqual(
+  db.prepare(`SELECT generationDurationMs FROM script_drafts WHERE id = 'legacy-script'`).get(),
+  { generationDurationMs: null },
+  '历史脚本草稿升级后必须保持 generationDurationMs 为 NULL',
 );
 assert.deepEqual(
   db.prepare(`SELECT supportsVision FROM script_providers WHERE id = 'script-provider'`).get(),

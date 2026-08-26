@@ -5,6 +5,7 @@ import {
   type ScriptCandidate,
   analyzeScriptStrategyV3,
   generateScriptV3,
+  type ScriptGenerationProgress,
 } from '../lib/script-generation-v3.ts';
 import { buildScriptDurationAdvisory, buildScriptDurationBudget } from '../lib/script-duration-policy.ts';
 import type { ScriptOutputV3 } from '../lib/script-providers/types.ts';
@@ -1167,6 +1168,88 @@ assert.deepEqual(
     },
   );
   assert.equal(calls, 0, '缺少目标人群时不得把泛化任务发送给模型');
+}
+
+{
+  const events: ScriptGenerationProgress[] = [];
+  const longReasoning = '思'.repeat(2000);
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async (request) => {
+      request.onReasoningDelta?.(longReasoning.slice(0, 900));
+      request.onReasoningDelta?.(longReasoning);
+      request.onTextDelta?.('{"ok":');
+      request.onTextDelta?.('{"ok":true}');
+      return feasibleResult({
+        title: '流式预览',
+        segments: [{
+          narration: `${'舒适承托'.repeat(13)}安心。`,
+          sellingPointRefs: ['112°承托', '5芯软弹'],
+          visualIntent: '附图中可见的客厅沙发使用场景',
+          visualKeywords: ['沙发', '客厅'],
+          visualRefs: ['visual-1'],
+        }],
+      });
+    },
+    onProgress: (progress) => events.push(progress),
+  });
+
+  assert.equal(result.attempts, 1);
+  const generating = events.filter((event) => event.phase === 'generating').at(-1);
+  assert.ok(generating);
+  assert.equal(generating.streamedContent, '{"ok":true}');
+  assert.equal(generating.reasoningChars, longReasoning.length);
+  assert.ok(generating.reasoningTail?.endsWith('思'.repeat(1500)));
+  assert.equal(generating.reasoningTail?.length, 1500);
+  assert.equal(typeof generating.reasoningDoneMs, 'number');
+  const validating = events.find((event) => event.phase === 'validating');
+  assert.ok(validating?.validation);
+  assert.equal(validating.validation.attempt, 1);
+  assert.equal(validating.validation.qualification, 'qualified');
+  assert.ok(validating.validation.contentCharacterCount > 0);
+  assert.deepEqual(validating.validation.targetCharacterRange, [54, 59]);
+  assert.deepEqual(validating.validation.sellingPointUsage, {
+    used: 2,
+    omitted: 0,
+    omittedNoVisualSupport: 0,
+  });
+  assert.equal(validating.history?.length, 1);
+  assert.equal(validating.history?.[0], validating.validation);
+}
+
+{
+  const progressEvents: ScriptGenerationProgress[] = [];
+  const responses = [
+    feasibleResult({
+      title: '超长首稿',
+      segments: [{
+        narration: `${'舒适承托'.repeat(20)}。`,
+        sellingPointRefs: ['112°承托', '5芯软弹'],
+        visualIntent: '附图中可见的客厅沙发使用场景',
+        visualKeywords: ['沙发', '客厅'],
+        visualRefs: ['visual-1'],
+      }],
+    }),
+    feasibleResult({
+      title: '修正后通过',
+      segments: [{
+        narration: `${'舒适承托'.repeat(14)}安心。`,
+        sellingPointRefs: ['112°承托', '5芯软弹'],
+        visualIntent: '附图中可见的客厅沙发使用场景',
+        visualKeywords: ['沙发', '客厅'],
+        visualRefs: ['visual-1'],
+      }],
+    }),
+  ];
+  const result = await generateScriptV3(baseInput, {
+    completeJson: async () => responses.shift(),
+    onProgress: (progress) => progressEvents.push(progress),
+  });
+  assert.equal(result.attempts, 2);
+  const validations = progressEvents.filter((event) => event.phase === 'validating');
+  assert.equal(validations.length, 2);
+  assert.notEqual(validations[0]?.history, validations[1]?.history, '每次校验必须重建 history，不能复用上一快照数组');
+  validations[0]?.history?.push(validations[1]!.validation!);
+  assert.equal(validations[1]?.history?.length, 2, '外部修改历史数组不得影响后续快照');
 }
 
 console.log('script generation v3 tests passed');

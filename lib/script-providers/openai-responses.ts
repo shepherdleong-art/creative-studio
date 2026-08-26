@@ -7,6 +7,7 @@ import type { ScriptProviderRuntimeConfig } from './config.ts';
 import type { ChatOptions } from './openai-compatible.ts';
 import { parseJsonResponse, resolveImageUrl } from './openai-compatible.ts';
 import { createScriptProviderRequestControl } from './request-control.ts';
+import { readSseStream } from './sse.ts';
 import type { ApiStyle, ProviderConfig } from './types.ts';
 
 const DEFAULT_RESPONSES_TIMEOUT_MS = 120_000;
@@ -39,12 +40,11 @@ function eventErrorMessage(event: Record<string, unknown>): string {
   return 'unknown error';
 }
 
-function consumeSseLine(line: string, deltas: string[]): void {
-  const normalized = line.replace(/\r$/, '').trim();
-  if (!normalized || normalized.startsWith(':') || !normalized.startsWith('data:')) return;
-  const payload = normalized.slice(5).trim();
-  if (!payload || payload === '[DONE]') return;
-
+function consumeResponsesEvent(
+  payload: string,
+  onTextDelta: (accumulated: string) => void,
+  onReasoningDelta: (accumulated: string) => void,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(payload) as Record<string, unknown>;
@@ -54,7 +54,11 @@ function consumeSseLine(line: string, deltas: string[]): void {
 
   const type = String(event.type || '');
   if (type === 'response.output_text.delta') {
-    deltas.push(String(event.delta || ''));
+    onTextDelta(String(event.delta || ''));
+    return;
+  }
+  if (type === 'response.reasoning_summary_text.delta') {
+    onReasoningDelta(String(event.delta || ''));
     return;
   }
   if (type === 'response.failed' || type === 'error') {
@@ -62,46 +66,32 @@ function consumeSseLine(line: string, deltas: string[]): void {
   }
 }
 
-function readWithAbort(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  signal: AbortSignal,
-): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
-  return new Promise((resolve, reject) => {
-    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
-    signal.addEventListener('abort', onAbort, { once: true });
-    reader.read().then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
-  });
+interface ResponsesReadOptions {
+  onTextDelta?: (accumulated: string) => void;
+  onReasoningDelta?: (accumulated: string) => void;
 }
 
-async function readSseText(body: ReadableStream<Uint8Array> | null, signal: AbortSignal): Promise<string> {
-  if (!body) throw new Error('OpenAI Responses 返回了空响应流');
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  const deltas: string[] = [];
-  let buffer = '';
-
-  let completed = false;
-  try {
-    while (true) {
-      const { value, done } = await readWithAbort(reader, signal);
-      if (done) {
-        completed = true;
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) consumeSseLine(line, deltas);
-    }
-
-    buffer += decoder.decode();
-    if (buffer.trim()) consumeSseLine(buffer, deltas);
-    return deltas.join('');
-  } finally {
-    if (!completed) await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
-  }
+async function readResponsesText(
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  callbacks: ResponsesReadOptions,
+): Promise<string> {
+  let text = '';
+  let reasoning = '';
+  await readSseStream(body, signal, {
+    onLine: (payload) => consumeResponsesEvent(
+      payload,
+      (delta) => {
+        text += delta;
+        callbacks.onTextDelta?.(text);
+      },
+      (delta) => {
+        reasoning += delta;
+        callbacks.onReasoningDelta?.(reasoning);
+      },
+    ),
+  });
+  return text;
 }
 
 export async function chatCompletion(
@@ -129,6 +119,7 @@ export async function chatCompletion(
       { role: 'user', content: userContent },
     ],
     max_output_tokens: options.maxTokens ?? runtime?.maxTokens ?? config.maxTokens,
+    reasoning: { summary: 'auto' },
   };
 
   const requestControl = createScriptProviderRequestControl({
@@ -153,7 +144,11 @@ export async function chatCompletion(
       throw new Error(`${config.name} (openai-responses) error ${response.status}: ${errorText.slice(0, 500)}`);
     }
 
-    const rawText = await readSseText(response.body, requestControl.signal);
+    if (!response.body) throw new Error('OpenAI Responses 返回了空响应流');
+    const rawText = await readResponsesText(response.body, requestControl.signal, {
+      onTextDelta: options.onTextDelta,
+      onReasoningDelta: options.onReasoningDelta,
+    });
     if (!rawText.trim()) throw new Error(`${config.name} (openai-responses) 返回了空响应`);
     return rawText;
   } catch (error) {

@@ -23,6 +23,8 @@ import type { MixcutTaskScriptSnapshot } from './final-edit/mixcut-script.ts';
 
 type JsonObject = Record<string, unknown>;
 
+const REASONING_TAIL_CHARS = 1500;
+
 export interface CompleteJsonRequest {
   systemPrompt: string;
   userPrompt: string;
@@ -31,6 +33,26 @@ export interface CompleteJsonRequest {
   timeoutMs?: number;
   images?: Array<{ mimeType: string; imageBase64: string }>;
   signal?: AbortSignal;
+  /** 回调累积正文全文，不是增量。 */
+  onTextDelta?: (accumulated: string) => void;
+  /** 回调累积推理全文，不是增量。 */
+  onReasoningDelta?: (accumulated: string) => void;
+}
+
+export interface ScriptGenerationValidationFeedback {
+  attempt: number;
+  qualification: 'qualified' | 'too_short' | 'too_long' | 'contract_invalid';
+  contentCharacterCount: number;
+  estimatedNarrationDurationSec: number;
+  targetCharacterRange: [number, number];
+  /** 未阻断但已降级的原因，截断至前 3 条。 */
+  advisories: string[];
+  /** 最终通过时的卖点三态摘要。 */
+  sellingPointUsage?: {
+    used: number;
+    omitted: number;
+    omittedNoVisualSupport: number;
+  };
 }
 
 export interface ScriptGenerationProgress {
@@ -38,6 +60,20 @@ export interface ScriptGenerationProgress {
   percent: number;
   message: string;
   attempt?: number;
+  /** 图片准备段真实计数 [已完成, 总数]。 */
+  preparedImages?: [number, number];
+  /** 当前 attempt 的累积正文（半截 JSON，仅供展示）。 */
+  streamedContent?: string;
+  /** 推理流尾部，保留约 1500 字；完整 CoT 不入快照、不落库。 */
+  reasoningTail?: string;
+  /** 本 attempt 累计推理字数。 */
+  reasoningChars?: number;
+  /** 推理段耗时；未结束时为 undefined。 */
+  reasoningDoneMs?: number;
+  /** 当前校验结果。 */
+  validation?: ScriptGenerationValidationFeedback;
+  /** 累计校验反馈，必须不可变重建，避免 manager 浅拷贝共享引用。 */
+  history?: ScriptGenerationValidationFeedback[];
 }
 
 export interface ScriptGenerationV3Dependencies {
@@ -1133,15 +1169,47 @@ export async function generateScriptV3(
   let lastValidationIssues: string[] = [];
   let bestCandidate: ScriptCandidate | null = null;
   let materialMismatchSeen = false;
+  let validationHistory: ScriptGenerationValidationFeedback[] = [];
+
+  const buildValidationFeedback = (
+    attempt: number,
+    qualification: ScriptGenerationValidationFeedback['qualification'],
+    contentCharacterCount: number,
+    estimatedNarrationDurationSec: number,
+    advisories: string[],
+    sellingPointUsage?: ScriptGenerationValidationFeedback['sellingPointUsage'],
+  ): ScriptGenerationValidationFeedback => ({
+    attempt,
+    qualification,
+    contentCharacterCount,
+    estimatedNarrationDurationSec,
+    targetCharacterRange: [budget.minContentCharacters, budget.maxContentCharacters],
+    advisories: advisories.slice(0, 3),
+    ...(sellingPointUsage ? { sellingPointUsage } : {}),
+  });
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     if (dependencies.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
-    dependencies.onProgress?.({
-      phase: 'generating',
-      percent: 32 + ((attempt - 1) * 20),
-      message: attempt === 1 ? '模型正在生成脚本' : `模型正在进行第 ${attempt - 1} 次修正`,
-      attempt,
-    });
+    const attemptStartedAt = Date.now();
+    let accumulatedText = '';
+    let accumulatedReasoning = '';
+    let reasoningDoneMs: number | undefined;
+    const emitGeneratingProgress = () => {
+      const progress: ScriptGenerationProgress = {
+        phase: 'generating',
+        percent: 32 + ((attempt - 1) * 20),
+        message: attempt === 1 ? '模型正在生成脚本' : `模型正在进行第 ${attempt - 1} 次修正`,
+        attempt,
+      };
+      if (accumulatedText) progress.streamedContent = accumulatedText;
+      if (accumulatedReasoning) {
+        progress.reasoningChars = Array.from(accumulatedReasoning).length;
+        progress.reasoningTail = Array.from(accumulatedReasoning).slice(-REASONING_TAIL_CHARS).join('');
+      }
+      if (reasoningDoneMs !== undefined) progress.reasoningDoneMs = reasoningDoneMs;
+      dependencies.onProgress?.(progress);
+    };
+    emitGeneratingProgress();
     let raw: unknown;
     try {
       raw = await dependencies.completeJson({
@@ -1152,24 +1220,70 @@ export async function generateScriptV3(
         temperature: 1,
         images,
         signal: dependencies.signal,
+        onTextDelta: (accumulated) => {
+          accumulatedText = accumulated;
+          if (reasoningDoneMs === undefined && accumulatedReasoning.length > 0) {
+            reasoningDoneMs = Date.now() - attemptStartedAt;
+          }
+          emitGeneratingProgress();
+        },
+        onReasoningDelta: (accumulated) => {
+          accumulatedReasoning = accumulated;
+          emitGeneratingProgress();
+        },
       });
     } catch (error) {
       if (dependencies.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
       if (!(error instanceof Error) || !/返回了无效 JSON|返回了空响应/.test(error.message)) throw error;
+      const validation = buildValidationFeedback(
+        attempt,
+        'contract_invalid',
+        lastScript?.contentCharacterCount || 0,
+        lastScript?.estimatedNarrationDurationSec || 0,
+        [error.message],
+      );
+      validationHistory = [...validationHistory, validation];
+      dependencies.onProgress?.({
+        phase: 'validating',
+        percent: 45 + ((attempt - 1) * 20),
+        message: `正在校验第 ${attempt} 次输出`,
+        attempt,
+        validation,
+        history: validationHistory,
+      });
       // 解析级失败（截断/空响应/夹带文字）此前会直接终止生成；记为一次可修正失败继续循环。
       lastQualification = 'contract_invalid';
       lastValidationIssues = ['上次返回不是可解析的完整 JSON（可能中途截断或夹带多余文字）：请只返回一个完整 JSON 对象，不要输出 markdown 代码块或其他文字'];
       prompt = rewritePrompt(input, 'contract_invalid', undefined, undefined, lastValidationIssues);
       continue;
     }
-    dependencies.onProgress?.({
-      phase: 'validating',
-      percent: 45 + ((attempt - 1) * 20),
-      message: `正在校验第 ${attempt} 次输出`,
-      attempt,
-    });
     try {
       const normalized = normalizeCandidate(raw, input);
+      const summary = (() => {
+        const usage = normalized.script.sellingPointUsage || [];
+        return {
+          used: usage.filter((entry) => entry.status === 'used').length,
+          omitted: usage.filter((entry) => entry.status === 'omitted').length,
+          omittedNoVisualSupport: usage.filter((entry) => entry.status === 'omitted_no_visual_support').length,
+        };
+      })();
+      const validation = buildValidationFeedback(
+        attempt,
+        normalized.qualification,
+        normalized.script.contentCharacterCount,
+        normalized.script.estimatedNarrationDurationSec,
+        normalized.advisories,
+        summary,
+      );
+      validationHistory = [...validationHistory, validation];
+      dependencies.onProgress?.({
+        phase: 'validating',
+        percent: 45 + ((attempt - 1) * 20),
+        message: `正在校验第 ${attempt} 次输出`,
+        attempt,
+        validation,
+        history: validationHistory,
+      });
       if (normalized.advisories.length === 0 && normalized.qualification === 'qualified') {
         return { script: normalized.script, attempts: attempt };
       }
@@ -1184,6 +1298,26 @@ export async function generateScriptV3(
         normalized.advisories.length > 0 ? normalized.advisories : undefined,
       );
     } catch (error) {
+      const validation = buildValidationFeedback(
+        attempt,
+        'contract_invalid',
+        lastScript?.contentCharacterCount || 0,
+        lastScript?.estimatedNarrationDurationSec || 0,
+        error instanceof ScriptMaterialMismatchError
+          ? [`当前分镜图片无法承接所选模板：${error.materialReason}`]
+          : error instanceof ScriptOutputValidationError
+            ? error.issues
+            : [error instanceof Error ? error.message : String(error)],
+      );
+      validationHistory = [...validationHistory, validation];
+      dependencies.onProgress?.({
+        phase: 'validating',
+        percent: 45 + ((attempt - 1) * 20),
+        message: `正在校验第 ${attempt} 次输出`,
+        attempt,
+        validation,
+        history: validationHistory,
+      });
       if (error instanceof ScriptMaterialMismatchError) {
         if (materialMismatchSeen) {
           throw new ScriptGenerationV3Error(

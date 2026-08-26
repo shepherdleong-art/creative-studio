@@ -115,12 +115,64 @@ try {
       generationId: 'gen-1',
       execute: ({ onProgress }) => {
         onProgress({ phase: 'preparing', percent: 5, message: '正在准备分镜图片' });
-        onProgress({ phase: 'generating', percent: 40, message: '正在生成' });
+        onProgress({
+          phase: 'generating',
+          percent: 40,
+          message: '正在生成',
+          streamedContent: '{"ok":true}',
+          reasoningTail: 'thinking',
+          reasoningChars: 8,
+          reasoningDoneMs: 123,
+          preparedImages: [2, 2],
+          validation: {
+            attempt: 1,
+            qualification: 'qualified',
+            contentCharacterCount: 58,
+            estimatedNarrationDurationSec: 13.8,
+            targetCharacterRange: [54, 59],
+            advisories: [],
+          },
+          history: [{
+            attempt: 1,
+            qualification: 'qualified',
+            contentCharacterCount: 58,
+            estimatedNarrationDurationSec: 13.8,
+            targetCharacterRange: [54, 59],
+            advisories: [],
+          }],
+        });
         return gate.promise;
       },
     });
     const snapshot = getProjectScriptGeneration('project-a');
-    assert.deepEqual(snapshot?.progress, { phase: 'generating', percent: 40, message: '正在生成' });
+    assert.deepEqual(snapshot?.progress, {
+      phase: 'generating',
+      percent: 40,
+      message: '正在生成',
+      streamedContent: '{"ok":true}',
+      reasoningTail: 'thinking',
+      reasoningChars: 8,
+      reasoningDoneMs: 123,
+      preparedImages: [2, 2],
+      validation: {
+        attempt: 1,
+        qualification: 'qualified',
+        contentCharacterCount: 58,
+        estimatedNarrationDurationSec: 13.8,
+        targetCharacterRange: [54, 59],
+        advisories: [],
+      },
+      history: [{
+        attempt: 1,
+        qualification: 'qualified',
+        contentCharacterCount: 58,
+        estimatedNarrationDurationSec: 13.8,
+        targetCharacterRange: [54, 59],
+        advisories: [],
+      }],
+    });
+    assert.equal(typeof snapshot?.startedAt, 'string');
+    assert.ok(snapshot?.startedAt);
     snapshot!.progress.percent = 99;
     assert.equal(getProjectScriptGeneration('project-a')?.progress.percent, 40, '返回快照必须是拷贝');
     gate.resolve(okResult);

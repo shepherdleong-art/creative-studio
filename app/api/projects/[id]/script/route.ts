@@ -84,7 +84,7 @@ export async function GET(
     const db = getDb();
 
     const drafts = db.prepare(`
-      SELECT id, provider, model, inputSnapshot, outputJson, createdAt
+      SELECT id, provider, model, inputSnapshot, outputJson, createdAt, generationDurationMs
       FROM script_drafts
       WHERE projectId = ?
       ORDER BY createdAt DESC

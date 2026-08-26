@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import ScriptSellingPointInput from './ScriptSellingPointInput';
 import ScriptStrategyConfig from './ScriptStrategyConfig';
 import ScriptResultView from './ScriptResultView';
+import ScriptGenerationLiveView from './script-generation-live-view';
 import {
   canNavigateToScriptStep,
   getScriptStepStatus,
@@ -33,6 +34,7 @@ interface ScriptDraft {
   inputSnapshot: string;
   outputJson: string;
   createdAt: string;
+  generationDurationMs?: number | null;
 }
 
 interface ShotSetOption {
@@ -246,6 +248,8 @@ export default function ScriptPanel({ projectId }: Props) {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [cancellingGeneration, setCancellingGeneration] = useState(false);
+  const [generationStartedAt, setGenerationStartedAt] = useState('');
+  const [lastGenerationDurationMs, setLastGenerationDurationMs] = useState<number | null>(null);
   const [generationProgress, setGenerationProgress] = useState<ScriptGenerationProgress>(INITIAL_GENERATION_PROGRESS);
   const [generationFailure, setGenerationFailure] = useState<ScriptGenerationSnapshot['error'] | null>(null);
 
@@ -370,6 +374,9 @@ export default function ScriptPanel({ projectId }: Props) {
         const freshDrafts = listData.drafts as ScriptDraft[];
         setDrafts(freshDrafts);
         const produced = freshDrafts.find((d) => d.id === snapshot.draftId) ?? freshDrafts[0];
+        setLastGenerationDurationMs(
+          typeof produced.generationDurationMs === 'number' ? produced.generationDurationMs : null,
+        );
         setSelectedDraftId(produced.id);
         hydrateStrategyFromDraft(produced, { restoreSellingPoints: false });
         try {
@@ -389,6 +396,7 @@ export default function ScriptPanel({ projectId }: Props) {
     }
     // cancelled：静默恢复按钮状态，不弹失败提示
     generationIdRef.current = null;
+    setGenerationStartedAt('');
     setGenerating(false);
     setCancellingGeneration(false);
   }, [projectId, hydrateStrategyFromDraft, loadShotImages]);
@@ -417,15 +425,16 @@ export default function ScriptPanel({ projectId }: Props) {
           return;
         }
         if (snapshot.state === 'running') {
+          setGenerationStartedAt(snapshot.startedAt);
           setGenerationProgress(snapshot.progress);
-          pollTimerRef.current = setTimeout(() => { void poll(); }, 1000);
+          pollTimerRef.current = setTimeout(() => { void poll(); }, 400);
           return;
         }
         await applyTerminalSnapshot(snapshot);
       } catch {
         if (controller.signal.aborted) return;
         // 查询失败（网络抖动等）：继续轮询，不影响服务端任务
-        pollTimerRef.current = setTimeout(() => { void poll(); }, 1000);
+        pollTimerRef.current = setTimeout(() => { void poll(); }, 400);
       }
     };
     void poll();
@@ -457,6 +466,7 @@ export default function ScriptPanel({ projectId }: Props) {
         const snapshot = generationData.generation as ScriptGenerationSnapshot | null;
         if (snapshot?.state === 'running') {
           generationIdRef.current = snapshot.generationId;
+          setGenerationStartedAt(snapshot.startedAt);
           setGenerationProgress(snapshot.progress);
           setCancellingGeneration(false);
           setGenerating(true);
@@ -494,6 +504,7 @@ export default function ScriptPanel({ projectId }: Props) {
             initialLoadDone.current = true;
             const first = draftData.drafts[0] as ScriptDraft;
             setSelectedDraftId(first.id);
+            setLastGenerationDurationMs(typeof first.generationDurationMs === 'number' ? first.generationDurationMs : null);
             hydrateStrategyFromDraft(first, { restoreSellingPoints: false });
             try {
               const parsed = JSON.parse(first.outputJson) as unknown;
@@ -644,6 +655,8 @@ export default function ScriptPanel({ projectId }: Props) {
     const resolvedTemplateId = override?.templateId ?? templateId;
     const resolvedTemplateName = override?.templateName ?? templateName;
     setGenerationProgress(INITIAL_GENERATION_PROGRESS);
+    setGenerationStartedAt(new Date().toISOString());
+    setLastGenerationDurationMs(null);
     setCancellingGeneration(false);
     setGenerating(true);
     try {
@@ -668,6 +681,7 @@ export default function ScriptPanel({ projectId }: Props) {
         // 以服务端返回的权威任务 ID 为准开始轮询（同项目已有活动任务时复用）
         const authoritativeId = (data.generation?.generationId as string) || generationId;
         generationIdRef.current = authoritativeId;
+        if (data.generation?.startedAt) setGenerationStartedAt(String(data.generation.startedAt));
         pollGeneration(authoritativeId);
       } else {
         setGenerationFailure({
@@ -675,11 +689,13 @@ export default function ScriptPanel({ projectId }: Props) {
           message: String(data.message || data.error || `HTTP ${res.status}`),
         });
         generationIdRef.current = null;
+        setGenerationStartedAt('');
         setGenerating(false);
       }
     } catch (err) {
       setGenerationFailure({ code: 'script_generation_failed', message: String(err) });
       generationIdRef.current = null;
+      setGenerationStartedAt('');
       setGenerating(false);
     }
   }, [
@@ -877,38 +893,14 @@ export default function ScriptPanel({ projectId }: Props) {
 
         {/* Generating progress */}
         {generating && (
-          <div className="mx-auto my-8 max-w-xl rounded-[20px] border border-hairline bg-surface-subtle p-5" aria-live="polite">
-            <div className="mb-3 flex items-center justify-between gap-4 text-sm">
-              <span className="font-medium text-ink">
-                {providers.find((p) => p.id === generateProviderId)?.name || 'AI'} 正在生成脚本
-              </span>
-              <span className="tabular-nums text-ink-tertiary">{generationProgress.percent}%</span>
-            </div>
-            <div
-              role="progressbar"
-              aria-label="脚本生成进度"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={generationProgress.percent}
-              className="h-2 overflow-hidden rounded-full bg-hairline"
-            >
-              <div
-                className="h-full rounded-full bg-accent transition-[width] duration-500 ease-out"
-                style={{ width: `${generationProgress.percent}%` }}
-              />
-            </div>
-            <div className="mt-3 flex items-center justify-between gap-4">
-              <p className="text-sm text-ink-tertiary">{generationProgress.message}</p>
-              <button
-                type="button"
-                onClick={handleCancelGeneration}
-                disabled={cancellingGeneration}
-                className="btn-secondary btn-sm shrink-0 text-xs"
-              >
-                {cancellingGeneration ? '正在取消…' : '取消生成'}
-              </button>
-            </div>
-          </div>
+          <ScriptGenerationLiveView
+            providerName={providers.find((p) => p.id === generateProviderId)?.name || 'AI'}
+            progress={generationProgress}
+            startedAt={generationStartedAt}
+            cancelling={cancellingGeneration}
+            onCancel={handleCancelGeneration}
+            lastGenerationDurationMs={lastGenerationDurationMs}
+          />
         )}
 
         {generationFailure && (

@@ -33,7 +33,8 @@ db.exec(`
   CREATE TABLE script_drafts (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, provider TEXT NOT NULL,
     model TEXT NOT NULL, inputSnapshot TEXT NOT NULL, outputJson TEXT NOT NULL,
-    createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+    generationDurationMs INTEGER
   );
   INSERT INTO shot_sets (id, projectId, name) VALUES
     ('set-owned', 'project-a', '当前分镜组'),
@@ -92,7 +93,7 @@ const project = {
 let receivedInput: object | null = null;
 let receivedSignal: AbortSignal | undefined;
 const generationController = new AbortController();
-const serviceProgress: Array<{ phase: string; percent: number }> = [];
+const serviceProgress: Array<{ phase: string; percent: number; preparedImages?: [number, number] }> = [];
 const response = await generateAndPersistScriptV3({
   projectId: 'project-a',
   project,
@@ -131,6 +132,13 @@ const response = await generateAndPersistScriptV3({
 assert.equal(response.status, 200);
 assert.equal(receivedSignal, generationController.signal, '服务层必须把取消信号传给模型生成器');
 assert.equal(serviceProgress[0]?.phase, 'preparing');
+assert.deepEqual(
+  serviceProgress
+    .filter((progress) => progress.phase === 'preparing' && Array.isArray(progress.preparedImages))
+    .map((progress) => progress.preparedImages),
+  [[1, 2], [2, 2]],
+  '图片准备段必须以 [已完成, 总数] 结构化上报',
+);
 assert.ok(serviceProgress.some((progress) => progress.phase === 'saving'));
 assert.deepEqual(serviceProgress.at(-1), {
   phase: 'completed', percent: 100, message: '脚本生成完成',
@@ -166,6 +174,11 @@ assert.equal('imageBase64' in snapshot, false);
 assert.equal(snapshot.visualCount, 2);
 assert.deepEqual(snapshot.visualImageAssetIds, ['image-generated', 'image-fallback-source']);
 assert.deepEqual(JSON.parse(row.outputJson), script);
+const durationRow = db.prepare(`SELECT generationDurationMs FROM script_drafts WHERE id='draft-v3'`).get() as {
+  generationDurationMs?: number;
+};
+assert.equal(typeof durationRow.generationDurationMs, 'number', '成功落库必须记录生成耗时');
+assert.ok((durationRow.generationDurationMs ?? 0) > 0);
 
 let nonVisionGenerateCalled = false;
 const nonVisionResponse = await generateAndPersistScriptV3({

@@ -117,6 +117,8 @@ export async function completeJson<T>(input: {
   signal?: AbortSignal;
   images?: Array<{ mimeType: string; imageBase64: string }>;
   usageContext?: LlmUsageContextInput;
+  onTextDelta?: (accumulated: string) => void;
+  onReasoningDelta?: (accumulated: string) => void;
 }): Promise<T> {
   checkConfigured(input.providerId);
   const runtime = resolveStoredScriptProvider(input.providerId);
@@ -154,6 +156,8 @@ export async function completeJson<T>(input: {
     timeoutMs: input.timeoutMs,
     signal: input.signal,
     images,
+    onTextDelta: input.onTextDelta,
+    onReasoningDelta: input.onReasoningDelta,
     usageContext: {
       ...defaultOptions.usageContext,
       ...(input.usageContext ?? {}),
