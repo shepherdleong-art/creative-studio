@@ -46,8 +46,6 @@ export interface BatchStepReviewProps {
   outputPreset: OutputPresetId;
   /** 片段编辑生效后回调(外层刷新 workspace,卡片进入渲染中) */
   onOutputChanged?: () => void;
-  /** 口播变速暂不在成片编辑器实现,从右侧说明卡跳回脚本步骤。 */
-  onJumpToScripts?: () => void;
   busy: 'create' | 'snapshot' | 'start' | null;
   onStartBatch: () => void;
 }
@@ -107,7 +105,6 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
     onRetryNarration,
     onReallocate,
     onControlBatch,
-    onJumpToScripts,
   } = props;
   const visibleCards = workspace.cards.filter(({ status }) => cardFilter === 'all' || status === cardFilter);
   const { counts } = workspace;
@@ -453,18 +450,15 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                 >关闭</button>
               </span>
             </div>
-            {modalRenderBusy && (
-              <p className="tile p-3 text-xs text-accent" role="status">正在按最新画面重新渲染，完成后以新成片为准。</p>
-            )}
-            {modalCard.renderStale && !modalRenderBusy && (
-              <p className="tile p-3 text-xs text-warn" role="status">修改已保存，当前预览仍是上一版成片；退出调整后会自动重新渲染，完成后才能审核和导出。</p>
-            )}
-            {(modalCard.blockers.length > 0 || modalCard.warnings.length > 0 || modalCard.task?.errorMessage) && (
-              <ul className={`shrink-0 space-y-1 text-xs text-warn ${editingClips ? 'max-h-20 overflow-y-auto' : ''}`}>
+            {!editingClips && (modalCard.blockers.length > 0 || modalCard.warnings.length > 0 || modalCard.task?.errorMessage) && (
+              <ul className="shrink-0 space-y-1 text-xs text-warn">
                 {modalCard.blockers.map((message) => <li key={`b-${message}`}>无法继续：{humanizeBatchWarning(message)}</li>)}
                 {modalCard.warnings.map((message) => <li key={`w-${message}`}>提醒：{humanizeBatchWarning(message)}</li>)}
                 {modalCard.task?.errorMessage && <li>任务失败：{modalCard.task.errorMessage}</li>}
               </ul>
+            )}
+            {editingClips && modalCard.task?.errorMessage && (
+              <p className="shrink-0 text-xs text-fail" role="alert">任务失败：{modalCard.task.errorMessage}</p>
             )}
             {editingClips ? (
               <div className="min-h-0 flex-1 overflow-hidden">
@@ -475,7 +469,6 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                   outputPreset={props.outputPreset}
                   renderBusy={modalRenderBusy}
                   onChanged={props.onOutputChanged}
-                  onJumpToScripts={onJumpToScripts}
                 />
               </div>
             ) : (

@@ -1925,7 +1925,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 // 片段编辑就地改当前版本并重渲染:刷新 workspace,卡片进入渲染中。
                 if (selectedBatchId) void loadWorkspace(selectedBatchId);
               }}
-              onJumpToScripts={() => setActiveStep(1)}
               busy={busy}
               onStartBatch={() => void startBatch()}
             />

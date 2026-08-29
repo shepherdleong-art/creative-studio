@@ -9,6 +9,7 @@ import type {
 } from '@/lib/batch-production/output-arrangement';
 import BatchClipTrimEditor from './BatchClipTrimEditor';
 import BatchCoverDraftPreview from './BatchCoverDraftPreview';
+import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from './BatchCoverEditorDrawer';
 import BatchTimeline from './BatchTimeline';
 import BatchTimelinePreview from './BatchTimelinePreview';
 
@@ -22,12 +23,10 @@ export interface BatchOutputEditorProps {
   active?: boolean;
   /** 编辑生效后回调,外层据此刷新 workspace(卡片进入渲染中) */
   onChanged?: () => void;
-  /** 从成片编辑器跳回批量脚本步骤,供暂不支持的口播变速能力使用。 */
-  onJumpToScripts?: () => void;
 }
 
 interface EditFeedback {
-  kind: 'success' | 'error';
+  kind: 'error';
   message: string;
 }
 
@@ -48,7 +47,6 @@ export default function BatchOutputEditor({
   renderBusy = false,
   active = true,
   onChanged,
-  onJumpToScripts,
 }: BatchOutputEditorProps) {
   const [view, setView] = useState<BatchOutputClipEditView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,13 +58,8 @@ export default function BatchOutputEditor({
   const [replaceCandidateId, setReplaceCandidateId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
-  const [editWarnings, setEditWarnings] = useState<string[]>([]);
-  // 这一轮调整里有画面变化尚未提交渲染。卸载兜底要读最新值,但 effect 不能依赖它
-  // (依赖它就会在编辑中途重跑、提前提交),所以 state 与 ref 并存。
-  const [pendingRender, setPendingRender] = useState(false);
   const [musicParamsDraft, setMusicParamsDraft] = useState({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
-  const [coverDraftAssetId, setCoverDraftAssetId] = useState<string | null>(null);
-  const [coverDraftTimeUs, setCoverDraftTimeUs] = useState(0);
+  const [coverEditorOpen, setCoverEditorOpen] = useState(false);
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const pendingRenderRef = useRef(false);
   const onChangedRef = useRef(onChanged);
@@ -74,11 +67,6 @@ export default function BatchOutputEditor({
   useEffect(() => { onChangedRef.current = onChanged; });
 
   const clipsUrl = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
-
-  const markRenderPending = useCallback((pending: boolean) => {
-    pendingRenderRef.current = pending;
-    setPendingRender(pending);
-  }, []);
 
   const loadView = useCallback(async (silent = false) => {
     if (!silent) {
@@ -111,7 +99,7 @@ export default function BatchOutputEditor({
       setFreeformClipId(null);
       setReplaceCandidateId(null);
       setEditFeedback(null);
-      setEditWarnings([]);
+      setCoverEditorOpen(false);
       void loadView();
     }, 0);
     return () => window.clearTimeout(timer);
@@ -143,36 +131,30 @@ export default function BatchOutputEditor({
   const selectedClip = clips.find((clip) => clip.clipId === selectedClipId) ?? null;
   const freeformClip = clips.find((clip) => clip.clipId === freeformClipId) ?? null;
   const pendingReplaceAsset = replaceCandidateId ? assetsById.get(replaceCandidateId) ?? null : null;
+  const selectedMaterialForPreview = pendingReplaceAsset ?? (selectedClip ? assetsById.get(selectedClip.assetId) ?? null : null);
 
   const usedHere = poolAssets.filter((asset) => asset.usedByPlanIds.includes(planId)).length;
   const coverHere = poolAssets.filter((asset) => asset.coverUsedByPlanIds.includes(planId)).length;
   const neverUsed = poolAssets.filter((asset) => asset.usedByPlanIds.length === 0 && asset.coverUsedByPlanIds.length === 0).length;
   const visualSec = (view?.visualDurationUs ?? 0) / 1_000_000;
   const narrationSec = view?.narration.durationUs != null ? view.narration.durationUs / 1_000_000 : null;
-  const durationDeltaSec = narrationSec == null ? 0 : visualSec - narrationSec;
-
   const editLocked = !view?.editable || renderBusy || submitting;
   const syncedMusicGain = view?.music.gainDb;
   const syncedMusicFadeIn = view?.music.fadeInSec;
   const syncedMusicFadeOut = view?.music.fadeOutSec;
-  const syncedCoverAssetId = view?.coverAssetId;
-  const syncedCoverTimeUs = view?.coverTimeUs;
-
   useEffect(() => {
-    if (syncedMusicGain === undefined || syncedMusicFadeIn === undefined || syncedMusicFadeOut === undefined || syncedCoverTimeUs === undefined) return;
+    if (syncedMusicGain === undefined || syncedMusicFadeIn === undefined || syncedMusicFadeOut === undefined) return;
     const timer = window.setTimeout(() => {
       setMusicParamsDraft({
         gainDb: syncedMusicGain,
         fadeInSec: syncedMusicFadeIn,
         fadeOutSec: syncedMusicFadeOut,
       });
-      setCoverDraftAssetId(syncedCoverAssetId ?? null);
-      setCoverDraftTimeUs(syncedCoverTimeUs);
     }, 0);
   // editRevision changes only after a command is accepted, so local slider drafts
   // are not overwritten while the user is moving a control.
     return () => window.clearTimeout(timer);
-  }, [syncedCoverAssetId, syncedCoverTimeUs, syncedMusicFadeIn, syncedMusicFadeOut, syncedMusicGain]);
+  }, [syncedMusicFadeIn, syncedMusicFadeOut, syncedMusicGain]);
 
   useEffect(() => () => {
     auditionAudioRef.current?.pause();
@@ -197,7 +179,6 @@ export default function BatchOutputEditor({
   async function submitEdit(payload: Record<string, unknown>): Promise<boolean> {
     setSubmitting(true);
     setEditFeedback(null);
-    setEditWarnings([]);
     try {
       const response = await fetch(clipsUrl, {
         method: 'POST',
@@ -208,17 +189,8 @@ export default function BatchOutputEditor({
       if (!response.ok) {
         throw new Error(typeof result.message === 'string' ? result.message : `HTTP ${response.status}`);
       }
-      const editResult = result as BatchOutputClipEditResult & { renderTaskId?: string | null };
-      setEditWarnings(Array.isArray(editResult.warnings) ? editResult.warnings : []);
-      if (editResult.changed && !editResult.visualChanged) {
-        setEditFeedback({ kind: 'success', message: '修改已保存，片段已分割，画面总长不变，无需重新渲染。' });
-      } else if (editResult.changed) {
-        markRenderPending(true);
-        const editKind = payload.type === 'set_cover' ? '封面' : payload.type?.toString().startsWith('set_music') ? '音乐' : payload.type?.toString().includes('subtitle') ? '字幕' : '画面';
-        setEditFeedback({ kind: 'success', message: `${editKind}修改已保存。退出本轮调整后会自动重新渲染，期间可以接着调。` });
-      } else {
-        setEditFeedback({ kind: 'success', message: '这次修改没有变化，已保持当前安排。' });
-      }
+      const editResult = result as BatchOutputClipEditResult;
+      if (editResult.changed && editResult.visualChanged) pendingRenderRef.current = true;
       // 静默重拉:预览立即吃到新 arrangement(即改即看),不打断当前交互。
       await loadView(true);
       return true;
@@ -230,24 +202,6 @@ export default function BatchOutputEditor({
     }
   }
 
-  /** 手动提交这一轮调整的重渲染(不必等退出)。幂等:同一 editRevision 不会重复排队。 */
-  async function commitPendingRender(): Promise<void> {
-    if (!pendingRenderRef.current) return;
-    markRenderPending(false);
-    try {
-      const response = await fetch(clipsUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'commit_render' }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setEditFeedback({ kind: 'success', message: '已排队重新渲染，完成后以新成片为准。' });
-      onChangedRef.current?.();
-    } catch {
-      markRenderPending(true);
-      setEditFeedback({ kind: 'error', message: '提交重新渲染失败，请重试。' });
-    }
-  }
 
   const handleVariableTrimCommit = async (sourceStartUs: number, sourceEndUs: number): Promise<boolean> => {
     if (!freeformClip) return false;
@@ -326,8 +280,17 @@ export default function BatchOutputEditor({
     void audio.play().catch(() => setAuditioningTrackId(null));
   };
 
-  const coverAsset = coverDraftAssetId ? poolAssets.find(({ assetId }) => assetId === coverDraftAssetId) ?? null : null;
-  const coverDurationUs = coverAsset?.durationSec != null ? Math.max(1, Math.round(coverAsset.durationSec * 1_000_000)) : null;
+  const coverAsset = view?.coverAssetId ? assetsById.get(view.coverAssetId) ?? null : null;
+
+  const openCoverEditor = () => {
+    if (editLocked) return;
+    setCoverEditorOpen(true);
+  };
+
+  const applyCover = async ({ assetId, timeUs }: BatchCoverEditorDraft): Promise<boolean> => {
+    if (!assetId) return false;
+    return submitEdit({ type: 'set_cover', assetId, timeUs });
+  };
 
   if (loading && !view) {
     return <div className="tile p-6 text-center text-sm text-ink-secondary">正在读取成片安排…</div>;
@@ -342,7 +305,6 @@ export default function BatchOutputEditor({
   }
   if (!view) return null;
 
-  const coverChanged = coverDraftAssetId !== view.coverAssetId || coverDraftTimeUs !== view.coverTimeUs;
   const musicParamsChanged = musicParamsDraft.gainDb !== view.music.gainDb
     || musicParamsDraft.fadeInSec !== view.music.fadeInSec
     || musicParamsDraft.fadeOutSec !== view.music.fadeOutSec;
@@ -353,47 +315,24 @@ export default function BatchOutputEditor({
         <span className="text-sm font-semibold text-ink">预览调整</span>
         <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">{clips.length} 个片段</span>
         <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">画面 {visualSec.toFixed(1)} 秒</span>
-        {narrationSec != null && <span className={`rounded-full px-2.5 py-1 text-[11px] ${Math.abs(durationDeltaSec) < 0.05 ? 'bg-ok/10 text-ok' : 'bg-warn/15 text-warn'}`}>口播 {narrationSec.toFixed(1)} 秒{Math.abs(durationDeltaSec) < 0.05 ? ' ✓' : ' ⚠'}</span>}
+        {narrationSec != null && <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">口播 {narrationSec.toFixed(1)} 秒</span>}
         <span className="ml-auto text-[11px] text-ink-tertiary">
           本片使用 {usedHere}/{poolAssets.length} 条素材{coverHere > 0 ? ` · 封面 ${coverHere} 条` : ''} · 未使用 {neverUsed} 条
           {view.versionNumber != null && ` · 当前 v${view.versionNumber}`}
         </span>
-        {pendingRender && (
-          <span className="flex w-full items-center justify-end gap-2 text-[11px] text-warn sm:w-auto">
-            修改已保存，退出本轮调整后会自动重新渲染
-            <button
-              type="button"
-              className="btn-secondary h-7 shrink-0 whitespace-nowrap px-2 text-[11px]"
-              onClick={() => void commitPendingRender()}
-            >立即渲染</button>
-          </span>
-        )}
       </div>
 
       {!view.outputVersionId && <p className="shrink-0 tile p-3 text-xs text-warn">还没有可编辑的成片版本，请先完成首次渲染。</p>}
       {view.outputVersionId && !view.editable && <p className="shrink-0 tile p-3 text-xs text-warn">批次已停止或输入尚未冻结，当前只能查看，不能调整片段。</p>}
-      {renderBusy && <p className="shrink-0 tile p-3 text-xs text-accent">正在按最新画面重新渲染，期间片段编辑暂时锁定。</p>}
       {editFeedback && (
         <p
-          role={editFeedback.kind === 'error' ? 'alert' : 'status'}
-          className={`shrink-0 tile p-3 text-xs ${editFeedback.kind === 'error' ? 'text-fail' : 'text-ok'}`}
+          role="alert"
+          className="shrink-0 tile p-3 text-xs text-fail"
         >{editFeedback.message}</p>
       )}
-      {editWarnings.length > 0 && (
-        <ul className="shrink-0 tile space-y-1 p-3 text-xs text-warn" role="status">
-          {editWarnings.map((warning) => <li key={warning}>{warning}</li>)}
-        </ul>
-      )}
-      {narrationSec != null && Math.abs(durationDeltaSec) >= 0.05 && (
-        <p className="shrink-0 tile p-3 text-xs text-warn" role="status">
-          {durationDeltaSec > 0
-            ? `画面比口播长 ${durationDeltaSec.toFixed(1)} 秒，超出部分渲染时会被裁掉。`
-            : `画面比口播短 ${Math.abs(durationDeltaSec).toFixed(1)} 秒，结尾会定格最后一帧补齐。`}
-        </p>
-      )}
 
-      <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto lg:grid-cols-[minmax(190px,220px)_minmax(0,1fr)_minmax(250px,300px)] lg:overflow-hidden">
-        <aside className="flex min-h-[280px] min-w-0 flex-col rounded-2xl bg-surface-subtle p-3 lg:min-h-0" aria-label="素材调整">
+      <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto lg:grid-cols-[minmax(246px,260px)_minmax(440px,1fr)_minmax(270px,300px)] lg:overflow-hidden">
+        <aside className="flex min-h-[320px] min-w-0 flex-col rounded-2xl bg-surface-subtle p-3 lg:min-h-0" aria-label="素材调整">
           <div className="flex shrink-0 items-center gap-2">
             <Icon name="retry" size={15} />
             <div className="min-w-0">
@@ -426,11 +365,38 @@ export default function BatchOutputEditor({
               </div>
             )}
           </div>
+          <div className="mt-3 shrink-0 rounded-xl border border-hairline bg-surface p-2.5" aria-label="素材预览">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-ink">素材预览</p>
+              <span className="text-[10px] text-ink-tertiary">点击列表切换</span>
+            </div>
+            {selectedMaterialForPreview ? (
+              <>
+                {selectedMaterialForPreview.previewUrl ? (
+                  <video
+                    className="mt-2 aspect-video w-full rounded-lg bg-black object-contain"
+                    controls
+                    muted
+                    playsInline
+                    preload="metadata"
+                    poster={selectedMaterialForPreview.thumbnailUrl}
+                    aria-label={`${selectedMaterialForPreview.displayName} 素材预览`}
+                  >
+                    <source src={selectedMaterialForPreview.previewUrl} type="video/mp4" />
+                  </video>
+                ) : selectedMaterialForPreview.thumbnailUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={selectedMaterialForPreview.thumbnailUrl} alt={`${selectedMaterialForPreview.displayName} 素材预览`} className="mt-2 aspect-video w-full rounded-lg object-cover" />
+                ) : <div className="mt-2 flex aspect-video items-center justify-center rounded-lg bg-ink/10 text-[10px] text-ink-tertiary">暂无预览</div>}
+                <p className="mt-1.5 truncate text-[10px] text-ink-tertiary" title={selectedMaterialForPreview.displayName}>{selectedMaterialForPreview.displayName}</p>
+              </>
+            ) : <p className="mt-2 flex aspect-video items-center justify-center rounded-lg bg-ink/10 text-[10px] text-ink-tertiary">选择素材后预览视频</p>}
+          </div>
           <div className="mt-3 flex shrink-0 items-center justify-between gap-2">
             <p className="text-xs font-medium text-ink">素材列表</p>
             <span className="text-[11px] text-ink-tertiary">已用 {usedHere} · 未用 {neverUsed}</span>
           </div>
-          <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+          <div className="mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
             {poolAssets.map((asset) => {
               const usedByThis = asset.usedByPlanIds.includes(planId);
               const usedByOthers = !usedByThis && asset.usedByPlanIds.length > 0;
@@ -444,10 +410,10 @@ export default function BatchOutputEditor({
                   disabled={!selectable}
                   aria-pressed={pending}
                   title={asset.excluded ? '该素材已被排除出本批次分配，不可用于替换' : `选择素材「${asset.displayName}」`}
-                  className={`flex w-full min-w-0 items-center gap-2 rounded-xl p-1.5 text-left transition ${asset.excluded ? 'opacity-45' : 'hover:bg-surface'} ${pending ? 'bg-accent/10 ring-2 ring-accent' : ''}`}
+                  className={`flex min-h-[72px] w-full min-w-0 items-center gap-2 rounded-xl p-1.5 text-left transition ${asset.excluded ? 'opacity-45' : 'hover:bg-surface'} ${pending ? 'bg-accent/10 ring-2 ring-accent' : ''}`}
                   onClick={() => setReplaceCandidateId(pending ? null : asset.assetId)}
                 >
-                  <span className="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg bg-ink/10">
+                  <span className="relative h-14 w-20 shrink-0 overflow-hidden rounded-lg bg-ink/10">
                     {asset.thumbnailUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={asset.thumbnailUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
@@ -471,52 +437,57 @@ export default function BatchOutputEditor({
           </div>
         </aside>
 
-        <main className="min-h-0 min-w-0 overflow-y-auto rounded-2xl bg-surface-subtle p-3" aria-label="预览调整">
-          <div className="tile space-y-3 p-3">
-            <BatchTimelinePreview
-              clips={clips}
-              assetsById={previewAssetsById}
-              coverUrl={coverUrl}
-              subtitleCues={view.subtitleCues}
-              subtitleStyle={view.subtitleStyle}
-              narrationUrl={narrationUrl}
-              bgm={previewBgm}
-              outputPreset={outputPreset}
-              playheadSec={playheadSec}
-              onSeek={setPlayheadSec}
-              active={active}
-            />
-            <BatchTimeline
-              clips={clips}
-              assets={poolAssets}
-              subtitleCues={view.subtitleCues}
-              narrationDurationUs={view.narration.durationUs}
-              playheadSec={playheadSec}
-              selectedClipId={selectedClipId}
-              selectedSubtitleCueId={selectedSubtitleCueId}
-              disabled={editLocked}
-              onSeek={setPlayheadSec}
-              onSelectClip={setSelectedClipId}
-              onSelectSubtitleCue={setSelectedSubtitleCueId}
-              onTrimVariable={async (clipId, sourceStartUs, sourceEndUs) =>
-                submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs })}
-              onSplit={async (clipId, offsetUs) => submitEdit({ type: 'split', clipId, offsetUs })}
-              onOpenFineTrim={(clipId) => { setSelectedClipId(clipId); setFreeformClipId(clipId); }}
-              onDeleteClip={(clipId) => void confirmDelete(clipId)}
-              onSubtitleEdit={submitEdit}
-              onDeleteSubtitleCue={confirmDeleteSubtitle}
-            />
-            {freeformClip && (
-              <BatchClipTrimEditor
-                key={freeformClip.clipId}
-                clip={freeformClip}
-                asset={assetsById.get(freeformClip.assetId) ?? null}
-                disabled={editLocked}
-                onTrimCommit={handleVariableTrimCommit}
-                onSplitCommit={handleSplitCommit}
-                onClose={() => setFreeformClipId(null)}
+        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl bg-surface-subtle p-3" aria-label="预览调整">
+          <div className="grid min-h-0 flex-1 grid-rows-[minmax(220px,1fr)_minmax(188px,0.82fr)] gap-3">
+            <section className="min-h-0 overflow-hidden rounded-xl bg-surface p-3" data-testid="batch-output-preview-pane">
+              <BatchTimelinePreview
+                clips={clips}
+                assetsById={previewAssetsById}
+                coverUrl={coverUrl}
+                subtitleCues={view.subtitleCues}
+                subtitleStyle={view.subtitleStyle}
+                narrationUrl={narrationUrl}
+                bgm={previewBgm}
+                outputPreset={outputPreset}
+                playheadSec={playheadSec}
+                onSeek={setPlayheadSec}
+                active={active}
+                compact
               />
-            )}
+            </section>
+            <section className="min-h-0 overflow-y-auto rounded-xl bg-surface p-3" data-testid="batch-output-timeline-pane">
+              <BatchTimeline
+                clips={clips}
+                assets={poolAssets}
+                subtitleCues={view.subtitleCues}
+                narrationDurationUs={view.narration.durationUs}
+                playheadSec={playheadSec}
+                selectedClipId={selectedClipId}
+                selectedSubtitleCueId={selectedSubtitleCueId}
+                disabled={editLocked}
+                onSeek={setPlayheadSec}
+                onSelectClip={setSelectedClipId}
+                onSelectSubtitleCue={setSelectedSubtitleCueId}
+                onTrimVariable={async (clipId, sourceStartUs, sourceEndUs) =>
+                  submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs })}
+                onSplit={async (clipId, offsetUs) => submitEdit({ type: 'split', clipId, offsetUs })}
+                onOpenFineTrim={(clipId) => { setSelectedClipId(clipId); setFreeformClipId(clipId); }}
+                onDeleteClip={(clipId) => void confirmDelete(clipId)}
+                onSubtitleEdit={submitEdit}
+                onDeleteSubtitleCue={confirmDeleteSubtitle}
+              />
+              {freeformClip && (
+                <BatchClipTrimEditor
+                  key={freeformClip.clipId}
+                  clip={freeformClip}
+                  asset={assetsById.get(freeformClip.assetId) ?? null}
+                  disabled={editLocked}
+                  onTrimCommit={handleVariableTrimCommit}
+                  onSplitCommit={handleSplitCommit}
+                  onClose={() => setFreeformClipId(null)}
+                />
+              )}
+            </section>
           </div>
         </main>
 
@@ -565,55 +536,43 @@ export default function BatchOutputEditor({
             </div>
           </div>
 
-          <div className="tile space-y-3 p-3" aria-label="口播变速">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-ink">口播变速</p>
-              <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[11px] text-ink-tertiary">暂不支持</span>
-            </div>
-            <p className="text-[11px] leading-5 text-ink-tertiary">批量模式下口播速度属于脚本与口播设置，当前成片编辑器不会改变音频时长或音画对位。</p>
-            <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onJumpToScripts}>跳转到脚本步骤</button>
-          </div>
-
           <div className="tile space-y-3 p-3" aria-label="封面设置">
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-semibold text-ink">视频封面设置</p>
-              <span className="text-[11px] text-ink-tertiary">独立于画面轨</span>
+              <span className="text-[11px] text-ink-tertiary">点击进入精调</span>
             </div>
-            <div className="flex items-start gap-3">
+            <div className="flex items-center gap-3">
               <div className="w-20 shrink-0">
-                <BatchCoverDraftPreview asset={coverAsset} timeUs={coverDraftTimeUs} title={view.coverTitle} outputPreset={outputPreset} />
+                <BatchCoverDraftPreview asset={coverAsset} timeUs={view.coverTimeUs} title={view.coverTitle} outputPreset={outputPreset} />
               </div>
-              <div className="min-w-0 flex-1 space-y-2">
-                <select
-                  aria-label="编辑器封面素材"
-                  value={coverDraftAssetId ?? ''}
-                  onChange={(event) => { setCoverDraftAssetId(event.target.value || null); setCoverDraftTimeUs(0); }}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-ink" title={coverAsset?.displayName}>{coverAsset?.displayName || '尚未设置封面素材'}</p>
+                <p className="mt-1 text-[10px] text-ink-tertiary">{coverAsset ? `截帧 ${(view.coverTimeUs / 1_000_000).toFixed(2)} 秒` : '选择视频片段作为封面'}</p>
+                <button
+                  type="button"
+                  className="btn-secondary mt-2 inline-flex h-8 items-center gap-1.5 px-3 text-xs"
+                  aria-label="打开视频封面设置"
                   disabled={editLocked || poolAssets.length === 0}
-                  className="h-9 w-full rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+                  onClick={openCoverEditor}
                 >
-                  <option value="">选择封面素材</option>
-                  {poolAssets.map((asset) => <option key={asset.assetId} value={asset.assetId}>{asset.displayName}{asset.durationSec != null ? ` · ${asset.durationSec.toFixed(1)} 秒` : ' · 时长未知'}</option>)}
-                </select>
-                <p className="truncate text-[10px] text-ink-tertiary" title={coverAsset?.displayName}>{coverAsset ? `${coverAsset.displayName} · ${(coverDraftTimeUs / 1_000_000).toFixed(2)} 秒` : '封面素材不可用'}</p>
+                  封面精调 <span aria-hidden="true">›</span>
+                </button>
               </div>
-            </div>
-            <input
-              type="range"
-              aria-label="编辑器封面抽帧时间"
-              min={0}
-              max={Math.max(0, (coverDurationUs ?? 1) - 1)}
-              step={100_000}
-              value={coverDraftTimeUs}
-              disabled={editLocked || !coverAsset || coverDurationUs == null}
-              onChange={(event) => setCoverDraftTimeUs(Number(event.target.value))}
-              className="w-full"
-            />
-            <div className="flex justify-end">
-              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || !coverAsset || coverDurationUs == null || !coverChanged} onClick={() => void submitEdit({ type: 'set_cover', assetId: coverAsset!.assetId, timeUs: Math.min(coverDraftTimeUs, coverDurationUs! - 1) })}>应用封面</button>
             </div>
           </div>
         </aside>
       </div>
+      <BatchCoverEditorDrawer
+        active={coverEditorOpen}
+        assets={poolAssets}
+        initialAssetId={view.coverAssetId}
+        initialTimeUs={view.coverTimeUs}
+        title={view.coverTitle}
+        outputPreset={outputPreset}
+        busy={editLocked}
+        onClose={() => setCoverEditorOpen(false)}
+        onApply={applyCover}
+      />
     </div>
   );
 }

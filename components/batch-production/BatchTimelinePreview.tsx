@@ -46,6 +46,8 @@ export interface BatchTimelinePreviewProps {
   onSeek: (sec: number) => void;
   /** false 时暂停一切播放（预留防御；当前调用方未传，弹窗关闭靠卸载兜底） */
   active?: boolean;
+  /** 嵌入编辑器时让预览区与时间轴共享固定高度，避免预览把时间轴推到视口外。 */
+  compact?: boolean;
 }
 
 function formatTime(timeSec: number): string {
@@ -87,6 +89,7 @@ export default function BatchTimelinePreview({
   playheadSec,
   onSeek,
   active = true,
+  compact = false,
 }: BatchTimelinePreviewProps) {
   const sortedClips = useMemo(() => [...clips].sort((a, b) => a.timelineStartUs - b.timelineStartUs), [clips]);
   const bodyDurationSec = (sortedClips.at(-1)?.timelineEndUs ?? 0) / 1_000_000;
@@ -421,14 +424,22 @@ export default function BatchTimelinePreview({
   const videoBSrc = slotClips[1] ? assetsById[slotClips[1].assetId]?.previewUrl : undefined;
 
   return (
-    <div className="space-y-2" aria-label="成片实时预览">
-      <div className="flex justify-center">
+    <div className={compact ? 'flex h-full min-h-0 flex-col gap-2' : 'space-y-2'} aria-label="成片实时预览">
+      <div className={compact ? 'flex min-h-0 flex-1 items-center justify-center overflow-hidden' : 'flex justify-center'}>
         <div
           ref={stageRef}
           className="relative overflow-hidden rounded-xl bg-black"
-          style={size.width >= size.height
-            ? { aspectRatio: `${size.width} / ${size.height}`, width: '100%' }
-            : { aspectRatio: `${size.width} / ${size.height}`, height: 'min(52vh, 560px)' }}
+          style={compact
+            ? {
+              aspectRatio: `${size.width} / ${size.height}`,
+              width: size.width >= size.height ? '100%' : 'auto',
+              height: size.width >= size.height ? 'auto' : '100%',
+              maxWidth: '100%',
+              maxHeight: '100%',
+            }
+            : size.width >= size.height
+              ? { aspectRatio: `${size.width} / ${size.height}`, width: '100%' }
+              : { aspectRatio: `${size.width} / ${size.height}`, height: 'min(52vh, 560px)' }}
         >
           <video ref={videoARef} src={videoASrc} className="pointer-events-none absolute h-px w-px opacity-0" muted playsInline preload="auto" aria-hidden="true" />
           <video ref={videoBRef} src={videoBSrc} className="pointer-events-none absolute h-px w-px opacity-0" muted playsInline preload="auto" aria-hidden="true" />
