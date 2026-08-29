@@ -412,6 +412,13 @@ interface RenderAttemptResult extends BatchExportRenderContract {
   coverChecksum: string;
 }
 
+function readArrangementEditRevision(value: unknown): number {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return -1;
+  const raw = (value as Record<string, unknown>).editRevision;
+  if (raw === undefined) return 0;
+  return Number.isSafeInteger(raw) && Number(raw) >= 0 ? Number(raw) : -1;
+}
+
 function parseRenderResult(raw: string | null): RenderAttemptResult | null {
   if (!raw) return null;
   try {
@@ -430,6 +437,8 @@ function parseRenderResult(raw: string | null): RenderAttemptResult | null {
       || typeof value.coverChecksum !== 'string'
       || (value.audioMode !== 'narration' && value.audioMode !== 'silent_placeholder')
       || typeof value.productionReady !== 'boolean'
+      || (value.editRevision !== undefined
+        && (!Number.isSafeInteger(value.editRevision) || Number(value.editRevision) < 0))
     ) return null;
     return value as RenderAttemptResult;
   } catch {
@@ -543,6 +552,15 @@ export async function publishSelectedBatchOutputs(
         resultJson: string | null;
       } | undefined;
       if (!row) throw new BatchDomainError('conflict', '当前成片版本还没有成功的渲染候选');
+      const pendingRender = db.prepare(`
+        SELECT 1
+        FROM batch_tasks
+        WHERE projectId = ? AND batchId = ? AND workType = 'render'
+          AND targetKind = 'output_version' AND targetId = ?
+          AND status IN ('queued', 'running')
+        LIMIT 1
+      `).get(projectId, batchId, row.currentVersionId);
+      if (pendingRender) throw new BatchDomainError('conflict', '成片正在重新渲染，请等待重新渲染完成后再导出');
       const render = parseRenderResult(row.resultJson);
       if (!render) throw new BatchDomainError('conflict', '渲染候选结果损坏或缺少发布信息');
       if (
@@ -560,8 +578,14 @@ export async function publishSelectedBatchOutputs(
       const arrangement = JSON.parse(row.arrangementJson) as {
         clips?: Array<{ assetId?: unknown }>;
         cover?: { assetId?: unknown };
+        editRevision?: unknown;
         review?: { decision?: unknown };
       };
+      const currentEditRevision = readArrangementEditRevision(arrangement);
+      const renderEditRevision = render.editRevision ?? 0;
+      if (currentEditRevision < 0 || renderEditRevision !== currentEditRevision) {
+        throw new BatchDomainError('conflict', '成片已被调整过，请等待重新渲染完成后再导出');
+      }
       // 审核门禁:正式导出只接受用户已标记「通过」的成片(权威的服务端单点判断)。
       if (arrangement.review?.decision !== 'approved') {
         throw new BatchDomainError('conflict', '该成片尚未审核通过,请先在检查页标记「通过」后再导出');

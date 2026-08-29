@@ -247,7 +247,6 @@ function buildEditWarnings(
   clips: Array<Record<string, unknown>>,
   arrangement: Record<string, unknown>,
   deleted: boolean,
-  coverReset: boolean,
 ): string[] {
   const warnings: string[] = [];
   const narrationDurationUs = finiteNumber(asRecord(arrangement.narration)?.durationUs);
@@ -262,7 +261,6 @@ function buildEditWarnings(
       warnings.push(`画面总长比口播短 ${(Math.abs(diffUs) / 1_000_000).toFixed(1)} 秒，结尾将定格最后一帧补齐`);
     }
   }
-  if (coverReset) warnings.push('封面抽帧点已重置到新片段开头');
   return warnings;
 }
 
@@ -627,18 +625,9 @@ export function applyBatchOutputClipEdit(
       arrangement.editRevision = nextEditRevision;
       delete arrangement.review;
 
-      let coverReset = false;
-      const cover = asRecord(arrangement.cover);
-      const first = clips[0];
-      if (cover && first) {
-        const firstRange = clipRangeOf(first);
-        const coverTimeUs = finiteNumber(cover.timeUs);
-        if (firstRange && coverTimeUs !== null && (coverTimeUs < firstRange.startUs || coverTimeUs >= firstRange.endUs)) {
-          cover.timeUs = firstRange.startUs;
-          coverReset = true;
-        }
-      }
-      const warnings = buildEditWarnings(clips, arrangement, deleted, coverReset);
+      // 封面是独立的冻结素材抽帧决定,范围是封面素材整段原片;
+      // 时间线片段窗口变化不应把合法的封面时间点重置到第一片段。
+      const warnings = buildEditWarnings(clips, arrangement, deleted);
       db.prepare(`
         UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);

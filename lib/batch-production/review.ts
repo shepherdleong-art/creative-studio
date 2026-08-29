@@ -15,6 +15,8 @@ export interface BatchReviewWriteResult {
   decision: BatchReviewDecision | null;
   updatedAt: string;
   planIds: string[];
+  /** 目标成片是否仍有 queued/running 的渲染任务。 */
+  pendingRender: boolean;
 }
 
 export interface BatchPlanReviewRow {
@@ -69,12 +71,26 @@ export function setBatchPlanReviews(
     throw new BatchDomainError('conflict', '部分成片计划不属于该批次当前版本');
   }
 
+  const currentOutputVersionIds = plans
+    .map(({ currentVersionId }) => currentVersionId)
+    .filter((value): value is string => Boolean(value));
   const updatedAt = nowIso(now);
   // 撤销审核(cancelled)归一化为 decision=null:与“从未审核”同一种展示态,
   // 但保留 decidedAt 便于审计。领域语义保持文档约定 approved/rework/null。
   const normalizedDecision: BatchReviewDecision | null = input.decision === 'cancelled' ? null : input.decision;
   const reviewJson = JSON.stringify({ decision: normalizedDecision, decidedAt: updatedAt });
-  db.transaction(() => {
+  const pendingRender = db.transaction(() => {
+    const pendingRenderIds = currentOutputVersionIds.length === 0 ? new Set<string>() : new Set(
+      (db.prepare(`
+        SELECT targetId
+        FROM batch_tasks
+        WHERE projectId = ? AND batchId = ?
+          AND workType = 'render' AND targetKind = 'output_version'
+          AND status IN ('queued', 'running')
+          AND targetId IN (${currentOutputVersionIds.map(() => '?').join(',')})
+      `).all(projectId, batchId, ...currentOutputVersionIds) as Array<{ targetId: string }>).map(({ targetId }) => targetId),
+    );
+    const hasPendingRender = currentOutputVersionIds.some((outputVersionId) => pendingRenderIds.has(outputVersionId));
     for (const plan of plans) {
       if (!plan.currentVersionId) continue;
       // json_set 写入当前版本的 arrangement.review;撤销时写成 decision=null 保持字段可见。
@@ -84,6 +100,7 @@ export function setBatchPlanReviews(
         WHERE id = ?
       `).run(reviewJson, plan.currentVersionId);
     }
+    return hasPendingRender;
   }).immediate();
 
   return {
@@ -91,6 +108,7 @@ export function setBatchPlanReviews(
     decision: input.decision,
     updatedAt,
     planIds: plans.map(({ id }) => id),
+    pendingRender,
   };
 }
 

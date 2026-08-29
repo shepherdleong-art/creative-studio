@@ -655,15 +655,15 @@ try {
   );
   console.log('✓ 17. split 结构不变/审核保留/不重渲染/贴边拒绝');
 
-  // 18. 第一片段窗口变化后 cover.timeUs 越界 -> 钳位到新片段开头
+  // 18. 封面是独立原片抽帧,第一片段窗口变化不得重置合法封面时间点
   resetPlan0Arrangement();
   const coverClamped = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
     type: 'trim_variable', clipId: 'clip-1', sourceStartUs: 4_000_000, sourceEndUs: 6_000_000,
   });
   assert.equal(coverClamped.changed, true);
-  assert.ok(coverClamped.warnings.includes('封面抽帧点已重置到新片段开头'));
-  assert.equal((currentArrangement(plans[0]).cover as Record<string, unknown>).timeUs, 4_000_000);
-  console.log('✓ 18. 封面抽帧点越界钳位');
+  assert.ok(!coverClamped.warnings.includes('封面抽帧点已重置到新片段开头'));
+  assert.equal((currentArrangement(plans[0]).cover as Record<string, unknown>).timeUs, 1_500_000);
+  console.log('✓ 18. 封面抽帧点不受时间线片段窗口限制');
 
   console.log('batch output clip edit tests passed');
 } finally {

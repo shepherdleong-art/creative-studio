@@ -52,6 +52,8 @@ export interface BatchWorkspaceCandidateView {
   outputVersionId: string;
   audioMode: 'narration' | 'silent_placeholder';
   productionReady: boolean;
+  /** 候选渲染读取的 arrangement 编辑修订号;旧候选缺省为 null。 */
+  editRevision: number | null;
   durationUs: number;
   subtitleCueCount: number;
   coverAvailable: boolean;
@@ -64,8 +66,9 @@ export interface BatchOutputVersionListItem {
   hasArtifact: boolean;
 }
 
-/** 换封面的可调范围:第一镜头(或显式封面 clip)的原片区间;无法解析时为 null */
+/** 换封面的可调范围:封面素材整段原片;无法解析时为 null */
 export interface BatchCoverRangeView {
+  assetId: string;
   startUs: number;
   endUs: number;
   /** 当前冻结的封面时间点;未设置时为 startUs */
@@ -86,6 +89,8 @@ export interface BatchOutputCardView {
   exportable: boolean;
   productionReady: boolean;
   publishable: boolean;
+  /** 当前候选与 arrangement 修订号不一致或仍有渲染任务时为 true。 */
+  renderStale: boolean;
   /** 用户审核状态:当前成片版本 arrangement 的 review.decision === 'approved' */
   approved: boolean;
   coverRange: BatchCoverRangeView | null;
@@ -129,6 +134,59 @@ function parseJson(raw: string | null | undefined): unknown {
   try { return JSON.parse(raw) as unknown; } catch { return null; }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function arrangementEditRevision(value: unknown): number {
+  const record = asRecord(value);
+  if (!record || record.editRevision === undefined) return 0;
+  const parsed = typeof record.editRevision === 'number' ? record.editRevision : Number(record.editRevision);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : -1;
+}
+
+function poolAssetDurationUs(row: { mediaJson: string | null; analysisJson: string | null }): number | null {
+  for (const raw of [row.analysisJson, row.mediaJson]) {
+    const record = asRecord(parseJson(raw));
+    if (!record) continue;
+    const durationUs = positiveSafeInteger(record.durationUs);
+    if (durationUs !== null) return durationUs;
+    const durationSec = typeof record.durationSec === 'number' ? record.durationSec : Number(record.durationSec);
+    if (Number.isFinite(durationSec) && durationSec > 0) {
+      const converted = Math.round(durationSec * 1_000_000);
+      if (Number.isSafeInteger(converted) && converted > 0) return converted;
+    }
+  }
+  return null;
+}
+
+function loadPoolAssetDurations(db: Database.Database, batchVersionId: string): Map<string, number> {
+  const rows = db.prepare(`
+    SELECT pool.assetId, assets.mediaJson, analysis.analysisJson
+    FROM batch_asset_pool_items pool
+    JOIN batch_assets assets ON assets.id = pool.assetId
+    LEFT JOIN batch_asset_analysis analysis ON analysis.id = pool.analysisId
+    WHERE pool.batchVersionId = ?
+  `).all(batchVersionId) as Array<{
+    assetId: string;
+    mediaJson: string | null;
+    analysisJson: string | null;
+  }>;
+  const durations = new Map<string, number>();
+  for (const row of rows) {
+    const durationUs = poolAssetDurationUs(row);
+    if (durationUs !== null) durations.set(row.assetId, durationUs);
+  }
+  return durations;
+}
+
 /** 审核态:当前版本 arrangement.review.decision === 'approved' */
 function arrangementReviewApproved(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -140,12 +198,12 @@ function arrangementReviewApproved(value: unknown): boolean {
 /**
  * 换封面可调范围:与渲染器封面取材规则保持一致——
  * - 显式封面 clip(clipId/segmentId):取该 clip 的原片区间;
- * - 只给 assetId(分配器默认写法):取使用该素材的首个时间线 clip 的原片区间
- *   (渲染器对该封面素材用的是整段原片 [0,duration),clip 区间必然落在其中,
- *   后端不会拒绝);封面素材不在时间线内时无法从 arrangement 推导,返回 null;
- * - 无封面设置:取第一镜头的原片区间。
+ * - 显式封面 assetId 即使不在时间线 clips 中,也按冻结素材池中的整段原片
+ *   [0,duration)返回范围;
+ * - 显式封面 clip 与无封面设置同样先解析出素材身份,再使用该素材整段原片。
+ *   素材不在冻结池或没有可用时长时返回 null。
  */
-function arrangementCoverRange(value: unknown): BatchCoverRangeView | null {
+function arrangementCoverRange(value: unknown, assetDurations: ReadonlyMap<string, number>): BatchCoverRangeView | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const rawClips = record.clips;
@@ -157,27 +215,30 @@ function arrangementCoverRange(value: unknown): BatchCoverRangeView | null {
     ? record.cover as Record<string, unknown>
     : null;
   let selected: Record<string, unknown> | null = null;
+  let assetId: string | null = null;
   const coverClipId = cover && (typeof cover.clipId === 'string' ? cover.clipId : typeof cover.segmentId === 'string' ? cover.segmentId : null);
   if (coverClipId) {
     selected = clips.find((clip) => clip.clipId === coverClipId || clip.segmentId === coverClipId) ?? null;
     if (!selected) return null;
+    assetId = typeof selected.assetId === 'string' ? selected.assetId : null;
   } else if (cover && typeof cover.assetId === 'string') {
-    selected = clips.find((clip) => clip.assetId === cover.assetId) ?? null;
-    if (!selected) return null; // 封面素材不在时间线内:无法从 arrangement 推导原片时长
+    assetId = cover.assetId;
   } else {
     selected = clips[0] ?? null;
     if (!selected) return null;
+    assetId = typeof selected.assetId === 'string' ? selected.assetId : null;
   }
-  const startUs = Number(selected.sourceStartUs);
-  const endUs = Number(selected.sourceEndUs);
-  if (!Number.isFinite(startUs) || !Number.isFinite(endUs) || endUs <= startUs) return null;
+  if (!assetId) return null;
+  const durationUs = assetDurations.get(assetId);
+  if (!durationUs || !Number.isSafeInteger(durationUs) || durationUs <= 0) return null;
   const requested = cover
     ? (typeof cover.timeUs === 'number' ? cover.timeUs
       : typeof cover.frameTimeUs === 'number' ? cover.frameTimeUs
         : typeof cover.sourceTimeUs === 'number' ? cover.sourceTimeUs : null)
     : null;
-  const currentUs = typeof requested === 'number' && Number.isFinite(requested) ? requested : startUs;
-  return { startUs, endUs, currentUs };
+  const requestedUs = typeof requested === 'number' && Number.isFinite(requested) ? requested : 0;
+  const currentUs = Math.min(Math.max(0, requestedUs), Math.max(0, durationUs - 1));
+  return { assetId, startUs: 0, endUs: durationUs, currentUs };
 }
 
 /** 与 output-media.ts 同一套配对规则:封面比视频多一个「-封面」后缀 */
@@ -227,11 +288,14 @@ function renderCandidate(value: unknown, outputVersionId: string | null): BatchW
     || Number(record.durationUs) <= 0
     || typeof record.videoRelativePath !== 'string'
     || typeof record.coverRelativePath !== 'string'
+    || (record.editRevision !== undefined
+      && (!Number.isSafeInteger(record.editRevision) || Number(record.editRevision) < 0))
   ) return null;
   return {
     outputVersionId,
     audioMode: record.audioMode,
     productionReady: record.productionReady,
+    editRevision: record.editRevision === undefined ? null : Number(record.editRevision),
     durationUs: Number(record.durationUs),
     subtitleCueCount: Array.isArray(record.subtitleCues) ? record.subtitleCues.length : 0,
     coverAvailable: true,
@@ -342,6 +406,7 @@ export function getBatchWorkspace(
     SELECT assetId, reason FROM batch_asset_exclusions
     WHERE batchVersionId = ? ORDER BY assetId
   `).all(batch.currentVersionId) as Array<{ assetId: string; reason: string }>;
+  const poolAssetDurations = loadPoolAssetDurations(db, batch.currentVersionId);
 
   const cards = plans.map((plan): BatchOutputCardView => {
     const arrangement = parseJson(plan.arrangementJson);
@@ -448,6 +513,12 @@ export function getBatchWorkspace(
     const candidate = candidateRow
       ? renderCandidate(parseJson(candidateRow.resultJson), plan.currentVersionId)
       : null;
+    const currentEditRevision = arrangementEditRevision(arrangement);
+    const pendingRender = task?.status === 'queued' || task?.status === 'running';
+    const renderStale = Boolean(
+      plan.currentVersionId
+      && (pendingRender || !candidate || (candidate.editRevision === null ? currentEditRevision !== 0 : candidate.editRevision !== currentEditRevision)),
+    );
     // 口播任务(渲染闸门的配套信息):失败时给用户「重试配音」入口,否则
     // 渲染被闸门挡住会变成看不到原因的静默等待。
     const narrationTaskRow = plan.scriptSnapshotId ? db.prepare(`
@@ -491,7 +562,7 @@ export function getBatchWorkspace(
     // 审核态与换封面范围都来自当前版本 arrangement(就地 JSON 升级,零迁移);
     // reallocate 生成的新版本没有 review 字段,天然回到未审核态。
     const approved = arrangementReviewApproved(arrangement);
-    const coverRange = arrangementCoverRange(arrangement);
+    const coverRange = arrangementCoverRange(arrangement, poolAssetDurations);
     return {
       planId: plan.id,
       seq: plan.seq,
@@ -505,6 +576,7 @@ export function getBatchWorkspace(
       exportable: Boolean(currentVideo),
       productionReady,
       publishable: candidateProductionReady,
+      renderStale,
       approved,
       coverRange,
       warnings,

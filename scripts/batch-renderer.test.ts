@@ -73,6 +73,7 @@ async function run(): Promise<void> {
   const arrangement = {
     preset: '3:4',
     fps: 24,
+    editRevision: 4,
     clips: [{
       clipId: 'clip-1',
       segmentId: 'segment-1',
@@ -134,6 +135,7 @@ async function run(): Promise<void> {
   assert.equal(result.fps, 24);
   assert.equal(result.audioMode, 'silent_placeholder');
   assert.equal(result.productionReady, false);
+  assert.equal(result.editRevision, 4, '渲染结果必须携带读取 arrangement 时的 editRevision');
   assert.deepEqual(result.subtitleCues, [
     { id: 'estimated-1', sourceSegmentId: 'segment-1', text: '预计字幕', startUs: 0, endUs: 500_000 },
   ], '静音视觉候选也必须烧录并回报预计字幕，但不能因此变为 productionReady');
@@ -181,7 +183,7 @@ async function run(): Promise<void> {
       preset,
       clips: arrangement.clips.map((clip) => ({ ...clip, preset })),
       targetDurationUs: 1_000_000,
-      cover: { clipId: 'clip-1', timeUs: 250_000 },
+      cover: { clipId: 'clip-1', timeUs: 1_100_000 },
     };
     db.prepare(`INSERT INTO batch_output_plans (id, batchVersionId, scriptSnapshotId, seq, planJson, currentVersionId, createdAt) VALUES (?, ?, 'snapshot-1', ?, '{}', ?, ?)`).run(planId, ids.batchVersionId, suffix === 'portrait' ? 2 : 3, outputVersionId, new Date().toISOString());
     db.prepare(`INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt) VALUES (?, ?, 1, ?, ?)`).run(outputVersionId, planId, JSON.stringify(nextArrangement), new Date().toISOString());

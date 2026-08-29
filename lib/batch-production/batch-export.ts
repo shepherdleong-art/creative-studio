@@ -36,6 +36,8 @@ export interface BatchExportTarget {
 export interface BatchExportRenderContract {
   audioMode: 'narration' | 'silent_placeholder';
   productionReady: boolean;
+  /** 渲染时冻结的成片编辑修订号;旧候选允许缺省并按 0 处理。 */
+  editRevision?: number;
 }
 
 export interface BatchExportResult {

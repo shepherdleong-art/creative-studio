@@ -156,6 +156,10 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   const selectableCount = workspace.cards.filter(({ publishable }) => publishable).length;
   const allSelected = selectableCount > 0 && workspace.cards.every(({ planId, publishable }) => !publishable || selectedPlanIds.includes(planId));
   const awaitingReview = workspace.cards.filter(({ publishable, approved }) => publishable && !approved).length;
+  const selectedPendingRenderCount = workspace.cards.filter((card) => (
+    selectedPlanIds.includes(card.planId)
+    && (card.task?.status === 'queued' || card.task?.status === 'running')
+  )).length;
   // 一条都不可勾选时的原因归类(问题 5):配音未完成 / 配音失败 / 其他阻塞。
   const narrationActiveCount = workspace.cards.filter((card) => (
     card.narrationTask && (card.narrationTask.status === 'queued' || card.narrationTask.status === 'running')
@@ -251,6 +255,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
               {allSelected ? '全不选' : `一键全选（${selectableCount}）`}
             </button>
             <span className="text-xs text-ink-secondary">已选 {selectedPlanIds.length} 条{awaitingReview > 0 && ` · ${awaitingReview} 条可发布但尚未审核`}</span>
+            {selectedPendingRenderCount > 0 && (
+              <span className="text-xs text-warn" role="status">渲染中，完成后才可导出</span>
+            )}
             {selectableCount === 0 && workspace.cards.length > 0 && (
               <span className="text-xs text-warn" role="status">
                 {narrationActiveCount > 0 && ` · ${narrationActiveCount} 条正在生成配音，完成后自动继续渲染`}
@@ -486,7 +493,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                       <p className="text-sm font-medium text-ink">封面抽帧时间</p>
                       <span className="text-xs text-ink-secondary">
                         {coverDraftUs == null ? '—' : `${(coverDraftUs / 1_000_000).toFixed(2)} 秒`}
-                        <span className="text-ink-tertiary">（第一镜头原片区间 {(modalCard.coverRange.startUs / 1_000_000).toFixed(1)}–{(modalCard.coverRange.endUs / 1_000_000).toFixed(1)} 秒）</span>
+                        <span className="text-ink-tertiary">（封面素材原片区间 {(modalCard.coverRange.startUs / 1_000_000).toFixed(1)}–{(modalCard.coverRange.endUs / 1_000_000).toFixed(1)} 秒）</span>
                       </span>
                     </div>
                     <input
@@ -509,6 +516,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                       >{coverBusy === modalCard.planId ? '生成中…' : '应用新封面'}</button>
                     </div>
                   </div>
+                )}
+                {modalCard.versionId && !modalCard.coverRange && (
+                  <p className="tile p-3 text-xs text-warn" role="status">封面素材不可用，无法调整抽帧时间。</p>
                 )}
               </>
             )}

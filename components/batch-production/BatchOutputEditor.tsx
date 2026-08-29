@@ -286,12 +286,12 @@ export default function BatchOutputEditor({
         </p>
         {pendingRender && (
           <span className="flex items-center gap-2 text-[11px] text-warn">
-            修改尚未渲染成成片
+            修改已保存，退出本轮调整后会自动重新渲染
             <button
               type="button"
               className="btn-secondary h-7 shrink-0 whitespace-nowrap px-2 text-[11px]"
               onClick={() => void commitPendingRender()}
-            >立即重新渲染</button>
+            >立即渲染</button>
           </span>
         )}
         {view.versionNumber != null && (

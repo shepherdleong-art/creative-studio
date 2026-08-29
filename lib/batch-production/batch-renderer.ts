@@ -57,6 +57,8 @@ export interface BatchRenderCoverInput {
 
 export interface BatchRenderArrangementInput {
   clips: BatchRenderClipInput[];
+  /** 就地片段编辑的修订号;旧 arrangement 缺省即 0。 */
+  editRevision?: number;
   preset?: string;
   fps?: number;
   targetDurationUs?: number;
@@ -176,6 +178,8 @@ export interface BatchRenderResult {
   outputVersionId: string;
   planSeq: number;
   outputVersionNumber: number;
+  /** 本次渲染读取的 arrangement 编辑修订号。 */
+  editRevision: number;
   preset: BatchOutputPreset;
   width: number;
   height: number;
@@ -236,6 +240,17 @@ interface ResolvedClip extends NormalizedClip {
   lutPath: string | null;
 }
 
+/** 封面是独立的原片抽帧决定,不应被时间线 clip 的 source 区间限制。 */
+function asFullSourceCoverClip(clip: ResolvedClip): ResolvedClip {
+  return {
+    ...clip,
+    sourceStartUs: 0,
+    sourceEndUs: clip.sourceDurationUs,
+    timelineStartUs: 0,
+    timelineEndUs: clip.sourceDurationUs,
+  };
+}
+
 interface Snapshot {
   projectId: string;
   batchId: string;
@@ -244,6 +259,7 @@ interface Snapshot {
   outputVersionId: string;
   planSeq: number;
   outputVersionNumber: number;
+  editRevision: number;
   arrangement: BatchRenderArrangementInput;
   versionDefaultsJson: Record<string, unknown>;
   clips: ResolvedClip[];
@@ -299,6 +315,8 @@ function normalizeArrangement(raw: unknown): { arrangement: BatchRenderArrangeme
     const targetDurationUs = finiteInteger(obj.targetDurationUs, 'targetDurationUs');
     if (targetDurationUs <= 0) throw error('targetDurationUs 必须为正数');
   }
+  const editRevision = obj.editRevision == null ? 0 : finiteInteger(obj.editRevision, 'editRevision');
+  if (editRevision < 0) throw error('editRevision 不能为负数');
   const clipIds = new Set<string>();
   const clips: NormalizedClip[] = obj.clips.map((rawClip, index) => {
     if (!rawClip || typeof rawClip !== 'object' || Array.isArray(rawClip)) throw error(`clip[${index}] 无效`);
@@ -329,6 +347,7 @@ function normalizeArrangement(raw: unknown): { arrangement: BatchRenderArrangeme
   const arrangement: BatchRenderArrangementInput = {
     ...(obj as unknown as BatchRenderArrangementInput),
     clips: obj.clips as BatchRenderClipInput[],
+    editRevision,
     preset: rootPreset ?? clips[0].preset,
     fps: 24,
   };
@@ -457,18 +476,13 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
   // An explicit cover asset/time is an independent frozen source-frame
   // decision. It may legally point outside every timeline clip while still
   // belonging to the frozen pool, so do not inherit the first clip's range.
-  let coverClip = selectedCoverClip ?? (coverInput?.assetId ? undefined : firstClip);
+  let coverClip = selectedCoverClip
+    ? asFullSourceCoverClip(selectedCoverClip)
+    : coverInput?.assetId ? undefined : asFullSourceCoverClip(firstClip);
   if (!coverClip) {
     const reusedSource = byAsset.get(coverAssetId);
     if (reusedSource) {
-      coverClip = {
-        ...reusedSource,
-        clipId: `cover:${coverAssetId}`,
-        sourceStartUs: 0,
-        sourceEndUs: reusedSource.sourceDurationUs,
-        timelineStartUs: 0,
-        timelineEndUs: reusedSource.sourceDurationUs,
-      };
+      coverClip = asFullSourceCoverClip({ ...reusedSource, clipId: `cover:${coverAssetId}` });
     }
   }
   if (!coverClip) {
@@ -489,6 +503,7 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
     projectId: input.projectId, batchId: input.batchId, batchVersionId: input.batchVersionId,
     planId: input.planId, outputVersionId: input.outputVersionId, planSeq: row.seq,
     outputVersionNumber: row.versionNumber, arrangement: normalized.arrangement,
+    editRevision: normalized.arrangement.editRevision ?? 0,
     versionDefaultsJson: parseJson(row.defaultsJson, 'defaultsJson') as Record<string, unknown>,
     clips: resolvedClips,
     coverClip,
@@ -711,7 +726,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const cover = snapshot.arrangement.cover;
     const requestedCoverTime = cover?.timeUs ?? cover?.frameTimeUs ?? cover?.sourceTimeUs;
     const coverTimeUs = requestedCoverTime == null ? first.sourceStartUs : finiteInteger(requestedCoverTime, 'cover timeUs');
-    if (coverTimeUs < first.sourceStartUs || coverTimeUs >= first.sourceEndUs) throw error('封面冻结时间点不在第一镜头原片区间内');
+    if (coverTimeUs < first.sourceStartUs || coverTimeUs >= first.sourceEndUs) throw error('封面冻结时间点不在封面素材原片区间内');
     const coverColorFragments = buildBatchRenderColorFilterFragments({ colorSnapshot: first.colorSnapshot, lutPath: first.lutPath });
     await runFfmpeg([
       '-ss', (coverTimeUs / 1_000_000).toFixed(6), '-i', first.sourcePath,
@@ -851,7 +866,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     return {
       projectId: snapshot.projectId, batchId: snapshot.batchId, batchVersionId: snapshot.batchVersionId,
       planId: snapshot.planId, outputVersionId: snapshot.outputVersionId, planSeq: snapshot.planSeq,
-      outputVersionNumber: snapshot.outputVersionNumber, preset: normalizedPreset,
+      outputVersionNumber: snapshot.outputVersionNumber, editRevision: snapshot.editRevision, preset: normalizedPreset,
       width: outputSize.width, height: outputSize.height, fps: 24, durationUs: probe.durationUs,
       audioMode, productionReady: audioMode === 'narration',
       subtitleCues,
@@ -953,7 +968,7 @@ export async function regenerateBatchOutputCover(input: BatchCoverRegenerationIn
   });
   const coverClip = snapshot.coverClip;
   if (timeUs < coverClip.sourceStartUs || timeUs >= coverClip.sourceEndUs) {
-    throw error('封面冻结时间点不在第一镜头原片区间内');
+    throw error('封面冻结时间点不在封面素材原片区间内');
   }
 
   // 1. 就地改写 arrangement.cover.timeUs(与 narration 就地升级同一套 json_set)。

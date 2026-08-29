@@ -105,6 +105,7 @@ const BATCH_STATUS_LABELS: Record<BatchProductionStatus, string> = {
 
 /** 后端原始错误 → 用户可读文案。匹配用 includes，避免依赖完整字符串。 */
 const EXPORT_SKIP_REASONS: Array<{ match: string; text: string }> = [
+  { match: '重新渲染', text: '等待重新渲染完成' },
   { match: 'productionReady', text: '还没有配音' },
   { match: 'narration', text: '还没有配音' },
   { match: '原片来源', text: '找不到原始素材文件' },
@@ -1287,7 +1288,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     setPhaseEBusy(`review:${decision}`);
     setFeedback(null);
     try {
-      await readJson(await fetch(
+      const reviewResult = await readJson<{ pendingRender?: boolean }>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/review?projectId=${encodeURIComponent(projectId)}`,
         {
           method: 'POST',
@@ -1313,7 +1314,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setFeedback({
         kind: 'success',
         message: decision === 'approved'
-          ? `已通过 ${selectedPlanIds.length} 条成片，可以正式导出。`
+          ? reviewResult.pendingRender
+            ? `已通过 ${selectedPlanIds.length} 条成片，渲染中，完成后才可导出。`
+            : `已通过 ${selectedPlanIds.length} 条成片，可以正式导出。`
           : decision === 'rework'
             ? `已返工 ${selectedPlanIds.length} 条成片并换一批画面，新候选需要重新审核。`
             : `已撤销 ${selectedPlanIds.length} 条成片的审核。`,
@@ -1373,8 +1376,15 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }
 
   async function publishSelected(): Promise<void> {
-    if (!selectedBatchId || selectedPlanIds.length === 0) {
-      setFeedback({ kind: 'error', message: '请先勾选要正式导出的成片。' });
+    const planIdsToPublish = (workspace?.cards ?? [])
+      .filter((card) => selectedPlanIds.includes(card.planId) && card.publishable && card.approved && !card.renderStale)
+      .map(({ planId }) => planId);
+    if (!selectedBatchId || planIdsToPublish.length === 0) {
+      const selectedStale = (workspace?.cards ?? []).some((card) => selectedPlanIds.includes(card.planId) && card.renderStale);
+      setFeedback({
+        kind: 'error',
+        message: selectedStale ? '选中的成片画面已调整，等待重新渲染完成后才能导出。' : '请先勾选要正式导出的成片。',
+      });
       return;
     }
     setPhaseEBusy('export');
@@ -1389,7 +1399,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planIds: selectedPlanIds }),
+          body: JSON.stringify({ planIds: planIdsToPublish }),
         },
       ));
       const skipped = result.items.filter(({ status }) => status === 'skipped');
@@ -1905,7 +1915,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
             ))}
             onSelectAll={() => {
-              const selectable = (workspace?.cards ?? []).filter(({ publishable, approved }) => publishable && approved);
+              const selectable = (workspace?.cards ?? []).filter(({ publishable, approved, renderStale }) => publishable && approved && !renderStale);
               const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
               setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
             }}

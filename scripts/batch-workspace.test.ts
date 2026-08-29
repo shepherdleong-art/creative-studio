@@ -31,9 +31,62 @@ try {
   insertVersion.run('ov4-old','plan4',1,JSON.stringify({ productionReady: true }),now);
   insertVersion.run('ov4-new','plan4',2,JSON.stringify({ productionReady: true }),now);
 
+  const insertAsset = db.prepare(`
+    INSERT INTO batch_assets
+      (id,projectId,sourceKind,locationJson,contentFingerprint,mediaKind,mediaJson,status,currentAnalysisId,createdAt,updatedAt)
+    VALUES (?,?, 'managed', '{}', ?, 'video', ?, 'online', ?, ?, ?)
+  `);
+  const insertAnalysis = db.prepare(`
+    INSERT INTO batch_asset_analysis
+      (id,assetId,analyzerVersion,providerId,model,analysisJson,status,analyzedAt,createdAt)
+    VALUES (?,?, 'fixture', 'fixture', 'fixture', ?, 'ready', ?, ?)
+  `);
+  const insertPoolItem = db.prepare(`
+    INSERT INTO batch_asset_pool_items (id,batchVersionId,assetId,analysisId,selectionState,createdAt)
+    VALUES (?,?,? ,?,'selected',?)
+  `);
+  insertAsset.run('timeline-asset','p1','sha256:timeline-asset',JSON.stringify({ durationSec: 4 }),null,now,now);
+  insertAsset.run('cover-pool-asset','p1','sha256:cover-pool-asset',JSON.stringify({ durationSec: 9 }),null,now,now);
+  insertAsset.run('outside-pool-asset','p1','sha256:outside-pool-asset',JSON.stringify({ durationSec: 12 }),null,now,now);
+  insertAnalysis.run('analysis-timeline','timeline-asset',JSON.stringify({ durationUs: 4_000_000 }),now,now);
+  insertAnalysis.run('analysis-cover','cover-pool-asset',JSON.stringify({ durationUs: 9_000_000 }),now,now);
+  insertAnalysis.run('analysis-outside','outside-pool-asset',JSON.stringify({ durationUs: 12_000_000 }),now,now);
+  insertPoolItem.run('pool-timeline','bv1','timeline-asset','analysis-timeline',now);
+  insertPoolItem.run('pool-cover','bv1','cover-pool-asset','analysis-cover',now);
+  db.prepare(`UPDATE batch_assets SET currentAnalysisId = ? WHERE id = ?`).run('analysis-timeline','timeline-asset');
+  db.prepare(`UPDATE batch_assets SET currentAnalysisId = ? WHERE id = ?`).run('analysis-cover','cover-pool-asset');
+
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(JSON.stringify({
+    productionReady: true,
+    clips: [{
+      clipId: 'clip-1', assetId: 'timeline-asset', sourceStartUs: 500_000,
+      sourceEndUs: 2_500_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+    }],
+    cover: { assetId: 'cover-pool-asset', timeUs: 3_000_000 },
+    warnings: [], blockers: [],
+  }));
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov2'`).run(JSON.stringify({
+    productionReady: false,
+    clips: [{
+      clipId: 'clip-2', assetId: 'timeline-asset', sourceStartUs: 0,
+      sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+    }],
+    cover: { assetId: 'outside-pool-asset', timeUs: 1_000_000 },
+    warnings: [], blockers: [],
+  }));
+
   const insertTask = db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,expectedState,progressJson,attemptCount,createdAt,updatedAt) VALUES (?,?,?,'render','output_version',?,?,?,?,?,?,?)`);
   insertTask.run('task2','p1','b1','ov2','failed','running','{}',1,now,now);
   db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,errorCode,errorMessage,startedAt,finishedAt,createdAt) VALUES ('attempt2','task2',1,'failed','{}','render_failed','编码失败',?,?,?)`).run(now,now,now);
+  insertTask.run('task1','p1','b1','ov1','succeeded','running','{}',1,now,now);
+  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt) VALUES ('attempt1','task1',1,'succeeded','{}',?,?,?,?)`).run(
+    JSON.stringify({
+      outputVersionId: 'ov1', audioMode: 'narration', productionReady: true, durationUs: 2_000_000,
+      videoRelativePath: 'batch-renders/ov1/video.mp4', coverRelativePath: 'batch-renders/ov1/cover.jpg',
+      editRevision: 0, subtitleCues: [],
+    }),
+    now, now, now,
+  );
   insertTask.run('task3','p1','b1','ov3','queued','running','{}',0,now,now);
   insertTask.run('task4','p1','b1','ov4-new','failed','running','{}',1,now,now);
   db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,errorCode,errorMessage,startedAt,finishedAt,createdAt) VALUES ('attempt4','task4',1,'failed','{}','render_failed','新版失败',?,?,?)`).run(now,now,now);
@@ -49,12 +102,18 @@ try {
   assert.equal(view.cards[0]?.status, 'completed');
   assert.equal(view.cards[0]?.exportable, true);
   assert.equal(view.cards[0]?.currentCover?.id, 'cover1');
+  assert.equal(view.cards[0]?.candidate?.editRevision, 0);
+  assert.equal(view.cards[0]?.renderStale, false, '候选与当前 arrangement revision 一致时不得标记 stale');
+  assert.deepEqual(view.cards[0]?.coverRange, {
+    assetId: 'cover-pool-asset', startUs: 0, endUs: 9_000_000, currentUs: 3_000_000,
+  }, '封面素材不在时间线 clips 中时仍应使用冻结素材的完整时长');
   assert.equal(view.cards[1]?.status, 'retryable_failed', '静音条件不得遮蔽可重试的渲染失败');
+  assert.equal(view.cards[1]?.coverRange, null, '封面素材不在冻结池时必须显式返回不可用');
   assert.equal(view.cards[2]?.status, 'needs_attention', '非阻塞差异提醒优先显示需处理');
   assert.equal(view.cards[3]?.status, 'needs_attention', '新版失败不能隐藏旧正式产物');
   assert.equal(view.cards[3]?.exportable, true);
   assert.match(view.cards[3]?.nextAction ?? '', /旧版仍可/);
-  assert.deepEqual(view.counts, { total: 4, exportable: 2, publishable: 0, approved: 0, processing: 0, needsAttention: 2, failed: 1 });
+  assert.deepEqual(view.counts, { total: 4, exportable: 2, publishable: 1, approved: 0, processing: 0, needsAttention: 2, failed: 1 });
   assert.equal(view.phase, 'review');
   db.prepare(`
     INSERT INTO batch_allocation_runs

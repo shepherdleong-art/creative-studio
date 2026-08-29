@@ -50,11 +50,14 @@ export default function BatchStepExport(props: BatchStepExportProps) {
   const hasPublished = workspace.cards.some(({ currentVideo }) => Boolean(currentVideo));
   const exportFolder = folderRelativePath
     ?? (hasPublished && workspace.exportDirName ? `storage/projects/${workspace.exportDirName}/成片` : null);
-  // 可导出 = 技术上可发布 && 已审核通过(审核门禁是服务端单点判断,UI 同步过滤)
-  const selectable = workspace.cards.filter(({ publishable, approved }) => publishable && approved);
+  // 可导出 = 技术上可发布 && 已审核通过 && 成功候选与当前编辑修订号一致。
+  // renderStale 是服务端导出新鲜度门禁在工作区的镜像,旧候选仍可预览但不能勾选。
+  const selectable = workspace.cards.filter(({ publishable, approved, renderStale }) => publishable && approved && !renderStale);
   const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
+  const selectedExportCount = selectable.filter(({ planId }) => selectedPlanIds.includes(planId)).length;
 
   const awaitingReview = workspace.cards.filter(({ publishable, approved }) => publishable && !approved).length;
+  const awaitingRender = workspace.cards.filter(({ publishable, approved, renderStale }) => publishable && approved && renderStale).length;
   const silentCount = workspace.cards.filter((card) => card.candidate?.audioMode === 'silent_placeholder').length;
   const blockedReasons = [...new Set(
     workspace.cards
@@ -83,10 +86,10 @@ export default function BatchStepExport(props: BatchStepExportProps) {
             <button
               type="button"
               className="btn-primary text-xs"
-              disabled={phaseEBusy !== null || selectedPlanIds.length === 0 || productCodeMissing}
+              disabled={phaseEBusy !== null || selectedExportCount === 0 || productCodeMissing}
               title={productCodeMissing ? '请先在项目信息中填写产品编码' : undefined}
               onClick={onPublish}
-            >{phaseEBusy === 'export' ? '导出中…' : productCodeMissing ? '请先填写产品编码' : `正式导出选中项（${selectedPlanIds.length}）`}</button>
+            >{phaseEBusy === 'export' ? '导出中…' : productCodeMissing ? '请先填写产品编码' : `正式导出选中项（${selectedExportCount}）`}</button>
           </div>
         </div>
         {productCodeMissing && (
@@ -110,9 +113,14 @@ export default function BatchStepExport(props: BatchStepExportProps) {
             {awaitingReview} 条成片可发布但尚未审核：请到「检查成片」勾选后点「通过」，审核通过后才能导出。
           </p>
         )}
+        {awaitingRender > 0 && (
+          <p className="w-full text-xs text-warn" role="status">
+            {awaitingRender} 条成片的画面已调整或正在重新渲染：渲染完成后才可导出。
+          </p>
+        )}
         <div className="grid gap-3 sm:grid-cols-5">
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">全部</p><strong className="text-xl text-ink">{counts.total}</strong></div>
-          <div className="tile p-3"><p className="text-xs text-ink-tertiary">可导出</p><strong className="text-xl text-ok">{counts.publishable}</strong></div>
+          <div className="tile p-3"><p className="text-xs text-ink-tertiary">可导出</p><strong className="text-xl text-ok">{selectable.length}</strong></div>
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">处理中</p><strong className="text-xl text-accent">{counts.processing}</strong></div>
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">需处理</p><strong className="text-xl text-warn">{counts.needsAttention}</strong></div>
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">可重试失败</p><strong className="text-xl text-fail">{counts.failed}</strong></div>
@@ -159,8 +167,12 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     type="checkbox"
                     aria-label={`选择成片 ${card.seq}`}
                     checked={selectedPlanIds.includes(card.planId)}
-                    disabled={!card.publishable || !card.approved}
-                    title={card.publishable && !card.approved ? '这条成片尚未审核通过，请先到检查页点「通过」' : card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
+                    disabled={!card.publishable || !card.approved || card.renderStale}
+                    title={card.renderStale
+                      ? '画面已调整，等待重新渲染完成后才能导出'
+                      : card.publishable && !card.approved
+                        ? '这条成片尚未审核通过，请先到检查页点「通过」'
+                        : card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
                     onChange={(event) => onTogglePlan(card.planId, event.target.checked)}
                     className="mt-1 disabled:opacity-40"
                   />
@@ -169,8 +181,8 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     <strong className="mt-1 block truncate text-ink">{card.scriptTitle || '未命名脚本'}</strong>
                   </span>
                 </label>
-                <span className={`rounded-full px-2 py-1 text-[11px] ${card.publishable && card.approved ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
-                  {card.publishable && card.approved ? '可导出' : card.publishable ? '待审核' : '不可导出'}
+                <span className={`rounded-full px-2 py-1 text-[11px] ${card.renderStale ? 'bg-warn/20 text-warn' : card.publishable && card.approved ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
+                  {card.renderStale ? '等待重新渲染' : card.publishable && card.approved ? '可导出' : card.publishable ? '待审核' : '不可导出'}
                 </span>
               </div>
               {mediaSource && (
