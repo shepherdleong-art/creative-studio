@@ -49,6 +49,10 @@ assert.match(outputEditor, /BatchTimeline/);
 assert.match(outputEditor, /aria-label="口播变速"/);
 assert.match(outputEditor, /跳转到脚本步骤/);
 assert.match(outputEditor, /BatchCoverDraftPreview/);
+assert.match(outputEditor, /lg:grid-cols-\[minmax\(190px,220px\)_minmax\(0,1fr\)_minmax\(250px,300px\)\]/);
+assert.match(outputEditor, /aria-label="素材调整"/);
+assert.match(outputEditor, /aria-label="成片设置"/);
+assert.doesNotMatch(review, /封面素材网格/);
 assert.match(batchTimeline, /batch-output-timeline/);
 assert.match(batchTimeline, /planSubtitleCueSplit/);
 assert.match(batchTimeline, /末帧延长/);
@@ -77,6 +81,5 @@ assert.ok(
   '导出状态必须先表达不可导出，再表达可导出候选的新鲜度',
 );
 assert.match(review, /渲染中，完成后才可导出/);
-assert.match(review, /封面素材不可用/);
-assert.match(review, /封面素材原片区间/);
+assert.doesNotMatch(review, /封面素材原片区间/);
 assert.match(panel, /因画面已调整未导出/);

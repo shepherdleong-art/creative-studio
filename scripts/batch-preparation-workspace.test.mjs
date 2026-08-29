@@ -144,7 +144,11 @@ assert.match(review, /版本切换/);
 assert.match(review, /查看版本/);
 assert.match(review, /batch-output-cover-/);
 assert.match(review, /subtitleCueCount/);
-assert.match(review, /封面素材网格/);
+// 封面素材切换只保留在「调整片段」右侧设置,普通预览不再重复出现该编辑器
+assert.doesNotMatch(review, /封面素材网格/);
+assert.match(outputEditor, /lg:grid-cols-\[minmax\(190px,220px\)_minmax\(0,1fr\)_minmax\(250px,300px\)\]/);
+assert.match(outputEditor, /aria-label="素材调整"/);
+assert.match(outputEditor, /aria-label="成片设置"/);
 assert.match(coverPreview, /封面实时预览/);
 assert.match(review, /手动字幕覆盖/);
 assert.match(outputEditor, /跳转到脚本步骤/);

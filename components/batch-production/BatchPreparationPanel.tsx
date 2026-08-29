@@ -1364,29 +1364,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
-  async function changeCover(planId: string, assetId: string, timeUs: number): Promise<void> {
-    if (!selectedBatchId) return;
-    setPhaseEBusy(`cover:${planId}`);
-    setFeedback(null);
-    try {
-      const result = await readJson<{ edit?: { timeUs?: number }; renderTaskId?: string | null }>(await fetch(
-        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: 'set_cover', assetId, timeUs }),
-        },
-      ));
-      const appliedTimeUs = result.edit?.timeUs ?? timeUs;
-      setFeedback({ kind: 'success', message: `封面已更新为 ${(appliedTimeUs / 1_000_000).toFixed(2)} 秒处画面；封面同时是成片片头，正在重新渲染这一条，完成后需重新导出。` });
-      await loadWorkspace(selectedBatchId);
-    } catch (coverError) {
-      setFeedback({ kind: 'error', message: coverError instanceof Error ? coverError.message : '换封面失败' });
-    } finally {
-      setPhaseEBusy(null);
-    }
-  }
-
   async function toggleAssetExclusion(assetId: string, excluded: boolean): Promise<void> {
     if (!selectedBatchId) return;
     setPhaseEBusy(`exclude:${assetId}`);
@@ -1936,8 +1913,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
               }}
               onReview={(decision) => void reviewSelected(decision)}
-              onChangeCover={(planId, assetId, timeUs) => void changeCover(planId, assetId, timeUs)}
-              coverBusy={phaseEBusy?.startsWith('cover:') ? phaseEBusy.slice('cover:'.length) : null}
               phaseEBusy={phaseEBusy}
               onRetryRender={(taskId) => void retryRenderTask(taskId)}
               onRetryNarration={(taskId) => void retryNarrationTask(taskId)}
