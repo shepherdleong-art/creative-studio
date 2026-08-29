@@ -7,6 +7,7 @@ import type {
   BatchOutputClipEditView,
 } from '@/lib/batch-production/output-arrangement';
 import BatchClipTrimEditor from './BatchClipTrimEditor';
+import BatchCoverDraftPreview from './BatchCoverDraftPreview';
 import BatchTimeline from './BatchTimeline';
 import BatchTimelinePreview from './BatchTimelinePreview';
 
@@ -20,6 +21,8 @@ export interface BatchOutputEditorProps {
   active?: boolean;
   /** 编辑生效后回调,外层据此刷新 workspace(卡片进入渲染中) */
   onChanged?: () => void;
+  /** 从成片编辑器跳回批量脚本步骤,供暂不支持的口播变速能力使用。 */
+  onJumpToScripts?: () => void;
 }
 
 interface EditFeedback {
@@ -44,11 +47,13 @@ export default function BatchOutputEditor({
   renderBusy = false,
   active = true,
   onChanged,
+  onJumpToScripts,
 }: BatchOutputEditorProps) {
   const [view, setView] = useState<BatchOutputClipEditView | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
   const [playheadSec, setPlayheadSec] = useState(0);
   const [freeformClipId, setFreeformClipId] = useState<string | null>(null);
   const [replaceCandidateId, setReplaceCandidateId] = useState<string | null>(null);
@@ -58,8 +63,13 @@ export default function BatchOutputEditor({
   // 这一轮调整里有画面变化尚未提交渲染。卸载兜底要读最新值,但 effect 不能依赖它
   // (依赖它就会在编辑中途重跑、提前提交),所以 state 与 ref 并存。
   const [pendingRender, setPendingRender] = useState(false);
+  const [musicParamsDraft, setMusicParamsDraft] = useState({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
+  const [coverDraftAssetId, setCoverDraftAssetId] = useState<string | null>(null);
+  const [coverDraftTimeUs, setCoverDraftTimeUs] = useState(0);
+  const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const pendingRenderRef = useRef(false);
   const onChangedRef = useRef(onChanged);
+  const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => { onChangedRef.current = onChanged; });
 
   const clipsUrl = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
@@ -95,6 +105,7 @@ export default function BatchOutputEditor({
     // 换片段计划时重置交互态并重新拉取;统一推迟到宏任务,避免 effect 内同步 setState。
     const timer = window.setTimeout(() => {
       setSelectedClipId(null);
+      setSelectedSubtitleCueId(null);
       setPlayheadSec(0);
       setFreeformClipId(null);
       setReplaceCandidateId(null);
@@ -133,12 +144,39 @@ export default function BatchOutputEditor({
   const pendingReplaceAsset = replaceCandidateId ? assetsById.get(replaceCandidateId) ?? null : null;
 
   const usedHere = poolAssets.filter((asset) => asset.usedByPlanIds.includes(planId)).length;
-  const neverUsed = poolAssets.filter((asset) => asset.usedByPlanIds.length === 0).length;
+  const coverHere = poolAssets.filter((asset) => asset.coverUsedByPlanIds.includes(planId)).length;
+  const neverUsed = poolAssets.filter((asset) => asset.usedByPlanIds.length === 0 && asset.coverUsedByPlanIds.length === 0).length;
   const visualSec = (view?.visualDurationUs ?? 0) / 1_000_000;
   const narrationSec = view?.narration.durationUs != null ? view.narration.durationUs / 1_000_000 : null;
   const durationDeltaSec = narrationSec == null ? 0 : visualSec - narrationSec;
 
   const editLocked = !view?.editable || renderBusy || submitting;
+  const syncedMusicGain = view?.music.gainDb;
+  const syncedMusicFadeIn = view?.music.fadeInSec;
+  const syncedMusicFadeOut = view?.music.fadeOutSec;
+  const syncedCoverAssetId = view?.coverAssetId;
+  const syncedCoverTimeUs = view?.coverTimeUs;
+
+  useEffect(() => {
+    if (syncedMusicGain === undefined || syncedMusicFadeIn === undefined || syncedMusicFadeOut === undefined || syncedCoverTimeUs === undefined) return;
+    const timer = window.setTimeout(() => {
+      setMusicParamsDraft({
+        gainDb: syncedMusicGain,
+        fadeInSec: syncedMusicFadeIn,
+        fadeOutSec: syncedMusicFadeOut,
+      });
+      setCoverDraftAssetId(syncedCoverAssetId ?? null);
+      setCoverDraftTimeUs(syncedCoverTimeUs);
+    }, 0);
+  // editRevision changes only after a command is accepted, so local slider drafts
+  // are not overwritten while the user is moving a control.
+    return () => window.clearTimeout(timer);
+  }, [syncedCoverAssetId, syncedCoverTimeUs, syncedMusicFadeIn, syncedMusicFadeOut, syncedMusicGain]);
+
+  useEffect(() => () => {
+    auditionAudioRef.current?.pause();
+    auditionAudioRef.current = null;
+  }, []);
 
   const narrationUrl = view?.narration.audioRelativePath
     ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?kind=narration&projectId=${encodeURIComponent(projectId)}`
@@ -175,9 +213,10 @@ export default function BatchOutputEditor({
         setEditFeedback({ kind: 'success', message: '修改已保存，片段已分割，画面总长不变，无需重新渲染。' });
       } else if (editResult.changed) {
         markRenderPending(true);
-        setEditFeedback({ kind: 'success', message: '修改已保存。退出片段调整后会按新画面重新渲染，期间可以接着调。' });
+        const editKind = payload.type === 'set_cover' ? '封面' : payload.type?.toString().startsWith('set_music') ? '音乐' : payload.type?.toString().includes('subtitle') ? '字幕' : '画面';
+        setEditFeedback({ kind: 'success', message: `${editKind}修改已保存。退出本轮调整后会自动重新渲染，期间可以接着调。` });
       } else {
-        setEditFeedback({ kind: 'success', message: '片段画面没有变化，已保持当前安排。' });
+        setEditFeedback({ kind: 'success', message: '这次修改没有变化，已保持当前安排。' });
       }
       // 静默重拉:预览立即吃到新 arrangement(即改即看),不打断当前交互。
       await loadView(true);
@@ -264,6 +303,31 @@ export default function BatchOutputEditor({
     }
   };
 
+  const confirmDeleteSubtitle = (cueId: string): void => {
+    if (!window.confirm('删除这条字幕后，口播音频不会改变。确定删除吗？')) return;
+    void submitEdit({ type: 'delete_subtitle_cue', cueId }).then((accepted) => {
+      if (accepted) setSelectedSubtitleCueId(null);
+    });
+  };
+
+  const auditionMusic = (trackId: string): void => {
+    if (auditioningTrackId === trackId) {
+      auditionAudioRef.current?.pause();
+      auditionAudioRef.current = null;
+      setAuditioningTrackId(null);
+      return;
+    }
+    const audio = new Audio(`/api/final-edit-bgm/${encodeURIComponent(trackId)}/file`);
+    audio.onended = () => setAuditioningTrackId(null);
+    auditionAudioRef.current?.pause();
+    auditionAudioRef.current = audio;
+    setAuditioningTrackId(trackId);
+    void audio.play().catch(() => setAuditioningTrackId(null));
+  };
+
+  const coverAsset = coverDraftAssetId ? poolAssets.find(({ assetId }) => assetId === coverDraftAssetId) ?? null : null;
+  const coverDurationUs = coverAsset?.durationSec != null ? Math.max(1, Math.round(coverAsset.durationSec * 1_000_000)) : null;
+
   if (loading && !view) {
     return <div className="tile p-6 text-center text-sm text-ink-secondary">正在读取成片安排…</div>;
   }
@@ -277,11 +341,16 @@ export default function BatchOutputEditor({
   }
   if (!view) return null;
 
+  const coverChanged = coverDraftAssetId !== view.coverAssetId || coverDraftTimeUs !== view.coverTimeUs;
+  const musicParamsChanged = musicParamsDraft.gainDb !== view.music.gainDb
+    || musicParamsDraft.fadeInSec !== view.music.fadeInSec
+    || musicParamsDraft.fadeOutSec !== view.music.fadeOutSec;
+
   return (
     <div className="space-y-4" data-testid={`batch-output-editor-${planId}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-ink-secondary">
-          本片使用 {usedHere}/{poolAssets.length} 条素材 · 本批次还有 {neverUsed} 条素材从未被任何成片使用
+          本片使用 {usedHere}/{poolAssets.length} 条画面素材{coverHere > 0 ? `，另有 ${coverHere} 条作为封面` : ''} · 本批次还有 {neverUsed} 条素材从未被任何成片使用
           · 画面 {visualSec.toFixed(1)} 秒{narrationSec != null ? ` / 口播 ${narrationSec.toFixed(1)} 秒` : ''}
         </p>
         {pendingRender && (
@@ -336,6 +405,7 @@ export default function BatchOutputEditor({
             assetsById={previewAssetsById}
             coverUrl={coverUrl}
             subtitleCues={view.subtitleCues}
+            subtitleStyle={view.subtitleStyle}
             narrationUrl={narrationUrl}
             bgm={previewBgm}
             outputPreset={outputPreset}
@@ -345,17 +415,128 @@ export default function BatchOutputEditor({
           />
         </section>
 
-        <section className="min-w-0 space-y-2" aria-label="冻结素材池">
+        <section className="min-w-0 space-y-3" aria-label="成片设置与冻结素材池">
+          <div className="tile space-y-3 p-3" aria-label="封面设置">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-ink">封面设置</p>
+              <span className="text-[11px] text-ink-tertiary">可选任意冻结素材</span>
+            </div>
+            <select
+              aria-label="编辑器封面素材"
+              value={coverDraftAssetId ?? ''}
+              onChange={(event) => {
+                setCoverDraftAssetId(event.target.value || null);
+                setCoverDraftTimeUs(0);
+              }}
+              disabled={editLocked || poolAssets.length === 0}
+              className="h-9 w-full rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+            >
+              <option value="">选择封面素材</option>
+              {poolAssets.map((asset) => (
+                <option key={asset.assetId} value={asset.assetId}>
+                  {asset.displayName}{asset.durationSec != null ? ` · ${asset.durationSec.toFixed(1)} 秒` : ' · 时长未知'}
+                </option>
+              ))}
+            </select>
+            <input
+              type="range"
+              aria-label="编辑器封面抽帧时间"
+              min={0}
+              max={Math.max(0, (coverDurationUs ?? 1) - 1)}
+              step={100_000}
+              value={coverDraftTimeUs}
+              disabled={editLocked || !coverAsset || coverDurationUs == null}
+              onChange={(event) => setCoverDraftTimeUs(Number(event.target.value))}
+              className="w-full"
+            />
+            <BatchCoverDraftPreview
+              asset={coverAsset}
+              timeUs={coverDraftTimeUs}
+              title={view.coverTitle}
+              outputPreset={outputPreset}
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <span className="text-ink-tertiary">{coverAsset ? `${coverAsset.displayName} · ${(coverDraftTimeUs / 1_000_000).toFixed(2)} 秒` : '封面素材不可用'}</span>
+              <button
+                type="button"
+                className="btn-secondary h-8 px-3 text-xs"
+                disabled={editLocked || !coverAsset || coverDurationUs == null || !coverChanged}
+                onClick={() => void submitEdit({ type: 'set_cover', assetId: coverAsset!.assetId, timeUs: Math.min(coverDraftTimeUs, coverDurationUs! - 1) })}
+              >应用封面</button>
+            </div>
+          </div>
+
+          <div className="tile space-y-3 p-3" aria-label="成片背景音乐">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-ink">成片背景音乐</p>
+              <span className="text-[11px] text-ink-tertiary">每条成片可单独覆盖</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                aria-label="成片背景音乐曲目"
+                value={view.music.trackId ?? ''}
+                disabled={editLocked}
+                onChange={(event) => void submitEdit({ type: 'set_music_track', trackId: event.target.value || null })}
+                className="h-9 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+              >
+                <option value="">关闭 BGM</option>
+                {view.musicLibrary.map((track) => <option key={track.id} value={track.id}>{track.filename} · {(track.durationUs / 1_000_000).toFixed(1)} 秒</option>)}
+              </select>
+              {view.music.trackId && (
+                <button
+                  type="button"
+                  className="btn-secondary h-9 shrink-0 px-3 text-xs"
+                  disabled={editLocked}
+                  onClick={() => auditionMusic(view.music.trackId!)}
+                >{auditioningTrackId === view.music.trackId ? '停止试听' : '试听'}</button>
+              )}
+            </div>
+            <label className="block text-[11px] text-ink-secondary">音量 {musicParamsDraft.gainDb.toFixed(0)} dB
+              <input type="range" min={-60} max={0} step={1} value={musicParamsDraft.gainDb} disabled={editLocked || !view.music.trackId} onChange={(event) => setMusicParamsDraft((current) => ({ ...current, gainDb: Number(event.target.value) }))} className="mt-1 w-full" />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-[11px] text-ink-secondary">淡入 {musicParamsDraft.fadeInSec.toFixed(1)} 秒
+                <input type="range" min={0} max={30} step={0.1} value={musicParamsDraft.fadeInSec} disabled={editLocked || !view.music.trackId} onChange={(event) => setMusicParamsDraft((current) => ({ ...current, fadeInSec: Number(event.target.value) }))} className="mt-1 w-full" />
+              </label>
+              <label className="text-[11px] text-ink-secondary">淡出 {musicParamsDraft.fadeOutSec.toFixed(1)} 秒
+                <input type="range" min={0} max={30} step={0.1} value={musicParamsDraft.fadeOutSec} disabled={editLocked || !view.music.trackId} onChange={(event) => setMusicParamsDraft((current) => ({ ...current, fadeOutSec: Number(event.target.value) }))} className="mt-1 w-full" />
+              </label>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || !musicParamsChanged} onClick={() => { setMusicParamsDraft(view.batchMusicDefaults); void submitEdit({ type: 'set_music_params', ...view.batchMusicDefaults }); }}>恢复批次默认</button>
+              <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={editLocked || !musicParamsChanged} onClick={() => void submitEdit({ type: 'set_music_params', ...musicParamsDraft })}>应用 BGM 参数</button>
+            </div>
+          </div>
+
+          <div className="tile space-y-2 p-3" aria-label="字幕编辑说明">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium text-ink">字幕覆盖</p>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] ${view.subtitleOverride ? 'bg-warn/20 text-warn' : 'bg-ok/10 text-ok'}`}>{view.subtitleOverride ? '手动覆盖' : '自动字幕'}</span>
+            </div>
+            <p className="text-[11px] text-ink-tertiary">拖动字幕块调整时间，拖边缘修剪，双击编辑文字；改字幕不改口播音频。</p>
+            {view.subtitleOverride && <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked} onClick={() => void submitEdit({ type: 'restore_automatic_subtitles' })}>恢复自动字幕</button>}
+          </div>
+
+          <div className="tile space-y-2 p-3" aria-label="口播变速">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-ink">口播变速</p>
+              <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[11px] text-ink-tertiary">暂不支持</span>
+            </div>
+            <p className="text-[11px] text-ink-tertiary">批量模式下口播速度属于脚本与口播设置，当前成片编辑器不会改变音频时长或音画对位。</p>
+            <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onJumpToScripts}>跳转到脚本步骤</button>
+          </div>
+
           <p className="text-xs font-medium text-ink">冻结素材池（{poolAssets.length}）</p>
           <p className="text-[11px] text-ink-tertiary">
             {selectedClip
-              ? '点击素材后可替换当前片段、插入到它之后，或追加到末尾。'
-              : '点击素材可追加到末尾；先在时间轴上选中片段，还可替换当前片段或插入到它之后。'}
+              ? '点击素材后可替换当前片段、插入到它之后，或追加到末尾。封面素材不要求出现在画面轨。'
+              : '点击素材可追加到末尾；先在时间轴上选中片段，还可替换当前片段或插入到它之后。封面可独立使用任意冻结素材。'}
           </p>
           <div className="grid max-h-[46vh] grid-cols-2 gap-2 overflow-y-auto pr-1">
             {poolAssets.map((asset) => {
               const usedByThis = asset.usedByPlanIds.includes(planId);
               const usedByOthers = !usedByThis && asset.usedByPlanIds.length > 0;
+              const coverUsedByThis = asset.coverUsedByPlanIds.includes(planId);
               const selectable = !asset.excluded && !editLocked && clips.length > 0;
               const pending = replaceCandidateId === asset.assetId;
               return (
@@ -377,6 +558,7 @@ export default function BatchOutputEditor({
                   <span className="block text-[10px] text-ink-tertiary">{asset.durationSec != null ? `${asset.durationSec.toFixed(1)} 秒` : '时长未知'}</span>
                   <span className="flex flex-wrap gap-1">
                     {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[10px] text-ok">本片已用</span>}
+                    {coverUsedByThis && <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">本片封面</span>}
                     {usedByOthers && <span className="rounded-full bg-surface-subtle px-1.5 py-0.5 text-[10px] text-ink-secondary">其他成片已用</span>}
                     {asset.excluded && <span className="rounded-full bg-fail/10 px-1.5 py-0.5 text-[10px] text-fail">已排除</span>}
                   </span>
@@ -435,14 +617,18 @@ export default function BatchOutputEditor({
         narrationDurationUs={view.narration.durationUs}
         playheadSec={playheadSec}
         selectedClipId={selectedClipId}
+        selectedSubtitleCueId={selectedSubtitleCueId}
         disabled={editLocked}
         onSeek={setPlayheadSec}
         onSelectClip={setSelectedClipId}
+        onSelectSubtitleCue={setSelectedSubtitleCueId}
         onTrimVariable={async (clipId, sourceStartUs, sourceEndUs) =>
           submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs })}
         onSplit={async (clipId, offsetUs) => submitEdit({ type: 'split', clipId, offsetUs })}
         onOpenFineTrim={(clipId) => { setSelectedClipId(clipId); setFreeformClipId(clipId); }}
         onDeleteClip={(clipId) => void confirmDelete(clipId)}
+        onSubtitleEdit={submitEdit}
+        onDeleteSubtitleCue={confirmDeleteSubtitle}
       />
 
       {freeformClip && (

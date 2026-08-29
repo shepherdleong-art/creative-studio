@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
 import { timelineAbsoluteFrameFromPointer, timelineContentWidthPx } from '@/components/final-edit/timeline-edit';
+import { planSubtitleCueSplit } from '@/components/final-edit/subtitle-split';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/final-edit/types';
-import type { BatchOutputClipView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
+import type { BatchOutputClipView, BatchOutputPoolAssetView, BatchOutputSubtitleCueView } from '@/lib/batch-production/output-arrangement';
 import styles from '../mixcut/mixcut-content.module.css';
 
 const FPS = FINAL_EDIT_FPS; // 24
@@ -30,10 +31,20 @@ interface ClipTrimDraft {
 }
 
 interface ClipContextMenuState {
+  kind: 'clip';
   clipId: string;
   x: number;
   y: number;
 }
+
+interface SubtitleContextMenuState {
+  kind: 'subtitle';
+  cueId: string;
+  x: number;
+  y: number;
+}
+
+type TimelineContextMenuState = ClipContextMenuState | SubtitleContextMenuState;
 
 // 伪波形组件：原样复制自 components/mixcut/MixcutTimeline.tsx（那边没有 export）。
 function Waveform({ tone, seed, playedWidthPx }: { tone: 'tts' | 'bgm'; seed: number; playedWidthPx: number }) {
@@ -64,22 +75,27 @@ export interface BatchTimelineProps {
   /** 必须是对 fetched view 的稳定引用（如 useMemo([view])）；draft 实时预览靠 draftState.clips === clips 引用比较失效，每次 render 新建数组会让拖拽预览静默失效。 */
   clips: BatchOutputClipView[];
   assets: BatchOutputPoolAssetView[]; // 取 thumbnailUrl/displayName/durationSec
-  subtitleCues: Array<{ startUs: number; endUs: number; text: string }>;
+  subtitleCues: BatchOutputSubtitleCueView[];
   narrationDurationUs: number | null;
   playheadSec: number; // 含片头绝对时间
   selectedClipId: string | null;
+  selectedSubtitleCueId: string | null;
   disabled: boolean; // 只禁用变更手势，不禁用 seek/选中
   onSeek: (sec: number) => void;
   onSelectClip: (clipId: string | null) => void;
+  onSelectSubtitleCue: (cueId: string | null) => void;
   onTrimVariable: (clipId: string, sourceStartUs: number, sourceEndUs: number) => Promise<boolean>;
   onSplit: (clipId: string, offsetUs: number) => Promise<boolean>;
   onOpenFineTrim: (clipId: string) => void;
   onDeleteClip: (clipId: string) => void;
+  onSubtitleEdit: (edit: Record<string, unknown>) => Promise<boolean>;
+  onDeleteSubtitleCue: (cueId: string) => void;
 }
 
 /**
  * 批量「检查成片」时间轴：画面轨（选中/拖边缘变长修剪/拖中段等长平移/分割/右键菜单）
- * + 字幕、口播只读对照轨。交互范式对齐 components/mixcut/MixcutTimeline.tsx。
+ * + 字幕轨（文字编辑/拖动/拖边/分割/删除）+口播对照轨。交互范式对齐
+ * components/mixcut/MixcutTimeline.tsx。
  * 时间坐标：clips 与 subtitleCues 是正文（片头后）相对时间，playheadSec 是含片头绝对时间。
  */
 export default function BatchTimeline({
@@ -89,18 +105,22 @@ export default function BatchTimeline({
   narrationDurationUs,
   playheadSec,
   selectedClipId,
+  selectedSubtitleCueId,
   disabled,
   onSeek,
   onSelectClip,
+  onSelectSubtitleCue,
   onTrimVariable,
   onSplit,
   onOpenFineTrim,
   onDeleteClip,
+  onSubtitleEdit,
+  onDeleteSubtitleCue,
 }: BatchTimelineProps) {
   const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
   const [tool, setTool] = useState<TimelineTool>('select');
-  const [contextMenu, setContextMenu] = useState<ClipContextMenuState | null>(null);
+  const [contextMenu, setContextMenu] = useState<TimelineContextMenuState | null>(null);
   // 修剪预览锚定到产生它时的 clips 数组：clips 刷新后 draft 自动失效，无需 effect 清理
   const [draftState, setDraftState] = useState<{ clips: BatchOutputClipView[]; value: ClipTrimDraft } | null>(null);
   const draft = draftState && draftState.clips === clips ? draftState.value : null;
@@ -109,6 +129,7 @@ export default function BatchTimeline({
   const visualFrames = usToFrame(clips.at(-1)?.timelineEndUs ?? 0);
   const narrationFrames = narrationDurationUs != null ? usToFrame(narrationDurationUs) : null;
   const bodyFrames = Math.max(visualFrames, narrationFrames ?? 0);
+  const subtitleBodyFrames = narrationFrames ?? visualFrames;
   const totalFrames = INTRO_FRAMES + bodyFrames;
   const totalSec = totalFrames / FPS;
   const contentWidth = timelineContentWidthPx({ totalUs: (totalFrames / FPS) * 1e6, pxPerSecond, viewportWidth: Math.max(1, viewportWidth) });
@@ -234,7 +255,7 @@ export default function BatchTimeline({
         >
           <Icon name="scissors" size={13} />分割
         </button>
-        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击片段上的目标位置切开（两侧至少 0.5 秒）' : '单击选中 · 拖边缘变长修剪 · 拖中段等长平移 · 双击精细修剪 · 右键更多'}</span>
+        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击片段或字幕上的目标位置切开' : '画面：拖边缘修剪、拖中段平移；字幕：拖动/拖边/双击改字；右键删除'}</span>
       </div>
       <section className={styles.tl} aria-label="成片时间轴" data-testid="batch-output-timeline" data-tool={effectiveTool}>
         <div className={styles.tlLabels}>
@@ -286,6 +307,7 @@ export default function BatchTimeline({
                     onSplit={onSplit}
                     onOpenFineTrim={onOpenFineTrim}
                     onOpenContextMenu={(clipId, clientX, clientY) => setContextMenu({
+                      kind: 'clip',
                       clipId,
                       x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
                       y: Math.max(8, Math.min(clientY, window.innerHeight - 96)),
@@ -312,16 +334,24 @@ export default function BatchTimeline({
             </div>
             <div className={`${styles.tlTrack} ${styles.tlTrackSub}`} data-track="subtitle">
               {subtitleCues.map((cue, index) => (
-                <div
-                  key={`${cue.startUs}-${cue.endUs}-${index}`}
-                  className={styles.subclip}
-                  style={{
-                    left: (INTRO_SEC + cue.startUs / 1e6) * pxPerSecond,
-                    width: ((cue.endUs - cue.startUs) / 1e6) * pxPerSecond,
-                    pointerEvents: 'none',
-                  }}
-                  title={cue.text}
-                >{cue.text}</div>
+                <BatchSubtitleBlock
+                  key={cue.id || `${cue.startUs}-${cue.endUs}-${index}`}
+                  cue={cue}
+                  disabled={disabled}
+                  tool={effectiveTool}
+                  pxPerSecond={pxPerSecond}
+                  frameFromPointer={frameFromPointer}
+                  bodyDurationUs={subtitleBodyFrames > 0 ? frameToUs(subtitleBodyFrames) : Math.max(cue.endUs, 1)}
+                  selected={cue.id === selectedSubtitleCueId}
+                  onSelect={onSelectSubtitleCue}
+                  onEdit={onSubtitleEdit}
+                  onOpenContextMenu={(cueId, clientX, clientY) => setContextMenu({
+                    kind: 'subtitle',
+                    cueId,
+                    x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
+                    y: Math.max(8, Math.min(clientY, window.innerHeight - 96)),
+                  })}
+                />
               ))}
             </div>
             <div
@@ -351,33 +381,49 @@ export default function BatchTimeline({
           <div className={styles.timelineContextLayer} onPointerDown={closeContextMenu}>
             <div
               role="menu"
-              aria-label="片段操作"
+              aria-label={contextMenu.kind === 'clip' ? '片段操作' : '字幕操作'}
               className={styles.timelineContextMenu}
               style={{ left: contextMenu.x, top: contextMenu.y }}
               onPointerDown={(event) => event.stopPropagation()}
             >
-              <button
-                type="button"
-                role="menuitem"
-                disabled={disabled}
-                onClick={() => {
-                  const clipId = contextMenu.clipId;
-                  setContextMenu(null);
-                  onOpenFineTrim(clipId);
-                }}
-              >精细修剪…</button>
-              <button
-                type="button"
-                role="menuitem"
-                className={styles.timelineContextDanger}
-                disabled={disabled || clips.length === 1}
-                title={clips.length === 1 ? '至少保留一条片段' : undefined}
-                onClick={() => {
-                  const clipId = contextMenu.clipId;
-                  setContextMenu(null);
-                  onDeleteClip(clipId);
-                }}
-              >删除片段</button>
+              {contextMenu.kind === 'clip' ? (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={disabled}
+                    onClick={() => {
+                      const clipId = contextMenu.clipId;
+                      setContextMenu(null);
+                      onOpenFineTrim(clipId);
+                    }}
+                  >精细修剪…</button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={styles.timelineContextDanger}
+                    disabled={disabled || clips.length === 1}
+                    title={clips.length === 1 ? '至少保留一条片段' : undefined}
+                    onClick={() => {
+                      const clipId = contextMenu.clipId;
+                      setContextMenu(null);
+                      onDeleteClip(clipId);
+                    }}
+                  >删除片段</button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={styles.timelineContextDanger}
+                  disabled={disabled}
+                  onClick={() => {
+                    const cueId = contextMenu.cueId;
+                    setContextMenu(null);
+                    onDeleteSubtitleCue(cueId);
+                  }}
+                >删除字幕</button>
+              )}
             </div>
           </div>,
           document.body,
@@ -535,6 +581,207 @@ function BatchClipBlock({
       <span className={styles.clipCd}>{durationSec.toFixed(1)}s</span>
       <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="修剪片段开头" onPointerDown={tool === 'select' ? (event) => begin('start', event) : undefined} />
       <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="修剪片段结尾" onPointerDown={tool === 'select' ? (event) => begin('end', event) : undefined} />
+    </article>
+  );
+}
+
+const MIN_SUBTITLE_FRAMES = 1;
+
+function BatchSubtitleBlock({
+  cue,
+  disabled,
+  tool,
+  pxPerSecond,
+  frameFromPointer,
+  bodyDurationUs,
+  selected,
+  onSelect,
+  onEdit,
+  onOpenContextMenu,
+}: {
+  cue: BatchOutputSubtitleCueView;
+  disabled: boolean;
+  tool: TimelineTool;
+  pxPerSecond: number;
+  frameFromPointer: (clientX: number) => number | null;
+  bodyDurationUs: number;
+  selected: boolean;
+  onSelect: (cueId: string | null) => void;
+  onEdit: (edit: Record<string, unknown>) => Promise<boolean>;
+  onOpenContextMenu: (cueId: string, clientX: number, clientY: number) => void;
+}) {
+  const cueId = cue.id;
+  const startFrame = usToFrame(cue.startUs);
+  const endFrame = usToFrame(cue.endUs);
+  const bodyFrames = Math.max(1, usToFrame(bodyDurationUs));
+  const [draft, setDraft] = useState<{ startFrame: number; endFrame: number } | null>(null);
+  const [splitOffsetFrames, setSplitOffsetFrames] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState(false);
+  const [textDraft, setTextDraft] = useState(cue.text);
+  const textDraftRef = useRef(cue.text);
+  const activeStartFrame = draft?.startFrame ?? startFrame;
+  const activeEndFrame = draft?.endFrame ?? endFrame;
+  const left = ((INTRO_FRAMES + activeStartFrame) / FPS) * pxPerSecond;
+  const width = Math.max(4, ((activeEndFrame - activeStartFrame) / FPS) * pxPerSecond);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setTextDraft(cue.text);
+      textDraftRef.current = cue.text;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [cue.text]);
+
+  const commitText = async () => {
+    setEditingText(false);
+    const text = textDraftRef.current;
+    if (text === cue.text) return;
+    await onEdit({ type: 'set_subtitle_cue_text', cueId, text });
+  };
+
+  const beginDrag = (mode: 'move' | 'start' | 'end', event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect(cueId);
+    if (disabled) return;
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    let latest = { startFrame, endFrame };
+    let changed = false;
+    const move = (pointer: PointerEvent) => {
+      const deltaFrames = Math.round(((pointer.clientX - startX) / pxPerSecond) * FPS);
+      let next: { startFrame: number; endFrame: number };
+      if (mode === 'move') {
+        const shift = clamp(deltaFrames, -startFrame, Math.max(-startFrame, bodyFrames - endFrame));
+        next = { startFrame: startFrame + shift, endFrame: endFrame + shift };
+      } else if (mode === 'start') {
+        next = { startFrame: clamp(startFrame + deltaFrames, 0, endFrame - MIN_SUBTITLE_FRAMES), endFrame };
+      } else {
+        next = { startFrame, endFrame: clamp(endFrame + deltaFrames, startFrame + MIN_SUBTITLE_FRAMES, bodyFrames) };
+      }
+      changed = changed || next.startFrame !== startFrame || next.endFrame !== endFrame;
+      latest = next;
+      setDraft(next);
+    };
+    const up = async (pointer: PointerEvent) => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
+      setDraft(null);
+      if (!changed) return;
+      await onEdit({
+        type: mode === 'move' ? 'move_subtitle_cue' : 'trim_subtitle_cue',
+        cueId,
+        startUs: frameToUs(latest.startFrame),
+        endUs: frameToUs(latest.endFrame),
+      });
+    };
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up, { once: true });
+  };
+
+  const splitFromPointer = (clientX: number): number | null => {
+    const absoluteFrame = frameFromPointer(clientX);
+    if (absoluteFrame === null) return null;
+    const splitFrame = absoluteFrame - INTRO_FRAMES;
+    if (splitFrame <= startFrame || splitFrame >= endFrame) return null;
+    return splitFrame;
+  };
+
+  return (
+    <article
+      data-subtitle-cue-id={cueId}
+      data-selected={selected ? 'true' : undefined}
+      className={`${styles.subclip} ${selected ? styles.subclipSel : ''}`}
+      style={{ left, width }}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect(cueId);
+        if (tool === 'split') {
+          if (disabled) return;
+          const splitFrame = splitFromPointer(event.clientX);
+          if (splitFrame === null) return;
+          const splitPlan = planSubtitleCueSplit({
+            cue: {
+              id: cueId,
+              segmentId: cue.sourceSegmentId,
+              text: cue.text,
+              startUs: frameToUs(activeStartFrame),
+              endUs: frameToUs(activeEndFrame),
+              textSource: cue.timingSource === 'manual' ? 'manual' : 'script',
+              timingSource: cue.timingSource === 'aligned' ? 'aligned' : cue.timingSource === 'estimated' ? 'proportional' : 'manual',
+            },
+            requestedSplitUs: frameToUs(splitFrame),
+            fps: FPS,
+          });
+          if (!splitPlan) return;
+          setSplitOffsetFrames(null);
+          void onEdit({
+            type: 'split_subtitle_cue',
+            cueId,
+            ...splitPlan,
+          });
+          return;
+        }
+        beginDrag('move', event);
+      }}
+      onPointerMove={(event) => {
+        if (tool === 'split') setSplitOffsetFrames(splitFromPointer(event.clientX));
+      }}
+      onPointerLeave={() => setSplitOffsetFrames(null)}
+      onContextMenu={(event) => {
+        if (disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect(cueId);
+        onOpenContextMenu(cueId, event.clientX, event.clientY);
+      }}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!disabled) setEditingText(true);
+      }}
+      title="拖动调整时间 · 拖边缘修剪 · 双击编辑文字 · 右键删除"
+    >
+      {tool === 'split' && splitOffsetFrames !== null && (
+        <i
+          className={styles.subtitleSplitPreview}
+          style={{ left: `${((splitOffsetFrames - activeStartFrame) / Math.max(1, activeEndFrame - activeStartFrame)) * 100}%` }}
+          aria-hidden="true"
+        />
+      )}
+      {editingText ? (
+        <input
+          autoFocus
+          aria-label="编辑字幕文字"
+          value={textDraft}
+          onChange={(event) => {
+            setTextDraft(event.target.value);
+            textDraftRef.current = event.target.value;
+          }}
+          onBlur={() => void commitText()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              void commitText();
+            } else if (event.key === 'Escape') {
+              setTextDraft(cue.text);
+              textDraftRef.current = cue.text;
+              setEditingText(false);
+            }
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="min-w-0 w-full bg-transparent text-[11px] text-inherit outline-none"
+        />
+      ) : (
+        <span className="truncate">{cue.text || '（空字幕）'}</span>
+      )}
+      <i className={`${styles.subclipHandle} ${styles.subclipHandleL}`} aria-label="修剪字幕开头" onPointerDown={tool === 'select' ? (event) => beginDrag('start', event) : undefined} />
+      <i className={`${styles.subclipHandle} ${styles.subclipHandleR}`} aria-label="修剪字幕结尾" onPointerDown={tool === 'select' ? (event) => beginDrag('end', event) : undefined} />
     </article>
   );
 }

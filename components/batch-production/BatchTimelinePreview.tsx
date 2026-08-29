@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
 import {
   expectedVideoTimeSec,
   getVideoSlotPlan,
@@ -14,6 +15,9 @@ import {
   OUTPUT_PRESETS,
   type OutputPresetId,
 } from '@/lib/final-edit/types';
+import { defaultTextStyle } from '@/lib/media-core/cover-domain';
+import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
+import type { TextStyle } from '@/lib/media-core/cover-types';
 
 const FPS = FINAL_EDIT_FPS;
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FPS; // 20/24 秒片头封面静帧
@@ -32,7 +36,8 @@ export interface BatchTimelinePreviewProps {
   /** assetId → 代理预览地址（LUT 已烧入，色彩与正式渲染一致） */
   assetsById: Record<string, { previewUrl: string }>;
   coverUrl: string | null;
-  subtitleCues: Array<{ startUs: number; endUs: number; text: string }>;
+  subtitleCues: Array<{ id?: string; startUs: number; endUs: number; text: string }>;
+  subtitleStyle?: TextStyle;
   narrationUrl: string | null;
   bgm: { fileUrl: string; gainDb: number; fadeInSec: number; fadeOutSec: number } | null;
   outputPreset: OutputPresetId;
@@ -66,39 +71,16 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number): void {
 }
 
 /**
- * 字幕参数与批量渲染器 batch-renderer.ts 的 materializeSubtitleOverlays 对齐:
- * fontSize = max(34, 宽 × 竖屏 0.055 / 横屏 0.042)、baseline 86%、描边约为字号 9%、字重 600,白字黑边。
- */
-function drawSubtitleCue(canvas: HTMLCanvasElement, text: string | null): void {
-  const context = canvas.getContext('2d');
-  if (!context) return;
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  if (!text) return;
-  const { width, height } = canvas;
-  const fontSize = Math.max(34, Math.round(width * (width > height ? 0.042 : 0.055)));
-  const baselineY = Math.round(height * 0.86);
-  context.font = `600 ${fontSize}px "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif`;
-  context.textAlign = 'center';
-  context.textBaseline = 'alphabetic';
-  context.lineJoin = 'round';
-  context.lineWidth = Math.max(3, Math.round(fontSize * 0.09));
-  context.strokeStyle = '#111111';
-  context.fillStyle = '#ffffff';
-  const x = Math.round(width / 2);
-  context.strokeText(text, x, baselineY);
-  context.fillText(text, x, baselineY);
-}
-
-/**
  * 批量「检查成片」的实时预览:客户端按当前 arrangement 即时合成,不等重渲染。
  * 机制与单条混剪预览同源——片头封面静帧、双 <video> slot 轮播、前景 canvas 上屏、
- * 字幕顶层 canvas 自绘、口播片头结束后起播、BGM 音量包络;但不依赖 final-edit 的路由与类型。
+ * 字幕顶层 SVG、口播片头结束后起播、BGM 音量包络;但不依赖 final-edit 的路由与类型。
  */
 export default function BatchTimelinePreview({
   clips,
   assetsById,
   coverUrl,
   subtitleCues,
+  subtitleStyle,
   narrationUrl,
   bgm,
   outputPreset,
@@ -112,8 +94,9 @@ export default function BatchTimelinePreview({
   const size = OUTPUT_PRESETS[outputPreset];
 
   const [playing, setPlaying] = useState(false);
+  const [showSafeArea, setShowSafeArea] = useState(false);
+  const stageRef = useRef<HTMLDivElement>(null);
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
-  const subtitleCanvasRef = useRef<HTMLCanvasElement>(null);
   const videoARef = useRef<HTMLVideoElement>(null);
   const videoBRef = useRef<HTMLVideoElement>(null);
   const narrationRef = useRef<HTMLAudioElement>(null);
@@ -158,7 +141,14 @@ export default function BatchTimelinePreview({
   const activeCue = playheadSec >= INTRO_SEC
     ? subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs) ?? null
     : null;
+  // 时间轴也能从外部直接 seek；封面/成片状态以实际播放头为准，避免外部
+  // seek 到 0 时仍残留「成片」模式而显示黑帧。
+  const previewMode: 'cover' | 'finished' = playheadSec < INTRO_SEC ? 'cover' : 'finished';
   const showCover = playheadSec < INTRO_SEC;
+  const resolvedSubtitleStyle = subtitleStyle ?? defaultTextStyle('subtitle', size.width);
+  const subtitleSvg = !showCover && activeCue
+    ? textStyleToSvgElements(resolvedSubtitleStyle, activeCue.text, size)
+    : '';
 
   const pauseAllMedia = useCallback(() => {
     playingRef.current = false;
@@ -277,12 +267,6 @@ export default function BatchTimelinePreview({
       video?.removeEventListener('seeked', paint);
     };
   }, [activeClip, activeSlot, bodyFrame, outputPreset, playing]);
-
-  useEffect(() => {
-    const canvas = subtitleCanvasRef.current;
-    if (!canvas) return;
-    drawSubtitleCue(canvas, showCover ? null : activeCue?.text ?? null);
-  }, [activeCue, showCover]);
 
   // 播放时钟:performance.now() 推进播放头,同时驱动口播/BGM 音量包络。
   const bgmGainDb = bgm?.gainDb ?? 0;
@@ -418,6 +402,21 @@ export default function BatchTimelinePreview({
     drivePlayhead(clamped);
   };
 
+  const toggleFullscreen = () => {
+    const stage = stageRef.current;
+    if (!stage || typeof document === 'undefined') return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void stage.requestFullscreen?.();
+    }
+  };
+
+  const choosePreviewMode = (mode: 'cover' | 'finished') => {
+    if (mode === 'cover') seek(0);
+    else if (playheadSec < INTRO_SEC) seek(INTRO_SEC);
+  };
+
   const videoASrc = slotClips[0] ? assetsById[slotClips[0].assetId]?.previewUrl : undefined;
   const videoBSrc = slotClips[1] ? assetsById[slotClips[1].assetId]?.previewUrl : undefined;
 
@@ -425,6 +424,7 @@ export default function BatchTimelinePreview({
     <div className="space-y-2" aria-label="成片实时预览">
       <div className="flex justify-center">
         <div
+          ref={stageRef}
           className="relative overflow-hidden rounded-xl bg-black"
           style={size.width >= size.height
             ? { aspectRatio: `${size.width} / ${size.height}`, width: '100%' }
@@ -437,15 +437,22 @@ export default function BatchTimelinePreview({
             coverUrl
               // eslint-disable-next-line @next/next/no-img-element
               ? <img src={coverUrl} alt="片头封面" className="absolute inset-0 h-full w-full object-cover" />
-              : <div className="absolute inset-0 flex items-center justify-center text-xs text-white/70">片头封面</div>
+              : <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">片头封面</div>
           )}
-          <canvas ref={subtitleCanvasRef} width={size.width} height={size.height} className="pointer-events-none absolute inset-0 h-full w-full" />
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full"
+            viewBox={`0 0 ${size.width} ${size.height}`}
+            role="img"
+            aria-label={activeCue?.text ? `字幕：${activeCue.text}` : '字幕预览'}
+            dangerouslySetInnerHTML={{ __html: subtitleSvg }}
+          />
+          {showSafeArea && <div className="pointer-events-none absolute inset-[4%] rounded-md border border-dashed border-surface/55" aria-label="4% 预览安全区" />}
           {sortedClips.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center text-xs text-white/70">没有可预览的片段</div>
+            <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">没有可预览的片段</div>
           )}
         </div>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           className="btn-primary h-8 w-8 shrink-0 rounded-full text-xs"
@@ -464,6 +471,18 @@ export default function BatchTimelinePreview({
           value={Math.min(playheadSec, totalSec)}
           onChange={(event) => seek(Number(event.target.value))}
         />
+        <div className="flex shrink-0 items-center gap-1 rounded-lg bg-surface-subtle p-1" role="group" aria-label="预览内容切换">
+          <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'cover' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'cover'} onClick={() => choosePreviewMode('cover')}>封面</button>
+          <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'finished' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'finished'} onClick={() => choosePreviewMode('finished')}>成片</button>
+        </div>
+        <button
+          type="button"
+          className={`btn-secondary h-8 shrink-0 px-2 text-[11px] ${showSafeArea ? 'border-accent text-accent' : ''}`}
+          aria-label={showSafeArea ? '隐藏安全区' : '显示安全区'}
+          aria-pressed={showSafeArea}
+          onClick={() => setShowSafeArea((current) => !current)}
+        >安全区</button>
+        <button type="button" className="btn-secondary h-8 w-8 shrink-0 rounded-full p-0" aria-label="全屏预览" title="全屏预览" onClick={toggleFullscreen}><Icon name="maximize" size={14} /></button>
       </div>
       <audio ref={narrationRef} preload="auto" src={narrationUrl ?? undefined} />
       <audio ref={bgmRef} preload="auto" loop src={bgm?.fileUrl} />

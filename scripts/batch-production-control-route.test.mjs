@@ -27,6 +27,7 @@ assert.match(controlRoute, /batch_control_failed/);
 // 重试
 assert.match(retryRoute, /retryTask/);
 assert.match(retryRoute, /retryTask\(db, projectId, taskId\)/);
+assert.ok(retryRoute.indexOf('retryTask(db, projectId, taskId)') < retryRoute.lastIndexOf('clearBatchSubtitleOverridesForNarrationRetry'), '重试失败时不得先清理人工字幕覆盖');
 assert.match(retryRoute, /task_retry_failed/);
 
 // readiness 门禁与公共约定

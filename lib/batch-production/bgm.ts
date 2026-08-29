@@ -82,6 +82,18 @@ export function readFrozenMusicPool(defaultsJson: unknown): BatchBgmPoolEntry[] 
   });
 }
 
+/**
+ * 成片编辑器的可选曲目范围:优先使用当前全局 ready 曲库;
+ * 只有旧数据库没有曲库表/记录时才回落冻结池,保证历史批次仍可操作。
+ */
+export function readBatchMusicEditPool(
+  db: Database.Database,
+  defaultsJson: unknown,
+): BatchBgmPoolEntry[] {
+  const readyPool = readBatchBgmPool(db);
+  return readyPool.length > 0 ? readyPool : readFrozenMusicPool(defaultsJson);
+}
+
 export interface BatchMusicSelection {
   mode: 'auto' | 'manual';
   trackIds: string[];

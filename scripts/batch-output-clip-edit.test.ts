@@ -46,12 +46,29 @@ for (const migration of BATCH_SCHEMA_MIGRATIONS) {
   db.exec(migration.sql);
   db.prepare(`INSERT INTO batch_schema_migrations (version, appliedAt) VALUES (?, ?)`).run(migration.version, new Date().toISOString());
 }
+db.exec(`
+  CREATE TABLE IF NOT EXISTS final_edit_bgm_tracks (
+    id TEXT PRIMARY KEY,
+    relativePath TEXT NOT NULL,
+    fileFingerprint TEXT NOT NULL,
+    durationUs INTEGER NOT NULL,
+    status TEXT NOT NULL
+  );
+  INSERT INTO final_edit_bgm_tracks (id, relativePath, fileFingerprint, durationUs, status)
+  VALUES ('bgm-b', 'bgm/b.mp3', 'sha256:bb-live', 15_000_000, 'ready');
+`);
 
 const projectId = 'project-1';
 const batchId = createBatchProduction(db, projectId, '片段编辑批次');
 const versionId = createBatchProductionVersion(db, batchId, {
   copyCount: 2,
-  defaultsJson: { batchBgmParams: { gainDb: -12, fadeInSec: 2, fadeOutSec: 3 } },
+  defaultsJson: {
+    batchBgmParams: { gainDb: -12, fadeInSec: 2, fadeOutSec: 3 },
+    batchMusicPool: [
+      { trackId: 'bgm-a', relativePath: 'bgm/a.mp3', fileFingerprint: fingerprintOf('bgm-a'), durationUs: 12_000_000 },
+      { trackId: 'bgm-b', relativePath: 'bgm/b.mp3', fileFingerprint: fingerprintOf('bgm-b'), durationUs: 15_000_000 },
+    ],
+  },
 });
 const scriptId = createProjectScript(db, projectId, {
   sourceKind: 'script_draft',
@@ -247,8 +264,11 @@ try {
     ],
   );
   assert.deepEqual(view.narration, { audioRelativePath: 'batch-narration/test/narration.wav', durationUs: 4_000_000 });
-  assert.deepEqual(view.subtitleCues, [{ startUs: 0, endUs: 2_000_000, text: '开场' }]);
+  assert.deepEqual(view.subtitleCues, [{
+    id: 'cue-1', sourceSegmentId: 'segment-1', startUs: 0, endUs: 2_000_000, text: '开场', timingSource: 'estimated',
+  }]);
   assert.equal(view.coverAssetId, assetA);
+  assert.equal(view.coverTimeUs, 1_500_000);
   assert.deepEqual(view.music, { trackId: 'bgm-a', gainDb: -12, fadeInSec: 2, fadeOutSec: 3 });
   assert.equal(view.poolAssets.length, 6, '冻结池 6 条素材(未入池素材不得出现)');
   assert.ok(!view.poolAssets.some((asset) => asset.assetId === assetNotInPool));
@@ -261,8 +281,11 @@ try {
   assert.equal(poolById.get(assetE)?.excluded, true);
   assert.equal(poolById.get(assetA)?.excluded, false);
   assert.deepEqual(poolById.get(assetA)?.usedByPlanIds, [plans[0]]);
+  assert.deepEqual(poolById.get(assetA)?.coverUsedByPlanIds, [plans[0]]);
   assert.deepEqual(poolById.get(assetB)?.usedByPlanIds, [plans[0]]);
+  assert.deepEqual(poolById.get(assetB)?.coverUsedByPlanIds, []);
   assert.deepEqual(poolById.get(assetC)?.usedByPlanIds, [plans[1]]);
+  assert.deepEqual(poolById.get(assetC)?.coverUsedByPlanIds, []);
   assert.deepEqual(poolById.get(assetD)?.usedByPlanIds, [], '从未使用的素材必须可见');
   assert.deepEqual(poolById.get(assetE)?.usedByPlanIds, []);
   assert.match(poolById.get(assetA)!.thumbnailUrl, new RegExp(`^/api/batch-production/assets/${assetA}/thumbnail\\?projectId=${projectId}&v=`));
@@ -270,7 +293,139 @@ try {
   assert.ok(poolById.get(assetA)!.previewUrl.includes(`batchVersionId=${versionId}`));
   console.log('✓ 1. 编辑器数据视图(片段/口播/字幕/BGM/冻结池使用标记)');
 
+  // 1b. 封面、BGM 与字幕覆盖指令:均只改当前 plan,视觉变化递增 revision。
+  resetPlan0Arrangement();
+  const coverEdit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_cover', assetId: assetC, timeUs: 6_500_000,
+  });
+  assert.equal(coverEdit.changed, true);
+  assert.equal(coverEdit.visualChanged, true);
+  assert.equal(coverEdit.editRevision, 1);
+  assert.deepEqual(currentArrangement(plans[0]).cover, { assetId: assetC, timeUs: 6_500_000 });
+  const coverView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(coverView.coverAssetId, assetC);
+  assert.equal(coverView.coverTimeUs, 6_500_000);
+  assert.deepEqual(coverView.poolAssets.find((asset) => asset.assetId === assetA)?.usedByPlanIds, [plans[0]]);
+  assert.deepEqual(coverView.poolAssets.find((asset) => asset.assetId === assetA)?.coverUsedByPlanIds, []);
+  assert.deepEqual(coverView.poolAssets.find((asset) => asset.assetId === assetC)?.usedByPlanIds, [plans[1]]);
+  assert.deepEqual(coverView.poolAssets.find((asset) => asset.assetId === assetC)?.coverUsedByPlanIds, [plans[0]]);
+  assertDomainError(
+    () => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_cover', assetId: assetNotInPool, timeUs: 0 }),
+    'invalid_input',
+    /冻结素材池/,
+  );
+  assertDomainError(
+    () => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_cover', assetId: assetD, timeUs: 1_500_000 }),
+    'invalid_input',
+    /超出素材原片时长/,
+  );
+
+  resetPlan0Arrangement();
+  const legacyTrackNoop = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music_track', trackId: 'bgm-a',
+  });
+  assert.equal(legacyTrackNoop.changed, false, '已冻结但已从当前 ready 曲库移除的曲目仍应允许幂等确认');
+  assert.equal(legacyTrackNoop.visualChanged, false);
+  const trackEdit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music_track', trackId: 'bgm-b',
+  });
+  assert.equal(trackEdit.editRevision, 1);
+  assert.equal((currentArrangement(plans[0]).music as Record<string, unknown>).trackId, 'bgm-b');
+  assertDomainError(
+    () => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_music_track', trackId: 'bgm-missing' }),
+    'invalid_input',
+    /曲库/,
+  );
+  const clampedMusic = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music_params', gainDb: -100, fadeInSec: 50, fadeOutSec: -1,
+  });
+  assert.equal(clampedMusic.editRevision, 2);
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).music, {
+    trackId: 'bgm-b', gainDb: -60, fadeInSec: 30, fadeOutSec: 0,
+  });
+  const restoredMusic = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music_params', gainDb: -12, fadeInSec: 2, fadeOutSec: 3,
+  });
+  assert.equal(restoredMusic.editRevision, 3);
+  const restoredMusicJson = currentArrangement(plans[0]).music as Record<string, unknown>;
+  assert.equal('gainDb' in restoredMusicJson, false, '恢复批次参数必须清掉单条 gainDb 覆盖');
+  assert.equal('fadeInSec' in restoredMusicJson, false, '恢复批次参数必须清掉单条 fadeInSec 覆盖');
+  assert.equal('fadeOutSec' in restoredMusicJson, false, '恢复批次参数必须清掉单条 fadeOutSec 覆盖');
+
+  resetPlan0Arrangement();
+  const subtitleTextEdit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_subtitle_cue_text', cueId: 'cue-1', text: '改好的字幕',
+  });
+  assert.equal(subtitleTextEdit.editRevision, 1);
+  let subtitleArrangement = currentArrangement(plans[0]);
+  assert.equal((subtitleArrangement.subtitle as Record<string, unknown>).source, 'manual');
+  assert.equal(((subtitleArrangement.subtitle as Record<string, unknown>).cues as Array<Record<string, unknown>>)[0]?.text, '改好的字幕');
+  const movedSubtitle = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'move_subtitle_cue', cueId: 'cue-1', startUs: 500_000, endUs: 2_500_000,
+  });
+  assert.equal(movedSubtitle.editRevision, 2);
+  const trimmedSubtitle = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'trim_subtitle_cue', cueId: 'cue-1', startUs: 750_000, endUs: 1_750_000,
+  });
+  assert.equal(trimmedSubtitle.editRevision, 3);
+  const splitSubtitle = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'split_subtitle_cue', cueId: 'cue-1', splitUs: 1_250_000, leftText: '左', rightText: '右',
+  });
+  assert.equal(splitSubtitle.editRevision, 4);
+  subtitleArrangement = currentArrangement(plans[0]);
+  const splitCues = (subtitleArrangement.subtitle as Record<string, unknown>).cues as Array<Record<string, unknown>>;
+  assert.deepEqual(splitCues.map((cue) => [cue.startUs, cue.endUs, cue.text]), [[750_000, 1_250_000, '左'], [1_250_000, 1_750_000, '右']]);
+  const rightCueId = String(splitCues[1]?.id);
+  const deletedSubtitle = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'delete_subtitle_cue', cueId: rightCueId,
+  });
+  assert.equal(deletedSubtitle.editRevision, 5);
+  const restoredSubtitle = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'restore_automatic_subtitles',
+  });
+  assert.equal(restoredSubtitle.editRevision, 6);
+  assert.equal('subtitle' in currentArrangement(plans[0]), false, '恢复自动字幕必须清掉手动覆盖数据');
+
+  // 恢复后 subtitle 槽位不存在时,下一次文字编辑仍须能安全物化自动字幕。
+  resetPlan0Arrangement();
+  const restoredAutoArrangement = currentArrangement(plans[0]);
+  restoredAutoArrangement.narration = {
+    ...(restoredAutoArrangement.narration as Record<string, unknown>),
+    segments: [{ id: 'narration-after-restore', sourceSegmentId: 'segment-1', text: '恢复后的自动句子', startUs: 0, endUs: 4_000_000 }],
+  };
+  delete restoredAutoArrangement.subtitle;
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(restoredAutoArrangement), outputVersionId);
+  const editAfterRestore = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_subtitle_cue_text', cueId: 'narration-after-restore:cue:1', text: '恢复后人工字幕',
+  });
+  assert.equal(editAfterRestore.changed, true);
+  assert.equal((currentArrangement(plans[0]).subtitle as Record<string, unknown>).source, 'manual');
+
+  // 首次字幕编辑物化当前 narration 对齐结果,不能沿用旧 estimated cue。
+  resetPlan0Arrangement();
+  const withNarrationSegments = currentArrangement(plans[0]);
+  withNarrationSegments.narration = {
+    ...(withNarrationSegments.narration as Record<string, unknown>),
+    segments: [{ id: 'narration-1', sourceSegmentId: 'segment-1', text: '当前口播句子', startUs: 0, endUs: 4_000_000 }],
+  };
+  withNarrationSegments.subtitle = {
+    ...(withNarrationSegments.subtitle as Record<string, unknown>),
+    cues: [{ id: 'old-estimated', sourceSegmentId: 'segment-1', text: '旧字幕', startUs: 0, endUs: 1_000_000 }],
+  };
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(withNarrationSegments), outputVersionId);
+  const automaticBeforeEdit = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(automaticBeforeEdit.subtitleCues[0]?.id, 'narration-1:cue:1');
+  const materialized = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_subtitle_cue_text', cueId: 'narration-1:cue:1', text: '物化后的字幕',
+  });
+  assert.equal(materialized.changed, true);
+  subtitleArrangement = currentArrangement(plans[0]);
+  assert.equal(((subtitleArrangement.subtitle as Record<string, unknown>).cues as Array<Record<string, unknown>>)[0]?.id, 'narration-1:cue:1');
+  assert.equal(((subtitleArrangement.subtitle as Record<string, unknown>).cues as Array<Record<string, unknown>>)[0]?.text, '物化后的字幕');
+  console.log('✓ 1b. 封面素材/BGM 参数/字幕覆盖指令与自动字幕物化');
+
   // 2. trim 成功:±1 帧取整误差内规整回原长度
+  resetPlan0Arrangement();
   const trimmed = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
     type: 'trim', clipId: 'clip-1', sourceStartUs: 500_000, sourceEndUs: 2_541_000,
   });

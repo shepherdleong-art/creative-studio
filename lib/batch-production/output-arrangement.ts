@@ -1,7 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { resolveBatchBgmParams } from './batch-renderer.ts';
+import { resolveBatchBgmParams, resolveBatchBgmParamsForArrangement } from './batch-renderer.ts';
+import { buildBatchNarrationSubtitleCues } from './subtitle-cues.ts';
+import type { BatchRenderNarrationSegment } from './batch-renderer.ts';
 import { BatchDomainError } from './errors.ts';
+import { listBatchBgmTracks, readBatchMusicEditPool, readFrozenMusicPool } from './bgm.ts';
+import { loadFrozenCoverTitleConfig } from './cover-title.ts';
+import type { FrozenBatchCoverTitleConfig } from './cover-title.ts';
+import { loadFrozenSubtitleStyle } from './subtitle-style.ts';
+import { defaultTextStyle } from '../media-core/cover-domain.ts';
+import type { TextStyle } from '../media-core/cover-types.ts';
 
 /**
  * 检查成片的片段级编辑（等长 trim / replace、变长修剪、删除、插入、分割）
@@ -47,8 +55,25 @@ export interface BatchOutputPoolAssetView {
   previewUrl: string;
   /** 已被排除出本批次联合分配（不可用于替换/插入）。 */
   excluded: boolean;
-  /** 本批次版本中，当前候选画面用到该素材（片段或封面）的全部成片计划。 */
+  /** 本批次版本中，当前候选画面片段用到该素材的全部成片计划。 */
   usedByPlanIds: string[];
+  /** 本批次版本中，当前候选封面用到该素材的全部成片计划。 */
+  coverUsedByPlanIds: string[];
+}
+
+export interface BatchOutputSubtitleCueView {
+  id: string;
+  sourceSegmentId: string;
+  startUs: number;
+  endUs: number;
+  text: string;
+  timingSource?: 'estimated' | 'aligned' | 'manual';
+}
+
+export interface BatchOutputMusicTrackView {
+  id: string;
+  filename: string;
+  durationUs: number;
 }
 
 export interface BatchOutputClipEditView {
@@ -63,9 +88,16 @@ export interface BatchOutputClipEditView {
   visualDurationUs: number;
   clips: BatchOutputClipView[];
   narration: { audioRelativePath: string | null; durationUs: number | null };
-  subtitleCues: Array<{ startUs: number; endUs: number; text: string }>;
+  subtitleCues: BatchOutputSubtitleCueView[];
+  /** true 表示当前成片会优先使用 arrangement.subtitle 的手动覆盖。 */
+  subtitleOverride: boolean;
+  subtitleStyle: TextStyle;
+  coverTitle: FrozenBatchCoverTitleConfig | null;
   coverAssetId: string | null;
+  coverTimeUs: number;
   music: { trackId: string | null; gainDb: number; fadeInSec: number; fadeOutSec: number };
+  batchMusicDefaults: { gainDb: number; fadeInSec: number; fadeOutSec: number };
+  musicLibrary: BatchOutputMusicTrackView[];
   poolAssets: BatchOutputPoolAssetView[];
 }
 
@@ -75,7 +107,16 @@ export type BatchOutputClipEdit =
   | { type: 'trim_variable'; clipId: string; sourceStartUs: number; sourceEndUs: number }
   | { type: 'delete'; clipId: string }
   | { type: 'insert'; afterClipId: string | null; assetId: string; durationUs?: number }
-  | { type: 'split'; clipId: string; offsetUs: number };
+  | { type: 'split'; clipId: string; offsetUs: number }
+  | { type: 'set_cover'; assetId: string; timeUs: number }
+  | { type: 'set_music_track'; trackId: string | null }
+  | { type: 'set_music_params'; gainDb: number; fadeInSec: number; fadeOutSec: number }
+  | { type: 'set_subtitle_cue_text'; cueId: string; text: string }
+  | { type: 'move_subtitle_cue'; cueId: string; startUs: number; endUs: number }
+  | { type: 'trim_subtitle_cue'; cueId: string; startUs: number; endUs: number }
+  | { type: 'split_subtitle_cue'; cueId: string; splitUs: number; leftText?: string; rightText?: string }
+  | { type: 'delete_subtitle_cue'; cueId: string }
+  | { type: 'restore_automatic_subtitles' };
 
 export interface BatchOutputClipEditResult {
   outputVersionId: string;
@@ -181,6 +222,87 @@ function fingerprintVersion(fingerprint: string): string {
 function readEditRevision(arrangement: Record<string, unknown> | null): number {
   const value = finiteNumber(arrangement?.editRevision);
   return value !== null && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function hasManualSubtitleOverride(arrangement: Record<string, unknown> | null): boolean {
+  const subtitle = asRecord(arrangement?.subtitle);
+  return subtitle?.source === 'manual' || subtitle?.mode === 'manual';
+}
+
+function outputWidthForPreset(value: unknown): number {
+  const preset = typeof value === 'string' ? value : '';
+  return preset === '16:9' || preset === '16x9' ? 1920 : 1080;
+}
+
+function subtitleCueViewFromRecord(record: Record<string, unknown>, index: number): BatchOutputSubtitleCueView | null {
+  const startUs = finiteNumber(record.startUs);
+  const endUs = finiteNumber(record.endUs);
+  if (startUs === null || endUs === null || startUs < 0 || endUs <= startUs) return null;
+  const id = nonEmptyString(record.id) ?? `subtitle:cue:${index + 1}`;
+  return {
+    id,
+    sourceSegmentId: nonEmptyString(record.sourceSegmentId) ?? id,
+    startUs: Math.round(startUs),
+    endUs: Math.round(endUs),
+    text: typeof record.text === 'string' ? record.text : '',
+    ...(record.timingSource === 'aligned' || record.timingSource === 'manual' || record.timingSource === 'estimated'
+      ? { timingSource: record.timingSource }
+      : {}),
+  };
+}
+
+function narrationSegmentsFromArrangement(arrangement: Record<string, unknown>): BatchRenderNarrationSegment[] {
+  const segments = asRecord(arrangement.narration)?.segments;
+  if (!Array.isArray(segments)) return [];
+  return segments.flatMap((entry, index): BatchRenderNarrationSegment[] => {
+    const record = asRecord(entry);
+    const id = nonEmptyString(record?.id) ?? `narration:segment:${index + 1}`;
+    const sourceSegmentId = nonEmptyString(record?.sourceSegmentId) ?? id;
+    const text = typeof record?.text === 'string' ? record.text : '';
+    const startUs = finiteNumber(record?.startUs);
+    const endUs = finiteNumber(record?.endUs);
+    return startUs !== null && endUs !== null && startUs >= 0 && endUs > startUs && text.trim()
+      ? [{ id, sourceSegmentId, text, startUs: Math.round(startUs), endUs: Math.round(endUs) }]
+      : [];
+  });
+}
+
+function readSubtitleCueRecords(arrangement: Record<string, unknown>): Array<Record<string, unknown>> {
+  const subtitle = asRecord(arrangement.subtitle);
+  if (!hasManualSubtitleOverride(arrangement)) {
+    const automatic = narrationSegmentsFromArrangement(arrangement);
+    if (automatic.length > 0) {
+      // 首次编辑要物化“当前实际会渲染的自动字幕”，而不是沿用可能已
+      // 与重试口播错位的旧 estimated cues。
+      return buildBatchNarrationSubtitleCues(automatic).map((cue) => ({ ...cue, timingSource: 'aligned' }));
+    }
+  }
+  if (!Array.isArray(subtitle?.cues)) {
+    throw new BatchDomainError('conflict', '字幕覆盖数据损坏,不能编辑字幕');
+  }
+  return subtitle.cues.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) throw new BatchDomainError('conflict', `字幕第 ${index + 1} 条数据损坏,不能编辑字幕`);
+    const view = subtitleCueViewFromRecord(record, index);
+    if (!view) throw new BatchDomainError('conflict', `字幕第 ${index + 1} 条时间范围损坏,不能编辑字幕`);
+    return { ...record, id: view.id, sourceSegmentId: view.sourceSegmentId, startUs: view.startUs, endUs: view.endUs, text: view.text };
+  });
+}
+
+function bodyDurationUsOf(arrangement: Record<string, unknown>, clips: Array<Record<string, unknown>>): number {
+  const visual = visualDurationUs(clips);
+  const narration = finiteNumber(asRecord(arrangement.narration)?.durationUs) ?? 0;
+  // Renderer uses narration duration as the body target when a verified
+  // narration exists; keep manual cue validation on the same contract.
+  return narration > 0 ? narration : Math.max(visual, 1);
+}
+
+function normalizeMusicParams(value: { gainDb: number; fadeInSec: number; fadeOutSec: number }): { gainDb: number; fadeInSec: number; fadeOutSec: number } {
+  return {
+    gainDb: Math.min(0, Math.max(-60, value.gainDb)),
+    fadeInSec: Math.min(30, Math.max(0, value.fadeInSec)),
+    fadeOutSec: Math.min(30, Math.max(0, value.fadeOutSec)),
+  };
 }
 
 function clipViewFromRecord(record: Record<string, unknown>): BatchOutputClipView | null {
@@ -309,19 +431,22 @@ export function getBatchOutputArrangementView(
     durationUs: narrationDurationUs !== null && narrationDurationUs > 0 ? Math.round(narrationDurationUs) : null,
   };
 
-  const subtitleCues = (Array.isArray(asRecord(arrangement?.subtitle)?.cues) ? asRecord(arrangement?.subtitle)!.cues as unknown[] : [])
-    .flatMap((entry) => {
+  const storedSubtitleCues = (Array.isArray(asRecord(arrangement?.subtitle)?.cues) ? asRecord(arrangement?.subtitle)!.cues as unknown[] : [])
+    .flatMap((entry, index) => {
       const record = asRecord(entry);
-      const startUs = finiteNumber(record?.startUs);
-      const endUs = finiteNumber(record?.endUs);
-      const text = typeof record?.text === 'string' ? record.text : null;
-      return startUs !== null && endUs !== null && text !== null
-        ? [{ startUs: Math.round(startUs), endUs: Math.round(endUs), text }]
-        : [];
+      return record ? [subtitleCueViewFromRecord(record, index)].filter((cue): cue is BatchOutputSubtitleCueView => cue !== null) : [];
     });
+  const automaticSubtitleSegments = narrationSegmentsFromArrangement(arrangement ?? {});
+  const subtitleCues = hasManualSubtitleOverride(arrangement)
+    ? storedSubtitleCues
+    : automaticSubtitleSegments.length > 0
+      ? buildBatchNarrationSubtitleCues(automaticSubtitleSegments).map((cue) => ({ ...cue, timingSource: 'aligned' as const }))
+      : storedSubtitleCues;
 
-  // 全批次版本维度的素材使用标记：全部 plan 当前候选的 clips ∪ cover。
+  // 全批次版本维度的素材使用标记：片段使用与封面使用分开，避免封面素材
+  // 被误报成「本片画面已用」，也让素材池能明确提示封面占用。
   const usageByAsset = new Map<string, Set<string>>();
+  const coverUsageByAsset = new Map<string, Set<string>>();
   const versionRows = db.prepare(`
     SELECT p.id AS planId, o.arrangementJson
     FROM batch_output_plans p
@@ -330,17 +455,18 @@ export function getBatchOutputArrangementView(
   `).all(lineage.batchVersionId) as Array<{ planId: string; arrangementJson: string }>;
   for (const row of versionRows) {
     const current = asRecord(parseJson(row.arrangementJson));
-    const usedAssetIds = new Set<string>();
     for (const entry of Array.isArray(current?.clips) ? current.clips : []) {
       const assetId = nonEmptyString(asRecord(entry)?.assetId);
-      if (assetId) usedAssetIds.add(assetId);
-    }
-    const coverAssetId = nonEmptyString(asRecord(current?.cover)?.assetId);
-    if (coverAssetId) usedAssetIds.add(coverAssetId);
-    for (const assetId of usedAssetIds) {
+      if (!assetId) continue;
       const plans = usageByAsset.get(assetId) ?? new Set<string>();
       plans.add(row.planId);
       usageByAsset.set(assetId, plans);
+    }
+    const coverAssetId = nonEmptyString(asRecord(current?.cover)?.assetId);
+    if (coverAssetId) {
+      const plans = coverUsageByAsset.get(coverAssetId) ?? new Set<string>();
+      plans.add(row.planId);
+      coverUsageByAsset.set(coverAssetId, plans);
     }
   }
 
@@ -374,10 +500,29 @@ export function getBatchOutputArrangementView(
       previewUrl: `/api/batch-production/preview/${encodedAssetId}?projectId=${encodedProjectId}&batchId=${encodedBatchId}&batchVersionId=${encodedBatchVersionId}`,
       excluded: row.excluded === 1,
       usedByPlanIds: [...(usageByAsset.get(row.assetId) ?? [])].sort(),
+      coverUsedByPlanIds: [...(coverUsageByAsset.get(row.assetId) ?? [])].sort(),
     };
   });
 
-  const bgmParams = resolveBatchBgmParams(parseJson(lineage.defaultsJson));
+  const defaultsJson = parseJson(lineage.defaultsJson);
+  const bgmParams = resolveBatchBgmParamsForArrangement(defaultsJson, asRecord(arrangement?.music) as { trackId?: unknown; gainDb?: unknown; fadeInSec?: unknown; fadeOutSec?: unknown } | undefined);
+  const batchMusicDefaults = resolveBatchBgmParams(defaultsJson);
+  const currentTrackId = nonEmptyString(asRecord(arrangement?.music)?.trackId);
+  const liveMusicLibrary = listBatchBgmTracks(db).map(({ id, filename, durationUs }) => ({ id, filename, durationUs }));
+  const frozenCurrentTrack = currentTrackId
+    ? readFrozenMusicPool(defaultsJson).find((track) => track.trackId === currentTrackId)
+    : undefined;
+  const musicLibrary = [
+    ...liveMusicLibrary,
+    ...(frozenCurrentTrack && !liveMusicLibrary.some((track) => track.id === frozenCurrentTrack.trackId)
+      ? [{
+        id: frozenCurrentTrack.trackId,
+        filename: frozenCurrentTrack.relativePath.split(/[\\/]/).filter(Boolean).at(-1) || frozenCurrentTrack.relativePath,
+        durationUs: frozenCurrentTrack.durationUs,
+      }]
+      : []),
+  ];
+  const outputWidth = outputWidthForPreset(arrangement?.preset);
   return {
     planId,
     batchVersionId: lineage.batchVersionId,
@@ -389,13 +534,19 @@ export function getBatchOutputArrangementView(
     clips,
     narration,
     subtitleCues,
+    subtitleOverride: hasManualSubtitleOverride(arrangement),
+    subtitleStyle: loadFrozenSubtitleStyle(db, planId, outputWidth) ?? defaultTextStyle('subtitle', outputWidth),
+    coverTitle: loadFrozenCoverTitleConfig(db, planId),
     coverAssetId: nonEmptyString(asRecord(arrangement?.cover)?.assetId),
+    coverTimeUs: finiteNumber(asRecord(arrangement?.cover)?.timeUs) ?? 0,
     music: {
       trackId: nonEmptyString(asRecord(arrangement?.music)?.trackId),
       gainDb: bgmParams.gainDb,
       fadeInSec: bgmParams.fadeInSec,
       fadeOutSec: bgmParams.fadeOutSec,
     },
+    batchMusicDefaults,
+    musicLibrary,
     poolAssets,
   };
 }
@@ -453,6 +604,53 @@ export function applyBatchOutputClipEdit(
       if (!Number.isSafeInteger(edit.offsetUs) || edit.offsetUs < 0) {
         throw new BatchDomainError('invalid_input', '分割偏移必须是非负安全整数(微秒)');
       }
+      break;
+    case 'set_cover':
+      if (!nonEmptyString(edit.assetId)) throw new BatchDomainError('invalid_input', '封面编辑需要 assetId');
+      if (!Number.isSafeInteger(edit.timeUs) || edit.timeUs < 0) {
+        throw new BatchDomainError('invalid_input', '封面时间点必须是非负安全整数(微秒)');
+      }
+      break;
+    case 'set_music_track':
+      if (edit.trackId !== null && !nonEmptyString(edit.trackId)) {
+        throw new BatchDomainError('invalid_input', 'BGM 曲目 ID 无效');
+      }
+      break;
+    case 'set_music_params':
+      if (![edit.gainDb, edit.fadeInSec, edit.fadeOutSec].every((value) => Number.isFinite(value))) {
+        throw new BatchDomainError('invalid_input', 'BGM 参数必须是有限数字');
+      }
+      break;
+    case 'set_subtitle_cue_text':
+      if (!nonEmptyString(edit.cueId) || typeof edit.text !== 'string') {
+        throw new BatchDomainError('invalid_input', '字幕文字编辑需要 cueId 与 text');
+      }
+      break;
+    case 'move_subtitle_cue':
+    case 'trim_subtitle_cue':
+      if (!nonEmptyString(edit.cueId)) throw new BatchDomainError('invalid_input', '字幕编辑缺少 cueId');
+      if (![edit.startUs, edit.endUs].every((value) => Number.isSafeInteger(value))) {
+        throw new BatchDomainError('invalid_input', '字幕时间必须是安全整数(微秒)');
+      }
+      if (edit.startUs < 0 || edit.endUs <= edit.startUs) {
+        throw new BatchDomainError('invalid_input', '字幕时间范围无效');
+      }
+      break;
+    case 'split_subtitle_cue':
+      if (!nonEmptyString(edit.cueId) || !Number.isSafeInteger(edit.splitUs) || edit.splitUs < 0) {
+        throw new BatchDomainError('invalid_input', '字幕分割需要 cueId 与非负安全整数 splitUs');
+      }
+      if (edit.leftText !== undefined && typeof edit.leftText !== 'string') {
+        throw new BatchDomainError('invalid_input', '字幕左侧文字无效');
+      }
+      if (edit.rightText !== undefined && typeof edit.rightText !== 'string') {
+        throw new BatchDomainError('invalid_input', '字幕右侧文字无效');
+      }
+      break;
+    case 'delete_subtitle_cue':
+      if (!nonEmptyString(edit.cueId)) throw new BatchDomainError('invalid_input', '字幕删除缺少 cueId');
+      break;
+    case 'restore_automatic_subtitles':
       break;
     default:
       throw new BatchDomainError('invalid_input', '不支持的片段编辑类型');
@@ -586,7 +784,7 @@ export function applyBatchOutputClipEdit(
       }
       clips.splice(position, 0, manualClipRecord(targetAssetId, target.contentFingerprint, insertDurationUs, 'manual_insert'));
       visualChanged = true;
-    } else {
+    } else if (edit.type === 'split') {
       const index = clipIndex(edit.clipId);
       if (index < 0) throw new BatchDomainError('not_found', '片段不存在');
       const clip = clips[index];
@@ -616,6 +814,138 @@ export function applyBatchOutputClipEdit(
       };
       clips.splice(index, 1, first, second);
       splitChanged = true;
+    } else if (edit.type === 'set_cover') {
+      const target = readFrozenPoolAsset(db, lineage.batchVersionId, edit.assetId.trim());
+      if (!target) throw new BatchDomainError('invalid_input', '封面素材不在本批次冻结素材池中');
+      const durationUs = poolAssetDurationUs(target);
+      if (durationUs === null) throw new BatchDomainError('invalid_input', '封面素材缺少时长信息,无法校验抽帧时间');
+      const timeUs = edit.timeUs;
+      if (timeUs < 0 || timeUs >= durationUs) throw new BatchDomainError('invalid_input', '封面抽帧时间超出素材原片时长');
+      const currentCover = asRecord(arrangement.cover) ?? {};
+      const currentAssetId = nonEmptyString(currentCover.assetId);
+      const currentTimeUs = finiteNumber(currentCover.timeUs);
+      if (currentAssetId === edit.assetId.trim() && currentTimeUs === timeUs
+        && !('clipId' in currentCover) && !('segmentId' in currentCover)) return unchanged;
+      const nextCover: Record<string, unknown> = { ...currentCover, assetId: edit.assetId.trim(), timeUs };
+      delete nextCover.clipId;
+      delete nextCover.segmentId;
+      arrangement.cover = nextCover;
+      visualChanged = true;
+    } else if (edit.type === 'set_music_track') {
+      const currentMusic = asRecord(arrangement.music) ?? {};
+      const trackId = edit.trackId === null ? null : edit.trackId.trim();
+      const currentTrackId = nonEmptyString(currentMusic.trackId);
+      // 旧批次可能仍在使用一首已从全局 ready 曲库移除的冻结曲目;
+      // 重新提交同一选择是幂等操作,不应因为当前曲库已变化而被拒绝。
+      if (currentTrackId === trackId || (currentTrackId === null && trackId === null)) return unchanged;
+      if (trackId !== null && !readBatchMusicEditPool(db, parseJson(lineage.defaultsJson)).some((track) => track.trackId === trackId)) {
+        throw new BatchDomainError('invalid_input', 'BGM 曲目不在当前 ready 曲库中');
+      }
+      arrangement.music = { ...currentMusic, trackId };
+      visualChanged = true;
+    } else if (edit.type === 'set_music_params') {
+      const currentMusic = asRecord(arrangement.music) ?? {};
+      const currentEffective = resolveBatchBgmParamsForArrangement(
+        parseJson(lineage.defaultsJson),
+        currentMusic as { trackId?: unknown; gainDb?: unknown; fadeInSec?: unknown; fadeOutSec?: unknown },
+      );
+      const nextParams = normalizeMusicParams(edit);
+      if (
+        currentEffective.gainDb === nextParams.gainDb
+        && currentEffective.fadeInSec === nextParams.fadeInSec
+        && currentEffective.fadeOutSec === nextParams.fadeOutSec
+      ) return unchanged;
+      const batchDefaults = resolveBatchBgmParams(parseJson(lineage.defaultsJson));
+      const nextMusic: Record<string, unknown> = { ...currentMusic };
+      if (nextParams.gainDb === batchDefaults.gainDb) delete nextMusic.gainDb;
+      else nextMusic.gainDb = nextParams.gainDb;
+      if (nextParams.fadeInSec === batchDefaults.fadeInSec) delete nextMusic.fadeInSec;
+      else nextMusic.fadeInSec = nextParams.fadeInSec;
+      if (nextParams.fadeOutSec === batchDefaults.fadeOutSec) delete nextMusic.fadeOutSec;
+      else nextMusic.fadeOutSec = nextParams.fadeOutSec;
+      arrangement.music = nextMusic;
+      visualChanged = true;
+    } else if (edit.type === 'set_subtitle_cue_text') {
+      const cues = readSubtitleCueRecords(arrangement);
+      const cue = cues.find((entry) => nonEmptyString(entry.id) === edit.cueId.trim());
+      if (!cue) throw new BatchDomainError('not_found', '字幕不存在');
+      const wasManual = hasManualSubtitleOverride(arrangement);
+      const changedText = cue.text !== edit.text;
+      if (!changedText && wasManual) return unchanged;
+      cue.text = edit.text;
+      const subtitle = asRecord(arrangement.subtitle) ?? {};
+      subtitle.cues = cues;
+      subtitle.source = 'manual';
+      delete subtitle.mode;
+      arrangement.subtitle = subtitle;
+      visualChanged = true;
+    } else if (edit.type === 'move_subtitle_cue' || edit.type === 'trim_subtitle_cue') {
+      const cues = readSubtitleCueRecords(arrangement);
+      const cue = cues.find((entry) => nonEmptyString(entry.id) === edit.cueId.trim());
+      if (!cue) throw new BatchDomainError('not_found', '字幕不存在');
+      const startUs = Math.round(edit.startUs);
+      const endUs = Math.round(edit.endUs);
+      if (endUs > bodyDurationUsOf(arrangement, clips)) throw new BatchDomainError('invalid_input', '字幕时间不能超出成片正文时长');
+      const wasManual = hasManualSubtitleOverride(arrangement);
+      if (cue.startUs === startUs && cue.endUs === endUs && wasManual) return unchanged;
+      cue.startUs = startUs;
+      cue.endUs = endUs;
+      cue.timingSource = 'manual';
+      const subtitle = asRecord(arrangement.subtitle) ?? {};
+      subtitle.cues = cues;
+      subtitle.source = 'manual';
+      delete subtitle.mode;
+      arrangement.subtitle = subtitle;
+      visualChanged = true;
+    } else if (edit.type === 'split_subtitle_cue') {
+      const cues = readSubtitleCueRecords(arrangement);
+      const index = cues.findIndex((entry) => nonEmptyString(entry.id) === edit.cueId.trim());
+      if (index < 0) throw new BatchDomainError('not_found', '字幕不存在');
+      const cue = cues[index]!;
+      const splitUs = Math.round(edit.splitUs);
+      if (splitUs <= Number(cue.startUs) || splitUs >= Number(cue.endUs)) {
+        throw new BatchDomainError('invalid_input', '字幕分割点必须位于字幕区间内部');
+      }
+      const sourceSegmentId = nonEmptyString(cue.sourceSegmentId) ?? String(cue.id);
+      const left = {
+        ...cue,
+        sourceSegmentId,
+        endUs: splitUs,
+        text: edit.leftText ?? String(cue.text),
+        timingSource: 'manual',
+      };
+      const right = {
+        ...cue,
+        id: `subtitle:${randomUUID()}`,
+        sourceSegmentId,
+        startUs: splitUs,
+        text: edit.rightText ?? String(cue.text),
+        timingSource: 'manual',
+      };
+      cues.splice(index, 1, left, right);
+      const subtitle = asRecord(arrangement.subtitle) ?? {};
+      subtitle.cues = cues;
+      subtitle.source = 'manual';
+      delete subtitle.mode;
+      arrangement.subtitle = subtitle;
+      visualChanged = true;
+    } else if (edit.type === 'delete_subtitle_cue') {
+      const cues = readSubtitleCueRecords(arrangement);
+      const index = cues.findIndex((entry) => nonEmptyString(entry.id) === edit.cueId.trim());
+      if (index < 0) throw new BatchDomainError('not_found', '字幕不存在');
+      cues.splice(index, 1);
+      const subtitle = asRecord(arrangement.subtitle) ?? {};
+      subtitle.cues = cues;
+      subtitle.source = 'manual';
+      delete subtitle.mode;
+      arrangement.subtitle = subtitle;
+      visualChanged = true;
+    } else if (edit.type === 'restore_automatic_subtitles') {
+      if (!hasManualSubtitleOverride(arrangement)) return unchanged;
+      // 不保留旧的人工 cues 作为“看起来像自动字幕”的假数据。渲染器会在
+      // subtitle 缺失时从最新口播对齐结果派生，编辑器也应立即显示同一事实。
+      delete arrangement.subtitle;
+      visualChanged = true;
     }
 
     if (visualChanged) {
@@ -643,5 +973,41 @@ export function applyBatchOutputClipEdit(
     }
 
     return unchanged;
+  })();
+}
+
+/**
+ * 口播重试前清理同一脚本快照下所有当前成片的手动字幕覆盖。
+ * 新口播成功后，renderer 会从新的对齐句段重新派生自动字幕；清理动作本身
+ * 先递增 revision 并删除审核结论，避免旧候选在重试窗口内被误导出。
+ */
+export function clearBatchSubtitleOverridesForNarrationRetry(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  scriptSnapshotId: string,
+): number {
+  return db.transaction(() => {
+    const rows = db.prepare(`
+      SELECT o.id AS outputVersionId, o.arrangementJson
+      FROM batch_output_plans p
+      JOIN batch_output_versions o ON o.id = p.currentVersionId
+      JOIN batch_production_versions v ON v.id = p.batchVersionId
+      JOIN batch_productions b ON b.id = v.batchId
+      WHERE p.scriptSnapshotId = ? AND p.batchVersionId = v.id
+        AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
+    `).all(scriptSnapshotId, batchId, projectId) as Array<{ outputVersionId: string; arrangementJson: string }>;
+    let cleared = 0;
+    for (const row of rows) {
+      const arrangement = asRecord(parseJson(row.arrangementJson));
+      if (!arrangement || !hasManualSubtitleOverride(arrangement)) continue;
+      delete arrangement.subtitle;
+      arrangement.editRevision = readEditRevision(arrangement) + 1;
+      delete arrangement.review;
+      db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`)
+        .run(JSON.stringify(arrangement), row.outputVersionId);
+      cleared += 1;
+    }
+    return cleared;
   })();
 }

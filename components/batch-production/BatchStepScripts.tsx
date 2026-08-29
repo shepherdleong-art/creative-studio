@@ -5,9 +5,9 @@ import { Icon } from '@/components/ui/Icon';
 import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
-import { defaultTextStyle } from '@/lib/final-edit/domain';
+import { defaultTextStyle, normalizeTextStyle } from '@/lib/media-core/cover-domain';
 // 纯字符串模块(无 sharp/fs 依赖),与渲染端封面合成共用同一份 SVG 构造。
-import { textStyleToSvgElements } from '@/lib/final-edit/title-svg';
+import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
 import {
   OUTPUT_PRESETS,
   type CoverFraming,
@@ -52,6 +52,12 @@ export interface BatchCoverTitleDraft {
   /** defaultsJson.coverTitleStylesByScript:按 sourceScriptId 的完整样式覆盖;无条目时回落 styles。 */
   stylesByScript: Record<string, { primary: TextStyle; secondary: TextStyle }>;
   framing: CoverFraming | null;
+}
+
+/** 批量字幕样式草稿:整批基准 + sourceScriptId 覆盖。 */
+export interface BatchSubtitleStyleDraft {
+  style: TextStyle;
+  stylesByScript: Record<string, TextStyle>;
 }
 
 export interface CoverPresetView extends CoverPresetV2 {
@@ -99,6 +105,8 @@ export interface BatchStepScriptsProps {
   /** 封面标题设置(容器持有草稿,写入 defaultsJson) */
   coverTitle: BatchCoverTitleDraft;
   onCoverTitleChange: (draft: BatchCoverTitleDraft) => void;
+  subtitleStyle: BatchSubtitleStyleDraft;
+  onSubtitleStyleChange: (draft: BatchSubtitleStyleDraft) => void;
   onConfirmSnapshot: () => void;
   onStartBatch: () => void;
   /** 手动脚本导入/编辑/删除后通知容器刷新准备区(容器决定是否强制重新确认) */
@@ -171,6 +179,8 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     onNarrationConfigTouched,
     coverTitle,
     onCoverTitleChange,
+    subtitleStyle,
+    onSubtitleStyleChange,
     onConfirmSnapshot,
     onStartBatch,
     onScriptCreated,
@@ -221,6 +231,9 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   // 在界面上看不出任何变化(基准 → 基准),所以按批量提交同款做内联二次确认。
   // 存的是「举起确认时要销毁的目标集合」指纹,目标或集合一变就自动失效。
   const [coverApplyAllArmedFor, setCoverApplyAllArmedFor] = useState<string | null>(null);
+  const [subtitlePreviewScriptId, setSubtitlePreviewScriptId] = useState<string | null>(null);
+  const [subtitleEditTargetScriptId, setSubtitleEditTargetScriptId] = useState<string | null>(null);
+  const [subtitleApplyAllArmedFor, setSubtitleApplyAllArmedFor] = useState<string | null>(null);
   // 手动脚本导入/编辑弹窗与删除进行中状态。
   const [scriptDialogOpen, setScriptDialogOpen] = useState(false);
   const [editingScript, setEditingScript] = useState<ManualScriptDraft | null>(null);
@@ -617,7 +630,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
 
   const coverPresetId = outputPreset.id.replace(':', 'x') as OutputPresetId;
   const coverPreviewSources = frozen
-    ? frozenScriptSnapshots.map((snapshot) => ({ id: snapshot.id, title: snapshot.title, coverTitle: snapshot.coverTitle }))
+    ? frozenScriptSnapshots.map((snapshot) => ({ id: snapshot.sourceScriptId, title: snapshot.title, coverTitle: snapshot.coverTitle }))
     : prep.scripts
         .filter((script) => selectedScripts[script.id] !== undefined)
         .map((script) => ({ id: script.id, title: script.title, coverTitle: script.coverTitle }));
@@ -635,6 +648,30 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const coverApplyAllVictimIds = coverOverrideScriptIds.filter((id) => id !== coverEditScriptId);
   const coverApplyAllArmKey = coverEditScriptId ? `${coverEditScriptId}|${coverApplyAllVictimIds.join(',')}` : '';
   const coverApplyAllArmed = coverApplyAllVictimIds.length > 0 && coverApplyAllArmedFor === coverApplyAllArmKey;
+
+  const subtitlePreview = coverPreviewSources.find((source) => source.id === subtitlePreviewScriptId)
+    ?? coverPreviewSources[0]
+    ?? null;
+  const subtitleEditScriptId = !frozen
+    && subtitleEditTargetScriptId
+    && coverPreviewSources.some((source) => source.id === subtitleEditTargetScriptId)
+    ? subtitleEditTargetScriptId
+    : null;
+  const subtitleEditStyle = subtitleEditScriptId
+    ? subtitleStyle.stylesByScript[subtitleEditScriptId] ?? subtitleStyle.style
+    : subtitleStyle.style;
+  const subtitleEffectiveStyle = subtitlePreview
+    ? subtitleStyle.stylesByScript[subtitlePreview.id] ?? subtitleStyle.style
+    : subtitleStyle.style;
+  const subtitleOverrideScriptIds = coverPreviewSources
+    .filter((source) => subtitleStyle.stylesByScript[source.id])
+    .map((source) => source.id);
+  const subtitleApplyAllVictimIds = subtitleOverrideScriptIds.filter((id) => id !== subtitleEditScriptId);
+  const subtitleApplyAllArmKey = subtitleEditScriptId
+    ? `${subtitleEditScriptId}|${subtitleApplyAllVictimIds.join(',')}`
+    : '';
+  const subtitleApplyAllArmed = subtitleApplyAllVictimIds.length > 0
+    && subtitleApplyAllArmedFor === subtitleApplyAllArmKey;
 
   /**
    * 封面标题草稿更新:进入「使用预设/自定义」时补齐已解析的当前画幅样式与
@@ -711,6 +748,211 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     const stylesByScript = { ...coverTitle.stylesByScript };
     delete stylesByScript[coverEditScriptId];
     onCoverTitleChange({ ...coverTitle, stylesByScript });
+  }
+
+  function updateSubtitleStyle(patch: Partial<TextStyle>): void {
+    const current = subtitleEditScriptId
+      ? subtitleStyle.stylesByScript[subtitleEditScriptId] ?? subtitleStyle.style
+      : subtitleStyle.style;
+    const next = normalizeTextStyle({ ...current, ...patch }, subtitleStyle.style);
+    if (subtitleEditScriptId) {
+      onSubtitleStyleChange({
+        ...subtitleStyle,
+        stylesByScript: { ...subtitleStyle.stylesByScript, [subtitleEditScriptId]: next },
+      });
+      return;
+    }
+    onSubtitleStyleChange({ ...subtitleStyle, style: next });
+  }
+
+  function applySubtitleStyleToAllScripts(): void {
+    if (!subtitleEditScriptId) return;
+    if (subtitleApplyAllVictimIds.length > 0 && !subtitleApplyAllArmed) {
+      setSubtitleApplyAllArmedFor(subtitleApplyAllArmKey);
+      return;
+    }
+    setSubtitleApplyAllArmedFor(null);
+    onSubtitleStyleChange({ ...subtitleStyle, style: subtitleEditStyle, stylesByScript: {} });
+  }
+
+  function restoreSubtitleStyleToBaseline(): void {
+    if (!subtitleEditScriptId || !subtitleStyle.stylesByScript[subtitleEditScriptId]) return;
+    const stylesByScript = { ...subtitleStyle.stylesByScript };
+    delete stylesByScript[subtitleEditScriptId];
+    onSubtitleStyleChange({ ...subtitleStyle, stylesByScript });
+  }
+
+  function renderSubtitleTextStyleEditor(style: TextStyle) {
+    const smallInput = 'h-7 w-full min-w-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink';
+    const smallColor = 'h-7 w-10 shrink-0 rounded border border-hairline bg-surface p-0.5';
+    const previewSize = OUTPUT_PRESETS[coverPresetId] ?? OUTPUT_PRESETS['3x4'];
+    return (
+      <div className="rounded-xl bg-surface-subtle p-3">
+        <p className="mb-1.5 text-xs font-medium text-ink">字幕样式</p>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字体</span>
+            <select
+              aria-label="字幕字体"
+              value={style.fontFamily}
+              disabled={frozen}
+              onChange={(event) => updateSubtitleStyle({ fontFamily: event.target.value })}
+              className={smallInput}
+            >
+              {!systemFonts.includes(style.fontFamily) && <option value={style.fontFamily}>{style.fontFamily}</option>}
+              {systemFonts.map((font) => <option key={font} value={font}>{font}</option>)}
+            </select>
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">字号</span>
+            <input
+              type="number"
+              min={8}
+              max={400}
+              aria-label="字幕字号"
+              value={style.fontSizePx}
+              disabled={frozen}
+              onChange={(event) => updateSubtitleStyle({ fontSizePx: Math.max(8, Number.parseFloat(event.target.value) || 8) })}
+              className={smallInput}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">文字颜色</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <input
+                type="color"
+                aria-label="字幕文字颜色"
+                value={style.color}
+                disabled={frozen}
+                onChange={(event) => updateSubtitleStyle({ color: event.target.value })}
+                className={smallColor}
+              />
+              <span className="truncate text-[11px] tabular-nums text-ink-tertiary">{style.color}</span>
+            </span>
+          </label>
+          <label className="flex items-end gap-2 pb-1.5">
+            <span className="flex items-center gap-1.5 text-xs text-ink-secondary">
+              <input
+                type="checkbox"
+                aria-label="字幕斜体"
+                checked={style.italic}
+                disabled={frozen}
+                onChange={(event) => updateSubtitleStyle({ italic: event.target.checked })}
+                className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              />
+              斜体
+            </span>
+          </label>
+          <label className="col-span-2 flex min-w-0 flex-col gap-0.5">
+            <span className="flex min-w-0 items-center justify-between gap-2 text-[11px] text-ink-tertiary">
+              <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  aria-label="字幕描边"
+                  checked={style.stroke.enabled}
+                  disabled={frozen}
+                  onChange={(event) => updateSubtitleStyle({ stroke: { ...style.stroke, enabled: event.target.checked } })}
+                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                />
+                描边
+              </span>
+              <span className="flex shrink-0 items-center gap-1">
+                <input
+                  type="color"
+                  aria-label="字幕描边颜色"
+                  value={style.stroke.color}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateSubtitleStyle({ stroke: { ...style.stroke, color: event.target.value } })}
+                  className={smallColor}
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={40}
+                  aria-label="字幕描边宽度"
+                  value={style.stroke.widthPx}
+                  disabled={frozen || !style.stroke.enabled}
+                  onChange={(event) => updateSubtitleStyle({ stroke: { ...style.stroke, widthPx: Math.max(0, Number.parseFloat(event.target.value) || 0) } })}
+                  className="h-7 w-14 shrink-0 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+                />
+              </span>
+            </span>
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary"><span>横向位置</span><span>{Math.round(style.x * 100)}%</span></span>
+            <input type="range" min={0} max={100} aria-label="字幕横向位置" value={Math.round(style.x * 100)} disabled={frozen} onChange={(event) => updateSubtitleStyle({ x: Number(event.target.value) / 100 })} className="w-full accent-[var(--color-accent)]" />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary"><span>纵向位置</span><span>{Math.round(style.y * 100)}%</span></span>
+            <input type="range" min={0} max={100} aria-label="字幕纵向位置" value={Math.round(style.y * 100)} disabled={frozen} onChange={(event) => updateSubtitleStyle({ y: Number(event.target.value) / 100 })} className="w-full accent-[var(--color-accent)]" />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center justify-between text-[11px] text-ink-tertiary"><span>缩放</span><span>{style.scale.toFixed(2)}×</span></span>
+            <input type="range" min={0.25} max={4} step={0.05} aria-label="字幕缩放" value={style.scale} disabled={frozen} onChange={(event) => updateSubtitleStyle({ scale: Number(event.target.value) })} className="w-full accent-[var(--color-accent)]" />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">文字框宽度（像素）</span>
+            <input type="number" min={100} max={previewSize.width} aria-label="字幕文字框宽度" value={Math.round(style.boxWidthPx)} disabled={frozen} onChange={(event) => updateSubtitleStyle({ boxWidthPx: Math.max(100, Number.parseFloat(event.target.value) || 100) })} className={smallInput} />
+          </label>
+          <label className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11px] text-ink-tertiary">对齐</span>
+            <select aria-label="字幕对齐" value={style.align} disabled={frozen} onChange={(event) => updateSubtitleStyle({ align: event.target.value as TextStyle['align'] })} className={smallInput}>
+              <option value="left">左对齐</option>
+              <option value="center">居中</option>
+              <option value="right">右对齐</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSubtitleStyleSection() {
+    const previewSize = OUTPUT_PRESETS[coverPresetId] ?? OUTPUT_PRESETS['3x4'];
+    const previewText = subtitlePreview?.title?.trim() || '示例字幕文案';
+    const previewSvg = textStyleToSvgElements(subtitleEffectiveStyle, previewText, previewSize);
+    return (
+      <section className={`card space-y-3 p-5 ${frozen ? 'border-accent/30' : ''}`} aria-label="字幕样式">
+        <div className="flex flex-wrap items-center gap-2">
+          <Icon name="text" size={15} />
+          <h3 className="font-semibold text-ink">字幕样式</h3>
+          {frozen && <span className="rounded-full bg-surface-subtle px-2.5 py-0.5 text-[11px] text-ink-tertiary">已锁定</span>}
+        </div>
+        <p className="text-xs text-ink-tertiary">字幕样式随整批输入冻结，预览与正式渲染使用同一份 SVG 参数。默认字幕来自口播对齐；在检查成片中编辑字幕时才会产生单条覆盖。确认后改样式会形成批次新版本。</p>
+        <div className="flex flex-wrap gap-4">
+          <div className="grid min-w-64 flex-1 gap-2.5">
+            {!frozen && <p className="text-xs text-ink-secondary">{subtitleEditScriptId ? `正在调整：脚本 ${coverPreviewSources.findIndex((source) => source.id === subtitleEditScriptId) + 1}（仅对这份脚本生效）` : '当前调整的是整批基准样式'}{subtitleOverrideScriptIds.length > 0 && `；本批已有 ${subtitleOverrideScriptIds.length} 份单独调整`}</p>}
+            {renderSubtitleTextStyleEditor(subtitleEditStyle)}
+          </div>
+          <div className="flex min-w-56 flex-1 flex-col gap-2">
+            {coverPreviewSources.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-tertiary">
+                <label className="flex min-w-0 basis-full items-center gap-2">
+                  <span className="shrink-0">预览脚本</span>
+                  <select aria-label="字幕样式预览脚本" value={subtitlePreview?.id ?? ''} onChange={(event) => setSubtitlePreviewScriptId(event.target.value)} className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink">
+                    {coverPreviewSources.map((source, index) => <option key={source.id} value={source.id}>脚本 {index + 1} · {source.title || '未命名脚本'}</option>)}
+                  </select>
+                </label>
+                {!frozen && <label className="flex min-w-0 basis-full items-center gap-2">
+                  <span className="shrink-0">调整目标</span>
+                  <select aria-label="字幕样式调整目标" value={subtitleEditScriptId ?? ''} onChange={(event) => setSubtitleEditTargetScriptId(event.target.value || null)} className="h-7 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink">
+                    <option value="">整批基准样式</option>
+                    {coverPreviewSources.map((source, index) => <option key={source.id} value={source.id}>脚本 {index + 1} · {source.title || '未命名脚本'}</option>)}
+                  </select>
+                </label>}
+                {subtitleEditScriptId && subtitleStyle.stylesByScript[subtitleEditScriptId] && <><span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent">已单独调整</span><button type="button" className="text-accent underline underline-offset-2" disabled={frozen} onClick={restoreSubtitleStyleToBaseline}>恢复基准样式</button></>}
+                {subtitleEditScriptId && <><button type="button" className={`underline underline-offset-2 ${subtitleApplyAllArmed ? 'text-warn' : 'text-accent'}`} disabled={frozen} onClick={applySubtitleStyleToAllScripts}>{subtitleApplyAllArmed ? `确认清除其他 ${subtitleApplyAllVictimIds.length} 份单独调整` : '应用到全部脚本'}</button>{subtitleApplyAllArmed && <button type="button" className="text-ink-tertiary underline underline-offset-2" onClick={() => setSubtitleApplyAllArmedFor(null)}>取消</button>}</>}
+              </div>
+            )}
+            <div className="relative mx-auto overflow-hidden rounded-xl bg-ink" style={{ aspectRatio: `${previewSize.width} / ${previewSize.height}`, width: `min(100%, ${Math.round((320 * previewSize.width) / previewSize.height)}px, 560px)` }}>
+              <svg viewBox={`0 0 ${previewSize.width} ${previewSize.height}`} xmlns="http://www.w3.org/2000/svg" role="img" aria-label="字幕样式预览" className="absolute inset-0 h-full w-full" dangerouslySetInnerHTML={{ __html: previewSvg }} />
+              <div className="pointer-events-none absolute border border-dashed border-surface/70" style={{ inset: '4%' }} aria-label="4% 导出安全区" />
+            </div>
+            <p className="text-[11px] text-ink-tertiary">预览使用真实输出尺寸（{previewSize.width}×{previewSize.height}）与同一 SVG 描边逻辑；虚线框为四边 4% 导出安全区。</p>
+          </div>
+        </div>
+      </section>
+    );
   }
 
   async function saveCoverPreset(): Promise<void> {
@@ -1033,7 +1275,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                   让三种画幅的预览框都保持真实比例(旧版 w-full + maxHeight 会把竖版
                   压成宽扁条,SVG letterbox 后看起来就是"没有比例")。 */}
               <div
-                className="relative mx-auto overflow-hidden rounded-xl bg-gradient-to-br from-slate-600 via-slate-700 to-slate-900"
+                className="relative mx-auto overflow-hidden rounded-xl bg-surface-subtle"
                 style={{
                   aspectRatio: `${previewSize.width} / ${previewSize.height}`,
                   width: `min(100%, ${Math.round((320 * previewSize.width) / previewSize.height)}px, 560px)`,
@@ -1049,7 +1291,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                   dangerouslySetInnerHTML={{ __html: previewTitleSvg }}
                 />
                 {/* 与混剪封面编辑器一致的四边 4% 导出安全区虚线框。 */}
-                <div className="pointer-events-none absolute border border-dashed border-white/70" style={{ inset: '4%' }} aria-label="4% 导出安全区" />
+                <div className="pointer-events-none absolute border border-dashed border-surface/70" style={{ inset: '4%' }} aria-label="4% 导出安全区" />
               </div>
               <p className="text-[11px] text-ink-tertiary">
                 预览按成片尺寸等比缩放，样式与合成一致（底图为示意色块，虚线框为四边 4% 导出安全区）；{coverPreview ? <>当前预览 <span className="text-ink-secondary">{coverPreview.title || '未命名脚本'}</span> 的标题：{primaryText} / {secondaryText}</> : '暂无已选脚本，显示示例文字'}
@@ -1271,6 +1513,8 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
       {renderBgmSection()}
 
       {renderCoverTitleSection()}
+
+      {renderSubtitleStyleSection()}
 
       {!frozen && (
         <section className="card space-y-4 p-5" aria-label="输出设置与开始">

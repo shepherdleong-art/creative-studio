@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
 import { computeFingerprintFromFile } from '../lib/batch-production/fingerprint.ts';
 import { resolveFfmpegPath, probeVideoMedia, runFfmpeg } from '../lib/ffmpeg.ts';
+import { defaultTextStyle } from '../lib/media-core/cover-domain.ts';
 import { FINAL_EDIT_INTRO_DURATION_US } from '../lib/media-core/render-contract.ts';
 import {
   regenerateBatchOutputCover,
@@ -242,6 +243,52 @@ async function run(): Promise<void> {
     { id: 'aligned-1:cue:1', sourceSegmentId: 'source-1', text: '本地对齐字幕', startUs: 0, endUs: 1_200_000 },
   ]);
   assert.equal(persistedNarrationResult.productionReady, true);
+
+  // 人工字幕覆盖必须优先于本次口播自动对齐;非人工的旧/损坏槽位不能阻塞
+  // narration 重试后的自动字幕渲染。
+  db.prepare(`UPDATE batch_production_versions SET defaultsJson = ? WHERE id = ?`).run(JSON.stringify({
+    subtitleStyles: {
+      ...defaultTextStyle('subtitle', 1080),
+      fontSizePx: 72,
+      color: '#ffcc00',
+    },
+  }), ids.batchVersionId);
+  const manualSubtitleArrangement = {
+    ...arrangement,
+    narration: {
+      mode: 'local_ready', productionReady: true,
+      audioRelativePath: 'storage/batch-narration/narration.wav',
+      audioFingerprint: narrationFingerprint,
+      durationUs: 1_200_000,
+      segments: [{ id: 'aligned-1', sourceSegmentId: 'source-1', text: '自动字幕', startUs: 0, endUs: 1_200_000 }],
+    },
+    subtitle: {
+      source: 'manual',
+      cues: [{ id: 'manual-1', sourceSegmentId: 'source-1', text: '人工字幕', startUs: 200_000, endUs: 800_000 }],
+    },
+  };
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(manualSubtitleArrangement), ids.outputVersionId);
+  const manualSubtitleResult = await renderBatchOutputVersion({
+    db, projectId: 'project-1', batchId: ids.batchId, batchVersionId: ids.batchVersionId,
+    planId: ids.planId, outputVersionId: ids.outputVersionId,
+    storageRoot, dataRootPath: dataRoot, renderRoot,
+  });
+  assert.deepEqual(manualSubtitleResult.subtitleCues, [
+    { id: 'manual-1', sourceSegmentId: 'source-1', text: '人工字幕', startUs: 200_000, endUs: 800_000 },
+  ], '人工字幕覆盖必须优先于口播自动字幕');
+
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify({
+    ...manualSubtitleArrangement,
+    subtitle: { cues: [{ id: 'broken', startUs: 'bad', endUs: 1_000_000, text: '不应阻塞' }] },
+  }), ids.outputVersionId);
+  const recoveredAutomaticSubtitleResult = await renderBatchOutputVersion({
+    db, projectId: 'project-1', batchId: ids.batchId, batchVersionId: ids.batchVersionId,
+    planId: ids.planId, outputVersionId: ids.outputVersionId,
+    storageRoot, dataRootPath: dataRoot, renderRoot,
+  });
+  assert.deepEqual(recoveredAutomaticSubtitleResult.subtitleCues, [
+    { id: 'aligned-1:cue:1', sourceSegmentId: 'source-1', text: '自动字幕', startUs: 0, endUs: 1_200_000 },
+  ], '自动字幕应忽略旧的损坏 estimated 槽位');
 
   // 换封面(问题 6/8):改写 arrangement.cover.timeUs 后从原片重新抽帧,
   // 同步渲染尝试的封面指纹;越界时间点必须拒绝且不产生半成品。

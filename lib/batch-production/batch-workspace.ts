@@ -95,6 +95,8 @@ export interface BatchOutputCardView {
   renderStale: boolean;
   /** 用户审核状态:当前成片版本 arrangement 的 review.decision === 'approved' */
   approved: boolean;
+  /** 当前成片存在人工字幕覆盖;重试口播前需要明确提示会清除它。 */
+  subtitleOverride: boolean;
   coverRange: BatchCoverRangeView | null;
   warnings: string[];
   blockers: string[];
@@ -140,6 +142,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function arrangementHasManualSubtitleOverride(value: unknown): boolean {
+  const subtitle = asRecord(asRecord(value)?.subtitle);
+  return subtitle?.source === 'manual' || subtitle?.mode === 'manual';
 }
 
 function positiveSafeInteger(value: unknown): number | null {
@@ -620,6 +627,7 @@ export function getBatchWorkspace(
       publishable: candidateProductionReady,
       renderStale,
       approved,
+      subtitleOverride: arrangementHasManualSubtitleOverride(arrangement),
       coverRange,
       warnings,
       blockers: effectiveBlockers,

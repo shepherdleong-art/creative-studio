@@ -46,7 +46,11 @@ assert.doesNotMatch(outputEditor, />截取</);
 assert.doesNotMatch(outputEditor, /mixcut\/TrimEditor/);
 // 时间轴替换片段卡片条:比例时间轴存在且带错位可视区与工具模式标记
 assert.match(outputEditor, /BatchTimeline/);
+assert.match(outputEditor, /aria-label="口播变速"/);
+assert.match(outputEditor, /跳转到脚本步骤/);
+assert.match(outputEditor, /BatchCoverDraftPreview/);
 assert.match(batchTimeline, /batch-output-timeline/);
+assert.match(batchTimeline, /planSubtitleCueSplit/);
 assert.match(batchTimeline, /末帧延长/);
 assert.match(batchTimeline, /超出裁掉/);
 assert.match(batchTimeline, /口播（锁定）/);

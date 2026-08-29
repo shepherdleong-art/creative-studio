@@ -17,6 +17,7 @@ import { createOutputPlansForSnapshot, createOutputVersion, listOutputPlans } fr
 import { createAsset, createAnalysisVersion } from '../lib/batch-production/assets.ts';
 import { createBatchSnapshot, getBatchSnapshotDetail, startBatchProduction } from '../lib/batch-production/batch-flow.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
+import { defaultTextStyle } from '../lib/media-core/cover-domain.ts';
 import {
   createBatchTask,
   finishTaskAttempt,
@@ -182,6 +183,19 @@ try {
   assert.deepEqual(snapshot2.planIds, snapshot1.planIds, '相同整体输入必须返回既有稳定计划');
   assert.equal(listBatchVersions(db, batchId).length, 1, '重复确认不得新增批次版本');
   assert.equal(listOutputPlans(db, snapshot1.batchVersionId).length, 3, '重复确认不得增加第 N+1 张卡片');
+
+  const legacyStyleRepeat = createBatchSnapshot(db, 'project-1', batchId, {
+    scriptSelections: [
+      { scriptId: scriptA, copyCount: 2 },
+      { scriptId: scriptB, copyCount: 1 },
+    ],
+    assetSelections: [
+      { assetId: asset1, analysisId: analysis1 },
+      { assetId: asset2, analysisId: analysis2 },
+    ],
+    defaultsJson: { subtitleStyles: defaultTextStyle('subtitle', 1080) },
+  });
+  assert.equal(legacyStyleRepeat.batchVersionId, snapshot1.batchVersionId, '旧批次补带字幕默认样式不得误建新版本');
 
   // 真正失败重试发生在同一稳定计划的任务尝试层，不创建新 Revision 或第 N+1 张卡。
   const retryOutputVersion = createOutputVersion(db, snapshot1.planIds[0]!, {});

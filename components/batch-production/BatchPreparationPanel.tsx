@@ -24,9 +24,11 @@ import BatchStepScripts, {
   type BatchBgmTrackView,
   type BatchCoverTitleDraft,
   type BatchMusicSelectionDraft,
+  type BatchSubtitleStyleDraft,
   type BatchTtsProviderView,
   type OutputPresetLabel,
 } from './BatchStepScripts';
+import { defaultTextStyle, normalizeTextStyle } from '@/lib/media-core/cover-domain';
 import BatchStepReview, { type CardFilter } from './BatchStepReview';
 import BatchStepExport from './BatchStepExport';
 
@@ -170,6 +172,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     stylesByScript: {},
     framing: null,
   });
+  const [subtitleStyle, setSubtitleStyle] = useState<BatchSubtitleStyleDraft>({
+    style: defaultTextStyle('subtitle', 1080),
+    stylesByScript: {},
+  });
   const [batchTasks, setBatchTasks] = useState<BatchTasksView['tasks']>([]);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const analysisReloadedTaskIdsRef = useRef<Set<string>>(new Set());
@@ -287,6 +293,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setSelectedAssets({});
       setBatchInputState(null);
       setFrozenScriptSnapshots([]);
+      setSubtitleStyle({ style: defaultTextStyle('subtitle', 1080), stylesByScript: {} });
       setInputConfirmed(false);
       return;
     }
@@ -302,6 +309,22 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setSelectedAssets(Object.fromEntries(detail.assetPool.map(({ assetId, analysisId, colorSnapshot }) => (
         [assetId, { analysisId, lutId: colorSnapshot.lutId }]
       ))));
+      const defaults = detail.version.defaultsJson && typeof detail.version.defaultsJson === 'object' && !Array.isArray(detail.version.defaultsJson)
+        ? detail.version.defaultsJson as Record<string, unknown>
+        : {};
+      const restoredWidth = defaults.outputPreset === '16:9' || defaults.outputPreset === '16x9' ? 1920 : 1080;
+      const restoredBase = defaultTextStyle('subtitle', restoredWidth);
+      const restoredByScript = defaults.subtitleStylesByScript && typeof defaults.subtitleStylesByScript === 'object' && !Array.isArray(defaults.subtitleStylesByScript)
+        ? Object.fromEntries(Object.entries(defaults.subtitleStylesByScript as Record<string, unknown>).flatMap(([scriptId, value]) => (
+          value && typeof value === 'object' && !Array.isArray(value)
+            ? [[scriptId, normalizeTextStyle(value, restoredBase)] as const]
+            : []
+        )))
+        : {};
+      setSubtitleStyle({
+        style: normalizeTextStyle(defaults.subtitleStyles, restoredBase),
+        stylesByScript: restoredByScript,
+      });
       setFrozenScriptSnapshots(detail.version.inputState === 'frozen' ? detail.scriptSnapshots : []);
       // 从已确认版本详情恢复的选择与快照一致，标记为已确认；
       // 用户随后任何修改都会通过 markInputChanged 取消该标记。
@@ -386,7 +409,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       if (view.cards.length > 0) {
         setOutputPlans(view.cards.map(({ planId, seq }) => ({ id: planId, seq })));
       }
-      setSelectedPlanIds((current) => current.filter((id) => view.cards.some(({ planId }) => planId === id)));
+      // 画面/封面/BGM/字幕编辑会让当前成功候选立刻变 stale；即使用户在编辑
+      // 前已经勾选，也不能把这条旧候选带进下一次「通过」或正式导出。
+      setSelectedPlanIds((current) => current.filter((id) => view.cards.some(({ planId, publishable, renderStale }) => (
+        planId === id && publishable && !renderStale
+      ))));
     } catch {
       setWorkspace(null);
     }
@@ -953,6 +980,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               ...(Object.keys(coverTitle.stylesByScript).length > 0
                 ? { coverTitleStylesByScript: coverTitle.stylesByScript }
                 : {}),
+              subtitleStyles: subtitleStyle.style,
+              ...(Object.keys(subtitleStyle.stylesByScript).length > 0
+                ? { subtitleStylesByScript: subtitleStyle.stylesByScript }
+                : {}),
             },
           }),
         },
@@ -1241,12 +1272,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     setPhaseEBusy(`narration:${taskId}`);
     setFeedback(null);
     try {
-      await readJson(await fetch(
+      const result = await readJson<{ subtitleOverrideCleared?: number }>(await fetch(
         `/api/batch-production/tasks/${encodeURIComponent(taskId)}/retry?projectId=${encodeURIComponent(projectId)}`,
         { method: 'POST' },
       ));
       if (selectedBatchId) await loadWorkspace(selectedBatchId);
-      setFeedback({ kind: 'success', message: '已重新排队配音，完成后渲染会自动继续。' });
+      setFeedback({
+        kind: 'success',
+        message: result.subtitleOverrideCleared
+          ? `已重新排队配音，并清除了 ${result.subtitleOverrideCleared} 条成片的手动字幕覆盖；完成后渲染会自动继续。`
+          : '已重新排队配音，完成后渲染会自动继续。',
+      });
     } catch (retryError) {
       setFeedback({ kind: 'error', message: retryError instanceof Error ? retryError.message : '配音重试失败' });
     } finally {
@@ -1328,20 +1364,21 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
-  async function changeCover(planId: string, timeUs: number): Promise<void> {
+  async function changeCover(planId: string, assetId: string, timeUs: number): Promise<void> {
     if (!selectedBatchId) return;
     setPhaseEBusy(`cover:${planId}`);
     setFeedback(null);
     try {
-      const result = await readJson<{ timeUs: number; coverRelativePath: string }>(await fetch(
-        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(planId)}/cover?projectId=${encodeURIComponent(projectId)}`,
+      const result = await readJson<{ edit?: { timeUs?: number }; renderTaskId?: string | null }>(await fetch(
+        `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ timeUs }),
+          body: JSON.stringify({ type: 'set_cover', assetId, timeUs }),
         },
       ));
-      setFeedback({ kind: 'success', message: `封面已更新为 ${(result.timeUs / 1_000_000).toFixed(2)} 秒处画面；封面同时是成片片头，正在重新渲染这一条，完成后需重新导出。` });
+      const appliedTimeUs = result.edit?.timeUs ?? timeUs;
+      setFeedback({ kind: 'success', message: `封面已更新为 ${(appliedTimeUs / 1_000_000).toFixed(2)} 秒处画面；封面同时是成片片头，正在重新渲染这一条，完成后需重新导出。` });
       await loadWorkspace(selectedBatchId);
     } catch (coverError) {
       setFeedback({ kind: 'error', message: coverError instanceof Error ? coverError.message : '换封面失败' });
@@ -1836,6 +1873,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 setCoverTitle(draft);
                 markInputChanged();
               }}
+              subtitleStyle={subtitleStyle}
+              onSubtitleStyleChange={(draft) => {
+                setSubtitleStyle(draft);
+                markInputChanged();
+              }}
               onNarrationConfigTouched={markInputChanged}
               onScriptCreated={handleScriptCreated}
               onScriptUpdated={handleScriptUpdated}
@@ -1889,12 +1931,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
               ))}
               onSelectAll={() => {
-                const selectable = (workspace?.cards ?? []).filter(({ publishable }) => publishable);
+                const selectable = (workspace?.cards ?? []).filter(({ publishable, renderStale }) => publishable && !renderStale);
                 const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
                 setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
               }}
               onReview={(decision) => void reviewSelected(decision)}
-              onChangeCover={(planId, timeUs) => void changeCover(planId, timeUs)}
+              onChangeCover={(planId, assetId, timeUs) => void changeCover(planId, assetId, timeUs)}
               coverBusy={phaseEBusy?.startsWith('cover:') ? phaseEBusy.slice('cover:'.length) : null}
               phaseEBusy={phaseEBusy}
               onRetryRender={(taskId) => void retryRenderTask(taskId)}
@@ -1908,6 +1950,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 // 片段编辑就地改当前版本并重渲染:刷新 workspace,卡片进入渲染中。
                 if (selectedBatchId) void loadWorkspace(selectedBatchId);
               }}
+              onJumpToScripts={() => setActiveStep(1)}
               busy={busy}
               onStartBatch={() => void startBatch()}
             />

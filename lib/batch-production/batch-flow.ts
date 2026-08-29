@@ -14,6 +14,7 @@ import {
   type ColorSnapshotV1,
 } from './versions.ts';
 import { colorSnapshotIdentity, upgradeColorSnapshot } from './color-pipeline.ts';
+import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
 
 export interface BatchScriptSelection {
   scriptId: string;
@@ -137,6 +138,48 @@ function parseJsonOrRaw(value: string): unknown {
   }
 }
 
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function subtitleOutputWidth(value: unknown): number {
+  const root = recordOrNull(value);
+  const preset = typeof root?.outputPreset === 'string'
+    ? root.outputPreset
+    : typeof root?.preset === 'string' ? root.preset : '';
+  return preset === '16:9' || preset === '16x9' ? 1920 : 1080;
+}
+
+/**
+ * 字幕样式是在新版本才加入 defaultsJson 的输入字段。旧批次重新确认时,
+ * 客户端会带上解析后的安全默认样式;只有当该默认样式确实等于渲染默认值时
+ * 才把它从身份比较中剥离,避免无意义地新建批次版本,同时保留自定义样式变化。
+ */
+function makeInputDefaultsForIdentity(storedDefaults: unknown, inputDefaults: unknown): unknown {
+  const stored = recordOrNull(storedDefaults);
+  const incoming = recordOrNull(inputDefaults);
+  if (!incoming) return inputDefaults;
+  const normalized = { ...incoming };
+  const width = subtitleOutputWidth(stored ?? incoming);
+  if (!Object.prototype.hasOwnProperty.call(stored ?? {}, 'subtitleStyles')) {
+    const fallback = defaultTextStyle('subtitle', width);
+    const incomingStyle = normalized.subtitleStyles;
+    if (incomingStyle !== undefined
+      && canonicalJson(normalizeTextStyle(incomingStyle, fallback)) === canonicalJson(fallback)) {
+      delete normalized.subtitleStyles;
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(stored ?? {}, 'subtitleStylesByScript')) {
+    const byScript = recordOrNull(normalized.subtitleStylesByScript);
+    if (normalized.subtitleStylesByScript === undefined || (byScript && Object.keys(byScript).length === 0)) {
+      delete normalized.subtitleStylesByScript;
+    }
+  }
+  return normalized;
+}
+
 /** 当前来源内容也属于整体输入；上游已变化时不能把旧快照误判为幂等确认。 */
 function matchesCurrentInput(
   db: Database.Database,
@@ -152,7 +195,8 @@ function matchesCurrentInput(
   const storedDefaults = parseJsonOrRaw(version.defaultsJson) as Record<string, unknown> | null;
   const identityDefaults = storedDefaults && typeof storedDefaults === 'object' ? { ...storedDefaults } : storedDefaults;
   if (identityDefaults && typeof identityDefaults === 'object') delete identityDefaults.batchMusicPool;
-  if (canonicalJson(identityDefaults) !== canonicalJson(input.defaultsJson ?? {})) {
+  const inputIdentityDefaults = makeInputDefaultsForIdentity(identityDefaults, input.defaultsJson ?? {});
+  if (canonicalJson(identityDefaults) !== canonicalJson(inputIdentityDefaults)) {
     return false;
   }
 
@@ -508,6 +552,7 @@ export interface BatchSnapshotDetail {
     versionNumber: number;
     copyCount: number;
     inputState: 'draft' | 'frozen';
+    defaultsJson: unknown;
   };
   scriptSnapshots: Array<{
     id: string;
@@ -552,12 +597,13 @@ export function getBatchSnapshotDetail(
     throw new BatchDomainError('conflict', '批次还没有版本');
   }
   const version = db.prepare(`
-    SELECT id, versionNumber, copyCount, inputState FROM batch_production_versions WHERE id = ?
+    SELECT id, versionNumber, copyCount, inputState, defaultsJson FROM batch_production_versions WHERE id = ?
   `).get(currentVersionId) as {
     id: string;
     versionNumber: number;
     copyCount: number;
     inputState: 'draft' | 'frozen';
+    defaultsJson: string;
   };
   const scriptSnapshotRows = db.prepare(`
     SELECT id, sourceScriptId, title, bodyText, sourceVersion, coverTitleJson,
@@ -598,7 +644,11 @@ export function getBatchSnapshotDetail(
   const outputPlans = listOutputPlans(db, currentVersionId).map(({ id, seq }) => ({ id, seq }));
   return {
     batch,
-    version: { ...version, inputState: version.inputState },
+    version: {
+      ...version,
+      inputState: version.inputState,
+      defaultsJson: parseJsonOrRaw(version.defaultsJson),
+    },
     scriptSnapshots,
     assetPool,
     outputPlans,

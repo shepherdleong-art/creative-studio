@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-title';
 import type { OutputPresetId } from '@/lib/final-edit/types';
+import BatchCoverDraftPreview from './BatchCoverDraftPreview';
 import BatchOutputEditor from './BatchOutputEditor';
 
 export type CardFilter = 'all' | BatchWorkspaceView['cards'][number]['status'];
@@ -35,7 +37,7 @@ export interface BatchStepReviewProps {
   onTogglePlan: (planId: string, checked: boolean) => void;
   onSelectAll: () => void;
   onReview: (decision: 'approved' | 'rework' | 'cancelled') => void;
-  onChangeCover: (planId: string, timeUs: number) => void;
+  onChangeCover: (planId: string, assetId: string, timeUs: number) => void;
   coverBusy: string | null;
   phaseEBusy: string | null;
   onRetryRender: (taskId: string) => void;
@@ -48,6 +50,8 @@ export interface BatchStepReviewProps {
   outputPreset: OutputPresetId;
   /** 片段编辑生效后回调(外层刷新 workspace,卡片进入渲染中) */
   onOutputChanged?: () => void;
+  /** 口播变速暂不在成片编辑器实现,从右侧说明卡跳回脚本步骤。 */
+  onJumpToScripts?: () => void;
   busy: 'create' | 'snapshot' | 'start' | null;
   onStartBatch: () => void;
 }
@@ -109,6 +113,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
     onRetryNarration,
     onReallocate,
     onControlBatch,
+    onJumpToScripts,
   } = props;
   const visibleCards = workspace.cards.filter(({ status }) => cardFilter === 'all' || status === cardFilter);
   const { counts } = workspace;
@@ -123,6 +128,16 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   const [previewCard, setPreviewCard] = useState<BatchWorkspaceView['cards'][number] | null>(null);
   const previewCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const [coverDraftUs, setCoverDraftUs] = useState<number | null>(null);
+  const [coverDraftAssetId, setCoverDraftAssetId] = useState<string | null>(null);
+  const [coverPoolAssets, setCoverPoolAssets] = useState<Array<{
+    assetId: string;
+    displayName: string;
+    durationSec: number | null;
+    excluded: boolean;
+    thumbnailUrl: string;
+    previewUrl: string;
+  }>>([]);
+  const [coverTitle, setCoverTitle] = useState<FrozenBatchCoverTitleConfig | null>(null);
   // 片段编辑模式:弹窗加宽并嵌入编辑器;打开/切换预览时一律退回普通预览。
   const [editingClips, setEditingClips] = useState(false);
 
@@ -141,10 +156,55 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
 
   useEffect(() => {
     if (!previewCard) return;
-    void (async () => {
+    const draftTimer = window.setTimeout(() => {
       setCoverDraftUs(previewCard.coverRange?.currentUs ?? null);
+      setCoverDraftAssetId(previewCard.coverRange?.assetId ?? null);
+      setCoverPoolAssets([]);
+      setCoverTitle(null);
+    }, 0);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/batch-production/batches/${encodeURIComponent(props.selectedBatchId)}/outputs/${encodeURIComponent(previewCard.planId)}/arrangement?projectId=${encodeURIComponent(props.projectId)}`,
+          { cache: 'no-store' },
+        );
+        const body = await response.json().catch(() => ({})) as {
+          coverAssetId?: unknown;
+          coverTitle?: unknown;
+          poolAssets?: unknown;
+        };
+        if (cancelled || !response.ok) return;
+        const assets = Array.isArray(body.poolAssets)
+          ? body.poolAssets.flatMap((value) => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+            const record = value as Record<string, unknown>;
+            return typeof record.assetId === 'string' && typeof record.displayName === 'string'
+              ? [{
+                assetId: record.assetId,
+                displayName: record.displayName,
+                durationSec: typeof record.durationSec === 'number' && Number.isFinite(record.durationSec) ? record.durationSec : null,
+                excluded: record.excluded === true,
+                thumbnailUrl: typeof record.thumbnailUrl === 'string' ? record.thumbnailUrl : '',
+                previewUrl: typeof record.previewUrl === 'string' ? record.previewUrl : '',
+              }]
+              : [];
+          })
+          : [];
+        setCoverPoolAssets(assets);
+        setCoverTitle(body.coverTitle && typeof body.coverTitle === 'object' && !Array.isArray(body.coverTitle)
+          ? body.coverTitle as FrozenBatchCoverTitleConfig
+          : null);
+        if (typeof body.coverAssetId === 'string' && body.coverAssetId) setCoverDraftAssetId(body.coverAssetId);
+      } catch {
+        // 封面弹窗仍保留工作区已经读到的当前素材与区间,池子读取失败不阻塞预览。
+      }
     })();
-  }, [previewCard]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(draftTimer);
+    };
+  }, [previewCard, props.projectId, props.selectedBatchId]);
 
   function mediaUrlFn(card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover', source: 'candidate' | 'artifact', outputVersionId: string | null): string | null {
     if (!props.selectedBatchId) return null;
@@ -153,9 +213,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
     return `/api/batch-production/batches/${encodeURIComponent(props.selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?${params.toString()}`;
   }
 
-  const selectableCount = workspace.cards.filter(({ publishable }) => publishable).length;
-  const allSelected = selectableCount > 0 && workspace.cards.every(({ planId, publishable }) => !publishable || selectedPlanIds.includes(planId));
-  const awaitingReview = workspace.cards.filter(({ publishable, approved }) => publishable && !approved).length;
+  const selectableCount = workspace.cards.filter(({ publishable, renderStale }) => publishable && !renderStale).length;
+  const allSelected = selectableCount > 0 && workspace.cards.every(({ planId, publishable, renderStale }) => !publishable || renderStale || selectedPlanIds.includes(planId));
+  const awaitingReview = workspace.cards.filter(({ publishable, approved, renderStale }) => publishable && !approved && !renderStale).length;
   const selectedPendingRenderCount = workspace.cards.filter((card) => (
     selectedPlanIds.includes(card.planId)
     && (card.task?.status === 'queued' || card.task?.status === 'running')
@@ -166,7 +226,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   )).length;
   const narrationFailedCount = workspace.cards.filter((card) => card.narrationTask?.status === 'failed').length;
   const otherBlockers = [...new Set(
-    workspace.cards.filter(({ publishable }) => !publishable).flatMap((card) => card.blockers),
+    workspace.cards.filter(({ publishable, renderStale }) => !publishable || renderStale).flatMap((card) => (
+      card.renderStale ? [...card.blockers, '修改已保存，等待重新渲染完成'] : card.blockers
+    )),
   )];
 
   /** 卡片当前查看版本可用的媒体来源(candidate 优先,其次正式产物) */
@@ -208,6 +270,16 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   // 「调整片段」入口:仅当前查看的是当前版本且批次非 stopped 时显示。
   const canEditClips = Boolean(modalCard?.versionId) && modalIsCurrentVersion && workspace.batch.controlState !== 'stopped';
   const modalRenderBusy = modalCard?.task?.status === 'running' || modalCard?.task?.status === 'queued';
+  const modalCoverAssetId = coverDraftAssetId ?? modalCard?.coverRange?.assetId ?? null;
+  const modalCoverAsset = coverPoolAssets.find(({ assetId }) => assetId === modalCoverAssetId) ?? null;
+  const modalCoverDurationUs = modalCoverAsset?.durationSec != null
+    ? Math.max(1, Math.round(modalCoverAsset.durationSec * 1_000_000))
+    : modalCard?.coverRange
+      ? Math.max(1, modalCard.coverRange.endUs - modalCard.coverRange.startUs)
+      : null;
+  const modalCoverCurrentUs = modalCard?.coverRange?.currentUs ?? 0;
+  const modalCoverAvailable = Boolean(modalIsCurrentVersion && modalCard?.versionId && modalCoverAssetId && modalCoverDurationUs);
+  const modalCoverDraftAsset = modalIsCurrentVersion ? modalCoverAsset : null;
 
   return (
     <div className="min-h-0 flex-1 space-y-4 p-2">
@@ -330,8 +402,8 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                     type="checkbox"
                     aria-label={`选择成片 ${card.seq}`}
                     checked={selectedPlanIds.includes(card.planId)}
-                    disabled={!card.publishable}
-                    title={card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
+                    disabled={!card.publishable || card.renderStale}
+                    title={card.renderStale ? '修改已保存，等待重新渲染完成' : card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
                     onChange={(event) => onTogglePlan(card.planId, event.target.checked)}
                     className="mt-0.5 disabled:opacity-40"
                   />
@@ -351,6 +423,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                     <span className={`rounded-full px-2 py-0.5 text-[11px] ${card.approved ? 'bg-accent/10 text-accent' : 'bg-warn/20 text-warn'}`}>
                       {card.approved ? '已通过' : '待审核'}
                     </span>
+                  )}
+                  {card.renderStale && (
+                    <span className="rounded-full bg-warn/20 px-2 py-0.5 text-[11px] text-warn">等待重新渲染</span>
                   )}
                 </span>
               </div>
@@ -395,7 +470,10 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                 <span className="text-[11px] text-ink-tertiary">{card.nextAction}</span>
                 <span className="flex flex-wrap gap-2">
                   {card.narrationTask?.status === 'failed' && (
-                    <button type="button" className="btn-secondary h-8 px-3 text-xs text-fail" disabled={phaseEBusy !== null} onClick={() => onRetryNarration(card.narrationTask!.id)}>
+                    <button type="button" className="btn-secondary h-8 px-3 text-xs text-fail" disabled={phaseEBusy !== null} onClick={() => {
+                      if (card.subtitleOverride && !window.confirm('重试配音会清除这条成片的手动字幕覆盖，并按新口播重新生成自动字幕。确定继续吗？')) return;
+                      onRetryNarration(card.narrationTask!.id);
+                    }}>
                       {phaseEBusy === `narration:${card.narrationTask.id}` ? '重试中…' : '重试配音'}
                     </button>
                   )}
@@ -458,6 +536,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
             {modalRenderBusy && (
               <p className="tile p-3 text-xs text-accent" role="status">正在按最新画面重新渲染，完成后以新成片为准。</p>
             )}
+            {modalCard.renderStale && !modalRenderBusy && (
+              <p className="tile p-3 text-xs text-warn" role="status">修改已保存，当前预览仍是上一版成片；退出调整后会自动重新渲染，完成后才能审核和导出。</p>
+            )}
             {editingClips ? (
               <BatchOutputEditor
                 projectId={props.projectId}
@@ -466,6 +547,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                 outputPreset={props.outputPreset}
                 renderBusy={modalRenderBusy}
                 onChanged={props.onOutputChanged}
+                onJumpToScripts={onJumpToScripts}
               />
             ) : (
               <>
@@ -481,43 +563,78 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                     <source src={previewVideo} type="video/mp4" />
                   </video>
                 )}
-                {previewCover && (
+                {modalCoverDraftAsset ? (
+                  <BatchCoverDraftPreview
+                    asset={modalCoverDraftAsset}
+                    timeUs={coverDraftUs ?? modalCoverCurrentUs}
+                    title={coverTitle}
+                    outputPreset={props.outputPreset}
+                  />
+                ) : previewCover && (
                   <figure className="overflow-hidden rounded-xl border border-hairline bg-surface-subtle">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={previewCover} alt={`成片 ${modalCard.seq} 封面`} className="aspect-[3/4] w-full max-w-56 object-cover" />
                   </figure>
                 )}
-                {modalCard.coverRange && (
+                {modalIsCurrentVersion && modalCard.versionId && (
                   <div className="tile space-y-3 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-medium text-ink">封面抽帧时间</p>
+                      <p className="text-sm font-medium text-ink">封面素材原片区间与抽帧时间</p>
                       <span className="text-xs text-ink-secondary">
                         {coverDraftUs == null ? '—' : `${(coverDraftUs / 1_000_000).toFixed(2)} 秒`}
-                        <span className="text-ink-tertiary">（封面素材原片区间 {(modalCard.coverRange.startUs / 1_000_000).toFixed(1)}–{(modalCard.coverRange.endUs / 1_000_000).toFixed(1)} 秒）</span>
+                        {modalCoverDurationUs != null && <span className="text-ink-tertiary">（当前素材原片区间 0.0–{(modalCoverDurationUs / 1_000_000).toFixed(1)} 秒）</span>}
                       </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2" aria-label="封面素材网格">
+                      {coverPoolAssets.map((asset) => {
+                        const selected = asset.assetId === modalCoverAssetId;
+                        return (
+                          <button
+                            key={asset.assetId}
+                            type="button"
+                            aria-pressed={selected}
+                            className={`tile space-y-1 p-1.5 text-left ${selected ? 'ring-2 ring-accent' : ''} ${asset.excluded ? 'opacity-75' : ''}`}
+                            onClick={() => {
+                              setCoverDraftAssetId(asset.assetId);
+                              setCoverDraftUs(0);
+                            }}
+                          >
+                            {asset.thumbnailUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={asset.thumbnailUrl} alt="" loading="lazy" className="aspect-video w-full rounded-md object-cover" />
+                            ) : (
+                              <span className="flex aspect-video w-full items-center justify-center rounded-md bg-surface-subtle text-[10px] text-ink-tertiary">无缩略图</span>
+                            )}
+                            <span className="block truncate text-[10px] font-medium text-ink" title={asset.displayName}>{asset.displayName}</span>
+                            <span className="block text-[10px] text-ink-tertiary">{asset.durationSec != null ? `${asset.durationSec.toFixed(1)} 秒` : '时长未知'}{asset.excluded ? ' · 已排除' : ''}</span>
+                          </button>
+                        );
+                      })}
+                      {coverPoolAssets.length === 0 && <p className="col-span-3 py-4 text-center text-xs text-ink-tertiary">正在读取冻结素材池…</p>}
                     </div>
                     <input
                       type="range"
                       aria-label="封面抽帧时间"
-                      min={modalCard.coverRange.startUs}
-                      max={Math.max(modalCard.coverRange.startUs, modalCard.coverRange.endUs - 1)}
+                      min={0}
+                      max={Math.max(0, (modalCoverDurationUs ?? 1) - 1)}
                       step={100_000}
-                      value={coverDraftUs ?? modalCard.coverRange.currentUs}
+                      value={coverDraftUs ?? modalCoverCurrentUs}
+                      disabled={!modalCoverAvailable}
                       onChange={(event) => setCoverDraftUs(Number(event.target.value))}
                       className="w-full"
                     />
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-xs text-ink-tertiary">封面始终从原片抽帧，不裁剪成片画面。封面同时是成片开头的片头静帧，所以应用后会重新渲染这一条成片，再重新导出才会更新成品。</p>
+                      <p className="text-xs text-ink-tertiary">封面始终从冻结素材池原片抽帧，不裁剪成片画面。封面同时是成片开头的片头静帧，所以应用后会重新渲染这一条成片，再重新导出才会更新成品。</p>
                       <button
                         type="button"
                         className="btn-primary h-9 px-3 text-xs"
-                        disabled={coverBusy === modalCard.planId || coverDraftUs == null || coverDraftUs === modalCard.coverRange.currentUs}
-                        onClick={() => onChangeCover(modalCard.planId, coverDraftUs!)}
-                      >{coverBusy === modalCard.planId ? '生成中…' : '应用新封面'}</button>
+                        disabled={coverBusy === modalCard.planId || !modalCoverAvailable || coverDraftUs == null || (modalCoverAssetId === modalCard.coverRange?.assetId && coverDraftUs === modalCoverCurrentUs)}
+                        onClick={() => onChangeCover(modalCard.planId, modalCoverAssetId!, coverDraftUs!)}
+                      >{coverBusy === modalCard.planId ? '保存中…' : '应用新封面'}</button>
                     </div>
                   </div>
                 )}
-                {modalCard.versionId && !modalCard.coverRange && (
+                {modalIsCurrentVersion && modalCard.versionId && !modalCoverAvailable && (
                   <p className="tile p-3 text-xs text-warn" role="status">封面素材不可用，无法调整抽帧时间。</p>
                 )}
               </>

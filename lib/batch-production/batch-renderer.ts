@@ -10,12 +10,16 @@ import { writeLog } from '../logger.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
 import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
 import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
-import { applyFrozenCoverTitleToFile, escapeXml } from './cover-title.ts';
+import { applyFrozenCoverTitleToFile } from './cover-title.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { listAssetSources, resolveSourceFilePath } from './media-catalog.ts';
 import { resolveManagedLutPath } from './lut-catalog.ts';
 import { buildBatchNarrationSubtitleCues } from './subtitle-cues.ts';
-import { readFrozenMusicPool } from './bgm.ts';
+import { loadFrozenSubtitleStyle, resolveBatchSubtitleStyle } from './subtitle-style.ts';
+import { readBatchBgmPool, readFrozenMusicPool } from './bgm.ts';
+import { defaultTextStyle } from '../media-core/cover-domain.ts';
+import { textStyleToSvgElements } from '../media-core/cover-title-svg.ts';
+import type { TextStyle } from '../media-core/cover-types.ts';
 
 export const BATCH_OUTPUT_PRESETS = {
   '3:4': { width: 1080, height: 1440 },
@@ -66,7 +70,7 @@ export interface BatchRenderArrangementInput {
   subtitle?: {
     cues?: unknown[];
   };
-  music?: { trackId?: unknown };
+  music?: { trackId?: unknown; gainDb?: unknown; fadeInSec?: unknown; fadeOutSec?: unknown };
   /** Optional already-prepared local narration seam (never a provider request). */
   narration?: {
     relativePath?: string;
@@ -117,7 +121,27 @@ function normalizeArrangementSubtitleCues(value: unknown, durationUs: number): B
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
   const cues = (value as Record<string, unknown>).cues;
   if (!Array.isArray(cues)) return [];
-  return normalizeNarrationSegments(cues, durationUs);
+  return cues.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw error(`subtitle cue ${index + 1} 无效`);
+    const raw = entry as Record<string, unknown>;
+    const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `subtitle:cue:${index + 1}`;
+    const sourceSegmentId = typeof raw.sourceSegmentId === 'string' && raw.sourceSegmentId.trim()
+      ? raw.sourceSegmentId.trim()
+      : id;
+    const text = typeof raw.text === 'string' ? raw.text : '';
+    const startUs = finiteInteger(raw.startUs, `subtitle cue ${index + 1} startUs`);
+    const endUs = finiteInteger(raw.endUs, `subtitle cue ${index + 1} endUs`);
+    if (startUs < 0 || endUs <= startUs || endUs > durationUs) {
+      throw error(`subtitle cue ${index + 1} 时间范围无效`);
+    }
+    return { id, sourceSegmentId, text, startUs, endUs };
+  });
+}
+
+function hasManualSubtitleOverride(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.source === 'manual' || record.mode === 'manual';
 }
 
 /** Parse the persisted arrangement narration seam without accepting browser absolute paths. */
@@ -561,23 +585,43 @@ export function resolveBatchBgmParams(versionDefaultsJson: unknown): BatchBgmPar
   };
 }
 
+/** 解析单条成片对整批 BGM 参数的覆盖；缺字段安全回落整批设置。 */
+export function resolveBatchBgmParamsForArrangement(
+  versionDefaultsJson: unknown,
+  music: BatchRenderArrangementInput['music'],
+): BatchBgmParams {
+  const defaults = resolveBatchBgmParams(versionDefaultsJson);
+  if (!music || typeof music !== 'object') return defaults;
+  const raw = music as Record<string, unknown>;
+  const gainDb = Number(raw.gainDb);
+  const fadeInSec = Number(raw.fadeInSec);
+  const fadeOutSec = Number(raw.fadeOutSec);
+  return {
+    gainDb: Number.isFinite(gainDb) ? clamp(gainDb, -60, 0) : defaults.gainDb,
+    fadeInSec: Number.isFinite(fadeInSec) ? clamp(fadeInSec, 0, 30) : defaults.fadeInSec,
+    fadeOutSec: Number.isFinite(fadeOutSec) ? clamp(fadeOutSec, 0, 30) : defaults.fadeOutSec,
+  };
+}
+
 /**
- * 解析成片分配的 BGM:只读冻结曲库池(锁定时快照),校验相对路径安全、
- * 文件存在且内容指纹与冻结池一致。曲库池缺失或曲目不在池中时视为分配异常;
+ * 解析成片分配的 BGM:优先校验锁定时快照,新增的成片编辑曲目允许来自
+ * 当前全局 ready 曲库。两者都校验相对路径安全、文件存在且内容指纹一致;
  * 没有分配任何曲目(旧批次)返回 null,不混音。
  */
 export async function resolveBatchBgm(
   arrangement: BatchRenderArrangementInput,
   versionDefaultsJson: unknown,
   storageRoot: string,
+  db?: Database.Database,
 ): Promise<ResolvedBgm | null> {
   const trackId = arrangement.music && typeof arrangement.music === 'object'
     ? (arrangement.music as { trackId?: unknown }).trackId
     : null;
   if (!trackId || typeof trackId !== 'string' || !trackId) return null;
   const pool = readFrozenMusicPool(versionDefaultsJson);
-  const entry = pool.find((item) => item.trackId === trackId);
-  if (!entry) throw error(`成片分配的 BGM（${trackId.slice(0, 8)}）不在冻结曲库中`);
+  const entry = pool.find((item) => item.trackId === trackId)
+    ?? (db ? readBatchBgmPool(db).find((item) => item.trackId === trackId) : undefined);
+  if (!entry) throw error(`成片分配的 BGM（${trackId.slice(0, 8)}）不在冻结或当前 ready 曲库中`);
   let filePath: string;
   try {
     filePath = resolveStoragePath(storageRoot, entry.relativePath);
@@ -634,20 +678,16 @@ async function materializeSubtitleOverlays(input: {
   cues: BatchRenderNarrationSegment[];
   width: number;
   height: number;
+  style: TextStyle;
 }): Promise<string[]> {
   if (input.cues.length === 0) return [];
   await fsp.mkdir(input.directory, { recursive: true });
-  const fontSize = Math.max(34, Math.round(input.width * (input.width > input.height ? 0.042 : 0.055)));
-  const baselineY = Math.round(input.height * 0.86);
-  const strokeWidth = Math.max(3, Math.round(fontSize * 0.09));
   return Promise.all(input.cues.map(async (cue, index) => {
     const target = path.join(input.directory, `cue-${String(index + 1).padStart(3, '0')}.png`);
+    const text = textStyleToSvgElements(input.style, cue.text, { width: input.width, height: input.height });
     const svg = `
       <svg width="${input.width}" height="${input.height}" viewBox="0 0 ${input.width} ${input.height}" xmlns="http://www.w3.org/2000/svg">
-        <text x="${Math.round(input.width / 2)}" y="${baselineY}" text-anchor="middle"
-          font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif"
-          font-size="${fontSize}" font-weight="600" fill="#ffffff" stroke="#111111"
-          stroke-width="${strokeWidth}" stroke-linejoin="round" paint-order="stroke fill">${escapeXml(cue.text)}</text>
+        ${text}
       </svg>`;
     await sharp(Buffer.from(svg)).png().toFile(target);
     return target;
@@ -714,9 +754,23 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const measuredDuration = await probeDurationSec(narrationPath);
     if (!narrationInput || !Number.isFinite(measuredDuration) || Math.abs(measuredDuration - narrationInput.durationUs / 1_000_000) > 0.1) throw error('narration 实际时长与冻结时长不一致');
   }
-  const subtitleCues = narrationSegments.length > 0
-    ? buildBatchNarrationSubtitleCues(narrationSegments)
-    : normalizeArrangementSubtitleCues(snapshot.arrangement.subtitle, targetDurationUs);
+  const hasManualSubtitle = hasManualSubtitleOverride(snapshot.arrangement.subtitle);
+  // 自动字幕由本次冻结口播重新派生；只有人工覆盖真正生效时才解析
+  // arrangement.subtitle。这样旧的/损坏的 estimated 槽位不会阻塞口播重试后的渲染。
+  const arrangementSubtitleCues = hasManualSubtitle || narrationSegments.length === 0
+    ? normalizeArrangementSubtitleCues(snapshot.arrangement.subtitle, targetDurationUs)
+    : [];
+  // 只有用户明确编辑过字幕时才以 arrangement 覆盖为准；自动字幕始终从本次
+  // 冻结口播对齐结果派生，避免重试口播后继续沿用旧时间轴。无口播的静音候选
+  // 才回落到分配阶段保存的预计字幕。
+  const subtitleCues = hasManualSubtitle
+    ? arrangementSubtitleCues
+    : narrationSegments.length > 0
+      ? buildBatchNarrationSubtitleCues(narrationSegments)
+      : arrangementSubtitleCues;
+  const subtitleStyle = loadFrozenSubtitleStyle(input.db, input.planId, outputSize.width)
+    ?? resolveBatchSubtitleStyle(snapshot.versionDefaultsJson, outputSize.width, null)
+    ?? defaultTextStyle('subtitle', outputSize.width);
   // 片头封面:与单条剪辑同一个契约(FINAL_EDIT_INTRO_DURATION_US = 20 帧),
   // 带标题的封面静帧接在正文之前,音频与字幕整体后移同样时长。脚本时长预算
   // (script-duration-policy)本来就为它扣掉了这 20 帧,不加片头成片会系统性
@@ -752,7 +806,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     // 再校验与算指纹,保证导出指纹校验与工作区预览一致。片头用的就是这张成品。
     await applyFrozenCoverTitleToFile(input.db, input.planId, coverTemp, outputSize);
     const audioInput = snapshot.clips.length;
-    const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot);
+    const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot, input.db);
     const args: string[] = [];
     snapshot.clips.forEach((clip) => {
       args.push('-ss', (clip.sourceStartUs / 1_000_000).toFixed(6), '-t', ((clip.sourceEndUs - clip.sourceStartUs) / 1_000_000).toFixed(6), '-i', clip.sourcePath);
@@ -767,6 +821,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       cues: subtitleCues,
       width: outputSize.width,
       height: outputSize.height,
+      style: subtitleStyle,
     });
     // 字幕是静态 PNG，单帧输入即可：overlay 用 eof_action=repeat 重复最后一帧，
     // 可见性由 enable 时间窗控制。-loop 1 会让每条 cue 全程持续解码，
@@ -809,7 +864,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     if (bgm && bgmInput != null) {
       // 混音链:响度归一化 → 增益 → 裁到正文时长 → 淡入淡出 → 与口播 amix。
       // 音量/淡入/淡出来自锁定快照(整批统一),渲染只读不重选。
-      const bgmParams = resolveBatchBgmParams(snapshot.versionDefaultsJson);
+      const bgmParams = resolveBatchBgmParamsForArrangement(snapshot.versionDefaultsJson, snapshot.arrangement.music);
       const fadeInSec = Math.min(bgmParams.fadeInSec, bodyDurationSec);
       const fadeOutSec = Math.min(bgmParams.fadeOutSec, bodyDurationSec);
       const fadeStartSec = Math.max(0, bodyDurationSec - fadeOutSec);
@@ -985,10 +1040,19 @@ export async function regenerateBatchOutputCover(input: BatchCoverRegenerationIn
     throw error('封面冻结时间点不在封面素材原片区间内');
   }
 
-  // 1. 就地改写 arrangement.cover.timeUs(与 narration 就地升级同一套 json_set)。
+  // 1. 就地改写 arrangement.cover.timeUs。这个历史兼容入口也必须沿用
+  // 片段编辑的鲜度契约：换封面会递增 revision 并清掉审核结论；旧候选
+  // 因而在新渲染完成前不能被再次审核/导出。
   db.prepare(`
     UPDATE batch_output_versions
-    SET arrangementJson = json_set(arrangementJson, '$.cover.timeUs', ?)
+    SET arrangementJson = json_remove(
+      json_set(
+        arrangementJson,
+        '$.cover.timeUs', ?,
+        '$.editRevision', COALESCE(CAST(json_extract(arrangementJson, '$.editRevision') AS INTEGER), 0) + 1
+      ),
+      '$.review'
+    )
     WHERE id = ?
   `).run(timeUs, lineage.currentVersionId);
 
