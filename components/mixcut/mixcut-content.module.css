@@ -421,6 +421,11 @@
 .coverRange { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 11px; }
 .coverRange span { display: flex; justify-content: space-between; }
 .coverRange input { width: 100%; accent-color: var(--blue); }
+.rangeInput { appearance: none; -webkit-appearance: none; width: 100%; min-width: 0; height: 4px; border: 0; border-radius: 99px; outline: none; background: #d2d2d7; accent-color: var(--blue); cursor: pointer; }
+.rangeInput::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; border: .5px solid rgba(0, 0, 0, .08); border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .18); cursor: pointer; }
+.rangeInput::-moz-range-thumb { width: 16px; height: 16px; border: .5px solid rgba(0, 0, 0, .08); border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .18); cursor: pointer; }
+.rangeInput:focus-visible { box-shadow: 0 0 0 3.5px rgba(0, 113, 227, .15); }
+.rangeInput:disabled { cursor: not-allowed; opacity: .45; }
 .coverControlHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .coverControlHeading button { border: 0; background: transparent; color: #b42318; font-size: 11px; cursor: pointer; }
 .coverTextOverflow { border-color: #f0a9a4 !important; background: #fff6f5 !important; }
@@ -496,6 +501,7 @@
 }
 :global(html[data-theme='dark']) .timelineContextMenu button:hover { background: rgba(255, 255, 255, .08); }
 :global(html[data-theme='dark']) .timelineSpeedRow input[type='range'] { background: #48484a; }
+:global(html[data-theme='dark']) .rangeInput { background: #48484a; }
 :global(html[data-theme='dark']) .timelineSpeedRow input[type='number'] {
   border-color: rgba(255, 255, 255, .14);
   background: rgba(255, 255, 255, .07);

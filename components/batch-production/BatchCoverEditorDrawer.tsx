@@ -248,7 +248,6 @@ export default function BatchCoverEditorDrawer({
                 title={previewTitle}
                 framing={draft.framing}
                 outputPreset={outputPreset}
-                className="h-full max-w-none"
               />
               <div className={styles.coverSafeArea} aria-label="4% 导出安全区" />
             </div>
@@ -360,7 +359,7 @@ function Range({
         step={step}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="w-full accent-[var(--color-accent)]"
+        className={styles.rangeInput}
         aria-label={label}
       />
     </label>

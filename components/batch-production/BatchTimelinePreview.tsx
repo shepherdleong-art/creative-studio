@@ -1,7 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Icon } from '@/components/ui/Icon';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   expectedVideoTimeSec,
   getVideoSlotPlan,
@@ -18,6 +17,7 @@ import {
 import { defaultTextStyle } from '@/lib/media-core/cover-domain';
 import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
 import type { TextStyle } from '@/lib/media-core/cover-types';
+import styles from './batch-preview.module.css';
 
 const FPS = FINAL_EDIT_FPS;
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FPS; // 20/24 秒片头封面静帧
@@ -98,6 +98,7 @@ export default function BatchTimelinePreview({
 
   const [playing, setPlaying] = useState(false);
   const [showSafeArea, setShowSafeArea] = useState(false);
+  const fullscreenRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
   const videoARef = useRef<HTMLVideoElement>(null);
@@ -406,12 +407,12 @@ export default function BatchTimelinePreview({
   };
 
   const toggleFullscreen = () => {
-    const stage = stageRef.current;
-    if (!stage || typeof document === 'undefined') return;
+    const root = fullscreenRef.current;
+    if (!root || typeof document === 'undefined') return;
     if (document.fullscreenElement) {
       void document.exitFullscreen();
     } else {
-      void stage.requestFullscreen?.();
+      void root.requestFullscreen?.();
     }
   };
 
@@ -425,10 +426,14 @@ export default function BatchTimelinePreview({
 
   return (
     <div className={compact ? 'flex h-full min-h-0 flex-col gap-2' : 'space-y-2'} aria-label="成片实时预览">
-      <div className={compact ? 'flex min-h-0 flex-1 items-center justify-center overflow-hidden' : 'flex justify-center'}>
+      <div
+        ref={fullscreenRef}
+        className={`${compact ? 'flex min-h-0 flex-1 items-center justify-center overflow-hidden' : 'flex justify-center'} ${styles.fullscreenShell}`}
+        style={{ '--batch-preview-ratio': size.width / size.height } as CSSProperties}
+      >
         <div
           ref={stageRef}
-          className="relative overflow-hidden rounded-xl bg-black"
+          className={`${styles.stage} relative overflow-hidden rounded-xl bg-black`}
           style={compact
             ? {
               aspectRatio: `${size.width} / ${size.height}`,
@@ -493,7 +498,7 @@ export default function BatchTimelinePreview({
           aria-pressed={showSafeArea}
           onClick={() => setShowSafeArea((current) => !current)}
         >安全区</button>
-        <button type="button" className="btn-secondary h-8 w-8 shrink-0 rounded-full p-0" aria-label="全屏预览" title="全屏预览" onClick={toggleFullscreen}><Icon name="maximize" size={14} /></button>
+        <button type="button" className="btn-secondary h-8 shrink-0 px-3 text-[11px]" aria-label="全屏预览" title="全屏预览" onClick={toggleFullscreen}>全屏</button>
       </div>
       <audio ref={narrationRef} preload="auto" src={narrationUrl ?? undefined} />
       <audio ref={bgmRef} preload="auto" loop src={bgm?.fileUrl} />

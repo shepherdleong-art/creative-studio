@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { TextStyle } from '@/lib/media-core/cover-types';
+import styles from '../mixcut/mixcut-content.module.css';
 
 interface BatchTextStyleEditorProps {
   label: string;
@@ -58,7 +59,7 @@ function RangeField({
           value={value}
           disabled={disabled}
           onChange={(event) => onChange(Number(event.target.value))}
-          className="w-full accent-[var(--color-accent)]"
+          className={styles.rangeInput}
           aria-label={label}
         />
         <input
@@ -131,7 +132,7 @@ export default function BatchTextStyleEditor({
         </select>
       </label>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="space-y-3">
         <RangeField
           label="字号"
           value={value.fontSizePx}
@@ -224,7 +225,7 @@ export default function BatchTextStyleEditor({
       </div>
 
       {value.stroke.enabled && (
-        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3 rounded-lg bg-surface-subtle p-2.5">
+        <div className="space-y-3 rounded-lg bg-surface-subtle p-2.5">
           <label className="block">
             <span className="mb-1 block text-[10px] text-ink-tertiary">描边色</span>
             <input
@@ -258,30 +259,26 @@ export default function BatchTextStyleEditor({
 
       {value.shadow.enabled && (
         <div className="space-y-3 rounded-lg bg-surface-subtle p-2.5">
-          <div className="flex items-end gap-3">
-            <label className="block shrink-0">
-              <span className="mb-1 block text-[10px] text-ink-tertiary">阴影色</span>
-              <input
-                type="color"
-                className={colorClass}
-                aria-label={`${label}阴影颜色`}
-                value={colorInputValue(value.shadow.color)}
-                onChange={(event) => patch({ shadow: { ...value.shadow, color: event.target.value } })}
-              />
-            </label>
-            <div className="min-w-0 flex-1">
-              <RangeField
-                label="不透明度"
-                value={value.shadow.opacity}
-                min={0}
-                max={1}
-                step={0.05}
-                disabled={disabled}
-                onChange={(opacity) => patch({ shadow: { ...value.shadow, opacity } })}
-              />
-            </div>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <label className="block shrink-0">
+            <span className="mb-1 block text-[10px] text-ink-tertiary">阴影色</span>
+            <input
+              type="color"
+              className={colorClass}
+              aria-label={`${label}阴影颜色`}
+              value={colorInputValue(value.shadow.color)}
+              onChange={(event) => patch({ shadow: { ...value.shadow, color: event.target.value } })}
+            />
+          </label>
+          <RangeField
+            label="不透明度"
+            value={value.shadow.opacity}
+            min={0}
+            max={1}
+            step={0.05}
+            disabled={disabled}
+            onChange={(opacity) => patch({ shadow: { ...value.shadow, opacity } })}
+          />
+          <div className="space-y-3">
             <RangeField
               label="模糊"
               value={value.shadow.blurPx}

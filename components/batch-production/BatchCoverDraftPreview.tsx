@@ -97,7 +97,7 @@ export default function BatchCoverDraftPreview({
 
   return (
     <figure
-      className={`relative mx-auto w-full max-w-sm overflow-hidden rounded-xl bg-ink ${className}`}
+      className={`relative mx-auto w-full max-w-full overflow-hidden rounded-xl bg-ink ${className}`}
       style={{ aspectRatio: `${outputSize.width} / ${outputSize.height}` }}
       aria-label="封面实时预览"
     >
