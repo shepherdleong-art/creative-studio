@@ -136,6 +136,7 @@ async function run(): Promise<void> {
   assert.equal(result.audioMode, 'silent_placeholder');
   assert.equal(result.productionReady, false);
   assert.equal(result.editRevision, 4, '渲染结果必须携带读取 arrangement 时的 editRevision');
+  assert.equal(result.coverTimeUs, 1_100_000, '渲染结果必须携带读取 arrangement 时的封面 timeUs');
   assert.deepEqual(result.subtitleCues, [
     { id: 'estimated-1', sourceSegmentId: 'segment-1', text: '预计字幕', startUs: 0, endUs: 500_000 },
   ], '静音视觉候选也必须烧录并回报预计字幕，但不能因此变为 productionReady');
@@ -192,6 +193,7 @@ async function run(): Promise<void> {
       planId, outputVersionId, storageRoot, dataRootPath: dataRoot, renderRoot,
       outputSize: { width, height },
     });
+    assert.equal(ratioResult.coverTimeUs, 1_100_000);
     const ratioProbe = await probeVideoMedia(ratioResult.videoAbsolutePath);
     assert.deepEqual([ratioProbe.width, ratioProbe.height], [width, height]);
     assert.ok(Math.abs(ratioProbe.fps - 24) < 0.2);

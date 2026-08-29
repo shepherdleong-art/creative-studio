@@ -83,7 +83,7 @@ try {
     JSON.stringify({
       outputVersionId: 'ov1', audioMode: 'narration', productionReady: true, durationUs: 2_000_000,
       videoRelativePath: 'batch-renders/ov1/video.mp4', coverRelativePath: 'batch-renders/ov1/cover.jpg',
-      editRevision: 0, subtitleCues: [],
+      editRevision: 0, coverTimeUs: 3_000_000, subtitleCues: [],
     }),
     now, now, now,
   );
@@ -103,7 +103,10 @@ try {
   assert.equal(view.cards[0]?.exportable, true);
   assert.equal(view.cards[0]?.currentCover?.id, 'cover1');
   assert.equal(view.cards[0]?.candidate?.editRevision, 0);
+  assert.equal(view.cards[0]?.candidate?.coverTimeUs, 3_000_000);
   assert.equal(view.cards[0]?.renderStale, false, '候选与当前 arrangement revision 一致时不得标记 stale');
+  assert.equal(view.cards[1]?.renderStale, false, '渲染失败/从未渲染由 publishable 表达，不得挤占 renderStale');
+  assert.equal(view.cards[2]?.renderStale, false, '渲染排队但没有候选时由 publishable 表达，不得挤占 renderStale');
   assert.deepEqual(view.cards[0]?.coverRange, {
     assetId: 'cover-pool-asset', startUs: 0, endUs: 9_000_000, currentUs: 3_000_000,
   }, '封面素材不在时间线 clips 中时仍应使用冻结素材的完整时长');
@@ -114,6 +117,14 @@ try {
   assert.equal(view.cards[3]?.exportable, true);
   assert.match(view.cards[3]?.nextAction ?? '', /旧版仍可/);
   assert.deepEqual(view.counts, { total: 4, exportable: 2, publishable: 1, approved: 0, processing: 0, needsAttention: 2, failed: 1 });
+
+  // pendingRender 取当前 outputVersion 的全部 queued/running 任务,不能只看最后一条。
+  insertTask.run('task1-old-pending', 'p1', 'b1', 'ov1', 'queued', 'running', '{}', 0, '2026-08-02T10:00:00.000Z', '2026-08-02T10:00:00.000Z');
+  const pendingRenderView = getBatchWorkspace(db, 'p1', 'b1');
+  assert.equal(pendingRenderView.cards[0]?.task?.status, 'succeeded', '展示任务仍应保留最新任务状态');
+  assert.equal(pendingRenderView.cards[0]?.renderStale, true, '较早的排队任务仍应让已有候选等待重渲染');
+  db.prepare(`UPDATE batch_tasks SET status = 'failed' WHERE id = 'task1-old-pending'`).run();
+
   assert.equal(view.phase, 'review');
   db.prepare(`
     INSERT INTO batch_allocation_runs

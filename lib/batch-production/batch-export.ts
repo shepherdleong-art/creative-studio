@@ -38,6 +38,8 @@ export interface BatchExportRenderContract {
   productionReady: boolean;
   /** 渲染时冻结的成片编辑修订号;旧候选允许缺省并按 0 处理。 */
   editRevision?: number;
+  /** 渲染时冻结的封面 arrangement.cover.timeUs;旧候选允许缺省。 */
+  coverTimeUs?: number;
 }
 
 export interface BatchExportResult {

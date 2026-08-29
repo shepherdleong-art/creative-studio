@@ -180,6 +180,8 @@ export interface BatchRenderResult {
   outputVersionNumber: number;
   /** 本次渲染读取的 arrangement 编辑修订号。 */
   editRevision: number;
+  /** 本次渲染读取的 arrangement.cover.timeUs;未设置时为 -1。 */
+  coverTimeUs: number;
   preset: BatchOutputPreset;
   width: number;
   height: number;
@@ -260,6 +262,9 @@ interface Snapshot {
   planSeq: number;
   outputVersionNumber: number;
   editRevision: number;
+  coverTimeUs: number;
+  /** 未显式设置封面 timeUs 时，实际抽帧采用的原片起点。 */
+  defaultCoverTimeUs: number;
   arrangement: BatchRenderArrangementInput;
   versionDefaultsJson: Record<string, unknown>;
   clips: ResolvedClip[];
@@ -464,6 +469,7 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
   const resolvedClips = normalized.clips.map((clip) => ({ ...byAsset.get(clip.assetId)!, ...clip }));
   const firstClip = resolvedClips[0]!;
   const coverInput = normalized.arrangement.cover;
+  const coverTimeUs = coverInput?.timeUs == null ? -1 : finiteInteger(coverInput.timeUs, 'cover timeUs');
   const coverClipId = coverInput?.clipId ?? coverInput?.segmentId;
   const selectedCoverClip = coverClipId
     ? resolvedClips.find((clip) => clip.clipId === coverClipId)
@@ -472,6 +478,11 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
   if (coverInput?.assetId && selectedCoverClip && coverInput.assetId !== selectedCoverClip.assetId) {
     throw error('封面 clip 与素材身份不一致');
   }
+  // 扩大 coverClip 到整段原片只改变允许抽帧的范围,不改变旧的默认点:
+  // 选中的时间线 clip 保留它原来的 sourceStartUs;独立封面素材原本从 0 起,
+  // 未指定封面时则沿用第一条时间线 clip 的 sourceStartUs。
+  const defaultCoverTimeUs = selectedCoverClip?.sourceStartUs
+    ?? (coverInput?.assetId ? 0 : firstClip.sourceStartUs);
   const coverAssetId = coverInput?.assetId ?? selectedCoverClip?.assetId ?? firstClip.assetId;
   // An explicit cover asset/time is an independent frozen source-frame
   // decision. It may legally point outside every timeline clip while still
@@ -504,6 +515,8 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
     planId: input.planId, outputVersionId: input.outputVersionId, planSeq: row.seq,
     outputVersionNumber: row.versionNumber, arrangement: normalized.arrangement,
     editRevision: normalized.arrangement.editRevision ?? 0,
+    coverTimeUs,
+    defaultCoverTimeUs,
     versionDefaultsJson: parseJson(row.defaultsJson, 'defaultsJson') as Record<string, unknown>,
     clips: resolvedClips,
     coverClip,
@@ -725,11 +738,11 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const first = snapshot.coverClip;
     const cover = snapshot.arrangement.cover;
     const requestedCoverTime = cover?.timeUs ?? cover?.frameTimeUs ?? cover?.sourceTimeUs;
-    const coverTimeUs = requestedCoverTime == null ? first.sourceStartUs : finiteInteger(requestedCoverTime, 'cover timeUs');
-    if (coverTimeUs < first.sourceStartUs || coverTimeUs >= first.sourceEndUs) throw error('封面冻结时间点不在封面素材原片区间内');
+    const coverFrameTimeUs = requestedCoverTime == null ? snapshot.defaultCoverTimeUs : finiteInteger(requestedCoverTime, 'cover timeUs');
+    if (coverFrameTimeUs < first.sourceStartUs || coverFrameTimeUs >= first.sourceEndUs) throw error('封面冻结时间点不在封面素材原片区间内');
     const coverColorFragments = buildBatchRenderColorFilterFragments({ colorSnapshot: first.colorSnapshot, lutPath: first.lutPath });
     await runFfmpeg([
-      '-ss', (coverTimeUs / 1_000_000).toFixed(6), '-i', first.sourcePath,
+      '-ss', (coverFrameTimeUs / 1_000_000).toFixed(6), '-i', first.sourcePath,
       '-frames:v', '1', '-vf', [
         'fps=24', `scale=${outputSize.width}:${outputSize.height}:force_original_aspect_ratio=increase`,
         `crop=${outputSize.width}:${outputSize.height}`, 'setsar=1', ...coverColorFragments, 'format=yuv420p',
@@ -866,7 +879,8 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     return {
       projectId: snapshot.projectId, batchId: snapshot.batchId, batchVersionId: snapshot.batchVersionId,
       planId: snapshot.planId, outputVersionId: snapshot.outputVersionId, planSeq: snapshot.planSeq,
-      outputVersionNumber: snapshot.outputVersionNumber, editRevision: snapshot.editRevision, preset: normalizedPreset,
+      outputVersionNumber: snapshot.outputVersionNumber, editRevision: snapshot.editRevision, coverTimeUs: snapshot.coverTimeUs,
+      preset: normalizedPreset,
       width: outputSize.width, height: outputSize.height, fps: 24, durationUs: probe.durationUs,
       audioMode, productionReady: audioMode === 'narration',
       subtitleCues,

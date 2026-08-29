@@ -1376,14 +1376,17 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }
 
   async function publishSelected(): Promise<void> {
-    const planIdsToPublish = (workspace?.cards ?? [])
-      .filter((card) => selectedPlanIds.includes(card.planId) && card.publishable && card.approved && !card.renderStale)
+    const selectedCards = (workspace?.cards ?? []).filter((card) => selectedPlanIds.includes(card.planId));
+    const selectedStaleCount = selectedCards
+      .filter((card) => card.publishable && card.approved && card.renderStale)
+      .length;
+    const planIdsToPublish = selectedCards
+      .filter((card) => card.publishable && card.approved && !card.renderStale)
       .map(({ planId }) => planId);
     if (!selectedBatchId || planIdsToPublish.length === 0) {
-      const selectedStale = (workspace?.cards ?? []).some((card) => selectedPlanIds.includes(card.planId) && card.renderStale);
       setFeedback({
         kind: 'error',
-        message: selectedStale ? '选中的成片画面已调整，等待重新渲染完成后才能导出。' : '请先勾选要正式导出的成片。',
+        message: selectedStaleCount > 0 ? '选中的成片画面已调整，等待重新渲染完成后才能导出。' : '请先勾选要正式导出的成片。',
       });
       return;
     }
@@ -1409,9 +1412,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         grouped.set(text, (grouped.get(text) ?? 0) + 1);
       }
       const detail = [...grouped].map(([text, count]) => `${count} 条${text}`).join('；');
+      const filteredStaleMessage = selectedStaleCount > 0
+        ? `，另有 ${selectedStaleCount} 条因画面已调整未导出`
+        : '';
       setFeedback({
         kind: result.published > 0 ? 'success' : 'error',
-        message: `已导出 ${result.published} 条${result.skipped > 0 ? `，跳过 ${result.skipped} 条：${detail}` : ''}`,
+        message: `已导出 ${result.published} 条${filteredStaleMessage}${result.skipped > 0 ? `，跳过 ${result.skipped} 条：${detail}` : ''}`,
       });
       const firstPublished = result.items.find(({ status }) => status === 'published' && result.published > 0 && result.skipped === 0);
       const exported = result.items.find(({ status }) => status === 'published');

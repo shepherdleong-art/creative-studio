@@ -4,7 +4,8 @@
  * 2. 编辑到 editRevision=1 后,旧候选即使审核通过也不得导出;
  * 3. 重新渲染到 editRevision=1 后恢复导出;
  * 4. queued render 会让审核写入返回 pendingRender=true;
- * 5. 没有 editRevision 的历史候选在当前 revision=0 时仍可导出。
+ * 5. 封面 timeUs 变化后旧候选不得导出,匹配新封面后恢复导出;
+ * 6. 没有 editRevision 的历史候选在当前 revision=0 时仍可导出。
  */
 
 import assert from 'node:assert/strict';
@@ -47,6 +48,7 @@ function resultFor(input: {
   videoChecksum: string;
   coverChecksum: string;
   editRevision?: number;
+  coverTimeUs?: number;
 }): Record<string, unknown> {
   return {
     projectId: input.projectId,
@@ -65,6 +67,7 @@ function resultFor(input: {
     productionReady: true,
     subtitleCues: [],
     ...(input.editRevision === undefined ? {} : { editRevision: input.editRevision }),
+    ...(input.coverTimeUs === undefined ? {} : { coverTimeUs: input.coverTimeUs }),
   };
 }
 
@@ -79,6 +82,7 @@ async function createSucceededRender(
     planSeq: number;
     outputVersionNumber: number;
     editRevision?: number;
+    coverTimeUs?: number;
     label: string;
     createdAt: string;
   },
@@ -211,7 +215,7 @@ try {
       timelineStartUs: 0,
       timelineEndUs: 2_000_000,
     }],
-    cover: { assetId, timeUs: 500_000 },
+    cover: { assetId, timeUs: 1_000_000 },
     narration: { ready: true, productionReady: true, status: 'ready', durationUs: 2_000_000 },
     subtitle: { cues: [] },
     audio: { productionReady: true },
@@ -245,6 +249,7 @@ try {
     planSeq: 1,
     outputVersionNumber: 1,
     editRevision: 0,
+    coverTimeUs: 1_000_000,
     label: 'revision-0',
     createdAt: '2026-08-01T00:00:01.000Z',
   });
@@ -254,7 +259,32 @@ try {
   assert.equal(initialExport.published, 1, 'revision 0 成功候选审核后应可导出');
 
   db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(
-    JSON.stringify({ ...arrangement, editRevision: 1, review: { decision: 'approved' } }),
+    JSON.stringify({ ...arrangement, cover: { assetId, timeUs: 2_000_000 }, review: { decision: 'approved' } }),
+    outputVersionId,
+  );
+  const staleCoverExport = await publishSelectedBatchOutputs(db, projectId, batchId, [planId], { storageRoot });
+  assert.equal(staleCoverExport.published, 0, '封面时间点变化后旧候选不得继续导出');
+  assert.equal(staleCoverExport.skipped, 1);
+  assert.match(staleCoverExport.items[0]?.reason ?? '', /封面/);
+
+  await createSucceededRender(db, {
+    projectId,
+    batchId,
+    batchVersionId,
+    planId,
+    outputVersionId,
+    planSeq: 1,
+    outputVersionNumber: 1,
+    editRevision: 0,
+    coverTimeUs: 2_000_000,
+    label: 'cover-2',
+    createdAt: '2026-08-01T00:00:01.500Z',
+  });
+  const freshCoverExport = await publishSelectedBatchOutputs(db, projectId, batchId, [planId], { storageRoot });
+  assert.equal(freshCoverExport.published, 1, '匹配新封面时间点的候选应恢复导出');
+
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(
+    JSON.stringify({ ...arrangement, cover: { assetId, timeUs: 2_000_000 }, editRevision: 1, review: { decision: 'approved' } }),
     outputVersionId,
   );
   createQueuedRender(db, {
@@ -282,6 +312,7 @@ try {
     planSeq: 1,
     outputVersionNumber: 1,
     editRevision: 1,
+    coverTimeUs: 2_000_000,
     label: 'revision-1',
     createdAt: '2026-08-01T00:00:03.000Z',
   });
@@ -302,7 +333,7 @@ try {
     .run(batchId, outputVersionId);
 
   db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(
-    JSON.stringify({ ...arrangement, editRevision: 0, review: { decision: 'approved' } }),
+    JSON.stringify({ ...arrangement, cover: { assetId, timeUs: 2_000_000 }, editRevision: 0, review: { decision: 'approved' } }),
     outputVersionId,
   );
   const latestTask = db.prepare(`
@@ -314,9 +345,10 @@ try {
   const latestAttempt = db.prepare(`SELECT resultJson FROM batch_task_attempts WHERE taskId = ?`).get(latestTask.id) as { resultJson: string };
   const legacyResult = JSON.parse(latestAttempt.resultJson) as Record<string, unknown>;
   delete legacyResult.editRevision;
+  delete legacyResult.coverTimeUs;
   db.prepare(`UPDATE batch_task_attempts SET resultJson = ? WHERE taskId = ?`).run(JSON.stringify(legacyResult), latestTask.id);
   const legacyExport = await publishSelectedBatchOutputs(db, projectId, batchId, [planId], { storageRoot });
-  assert.equal(legacyExport.published, 1, '旧候选缺少 editRevision 且当前 revision=0 时应保持兼容');
+  assert.equal(legacyExport.published, 1, '旧候选缺少 editRevision/coverTimeUs 且当前输入匹配时应保持兼容');
 
   db.close();
   db = null;

@@ -330,10 +330,17 @@ try {
     new Date().toISOString(), new Date().toISOString(), new Date().toISOString(),
   );
   db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(silentTask);
+  createBatchTask(db, 'project-1', {
+    batchId,
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: silentVersion,
+    requestKey: `test-silent-pending:${silentVersion}`,
+  });
   const blocked = await publishSelectedBatchOutputs(db, 'project-1', batchId, [silentPlanId], { storageRoot });
   assert.equal(blocked.published, 0);
   assert.equal(blocked.skipped, 1);
-  assert.match(blocked.items[0]?.reason ?? '', /静音|口播/);
+  assert.match(blocked.items[0]?.reason ?? '', /静音|口播/, '静音候选即使有排队渲染任务也应先提示缺少口播');
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM batch_artifacts WHERE outputPlanId = ?`).get(silentPlanId) as { n: number }).n, 0);
 
   fs.appendFileSync(originalPath, Buffer.from('changed'));

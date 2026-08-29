@@ -67,6 +67,12 @@ assert.match(outputEditor, /修改已保存，退出本轮调整后会自动重�
 assert.match(outputEditor, /立即渲染/);
 assert.match(exportStep, /renderStale/);
 assert.match(exportStep, /等待重新渲染/);
+assert.ok(
+  exportStep.indexOf("!card.publishable ? '不可导出'") >= 0
+    && exportStep.indexOf("!card.publishable ? '不可导出'") < exportStep.indexOf("card.renderStale ? '等待重新渲染'"),
+  '导出状态必须先表达不可导出，再表达可导出候选的新鲜度',
+);
 assert.match(review, /渲染中，完成后才可导出/);
 assert.match(review, /封面素材不可用/);
 assert.match(review, /封面素材原片区间/);
+assert.match(panel, /因画面已调整未导出/);

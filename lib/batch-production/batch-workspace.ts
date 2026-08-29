@@ -54,6 +54,8 @@ export interface BatchWorkspaceCandidateView {
   productionReady: boolean;
   /** 候选渲染读取的 arrangement 编辑修订号;旧候选缺省为 null。 */
   editRevision: number | null;
+  /** 候选渲染读取的封面 timeUs;旧候选缺省为 null。 */
+  coverTimeUs: number | null;
   durationUs: number;
   subtitleCueCount: number;
   coverAvailable: boolean;
@@ -152,32 +154,50 @@ function arrangementEditRevision(value: unknown): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : -1;
 }
 
-function poolAssetDurationUs(row: { mediaJson: string | null; analysisJson: string | null }): number | null {
-  for (const raw of [row.analysisJson, row.mediaJson]) {
-    const record = asRecord(parseJson(raw));
-    if (!record) continue;
-    const durationUs = positiveSafeInteger(record.durationUs);
+function arrangementCoverTimeUs(value: unknown): number {
+  const record = asRecord(value);
+  const cover = asRecord(record?.cover);
+  const raw = cover?.timeUs;
+  if (raw == null) return -1;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : Number.NaN;
+}
+
+function durationFromSeconds(value: unknown): number | null {
+  const durationSec = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return null;
+  const converted = Math.round(durationSec * 1_000_000);
+  return Number.isSafeInteger(converted) && converted > 0 ? converted : null;
+}
+
+function poolAssetDurationUs(row: {
+  analysisDurationUs: number | null;
+  mediaDurationUs: number | null;
+  mediaDurationSec: number | null;
+}): number | null {
+  for (const raw of [row.analysisDurationUs, row.mediaDurationUs]) {
+    const durationUs = positiveSafeInteger(raw);
     if (durationUs !== null) return durationUs;
-    const durationSec = typeof record.durationSec === 'number' ? record.durationSec : Number(record.durationSec);
-    if (Number.isFinite(durationSec) && durationSec > 0) {
-      const converted = Math.round(durationSec * 1_000_000);
-      if (Number.isSafeInteger(converted) && converted > 0) return converted;
-    }
   }
-  return null;
+  return durationFromSeconds(row.mediaDurationSec);
 }
 
 function loadPoolAssetDurations(db: Database.Database, batchVersionId: string): Map<string, number> {
   const rows = db.prepare(`
-    SELECT pool.assetId, assets.mediaJson, analysis.analysisJson
+    SELECT pool.assetId,
+      CASE WHEN json_valid(analysis.analysisJson) THEN json_extract(analysis.analysisJson, '$.durationUs') END AS analysisDurationUs,
+      CASE WHEN json_valid(assets.mediaJson) THEN json_extract(assets.mediaJson, '$.durationUs') END AS mediaDurationUs,
+      CASE WHEN json_valid(assets.mediaJson) THEN json_extract(assets.mediaJson, '$.durationSec') END AS mediaDurationSec
     FROM batch_asset_pool_items pool
     JOIN batch_assets assets ON assets.id = pool.assetId
     LEFT JOIN batch_asset_analysis analysis ON analysis.id = pool.analysisId
     WHERE pool.batchVersionId = ?
   `).all(batchVersionId) as Array<{
     assetId: string;
-    mediaJson: string | null;
-    analysisJson: string | null;
+    analysisDurationUs: number | null;
+    analysisDurationSec: number | null;
+    mediaDurationUs: number | null;
+    mediaDurationSec: number | null;
   }>;
   const durations = new Map<string, number>();
   for (const row of rows) {
@@ -290,12 +310,15 @@ function renderCandidate(value: unknown, outputVersionId: string | null): BatchW
     || typeof record.coverRelativePath !== 'string'
     || (record.editRevision !== undefined
       && (!Number.isSafeInteger(record.editRevision) || Number(record.editRevision) < 0))
+    || (record.coverTimeUs !== undefined
+      && (!Number.isSafeInteger(record.coverTimeUs) || Number(record.coverTimeUs) < -1))
   ) return null;
   return {
     outputVersionId,
     audioMode: record.audioMode,
     productionReady: record.productionReady,
     editRevision: record.editRevision === undefined ? null : Number(record.editRevision),
+    coverTimeUs: record.coverTimeUs === undefined ? null : Number(record.coverTimeUs),
     durationUs: Number(record.durationUs),
     subtitleCueCount: Array.isArray(record.subtitleCues) ? record.subtitleCues.length : 0,
     coverAvailable: true,
@@ -514,10 +537,30 @@ export function getBatchWorkspace(
       ? renderCandidate(parseJson(candidateRow.resultJson), plan.currentVersionId)
       : null;
     const currentEditRevision = arrangementEditRevision(arrangement);
-    const pendingRender = task?.status === 'queued' || task?.status === 'running';
+    const pendingRender = plan.currentVersionId ? Boolean(db.prepare(`
+      SELECT 1
+      FROM batch_tasks
+      WHERE projectId = ? AND batchId = ? AND workType = 'render'
+        AND targetKind = 'output_version' AND targetId = ?
+        AND status IN ('queued', 'running')
+      LIMIT 1
+    `).get(projectId, batchId, plan.currentVersionId)) : false;
+    const currentCoverTimeUs = arrangementCoverTimeUs(arrangement);
+    const candidateRevisionStale = candidate
+      ? candidate.editRevision === null
+        ? currentEditRevision !== 0
+        : candidate.editRevision !== currentEditRevision
+      : false;
+    const candidateCoverStale = candidate
+      ? candidate.coverTimeUs !== null && candidate.coverTimeUs !== currentCoverTimeUs
+      : false;
+    // renderStale 只表达“已有候选与当前 arrangement 不一致/仍在重渲染”。
+    // 无候选、失败和未配音由 publishable/productionReady 表达，避免导出页把
+    // 不同原因都显示成“等待重新渲染”。
     const renderStale = Boolean(
       plan.currentVersionId
-      && (pendingRender || !candidate || (candidate.editRevision === null ? currentEditRevision !== 0 : candidate.editRevision !== currentEditRevision)),
+      && candidate
+      && (pendingRender || candidateRevisionStale || candidateCoverStale),
     );
     // 口播任务(渲染闸门的配套信息):失败时给用户「重试配音」入口,否则
     // 渲染被闸门挡住会变成看不到原因的静默等待。

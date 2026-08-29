@@ -419,6 +419,15 @@ function readArrangementEditRevision(value: unknown): number {
   return Number.isSafeInteger(raw) && Number(raw) >= 0 ? Number(raw) : -1;
 }
 
+function readArrangementCoverTimeUs(value: unknown): number {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return -1;
+  const cover = (value as Record<string, unknown>).cover;
+  if (!cover || typeof cover !== 'object' || Array.isArray(cover)) return -1;
+  const raw = (cover as Record<string, unknown>).timeUs;
+  if (raw == null) return -1;
+  return Number.isSafeInteger(raw) && Number(raw) >= 0 ? Number(raw) : -2;
+}
+
 function parseRenderResult(raw: string | null): RenderAttemptResult | null {
   if (!raw) return null;
   try {
@@ -439,6 +448,8 @@ function parseRenderResult(raw: string | null): RenderAttemptResult | null {
       || typeof value.productionReady !== 'boolean'
       || (value.editRevision !== undefined
         && (!Number.isSafeInteger(value.editRevision) || Number(value.editRevision) < 0))
+      || (value.coverTimeUs !== undefined
+        && (!Number.isSafeInteger(value.coverTimeUs) || Number(value.coverTimeUs) < -1))
     ) return null;
     return value as RenderAttemptResult;
   } catch {
@@ -552,15 +563,6 @@ export async function publishSelectedBatchOutputs(
         resultJson: string | null;
       } | undefined;
       if (!row) throw new BatchDomainError('conflict', '当前成片版本还没有成功的渲染候选');
-      const pendingRender = db.prepare(`
-        SELECT 1
-        FROM batch_tasks
-        WHERE projectId = ? AND batchId = ? AND workType = 'render'
-          AND targetKind = 'output_version' AND targetId = ?
-          AND status IN ('queued', 'running')
-        LIMIT 1
-      `).get(projectId, batchId, row.currentVersionId);
-      if (pendingRender) throw new BatchDomainError('conflict', '成片正在重新渲染，请等待重新渲染完成后再导出');
       const render = parseRenderResult(row.resultJson);
       if (!render) throw new BatchDomainError('conflict', '渲染候选结果损坏或缺少发布信息');
       if (
@@ -575,9 +577,18 @@ export async function publishSelectedBatchOutputs(
       if (!render.productionReady || render.audioMode !== 'narration') {
         throw new BatchDomainError('conflict', '当前只是静音视觉候选,需准备并核验口播后才能正式导出');
       }
+      const pendingRender = db.prepare(`
+        SELECT 1
+        FROM batch_tasks
+        WHERE projectId = ? AND batchId = ? AND workType = 'render'
+          AND targetKind = 'output_version' AND targetId = ?
+          AND status IN ('queued', 'running')
+        LIMIT 1
+      `).get(projectId, batchId, row.currentVersionId);
+      if (pendingRender) throw new BatchDomainError('conflict', '成片正在重新渲染，请等待重新渲染完成后再导出');
       const arrangement = JSON.parse(row.arrangementJson) as {
         clips?: Array<{ assetId?: unknown }>;
-        cover?: { assetId?: unknown };
+        cover?: { assetId?: unknown; timeUs?: unknown };
         editRevision?: unknown;
         review?: { decision?: unknown };
       };
@@ -585,6 +596,10 @@ export async function publishSelectedBatchOutputs(
       const renderEditRevision = render.editRevision ?? 0;
       if (currentEditRevision < 0 || renderEditRevision !== currentEditRevision) {
         throw new BatchDomainError('conflict', '成片已被调整过，请等待重新渲染完成后再导出');
+      }
+      const currentCoverTimeUs = readArrangementCoverTimeUs(arrangement);
+      if (render.coverTimeUs !== undefined && render.coverTimeUs !== currentCoverTimeUs) {
+        throw new BatchDomainError('conflict', '封面已更换，请等待重新渲染完成后再导出');
       }
       // 审核门禁:正式导出只接受用户已标记「通过」的成片(权威的服务端单点判断)。
       if (arrangement.review?.decision !== 'approved') {
