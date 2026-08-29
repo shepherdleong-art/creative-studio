@@ -79,6 +79,8 @@ assert.doesNotMatch(batchTextStyle, /sm:grid-cols-2/);
 assert.doesNotMatch(batchTextStyle, /sm:grid-cols-3/);
 assert.doesNotMatch(batchTextStyle, /grid-cols-\[auto_minmax\(0,1fr\)\]/);
 assert.match(coverPreview, /max-w-full/);
+assert.match(coverPreview, /maxWidth: 'none'/);
+assert.match(coverPreview, /inset-0 h-full w-full/);
 assert.doesNotMatch(coverEditor, /className="h-full max-w-none"/);
 assert.match(batchTimelinePreview, />全屏</);
 assert.match(batchTimelinePreview, /requestFullscreen/);

@@ -61,6 +61,9 @@ export default function BatchCoverDraftPreview({
     height: `${(frameGeometry.resizedHeight / outputSize.height) * 100}%`,
     left: `${-(frameGeometry.left / outputSize.width) * 100}%`,
     top: `${-(frameGeometry.top / outputSize.height) * 100}%`,
+    // Tailwind preflight caps media at max-width: 100%, which would clip the
+    // enlarged frame on the right after applying the centered negative offset.
+    maxWidth: 'none',
   } : undefined;
   const previewSvg = title
     ? [
@@ -105,7 +108,7 @@ export default function BatchCoverDraftPreview({
         <video
           ref={videoRef}
           key={asset.assetId}
-          className={`absolute ${frameStyle ? '' : 'inset-0'} h-auto w-auto object-cover`}
+          className={`absolute ${frameStyle ? '' : 'inset-0 h-full w-full'} object-cover`}
           style={frameStyle}
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
@@ -126,7 +129,7 @@ export default function BatchCoverDraftPreview({
         <img
           src={asset.thumbnailUrl}
           alt={`${asset.displayName} 封面底图预览`}
-          className={`absolute ${frameStyle ? '' : 'inset-0'} h-auto w-auto object-cover`}
+          className={`absolute ${frameStyle ? '' : 'inset-0 h-full w-full'} object-cover`}
           style={frameStyle}
           onLoad={(event) => {
             const image = event.currentTarget;
