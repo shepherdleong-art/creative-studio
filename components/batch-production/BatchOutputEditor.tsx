@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { OutputPresetId } from '@/lib/final-edit/types';
+import type { TextStyle } from '@/lib/media-core/cover-types';
 import type {
   BatchOutputClipEditResult,
   BatchOutputClipEditView,
@@ -12,6 +13,7 @@ import BatchCoverDraftPreview from './BatchCoverDraftPreview';
 import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from './BatchCoverEditorDrawer';
 import BatchTimeline from './BatchTimeline';
 import BatchTimelinePreview from './BatchTimelinePreview';
+import BatchTextStyleEditor from './BatchTextStyleEditor';
 
 export interface BatchOutputEditorProps {
   projectId: string;
@@ -60,6 +62,9 @@ export default function BatchOutputEditor({
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
   const [musicParamsDraft, setMusicParamsDraft] = useState({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
+  const [previewMode, setPreviewMode] = useState<'output' | 'material'>('output');
+  const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
+  const [subtitleStyleDraft, setSubtitleStyleDraft] = useState<TextStyle | null>(null);
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const pendingRenderRef = useRef(false);
   const onChangedRef = useRef(onChanged);
@@ -100,6 +105,9 @@ export default function BatchOutputEditor({
       setReplaceCandidateId(null);
       setEditFeedback(null);
       setCoverEditorOpen(false);
+      setPreviewMode('output');
+      setPreviewAssetId(null);
+      setSubtitleStyleDraft(null);
       void loadView();
     }, 0);
     return () => window.clearTimeout(timer);
@@ -131,7 +139,7 @@ export default function BatchOutputEditor({
   const selectedClip = clips.find((clip) => clip.clipId === selectedClipId) ?? null;
   const freeformClip = clips.find((clip) => clip.clipId === freeformClipId) ?? null;
   const pendingReplaceAsset = replaceCandidateId ? assetsById.get(replaceCandidateId) ?? null : null;
-  const selectedMaterialForPreview = pendingReplaceAsset ?? (selectedClip ? assetsById.get(selectedClip.assetId) ?? null : null);
+  const previewMaterial = previewAssetId ? assetsById.get(previewAssetId) ?? null : null;
 
   const usedHere = poolAssets.filter((asset) => asset.usedByPlanIds.includes(planId)).length;
   const coverHere = poolAssets.filter((asset) => asset.coverUsedByPlanIds.includes(planId)).length;
@@ -155,6 +163,12 @@ export default function BatchOutputEditor({
   // are not overwritten while the user is moving a control.
     return () => window.clearTimeout(timer);
   }, [syncedMusicFadeIn, syncedMusicFadeOut, syncedMusicGain]);
+
+  useEffect(() => {
+    if (!view) return;
+    const timer = window.setTimeout(() => setSubtitleStyleDraft(view.subtitleStyle), 0);
+    return () => window.clearTimeout(timer);
+  }, [view?.editRevision, view?.planId, view?.subtitleStyle]);
 
   useEffect(() => () => {
     auditionAudioRef.current?.pause();
@@ -287,9 +301,15 @@ export default function BatchOutputEditor({
     setCoverEditorOpen(true);
   };
 
-  const applyCover = async ({ assetId, timeUs }: BatchCoverEditorDraft): Promise<boolean> => {
-    if (!assetId) return false;
-    return submitEdit({ type: 'set_cover', assetId, timeUs });
+  const applyCover = async (draft: BatchCoverEditorDraft): Promise<boolean> => {
+    if (!draft.assetId) return false;
+    return submitEdit({
+      type: 'set_cover',
+      assetId: draft.assetId,
+      timeUs: draft.timeUs,
+      framing: draft.framing,
+      title: draft.title,
+    });
   };
 
   if (loading && !view) {
@@ -308,6 +328,9 @@ export default function BatchOutputEditor({
   const musicParamsChanged = musicParamsDraft.gainDb !== view.music.gainDb
     || musicParamsDraft.fadeInSec !== view.music.fadeInSec
     || musicParamsDraft.fadeOutSec !== view.music.fadeOutSec;
+  const effectiveSubtitleStyleDraft = subtitleStyleDraft ?? view.subtitleStyle;
+  const subtitleStyleChanged = JSON.stringify(effectiveSubtitleStyleDraft) !== JSON.stringify(view.subtitleStyle);
+  const canResetSubtitleStyle = view.subtitleStyleOverride || subtitleStyleChanged;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3" data-testid={`batch-output-editor-${planId}`}>
@@ -331,7 +354,7 @@ export default function BatchOutputEditor({
         >{editFeedback.message}</p>
       )}
 
-      <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto lg:grid-cols-[minmax(246px,260px)_minmax(440px,1fr)_minmax(270px,300px)] lg:overflow-hidden">
+      <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto lg:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)] lg:overflow-hidden">
         <aside className="flex min-h-[320px] min-w-0 flex-col rounded-2xl bg-surface-subtle p-3 lg:min-h-0" aria-label="素材调整">
           <div className="flex shrink-0 items-center gap-2">
             <Icon name="retry" size={15} />
@@ -365,33 +388,6 @@ export default function BatchOutputEditor({
               </div>
             )}
           </div>
-          <div className="mt-3 shrink-0 rounded-xl border border-hairline bg-surface p-2.5" aria-label="素材预览">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-medium text-ink">素材预览</p>
-              <span className="text-[10px] text-ink-tertiary">点击列表切换</span>
-            </div>
-            {selectedMaterialForPreview ? (
-              <>
-                {selectedMaterialForPreview.previewUrl ? (
-                  <video
-                    className="mt-2 aspect-video w-full rounded-lg bg-black object-contain"
-                    controls
-                    muted
-                    playsInline
-                    preload="metadata"
-                    poster={selectedMaterialForPreview.thumbnailUrl}
-                    aria-label={`${selectedMaterialForPreview.displayName} 素材预览`}
-                  >
-                    <source src={selectedMaterialForPreview.previewUrl} type="video/mp4" />
-                  </video>
-                ) : selectedMaterialForPreview.thumbnailUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={selectedMaterialForPreview.thumbnailUrl} alt={`${selectedMaterialForPreview.displayName} 素材预览`} className="mt-2 aspect-video w-full rounded-lg object-cover" />
-                ) : <div className="mt-2 flex aspect-video items-center justify-center rounded-lg bg-ink/10 text-[10px] text-ink-tertiary">暂无预览</div>}
-                <p className="mt-1.5 truncate text-[10px] text-ink-tertiary" title={selectedMaterialForPreview.displayName}>{selectedMaterialForPreview.displayName}</p>
-              </>
-            ) : <p className="mt-2 flex aspect-video items-center justify-center rounded-lg bg-ink/10 text-[10px] text-ink-tertiary">选择素材后预览视频</p>}
-          </div>
           <div className="mt-3 flex shrink-0 items-center justify-between gap-2">
             <p className="text-xs font-medium text-ink">素材列表</p>
             <span className="text-[11px] text-ink-tertiary">已用 {usedHere} · 未用 {neverUsed}</span>
@@ -404,33 +400,47 @@ export default function BatchOutputEditor({
               const selectable = !asset.excluded && !editLocked && clips.length > 0;
               const pending = replaceCandidateId === asset.assetId;
               return (
-                <button
+                <div
                   key={asset.assetId}
-                  type="button"
-                  disabled={!selectable}
-                  aria-pressed={pending}
-                  title={asset.excluded ? '该素材已被排除出本批次分配，不可用于替换' : `选择素材「${asset.displayName}」`}
-                  className={`flex min-h-[72px] w-full min-w-0 items-center gap-2 rounded-xl p-1.5 text-left transition ${asset.excluded ? 'opacity-45' : 'hover:bg-surface'} ${pending ? 'bg-accent/10 ring-2 ring-accent' : ''}`}
-                  onClick={() => setReplaceCandidateId(pending ? null : asset.assetId)}
+                  className={'flex min-h-[72px] min-w-0 items-center gap-1 rounded-xl p-1.5 transition ' + (asset.excluded ? 'opacity-45' : 'hover:bg-surface') + (pending ? ' bg-accent/10 ring-2 ring-accent' : '')}
                 >
-                  <span className="relative h-14 w-20 shrink-0 overflow-hidden rounded-lg bg-ink/10">
-                    {asset.thumbnailUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={asset.thumbnailUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
-                    ) : <span className="flex h-full items-center justify-center text-[9px] text-ink-tertiary">无图</span>}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className={`block truncate text-[11px] font-medium ${pending ? 'text-accent' : 'text-ink'}`} title={asset.displayName}>{asset.displayName}</span>
-                    <span className="mt-0.5 block text-[10px] tabular-nums text-ink-tertiary">{asset.durationSec != null ? `${asset.durationSec.toFixed(1)} 秒` : '时长未知'}</span>
-                    <span className="mt-1 flex flex-wrap gap-1">
-                      {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[9px] text-ok">本片已用</span>}
-                      {coverUsedByThis && <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] text-accent">本片封面</span>}
-                      {usedByOthers && <span className="rounded-full bg-surface px-1.5 py-0.5 text-[9px] text-ink-secondary">其他成片已用</span>}
-                      {asset.excluded && <span className="rounded-full bg-fail/10 px-1.5 py-0.5 text-[9px] text-fail">已排除</span>}
+                  <button
+                    type="button"
+                    disabled={!selectable}
+                    aria-pressed={pending}
+                    title={asset.excluded ? '该素材已被排除出本批次分配，不可用于替换' : '选择素材「' + asset.displayName + '」'}
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-lg p-0.5 text-left"
+                    onClick={() => setReplaceCandidateId(pending ? null : asset.assetId)}
+                  >
+                    <span className="relative h-14 w-20 shrink-0 overflow-hidden rounded-lg bg-ink/10">
+                      {asset.thumbnailUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={asset.thumbnailUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
+                      ) : <span className="flex h-full items-center justify-center text-[9px] text-ink-tertiary">无图</span>}
                     </span>
-                  </span>
-                  {pending && <Icon name="check" size={13} />}
-                </button>
+                    <span className="min-w-0 flex-1">
+                      <span className={(pending ? 'block truncate text-[11px] font-medium text-accent' : 'block truncate text-[11px] font-medium text-ink')} title={asset.displayName}>{asset.displayName}</span>
+                      <span className="mt-0.5 block text-[10px] tabular-nums text-ink-tertiary">{asset.durationSec != null ? asset.durationSec.toFixed(1) + ' 秒' : '时长未知'}</span>
+                      <span className="mt-1 flex flex-wrap gap-1">
+                        {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[9px] text-ok">本片已用</span>}
+                        {coverUsedByThis && <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] text-accent">本片封面</span>}
+                        {usedByOthers && <span className="rounded-full bg-surface px-1.5 py-0.5 text-[9px] text-ink-secondary">其他成片已用</span>}
+                        {asset.excluded && <span className="rounded-full bg-fail/10 px-1.5 py-0.5 text-[9px] text-fail">已排除</span>}
+                      </span>
+                    </span>
+                    {pending && <Icon name="check" size={13} />}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary h-7 shrink-0 px-2 text-[10px]"
+                    aria-label={'预览素材 ' + asset.displayName}
+                    disabled={!asset.previewUrl && !asset.thumbnailUrl}
+                    onClick={() => {
+                      setPreviewAssetId(asset.assetId);
+                      setPreviewMode('material');
+                    }}
+                  >预览</button>
+                </div>
               );
             })}
             {poolAssets.length === 0 && <p className="py-6 text-center text-xs text-ink-tertiary">冻结素材池为空</p>}
@@ -440,20 +450,70 @@ export default function BatchOutputEditor({
         <main className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl bg-surface-subtle p-3" aria-label="预览调整">
           <div className="grid min-h-0 flex-1 grid-rows-[minmax(220px,1fr)_minmax(188px,0.82fr)] gap-3">
             <section className="min-h-0 overflow-hidden rounded-xl bg-surface p-3" data-testid="batch-output-preview-pane">
-              <BatchTimelinePreview
-                clips={clips}
-                assetsById={previewAssetsById}
-                coverUrl={coverUrl}
-                subtitleCues={view.subtitleCues}
-                subtitleStyle={view.subtitleStyle}
-                narrationUrl={narrationUrl}
-                bgm={previewBgm}
-                outputPreset={outputPreset}
-                playheadSec={playheadSec}
-                onSeek={setPlayheadSec}
-                active={active}
-                compact
-              />
+              <div className="flex h-full min-h-0 flex-col gap-2">
+                <div className="flex shrink-0 items-center justify-between gap-2">
+                  <div className="flex rounded-lg bg-surface-subtle p-1" role="tablist" aria-label="预览内容">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={previewMode === 'output'}
+                      className={'rounded-md px-2.5 py-1 text-[11px] ' + (previewMode === 'output' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary')}
+                      onClick={() => setPreviewMode('output')}
+                    >成片预览</button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={previewMode === 'material'}
+                      className={'rounded-md px-2.5 py-1 text-[11px] ' + (previewMode === 'material' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary')}
+                      onClick={() => setPreviewMode('material')}
+                    >素材预览</button>
+                  </div>
+                  <span className="min-w-0 truncate text-[11px] text-ink-tertiary" title={previewMaterial?.displayName}>
+                    {previewMode === 'material' ? (previewMaterial?.displayName ?? '请从左侧点击预览') : '实时合成预览'}
+                  </span>
+                </div>
+                <div className="min-h-0 flex-1">
+                  {previewMode === 'material' ? (
+                    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-2 rounded-xl bg-ink/[.04] p-2" data-testid="batch-output-material-preview">
+                      {previewMaterial?.previewUrl ? (
+                        <video
+                          key={'material-preview-' + previewMaterial.assetId}
+                          className="max-h-full max-w-full rounded-lg bg-black object-contain"
+                          controls
+                          muted
+                          playsInline
+                          preload="metadata"
+                          poster={previewMaterial.thumbnailUrl}
+                          aria-label={'素材预览：' + previewMaterial.displayName}
+                        >
+                          <source src={previewMaterial.previewUrl} type="video/mp4" />
+                        </video>
+                      ) : previewMaterial?.thumbnailUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={previewMaterial.thumbnailUrl} alt={previewMaterial.displayName} className="max-h-full max-w-full rounded-lg object-contain" />
+                      ) : (
+                        <p className="text-xs text-ink-tertiary">请从左侧素材列表点击“预览”</p>
+                      )}
+                      {previewMaterial && <p className="max-w-full truncate text-[11px] text-ink-tertiary" title={previewMaterial.displayName}>{previewMaterial.displayName}</p>}
+                    </div>
+                  ) : (
+                    <BatchTimelinePreview
+                      clips={clips}
+                      assetsById={previewAssetsById}
+                      coverUrl={coverUrl}
+                      subtitleCues={view.subtitleCues}
+                      subtitleStyle={effectiveSubtitleStyleDraft}
+                      narrationUrl={narrationUrl}
+                      bgm={previewBgm}
+                      outputPreset={outputPreset}
+                      playheadSec={playheadSec}
+                      onSeek={setPlayheadSec}
+                      active={active}
+                      compact
+                    />
+                  )}
+                </div>
+              </div>
             </section>
             <section className="min-h-0 overflow-y-auto rounded-xl bg-surface p-3" data-testid="batch-output-timeline-pane">
               <BatchTimeline
@@ -492,12 +552,37 @@ export default function BatchOutputEditor({
         </main>
 
         <aside className="min-h-0 min-w-0 space-y-3 overflow-y-auto pr-1" aria-label="成片设置">
-          <div className="tile space-y-3 p-3" aria-label="字幕编辑说明">
+          <div className="tile space-y-3 p-3" aria-label="字幕样式">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-semibold text-ink">字幕样式</p>
-              <span className={`rounded-full px-2 py-0.5 text-[11px] ${view.subtitleOverride ? 'bg-warn/20 text-warn' : 'bg-ok/10 text-ok'}`}>{view.subtitleOverride ? '手动覆盖' : '自动字幕'}</span>
+              <span className={'rounded-full px-2 py-0.5 text-[11px] ' + (view.subtitleStyleOverride ? 'bg-warn/20 text-warn' : 'bg-ok/10 text-ok')}>{view.subtitleStyleOverride ? '本片覆盖' : '批次默认'}</span>
             </div>
-            <p className="text-[11px] leading-5 text-ink-tertiary">字幕样式在脚本步骤统一设置；在中间时间轴可拖动、修剪或双击编辑字幕。改字幕不改口播音频。</p>
+            <p className="text-[11px] leading-5 text-ink-tertiary">这里的样式只覆盖当前成片；字幕文字仍可在下方时间轴拖动、修剪或双击编辑，改字幕不改口播音频。</p>
+            <BatchTextStyleEditor
+              key={'batch-subtitle-style-' + view.planId + '-' + view.editRevision}
+              label="字幕样式"
+              value={effectiveSubtitleStyleDraft}
+              outputWidth={outputPreset === '16x9' ? 1920 : 1080}
+              disabled={editLocked}
+              onChange={setSubtitleStyleDraft}
+            />
+            <div className="flex flex-wrap justify-end gap-2 border-t border-hairline pt-3">
+              <button
+                type="button"
+                className="btn-secondary h-8 px-3 text-xs"
+                disabled={editLocked || !canResetSubtitleStyle}
+                onClick={() => {
+                  setSubtitleStyleDraft(view.subtitleStyleDefault);
+                  void submitEdit({ type: 'set_subtitle_style', style: null });
+                }}
+              >恢复批次默认</button>
+              <button
+                type="button"
+                className="btn-primary h-8 px-3 text-xs"
+                disabled={editLocked || !subtitleStyleChanged}
+                onClick={() => void submitEdit({ type: 'set_subtitle_style', style: effectiveSubtitleStyleDraft })}
+              >应用字幕样式</button>
+            </div>
             {view.subtitleOverride && <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked} onClick={() => void submitEdit({ type: 'restore_automatic_subtitles' })}>恢复自动字幕</button>}
           </div>
 
@@ -543,7 +628,7 @@ export default function BatchOutputEditor({
             </div>
             <div className="flex items-center gap-3">
               <div className="w-20 shrink-0">
-                <BatchCoverDraftPreview asset={coverAsset} timeUs={view.coverTimeUs} title={view.coverTitle} outputPreset={outputPreset} />
+                <BatchCoverDraftPreview asset={coverAsset} timeUs={view.coverTimeUs} title={view.coverTitle} framing={view.coverFraming} outputPreset={outputPreset} />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs font-medium text-ink" title={coverAsset?.displayName}>{coverAsset?.displayName || '尚未设置封面素材'}</p>
@@ -568,6 +653,7 @@ export default function BatchOutputEditor({
         initialAssetId={view.coverAssetId}
         initialTimeUs={view.coverTimeUs}
         title={view.coverTitle}
+        framing={view.coverFraming}
         outputPreset={outputPreset}
         busy={editLocked}
         onClose={() => setCoverEditorOpen(false)}

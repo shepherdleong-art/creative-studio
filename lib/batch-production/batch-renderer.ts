@@ -15,7 +15,7 @@ import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts'
 import { listAssetSources, resolveSourceFilePath } from './media-catalog.ts';
 import { resolveManagedLutPath } from './lut-catalog.ts';
 import { buildBatchNarrationSubtitleCues } from './subtitle-cues.ts';
-import { loadFrozenSubtitleStyle, resolveBatchSubtitleStyle } from './subtitle-style.ts';
+import { loadFrozenSubtitleStyle, resolveBatchSubtitleStyle, resolveBatchSubtitleStyleOverride } from './subtitle-style.ts';
 import { readBatchBgmPool, readFrozenMusicPool } from './bgm.ts';
 import { defaultTextStyle } from '../media-core/cover-domain.ts';
 import { textStyleToSvgElements } from '../media-core/cover-title-svg.ts';
@@ -69,6 +69,7 @@ export interface BatchRenderArrangementInput {
   cover?: BatchRenderCoverInput;
   subtitle?: {
     cues?: unknown[];
+    style?: unknown;
   };
   music?: { trackId?: unknown; gainDb?: unknown; fadeInSec?: unknown; fadeOutSec?: unknown };
   /** Optional already-prepared local narration seam (never a provider request). */
@@ -768,9 +769,10 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     : narrationSegments.length > 0
       ? buildBatchNarrationSubtitleCues(narrationSegments)
       : arrangementSubtitleCues;
-  const subtitleStyle = loadFrozenSubtitleStyle(input.db, input.planId, outputSize.width)
+  const frozenSubtitleStyle = loadFrozenSubtitleStyle(input.db, input.planId, outputSize.width)
     ?? resolveBatchSubtitleStyle(snapshot.versionDefaultsJson, outputSize.width, null)
     ?? defaultTextStyle('subtitle', outputSize.width);
+  const subtitleStyle = resolveBatchSubtitleStyleOverride(frozenSubtitleStyle, snapshot.arrangement.subtitle);
   // 片头封面:与单条剪辑同一个契约(FINAL_EDIT_INTRO_DURATION_US = 20 帧),
   // 带标题的封面静帧接在正文之前,音频与字幕整体后移同样时长。脚本时长预算
   // (script-duration-policy)本来就为它扣掉了这 20 帧,不加片头成片会系统性
@@ -798,13 +800,14 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     await runFfmpeg([
       '-ss', (coverFrameTimeUs / 1_000_000).toFixed(6), '-i', first.sourcePath,
       '-frames:v', '1', '-vf', [
-        'fps=24', `scale=${outputSize.width}:${outputSize.height}:force_original_aspect_ratio=increase`,
-        `crop=${outputSize.width}:${outputSize.height}`, 'setsar=1', ...coverColorFragments, 'format=yuv420p',
+        // 保留原始帧,构图覆盖要在 sharp 中按原片尺寸统一缩放/裁切;
+        // 先居中 crop 会让水平/垂直位移无法取到原片边缘。
+        'fps=24', 'setsar=1', ...coverColorFragments, 'format=yuv420p',
       ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
     ], { signal });
     // 冻结的封面标题设置随版本 defaultsJson 锁定:抽帧+色彩链之后合成主/副标题,
     // 再校验与算指纹,保证导出指纹校验与工作区预览一致。片头用的就是这张成品。
-    await applyFrozenCoverTitleToFile(input.db, input.planId, coverTemp, outputSize);
+    await applyFrozenCoverTitleToFile(input.db, input.planId, coverTemp, outputSize, snapshot.arrangement.cover);
     const audioInput = snapshot.clips.length;
     const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot, input.db);
     const args: string[] = [];
@@ -1092,8 +1095,8 @@ export async function regenerateBatchOutputCover(input: BatchCoverRegenerationIn
     await runFfmpeg([
       '-ss', (timeUs / 1_000_000).toFixed(6), '-i', coverClip.sourcePath,
       '-frames:v', '1', '-vf', [
-        'fps=24', `scale=${outputSize.width}:${outputSize.height}:force_original_aspect_ratio=increase`,
-        `crop=${outputSize.width}:${outputSize.height}`, 'setsar=1', ...colorFragments, 'format=yuv420p',
+        // 与正式渲染保持一致:先保留原始帧,再由封面合成路径处理画幅和构图。
+        'fps=24', 'setsar=1', ...colorFragments, 'format=yuv420p',
       ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
     ], { signal });
     assertSignal(signal);

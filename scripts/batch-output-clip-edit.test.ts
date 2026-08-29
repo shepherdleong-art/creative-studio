@@ -321,6 +321,68 @@ try {
   );
 
   resetPlan0Arrangement();
+  const customizedCover = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_cover',
+    assetId: assetA,
+    timeUs: 2_000_000,
+    framing: { scale: 1.5, offsetX: -0.2, offsetY: 0.3 },
+    title: {
+      primary: '批量主标题',
+      secondary: '批量副标题',
+      styles: { primary: {}, secondary: {} },
+    },
+  });
+  assert.equal(customizedCover.changed, true);
+  assert.equal(customizedCover.visualChanged, true);
+  const customizedCoverArrangement = currentArrangement(plans[0]);
+  assert.deepEqual(customizedCoverArrangement.cover, {
+    assetId: assetA,
+    timeUs: 2_000_000,
+    framing: { scale: 1.5, offsetX: -0.2, offsetY: 0.3 },
+    title: {
+      primary: '批量主标题',
+      secondary: '批量副标题',
+      styles: {
+        primary: getBatchOutputArrangementView(db, projectId, batchId, plans[0]).coverTitle?.styles.primary,
+        secondary: getBatchOutputArrangementView(db, projectId, batchId, plans[0]).coverTitle?.styles.secondary,
+      },
+    },
+  });
+  const customizedCoverView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(customizedCoverView.coverTitleOverride, true);
+  assert.equal(customizedCoverView.coverTitle?.primary, '批量主标题');
+  assert.deepEqual(customizedCoverView.coverFraming, { scale: 1.5, offsetX: -0.2, offsetY: 0.3 });
+
+  resetPlan0Arrangement();
+  const baseSubtitleStyle = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).subtitleStyleDefault;
+  const customizedSubtitle = {
+    ...baseSubtitleStyle,
+    fontSizePx: 68,
+    italic: true,
+    shadow: { ...baseSubtitleStyle.shadow, enabled: false },
+  };
+  const subtitleStyleEdit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_subtitle_style',
+    style: customizedSubtitle,
+  });
+  assert.equal(subtitleStyleEdit.changed, true);
+  assert.equal(subtitleStyleEdit.visualChanged, true);
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).subtitleStyle.fontSizePx, 68);
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).subtitleStyleOverride, true);
+  assert.deepEqual((currentArrangement(plans[0]).subtitle as Record<string, unknown>).style, customizedSubtitle);
+  const repeatedSubtitleStyleEdit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_subtitle_style',
+    style: customizedSubtitle,
+  });
+  assert.equal(repeatedSubtitleStyleEdit.changed, false);
+  const resetSubtitleStyle = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_subtitle_style',
+    style: null,
+  });
+  assert.equal(resetSubtitleStyle.changed, true);
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).subtitleStyleOverride, false);
+
+  resetPlan0Arrangement();
   const legacyTrackNoop = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
     type: 'set_music_track', trackId: 'bgm-a',
   });

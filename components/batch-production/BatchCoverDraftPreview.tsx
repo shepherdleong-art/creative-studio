@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-title';
+import { coverFramingGeometry } from '@/lib/media-core/cover-framing';
 import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
+import type { CoverFraming } from '@/lib/media-core/cover-types';
 import { OUTPUT_PRESETS, type OutputPresetId } from '@/lib/final-edit/types';
 
 export interface BatchCoverPreviewAsset {
@@ -12,10 +14,17 @@ export interface BatchCoverPreviewAsset {
   previewUrl?: string;
 }
 
+interface SourceDimensions {
+  key: string;
+  width: number;
+  height: number;
+}
+
 interface BatchCoverDraftPreviewProps {
   asset: BatchCoverPreviewAsset | null;
   timeUs: number;
   title: FrozenBatchCoverTitleConfig | null;
+  framing?: CoverFraming | null;
   outputPreset: OutputPresetId;
   className?: string;
 }
@@ -28,11 +37,31 @@ export default function BatchCoverDraftPreview({
   asset,
   timeUs,
   title,
+  framing,
   outputPreset,
   className = '',
 }: BatchCoverDraftPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [sourceDimensions, setSourceDimensions] = useState<SourceDimensions | null>(null);
   const outputSize = OUTPUT_PRESETS[outputPreset];
+  const sourceKey = asset ? `${asset.assetId}:${asset.previewUrl ?? asset.thumbnailUrl ?? ''}` : '';
+  const resolvedFraming = framing ?? title?.framing ?? { scale: 1, offsetX: 0, offsetY: 0 };
+  const sourceSize = sourceDimensions?.key === sourceKey ? sourceDimensions : null;
+  const frameGeometry = sourceSize
+    ? coverFramingGeometry({
+      sourceWidth: sourceSize.width,
+      sourceHeight: sourceSize.height,
+      outputWidth: outputSize.width,
+      outputHeight: outputSize.height,
+      framing: resolvedFraming,
+    })
+    : null;
+  const frameStyle = frameGeometry ? {
+    width: `${(frameGeometry.resizedWidth / outputSize.width) * 100}%`,
+    height: `${(frameGeometry.resizedHeight / outputSize.height) * 100}%`,
+    left: `${-(frameGeometry.left / outputSize.width) * 100}%`,
+    top: `${-(frameGeometry.top / outputSize.height) * 100}%`,
+  } : undefined;
   const previewSvg = title
     ? [
       title.primary.trim() ? textStyleToSvgElements(title.styles.primary, title.primary, outputSize) : '',
@@ -46,10 +75,17 @@ export default function BatchCoverDraftPreview({
     const seek = () => {
       if (Number.isFinite(timeUs) && timeUs >= 0) video.currentTime = timeUs / 1_000_000;
     };
+    const readDimensions = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setSourceDimensions({ key: sourceKey, width: video.videoWidth, height: video.videoHeight });
+      }
+      seek();
+    };
     seek();
-    video.addEventListener('loadedmetadata', seek);
-    return () => video.removeEventListener('loadedmetadata', seek);
-  }, [asset?.previewUrl, timeUs]);
+    readDimensions();
+    video.addEventListener('loadedmetadata', readDimensions);
+    return () => video.removeEventListener('loadedmetadata', readDimensions);
+  }, [asset?.previewUrl, sourceKey, timeUs]);
 
   if (!asset) {
     return (
@@ -69,7 +105,14 @@ export default function BatchCoverDraftPreview({
         <video
           ref={videoRef}
           key={asset.assetId}
-          className="absolute inset-0 h-full w-full object-cover"
+          className={`absolute ${frameStyle ? '' : 'inset-0'} h-auto w-auto object-cover`}
+          style={frameStyle}
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget;
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+              setSourceDimensions({ key: sourceKey, width: video.videoWidth, height: video.videoHeight });
+            }
+          }}
           muted
           playsInline
           preload="metadata"
@@ -80,7 +123,18 @@ export default function BatchCoverDraftPreview({
         </video>
       ) : asset.thumbnailUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={asset.thumbnailUrl} alt={`${asset.displayName} 封面底图预览`} className="absolute inset-0 h-full w-full object-cover" />
+        <img
+          src={asset.thumbnailUrl}
+          alt={`${asset.displayName} 封面底图预览`}
+          className={`absolute ${frameStyle ? '' : 'inset-0'} h-auto w-auto object-cover`}
+          style={frameStyle}
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              setSourceDimensions({ key: sourceKey, width: image.naturalWidth, height: image.naturalHeight });
+            }
+          }}
+        />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">暂无底图预览</div>
       )}

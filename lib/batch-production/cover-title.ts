@@ -126,6 +126,17 @@ export interface FrozenBatchCoverTitleConfig {
   framing: CoverFraming | null;
 }
 
+/**
+ * 成片调整阶段对冻结封面配置的单条覆盖。覆盖存进 arrangement.cover，
+ * 不回写批次 defaultsJson，避免改一条成片时意外影响同批其它成片。
+ */
+export interface BatchCoverTitleOverride {
+  primary: string;
+  secondary: string;
+  styles: { primary: TextStyle; secondary: TextStyle };
+  framing: CoverFraming | null;
+}
+
 function parseJsonObject(value: string): Record<string, unknown> | null {
   try {
     return asRecord(JSON.parse(value) as unknown);
@@ -159,18 +170,93 @@ export function loadFrozenCoverTitleConfig(db: Database.Database, planId: string
   return { primary, secondary, styles, framing: settings.framing };
 }
 
+function cleanTitlePart(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value.replace(/[\r\n]+/gu, '').trim() : fallback;
+}
+
+/**
+ * 解析 arrangement.cover 上的单条封面覆盖，并与冻结标题合并。
+ * 允许旧 arrangement 没有 title/framing；非法字段只回落到冻结值，
+ * 不让一条坏的成片编辑阻塞整个批次渲染。
+ */
+export function resolveBatchCoverTitleOverride(
+  frozen: FrozenBatchCoverTitleConfig | null,
+  coverValue: unknown,
+  outputWidth: number,
+): BatchCoverTitleOverride | null {
+  const cover = asRecord(coverValue);
+  const rawTitle = asRecord(cover?.title);
+  const hasTitleOverride = Boolean(rawTitle && (
+    Object.prototype.hasOwnProperty.call(rawTitle, 'primary')
+    || Object.prototype.hasOwnProperty.call(rawTitle, 'secondary')
+    || Object.prototype.hasOwnProperty.call(rawTitle, 'styles')
+  ));
+  const hasFramingOverride = Boolean(cover && Object.prototype.hasOwnProperty.call(cover, 'framing'));
+  if (!frozen && !hasTitleOverride && !hasFramingOverride) return null;
+
+  const fallbackStyles = frozen?.styles ?? {
+    primary: defaultTextStyle('coverPrimary', outputWidth),
+    secondary: defaultTextStyle('coverSecondary', outputWidth),
+  };
+  const rawStyles = asRecord(rawTitle?.styles);
+  const framing = hasFramingOverride
+    ? cover?.framing == null ? null : cleanFraming(cover.framing)
+    : frozen?.framing ?? null;
+  return {
+    primary: cleanTitlePart(rawTitle?.primary, frozen?.primary ?? ''),
+    secondary: cleanTitlePart(rawTitle?.secondary, frozen?.secondary ?? ''),
+    styles: {
+      primary: normalizeTextStyle(rawStyles?.primary, fallbackStyles.primary),
+      secondary: normalizeTextStyle(rawStyles?.secondary, fallbackStyles.secondary),
+    },
+    framing,
+  };
+}
+
+/** 读取当前成片 arrangement 的封面覆盖，供历史换封面接口保留标题/构图。 */
+function loadCurrentCoverOverride(db: Database.Database, planId: string): unknown {
+  const row = db.prepare(`
+    SELECT o.arrangementJson AS arrangementJson
+    FROM batch_output_plans p
+    LEFT JOIN batch_output_versions o ON o.id = p.currentVersionId
+    WHERE p.id = ?
+  `).get(planId) as { arrangementJson: string | null } | undefined;
+  if (!row?.arrangementJson) return undefined;
+  try {
+    const arrangement = JSON.parse(row.arrangementJson) as unknown;
+    return asRecord(arrangement)?.cover;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 渲染接线点:plan 有冻结封面标题设置时,把主/副标题就地合成进封面文件
- * (覆盖传入的临时文件路径);无设置或无标题时不做任何事。返回是否发生合成。
+ * (覆盖传入的临时文件路径);无标题时只规整最终画幅,不合成文字。返回是否发生合成。
  */
 export async function applyFrozenCoverTitleToFile(
   db: Database.Database,
   planId: string,
   coverFilePath: string,
   outputSize: { width: number; height: number },
+  coverOverride?: unknown,
 ): Promise<boolean> {
-  const config = loadFrozenCoverTitleConfig(db, planId);
-  if (!config) return false;
+  const config = resolveBatchCoverTitleOverride(
+    loadFrozenCoverTitleConfig(db, planId),
+    coverOverride === undefined ? loadCurrentCoverOverride(db, planId) : coverOverride,
+    outputSize.width,
+  );
+  if (!config) {
+    // 渲染器保留原始抽帧,所以即使没有标题也要在这里完成最终画幅规整。
+    // 这样默认居中裁切和有构图覆盖的路径都只发生一次,避免先裁后移丢失边缘。
+    const normalized = await sharp(await fsp.readFile(coverFilePath))
+      .rotate()
+      .resize(outputSize.width, outputSize.height, { fit: 'cover' })
+      .jpeg({ quality: 92 })
+      .toBuffer();
+    await fsp.writeFile(coverFilePath, normalized);
+    return false;
+  }
   const composed = await composeBatchCoverTitle({
     coverImage: await fsp.readFile(coverFilePath),
     primary: config.primary,

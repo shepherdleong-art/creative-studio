@@ -5,6 +5,7 @@ import {
   applyBatchOutputClipEdit,
   type BatchOutputClipEdit,
 } from '@/lib/batch-production/output-arrangement';
+import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
 import { scheduleRenderAfterClipEdit } from '@/lib/batch-production/phase-e';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import {
@@ -22,9 +23,8 @@ export const dynamic = 'force-dynamic';
  * 分割是纯结构操作，不递增 revision、不触发重渲染。
  *
  * `deferRender: true` 只写 arrangement 不排渲染：编辑器里的预览是客户端实时合成，
- * 不看渲染产物，每次微调都排一次整片重渲染（实测 4~7 秒）纯属白烧 CPU，还会经
- * renderBusy 把编辑器锁死。编辑器改为退出这一轮调整时用 `type: 'commit_render'`
- * 一次性提交——requestKey 含 editRevision 且 createBatchTask 按 key 幂等，
+ * 不看渲染产物；编辑器在退出这一轮调整时用 `type: 'commit_render'` 一次性提交，
+ * 避免每次微调都被整片渲染锁住——requestKey 含 editRevision 且 createBatchTask 按 key 幂等，
  * 所以重复提交、以及「已经渲染过的 revision」都不会多排任务。
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
@@ -59,6 +59,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       splitUs?: unknown;
       leftText?: unknown;
       rightText?: unknown;
+      framing?: unknown;
+      title?: unknown;
+      style?: unknown;
       deferRender?: unknown;
     };
     const clipId = typeof body.clipId === 'string' ? body.clipId.trim() : '';
@@ -147,7 +150,19 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
           message: '封面编辑需要 assetId 与非负安全整数 timeUs(微秒)',
         }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
       }
-      edit = { type: 'set_cover', assetId, timeUs: body.timeUs };
+      if (body.framing !== undefined && body.framing !== null && (typeof body.framing !== 'object' || Array.isArray(body.framing))) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '封面构图参数无效' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      if (body.title !== undefined && (body.title === null || typeof body.title !== 'object' || Array.isArray(body.title))) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '封面标题参数无效' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = {
+        type: 'set_cover',
+        assetId,
+        timeUs: body.timeUs,
+        ...(body.framing === undefined ? {} : { framing: body.framing as CoverFraming | null }),
+        ...(body.title === undefined ? {} : { title: body.title }),
+      };
     } else if (body.type === 'set_music_track') {
       const trackId = body.trackId === null
         ? null
@@ -177,6 +192,11 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         fadeInSec,
         fadeOutSec,
       };
+    } else if (body.type === 'set_subtitle_style') {
+      if (body.style !== null && (typeof body.style !== 'object' || Array.isArray(body.style))) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '字幕样式参数无效' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: 'set_subtitle_style', style: body.style === null ? null : body.style as TextStyle };
     } else if (body.type === 'set_subtitle_cue_text') {
       const cueId = typeof body.cueId === 'string' ? body.cueId.trim() : '';
       if (!cueId || typeof body.text !== 'string') {
@@ -229,7 +249,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     } else {
       return NextResponse.json({
         error: 'invalid_clip_edit',
-        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/commit_render)',
+        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/commit_render)',
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
 

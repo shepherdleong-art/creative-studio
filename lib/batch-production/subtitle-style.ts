@@ -58,6 +58,23 @@ export function resolveBatchSubtitleStyle(
     : settings.style;
 }
 
+/**
+ * 解析成片 arrangement.subtitle.style 的单条覆盖。批量脚本步骤里的样式
+ * 仍是冻结基准；检查成片只覆盖当前 plan，不回写整批 defaultsJson。
+ */
+export function resolveBatchSubtitleStyleOverride(
+  frozenStyle: TextStyle,
+  subtitleValue: unknown,
+): TextStyle {
+  const subtitle = asRecord(subtitleValue);
+  return normalizeTextStyle(subtitle?.style, frozenStyle);
+}
+
+export function hasBatchSubtitleStyleOverride(subtitleValue: unknown): boolean {
+  const subtitle = asRecord(subtitleValue);
+  return Boolean(subtitle && Object.prototype.hasOwnProperty.call(subtitle, 'style'));
+}
+
 /** 从输出计划谱系读取冻结样式；查询失败时返回 null，由调用方走默认值。 */
 export function loadFrozenSubtitleStyle(
   db: Database.Database,

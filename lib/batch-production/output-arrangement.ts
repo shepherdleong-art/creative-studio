@@ -5,11 +5,12 @@ import { buildBatchNarrationSubtitleCues } from './subtitle-cues.ts';
 import type { BatchRenderNarrationSegment } from './batch-renderer.ts';
 import { BatchDomainError } from './errors.ts';
 import { listBatchBgmTracks, readBatchMusicEditPool, readFrozenMusicPool } from './bgm.ts';
-import { loadFrozenCoverTitleConfig } from './cover-title.ts';
+import { loadFrozenCoverTitleConfig, resolveBatchCoverTitleOverride } from './cover-title.ts';
 import type { FrozenBatchCoverTitleConfig } from './cover-title.ts';
-import { loadFrozenSubtitleStyle } from './subtitle-style.ts';
-import { defaultTextStyle } from '../media-core/cover-domain.ts';
-import type { TextStyle } from '../media-core/cover-types.ts';
+import { hasBatchSubtitleStyleOverride, loadFrozenSubtitleStyle, resolveBatchSubtitleStyleOverride } from './subtitle-style.ts';
+import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
+import { cleanFraming } from '../media-core/cover-title-presets.ts';
+import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
 
 /**
  * 检查成片的片段级编辑（等长 trim / replace、变长修剪、删除、插入、分割）
@@ -92,7 +93,11 @@ export interface BatchOutputClipEditView {
   /** true 表示当前成片会优先使用 arrangement.subtitle 的手动覆盖。 */
   subtitleOverride: boolean;
   subtitleStyle: TextStyle;
+  subtitleStyleDefault: TextStyle;
+  subtitleStyleOverride: boolean;
   coverTitle: FrozenBatchCoverTitleConfig | null;
+  coverFraming: CoverFraming;
+  coverTitleOverride: boolean;
   coverAssetId: string | null;
   coverTimeUs: number;
   music: { trackId: string | null; gainDb: number; fadeInSec: number; fadeOutSec: number };
@@ -108,10 +113,11 @@ export type BatchOutputClipEdit =
   | { type: 'delete'; clipId: string }
   | { type: 'insert'; afterClipId: string | null; assetId: string; durationUs?: number }
   | { type: 'split'; clipId: string; offsetUs: number }
-  | { type: 'set_cover'; assetId: string; timeUs: number }
+  | { type: 'set_cover'; assetId: string; timeUs: number; framing?: CoverFraming | null; title?: unknown }
   | { type: 'set_music_track'; trackId: string | null }
   | { type: 'set_music_params'; gainDb: number; fadeInSec: number; fadeOutSec: number }
   | { type: 'set_subtitle_cue_text'; cueId: string; text: string }
+  | { type: 'set_subtitle_style'; style: TextStyle | null }
   | { type: 'move_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { type: 'trim_subtitle_cue'; cueId: string; startUs: number; endUs: number }
   | { type: 'split_subtitle_cue'; cueId: string; splitUs: number; leftText?: string; rightText?: string }
@@ -523,6 +529,10 @@ export function getBatchOutputArrangementView(
       : []),
   ];
   const outputWidth = outputWidthForPreset(arrangement?.preset);
+  const frozenSubtitleStyle = loadFrozenSubtitleStyle(db, planId, outputWidth) ?? defaultTextStyle('subtitle', outputWidth);
+  const coverValue = asRecord(arrangement?.cover);
+  const frozenCoverTitle = loadFrozenCoverTitleConfig(db, planId);
+  const effectiveCoverTitle = resolveBatchCoverTitleOverride(frozenCoverTitle, coverValue, outputWidth);
   return {
     planId,
     batchVersionId: lineage.batchVersionId,
@@ -535,10 +545,14 @@ export function getBatchOutputArrangementView(
     narration,
     subtitleCues,
     subtitleOverride: hasManualSubtitleOverride(arrangement),
-    subtitleStyle: loadFrozenSubtitleStyle(db, planId, outputWidth) ?? defaultTextStyle('subtitle', outputWidth),
-    coverTitle: loadFrozenCoverTitleConfig(db, planId),
-    coverAssetId: nonEmptyString(asRecord(arrangement?.cover)?.assetId),
-    coverTimeUs: finiteNumber(asRecord(arrangement?.cover)?.timeUs) ?? 0,
+    subtitleStyle: resolveBatchSubtitleStyleOverride(frozenSubtitleStyle, arrangement?.subtitle),
+    subtitleStyleDefault: frozenSubtitleStyle,
+    subtitleStyleOverride: hasBatchSubtitleStyleOverride(arrangement?.subtitle),
+    coverTitle: effectiveCoverTitle,
+    coverFraming: effectiveCoverTitle?.framing ?? { scale: 1, offsetX: 0, offsetY: 0 },
+    coverTitleOverride: Boolean(asRecord(coverValue?.title)),
+    coverAssetId: nonEmptyString(coverValue?.assetId),
+    coverTimeUs: finiteNumber(coverValue?.timeUs) ?? 0,
     music: {
       trackId: nonEmptyString(asRecord(arrangement?.music)?.trackId),
       gainDb: bgmParams.gainDb,
@@ -610,6 +624,12 @@ export function applyBatchOutputClipEdit(
       if (!Number.isSafeInteger(edit.timeUs) || edit.timeUs < 0) {
         throw new BatchDomainError('invalid_input', '封面时间点必须是非负安全整数(微秒)');
       }
+      if (edit.framing !== undefined && edit.framing !== null && (typeof edit.framing !== 'object' || Array.isArray(edit.framing))) {
+        throw new BatchDomainError('invalid_input', '封面构图参数无效');
+      }
+      if (edit.title !== undefined && (edit.title === null || typeof edit.title !== 'object' || Array.isArray(edit.title))) {
+        throw new BatchDomainError('invalid_input', '封面标题参数无效');
+      }
       break;
     case 'set_music_track':
       if (edit.trackId !== null && !nonEmptyString(edit.trackId)) {
@@ -624,6 +644,11 @@ export function applyBatchOutputClipEdit(
     case 'set_subtitle_cue_text':
       if (!nonEmptyString(edit.cueId) || typeof edit.text !== 'string') {
         throw new BatchDomainError('invalid_input', '字幕文字编辑需要 cueId 与 text');
+      }
+      break;
+    case 'set_subtitle_style':
+      if (edit.style !== null && (typeof edit.style !== 'object' || Array.isArray(edit.style))) {
+        throw new BatchDomainError('invalid_input', '字幕样式参数无效');
       }
       break;
     case 'move_subtitle_cue':
@@ -817,6 +842,7 @@ export function applyBatchOutputClipEdit(
     } else if (edit.type === 'set_cover') {
       const target = readFrozenPoolAsset(db, lineage.batchVersionId, edit.assetId.trim());
       if (!target) throw new BatchDomainError('invalid_input', '封面素材不在本批次冻结素材池中');
+      if (target.excluded === 1) throw new BatchDomainError('conflict', '封面素材已被排除出本批次分配');
       const durationUs = poolAssetDurationUs(target);
       if (durationUs === null) throw new BatchDomainError('invalid_input', '封面素材缺少时长信息,无法校验抽帧时间');
       const timeUs = edit.timeUs;
@@ -824,11 +850,33 @@ export function applyBatchOutputClipEdit(
       const currentCover = asRecord(arrangement.cover) ?? {};
       const currentAssetId = nonEmptyString(currentCover.assetId);
       const currentTimeUs = finiteNumber(currentCover.timeUs);
-      if (currentAssetId === edit.assetId.trim() && currentTimeUs === timeUs
-        && !('clipId' in currentCover) && !('segmentId' in currentCover)) return unchanged;
       const nextCover: Record<string, unknown> = { ...currentCover, assetId: edit.assetId.trim(), timeUs };
       delete nextCover.clipId;
       delete nextCover.segmentId;
+      if (edit.framing !== undefined) nextCover.framing = edit.framing === null ? null : cleanFraming(edit.framing);
+      if (edit.title !== undefined) {
+        const outputWidth = outputWidthForPreset(arrangement.preset);
+        const frozenCoverTitle = loadFrozenCoverTitleConfig(db, planId);
+        const effectiveTitle = resolveBatchCoverTitleOverride(
+          frozenCoverTitle,
+          { ...nextCover, title: edit.title },
+          outputWidth,
+        );
+        if (effectiveTitle) {
+          nextCover.title = {
+            primary: effectiveTitle.primary,
+            secondary: effectiveTitle.secondary,
+            styles: effectiveTitle.styles,
+          };
+          nextCover.framing = effectiveTitle.framing;
+        } else {
+          delete nextCover.title;
+        }
+      }
+      if (currentAssetId === edit.assetId.trim() && currentTimeUs === timeUs
+        && !('clipId' in currentCover) && !('segmentId' in currentCover)
+        && JSON.stringify(currentCover.framing ?? null) === JSON.stringify(nextCover.framing ?? null)
+        && JSON.stringify(currentCover.title ?? null) === JSON.stringify(nextCover.title ?? null)) return unchanged;
       arrangement.cover = nextCover;
       visualChanged = true;
     } else if (edit.type === 'set_music_track') {
@@ -864,6 +912,20 @@ export function applyBatchOutputClipEdit(
       if (nextParams.fadeOutSec === batchDefaults.fadeOutSec) delete nextMusic.fadeOutSec;
       else nextMusic.fadeOutSec = nextParams.fadeOutSec;
       arrangement.music = nextMusic;
+      visualChanged = true;
+    } else if (edit.type === 'set_subtitle_style') {
+      const subtitle = asRecord(arrangement.subtitle) ?? {};
+      const outputWidth = outputWidthForPreset(arrangement.preset);
+      const frozenStyle = loadFrozenSubtitleStyle(db, planId, outputWidth) ?? defaultTextStyle('subtitle', outputWidth);
+      const currentStyle = resolveBatchSubtitleStyleOverride(frozenStyle, subtitle);
+      const nextStyle = edit.style === null ? null : normalizeTextStyle(edit.style, currentStyle);
+      const currentHasOverride = hasBatchSubtitleStyleOverride(subtitle);
+      if (edit.style === null && !currentHasOverride) return unchanged;
+      if (nextStyle && currentHasOverride && JSON.stringify(nextStyle) === JSON.stringify(currentStyle)) return unchanged;
+      if (nextStyle) subtitle.style = nextStyle;
+      else delete subtitle.style;
+      if (Object.keys(subtitle).length > 0) arrangement.subtitle = subtitle;
+      else delete arrangement.subtitle;
       visualChanged = true;
     } else if (edit.type === 'set_subtitle_cue_text') {
       const cues = readSubtitleCueRecords(arrangement);
@@ -944,7 +1006,10 @@ export function applyBatchOutputClipEdit(
       if (!hasManualSubtitleOverride(arrangement)) return unchanged;
       // 不保留旧的人工 cues 作为“看起来像自动字幕”的假数据。渲染器会在
       // subtitle 缺失时从最新口播对齐结果派生，编辑器也应立即显示同一事实。
-      delete arrangement.subtitle;
+      // 字幕样式是独立的单条覆盖，恢复自动字幕不应把用户刚调好的样式一并抹掉。
+      const subtitle = asRecord(arrangement.subtitle) ?? {};
+      if (hasBatchSubtitleStyleOverride(subtitle)) arrangement.subtitle = { style: subtitle.style };
+      else delete arrangement.subtitle;
       visualChanged = true;
     }
 
@@ -1001,7 +1066,9 @@ export function clearBatchSubtitleOverridesForNarrationRetry(
     for (const row of rows) {
       const arrangement = asRecord(parseJson(row.arrangementJson));
       if (!arrangement || !hasManualSubtitleOverride(arrangement)) continue;
-      delete arrangement.subtitle;
+      const subtitle = asRecord(arrangement.subtitle) ?? {};
+      if (hasBatchSubtitleStyleOverride(subtitle)) arrangement.subtitle = { style: subtitle.style };
+      else delete arrangement.subtitle;
       arrangement.editRevision = readEditRevision(arrangement) + 1;
       delete arrangement.review;
       db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`)
