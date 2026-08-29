@@ -183,7 +183,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     <strong className="mt-1 block truncate text-ink">{card.scriptTitle || '未命名脚本'}</strong>
                   </span>
                 </label>
-                <span className={`rounded-full px-2 py-1 text-[11px] ${!card.publishable || card.renderStale ? 'bg-warn/20 text-warn' : card.approved ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
+                <span className={`rounded-full px-2 py-1 text-[11px] ${card.publishable && card.renderStale ? 'bg-warn/20 text-warn' : card.publishable && card.approved ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
                   {!card.publishable ? '不可导出' : card.renderStale ? '等待重新渲染' : card.approved ? '可导出' : '待审核'}
                 </span>
               </div>

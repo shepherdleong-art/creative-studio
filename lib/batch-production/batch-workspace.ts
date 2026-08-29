@@ -195,7 +195,6 @@ function loadPoolAssetDurations(db: Database.Database, batchVersionId: string): 
   `).all(batchVersionId) as Array<{
     assetId: string;
     analysisDurationUs: number | null;
-    analysisDurationSec: number | null;
     mediaDurationUs: number | null;
     mediaDurationSec: number | null;
   }>;
