@@ -333,7 +333,7 @@ export default function BatchOutputEditor({
   const canResetSubtitleStyle = view.subtitleStyleOverride || subtitleStyleChanged;
 
   return (
-    <div className="flex min-h-full min-w-0 flex-col gap-3" data-testid={`batch-output-editor-${planId}`}>
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-3" data-testid={`batch-output-editor-${planId}`}>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline pb-2">
         <span className="text-sm font-semibold text-ink">预览调整</span>
         <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">{clips.length} 个片段</span>
@@ -354,7 +354,7 @@ export default function BatchOutputEditor({
         >{editFeedback.message}</p>
       )}
 
-      <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)]">
+      <div className="grid min-h-0 min-w-0 flex-1 gap-3 lg:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)]">
         <aside className="flex min-h-[320px] min-w-0 flex-col rounded-2xl bg-surface-subtle p-3 lg:min-h-0" aria-label="素材调整">
           <div className="flex shrink-0 items-center gap-2">
             <Icon name="retry" size={15} />
@@ -447,7 +447,7 @@ export default function BatchOutputEditor({
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-col rounded-2xl bg-surface-subtle p-3" aria-label="预览调整">
+        <main className="flex min-h-0 min-w-0 flex-col overflow-y-auto rounded-2xl bg-surface-subtle p-3" data-testid="batch-output-middle-scroll-area" aria-label="预览调整">
           <div className="flex flex-col gap-3">
             <section className="flex h-[clamp(360px,58vh,560px)] min-h-[360px] flex-none flex-col overflow-hidden rounded-xl bg-surface p-3" data-testid="batch-output-preview-pane">
               <div className="flex h-full min-h-0 flex-col gap-2">
@@ -551,7 +551,7 @@ export default function BatchOutputEditor({
           </div>
         </main>
 
-        <aside className="min-h-0 min-w-0 space-y-3 overflow-y-auto pr-1" aria-label="成片设置">
+        <aside className="min-h-0 min-w-0 space-y-3 overflow-y-auto pr-1" data-testid="batch-output-settings-scroll-area" aria-label="成片设置">
           <div className="tile space-y-3 p-3" aria-label="字幕样式">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-semibold text-ink">字幕样式</p>

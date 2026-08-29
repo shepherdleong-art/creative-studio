@@ -461,7 +461,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
               <p className="shrink-0 text-xs text-fail" role="alert">任务失败：{modalCard.task.errorMessage}</p>
             )}
             {editingClips ? (
-              <div className="min-h-0 flex-1 overflow-y-auto pr-1" data-testid="batch-output-editor-scroll-area">
+              <div className="min-h-0 flex-1 overflow-hidden" data-testid="batch-output-editor-layout">
                 <BatchOutputEditor
                   projectId={props.projectId}
                   batchId={props.selectedBatchId}
