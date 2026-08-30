@@ -71,6 +71,7 @@ assert.match(outputEditor, /data-testid="batch-output-settings-scroll-area"/);
 assert.match(outputEditor, /min-h-0 min-w-0 flex-1 gap-3/);
 assert.match(outputEditor, /BatchTextStyleEditor/);
 assert.match(outputEditor, /set_subtitle_style/);
+assert.doesNotMatch(outputEditor, /view\?\.subtitleStyle\]/);
 assert.match(coverEditor, /data-testid="batch-cover-editor-drawer"/);
 assert.match(coverEditor, /封面截帧时间/);
 assert.match(coverEditor, /rangeInput/);

@@ -180,12 +180,6 @@ export default function BatchOutputEditor({
     return () => window.clearTimeout(timer);
   }, [syncedMusicFadeIn, syncedMusicFadeOut, syncedMusicGain]);
 
-  useEffect(() => {
-    if (!view) return;
-    const timer = window.setTimeout(() => setSubtitleStyleDraft(view.subtitleStyle), 0);
-    return () => window.clearTimeout(timer);
-  }, [view?.editRevision, view?.planId, view?.subtitleStyle]);
-
   useEffect(() => () => {
     auditionAudioRef.current?.pause();
     auditionAudioRef.current = null;
@@ -579,7 +573,7 @@ export default function BatchOutputEditor({
             </div>
             <p className="text-[11px] leading-5 text-ink-tertiary">这里的样式只覆盖当前成片；字幕文字仍可在下方时间轴拖动、修剪或双击编辑，改字幕不改口播音频。</p>
             <BatchTextStyleEditor
-              key={'batch-subtitle-style-' + view.planId + '-' + view.editRevision}
+              key={'batch-subtitle-style-' + view.planId}
               label="字幕样式"
               value={effectiveSubtitleStyleDraft}
               outputWidth={outputPreset === '16x9' ? 1920 : 1080}
@@ -592,15 +586,18 @@ export default function BatchOutputEditor({
                 className="btn-secondary h-8 px-3 text-xs"
                 disabled={editLocked || !canResetSubtitleStyle}
                 onClick={() => {
-                  setSubtitleStyleDraft(view.subtitleStyleDefault);
-                  void submitEdit({ type: 'set_subtitle_style', style: null });
+                  void submitEdit({ type: 'set_subtitle_style', style: null })
+                    .then((accepted) => { if (accepted) setSubtitleStyleDraft(null); });
                 }}
               >恢复批次默认</button>
               <button
                 type="button"
                 className="btn-primary h-8 px-3 text-xs"
                 disabled={editLocked || !subtitleStyleChanged}
-                onClick={() => void submitEdit({ type: 'set_subtitle_style', style: effectiveSubtitleStyleDraft })}
+                onClick={() => {
+                  void submitEdit({ type: 'set_subtitle_style', style: effectiveSubtitleStyleDraft })
+                    .then((accepted) => { if (accepted) setSubtitleStyleDraft(null); });
+                }}
               >应用字幕样式</button>
             </div>
             {view.subtitleOverride && <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked} onClick={() => void submitEdit({ type: 'restore_automatic_subtitles' })}>恢复自动字幕</button>}
