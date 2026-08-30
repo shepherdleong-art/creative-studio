@@ -194,11 +194,11 @@ export default function BatchOutputEditor({
   const previewBgm = useMemo(() => (view?.music.trackId
     ? {
       fileUrl: `/api/final-edit-bgm/${encodeURIComponent(view.music.trackId)}/file`,
-      gainDb: view.music.gainDb,
-      fadeInSec: view.music.fadeInSec,
-      fadeOutSec: view.music.fadeOutSec,
+      gainDb: musicParamsDraft.gainDb,
+      fadeInSec: musicParamsDraft.fadeInSec,
+      fadeOutSec: musicParamsDraft.fadeOutSec,
     }
-    : null), [view]);
+    : null), [view?.music.trackId, musicParamsDraft.gainDb, musicParamsDraft.fadeInSec, musicParamsDraft.fadeOutSec]);
 
   async function submitEdit(payload: Record<string, unknown>): Promise<boolean> {
     // split 是纯结构操作(不改像素,不递增 editRevision),其余命令都可能改画面。
