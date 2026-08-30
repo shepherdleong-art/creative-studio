@@ -1,4 +1,5 @@
 import type { OutputPresetId } from '@/lib/final-edit/types';
+import { NARRATION_GAIN_DB_DEFAULT, narrationGainLinear } from '../../lib/media-core/audio-gain.ts';
 
 export type VideoSlot = 0 | 1;
 
@@ -56,16 +57,26 @@ export function bgmGainAtTime({ bodyTimeSec, bodyDurationSec, gainDb, fadeInSec,
   return baseGain * fadeIn * fadeOut;
 }
 
-export function previewAudioLevelsAtTime({ playheadSec, introSec, bodyDurationSec, gainDb, fadeInSec, fadeOutSec }: {
+export function narrationGainAtTime({ bodyTimeSec, bodyDurationSec, gainDb }: {
+  bodyTimeSec: number;
+  bodyDurationSec: number;
+  gainDb: number;
+}): number {
+  if (bodyTimeSec < 0 || bodyTimeSec >= bodyDurationSec || bodyDurationSec <= 0) return 0;
+  return narrationGainLinear(gainDb);
+}
+
+export function previewAudioLevelsAtTime({ playheadSec, introSec, bodyDurationSec, narrationGainDb = NARRATION_GAIN_DB_DEFAULT, gainDb, fadeInSec, fadeOutSec }: {
   playheadSec: number;
   introSec: number;
   bodyDurationSec: number;
+  narrationGainDb?: number;
   gainDb: number;
   fadeInSec: number;
   fadeOutSec: number;
 }): { narrationGain: number; bgmGain: number } {
   const bodyTimeSec = playheadSec - introSec;
-  const narrationGain = bodyTimeSec >= 0 && bodyTimeSec < bodyDurationSec ? 1 : 0;
+  const narrationGain = narrationGainAtTime({ bodyTimeSec, bodyDurationSec, gainDb: narrationGainDb });
   return {
     narrationGain,
     bgmGain: bgmGainAtTime({ bodyTimeSec, bodyDurationSec, gainDb, fadeInSec, fadeOutSec }),

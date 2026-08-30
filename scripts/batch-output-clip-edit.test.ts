@@ -263,7 +263,7 @@ try {
       ['clip-2', assetB, 0, 2_000_000, 2_000_000, 4_000_000, false],
     ],
   );
-  assert.deepEqual(view.narration, { audioRelativePath: 'batch-narration/test/narration.wav', durationUs: 4_000_000 });
+  assert.deepEqual(view.narration, { audioRelativePath: 'batch-narration/test/narration.wav', durationUs: 4_000_000, gainDb: 0 });
   assert.deepEqual(view.subtitleCues, [{
     id: 'cue-1', sourceSegmentId: 'segment-1', startUs: 0, endUs: 2_000_000, text: '开场', timingSource: 'estimated',
   }]);
@@ -441,6 +441,24 @@ try {
   assert.equal('gainDb' in restoredMusicJson, false, '恢复批次参数必须清掉单条 gainDb 覆盖');
   assert.equal('fadeInSec' in restoredMusicJson, false, '恢复批次参数必须清掉单条 fadeInSec 覆盖');
   assert.equal('fadeOutSec' in restoredMusicJson, false, '恢复批次参数必须清掉单条 fadeOutSec 覆盖');
+
+  resetPlan0Arrangement();
+  const clampedNarrationGain = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_narration_gain', gainDb: -100,
+  });
+  assert.equal(clampedNarrationGain.editRevision, 1);
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).narration.gainDb, -40);
+  assert.equal((currentArrangement(plans[0]).narration as Record<string, unknown>).gainDb, -40);
+  const upperBoundNarrationGain = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_narration_gain', gainDb: 100,
+  });
+  assert.equal(upperBoundNarrationGain.editRevision, 2);
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).narration.gainDb, 10);
+  const restoredNarrationGain = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_narration_gain', gainDb: 0,
+  });
+  assert.equal(restoredNarrationGain.editRevision, 3);
+  assert.equal('gainDb' in (currentArrangement(plans[0]).narration as Record<string, unknown>), false, '恢复口播音量必须清掉单条 gainDb 覆盖');
 
   resetPlan0Arrangement();
   const subtitleTextEdit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {

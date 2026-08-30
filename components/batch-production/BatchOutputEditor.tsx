@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import type { TextStyle } from '@/lib/media-core/cover-types';
+import { NARRATION_GAIN_DB_DEFAULT, NARRATION_GAIN_DB_MAX, NARRATION_GAIN_DB_MIN } from '@/lib/media-core/audio-gain';
 import type {
   BatchOutputClipEditResult,
   BatchOutputClipEditView,
@@ -62,6 +63,7 @@ export default function BatchOutputEditor({
   const [renderPending, setRenderPending] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
   const [musicParamsDraft, setMusicParamsDraft] = useState({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
+  const [narrationGainDraft, setNarrationGainDraft] = useState(NARRATION_GAIN_DB_DEFAULT);
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
   const [previewMode, setPreviewMode] = useState<'output' | 'material'>('output');
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
@@ -178,6 +180,7 @@ export default function BatchOutputEditor({
   const syncedMusicGain = view?.music.gainDb;
   const syncedMusicFadeIn = view?.music.fadeInSec;
   const syncedMusicFadeOut = view?.music.fadeOutSec;
+  const syncedNarrationGain = view?.narration.gainDb;
   useEffect(() => {
     if (syncedMusicGain === undefined || syncedMusicFadeIn === undefined || syncedMusicFadeOut === undefined) return;
     const timer = window.setTimeout(() => {
@@ -191,6 +194,12 @@ export default function BatchOutputEditor({
   // are not overwritten while the user is moving a control.
     return () => window.clearTimeout(timer);
   }, [syncedMusicFadeIn, syncedMusicFadeOut, syncedMusicGain]);
+
+  useEffect(() => {
+    if (syncedNarrationGain === undefined) return;
+    const timer = window.setTimeout(() => setNarrationGainDraft(syncedNarrationGain), 0);
+    return () => window.clearTimeout(timer);
+  }, [syncedNarrationGain]);
 
   useEffect(() => () => {
     auditionAudioRef.current?.pause();
@@ -366,6 +375,7 @@ export default function BatchOutputEditor({
   const musicParamsChanged = musicParamsDraft.gainDb !== view.music.gainDb
     || musicParamsDraft.fadeInSec !== view.music.fadeInSec
     || musicParamsDraft.fadeOutSec !== view.music.fadeOutSec;
+  const narrationGainChanged = narrationGainDraft !== view.narration.gainDb;
   const effectiveSubtitleStyleDraft = subtitleStyleDraft ?? view.subtitleStyle;
   const subtitleStyleChanged = JSON.stringify(effectiveSubtitleStyleDraft) !== JSON.stringify(view.subtitleStyle);
   const canResetSubtitleStyle = view.subtitleStyleOverride || subtitleStyleChanged;
@@ -580,6 +590,7 @@ export default function BatchOutputEditor({
                       subtitleCues={view.subtitleCues}
                       subtitleStyle={effectiveSubtitleStyleDraft}
                       narrationUrl={narrationUrl}
+                      narrationGainDb={narrationGainDraft}
                       bgm={previewBgm}
                       outputPreset={outputPreset}
                       playheadSec={playheadSec}
@@ -697,6 +708,31 @@ export default function BatchOutputEditor({
             <div className="flex flex-wrap justify-end gap-2">
               <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || !musicParamsChanged} onClick={() => { setMusicParamsDraft(view.batchMusicDefaults); void submitEdit({ type: 'set_music_params', ...view.batchMusicDefaults }); }}>恢复批次默认</button>
               <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={editLocked || !musicParamsChanged} onClick={() => void submitEdit({ type: 'set_music_params', ...musicParamsDraft })}>应用 BGM 参数</button>
+            </div>
+          </div>
+
+          <div className="tile space-y-3 p-3" aria-label="成片口播音量" data-testid="batch-output-narration-volume-card">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-ink">成片口播音量</p>
+              <span className="text-[11px] text-ink-tertiary">每条成片可单独覆盖</span>
+            </div>
+            <p className="text-[11px] leading-5 text-ink-tertiary">只调整当前成片的口播响度，不改变口播内容与时长。</p>
+            <label className="block text-[11px] text-ink-secondary">音量 {narrationGainDraft.toFixed(0)} dB
+              <input
+                aria-label="成片口播音量"
+                type="range"
+                min={NARRATION_GAIN_DB_MIN}
+                max={NARRATION_GAIN_DB_MAX}
+                step={1}
+                value={narrationGainDraft}
+                disabled={editLocked || !narrationUrl}
+                onChange={(event) => setNarrationGainDraft(Number(event.target.value))}
+                className="mt-1 w-full"
+              />
+            </label>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || !narrationGainChanged} onClick={() => { setNarrationGainDraft(NARRATION_GAIN_DB_DEFAULT); void submitEdit({ type: 'set_narration_gain', gainDb: NARRATION_GAIN_DB_DEFAULT }); }}>恢复默认</button>
+              <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={editLocked || !narrationGainChanged || !narrationUrl} onClick={() => void submitEdit({ type: 'set_narration_gain', gainDb: narrationGainDraft })}>应用口播音量</button>
             </div>
           </div>
 

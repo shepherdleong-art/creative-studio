@@ -565,8 +565,25 @@ assert.equal(playbackAdjustedGroup.script.narrationConfig.playbackRate, 1.3, '�
 assert.ok(Math.abs(playbackAdjustedGroup.totalDurationUs - (833_333 + readyManualGroup.narrationDurationUs / 1.3)) < 1, '当前成片预计时长必须随音轨播放倍速直接变化');
 assert.equal(playbackAdjustedGroup.variants.length, readyManualGroup.variants.length, '直接调速不得新增或删除成片草稿');
 
+const narrationGainAdjustedGroup = workspace.apply({
+  scope: 'group', groupId: readyManualGroup.id, expectedRevision: playbackAdjustedGroup.revision,
+  type: 'set_narration_gain', gainDb: -100,
+}).view as typeof readyManualGroup;
+assert.equal(narrationGainAdjustedGroup.script.narrationConfig.gainDb, -40, '口播音量必须限制在 -40dB～10dB 并持久化');
+assert.equal(narrationGainAdjustedGroup.script.narrationConfig.playbackRate, 1.3, '调整口播音量不得丢失已有倍速');
+const upperBoundNarrationGainGroup = workspace.apply({
+  scope: 'group', groupId: readyManualGroup.id, expectedRevision: narrationGainAdjustedGroup.revision,
+  type: 'set_narration_gain', gainDb: 100,
+}).view as typeof readyManualGroup;
+assert.equal(upperBoundNarrationGainGroup.script.narrationConfig.gainDb, 10, '口播音量上限必须限制为 10dB');
+const restoredNarrationGainGroup = workspace.apply({
+  scope: 'group', groupId: readyManualGroup.id, expectedRevision: upperBoundNarrationGainGroup.revision,
+  type: 'set_narration_gain', gainDb: 0,
+}).view as typeof readyManualGroup;
+assert.equal(restoredNarrationGainGroup.script.narrationConfig.gainDb, 0, '恢复默认口播音量必须为 0dB');
+
 assert.throws(
-  () => workspace.apply({ scope: 'group', groupId: readyManualGroup.id, expectedRevision: playbackAdjustedGroup.revision, type: 'set_narration_playback_rate', playbackRate: 2.1 }),
+  () => workspace.apply({ scope: 'group', groupId: readyManualGroup.id, expectedRevision: restoredNarrationGainGroup.revision, type: 'set_narration_playback_rate', playbackRate: 2.1 }),
   (error: unknown) => error instanceof FinalEditError && error.code === 'invalid_narration_playback_rate',
   '音轨播放倍速仍必须限制在 0.5x～2.0x',
 );

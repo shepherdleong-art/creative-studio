@@ -9,11 +9,12 @@ import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
 import { coverFramingGeometry } from './cover-framing.ts';
 import type { ReservedProjectExportTarget } from './export-naming.ts';
 import type { ExportIdentity } from './types.ts';
+import { normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
   variantRevision: number;
-  group: { narrationDurationUs: number; narrationPlaybackRate?: number; subtitleCues: SubtitleCue[] };
+  group: { narrationDurationUs: number; narrationPlaybackRate?: number; narrationGainDb?: number; subtitleCues: SubtitleCue[] };
   variant: FinalEditVariantView;
   sources: Array<{ videoJobId: string; relativePath: string; fingerprint: string; externalScope?: { projectId: string; shotSetId: string } }>;
   coverRelativePath: string;
@@ -75,6 +76,7 @@ export async function renderFinalEditSnapshot(input: {
   const narrationPlaybackRate = Number.isFinite(snapshot.group.narrationPlaybackRate)
     ? Math.max(0.5, Math.min(2, Number(snapshot.group.narrationPlaybackRate)))
     : 1;
+  const narrationGainDb = normalizeNarrationGainDb(snapshot.group.narrationGainDb);
   const sourceNarrationSec = snapshot.group.narrationDurationUs / 1_000_000;
   const bodySec = sourceNarrationSec / narrationPlaybackRate;
   const totalSec = FINAL_EDIT_INTRO_DURATION_US / 1_000_000 + bodySec;
@@ -154,7 +156,7 @@ export async function renderFinalEditSnapshot(input: {
   const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;
   // 不上 loudnorm:单遍动态模式会给音频流附加异常时间基准,下游 adelay
   // 插入的片头静音会被吞掉,造成音画不同步(2026-08-12 实测复现)。
-  filters.push(`[${narrationInput}:a]${narrationTempo}aresample=48000,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
+  filters.push(`[${narrationInput}:a]${narrationTempo}aresample=48000,volume=${narrationGainDb.toFixed(1)}dB,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
   if (snapshot.bgm && bgmInput != null) {
     const fadeInDuration = Math.min(Math.max(0, snapshot.bgm.fadeInSec), bodySec);
     const fadeOutDuration = Math.min(Math.max(0, snapshot.bgm.fadeOutSec), bodySec);

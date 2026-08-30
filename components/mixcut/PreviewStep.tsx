@@ -10,8 +10,10 @@ import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { timelineGaps } from '@/lib/final-edit/domain';
 import { hasLegacyAutomaticSubtitleCuesToNormalize } from '@/lib/final-edit/subtitle-cue-normalize';
 import { FINAL_EDIT_FPS, FINAL_EDIT_MIN_CLIP_FRAMES, OUTPUT_PRESETS, type CoverEditorDraft, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView, type TimelineClip } from '@/lib/final-edit/types';
+import { NARRATION_GAIN_DB_DEFAULT } from '@/lib/media-core/audio-gain';
 import { MixcutTimeline } from './MixcutTimeline';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
+import { NarrationGainControl } from './NarrationGainControl';
 import { TrimEditor } from './TrimEditor';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
@@ -246,6 +248,16 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       script: {
         ...current.script,
         narrationConfig: { ...current.script.narrationConfig, playbackRate },
+      },
+    });
+  };
+  const previewNarrationGain = (gainDb: number) => {
+    const current = groupRef.current;
+    publishGroup({
+      ...current,
+      script: {
+        ...current.script,
+        narrationConfig: { ...current.script.narrationConfig, gainDb },
       },
     });
   };
@@ -578,7 +590,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       </main>
       <div className={styles.rz} role="separator" aria-orientation="vertical" title="拖拽调整宽度" onPointerDown={onResizeStart('rgt')} />
 
-      {/* 右栏：字幕样式 / 背景音乐 / 口播音频变速 / 封面 */}
+      {/* 右栏：字幕样式 / 背景音乐 / 口播音频变速与音量 / 封面 */}
       <aside className={styles.rightCol}>
         <button type="button" className={styles.collapseBtn} title="隐藏面板" onClick={() => onRgtCollapse(true)}>›</button>
         <button type="button" className={styles.expandBtn} title="展开面板" onClick={() => onRgtCollapse(false)}>‹</button>
@@ -624,6 +636,23 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             ariaLabelPrefix="右侧音频倍速"
             onPreview={previewNarrationPlaybackRate}
             onCommit={(playbackRate) => void applyGroup({ type: 'set_narration_playback_rate', playbackRate })}
+          />
+        </section>
+
+        <section className={styles.rcard} data-testid="mixcut-narration-volume-card">
+          <h4><Icon name="speaker" size={15} />口播音量</h4>
+          <div className={styles.narrationSpeedSummary}>
+            <span>整条口播音轨</span>
+            <strong>{(group.script.narrationConfig.gainDb ?? NARRATION_GAIN_DB_DEFAULT).toFixed(0)} dB</strong>
+          </div>
+          <p className={styles.narrationSpeedCardHint}>只调整口播响度，不改变口播内容与成片时长</p>
+          <NarrationGainControl
+            idPrefix="mixcut-narration-sidebar-gain"
+            value={group.script.narrationConfig.gainDb ?? NARRATION_GAIN_DB_DEFAULT}
+            disabled={busy}
+            ariaLabelPrefix="右侧口播音量"
+            onPreview={previewNarrationGain}
+            onCommit={(gainDb) => void applyGroup({ type: 'set_narration_gain', gainDb })}
           />
         </section>
 

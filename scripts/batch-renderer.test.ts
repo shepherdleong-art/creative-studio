@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
@@ -39,6 +40,22 @@ async function makeNarration(filePath: string, durationSec = 1.2): Promise<void>
     '-f', 'lavfi', '-i', `sine=frequency=440:duration=${durationSec}`,
     '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '1', '-y', filePath,
   ], { signal: new AbortController().signal });
+}
+
+async function meanVolumeDb(filePath: string, startSec: number, durationSec: number): Promise<number> {
+  const stderr = await new Promise<string>((resolve, reject) => {
+    const child = spawn(resolveFfmpegPath(), [
+      '-ss', String(startSec), '-t', String(durationSec), '-i', filePath,
+      '-af', 'volumedetect', '-f', 'null', '-',
+    ], { windowsHide: true });
+    let output = '';
+    child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => code === 0 ? resolve(output) : reject(new Error(`volumedetect failed: ${output.slice(-1000)}`)));
+  });
+  const match = stderr.match(/mean_volume:\s*(-?[\d.]+)\s*dB/);
+  assert.ok(match, `volumedetect 输出缺少 mean_volume: ${stderr.slice(-600)}`);
+  return Number(match[1]);
 }
 
 async function setupDatabase(videoPath: string, arrangement: unknown): Promise<{ db: Database.Database; ids: Record<string, string> }> {
@@ -243,6 +260,38 @@ async function run(): Promise<void> {
     { id: 'aligned-1:cue:1', sourceSegmentId: 'source-1', text: '本地对齐字幕', startUs: 0, endUs: 1_200_000 },
   ]);
   assert.equal(persistedNarrationResult.productionReady, true);
+
+  // 口播增益来自单条 arrangement,必须同时影响批量最终渲染的正文音量。
+  const persistedArrangement = JSON.parse(
+    (db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = ?`).get(ids.outputVersionId) as { arrangementJson: string }).arrangementJson,
+  ) as { [key: string]: unknown; narration: Record<string, unknown> };
+  const loudNarrationArrangement = {
+    ...persistedArrangement,
+    narration: { ...persistedArrangement.narration, gainDb: 0 },
+  };
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(loudNarrationArrangement), ids.outputVersionId);
+  const loudNarrationResult = await renderBatchOutputVersion({
+    db, projectId: 'project-1', batchId: ids.batchId, batchVersionId: ids.batchVersionId,
+    planId: ids.planId, outputVersionId: ids.outputVersionId,
+    storageRoot, dataRootPath: dataRoot, renderRoot,
+    narration: { absolutePath: narrationPath, fingerprint: narrationFingerprint, durationUs: 1_200_000 },
+  });
+  const loudNarrationMean = await meanVolumeDb(loudNarrationResult.videoAbsolutePath, 1, 0.4);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify({
+    ...loudNarrationArrangement,
+    narration: { ...loudNarrationArrangement.narration, gainDb: -40 },
+  }), ids.outputVersionId);
+  const quietNarrationResult = await renderBatchOutputVersion({
+    db, projectId: 'project-1', batchId: ids.batchId, batchVersionId: ids.batchVersionId,
+    planId: ids.planId, outputVersionId: ids.outputVersionId,
+    storageRoot, dataRootPath: dataRoot, renderRoot,
+    narration: { absolutePath: narrationPath, fingerprint: narrationFingerprint, durationUs: 1_200_000 },
+  });
+  const quietNarrationMean = await meanVolumeDb(quietNarrationResult.videoAbsolutePath, 1, 0.4);
+  assert.ok(
+    quietNarrationMean < loudNarrationMean - 25,
+    `-40dB 口播渲染必须显著低于 0dB: loud=${loudNarrationMean}dB, quiet=${quietNarrationMean}dB`,
+  );
 
   // 人工字幕覆盖必须优先于本次口播自动对齐;非人工的旧/损坏槽位不能阻塞
   // narration 重试后的自动字幕渲染。

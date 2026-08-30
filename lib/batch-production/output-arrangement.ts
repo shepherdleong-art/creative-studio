@@ -9,6 +9,7 @@ import { loadFrozenCoverTitleConfig, resolveBatchCoverTitleOverride } from './co
 import type { FrozenBatchCoverTitleConfig } from './cover-title.ts';
 import { hasBatchSubtitleStyleOverride, loadFrozenSubtitleStyle, resolveBatchSubtitleStyleOverride } from './subtitle-style.ts';
 import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
+import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { cleanFraming } from '../media-core/cover-title-presets.ts';
 import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
 
@@ -88,7 +89,7 @@ export interface BatchOutputClipEditView {
   /** 当前片段的真实画面结尾时间（last clip timelineEndUs）。 */
   visualDurationUs: number;
   clips: BatchOutputClipView[];
-  narration: { audioRelativePath: string | null; durationUs: number | null };
+  narration: { audioRelativePath: string | null; durationUs: number | null; gainDb: number };
   subtitleCues: BatchOutputSubtitleCueView[];
   /** true 表示当前成片会优先使用 arrangement.subtitle 的手动覆盖。 */
   subtitleOverride: boolean;
@@ -116,6 +117,7 @@ export type BatchOutputClipEdit =
   | { type: 'set_cover'; assetId: string; timeUs: number; framing?: CoverFraming | null; title?: unknown }
   | { type: 'set_music_track'; trackId: string | null }
   | { type: 'set_music_params'; gainDb: number; fadeInSec: number; fadeOutSec: number }
+  | { type: 'set_narration_gain'; gainDb: number }
   | { type: 'set_subtitle_cue_text'; cueId: string; text: string }
   | { type: 'set_subtitle_style'; style: TextStyle | null }
   | { type: 'move_subtitle_cue'; cueId: string; startUs: number; endUs: number }
@@ -435,6 +437,7 @@ export function getBatchOutputArrangementView(
   const narration = {
     audioRelativePath: nonEmptyString(narrationRecord?.audioRelativePath),
     durationUs: narrationDurationUs !== null && narrationDurationUs > 0 ? Math.round(narrationDurationUs) : null,
+    gainDb: normalizeNarrationGainDb(narrationRecord?.gainDb),
   };
 
   const storedSubtitleCues = (Array.isArray(asRecord(arrangement?.subtitle)?.cues) ? asRecord(arrangement?.subtitle)!.cues as unknown[] : [])
@@ -640,6 +643,9 @@ export function applyBatchOutputClipEdit(
       if (![edit.gainDb, edit.fadeInSec, edit.fadeOutSec].every((value) => Number.isFinite(value))) {
         throw new BatchDomainError('invalid_input', 'BGM 参数必须是有限数字');
       }
+      break;
+    case 'set_narration_gain':
+      if (!Number.isFinite(edit.gainDb)) throw new BatchDomainError('invalid_input', '口播音量必须是有限数字');
       break;
     case 'set_subtitle_cue_text':
       if (!nonEmptyString(edit.cueId) || typeof edit.text !== 'string') {
@@ -917,6 +923,16 @@ export function applyBatchOutputClipEdit(
       if (nextParams.fadeOutSec === batchDefaults.fadeOutSec) delete nextMusic.fadeOutSec;
       else nextMusic.fadeOutSec = nextParams.fadeOutSec;
       arrangement.music = nextMusic;
+      visualChanged = true;
+    } else if (edit.type === 'set_narration_gain') {
+      const currentNarration = asRecord(arrangement.narration) ?? {};
+      const currentGainDb = normalizeNarrationGainDb(currentNarration.gainDb);
+      const nextGainDb = normalizeNarrationGainDb(edit.gainDb);
+      if (currentGainDb === nextGainDb) return unchanged;
+      const nextNarration: Record<string, unknown> = { ...currentNarration };
+      if (nextGainDb === NARRATION_GAIN_DB_DEFAULT) delete nextNarration.gainDb;
+      else nextNarration.gainDb = nextGainDb;
+      arrangement.narration = nextNarration;
       visualChanged = true;
     } else if (edit.type === 'set_subtitle_style') {
       const subtitle = asRecord(arrangement.subtitle) ?? {};

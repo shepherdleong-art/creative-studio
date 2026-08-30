@@ -48,6 +48,7 @@ export interface BatchTimelinePreviewProps {
   subtitleCues: Array<{ id?: string; startUs: number; endUs: number; text: string }>;
   subtitleStyle?: TextStyle;
   narrationUrl: string | null;
+  narrationGainDb: number;
   bgm: { fileUrl: string; gainDb: number; fadeInSec: number; fadeOutSec: number } | null;
   outputPreset: OutputPresetId;
   /** 含片头的绝对播放头（受控，与时间轴共享） */
@@ -57,6 +58,11 @@ export interface BatchTimelinePreviewProps {
   active?: boolean;
   /** 嵌入编辑器时让预览区与时间轴共享固定高度，避免预览把时间轴推到视口外。 */
   compact?: boolean;
+}
+
+interface BatchPreviewAudioGraph {
+  context: AudioContext;
+  narrationGain: GainNode;
 }
 
 function formatTime(timeSec: number): string {
@@ -94,6 +100,7 @@ export default function BatchTimelinePreview({
   subtitleCues,
   subtitleStyle,
   narrationUrl,
+  narrationGainDb,
   bgm,
   outputPreset,
   playheadSec,
@@ -116,6 +123,8 @@ export default function BatchTimelinePreview({
   const videoBRef = useRef<HTMLVideoElement>(null);
   const narrationRef = useRef<HTMLAudioElement>(null);
   const bgmRef = useRef<HTMLAudioElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioGraphRef = useRef<BatchPreviewAudioGraph | null>(null);
   const playingRef = useRef(false);
   const clockStartRef = useRef(0);
   const clockOffsetRef = useRef(0);
@@ -165,6 +174,17 @@ export default function BatchTimelinePreview({
     ? textStyleToSvgElements(resolvedSubtitleStyle, activeCue.text, size)
     : '';
 
+  const setNarrationOutputGain = useCallback((gain: number) => {
+    const graph = audioGraphRef.current;
+    if (graph) {
+      graph.narrationGain.gain.setValueAtTime(Math.max(0, gain), graph.context.currentTime);
+      return;
+    }
+    // 播放尚未经过用户手势建立 Web Audio 图时，只能使用 HTML 音量的安全范围。
+    // 正式播放路径会在 togglePlayback 中建立图，因此 +10dB 不会在正常预览中被截断。
+    if (narrationRef.current) narrationRef.current.volume = Math.min(1, Math.max(0, gain));
+  }, []);
+
   const pauseAllMedia = useCallback(() => {
     playingRef.current = false;
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
@@ -175,6 +195,9 @@ export default function BatchTimelinePreview({
     videoBRef.current?.pause();
     narrationRef.current?.pause();
     bgmRef.current?.pause();
+    const graph = audioGraphRef.current;
+    if (graph) graph.narrationGain.gain.setValueAtTime(0, graph.context.currentTime);
+    else if (narrationRef.current) narrationRef.current.volume = 0;
   }, []);
 
   const stopPlayback = useCallback(() => {
@@ -300,12 +323,13 @@ export default function BatchTimelinePreview({
         playheadSec: next,
         introSec: INTRO_SEC,
         bodyDurationSec,
+        narrationGainDb,
         gainDb: bgmGainDb,
         fadeInSec: bgmFadeInSec,
         fadeOutSec: bgmFadeOutSec,
       });
       const narration = narrationRef.current;
-      if (narration) narration.volume = narrationUrl ? levels.narrationGain : 0;
+      if (narration) setNarrationOutputGain(narrationUrl ? levels.narrationGain : 0);
       const bgmElement = bgmRef.current;
       if (bgmElement) bgmElement.volume = bgm ? levels.bgmGain : 0;
       // 外部 seek 落地窗口内只续排 rAF 不驱动播放头,等同步 effect 重置时钟基线后再从新基线继续。
@@ -320,7 +344,7 @@ export default function BatchTimelinePreview({
     };
     animationRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationRef.current);
-  }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, drivePlayhead, narrationUrl, playing, stopPlayback, totalSec]);
+  }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, drivePlayhead, narrationGainDb, narrationUrl, playing, setNarrationOutputGain, stopPlayback, totalSec]);
 
   useEffect(() => {
     if (active) return;
@@ -330,7 +354,13 @@ export default function BatchTimelinePreview({
     return () => window.clearTimeout(timer);
   }, [active, pauseAllMedia]);
 
-  useEffect(() => () => pauseAllMedia(), [pauseAllMedia]);
+  useEffect(() => () => {
+    pauseAllMedia();
+    const context = audioContextRef.current;
+    audioGraphRef.current = null;
+    audioContextRef.current = null;
+    if (context && context.state !== 'closed') void context.close();
+  }, [pauseAllMedia]);
 
   /** 口播与 BGM 在片头结束后起播;从正文中途起播时直接对齐到 bodyOffset。 */
   const syncAudioStart = useCallback((startAt: number) => {
@@ -342,6 +372,16 @@ export default function BatchTimelinePreview({
       if (!playingRef.current) return;
       const narration = narrationRef.current;
       if (narration && narrationUrl) {
+        const levels = previewAudioLevelsAtTime({
+          playheadSec: startAt,
+          introSec: INTRO_SEC,
+          bodyDurationSec,
+          narrationGainDb,
+          gainDb: bgmGainDb,
+          fadeInSec: bgmFadeInSec,
+          fadeOutSec: bgmFadeOutSec,
+        });
+        setNarrationOutputGain(levels.narrationGain);
         seekMedia(narration, bodyOffset);
         void narration.play().catch(() => undefined);
       }
@@ -352,7 +392,7 @@ export default function BatchTimelinePreview({
         void bgmElement.play().catch(() => undefined);
       }
     }, delayMs);
-  }, [bgm, bodyDurationSec, narrationUrl]);
+  }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, narrationGainDb, narrationUrl, setNarrationOutputGain]);
 
   /** 暂停态音频 seek debounce:拖动每格都 seek 口播/BGM 是无用功(暂停的音频不发声),~120ms 内只做最后一次。 */
   const pausedAudioSeekTimerRef = useRef(0);
@@ -394,12 +434,23 @@ export default function BatchTimelinePreview({
     if (playheadSec > totalSec) drivePlayhead(totalSec);
   }, [playheadSec, totalSec, drivePlayhead]);
 
-  const togglePlayback = () => {
+  const togglePlayback = async () => {
     if (!active || sortedClips.length === 0) return;
     if (playing) {
       stopPlayback();
       return;
     }
+    const narration = narrationRef.current;
+    if (narration && narrationUrl && !audioGraphRef.current) {
+      const context = audioContextRef.current || new AudioContext();
+      const narrationGain = context.createGain();
+      context.createMediaElementSource(narration).connect(narrationGain).connect(context.destination);
+      narration.volume = 1;
+      audioContextRef.current = context;
+      audioGraphRef.current = { context, narrationGain };
+    }
+    const context = audioContextRef.current;
+    if (context?.state === 'suspended') await context.resume();
     const startAt = playheadSec >= totalSec ? 0 : playheadSec;
     clockOffsetRef.current = startAt;
     clockStartRef.current = performance.now();

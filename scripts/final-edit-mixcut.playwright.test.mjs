@@ -46,7 +46,7 @@ function createFormalGroup() {
       editedNarrationText: '第一句。第二句。',
       syncState: 'synced',
       sourceScriptUpdatedAt: '2026-07-24T00:00:00.000Z',
-      narrationConfig: { providerId: 'tts-e2e', voice: 'voice-e2e', speed: 1, playbackRate: 1 },
+      narrationConfig: { providerId: 'tts-e2e', voice: 'voice-e2e', speed: 1, playbackRate: 1, gainDb: 0 },
       selectedMaterialKeys: ['module4:video-a', 'module4:video-b'],
     },
     narrationDurationUs: 10_000_000,
@@ -316,13 +316,13 @@ try {
       if (pathname === '/api/projects/e2e-project/final-edit/draft' && request.method() === 'POST') {
         const body = request.postDataJSON();
         const base = createFormalGroup();
-        editingGroup = { ...base, id: 'editing-draft-e2e', status: 'editing', phase: 'editing', revision: 0, script: { ...base.script, editedNarrationText: body.editedNarrationText, narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed }, selectedMaterialKeys: body.selectedMaterialKeys } };
+        editingGroup = { ...base, id: 'editing-draft-e2e', status: 'editing', phase: 'editing', revision: 0, script: { ...base.script, editedNarrationText: body.editedNarrationText, narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed, gainDb: base.script.narrationConfig.gainDb }, selectedMaterialKeys: body.selectedMaterialKeys } };
         return json(editingGroup);
       }
       if (pathname === '/api/final-edit-groups/editing-draft-e2e' && request.method() === 'PATCH') {
         const body = request.postDataJSON();
         const base = createFormalGroup();
-        editingGroup = { ...base, id: 'editing-draft-e2e', status: 'editing', phase: 'editing', revision: body.expectedRevision + 1, script: { ...base.script, editedNarrationText: body.editedNarrationText, narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed }, selectedMaterialKeys: body.selectedMaterialKeys } };
+        editingGroup = { ...base, id: 'editing-draft-e2e', status: 'editing', phase: 'editing', revision: body.expectedRevision + 1, script: { ...base.script, editedNarrationText: body.editedNarrationText, narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed, gainDb: base.script.narrationConfig.gainDb }, selectedMaterialKeys: body.selectedMaterialKeys } };
         return json({ view: editingGroup });
       }
       if (pathname === '/api/projects/e2e-project/final-edit/start' && request.method() === 'POST') {
@@ -339,7 +339,7 @@ try {
           script: {
             ...base.script,
             title: `E2E 新版本 ${generationSequence}`,
-            narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed },
+            narrationConfig: { providerId: body.providerId, voice: body.voice, speed: body.speed, gainDb: base.script.narrationConfig.gainDb },
           },
           jobs: [completedJob],
         });
@@ -453,6 +453,15 @@ try {
             script: {
               ...savedGroup.script,
               narrationConfig: { ...savedGroup.script.narrationConfig, playbackRate: body.playbackRate },
+            },
+          };
+        } else if (body.type === 'set_narration_gain') {
+          savedGroup = {
+            ...savedGroup,
+            revision: savedGroup.revision + 1,
+            script: {
+              ...savedGroup.script,
+              narrationConfig: { ...savedGroup.script.narrationConfig, gainDb: body.gainDb },
             },
           };
         } else if (body.type === 'apply_cover_editor') {
@@ -1079,7 +1088,7 @@ try {
     assert.equal(await selectedTimelineClip.getAttribute('data-selected'), 'true', '单击时间轴视频片段后必须暴露明确选中态');
     assert.match(await selectedTimelineClip.evaluate((element) => getComputedStyle(element).boxShadow), /inset/, '时间轴视频选中态必须保留蓝色内描边');
     await page.getByText(/拖拽排序/, { exact: false }).waitFor();
-    const materialB = page.getByRole('button', { name: /b\.mp4/ });
+    const materialB = page.getByRole('button', { name: /b\.mp4/ }).first();
     await materialB.click();
     assert.equal(await materialB.getAttribute('aria-pressed'), 'true', '单击左侧视频素材后必须高亮并暴露可访问选中态');
     const replaceResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
@@ -1539,6 +1548,17 @@ try {
     assert.equal(await speedMenu.count(), 0, 'Esc 保存后必须关闭倍速弹层');
     assert.equal(await sidebarSpeedSlider.inputValue(), '1.4', '右键保存后右侧滑杆必须同步');
     assert.equal(await sidebarSpeedNumber.inputValue(), '1.4', '右键保存后右侧数值框必须同步');
+
+    const sidebarNarrationGainSlider = page.getByRole('slider', { name: '右侧口播音量拉条', exact: true });
+    assert.equal(await sidebarNarrationGainSlider.inputValue(), '0', '右侧口播音量默认必须为 0dB');
+    await sidebarNarrationGainSlider.fill('-20');
+    assert.equal(await page.locator('audio').first().evaluate((element) => element.volume), 1, '口播音量不应改写 HTML audio 的播放速率/基础音量属性');
+    await sidebarNarrationGainSlider.dispatchEvent('pointerup');
+    await expectEventually(
+      () => groupPatchBodies.some((body) => body.type === 'set_narration_gain' && body.gainDb === -20),
+      '右侧口播音量拉条松手必须保存整轨增益',
+    );
+    assert.equal(await sidebarNarrationGainSlider.inputValue(), '-20');
 
     await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
     await page.getByText('魅力女友', { exact: true }).click();

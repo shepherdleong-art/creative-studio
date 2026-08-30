@@ -30,7 +30,7 @@ const bgmFingerprint = crypto.createHash('sha256').update(fs.readFileSync(bgm)).
 const snapshot: FinalEditRenderSnapshot = {
   groupRevision: 1,
   variantRevision: 0,
-  group: { narrationDurationUs: 2_000_000, narrationPlaybackRate: 1, subtitleCues: [{ id: 'cue-1', segmentId: 'seg-1', text: '测试字幕', startUs: 0, endUs: 2_000_000, textSource: 'script', timingSource: 'aligned' }] },
+  group: { narrationDurationUs: 2_000_000, narrationPlaybackRate: 1, narrationGainDb: 0, subtitleCues: [{ id: 'cue-1', segmentId: 'seg-1', text: '测试字幕', startUs: 0, endUs: 2_000_000, textSource: 'script', timingSource: 'aligned' }] },
   variant: {
     id: 'variant-1', indexNum: 1, outputPreset: '3x4', revision: 0, lastRenderedRevision: null, renderStatus: null, maxOverlap: 0, issues: [],
     timeline: { fps: 24, introFrames: 20, bodyFrames: 48, clips: [{ id: 'clip-1', videoJobId: 'video-1', sourceFingerprint: fingerprint, sourceInFrame: 0, sourceOutFrame: 48, timelineInFrame: 0, timelineOutFrame: 48, boundSegmentId: 'seg-1', framing: { scale: 1.15, offsetX: 0.25, offsetY: -0.25 }, manualUseOverride: false }] },
@@ -77,23 +77,35 @@ const fastResult = await renderFinalEditSnapshot({
   snapshot: { ...snapshot, group: { ...snapshot.group, narrationPlaybackRate: 2 }, bgm: null },
 });
 assert.ok(Math.abs(fastResult.durationSec - (1 + 20 / 24)) < 1 / 24 + 0.02, '2.0x 成片总时长必须按当前音轨的有效时长缩短');
-const fastPcm = path.join(root, 'fast-narration.pcm');
-// 裸 PCM 不携带时间戳；解码时显式按 MP4 PTS 补齐 intro 的静音间隙，
-// 否则 adelay 产生的首包时长会被压掉，RMS 窗口会错误地从文件开头取样。
-await runFfmpeg(['-i', path.join(storage, fastResult.videoRelativePath), '-map', '0:a:0', '-af', 'aresample=async=1:first_pts=0', '-f', 's16le', '-ac', '1', '-ar', '8000', '-y', fastPcm]);
-const pcmBytes = fs.readFileSync(fastPcm);
-const samples = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, Math.floor(pcmBytes.byteLength / 2));
-const rms = (startSec: number, endSec: number) => {
+const decodeMonoPcm = async (videoPath: string, pcmPath: string): Promise<Int16Array> => {
+  // 裸 PCM 不携带时间戳；解码时显式按 MP4 PTS 补齐 intro 的静音间隙，
+  // 否则 adelay 产生的首包时长会被压掉，RMS 窗口会错误地从文件开头取样。
+  await runFfmpeg(['-i', videoPath, '-map', '0:a:0', '-af', 'aresample=async=1:first_pts=0', '-f', 's16le', '-ac', '1', '-ar', '8000', '-y', pcmPath]);
+  const pcmBytes = fs.readFileSync(pcmPath);
+  return new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, Math.floor(pcmBytes.byteLength / 2));
+};
+const pcmRms = (samples: Int16Array, startSec: number, endSec: number): number => {
   const start = Math.floor(startSec * 8000);
   const end = Math.min(samples.length, Math.floor(endSec * 8000));
   let sum = 0;
   for (let index = start; index < end; index += 1) sum += samples[index] ** 2;
   return Math.sqrt(sum / Math.max(1, end - start));
 };
-const earlyNarrationRms = rms(1.1, 1.5);
-const lateNarrationRms = rms(2.2, 2.6);
+const fastPcm = path.join(root, 'fast-narration.pcm');
+const samples = await decodeMonoPcm(path.join(storage, fastResult.videoRelativePath), fastPcm);
+const earlyNarrationRms = pcmRms(samples, 1.1, 1.5);
+const lateNarrationRms = pcmRms(samples, 2.2, 2.6);
 assert.ok(earlyNarrationRms > 500, '2.0x 成片的前半段必须保留可听口播');
 assert.ok(lateNarrationRms < earlyNarrationRms * 0.2, '2.0x 成片口播必须在约一半时间后结束，不能只改变编辑器显示');
+
+const quietFastResult = await renderFinalEditSnapshot({
+  jobId: 'job-quiet-narration',
+  storageRoot: storage,
+  snapshot: { ...snapshot, group: { ...snapshot.group, narrationPlaybackRate: 2, narrationGainDb: -40 }, bgm: null },
+});
+const quietSamples = await decodeMonoPcm(path.join(storage, quietFastResult.videoRelativePath), path.join(root, 'quiet-narration.pcm'));
+const quietNarrationRms = pcmRms(quietSamples, 1.1, 1.5);
+assert.ok(quietNarrationRms < earlyNarrationRms * 0.03, `-40dB 口播渲染必须显著低于 0dB: loud=${earlyNarrationRms}, quiet=${quietNarrationRms}`);
 
 const slowResult = await renderFinalEditSnapshot({
   jobId: 'job-slow-narration',

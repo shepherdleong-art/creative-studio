@@ -127,7 +127,7 @@ export interface FinalEditGroupView {
     editedNarrationText: string;
     syncState: 'synced' | 'modified';
     sourceScriptUpdatedAt: string | null;
-    narrationConfig: { providerId: string; voice: string; speed: number; playbackRate: number };
+    narrationConfig: { providerId: string; voice: string; speed: number; playbackRate: number; gainDb: number };
     selectedMaterialKeys: string[];
   };
   narrationDurationUs: number;

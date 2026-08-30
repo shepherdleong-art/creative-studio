@@ -56,6 +56,7 @@ import type { BeatDetectionResult } from './beat-detect.ts';
 import { splitNarrationForDisplay } from '../subtitle-display.ts';
 import { normalizeLegacyAutomaticSubtitleCues } from './subtitle-cue-normalize.ts';
 import { minimumFrameDurationUs, splitTimeAtNearestFrame } from './frame-time.ts';
+import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import {
   createUncheckedDurationGateState,
   evaluateFinalDurationGate,
@@ -273,6 +274,7 @@ export type FinalEditCommand =
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_title_preset'; presetId: string }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'apply_cover_editor'; variantId: string; expectedVariantRevision: number; draft: CoverEditorDraft }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_narration_playback_rate'; playbackRate: number }
+  | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_narration_gain'; gainDb: number }
   | { scope: 'group'; groupId: string; expectedRevision: number; type: 'set_mixcut_script_state'; scriptDraftId?: string; editedNarrationText: string; selectedMaterialKeys: string[]; providerId?: string; analysisProviderId?: string; voice: string; speed: number };
 
 export interface EnqueueRenderInput {
@@ -417,6 +419,9 @@ function validateTtsSpeed(speed: number): void {
 function validateNarrationPlaybackRate(playbackRate: number): void {
   try { assertNarrationPlaybackRate(playbackRate); }
   catch (error) { throw new FinalEditError('invalid_narration_playback_rate', error instanceof Error ? error.message : '音轨倍速无效'); }
+}
+function validateNarrationGainDb(gainDb: number): void {
+  if (!Number.isFinite(gainDb)) throw new FinalEditError('invalid_narration_gain', '口播音量必须是有限数字');
 }
 function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'projectId' | 'scriptDraftId' | 'shotSetId' | 'editedNarrationText'>): ScriptSnapshot {
   const scriptDraftId = String(input.scriptDraftId || '').trim();
@@ -936,7 +941,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         .slice(0, 3)
         .map((frameUs) => ({ videoJobId: row.videoJobId, frameUs }));
     });
-    const parsedNarrationConfig = parseJson<{ providerId?: unknown; voice?: unknown; speed?: unknown; playbackRate?: unknown }>(String(group.narrationConfigJson), {});
+    const parsedNarrationConfig = parseJson<{ providerId?: unknown; voice?: unknown; speed?: unknown; playbackRate?: unknown; gainDb?: unknown }>(String(group.narrationConfigJson), {});
     const parsedPlaybackRate = Number(parsedNarrationConfig.playbackRate ?? 1);
     const playbackRate = Number.isFinite(parsedPlaybackRate) && parsedPlaybackRate >= 0.5 && parsedPlaybackRate <= 2 ? parsedPlaybackRate : 1;
     const narrationConfig = {
@@ -944,6 +949,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       voice: String(parsedNarrationConfig.voice || ''),
       speed: Number(parsedNarrationConfig.speed || 1),
       playbackRate,
+      gainDb: normalizeNarrationGainDb(parsedNarrationConfig.gainDb),
     };
     return {
       id: String(group.id), projectId: String(group.projectId), scriptDraftId: String(group.scriptDraftId), shotSetId: String(group.shotSetId),
@@ -991,7 +997,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const titleParts = script.coverTitleParts || splitCoverTitle(script.title);
     const createdAt = now();
     const narrationHash = sha256(JSON.stringify({ kind: 'editing-draft', groupId }));
-    db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editing', 'editing', 0, ?, ?)`).run(groupId, input.projectId, script.sourceDraftId || '', input.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), createdAt, createdAt);
+    db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editing', 'editing', 0, ?, ?)`).run(groupId, input.projectId, script.sourceDraftId || '', input.shotSetId, JSON.stringify(script), narrationHash, input.analysisProviderId || '', JSON.stringify({ providerId: input.providerId, voice: input.voice, speed: input.speed, gainDb: NARRATION_GAIN_DB_DEFAULT }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), createdAt, createdAt);
     return load(groupId);
   };
 
@@ -1480,7 +1486,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const jobSnapshot = { version: 1 as const, input: normalizedInput, scriptSnapshot: script };
     const createdAt = now();
     db.transaction(() => {
-      db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, durationGateJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, executionInput.projectId, normalizedInput.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, executionInput.analysisProviderId || '', JSON.stringify({ providerId: executionInput.providerId, voice: executionInput.voice, speed: executionInput.speed }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), JSON.stringify(createUncheckedDurationGateState({ narrationHash, targetTotalSec: script.targetDurationSec })), createdAt, createdAt);
+    db.prepare(`INSERT INTO final_edit_groups (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, analysisProviderId, narrationConfigJson, coverTitleJson, textStylesJson, editedNarrationText, scriptSyncState, sourceScriptUpdatedAt, selectedMaterialKeysJson, durationGateJson, status, phase, revision, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'validating', 0, ?, ?)`).run(groupId, executionInput.projectId, normalizedInput.scriptDraftId, script.shotSetId, JSON.stringify(script), narrationHash, executionInput.analysisProviderId || '', JSON.stringify({ providerId: executionInput.providerId, voice: executionInput.voice, speed: executionInput.speed, gainDb: NARRATION_GAIN_DB_DEFAULT }), JSON.stringify({ primary: { id: 'primary', text: titleParts.primary, textSource: 'script' }, secondary: { id: 'secondary', text: titleParts.secondary, textSource: 'script' } }), JSON.stringify(buildStyles()), script.editedNarrationText, script.scriptSyncState, script.sourceScriptUpdatedAt, JSON.stringify(selectedMaterialKeys), JSON.stringify(createUncheckedDurationGateState({ narrationHash, targetTotalSec: script.targetDurationSec })), createdAt, createdAt);
       db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, kind, status, phase, progress, requestKey, inputSnapshotJson, estimatedCost, costCurrency, createdAt) VALUES (?, ?, ?, 'prepare', 'queued', 'analyzing', 0, ?, ?, ?, 'CNY', ?)`).run(jobId, executionInput.projectId, groupId, requestKey, JSON.stringify(jobSnapshot), estimatedCost, createdAt);
     })();
     if (deps.runJobsInline) await resumePrepareJob(jobId);
@@ -1506,11 +1512,16 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     if (!storedSnapshot?.input || !storedSnapshot.scriptSnapshot) throw new FinalEditError('prepare_snapshot_invalid', '准备任务快照损坏', 409);
 
     let script = parseJson<ScriptSnapshot>(String(row.scriptSnapshotJson), storedSnapshot.scriptSnapshot);
-    let nextNarrationConfig = parseJson<{ providerId: string; voice: string; speed: number }>(String(row.narrationConfigJson), {
+    let nextNarrationConfig = parseJson<{ providerId: string; voice: string; speed: number; playbackRate?: number; gainDb?: number }>(String(row.narrationConfigJson), {
       providerId: storedSnapshot.input.providerId,
       voice: storedSnapshot.input.voice,
       speed: storedSnapshot.input.speed,
     });
+    nextNarrationConfig = {
+      ...nextNarrationConfig,
+      playbackRate: nextNarrationConfig.playbackRate ?? 1,
+      gainDb: normalizeNarrationGainDb(nextNarrationConfig.gainDb),
+    };
     let nextHash = narrationHash;
     let nextGate: FinalEditDurationGateStateV1;
     let clearTts = false;
@@ -1909,7 +1920,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const coverTitle = parseJson<{ primary: { id: 'primary'; text: string; textSource: 'script' | 'manual' }; secondary: { id: 'secondary'; text: string; textSource: 'script' | 'manual' } }>(String(row.coverTitleJson), { primary: { id: 'primary', text: '', textSource: 'script' }, secondary: { id: 'secondary', text: '', textSource: 'script' } });
     const textStyles = normalizeTextStyles(parseJson<unknown>(String(row.textStylesJson), buildStyles()));
     let mixcutScriptSnapshot = parseJson<ScriptSnapshot>(String(row.scriptSnapshotJson), {} as ScriptSnapshot);
-    let narrationConfig = parseJson<{ providerId: string; voice: string; speed: number; playbackRate?: number }>(String(row.narrationConfigJson), { providerId: '', voice: '', speed: 1, playbackRate: 1 });
+    let narrationConfig = parseJson<{ providerId: string; voice: string; speed: number; playbackRate?: number; gainDb?: number }>(String(row.narrationConfigJson), { providerId: '', voice: '', speed: 1, playbackRate: 1, gainDb: NARRATION_GAIN_DB_DEFAULT });
     let selectedMaterialKeys = parseJson<unknown[]>(String(row.selectedMaterialKeysJson || '[]'), []).map(String);
     let analysisProviderId = String(row.analysisProviderId || '');
     const validateCueRange = (cueId: string | null, startUs: number, endUs: number) => {
@@ -2015,19 +2026,23 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         : buildMixcutEditingScriptSnapshot({ sourceDraftId: mixcutScriptSnapshot.sourceDraftId, sourceScriptUpdatedAt: mixcutScriptSnapshot.sourceScriptUpdatedAt, sourceScript, shotSetId: String(row.shotSetId), editedNarrationText });
       const providerId = String(command.providerId ?? narrationConfig.providerId).trim();
       if (!providerId || !db.prepare(`SELECT 1 FROM final_edit_tts_providers WHERE id=? AND enabled=1`).get(providerId)) throw new FinalEditError('tts_provider_unavailable', '口播配音供应商不存在或未启用');
-      narrationConfig = { providerId, voice: command.voice.trim(), speed: command.speed, playbackRate: narrationConfig.playbackRate ?? 1 };
+      narrationConfig = { providerId, voice: command.voice.trim(), speed: command.speed, playbackRate: narrationConfig.playbackRate ?? 1, gainDb: normalizeNarrationGainDb(narrationConfig.gainDb) };
       analysisProviderId = String(command.analysisProviderId ?? analysisProviderId);
     }
     if (command.type === 'set_narration_playback_rate') {
       validateNarrationPlaybackRate(command.playbackRate);
       narrationConfig = { ...narrationConfig, playbackRate: command.playbackRate };
     }
+    if (command.type === 'set_narration_gain') {
+      validateNarrationGainDb(command.gainDb);
+      narrationConfig = { ...narrationConfig, gainDb: normalizeNarrationGainDb(command.gainDb) };
+    }
     const revision = Number(row.revision) + 1;
     db.transaction(() => {
       db.prepare(`INSERT INTO final_edit_revisions (scopeKind, scopeId, revision, stateJson, commandJson, createdAt) VALUES ('group', ?, ?, ?, ?, ?)`).run(command.groupId, revision, JSON.stringify({ cues, coverTitle, textStyles, scriptSnapshot: mixcutScriptSnapshot, narrationConfig, selectedMaterialKeys }), JSON.stringify(command), now());
       if (command.type === 'set_mixcut_script_state') {
         db.prepare(`UPDATE final_edit_groups SET scriptDraftId=?, analysisProviderId=?, subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, scriptSnapshotJson=?, editedNarrationText=?, scriptSyncState=?, sourceScriptUpdatedAt=?, narrationConfigJson=?, selectedMaterialKeysJson=?, revision=?, updatedAt=? WHERE id=?`).run(mixcutScriptSnapshot.sourceDraftId || '', analysisProviderId, JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), JSON.stringify(mixcutScriptSnapshot), mixcutScriptSnapshot.editedNarrationText, mixcutScriptSnapshot.scriptSyncState, mixcutScriptSnapshot.sourceScriptUpdatedAt, JSON.stringify(narrationConfig), JSON.stringify(selectedMaterialKeys), revision, now(), command.groupId);
-      } else if (command.type === 'set_narration_playback_rate') {
+      } else if (command.type === 'set_narration_playback_rate' || command.type === 'set_narration_gain') {
         db.prepare(`UPDATE final_edit_groups SET narrationConfigJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(narrationConfig), revision, now(), command.groupId);
       } else {
         db.prepare(`UPDATE final_edit_groups SET subtitleStateJson=?, coverTitleJson=?, textStylesJson=?, revision=?, updatedAt=? WHERE id=?`).run(JSON.stringify(cues), JSON.stringify(coverTitle), JSON.stringify(textStyles), revision, now(), command.groupId);
@@ -2106,7 +2121,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     const id = uuidv4();
     const snapshot = {
       groupRevision: group.revision, variantRevision: variant.revision,
-      group: { coverTitle: group.coverTitle, subtitleCues: group.subtitleCues, narrationDurationUs: group.narrationDurationUs, narrationPlaybackRate: group.script.narrationConfig.playbackRate },
+      group: { coverTitle: group.coverTitle, subtitleCues: group.subtitleCues, narrationDurationUs: group.narrationDurationUs, narrationPlaybackRate: group.script.narrationConfig.playbackRate, narrationGainDb: group.script.narrationConfig.gainDb },
       // §10.5：快照必须记录渲染所用字体（标准字体名称/PostScript 名），保证可审计、可复现
       textStyles: group.textStyles[variant.outputPreset],
       variant, sources, coverRelativePath, narrationRelativePath: toRelative(groupRow.narrationAudioPath),

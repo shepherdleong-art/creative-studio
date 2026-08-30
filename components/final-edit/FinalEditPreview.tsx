@@ -122,13 +122,14 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       playheadSec: timeSec,
       introSec: INTRO_SEC,
       bodyDurationSec,
+      narrationGainDb: group.script.narrationConfig.gainDb,
       gainDb: variant.bgm.gainDb,
       fadeInSec: variant.bgm.fadeInSec,
       fadeOutSec: variant.bgm.fadeOutSec,
     });
     graph.narrationGain.gain.setValueAtTime(levels.narrationGain, graph.context.currentTime);
     graph.bgmGain.gain.setValueAtTime(levels.bgmGain, graph.context.currentTime);
-  }, [bodyDurationSec, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.bgm.gainDb]);
+  }, [bodyDurationSec, group.script.narrationConfig.gainDb, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.bgm.gainDb]);
 
   const pauseAllMedia = useCallback(() => {
     playingRef.current = false;

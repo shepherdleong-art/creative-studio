@@ -192,6 +192,14 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         fadeInSec,
         fadeOutSec,
       };
+    } else if (body.type === 'set_narration_gain') {
+      if (typeof body.gainDb !== 'number' || !Number.isFinite(body.gainDb)) {
+        return NextResponse.json({
+          error: 'invalid_clip_edit',
+          message: '口播音量必须是有限数字',
+        }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: 'set_narration_gain', gainDb: body.gainDb };
     } else if (body.type === 'set_subtitle_style') {
       if (body.style !== null && (typeof body.style !== 'object' || Array.isArray(body.style))) {
         return NextResponse.json({ error: 'invalid_clip_edit', message: '字幕样式参数无效' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
@@ -249,7 +257,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     } else {
       return NextResponse.json({
         error: 'invalid_clip_edit',
-        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/commit_render)',
+        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_narration_gain/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/commit_render)',
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
 

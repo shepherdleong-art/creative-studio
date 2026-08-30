@@ -20,6 +20,7 @@ import { readBatchBgmPool, readFrozenMusicPool } from './bgm.ts';
 import { defaultTextStyle } from '../media-core/cover-domain.ts';
 import { textStyleToSvgElements } from '../media-core/cover-title-svg.ts';
 import type { TextStyle } from '../media-core/cover-types.ts';
+import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 
 export const BATCH_OUTPUT_PRESETS = {
   '3:4': { width: 1080, height: 1440 },
@@ -78,6 +79,7 @@ export interface BatchRenderArrangementInput {
     fingerprint?: string;
     durationUs?: number;
     segments?: unknown[];
+    gainDb?: unknown;
   };
 }
 
@@ -561,6 +563,12 @@ export interface BatchBgmParams {
 
 export const BATCH_BGM_DEFAULT_PARAMS: BatchBgmParams = { gainDb: -18, fadeInSec: 1.0, fadeOutSec: 1.5 };
 
+/** 解析单条成片的口播增益；旧 arrangement 缺字段时使用 0dB。 */
+export function resolveBatchNarrationGainDb(value: unknown): number {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return normalizeNarrationGainDb(undefined);
+  return normalizeNarrationGainDb((value as Record<string, unknown>).gainDb);
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -668,9 +676,9 @@ export function buildBatchRenderColorFilterFragments(input: { colorSnapshot: Col
   });
 }
 
-function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderAudioMode): string {
+function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderAudioMode, narrationGainDb = NARRATION_GAIN_DB_DEFAULT): string {
   const source = `[${audioInput}:a]aresample=48000`;
-  if (mode === 'narration') return `${source},atrim=duration=${durationSec.toFixed(6)},apad,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`;
+  if (mode === 'narration') return `${source},volume=${normalizeNarrationGainDb(narrationGainDb).toFixed(1)}dB,atrim=duration=${durationSec.toFixed(6)},apad,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`;
   return `${source},anullsrc=channel_layout=stereo:sample_rate=48000`; // replaced by caller for silent lavfi input
 }
 
@@ -741,6 +749,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
   const visualDurationUs = snapshot.clips.at(-1)!.timelineEndUs;
   const resolvedStorageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
   const narrationInput = input.narration ?? resolveBatchArrangementNarration(snapshot.arrangement.narration);
+  const narrationGainDb = resolveBatchNarrationGainDb(snapshot.arrangement.narration);
   const narrationSegments = narrationInput
     ? normalizeNarrationSegments(narrationInput.segments, narrationInput.durationUs)
     : [];
@@ -862,7 +871,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     });
     filters.push(`[${currentVideoLabel}]null[vout]`);
     const voiceLabel = narrationPath ? 'narration' : 'silence';
-    if (narrationPath) filters.push(audioFilter(audioInput, bodyDurationSec, 'narration'));
+    if (narrationPath) filters.push(audioFilter(audioInput, bodyDurationSec, 'narration', narrationGainDb));
     else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[silence]`);
     if (bgm && bgmInput != null) {
       // 混音链:响度归一化 → 增益 → 裁到正文时长 → 淡入淡出 → 与口播 amix。
