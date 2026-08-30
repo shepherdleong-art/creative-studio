@@ -93,6 +93,7 @@ assert.match(coverPreview, /inset-0 h-full w-full/);
 assert.match(coverPreview, /fill = false/);
 assert.match(batchTimelinePreview, /BatchCoverDraftPreview/);
 assert.match(batchTimelinePreview, /coverDraft/);
+assert.match(batchTimelinePreview, /coverDraft\?\.asset/);
 assert.doesNotMatch(coverEditor, /className="h-full max-w-none"/);
 assert.match(batchTimelinePreview, /isFullscreen \? '退出全屏' : '全屏'/);
 assert.match(batchTimelinePreview, /requestFullscreen/);

@@ -508,7 +508,7 @@ export default function BatchTimelinePreview({
           <video ref={videoBRef} src={videoBSrc} className="pointer-events-none absolute h-px w-px opacity-0" muted playsInline preload="auto" aria-hidden="true" />
           <canvas ref={frameCanvasRef} width={size.width} height={size.height} className="absolute inset-0 h-full w-full" />
           {showCover && (
-            coverDraft
+            coverDraft?.asset
               ? <BatchCoverDraftPreview
                 fill
                 asset={coverDraft.asset}
@@ -520,7 +520,16 @@ export default function BatchTimelinePreview({
               : coverUrl
                 // eslint-disable-next-line @next/next/no-img-element
                 ? <img src={coverUrl} alt="片头封面" className="absolute inset-0 h-full w-full object-cover" />
-                : <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">片头封面</div>
+                : coverDraft
+                  ? <BatchCoverDraftPreview
+                    fill
+                    asset={coverDraft.asset}
+                    timeUs={coverDraft.timeUs}
+                    title={coverDraft.title}
+                    framing={coverDraft.framing}
+                    outputPreset={outputPreset}
+                  />
+                  : <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">片头封面</div>
           )}
           <svg
             className="pointer-events-none absolute inset-0 h-full w-full"
