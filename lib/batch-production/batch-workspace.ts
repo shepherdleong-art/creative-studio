@@ -93,6 +93,8 @@ export interface BatchOutputCardView {
   publishable: boolean;
   /** 当前候选与 arrangement 修订号不一致或仍有渲染任务时为 true。 */
   renderStale: boolean;
+  /** 候选与 arrangement 不一致、但队列里没有渲染任务——需要用户点「重新生成」。 */
+  renderUncommitted: boolean;
   /** 用户审核状态:当前成片版本 arrangement 的 review.decision === 'approved' */
   approved: boolean;
   /** 当前成片存在人工字幕覆盖;重试口播前需要明确提示会清除它。 */
@@ -568,6 +570,12 @@ export function getBatchWorkspace(
       && candidate
       && (pendingRender || candidateRevisionStale || candidateCoverStale),
     );
+    // renderStale 是导出闸门的镜像;renderUncommitted 进一步区分「真的排了渲染在跑」
+    // 和「改动还没提交重渲染」——后者要用户自己点「重新生成」,不能显示成「等待完成」。
+    const renderUncommitted = Boolean(
+      plan.currentVersionId && candidate && !pendingRender
+      && (candidateRevisionStale || candidateCoverStale),
+    );
     // 口播任务(渲染闸门的配套信息):失败时给用户「重试配音」入口,否则
     // 渲染被闸门挡住会变成看不到原因的静默等待。
     const narrationTaskRow = plan.scriptSnapshotId ? db.prepare(`
@@ -626,6 +634,7 @@ export function getBatchWorkspace(
       productionReady,
       publishable: candidateProductionReady,
       renderStale,
+      renderUncommitted,
       approved,
       subtitleOverride: arrangementHasManualSubtitleOverride(arrangement),
       coverRange,

@@ -155,7 +155,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
   const narrationFailedCount = workspace.cards.filter((card) => card.narrationTask?.status === 'failed').length;
   const otherBlockers = [...new Set(
     workspace.cards.filter(({ publishable, renderStale }) => !publishable || renderStale).flatMap((card) => (
-      card.renderStale ? [...card.blockers, '修改已保存，等待重新渲染完成'] : card.blockers
+      card.renderStale
+        ? [...card.blockers, card.renderUncommitted ? '修改还没提交重新渲染，请点卡片上的「重新生成」' : '修改已保存，等待重新渲染完成']
+        : card.blockers
     )),
   )];
 
@@ -320,7 +322,9 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                     aria-label={`选择成片 ${card.seq}`}
                     checked={selectedPlanIds.includes(card.planId)}
                     disabled={!card.publishable || card.renderStale}
-                    title={card.renderStale ? '修改已保存，等待重新渲染完成' : card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
+                    title={card.renderStale
+                      ? card.renderUncommitted ? '修改还没提交重新渲染，请点卡片上的「重新生成」' : '修改已保存，等待重新渲染完成'
+                      : card.publishable ? undefined : '这条成片还没有配音，暂时无法导出'}
                     onChange={(event) => onTogglePlan(card.planId, event.target.checked)}
                     className="mt-0.5 disabled:opacity-40"
                   />
@@ -342,7 +346,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                     </span>
                   )}
                   {card.renderStale && (
-                    <span className="rounded-full bg-warn/20 px-2 py-0.5 text-[11px] text-warn">等待重新渲染</span>
+                    <span className="rounded-full bg-warn/20 px-2 py-0.5 text-[11px] text-warn">{card.renderUncommitted ? '待重新生成' : '等待重新渲染'}</span>
                   )}
                 </span>
               </div>

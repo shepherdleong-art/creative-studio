@@ -118,12 +118,22 @@ try {
   assert.match(view.cards[3]?.nextAction ?? '', /旧版仍可/);
   assert.deepEqual(view.counts, { total: 4, exportable: 2, publishable: 1, approved: 0, processing: 0, needsAttention: 2, failed: 1 });
 
+  const originalOv1ArrangementJson = (db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = 'ov1'`).get() as { arrangementJson: string }).arrangementJson;
+  const staleOv1Arrangement = JSON.parse(originalOv1ArrangementJson) as Record<string, unknown>;
+  staleOv1Arrangement.editRevision = 1;
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(JSON.stringify(staleOv1Arrangement));
+  const uncommittedView = getBatchWorkspace(db, 'p1', 'b1');
+  assert.equal(uncommittedView.cards[0]?.renderStale, true, '候选修订落后时必须标记 stale');
+  assert.equal(uncommittedView.cards[0]?.renderUncommitted, true, '没有排队任务时必须提示待重新生成');
+
   // pendingRender 取当前 outputVersion 的全部 queued/running 任务,不能只看最后一条。
   insertTask.run('task1-old-pending', 'p1', 'b1', 'ov1', 'queued', 'running', '{}', 0, '2026-08-02T10:00:00.000Z', '2026-08-02T10:00:00.000Z');
   const pendingRenderView = getBatchWorkspace(db, 'p1', 'b1');
   assert.equal(pendingRenderView.cards[0]?.task?.status, 'succeeded', '展示任务仍应保留最新任务状态');
   assert.equal(pendingRenderView.cards[0]?.renderStale, true, '较早的排队任务仍应让已有候选等待重渲染');
+  assert.equal(pendingRenderView.cards[0]?.renderUncommitted, false, '有排队任务时不得显示待重新生成');
   db.prepare(`UPDATE batch_tasks SET status = 'failed' WHERE id = 'task1-old-pending'`).run();
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(originalOv1ArrangementJson);
 
   assert.equal(view.phase, 'review');
   db.prepare(`

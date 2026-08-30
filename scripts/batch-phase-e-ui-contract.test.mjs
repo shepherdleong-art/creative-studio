@@ -106,10 +106,15 @@ assert.match(clipsRoute, /commit_render/);
 assert.match(clipsRoute, /deferRender/);
 assert.match(outputEditor, /deferRender: true/);
 assert.match(outputEditor, /'commit_render'/);
+assert.match(outputEditor, /pagehide/);
+assert.match(outputEditor, /response\.ok/);
+assert.match(outputEditor, /payload\.type !== 'split'/);
 assert.doesNotMatch(outputEditor, /修改已保存，退出本轮调整后会自动重新渲染/);
 assert.doesNotMatch(outputEditor, /立即渲染/);
 assert.match(exportStep, /renderStale/);
 assert.match(exportStep, /等待重新渲染/);
+assert.match(review, /renderUncommitted/);
+assert.match(exportStep, /待重新生成/);
 assert.ok(
   exportStep.indexOf("!card.publishable ? '不可导出'") >= 0
     && exportStep.indexOf("!card.publishable ? '不可导出'") < exportStep.indexOf("card.renderStale ? '等待重新渲染'"),

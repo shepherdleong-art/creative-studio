@@ -171,7 +171,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     title={!card.publishable
                       ? '这条成片还没有配音，暂时无法导出'
                       : card.renderStale
-                        ? '画面已调整，等待重新渲染完成后才能导出'
+                        ? card.renderUncommitted ? '修改还没提交重新渲染，请点卡片上的「重新生成」' : '修改已保存，等待重新渲染完成'
                         : card.approved
                           ? undefined
                           : '这条成片尚未审核通过，请先到检查页点「通过」'}
@@ -184,7 +184,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                   </span>
                 </label>
                 <span className={`rounded-full px-2 py-1 text-[11px] ${card.publishable && card.renderStale ? 'bg-warn/20 text-warn' : card.publishable && card.approved ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
-                  {!card.publishable ? '不可导出' : card.renderStale ? '等待重新渲染' : card.approved ? '可导出' : '待审核'}
+                  {!card.publishable ? '不可导出' : card.renderUncommitted ? '待重新生成' : card.renderStale ? '等待重新渲染' : card.approved ? '可导出' : '待审核'}
                 </span>
               </div>
               {mediaSource && (

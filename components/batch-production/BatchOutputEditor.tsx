@@ -95,6 +95,25 @@ export default function BatchOutputEditor({
     }
   }, [batchId, planId, projectId]);
 
+  /**
+   * 提交这一轮欠着的重渲染。keepalive 让卸载/关标签页时请求仍能发出;
+   * 只有服务端确认收下才清欠账——失败就留着,让 pagehide 或下一次卸载再补一次。
+   * commit_render 按 requestKey 幂等(phase-e.ts:39-50),多提交一次只会拿回同一个任务。
+   */
+  const commitRender = useCallback((url: string) => {
+    if (!pendingRenderRef.current) return;
+    void fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'commit_render' }),
+      keepalive: true,
+    }).then((response) => {
+      if (!response.ok) return;
+      pendingRenderRef.current = false;
+      onChangedRef.current?.();
+    }).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     // 换片段计划时重置交互态并重新拉取;统一推迟到宏任务,避免 effect 内同步 setState。
     const timer = window.setTimeout(() => {
@@ -114,20 +133,17 @@ export default function BatchOutputEditor({
   }, [loadView]);
 
   useEffect(() => {
-    // 退出这一轮调整(关闭弹窗/换成片/切步骤)时才把欠着的重渲染一次性提交。
+    // 退出这一轮调整(关闭弹窗/换成片/切步骤)时把欠着的重渲染一次性提交。
     // url 按当次的 projectId/batchId/planId 固化:换成片时提交的必须是上一条的渲染。
+    // 关标签页/刷新不会走 React 卸载,只有 pagehide 能兜住(单条走的是 beforeunload)。
     const url = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
+    const flush = () => commitRender(url);
+    window.addEventListener('pagehide', flush);
     return () => {
-      if (!pendingRenderRef.current) return;
-      pendingRenderRef.current = false;
-      void fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'commit_render' }),
-        keepalive: true,
-      }).then(() => onChangedRef.current?.()).catch(() => undefined);
+      window.removeEventListener('pagehide', flush);
+      flush();
     };
-  }, [projectId, batchId, planId]);
+  }, [projectId, batchId, planId, commitRender]);
 
   const clips = useMemo(() => view?.clips ?? [], [view]);
   const poolAssets = useMemo(() => view?.poolAssets ?? [], [view]);
@@ -191,6 +207,10 @@ export default function BatchOutputEditor({
     : null), [view]);
 
   async function submitEdit(payload: Record<string, unknown>): Promise<boolean> {
+    // split 是纯结构操作(不改像素,不递增 editRevision),其余命令都可能改画面。
+    // 响应回来前组件就被卸载时(改完立刻关弹窗),响应里的 visualChanged 没人接得到,
+    // 所以先记欠账再发请求;命令实际没生效时最多多发一次幂等的 commit。
+    if (payload.type !== 'split') pendingRenderRef.current = true;
     setSubmitting(true);
     setEditFeedback(null);
     try {
