@@ -362,36 +362,73 @@ export default function BatchTimelinePreview({
     if (context && context.state !== 'closed') void context.close();
   }, [pauseAllMedia]);
 
-  /** 口播与 BGM 在片头结束后起播;从正文中途起播时直接对齐到 bodyOffset。 */
+  /** 在点击事件里立即起播;片头靠音量包络保持静音,避免延迟 play() 丢失用户手势授权。 */
   const syncAudioStart = useCallback((startAt: number) => {
     const bodyOffset = Math.max(0, Math.min(bodyDurationSec, startAt - INTRO_SEC));
-    const delayMs = Math.max(0, (INTRO_SEC - startAt) * 1000);
+    const startsInCover = startAt < INTRO_SEC;
     if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
-    audioStartTimerRef.current = window.setTimeout(() => {
-      audioStartTimerRef.current = 0;
-      if (!playingRef.current) return;
-      const narration = narrationRef.current;
-      if (narration && narrationUrl) {
-        const levels = previewAudioLevelsAtTime({
-          playheadSec: startAt,
-          introSec: INTRO_SEC,
-          bodyDurationSec,
-          narrationGainDb,
-          gainDb: bgmGainDb,
-          fadeInSec: bgmFadeInSec,
-          fadeOutSec: bgmFadeOutSec,
-        });
-        setNarrationOutputGain(levels.narrationGain);
-        seekMedia(narration, bodyOffset);
-        void narration.play().catch(() => undefined);
-      }
-      const bgmElement = bgmRef.current;
-      if (bgmElement && bgm) {
-        const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
-        seekMedia(bgmElement, bodyOffset % Math.max(0.1, loopDuration));
-        void bgmElement.play().catch(() => undefined);
-      }
-    }, delayMs);
+    audioStartTimerRef.current = 0;
+    if (!playingRef.current) return;
+    const levels = previewAudioLevelsAtTime({
+      playheadSec: startAt,
+      introSec: INTRO_SEC,
+      bodyDurationSec,
+      narrationGainDb,
+      gainDb: bgmGainDb,
+      fadeInSec: bgmFadeInSec,
+      fadeOutSec: bgmFadeOutSec,
+    });
+    const narration = narrationRef.current;
+    if (narration && narrationUrl) {
+      // 必须在用户点击的同步调用栈里 play();片头靠 GainNode 保持静音,否则浏览器/Electron
+      // 可能把 setTimeout 里的首次 play() 判定为非用户手势并直接拒绝。
+      setNarrationOutputGain(levels.narrationGain);
+      // 片头也立即启动媒体以取得用户手势授权,但正文音频必须从 0 秒对齐。
+      seekMedia(narration, startsInCover ? 0 : bodyOffset);
+      void narration.play().catch(() => undefined);
+    }
+    const bgmElement = bgmRef.current;
+    if (bgmElement && bgm) {
+      const loopDuration = Number.isFinite(bgmElement.duration) && bgmElement.duration > 0 ? bgmElement.duration : bodyDurationSec;
+      bgmElement.volume = startsInCover ? 0 : levels.bgmGain;
+      seekMedia(bgmElement, (startsInCover ? 0 : bodyOffset) % Math.max(0.1, loopDuration));
+      void bgmElement.play().catch(() => undefined);
+    }
+    if (startsInCover) {
+      // 媒体已经在片头静音播放,到正文边界再把它们拨回 0 秒,避免片头时长被吃掉。
+      audioStartTimerRef.current = window.setTimeout(() => {
+        audioStartTimerRef.current = 0;
+        if (!playingRef.current) return;
+        const currentNarration = narrationRef.current;
+        if (currentNarration && narrationUrl) {
+          seekMedia(currentNarration, 0);
+          const bodyLevels = previewAudioLevelsAtTime({
+            playheadSec: INTRO_SEC,
+            introSec: INTRO_SEC,
+            bodyDurationSec,
+            narrationGainDb,
+            gainDb: bgmGainDb,
+            fadeInSec: bgmFadeInSec,
+            fadeOutSec: bgmFadeOutSec,
+          });
+          setNarrationOutputGain(bodyLevels.narrationGain);
+        }
+        const currentBgm = bgmRef.current;
+        if (currentBgm && bgm) {
+          const currentLoopDuration = Number.isFinite(currentBgm.duration) && currentBgm.duration > 0 ? currentBgm.duration : bodyDurationSec;
+          seekMedia(currentBgm, 0 % Math.max(0.1, currentLoopDuration));
+          currentBgm.volume = previewAudioLevelsAtTime({
+            playheadSec: INTRO_SEC,
+            introSec: INTRO_SEC,
+            bodyDurationSec,
+            narrationGainDb,
+            gainDb: bgmGainDb,
+            fadeInSec: bgmFadeInSec,
+            fadeOutSec: bgmFadeOutSec,
+          }).bgmGain;
+        }
+      }, (INTRO_SEC - startAt) * 1000);
+    }
   }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, narrationGainDb, narrationUrl, setNarrationOutputGain]);
 
   /** 暂停态音频 seek debounce:拖动每格都 seek 口播/BGM 是无用功(暂停的音频不发声),~120ms 内只做最后一次。 */
@@ -434,7 +471,7 @@ export default function BatchTimelinePreview({
     if (playheadSec > totalSec) drivePlayhead(totalSec);
   }, [playheadSec, totalSec, drivePlayhead]);
 
-  const togglePlayback = async () => {
+  const togglePlayback = () => {
     if (!active || sortedClips.length === 0) return;
     if (playing) {
       stopPlayback();
@@ -450,7 +487,9 @@ export default function BatchTimelinePreview({
       audioGraphRef.current = { context, narrationGain };
     }
     const context = audioContextRef.current;
-    if (context?.state === 'suspended') await context.resume();
+    // resume 与 play 都必须由这次点击同步触发;不要 await resume 后再起播,否则
+    // 某些浏览器/Electron 会丢失用户手势授权。音频图会在恢复后继续输出。
+    if (context?.state === 'suspended') void context.resume().catch(() => undefined);
     const startAt = playheadSec >= totalSec ? 0 : playheadSec;
     clockOffsetRef.current = startAt;
     clockStartRef.current = performance.now();

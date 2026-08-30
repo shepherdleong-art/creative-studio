@@ -197,12 +197,40 @@ try {
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1 });
     await page.addInitScript(() => {
+      globalThis.__mixcutAudioProbe = {
+        gainEvents: [],
+        mediaSources: [],
+        playCalls: [],
+        resumeCalls: [],
+      };
       HTMLMediaElement.prototype.play = function play() {
+        globalThis.__mixcutAudioProbe.playCalls.push({ src: this.currentSrc || this.src });
         this.dispatchEvent(new Event('play'));
         return Promise.resolve();
       };
       HTMLMediaElement.prototype.pause = function pause() {
         this.dispatchEvent(new Event('pause'));
+      };
+      const audioContextPrototype = AudioContext.prototype;
+      const originalCreateGain = audioContextPrototype.createGain;
+      audioContextPrototype.createGain = function createGainWithProbe() {
+        const gain = originalCreateGain.call(this);
+        const originalSetValueAtTime = gain.gain.setValueAtTime.bind(gain.gain);
+        gain.gain.setValueAtTime = function setValueAtTimeWithProbe(value, time) {
+          globalThis.__mixcutAudioProbe.gainEvents.push({ value, time });
+          return originalSetValueAtTime(value, time);
+        };
+        return gain;
+      };
+      const originalCreateMediaElementSource = audioContextPrototype.createMediaElementSource;
+      audioContextPrototype.createMediaElementSource = function createMediaElementSourceWithProbe(element) {
+        globalThis.__mixcutAudioProbe.mediaSources.push(element.currentSrc || element.src);
+        return originalCreateMediaElementSource.call(this, element);
+      };
+      const originalResume = audioContextPrototype.resume;
+      audioContextPrototype.resume = function resumeWithProbe() {
+        globalThis.__mixcutAudioProbe.resumeCalls.push(true);
+        return originalResume.call(this);
       };
       const originalMeasureText = CanvasRenderingContext2D.prototype.measureText;
       CanvasRenderingContext2D.prototype.measureText = function measureTextWithOptionalUnderreport(text) {
@@ -706,6 +734,30 @@ try {
       ['', '视频', '字幕', '音频'],
       '时间轴标签列文案必须是视频/字幕/音频三组（音频行合并展示口播+BGM）',
     );
+
+    const playbackPositionProbe = page.getByRole('slider', { name: '播放位置' });
+    await playbackPositionProbe.fill('2');
+    await page.getByRole('button', { name: '播放成片', exact: true }).click();
+    await expectEventually(
+      async () => await page.evaluate(() => globalThis.__mixcutAudioProbe.gainEvents.some((event) => event.value > 0)),
+      '播放成片后必须给至少一条音频轨设置正向 GainNode 增益，不能完全静音',
+    );
+    const audioProbe = await page.evaluate(() => globalThis.__mixcutAudioProbe);
+    assert.ok(audioProbe.mediaSources.length >= 2, '播放成片必须把口播和 BGM 都接入 Web Audio');
+    assert.ok(audioProbe.playCalls.some((call) => call.src.includes('/narration')), '播放成片必须启动口播音频');
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
+
+    await page.evaluate(() => {
+      globalThis.__mixcutAudioProbe.playCalls = [];
+    });
+    await playbackPositionProbe.fill('0');
+    await page.getByRole('button', { name: '播放成片', exact: true }).click();
+    await expectEventually(
+      async () => await page.evaluate(() => globalThis.__mixcutAudioProbe.playCalls.some((call) => call.src.includes('/narration'))),
+      '从片头点击播放时必须立即启动口播，不能把首次 play() 延迟到定时器中而丢失用户手势授权',
+      250,
+    );
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
 
     await page.setViewportSize({ width: 1024, height: 1000 });
     await assertPreviewGeometry('1024×1000');

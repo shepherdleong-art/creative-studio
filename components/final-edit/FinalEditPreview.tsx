@@ -393,26 +393,54 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   }, [playheadSec, seekRequestId, stopPlayback, synchronizePausedAudio, variant.id]);
 
   const syncAudio = (startAt: number) => {
-    const bodyOffset = Math.max(0, startAt - INTRO_SEC);
-    const delayMs = Math.max(0, (INTRO_SEC - startAt) * 1000);
+    const bodyOffset = Math.max(0, Math.min(bodyDurationSec, startAt - INTRO_SEC));
+    const startsInCover = startAt < INTRO_SEC;
     if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
-    audioStartTimerRef.current = window.setTimeout(() => {
-      audioStartTimerRef.current = 0;
-      if (!audioContextRef.current || !playingRef.current) return;
-      const narration = narrationRef.current;
-      const bgm = bgmRef.current;
-      if (narration) {
-        narration.volume = 1;
-        seekMedia(narration, bodyOffset * narrationPlaybackRate);
-        void narration.play().catch(() => undefined);
-      }
-      if (bgm && variant.bgm.trackId) {
-        const loopDuration = Number.isFinite(bgm.duration) && bgm.duration > 0 ? bgm.duration : bodyDurationSec;
-        bgm.volume = 1;
-        seekMedia(bgm, bodyOffset % Math.max(0.1, loopDuration));
-        void bgm.play().catch(() => undefined);
-      }
-    }, delayMs);
+    audioStartTimerRef.current = 0;
+    if (!audioContextRef.current || !playingRef.current) return;
+    const narration = narrationRef.current;
+    const bgm = bgmRef.current;
+    const levels = previewAudioLevelsAtTime({
+      playheadSec: startAt,
+      introSec: INTRO_SEC,
+      bodyDurationSec,
+      narrationGainDb,
+      gainDb: bgmGainDb,
+      fadeInSec: variant.bgm.fadeInSec,
+      fadeOutSec: variant.bgm.fadeOutSec,
+    });
+    // 必须在用户点击的同步调用栈里 play();片头靠增益保持静音,否则浏览器/Electron
+    // 可能把 setTimeout 里的首次 play() 判定为非用户手势并直接拒绝。
+    setAudioLevels(startAt);
+    if (narration) {
+      narration.volume = 1;
+      // 片头也立即启动媒体以取得用户手势授权,但正文音频必须从 0 秒对齐。
+      seekMedia(narration, startsInCover ? 0 : bodyOffset * narrationPlaybackRate);
+      void narration.play().catch(() => undefined);
+    }
+    if (bgm && variant.bgm.trackId) {
+      const loopDuration = Number.isFinite(bgm.duration) && bgm.duration > 0 ? bgm.duration : bodyDurationSec;
+      bgm.volume = 1;
+      seekMedia(bgm, (startsInCover ? 0 : bodyOffset) % Math.max(0.1, loopDuration));
+      // Web Audio 图只接管增益;BGM 的片头淡入仍由同一次起播前的参数先归零。
+      bgm.volume = levels.bgmGain > 0 ? 1 : 0;
+      void bgm.play().catch(() => undefined);
+    }
+    if (startsInCover) {
+      // 媒体已经在片头静音播放,到正文边界再把它们拨回 0 秒,避免片头时长被吃掉。
+      audioStartTimerRef.current = window.setTimeout(() => {
+        audioStartTimerRef.current = 0;
+        if (!playingRef.current) return;
+        seekMedia(narrationRef.current, 0);
+        const currentBgm = bgmRef.current;
+        if (currentBgm && variant.bgm.trackId) {
+          const currentLoopDuration = Number.isFinite(currentBgm.duration) && currentBgm.duration > 0 ? currentBgm.duration : bodyDurationSec;
+          seekMedia(currentBgm, 0 % Math.max(0.1, currentLoopDuration));
+          currentBgm.volume = 1;
+        }
+        setAudioLevels(INTRO_SEC);
+      }, (INTRO_SEC - startAt) * 1000);
+    }
   };
 
   const ensureAudioGraph = () => {
@@ -431,13 +459,15 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
     return graph;
   };
 
-  const togglePlayback = async () => {
+  const togglePlayback = () => {
     if (!active) return;
     if (playing) { stopPlayback(); return; }
     const graph = ensureAudioGraph();
     if (!graph) return;
     const { context } = graph;
-    if (context.state === 'suspended') await context.resume();
+    // resume 与 play 都必须由这次点击同步触发;不要 await resume 后再起播,否则
+    // 某些浏览器/Electron 会丢失用户手势授权。音频图会在恢复后继续输出。
+    if (context.state === 'suspended') void context.resume().catch(() => undefined);
     const startAt = playheadSec >= totalSec ? 0 : playheadSec;
     if (startAt !== playheadSec) emitPlayhead(startAt);
     clockOffsetRef.current = startAt;
