@@ -35,7 +35,7 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number) {
   }
 }
 
-export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, narrationGainDb: narrationGainDbOverride, onPlaybackStart, onPlayheadChange, onTextPositionChange }: {
+export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, narrationGainDb: narrationGainDbOverride, bgmGainDb: bgmGainDbOverride, onPlaybackStart, onPlayheadChange, onTextPositionChange }: {
   group: FinalEditGroupView;
   variant: FinalEditVariantView;
   assets: FinalEditAssetView[];
@@ -46,6 +46,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   active?: boolean;
   textTarget: StyleTarget | null;
   narrationGainDb?: number;
+  bgmGainDb?: number;
   onPlaybackStart?: () => void;
   onPlayheadChange: (timeSec: number) => void;
   onTextPositionChange: (target: StyleTarget, x: number, y: number, commit: boolean) => void;
@@ -116,6 +117,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const activeFramingOffsetY = activeFraming.offsetY;
   const previewSize = OUTPUT_PRESETS[variant.outputPreset];
   const narrationGainDb = narrationGainDbOverride ?? group.script.narrationConfig.gainDb;
+  const bgmGainDb = bgmGainDbOverride ?? variant.bgm.gainDb;
 
   const setAudioLevels = useCallback((timeSec: number) => {
     const graph = audioGraphRef.current;
@@ -125,13 +127,17 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       introSec: INTRO_SEC,
       bodyDurationSec,
       narrationGainDb,
-      gainDb: variant.bgm.gainDb,
+      gainDb: bgmGainDb,
       fadeInSec: variant.bgm.fadeInSec,
       fadeOutSec: variant.bgm.fadeOutSec,
     });
     graph.narrationGain.gain.setValueAtTime(levels.narrationGain, graph.context.currentTime);
     graph.bgmGain.gain.setValueAtTime(levels.bgmGain, graph.context.currentTime);
-  }, [bodyDurationSec, narrationGainDb, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.bgm.gainDb]);
+  }, [bodyDurationSec, bgmGainDb, narrationGainDb, variant.bgm.fadeInSec, variant.bgm.fadeOutSec]);
+
+  useEffect(() => {
+    setAudioLevels(playheadSecRef.current);
+  }, [setAudioLevels]);
 
   const pauseAllMedia = useCallback(() => {
     playingRef.current = false;

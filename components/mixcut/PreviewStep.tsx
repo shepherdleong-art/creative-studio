@@ -54,6 +54,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [message, setMessage] = useState('已从本地草稿恢复');
   const [busy, setBusy] = useState(false);
   const [narrationGainPreview, setNarrationGainPreview] = useState<{ groupId: string; gainDb: number } | null>(null);
+  const [bgmGainPreview, setBgmGainPreview] = useState<{ variantId: string; gainDb: number } | null>(null);
   const [previewStopRequestId, setPreviewStopRequestId] = useState(0);
   const [auditionStopRequestId, setAuditionStopRequestId] = useState(0);
   const [coverOpen, setCoverOpen] = useState(false);
@@ -256,14 +257,34 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const effectiveNarrationGainDb = narrationGainPreview?.groupId === group.id
     ? narrationGainPreview.gainDb
     : persistedNarrationGainDb;
+  const persistedBgmGainDb = variant?.bgm.gainDb ?? 0;
+  const effectiveBgmGainDb = bgmGainPreview?.variantId === variant?.id
+    ? bgmGainPreview.gainDb
+    : persistedBgmGainDb;
   const previewNarrationGain = (gainDb: number) => {
     setNarrationGainPreview({ groupId: group.id, gainDb });
   };
-  const commitNarrationGain = (gainDb: number) => {
+  const commitNarrationGain = (gainDb: number): Promise<boolean> => {
     const targetGroupId = group.id;
-    void applyGroup({ type: 'set_narration_gain', gainDb }).then(() => {
-      if (!mountedRef.current || groupRef.current.id !== targetGroupId) return;
-      setNarrationGainPreview((current) => current?.groupId === targetGroupId ? null : current);
+    return applyGroup({ type: 'set_narration_gain', gainDb }).then((accepted) => {
+      if (mountedRef.current && groupRef.current.id === targetGroupId) {
+        setNarrationGainPreview((current) => current?.groupId === targetGroupId ? null : current);
+      }
+      return accepted;
+    });
+  };
+  const previewBgmGain = (gainDb: number) => {
+    if (!variant) return;
+    setBgmGainPreview({ variantId: variant.id, gainDb });
+  };
+  const commitBgmGain = (gainDb: number): Promise<boolean> => {
+    const targetVariantId = variant?.id;
+    if (!targetVariantId) return Promise.resolve(false);
+    return applyVariant({ type: 'set_bgm_gain', gainDb }).then((accepted) => {
+      if (mountedRef.current) {
+        setBgmGainPreview((current) => current?.variantId === targetVariantId ? null : current);
+      }
+      return accepted;
     });
   };
   const closeCover = useCallback(() => setCoverOpen(false), []);
@@ -544,6 +565,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                     active={active}
                     textTarget={null}
                     narrationGainDb={effectiveNarrationGainDb}
+                    bgmGainDb={effectiveBgmGainDb}
                     onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}
                     onPlayheadChange={setPlayheadSec}
                     onTextPositionChange={() => undefined}
@@ -624,6 +646,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           stopRequestId={auditionStopRequestId}
           onAuditionStart={() => setPreviewStopRequestId((value) => value + 1)}
           onCommand={applyVariant}
+          onGainPreview={previewBgmGain}
+          onGainCommit={commitBgmGain}
           onImportFiles={importBgmFiles}
         />
 

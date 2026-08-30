@@ -1487,13 +1487,19 @@ try {
     await bgmCard.getByRole('button', { name: '试听', exact: true }).waitFor();
 
     const bgmGainSlider = bgmCard.getByRole('slider', { name: '音量（dB）', exact: true });
-    const variantWritesBeforeBgmGain = variantPatchBodies.length;
+    const bgmGainWritesBefore = variantPatchBodies.filter((body) => body.type === 'set_bgm_gain').length;
     await bgmGainSlider.fill('-20');
     assert.equal(await bgmGainSlider.inputValue(), '-20', 'BGM 音量拖动时必须先更新本地草稿');
-    assert.equal(variantPatchBodies.length, variantWritesBeforeBgmGain, 'BGM 音量拖动过程中不得逐步请求服务端');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(
+      variantPatchBodies.filter((body) => body.type === 'set_bgm_gain').length,
+      bgmGainWritesBefore,
+      'BGM 音量拖动稳定期间不得逐步请求服务端',
+    );
     await bgmGainSlider.dispatchEvent('pointerup');
     await expectEventually(
-      () => variantPatchBodies.filter((body) => body.type === 'set_bgm_gain' && body.gainDb === -20).length === 1,
+      () => variantPatchBodies.filter((body) => body.type === 'set_bgm_gain').length === bgmGainWritesBefore + 1
+        && variantPatchBodies.at(-1)?.gainDb === -20,
       'BGM 音量松手后必须只保存一次当前值',
     );
 

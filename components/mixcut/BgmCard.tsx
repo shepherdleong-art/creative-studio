@@ -27,6 +27,8 @@ export function BgmCard({
   stopRequestId,
   onAuditionStart,
   onCommand,
+  onGainPreview,
+  onGainCommit,
   onImportFiles,
 }: {
   scopeId: string;
@@ -38,6 +40,8 @@ export function BgmCard({
   stopRequestId: number;
   onAuditionStart: () => void;
   onCommand: (request: VariantCommandRequest) => Promise<boolean>;
+  onGainPreview: (gainDb: number) => void;
+  onGainCommit: (gainDb: number) => Promise<boolean>;
   onImportFiles: (files: File[]) => Promise<BgmImportUiResult>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -114,13 +118,19 @@ export function BgmCard({
     const next = Number.isFinite(nextValue) ? Math.min(0, Math.max(-40, nextValue)) : 0;
     bgmGainPendingRef.current = next;
     setBgmGainDraft(next);
+    onGainPreview(next);
   };
 
   const commitBgmGain = (nextValue: number) => {
     const next = Number.isFinite(nextValue) ? Math.min(0, Math.max(-40, nextValue)) : 0;
+    const persistedGainDb = bgm.gainDb;
     bgmGainPendingRef.current = null;
     setBgmGainDraft(next);
-    void onCommand({ type: 'set_bgm_gain', gainDb: next });
+    void onGainCommit(next).then((accepted) => {
+      if (!accepted && mountedRef.current) setBgmGainDraft(persistedGainDb);
+    }).catch(() => {
+      if (mountedRef.current) setBgmGainDraft(persistedGainDb);
+    });
   };
 
   const chooseFiles = async (event: ChangeEvent<HTMLInputElement>) => {

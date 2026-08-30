@@ -22,16 +22,24 @@ export function NarrationGainControl({
   disabled: boolean;
   ariaLabelPrefix?: string;
   onPreview: (gainDb: number) => void;
-  onCommit: (gainDb: number) => void;
+  onCommit: (gainDb: number) => Promise<boolean>;
 }) {
   const normalizedValue = normalizeNarrationGainDb(value);
   const [draft, setDraft] = useState(normalizedValue);
   const pendingRef = useRef<number | null>(null);
+  const persistedValueRef = useRef(normalizedValue);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
+    persistedValueRef.current = normalizeNarrationGainDb(value);
     if (pendingRef.current !== null) return;
-    setDraft(normalizeNarrationGainDb(value));
+    setDraft(persistedValueRef.current);
   }, [value]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const preview = (nextValue: number) => {
     const next = normalizeNarrationGainDb(nextValue);
@@ -44,7 +52,11 @@ export function NarrationGainControl({
     const next = normalizeNarrationGainDb(nextValue);
     pendingRef.current = null;
     setDraft(next);
-    onCommit(next);
+    void onCommit(next).then((accepted) => {
+      if (!accepted && mountedRef.current) setDraft(persistedValueRef.current);
+    }).catch(() => {
+      if (mountedRef.current) setDraft(persistedValueRef.current);
+    });
   };
 
   return (
@@ -64,7 +76,13 @@ export function NarrationGainControl({
           onPointerUp={(event) => {
             if (pendingRef.current !== null) commit(Number(event.currentTarget.value));
           }}
+          onPointerCancel={() => {
+            if (pendingRef.current !== null) commit(pendingRef.current);
+          }}
           onKeyUp={() => {
+            if (pendingRef.current !== null) commit(pendingRef.current);
+          }}
+          onBlur={() => {
             if (pendingRef.current !== null) commit(pendingRef.current);
           }}
         />
