@@ -368,8 +368,8 @@ export default function BatchOutputEditor({
         >{editFeedback.message}</p>
       )}
 
-      <div className="grid min-h-0 min-w-0 flex-1 gap-3 lg:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)]">
-        <aside className="flex min-h-[320px] min-w-0 flex-col rounded-2xl bg-surface-subtle p-3 lg:min-h-0" aria-label="素材调整">
+      <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto xl:overflow-visible xl:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)]">
+        <aside className="flex min-h-[320px] min-w-0 flex-col rounded-2xl bg-surface-subtle p-3 xl:min-h-0" aria-label="素材调整">
           <div className="flex shrink-0 items-center gap-2">
             <Icon name="retry" size={15} />
             <div className="min-w-0">

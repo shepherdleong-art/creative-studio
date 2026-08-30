@@ -55,7 +55,7 @@ assert.doesNotMatch(outputEditor, /口播变速/);
 assert.doesNotMatch(outputEditor, /跳转到脚本步骤/);
 assert.match(outputEditor, /BatchCoverDraftPreview/);
 assert.match(outputEditor, /BatchCoverEditorDrawer/);
-assert.match(outputEditor, /lg:grid-cols-\[minmax\(254px,280px\)_minmax\(420px,1fr\)_minmax\(300px,340px\)\]/);
+assert.match(outputEditor, /xl:grid-cols-\[minmax\(254px,280px\)_minmax\(420px,1fr\)_minmax\(300px,340px\)\]/);
 assert.match(outputEditor, /aria-label="素材调整"/);
 assert.match(outputEditor, /素材预览/);
 assert.match(outputEditor, /预览素材/);
