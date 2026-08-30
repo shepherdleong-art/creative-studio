@@ -66,6 +66,7 @@ export default function BatchOutputEditor({
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
   const [subtitleStyleDraft, setSubtitleStyleDraft] = useState<TextStyle | null>(null);
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
+  const previewTabRefs = useRef<Record<'output' | 'material', HTMLButtonElement | null>>({ output: null, material: null });
   const pendingRenderRef = useRef(false);
   const onChangedRef = useRef(onChanged);
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -466,18 +467,37 @@ export default function BatchOutputEditor({
             <section className="flex h-[clamp(360px,58vh,560px)] min-h-[360px] flex-none flex-col overflow-hidden rounded-xl bg-surface p-3" data-testid="batch-output-preview-pane">
               <div className="flex h-full min-h-0 flex-col gap-2">
                 <div className="flex shrink-0 items-center justify-between gap-2">
-                  <div className="flex rounded-lg bg-surface-subtle p-1" role="tablist" aria-label="预览内容">
+                  <div
+                    className="flex rounded-lg bg-surface-subtle p-1"
+                    role="tablist"
+                    aria-label="预览内容"
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                      event.preventDefault();
+                      const nextMode = previewMode === 'output' ? 'material' : 'output';
+                      setPreviewMode(nextMode);
+                      previewTabRefs.current[nextMode]?.focus();
+                    }}
+                  >
                     <button
                       type="button"
                       role="tab"
+                      id="batch-output-preview-tab"
+                      aria-controls="batch-preview-panel"
                       aria-selected={previewMode === 'output'}
+                      tabIndex={previewMode === 'output' ? 0 : -1}
+                      ref={(element) => { previewTabRefs.current.output = element; }}
                       className={'rounded-md px-2.5 py-1 text-[11px] ' + (previewMode === 'output' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary')}
                       onClick={() => setPreviewMode('output')}
                     >成片预览</button>
                     <button
                       type="button"
                       role="tab"
+                      id="batch-material-preview-tab"
+                      aria-controls="batch-preview-panel"
                       aria-selected={previewMode === 'material'}
+                      tabIndex={previewMode === 'material' ? 0 : -1}
+                      ref={(element) => { previewTabRefs.current.material = element; }}
                       className={'rounded-md px-2.5 py-1 text-[11px] ' + (previewMode === 'material' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary')}
                       onClick={() => setPreviewMode('material')}
                     >素材预览</button>
@@ -486,7 +506,12 @@ export default function BatchOutputEditor({
                     {previewMode === 'material' ? (previewMaterial?.displayName ?? '请从左侧点击预览') : '实时合成预览'}
                   </span>
                 </div>
-                <div className="min-h-0 flex-1">
+                <div
+                  id="batch-preview-panel"
+                  role="tabpanel"
+                  aria-labelledby={previewMode === 'output' ? 'batch-output-preview-tab' : 'batch-material-preview-tab'}
+                  className="min-h-0 flex-1"
+                >
                   {previewMode === 'material' ? (
                     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-2 rounded-xl bg-ink/[.04] p-2" data-testid="batch-output-material-preview">
                       {previewMaterial?.previewUrl ? (
