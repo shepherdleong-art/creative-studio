@@ -637,6 +637,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         </section>
 
         <BgmCard
+          key={`bgm-${group.id}-${variant.id}`}
           scopeId={group.id}
           tracks={group.bgmTracks}
           bgm={variant.bgm}

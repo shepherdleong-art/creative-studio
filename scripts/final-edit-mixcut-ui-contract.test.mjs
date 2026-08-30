@@ -176,6 +176,7 @@ assert.match(previewStep, /<MixcutTimeline/, '正式第三步必须挂载可操�
 assert.match(previewStep, /type: 'set_narration_playback_rate'/, '口播轨变速必须保存到当前成片组，不能提升为新版本生成请求');
 assert.match(previewStep, /data-testid="mixcut-narration-volume-card"/, '单条剪辑必须显示独立的口播音量模块');
 assert.match(previewStep, /type: 'set_narration_gain'/, '口播音量必须保存到当前成片组');
+assert.match(previewStep, /key=\{`bgm-\$\{group\.id\}-\$\{variant\.id\}`\}/, '切换成片草稿时 BGM 本地草稿必须按 variant 隔离');
 assert.match(narrationGainControl, /min=\{NARRATION_GAIN_DB_MIN\}/, '口播音量下限必须来自统一规格');
 assert.match(narrationGainControl, /max=\{NARRATION_GAIN_DB_MAX\}/, '口播音量上限必须来自统一规格');
 assert.match(narrationGainControl, /data-narration-gain-control/, '口播音量控件必须暴露稳定的验证入口');

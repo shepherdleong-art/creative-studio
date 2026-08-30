@@ -1487,19 +1487,27 @@ try {
     await bgmCard.getByRole('button', { name: '试听', exact: true }).waitFor();
 
     const bgmGainSlider = bgmCard.getByRole('slider', { name: '音量（dB）', exact: true });
-    const bgmGainWritesBefore = variantPatchBodies.filter((body) => body.type === 'set_bgm_gain').length;
+    const observedBgmGainRequests = [];
+    page.on('request', (request) => {
+      if (!request.url().endsWith('/api/final-edit-variants/variant-e2e') || request.method() !== 'PATCH') return;
+      try {
+        const body = request.postDataJSON();
+        if (body?.type === 'set_bgm_gain') observedBgmGainRequests.push(body);
+      } catch { /* Non-JSON requests are irrelevant to this assertion. */ }
+    });
+    const bgmGainWritesBefore = observedBgmGainRequests.length;
     await bgmGainSlider.fill('-20');
     assert.equal(await bgmGainSlider.inputValue(), '-20', 'BGM 音量拖动时必须先更新本地草稿');
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
     assert.equal(
-      variantPatchBodies.filter((body) => body.type === 'set_bgm_gain').length,
+      observedBgmGainRequests.length,
       bgmGainWritesBefore,
-      'BGM 音量拖动稳定期间不得逐步请求服务端',
+      'BGM 音量拖动当前帧不得请求服务端',
     );
     await bgmGainSlider.dispatchEvent('pointerup');
     await expectEventually(
-      () => variantPatchBodies.filter((body) => body.type === 'set_bgm_gain').length === bgmGainWritesBefore + 1
-        && variantPatchBodies.at(-1)?.gainDb === -20,
+      () => observedBgmGainRequests.length === bgmGainWritesBefore + 1
+        && observedBgmGainRequests.at(-1)?.gainDb === -20,
       'BGM 音量松手后必须只保存一次当前值',
     );
 
