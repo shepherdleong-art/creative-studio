@@ -42,6 +42,8 @@ assert.match(materialStep, /\.mp4,.mov,.avi,.webm/, '外部素材入口只接受
 assert.match(materialStep, /\.gif/, '外部素材入口必须接受 GIF');
 assert.match(materialStep, /GIF 会自动转为 MP4/, 'GIF 入口必须明确转码行为');
 assert.match(materialStep, /matPreviewButton/, '素材卡必须提供视频预览入口');
+assert.match(materialStep, /matPreviewAction/, '素材卡必须提供不依赖悬浮层的明确预览按钮');
+assert.match(materialStep, /mixcut-material-card-preview/, '素材卡预览按钮必须有稳定的验证入口');
 assert.match(materialStep, /role="dialog"/, '素材预览必须使用可访问对话框');
 assert.match(materialStep, /multiple/, '文件选择必须支持批量导入');
 assert.match(materialStep, /onDrop=/, '外部素材入口必须支持拖拽导入');
@@ -109,6 +111,13 @@ assert.match(previewStep, /queueRef\.current\.then\(work, work\)/, '连续编辑
 assert.doesNotMatch(previewStep, /if\s*\(busy\)\s*return false/, '保存期间不得直接丢弃第二个编辑 command');
 assert.match(previewStep, /\/api\/final-edit-groups\/\$\{groupId\}/, '冲突或刷新必须重新读取服务端 group 权威状态');
 assert.match(previewStep, /<FinalEditPreview/, '正式第三步必须复用双 video/Web Audio 预览器');
+assert.match(previewStep, /previewModeTabs/, '预览调整必须提供独立的预览模式切换器');
+assert.match(previewStep, /role="tablist"/, '预览模式切换器必须使用可访问的 Tab 语义');
+assert.match(previewStep, /成片预览/, '预览调整必须提供成片预览模式');
+assert.match(previewStep, /素材预览/, '预览调整必须提供素材预览模式');
+assert.match(previewStep, /aria-label=\{`预览素材 \$\{asset\.filename\}`\}/, '素材调整列表必须提供独立预览按钮');
+assert.match(previewStep, /data-testid="mixcut-material-preview"/, '素材预览模式必须暴露稳定的验证入口');
+assert.match(previewStep, /<video[\s\S]{0,500}controls[\s\S]{0,500}muted[\s\S]{0,500}playsInline/, '素材预览模式必须直接提供可播放的视频控件');
 assert.match(previewStep, /<BgmCard/, '背景音乐必须抽成可独立确认的卡片组件');
 assert.match(bgmCard, /type="file"/, '背景音乐卡片必须提供本地音乐文件入口');
 assert.match(bgmCard, /multiple/, '背景音乐卡片必须支持一次选择多首音乐');

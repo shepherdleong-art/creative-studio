@@ -19,6 +19,7 @@ import type { BgmImportResponse } from '@/lib/final-edit/types';
 import styles from './mixcut-content.module.css';
 
 const FPS = FINAL_EDIT_FPS;
+type PreviewMode = 'output' | 'material';
 
 async function responseBody<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
@@ -43,6 +44,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [selectedVariantId, setSelectedVariantId] = useState(group.variants[0]?.id || '');
   const [selectedClipId, setSelectedClipId] = useState('');
   const [selectedMaterialKey, setSelectedMaterialKey] = useState('');
+  const [previewMode, setPreviewMode] = useState<PreviewMode>('output');
+  const [previewMaterialKey, setPreviewMaterialKey] = useState('');
   const [selectedCueId, setSelectedCueId] = useState(group.subtitleCues[0]?.id || '');
   const [playheadSec, setPlayheadSec] = useState(0);
   const [seekRequestId, setSeekRequestId] = useState(0);
@@ -54,6 +57,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [trimClip, setTrimClip] = useState<TimelineClip | null>(null);
   const groupRef = useRef(group);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const previewTabRefs = useRef<Record<PreviewMode, HTMLButtonElement | null>>({ output: null, material: null });
   const pendingRef = useRef(0);
   const mountedRef = useRef(true);
   const applyGroupRef = useRef<(request: GroupCommandRequest) => Promise<boolean>>(async () => false);
@@ -61,6 +65,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const variant = group.variants.find((item) => item.id === selectedVariantId) || group.variants[0] || null;
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === selectedMaterialKey) || null;
+  const previewMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === previewMaterialKey) || null;
   const timelineSelectedCueId = group.subtitleCues.some((cue) => cue.id === selectedCueId) ? selectedCueId : '';
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
@@ -308,6 +313,12 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     scene_reuse_fallback: '场景复用',
   } as const)[selectedMatchReason.reason] : null;
 
+  const openMaterialPreview = (materialKey: string) => {
+    setPreviewMaterialKey(materialKey);
+    setPreviewMode('material');
+    setPreviewStopRequestId((value) => value + 1);
+  };
+
   if (!variant) {
     return (
       <main className={styles.mainCol}>
@@ -330,7 +341,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
               ? '当前片段已选中。先选素材，再点击“替换当前片段”；裁剪或删除可腾出添加缺口。'
               : firstInsertableGap
                 ? `时间轴有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口。先选素材，再点击“添加到缺口”。`
-                : '单击下方素材会高亮选中；选中时间轴片段后可替换，右键片段可删除并腾出缺口。'}</div>
+                : '单击下方素材会高亮选中，点击“预览”查看视频；选中时间轴片段后可替换，右键片段可删除并腾出缺口。'}</div>
           <div className={styles.replaceSelection} aria-live="polite">
             <span className={styles.replaceSelectionName} title={selectedMaterial?.filename}>
               {selectedMaterial ? `已选：${selectedMaterial.filename}` : '尚未选择素材'}
@@ -357,26 +368,34 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
               const materialKey = asset.assetKey || asset.videoJobId;
               const materialSelected = materialKey === selectedMaterialKey;
               return (
-                <button
-                  type="button"
-                  key={materialKey}
-                  className={`${styles.rep} ${materialSelected ? styles.repActive : ''}`}
-                  disabled={busy}
-                  aria-pressed={materialSelected}
-                  onClick={() => setSelectedMaterialKey(materialKey)}
-                  title={`选择素材「${asset.filename}」`}
-                >
-                  <span className={styles.repThumb}>
-                    {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <Icon name="video" size={14} />}
-                  </span>
-                  <span className={styles.repInfo}>
-                    <span className={styles.repN}>{asset.filename}</span>
-                    <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'}</span>
-                  </span>
-                  {materialSelected
-                    ? <span className={`${styles.chip} ${styles.chipBlue}`}><Icon name="check" size={10} />已选</span>
-                    : usedVideoJobIds.has(asset.videoJobId) && <span className={`${styles.chip} ${styles.chipGreen}`}>已用</span>}
-                </button>
+                <div className={styles.replaceItem} key={materialKey}>
+                  <button
+                    type="button"
+                    className={`${styles.rep} ${materialSelected ? styles.repActive : ''}`}
+                    disabled={busy}
+                    aria-pressed={materialSelected}
+                    onClick={() => setSelectedMaterialKey(materialKey)}
+                    title={`选择素材「${asset.filename}」`}
+                  >
+                    <span className={styles.repThumb}>
+                      {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <Icon name="video" size={14} />}
+                    </span>
+                    <span className={styles.repInfo}>
+                      <span className={styles.repN}>{asset.filename}</span>
+                      <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'}</span>
+                    </span>
+                    {materialSelected
+                      ? <span className={`${styles.chip} ${styles.chipBlue}`}><Icon name="check" size={10} />已选</span>
+                      : usedVideoJobIds.has(asset.videoJobId) && <span className={`${styles.chip} ${styles.chipGreen}`}>已用</span>}
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.small} ${styles.replacePreviewButton}`}
+                    aria-label={`预览素材 ${asset.filename}`}
+                    disabled={!asset.previewUrl && !asset.thumbnailUrl}
+                    onClick={() => openMaterialPreview(materialKey)}
+                  >预览</button>
+                </div>
               );
             })}
           </div>
@@ -398,7 +417,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           <span className={styles.spacer} />
           <span className={styles.flowHint} aria-live="polite">{busy ? '正在保存…' : message}</span>
           {group.variants.length > 1 && (
-            <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); setSelectedClipId(''); setSelectedMaterialKey(''); setTrimClip(null); setPlayheadSec(0); }}>
+            <select aria-label="选择成片草稿" value={variant.id} onChange={(event) => { setSelectedVariantId(event.target.value); setSelectedClipId(''); setSelectedMaterialKey(''); setPreviewMaterialKey(''); setPreviewMode('output'); setTrimClip(null); setPlayheadSec(0); }}>
               {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
             </select>
           )}
@@ -426,22 +445,93 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
         )}
 
         <div className={styles.bigPaper} data-output-preset={variant.outputPreset}>
-          <div className={styles.previewWrap}>
-            <div className={styles.previewFrame} data-output-preset={variant.outputPreset}>
-              <FinalEditPreview
-                group={group}
-                variant={variant}
-                assets={group.assets}
-                selectedAsset={null}
-                playheadSec={effectivePlayheadSec}
-                seekRequestId={seekRequestId}
-                stopRequestId={previewStopRequestId}
-                active={active}
-                textTarget={null}
-                onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}
-                onPlayheadChange={setPlayheadSec}
-                onTextPositionChange={() => undefined}
-              />
+          <div className={styles.previewModeHeader}>
+            <div
+              className={styles.previewModeTabs}
+              role="tablist"
+              aria-label="预览内容"
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                const nextMode: PreviewMode = previewMode === 'output' ? 'material' : 'output';
+                setPreviewMode(nextMode);
+                previewTabRefs.current[nextMode]?.focus();
+              }}
+            >
+              <button
+                type="button"
+                role="tab"
+                id="mixcut-output-preview-tab"
+                aria-controls="mixcut-preview-panel"
+                aria-selected={previewMode === 'output'}
+                tabIndex={previewMode === 'output' ? 0 : -1}
+                ref={(element) => { previewTabRefs.current.output = element; }}
+                className={`${styles.previewModeTab} ${previewMode === 'output' ? styles.previewModeTabActive : ''}`}
+                onClick={() => setPreviewMode('output')}
+              >成片预览</button>
+              <button
+                type="button"
+                role="tab"
+                id="mixcut-material-preview-tab"
+                aria-controls="mixcut-preview-panel"
+                aria-selected={previewMode === 'material'}
+                tabIndex={previewMode === 'material' ? 0 : -1}
+                ref={(element) => { previewTabRefs.current.material = element; }}
+                className={`${styles.previewModeTab} ${previewMode === 'material' ? styles.previewModeTabActive : ''}`}
+                onClick={() => setPreviewMode('material')}
+              >素材预览</button>
+            </div>
+            <span className={styles.previewModeLabel} title={previewMaterial?.filename}>
+              {previewMode === 'material' ? (previewMaterial?.filename ?? '请从左侧素材列表点击“预览”') : '实时合成预览'}
+            </span>
+          </div>
+          <div
+            id="mixcut-preview-panel"
+            role="tabpanel"
+            aria-labelledby={previewMode === 'output' ? 'mixcut-output-preview-tab' : 'mixcut-material-preview-tab'}
+            className={styles.previewModePanel}
+          >
+            <div className={styles.previewWrap}>
+              <div className={styles.previewFrame} data-output-preset={variant.outputPreset}>
+                {previewMode === 'material' ? (
+                  <div className={styles.materialPreview} data-testid="mixcut-material-preview">
+                    {previewMaterial?.previewUrl ? (
+                      <video
+                        key={`material-preview-${previewMaterial.assetKey || previewMaterial.videoJobId}`}
+                        className={styles.materialPreviewVideo}
+                        src={previewMaterial.previewUrl}
+                        controls
+                        muted
+                        playsInline
+                        preload="metadata"
+                        poster={previewMaterial.thumbnailUrl}
+                        aria-label={`素材预览：${previewMaterial.filename}`}
+                      />
+                    ) : previewMaterial?.thumbnailUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img className={styles.materialPreviewImage} src={previewMaterial.thumbnailUrl} alt={previewMaterial.filename} />
+                    ) : (
+                      <p className={styles.materialPreviewEmpty}>请从左侧素材列表点击“预览”</p>
+                    )}
+                    {previewMaterial && <p className={styles.materialPreviewName} title={previewMaterial.filename}>{previewMaterial.filename}</p>}
+                  </div>
+                ) : (
+                  <FinalEditPreview
+                    group={group}
+                    variant={variant}
+                    assets={group.assets}
+                    selectedAsset={null}
+                    playheadSec={effectivePlayheadSec}
+                    seekRequestId={seekRequestId}
+                    stopRequestId={previewStopRequestId}
+                    active={active}
+                    textTarget={null}
+                    onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}
+                    onPlayheadChange={setPlayheadSec}
+                    onTextPositionChange={() => undefined}
+                  />
+                )}
+              </div>
             </div>
           </div>
 

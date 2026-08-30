@@ -116,7 +116,7 @@ export function MaterialStep({
           <p className={`${styles.eyebrow} ${styles.stepTitle}`} style={{ fontSize: 11 }}>STEP 01</p>
           <h1 className={styles.stepTitle} id="mixcut-material-heading">确认本次混剪要用的素材</h1>
           <div className={styles.stepSub} style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-            当前分镜组的完成视频默认全部参与混剪，点掉不想要的即可。
+            当前分镜组的完成视频默认全部参与混剪，点卡片排除；点击“预览”查看视频。
             <span className={styles.linked}>已与模块 4 联动，仅显示「{shotSetName || '当前分镜组'}」的真实成功视频</span>
           </div>
         </div>
@@ -219,11 +219,24 @@ export function MaterialStep({
                   </span>
                   <span className={styles.matBadge}><Icon name={excluded ? 'plus' : 'close'} size={11} /></span>
                   <span className={styles.matTag}>已排除</span>
-                  <span className={styles.matBody}>
+                  <div className={styles.matBody}>
                     <span className={styles.matName}>{material.filename}</span>
                     <span className={styles.matMeta}>{material.errorMessage || (material.width && material.height ? `${material.width} × ${material.height}` : '媒体信息待探测')}</span>
                     <span className={styles.matSrc}>{sourceLabel} · {stateLabel}</span>
-                  </span>
+                    <button
+                      type="button"
+                      className={styles.matPreviewAction}
+                      data-testid="mixcut-material-card-preview"
+                      aria-label={`预览 ${material.filename}`}
+                      disabled={!material.previewUrl}
+                      title={material.previewUrl ? '预览视频' : '暂无可预览视频'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setPreviewMaterial(material);
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
+                    ><Icon name="play" size={11} />预览</button>
+                  </div>
                 </div>
               );
             })}
