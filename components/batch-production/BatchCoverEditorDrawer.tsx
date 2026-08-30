@@ -102,6 +102,7 @@ export default function BatchCoverEditorDrawer({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const busyRef = useRef(busy);
   const onCloseRef = useRef(onClose);
+  const initialSnapshotRef = useRef({ title, framing, assets });
   const selectedAsset = draft.assetId ? assets.find((asset) => asset.assetId === draft.assetId) ?? null : null;
   const selectedDurationUs = durationUsOf(selectedAsset);
   const selectedTimeUs = clampTimeUs(draft.timeUs, selectedAsset);
@@ -114,13 +115,26 @@ export default function BatchCoverEditorDrawer({
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   useEffect(() => {
+    initialSnapshotRef.current = { title, framing, assets };
+  });
+
+  // 草稿初始化:只在真正「打开这个 drawer / 换了目标封面」时重置。
+  // title/framing/assets 每次 loadView 都换引用,不能进依赖,否则应用一次就把草稿冲掉。
+  useEffect(() => {
     if (!active) return;
-    const selectedInitialAsset = assets.find((asset) => asset.assetId === initialAssetId) ?? null;
-    const draftTimer = window.setTimeout(() => {
-      setDraft(createDraft(title, framing, initialAssetId, initialTimeUs, outputWidth, selectedInitialAsset));
+    const snapshot = initialSnapshotRef.current;
+    const selectedInitialAsset = snapshot.assets.find((asset) => asset.assetId === initialAssetId) ?? null;
+    const timer = window.setTimeout(() => {
+      setDraft(createDraft(snapshot.title, snapshot.framing, initialAssetId, initialTimeUs, outputWidth, selectedInitialAsset));
     }, 0);
+    return () => window.clearTimeout(timer);
+  }, [active, initialAssetId, initialTimeUs, outputWidth]);
+
+  // 焦点陷阱 / 滚动锁 / ESC:只跟 active 走。
+  useEffect(() => {
+    if (!active) return;
     previousFocusRef.current = document.activeElement as HTMLElement | null;
-    window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const keydown = (event: KeyboardEvent) => {
@@ -146,12 +160,12 @@ export default function BatchCoverEditorDrawer({
     };
     window.addEventListener('keydown', keydown);
     return () => {
-      window.clearTimeout(draftTimer);
+      window.clearTimeout(focusTimer);
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', keydown);
       previousFocusRef.current?.focus();
     };
-  }, [active, assets, framing, initialAssetId, initialTimeUs, outputWidth, title]);
+  }, [active]);
 
   useEffect(() => {
     if (active && busy) dialogRef.current?.focus();
