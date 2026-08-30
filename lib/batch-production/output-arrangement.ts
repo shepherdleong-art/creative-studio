@@ -851,12 +851,12 @@ export function applyBatchOutputClipEdit(
       const currentAssetId = nonEmptyString(currentCover.assetId);
       const currentTimeUs = finiteNumber(currentCover.timeUs);
       const nextCover: Record<string, unknown> = { ...currentCover, assetId: edit.assetId.trim(), timeUs };
+      const outputWidth = outputWidthForPreset(arrangement.preset);
+      const frozenCoverTitle = loadFrozenCoverTitleConfig(db, planId);
       delete nextCover.clipId;
       delete nextCover.segmentId;
       if (edit.framing !== undefined) nextCover.framing = edit.framing === null ? null : cleanFraming(edit.framing);
       if (edit.title !== undefined) {
-        const outputWidth = outputWidthForPreset(arrangement.preset);
-        const frozenCoverTitle = loadFrozenCoverTitleConfig(db, planId);
         const effectiveTitle = resolveBatchCoverTitleOverride(
           frozenCoverTitle,
           { ...nextCover, title: edit.title },
@@ -873,10 +873,15 @@ export function applyBatchOutputClipEdit(
           delete nextCover.title;
         }
       }
+      const currentEffectiveTitle = resolveBatchCoverTitleOverride(frozenCoverTitle, currentCover, outputWidth);
+      const nextEffectiveTitle = resolveBatchCoverTitleOverride(frozenCoverTitle, nextCover, outputWidth);
+      const sameEffectiveTitle = currentEffectiveTitle?.primary === nextEffectiveTitle?.primary
+        && currentEffectiveTitle?.secondary === nextEffectiveTitle?.secondary
+        && JSON.stringify(currentEffectiveTitle?.styles ?? null) === JSON.stringify(nextEffectiveTitle?.styles ?? null)
+        && JSON.stringify(currentEffectiveTitle?.framing ?? null) === JSON.stringify(nextEffectiveTitle?.framing ?? null);
       if (currentAssetId === edit.assetId.trim() && currentTimeUs === timeUs
         && !('clipId' in currentCover) && !('segmentId' in currentCover)
-        && JSON.stringify(currentCover.framing ?? null) === JSON.stringify(nextCover.framing ?? null)
-        && JSON.stringify(currentCover.title ?? null) === JSON.stringify(nextCover.title ?? null)) return unchanged;
+        && sameEffectiveTitle) return unchanged;
       arrangement.cover = nextCover;
       visualChanged = true;
     } else if (edit.type === 'set_music_track') {

@@ -353,6 +353,34 @@ try {
   assert.equal(customizedCoverView.coverTitle?.primary, '批量主标题');
   assert.deepEqual(customizedCoverView.coverFraming, { scale: 1.5, offsetX: -0.2, offsetY: 0.3 });
 
+  // 1c. 封面 drawer 提交与冻结基准完全相同的完整覆盖时必须幂等,不能误增 revision。
+  const originalDefaultsJson = (db.prepare(`SELECT defaultsJson FROM batch_production_versions WHERE id = ?`).get(versionId) as { defaultsJson: string }).defaultsJson;
+  const originalSnapshotCoverTitleJson = (db.prepare(`SELECT coverTitleJson FROM batch_script_snapshots WHERE id = ?`).get(snapshotId) as { coverTitleJson: string }).coverTitleJson;
+  const coverDefaults = JSON.parse(originalDefaultsJson) as Record<string, unknown>;
+  coverDefaults.coverTitleMode = 'custom';
+  coverDefaults.coverTitleStyles = { primary: {}, secondary: {} };
+  coverDefaults.coverTitleFraming = { scale: 1, offsetX: 0, offsetY: 0 };
+  db.prepare(`UPDATE batch_production_versions SET defaultsJson = ? WHERE id = ?`).run(JSON.stringify(coverDefaults), versionId);
+  db.prepare(`UPDATE batch_script_snapshots SET coverTitleJson = ? WHERE id = ?`).run(JSON.stringify({ primary: '批量主标题', secondary: '批量副标题' }), snapshotId);
+  resetPlan0Arrangement();
+  const frozenCoverView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.ok(frozenCoverView.coverTitle);
+  const unchangedCover = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_cover',
+    assetId: assetA,
+    timeUs: 1_500_000,
+    framing: frozenCoverView.coverFraming,
+    title: {
+      primary: frozenCoverView.coverTitle!.primary,
+      secondary: frozenCoverView.coverTitle!.secondary,
+      styles: frozenCoverView.coverTitle!.styles,
+    },
+  });
+  assert.equal(unchangedCover.changed, false, '重复提交冻结基准封面覆盖不得触发重渲染');
+  assert.equal(unchangedCover.visualChanged, false);
+  db.prepare(`UPDATE batch_production_versions SET defaultsJson = ? WHERE id = ?`).run(originalDefaultsJson, versionId);
+  db.prepare(`UPDATE batch_script_snapshots SET coverTitleJson = ? WHERE id = ?`).run(originalSnapshotCoverTitleJson, snapshotId);
+
   resetPlan0Arrangement();
   const baseSubtitleStyle = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).subtitleStyleDefault;
   const customizedSubtitle = {
