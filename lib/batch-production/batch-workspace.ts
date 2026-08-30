@@ -574,6 +574,8 @@ export function getBatchWorkspace(
     // 和「改动还没提交重渲染」——后者要用户自己点「重新生成」,不能显示成「等待完成」。
     const renderUncommitted = Boolean(
       plan.currentVersionId && candidate && !pendingRender
+      && taskRow?.status !== 'failed'
+      && taskRow?.status !== 'cancelled'
       && (candidateRevisionStale || candidateCoverStale),
     );
     // 口播任务(渲染闸门的配套信息):失败时给用户「重试配音」入口,否则

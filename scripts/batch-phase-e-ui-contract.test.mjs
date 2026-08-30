@@ -138,6 +138,8 @@ assert.doesNotMatch(outputEditor, /修改已保存，退出本轮调整后会自
 assert.doesNotMatch(outputEditor, /立即渲染/);
 assert.match(exportStep, /renderStale/);
 assert.match(exportStep, /等待重新渲染/);
+assert.match(panel, /selectedUncommittedCount/);
+assert.match(panel, /修改还没提交重新渲染/);
 assert.match(review, /renderUncommitted/);
 assert.match(exportStep, /待重新生成/);
 assert.ok(

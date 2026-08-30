@@ -126,6 +126,18 @@ try {
   assert.equal(uncommittedView.cards[0]?.renderStale, true, '候选修订落后时必须标记 stale');
   assert.equal(uncommittedView.cards[0]?.renderUncommitted, true, '没有排队任务时必须提示待重新生成');
 
+  for (const failedStatus of ['failed', 'cancelled'] as const) {
+    db.prepare(`UPDATE batch_tasks SET status = ? WHERE id = 'task1'`).run(failedStatus);
+    const failedRenderView = getBatchWorkspace(db, 'p1', 'b1');
+    assert.equal(failedRenderView.cards[0]?.renderStale, true, `${failedStatus} render remains stale`);
+    assert.equal(
+      failedRenderView.cards[0]?.renderUncommitted,
+      false,
+      `${failedStatus} render is not an uncommitted edit`,
+    );
+  }
+  db.prepare(`UPDATE batch_tasks SET status = 'succeeded' WHERE id = 'task1'`).run();
+
   // pendingRender 取当前 outputVersion 的全部 queued/running 任务,不能只看最后一条。
   insertTask.run('task1-old-pending', 'p1', 'b1', 'ov1', 'queued', 'running', '{}', 0, '2026-08-02T10:00:00.000Z', '2026-08-02T10:00:00.000Z');
   const pendingRenderView = getBatchWorkspace(db, 'p1', 'b1');

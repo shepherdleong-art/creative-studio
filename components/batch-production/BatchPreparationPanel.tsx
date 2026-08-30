@@ -1394,13 +1394,20 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     const selectedStaleCount = selectedCards
       .filter((card) => card.publishable && card.approved && card.renderStale)
       .length;
+    const selectedUncommittedCount = selectedCards
+      .filter((card) => card.publishable && card.approved && card.renderUncommitted)
+      .length;
     const planIdsToPublish = selectedCards
       .filter((card) => card.publishable && card.approved && !card.renderStale)
       .map(({ planId }) => planId);
     if (!selectedBatchId || planIdsToPublish.length === 0) {
       setFeedback({
         kind: 'error',
-        message: selectedStaleCount > 0 ? '选中的成片画面已调整，等待重新渲染完成后才能导出。' : '请先勾选要正式导出的成片。',
+        message: selectedUncommittedCount > 0
+          ? '选中的成片修改还没提交重新渲染，请先回到检查页点「重新生成」。'
+          : selectedStaleCount > 0
+            ? '选中的成片画面已调整，等待重新渲染完成后才能导出。'
+            : '请先勾选要正式导出的成片。',
       });
       return;
     }
