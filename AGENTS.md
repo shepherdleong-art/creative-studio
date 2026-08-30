@@ -78,6 +78,7 @@ installer/macos/        .app bundle 元数据模板（Info.plist）；launcher.c
 docs/                   设计/评审/会话记录，按日期前缀命名；
                         docs/reference/ 放常驻参考（架构细节，见下）；
                         docs/superpowers/{specs,plans}/ 放较大功能的规格与计划文档
+                        （目录名属历史沿革，与当前使用的工具无关）
 outputs/                阶段性规格、测试清单、交付记录（gitignored）
 python-runtime/         免安装包内置便携 Python + LiteLLM（gitignored，只进 Windows 免安装包）
 types/                  第三方包的类型补丁（ffprobe-static.d.ts）
@@ -150,8 +151,16 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。
 - **外观主题**：全局三态（浅色/深色/跟随系统）由 `html[data-theme="dark"]` 驱动——暗色令牌与组件覆盖集中在 `app/globals.css` 末尾，mixcut 两个 CSS module 各自带暗色覆盖块；偏好存 `localStorage["creative-studio-theme"]`，水合前初始化脚本在 `app/layout.tsx`，切换按钮是 `components/ThemeToggle.tsx`。新增 UI 颜色一律走设计令牌，不要新增硬编码浅色值（深色覆盖只补丁存量）。
-- **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`。
+- **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`——**这个目录名是历史沿革，与当前使用的任何 skill 无关**，新文档照旧往里放，不要按名字另起炉灶。
 - **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。SIGTERM/SIGINT 也走同一入口。
+
+## Agent skills
+
+本仓库常用的 skill 装在**全局**（Claude Code 插件 `mattpocock-skills@claude-plugins-official`，user scope），仓库里不含任何 skill 文件——换一台机器或新克隆一份代码不会自带，需各自 `claude plugin install mattpocock-skills`。
+
+- **本仓库没跑过 `/setup-matt-pocock-skills`**：`to-tickets`、`triage`、`to-spec` 这类要读 issue tracker 配置的 skill 会现场追问「issue 放哪、label 用什么」。纯方法论的（`tdd`、`diagnosing-bugs`、`grilling`、`prototype`、`research`、`codebase-design`）不受影响，直接可用。
+- `CONTEXT.md` 由 `/domain-modeling` 维护，格式见该 skill 的 `CONTEXT-FORMAT.md`（术语 + `_避免：别名_`）。**它只是词汇表**：实现细节、规格、临时笔记一律不进——那些归 `docs/`。
+- skill 产出的规格与计划落到 `docs/superpowers/{specs,plans}/`（见「目录结构与代码组织」）。
 
 ## 安全注意事项
 
