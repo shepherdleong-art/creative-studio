@@ -52,6 +52,7 @@ db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES
   ('set-concurrent', 'project-a', '并发导入'),
   ('set-race', 'project-a', '混合并发导入'),
   ('set-formats', 'project-a', '格式覆盖'),
+  ('set-gif', 'project-a', 'GIF 转码'),
   ('set-invalid', 'project-a', '失败素材'),
   ('set-symlink', 'project-a', '路径安全'),
   ('set-c', 'project-b', '分镜 C')
@@ -87,6 +88,11 @@ for (const format of [
   await runFfmpeg(['-f', 'lavfi', '-i', 'testsrc2=duration=0.4:size=160x120:rate=12', ...format.args, '-y', target]);
   formatUploads.push({ filename: path.basename(target), mimeType: format.mimeType, data: fs.readFileSync(target) });
 }
+const gifPath = path.join(root, 'animated.gif');
+await runFfmpeg([
+  '-f', 'lavfi', '-i', 'testsrc2=duration=0.5:size=160x120:rate=12',
+  '-vf', 'fps=12', '-f', 'gif', '-y', gifPath,
+]);
 
 // The public HTTP seam must consume real multipart bytes. Ownership-looking
 // client fields are deliberately present but must not be returned/used.
@@ -209,6 +215,52 @@ const formats = await workspace.importShotSetExternalAssets({ projectId: 'projec
 assert.equal(formats.errors.length, 0, JSON.stringify(formats.errors));
 assert.deepEqual(formats.assets.map((asset) => asset.mimeType).sort(), ['video/quicktime', 'video/webm', 'video/x-msvideo']);
 assert.ok(formats.assets.every((asset) => asset.status === 'ready' && asset.width === 160 && asset.height === 120));
+
+const gifs = await workspace.importShotSetExternalAssets({
+  projectId: 'project-a',
+  shotSetId: 'set-gif',
+  files: [{ filename: 'animated.gif', mimeType: 'image/gif', data: fs.readFileSync(gifPath) }],
+});
+assert.equal(gifs.errors.length, 0, JSON.stringify(gifs.errors));
+assert.equal(gifs.assets.length, 1);
+assert.equal(gifs.assets[0].originalFilename, 'animated.gif', 'GIF 的原始文件名应保留给界面');
+assert.equal(gifs.assets[0].mimeType, 'video/mp4', 'GIF 导入后应以 MP4 作为实际媒体类型');
+const gifRow = db.prepare(`SELECT relativePath FROM final_edit_external_assets WHERE id=?`).get(gifs.assets[0].id) as { relativePath: string };
+assert.equal(path.extname(gifRow.relativePath), '.mp4', 'GIF 不得以 GIF 原格式写入素材库');
+assert.ok(fs.existsSync(path.join(storageRoot, gifRow.relativePath)), 'GIF 转码后的 MP4 必须写入素材库');
+const gifMedia = await probeVideoMedia(path.join(storageRoot, gifRow.relativePath));
+assert.ok((gifMedia.format || '').includes('mp4'));
+assert.ok(gifMedia.durationUs > 0);
+
+const invalidGif = await workspace.importShotSetExternalAssets({
+  projectId: 'project-a',
+  shotSetId: 'set-gif',
+  files: [{ filename: 'broken.gif', mimeType: 'image/gif', data: Buffer.from('not a GIF') }],
+});
+assert.equal(invalidGif.assets.length, 0, 'GIF 转码失败不得返回半成品素材');
+assert.equal(invalidGif.errors[0]?.error, 'gif_transcode_failed');
+assert.equal(
+  db.prepare(`SELECT 1 FROM final_edit_external_assets WHERE originalFilename='broken.gif'`).get(),
+  undefined,
+  'GIF 转码失败不得写入数据库记录',
+);
+
+const abortedGifImport = new AbortController();
+abortedGifImport.abort();
+await assert.rejects(
+  () => workspace.importShotSetExternalAssets({
+    projectId: 'project-a',
+    shotSetId: 'set-gif',
+    files: [{ filename: 'cancelled.gif', mimeType: 'image/gif', data: fs.readFileSync(gifPath) }],
+    signal: abortedGifImport.signal,
+  }),
+  (error: unknown) => error instanceof Error && error.name === 'AbortError',
+  '已取消的 GIF 导入必须在转码前中止且不得落库',
+);
+assert.equal(
+  db.prepare(`SELECT 1 FROM final_edit_external_assets WHERE originalFilename='cancelled.gif'`).get(),
+  undefined,
+);
 
 const first = await workspace.importShotSetExternalAssets({
   projectId: 'project-a',
@@ -334,7 +386,7 @@ assert.deepEqual(fs.readdirSync(outside), [], 'symlinked owner directory must ne
 
 const canonicalRoute = fs.readFileSync(path.join(process.cwd(), 'app/api/projects/[id]/final-edit/shot-sets/[shotSetId]/external-assets/route.ts'), 'utf8');
 assert.match(canonicalRoute, /importShotSetExternalAssetsFromFormData\(/);
-assert.match(canonicalRoute, /importShotSetExternalAssets\(\{ projectId, shotSetId, files \}\)/);
+assert.match(canonicalRoute, /importShotSetExternalAssets\(\{ projectId, shotSetId, files, signal \}\)/);
 assert.doesNotMatch(canonicalRoute, /status === ['"]ready['"]/, 'all-file failures must remain a parseable success response');
 assert.doesNotMatch(canonicalRoute, /expectedRevision/, 'pre-group canonical import must not invent revision semantics');
 const finalEditSchemaSource = fs.readFileSync(path.join(process.cwd(), 'lib/final-edit/schema.ts'), 'utf8');

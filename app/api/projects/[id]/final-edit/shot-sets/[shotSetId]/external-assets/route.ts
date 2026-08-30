@@ -26,7 +26,7 @@ export async function POST(
     const workspace = getFinalEditWorkspace();
     const result = await importShotSetExternalAssetsFromFormData(
       request,
-      (files) => workspace.importShotSetExternalAssets({ projectId, shotSetId, files }),
+      (files, signal) => workspace.importShotSetExternalAssets({ projectId, shotSetId, files, signal }),
     );
     return NextResponse.json(result, { status: 201 });
   } catch (error) {

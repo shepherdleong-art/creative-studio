@@ -1,9 +1,11 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { formatShanghaiTaskDate } from './export-identity.ts';
 import { probeVideoMedia } from '../ffmpeg.ts';
 import type { StoredScriptOutput } from '../script-providers/types.ts';
 import { resolveStoragePath } from './storage-path.ts';
+import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
 import type { MixcutContextResponse } from './types.ts';
 
 // Pure, dependency-injected (db + storageRoot passed in — never getDb()/
@@ -56,6 +58,42 @@ interface VideoJobRow {
   shotSetId: string;
   filename: string | null;
   localVideoPath: string;
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(table));
+}
+
+function parseSummary(value: string | null | undefined): string {
+  if (!value) return '';
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+    const summary = (parsed as Record<string, unknown>).summary;
+    return typeof summary === 'string' ? summary.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function loadVideoAnalysisSummaries(db: Database.Database, videoJobIds: string[]): Map<string, string> {
+  const summaries = new Map<string, string>();
+  if (!videoJobIds.length || !tableExists(db, 'final_edit_asset_analysis')) return summaries;
+  const placeholders = videoJobIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT videoJobId, generatedJson, manualOverrideJson
+    FROM final_edit_asset_analysis
+    WHERE videoJobId IN (${placeholders})
+  `).all(...videoJobIds) as Array<{ videoJobId: string; generatedJson: string | null; manualOverrideJson: string | null }>;
+  for (const row of rows) {
+    summaries.set(row.videoJobId, parseSummary(row.manualOverrideJson) || parseSummary(row.generatedJson));
+  }
+  return summaries;
+}
+
+function storagePreviewUrl(storageRoot: string, absolutePath: string): string {
+  const relative = path.relative(path.resolve(storageRoot), absolutePath);
+  return `/api/videos/${relative.split(path.sep).filter(Boolean).map(encodeURIComponent).join('/')}`;
 }
 
 const MEDIA_PROBE_CONCURRENCY = 4;
@@ -193,6 +231,7 @@ export async function buildMixcutContext(
     SELECT shotSetId, COUNT(*) AS count, COALESCE(SUM(durationSec), 0) AS totalSec
     FROM video_jobs
     WHERE projectId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL AND shotSetId IS NOT NULL
+      AND ${videoJobNotRejectedSql(db)}
     GROUP BY shotSetId
   `).all(projectId) as { shotSetId: string; count: number; totalSec: number }[];
   for (const r of videoAggRows) videoAggByShotSetId.set(r.shotSetId, { count: Number(r.count) || 0, totalSec: Number(r.totalSec) || 0 });
@@ -251,12 +290,14 @@ export async function buildMixcutContext(
       SELECT id AS videoJobId, shotSetId, filename, localVideoPath
       FROM video_jobs
       WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
+        AND ${videoJobNotRejectedSql(db)}
       ORDER BY createdAt
     `).all(projectId, currentShotSetId) as VideoJobRow[];
 
     const safeRows = videoRows
       .map((row) => ({ row, absolutePath: resolveSafeVideoAbsolutePath(storageRoot, row.localVideoPath) }))
       .filter((entry): entry is { row: VideoJobRow; absolutePath: string } => entry.absolutePath !== null);
+    const summaries = loadVideoAnalysisSummaries(db, safeRows.map(({ row }) => row.videoJobId));
 
     // JUDGMENT CALL (JC-2): metadata probing stays inside the request because
     // it is not a transcode/paid task, but it is bounded so a large shot set
@@ -277,6 +318,8 @@ export async function buildMixcutContext(
         width: probe.width,
         height: probe.height,
         thumbnailUrl: `/api/projects/${encodeURIComponent(projectId)}/final-edit/shot-sets/${encodeURIComponent(currentShotSetId)}/module4-assets/${encodeURIComponent(entry.row.videoJobId)}/thumbnail`,
+        previewUrl: storagePreviewUrl(storageRoot, entry.absolutePath),
+        summary: summaries.get(entry.row.videoJobId) || '',
         source: 'module4',
       });
     });

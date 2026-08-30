@@ -217,6 +217,8 @@ export interface MixcutContextResponse {
     width: number;
     height: number;
     thumbnailUrl: string;
+    previewUrl: string;
+    summary: string;
     source: 'module4';
   }>;
 }

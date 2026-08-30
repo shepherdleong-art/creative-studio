@@ -79,6 +79,8 @@ interface VideoJob {
   templateName?: string;
   posterImageUrl?: string;
   tailImageId?: string | null;
+  rejectedAt?: string | null;
+  rejectReason?: string | null;
 }
 
 interface Props {
@@ -97,6 +99,7 @@ const FREE_HEAD_FRAME_DRAG_KEY = '__free-head-frame__';
 
 /** 首尾帧（带尾帧）运镜的默认提示词：空提示词时自动补这句，批量生成不再算它「未填写」。 */
 const TAIL_TRANSITION_DEFAULT_PROMPT = '从首帧丝滑转场到尾帧';
+const BULK_CONFIRM_THRESHOLD = 5;
 
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
@@ -292,11 +295,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   // Load shots when set is selected (with race guard)
   const getDefaultPreviewJobId = (jobs: VideoJob[]) =>
-    jobs.find((j) => j.status === 'succeeded' && j.filename)?.id || null;
+    jobs.find((j) => j.status === 'succeeded' && j.filename && !j.rejectedAt)?.id || null;
 
   const syncPreviewSelection = (jobs: VideoJob[]) => {
     setVideoPreviewJobId((current) => {
-      if (current && jobs.some((j) => j.id === current && j.status === 'succeeded' && j.filename)) return current;
+      if (current && jobs.some((j) => j.id === current && j.status === 'succeeded' && j.filename && !j.rejectedAt)) return current;
       if (previewSuppressedRef.current) return null;
       return getDefaultPreviewJobId(jobs);
     });
@@ -958,7 +961,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     // 不能用原生同步确认弹窗（confirm）：它会吞掉点击的 mouseup，之后页面里的
     // 原生 <select> 下拉会点不开，要切到别的应用再切回来才恢复。改为抽屉内联
     // 二次确认（第一次点击在底栏展示摘要，再点「确认提交」才真正提交）。
-    if (!bulkConfirmText) {
+    const requiresBulkConfirmation = safeShots.length >= BULK_CONFIRM_THRESHOLD;
+    if (requiresBulkConfirmation && !bulkConfirmText) {
       setBulkConfirmText(
         `将为 ${plan.ready.length} 个分镜提交 ${plan.totalClips} 条视频；` +
         `跳过 ${plan.skippedExisting.length} 个已有任务、${plan.skippedEmpty.length} 个未填写、` +
@@ -1130,6 +1134,40 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
 
+  const handleRejectVideoJob = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/video-jobs/${encodeURIComponent(jobId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reject' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('剔除失败: ' + (data.error || `HTTP ${res.status}`)); return; }
+      if (videoPreviewJobId === jobId) {
+        previewSuppressedRef.current = false;
+        setVideoPreviewJobId(null);
+      }
+      await refreshJobs();
+    } catch (err) {
+      alert('剔除失败: ' + String(err));
+    }
+  };
+
+  const handleUnrejectVideoJob = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/video-jobs/${encodeURIComponent(jobId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'unreject' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert('恢复失败: ' + (data.error || `HTTP ${res.status}`)); return; }
+      await refreshJobs();
+    } catch (err) {
+      alert('恢复失败: ' + String(err));
+    }
+  };
+
   if (loading) return <p className="text-xs text-ink-tertiary">加载视频功能...</p>;
   const storyboardSets = availableSets.filter((s) => s.kind !== 'free');
   const freeSet = availableSets.find((s) => s.kind === 'free');
@@ -1256,14 +1294,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             )}
             {safeShots.length > 0 && (
               <div className="video-bulk-toolbar">
-                <button
-                  type="button"
-                  className="btn-secondary btn-sm"
-                  onClick={handleBulkFillPrompts}
-                  disabled={creating}
-                >
-                  一键填充提示词
-                </button>
                 <button
                   type="button"
                   className="btn-secondary btn-sm"
@@ -1673,6 +1703,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               onRetry={handleRetry}
               onResumePoll={handleResumePoll}
               onCancel={handleCancelVideoJob}
+              onReject={handleRejectVideoJob}
+              onUnreject={handleUnrejectVideoJob}
               activePreviewJobId={videoPreviewJobId}
             />
           </div>

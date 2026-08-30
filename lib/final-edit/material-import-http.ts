@@ -34,7 +34,7 @@ async function requestFormData(request: Request): Promise<FormData> {
   }
 }
 
-async function stageUploadedFile(file: File, temporaryPath: string): Promise<void> {
+async function stageUploadedFile(file: File, temporaryPath: string, signal?: AbortSignal): Promise<void> {
   let writtenBytes = 0;
   const byteLimit = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
@@ -51,12 +51,18 @@ async function stageUploadedFile(file: File, temporaryPath: string): Promise<voi
       Readable.from(file.stream() as unknown as AsyncIterable<Uint8Array>),
       byteLimit,
       fs.createWriteStream(temporaryPath, { flags: 'wx' }),
+      { signal },
     );
     if (writtenBytes !== file.size) {
       throw new FinalEditError('invalid_upload_size', '上传文件大小与声明不一致');
     }
   } catch (error) {
     if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      const abortError = new Error('素材上传已取消');
+      abortError.name = 'AbortError';
+      throw abortError;
+    }
     if (error instanceof FinalEditError) throw error;
     throw new FinalEditError('upload_staging_failed', '暂存上传文件失败，请重试', 500);
   }
@@ -71,7 +77,7 @@ async function stageUploadedFile(file: File, temporaryPath: string): Promise<voi
  */
 export async function importShotSetExternalAssetsFromFormData(
   request: Request,
-  importFiles: (files: ExternalAssetUpload[]) => Promise<ExternalAssetImportResult>,
+  importFiles: (files: ExternalAssetUpload[], signal?: AbortSignal) => Promise<ExternalAssetImportResult>,
 ): Promise<ExternalAssetImportResult> {
   const formData = await requestFormData(request);
   const files = uploadedFiles(formData);
@@ -82,13 +88,13 @@ export async function importShotSetExternalAssetsFromFormData(
       const file = files[index];
       const temporaryPath = path.join(temporaryDirectory, `upload-${index}`);
       try {
-        await stageUploadedFile(file, temporaryPath);
+        await stageUploadedFile(file, temporaryPath, request.signal);
         const imported = await importFiles([{
           filename: file.name,
           mimeType: file.type,
           temporaryPath,
           size: file.size,
-        }]);
+        }], request.signal);
         result.assets.push(...imported.assets);
         result.errors.push(...imported.errors);
       } finally {

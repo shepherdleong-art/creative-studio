@@ -63,7 +63,7 @@ export async function GET() {
         )
         WHERE rn = 1
       ) thumb ON thumb.projectId = p.id
-      ORDER BY p.createdAt DESC
+      ORDER BY COALESCE(p.lastOpenedAt, p.createdAt) DESC
     `).all() as Array<Record<string, unknown>>).map((project) => {
       const thumbnailPath = typeof project.thumbnailPath === 'string' ? project.thumbnailPath : '';
       const legacyCostMicros = Math.round(Number(project.totalCost || 0) * 1_000_000);

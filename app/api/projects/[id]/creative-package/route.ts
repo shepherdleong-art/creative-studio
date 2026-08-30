@@ -38,7 +38,7 @@ export async function GET(
 
     // Gather video jobs
     const videos = db.prepare(`
-      SELECT vj.shotId, vj.filename, vj.localVideoPath, vj.prompt,
+      SELECT vj.shotId, vj.filename, vj.localVideoPath, vj.prompt, vj.rejectedAt, vj.rejectReason,
         vp.name as providerName, vpt.name as templateName
       FROM video_jobs vj
       LEFT JOIN video_providers vp ON vp.id = vj.providerId
@@ -47,7 +47,8 @@ export async function GET(
       ORDER BY vj.createdAt
     `).all(projectId) as Array<{
       shotId: string; filename: string | null; localVideoPath: string;
-      prompt: string; providerName: string | null; templateName: string | null;
+      prompt: string; rejectedAt: string | null; rejectReason: string | null;
+      providerName: string | null; templateName: string | null;
     }>;
 
     const projectArtifacts = db.prepare(`
@@ -126,6 +127,8 @@ export async function GET(
         provider: string;
         template: string;
         prompt: string;
+        rejected: boolean;
+        rejectReason?: string;
       }> = [];
       for (const v of shotVideos) {
         let videoFilename = `${prefix}videos/shot-${String(shot.indexNum).padStart(2, '0')}-${v.providerName || 'unknown'}-${v.templateName || 'custom'}.mp4`;
@@ -138,6 +141,8 @@ export async function GET(
           provider: v.providerName || 'unknown',
           template: v.templateName || 'custom',
           prompt: v.prompt || '',
+          rejected: Boolean(v.rejectedAt),
+          ...(v.rejectReason ? { rejectReason: v.rejectReason } : {}),
         });
       }
 

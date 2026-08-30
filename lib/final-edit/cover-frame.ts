@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
 import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
 import { OUTPUT_PRESETS, type OutputPresetId } from './types.ts';
@@ -154,6 +155,7 @@ function resolveCoverFrameSourceRecord(input: {
       FROM final_edit_groups g
       JOIN video_jobs vj
         ON vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId AND vj.status='succeeded'
+          AND ${videoJobNotRejectedSql(input.db, 'vj')}
       JOIN final_edit_asset_analysis a
         ON a.videoJobId=vj.id AND a.shotSetId=g.shotSetId AND a.status='succeeded'
       WHERE g.id=? AND g.status IN ('ready','partial')

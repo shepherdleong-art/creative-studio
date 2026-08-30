@@ -79,4 +79,7 @@ export const CORE_DB_MIGRATIONS = [
   // 供手动选，只是不再被洗牌抽到——避免某个产品线的专用提示词污染别的项目。
   `ALTER TABLE video_prompt_templates ADD COLUMN inRandomPool INTEGER NOT NULL DEFAULT 1`,
   `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
+  `ALTER TABLE projects ADD COLUMN lastOpenedAt TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT`,
+  `ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT`,
 ];

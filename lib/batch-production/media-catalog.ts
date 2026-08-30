@@ -4,6 +4,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, type VideoMediaProbe } from '../ffmpeg.ts';
+import { isVideoJobRejected } from '../media-core/video-job-rejection.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
 import {
   isDetectedVideoContainerCompatible,
@@ -310,6 +311,9 @@ export async function registerModule4Video(
   if (row.status !== 'succeeded') {
     throw new Error('视频任务尚未成功,不能登记为素材');
   }
+  if (isVideoJobRejected(db, row.id)) {
+    throw new Error('视频任务已剔除,不能登记为素材');
+  }
   if (!row.localVideoPath) {
     throw new Error('视频任务没有产物文件');
   }
@@ -467,6 +471,23 @@ export function listAssetSources(db: Database.Database, assetId: string): BatchA
     lastVerifiedIdentityJson: row.lastVerifiedIdentityJson ?? null,
     createdAt: row.createdAt,
   }));
+}
+
+/**
+ * A historical batch asset remains in the database and keeps its files, but a
+ * rejected module-4 source must not enter a new batch or be returned as a
+ * current input. If the same content has a managed/linked source, that source
+ * is still a valid way to use the asset.
+ */
+export function isBatchAssetEligible(db: Database.Database, assetId: string): boolean {
+  const sources = listAssetSources(db, assetId);
+  if (sources.length === 0) return true;
+  return sources.some((source) => {
+    if (source.sourceKind !== 'module4') return true;
+    if (source.locationJson.kind !== 'module4') return false;
+    if (!source.locationJson.videoJobId || !source.locationJson.shotSetId || !source.locationJson.relativePath) return false;
+    return !isVideoJobRejected(db, source.locationJson.videoJobId);
+  });
 }
 
 /** 持久化某来源最近一次完整核验时的文件身份。 */

@@ -139,12 +139,22 @@ assert.ok(
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
+  `ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT`,
   'new core migrations must be appended without rewriting published entries',
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-2),
-  `ALTER TABLE video_prompt_templates ADD COLUMN inRandomPool INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT`,
+  'the previous rejection migration must keep its position',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-3),
+  `ALTER TABLE projects ADD COLUMN lastOpenedAt TEXT`,
+  'the last-opened migration must remain before the rejection migrations',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-4),
+  `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
   'the previously published tail migration must keep its position',
 );
 // 老库里已有的模板必须自动入池，否则升级后一键随机填充会突然填不出东西。

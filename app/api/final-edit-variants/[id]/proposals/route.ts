@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db';
 import { timelineGaps } from '@/lib/final-edit/domain';
 import { findAvailableSourceWindow } from '@/lib/final-edit/proposal';
 import type { VideoTimeline } from '@/lib/final-edit/types';
+import { videoJobNotRejectedSql } from '@/lib/media-core/video-job-rejection';
 
 const MIN_AUTO_CLIP_FRAMES = 24;
 
@@ -20,7 +21,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const timeline = parse<VideoTimeline>(row.timelineJson, { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
     const gaps = timelineGaps(timeline.bodyFrames, timeline.clips);
     const targets = kind === 'fill_gap' ? gaps.slice(0, 1) : gaps;
-    const assets = db.prepare(`SELECT a.videoJobId, a.fileFingerprint, a.generatedJson, a.manualOverrideJson, (SELECT COUNT(DISTINCT u.scopeId) FROM final_edit_usage u WHERE u.projectId=? AND u.shotSetId=a.shotSetId AND u.assetKind='video' AND u.assetKey=a.fileFingerprint) AS usageCount FROM final_edit_asset_analysis a JOIN video_jobs vj ON vj.id=a.videoJobId WHERE a.shotSetId=? AND a.status='succeeded' AND a.autoUseDisabled=0 AND vj.status='succeeded'`).all(row.projectId, row.shotSetId) as Array<{ videoJobId: string; fileFingerprint: string; generatedJson: string; manualOverrideJson: string; usageCount: number }>;
+    const assets = db.prepare(`SELECT a.videoJobId, a.fileFingerprint, a.generatedJson, a.manualOverrideJson, (SELECT COUNT(DISTINCT u.scopeId) FROM final_edit_usage u WHERE u.projectId=? AND u.shotSetId=a.shotSetId AND u.assetKind='video' AND u.assetKey=a.fileFingerprint) AS usageCount FROM final_edit_asset_analysis a JOIN video_jobs vj ON vj.id=a.videoJobId WHERE a.shotSetId=? AND a.status='succeeded' AND a.autoUseDisabled=0 AND vj.status='succeeded' AND ${videoJobNotRejectedSql(db, 'vj')}`).all(row.projectId, row.shotSetId) as Array<{ videoJobId: string; fileFingerprint: string; generatedJson: string; manualOverrideJson: string; usageCount: number }>;
     const candidate = structuredClone(timeline);
     const occupiedByAsset = new Map<string, Array<{ startFrame: number; endFrame: number }>>();
     for (const clip of candidate.clips) {

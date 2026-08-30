@@ -15,6 +15,7 @@ import {
 } from './versions.ts';
 import { colorSnapshotIdentity, upgradeColorSnapshot } from './color-pipeline.ts';
 import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
+import { isBatchAssetEligible } from './media-catalog.ts';
 
 export interface BatchScriptSelection {
   scriptId: string;
@@ -102,6 +103,9 @@ function validateSelections(
     }
     if (asset.status !== 'online') {
       throw new BatchDomainError('conflict', asset.status === 'archived' ? '归档素材不能进入新批次' : '离线素材不能进入新批次');
+    }
+    if (!isBatchAssetEligible(db, assetId)) {
+      throw new BatchDomainError('conflict', '素材对应的视频已剔除，不能进入新批次');
     }
     const analysis = db.prepare(`SELECT assetId, status FROM batch_asset_analysis WHERE id = ?`).get(analysisId) as {
       assetId: string;
@@ -452,6 +456,11 @@ export function startBatchProduction(
         'conflict',
         unavailablePoolItem.status === 'archived' ? '批次包含已归档素材,不能启动' : '批次包含离线素材,不能启动',
       );
+    }
+    const rejectedPoolItem = listPoolItems(db, batch.currentVersionId)
+      .find((item) => !isBatchAssetEligible(db, item.assetId));
+    if (rejectedPoolItem) {
+      throw new BatchDomainError('conflict', '批次素材池包含已剔除视频，不能启动');
     }
     const planCount = db.prepare(`
       SELECT COUNT(*) AS n FROM batch_output_plans WHERE batchVersionId = ?

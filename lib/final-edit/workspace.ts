@@ -12,6 +12,7 @@ import { runFinalEditHeavyJob } from './heavy-job-lock.ts';
 import { getFinalEditTtsAdapter } from './adapters/tts-registry.ts';
 import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
 import { buildMixcutContext } from './mixcut-context.ts';
+import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
 import {
   buildMixcutEditingScriptSnapshot,
   buildMixcutSemanticText,
@@ -464,6 +465,7 @@ function assetsForScript(db: Database.Database, storageRoot: string, projectId: 
     SELECT id AS videoJobId, shotSetId, shotId, filename, localVideoPath, durationSec
     FROM video_jobs
     WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
+      AND ${videoJobNotRejectedSql(db)}
     ORDER BY id
   `).all(projectId, shotSetId) as Array<Omit<AssetRow, 'assetKey' | 'source'>>;
   return rows.filter((row) => {
@@ -590,6 +592,7 @@ function editableVideoSource(db: Database.Database, storageRoot: string, groupId
     JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id AND a.status='succeeded'
     JOIN final_edit_groups g ON g.id=?
     WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId AND vj.status='succeeded'
+      AND ${videoJobNotRejectedSql(db, 'vj')}
   `).get(groupId, videoJobId) as { fileFingerprint: string; mediaJson: string } | undefined || null;
 }
 
@@ -924,6 +927,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       FROM video_jobs vj
       JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id
       WHERE vj.projectId=? AND vj.shotSetId=? AND vj.status='succeeded' AND a.status='succeeded'
+        AND ${videoJobNotRejectedSql(db, 'vj')}
       ORDER BY vj.id
     `).all(String(group.projectId), String(group.shotSetId)) as Array<{ videoJobId: string; generatedJson: string }>).flatMap((row) => {
       const generated = parseJson<{ coverFrameTimesUs?: unknown[] }>(row.generatedJson, {});
@@ -1780,6 +1784,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id
             JOIN final_edit_groups g ON g.id=?
             WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId AND a.status='succeeded'
+              AND ${videoJobNotRejectedSql(db, 'vj')}
           `).get(String(row.groupId), parsedKey.videoJobId) as { generatedJson: string } | undefined;
           const frames = candidate ? parseJson<{ coverFrameTimesUs?: unknown[] }>(candidate.generatedJson, {}).coverFrameTimesUs || [] : [];
           if (!frames.some((value) => Number(value) === parsedKey.frameUs)) throw new FinalEditError('cover_not_found', '视频关键帧封面不属于当前分镜组', 404);
@@ -2063,7 +2068,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         catch (error) { throw new FinalEditError('unsafe_path', error instanceof Error ? error.message : '外部素材路径无效'); }
         return { videoJobId, relativePath: toRelative(absolutePath), fingerprint: clip.sourceFingerprint, externalScope: { projectId: group.projectId, shotSetId: group.shotSetId } };
       }
-      const row = db.prepare(`SELECT localVideoPath FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=?`).get(videoJobId, group.projectId, group.shotSetId) as { localVideoPath: string | null } | undefined;
+      const row = db.prepare(`SELECT localVideoPath FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=? AND status='succeeded' AND ${videoJobNotRejectedSql(db)}`).get(videoJobId, group.projectId, group.shotSetId) as { localVideoPath: string | null } | undefined;
       if (!row?.localVideoPath) throw new FinalEditError('video_file_missing', `视频素材 ${videoJobId} 缺失`);
       const clip = variant.timeline.clips.find((item) => item.videoJobId === videoJobId)!;
       return { videoJobId, relativePath: toRelative(row.localVideoPath), fingerprint: clip.sourceFingerprint };

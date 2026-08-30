@@ -9,6 +9,7 @@ interface Project {
   id: string;
   name: string;
   createdAt: string;
+  lastOpenedAt?: string | null;
   providerId: string;
   model: string;
   status: string;
@@ -47,7 +48,7 @@ const STATUS_CLASS: Record<string, string> = {
 };
 
 type ViewMode = 'card' | 'table';
-type SortKey = 'name' | 'createdAt' | 'totalJobs' | 'totalCost';
+type SortKey = 'name' | 'createdAt' | 'lastOpenedAt' | 'totalJobs' | 'totalCost';
 type SortDir = 'asc' | 'desc';
 
 // 视图偏好活在 localStorage 里,属于 React 之外的状态。用 useSyncExternalStore 读取:
@@ -122,7 +123,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const viewMode = useSyncExternalStore(subscribeViewMode, readViewMode, readViewModeOnServer);
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('createdAt');
+  const [sortKey, setSortKey] = useState<SortKey>('lastOpenedAt');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   const loadProjects = () => {
@@ -168,13 +169,16 @@ export default function HomePage() {
     });
   }, [projects, normalizedQuery]);
 
-  // 排序只作用于表格视图 —— 卡片视图没有排序控件,保持接口返回的 createdAt DESC
+  // 排序只作用于表格视图 —— 卡片视图没有排序控件,保持接口返回的最近打开 DESC
   const tableProjects = useMemo(() => {
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...filteredProjects].sort((a, b) => {
       if (sortKey === 'name') return a.name.localeCompare(b.name, 'zh-CN') * dir;
       if (sortKey === 'totalJobs') return (a.totalJobs - b.totalJobs) * dir;
       if (sortKey === 'totalCost') return (a.totalUsageCostMicros - b.totalUsageCostMicros) * dir;
+      if (sortKey === 'lastOpenedAt') {
+        return (a.lastOpenedAt || a.createdAt).localeCompare(b.lastOpenedAt || b.createdAt) * dir;
+      }
       return a.createdAt.localeCompare(b.createdAt) * dir;
     });
   }, [filteredProjects, sortKey, sortDir]);
@@ -362,7 +366,7 @@ export default function HomePage() {
             <button type="button" onClick={() => setQuery('')} className="btn-secondary">清除搜索</button>
           </div>
         ) : hasProjects && viewMode === 'table' ? (
-          <div className="card overflow-hidden">
+          <div className="card max-h-[calc(100vh-22rem)] overflow-y-auto overscroll-contain p-0">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -373,6 +377,7 @@ export default function HomePage() {
                     <th className="px-4 py-2.5 font-medium">{sortHeader('totalJobs', '任务')}</th>
                     <th className="px-4 py-2.5 text-right font-medium">{sortHeader('totalCost', '成本', 'right')}</th>
                     <th className="px-4 py-2.5 font-medium">{sortHeader('createdAt', '创建时间')}</th>
+                    <th className="px-4 py-2.5 font-medium">{sortHeader('lastOpenedAt', '最近打开')}</th>
                     <th className="w-10 px-4 py-2.5 font-medium"><span className="sr-only">操作</span></th>
                   </tr>
                 </thead>
@@ -431,6 +436,7 @@ export default function HomePage() {
                         {projectCostYuan(p) > 0 ? `¥${projectCostYuan(p).toFixed(4)}` : <span className="text-ink-tertiary">—</span>}
                       </td>
                       <td className="whitespace-nowrap px-4 py-2.5 text-xs text-ink-secondary">{formatCompactTime(p.createdAt)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-xs text-ink-secondary">{formatCompactTime(p.lastOpenedAt || p.createdAt)}</td>
                       <td className="px-4 py-2.5">
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDelete(p.id); }}
@@ -450,52 +456,54 @@ export default function HomePage() {
         ) : hasProjects ? (
           /* 宫格视图(参考剪映本地草稿页):大缩略图铺成格子,文字信息压到图下面两行。
              删除按钮是 Link 的兄弟节点而不是子节点 —— button 嵌在 a 里是非法 HTML。 */
-          <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4">
-            {filteredProjects.map((p) => (
-              <div key={p.id} className="group relative">
-                <Link href={`/projects/${p.id}`} className="block">
-                  <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface-subtle ring-1 ring-hairline transition-shadow group-hover:shadow-[0_10px_30px_rgba(0,0,0,.14)]">
-                    {p.thumbnailImageUrl ? (
-                      <img src={p.thumbnailImageUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
-                    ) : (
-                      <div className="grid h-full w-full place-items-center text-ink-tertiary">
-                        <Icon name="image" size={28} />
-                      </div>
-                    )}
-                    <span className={`status-badge absolute left-2 top-2 shadow-sm ${STATUS_CLASS[p.status] ?? 'status-pending'}`}>
-                      {STATUS_LABELS[p.status] ?? p.status}
-                    </span>
-                    {p.totalJobs > 0 && (
-                      <div className="absolute inset-x-0 bottom-0 h-1 bg-black/20">
-                        <div
-                          className={`h-full ${progressClass(p.status)}`}
-                          style={{ width: `${Math.round(((p.completedJobs + p.failedJobs) / p.totalJobs) * 100)}%` }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <div className="mt-2 truncate text-[0.9rem] font-medium text-ink" title={p.name}>{p.name}</div>
-                  {/* 左右对开:左边截断、右边固定,窄格子里也不会把日期挤掉。
-                      失败数和精确成本不放这里 —— 红色状态胶囊+红色进度条已经给了信号,
-                      要看数字去表格视图。 */}
-                  <div className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-ink-tertiary">
-                    <span className="truncate">
-                      {p.totalJobs > 0 ? `${p.completedJobs}/${p.totalJobs} 任务` : '暂无任务'}
-                      {projectCostYuan(p) > 0 && ` · ¥${projectCostYuan(p).toFixed(2)}`}
-                    </span>
-                    <span className="shrink-0">{formatDateOnly(p.createdAt)}</span>
-                  </div>
-                </Link>
-                <button
-                  onClick={() => handleDelete(p.id)}
-                  className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-lg bg-black/45 text-white opacity-0 transition-opacity hover:bg-fail focus-visible:opacity-100 group-hover:opacity-100"
-                  title="删除"
-                  aria-label={`删除项目 ${p.name}`}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
-              </div>
-            ))}
+          <div className="max-h-[calc(100vh-22rem)] overflow-y-auto overscroll-contain pr-1">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4">
+              {filteredProjects.map((p) => (
+                <div key={p.id} className="group relative">
+                  <Link href={`/projects/${p.id}`} className="block">
+                    <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface-subtle ring-1 ring-hairline transition-shadow group-hover:shadow-[0_10px_30px_rgba(0,0,0,.14)]">
+                      {p.thumbnailImageUrl ? (
+                        <img src={p.thumbnailImageUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
+                      ) : (
+                        <div className="grid h-full w-full place-items-center text-ink-tertiary">
+                          <Icon name="image" size={28} />
+                        </div>
+                      )}
+                      <span className={`status-badge absolute left-2 top-2 shadow-sm ${STATUS_CLASS[p.status] ?? 'status-pending'}`}>
+                        {STATUS_LABELS[p.status] ?? p.status}
+                      </span>
+                      {p.totalJobs > 0 && (
+                        <div className="absolute inset-x-0 bottom-0 h-1 bg-black/20">
+                          <div
+                            className={`h-full ${progressClass(p.status)}`}
+                            style={{ width: `${Math.round(((p.completedJobs + p.failedJobs) / p.totalJobs) * 100)}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-2 truncate text-[0.9rem] font-medium text-ink" title={p.name}>{p.name}</div>
+                    {/* 左右对开:左边截断、右边固定,窄格子里也不会把日期挤掉。
+                        失败数和精确成本不放这里 —— 红色状态胶囊+红色进度条已经给了信号,
+                        要看数字去表格视图。 */}
+                    <div className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-ink-tertiary">
+                      <span className="truncate">
+                        {p.totalJobs > 0 ? `${p.completedJobs}/${p.totalJobs} 任务` : '暂无任务'}
+                        {projectCostYuan(p) > 0 && ` · ¥${projectCostYuan(p).toFixed(2)}`}
+                      </span>
+                      <span className="shrink-0">{formatDateOnly(p.createdAt)}</span>
+                    </div>
+                  </Link>
+                  <button
+                    onClick={() => handleDelete(p.id)}
+                    className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-lg bg-black/45 text-white opacity-0 transition-opacity hover:bg-fail focus-visible:opacity-100 group-hover:opacity-100"
+                    title="删除"
+                    aria-label={`删除项目 ${p.name}`}
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
       </section>

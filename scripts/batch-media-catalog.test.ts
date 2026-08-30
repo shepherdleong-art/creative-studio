@@ -111,6 +111,7 @@ try {
     now: () => new Date('2026-08-02T08:00:00.000Z'),
   });
   assert.equal(migrated.state, 'ready');
+  db.exec(`ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT; ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT;`);
 
   // dataRoot 与 cwd 不同的前提已由文件顶部 env 设置保证
   assert.notEqual(mediaCatalog.storageRootOf(), path.join(process.cwd(), 'storage'), 'dataRoot 必须指向独立测试根');
@@ -195,6 +196,16 @@ try {
   // 正常登记
   const first = await mediaCatalog.registerModule4Video(db, { videoJobId: 'video-job-1' });
   assert.equal(first.projectId, 'project-1');
+
+  db.prepare(`UPDATE video_jobs SET rejectedAt = '2026-08-02T08:01:00.000Z', rejectReason = '测试剔除' WHERE id = 'video-job-1'`).run();
+  assert.equal(mediaCatalog.isBatchAssetEligible(db, first.assetId), false, '只有已剔除模块 4 来源的素材不得进入新批次');
+  await assert.rejects(
+    () => mediaCatalog.registerModule4Video(db, { videoJobId: 'video-job-1' }),
+    /已剔除/,
+    '已剔除的视频任务不得再次登记为模块 4 素材',
+  );
+  db.prepare(`UPDATE video_jobs SET rejectedAt = NULL, rejectReason = NULL WHERE id = 'video-job-1'`).run();
+  assert.equal(mediaCatalog.isBatchAssetEligible(db, first.assetId), true, '恢复视频任务后素材应重新可用');
 
   // --- 测试 2:相同 module4 来源重复登记保持幂等 ---
   await mediaCatalog.registerModule4Video(db, { videoJobId: 'video-job-1' });

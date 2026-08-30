@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { type ColorSnapshotV1, type ColorSnapshotIdentity } from './color-pipeline.ts';
 import { fingerprintsEqual } from './fingerprint.ts';
+import { isBatchAssetEligible } from './media-catalog.ts';
 
 export type BatchProductionStatus = 'draft' | 'running' | 'partially_completed' | 'completed' | 'failed';
 
@@ -299,6 +300,9 @@ export function addAssetToPool(
     }
     if (asset.projectId !== owner.projectId) {
       throw new Error('素材不属于该批次所在项目');
+    }
+    if (!isBatchAssetEligible(db, input.assetId)) {
+      throw new Error('素材对应的视频已剔除,不能加入批次素材池');
     }
     const analysis = db.prepare(`
       SELECT assetId, status FROM batch_asset_analysis WHERE id = ?

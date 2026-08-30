@@ -77,6 +77,8 @@ db.exec(`
     filename TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     durationSec INTEGER NOT NULL DEFAULT 5,
+    rejectedAt TEXT,
+    rejectReason TEXT,
     createdAt TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -88,6 +90,12 @@ db.exec(`
     inputSnapshot TEXT NOT NULL,
     outputJson TEXT NOT NULL,
     createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE final_edit_asset_analysis (
+    videoJobId TEXT PRIMARY KEY,
+    generatedJson TEXT NOT NULL DEFAULT '{}',
+    manualOverrideJson TEXT NOT NULL DEFAULT '{}'
   );
 `);
 
@@ -163,6 +171,14 @@ db.prepare(`
     ('video-unsafe',       'project-a', 'ss-a', '../../etc/passwd', 'video-unsafe.mp4', 'succeeded', 5, '2026-01-05 11:02:00'),
     ('video-missing',      'project-a', 'ss-a', ?,                  'video-missing.mp4', 'succeeded', 5, '2026-01-05 11:03:00')
 `).run(realVideoPath, realVideoPath, path.join(videosDir, 'video-pending.mp4'), path.join(videosDir, 'does-not-exist.mp4'));
+db.prepare(`
+  INSERT INTO video_jobs (id, projectId, shotSetId, localVideoPath, filename, status, durationSec, rejectedAt, rejectReason, createdAt)
+  VALUES ('video-real-rejected', 'project-a', 'ss-a', ?, 'video-real-rejected.mp4', 'succeeded', 1, '2026-01-05 11:00:15', '画面重复', '2026-01-05 11:00:15')
+`).run(realVideoPath);
+db.prepare(`
+  INSERT INTO final_edit_asset_analysis (videoJobId, generatedJson, manualOverrideJson)
+  VALUES ('video-real', ?, '{}')
+`).run(JSON.stringify({ summary: '真实视频分析摘要' }));
 
 // ss-b videos: purely for JC-3 aggregate coverage — files are never actually
 // created on disk (JC-3's aggregation is pure SQL and must never touch the
@@ -338,6 +354,8 @@ const realAsset = explicitContext.videoAssets[0];
 assert.equal(realAsset.shotSetId, 'ss-a');
 assert.equal(realAsset.filename, 'video-real.mp4');
 assert.equal(realAsset.thumbnailUrl, '/api/projects/project-a/final-edit/shot-sets/ss-a/module4-assets/video-real/thumbnail');
+assert.equal(realAsset.previewUrl, '/api/videos/final-edits/videos/video-real.mp4');
+assert.equal(realAsset.summary, '真实视频分析摘要');
 assert.equal(realAsset.source, 'module4');
 
 assert.ok(findModule4Video(db, { projectId: 'project-a', shotSetId: 'ss-a', videoJobId: 'video-real' }));
@@ -357,14 +375,16 @@ assert.deepEqual(defaultContext.videoAssets, [], 'ss-b 下没有真实存在的�
 // (f) JC-3: shotSets[] coarse aggregate stays correct across BOTH shot sets
 // in the same call, independent of which one is "current". ss-a's aggregate
 // intentionally counts video-unsafe and video-missing (DB-only, no fs/path
-// check) even though neither ever appears in a videoAssets[] detail list.
+// check) even though neither ever appears in a videoAssets[] detail list. The
+// rejected row points at the same real file as video-real, so rejection—not
+// path existence—is the only reason it is absent from the aggregate.
 // =============================================================================
 const ssA = defaultContext.shotSets.find((s) => s.id === 'ss-a');
 const ssB = defaultContext.shotSets.find((s) => s.id === 'ss-b');
 assert.ok(ssA && ssB);
 assert.equal(ssA.shotCount, 3, 'ss-a 应有 3 个分镜');
-assert.equal(ssA.succeededVideoCount, 3, 'ss-a 粗统计应计入 video-real + video-unsafe + video-missing（不做安全路径/存在性校验）');
-assert.equal(ssA.totalDurationUs, (1 + 5 + 5) * 1_000_000, 'ss-a totalDurationUs 应为 durationSec 粗求和 * 1e6');
+assert.equal(ssA.succeededVideoCount, 3, 'ss-a 粗统计应排除已剔除视频，计入 video-real + video-unsafe + video-missing');
+assert.equal(ssA.totalDurationUs, (1 + 5 + 5) * 1_000_000, 'ss-a totalDurationUs 应为未剔除视频的 durationSec 粗求和 * 1e6');
 assert.equal(ssB.shotCount, 2, 'ss-b 应有 2 个分镜');
 assert.equal(ssB.succeededVideoCount, 2, 'ss-b 粗统计应计入 video-b1 + video-b2，排除 pending 的 video-b-pending');
 assert.equal(ssB.totalDurationUs, (3 + 4) * 1_000_000, 'ss-b totalDurationUs 应为 3+4 秒的粗求和 * 1e6');

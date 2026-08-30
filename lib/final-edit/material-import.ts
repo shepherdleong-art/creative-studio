@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
-import type { VideoMediaProbe } from '../ffmpeg.ts';
+import { runFfmpeg, type VideoMediaProbe } from '../ffmpeg.ts';
 import {
   isDetectedVideoContainerCompatible,
   SUPPORTED_VIDEO_MIME_BY_EXTENSION,
@@ -46,6 +47,7 @@ export interface ShotSetExternalAssetImportInput {
   projectId: string;
   shotSetId: string;
   files: ExternalAssetUpload[];
+  signal?: AbortSignal;
 }
 
 export interface MaterialImportDependencies {
@@ -145,19 +147,36 @@ function uploadSize(upload: ExternalAssetUpload): number {
   return 'data' in upload ? upload.data.length : upload.size;
 }
 
-function validateUpload(upload: ExternalAssetUpload): { extension: string; mimeType: string; originalFilename: string } {
+function validateUpload(upload: ExternalAssetUpload): {
+  extension: string;
+  storedExtension: string;
+  mimeType: string;
+  originalFilename: string;
+  transcodeGif: boolean;
+} {
   const extension = path.extname(upload.filename.replace(/\\/g, '/')).toLowerCase();
-  if (upload.mimeType.toLowerCase().startsWith('image/') || ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic'].includes(extension)) {
+  const isGif = extension === '.gif';
+  if (!isGif && (upload.mimeType.toLowerCase().startsWith('image/') || ['.jpg', '.jpeg', '.png', '.webp', '.heic'].includes(extension))) {
     throw new MaterialImportError('unsupported_media_kind', 'V1 只支持视频素材，不支持静态图片');
   }
-  const mimeType = SUPPORTED_VIDEO_MIME_BY_EXTENSION[extension];
-  if (!mimeType) throw new MaterialImportError('unsupported_video_format', '仅支持 MP4、MOV、AVI、WebM 视频');
+  const mimeType = isGif ? 'video/mp4' : SUPPORTED_VIDEO_MIME_BY_EXTENSION[extension];
+  if (!mimeType) throw new MaterialImportError('unsupported_video_format', '仅支持 MP4、MOV、AVI、WebM、GIF 视频');
   const suppliedMime = upload.mimeType.trim().toLowerCase();
-  if (suppliedMime && suppliedMime !== 'application/octet-stream' && !suppliedMime.startsWith('video/')) {
+  if (isGif) {
+    if (suppliedMime && suppliedMime !== 'application/octet-stream' && suppliedMime !== 'image/gif') {
+      throw new MaterialImportError('unsupported_video_mime', 'GIF 文件的 MIME 类型无效');
+    }
+  } else if (suppliedMime && suppliedMime !== 'application/octet-stream' && !suppliedMime.startsWith('video/')) {
     throw new MaterialImportError('unsupported_video_mime', '上传文件的 MIME 类型不是视频');
   }
   if (!uploadSize(upload)) throw new MaterialImportError('empty_upload', '上传文件为空');
-  return { extension, mimeType, originalFilename: cleanOriginalFilename(upload.filename, extension) };
+  return {
+    extension,
+    storedExtension: isGif ? '.mp4' : extension,
+    mimeType,
+    originalFilename: cleanOriginalFilename(upload.filename, extension),
+    transcodeGif: isGif,
+  };
 }
 
 function assertTemporaryUploadFile(upload: StagedExternalAssetUpload): void {
@@ -306,6 +325,57 @@ function errorResult(filename: string, error: unknown): ExternalAssetImportFailu
   return { filename, error: 'external_asset_import_failed', message: '外部素材导入失败，请重试' };
 }
 
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+async function transcodeGifUpload(
+  upload: ExternalAssetUpload,
+  signal?: AbortSignal,
+): Promise<{ upload: StagedExternalAssetUpload; cleanup: () => void }> {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-gif-'));
+  const inputPath = path.join(temporaryDirectory, 'input.gif');
+  const outputPath = path.join(temporaryDirectory, 'output.mp4');
+  let keepDirectory = false;
+  try {
+    if ('data' in upload) {
+      fs.writeFileSync(inputPath, upload.data, { flag: 'wx' });
+    } else {
+      assertTemporaryUploadFile(upload);
+      fs.copyFileSync(upload.temporaryPath, inputPath, fs.constants.COPYFILE_EXCL);
+    }
+    await runFfmpeg([
+      '-i', inputPath,
+      '-movflags', '+faststart',
+      '-pix_fmt', 'yuv420p',
+      '-vf', 'fps=24,scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-c:v', 'libx264',
+      '-crf', '20',
+      '-an',
+      '-y', outputPath,
+    ], { timeoutMs: 120_000, signal });
+    if (signal?.aborted) throw createAbortError('GIF 转码已取消');
+    if (!fs.existsSync(outputPath) || !fs.statSync(outputPath).isFile() || fs.statSync(outputPath).size <= 0) {
+      throw new Error('GIF 转码没有生成有效的 MP4 文件');
+    }
+    keepDirectory = true;
+    const filename = `${path.basename(upload.filename, path.extname(upload.filename))}.mp4`;
+    return {
+      upload: { filename, mimeType: 'video/mp4', temporaryPath: outputPath, size: fs.statSync(outputPath).size },
+      cleanup: () => fs.rmSync(temporaryDirectory, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      throw error instanceof Error && error.name === 'AbortError' ? error : createAbortError('GIF 转码已取消');
+    }
+    throw new MaterialImportError('gif_transcode_failed', 'GIF 转码失败，请检查文件后重试');
+  } finally {
+    if (!keepDirectory) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
 export function listShotSetExternalAssets(
   deps: Pick<MaterialImportDependencies, 'db' | 'storageRoot'>,
   projectId: string,
@@ -323,6 +393,7 @@ async function importExternalAssetsForScope(
   deps: MaterialImportDependencies,
   scope: ShotSetMaterialScope,
   files: ExternalAssetUpload[],
+  signal?: AbortSignal,
 ): Promise<ExternalAssetImportResult> {
   if (!files.length) throw new MaterialImportError('files_required', '请选择至少一个视频文件');
 
@@ -331,6 +402,7 @@ async function importExternalAssetsForScope(
   const errors: ExternalAssetImportFailure[] = [];
 
   for (const upload of files) {
+    if (signal?.aborted) throw createAbortError('素材导入已取消');
     let writtenVideoPath: string | null = null;
     let thumbnailAbsolutePath: string | null = null;
     let videoExistedBefore = false;
@@ -342,9 +414,16 @@ async function importExternalAssetsForScope(
     let assetId = '';
     let relativePath = '';
     let media: VideoMediaProbe | null = null;
+    let preparedUpload = upload;
+    let cleanupPreparedUpload: (() => void) | null = null;
     try {
       valid = validateUpload(upload);
-      fingerprint = await fingerprintUpload(upload);
+      if (valid.transcodeGif) {
+        const transcoded = await transcodeGifUpload(upload, signal);
+        preparedUpload = transcoded.upload;
+        cleanupPreparedUpload = transcoded.cleanup;
+      }
+      fingerprint = await fingerprintUpload(preparedUpload);
       const stagedDuplicate = pending.get(fingerprint);
       if (stagedDuplicate) {
         results.push({ assetId: stagedDuplicate.row.id, fingerprint, reused: true });
@@ -368,10 +447,10 @@ async function importExternalAssetsForScope(
       }
 
       assetId = existing?.id || uuidv4();
-      relativePath = existing?.relativePath || path.join(materialsRelativeDirectory(scope), `${assetId}${valid.extension}`);
+      relativePath = existing?.relativePath || path.join(materialsRelativeDirectory(scope), `${assetId}${valid.storedExtension}`);
       const absolutePath = resolveImportedExternalAssetVideoPath(deps.storageRoot, scope, relativePath, true);
       videoExistedBefore = fs.existsSync(absolutePath);
-      writeUploadAtomic(absolutePath, upload);
+      writeUploadAtomic(absolutePath, preparedUpload);
       writtenVideoPath = absolutePath;
 
       media = await deps.probeVideo({ filePath: absolutePath, videoJobId: assetId });
@@ -379,7 +458,7 @@ async function importExternalAssetsForScope(
         if (media.errorMessage) console.error('[final-edit] external video probe failed:', media.errorMessage.replaceAll(path.resolve(deps.storageRoot), '<storage>').replaceAll(absolutePath, '<material>'));
         throw new MaterialImportError('video_probe_failed', '无法读取视频时长或分辨率');
       }
-      validateDetectedContainer(valid.extension, media.format);
+      validateDetectedContainer(valid.storedExtension, media.format);
       const lastSafeFrameUs = Math.max(0, media.durationUs - Math.max(50_000, Math.ceil(1_000_000 / Math.max(1, media.fps || 24))));
       const frameUs = Math.min(lastSafeFrameUs, Math.max(0, Math.min(100_000, Math.round(media.durationUs / 10))));
       ensureSafeRelativeDirectory(deps.storageRoot, thumbnailRelativeDirectory(scope), true);
@@ -418,6 +497,12 @@ async function importExternalAssetsForScope(
       });
       results.push({ assetId, fingerprint, reused: false });
     } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        if (writtenVideoPath && !videoExistedBefore && fs.existsSync(writtenVideoPath)) fs.unlinkSync(writtenVideoPath);
+        throw error instanceof Error && error.name === 'AbortError'
+          ? error
+          : createAbortError('素材导入已取消');
+      }
       if (!(error instanceof MaterialImportError)) {
         const diagnostic = error instanceof Error ? error.message : String(error);
         console.error('[final-edit] external asset import failed:', diagnostic.replaceAll(path.resolve(deps.storageRoot), '<storage>'));
@@ -455,6 +540,8 @@ async function importExternalAssetsForScope(
       } else if (writtenVideoPath && !videoExistedBefore && fs.existsSync(writtenVideoPath)) {
         fs.unlinkSync(writtenVideoPath);
       }
+    } finally {
+      cleanupPreparedUpload?.();
     }
   }
 
@@ -539,7 +626,7 @@ export async function importShotSetExternalAssets(
   // real atomic group command with revision CAS, not a wrapper around this
   // pre-group operation.
   const scope = getShotSetMaterialScope(deps.db, input.projectId, input.shotSetId);
-  return importExternalAssetsForScope(deps, scope, input.files);
+  return importExternalAssetsForScope(deps, scope, input.files, input.signal);
 }
 
 function objectReferencesAsset(value: unknown, assetId: string): boolean {

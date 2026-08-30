@@ -9,6 +9,7 @@ import {
 import { parseStoredNarrationConfig } from './scripts.ts';
 import {
   listAssetSources,
+  isBatchAssetEligible,
   registerModule4Video,
   verifyAssetSources,
   type BatchAssetSourceHealth,
@@ -16,6 +17,7 @@ import {
 import { listProjectScripts } from './scripts.ts';
 import { syncProjectScripts } from './script-catalog.ts';
 import { getCurrentAssetAnalysis, type AssetAnalysisLevel } from './asset-preparation.ts';
+import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
 
 export interface PrepareScriptView {
   id: string;
@@ -128,6 +130,7 @@ export async function prepareBatchProductionInputs(
   const succeededJobs = db.prepare(`
     SELECT id FROM video_jobs
     WHERE projectId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
+      AND ${videoJobNotRejectedSql(db)}
     ORDER BY createdAt, id
   `).all(projectId) as Array<{ id: string }>;
   for (const { id } of succeededJobs) {
@@ -159,38 +162,40 @@ export async function prepareBatchProductionInputs(
     manual: row.sourceId.startsWith('manual:'),
   }));
 
-  const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId).map((row: BatchAssetRow) => {
-    const current = getCurrentAssetAnalysis(db, projectId, row.id);
-    const encodedProjectId = encodeURIComponent(projectId);
-    const encodedAssetId = encodeURIComponent(row.id);
-    // 缩略图 URL 携带登记指纹前 16 位作为缓存版本:内容不变时 URL 稳定,
-    // 内容替换后指纹变化,URL 变化,配合 immutable 长缓存不会吐旧图。
-    const fingerprintVersion = (row.contentFingerprint.startsWith('sha256:')
-      ? row.contentFingerprint.slice('sha256:'.length)
-      : row.contentFingerprint).slice(0, 16);
-    const media = JSON.parse(row.mediaJson) as PrepareAssetMedia;
-    return {
-      id: row.id,
-      status: row.status,
-      mediaKind: row.mediaKind,
-      currentAnalysisId: current?.status === 'ready' ? current.id : null,
-      analysisLevel: current?.status === 'ready' ? current.analysisLevel : 'none',
-      thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion)}`,
-      previewUrl: `/api/batch-production/assets/${encodedAssetId}/preview?projectId=${encodedProjectId}`,
-      media,
-      sources: listAssetSources(db, row.id).map((source) => {
-        const fallbackName = source.sourceKind === 'module4'
-          ? `视频任务 ${source.locationJson.kind === 'module4' ? source.locationJson.videoJobId : source.id}`
-          : source.sourceKind === 'managed' ? '托管文件' : '用户文件';
-        return {
-          id: source.id,
-          sourceKind: source.sourceKind,
-          health: source.health,
-          displayName: safeSourceDisplayName(media.displayName || media.filename, fallbackName),
-        };
-      }),
-    };
-  });
+  const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId)
+    .filter((row) => isBatchAssetEligible(db, row.id))
+    .map((row: BatchAssetRow) => {
+      const current = getCurrentAssetAnalysis(db, projectId, row.id);
+      const encodedProjectId = encodeURIComponent(projectId);
+      const encodedAssetId = encodeURIComponent(row.id);
+      // 缩略图 URL 携带登记指纹前 16 位作为缓存版本:内容不变时 URL 稳定,
+      // 内容替换后指纹变化,URL 变化,配合 immutable 长缓存不会吐旧图。
+      const fingerprintVersion = (row.contentFingerprint.startsWith('sha256:')
+        ? row.contentFingerprint.slice('sha256:'.length)
+        : row.contentFingerprint).slice(0, 16);
+      const media = JSON.parse(row.mediaJson) as PrepareAssetMedia;
+      return {
+        id: row.id,
+        status: row.status,
+        mediaKind: row.mediaKind,
+        currentAnalysisId: current?.status === 'ready' ? current.id : null,
+        analysisLevel: current?.status === 'ready' ? current.analysisLevel : 'none',
+        thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion)}`,
+        previewUrl: `/api/batch-production/assets/${encodedAssetId}/preview?projectId=${encodedProjectId}`,
+        media,
+        sources: listAssetSources(db, row.id).map((source) => {
+          const fallbackName = source.sourceKind === 'module4'
+            ? `视频任务 ${source.locationJson.kind === 'module4' ? source.locationJson.videoJobId : source.id}`
+            : source.sourceKind === 'managed' ? '托管文件' : '用户文件';
+          return {
+            id: source.id,
+            sourceKind: source.sourceKind,
+            health: source.health,
+            displayName: safeSourceDisplayName(media.displayName || media.filename, fallbackName),
+          };
+        }),
+      };
+    });
 
   return {
     project: { id: project.id, name: project.name, productCode: project.productCode ?? '' },

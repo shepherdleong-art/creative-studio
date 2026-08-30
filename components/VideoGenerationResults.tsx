@@ -1,6 +1,7 @@
 'use client';
 
 import Image from 'next/image';
+import { useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 
 interface VideoJob {
@@ -21,6 +22,8 @@ interface VideoJob {
   templateName?: string;
   posterImageUrl?: string;
   tailImageId?: string | null;
+  rejectedAt?: string | null;
+  rejectReason?: string | null;
 }
 
 interface Props {
@@ -29,6 +32,8 @@ interface Props {
   onRetry: (jobId: string) => void | Promise<void>;
   onResumePoll: (jobId: string) => void | Promise<void>;
   onCancel: (jobId: string) => void | Promise<void>;
+  onReject: (jobId: string) => void | Promise<void>;
+  onUnreject: (jobId: string) => void | Promise<void>;
   activePreviewJobId: string | null;
 }
 
@@ -41,7 +46,10 @@ const STATUS_LABELS: Record<string, string> = {
   canceled: '已取消',
 };
 
-export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, onResumePoll, onCancel, activePreviewJobId }: Props) {
+export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, onResumePoll, onCancel, onReject, onUnreject, activePreviewJobId }: Props) {
+  const [showRejected, setShowRejected] = useState(false);
+  const rejectedJobs = videoJobs.filter((job) => Boolean(job.rejectedAt));
+  const visibleJobs = showRejected ? videoJobs : videoJobs.filter((job) => !job.rejectedAt);
   if (videoJobs.length === 0) {
     return (
       <div className="result-empty">
@@ -51,22 +59,39 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
     );
   }
 
-  const sorted = [...videoJobs].sort((a, b) => {
+  const sorted = [...visibleJobs].sort((a, b) => {
     const order: Record<string, number> = { succeeded: 0, running: 1, pending: 2, needs_check: 3, failed: 4, canceled: 5 };
     return (order[a.status] ?? 9) - (order[b.status] ?? 9);
   });
 
   return (
     <div className="flex flex-col gap-3">
+      {rejectedJobs.length > 0 && (
+        <button
+          type="button"
+          className="btn-secondary btn-sm self-start"
+          onClick={() => setShowRejected((value) => !value)}
+          aria-pressed={showRejected}
+        >
+          {showRejected ? '隐藏已剔除' : `显示已剔除（${rejectedJobs.length}）`}
+        </button>
+      )}
+      {sorted.length === 0 && (
+        <div className="result-empty min-h-[120px]">
+          <Icon name="video" size={24} />
+          <span>暂无可用视频</span>
+        </div>
+      )}
       {sorted.map((job) => {
         const isActive = activePreviewJobId === job.id;
         const isSucceeded = job.status === 'succeeded';
+        const isRejected = Boolean(job.rejectedAt);
         const isFailed = job.status === 'failed' || job.status === 'canceled';
         const isRunning = job.status === 'pending' || job.status === 'running';
         const isNeedsCheck = job.status === 'needs_check';
 
         return (
-          <div key={job.id} className={`result-card ${isActive ? 'active' : ''}`}>
+          <div key={job.id} className={`result-card ${isActive ? 'active' : ''} ${isRejected ? 'is-rejected' : ''}`}>
             <div className="result-thumb" onClick={() => isSucceeded && job.filename && onPreview(job.id)}>
               {isSucceeded ? (
                 <>
@@ -105,6 +130,11 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                     首尾帧
                   </span>
                 )}
+                {isRejected && (
+                  <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-ink-secondary" title={job.rejectReason || undefined}>
+                    已剔除
+                  </span>
+                )}
                 <span className="result-meta">
                   {job.providerName || '-'} / {job.templateName || '自定义'} / {job.durationSec}s
                 </span>
@@ -130,6 +160,15 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                       {isActive ? '正在播放' : '播放'}
                     </button>
                   </>
+                )}
+                {isSucceeded && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); void (isRejected ? onUnreject(job.id) : onReject(job.id)); }}
+                    className={`result-action ${isRejected ? 'link-accent' : 'text-fail'}`}
+                  >
+                    {isRejected ? '恢复使用' : '剔除'}
+                  </button>
                 )}
                 {isNeedsCheck && (
                   <button
@@ -163,6 +202,11 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
               {job.errorMessage && (
                 <div className="mt-1 break-words text-fail" style={{ fontSize: '0.6rem' }}>
                   {job.errorMessage}
+                </div>
+              )}
+              {isRejected && job.rejectReason && (
+                <div className="mt-1 break-words text-ink-tertiary" style={{ fontSize: '0.6rem' }}>
+                  剔除原因：{job.rejectReason}
                 </div>
               )}
             </div>

@@ -32,7 +32,14 @@ assert.doesNotMatch(
   '批量确认不得用 window.confirm：同步原生弹窗会吞掉 mouseup，之后原生 select 下拉点不开，必须切走再切回应用才恢复',
 );
 assert.match(generateBlock, /setBulkStatus/);
+assert.match(generateBlock, /BULK_CONFIRM_THRESHOLD/);
+assert.match(generateBlock, /safeShots\.length >= BULK_CONFIRM_THRESHOLD/);
 assert.doesNotMatch(generateBlock, /\balert\s*\(/, '批量结果不得用 alert 短暂弹出');
+
+const toolbarStart = panel.indexOf('className="video-bulk-toolbar"');
+assert.notEqual(toolbarStart, -1, '批量工具栏必须有明确入口');
+const toolbar = panel.slice(toolbarStart, toolbarStart + 900);
+assert.doesNotMatch(toolbar, /handleBulkFillPrompts/, '外层工具栏不得重复提供一键填充提示词');
 
 const drawerStart = panel.indexOf('className="video-bulk-drawer"');
 const drawerEnd = panel.indexOf('className="video-bulk-status-bar"', drawerStart);
@@ -48,6 +55,7 @@ assert.match(drawer, /已有视频/);
 assert.match(drawer, /未填写/);
 assert.match(drawer, /手写已锁定/);
 assert.match(drawer, /带尾帧/);
+assert.match(drawer, /handleBulkFillPrompts/, '一键填充提示词必须保留在批量检查抽屉内');
 assert.doesNotMatch(drawer, /handleTailFrameUpload|handleTailFrameRemove/, '检查列表不得编辑尾帧');
 
 const editStart = panel.indexOf('const updateBulkRowPrompt');
@@ -58,6 +66,16 @@ assert.match(panel.slice(editStart, editEnd), /setShotRows/);
 
 assert.match(panel, /video-bulk-status-bar/);
 assert.match(panel, /bulkProgress/);
+
+const videoJobRoute = readFileSync(
+  new URL('../app/api/video-jobs/[id]/route.ts', import.meta.url),
+  'utf8',
+);
+assert.match(videoJobRoute, /body\.action === ['"]reject['"] \|\| body\.action === ['"]unreject['"]/);
+assert.match(videoJobRoute, /status !== ['"]succeeded['"]/);
+assert.match(videoJobRoute, /rejectedAt = datetime\(['"]now['"]\)/);
+assert.match(videoJobRoute, /rejectedAt = NULL, rejectReason = NULL/);
+assert.match(videoJobRoute, /slice\(0, 500\)/);
 
 // 抽屉必须 portal 到 body，且这条约束的成因要能被验证：
 // .video-generation-section 用 transform 做全宽布局，transform 会给后代的

@@ -59,6 +59,7 @@ export default function BatchOutputEditor({
   const [freeformClipId, setFreeformClipId] = useState<string | null>(null);
   const [replaceCandidateId, setReplaceCandidateId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [renderPending, setRenderPending] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
   const [musicParamsDraft, setMusicParamsDraft] = useState({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
@@ -114,6 +115,7 @@ export default function BatchOutputEditor({
       }).then((response) => {
         if (!response.ok) return;
         pendingRenderRef.current = false;
+        setRenderPending(false);
         onChangedRef.current?.();
       }).catch(() => undefined);
     };
@@ -215,7 +217,9 @@ export default function BatchOutputEditor({
     // split 是纯结构操作(不改像素,不递增 editRevision),其余命令都可能改画面。
     // 响应回来前组件就被卸载时(改完立刻关弹窗),响应里的 visualChanged 没人接得到,
     // 所以先记欠账再发请求;命令实际没生效时最多多发一次幂等的 commit。
-    if (payload.type !== 'split') pendingRenderRef.current = true;
+    if (payload.type !== 'split') {
+      pendingRenderRef.current = true;
+    }
     setSubmitting(true);
     setEditFeedback(null);
     let editRequestDone: Promise<void> | null = null;
@@ -234,7 +238,10 @@ export default function BatchOutputEditor({
         throw new Error(typeof result.message === 'string' ? result.message : `HTTP ${response.status}`);
       }
       const editResult = result as BatchOutputClipEditResult;
-      if (editResult.changed && editResult.visualChanged) pendingRenderRef.current = true;
+      if (editResult.changed && editResult.visualChanged) {
+        pendingRenderRef.current = true;
+        setRenderPending(true);
+      }
       // 静默重拉:预览立即吃到新 arrangement(即改即看),不打断当前交互。
       await loadView(true);
       return true;
@@ -378,6 +385,19 @@ export default function BatchOutputEditor({
 
       {!view.outputVersionId && <p className="shrink-0 tile p-3 text-xs text-warn">还没有可编辑的成片版本，请先完成首次渲染。</p>}
       {view.outputVersionId && !view.editable && <p className="shrink-0 tile p-3 text-xs text-warn">批次已停止或输入尚未冻结，当前只能查看，不能调整片段。</p>}
+      {renderPending && view.editable && (
+        <div className="flex shrink-0 items-center gap-3 rounded-xl border border-hairline bg-surface-subtle p-3 text-xs text-ink-secondary">
+          <span className="min-w-0 flex-1">修改已保存，退出本轮调整后会自动重新渲染</span>
+          <button
+            type="button"
+            className="btn-secondary h-8 shrink-0 px-3 text-xs"
+            disabled={renderBusy || submitting}
+            onClick={() => commitRender(clipsUrl)}
+          >
+            立即渲染
+          </button>
+        </div>
+      )}
       {editFeedback && (
         <p
           role="alert"

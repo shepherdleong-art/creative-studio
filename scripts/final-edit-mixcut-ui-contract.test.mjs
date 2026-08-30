@@ -12,10 +12,12 @@ const timeline = fs.readFileSync('components/mixcut/MixcutTimeline.tsx', 'utf8')
 const narrationSpeedControl = fs.readFileSync('components/mixcut/NarrationPlaybackRateControl.tsx', 'utf8');
 const finalPreview = fs.readFileSync('components/final-edit/FinalEditPreview.tsx', 'utf8');
 const exportStep = fs.readFileSync('components/mixcut/ExportStep.tsx', 'utf8');
-const styles = fs.readFileSync('components/mixcut/MixcutPanel.module.css', 'utf8');
+const styles = fs.readFileSync('components/mixcut/mixcut-content.module.css', 'utf8');
+const shell = fs.readFileSync('components/mixcut/MixcutShell.tsx', 'utf8');
 const workspace = fs.readFileSync('components/mixcut/MixcutWorkspace.tsx', 'utf8');
 const page = fs.readFileSync('app/projects/[id]/page.tsx', 'utf8');
 const workbenchTabs = fs.readFileSync('components/ProjectWorkbenchTabs.tsx', 'utf8');
+const proposalRoute = fs.readFileSync('app/api/final-edit-variants/[id]/proposals/route.ts', 'utf8');
 
 assert.doesNotMatch(page, /searchParams\.get\('mixcut'\)|showMixcutV1|FinalEditPanel/, 'Phase 7 必须移除查询参数灰度和旧第五步表面');
 assert.match(page, /<MixcutWorkspace projectId=/, '项目页必须挂载智能混剪工作区');
@@ -37,6 +39,10 @@ assert.match(sidebar, /totalDurationUs/);
 assert.match(sidebar, /其他分镜组不会混入/, '左辅栏必须明确当前组隔离规则');
 assert.match(materialStep, /source === 'module4'/, '模块 4 素材必须显示真实来源标记');
 assert.match(materialStep, /\.mp4,.mov,.avi,.webm/, '外部素材入口只接受 V1 锁定的视频格式');
+assert.match(materialStep, /\.gif/, '外部素材入口必须接受 GIF');
+assert.match(materialStep, /GIF 会自动转为 MP4/, 'GIF 入口必须明确转码行为');
+assert.match(materialStep, /matPreviewButton/, '素材卡必须提供视频预览入口');
+assert.match(materialStep, /role="dialog"/, '素材预览必须使用可访问对话框');
 assert.match(materialStep, /multiple/, '文件选择必须支持批量导入');
 assert.match(materialStep, /onDrop=/, '外部素材入口必须支持拖拽导入');
 assert.match(materialStep, /onDragOver=/, '拖拽区必须显式允许放置文件');
@@ -56,6 +62,7 @@ assert.match(panel, /group\.status === 'editing'/, '自动保存只能继续修�
 assert.match(panel, /setSelectionByShotSet\(\(current\) => latestGroup[\s\S]{0,160}\{ \[currentShotSetId\]: persistedSelection \}/, '服务端已保存空选择时刷新不得重置为默认全选');
 assert.match(panel, /const editedText = groupScript \? groupScript\.editedNarrationText : importedText/, '服务端已保存空文案时刷新不得回退为导入稿');
 assert.match(panel, /\/api\/final-edit-jobs\/\$\{activeJobId\}/, '进度必须读取真实 job API');
+assert.match(proposalRoute, /videoJobNotRejectedSql\(db, ['"]vj['"]\)/, '自动补空隙不得重新选入已剔除视频');
 assert.match(panel, /selectedMaterialKeys:\s*requestMaterialKeys/, '任务快照必须冻结当前素材选择或被选历史版本的素材快照');
 assert.match(panel, /submittingRef\.current/, '生成提交必须有同步锁，防止快速双击重复计费');
 assert.match(panel, /startRequestRef\.current\?\.sequence/, '生成响应必须校验请求 token，防止跨组迟到回填');
@@ -191,7 +198,9 @@ assert.match(styles, /\.narrationSpeedPresets\s*{[^}]*grid-template-columns:\s*r
 assert.match(finalPreview, /narration\.playbackRate = narrationPlaybackRate/, '成片预览必须把保存的倍速应用到真实 audio 元素');
 assert.match(styles, /\.tlLabels\s*{[^}]*flex-shrink:\s*0/s, '轨道标签必须位于横向滚动容器外并保持可见');
 assert.match(styles, /\.tlScroll\s*{[^}]*overflow-x:\s*auto/s, '正式时间轴必须允许横向滚动');
-assert.deepEqual([...new Set([...panel.matchAll(/localStorage\.(?:getItem|setItem)\('([^']+)'/g)].map((match) => match[1]))], ['mixcut-layout-v2'], '浏览器 storage 只能保存无业务含义的布局偏好');
+assert.match(shell, /localStorage\.getItem\(layoutStorageKey/, '布局读取必须使用专用布局 key');
+assert.match(shell, /localStorage\.setItem\(layoutStorageKey/, '布局写入必须使用专用布局 key');
+assert.match(shell, /layoutStorageKey = 'mixcut-layout-v2'/, '单条混剪布局必须使用固定的布局偏好 key');
 assert.doesNotMatch(previewStep, /localStorage|sessionStorage/, '正式编辑和运行态不得落浏览器 storage');
 assert.match(panel, /<ExportStep/, '正式 MixcutPanel 必须挂载 ExportStep');
 assert.match(exportStep, /导出并写回项目/);

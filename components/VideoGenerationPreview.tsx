@@ -8,6 +8,7 @@ interface VideoJob {
   filename?: string;
   localVideoPath?: string;
   status: string;
+  rejectedAt?: string | null;
 }
 
 interface Props {
@@ -42,7 +43,7 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
   const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
 
-  const succeededJobs = videoJobs.filter((j) => j.status === 'succeeded' && j.filename);
+  const succeededJobs = videoJobs.filter((j) => j.status === 'succeeded' && j.filename && !j.rejectedAt);
   const currentIndex = currentJobId ? succeededJobs.findIndex((j) => j.id === currentJobId) : -1;
 
   const applyStageSize = useCallback(() => {
