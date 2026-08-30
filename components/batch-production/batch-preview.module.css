@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: #000;
+  background: var(--color-media-background);
 }
 
 .fullscreenShell:fullscreen .stage {
@@ -32,13 +32,13 @@
   align-items: center;
   gap: 8px;
   padding: 12px 20px;
-  background: linear-gradient(to top, rgba(0, 0, 0, .72), rgba(0, 0, 0, 0));
+  background: linear-gradient(to top, var(--color-media-scrim), transparent);
 }
 .fullscreenControls,
 .fullscreenControls span,
-.fullscreenControls button { color: #fff; }
+.fullscreenControls button { color: var(--color-media-foreground); }
 .fullscreenControls button {
-  border-color: rgba(255, 255, 255, .28);
-  background: rgba(255, 255, 255, .14);
+  border-color: var(--color-media-control-border);
+  background: var(--color-media-control);
 }
-.fullscreenControls input[type='range'] { accent-color: #fff; }
+.fullscreenControls input[type='range'] { accent-color: var(--color-media-foreground); }

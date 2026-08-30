@@ -27,6 +27,12 @@
   --color-dot-ok: #34c759;
   --color-dot-fail: #ff3b30;
   --color-dot-warn: #ff9f0a;
+  /* media preview */
+  --color-media-background: #000000;
+  --color-media-foreground: #ffffff;
+  --color-media-control: rgb(255 255 255 / 14%);
+  --color-media-control-border: rgb(255 255 255 / 28%);
+  --color-media-scrim: rgb(0 0 0 / 72%);
   /* radii */
   --radius-pill: 980px;
   --radius-card: 18px;
