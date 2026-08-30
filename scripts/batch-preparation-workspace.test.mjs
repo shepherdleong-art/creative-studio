@@ -148,7 +148,7 @@ assert.match(review, /subtitleCueCount/);
 // 封面素材切换只保留在「调整片段」右侧设置,普通预览不再重复出现该编辑器
 assert.doesNotMatch(review, /封面素材网格/);
 assert.match(outputEditor, /BatchCoverEditorDrawer/);
-assert.match(outputEditor, /lg:grid-cols-\[minmax\(254px,280px\)_minmax\(420px,1fr\)_minmax\(300px,340px\)\]/);
+assert.match(outputEditor, /xl:grid-cols-\[minmax\(254px,280px\)_minmax\(420px,1fr\)_minmax\(300px,340px\)\]/);
 assert.match(outputEditor, /aria-label="素材调整"/);
 assert.match(outputEditor, /素材预览/);
 assert.match(outputEditor, /预览素材/);
