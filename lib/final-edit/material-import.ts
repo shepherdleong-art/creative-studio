@@ -331,6 +331,17 @@ function createAbortError(message: string): Error {
   return error;
 }
 
+// GIF can carry transparent pixels, while the MP4 output format cannot carry
+// alpha. Flatten onto white before converting to yuv420p; otherwise ffmpeg's
+// implicit alpha removal turns transparent areas into black blocks.
+const GIF_WHITE_BACKGROUND_FILTER = [
+  'fps=24',
+  'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+  'format=rgba',
+  "geq=r='r(X,Y)*alpha(X,Y)/255+255*(1-alpha(X,Y)/255)':g='g(X,Y)*alpha(X,Y)/255+255*(1-alpha(X,Y)/255)':b='b(X,Y)*alpha(X,Y)/255+255*(1-alpha(X,Y)/255)'",
+  'format=yuv420p',
+].join(',');
+
 async function transcodeGifUpload(
   upload: ExternalAssetUpload,
   signal?: AbortSignal,
@@ -350,7 +361,7 @@ async function transcodeGifUpload(
       '-i', inputPath,
       '-movflags', '+faststart',
       '-pix_fmt', 'yuv420p',
-      '-vf', 'fps=24,scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-vf', GIF_WHITE_BACKGROUND_FILTER,
       '-c:v', 'libx264',
       '-crf', '20',
       '-an',

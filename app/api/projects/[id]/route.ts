@@ -17,7 +17,11 @@ export async function GET(
     if (!projectExists) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
-    db.prepare(`UPDATE projects SET lastOpenedAt = datetime('now') WHERE id = ?`).run(id);
+    db.prepare(`
+      UPDATE projects
+      SET lastOpenedAt = datetime('now')
+      WHERE id = ? AND (lastOpenedAt IS NULL OR lastOpenedAt < datetime('now', '-60 seconds'))
+    `).run(id);
     const project = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) as Record<string, unknown>;
 
     // Get images with computed imageUrl

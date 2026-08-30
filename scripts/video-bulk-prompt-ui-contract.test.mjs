@@ -5,6 +5,10 @@ const panel = readFileSync(
   new URL('../components/VideoGenerationPanel.tsx', import.meta.url),
   'utf8',
 );
+const results = readFileSync(
+  new URL('../components/VideoGenerationResults.tsx', import.meta.url),
+  'utf8',
+);
 
 assert.match(
   panel,
@@ -33,7 +37,11 @@ assert.doesNotMatch(
 );
 assert.match(generateBlock, /setBulkStatus/);
 assert.match(generateBlock, /BULK_CONFIRM_THRESHOLD/);
-assert.match(generateBlock, /safeShots\.length >= BULK_CONFIRM_THRESHOLD/);
+assert.match(
+  generateBlock,
+  /safeShots\.length >= BULK_CONFIRM_THRESHOLD[\s\S]*plan\.totalClips >= BULK_CONFIRM_THRESHOLD/,
+  '批量确认必须同时覆盖分镜少但提交条数多的情况',
+);
 assert.doesNotMatch(generateBlock, /\balert\s*\(/, '批量结果不得用 alert 短暂弹出');
 
 const toolbarStart = panel.indexOf('className="video-bulk-toolbar"');
@@ -76,6 +84,9 @@ assert.match(videoJobRoute, /status !== ['"]succeeded['"]/);
 assert.match(videoJobRoute, /rejectedAt = datetime\(['"]now['"]\)/);
 assert.match(videoJobRoute, /rejectedAt = NULL, rejectReason = NULL/);
 assert.match(videoJobRoute, /slice\(0, 500\)/);
+assert.match(panel, /JSON\.stringify\(\{ action: ['"]reject['"], reason:/, '剔除请求必须把可选原因传给服务端');
+assert.match(results, /placeholder="剔除原因（可选）"/);
+assert.match(results, /onReject\(jobId, rejectReasonDraft\.trim\(\) \|\| undefined\)/);
 
 // 抽屉必须 portal 到 body，且这条约束的成因要能被验证：
 // .video-generation-section 用 transform 做全宽布局，transform 会给后代的

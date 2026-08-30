@@ -2,7 +2,6 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { materializeVideoFrame } from './video-frame.ts';
 import { toStorageRelativePath } from './storage-path.ts';
-import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
 
 interface GroupIdentity {
   id: string;
@@ -50,7 +49,6 @@ export async function resolveCoverCandidateFile(input: {
     FROM video_jobs vj
     JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id
     WHERE vj.id=? AND vj.projectId=? AND vj.shotSetId=? AND vj.status='succeeded'
-      AND ${videoJobNotRejectedSql(input.db, 'vj')}
   `).get(parsedKey.videoJobId, input.group.projectId, input.group.shotSetId) as { localVideoPath: string; generatedJson: string; fileFingerprint: string } | undefined;
   if (!row) throw new Error('视频封面候选不存在');
   const generated = JSON.parse(row.generatedJson || '{}') as { coverFrameTimesUs?: unknown[] };

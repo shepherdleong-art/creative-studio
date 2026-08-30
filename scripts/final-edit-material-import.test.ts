@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import sharp from 'sharp';
 import { probeVideoMedia, runFfmpeg } from '../lib/ffmpeg.ts';
 import { initFinalEditSchema } from '../lib/final-edit/schema.ts';
 import { importShotSetExternalAssetsFromFormData } from '../lib/final-edit/material-import-http.ts';
@@ -93,6 +94,26 @@ await runFfmpeg([
   '-f', 'lavfi', '-i', 'testsrc2=duration=0.5:size=160x120:rate=12',
   '-vf', 'fps=12', '-f', 'gif', '-y', gifPath,
 ]);
+const transparentGifSourcePng = path.join(root, 'transparent-source.png');
+await sharp({
+  create: { width: 64, height: 64, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+})
+  .composite([{ input: Buffer.from('<svg width="64" height="64"><rect x="16" y="16" width="32" height="32" fill="blue"/></svg>') }])
+  .png()
+  .toFile(transparentGifSourcePng);
+const transparentGifPath = path.join(root, 'transparent.gif');
+await runFfmpeg([
+  '-i', transparentGifSourcePng,
+  '-filter_complex', '[0:v]split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse=alpha_threshold=128',
+  '-frames:v', '1', '-f', 'gif', '-y', transparentGifPath,
+]);
+const transparentGifDecodedPng = path.join(root, 'transparent-decoded.png');
+await runFfmpeg([
+  '-i', transparentGifPath, '-frames:v', '1', '-pix_fmt', 'rgba', '-f', 'image2', '-vcodec', 'png', '-y', transparentGifDecodedPng,
+]);
+const transparentGifDecoded = await sharp(transparentGifDecodedPng).raw().toBuffer({ resolveWithObject: true });
+assert.equal(transparentGifDecoded.info.channels, 4, '透明 GIF 测试素材必须保留 alpha 通道');
+assert.equal(transparentGifDecoded.data[3], 0, '透明 GIF 测试素材的角落必须确实透明');
 
 // The public HTTP seam must consume real multipart bytes. Ownership-looking
 // client fields are deliberately present but must not be returned/used.
@@ -231,6 +252,26 @@ assert.ok(fs.existsSync(path.join(storageRoot, gifRow.relativePath)), 'GIF 转�
 const gifMedia = await probeVideoMedia(path.join(storageRoot, gifRow.relativePath));
 assert.ok((gifMedia.format || '').includes('mp4'));
 assert.ok(gifMedia.durationUs > 0);
+
+const transparentGifs = await workspace.importShotSetExternalAssets({
+  projectId: 'project-a',
+  shotSetId: 'set-gif',
+  files: [{ filename: 'transparent.gif', mimeType: 'image/gif', data: fs.readFileSync(transparentGifPath) }],
+});
+assert.equal(transparentGifs.errors.length, 0, JSON.stringify(transparentGifs.errors));
+assert.equal(transparentGifs.assets.length, 1);
+const transparentGifRow = db.prepare(`SELECT relativePath FROM final_edit_external_assets WHERE id=?`).get(transparentGifs.assets[0].id) as { relativePath: string };
+const transparentGifOutputFrame = path.join(root, 'transparent-output-frame.png');
+await runFfmpeg([
+  '-i', path.join(storageRoot, transparentGifRow.relativePath), '-frames:v', '1', '-f', 'image2', '-vcodec', 'png', '-y', transparentGifOutputFrame,
+]);
+const transparentGifOutput = await sharp(transparentGifOutputFrame).raw().toBuffer({ resolveWithObject: true });
+const outputPixel = (x: number, y: number) => {
+  const offset = (y * transparentGifOutput.info.width + x) * transparentGifOutput.info.channels;
+  return transparentGifOutput.data.subarray(offset, offset + 3);
+};
+assert.ok(outputPixel(0, 0).every((channel) => channel >= 240), '透明 GIF 转码后透明区域必须垫成白色，不能变黑');
+assert.ok(outputPixel(32, 32)[2] >= 180 && outputPixel(32, 32)[0] <= 80, '透明 GIF 转码后不透明内容必须保留');
 
 const invalidGif = await workspace.importShotSetExternalAssets({
   projectId: 'project-a',

@@ -6,6 +6,8 @@ import Database from 'better-sqlite3';
 import type { ScriptOutput, ScriptOutputV3 } from '../lib/script-providers/types.ts';
 import { buildMixcutContext, isUsableMixcutScriptDraft, mapWithConcurrency } from '../lib/final-edit/mixcut-context.ts';
 import { findModule4Video } from '../lib/final-edit/module4-asset.ts';
+import { createFinalEditWorkspace } from '../lib/final-edit/workspace.ts';
+import { initFinalEditSchema } from '../lib/final-edit/schema.ts';
 import { resolveFfprobePath, runFfmpeg } from '../lib/ffmpeg.ts';
 
 // Phase 1 integration test for
@@ -359,11 +361,107 @@ assert.equal(realAsset.summary, '真实视频分析摘要');
 assert.equal(realAsset.source, 'module4');
 
 assert.ok(findModule4Video(db, { projectId: 'project-a', shotSetId: 'ss-a', videoJobId: 'video-real' }));
+assert.equal(findModule4Video(db, { projectId: 'project-a', shotSetId: 'ss-a', videoJobId: 'video-real-rejected' }), null, '被剔除视频仍必须从新的素材枚举中隐藏');
 assert.equal(findModule4Video(db, { projectId: 'project-a', shotSetId: 'ss-b', videoJobId: 'video-real' }), null, '其他分镜组不能读取 ss-a 视频缩略图');
 assert.equal(findModule4Video(db, { projectId: 'project-b', shotSetId: 'ss-a', videoJobId: 'video-real' }), null, '其他项目不能读取 project-a 视频缩略图');
 assert.ok(Math.abs(realAsset.durationUs - 1_000_000) < 200_000, `真实探测 durationUs=${realAsset.durationUs} 应接近 1,000,000`);
 assert.equal(realAsset.width, 320, '真实探测宽度应为 320');
 assert.equal(realAsset.height, 240, '真实探测高度应为 240');
+
+// Rejection only changes the fresh material pool. Use a real workspace view
+// here so the assertion covers a persisted timeline reference, not a hardcoded
+// list that merely claims the timeline was unchanged.
+const persistedDb = new Database(':memory:');
+persistedDb.pragma('foreign_keys = ON');
+persistedDb.exec(`
+  CREATE TABLE projects (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, createdAt TEXT NOT NULL, productCode TEXT DEFAULT ''
+  );
+  CREATE TABLE shot_sets (
+    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL
+  );
+  CREATE TABLE shots (
+    id TEXT PRIMARY KEY, shotSetId TEXT NOT NULL, indexNum INTEGER NOT NULL, latestGeneratedImageId TEXT
+  );
+  CREATE TABLE image_assets (
+    id TEXT PRIMARY KEY, projectId TEXT, filename TEXT NOT NULL, path TEXT NOT NULL
+  );
+  CREATE TABLE video_jobs (
+    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT,
+    status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, durationSec REAL,
+    rejectedAt TEXT, rejectReason TEXT
+  );
+`);
+initFinalEditSchema(persistedDb);
+const persistedStorageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mixcut-flow-persisted-test-'));
+const persistedVideoPath = path.join(persistedStorageRoot, 'videos', 'video-real.mp4');
+fs.mkdirSync(path.dirname(persistedVideoPath), { recursive: true });
+fs.writeFileSync(persistedVideoPath, 'persisted video fixture');
+persistedDb.prepare(`INSERT INTO projects (id, name, createdAt, productCode) VALUES ('project-a', '智能加湿器投放项目', '2026-01-05 10:00:00', 'JSQ-A1')`).run();
+persistedDb.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('ss-a', 'project-a', '客厅场景')`).run();
+persistedDb.prepare(`INSERT INTO shots (id, shotSetId, indexNum) VALUES ('shot-a1', 'ss-a', 1)`).run();
+persistedDb.prepare(`INSERT INTO video_jobs (id, projectId, shotSetId, shotId, status, localVideoPath, filename, durationSec) VALUES ('video-real', 'project-a', 'ss-a', 'shot-a1', 'succeeded', ?, 'video-real.mp4', 1)`).run(persistedVideoPath);
+persistedDb.prepare(`
+  INSERT INTO final_edit_asset_analysis
+    (videoJobId, shotSetId, fileFingerprint, providerId, model, analyzerVersion, status, mediaJson, generatedJson, analyzedAt, updatedAt)
+  VALUES ('video-real', 'ss-a', 'persisted-fingerprint', '', '', '2', 'succeeded', ?, ?, ?, ?)
+`).run(
+  JSON.stringify({ durationUs: 1_000_000, width: 320, height: 240, fps: 24 }),
+  JSON.stringify({ summary: '已用素材', sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 0, endUs: 1_000_000, qualityScore: 1 }], qualityIssues: [], coverFrameTimesUs: [0] }),
+  '2026-08-30T13:00:00.000Z',
+  '2026-08-30T13:00:00.000Z',
+);
+const persistedScript = {
+  version: 2, title: '已用素材测试', coverTitleParts: { primary: '已用素材', secondary: '' },
+  platform: '抖音', tone: '种草', targetDurationSec: 1, template: '功能展示', shotSetId: 'ss-a',
+  sellingPointMap: [], droppedShots: [], fullScript: '已用素材', sourceNarrationText: '已用素材', editedNarrationText: '已用素材',
+  scriptSyncState: 'synced', segments: [],
+};
+const persistedAt = '2026-08-30T13:00:00.000Z';
+persistedDb.prepare(`
+  INSERT INTO final_edit_groups
+    (id, projectId, scriptDraftId, shotSetId, scriptSnapshotJson, narrationHash, narrationConfigJson, coverTitleJson, textStylesJson, status, phase, revision, createdAt, updatedAt, selectedMaterialKeysJson)
+  VALUES ('group-used-material', 'project-a', 'draft-used-material', 'ss-a', ?, 'used-material-hash', '{}', '{}', '{}', 'ready', 'succeeded', 0, ?, ?, ?)
+`).run(JSON.stringify(persistedScript), persistedAt, persistedAt, JSON.stringify(['module4:video-real']));
+const persistedTimeline = {
+  fps: 24, introFrames: 20, bodyFrames: 24,
+  clips: [{
+    id: 'clip-used-material', videoJobId: 'video-real', sourceFingerprint: 'persisted-fingerprint',
+    sourceInFrame: 0, sourceOutFrame: 24, timelineInFrame: 0, timelineOutFrame: 24,
+    boundSegmentId: null, framing: { scale: 1, offsetX: 0, offsetY: 0 }, manualUseOverride: false,
+  }],
+};
+persistedDb.prepare(`
+  INSERT INTO final_edit_variants
+    (id, groupId, indexNum, outputPreset, timelineJson, bgmJson, coverJson, issuesJson, overlapJson, revision, createdAt, updatedAt)
+  VALUES ('variant-used-material', 'group-used-material', 1, '3x4', ?, '{}', ?, '[]', '{}', 0, ?, ?)
+`).run(
+  JSON.stringify(persistedTimeline),
+  JSON.stringify({ coverKey: 'video:video-real:0', kind: 'video_keyframe', sourceKey: 'module4:video-real', frameTimeUs: 0, framing: { scale: 1, offsetX: 0, offsetY: 0 } }),
+  persistedAt,
+  persistedAt,
+);
+const persistedWorkspace = createFinalEditWorkspace({
+  db: persistedDb,
+  storageRoot: persistedStorageRoot,
+  probeVideo: async () => { throw new Error('未调用素材探测 seam'); },
+  analyzeVideo: async () => { throw new Error('未调用素材分析 seam'); },
+  synthesize: async () => { throw new Error('未调用口播 seam'); },
+});
+const persistedBeforeReject = persistedWorkspace.load('group-used-material');
+assert.ok(persistedBeforeReject.variants[0].timeline.clips.some((clip) => clip.videoJobId === 'video-real'));
+assert.ok(persistedBeforeReject.assets.some((asset) => asset.videoJobId === 'video-real'));
+persistedDb.prepare(`UPDATE video_jobs SET rejectedAt=?, rejectReason='画面重复' WHERE id='video-real'`).run(persistedAt);
+const persistedAfterReject = persistedWorkspace.load('group-used-material');
+assert.ok(persistedAfterReject.variants[0].timeline.clips.some((clip) => clip.videoJobId === 'video-real'), '已用素材被剔除后，历史时间轴仍必须保留片段');
+assert.ok(!persistedAfterReject.assets.some((asset) => asset.videoJobId === 'video-real'), '被剔除素材不得重新出现在新素材池');
+const persistedCoverResult = persistedWorkspace.apply({
+  scope: 'variant', variantId: 'variant-used-material', expectedRevision: 0,
+  type: 'set_cover', coverKey: 'video:video-real:0',
+});
+assert.equal((persistedCoverResult.view as { cover: { coverKey: string | null } }).cover.coverKey, 'video:video-real:0', '被剔除的已用素材仍必须能作为已有成片封面来源');
+persistedDb.close();
+fs.rmSync(persistedStorageRoot, { recursive: true, force: true });
 
 // bogusIdContext/defaultContext both resolve to ss-b as "current" — assert
 // ss-b's videoAssets[] is empty, since none of its fixture files exist on

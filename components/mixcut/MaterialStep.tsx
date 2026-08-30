@@ -83,8 +83,8 @@ export function MaterialStep({
     }
     setImportStatus(
       ignoredCount > 0
-        ? `已提交 ${supported.length} 个视频，忽略 ${ignoredCount} 个不支持的文件。GIF 会自动转为 MP4。`
-        : `已提交 ${supported.length} 个视频。GIF 会自动转为 MP4。`,
+        ? `已提交 ${supported.length} 个视频，忽略 ${ignoredCount} 个不支持的文件。GIF 会自动转为 MP4，透明区域铺白。`
+        : `已提交 ${supported.length} 个视频。GIF 会自动转为 MP4，透明区域铺白。`,
     );
     onImportFiles?.(supported);
   };
@@ -163,7 +163,7 @@ export function MaterialStep({
           onDrop={handleDrop}
         >
           <div className={styles.dropzoneT1}>{dragActive ? '松开即可导入到本组' : '拖拽视频到这里，或点击导入外部视频'}</div>
-          <div className={styles.dropzoneT2} id="mixcut-import-help">支持 MP4 / MOV / AVI / WebM / GIF，可一次多选；GIF 会自动转为 MP4</div>
+          <div className={styles.dropzoneT2} id="mixcut-import-help">支持 MP4 / MOV / AVI / WebM / GIF，可一次多选；GIF 会自动转为 MP4，透明区域铺白</div>
         </div>
         <p id="mixcut-import-status" className={styles.importStatus} aria-live="polite">{importStatus}</p>
 

@@ -32,7 +32,7 @@ interface Props {
   onRetry: (jobId: string) => void | Promise<void>;
   onResumePoll: (jobId: string) => void | Promise<void>;
   onCancel: (jobId: string) => void | Promise<void>;
-  onReject: (jobId: string) => void | Promise<void>;
+  onReject: (jobId: string, reason?: string) => void | boolean | Promise<void | boolean>;
   onUnreject: (jobId: string) => void | Promise<void>;
   activePreviewJobId: string | null;
 }
@@ -48,6 +48,9 @@ const STATUS_LABELS: Record<string, string> = {
 
 export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, onResumePoll, onCancel, onReject, onUnreject, activePreviewJobId }: Props) {
   const [showRejected, setShowRejected] = useState(false);
+  const [rejectingJobId, setRejectingJobId] = useState<string | null>(null);
+  const [rejectReasonDraft, setRejectReasonDraft] = useState('');
+  const [rejectSubmittingJobId, setRejectSubmittingJobId] = useState<string | null>(null);
   const rejectedJobs = videoJobs.filter((job) => Boolean(job.rejectedAt));
   const visibleJobs = showRejected ? videoJobs : videoJobs.filter((job) => !job.rejectedAt);
   if (videoJobs.length === 0) {
@@ -63,6 +66,26 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
     const order: Record<string, number> = { succeeded: 0, running: 1, pending: 2, needs_check: 3, failed: 4, canceled: 5 };
     return (order[a.status] ?? 9) - (order[b.status] ?? 9);
   });
+
+  const cancelReject = () => {
+    if (rejectSubmittingJobId) return;
+    setRejectingJobId(null);
+    setRejectReasonDraft('');
+  };
+
+  const submitReject = async (jobId: string) => {
+    if (rejectSubmittingJobId) return;
+    setRejectSubmittingJobId(jobId);
+    try {
+      const result = await onReject(jobId, rejectReasonDraft.trim() || undefined);
+      if (result !== false) {
+        setRejectingJobId(null);
+        setRejectReasonDraft('');
+      }
+    } finally {
+      setRejectSubmittingJobId(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -164,7 +187,15 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                 {isSucceeded && (
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); void (isRejected ? onUnreject(job.id) : onReject(job.id)); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isRejected) {
+                        void onUnreject(job.id);
+                      } else {
+                        setRejectingJobId(job.id);
+                        setRejectReasonDraft('');
+                      }
+                    }}
                     className={`result-action ${isRejected ? 'link-accent' : 'text-fail'}`}
                   >
                     {isRejected ? '恢复使用' : '剔除'}
@@ -198,6 +229,43 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                   </button>
                 )}
               </div>
+
+              {isSucceeded && !isRejected && rejectingJobId === job.id && (
+                <form
+                  className="mt-2 flex flex-wrap items-center gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void submitReject(job.id);
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={rejectReasonDraft}
+                    onChange={(event) => setRejectReasonDraft(event.target.value)}
+                    maxLength={500}
+                    placeholder="剔除原因（可选）"
+                    aria-label="剔除原因，可选"
+                    className="input-field min-w-[160px] flex-1"
+                    disabled={rejectSubmittingJobId === job.id}
+                    autoFocus
+                  />
+                  <button
+                    type="submit"
+                    className="result-action text-fail"
+                    disabled={rejectSubmittingJobId === job.id}
+                  >
+                    确认剔除
+                  </button>
+                  <button
+                    type="button"
+                    className="result-action link-accent"
+                    onClick={cancelReject}
+                    disabled={rejectSubmittingJobId === job.id}
+                  >
+                    取消
+                  </button>
+                </form>
+              )}
 
               {job.errorMessage && (
                 <div className="mt-1 break-words text-fail" style={{ fontSize: '0.6rem' }}>

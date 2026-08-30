@@ -82,7 +82,7 @@ db.exec(`
   CREATE TABLE video_jobs (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT,
     status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, durationSec INTEGER,
-    prompt TEXT NOT NULL DEFAULT ''
+    prompt TEXT NOT NULL DEFAULT '', rejectedAt TEXT, rejectReason TEXT
   );
 `);
 initFinalEditSchema(db);
@@ -564,11 +564,28 @@ assert.equal(playbackAdjustedGroup.script.narrationConfig.speed, 1, '生成阶�
 assert.equal(playbackAdjustedGroup.script.narrationConfig.playbackRate, 1.3, '当前音轨播放倍速必须持久化');
 assert.ok(Math.abs(playbackAdjustedGroup.totalDurationUs - (833_333 + readyManualGroup.narrationDurationUs / 1.3)) < 1, '当前成片预计时长必须随音轨播放倍速直接变化');
 assert.equal(playbackAdjustedGroup.variants.length, readyManualGroup.variants.length, '直接调速不得新增或删除成片草稿');
+
 assert.throws(
   () => workspace.apply({ scope: 'group', groupId: readyManualGroup.id, expectedRevision: playbackAdjustedGroup.revision, type: 'set_narration_playback_rate', playbackRate: 2.1 }),
   (error: unknown) => error instanceof FinalEditError && error.code === 'invalid_narration_playback_rate',
   '音轨播放倍速仍必须限制在 0.5x～2.0x',
 );
+
+// Rejection is an enumeration-only policy: an already-used source may disappear
+// from the fresh asset pool, but it must remain editable and cover-addressable
+// in the persisted timeline.
+db.prepare(`UPDATE video_jobs SET rejectedAt='2026-08-30 13:00:00', rejectReason='画面重复' WHERE id='v1'`).run();
+const rejectedManualGroup = workspace.load(readyManualGroup.id);
+assert.ok(rejectedManualGroup.variants[0].timeline.clips.some((clip) => clip.videoJobId === 'v1'), '已用素材被剔除后，历史时间轴仍必须保留片段');
+assert.ok(!rejectedManualGroup.assets.some((asset) => asset.videoJobId === 'v1'), '被剔除素材不得重新出现在新素材池');
+const rejectedManualVariant = rejectedManualGroup.variants[0];
+const rejectedCoverResult = workspace.apply({
+  scope: 'variant', variantId: rejectedManualVariant.id, expectedRevision: rejectedManualVariant.revision,
+  type: 'set_cover', coverKey: 'video:v1:1000000',
+}).view as FinalEditVariantView;
+assert.equal(rejectedCoverResult.cover.coverKey, 'video:v1:1000000', '已用且被剔除的视频仍必须可以作为已有成片的封面来源');
+db.prepare(`UPDATE video_jobs SET rejectedAt=NULL, rejectReason=NULL WHERE id='v1'`).run();
+
 const beforeScriptCommand = workspace.load(editingDraft.id);
 const scriptCommandResult = workspace.apply({ scope: 'group', groupId: editingDraft.id, expectedRevision: beforeScriptCommand.revision, type: 'set_mixcut_script_state', editedNarrationText: '手工文案已修改。', selectedMaterialKeys: ['module4:v1'], voice: 'Cherry', speed: 1.1 }).view as typeof beforeScriptCommand;
 assert.equal(scriptCommandResult.script.editedNarrationText, '手工文案已修改。');
@@ -602,7 +619,10 @@ db.prepare(`UPDATE final_edit_variants SET coverJson=? WHERE id=?`).run(JSON.str
 db.prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES ('export-identity-bundle', ?, '3x4', ?, 'export-identity', '{}', 'final-edits/test/export-overlays', 'ready', datetime('now'))`).run(group.id, group.revision);
 const exportReady = workspace.load(group.id);
 const exportReadyVariant = exportReady.variants.find((variant) => variant.id === restoredVariant.id)!;
+db.prepare(`UPDATE video_jobs SET rejectedAt='2026-08-30 13:05:00', rejectReason='画面重复' WHERE id='v1'`).run();
 const renderJob = await workspace.enqueueRender({ groupId: group.id, variantId: exportReadyVariant.id, expectedGroupRevision: exportReady.revision, expectedVariantRevision: exportReadyVariant.revision, overlayBundleId: 'export-identity-bundle' });
+assert.equal(renderJob.status, 'queued', '已在时间轴中的素材被剔除后，仍必须允许创建导出任务');
+db.prepare(`UPDATE video_jobs SET rejectedAt=NULL, rejectReason=NULL WHERE id='v1'`).run();
 assert.equal(renderJob.target.taskName, '沙发任务');
 assert.equal(renderJob.target.productCode, 'SF-A1');
 assert.equal(renderJob.target.taskDate, '20260724');

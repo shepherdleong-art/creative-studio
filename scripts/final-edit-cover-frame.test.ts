@@ -17,7 +17,7 @@ const db = new Database(':memory:');
 db.exec(`
   CREATE TABLE video_jobs (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT,
-    status TEXT NOT NULL, localVideoPath TEXT
+    status TEXT NOT NULL, localVideoPath TEXT, rejectedAt TEXT, rejectReason TEXT
   );
 `);
 initFinalEditSchema(db);
@@ -118,6 +118,10 @@ await assert.rejects(
   (error: unknown) => error instanceof CoverFrameError && error.code === 'cover_source_not_found',
 );
 db.prepare(`UPDATE video_jobs SET status='succeeded' WHERE id='video-a'`).run();
+db.prepare(`UPDATE video_jobs SET rejectedAt='2026-08-30 13:00:00', rejectReason='画面重复' WHERE id='video-a'`).run();
+const rejectedSourceFrame = await materializeCoverFrame({ db, storageRoot, groupId: 'group-a', sourceKey: 'module4:video-a', timeUs: 0, preset: '3x4' });
+assert.ok(fs.existsSync(rejectedSourceFrame.absolutePath), '已在成片中使用的视频被剔除后仍必须能读取已有封面来源');
+db.prepare(`UPDATE video_jobs SET rejectedAt=NULL, rejectReason=NULL WHERE id='video-a'`).run();
 
 db.prepare(`UPDATE final_edit_asset_analysis SET fileFingerprint='stale' WHERE videoJobId='video-a'`).run();
 await assert.rejects(

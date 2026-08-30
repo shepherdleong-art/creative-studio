@@ -41,6 +41,7 @@ assert.match(materialStep, /source === 'module4'/, '模块 4 素材必须显示�
 assert.match(materialStep, /\.mp4,.mov,.avi,.webm/, '外部素材入口只接受 V1 锁定的视频格式');
 assert.match(materialStep, /\.gif/, '外部素材入口必须接受 GIF');
 assert.match(materialStep, /GIF 会自动转为 MP4/, 'GIF 入口必须明确转码行为');
+assert.match(materialStep, /透明区域铺白/, 'GIF 入口必须说明透明区域会铺白');
 assert.match(materialStep, /matPreviewButton/, '素材卡必须提供视频预览入口');
 assert.match(materialStep, /matPreviewAction/, '素材卡必须提供不依赖悬浮层的明确预览按钮');
 assert.match(materialStep, /mixcut-material-card-preview/, '素材卡预览按钮必须有稳定的验证入口');

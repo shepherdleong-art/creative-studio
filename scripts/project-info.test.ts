@@ -41,6 +41,11 @@ assert.match(
   projectRouteSource,
   /SELECT id, name, productName, productCode, productCategory FROM projects WHERE id = \?/,
 );
+assert.match(
+  projectRouteSource,
+  /lastOpenedAt IS NULL OR lastOpenedAt < datetime\(['"]now['"], ['"]-60 seconds['"]\)/,
+  '项目详情轮询不得每次都写入 lastOpenedAt',
+);
 assert.match(projectRouteSource, /project:\s*updatedProject/);
 
 console.log('project info tests passed');

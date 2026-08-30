@@ -592,7 +592,6 @@ function editableVideoSource(db: Database.Database, storageRoot: string, groupId
     JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id AND a.status='succeeded'
     JOIN final_edit_groups g ON g.id=?
     WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId AND vj.status='succeeded'
-      AND ${videoJobNotRejectedSql(db, 'vj')}
   `).get(groupId, videoJobId) as { fileFingerprint: string; mediaJson: string } | undefined || null;
 }
 
@@ -1784,7 +1783,6 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
             JOIN final_edit_asset_analysis a ON a.videoJobId=vj.id
             JOIN final_edit_groups g ON g.id=?
             WHERE vj.id=? AND vj.projectId=g.projectId AND vj.shotSetId=g.shotSetId AND a.status='succeeded'
-              AND ${videoJobNotRejectedSql(db, 'vj')}
           `).get(String(row.groupId), parsedKey.videoJobId) as { generatedJson: string } | undefined;
           const frames = candidate ? parseJson<{ coverFrameTimesUs?: unknown[] }>(candidate.generatedJson, {}).coverFrameTimesUs || [] : [];
           if (!frames.some((value) => Number(value) === parsedKey.frameUs)) throw new FinalEditError('cover_not_found', '视频关键帧封面不属于当前分镜组', 404);
@@ -2068,7 +2066,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         catch (error) { throw new FinalEditError('unsafe_path', error instanceof Error ? error.message : '外部素材路径无效'); }
         return { videoJobId, relativePath: toRelative(absolutePath), fingerprint: clip.sourceFingerprint, externalScope: { projectId: group.projectId, shotSetId: group.shotSetId } };
       }
-      const row = db.prepare(`SELECT localVideoPath FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=? AND status='succeeded' AND ${videoJobNotRejectedSql(db)}`).get(videoJobId, group.projectId, group.shotSetId) as { localVideoPath: string | null } | undefined;
+      const row = db.prepare(`SELECT localVideoPath FROM video_jobs WHERE id=? AND projectId=? AND shotSetId=? AND status='succeeded'`).get(videoJobId, group.projectId, group.shotSetId) as { localVideoPath: string | null } | undefined;
       if (!row?.localVideoPath) throw new FinalEditError('video_file_missing', `视频素材 ${videoJobId} 缺失`);
       const clip = variant.timeline.clips.find((item) => item.videoJobId === videoJobId)!;
       return { videoJobId, relativePath: toRelative(row.localVideoPath), fingerprint: clip.sourceFingerprint };
