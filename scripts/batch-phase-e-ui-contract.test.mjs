@@ -97,6 +97,7 @@ assert.match(batchTimelinePreview, /coverDraft\?\.asset/);
 assert.doesNotMatch(coverEditor, /className="h-full max-w-none"/);
 assert.match(batchTimelinePreview, /isFullscreen \? '退出全屏' : '全屏'/);
 assert.match(batchTimelinePreview, /requestFullscreen/);
+assert.match(batchTimelinePreview, /else if \(root\.requestFullscreen\)/);
 assert.match(batchTimelinePreview, /fullscreenShell/);
 assert.match(batchTimelinePreview, /fullscreenchange/);
 assert.match(batchTimelinePreview, /退出全屏/);

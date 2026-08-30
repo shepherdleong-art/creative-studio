@@ -428,8 +428,8 @@ export default function BatchTimelinePreview({
     if (!root || typeof document === 'undefined') return;
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => undefined);
-    } else {
-      void root.requestFullscreen?.().catch(() => undefined);
+    } else if (root.requestFullscreen) {
+      void root.requestFullscreen().catch(() => undefined);
     }
   };
 
