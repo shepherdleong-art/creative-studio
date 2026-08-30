@@ -130,6 +130,7 @@ assert.match(outputEditor, /'commit_render'/);
 assert.match(outputEditor, /pagehide/);
 assert.match(outputEditor, /response\.ok/);
 assert.match(outputEditor, /payload\.type !== 'split'/);
+assert.match(outputEditor, /inFlightEditRef/);
 assert.doesNotMatch(outputEditor, /修改已保存，退出本轮调整后会自动重新渲染/);
 assert.doesNotMatch(outputEditor, /立即渲染/);
 assert.match(exportStep, /renderStale/);

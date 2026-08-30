@@ -68,6 +68,7 @@ export default function BatchOutputEditor({
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const previewTabRefs = useRef<Record<'output' | 'material', HTMLButtonElement | null>>({ output: null, material: null });
   const pendingRenderRef = useRef(false);
+  const inFlightEditRef = useRef<Promise<void> | null>(null);
   const onChangedRef = useRef(onChanged);
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => { onChangedRef.current = onChanged; });
@@ -103,16 +104,24 @@ export default function BatchOutputEditor({
    */
   const commitRender = useCallback((url: string) => {
     if (!pendingRenderRef.current) return;
-    void fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'commit_render' }),
-      keepalive: true,
-    }).then((response) => {
-      if (!response.ok) return;
-      pendingRenderRef.current = false;
-      onChangedRef.current?.();
-    }).catch(() => undefined);
+    const send = () => {
+      if (!pendingRenderRef.current) return;
+      void fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'commit_render' }),
+        keepalive: true,
+      }).then((response) => {
+        if (!response.ok) return;
+        pendingRenderRef.current = false;
+        onChangedRef.current?.();
+      }).catch(() => undefined);
+    };
+    // 编辑请求与 commit_render 必须保持顺序:组件在请求返回前卸载时,如果
+    // commit 先到服务端,它会按旧 arrangement 排任务,随后编辑反而没有新任务。
+    const inFlightEdit = inFlightEditRef.current;
+    if (inFlightEdit) void inFlightEdit.then(send, send);
+    else send();
   }, []);
 
   useEffect(() => {
@@ -209,12 +218,17 @@ export default function BatchOutputEditor({
     if (payload.type !== 'split') pendingRenderRef.current = true;
     setSubmitting(true);
     setEditFeedback(null);
+    let editRequestDone: Promise<void> | null = null;
     try {
-      const response = await fetch(clipsUrl, {
+      const editRequest = fetch(clipsUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, deferRender: true }),
+        keepalive: true,
       });
+      editRequestDone = editRequest.then(() => undefined, () => undefined);
+      inFlightEditRef.current = editRequestDone;
+      const response = await editRequest;
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(typeof result.message === 'string' ? result.message : `HTTP ${response.status}`);
@@ -228,6 +242,7 @@ export default function BatchOutputEditor({
       setEditFeedback({ kind: 'error', message: error instanceof Error ? error.message : '保存片段修改失败' });
       return false;
     } finally {
+      if (inFlightEditRef.current === editRequestDone) inFlightEditRef.current = null;
       setSubmitting(false);
     }
   }
