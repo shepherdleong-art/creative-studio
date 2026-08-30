@@ -104,6 +104,10 @@ assert.match(batchTimeline, /末帧延长/);
 assert.match(batchTimeline, /超出裁掉/);
 assert.match(batchTimeline, /口播（锁定）/);
 assert.match(batchTimeline, /data-tool/);
+assert.ok(
+  (batchTimeline.match(/addEventListener\('pointercancel'/g) ?? []).length >= 3,
+  '播放头、视频片段和字幕拖拽都必须清理 pointercancel',
+);
 // 播放头竖线回归(2026-08-24):.shell button 重置(0,1,1)会洗掉单类 .tlPlayhead(0,1,0)
 // 的 background/cursor,只剩 ::before 抓手点;规则必须挂在 .tlInner 下抬到 (0,2,0)。
 assert.match(timelineCss, /\.tlInner \.tlPlayhead \{/);

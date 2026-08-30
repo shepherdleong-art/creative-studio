@@ -203,10 +203,18 @@ export default function BatchTimeline({
       seekFromPointer(pointer.clientX);
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
+      if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
+    };
+    const cancel = (pointer: PointerEvent) => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
       if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
     };
     target.addEventListener('pointermove', move);
     target.addEventListener('pointerup', up, { once: true });
+    target.addEventListener('pointercancel', cancel, { once: true });
   };
 
   // 拖拽预览镜像服务端 ripple：draft 存在时显示布局从 0 起首尾相接重新累计
@@ -517,6 +525,7 @@ function BatchClipBlock({
     const up = async (pointer: PointerEvent) => {
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
       if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
       if (!changed) {
         onDraftChange(null);
@@ -525,8 +534,16 @@ function BatchClipBlock({
       const accepted = await onTrimVariable(clip.clipId, frameToUs(latest.sourceIn), frameToUs(latest.sourceOut));
       if (!accepted) onDraftChange(null);
     };
+    const cancel = (pointer: PointerEvent) => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
+      if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
+      onDraftChange(null);
+    };
     target.addEventListener('pointermove', move);
     target.addEventListener('pointerup', up, { once: true });
+    target.addEventListener('pointercancel', cancel, { once: true });
   };
 
   return (
@@ -668,6 +685,7 @@ function BatchSubtitleBlock({
     const up = async (pointer: PointerEvent) => {
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
       if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
       setDraft(null);
       if (!changed) return;
@@ -678,8 +696,16 @@ function BatchSubtitleBlock({
         endUs: frameToUs(latest.endFrame),
       });
     };
+    const cancel = (pointer: PointerEvent) => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', cancel);
+      if (target.hasPointerCapture(pointer.pointerId)) target.releasePointerCapture(pointer.pointerId);
+      setDraft(null);
+    };
     target.addEventListener('pointermove', move);
     target.addEventListener('pointerup', up, { once: true });
+    target.addEventListener('pointercancel', cancel, { once: true });
   };
 
   const splitFromPointer = (clientX: number): number | null => {
