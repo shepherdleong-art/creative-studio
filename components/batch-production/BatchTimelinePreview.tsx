@@ -16,7 +16,9 @@ import {
 } from '@/lib/final-edit/types';
 import { defaultTextStyle } from '@/lib/media-core/cover-domain';
 import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
-import type { TextStyle } from '@/lib/media-core/cover-types';
+import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
+import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-title';
+import BatchCoverDraftPreview, { type BatchCoverPreviewAsset } from './BatchCoverDraftPreview';
 import styles from './batch-preview.module.css';
 
 const FPS = FINAL_EDIT_FPS;
@@ -36,6 +38,13 @@ export interface BatchTimelinePreviewProps {
   /** assetId → 代理预览地址（LUT 已烧入，色彩与正式渲染一致） */
   assetsById: Record<string, { previewUrl: string }>;
   coverUrl: string | null;
+  /** 提供时片头用客户端实时合成的封面草稿，不再等渲染产物（封面精调即改即看）。 */
+  coverDraft?: {
+    asset: BatchCoverPreviewAsset | null;
+    timeUs: number;
+    title: FrozenBatchCoverTitleConfig | null;
+    framing: CoverFraming | null;
+  } | null;
   subtitleCues: Array<{ id?: string; startUs: number; endUs: number; text: string }>;
   subtitleStyle?: TextStyle;
   narrationUrl: string | null;
@@ -81,6 +90,7 @@ export default function BatchTimelinePreview({
   clips,
   assetsById,
   coverUrl,
+  coverDraft,
   subtitleCues,
   subtitleStyle,
   narrationUrl,
@@ -498,10 +508,19 @@ export default function BatchTimelinePreview({
           <video ref={videoBRef} src={videoBSrc} className="pointer-events-none absolute h-px w-px opacity-0" muted playsInline preload="auto" aria-hidden="true" />
           <canvas ref={frameCanvasRef} width={size.width} height={size.height} className="absolute inset-0 h-full w-full" />
           {showCover && (
-            coverUrl
-              // eslint-disable-next-line @next/next/no-img-element
-              ? <img src={coverUrl} alt="片头封面" className="absolute inset-0 h-full w-full object-cover" />
-              : <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">片头封面</div>
+            coverDraft
+              ? <BatchCoverDraftPreview
+                fill
+                asset={coverDraft.asset}
+                timeUs={coverDraft.timeUs}
+                title={coverDraft.title}
+                framing={coverDraft.framing}
+                outputPreset={outputPreset}
+              />
+              : coverUrl
+                // eslint-disable-next-line @next/next/no-img-element
+                ? <img src={coverUrl} alt="片头封面" className="absolute inset-0 h-full w-full object-cover" />
+                : <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">片头封面</div>
           )}
           <svg
             className="pointer-events-none absolute inset-0 h-full w-full"

@@ -515,6 +515,7 @@ export default function BatchOutputEditor({
                       clips={clips}
                       assetsById={previewAssetsById}
                       coverUrl={coverUrl}
+                      coverDraft={{ asset: coverAsset, timeUs: view.coverTimeUs, title: view.coverTitle, framing: view.coverFraming }}
                       subtitleCues={view.subtitleCues}
                       subtitleStyle={effectiveSubtitleStyleDraft}
                       narrationUrl={narrationUrl}

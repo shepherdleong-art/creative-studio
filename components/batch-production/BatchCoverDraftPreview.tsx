@@ -27,6 +27,7 @@ interface BatchCoverDraftPreviewProps {
   framing?: CoverFraming | null;
   outputPreset: OutputPresetId;
   className?: string;
+  fill?: boolean;
 }
 
 /**
@@ -40,6 +41,7 @@ export default function BatchCoverDraftPreview({
   framing,
   outputPreset,
   className = '',
+  fill = false,
 }: BatchCoverDraftPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [sourceDimensions, setSourceDimensions] = useState<SourceDimensions | null>(null);
@@ -92,7 +94,7 @@ export default function BatchCoverDraftPreview({
 
   if (!asset) {
     return (
-      <div className={`flex aspect-[3/4] items-center justify-center rounded-xl bg-surface-subtle text-xs text-ink-tertiary ${className}`} aria-label="封面实时预览">
+      <div className={`${fill ? 'absolute inset-0 h-full w-full' : 'flex aspect-[3/4]'} items-center justify-center rounded-xl bg-surface-subtle text-xs text-ink-tertiary ${className}`} aria-label="封面实时预览">
         选择素材后预览封面
       </div>
     );
@@ -100,8 +102,10 @@ export default function BatchCoverDraftPreview({
 
   return (
     <figure
-      className={`relative mx-auto w-full max-w-full overflow-hidden rounded-xl bg-ink ${className}`}
-      style={{ aspectRatio: `${outputSize.width} / ${outputSize.height}` }}
+      className={fill
+        ? `absolute inset-0 h-full w-full overflow-hidden bg-ink ${className}`
+        : `relative mx-auto w-full max-w-full overflow-hidden rounded-xl bg-ink ${className}`}
+      style={fill ? undefined : { aspectRatio: `${outputSize.width} / ${outputSize.height}` }}
       aria-label="封面实时预览"
     >
       {asset.previewUrl ? (
