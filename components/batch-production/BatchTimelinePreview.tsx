@@ -98,6 +98,7 @@ export default function BatchTimelinePreview({
 
   const [playing, setPlaying] = useState(false);
   const [showSafeArea, setShowSafeArea] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -406,13 +407,19 @@ export default function BatchTimelinePreview({
     drivePlayhead(clamped);
   };
 
+  useEffect(() => {
+    const sync = () => setIsFullscreen(document.fullscreenElement === fullscreenRef.current);
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+
   const toggleFullscreen = () => {
     const root = fullscreenRef.current;
     if (!root || typeof document === 'undefined') return;
     if (document.fullscreenElement) {
-      void document.exitFullscreen();
+      void document.exitFullscreen().catch(() => undefined);
     } else {
-      void root.requestFullscreen?.();
+      void root.requestFullscreen?.().catch(() => undefined);
     }
   };
 
@@ -423,6 +430,47 @@ export default function BatchTimelinePreview({
 
   const videoASrc = slotClips[0] ? assetsById[slotClips[0].assetId]?.previewUrl : undefined;
   const videoBSrc = slotClips[1] ? assetsById[slotClips[1].assetId]?.previewUrl : undefined;
+
+  const renderControls = (overlay: boolean) => (
+    <div className={overlay ? styles.fullscreenControls : 'flex flex-wrap items-center gap-2'}>
+      <button
+        type="button"
+        className="btn-primary h-8 w-8 shrink-0 rounded-full text-xs"
+        aria-label={playing ? '暂停' : '播放'}
+        disabled={!active || sortedClips.length === 0}
+        onClick={togglePlayback}
+      >{playing ? 'Ⅱ' : '▶'}</button>
+      <span className="shrink-0 text-xs tabular-nums text-ink-secondary">{formatTime(playheadSec)} / {formatTime(totalSec)}</span>
+      <input
+        aria-label="播放位置"
+        type="range"
+        className="min-w-0 flex-1"
+        min={0}
+        max={Math.max(totalSec, 1 / FPS)}
+        step={1 / FPS}
+        value={Math.min(playheadSec, totalSec)}
+        onChange={(event) => seek(Number(event.target.value))}
+      />
+      <div className="flex shrink-0 items-center gap-1 rounded-lg bg-surface-subtle p-1" role="group" aria-label="预览内容切换">
+        <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'cover' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'cover'} onClick={() => choosePreviewMode('cover')}>封面</button>
+        <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'finished' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'finished'} onClick={() => choosePreviewMode('finished')}>成片</button>
+      </div>
+      <button
+        type="button"
+        className={`btn-secondary h-8 shrink-0 px-2 text-[11px] ${showSafeArea ? 'border-accent text-accent' : ''}`}
+        aria-label={showSafeArea ? '隐藏安全区' : '显示安全区'}
+        aria-pressed={showSafeArea}
+        onClick={() => setShowSafeArea((current) => !current)}
+      >安全区</button>
+      <button
+        type="button"
+        className="btn-secondary h-8 shrink-0 px-3 text-[11px]"
+        aria-label={isFullscreen ? '退出全屏' : '全屏'}
+        title={isFullscreen ? '退出全屏' : '全屏'}
+        onClick={toggleFullscreen}
+      >{isFullscreen ? '退出全屏' : '全屏'}</button>
+    </div>
+  );
 
   return (
     <div className={compact ? 'flex h-full min-h-0 flex-col gap-2' : 'space-y-2'} aria-label="成片实时预览">
@@ -467,39 +515,9 @@ export default function BatchTimelinePreview({
             <div className="absolute inset-0 flex items-center justify-center text-xs text-surface/70">没有可预览的片段</div>
           )}
         </div>
+        {isFullscreen && renderControls(true)}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="btn-primary h-8 w-8 shrink-0 rounded-full text-xs"
-          aria-label={playing ? '暂停' : '播放'}
-          disabled={!active || sortedClips.length === 0}
-          onClick={togglePlayback}
-        >{playing ? 'Ⅱ' : '▶'}</button>
-        <span className="shrink-0 text-xs tabular-nums text-ink-secondary">{formatTime(playheadSec)} / {formatTime(totalSec)}</span>
-        <input
-          aria-label="播放位置"
-          type="range"
-          className="min-w-0 flex-1"
-          min={0}
-          max={Math.max(totalSec, 1 / FPS)}
-          step={1 / FPS}
-          value={Math.min(playheadSec, totalSec)}
-          onChange={(event) => seek(Number(event.target.value))}
-        />
-        <div className="flex shrink-0 items-center gap-1 rounded-lg bg-surface-subtle p-1" role="group" aria-label="预览内容切换">
-          <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'cover' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'cover'} onClick={() => choosePreviewMode('cover')}>封面</button>
-          <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'finished' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'finished'} onClick={() => choosePreviewMode('finished')}>成片</button>
-        </div>
-        <button
-          type="button"
-          className={`btn-secondary h-8 shrink-0 px-2 text-[11px] ${showSafeArea ? 'border-accent text-accent' : ''}`}
-          aria-label={showSafeArea ? '隐藏安全区' : '显示安全区'}
-          aria-pressed={showSafeArea}
-          onClick={() => setShowSafeArea((current) => !current)}
-        >安全区</button>
-        <button type="button" className="btn-secondary h-8 shrink-0 px-3 text-[11px]" aria-label="全屏预览" title="全屏预览" onClick={toggleFullscreen}>全屏</button>
-      </div>
+      {!isFullscreen && renderControls(false)}
       <audio ref={narrationRef} preload="auto" src={narrationUrl ?? undefined} />
       <audio ref={bgmRef} preload="auto" loop src={bgm?.fileUrl} />
     </div>

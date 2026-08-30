@@ -17,3 +17,28 @@
   aspect-ratio: var(--batch-preview-ratio) !important;
   border-radius: 0;
 }
+
+.fullscreenShell:fullscreen {
+  position: relative;
+}
+
+.fullscreenControls {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  background: linear-gradient(to top, rgba(0, 0, 0, .72), rgba(0, 0, 0, 0));
+}
+.fullscreenControls,
+.fullscreenControls span,
+.fullscreenControls button { color: #fff; }
+.fullscreenControls button {
+  border-color: rgba(255, 255, 255, .28);
+  background: rgba(255, 255, 255, .14);
+}
+.fullscreenControls input[type='range'] { accent-color: #fff; }
