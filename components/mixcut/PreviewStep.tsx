@@ -53,6 +53,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const [seekRequestId, setSeekRequestId] = useState(0);
   const [message, setMessage] = useState('已从本地草稿恢复');
   const [busy, setBusy] = useState(false);
+  const [narrationGainPreview, setNarrationGainPreview] = useState<{ groupId: string; gainDb: number } | null>(null);
   const [previewStopRequestId, setPreviewStopRequestId] = useState(0);
   const [auditionStopRequestId, setAuditionStopRequestId] = useState(0);
   const [coverOpen, setCoverOpen] = useState(false);
@@ -251,14 +252,18 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       },
     });
   };
+  const persistedNarrationGainDb = group.script.narrationConfig.gainDb ?? NARRATION_GAIN_DB_DEFAULT;
+  const effectiveNarrationGainDb = narrationGainPreview?.groupId === group.id
+    ? narrationGainPreview.gainDb
+    : persistedNarrationGainDb;
   const previewNarrationGain = (gainDb: number) => {
-    const current = groupRef.current;
-    publishGroup({
-      ...current,
-      script: {
-        ...current.script,
-        narrationConfig: { ...current.script.narrationConfig, gainDb },
-      },
+    setNarrationGainPreview({ groupId: group.id, gainDb });
+  };
+  const commitNarrationGain = (gainDb: number) => {
+    const targetGroupId = group.id;
+    void applyGroup({ type: 'set_narration_gain', gainDb }).then(() => {
+      if (!mountedRef.current || groupRef.current.id !== targetGroupId) return;
+      setNarrationGainPreview((current) => current?.groupId === targetGroupId ? null : current);
     });
   };
   const closeCover = useCallback(() => setCoverOpen(false), []);
@@ -538,6 +543,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                     stopRequestId={previewStopRequestId}
                     active={active}
                     textTarget={null}
+                    narrationGainDb={effectiveNarrationGainDb}
                     onPlaybackStart={() => setAuditionStopRequestId((value) => value + 1)}
                     onPlayheadChange={setPlayheadSec}
                     onTextPositionChange={() => undefined}
@@ -643,16 +649,16 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
           <h4><Icon name="speaker" size={15} />口播音量</h4>
           <div className={styles.narrationSpeedSummary}>
             <span>整条口播音轨</span>
-            <strong>{(group.script.narrationConfig.gainDb ?? NARRATION_GAIN_DB_DEFAULT).toFixed(0)} dB</strong>
+            <strong>{effectiveNarrationGainDb.toFixed(0)} dB</strong>
           </div>
           <p className={styles.narrationSpeedCardHint}>只调整口播响度，不改变口播内容与成片时长</p>
           <NarrationGainControl
             idPrefix="mixcut-narration-sidebar-gain"
-            value={group.script.narrationConfig.gainDb ?? NARRATION_GAIN_DB_DEFAULT}
+            value={persistedNarrationGainDb}
             disabled={busy}
             ariaLabelPrefix="右侧口播音量"
             onPreview={previewNarrationGain}
-            onCommit={(gainDb) => void applyGroup({ type: 'set_narration_gain', gainDb })}
+            onCommit={commitNarrationGain}
           />
         </section>
 

@@ -180,7 +180,11 @@ assert.match(narrationGainControl, /min=\{NARRATION_GAIN_DB_MIN\}/, '口播音�
 assert.match(narrationGainControl, /max=\{NARRATION_GAIN_DB_MAX\}/, '口播音量上限必须来自统一规格');
 assert.match(narrationGainControl, /data-narration-gain-control/, '口播音量控件必须暴露稳定的验证入口');
 assert.match(narrationGainControl, /恢复默认/, '单条口播音量必须提供恢复默认入口');
-assert.match(finalPreview, /narrationGainDb: group\.script\.narrationConfig\.gainDb/, '单条预览必须把保存的口播增益送入音频电平计算');
+assert.match(finalPreview, /narrationGainDbOverride \?\? group\.script\.narrationConfig\.gainDb/, '单条预览必须以保存的口播增益作为未提交预览的回退值');
+assert.match(finalPreview, /narrationGainDb,/, '单条预览必须把当前口播增益送入音频电平计算');
+assert.match(bgmCard, /onPointerUp/, 'BGM 音量拖动结束后才提交保存');
+assert.match(bgmCard, /onKeyUp/, 'BGM 音量键盘调整结束后才提交保存');
+assert.doesNotMatch(bgmCard, /onChange=\{\(event\) => void onCommand\(\{ type: 'set_bgm_gain'/, 'BGM 音量拖动过程中不得逐步请求服务端');
 assert.doesNotMatch(previewStep, /onRegenerateWithSpeed/, '口播轨直接变速不得保留生成新版本回调');
 assert.match(previewStep, /<StyleEditor/, '正式第三步必须提供字体、字号、颜色、描边和位置等全局字幕样式');
 assert.match(timeline, /const PX_PER_SECOND = 60/, 'V2 时间轴必须使用冻结的 60 px/s 缩放并通过滚动容纳长内容');

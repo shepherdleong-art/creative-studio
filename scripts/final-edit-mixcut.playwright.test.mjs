@@ -581,6 +581,15 @@ try {
           savedGroup = { ...savedGroup, variants: [nextVariant] };
           return json({ view: nextVariant });
         }
+        if (body.type === 'set_bgm_gain') {
+          const nextVariant = {
+            ...currentVariant,
+            revision: currentVariant.revision + 1,
+            bgm: { ...currentVariant.bgm, gainDb: body.gainDb },
+          };
+          savedGroup = { ...savedGroup, variants: [nextVariant] };
+          return json({ view: nextVariant });
+        }
         return json({ view: currentVariant });
       }
       if (pathname === '/api/final-edit-variants/variant-e2e/render' && request.method() === 'POST') {
@@ -1476,6 +1485,17 @@ try {
     );
     await page.getByLabel('BGM 曲目').selectOption('bgm-e2e');
     await bgmCard.getByRole('button', { name: '试听', exact: true }).waitFor();
+
+    const bgmGainSlider = bgmCard.getByRole('slider', { name: '音量（dB）', exact: true });
+    const variantWritesBeforeBgmGain = variantPatchBodies.length;
+    await bgmGainSlider.fill('-20');
+    assert.equal(await bgmGainSlider.inputValue(), '-20', 'BGM 音量拖动时必须先更新本地草稿');
+    assert.equal(variantPatchBodies.length, variantWritesBeforeBgmGain, 'BGM 音量拖动过程中不得逐步请求服务端');
+    await bgmGainSlider.dispatchEvent('pointerup');
+    await expectEventually(
+      () => variantPatchBodies.filter((body) => body.type === 'set_bgm_gain' && body.gainDb === -20).length === 1,
+      'BGM 音量松手后必须只保存一次当前值',
+    );
 
     const sidebarSpeedSlider = page.getByRole('slider', { name: '右侧音频倍速拉条', exact: true });
     const sidebarSpeedNumber = page.getByRole('spinbutton', { name: '右侧音频倍速数值', exact: true });

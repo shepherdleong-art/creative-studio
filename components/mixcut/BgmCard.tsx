@@ -47,6 +47,8 @@ export function BgmCard({
   const [importing, setImporting] = useState(false);
   const [auditioning, setAuditioning] = useState(false);
   const [status, setStatus] = useState('');
+  const [bgmGainDraft, setBgmGainDraft] = useState(bgm.gainDb);
+  const bgmGainPendingRef = useRef<number | null>(null);
 
   const selectedTrackId = bgm.trackId || '';
   const selectedTrackName = tracks.find((track) => track.id === selectedTrackId)?.filename || '';
@@ -91,6 +93,12 @@ export function BgmCard({
     pauseAudio();
   }, [stopRequestId, pauseAudio]);
 
+  useEffect(() => {
+    bgmGainPendingRef.current = null;
+    const timer = window.setTimeout(() => setBgmGainDraft(bgm.gainDb), 0);
+    return () => window.clearTimeout(timer);
+  }, [bgm.gainDb, revision, scopeId]);
+
   useEffect(() => () => {
     const audio = audioRef.current;
     audio?.pause();
@@ -100,6 +108,19 @@ export function BgmCard({
   const chooseTrack = (trackId: string) => {
     stopAudition();
     void onCommand({ type: 'set_bgm', trackId: trackId || null });
+  };
+
+  const previewBgmGain = (nextValue: number) => {
+    const next = Number.isFinite(nextValue) ? Math.min(0, Math.max(-40, nextValue)) : 0;
+    bgmGainPendingRef.current = next;
+    setBgmGainDraft(next);
+  };
+
+  const commitBgmGain = (nextValue: number) => {
+    const next = Number.isFinite(nextValue) ? Math.min(0, Math.max(-40, nextValue)) : 0;
+    bgmGainPendingRef.current = null;
+    setBgmGainDraft(next);
+    void onCommand({ type: 'set_bgm_gain', gainDb: next });
   };
 
   const chooseFiles = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -218,13 +239,24 @@ export function BgmCard({
             min={-40}
             max={0}
             step={1}
-            defaultValue={bgm.gainDb}
-            key={`gain-${revision}`}
+            value={bgmGainDraft}
             disabled={disabled}
-            onChange={(event) => void onCommand({ type: 'set_bgm_gain', gainDb: Number(event.target.value) })}
+            onChange={(event) => previewBgmGain(Number(event.currentTarget.value))}
+            onPointerUp={(event) => {
+              if (bgmGainPendingRef.current !== null) commitBgmGain(Number(event.currentTarget.value));
+            }}
+            onPointerCancel={() => {
+              if (bgmGainPendingRef.current !== null) commitBgmGain(bgmGainPendingRef.current);
+            }}
+            onKeyUp={() => {
+              if (bgmGainPendingRef.current !== null) commitBgmGain(bgmGainPendingRef.current);
+            }}
+            onBlur={() => {
+              if (bgmGainPendingRef.current !== null) commitBgmGain(bgmGainPendingRef.current);
+            }}
             aria-label="音量（dB）"
           />
-          <span className={styles.ctlVal}>{bgm.gainDb} dB</span>
+          <span className={styles.ctlVal}>{bgmGainDraft} dB</span>
         </div>
         <div className={styles.ctlRow}>
           <span className={styles.ctlLab}>淡入</span>

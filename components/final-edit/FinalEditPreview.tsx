@@ -35,7 +35,7 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number) {
   }
 }
 
-export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, onPlaybackStart, onPlayheadChange, onTextPositionChange }: {
+export function FinalEditPreview({ group, variant, assets, selectedAsset, playheadSec, seekRequestId, stopRequestId, active = true, textTarget, narrationGainDb: narrationGainDbOverride, onPlaybackStart, onPlayheadChange, onTextPositionChange }: {
   group: FinalEditGroupView;
   variant: FinalEditVariantView;
   assets: FinalEditAssetView[];
@@ -45,6 +45,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   stopRequestId?: string | number;
   active?: boolean;
   textTarget: StyleTarget | null;
+  narrationGainDb?: number;
   onPlaybackStart?: () => void;
   onPlayheadChange: (timeSec: number) => void;
   onTextPositionChange: (target: StyleTarget, x: number, y: number, commit: boolean) => void;
@@ -114,6 +115,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const activeFramingOffsetX = activeFraming.offsetX;
   const activeFramingOffsetY = activeFraming.offsetY;
   const previewSize = OUTPUT_PRESETS[variant.outputPreset];
+  const narrationGainDb = narrationGainDbOverride ?? group.script.narrationConfig.gainDb;
 
   const setAudioLevels = useCallback((timeSec: number) => {
     const graph = audioGraphRef.current;
@@ -122,14 +124,14 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       playheadSec: timeSec,
       introSec: INTRO_SEC,
       bodyDurationSec,
-      narrationGainDb: group.script.narrationConfig.gainDb,
+      narrationGainDb,
       gainDb: variant.bgm.gainDb,
       fadeInSec: variant.bgm.fadeInSec,
       fadeOutSec: variant.bgm.fadeOutSec,
     });
     graph.narrationGain.gain.setValueAtTime(levels.narrationGain, graph.context.currentTime);
     graph.bgmGain.gain.setValueAtTime(levels.bgmGain, graph.context.currentTime);
-  }, [bodyDurationSec, group.script.narrationConfig.gainDb, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.bgm.gainDb]);
+  }, [bodyDurationSec, narrationGainDb, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.bgm.gainDb]);
 
   const pauseAllMedia = useCallback(() => {
     playingRef.current = false;
