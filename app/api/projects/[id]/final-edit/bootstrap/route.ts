@@ -6,8 +6,14 @@ import { getFinalEditTtsAdapter } from '@/lib/final-edit/adapters/tts-registry';
 import { isFinalEditAlignmentConfigured, recoverFinalEditPrepareJobs } from '@/lib/final-edit/runtime';
 import { wakeFinalEditWorker } from '@/lib/final-edit/worker';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
+import {
+  listReadableProjectScripts,
+  readableScriptShotSetId,
+} from '@/lib/media-core/project-script-reader';
+import { isScriptVisibleInContext } from '@/lib/media-core/script-visibility';
+import { isUsableMixcutScriptDraft } from '@/lib/media-core/script-draft-usable';
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: projectId } = await params;
     recoverFinalEditPrepareJobs();
@@ -15,11 +21,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const db = getDb();
     const project = db.prepare(`SELECT id, name FROM projects WHERE id=?`).get(projectId);
     if (!project) return NextResponse.json({ error: 'project_not_found', message: '项目不存在' }, { status: 404 });
-    const drafts = (db.prepare(`SELECT id, outputJson, provider, model, createdAt FROM script_drafts WHERE projectId=? ORDER BY createdAt DESC`).all(projectId) as Array<{ id: string; outputJson: string; provider: string; model: string; createdAt: string }>).flatMap((row) => {
+    const requestedShotSetId = new URL(request.url).searchParams.get('shotSetId') || undefined;
+    const validShotSetIds = new Set(
+      (db.prepare(`SELECT id FROM shot_sets WHERE projectId=?`).all(projectId) as Array<{ id: string }>).map((row) => row.id),
+    );
+    const drafts = listReadableProjectScripts(db, projectId).flatMap((row) => {
       try {
         const script = JSON.parse(row.outputJson) as { version?: number; title?: string; shotSetId?: string; targetDurationSec?: number; segments?: unknown[] };
-        if (![2, 3].includes(Number(script.version)) || !script.shotSetId || !script.segments?.length) return [];
-        return [{ id: row.id, version: script.version, title: script.title || '未命名脚本', shotSetId: script.shotSetId, targetDurationSec: script.targetDurationSec || 0, segmentCount: script.segments.length, provider: row.provider, model: row.model, createdAt: row.createdAt }];
+        if (!isUsableMixcutScriptDraft(script) || !script.segments?.length) return [];
+        const shotSetId = readableScriptShotSetId(row) || String(script.shotSetId || '');
+        if (!isScriptVisibleInContext({ shotSetId, requestedShotSetId, validShotSetIds })) return [];
+        return [{ id: row.id, version: script.version, title: script.title || '未命名脚本', shotSetId, targetDurationSec: script.targetDurationSec || 0, segmentCount: script.segments.length, provider: row.provider, model: row.model, createdAt: row.createdAt }];
       } catch { return []; }
     });
     const groups = db.prepare(`SELECT g.id, g.scriptDraftId, g.status, g.phase, g.narrationDurationUs, g.revision, g.createdAt, g.updatedAt, (SELECT COUNT(*) FROM final_edit_variants v WHERE v.groupId=g.id) AS variantCount FROM final_edit_groups g WHERE g.projectId=? ORDER BY g.createdAt DESC`).all(projectId);

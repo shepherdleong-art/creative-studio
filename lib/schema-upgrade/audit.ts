@@ -49,7 +49,7 @@ export interface SchemaUpgradeAuditRecord {
   version: 1;
   event: SchemaUpgradeAuditEvent;
   attemptId: string;
-  scope: 'batch-production' | 'video-provider-gateway';
+  scope: 'batch-production' | 'video-provider-gateway' | 'script-studio';
   at: string;
   recoveredByAttemptId?: string;
   result?: SchemaUpgradeAuditResult;
@@ -63,7 +63,7 @@ function isAuditRecord(value: unknown): value is SchemaUpgradeAuditRecord {
     && typeof record.event === 'string'
     && typeof record.attemptId === 'string'
     && typeof record.at === 'string'
-    && (record.scope === 'batch-production' || record.scope === 'video-provider-gateway');
+    && (record.scope === 'batch-production' || record.scope === 'video-provider-gateway' || record.scope === 'script-studio');
 }
 
 export async function appendSchemaUpgradeAudit(

@@ -195,7 +195,9 @@ export function buildMixcutTaskScriptSnapshot(input: {
   if (!input.shotSetId.trim()) throw new Error('shot_set_required');
   if (!editedNarrationText) throw new Error('narration_text_required');
   const source = input.sourceScript || null;
-  if (source && source.shotSetId !== input.shotSetId) throw new Error('script_shot_set_mismatch');
+  if (source && input.shotSetId.trim() && source.shotSetId && source.shotSetId !== input.shotSetId) {
+    throw new Error('script_shot_set_mismatch');
+  }
   const originalText = source ? sourceNarrationText(source) : '';
   const syncState = source ? getScriptSyncState(originalText, editedNarrationText) : 'modified';
   const originalSegments = source?.segments || [];
@@ -275,7 +277,9 @@ export function buildMixcutEditingScriptSnapshot(input: {
   if (normalized) return buildMixcutTaskScriptSnapshot({ ...input, editedNarrationText: normalized });
   if (!input.shotSetId.trim()) throw new Error('shot_set_required');
   const source = input.sourceScript || null;
-  if (source && source.shotSetId !== input.shotSetId) throw new Error('script_shot_set_mismatch');
+  if (source && input.shotSetId.trim() && source.shotSetId && source.shotSetId !== input.shotSetId) {
+    throw new Error('script_shot_set_mismatch');
+  }
   const originalText = source ? sourceNarrationText(source) : '';
   return {
     version: 2,

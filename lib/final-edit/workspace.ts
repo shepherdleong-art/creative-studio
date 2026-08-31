@@ -14,6 +14,11 @@ import { resolveStoragePath, toStorageRelativePath } from './storage-path.ts';
 import { buildMixcutContext } from './mixcut-context.ts';
 import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
 import {
+  listReadableProjectScripts,
+  readableScriptShotSetId,
+} from '../media-core/project-script-reader.ts';
+import { isScriptVisibleInContext } from '../media-core/script-visibility.ts';
+import {
   buildMixcutEditingScriptSnapshot,
   buildMixcutSemanticText,
   buildMixcutTaskScriptSnapshot,
@@ -434,19 +439,25 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
       throw new FinalEditError('narration_text_required', '请输入混剪文案');
     }
   }
-  const row = db.prepare(`SELECT projectId, outputJson, createdAt FROM script_drafts WHERE id = ?`).get(scriptDraftId) as { projectId: string; outputJson: string; createdAt: string } | undefined;
-  if (!row || row.projectId !== input.projectId) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
+  const row = listReadableProjectScripts(db, input.projectId).find((item) => item.id === scriptDraftId);
+  if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
-  if (!source || ![2, 3].includes(source.version) || !source.shotSetId || !Array.isArray(source.segments) || source.segments.length === 0) {
+  const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
+  if (!source || ![2, 3].includes(source.version) || !Array.isArray(source.segments) || source.segments.length === 0) {
     throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
   }
-  if (input.shotSetId && source.shotSetId !== input.shotSetId) throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
+  if (!isScriptVisibleInContext({
+    shotSetId,
+    requestedShotSetId: input.shotSetId || undefined,
+  })) {
+    throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
+  }
   try {
     return buildMixcutTaskScriptSnapshot({
       sourceDraftId: scriptDraftId,
       sourceScriptUpdatedAt: row.createdAt || null,
       sourceScript: source,
-      shotSetId: source.shotSetId,
+      shotSetId: String(input.shotSetId || shotSetId || ''),
       editedNarrationText: String(input.editedNarrationText == null ? source.segments.map((segment) => segment.narration || segment.subtitle || '').join('\n') : input.editedNarrationText),
     });
   } catch {
@@ -457,11 +468,16 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
 function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDraftInput, 'projectId' | 'scriptDraftId' | 'shotSetId' | 'editedNarrationText'>): ScriptSnapshot {
   const scriptDraftId = String(input.scriptDraftId || '').trim();
   if (!scriptDraftId) return buildMixcutEditingScriptSnapshot({ shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
-  const row = db.prepare(`SELECT projectId, outputJson, createdAt FROM script_drafts WHERE id=?`).get(scriptDraftId) as { projectId: string; outputJson: string; createdAt: string } | undefined;
-  if (!row || row.projectId !== input.projectId) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
+  const row = listReadableProjectScripts(db, input.projectId).find((item) => item.id === scriptDraftId);
+  if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
-  if (!source || ![2, 3].includes(source.version) || !source.shotSetId || !Array.isArray(source.segments)) throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
-  if (source.shotSetId !== input.shotSetId) throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
+  const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
+  if (!source || ![2, 3].includes(source.version) || !Array.isArray(source.segments)) {
+    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
+  }
+  if (!isScriptVisibleInContext({ shotSetId, requestedShotSetId: input.shotSetId || undefined })) {
+    throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
+  }
   return buildMixcutEditingScriptSnapshot({ sourceDraftId: scriptDraftId, sourceScriptUpdatedAt: row.createdAt || null, sourceScript: source, shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
 }
 

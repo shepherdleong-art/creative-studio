@@ -1,10 +1,8 @@
-/** V2 and V3 are both first-class Mixcut inputs; older rows stay on legacy read paths. */
+/** V2 和 V3 都是可用的 Mixcut 输入；可见性交给 script-visibility，不在这里做 shotSetId 过滤。 */
 export function isUsableMixcutScriptDraft(parsed: unknown): boolean {
   if (typeof parsed !== 'object' || parsed === null) return false;
   const value = parsed as Record<string, unknown>;
   return (value.version === 2 || value.version === 3)
-    && typeof value.shotSetId === 'string'
-    && value.shotSetId.length > 0
     && Array.isArray(value.segments)
     && value.segments.length > 0;
 }

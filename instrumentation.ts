@@ -41,4 +41,6 @@ export async function register(): Promise<void> {
   }
   const { startBatchSchedulerAfterReadiness } = await import('./lib/batch-production/bootstrap');
   void startBatchSchedulerAfterReadiness();
+  const { startScriptStudioSchedulerAfterReadiness } = await import('./lib/script-studio/bootstrap');
+  void startScriptStudioSchedulerAfterReadiness();
 }

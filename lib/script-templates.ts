@@ -1,5 +1,6 @@
 export interface ScriptTemplateDefinition {
   id: string;
+  version: number;
   name: string;
   slogan: string;
   example: string;
@@ -13,6 +14,7 @@ export interface ScriptTemplateDefinition {
 export const SCRIPT_TEMPLATES: readonly ScriptTemplateDefinition[] = [
   {
     id: 'pain_point',
+    version: 1,
     name: '直击痛点',
     slogan: '你是不是也…？',
     example: '从用户痛点切入，再给出解决证据。',
@@ -34,6 +36,7 @@ export const SCRIPT_TEMPLATES: readonly ScriptTemplateDefinition[] = [
   },
   {
     id: 'scene_seeding',
+    version: 1,
     name: '场景种草',
     slogan: '打造让人向往的生活场景',
     example: '用具体生活场景建立代入感。',
@@ -55,6 +58,7 @@ export const SCRIPT_TEMPLATES: readonly ScriptTemplateDefinition[] = [
   },
   {
     id: 'feature_showcase',
+    version: 1,
     name: '功能展示',
     slogan: '逐项展示核心功能',
     example: '按重要性展示功能和参数证据。',
@@ -76,6 +80,7 @@ export const SCRIPT_TEMPLATES: readonly ScriptTemplateDefinition[] = [
   },
   {
     id: 'emotional',
+    version: 1,
     name: '情感共鸣',
     slogan: '先讲一个故事',
     example: '用情绪和生活变化连接产品。',
@@ -97,6 +102,7 @@ export const SCRIPT_TEMPLATES: readonly ScriptTemplateDefinition[] = [
   },
   {
     id: 'comparison',
+    version: 1,
     name: '对比测评',
     slogan: '使用前 vs 使用后',
     example: '通过前后差异突出产品价值。',
@@ -118,6 +124,7 @@ export const SCRIPT_TEMPLATES: readonly ScriptTemplateDefinition[] = [
   },
   {
     id: 'unboxing',
+    version: 1,
     name: '开箱体验',
     slogan: '从拆包到使用全记录',
     example: '沿真实体验顺序介绍产品。',
@@ -139,6 +146,7 @@ export const SCRIPT_TEMPLATES: readonly ScriptTemplateDefinition[] = [
   },
   {
     id: 'problem_solving',
+    version: 1,
     name: '问题解决',
     slogan: '展示问题与解决方案',
     example: '抛出问题并用产品能力解决。',

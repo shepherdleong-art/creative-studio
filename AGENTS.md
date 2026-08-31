@@ -86,7 +86,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 
 ### `docs/reference/` — 深水区参考
 
-细节多、变动频繁的模块已下沉到这四份文档。**动到对应代码前先读它**，别只看下面的一句话摘要：
+细节多、变动频繁的模块已下沉到以下文档。**动到对应代码前先读它**，别只看下面的一句话摘要：
 
 | 文档 | 什么时候读 |
 | --- | --- |
@@ -94,6 +94,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/公司网关与COS中转.md` | 改公司网关、尺寸吸附、参考图交付、尾帧、COS |
 | `docs/reference/供应商与队列.md` | 新增/修改图片、脚本、视频供应商适配器 |
 | `docs/reference/打包与桌面运行.md` | 改打包脚本、快启脚本、Electron 桌面壳 |
+| `docs/reference/详情页智能脚本生成.md` | 改 `lib/script-studio/` 任何东西 |
 
 ### `lib/` 核心模块
 
@@ -106,6 +107,10 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 **批量生产** — 细节见 `docs/reference/批量生产模块.md`
 
 - `batch-production/` — 独立的批量生产 Module，自带 `{version, sql}` 迁移流（v1–v23，权威清单直接看 `schema.ts`）和 `readiness.ts` 闸门。红线：迁移只能追加；批量迁移必须过共享备份/锁/审计 gate，不许塞回会吞错误的旧 core runner；**只从 `media-core/` 导入，绝不从 `final-edit/` 导入**；静音占位素材只能预览，不得通过正式发布。
+
+**详情页智能脚本生成** — 细节见 `docs/reference/详情页智能脚本生成.md`
+
+- `script-studio/` — 独立的详情页智能脚本 Module，自带 `{version, sql}` 迁移流和共享 readiness gate；调度器默认关闭，真机执行需显式设置 `CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1`。只从 `media-core/` 导入，绝不从 `final-edit/` 导入。
 
 **供应商与队列** — 细节见 `docs/reference/供应商与队列.md`
 

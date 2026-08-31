@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { splitCoverTitle } from '../media-core/cover-domain.ts';
 import { isUsableMixcutScriptDraft } from '../media-core/script-draft-usable.ts';
+import {
+  listReadableProjectScripts,
+  readableScriptShotSetId,
+} from '../media-core/project-script-reader.ts';
+import { isScriptVisibleInContext } from '../media-core/script-visibility.ts';
 import type { StoredScriptOutput } from '../script-providers/types.ts';
 import { createProjectScript } from './scripts.ts';
 
@@ -12,11 +17,6 @@ export interface ScriptSyncResult {
   skipped: number;
   /** 同步后项目脚本的稳定身份列表(同一来源多次同步复用同一身份) */
   scripts: string[];
-}
-
-interface ScriptDraftRow {
-  id: string;
-  outputJson: string;
 }
 
 function contentRevisionOf(outputJson: string): string {
@@ -34,14 +34,14 @@ function coverTitleOf(script: StoredScriptOutput): unknown {
 /**
  * 把第 3 步明确保存的项目脚本草稿同步进批量脚本目录。
  *
- * - 来源身份是 script_drafts.id:同一来源重复同步只保留一份项目脚本,
- *   不按标题或正文猜测是否重复。
+ * - 来源身份是 script_drafts.id 或 project_scripts.id(project-script: 命名空间):
+ *   同一来源重复同步只保留一份项目脚本,不按标题或正文猜测是否重复。
  * - 正文由有序叙事段落重组(忽略空段);普通标题、结构化封面标题、
  *   shotSetId 归属与内容修订身份(草稿 outputJson 的 SHA-256)一起同步。
  * - 草稿更新后再次同步会更新项目脚本当前内容与修订身份;已开始批次
  *   只读自己的快照,不受这里的影响。
- * - 无效草稿(JSON 解析失败、非 V2/V3、无段、全空叙文、shotSetId 不属于
- *   当前项目)一律跳过。
+ * - 无效草稿(JSON 解析失败、非 V2/V3、无段、全空叙文、历史脚本 shotSetId
+ *   不属于当前项目)一律跳过。
  */
 export function syncProjectScripts(
   db: Database.Database,
@@ -53,14 +53,13 @@ export function syncProjectScripts(
       (db.prepare(`SELECT id FROM shot_sets WHERE projectId = ?`).all(projectId) as Array<{ id: string }>)
         .map(({ id }) => id),
     );
-    const draftRows = db.prepare(`
-      SELECT id, outputJson FROM script_drafts WHERE projectId = ? ORDER BY createdAt, id
-    `).all(projectId) as ScriptDraftRow[];
+    const draftRows = listReadableProjectScripts(db, projectId, { excludeArchived: false });
     db.prepare(`
       UPDATE batch_scripts
       SET catalogManaged = 1
       WHERE projectId = ? AND sourceKind = 'script_draft' AND ownerBatchVersionId IS NULL
-        AND sourceId IN (SELECT id FROM script_drafts WHERE projectId = ?)
+        AND (sourceId IN (SELECT id FROM script_drafts WHERE projectId = ?)
+          OR sourceId LIKE 'project-script:%')
     `).run(projectId, projectId);
     db.prepare(`
       UPDATE batch_scripts
@@ -82,7 +81,8 @@ export function syncProjectScripts(
         continue;
       }
       const script = parsed as StoredScriptOutput;
-      if (!validShotSetIds.has(script.shotSetId)) {
+      const shotSetId = readableScriptShotSetId(row) || String(script.shotSetId || '');
+      if (!isScriptVisibleInContext({ shotSetId, validShotSetIds })) {
         result.skipped += 1;
         continue;
       }
@@ -96,13 +96,13 @@ export function syncProjectScripts(
       }
       const scriptId = createProjectScript(db, projectId, {
         sourceKind: 'script_draft',
-        sourceId: row.id,
+        sourceId: row.kind === 'project' ? `project-script:${row.id}` : row.id,
         title: script.title || '',
         bodyText: narrationText,
         sourceVersion: String(script.version),
         metadata: {
           coverTitleJson: coverTitleOf(script),
-          shotSetId: script.shotSetId,
+          shotSetId,
           contentRevision: contentRevisionOf(row.outputJson),
           targetDurationSec: script.targetDurationSec,
         },

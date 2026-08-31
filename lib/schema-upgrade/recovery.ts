@@ -29,7 +29,7 @@ function isManifest(value: unknown): value is SchemaUpgradeBackupManifest {
   if (!value || typeof value !== 'object') return false;
   const manifest = value as Partial<SchemaUpgradeBackupManifest>;
   return manifest.kind === 'schema-upgrade'
-    && (manifest.scope === 'batch-production' || manifest.scope === 'video-provider-gateway')
+    && (manifest.scope === 'batch-production' || manifest.scope === 'video-provider-gateway' || manifest.scope === 'script-studio')
     && typeof manifest.applicationVersion === 'string'
     && typeof manifest.createdAt === 'string'
     && Array.isArray(manifest.sourceVersions)

@@ -21,6 +21,12 @@ import {
   beginScriptGenerationShutdown,
   waitForScriptGenerationsIdle,
 } from './script-generation-manager.ts';
+import {
+  abortRunningScriptStudioTasks,
+  getScriptStudioSchedulerController,
+  waitForScriptStudioTasksIdle,
+  type ScriptStudioSchedulerController,
+} from './script-studio/scheduler.ts';
 
 export interface GracefulShutdownResult {
   stopped: boolean;
@@ -36,6 +42,9 @@ export interface GracefulShutdownDependencies {
   waitForFinalEdit?: (timeoutMs: number) => Promise<number>;
   abortScriptGenerations?: () => number;
   waitForScriptGenerations?: (timeoutMs: number) => Promise<number>;
+  scriptStudioScheduler?: ScriptStudioSchedulerController | null;
+  abortScriptStudioTasks?: () => number;
+  waitForScriptStudioTasks?: (timeoutMs: number) => Promise<number>;
   abortFfmpeg?: () => number;
   waitForFfmpeg?: (timeoutMs: number) => Promise<number>;
   closeDatabase?: () => void;
@@ -134,6 +143,18 @@ async function performGracefulShutdown(
     }
   }
 
+  const scriptStudioScheduler = 'scriptStudioScheduler' in dependencies
+    ? dependencies.scriptStudioScheduler
+    : getScriptStudioSchedulerController();
+  let scriptStudioSchedulerStop: Promise<void> | null = null;
+  if (scriptStudioScheduler) {
+    try {
+      scriptStudioSchedulerStop = Promise.resolve(scriptStudioScheduler.stop());
+    } catch {
+      pendingTasks += 1;
+    }
+  }
+
   // 先让调度器停止领取，再广播到各执行层及其直接 FFmpeg 子进程。
   // 脚本生成管理器紧随停止领取：拒绝新任务并以 shutdown 原因取消运行中任务。
   let abortedScriptGenerationCount = 0;
@@ -156,6 +177,12 @@ async function performGracefulShutdown(
   } catch {
     pendingTasks += 1;
   }
+  let abortedScriptStudioCount = 0;
+  try {
+    abortedScriptStudioCount = dependencies.abortScriptStudioTasks?.() ?? abortRunningScriptStudioTasks();
+  } catch {
+    pendingTasks += 1;
+  }
 
   let abortedFfmpegCount = 0;
   try {
@@ -167,6 +194,9 @@ async function performGracefulShutdown(
   if (schedulerStop && !(await waitForStep(schedulerStop, remainingBudget()))) {
     pendingTasks += 1;
   }
+  if (scriptStudioSchedulerStop && !(await waitForStep(scriptStudioSchedulerStop, remainingBudget()))) {
+    pendingTasks += 1;
+  }
 
   try {
     pendingTasks += await waitForCountStep(
@@ -176,6 +206,16 @@ async function performGracefulShutdown(
     );
   } catch {
     pendingTasks += Math.max(1, abortedBatchTaskCount);
+  }
+
+  try {
+    pendingTasks += await waitForCountStep(
+      dependencies.waitForScriptStudioTasks ?? waitForScriptStudioTasksIdle,
+      remainingBudget(),
+      abortedScriptStudioCount,
+    );
+  } catch {
+    pendingTasks += Math.max(1, abortedScriptStudioCount);
   }
 
   try {

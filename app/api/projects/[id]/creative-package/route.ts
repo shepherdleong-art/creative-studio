@@ -7,6 +7,7 @@ import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
 import { resolveProjectExportDirName } from '@/lib/project-export-dir';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
+import { listReadableProjectScripts } from '@/lib/media-core/project-script-reader';
 
 export const runtime = 'nodejs';
 
@@ -60,11 +61,11 @@ export async function GET(
       kind: string; displayName: string; relativePath: string; mimeType: string; sourceJobId: string | null;
     }>;
 
-    // Latest script draft
-    const scriptDraft = db.prepare(`
-      SELECT outputJson FROM script_drafts
-      WHERE projectId = ? ORDER BY createdAt DESC LIMIT 1
-    `).get(projectId) as { outputJson: string } | undefined;
+    // 新核心层优先：取当前项目脚本的当前版本；没有时回退历史最新草稿。
+    const readableScripts = listReadableProjectScripts(db, projectId);
+    const scriptDraft = readableScripts.find((row) => row.kind === 'project' && row.currentRevisionId)
+      ?? readableScripts.find((row) => row.kind === 'project')
+      ?? readableScripts[0];
 
     // Build entries
     const entries: ZipImageEntry[] = [];

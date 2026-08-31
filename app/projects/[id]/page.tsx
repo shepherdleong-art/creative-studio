@@ -7,7 +7,8 @@ import { Icon } from '@/components/ui/Icon';
 import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
 import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
-import ScriptPanel from '@/components/ScriptPanel';
+import ScriptStudioPanel from '@/components/script-studio/ScriptStudioPanel';
+// 旧版 ScriptPanel 保留但不挂载为主入口：历史数据仍走旧路由兼容读取。
 import VideoGenerationPanel from '@/components/VideoGenerationPanel';
 import MixcutWorkspace from '@/components/mixcut/MixcutWorkspace';
 import AssetUploadGrid, { AssetGridItem } from '@/components/AssetUploadGrid';
@@ -594,7 +595,7 @@ export default function ProjectDetailPage() {
                 onDeleteAsset={handleDeleteAsset}
               />
             )}
-            {activeTab === 'script' && <ScriptPanel projectId={project.id} />}
+            {activeTab === 'script' && <ScriptStudioPanel projectId={project.id} />}
             {activeTab === 'video' && (
               <div className="video-generation-section">
                 <div className="video-generation-heading">

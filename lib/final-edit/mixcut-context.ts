@@ -6,6 +6,12 @@ import { probeVideoMedia } from '../ffmpeg.ts';
 import type { StoredScriptOutput } from '../script-providers/types.ts';
 import { resolveStoragePath } from './storage-path.ts';
 import { videoJobNotRejectedSql } from '../media-core/video-job-rejection.ts';
+import {
+  listReadableProjectScripts,
+  readableScriptShotSetId,
+  type ReadableProjectScriptRow,
+} from '../media-core/project-script-reader.ts';
+import { isScriptVisibleInContext } from '../media-core/script-visibility.ts';
 import type { MixcutContextResponse } from './types.ts';
 
 // Pure, dependency-injected (db + storageRoot passed in — never getDb()/
@@ -42,14 +48,6 @@ interface ProjectRow {
 interface ShotSetRow {
   id: string;
   name: string;
-  createdAt: string;
-}
-
-interface ScriptDraftRow {
-  id: string;
-  provider: string;
-  model: string;
-  outputJson: string;
   createdAt: string;
 }
 
@@ -247,17 +245,20 @@ export async function buildMixcutContext(
     };
   });
 
-  // Rule: script_drafts.outputJson parsed; only V2/V3 + usable shotSetId/segments.
-  const draftRows = db.prepare(`
-    SELECT id, provider, model, outputJson, createdAt FROM script_drafts WHERE projectId = ? ORDER BY createdAt DESC
-  `).all(projectId) as ScriptDraftRow[];
+  // Rule: project_scripts(新核心层) ∪ script_drafts(历史兼容)，只解析 V2/V3 内容，
+  // 可见性统一交给 isScriptVisibleInContext；空 shotSetId 项目级脚本可见。
+  const draftRows = listReadableProjectScripts(db, projectId);
   const drafts: MixcutContextResponse['drafts'] = [];
   for (const row of draftRows) {
     let parsed: unknown;
     try { parsed = JSON.parse(row.outputJson); } catch { continue; }
     if (!isUsableMixcutScriptDraft(parsed)) continue;
     const script = parsed as StoredScriptOutput;
-    if (!validShotSetIds.has(script.shotSetId)) continue;
+    if (!isScriptVisibleInContext({
+      shotSetId: readableScriptShotSetId(row),
+      requestedShotSetId: requestedShotSetId || undefined,
+      validShotSetIds,
+    })) continue;
     // fullScript is a derived convenience field and can be absent or stale in
     // historical V2 rows. Rebuild the narration from the ordered source
     // segments so Phase 2 never sends drifted text to TTS.
@@ -269,12 +270,12 @@ export async function buildMixcutContext(
     drafts.push({
       id: row.id,
       version: script.version,
-      shotSetId: script.shotSetId,
+      shotSetId: readableScriptShotSetId(row) || script.shotSetId || '',
       title: script.title || '',
       narrationText,
       targetDurationSec: Number(script.targetDurationSec) || 0,
-      provider: row.provider,
-      model: row.model,
+      provider: row.provider || '',
+      model: row.model || '',
       createdAt: row.createdAt,
     });
   }
