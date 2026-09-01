@@ -296,7 +296,7 @@ export async function buildMixcutContext(
       FROM video_jobs
       WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
         AND ${videoJobNotRejectedSql(db)}
-      ORDER BY createdAt
+      ORDER BY createdAt, rowid
     `).all(projectId, currentShotSetId) as VideoJobRow[];
 
     const safeRows = videoRows

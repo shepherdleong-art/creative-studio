@@ -112,10 +112,13 @@ export async function POST(
       }
 
       // 友好展示名（D5）：批量同 shot 多条运镜按请求原始顺序续号（现有任务数
-      // 为基数，逐条 +1）。createdAt 逐条加 1ms，保证 (createdAt, id) 排名与
-      // 请求顺序、持久化版次一致；物理文件名仍由队列生成，不受影响。
+      // 为基数，逐条 +1）。整批写同一 createdAt——与 C4 场景任务同款约定，
+      // 读取端（列表 API / Mixcut / ZIP）用 rowid 决胜得到「最新批次在前、
+      // 批内按提交顺序」，不再出现批内倒序（V03→V01）。本批行都持久化了
+      // displayName，不依赖 (createdAt, id) 派生版次；物理文件名仍由队列
+      // 生成，不受影响。
       const versionBase = countVideoJobsForShot(db, shotId);
-      const batchBaseMs = Date.now();
+      const batchCreatedAt = new Date().toISOString();
       items.forEach((item, index) => {
         const videoJobId = uuidv4();
         const p = providerCache.get(item.providerId)!;
@@ -129,7 +132,7 @@ export async function POST(
         insert.run(
           videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId,
           item.providerId, p.model, item.templateId, item.prompt, item.durationSec, multiShot,
-          new Date(batchBaseMs + index).toISOString(), displayName,
+          batchCreatedAt, displayName,
         );
         videoJobIds.push(videoJobId);
       });

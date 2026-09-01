@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { CORE_DB_MIGRATIONS } from '../lib/db-migrations.ts';
 import {
-  compareProjectJobsByCreation,
   sortProjectJobsByCreation,
   sqliteTimestampMs,
   type ProjectJobOrderRow,
@@ -40,18 +39,8 @@ assert.deepEqual(
   ['b-0', 'b-1', 'a-0', 'a-1', 'a-2', 'legacy-submitted', 'legacy-none'],
   '批次 B 在 A 前，批内 index 升序，legacy 行按旧时间列回退且无时间行垫底',
 );
-// 状态不参与排序：同一输入改状态后顺序不变。
-assert.equal(
-  compareProjectJobsByCreation(
-    { id: 'x', createdAt: batchBTime, creationIndex: 0 },
-    { id: 'y', createdAt: batchATime, creationIndex: 0 },
-  ),
-  compareProjectJobsByCreation(
-    { id: 'x', createdAt: batchBTime, creationIndex: 0 },
-    { id: 'y', createdAt: batchATime, creationIndex: 0 },
-  ),
-  '排序比较与状态字段无关',
-);
+// 「状态不参与排序」的真实覆盖在下方内存库集成段：UPDATE jobs SET
+// status='succeeded' 后重查，顺序不变。
 
 // ---- 内存库集成：与真实 jobs 表结构一起验证 ----
 const db = new Database(':memory:');

@@ -130,7 +130,7 @@ export async function GET(
       LEFT JOIN video_prompt_templates vpt ON vpt.id = vj.templateId
       LEFT JOIN image_assets ia ON ia.id = vj.sourceImageId
       WHERE vj.shotSetId = ?
-      ORDER BY vj.createdAt DESC
+      ORDER BY vj.createdAt DESC, vj.rowid ASC
     `).all(shotSetId) as Array<Record<string, unknown> & { posterImagePath?: string | null }>;
 
     // 读 API 同时返回物理 filename（播放 URL 用）与 displayName（所有用户可见名称）。

@@ -188,5 +188,32 @@ insertJob.run('created-1', 'shot-1', 'tpl-push', '01-LH122K3-B1-沙发-缓慢推
 assert.equal(resolveVideoJobDisplayNames(db, ['created-1']).get('created-1'), '01-LH122K3-B1-沙发-缓慢推近-V04.mp4');
 assert.equal(resolveVideoJobDisplayNames(db, ['old-1']).get('old-1'), '01-LH122K3-B1-沙发-缓慢推近-V01.mp4', '新行插入不改变旧行派生');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 批量视频批内顺序（复核 F5，对齐 C4 的「最新批次在前、批内按提交顺序」）：
+// 批量创建整批写同一 createdAt，读取端用 rowid 决胜。这里镜像各读取路由的
+// 实际 ORDER BY，证明排序语义成立。
+// ─────────────────────────────────────────────────────────────────────────────
+insertJob.run('batchA-1', 'shot-2', 'tpl-push', '02-LH122K3-B1-沙发-缓慢推近-V01.mp4', '2026-01-08 09:00:00');
+insertJob.run('batchA-2', 'shot-2', 'tpl-orbit', '02-LH122K3-B1-沙发-环绕-V02.mp4', '2026-01-08 09:00:00');
+insertJob.run('batchA-3', 'shot-2', null, '02-LH122K3-B1-沙发-自定义-V03.mp4', '2026-01-08 09:00:00');
+insertJob.run('batchB-1', 'shot-2', 'tpl-push', '02-LH122K3-B1-沙发-缓慢推近-V04.mp4', '2026-01-08 10:00:00');
+insertJob.run('batchB-2', 'shot-2', 'tpl-orbit', '02-LH122K3-B1-沙发-环绕-V05.mp4', '2026-01-08 10:00:00');
+const listOrder = (db.prepare(`
+  SELECT id FROM video_jobs WHERE shotSetId = 'ss-1' ORDER BY createdAt DESC, rowid ASC
+`).all() as Array<{ id: string }>).map((row) => row.id);
+assert.deepEqual(
+  listOrder,
+  ['batchB-1', 'batchB-2', 'batchA-1', 'batchA-2', 'batchA-3', 'created-1', 'new-1', 'orphan-2', 'orphan-1', 'old-3', 'old-2', 'old-1'],
+  '列表 API（createdAt DESC, rowid ASC）：最新批次在前，批内按提交顺序（V01→V02→V03），不再倒序',
+);
+const ascOrder = (db.prepare(`
+  SELECT id FROM video_jobs WHERE shotSetId = 'ss-1' ORDER BY createdAt, rowid
+`).all() as Array<{ id: string }>).map((row) => row.id);
+assert.deepEqual(
+  ascOrder,
+  ['old-1', 'old-2', 'old-3', 'orphan-1', 'orphan-2', 'new-1', 'created-1', 'batchA-1', 'batchA-2', 'batchA-3', 'batchB-1', 'batchB-2'],
+  'Mixcut/ZIP 读取（createdAt ASC, rowid）：整时间升序，批内仍按提交顺序',
+);
+
 db.close();
 console.log('video output filename tests passed');
