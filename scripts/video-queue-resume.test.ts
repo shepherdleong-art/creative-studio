@@ -197,14 +197,16 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
   db.prepare(`UPDATE video_jobs SET status = 'succeeded' WHERE id IN ('job-old', 'job-new')`).run();
   // 批量提交的整批任务共享同一 createdAt,批内决胜必须走 rowid(提交顺序),
   // 不得回落到 id(UUID)随机序——与列表 API 的排序口径一致。
+  // id 必须按逆字典序插入:顺序命名(1→2→3)会让 ORDER BY id 与 ORDER BY rowid
+  // 结果相同,断言退化成恒真,bug 存在时也绿。
   const batchCreatedAt = '2026-08-03T00:00:00.000Z';
-  insertVideoJob('job-batch-1', 'project-order', { createdAt: batchCreatedAt });
-  insertVideoJob('job-batch-2', 'project-order', { createdAt: batchCreatedAt });
-  insertVideoJob('job-batch-3', 'project-order', { createdAt: batchCreatedAt });
-  assert.equal(queueModule.claimNextVideoJob('project-order').job?.id, 'job-batch-1', '批内同 createdAt 时按 rowid 领取(提交顺序)');
-  assert.equal(queueModule.claimNextVideoJob('project-order').job?.id, 'job-batch-2', '批内第二条按提交顺序领取');
-  assert.equal(queueModule.claimNextVideoJob('project-order').job?.id, 'job-batch-3', '批内第三条按提交顺序领取');
-  db.prepare(`UPDATE video_jobs SET status = 'succeeded' WHERE id IN ('job-batch-1', 'job-batch-2', 'job-batch-3')`).run();
+  insertVideoJob('job-batch-c', 'project-order', { createdAt: batchCreatedAt });
+  insertVideoJob('job-batch-b', 'project-order', { createdAt: batchCreatedAt });
+  insertVideoJob('job-batch-a', 'project-order', { createdAt: batchCreatedAt });
+  assert.equal(queueModule.claimNextVideoJob('project-order').job?.id, 'job-batch-c', '批内同 createdAt 时按 rowid 领取(提交顺序)');
+  assert.equal(queueModule.claimNextVideoJob('project-order').job?.id, 'job-batch-b', '批内第二条按提交顺序领取');
+  assert.equal(queueModule.claimNextVideoJob('project-order').job?.id, 'job-batch-a', '批内第三条按提交顺序领取');
+  db.prepare(`UPDATE video_jobs SET status = 'succeeded' WHERE id IN ('job-batch-a', 'job-batch-b', 'job-batch-c')`).run();
 }
 
 // needs_check 自动续跑领取:持有远端 task_id 的任务转 running 继续轮询
@@ -219,17 +221,19 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
   assert.equal(videoJobAttempt('resume-job'), 1, '续跑领取会计入尝试次数');
 }
 
-// needs_check 批内同 createdAt:决胜同样走 rowid,续跑领取保持提交顺序
+// needs_check 批内同 createdAt:决胜同样走 rowid,续跑领取保持提交顺序。
+// id 必须按逆字典序插入(先 b 后 a):顺序命名会让 ORDER BY id 与
+// ORDER BY rowid 结果相同,断言退化成恒真,bug 存在时也绿。
 {
   insertProject('project-resume-order');
   insertImageAsset('img-project-resume-order', 'project-resume-order');
   const resumeBatchCreatedAt = '2026-08-04T00:00:00.000Z';
-  insertVideoJob('resume-job-a', 'project-resume-order', { status: 'needs_check', createdAt: resumeBatchCreatedAt });
   insertVideoJob('resume-job-b', 'project-resume-order', { status: 'needs_check', createdAt: resumeBatchCreatedAt });
-  db.prepare(`UPDATE video_jobs SET providerTaskId = 'remote-task-a' WHERE id = 'resume-job-a'`).run();
+  insertVideoJob('resume-job-a', 'project-resume-order', { status: 'needs_check', createdAt: resumeBatchCreatedAt });
   db.prepare(`UPDATE video_jobs SET providerTaskId = 'remote-task-b' WHERE id = 'resume-job-b'`).run();
-  assert.equal(queueModule.claimNeedsCheckVideoJob('project-resume-order')?.id, 'resume-job-a', 'needs_check 批内同 createdAt 按 rowid 领取');
-  assert.equal(queueModule.claimNeedsCheckVideoJob('project-resume-order')?.id, 'resume-job-b', 'needs_check 批内第二条按提交顺序续跑');
+  db.prepare(`UPDATE video_jobs SET providerTaskId = 'remote-task-a' WHERE id = 'resume-job-a'`).run();
+  assert.equal(queueModule.claimNeedsCheckVideoJob('project-resume-order')?.id, 'resume-job-b', 'needs_check 批内同 createdAt 按 rowid 领取');
+  assert.equal(queueModule.claimNeedsCheckVideoJob('project-resume-order')?.id, 'resume-job-a', 'needs_check 批内第二条按提交顺序续跑');
 }
 
 // --- P0-c:适配器内部 AbortError 不得误判为用户取消 ---
