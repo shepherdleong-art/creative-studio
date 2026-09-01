@@ -428,6 +428,7 @@ function validateNarrationPlaybackRate(playbackRate: number): void {
 function validateNarrationGainDb(gainDb: number): void {
   if (!Number.isFinite(gainDb)) throw new FinalEditError('invalid_narration_gain', '口播音量必须是有限数字');
 }
+
 function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'projectId' | 'scriptDraftId' | 'shotSetId' | 'editedNarrationText'>): ScriptSnapshot {
   const scriptDraftId = String(input.scriptDraftId || '').trim();
   if (!scriptDraftId) {
@@ -456,6 +457,8 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
     return buildMixcutTaskScriptSnapshot({
       sourceDraftId: scriptDraftId,
       sourceScriptUpdatedAt: row.createdAt || null,
+      sourceScriptRevisionId: row.currentRevisionId ?? null,
+      sourceScriptRevisionNumber: row.revisionNumber ?? null,
       sourceScript: source,
       shotSetId: String(input.shotSetId || shotSetId || ''),
       editedNarrationText: String(input.editedNarrationText == null ? source.segments.map((segment) => segment.narration || segment.subtitle || '').join('\n') : input.editedNarrationText),
@@ -478,7 +481,7 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
   if (!isScriptVisibleInContext({ shotSetId, requestedShotSetId: input.shotSetId || undefined })) {
     throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
   }
-  return buildMixcutEditingScriptSnapshot({ sourceDraftId: scriptDraftId, sourceScriptUpdatedAt: row.createdAt || null, sourceScript: source, shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
+  return buildMixcutEditingScriptSnapshot({ sourceDraftId: scriptDraftId, sourceScriptUpdatedAt: row.createdAt || null, sourceScriptRevisionId: row.currentRevisionId ?? null, sourceScriptRevisionNumber: row.revisionNumber ?? null, sourceScript: source, shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
 }
 
 function assetsForScript(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string): AssetRow[] {
@@ -977,6 +980,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         editedNarrationText: String(group.editedNarrationText || script.editedNarrationText || script.fullScript || ''),
         syncState: group.scriptSyncState === 'modified' ? 'modified' : 'synced',
         sourceScriptUpdatedAt: group.sourceScriptUpdatedAt == null ? null : String(group.sourceScriptUpdatedAt),
+        sourceScriptRevisionId: script.sourceScriptRevisionId ?? null,
+        sourceScriptRevisionNumber: script.sourceScriptRevisionNumber == null ? null : Number(script.sourceScriptRevisionNumber),
         narrationConfig,
         selectedMaterialKeys: selectedKeys,
       },

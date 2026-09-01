@@ -127,6 +127,8 @@ export interface FinalEditGroupView {
     editedNarrationText: string;
     syncState: 'synced' | 'modified';
     sourceScriptUpdatedAt: string | null;
+    sourceScriptRevisionId: string | null;
+    sourceScriptRevisionNumber: number | null;
     narrationConfig: { providerId: string; voice: string; speed: number; playbackRate: number; gainDb: number };
     selectedMaterialKeys: string[];
   };
@@ -208,6 +210,11 @@ export interface MixcutContextResponse {
     provider: string;
     model: string;
     createdAt: string;
+    /** 'project' = 新核心层项目脚本（空 shotSetId 项目级可见）；'legacy' = script_drafts 历史行。 */
+    sourceKind: 'project' | 'legacy';
+    /** 项目脚本当前 revision 身份；历史行固定为 null。用于“源脚本有新版本”提示，不暴露任务快照。 */
+    sourceRevisionId: string | null;
+    sourceRevisionNumber: number | null;
   }>;
   videoAssets: Array<{
     videoJobId: string;

@@ -492,6 +492,20 @@ try {
               narrationConfig: { ...savedGroup.script.narrationConfig, gainDb: body.gainDb },
             },
           };
+        } else if (body.type === 'set_mixcut_script_state') {
+          savedGroup = {
+            ...savedGroup,
+            revision: savedGroup.revision + 1,
+            script: {
+              ...savedGroup.script,
+              editedNarrationText: body.editedNarrationText,
+              ...(body.scriptDraftId
+                ? { sourceDraftId: body.scriptDraftId, sourceScriptRevisionId: 'ps-rev-2', sourceScriptRevisionNumber: 2, importedNarrationText: '项目脚本第二版。' }
+                : {}),
+              narrationConfig: { ...savedGroup.script.narrationConfig, providerId: body.providerId, voice: body.voice, speed: body.speed },
+              selectedMaterialKeys: body.selectedMaterialKeys,
+            },
+          };
         } else if (body.type === 'apply_cover_editor') {
           const currentVariant = savedGroup.variants.find((variant) => variant.id === body.variantId);
           assert.ok(currentVariant, 'cover command variant must exist');
@@ -1649,6 +1663,58 @@ try {
     await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
     await page.getByText('魅力女友', { exact: true }).click();
     assert.equal(await page.getByText(/^当前选中：/).textContent(), '当前选中：魅力女友', '选中状态也只显示友好名称，不能再次露出英文音色 ID');
+
+    // C1：项目级脚本（空 shotSetId）必须进入单条混剪脚本下拉；已有混剪保留快照文案，
+    // 只在源脚本 revision 更新时提供显式「同步最新版本」，同步经 set_mixcut_script_state
+    // 自动保存链写回并用服务端返回的快照身份清除提示。
+    // 先等上一轮音色点击的防抖自动保存落完，否则迟到的 PATCH 会在重置后
+    // 重建 editingGroup，让刷新后的 latestGroup 变回基础脚本。
+    await page.waitForTimeout(1500);
+    context.drafts = [
+      { id: 'ps-e2e', version: 3, shotSetId: '', title: '项目脚本', narrationText: '项目脚本第二版。', targetDurationSec: 15, provider: '', model: '', createdAt: '2026-07-25T00:00:00.000Z', sourceKind: 'project', sourceRevisionId: 'ps-rev-2', sourceRevisionNumber: 2 },
+      ...context.drafts.filter((draft) => draft.id !== 'ps-e2e'),
+    ];
+    generatedGroups.clear();
+    editingGroup = null;
+    savedGroup = {
+      ...createFormalGroup(),
+      status: 'editing',
+      phase: 'editing',
+      script: {
+        ...createFormalGroup().script,
+        sourceDraftId: 'ps-e2e',
+        sourceScriptRevisionId: 'ps-rev-1',
+        sourceScriptRevisionNumber: 1,
+        importedNarrationText: '项目脚本第一版。',
+        editedNarrationText: '项目脚本第一版。',
+      },
+    };
+    groupPatchBodies.length = 0;
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
+    const scriptTextarea = page.getByPlaceholder('输入 15～30 秒口播文案…');
+    await scriptTextarea.waitFor();
+    assert.equal(await scriptTextarea.inputValue(), '项目脚本第一版。', '刷新后已有混剪必须保留快照文案，不得被当前 revision 静默替换');
+    assert.match(
+      await page.locator('select option[value="ps-e2e"]').textContent(),
+      /V3 · 项目脚本 · 15s · 项目脚本 · 当前版本 V2 ·/,
+      '项目脚本必须显示当前版本 Vn，不得显示空 provider/model 斜杠',
+    );
+    const updateHint = page.locator('[data-testid="mixcut-source-script-update"]');
+    await updateHint.waitFor();
+    assert.match(await updateHint.textContent(), /源脚本有新版本/, '源脚本 revision 落后时必须显示新版本提示');
+    await updateHint.getByRole('button', { name: '同步最新版本' }).click();
+    await expectEventually(
+      () => {
+        const command = groupPatchBodies.at(-1);
+        return command?.type === 'set_mixcut_script_state'
+          && command.scriptDraftId === 'ps-e2e'
+          && command.editedNarrationText === '项目脚本第二版。';
+      },
+      '同步最新版本必须经 set_mixcut_script_state 自动保存链提交新 revision 文案',
+    );
+    await expectEventually(async () => (await updateHint.count()) === 0, '同步落库后必须用服务端返回的快照身份清除新版本提示');
+    assert.equal(await scriptTextarea.inputValue(), '项目脚本第二版。', '无手改文案时同步必须直接采用新 revision 正文');
 
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');

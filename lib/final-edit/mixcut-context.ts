@@ -277,6 +277,9 @@ export async function buildMixcutContext(
       provider: row.provider || '',
       model: row.model || '',
       createdAt: row.createdAt,
+      sourceKind: row.kind,
+      sourceRevisionId: row.currentRevisionId,
+      sourceRevisionNumber: row.revisionNumber,
     });
   }
 

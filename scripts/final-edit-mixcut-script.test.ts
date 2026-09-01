@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  buildMixcutEditingScriptSnapshot,
   buildMixcutTaskScriptSnapshot,
   buildMixcutSemanticText,
   getScriptSyncState,
@@ -157,5 +158,33 @@ assert.equal(manual.source, 'manual');
 assert.equal(manual.sourceDraftId, null);
 assert.equal(manual.scriptSyncState, 'modified');
 assert.equal(manual.segments.length, 2);
+
+// 源脚本 revision 身份：创建任务/编辑快照时必须与 sourceScriptUpdatedAt 一起写入；
+// 手工快照与旧快照（缺字段）继续兼容为 null/undefined。
+const withRevisionIdentity = buildMixcutTaskScriptSnapshot({
+  sourceDraftId: 'ps-1',
+  sourceScriptUpdatedAt: '2026-08-31T00:00:00.000Z',
+  sourceScriptRevisionId: 'psr-2',
+  sourceScriptRevisionNumber: 2,
+  sourceScript: source,
+  shotSetId: 'set-a',
+  editedNarrationText: '第一句。\n第二句！',
+});
+assert.equal(withRevisionIdentity.sourceScriptRevisionId, 'psr-2');
+assert.equal(withRevisionIdentity.sourceScriptRevisionNumber, 2);
+assert.equal(manual.sourceScriptRevisionId, null, '手工快照没有源脚本，revision 身份必须是 null');
+assert.equal(synced.sourceScriptRevisionId, null, '未提供 revision 身份时快照必须落显式 null，与旧快照缺字段同样按 null 兼容读取');
+
+const editingWithIdentity = buildMixcutEditingScriptSnapshot({
+  sourceDraftId: 'ps-1',
+  sourceScriptUpdatedAt: '2026-08-31T00:00:00.000Z',
+  sourceScriptRevisionId: 'psr-3',
+  sourceScriptRevisionNumber: 3,
+  sourceScript: source,
+  shotSetId: 'set-a',
+  editedNarrationText: '',
+});
+assert.equal(editingWithIdentity.sourceScriptRevisionId, 'psr-3', '编辑快照（空文案路径）也必须携带 revision 身份');
+assert.equal(editingWithIdentity.sourceScriptRevisionNumber, 3);
 
 console.log('final-edit mixcut script tests passed');

@@ -37,6 +37,9 @@ export interface MixcutTaskScriptSnapshot {
   source: 'module3' | 'manual';
   sourceDraftId: string | null;
   sourceScriptUpdatedAt: string | null;
+  /** 源脚本 revision 身份（project_scripts 才有）。旧快照缺字段时按 null 兼容读取。 */
+  sourceScriptRevisionId?: string | null;
+  sourceScriptRevisionNumber?: number | null;
   sourceScriptVersion: number | null;
   title: string;
   coverTitleParts?: { primary: string; secondary: string; source?: 'model' | 'system_split' | 'system_composed' };
@@ -187,6 +190,8 @@ function usableShotIds(source: MixcutSourceScript | null): string[] {
 export function buildMixcutTaskScriptSnapshot(input: {
   sourceDraftId?: string | null;
   sourceScriptUpdatedAt?: string | null;
+  sourceScriptRevisionId?: string | null;
+  sourceScriptRevisionNumber?: number | null;
   sourceScript?: MixcutSourceScript | null;
   shotSetId: string;
   editedNarrationText: string;
@@ -252,6 +257,8 @@ export function buildMixcutTaskScriptSnapshot(input: {
     source: source ? 'module3' : 'manual',
     sourceDraftId: source ? (input.sourceDraftId || null) : null,
     sourceScriptUpdatedAt: source ? (input.sourceScriptUpdatedAt || null) : null,
+    sourceScriptRevisionId: source ? (input.sourceScriptRevisionId ?? null) : null,
+    sourceScriptRevisionNumber: source ? (input.sourceScriptRevisionNumber ?? null) : null,
     sourceScriptVersion: source?.version || null,
     title: source?.title || '手工混剪文案',
     ...(source?.coverTitleParts ? { coverTitleParts: source.coverTitleParts } : {}),
@@ -269,6 +276,8 @@ export function buildMixcutTaskScriptSnapshot(input: {
 export function buildMixcutEditingScriptSnapshot(input: {
   sourceDraftId?: string | null;
   sourceScriptUpdatedAt?: string | null;
+  sourceScriptRevisionId?: string | null;
+  sourceScriptRevisionNumber?: number | null;
   sourceScript?: MixcutSourceScript | null;
   shotSetId: string;
   editedNarrationText: string;
@@ -286,6 +295,8 @@ export function buildMixcutEditingScriptSnapshot(input: {
     source: source ? 'module3' : 'manual',
     sourceDraftId: source ? (input.sourceDraftId || null) : null,
     sourceScriptUpdatedAt: source ? (input.sourceScriptUpdatedAt || null) : null,
+    sourceScriptRevisionId: source ? (input.sourceScriptRevisionId ?? null) : null,
+    sourceScriptRevisionNumber: source ? (input.sourceScriptRevisionNumber ?? null) : null,
     sourceScriptVersion: source?.version || null,
     title: source?.title || '手工混剪文案',
     ...(source?.coverTitleParts ? { coverTitleParts: source.coverTitleParts } : {}),
