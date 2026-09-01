@@ -180,6 +180,7 @@ export function planDirectionBriefs(input: PlanDirectionBriefsInput): DirectionS
   const eligible = input.sellingPoints.filter(isSellingPointEvidenceUsable);
   const pointUsage = new Map<string, number>();
   const themeUsage = new Map<string, number>();
+  const typeUsage = new Map<string, number>();
 
   return input.plans.map((plan) => {
     const score = (mainTheme: string): ScoredPoint[] => eligible.map((point) => ({
@@ -231,14 +232,23 @@ export function planDirectionBriefs(input: PlanDirectionBriefsInput): DirectionS
     }
 
     const requiredIds = new Set(required.map((item) => item.point.id));
-    const optional = ranked
-      .filter((item) => !requiredIds.has(item.point.id))
-      .slice(0, Math.max(0, candidateLimit - required.length));
+    const optionalPool = ranked.filter((item) => !requiredIds.has(item.point.id));
+    // 可选槽位先补给本轮尚未使用的方向内类型：类型分数是硬优先，
+    // 仅靠排序时惩罚无法让未使用的次级类型上位，多方向会拿到完全相同的卖点包。
+    // 方向类型池之外的卖点不参与这次提拔，保证方向匹配不被稀释。
+    const freshTyped = optionalPool.filter((item) => item.typeScore > 0
+      && (typeUsage.get(item.point.pointType) ?? 0) === 0
+      && (pointUsage.get(item.point.id) ?? 0) === 0);
+    const optional = [
+      ...freshTyped,
+      ...optionalPool.filter((item) => !freshTyped.includes(item)),
+    ].slice(0, Math.max(0, candidateLimit - required.length));
 
     for (const item of [...required, ...optional]) {
       pointUsage.set(item.point.id, (pointUsage.get(item.point.id) ?? 0) + 1);
       const key = themeKeyOf(item.point);
       themeUsage.set(key, (themeUsage.get(key) ?? 0) + 1);
+      typeUsage.set(item.point.pointType, (typeUsage.get(item.point.pointType) ?? 0) + 1);
     }
 
     const mainThemeTitle = required[0] ? themeTitleOf(required[0].point) : '';

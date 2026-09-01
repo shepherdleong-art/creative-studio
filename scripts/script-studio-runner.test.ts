@@ -330,6 +330,33 @@ assert.equal(crossPageTiles.every((tile) => !tile.imageBase64.startsWith('p1-t')
 const legacyTiles = evidenceTilesForPoint({ sourcePageIndex: 1, tileRefs: ['tile_2'] }, tileSet);
 assert.equal(legacyTiles.some((tile) => tile.imageBase64 === 'p1-t2'), true);
 
+// 二次核验单点图预算硬生效：6 条引用各自带相邻片时不得膨胀到 18 图。
+const bigTileSet: TileSetResult = {
+  pages: [{
+    pageIndex: 0, imageAssetId: 'img-c', filename: 'c.png', sourceWidth: 100, sourceHeight: 100, degraded: false,
+    tiles: Array.from({ length: 18 }, (_, index) => fakeTile(0, index, `big-t${index + 1}`)),
+  }],
+  totalTiles: 18,
+  maxImagesPerRequest: 50,
+  degraded: false,
+};
+const sixRefs = {
+  evidenceRefs: [1, 4, 7, 10, 13, 16].map((tileNumber) => ({ pageIndex: 0, tileRef: `tile_${tileNumber}` })),
+};
+const capped = evidenceTilesForPoint(sixRefs, bigTileSet, 6);
+assert.equal(capped.length <= 6, true, `单条卖点不得突破 6 图预算（实际 ${capped.length}）`);
+assert.deepEqual(
+  capped.map((tile) => tile.imageBase64),
+  ['big-t1', 'big-t4', 'big-t7', 'big-t10', 'big-t13', 'big-t16'],
+  '预算耗尽前必须优先保留全部精确切片',
+);
+const expanded = evidenceTilesForPoint({ evidenceRefs: [{ pageIndex: 0, tileRef: 'tile_3' }] }, bigTileSet, 6);
+assert.deepEqual(
+  expanded.map((tile) => tile.imageBase64),
+  ['big-t3', 'big-t2', 'big-t4'],
+  '引用较少时精确片在前、相邻片在后',
+);
+
 // 证据边界 fail closed：卖点库全部不可用时任务明确失败（可用证据不足），不得产出零引用脚本。
 const currentBeforeLock = getCurrentLibraryRevision(db, 'p1')!;
 manualEditLibraryRevision(db, 'p1', currentBeforeLock.sellingPoints.map((point) => ({

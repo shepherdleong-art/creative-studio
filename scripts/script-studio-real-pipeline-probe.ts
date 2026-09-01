@@ -22,8 +22,9 @@ const { createTask, getTask } = await import('../lib/script-studio/tasks.ts');
 const { executeScriptStudioTask } = await import('../lib/script-studio/runner.ts');
 
 const PROVIDER_ID = 'a94f6d47-4266-4b06-bbd4-89d273f06dbc';
-const TILE = path.resolve('outputs/detail-page-probe/tiles/p1-t01.jpg');
-const OUT_ROOT = path.resolve('outputs/script-studio-real-smoke');
+const { dataRoot } = await import('../lib/data-root.ts');
+const TILE = path.join(dataRoot(), 'outputs', 'detail-page-probe', 'tiles', 'p1-t01.jpg');
+const OUT_ROOT = path.join(dataRoot(), 'outputs', 'script-studio-real-smoke');
 fs.mkdirSync(OUT_ROOT, { recursive: true });
 if (!isCosMediaConfigured()) throw new Error('COS 未配置');
 if (!fs.existsSync(TILE)) throw new Error(`缺少真实探针切片：${TILE}`);

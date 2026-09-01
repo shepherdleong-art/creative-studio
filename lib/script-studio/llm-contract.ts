@@ -3,6 +3,8 @@
  * 这里刻意不引用 script-generation-v3.ts，避免 script-studio 间接依赖 final-edit。
  */
 export interface ScriptStudioCompleteJsonRequest {
+  /** 任务快照固定的模型；适配层收到后会固定为实际调用模型。 */
+  model?: string;
   systemPrompt: string;
   userPrompt: string;
   temperature?: number;

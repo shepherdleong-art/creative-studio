@@ -135,6 +135,47 @@ assert.equal(batched.verifiedHighRisk, 6);
 assert.equal(batched.reprobeRequestCount, 2, '任务指标必须记录真实核验请求数');
 assert.deepEqual(batched.points.map((item) => item.title), manyPoints.map((item) => item.title));
 
+// 非法证据位置 fail closed：pageIndex=999、tileRef=not_a_tile 不得被当作可用证据。
+const invalidLocation = await runEvidenceGate([
+  point({
+    title: '黑色外观',
+    factText: '产品外观为黑色',
+    pointType: 'appearance',
+    evidenceQuote: '产品外观为黑色',
+    riskLevel: 'low',
+    sourcePageIndex: 999,
+    tileRefs: ['not_a_tile'],
+  }),
+], { reprobe: verifiedReprobe, pageCount: 2, pageTileCounts: [5, 5] });
+assert.equal(invalidLocation.points[0]?.evidenceGate, 'failed', '页码越界 + 非法切片引用必须判为证据失败');
+assert.equal(invalidLocation.points[0]?.usable, false);
+
+const tileOutOfRange = await runEvidenceGate([
+  point({
+    title: '黑色外观',
+    factText: '产品外观为黑色',
+    pointType: 'appearance',
+    evidenceQuote: '产品外观为黑色',
+    riskLevel: 'low',
+    sourcePageIndex: 0,
+    tileRefs: ['tile_99'],
+  }),
+], { reprobe: verifiedReprobe, pageCount: 1, pageTileCounts: [5] });
+assert.equal(tileOutOfRange.points[0]?.evidenceGate, 'failed', '切片引用越过该页切片数必须判为证据失败');
+
+const badFormatNoRange = await runEvidenceGate([
+  point({
+    title: '黑色外观',
+    factText: '产品外观为黑色',
+    pointType: 'appearance',
+    evidenceQuote: '产品外观为黑色',
+    riskLevel: 'low',
+    sourcePageIndex: 0,
+    tileRefs: ['not_a_tile'],
+  }),
+], { reprobe: verifiedReprobe });
+assert.equal(badFormatNoRange.points[0]?.evidenceGate, 'failed', '未提供页数范围时非法切片格式同样 fail closed');
+
 // 信号已取消时，剩余高风险卖点按「未核验」排除，不再发起核验调用。
 const aborted = await runEvidenceGate([point()], { reprobe: verifiedReprobe, signal: AbortSignal.abort() });
 assert.equal(aborted.points[0]?.evidenceGate, 'failed');

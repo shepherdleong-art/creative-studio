@@ -1,6 +1,7 @@
 import type { EvidenceReprobe, EvidenceTile } from './adapters/reprobe.ts';
 import type { LibrarySellingPointInput } from './libraries.ts';
 import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
+import { parseTileRefIndex } from './tiling.ts';
 import type { ScriptStudioEvidenceGate, ScriptStudioPointType } from './types.ts';
 
 const MATERIAL_WORDS = /\b(?:真皮|实木|棉麻|铝合金|不锈钢|岩板|金属|玻璃|陶瓷|尼龙|橡胶|钛|碳纤维|食品级|环保材质)\b/u;
@@ -30,6 +31,10 @@ export interface EvidenceGateDeps {
   batchSize?: number;
   /** 单次视觉请求的图片预算；超出时自动切新批。 */
   maxImagesPerBatch?: number;
+  /** 来源页数；提供时页码越界的引用判定为非法证据位置。 */
+  pageCount?: number;
+  /** 每页切片数；提供时切片引用越界同样判定为非法证据位置。 */
+  pageTileCounts?: number[];
 }
 
 interface ReprobeBatchItem {
@@ -122,16 +127,30 @@ export function classifyRisk(point: Pick<LibrarySellingPointInput, 'title' | 'fa
 
 export function structuralGatePassed(
   point: Pick<LibrarySellingPointInput, 'title' | 'factText' | 'evidenceQuote' | 'sourcePageIndex' | 'tileRefs' | 'evidenceRefs'>,
+  options: { pageCount?: number; pageTileCounts?: number[] } = {},
 ): { ok: boolean; issues: string[] } {
   const issues: string[] = [];
   if (!point.title?.trim()) issues.push('title_required');
   if (!point.factText?.trim()) issues.push('fact_text_required');
   if (!point.evidenceQuote?.trim()) issues.push('evidence_quote_required');
-  // 证据定位以配对结构为准：至少一条引用带页码，二次核验才能找到正确页面。
+  // 证据定位 fail closed：至少一条引用带页码；提供来源范围时页码不得越界；
+  // 非空切片引用必须能按 tile_N/数字解析且不得越过该页切片数。
+  // pageIndex=999、tileRef=not_a_tile 这类非法位置不得被当作可用证据。
   const refs = normalizeEvidenceRefs(point);
   if (!refs.some((ref) => ref.pageIndex !== null)) {
     issues.push('tile_location_required');
   }
+  const locationInvalid = refs.some((ref) => {
+    if (ref.tileRef && parseTileRefIndex(ref.tileRef) === null) return true;
+    if (typeof options.pageCount === 'number' && ref.pageIndex !== null && ref.pageIndex >= options.pageCount) return true;
+    if (Array.isArray(options.pageTileCounts) && ref.pageIndex !== null && ref.tileRef) {
+      const tileIndex = parseTileRefIndex(ref.tileRef);
+      const tileCount = options.pageTileCounts[ref.pageIndex];
+      if (tileIndex !== null && tileCount !== undefined && tileIndex >= tileCount) return true;
+    }
+    return false;
+  });
+  if (locationInvalid) issues.push('tile_location_invalid');
   return { ok: issues.length === 0, issues };
 }
 
@@ -153,7 +172,10 @@ export async function runEvidenceGate(
   // 第一遍同步判定：结构门禁与促销排除不需要模型调用，只有高风险卖点进入二次核验队列。
   const reprobeQueue: number[] = [];
   input.forEach((point, index) => {
-    const structural = structuralGatePassed(point);
+    const structural = structuralGatePassed(point, {
+      pageCount: deps.pageCount,
+      pageTileCounts: deps.pageTileCounts,
+    });
     const isPromotion = isPromotionPoint(point);
     const riskLevel = classifyRisk(point);
     if (!structural.ok || isPromotion) {

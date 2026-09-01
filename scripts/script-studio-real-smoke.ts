@@ -21,15 +21,16 @@ const { createScriptGenerator } = await import('../lib/script-studio/generator.t
 const { createTask, getTask } = await import('../lib/script-studio/tasks.ts');
 const { executeScriptStudioTask } = await import('../lib/script-studio/runner.ts');
 
+const { dataRoot } = await import('../lib/data-root.ts');
 const PROVIDER_ID = 'a94f6d47-4266-4b06-bbd4-89d273f06dbc';
-const OUT_ROOT = path.resolve('outputs/script-studio-real-smoke');
+const OUT_ROOT = path.join(dataRoot(), 'outputs', 'script-studio-real-smoke');
 fs.mkdirSync(OUT_ROOT, { recursive: true });
 if (!isCosMediaConfigured()) {
   throw new Error('COS 未配置，无法执行公司供应商媒体传输');
 }
 
 function imageRows(): Array<{ id: string; filename: string; usage: string; path: string }> {
-  const db = new Database(path.resolve('data/workbench.db'), { readonly: true, fileMustExist: true });
+  const db = new Database(path.join(dataRoot(), 'data', 'workbench.db'), { readonly: true, fileMustExist: true });
   const rows = db.prepare(`
     SELECT id, filename, usage, path FROM image_assets
     WHERE role='input' AND usage IN ('scene_seed','shot_source')

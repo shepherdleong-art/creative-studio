@@ -14,9 +14,10 @@ const { completeJson } = await import('../lib/script-providers/index.ts');
 const { isCosMediaConfigured } = await import('../lib/cos-media.ts');
 const { createVisionExtractor } = await import('../lib/script-studio/adapters/vision-extract.ts');
 
+const { dataRoot } = await import('../lib/data-root.ts');
 const PROVIDER_ID = 'a94f6d47-4266-4b06-bbd4-89d273f06dbc';
-const TILE_DIR = path.resolve('outputs/detail-page-probe/tiles');
-const OUT_ROOT = path.resolve('outputs/script-studio-real-smoke');
+const TILE_DIR = path.join(dataRoot(), 'outputs', 'detail-page-probe', 'tiles');
+const OUT_ROOT = path.join(dataRoot(), 'outputs', 'script-studio-real-smoke');
 fs.mkdirSync(OUT_ROOT, { recursive: true });
 if (!isCosMediaConfigured()) throw new Error('COS 未配置');
 

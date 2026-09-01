@@ -22,7 +22,8 @@ const [{ completeJson, getAvailableProviders }, { createVisionExtractor }, { til
 ]);
 
 const providers = selectScriptStudioRuntimeProviders(getAvailableProviders());
-const db = new Database(path.resolve('data/workbench.db'), { readonly: true, fileMustExist: true });
+const { dataRoot } = await import('../lib/data-root.ts');
+const db = new Database(path.join(dataRoot(), 'data', 'workbench.db'), { readonly: true, fileMustExist: true });
 const source = db.prepare(`
   SELECT imageAssetIdsJson FROM script_studio_source_sets WHERE id = ? AND projectId = ?
 `).get(SOURCE_SET_ID, PROJECT_ID) as { imageAssetIdsJson: string } | undefined;

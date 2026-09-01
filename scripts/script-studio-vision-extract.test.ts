@@ -112,6 +112,22 @@ assert.deepEqual(
 );
 assert.equal(result.batchMetrics?.every((metric) => metric.elapsedMs >= 0), true);
 
+// 不传任何选项时默认值必须等于 limits.ts 权威值（批 6、并发 4、超时 120s、重试 2）。
+let defaultInFlight = 0;
+let defaultMaxInFlight = 0;
+const defaultCalls: number[] = [];
+const defaultExtractor = createVisionExtractor(async (request) => {
+  defaultInFlight += 1;
+  defaultMaxInFlight = Math.max(defaultMaxInFlight, defaultInFlight);
+  defaultCalls.push((JSON.parse(request.userPrompt) as { tileRange: { start: number; end: number } }).tileRange.end);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  defaultInFlight -= 1;
+  return { productName: '', category: '', brand: '', sellingPoints: [] };
+}, { id: 'fake', model: 'fake' });
+await defaultExtractor.extract({ pages: [makePage(43)] });
+assert.equal(defaultCalls.length, 8, '默认批大小 6：43 片应拆 8 批');
+assert.equal(defaultMaxInFlight, 4, '默认并发必须使用 limits 权威值 4，而不是模块内硬编码的 3');
+
 // 小页不拆批：10 片单次调用。
 let smallCalls = 0;
 const smallExtractor = createVisionExtractor(async () => {

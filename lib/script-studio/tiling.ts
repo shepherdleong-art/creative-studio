@@ -177,6 +177,17 @@ async function tileSinglePage(
   };
 }
 
+// 模型按 prompt 约定返回 1-based 的 "tile_N" 编号；兼容裸数字与数字字符串。
+// 解析失败时不猜（返回 null 由调用方兜底），避免核验时看错切片。
+export function parseTileRefIndex(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) return value >= 1 ? value - 1 : null;
+  if (typeof value !== 'string') return null;
+  const match = value.trim().match(/(\d+)/);
+  if (!match) return null;
+  const parsed = Number.parseInt(match[1]!, 10);
+  return parsed >= 1 ? parsed - 1 : null;
+}
+
 export function selectEvidenceTiles(
   page: TilePageResult,
   tileIndex: number,

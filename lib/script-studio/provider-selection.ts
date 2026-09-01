@@ -52,3 +52,19 @@ export function selectScriptStudioRuntimeProviders(
     text: selected,
   };
 }
+
+/**
+ * 任务快照固定的模型不得随供应商配置漂移：创建任务时保存 providerId + providerModel，
+ * 执行时必须原样使用，任务显示模型才是实际调用模型。历史任务没有快照时沿用解析结果。
+ */
+export function pinRuntimeProviderModel(
+  providers: { vision: ScriptStudioRuntimeProvider; text: ScriptStudioRuntimeProvider },
+  snapshotModel: unknown,
+): { vision: ScriptStudioRuntimeProvider; text: ScriptStudioRuntimeProvider } {
+  const model = typeof snapshotModel === 'string' ? snapshotModel.trim() : '';
+  if (!model) return providers;
+  return {
+    vision: { ...providers.vision, model },
+    text: { ...providers.text, model },
+  };
+}

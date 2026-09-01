@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import type { ProviderMeta } from '../lib/script-providers/types.ts';
-import { selectScriptStudioRuntimeProviders } from '../lib/script-studio/provider-selection.ts';
+import { pinRuntimeProviderModel, selectScriptStudioRuntimeProviders } from '../lib/script-studio/provider-selection.ts';
 
 function provider(overrides: Partial<ProviderMeta> & Pick<ProviderMeta, 'id' | 'name' | 'model'>): ProviderMeta {
   return {
@@ -111,6 +111,26 @@ assert.throws(
   ], 'gemini-text-only'),
   /不支持图片读取|支持视觉/,
   '显式选择仅文本模型时必须在任务提交前失败关闭',
+);
+
+// 任务快照固定模型：执行时不得从当前配置重新解析（排队期间配置从 A 改 B，实际调用仍为 A）。
+const pinned = pinRuntimeProviderModel(
+  { vision: { id: 'company-luna', model: 'GPT-5-6-Luna-Standard' }, text: { id: 'company-luna', model: 'GPT-5-6-Luna-Standard' } },
+  'GPT-5-6-Luna-Flash',
+);
+assert.deepEqual(pinned, {
+  vision: { id: 'company-luna', model: 'GPT-5-6-Luna-Flash' },
+  text: { id: 'company-luna', model: 'GPT-5-6-Luna-Flash' },
+}, '快照模型必须同时固定视觉与文本执行');
+assert.deepEqual(
+  pinRuntimeProviderModel(pinned, ''),
+  pinned,
+  '历史任务没有模型快照时沿用解析结果',
+);
+assert.deepEqual(
+  pinRuntimeProviderModel(pinned, 42),
+  pinned,
+  '非法快照模型不得覆盖解析结果',
 );
 
 console.log('script-studio-runtime.test.ts: ok');

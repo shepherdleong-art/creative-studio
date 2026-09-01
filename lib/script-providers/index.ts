@@ -109,6 +109,8 @@ function assertExternalProviderExecutionAvailable(
 
 export async function completeJson<T>(input: {
   providerId: string;
+  /** 任务快照固定的模型；提供时覆盖当前供应商配置，避免排队期间配置漂移改变实际调用。 */
+  model?: string;
   systemPrompt: string;
   userPrompt: string;
   temperature?: number;
@@ -121,7 +123,8 @@ export async function completeJson<T>(input: {
   onReasoningDelta?: (accumulated: string) => void;
 }): Promise<T> {
   checkConfigured(input.providerId);
-  const runtime = resolveStoredScriptProvider(input.providerId);
+  const storedRuntime = resolveStoredScriptProvider(input.providerId);
+  const runtime = input.model?.trim() ? { ...storedRuntime, model: input.model.trim() } : storedRuntime;
   const capability = input.images?.length ? 'media' : 'model';
   let images: ChatImagePart[] | undefined = input.images;
   if (runtime.executionScope === 'company') {

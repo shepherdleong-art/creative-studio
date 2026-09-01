@@ -76,6 +76,9 @@ export function validateScriptContent(
       if (!keyword.trim()) issues.push(`empty_visual_keyword:${segment.id}`);
     }
   }
+  // 口播必须落在已核验事实上：整条脚本至少引用一条卖点，零引用不得通过。
+  const referencedIds = new Set(input.segments.flatMap((segment) => segment.sellingPointIdRefs || []));
+  if (referencedIds.size === 0) issues.push('selling_point_refs_required');
   for (const usage of input.sellingPointUsage || []) {
     if (usage.status === 'used' && !usableIds.has(usage.sellingPointId)) {
       issues.push(`used_unusable_selling_point:${usage.sellingPointId}`);

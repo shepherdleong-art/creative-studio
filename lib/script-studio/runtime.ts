@@ -10,6 +10,7 @@ import { createVisionClosedQuestionReprobe, type EvidenceReprobe } from './adapt
 import { createVisionExtractor, type VisionExtractor } from './adapters/vision-extract.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import {
+  pinRuntimeProviderModel,
   selectScriptStudioRuntimeProviders,
   type ScriptStudioRuntimeProvider,
 } from './provider-selection.ts';
@@ -26,9 +27,10 @@ export function resolveRuntimeProviders(requestedProviderId?: string | null): {
   return selectScriptStudioRuntimeProviders(getAvailableProviders(), requestedProviderId);
 }
 
-function providerCompleteJson(providerId: string, projectId: string, taskId: string, refType: string) {
+function providerCompleteJson(providerId: string, model: string, projectId: string, taskId: string, refType: string) {
   return (input: ScriptStudioCompleteJsonRequest) => completeJson({
     providerId,
+    model,
     ...input,
     usageContext: {
       enabled: true,
@@ -53,12 +55,16 @@ export function createRuntimeDeps(
   const requestedProviderId = typeof inputSnapshot.providerId === 'string'
     ? inputSnapshot.providerId
     : null;
-  const providers = resolveRuntimeProviders(requestedProviderId);
+  // 执行模型以任务快照为准：排队期间供应商配置从模型 A 改为 B，实际调用仍用快照里的 A。
+  const providers = pinRuntimeProviderModel(
+    resolveRuntimeProviders(requestedProviderId),
+    inputSnapshot.providerModel,
+  );
   const projectId = task.projectId;
   const taskId = task.id;
   const limits = getScriptStudioLimits();
   const visionExtractor = createVisionExtractor(
-    providerCompleteJson(providers.vision.id, projectId, taskId, 'script-studio-vision'),
+    providerCompleteJson(providers.vision.id, providers.vision.model, projectId, taskId, 'script-studio-vision'),
     providers.vision,
     {
       maxTokens: limits.maxTokensPerPage,
@@ -69,10 +75,10 @@ export function createRuntimeDeps(
     },
   );
   const reprobe = createVisionClosedQuestionReprobe(
-    providerCompleteJson(providers.text.id, projectId, taskId, 'script-studio-reprobe'),
+    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-reprobe'),
   );
   const generator = createScriptGenerator(
-    providerCompleteJson(providers.text.id, projectId, taskId, 'script-studio-generate'),
+    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-generate'),
     providers.text,
     { maxTokens: getScriptStudioLimits().maxTokensPerPage },
   );

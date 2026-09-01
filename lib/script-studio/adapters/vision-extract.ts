@@ -1,4 +1,5 @@
 import type { LibrarySellingPointInput } from '../libraries.ts';
+import { getScriptStudioLimits } from '../limits.ts';
 import {
   normalizeEvidenceRefs,
   normalizeHierarchyRole,
@@ -117,10 +118,12 @@ export function createVisionExtractor(
   return {
     async extract(input, signal) {
       // 按页合并语义不变；页内切片按 tileBatchSize 分批、有界并发调用，遵守单请求 50 张的供应商硬限制。
-      const batchSize = Math.max(1, Math.floor(options.tileBatchSize ?? 6));
-      const concurrency = Math.max(1, Math.floor(options.concurrency ?? 3));
-      const requestTimeoutMs = Math.max(1, Math.floor(options.requestTimeoutMs ?? 120_000));
-      const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 2));
+      // 默认值一律来自 limits.ts 权威资源值，业务模块不再各自硬编码。
+      const limits = getScriptStudioLimits();
+      const batchSize = Math.max(1, Math.floor(options.tileBatchSize ?? limits.extractTileBatchSize));
+      const concurrency = Math.max(1, Math.floor(options.concurrency ?? limits.extractConcurrency));
+      const requestTimeoutMs = Math.max(1, Math.floor(options.requestTimeoutMs ?? limits.extractRequestTimeoutMs));
+      const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? limits.extractMaxAttempts));
       let productName = '';
       let category = '';
       let brand = '';

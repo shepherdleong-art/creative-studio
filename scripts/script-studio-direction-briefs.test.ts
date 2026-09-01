@@ -162,6 +162,28 @@ assert.equal(uniformOverlap.length, 0, '供给充足时后编排方向应整体�
 assert.equal(uniformBriefs[0]!.degraded, true, '类型组成不满足的方向必须标记降级');
 assert.ok(uniformBriefs[0]!.rationale.includes('降级'), '降级必须写进编排理由');
 
+// review 反例：7 条场景 + 1 条结构 + 12 条材质。scene_seeding 与 emotional
+// 在硬类型优先下曾得到完全相同的 7+1；可选槽位优先未使用的方向内类型后必须分化。
+const counterPoints = [
+  ...Array.from({ length: 7 }, (_, index) => makePoint({ id: `c-scene-${index + 1}`, seq: index + 1, pointType: 'scenario', themeKey: 't-scene', themeTitle: '场景', importance: 90 - index })),
+  makePoint({ id: 'c-struct-1', seq: 8, pointType: 'structure', themeKey: 't-struct', themeTitle: '结构', importance: 60 }),
+  ...Array.from({ length: 12 }, (_, index) => makePoint({ id: `c-mat-${index + 1}`, seq: 9 + index, pointType: 'material', themeKey: 't-mat', themeTitle: '材质', importance: 55 - index })),
+];
+const counterBriefs = planDirectionBriefs({ sellingPoints: counterPoints, plans: [makePlan(1, 'scene_seeding'), makePlan(2, 'emotional')], targetDurationSec: 15 });
+assert.notEqual(
+  briefIdSet(counterBriefs[0]!),
+  briefIdSet(counterBriefs[1]!),
+  'scene_seeding 与 emotional 不得再获得完全相同的卖点包',
+);
+const emotionalIds = new Set([...counterBriefs[1]!.requiredPointIds, ...counterBriefs[1]!.optionalPointIds]);
+assert.equal(
+  [...emotionalIds].some((id) => id.startsWith('c-mat-')),
+  true,
+  'emotional 必须让未使用的方向内类型（材质）上位，而不是重复消费已用场景卖点',
+);
+const sceneMaterialCount = [...emotionalIds].filter((id) => id.startsWith('c-scene-')).length;
+assert.equal(sceneMaterialCount < 7, true, 'emotional 不得原样复制 scene_seeding 的 7 条场景');
+
 // 主主题连贯只是加分项：不得在排序后强制塞入方向不匹配的卖点。
 const coherencePoints = [
   makePoint({ id: 'q-theme-only', seq: 1, pointType: 'other', themeKey: 'ta', themeTitle: '主题A', hierarchyRole: 'primary', importance: 100 }),

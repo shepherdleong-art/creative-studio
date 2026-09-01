@@ -21,7 +21,7 @@ import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
 import { planScriptDirections } from './planner.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import { isScriptStudioTaskCancelRequested } from './scheduler.ts';
-import { tileSourceImages, selectEvidenceTiles, type TileSetResult } from './tiling.ts';
+import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles, type TileSetResult } from './tiling.ts';
 import {
   finishStage,
   getTask,
@@ -76,19 +76,12 @@ function parseCreativeBrief(input: Record<string, unknown>): string {
   return typeof input.creativeBrief === 'string' ? input.creativeBrief.trim().slice(0, 2000) : '';
 }
 
-// 模型按 prompt 约定返回 1-based 的 "tile_N" 编号；兼容裸数字与数字字符串。
-// 解析失败时不猜（返回 null 由调用方兜底），避免核验时看错切片。
-export function parseTileRefIndex(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isInteger(value)) return value >= 1 ? value - 1 : null;
-  if (typeof value !== 'string') return null;
-  const match = value.trim().match(/(\d+)/);
-  if (!match) return null;
-  const parsed = Number.parseInt(match[1]!, 10);
-  return parsed >= 1 ? parsed - 1 : null;
-}
+// parseTileRefIndex 已上移到 tiling.ts（证据门禁共用）；这里再导出以兼容既有调用方。
+export { parseTileRefIndex };
 
 // 每条证据引用自带 pageIndex + tileRef 配对：跨页合并的卖点也能把每条约回到正确页面。
-// 单条卖点最多取 6 条引用，切片按目标片带相邻片，重复切片去重。
+// 单条卖点的图片总数硬封顶 maxTiles（默认与二次核验单批预算一致）：先收全部精确切片，
+// 再按引用顺序补相邻片——6 条引用带相邻片最多 18 图的溢出不允许发生。
 export function evidenceTilesForPoint(
   point: {
     evidenceRefs?: Array<{ pageIndex: number | null; tileRef: string }>;
@@ -96,18 +89,32 @@ export function evidenceTilesForPoint(
     tileRefs?: string[];
   },
   tileResult: TileSetResult,
+  maxTiles = 6,
 ): Array<{ mimeType: string; imageBase64: string }> {
+  const budget = Math.max(1, Math.floor(maxTiles));
   const tiles: Array<{ mimeType: string; imageBase64: string }> = [];
   const seen = new Set<string>();
-  for (const ref of normalizeEvidenceRefs(point).slice(0, 6)) {
+  const push = (tile: { mimeType: string; imageBase64: string }): void => {
+    if (tiles.length >= budget) return;
+    const key = `${tile.mimeType} ${tile.imageBase64}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    tiles.push({ mimeType: tile.mimeType, imageBase64: tile.imageBase64 });
+  };
+  const located: Array<{ page: TileSetResult['pages'][number]; tileIndex: number }> = [];
+  for (const ref of normalizeEvidenceRefs(point).slice(0, budget)) {
     const page = tileResult.pages[ref.pageIndex ?? 0];
     if (!page) continue;
-    const tileIndex = ref.tileRef ? parseTileRefIndex(ref.tileRef) ?? 0 : 0;
+    located.push({ page, tileIndex: ref.tileRef ? parseTileRefIndex(ref.tileRef) ?? 0 : 0 });
+  }
+  for (const { page, tileIndex } of located) {
+    const exact = page.tiles[tileIndex];
+    if (exact) push(exact);
+  }
+  for (const { page, tileIndex } of located) {
     for (const tile of selectEvidenceTiles(page, tileIndex, 1)) {
-      const key = `${tile.mimeType}${tile.imageBase64}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      tiles.push({ mimeType: tile.mimeType, imageBase64: tile.imageBase64 });
+      if (tile === page.tiles[tileIndex]) continue;
+      push(tile);
     }
   }
   return tiles;
@@ -295,11 +302,13 @@ export async function executeScriptStudioTask(
       const evidenceLimits = getScriptStudioLimits();
       evidenceResult = await runEvidenceGate(extracted, {
         reprobe: deps.reprobe,
-        evidenceTiles: (point) => tileResult ? evidenceTilesForPoint(point, tileResult) : [],
+        evidenceTiles: (point) => tileResult ? evidenceTilesForPoint(point, tileResult, evidenceLimits.reprobeMaxImagesPerBatch) : [],
         signal,
         concurrency: evidenceLimits.reprobeConcurrency,
         batchSize: evidenceLimits.reprobeBatchSize,
         maxImagesPerBatch: evidenceLimits.reprobeMaxImagesPerBatch,
+        pageCount: tileResult!.pages.length,
+        pageTileCounts: tileResult!.pages.map((page) => page.tiles.length),
       });
       if (usableSellingPoints(evidenceResult.points).length === 0) {
         finishStage(db, projectId, taskId, 'evidence_gate', 'failed', evidenceGateSummary(evidenceResult.points, evidenceResult), 'evidence_failed', now);
