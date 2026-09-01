@@ -9,27 +9,16 @@ import {
 import { getCurrentLibraryRevision, getLibraryRevision } from '@/lib/script-studio/libraries';
 import { getSourceSet } from '@/lib/script-studio/source-sets';
 import { resolveRuntimeProviders } from '@/lib/script-studio/runtime';
-import { createTask, getTask, getTaskByRequestKey } from '@/lib/script-studio/tasks';
+import {
+  createScriptStudioTaskRequestKey,
+  createTask,
+  getTask,
+  getTaskByRequestKey,
+} from '@/lib/script-studio/tasks';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
-import { createHash } from 'node:crypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-function requestKeyFor(input: Record<string, unknown>): string {
-  if (typeof input.requestKey === 'string' && input.requestKey.trim()) return input.requestKey.trim();
-  return createHash('sha256')
-    .update([
-      String(input.projectId || ''),
-      String(input.sourceSetId || ''),
-      String(input.libraryRevisionId || ''),
-      String(input.targetDurationSec || ''),
-      String(input.requestedCount || ''),
-      String(input.creativeBrief || ''),
-      String(input.providerId || ''),
-    ].join('|'))
-    .digest('hex');
-}
 
 export async function POST(
   request: Request,
@@ -75,7 +64,19 @@ export async function POST(
     }
     // 提交前确认视觉/文本供应商可用，避免进入必然失败的长任务。
     const providers = resolveRuntimeProviders(providerId);
-    const requestKey = requestKeyFor({ projectId, ...body });
+    const creativeBrief = typeof body.creativeBrief === 'string' ? body.creativeBrief.slice(0, 2000) : '';
+    const explicitRequestKey = typeof body.requestKey === 'string' ? body.requestKey.trim() : '';
+    const requestKey = explicitRequestKey || createScriptStudioTaskRequestKey({
+      projectId,
+      mode,
+      sourceSetId,
+      libraryRevisionId,
+      targetDurationSec,
+      requestedCount,
+      creativeBrief,
+      providerId: providers.vision.id,
+      providerModel: providers.vision.model,
+    });
     const existing = getTaskByRequestKey(db, projectId, requestKey);
     if (existing) {
       return NextResponse.json({
@@ -99,7 +100,7 @@ export async function POST(
       inputSnapshot: {
         targetDurationSec,
         requestedCount,
-        creativeBrief: typeof body.creativeBrief === 'string' ? body.creativeBrief.slice(0, 2000) : '',
+        creativeBrief,
         providerId: providers.vision.id,
         providerModel: providers.vision.model,
         ...(typeof body.targetScriptId === 'string' ? { targetScriptId: body.targetScriptId } : {}),

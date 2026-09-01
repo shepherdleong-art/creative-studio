@@ -184,6 +184,45 @@ assert.equal(
 const sceneMaterialCount = [...emotionalIds].filter((id) => id.startsWith('c-scene-')).length;
 assert.equal(sceneMaterialCount < 7, true, 'emotional 不得原样复制 scene_seeding 的 7 条场景');
 
+// 历史修订不会重新跑视觉门禁，因此进入卖点包前必须本地复核已保存的证据位置。
+const invalidHistoricalPoints = [
+  makePoint({
+    id: 'history-page-out-of-range',
+    seq: 1,
+    pointType: 'appearance',
+    sourcePageIndex: 999,
+    tileRefsJson: JSON.stringify(['tile_1']),
+    evidenceRefsJson: JSON.stringify([{ pageIndex: 999, tileRef: 'tile_1' }]),
+  }),
+  makePoint({
+    id: 'history-bad-tile-format',
+    seq: 2,
+    pointType: 'appearance',
+    sourcePageIndex: 0,
+    tileRefsJson: JSON.stringify(['not_a_tile']),
+    evidenceRefsJson: JSON.stringify([{ pageIndex: 0, tileRef: 'not_a_tile' }]),
+  }),
+  makePoint({
+    id: 'history-tile-out-of-range',
+    seq: 3,
+    pointType: 'appearance',
+    sourcePageIndex: 0,
+    tileRefsJson: JSON.stringify(['tile_99']),
+    evidenceRefsJson: JSON.stringify([{ pageIndex: 0, tileRef: 'tile_99' }]),
+  }),
+];
+const invalidHistoricalBrief = planDirectionBriefs({
+  sellingPoints: invalidHistoricalPoints,
+  plans: [makePlan(1, 'scene_seeding')],
+  targetDurationSec: 15,
+  evidenceBounds: { pageCount: 1, pageTileCounts: [5] },
+})[0]!;
+assert.equal(
+  invalidHistoricalBrief.candidateCount,
+  0,
+  '历史库中页码越界、切片格式非法或切片越界的卖点不得进入方向卖点包',
+);
+
 // 主主题连贯只是加分项：不得在排序后强制塞入方向不匹配的卖点。
 const coherencePoints = [
   makePoint({ id: 'q-theme-only', seq: 1, pointType: 'other', themeKey: 'ta', themeTitle: '主题A', hierarchyRole: 'primary', importance: 100 }),

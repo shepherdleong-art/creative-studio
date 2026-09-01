@@ -1,5 +1,6 @@
 import type { EvidenceReprobe, EvidenceTile } from './adapters/reprobe.ts';
 import type { LibrarySellingPointInput } from './libraries.ts';
+import { getScriptStudioLimits } from './limits.ts';
 import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
 import { parseTileRefIndex } from './tiling.ts';
 import type { ScriptStudioEvidenceGate, ScriptStudioPointType } from './types.ts';
@@ -48,6 +49,12 @@ interface ReprobeBatch {
   tiles: EvidenceTile[];
 }
 
+type ResolvedEvidenceGateDeps = EvidenceGateDeps & {
+  concurrency: number;
+  batchSize: number;
+  maxImagesPerBatch: number;
+};
+
 function evidenceTileKey(tile: EvidenceTile): string {
   return `${tile.mimeType}\u0000${tile.imageBase64}`;
 }
@@ -55,12 +62,12 @@ function evidenceTileKey(tile: EvidenceTile): string {
 function buildReprobeBatches(
   queue: number[],
   input: LibrarySellingPointInput[],
-  deps: EvidenceGateDeps,
+  deps: ResolvedEvidenceGateDeps,
 ): ReprobeBatch[] {
   const maxClaims = deps.reprobe?.verifyMany
-    ? Math.max(1, Math.floor(deps.batchSize ?? 4))
+    ? Math.max(1, Math.floor(deps.batchSize))
     : 1;
-  const maxImages = Math.max(1, Math.floor(deps.maxImagesPerBatch ?? 6));
+  const maxImages = Math.max(1, Math.floor(deps.maxImagesPerBatch));
   const batches: ReprobeBatch[] = [];
   let batch: ReprobeBatch = { items: [], tiles: [] };
   let tileIndexByKey = new Map<string, number>();
@@ -75,7 +82,9 @@ function buildReprobeBatches(
     const point = input[index]!;
     const claim = point.evidenceQuote?.trim() || point.factText.trim();
     const pointTiles = deps.evidenceTiles?.(point) || [];
-    const uniquePointTiles = [...new Map(pointTiles.map((tile) => [evidenceTileKey(tile), tile])).values()];
+    // 调用方即使返回超额图片，门禁自身仍负责最后一道硬封顶；不能把资源契约寄托在 runner 守约上。
+    const uniquePointTiles = [...new Map(pointTiles.map((tile) => [evidenceTileKey(tile), tile])).values()]
+      .slice(0, maxImages);
     const unseenCount = uniquePointTiles.reduce(
       (count, tile) => count + (tileIndexByKey.has(evidenceTileKey(tile)) ? 0 : 1),
       0,
@@ -162,6 +171,13 @@ export async function runEvidenceGate(
   input: LibrarySellingPointInput[],
   deps: EvidenceGateDeps = {},
 ): Promise<EvidenceGateResult> {
+  const limits = getScriptStudioLimits();
+  const resolvedDeps: ResolvedEvidenceGateDeps = {
+    ...deps,
+    concurrency: deps.concurrency ?? limits.reprobeConcurrency,
+    batchSize: deps.batchSize ?? limits.reprobeBatchSize,
+    maxImagesPerBatch: deps.maxImagesPerBatch ?? limits.reprobeMaxImagesPerBatch,
+  };
   const points: Array<LibrarySellingPointInput | undefined> = new Array(input.length);
   let excludedPromotion = 0;
   let excludedHighRiskUnverified = 0;
@@ -173,8 +189,8 @@ export async function runEvidenceGate(
   const reprobeQueue: number[] = [];
   input.forEach((point, index) => {
     const structural = structuralGatePassed(point, {
-      pageCount: deps.pageCount,
-      pageTileCounts: deps.pageTileCounts,
+      pageCount: resolvedDeps.pageCount,
+      pageTileCounts: resolvedDeps.pageTileCounts,
     });
     const isPromotion = isPromotionPoint(point);
     const riskLevel = classifyRisk(point);
@@ -193,34 +209,34 @@ export async function runEvidenceGate(
 
   // 高风险卖点以小批封闭问题有界并发核验；每条仅看它的证据图，
   // 且模型回传摘录后仍由服务端按 id 逐条字符串匹配。旧适配器无 verifyMany 时自动回退逐条请求。
-  const reprobeBatches = buildReprobeBatches(reprobeQueue, input, deps);
+  const reprobeBatches = buildReprobeBatches(reprobeQueue, input, resolvedDeps);
   const processed = new Set<number>();
   let cursor = 0;
   const worker = async (): Promise<void> => {
     while (cursor < reprobeBatches.length) {
-      if (!deps.reprobe || deps.signal?.aborted) break;
+      if (!resolvedDeps.reprobe || resolvedDeps.signal?.aborted) break;
       const batch = reprobeBatches[cursor]!;
       cursor += 1;
       reprobeRequestCount += 1;
       let quotes = new Map<number, string | null>();
-      if (deps.reprobe.verifyMany) {
-        const result = await deps.reprobe.verifyMany({
+      if (resolvedDeps.reprobe.verifyMany) {
+        const result = await resolvedDeps.reprobe.verifyMany({
           claims: batch.items.map((item) => ({
             id: String(item.index),
             claim: item.claim,
             imageIndexes: item.imageIndexes,
           })),
           tiles: batch.tiles,
-          signal: deps.signal,
+          signal: resolvedDeps.signal,
         }).catch(() => ({ results: [] }));
         const byId = new Map(result.results.map((item) => [item.id, item.quote]));
         quotes = new Map(batch.items.map((item) => [item.index, byId.get(String(item.index)) ?? null]));
       } else {
         const item = batch.items[0]!;
-        const result = await deps.reprobe.verify({
+        const result = await resolvedDeps.reprobe.verify({
           claim: item.claim,
           tiles: batch.tiles,
-          signal: deps.signal,
+          signal: resolvedDeps.signal,
         }).catch(() => ({ quote: null }));
         quotes.set(item.index, result.quote);
       }
@@ -239,7 +255,7 @@ export async function runEvidenceGate(
       }
     }
   };
-  const concurrency = Math.max(1, Math.floor(deps.concurrency ?? 3));
+  const concurrency = Math.max(1, Math.floor(resolvedDeps.concurrency));
   await Promise.all(Array.from({ length: Math.min(concurrency, reprobeBatches.length) }, () => worker()));
 
   // 无 reprobe 或中途取消时，所有尚未处理的高风险卖点按「未核验」排除。

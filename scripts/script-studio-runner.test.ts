@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { ensureScriptStudioSchemaReady } from '../lib/script-studio/schema.ts';
 import { createTask, getTask, recoverInterruptedTasks, updateTask } from '../lib/script-studio/tasks.ts';
 import { evidenceTilesForPoint, executeScriptStudioTask, type ScriptStudioRunDeps } from '../lib/script-studio/runner.ts';
-import { getCurrentLibraryRevision, manualEditLibraryRevision } from '../lib/script-studio/libraries.ts';
+import { createLibraryRevision, getCurrentLibraryRevision, manualEditLibraryRevision } from '../lib/script-studio/libraries.ts';
 import type { TileSetResult } from '../lib/script-studio/tiling.ts';
 import {
   requestScriptStudioTaskCancel,
@@ -398,6 +398,53 @@ assert.equal(
   (db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n,
   scriptCountBefore,
   '可用证据不足时不得创建任何脚本（包括零引用脚本）',
+);
+
+// 复用历史卖点库时 runner 必须把来源页数传给本地结构重验，不能让 pageIndex=999 继续生成。
+const invalidHistoricalRevision = createLibraryRevision(db, {
+  projectId: 'p1',
+  sourceSetId: 'source-1',
+  sourceFingerprint: 'fingerprint-1',
+  productName: '测试床',
+  category: '家具',
+  extractProviderId: 'legacy-provider',
+  extractModel: 'legacy-model',
+  promptContractVersion: 2,
+  origin: 'extraction',
+  sellingPoints: [{
+    title: '历史黑色外观',
+    factText: '产品外观为黑色',
+    pointType: 'appearance',
+    evidenceQuote: '产品外观为黑色',
+    evidenceRefs: [{ pageIndex: 999, tileRef: 'tile_1' }],
+    evidenceGate: 'skipped',
+    usable: true,
+  }],
+}, () => new Date('2026-08-31T00:17:00.000Z'));
+const invalidHistoricalTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'invalid-historical-location-1',
+  mode: 'reuse',
+  libraryRevisionId: invalidHistoricalRevision.id,
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:18:00.000Z'));
+const invalidHistoricalResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: invalidHistoricalTask.task.id,
+  libraryRevisionId: invalidHistoricalRevision.id,
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor,
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:19:00.000Z'),
+});
+assert.equal(invalidHistoricalResult.status, 'failed');
+assert.equal(
+  invalidHistoricalResult.errorCode,
+  'evidence_insufficient',
+  '历史页码越界卖点必须在复用 plan 阶段失败关闭',
 );
 
 db.close();

@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { ensureScriptStudioSchemaReady } from '../lib/script-studio/schema.ts';
-import { tileSourceImages, selectEvidenceTiles } from '../lib/script-studio/tiling.ts';
+import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles } from '../lib/script-studio/tiling.ts';
 import { createOrFindSourceSet } from '../lib/script-studio/source-sets.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-script-studio-tiling-'));
@@ -64,6 +64,12 @@ assert.equal(result.pages[0]!.tiles[0]!.mimeType, 'image/jpeg');
 assert.equal(result.pages[0]!.tiles[0]!.imageBase64.length > 100, true);
 assert.equal(selectEvidenceTiles(result.pages[0]!, 5, 1).length, 0, '越界证据切片不应越界');
 assert.equal(selectEvidenceTiles(result.pages[0]!, 1, 1).length >= 2, true);
+assert.equal(parseTileRefIndex('tile_2'), 1, 'tile_N 按 1-based 契约解析');
+assert.equal(parseTileRefIndex('2'), 1, '纯数字字符串保持兼容');
+assert.equal(parseTileRefIndex(2), 1, '纯数字输入保持兼容');
+for (const invalidRef of ['garbage2', 'tile_2_evil', 'page_3', '2foo', 'tile_0', '0']) {
+  assert.equal(parseTileRefIndex(invalidRef), null, `非法证据位置必须拒绝：${invalidRef}`);
+}
 
 // 超过保护值的大图：不再硬阻断，改走逐条带流式管线
 const bigImagePath = path.join(root, 'detail-big.png');

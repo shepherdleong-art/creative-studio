@@ -1,4 +1,5 @@
 import type { PlannedScript } from './planner.ts';
+import { structuralGatePassed } from './evidence-gate.ts';
 import {
   canonicalThemeKey,
   evidenceRefsOfRecord,
@@ -32,6 +33,8 @@ export interface PlanDirectionBriefsInput {
   sellingPoints: SellingPointRecord[];
   plans: PlannedScript[];
   targetDurationSec: number;
+  /** 已保存证据的来源范围；复用历史卖点库时用于本地 fail-closed 重验。 */
+  evidenceBounds?: { pageCount?: number; pageTileCounts?: number[] };
 }
 
 const HIERARCHY_ROLE_SCORE: Record<ScriptStudioHierarchyRole, number> = {
@@ -153,6 +156,19 @@ function evidenceScoreOf(point: SellingPointRecord): number {
   return EVIDENCE_GATE_SCORE[point.evidenceGate] ?? 0;
 }
 
+function storedEvidenceIsStructurallyUsable(
+  point: SellingPointRecord,
+  bounds: NonNullable<PlanDirectionBriefsInput['evidenceBounds']>,
+): boolean {
+  return structuralGatePassed({
+    title: point.title,
+    factText: point.factText,
+    evidenceQuote: point.evidenceQuote,
+    sourcePageIndex: point.sourcePageIndex,
+    evidenceRefs: evidenceRefsOfRecord(point),
+  }, bounds).ok;
+}
+
 /**
  * 评分优先级：方向类型匹配 > 本轮重复惩罚 > 主主题连贯 > 主题角色 > 提取重要度 > 证据状态。
  * 重复惩罚提到第二位：已使用卖点会真实让位给未使用卖点，而不是只在完全同分时生效；
@@ -177,7 +193,10 @@ function compareScored(left: ScoredPoint, right: ScoredPoint): number {
  */
 export function planDirectionBriefs(input: PlanDirectionBriefsInput): DirectionSellingPointBrief[] {
   const { candidateLimit, requiredLimit } = directionBriefLimits(input.targetDurationSec);
-  const eligible = input.sellingPoints.filter(isSellingPointEvidenceUsable);
+  const eligible = input.sellingPoints.filter((point) => (
+    isSellingPointEvidenceUsable(point)
+    && storedEvidenceIsStructurallyUsable(point, input.evidenceBounds ?? {})
+  ));
   const pointUsage = new Map<string, number>();
   const themeUsage = new Map<string, number>();
   const typeUsage = new Map<string, number>();

@@ -124,6 +124,27 @@ function stagePayload(data: unknown): Record<string, unknown> {
   return data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : {};
 }
 
+function sourceSetPageCount(
+  db: Database.Database,
+  projectId: string,
+  sourceSetId: string,
+): number | undefined {
+  const row = db.prepare(`
+    SELECT imageAssetIdsJson
+    FROM script_studio_source_sets
+    WHERE id = ? AND projectId = ?
+  `).get(sourceSetId, projectId) as { imageAssetIdsJson: string } | undefined;
+  if (!row) return undefined;
+  try {
+    const imageAssetIds = JSON.parse(row.imageAssetIdsJson) as unknown;
+    return Array.isArray(imageAssetIds) && imageAssetIds.length > 0
+      ? imageAssetIds.length
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function generateValidatedScript(
   deps: ScriptStudioRunDeps,
   library: LibraryRevisionView,
@@ -345,10 +366,21 @@ export async function executeScriptStudioTask(
     await updateTask(db, projectId, taskId, { currentStage: 'plan' }, now);
     const plans = planScriptDirections(libraryRevision!, requestedCount, creativeBrief);
     // 本地确定性编排：一次为本轮全部方向准备卖点包，首稿与相似度重试都复用这份包。
+    // 首次提取可同时校验页码与切片范围；历史复用不重读图片，但仍从来源集恢复页数，
+    // 对非法格式和页码越界做本地 fail-closed 重验。
+    const evidenceBounds = tileResult
+      ? {
+          pageCount: tileResult.pages.length,
+          pageTileCounts: tileResult.pages.map((page) => page.tiles.length),
+        }
+      : {
+          pageCount: sourceSetPageCount(db, projectId, libraryRevision!.sourceSetId),
+        };
     const briefs = planDirectionBriefs({
       sellingPoints: libraryRevision!.sellingPoints,
       plans: plans.plans,
       targetDurationSec,
+      evidenceBounds,
     });
     const briefByPlanIndex = new Map(briefs.map((brief) => [brief.planIndex, brief]));
     const briefSnapshots = briefs.map((brief) => ({

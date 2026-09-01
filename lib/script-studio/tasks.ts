@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { ScriptStudioError } from './errors.ts';
 import type {
@@ -16,6 +16,38 @@ export interface CreateTaskInput {
   inputSnapshot: Record<string, unknown>;
   requestedCount: number;
   parentTaskId?: string | null;
+}
+
+export interface ScriptStudioTaskRequestIdentity {
+  projectId: string;
+  mode: 'first_extraction' | 'reuse';
+  sourceSetId?: string | null;
+  libraryRevisionId?: string | null;
+  targetDurationSec: number;
+  requestedCount: number;
+  creativeBrief?: string;
+  providerId: string;
+  providerModel: string;
+}
+
+/**
+ * 自动幂等键必须覆盖任务的完整执行身份；尤其是同一供应商记录切换模型后，
+ * 新提交不得命中旧模型任务。
+ */
+export function createScriptStudioTaskRequestKey(input: ScriptStudioTaskRequestIdentity): string {
+  return createHash('sha256')
+    .update([
+      input.projectId,
+      input.mode,
+      input.sourceSetId || '',
+      input.libraryRevisionId || '',
+      String(input.targetDurationSec),
+      String(input.requestedCount),
+      input.creativeBrief || '',
+      input.providerId,
+      input.providerModel,
+    ].join('|'))
+    .digest('hex');
 }
 
 export interface TaskView extends ScriptStudioTaskRecord {

@@ -182,10 +182,10 @@ async function tileSinglePage(
 export function parseTileRefIndex(value: unknown): number | null {
   if (typeof value === 'number' && Number.isInteger(value)) return value >= 1 ? value - 1 : null;
   if (typeof value !== 'string') return null;
-  const match = value.trim().match(/(\d+)/);
+  const match = value.trim().match(/^(?:tile_)?([1-9]\d*)$/i);
   if (!match) return null;
   const parsed = Number.parseInt(match[1]!, 10);
-  return parsed >= 1 ? parsed - 1 : null;
+  return parsed - 1;
 }
 
 export function selectEvidenceTiles(

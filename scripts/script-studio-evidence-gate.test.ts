@@ -135,6 +135,83 @@ assert.equal(batched.verifiedHighRisk, 6);
 assert.equal(batched.reprobeRequestCount, 2, '任务指标必须记录真实核验请求数');
 assert.deepEqual(batched.points.map((item) => item.title), manyPoints.map((item) => item.title));
 
+// 门禁自身也必须守住图片预算，不能只依赖 runner 的 evidenceTiles 回调预先截断。
+let oversizedImageCount = 0;
+const oversizedReprobe = {
+  kind: 'vision_closed_question' as const,
+  async verify() {
+    throw new Error('批处理可用时不应回退到逐条 verify');
+  },
+  async verifyMany(input: {
+    claims: Array<{ id: string; claim: string }>;
+    tiles: Array<{ mimeType: string; imageBase64: string }>;
+  }) {
+    oversizedImageCount = input.tiles.length;
+    return { results: input.claims.map((claim) => ({ id: claim.id, quote: claim.claim })) };
+  },
+} as EvidenceReprobe;
+const oversized = await runEvidenceGate([point()], {
+  reprobe: oversizedReprobe,
+  evidenceTiles: () => Array.from({ length: 18 }, (_, index) => ({
+    mimeType: 'image/jpeg',
+    imageBase64: `oversized-${index + 1}`,
+  })),
+  maxImagesPerBatch: 6,
+});
+assert.equal(oversizedImageCount, 6, '单条卖点即使返回 18 张图，门禁请求也必须硬封顶 6 张');
+assert.equal(oversized.verifiedHighRisk, 1);
+
+// 未显式传资源选项时，门禁必须读取 limits.ts（包括环境覆盖），不能保留模块内字面量。
+const resourceEnvNames = [
+  'CREATIVE_STUDIO_SCRIPT_STUDIO_REPROBE_CONCURRENCY',
+  'CREATIVE_STUDIO_SCRIPT_STUDIO_REPROBE_BATCH_SIZE',
+  'CREATIVE_STUDIO_SCRIPT_STUDIO_REPROBE_MAX_IMAGES_PER_BATCH',
+] as const;
+const previousResourceEnv = new Map(resourceEnvNames.map((name) => [name, process.env[name]]));
+process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_REPROBE_CONCURRENCY = '1';
+process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_REPROBE_BATCH_SIZE = '2';
+process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_REPROBE_MAX_IMAGES_PER_BATCH = '3';
+let configuredInFlight = 0;
+let configuredMaxInFlight = 0;
+let configuredMaxClaims = 0;
+let configuredMaxImages = 0;
+try {
+  const configuredReprobe = {
+    kind: 'vision_closed_question' as const,
+    async verify() {
+      throw new Error('批处理可用时不应回退到逐条 verify');
+    },
+    async verifyMany(input: {
+      claims: Array<{ id: string; claim: string }>;
+      tiles: Array<{ mimeType: string; imageBase64: string }>;
+    }) {
+      configuredInFlight += 1;
+      configuredMaxInFlight = Math.max(configuredMaxInFlight, configuredInFlight);
+      configuredMaxClaims = Math.max(configuredMaxClaims, input.claims.length);
+      configuredMaxImages = Math.max(configuredMaxImages, input.tiles.length);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      configuredInFlight -= 1;
+      return { results: input.claims.map((claim) => ({ id: claim.id, quote: claim.claim })) };
+    },
+  } as EvidenceReprobe;
+  await runEvidenceGate(manyPoints.slice(0, 5), {
+    reprobe: configuredReprobe,
+    evidenceTiles: () => Array.from({ length: 5 }, (_, index) => ({
+      mimeType: 'image/jpeg',
+      imageBase64: `configured-shared-${index + 1}`,
+    })),
+  });
+} finally {
+  for (const name of resourceEnvNames) {
+    const previous = previousResourceEnv.get(name);
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
+}
+assert.equal(configuredMaxClaims, 2, '默认批大小必须读取 limits.ts 的环境覆盖');
+assert.equal(configuredMaxImages, 3, '默认图片预算必须读取 limits.ts 的环境覆盖');
+assert.equal(configuredMaxInFlight, 1, '默认复核并发必须读取 limits.ts 的环境覆盖');
+
 // 非法证据位置 fail closed：pageIndex=999、tileRef=not_a_tile 不得被当作可用证据。
 const invalidLocation = await runEvidenceGate([
   point({
