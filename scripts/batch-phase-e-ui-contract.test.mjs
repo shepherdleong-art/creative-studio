@@ -91,7 +91,14 @@ assert.match(
 );
 // C3：预览换源续播——fileUrl 变化时保留播放头与播放状态。
 assert.match(batchTimelinePreview, /lastBgmFileUrlRef/, 'BGM 换源必须建立显式媒体同步');
-assert.match(batchTimelinePreview, /playingRef\.current && bgm/, '播放中换源必须按音量包络续播');
+// 复核 F3：「首次挂载」与「BGM 原本关闭」必须区分，否则关闭 BGM 后播放中
+// 再选曲（含初始无 BGM、播放中第一次选曲）会被当成首帧跳过，音乐静默。
+assert.match(batchTimelinePreview, /bgmSyncInitializedRef/, '首帧与「BGM 原本关闭」必须用独立标记区分');
+assert.match(batchTimelinePreview, /playingRef\.current[\s\S]{0,600}element\.play\(\)/, '播放中换源必须按音量包络续播');
+// 复核 F4：异步分支的播放头必须读 ref（陈旧闭包会 seek 落后一个加载时长）；
+// loadedmetadata 监听器必须在 cleanup 中摘除，快速连换两首不得触发过期 seek/play。
+assert.match(batchTimelinePreview, /const currentSec = lastDrivenSecRef\.current/, '换源续播的播放头必须读 ref，不得吃陈旧闭包');
+assert.match(batchTimelinePreview, /removeEventListener\('loadedmetadata'/, '换源 loadedmetadata 监听器必须在 cleanup 中摘除');
 assert.doesNotMatch(batchTimelinePreview, /bgmElement\.currentTime = 0;[\s\S]{0,80}play\(\)/, '换源续播不得把 BGM 归零后直接播放');
 assert.match(outputEditor, /aria-label="成片口播音量"/);
 assert.match(outputEditor, /narrationGainDb=\{narrationGainDraft\}/);

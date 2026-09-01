@@ -440,34 +440,54 @@ export default function BatchTimelinePreview({
   /**
    * BGM 换源媒体同步：曲目 fileUrl 变化时保留播放头与播放状态——
    * 暂停时载入新源并定位当前播放头；播放中载入新源、定位正文偏移并按当前
-   * 音量包络续播。不重置画面播放头，不影响口播 GainNode；play() 失败按现有
-   * 安全策略静默处理，不产生未处理 Promise rejection。
+   * 音量包络续播。「首次挂载」与「BGM 原本是关闭的」用独立的 initialized
+   * 标记区分：lastBgmFileUrlRef 的 null 不能兼任两种语义，否则「关闭 BGM →
+   * 播放中再选曲」（以及初始无 BGM、播放中第一次选曲）会被当成首帧跳过，
+   * 新 <audio src> 生效后无人调 play()，音乐静默到下一次暂停/重播。
+   * 不重置画面播放头，不影响口播 GainNode；play() 失败按现有安全策略静默
+   * 处理，不产生未处理 Promise rejection。
    */
   const bgmFileUrl = bgm?.fileUrl ?? null;
   const lastBgmFileUrlRef = useRef<string | null>(null);
+  const bgmSyncInitializedRef = useRef(false);
+  // 换源续播的音量包络输入：loadedmetadata 异步回调触发时读 ref 里的最新值，
+  // 不吃 effect 闭包里的快照（换 src 后加载期间播放头/增益可能已变化）。
+  // 渲染期写 ref 是 React 编译器红线，因此在每次渲染后的 effect 中同步。
+  const bgmLevelsInputRef = useRef({ bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec });
+  useEffect(() => {
+    bgmLevelsInputRef.current = { bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec };
+  });
   useEffect(() => {
     const element = bgmRef.current;
     if (!element) return;
     const previous = lastBgmFileUrlRef.current;
     lastBgmFileUrlRef.current = bgmFileUrl;
-    if (previous === null || previous === bgmFileUrl) return;
+    if (!bgmSyncInitializedRef.current) {
+      bgmSyncInitializedRef.current = true;
+      return;
+    }
+    if (previous === bgmFileUrl) return;
     if (bgmFileUrl === null) {
       element.pause();
       return;
     }
     const resumeBgm = () => {
-      const bodyOffset = Math.max(0, Math.min(bodyDurationSec, playheadSec - INTRO_SEC));
-      const loopDuration = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : bodyDurationSec;
+      // 播放头读 lastDrivenSecRef（时钟驱动与外部 seek 双路维护，始终等于
+      // 当前有效播放头），避免异步分支里用陈旧闭包值 seek 落后一个加载时长。
+      const currentSec = lastDrivenSecRef.current;
+      const levels = bgmLevelsInputRef.current;
+      const bodyOffset = Math.max(0, Math.min(levels.bodyDurationSec, currentSec - INTRO_SEC));
+      const loopDuration = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : levels.bodyDurationSec;
       seekMedia(element, bodyOffset % Math.max(0.1, loopDuration));
-      if (playingRef.current && bgm) {
+      if (playingRef.current) {
         element.volume = previewAudioLevelsAtTime({
-          playheadSec,
+          playheadSec: currentSec,
           introSec: INTRO_SEC,
-          bodyDurationSec,
-          narrationGainDb,
-          gainDb: bgmGainDb,
-          fadeInSec: bgmFadeInSec,
-          fadeOutSec: bgmFadeOutSec,
+          bodyDurationSec: levels.bodyDurationSec,
+          narrationGainDb: levels.narrationGainDb,
+          gainDb: levels.gainDb,
+          fadeInSec: levels.fadeInSec,
+          fadeOutSec: levels.fadeOutSec,
         }).bgmGain;
         void element.play().catch(() => undefined);
       }
@@ -475,8 +495,12 @@ export default function BatchTimelinePreview({
     if (element.readyState >= HTMLMediaElement.HAVE_METADATA) resumeBgm();
     else {
       element.addEventListener('loadedmetadata', resumeBgm, { once: true });
+      // 快速连换两首时摘掉尚未触发的陈旧监听器，不让它对共享的 <audio>
+      // 再做一次过期 seek/play（与同文件其他监听器的 cleanup 惯例一致）。
+      // 本 effect 依赖只有 bgmFileUrl，cleanup 必然对应一次换源或卸载。
+      return () => element.removeEventListener('loadedmetadata', resumeBgm);
     }
-  }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmFileUrl, bgmGainDb, bodyDurationSec, narrationGainDb, playheadSec]);
+  }, [bgmFileUrl]);
 
   const synchronizePausedAudio = useCallback((timeSec: number) => {
     if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
