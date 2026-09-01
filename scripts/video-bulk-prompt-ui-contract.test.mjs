@@ -94,6 +94,15 @@ assert.match(results, /result-name/, '结果卡必须显示友好名称行');
 assert.match(results, /download=\{job\.displayName \|\| job\.filename\}/, '下载建议文件名必须优先 displayName');
 assert.match(panel, /displayName\?: string \| null/, '面板任务类型必须携带 displayName');
 
+// 排序契约（对齐 C4「状态不参与位置计算」）：结果卡必须保留列表 API 的
+// 入参顺序（createdAt DESC, rowid ASC），不得按任务状态重排——否则批内
+// V01→V02→V03 会随任务陆续完成而跳位。
+assert.doesNotMatch(
+  results,
+  /\.sort\(/,
+  '结果卡不得重排列表 API 顺序：状态排序会让卡片随任务状态跳位',
+);
+
 // 抽屉必须 portal 到 body，且这条约束的成因要能被验证：
 // .video-generation-section 用 transform 做全宽布局，transform 会给后代的
 // position: fixed 造包含块，抽屉留在原地就会被按进页面流，笔记本视口下

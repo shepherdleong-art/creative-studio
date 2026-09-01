@@ -64,11 +64,9 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
     );
   }
 
-  const sorted = [...visibleJobs].sort((a, b) => {
-    const order: Record<string, number> = { succeeded: 0, running: 1, pending: 2, needs_check: 3, failed: 4, canceled: 5 };
-    return (order[a.status] ?? 9) - (order[b.status] ?? 9);
-  });
-
+  // 卡片顺序完全保留列表 API 的入参顺序（createdAt DESC, rowid ASC：最新批次
+  // 在前、批内按提交顺序）。状态不参与位置计算——任务从 pending 变为
+  // running/succeeded/failed 时卡片不跳位，与 C4 场景图的排序契约一致。
   const cancelReject = () => {
     if (rejectSubmittingJobId) return;
     setRejectingJobId(null);
@@ -101,13 +99,13 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
           {showRejected ? '隐藏已剔除' : `显示已剔除（${rejectedJobs.length}）`}
         </button>
       )}
-      {sorted.length === 0 && (
+      {visibleJobs.length === 0 && (
         <div className="result-empty min-h-[120px]">
           <Icon name="video" size={24} />
           <span>暂无可用视频</span>
         </div>
       )}
-      {sorted.map((job) => {
+      {visibleJobs.map((job) => {
         const isActive = activePreviewJobId === job.id;
         const isSucceeded = job.status === 'succeeded';
         const isRejected = Boolean(job.rejectedAt);

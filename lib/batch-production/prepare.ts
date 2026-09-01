@@ -132,7 +132,7 @@ export async function prepareBatchProductionInputs(
     SELECT id FROM video_jobs
     WHERE projectId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
       AND ${videoJobNotRejectedSql(db)}
-    ORDER BY createdAt, id
+    ORDER BY createdAt, rowid
   `).all(projectId) as Array<{ id: string }>;
   for (const { id } of succeededJobs) {
     try {
