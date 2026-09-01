@@ -19,6 +19,32 @@ test('macOS 公司供应商运行环境只把 LiteLLM 绑定到 loopback', () =>
   assert.doesNotMatch(startLiteLlm, /apiKey|masterKey/);
 });
 
+test('macOS LiteLLM 子进程不继承 Codex 或终端的上游代理', () => {
+  const startLiteLlm = read('scripts/start-litellm.sh');
+  const launchStart = startLiteLlm.indexOf('env \\\n');
+  const launchEnd = startLiteLlm.indexOf('litellm_pid=$!');
+
+  assert.notEqual(launchStart, -1, 'LiteLLM 必须通过受控 env 启动');
+  assert.ok(launchEnd > launchStart, 'LiteLLM 代理隔离必须与启动命令位于同一命令块');
+
+  const launchBlock = startLiteLlm.slice(launchStart, launchEnd);
+  for (const proxyVariable of [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+  ]) {
+    assert.match(
+      launchBlock,
+      new RegExp(`-u\\s+${proxyVariable}\\b`),
+      `LiteLLM 启动前必须清除 ${proxyVariable}`,
+    );
+  }
+  assert.match(launchBlock, /"\$litellm_exe"/);
+});
+
 test('macOS 工作台启动和停止入口共同看管 LiteLLM sidecar', () => {
   const startCommand = read('start.command');
   const startDesktopCommand = read('start-desktop.command');
@@ -76,4 +102,16 @@ test('LiteLLM 运行依赖锁定到已验证版本并包含 SOCKS 支持', () =>
   assert.match(nextConfig, /["']\.\/config\.yaml["']/);
   assert.match(standaloneSync, /config\.yaml/);
   assert.match(standaloneSync, /\.venv-litellm/);
+});
+
+test('LiteLLM Router 在应用超时前终止上游且不做内部重试', {
+  skip: !fs.existsSync(path.join(root, 'config.yaml')),
+}, () => {
+  const config = read('config.yaml').replace(/\r/g, '');
+  const routerBlock = config.match(/^router_settings:\n((?:^[ \t]+.*\n?)*)/m)?.[1] || '';
+
+  assert.match(routerBlock, /^  num_retries: 0$/m, '公司模型请求不得在 LiteLLM 内部静默重试');
+  assert.match(routerBlock, /^  timeout: 110$/m, '代理上游超时必须早于应用侧 120 秒超时');
+  assert.doesNotMatch(config, /^num_retries:/m, '顶层 num_retries 不会传给 Router，禁止伪配置');
+  assert.doesNotMatch(config, /^timeout:/m, '顶层 timeout 不会传给 Router，禁止伪配置');
 });

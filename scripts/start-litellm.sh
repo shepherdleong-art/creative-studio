@@ -51,7 +51,18 @@ rm -f "$stack_file"
 
 echo "正在启动 LiteLLM（仅监听 127.0.0.1:${proxy_port}）..."
 # 离线加载模型价格表：避免启动时拉取 remote cost map 超时拖慢启动
-LITELLM_LOCAL_MODEL_COST_MAP=True PYTHONUTF8=1 "$litellm_exe" \
+# Codex/终端可能通过 HTTP(S)_PROXY 或 ALL_PROXY 访问公网；公司网关必须按本机内网路由直连。
+# 代理变量只从 LiteLLM 子进程移除，不影响 Codex、Next 或当前 shell。
+env \
+    -u HTTP_PROXY \
+    -u HTTPS_PROXY \
+    -u ALL_PROXY \
+    -u http_proxy \
+    -u https_proxy \
+    -u all_proxy \
+    LITELLM_LOCAL_MODEL_COST_MAP=True \
+    PYTHONUTF8=1 \
+    "$litellm_exe" \
     --config "$config_file" \
     --host 127.0.0.1 \
     --port "$proxy_port" \
