@@ -10,6 +10,7 @@ import {
   analyzeScriptStrategyV3,
   ScriptGenerationV3Error,
 } from '@/lib/script-generation-v3';
+import { listScriptDraftHistoryPage } from '@/lib/script-draft-history';
 
 // ── POST: 只保留 analyze；生成/取消已迁移到 /script-generation（任务化接口）──
 
@@ -82,14 +83,9 @@ export async function GET(
     }
 
     const db = getDb();
-
-    const drafts = db.prepare(`
-      SELECT id, provider, model, inputSnapshot, outputJson, createdAt, generationDurationMs
-      FROM script_drafts
-      WHERE projectId = ?
-      ORDER BY createdAt DESC
-      LIMIT 10
-    `).all(projectId);
+    const cursor = request.nextUrl.searchParams.get('cursor') || '';
+    const limit = Number(request.nextUrl.searchParams.get('limit')) || 50;
+    const historyPage = listScriptDraftHistoryPage(db, { projectId, cursor, limit });
 
     // Load saved analysis from project
     const project = db.prepare(`SELECT sellingPointAnalysisJson FROM projects WHERE id = ?`).get(projectId) as { sellingPointAnalysisJson: string } | undefined;
@@ -100,7 +96,11 @@ export async function GET(
       } catch { /* ignore corrupt data */ }
     }
 
-    return NextResponse.json({ drafts, analysis });
+    return NextResponse.json({
+      drafts: historyPage.drafts,
+      analysis,
+      nextCursor: historyPage.nextCursor,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });
