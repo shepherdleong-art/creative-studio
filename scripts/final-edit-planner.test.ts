@@ -4,17 +4,17 @@ import { clipFilter, subtitleOverlayEnableExpression } from '../lib/final-edit/r
 
 const assets = [
   {
-    videoJobId: 'direct', shotSetId: 'set', shotId: 'shot-1', filename: 'direct.mp4', localVideoPath: '/storage/direct.mp4', durationSec: 10,
+    videoJobId: 'direct', shotSetId: 'set', shotId: 'shot-1', filename: 'direct.mp4', displayName: null, localVideoPath: '/storage/direct.mp4', durationSec: 10,
     durationUs: 10_000_000, fingerprint: 'direct-fingerprint', autoUseDisabled: false, existingUsageCount: 0,
     analysis: { summary: '', sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 2_000_000, endUs: 6_000_000, qualityScore: 0.8 }], qualityIssues: [], coverFrameTimesUs: [] },
   },
   {
-    videoJobId: 'disabled', shotSetId: 'set', shotId: 'shot-1', filename: 'disabled.mp4', localVideoPath: '/storage/disabled.mp4', durationSec: 10,
+    videoJobId: 'disabled', shotSetId: 'set', shotId: 'shot-1', filename: 'disabled.mp4', displayName: null, localVideoPath: '/storage/disabled.mp4', durationSec: 10,
     durationUs: 10_000_000, fingerprint: 'disabled-fingerprint', autoUseDisabled: true, existingUsageCount: 0,
     analysis: { summary: '', sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 0, endUs: 10_000_000, qualityScore: 1 }], qualityIssues: [], coverFrameTimesUs: [] },
   },
   {
-    videoJobId: 'limited', shotSetId: 'set', shotId: 'shot-2', filename: 'limited.mp4', localVideoPath: '/storage/limited.mp4', durationSec: 10,
+    videoJobId: 'limited', shotSetId: 'set', shotId: 'shot-2', filename: 'limited.mp4', displayName: null, localVideoPath: '/storage/limited.mp4', durationSec: 10,
     durationUs: 10_000_000, fingerprint: 'limited-fingerprint', autoUseDisabled: false, existingUsageCount: 2,
     analysis: { summary: '', sellingPoints: [], semanticTags: [], usableRanges: [{ startUs: 0, endUs: 10_000_000, qualityScore: 1 }], qualityIssues: [], coverFrameTimesUs: [] },
   },
@@ -30,6 +30,7 @@ const fiveSecondAssets = Array.from({ length: 7 }, (_, index) => ({
   shotSetId: 'set',
   shotId: `shot-${index + 1}`,
   filename: `five-second-${index + 1}.mp4`,
+  displayName: null,
   localVideoPath: `/storage/five-second-${index + 1}.mp4`,
   durationSec: 5.05,
   durationUs: 5_050_000,

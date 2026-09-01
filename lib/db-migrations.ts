@@ -86,4 +86,8 @@ export const CORE_DB_MIGRATIONS = [
   // 历史行不回填，读取端按 lib/project-job-order.ts 的兼容规则排序。
   `ALTER TABLE jobs ADD COLUMN createdAt TEXT`,
   `ALTER TABLE jobs ADD COLUMN creationIndex INTEGER NOT NULL DEFAULT 0`,
+  // 生成视频友好展示名（D5）：只是展示层，物理文件名与 localVideoPath 不变。
+  // 新任务创建时写入；历史行保持 NULL，读取端用 lib/video-output-filenames.ts
+  // 按 shot 序号、来源图名、模板名与 (createdAt, id) 版次确定性派生，不回填。
+  `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
 ];

@@ -139,31 +139,36 @@ assert.ok(
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE jobs ADD COLUMN creationIndex INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
   'new core migrations must be appended without rewriting published entries',
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-2),
+  `ALTER TABLE jobs ADD COLUMN creationIndex INTEGER NOT NULL DEFAULT 0`,
+  'the C4 creation-index migration must keep its position before the C5 tail',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-3),
   `ALTER TABLE jobs ADD COLUMN createdAt TEXT`,
   'the scene-job creation timestamp migration must precede its index migration',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-3),
+  CORE_DB_MIGRATIONS.at(-4),
   `ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT`,
   'the previous rejection migration must keep its position',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-4),
+  CORE_DB_MIGRATIONS.at(-5),
   `ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT`,
   'the previous rejection migration must keep its position',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-5),
+  CORE_DB_MIGRATIONS.at(-6),
   `ALTER TABLE projects ADD COLUMN lastOpenedAt TEXT`,
   'the last-opened migration must remain before the rejection migrations',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-6),
+  CORE_DB_MIGRATIONS.at(-7),
   `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
   'the previously published tail migration must keep its position',
 );
@@ -244,6 +249,18 @@ assert.deepEqual(
   db.prepare(`SELECT usageSnapshotJson FROM video_jobs WHERE id = 'legacy-video-job'`).get(),
   { usageSnapshotJson: null },
   '历史 video_jobs 行升级后必须保持 usageSnapshotJson 为 NULL',
+);
+// C5：video_jobs.displayName —— 只追加、可空、不回填历史行。
+const videoDisplayNameColumn = videoJobColumns.find((column) => column.name === 'displayName') as
+  | { name: string; type?: string; notnull?: number; dflt_value?: string | null }
+  | undefined;
+assert.equal(videoDisplayNameColumn?.type, 'TEXT', 'video_jobs.displayName must be TEXT');
+assert.equal(videoDisplayNameColumn?.notnull, 0, 'video_jobs.displayName must remain nullable');
+assert.equal(videoDisplayNameColumn?.dflt_value, null, 'video_jobs.displayName must not have a default');
+assert.deepEqual(
+  db.prepare(`SELECT displayName FROM video_jobs WHERE id = 'legacy-video-job'`).get(),
+  { displayName: null },
+  '历史 video_jobs 行升级后必须保持 displayName 为 NULL（读取端派生，不回填）',
 );
 for (const table of ['providers', 'video_providers', 'script_providers']) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;

@@ -339,7 +339,9 @@ export default function MixcutPanel({
   const materials: MaterialCardView[] = [
     ...(context?.videoAssets ?? []).map((asset) => ({
       key: `module4:${asset.videoJobId}`,
-      filename: asset.filename,
+      // MaterialCardView.filename 只做展示：module4 素材优先用友好名称（D5），
+      // 播放/预览 URL 继续走 previewUrl（物理 filename），不受影响。
+      filename: asset.displayName || asset.filename,
       durationUs: asset.durationUs,
       width: asset.width,
       height: asset.height,

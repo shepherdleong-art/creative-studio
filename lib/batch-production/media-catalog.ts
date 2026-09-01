@@ -6,6 +6,7 @@ import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, type VideoMediaProbe } from '../ffmpeg.ts';
 import { isVideoJobRejected } from '../media-core/video-job-rejection.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
+import { resolveVideoJobDisplayNames } from '../video-output-filenames.ts';
 import {
   isDetectedVideoContainerCompatible,
   SUPPORTED_VIDEO_MIME_BY_EXTENSION,
@@ -471,6 +472,42 @@ export function listAssetSources(db: Database.Database, assetId: string): BatchA
     lastVerifiedIdentityJson: row.lastVerifiedIdentityJson ?? null,
     createdAt: row.createdAt,
   }));
+}
+
+/**
+ * 批量素材目录的友好展示名（D5）：按 module4 来源反查视频任务，用与视频
+ * 生成 API、Mixcut context 相同的 helper 解析（持久化优先，旧行确定性派生）。
+ * 只做读取，不改写 batch_assets.mediaJson，也不影响素材身份（内容指纹）。
+ */
+export function resolveModule4AssetDisplayNames(
+  db: Database.Database,
+  assetIds: Array<string>,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  const ids = [...new Set(assetIds.filter((id) => typeof id === 'string' && id))];
+  if (ids.length === 0) return result;
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT assetId, locationJson FROM batch_asset_sources
+    WHERE sourceKind = 'module4' AND assetId IN (${placeholders})
+    ORDER BY createdAt, id
+  `).all(...ids) as Array<{ assetId: string; locationJson: string }>;
+  const assetIdByVideoJobId = new Map<string, string>();
+  const videoJobIds: string[] = [];
+  for (const row of rows) {
+    const location = parseSourceLocation('module4', row.locationJson);
+    if (location.kind !== 'module4' || !location.videoJobId) continue;
+    if (!assetIdByVideoJobId.has(location.videoJobId)) {
+      assetIdByVideoJobId.set(location.videoJobId, row.assetId);
+      videoJobIds.push(location.videoJobId);
+    }
+  }
+  const displayNames = resolveVideoJobDisplayNames(db, videoJobIds);
+  for (const [videoJobId, displayName] of displayNames) {
+    const assetId = assetIdByVideoJobId.get(videoJobId);
+    if (assetId) result.set(assetId, displayName);
+  }
+  return result;
 }
 
 /**

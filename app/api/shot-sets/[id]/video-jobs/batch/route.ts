@@ -5,6 +5,7 @@ import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_
 import { getVideoProviderConfigState } from '@/lib/video-auth';
 import { validateVideoTailFrameAsset, validateVideoTailFrameBatchDrafts } from '@/lib/video-tail-frame';
 import { normalizeVideoMultiShotForStorage } from '@/lib/video-multi-shot';
+import { countVideoJobsForShot, planVideoJobDisplayName } from '@/lib/video-output-filenames';
 
 const MAX_ITEMS = 10;
 
@@ -93,8 +94,8 @@ export async function POST(
 
     const insert = db.prepare(`
       INSERT INTO video_jobs
-        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot, createdAt, displayName)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const videoJobIds: string[] = [];
     const createAll = db.transaction(() => {
@@ -110,13 +111,28 @@ export async function POST(
         if (!tailFrameValidation.ok) return tailFrameValidation;
       }
 
-      for (const item of items) {
+      // 友好展示名（D5）：批量同 shot 多条运镜按请求原始顺序续号（现有任务数
+      // 为基数，逐条 +1）。createdAt 逐条加 1ms，保证 (createdAt, id) 排名与
+      // 请求顺序、持久化版次一致；物理文件名仍由队列生成，不受影响。
+      const versionBase = countVideoJobsForShot(db, shotId);
+      const batchBaseMs = Date.now();
+      items.forEach((item, index) => {
         const videoJobId = uuidv4();
         const p = providerCache.get(item.providerId)!;
         const multiShot = normalizeVideoMultiShotForStorage(p.type, p.model, item.multiShot);
-        insert.run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId, item.providerId, p.model, item.templateId, item.prompt, item.durationSec, multiShot);
+        const displayName = planVideoJobDisplayName(db, {
+          shotId,
+          sourceImageId,
+          templateId: item.templateId,
+          versionNumber: versionBase + index + 1,
+        });
+        insert.run(
+          videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId,
+          item.providerId, p.model, item.templateId, item.prompt, item.durationSec, multiShot,
+          new Date(batchBaseMs + index).toISOString(), displayName,
+        );
         videoJobIds.push(videoJobId);
-      }
+      });
       return { ok: true as const };
     });
     const createResult = createAll();

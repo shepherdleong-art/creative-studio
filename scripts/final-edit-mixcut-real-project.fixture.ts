@@ -63,9 +63,12 @@ const insertShot = db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourc
 ids.shotsA.forEach((shotId, index) => insertShot.run(shotId, ids.shotSetA, index + 1, `2026-07-24 09:${String(index + 3).padStart(2, '0')}:00`));
 insertShot.run(ids.shotB, ids.shotSetB, 1, '2026-07-24 09:11:00');
 db.prepare(`INSERT OR IGNORE INTO video_providers (id, name, type, baseUrlEnv, apiKeyEnv, modelEnv, defaultModel, enabled) VALUES ('mixcut-real-video-provider', '真实 E2E 视频供应商', 'kling', '', '', '', 'fixture-video', 1)`).run();
-const insertVideoJob = db.prepare(`INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec, status, localVideoPath, filename, createdAt) VALUES (?, ?, ?, ?, 'mixcut-real-source-image', 'mixcut-real-video-provider', 'fixture-video', '', ?, 'succeeded', ?, ?, ?)`);
-ids.videosA.forEach((videoId, index) => insertVideoJob.run(videoId, ids.projectId, ids.shotSetA, ids.shotsA[index], 5, videoAPaths[index], `真实组A-素材${index + 1}.mp4`, `2026-07-24 09:${String(index + 12).padStart(2, '0')}:00`));
-insertVideoJob.run(ids.videoB, ids.projectId, ids.shotSetB, ids.shotB, 3, videoBPath, '真实组B-专属.mp4', '2026-07-24 09:19:00');
+// C5（D5）：这些 fixture 任务按「新任务」语义直接持久化 displayName（与 filename
+// 同值），E2E 素材卡显示持久化名；派生路径由 video-output-filenames /
+// mixcut-flow 测试覆盖。物理 filename 与 localVideoPath 保持不变。
+const insertVideoJob = db.prepare(`INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec, status, localVideoPath, filename, displayName, createdAt) VALUES (?, ?, ?, ?, 'mixcut-real-source-image', 'mixcut-real-video-provider', 'fixture-video', '', ?, 'succeeded', ?, ?, ?, ?)`);
+ids.videosA.forEach((videoId, index) => insertVideoJob.run(videoId, ids.projectId, ids.shotSetA, ids.shotsA[index], 5, videoAPaths[index], `真实组A-素材${index + 1}.mp4`, `真实组A-素材${index + 1}.mp4`, `2026-07-24 09:${String(index + 12).padStart(2, '0')}:00`));
+insertVideoJob.run(ids.videoB, ids.projectId, ids.shotSetB, ids.shotB, 3, videoBPath, '真实组B-专属.mp4', '真实组B-专属.mp4', '2026-07-24 09:19:00');
 
 const makeScript = (shotSetId: string, shotIds: string[], title: string, narrations: string[]) => ({
   version: 2 as const,

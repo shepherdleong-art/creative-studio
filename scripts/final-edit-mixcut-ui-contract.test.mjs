@@ -117,7 +117,7 @@ assert.match(previewStep, /previewModeTabs/, '预览调整必须提供独立的�
 assert.match(previewStep, /role="tablist"/, '预览模式切换器必须使用可访问的 Tab 语义');
 assert.match(previewStep, /成片预览/, '预览调整必须提供成片预览模式');
 assert.match(previewStep, /素材预览/, '预览调整必须提供素材预览模式');
-assert.match(previewStep, /aria-label=\{`预览素材 \$\{asset\.filename\}`\}/, '素材调整列表必须提供独立预览按钮');
+assert.match(previewStep, /aria-label=\{`预览素材 \$\{materialName\(asset\)\}`\}/, '素材调整列表必须提供独立预览按钮（C5：预览名使用友好展示名）');
 assert.match(previewStep, /data-testid="mixcut-material-preview"/, '素材预览模式必须暴露稳定的验证入口');
 assert.match(previewStep, /<video[\s\S]{0,500}controls[\s\S]{0,500}muted[\s\S]{0,500}playsInline/, '素材预览模式必须直接提供可播放的视频控件');
 assert.match(previewStep, /<BgmCard/, '背景音乐必须抽成可独立确认的卡片组件');

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 
 export async function GET(
   _request: NextRequest,
@@ -14,9 +15,12 @@ export async function GET(
       LEFT JOIN video_providers vp ON vp.id = vj.providerId
       LEFT JOIN video_prompt_templates vpt ON vpt.id = vj.templateId
       WHERE vj.id = ?
-    `).get(id);
+    `).get(id) as Record<string, unknown> | undefined;
     if (!job) return NextResponse.json({ error: 'Video job not found' }, { status: 404 });
-    return NextResponse.json(job);
+    // filename 只服务播放 URL/物理路径；displayName 是所有用户可见名称，
+    // 旧任务为 NULL 时由共享 helper 确定性派生（不回写数据库）。
+    const displayNames = resolveVideoJobDisplayNames(db, [String(job.id)]);
+    return NextResponse.json({ ...job, displayName: displayNames.get(String(job.id)) ?? null });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

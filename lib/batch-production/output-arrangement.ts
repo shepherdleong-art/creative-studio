@@ -12,6 +12,7 @@ import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain
 import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { cleanFraming } from '../media-core/cover-title-presets.ts';
 import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
+import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
 
 /**
  * 检查成片的片段级编辑（等长 trim / replace、变长修剪、删除、插入、分割）
@@ -497,6 +498,9 @@ export function getBatchOutputArrangementView(
   const encodedProjectId = encodeURIComponent(projectId);
   const encodedBatchId = encodeURIComponent(batchId);
   const encodedBatchVersionId = encodeURIComponent(lineage.batchVersionId);
+  // 友好展示名（D5）：module4 来源素材的 mediaJson 可能只有物理文件名
+  // （video-<jobId>-<时间戳>.mp4），旧登记行读取时派生友好名，不改写数据库。
+  const module4DisplayNames = resolveModule4AssetDisplayNames(db, poolRows.map((row) => row.assetId));
   const poolAssets = poolRows.map((row): BatchOutputPoolAssetView => {
     const media = asRecord(parseJson(row.mediaJson));
     const durationUs = poolAssetDurationUs(row);
@@ -504,7 +508,7 @@ export function getBatchOutputArrangementView(
     const encodedAssetId = encodeURIComponent(row.assetId);
     return {
       assetId: row.assetId,
-      displayName: nonEmptyString(media?.displayName) ?? nonEmptyString(media?.filename) ?? `素材 ${row.assetId.slice(0, 8)}`,
+      displayName: nonEmptyString(media?.displayName) ?? module4DisplayNames.get(row.assetId) ?? nonEmptyString(media?.filename) ?? `素材 ${row.assetId.slice(0, 8)}`,
       durationSec: durationUs !== null ? durationUs / 1_000_000 : mediaDurationSec,
       contentFingerprint: row.contentFingerprint,
       thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion(row.contentFingerprint))}`,

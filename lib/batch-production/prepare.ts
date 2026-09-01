@@ -11,6 +11,7 @@ import {
   listAssetSources,
   isBatchAssetEligible,
   registerModule4Video,
+  resolveModule4AssetDisplayNames,
   verifyAssetSources,
   type BatchAssetSourceHealth,
 } from './media-catalog.ts';
@@ -162,40 +163,47 @@ export async function prepareBatchProductionInputs(
     manual: row.sourceId.startsWith('manual:'),
   }));
 
-  const assetViews: PrepareAssetView[] = listProjectAssets(db, projectId)
-    .filter((row) => isBatchAssetEligible(db, row.id))
-    .map((row: BatchAssetRow) => {
-      const current = getCurrentAssetAnalysis(db, projectId, row.id);
-      const encodedProjectId = encodeURIComponent(projectId);
-      const encodedAssetId = encodeURIComponent(row.id);
-      // 缩略图 URL 携带登记指纹前 16 位作为缓存版本:内容不变时 URL 稳定,
-      // 内容替换后指纹变化,URL 变化,配合 immutable 长缓存不会吐旧图。
-      const fingerprintVersion = (row.contentFingerprint.startsWith('sha256:')
-        ? row.contentFingerprint.slice('sha256:'.length)
-        : row.contentFingerprint).slice(0, 16);
-      const media = JSON.parse(row.mediaJson) as PrepareAssetMedia;
-      return {
-        id: row.id,
-        status: row.status,
-        mediaKind: row.mediaKind,
-        currentAnalysisId: current?.status === 'ready' ? current.id : null,
-        analysisLevel: current?.status === 'ready' ? current.analysisLevel : 'none',
-        thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion)}`,
-        previewUrl: `/api/batch-production/assets/${encodedAssetId}/preview?projectId=${encodedProjectId}`,
-        media,
-        sources: listAssetSources(db, row.id).map((source) => {
-          const fallbackName = source.sourceKind === 'module4'
-            ? `视频任务 ${source.locationJson.kind === 'module4' ? source.locationJson.videoJobId : source.id}`
-            : source.sourceKind === 'managed' ? '托管文件' : '用户文件';
-          return {
-            id: source.id,
-            sourceKind: source.sourceKind,
-            health: source.health,
-            displayName: safeSourceDisplayName(media.displayName || media.filename, fallbackName),
-          };
-        }),
-      };
-    });
+  const assetViews: PrepareAssetView[] = (() => {
+    // 友好展示名（D5）：module4 来源的素材用与视频生成 API、Mixcut context
+    // 相同的派生名称；只在视图层补齐，不改写 batch_assets.mediaJson。
+    const module4DisplayNames = resolveModule4AssetDisplayNames(db, assets.map((row) => row.id));
+    return assets
+      .filter((row) => isBatchAssetEligible(db, row.id))
+      .map((row: BatchAssetRow) => {
+        const current = getCurrentAssetAnalysis(db, projectId, row.id);
+        const encodedProjectId = encodeURIComponent(projectId);
+        const encodedAssetId = encodeURIComponent(row.id);
+        // 缩略图 URL 携带登记指纹前 16 位作为缓存版本:内容不变时 URL 稳定,
+        // 内容替换后指纹变化,URL 变化,配合 immutable 长缓存不会吐旧图。
+        const fingerprintVersion = (row.contentFingerprint.startsWith('sha256:')
+          ? row.contentFingerprint.slice('sha256:'.length)
+          : row.contentFingerprint).slice(0, 16);
+        const media = JSON.parse(row.mediaJson) as PrepareAssetMedia;
+        const module4DisplayName = module4DisplayNames.get(row.id);
+        const assetDisplayName = media.displayName || module4DisplayName || '';
+        return {
+          id: row.id,
+          status: row.status,
+          mediaKind: row.mediaKind,
+          currentAnalysisId: current?.status === 'ready' ? current.id : null,
+          analysisLevel: current?.status === 'ready' ? current.analysisLevel : 'none',
+          thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion)}`,
+          previewUrl: `/api/batch-production/assets/${encodedAssetId}/preview?projectId=${encodedProjectId}`,
+          media: media.displayName || !module4DisplayName ? media : { ...media, displayName: module4DisplayName },
+          sources: listAssetSources(db, row.id).map((source) => {
+            const fallbackName = source.sourceKind === 'module4'
+              ? `视频任务 ${source.locationJson.kind === 'module4' ? source.locationJson.videoJobId : source.id}`
+              : source.sourceKind === 'managed' ? '托管文件' : '用户文件';
+            return {
+              id: source.id,
+              sourceKind: source.sourceKind,
+              health: source.health,
+              displayName: safeSourceDisplayName(assetDisplayName || media.filename, fallbackName),
+            };
+          }),
+        };
+      });
+  })();
 
   return {
     project: { id: project.id, name: project.name, productCode: project.productCode ?? '' },

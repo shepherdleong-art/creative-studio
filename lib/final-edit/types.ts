@@ -59,7 +59,10 @@ export interface FinalEditAssetView {
   videoJobId: string;
   shotSetId: string;
   shotId: string | null;
+  /** 物理文件名，仅供播放 URL/物理路径；用户可见名称用 displayName。 */
   filename: string;
+  /** 用户可见的友好名称（D5）；module4 视频来自持久化/派生 displayName，外部素材为原文件名。 */
+  displayName: string;
   previewUrl: string;
   thumbnailUrl: string;
   durationUs: number;
@@ -220,6 +223,8 @@ export interface MixcutContextResponse {
     videoJobId: string;
     shotSetId: string;
     filename: string;
+    /** 用户可见的友好名称（D5）；filename 仅供播放 URL/物理路径。 */
+    displayName: string;
     durationUs: number;
     width: number;
     height: number;

@@ -82,6 +82,7 @@ db.exec(`
   );
   CREATE TABLE video_jobs (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT,
+    sourceImageId TEXT, templateId TEXT, displayName TEXT, createdAt TEXT,
     status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, durationSec INTEGER,
     prompt TEXT NOT NULL DEFAULT '', rejectedAt TEXT, rejectReason TEXT
   );
@@ -101,6 +102,8 @@ for (const [id, setId, shotId] of [['v1', 'set-a', 's1'], ['v2', 'set-a', 's2'],
   fs.writeFileSync(file, `video-${id}`);
   db.prepare(`INSERT INTO video_jobs (id, projectId, shotSetId, shotId, status, localVideoPath, filename, durationSec) VALUES (?, 'p1', ?, ?, 'succeeded', ?, ?, 12)`).run(id, setId, shotId, file, `${id}.mp4`);
 }
+// C5（D5）：旧任务（displayName NULL）补来源图身份，派生名走真实链路。
+db.prepare(`UPDATE video_jobs SET sourceImageId = 'img-' || shotId WHERE id IN ('v1', 'v2')`).run();
 
 const script = {
   version: 2,
@@ -226,6 +229,12 @@ assert.equal(group.variants.length, 2);
 assert.equal(group.assets.length, 2);
 assert.ok(group.assets.every((asset) => asset.shotSetId === 'set-a'));
 assert.ok(group.assets.every((asset) => asset.thumbnailUrl.includes('/thumbnail')));
+// C5（D5）：旧任务 displayName 为 NULL 时派生友好名；物理 filename 不变。
+assert.deepEqual(
+  group.assets.map((asset) => [asset.videoJobId, asset.filename, asset.displayName]),
+  [['v1', 'v1.mp4', '01-s1-自定义-V01.mp4'], ['v2', 'v2.mp4', '02-s2-自定义-V01.mp4']],
+  'assets 视图必须携带派生 displayName，filename 保持物理名',
+);
 assert.ok(group.coverCandidates.some((candidate) => candidate.coverKey.startsWith('video:')));
 assert.ok(group.variants.every((variant) => variant.timeline.clips.every((clip) => clip.videoJobId !== 'foreign')));
 assert.equal(warmedPreviewPaths.length, 2, 'previewing 必须调用真实预览预热 seam');

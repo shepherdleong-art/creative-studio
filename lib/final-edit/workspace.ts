@@ -46,6 +46,7 @@ import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { releaseReservedExportTarget, reserveProjectExportTarget } from './export-naming.ts';
 import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts';
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
+import { resolveVideoJobDisplayNames } from '../video-output-filenames.ts';
 import {
   buildSemanticMatrixPrompt,
   createSemanticMatrixCacheKey,
@@ -345,7 +346,10 @@ interface AssetRow {
   videoJobId: string;
   shotSetId: string;
   shotId: string | null;
+  /** 物理文件名，仅供播放 URL/物理路径；用户可见名称用 displayName。 */
   filename: string | null;
+  /** 友好展示名（D5）：module4 视频来自持久化/派生 displayName；外部素材为原文件名。 */
+  displayName: string | null;
   localVideoPath: string;
   durationSec: number | null;
 }
@@ -500,18 +504,26 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
 
 function assetsForScript(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string): AssetRow[] {
   const rows = db.prepare(`
-    SELECT id AS videoJobId, shotSetId, shotId, filename, localVideoPath, durationSec
+    SELECT id AS videoJobId, shotSetId, shotId, filename, displayName, localVideoPath, durationSec
     FROM video_jobs
     WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
       AND ${videoJobNotRejectedSql(db)}
     ORDER BY id
-  `).all(projectId, shotSetId) as Array<Omit<AssetRow, 'assetKey' | 'source'>>;
+  `).all(projectId, shotSetId) as Array<Pick<AssetRow, 'videoJobId' | 'shotSetId' | 'shotId' | 'filename' | 'displayName' | 'localVideoPath' | 'durationSec'>>;
+  // 友好展示名（D5）：旧任务 displayName 为 NULL 时由共享 helper 确定性派生，
+  // 与视频生成 API、批量 catalog 同名；filename/localVideoPath 物理身份不变。
+  const displayNames = resolveVideoJobDisplayNames(db, rows.map((row) => row.videoJobId));
   return rows.filter((row) => {
     try {
       const resolved = resolveStoragePath(storageRoot, row.localVideoPath, { allowAbsolute: true });
       return fs.existsSync(resolved) && fs.statSync(resolved).isFile();
     } catch { return false; }
-  }).map((row) => ({ ...row, assetKey: `module4:${row.videoJobId}`, source: 'module4' as const }));
+  }).map((row) => ({
+    ...row,
+    displayName: row.displayName || displayNames.get(row.videoJobId) || null,
+    assetKey: `module4:${row.videoJobId}`,
+    source: 'module4' as const,
+  }));
 }
 
 function selectedAssets(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string, requestedKeys?: string[]): AssetRow[] {
@@ -546,6 +558,7 @@ function selectedAssets(db: Database.Database, storageRoot: string, projectId: s
       shotSetId,
       shotId: null,
       filename: row.originalFilename,
+      displayName: row.originalFilename,
       localVideoPath: absolutePath,
       durationSec: Number(row.durationUs || 0) / 1_000_000,
     };
@@ -923,7 +936,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       if (!row) return [];
       try {
         const absolutePath = resolveImportedExternalAssetVideoPath(storageRoot, { projectId: String(group.projectId), shotSetId: String(group.shotSetId) }, row.relativePath);
-        return [{ assetKey, source: 'external' as const, videoJobId: `external-asset-${id}`, shotSetId: row.shotSetId, shotId: null, filename: row.originalFilename, localVideoPath: absolutePath, durationSec: row.durationUs / 1_000_000 }];
+        return [{ assetKey, source: 'external' as const, videoJobId: `external-asset-${id}`, shotSetId: row.shotSetId, shotId: null, filename: row.originalFilename, displayName: row.originalFilename, localVideoPath: absolutePath, durationSec: row.durationUs / 1_000_000 }];
       } catch { return []; }
     });
     const assets = [...module4Assets, ...externalAssets].map((asset) => {
@@ -942,6 +955,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         shotSetId: asset.shotSetId,
         shotId: asset.shotId,
         filename: asset.filename || asset.videoJobId,
+        displayName: asset.displayName || asset.filename || asset.videoJobId,
         previewUrl: externalId
           ? `/api/projects/${String(group.projectId)}/final-edit/shot-sets/${String(group.shotSetId)}/external-assets/${externalId}/media`
           : `/api/videos/${relative}`,

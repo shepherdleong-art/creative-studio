@@ -73,6 +73,8 @@ interface VideoJob {
   providerTaskId?: string;
   providerStatus?: string;
   filename?: string;
+  /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
+  displayName?: string | null;
   localVideoPath?: string;
   errorMessage?: string;
   providerName?: string;

@@ -461,6 +461,7 @@ body {
   .result-thumb .play-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.25); opacity: 0; transition: opacity .2s; }
   .result-card:hover .play-overlay { opacity: 1; }
   .result-card .result-info { padding: 7px 9px 8px; }
+  .result-card .result-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-ink); font-size: 11px; font-weight: 500; line-height: 1.3; margin-bottom: 3px; }
   .result-card .result-meta-row { display: flex; align-items: center; gap: 6px; }
   .result-card .result-status { flex: 0 0 auto; padding: 2px 7px; font-size: 10px; line-height: 1.2; font-weight: 500; letter-spacing: 0; }
   .result-card .result-meta { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-ink-tertiary); font-size: 10.5px; line-height: 1.2; text-align: right; }

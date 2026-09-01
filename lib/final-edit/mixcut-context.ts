@@ -12,6 +12,7 @@ import {
   type ReadableProjectScriptRow,
 } from '../media-core/project-script-reader.ts';
 import { isScriptVisibleInContext } from '../media-core/script-visibility.ts';
+import { resolveVideoJobDisplayNames } from '../video-output-filenames.ts';
 import type { MixcutContextResponse } from './types.ts';
 
 // Pure, dependency-injected (db + storageRoot passed in — never getDb()/
@@ -302,6 +303,9 @@ export async function buildMixcutContext(
       .map((row) => ({ row, absolutePath: resolveSafeVideoAbsolutePath(storageRoot, row.localVideoPath) }))
       .filter((entry): entry is { row: VideoJobRow; absolutePath: string } => entry.absolutePath !== null);
     const summaries = loadVideoAnalysisSummaries(db, safeRows.map(({ row }) => row.videoJobId));
+    // 友好展示名（D5）：与视频生成 API、批量 catalog 共用同一派生 helper，
+    // 旧任务按 shot 序号/来源图名/模板名/版次确定性派生；filename 仅供播放 URL。
+    const displayNames = resolveVideoJobDisplayNames(db, safeRows.map(({ row }) => row.videoJobId));
 
     // JUDGMENT CALL (JC-2): metadata probing stays inside the request because
     // it is not a transcode/paid task, but it is bounded so a large shot set
@@ -318,6 +322,7 @@ export async function buildMixcutContext(
         videoJobId: entry.row.videoJobId,
         shotSetId: entry.row.shotSetId,
         filename: entry.row.filename || entry.row.videoJobId,
+        displayName: displayNames.get(entry.row.videoJobId) || entry.row.filename || entry.row.videoJobId,
         durationUs: probe.durationUs,
         width: probe.width,
         height: probe.height,

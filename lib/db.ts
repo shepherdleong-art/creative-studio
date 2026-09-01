@@ -295,6 +295,7 @@ function initTables(db: Database.Database) {
       remoteVideoUrl TEXT,
       localVideoPath TEXT,
       filename TEXT,
+      displayName TEXT,
       attempt INTEGER NOT NULL DEFAULT 0,
       maxAttempts INTEGER NOT NULL DEFAULT 2,
       errorMessage TEXT,

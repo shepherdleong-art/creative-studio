@@ -75,6 +75,10 @@ db.exec(`
     id TEXT PRIMARY KEY,
     projectId TEXT NOT NULL,
     shotSetId TEXT,
+    shotId TEXT,
+    sourceImageId TEXT,
+    templateId TEXT,
+    displayName TEXT,
     localVideoPath TEXT,
     filename TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -82,6 +86,14 @@ db.exec(`
     rejectedAt TEXT,
     rejectReason TEXT,
     createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- C5 友好名派生依赖的展示字段表（与生产核心 schema 同名同列）。
+  CREATE TABLE image_assets (
+    id TEXT PRIMARY KEY, projectId TEXT, filename TEXT NOT NULL, path TEXT NOT NULL
+  );
+  CREATE TABLE video_prompt_templates (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL
   );
 
   CREATE TABLE script_drafts (
@@ -209,6 +221,12 @@ db.prepare(`
   INSERT INTO final_edit_asset_analysis (videoJobId, generatedJson, manualOverrideJson)
   VALUES ('video-real', ?, '{}')
 `).run(JSON.stringify({ summary: '真实视频分析摘要' }));
+
+// C5（D5）：video-real 补齐 shot/来源图/模板身份，让 videoAssets 的 displayName
+// 走真实派生链路（旧任务 displayName 为 NULL → 按 shot 序号/来源图名/模板名/版次派生）。
+db.prepare(`INSERT INTO image_assets (id, projectId, filename, path) VALUES ('img-a1', 'project-a', 'LH122K3-B1-沙发.png', '/data/img-a1.png')`).run();
+db.prepare(`INSERT INTO video_prompt_templates (id, name) VALUES ('tpl-push', '缓慢推近')`).run();
+db.prepare(`UPDATE video_jobs SET shotId = 'shot-a1', sourceImageId = 'img-a1', templateId = 'tpl-push' WHERE id = 'video-real'`).run();
 
 // ss-b videos: purely for JC-3 aggregate coverage — files are never actually
 // created on disk (JC-3's aggregation is pure SQL and must never touch the
@@ -446,6 +464,8 @@ assert.ok(
 const realAsset = explicitContext.videoAssets[0];
 assert.equal(realAsset.shotSetId, 'ss-a');
 assert.equal(realAsset.filename, 'video-real.mp4');
+// C5（D5）：Mixcut 素材名优先展示派生的友好名；filename 物理身份不变。
+assert.equal(realAsset.displayName, '01-LH122K3-B1-沙发-缓慢推近-V01.mp4', '旧任务 displayName 为 NULL 时必须按 shot 序号/来源图名/模板名/版次确定性派生');
 assert.equal(realAsset.thumbnailUrl, '/api/projects/project-a/final-edit/shot-sets/ss-a/module4-assets/video-real/thumbnail');
 assert.equal(realAsset.previewUrl, '/api/videos/final-edits/videos/video-real.mp4');
 assert.equal(realAsset.summary, '真实视频分析摘要');
@@ -479,6 +499,7 @@ persistedDb.exec(`
   );
   CREATE TABLE video_jobs (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT,
+    sourceImageId TEXT, templateId TEXT, displayName TEXT, createdAt TEXT,
     status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, durationSec REAL,
     rejectedAt TEXT, rejectReason TEXT
   );

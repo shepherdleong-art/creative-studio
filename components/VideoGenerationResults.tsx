@@ -16,6 +16,8 @@ interface VideoJob {
   providerTaskId?: string;
   providerStatus?: string;
   filename?: string;
+  /** 用户可见的友好名称（D5）；filename 只服务播放 URL/物理路径。 */
+  displayName?: string | null;
   localVideoPath?: string;
   errorMessage?: string;
   providerName?: string;
@@ -144,6 +146,11 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
             </div>
 
             <div className="result-info">
+              {(job.displayName || job.filename) && (
+                <div className="result-name" title={job.displayName || job.filename}>
+                  {job.displayName || job.filename}
+                </div>
+              )}
               <div className="result-meta-row">
                 <span className={`status-badge result-status status-${isSucceeded ? 'succeeded' : isFailed ? 'failed' : isRunning ? 'running' : 'pending'}`}>
                   {STATUS_LABELS[job.status] || job.status}
@@ -168,7 +175,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                   <>
                     <a
                       href={`/api/videos/videos/${encodeURIComponent(job.filename)}`}
-                      download
+                      download={job.displayName || job.filename}
                       className="result-action link-accent"
                       onClick={(e) => e.stopPropagation()}
                     >

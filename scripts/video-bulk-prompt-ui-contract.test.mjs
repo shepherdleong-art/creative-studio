@@ -88,6 +88,12 @@ assert.match(panel, /JSON\.stringify\(\{ action: ['"]reject['"], reason:/, '剔�
 assert.match(results, /placeholder="剔除原因（可选）"/);
 assert.match(results, /onReject\(jobId, rejectReasonDraft\.trim\(\) \|\| undefined\)/);
 
+// C5（D5）：友好名称展示契约——结果卡显示 displayName，播放 URL 仍用物理
+// filename，下载建议文件名为 displayName。
+assert.match(results, /result-name/, '结果卡必须显示友好名称行');
+assert.match(results, /download=\{job\.displayName \|\| job\.filename\}/, '下载建议文件名必须优先 displayName');
+assert.match(panel, /displayName\?: string \| null/, '面板任务类型必须携带 displayName');
+
 // 抽屉必须 portal 到 body，且这条约束的成因要能被验证：
 // .video-generation-section 用 transform 做全宽布局，transform 会给后代的
 // position: fixed 造包含块，抽屉留在原地就会被按进页面流，笔记本视口下
