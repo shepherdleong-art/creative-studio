@@ -1207,7 +1207,7 @@ try {
     // 裁剪会形成时间轴缺口，同时保留当前片段选中态。此时用户应仍能明确选择另一素材并“添加到缺口”，
     // 不能因为 selectedClip 仍存在就只能替换原片段。
     const insertAfterTrimResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
-    const materialAAfterTrim = page.getByRole('button', { name: /a\.mp4/ });
+    const materialAAfterTrim = page.getByRole('button', { name: /a\.mp4/ }).first();
     await materialAAfterTrim.click();
     assert.equal(await materialAAfterTrim.getAttribute('aria-pressed'), 'true', '裁剪后再次单击素材必须切换左侧高亮');
     await page.getByRole('button', { name: '添加到缺口', exact: true }).click();
@@ -1260,7 +1260,7 @@ try {
     await page.locator('[data-clip-id="clip-a"]').waitFor({ state: 'detached' });
 
     const insertResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-variants/variant-e2e') && response.request().method() === 'PATCH');
-    const materialAAfterDelete = page.getByRole('button', { name: /a\.mp4/ });
+    const materialAAfterDelete = page.getByRole('button', { name: /a\.mp4/ }).first();
     await materialAAfterDelete.click();
     await page.getByRole('button', { name: '添加到缺口', exact: true }).click();
     await insertResponse;

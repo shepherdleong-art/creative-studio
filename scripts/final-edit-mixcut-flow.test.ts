@@ -264,7 +264,7 @@ db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnap
 assert.equal(isUsableMixcutScriptDraft(validScript), true, '合法 V2 草稿必须通过网关');
 assert.equal(isUsableMixcutScriptDraft(validV3Script), true, '合法 V3 草稿必须进入智能混剪');
 assert.equal(isUsableMixcutScriptDraft(v1Draft), false, 'V1 草稿继续走既有 legacy 兼容路径');
-assert.equal(isUsableMixcutScriptDraft(emptyShotSetIdDraft), false, '空 shotSetId 必须被拒绝');
+assert.equal(isUsableMixcutScriptDraft(emptyShotSetIdDraft), true, '空 shotSetId 是项目级脚本，结构校验应通过');
 assert.equal(isUsableMixcutScriptDraft(emptySegmentsDraft), false, '空 segments[] 必须被拒绝');
 assert.equal(isUsableMixcutScriptDraft(null), false, 'null 必须被拒绝');
 assert.equal(isUsableMixcutScriptDraft('not an object'), false, '非对象必须被拒绝');
@@ -315,7 +315,7 @@ assert.ok(!defaultContext.drafts.some((d) => d.id === 'draft-for-b'), 'project-a
 // (c) script draft gates, via real code: only draft-valid survives; each of
 // the other three malformed drafts is excluded for its own single reason.
 // =============================================================================
-assert.deepEqual(defaultContext.drafts.map((d) => d.id), ['draft-v3', 'draft-stale-fullscript', 'draft-valid'], '引用当前项目真实分镜组的合法 V2/V3 草稿都应出现');
+assert.deepEqual(defaultContext.drafts.map((d) => d.id), ['draft-valid', 'draft-empty-shotset', 'draft-stale-fullscript', 'draft-v3'], '项目级脚本与引用当前项目真实分镜组的合法 V2/V3 草稿都应出现');
 assert.ok(!defaultContext.drafts.some((draft) => draft.id === 'draft-foreign-shotset'), '当前项目草稿不得引用其他项目的 shotSetId');
 const validDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-valid');
 const staleDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-stale-fullscript');
