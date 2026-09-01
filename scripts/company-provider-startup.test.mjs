@@ -71,6 +71,37 @@ test('LiteLLM 启动参数明确绑定 loopback，不能回归到公网监听', 
   assert.doesNotMatch(startStack, /0\.0\.0\.0/);
 });
 
+test('LiteLLM 子进程启动前剥离六个代理变量，且只影响子进程（不清洗父 shell / Next）', () => {
+  const launchStart = startStack.indexOf('$env:LITELLM_LOCAL_MODEL_COST_MAP');
+  const healthLoopStart = startStack.indexOf('$ok = $false', launchStart);
+  assert.ok(launchStart >= 0 && healthLoopStart > launchStart, '缺少 LiteLLM 启动区块');
+  const launchBlock = startStack.slice(launchStart, healthLoopStart);
+
+  for (const proxyVariable of [
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+    'http_proxy', 'https_proxy', 'all_proxy',
+  ]) {
+    assert.ok(launchBlock.includes(`'${proxyVariable}'`), `LiteLLM 启动前必须剥离 ${proxyVariable}`);
+  }
+  const saveCall = "$savedProxyValues[$name] = [System.Environment]::GetEnvironmentVariable($name, 'Process')";
+  const stripCall = "[System.Environment]::SetEnvironmentVariable($name, $null, 'Process')";
+  const spawnCall = 'Start-Process -FilePath $litellmExe';
+  const restoreCall = "[System.Environment]::SetEnvironmentVariable($name, $savedProxyValues[$name], 'Process')";
+  const saveIdx = launchBlock.indexOf(saveCall);
+  const stripIdx = launchBlock.indexOf(stripCall);
+  const spawnIdx = launchBlock.indexOf(spawnCall);
+  const finallyIdx = launchBlock.indexOf('finally');
+  const restoreIdx = launchBlock.lastIndexOf(restoreCall);
+  assert.ok(saveIdx >= 0, '剥离前必须保存原值用于恢复');
+  assert.ok(stripIdx > saveIdx, '必须先保存再剥离代理变量');
+  assert.ok(spawnIdx > stripIdx, '代理变量剥离必须先于 LiteLLM 子进程启动');
+  assert.ok(finallyIdx > spawnIdx && restoreIdx > finallyIdx, '恢复逻辑必须位于 finally 块，Start-Process 失败也不能弄丢调用方代理配置');
+  // 代理隔离只能作用于 LiteLLM 子进程；app（Next）仍按调用方环境继承
+  const appStart = startStack.indexOf('# ── 2. 启动 app');
+  assert.ok(appStart > launchStart, '缺少 app 启动区块');
+  assert.ok(!startStack.slice(appStart).includes(stripCall), '不得清洗 app 继承的代理变量');
+});
+
 test('公司健康 API 从 dataRoot 读取并明确禁止缓存', () => {
   assert.match(healthRoute, /inspectCompanyProviderRuntime\(\{ root: dataRoot\(\) \}\)/);
   assert.match(healthRoute, /Cache-Control.*no-store/);

@@ -136,12 +136,27 @@ try {
   $env:PYTHONUTF8 = '1'
   # 离线加载模型价格表：避免启动时拉取 remote cost map 超时拖慢启动
   $env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
-  $p = Start-Process -FilePath $litellmExe `
-    -ArgumentList $litellmArgs `
-    -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
-    -RedirectStandardOutput (Join-Path $LogDir 'litellm.out.log') `
-    -RedirectStandardError (Join-Path $LogDir 'litellm.err.log')
-  $started.litellmPid = $p.Id
+  # 公司网关必须按本机内网路由直连；Codex/终端可能通过 HTTP(S)_PROXY 或 ALL_PROXY 访问公网。
+  # 代理变量只从 LiteLLM 子进程移除（等价 start-litellm.sh 的 env -u），
+  # 启动后立即恢复，不影响 Codex、Next 或当前 shell。
+  $proxyVariables = @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')
+  $savedProxyValues = @{}
+  foreach ($name in $proxyVariables) {
+    $savedProxyValues[$name] = [System.Environment]::GetEnvironmentVariable($name, 'Process')
+    [System.Environment]::SetEnvironmentVariable($name, $null, 'Process')
+  }
+  try {
+    $p = Start-Process -FilePath $litellmExe `
+      -ArgumentList $litellmArgs `
+      -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
+      -RedirectStandardOutput (Join-Path $LogDir 'litellm.out.log') `
+      -RedirectStandardError (Join-Path $LogDir 'litellm.err.log')
+    $started.litellmPid = $p.Id
+  } finally {
+    foreach ($name in $proxyVariables) {
+      [System.Environment]::SetEnvironmentVariable($name, $savedProxyValues[$name], 'Process')
+    }
+  }
 
   $ok = $false
   for ($i = 0; $i -lt 30; $i++) {
