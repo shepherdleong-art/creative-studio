@@ -107,6 +107,58 @@ final result: passed
 
 ---
 
+# 详情页脚本生成上传框与模型选择 — Design QA
+
+## Evidence
+
+- Source visual truth: `/var/folders/4y/v3q6w0gn7v7f4r79h9gjjk3r0000gn/T/codex-clipboard-c783bc40-bd15-459e-b72e-a3c65aa76ac7.png`
+- Browser-rendered full state: `outputs/design-qa/script-studio-full.png`
+- Browser-rendered upload region: `outputs/design-qa/script-studio-upload.png`
+- Source/implementation combined comparison: `outputs/design-qa/upload-reference-vs-implementation.png`
+- Route: `http://localhost:3000/projects/ab40db9a-87a7-4cf7-be3e-0b04ee8e9524?tab=script`
+- Browser viewport: `1280 × 720 CSS px`, DPR 2; in-app-browser screenshots are normalized to one output pixel per CSS pixel.
+- Source pixels: `796 × 570`; focused dashed region: `657 × 402`. Implementation focused region: `856 × 420 CSS px`.
+- State: empty image list, default company Luna selected, company-network requirement visible. No image was uploaded and no provider request was submitted during QA.
+
+## Findings
+
+- No actionable P0, P1, or P2 issue remains.
+- The empty image area is one large dashed button. Its whole surface opens a multiple-file chooser and continues to accept drag/drop.
+- The model selector lists configured vision-capable providers. Luna remains the default and is labelled `需要公司内网`; Gemini is available as the configured external fallback.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing system/PingFang stack is preserved; folder icon, main upload instruction, and muted format/processing note retain the reference hierarchy.
+- Spacing and layout rhythm: the desktop upload surface was increased from `260px` to `420px` minimum height after the first comparison so it reads as the large image frame in the source. Smaller breakpoints retain a `320px` minimum.
+- Colors and visual tokens: surface, hairline, ink, and accent focus colors all use the existing Creative Studio tokens; no one-off light colors or gradients were added.
+- Images and assets: the existing shared folder icon is used; no placeholder image, handcrafted SVG, or generated asset was introduced.
+- Copy and content: the primary instruction mirrors the source. The secondary line states accepted formats and the actual local compression/tiling behavior.
+
+## Interaction and runtime checks
+
+- Clicking `script-studio-upload-dropzone` opened a real file chooser; `multiple = true`.
+- Switched Luna → Gemini and confirmed the selected value and `外部直连` helper, then switched back to Luna and confirmed `需要公司内网，并经本机 LiteLLM`.
+- Reloaded the page and confirmed Luna remains selected in the inspected default state.
+- Local provider metadata confirms Gemini `gemini-3.7-flash` is configured, enabled, and vision-capable. This check did not call Gemini.
+- Browser console errors: 0.
+
+## Comparison history
+
+1. Initial implementation matched the dashed/clickable structure but was visibly too shallow at `856 × 260px` compared with the source.
+2. Increased the desktop minimum height to `420px`, repeated the focused source/implementation comparison, and found no remaining P0/P1/P2 mismatch.
+
+## Implementation checklist
+
+- [x] Whole empty frame is clickable and keyboard-focusable.
+- [x] PNG/JPEG/WebP multiple upload and drag/drop remain supported.
+- [x] User can explicitly choose Luna or Gemini for the whole task.
+- [x] Luna is the default and clearly marked as requiring company intranet.
+- [x] Selected provider id/model are frozen into the task snapshot; unavailable explicit choices fail closed without silent fallback.
+
+final result: passed
+
+---
+
 # Seedance 2.0 尾帧拖拽与悬浮预览 — Design QA
 
 ## Evidence
