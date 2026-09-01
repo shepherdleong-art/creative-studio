@@ -125,13 +125,21 @@ try {
   });
   assert.equal((db.prepare('SELECT category FROM usage_ledger').get() as { category: string }).category, 'llm_vision');
 
-  // Same model with an external scope or a different provider ID is not tracked.
+  // 外部范围不记账；公司网关非种子行仍按公司 GPT 记账。
   clearUsage();
   globalThis.fetch = async () => Response.json({ choices: [{ message: { content: '{"ok":true}' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
   await tracked({ systemPrompt: 'system', userPrompt: 'external' }, { ...runtime, executionScope: 'external' });
-  await tracked({ systemPrompt: 'system', userPrompt: 'other provider' }, { ...runtime, id: 'qwen', name: '通义千问' });
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM usage_ledger').get() as { count: number }).count, 0);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM usage_call_events').get() as { count: number }).count, 0);
+  await tracked(
+    { systemPrompt: 'system', userPrompt: 'public custom' },
+    { ...runtime, id: 'company-gpt-public', name: '公网 GPT 自定义', baseUrl: 'https://example.test/v1' },
+  );
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM usage_ledger').get() as { count: number }).count, 0);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM usage_call_events').get() as { count: number }).count, 0);
+  await tracked({ systemPrompt: 'system', userPrompt: 'company custom' }, { ...runtime, id: 'company-gpt-custom', name: '公司 GPT 自定义' });
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM usage_ledger').get() as { count: number }).count, 1);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM usage_call_events').get() as { count: number }).count, 1);
 
   // Temperature fallback is two real HTTP calls, each with an independent event key;
   // only the successful second response becomes billable.

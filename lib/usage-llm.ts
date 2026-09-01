@@ -72,44 +72,34 @@ function parseGptUsage(value: unknown): ParsedGptUsage | null {
 }
 
 function createProviderSnapshot(
-  runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope'>,
+  runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope' | 'baseUrl'>,
   requestModel: string,
 ): CoreUsageProviderSnapshot {
   return {
     providerTable: 'script_providers',
     providerId: runtime.id,
     providerName: runtime.name,
-    providerType: runtime.type?.trim() || '',
+    providerType: runtime.type?.trim() || runtime.apiStyle,
     executionScope: runtime.executionScope,
     apiStyle: runtime.apiStyle,
     configuredModel: runtime.model,
     requestModel,
+    baseUrl: runtime.baseUrl,
   };
 }
 
 /** Create durable started evidence only for the exact company GPT core identity. */
 export function beginLlmUsageCall(
-  runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope'>,
+  runtime: Pick<ScriptProviderRuntimeConfig, 'id' | 'name' | 'type' | 'apiStyle' | 'model' | 'executionScope' | 'baseUrl'>,
   requestModel: string,
   context?: LlmUsageContext,
 ): LlmUsageAttempt | null {
   if (!context?.enabled) return null;
 
-  // Keep direct adapter/test callers compatible while still taking the persisted
-  // type as the source of truth. Never substitute apiStyle for this identity.
+  // 生产 runtime.type 来自 script_providers；直接适配器/测试调用若省略 type，
+  // createProviderSnapshot 才按协议值兼容。canonical gpt 的存量空 type 由 seed 修复。
   let db: Database.Database | undefined;
-  let persistedType = runtime.type?.trim();
-  if (!persistedType) {
-    try {
-      db = getDb();
-      persistedType = (
-        db.prepare('SELECT type FROM script_providers WHERE id = ?').get(runtime.id) as { type?: unknown } | undefined
-      )?.type as string | undefined;
-    } catch {
-      return null;
-    }
-  }
-  const provider = createProviderSnapshot({ ...runtime, type: typeof persistedType === 'string' ? persistedType : '' }, requestModel);
+  const provider = createProviderSnapshot(runtime, requestModel);
   const plan = resolveCoreUsagePlan(provider);
   if (!plan) return null;
 

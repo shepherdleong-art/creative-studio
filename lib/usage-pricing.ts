@@ -256,6 +256,35 @@ function matchesVideoIdentity(
 }
 
 /**
+ * 脚本供应商的身份匹配：providerId 允许 canonical gpt 或本机公司网关行。
+ * 用户手工配置的非种子公司行同样计入公司 GPT 消耗，避免调用成功但指标为空。
+ */
+function matchesScriptIdentity(
+  provider: Partial<CoreUsageProviderSnapshot>,
+  expected: {
+    canonicalProviderId: string;
+    providerType: string;
+    configuredModel: string;
+    requestModel: string;
+    executionScope: string;
+    apiStyle: string;
+  },
+): boolean {
+  if (
+    trimmed(provider.providerTable) !== 'script_providers'
+    || trimmed(provider.providerType) !== expected.providerType
+    || trimmed(provider.configuredModel) !== expected.configuredModel
+    || trimmed(provider.requestModel) !== expected.requestModel
+    || trimmed(provider.executionScope) !== expected.executionScope
+    || trimmed(provider.apiStyle) !== expected.apiStyle
+  ) {
+    return false;
+  }
+  if (trimmed(provider.providerId) === expected.canonicalProviderId) return true;
+  return isLoopbackHttpBaseUrl(provider.baseUrl);
+}
+
+/**
  * Resolve the fixed plan for a complete provider identity.
  *
  * Every comparison is exact after trimming the individual input field. No
@@ -315,9 +344,8 @@ export function resolveCoreUsagePlan(
     );
   }
 
-  if (matchesIdentity(provider, {
-    providerTable: 'script_providers',
-    providerId: 'gpt',
+  if (matchesScriptIdentity(provider, {
+    canonicalProviderId: 'gpt',
     providerType: 'openai-compatible',
     executionScope: 'company',
     apiStyle: 'openai-compatible',

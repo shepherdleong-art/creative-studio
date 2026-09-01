@@ -381,6 +381,12 @@ export function seedScriptProviders() {
       isCompanyGpt ? 1 : 0
     );
   }
+  // 存量兼容：规范 gpt 行如果 type 为空，补种为 openai-compatible，保证用量身份可匹配。
+  db.prepare(`
+    UPDATE script_providers
+    SET type = 'openai-compatible'
+    WHERE id = 'gpt' AND (type IS NULL OR trim(type) = '')
+  `).run();
 }
 
 export function seedMotionTemplates() {

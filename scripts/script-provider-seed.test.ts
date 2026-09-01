@@ -34,6 +34,7 @@ if (process.env[childFlag] !== '1') {
 
     seedScriptProviders();
     const db = getDb();
+    db.prepare(`UPDATE script_providers SET type = '' WHERE id = 'gpt'`).run();
     db.prepare(`
       UPDATE script_providers
       SET type = ?, apiStyle = ?, model = ?, maxTokens = ?
@@ -41,6 +42,12 @@ if (process.env[childFlag] !== '1') {
     `).run('anthropic-messages', 'anthropic-messages', 'kimi-k2.6', 8192);
 
     seedScriptProviders();
+
+    assert.deepEqual(
+      db.prepare(`SELECT type FROM script_providers WHERE id = 'gpt'`).get(),
+      { type: 'openai-compatible' },
+      '存量 gpt 行缺少 type 时必须补种为 openai-compatible，保证公司 GPT 用量身份可匹配',
+    );
 
     assert.deepEqual(
       db.prepare(`
