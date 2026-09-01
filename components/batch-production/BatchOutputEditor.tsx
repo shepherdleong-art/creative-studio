@@ -75,7 +75,9 @@ export default function BatchOutputEditor({
   const pendingRenderRef = useRef(false);
   const inFlightEditRef = useRef<Promise<void> | null>(null);
   const musicDraftRef = useRef<BatchBgmDraft>(musicDraft);
-  musicDraftRef.current = musicDraft;
+  // React 编译器红线：渲染期不得写 ref。与下方 onChangedRef 同款：在 effect
+  // 中同步最新值；读取方（BGM 草稿同步 effect）声明在其后，执行顺序有保证。
+  useEffect(() => { musicDraftRef.current = musicDraft; });
   const syncedBgmRef = useRef<{ planId: string | null; music: BatchBgmDraft | null }>({ planId: null, music: null });
   const onChangedRef = useRef(onChanged);
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
