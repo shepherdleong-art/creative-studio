@@ -283,7 +283,8 @@ export function parseJsonResponse<T>(rawText: string, providerName: string): T {
   try {
     return JSON.parse(jsonText) as T;
   } catch {
-    throw new Error(`${providerName} 返回了无效 JSON`);
+    // 带上原始回复片段，否则线上失败只剩一句「无效 JSON」无法定位。
+    throw new Error(`${providerName} 返回了无效 JSON。原始回复: ${jsonText.slice(0, 200)}`);
   }
 }
 

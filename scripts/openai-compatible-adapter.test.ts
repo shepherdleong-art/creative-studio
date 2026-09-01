@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chatCompletion } from '../lib/script-providers/openai-compatible.ts';
+import { chatCompletion, parseJsonResponse } from '../lib/script-providers/openai-compatible.ts';
 import type { ScriptProviderRuntimeConfig } from '../lib/script-providers/config.ts';
 import type { ProviderConfig } from '../lib/script-providers/types.ts';
 
@@ -124,6 +124,17 @@ try {
   }, reasonerRuntime);
   assert.equal(reasonerBodies.length, 3, '已记忆的模型不应再次触发 400 重试');
   assert.equal(reasonerBodies[2].temperature, 1, '已记忆的模型必须固定 temperature=1');
+
+  const invalidJson = `not-json:${'x'.repeat(220)}:tail-marker`;
+  assert.throws(
+    () => parseJsonResponse(invalidJson, '测试供应商'),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /^测试供应商 返回了无效 JSON。原始回复: not-json:/);
+      assert.doesNotMatch(error.message, /tail-marker/, '诊断片段不得超过 200 字');
+      return true;
+    },
+  );
 } finally {
   globalThis.fetch = originalFetch;
 }
