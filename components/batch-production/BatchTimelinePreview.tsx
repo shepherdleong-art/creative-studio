@@ -437,6 +437,47 @@ export default function BatchTimelinePreview({
     if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
   }, []);
 
+  /**
+   * BGM 换源媒体同步：曲目 fileUrl 变化时保留播放头与播放状态——
+   * 暂停时载入新源并定位当前播放头；播放中载入新源、定位正文偏移并按当前
+   * 音量包络续播。不重置画面播放头，不影响口播 GainNode；play() 失败按现有
+   * 安全策略静默处理，不产生未处理 Promise rejection。
+   */
+  const bgmFileUrl = bgm?.fileUrl ?? null;
+  const lastBgmFileUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    const element = bgmRef.current;
+    if (!element) return;
+    const previous = lastBgmFileUrlRef.current;
+    lastBgmFileUrlRef.current = bgmFileUrl;
+    if (previous === null || previous === bgmFileUrl) return;
+    if (bgmFileUrl === null) {
+      element.pause();
+      return;
+    }
+    const resumeBgm = () => {
+      const bodyOffset = Math.max(0, Math.min(bodyDurationSec, playheadSec - INTRO_SEC));
+      const loopDuration = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : bodyDurationSec;
+      seekMedia(element, bodyOffset % Math.max(0.1, loopDuration));
+      if (playingRef.current && bgm) {
+        element.volume = previewAudioLevelsAtTime({
+          playheadSec,
+          introSec: INTRO_SEC,
+          bodyDurationSec,
+          narrationGainDb,
+          gainDb: bgmGainDb,
+          fadeInSec: bgmFadeInSec,
+          fadeOutSec: bgmFadeOutSec,
+        }).bgmGain;
+        void element.play().catch(() => undefined);
+      }
+    };
+    if (element.readyState >= HTMLMediaElement.HAVE_METADATA) resumeBgm();
+    else {
+      element.addEventListener('loadedmetadata', resumeBgm, { once: true });
+    }
+  }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmFileUrl, bgmGainDb, bodyDurationSec, narrationGainDb, playheadSec]);
+
   const synchronizePausedAudio = useCallback((timeSec: number) => {
     if (pausedAudioSeekTimerRef.current) window.clearTimeout(pausedAudioSeekTimerRef.current);
     pausedAudioSeekTimerRef.current = window.setTimeout(() => {
