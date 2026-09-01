@@ -82,4 +82,8 @@ export const CORE_DB_MIGRATIONS = [
   `ALTER TABLE projects ADD COLUMN lastOpenedAt TEXT`,
   `ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT`,
   `ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT`,
+  // 场景结果稳定排序：同一创建请求写同一 createdAt、按提交顺序写 creationIndex；
+  // 历史行不回填，读取端按 lib/project-job-order.ts 的兼容规则排序。
+  `ALTER TABLE jobs ADD COLUMN createdAt TEXT`,
+  `ALTER TABLE jobs ADD COLUMN creationIndex INTEGER NOT NULL DEFAULT 0`,
 ];

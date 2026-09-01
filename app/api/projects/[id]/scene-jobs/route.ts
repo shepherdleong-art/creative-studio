@@ -50,14 +50,15 @@ export async function POST(
       // Update project scenePrompt
       db.prepare(`UPDATE projects SET scenePrompt = ? WHERE id = ?`).run(scenePrompt, id);
 
-      // Create scene generation jobs
+      // Create scene generation jobs：同一请求写同一 createdAt、按提交顺序写 creationIndex。
+      const batchCreatedAt = new Date().toISOString();
       const insertJob = db.prepare(`
-        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode)
-        VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none')
+        INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex)
+        VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?)
       `);
       for (let g = 0; g < generationCount; g++) {
         const jobId = uuidv4();
-        insertJob.run(jobId, id, sceneSeedImageId, jobProvider.providerId, jobProvider.model, scenePrompt, project.size, project.quality, maxAttempts);
+        insertJob.run(jobId, id, sceneSeedImageId, jobProvider.providerId, jobProvider.model, scenePrompt, project.size, project.quality, maxAttempts, batchCreatedAt, g);
         jobIds.push(jobId);
       }
     })();

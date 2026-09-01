@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
 import { parseProjectInfoUpdate, ProjectInfoValidationError } from '@/lib/project-info';
+import { sortProjectJobsByCreation, type ProjectJobOrderRow } from '@/lib/project-job-order';
 
 export async function GET(
   _request: NextRequest,
@@ -39,15 +40,16 @@ export async function GET(
       };
     });
 
-    // Get jobs with input filenames
-    const jobs = db.prepare(`
-      SELECT j.*, ia.filename as inputFilename, oa.filename as outputFilename
+    // Get jobs with input filenames。排序交给共享纯函数（lib/project-job-order.ts）：
+    // 最新创建批次在前、批内按提交顺序、历史行按旧时间列回退；creationSequence
+    // 是 rowid 的历史兼容投影，不是任务身份。UUID 与状态一律不参与排序。
+    const jobs = sortProjectJobsByCreation(db.prepare(`
+      SELECT j.*, ia.filename as inputFilename, oa.filename as outputFilename, j.rowid AS creationSequence
       FROM jobs j
       LEFT JOIN image_assets ia ON j.inputImageId = ia.id
       LEFT JOIN image_assets oa ON j.outputImageId = oa.id
       WHERE j.projectId = ?
-      ORDER BY j.id
-    `).all(id);
+    `).all(id) as Array<ProjectJobOrderRow & Record<string, unknown>>);
 
     // Get provider info
     const provider = db.prepare(`SELECT * FROM providers WHERE id = ?`).get(project.providerId as string) as Record<string, unknown> | undefined;
