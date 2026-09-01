@@ -252,5 +252,12 @@ assert.match(exportStep, /导出并写回项目/);
 assert.match(exportStep, /产品型号/);
 assert.match(exportStep, /warningIssues/, '导出必须持续展示服务端返回的时长 override warning');
 assert.match(exportStep, /\/api\/final-edit-variants\/\$\{encodeURIComponent\(variant\.id\)\}\/render/, '正式导出必须创建持久化 render job');
+assert.match(exportStep, /currentRenderJob/, '导出新鲜度必须按当前 groupRevision + variantRevision 分类当前导出');
+assert.match(exportStep, /historicalSucceededJob/, '旧版成功导出必须单独分类为上一版，不得冒充当前结果');
+assert.match(exportStep, /renderRevision != null/, '缺 revision 的旧 job 不得被当作当前导出');
+assert.match(exportStep, /上一版可下载/, '只有历史成功结果时必须提供上一版下载入口');
+assert.match(exportStep, /重新导出当前修改/, '当前修订号未导出时必须允许再次导出');
+assert.match(exportStep, /activeRenderJobInFlight/, '只有当前 revision 的在途任务才显示进度并阻止重复点击');
+assert.doesNotMatch(exportStep, /inputSnapshotJson/, '前端不得接收或引用整个渲染输入快照');
 
 console.log('final-edit mixcut UI contract tests passed');

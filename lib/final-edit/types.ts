@@ -145,7 +145,7 @@ export interface FinalEditGroupView {
   assets: FinalEditAssetView[];
   bgmTracks: FinalEditBgmTrackView[];
   coverCandidates: Array<{ coverKey: string; sourceUrl: string; kind: 'storyboard_image' | 'video_keyframe' }>;
-  jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string }>;
+  jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string; renderRevision: { groupRevision: number; variantRevision: number } | null }>;
 }
 
 export interface CapacityEstimate {

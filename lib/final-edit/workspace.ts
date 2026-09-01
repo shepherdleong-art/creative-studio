@@ -429,6 +429,20 @@ function validateNarrationGainDb(gainDb: number): void {
   if (!Number.isFinite(gainDb)) throw new FinalEditError('invalid_narration_gain', '口播音量必须是有限数字');
 }
 
+/**
+ * 从 render job 的 inputSnapshotJson 只投影两个安全标量（groupRevision /
+ * variantRevision），用于前端区分「当前导出」与「上一版可下载」。解析失败、
+ * 非 render job 或旧数据缺字段时返回 null；绝不把整个快照或本地路径返给前端。
+ */
+export function parseRenderRevisionFromSnapshot(value: unknown): { groupRevision: number; variantRevision: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const snapshot = value as { groupRevision?: unknown; variantRevision?: unknown };
+  const groupRevision = Number(snapshot.groupRevision);
+  const variantRevision = Number(snapshot.variantRevision);
+  if (!Number.isInteger(groupRevision) || !Number.isInteger(variantRevision) || groupRevision < 0 || variantRevision < 0) return null;
+  return { groupRevision, variantRevision };
+}
+
 function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'projectId' | 'scriptDraftId' | 'shotSetId' | 'editedNarrationText'>): ScriptSnapshot {
   const scriptDraftId = String(input.scriptDraftId || '').trim();
   if (!scriptDraftId) {
@@ -942,7 +956,22 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         usageCount: Number(usage?.count || 0),
       } satisfies FinalEditAssetView;
     });
-    const jobs = db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage, startedAt, finishedAt, createdAt FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as FinalEditGroupView['jobs'];
+    const jobs = (db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage, startedAt, finishedAt, createdAt, inputSnapshotJson FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as Array<Record<string, unknown>>).map((row) => ({
+      id: String(row.id),
+      variantId: row.variantId == null ? null : String(row.variantId),
+      kind: String(row.kind),
+      status: String(row.status),
+      phase: String(row.phase),
+      progress: Number(row.progress),
+      estimatedCost: row.estimatedCost == null ? null : Number(row.estimatedCost),
+      costCurrency: String(row.costCurrency),
+      errorCode: row.errorCode == null ? null : String(row.errorCode),
+      errorMessage: row.errorMessage == null ? null : String(row.errorMessage),
+      startedAt: row.startedAt == null ? null : String(row.startedAt),
+      finishedAt: row.finishedAt == null ? null : String(row.finishedAt),
+      createdAt: String(row.createdAt),
+      renderRevision: row.kind === 'render' ? parseRenderRevisionFromSnapshot(parseJson<unknown>(String(row.inputSnapshotJson || 'null'), null)) : null,
+    })) as FinalEditGroupView['jobs'];
     const bgmTracks = listReadyFinalEditBgmTracks(db);
     const imageCoverCandidates = db.prepare(`SELECT ia.id FROM shots s JOIN image_assets ia ON ia.id=s.latestGeneratedImageId WHERE s.shotSetId=? AND s.latestGeneratedImageId IS NOT NULL ORDER BY s.indexNum`).all(String(group.shotSetId)) as Array<{ id: string }>;
     const videoCoverCandidates = (db.prepare(`

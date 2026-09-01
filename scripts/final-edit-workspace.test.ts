@@ -11,6 +11,7 @@ const {
   FinalEditError,
   MIXCUT_PREPARE_PHASE_RANGES,
   buildAlignedSubtitleCues,
+  parseRenderRevisionFromSnapshot,
 } = await import('../lib/final-edit/workspace.ts');
 const {
   abortRunningFinalEditJobs,
@@ -669,6 +670,65 @@ await assert.rejects(
   workspace.enqueueRender({ groupId: group.id, variantId: first.id, expectedGroupRevision: group.revision, expectedVariantRevision: withBgm.revision, overlayBundleId: 'bundle-for-bgm-check' }),
   (error: unknown) => error instanceof FinalEditError && error.code === 'bgm_missing',
 );
+
+// ---- C2：group view 的 jobs 必须为 render job 投影创建时的双 revision，且只投影
+// 两个安全标量（不暴露整个 inputSnapshotJson / 本地路径）。缺 revision 的旧数据、
+// 非 render job、解析失败一律 null。 ----
+assert.deepEqual(parseRenderRevisionFromSnapshot({ groupRevision: 2, variantRevision: 3 }), { groupRevision: 2, variantRevision: 3 });
+assert.equal(parseRenderRevisionFromSnapshot({ groupRevision: 2 }), null, '缺 variantRevision 必须返回 null');
+assert.equal(parseRenderRevisionFromSnapshot({ groupRevision: 1.5, variantRevision: 2 }), null, '非整数 revision 必须返回 null');
+assert.equal(parseRenderRevisionFromSnapshot({ groupRevision: -1, variantRevision: 0 }), null, '负 revision 必须返回 null');
+assert.equal(parseRenderRevisionFromSnapshot('junk'), null);
+assert.equal(parseRenderRevisionFromSnapshot(null), null);
+const jobsWithRender = workspace.load(group.id).jobs;
+const renderJobView = jobsWithRender.find((item) => item.id === renderJob.id);
+assert.ok(renderJobView, 'group view 必须包含刚创建的 render job');
+assert.deepEqual(
+  renderJobView.renderRevision,
+  { groupRevision: exportReady.revision, variantRevision: exportReadyVariant.revision },
+  'group view 必须投影 render job 创建时的 groupRevision + variantRevision',
+);
+assert.equal(
+  jobsWithRender.find((item) => item.kind === 'prepare')?.renderRevision ?? null,
+  null,
+  '非 render job 不得携带 renderRevision',
+);
+db.prepare(`INSERT INTO final_edit_jobs (id, projectId, groupId, variantId, kind, status, phase, progress, requestKey, inputSnapshotJson, createdAt) VALUES ('legacy-render-job', 'p1', ?, ?, 'render', 'succeeded', 'succeeded', 1, 'legacy-render-key', '{}', datetime('now'))`).run(group.id, first.id);
+const legacyRenderJobView = workspace.load(group.id).jobs.find((item) => item.id === 'legacy-render-job');
+assert.equal(legacyRenderJobView?.renderRevision, null, '缺 revision 的旧 render job 必须按历史产物处理（null）');
+
+// ---- C2：编辑使 revision 变化后允许再次导出；旧 render job 的存在不阻塞新任务，
+// 新 job 记录新的双 revision，旧 job 与旧产物原样保留。（上一段已把 missing-bgm
+// 置为 failed，这里用 set_bgm null 做一次合法编辑并同时避开失效曲目。） ----
+const reexportBase = workspace.load(group.id);
+const reexportVariantBefore = reexportBase.variants.find((variant) => variant.id === first.id)!;
+const reexportEdit = workspace.apply({
+  scope: 'variant', variantId: first.id, expectedRevision: reexportVariantBefore.revision,
+  type: 'set_bgm', trackId: null,
+}).view as FinalEditVariantView;
+db.prepare(`UPDATE final_edit_variants SET coverJson=? WHERE id=?`).run(JSON.stringify({ ...restoredVariant.cover, coverKey: 'image:img-s1', kind: 'storyboard_image', sourceKey: undefined, sourceUrl: '/api/final-edit-groups/test/cover-candidates/image%3Aimg-s1' }), first.id);
+const reexportJob = await workspace.enqueueRender({
+  groupId: group.id, variantId: first.id,
+  expectedGroupRevision: reexportBase.revision,
+  expectedVariantRevision: reexportEdit.revision,
+  overlayBundleId: 'export-identity-bundle',
+});
+assert.equal(reexportJob.status, 'queued', '已有旧 render job 时不得阻止当前修订号再次导出');
+const reexportJobsView = workspace.load(group.id).jobs;
+assert.deepEqual(
+  reexportJobsView.find((item) => item.id === reexportJob.id)?.renderRevision,
+  { groupRevision: reexportBase.revision, variantRevision: reexportEdit.revision },
+  '再次导出的新 job 必须记录新的双 revision',
+);
+assert.deepEqual(
+  reexportJobsView.find((item) => item.id === renderJob.id)?.renderRevision,
+  { groupRevision: exportReady.revision, variantRevision: exportReadyVariant.revision },
+  '旧 render job 的 revision 身份不得被新任务改写',
+);
+const reexportSnapshot = JSON.parse((db.prepare(`SELECT inputSnapshotJson FROM final_edit_jobs WHERE id=?`).get(reexportJob.id) as { inputSnapshotJson: string }).inputSnapshotJson) as { exportTarget: ReservedProjectExportTarget };
+releaseReservedExportTarget(storageRoot, reexportSnapshot.exportTarget);
+db.prepare(`UPDATE final_edit_variants SET coverJson=? WHERE id=?`).run(JSON.stringify(restoredVariant.cover), first.id);
+db.prepare(`DELETE FROM final_edit_jobs WHERE id='legacy-render-job'`).run();
 
 db.prepare(`INSERT INTO final_edit_bgm_tracks
   (id, relativePath, fileFingerprint, durationUs, format, status, scannedAt)
