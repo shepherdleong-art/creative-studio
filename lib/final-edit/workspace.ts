@@ -364,7 +364,7 @@ interface PreparedAsset extends AssetRow {
   analysisSucceeded?: boolean;
 }
 
-const FINAL_EDIT_ANALYZER_VERSION = '2';
+export const FINAL_EDIT_ANALYZER_VERSION = '2';
 
 function flattenPreparedSemanticScenes(assets: PreparedAsset[]): SemanticScene[] {
   return assets.flatMap((asset) => {
