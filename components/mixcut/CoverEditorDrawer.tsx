@@ -34,6 +34,43 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+// 会话级字体列表缓存（stale-while-revalidate）：抽屉打开先用缓存秒显（不闪跳），
+// 同时后台重校验——服务端按目录 mtime + 条目数失效重扫，新装字体无需点「刷新字体」即可出现。
+let sessionFontList: string[] | null = null;
+let sessionFontRequest: Promise<string[]> | null = null;
+
+function readFontBody(body: unknown): string[] {
+  const values = Array.isArray(body) ? body : (body as { fonts?: unknown } | null)?.fonts;
+  const families = Array.isArray(values) ? values.map((item) => (typeof item === 'string' ? item : (item as { family?: string }).family)) : [];
+  return [...new Set(['PingFang SC', ...families.filter((family): family is string => Boolean(family))])];
+}
+
+function requestSystemFonts(forceRefresh = false): Promise<string[]> {
+  if (!forceRefresh && sessionFontRequest) return sessionFontRequest;
+  const request = fetch(forceRefresh ? '/api/system-fonts?refresh=1' : '/api/system-fonts')
+    .then((response) => response.json())
+    .then((body: unknown) => {
+      const next = readFontBody(body);
+      const current = sessionFontList;
+      // 内容未变时保留原引用，避免每次重校验都触发一次无意义的重渲染。
+      const resolved = current !== null && next.length === current.length && next.every((family, index) => family === current[index]) ? current : next;
+      sessionFontList = resolved;
+      sessionFontRequest = null;
+      return resolved;
+    })
+    .catch((error: unknown) => {
+      sessionFontRequest = null;
+      throw error;
+    });
+  sessionFontRequest = request;
+  return request;
+}
+
+/** 进入混剪步骤即预取字体列表，让封面抽屉打开的首帧就是全量。 */
+export function preloadSystemFonts(): void {
+  void requestSystemFonts().catch(() => undefined);
+}
+
 export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApply }: {
   active: boolean;
   group: FinalEditGroupView;
@@ -43,7 +80,7 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   onApply: (draft: CoverEditorDraft) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<CoverEditorDraft>(() => cloneDraft(group, variant));
-  const [fonts, setFonts] = useState<string[]>(['PingFang SC']);
+  const [fonts, setFonts] = useState<string[]>(() => sessionFontList ?? ['PingFang SC']);
   const [presets, setPresets] = useState<CoverPresetView[]>([]);
   const [presetName, setPresetName] = useState('');
   const [message, setMessage] = useState('抽屉内修改尚未应用');
@@ -69,16 +106,9 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
     onCloseRef.current = onClose;
   }, [onClose]);
 
-  const applyFontBody = (body: unknown) => {
-    const values = Array.isArray(body) ? body : (body as { fonts?: unknown } | null)?.fonts;
-    if (Array.isArray(values)) setFonts([...new Set(['PingFang SC', ...values.map((item) => typeof item === 'string' ? item : (item as { family?: string }).family).filter(Boolean)])]);
-  };
-
   const refreshFonts = async () => {
     try {
-      const response = await fetch('/api/system-fonts?refresh=1');
-      const body = await response.json();
-      applyFontBody(body);
+      setFonts(await requestSystemFonts(true));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -86,7 +116,7 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
 
   useEffect(() => {
     void Promise.all([
-      fetch('/api/system-fonts').then((response) => response.json()).then(applyFontBody),
+      requestSystemFonts().then(setFonts),
       fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response)).then((presetBody) => setPresets(presetBody)),
     ]).catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
   }, []);

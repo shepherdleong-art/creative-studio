@@ -282,6 +282,8 @@ try {
     let currentDurationJob = null;
     let durationReadyGroup = null;
     let delayedPreparedGroupMs = 0;
+    let fontListBody = ['Arial'];
+    let fontListDelayMs = 0;
     let savedPresets = [];
     let revealAvailable = false;
     let renderSequence = 0;
@@ -325,7 +327,10 @@ try {
       if (pathname === '/api/providers') return json([]);
       if (pathname === '/api/providers/tts') return json([{ id: 'tts-e2e', name: 'Mock TTS', model: 'mock-tts', configured: true, voices: [{ id: 'voice-e2e', label: '测试音色' }, { id: longVoiceId, label: '魅力女友' }] }]);
       if (pathname === '/api/providers/script') return json([{ id: 'vision-e2e', configured: true, supportsVision: true }]);
-      if (pathname === '/api/system-fonts') return json(['Arial']);
+      if (pathname === '/api/system-fonts') {
+        if (fontListDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, fontListDelayMs));
+        return json(fontListBody);
+      }
       if (pathname === '/api/final-edit/capabilities') return json({ revealInFolder: revealAvailable });
       if (pathname === '/api/final-edit/title-presets' && request.method() === 'GET') return json(savedPresets);
       if (pathname === '/api/final-edit/title-presets' && request.method() === 'POST') {
@@ -886,6 +891,40 @@ try {
     await page.getByText('字体', { exact: true }).waitFor();
     await page.getByText('字号', { exact: true }).waitFor();
     await page.getByText('描边', { exact: true }).waitFor();
+
+    // 字体列表回归（会话缓存 + 进入步骤即预取）：封面抽屉打开的首帧就必须是全量字体，
+    // 不能先只有置顶项「PingFang SC」、等抽屉自己 fetch 回来才填满（用户体感「字体逐渐出现」）。
+    fontListBody = ['Arial', 'Songti SC', 'Heiti SC', 'Microsoft YaHei'];
+    fontListDelayMs = 600;
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const fontsPrefetched = page.waitForResponse((response) => response.url().includes('/api/system-fonts'), { timeout: 8000 }).catch(() => null);
+    await page.getByRole('button', { name: /预览调整/ }).click();
+    await fontsPrefetched;
+    await page.locator('[data-track="video"]').waitFor();
+    await page.getByRole('button', { name: /视频封面设置/ }).click();
+    const fontSelect = page.getByLabel('封面共享字体');
+    await fontSelect.waitFor({ state: 'attached' });
+    assert.deepEqual(
+      await fontSelect.locator('option').allTextContents(),
+      ['PingFang SC', ...fontListBody],
+      '封面抽屉打开的首帧就必须是全量字体列表（进入步骤时已预取），不能先只有置顶项再等抽屉自己 fetch',
+    );
+    await page.getByRole('button', { name: '关闭封面精调' }).click();
+    await page.getByRole('button', { name: /视频封面设置/ }).click();
+    await fontSelect.waitFor({ state: 'attached' });
+    assert.deepEqual(await fontSelect.locator('option').allTextContents(), ['PingFang SC', ...fontListBody], '重开抽屉首帧同样必须是全量字体（会话缓存）');
+    await page.getByRole('button', { name: '关闭封面精调' }).click();
+    // 会话缓存不得冻结列表：模拟新装字体（服务端重扫会返回更多），重开抽屉
+    // 首帧仍先显示缓存（不闪跳），随后必须无需点「刷新字体」就自动重校验到最新列表。
+    fontListBody = [...fontListBody, 'SimHei', 'Consolas'];
+    await page.getByRole('button', { name: /视频封面设置/ }).click();
+    await fontSelect.waitFor({ state: 'attached' });
+    assert.deepEqual(await fontSelect.locator('option').allTextContents(), ['PingFang SC', 'Arial', 'Songti SC', 'Heiti SC', 'Microsoft YaHei'], '重开首帧仍先显示会话缓存（不闪跳）');
+    await page.waitForFunction((expected) => document.querySelectorAll('select[aria-label="封面共享字体"] option').length === expected, 7, { timeout: 4000 })
+      .catch(() => { assert.fail('新装字体后，重开抽屉必须自动重校验到最新列表，不能等用户点「刷新字体」'); });
+    await page.getByRole('button', { name: '关闭封面精调' }).click();
+    fontListDelayMs = 0;
+    fontListBody = ['Arial'];
 
     const openCoverDrawer = async () => {
       await page.getByRole('button', { name: /视频封面设置/ }).click();

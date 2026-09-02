@@ -15,7 +15,7 @@ import { MixcutTimeline } from './MixcutTimeline';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
 import { NarrationGainControl } from './NarrationGainControl';
 import { TrimEditor } from './TrimEditor';
-import { CoverEditorDrawer } from './CoverEditorDrawer';
+import { CoverEditorDrawer, preloadSystemFonts } from './CoverEditorDrawer';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
 import type { BgmImportResponse } from '@/lib/final-edit/types';
 import styles from './mixcut-content.module.css';
@@ -91,6 +91,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   );
 
   useEffect(() => { groupRef.current = group; }, [group]);
+  // 进入混剪步骤即预取字体列表：封面抽屉是条件挂载，预取让它打开的首帧就是全量字体。
+  useEffect(() => { preloadSystemFonts(); }, []);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };

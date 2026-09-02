@@ -160,14 +160,15 @@ function detectFormat(filename: string): SystemFontEntry['format'] | null {
 
 let cached: { key: string; fonts: SystemFontEntry[] } | null = null;
 
-/** 以各字体目录的 mtime 作为失效键：用户新装字体后目录内容变化，自动重扫。 */
+/** 以各字体目录的 mtime + 顶层条目数作为失效键：目录内容变化则重扫。条目数兜底——部分安装方式（如直接写入文件）不更新目录 mtime。 */
 function scanCacheKey(): string {
   const directories = FONT_DIRECTORIES[process.platform] || FONT_DIRECTORIES.linux;
   return directories
     .map((directory) => {
       try {
         const stat = fs.statSync(directory);
-        return `${directory}:${stat.mtimeMs}`;
+        const entryCount = fs.readdirSync(directory).length;
+        return `${directory}:${stat.mtimeMs}:${entryCount}`;
       } catch {
         return `${directory}:missing`;
       }
