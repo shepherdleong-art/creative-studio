@@ -65,9 +65,19 @@ export default function BatchStepExport(props: BatchStepExportProps) {
       .flatMap((card) => card.blockers),
   )];
 
-  const mediaUrl = (card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover', source: 'candidate' | 'artifact', download = false) => (
-    `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=${kind}&source=${source}${download ? '&download=1' : ''}`
-  );
+  const mediaUrl = (
+    card: BatchWorkspaceView['cards'][number],
+    kind: 'video' | 'cover',
+    source: 'candidate' | 'artifact',
+    generation: string | null,
+    download = false,
+  ) => {
+    const params = new URLSearchParams({ projectId, kind, source });
+    // 代际参数让同一 URL 固定指向一个成功渲染尝试/正式产物,不只当 cache-buster。
+    if (generation) params.set(source === 'artifact' ? 'artifactId' : 'renderAttemptId', generation);
+    if (download) params.set('download', '1');
+    return `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?${params.toString()}`;
+  };
 
   return (
     <div className="min-h-0 flex-1 space-y-4 p-2">
@@ -158,7 +168,16 @@ export default function BatchStepExport(props: BatchStepExportProps) {
       <div className="grid gap-4 lg:grid-cols-2">
         {workspace.cards.map((card) => {
           const mediaSource = card.candidate ? 'candidate' : card.currentVideo ? 'artifact' : null;
+          const previewGeneration = mediaSource === 'candidate'
+            ? (card.candidate?.renderAttemptId ?? null)
+            : (card.currentVideo?.id ?? null);
           const published = Boolean(card.currentVideo);
+          // 「下载最新预览」只对"新鲜且生产就绪"的候选开放:任务成功、非静音占位
+          // (card.publishable 即 workspace 派生的生产就绪位)、与当前编辑一致;
+          // queued/running/failed/stale 一律不冒充最新。
+          const latestFresh = card.task?.status === 'succeeded'
+            && card.publishable
+            && !card.renderStale;
           return (
             <article key={card.planId} data-testid="batch-export-card" className="tile space-y-3 p-4">
               <div className="flex items-start justify-between gap-3">
@@ -188,25 +207,50 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                 </span>
               </div>
               {mediaSource && (
-                <video controls preload="metadata" className="aspect-video w-full rounded-xl bg-black" data-testid={`batch-export-preview-${card.planId}`}>
-                  <source src={mediaUrl(card, 'video', mediaSource)} type="video/mp4" />
+                <video
+                  key={`${card.planId}-${card.versionId}-${previewGeneration}`}
+                  controls
+                  preload="metadata"
+                  className="aspect-video w-full rounded-xl bg-black"
+                  data-testid={`batch-export-preview-${card.planId}`}
+                >
+                  <source src={mediaUrl(card, 'video', mediaSource, previewGeneration)} type="video/mp4" />
                 </video>
               )}
               {card.candidate?.audioMode === 'silent_placeholder' && (
                 <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">无配音样片 —— 仅供检查画面，不能导出。</p>
               )}
-              {published && (
+              {(latestFresh || published) && (
                 <div className="space-y-2">
-                  <p className="text-xs text-ok">已导出过正式成片，重复导出会追加新文件、不会覆盖旧文件。</p>
-                  {/* 下载走浏览器「另存为」,用户自己选保存位置与文件名(与单条模式一致)。
-                      文件名默认用导出命名合约生成的名字。 */}
+                  {published && (
+                    <p className="text-xs text-ok">已导出过正式成片，重复导出会追加新文件、不会覆盖旧文件。</p>
+                  )}
+                  {card.task?.status === 'failed' && card.candidate && (
+                    <p className="text-xs text-fail" role="status">渲染失败，请点「重试渲染」；当前可播放的是上一次成功候选。</p>
+                  )}
                   <div className="flex flex-wrap gap-2">
-                    <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'video', 'artifact', true)} download>
-                      下载视频
-                    </a>
-                    <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', 'artifact', true)} download>
-                      下载封面
-                    </a>
+                    {latestFresh && card.candidate && (
+                      <>
+                        <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'video', 'candidate', card.candidate.renderAttemptId, true)} download>
+                          下载最新预览视频
+                        </a>
+                        <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', 'candidate', card.candidate.renderAttemptId, true)} download>
+                          下载最新预览封面
+                        </a>
+                      </>
+                    )}
+                    {published && card.currentVideo && (
+                      <>
+                        <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'video', 'artifact', card.currentVideo.id, true)} download>
+                          下载上次正式版视频
+                        </a>
+                        {card.currentCover && (
+                          <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', 'artifact', card.currentCover.id, true)} download>
+                            下载上次正式版封面
+                          </a>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               )}

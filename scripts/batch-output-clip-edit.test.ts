@@ -1062,6 +1062,68 @@ try {
   assert.equal(countAfterSplit?.useCountByPlanId[plans[0]], 2, 'split 切成两段产生两条记录,计为 2 次使用');
   console.log('✓ 19. 素材使用次数(本片 ×N / 其他成片 ×M,split/insert 逐条累计)');
 
+  // 20. 审核重置提示(B4):有效编辑原子返回 reviewCleared,纯结构 split / 无变化 / 无既有审核均 false
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, 'approved');
+  const clearedByTrim = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'trim', clipId: 'clip-1', sourceStartUs: 500_000, sourceEndUs: 2_500_000,
+  });
+  assert.equal(clearedByTrim.reviewCleared, true, '已审核成片做片段编辑必须返回 reviewCleared');
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, null, '编辑后审核必须被清除');
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_cover', assetId: assetC, timeUs: 6_500_000 }).reviewCleared,
+    true,
+    '封面编辑必须返回 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  const baseStyle = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).subtitleStyleDefault;
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_subtitle_style', style: { ...baseStyle, fontSizePx: 70 } }).reviewCleared,
+    true,
+    '字幕样式编辑必须返回 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_music', trackId: 'bgm-b', gainDb: -12, fadeInSec: 2, fadeOutSec: 3 }).reviewCleared,
+    true,
+    'BGM 编辑必须返回 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_narration_gain', gainDb: -5 }).reviewCleared,
+    true,
+    '口播音量编辑必须返回 reviewCleared',
+  );
+  // 纯结构 split:不改画面、不删 review,不得谎报 reviewCleared
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  const splitNotCleared = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'split', clipId: 'clip-1', offsetUs: 1_000_000,
+  });
+  assert.equal(splitNotCleared.reviewCleared, false, '输出等价的纯结构 split 不得算作审核重置');
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, 'approved', 'split 不得清除审核');
+  // 无既有审核时编辑、无变化提交:均 false
+  resetPlan0Arrangement();
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'trim', clipId: 'clip-1', sourceStartUs: 500_000, sourceEndUs: 2_500_000 }).reviewCleared,
+    false,
+    '本来就没有审核时不得谎报 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  const noopTrimB4 = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'trim', clipId: 'clip-1', sourceStartUs: 1_000_000, sourceEndUs: 3_000_000,
+  });
+  assert.equal(noopTrimB4.changed, false);
+  assert.equal(noopTrimB4.reviewCleared, false, '无变化提交不得返回 reviewCleared');
+  console.log('✓ 20. 审核重置提示(reviewCleared:片段/封面/字幕/BGM/口播为 true,split/无变化/无审核为 false)');
+
   console.log('batch output clip edit tests passed');
 } finally {
   db.close();

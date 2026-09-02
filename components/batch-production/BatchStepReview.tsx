@@ -134,11 +134,33 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
     };
   }, [previewCard]);
 
-  function mediaUrlFn(card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover', source: 'candidate' | 'artifact', outputVersionId: string | null): string | null {
+  function mediaUrlFn(
+    card: BatchWorkspaceView['cards'][number],
+    kind: 'video' | 'cover',
+    source: 'candidate' | 'artifact',
+    outputVersionId: string | null,
+    generation: string | null,
+  ): string | null {
     if (!props.selectedBatchId) return null;
     const params = new URLSearchParams({ projectId: props.projectId, kind, source });
     if (outputVersionId) params.set('outputVersionId', outputVersionId);
+    // 代际参数让同一个 URL 固定指向一个成功渲染尝试/正式产物;不只当 cache-buster。
+    if (generation) params.set(source === 'artifact' ? 'artifactId' : 'renderAttemptId', generation);
     return `/api/batch-production/batches/${encodeURIComponent(props.selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?${params.toString()}`;
+  }
+
+  /** 当前/历史版本可用的媒体代际:candidate → 最近成功尝试 ID,artifact → 正式产物 ID。 */
+  function mediaGenerationOf(
+    card: BatchWorkspaceView['cards'][number],
+    source: 'candidate' | 'artifact',
+    viewedVersionId: string | null,
+  ): string | null {
+    const isCurrentView = !viewedVersionId || viewedVersionId === card.versionId;
+    if (isCurrentView) {
+      return source === 'candidate' ? (card.candidate?.renderAttemptId ?? null) : (card.currentVideo?.id ?? null);
+    }
+    const viewedVersion = card.versions.find((version) => version.id === viewedVersionId) ?? null;
+    return source === 'candidate' ? (viewedVersion?.candidateRenderAttemptId ?? null) : (viewedVersion?.artifactId ?? null);
   }
 
   const selectableCount = workspace.cards.filter(({ publishable, renderStale }) => publishable && !renderStale).length;
@@ -182,20 +204,16 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
     setPreviewCard(card);
   }
 
-  function previewMediaUrl(card: BatchWorkspaceView['cards'][number], kind: 'video' | 'cover'): string | null {
-    const viewedVersionId = viewedVersionIdOf(card);
-    const source = mediaSourceOf(card, viewedVersionId);
-    if (!source) return null;
-    const isCurrentView = !viewedVersionId || viewedVersionId === card.versionId;
-    return mediaUrlFn(card, kind, source, isCurrentView ? null : viewedVersionId);
-  }
-
   // 弹窗内始终读 workspace 里的实时卡片:片段编辑就地改同一版本、versionId 不变,
   // 只有实时卡片才能反映编辑后的渲染中状态与最新提醒。
   const modalCard = previewCard ? workspace.cards.find((card) => card.planId === previewCard.planId) ?? previewCard : null;
-  const previewVideo = modalCard ? previewMediaUrl(modalCard, 'video') : null;
   const modalViewedVersionId = modalCard ? viewedVersionIdOf(modalCard) : null;
   const modalIsCurrentVersion = !modalViewedVersionId || modalViewedVersionId === modalCard?.versionId;
+  const modalPreviewSource = modalCard ? mediaSourceOf(modalCard, modalViewedVersionId) : null;
+  const modalGeneration = modalCard && modalPreviewSource ? mediaGenerationOf(modalCard, modalPreviewSource, modalViewedVersionId) : null;
+  const previewVideo = modalCard && modalPreviewSource
+    ? mediaUrlFn(modalCard, 'video', modalPreviewSource, modalIsCurrentVersion ? null : modalViewedVersionId, modalGeneration)
+    : null;
   // 「调整片段」入口:仅当前查看的是当前版本且批次非 stopped 时显示。
   const canEditClips = Boolean(modalCard?.versionId) && modalIsCurrentVersion && workspace.batch.controlState !== 'stopped';
   const modalRenderBusy = modalCard?.task?.status === 'running' || modalCard?.task?.status === 'queued';
@@ -285,7 +303,8 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
           const viewedVersionId = viewedVersionIdOf(card);
           const isCurrentView = !viewedVersionId || viewedVersionId === card.versionId;
           const coverSource = mediaSourceOf(card, viewedVersionId);
-          const coverUrl = coverSource ? mediaUrlFn(card, 'cover', coverSource, isCurrentView ? null : viewedVersionId) : null;
+          const coverGeneration = coverSource ? mediaGenerationOf(card, coverSource, viewedVersionId) : null;
+          const coverUrl = coverSource ? mediaUrlFn(card, 'cover', coverSource, isCurrentView ? null : viewedVersionId, coverGeneration) : null;
           const progress = card.task?.progress as { phase?: string; percent?: number | null; description?: string } | null;
           const historyCount = Math.max(0, card.history.length > 0 ? card.history.length / 2 : 0);
           return (
@@ -301,6 +320,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                   <>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
+                      key={`${card.planId}-${viewedVersionId}-${coverGeneration}`}
                       src={coverUrl}
                       alt={`成片 ${card.seq} 封面`}
                       loading="lazy"
@@ -472,6 +492,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                   planId={modalCard.planId}
                   outputPreset={props.outputPreset}
                   renderBusy={modalRenderBusy}
+                  candidateRenderAttemptId={modalCard.candidate?.renderAttemptId ?? null}
                   onChanged={props.onOutputChanged}
                 />
               </div>
@@ -479,7 +500,7 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
               <div className="space-y-4">
                 {previewVideo && (
                   <video
-                    key={`${modalCard.planId}-${modalCard.versionId}`}
+                    key={`${modalCard.planId}-${modalCard.versionId}-${modalGeneration}`}
                     className="aspect-video w-full rounded-xl bg-black"
                     controls
                     autoFocus

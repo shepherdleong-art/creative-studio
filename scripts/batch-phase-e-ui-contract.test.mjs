@@ -173,8 +173,9 @@ assert.match(outputEditor, /立即渲染/);
 assert.match(outputEditor, /btn-secondary/);
 assert.match(exportStep, /renderStale/);
 assert.match(exportStep, /等待重新渲染/);
-assert.match(panel, /selectedUncommittedCount/);
-assert.match(panel, /修改还没提交重新渲染/);
+// B4：不再前端按新鲜度预过滤,raw 选择全部交服务端复核;失效选择常驻列出。
+assert.match(panel, /planIdsToPublish/);
+assert.match(panel, /以下成片已取消选择/);
 assert.match(review, /renderUncommitted/);
 assert.match(exportStep, /待重新生成/);
 assert.ok(
@@ -184,4 +185,5 @@ assert.ok(
 );
 assert.match(review, /渲染中，完成后才可导出/);
 assert.doesNotMatch(review, /封面素材原片区间/);
-assert.match(panel, /因画面已调整未导出/);
+// B4：导出结果结构化分栏(成功数 + 服务端跳过项 + 前端取消项)。
+assert.match(panel, /导出结果：成功/);

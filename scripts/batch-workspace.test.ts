@@ -147,6 +147,38 @@ try {
   db.prepare(`UPDATE batch_tasks SET status = 'failed' WHERE id = 'task1-old-pending'`).run();
   db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(originalOv1ArrangementJson);
 
+  // 媒体代际(B2):同一 outputVersion 连续成功渲染,工作区候选的 renderAttemptId
+  // 必须随成功切换;排队中的新任务(无成功尝试)不提前切换,仍保持上一条成功尝试。
+  {
+    const attemptRow = (taskId: string, attemptNumber: number, label: string, createdAt: string): string => {
+      const id = `attempt-${taskId}-${attemptNumber}`;
+      db.prepare(`
+        INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt)
+        VALUES (?,?,?,'succeeded','{}',?,?,?,?)
+      `).run(id, taskId, attemptNumber, JSON.stringify({
+        outputVersionId: 'ov1', audioMode: 'narration', productionReady: true, durationUs: 2_000_000,
+        videoRelativePath: `batch-renders/ov1/video-${label}.mp4`, coverRelativePath: `batch-renders/ov1/cover-${label}.jpg`,
+        editRevision: 0, coverTimeUs: 3_000_000, subtitleCues: [],
+      }), createdAt, createdAt, createdAt);
+      return id;
+    };
+    // task1 已有 attempt1;同任务 attempt2 成功应成为最新候选
+    const attempt2 = attemptRow('task1', 2, 'b', '2026-08-03T10:30:00.000Z');
+    const firstView = getBatchWorkspace(db, 'p1', 'b1');
+    assert.equal(firstView.cards[0]?.candidate?.renderAttemptId, attempt2, '同任务更新尝试成功时候选代际切到最新 attempt');
+    // 新任务(task5)成功(createdAt 更晚)也应成为最新候选
+    db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,expectedState,progressJson,attemptCount,createdAt,updatedAt) VALUES (?,?,?,'render','output_version','ov1','succeeded','running','{}',1,?,?)`)
+      .run('task5', 'p1', 'b1', '2026-08-03T11:00:00.000Z', '2026-08-03T11:00:00.000Z');
+    const attempt5 = attemptRow('task5', 1, 'c', '2026-08-03T11:00:00.000Z');
+    const secondView = getBatchWorkspace(db, 'p1', 'b1');
+    assert.equal(secondView.cards[0]?.candidate?.renderAttemptId, attempt5, '新任务成功切到新尝试');
+    // 排队中的新任务没有成功尝试,候选保持上一条成功尝试
+    db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,expectedState,progressJson,attemptCount,createdAt,updatedAt) VALUES (?,?,?,'render','output_version','ov1','queued','running','{}',0,?,?)`)
+      .run('task6', 'p1', 'b1', '2026-08-03T12:00:00.000Z', '2026-08-03T12:00:00.000Z');
+    const queuedView = getBatchWorkspace(db, 'p1', 'b1');
+    assert.equal(queuedView.cards[0]?.candidate?.renderAttemptId, attempt5, 'queued 新任务不得提前切换候选代际');
+  }
+
   assert.equal(view.phase, 'review');
   db.prepare(`
     INSERT INTO batch_allocation_runs

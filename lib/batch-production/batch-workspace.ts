@@ -50,6 +50,8 @@ export interface BatchWorkspaceNarrationTaskView {
 
 export interface BatchWorkspaceCandidateView {
   outputVersionId: string;
+  /** 该候选所属「最近一次成功渲染尝试」的 ID;同一输出版本连续重渲染时随成功切换。 */
+  renderAttemptId: string;
   audioMode: 'narration' | 'silent_placeholder';
   productionReady: boolean;
   /** 候选渲染读取的 arrangement 编辑修订号;旧候选缺省为 null。 */
@@ -66,6 +68,10 @@ export interface BatchOutputVersionListItem {
   versionNumber: number;
   hasCandidate: boolean;
   hasArtifact: boolean;
+  /** 该版本最近一次成功渲染尝试的 ID;无成功候选为 null。 */
+  candidateRenderAttemptId: string | null;
+  /** 该版本最近登记的正式视频 artifact ID;无正式产物为 null。 */
+  artifactId: string | null;
 }
 
 /** 换封面的可调范围:封面素材整段原片;无法解析时为 null */
@@ -304,8 +310,13 @@ function arrangementProductionReady(value: unknown): boolean {
   );
 }
 
-function renderCandidate(value: unknown, outputVersionId: string | null): BatchWorkspaceCandidateView | null {
-  if (!outputVersionId || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+function renderCandidate(
+  value: unknown,
+  outputVersionId: string | null,
+  renderAttemptId: string | null,
+): BatchWorkspaceCandidateView | null {
+  if (!outputVersionId || !renderAttemptId || typeof renderAttemptId !== 'string') return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (
     record.outputVersionId !== outputVersionId
@@ -323,6 +334,7 @@ function renderCandidate(value: unknown, outputVersionId: string | null): BatchW
   ) return null;
   return {
     outputVersionId,
+    renderAttemptId,
     audioMode: record.audioMode,
     productionReady: record.productionReady,
     editRevision: record.editRevision === undefined ? null : Number(record.editRevision),
@@ -443,32 +455,38 @@ export function getBatchWorkspace(
     const arrangement = parseJson(plan.arrangementJson);
     const versionRows = db.prepare(`
       SELECT o.id, o.versionNumber,
-        EXISTS(
-          SELECT 1 FROM batch_tasks t
+        (SELECT a.id FROM batch_tasks t
+          JOIN batch_task_attempts a ON a.id = (
+            SELECT id FROM batch_task_attempts
+            WHERE taskId = t.id AND status = 'succeeded'
+            ORDER BY attemptNumber DESC LIMIT 1
+          )
           WHERE t.targetKind = 'output_version' AND t.targetId = o.id
             AND t.workType = 'render'
-            AND EXISTS(
-              SELECT 1 FROM batch_task_attempts a
-              WHERE a.taskId = t.id AND a.status = 'succeeded'
-            )
-        ) AS hasCandidate,
-        EXISTS(
-          SELECT 1 FROM batch_artifacts a WHERE a.outputVersionId = o.id
-        ) AS hasArtifact
+          ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
+        ) AS candidateRenderAttemptId,
+        (SELECT id FROM batch_artifacts
+          WHERE outputVersionId = o.id AND kind = 'video'
+          ORDER BY createdAt DESC, id DESC LIMIT 1
+        ) AS artifactId
       FROM batch_output_versions o
       WHERE o.planId = ?
       ORDER BY o.versionNumber DESC
     `).all(plan.id) as Array<{
       id: string;
       versionNumber: number;
-      hasCandidate: number;
-      hasArtifact: number;
+      candidateRenderAttemptId: string | null;
+      artifactId: string | null;
     }>;
-    const versions: BatchOutputVersionListItem[] = versionRows.map(({ id, versionNumber, hasCandidate, hasArtifact }) => ({
+    const versions: BatchOutputVersionListItem[] = versionRows.map(({
+      id, versionNumber, candidateRenderAttemptId, artifactId,
+    }) => ({
       id,
       versionNumber,
-      hasCandidate: hasCandidate === 1,
-      hasArtifact: hasArtifact === 1,
+      hasCandidate: candidateRenderAttemptId !== null,
+      hasArtifact: artifactId !== null,
+      candidateRenderAttemptId,
+      artifactId,
     }));
     const latestAllocationOutput = allocationOutput(allocationReport, plan.id);
     const latestArrangement = latestAllocationOutput && typeof latestAllocationOutput === 'object' && !Array.isArray(latestAllocationOutput)
@@ -527,8 +545,9 @@ export function getBatchWorkspace(
     } : null;
     // 候选一律取"该任务最近一次成功的尝试",不看任务当前状态:
     // 重渲染(queued/running/failed)期间与之后,老版本仍然可播放。
+    // renderAttemptId 与 resultJson 必须来自同一 attempt 行。
     const candidateRow = plan.currentVersionId ? db.prepare(`
-      SELECT a.resultJson
+      SELECT a.id AS renderAttemptId, a.resultJson
       FROM batch_tasks t
       JOIN batch_task_attempts a ON a.id = (
         SELECT id FROM batch_task_attempts
@@ -539,10 +558,11 @@ export function getBatchWorkspace(
         AND t.targetKind = 'output_version' AND t.targetId = ?
       ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
     `).get(projectId, batchId, plan.currentVersionId) as {
+      renderAttemptId: string;
       resultJson: string | null;
     } | undefined : undefined;
     const candidate = candidateRow
-      ? renderCandidate(parseJson(candidateRow.resultJson), plan.currentVersionId)
+      ? renderCandidate(parseJson(candidateRow.resultJson), plan.currentVersionId, candidateRow.renderAttemptId)
       : null;
     const currentEditRevision = arrangementEditRevision(arrangement);
     const pendingRender = plan.currentVersionId ? Boolean(db.prepare(`

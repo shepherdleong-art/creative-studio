@@ -137,6 +137,8 @@ export interface BatchOutputClipEditResult {
   changed: boolean;
   /** 画面是否真的发生变化；split 为 false（不递增 revision、不重渲染）。 */
   visualChanged: boolean;
+  /** 这次有效编辑是否真的清除了既有审核态（reviewCleared=true 时前端应提示重新审核）。 */
+  reviewCleared: boolean;
   warnings: string[];
 }
 
@@ -732,11 +734,15 @@ export function applyBatchOutputClipEdit(
       return record;
     });
     const editRevision = readEditRevision(arrangement);
+    // 有效编辑会删除 $.review(B4):记录编辑前是否真的存在审核态,供前端判断
+    // 这次是否需要提示"重新审核"。unchanged / 纯结构 split 不删 review。
+    const reviewPresentBefore = arrangement.review !== undefined && arrangement.review !== null;
     const unchanged: BatchOutputClipEditResult = {
       outputVersionId,
       editRevision,
       changed: false,
       visualChanged: false,
+      reviewCleared: false,
       warnings: [],
     };
 
@@ -1097,7 +1103,14 @@ export function applyBatchOutputClipEdit(
       db.prepare(`
         UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);
-      return { outputVersionId, editRevision: nextEditRevision, changed: true, visualChanged: true, warnings };
+      return {
+        outputVersionId,
+        editRevision: nextEditRevision,
+        changed: true,
+        visualChanged: true,
+        reviewCleared: reviewPresentBefore,
+        warnings,
+      };
     }
 
     if (splitChanged) {
@@ -1105,7 +1118,7 @@ export function applyBatchOutputClipEdit(
       db.prepare(`
         UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);
-      return { outputVersionId, editRevision, changed: true, visualChanged: false, warnings: [] };
+      return { outputVersionId, editRevision, changed: true, visualChanged: false, reviewCleared: false, warnings: [] };
     }
 
     return unchanged;

@@ -147,6 +147,14 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [busy, setBusy] = useState<'create' | 'snapshot' | 'start' | null>(null);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  /** 选中项因编辑失效被 workspace 刷新移除(B4):按最新 card 状态列出失效原因,常驻可见。 */
+  const [selectionDropped, setSelectionDropped] = useState<Array<{ planId: string; seq: number | null; title: string; reason: string }>>([]);
+  /** 最近一次正式导出的结构化结果(B4):成功数、服务端跳过项、前端移除项分栏展示。 */
+  const [exportResult, setExportResult] = useState<{
+    published: number;
+    skipped: Array<{ planId: string; seq: number | null; title: string; reason: string }>;
+    removed: Array<{ planId: string; seq: number | null; title: string; reason: string }>;
+  } | null>(null);
   /** 当前 UI 选择是否与已确认的批次版本一致；修改脚本/素材/分析版本/LUT 后必须重新确认 */
   const [inputConfirmed, setInputConfirmed] = useState(false);
 
@@ -195,6 +203,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [workspace, setWorkspace] = useState<BatchWorkspaceView | null>(null);
   const [cardFilter, setCardFilter] = useState<CardFilter>('all');
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
+  // loadWorkspace 需要读当前选择做"失效移除"计算,又不希望它进 useCallback 依赖。
+  const selectedPlanIdsRef = useRef<string[]>([]);
+  useEffect(() => { selectedPlanIdsRef.current = selectedPlanIds; }, [selectedPlanIds]);
   const [phaseEBusy, setPhaseEBusy] = useState<'export' | 'control' | string | null>(null);
   const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
   const [folderRelativePath, setFolderRelativePath] = useState<string | null>(null);
@@ -411,9 +422,35 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       }
       // 画面/封面/BGM/字幕编辑会让当前成功候选立刻变 stale；即使用户在编辑
       // 前已经勾选，也不能把这条旧候选带进下一次「通过」或正式导出。
-      setSelectedPlanIds((current) => current.filter((id) => view.cards.some(({ planId, publishable, renderStale }) => (
+      // B4：被移除的既有选择必须按最新 card 状态列出失效原因，不能静默减少"已选"。
+      const currentSelected = selectedPlanIdsRef.current;
+      const kept = currentSelected.filter((id) => view.cards.some(({ planId, publishable, renderStale }) => (
         planId === id && publishable && !renderStale
-      ))));
+      )));
+      setSelectedPlanIds(kept);
+      const removed = currentSelected.filter((id) => !kept.includes(id));
+      if (removed.length > 0) {
+        setSelectionDropped((previous) => {
+          const existing = new Set(previous.map(({ planId }) => planId));
+          const fresh = removed.filter((id) => !existing.has(id)).map((id) => {
+            const card = view.cards.find(({ planId }) => planId === id);
+            if (!card) return { planId: id, seq: null, title: '（未知成片）', reason: '该成片已不在当前批次' };
+            return {
+              planId: id,
+              seq: card.seq,
+              title: card.scriptTitle || '未命名脚本',
+              reason: card.renderUncommitted
+                ? '修改后需要重新生成并重新审核'
+                : card.renderStale
+                  ? '修改后需要重新渲染并重新审核'
+                  : !card.publishable
+                    ? '缺少配音，暂时不能导出'
+                    : '已不再满足导出条件',
+            };
+          });
+          return [...previous, ...fresh];
+        });
+      }
     } catch {
       setWorkspace(null);
     }
@@ -1390,34 +1427,27 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   }
 
   async function publishSelected(): Promise<void> {
+    // B4：raw selected = 当前勾选与 workspace 做归属匹配、但尚未按
+    // productionReady/publishable/approved/renderStale 过滤的原始选择。
+    // 只在这一层集合为空时前端拦截；其余全部交给服务端逐条复核（服务端是
+    // 最终事实源，能覆盖最后一次 workspace 读取与 POST 之间的竞态）。
     const selectedCards = (workspace?.cards ?? []).filter((card) => selectedPlanIds.includes(card.planId));
-    const selectedStaleCount = selectedCards
-      .filter((card) => card.publishable && card.approved && card.renderStale)
-      .length;
-    const selectedUncommittedCount = selectedCards
-      .filter((card) => card.publishable && card.approved && card.renderUncommitted)
-      .length;
-    const planIdsToPublish = selectedCards
-      .filter((card) => card.publishable && card.approved && !card.renderStale)
-      .map(({ planId }) => planId);
+    const planIdsToPublish = [...new Set(selectedCards.map(({ planId }) => planId))];
     if (!selectedBatchId || planIdsToPublish.length === 0) {
       setFeedback({
         kind: 'error',
-        message: selectedUncommittedCount > 0
-          ? '选中的成片修改还没提交重新渲染，请先回到检查页点「重新生成」。'
-          : selectedStaleCount > 0
-            ? '选中的成片画面已调整，等待重新渲染完成后才能导出。'
-            : '请先勾选要正式导出的成片。',
+        message: '请先勾选要正式导出的成片。',
       });
       return;
     }
     setPhaseEBusy('export');
     setFeedback(null);
+    setExportResult(null);
     try {
       const result = await readJson<{
         published: number;
         skipped: number;
-        items: Array<{ status: 'published' | 'skipped'; reason?: string; videoRelativePath?: string }>;
+        items: Array<{ planId: string; status: 'published' | 'skipped'; reason?: string; videoRelativePath?: string }>;
       }>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/exports?projectId=${encodeURIComponent(projectId)}`,
         {
@@ -1426,29 +1456,33 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           body: JSON.stringify({ planIds: planIdsToPublish }),
         },
       ));
-      const skipped = result.items.filter(({ status }) => status === 'skipped');
-      const grouped = new Map<string, number>();
-      for (const item of skipped) {
-        const text = humanizeSkipReason(item.reason);
-        grouped.set(text, (grouped.get(text) ?? 0) + 1);
-      }
-      const detail = [...grouped].map(([text, count]) => `${count} 条${text}`).join('；');
-      const filteredStaleMessage = selectedStaleCount > 0
-        ? `，另有 ${selectedStaleCount} 条因画面已调整未导出`
-        : '';
+      const cardsById = new Map((workspace?.cards ?? []).map((card) => [card.planId, card]));
+      const describe = (planId: string): { seq: number | null; title: string } => {
+        const card = cardsById.get(planId);
+        return { seq: card?.seq ?? null, title: card?.scriptTitle || '未命名脚本' };
+      };
+      const skipped = result.items
+        .filter(({ status }) => status === 'skipped')
+        .map(({ planId, reason }) => ({
+          planId,
+          ...describe(planId),
+          reason: humanizeSkipReason(reason),
+        }));
+      const removed = selectionDropped;
+      setExportResult({ published: result.published, skipped, removed });
       setFeedback({
         kind: result.published > 0 ? 'success' : 'error',
-        message: `已导出 ${result.published} 条${filteredStaleMessage}${result.skipped > 0 ? `，跳过 ${result.skipped} 条：${detail}` : ''}`,
+        message: `已导出 ${result.published} 条${result.skipped > 0 ? ` · 跳过 ${result.skipped} 条` : ''}${removed.length > 0 ? ` · 取消选择 ${removed.length} 条` : ''}`,
       });
-      const firstPublished = result.items.find(({ status }) => status === 'published' && result.published > 0 && result.skipped === 0);
       const exported = result.items.find(({ status }) => status === 'published');
       if (exported?.videoRelativePath) {
         const folder = exported.videoRelativePath.split('/').slice(0, -1).join('/');
         setFolderRelativePath(`storage/${folder}`);
-      } else if (firstPublished) {
+      } else {
         setFolderRelativePath(null);
       }
       setSelectedPlanIds([]);
+      setSelectionDropped([]);
       await loadWorkspace(selectedBatchId);
     } catch (publishError) {
       setFeedback({ kind: 'error', message: publishError instanceof Error ? publishError.message : '正式导出失败' });
@@ -1715,6 +1749,43 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 className={`mb-2 rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
               >{feedback.message}</div>
             )}
+            {/* B4：选中项失效列表——编辑后 workspace 刷新移除的既有选择,常驻可见,不静默消失。 */}
+            {selectionDropped.length > 0 && (
+              <div className="mb-2 rounded-xl border border-hairline bg-surface p-4 text-sm" role="status">
+                <p className="font-medium text-warn">以下成片已取消选择：{selectionDropped.length} 条</p>
+                <ul className="mt-1 space-y-1 text-xs text-warn">
+                  {selectionDropped.map((item) => (
+                    <li key={`drop-${item.planId}`}>
+                      成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {/* B4：正式导出结构化结果——成功数、服务端跳过项、前端取消项分栏展示。 */}
+            {exportResult && (
+              <div className="mb-2 rounded-xl border border-hairline bg-surface p-4 text-sm" role="status">
+                <p className="font-medium text-ink">导出结果：成功 {exportResult.published} 条{exportResult.skipped.length > 0 ? ` · 跳过 ${exportResult.skipped.length} 条` : ''}{exportResult.removed.length > 0 ? ` · 已取消 ${exportResult.removed.length} 条` : ''}</p>
+                {exportResult.skipped.length > 0 && (
+                  <ul className="mt-1 space-y-1 text-xs text-warn">
+                    {exportResult.skipped.map((item) => (
+                      <li key={`skip-${item.planId}`}>
+                        成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {exportResult.removed.length > 0 && (
+                  <ul className="mt-1 space-y-1 text-xs text-warn">
+                    {exportResult.removed.map((item) => (
+                      <li key={`removed-${item.planId}`}>
+                        成片 {item.seq != null ? String(item.seq).padStart(2, '0') : '--'} · {item.title}：{item.reason}（已取消勾选）
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             {/* 第 3、4 步:紧凑进度条置顶,保证“做的时候看得见”。
                 脚本步(activeStep === 1)不置顶——「开始」按钮在该步内容栈底部,
                 进度卡置顶会落在用户视线之外(实测:点完按钮看不到它,等滚上去
@@ -1911,12 +1982,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               cardFilter={cardFilter}
               onCardFilterChange={setCardFilter}
               selectedPlanIds={selectedPlanIds}
-              onTogglePlan={(planId, checked) => setSelectedPlanIds((current) => (
-                checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
-              ))}
+              onTogglePlan={(planId, checked) => {
+                setSelectionDropped([]);
+                setSelectedPlanIds((current) => (
+                  checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
+                ));
+              }}
               onSelectAll={() => {
                 const selectable = (workspace?.cards ?? []).filter(({ publishable, renderStale }) => publishable && !renderStale);
                 const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
+                setSelectionDropped([]);
                 setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
               }}
               onReview={(decision) => void reviewSelected(decision)}
@@ -1941,12 +2016,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           <BatchStepExport
             workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', exportDirName: '', counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
             selectedPlanIds={selectedPlanIds}
-            onTogglePlan={(planId, checked) => setSelectedPlanIds((current) => (
-              checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
-            ))}
+            onTogglePlan={(planId, checked) => {
+              setSelectionDropped([]);
+              setSelectedPlanIds((current) => (
+                checked ? [...new Set([...current, planId])] : current.filter((id) => id !== planId)
+              ));
+            }}
             onSelectAll={() => {
               const selectable = (workspace?.cards ?? []).filter(({ publishable, approved, renderStale }) => publishable && approved && !renderStale);
               const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
+              setSelectionDropped([]);
               setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
             }}
             phaseEBusy={phaseEBusy}

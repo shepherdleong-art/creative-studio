@@ -68,6 +68,8 @@ function serveMedia(request: NextRequest, filePath: string, contentType: string,
   );
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ id: string; planId: string }> },
@@ -83,8 +85,17 @@ export async function GET(
   const kind = request.nextUrl.searchParams.get('kind') ?? 'video';
   const source = request.nextUrl.searchParams.get('source') ?? 'candidate';
   const outputVersionId = request.nextUrl.searchParams.get('outputVersionId') ?? undefined;
+  const renderAttemptId = request.nextUrl.searchParams.get('renderAttemptId') ?? undefined;
+  const artifactId = request.nextUrl.searchParams.get('artifactId') ?? undefined;
   if ((kind !== 'video' && kind !== 'cover' && kind !== 'narration') || (source !== 'candidate' && source !== 'artifact')) {
     return NextResponse.json({ error: 'invalid_media_query', message: 'kind 或 source 参数无效' }, {
+      status: 400,
+      headers: BATCH_NO_STORE_HEADERS,
+    });
+  }
+  // 代际参数格式无效直接 400;不存在/谱系不符/非成功统一由解析器回 404。
+  if ((renderAttemptId && !UUID_PATTERN.test(renderAttemptId)) || (artifactId && !UUID_PATTERN.test(artifactId))) {
+    return NextResponse.json({ error: 'invalid_media_query', message: 'renderAttemptId 或 artifactId 参数格式无效' }, {
       status: 400,
       headers: BATCH_NO_STORE_HEADERS,
     });
@@ -104,16 +115,26 @@ export async function GET(
         'X-Batch-Media-Source': 'candidate',
       });
     }
-    const media = resolveBatchOutputMedia(getDb(), projectId, batchId, planId, kind, source, undefined, outputVersionId);
+    const media = resolveBatchOutputMedia(
+      getDb(), projectId, batchId, planId, kind, source,
+      undefined, outputVersionId, renderAttemptId, artifactId,
+    );
     const extra: Record<string, string> = {
       'X-Batch-Media-Source': media.source,
       'X-Batch-Production-Ready': media.productionReady ? '1' : '0',
     };
-    // download=1:让浏览器走「另存为」而不是内联播放,用户可自行选择保存位置
-    // 与文件名(与单条模式的「下载视频/下载封面」一致)。文件名取自产物自身的
-    // basename——它由服务端的导出命名合约生成,不接受任何浏览器传入的名字。
+    // download=1:让浏览器走「另存为」而不是内联播放,用户可自行选择保存位置。
+    // candidate 是"最新渲染预览",文件名由服务端拼成可辨认的「成片-<序号>-v<版本>-预览」,
+    // 不再沿用渲染目录里的通用 basename;artifact 沿用导出命名合约生成的 basename。
+    // 无论哪种都只接受服务端生成的名字,绝不接受浏览器传入的文件名。
     if (request.nextUrl.searchParams.get('download') === '1') {
-      const filename = path.basename(media.absolutePath);
+      let filename: string;
+      if (media.source === 'candidate') {
+        const suffix = kind === 'cover' ? '-封面.jpg' : '.mp4';
+        filename = `成片-${String(media.planSeq).padStart(2, '0')}-v${media.outputVersionNumber}-预览${suffix}`;
+      } else {
+        filename = path.basename(media.absolutePath);
+      }
       extra['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`;
     }
     return serveMedia(request, media.absolutePath, media.contentType, extra);

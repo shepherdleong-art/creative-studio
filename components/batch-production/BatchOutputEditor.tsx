@@ -25,6 +25,8 @@ export interface BatchOutputEditorProps {
   /** 外层卡片正在重渲染时传入,编辑控件暂时锁定 */
   renderBusy?: boolean;
   active?: boolean;
+  /** 上层传入的当前候选渲染代际:编辑器封面 URL 绑定该成功尝试,不自行派生。 */
+  candidateRenderAttemptId?: string | null;
   /** 编辑生效后回调,外层据此刷新 workspace(卡片进入渲染中) */
   onChanged?: () => void;
 }
@@ -50,6 +52,7 @@ export default function BatchOutputEditor({
   outputPreset,
   renderBusy = false,
   active = true,
+  candidateRenderAttemptId,
   onChanged,
 }: BatchOutputEditorProps) {
   const [view, setView] = useState<BatchOutputClipEditView | null>(null);
@@ -63,6 +66,8 @@ export default function BatchOutputEditor({
   const [submitting, setSubmitting] = useState(false);
   const [renderPending, setRenderPending] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
+  /** 本次编辑确实清除了既有审核态;在本次编辑器会话内持续提示需重新审核。 */
+  const [reviewCleared, setReviewCleared] = useState(false);
   /** BGM 本地草稿：曲目 + 音量 + 淡入 + 淡出共同组成一份 musicDraft，任一字段都可独立弄脏。 */
   const [musicDraft, setMusicDraft] = useState<BatchBgmDraft>({ trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
   const [narrationGainDraft, setNarrationGainDraft] = useState(NARRATION_GAIN_DB_DEFAULT);
@@ -144,6 +149,7 @@ export default function BatchOutputEditor({
       setFreeformClipId(null);
       setReplaceCandidateId(null);
       setEditFeedback(null);
+      setReviewCleared(false);
       setCoverEditorOpen(false);
       setPreviewMode('output');
       setPreviewAssetId(null);
@@ -221,7 +227,7 @@ export default function BatchOutputEditor({
     ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?kind=narration&projectId=${encodeURIComponent(projectId)}`
     : null;
   const coverUrl = view?.coverAssetId
-    ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=cover&source=candidate`
+    ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=cover&source=candidate${candidateRenderAttemptId ? `&renderAttemptId=${encodeURIComponent(candidateRenderAttemptId)}` : ''}`
     : null;
   const previewBgmTrackId = musicDraft.trackId;
   const previewBgm = useMemo(() => (previewBgmTrackId
@@ -262,6 +268,8 @@ export default function BatchOutputEditor({
         pendingRenderRef.current = true;
         setRenderPending(true);
       }
+      // 有效编辑清除了既有审核态:常驻提示需要重新审核(覆盖片段/封面/字幕/BGM/口播音量)。
+      if (editResult.reviewCleared) setReviewCleared(true);
       // 静默重拉:预览立即吃到新 arrangement(即改即看),不打断当前交互。
       await loadView(true);
       return true;
@@ -429,6 +437,11 @@ export default function BatchOutputEditor({
           role="alert"
           className="shrink-0 tile p-3 text-xs text-fail"
         >{editFeedback.message}</p>
+      )}
+      {reviewCleared && (
+        <p className="shrink-0 tile p-3 text-xs text-warn" role="status">
+          本次修改已重置审核状态；重新渲染完成后，请返回检查成片重新通过。
+        </p>
       )}
 
       <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto xl:overflow-visible xl:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)]">
