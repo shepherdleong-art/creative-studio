@@ -25,7 +25,12 @@ type PreviewMode = 'output' | 'material';
 
 async function responseBody<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.message || body.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(body.message || body.error || `HTTP ${response.status}`) as Error & { details?: unknown; code?: string };
+    if (body.details !== undefined) error.details = body.details;
+    if (typeof body.error === 'string') error.code = body.error;
+    throw error;
+  }
   return body as T;
 }
 
@@ -131,6 +136,10 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
     } catch (error) {
       await reloadGroup(currentGroup.id).catch(() => undefined);
       if (mountedRef.current) setMessage(`保存失败，已恢复服务端版本：${error instanceof Error ? error.message : String(error)}`);
+      // 源校验失败时后端 details 会给出 clipId，直接定位到出问题的片段
+      // （复用 TextOverflowError 的「点击提示定位」交互）。
+      const details = (error as { details?: { clipId?: string } } | undefined)?.details;
+      if (details?.clipId) setSelectedClipId(details.clipId);
       return false;
     }
   };

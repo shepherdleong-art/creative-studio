@@ -1038,10 +1038,16 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
 // M1：成因 1 回归——手工塞一条 sourceOutFrame = floor+1 的 clip 进时间线，
 // 删除另一个（好的）clip 必须被拒绝（整条时间线被坏 clip 锁死）。
 // 该断言在 M4 完成后改为「删除另一个 clip 成功」。
+// 注：早期测试改写过 v1.mp4 导致旧 clip 指纹过期，这里先把每个 clip 的指纹
+// 对齐到分析行的当前指纹，确保唯一故障是尾帧超限（成因 1）。
 {
   const variantRow = db.prepare(`SELECT id, timelineJson, revision FROM final_edit_variants WHERE groupId=? ORDER BY indexNum LIMIT 1`).get(group.id) as { id: string; timelineJson: string; revision: number };
   const timeline = JSON.parse(variantRow.timelineJson) as { clips: Array<{ id: string; videoJobId: string; sourceFingerprint: string; sourceOutFrame: number }> };
   assert.ok(timeline.clips.length >= 2, 'M1 回归测试需要至少两个 clip 的时间线');
+  for (const clip of timeline.clips) {
+    const analysis = db.prepare(`SELECT fileFingerprint FROM final_edit_asset_analysis WHERE videoJobId=?`).get(clip.videoJobId) as { fileFingerprint: string } | undefined;
+    if (analysis) clip.sourceFingerprint = analysis.fileFingerprint;
+  }
   const [badClip, goodClip] = timeline.clips;
   const analysis = db.prepare(`SELECT mediaJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(badClip.videoJobId) as { mediaJson: string } | undefined;
   const durationUs = Number((JSON.parse(analysis?.mediaJson || '{}') as { durationUs?: number }).durationUs || 0);
@@ -1056,6 +1062,62 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
   );
   badClip.sourceOutFrame = originalOut;
   db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(JSON.stringify(timeline), variantRow.id);
+}
+
+// M3：报错可定位——四类源校验失败必须给出互不相同的 code / details.reason，
+// 且 message 点名片段/素材、details 携带 clipId / videoJobId。
+{
+  const baseRow = db.prepare(`SELECT id, timelineJson, revision FROM final_edit_variants WHERE groupId=? ORDER BY indexNum LIMIT 1`).get(group.id) as { id: string; timelineJson: string; revision: number };
+  const baseTimeline = JSON.parse(baseRow.timelineJson) as { clips: Array<{ id: string; videoJobId: string; sourceFingerprint: string; sourceOutFrame: number }> };
+  const badClipId = baseTimeline.clips[0].id;
+  const goodClipId = baseTimeline.clips[1].id;
+  const mediaRow = db.prepare(`SELECT mediaJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(baseTimeline.clips[0].videoJobId) as { mediaJson: string } | undefined;
+  const runScenario = (mutateTimeline: (clips: typeof baseTimeline.clips) => void, mutateAnalysis?: () => void): FinalEditError => {
+    const timeline = JSON.parse(baseRow.timelineJson) as typeof baseTimeline;
+    // 对齐指纹到分析行当前值，确保唯一故障来自场景自身的 mutation
+    // （早期测试改写过 v1.mp4，导致旧 clip 指纹过期）。
+    for (const clip of timeline.clips) {
+      const analysis = db.prepare(`SELECT fileFingerprint FROM final_edit_asset_analysis WHERE videoJobId=?`).get(clip.videoJobId) as { fileFingerprint: string } | undefined;
+      if (analysis) clip.sourceFingerprint = analysis.fileFingerprint;
+    }
+    mutateTimeline(timeline.clips);
+    db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(JSON.stringify(timeline), baseRow.id);
+    if (mutateAnalysis) mutateAnalysis();
+    let error: unknown;
+    try {
+      workspace.apply({ scope: 'variant', variantId: baseRow.id, expectedRevision: baseRow.revision, type: 'delete_clip', clipId: goodClipId });
+    } catch (caught) { error = caught; }
+    assert.ok(error instanceof FinalEditError, '源校验失败必须抛出 FinalEditError');
+    return error;
+  };
+  const fingerprintError = runScenario((clips) => { clips[0].sourceFingerprint = 'fingerprint-does-not-match'; });
+  const unavailableError = runScenario((clips) => { clips[0].videoJobId = 'missing-video'; });
+  const tailError = runScenario((clips) => {
+    const durationUs = Number((JSON.parse(mediaRow?.mediaJson || '{}') as { durationUs?: number }).durationUs || 0);
+    clips[0].sourceOutFrame = Math.floor(durationUs * 24 / 1_000_000) + 1;
+  });
+  let durationMissingError!: FinalEditError;
+  {
+    db.prepare(`UPDATE final_edit_asset_analysis SET mediaJson='{}' WHERE videoJobId=?`).run(baseTimeline.clips[0].videoJobId);
+    durationMissingError = runScenario(() => undefined);
+    db.prepare(`UPDATE final_edit_asset_analysis SET mediaJson=? WHERE videoJobId=?`).run(mediaRow?.mediaJson || '{}', baseTimeline.clips[0].videoJobId);
+  }
+  db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(baseRow.timelineJson, baseRow.id);
+
+  assert.equal(fingerprintError.code, 'source_fingerprint_mismatch');
+  assert.equal(unavailableError.code, 'source_unavailable');
+  assert.equal(tailError.code, 'source_out_of_range');
+  assert.equal(durationMissingError.code, 'source_duration_missing');
+  const allErrors = [fingerprintError, unavailableError, tailError, durationMissingError];
+  const codes = allErrors.map((error) => error.code);
+  assert.equal(new Set(codes).size, codes.length, '四类源校验失败的 code 必须互不相同');
+  const reasons = allErrors.map((error) => (error.details as { reason?: string }).reason);
+  assert.equal(new Set(reasons).size, reasons.length, '四类源校验失败的 details.reason 必须互不相同');
+  for (const error of allErrors) {
+    assert.match(error.message, /片段「[^」]+」/, '错误文案必须点名片段/素材');
+    assert.equal((error.details as { clipId?: string }).clipId, badClipId, 'details 必须含坏 clipId');
+    assert.ok((error.details as { videoJobId?: string }).videoJobId, 'details 必须含 videoJobId');
+  }
 }
 
 db.close();

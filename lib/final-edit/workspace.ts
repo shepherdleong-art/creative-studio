@@ -647,6 +647,45 @@ function editableVideoSource(db: Database.Database, storageRoot: string, groupId
   `).get(groupId, videoJobId) as { fileFingerprint: string; mediaJson: string } | undefined || null;
 }
 
+/** 片段素材的用户可见名（外部素材用原文件名，module4 视频用展示名，均回落 id）。 */
+function clipDisplayName(db: Database.Database, groupId: string, videoJobId: string): string {
+  if (videoJobId.startsWith('external-asset-')) {
+    const externalId = videoJobId.slice('external-asset-'.length);
+    const row = db.prepare(`
+      SELECT e.originalFilename FROM final_edit_external_assets e
+      JOIN final_edit_groups g ON g.id=? AND e.projectId=g.projectId AND e.shotSetId=g.shotSetId
+      WHERE e.id=?
+    `).get(groupId, externalId) as { originalFilename?: string } | undefined;
+    return row?.originalFilename || videoJobId;
+  }
+  const row = db.prepare(`SELECT COALESCE(NULLIF(displayName, ''), filename, id) AS name FROM video_jobs WHERE id=?`).get(videoJobId) as { name?: string } | undefined;
+  return row?.name || videoJobId;
+}
+
+/** 片段源校验失败的可定位信息：不同失败成因给出不同 code / details.reason / 中文文案。 */
+function clipSourceFailure(
+  db: Database.Database,
+  storageRoot: string,
+  groupId: string,
+  clip: TimelineClip,
+  analysis: { fileFingerprint: string; mediaJson: string } | null,
+  sourceFrames: number,
+): { code: string; message: string; details: Record<string, unknown> } {
+  const name = clipDisplayName(db, groupId, clip.videoJobId);
+  const baseDetails = { clipId: clip.id, videoJobId: clip.videoJobId, sourceOutFrame: clip.sourceOutFrame, sourceFrames };
+  if (!analysis) {
+    return { code: 'source_unavailable', message: `片段「${name}」的源素材不可用（未成功分析、视频任务未完成或源文件缺失），请重新分析或替换素材`, details: { ...baseDetails, reason: 'source_unavailable' } };
+  }
+  const durationUs = Number(parseJson<{ durationUs?: number }>(analysis.mediaJson || '{}', {}).durationUs || 0);
+  if (!durationUs || !Number.isFinite(durationUs)) {
+    return { code: 'source_duration_missing', message: `片段「${name}」缺少媒体时长信息，请对该素材点「重新分析」`, details: { ...baseDetails, reason: 'source_duration_missing' } };
+  }
+  if (analysis.fileFingerprint !== clip.sourceFingerprint) {
+    return { code: 'source_fingerprint_mismatch', message: `片段「${name}」的源素材已变化（指纹与当前文件不一致），请重新分析或替换素材`, details: { ...baseDetails, reason: 'source_fingerprint_mismatch' } };
+  }
+  return { code: 'source_out_of_range', message: `片段「${name}」的源区间超出素材真实时长（需要到第 ${clip.sourceOutFrame} 帧，素材只有 ${sourceFrames} 帧）`, details: { ...baseDetails, reason: 'source_out_of_range' } };
+}
+
 function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean): FinalEditIssue[] {
   const issues: FinalEditIssue[] = [];
   for (const gap of timelineGaps(timeline.bodyFrames, timeline.clips)) {
@@ -1892,10 +1931,15 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (command.type === 'set_framing') clip.framing = { scale: Math.max(1, Math.min(3, command.scale)), offsetX: Math.max(-1, Math.min(1, command.offsetX)), offsetY: Math.max(-1, Math.min(1, command.offsetY)) };
       }
       for (const clip of timeline.clips) {
-        if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒');
+        if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) {
+          throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒', 400, { clipId: clip.id, videoJobId: clip.videoJobId, reason: 'structural_invalid', sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame, bodyFrames: timeline.bodyFrames });
+        }
         const analysis = editableVideoSource(db, storageRoot, String(row.groupId), clip.videoJobId);
         const sourceFrames = sourceFrameLimit(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0));
-        if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) throw new FinalEditError('source_out_of_range', '片段超出源视频真实时长');
+        if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) {
+          const failure = clipSourceFailure(db, storageRoot, String(row.groupId), clip, analysis, sourceFrames);
+          throw new FinalEditError(failure.code, failure.message, 400, failure.details);
+        }
       }
       const orderedClips = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
       if (orderedClips.some((clip, index) => index > 0 && clip.timelineInFrame < orderedClips[index - 1].timelineOutFrame)) throw new FinalEditError('timeline_overlap', '视频片段不能重叠');
