@@ -1962,7 +1962,9 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) {
           const failure = clipSourceFailure(db, storageRoot, String(row.groupId), clip, analysis, sourceFrames);
           if (touched) throw new FinalEditError(failure.code, failure.message, 400, failure.details);
-          blockedIssues.push({ code: 'source_unavailable', severity: 'blocking', message: failure.message, targetId: clip.id });
+          // issue 通道保留 M3 的细分 code（source_unavailable / source_duration_missing /
+          // source_fingerprint_mismatch / source_out_of_range），UI 与导出闸门可按成因展示。
+          blockedIssues.push({ code: failure.code, severity: 'blocking', message: failure.message, targetId: clip.id });
         }
       }
       // 重叠是结构问题：被触碰的 clip 主动制造重叠必须拒绝；存量重叠降级为 issue。
