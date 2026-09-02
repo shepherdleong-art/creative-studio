@@ -45,7 +45,7 @@ export async function GET(
       FROM video_jobs vj
       JOIN shots s ON s.id = vj.shotId
       WHERE vj.shotSetId = ? AND vj.status = 'succeeded' AND vj.localVideoPath IS NOT NULL
-      ORDER BY s.indexNum, vj.createdAt
+      ORDER BY s.indexNum, vj.createdAt, vj.rowid
     `).all(id) as Array<{ shotId: string; filename: string | null; localVideoPath: string; indexNum: number }>;
 
     for (const v of videoRows) {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { finalEditErrorResponse } from '@/lib/final-edit/http';
 import { parseDurationGateState } from '@/lib/final-edit/duration-gate';
+import { parseRenderRevisionFromSnapshot } from '@/lib/final-edit/workspace';
 import { countScriptContentCharacters, estimateNarrationDurationSec } from '@/lib/script-duration-policy';
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -11,9 +12,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (!row) return NextResponse.json({ error: 'job_not_found', message: '任务不存在' }, { status: 404 });
     let output: Record<string, unknown> | null = null;
     let target: Record<string, string> | null = null;
+    let renderRevision: { groupRevision: number; variantRevision: number } | null = null;
     if (row.kind === 'render' && typeof row.inputSnapshotJson === 'string') {
       try {
         const snapshot = JSON.parse(row.inputSnapshotJson) as { exportIdentity?: Record<string, unknown>; exportTarget?: Record<string, unknown> };
+        renderRevision = parseRenderRevisionFromSnapshot(snapshot);
         const identity = snapshot.exportIdentity;
         const exportTarget = snapshot.exportTarget;
         if (identity && exportTarget) target = {
@@ -58,6 +61,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         };
       }
     }
-    return NextResponse.json({ ...publicRow, target, output, durationReview });
+    return NextResponse.json({ ...publicRow, target, output, renderRevision, durationReview });
   } catch (error) { return finalEditErrorResponse(error); }
 }

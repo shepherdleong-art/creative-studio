@@ -5,6 +5,7 @@ import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_
 import { getVideoProviderConfigState } from '@/lib/video-auth';
 import { validateVideoTailFrameAsset, validateVideoTailFrameBatchDrafts } from '@/lib/video-tail-frame';
 import { normalizeVideoMultiShotForStorage } from '@/lib/video-multi-shot';
+import { countVideoJobsForShot, planVideoJobDisplayName } from '@/lib/video-output-filenames';
 
 const MAX_ITEMS = 10;
 
@@ -93,8 +94,8 @@ export async function POST(
 
     const insert = db.prepare(`
       INSERT INTO video_jobs
-        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, projectId, shotSetId, shotId, sourceImageId, tailImageId, providerId, model, templateId, prompt, durationSec, multiShot, createdAt, displayName)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const videoJobIds: string[] = [];
     const createAll = db.transaction(() => {
@@ -110,13 +111,31 @@ export async function POST(
         if (!tailFrameValidation.ok) return tailFrameValidation;
       }
 
-      for (const item of items) {
+      // 友好展示名（D5）：批量同 shot 多条运镜按请求原始顺序续号（现有任务数
+      // 为基数，逐条 +1）。整批写同一 createdAt——与 C4 场景任务同款约定，
+      // 读取端（列表 API / Mixcut / ZIP）用 rowid 决胜得到「最新批次在前、
+      // 批内按提交顺序」，不再出现批内倒序（V03→V01）。本批行都持久化了
+      // displayName，不依赖 (createdAt, id) 派生版次；物理文件名仍由队列
+      // 生成，不受影响。
+      const versionBase = countVideoJobsForShot(db, shotId);
+      const batchCreatedAt = new Date().toISOString();
+      items.forEach((item, index) => {
         const videoJobId = uuidv4();
         const p = providerCache.get(item.providerId)!;
         const multiShot = normalizeVideoMultiShotForStorage(p.type, p.model, item.multiShot);
-        insert.run(videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId, item.providerId, p.model, item.templateId, item.prompt, item.durationSec, multiShot);
+        const displayName = planVideoJobDisplayName(db, {
+          shotId,
+          sourceImageId,
+          templateId: item.templateId,
+          versionNumber: versionBase + index + 1,
+        });
+        insert.run(
+          videoJobId, shotSet.projectId, shotSetId, shotId, sourceImageId, item.tailImageId,
+          item.providerId, p.model, item.templateId, item.prompt, item.durationSec, multiShot,
+          batchCreatedAt, displayName,
+        );
         videoJobIds.push(videoJobId);
-      }
+      });
       return { ok: true as const };
     });
     const createResult = createAll();

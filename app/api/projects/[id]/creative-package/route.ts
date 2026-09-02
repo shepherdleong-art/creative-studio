@@ -45,7 +45,7 @@ export async function GET(
       LEFT JOIN video_providers vp ON vp.id = vj.providerId
       LEFT JOIN video_prompt_templates vpt ON vpt.id = vj.templateId
       WHERE vj.projectId = ? AND vj.status = 'succeeded' AND vj.localVideoPath IS NOT NULL
-      ORDER BY vj.createdAt
+      ORDER BY vj.createdAt, vj.rowid
     `).all(projectId) as Array<{
       shotId: string; filename: string | null; localVideoPath: string;
       prompt: string; rejectedAt: string | null; rejectReason: string | null;

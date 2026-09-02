@@ -151,13 +151,14 @@ export async function POST(request: NextRequest) {
           bindProjectImage(db, imgId, projectId, 'input');
         }
 
-        // Create scene generation jobs
+        // Create scene generation jobs：同一请求写同一 createdAt、按提交顺序写 creationIndex。
+        const batchCreatedAt = new Date().toISOString();
         const insertJob = db.prepare(`
-          INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode)
-          VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none')
+          INSERT INTO jobs (id, projectId, inputImageId, referenceImageIds, providerId, model, prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex)
+          VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?)
         `);
         for (let g = 0; g < genCount; g++) {
-          insertJob.run(uuidv4(), projectId, sceneSeedImageId, body.providerId, model, scenePrompt, resolvedSize, quality, maxAttempts);
+          insertJob.run(uuidv4(), projectId, sceneSeedImageId, body.providerId, model, scenePrompt, resolvedSize, quality, maxAttempts, batchCreatedAt, g);
         }
 
         // Create draft ShotSet

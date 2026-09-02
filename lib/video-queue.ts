@@ -574,15 +574,17 @@ export interface ClaimVideoJobResult {
 
 /**
  * 原子领取下一条 pending 视频任务。领取顺序与 UI 的 createdAt 一致,
- * 避免“后面的任务先跑”的混乱观感。若该任务所属供应商已达并发上限,
- * 不领取并标记 gated(跨项目统计 running,闸门在多项目并行时依然生效)。
+ * 避免“后面的任务先跑”的混乱观感;批内任务共享同一 createdAt,按 rowid
+ * 决胜(与列表 API 的排序口径一致,批内保持提交顺序)。若该任务所属供应
+ * 商已达并发上限,不领取并标记 gated(跨项目统计 running,闸门在多项目
+ * 并行时依然生效)。
  */
 export function claimNextVideoJob(projectId: string): ClaimVideoJobResult {
   const db = getDb();
   const job = db.prepare(`
     SELECT * FROM video_jobs
     WHERE projectId = ? AND status = 'pending'
-    ORDER BY createdAt, id LIMIT 1
+    ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId) as VideoJobRecord | undefined;
 
   if (!job) return { job: null, gated: false };
@@ -617,14 +619,16 @@ export function claimNextVideoJob(projectId: string): ClaimVideoJobResult {
 
 /**
  * 原子领取一条 needs_check 任务继续轮询(自动续跑)。只有持有远端 task_id
- * 的任务才会进入 needs_check,续跑不会重新提交、不会重复扣费。
+ * 的任务才会进入 needs_check,续跑不会重新提交、不会重复扣费。批内任务
+ * 共享同一 createdAt 时按 rowid 决胜,续跑领取保持提交顺序,与
+ * claimNextVideoJob 及列表 API 的排序口径一致。
  */
 export function claimNeedsCheckVideoJob(projectId: string): ClaimedVideoJob | null {
   const db = getDb();
   const job = db.prepare(`
     SELECT * FROM video_jobs
     WHERE projectId = ? AND status = 'needs_check' AND providerTaskId IS NOT NULL
-    ORDER BY createdAt, id LIMIT 1
+    ORDER BY createdAt, rowid LIMIT 1
   `).get(projectId) as VideoJobRecord | undefined;
 
   if (!job) return null;

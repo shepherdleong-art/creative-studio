@@ -9,6 +9,7 @@ import type {
   BatchOutputClipEditResult,
   BatchOutputClipEditView,
 } from '@/lib/batch-production/output-arrangement';
+import { resolveBgmDraftAfterViewLoad, type BatchBgmDraft } from './bgm-draft';
 import BatchClipTrimEditor from './BatchClipTrimEditor';
 import BatchCoverDraftPreview from './BatchCoverDraftPreview';
 import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from './BatchCoverEditorDrawer';
@@ -62,7 +63,8 @@ export default function BatchOutputEditor({
   const [submitting, setSubmitting] = useState(false);
   const [renderPending, setRenderPending] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
-  const [musicParamsDraft, setMusicParamsDraft] = useState({ gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
+  /** BGM 本地草稿：曲目 + 音量 + 淡入 + 淡出共同组成一份 musicDraft，任一字段都可独立弄脏。 */
+  const [musicDraft, setMusicDraft] = useState<BatchBgmDraft>({ trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
   const [narrationGainDraft, setNarrationGainDraft] = useState(NARRATION_GAIN_DB_DEFAULT);
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
   const [previewMode, setPreviewMode] = useState<'output' | 'material'>('output');
@@ -72,6 +74,11 @@ export default function BatchOutputEditor({
   const previewTabRefs = useRef<Record<'output' | 'material', HTMLButtonElement | null>>({ output: null, material: null });
   const pendingRenderRef = useRef(false);
   const inFlightEditRef = useRef<Promise<void> | null>(null);
+  const musicDraftRef = useRef<BatchBgmDraft>(musicDraft);
+  // React 编译器红线：渲染期不得写 ref。与下方 onChangedRef 同款：在 effect
+  // 中同步最新值；读取方（BGM 草稿同步 effect）声明在其后，执行顺序有保证。
+  useEffect(() => { musicDraftRef.current = musicDraft; });
+  const syncedBgmRef = useRef<{ planId: string | null; music: BatchBgmDraft | null }>({ planId: null, music: null });
   const onChangedRef = useRef(onChanged);
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => { onChangedRef.current = onChanged; });
@@ -177,23 +184,27 @@ export default function BatchOutputEditor({
   const visualSec = (view?.visualDurationUs ?? 0) / 1_000_000;
   const narrationSec = view?.narration.durationUs != null ? view.narration.durationUs / 1_000_000 : null;
   const editLocked = !view?.editable || renderBusy || submitting;
-  const syncedMusicGain = view?.music.gainDb;
-  const syncedMusicFadeIn = view?.music.fadeInSec;
-  const syncedMusicFadeOut = view?.music.fadeOutSec;
   const syncedNarrationGain = view?.narration.gainDb;
+  // BGM 草稿同步决策（纯函数，见 bgm-draft.ts）：换 plan 或服务端真值变化才对齐；
+  // 其他编辑命令触发的静默 loadView(true) 一律保留未应用的草稿。
   useEffect(() => {
-    if (syncedMusicGain === undefined || syncedMusicFadeIn === undefined || syncedMusicFadeOut === undefined) return;
-    const timer = window.setTimeout(() => {
-      setMusicParamsDraft({
-        gainDb: syncedMusicGain,
-        fadeInSec: syncedMusicFadeIn,
-        fadeOutSec: syncedMusicFadeOut,
-      });
-    }, 0);
-  // editRevision changes only after a command is accepted, so local slider drafts
-  // are not overwritten while the user is moving a control.
-    return () => window.clearTimeout(timer);
-  }, [syncedMusicFadeIn, syncedMusicFadeOut, syncedMusicGain]);
+    if (!view) return;
+    const serverMusic: BatchBgmDraft = {
+      trackId: view.music.trackId,
+      gainDb: view.music.gainDb,
+      fadeInSec: view.music.fadeInSec,
+      fadeOutSec: view.music.fadeOutSec,
+    };
+    const resolution = resolveBgmDraftAfterViewLoad({
+      planId: view.planId,
+      syncedPlanId: syncedBgmRef.current.planId,
+      syncedServerMusic: syncedBgmRef.current.music,
+      serverMusic,
+      currentDraft: musicDraftRef.current,
+    });
+    syncedBgmRef.current = { planId: resolution.syncedPlanId, music: resolution.syncedServerMusic };
+    if (resolution.resync) setMusicDraft(resolution.draft);
+  }, [view]);
 
   useEffect(() => {
     if (syncedNarrationGain === undefined) return;
@@ -212,15 +223,15 @@ export default function BatchOutputEditor({
   const coverUrl = view?.coverAssetId
     ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=cover&source=candidate`
     : null;
-  const previewBgmTrackId = view?.music.trackId;
+  const previewBgmTrackId = musicDraft.trackId;
   const previewBgm = useMemo(() => (previewBgmTrackId
     ? {
       fileUrl: `/api/final-edit-bgm/${encodeURIComponent(previewBgmTrackId)}/file`,
-      gainDb: musicParamsDraft.gainDb,
-      fadeInSec: musicParamsDraft.fadeInSec,
-      fadeOutSec: musicParamsDraft.fadeOutSec,
+      gainDb: musicDraft.gainDb,
+      fadeInSec: musicDraft.fadeInSec,
+      fadeOutSec: musicDraft.fadeOutSec,
     }
-    : null), [previewBgmTrackId, musicParamsDraft.gainDb, musicParamsDraft.fadeInSec, musicParamsDraft.fadeOutSec]);
+    : null), [previewBgmTrackId, musicDraft.gainDb, musicDraft.fadeInSec, musicDraft.fadeOutSec]);
 
   async function submitEdit(payload: Record<string, unknown>): Promise<boolean> {
     // split 是纯结构操作(不改像素,不递增 editRevision),其余命令都可能改画面。
@@ -372,9 +383,14 @@ export default function BatchOutputEditor({
   }
   if (!view) return null;
 
-  const musicParamsChanged = musicParamsDraft.gainDb !== view.music.gainDb
-    || musicParamsDraft.fadeInSec !== view.music.fadeInSec
-    || musicParamsDraft.fadeOutSec !== view.music.fadeOutSec;
+  // BGM 草稿与服务端真值的比较覆盖全部四个字段：曲目、音量、淡入、淡出。
+  const musicDraftChanged = musicDraft.trackId !== view.music.trackId
+    || musicDraft.gainDb !== view.music.gainDb
+    || musicDraft.fadeInSec !== view.music.fadeInSec
+    || musicDraft.fadeOutSec !== view.music.fadeOutSec;
+  const musicParamsMatchDefaults = musicDraft.gainDb === view.batchMusicDefaults.gainDb
+    && musicDraft.fadeInSec === view.batchMusicDefaults.fadeInSec
+    && musicDraft.fadeOutSec === view.batchMusicDefaults.fadeOutSec;
   const narrationGainChanged = narrationGainDraft !== view.narration.gainDb;
   const effectiveSubtitleStyleDraft = subtitleStyleDraft ?? view.subtitleStyle;
   const subtitleStyleChanged = JSON.stringify(effectiveSubtitleStyleDraft) !== JSON.stringify(view.subtitleStyle);
@@ -684,30 +700,30 @@ export default function BatchOutputEditor({
             <div className="flex items-center gap-2">
               <select
                 aria-label="成片背景音乐曲目"
-                value={view.music.trackId ?? ''}
+                value={musicDraft.trackId ?? ''}
                 disabled={editLocked}
-                onChange={(event) => void submitEdit({ type: 'set_music_track', trackId: event.target.value || null })}
+                onChange={(event) => setMusicDraft((current) => ({ ...current, trackId: event.target.value || null }))}
                 className="h-9 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
               >
                 <option value="">关闭 BGM</option>
                 {view.musicLibrary.map((track) => <option key={track.id} value={track.id}>{track.filename} · {(track.durationUs / 1_000_000).toFixed(1)} 秒</option>)}
               </select>
-              {view.music.trackId && <button type="button" className="btn-secondary h-9 shrink-0 px-3 text-xs" disabled={editLocked} onClick={() => auditionMusic(view.music.trackId!)}>{auditioningTrackId === view.music.trackId ? '停止试听' : '试听'}</button>}
+              {musicDraft.trackId && <button type="button" className="btn-secondary h-9 shrink-0 px-3 text-xs" disabled={editLocked} onClick={() => auditionMusic(musicDraft.trackId!)}>{auditioningTrackId === musicDraft.trackId ? '停止试听' : '试听'}</button>}
             </div>
-            <label className="block text-[11px] text-ink-secondary">音量 {musicParamsDraft.gainDb.toFixed(0)} dB
-              <input type="range" min={-60} max={0} step={1} value={musicParamsDraft.gainDb} disabled={editLocked || !view.music.trackId} onChange={(event) => setMusicParamsDraft((current) => ({ ...current, gainDb: Number(event.target.value) }))} className="mt-1 w-full" />
+            <label className="block text-[11px] text-ink-secondary">音量 {musicDraft.gainDb.toFixed(0)} dB
+              <input type="range" min={-60} max={0} step={1} value={musicDraft.gainDb} disabled={editLocked || !musicDraft.trackId} onChange={(event) => setMusicDraft((current) => ({ ...current, gainDb: Number(event.target.value) }))} className="mt-1 w-full" />
             </label>
             <div className="grid grid-cols-2 gap-2">
-              <label className="text-[11px] text-ink-secondary">淡入 {musicParamsDraft.fadeInSec.toFixed(1)} 秒
-                <input type="range" min={0} max={30} step={0.1} value={musicParamsDraft.fadeInSec} disabled={editLocked || !view.music.trackId} onChange={(event) => setMusicParamsDraft((current) => ({ ...current, fadeInSec: Number(event.target.value) }))} className="mt-1 w-full" />
+              <label className="text-[11px] text-ink-secondary">淡入 {musicDraft.fadeInSec.toFixed(1)} 秒
+                <input type="range" min={0} max={30} step={0.1} value={musicDraft.fadeInSec} disabled={editLocked || !musicDraft.trackId} onChange={(event) => setMusicDraft((current) => ({ ...current, fadeInSec: Number(event.target.value) }))} className="mt-1 w-full" />
               </label>
-              <label className="text-[11px] text-ink-secondary">淡出 {musicParamsDraft.fadeOutSec.toFixed(1)} 秒
-                <input type="range" min={0} max={30} step={0.1} value={musicParamsDraft.fadeOutSec} disabled={editLocked || !view.music.trackId} onChange={(event) => setMusicParamsDraft((current) => ({ ...current, fadeOutSec: Number(event.target.value) }))} className="mt-1 w-full" />
+              <label className="text-[11px] text-ink-secondary">淡出 {musicDraft.fadeOutSec.toFixed(1)} 秒
+                <input type="range" min={0} max={30} step={0.1} value={musicDraft.fadeOutSec} disabled={editLocked || !musicDraft.trackId} onChange={(event) => setMusicDraft((current) => ({ ...current, fadeOutSec: Number(event.target.value) }))} className="mt-1 w-full" />
               </label>
             </div>
             <div className="flex flex-wrap justify-end gap-2">
-              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || !musicParamsChanged} onClick={() => { setMusicParamsDraft(view.batchMusicDefaults); void submitEdit({ type: 'set_music_params', ...view.batchMusicDefaults }); }}>恢复批次默认</button>
-              <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={editLocked || !musicParamsChanged} onClick={() => void submitEdit({ type: 'set_music_params', ...musicParamsDraft })}>应用 BGM 参数</button>
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={editLocked || musicParamsMatchDefaults} onClick={() => setMusicDraft((current) => ({ ...current, ...view.batchMusicDefaults }))}>恢复批次默认</button>
+              <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={editLocked || !musicDraftChanged} onClick={() => void submitEdit({ type: 'set_music', trackId: musicDraft.trackId, gainDb: musicDraft.gainDb, fadeInSec: musicDraft.fadeInSec, fadeOutSec: musicDraft.fadeOutSec })}>应用 BGM 更改</button>
             </div>
           </div>
 

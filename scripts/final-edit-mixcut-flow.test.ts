@@ -75,6 +75,10 @@ db.exec(`
     id TEXT PRIMARY KEY,
     projectId TEXT NOT NULL,
     shotSetId TEXT,
+    shotId TEXT,
+    sourceImageId TEXT,
+    templateId TEXT,
+    displayName TEXT,
     localVideoPath TEXT,
     filename TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -82,6 +86,14 @@ db.exec(`
     rejectedAt TEXT,
     rejectReason TEXT,
     createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- C5 友好名派生依赖的展示字段表（与生产核心 schema 同名同列）。
+  CREATE TABLE image_assets (
+    id TEXT PRIMARY KEY, projectId TEXT, filename TEXT NOT NULL, path TEXT NOT NULL
+  );
+  CREATE TABLE video_prompt_templates (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL
   );
 
   CREATE TABLE script_drafts (
@@ -92,6 +104,34 @@ db.exec(`
     inputSnapshot TEXT NOT NULL,
     outputJson TEXT NOT NULL,
     createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE project_scripts (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    shotSetId TEXT,
+    currentRevisionId TEXT,
+    generationTaskId TEXT,
+    archivedAt TEXT,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL
+  );
+
+  CREATE TABLE project_script_revisions (
+    id TEXT PRIMARY KEY,
+    scriptId TEXT NOT NULL,
+    revisionNumber INTEGER NOT NULL,
+    generationTaskId TEXT,
+    libraryRevisionId TEXT,
+    templateId TEXT NOT NULL DEFAULT '',
+    templateVersion INTEGER NOT NULL DEFAULT 0,
+    templateRationale TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL,
+    contentJson TEXT NOT NULL,
+    targetDurationSec INTEGER NOT NULL,
+    estimatedDurationSec REAL,
+    validationJson TEXT NOT NULL DEFAULT '{}',
+    createdAt TEXT NOT NULL
   );
 
   CREATE TABLE final_edit_asset_analysis (
@@ -182,6 +222,12 @@ db.prepare(`
   VALUES ('video-real', ?, '{}')
 `).run(JSON.stringify({ summary: '真实视频分析摘要' }));
 
+// C5（D5）：video-real 补齐 shot/来源图/模板身份，让 videoAssets 的 displayName
+// 走真实派生链路（旧任务 displayName 为 NULL → 按 shot 序号/来源图名/模板名/版次派生）。
+db.prepare(`INSERT INTO image_assets (id, projectId, filename, path) VALUES ('img-a1', 'project-a', 'LH122K3-B1-沙发.png', '/data/img-a1.png')`).run();
+db.prepare(`INSERT INTO video_prompt_templates (id, name) VALUES ('tpl-push', '缓慢推近')`).run();
+db.prepare(`UPDATE video_jobs SET shotId = 'shot-a1', sourceImageId = 'img-a1', templateId = 'tpl-push' WHERE id = 'video-real'`).run();
+
 // ss-b videos: purely for JC-3 aggregate coverage — files are never actually
 // created on disk (JC-3's aggregation is pure SQL and must never touch the
 // filesystem, so this is deliberate, not an oversight).
@@ -236,6 +282,37 @@ db.prepare(`INSERT INTO script_drafts (id, projectId, provider, model, inputSnap
   ('draft-stale-fullscript', 'project-a', 'gemini', 'gemini-3.5-flash', '{}', ?, '2026-01-05 13:05:00'),
   ('draft-v3', 'project-a', 'openai-responses', 'gpt-5.5', '{}', ?, '2026-01-05 13:06:00')
 `).run(JSON.stringify(validScript), JSON.stringify(v1Draft), JSON.stringify(emptyShotSetIdDraft), JSON.stringify(emptySegmentsDraft), JSON.stringify(foreignShotSetDraft), JSON.stringify(staleFullScriptDraft), JSON.stringify(validV3Script));
+
+// ---------------------------------------------------------------------------
+// 新核心层项目脚本 fixture：两个项目级脚本（空 shotSetId）。
+// ps-old 的当前 revision 创建于 2026-01-05 14:00，ps-new 更新于 2026-01-06，
+// 因此 ps-new 必须排在 ps-old 之前、且两者都排在所有 script_drafts 之前。
+// ---------------------------------------------------------------------------
+const projectScriptContent = (title: string, narration: string) => JSON.stringify({
+  version: 3,
+  title,
+  shotSetId: '',
+  targetDurationSec: 15,
+  segments: [{ id: 'v3-p-1', narration, subtitle: narration, sellingPointRefs: [], visualIntent: '', visualKeywords: [] }],
+  fullScript: narration,
+});
+db.prepare(`
+  INSERT INTO project_scripts (id, projectId, shotSetId, currentRevisionId, generationTaskId, archivedAt, createdAt, updatedAt)
+  VALUES
+    ('ps-old', 'project-a', NULL, 'ps-old-r1', NULL, NULL, '2026-01-05 13:30:00', '2026-01-05 14:00:00'),
+    ('ps-new', 'project-a', NULL, 'ps-new-r2', NULL, NULL, '2026-01-05 15:00:00', '2026-01-06 09:00:00')
+`).run();
+db.prepare(`
+  INSERT INTO project_script_revisions (id, scriptId, revisionNumber, origin, contentJson, targetDurationSec, createdAt)
+  VALUES
+    ('ps-old-r1', 'ps-old', 1, 'ai_generate', ?, 15, '2026-01-05 14:00:00'),
+    ('ps-new-r1', 'ps-new', 1, 'ai_generate', ?, 15, '2026-01-05 15:00:00'),
+    ('ps-new-r2', 'ps-new', 2, 'ai_generate', ?, 15, '2026-01-06 09:00:00')
+`).run(
+  projectScriptContent('项目脚本旧档', '项目脚本旧档正文。'),
+  projectScriptContent('项目脚本首版', '项目脚本首版正文。'),
+  projectScriptContent('项目脚本新版', '项目脚本新版正文。'),
+);
 
 // ---------------------------------------------------------------------------
 // Fixture: project-b — unrelated project (isolation + "wrong project" gate).
@@ -315,9 +392,30 @@ assert.ok(!defaultContext.drafts.some((d) => d.id === 'draft-for-b'), 'project-a
 // (c) script draft gates, via real code: only draft-valid survives; each of
 // the other three malformed drafts is excluded for its own single reason.
 // =============================================================================
-assert.deepEqual(defaultContext.drafts.map((d) => d.id), ['draft-valid', 'draft-empty-shotset', 'draft-stale-fullscript', 'draft-v3'], '项目级脚本与引用当前项目真实分镜组的合法 V2/V3 草稿都应出现');
+assert.deepEqual(
+  defaultContext.drafts.map((d) => d.id),
+  ['ps-new', 'ps-old', 'draft-valid', 'draft-empty-shotset', 'draft-stale-fullscript', 'draft-v3'],
+  '项目脚本必须按当前 revision 创建时间降序排在 script_drafts 之前',
+);
 assert.ok(!defaultContext.drafts.some((draft) => draft.id === 'draft-foreign-shotset'), '当前项目草稿不得引用其他项目的 shotSetId');
+
+// 项目脚本显式身份：sourceKind/sourceRevisionId/sourceRevisionNumber 必须随 drafts
+// 返回（且不得携带任务快照），历史行 revision 身份为 null。
+const psNewDraft = defaultContext.drafts.find((draft) => draft.id === 'ps-new');
+assert.ok(psNewDraft, '项目脚本 ps-new 必须出现在 context drafts');
+assert.equal(psNewDraft.sourceKind, 'project');
+assert.equal(psNewDraft.sourceRevisionId, 'ps-new-r2', 'drafts 必须暴露当前 revision id');
+assert.equal(psNewDraft.sourceRevisionNumber, 2);
+assert.equal(psNewDraft.shotSetId, '', '项目脚本是项目级的，shotSetId 为空');
+assert.equal(psNewDraft.narrationText, '项目脚本新版正文。');
+const psOldDraft = defaultContext.drafts.find((draft) => draft.id === 'ps-old');
+assert.ok(psOldDraft);
+assert.equal(psOldDraft.sourceRevisionId, 'ps-old-r1');
+assert.equal(psOldDraft.sourceRevisionNumber, 1);
 const validDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-valid');
+assert.equal(validDraftView?.sourceKind, 'legacy', 'script_drafts 历史行必须标记为 legacy');
+assert.equal(validDraftView?.sourceRevisionId, null);
+assert.equal(validDraftView?.sourceRevisionNumber, null);
 const staleDraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-stale-fullscript');
 assert.ok(validDraftView && staleDraftView);
 assert.equal(validDraftView.shotSetId, 'ss-a');
@@ -330,6 +428,17 @@ const v3DraftView = defaultContext.drafts.find((draft) => draft.id === 'draft-v3
 assert.ok(v3DraftView);
 assert.equal(v3DraftView.version, 3);
 assert.equal(v3DraftView.narrationText, validV3Script.segments[0].narration);
+
+// =============================================================================
+// 显式请求 ss-b 时：项目脚本（空 shotSetId）仍可见，ss-a 的历史脚本必须隐藏。
+// =============================================================================
+const ssBContext = await buildMixcutContext(db, storageRoot, 'project-a', 'ss-b');
+assert.ok(ssBContext);
+assert.deepEqual(
+  ssBContext.drafts.map((draft) => draft.id),
+  ['ps-new', 'ps-old', 'draft-empty-shotset'],
+  '请求 ss-b 时项目脚本与空 shotSetId 历史草稿必须可见，ss-a 的历史脚本不得出现',
+);
 
 // =============================================================================
 // (d)+(e)+JC-2/JC-4: videoAssets[] for the CURRENT shot set (ss-a via
@@ -355,6 +464,8 @@ assert.ok(
 const realAsset = explicitContext.videoAssets[0];
 assert.equal(realAsset.shotSetId, 'ss-a');
 assert.equal(realAsset.filename, 'video-real.mp4');
+// C5（D5）：Mixcut 素材名优先展示派生的友好名；filename 物理身份不变。
+assert.equal(realAsset.displayName, '01-LH122K3-B1-沙发-缓慢推近-V01.mp4', '旧任务 displayName 为 NULL 时必须按 shot 序号/来源图名/模板名/版次确定性派生');
 assert.equal(realAsset.thumbnailUrl, '/api/projects/project-a/final-edit/shot-sets/ss-a/module4-assets/video-real/thumbnail');
 assert.equal(realAsset.previewUrl, '/api/videos/final-edits/videos/video-real.mp4');
 assert.equal(realAsset.summary, '真实视频分析摘要');
@@ -388,6 +499,7 @@ persistedDb.exec(`
   );
   CREATE TABLE video_jobs (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT,
+    sourceImageId TEXT, templateId TEXT, displayName TEXT, createdAt TEXT,
     status TEXT NOT NULL, localVideoPath TEXT, filename TEXT, durationSec REAL,
     rejectedAt TEXT, rejectReason TEXT
   );
@@ -448,6 +560,60 @@ const persistedWorkspace = createFinalEditWorkspace({
   analyzeVideo: async () => { throw new Error('未调用素材分析 seam'); },
   synthesize: async () => { throw new Error('未调用口播 seam'); },
 });
+
+// ---------------------------------------------------------------------------
+// 新核心层项目脚本进入单条混剪：ensureMixcutDraft 用项目脚本建 editing group 时，
+// 快照必须携带源 revision 身份，load() 也必须把它投影回 view.script。
+// ---------------------------------------------------------------------------
+persistedDb.exec(`
+  CREATE TABLE script_drafts (
+    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, provider TEXT NOT NULL DEFAULT 'gemini',
+    model TEXT NOT NULL, inputSnapshot TEXT NOT NULL, outputJson TEXT NOT NULL, createdAt TEXT NOT NULL, generationDurationMs INTEGER
+  );
+  CREATE TABLE project_scripts (
+    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, currentRevisionId TEXT,
+    generationTaskId TEXT, archivedAt TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+  );
+  CREATE TABLE project_script_revisions (
+    id TEXT PRIMARY KEY, scriptId TEXT NOT NULL, revisionNumber INTEGER NOT NULL, generationTaskId TEXT,
+    libraryRevisionId TEXT, templateId TEXT NOT NULL DEFAULT '', templateVersion INTEGER NOT NULL DEFAULT 0,
+    templateRationale TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL, contentJson TEXT NOT NULL,
+    targetDurationSec INTEGER NOT NULL, estimatedDurationSec REAL, validationJson TEXT NOT NULL DEFAULT '{}', createdAt TEXT NOT NULL
+  );
+`);
+persistedDb.prepare(`
+  INSERT INTO project_scripts (id, projectId, shotSetId, currentRevisionId, createdAt, updatedAt)
+  VALUES ('ps-project', 'project-a', NULL, 'ps-project-r1', '2026-08-31T00:01:00.000Z', '2026-08-31T00:01:00.000Z')
+`).run();
+persistedDb.prepare(`
+  INSERT INTO project_script_revisions (id, scriptId, revisionNumber, origin, contentJson, targetDurationSec, createdAt)
+  VALUES ('ps-project-r1', 'ps-project', 1, 'ai_generate', ?, 15, '2026-08-31T00:01:00.000Z')
+`).run(JSON.stringify({
+  version: 3,
+  title: '项目级脚本',
+  shotSetId: '',
+  targetDurationSec: 15,
+  segments: [{ id: 'p-1', narration: '项目脚本正文。', subtitle: '项目脚本正文', sellingPointRefs: [], visualIntent: '', visualKeywords: [] }],
+  fullScript: '项目脚本正文。',
+}));
+const mixcutDraftView = persistedWorkspace.ensureMixcutDraft({
+  projectId: 'project-a',
+  shotSetId: 'ss-a',
+  scriptDraftId: 'ps-project',
+  editedNarrationText: '',
+  selectedMaterialKeys: [],
+  providerId: 'vapi-qwen3-tts',
+  voice: 'voice-a',
+  speed: 1,
+  analysisProviderId: '',
+});
+assert.equal(mixcutDraftView.status, 'editing');
+assert.equal(mixcutDraftView.script.sourceDraftId, 'ps-project', '项目脚本必须能创建单条混剪编辑草稿');
+assert.equal(mixcutDraftView.script.sourceScriptRevisionId, 'ps-project-r1', '编辑草稿快照必须记录源脚本 revision 身份');
+assert.equal(mixcutDraftView.script.sourceScriptRevisionNumber, 1);
+const reloadedDraftView = persistedWorkspace.load(mixcutDraftView.id);
+assert.equal(reloadedDraftView.script.sourceScriptRevisionId, 'ps-project-r1', '重新 load 也必须稳定投影 revision 身份');
+
 const persistedBeforeReject = persistedWorkspace.load('group-used-material');
 assert.ok(persistedBeforeReject.variants[0].timeline.clips.some((clip) => clip.videoJobId === 'video-real'));
 assert.ok(persistedBeforeReject.assets.some((asset) => asset.videoJobId === 'video-real'));

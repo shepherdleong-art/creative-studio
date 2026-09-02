@@ -60,6 +60,16 @@ function formatCreatedAt(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+/** 项目脚本显示「当前版本 Vn」；历史脚本保留 provider/model 元数据。 */
+function draftMetaLabel(draft: Draft): string {
+  if (draft.sourceKind === 'project') return `项目脚本 · 当前版本 V${draft.sourceRevisionNumber ?? 1}`;
+  return `${draft.provider} / ${draft.model}`;
+}
+
+function draftOptionLabel(draft: Draft): string {
+  return `V${draft.version} · ${draft.title || '未命名脚本'} · ${draft.targetDurationSec}s · ${draftMetaLabel(draft)} · ${formatCreatedAt(draft.createdAt)}`;
+}
+
 function stageState(job: MixcutPrepareJobView | null, index: number): 'waiting' | 'running' | 'done' | 'failed' {
   if (!job) return 'waiting';
   const activePhase = job.phase === 'duration_review' ? 'duration_check' : job.phase;
@@ -86,6 +96,10 @@ export function CreationStep({
   dirty,
   modified,
   pendingDraft,
+  sourceScriptUpdate,
+  pendingSyncDraft,
+  onRequestSourceSync,
+  onResolveSourceSync,
   onDraftChange,
   onResolveDraftSwitch,
   onTextChange,
@@ -115,6 +129,11 @@ export function CreationStep({
   dirty: boolean;
   modified: boolean;
   pendingDraft: Draft | null;
+  /** 当前编辑源脚本有新 revision 时非空，驱动「源脚本有新版本」提示与显式同步入口。 */
+  sourceScriptUpdate: Draft | null;
+  pendingSyncDraft: Draft | null;
+  onRequestSourceSync: () => void;
+  onResolveSourceSync: (resolution: ScriptSwitchResolution) => void;
   onDraftChange: (draftId: string) => void;
   onResolveDraftSwitch: (resolution: ScriptSwitchResolution) => void;
   onTextChange: (text: string) => void;
@@ -174,14 +193,20 @@ export function CreationStep({
           </div>
           {drafts.length > 0 ? (
             <label className={styles.field}>
-              <span>脚本版本（模块 3 · 仅显示当前分镜组的有效草稿）
+              <span>脚本版本（项目脚本与当前分镜组的历史脚本）
                 <span className={modified ? styles.chipGrey : styles.chipGreen} style={{ marginLeft: 8 }}>{modified ? '已手动修改' : '已同步'}{dirty ? '，待保存' : ''}</span>
               </span>
               <select value={activeDraftId} onChange={(event) => onDraftChange(event.target.value)} disabled={busy}>
-                {drafts.map((draft) => <option key={draft.id} value={draft.id}>V{draft.version} · {draft.title || '未命名脚本'} · {draft.targetDurationSec}s · {draft.provider}/{draft.model} · {formatCreatedAt(draft.createdAt)}</option>)}
+                {drafts.map((draft) => <option key={draft.id} value={draft.id}>{draftOptionLabel(draft)}</option>)}
               </select>
             </label>
-          ) : <div className={styles.warningNotice}>当前组还没有模块 3 脚本，可以先手动输入口播文案。</div>}
+          ) : <div className={styles.warningNotice}>当前组还没有可用脚本，可以先手动输入口播文案。</div>}
+          {sourceScriptUpdate && (
+            <div className={styles.softDurationWarning} role="status" data-testid="mixcut-source-script-update">
+              源脚本有新版本（{draftMetaLabel(sourceScriptUpdate)}），当前编辑仍使用旧版本快照。
+              <button type="button" className={styles.linkBtn} onClick={onRequestSourceSync} disabled={busy}>同步最新版本</button>
+            </div>
+          )}
           <label className={styles.field}>
             <span>口播文案</span>
             <textarea value={editedNarrationText} onChange={(event) => onTextChange(event.target.value)} disabled={busy} placeholder="输入 15～30 秒口播文案…" />
@@ -190,7 +215,7 @@ export function CreationStep({
             <span className={overSuggestedCharacters ? styles.metaWarning : undefined}>
               {charCount} 字 · 建议 {durationBudget.minContentCharacters}～{durationBudget.maxContentCharacters} 字（预计 {estimatedNarrationSec.toFixed(1)} 秒口播）
             </span>
-            <span>来源：{activeDraft ? `${activeDraft.provider} / ${activeDraft.model}` : '手动输入'}</span>
+            <span>来源：{activeDraft ? draftMetaLabel(activeDraft) : '手动输入'}</span>
             {importedNarrationText && <button type="button" className={styles.linkBtn} onClick={onRestoreImported} disabled={!modified || busy}>恢复导入版本</button>}
           </div>
           {overSuggestedCharacters && (
@@ -279,6 +304,16 @@ export function CreationStep({
             <h2 id="mixcut-switch-title">当前脚本有未保存修改</h2>
             <p>切换到「{pendingDraft.title || '未命名脚本'}」前，请选择如何处理当前文案。</p>
             <div><button type="button" className={styles.primaryButton} onClick={() => onResolveDraftSwitch('preserve')}>保留修改并切换</button><button type="button" className={styles.secondaryButton} onClick={() => onResolveDraftSwitch('discard')}>放弃修改并切换</button><button type="button" className={styles.textButton} onClick={() => onResolveDraftSwitch('cancel')}>取消</button></div>
+          </div>
+        </div>
+      )}
+
+      {pendingSyncDraft && (
+        <div className={styles.switchDialogBackdrop} role="presentation">
+          <div className={styles.switchDialog} role="dialog" aria-modal="true" aria-labelledby="mixcut-sync-title">
+            <h2 id="mixcut-sync-title">源脚本有新版本</h2>
+            <p>同步「{pendingSyncDraft.title || '未命名脚本'}」的最新版本前，请选择如何处理当前文案。</p>
+            <div><button type="button" className={styles.primaryButton} onClick={() => onResolveSourceSync('preserve')}>保留修改并同步</button><button type="button" className={styles.secondaryButton} onClick={() => onResolveSourceSync('discard')}>放弃修改并同步</button><button type="button" className={styles.textButton} onClick={() => onResolveSourceSync('cancel')}>取消</button></div>
           </div>
         </div>
       )}

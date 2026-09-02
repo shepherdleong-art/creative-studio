@@ -70,6 +70,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
   const selectedClip = variant?.timeline.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === selectedMaterialKey) || null;
   const previewMaterial = group.assets.find((asset) => (asset.assetKey || asset.videoJobId) === previewMaterialKey) || null;
+  // 用户可见名称一律走 displayName（D5）；filename 只服务播放 URL/物理路径。
+  const materialName = (asset: FinalEditAssetView | null) => (asset ? asset.displayName || asset.filename : '');
   const timelineSelectedCueId = group.subtitleCues.some((cue) => cue.id === selectedCueId) ? selectedCueId : '';
   const orderedClips = useMemo(() => variant ? [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame) : [], [variant]);
   const trimClipIndex = trimClip ? orderedClips.findIndex((clip) => clip.id === trimClip.id) : -1;
@@ -381,8 +383,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                 ? `时间轴有 ${(firstInsertableGap.endFrame - firstInsertableGap.startFrame) / FPS}s 缺口。先选素材，再点击“添加到缺口”。`
                 : '单击下方素材会高亮选中，点击“预览”查看视频；选中时间轴片段后可替换，右键片段可删除并腾出缺口。'}</div>
           <div className={styles.replaceSelection} aria-live="polite">
-            <span className={styles.replaceSelectionName} title={selectedMaterial?.filename}>
-              {selectedMaterial ? `已选：${selectedMaterial.filename}` : '尚未选择素材'}
+            <span className={styles.replaceSelectionName} title={materialName(selectedMaterial)}>
+              {selectedMaterial ? `已选：${materialName(selectedMaterial)}` : '尚未选择素材'}
             </span>
             <div className={styles.replaceActions}>
               <button
@@ -413,13 +415,13 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                     disabled={busy}
                     aria-pressed={materialSelected}
                     onClick={() => setSelectedMaterialKey(materialKey)}
-                    title={`选择素材「${asset.filename}」`}
+                    title={`选择素材「${materialName(asset)}」`}
                   >
                     <span className={styles.repThumb}>
                       {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <Icon name="video" size={14} />}
                     </span>
                     <span className={styles.repInfo}>
-                      <span className={styles.repN}>{asset.filename}</span>
+                      <span className={styles.repN}>{materialName(asset)}</span>
                       <span className={styles.repM}>{(asset.durationUs / 1_000_000).toFixed(1)}s · {asset.source === 'external' ? '外部导入' : '模块 4'}</span>
                     </span>
                     {materialSelected
@@ -429,7 +431,7 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                   <button
                     type="button"
                     className={`${styles.btn} ${styles.small} ${styles.replacePreviewButton}`}
-                    aria-label={`预览素材 ${asset.filename}`}
+                    aria-label={`预览素材 ${materialName(asset)}`}
                     disabled={!asset.previewUrl && !asset.thumbnailUrl}
                     onClick={() => openMaterialPreview(materialKey)}
                   >预览</button>
@@ -519,8 +521,8 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                 onClick={() => setPreviewMode('material')}
               >素材预览</button>
             </div>
-            <span className={styles.previewModeLabel} title={previewMaterial?.filename}>
-              {previewMode === 'material' ? (previewMaterial?.filename ?? '请从左侧素材列表点击“预览”') : '实时合成预览'}
+            <span className={styles.previewModeLabel} title={materialName(previewMaterial)}>
+              {previewMode === 'material' ? (materialName(previewMaterial) || '请从左侧素材列表点击“预览”') : '实时合成预览'}
             </span>
           </div>
           <div
@@ -543,15 +545,15 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
                         playsInline
                         preload="metadata"
                         poster={previewMaterial.thumbnailUrl}
-                        aria-label={`素材预览：${previewMaterial.filename}`}
+                        aria-label={`素材预览：${materialName(previewMaterial)}`}
                       />
                     ) : previewMaterial?.thumbnailUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img className={styles.materialPreviewImage} src={previewMaterial.thumbnailUrl} alt={previewMaterial.filename} />
+                      <img className={styles.materialPreviewImage} src={previewMaterial.thumbnailUrl} alt={materialName(previewMaterial)} />
                     ) : (
                       <p className={styles.materialPreviewEmpty}>请从左侧素材列表点击“预览”</p>
                     )}
-                    {previewMaterial && <p className={styles.materialPreviewName} title={previewMaterial.filename}>{previewMaterial.filename}</p>}
+                    {previewMaterial && <p className={styles.materialPreviewName} title={materialName(previewMaterial)}>{materialName(previewMaterial)}</p>}
                   </div>
                 ) : (
                   <FinalEditPreview

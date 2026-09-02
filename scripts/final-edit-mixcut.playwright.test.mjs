@@ -284,7 +284,8 @@ try {
     let delayedPreparedGroupMs = 0;
     let savedPresets = [];
     let revealAvailable = false;
-    let renderPollCount = 0;
+    let renderSequence = 0;
+    const renderJobsById = new Map();
     const project = {
       id: 'e2e-project',
       name: 'Mixcut E2E 项目',
@@ -492,6 +493,20 @@ try {
               narrationConfig: { ...savedGroup.script.narrationConfig, gainDb: body.gainDb },
             },
           };
+        } else if (body.type === 'set_mixcut_script_state') {
+          savedGroup = {
+            ...savedGroup,
+            revision: savedGroup.revision + 1,
+            script: {
+              ...savedGroup.script,
+              editedNarrationText: body.editedNarrationText,
+              ...(body.scriptDraftId
+                ? { sourceDraftId: body.scriptDraftId, sourceScriptRevisionId: 'ps-rev-2', sourceScriptRevisionNumber: 2, importedNarrationText: '项目脚本第二版。' }
+                : {}),
+              narrationConfig: { ...savedGroup.script.narrationConfig, providerId: body.providerId, voice: body.voice, speed: body.speed },
+              selectedMaterialKeys: body.selectedMaterialKeys,
+            },
+          };
         } else if (body.type === 'apply_cover_editor') {
           const currentVariant = savedGroup.variants.find((variant) => variant.id === body.variantId);
           assert.ok(currentVariant, 'cover command variant must exist');
@@ -623,26 +638,32 @@ try {
       if (pathname === '/api/final-edit-variants/variant-e2e/render' && request.method() === 'POST') {
         const body = request.postDataJSON();
         renderPostBodies.push(body);
-        const queued = { id: 'render-job-e2e', variantId: 'variant-e2e', kind: 'render', status: 'queued', phase: 'preflight', progress: 0, estimatedCost: 0, costCurrency: 'CNY', errorCode: null, errorMessage: null, startedAt: null, finishedAt: null, createdAt: '2026-07-24T01:00:00.000Z' };
-        savedGroup = { ...savedGroup, jobs: [queued, ...savedGroup.jobs.filter((job) => job.id !== queued.id)] };
-        renderPollCount = 0;
-        return json({ ...queued, groupId: savedGroup.id, target: { taskName: project.name, productCode: project.productCode, taskDate: '20260724', videoFilename: '成片-E2E-001-20260724-02.mp4', coverFilename: '成片-E2E-001-20260724-02-封面.jpg', displayDirectory: '工作台/Mixcut E2E 项目/成片/' } }, 202);
+        renderSequence += 1;
+        const jobId = renderSequence === 1 ? 'render-job-e2e' : `render-job-e2e-${renderSequence}`;
+        const target = { taskName: project.name, productCode: project.productCode, taskDate: '20260724', videoFilename: `成片-E2E-001-20260724-0${renderSequence + 1}.mp4`, coverFilename: `成片-E2E-001-20260724-0${renderSequence + 1}-封面.jpg`, displayDirectory: '工作台/Mixcut E2E 项目/成片/' };
+        const queued = { id: jobId, variantId: 'variant-e2e', kind: 'render', status: 'queued', phase: 'preflight', progress: 0, renderRevision: { groupRevision: body.expectedGroupRevision, variantRevision: body.expectedVariantRevision }, estimatedCost: 0, costCurrency: 'CNY', errorCode: null, errorMessage: null, startedAt: null, finishedAt: null, createdAt: '2026-07-24T01:00:00.000Z' };
+        renderJobsById.set(jobId, { pollCount: 0, target, renderRevision: queued.renderRevision });
+        savedGroup = { ...savedGroup, jobs: [queued, ...savedGroup.jobs.filter((job) => job.id !== jobId)] };
+        return json({ ...queued, groupId: savedGroup.id, target }, 202);
       }
-      if (pathname === '/api/final-edit-jobs/render-job-e2e' && request.method() === 'GET') {
-        renderPollCount += 1;
-        const target = { taskName: project.name, productCode: project.productCode, taskDate: '20260724', videoFilename: '成片-E2E-001-20260724-02.mp4', coverFilename: '成片-E2E-001-20260724-02-封面.jpg', displayDirectory: '工作台/Mixcut E2E 项目/成片/' };
-        if (renderPollCount <= 4) return json({ id: 'render-job-e2e', groupId: savedGroup.id, variantId: 'variant-e2e', kind: 'render', status: 'running', phase: 'rendering', progress: 0.42, target, output: null, errorMessage: null });
-        const output = { videoRelativePath: 'final-edits/jobs/render-job-e2e/final.mp4', coverRelativePath: 'final-edits/jobs/render-job-e2e/cover.jpg', publishedVideoRelativePath: 'projects/e2e-project/成片/成片-E2E-001-20260724-02.mp4', publishedCoverRelativePath: 'projects/e2e-project/成片/成片-E2E-001-20260724-02-封面.jpg', videoFilename: '成片-E2E-001-20260724-02.mp4', coverFilename: '成片-E2E-001-20260724-02-封面.jpg', displayDirectory: '工作台/Mixcut E2E 项目/成片/', durationSec: 10.83, width: 1080, height: 1920, fps: 24, videoUrl: '/api/final-edit-jobs/render-job-e2e/video', videoDownloadUrl: '/api/final-edit-jobs/render-job-e2e/video?download=1', coverUrl: '/api/final-edit-jobs/render-job-e2e/cover', coverDownloadUrl: '/api/final-edit-jobs/render-job-e2e/cover?download=1' };
-        const succeeded = { id: 'render-job-e2e', groupId: savedGroup.id, variantId: 'variant-e2e', kind: 'render', status: 'succeeded', phase: 'succeeded', progress: 1, output, errorMessage: null, finishedAt: '2026-07-24T01:00:10.000Z' };
-        savedGroup = { ...savedGroup, jobs: savedGroup.jobs.map((job) => job.id === succeeded.id ? { ...job, ...succeeded } : job) };
-        return json({ ...succeeded, target });
+      const renderJobMatch = pathname.match(/^\/api\/final-edit-jobs\/(render-job-e2e(?:-\d+)?)$/);
+      if (renderJobMatch && request.method() === 'GET') {
+        const jobId = renderJobMatch[1];
+        const state = renderJobsById.get(jobId);
+        if (!state) return json({ error: 'job_not_found' }, 404);
+        state.pollCount += 1;
+        if (state.pollCount <= 4) return json({ id: jobId, groupId: savedGroup.id, variantId: 'variant-e2e', kind: 'render', status: 'running', phase: 'rendering', progress: 0.42, renderRevision: state.renderRevision, target: state.target, output: null, errorMessage: null });
+        const output = { videoRelativePath: `final-edits/jobs/${jobId}/final.mp4`, coverRelativePath: `final-edits/jobs/${jobId}/cover.jpg`, publishedVideoRelativePath: `projects/e2e-project/成片/成片-E2E-001-20260724-0${renderSequence + 1}.mp4`, publishedCoverRelativePath: `projects/e2e-project/成片/成片-E2E-001-20260724-0${renderSequence + 1}-封面.jpg`, videoFilename: state.target.videoFilename, coverFilename: state.target.coverFilename, displayDirectory: '工作台/Mixcut E2E 项目/成片/', durationSec: 10.83, width: 1080, height: 1920, fps: 24, videoUrl: `/api/final-edit-jobs/${jobId}/video`, videoDownloadUrl: `/api/final-edit-jobs/${jobId}/video?download=1`, coverUrl: `/api/final-edit-jobs/${jobId}/cover`, coverDownloadUrl: `/api/final-edit-jobs/${jobId}/cover?download=1` };
+        const succeeded = { id: jobId, groupId: savedGroup.id, variantId: 'variant-e2e', kind: 'render', status: 'succeeded', phase: 'succeeded', progress: 1, renderRevision: state.renderRevision, output, errorMessage: null, finishedAt: '2026-07-24T01:00:10.000Z' };
+        savedGroup = { ...savedGroup, jobs: savedGroup.jobs.map((job) => job.id === jobId ? { ...job, ...succeeded } : job) };
+        return json({ ...succeeded, target: state.target });
       }
-      if (pathname === '/api/final-edit-jobs/render-job-e2e/reveal' && request.method() === 'POST') {
+      if (/^\/api\/final-edit-jobs\/render-job-e2e(?:-\d+)?\/reveal$/.test(pathname) && request.method() === 'POST') {
         revealRequests.push(request.postData());
         return json({ revealed: true });
       }
-      if (pathname === '/api/final-edit-jobs/render-job-e2e/cover') return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
-      if (pathname === '/api/final-edit-jobs/render-job-e2e/video') return route.fulfill({ status: 200, contentType: 'video/mp4', body: Buffer.from('non-empty-mocked-video-response') });
+      if (/^\/api\/final-edit-jobs\/render-job-e2e(?:-\d+)?\/cover$/.test(pathname)) return route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from(transparentPixel.split(',')[1], 'base64') });
+      if (/^\/api\/final-edit-jobs\/render-job-e2e(?:-\d+)?\/video$/.test(pathname)) return route.fulfill({ status: 200, contentType: 'video/mp4', body: Buffer.from('non-empty-mocked-video-response') });
       if (pathname === '/api/final-edit-bgm' && request.method() === 'POST') {
         const body = request.postDataBuffer();
         assert.ok(body && body.includes(Buffer.from('轻快音乐.mp3')));
@@ -1333,6 +1354,7 @@ try {
     assert.equal(await page.getByRole('button', { name: '开始导出' }).count(), 0, '恢复运行中任务时不得短暂开放重复导出');
     await page.getByText('成片-E2E-001-20260724-02.mp4', { exact: true }).waitFor();
     await page.getByText('成片-E2E-001-20260724-02-封面.jpg', { exact: true }).waitFor();
+    await page.getByRole('link', { name: '下载视频' }).waitFor();
     assert.equal(await page.getByRole('link', { name: '下载视频' }).getAttribute('href'), '/api/final-edit-jobs/render-job-e2e/video?download=1');
     assert.equal(await page.getByRole('link', { name: '下载封面' }).getAttribute('href'), '/api/final-edit-jobs/render-job-e2e/cover?download=1');
     assert.equal(await page.locator('section[aria-label="导出结果"] video').getAttribute('src'), '/api/final-edit-jobs/render-job-e2e/video');
@@ -1352,6 +1374,49 @@ try {
     await page.getByText('成片-E2E-001-20260724-02.mp4', { exact: true }).waitFor();
     await page.getByRole('button', { name: '在文件夹中查看' }).click();
     assert.deepEqual(revealRequests, [null], '文件定位请求不得接受或泄露客户端路径');
+
+    // C2 完整回归：编辑（group revision 变化）后，旧版成功导出降级为「上一版可下载」，
+    // 不再冒充当前结果；「重新导出当前修改」必须携带新 revision 创建新任务，成功后
+    // 成为当前下载，旧 job 的原 URL 仍可读取。
+    const c2FirstRenderPost = renderPostBodies[0];
+    await page.getByRole('button', { name: '返回预览修复' }).click();
+    await page.locator('[data-track="video"]').waitFor();
+    const c2SpeedSlider = page.getByRole('slider', { name: '右侧音频倍速拉条', exact: true });
+    await c2SpeedSlider.fill('1.2');
+    await c2SpeedSlider.dispatchEvent('pointerup');
+    await expectEventually(
+      () => groupPatchBodies.some((body) => body.type === 'set_narration_playback_rate' && body.playbackRate === 1.2),
+      'C2 编辑：口播倍速修改必须保存为新的 group revision',
+    );
+    await page.getByRole('button', { name: '下一步：导出' }).click();
+    await page.getByRole('heading', { name: '导出并写回项目' }).waitFor();
+    await page.getByText('上一版可下载', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('link', { name: '下载视频', exact: true }).count(), 0, '旧版导出不得冒充当前下载');
+    assert.equal(
+      await page.getByRole('link', { name: '下载上一版视频' }).getAttribute('href'),
+      '/api/final-edit-jobs/render-job-e2e/video?download=1',
+      '上一版下载必须指向旧 job 的原始 URL',
+    );
+    const c2ReexportButton = page.getByRole('button', { name: '重新导出当前修改' });
+    await c2ReexportButton.waitFor();
+    const c2OverlayResponse = page.waitForResponse((response) => response.url().endsWith('/api/final-edit-groups/group-e2e/overlay-bundles/9x16') && response.request().method() === 'POST');
+    await c2ReexportButton.click();
+    await c2OverlayResponse;
+    await expectEventually(() => renderPostBodies.length === 2, 'C2：重新导出必须创建新的渲染任务');
+    assert.equal(renderPostBodies[1].expectedGroupRevision, c2FirstRenderPost.expectedGroupRevision + 1, '重新导出必须携带编辑后的新 group revision');
+    assert.equal(renderPostBodies[1].expectedVariantRevision, c2FirstRenderPost.expectedVariantRevision, '口播倍速编辑不改变 variant revision');
+    await page.getByText('成片-E2E-001-20260724-03.mp4', { exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole('link', { name: '下载视频', exact: true }).getAttribute('href'),
+      '/api/final-edit-jobs/render-job-e2e-2/video?download=1',
+      '新 job 成功后必须成为当前下载',
+    );
+    const c2OldVideoResponse = await page.evaluate(async () => {
+      const response = await fetch('/api/final-edit-jobs/render-job-e2e/video?download=1');
+      return { ok: response.ok, size: (await response.arrayBuffer()).byteLength };
+    });
+    assert.equal(c2OldVideoResponse.ok, true, '旧导出 URL 必须仍然可读取');
+    assert.equal(c2OldVideoResponse.size > 0, true, '旧导出 URL 响应不得为空');
 
     // 回归：匹配诊断必须在第 3 步可见；真实缺口显示红色 blocking，语义/短素材
     // 兜底显示黄色 warning，不再只等到第 4 步导出才第一次露面。
@@ -1649,6 +1714,58 @@ try {
     await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
     await page.getByText('魅力女友', { exact: true }).click();
     assert.equal(await page.getByText(/^当前选中：/).textContent(), '当前选中：魅力女友', '选中状态也只显示友好名称，不能再次露出英文音色 ID');
+
+    // C1：项目级脚本（空 shotSetId）必须进入单条混剪脚本下拉；已有混剪保留快照文案，
+    // 只在源脚本 revision 更新时提供显式「同步最新版本」，同步经 set_mixcut_script_state
+    // 自动保存链写回并用服务端返回的快照身份清除提示。
+    // 先等上一轮音色点击的防抖自动保存落完，否则迟到的 PATCH 会在重置后
+    // 重建 editingGroup，让刷新后的 latestGroup 变回基础脚本。
+    await page.waitForTimeout(1500);
+    context.drafts = [
+      { id: 'ps-e2e', version: 3, shotSetId: '', title: '项目脚本', narrationText: '项目脚本第二版。', targetDurationSec: 15, provider: '', model: '', createdAt: '2026-07-25T00:00:00.000Z', sourceKind: 'project', sourceRevisionId: 'ps-rev-2', sourceRevisionNumber: 2 },
+      ...context.drafts.filter((draft) => draft.id !== 'ps-e2e'),
+    ];
+    generatedGroups.clear();
+    editingGroup = null;
+    savedGroup = {
+      ...createFormalGroup(),
+      status: 'editing',
+      phase: 'editing',
+      script: {
+        ...createFormalGroup().script,
+        sourceDraftId: 'ps-e2e',
+        sourceScriptRevisionId: 'ps-rev-1',
+        sourceScriptRevisionNumber: 1,
+        importedNarrationText: '项目脚本第一版。',
+        editedNarrationText: '项目脚本第一版。',
+      },
+    };
+    groupPatchBodies.length = 0;
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /AI 智能创作/ }).click();
+    const scriptTextarea = page.getByPlaceholder('输入 15～30 秒口播文案…');
+    await scriptTextarea.waitFor();
+    assert.equal(await scriptTextarea.inputValue(), '项目脚本第一版。', '刷新后已有混剪必须保留快照文案，不得被当前 revision 静默替换');
+    assert.match(
+      await page.locator('select option[value="ps-e2e"]').textContent(),
+      /V3 · 项目脚本 · 15s · 项目脚本 · 当前版本 V2 ·/,
+      '项目脚本必须显示当前版本 Vn，不得显示空 provider/model 斜杠',
+    );
+    const updateHint = page.locator('[data-testid="mixcut-source-script-update"]');
+    await updateHint.waitFor();
+    assert.match(await updateHint.textContent(), /源脚本有新版本/, '源脚本 revision 落后时必须显示新版本提示');
+    await updateHint.getByRole('button', { name: '同步最新版本' }).click();
+    await expectEventually(
+      () => {
+        const command = groupPatchBodies.at(-1);
+        return command?.type === 'set_mixcut_script_state'
+          && command.scriptDraftId === 'ps-e2e'
+          && command.editedNarrationText === '项目脚本第二版。';
+      },
+      '同步最新版本必须经 set_mixcut_script_state 自动保存链提交新 revision 文案',
+    );
+    await expectEventually(async () => (await updateHint.count()) === 0, '同步落库后必须用服务端返回的快照身份清除新版本提示');
+    assert.equal(await scriptTextarea.inputValue(), '项目脚本第二版。', '无手改文案时同步必须直接采用新 revision 正文');
 
     await page.close();
     console.log('final-edit mixcut formal page smoke tests passed');

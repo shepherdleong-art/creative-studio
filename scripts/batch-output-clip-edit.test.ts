@@ -32,6 +32,11 @@ import {
   applyBatchOutputClipEdit,
   getBatchOutputArrangementView,
 } from '../lib/batch-production/output-arrangement.ts';
+import {
+  bgmDraftDiffers,
+  resolveBgmDraftAfterViewLoad,
+  type BatchBgmDraft,
+} from '../components/batch-production/bgm-draft.ts';
 import { scheduleRenderAfterClipEdit } from '../lib/batch-production/phase-e.ts';
 import { resolveBatchOutputNarrationAudio } from '../lib/batch-production/output-media.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
@@ -441,6 +446,80 @@ try {
   assert.equal('gainDb' in restoredMusicJson, false, '恢复批次参数必须清掉单条 gainDb 覆盖');
   assert.equal('fadeInSec' in restoredMusicJson, false, '恢复批次参数必须清掉单条 fadeInSec 覆盖');
   assert.equal('fadeOutSec' in restoredMusicJson, false, '恢复批次参数必须清掉单条 fadeOutSec 覆盖');
+
+  // ---- C3：set_music 原子命令——曲目与参数一次提交，只递增一次 editRevision ----
+  resetPlan0Arrangement();
+  const atomicNoop = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music', trackId: 'bgm-a', gainDb: -12, fadeInSec: 2, fadeOutSec: 3,
+  });
+  assert.equal(atomicNoop.changed, false, '与当前曲目和批次默认参数完全一致的 set_music 必须幂等（即使曲目已移出 ready 曲库）');
+  const atomicTrackOnly = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music', trackId: 'bgm-b', gainDb: -12, fadeInSec: 2, fadeOutSec: 3,
+  });
+  assert.equal(atomicTrackOnly.changed, true, '仅换曲目也必须是一次有效修改');
+  assert.equal(atomicTrackOnly.visualChanged, true);
+  assert.equal(atomicTrackOnly.editRevision, 1, 'set_music 只递增一次 editRevision');
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).music, {
+    trackId: 'bgm-b', gainDb: -12, fadeInSec: 2, fadeOutSec: 3,
+  }, '仅换曲目时参数继续沿用批次默认');
+  const atomicTrackAndParams = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music', trackId: 'bgm-b', gainDb: -100, fadeInSec: 50, fadeOutSec: -1,
+  });
+  assert.equal(atomicTrackAndParams.editRevision, 2, '曲目与参数一起改仍只递增一次');
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).music, {
+    trackId: 'bgm-b', gainDb: -60, fadeInSec: 30, fadeOutSec: 0,
+  }, 'set_music 参数 clamp 必须与 set_music_params 契约一致');
+  assertDomainError(
+    () => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_music', trackId: 'bgm-missing', gainDb: -12, fadeInSec: 2, fadeOutSec: 3 }),
+    'invalid_input',
+    /曲库/,
+  );
+  assertDomainError(
+    () => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_music', trackId: 'bgm-a', gainDb: Number.NaN, fadeInSec: 2, fadeOutSec: 3 }),
+    'invalid_input',
+    /有限数字/,
+  );
+  const atomicDisable = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music', trackId: null, gainDb: -12, fadeInSec: 2, fadeOutSec: 3,
+  });
+  assert.equal(atomicDisable.editRevision, 3, 'set_music 支持关闭 BGM');
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).music.trackId, null);
+  const atomicDisableNoop = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_music', trackId: null, gainDb: -12, fadeInSec: 2, fadeOutSec: 3,
+  });
+  assert.equal(atomicDisableNoop.changed, false, '重复应用相同 set_music 必须返回 changed=false');
+
+  // ---- C3：BGM 草稿同步决策（components/batch-production/bgm-draft.ts）----
+  const serverMusic: BatchBgmDraft = { trackId: 'bgm-b', gainDb: -12, fadeInSec: 2, fadeOutSec: 3 };
+  assert.equal(bgmDraftDiffers({ ...serverMusic, trackId: 'bgm-c' }, serverMusic), true, '只改曲目也必须识别为草稿变化');
+  assert.equal(bgmDraftDiffers({ ...serverMusic, gainDb: -13 }, serverMusic), true, '只改音量也必须识别为草稿变化');
+  assert.equal(bgmDraftDiffers({ ...serverMusic, fadeInSec: 2.5 }, serverMusic), true, '只改淡入也必须识别为草稿变化');
+  assert.equal(bgmDraftDiffers({ ...serverMusic, fadeOutSec: 3.5 }, serverMusic), true, '只改淡出也必须识别为草稿变化');
+  assert.equal(bgmDraftDiffers(serverMusic, serverMusic), false, '四字段全部一致时不得视为草稿变化');
+  const initialSync = resolveBgmDraftAfterViewLoad({
+    planId: 'plan-1', syncedPlanId: null, syncedServerMusic: null,
+    serverMusic, currentDraft: { trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 },
+  });
+  assert.equal(initialSync.resync, true, '首次加载必须把草稿对齐服务端真值');
+  assert.deepEqual(initialSync.draft, serverMusic);
+  const silentReload = resolveBgmDraftAfterViewLoad({
+    planId: 'plan-1', syncedPlanId: initialSync.syncedPlanId, syncedServerMusic: initialSync.syncedServerMusic,
+    serverMusic, currentDraft: { ...serverMusic, gainDb: -30 },
+  });
+  assert.equal(silentReload.resync, false, '其他编辑命令触发的静默刷新必须保留未应用的 BGM 草稿');
+  assert.equal(silentReload.draft.gainDb, -30);
+  const appliedRefresh = resolveBgmDraftAfterViewLoad({
+    planId: 'plan-1', syncedPlanId: initialSync.syncedPlanId, syncedServerMusic: initialSync.syncedServerMusic,
+    serverMusic: { ...serverMusic, trackId: 'bgm-c' }, currentDraft: { ...serverMusic, trackId: 'bgm-c' },
+  });
+  assert.equal(appliedRefresh.resync, true, '服务端真值变化（应用成功）后必须对齐新真值');
+  assert.equal(appliedRefresh.draft.trackId, 'bgm-c');
+  const planSwitch = resolveBgmDraftAfterViewLoad({
+    planId: 'plan-2', syncedPlanId: initialSync.syncedPlanId, syncedServerMusic: initialSync.syncedServerMusic,
+    serverMusic, currentDraft: { ...serverMusic, gainDb: -30 },
+  });
+  assert.equal(planSwitch.resync, true, '换 plan 必须丢弃未应用的修改并对齐新 plan 真值');
+  assert.deepEqual(planSwitch.draft, serverMusic);
 
   resetPlan0Arrangement();
   const clampedNarrationGain = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {

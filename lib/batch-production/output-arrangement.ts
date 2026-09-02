@@ -12,6 +12,7 @@ import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain
 import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { cleanFraming } from '../media-core/cover-title-presets.ts';
 import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
+import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
 
 /**
  * 检查成片的片段级编辑（等长 trim / replace、变长修剪、删除、插入、分割）
@@ -117,6 +118,8 @@ export type BatchOutputClipEdit =
   | { type: 'set_cover'; assetId: string; timeUs: number; framing?: CoverFraming | null; title?: unknown }
   | { type: 'set_music_track'; trackId: string | null }
   | { type: 'set_music_params'; gainDb: number; fadeInSec: number; fadeOutSec: number }
+  /** 原子 BGM 编辑：一次校验曲目并写入全部参数，只递增一次 editRevision。 */
+  | { type: 'set_music'; trackId: string | null; gainDb: number; fadeInSec: number; fadeOutSec: number }
   | { type: 'set_narration_gain'; gainDb: number }
   | { type: 'set_subtitle_cue_text'; cueId: string; text: string }
   | { type: 'set_subtitle_style'; style: TextStyle | null }
@@ -495,6 +498,9 @@ export function getBatchOutputArrangementView(
   const encodedProjectId = encodeURIComponent(projectId);
   const encodedBatchId = encodeURIComponent(batchId);
   const encodedBatchVersionId = encodeURIComponent(lineage.batchVersionId);
+  // 友好展示名（D5）：module4 来源素材的 mediaJson 可能只有物理文件名
+  // （video-<jobId>-<时间戳>.mp4），旧登记行读取时派生友好名，不改写数据库。
+  const module4DisplayNames = resolveModule4AssetDisplayNames(db, poolRows.map((row) => row.assetId));
   const poolAssets = poolRows.map((row): BatchOutputPoolAssetView => {
     const media = asRecord(parseJson(row.mediaJson));
     const durationUs = poolAssetDurationUs(row);
@@ -502,7 +508,7 @@ export function getBatchOutputArrangementView(
     const encodedAssetId = encodeURIComponent(row.assetId);
     return {
       assetId: row.assetId,
-      displayName: nonEmptyString(media?.displayName) ?? nonEmptyString(media?.filename) ?? `素材 ${row.assetId.slice(0, 8)}`,
+      displayName: nonEmptyString(media?.displayName) ?? module4DisplayNames.get(row.assetId) ?? nonEmptyString(media?.filename) ?? `素材 ${row.assetId.slice(0, 8)}`,
       durationSec: durationUs !== null ? durationUs / 1_000_000 : mediaDurationSec,
       contentFingerprint: row.contentFingerprint,
       thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion(row.contentFingerprint))}`,
@@ -640,6 +646,14 @@ export function applyBatchOutputClipEdit(
       }
       break;
     case 'set_music_params':
+      if (![edit.gainDb, edit.fadeInSec, edit.fadeOutSec].every((value) => Number.isFinite(value))) {
+        throw new BatchDomainError('invalid_input', 'BGM 参数必须是有限数字');
+      }
+      break;
+    case 'set_music':
+      if (edit.trackId !== null && !nonEmptyString(edit.trackId)) {
+        throw new BatchDomainError('invalid_input', 'BGM 曲目 ID 无效');
+      }
       if (![edit.gainDb, edit.fadeInSec, edit.fadeOutSec].every((value) => Number.isFinite(value))) {
         throw new BatchDomainError('invalid_input', 'BGM 参数必须是有限数字');
       }
@@ -916,6 +930,36 @@ export function applyBatchOutputClipEdit(
       ) return unchanged;
       const batchDefaults = resolveBatchBgmParams(parseJson(lineage.defaultsJson));
       const nextMusic: Record<string, unknown> = { ...currentMusic };
+      if (nextParams.gainDb === batchDefaults.gainDb) delete nextMusic.gainDb;
+      else nextMusic.gainDb = nextParams.gainDb;
+      if (nextParams.fadeInSec === batchDefaults.fadeInSec) delete nextMusic.fadeInSec;
+      else nextMusic.fadeInSec = nextParams.fadeInSec;
+      if (nextParams.fadeOutSec === batchDefaults.fadeOutSec) delete nextMusic.fadeOutSec;
+      else nextMusic.fadeOutSec = nextParams.fadeOutSec;
+      arrangement.music = nextMusic;
+      visualChanged = true;
+    } else if (edit.type === 'set_music') {
+      const currentMusic = asRecord(arrangement.music) ?? {};
+      const trackId = edit.trackId === null ? null : edit.trackId.trim();
+      const currentEffective = resolveBatchBgmParamsForArrangement(
+        parseJson(lineage.defaultsJson),
+        currentMusic as { trackId?: unknown; gainDb?: unknown; fadeInSec?: unknown; fadeOutSec?: unknown },
+      );
+      const currentTrackId = nonEmptyString(currentMusic.trackId) ?? null;
+      const nextParams = normalizeMusicParams(edit);
+      // 旧批次可能仍在使用一首已从全局 ready 曲库移除的冻结曲目;
+      // 重新提交同一选择是幂等操作,不应因为当前曲库已变化而被拒绝。
+      if (
+        currentTrackId === trackId
+        && currentEffective.gainDb === nextParams.gainDb
+        && currentEffective.fadeInSec === nextParams.fadeInSec
+        && currentEffective.fadeOutSec === nextParams.fadeOutSec
+      ) return unchanged;
+      if (trackId !== null && trackId !== currentTrackId && !readBatchMusicEditPool(db, parseJson(lineage.defaultsJson)).some((track) => track.trackId === trackId)) {
+        throw new BatchDomainError('invalid_input', 'BGM 曲目不在当前 ready 曲库中');
+      }
+      const batchDefaults = resolveBatchBgmParams(parseJson(lineage.defaultsJson));
+      const nextMusic: Record<string, unknown> = { ...currentMusic, trackId };
       if (nextParams.gainDb === batchDefaults.gainDb) delete nextMusic.gainDb;
       else nextMusic.gainDb = nextParams.gainDb;
       if (nextParams.fadeInSec === batchDefaults.fadeInSec) delete nextMusic.fadeInSec;

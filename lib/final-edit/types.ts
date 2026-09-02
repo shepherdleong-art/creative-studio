@@ -59,7 +59,10 @@ export interface FinalEditAssetView {
   videoJobId: string;
   shotSetId: string;
   shotId: string | null;
+  /** 物理文件名，仅供播放 URL/物理路径；用户可见名称用 displayName。 */
   filename: string;
+  /** 用户可见的友好名称（D5）；module4 视频来自持久化/派生 displayName，外部素材为原文件名。 */
+  displayName: string;
   previewUrl: string;
   thumbnailUrl: string;
   durationUs: number;
@@ -127,6 +130,8 @@ export interface FinalEditGroupView {
     editedNarrationText: string;
     syncState: 'synced' | 'modified';
     sourceScriptUpdatedAt: string | null;
+    sourceScriptRevisionId: string | null;
+    sourceScriptRevisionNumber: number | null;
     narrationConfig: { providerId: string; voice: string; speed: number; playbackRate: number; gainDb: number };
     selectedMaterialKeys: string[];
   };
@@ -143,7 +148,7 @@ export interface FinalEditGroupView {
   assets: FinalEditAssetView[];
   bgmTracks: FinalEditBgmTrackView[];
   coverCandidates: Array<{ coverKey: string; sourceUrl: string; kind: 'storyboard_image' | 'video_keyframe' }>;
-  jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string }>;
+  jobs: Array<{ id: string; variantId: string | null; kind: string; status: string; phase: string; progress: number; estimatedCost: number | null; costCurrency: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string; renderRevision: { groupRevision: number; variantRevision: number } | null }>;
 }
 
 export interface CapacityEstimate {
@@ -208,11 +213,18 @@ export interface MixcutContextResponse {
     provider: string;
     model: string;
     createdAt: string;
+    /** 'project' = 新核心层项目脚本（空 shotSetId 项目级可见）；'legacy' = script_drafts 历史行。 */
+    sourceKind: 'project' | 'legacy';
+    /** 项目脚本当前 revision 身份；历史行固定为 null。用于“源脚本有新版本”提示，不暴露任务快照。 */
+    sourceRevisionId: string | null;
+    sourceRevisionNumber: number | null;
   }>;
   videoAssets: Array<{
     videoJobId: string;
     shotSetId: string;
     filename: string;
+    /** 用户可见的友好名称（D5）；filename 仅供播放 URL/物理路径。 */
+    displayName: string;
     durationUs: number;
     width: number;
     height: number;

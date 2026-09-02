@@ -46,6 +46,7 @@ import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { releaseReservedExportTarget, reserveProjectExportTarget } from './export-naming.ts';
 import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts';
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
+import { resolveVideoJobDisplayNames } from '../video-output-filenames.ts';
 import {
   buildSemanticMatrixPrompt,
   createSemanticMatrixCacheKey,
@@ -345,7 +346,10 @@ interface AssetRow {
   videoJobId: string;
   shotSetId: string;
   shotId: string | null;
+  /** 物理文件名，仅供播放 URL/物理路径；用户可见名称用 displayName。 */
   filename: string | null;
+  /** 友好展示名（D5）：module4 视频来自持久化/派生 displayName；外部素材为原文件名。 */
+  displayName: string | null;
   localVideoPath: string;
   durationSec: number | null;
 }
@@ -428,6 +432,21 @@ function validateNarrationPlaybackRate(playbackRate: number): void {
 function validateNarrationGainDb(gainDb: number): void {
   if (!Number.isFinite(gainDb)) throw new FinalEditError('invalid_narration_gain', '口播音量必须是有限数字');
 }
+
+/**
+ * 从 render job 的 inputSnapshotJson 只投影两个安全标量（groupRevision /
+ * variantRevision），用于前端区分「当前导出」与「上一版可下载」。解析失败、
+ * 非 render job 或旧数据缺字段时返回 null；绝不把整个快照或本地路径返给前端。
+ */
+export function parseRenderRevisionFromSnapshot(value: unknown): { groupRevision: number; variantRevision: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const snapshot = value as { groupRevision?: unknown; variantRevision?: unknown };
+  const groupRevision = Number(snapshot.groupRevision);
+  const variantRevision = Number(snapshot.variantRevision);
+  if (!Number.isInteger(groupRevision) || !Number.isInteger(variantRevision) || groupRevision < 0 || variantRevision < 0) return null;
+  return { groupRevision, variantRevision };
+}
+
 function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'projectId' | 'scriptDraftId' | 'shotSetId' | 'editedNarrationText'>): ScriptSnapshot {
   const scriptDraftId = String(input.scriptDraftId || '').trim();
   if (!scriptDraftId) {
@@ -456,6 +475,8 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
     return buildMixcutTaskScriptSnapshot({
       sourceDraftId: scriptDraftId,
       sourceScriptUpdatedAt: row.createdAt || null,
+      sourceScriptRevisionId: row.currentRevisionId ?? null,
+      sourceScriptRevisionNumber: row.revisionNumber ?? null,
       sourceScript: source,
       shotSetId: String(input.shotSetId || shotSetId || ''),
       editedNarrationText: String(input.editedNarrationText == null ? source.segments.map((segment) => segment.narration || segment.subtitle || '').join('\n') : input.editedNarrationText),
@@ -478,23 +499,31 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
   if (!isScriptVisibleInContext({ shotSetId, requestedShotSetId: input.shotSetId || undefined })) {
     throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
   }
-  return buildMixcutEditingScriptSnapshot({ sourceDraftId: scriptDraftId, sourceScriptUpdatedAt: row.createdAt || null, sourceScript: source, shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
+  return buildMixcutEditingScriptSnapshot({ sourceDraftId: scriptDraftId, sourceScriptUpdatedAt: row.createdAt || null, sourceScriptRevisionId: row.currentRevisionId ?? null, sourceScriptRevisionNumber: row.revisionNumber ?? null, sourceScript: source, shotSetId: input.shotSetId, editedNarrationText: input.editedNarrationText });
 }
 
 function assetsForScript(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string): AssetRow[] {
   const rows = db.prepare(`
-    SELECT id AS videoJobId, shotSetId, shotId, filename, localVideoPath, durationSec
+    SELECT id AS videoJobId, shotSetId, shotId, filename, displayName, localVideoPath, durationSec
     FROM video_jobs
     WHERE projectId = ? AND shotSetId = ? AND status = 'succeeded' AND localVideoPath IS NOT NULL
       AND ${videoJobNotRejectedSql(db)}
     ORDER BY id
-  `).all(projectId, shotSetId) as Array<Omit<AssetRow, 'assetKey' | 'source'>>;
+  `).all(projectId, shotSetId) as Array<Pick<AssetRow, 'videoJobId' | 'shotSetId' | 'shotId' | 'filename' | 'displayName' | 'localVideoPath' | 'durationSec'>>;
+  // 友好展示名（D5）：旧任务 displayName 为 NULL 时由共享 helper 确定性派生，
+  // 与视频生成 API、批量 catalog 同名；filename/localVideoPath 物理身份不变。
+  const displayNames = resolveVideoJobDisplayNames(db, rows.map((row) => row.videoJobId));
   return rows.filter((row) => {
     try {
       const resolved = resolveStoragePath(storageRoot, row.localVideoPath, { allowAbsolute: true });
       return fs.existsSync(resolved) && fs.statSync(resolved).isFile();
     } catch { return false; }
-  }).map((row) => ({ ...row, assetKey: `module4:${row.videoJobId}`, source: 'module4' as const }));
+  }).map((row) => ({
+    ...row,
+    displayName: row.displayName || displayNames.get(row.videoJobId) || null,
+    assetKey: `module4:${row.videoJobId}`,
+    source: 'module4' as const,
+  }));
 }
 
 function selectedAssets(db: Database.Database, storageRoot: string, projectId: string, shotSetId: string, requestedKeys?: string[]): AssetRow[] {
@@ -529,6 +558,7 @@ function selectedAssets(db: Database.Database, storageRoot: string, projectId: s
       shotSetId,
       shotId: null,
       filename: row.originalFilename,
+      displayName: row.originalFilename,
       localVideoPath: absolutePath,
       durationSec: Number(row.durationUs || 0) / 1_000_000,
     };
@@ -906,7 +936,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       if (!row) return [];
       try {
         const absolutePath = resolveImportedExternalAssetVideoPath(storageRoot, { projectId: String(group.projectId), shotSetId: String(group.shotSetId) }, row.relativePath);
-        return [{ assetKey, source: 'external' as const, videoJobId: `external-asset-${id}`, shotSetId: row.shotSetId, shotId: null, filename: row.originalFilename, localVideoPath: absolutePath, durationSec: row.durationUs / 1_000_000 }];
+        return [{ assetKey, source: 'external' as const, videoJobId: `external-asset-${id}`, shotSetId: row.shotSetId, shotId: null, filename: row.originalFilename, displayName: row.originalFilename, localVideoPath: absolutePath, durationSec: row.durationUs / 1_000_000 }];
       } catch { return []; }
     });
     const assets = [...module4Assets, ...externalAssets].map((asset) => {
@@ -925,6 +955,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         shotSetId: asset.shotSetId,
         shotId: asset.shotId,
         filename: asset.filename || asset.videoJobId,
+        displayName: asset.displayName || asset.filename || asset.videoJobId,
         previewUrl: externalId
           ? `/api/projects/${String(group.projectId)}/final-edit/shot-sets/${String(group.shotSetId)}/external-assets/${externalId}/media`
           : `/api/videos/${relative}`,
@@ -939,7 +970,22 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         usageCount: Number(usage?.count || 0),
       } satisfies FinalEditAssetView;
     });
-    const jobs = db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage, startedAt, finishedAt, createdAt FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as FinalEditGroupView['jobs'];
+    const jobs = (db.prepare(`SELECT id, variantId, kind, status, phase, progress, estimatedCost, costCurrency, errorCode, errorMessage, startedAt, finishedAt, createdAt, inputSnapshotJson FROM final_edit_jobs WHERE groupId = ? ORDER BY createdAt DESC`).all(groupId) as Array<Record<string, unknown>>).map((row) => ({
+      id: String(row.id),
+      variantId: row.variantId == null ? null : String(row.variantId),
+      kind: String(row.kind),
+      status: String(row.status),
+      phase: String(row.phase),
+      progress: Number(row.progress),
+      estimatedCost: row.estimatedCost == null ? null : Number(row.estimatedCost),
+      costCurrency: String(row.costCurrency),
+      errorCode: row.errorCode == null ? null : String(row.errorCode),
+      errorMessage: row.errorMessage == null ? null : String(row.errorMessage),
+      startedAt: row.startedAt == null ? null : String(row.startedAt),
+      finishedAt: row.finishedAt == null ? null : String(row.finishedAt),
+      createdAt: String(row.createdAt),
+      renderRevision: row.kind === 'render' ? parseRenderRevisionFromSnapshot(parseJson<unknown>(String(row.inputSnapshotJson || 'null'), null)) : null,
+    })) as FinalEditGroupView['jobs'];
     const bgmTracks = listReadyFinalEditBgmTracks(db);
     const imageCoverCandidates = db.prepare(`SELECT ia.id FROM shots s JOIN image_assets ia ON ia.id=s.latestGeneratedImageId WHERE s.shotSetId=? AND s.latestGeneratedImageId IS NOT NULL ORDER BY s.indexNum`).all(String(group.shotSetId)) as Array<{ id: string }>;
     const videoCoverCandidates = (db.prepare(`
@@ -977,6 +1023,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         editedNarrationText: String(group.editedNarrationText || script.editedNarrationText || script.fullScript || ''),
         syncState: group.scriptSyncState === 'modified' ? 'modified' : 'synced',
         sourceScriptUpdatedAt: group.sourceScriptUpdatedAt == null ? null : String(group.sourceScriptUpdatedAt),
+        sourceScriptRevisionId: script.sourceScriptRevisionId ?? null,
+        sourceScriptRevisionNumber: script.sourceScriptRevisionNumber == null ? null : Number(script.sourceScriptRevisionNumber),
         narrationConfig,
         selectedMaterialKeys: selectedKeys,
       },

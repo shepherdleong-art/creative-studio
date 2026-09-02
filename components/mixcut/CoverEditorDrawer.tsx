@@ -296,7 +296,7 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
             <h3>来源片段</h3>
             <div className={styles.coverSourceList}>{coverAssets.map((asset) => {
               const key = asset.assetKey || asset.videoJobId;
-              return <button type="button" key={key} className={key === draft.sourceKey ? styles.coverSourceSelected : ''} onClick={() => setDraft((current) => ({ ...current, sourceKey: key, frameTimeUs: 0 }))}><img src={asset.thumbnailUrl} alt="" /><span><strong>{asset.filename}</strong><small>{(asset.durationUs / 1_000_000).toFixed(2)}s</small></span></button>;
+              return <button type="button" key={key} className={key === draft.sourceKey ? styles.coverSourceSelected : ''} onClick={() => setDraft((current) => ({ ...current, sourceKey: key, frameTimeUs: 0 }))}><img src={asset.thumbnailUrl} alt="" /><span><strong>{asset.displayName || asset.filename}</strong><small>{(asset.durationUs / 1_000_000).toFixed(2)}s</small></span></button>;
             })}</div>
             <label className={styles.fieldLabel}>截帧时间 {(draft.frameTimeUs / 1_000_000).toFixed(2)}s<input aria-label="封面截帧时间" type="range" min={0} max={Math.max(0, (source?.durationUs || 0) / 1_000_000)} step={1 / 24} value={draft.frameTimeUs / 1_000_000} onChange={(event) => setDraft((current) => ({ ...current, frameTimeUs: Math.round(Number(event.target.value) * 1_000_000) }))} /></label>
           </aside>

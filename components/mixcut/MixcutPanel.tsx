@@ -1,15 +1,19 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import {
   createScriptEditorState,
   editActiveScript,
+  hasNewerScriptRevision,
+  isMixcutScriptChoiceVisible,
   markScriptSaved,
   resolveScriptSwitch,
   restoreImportedScript,
+  syncScriptToRevision,
   type ScriptEditorState,
+  type ScriptSourceRevisionState,
   type ScriptSwitchResolution,
 } from '@/lib/final-edit/mixcut-creation-state';
 import {
@@ -65,6 +69,16 @@ function prepareCreatedAt(group: FinalEditGroupView): string {
   return group.jobs.find((job) => job.kind === 'prepare')?.createdAt ?? '';
 }
 
+function scriptSourceFromGroup(script: FinalEditGroupView['script'] | undefined): (ScriptSourceRevisionState & { draftId: string }) | null {
+  if (!script || !script.sourceDraftId) return null;
+  return {
+    draftId: script.sourceDraftId,
+    sourceRevisionId: script.sourceScriptRevisionId ?? null,
+    sourceRevisionNumber: script.sourceScriptRevisionNumber ?? null,
+    sourceUpdatedAt: script.sourceScriptUpdatedAt ?? null,
+  };
+}
+
 export default function MixcutPanel({
   projectId, projectName, projectInfo, onProjectInfoChange,
 }: MixcutPanelProps) {
@@ -76,6 +90,8 @@ export default function MixcutPanel({
   const [externalByShotSet, setExternalByShotSet] = useState<Record<string, FinalEditExternalAssetView[]>>({});
   const [scriptEditor, setScriptEditor] = useState<ScriptEditorState>(() => createScriptEditorState({ id: MANUAL_SCRIPT_ID, narrationText: '' }));
   const [pendingDraftId, setPendingDraftId] = useState<string | null>(null);
+  const [pendingSyncDraftId, setPendingSyncDraftId] = useState<string | null>(null);
+  const [groupScriptSource, setGroupScriptSource] = useState<(ScriptSourceRevisionState & { draftId: string }) | null>(null);
   const [pendingShotSetId, setPendingShotSetId] = useState<string | null>(null);
   const [ttsProviders, setTtsProviders] = useState<MixcutTtsProviderView[]>([]);
   const [ttsProviderId, setTtsProviderId] = useState('');
@@ -170,9 +186,10 @@ export default function MixcutPanel({
           ? { [currentShotSetId]: persistedSelection }
           : initializeMaterialSelection(current, currentShotSetId, module4Keys, [...module4Keys, ...readyExternalKeys]));
         const groupScript = latestGroup?.script;
+        const visibleDraftIds = new Set(next.shotSets.map((shotSet) => shotSet.id));
         const sourceDraftId = groupScript
           ? groupScript.sourceDraftId ?? MANUAL_SCRIPT_ID
-          : next.drafts.find((draft) => draft.shotSetId === currentShotSetId)?.id ?? MANUAL_SCRIPT_ID;
+          : next.drafts.find((draft) => isMixcutScriptChoiceVisible(draft, currentShotSetId, visibleDraftIds))?.id ?? MANUAL_SCRIPT_ID;
         const sourceDraft = next.drafts.find((draft) => draft.id === sourceDraftId);
         const importedText = groupScript?.importedNarrationText ?? sourceDraft?.narrationText ?? '';
         const editedText = groupScript ? groupScript.editedNarrationText : importedText;
@@ -181,8 +198,9 @@ export default function MixcutPanel({
           { editedNarrationText: editedText },
         );
         const cachedEditor = scriptEditorByShotSetRef.current[currentShotSetId];
-        const cachedSourceStillExists = cachedEditor?.activeDraftId === MANUAL_SCRIPT_ID || next.drafts.some((draft) => draft.id === cachedEditor?.activeDraftId && draft.shotSetId === currentShotSetId);
+        const cachedSourceStillExists = cachedEditor?.activeDraftId === MANUAL_SCRIPT_ID || next.drafts.some((draft) => draft.id === cachedEditor?.activeDraftId && isMixcutScriptChoiceVisible(draft, currentShotSetId, visibleDraftIds));
         setScriptEditor(!selectedGroupId && cachedEditor && cachedSourceStillExists ? cachedEditor : persistedEditor);
+        setGroupScriptSource(scriptSourceFromGroup(groupScript));
         if (groupScript?.narrationConfig) {
           const persistedProvider = providersResult.find((provider) => provider.id === groupScript.narrationConfig.providerId && provider.configured);
           const selectedProvider = persistedProvider ?? configuredTts;
@@ -321,7 +339,9 @@ export default function MixcutPanel({
   const materials: MaterialCardView[] = [
     ...(context?.videoAssets ?? []).map((asset) => ({
       key: `module4:${asset.videoJobId}`,
-      filename: asset.filename,
+      // MaterialCardView.filename 只做展示：module4 素材优先用友好名称（D5），
+      // 播放/预览 URL 继续走 previewUrl（物理 filename），不受影响。
+      filename: asset.displayName || asset.filename,
       durationUs: asset.durationUs,
       width: asset.width,
       height: asset.height,
@@ -356,6 +376,7 @@ export default function MixcutPanel({
     setSelectionByShotSet({});
     setActiveStep(0);
     setPendingDraftId(null);
+    setPendingSyncDraftId(null);
     setPendingShotSetId(null);
     setActiveJob(null);
     setDurationReviewGroup(null);
@@ -381,6 +402,7 @@ export default function MixcutPanel({
       persistenceEpochRef.current += 1;
       saveAbortRef.current?.abort();
       setPendingDraftId(null);
+      setPendingSyncDraftId(null);
       setPendingShotSetId(null);
       setDurationReviewGroup(null);
       setPreparedGroup(null);
@@ -439,9 +461,22 @@ export default function MixcutPanel({
     }
   };
 
-  const activeDrafts = (context?.drafts ?? []).filter((draft) => draft.shotSetId === activeShotSetId);
+  const validShotSetIds = useMemo(() => new Set((context?.shotSets ?? []).map((shotSet) => shotSet.id)), [context?.shotSets]);
+  const activeDrafts = useMemo(
+    () => (context?.drafts ?? []).filter((draft) => isMixcutScriptChoiceVisible(draft, activeShotSetId, validShotSetIds)),
+    [context?.drafts, activeShotSetId, validShotSetIds],
+  );
   const pendingDraft = activeDrafts.find((draft) => draft.id === pendingDraftId) ?? null;
+  const pendingSyncDraft = activeDrafts.find((draft) => draft.id === pendingSyncDraftId) ?? null;
   const activeProvider = ttsProviders.find((provider) => provider.id === ttsProviderId) ?? null;
+  // 源脚本新版本提示：已有混剪的快照 revision 落后于当前可选脚本 revision 时，
+  // 提供显式「同步最新版本」入口；刷新/切组绝不静默覆盖用户文案。
+  const sourceScriptUpdate = groupScriptSource
+    && groupScriptSource.draftId === scriptEditor.activeDraftId
+    && groupScriptSource.draftId !== MANUAL_SCRIPT_ID
+    && activeDrafts.some((draft) => draft.id === groupScriptSource.draftId && hasNewerScriptRevision(groupScriptSource, draft))
+    ? activeDrafts.find((draft) => draft.id === groupScriptSource.draftId) ?? null
+    : null;
 
   const markPersistenceDirty = useCallback(() => {
     const version = persistVersionRef.current + 1;
@@ -494,6 +529,7 @@ export default function MixcutPanel({
         }
         if (persistenceEpochRef.current !== epoch) return;
         draftGroupRef.current = { id: view.id, shotSetId: view.shotSetId, revision: view.revision };
+        setGroupScriptSource(scriptSourceFromGroup(view.script));
         if (version === persistVersionRef.current) {
           lastSavedVersionRef.current = version;
           setScriptEditor((current) => current.editedNarrationText === snapshot.editedNarrationText
@@ -561,6 +597,28 @@ export default function MixcutPanel({
     }
     setPendingDraftId(null);
     setScriptEditor((current) => resolveScriptSwitch(current, { id: target.id, narrationText: target.narrationText }, resolution));
+    markPersistenceDirty();
+  };
+
+  const requestSourceScriptSync = () => {
+    if (!sourceScriptUpdate || submittingRef.current) return;
+    if (scriptEditor.modified) {
+      setPendingSyncDraftId(sourceScriptUpdate.id);
+      return;
+    }
+    setScriptEditor((current) => syncScriptToRevision(current, { id: sourceScriptUpdate.id, narrationText: sourceScriptUpdate.narrationText }, 'discard'));
+    markPersistenceDirty();
+  };
+
+  const resolveSourceScriptSync = (resolution: ScriptSwitchResolution) => {
+    const target = activeDrafts.find((draft) => draft.id === pendingSyncDraftId);
+    if (!target || resolution === 'cancel') { setPendingSyncDraftId(null); return; }
+    if (resolution === 'discard') {
+      persistenceEpochRef.current += 1;
+      saveAbortRef.current?.abort();
+    }
+    setPendingSyncDraftId(null);
+    setScriptEditor((current) => syncScriptToRevision(current, { id: target.id, narrationText: target.narrationText }, resolution));
     markPersistenceDirty();
   };
 
@@ -663,6 +721,7 @@ export default function MixcutPanel({
     );
     scriptEditorByShotSetRef.current[group.shotSetId] = resolvedEditor;
     setScriptEditor(resolvedEditor);
+    setGroupScriptSource(scriptSourceFromGroup(group.script));
     setTtsProviderId(group.script.narrationConfig.providerId);
     setVoice(group.script.narrationConfig.voice);
     setSpeed(group.script.narrationConfig.speed);
@@ -826,6 +885,10 @@ export default function MixcutPanel({
                     dirty={scriptEditor.dirty}
                     modified={scriptEditor.modified}
                     pendingDraft={pendingDraft}
+                    sourceScriptUpdate={sourceScriptUpdate}
+                    pendingSyncDraft={pendingSyncDraft}
+                    onRequestSourceSync={requestSourceScriptSync}
+                    onResolveSourceSync={resolveSourceScriptSync}
                     onDraftChange={requestDraftChange}
                     onResolveDraftSwitch={(resolution) => void resolveDraftChange(resolution)}
                     onTextChange={(text) => {

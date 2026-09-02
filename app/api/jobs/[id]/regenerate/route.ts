@@ -117,11 +117,11 @@ export async function POST(
         INSERT INTO jobs (
           id, projectId, inputImageId, referenceImageIds, providerId, model,
           prompt, size, quality, status, attempt, maxAttempts,
-          parentJobId, revision, referenceGuidanceMode
+          parentJobId, revision, referenceGuidanceMode, createdAt, creationIndex
         )
         SELECT ?, projectId, ?, ?, ?, ?,
                ?, size, quality, 'pending', 0, maxAttempts,
-               id, ?, referenceGuidanceMode
+               id, ?, referenceGuidanceMode, ?, 0
         FROM jobs
         WHERE id = ?
       `).run(
@@ -132,6 +132,7 @@ export async function POST(
         jobProvider.model,
         prompt,
         latest.rev,
+        new Date().toISOString(),
         id
       );
 

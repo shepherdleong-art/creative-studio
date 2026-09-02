@@ -192,6 +192,31 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         fadeInSec,
         fadeOutSec,
       };
+    } else if (body.type === 'set_music') {
+      const trackId = body.trackId === null
+        ? null
+        : typeof body.trackId === 'string' && body.trackId.trim()
+          ? body.trackId.trim()
+          : undefined;
+      if (trackId === undefined) {
+        return NextResponse.json({
+          error: 'invalid_clip_edit',
+          message: 'BGM 编辑需要有效 trackId，null 表示关闭音乐',
+        }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      if (![body.gainDb, body.fadeInSec, body.fadeOutSec].every((value) => typeof value === 'number' && Number.isFinite(value))) {
+        return NextResponse.json({
+          error: 'invalid_clip_edit',
+          message: 'BGM 参数必须是有限数字',
+        }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = {
+        type: 'set_music',
+        trackId,
+        gainDb: body.gainDb as number,
+        fadeInSec: body.fadeInSec as number,
+        fadeOutSec: body.fadeOutSec as number,
+      };
     } else if (body.type === 'set_narration_gain') {
       if (typeof body.gainDb !== 'number' || !Number.isFinite(body.gainDb)) {
         return NextResponse.json({
@@ -257,7 +282,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     } else {
       return NextResponse.json({
         error: 'invalid_clip_edit',
-        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_narration_gain/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/commit_render)',
+        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_music/set_narration_gain/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/commit_render)',
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
 

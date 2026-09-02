@@ -28,6 +28,7 @@ type ExportJob = {
   errorMessage?: string | null;
   target?: ExportTargetView | null;
   output?: ExportOutput | null;
+  renderRevision?: { groupRevision: number; variantRevision: number } | null;
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -70,7 +71,31 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   const predictedBaseName = useMemo(() => previewExportBaseName(project.productCode, project.taskDate), [project.productCode, project.taskDate]);
   const blockingIssue = variant?.issues.find((issue) => issue.severity === 'blocking');
   const warningIssues = variant?.issues.filter((issue) => issue.severity === 'warning') ?? [];
-  const latestJobId = useMemo(() => group.jobs.find((item) => item.kind === 'render' && item.variantId === variant?.id)?.id || '', [group.jobs, variant?.id]);
+
+  // ---------------------------------------------------------------------------
+  // 导出新鲜度分类（D2）：render job 属于它创建时的 groupRevision + variantRevision。
+  // 只有两个 revision 都与当前编辑一致的 job 才是「当前导出」；旧版成功 job 是
+  // 「上一版可下载」，不得遮住当前修订号的再次导出。缺 revision 的旧 job 按
+  // 历史产物处理，不猜测它与当前编辑一致。
+  // ---------------------------------------------------------------------------
+  const renderJobs = useMemo(
+    () => group.jobs.filter((item) => item.kind === 'render' && item.variantId === variant?.id),
+    [group.jobs, variant?.id],
+  );
+  const currentRenderJob = useMemo(() => {
+    if (!variant) return null;
+    return renderJobs.find((item) => item.renderRevision != null
+      && item.renderRevision.groupRevision === group.revision
+      && item.renderRevision.variantRevision === variant.revision) ?? null;
+  }, [renderJobs, group.revision, variant]);
+  const historicalSucceededJob = useMemo(() => renderJobs.find((item) => item.status === 'succeeded' && item.id !== currentRenderJob?.id) ?? null, [renderJobs, currentRenderJob?.id]);
+  const jobStillListed = job ? group.jobs.some((item) => item.id === job.id) : false;
+  const jobIsCurrentRevision = Boolean(job && currentRenderJob && job.id === currentRenderJob.id);
+  // 刚创建、尚未出现在 group view 里的任务（jobStillListed=false）也视为当前在途；
+  // 只有旧 revision 的在途任务不能遮住当前导出操作。
+  const activeRenderJobInFlight = Boolean(job && ['queued', 'running'].includes(job.status) && (jobIsCurrentRevision || !jobStillListed));
+  const currentRevisionExported = currentRenderJob?.status === 'succeeded';
+  const activeJobId = currentRenderJob?.id || historicalSucceededJob?.id || '';
 
   const fetchJob = useCallback(async (id: string, signal?: AbortSignal) => {
     return readJson<ExportJob>(await fetch(`/api/final-edit-jobs/${encodeURIComponent(id)}`, { signal }));
@@ -87,13 +112,17 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
   }, [active]);
 
   useEffect(() => {
-    if (!active || job) return;
+    if (!active) return;
+    // group/variant revision 变化、切换 variant 或重新进入导出步时按分类重新取 job；
+    // 刚创建、尚未出现在 group.jobs 里的在途任务（jobStillListed=false）保持展示，
+    // 组件内的旧 job state 不得继续冒充当前结果。
+    if (job && (!jobStillListed || job.id === activeJobId)) return;
     const controller = new AbortController();
     const requestedVariantId = variant?.id || '';
     const timer = window.setTimeout(() => {
       setRestoringJob(true);
-      if (!latestJobId) { setRestoringJob(false); return; }
-      void fetchJob(latestJobId, controller.signal).then((next) => {
+      if (!activeJobId) { setJob(null); setRestoringJob(false); return; }
+      void fetchJob(activeJobId, controller.signal).then((next) => {
         if (next.variantId !== requestedVariantId) return;
         setJob(next);
         setTarget(next.target || null);
@@ -104,7 +133,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
       });
     }, 0);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [active, fetchJob, job, latestJobId, variant?.id]);
+  }, [active, activeJobId, fetchJob, job, jobStillListed, variant?.id]);
 
   useEffect(() => {
     if (!active || !job?.id || !['queued', 'running'].includes(job.status)) return;
@@ -115,12 +144,19 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
         const next = await fetchJob(job.id);
         if (pollTokenRef.current !== token) return;
         if (next.variantId !== job.variantId) return;
+        if (next.status === 'succeeded') {
+          // 先取权威 group 再一次性落 job 与 group：setJob 会把 job.status 变为
+          // succeeded、触发本 effect 自清理并把 token 置空，若先 setJob 再 fetch，
+          // group 刷新会因 token 失效被丢弃，导出分类就只能看到陈旧的 group。
+          const refreshed = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}`));
+          if (pollTokenRef.current !== token) return;
+          setJob(next);
+          if (next.target) setTarget(next.target);
+          onGroupChange(refreshed);
+          return;
+        }
         setJob(next);
         if (next.target) setTarget(next.target);
-        if (next.status === 'succeeded') {
-          const refreshed = await readJson<FinalEditGroupView>(await fetch(`/api/final-edit-groups/${encodeURIComponent(group.id)}`));
-          if (pollTokenRef.current === token) onGroupChange(refreshed);
-        }
       } catch (error) {
         if (pollTokenRef.current === token) setMessage(error instanceof Error ? error.message : String(error));
       }
@@ -184,7 +220,15 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
     displayDirectory: `工作台/${project.name}/成片/`,
   };
   const progress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
-  const statusText = job ? `${PHASE_LABELS[job.phase] || job.phase} · ${Math.round(progress * 100)}%` : '尚未开始';
+  const statusText = activeRenderJobInFlight && job
+    ? `${PHASE_LABELS[job.phase] || job.phase} · ${Math.round(progress * 100)}%`
+    : job?.status === 'failed'
+      ? '上次导出失败'
+      : currentRevisionExported
+        ? '当前修改已导出'
+        : job?.status === 'succeeded'
+          ? '上一版可下载'
+          : '尚未开始';
   const canExport = !blockingIssue && Boolean(project.productCode.trim());
   const canStartExport = Boolean(variant) && !blockingIssue;
   const checks = variant ? [
@@ -251,7 +295,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
             <div className={styles.cardHead}><div className={styles.cardTitle}>渲染设置</div></div>
             <label className={styles.field}>
               <span>成片草稿</span>
-              <select aria-label="选择导出草稿" value={variant?.id || ''} disabled={busy || restoringJob || Boolean(job && ['queued', 'running'].includes(job.status))} onChange={(event) => { setSelectedVariantId(event.target.value); setJob(null); setTarget(null); setRestoringJob(true); setMessage(''); }}>
+              <select aria-label="选择导出草稿" value={variant?.id || ''} disabled={busy || restoringJob || activeRenderJobInFlight} onChange={(event) => { setSelectedVariantId(event.target.value); setJob(null); setTarget(null); setRestoringJob(true); setMessage(''); }}>
                 {group.variants.map((item) => <option key={item.id} value={item.id}>成片 {item.indexNum} · {item.outputPreset.replace('x', ':')}</option>)}
               </select>
             </label>
@@ -276,7 +320,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
           </section>
         </div>
 
-        <section className={styles.card}>
+        <section className={styles.card} data-testid="mixcut-export-status-card">
           <div className={styles.cardHead}>
             <div>
               <div className={styles.cardTitle}>{restoringJob ? '正在恢复导出任务' : statusText}</div>
@@ -287,7 +331,7 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
           <div className={styles.progBar} role="progressbar" aria-label="导出进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} style={{ marginBottom: 14 }}><i style={{ width: `${progress * 100}%` }} /></div>
           {job?.status === 'failed' && <p className={styles.exportBlocker}>{job.errorMessage || '渲染失败'}</p>}
           <div className={styles.ctaZone}>
-            {!restoringJob && (!job || !['queued', 'running', 'succeeded'].includes(job.status)) ? (
+            {!restoringJob && !currentRevisionExported && !activeRenderJobInFlight ? (
               <button
                 type="button"
                 className={`${styles.btn} ${styles.primary} ${styles.big}`}
@@ -298,15 +342,22 @@ export function ExportStep({ project, group, initialVariantId, active, onBack, o
                 }}
               >
                 <Icon name="download" size={16} />
-                {project.productCode.trim() ? '开始导出' : '填写信息并导出'}
+                {project.productCode.trim() ? (historicalSucceededJob ? '重新导出当前修改' : '开始导出') : '填写信息并导出'}
               </button>
             ) : null}
             {job?.status === 'failed' && <button type="button" className={`${styles.btn} ${styles.primary}`} disabled={busy} onClick={() => void retry()}><Icon name="retry" size={15} />重试导出</button>}
-            {job?.status === 'succeeded' && job.output && (
+            {currentRevisionExported && job?.output && (
               <div className={styles.dlRow}>
                 <a className={styles.primaryButton} href={job.output.videoDownloadUrl}><Icon name="download" size={15} />下载视频</a>
                 <a className={styles.secondaryButton} href={job.output.coverDownloadUrl}><Icon name="image" size={15} />下载封面</a>
                 {revealAvailable && <button type="button" className={styles.secondaryButton} onClick={() => void reveal()}><Icon name="folder" size={15} />在文件夹中查看</button>}
+              </div>
+            )}
+            {historicalSucceededJob && !currentRevisionExported && (
+              <div className={styles.dlRow} data-testid="mixcut-previous-export-downloads">
+                <span className={styles.flowHint}>上一版可下载：</span>
+                <a className={styles.secondaryButton} href={`/api/final-edit-jobs/${encodeURIComponent(historicalSucceededJob.id)}/video?download=1`}><Icon name="download" size={14} />下载上一版视频</a>
+                <a className={styles.secondaryButton} href={`/api/final-edit-jobs/${encodeURIComponent(historicalSucceededJob.id)}/cover?download=1`}><Icon name="image" size={14} />下载上一版封面</a>
               </div>
             )}
             <div className={styles.dlRow}>

@@ -47,27 +47,29 @@ export async function POST(
     const shots = db.prepare(`SELECT * FROM shots WHERE shotSetId = ? ORDER BY indexNum`).all(id) as Array<{ id: string; sourceImageId: string }>;
     if (shots.length === 0) return NextResponse.json({ error: '分镜组没有分镜图' }, { status: 400 });
 
-    // ── Create one job per shot ──
+    // ── Create one job per shot：同一请求写同一 createdAt、按分镜顺序写 creationIndex ──
     const createdJobs: string[] = [];
     db.transaction(() => {
+      const batchCreatedAt = new Date().toISOString();
       const insertJob = db.prepare(`
         INSERT INTO jobs (
           id, projectId, inputImageId, referenceImageIds, providerId, model,
-          prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, 'none')
+          prompt, size, quality, status, attempt, maxAttempts, referenceGuidanceMode, createdAt, creationIndex
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, 'none', ?, ?)
       `);
 
-      for (const shot of shots) {
+      shots.forEach((shot, index) => {
         const jobId = uuidv4();
         insertJob.run(
           jobId, set.projectId, shot.sourceImageId,
           JSON.stringify([sceneRef.imageAssetId]),
           jobProvider.providerId, jobProvider.model, promptTemplate, set.size, set.quality,
-          set.maxAttempts || 2
+          set.maxAttempts || 2,
+          batchCreatedAt, index
         );
         db.prepare(`UPDATE shots SET latestJobId = ? WHERE id = ?`).run(jobId, shot.id);
         createdJobs.push(jobId);
-      }
+      });
     })();
 
     // Update shot set status

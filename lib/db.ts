@@ -127,6 +127,8 @@ function initTables(db: Database.Database) {
       parentJobId TEXT,
       revision INTEGER DEFAULT 0,
       referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject',
+      createdAt TEXT,
+      creationIndex INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (inputImageId) REFERENCES image_assets(id),
       FOREIGN KEY (outputImageId) REFERENCES image_assets(id)
@@ -293,6 +295,7 @@ function initTables(db: Database.Database) {
       remoteVideoUrl TEXT,
       localVideoPath TEXT,
       filename TEXT,
+      displayName TEXT,
       attempt INTEGER NOT NULL DEFAULT 0,
       maxAttempts INTEGER NOT NULL DEFAULT 2,
       errorMessage TEXT,

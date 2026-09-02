@@ -44,10 +44,12 @@ function createLegacyDatabase(root: string, name: string): Database.Database {
       id TEXT PRIMARY KEY,
       projectId TEXT NOT NULL,
       shotSetId TEXT,
+      shotId TEXT,
       sourceImageId TEXT NOT NULL,
       providerId TEXT NOT NULL,
       model TEXT NOT NULL,
       templateId TEXT,
+      displayName TEXT,
       prompt TEXT NOT NULL,
       durationSec INTEGER NOT NULL DEFAULT 5,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -63,8 +65,12 @@ function createLegacyDatabase(root: string, name: string): Database.Database {
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (shotSetId) REFERENCES shot_sets(id) ON DELETE SET NULL
     );
+    CREATE TABLE image_assets (
+      id TEXT PRIMARY KEY, projectId TEXT, filename TEXT NOT NULL, path TEXT NOT NULL
+    );
     INSERT INTO projects (id, name, productCode) VALUES ('project-1', '项目一', 'RQ5A');
     INSERT INTO projects (id, name) VALUES ('project-2', '项目二');
+    INSERT INTO image_assets (id, projectId, filename, path) VALUES ('img-1', 'project-1', 'RQ5A-主图.png', '/tmp/img-1.png');
     INSERT INTO shot_sets (id, projectId, name, createdAt) VALUES ('ss-1', 'project-1', '分镜组A', '2026-08-02T00:00:00.000Z');
     INSERT INTO shot_sets (id, projectId, name, createdAt) VALUES ('ss-2', 'project-2', '分镜组B', '2026-08-02T00:00:00.000Z');
   `);
@@ -148,7 +154,14 @@ try {
   const module4Source = preparation.assets[0]?.sources.find(({ sourceKind }) => sourceKind === 'module4');
   assert.ok(module4Source, '素材带模块 4 来源');
   assert.equal(module4Source?.health, 'healthy');
-  assert.equal(module4Source?.displayName, 'clip.mp4', '来源只返回安全展示名');
+  // C5（D5）：旧视频任务（displayName NULL）在批量目录中展示派生友好名，
+  // 与视频生成 API、Mixcut context 使用同一命名契约；物理 filename 不变。
+  assert.equal(
+    preparation.assets[0]?.media.displayName,
+    '素材-RQ5A-主图-自定义-V01.mp4',
+    '批量素材标题必须使用派生友好名（shotId 缺失回退「素材」前缀）',
+  );
+  assert.equal(module4Source?.displayName, '素材-RQ5A-主图-自定义-V01.mp4', '来源展示名与素材标题一致，且只返回安全展示名');
   assert.equal('location' in module4Source!, false, '准备接口不得泄漏本地来源路径');
   const currentAnalysisId = assetsModule.createAnalysisVersion(db, {
     assetId: preparation.assets[0]!.id,

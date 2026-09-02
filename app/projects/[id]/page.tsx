@@ -82,6 +82,11 @@ interface Job {
   parentJobId?: string;
   revision?: number;
   reviewMark?: string;
+  /** 场景结果稳定排序字段：同一创建请求同一 createdAt、批内按 creationIndex 排列。 */
+  createdAt?: string | null;
+  creationIndex?: number | null;
+  /** rowid 的历史兼容投影，仅用于旧数据排序兜底，不是任务身份。 */
+  creationSequence?: number | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
