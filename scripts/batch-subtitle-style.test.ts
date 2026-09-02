@@ -85,7 +85,8 @@ try {
     '字幕 SVG 必须按真实输出尺寸栅格化',
   );
   const svg = svgFor(custom, 'A < B');
-  assert.match(svg, /font-style="italic"/);
+  assert.match(svg, /skewX\(-12\)/);
+  assert.doesNotMatch(svg, /font-style/, '斜体不得再输出 font-style(统一走 skewX 合成)');
   assert.match(svg, /fill="#ffcc00"/);
   assert.match(svg, /A &lt; B/);
   assert.doesNotMatch(svg, /WebkitTextStroke/i, '预览不得退回 CSS 描边');

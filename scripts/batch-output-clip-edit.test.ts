@@ -736,7 +736,7 @@ try {
   const taskId1 = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
   assert.ok(taskId1);
   const requestKey1 = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(taskId1) as { requestKey: string }).requestKey;
-  assert.equal(requestKey1, `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:3`);
+  assert.equal(requestKey1, `render:${outputVersionId}:batch-render-v3:cover:1500000:edit:3`);
   db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(taskId1);
   const taskIdDeduped = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
   assert.equal(taskIdDeduped, taskId1, '同一 editRevision 重复触发必须幂等去重');
@@ -748,7 +748,7 @@ try {
   assert.ok(taskId2);
   assert.notEqual(taskId2, taskId1, 'editRevision 变化必须在既有 succeeded 任务之上建新渲染任务');
   const requestKey2 = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(taskId2) as { requestKey: string }).requestKey;
-  assert.equal(requestKey2, `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:4`);
+  assert.equal(requestKey2, `render:${outputVersionId}:batch-render-v3:cover:1500000:edit:4`);
   console.log('✓ 11. requestKey 含 editRevision:新编辑产生新任务,同 key 去重');
 
   // 11b. 延迟提交模型(2026-08-25):编辑期不排渲染,退出这一轮调整时一次性提交。
@@ -771,7 +771,7 @@ try {
   const committedKey = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(committedTaskId) as { requestKey: string }).requestKey;
   assert.equal(
     committedKey,
-    `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:7`,
+    `render:${outputVersionId}:batch-render-v3:cover:1500000:edit:7`,
     '提交的必须是最终 editRevision,不是中间态',
   );
   assert.equal(
@@ -1006,6 +1006,61 @@ try {
   assert.ok(!coverClamped.warnings.includes('封面抽帧点已重置到新片段开头'));
   assert.equal((currentArrangement(plans[0]).cover as Record<string, unknown>).timeUs, 1_500_000);
   console.log('✓ 18. 封面抽帧点不受时间线片段窗口限制');
+
+  // 19. 素材使用次数(F3):同一素材本片 2 次 + 其他成片 3 次,计数按成片计划独立
+  //     且 split/多次 insert 逐条累计;封面身份单独计,不计入片段次数。
+  const countArrangement = (clips: Array<Record<string, unknown>>): Record<string, unknown> => ({
+    schemaVersion: 'test-arrangement',
+    preset: '3:4',
+    fps: 24,
+    clips,
+    cover: { assetId: assetA, timeUs: 500_000 },
+    narration: { ready: true, productionReady: true, status: 'ready', durationUs: 3_000_000, reason: '', audioRelativePath: 'batch-narration/test/narration.wav' },
+    subtitle: { ready: false, productionReady: false, status: 'pending', cues: [] },
+    music: { trackId: null },
+  });
+  const plan0VersionRow = db.prepare(`SELECT currentVersionId AS id FROM batch_output_plans WHERE id = ?`).get(plans[0]) as { id: string };
+  const plan1VersionRow = db.prepare(`SELECT currentVersionId AS id FROM batch_output_plans WHERE id = ?`).get(plans[1]) as { id: string };
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(countArrangement([
+    makeClip('count-1', 'segment-1', assetA, 0, 1_000_000, 0, 1_000_000),
+    makeClip('count-2', 'segment-2', assetA, 1_000_000, 2_000_000, 1_000_000, 2_000_000),
+    makeClip('count-3', 'segment-3', assetB, 2_000_000, 3_000_000, 2_000_000, 3_000_000),
+  ])), plan0VersionRow.id);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(countArrangement([
+    makeClip('count-o1', 'segment-1', assetA, 0, 1_000_000, 0, 1_000_000),
+    makeClip('count-o2', 'segment-2', assetA, 1_000_000, 2_000_000, 1_000_000, 2_000_000),
+    makeClip('count-o3', 'segment-3', assetA, 2_000_000, 3_000_000, 2_000_000, 3_000_000),
+  ])), plan1VersionRow.id);
+  const countView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  const countPoolById = new Map(countView.poolAssets.map((asset) => [asset.assetId, asset]));
+  assert.deepEqual(
+    countPoolById.get(assetA)?.useCountByPlanId,
+    { [plans[0]]: 2, [plans[1]]: 3 },
+    '同一素材本片 2 次 + 其他成片 3 次必须分别计数',
+  );
+  assert.deepEqual(countPoolById.get(assetA)?.usedByPlanIds, [plans[0], plans[1]].sort(), 'usedByPlanIds 兼容字段仍是去重后的计划列表(排序)');
+  assert.deepEqual(countPoolById.get(assetA)?.coverUsedByPlanIds, [plans[0], plans[1]].sort(), '封面身份仍独立记录(排序)');
+  assert.equal(countPoolById.get(assetA)?.useCountByPlanId[plans[0]], 2, '封面贡献 0 次片段使用(useCountByPlanId 只累计 clips)');
+  assert.deepEqual(countPoolById.get(assetB)?.useCountByPlanId, { [plans[0]]: 1 });
+  assert.deepEqual(countPoolById.get(assetB)?.coverUsedByPlanIds, []);
+  const otherCountOfA = Object.entries(countPoolById.get(assetA)!.useCountByPlanId)
+    .filter(([id]) => id !== plans[0])
+    .reduce((sum, [, count]) => sum + count, 0);
+  assert.equal(otherCountOfA, 3, '其他成片次数必须为其余计划计数之和');
+  // insert/split 计数:同片内逐条累计
+  resetPlan0Arrangement();
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'insert', afterClipId: 'clip-2', assetId: assetA, durationUs: 1_000_000,
+  });
+  const countAfterInsert = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).poolAssets.find((asset) => asset.assetId === assetA);
+  assert.equal(countAfterInsert?.useCountByPlanId[plans[0]], 2, 'insert 同一素材必须计为两次使用');
+  resetPlan0Arrangement();
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'split', clipId: 'clip-1', offsetUs: 1_000_000,
+  });
+  const countAfterSplit = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).poolAssets.find((asset) => asset.assetId === assetA);
+  assert.equal(countAfterSplit?.useCountByPlanId[plans[0]], 2, 'split 切成两段产生两条记录,计为 2 次使用');
+  console.log('✓ 19. 素材使用次数(本片 ×N / 其他成片 ×M,split/insert 逐条累计)');
 
   console.log('batch output clip edit tests passed');
 } finally {

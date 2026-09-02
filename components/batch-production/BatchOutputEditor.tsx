@@ -471,8 +471,14 @@ export default function BatchOutputEditor({
           </div>
           <div className="mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
             {poolAssets.map((asset) => {
-              const usedByThis = asset.usedByPlanIds.includes(planId);
-              const usedByOthers = !usedByThis && asset.usedByPlanIds.length > 0;
+              // 本片次数 = useCountByPlanId[planId]，其他次数 = 其余计划计数之和；
+              // 两数独立计算，同一素材同时用于本片和其他成片时两个徽标并存。
+              const thisCount = asset.useCountByPlanId[planId] ?? 0;
+              const otherCount = Object.entries(asset.useCountByPlanId)
+                .filter(([id]) => id !== planId)
+                .reduce((sum, [, count]) => sum + count, 0);
+              const usedByThis = thisCount > 0;
+              const usedByOthers = otherCount > 0;
               const coverUsedByThis = asset.coverUsedByPlanIds.includes(planId);
               const selectable = !asset.excluded && !editLocked && clips.length > 0;
               const pending = replaceCandidateId === asset.assetId;
@@ -499,9 +505,9 @@ export default function BatchOutputEditor({
                       <span className={(pending ? 'block truncate text-[11px] font-medium text-accent' : 'block truncate text-[11px] font-medium text-ink')} title={asset.displayName}>{asset.displayName}</span>
                       <span className="mt-0.5 block text-[10px] tabular-nums text-ink-tertiary">{asset.durationSec != null ? asset.durationSec.toFixed(1) + ' 秒' : '时长未知'}</span>
                       <span className="mt-1 flex flex-wrap gap-1">
-                        {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[9px] text-ok">本片已用</span>}
+                        {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[9px] text-ok">本片已用{thisCount > 1 ? ` ×${thisCount}` : ''}</span>}
                         {coverUsedByThis && <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] text-accent">本片封面</span>}
-                        {usedByOthers && <span className="rounded-full bg-surface px-1.5 py-0.5 text-[9px] text-ink-secondary">其他成片已用</span>}
+                        {usedByOthers && <span className="rounded-full bg-surface px-1.5 py-0.5 text-[9px] text-ink-secondary">其他成片已用{otherCount > 1 ? ` ×${otherCount}` : ''}</span>}
                         {asset.excluded && <span className="rounded-full bg-fail/10 px-1.5 py-0.5 text-[9px] text-fail">已排除</span>}
                       </span>
                     </span>

@@ -28,7 +28,10 @@ import { createBatchTask } from './tasks.ts';
 
 // v2:成片开头加入 20 帧封面片头(与单条剪辑同一契约),渲染产物形状变了,
 // 所以幂等身份必须换代——旧的 succeeded 渲染任务不该再挡住重渲染。
-export const BATCH_RENDER_ADAPTER_VERSION = 'batch-render-v2';
+// v3:斜体从 font-style 改为 skewX 剪切合成(见 cover-title-svg.ts),渲染产物
+// 语义变化,同样换代。旧 v2 任务点「重新生成」保留原 requestKey,新 attempt 会
+// 运行当前代码产出修复后的斜体。
+export const BATCH_RENDER_ADAPTER_VERSION = 'batch-render-v3';
 
 /**
  * 渲染任务的幂等身份。封面被烤进片头之后,封面抽帧时间点就是成片内容的一部分,

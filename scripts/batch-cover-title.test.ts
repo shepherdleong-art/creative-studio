@@ -125,13 +125,14 @@ const svg = textStyleToSvgElements(svgStyle, '标题&<\'">', { width: 1080, heig
 assert.equal((svg.match(/<text /gu) ?? []).length, 2, '阴影开启必须是两层 text');
 assert.ok(svg.includes('font-family="PingFang SC, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Heiti SC, sans-serif"'), 'font-family 必须带通用 fallback 串（含 Heiti SC）');
 assert.ok(svg.includes('font-size="80"'));
-assert.ok(svg.includes('font-style="italic"'));
+assert.equal((svg.match(/skewX\(-12\)/gu) ?? []).length, 2, '阴影开启时阴影层与正文层都必须在 skewX 剪切组内');
+assert.ok(!svg.includes('font-style'), '斜体不得再输出 font-style(统一走 skewX 合成)');
 assert.ok(svg.includes('text-anchor="end"'), 'align right 必须映射 text-anchor end');
 assert.ok(svg.includes('stroke="#111111" stroke-width="4"'));
 assert.ok(svg.includes('stroke-linejoin="round" paint-order="stroke fill"'));
 assert.ok(svg.includes('fill="#222222" fill-opacity="0.5"'), '阴影层必须带偏移色与透明度');
-assert.ok(svg.includes('x="540" y="298"'), '阴影层必须按 (distancePx, angleDeg) 极坐标偏移(90° → y+10)');
-assert.ok(svg.includes('x="540" y="288"'), '正文层必须锚在 x*width / y*height');
+assert.ok(svg.includes('translate(540,298)'), '阴影层必须按 (distancePx, angleDeg) 极坐标偏移(90° → y+10)');
+assert.ok(svg.includes('translate(540,288)'), '正文层必须锚在 x*width / y*height');
 assert.ok(svg.indexOf('#222222') < svg.indexOf('#ffffff'), '阴影层必须在正文层之前');
 assert.ok(svg.includes('标题&amp;&lt;&apos;&quot;&gt;</text>'), '文本必须 XML 转义');
 
@@ -144,15 +145,41 @@ assert.equal((noShadowNoStroke.match(/<text /gu) ?? []).length, 1, '阴影关闭
 assert.ok(noShadowNoStroke.includes('text-anchor="middle"'), 'align center 必须映射 text-anchor middle');
 assert.ok(!noShadowNoStroke.includes('paint-order'), '描边关闭不得出现 stroke 属性');
 assert.ok(!noShadowNoStroke.includes('font-style'), '非斜体不得出现 font-style');
+assert.ok(!noShadowNoStroke.includes('skewX'), '非斜体不得出现 skewX 剪切');
 assert.ok(textStyleToSvgElements({ ...svgStyle, align: 'left', shadow: { ...svgStyle.shadow, enabled: false } }, '左', { width: 1080, height: 1440 }).includes('text-anchor="start"'));
 
 // boxWidthPx 收缩:6 个拉丁字符 × 0.55 × 100px = 330 > 100 → 收缩因子钳到下限 0.5 → 50px
 const shrinkSvg = textStyleToSvgElements(
-  { ...svgStyle, fontSizePx: 100, boxWidthPx: 100, shadow: { ...svgStyle.shadow, enabled: false } },
+  { ...svgStyle, italic: false, fontSizePx: 100, boxWidthPx: 100, shadow: { ...svgStyle.shadow, enabled: false } },
   'abcdef',
   { width: 1080, height: 1440 },
 );
 assert.ok(shrinkSvg.includes('font-size="50"'), 'boxWidthPx 超限必须等比缩字号且下限 0.5 倍');
+// 斜体 overhang 补偿:可用宽度先扣 fontSize × tan(12°) 再缩字号、锚点不动,所以同一
+// 文本/同一盒子的斜体字号必须比直立更小。boxWidthPx=200:直立 100 × 200/330 ≈ 60.61;
+// 斜体 usableWidth ≈ 178.74 → 100 × 178.74/330 ≈ 54.16(按缩后字号重估一轮即收敛)。
+const outSize = { width: 1080, height: 1440 };
+const fitBox = { ...svgStyle, fontSizePx: 100, boxWidthPx: 200, shadow: { ...svgStyle.shadow, enabled: false } };
+const shrinkItalicSvg = textStyleToSvgElements(fitBox, 'abcdef', outSize);
+assert.match(shrinkItalicSvg, /skewX\(-12\)/);
+assert.ok(
+  textStyleToSvgElements({ ...fitBox, italic: false }, 'abcdef', outSize).includes('font-size="60.61"'),
+  '直立按 boxWidthPx 等比缩字号',
+);
+assert.ok(shrinkItalicSvg.includes('font-size="54.16"'), '斜体必须先扣 overhang 再缩字号(60.61 → 54.16)');
+// 0.5 倍下限钳的是**总收缩比**,不是每轮各钳一次——两轮各钳会把斜体的实际下限压到
+// 0.25 倍,同一段文字开不开斜体差一倍字号。触底时直立与斜体必须同为 50。
+const floorBox = { ...svgStyle, fontSizePx: 100, boxWidthPx: 100, shadow: { ...svgStyle.shadow, enabled: false } };
+for (const [label, text] of [['拉丁', 'abcdef'], ['长 CJK', '这是一段很长的中文字幕文本']] as const) {
+  assert.ok(
+    textStyleToSvgElements({ ...floorBox, italic: false }, text, outSize).includes('font-size="50"'),
+    `${label}:直立收缩下限 0.5 倍`,
+  );
+  assert.ok(
+    textStyleToSvgElements(floorBox, text, outSize).includes('font-size="50"'),
+    `${label}:斜体收缩下限同样是 0.5 倍,不得被两轮 overhang 补偿压到 0.25 倍`,
+  );
+}
 const fitSvg = textStyleToSvgElements(
   { ...svgStyle, shadow: { ...svgStyle.shadow, enabled: false } },
   '你好',
