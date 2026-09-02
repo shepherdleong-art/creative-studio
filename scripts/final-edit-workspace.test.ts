@@ -1035,33 +1035,59 @@ assert.deepEqual(
 );
 assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从停机等待集合释放');
 
-// M1：成因 1 回归——手工塞一条 sourceOutFrame = floor+1 的 clip 进时间线，
-// 删除另一个（好的）clip 必须被拒绝（整条时间线被坏 clip 锁死）。
-// 该断言在 M4 完成后改为「删除另一个 clip 成功」。
+// M1/M4：成因 1（尾帧超限 floor+1）与成因 2（指纹不匹配）的坏 clip 不再锁死编辑——
+// 删除另一个（好的）clip 必须成功，坏 clip 降级为 source_unavailable blocking issue；
+// 删除坏 clip 本身成功且 issue 消失；坏 clip 仍存在时渲染闸门必须被拒；
+// insert_clip 引入不属于当前分镜组的素材仍被当场拒绝。
 // 注：早期测试改写过 v1.mp4 导致旧 clip 指纹过期，这里先把每个 clip 的指纹
 // 对齐到分析行的当前指纹，确保唯一故障是尾帧超限（成因 1）。
 {
   const variantRow = db.prepare(`SELECT id, timelineJson, revision FROM final_edit_variants WHERE groupId=? ORDER BY indexNum LIMIT 1`).get(group.id) as { id: string; timelineJson: string; revision: number };
-  const timeline = JSON.parse(variantRow.timelineJson) as { clips: Array<{ id: string; videoJobId: string; sourceFingerprint: string; sourceOutFrame: number }> };
-  assert.ok(timeline.clips.length >= 2, 'M1 回归测试需要至少两个 clip 的时间线');
-  for (const clip of timeline.clips) {
-    const analysis = db.prepare(`SELECT fileFingerprint FROM final_edit_asset_analysis WHERE videoJobId=?`).get(clip.videoJobId) as { fileFingerprint: string } | undefined;
-    if (analysis) clip.sourceFingerprint = analysis.fileFingerprint;
-  }
+  const readTimeline = () => JSON.parse(variantRow.timelineJson) as { clips: Array<{ id: string; videoJobId: string; sourceFingerprint: string; sourceOutFrame: number; sourceInFrame: number; timelineInFrame: number; timelineOutFrame: number }> };
+  const normalizeFingerprints = (value: ReturnType<typeof readTimeline>) => {
+    for (const clip of value.clips) {
+      const analysis = db.prepare(`SELECT fileFingerprint FROM final_edit_asset_analysis WHERE videoJobId=?`).get(clip.videoJobId) as { fileFingerprint: string } | undefined;
+      if (analysis) clip.sourceFingerprint = analysis.fileFingerprint;
+    }
+  };
+  const timeline = readTimeline();
+  normalizeFingerprints(timeline);
+  assert.ok(timeline.clips.length >= 2, 'M4 回归测试需要至少两个 clip 的时间线');
   const [badClip, goodClip] = timeline.clips;
   const analysis = db.prepare(`SELECT mediaJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(badClip.videoJobId) as { mediaJson: string } | undefined;
-  const durationUs = Number((JSON.parse(analysis?.mediaJson || '{}') as { durationUs?: number }).durationUs || 0);
-  const floor = Math.floor(durationUs * 24 / 1_000_000);
-  const originalOut = badClip.sourceOutFrame;
-  badClip.sourceOutFrame = floor + 1;
+  const floor = Math.floor(Number((JSON.parse(analysis?.mediaJson || '{}') as { durationUs?: number }).durationUs || 0) * 24 / 1_000_000);
+  badClip.sourceOutFrame = floor + 1; // 尾帧超限（成因 1）
   db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(JSON.stringify(timeline), variantRow.id);
-  assert.throws(
-    () => workspace.apply({ scope: 'variant', variantId: variantRow.id, expectedRevision: variantRow.revision, type: 'delete_clip', clipId: goodClip.id }),
-    (error: unknown) => error instanceof FinalEditError && error.code === 'source_out_of_range',
-    'M1 修复后生成侧不再产出 floor+1 的 clip；手工塞入的坏 clip 仍会锁死整条时间线（M4 放宽）',
+
+  // 1) 删除另一个（好的）clip 必须成功；坏 clip 降级为 blocking issue。
+  const deleteGood = workspace.apply({ scope: 'variant', variantId: variantRow.id, expectedRevision: variantRow.revision, type: 'delete_clip', clipId: goodClip.id }).view as FinalEditVariantView;
+  assert.equal(deleteGood.timeline.clips.some((clip) => clip.id === goodClip.id), false, '删除另一个（好的）clip 必须成功');
+  const badIssue = deleteGood.issues.find((issue) => issue.code === 'source_unavailable' && issue.targetId === badClip.id);
+  assert.ok(badIssue, '坏 clip 必须降级为 source_unavailable issue');
+  assert.equal(badIssue.severity, 'blocking', 'source_unavailable 必须是 blocking');
+
+  // 2) 坏 clip 仍存在时渲染闸门必须被拒（导出期严格，编辑期宽松）。
+  const currentGroupRevision = (db.prepare(`SELECT revision FROM final_edit_groups WHERE id=?`).get(group.id) as { revision: number }).revision;
+  await assert.rejects(
+    workspace.enqueueRender({ groupId: group.id, variantId: deleteGood.id, expectedGroupRevision: currentGroupRevision, expectedVariantRevision: deleteGood.revision, overlayBundleId: 'not-needed' }),
+    (error: unknown) => error instanceof FinalEditError,
+    '坏 clip 存在时导出必须被 blocking issue 拦住（导出闸门不得放宽）',
   );
-  badClip.sourceOutFrame = originalOut;
-  db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(JSON.stringify(timeline), variantRow.id);
+
+  // 3) 删除坏 clip 本身成功，且删完后 source_unavailable issue 消失。
+  const deleteBad = workspace.apply({ scope: 'variant', variantId: deleteGood.id, expectedRevision: deleteGood.revision, type: 'delete_clip', clipId: badClip.id }).view as FinalEditVariantView;
+  assert.equal(deleteBad.timeline.clips.some((clip) => clip.id === badClip.id), false, '删除坏 clip 本身必须成功');
+  assert.ok(!deleteBad.issues.some((issue) => issue.code === 'source_unavailable'), '删完坏 clip 后 source_unavailable issue 必须消失');
+
+  // 4) insert_clip 回归保护：不属于当前分镜组的素材仍被当场拒绝。
+  assert.throws(
+    () => workspace.apply({ scope: 'variant', variantId: deleteBad.id, expectedRevision: deleteBad.revision, type: 'insert_clip', videoJobId: 'foreign', sourceFingerprint: 'whatever', sourceInFrame: 0, sourceOutFrame: 24, timelineInFrame: 0, timelineOutFrame: 24 }),
+    (error: unknown) => error instanceof FinalEditError && error.code === 'shot_set_mismatch',
+    'insert_clip 引入不属于当前分镜组的素材必须被当场拒绝',
+  );
+
+  // 恢复时间线（供后续 M3 测试使用干净基线）。
+  db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(variantRow.timelineJson, variantRow.id);
 }
 
 // M3：报错可定位——四类源校验失败必须给出互不相同的 code / details.reason，
@@ -1070,8 +1096,8 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
   const baseRow = db.prepare(`SELECT id, timelineJson, revision FROM final_edit_variants WHERE groupId=? ORDER BY indexNum LIMIT 1`).get(group.id) as { id: string; timelineJson: string; revision: number };
   const baseTimeline = JSON.parse(baseRow.timelineJson) as { clips: Array<{ id: string; videoJobId: string; sourceFingerprint: string; sourceOutFrame: number }> };
   const badClipId = baseTimeline.clips[0].id;
-  const goodClipId = baseTimeline.clips[1].id;
   const mediaRow = db.prepare(`SELECT mediaJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(baseTimeline.clips[0].videoJobId) as { mediaJson: string } | undefined;
+  // 触碰坏 clip 本身（set_framing）才会抛错；M4 之后未触碰的坏 clip 只降级为 issue。
   const runScenario = (mutateTimeline: (clips: typeof baseTimeline.clips) => void, mutateAnalysis?: () => void): FinalEditError => {
     const timeline = JSON.parse(baseRow.timelineJson) as typeof baseTimeline;
     // 对齐指纹到分析行当前值，确保唯一故障来自场景自身的 mutation
@@ -1085,9 +1111,9 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
     if (mutateAnalysis) mutateAnalysis();
     let error: unknown;
     try {
-      workspace.apply({ scope: 'variant', variantId: baseRow.id, expectedRevision: baseRow.revision, type: 'delete_clip', clipId: goodClipId });
+      workspace.apply({ scope: 'variant', variantId: baseRow.id, expectedRevision: baseRow.revision, type: 'set_framing', clipId: badClipId, scale: 1, offsetX: 0, offsetY: 0 });
     } catch (caught) { error = caught; }
-    assert.ok(error instanceof FinalEditError, '源校验失败必须抛出 FinalEditError');
+    assert.ok(error instanceof FinalEditError, '触碰坏 clip 时必须抛出 FinalEditError');
     return error;
   };
   const fingerprintError = runScenario((clips) => { clips[0].sourceFingerprint = 'fingerprint-does-not-match'; });

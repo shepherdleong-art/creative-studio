@@ -686,7 +686,7 @@ function clipSourceFailure(
   return { code: 'source_out_of_range', message: `片段「${name}」的源区间超出素材真实时长（需要到第 ${clip.sourceOutFrame} 帧，素材只有 ${sourceFrames} 帧）`, details: { ...baseDetails, reason: 'source_out_of_range' } };
 }
 
-function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean): FinalEditIssue[] {
+function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean, extraIssues: FinalEditIssue[] = []): FinalEditIssue[] {
   const issues: FinalEditIssue[] = [];
   for (const gap of timelineGaps(timeline.bodyFrames, timeline.clips)) {
     issues.push({ code: 'timeline_gap', severity: 'blocking', message: `正文 ${gap.startFrame}–${gap.endFrame} 帧缺少画面` });
@@ -704,6 +704,7 @@ function issueList(timeline: VideoTimeline, coverKey: string | null, narrationRe
       issues.push({ code: 'clip_too_short', severity: 'warning', message: '片段短于 0.5 秒', targetId: clip.id });
     }
   }
+  for (const issue of extraIssues) issues.push(issue);
   return issues;
 }
 
@@ -1784,6 +1785,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       let timeline = parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
       let bgm = normalizeBgm(parseJson<unknown>(String(row.bgmJson), {}));
       let cover = normalizeCover(parseJson(String(row.coverJson), {}));
+      // M4：记录命令执行前的 clip 集合，用于识别 insert_clip 新建的 clip。
+      const clipIdsBeforeCommand = new Set(timeline.clips.map((clip) => clip.id));
       if (command.type === 'apply_proposal') {
         const proposal = db.prepare(`SELECT baseRevision, proposalJson, status FROM final_edit_proposals WHERE id=? AND variantId=?`).get(command.proposalId, command.variantId) as { baseRevision: number; proposalJson: string; status: string } | undefined;
         if (!proposal || proposal.status !== 'ready') throw new FinalEditError('proposal_not_ready', 'AI 候选不存在或不可应用', 404);
@@ -1930,20 +1933,47 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (command.type === 'bind_clip') clip.boundSegmentId = command.segmentId;
         if (command.type === 'set_framing') clip.framing = { scale: Math.max(1, Math.min(3, command.scale)), offsetX: Math.max(-1, Math.min(1, command.offsetX)), offsetY: Math.max(-1, Math.min(1, command.offsetY)) };
       }
+      // M4：定义「本次命令触碰的 clip 集合」。被触碰的 clip 必须合法（抛错）；
+      // 未触碰的 clip 若因存量坏数据校验失败，降级为 blocking issue，不再锁死整条时间线。
+      const touchedClipIds = new Set<string>();
+      if (command.type === 'delete_clip') {
+        // 已移除的 clip 不在时间线里，不触碰任何现存 clip。
+      } else if (command.type === 'move_clip' || command.type === 'trim_clip' || command.type === 'replace_clip' || command.type === 'bind_clip' || command.type === 'unbind_clip' || command.type === 'set_framing') {
+        touchedClipIds.add(command.clipId);
+      } else if (command.type === 'insert_clip') {
+        for (const clip of timeline.clips) if (!clipIdsBeforeCommand.has(clip.id)) touchedClipIds.add(clip.id);
+      } else if (command.type === 'swap_clips') {
+        touchedClipIds.add(command.leftClipId);
+        touchedClipIds.add(command.rightClipId);
+      } else if (command.type === 'reorder_clips' || command.type === 'apply_proposal' || command.type === 'restore_revision') {
+        for (const clip of timeline.clips) touchedClipIds.add(clip.id);
+      }
+      const blockedIssues: FinalEditIssue[] = [];
       for (const clip of timeline.clips) {
+        const touched = touchedClipIds.has(clip.id);
         if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) {
-          throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒', 400, { clipId: clip.id, videoJobId: clip.videoJobId, reason: 'structural_invalid', sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame, bodyFrames: timeline.bodyFrames });
+          const details = { clipId: clip.id, videoJobId: clip.videoJobId, reason: 'structural_invalid', sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame, bodyFrames: timeline.bodyFrames };
+          if (touched) throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒', 400, details);
+          blockedIssues.push({ code: 'structural_invalid', severity: 'blocking', message: `片段「${clipDisplayName(db, String(row.groupId), clip.videoJobId)}」的片段时间范围无效或短于 0.5 秒`, targetId: clip.id });
+          continue;
         }
         const analysis = editableVideoSource(db, storageRoot, String(row.groupId), clip.videoJobId);
         const sourceFrames = sourceFrameLimit(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0));
         if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) {
           const failure = clipSourceFailure(db, storageRoot, String(row.groupId), clip, analysis, sourceFrames);
-          throw new FinalEditError(failure.code, failure.message, 400, failure.details);
+          if (touched) throw new FinalEditError(failure.code, failure.message, 400, failure.details);
+          blockedIssues.push({ code: 'source_unavailable', severity: 'blocking', message: failure.message, targetId: clip.id });
         }
       }
+      // 重叠是结构问题：被触碰的 clip 主动制造重叠必须拒绝；存量重叠降级为 issue。
       const orderedClips = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
-      if (orderedClips.some((clip, index) => index > 0 && clip.timelineInFrame < orderedClips[index - 1].timelineOutFrame)) throw new FinalEditError('timeline_overlap', '视频片段不能重叠');
-      const issues = issueList(timeline, cover.coverKey, true);
+      for (let index = 1; index < orderedClips.length; index += 1) {
+        if (orderedClips[index].timelineInFrame < orderedClips[index - 1].timelineOutFrame) {
+          if (touchedClipIds.has(orderedClips[index - 1].id) || touchedClipIds.has(orderedClips[index].id)) throw new FinalEditError('timeline_overlap', '视频片段不能重叠');
+          blockedIssues.push({ code: 'timeline_overlap', severity: 'blocking', message: '视频片段发生重叠', targetId: orderedClips[index].id });
+        }
+      }
+      const issues = issueList(timeline, cover.coverKey, true, blockedIssues);
       const revision = Number(row.revision) + 1;
       const groupId = String(row.groupId);
       db.transaction(() => {
