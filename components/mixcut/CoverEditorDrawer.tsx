@@ -69,15 +69,26 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
     onCloseRef.current = onClose;
   }, [onClose]);
 
+  const applyFontBody = (body: unknown) => {
+    const values = Array.isArray(body) ? body : (body as { fonts?: unknown } | null)?.fonts;
+    if (Array.isArray(values)) setFonts([...new Set(['PingFang SC', ...values.map((item) => typeof item === 'string' ? item : (item as { family?: string }).family).filter(Boolean)])]);
+  };
+
+  const refreshFonts = async () => {
+    try {
+      const response = await fetch('/api/system-fonts?refresh=1');
+      const body = await response.json();
+      applyFontBody(body);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   useEffect(() => {
     void Promise.all([
-      fetch('/api/system-fonts').then((response) => response.json()),
-      fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response)),
-    ]).then(([fontBody, presetBody]) => {
-      const values = Array.isArray(fontBody) ? fontBody : fontBody.fonts;
-      if (Array.isArray(values)) setFonts([...new Set(['PingFang SC', ...values.map((item) => typeof item === 'string' ? item : item.family).filter(Boolean)])]);
-      setPresets(presetBody);
-    }).catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
+      fetch('/api/system-fonts').then((response) => response.json()).then(applyFontBody),
+      fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response)).then((presetBody) => setPresets(presetBody)),
+    ]).catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
   }, []);
 
   useEffect(() => {
@@ -318,7 +329,7 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
           </main>
           <aside className={styles.coverControlsPanel}>
             <section><h3>画面</h3><Range label="缩放" value={draft.framing.scale} min={1} max={3} step={0.05} onChange={(scale) => patchFraming({ scale })} /><Range label="水平" value={draft.framing.offsetX} min={-1} max={1} step={0.02} onChange={(offsetX) => patchFraming({ offsetX })} /><Range label="垂直" value={draft.framing.offsetY} min={-1} max={1} step={0.02} onChange={(offsetY) => patchFraming({ offsetY })} /></section>
-            <section><h3>共享字体</h3><select aria-label="封面共享字体" value={draft.primary.style.fontFamily} onChange={(event) => { patchStyle('primary', { fontFamily: event.target.value, fontPostscriptName: undefined }); patchStyle('secondary', { fontFamily: event.target.value, fontPostscriptName: undefined }); }}>{fonts.map((font) => <option key={font}>{font}</option>)}</select></section>
+            <section><div className={styles.coverControlHeading}><h3>共享字体</h3><button type="button" className={styles.coverRefreshButton} onClick={() => void refreshFonts()}>刷新字体</button></div><select aria-label="封面共享字体" value={draft.primary.style.fontFamily} onChange={(event) => { patchStyle('primary', { fontFamily: event.target.value, fontPostscriptName: undefined }); patchStyle('secondary', { fontFamily: event.target.value, fontPostscriptName: undefined }); }}>{fonts.map((font) => <option key={font}>{font}</option>)}</select></section>
             {(['primary', 'secondary'] as const).map((part) => <section key={part} className={overflow[part] ? styles.coverTextOverflow : ''}><div className={styles.coverControlHeading}><h3>{part === 'primary' ? '主标题' : '副标题'}</h3>{overflow[part] && <button type="button" onClick={() => fitPart(part)}>适配单行</button>}</div><input aria-label={`${part === 'primary' ? '主' : '副'}标题文字`} value={draft[part].text} onChange={(event) => patchPart(part, { text: event.target.value.replace(/[\r\n]+/g, '') })} /><div className={styles.coverInlineControls}><label>颜色<input type="color" value={draft[part].style.color} onChange={(event) => patchStyle(part, { color: event.target.value })} /></label><label>字号<input type="number" min={12} max={180} value={draft[part].style.fontSizePx} onChange={(event) => patchStyle(part, { fontSizePx: Number(event.target.value) })} /></label></div><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.italic} onChange={(event) => patchStyle(part, { italic: event.target.checked })} />斜体</label><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.stroke.enabled} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, enabled: event.target.checked } })} />描边</label><div className={styles.coverInlineControls}><label>描边色<input type="color" value={draft[part].style.stroke.color} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, color: event.target.value } })} /></label><label>粗细<input type="number" min={0} max={16} step={0.5} value={draft[part].style.stroke.widthPx} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, widthPx: Number(event.target.value) } })} /></label></div></section>)}
             <section><h3>内置样式</h3><button type="button" className={styles.coverPresetButton} onClick={() => { patchStyle('primary', { color: '#ffffff', italic: false, stroke: { enabled: true, color: '#101010', widthPx: 4 } }); patchStyle('secondary', { color: '#61a8ff', italic: true, stroke: { enabled: true, color: '#0b1d35', widthPx: 2 } }); }}>清爽蓝白</button></section>
             <section><h3>自定义预设</h3><div className={styles.coverPresetSave}><input aria-label="预设名称" placeholder="输入名称" value={presetName} onChange={(event) => setPresetName(event.target.value)} /><button type="button" onClick={() => void savePreset()}>保存</button></div>{presets.map((preset) => <div key={preset.id} className={styles.coverPresetRow}><button type="button" onClick={() => applyPreset(preset)}>{preset.name}</button><button type="button" aria-label={`删除预设 ${preset.name}`} onClick={() => void deletePreset(preset)}>删除</button></div>)}</section>

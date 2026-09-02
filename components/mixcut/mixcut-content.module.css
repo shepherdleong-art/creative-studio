@@ -454,6 +454,7 @@
 .rangeInput:disabled { cursor: not-allowed; opacity: .45; }
 .coverControlHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .coverControlHeading button { border: 0; background: transparent; color: #b42318; font-size: 11px; cursor: pointer; }
+.coverControlHeading .coverRefreshButton { color: var(--blue); }
 .coverTextOverflow { border-color: #f0a9a4 !important; background: #fff6f5 !important; }
 .coverInlineControls { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
 .coverInlineControls label { display: flex; flex-direction: column; gap: 4px; color: var(--sub); font-size: 11px; }
