@@ -99,6 +99,7 @@ export default function BatchCoverEditorDrawer({
   });
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  // 字体浮层 host 由 BatchTextStyleEditor 自托管（紧跟各自触发器），抽屉不再管 host。
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const busyRef = useRef(busy);
   const onCloseRef = useRef(onClose);
@@ -139,6 +140,9 @@ export default function BatchCoverEditorDrawer({
     document.body.style.overflow = 'hidden';
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // 字体面板在 document 捕获阶段先 preventDefault + stopPropagation 并关闭面板；
+        // 已被面板消费的 Esc（defaultPrevented）直接放行，不再重复关抽屉。
+        if (event.defaultPrevented) return;
         if (!busyRef.current) onCloseRef.current();
         return;
       }

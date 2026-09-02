@@ -10,11 +10,11 @@ import { getCurrentLibraryRevision, getLibraryRevision } from '@/lib/script-stud
 import { getSourceSet } from '@/lib/script-studio/source-sets';
 import { resolveRuntimeProviders } from '@/lib/script-studio/runtime';
 import {
-  createScriptStudioTaskRequestKey,
   createTask,
+  decideTaskRequest,
   getTask,
-  getTaskByRequestKey,
 } from '@/lib/script-studio/tasks';
+import { parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from '@/lib/script-studio/generation-contract';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 
 export const runtime = 'nodejs';
@@ -32,14 +32,8 @@ export async function POST(
     const db = getDb();
     const project = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId);
     if (!project) throw new ScriptStudioError('not_found', '项目不存在');
-    const targetDurationSec = Number(body.targetDurationSec);
-    const requestedCount = Math.floor(Number(body.requestedCount));
-    if (![15, 20, 30, 45, 60].includes(targetDurationSec)) {
-      throw new ScriptStudioError('invalid_input', '目标时长仅支持 15、20、30、45 或 60 秒');
-    }
-    if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > 5) {
-      throw new ScriptStudioError('invalid_input', '生成数量必须是 1-5 的整数');
-    }
+    const targetDurationSec = parseScriptStudioTargetDuration(body.targetDurationSec);
+    const requestedCount = parseScriptStudioRequestedCount(body.requestedCount);
     const sourceSetId = typeof body.sourceSetId === 'string' ? body.sourceSetId : null;
     const libraryRevisionId = typeof body.libraryRevisionId === 'string' ? body.libraryRevisionId : null;
     const providerId = typeof body.providerId === 'string' ? body.providerId.trim() : '';
@@ -62,11 +56,13 @@ export async function POST(
         throw new ScriptStudioError('invalid_input', '首次生成需要提供详情页来源集，或复用已有卖点库');
       }
     }
-    // 提交前确认视觉/文本供应商可用，避免进入必然失败的长任务。
-    const providers = resolveRuntimeProviders(providerId);
+    // 视觉/文本供应商只在 decideTaskRequest 确认要创建时才解析（见 G5 注释）。
     const creativeBrief = typeof body.creativeBrief === 'string' ? body.creativeBrief.slice(0, 2000) : '';
+    const targetScriptId = typeof body.targetScriptId === 'string' ? body.targetScriptId.trim() : '';
     const explicitRequestKey = typeof body.requestKey === 'string' ? body.requestKey.trim() : '';
-    const requestKey = explicitRequestKey || createScriptStudioTaskRequestKey({
+    // G5：先走幂等决策，命中既有任务就按冻结身份复用，全程不解析当前供应商——
+    // 丢包重试期间供应商被删/不可用不影响安全重放；只有确认要创建才解析并冻结。
+    const decision = decideTaskRequest(db, {
       projectId,
       mode,
       sourceSetId,
@@ -74,13 +70,13 @@ export async function POST(
       targetDurationSec,
       requestedCount,
       creativeBrief,
-      providerId: providers.vision.id,
-      providerModel: providers.vision.model,
-    });
-    const existing = getTaskByRequestKey(db, projectId, requestKey);
-    if (existing) {
+      targetScriptId,
+      providerId,
+      explicitRequestKey,
+    }, resolveRuntimeProviders);
+    if (decision.existing) {
       return NextResponse.json({
-        task: toTaskSnapshot(existing),
+        task: toTaskSnapshot(decision.existing),
         created: false,
         schedulerEnabled: process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER === '1',
       }, { status: 202 });
@@ -91,20 +87,14 @@ export async function POST(
     } catch {
       // 调度器启动失败时任务仍会留作 queued，下轮 instrumentation 启动恢复。
     }
+    // 全新 key：走 decideTaskRequest 冻结的 inputSnapshot，原子 get-or-create。
     const created = createTask(db, {
       projectId,
-      requestKey,
+      requestKey: decision.requestKey,
       mode,
       sourceSetId,
       libraryRevisionId,
-      inputSnapshot: {
-        targetDurationSec,
-        requestedCount,
-        creativeBrief,
-        providerId: providers.vision.id,
-        providerModel: providers.vision.model,
-        ...(typeof body.targetScriptId === 'string' ? { targetScriptId: body.targetScriptId } : {}),
-      },
+      inputSnapshot: decision.snapshot!,
       requestedCount,
     });
     return NextResponse.json({

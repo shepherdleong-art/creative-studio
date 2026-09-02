@@ -188,6 +188,34 @@ assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as {
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM script_studio_library_revisions`).get() as { n: number }).n, 1);
 assert.equal((db.prepare(`SELECT stage FROM script_studio_task_stages WHERE taskId=? AND status='succeeded'`).all(task.task.id) as Array<{ stage: string }>).length >= 7, true);
 
+// F1：requestedCount=6 的复用任务也能完成 6 次生成并落 succeededCount=6。
+const sixTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'six-request-1',
+  mode: 'reuse',
+  libraryRevisionId: (db.prepare(`SELECT currentRevisionId FROM script_studio_libraries WHERE projectId='p1'`).get() as { currentRevisionId: string }).currentRevisionId,
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 6, creativeBrief: '' },
+  requestedCount: 6,
+}, () => new Date('2026-08-31T00:03:30.000Z'));
+const sixResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: sixTask.task.id,
+  libraryRevisionId: (db.prepare(`SELECT currentRevisionId FROM script_studio_libraries WHERE projectId='p1'`).get() as { currentRevisionId: string }).currentRevisionId,
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 6, creativeBrief: '' },
+  visionExtractor,
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:04:00.000Z'),
+});
+assert.equal(sixResult.status, 'succeeded', '6 条复用必须能完整完成');
+assert.equal(sixResult.succeededCount, 6, 'runner 必须完成 6 次生成');
+assert.equal(getTask(db, 'p1', sixTask.task.id)!.succeededCount, 6, '任务必须落 succeededCount=6');
+const sixPlanStage = db.prepare(`SELECT payloadJson FROM script_studio_task_stages WHERE taskId = ? AND stage = 'plan'`).get(sixTask.task.id) as { payloadJson: string };
+const sixPlan = JSON.parse(sixPlanStage.payloadJson) as { plans?: Array<{ templateId: string; angle: string }> };
+assert.equal(sixPlan.plans?.length, 6, 'plan 阶段必须规划 6 个方向');
+assert.equal(new Set((sixPlan.plans || []).map((plan) => plan.templateId)).size, 6, '6 个方向必须模板各不相同');
+
 const partialTask = createTask(db, {
   projectId: 'p1',
   requestKey: 'partial-request-1',

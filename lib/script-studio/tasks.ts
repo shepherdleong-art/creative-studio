@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { ScriptStudioError } from './errors.ts';
+import { parseScriptStudioRequestedCount } from './generation-contract.ts';
 import type {
   ScriptStudioTaskRecord,
   ScriptStudioTaskStageRecord,
@@ -50,6 +51,66 @@ export function createScriptStudioTaskRequestKey(input: ScriptStudioTaskRequestI
     .digest('hex');
 }
 
+/** 递归地把对象键按字典序排序，得到稳定的规范化结构（数组顺序不变）。 */
+function normalizeSnapshotValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeSnapshotValue);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) sorted[key] = normalizeSnapshotValue(record[key]);
+    return sorted;
+  }
+  return value;
+}
+
+/**
+ * Canonical 请求身份（F2）：覆盖 CreateTaskInput 的全部持久字段——projectId、
+ * mode、sourceSetId、libraryRevisionId、requestedCount、parentTaskId，以及规范化后的
+ * 完整 inputSnapshot（不漏未来字段）。requestKey 是唯一索引本身，不参与身份比较。
+ * 快速预查命中与原子插入冲突回读必须用同一函数，同 key 不同 body 才能稳定 409。
+ */
+export function buildTaskIdentity(input: CreateTaskInput): string {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      projectId: input.projectId,
+      mode: input.mode,
+      sourceSetId: input.sourceSetId || null,
+      libraryRevisionId: input.libraryRevisionId || null,
+      requestedCount: input.requestedCount,
+      parentTaskId: input.parentTaskId || null,
+      inputSnapshot: normalizeSnapshotValue(input.inputSnapshot),
+    }))
+    .digest('hex');
+}
+
+/** 从已存任务行构造其 canonical 身份（与 buildTaskIdentity 同构）。 */
+export function taskStoredIdentity(
+  task: Pick<ScriptStudioTaskRecord, 'projectId' | 'mode' | 'sourceSetId' | 'libraryRevisionId' | 'requestedCount' | 'parentTaskId' | 'inputSnapshotJson'>,
+): string {
+  let snapshot: Record<string, unknown> = {};
+  try {
+    snapshot = JSON.parse(task.inputSnapshotJson || '{}') as Record<string, unknown>;
+  } catch {
+    snapshot = {};
+  }
+  return createHash('sha256')
+    .update(JSON.stringify({
+      projectId: task.projectId,
+      mode: task.mode,
+      sourceSetId: task.sourceSetId || null,
+      libraryRevisionId: task.libraryRevisionId || null,
+      requestedCount: task.requestedCount,
+      parentTaskId: task.parentTaskId || null,
+      inputSnapshot: normalizeSnapshotValue(snapshot),
+    }))
+    .digest('hex');
+}
+
+/** 两个 canonical 身份是否一致（快速预查与冲突回读共用的比较器）。 */
+export function taskIdentitiesMatch(left: string, right: string): boolean {
+  return left === right;
+}
+
 export interface TaskView extends ScriptStudioTaskRecord {
   stages: ScriptStudioTaskStageRecord[];
 }
@@ -65,23 +126,34 @@ function stageSeq(db: Database.Database, taskId: string): number {
   return Number(row.seq) + 1;
 }
 
+/**
+ * 数据库层的原子 get-or-create：先校验数量（非法直接拒绝、不落库），再
+ * `INSERT ... ON CONFLICT(projectId, requestKey) DO NOTHING` 后回读。
+ * - 本次插入成功 → created:true；
+ * - 命中既有任务 → 用 canonical identity 比较：一致 created:false，不一致 409 conflict。
+ * 并发正确性由这个函数保证；route 外层预查只是快速路径，不再承担并发正确性。
+ *
+ * `ON CONFLICT DO NOTHING` 已在 SQL 层把唯一冲突处理成 0 行插入，所以这里**不**用
+ * try/catch 吞错误：唯一冲突外的失败（NOT NULL、FK、磁盘满、schema 未就绪……）必须
+ * 原样上抛，让调用方看到真实原因，而不是被伪装成 conflict。
+ */
 export function createTask(
   db: Database.Database,
   input: CreateTaskInput,
   now?: () => Date,
 ): { task: TaskView; created: boolean } {
-  const existing = db.prepare(`
-    SELECT * FROM script_studio_tasks WHERE projectId = ? AND requestKey = ?
-  `).get(input.projectId, input.requestKey) as ScriptStudioTaskRecord | undefined;
-  if (existing) return { task: getTask(db, input.projectId, existing.id)!, created: false };
+  // 非法数量在写库前拒绝（F1）：不落库、不掩盖非法输入。
+  const requestedCount = parseScriptStudioRequestedCount(input.requestedCount);
+  const identity = buildTaskIdentity({ ...input, requestedCount });
   const createdAt = nowIso(now);
   const id = randomUUID();
-  db.prepare(`
+  const result = db.prepare(`
     INSERT INTO script_studio_tasks
       (id, projectId, requestKey, mode, sourceSetId, libraryRevisionId, inputSnapshotJson,
        requestedCount, succeededCount, failedCount, status, currentStage, errorCode, errorMessage,
        leaseUntil, attemptCount, parentTaskId, createdAt, updatedAt)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'queued', '', NULL, NULL, NULL, 0, ?, ?, ?)
+    ON CONFLICT(projectId, requestKey) DO NOTHING
   `).run(
     id,
     input.projectId,
@@ -90,12 +162,117 @@ export function createTask(
     input.sourceSetId || null,
     input.libraryRevisionId || null,
     JSON.stringify(input.inputSnapshot),
-    Math.max(1, Number(input.requestedCount) || 1),
+    requestedCount,
     input.parentTaskId || null,
     createdAt,
     createdAt,
   );
-  return { task: getTask(db, input.projectId, id)!, created: true };
+  const inserted = result.changes > 0;
+  const row = db.prepare(`
+    SELECT * FROM script_studio_tasks WHERE projectId = ? AND requestKey = ?
+  `).get(input.projectId, input.requestKey) as ScriptStudioTaskRecord | undefined;
+  // 防御性兜底：插入成功但回读不到行属于内部异常（正常路径不可达），
+  // 不能用 conflict 码——那是给「同 key 不同 body」的语义。这里抛普通 Error，
+  // 经 errorResponse 落成 500 且保留真实信息。
+  if (!row) throw new Error(`任务创建失败：插入后未能回读到任务行（requestKey=${input.requestKey}）`);
+  const task = getTask(db, input.projectId, row.id)!;
+  if (inserted) return { task, created: true };
+  if (taskIdentitiesMatch(taskStoredIdentity(task), identity)) return { task, created: false };
+  throw new ScriptStudioError('conflict', '同一 requestKey 已对应不同请求内容，不能复用');
+}
+
+export interface TaskRequestParams {
+  projectId: string;
+  mode: 'first_extraction' | 'reuse';
+  sourceSetId?: string | null;
+  libraryRevisionId?: string | null;
+  targetDurationSec: number;
+  requestedCount: number;
+  creativeBrief: string;
+  targetScriptId?: string;
+  providerId: string;
+  /** 显式幂等键（「再生成一组」的 action key）；缺省时按参数派生。 */
+  explicitRequestKey?: string;
+}
+
+export interface TaskRequestDecision {
+  requestKey: string;
+  /** 命中既有任务（canonical identity 一致）→ 复用；否则为 null，走创建。 */
+  existing: TaskView | null;
+  /** 创建用的 inputSnapshot（含冻结的 providerId/providerModel）；复用路径为 null。 */
+  snapshot: Record<string, unknown> | null;
+}
+
+/**
+ * POST /tasks 的幂等决策（G5）：先走显式 key 快路径，命中既有任务就直接按冻结身份复用，
+ * **不解析当前供应商**——丢包重试期间供应商被删/不可用也不影响安全重放；只有确认要创建
+ * （显式 key 未命中，或派生 key）才调用 resolveProviders，冻结实际 providerId/providerModel
+ * 参与派生 key 与创建快照。resolveProviders 每个请求至多调用一次。
+ */
+export function decideTaskRequest(
+  db: Database.Database,
+  input: TaskRequestParams,
+  resolveProviders: (providerId: string) => { vision: { id: string; model: string } },
+): TaskRequestDecision {
+  const buildSnapshot = (pv: { id: string; model: string }): Record<string, unknown> => ({
+    targetDurationSec: input.targetDurationSec,
+    requestedCount: input.requestedCount,
+    creativeBrief: input.creativeBrief,
+    providerId: pv.id,
+    providerModel: pv.model,
+    ...(input.targetScriptId ? { targetScriptId: input.targetScriptId } : {}),
+  });
+  const reuseIfMatches = (existing: TaskView, requestKey: string): TaskView => {
+    let storedProvider: { id: string; model: string };
+    try {
+      const stored = JSON.parse(existing.inputSnapshotJson || '{}') as Record<string, unknown>;
+      storedProvider = {
+        id: typeof stored.providerId === 'string' ? stored.providerId : '',
+        model: typeof stored.providerModel === 'string' ? stored.providerModel : '',
+      };
+    } catch {
+      storedProvider = { id: '', model: '' };
+    }
+    const candidateIdentity = buildTaskIdentity({
+      projectId: input.projectId,
+      requestKey,
+      mode: input.mode,
+      sourceSetId: input.sourceSetId ?? null,
+      libraryRevisionId: input.libraryRevisionId ?? null,
+      requestedCount: input.requestedCount,
+      parentTaskId: existing.parentTaskId,
+      inputSnapshot: buildSnapshot(storedProvider),
+    });
+    if (!taskIdentitiesMatch(taskStoredIdentity(existing), candidateIdentity)) {
+      throw new ScriptStudioError('conflict', '同一 requestKey 已对应不同请求内容，不能复用');
+    }
+    return existing;
+  };
+
+  const explicitKey = input.explicitRequestKey?.trim() || '';
+  if (explicitKey) {
+    const existing = getTaskByRequestKey(db, input.projectId, explicitKey);
+    if (existing) return { requestKey: explicitKey, existing: reuseIfMatches(existing, explicitKey), snapshot: null };
+    // 显式 key 未命中：需要创建，此刻才解析当前供应商。
+    const providers = resolveProviders(input.providerId);
+    return { requestKey: explicitKey, existing: null, snapshot: buildSnapshot(providers.vision) };
+  }
+  // 派生 key：解析当前供应商构造 key（key 含 providerId/model），再查既有任务。
+  const providers = resolveProviders(input.providerId);
+  const requestKey = createScriptStudioTaskRequestKey({
+    projectId: input.projectId,
+    mode: input.mode,
+    sourceSetId: input.sourceSetId ?? null,
+    libraryRevisionId: input.libraryRevisionId ?? null,
+    targetDurationSec: input.targetDurationSec,
+    requestedCount: input.requestedCount,
+    creativeBrief: input.creativeBrief,
+    providerId: providers.vision.id,
+    providerModel: providers.vision.model,
+  });
+  const existing = getTaskByRequestKey(db, input.projectId, requestKey);
+  if (existing) return { requestKey, existing: reuseIfMatches(existing, requestKey), snapshot: null };
+  return { requestKey, existing: null, snapshot: buildSnapshot(providers.vision) };
 }
 
 export function getTask(

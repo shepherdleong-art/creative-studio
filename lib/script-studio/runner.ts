@@ -20,6 +20,7 @@ import { planDirectionBriefs, type DirectionSellingPointBrief } from './directio
 import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
 import { planScriptDirections } from './planner.ts';
 import { getScriptStudioLimits } from './limits.ts';
+import { parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from './generation-contract.ts';
 import { isScriptStudioTaskCancelRequested } from './scheduler.ts';
 import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles, type TileSetResult } from './tiling.ts';
 import {
@@ -57,19 +58,11 @@ export interface ScriptStudioRunResult {
 }
 
 function parseTargetDuration(input: Record<string, unknown>): number {
-  const value = Number(input.targetDurationSec);
-  if (![15, 20, 30, 45, 60].includes(value)) {
-    throw new ScriptStudioError('invalid_input', '目标时长仅支持 15、20、30、45 或 60 秒');
-  }
-  return value;
+  return parseScriptStudioTargetDuration(input.targetDurationSec);
 }
 
 function parseRequestedCount(input: Record<string, unknown>): number {
-  const value = Math.floor(Number(input.requestedCount));
-  if (!Number.isInteger(value) || value < 1 || value > 5) {
-    throw new ScriptStudioError('invalid_input', '生成数量必须是 1-5 的整数');
-  }
-  return value;
+  return parseScriptStudioRequestedCount(input.requestedCount);
 }
 
 function parseCreativeBrief(input: Record<string, unknown>): string {

@@ -908,34 +908,172 @@ try {
     await page.getByRole('button', { name: /预览调整/ }).click();
     await fontsPrefetched;
     await page.locator('[data-track="video"]').waitFor();
-    // 字幕样式下拉框：自动合并 OS 注册字体（桩），无需点「刷新」。
-    await page.waitForFunction(() => [...document.querySelectorAll('select[aria-label="文本样式字体"] option')].some((option) => option.textContent === 'AaHouDiHei'), null, { timeout: 4000 })
-      .catch(() => { assert.fail('字幕样式字体下拉框必须自动合并 queryLocalFonts 的 OS 注册字体'); });
+    // SystemFontPicker 浮层里的字体选择按钮（data-font-control="select"）与其 family 名集合。
+    // aria-label = family + （当前）/（当前未检测到）后缀，比较时剥掉后缀。
+    const fontFamiliesIn = async (scope) => (await scope.locator('[data-font-control="select"]').evaluateAll((els) => els.map((el) => (el.getAttribute('aria-label') || '').replace(/[（(].*$/u, ''))));
+    const openCoverFontDialog = async () => {
+      await page.getByRole('button', { name: '封面共享字体' }).click();
+      const dialog = page.getByRole('dialog', { name: '封面共享字体选择' });
+      await dialog.waitFor();
+      return dialog;
+    };
+    // 字幕样式字体选择器：自动合并 queryLocalFonts 的 OS 注册字体（桩），无需点「刷新」。
+    await page.getByRole('button', { name: '文本样式字体' }).click();
+    const subtitleFontDialog = page.getByRole('dialog', { name: '文本样式字体选择' });
+    await subtitleFontDialog.waitFor();
+    await subtitleFontDialog.getByRole('button', { name: /^AaHouDiHei/ }).waitFor({ timeout: 4000 })
+      .catch(() => { assert.fail('字幕样式字体选择器必须自动合并 queryLocalFonts 的 OS 注册字体'); });
+    await page.keyboard.press('Escape');
     const expectedOptions = ['PingFang SC', ...fontListBody, 'AaHouDiHei'];
+    // 封面抽屉打开的首帧就必须是全量字体（服务端 + 本机合并，进入步骤时已预取）。
     await page.getByRole('button', { name: /视频封面设置/ }).click();
-    const fontSelect = page.getByLabel('封面共享字体');
-    await fontSelect.waitFor({ state: 'attached' });
-    assert.deepEqual(
-      await fontSelect.locator('option').allTextContents(),
-      expectedOptions,
-      '封面抽屉打开的首帧就必须是全量字体（服务端 + 本机合并，进入步骤时已预取）',
-    );
+    let coverFontDialog = await openCoverFontDialog();
+    assert.deepEqual([...(await fontFamiliesIn(coverFontDialog))].sort(), [...expectedOptions].sort(), '封面抽屉打开的首帧就必须是全量字体（服务端 + 本机合并，进入步骤时已预取）');
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '关闭封面精调' }).click();
+    // 重开抽屉首帧同样必须是全量字体（会话缓存）。
     await page.getByRole('button', { name: /视频封面设置/ }).click();
-    await fontSelect.waitFor({ state: 'attached' });
-    assert.deepEqual(await fontSelect.locator('option').allTextContents(), expectedOptions, '重开抽屉首帧同样必须是全量字体（会话缓存）');
+    coverFontDialog = await openCoverFontDialog();
+    assert.deepEqual([...(await fontFamiliesIn(coverFontDialog))].sort(), [...expectedOptions].sort(), '重开抽屉首帧同样必须是全量字体（会话缓存）');
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '关闭封面精调' }).click();
     // 会话缓存不得冻结列表：模拟新装字体（服务端重扫会返回更多），重开抽屉
     // 首帧仍先显示缓存（不闪跳），随后必须无需点「刷新字体」就自动重校验到最新列表。
     fontListBody = [...fontListBody, 'SimHei', 'Consolas'];
     await page.getByRole('button', { name: /视频封面设置/ }).click();
-    await fontSelect.waitFor({ state: 'attached' });
-    assert.deepEqual(await fontSelect.locator('option').allTextContents(), expectedOptions, '重开首帧仍先显示会话缓存（不闪跳）');
-    await page.waitForFunction((expected) => document.querySelectorAll('select[aria-label="封面共享字体"] option').length === expected, expectedOptions.length + 2, { timeout: 4000 })
+    coverFontDialog = await openCoverFontDialog();
+    assert.deepEqual([...(await fontFamiliesIn(coverFontDialog))].sort(), [...expectedOptions].sort(), '重开首帧仍先显示会话缓存（不闪跳）');
+    await page.waitForFunction((expected) => document.querySelectorAll('[data-font-control="select"]').length === expected, expectedOptions.length + 2, { timeout: 4000 })
       .catch(() => { assert.fail('新装字体后，重开抽屉必须自动重校验到最新列表，不能等用户点「刷新字体」'); });
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '关闭封面精调' }).click();
     await page.evaluate(() => { window.__e2eLocalFonts = []; });
     fontListDelayMs = 0;
+    fontListBody = ['Arial'];
+
+    // ---- F4 交互回归：搜索 / 收藏 / 提交 / 键盘 / Esc 分层 ----
+    fontListBody = ['Arial', 'Songti SC', 'Heiti SC', 'Microsoft YaHei'];
+    fontListDelayMs = 400;
+    await page.getByRole('button', { name: /视频封面设置/ }).click();
+    const coverDialogF4 = page.getByRole('dialog', { name: '精调封面' });
+    await coverDialogF4.waitFor();
+    await page.getByRole('button', { name: '封面共享字体' }).click();
+    const fontDlgF4 = page.getByRole('dialog', { name: '封面共享字体选择' });
+    await fontDlgF4.waitFor();
+    // 收藏非首项：只改收藏，不改变当前选择、不关闭浮层；立即进入收藏页签且排首位。
+    await fontDlgF4.getByRole('button', { name: '收藏 Songti SC' }).click();
+    assert.equal(await page.getByRole('button', { name: '封面共享字体' }).getAttribute('aria-expanded'), 'true', '点星标不得关闭字体浮层');
+    assert.equal(await page.getByRole('button', { name: '封面共享字体' }).textContent(), 'Arial', '点星标不得改变当前选择（触发器仍显示原字体）');
+    await fontDlgF4.getByRole('tab', { name: '收藏' }).click();
+    assert.match(await fontDlgF4.locator('[data-font-control="select"]').first().getAttribute('aria-label') ?? '', /^Songti SC/, '收藏项必须排在收藏页首位');
+    // 收藏了但当前未检测到的字体：留在收藏页、标「未检测到」、不可选但星标仍可取消。
+    await page.evaluate(() => {
+      localStorage.setItem('creative-studio-font-favorites-v1', JSON.stringify(['Songti SC', 'Ghost Font XYZ']));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'creative-studio-font-favorites-v1' }));
+    });
+    const ghostSelect = fontDlgF4.locator('[data-font-control="select"][aria-disabled="true"]');
+    await ghostSelect.waitFor();
+    assert.match(await ghostSelect.getAttribute('aria-label') ?? '', /^Ghost Font XYZ（当前未检测到）/, '缺失收藏必须标注「当前未检测到」');
+    // force：Playwright 把 aria-disabled 当作不可点，这里就是要验证「点了也不生效」。
+    await ghostSelect.click({ force: true });
+    assert.equal(await page.getByRole('button', { name: '封面共享字体' }).textContent(), 'Arial', '点缺失字体的选择按钮不得改变当前字体');
+    await fontDlgF4.getByRole('button', { name: '取消收藏 Ghost Font XYZ' }).click();
+    assert.equal(await ghostSelect.count(), 0, '缺失收藏的星标必须仍可取消');
+    // 「全部」页同时存在收藏与非收藏时必须出现分组标题。
+    await fontDlgF4.getByRole('tab', { name: '全部' }).click();
+    assert.equal(await fontDlgF4.getByText('收藏', { exact: true }).count() >= 1, true, '全部页收藏组必须有分组标题');
+    assert.equal(await fontDlgF4.getByText('全部字体', { exact: true }).count(), 1, '全部页其余字体必须有分组标题');
+    // 搜索只留下匹配项；清空恢复；空结果不阻塞。
+    await fontDlgF4.getByRole('tab', { name: '全部' }).click();
+    const searchInputF4 = fontDlgF4.getByPlaceholder('搜索字体');
+    await searchInputF4.fill('songti');
+    const filteredF4 = await fontDlgF4.locator('[data-font-control="select"]').evaluateAll((els) => els.map((el) => el.getAttribute('aria-label')));
+    assert.ok(filteredF4.length >= 1 && filteredF4.every((name) => /^Songti SC/.test(name)), '搜索必须只留下匹配项');
+    await searchInputF4.fill('zzz-not-a-font');
+    assert.equal(await fontDlgF4.getByText('没有找到匹配字体').isVisible(), true, '空结果必须显示没有找到匹配字体');
+    await fontDlgF4.getByRole('button', { name: '清空搜索' }).click();
+    // 点字体行：应用一次并关闭浮层，触发器显示新 family。
+    await fontDlgF4.getByRole('button', { name: /^Songti SC/ }).click();
+    await fontDlgF4.waitFor({ state: 'detached' });
+    assert.equal(await page.getByRole('button', { name: '封面共享字体' }).textContent(), 'Songti SC', '选择后触发器必须显示新字体');
+    // Esc 分层：字体浮层打开时第一次 Esc 只关面板，第二次 Esc 才关抽屉。
+    await page.getByRole('button', { name: '封面共享字体' }).click();
+    await fontDlgF4.waitFor();
+    await page.keyboard.press('Escape');
+    await fontDlgF4.waitFor({ state: 'detached' });
+    assert.equal(await coverDialogF4.isVisible(), true, '第一次 Esc 只关字体面板，不得关抽屉');
+    await page.keyboard.press('Escape');
+    assert.equal(await coverDialogF4.isVisible(), false, '第二次 Esc 才关闭抽屉');
+    await page.evaluate(() => { localStorage.removeItem('creative-studio-font-favorites-v1'); });
+    fontListDelayMs = 0;
+    fontListBody = ['Arial'];
+
+    // ---- G1/G2 键盘回归：渐进加载的 End 与第 80/81 边界 ArrowDown ----
+    fontListBody = ['Arial', ...Array.from({ length: 90 }, (_, i) => `KFont ${String(i + 1).padStart(2, '0')}`)];
+    await page.getByRole('button', { name: /视频封面设置/ }).click();
+    const coverDialogG = page.getByRole('dialog', { name: '精调封面' });
+    await coverDialogG.waitFor();
+    await page.getByRole('button', { name: '封面共享字体' }).click();
+    const fontDlgG = page.getByRole('dialog', { name: '封面共享字体选择' });
+    await fontDlgG.waitFor();
+    // 等待 SWR 把 90+ 字体补齐（首帧是旧缓存，量少）：首批固定渲染 80 行，页脚显示「80+ 个字体」即为补齐。
+    // 超时放宽到 10s，容忍 dev server 按需编译 /api/system-fonts 或组件 chunk 的延迟。
+    await expectEventually(async () => (await fontDlgG.getByText('80+ 个字体').count()) >= 1, '字体数据应超过 80 项（SWR 补齐）', 10_000);
+    const activeFontRow = () => page.evaluate(() => document.activeElement?.dataset?.fontRow);
+    const activeFontControl = () => page.evaluate(() => document.activeElement?.dataset?.fontControl);
+    // 从搜索框一路 ArrowDown 走到第 80 行（当前批次最后一行，data-font-row=79）。
+    await fontDlgG.getByPlaceholder('搜索字体').click();
+    for (let i = 0; i < 80; i += 1) await page.keyboard.press('ArrowDown');
+    await expectEventually(async () => (await activeFontRow()) === '79', '应到达第 80 行', 3000);
+    // 第 80 行按一次 ArrowDown 必须落到第 81 行（data-font-row=80），不能停在原地。
+    await page.keyboard.press('ArrowDown');
+    await expectEventually(async () => (await activeFontRow()) === '80', '第 80 项按一次 ArrowDown 必须聚焦到第 81 项', 3000);
+    // End：加载完整结果并聚焦真正的末项（92 行 → data-font-row=91），不是扩容前的第 80 项。
+    await page.keyboard.press('End');
+    await expectEventually(async () => (await fontDlgG.locator('[data-font-control="select"]').count()) >= 92, 'End 必须加载完整列表', 3000);
+    const totalRowsG1 = await fontDlgG.locator('[data-font-control="select"]').count();
+    await expectEventually(async () => (await activeFontRow()) === String(totalRowsG1 - 1), 'End 必须聚焦扩容后的真正末项', 3000);
+    assert.ok((await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? '')).startsWith('PingFang SC'), '末项应为排序结果末尾');
+    // ArrowUp 回退一行；Home 回第一行；ArrowRight/Left 在选择↔星标间切换。
+    await page.keyboard.press('ArrowUp');
+    await expectEventually(async () => (await activeFontRow()) === String(totalRowsG1 - 2), 'ArrowUp 必须回到倒数第二项', 3000);
+    await page.keyboard.press('Home');
+    await expectEventually(async () => (await activeFontRow()) === '0', 'Home 必须聚焦第一行', 3000);
+    await page.keyboard.press('ArrowRight');
+    await expectEventually(async () => (await activeFontControl()) === 'star', 'ArrowRight 必须切到星标按钮', 3000);
+    await page.keyboard.press('ArrowLeft');
+    await expectEventually(async () => (await activeFontControl()) === 'select', 'ArrowLeft 必须切回选择按钮', 3000);
+    // 收藏页全部为缺失字体：ArrowDown 聚焦 aria-disabled 选择按钮，激活不改字体，ArrowRight 到星标可取消收藏。
+    await page.evaluate(() => {
+      localStorage.setItem('creative-studio-font-favorites-v1', JSON.stringify(['MissingFontA', 'MissingFontB']));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'creative-studio-font-favorites-v1' }));
+    });
+    await fontDlgG.getByRole('tab', { name: '收藏' }).click();
+    await expectEventually(async () => (await fontDlgG.locator('[data-font-control="select"][aria-disabled="true"]').count()) >= 2, '收藏页应显示缺失字体行', 3000);
+    await fontDlgG.getByPlaceholder('搜索字体').click();
+    await page.keyboard.press('ArrowDown');
+    await expectEventually(async () => (await activeFontRow()) === '0', 'ArrowDown 必须聚焦收藏页第一行', 3000);
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-disabled')), 'true', '缺失字体选择按钮必须 aria-disabled');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.getByRole('button', { name: '封面共享字体' }).textContent(), 'Arial', '激活 aria-disabled 选择按钮不得改字体');
+    await page.keyboard.press('ArrowRight');
+    await expectEventually(async () => (await activeFontControl()) === 'star', 'ArrowRight 必须到缺失行的星标', 3000);
+    await page.keyboard.press('Enter');
+    await expectEventually(async () => (await fontDlgG.locator('[data-font-control="select"]').count()) === 1, '取消收藏后收藏页只剩一项', 3000);
+    // G4：从字体面板最后一个控件 Tab，焦点应落到「共享字体」所在 section 的下一个控件（主标题文字），
+    // 而不是抽屉页脚；全程不跳出抽屉（Tab 移出时字体面板自动关闭是预期行为）。
+    await fontDlgG.getByRole('button', { name: '刷新字体' }).focus();
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '主标题文字', 'Tab 必须落到共享字体 section 的下一个控件，而不是抽屉页脚');
+    await page.keyboard.press('Shift+Tab');
+    const backLabelG4 = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+    assert.ok(!/^(取消|应用)/.test(backLabelG4 ?? ''), `Shift+Tab 不得回到抽屉页脚（实际 ${backLabelG4}）`);
+    assert.equal(await coverDialogG.isVisible(), true, '全程不跳出抽屉');
+    await page.keyboard.press('Escape');
+    await fontDlgG.waitFor({ state: 'detached' });
+    await page.keyboard.press('Escape');
+    assert.equal(await coverDialogG.isVisible(), false, '键盘回归结束后抽屉应已关闭');
+    await page.evaluate(() => { localStorage.removeItem('creative-studio-font-favorites-v1'); });
     fontListBody = ['Arial'];
 
     const openCoverDrawer = async () => {

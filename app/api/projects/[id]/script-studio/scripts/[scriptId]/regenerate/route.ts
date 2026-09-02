@@ -52,7 +52,7 @@ export async function POST(
       },
       requestedCount: 1,
     });
-    return NextResponse.json({ task: toTaskSnapshot(created.task), created: true }, { status: 202 });
+    return NextResponse.json({ task: toTaskSnapshot(created.task), created: created.created }, { status: 202 });
   } catch (error) {
     const result = errorResponse(error);
     return NextResponse.json(result.body, { status: result.status });

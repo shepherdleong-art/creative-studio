@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { getCachedFontOptions, requestFontOptions } from '@/components/system-fonts';
+import { useState } from 'react';
+import SystemFontPicker from '@/components/ui/SystemFontPicker';
 import type { CoverPresetV2, FinalEditAssetView, FinalEditGroupView, FinalEditVariantView, SubtitleCue, TextStyle, TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from './command-types';
 import styles from './FinalEditEditor.module.css';
@@ -181,27 +181,14 @@ function SectionTitle({ title, action, onAction }: { title: string; action?: str
 
 export function StyleEditor({ value, onPreview, onCommit }: { value: TextStyle; onPreview: (style: TextStyle) => void; onCommit: (style: TextStyle) => void }) {
   const [draft, setDraft] = useState(value);
-  const [fonts, setFonts] = useState<string[]>(() => [...new Set([value.fontFamily, ...(getCachedFontOptions() ?? [])])]);
 
-  useEffect(() => {
-    void requestFontOptions().then((options) => {
-      setFonts([...new Set([value.fontFamily, ...options])]);
-    }).catch(() => undefined);
-  }, [value.fontFamily]);
-
-  const refreshFonts = async () => {
-    try {
-      const options = await requestFontOptions(true);
-      setFonts([...new Set([value.fontFamily, ...options])]);
-    } catch { /* 刷新失败不阻塞编辑。 */ }
-  };
   const preview = (patch: Partial<TextStyle>) => { const next = { ...draft, ...patch }; setDraft(next); onPreview(next); };
   const commit = (patch: Partial<TextStyle>) => { const next = { ...draft, ...patch }; setDraft(next); onPreview(next); onCommit(next); };
 
   return (
     <div>
       <label className={styles.fieldLabel}>字体</label>
-      <div className={styles.sliderRow}><select aria-label="文本样式字体" className={styles.input} value={draft.fontFamily} onChange={(event) => commit({ fontFamily: event.target.value })}>{fonts.map((font) => <option key={font}>{font}</option>)}</select><button type="button" className={styles.actionButton} onClick={() => void refreshFonts()}>刷新</button></div>
+      <div className={styles.sliderRow}><SystemFontPicker value={draft.fontFamily} ariaLabel="文本样式字体" onChange={(fontFamily) => commit({ fontFamily, fontPostscriptName: undefined })} /></div>
       <Slider label="字号" value={draft.fontSizePx} min={12} max={180} step={1} onPreview={(fontSizePx) => preview({ fontSizePx })} onCommit={(fontSizePx) => commit({ fontSizePx })} />
       <Slider label="X 位置" value={draft.x} min={0} max={1} step={0.01} onPreview={(x) => preview({ x })} onCommit={(x) => commit({ x })} />
       <Slider label="Y 位置" value={draft.y} min={0} max={1} step={0.01} onPreview={(y) => preview({ y })} onCommit={(y) => commit({ y })} />

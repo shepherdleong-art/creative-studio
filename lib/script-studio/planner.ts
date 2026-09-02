@@ -1,5 +1,6 @@
 import { getScriptTemplate, type ScriptTemplateDefinition } from '../script-templates.ts';
 import type { LibraryRevisionView } from './libraries.ts';
+import { parseScriptStudioRequestedCount } from './generation-contract.ts';
 
 export interface PlannedScript {
   index: number;
@@ -55,7 +56,8 @@ export function planScriptDirections(
   count: number,
   creativeBrief: string,
 ): { plans: PlannedScript[]; audience: string; tone: string; platform: string } {
-  const requested = Math.max(1, Math.min(5, Math.floor(count) || 3));
+  // 数量走共享契约:非法值直接拒绝,不再 Math.min/Math.floor 静默钳制。
+  const requested = parseScriptStudioRequestedCount(count);
   const selectedIds: string[] = [];
   const pointTypes = new Set(revision.sellingPoints.map((point) => point.pointType));
   const preferred = DIVERSITY_ORDER.filter((id) => {

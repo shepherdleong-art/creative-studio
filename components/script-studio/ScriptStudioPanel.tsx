@@ -6,6 +6,10 @@ import type {
   ScriptStudioScriptContent,
   ScriptStudioTaskSnapshot,
 } from '@/lib/script-studio/types';
+import {
+  SCRIPT_GENERATION_UI_OPTIONS,
+  SCRIPT_TARGET_DURATION_OPTIONS,
+} from '@/lib/script-studio/generation-contract';
 
 interface Props {
   projectId: string;
@@ -392,6 +396,16 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [task, setTask] = useState<ScriptStudioTaskSnapshot | null>(null);
   const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [requestedCount, setRequestedCount] = useState(3);
+  /** 「再生成一组」本次专用参数:与第 1 页表单不共享隐式状态,切换结果组时按 inputSnapshot 初始化一次。 */
+  const [regenerateDuration, setRegenerateDuration] = useState(15);
+  const [regenerateCount, setRegenerateCount] = useState(3);
+  /** 上一动作结果不确定(5xx/断连)时保留 action,按钮呈现「重试本次提交」。 */
+  const [regeneratePending, setRegeneratePending] = useState(false);
+  /** 不可变的再生成 action:requestKey + 完整 POST body,重试原样复用,不从最新表单重建。 */
+  const pendingRegenerationRef = useRef<{ requestKey: string; body: Record<string, unknown> } | null>(null);
+  /** 同步 in-flight guard:极速双击最多发一次 fetch。 */
+  const inFlightRegenerationRef = useRef(false);
+  const lastRegenerateSourceTaskIdRef = useRef<string | null>(null);
   const [creativeBrief, setCreativeBrief] = useState('');
   const [providers, setProviders] = useState<ScriptProviderView[]>([]);
   const [providerId, setProviderId] = useState('');
@@ -567,10 +581,19 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     }
   }, []);
 
-  const startTask = useCallback(async (sourceSetId: string | null, libraryRevisionId: string | null) => {
-    if (!providerId) {
+  /** 提交生成任务。F2：接收完整显式参数，不再从闭包读取关键字段；显式 requestKey 仅再生成使用。 */
+  const startTask = useCallback(async (request: {
+    sourceSetId: string | null;
+    libraryRevisionId: string | null;
+    targetDurationSec: number;
+    requestedCount: number;
+    creativeBrief: string;
+    providerId: string;
+    requestKey?: string;
+  }): Promise<boolean> => {
+    if (!request.providerId) {
       setError('请先选择一个已配置且支持图片读取的脚本模型');
-      return;
+      return false;
     }
     setSubmitting(true);
     setError('');
@@ -579,30 +602,49 @@ export default function ScriptStudioPanel({ projectId }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sourceSetId,
-          libraryRevisionId,
-          targetDurationSec,
-          requestedCount,
-          creativeBrief,
-          providerId,
+          sourceSetId: request.sourceSetId,
+          libraryRevisionId: request.libraryRevisionId,
+          targetDurationSec: request.targetDurationSec,
+          requestedCount: request.requestedCount,
+          creativeBrief: request.creativeBrief,
+          providerId: request.providerId,
+          ...(request.requestKey ? { requestKey: request.requestKey } : {}),
         }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         setError(data.message || data.error || `HTTP ${response.status}`);
-        return;
+        return false;
       }
       const nextTask = data.task as ScriptStudioTaskSnapshot;
       setTask(nextTask);
       setStep(2);
       setNotice(data.schedulerEnabled ? '' : '任务已创建；真实供应商调用尚未授权，需启用调度器后执行');
       startPolling(nextTask.id);
+      return true;
     } catch (err) {
       setError(String(err));
+      return false;
     } finally {
       setSubmitting(false);
     }
-  }, [projectId, targetDurationSec, requestedCount, creativeBrief, providerId, startPolling]);
+  }, [projectId, startPolling]);
+
+  /** 切换到一个新结果组时，把「再生成一组」的条数/秒数控件按该任务 inputSnapshot 初始化一次。 */
+  useEffect(() => {
+    if (!task) return;
+    if (task.id === lastRegenerateSourceTaskIdRef.current) return;
+    lastRegenerateSourceTaskIdRef.current = task.id;
+    const snapshot = task.inputSnapshot || {};
+    const count = typeof snapshot.requestedCount === 'number' ? snapshot.requestedCount : 3;
+    const duration = typeof snapshot.targetDurationSec === 'number' ? snapshot.targetDurationSec : 15;
+    // 延迟到宏任务执行,避免 effect 内同步 setState 触发级联渲染。
+    const timer = window.setTimeout(() => {
+      if (Number.isInteger(count) && count >= 1 && count <= 6) setRegenerateCount(count);
+      if (SCRIPT_TARGET_DURATION_OPTIONS.includes(duration as (typeof SCRIPT_TARGET_DURATION_OPTIONS)[number])) setRegenerateDuration(duration);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [task]);
 
   const handleAnalyze = useCallback(async () => {
     if (!providerId) {
@@ -614,7 +656,14 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       return;
     }
     if (assets.length === 0 && libraryReady) {
-      await startTask(null, null);
+      await startTask({
+        sourceSetId: null,
+        libraryRevisionId: null,
+        targetDurationSec,
+        requestedCount,
+        creativeBrief,
+        providerId,
+      });
       return;
     }
     const response = await fetch(`/api/projects/${projectId}/script-studio/source-sets`, {
@@ -627,8 +676,15 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       setError(data.message || data.error || '创建详情页来源失败');
       return;
     }
-    await startTask(data.sourceSetId as string, null);
-  }, [assets, libraryReady, projectId, providerId, startTask]);
+    await startTask({
+      sourceSetId: data.sourceSetId as string,
+      libraryRevisionId: null,
+      targetDurationSec,
+      requestedCount,
+      creativeBrief,
+      providerId,
+    });
+  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, providerId, startTask]);
 
   const switchRevision = useCallback(async (scriptId: string, revisionId: string) => {
     await fetch(`/api/projects/${projectId}/script-studio/scripts/${scriptId}/current`, {
@@ -710,13 +766,75 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     }
   }, [projectId, task, startPolling]);
 
+  /** 发送不可变的再生成 action。202 明确成功或 4xx 明确拒绝后清 action；5xx/断连保留供重试。 */
+  const runRegenerateAction = useCallback(async (action: { requestKey: string; body: Record<string, unknown> }) => {
+    if (inFlightRegenerationRef.current) return;
+    inFlightRegenerationRef.current = true;
+    setSubmitting(true);
+    setError('');
+    try {
+      const response = await fetch(`/api/projects/${projectId}/script-studio/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action.body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && response.status === 202) {
+        const nextTask = data.task as ScriptStudioTaskSnapshot;
+        setTask(nextTask);
+        setStep(2);
+        setNotice(data.schedulerEnabled ? '' : '任务已创建；真实供应商调用尚未授权，需启用调度器后执行');
+        startPolling(nextTask.id);
+        pendingRegenerationRef.current = null;
+        setRegeneratePending(false);
+        return;
+      }
+      if (response.status >= 400 && response.status < 500) {
+        // 明确不可重试的业务拒绝（例如参数型 4xx）：清理 action。
+        setError(data.message || data.error || `HTTP ${response.status}`);
+        pendingRegenerationRef.current = null;
+        setRegeneratePending(false);
+        return;
+      }
+      // 5xx / 未知结果：保留 action，按钮呈现「重试本次提交」，不得从最新表单重建 body。
+      setError(data.message || data.error || `提交失败（${response.status}），可点击「重试本次提交」`);
+    } catch (err) {
+      setError(`提交失败：${String(err)}，可点击「重试本次提交」`);
+    } finally {
+      inFlightRegenerationRef.current = false;
+      setSubmitting(false);
+    }
+  }, [projectId, startPolling]);
+
   const regenerateGroup = useCallback(() => {
     if (!libraryRevisionId) {
       setError('当前项目没有可复用的卖点库');
       return;
     }
-    void startTask(null, libraryRevisionId);
-  }, [libraryRevisionId, startTask]);
+    if (inFlightRegenerationRef.current) return;
+    if (!providerId) {
+      setError('请先选择一个已配置且支持图片读取的脚本模型');
+      return;
+    }
+    // 第一次点击冻结不可变 action：key + 完整 POST body；同一次传输的重试原样复用。
+    if (!pendingRegenerationRef.current) {
+      const requestKey = `regenerate-group:${crypto.randomUUID()}`;
+      pendingRegenerationRef.current = {
+        requestKey,
+        body: {
+          sourceSetId: null,
+          libraryRevisionId,
+          targetDurationSec: regenerateDuration,
+          requestedCount: regenerateCount,
+          creativeBrief,
+          providerId,
+          requestKey,
+        },
+      };
+      setRegeneratePending(true);
+    }
+    void runRegenerateAction(pendingRegenerationRef.current);
+  }, [libraryRevisionId, regenerateDuration, regenerateCount, creativeBrief, providerId, runRegenerateAction]);
 
   const cancelTask = useCallback(async () => {
     if (!task || !['queued', 'running'].includes(task.status)) return;
@@ -950,13 +1068,13 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               <div>
                 <label className="label">目标时长</label>
                 <select value={targetDurationSec} onChange={(event) => setTargetDurationSec(Number(event.target.value))} className="input-field">
-                  {[15, 20, 30, 45, 60].map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
+                  {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                 </select>
               </div>
               <div>
                 <label className="label">生成数量</label>
                 <select value={requestedCount} onChange={(event) => setRequestedCount(Number(event.target.value))} className="input-field">
-                  {[1, 2, 3, 5].map((count) => <option key={count} value={count}>{count} 条并列方案</option>)}
+                  {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count} 条并列方案</option>)}
                 </select>
               </div>
               <div>
@@ -1176,7 +1294,20 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {libraryRevisionId && <span className="text-xs text-ok">✓ 再生成只复用卖点库，不重新识图</span>}
-                <button type="button" onClick={regenerateGroup} className="btn-secondary btn-sm">再生成一组</button>
+                {/* F2：再生成一组可单独指定本次条数/秒数（不与第 1 页表单共享隐式状态）。 */}
+                <label className="flex items-center gap-1 text-xs text-ink-secondary">
+                  条数
+                  <select value={regenerateCount} onChange={(event) => setRegenerateCount(Number(event.target.value))} className="input-field h-8 w-[68px] px-1.5 text-xs" aria-label="再生成条数">
+                    {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count}</option>)}
+                  </select>
+                </label>
+                <label className="flex items-center gap-1 text-xs text-ink-secondary">
+                  时长
+                  <select value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 text-xs" aria-label="再生成时长">
+                    {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
+                  </select>
+                </label>
+                <button type="button" onClick={regenerateGroup} disabled={submitting} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : '再生成一组'}</button>
                 {(task?.status === 'partial' || task?.status === 'failed') && (
                   <button type="button" onClick={() => void retryTask()} className="btn-secondary btn-sm">补跑缺失条目</button>
                 )}
