@@ -30,7 +30,13 @@ const FONT_DIRECTORIES: Record<string, string[]> = {
     '/Library/Fonts',
     path.join(os.homedir(), 'Library', 'Fonts'),
   ],
-  win32: [path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts')],
+  // Windows 字体有两个标准位置：系统目录（为所有用户安装）与 per-user 目录
+  // %LOCALAPPDATA%\Microsoft\Windows\Fonts（Win10+ 默认的「仅当前用户」安装，
+  // 第三方字体与字体管家大多落在这里）。缺后者会漏掉整批用户字体。
+  win32: [
+    path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts'),
+    path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Microsoft', 'Windows', 'Fonts'),
+  ],
   linux: ['/usr/share/fonts', path.join(os.homedir(), '.local', 'share', 'fonts')],
 };
 

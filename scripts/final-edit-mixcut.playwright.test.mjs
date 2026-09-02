@@ -728,6 +728,11 @@ try {
       assert.ok(box.stageBottom <= box.bigPaperBottom + 0.5, `${label}: 预览底边必须始终在大纸内（规格 §9）`);
     };
 
+    await page.addInitScript(() => {
+      // e2e 桩：模拟字体管家按需激活的字体——仅 OS 注册可见、服务端扫盘扫不到。
+      window.__e2eLocalFonts = [];
+      window.queryLocalFonts = async () => (window.__e2eLocalFonts || []).map((family) => ({ family }));
+    });
     const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
     await page.goto(formalUrl, { waitUntil: 'networkidle' });
     await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
@@ -892,37 +897,44 @@ try {
     await page.getByText('字号', { exact: true }).waitFor();
     await page.getByText('描边', { exact: true }).waitFor();
 
-    // 字体列表回归（会话缓存 + 进入步骤即预取）：封面抽屉打开的首帧就必须是全量字体，
-    // 不能先只有置顶项「PingFang SC」、等抽屉自己 fetch 回来才填满（用户体感「字体逐渐出现」）。
+    // 字体列表回归（会话缓存 + 进入步骤即预取 + queryLocalFonts 合并）：
+    // 封面抽屉/字幕样式打开的首帧就必须是全量字体，不能先只有置顶项再填满；
+    // 仅 OS 注册（字体管家激活、服务端扫盘扫不到）的字体也必须自动合并进来。
     fontListBody = ['Arial', 'Songti SC', 'Heiti SC', 'Microsoft YaHei'];
     fontListDelayMs = 600;
     await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.evaluate(() => { window.__e2eLocalFonts = ['AaHouDiHei']; });
     const fontsPrefetched = page.waitForResponse((response) => response.url().includes('/api/system-fonts'), { timeout: 8000 }).catch(() => null);
     await page.getByRole('button', { name: /预览调整/ }).click();
     await fontsPrefetched;
     await page.locator('[data-track="video"]').waitFor();
+    // 字幕样式下拉框：自动合并 OS 注册字体（桩），无需点「刷新」。
+    await page.waitForFunction(() => [...document.querySelectorAll('select[aria-label="文本样式字体"] option')].some((option) => option.textContent === 'AaHouDiHei'), null, { timeout: 4000 })
+      .catch(() => { assert.fail('字幕样式字体下拉框必须自动合并 queryLocalFonts 的 OS 注册字体'); });
+    const expectedOptions = ['PingFang SC', ...fontListBody, 'AaHouDiHei'];
     await page.getByRole('button', { name: /视频封面设置/ }).click();
     const fontSelect = page.getByLabel('封面共享字体');
     await fontSelect.waitFor({ state: 'attached' });
     assert.deepEqual(
       await fontSelect.locator('option').allTextContents(),
-      ['PingFang SC', ...fontListBody],
-      '封面抽屉打开的首帧就必须是全量字体列表（进入步骤时已预取），不能先只有置顶项再等抽屉自己 fetch',
+      expectedOptions,
+      '封面抽屉打开的首帧就必须是全量字体（服务端 + 本机合并，进入步骤时已预取）',
     );
     await page.getByRole('button', { name: '关闭封面精调' }).click();
     await page.getByRole('button', { name: /视频封面设置/ }).click();
     await fontSelect.waitFor({ state: 'attached' });
-    assert.deepEqual(await fontSelect.locator('option').allTextContents(), ['PingFang SC', ...fontListBody], '重开抽屉首帧同样必须是全量字体（会话缓存）');
+    assert.deepEqual(await fontSelect.locator('option').allTextContents(), expectedOptions, '重开抽屉首帧同样必须是全量字体（会话缓存）');
     await page.getByRole('button', { name: '关闭封面精调' }).click();
     // 会话缓存不得冻结列表：模拟新装字体（服务端重扫会返回更多），重开抽屉
     // 首帧仍先显示缓存（不闪跳），随后必须无需点「刷新字体」就自动重校验到最新列表。
     fontListBody = [...fontListBody, 'SimHei', 'Consolas'];
     await page.getByRole('button', { name: /视频封面设置/ }).click();
     await fontSelect.waitFor({ state: 'attached' });
-    assert.deepEqual(await fontSelect.locator('option').allTextContents(), ['PingFang SC', 'Arial', 'Songti SC', 'Heiti SC', 'Microsoft YaHei'], '重开首帧仍先显示会话缓存（不闪跳）');
-    await page.waitForFunction((expected) => document.querySelectorAll('select[aria-label="封面共享字体"] option').length === expected, 7, { timeout: 4000 })
+    assert.deepEqual(await fontSelect.locator('option').allTextContents(), expectedOptions, '重开首帧仍先显示会话缓存（不闪跳）');
+    await page.waitForFunction((expected) => document.querySelectorAll('select[aria-label="封面共享字体"] option').length === expected, expectedOptions.length + 2, { timeout: 4000 })
       .catch(() => { assert.fail('新装字体后，重开抽屉必须自动重校验到最新列表，不能等用户点「刷新字体」'); });
     await page.getByRole('button', { name: '关闭封面精调' }).click();
+    await page.evaluate(() => { window.__e2eLocalFonts = []; });
     fontListDelayMs = 0;
     fontListBody = ['Arial'];
 

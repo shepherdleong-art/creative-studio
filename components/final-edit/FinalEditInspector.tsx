@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { getCachedFontOptions, requestFontOptions } from '@/components/system-fonts';
 import type { CoverPresetV2, FinalEditAssetView, FinalEditGroupView, FinalEditVariantView, SubtitleCue, TextStyle, TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from './command-types';
 import styles from './FinalEditEditor.module.css';
@@ -180,22 +181,19 @@ function SectionTitle({ title, action, onAction }: { title: string; action?: str
 
 export function StyleEditor({ value, onPreview, onCommit }: { value: TextStyle; onPreview: (style: TextStyle) => void; onCommit: (style: TextStyle) => void }) {
   const [draft, setDraft] = useState(value);
-  const [fonts, setFonts] = useState<string[]>([value.fontFamily]);
+  const [fonts, setFonts] = useState<string[]>(() => [...new Set([value.fontFamily, ...(getCachedFontOptions() ?? [])])]);
 
   useEffect(() => {
-    void fetch('/api/system-fonts').then((response) => response.json()).then((body) => {
-      const values = Array.isArray(body) ? body : body.fonts;
-      if (Array.isArray(values)) setFonts([...new Set([value.fontFamily, ...values.map((item) => typeof item === 'string' ? item : item.family).filter(Boolean)])]);
+    void requestFontOptions().then((options) => {
+      setFonts([...new Set([value.fontFamily, ...options])]);
     }).catch(() => undefined);
   }, [value.fontFamily]);
 
   const refreshFonts = async () => {
-    const localWindow = window as Window & { queryLocalFonts?: () => Promise<Array<{ family: string; postscriptName?: string }>> };
-    if (!localWindow.queryLocalFonts) return;
     try {
-      const localFonts = await localWindow.queryLocalFonts();
-      setFonts([...new Set([value.fontFamily, ...localFonts.map((font) => font.family)])]);
-    } catch { /* Permission can be declined without blocking editing. */ }
+      const options = await requestFontOptions(true);
+      setFonts([...new Set([value.fontFamily, ...options])]);
+    } catch { /* 刷新失败不阻塞编辑。 */ }
   };
   const preview = (patch: Partial<TextStyle>) => { const next = { ...draft, ...patch }; setDraft(next); onPreview(next); };
   const commit = (patch: Partial<TextStyle>) => { const next = { ...draft, ...patch }; setDraft(next); onPreview(next); onCommit(next); };
@@ -203,7 +201,7 @@ export function StyleEditor({ value, onPreview, onCommit }: { value: TextStyle; 
   return (
     <div>
       <label className={styles.fieldLabel}>字体</label>
-      <div className={styles.sliderRow}><select className={styles.input} value={draft.fontFamily} onChange={(event) => commit({ fontFamily: event.target.value })}>{fonts.map((font) => <option key={font}>{font}</option>)}</select><button type="button" className={styles.actionButton} onClick={() => void refreshFonts()}>刷新</button></div>
+      <div className={styles.sliderRow}><select aria-label="文本样式字体" className={styles.input} value={draft.fontFamily} onChange={(event) => commit({ fontFamily: event.target.value })}>{fonts.map((font) => <option key={font}>{font}</option>)}</select><button type="button" className={styles.actionButton} onClick={() => void refreshFonts()}>刷新</button></div>
       <Slider label="字号" value={draft.fontSizePx} min={12} max={180} step={1} onPreview={(fontSizePx) => preview({ fontSizePx })} onCommit={(fontSizePx) => commit({ fontSizePx })} />
       <Slider label="X 位置" value={draft.x} min={0} max={1} step={0.01} onPreview={(x) => preview({ x })} onCommit={(x) => commit({ x })} />
       <Slider label="Y 位置" value={draft.y} min={0} max={1} step={0.01} onPreview={(y) => preview({ y })} onCommit={(y) => commit({ y })} />
