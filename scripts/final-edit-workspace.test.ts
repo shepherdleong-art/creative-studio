@@ -441,22 +441,33 @@ const externalAPath = path.join(storageRoot, externalARow.relativePath);
 const outsideVideoPath = path.join(root, 'outside-replacement.mp4');
 fs.writeFileSync(outsideVideoPath, 'outside-owner-directory');
 fs.unlinkSync(externalAPath);
-fs.symlinkSync(outsideVideoPath, externalAPath);
-await assert.rejects(
-  workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['external:external-a'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
-  (error: unknown) => error instanceof FinalEditError && error.code === 'material_not_ready',
-  '导入后替换成 symlink 的外部素材不得再被 prepare 读取',
-);
-assert.equal(workspace.load(externalJob.groupId).assets.length, 0, 'load 不得暴露已经 symlink 越界的外部素材');
-db.prepare(`UPDATE final_edit_variants SET issuesJson='[]' WHERE id=?`).run(externalGroup.variants[0].id);
-db.prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES ('external-symlink-bundle', ?, '3x4', ?, 'external-symlink', '{}', 'final-edits/test/overlays', 'ready', datetime('now'))`).run(externalGroup.id, externalGroup.revision);
-await assert.rejects(
-  workspace.enqueueRender({ groupId: externalGroup.id, variantId: externalGroup.variants[0].id, expectedGroupRevision: externalGroup.revision, expectedVariantRevision: externalGroup.variants[0].revision, overlayBundleId: 'external-symlink-bundle' }),
-  (error: unknown) => error instanceof FinalEditError && error.code === 'unsafe_path',
-  'render 快照不得读取已经 symlink 越界的外部素材',
-);
-fs.unlinkSync(externalAPath);
-fs.writeFileSync(externalAPath, 'video-external-a');
+// Windows 未开启开发者模式时无法创建符号链接（EPERM），此时跳过 symlink 越界安全子测试
+// （仅当前平台不覆盖该场景，macOS/开启开发者模式的 Windows 行为不变），并保持文件内容一致。
+let symlinkCreated = false;
+try {
+  fs.symlinkSync(outsideVideoPath, externalAPath);
+  symlinkCreated = true;
+} catch {
+  console.warn('跳过 symlink 越界安全子测试：当前环境无符号链接权限');
+  fs.writeFileSync(externalAPath, 'video-external-a');
+}
+if (symlinkCreated) {
+  await assert.rejects(
+    workspace.start({ projectId: 'p1', scriptDraftId: 'script-1', shotSetId: 'set-a', selectedMaterialKeys: ['external:external-a'], count: 1, outputPreset: '3x4', providerId: 'vapi-qwen3-tts', voice: 'Cherry', speed: 1 }),
+    (error: unknown) => error instanceof FinalEditError && error.code === 'material_not_ready',
+    '导入后替换成 symlink 的外部素材不得再被 prepare 读取',
+  );
+  assert.equal(workspace.load(externalJob.groupId).assets.length, 0, 'load 不得暴露已经 symlink 越界的外部素材');
+  db.prepare(`UPDATE final_edit_variants SET issuesJson='[]' WHERE id=?`).run(externalGroup.variants[0].id);
+  db.prepare(`INSERT INTO final_edit_overlay_bundles (id, groupId, outputPreset, groupRevision, specHash, manifestJson, relativeDir, status, createdAt) VALUES ('external-symlink-bundle', ?, '3x4', ?, 'external-symlink', '{}', 'final-edits/test/overlays', 'ready', datetime('now'))`).run(externalGroup.id, externalGroup.revision);
+  await assert.rejects(
+    workspace.enqueueRender({ groupId: externalGroup.id, variantId: externalGroup.variants[0].id, expectedGroupRevision: externalGroup.revision, expectedVariantRevision: externalGroup.variants[0].revision, overlayBundleId: 'external-symlink-bundle' }),
+    (error: unknown) => error instanceof FinalEditError && error.code === 'unsafe_path',
+    'render 快照不得读取已经 symlink 越界的外部素材',
+  );
+  fs.unlinkSync(externalAPath);
+  fs.writeFileSync(externalAPath, 'video-external-a');
+}
 const editableExternal = workspace.load(externalGroup.id);
 const externalVariant = editableExternal.variants[0];
 const externalClip = [...externalVariant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame)[0];
@@ -1023,6 +1034,29 @@ assert.deepEqual(
   { status: 'queued', phase: 'recovered_after_shutdown', errorCode: null },
 );
 assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从停机等待集合释放');
+
+// M1：成因 1 回归——手工塞一条 sourceOutFrame = floor+1 的 clip 进时间线，
+// 删除另一个（好的）clip 必须被拒绝（整条时间线被坏 clip 锁死）。
+// 该断言在 M4 完成后改为「删除另一个 clip 成功」。
+{
+  const variantRow = db.prepare(`SELECT id, timelineJson, revision FROM final_edit_variants WHERE groupId=? ORDER BY indexNum LIMIT 1`).get(group.id) as { id: string; timelineJson: string; revision: number };
+  const timeline = JSON.parse(variantRow.timelineJson) as { clips: Array<{ id: string; videoJobId: string; sourceFingerprint: string; sourceOutFrame: number }> };
+  assert.ok(timeline.clips.length >= 2, 'M1 回归测试需要至少两个 clip 的时间线');
+  const [badClip, goodClip] = timeline.clips;
+  const analysis = db.prepare(`SELECT mediaJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(badClip.videoJobId) as { mediaJson: string } | undefined;
+  const durationUs = Number((JSON.parse(analysis?.mediaJson || '{}') as { durationUs?: number }).durationUs || 0);
+  const floor = Math.floor(durationUs * 24 / 1_000_000);
+  const originalOut = badClip.sourceOutFrame;
+  badClip.sourceOutFrame = floor + 1;
+  db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(JSON.stringify(timeline), variantRow.id);
+  assert.throws(
+    () => workspace.apply({ scope: 'variant', variantId: variantRow.id, expectedRevision: variantRow.revision, type: 'delete_clip', clipId: goodClip.id }),
+    (error: unknown) => error instanceof FinalEditError && error.code === 'source_out_of_range',
+    'M1 修复后生成侧不再产出 floor+1 的 clip；手工塞入的坏 clip 仍会锁死整条时间线（M4 放宽）',
+  );
+  badClip.sourceOutFrame = originalOut;
+  db.prepare(`UPDATE final_edit_variants SET timelineJson=? WHERE id=?`).run(JSON.stringify(timeline), variantRow.id);
+}
 
 db.close();
 fs.rmSync(root, { recursive: true, force: true });

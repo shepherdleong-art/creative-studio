@@ -76,6 +76,7 @@ import {
   FINAL_EDIT_INTRO_FRAMES,
   FINAL_EDIT_MIN_CLIP_FRAMES,
   OUTPUT_PRESETS,
+  sourceFrameLimit,
   type CapacityEstimate,
   type CoverEditorDraft,
   type FinalEditAssetView,
@@ -677,7 +678,7 @@ export function planTimeline(assets: PreparedAsset[], bodyFrames: number, varian
   const candidates = assets
     .filter((asset) => !asset.autoUseDisabled && asset.existingUsageCount < autoUseLimit)
     .flatMap((asset) => {
-      const mediaEndFrame = Math.floor(asset.durationUs * FINAL_EDIT_FPS / 1_000_000);
+      const mediaEndFrame = sourceFrameLimit(asset.durationUs);
       const normalized = asset.analysis.usableRanges
         .map((range) => ({
           startFrame: Math.max(0, Math.ceil(range.startUs * FINAL_EDIT_FPS / 1_000_000)),
@@ -1893,7 +1894,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       for (const clip of timeline.clips) {
         if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒');
         const analysis = editableVideoSource(db, storageRoot, String(row.groupId), clip.videoJobId);
-        const sourceFrames = Math.floor(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0) * 24 / 1_000_000);
+        const sourceFrames = sourceFrameLimit(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0));
         if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) throw new FinalEditError('source_out_of_range', '片段超出源视频真实时长');
       }
       const orderedClips = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
