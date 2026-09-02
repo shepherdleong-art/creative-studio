@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import {
   defaultTextStyle,
   normalizeTextStyle,
+  resolveDefaultCjkFontFamily,
 } from '../lib/media-core/cover-domain.ts';
 import { textStyleToSvgElements } from '../lib/media-core/cover-title-svg.ts';
 import {
@@ -32,7 +33,7 @@ async function rawPng(svg: string): Promise<{ data: Buffer; info: { width?: numb
 
 try {
   const baseline = defaultTextStyle('subtitle', outputSize.width);
-  assert.equal(baseline.fontFamily, 'PingFang SC');
+  assert.equal(baseline.fontFamily, resolveDefaultCjkFontFamily(), '默认字体必须是平台候选链首个（真实可用项由服务端注入）');
   assert.equal(baseline.fontSizePx, 56);
   assert.equal(baseline.x, 0.5);
   assert.equal(baseline.y, 0.82);

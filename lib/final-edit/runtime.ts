@@ -12,6 +12,8 @@ import { warmPreparePreview } from './prepare-preview';
 import { detectBeatPoints } from './beat-detect';
 import { writeLog } from '../logger';
 import { createFinalEditJobController } from './worker';
+import { resolveDefaultCjkFontFamily, setDefaultCjkFontFamily } from '../media-core/cover-domain.ts';
+import { listSystemFonts } from '../media-core/system-fonts.ts';
 
 let workspace: FinalEditWorkspaceRuntime | null = null;
 let prepareRecoveryStarted = false;
@@ -40,6 +42,9 @@ function createFinalEditAlignmentAdapter(provider?: AlignmentFallbackProvider): 
 
 export function getFinalEditWorkspace(): FinalEditWorkspaceRuntime {
   if (workspace) return workspace;
+  // 服务端把默认 CJK 字体解析为真实可用的 family（客户端构建不能扫描文件系统，
+  // 那里用静态兜底）；同一进程内的批量生产也共享这份默认。
+  setDefaultCjkFontFamily(resolveDefaultCjkFontFamily(new Set(listSystemFonts().map((font) => font.family))));
   const db = getDb();
   const storageRoot = path.join(dataRoot(), 'storage');
   workspace = createFinalEditWorkspace({

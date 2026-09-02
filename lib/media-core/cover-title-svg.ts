@@ -19,7 +19,7 @@ export function escapeXml(value: string): string {
     .replace(/'/gu, '&apos;');
 }
 
-export const FONT_FALLBACK_STACK = 'PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif';
+export const FONT_FALLBACK_STACK = 'PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Heiti SC, sans-serif';
 
 const CJK_WIDE_CHAR = /[ᄀ-ᅟ⺀-鿿가-힯豈-﫿︰-﹏＀-￯]/u;
 

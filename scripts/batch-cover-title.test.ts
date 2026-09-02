@@ -123,7 +123,7 @@ const svgStyle = {
 };
 const svg = textStyleToSvgElements(svgStyle, '标题&<\'">', { width: 1080, height: 1440 });
 assert.equal((svg.match(/<text /gu) ?? []).length, 2, '阴影开启必须是两层 text');
-assert.ok(svg.includes('font-family="PingFang SC, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif"'), 'font-family 必须带通用 fallback 串');
+assert.ok(svg.includes('font-family="PingFang SC, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Heiti SC, sans-serif"'), 'font-family 必须带通用 fallback 串（含 Heiti SC）');
 assert.ok(svg.includes('font-size="80"'));
 assert.ok(svg.includes('font-style="italic"'));
 assert.ok(svg.includes('text-anchor="end"'), 'align right 必须映射 text-anchor end');
