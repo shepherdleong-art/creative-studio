@@ -3,11 +3,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
-import { getCachedFontOptions, requestFontOptions } from '@/components/system-fonts';
+import { getCachedFontOptions, requestFontOptions, type FontOption } from '@/components/system-fonts';
 import { useFontFavorites } from '@/components/font-preferences';
 import {
   fontIdentity,
-  mergeFontSources,
   sortFontFamilies,
 } from '@/lib/media-core/font-identity';
 import styles from './SystemFontPicker.module.css';
@@ -23,7 +22,6 @@ export interface SystemFontPickerProps {
 }
 
 const BATCH_SIZE = 80;
-const SAMPLE_TEXT = '春风正好 Aa 123';
 
 type FontRowGroup = 'current' | 'favorite' | 'rest';
 
@@ -35,6 +33,7 @@ const GROUP_LABELS: Record<FontRowGroup, string> = {
 
 interface FontRow {
   family: string;
+  displayName: string;
   group: FontRowGroup;
   /** 当前选中但未检测到：置顶「当前字体」保护行。 */
   currentMissing?: boolean;
@@ -54,7 +53,7 @@ export default function SystemFontPicker({
   // fonts 只装「检测到的字体目录」（服务端扫盘 + queryLocalFonts）。
   // 绝不把当前 value 掺进来——掺了 currentMissing 就恒为 false，
   // 「当前字体」保护行永远不渲染，缺失字体会被静默当成普通可选项。
-  const [fonts, setFonts] = useState<string[]>(() => getCachedFontOptions() ?? []);
+  const [fonts, setFonts] = useState<FontOption[]>(() => getCachedFontOptions() ?? []);
   /** 目录就绪前不得把任何字体判成「未检测到」，否则首帧会误报缺失。 */
   const [catalogReady, setCatalogReady] = useState(() => getCachedFontOptions() !== null);
   const [query, setQuery] = useState('');
@@ -74,12 +73,19 @@ export default function SystemFontPicker({
   // stale-while-revalidate：首帧用缓存，挂载后后台拉最新，不重置搜索/页签/收藏/选择。
   useEffect(() => {
     void requestFontOptions().then((options) => {
-      setFonts((current) => mergeFontSources([current, options]));
+      setFonts((current) => {
+        const merged = new Map<string, FontOption>();
+        for (const font of current) merged.set(font.family, font);
+        for (const font of options) if (!merged.has(font.family)) merged.set(font.family, font);
+        return [...merged.values()];
+      });
       setCatalogReady(true);
     }).catch(() => undefined);
   }, []);
 
-  const fontsById = useMemo(() => new Set(fonts.map(fontIdentity)), [fonts]);
+  const displayNameByFamily = useMemo(() => new Map(fonts.map((font) => [font.family, font.displayName])), [fonts]);
+  const familyList = useMemo(() => fonts.map((font) => font.family), [fonts]);
+  const fontsById = useMemo(() => new Set(familyList.map(fontIdentity)), [familyList]);
   /** 目录未就绪时一律按「已检测到」处理，只有拿到目录后才敢判缺失。 */
   const isDetected = useCallback(
     (family: string) => !catalogReady || fontsById.has(fontIdentity(family)),
@@ -91,25 +97,31 @@ export default function SystemFontPicker({
   // 「全部」页：当前缺失保护行 → 收藏 → 其余（收藏按偏好顺序，其余按 collator）。
   const allBase = useMemo<FontRow[]>(() => {
     const rows: FontRow[] = [];
-    if (currentMissing) rows.push({ family: value, group: 'current', currentMissing: true });
-    for (const family of sortFontFamilies(fonts, favorites)) {
-      rows.push({ family, group: favoritesById.has(fontIdentity(family)) ? 'favorite' : 'rest' });
+    if (currentMissing) rows.push({ family: value, displayName: value, group: 'current', currentMissing: true });
+    for (const family of sortFontFamilies(familyList, favorites)) {
+      rows.push({ family, displayName: displayNameByFamily.get(family) ?? family, group: favoritesById.has(fontIdentity(family)) ? 'favorite' : 'rest' });
     }
     return rows;
-  }, [fonts, favorites, favoritesById, currentMissing, value]);
+  }, [familyList, favorites, favoritesById, currentMissing, value, displayNameByFamily]);
 
   // 「收藏」页：收藏里在册的可选行 + 收藏里缺失的不可选行。
   const favoritesBase = useMemo<FontRow[]>(
-    () => favorites.map((family) => (isDetected(family)
-      ? { family, group: 'favorite' as const }
-      : { family, group: 'favorite' as const, favoriteMissing: true })),
-    [favorites, isDetected],
+    () => favorites.map((family) => {
+      const detected = isDetected(family);
+      return {
+        family,
+        displayName: displayNameByFamily.get(family) ?? family,
+        group: 'favorite' as const,
+        favoriteMissing: !detected,
+      };
+    }),
+    [favorites, isDetected, displayNameByFamily],
   );
 
   const filterRows = useCallback((rows: FontRow[], q: string): FontRow[] => {
     const id = fontIdentity(q);
     if (!id) return rows;
-    return rows.filter((row) => fontIdentity(row.family).includes(id));
+    return rows.filter((row) => fontIdentity(row.family).includes(id) || fontIdentity(row.displayName).includes(id));
   }, []);
 
   const allRows = useMemo(() => filterRows(allBase, query), [allBase, query, filterRows]);
@@ -128,7 +140,12 @@ export default function SystemFontPicker({
     setRefreshError('');
     try {
       const options = await requestFontOptions(true);
-      setFonts((current) => mergeFontSources([current, options]));
+      setFonts((current) => {
+        const merged = new Map<string, FontOption>();
+        for (const font of current) merged.set(font.family, font);
+        for (const font of options) if (!merged.has(font.family)) merged.set(font.family, font);
+        return [...merged.values()];
+      });
       setCatalogReady(true);
     } catch {
       setRefreshError('刷新失败，已保留现有列表');
@@ -359,11 +376,10 @@ export default function SystemFontPicker({
                   className={styles.sample}
                   style={unusable ? undefined : { fontFamily: `"${row.family.replace(/"/gu, '\\"')}", sans-serif` }}
                   aria-disabled={unusable ? true : undefined}
-                  aria-label={`${row.family}${selected ? '（当前）' : ''}${unusable ? '（当前未检测到）' : ''}`}
+                  aria-label={`${row.displayName}${selected ? '（当前）' : ''}${unusable ? '（当前未检测到）' : ''}`}
                   onClick={() => { if (!unusable) selectFamily(row.family); }}
                 >
-                  <span className={styles.familyName}>{row.family}</span>
-                  <span className={unusable ? styles.sampleDisabled : ''}>{SAMPLE_TEXT}</span>
+                  <span className={unusable ? styles.sampleDisabled : ''}>{row.displayName}</span>
                 </button>
                 {unusable && <span className={styles.missingTag}>未检测到</span>}
                 <button
@@ -371,7 +387,7 @@ export default function SystemFontPicker({
                   data-font-row={index}
                   data-font-control="star"
                   className={`${styles.starButton} ${favorite ? styles.starOn : ''}`}
-                  aria-label={favorite ? `取消收藏 ${row.family}` : `收藏 ${row.family}`}
+                  aria-label={favorite ? `取消收藏 ${row.displayName}` : `收藏 ${row.displayName}`}
                   aria-pressed={favorite}
                   onClick={() => toggleFavorite(row.family)}
                 >
@@ -391,6 +407,8 @@ export default function SystemFontPicker({
     portalRoot ?? document.body,
   ) : null;
 
+  const triggerDisplayName = value ? (displayNameByFamily.get(value) ?? value) : '';
+
   return (
     <>
       <button
@@ -404,7 +422,7 @@ export default function SystemFontPicker({
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        <span className={styles.triggerLabel} style={value ? { fontFamily: `"${value.replace(/"/gu, '\\"')}", sans-serif` } : undefined}>{value || '选择字体'}</span>
+        <span className={styles.triggerLabel} style={value ? { fontFamily: `"${value.replace(/"/gu, '\\"')}", sans-serif` } : undefined}>{triggerDisplayName || '选择字体'}</span>
         <Icon name="chevron-down" size={14} className={styles.triggerChevron} />
       </button>
       {overlay}

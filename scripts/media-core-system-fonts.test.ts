@@ -53,12 +53,21 @@ const fonts = listSystemFonts();
 assert.ok(Array.isArray(fonts));
 for (const font of fonts) {
   assert.ok(font.family && typeof font.family === 'string');
+  assert.ok(font.displayName && typeof font.displayName === 'string', 'displayName 必须存在');
   assert.ok(['ttf', 'otf', 'ttc'].includes(font.format), `未知字体格式：${font.format}`);
   assert.equal(font.source, 'system', '本卡字体来源应固定为 system');
 }
 const families = fonts.map((font) => font.family);
 assert.deepEqual(families, [...families].sort((a, b) => a.localeCompare(b)), '字体列表必须按 family 排序');
 assert.equal(new Set(families).size, families.length, 'family 必须去重');
+
+// 中文系统字体应携带中文 displayName（如「等线」「微软雅黑」）。
+if (process.platform === 'win32') {
+  const dengxian = fonts.find((font) => font.family === 'DengXian');
+  if (dengxian) assert.equal(dengxian.displayName, '等线', 'DengXian 的 displayName 应为「等线」');
+  const yahei = fonts.find((font) => font.family === 'Microsoft YaHei');
+  if (yahei) assert.equal(yahei.displayName, '微软雅黑', 'Microsoft YaHei 的 displayName 应为「微软雅黑」');
+}
 
 // .ttc 一个文件应产出多于一个真实 family（用系统上存在的已知多字型 ttc 验证，存在才断言）。
 const knownMultiFamilyTtc: Array<{ file: string; families: string[] }> = [
