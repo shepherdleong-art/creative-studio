@@ -43,6 +43,8 @@ import { CoverFrameError, materializeCoverFrame, resolveCoverFrameSource } from 
 import { FinalEditError } from './errors.ts';
 import { formatShanghaiTaskDate } from './export-identity.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
+import { getOrCreateCurrentExportIdentity } from '../project-export-identity.ts';
+import { readProductionIdentityFields, deriveProjectNamingDate } from '../project-production-identity.ts';
 import { releaseReservedExportTarget, reserveProjectExportTarget } from './export-naming.ts';
 import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts';
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
@@ -463,8 +465,8 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
   if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
   const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
-  if (!source || ![2, 3].includes(source.version) || !Array.isArray(source.segments) || source.segments.length === 0) {
-    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
+  if (!source || ![2, 3, 4].includes(source.version) || !Array.isArray(source.segments) || source.segments.length === 0) {
+    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3/V4 脚本');
   }
   if (!isScriptVisibleInContext({
     shotSetId,
@@ -494,8 +496,8 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
   if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
   const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
-  if (!source || ![2, 3].includes(source.version) || !Array.isArray(source.segments)) {
-    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
+  if (!source || ![2, 3, 4].includes(source.version) || !Array.isArray(source.segments)) {
+    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3/V4 脚本');
   }
   if (!isScriptVisibleInContext({ shotSetId, requestedShotSetId: input.shotSetId || undefined })) {
     throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
@@ -2248,14 +2250,21 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     } catch (error) {
       throw new FinalEditError('cover_missing', error instanceof Error ? error.message : '封面底图缺失');
     }
-    const project = db.prepare(`SELECT name, productCode, createdAt FROM projects WHERE id=?`).get(group.projectId) as { name: string; productCode: string | null; createdAt: string } | undefined;
+    const project = db.prepare(`SELECT name, productCode, createdAt, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id=?`).get(group.projectId) as { name: string; productCode: string | null; createdAt: string; storeCode: string | null; productSubmodel: string | null; productionType: string | null; editorName: string | null; namingDate: string | null } | undefined;
     if (!project) throw new FinalEditError('project_not_found', '项目不存在', 404);
+    // 生产身份完整时冻结/复用不可变导出身份；旧项目缺字段时回退旧目录解析。
+    const identityFields = readProductionIdentityFields(project);
+    const namingDate = deriveProjectNamingDate({ namingDate: project.namingDate ?? '', createdAt: project.createdAt });
+    const frozen = identityFields.storeCode && identityFields.productCode && identityFields.productionType && identityFields.editorName
+      ? getOrCreateCurrentExportIdentity(db, group.projectId, { ...identityFields, namingDate })
+      : null;
     const exportIdentity = {
       projectId: group.projectId,
       taskName: project.name,
       productCode: project.productCode || '',
       taskDate: formatShanghaiTaskDate(project.createdAt),
-      exportDirName: resolveProjectExportDirName(db, group.projectId),
+      exportDirName: frozen ? frozen.exportDirName : resolveProjectExportDirName(db, group.projectId),
+      ...(frozen ? { baseName: frozen.baseName } : {}),
     };
     const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(group.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
     const exportTarget = reserveProjectExportTarget(storageRoot, exportIdentity, { blockedRelativePaths });

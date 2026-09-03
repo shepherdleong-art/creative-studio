@@ -32,6 +32,10 @@ try {
   writeFixture('node_modules/ffprobe-static/package.json', '{}\n');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node');
   writeFixture('node_modules/@img/sharp-win32-x64/lib/libvips-42.dll');
+  // 知识/模板目录导入的 XLSX 依赖（纯 JS，Next 文件追踪会随服务端路由收进
+  // .next/standalone/node_modules）。sync 不得把已追踪的 node_modules 清掉。
+  writeFixture('.next/standalone/node_modules/exceljs/package.json', '{}\n');
+  writeFixture('.next/standalone/node_modules/exceljs/lib/exceljs.nodejs.js', 'fixture-exceljs\n');
   writeFixture('.next/standalone/desktop/main.js');
   writeFixture('.next/standalone/dist-desktop/main.js');
   writeFixture('.next/standalone/python-runtime/python.exe');
@@ -66,6 +70,10 @@ try {
     readFileSync(runtimeCopy, 'utf8'),
     readFileSync(runtimeSource, 'utf8'),
     'standalone runtime/server-entry.js 必须与根 runtime/server-entry.js 内容一致',
+  );
+  assert.ok(
+    existsSync(path.join(standalone, 'node_modules', 'exceljs', 'lib', 'exceljs.nodejs.js')),
+    'standalone 必须保留被 Next 追踪的 node_modules/exceljs（脚本知识目录导入依赖）',
   );
 
   console.log('standalone desktop boundary test passed');

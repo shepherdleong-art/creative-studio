@@ -35,6 +35,11 @@ export interface PlanDirectionBriefsInput {
   targetDurationSec: number;
   /** 已保存证据的来源范围；复用历史卖点库时用于本地 fail-closed 重验。 */
   evidenceBounds?: { pageCount?: number; pageTileCounts?: number[] };
+  /**
+   * 产品策略的品类主卖点/差异化卖点：只对「已经通过证据门禁的卖点」做本地排序取舍，
+   * 不扩大正文事实来源（策略原文不得进入候选白名单）。
+   */
+  strategyRanking?: { primarySellingPoints: string[]; differentiators: string[] };
 }
 
 const HIERARCHY_ROLE_SCORE: Record<ScriptStudioHierarchyRole, number> = {
@@ -139,6 +144,7 @@ interface ScoredPoint {
   roleScore: number;
   importance: number;
   evidenceScore: number;
+  strategyScore: number;
 }
 
 function typeScoreOf(point: SellingPointRecord, templateId: string): number {
@@ -156,6 +162,30 @@ function evidenceScoreOf(point: SellingPointRecord): number {
   return EVIDENCE_GATE_SCORE[point.evidenceGate] ?? 0;
 }
 
+function normalizeStrategyText(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/g, '').toLowerCase();
+}
+
+/**
+ * 策略排序信号（方案 §2.6）：只统计「详情页卖点的标题/事实文本命中策略品类主卖点或
+ * 差异化卖点」的命中数。策略原文不会作为新事实进入候选池——候选仍只来自证据门禁白名单。
+ */
+function strategyScoreOf(
+  point: SellingPointRecord,
+  ranking: NonNullable<PlanDirectionBriefsInput['strategyRanking']>,
+): number {
+  const phrases = [...(ranking.primarySellingPoints ?? []), ...(ranking.differentiators ?? [])]
+    .map(normalizeStrategyText)
+    .filter(Boolean);
+  if (phrases.length === 0) return 0;
+  const haystacks = [point.title, point.factText, point.themeTitle].map(normalizeStrategyText);
+  let hits = 0;
+  for (const phrase of phrases) {
+    if (haystacks.some((haystack) => haystack && haystack.includes(phrase))) hits += 1;
+  }
+  return hits;
+}
+
 function storedEvidenceIsStructurallyUsable(
   point: SellingPointRecord,
   bounds: NonNullable<PlanDirectionBriefsInput['evidenceBounds']>,
@@ -170,14 +200,15 @@ function storedEvidenceIsStructurallyUsable(
 }
 
 /**
- * 评分优先级：方向类型匹配 > 本轮重复惩罚 > 主主题连贯 > 主题角色 > 提取重要度 > 证据状态。
- * 重复惩罚提到第二位：已使用卖点会真实让位给未使用卖点，而不是只在完全同分时生效；
- * 主主题只是加分项，不会把方向不匹配的卖点塞进必选。同分按 seq/id 回退，保证确定性。
+ * 评分优先级：方向类型匹配 > 本轮重复惩罚 > 主主题连贯 > 策略卖点排序 > 主题角色 >
+ * 提取重要度 > 证据状态。策略只对证据门禁白名单内的卖点做排序取舍，不扩来源。
+ * 同分按 seq/id 回退，保证确定性。
  */
 function compareScored(left: ScoredPoint, right: ScoredPoint): number {
   return (right.typeScore - left.typeScore)
     || (left.repeatScore - right.repeatScore)
     || (right.themeBonus - left.themeBonus)
+    || (right.strategyScore - left.strategyScore)
     || (right.roleScore - left.roleScore)
     || (right.importance - left.importance)
     || (right.evidenceScore - left.evidenceScore)
@@ -210,6 +241,7 @@ export function planDirectionBriefs(input: PlanDirectionBriefsInput): DirectionS
       roleScore: roleScoreOf(point),
       importance: point.importance,
       evidenceScore: evidenceScoreOf(point),
+      strategyScore: input.strategyRanking ? strategyScoreOf(point, input.strategyRanking) : 0,
     })).sort(compareScored);
 
     // 先按无主主题加分排出头部确定主主题；feature_showcase 要保持跨主题，不做主题加分。

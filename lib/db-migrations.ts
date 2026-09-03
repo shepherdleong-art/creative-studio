@@ -90,4 +90,26 @@ export const CORE_DB_MIGRATIONS = [
   // 新任务创建时写入；历史行保持 NULL，读取端用 lib/video-output-filenames.ts
   // 按 shot 序号、来源图名、模板名与 (createdAt, id) 版次确定性派生，不回填。
   `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
+  // 项目生产身份（2026-09-03）：新项目只填写店铺/型号/子型号/生产类型/剪辑师，
+  // 项目名与导出基础名由服务端统一生成。namingDate 为新项目创建日 YYYYMMDD（上海时区），
+  // 历史空值读取时才从 createdAt 派生；currentExportIdentityId 指向 project_export_identities 当前身份。
+  `ALTER TABLE projects ADD COLUMN storeCode TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productSubmodel TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productionType TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN editorName TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN namingDate TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN currentExportIdentityId TEXT`,
+  `CREATE TABLE IF NOT EXISTS project_export_identities (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    revisionNumber INTEGER NOT NULL,
+    baseName TEXT NOT NULL,
+    exportDirName TEXT NOT NULL,
+    identityJson TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    supersededAt TEXT,
+    UNIQUE(projectId, revisionNumber),
+    UNIQUE(exportDirName)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId)`,
 ];

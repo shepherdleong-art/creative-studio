@@ -29,11 +29,13 @@ export interface ScriptStudioTaskRequestIdentity {
   creativeBrief?: string;
   providerId: string;
   providerModel: string;
+  /** 冻结知识上下文指纹：不同策略/模板版本得到不同 key，不能误复用旧任务。 */
+  knowledgeFingerprint?: string;
 }
 
 /**
  * 自动幂等键必须覆盖任务的完整执行身份；尤其是同一供应商记录切换模型后，
- * 新提交不得命中旧模型任务。
+ * 新提交不得命中旧模型任务。知识/模板目录版本也参与派生 key。
  */
 export function createScriptStudioTaskRequestKey(input: ScriptStudioTaskRequestIdentity): string {
   return createHash('sha256')
@@ -47,6 +49,7 @@ export function createScriptStudioTaskRequestKey(input: ScriptStudioTaskRequestI
       input.creativeBrief || '',
       input.providerId,
       input.providerModel,
+      input.knowledgeFingerprint || '',
     ].join('|'))
     .digest('hex');
 }
@@ -193,6 +196,11 @@ export interface TaskRequestParams {
   providerId: string;
   /** 显式幂等键（「再生成一组」的 action key）；缺省时按参数派生。 */
   explicitRequestKey?: string;
+  /**
+   * 冻结知识上下文（策略匹配 + 模板推荐）。在任务创建时解析一次写入快照，
+   * runner 只读快照；其 fingerprint 参与派生 requestKey。
+   */
+  knowledgeContext?: Record<string, unknown>;
 }
 
 export interface TaskRequestDecision {
@@ -214,25 +222,30 @@ export function decideTaskRequest(
   input: TaskRequestParams,
   resolveProviders: (providerId: string) => { vision: { id: string; model: string } },
 ): TaskRequestDecision {
-  const buildSnapshot = (pv: { id: string; model: string }): Record<string, unknown> => ({
+  const buildSnapshot = (pv: { id: string; model: string }, knowledgeContext?: Record<string, unknown>): Record<string, unknown> => ({
     targetDurationSec: input.targetDurationSec,
     requestedCount: input.requestedCount,
     creativeBrief: input.creativeBrief,
     providerId: pv.id,
     providerModel: pv.model,
     ...(input.targetScriptId ? { targetScriptId: input.targetScriptId } : {}),
+    ...(knowledgeContext ? { knowledgeContext } : {}),
   });
+  const knowledgeFingerprint = input.knowledgeContext
+    && typeof input.knowledgeContext.fingerprint === 'string'
+    ? input.knowledgeContext.fingerprint
+    : '';
   const reuseIfMatches = (existing: TaskView, requestKey: string): TaskView => {
-    let storedProvider: { id: string; model: string };
+    let stored: Record<string, unknown>;
     try {
-      const stored = JSON.parse(existing.inputSnapshotJson || '{}') as Record<string, unknown>;
-      storedProvider = {
-        id: typeof stored.providerId === 'string' ? stored.providerId : '',
-        model: typeof stored.providerModel === 'string' ? stored.providerModel : '',
-      };
+      stored = JSON.parse(existing.inputSnapshotJson || '{}') as Record<string, unknown>;
     } catch {
-      storedProvider = { id: '', model: '' };
+      stored = {};
     }
+    const storedProvider = {
+      id: typeof stored.providerId === 'string' ? stored.providerId : '',
+      model: typeof stored.providerModel === 'string' ? stored.providerModel : '',
+    };
     const candidateIdentity = buildTaskIdentity({
       projectId: input.projectId,
       requestKey,
@@ -241,7 +254,9 @@ export function decideTaskRequest(
       libraryRevisionId: input.libraryRevisionId ?? null,
       requestedCount: input.requestedCount,
       parentTaskId: existing.parentTaskId,
-      inputSnapshot: buildSnapshot(storedProvider),
+      // 重放身份一律用已冻结快照里的知识上下文（provider 同理）：
+      // 目录/卖点库切换后重试同一次动作不得按当前状态重算而误判冲突。
+      inputSnapshot: buildSnapshot(storedProvider, stored.knowledgeContext as Record<string, unknown> | undefined),
     });
     if (!taskIdentitiesMatch(taskStoredIdentity(existing), candidateIdentity)) {
       throw new ScriptStudioError('conflict', '同一 requestKey 已对应不同请求内容，不能复用');
@@ -255,9 +270,9 @@ export function decideTaskRequest(
     if (existing) return { requestKey: explicitKey, existing: reuseIfMatches(existing, explicitKey), snapshot: null };
     // 显式 key 未命中：需要创建，此刻才解析当前供应商。
     const providers = resolveProviders(input.providerId);
-    return { requestKey: explicitKey, existing: null, snapshot: buildSnapshot(providers.vision) };
+    return { requestKey: explicitKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext) };
   }
-  // 派生 key：解析当前供应商构造 key（key 含 providerId/model），再查既有任务。
+  // 派生 key：解析当前供应商构造 key（key 含 providerId/model 与知识指纹），再查既有任务。
   const providers = resolveProviders(input.providerId);
   const requestKey = createScriptStudioTaskRequestKey({
     projectId: input.projectId,
@@ -269,10 +284,11 @@ export function decideTaskRequest(
     creativeBrief: input.creativeBrief,
     providerId: providers.vision.id,
     providerModel: providers.vision.model,
+    knowledgeFingerprint,
   });
   const existing = getTaskByRequestKey(db, input.projectId, requestKey);
   if (existing) return { requestKey, existing: reuseIfMatches(existing, requestKey), snapshot: null };
-  return { requestKey, existing: null, snapshot: buildSnapshot(providers.vision) };
+  return { requestKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext) };
 }
 
 export function getTask(
@@ -299,6 +315,20 @@ export function getTaskByRequestKey(
     SELECT * FROM script_studio_tasks WHERE projectId = ? AND requestKey = ?
   `).get(projectId, requestKey) as ScriptStudioTaskRecord | undefined;
   return row ? getTask(db, projectId, row.id) : undefined;
+}
+
+/** 最近任务列表（倒序），供前端刷新后恢复运行中任务。 */
+export function listRecentTasks(
+  db: Database.Database,
+  projectId: string,
+  limit: number,
+): TaskView[] {
+  const rows = db.prepare(`
+    SELECT id FROM script_studio_tasks WHERE projectId = ? ORDER BY createdAt DESC, id DESC LIMIT ?
+  `).all(projectId, Math.max(1, Math.min(100, Math.floor(limit) || 10))) as Array<{ id: string }>;
+  return rows
+    .map((row) => getTask(db, projectId, row.id))
+    .filter((task): task is TaskView => Boolean(task));
 }
 
 export function updateTask(

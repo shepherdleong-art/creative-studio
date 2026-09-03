@@ -18,7 +18,8 @@ import {
 } from './evidence-gate.ts';
 import { planDirectionBriefs, type DirectionSellingPointBrief } from './direction-briefs.ts';
 import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
-import { planScriptDirections } from './planner.ts';
+import { applyKnowledgeRecommendations, planScriptDirections } from './planner.ts';
+import { parseKnowledgeContext, type FrozenKnowledgeContext } from './knowledge-context.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import { parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from './generation-contract.ts';
 import { isScriptStudioTaskCancelRequested } from './scheduler.ts';
@@ -67,6 +68,59 @@ function parseRequestedCount(input: Record<string, unknown>): number {
 
 function parseCreativeBrief(input: Record<string, unknown>): string {
   return typeof input.creativeBrief === 'string' ? input.creativeBrief.trim().slice(0, 2000) : '';
+}
+
+/** 把冻结知识上下文压缩进 plan stage payload（不含完整推荐数组，避免重复冗余）。 */
+function serializeKnowledgeForStage(context: FrozenKnowledgeContext): Record<string, unknown> {
+  return {
+    strategy: context.strategy,
+    template: context.template,
+    fingerprint: context.fingerprint,
+  };
+}
+
+/** 单条脚本修订的来源推荐 JSON（框架/文案钩子/画面钩子）；未使用目录时为 {}。 */
+function recommendationForPlan(plan: {
+  recommendation?: {
+    framework?: { id: string; stableKey: string; name: string; structure: string[]; rationale: string } | null;
+    copyHook?: { id: string; type: string; subtype: string; formula: string; example: string; rationale: string } | null;
+    visualHook?: { id: string; group: string; name: string; formula: string; guidance: string; referenceAssetIds: string[]; rationale: string } | null;
+  };
+}): Record<string, unknown> {
+  const recommendation = plan.recommendation;
+  if (!recommendation) return {};
+  return {
+    framework: recommendation.framework
+      ? {
+          id: recommendation.framework.id,
+          stableKey: recommendation.framework.stableKey,
+          name: recommendation.framework.name,
+          structure: recommendation.framework.structure,
+          rationale: recommendation.framework.rationale,
+        }
+      : null,
+    copyHook: recommendation.copyHook
+      ? {
+          id: recommendation.copyHook.id,
+          type: recommendation.copyHook.type,
+          subtype: recommendation.copyHook.subtype,
+          formula: recommendation.copyHook.formula,
+          example: recommendation.copyHook.example,
+          rationale: recommendation.copyHook.rationale,
+        }
+      : null,
+    visualHook: recommendation.visualHook
+      ? {
+          id: recommendation.visualHook.id,
+          group: recommendation.visualHook.group,
+          name: recommendation.visualHook.name,
+          formula: recommendation.visualHook.formula,
+          guidance: recommendation.visualHook.guidance,
+          referenceAssetIds: recommendation.visualHook.referenceAssetIds,
+          rationale: recommendation.visualHook.rationale,
+        }
+      : null,
+  };
 }
 
 // parseTileRefIndex 已上移到 tiling.ts（证据门禁共用）；这里再导出以兼容既有调用方。
@@ -145,10 +199,18 @@ async function generateValidatedScript(
   brief: DirectionSellingPointBrief,
   context: { audience: string; tone: string; platform: string; targetDurationSec: number; creativeBrief: string },
   previousScripts: ScriptStudioScriptContent[],
+  knowledgeContext: FrozenKnowledgeContext | null,
 ): Promise<ScriptStudioScriptContent> {
   let content: ScriptStudioScriptContent | undefined;
   let validation: ReturnType<typeof validateScriptContent> | undefined;
   let generatedAttempts = 0;
+  const titleEmbeddingContext = knowledgeContext
+    ? {
+        matchStatus: knowledgeContext.strategy.matchStatus,
+        canonicalName: knowledgeContext.strategy.canonicalName,
+        searchTerms: knowledgeContext.strategy.searchTerms,
+      }
+    : undefined;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     if (deps.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
     const generated = await deps.generator.generate({
@@ -163,12 +225,14 @@ async function generateValidatedScript(
       previousScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
       signal: deps.signal,
       validationFeedback: attempt > 1 ? validation?.issues : undefined,
+      ...(knowledgeContext ? { knowledgeContext } : {}),
     });
     generatedAttempts += generated.attempts;
     content = generated.content;
     validation = validateScriptContent(content, {
       libraryRevision: library,
       siblingScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+      titleEmbeddingContext,
     });
     if (validation.ok) return validation.content;
     if (!validation.ok && validation.issues.includes('duration_too_short')) {
@@ -176,6 +240,7 @@ async function generateValidatedScript(
       validation = validateScriptContent(content, {
         libraryRevision: library,
         siblingScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+        titleEmbeddingContext,
       });
       if (validation.ok) return validation.content;
     }
@@ -195,11 +260,13 @@ async function generateValidatedScript(
       targetDurationSec: context.targetDurationSec,
       previousScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
       signal: deps.signal,
+      ...(knowledgeContext ? { knowledgeContext } : {}),
     });
     content = fallback.content;
     validation = validateScriptContent(content, {
       libraryRevision: library,
       siblingScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+      titleEmbeddingContext,
     });
     if (validation.ok) return validation.content;
   }
@@ -216,6 +283,9 @@ export async function executeScriptStudioTask(
   let targetDurationSec: number;
   let requestedCount: number;
   let creativeBrief: string;
+  // 知识/模板目录推荐在创建任务时冻结在 inputSnapshot；runner 只读快照，
+  // 设置页切换当前目录版本不改变运行中任务。
+  const knowledgeContext = parseKnowledgeContext(input.knowledgeContext);
   try {
     targetDurationSec = parseTargetDuration(input);
     requestedCount = parseRequestedCount(input);
@@ -358,6 +428,9 @@ export async function executeScriptStudioTask(
     startStage(db, projectId, taskId, 'plan', now);
     await updateTask(db, projectId, taskId, { currentStage: 'plan' }, now);
     const plans = planScriptDirections(libraryRevision!, requestedCount, creativeBrief);
+    const plansWithRecommendations = knowledgeContext
+      ? applyKnowledgeRecommendations(plans.plans, knowledgeContext.recommendations)
+      : plans.plans;
     // 本地确定性编排：一次为本轮全部方向准备卖点包，首稿与相似度重试都复用这份包。
     // 首次提取可同时校验页码与切片范围；历史复用不重读图片，但仍从来源集恢复页数，
     // 对非法格式和页码越界做本地 fail-closed 重验。
@@ -371,9 +444,15 @@ export async function executeScriptStudioTask(
         };
     const briefs = planDirectionBriefs({
       sellingPoints: libraryRevision!.sellingPoints,
-      plans: plans.plans,
+      plans: plansWithRecommendations,
       targetDurationSec,
       evidenceBounds,
+      strategyRanking: knowledgeContext?.strategy.matchStatus === 'matched'
+        ? {
+            primarySellingPoints: knowledgeContext.strategy.primarySellingPoints,
+            differentiators: knowledgeContext.strategy.differentiators,
+          }
+        : undefined,
     });
     const briefByPlanIndex = new Map(briefs.map((brief) => [brief.planIndex, brief]));
     const briefSnapshots = briefs.map((brief) => ({
@@ -394,8 +473,9 @@ export async function executeScriptStudioTask(
         audience: plans.audience,
         tone: plans.tone,
         platform: plans.platform,
-        plans: plans.plans,
+        plans: plansWithRecommendations,
         briefs: briefSnapshots,
+        knowledgeContext: knowledgeContext ? serializeKnowledgeForStage(knowledgeContext) : null,
       }, 'evidence_insufficient', now);
       throw new ScriptStudioError('evidence_insufficient', '可用证据不足：卖点库中没有通过证据门禁且可用的卖点，请先在卖点库中补充或恢复可用卖点');
     }
@@ -403,8 +483,9 @@ export async function executeScriptStudioTask(
       audience: plans.audience,
       tone: plans.tone,
       platform: plans.platform,
-      plans: plans.plans,
+      plans: plansWithRecommendations,
       briefs: briefSnapshots,
+      knowledgeContext: knowledgeContext ? serializeKnowledgeForStage(knowledgeContext) : null,
     }, null, now);
 
     startStage(db, projectId, taskId, 'generate', now);
@@ -419,14 +500,14 @@ export async function executeScriptStudioTask(
     // 各创意方向的首稿只读卖点库和自己的 plan，可以有界并行；
     // 按 plan 顺序落库前再做一次 sibling 校验，若相似才携已采用脚本定向重生成。
     // 这样不会为并行牺牲方案差异契约，同时避免正常情况下纯串行累加上游长尾。
-    const initialResults: Array<{ content?: ScriptStudioScriptContent; error?: unknown }> = new Array(plans.plans.length);
+    const initialResults: Array<{ content?: ScriptStudioScriptContent; error?: unknown }> = new Array(plansWithRecommendations.length);
     let generationCursor = 0;
     const generateWorker = async (): Promise<void> => {
-      while (generationCursor < plans.plans.length) {
+      while (generationCursor < plansWithRecommendations.length) {
         if (deps.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
         const index = generationCursor;
         generationCursor += 1;
-        const plan = plans.plans[index]!;
+        const plan = plansWithRecommendations[index]!;
         const brief = briefByPlanIndex.get(plan.index);
         if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
         try {
@@ -438,6 +519,7 @@ export async function executeScriptStudioTask(
               brief,
               generationContext,
               [],
+              knowledgeContext,
             ),
           };
         } catch (error) {
@@ -447,21 +529,29 @@ export async function executeScriptStudioTask(
     };
     const generationConcurrency = Math.max(
       1,
-      Math.min(plans.plans.length, getScriptStudioLimits().generationConcurrency),
+      Math.min(plansWithRecommendations.length, getScriptStudioLimits().generationConcurrency),
     );
     await Promise.all(Array.from({ length: generationConcurrency }, () => generateWorker()));
 
-    for (let index = 0; index < plans.plans.length; index += 1) {
-      const plan = plans.plans[index]!;
+    for (let index = 0; index < plansWithRecommendations.length; index += 1) {
+      const plan = plansWithRecommendations[index]!;
       const brief = briefByPlanIndex.get(plan.index);
       if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
       try {
         const initial = initialResults[index]!;
         if (initial.error) throw initial.error;
         let content = initial.content!;
+        const titleEmbeddingContext = knowledgeContext
+          ? {
+              matchStatus: knowledgeContext.strategy.matchStatus,
+              canonicalName: knowledgeContext.strategy.canonicalName,
+              searchTerms: knowledgeContext.strategy.searchTerms,
+            }
+          : undefined;
         const siblingValidation = validateScriptContent(content, {
           libraryRevision: libraryRevision!,
           siblingScripts: createdScripts.map((item) => ({ fullScript: item.fullScript })),
+          titleEmbeddingContext,
         });
         if (!siblingValidation.ok) {
           content = await generateValidatedScript(
@@ -471,10 +561,12 @@ export async function executeScriptStudioTask(
             brief,
             generationContext,
             createdScripts,
+            knowledgeContext,
           );
         } else {
           content = siblingValidation.content;
         }
+        const recommendationJson = recommendationForPlan(plan);
         const created = targetScriptId
           ? addProjectScriptRevision(db, projectId, targetScriptId, {
               origin: 'ai_regenerate',
@@ -487,6 +579,10 @@ export async function executeScriptStudioTask(
               targetDurationSec,
               estimatedDurationSec: content.estimatedNarrationDurationSec,
               validationJson: { durationStatus: content.durationStatus, contentCharacterCount: content.contentCharacterCount },
+              strategyCatalogRevisionId: knowledgeContext?.strategy.strategyCatalogRevisionId ?? '',
+              strategyEntryId: knowledgeContext?.strategy.strategyEntryId ?? '',
+              templateCatalogRevisionId: knowledgeContext?.template.templateCatalogRevisionId ?? '',
+              recommendationJson,
             }, now)
           : createProjectScript(db, projectId, {
               shotSetId: null,
@@ -500,6 +596,10 @@ export async function executeScriptStudioTask(
               targetDurationSec,
               estimatedDurationSec: content.estimatedNarrationDurationSec,
               validationJson: { durationStatus: content.durationStatus, contentCharacterCount: content.contentCharacterCount },
+              strategyCatalogRevisionId: knowledgeContext?.strategy.strategyCatalogRevisionId ?? '',
+              strategyEntryId: knowledgeContext?.strategy.strategyEntryId ?? '',
+              templateCatalogRevisionId: knowledgeContext?.template.templateCatalogRevisionId ?? '',
+              recommendationJson,
             }, now);
         scriptIds.push(created.id);
         createdScripts.push(content);

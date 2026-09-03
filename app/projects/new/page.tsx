@@ -14,6 +14,13 @@ import {
   resolveGptImage2Size,
 } from '@/lib/gpt-image-2-size-presets';
 import { companyImageCapsForModel } from '@/lib/company-gateway-size';
+import {
+  STORE_CODES,
+  PRODUCTION_TYPES,
+  buildProjectBaseName,
+  formatShanghaiIdentityDate,
+  type ProductionIdentityFields,
+} from '@/lib/project-production-identity';
 
 interface Provider {
   id: string; name: string; model: string; type: string; hasApiKey?: boolean;
@@ -22,11 +29,24 @@ interface Provider {
 export default function NewProjectPage() {
   const router = useRouter();
 
-  // ── Project info ──
-  const [name, setName] = useState('');
-  const [productName, setProductName] = useState('');
+  // ── 生产身份：店铺/型号/子型号/生产类型/剪辑师；项目名由服务端生成 ──
+  const [storeCode, setStoreCode] = useState<string>('');
   const [productCode, setProductCode] = useState('');
-  const [category, setCategory] = useState('');
+  const [productSubmodel, setProductSubmodel] = useState('');
+  const [productionType, setProductionType] = useState<string>('');
+  const [editorName, setEditorName] = useState('');
+
+  const previewDate = useMemo(() => formatShanghaiIdentityDate(new Date()), []);
+  const namePreview = useMemo(() => {
+    if (!storeCode || !productCode.trim() || !productionType || !editorName.trim()) return '';
+    try {
+      return buildProjectBaseName({
+        namingDate: previewDate, storeCode, productCode: productCode.trim(), productSubmodel: productSubmodel.trim(), productionType, editorName: editorName.trim(),
+      });
+    } catch {
+      return '';
+    }
+  }, [storeCode, productCode, productSubmodel, productionType, editorName, previewDate]);
 
   // ── Provider / Model ──
   const [provider, setProvider] = useState<Provider | null>(null);
@@ -58,7 +78,10 @@ export default function NewProjectPage() {
 
   const handleSubmitComplex = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) { alert('请输入项目名称'); return; }
+    if (!storeCode) { alert('请选择店铺'); return; }
+    if (!productCode.trim()) { alert('请输入型号'); return; }
+    if (!productionType) { alert('请选择生产类型'); return; }
+    if (!editorName.trim()) { alert('请输入剪辑师'); return; }
     if (!provider) { alert('请选择供应商'); return; }
     if (!provider.hasApiKey) { alert('当前供应商未配置 API Key'); return; }
 
@@ -67,7 +90,7 @@ export default function NewProjectPage() {
       const res = await fetch('/api/projects', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name, productName, productCode, category,
+          storeCode, productCode, productSubmodel: productSubmodel.trim(), productionType, editorName: editorName.trim(),
           workflowType: 'complex_product',
           providerId: provider.id, model, size, quality: effectiveQuality, timeoutMs,
           aspectRatio, resolution,
@@ -79,7 +102,7 @@ export default function NewProjectPage() {
       if (data.id) {
         router.push(`/projects/${data.id}`);
       } else {
-        alert('创建失败: ' + (data.error || '未知错误'));
+        alert('创建失败: ' + (data.message || data.error || '未知错误'));
       }
     } catch (err) { alert('创建失败: ' + String(err)); }
     finally { setCreating(false); }
@@ -193,29 +216,43 @@ export default function NewProjectPage() {
       </h1>
 
       <form onSubmit={handleSubmitComplex} className="space-y-10">
-          {/* Project info */}
+          {/* Production identity */}
           <div className="card p-4">
-            <h3 className="text-sm font-semibold mb-3 text-ink">项目信息</h3>
+            <h3 className="text-sm font-semibold mb-3 text-ink">生产身份</h3>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="label">项目名称 *</label>
-                <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="例如：奶油风软包床" />
+                <label className="label">店铺 *</label>
+                <select value={storeCode} onChange={(e) => setStoreCode(e.target.value)} className="input-field">
+                  <option value="">请选择</option>
+                  {STORE_CODES.map((store) => (<option key={store} value={store}>{store}</option>))}
+                </select>
               </div>
               <div>
-                <label className="label">产品名称</label>
-                <input type="text" value={productName} onChange={(e) => setProductName(e.target.value)} className="input-field" placeholder="可选" />
+                <label className="label">型号 *</label>
+                <input type="text" value={productCode} onChange={(e) => setProductCode(e.target.value)} className="input-field" placeholder="例如：XQ9A 或 PC672-A" />
               </div>
               <div>
-                <label className="label">产品编号</label>
-                <input type="text" value={productCode} onChange={(e) => setProductCode(e.target.value)} className="input-field" placeholder="可选" />
+                <label className="label">子型号</label>
+                <input type="text" value={productSubmodel} onChange={(e) => setProductSubmodel(e.target.value)} className="input-field" placeholder="可选" />
               </div>
               <div>
-                <label className="label">品类</label>
-                <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} className="input-field" placeholder="可选" />
+                <label className="label">生产类型 *</label>
+                <select value={productionType} onChange={(e) => setProductionType(e.target.value)} className="input-field">
+                  <option value="">请选择</option>
+                  {PRODUCTION_TYPES.map((type) => (<option key={type} value={type}>{type}</option>))}
+                </select>
+              </div>
+              <div>
+                <label className="label">剪辑师 *</label>
+                <input type="text" value={editorName} onChange={(e) => setEditorName(e.target.value)} className="input-field" placeholder="例如：紫菜卷" />
+              </div>
+              <div>
+                <label className="label">项目名称（自动生成）</label>
+                <input type="text" value={namePreview} readOnly className="input-field bg-transparent text-ink-secondary" placeholder="填写完生产身份后自动生成" />
               </div>
             </div>
             <p className="text-xs text-ink-tertiary mt-3">
-              创建项目后，可在项目工作台中按需上传素材、生成场景图、分镜图、脚本和视频。
+              项目名称由系统按「日期-店铺-型号-生产类型-剪辑师」自动生成，创建后可在项目工作台中按需上传素材、生成场景图、分镜图、脚本和视频。
             </p>
           </div>
 

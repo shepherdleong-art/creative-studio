@@ -5,6 +5,8 @@ import type { LibraryRevisionView } from './libraries.ts';
 import type { PlannedScript } from './planner.ts';
 import type { ScriptStudioCompleteJson } from './llm-contract.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
+import { embeddingRequirementText, checkTitleEmbedding, matchedSearchTerms } from './title-embedding.ts';
+import type { FrozenKnowledgeContext } from './knowledge-context.ts';
 import type {
   ScriptStudioScriptContent,
   ScriptStudioSegmentContent,
@@ -24,6 +26,8 @@ export interface ScriptGeneratorInput {
   previousScripts: Array<Pick<ScriptStudioScriptContent, 'fullScript'>>;
   signal?: AbortSignal;
   validationFeedback?: string[];
+  /** 任务创建时冻结的知识上下文；仅用于标题埋词与推荐说明，不扩大事实来源。 */
+  knowledgeContext?: FrozenKnowledgeContext;
 }
 
 /**
@@ -79,9 +83,47 @@ export function buildScriptPrompt(
     `口播总字数必须落在目标时长预算内（${budget.minContentCharacters}-${budget.maxContentCharacters} 字）`,
     '同一轮多条方案必须在开场、结构或卖点组合上明显不同',
   ];
+  const embeddingText = input.knowledgeContext
+    ? embeddingRequirementText({
+        matchStatus: input.knowledgeContext.strategy.matchStatus,
+        canonicalName: input.knowledgeContext.strategy.canonicalName,
+        searchTerms: input.knowledgeContext.strategy.searchTerms,
+      })
+    : null;
+  if (embeddingText) requirements.push(embeddingText);
   if (input.validationFeedback?.length) {
     requirements.push(`上一轮未通过：${input.validationFeedback.slice(0, 5).join('；')}；请只修复这些问题，不要改变已合规内容`);
   }
+  const recommendation = input.plan.recommendation;
+  const templateBlock = {
+    id: input.plan.templateId,
+    name: input.plan.templateName,
+    version: input.plan.templateVersion,
+    rationale: input.plan.rationale,
+  };
+  const recommendationBlock = recommendation
+    ? {
+        framework: recommendation.framework ? {
+          id: recommendation.framework.id,
+          stableKey: recommendation.framework.stableKey,
+          name: recommendation.framework.name,
+          structure: recommendation.framework.structure,
+          rationale: recommendation.framework.rationale,
+        } : null,
+        copyHook: recommendation.copyHook ? {
+          type: recommendation.copyHook.type,
+          subtype: recommendation.copyHook.subtype,
+          formula: recommendation.copyHook.formula,
+          example: recommendation.copyHook.example,
+        } : null,
+        visualHook: recommendation.visualHook ? {
+          group: recommendation.visualHook.group,
+          name: recommendation.visualHook.name,
+          formula: recommendation.visualHook.formula,
+          guidance: recommendation.visualHook.guidance,
+        } : null,
+      }
+    : null;
   return {
     systemPrompt: '你是电商短视频口播编剧。只返回一个 JSON 对象，不输出解释。不得绑定具体视频、素材顺序或 shotId。',
     userPrompt: JSON.stringify({
@@ -97,12 +139,8 @@ export function buildScriptPrompt(
       creativeBrief: input.creativeBrief,
       direction: input.plan.angle,
       ...(input.brief?.themeTitle ? { theme: input.brief.themeTitle } : {}),
-      template: {
-        id: input.plan.templateId,
-        name: input.plan.templateName,
-        version: input.plan.templateVersion,
-        rationale: input.plan.rationale,
-      },
+      template: templateBlock,
+      ...(recommendationBlock ? { recommendation: recommendationBlock } : {}),
       sellingPoints: candidates.map((point) => ({
         id: point.id,
         title: point.title,
@@ -207,8 +245,22 @@ export function normalizeGeneratedScript(
   const contentCharacterCount = countScriptContentCharacters(fullScript);
   const budget = buildScriptDurationBudget(input.targetDurationSec);
   const estimatedNarrationDurationSec = estimateNarrationDurationSec(contentCharacterCount);
+  const knowledgeContext = input.knowledgeContext;
+  const strategy = knowledgeContext?.strategy;
+  const embedding = knowledgeContext
+    ? checkTitleEmbedding(
+        {
+          matchStatus: strategy!.matchStatus,
+          canonicalName: strategy!.canonicalName,
+          searchTerms: strategy!.searchTerms,
+        },
+        asString(record.title),
+        `${coverTitleParts.primary}${coverTitleParts.secondary}`,
+      )
+    : null;
+  const recommendation = input.plan.recommendation;
   return {
-    version: 3,
+    version: 4,
     title: asString(record.title) || `${input.libraryRevision.productName || '产品'}口播方案`,
     coverTitleParts: {
       ...coverTitleParts,
@@ -235,6 +287,46 @@ export function normalizeGeneratedScript(
     segments,
     fullScript,
     fullSubtitle: segments.map((segment) => segment.subtitle).join('\n'),
+    knowledgeContext: knowledgeContext
+      ? {
+          matchStatus: strategy!.matchStatus,
+          strategyRevisionId: strategy!.strategyCatalogRevisionId,
+          normalizedModelKey: strategy!.normalizedModelKey,
+          canonicalName: strategy!.canonicalName,
+          searchTermsUsed: embedding?.searchTermsUsed ?? [],
+          sourceRows: strategy!.sourceRows ?? [],
+        }
+      : undefined,
+    recommendation: recommendation
+      ? {
+          framework: recommendation.framework ? {
+            id: recommendation.framework.id,
+            stableKey: recommendation.framework.stableKey,
+            name: recommendation.framework.name,
+            structure: recommendation.framework.structure,
+            rationale: recommendation.framework.rationale,
+          } : null,
+          copyHook: recommendation.copyHook ? {
+            id: recommendation.copyHook.id,
+            stableKey: recommendation.copyHook.stableKey,
+            type: recommendation.copyHook.type,
+            subtype: recommendation.copyHook.subtype,
+            formula: recommendation.copyHook.formula,
+            example: recommendation.copyHook.example,
+            rationale: recommendation.copyHook.rationale,
+          } : null,
+          visualHook: recommendation.visualHook ? {
+            id: recommendation.visualHook.id,
+            stableKey: recommendation.visualHook.stableKey,
+            group: recommendation.visualHook.group,
+            name: recommendation.visualHook.name,
+            formula: recommendation.visualHook.formula,
+            guidance: recommendation.visualHook.guidance,
+            referenceAssetIds: recommendation.visualHook.referenceAssetIds,
+            rationale: recommendation.visualHook.rationale,
+          } : null,
+        }
+      : undefined,
   };
 }
 
@@ -304,12 +396,26 @@ export function buildDeterministicFallbackScript(
   }));
   const fullScript = segments.map((segment) => segment.narration).join('\n');
   contentCharacterCount = countScriptContentCharacters(fullScript);
+  const knowledgeContext = input.knowledgeContext;
+  const strategy = knowledgeContext?.strategy;
+  const matched = strategy?.matchStatus === 'matched';
+  const canonicalName = matched ? (strategy!.canonicalName || '') : '';
+  const searchTerms = matched ? (strategy!.searchTerms || []) : [];
+  const usedSearchTerm = searchTerms[0] || '';
+  // 内部标题必须同时含统一名称与至少一个搜索词；统一名称已含搜索词时直接使用。
+  const titleIncludesTerm = matchedSearchTerms(canonicalName, searchTerms).length > 0;
+  const title = canonicalName
+    ? (titleIncludesTerm ? canonicalName : `${canonicalName}｜${usedSearchTerm}`)
+    : `${input.libraryRevision.productName || '产品'}口播方案`;
+  const coverPrimary = canonicalName ? `${canonicalName}优选` : `${input.libraryRevision.category || '产品'}优选`;
+  const coverSecondary = usedSearchTerm || '真实细节更可信';
+  const recommendation = input.plan.recommendation;
   return {
-    version: 3,
-    title: `${input.libraryRevision.productName || '产品'}口播方案`,
+    version: 4,
+    title,
     coverTitleParts: {
-      primary: `${input.libraryRevision.category || '产品'}优选`,
-      secondary: '真实细节更可信',
+      primary: coverPrimary,
+      secondary: coverSecondary,
       source: 'system_composed',
     },
     platform: input.platform,
@@ -336,6 +442,46 @@ export function buildDeterministicFallbackScript(
     segments,
     fullScript,
     fullSubtitle: segments.map((segment) => segment.subtitle).join('\n'),
+    knowledgeContext: knowledgeContext
+      ? {
+          matchStatus: strategy!.matchStatus,
+          strategyRevisionId: strategy!.strategyCatalogRevisionId,
+          normalizedModelKey: strategy!.normalizedModelKey,
+          canonicalName: strategy!.canonicalName,
+          searchTermsUsed: matched ? (usedSearchTerm ? [usedSearchTerm] : []) : [],
+          sourceRows: strategy!.sourceRows ?? [],
+        }
+      : undefined,
+    recommendation: recommendation
+      ? {
+          framework: recommendation.framework ? {
+            id: recommendation.framework.id,
+            stableKey: recommendation.framework.stableKey,
+            name: recommendation.framework.name,
+            structure: recommendation.framework.structure,
+            rationale: recommendation.framework.rationale,
+          } : null,
+          copyHook: recommendation.copyHook ? {
+            id: recommendation.copyHook.id,
+            stableKey: recommendation.copyHook.stableKey,
+            type: recommendation.copyHook.type,
+            subtype: recommendation.copyHook.subtype,
+            formula: recommendation.copyHook.formula,
+            example: recommendation.copyHook.example,
+            rationale: recommendation.copyHook.rationale,
+          } : null,
+          visualHook: recommendation.visualHook ? {
+            id: recommendation.visualHook.id,
+            stableKey: recommendation.visualHook.stableKey,
+            group: recommendation.visualHook.group,
+            name: recommendation.visualHook.name,
+            formula: recommendation.visualHook.formula,
+            guidance: recommendation.visualHook.guidance,
+            referenceAssetIds: recommendation.visualHook.referenceAssetIds,
+            rationale: recommendation.visualHook.rationale,
+          } : null,
+        }
+      : undefined,
   };
 }
 

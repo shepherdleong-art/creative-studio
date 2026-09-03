@@ -22,7 +22,7 @@ try {
   const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
   db.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '', exportDirName TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')), storeCode TEXT NOT NULL DEFAULT '', productSubmodel TEXT NOT NULL DEFAULT '', productionType TEXT NOT NULL DEFAULT '', editorName TEXT NOT NULL DEFAULT '', namingDate TEXT NOT NULL DEFAULT '', currentExportIdentityId TEXT);
     CREATE TABLE shot_sets (
       id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL,
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE

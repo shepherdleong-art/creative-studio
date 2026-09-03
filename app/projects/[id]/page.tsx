@@ -29,6 +29,12 @@ interface Project {
   productName?: string | null;
   productCode?: string | null;
   productCategory?: string | null;
+  storeCode?: string | null;
+  productSubmodel?: string | null;
+  productionType?: string | null;
+  editorName?: string | null;
+  namingDate?: string | null;
+  currentExportIdentityId?: string | null;
   providerId: string;
   model: string;
   prompt: string;
@@ -474,6 +480,12 @@ export default function ProjectDetailPage() {
     productName: project.productName || '',
     productCode: project.productCode || '',
     productCategory: project.productCategory || '',
+    storeCode: (project as { storeCode?: string }).storeCode || '',
+    productSubmodel: (project as { productSubmodel?: string }).productSubmodel || '',
+    productionType: (project as { productionType?: string }).productionType || '',
+    editorName: (project as { editorName?: string }).editorName || '',
+    namingDate: (project as { namingDate?: string }).namingDate || '',
+    hasExportIdentity: Boolean((project as { currentExportIdentityId?: string }).currentExportIdentityId),
   };
   return (
     <div>

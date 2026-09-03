@@ -3,6 +3,13 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
+import {
+  createExportIdentity,
+  getOrCreateCurrentExportIdentity,
+  hasExportIdentity,
+  type ExportIdentityView,
+} from '../project-export-identity.ts';
+import { readProductionIdentityFields, deriveProjectNamingDate } from '../project-production-identity.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 // 命名合约与单条模式共用同一处纯函数,避免两边各写一份后慢慢漂移。
 import { formatShanghaiTaskDate } from '../media-core/export-identity.ts';
@@ -19,7 +26,7 @@ import {
   reserveBatchExportTarget,
   type BatchExportRenderContract,
 } from './batch-export.ts';
-import { startBatchProduction } from './batch-flow.ts';
+import { readFrozenBatchExportIdentity, startBatchProduction } from './batch-flow.ts';
 import { freezeBatchMusicPool, readBatchBgmPool } from './bgm.ts';
 import { BatchDomainError } from './errors.ts';
 import { checkFormalExportPreflight } from './export-preflight.ts';
@@ -507,15 +514,45 @@ export async function publishSelectedBatchOutputs(
   if (lineage.inputState !== 'frozen') {
     throw new BatchDomainError('conflict', '批次输入尚未冻结,不能正式导出');
   }
-  const project = db.prepare(`SELECT productCode, createdAt FROM projects WHERE id = ?`).get(projectId) as {
+  const project = db.prepare(`SELECT productCode, createdAt, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id = ?`).get(projectId) as {
     productCode: string | null;
     createdAt: string | null;
+    storeCode: string | null;
+    productSubmodel: string | null;
+    productionType: string | null;
+    editorName: string | null;
+    namingDate: string | null;
   } | undefined;
   if (!project) throw new BatchDomainError('not_found', '项目不存在');
   if (!project.productCode?.trim()) throw new BatchDomainError('conflict', '请先在项目信息中填写产品编码再正式导出');
   // 与单条模式一致:文件名里的日期取项目创建日期(上海时区),不是导出当天,
   // 这样同一项目的单条与批量成片落在同一个日期前缀下,重复导出也不会变名。
   const taskDate = formatShanghaiTaskDate(project.createdAt ?? '') || undefined;
+
+  // 导出身份以批次冻结快照为准:start 时把当时的身份/目录名冻结进版本 defaultsJson,
+  // 正式发布不再读「当前」项目字段,项目身份后续切换不影响已冻结批次的目录与命名。
+  // 旧批次(本改动前已冻结,没有快照)回退到发布时解析当前身份,保持向后兼容。
+  const frozenBatchIdentity = readFrozenBatchExportIdentity(db, lineage.currentVersionId!);
+  let frozenIdentity: ExportIdentityView | null = null;
+  let exportDirName: string;
+  if (frozenBatchIdentity?.exportDirName) {
+    exportDirName = frozenBatchIdentity.exportDirName;
+    if (frozenBatchIdentity.identity) {
+      // 首次正式导出才用冻结快照的字段创建身份修订;项目已有身份修订(含用户显式切换过)时
+      // 直接用冻结名称发布,不再改动项目当前身份指针。
+      if (!hasExportIdentity(db, projectId)) {
+        frozenIdentity = createExportIdentity(db, { projectId, identity: frozenBatchIdentity.identity });
+      }
+    }
+  } else {
+    // 旧批次:发布时按当前项目身份解析并冻结(首次正式导出语义)。
+    const identityFields = readProductionIdentityFields(project);
+    const namingDate = deriveProjectNamingDate({ namingDate: project.namingDate ?? '', createdAt: project.createdAt });
+    frozenIdentity = identityFields.storeCode && identityFields.productCode && identityFields.productionType && identityFields.editorName
+      ? getOrCreateCurrentExportIdentity(db, projectId, { ...identityFields, namingDate })
+      : null;
+    exportDirName = frozenIdentity ? frozenIdentity.exportDirName : resolveProjectExportDirName(db, projectId);
+  }
 
   const storageRoot = path.resolve(options.storageRoot ?? path.join(dataRoot(), 'storage'));
   const items: BatchPublishItemResult[] = [];
@@ -621,11 +658,14 @@ export async function publishSelectedBatchOutputs(
         storageRoot,
         projectId,
         batchId,
-        productCode: project.productCode,
-        taskDate: taskDate ?? options.now?.() ?? new Date(),
+        // 冻结快照存在时用快照里的型号/日期（baseName 缺省时才回退旧命名公式）。
+        productCode: frozenBatchIdentity?.productCode || project.productCode || '',
+        taskDate: frozenBatchIdentity?.taskDate || taskDate || options.now?.() || new Date(),
         planSeq: row.seq,
         outputVersion: row.versionNumber,
-        exportDirName: resolveProjectExportDirName(db, projectId),
+        exportDirName,
+        ...(frozenIdentity ? { baseName: frozenIdentity.baseName } : {}),
+        ...(frozenBatchIdentity?.baseName && !frozenIdentity ? { baseName: frozenBatchIdentity.baseName } : {}),
       });
       let output;
       try {

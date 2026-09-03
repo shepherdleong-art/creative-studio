@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
+import { getCurrentExportDirName } from '../project-export-identity.ts';
 import { BatchDomainError } from './errors.ts';
 import type { BatchProductionStatus } from './versions.ts';
 import type { BatchTaskExpectedState, BatchTaskStatus } from './tasks.ts';
@@ -410,7 +411,7 @@ export function getBatchWorkspace(
     return {
       batch,
       phase: 'prepare_materials',
-      exportDirName: resolveProjectExportDirName(db, projectId),
+      exportDirName: getCurrentExportDirName(db, projectId) ?? resolveProjectExportDirName(db, projectId),
       counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 },
       cards: [],
       exclusions: [],
@@ -687,5 +688,5 @@ export function getBatchWorkspace(
   else if (counts.processing > 0) phase = 'export';
   else phase = 'review';
 
-  return { batch, phase, exportDirName: resolveProjectExportDirName(db, projectId), counts, cards, exclusions, allocationReport };
+  return { batch, phase, exportDirName: getCurrentExportDirName(db, projectId) ?? resolveProjectExportDirName(db, projectId), counts, cards, exclusions, allocationReport };
 }

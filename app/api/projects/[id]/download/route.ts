@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { buildGenericZipStream, ZipImageEntry } from '@/lib/zip-download';
+import { getCurrentExportIdentity } from '@/lib/project-export-identity';
 
 export const runtime = 'nodejs';
 
@@ -65,7 +66,9 @@ export async function GET(
     }
 
     const stream = buildGenericZipStream(entries);
-    const zipName = encodeURIComponent(`${project.name || 'project'}-outputs.zip`);
+    // 项目下载 ZIP 以生产身份基础名开头（旧项目无冻结身份时回退项目名）。
+    const baseName = getCurrentExportIdentity(getDb(), project.id)?.baseName || project.name || 'project';
+    const zipName = encodeURIComponent(`${baseName}-全部产物.zip`);
     return new NextResponse(stream, {
       headers: {
         'Content-Type': 'application/zip',

@@ -1,5 +1,6 @@
 import { getScriptTemplate, type ScriptTemplateDefinition } from '../script-templates.ts';
 import type { LibraryRevisionView } from './libraries.ts';
+import type { KnowledgePlanRecommendation } from './template-catalog.ts';
 import { parseScriptStudioRequestedCount } from './generation-contract.ts';
 
 export interface PlannedScript {
@@ -10,6 +11,8 @@ export interface PlannedScript {
   rationale: string;
   direction: string;
   angle: string;
+  /** 知识/模板目录的推荐组合（框架/文案钩子/画面钩子）；未启用目录时为 undefined。 */
+  recommendation?: KnowledgePlanRecommendation;
 }
 
 const DIVERSITY_ORDER = [
@@ -112,4 +115,22 @@ function spread(left: string, right: string): number {
 
 export function plannedTemplate(id: string): ScriptTemplateDefinition | undefined {
   return getScriptTemplate(id);
+}
+
+/**
+ * 把冻结的知识/模板目录推荐按 planIndex 合并进方案（方案 §2.7）。
+ * 只在创建时冻结一次；runner 直接使用，不再查当前目录版本。
+ * 推荐缺失的 plan 保持静态模板身份，方向卖点编排不受影响。
+ */
+export function applyKnowledgeRecommendations(
+  plans: PlannedScript[],
+  recommendations: KnowledgePlanRecommendation[],
+): PlannedScript[] {
+  if (!recommendations || recommendations.length === 0) return plans;
+  const byIndex = new Map(recommendations.map((item) => [item.planIndex, item]));
+  return plans.map((plan) => {
+    const recommendation = byIndex.get(plan.index);
+    if (!recommendation) return plan;
+    return { ...plan, recommendation };
+  });
 }

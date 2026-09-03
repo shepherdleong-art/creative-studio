@@ -30,7 +30,7 @@ try {
   const db = new Database(path.join(root, 'workbench.db'));
   db.pragma('foreign_keys = ON');
   db.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '', exportDirName TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, productCode TEXT DEFAULT '', exportDirName TEXT NOT NULL DEFAULT '', createdAt TEXT NOT NULL DEFAULT (datetime('now')), storeCode TEXT NOT NULL DEFAULT '', productSubmodel TEXT NOT NULL DEFAULT '', productionType TEXT NOT NULL DEFAULT '', editorName TEXT NOT NULL DEFAULT '', namingDate TEXT NOT NULL DEFAULT '', currentExportIdentityId TEXT);
     CREATE TABLE shot_sets (
       id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL,
       FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE
@@ -155,6 +155,10 @@ try {
   );
   const frozenPool = JSON.parse((db.prepare(`SELECT defaultsJson FROM batch_production_versions WHERE id = ?`).get(versionId) as { defaultsJson: string }).defaultsJson).batchMusicPool as Array<{ trackId: string }>;
   assert.equal(frozenPool.length, 3, '锁定时曲库池必须冻结进批次版本');
+  // 导出身份也必须在 start 时冻结进版本快照（本项目身份不完整 → identity 留空，目录名仍冻结）。
+  const frozenIdentity = (JSON.parse((db.prepare(`SELECT defaultsJson FROM batch_production_versions WHERE id = ?`).get(versionId) as { defaultsJson: string }).defaultsJson).batchExportIdentity) as { baseName: string | null; exportDirName: string; identity: unknown };
+  assert.ok(frozenIdentity && typeof frozenIdentity.exportDirName === 'string' && frozenIdentity.exportDirName.length > 0, 'start 必须冻结导出目录名');
+  assert.equal(frozenIdentity.identity, null, '生产身份不完整时身份字段留空，发布端走旧命名回退');
   const allocationArrangements = (db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE allocationRunId = ?`).all(started.allocationRunId) as Array<{ arrangementJson: string }>).map(({ arrangementJson }) => JSON.parse(arrangementJson));
   assert.deepEqual(
     allocationArrangements.map(({ music }) => music.trackId),

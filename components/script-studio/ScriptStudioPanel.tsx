@@ -743,6 +743,59 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     }
   }, [projectId, providerId, startPolling]);
 
+  // 「换一个框架/钩子」：排除当前组合后创建新任务，新推荐进入任务快照（方案 §2.7）。
+  const switchRecommendation = useCallback(async (script: ScriptView, content: ScriptStudioScriptContent | null) => {
+    setError('');
+    if (!libraryRevisionId) {
+      setError('当前项目没有可复用的卖点库');
+      return;
+    }
+    if (!providerId) {
+      setError('请先选择一个已配置且支持图片读取的脚本模型');
+      return;
+    }
+    const recommendation = content?.recommendation;
+    const exclusions = {
+      ...(recommendation?.framework?.stableKey ? { frameworkKeys: [recommendation.framework.stableKey] } : {}),
+      ...(recommendation?.copyHook?.stableKey ? { copyHookKeys: [recommendation.copyHook.stableKey] } : {}),
+      ...(recommendation?.visualHook?.stableKey ? { visualHookKeys: [recommendation.visualHook.stableKey] } : {}),
+    };
+    // 稳定幂等键：由脚本 + 排除列表派生，断线重试同一次「换一个」只创建一个任务；
+    // 排除当前组合变化（点出新组合）后自然得到新 key，与「再生成」的 key/body 语义一致。
+    const exclusionIdentity = JSON.stringify({
+      frameworkKeys: (exclusions.frameworkKeys ?? []).sort(),
+      copyHookKeys: (exclusions.copyHookKeys ?? []).sort(),
+      visualHookKeys: (exclusions.visualHookKeys ?? []).sort(),
+    });
+    const requestKey = `switch-recommendation:${script.id}:${exclusionIdentity}`;
+    try {
+      const response = await fetch(`/api/projects/${projectId}/script-studio/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          libraryRevisionId,
+          targetScriptId: script.id,
+          targetDurationSec: script.currentRevision?.targetDurationSec || content?.targetDurationSec || 15,
+          requestedCount: 1,
+          providerId,
+          requestKey,
+          ...(Object.keys(exclusions).length > 0 ? { exclusions } : {}),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(data.message || data.error || '换一个框架/钩子失败');
+        return;
+      }
+      const nextTask = data.task as ScriptStudioTaskSnapshot;
+      setTask(nextTask);
+      setStep(2);
+      startPolling(nextTask.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [projectId, libraryRevisionId, providerId, startPolling]);
+
   const retryTask = useCallback(async () => {
     if (!task) return;
     setError('');
@@ -1339,11 +1392,14 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                           <div className="mt-1 text-xs leading-5 text-ink-secondary">
                             模板选择理由：{content?.templateRationale || revision?.templateRationale || '按切入点自动匹配'}
                           </div>
+                          {content?.knowledgeContext && <KnowledgeBadge knowledgeContext={content.knowledgeContext} />}
+                          {content?.recommendation && <RecommendationBlock recommendation={content.recommendation} />}
                         </div>
                       </div>
                       <div className="flex flex-none flex-wrap justify-end gap-1.5">
                         <button type="button" onClick={() => toggleCollapsed(script.id)} className="btn-secondary btn-sm">{collapsed ? '完整脚本' : '收起脚本'}</button>
                         <button type="button" onClick={() => void copyScript(content?.fullScript || '')} className="btn-secondary btn-sm">复制</button>
+                        <button type="button" onClick={() => void switchRecommendation(script, content)} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>
                         <button type="button" onClick={() => void regenerateOne(script.id)} className="btn-secondary btn-sm">再生成一版</button>
                         <button type="button" onClick={() => void loadHistory(script.id)} className="btn-secondary btn-sm">版本历史</button>
                       </div>
@@ -1573,6 +1629,107 @@ function EditBox({
         <button type="button" onClick={() => setEditing(false)} className="btn-secondary btn-sm">取消</button>
         <button type="button" onClick={() => void save()} disabled={saving} className="btn-primary btn-sm">{saving ? '保存中…' : '保存为新版本'}</button>
       </div>
+    </div>
+  );
+}
+
+interface KnowledgeContextView {
+  matchStatus: 'matched' | 'unmatched';
+  canonicalName?: string | null;
+  searchTermsUsed?: string[];
+  sourceRows?: Array<number | string>;
+}
+
+/** 知识库匹配状态徽标：未匹配用中性提示，不使用失败色或阻断按钮（方案 §6.6）。 */
+function KnowledgeBadge({ knowledgeContext }: { knowledgeContext: KnowledgeContextView }) {
+  if (knowledgeContext.matchStatus === 'unmatched') {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[0.65rem] font-semibold text-ink-tertiary">未匹配策略</span>
+        <span className="text-[0.68rem] text-ink-tertiary">未匹配产品策略，已按详情页卖点正常生成</span>
+      </div>
+    );
+  }
+  const terms = (knowledgeContext.searchTermsUsed || []).filter(Boolean);
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="rounded-full bg-ok-tint px-2 py-0.5 text-[0.65rem] font-semibold text-ok">已匹配策略</span>
+      <span className="text-[0.68rem] text-ink-secondary">
+        统一名称「{knowledgeContext.canonicalName || '-'}」{terms.length > 0 ? ` · 埋词：${terms.join('、')}` : ''}
+      </span>
+    </div>
+  );
+}
+
+interface RecommendationView {
+  framework?: {
+    name?: string;
+    structure?: string[];
+    rationale?: string;
+  } | null;
+  copyHook?: {
+    type?: string;
+    subtype?: string;
+    formula?: string;
+    example?: string;
+    rationale?: string;
+  } | null;
+  visualHook?: {
+    group?: string;
+    name?: string;
+    formula?: string;
+    guidance?: string;
+    referenceAssetIds?: string[];
+    rationale?: string;
+  } | null;
+}
+
+/** 推荐说明（框架/文案钩子/画面钩子）；参考图按需展开，不嵌入正文（方案 §2.7/§6.5）。 */
+function RecommendationBlock({ recommendation }: { recommendation: RecommendationView }) {
+  const [showRefs, setShowRefs] = useState(false);
+  const assetIds = recommendation.visualHook?.referenceAssetIds || [];
+  return (
+    <div className="mt-2 space-y-1.5 rounded-[12px] border border-hairline bg-surface-subtle p-3">
+      {recommendation.framework && (
+        <div className="text-[0.68rem] text-ink-secondary">
+          <span className="font-semibold text-ink">核心框架</span>：{recommendation.framework.name}
+          {recommendation.framework.rationale ? <span className="text-ink-tertiary">（{recommendation.framework.rationale}）</span> : null}
+          {(recommendation.framework.structure || []).length > 0 && (
+            <span className="ml-1.5 text-ink-tertiary">节奏：{(recommendation.framework.structure || []).join(' → ')}</span>
+          )}
+        </div>
+      )}
+      {recommendation.copyHook && (
+        <div className="text-[0.68rem] text-ink-secondary">
+          <span className="font-semibold text-ink">文案钩子</span>：{recommendation.copyHook.type || ''} / {recommendation.copyHook.subtype || ''}
+          {recommendation.copyHook.formula ? <span className="text-ink-tertiary"> · 公式：{recommendation.copyHook.formula}</span> : null}
+        </div>
+      )}
+      {recommendation.visualHook && (
+        <div className="text-[0.68rem] text-ink-secondary">
+          <span className="font-semibold text-ink">画面钩子</span>：{recommendation.visualHook.name || '-'}
+          {recommendation.visualHook.formula ? <span className="text-ink-tertiary"> · 画面公式：{recommendation.visualHook.formula}</span> : null}
+          {recommendation.visualHook.guidance ? <span className="text-ink-tertiary"> · {recommendation.visualHook.guidance}</span> : null}
+          {assetIds.length > 0 && (
+            <button type="button" onClick={() => setShowRefs((value) => !value)} className="ml-1.5 text-accent hover:underline">
+              {showRefs ? '收起参考图' : '查看参考图'}
+            </button>
+          )}
+        </div>
+      )}
+      {showRefs && assetIds.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-2">
+          {assetIds.map((assetId) => (
+            <img
+              key={assetId}
+              src={`/api/script-studio/template-assets/${assetId}`}
+              alt="画面钩子参考图"
+              className="h-16 w-16 rounded-lg border border-hairline object-cover"
+              loading="lazy"
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

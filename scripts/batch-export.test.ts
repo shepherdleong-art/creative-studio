@@ -35,6 +35,23 @@ async function run(): Promise<void> {
   assert.equal(target.coverFilename, '成片-床垫 A-20260803-02-封面.jpg');
   assert.ok(fs.existsSync(target.reservationAbsolutePath));
 
+  // 生产身份冻结后批量成片使用 `<基础名>-<两位序号>`（无「成片-」前缀）——2026-09-03 命名统一
+  const identityNamed = reserveBatchExportTarget({
+    storageRoot,
+    projectId: 'project-identity',
+    batchId: 'batch-identity',
+    productCode: 'XQ9A',
+    taskDate: '20260903',
+    planSeq: 2,
+    outputVersion: 3,
+    exportDirName: '20260903-B店-XQ9A-AI种草-紫菜卷',
+    baseName: '20260903-B店-XQ9A-AI种草-紫菜卷',
+  });
+  assert.equal(identityNamed.videoFilename, '20260903-B店-XQ9A-AI种草-紫菜卷-02.mp4');
+  assert.equal(identityNamed.coverFilename, '20260903-B店-XQ9A-AI种草-紫菜卷-02-封面.jpg');
+  assert.ok(identityNamed.videoRelativePath.startsWith(path.join('projects', '20260903-B店-XQ9A-AI种草-紫菜卷', '成片')));
+  releaseBatchExportReservation(storageRoot, identityNamed);
+
   await assert.rejects(
     publishBatchExportTarget({
       storageRoot,

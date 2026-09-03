@@ -39,7 +39,7 @@ assert.match(projectRouteSource, /parseProjectInfoUpdate\(body\)/);
 assert.match(projectRouteSource, /ProjectInfoValidationError/);
 assert.match(
   projectRouteSource,
-  /SELECT id, name, productName, productCode, productCategory FROM projects WHERE id = \?/,
+  /SELECT id, name, productName, productCode, productCategory, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id = \?/,
 );
 assert.match(
   projectRouteSource,
@@ -47,5 +47,10 @@ assert.match(
   '项目详情轮询不得每次都写入 lastOpenedAt',
 );
 assert.match(projectRouteSource, /project:\s*updatedProject/);
+// 生产身份：PATCH 必须走领域字段解析并重新生成名称，冻结后返回 409
+assert.match(projectRouteSource, /parseProductionIdentityUpdate\(body\)/);
+assert.match(projectRouteSource, /export_identity_frozen/);
+assert.match(projectRouteSource, /ENABLE_NEW_EXPORT_IDENTITY_KEY/, '确认字段必须走共享常量，与弹窗契约一致');
+assert.match(projectRouteSource, /hasExportIdentity\(db, id\)/);
 
 console.log('project info tests passed');

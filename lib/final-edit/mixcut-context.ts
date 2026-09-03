@@ -44,6 +44,12 @@ interface ProjectRow {
   productCode: string | null;
   productCategory: string | null;
   createdAt: string;
+  storeCode: string | null;
+  productSubmodel: string | null;
+  productionType: string | null;
+  editorName: string | null;
+  namingDate: string | null;
+  currentExportIdentityId: string | null;
 }
 
 interface ShotSetRow {
@@ -167,7 +173,9 @@ export async function buildMixcutContext(
   requestedShotSetId?: string | null,
 ): Promise<MixcutContextResponse | null> {
   const projectRow = db.prepare(`
-    SELECT id, name, productName, productCode, productCategory, createdAt FROM projects WHERE id = ?
+    SELECT id, name, productName, productCode, productCategory, createdAt,
+      storeCode, productSubmodel, productionType, editorName, namingDate, currentExportIdentityId
+    FROM projects WHERE id = ?
   `).get(projectId) as ProjectRow | undefined;
   if (!projectRow) return null;
 
@@ -347,6 +355,12 @@ export async function buildMixcutContext(
       productCode: projectRow.productCode || '',
       createdAt: projectRow.createdAt,
       taskDate: formatShanghaiTaskDate(projectRow.createdAt),
+      storeCode: projectRow.storeCode || '',
+      productSubmodel: projectRow.productSubmodel || '',
+      productionType: projectRow.productionType || '',
+      editorName: projectRow.editorName || '',
+      namingDate: projectRow.namingDate || '',
+      hasExportIdentity: Boolean(projectRow.currentExportIdentityId),
     },
     shotSets,
     currentShotSetId,

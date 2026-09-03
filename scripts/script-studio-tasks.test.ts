@@ -12,6 +12,7 @@ import {
   createTask,
   decideTaskRequest,
   getTask,
+  listRecentTasks,
   recoverInterruptedTasks,
   taskStoredIdentity,
   updateTask,
@@ -269,6 +270,13 @@ const g5Derived = decideTaskRequest(db, {
 assert.equal(g5DerivedCalls, 1, '派生 key 必须解析供应商一次');
 assert.equal(g5Derived.existing, null, '新参数不应命中旧任务');
 assert.ok(g5Derived.snapshot && g5Derived.snapshot.providerId === 'vision-e2e', '创建快照必须冻结供应商');
+
+// 最近任务列表（刷新后恢复运行中任务）：按创建时间倒序，limit 生效。
+const recent = listRecentTasks(db, 'p1', 2);
+assert.equal(recent.length, 2, 'listRecentTasks 受 limit 约束');
+assert.ok(recent[0]!.createdAt >= recent[1]!.createdAt, 'listRecentTasks 必须按创建时间倒序');
+assert.ok(recent.every((task) => task.projectId === 'p1'), 'listRecentTasks 只返回本项目任务');
+assert.ok(Array.isArray(recent[0]!.stages), 'listRecentTasks 返回带阶段的任务视图（快照可序列化）');
 
 db.close();
 console.log('script-studio-tasks.test.ts: ok');

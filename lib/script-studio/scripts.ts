@@ -18,6 +18,11 @@ export interface ProjectScriptRevisionInput {
   targetDurationSec: number;
   estimatedDurationSec?: number | null;
   validationJson?: Record<string, unknown>;
+  /** 知识/模板目录来源追溯（方案 §2.8 / §5.2）。 */
+  strategyCatalogRevisionId?: string;
+  strategyEntryId?: string;
+  templateCatalogRevisionId?: string;
+  recommendationJson?: Record<string, unknown>;
 }
 
 export interface ProjectScriptWithRevision extends ProjectScriptRecord {
@@ -43,8 +48,9 @@ function insertRevision(
   db.prepare(`
     INSERT INTO project_script_revisions
       (id, scriptId, revisionNumber, generationTaskId, libraryRevisionId, templateId, templateVersion,
-       templateRationale, origin, contentJson, targetDurationSec, estimatedDurationSec, validationJson, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       templateRationale, origin, contentJson, targetDurationSec, estimatedDurationSec, validationJson, createdAt,
+       strategyCatalogRevisionId, strategyEntryId, templateCatalogRevisionId, recommendationJson)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     scriptId,
@@ -60,6 +66,10 @@ function insertRevision(
     input.estimatedDurationSec == null ? null : Number(input.estimatedDurationSec),
     JSON.stringify(input.validationJson || {}),
     createdAt,
+    input.strategyCatalogRevisionId || '',
+    input.strategyEntryId || '',
+    input.templateCatalogRevisionId || '',
+    JSON.stringify(input.recommendationJson || {}),
   );
   return db.prepare(`
     SELECT * FROM project_script_revisions WHERE id = ? AND scriptId = ? AND revisionNumber = ?

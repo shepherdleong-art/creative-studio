@@ -12,7 +12,9 @@ import {
 
 // Next dev 热更新会保留 globalThis，但旧调度器的 executor 闭包不会自动换成新代码。
 // 任何改变任务实际供应商/执行语义的修改都必须递增此版本，使旧闭包先停再换。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 6;
+// v7：runner 执行语义变更——卖点库修订在任务创建时冻结（不再执行时读当前版）、
+// 知识推荐真正按证据卖点类型评分并写入方向卖点包（详见任务快照/知识上下文改动）。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 7;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

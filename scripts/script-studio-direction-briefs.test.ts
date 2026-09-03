@@ -318,4 +318,27 @@ assert.deepEqual(
   '缺少 brief 时候选为空而不是完整卖点库',
 );
 
+// ── 策略排序信号（方案 §2.6）：只对证据门禁白名单内的卖点做排序取舍，不扩来源 ──
+const strategyPoints = [
+  makePoint({ id: 's-a', seq: 1, title: '一键折叠设计', factText: '靠背一键折叠', pointType: 'efficacy', themeKey: 's-t1', themeTitle: '折叠便利', importance: 50 }),
+  makePoint({ id: 's-b', seq: 2, title: '普通坐感', factText: '常规坐垫', pointType: 'efficacy', themeKey: 's-t2', themeTitle: '坐感', importance: 90 }),
+  // 策略提到「智能调节」，但库中没有任何证据支持该主张 → 不得凭空进入候选
+  makePoint({ id: 's-c', seq: 3, title: '透气面料', factText: '透气网布', pointType: 'material', themeKey: 's-t3', themeTitle: '材质', importance: 60 }),
+];
+const strategyRanking = { primarySellingPoints: ['一键折叠', '智能调节'], differentiators: ['窄缝适配'] };
+const strategyBrief = planDirectionBriefs({
+  sellingPoints: strategyPoints,
+  plans: [makePlan(1, 'feature_showcase')],
+  targetDurationSec: 15,
+  strategyRanking,
+})[0]!;
+// 命中策略「一键折叠」的卖点 s-a 排在最前（即使 s-b 重要度更高）。
+assert.equal(strategyBrief.requiredPointIds[0], 's-a', '策略卖点命中必须排在同类前面');
+// 候选只来自白名单：策略「智能调节/窄缝适配」无证据支持，不得进入候选池。
+const strategyIds = new Set([...strategyBrief.requiredPointIds, ...strategyBrief.optionalPointIds]);
+for (const point of strategyPoints) assert.equal(strategyIds.has(point.id), true, `白名单卖点 ${point.id} 应可进入候选`);
+assert.equal(strategyIds.has('s-c'), true, '未命中策略的已有证据卖点仍可进入候选');
+// 关键边界：没有任何「智能调节」卖点被合成出来。
+assert.equal(strategyPoints.some((point) => point.title.includes('智能调节')), false, '策略主张不得自动成为正文事实');
+
 console.log('script-studio-direction-briefs.test.ts: ok');
