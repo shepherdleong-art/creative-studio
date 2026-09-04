@@ -15,6 +15,7 @@ import { createProjectScript, snapshotScriptIntoBatch } from '../lib/batch-produ
 import { createOutputPlansForSnapshot, createOutputVersion } from '../lib/batch-production/plans.ts';
 import { addAssetToPool } from '../lib/batch-production/versions.ts';
 import { renderBatchOutputVersion } from '../lib/batch-production/batch-renderer.ts';
+import { FINAL_EDIT_INTRO_DURATION_US } from '../lib/media-core/render-contract.ts';
 
 /**
  * 渲染冒烟测试:不经过 API、不起 Next 服务,直接调用 batch-renderer 产出真实 mp4。
@@ -207,7 +208,7 @@ try {
   const first = await renderBatchOutputVersion(renderInput);
   assert.equal(first.audioMode, 'narration');
   assert.equal(first.productionReady, true);
-  assert.ok(Math.abs(first.durationUs - TARGET_DURATION_US) < 100_000, `成片时长应接近目标 10s，实际 ${first.durationUs / 1e6}s`);
+  assert.ok(Math.abs(first.durationUs - (TARGET_DURATION_US + FINAL_EDIT_INTRO_DURATION_US)) < 100_000, `成片时长应为正文 10s + 20 帧片头(约 0.83s)，实际 ${first.durationUs / 1e6}s`);
   assert.ok(fs.existsSync(first.videoAbsolutePath) && fs.existsSync(first.coverAbsolutePath));
   assert.equal(path.basename(first.videoAbsolutePath), 'video.mp4');
   assert.equal(path.basename(first.coverAbsolutePath), 'cover.jpg');
@@ -219,7 +220,7 @@ try {
   assert.equal(probe.audioCodec, 'aac');
   assert.equal(probe.audioSampleRate, 48_000);
   assert.equal(probe.videoCodec, 'h264');
-  assert.ok(Math.abs(probe.durationUs / 1e6 - 10) < 0.12, `ffprobe 时长应 ≈10s，实际 ${probe.durationUs / 1e6}s`);
+  assert.ok(Math.abs(probe.durationUs / 1e6 - ((TARGET_DURATION_US + FINAL_EDIT_INTRO_DURATION_US) / 1e6)) < 0.12, `ffprobe 时长应 ≈ 正文 10s + 20 帧片头，实际 ${probe.durationUs / 1e6}s`);
 
   // 音频非静音:全片 mean_volume 必须远高于静音(约 -91dB)
   const fullMean = await meanVolumeDb(first.videoAbsolutePath);

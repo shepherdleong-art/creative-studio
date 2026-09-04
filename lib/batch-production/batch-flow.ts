@@ -16,6 +16,91 @@ import {
 import { colorSnapshotIdentity, upgradeColorSnapshot } from './color-pipeline.ts';
 import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
 import { isBatchAssetEligible } from './media-catalog.ts';
+import { getCurrentExportIdentity } from '../project-export-identity.ts';
+import { deriveProjectNamingDate, readProductionIdentityFields, type ProjectProductionIdentity } from '../project-production-identity.ts';
+import { resolveProjectExportDirName } from '../project-export-dir.ts';
+
+/** 批次版本 defaultsJson 中冻结的导出身份键：口播/渲染/正式发布都只信这份快照。 */
+export const BATCH_EXPORT_IDENTITY_KEY = 'batchExportIdentity';
+
+export interface FrozenBatchExportIdentity {
+  baseName: string | null;
+  exportDirName: string;
+  productCode: string;
+  taskDate: string;
+  identity: ProjectProductionIdentity | null;
+}
+
+/**
+ * 批次 start 是输入冻结点：把当时的导出身份一并冻结进版本 defaultsJson。
+ * 之后口播/渲染/正式发布不再读「当前」项目字段，项目身份后续切换不影响本批次目录与命名。
+ * 生产身份不完整时仍冻结目录名（旧命名公式回退），身份字段留空供发布端判断。
+ */
+export function freezeBatchExportIdentity(
+  db: Database.Database,
+  projectId: string,
+  batchVersionId: string,
+): void {
+  // 旧库/测试夹具可能没有身份字段:任一缺列就按老批次语义直接跳过冻结,
+  // 发布端回退到解析当前身份(不该让生产冻结因缺列崩溃)。
+  const columns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
+  const requiredColumns = ['productCode', 'createdAt', 'storeCode', 'productSubmodel', 'productionType', 'editorName', 'namingDate'];
+  if (!requiredColumns.every((name) => columns.some((col) => col.name === name))) return;
+  const project = db.prepare(`
+    SELECT productCode, createdAt, storeCode, productSubmodel, productionType, editorName, namingDate
+    FROM projects WHERE id = ?
+  `).get(projectId) as {
+    productCode: string | null; createdAt: string | null;
+    storeCode: string | null; productSubmodel: string | null;
+    productionType: string | null; editorName: string | null; namingDate: string | null;
+  } | undefined;
+  if (!project) return;
+  const identityFields = readProductionIdentityFields(project);
+  const namingDate = deriveProjectNamingDate({ namingDate: project.namingDate ?? '', createdAt: project.createdAt });
+  const complete = Boolean(identityFields.storeCode && identityFields.productCode && identityFields.productionType && identityFields.editorName);
+  const current = getCurrentExportIdentity(db, projectId);
+  const frozen: FrozenBatchExportIdentity = {
+    baseName: current?.baseName ?? null,
+    exportDirName: current?.exportDirName ?? resolveProjectExportDirName(db, projectId),
+    productCode: identityFields.productCode,
+    taskDate: namingDate,
+    identity: complete ? { ...identityFields, namingDate } : null,
+  };
+  db.prepare(`
+    UPDATE batch_production_versions
+    SET defaultsJson = json_set(defaultsJson, ?, json(?))
+    WHERE id = ?
+  `).run(`$.${BATCH_EXPORT_IDENTITY_KEY}`, JSON.stringify(frozen), batchVersionId);
+}
+
+/** 读取批次版本冻结的导出身份；没有（旧批次）返回 null，发布端回退到解析当前身份。 */
+export function readFrozenBatchExportIdentity(
+  db: Database.Database,
+  batchVersionId: string,
+): FrozenBatchExportIdentity | null {
+  const row = db.prepare(`SELECT defaultsJson FROM batch_production_versions WHERE id = ?`).get(batchVersionId) as { defaultsJson: string } | undefined;
+  if (!row) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.defaultsJson);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const record = (parsed as Record<string, unknown>)[BATCH_EXPORT_IDENTITY_KEY];
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+  const value = record as Record<string, unknown>;
+  const identity = value.identity && typeof value.identity === 'object' && !Array.isArray(value.identity)
+    ? value.identity as ProjectProductionIdentity
+    : null;
+  return {
+    baseName: typeof value.baseName === 'string' && value.baseName ? value.baseName : null,
+    exportDirName: typeof value.exportDirName === 'string' ? value.exportDirName : '',
+    productCode: typeof value.productCode === 'string' ? value.productCode : '',
+    taskDate: typeof value.taskDate === 'string' ? value.taskDate : '',
+    identity,
+  };
+}
 
 export interface BatchScriptSelection {
   scriptId: string;
@@ -198,7 +283,10 @@ function matchesCurrentInput(
   // 不参与"整体输入是否变化"的身份比对(否则批次开始后任何重新确认都会误判为新输入)。
   const storedDefaults = parseJsonOrRaw(version.defaultsJson) as Record<string, unknown> | null;
   const identityDefaults = storedDefaults && typeof storedDefaults === 'object' ? { ...storedDefaults } : storedDefaults;
-  if (identityDefaults && typeof identityDefaults === 'object') delete identityDefaults.batchMusicPool;
+  if (identityDefaults && typeof identityDefaults === 'object') {
+    delete identityDefaults.batchMusicPool;
+    delete identityDefaults[BATCH_EXPORT_IDENTITY_KEY];
+  }
   const inputIdentityDefaults = makeInputDefaultsForIdentity(identityDefaults, input.defaultsJson ?? {});
   if (canonicalJson(identityDefaults) !== canonicalJson(inputIdentityDefaults)) {
     return false;
@@ -546,6 +634,9 @@ export function startBatchProduction(
     }
     // 素材分析必须在 snapshot 前由项目素材分析入口排队并完成。start 只
     // 冻结已锁定的 analysisId，不再为素材池重复创建 asset_prepare 任务。
+    // start 是输入冻结点：把当时的导出身份一并冻结进版本快照，
+    // 后续口播/渲染/正式发布都只信这份快照，项目身份后续切换不影响本批次目录与命名。
+    freezeBatchExportIdentity(db, projectId, batch.currentVersionId);
     updateBatchProductionStatus(db, projectId, batchId, 'running', now);
   })();
 }

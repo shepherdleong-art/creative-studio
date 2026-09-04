@@ -70,8 +70,29 @@ function initTables(db: Database.Database) {
       status TEXT NOT NULL DEFAULT 'draft',
       runId TEXT,
       referenceGuidanceMode TEXT NOT NULL DEFAULT 'preserve_subject',
+      storeCode TEXT NOT NULL DEFAULT '',
+      productSubmodel TEXT NOT NULL DEFAULT '',
+      productionType TEXT NOT NULL DEFAULT '',
+      editorName TEXT NOT NULL DEFAULT '',
+      namingDate TEXT NOT NULL DEFAULT '',
+      currentExportIdentityId TEXT,
       FOREIGN KEY (providerId) REFERENCES providers(id)
     );
+
+    CREATE TABLE IF NOT EXISTS project_export_identities (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL,
+      revisionNumber INTEGER NOT NULL,
+      baseName TEXT NOT NULL,
+      exportDirName TEXT NOT NULL,
+      identityJson TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      supersededAt TEXT,
+      UNIQUE(projectId, revisionNumber),
+      UNIQUE(exportDirName)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId);
 
 
     CREATE TABLE IF NOT EXISTS image_assets (

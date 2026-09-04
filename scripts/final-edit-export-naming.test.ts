@@ -109,6 +109,20 @@ function makeIdentity(overrides: Partial<ExportIdentity> = {}): ExportIdentity {
 assert.equal(buildExportBaseName(makeIdentity()), '成片-JSQ-A1-20260723');
 
 // ---------------------------------------------------------------------------
+// 1b. 生产身份基础名:冻结后使用 `<基础名>`（无「成片-」前缀）——2026-09-03 命名统一
+// ---------------------------------------------------------------------------
+assert.equal(
+  buildExportBaseName(makeIdentity({ baseName: '20260903-B店-XQ9A-AI种草-紫菜卷' })),
+  '20260903-B店-XQ9A-AI种草-紫菜卷',
+  '冻结 baseName 时不得再加「成片-」前缀',
+);
+assert.equal(
+  buildExportBaseName(makeIdentity({ baseName: '20260903-B店-PC672-A-新品种草-张 三' })),
+  '20260903-B店-PC672-A-新品种草-张 三',
+  '内部连字符与内部空格必须保留',
+);
+
+// ---------------------------------------------------------------------------
 // 2. Sanitization — representative cases (plan §11.2: strip
 //    `/ \ : * ? " < > |`, control characters, and trailing dots/spaces)
 // ---------------------------------------------------------------------------

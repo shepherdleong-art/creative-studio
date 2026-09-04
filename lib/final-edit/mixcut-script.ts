@@ -7,7 +7,10 @@ export interface MixcutSourceSegment {
   shotId?: string;
   narration?: string;
   subtitle?: string;
+  /** V3：卖点引用文本。 */
   sellingPointRefs?: string[];
+  /** V4：卖点引用 ID（project_scripts 归一化内容），混剪统一映射为引用文本参与语义匹配。 */
+  sellingPointIdRefs?: string[];
   visualIntent?: string;
   visualKeywords?: string[];
 }
@@ -79,7 +82,8 @@ export function buildMixcutSemanticText(input: {
   sourceScriptVersion: number | null;
   sourceSegment?: Pick<MixcutTaskScriptSegment, 'sellingPointRefs' | 'visualIntent' | 'visualKeywords'>;
 }): string {
-  if (input.sourceScriptVersion !== 3 || !input.sourceSegment) return input.narration;
+  // V3/V4 都带画面语义与卖点引用；V2/旧脚本只有口播正文，退回原样。
+  if ((input.sourceScriptVersion ?? 0) < 3 || !input.sourceSegment) return input.narration;
   const auxiliary = [
     input.sourceSegment.visualIntent || '',
     ...(input.sourceSegment.visualKeywords || []).slice(0, 8),
@@ -183,7 +187,7 @@ export function splitNarrationSentences(value: string): string[] {
 }
 
 function usableShotIds(source: MixcutSourceScript | null): string[] {
-  if (!source || source.version === 3) return [];
+  if (!source || source.version === 3 || source.version === 4) return [];
   return source.segments.map((segment) => String(segment.shotId || '').trim()).filter(Boolean);
 }
 
@@ -229,9 +233,14 @@ export function buildMixcutTaskScriptSnapshot(input: {
           : splitNarrationSentences(narration);
         return parts.map((part, partIndex) => ({
           id: parts.length === 1 && segment.id ? segment.id : `${segment.id || `source-${sourceIndex + 1}`}-part-${partIndex + 1}`,
-          shotId: source?.version === 3 ? '' : String(segment.shotId || ''),
+          shotId: source?.version === 3 || source?.version === 4 ? '' : String(segment.shotId || ''),
           narration: part,
-          sellingPointRefs: Array.isArray(segment.sellingPointRefs) ? segment.sellingPointRefs.slice(0, 8) : [],
+          // V3 直接带引用文本；V4 只带引用 ID，统一归一为文本参与下游语义匹配。
+          sellingPointRefs: Array.isArray(segment.sellingPointRefs) && segment.sellingPointRefs.length > 0
+            ? segment.sellingPointRefs.slice(0, 8)
+            : Array.isArray(segment.sellingPointIdRefs)
+              ? segment.sellingPointIdRefs.slice(0, 8)
+              : [],
           visualIntent: String(segment.visualIntent || '').trim(),
           visualKeywords: Array.isArray(segment.visualKeywords) ? segment.visualKeywords.map(String).slice(0, 8) : [],
         }));
@@ -244,7 +253,7 @@ export function buildMixcutTaskScriptSnapshot(input: {
     const original = originalSegments[index];
     return {
       id: preserved?.id || `segment-${index + 1}`,
-      shotId: source?.version === 3 ? '' : preserved?.shotId || (syncState === 'synced' ? String(original?.shotId || shotIds[index] || '') : ''),
+      shotId: source?.version === 3 || source?.version === 4 ? '' : preserved?.shotId || (syncState === 'synced' ? String(original?.shotId || shotIds[index] || '') : ''),
       narration,
       subtitle: normalizeAutomaticSubtitleText(narration),
       ...(preserved?.sellingPointRefs?.length ? { sellingPointRefs: preserved.sellingPointRefs } : {}),

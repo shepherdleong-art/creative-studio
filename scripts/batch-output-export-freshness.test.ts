@@ -151,7 +151,13 @@ try {
       name TEXT NOT NULL,
       productCode TEXT NOT NULL DEFAULT '',
       exportDirName TEXT NOT NULL DEFAULT '',
-      createdAt TEXT NOT NULL
+      createdAt TEXT NOT NULL,
+      storeCode TEXT NOT NULL DEFAULT '',
+      productSubmodel TEXT NOT NULL DEFAULT '',
+      productionType TEXT NOT NULL DEFAULT '',
+      editorName TEXT NOT NULL DEFAULT '',
+      namingDate TEXT NOT NULL DEFAULT '',
+      currentExportIdentityId TEXT
     );
     INSERT INTO projects (id, name, productCode, createdAt)
     VALUES ('project-1', '导出新鲜度测试', 'SKU-FRESH', '2026-08-01T00:00:00.000Z');

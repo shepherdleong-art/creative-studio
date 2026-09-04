@@ -5,7 +5,7 @@ export { OUTPUT_PRESETS } from '../media-core/cover-types.ts';
 export type { OutputPresetId, TextStyle, CoverFraming, CoverPresetV2 } from '../media-core/cover-types.ts';
 import type { OutputPresetId, TextStyle, CoverFraming } from '../media-core/cover-types.ts';
 
-export { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
+export { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, FINAL_EDIT_INTRO_DURATION_US, sourceFrameLimit } from '../media-core/render-contract.ts';
 export const FINAL_EDIT_MIN_CLIP_FRAMES = 12 as const;
 
 export interface TimelineClip {
@@ -194,6 +194,12 @@ export interface MixcutContextResponse {
     productCategory: string;
     createdAt: string;
     taskDate: string;
+    storeCode: string;
+    productSubmodel: string;
+    productionType: string;
+    editorName: string;
+    namingDate: string;
+    hasExportIdentity: boolean;
   };
   shotSets: Array<{
     id: string;
@@ -250,6 +256,12 @@ export interface ExportIdentity {
    * 解析后传入,调用方负责落库。空字符串会被当作 `projectId` 处理。
    */
   exportDirName: string;
+  /**
+   * 生产身份基础名（无「成片-」前缀），来自 `project_export_identities` 冻结身份，
+   * 例如 `20260903-B店-XQ9A-AI种草-紫菜卷`。旧任务快照缺省该字段时，
+   * `buildExportBaseName` 回退旧的 `成片-<型号>-<YYYYMMDD>` 命名，历史文件不受影响。
+   */
+  baseName?: string;
 }
 
 export interface FinalEditBgmTrackView {

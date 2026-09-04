@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { TextStyle } from '@/lib/media-core/cover-types';
+import SystemFontPicker from '@/components/ui/SystemFontPicker';
 import styles from '../mixcut/mixcut-content.module.css';
 
 interface BatchTextStyleEditorProps {
@@ -85,52 +86,32 @@ export default function BatchTextStyleEditor({
   disabled = false,
   onChange,
 }: BatchTextStyleEditorProps) {
-  const [fonts, setFonts] = useState<string[]>([value.fontFamily]);
-
-  useEffect(() => {
-    void fetch('/api/system-fonts').then((response) => response.json()).then((body) => {
-      const values = Array.isArray(body) ? body : body.fonts;
-      if (Array.isArray(values)) {
-        setFonts([...new Set([
-          value.fontFamily,
-          ...values.map((item) => typeof item === 'string' ? item : item.family).filter((item): item is string => Boolean(item)),
-        ])]);
-      }
-    }).catch(() => undefined);
-  }, [value.fontFamily]);
-
-  const refreshFonts = async () => {
-    const localWindow = window as Window & { queryLocalFonts?: () => Promise<Array<{ family: string }>> };
-    if (!localWindow.queryLocalFonts) return;
-    try {
-      const localFonts = await localWindow.queryLocalFonts();
-      setFonts([...new Set([value.fontFamily, ...localFonts.map((font) => font.family)])]);
-    } catch {
-      // 用户拒绝本地字体权限时仍保留系统字体接口的结果。
-    }
-  };
-
   const patch = (next: Partial<TextStyle>) => onChange({ ...value, ...next });
+  // 字体浮层自托管 host：紧跟字体触发器，浮层控件按 DOM 顺序进入所在 dialog 的焦点陷阱，
+  // Tab 从浮层出去落到本编辑器的下一个控件（字号），而不是跳过整个样式编辑器。
+  const [fontOverlayHost, setFontOverlayHost] = useState<HTMLDivElement | null>(null);
+  const setFontOverlayHostRef = useCallback((node: HTMLDivElement | null) => setFontOverlayHost(node), []);
 
   return (
     <fieldset className="space-y-3" disabled={disabled}>
       <legend className="flex w-full items-center justify-between gap-2 text-xs font-medium text-ink">
         <span>{label}</span>
-        <button type="button" className="text-[11px] font-normal text-accent underline underline-offset-2" onClick={() => void refreshFonts()}>刷新字体</button>
       </legend>
 
       <label className="block">
         <span className="mb-1 block text-[11px] text-ink-tertiary">字体</span>
-        <select
-          className={inputClass}
-          aria-label={`${label}字体`}
+        <SystemFontPicker
           value={value.fontFamily}
-          onChange={(event) => onChange({ ...value, fontFamily: event.target.value, fontPostscriptName: undefined })}
-        >
-          {!fonts.includes(value.fontFamily) && <option value={value.fontFamily}>{value.fontFamily}</option>}
-          {fonts.map((font) => <option key={font} value={font}>{font}</option>)}
-        </select>
+          ariaLabel={`${label}字体`}
+          disabled={disabled}
+          onChange={(fontFamily) => onChange({ ...value, fontFamily, fontPostscriptName: undefined })}
+          portalRoot={fontOverlayHost}
+        />
       </label>
+      {/* 字体浮层挂载点：必须紧跟在触发器所在 label 的**外面**。放进 label 内的话，
+          label 会把浮层非交互区域（分组标题 / 「N+ 个字体」页脚 / 内边距）的点击转发给被标注控件（即触发器），
+          等于点一下标题就把面板关了。放在外面 DOM 顺序不变（label 不可聚焦），Tab 仍落到「字号」。 */}
+      <div ref={setFontOverlayHostRef} />
 
       <div className="space-y-3">
         <RangeField

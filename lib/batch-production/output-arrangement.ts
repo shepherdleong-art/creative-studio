@@ -58,8 +58,10 @@ export interface BatchOutputPoolAssetView {
   previewUrl: string;
   /** 已被排除出本批次联合分配（不可用于替换/插入）。 */
   excluded: boolean;
-  /** 本批次版本中，当前候选画面片段用到该素材的全部成片计划。 */
+  /** 本批次版本中，当前候选画面片段用到该素材的全部成片计划（去重）。 */
   usedByPlanIds: string[];
+  /** 本批次版本中，当前候选画面片段用到该素材的次数（按成片计划计数；split 切成两段计 2 次）。 */
+  useCountByPlanId: Record<string, number>;
   /** 本批次版本中，当前候选封面用到该素材的全部成片计划。 */
   coverUsedByPlanIds: string[];
 }
@@ -135,6 +137,8 @@ export interface BatchOutputClipEditResult {
   changed: boolean;
   /** 画面是否真的发生变化；split 为 false（不递增 revision、不重渲染）。 */
   visualChanged: boolean;
+  /** 这次有效编辑是否真的清除了既有审核态（reviewCleared=true 时前端应提示重新审核）。 */
+  reviewCleared: boolean;
   warnings: string[];
 }
 
@@ -457,7 +461,9 @@ export function getBatchOutputArrangementView(
 
   // 全批次版本维度的素材使用标记：片段使用与封面使用分开，避免封面素材
   // 被误报成「本片画面已用」，也让素材池能明确提示封面占用。
-  const usageByAsset = new Map<string, Set<string>>();
+  // 片段次数用 Map<planId, count>：clips[] 是数组，同一素材出现几次计几次
+  // （split 切成两段产生两条记录，计 2 次）；Set 会丢掉次数，不能用。
+  const usageByAsset = new Map<string, Map<string, number>>();
   const coverUsageByAsset = new Map<string, Set<string>>();
   const versionRows = db.prepare(`
     SELECT p.id AS planId, o.arrangementJson
@@ -470,9 +476,9 @@ export function getBatchOutputArrangementView(
     for (const entry of Array.isArray(current?.clips) ? current.clips : []) {
       const assetId = nonEmptyString(asRecord(entry)?.assetId);
       if (!assetId) continue;
-      const plans = usageByAsset.get(assetId) ?? new Set<string>();
-      plans.add(row.planId);
-      usageByAsset.set(assetId, plans);
+      const counts = usageByAsset.get(assetId) ?? new Map<string, number>();
+      counts.set(row.planId, (counts.get(row.planId) ?? 0) + 1);
+      usageByAsset.set(assetId, counts);
     }
     const coverAssetId = nonEmptyString(asRecord(current?.cover)?.assetId);
     if (coverAssetId) {
@@ -506,6 +512,7 @@ export function getBatchOutputArrangementView(
     const durationUs = poolAssetDurationUs(row);
     const mediaDurationSec = finiteNumber(media?.durationSec);
     const encodedAssetId = encodeURIComponent(row.assetId);
+    const usageCounts = usageByAsset.get(row.assetId);
     return {
       assetId: row.assetId,
       displayName: nonEmptyString(media?.displayName) ?? module4DisplayNames.get(row.assetId) ?? nonEmptyString(media?.filename) ?? `素材 ${row.assetId.slice(0, 8)}`,
@@ -514,7 +521,8 @@ export function getBatchOutputArrangementView(
       thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion(row.contentFingerprint))}`,
       previewUrl: `/api/batch-production/preview/${encodedAssetId}?projectId=${encodedProjectId}&batchId=${encodedBatchId}&batchVersionId=${encodedBatchVersionId}`,
       excluded: row.excluded === 1,
-      usedByPlanIds: [...(usageByAsset.get(row.assetId) ?? [])].sort(),
+      usedByPlanIds: [...(usageCounts?.keys() ?? [])].sort(),
+      useCountByPlanId: Object.fromEntries(usageCounts ?? []),
       coverUsedByPlanIds: [...(coverUsageByAsset.get(row.assetId) ?? [])].sort(),
     };
   });
@@ -726,11 +734,15 @@ export function applyBatchOutputClipEdit(
       return record;
     });
     const editRevision = readEditRevision(arrangement);
+    // 有效编辑会删除 $.review(B4):记录编辑前是否真的存在审核态,供前端判断
+    // 这次是否需要提示"重新审核"。unchanged / 纯结构 split 不删 review。
+    const reviewPresentBefore = arrangement.review !== undefined && arrangement.review !== null;
     const unchanged: BatchOutputClipEditResult = {
       outputVersionId,
       editRevision,
       changed: false,
       visualChanged: false,
+      reviewCleared: false,
       warnings: [],
     };
 
@@ -1091,7 +1103,14 @@ export function applyBatchOutputClipEdit(
       db.prepare(`
         UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);
-      return { outputVersionId, editRevision: nextEditRevision, changed: true, visualChanged: true, warnings };
+      return {
+        outputVersionId,
+        editRevision: nextEditRevision,
+        changed: true,
+        visualChanged: true,
+        reviewCleared: reviewPresentBefore,
+        warnings,
+      };
     }
 
     if (splitChanged) {
@@ -1099,7 +1118,7 @@ export function applyBatchOutputClipEdit(
       db.prepare(`
         UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);
-      return { outputVersionId, editRevision, changed: true, visualChanged: false, warnings: [] };
+      return { outputVersionId, editRevision, changed: true, visualChanged: false, reviewCleared: false, warnings: [] };
     }
 
     return unchanged;

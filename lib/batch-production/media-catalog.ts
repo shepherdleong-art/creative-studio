@@ -430,6 +430,8 @@ export async function registerManagedCopy(
   projectId: string,
   input: {
     sourcePath: string;
+    /** 供批量素材区展示;不参与素材身份计算。 */
+    displayName?: string;
     now?: () => Date;
   },
 ): Promise<string> {
@@ -451,7 +453,10 @@ export async function registerManagedCopy(
     await copyFile(input.sourcePath, targetPath);
   }
   const location: ManagedSourceLocation = { kind: 'managed', relativePath };
+  const displayName = input.displayName?.trim() || path.basename(input.sourcePath);
   return resolveAssetId(db, projectId, 'managed', location, fingerprint, {
+    displayName,
+    filename: displayName,
     durationSec: media.durationUs / 1_000_000,
     width: media.width,
     height: media.height,

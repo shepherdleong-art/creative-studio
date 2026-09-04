@@ -17,6 +17,8 @@ export interface BatchExportIdentity {
   outputVersion: number;
   /** 成片导出目录名(`<产品编码>-<YYYYMMDD>`),由调用方解析后传入。 */
   exportDirName: string;
+  /** 生产身份基础名（无「成片-」前缀），来自 `project_export_identities` 冻结身份。缺省回退旧命名。 */
+  baseName?: string;
 }
 
 export interface BatchExportTarget {
@@ -128,15 +130,19 @@ function assertTargetPathsUnderStorage(storageRoot: string, target: BatchExportT
 }
 
 /**
- * 与单条模式同一套命名合约(`lib/final-edit/export-naming.ts` 的
- * `成片-<产品编码>-<YYYYMMDD>`),后面接两位成片序号以区分同批次的多条成片。
+ * 与单条模式同一套命名合约：生产身份冻结后使用 `<基础名>-<两位成片序号>`；
+ * 旧调用缺省 `baseName` 时回退 `成片-<产品编码>-<YYYYMMDD>-<两位序号>`。
  * 序号与检查页的「成片 01/02」一一对应。
  */
 function buildBaseName(identity: BatchExportIdentity): string {
   if (!Number.isInteger(identity.planSeq) || identity.planSeq < 1) throw new Error('plan 序号必须是正整数');
   if (!Number.isInteger(identity.outputVersion) || identity.outputVersion < 1) throw new Error('output version 必须是正整数');
+  const sequenceSuffix = String(identity.planSeq).padStart(2, '0');
+  if (identity.baseName) {
+    return `${identity.baseName}-${sequenceSuffix}`;
+  }
   const productCode = safeFilenameSegment(identity.productCode, 'productCode');
-  return `成片-${productCode}-${dateInShanghai(identity.taskDate)}-${String(identity.planSeq).padStart(2, '0')}`;
+  return `成片-${productCode}-${dateInShanghai(identity.taskDate)}-${sequenceSuffix}`;
 }
 
 /**

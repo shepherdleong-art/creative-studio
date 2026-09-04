@@ -9,6 +9,7 @@ import { createProjectScript } from '../lib/batch-production/scripts.ts';
 import { createBatchSnapshot, startBatchProduction } from '../lib/batch-production/batch-flow.ts';
 import { createBatchTask, getBatchTask, listTaskAttempts } from '../lib/batch-production/tasks.ts';
 import { createAsset, createAnalysisVersion } from '../lib/batch-production/assets.ts';
+import { resolveCoverContractHash } from '../lib/batch-production/cover-contract.ts';
 import { pauseBatch, resumeBatch, stopBatch, claimNextTask, completeTaskAttempt } from '../lib/batch-production/scheduler.ts';
 import {
   resetSchedulerSingletonForTests,
@@ -23,7 +24,16 @@ function createLegacyDatabase(root: string, name: string): Database.Database {
   db.exec(`
     CREATE TABLE projects (
       id TEXT PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      productCode TEXT DEFAULT '',
+      exportDirName TEXT NOT NULL DEFAULT '',
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      storeCode TEXT NOT NULL DEFAULT '',
+      productSubmodel TEXT NOT NULL DEFAULT '',
+      productionType TEXT NOT NULL DEFAULT '',
+      editorName TEXT NOT NULL DEFAULT '',
+      namingDate TEXT NOT NULL DEFAULT '',
+      currentExportIdentityId TEXT
     );
     CREATE TABLE shot_sets (
       id TEXT PRIMARY KEY,
@@ -429,6 +439,270 @@ try {
     },
     { status: 'cancelled', expectedState: 'stopped', attemptStatus: 'interrupted', discarded: 1 },
     '被新版本替代的 render 不得成功落账且必须清理迟到候选',
+  );
+
+  // --- 场景 6b:旧版本封面任务(output_version_cover)的晚到结果同样被丢弃并清理 ---
+  const batchCoverSuperseded = setupBatch(db, 'batch-cover-superseded', 1);
+  const coverRow = db.prepare(`
+    SELECT t.id AS fullTaskId, t.targetId, o.planId
+    FROM batch_tasks t JOIN batch_output_versions o ON o.id = t.targetId
+    WHERE t.batchId = ? AND t.workType = 'render'
+  `).get(batchCoverSuperseded) as { fullTaskId: string; targetId: string; planId: string };
+  db.prepare(`UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped' WHERE id = ?`).run(coverRow.fullTaskId);
+  const coverTaskId = createBatchTask(db, 'project-1', {
+    batchId: batchCoverSuperseded,
+    workType: 'render',
+    targetKind: 'output_version_cover',
+    targetId: coverRow.targetId,
+    now: () => new Date('2026-08-02T12:30:00.000Z'),
+  });
+  let coverStarted = false;
+  let releaseCover!: () => void;
+  let coverDiscarded = 0;
+  const coverExecutor: BatchTaskExecutor = {
+    workTypes: ['render'],
+    async execute() {
+      coverStarted = true;
+      await new Promise<void>((resolve) => { releaseCover = resolve; });
+      return { resultJson: { stale: true }, discard: () => { coverDiscarded += 1; } };
+    },
+  };
+  const coverSupersededRun = runPendingOnce({
+    db, workerId: 'worker-cover-superseded', executors: [coverExecutor], concurrency: 1,
+    heartbeatMs: 10, leaseDurationMs: 1_000, progressThrottleMs: 0,
+  });
+  await waitFor(() => coverStarted);
+  db.prepare(`
+    INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
+    VALUES (?, ?, 2, '{}', '2026-08-02T12:31:00.000Z')
+  `).run(`${coverRow.targetId}-new`, coverRow.planId);
+  db.prepare(`UPDATE batch_output_plans SET currentVersionId = ? WHERE id = ?`).run(`${coverRow.targetId}-new`, coverRow.planId);
+  releaseCover();
+  await coverSupersededRun;
+  assert.deepEqual(
+    {
+      status: getBatchTask(db, 'project-1', coverTaskId)?.status,
+      expectedState: getBatchTask(db, 'project-1', coverTaskId)?.expectedState,
+      attemptStatus: listTaskAttempts(db, coverTaskId)[0]?.status,
+      discarded: coverDiscarded,
+    },
+    { status: 'cancelled', expectedState: 'stopped', attemptStatus: 'interrupted', discarded: 1 },
+    '被新版本替代的封面任务不得成功落账且必须清理迟到候选',
+  );
+
+  // --- 场景 6c:同版本换封面(契约变化)后,旧封面任务的迟到结果不得落账 ---
+  // 版本指针没变,只有当前封面契约变了:完成前 CAS 必须按 requestKey 契约拦截。
+  const batchCoverRolling = setupBatch(db, 'batch-cover-rolling', 1);
+  const rollingRow = db.prepare(`
+    SELECT t.id AS fullTaskId, t.targetId, o.planId, p.batchVersionId
+    FROM batch_tasks t
+    JOIN batch_output_versions o ON o.id = t.targetId
+    JOIN batch_output_plans p ON p.id = o.planId
+    WHERE t.batchId = ? AND t.workType = 'render' AND t.targetKind = 'output_version'
+  `).get(batchCoverRolling) as {
+    fullTaskId: string;
+    targetId: string;
+    planId: string;
+    batchVersionId: string;
+  };
+  db.prepare(`UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped' WHERE id = ?`).run(rollingRow.fullTaskId);
+  const rollingAsset = db.prepare(`SELECT assetId FROM batch_asset_pool_items WHERE batchVersionId = ? LIMIT 1`)
+    .get(rollingRow.batchVersionId) as { assetId: string } | undefined;
+  assert.ok(rollingAsset, 'fixture:快照必须有素材池条目');
+  const writeRollingArrangement = (coverTimeUs: number): void => {
+    db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(
+      JSON.stringify({
+        preset: '3:4',
+        clips: [{
+          clipId: 'clip-1', assetId: rollingAsset.assetId,
+          sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+        }],
+        cover: { assetId: rollingAsset.assetId, timeUs: coverTimeUs },
+      }),
+      rollingRow.targetId,
+    );
+  };
+  writeRollingArrangement(1_000_000);
+  const rollingKey = `cover:${rollingRow.targetId}:${resolveCoverContractHash(db, rollingRow.targetId)}`;
+  const rollingCoverTaskId = createBatchTask(db, 'project-1', {
+    batchId: batchCoverRolling,
+    workType: 'render',
+    targetKind: 'output_version_cover',
+    targetId: rollingRow.targetId,
+    requestKey: rollingKey,
+    now: () => new Date('2026-08-02T12:40:00.000Z'),
+  });
+  let rollingStarted = false;
+  let releaseRolling!: () => void;
+  let rollingDiscarded = 0;
+  const rollingExecutor: BatchTaskExecutor = {
+    workTypes: ['render'],
+    async execute() {
+      rollingStarted = true;
+      await new Promise<void>((resolve) => { releaseRolling = resolve; });
+      return { resultJson: { stale: true }, discard: () => { rollingDiscarded += 1; } };
+    },
+  };
+  const rollingRun = runPendingOnce({
+    db, workerId: 'worker-cover-rolling', executors: [rollingExecutor], concurrency: 1,
+    heartbeatMs: 10, leaseDurationMs: 1_000, progressThrottleMs: 0,
+  });
+  await waitFor(() => rollingStarted);
+  // 渲染进行中,同版本换了封面时间点:版本指针与 requestKey 都没有变,
+  // 但当前封面契约已经变了——旧任务的迟到结果必须被滚动 CAS 丢弃。
+  writeRollingArrangement(2_000_000);
+  releaseRolling();
+  await rollingRun;
+  assert.deepEqual(
+    {
+      status: getBatchTask(db, 'project-1', rollingCoverTaskId)?.status,
+      expectedState: getBatchTask(db, 'project-1', rollingCoverTaskId)?.expectedState,
+      attemptStatus: listTaskAttempts(db, rollingCoverTaskId)[0]?.status,
+      discarded: rollingDiscarded,
+    },
+    { status: 'cancelled', expectedState: 'stopped', attemptStatus: 'interrupted', discarded: 1 },
+    '同版本契约变化的封面任务迟到结果不得落账且必须清理',
+  );
+
+  // --- 场景 6d:封面 A 任务若实际读取了 B 快照,即使结束前又切回 A 也不得落账 ---
+  // 只比较「任务 key = 当前 key」会漏掉这个回环；还必须核对执行结果携带的
+  // coverContractHash，证明产物确实来自任务声明的冻结契约。
+  const batchCoverResultMismatch = setupBatch(db, 'batch-cover-result-mismatch', 1);
+  const mismatchRow = db.prepare(`
+    SELECT t.id AS fullTaskId, t.targetId, o.planId, p.batchVersionId
+    FROM batch_tasks t
+    JOIN batch_output_versions o ON o.id = t.targetId
+    JOIN batch_output_plans p ON p.id = o.planId
+    WHERE t.batchId = ? AND t.workType = 'render' AND t.targetKind = 'output_version'
+  `).get(batchCoverResultMismatch) as {
+    fullTaskId: string;
+    targetId: string;
+    planId: string;
+    batchVersionId: string;
+  };
+  db.prepare(`UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped' WHERE id = ?`).run(mismatchRow.fullTaskId);
+  const mismatchAsset = db.prepare(`SELECT assetId FROM batch_asset_pool_items WHERE batchVersionId = ? LIMIT 1`)
+    .get(mismatchRow.batchVersionId) as { assetId: string } | undefined;
+  assert.ok(mismatchAsset, 'fixture:快照必须有素材池条目');
+  const mismatchArrangement = (coverTimeUs: number): string => JSON.stringify({
+    preset: '3:4',
+    clips: [{
+      clipId: 'clip-1', assetId: mismatchAsset.assetId,
+      sourceStartUs: 0, sourceEndUs: 3_000_000, timelineStartUs: 0, timelineEndUs: 3_000_000,
+    }],
+    cover: { assetId: mismatchAsset.assetId, timeUs: coverTimeUs },
+  });
+  const arrangementA = mismatchArrangement(1_000_000);
+  const arrangementB = mismatchArrangement(2_000_000);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(arrangementA, mismatchRow.targetId);
+  const mismatchKeyA = `cover:${mismatchRow.targetId}:${resolveCoverContractHash(db, mismatchRow.targetId)}`;
+  const mismatchCoverTaskId = createBatchTask(db, 'project-1', {
+    batchId: batchCoverResultMismatch,
+    workType: 'render',
+    targetKind: 'output_version_cover',
+    targetId: mismatchRow.targetId,
+    requestKey: mismatchKeyA,
+    now: () => new Date('2026-08-02T12:50:00.000Z'),
+  });
+  // A 任务还在队列时 arrangement 已变为 B；执行器将像真实 renderer 一样
+  // 冻结它实际读到的 B 契约并把 hash 写进 resultJson。
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(arrangementB, mismatchRow.targetId);
+  let mismatchStarted = false;
+  let releaseMismatch!: () => void;
+  let mismatchDiscarded = 0;
+  const mismatchExecutor: BatchTaskExecutor = {
+    workTypes: ['render'],
+    async execute() {
+      const renderedHash = resolveCoverContractHash(db, mismatchRow.targetId);
+      mismatchStarted = true;
+      await new Promise<void>((resolve) => { releaseMismatch = resolve; });
+      return {
+        resultJson: { coverContractHash: renderedHash },
+        discard: () => { mismatchDiscarded += 1; },
+      };
+    },
+  };
+  const mismatchRun = runPendingOnce({
+    db, workerId: 'worker-cover-result-mismatch', executors: [mismatchExecutor], concurrency: 1,
+    heartbeatMs: 10, leaseDurationMs: 1_000, progressThrottleMs: 0,
+  });
+  await waitFor(() => mismatchStarted);
+  // 执行器已冻结 B 后切回 A：任务 key 与当前 key 再次相等，但结果仍是 B。
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(arrangementA, mismatchRow.targetId);
+  releaseMismatch();
+  await mismatchRun;
+  assert.deepEqual(
+    {
+      status: getBatchTask(db, 'project-1', mismatchCoverTaskId)?.status,
+      expectedState: getBatchTask(db, 'project-1', mismatchCoverTaskId)?.expectedState,
+      attemptStatus: listTaskAttempts(db, mismatchCoverTaskId)[0]?.status,
+      discarded: mismatchDiscarded,
+    },
+    { status: 'cancelled', expectedState: 'stopped', attemptStatus: 'interrupted', discarded: 1 },
+    '任务 key 与当前 key 回到 A 时，B 契约结果仍必须被丢弃',
+  );
+
+  // --- 场景 6e:现代封面任务完成时当前契约不可解析，必须 fail closed ---
+  const batchCoverUnverifiable = setupBatch(db, 'batch-cover-unverifiable', 1);
+  const unverifiableRow = db.prepare(`
+    SELECT t.id AS fullTaskId, t.targetId, p.batchVersionId
+    FROM batch_tasks t
+    JOIN batch_output_versions o ON o.id = t.targetId
+    JOIN batch_output_plans p ON p.id = o.planId
+    WHERE t.batchId = ? AND t.workType = 'render' AND t.targetKind = 'output_version'
+  `).get(batchCoverUnverifiable) as { fullTaskId: string; targetId: string; batchVersionId: string };
+  db.prepare(`UPDATE batch_tasks SET status = 'cancelled', expectedState = 'stopped' WHERE id = ?`).run(unverifiableRow.fullTaskId);
+  const unverifiableAsset = db.prepare(`SELECT assetId FROM batch_asset_pool_items WHERE batchVersionId = ? LIMIT 1`)
+    .get(unverifiableRow.batchVersionId) as { assetId: string } | undefined;
+  assert.ok(unverifiableAsset, 'fixture:快照必须有素材池条目');
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify({
+    preset: '3:4',
+    clips: [{
+      clipId: 'clip-1', assetId: unverifiableAsset.assetId,
+      sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+    }],
+    cover: { assetId: unverifiableAsset.assetId, timeUs: 1_000_000 },
+  }), unverifiableRow.targetId);
+  const unverifiableHash = resolveCoverContractHash(db, unverifiableRow.targetId);
+  const unverifiableTaskId = createBatchTask(db, 'project-1', {
+    batchId: batchCoverUnverifiable,
+    workType: 'render',
+    targetKind: 'output_version_cover',
+    targetId: unverifiableRow.targetId,
+    requestKey: `cover:${unverifiableRow.targetId}:${unverifiableHash}`,
+    now: () => new Date('2026-08-02T13:00:00.000Z'),
+  });
+  let unverifiableStarted = false;
+  let releaseUnverifiable!: () => void;
+  let unverifiableDiscarded = 0;
+  const unverifiableExecutor: BatchTaskExecutor = {
+    workTypes: ['render'],
+    async execute() {
+      unverifiableStarted = true;
+      await new Promise<void>((resolve) => { releaseUnverifiable = resolve; });
+      return {
+        resultJson: { coverContractHash: unverifiableHash },
+        discard: () => { unverifiableDiscarded += 1; },
+      };
+    },
+  };
+  const unverifiableRun = runPendingOnce({
+    db, workerId: 'worker-cover-unverifiable', executors: [unverifiableExecutor], concurrency: 1,
+    heartbeatMs: 10, leaseDurationMs: 1_000, progressThrottleMs: 0,
+  });
+  await waitFor(() => unverifiableStarted);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = '{' WHERE id = ?`).run(unverifiableRow.targetId);
+  releaseUnverifiable();
+  await unverifiableRun;
+  assert.deepEqual(
+    {
+      status: getBatchTask(db, 'project-1', unverifiableTaskId)?.status,
+      expectedState: getBatchTask(db, 'project-1', unverifiableTaskId)?.expectedState,
+      attemptStatus: listTaskAttempts(db, unverifiableTaskId)[0]?.status,
+      discarded: unverifiableDiscarded,
+    },
+    { status: 'cancelled', expectedState: 'stopped', attemptStatus: 'interrupted', discarded: 1 },
+    '现代契约无法解析时不得把结果标成成功',
   );
 
   // --- 场景 7:startBatchScheduler 单例 + stop 清理 ---

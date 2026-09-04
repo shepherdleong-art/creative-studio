@@ -522,6 +522,93 @@ try {
     '租约回收遇到 stopped 批次时必须收敛为 cancelled 终态',
   );
 
+  // --- 场景 10:编辑器优先——封面任务不被口播闸门阻塞,整片渲染仍被闸门保护;failed 封面可显式重试 ---
+  const batch7 = createBatchProduction(db, 'project-1', '批次七', () => new Date('2026-08-02T15:00:00.000Z'));
+  const snapshot7 = createBatchSnapshot(db, 'project-1', batch7, {
+    scriptSelections: [{ scriptId: scriptA, copyCount: 1 }],
+    assetSelections,
+    now: () => new Date('2026-08-02T15:05:00.000Z'),
+  });
+  const plan7 = db.prepare(`
+    SELECT id AS planId, scriptSnapshotId AS snapshotId
+    FROM batch_output_plans WHERE id = ?
+  `).get(snapshot7.planIds[0]!) as { planId: string; snapshotId: string };
+  db.prepare(`
+    INSERT INTO batch_output_versions (id, planId, versionNumber, arrangementJson, createdAt)
+    VALUES (?, ?, 1, '{}', '2026-08-02T15:06:00.000Z')
+  `).run('ov-b7', plan7.planId);
+  const narration7 = createBatchTask(db, 'project-1', {
+    batchId: batch7,
+    workType: 'narration',
+    targetKind: 'script_snapshot',
+    targetId: plan7.snapshotId,
+    now: () => new Date('2026-08-02T15:07:00.000Z'),
+  });
+  const cover7 = createBatchTask(db, 'project-1', {
+    batchId: batch7,
+    workType: 'render',
+    targetKind: 'output_version_cover',
+    targetId: 'ov-b7',
+    now: () => new Date('2026-08-02T15:08:00.000Z'),
+  });
+  const full7 = createBatchTask(db, 'project-1', {
+    batchId: batch7,
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: 'ov-b7',
+    now: () => new Date('2026-08-02T15:09:00.000Z'),
+  });
+  startBatchProduction(db, 'project-1', batch7, () => new Date('2026-08-02T15:10:00.000Z'));
+  // 清掉此前场景遗留的排队任务(不含场景 10 的三条),保证断言只对场景 10 生效。
+  db.prepare(`
+    UPDATE batch_tasks
+    SET status = 'cancelled', expectedState = 'stopped', updatedAt = ?
+    WHERE status = 'queued' AND id NOT IN (?, ?, ?)
+  `).run('2026-08-02T15:10:30.000Z', narration7, cover7, full7);
+  const claimNarration7 = claimNextTask(db, {
+    workerId: 'w-narr7',
+    now: () => new Date('2026-08-02T15:12:00.000Z'),
+  });
+  assert.equal(claimNarration7?.task.id, narration7, '口播任务本身可正常领取');
+  const claimCover7 = claimNextTask(db, {
+    workerId: 'w-cover7',
+    now: () => new Date('2026-08-02T15:13:00.000Z'),
+  });
+  assert.equal(claimCover7?.task.id, cover7, '封面任务不被口播闸门阻塞');
+  const claimFullBlocked = claimNextTask(db, {
+    workerId: 'w-full7',
+    now: () => new Date('2026-08-02T15:14:00.000Z'),
+  });
+  assert.equal(claimFullBlocked, null, '口播未完成时整片渲染必须被闸门挡住');
+  completeTaskAttempt(db, claimNarration7!.attempt.id, {
+    workerId: 'w-narr7',
+    status: 'succeeded',
+    now: () => new Date('2026-08-02T15:15:00.000Z'),
+  });
+  const claimFull7 = claimNextTask(db, {
+    workerId: 'w-full7',
+    now: () => new Date('2026-08-02T15:16:00.000Z'),
+  });
+  assert.equal(claimFull7?.task.id, full7, '口播成功后整片渲染放行');
+  // failed 封面任务必须能显式重试,不能永久卡死。
+  completeTaskAttempt(db, claimCover7!.attempt.id, {
+    workerId: 'w-cover7',
+    status: 'failed',
+    errorCode: 'cover_error',
+    errorMessage: '封面编码失败',
+    now: () => new Date('2026-08-02T15:17:00.000Z'),
+  });
+  assert.equal(
+    (db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(cover7) as { status: string }).status,
+    'failed',
+  );
+  retryTask(db, 'project-1', cover7, () => new Date('2026-08-02T15:18:00.000Z'));
+  assert.equal(
+    (db.prepare(`SELECT status FROM batch_tasks WHERE id = ?`).get(cover7) as { status: string }).status,
+    'queued',
+    'failed 封面任务可显式重试',
+  );
+
   db.close();
   console.log('batch scheduler tests passed');
 } finally {

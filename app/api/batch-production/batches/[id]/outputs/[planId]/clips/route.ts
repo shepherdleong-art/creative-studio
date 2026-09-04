@@ -6,7 +6,8 @@ import {
   type BatchOutputClipEdit,
 } from '@/lib/batch-production/output-arrangement';
 import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
-import { scheduleRenderAfterClipEdit } from '@/lib/batch-production/phase-e';
+import { scheduleRenderAfterCoverChange } from '@/lib/batch-production/phase-e';
+import { resolveCoverContractHash } from '@/lib/batch-production/cover-contract';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import {
   BATCH_NO_STORE_HEADERS,
@@ -18,14 +19,14 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * 片段级编辑（等长 trim/replace、变长修剪、删除、插入、分割）：就地改写当前
- * 候选版本 arrangement，只在画面变化时递增 editRevision 并重渲染同一版本。
- * 分割是纯结构操作，不递增 revision、不触发重渲染。
+ * 片段级编辑（等长 trim/replace、变长修剪、删除、插入、分割、封面、BGM、字幕）：
+ * 就地改写当前候选版本 arrangement，画面/音频/字幕变化时递增 editRevision 并
+ * 清除审核结论。编辑器优先模型下编辑只保存，不排整片渲染；完整 mp4 在导出阶段
+ * 按完整渲染契约生成。
  *
- * `deferRender: true` 只写 arrangement 不排渲染：编辑器里的预览是客户端实时合成，
- * 不看渲染产物；编辑器在退出这一轮调整时用 `type: 'commit_render'` 一次性提交，
- * 避免每次微调都被整片渲染锁住——requestKey 含 editRevision 且 createBatchTask 按 key 幂等，
- * 所以重复提交、以及「已经渲染过的 revision」都不会多排任务。
+ * 只有影响封面契约的编辑（换封面素材/时间/构图/标题，或替换掉封面引用的第一条
+ * 片段）会让封面渲染任务重跑：封面任务 requestKey 是统一的 coverContractHash，
+ * 同一契约重复触发幂等命中既有任务；与封面无关的编辑不会产生任何新任务。
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string; planId: string }> }) {
   const { id, planId } = await context.params;
@@ -62,18 +63,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       framing?: unknown;
       title?: unknown;
       style?: unknown;
-      deferRender?: unknown;
     };
     const clipId = typeof body.clipId === 'string' ? body.clipId.trim() : '';
-
-    // 提交这一轮片段调整:只排渲染,不改 arrangement。当前 editRevision 已经排过
-    // (或正在渲染)时命中同一 requestKey,原样返回既有任务,不会重复排队。
-    if (body.type === 'commit_render') {
-      const db = getDb();
-      const renderTaskId = scheduleRenderAfterClipEdit(db, projectId, id, planId);
-      if (renderTaskId) ensureBatchSchedulerStarted();
-      return NextResponse.json({ committed: true, renderTaskId }, { headers: BATCH_NO_STORE_HEADERS });
-    }
 
     let edit: BatchOutputClipEdit;
 
@@ -282,22 +273,45 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     } else {
       return NextResponse.json({
         error: 'invalid_clip_edit',
-        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_music/set_narration_gain/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/commit_render)',
+        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_music/set_narration_gain/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles)',
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
 
     const db = getDb();
+    // 封面契约前后比对:只有封面契约真的变化才排封面任务。BGM、字幕、口播
+    // 音量等编辑同样会置 visualChanged,但不能触发封面重渲染;老批次没有
+    // 封面任务时更不能因为改 BGM 平白生出一条封面任务。
+    const planRow = db.prepare(`SELECT currentVersionId FROM batch_output_plans WHERE id = ?`).get(planId) as {
+      currentVersionId: string | null;
+    } | undefined;
+    const outputVersionId = planRow?.currentVersionId ?? null;
+    let coverContractBefore: string | null = null;
+    if (outputVersionId) {
+      try {
+        coverContractBefore = resolveCoverContractHash(db, outputVersionId);
+      } catch {
+        coverContractBefore = null;
+      }
+    }
     const result = applyBatchOutputClipEdit(db, projectId, id, planId, edit);
-    // 视觉变化才重渲染这一条；requestKey 含 editRevision，同一次编辑重复提交
-    // 不会重复排队，无变化(unchanged)与纯结构分割(split)都不排队。
-    // deferRender 时把这次渲染欠着，等调用方 commit_render 一次性结清。
-    const deferRender = body.deferRender === true;
-    const renderDeferred = result.visualChanged && deferRender;
-    const renderTaskId = result.visualChanged && !deferRender
-      ? scheduleRenderAfterClipEdit(db, projectId, id, planId)
+    let coverContractAfter: string | null = null;
+    if (outputVersionId && result.visualChanged) {
+      try {
+        coverContractAfter = resolveCoverContractHash(db, outputVersionId);
+      } catch {
+        coverContractAfter = null;
+      }
+    }
+    // 前后契约任一无法解析时保持老行为(visualChanged 即排),可解析且相等则
+    // 说明本次编辑与封面无关,不产生封面任务。
+    const coverContractChanged = result.changed
+      && result.visualChanged
+      && (coverContractBefore === null || coverContractAfter === null || coverContractBefore !== coverContractAfter);
+    const coverTaskId = coverContractChanged
+      ? scheduleRenderAfterCoverChange(db, projectId, id, planId)
       : null;
-    if (renderTaskId) ensureBatchSchedulerStarted();
-    return NextResponse.json({ ...result, renderTaskId, renderDeferred }, { headers: BATCH_NO_STORE_HEADERS });
+    if (coverTaskId) ensureBatchSchedulerStarted();
+    return NextResponse.json({ ...result, coverTaskId }, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_clip_edit_failed', '编辑成片片段失败');
   }

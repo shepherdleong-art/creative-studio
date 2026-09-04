@@ -187,13 +187,54 @@ export function measureTextOverflowDetails(group: FinalEditGroupView, preset: Ou
   return details;
 }
 
+/** 探测文本必须同时含中西文：只测拉丁会漏掉中文字体不生效的情况。 */
+const FONT_PROBE_TEXT = '产品素材Ag';
+const FONT_PROBE_SIZE_PX = 36;
+/** 确定不存在的 sentinel family：用它渲染出的结果即「回落到默认字体」的基线。 */
+const FONT_PROBE_SENTINEL = '__cs_missing_font__';
+
+function probeFontFingerprint(family: string): { hash: string; width: number } {
+  const canvas = document.createElement('canvas');
+  canvas.width = 480;
+  canvas.height = 120;
+  const context = canvas.getContext('2d');
+  if (!context) return { hash: '', width: 0 };
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.font = `${FONT_PROBE_SIZE_PX}px ${JSON.stringify(family)}`;
+  context.textAlign = 'left';
+  context.textBaseline = 'alphabetic';
+  context.fillStyle = '#000000';
+  context.fillText(FONT_PROBE_TEXT, 8, 80);
+  const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let hash = 2166136261; // FNV-1a
+  for (let index = 3; index < data.length; index += 4) {
+    hash ^= data[index];
+    hash = Math.imul(hash, 16777619);
+  }
+  return { hash: (hash >>> 0).toString(16), width: context.measureText(FONT_PROBE_TEXT).width };
+}
+
+/**
+ * 校验字体真实生效：与「确定不存在的 sentinel」渲染完全一致即判定该字体未生效
+ * （浏览器静默回落到默认字体）。调用方需先 await document.fonts.ready。
+ */
+export function assertFontsEffective(families: Iterable<string>): void {
+  const sentinel = probeFontFingerprint(FONT_PROBE_SENTINEL);
+  for (const family of new Set(families)) {
+    if (!family) continue;
+    const probe = probeFontFingerprint(family);
+    if (probe.hash && probe.hash === sentinel.hash && probe.width === sentinel.width) {
+      throw new Error(`字体「${family}」未生效：系统未安装或名称无效`);
+    }
+  }
+}
+
 export async function createOverlayBundlePayload(group: FinalEditGroupView, preset: OutputPresetId) {
   const style = group.textStyles[preset];
   const requiredFonts = new Set([style.coverPrimary.fontFamily, style.coverSecondary.fontFamily, style.subtitle.fontFamily]);
-  for (const family of requiredFonts) {
-    if (!document.fonts.check(`16px ${JSON.stringify(family)}`)) throw new Error(`字体缺失：${family}`);
-  }
+  // document.fonts.check() 对任何字符串都返回 true，挡不住无效字体——改用像素比对。
   await document.fonts.ready;
+  assertFontsEffective(requiredFonts);
   const titleCanvas = canvasFor(preset);
   const titleContext = titleCanvas.getContext('2d');
   if (!titleContext) throw new Error('浏览器 Canvas 不可用');

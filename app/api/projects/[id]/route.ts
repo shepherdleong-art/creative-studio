@@ -4,6 +4,17 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
 import { parseProjectInfoUpdate, ProjectInfoValidationError } from '@/lib/project-info';
+import {
+  parseProductionIdentityUpdate,
+  parseProductionIdentityInput,
+  buildProjectBaseName,
+  resolveUniqueProjectBaseName,
+  readProductionIdentityFields,
+  deriveProjectNamingDate,
+  projectHasProductionIdentity,
+  ENABLE_NEW_EXPORT_IDENTITY_KEY,
+} from '@/lib/project-production-identity';
+import { hasExportIdentity, createExportIdentity, activateNewExportIdentity } from '@/lib/project-export-identity';
 import { sortProjectJobsByCreation, type ProjectJobOrderRow } from '@/lib/project-job-order';
 
 export async function GET(
@@ -139,9 +150,62 @@ export async function PATCH(
     const updates: string[] = [];
     const values: unknown[] = [];
 
-    const projectInfoUpdate = parseProjectInfoUpdate(body);
-    for (const key of ['name', 'productName', 'productCode', 'productCategory'] as const) {
-      const value = projectInfoUpdate[key];
+    const project = db.prepare(`
+      SELECT id, name, productName, productCode, productCategory, createdAt,
+        storeCode, productSubmodel, productionType, editorName, namingDate
+      FROM projects WHERE id = ?
+    `).get(id) as Record<string, unknown> | undefined;
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
+    // ── 生产身份更新：PATCH 只接收领域字段，项目名由服务端重新生成 ──
+    const identityUpdate = parseProductionIdentityUpdate(body);
+    if (Object.keys(identityUpdate).length > 0) {
+      const frozen = hasExportIdentity(db, id);
+      const namingDate = deriveProjectNamingDate({
+        namingDate: typeof project.namingDate === 'string' ? project.namingDate : '',
+        createdAt: typeof project.createdAt === 'string' ? project.createdAt : null,
+      });
+
+      if (frozen) {
+        // 已有正式导出产物：普通编辑不得静默改变导出身份，必须显式确认「启用新的导出名称」。
+        if (body[ENABLE_NEW_EXPORT_IDENTITY_KEY] !== true) {
+          return NextResponse.json({
+            error: 'export_identity_frozen',
+            message: '项目已有正式导出产物，修改店铺/型号/生产类型/剪辑师将启用新的导出名称；如需继续请显式确认',
+            requiresConfirmation: true,
+          }, { status: 409 });
+        }
+        const full = parseProductionIdentityInput({ ...readProductionIdentityFields(project), ...identityUpdate });
+        activateNewExportIdentity(db, { projectId: id, identity: { ...full, namingDate } });
+        for (const key of ['storeCode', 'productCode', 'productSubmodel', 'productionType', 'editorName'] as const) {
+          updates.push(`${key} = ?`);
+          values.push(full[key]);
+        }
+      } else {
+        const full = parseProductionIdentityInput({ ...readProductionIdentityFields(project), ...identityUpdate });
+        const historicalCompletion = !projectHasProductionIdentity(project);
+        if (historicalCompletion && namingDate) {
+          // 历史项目补齐身份：日期取原 createdAt（上海时区），并冻结第一版导出身份。
+          createExportIdentity(db, { projectId: id, identity: { ...full, namingDate } });
+        } else {
+          // 新建项目（尚未正式导出）：只更新字段并重新生成唯一名称。
+          const baseName = resolveUniqueProjectBaseName(db, buildProjectBaseName({ ...full, namingDate }), id);
+          updates.push('name = ?');
+          values.push(baseName);
+        }
+        for (const key of ['storeCode', 'productCode', 'productSubmodel', 'productionType', 'editorName'] as const) {
+          updates.push(`${key} = ?`);
+          values.push(full[key]);
+        }
+        updates.push('namingDate = ?');
+        values.push(namingDate);
+      }
+    }
+
+    // ── 旧项目兼容字段：productName / productCategory 保留给历史数据，项目名由服务端生成 ──
+    const legacyUpdate = parseProjectInfoUpdate(body);
+    for (const key of ['productName', 'productCategory'] as const) {
+      const value = legacyUpdate[key];
       if (value !== undefined) {
         updates.push(`${key} = ?`);
         values.push(value);
@@ -159,21 +223,26 @@ export async function PATCH(
       values.push(Math.max(1, Math.min(10, Math.floor(Number(body.videoConcurrency)))));
     }
 
-    if (updates.length === 0) return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
-
-    values.push(id);
-    const result = db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-    if (result.changes !== 1) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    if (updates.length > 0) {
+      values.push(id);
+      const result = db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      if (result.changes !== 1) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
 
     const responseShotPrompt = typeof body.shotPrompt === 'string' ? body.shotPrompt.trim() : '';
     const updatedProjectRow = db.prepare(`
-      SELECT id, name, productName, productCode, productCategory FROM projects WHERE id = ?
+      SELECT id, name, productName, productCode, productCategory, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id = ?
     `).get(id) as {
       id: string;
       name: string;
       productName: string | null;
       productCode: string | null;
       productCategory: string | null;
+      storeCode: string | null;
+      productSubmodel: string | null;
+      productionType: string | null;
+      editorName: string | null;
+      namingDate: string | null;
     } | undefined;
     if (!updatedProjectRow) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
@@ -183,6 +252,12 @@ export async function PATCH(
       productName: updatedProjectRow.productName || '',
       productCode: updatedProjectRow.productCode || '',
       productCategory: updatedProjectRow.productCategory || '',
+      storeCode: updatedProjectRow.storeCode || '',
+      productSubmodel: updatedProjectRow.productSubmodel || '',
+      productionType: updatedProjectRow.productionType || '',
+      editorName: updatedProjectRow.editorName || '',
+      namingDate: updatedProjectRow.namingDate || '',
+      hasExportIdentity: hasExportIdentity(db, id),
     };
 
     return NextResponse.json({ success: true, shotPrompt: responseShotPrompt, project: updatedProject });

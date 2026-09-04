@@ -238,11 +238,81 @@ try {
     assert.equal(coverStill.absolutePath, path.join(root, 'storage', 'batch-renders', 'candidate', 'cover.jpg'), '封面候选同样回落到最近一次成功尝试');
   }
 
+  // 媒体代际绑定(B2):同一成片版本连续两次成功渲染,按 renderAttemptId 精确解析各自
+  // 物理文件(同 URL 的所有 Range 请求固定同一文件);非成功/谱系不符/不存在均 404。
+  {
+    const genTask = createBatchTask(db, 'project-1', {
+      batchId, workType: 'render', targetKind: 'output_version', targetId: outputVersionId,
+      requestKey: `render:${outputVersionId}:gen-fixture`,
+    });
+    const makeAttempt = (label: string): string => {
+      const dir = `batch-renders/${label}`;
+      fs.mkdirSync(path.join(root, 'storage', dir), { recursive: true });
+      fs.writeFileSync(path.join(root, 'storage', dir, 'video.mp4'), Buffer.from(`video-${label}`));
+      fs.writeFileSync(path.join(root, 'storage', dir, 'cover.jpg'), Buffer.from(`cover-${label}`));
+      const result = {
+        projectId: 'project-1', batchId, batchVersionId: version1, planId, outputVersionId,
+        planSeq: 1, outputVersionNumber: 1,
+        videoRelativePath: `${dir}/video.mp4`, coverRelativePath: `${dir}/cover.jpg`,
+        videoChecksum: 'sha256:v', coverChecksum: 'sha256:c',
+        durationUs: 4_000_000, audioMode: 'narration', productionReady: true,
+      };
+      const attempt = startTaskAttempt(db, genTask);
+      finishTaskAttempt(db, genTask, attempt, { status: 'succeeded', resultJson: result });
+      return attempt;
+    };
+    const attemptA = makeAttempt('gen-a');
+    const attemptB = makeAttempt('gen-b');
+    const mediaA = resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'video', 'candidate', path.join(root, 'storage'), undefined, attemptA);
+    const mediaB = resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'video', 'candidate', path.join(root, 'storage'), undefined, attemptB);
+    assert.equal(mediaA.absolutePath, path.join(root, 'storage', 'batch-renders', 'gen-a', 'video.mp4'), 'renderAttemptId 必须锁定到对应的成功尝试文件');
+    assert.equal(mediaB.absolutePath, path.join(root, 'storage', 'batch-renders', 'gen-b', 'video.mp4'));
+    assert.notEqual(mediaA.absolutePath, mediaB.absolutePath, '两次成功渲染必须是不同物理文件');
+    const coverA = resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'cover', 'candidate', path.join(root, 'storage'), undefined, attemptA);
+    assert.equal(coverA.absolutePath, path.join(root, 'storage', 'batch-renders', 'gen-a', 'cover.jpg'));
+    const attemptFailed = startTaskAttempt(db, genTask);
+    finishTaskAttempt(db, genTask, attemptFailed, { status: 'failed', errorMessage: 'gen-failed' });
+    assert.throws(
+      () => resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'video', 'candidate', path.join(root, 'storage'), undefined, attemptFailed),
+      /不存在|非成功/,
+      '非 succeeded 的 attempt 不可读',
+    );
+    assert.throws(
+      () => resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'video', 'candidate', path.join(root, 'storage'), undefined, 'ghost-attempt'),
+      /不存在|非成功/,
+      '不存在的 attempt 不可读',
+    );
+  }
+
+  // artifact 代际绑定(B2):按 artifactId 精确解析视频与同导出对的封面,谱系不符/不存在 404。
+  {
+    fs.mkdirSync(path.join(root, 'storage', 'final-edits', 'plan-1'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'storage', 'final-edits', 'plan-1', 'bound-video.mp4'), Buffer.from('bound-video'));
+    fs.writeFileSync(path.join(root, 'storage', 'final-edits', 'plan-1', 'bound-video-封面.jpg'), Buffer.from('bound-cover'));
+    const boundVideoId = registerArtifact(db, 'project-1', {
+      batchId, batchVersionId: version1, outputPlanId: planId, outputVersionId,
+      kind: 'video', relativePath: 'final-edits/plan-1/bound-video.mp4', checksum: 'sha256:bv',
+    });
+    registerArtifact(db, 'project-1', {
+      batchId, batchVersionId: version1, outputPlanId: planId, outputVersionId,
+      kind: 'cover', relativePath: 'final-edits/plan-1/bound-video-封面.jpg', checksum: 'sha256:bc',
+    });
+    const boundVideo = resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'video', 'artifact', path.join(root, 'storage'), undefined, undefined, boundVideoId);
+    assert.equal(boundVideo.absolutePath, path.join(root, 'storage', 'final-edits', 'plan-1', 'bound-video.mp4'), 'artifactId 必须锁定到对应正式产物');
+    const boundCover = resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'cover', 'artifact', path.join(root, 'storage'), undefined, undefined, boundVideoId);
+    assert.equal(boundCover.absolutePath, path.join(root, 'storage', 'final-edits', 'plan-1', 'bound-video-封面.jpg'), 'kind=cover 必须解析与 video 同一导出对的封面');
+    assert.throws(
+      () => resolveBatchOutputMedia(db, 'project-1', batchId, planId, 'video', 'artifact', path.join(root, 'storage'), undefined, undefined, 'ghost-art'),
+      /没有正式视频产物/,
+      '不存在的 artifactId 不可读',
+    );
+  }
+
   // --- 用户删除批次是逻辑删除:列表隐藏，但正式产物及谱系继续保留 ---
   deleteBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-01T12:00:00.000Z'));
   assert.equal(getBatchProduction(db, 'project-1', batchId), undefined, '逻辑删除后的批次不得继续作为活跃工作单读取');
   assert.ok(!listProjectBatchProductions(db, 'project-1').some(({ id }) => id === batchId));
-  assert.equal(listPlanArtifacts(db, planId).length, 4, '逻辑删除批次不得删除正式产物');
+  assert.equal(listPlanArtifacts(db, planId).length, 6, '逻辑删除批次不得删除正式产物(4 原 + 2 代际绑定)');
   assert.equal(getArtifact(db, 'project-1', artifact1)?.relativePath, 'final-edits/plan-1/export-1.mp4');
   assert.throws(
     () => registerArtifact(db, 'project-1', {
@@ -264,7 +334,7 @@ try {
     /FOREIGN KEY|foreign key/i,
     '批次仍被正式产物引用时,删除批次必须被拒绝,产物记录不得级联消失',
   );
-  assert.equal(listPlanArtifacts(db, planId).length, 4, '产物记录必须保留');
+  assert.equal(listPlanArtifacts(db, planId).length, 6, '产物记录必须保留');
 
   db.close();
   console.log('batch domain artifacts tests passed');

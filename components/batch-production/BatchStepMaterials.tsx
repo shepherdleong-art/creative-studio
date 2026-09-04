@@ -50,6 +50,7 @@ export interface BatchStepMaterialsProps {
   onCleanupProxies: (scope: 'selected' | 'project') => void;
   onLutAction: (lutId: string, action: 'archive' | 'restore' | 'delete') => void;
   onImportLutFile: (file: File) => void;
+  onImportFiles: (files: File[]) => void;
   onResync: () => void;
   onPreviewAsset: (asset: PrepareAssetCardView) => void;
   /** 锁定后素材卡点击播放(走批次版本预览接口) */
@@ -67,6 +68,7 @@ export interface BatchStepMaterialsProps {
   cleanupBusy: 'selected' | 'project' | null;
   cacheUsage: { count: number; totalBytes: number } | null;
   lutImporting: boolean;
+  managedImporting: boolean;
   phaseEBusy: string | null;
 }
 
@@ -114,6 +116,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   const [prepOpen, setPrepOpen] = useState(false);
   const prepCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const lutFileInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaFileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFinishedTasks, setShowFinishedTasks] = useState(false);
   const [linkedImportBusy, setLinkedImportBusy] = useState<'files' | 'folder' | null>(null);
   const [linkedImportProgress, setLinkedImportProgress] = useState<{ requestId: string; completed: number; total: number } | null>(null);
@@ -230,6 +233,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
     cleanupBusy,
     cacheUsage,
     lutImporting,
+    managedImporting,
     phaseEBusy,
   } = props;
 
@@ -337,12 +341,31 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 className="btn-secondary"
                 onClick={() => setPrepOpen(true)}
               >画质与调色</button>
+              <input
+                ref={mediaFileInputRef}
+                type="file"
+                accept=".mp4,.mov,.avi,.webm"
+                multiple
+                aria-label="选择自定义视频素材"
+                className="hidden"
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.currentTarget.value = '';
+                  if (files.length > 0) props.onImportFiles(files);
+                }}
+              />
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={managedImporting || linkedImportBusy !== null}
+                onClick={() => mediaFileInputRef.current?.click()}
+              >{managedImporting ? '导入中…' : '自定义导入素材'}</button>
               {desktopAvailable && (
                 <>
                   <button
                     type="button"
                     className="btn-secondary"
-                    disabled={linkedImportBusy !== null}
+                    disabled={linkedImportBusy !== null || managedImporting}
                     onClick={() => void importLinked('files')}
                   >{linkedImportBusy === 'files'
                     ? linkedImportProgress ? `正在校验 ${linkedImportProgress.completed}/${linkedImportProgress.total}` : '准备校验…'
@@ -350,7 +373,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                   <button
                     type="button"
                     className="btn-secondary"
-                    disabled={linkedImportBusy !== null}
+                    disabled={linkedImportBusy !== null || managedImporting}
                     onClick={() => void importLinked('folder')}
                   >{linkedImportBusy === 'folder'
                     ? linkedImportProgress ? `正在校验 ${linkedImportProgress.completed}/${linkedImportProgress.total}` : '准备校验…'
@@ -466,7 +489,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
               })}
             </div>
           ) : (
-            <div className="tile p-6 text-sm text-ink-secondary">暂无可用视频素材，请先在第 4 步完成视频生成。</div>
+            <div className="tile p-6 text-sm text-ink-secondary">暂无可用视频素材，请先导入自定义素材或在第 4 步完成视频生成。</div>
           )}
         </div>
         )}

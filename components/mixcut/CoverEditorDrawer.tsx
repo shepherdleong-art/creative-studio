@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
+import SystemFontPicker from '@/components/ui/SystemFontPicker';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
 import { OUTPUT_PRESETS, type CoverEditorDraft, type CoverPresetV2, type FinalEditGroupView, type FinalEditVariantView, type OutputPresetId, type TextStyle } from '@/lib/final-edit/types';
 import { drawText, fitTextStyleToSingleLine, horizontalTextBounds, isTextStyleWithinSafeArea, measureSingleLineText, textStyleFont } from '@/components/final-edit/text-canvas-renderer';
@@ -43,7 +44,6 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   onApply: (draft: CoverEditorDraft) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<CoverEditorDraft>(() => cloneDraft(group, variant));
-  const [fonts, setFonts] = useState<string[]>(['PingFang SC']);
   const [presets, setPresets] = useState<CoverPresetView[]>([]);
   const [presetName, setPresetName] = useState('');
   const [message, setMessage] = useState('抽屉内修改尚未应用');
@@ -52,6 +52,9 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  /** 字体浮层 overlay host：紧跟「共享字体」触发器所在 section，浮层控件按 DOM 顺序进入抽屉焦点陷阱。 */
+  const [fontOverlayHost, setFontOverlayHost] = useState<HTMLDivElement | null>(null);
+  const setFontOverlayHostRef = useCallback((node: HTMLDivElement | null) => setFontOverlayHost(node), []);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const busyRef = useRef(busy);
   const onCloseRef = useRef(onClose);
@@ -70,14 +73,9 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
   }, [onClose]);
 
   useEffect(() => {
-    void Promise.all([
-      fetch('/api/system-fonts').then((response) => response.json()),
-      fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response)),
-    ]).then(([fontBody, presetBody]) => {
-      const values = Array.isArray(fontBody) ? fontBody : fontBody.fonts;
-      if (Array.isArray(values)) setFonts([...new Set(['PingFang SC', ...values.map((item) => typeof item === 'string' ? item : item.family).filter(Boolean)])]);
-      setPresets(presetBody);
-    }).catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
+    void fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response))
+      .then((presetBody) => setPresets(presetBody))
+      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
   }, []);
 
   useEffect(() => {
@@ -88,6 +86,9 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
     document.body.style.overflow = 'hidden';
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // 字体面板在 document 捕获阶段先 preventDefault + stopPropagation 并关闭面板；
+        // 已被面板消费的 Esc（defaultPrevented）直接放行，不再重复关抽屉。
+        if (event.defaultPrevented) return;
         if (!busyRef.current) onCloseRef.current();
         return;
       }
@@ -318,7 +319,9 @@ export function CoverEditorDrawer({ active, group, variant, busy, onClose, onApp
           </main>
           <aside className={styles.coverControlsPanel}>
             <section><h3>画面</h3><Range label="缩放" value={draft.framing.scale} min={1} max={3} step={0.05} onChange={(scale) => patchFraming({ scale })} /><Range label="水平" value={draft.framing.offsetX} min={-1} max={1} step={0.02} onChange={(offsetX) => patchFraming({ offsetX })} /><Range label="垂直" value={draft.framing.offsetY} min={-1} max={1} step={0.02} onChange={(offsetY) => patchFraming({ offsetY })} /></section>
-            <section><h3>共享字体</h3><select aria-label="封面共享字体" value={draft.primary.style.fontFamily} onChange={(event) => { patchStyle('primary', { fontFamily: event.target.value, fontPostscriptName: undefined }); patchStyle('secondary', { fontFamily: event.target.value, fontPostscriptName: undefined }); }}>{fonts.map((font) => <option key={font}>{font}</option>)}</select></section>
+            <section><div className={styles.coverControlHeading}><h3>共享字体</h3></div><SystemFontPicker value={draft.primary.style.fontFamily} ariaLabel="封面共享字体" onChange={(fontFamily) => { patchStyle('primary', { fontFamily, fontPostscriptName: undefined }); patchStyle('secondary', { fontFamily, fontPostscriptName: undefined }); }} portalRoot={fontOverlayHost} /></section>
+            {/* 字体浮层挂载点：紧跟「共享字体」触发器所在 section，浮层控件按 DOM 顺序进入抽屉焦点陷阱；浮层仍用 fixed 坐标。 */}
+            <div ref={setFontOverlayHostRef} />
             {(['primary', 'secondary'] as const).map((part) => <section key={part} className={overflow[part] ? styles.coverTextOverflow : ''}><div className={styles.coverControlHeading}><h3>{part === 'primary' ? '主标题' : '副标题'}</h3>{overflow[part] && <button type="button" onClick={() => fitPart(part)}>适配单行</button>}</div><input aria-label={`${part === 'primary' ? '主' : '副'}标题文字`} value={draft[part].text} onChange={(event) => patchPart(part, { text: event.target.value.replace(/[\r\n]+/g, '') })} /><div className={styles.coverInlineControls}><label>颜色<input type="color" value={draft[part].style.color} onChange={(event) => patchStyle(part, { color: event.target.value })} /></label><label>字号<input type="number" min={12} max={180} value={draft[part].style.fontSizePx} onChange={(event) => patchStyle(part, { fontSizePx: Number(event.target.value) })} /></label></div><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.italic} onChange={(event) => patchStyle(part, { italic: event.target.checked })} />斜体</label><label className={styles.coverCheck}><input type="checkbox" checked={draft[part].style.stroke.enabled} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, enabled: event.target.checked } })} />描边</label><div className={styles.coverInlineControls}><label>描边色<input type="color" value={draft[part].style.stroke.color} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, color: event.target.value } })} /></label><label>粗细<input type="number" min={0} max={16} step={0.5} value={draft[part].style.stroke.widthPx} onChange={(event) => patchStyle(part, { stroke: { ...draft[part].style.stroke, widthPx: Number(event.target.value) } })} /></label></div></section>)}
             <section><h3>内置样式</h3><button type="button" className={styles.coverPresetButton} onClick={() => { patchStyle('primary', { color: '#ffffff', italic: false, stroke: { enabled: true, color: '#101010', widthPx: 4 } }); patchStyle('secondary', { color: '#61a8ff', italic: true, stroke: { enabled: true, color: '#0b1d35', widthPx: 2 } }); }}>清爽蓝白</button></section>
             <section><h3>自定义预设</h3><div className={styles.coverPresetSave}><input aria-label="预设名称" placeholder="输入名称" value={presetName} onChange={(event) => setPresetName(event.target.value)} /><button type="button" onClick={() => void savePreset()}>保存</button></div>{presets.map((preset) => <div key={preset.id} className={styles.coverPresetRow}><button type="button" onClick={() => applyPreset(preset)}>{preset.name}</button><button type="button" aria-label={`删除预设 ${preset.name}`} onClick={() => void deletePreset(preset)}>删除</button></div>)}</section>

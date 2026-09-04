@@ -3,6 +3,13 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
+import {
+  createExportIdentity,
+  getOrCreateCurrentExportIdentity,
+  hasExportIdentity,
+  type ExportIdentityView,
+} from '../project-export-identity.ts';
+import { readProductionIdentityFields, deriveProjectNamingDate } from '../project-production-identity.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 // 命名合约与单条模式共用同一处纯函数,避免两边各写一份后慢慢漂移。
 import { formatShanghaiTaskDate } from '../media-core/export-identity.ts';
@@ -19,38 +26,27 @@ import {
   reserveBatchExportTarget,
   type BatchExportRenderContract,
 } from './batch-export.ts';
-import { startBatchProduction } from './batch-flow.ts';
+import { readFrozenBatchExportIdentity, startBatchProduction } from './batch-flow.ts';
 import { freezeBatchMusicPool, readBatchBgmPool } from './bgm.ts';
 import { BatchDomainError } from './errors.ts';
 import { checkFormalExportPreflight } from './export-preflight.ts';
 import { registerArtifact } from './artifacts.ts';
+import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 import { createBatchTask } from './tasks.ts';
+import { resolveCoverContractHash, resolveFullRenderContractHash } from './cover-contract.ts';
+import {
+  buildCoverRenderTaskRequestKey,
+  parseRenderTaskRequestKey,
+} from './render-task-key.ts';
 
-// v2:成片开头加入 20 帧封面片头(与单条剪辑同一契约),渲染产物形状变了,
-// 所以幂等身份必须换代——旧的 succeeded 渲染任务不该再挡住重渲染。
-export const BATCH_RENDER_ADAPTER_VERSION = 'batch-render-v2';
-
-/**
- * 渲染任务的幂等身份。封面被烤进片头之后,封面抽帧时间点就是成片内容的一部分,
- * 所以必须进 requestKey——否则换封面命中既有 succeeded 任务,成片开头会一直
- * 停留在旧封面。片段级编辑(trim/replace)就地改 clips,同理必须把 editRevision
- * 放进 key——否则编辑后的重渲染会被幂等去重跳过。
- */
-function renderRequestKey(db: Database.Database, outputVersionId: string): string {
-  const row = db.prepare(`
-    SELECT COALESCE(json_extract(arrangementJson, '$.cover.timeUs'), -1) AS coverTimeUs,
-           COALESCE(json_extract(arrangementJson, '$.editRevision'), 0) AS editRevision
-    FROM batch_output_versions WHERE id = ?
-  `).get(outputVersionId) as { coverTimeUs: number; editRevision: number } | undefined;
-  const coverTimeUs = Number.isFinite(Number(row?.coverTimeUs)) ? Number(row?.coverTimeUs) : -1;
-  const editRevision = Number.isSafeInteger(Number(row?.editRevision)) && Number(row?.editRevision) > 0
-    ? Number(row?.editRevision)
-    : 0;
-  return `render:${outputVersionId}:${BATCH_RENDER_ADAPTER_VERSION}:cover:${coverTimeUs}:edit:${editRevision}`;
+/** 封面任务的幂等身份：使用统一定义的 coverContractHash */
+export function coverTaskRequestKey(db: Database.Database, outputVersionId: string): string {
+  const hash = resolveCoverContractHash(db, outputVersionId);
+  return buildCoverRenderTaskRequestKey(outputVersionId, hash);
 }
 
-/** 就地改写 arrangement(换封面/片段编辑)后,重排当前候选版本的渲染。 */
-function scheduleRenderForCurrentOutputVersion(
+/** 为当前候选版本排一条独立封面任务。 */
+function scheduleCoverForCurrentOutputVersion(
   db: Database.Database,
   projectId: string,
   batchId: string,
@@ -68,16 +64,16 @@ function scheduleRenderForCurrentOutputVersion(
   return createBatchTask(db, projectId, {
     batchId,
     workType: 'render',
-    targetKind: 'output_version',
+    targetKind: 'output_version_cover',
     targetId: plan.outputVersionId,
-    requestKey: renderRequestKey(db, plan.outputVersionId),
+    requestKey: coverTaskRequestKey(db, plan.outputVersionId),
     now,
   });
 }
 
 /**
- * 换封面之后重排一次渲染。封面是片头的一部分,只换那张独立封面图会让成片
- * 开头与封面不一致。requestKey 含封面时间点,所以同一封面重复触发是幂等的。
+ * 换封面之后排一次独立封面任务。requestKey 含 coverContractHash，
+ * 所以相同封面契约重复触发是幂等的。
  */
 export function scheduleRenderAfterCoverChange(
   db: Database.Database,
@@ -86,22 +82,7 @@ export function scheduleRenderAfterCoverChange(
   planId: string,
   now?: () => Date,
 ): string | null {
-  return scheduleRenderForCurrentOutputVersion(db, projectId, batchId, planId, now);
-}
-
-/**
- * 片段级编辑(trim/replace)之后重排一次渲染。requestKey 含 editRevision,
- * 每次生效的编辑都会产生新 key,既有 succeeded 任务不会吞掉这次重渲染;
- * 同一次编辑重复提交则命中同一 key 幂等去重。
- */
-export function scheduleRenderAfterClipEdit(
-  db: Database.Database,
-  projectId: string,
-  batchId: string,
-  planId: string,
-  now?: () => Date,
-): string | null {
-  return scheduleRenderForCurrentOutputVersion(db, projectId, batchId, planId, now);
+  return scheduleCoverForCurrentOutputVersion(db, projectId, batchId, planId, now);
 }
 
 export interface BatchAllocationSchedulingResult {
@@ -193,14 +174,14 @@ function scheduleAllocationRenderTasks(
   allocation: PersistedAllocationRun,
   now?: () => Date,
 ): Record<string, string> {
-  // 候选指针切换后，旧版本尚未完成的 render 不再有提交资格。排队/失败
+  // 候选指针切换后，旧版本尚未完成的封面/整片渲染任务不再有提交资格。排队/失败
   // 任务立即取消；运行任务标为 stopped，由 runner 心跳中止并清理迟到结果。
   db.prepare(`
     UPDATE batch_tasks
     SET status = CASE WHEN status IN ('queued', 'failed') THEN 'cancelled' ELSE status END,
         expectedState = 'stopped', updatedAt = ?
     WHERE projectId = ? AND batchId = ? AND workType = 'render'
-      AND targetKind = 'output_version'
+      AND targetKind IN ('output_version', 'output_version_cover')
       AND status IN ('queued', 'running', 'failed')
       AND targetId IN (
         SELECT o.id FROM batch_output_versions o
@@ -215,19 +196,20 @@ function scheduleAllocationRenderTasks(
       SET status = CASE WHEN status IN ('queued', 'failed') THEN 'cancelled' ELSE status END,
           expectedState = 'stopped', updatedAt = ?
       WHERE projectId = ? AND batchId = ? AND workType = 'render'
-        AND targetKind = 'output_version' AND status IN ('queued', 'running', 'failed')
+        AND targetKind IN ('output_version', 'output_version_cover') AND status IN ('queued', 'running', 'failed')
         AND targetId IN (SELECT id FROM batch_output_versions WHERE planId = ?)
     `).run((now ?? (() => new Date()))().toISOString(), projectId, batchId, output.planId);
   }
   const taskIds: Record<string, string> = {};
-  // 口播任务已在冻结后建立(先于分配),这里只建渲染任务。
+  // 口播任务已在冻结后建立(先于分配)。编辑器优先模型下这里只建封面任务,
+  // 整片 mp4 推迟到导出阶段按完整渲染契约排任务。
   for (const [planId, outputVersionId] of Object.entries(allocation.outputVersionIds)) {
     taskIds[planId] = createBatchTask(db, projectId, {
       batchId,
       workType: 'render',
-      targetKind: 'output_version',
+      targetKind: 'output_version_cover',
       targetId: outputVersionId,
-      requestKey: renderRequestKey(db, outputVersionId),
+      requestKey: coverTaskRequestKey(db, outputVersionId),
       now,
     });
   }
@@ -236,15 +218,18 @@ function scheduleAllocationRenderTasks(
 
 /**
  * Freeze a draft batch (or resume a previously frozen start request), then run
- * the production pipeline in order: 口播 → 分配 → 渲染。
+ * the production pipeline in order: 口播 → 分配 → 封面。
  *
  * After the freeze point only narration tasks are enqueued; the batch-wide
- * allocation and render tasks are deferred until every narration task of this
+ * allocation and cover tasks are deferred until every narration task of this
  * version has reached a terminal state. An unfinished narration returns
  * `narration_pending` (same resume mechanism as semantic scoring: PUT /start
  * is idempotent and re-entered by the frontend once tasks settle). Failed
  * narrations still proceed to allocation so silent preview candidates can be
- * rendered; formal publishing stays behind `assertNarrationPublishable`.
+ * checked; formal publishing stays behind `assertNarrationPublishable`.
+ *
+ * 编辑器优先模型:生产阶段只出封面,不渲染整片 mp4;完整视频渲染由导出
+ * 阶段按完整渲染契约按需触发。
  *
  * BGM is a required output component: the shared library is snapshotted into
  * the frozen version at lock time, so later library changes never mutate an
@@ -428,6 +413,67 @@ function readArrangementCoverTimeUs(value: unknown): number {
   return Number.isSafeInteger(raw) && Number(raw) >= 0 ? Number(raw) : -2;
 }
 
+/**
+ * 发布前/最终事务里的渲染契约 CAS:requestKey 携带契约哈希时,必须与当前
+ * 成片版本的完整渲染契约一致;旧任务(无契约哈希)不做该检查,保持兼容。
+ */
+function assertRenderContractCurrent(
+  db: Database.Database,
+  requestKey: string | null,
+  outputVersionId: string,
+): void {
+  const parsed = parseRenderTaskRequestKey(requestKey);
+  if (!parsed) return;
+  if (
+    parsed.kind !== 'full'
+    || parsed.outputVersionId !== outputVersionId
+    || parsed.contractHash !== resolveFullRenderContractHash(db, outputVersionId)
+  ) {
+    throw new BatchDomainError('conflict', '渲染期间成片内容已变化,旧结果不能成为正式成片,请重新导出');
+  }
+}
+
+/**
+ * 安排状态 CAS:重新核对修订号、封面时间点与审核结论。发布前先跑一遍,
+ * 复制文件完成、替换当前指针前的最终事务里**必须再跑一遍**——复制期间
+ * 用户仍可能编辑或撤销审核,撤销审核不递增 editRevision,只比对修订号
+ * 拦不住它。
+ */
+function assertArrangementStateMatchesRender(
+  db: Database.Database,
+  outputVersionId: string,
+  render: RenderAttemptResult,
+): void {
+  const row = db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = ?`).get(outputVersionId) as {
+    arrangementJson: string | null;
+  } | undefined;
+  if (!row?.arrangementJson) throw new BatchDomainError('conflict', '成片安排已不可读,请重新导出');
+  let arrangement: unknown;
+  try {
+    arrangement = JSON.parse(row.arrangementJson) as unknown;
+  } catch {
+    throw new BatchDomainError('conflict', '成片安排已损坏,请重新导出');
+  }
+  const currentEditRevision = readArrangementEditRevision(arrangement);
+  const renderEditRevision = render.editRevision ?? 0;
+  if (currentEditRevision < 0 || renderEditRevision !== currentEditRevision) {
+    throw new BatchDomainError('conflict', '成片已被调整过，请等待重新渲染完成后再导出');
+  }
+  const currentCoverTimeUs = readArrangementCoverTimeUs(arrangement);
+  if (render.coverTimeUs !== undefined && render.coverTimeUs !== currentCoverTimeUs) {
+    throw new BatchDomainError('conflict', '封面已更换，请等待重新渲染完成后再导出');
+  }
+  const review = arrangement && typeof arrangement === 'object' && !Array.isArray(arrangement)
+    ? (arrangement as Record<string, unknown>).review
+    : undefined;
+  const decision = review && typeof review === 'object' && !Array.isArray(review)
+    ? (review as Record<string, unknown>).decision
+    : undefined;
+  if (decision !== 'approved') {
+    throw new BatchDomainError('conflict', '该成片尚未审核通过,请先在检查页标记「通过」后再导出');
+  }
+}
+
 function parseRenderResult(raw: string | null): RenderAttemptResult | null {
   if (!raw) return null;
   try {
@@ -459,7 +505,7 @@ function parseRenderResult(raw: string | null): RenderAttemptResult | null {
 
 export interface BatchPublishItemResult {
   planId: string;
-  status: 'published' | 'skipped';
+  status: 'published' | 'skipped' | 'already_published';
   reason?: string;
   videoArtifactId?: string;
   coverArtifactId?: string;
@@ -488,13 +534,24 @@ async function unlinkPublishedPair(storageRoot: string, videoRelativePath: strin
 /**
  * Publish selected, production-ready render candidates. Invalid cards are
  * reported as skipped so one bad output does not discard successful siblings.
+ *
+ * `options.requireRenderContract` 打开后,发布前与最终事务里都会校验成功
+ * 渲染任务 requestKey 携带的完整渲染契约与当前成片版本一致(渲染期间又编辑
+ * 时,过期结果不得成为当前正式成片);旧任务没有契约哈希时保持原有修订号
+ * 比对兼容。
  */
 export async function publishSelectedBatchOutputs(
   db: Database.Database,
   projectId: string,
   batchId: string,
   planIds: string[],
-  options: { storageRoot?: string; now?: () => Date } = {},
+  options: {
+    storageRoot?: string;
+    now?: () => Date;
+    requireRenderContract?: boolean;
+    /** 测试/编排 seam:文件复制完成、进入最终注册事务前执行。 */
+    beforeRegister?: () => Promise<void> | void;
+  } = {},
 ): Promise<BatchPublishSelectionResult> {
   const uniquePlanIds = [...new Set(planIds.filter((value) => typeof value === 'string' && value.trim()))];
   if (uniquePlanIds.length === 0) {
@@ -504,15 +561,45 @@ export async function publishSelectedBatchOutputs(
   if (lineage.inputState !== 'frozen') {
     throw new BatchDomainError('conflict', '批次输入尚未冻结,不能正式导出');
   }
-  const project = db.prepare(`SELECT productCode, createdAt FROM projects WHERE id = ?`).get(projectId) as {
+  const project = db.prepare(`SELECT productCode, createdAt, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id = ?`).get(projectId) as {
     productCode: string | null;
     createdAt: string | null;
+    storeCode: string | null;
+    productSubmodel: string | null;
+    productionType: string | null;
+    editorName: string | null;
+    namingDate: string | null;
   } | undefined;
   if (!project) throw new BatchDomainError('not_found', '项目不存在');
   if (!project.productCode?.trim()) throw new BatchDomainError('conflict', '请先在项目信息中填写产品编码再正式导出');
   // 与单条模式一致:文件名里的日期取项目创建日期(上海时区),不是导出当天,
   // 这样同一项目的单条与批量成片落在同一个日期前缀下,重复导出也不会变名。
   const taskDate = formatShanghaiTaskDate(project.createdAt ?? '') || undefined;
+
+  // 导出身份以批次冻结快照为准:start 时把当时的身份/目录名冻结进版本 defaultsJson,
+  // 正式发布不再读「当前」项目字段,项目身份后续切换不影响已冻结批次的目录与命名。
+  // 旧批次(本改动前已冻结,没有快照)回退到发布时解析当前身份,保持向后兼容。
+  const frozenBatchIdentity = readFrozenBatchExportIdentity(db, lineage.currentVersionId!);
+  let frozenIdentity: ExportIdentityView | null = null;
+  let exportDirName: string;
+  if (frozenBatchIdentity?.exportDirName) {
+    exportDirName = frozenBatchIdentity.exportDirName;
+    if (frozenBatchIdentity.identity) {
+      // 首次正式导出才用冻结快照的字段创建身份修订;项目已有身份修订(含用户显式切换过)时
+      // 直接用冻结名称发布,不再改动项目当前身份指针。
+      if (!hasExportIdentity(db, projectId)) {
+        frozenIdentity = createExportIdentity(db, { projectId, identity: frozenBatchIdentity.identity });
+      }
+    }
+  } else {
+    // 旧批次:发布时按当前项目身份解析并冻结(首次正式导出语义)。
+    const identityFields = readProductionIdentityFields(project);
+    const namingDate = deriveProjectNamingDate({ namingDate: project.namingDate ?? '', createdAt: project.createdAt });
+    frozenIdentity = identityFields.storeCode && identityFields.productCode && identityFields.productionType && identityFields.editorName
+      ? getOrCreateCurrentExportIdentity(db, projectId, { ...identityFields, namingDate })
+      : null;
+    exportDirName = frozenIdentity ? frozenIdentity.exportDirName : resolveProjectExportDirName(db, projectId);
+  }
 
   const storageRoot = path.resolve(options.storageRoot ?? path.join(dataRoot(), 'storage'));
   const items: BatchPublishItemResult[] = [];
@@ -542,6 +629,7 @@ export async function publishSelectedBatchOutputs(
       const row = db.prepare(`
         SELECT p.id AS planId, p.seq, p.currentVersionId, p.scriptSnapshotId,
                o.versionNumber, o.arrangementJson,
+               t.requestKey AS requestKey,
                a.resultJson
         FROM batch_output_plans p
         JOIN batch_output_versions o ON o.id = p.currentVersionId
@@ -560,6 +648,7 @@ export async function publishSelectedBatchOutputs(
         scriptSnapshotId: string;
         versionNumber: number;
         arrangementJson: string;
+        requestKey: string | null;
         resultJson: string | null;
       } | undefined;
       if (!row) throw new BatchDomainError('conflict', '当前成片版本还没有成功的渲染候选');
@@ -592,18 +681,12 @@ export async function publishSelectedBatchOutputs(
         editRevision?: unknown;
         review?: { decision?: unknown };
       };
-      const currentEditRevision = readArrangementEditRevision(arrangement);
-      const renderEditRevision = render.editRevision ?? 0;
-      if (currentEditRevision < 0 || renderEditRevision !== currentEditRevision) {
-        throw new BatchDomainError('conflict', '成片已被调整过，请等待重新渲染完成后再导出');
-      }
-      const currentCoverTimeUs = readArrangementCoverTimeUs(arrangement);
-      if (render.coverTimeUs !== undefined && render.coverTimeUs !== currentCoverTimeUs) {
-        throw new BatchDomainError('conflict', '封面已更换，请等待重新渲染完成后再导出');
-      }
-      // 审核门禁:正式导出只接受用户已标记「通过」的成片(权威的服务端单点判断)。
-      if (arrangement.review?.decision !== 'approved') {
-        throw new BatchDomainError('conflict', '该成片尚未审核通过,请先在检查页标记「通过」后再导出');
+      // 修订号/封面时间点/审核结论 CAS——发布前先跑一遍;复制文件完成后、
+      // 替换当前指针前的最终事务里还会再跑一遍(见下方 db.transaction)。
+      assertArrangementStateMatchesRender(db, row.currentVersionId, render);
+      // 渲染契约 CAS:导出编排开启时,成功任务必须对应当前完整渲染契约。
+      if (options.requireRenderContract) {
+        assertRenderContractCurrent(db, row.requestKey, row.currentVersionId);
       }
       const usedAssetIds = [...new Set([
         ...(Array.isArray(arrangement.clips) ? arrangement.clips.map(({ assetId }) => assetId) : []),
@@ -618,11 +701,14 @@ export async function publishSelectedBatchOutputs(
         storageRoot,
         projectId,
         batchId,
-        productCode: project.productCode,
-        taskDate: taskDate ?? options.now?.() ?? new Date(),
+        // 冻结快照存在时用快照里的型号/日期（baseName 缺省时才回退旧命名公式）。
+        productCode: frozenBatchIdentity?.productCode || project.productCode || '',
+        taskDate: frozenBatchIdentity?.taskDate || taskDate || options.now?.() || new Date(),
         planSeq: row.seq,
         outputVersion: row.versionNumber,
-        exportDirName: resolveProjectExportDirName(db, projectId),
+        exportDirName,
+        ...(frozenIdentity ? { baseName: frozenIdentity.baseName } : {}),
+        ...(frozenBatchIdentity?.baseName && !frozenIdentity ? { baseName: frozenBatchIdentity.baseName } : {}),
       });
       let output;
       try {
@@ -645,13 +731,53 @@ export async function publishSelectedBatchOutputs(
       if (output.videoChecksum !== render.videoChecksum || output.coverChecksum !== render.coverChecksum) {
         throw new BatchDomainError('conflict', '正式发布源内容与已核验渲染候选指纹不一致');
       }
+      // 测试/编排 seam:文件复制完成、进入最终注册事务前执行(如模拟复制期间撤销审核)。
+      if (options.beforeRegister) {
+        await options.beforeRegister();
+      }
       const createdAt = options.now?.() ?? new Date();
+      let alreadyPublishedVideoId: string | null = null;
       const registered = db.transaction(() => {
         const current = db.prepare(`
           SELECT currentVersionId FROM batch_output_plans WHERE id = ? AND batchVersionId = ?
         `).get(planId, lineage.currentVersionId) as { currentVersionId: string | null } | undefined;
         if (!current || current.currentVersionId !== row.currentVersionId) {
           throw new BatchDomainError('conflict', '正式发布期间成片版本已变化,请重新检查');
+        }
+        // 复制文件期间用户仍可能编辑或撤销审核:替换当前指针前把安排状态
+        // (修订号/封面时间点/审核结论)与渲染契约 CAS 全部重跑一遍;撤销审核
+        // 不递增 editRevision,只比对修订号拦不住它,必须在事务内复核审核态。
+        assertArrangementStateMatchesRender(db, row.currentVersionId, render);
+        if (options.requireRenderContract) {
+          assertRenderContractCurrent(db, row.requestKey, row.currentVersionId);
+        }
+        // 并发的重复 POST 竞态:同一渲染结果(版本 + 视频/封面成对指纹)已注册为当前
+        // 正式成片时,本请求不再注册第二对 artifact;本次多复制的文件随后清理。
+        // 只在编排路径(requireRenderContract,即 exports 路由)开启——旧直接
+        // 发布入口保留「每次导出都追加一份」的历史语义(见 legacy 用例)。
+        if (options.requireRenderContract) {
+          const concurrentCurrent = db.prepare(`
+            SELECT a.id, a.relativePath
+            FROM batch_output_plans p
+            JOIN batch_artifacts a ON a.id = p.currentArtifactId AND a.kind = 'video'
+            WHERE p.id = ? AND a.outputVersionId = ? AND a.checksum = ?
+          `).get(planId, row.currentVersionId, output.videoChecksum) as {
+            id: string;
+            relativePath: string;
+          } | undefined;
+          const coverCandidates = concurrentCurrent ? db.prepare(`
+            SELECT relativePath
+            FROM batch_artifacts
+            WHERE outputPlanId = ? AND outputVersionId = ? AND kind = 'cover' AND checksum = ?
+            ORDER BY createdAt DESC, id DESC
+          `).all(planId, row.currentVersionId, output.coverChecksum) as Array<{ relativePath: string }> : [];
+          const pairedCover = concurrentCurrent ? coverCandidates.find(({ relativePath }) => (
+            batchArtifactPathsArePaired(concurrentCurrent.relativePath, String(relativePath))
+          )) : undefined;
+          if (concurrentCurrent && pairedCover) {
+            alreadyPublishedVideoId = concurrentCurrent.id;
+            return null;
+          }
         }
         const coverArtifactId = registerArtifact(db, projectId, {
           batchId,
@@ -675,6 +801,18 @@ export async function publishSelectedBatchOutputs(
         });
         return { videoArtifactId, coverArtifactId };
       })();
+      if (registered === null) {
+        // 唯一走到这里的路径是并发重复 POST(alreadyPublishedVideoId 已置):
+        // 清理本次多复制的一对文件,不碰已注册的正式产物。
+        await unlinkPublishedPair(storageRoot, output.videoRelativePath, output.coverRelativePath);
+        publishedPaths = null;
+        items.push({
+          planId,
+          status: 'already_published',
+          videoArtifactId: alreadyPublishedVideoId!,
+        });
+        continue;
+      }
       publishedPaths = null;
       items.push({
         planId,

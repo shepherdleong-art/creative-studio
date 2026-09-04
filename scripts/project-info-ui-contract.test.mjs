@@ -6,23 +6,25 @@ assert.ok(existsSync(dialogUrl), 'shared ProjectInfoDialog component should exis
 
 const dialogSource = readFileSync(dialogUrl, 'utf8');
 
-for (const label of ['项目名称', '产品名称', '产品型号', '品类']) {
+for (const label of ['店铺', '生产类型', '型号', '子型号', '剪辑师']) {
   assert.match(dialogSource, new RegExp(label), `dialog should render the ${label} field`);
 }
 
 assert.ok(
-  (dialogSource.match(/h-11/g) || []).length >= 4,
-  'all four inputs should use the same h-11 height',
+  (dialogSource.match(/h-11/g) || []).length >= 5,
+  'all five inputs should use the same h-11 height',
 );
 assert.ok(
-  (dialogSource.match(/content-start/g) || []).length >= 4,
+  (dialogSource.match(/content-start/g) || []).length >= 5,
   'each field should align its content to the top of its grid cell',
 );
 assert.match(dialogSource, /intent === 'export'/);
 assert.match(dialogSource, /保存并开始导出/);
 assert.match(dialogSource, /method:\s*'PATCH'/);
-assert.match(dialogSource, /项目名称不能为空/);
-assert.match(dialogSource, /请填写产品型号后再导出/);
+assert.match(dialogSource, /请填写产品型号/);
+assert.match(dialogSource, /项目名称（自动生成）/);
+assert.match(dialogSource, /ENABLE_NEW_EXPORT_IDENTITY_KEY/, '弹窗必须通过共享常量发送确认字段，与 PATCH 路由共用同一契约');
+assert.match(dialogSource, /project\.hasExportIdentity && identityChanged/);
 
 const projectPageSource = readFileSync(new URL('../app/projects/[id]/page.tsx', import.meta.url), 'utf8');
 const mixcutPanelSource = readFileSync(new URL('../components/mixcut/MixcutPanel.tsx', import.meta.url), 'utf8');
@@ -35,8 +37,10 @@ assert.match(projectPageSource, /项目信息/);
 assert.match(mixcutPanelSource, /<ProjectInfoDialog/);
 assert.match(mixcutPanelSource, /项目信息/);
 
-assert.match(mixcutContextSource, /SELECT id, name, productName, productCode, productCategory, createdAt FROM projects/);
+assert.match(mixcutContextSource, /SELECT id, name, productName, productCode, productCategory, createdAt,[\s\S]*?storeCode, productSubmodel, productionType, editorName, namingDate, currentExportIdentityId\s+FROM projects/);
 assert.match(mixcutContextSource, /productCategory: projectRow\.productCategory \|\| ''/);
+assert.match(mixcutContextSource, /storeCode: projectRow\.storeCode \|\| ''/);
+assert.match(mixcutContextSource, /editorName: projectRow\.editorName \|\| ''/);
 assert.match(finalEditTypesSource, /project:\s*{[\s\S]*?productCategory: string;/);
 
 
@@ -56,7 +60,7 @@ assert.ok(
   'export dialog must be mounted inside the returned fragment',
 );
 
-const topbarRightIndex = mixcutPanelSource.indexOf(`className={styles.topbarRight}`);
+const topbarRightIndex = mixcutPanelSource.indexOf('topbarRight={(');
 const topbarEditIndex = mixcutPanelSource.indexOf('setProjectInfoOpen(true)', topbarRightIndex);
 const aspectSegmentIndex = mixcutPanelSource.indexOf(`className={styles.seg}`, topbarRightIndex);
 assert.ok(

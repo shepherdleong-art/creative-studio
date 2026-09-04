@@ -77,5 +77,6 @@ next-env.d.ts
 # company gateway local stack (litellm proxy config holds real API keys; venv is local tooling)
 /config.yaml
 /config.yaml.backup-*
+/config.yaml.bak-*
 /litellm-config.yaml
 /.venv-litellm/

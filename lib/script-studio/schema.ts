@@ -176,6 +176,123 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       WHERE TRIM(themeTitle) <> '';
     `,
   },
+  {
+    // 全局产品策略知识库 + 脚本模板库（2026-09-03，方案 §5.2）。
+    // 只追加新版本，不改已发布条目；继续走共享备份/锁/审计 gate。
+    version: 4,
+    sql: `
+      CREATE TABLE IF NOT EXISTS script_studio_catalogs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('strategy','template')),
+        currentRevisionId TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssc_kind ON script_studio_catalogs(kind);
+
+      CREATE TABLE IF NOT EXISTS script_studio_catalog_revisions (
+        id TEXT PRIMARY KEY,
+        catalogId TEXT NOT NULL,
+        revisionNumber INTEGER NOT NULL,
+        sourceFilename TEXT NOT NULL,
+        sourceSha256 TEXT NOT NULL,
+        importReportJson TEXT NOT NULL DEFAULT '{}',
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY(catalogId) REFERENCES script_studio_catalogs(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sscr_number ON script_studio_catalog_revisions(catalogId, revisionNumber);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sscr_sha ON script_studio_catalog_revisions(catalogId, sourceSha256);
+
+      CREATE TABLE IF NOT EXISTS script_studio_strategy_entries (
+        id TEXT PRIMARY KEY,
+        revisionId TEXT NOT NULL,
+        modelKey TEXT NOT NULL,
+        normalizedModelKey TEXT NOT NULL,
+        canonicalName TEXT NOT NULL DEFAULT '',
+        categoryMindsetsJson TEXT NOT NULL DEFAULT '[]',
+        primarySellingPointsJson TEXT NOT NULL DEFAULT '[]',
+        differentiatorsJson TEXT NOT NULL DEFAULT '[]',
+        searchTermsJson TEXT NOT NULL DEFAULT '[]',
+        auxiliaryJson TEXT NOT NULL DEFAULT '{}',
+        sourceRowsJson TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'active',
+        FOREIGN KEY(revisionId) REFERENCES script_studio_catalog_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssse_model ON script_studio_strategy_entries(revisionId, normalizedModelKey);
+
+      CREATE TABLE IF NOT EXISTS script_studio_framework_templates (
+        id TEXT PRIMARY KEY,
+        revisionId TEXT NOT NULL,
+        stableKey TEXT NOT NULL,
+        name TEXT NOT NULL,
+        subtype TEXT NOT NULL DEFAULT '',
+        structureJson TEXT NOT NULL DEFAULT '[]',
+        sellingPointDensityJson TEXT NOT NULL DEFAULT '{}',
+        applicableProductsJson TEXT NOT NULL DEFAULT '[]',
+        preferredHookTypesJson TEXT NOT NULL DEFAULT '[]',
+        secondaryHookTypesJson TEXT NOT NULL DEFAULT '[]',
+        sourceRow INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        FOREIGN KEY(revisionId) REFERENCES script_studio_catalog_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssft_key ON script_studio_framework_templates(revisionId, stableKey);
+
+      CREATE TABLE IF NOT EXISTS script_studio_copy_hook_templates (
+        id TEXT PRIMARY KEY,
+        revisionId TEXT NOT NULL,
+        stableKey TEXT NOT NULL,
+        hookType TEXT NOT NULL,
+        mechanism TEXT NOT NULL DEFAULT '',
+        subtype TEXT NOT NULL DEFAULT '',
+        formula TEXT NOT NULL DEFAULT '',
+        example TEXT NOT NULL DEFAULT '',
+        recommendedFrameworksJson TEXT NOT NULL DEFAULT '[]',
+        recommendedSellingPointTagsJson TEXT NOT NULL DEFAULT '[]',
+        sourceRow INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        FOREIGN KEY(revisionId) REFERENCES script_studio_catalog_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssch_key ON script_studio_copy_hook_templates(revisionId, stableKey);
+
+      CREATE TABLE IF NOT EXISTS script_studio_visual_hook_templates (
+        id TEXT PRIMARY KEY,
+        revisionId TEXT NOT NULL,
+        stableKey TEXT NOT NULL,
+        playGroup TEXT NOT NULL DEFAULT '',
+        playName TEXT NOT NULL DEFAULT '',
+        visualFormula TEXT NOT NULL DEFAULT '',
+        implementationAdvice TEXT NOT NULL DEFAULT '',
+        applicableProductsJson TEXT NOT NULL DEFAULT '[]',
+        hookTagsJson TEXT NOT NULL DEFAULT '[]',
+        referenceLinksJson TEXT NOT NULL DEFAULT '[]',
+        notes TEXT NOT NULL DEFAULT '',
+        sourceRow INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        FOREIGN KEY(revisionId) REFERENCES script_studio_catalog_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssvh_key ON script_studio_visual_hook_templates(revisionId, stableKey);
+
+      CREATE TABLE IF NOT EXISTS script_studio_template_assets (
+        id TEXT PRIMARY KEY,
+        revisionId TEXT NOT NULL,
+        visualHookId TEXT NOT NULL,
+        relativePath TEXT NOT NULL,
+        contentSha256 TEXT NOT NULL,
+        sourceAnchor TEXT NOT NULL DEFAULT '',
+        width INTEGER,
+        height INTEGER,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY(revisionId) REFERENCES script_studio_catalog_revisions(id) ON DELETE CASCADE,
+        FOREIGN KEY(visualHookId) REFERENCES script_studio_visual_hook_templates(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_ssta_visual ON script_studio_template_assets(revisionId, visualHookId);
+
+      ALTER TABLE project_script_revisions ADD COLUMN strategyCatalogRevisionId TEXT NOT NULL DEFAULT '';
+      ALTER TABLE project_script_revisions ADD COLUMN strategyEntryId TEXT NOT NULL DEFAULT '';
+      ALTER TABLE project_script_revisions ADD COLUMN templateCatalogRevisionId TEXT NOT NULL DEFAULT '';
+      ALTER TABLE project_script_revisions ADD COLUMN recommendationJson TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =
@@ -277,6 +394,13 @@ function assertTablesExist(db: Database.Database): void {
     'script_studio_task_stages',
     'project_scripts',
     'project_script_revisions',
+    'script_studio_catalogs',
+    'script_studio_catalog_revisions',
+    'script_studio_strategy_entries',
+    'script_studio_framework_templates',
+    'script_studio_copy_hook_templates',
+    'script_studio_visual_hook_templates',
+    'script_studio_template_assets',
   ];
   for (const table of tables) {
     const row = db.prepare(

@@ -25,6 +25,8 @@ export interface BatchOutputEditorProps {
   /** 外层卡片正在重渲染时传入,编辑控件暂时锁定 */
   renderBusy?: boolean;
   active?: boolean;
+  /** 上层传入的当前候选渲染代际:编辑器封面 URL 绑定该成功尝试,不自行派生。 */
+  candidateRenderAttemptId?: string | null;
   /** 编辑生效后回调,外层据此刷新 workspace(卡片进入渲染中) */
   onChanged?: () => void;
 }
@@ -38,10 +40,8 @@ interface EditFeedback {
  * 「检查成片」片段编辑面板:左侧冻结素材池,中间实时预览与时间轴,右侧成片设置。
  * 自身拉取 arrangement 视图;编辑生效后静默重拉本视图。
  *
- * 渲染时机:编辑期一次都不排渲染(POST 带 deferRender),退出这一轮调整时再
- * commit_render 一次性提交。本面板的预览是客户端实时合成的,不看渲染产物,
- * 而每次微调排一次整片重渲染要 4~7 秒,还会经 renderBusy 把编辑器整个锁死——
- * 用户实测「调一下等一下」就是这么来的。commit 幂等,重复提交不会多排任务。
+ * 编辑器优先模型:编辑只保存 arrangement(必要时重做封面任务),不排整片渲染。
+ * 本面板的预览是客户端实时合成的,不看渲染产物;完整 mp4 推迟到导出阶段生成。
  */
 export default function BatchOutputEditor({
   projectId,
@@ -50,6 +50,7 @@ export default function BatchOutputEditor({
   outputPreset,
   renderBusy = false,
   active = true,
+  candidateRenderAttemptId,
   onChanged,
 }: BatchOutputEditorProps) {
   const [view, setView] = useState<BatchOutputClipEditView | null>(null);
@@ -61,8 +62,9 @@ export default function BatchOutputEditor({
   const [freeformClipId, setFreeformClipId] = useState<string | null>(null);
   const [replaceCandidateId, setReplaceCandidateId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [renderPending, setRenderPending] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
+  /** 本次编辑确实清除了既有审核态;在本次编辑器会话内持续提示需重新审核。 */
+  const [reviewCleared, setReviewCleared] = useState(false);
   /** BGM 本地草稿：曲目 + 音量 + 淡入 + 淡出共同组成一份 musicDraft，任一字段都可独立弄脏。 */
   const [musicDraft, setMusicDraft] = useState<BatchBgmDraft>({ trackId: null, gainDb: -18, fadeInSec: 1, fadeOutSec: 1.5 });
   const [narrationGainDraft, setNarrationGainDraft] = useState(NARRATION_GAIN_DB_DEFAULT);
@@ -72,16 +74,12 @@ export default function BatchOutputEditor({
   const [subtitleStyleDraft, setSubtitleStyleDraft] = useState<TextStyle | null>(null);
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const previewTabRefs = useRef<Record<'output' | 'material', HTMLButtonElement | null>>({ output: null, material: null });
-  const pendingRenderRef = useRef(false);
-  const inFlightEditRef = useRef<Promise<void> | null>(null);
   const musicDraftRef = useRef<BatchBgmDraft>(musicDraft);
-  // React 编译器红线：渲染期不得写 ref。与下方 onChangedRef 同款：在 effect
-  // 中同步最新值；读取方（BGM 草稿同步 effect）声明在其后，执行顺序有保证。
+  // React 编译器红线：渲染期不得写 ref。在 effect 中同步最新值；
+  // 读取方（BGM 草稿同步 effect）声明在其后，执行顺序有保证。
   useEffect(() => { musicDraftRef.current = musicDraft; });
   const syncedBgmRef = useRef<{ planId: string | null; music: BatchBgmDraft | null }>({ planId: null, music: null });
-  const onChangedRef = useRef(onChanged);
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
-  useEffect(() => { onChangedRef.current = onChanged; });
 
   const clipsUrl = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
 
@@ -107,34 +105,6 @@ export default function BatchOutputEditor({
     }
   }, [batchId, planId, projectId]);
 
-  /**
-   * 提交这一轮欠着的重渲染。keepalive 让卸载/关标签页时请求仍能发出;
-   * 只有服务端确认收下才清欠账——失败就留着,让 pagehide 或下一次卸载再补一次。
-   * commit_render 按 requestKey 幂等(phase-e.ts:39-50),多提交一次只会拿回同一个任务。
-   */
-  const commitRender = useCallback((url: string) => {
-    if (!pendingRenderRef.current) return;
-    const send = () => {
-      if (!pendingRenderRef.current) return;
-      void fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'commit_render' }),
-        keepalive: true,
-      }).then((response) => {
-        if (!response.ok) return;
-        pendingRenderRef.current = false;
-        setRenderPending(false);
-        onChangedRef.current?.();
-      }).catch(() => undefined);
-    };
-    // 编辑请求与 commit_render 必须保持顺序:组件在请求返回前卸载时,如果
-    // commit 先到服务端,它会按旧 arrangement 排任务,随后编辑反而没有新任务。
-    const inFlightEdit = inFlightEditRef.current;
-    if (inFlightEdit) void inFlightEdit.then(send, send);
-    else send();
-  }, []);
-
   useEffect(() => {
     // 换片段计划时重置交互态并重新拉取;统一推迟到宏任务,避免 effect 内同步 setState。
     const timer = window.setTimeout(() => {
@@ -144,6 +114,7 @@ export default function BatchOutputEditor({
       setFreeformClipId(null);
       setReplaceCandidateId(null);
       setEditFeedback(null);
+      setReviewCleared(false);
       setCoverEditorOpen(false);
       setPreviewMode('output');
       setPreviewAssetId(null);
@@ -152,19 +123,6 @@ export default function BatchOutputEditor({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadView]);
-
-  useEffect(() => {
-    // 退出这一轮调整(关闭弹窗/换成片/切步骤)时把欠着的重渲染一次性提交。
-    // url 按当次的 projectId/batchId/planId 固化:换成片时提交的必须是上一条的渲染。
-    // 关标签页/刷新不会走 React 卸载,只有 pagehide 能兜住(单条走的是 beforeunload)。
-    const url = `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/clips?projectId=${encodeURIComponent(projectId)}`;
-    const flush = () => commitRender(url);
-    window.addEventListener('pagehide', flush);
-    return () => {
-      window.removeEventListener('pagehide', flush);
-      flush();
-    };
-  }, [projectId, batchId, planId, commitRender]);
 
   const clips = useMemo(() => view?.clips ?? [], [view]);
   const poolAssets = useMemo(() => view?.poolAssets ?? [], [view]);
@@ -221,7 +179,7 @@ export default function BatchOutputEditor({
     ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?kind=narration&projectId=${encodeURIComponent(projectId)}`
     : null;
   const coverUrl = view?.coverAssetId
-    ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=cover&source=candidate`
+    ? `/api/batch-production/batches/${encodeURIComponent(batchId)}/outputs/${encodeURIComponent(planId)}/media?projectId=${encodeURIComponent(projectId)}&kind=cover&source=candidate${candidateRenderAttemptId ? `&renderAttemptId=${encodeURIComponent(candidateRenderAttemptId)}` : ''}`
     : null;
   const previewBgmTrackId = musicDraft.trackId;
   const previewBgm = useMemo(() => (previewBgmTrackId
@@ -234,42 +192,33 @@ export default function BatchOutputEditor({
     : null), [previewBgmTrackId, musicDraft.gainDb, musicDraft.fadeInSec, musicDraft.fadeOutSec]);
 
   async function submitEdit(payload: Record<string, unknown>): Promise<boolean> {
-    // split 是纯结构操作(不改像素,不递增 editRevision),其余命令都可能改画面。
-    // 响应回来前组件就被卸载时(改完立刻关弹窗),响应里的 visualChanged 没人接得到,
-    // 所以先记欠账再发请求;命令实际没生效时最多多发一次幂等的 commit。
-    if (payload.type !== 'split') {
-      pendingRenderRef.current = true;
-    }
+    // 编辑器优先:所有编辑都只保存;服务端按 coverContractHash 幂等地重排封面任务。
     setSubmitting(true);
     setEditFeedback(null);
-    let editRequestDone: Promise<void> | null = null;
     try {
       const editRequest = fetch(clipsUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payload, deferRender: true }),
+        body: JSON.stringify(payload),
         keepalive: true,
       });
-      editRequestDone = editRequest.then(() => undefined, () => undefined);
-      inFlightEditRef.current = editRequestDone;
       const response = await editRequest;
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(typeof result.message === 'string' ? result.message : `HTTP ${response.status}`);
       }
       const editResult = result as BatchOutputClipEditResult;
-      if (editResult.changed && editResult.visualChanged) {
-        pendingRenderRef.current = true;
-        setRenderPending(true);
-      }
+      // 有效编辑清除了既有审核态:常驻提示需要重新审核(覆盖片段/封面/字幕/BGM/口播音量)。
+      if (editResult.reviewCleared) setReviewCleared(true);
       // 静默重拉:预览立即吃到新 arrangement(即改即看),不打断当前交互。
       await loadView(true);
+      // 通知外层刷新工作区(审核/封面任务/formalOutdated 都可能已变化)。
+      if (editResult.changed) onChanged?.();
       return true;
     } catch (error) {
       setEditFeedback({ kind: 'error', message: error instanceof Error ? error.message : '保存片段修改失败' });
       return false;
     } finally {
-      if (inFlightEditRef.current === editRequestDone) inFlightEditRef.current = null;
       setSubmitting(false);
     }
   }
@@ -409,26 +358,18 @@ export default function BatchOutputEditor({
         </span>
       </div>
 
-      {!view.outputVersionId && <p className="shrink-0 tile p-3 text-xs text-warn">还没有可编辑的成片版本，请先完成首次渲染。</p>}
+      {!view.outputVersionId && <p className="shrink-0 tile p-3 text-xs text-warn">还没有可编辑的成片版本，请先完成生产。</p>}
       {view.outputVersionId && !view.editable && <p className="shrink-0 tile p-3 text-xs text-warn">批次已停止或输入尚未冻结，当前只能查看，不能调整片段。</p>}
-      {renderPending && view.editable && (
-        <div className="flex shrink-0 items-center gap-3 rounded-xl border border-hairline bg-surface-subtle p-3 text-xs text-ink-secondary">
-          <span className="min-w-0 flex-1">修改已保存，退出本轮调整后会自动重新渲染</span>
-          <button
-            type="button"
-            className="btn-secondary h-8 shrink-0 px-3 text-xs"
-            disabled={renderBusy || submitting}
-            onClick={() => commitRender(clipsUrl)}
-          >
-            立即渲染
-          </button>
-        </div>
-      )}
       {editFeedback && (
         <p
           role="alert"
           className="shrink-0 tile p-3 text-xs text-fail"
         >{editFeedback.message}</p>
+      )}
+      {reviewCleared && (
+        <p className="shrink-0 tile p-3 text-xs text-warn" role="status">
+          本次修改已重置审核状态；请返回检查成片重新通过。
+        </p>
       )}
 
       <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-y-auto xl:overflow-visible xl:grid-cols-[minmax(254px,280px)_minmax(420px,1fr)_minmax(300px,340px)]">
@@ -471,8 +412,14 @@ export default function BatchOutputEditor({
           </div>
           <div className="mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
             {poolAssets.map((asset) => {
-              const usedByThis = asset.usedByPlanIds.includes(planId);
-              const usedByOthers = !usedByThis && asset.usedByPlanIds.length > 0;
+              // 本片次数 = useCountByPlanId[planId]，其他次数 = 其余计划计数之和；
+              // 两数独立计算，同一素材同时用于本片和其他成片时两个徽标并存。
+              const thisCount = asset.useCountByPlanId[planId] ?? 0;
+              const otherCount = Object.entries(asset.useCountByPlanId)
+                .filter(([id]) => id !== planId)
+                .reduce((sum, [, count]) => sum + count, 0);
+              const usedByThis = thisCount > 0;
+              const usedByOthers = otherCount > 0;
               const coverUsedByThis = asset.coverUsedByPlanIds.includes(planId);
               const selectable = !asset.excluded && !editLocked && clips.length > 0;
               const pending = replaceCandidateId === asset.assetId;
@@ -499,9 +446,9 @@ export default function BatchOutputEditor({
                       <span className={(pending ? 'block truncate text-[11px] font-medium text-accent' : 'block truncate text-[11px] font-medium text-ink')} title={asset.displayName}>{asset.displayName}</span>
                       <span className="mt-0.5 block text-[10px] tabular-nums text-ink-tertiary">{asset.durationSec != null ? asset.durationSec.toFixed(1) + ' 秒' : '时长未知'}</span>
                       <span className="mt-1 flex flex-wrap gap-1">
-                        {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[9px] text-ok">本片已用</span>}
+                        {usedByThis && <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[9px] text-ok">本片已用{thisCount > 1 ? ` ×${thisCount}` : ''}</span>}
                         {coverUsedByThis && <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] text-accent">本片封面</span>}
-                        {usedByOthers && <span className="rounded-full bg-surface px-1.5 py-0.5 text-[9px] text-ink-secondary">其他成片已用</span>}
+                        {usedByOthers && <span className="rounded-full bg-surface px-1.5 py-0.5 text-[9px] text-ink-secondary">其他成片已用{otherCount > 1 ? ` ×${otherCount}` : ''}</span>}
                         {asset.excluded && <span className="rounded-full bg-fail/10 px-1.5 py-0.5 text-[9px] text-fail">已排除</span>}
                       </span>
                     </span>

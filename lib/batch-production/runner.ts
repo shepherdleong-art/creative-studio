@@ -11,6 +11,47 @@ import {
   setBatchSchedulerDraining,
   settleInterruptedTask,
 } from './scheduler.ts';
+import { resolveCoverContractHash, resolveFullRenderContractHash } from './cover-contract.ts';
+import {
+  buildCoverRenderTaskRequestKey,
+  buildFullRenderTaskRequestKey,
+  parseRenderTaskRequestKey,
+} from './render-task-key.ts';
+
+interface RenderTaskIdentity {
+  workType: string;
+  targetKind: string;
+  targetId: string;
+  requestKey: string | null;
+}
+
+function coverContractHashFromResult(resultJson: unknown): string | null {
+  if (!resultJson || typeof resultJson !== 'object' || Array.isArray(resultJson)) return null;
+  const value = (resultJson as Record<string, unknown>).coverContractHash;
+  return typeof value === 'string' && /^cov_[0-9a-f]{32}$/u.test(value) ? value : null;
+}
+
+/**
+ * 同版本范围内渲染任务的契约 identity。任务 requestKey 是新格式时返回
+ * 当前应具有的契约 key,与任务所持有的 key 比对即可发现「渲染期间内容
+ * 又变了」;只有旧格式任务返回 null。新格式任务的当前契约无法解析时必须
+ * 抛错并由完成事务 fail closed，不能把无法证明身份的结果记成成功。
+ */
+function resolveCurrentRenderRequestKey(
+  db: Database.Database,
+  task: RenderTaskIdentity | undefined,
+): string | null {
+  if (!task || task.workType !== 'render' || !task.requestKey) return null;
+  const parsed = parseRenderTaskRequestKey(task.requestKey);
+  if (!parsed) return null;
+  const expectedTargetKind = parsed.kind === 'cover' ? 'output_version_cover' : 'output_version';
+  if (task.targetKind !== expectedTargetKind || parsed.outputVersionId !== task.targetId) {
+    throw new Error('渲染任务契约身份与任务目标不一致');
+  }
+  return parsed.kind === 'cover'
+    ? buildCoverRenderTaskRequestKey(task.targetId, resolveCoverContractHash(db, task.targetId))
+    : buildFullRenderTaskRequestKey(task.targetId, resolveFullRenderContractHash(db, task.targetId));
+}
 
 export interface SchedulerRunOptions {
   db: Database.Database;
@@ -177,7 +218,7 @@ async function executeOne(
     const control = db.prepare(`
       SELECT p.controlState, t.expectedState,
         CASE
-          WHEN t.workType <> 'render' OR t.targetKind <> 'output_version' THEN 1
+          WHEN t.workType <> 'render' OR (t.targetKind <> 'output_version' AND t.targetKind <> 'output_version_cover') THEN 1
           WHEN EXISTS (
             SELECT 1 FROM batch_output_versions o
             JOIN batch_output_plans plan ON plan.id = o.planId
@@ -220,7 +261,7 @@ async function executeOne(
       const completionState = db.prepare(`
         SELECT t.expectedState, p.controlState,
           CASE
-            WHEN t.workType <> 'render' OR t.targetKind <> 'output_version' THEN 1
+            WHEN t.workType <> 'render' OR (t.targetKind <> 'output_version' AND t.targetKind <> 'output_version_cover') THEN 1
             WHEN EXISTS (
               SELECT 1 FROM batch_output_versions o
               JOIN batch_output_plans plan ON plan.id = o.planId
@@ -234,6 +275,28 @@ async function executeOne(
       if (completionState?.targetIsCurrent === 0) {
         interrupt('superseded');
         throw new Error('渲染目标已被新成片版本替代,不能提交结果');
+      }
+      // 同版本范围内的契约 CAS:封面/整片任务的新格式 requestKey 携带契约哈希,
+      // 渲染期间同版本内容又变了(换封面/改片段)时,基于旧契约的迟到结果
+      // 不能落成 succeeded——旧任务按 superseded 取消终态,由新契约任务接棒。
+      const renderTask = db.prepare(`
+        SELECT workType, targetKind, targetId, requestKey FROM batch_tasks WHERE id = ?
+      `).get(claim.task.id) as {
+        workType: string;
+        targetKind: string;
+        targetId: string;
+        requestKey: string | null;
+      } | undefined;
+      let expectedRequestKey: string | null;
+      try {
+        expectedRequestKey = resolveCurrentRenderRequestKey(db, renderTask);
+      } catch {
+        interrupt('superseded');
+        throw new Error('当前渲染契约无法验证,结果不能提交');
+      }
+      if (expectedRequestKey && renderTask?.requestKey !== expectedRequestKey) {
+        interrupt('superseded');
+        throw new Error('渲染契约已变化,旧任务结果不能提交');
       }
       if (
         !completionState
@@ -259,6 +322,18 @@ async function executeOne(
           interrupt('batch_control');
           throw new Error('任务在发布结果时被中止,不能提交成功结果');
         }
+      }
+      // 封面 A→B→A 时，task key 与当前 key 可能再次相等；还必须证明执行器
+      // 返回的产物确实来自 task 声明的冻结契约，不能把 B 结果记到 A 任务。
+      const parsedTaskKey = parseRenderTaskRequestKey(renderTask?.requestKey);
+      const taskCoverHash = parsedTaskKey?.kind === 'cover' ? parsedTaskKey.contractHash : null;
+      if (
+        renderTask?.targetKind === 'output_version_cover'
+        && taskCoverHash
+        && coverContractHashFromResult(resultJson) !== taskCoverHash
+      ) {
+        interrupt('superseded');
+        throw new Error('封面渲染结果与任务契约不一致,不能提交结果');
       }
       db.prepare(`
         UPDATE batch_task_attempts SET progressJson = ? WHERE id = ? AND claimedBy = ?

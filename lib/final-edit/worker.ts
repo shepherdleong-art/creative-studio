@@ -5,6 +5,8 @@ import { renderFinalEditSnapshot, type FinalEditRenderSnapshot } from './rendere
 import { runFinalEditHeavyJob } from './heavy-job-lock.ts';
 import { formatShanghaiTaskDate } from './export-identity.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
+import { getOrCreateCurrentExportIdentity } from '../project-export-identity.ts';
+import { readProductionIdentityFields, deriveProjectNamingDate } from '../project-production-identity.ts';
 import { publishReservedExportTarget, reserveProjectExportTarget, restorePublishedExportReservation } from './export-naming.ts';
 import { buildPublishedJobOutput, registerPublishedArtifacts } from './project-artifacts.ts';
 import { FinalEditError } from './errors.ts';
@@ -82,14 +84,20 @@ async function drain() {
         if (controller.signal.aborted) throw makeAbortError();
         let snapshot = JSON.parse(job.inputSnapshotJson) as FinalEditRenderSnapshot;
         if (!snapshot.exportIdentity || !snapshot.exportTarget) {
-          const project = db.prepare(`SELECT name, productCode, createdAt FROM projects WHERE id=?`).get(job.projectId) as { name: string; productCode: string | null; createdAt: string } | undefined;
+          const project = db.prepare(`SELECT name, productCode, createdAt, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id=?`).get(job.projectId) as { name: string; productCode: string | null; createdAt: string; storeCode: string | null; productSubmodel: string | null; productionType: string | null; editorName: string | null; namingDate: string | null } | undefined;
           if (!project) throw new FinalEditError('project_not_found', '项目不存在', 404);
+          const identityFields = readProductionIdentityFields(project);
+          const namingDate = deriveProjectNamingDate({ namingDate: project.namingDate ?? '', createdAt: project.createdAt });
+          const frozen = identityFields.storeCode && identityFields.productCode && identityFields.productionType && identityFields.editorName
+            ? getOrCreateCurrentExportIdentity(db, job.projectId, { ...identityFields, namingDate })
+            : null;
           const exportIdentity = {
             projectId: job.projectId,
             taskName: project.name,
             productCode: project.productCode || '',
             taskDate: formatShanghaiTaskDate(project.createdAt),
-            exportDirName: resolveProjectExportDirName(db, job.projectId),
+            exportDirName: frozen ? frozen.exportDirName : resolveProjectExportDirName(db, job.projectId),
+            ...(frozen ? { baseName: frozen.baseName } : {}),
           };
           const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(job.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
           snapshot = { ...snapshot, exportIdentity, exportTarget: reserveProjectExportTarget(path.join(dataRoot(), 'storage'), exportIdentity, { blockedRelativePaths }) };

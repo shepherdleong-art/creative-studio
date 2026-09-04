@@ -309,6 +309,9 @@ for (const [name, provider, requestModel] of [
   assert.ok(queueRecordIndex > completeIndex, 'queue must record only after atomic success');
   assert.match(resumeSource, /WHERE id = \? AND status = 'running'/, 'resume success must be atomic');
   assert.match(resumeSource, /recordImageJobUsage\(/, 'resume success must record from the stored snapshot');
+  assert.match(resumeSource, /normalizeGeneratedImageToSize\(/, '补抓成功路径必须按任务尺寸规整图片');
+  assert.match(resumeSource, /companyImageDeliverySize\(/, '补抓成功路径必须遵守公司模型的比例交付规则');
+  assert.match(resumeSource, /normalizedImage\.width/, '补抓产物必须持久化真实宽高');
   assert.doesNotMatch(retrySource, /usageSnapshotJson\s*=\s*NULL/i, 'retry must preserve usageSnapshotJson');
   assert.match(retrySource, /providerTaskId/, 'retry must inspect an already-submitted remote task');
   assert.match(retrySource, /status = 'needs_check'/, 'retry must route an already-submitted task to resume-poll');

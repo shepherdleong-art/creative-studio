@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { dataRoot } from '@/lib/data-root';
 import { resolveProjectExportDirName } from '@/lib/project-export-dir';
+import { getCurrentExportDirName } from '@/lib/project-export-identity';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import {
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const storageRoot = path.join(dataRoot(), 'storage');
     // 与 reserveBatchExportTarget 同一个成品目录(和单条模式共用)。
     // 改导出路径时这里必须一起改,否则桌面版会打不开目录。
-    const exportDirName = resolveProjectExportDirName(getDb(), projectId);
+    const exportDirName = getCurrentExportDirName(getDb(), projectId) ?? resolveProjectExportDirName(getDb(), projectId);
     const relativeDir = path.join('projects', exportDirName, '成片');
     const directory = assertNoStorageSymlink(storageRoot, relativeDir);
     const stat = fs.statSync(directory);

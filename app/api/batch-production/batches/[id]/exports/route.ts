@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { publishSelectedBatchOutputs } from '@/lib/batch-production/phase-e';
+import { orchestrateBatchExport } from '@/lib/batch-production/export-orchestrator';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import {
   BATCH_NO_STORE_HEADERS,
@@ -11,7 +11,12 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** 发布选中且已具备真实 narration 的渲染候选；无效卡片逐条跳过并说明。 */
+/**
+ * 正式导出编排入口。服务端统一判断每条计划:
+ * 预检不通过 → skipped;需要渲染 → render_queued/rendering;渲染失败 → render_failed;
+ * 已发布且未过期 → already_published(幂等);复制注册成功 → published。
+ * 调度器唤醒由编排模块内部完成(幂等),路由不接触任务领取细节。
+ */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: batchId } = await context.params;
   const projectId = batchProjectIdFromRequest(request);
@@ -30,7 +35,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   }
   try {
     await assertBatchApiReady();
-    const result = await publishSelectedBatchOutputs(getDb(), projectId, batchId, body.planIds as string[]);
+    const result = await orchestrateBatchExport(getDb(), projectId, batchId, body.planIds as string[]);
     return NextResponse.json(result, { headers: BATCH_NO_STORE_HEADERS });
   } catch (error) {
     return batchRouteErrorResponse(error, 'batch_export_failed', '批次正式导出失败');

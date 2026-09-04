@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import SystemFontPicker from '@/components/ui/SystemFontPicker';
 import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
@@ -221,7 +222,6 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
   const saveQueueRef = useRef<Record<string, Promise<void>>>({});
   const [coverPresets, setCoverPresets] = useState<CoverPresetView[]>([]);
-  const [systemFonts, setSystemFonts] = useState<string[]>(['PingFang SC']);
   const [presetName, setPresetName] = useState('');
   const [coverTitleError, setCoverTitleError] = useState('');
   // 封面标题预览当前选中的脚本/快照 id:选中项失效(取消勾选/删脚本)时
@@ -240,18 +240,11 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [deletingScriptId, setDeletingScriptId] = useState<string | null>(null);
   const [scriptActionError, setScriptActionError] = useState('');
 
-  // 封面标题预设与系统字体来自全局(与单条共用),一次拉取,失败不阻塞其他输入。
+  // 封面标题预设来自全局(与单条共用),一次拉取,失败不阻塞其他输入。
   useEffect(() => {
-    void Promise.all([
-      fetch('/api/system-fonts').then((response) => response.json()),
-      fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response)),
-    ]).then(([fontBody, presetBody]) => {
-      const values = Array.isArray(fontBody) ? fontBody : fontBody.fonts;
-      if (Array.isArray(values)) {
-        setSystemFonts([...new Set(['PingFang SC', ...values.map((item) => typeof item === 'string' ? item : item.family).filter(Boolean)])]);
-      }
-      setCoverPresets(presetBody);
-    }).catch((error) => setCoverTitleError(error instanceof Error ? error.message : String(error)));
+    void fetch('/api/final-edit/title-presets').then((response) => readJson<CoverPresetView[]>(response))
+      .then(setCoverPresets)
+      .catch((error) => setCoverTitleError(error instanceof Error ? error.message : String(error)));
   }, []);
 
   const scriptCount = Object.keys(selectedScripts).length;
@@ -792,16 +785,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
           <label className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[11px] text-ink-tertiary">字体</span>
-            <select
-              aria-label="字幕字体"
-              value={style.fontFamily}
-              disabled={frozen}
-              onChange={(event) => updateSubtitleStyle({ fontFamily: event.target.value })}
-              className={smallInput}
-            >
-              {!systemFonts.includes(style.fontFamily) && <option value={style.fontFamily}>{style.fontFamily}</option>}
-              {systemFonts.map((font) => <option key={font} value={font}>{font}</option>)}
-            </select>
+            <SystemFontPicker value={style.fontFamily} ariaLabel="字幕字体" disabled={frozen} compact onChange={(fontFamily) => updateSubtitleStyle({ fontFamily, fontPostscriptName: undefined })} />
           </label>
           <label className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[11px] text-ink-tertiary">字号</span>
@@ -1019,15 +1003,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
         <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
           <label className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[11px] text-ink-tertiary">字体</span>
-            <select
-              aria-label={`${kind === 'primary' ? '主标题' : '副标题'}字体`}
-              value={style.fontFamily}
-              disabled={frozen}
-              onChange={(event) => updateCoverStyle(kind, { fontFamily: event.target.value })}
-              className={smallInput}
-            >
-              {systemFonts.map((font) => <option key={font} value={font}>{font}</option>)}
-            </select>
+            <SystemFontPicker value={style.fontFamily} ariaLabel={`${kind === 'primary' ? '主标题' : '副标题'}字体`} disabled={frozen} compact onChange={(fontFamily) => updateCoverStyle(kind, { fontFamily, fontPostscriptName: undefined })} />
           </label>
           <label className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[11px] text-ink-tertiary">字号</span>

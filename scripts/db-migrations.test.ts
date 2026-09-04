@@ -83,7 +83,9 @@ db.exec(`
   );
 
   CREATE TABLE jobs (
-    id TEXT PRIMARY KEY
+    id TEXT PRIMARY KEY,
+    projectId TEXT,
+    size TEXT
   );
 
   INSERT INTO jobs (id) VALUES ('legacy-image-job');
@@ -139,36 +141,108 @@ assert.ok(
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-1),
-  `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
-  'new core migrations must be appended without rewriting published entries',
+  `UPDATE jobs
+   SET size = (SELECT p.size FROM projects p WHERE p.id = jobs.projectId)
+   WHERE COALESCE(size, '') = ''
+     AND EXISTS (
+       SELECT 1 FROM projects p
+       WHERE p.id = jobs.projectId AND COALESCE(p.size, '') <> ''
+     )`,
+  'the repaired project size must be copied to empty scene-job snapshots',
 );
 assert.equal(
   CORE_DB_MIGRATIONS.at(-2),
+  `UPDATE projects
+   SET size = prompt, prompt = '', status = 'draft', referenceGuidanceMode = 'none'
+   WHERE size = ''
+     AND status = 'none'
+     AND referenceGuidanceMode = 'draft'
+     AND (prompt = 'auto' OR prompt GLOB '[0-9]*x[0-9]*')`,
+  'the production identity insert regression must be repaired by an appended migration',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-3),
+  `CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId)`,
+  'new core migrations must be appended without rewriting published entries',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-4),
+  `CREATE TABLE IF NOT EXISTS project_export_identities (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    revisionNumber INTEGER NOT NULL,
+    baseName TEXT NOT NULL,
+    exportDirName TEXT NOT NULL,
+    identityJson TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    supersededAt TEXT,
+    UNIQUE(projectId, revisionNumber),
+    UNIQUE(exportDirName)
+  )`,
+  'the export identities table must follow the production identity columns',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-5),
+  `ALTER TABLE projects ADD COLUMN currentExportIdentityId TEXT`,
+  'the currentExportIdentityId column must precede the export identities table',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-6),
+  `ALTER TABLE projects ADD COLUMN namingDate TEXT NOT NULL DEFAULT ''`,
+  'the production identity namingDate migration must precede the export identities table',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-7),
+  `ALTER TABLE projects ADD COLUMN editorName TEXT NOT NULL DEFAULT ''`,
+  'the editorName column must precede namingDate',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-8),
+  `ALTER TABLE projects ADD COLUMN productionType TEXT NOT NULL DEFAULT ''`,
+  'the productionType column must precede editorName',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-9),
+  `ALTER TABLE projects ADD COLUMN productSubmodel TEXT NOT NULL DEFAULT ''`,
+  'the productSubmodel column must precede productionType',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-10),
+  `ALTER TABLE projects ADD COLUMN storeCode TEXT NOT NULL DEFAULT ''`,
+  'the storeCode column must be the first production identity column',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-11),
+  `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
+  'the previously published tail migration must keep its position',
+);
+assert.equal(
+  CORE_DB_MIGRATIONS.at(-12),
   `ALTER TABLE jobs ADD COLUMN creationIndex INTEGER NOT NULL DEFAULT 0`,
   'the C4 creation-index migration must keep its position before the C5 tail',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-3),
+  CORE_DB_MIGRATIONS.at(-13),
   `ALTER TABLE jobs ADD COLUMN createdAt TEXT`,
   'the scene-job creation timestamp migration must precede its index migration',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-4),
+  CORE_DB_MIGRATIONS.at(-14),
   `ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT`,
   'the previous rejection migration must keep its position',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-5),
+  CORE_DB_MIGRATIONS.at(-15),
   `ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT`,
   'the previous rejection migration must keep its position',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-6),
+  CORE_DB_MIGRATIONS.at(-16),
   `ALTER TABLE projects ADD COLUMN lastOpenedAt TEXT`,
   'the last-opened migration must remain before the rejection migrations',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-7),
+  CORE_DB_MIGRATIONS.at(-17),
   `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
   'the previously published tail migration must keep its position',
 );
@@ -372,9 +446,30 @@ db.prepare(
 ).run();
 
 // 生产环境每次启动都会整条重跑迁移流,必须幂等且不改动已有数据。
+db.prepare(`
+  INSERT INTO projects
+    (id, name, providerId, model, prompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode)
+  VALUES ('identity-insert-regression', '身份错位回归', 'image-provider', 'gpt-image-2', '1024x1024', '', 'medium', 3, 2, 'none', 'draft')
+`).run();
+db.prepare(`
+  INSERT INTO projects
+    (id, name, providerId, model, prompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode)
+  VALUES ('ratio-backfill-project', '比例回填', 'image-provider', 'gpt-image-2', '', '864x1152', 'medium', 3, 2, 'draft', 'none')
+`).run();
+db.prepare(`INSERT INTO jobs (id, projectId, size) VALUES ('ratio-backfill-job', 'ratio-backfill-project', '')`).run();
 for (const sql of CORE_DB_MIGRATIONS) {
   try { db.exec(sql); } catch { /* Match production migration behavior. */ }
 }
+assert.deepEqual(
+  db.prepare(`SELECT prompt, size, status, referenceGuidanceMode FROM projects WHERE id = 'identity-insert-regression'`).get(),
+  { prompt: '', size: '1024x1024', status: 'draft', referenceGuidanceMode: 'none' },
+  '旧生产身份插入错位记录应在迁移重跑时恢复到正确字段',
+);
+assert.equal(
+  (db.prepare(`SELECT size FROM jobs WHERE id = 'ratio-backfill-job'`).get() as { size: string }).size,
+  '864x1152',
+  '旧场景任务的空尺寸应继承项目已修复的目标比例',
+);
 assert.equal(
   (db.prepare(`SELECT kind FROM shot_sets WHERE id = ?`).get('legacy-set') as { kind: string }).kind,
   'storyboard',

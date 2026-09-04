@@ -1,8 +1,17 @@
 import type Database from 'better-sqlite3';
+import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
+import { getCurrentExportDirName } from '../project-export-identity.ts';
+import { isFormalArtifactOutdated } from './formal-artifact-freshness.ts';
+import { resolveCoverContractHash, resolveFullRenderContractHash } from './cover-contract.ts';
 import { BatchDomainError } from './errors.ts';
 import type { BatchProductionStatus } from './versions.ts';
 import type { BatchTaskExpectedState, BatchTaskStatus } from './tasks.ts';
+import {
+  buildCoverRenderTaskRequestKey,
+  buildFullRenderTaskRequestKey,
+  parseRenderTaskRequestKey,
+} from './render-task-key.ts';
 
 export type BatchWorkspacePhase =
   | 'prepare_materials'
@@ -21,6 +30,10 @@ export type BatchOutputCardStatus =
   | 'retryable_failed'
   | 'stopped';
 
+export type BatchCoverTaskStatus = 'missing' | 'queued' | 'running' | 'succeeded' | 'failed';
+
+export type BatchCardExportStatus = 'not_exported' | 'rendering' | 'failed' | 'exported';
+
 export interface BatchWorkspaceArtifactView {
   id: string;
   outputVersionId: string;
@@ -28,6 +41,12 @@ export interface BatchWorkspaceArtifactView {
   relativePath: string;
   checksum: string;
   createdAt: string;
+}
+
+/** 当前正式成片:视频指针及其配对封面(同一导出对)。 */
+export interface BatchFormalArtifactView {
+  video: BatchWorkspaceArtifactView;
+  cover: BatchWorkspaceArtifactView | null;
 }
 
 export interface BatchWorkspaceTaskView {
@@ -48,26 +67,6 @@ export interface BatchWorkspaceNarrationTaskView {
   errorMessage: string | null;
 }
 
-export interface BatchWorkspaceCandidateView {
-  outputVersionId: string;
-  audioMode: 'narration' | 'silent_placeholder';
-  productionReady: boolean;
-  /** 候选渲染读取的 arrangement 编辑修订号;旧候选缺省为 null。 */
-  editRevision: number | null;
-  /** 候选渲染读取的封面 timeUs;旧候选缺省为 null。 */
-  coverTimeUs: number | null;
-  durationUs: number;
-  subtitleCueCount: number;
-  coverAvailable: boolean;
-}
-
-export interface BatchOutputVersionListItem {
-  id: string;
-  versionNumber: number;
-  hasCandidate: boolean;
-  hasArtifact: boolean;
-}
-
 /** 换封面的可调范围:封面素材整段原片;无法解析时为 null */
 export interface BatchCoverRangeView {
   assetId: string;
@@ -84,30 +83,41 @@ export interface BatchOutputCardView {
   scriptTitle: string;
   versionId: string | null;
   versionNumber: number | null;
-  /** 该计划全部成片版本(按版本号倒序),供历史版本切换 */
-  versions: BatchOutputVersionListItem[];
   status: BatchOutputCardStatus;
   nextAction: string;
-  exportable: boolean;
-  productionReady: boolean;
-  publishable: boolean;
-  /** 当前候选与 arrangement 修订号不一致或仍有渲染任务时为 true。 */
-  renderStale: boolean;
-  /** 候选与 arrangement 不一致、但队列里没有渲染任务——需要用户点「重新生成」。 */
-  renderUncommitted: boolean;
+  /** 有当前候选版本且批次未停止 → 可以进入编辑器。 */
+  reviewable: boolean;
+  /** 口播和封面都已就绪 → 允许标记「通过」。 */
+  approvable: boolean;
   /** 用户审核状态:当前成片版本 arrangement 的 review.decision === 'approved' */
   approved: boolean;
+  /** 审核已通过、口播就绪、配音未失败、有当前版本 → 允许发起正式导出。 */
+  exportEligible: boolean;
+  /** 已有正式成片,但当前编辑方案比它更新(或对应渲染结果已找不到)。 */
+  formalOutdated: boolean;
+  /**
+   * 正式导出状态(服务端统一判断,前端只消费,不得再从 fullRenderTask 自行拼):
+   * exported(当前正式成片对应当前方案)/ rendering(整片渲染排队或进行中)/
+   * failed(渲染失败)/ not_exported(尚未导出或渲染结果已过期)。
+   */
+  exportStatus: BatchCardExportStatus;
+  /** 封面任务状态;missing 表示还没有独立封面任务(老批次回落到完整候选)。 */
+  coverStatus: BatchCoverTaskStatus;
+  /** 最近成功封面尝试 ID(封面墙/编辑器封面预览用;老批次为完整渲染尝试)。 */
+  coverAttemptId: string | null;
+  productionReady: boolean;
   /** 当前成片存在人工字幕覆盖;重试口播前需要明确提示会清除它。 */
   subtitleOverride: boolean;
   coverRange: BatchCoverRangeView | null;
   warnings: string[];
   blockers: string[];
-  currentVideo: BatchWorkspaceArtifactView | null;
-  currentCover: BatchWorkspaceArtifactView | null;
-  history: BatchWorkspaceArtifactView[];
-  task: BatchWorkspaceTaskView | null;
+  /** 当前正式成片(视频 + 配对封面);未发布过为 null。 */
+  currentFormalArtifact: BatchFormalArtifactView | null;
+  /** 整片渲染任务(导出阶段按需创建)。 */
+  fullRenderTask: BatchWorkspaceTaskView | null;
+  /** 独立封面渲染任务。 */
+  coverTask: BatchWorkspaceTaskView | null;
   narrationTask: BatchWorkspaceNarrationTaskView | null;
-  candidate: BatchWorkspaceCandidateView | null;
 }
 
 export interface BatchWorkspaceView {
@@ -123,8 +133,8 @@ export interface BatchWorkspaceView {
   exportDirName: string;
   counts: {
     total: number;
-    exportable: number;
-    publishable: number;
+    reviewable: number;
+    approvable: number;
     approved: number;
     processing: number;
     needsAttention: number;
@@ -154,22 +164,6 @@ function arrangementHasManualSubtitleOverride(value: unknown): boolean {
 function positiveSafeInteger(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function arrangementEditRevision(value: unknown): number {
-  const record = asRecord(value);
-  if (!record || record.editRevision === undefined) return 0;
-  const parsed = typeof record.editRevision === 'number' ? record.editRevision : Number(record.editRevision);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : -1;
-}
-
-function arrangementCoverTimeUs(value: unknown): number {
-  const record = asRecord(value);
-  const cover = asRecord(record?.cover);
-  const raw = cover?.timeUs;
-  if (raw == null) return -1;
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : Number.NaN;
 }
 
 function durationFromSeconds(value: unknown): number | null {
@@ -269,11 +263,6 @@ function arrangementCoverRange(value: unknown, assetDurations: ReadonlyMap<strin
   return { assetId, startUs: 0, endUs: durationUs, currentUs };
 }
 
-/** 与 output-media.ts 同一套配对规则:封面比视频多一个「-封面」后缀 */
-function mediaPairKey(relativePath: string): string {
-  return relativePath.replace(/\.[^./\\]+$/u, '').replace(/-封面$/u, '');
-}
-
 function diagnosticMessages(value: unknown, key: 'warnings' | 'blockers'): string[] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
   const diagnostics = (value as Record<string, unknown>)[key];
@@ -304,35 +293,6 @@ function arrangementProductionReady(value: unknown): boolean {
   );
 }
 
-function renderCandidate(value: unknown, outputVersionId: string | null): BatchWorkspaceCandidateView | null {
-  if (!outputVersionId || !value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (
-    record.outputVersionId !== outputVersionId
-    || (record.audioMode !== 'narration' && record.audioMode !== 'silent_placeholder')
-    || typeof record.productionReady !== 'boolean'
-    || record.productionReady !== (record.audioMode === 'narration')
-    || !Number.isSafeInteger(record.durationUs)
-    || Number(record.durationUs) <= 0
-    || typeof record.videoRelativePath !== 'string'
-    || typeof record.coverRelativePath !== 'string'
-    || (record.editRevision !== undefined
-      && (!Number.isSafeInteger(record.editRevision) || Number(record.editRevision) < 0))
-    || (record.coverTimeUs !== undefined
-      && (!Number.isSafeInteger(record.coverTimeUs) || Number(record.coverTimeUs) < -1))
-  ) return null;
-  return {
-    outputVersionId,
-    audioMode: record.audioMode,
-    productionReady: record.productionReady,
-    editRevision: record.editRevision === undefined ? null : Number(record.editRevision),
-    coverTimeUs: record.coverTimeUs === undefined ? null : Number(record.coverTimeUs),
-    durationUs: Number(record.durationUs),
-    subtitleCueCount: Array.isArray(record.subtitleCues) ? record.subtitleCues.length : 0,
-    coverAvailable: true,
-  };
-}
-
 function allocationOutput(value: unknown, planId: string): unknown | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const outputs = (value as Record<string, unknown>).outputs;
@@ -343,44 +303,191 @@ function allocationOutput(value: unknown, planId: string): unknown | null {
   )) ?? null;
 }
 
-function deriveCardStatus(input: {
-  currentVideo: BatchWorkspaceArtifactView | null;
-  hasNewerCandidate: boolean;
-  warnings: string[];
-  blockers: string[];
-  productionReady: boolean;
-  task: BatchWorkspaceTaskView | null;
-  narrationTask: BatchWorkspaceNarrationTaskView | null;
-  batchControl: 'running' | 'paused' | 'stopped';
-}): { status: BatchOutputCardStatus; nextAction: string } {
-  const hasAttention = input.warnings.length > 0 || input.blockers.length > 0 || !input.productionReady;
-  if (input.currentVideo && (hasAttention || input.hasNewerCandidate || input.task?.status === 'failed')) {
-    return { status: 'needs_attention', nextAction: '查看原因；旧版仍可播放和导出' };
-  }
-  if (input.currentVideo) return { status: 'completed', nextAction: '播放、选择导出或查看历史' };
-  if (input.batchControl === 'stopped' || input.task?.status === 'cancelled') {
-    return { status: 'stopped', nextAction: '查看已停止任务详情' };
-  }
-  if (input.batchControl === 'paused' || input.task?.expectedState === 'paused') {
-    return { status: 'paused', nextAction: '继续批次后恢复处理' };
-  }
-  // 口播未完成且还没有渲染候选:渲染闸门会挡住 render,这里给出明确等待提示。
-  if (
-    input.narrationTask
-    && (input.narrationTask.status === 'queued' || input.narrationTask.status === 'running')
-    && !input.currentVideo
-  ) {
-    return { status: 'waiting', nextAction: '等待配音完成' };
-  }
-  if (input.task?.status === 'running') return { status: 'processing', nextAction: '查看真实渲染进度' };
-  if (input.task?.status === 'failed') return { status: 'retryable_failed', nextAction: '重试这一条或查看详情' };
-  if (hasAttention) return { status: 'needs_attention', nextAction: '查看阻塞与分配提醒' };
-  return { status: 'waiting', nextAction: '等待联合分配或渲染调度' };
+/** 完整渲染任务的状态视图(用于导出页进度与失败提示)。 */
+function readFullRenderTaskView(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  outputVersionId: string,
+  requestKey: string | null,
+): BatchWorkspaceTaskView | null {
+  if (!requestKey) return null;
+  const row = db.prepare(`
+    SELECT t.id, t.status, t.expectedState, t.attemptCount, t.progressJson,
+           a.errorCode, a.errorMessage
+    FROM batch_tasks t
+    LEFT JOIN batch_task_attempts a ON a.taskId = t.id
+      AND a.attemptNumber = t.attemptCount
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+      AND t.targetKind = 'output_version' AND t.targetId = ?
+      AND t.requestKey = ?
+    ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
+  `).get(projectId, batchId, outputVersionId, requestKey) as {
+    id: string;
+    status: BatchTaskStatus;
+    expectedState: BatchTaskExpectedState;
+    attemptCount: number;
+    progressJson: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+  } | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    status: row.status,
+    expectedState: row.expectedState,
+    attemptCount: row.attemptCount,
+    progress: parseJson(row.progressJson),
+    errorCode: row.errorCode,
+    errorMessage: row.errorMessage,
+  };
 }
 
 /**
- * 聚合一个批次的稳定工作区视图。卡片状态来自计划、候选版本、任务与正式
- * artifact 的组合事实，React 不再把“最后一条任务状态”直接当成成片状态。
+ * 封面任务状态与最近成功尝试 ID(编辑器优先模型下封面的唯一事实来源)。
+ * 必须按**当前**封面契约哈希选任务:封面 A→B→A 时复用旧 A 任务,
+ * 不能把较新的 B 任务(或它的失败状态)当成 A 的事实展示。
+ * 契约无法解析时只允许读取没有现代契约 key 的老任务；现代任务无法证明
+ * 与当前安排一致时必须视为缺失，不能猜最近一条。
+ */
+function readCoverTaskFacts(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  outputVersionId: string | null,
+  coverContractHash: string | null,
+): { task: BatchWorkspaceTaskView | null; attemptId: string | null } {
+  if (!outputVersionId) return { task: null, attemptId: null };
+  // 任务 requestKey 是 `cover:<outputVersionId>:<hash>` 全串,过滤也按全串比。
+  const coverRequestKey = coverContractHash
+    ? buildCoverRenderTaskRequestKey(outputVersionId, coverContractHash)
+    : null;
+  const rows = db.prepare(`
+    SELECT t.id, t.requestKey, t.status, t.expectedState, t.attemptCount, t.progressJson,
+           a.errorCode, a.errorMessage,
+           (SELECT sa.id FROM batch_task_attempts sa
+             WHERE sa.taskId = t.id AND sa.status = 'succeeded'
+             ORDER BY sa.attemptNumber DESC LIMIT 1) AS succeededAttemptId
+    FROM batch_tasks t
+    LEFT JOIN batch_task_attempts a ON a.taskId = t.id
+      AND a.attemptNumber = t.attemptCount
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+      AND t.targetKind = 'output_version_cover' AND t.targetId = ?
+    ORDER BY t.createdAt DESC, t.id DESC
+  `).all(projectId, batchId, outputVersionId) as Array<{
+    id: string;
+    requestKey: string | null;
+    status: BatchTaskStatus;
+    expectedState: BatchTaskExpectedState;
+    attemptCount: number;
+    progressJson: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    succeededAttemptId: string | null;
+  }>;
+  const row = coverRequestKey
+    ? rows.find(({ requestKey }) => requestKey === coverRequestKey)
+    : rows.find(({ requestKey }) => parseRenderTaskRequestKey(requestKey) === null);
+  if (!row) return { task: null, attemptId: null };
+  return {
+    task: {
+      id: row.id,
+      status: row.status,
+      expectedState: row.expectedState,
+      attemptCount: row.attemptCount,
+      progress: parseJson(row.progressJson),
+      errorCode: row.errorCode,
+      errorMessage: row.errorMessage,
+    },
+    attemptId: row.succeededAttemptId,
+  };
+}
+
+/** 老批次的最近一次成功完整渲染尝试(封面回落与 fresh 判断的兼容事实)。 */
+function readLatestFullRenderAttempt(
+  db: Database.Database,
+  projectId: string,
+  batchId: string,
+  outputVersionId: string,
+): { attemptId: string; requestKey: string | null; resultJson: string | null } | null {
+  const row = db.prepare(`
+    SELECT t.requestKey AS requestKey, a.id AS attemptId, a.resultJson AS resultJson
+    FROM batch_tasks t
+    JOIN batch_task_attempts a ON a.id = (
+      SELECT id FROM batch_task_attempts
+      WHERE taskId = t.id AND status = 'succeeded'
+      ORDER BY attemptNumber DESC LIMIT 1
+    )
+    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+      AND t.targetKind = 'output_version' AND t.targetId = ?
+    ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
+  `).get(projectId, batchId, outputVersionId) as {
+    attemptId: string;
+    requestKey: string | null;
+    resultJson: string | null;
+  } | undefined;
+  return row ?? null;
+}
+
+function deriveCardStatus(input: {
+  reviewable: boolean;
+  coverStatus: BatchCoverTaskStatus;
+  fullRenderTask: BatchWorkspaceTaskView | null;
+  narrationTask: BatchWorkspaceNarrationTaskView | null;
+  productionReady: boolean;
+  blockers: string[];
+  approved: boolean;
+  formalOutdated: boolean;
+  hasFormalArtifact: boolean;
+  batchControl: 'running' | 'paused' | 'stopped';
+}): { status: BatchOutputCardStatus; nextAction: string } {
+  if (input.batchControl === 'stopped') {
+    return { status: 'stopped', nextAction: '批次已停止，只能查看' };
+  }
+  if (input.batchControl === 'paused') {
+    return { status: 'paused', nextAction: '继续批次后恢复处理' };
+  }
+  if (!input.reviewable) {
+    return input.blockers.length > 0
+      ? { status: 'needs_attention', nextAction: '查看阻塞与分配提醒' }
+      : { status: 'waiting', nextAction: '等待联合分配' };
+  }
+  if (
+    input.narrationTask
+    && (input.narrationTask.status === 'queued' || input.narrationTask.status === 'running')
+    && !input.productionReady
+  ) {
+    return { status: 'waiting', nextAction: '等待配音完成' };
+  }
+  if (input.coverStatus === 'queued' || input.coverStatus === 'running') {
+    return { status: 'processing', nextAction: '正在生成封面' };
+  }
+  if (input.coverStatus === 'failed') {
+    return { status: 'retryable_failed', nextAction: '封面生成失败，请重试' };
+  }
+  if (input.fullRenderTask
+    && (input.fullRenderTask.status === 'queued' || input.fullRenderTask.status === 'running')) {
+    return { status: 'processing', nextAction: '正在渲染完整成片' };
+  }
+  if (input.narrationTask?.status === 'failed') {
+    return { status: 'needs_attention', nextAction: '配音失败，请点「重试配音」' };
+  }
+  if (input.blockers.length > 0) {
+    return { status: 'needs_attention', nextAction: '查看阻塞与分配提醒' };
+  }
+  if (input.hasFormalArtifact && input.formalOutdated) {
+    return { status: 'needs_attention', nextAction: '当前修改尚未导出，请重新导出' };
+  }
+  if (input.approved) {
+    return { status: 'completed', nextAction: '已通过审核，可到导出成片' };
+  }
+  return { status: 'needs_attention', nextAction: '待审核' };
+}
+
+/**
+ * 聚合一个批次的稳定工作区视图。编辑器优先模型下,卡片状态由四类独立事实
+ * 组合:封面任务、整片渲染任务、当前正式 artifact 与当前版本安排/审核。
+ * React 不再把"最后一条任务状态"直接当成成片状态。
  */
 export function getBatchWorkspace(
   db: Database.Database,
@@ -398,8 +505,8 @@ export function getBatchWorkspace(
     return {
       batch,
       phase: 'prepare_materials',
-      exportDirName: resolveProjectExportDirName(db, projectId),
-      counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 },
+      exportDirName: getCurrentExportDirName(db, projectId) ?? resolveProjectExportDirName(db, projectId),
+      counts: { total: 0, reviewable: 0, approvable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 },
       cards: [],
       exclusions: [],
       allocationReport: null,
@@ -441,35 +548,6 @@ export function getBatchWorkspace(
 
   const cards = plans.map((plan): BatchOutputCardView => {
     const arrangement = parseJson(plan.arrangementJson);
-    const versionRows = db.prepare(`
-      SELECT o.id, o.versionNumber,
-        EXISTS(
-          SELECT 1 FROM batch_tasks t
-          WHERE t.targetKind = 'output_version' AND t.targetId = o.id
-            AND t.workType = 'render'
-            AND EXISTS(
-              SELECT 1 FROM batch_task_attempts a
-              WHERE a.taskId = t.id AND a.status = 'succeeded'
-            )
-        ) AS hasCandidate,
-        EXISTS(
-          SELECT 1 FROM batch_artifacts a WHERE a.outputVersionId = o.id
-        ) AS hasArtifact
-      FROM batch_output_versions o
-      WHERE o.planId = ?
-      ORDER BY o.versionNumber DESC
-    `).all(plan.id) as Array<{
-      id: string;
-      versionNumber: number;
-      hasCandidate: number;
-      hasArtifact: number;
-    }>;
-    const versions: BatchOutputVersionListItem[] = versionRows.map(({ id, versionNumber, hasCandidate, hasArtifact }) => ({
-      id,
-      versionNumber,
-      hasCandidate: hasCandidate === 1,
-      hasArtifact: hasArtifact === 1,
-    }));
     const latestAllocationOutput = allocationOutput(allocationReport, plan.id);
     const latestArrangement = latestAllocationOutput && typeof latestAllocationOutput === 'object' && !Array.isArray(latestAllocationOutput)
       ? (latestAllocationOutput as Record<string, unknown>).arrangement
@@ -484,6 +562,7 @@ export function getBatchWorkspace(
       ...diagnosticMessages(latestAllocationOutput, 'blockers'),
       ...diagnosticMessages(latestArrangement, 'blockers'),
     ])];
+
     const artifactRows = db.prepare(`
       SELECT id, outputVersionId, kind, relativePath, checksum, createdAt
       FROM batch_artifacts WHERE outputPlanId = ? ORDER BY createdAt DESC, id DESC
@@ -495,91 +574,59 @@ export function getBatchWorkspace(
       ? artifactRows.find((artifact) => (
           artifact.kind === 'cover'
           && artifact.outputVersionId === currentVideo.outputVersionId
-          && mediaPairKey(artifact.relativePath) === mediaPairKey(currentVideo.relativePath)
+          && batchArtifactPathsArePaired(currentVideo.relativePath, artifact.relativePath)
         )) ?? null
       : null;
-    const taskRow = plan.currentVersionId ? db.prepare(`
-      SELECT t.id, t.status, t.expectedState, t.attemptCount, t.progressJson,
-             a.errorCode, a.errorMessage
-      FROM batch_tasks t
-      LEFT JOIN batch_task_attempts a ON a.taskId = t.id
-        AND a.attemptNumber = t.attemptCount
-      WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-        AND t.targetKind = 'output_version' AND t.targetId = ?
-      ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
-    `).get(projectId, batchId, plan.currentVersionId) as {
-      id: string;
-      status: BatchTaskStatus;
-      expectedState: BatchTaskExpectedState;
-      attemptCount: number;
-      progressJson: string;
-      errorCode: string | null;
-      errorMessage: string | null;
-    } | undefined : undefined;
-    const task = taskRow ? {
-      id: taskRow.id,
-      status: taskRow.status,
-      expectedState: taskRow.expectedState,
-      attemptCount: taskRow.attemptCount,
-      progress: parseJson(taskRow.progressJson),
-      errorCode: taskRow.errorCode,
-      errorMessage: taskRow.errorMessage,
-    } : null;
-    // 候选一律取"该任务最近一次成功的尝试",不看任务当前状态:
-    // 重渲染(queued/running/failed)期间与之后,老版本仍然可播放。
-    const candidateRow = plan.currentVersionId ? db.prepare(`
-      SELECT a.resultJson
-      FROM batch_tasks t
-      JOIN batch_task_attempts a ON a.id = (
-        SELECT id FROM batch_task_attempts
-        WHERE taskId = t.id AND status = 'succeeded'
-        ORDER BY attemptNumber DESC LIMIT 1
-      )
-      WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-        AND t.targetKind = 'output_version' AND t.targetId = ?
-      ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
-    `).get(projectId, batchId, plan.currentVersionId) as {
-      resultJson: string | null;
-    } | undefined : undefined;
-    const candidate = candidateRow
-      ? renderCandidate(parseJson(candidateRow.resultJson), plan.currentVersionId)
+
+    let fullRenderRequestKey: string | null = null;
+    if (plan.currentVersionId) {
+      try {
+        fullRenderRequestKey = buildFullRenderTaskRequestKey(
+          plan.currentVersionId,
+          resolveFullRenderContractHash(db, plan.currentVersionId),
+        );
+      } catch {
+        fullRenderRequestKey = null;
+      }
+    }
+    const fullRenderTask = plan.currentVersionId
+      ? readFullRenderTaskView(db, projectId, batchId, plan.currentVersionId, fullRenderRequestKey)
       : null;
-    const currentEditRevision = arrangementEditRevision(arrangement);
-    const pendingRender = plan.currentVersionId ? Boolean(db.prepare(`
-      SELECT 1
-      FROM batch_tasks
-      WHERE projectId = ? AND batchId = ? AND workType = 'render'
-        AND targetKind = 'output_version' AND targetId = ?
-        AND status IN ('queued', 'running')
-      LIMIT 1
-    `).get(projectId, batchId, plan.currentVersionId)) : false;
-    const currentCoverTimeUs = arrangementCoverTimeUs(arrangement);
-    const candidateRevisionStale = candidate
-      ? candidate.editRevision === null
-        ? currentEditRevision !== 0
-        : candidate.editRevision !== currentEditRevision
-      : false;
-    const candidateCoverStale = candidate
-      ? candidate.coverTimeUs !== null && candidate.coverTimeUs !== currentCoverTimeUs
-      : false;
-    // renderStale 只表达“已有候选与当前 arrangement 不一致/仍在重渲染”。
-    // 无候选、失败和未配音由 publishable/productionReady 表达，避免导出页把
-    // 不同原因都显示成“等待重新渲染”。
-    const renderStale = Boolean(
-      plan.currentVersionId
-      && candidate
-      && (pendingRender || candidateRevisionStale || candidateCoverStale),
-    );
-    // renderStale 是导出闸门的镜像;renderUncommitted 进一步区分「真的排了渲染在跑」
-    // 和「改动还没提交重渲染」——后者要用户自己点「重新生成」,不能显示成「等待完成」。
-    const renderUncommitted = Boolean(
-      plan.currentVersionId && candidate && !pendingRender
-      && taskRow?.status !== 'failed'
-      && taskRow?.status !== 'cancelled'
-      && (candidateRevisionStale || candidateCoverStale),
-    );
-    // 口播任务(渲染闸门的配套信息):失败时给用户「重试配音」入口,否则
-    // 渲染被闸门挡住会变成看不到原因的静默等待。
+    const latestFullAttempt = plan.currentVersionId
+      ? readLatestFullRenderAttempt(db, projectId, batchId, plan.currentVersionId)
+      : null;
+    // 当前封面契约哈希:封面任务与封面事实都必须按它选(封面 A→B→A)。
+    // 契约无法解析时 fail closed；只有不带现代契约 key 的老任务允许兼容回退。
+    let coverContractHash: string | null = null;
+    if (plan.currentVersionId) {
+      try {
+        coverContractHash = resolveCoverContractHash(db, plan.currentVersionId);
+      } catch {
+        coverContractHash = null;
+      }
+    }
+    const coverFacts = readCoverTaskFacts(db, projectId, batchId, plan.currentVersionId, coverContractHash);
+    // 老批次没有独立封面任务:最近一次成功完整渲染的封面继续可检查、可预览。
+    let coverStatus: BatchCoverTaskStatus;
+    let coverAttemptId: string | null;
+    if (coverFacts.task) {
+      coverStatus = coverFacts.task.status === 'cancelled' ? 'failed' : coverFacts.task.status;
+      coverAttemptId = coverFacts.attemptId;
+    } else if (
+      latestFullAttempt
+      && (
+        coverContractHash !== null
+        || parseRenderTaskRequestKey(latestFullAttempt.requestKey) === null
+      )
+    ) {
+      const legacyResult = asRecord(parseJson(latestFullAttempt.resultJson));
+      coverStatus = typeof legacyResult?.coverRelativePath === 'string' ? 'succeeded' : 'missing';
+      coverAttemptId = coverStatus === 'succeeded' ? latestFullAttempt.attemptId : null;
+    } else {
+      coverStatus = 'missing';
+      coverAttemptId = null;
+    }
+
     const narrationTaskRow = plan.scriptSnapshotId ? db.prepare(`
       SELECT t.id, t.status, t.expectedState, a.errorMessage
       FROM batch_tasks t
@@ -599,28 +646,63 @@ export function getBatchWorkspace(
       expectedState: narrationTaskRow.expectedState,
       errorMessage: narrationTaskRow.errorMessage,
     } : null;
-    const candidateProductionReady = candidate?.productionReady === true;
-    const productionReady = arrangementProductionReady(arrangement) || candidateProductionReady;
-    const hasNewerCandidate = Boolean(
-      currentVideo && plan.currentVersionId && currentVideo.outputVersionId !== plan.currentVersionId,
+
+    const latestFullResult = asRecord(parseJson(latestFullAttempt?.resultJson));
+    // 老批次兼容:arrangement 尚无真实口播时,成功渲染候选的生产就绪位仍可信。
+    const productionReady = arrangementProductionReady(arrangement)
+      || (latestFullResult?.productionReady === true);
+    const approved = arrangementReviewApproved(arrangement);
+    const reviewable = Boolean(
+      plan.currentVersionId
+      && batch.controlState !== 'stopped',
     );
+    const approvable = Boolean(
+      plan.currentVersionId
+      && productionReady
+      && coverStatus === 'succeeded'
+      && batch.controlState !== 'stopped',
+    );
+    const exportEligible = Boolean(
+      approvable
+      && approved
+      && narrationTask?.status !== 'failed',
+    );
+    const formalOutdated = Boolean(
+      currentVideo
+      && plan.currentVersionId
+      && isFormalArtifactOutdated(
+        db,
+        projectId,
+        batchId,
+        plan.currentVersionId,
+        { video: currentVideo, cover: currentCover },
+      ),
+    );
+    // 正式导出状态由服务端统一判断:前端只消费 exportStatus,不得再从
+    // fullRenderTask 自行拼渲染/失败/已导出。
+    const exportStatus: BatchCardExportStatus = (currentVideo && !formalOutdated)
+      ? 'exported'
+      : fullRenderTask?.status === 'failed'
+        ? 'failed'
+        : (fullRenderTask?.status === 'queued' || fullRenderTask?.status === 'running')
+          ? 'rendering'
+          : 'not_exported';
     // 配音失败必须显式暴露为 blocker,否则用户只看到渲染一直没动静。
     const effectiveBlockers = narrationTask?.status === 'failed'
       ? [...blockers, `配音失败：${narrationTask.errorMessage || '未知原因'}，请点「重试配音」`]
       : blockers;
     const state = deriveCardStatus({
-      currentVideo,
-      hasNewerCandidate,
-      warnings,
-      blockers: effectiveBlockers,
-      productionReady,
-      task,
+      reviewable,
+      coverStatus,
+      fullRenderTask,
       narrationTask,
+      productionReady,
+      blockers: effectiveBlockers,
+      approved,
+      formalOutdated,
+      hasFormalArtifact: Boolean(currentVideo),
       batchControl: batch.controlState,
     });
-    // 审核态与换封面范围都来自当前版本 arrangement(就地 JSON 升级,零迁移);
-    // reallocate 生成的新版本没有 review 字段,天然回到未审核态。
-    const approved = arrangementReviewApproved(arrangement);
     const coverRange = arrangementCoverRange(arrangement, poolAssetDurations);
     return {
       planId: plan.id,
@@ -629,32 +711,34 @@ export function getBatchWorkspace(
       scriptTitle: plan.scriptTitle,
       versionId: plan.currentVersionId,
       versionNumber: plan.versionNumber,
-      versions,
       status: state.status,
       nextAction: state.nextAction,
-      exportable: Boolean(currentVideo),
-      productionReady,
-      publishable: candidateProductionReady,
-      renderStale,
-      renderUncommitted,
+      reviewable,
+      approvable,
       approved,
+      exportEligible,
+      formalOutdated,
+      exportStatus,
+      coverStatus,
+      coverAttemptId,
+      productionReady,
       subtitleOverride: arrangementHasManualSubtitleOverride(arrangement),
       coverRange,
       warnings,
       blockers: effectiveBlockers,
-      currentVideo,
-      currentCover,
-      history: artifactRows,
-      task,
+      currentFormalArtifact: currentVideo
+        ? { video: currentVideo, cover: currentCover }
+        : null,
+      fullRenderTask,
+      coverTask: coverFacts.task,
       narrationTask,
-      candidate,
     };
   });
 
   const counts = {
     total: cards.length,
-    exportable: cards.filter(({ exportable }) => exportable).length,
-    publishable: cards.filter(({ publishable }) => publishable).length,
+    reviewable: cards.filter(({ reviewable }) => reviewable).length,
+    approvable: cards.filter(({ approvable }) => approvable).length,
     approved: cards.filter(({ approved }) => approved).length,
     processing: cards.filter(({ status }) => ['processing', 'waiting', 'paused'].includes(status)).length,
     needsAttention: cards.filter(({ status }) => status === 'needs_attention').length,
@@ -664,8 +748,7 @@ export function getBatchWorkspace(
   const versionCount = cards.filter(({ versionId }) => Boolean(versionId)).length;
   if (plans.length === 0) phase = 'prepare_scripts';
   else if (versionCount < plans.length) phase = 'allocate';
-  else if (counts.processing > 0) phase = 'export';
   else phase = 'review';
 
-  return { batch, phase, exportDirName: resolveProjectExportDirName(db, projectId), counts, cards, exclusions, allocationReport };
+  return { batch, phase, exportDirName: getCurrentExportDirName(db, projectId) ?? resolveProjectExportDirName(db, projectId), counts, cards, exclusions, allocationReport };
 }

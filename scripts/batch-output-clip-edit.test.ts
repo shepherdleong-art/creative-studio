@@ -37,7 +37,8 @@ import {
   resolveBgmDraftAfterViewLoad,
   type BatchBgmDraft,
 } from '../components/batch-production/bgm-draft.ts';
-import { scheduleRenderAfterClipEdit } from '../lib/batch-production/phase-e.ts';
+import { scheduleRenderAfterCoverChange } from '../lib/batch-production/phase-e.ts';
+import { resolveCoverContractHash } from '../lib/batch-production/cover-contract.ts';
 import { resolveBatchOutputNarrationAudio } from '../lib/batch-production/output-media.ts';
 import { BatchDomainError } from '../lib/batch-production/errors.ts';
 
@@ -732,54 +733,94 @@ try {
   );
   console.log('✓ 10. stopped/draft 批次与幽灵计划/片段拒绝');
 
-  // 11. requestKey 含 editRevision:既有 succeeded 任务不吞掉编辑后的重渲染
-  const taskId1 = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
-  assert.ok(taskId1);
-  const requestKey1 = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(taskId1) as { requestKey: string }).requestKey;
-  assert.equal(requestKey1, `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:3`);
-  db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(taskId1);
-  const taskIdDeduped = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
-  assert.equal(taskIdDeduped, taskId1, '同一 editRevision 重复触发必须幂等去重');
-  const editAfterSuccess = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
-    type: 'trim', clipId: 'clip-1', sourceStartUs: 700_000, sourceEndUs: 2_700_000,
-  });
-  assert.equal(editAfterSuccess.editRevision, 4);
-  const taskId2 = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
-  assert.ok(taskId2);
-  assert.notEqual(taskId2, taskId1, 'editRevision 变化必须在既有 succeeded 任务之上建新渲染任务');
-  const requestKey2 = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(taskId2) as { requestKey: string }).requestKey;
-  assert.equal(requestKey2, `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:4`);
-  console.log('✓ 11. requestKey 含 editRevision:新编辑产生新任务,同 key 去重');
-
-  // 11b. 延迟提交模型(2026-08-25):编辑期不排渲染,退出这一轮调整时一次性提交。
-  // 旧行为是每次微调排一条整片重渲染(实测 4~7 秒),期间 renderBusy 把编辑器锁死,
-  // 用户体感就是"调一下等一下"。这里锁定"N 次编辑只排 1 条、且指向最终 revision"。
-  const renderTaskCount = () => (db.prepare(
-    `SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render' AND targetId = ?`,
+  // 11. 编辑器优先:编辑只保存,不排整片渲染。封面任务 requestKey 是统一的
+  // coverContractHash——与封面无关的编辑幂等命中既有任务,只有封面契约变化才重做封面。
+  const fullRenderCount = () => (db.prepare(
+    `SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render' AND targetKind = 'output_version' AND targetId = ?`,
   ).get(outputVersionId) as { n: number }).n;
-  const tasksBeforeDeferred = renderTaskCount();
-  for (const [startUs, endUs] of [[100_000, 2_100_000], [200_000, 2_200_000], [300_000, 2_300_000]] as const) {
+  const coverTaskCount = () => (db.prepare(
+    `SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render' AND targetKind = 'output_version_cover' AND targetId = ?`,
+  ).get(outputVersionId) as { n: number }).n;
+  const coverTaskId1 = scheduleRenderAfterCoverChange(db, projectId, batchId, plans[0]);
+  assert.ok(coverTaskId1);
+  const requestKey1 = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(coverTaskId1) as { requestKey: string }).requestKey;
+  assert.equal(requestKey1, `cover:${outputVersionId}:${resolveCoverContractHash(db, outputVersionId)}`);
+  assert.equal(fullRenderCount(), 0, '检查阶段编辑流程不得创建整片渲染任务');
+  db.prepare(`UPDATE batch_tasks SET status = 'succeeded', attemptCount = 1 WHERE id = ?`).run(coverTaskId1);
+  assert.equal(
+    scheduleRenderAfterCoverChange(db, projectId, batchId, plans[0]),
+    coverTaskId1,
+    '同一封面契约重复触发必须幂等去重',
+  );
+  // 与封面无关的片段编辑:arrangement 变化但封面契约不变 → 不重做封面、不排渲染。
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  const coverIrrelevantEdit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'trim', clipId: 'clip-2', sourceStartUs: 100_000, sourceEndUs: 2_100_000,
+  });
+  assert.equal(coverIrrelevantEdit.visualChanged, true);
+  assert.equal(coverIrrelevantEdit.reviewCleared, true, '有效编辑必须再次上报审核清除事实');
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, null, '编辑就地重置当前版本审核');
+  assert.equal(
+    scheduleRenderAfterCoverChange(db, projectId, batchId, plans[0]),
+    coverTaskId1,
+    '与封面无关的编辑不得重做封面',
+  );
+  assert.equal(coverTaskCount(), 1, '普通编辑不产生新的封面任务');
+  assert.equal(fullRenderCount(), 0, '普通编辑不产生整片渲染任务');
+  // 换封面(资产/时间/构图/标题都会改变封面契约)→ 必须建立新封面任务。
+  const coverChange = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'set_cover', assetId: assetA, timeUs: 2_500_000,
+  });
+  assert.equal(coverChange.visualChanged, true);
+  const coverTaskId2 = scheduleRenderAfterCoverChange(db, projectId, batchId, plans[0]);
+  assert.ok(coverTaskId2);
+  assert.notEqual(coverTaskId2, coverTaskId1, '封面契约变化必须建立新封面任务');
+  const requestKey2 = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(coverTaskId2) as { requestKey: string }).requestKey;
+  assert.equal(requestKey2, `cover:${outputVersionId}:${resolveCoverContractHash(db, outputVersionId)}`);
+  assert.equal(coverTaskCount(), 2, '换封面只多排一条封面任务');
+  assert.equal(fullRenderCount(), 0, '连换封面也不得排整片渲染');
+  console.log('✓ 11. 编辑器优先:普通编辑零渲染,封面契约变化才重做封面,永不排整片');
+
+  // 11b. 连续编辑只保存:检查阶段一条整片渲染都不会欠下。
+  for (const [startUs, endUs] of [[1_100_000, 3_100_000], [1_200_000, 3_200_000], [1_300_000, 3_300_000]] as const) {
     const deferred = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
       type: 'trim', clipId: 'clip-1', sourceStartUs: startUs, sourceEndUs: endUs,
     });
     assert.equal(deferred.visualChanged, true);
   }
-  assert.equal(renderTaskCount(), tasksBeforeDeferred, '编辑期只改 arrangement,一条渲染任务都不该建');
-  const committedTaskId = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
-  assert.ok(committedTaskId);
-  assert.equal(renderTaskCount(), tasksBeforeDeferred + 1, '退出时一次性提交:3 次编辑只排 1 条渲染');
-  const committedKey = (db.prepare(`SELECT requestKey FROM batch_tasks WHERE id = ?`).get(committedTaskId) as { requestKey: string }).requestKey;
+  assert.equal(fullRenderCount(), 0, '连续编辑绝不欠渲染任务');
   assert.equal(
-    committedKey,
-    `render:${outputVersionId}:batch-render-v2:cover:1500000:edit:7`,
-    '提交的必须是最终 editRevision,不是中间态',
+    (db.prepare(
+      `SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render' AND targetKind = 'output_version_cover' AND targetId = ?`,
+    ).get(outputVersionId) as { n: number }).n,
+    2,
+    '连续普通编辑不增加封面任务',
   );
-  assert.equal(
-    scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]),
-    committedTaskId,
-    '手动「立即重新渲染」与卸载兜底可能都提交一次,必须幂等',
-  );
-  console.log('✓ 11b. 延迟提交:编辑期零渲染,退出时按最终 revision 只排一条');
+  console.log('✓ 11b. 连续编辑:编辑期零渲染、零封面重做');
+
+  // 11c. BGM/音量等 visualChanged 编辑不改变封面契约哈希:clips 路由只在
+  // 前后 coverContractHash 不同才排封面任务——老批次没有封面任务时,
+  // 改 BGM 不得平白建出封面任务。
+  {
+    const coverHashBeforeMusic = resolveCoverContractHash(db, outputVersionId);
+    const appliedMusic = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+      type: 'set_music', trackId: 'bgm-a', gainDb: -14, fadeInSec: 2, fadeOutSec: 3,
+    });
+    assert.equal(appliedMusic.visualChanged, true, 'BGM 编辑属于 visualChanged,但不得动封面契约');
+    assert.equal(
+      resolveCoverContractHash(db, outputVersionId),
+      coverHashBeforeMusic,
+      'set_music 前后封面契约哈希不变(clips 路由据此跳过封面任务)',
+    );
+    assert.equal(
+      (db.prepare(
+        `SELECT COUNT(*) AS n FROM batch_tasks WHERE workType = 'render' AND targetKind = 'output_version_cover' AND targetId = ?`,
+      ).get(outputVersionId) as { n: number }).n,
+      2,
+      'BGM 编辑不增加封面任务',
+    );
+  }
+  console.log('✓ 11c. BGM 编辑不改封面契约哈希,不产生封面任务');
 
   // 12. 口播音频解析:有口播出绝对路径,无口播 404
   const narrationDir = path.join(storageRoot, 'batch-narration', 'test');
@@ -953,10 +994,10 @@ try {
   );
   console.log('✓ 16. insert 三位置连续性/默认窗口/非法素材拒绝');
 
-  // 17. split 源连续、时间线连续、总长不变、后续不动;不递增 revision/不清 review/不排队
+  // 17. split 源连续、时间线连续、总长不变、后续不动;不递增 revision/不清 review/不重做封面
   resetPlan0Arrangement();
   setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
-  const taskBeforeSplit = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
+  const taskBeforeSplit = scheduleRenderAfterCoverChange(db, projectId, batchId, plans[0]);
   const split = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
     type: 'split', clipId: 'clip-1', offsetUs: 1_000_000,
   });
@@ -978,8 +1019,8 @@ try {
     'split 两段源区间必须连续、时间线连续且后续片段不动',
   );
   assert.equal(splitClips[1].segmentId, '');
-  const taskAfterSplit = scheduleRenderAfterClipEdit(db, projectId, batchId, plans[0]);
-  assert.equal(taskAfterSplit, taskBeforeSplit, 'split 不得产生新渲染任务(revision 未变,同 key 去重)');
+  const taskAfterSplit = scheduleRenderAfterCoverChange(db, projectId, batchId, plans[0]);
+  assert.equal(taskAfterSplit, taskBeforeSplit, 'split 不改变封面契约,不得产生新封面任务');
   resetPlan0Arrangement();
   assertDomainError(
     () => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
@@ -1006,6 +1047,123 @@ try {
   assert.ok(!coverClamped.warnings.includes('封面抽帧点已重置到新片段开头'));
   assert.equal((currentArrangement(plans[0]).cover as Record<string, unknown>).timeUs, 1_500_000);
   console.log('✓ 18. 封面抽帧点不受时间线片段窗口限制');
+
+  // 19. 素材使用次数(F3):同一素材本片 2 次 + 其他成片 3 次,计数按成片计划独立
+  //     且 split/多次 insert 逐条累计;封面身份单独计,不计入片段次数。
+  const countArrangement = (clips: Array<Record<string, unknown>>): Record<string, unknown> => ({
+    schemaVersion: 'test-arrangement',
+    preset: '3:4',
+    fps: 24,
+    clips,
+    cover: { assetId: assetA, timeUs: 500_000 },
+    narration: { ready: true, productionReady: true, status: 'ready', durationUs: 3_000_000, reason: '', audioRelativePath: 'batch-narration/test/narration.wav' },
+    subtitle: { ready: false, productionReady: false, status: 'pending', cues: [] },
+    music: { trackId: null },
+  });
+  const plan0VersionRow = db.prepare(`SELECT currentVersionId AS id FROM batch_output_plans WHERE id = ?`).get(plans[0]) as { id: string };
+  const plan1VersionRow = db.prepare(`SELECT currentVersionId AS id FROM batch_output_plans WHERE id = ?`).get(plans[1]) as { id: string };
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(countArrangement([
+    makeClip('count-1', 'segment-1', assetA, 0, 1_000_000, 0, 1_000_000),
+    makeClip('count-2', 'segment-2', assetA, 1_000_000, 2_000_000, 1_000_000, 2_000_000),
+    makeClip('count-3', 'segment-3', assetB, 2_000_000, 3_000_000, 2_000_000, 3_000_000),
+  ])), plan0VersionRow.id);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(countArrangement([
+    makeClip('count-o1', 'segment-1', assetA, 0, 1_000_000, 0, 1_000_000),
+    makeClip('count-o2', 'segment-2', assetA, 1_000_000, 2_000_000, 1_000_000, 2_000_000),
+    makeClip('count-o3', 'segment-3', assetA, 2_000_000, 3_000_000, 2_000_000, 3_000_000),
+  ])), plan1VersionRow.id);
+  const countView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  const countPoolById = new Map(countView.poolAssets.map((asset) => [asset.assetId, asset]));
+  assert.deepEqual(
+    countPoolById.get(assetA)?.useCountByPlanId,
+    { [plans[0]]: 2, [plans[1]]: 3 },
+    '同一素材本片 2 次 + 其他成片 3 次必须分别计数',
+  );
+  assert.deepEqual(countPoolById.get(assetA)?.usedByPlanIds, [plans[0], plans[1]].sort(), 'usedByPlanIds 兼容字段仍是去重后的计划列表(排序)');
+  assert.deepEqual(countPoolById.get(assetA)?.coverUsedByPlanIds, [plans[0], plans[1]].sort(), '封面身份仍独立记录(排序)');
+  assert.equal(countPoolById.get(assetA)?.useCountByPlanId[plans[0]], 2, '封面贡献 0 次片段使用(useCountByPlanId 只累计 clips)');
+  assert.deepEqual(countPoolById.get(assetB)?.useCountByPlanId, { [plans[0]]: 1 });
+  assert.deepEqual(countPoolById.get(assetB)?.coverUsedByPlanIds, []);
+  const otherCountOfA = Object.entries(countPoolById.get(assetA)!.useCountByPlanId)
+    .filter(([id]) => id !== plans[0])
+    .reduce((sum, [, count]) => sum + count, 0);
+  assert.equal(otherCountOfA, 3, '其他成片次数必须为其余计划计数之和');
+  // insert/split 计数:同片内逐条累计
+  resetPlan0Arrangement();
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'insert', afterClipId: 'clip-2', assetId: assetA, durationUs: 1_000_000,
+  });
+  const countAfterInsert = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).poolAssets.find((asset) => asset.assetId === assetA);
+  assert.equal(countAfterInsert?.useCountByPlanId[plans[0]], 2, 'insert 同一素材必须计为两次使用');
+  resetPlan0Arrangement();
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'split', clipId: 'clip-1', offsetUs: 1_000_000,
+  });
+  const countAfterSplit = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).poolAssets.find((asset) => asset.assetId === assetA);
+  assert.equal(countAfterSplit?.useCountByPlanId[plans[0]], 2, 'split 切成两段产生两条记录,计为 2 次使用');
+  console.log('✓ 19. 素材使用次数(本片 ×N / 其他成片 ×M,split/insert 逐条累计)');
+
+  // 20. 审核重置提示(B4):有效编辑原子返回 reviewCleared,纯结构 split / 无变化 / 无既有审核均 false
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, 'approved');
+  const clearedByTrim = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'trim', clipId: 'clip-1', sourceStartUs: 500_000, sourceEndUs: 2_500_000,
+  });
+  assert.equal(clearedByTrim.reviewCleared, true, '已审核成片做片段编辑必须返回 reviewCleared');
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, null, '编辑后审核必须被清除');
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_cover', assetId: assetC, timeUs: 6_500_000 }).reviewCleared,
+    true,
+    '封面编辑必须返回 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  const baseStyle = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).subtitleStyleDefault;
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_subtitle_style', style: { ...baseStyle, fontSizePx: 70 } }).reviewCleared,
+    true,
+    '字幕样式编辑必须返回 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_music', trackId: 'bgm-b', gainDb: -12, fadeInSec: 2, fadeOutSec: 3 }).reviewCleared,
+    true,
+    'BGM 编辑必须返回 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_narration_gain', gainDb: -5 }).reviewCleared,
+    true,
+    '口播音量编辑必须返回 reviewCleared',
+  );
+  // 纯结构 split:不改画面、不删 review,不得谎报 reviewCleared
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  const splitNotCleared = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'split', clipId: 'clip-1', offsetUs: 1_000_000,
+  });
+  assert.equal(splitNotCleared.reviewCleared, false, '输出等价的纯结构 split 不得算作审核重置');
+  assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, 'approved', 'split 不得清除审核');
+  // 无既有审核时编辑、无变化提交:均 false
+  resetPlan0Arrangement();
+  assert.equal(
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'trim', clipId: 'clip-1', sourceStartUs: 500_000, sourceEndUs: 2_500_000 }).reviewCleared,
+    false,
+    '本来就没有审核时不得谎报 reviewCleared',
+  );
+  resetPlan0Arrangement();
+  setBatchPlanReviews(db, projectId, batchId, { planIds: [plans[0]], decision: 'approved' });
+  const noopTrimB4 = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'trim', clipId: 'clip-1', sourceStartUs: 1_000_000, sourceEndUs: 3_000_000,
+  });
+  assert.equal(noopTrimB4.changed, false);
+  assert.equal(noopTrimB4.reviewCleared, false, '无变化提交不得返回 reviewCleared');
+  console.log('✓ 20. 审核重置提示(reviewCleared:片段/封面/字幕/BGM/口播为 true,split/无变化/无审核为 false)');
 
   console.log('batch output clip edit tests passed');
 } finally {

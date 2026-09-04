@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { TimelinePlan } from './audio-first-matcher.ts';
-import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditIssue, type TimelineClip, type VideoTimeline } from './types.ts';
+import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, sourceFrameLimit, type FinalEditIssue, type TimelineClip, type VideoTimeline } from './types.ts';
 
 export interface TimelineSourceAsset {
   videoJobId: string;
@@ -38,8 +38,8 @@ export function audioFirstPlanToVideoTimeline(input: {
     const lengthFrames = timelineOutFrame - timelineInFrame;
     const sourceInFrame = frameAt(segment.sourceStartUs);
     const sourceOutFrame = sourceInFrame + lengthFrames;
-    const sourceFrameLimit = Math.ceil(asset.durationUs * FINAL_EDIT_FPS / 1_000_000);
-    if (lengthFrames <= 0 || sourceOutFrame > sourceFrameLimit) {
+    const sourceMaxOutFrame = sourceFrameLimit(asset.durationUs);
+    if (lengthFrames <= 0 || sourceOutFrame > sourceMaxOutFrame) {
       issues.push({ code: 'material_gap', severity: 'blocking', message: `句段 ${boundSegmentId} 无法安全换算为视频帧`, targetId: boundSegmentId });
       continue;
     }

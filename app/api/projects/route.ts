@@ -2,12 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
+import { validateImageAspectRatio } from '@/lib/image-generation-settings';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { normalizeShotImageIds } from '@/lib/shot-set-domain';
 import { getUsageSchemaReadiness } from '@/lib/usage-schema';
 import { reconcileUsageLedger } from '@/lib/usage-ledger';
 import { sumUsageCostByProject } from '@/lib/usage-query';
+import {
+  parseProductionIdentityInput,
+  buildProjectBaseName,
+  formatShanghaiIdentityDate,
+  resolveUniqueProjectBaseName,
+} from '@/lib/project-production-identity';
+import { ProjectInfoValidationError } from '@/lib/project-info';
 
 function isRealApiKey(value: string | null | undefined): boolean {
   const trimmed = (value || '').trim();
@@ -89,6 +97,19 @@ export async function POST(request: NextRequest) {
     const db = getDb();
     const body = await request.json();
 
+    // ── 生产身份：新项目只填写身份字段，项目名/日期由服务端生成，客户端 name 一律忽略 ──
+    let identity;
+    try {
+      identity = parseProductionIdentityInput(body);
+    } catch (err) {
+      if (err instanceof ProjectInfoValidationError) {
+        return NextResponse.json({ error: 'invalid_project_info', message: err.message }, { status: 400 });
+      }
+      throw err;
+    }
+    const namingDate = formatShanghaiIdentityDate(new Date());
+    const baseName = resolveUniqueProjectBaseName(db, buildProjectBaseName({ ...identity, namingDate }));
+
     // Validate provider
     const provider = db.prepare(`SELECT id, enabled, apiKey, apiKeyEnv, type FROM providers WHERE id = ?`).get(body.providerId) as {
       id: string; enabled: number; apiKey: string; apiKeyEnv: string; type: string;
@@ -97,7 +118,14 @@ export async function POST(request: NextRequest) {
     if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
     if (!isRealApiKey(provider.apiKey)) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
 
-    // Resolve size
+    const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-image-2';
+
+    // Resolve size. The selected ratio is part of the generation contract; reject
+    // unsupported company-gateway ratios instead of silently snapping to another ratio.
+    if (typeof body.aspectRatio === 'string') {
+      const aspectRatioError = validateImageAspectRatio(model, body.aspectRatio);
+      if (aspectRatioError) return NextResponse.json({ error: aspectRatioError }, { status: 400 });
+    }
     let resolvedSize: string;
     if (body.aspectRatio) {
       try { resolvedSize = resolveGptImage2Size(body.aspectRatio, body.resolution || '1k'); }
@@ -109,7 +137,6 @@ export async function POST(request: NextRequest) {
     }
 
     const projectId = uuidv4();
-    const model = body.model || 'gpt-image-2';
     const quality = body.quality || 'medium';
     const timeoutMs = body.timeoutMs || 600000;
     const maxAttempts = body.maxAttempts || 2;
@@ -136,13 +163,13 @@ export async function POST(request: NextRequest) {
 参考图2，修改图1，保持图中床和模特的一致性不变，更换卧室的其他家具和软装布置，构图和机位景别严格参考图1。`;
 
     db.transaction(() => {
-      // Create project shell
+      // Create project shell：项目名由服务端按生产身份生成，旧 productName/productCategory 不写入。
       db.prepare(`
-        INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)
-      `).run(projectId, body.name || '', body.productName || '', body.productCode || '', body.category || '',
-        body.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'none', timeoutMs, 'complex_product',
-        scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt);
+        INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt, storeCode, productSubmodel, productionType, editorName, namingDate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product',
+        scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt,
+        identity.storeCode, identity.productSubmodel, identity.productionType, identity.editorName, namingDate);
 
       if (hasFullCreation) {
         bindProjectImage(db, sceneSeedImageId, projectId, 'input');
@@ -163,13 +190,13 @@ export async function POST(request: NextRequest) {
 
         // Create draft ShotSet
         const setId = uuidv4();
-        db.prepare(`INSERT INTO shot_sets (id, projectId, name, productCode, category) VALUES (?, ?, ?, ?, ?)`).run(setId, projectId, body.name || '默认分镜组', body.productCode || '', body.category || '');
+        db.prepare(`INSERT INTO shot_sets (id, projectId, name, productCode, category) VALUES (?, ?, ?, ?, '')`).run(setId, projectId, baseName, identity.productCode);
         const insertShot = db.prepare(`INSERT INTO shots (id, shotSetId, indexNum, sourceImageId) VALUES (?, ?, ?, ?)`);
         shotImageIds.forEach((imgId, i) => insertShot.run(uuidv4(), setId, i + 1, imgId));
       }
     })();
 
-    return NextResponse.json({ id: projectId, workflowType: 'complex_product' });
+    return NextResponse.json({ id: projectId, workflowType: 'complex_product', name: baseName });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

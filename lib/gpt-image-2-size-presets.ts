@@ -62,3 +62,33 @@ export function isValidGptImage2Size(size: string): boolean {
     Object.values(byRes).includes(size)
   );
 }
+
+/**
+ * 从已持久化的目标尺寸还原画幅标签，用于结果详情展示。
+ * 先匹配 GPT-Image-2 预设；对公司网关的名义尺寸（如 1024x1366）再按最近比例回退。
+ */
+export function getGptImage2AspectRatio(size: string | null | undefined): string | null {
+  if (!size) return null;
+  if (size === 'auto') return 'auto';
+
+  for (const [ratio, byResolution] of Object.entries(GPT_IMAGE_2_SIZE_MAP)) {
+    if (Object.values(byResolution).includes(size)) return ratio;
+  }
+
+  const match = size.match(/^(\d+)x(\d+)$/);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+
+  const target = width / height;
+  let closest: { ratio: string; distance: number } | null = null;
+  for (const ratio of Object.keys(GPT_IMAGE_2_SIZE_MAP)) {
+    const [ratioWidth, ratioHeight] = ratio.split(':').map(Number);
+    const distance = Math.abs(Math.log(target / (ratioWidth / ratioHeight)));
+    if (!closest || distance < closest.distance) closest = { ratio, distance };
+  }
+
+  // 只为轻微的供应商尺寸取整误差显示画幅，避免把任意自定义尺寸误标成预设比例。
+  return closest && closest.distance <= 0.01 ? closest.ratio : null;
+}

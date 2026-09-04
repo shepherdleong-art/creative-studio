@@ -26,16 +26,16 @@ for (const source of [panel, materials, review, exportStep]) {
   assert.doesNotMatch(source, /联合分配/);
 }
 // 渲染闸门(问题 3-A/B)生效后不再产出静音样片,界面不得再出现相关文案;
-// 检查页提供「重试配音」与常驻「重新生成」入口。
+// 检查页提供「重试配音」与「重试封面」入口(编辑器优先,批量通过前无整片渲染)。
 assert.doesNotMatch(review, /无配音样片/);
 assert.doesNotMatch(review, /重新渲染（带配音）/);
-assert.match(review, /重新生成/);
+assert.match(review, /重试封面/);
 assert.match(review, /重试配音/);
 assert.doesNotMatch(panel, /静音视觉候选/);
 assert.doesNotMatch(exportStep, /productionReady/);
 assert.match(exportStep, /正式导出选中项/);
 assert.match(review, /换一批画面/);
-assert.match(review, /batch-output-preview-/);
+assert.match(review, /batch-output-editor-layout/);
 assert.match(review, /暂停批次/);
 assert.match(review, /继续批次/);
 assert.match(materials, /从后续分配排除/);
@@ -44,7 +44,9 @@ assert.match(bootstrap, /batchRenderExecutor/);
 assert.match(bootstrap, /batchNarrationExecutor/);
 assert.match(startRoute, /startOrResumePhaseE/);
 assert.match(workspaceRoute, /getBatchWorkspace/);
-assert.match(exportRoute, /publishSelectedBatchOutputs/);
+assert.match(exportRoute, /orchestrateBatchExport/);
+// 调度器唤醒已下沉进编排模块:路由只调用统一入口,不再直接触碰调度器。
+assert.doesNotMatch(exportRoute, /ensureBatchSchedulerStarted/, '路由不得再直接唤醒调度器(编排模块内部唤醒)');
 assert.match(exclusionRoute, /updateBatchAssetExclusionAndSchedule/);
 // 截取/修剪合并为一个入口:编辑器不再出现「截取」按钮与旧 TrimEditor 复用
 assert.doesNotMatch(outputEditor, />截取</);
@@ -158,30 +160,37 @@ assert.match(timelineCss, /\.tlInner \.tlPlayhead \{/);
 
 console.log('batch Phase E UI contract tests passed');
 
-// 片段调整期不排重渲染(2026-08-25):每次微调排一条整片渲染要 4~7 秒,还会经
-// renderBusy 把编辑器锁死。编辑一律带 deferRender,退出这一轮时 commit_render 一次性提交。
-assert.match(clipsRoute, /commit_render/);
-assert.match(clipsRoute, /deferRender/);
-assert.match(outputEditor, /deferRender: true/);
-assert.match(outputEditor, /'commit_render'/);
-assert.match(outputEditor, /pagehide/);
+// 编辑器优先(2026-09):编辑只保存不排整片渲染;检查页点卡片直接进编辑器,
+// 删除“播放器/调整片段”双模式、历史版本入口与待重渲文案。
+assert.doesNotMatch(clipsRoute, /commit_render/);
+assert.doesNotMatch(clipsRoute, /deferRender/);
+assert.match(clipsRoute, /scheduleRenderAfterCoverChange/, '编辑后按封面契约幂等重排封面任务');
+assert.match(clipsRoute, /coverTaskId/);
+assert.doesNotMatch(outputEditor, /deferRender|commit_render/);
+assert.doesNotMatch(outputEditor, /pagehide/);
+assert.doesNotMatch(outputEditor, /inFlightEditRef/);
+assert.doesNotMatch(outputEditor, /退出本轮调整后会自动重新渲染/);
+assert.doesNotMatch(outputEditor, /立即渲染/);
 assert.match(outputEditor, /response\.ok/);
-assert.match(outputEditor, /payload\.type !== 'split'/);
-assert.match(outputEditor, /inFlightEditRef/);
-assert.match(outputEditor, /修改已保存，退出本轮调整后会自动重新渲染/);
-assert.match(outputEditor, /立即渲染/);
-assert.match(outputEditor, /btn-secondary/);
-assert.match(exportStep, /renderStale/);
-assert.match(exportStep, /等待重新渲染/);
-assert.match(panel, /selectedUncommittedCount/);
-assert.match(panel, /修改还没提交重新渲染/);
-assert.match(review, /renderUncommitted/);
-assert.match(exportStep, /待重新生成/);
-assert.ok(
-  exportStep.indexOf("!card.publishable ? '不可导出'") >= 0
-    && exportStep.indexOf("!card.publishable ? '不可导出'") < exportStep.indexOf("card.renderStale ? '等待重新渲染'"),
-  '导出状态必须先表达不可导出，再表达可导出候选的新鲜度',
-);
-assert.match(review, /渲染中，完成后才可导出/);
-assert.doesNotMatch(review, /封面素材原片区间/);
-assert.match(panel, /因画面已调整未导出/);
+assert.match(outputEditor, /body: JSON\.stringify\(payload\)/, '编辑只提交命令正文,不带渲染标记');
+assert.doesNotMatch(review, /renderStale|renderUncommitted|待重新生成|等待重新渲染/);
+assert.doesNotMatch(review, /另有 .* 个历史版本|查看版本（默认最新）/);
+assert.doesNotMatch(review, /返回预览/);
+assert.doesNotMatch(review, /batch-output-preview-/, '检查页不再有渲染视频播放器');
+assert.match(review, /点击进编辑器/);
+assert.match(review, /coverStatus === 'failed'/);
+assert.match(review, /data-testid="batch-output-editor-layout"/);
+assert.doesNotMatch(exportStep, /renderStale|renderUncommitted|publishable|待重新生成|等待重新渲染/);
+assert.match(exportStep, /currentFormalArtifact/, '导出页播放与下载只绑定当前正式成片');
+assert.match(exportStep, /formal\.video\.id/, '播放器 key 必须含 artifactId,换源才生效');
+assert.match(exportStep, /下载当前正式版视频/);
+assert.match(exportStep, /下载当前正式版封面/);
+assert.match(exportStep, /当前修改尚未导出/);
+assert.match(exportStep, /重试导出/);
+// B4：服务端逐条复核;失效选择常驻列出;同页渲染完成后自动续跑发布。
+assert.match(panel, /pendingAutoExportRef/);
+assert.match(panel, /以下成片已取消选择/);
+assert.match(panel, /渲染完成后自动导出/);
+assert.match(panel, /onGoReview/);
+// 导出结果结构化分栏(成功数 + 服务端跳过项 + 前端取消项)。
+assert.match(panel, /导出结果：成功/);

@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { getBatchWorkspace } from '../lib/batch-production/batch-workspace.ts';
+import { resolveCoverContractHash, resolveFullRenderContractHash } from '../lib/batch-production/cover-contract.ts';
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
+import { createBatchTask } from '../lib/batch-production/tasks.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-workspace-'));
 try {
@@ -58,6 +60,7 @@ try {
 
   db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(JSON.stringify({
     productionReady: true,
+    review: { decision: 'approved', decidedAt: now },
     clips: [{
       clipId: 'clip-1', assetId: 'timeline-asset', sourceStartUs: 500_000,
       sourceEndUs: 2_500_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
@@ -75,76 +78,167 @@ try {
     warnings: [], blockers: [],
   }));
 
-  const insertTask = db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,expectedState,progressJson,attemptCount,createdAt,updatedAt) VALUES (?,?,?,'render','output_version',?,?,?,?,?,?,?)`);
-  insertTask.run('task2','p1','b1','ov2','failed','running','{}',1,now,now);
-  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,errorCode,errorMessage,startedAt,finishedAt,createdAt) VALUES ('attempt2','task2',1,'failed','{}','render_failed','编码失败',?,?,?)`).run(now,now,now);
-  insertTask.run('task1','p1','b1','ov1','succeeded','running','{}',1,now,now);
-  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt) VALUES ('attempt1','task1',1,'succeeded','{}',?,?,?,?)`).run(
+  const insertTask = db.prepare(`INSERT INTO batch_tasks (id,projectId,batchId,workType,targetKind,targetId,status,expectedState,progressJson,attemptCount,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,'{}',?,?,?)`);
+  // plan1:独立封面任务成功(封面墙/可检查的事实来源);requestKey 必须与
+  // 当前封面契约哈希一致,workspace 才认它作封面事实(封面 A→B→A 语义)。
+  const ov1CoverContractHash = resolveCoverContractHash(db, 'ov1');
+  insertTask.run('cover1-task','p1','b1','render','output_version_cover','ov1','succeeded','running',1,now,now);
+  db.prepare(`UPDATE batch_tasks SET requestKey = ? WHERE id = 'cover1-task'`).run(`cover:ov1:${ov1CoverContractHash}`);
+  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt) VALUES ('cover1-attempt','cover1-task',1,'succeeded','{}',?,?,?,?)`).run(
+    JSON.stringify({
+      projectId: 'p1', batchId: 'b1', batchVersionId: 'bv1', planId: 'plan1',
+      outputVersionId: 'ov1', planSeq: 1, outputVersionNumber: 1,
+      coverRelativePath: 'batch-renders/ov1/cover.jpg', coverChecksum: 'sha256:cover-candidate',
+    }),
+    now, now, now,
+  );
+  // plan1:整片渲染任务(导出阶段产物)与当前契约一致 → 正式成片新鲜
+  const ov1ContractHash = resolveFullRenderContractHash(db, 'ov1');
+  insertTask.run('full1-task','p1','b1','render','output_version','ov1','succeeded','running',1,now,now);
+  db.prepare(`
+    UPDATE batch_tasks SET requestKey = ? WHERE id = 'full1-task'
+  `).run(`render:ov1:${ov1ContractHash}`);
+  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt) VALUES ('full1-attempt','full1-task',1,'succeeded','{}',?,?,?,?)`).run(
     JSON.stringify({
       outputVersionId: 'ov1', audioMode: 'narration', productionReady: true, durationUs: 2_000_000,
       videoRelativePath: 'batch-renders/ov1/video.mp4', coverRelativePath: 'batch-renders/ov1/cover.jpg',
+      videoChecksum: 'sha256:video1', coverChecksum: 'sha256:cover1',
       editRevision: 0, coverTimeUs: 3_000_000, subtitleCues: [],
     }),
     now, now, now,
   );
-  insertTask.run('task3','p1','b1','ov3','queued','running','{}',0,now,now);
-  insertTask.run('task4','p1','b1','ov4-new','failed','running','{}',1,now,now);
-  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,errorCode,errorMessage,startedAt,finishedAt,createdAt) VALUES ('attempt4','task4',1,'failed','{}','render_failed','新版失败',?,?,?)`).run(now,now,now);
+  // plan2:封面任务失败(可重试),且无整片任务
+  insertTask.run('cover2-task','p1','b1','render','output_version_cover','ov2','failed','running',1,now,now);
+  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,errorCode,errorMessage,startedAt,finishedAt,createdAt) VALUES ('cover2-attempt','cover2-task',1,'failed','{}','render_failed','封面编码失败',?,?,?)`).run(now,now,now);
+  // plan3:封面任务排队中 → 处理中,不被误标成「等待渲染」
+  insertTask.run('cover3-task','p1','b1','render','output_version_cover','ov3','queued','running',0,now,now);
+  // plan4:旧正式产物(ov4-old),当前版本已换到 ov4-new → formalOutdated
+  insertTask.run('full4-task','p1','b1','render','output_version','ov4-old','succeeded','running',1,now,now);
+  db.prepare(`UPDATE batch_tasks SET requestKey = ? WHERE id = 'full4-task'`).run(`render:ov4-old:legacy-fixture-key`);
+  db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,startedAt,finishedAt,createdAt) VALUES ('full4-attempt','full4-task',1,'succeeded','{}',?,?,?,?)`).run(
+    JSON.stringify({
+      outputVersionId: 'ov4-old', audioMode: 'narration', productionReady: true, durationUs: 2_000_000,
+      videoRelativePath: 'batch-renders/ov4-old/video.mp4', coverRelativePath: 'batch-renders/ov4-old/cover.jpg',
+      videoChecksum: 'sha256:video4', coverChecksum: 'sha256:cover4',
+      editRevision: 0, coverTimeUs: 0, subtitleCues: [],
+    }),
+    now, now, now,
+  );
 
   const insertArtifact = db.prepare(`INSERT INTO batch_artifacts (id,projectId,batchId,batchVersionId,outputPlanId,outputVersionId,kind,relativePath,checksum,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?)`);
   insertArtifact.run('video1','p1','b1','bv1','plan1','ov1','video','storage/batch/video1.mp4','sha256:video1',now);
-  insertArtifact.run('cover1','p1','b1','bv1','plan1','ov1','cover','storage/batch/video1.jpg','sha256:cover1',now);
+  insertArtifact.run('cover1','p1','b1','bv1','plan1','ov1','cover','storage/batch/video1-封面.jpg','sha256:cover1',now);
   insertArtifact.run('video4-old','p1','b1','bv1','plan4','ov4-old','video','storage/batch/video4.mp4','sha256:video4',now);
-  insertArtifact.run('cover4-old','p1','b1','bv1','plan4','ov4-old','cover','storage/batch/video4.jpg','sha256:cover4',now);
+  insertArtifact.run('cover4-old','p1','b1','bv1','plan4','ov4-old','cover','storage/batch/video4-封面.jpg','sha256:cover4',now);
 
   const view = getBatchWorkspace(db, 'p1', 'b1');
   assert.equal(view.cards.length, 4);
-  assert.equal(view.cards[0]?.status, 'completed');
-  assert.equal(view.cards[0]?.exportable, true);
-  assert.equal(view.cards[0]?.currentCover?.id, 'cover1');
-  assert.equal(view.cards[0]?.candidate?.editRevision, 0);
-  assert.equal(view.cards[0]?.candidate?.coverTimeUs, 3_000_000);
-  assert.equal(view.cards[0]?.renderStale, false, '候选与当前 arrangement revision 一致时不得标记 stale');
-  assert.equal(view.cards[1]?.renderStale, false, '渲染失败/从未渲染由 publishable 表达，不得挤占 renderStale');
-  assert.equal(view.cards[2]?.renderStale, false, '渲染排队但没有候选时由 publishable 表达，不得挤占 renderStale');
-  assert.deepEqual(view.cards[0]?.coverRange, {
+  // 状态口径互不混淆:封面/审核/导出/正式成片各自独立表达。
+  const card1 = view.cards.find(({ planId }) => planId === 'plan1')!;
+  assert.equal(card1.status, 'completed');
+  assert.equal(card1.reviewable, true);
+  assert.equal(card1.approvable, true, '口播+封面就绪才允许通过');
+  assert.equal(card1.approved, true);
+  assert.equal(card1.exportEligible, true);
+  assert.equal(card1.coverStatus, 'succeeded');
+  assert.equal(card1.coverAttemptId, 'cover1-attempt');
+  assert.equal(card1.formalOutdated, false, 'artifact 与当前完整渲染契约一致时不得标记过期');
+  assert.equal(card1.exportStatus, 'exported');
+  assert.equal(card1.currentFormalArtifact?.video.id, 'video1');
+  assert.equal(card1.currentFormalArtifact?.cover?.id, 'cover1');
+  assert.deepEqual(card1.coverRange, {
     assetId: 'cover-pool-asset', startUs: 0, endUs: 9_000_000, currentUs: 3_000_000,
   }, '封面素材不在时间线 clips 中时仍应使用冻结素材的完整时长');
-  assert.equal(view.cards[1]?.status, 'retryable_failed', '静音条件不得遮蔽可重试的渲染失败');
-  assert.equal(view.cards[1]?.coverRange, null, '封面素材不在冻结池时必须显式返回不可用');
-  assert.equal(view.cards[2]?.status, 'needs_attention', '非阻塞差异提醒优先显示需处理');
-  assert.equal(view.cards[3]?.status, 'needs_attention', '新版失败不能隐藏旧正式产物');
-  assert.equal(view.cards[3]?.exportable, true);
-  assert.match(view.cards[3]?.nextAction ?? '', /旧版仍可/);
-  assert.deepEqual(view.counts, { total: 4, exportable: 2, publishable: 1, approved: 0, processing: 0, needsAttention: 2, failed: 1 });
+  const card2 = view.cards.find(({ planId }) => planId === 'plan2')!;
+  assert.equal(card2.status, 'retryable_failed', '封面失败必须可重试,不能被口播未就绪遮蔽');
+  assert.equal(card2.coverStatus, 'failed');
+  assert.equal(card2.approvable, false);
+  assert.equal(card2.coverRange, null, '封面素材不在冻结池时必须显式返回不可用');
+  const card3 = view.cards.find(({ planId }) => planId === 'plan3')!;
+  assert.equal(card3.status, 'processing', '封面排队中显示处理中,不再永远 waiting');
+  assert.equal(card3.coverStatus, 'queued');
+  assert.equal(card3.approvable, false);
+  const card4 = view.cards.find(({ planId }) => planId === 'plan4')!;
+  assert.equal(card4.status, 'needs_attention', '新版没有封面/渲染时不能隐藏旧正式产物');
+  assert.equal(card4.formalOutdated, true, '当前版本已换,旧 artifact 必须标记过期');
+  assert.equal(card4.currentFormalArtifact?.video.id, 'video4-old', '返工期间旧正式成片仍返回');
+  assert.equal(card4.approvable, false);
+  assert.equal(card4.exportEligible, false);
+  assert.deepEqual(view.counts, { total: 4, reviewable: 4, approvable: 1, approved: 1, processing: 1, needsAttention: 1, failed: 1 });
 
+  // 正式视频与封面必须成对匹配同一次成功渲染；封面指纹不符时不能仍称已导出。
+  db.prepare(`UPDATE batch_artifacts SET checksum = 'sha256:wrong-cover' WHERE id = 'cover1'`).run();
+  const mismatchedFormalPairView = getBatchWorkspace(db, 'p1', 'b1');
+  const mismatchedFormalPairCard = mismatchedFormalPairView.cards.find(({ planId }) => planId === 'plan1');
+  assert.equal(mismatchedFormalPairCard?.formalOutdated, true, '配套封面指纹不符时正式产物必须过期');
+  assert.equal(mismatchedFormalPairCard?.exportStatus, 'not_exported', '封面不匹配时不得显示已导出');
+  db.prepare(`UPDATE batch_artifacts SET checksum = 'sha256:cover1' WHERE id = 'cover1'`).run();
+
+  // 返工:ov1 编辑后(契约变化)旧正式成片仍返回,但 formalOutdated=true。
   const originalOv1ArrangementJson = (db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = 'ov1'`).get() as { arrangementJson: string }).arrangementJson;
-  const staleOv1Arrangement = JSON.parse(originalOv1ArrangementJson) as Record<string, unknown>;
-  staleOv1Arrangement.editRevision = 1;
-  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(JSON.stringify(staleOv1Arrangement));
-  const uncommittedView = getBatchWorkspace(db, 'p1', 'b1');
-  assert.equal(uncommittedView.cards[0]?.renderStale, true, '候选修订落后时必须标记 stale');
-  assert.equal(uncommittedView.cards[0]?.renderUncommitted, true, '没有排队任务时必须提示待重新生成');
+  const editedOv1Arrangement = JSON.parse(originalOv1ArrangementJson) as Record<string, unknown>;
+  editedOv1Arrangement.editRevision = 1;
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(JSON.stringify(editedOv1Arrangement));
+  const staleFailedFullTaskId = createBatchTask(db, 'p1', {
+    batchId: 'b1',
+    workType: 'render',
+    targetKind: 'output_version',
+    targetId: 'ov1',
+    requestKey: `render:ov1:rnd_${'0'.repeat(32)}`,
+    now: () => new Date('2026-08-04T11:00:00.000Z'),
+  });
+  db.prepare(`UPDATE batch_tasks SET status = 'failed', expectedState = 'stopped' WHERE id = ?`).run(staleFailedFullTaskId);
+  const editedView = getBatchWorkspace(db, 'p1', 'b1');
+  assert.equal(editedView.cards.find(({ planId }) => planId === 'plan1')?.formalOutdated, true, '编辑后当前正式成片必须标记过期');
+  assert.equal(editedView.cards.find(({ planId }) => planId === 'plan1')?.currentFormalArtifact?.video.id, 'video1', '返工期间仍返回旧正式成片');
+  assert.equal(editedView.cards.find(({ planId }) => planId === 'plan1')?.status, 'needs_attention', '当前修改尚未导出');
+  assert.equal(editedView.cards.find(({ planId }) => planId === 'plan1')?.fullRenderTask, null, '旧契约失败任务不得冒充当前契约任务');
+  assert.equal(editedView.cards.find(({ planId }) => planId === 'plan1')?.exportStatus, 'not_exported', '当前契约尚未建任务时应显示未导出而非失败');
+  db.prepare(`DELETE FROM batch_tasks WHERE id = ?`).run(staleFailedFullTaskId);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(originalOv1ArrangementJson);
 
-  for (const failedStatus of ['failed', 'cancelled'] as const) {
-    db.prepare(`UPDATE batch_tasks SET status = ? WHERE id = 'task1'`).run(failedStatus);
-    const failedRenderView = getBatchWorkspace(db, 'p1', 'b1');
-    assert.equal(failedRenderView.cards[0]?.renderStale, true, `${failedStatus} render remains stale`);
-    assert.equal(
-      failedRenderView.cards[0]?.renderUncommitted,
-      false,
-      `${failedStatus} render is not an uncommitted edit`,
-    );
+  // 老批次兼容:发布任务没有契约哈希时,回落到修订号+封面时间点比对。
+  db.prepare(`UPDATE batch_tasks SET requestKey = ? WHERE id = 'full1-task'`).run(`render:ov1:legacy-key`);
+  const legacyView = getBatchWorkspace(db, 'p1', 'b1');
+  assert.equal(legacyView.cards.find(({ planId }) => planId === 'plan1')?.formalOutdated, false, '旧任务按修订号+封面时间点仍可判断新鲜');
+  db.prepare(`UPDATE batch_tasks SET requestKey = ? WHERE id = 'full1-task'`).run(`render:ov1:${ov1ContractHash}`);
+
+  // 封面 A→B→A:workspace 必须按当前契约选封面任务,不能展示较新的 B 任务
+  // 或它的失败状态;切回 A 时旧 A 任务的事实(成功)恢复展示。
+  {
+    const currentA = JSON.parse((db.prepare(`SELECT arrangementJson FROM batch_output_versions WHERE id = 'ov1'`).get() as { arrangementJson: string }).arrangementJson) as Record<string, unknown>;
+    // B:改封面时间点 → 新契约;旧 A 任务保持自己的 A requestKey(真实链路),
+    // 另建一条新的、更晚的失败 B 任务。
+    const arrangementB = { ...currentA, cover: { assetId: (currentA.cover as { assetId?: string } | undefined)?.assetId ?? 'cover-pool-asset', timeUs: 4_000_000 } } as Record<string, unknown>;
+    db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(JSON.stringify(arrangementB));
+    const hashB = resolveCoverContractHash(db, 'ov1');
+    const bCoverTaskId = createBatchTask(db, 'p1', {
+      batchId: 'b1',
+      workType: 'render',
+      targetKind: 'output_version_cover',
+      targetId: 'ov1',
+      requestKey: `cover:ov1:${hashB}`,
+      now: () => new Date('2026-08-04T12:00:00.000Z'),
+    });
+    db.prepare(`UPDATE batch_tasks SET status = 'failed', expectedState = 'stopped' WHERE id = ?`).run(bCoverTaskId);
+    db.prepare(`INSERT INTO batch_task_attempts (id,taskId,attemptNumber,status,progressJson,resultJson,errorCode,errorMessage,startedAt,finishedAt,createdAt) VALUES ('coverB-attempt',?,1,'failed','{}',NULL,'render_failed','B 封面失败','2026-08-04T12:00:00.000Z','2026-08-04T12:00:01.000Z','2026-08-04T12:00:00.000Z')`).run(bCoverTaskId);
+    const viewB = getBatchWorkspace(db, 'p1', 'b1');
+    assert.equal(viewB.cards.find(({ planId }) => planId === 'plan1')?.coverStatus, 'failed', '当前契约是 B 时必须展示 B 任务失败状态');
+    assert.equal(viewB.cards.find(({ planId }) => planId === 'plan1')?.coverAttemptId, null, 'B 失败时没有成功封面尝试');
+    // A:封面时间点改回去
+    db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(originalOv1ArrangementJson);
+    const viewA = getBatchWorkspace(db, 'p1', 'b1');
+    assert.equal(viewA.cards.find(({ planId }) => planId === 'plan1')?.coverStatus, 'succeeded', '切回 A 时必须展示旧 A 任务的成功状态,而非较新的 B 失败');
+    assert.equal(viewA.cards.find(({ planId }) => planId === 'plan1')?.coverAttemptId, 'cover1-attempt', '切回 A 时封面来源必须是旧 A 任务的成功尝试');
   }
-  db.prepare(`UPDATE batch_tasks SET status = 'succeeded' WHERE id = 'task1'`).run();
 
-  // pendingRender 取当前 outputVersion 的全部 queued/running 任务,不能只看最后一条。
-  insertTask.run('task1-old-pending', 'p1', 'b1', 'ov1', 'queued', 'running', '{}', 0, '2026-08-02T10:00:00.000Z', '2026-08-02T10:00:00.000Z');
-  const pendingRenderView = getBatchWorkspace(db, 'p1', 'b1');
-  assert.equal(pendingRenderView.cards[0]?.task?.status, 'succeeded', '展示任务仍应保留最新任务状态');
-  assert.equal(pendingRenderView.cards[0]?.renderStale, true, '较早的排队任务仍应让已有候选等待重渲染');
-  assert.equal(pendingRenderView.cards[0]?.renderUncommitted, false, '有排队任务时不得显示待重新生成');
-  db.prepare(`UPDATE batch_tasks SET status = 'failed' WHERE id = 'task1-old-pending'`).run();
+  // 当前封面契约损坏时必须 fail closed：不能回退到最近任意独立封面任务。
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = '{' WHERE id = 'ov1'`).run();
+  const unverifiableCoverView = getBatchWorkspace(db, 'p1', 'b1');
+  const unverifiableCoverCard = unverifiableCoverView.cards.find(({ planId }) => planId === 'plan1');
+  assert.equal(unverifiableCoverCard?.coverStatus, 'missing', '契约不可解析时不得猜测最近封面任务');
+  assert.equal(unverifiableCoverCard?.coverAttemptId, null, '契约不可解析时不得暴露任意封面尝试');
+  assert.equal(unverifiableCoverCard?.approvable, false, '无法证明封面身份时不得进入审核通过门禁');
   db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(originalOv1ArrangementJson);
 
   assert.equal(view.phase, 'review');
@@ -163,9 +257,8 @@ try {
   }), '2026-08-03T10:01:00.000Z');
   db.prepare(`UPDATE batch_production_versions SET currentAllocationRunId = 'run-blocked' WHERE id = 'bv1'`).run();
   const blockedReallocationView = getBatchWorkspace(db, 'p1', 'b1');
-  assert.equal(blockedReallocationView.cards[0]?.status, 'needs_attention', '阻塞重分配必须覆盖旧 completed 展示并保留旧产物');
-  assert.equal(blockedReallocationView.cards[0]?.exportable, true);
-  assert.deepEqual(blockedReallocationView.cards[0]?.blockers, ['locked-conflict:segment-1']);
+  assert.equal(blockedReallocationView.cards.find(({ planId }) => planId === 'plan1')?.status, 'needs_attention', '阻塞重分配必须覆盖旧 completed 展示并保留旧产物');
+  assert.deepEqual(blockedReallocationView.cards.find(({ planId }) => planId === 'plan1')?.blockers, ['locked-conflict:segment-1']);
   assert.throws(() => getBatchWorkspace(db, 'p2', 'b1'), /不存在/);
   db.close();
   console.log('batch workspace aggregation tests passed');

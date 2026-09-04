@@ -6,6 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from '@/lib/data-root';
 import { resolveProjectExportDirName } from '@/lib/project-export-dir';
+import { getCurrentExportDirName, getCurrentExportIdentity, listExportIdentities } from '@/lib/project-export-identity';
 import { assertNoStorageSymlink } from '@/lib/final-edit/storage-path';
 import { listReadableProjectScripts } from '@/lib/media-core/project-script-reader';
 
@@ -92,17 +93,24 @@ export async function GET(
 
     const manifestArtifacts: Array<{ kind: string; filename: string; sourceJobId: string | null }> = [];
     const storageRoot = path.join(dataRoot(), 'storage');
-    // 新目录:projects/<产品编码-日期>/成片;历史成片仍在旧 UUID 目录里,
-    // 打包导出两者都收,不能把老文件漏掉。
-    const exportDirName = resolveProjectExportDirName(db, projectId);
-    const projectArtifactRoot = path.join('projects', exportDirName, '成片');
+    // 打包导出必须收齐该项目所有导出身份目录（当前 + 历史切换过的旧目录）与历史 UUID 目录，
+    // 不能只认当前身份——切换新身份后旧成片仍在旧身份目录里，漏掉会破坏历史产物可读性。
+    const exportDirNames = [
+      ...listExportIdentities(db, projectId).map((identity) => identity.exportDirName),
+      ...(getCurrentExportDirName(db, projectId) ? [getCurrentExportDirName(db, projectId)!] : []),
+      resolveProjectExportDirName(db, projectId),
+      projectId, // 历史 UUID 目录
+    ];
+    const identityArtifactRoots = [...new Set(exportDirNames)].map((dir) => path.join('projects', dir, '成片'));
     const legacyProjectArtifactRoot = path.join('projects', projectId, '成片');
     for (const artifact of projectArtifacts) {
       let filePath: string;
       try {
-        const underNewRoot = artifact.relativePath.startsWith(`${projectArtifactRoot}${path.sep}`) || artifact.relativePath.startsWith(`${projectArtifactRoot}/`);
+        const underIdentityRoot = identityArtifactRoots.some((root) => (
+          artifact.relativePath.startsWith(`${root}${path.sep}`) || artifact.relativePath.startsWith(`${root}/`)
+        ));
         const underLegacyRoot = artifact.relativePath.startsWith(`${legacyProjectArtifactRoot}${path.sep}`) || artifact.relativePath.startsWith(`${legacyProjectArtifactRoot}/`);
-        if (!underNewRoot && !underLegacyRoot) continue;
+        if (!underIdentityRoot && !underLegacyRoot) continue;
         filePath = assertNoStorageSymlink(storageRoot, artifact.relativePath);
       }
       catch { continue; }
@@ -164,15 +172,52 @@ export async function GET(
         const scriptJson = JSON.stringify(scriptObj, null, 2);
         const rawScript = scriptObj as Record<string, unknown>;
         const isV3 = rawScript.version === 3;
+        const isV4 = rawScript.version === 4;
         const coverTitleParts = rawScript.coverTitleParts && typeof rawScript.coverTitleParts === 'object'
           ? rawScript.coverTitleParts as Record<string, unknown>
           : {};
-        const scriptText = isV3
+        const knowledgeContext = rawScript.knowledgeContext && typeof rawScript.knowledgeContext === 'object'
+          ? rawScript.knowledgeContext as Record<string, unknown>
+          : null;
+        const recommendation = rawScript.recommendation && typeof rawScript.recommendation === 'object'
+          ? rawScript.recommendation as Record<string, unknown>
+          : null;
+        const recommendationLines: string[] = [];
+        if (recommendation) {
+          const framework = recommendation.framework && typeof recommendation.framework === 'object'
+            ? recommendation.framework as Record<string, unknown>
+            : null;
+          const copyHook = recommendation.copyHook && typeof recommendation.copyHook === 'object'
+            ? recommendation.copyHook as Record<string, unknown>
+            : null;
+          const visualHook = recommendation.visualHook && typeof recommendation.visualHook === 'object'
+            ? recommendation.visualHook as Record<string, unknown>
+            : null;
+          if (framework) {
+            const structure = Array.isArray(framework.structure) ? (framework.structure as unknown[]).map(String).join(' → ') : '';
+            recommendationLines.push(`核心框架：${String(framework.name || '')}${structure ? `（节奏：${structure}）` : ''}`);
+          }
+          if (copyHook) {
+            recommendationLines.push(`文案钩子：${String(copyHook.type || '')} / ${String(copyHook.subtype || '')}${copyHook.formula ? ` · 公式：${String(copyHook.formula)}` : ''}`);
+          }
+          if (visualHook) {
+            recommendationLines.push(`画面钩子：${String(visualHook.name || '')}${visualHook.formula ? ` · 画面公式：${String(visualHook.formula)}` : ''}${visualHook.guidance ? ` · 制作建议：${String(visualHook.guidance)}` : ''}`);
+          }
+        }
+        const matchedKnowledge = knowledgeContext && knowledgeContext.matchStatus === 'matched'
+          ? knowledgeContext
+          : null;
+        const searchTermsUsed = Array.isArray(matchedKnowledge?.searchTermsUsed)
+          ? (matchedKnowledge.searchTermsUsed as unknown[]).map(String).filter(Boolean)
+          : [];
+        const scriptText = (isV3 || isV4)
           ? [
               `# ${String(rawScript.title || '脚本')}`,
               `封面主标题：${String(coverTitleParts.primary || '')}`,
               `封面副标题：${String(coverTitleParts.secondary || '')}`,
               `目标总时长：${String(rawScript.targetDurationSec || '')} 秒`,
+              ...(matchedKnowledge ? [`统一名称：${String(matchedKnowledge.canonicalName || '')}${searchTermsUsed.length > 0 ? ` · 埋词：${searchTermsUsed.join('、')}` : ''}`] : []),
+              ...(recommendationLines.length > 0 ? ['', '## 推荐说明（仅文本，不含参考图片）', ...recommendationLines] : []),
               '',
               '## 配音稿（保留自然标点）',
               String(rawScript.fullScript || ''),
@@ -248,7 +293,8 @@ export async function GET(
     }
 
     const stream = buildGenericZipStream(entries);
-    const zipName = encodeURIComponent(`${String(project.name || 'project')}-creative-package.zip`);
+    const baseName = getCurrentExportIdentity(db, projectId)?.baseName || String(project.name || 'project');
+    const zipName = encodeURIComponent(`${baseName}-创作包.zip`);
     return new NextResponse(stream, {
       headers: {
         'Content-Type': 'application/zip',

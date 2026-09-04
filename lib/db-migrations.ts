@@ -90,4 +90,44 @@ export const CORE_DB_MIGRATIONS = [
   // 新任务创建时写入；历史行保持 NULL，读取端用 lib/video-output-filenames.ts
   // 按 shot 序号、来源图名、模板名与 (createdAt, id) 版次确定性派生，不回填。
   `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
+  // 项目生产身份（2026-09-03）：新项目只填写店铺/型号/子型号/生产类型/剪辑师，
+  // 项目名与导出基础名由服务端统一生成。namingDate 为新项目创建日 YYYYMMDD（上海时区），
+  // 历史空值读取时才从 createdAt 派生；currentExportIdentityId 指向 project_export_identities 当前身份。
+  `ALTER TABLE projects ADD COLUMN storeCode TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productSubmodel TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN productionType TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN editorName TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN namingDate TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projects ADD COLUMN currentExportIdentityId TEXT`,
+  `CREATE TABLE IF NOT EXISTS project_export_identities (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL,
+    revisionNumber INTEGER NOT NULL,
+    baseName TEXT NOT NULL,
+    exportDirName TEXT NOT NULL,
+    identityJson TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    supersededAt TEXT,
+    UNIQUE(projectId, revisionNumber),
+    UNIQUE(exportDirName)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId)`,
+  // 修复 2026-09-03 生产身份 SQL 的历史错位:尺寸曾写进 projects.prompt,
+  // size 为空且 status/referenceGuidanceMode 分别变成 none/draft。只匹配该
+  // 组特征,把尺寸移回原列并清空不应展示的项目提示词;重复执行保持幂等。
+  `UPDATE projects
+   SET size = prompt, prompt = '', status = 'draft', referenceGuidanceMode = 'none'
+   WHERE size = ''
+     AND status = 'none'
+     AND referenceGuidanceMode = 'draft'
+     AND (prompt = 'auto' OR prompt GLOB '[0-9]*x[0-9]*')`,
+  // 受旧错位影响的项目可能已经在修复前通过「场景生成」继续创建了空尺寸任务；
+  // 让这些任务继承项目目标尺寸，避免队列跳过比例规整。只补齐空值，不覆盖已有任务快照。
+  `UPDATE jobs
+   SET size = (SELECT p.size FROM projects p WHERE p.id = jobs.projectId)
+   WHERE COALESCE(size, '') = ''
+     AND EXISTS (
+       SELECT 1 FROM projects p
+       WHERE p.id = jobs.projectId AND COALESCE(p.size, '') <> ''
+     )`,
 ];

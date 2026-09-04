@@ -1,5 +1,6 @@
-import type { NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { ScriptStudioApiUnavailableError } from './errors.ts';
+import { getScriptStudioLimits } from './limits.ts';
 import {
   getScriptStudioReadiness,
   scriptStudioReadinessUnavailable,
@@ -43,4 +44,29 @@ export async function jsonOrNull(request: Request): Promise<Record<string, unkno
   } catch {
     return null;
   }
+}
+
+/**
+ * 目录导入路由共用的上传读取与校验（方案 §6.1）：仅 .xlsx、大小上限内。
+ * 只做表单层校验；ZIP/OOXML 内容校验在 catalog-import 的 assertXlsxBuffer。
+ */
+export async function readCatalogImportUpload(request: Request): Promise<{ file: File } | { error: NextResponse }> {
+  let file: File | null = null;
+  try {
+    const formData = await request.formData();
+    file = formData.get('file') instanceof File ? formData.get('file') as File : null;
+  } catch {
+    file = null;
+  }
+  if (!file) {
+    return { error: NextResponse.json({ error: 'invalid_input', message: '缺少上传文件' }, { status: 400 }) };
+  }
+  if (!/\.xlsx$/i.test(file.name)) {
+    return { error: NextResponse.json({ error: 'invalid_input', message: '只接受 .xlsx 文件' }, { status: 400 }) };
+  }
+  const maxBytes = getScriptStudioLimits().maxCatalogImportBytes;
+  if (file.size > maxBytes) {
+    return { error: NextResponse.json({ error: 'invalid_input', message: `文件超过 ${Math.round(maxBytes / 1024 / 1024)} MiB 上限` }, { status: 400 }) };
+  }
+  return { file };
 }

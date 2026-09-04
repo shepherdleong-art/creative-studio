@@ -11,7 +11,7 @@ import type { BatchProductionStatus } from './versions.ts';
 export type BatchTaskWorkType = 'asset_prepare' | 'render' | 'proxy_generate' | 'narration' | 'semantic_score';
 // legacy_proxy_cache 只可能由 v15 把无法回溯谱系的 v14 异常任务隔离成 cancelled
 // 历史记录；createBatchTask 的判别联合不接受它，运行时不能创建或调度这种目标。
-export type BatchTaskTargetKind = 'asset' | 'output_version' | 'proxy_request' | 'script_snapshot' | 'legacy_proxy_cache';
+export type BatchTaskTargetKind = 'asset' | 'output_version' | 'output_version_cover' | 'proxy_request' | 'script_snapshot' | 'legacy_proxy_cache';
 export type BatchTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type BatchTaskAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export type BatchTaskExpectedState = 'running' | 'paused' | 'stopped';
@@ -98,6 +98,13 @@ export function createBatchTask(
     batchId: string;
     workType: 'render';
     targetKind: 'output_version';
+    targetId: string;
+    requestKey?: string;
+    now?: () => Date;
+  } | {
+    batchId: string;
+    workType: 'render';
+    targetKind: 'output_version_cover';
     targetId: string;
     requestKey?: string;
     now?: () => Date;
@@ -198,8 +205,8 @@ export function createBatchTask(
       }
     }
     if (input.workType === 'render') {
-      if (input.targetKind !== 'output_version') {
-        throw new Error('render 任务的目标类型必须是 output_version');
+      if (input.targetKind !== 'output_version' && input.targetKind !== 'output_version_cover') {
+        throw new Error('render 任务的目标类型必须是 output_version 或 output_version_cover');
       }
       const version = db.prepare(`
         SELECT v.batchId

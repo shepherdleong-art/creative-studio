@@ -6,6 +6,7 @@ import {
 import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
 import type { LibraryRevisionView } from './libraries.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
+import { checkTitleEmbedding, type TitleEmbeddingContext } from './title-embedding.ts';
 import type { ScriptStudioScriptContent } from './types.ts';
 
 export interface ScriptValidationResult {
@@ -47,6 +48,8 @@ export function validateScriptContent(
   options: {
     libraryRevision: LibraryRevisionView;
     siblingScripts?: Array<Pick<ScriptStudioScriptContent, 'fullScript'>>;
+    /** 冻结知识上下文的标题埋词约束；未提供或未匹配时不启用埋词门禁。 */
+    titleEmbeddingContext?: TitleEmbeddingContext;
   },
 ): ScriptValidationResult {
   const issues: string[] = [];
@@ -63,6 +66,15 @@ export function validateScriptContent(
   if (!input.title.trim()) issues.push('title_required');
   if (!input.coverTitleParts?.primary?.trim() || !input.coverTitleParts?.secondary?.trim()) {
     issues.push('cover_title_required');
+  }
+  // 匹配知识库时启用标题埋词门禁：内部标题与封面标题组合各自满足统一名称+搜索词。
+  if (options.titleEmbeddingContext) {
+    const embedding = checkTitleEmbedding(
+      options.titleEmbeddingContext,
+      input.title,
+      `${input.coverTitleParts?.primary ?? ''}${input.coverTitleParts?.secondary ?? ''}`,
+    );
+    issues.push(...embedding.issues);
   }
   if (!input.segments.length) issues.push('segments_required');
   if (contentCharacterCount < budget.minContentCharacters) issues.push('duration_too_short');

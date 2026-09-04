@@ -43,6 +43,8 @@ import { CoverFrameError, materializeCoverFrame, resolveCoverFrameSource } from 
 import { FinalEditError } from './errors.ts';
 import { formatShanghaiTaskDate } from './export-identity.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
+import { getOrCreateCurrentExportIdentity } from '../project-export-identity.ts';
+import { readProductionIdentityFields, deriveProjectNamingDate } from '../project-production-identity.ts';
 import { releaseReservedExportTarget, reserveProjectExportTarget } from './export-naming.ts';
 import { matchAudioFirst, type MatchDiagnostics } from './audio-first-matcher.ts';
 import { audioFirstPlanToVideoTimeline } from './audio-first-timeline.ts';
@@ -76,6 +78,7 @@ import {
   FINAL_EDIT_INTRO_FRAMES,
   FINAL_EDIT_MIN_CLIP_FRAMES,
   OUTPUT_PRESETS,
+  sourceFrameLimit,
   type CapacityEstimate,
   type CoverEditorDraft,
   type FinalEditAssetView,
@@ -363,7 +366,7 @@ interface PreparedAsset extends AssetRow {
   analysisSucceeded?: boolean;
 }
 
-const FINAL_EDIT_ANALYZER_VERSION = '2';
+export const FINAL_EDIT_ANALYZER_VERSION = '2';
 
 function flattenPreparedSemanticScenes(assets: PreparedAsset[]): SemanticScene[] {
   return assets.flatMap((asset) => {
@@ -462,8 +465,8 @@ function resolveTaskScript(db: Database.Database, input: Pick<PreflightInput, 'p
   if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
   const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
-  if (!source || ![2, 3].includes(source.version) || !Array.isArray(source.segments) || source.segments.length === 0) {
-    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
+  if (!source || ![2, 3, 4].includes(source.version) || !Array.isArray(source.segments) || source.segments.length === 0) {
+    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3/V4 脚本');
   }
   if (!isScriptVisibleInContext({
     shotSetId,
@@ -493,8 +496,8 @@ function resolveEditingScript(db: Database.Database, input: Pick<EnsureMixcutDra
   if (!row) throw new FinalEditError('script_not_found', '脚本不存在或不属于当前项目', 404);
   const source = parseJson<MixcutSourceScript | null>(row.outputJson, null);
   const shotSetId = readableScriptShotSetId(row) || String(source?.shotSetId || '');
-  if (!source || ![2, 3].includes(source.version) || !Array.isArray(source.segments)) {
-    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3 脚本');
+  if (!source || ![2, 3, 4].includes(source.version) || !Array.isArray(source.segments)) {
+    throw new FinalEditError('script_invalid', '脚本不是可用的 V2/V3/V4 脚本');
   }
   if (!isScriptVisibleInContext({ shotSetId, requestedShotSetId: input.shotSetId || undefined })) {
     throw new FinalEditError('script_shot_set_mismatch', '脚本不属于当前分镜组');
@@ -646,7 +649,46 @@ function editableVideoSource(db: Database.Database, storageRoot: string, groupId
   `).get(groupId, videoJobId) as { fileFingerprint: string; mediaJson: string } | undefined || null;
 }
 
-function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean): FinalEditIssue[] {
+/** 片段素材的用户可见名（外部素材用原文件名，module4 视频用展示名，均回落 id）。 */
+function clipDisplayName(db: Database.Database, groupId: string, videoJobId: string): string {
+  if (videoJobId.startsWith('external-asset-')) {
+    const externalId = videoJobId.slice('external-asset-'.length);
+    const row = db.prepare(`
+      SELECT e.originalFilename FROM final_edit_external_assets e
+      JOIN final_edit_groups g ON g.id=? AND e.projectId=g.projectId AND e.shotSetId=g.shotSetId
+      WHERE e.id=?
+    `).get(groupId, externalId) as { originalFilename?: string } | undefined;
+    return row?.originalFilename || videoJobId;
+  }
+  const row = db.prepare(`SELECT COALESCE(NULLIF(displayName, ''), filename, id) AS name FROM video_jobs WHERE id=?`).get(videoJobId) as { name?: string } | undefined;
+  return row?.name || videoJobId;
+}
+
+/** 片段源校验失败的可定位信息：不同失败成因给出不同 code / details.reason / 中文文案。 */
+function clipSourceFailure(
+  db: Database.Database,
+  storageRoot: string,
+  groupId: string,
+  clip: TimelineClip,
+  analysis: { fileFingerprint: string; mediaJson: string } | null,
+  sourceFrames: number,
+): { code: string; message: string; details: Record<string, unknown> } {
+  const name = clipDisplayName(db, groupId, clip.videoJobId);
+  const baseDetails = { clipId: clip.id, videoJobId: clip.videoJobId, sourceOutFrame: clip.sourceOutFrame, sourceFrames };
+  if (!analysis) {
+    return { code: 'source_unavailable', message: `片段「${name}」的源素材不可用（未成功分析、视频任务未完成或源文件缺失），请重新分析或替换素材`, details: { ...baseDetails, reason: 'source_unavailable' } };
+  }
+  const durationUs = Number(parseJson<{ durationUs?: number }>(analysis.mediaJson || '{}', {}).durationUs || 0);
+  if (!durationUs || !Number.isFinite(durationUs)) {
+    return { code: 'source_duration_missing', message: `片段「${name}」缺少媒体时长信息，请对该素材点「重新分析」`, details: { ...baseDetails, reason: 'source_duration_missing' } };
+  }
+  if (analysis.fileFingerprint !== clip.sourceFingerprint) {
+    return { code: 'source_fingerprint_mismatch', message: `片段「${name}」的源素材已变化（指纹与当前文件不一致），请重新分析或替换素材`, details: { ...baseDetails, reason: 'source_fingerprint_mismatch' } };
+  }
+  return { code: 'source_out_of_range', message: `片段「${name}」的源区间超出素材真实时长（需要到第 ${clip.sourceOutFrame} 帧，素材只有 ${sourceFrames} 帧）`, details: { ...baseDetails, reason: 'source_out_of_range' } };
+}
+
+function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean, extraIssues: FinalEditIssue[] = []): FinalEditIssue[] {
   const issues: FinalEditIssue[] = [];
   for (const gap of timelineGaps(timeline.bodyFrames, timeline.clips)) {
     issues.push({ code: 'timeline_gap', severity: 'blocking', message: `正文 ${gap.startFrame}–${gap.endFrame} 帧缺少画面` });
@@ -664,6 +706,7 @@ function issueList(timeline: VideoTimeline, coverKey: string | null, narrationRe
       issues.push({ code: 'clip_too_short', severity: 'warning', message: '片段短于 0.5 秒', targetId: clip.id });
     }
   }
+  for (const issue of extraIssues) issues.push(issue);
   return issues;
 }
 
@@ -677,7 +720,7 @@ export function planTimeline(assets: PreparedAsset[], bodyFrames: number, varian
   const candidates = assets
     .filter((asset) => !asset.autoUseDisabled && asset.existingUsageCount < autoUseLimit)
     .flatMap((asset) => {
-      const mediaEndFrame = Math.floor(asset.durationUs * FINAL_EDIT_FPS / 1_000_000);
+      const mediaEndFrame = sourceFrameLimit(asset.durationUs);
       const normalized = asset.analysis.usableRanges
         .map((range) => ({
           startFrame: Math.max(0, Math.ceil(range.startUs * FINAL_EDIT_FPS / 1_000_000)),
@@ -1744,6 +1787,8 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       let timeline = parseJson<VideoTimeline>(String(row.timelineJson), { fps: 24, introFrames: 20, bodyFrames: 0, clips: [] });
       let bgm = normalizeBgm(parseJson<unknown>(String(row.bgmJson), {}));
       let cover = normalizeCover(parseJson(String(row.coverJson), {}));
+      // M4：记录命令执行前的 clip 集合，用于识别 insert_clip 新建的 clip。
+      const clipIdsBeforeCommand = new Set(timeline.clips.map((clip) => clip.id));
       if (command.type === 'apply_proposal') {
         const proposal = db.prepare(`SELECT baseRevision, proposalJson, status FROM final_edit_proposals WHERE id=? AND variantId=?`).get(command.proposalId, command.variantId) as { baseRevision: number; proposalJson: string; status: string } | undefined;
         if (!proposal || proposal.status !== 'ready') throw new FinalEditError('proposal_not_ready', 'AI 候选不存在或不可应用', 404);
@@ -1890,15 +1935,49 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (command.type === 'bind_clip') clip.boundSegmentId = command.segmentId;
         if (command.type === 'set_framing') clip.framing = { scale: Math.max(1, Math.min(3, command.scale)), offsetX: Math.max(-1, Math.min(1, command.offsetX)), offsetY: Math.max(-1, Math.min(1, command.offsetY)) };
       }
-      for (const clip of timeline.clips) {
-        if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒');
-        const analysis = editableVideoSource(db, storageRoot, String(row.groupId), clip.videoJobId);
-        const sourceFrames = Math.floor(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0) * 24 / 1_000_000);
-        if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) throw new FinalEditError('source_out_of_range', '片段超出源视频真实时长');
+      // M4：定义「本次命令触碰的 clip 集合」。被触碰的 clip 必须合法（抛错）；
+      // 未触碰的 clip 若因存量坏数据校验失败，降级为 blocking issue，不再锁死整条时间线。
+      const touchedClipIds = new Set<string>();
+      if (command.type === 'delete_clip') {
+        // 已移除的 clip 不在时间线里，不触碰任何现存 clip。
+      } else if (command.type === 'move_clip' || command.type === 'trim_clip' || command.type === 'replace_clip' || command.type === 'bind_clip' || command.type === 'unbind_clip' || command.type === 'set_framing') {
+        touchedClipIds.add(command.clipId);
+      } else if (command.type === 'insert_clip') {
+        for (const clip of timeline.clips) if (!clipIdsBeforeCommand.has(clip.id)) touchedClipIds.add(clip.id);
+      } else if (command.type === 'swap_clips') {
+        touchedClipIds.add(command.leftClipId);
+        touchedClipIds.add(command.rightClipId);
+      } else if (command.type === 'reorder_clips' || command.type === 'apply_proposal' || command.type === 'restore_revision') {
+        for (const clip of timeline.clips) touchedClipIds.add(clip.id);
       }
+      const blockedIssues: FinalEditIssue[] = [];
+      for (const clip of timeline.clips) {
+        const touched = touchedClipIds.has(clip.id);
+        if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) {
+          const details = { clipId: clip.id, videoJobId: clip.videoJobId, reason: 'structural_invalid', sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame, bodyFrames: timeline.bodyFrames };
+          if (touched) throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒', 400, details);
+          blockedIssues.push({ code: 'structural_invalid', severity: 'blocking', message: `片段「${clipDisplayName(db, String(row.groupId), clip.videoJobId)}」的片段时间范围无效或短于 0.5 秒`, targetId: clip.id });
+          continue;
+        }
+        const analysis = editableVideoSource(db, storageRoot, String(row.groupId), clip.videoJobId);
+        const sourceFrames = sourceFrameLimit(Number(parseJson<{ durationUs?: number }>(analysis?.mediaJson || '{}', {}).durationUs || 0));
+        if (!analysis || analysis.fileFingerprint !== clip.sourceFingerprint || clip.sourceOutFrame > sourceFrames) {
+          const failure = clipSourceFailure(db, storageRoot, String(row.groupId), clip, analysis, sourceFrames);
+          if (touched) throw new FinalEditError(failure.code, failure.message, 400, failure.details);
+          // issue 通道保留 M3 的细分 code（source_unavailable / source_duration_missing /
+          // source_fingerprint_mismatch / source_out_of_range），UI 与导出闸门可按成因展示。
+          blockedIssues.push({ code: failure.code, severity: 'blocking', message: failure.message, targetId: clip.id });
+        }
+      }
+      // 重叠是结构问题：被触碰的 clip 主动制造重叠必须拒绝；存量重叠降级为 issue。
       const orderedClips = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
-      if (orderedClips.some((clip, index) => index > 0 && clip.timelineInFrame < orderedClips[index - 1].timelineOutFrame)) throw new FinalEditError('timeline_overlap', '视频片段不能重叠');
-      const issues = issueList(timeline, cover.coverKey, true);
+      for (let index = 1; index < orderedClips.length; index += 1) {
+        if (orderedClips[index].timelineInFrame < orderedClips[index - 1].timelineOutFrame) {
+          if (touchedClipIds.has(orderedClips[index - 1].id) || touchedClipIds.has(orderedClips[index].id)) throw new FinalEditError('timeline_overlap', '视频片段不能重叠');
+          blockedIssues.push({ code: 'timeline_overlap', severity: 'blocking', message: '视频片段发生重叠', targetId: orderedClips[index].id });
+        }
+      }
+      const issues = issueList(timeline, cover.coverKey, true, blockedIssues);
       const revision = Number(row.revision) + 1;
       const groupId = String(row.groupId);
       db.transaction(() => {
@@ -2171,14 +2250,21 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
     } catch (error) {
       throw new FinalEditError('cover_missing', error instanceof Error ? error.message : '封面底图缺失');
     }
-    const project = db.prepare(`SELECT name, productCode, createdAt FROM projects WHERE id=?`).get(group.projectId) as { name: string; productCode: string | null; createdAt: string } | undefined;
+    const project = db.prepare(`SELECT name, productCode, createdAt, storeCode, productSubmodel, productionType, editorName, namingDate FROM projects WHERE id=?`).get(group.projectId) as { name: string; productCode: string | null; createdAt: string; storeCode: string | null; productSubmodel: string | null; productionType: string | null; editorName: string | null; namingDate: string | null } | undefined;
     if (!project) throw new FinalEditError('project_not_found', '项目不存在', 404);
+    // 生产身份完整时冻结/复用不可变导出身份；旧项目缺字段时回退旧目录解析。
+    const identityFields = readProductionIdentityFields(project);
+    const namingDate = deriveProjectNamingDate({ namingDate: project.namingDate ?? '', createdAt: project.createdAt });
+    const frozen = identityFields.storeCode && identityFields.productCode && identityFields.productionType && identityFields.editorName
+      ? getOrCreateCurrentExportIdentity(db, group.projectId, { ...identityFields, namingDate })
+      : null;
     const exportIdentity = {
       projectId: group.projectId,
       taskName: project.name,
       productCode: project.productCode || '',
       taskDate: formatShanghaiTaskDate(project.createdAt),
-      exportDirName: resolveProjectExportDirName(db, group.projectId),
+      exportDirName: frozen ? frozen.exportDirName : resolveProjectExportDirName(db, group.projectId),
+      ...(frozen ? { baseName: frozen.baseName } : {}),
     };
     const blockedRelativePaths = new Set((db.prepare(`SELECT relativePath FROM project_artifacts WHERE projectId=?`).all(group.projectId) as Array<{ relativePath: string }>).map((row) => row.relativePath));
     const exportTarget = reserveProjectExportTarget(storageRoot, exportIdentity, { blockedRelativePaths });

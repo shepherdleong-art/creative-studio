@@ -54,6 +54,7 @@ const result = await tileSourceImages(db, 'p1', ['img-1'], {
     extractRequestTimeoutMs: 120_000,
     extractMaxAttempts: 2,
     generationConcurrency: 2,
+    maxCatalogImportBytes: 32 * 1024 * 1024,
   },
 });
 assert.equal(result.pages.length, 1);
@@ -98,6 +99,7 @@ const tightLimits = {
   extractRequestTimeoutMs: 120_000,
   extractMaxAttempts: 2,
   generationConcurrency: 2,
+  maxCatalogImportBytes: 32 * 1024 * 1024,
 };
 const bigResult = await tileSourceImages(db, 'p1', ['img-2'], { limits: tightLimits });
 assert.equal(bigResult.pages.length, 1);
