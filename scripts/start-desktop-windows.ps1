@@ -74,8 +74,7 @@ if ($Portable) {
     'start-windows.cmd',
     'stop-windows.cmd',
     '迁移旧版数据.cmd',
-    '环境自检.cmd',
-    '使用说明.txt'
+    '环境自检.cmd'
   )
   do {
     if (-not (Test-Path $portableManifestFile)) { break }

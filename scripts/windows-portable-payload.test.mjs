@@ -104,7 +104,8 @@ for (const forbidden of ['.venv-litellm', 'data', 'storage', 'outputs', 'docs', 
   assert.ok(!filesBlock[1].includes(`'${forbidden}'`), `白名单文件不得包含 ${forbidden}`);
 }
 
-// manifest 契约：与 start-desktop-windows.ps1 预检一致的 schema 与 11 项关键文件
+// manifest 契约：与 start-desktop-windows.ps1 预检一致；仅运行必需文件参与强校验。
+// 使用说明仍需随包交付，但允许维护者补充联系人等文字，不得因此禁用公司网关。
 assert.match(build, /schemaVersion = 1/, 'manifest schemaVersion 必须锁定 1');
 assert.match(build, /'windows-portable-v1'/, 'manifest mode 必须锁定 windows-portable-v1');
 assert.match(build, /Get-Sha256Hex/, 'manifest 必须记录 SHA-256');
@@ -113,6 +114,11 @@ assert.match(build, /appVersion/, 'manifest 必须记录应用版本');
 assert.match(build, /builtAt/, 'manifest 必须记录构建时间');
 assert.match(build, /sourceCommit/, 'manifest 必须记录源码 commit');
 const portablePrecheck = fs.readFileSync(path.join(root, 'scripts', 'start-desktop-windows.ps1'), 'utf8');
+const manifestKeyFilesBlock = build.match(/\$manifestKeyFiles = @\(([\s\S]*?)\)\r?\n/);
+const portableRequiredFilesBlock = portablePrecheck.match(/\$portableRequiredFiles = @\(([\s\S]*?)\)\r?\n/);
+assert.ok(manifestKeyFilesBlock && portableRequiredFilesBlock, '必须存在 manifest 与启动预检关键文件清单');
+assert.ok(!manifestKeyFilesBlock[1].includes("'使用说明.txt'"), '可编辑使用说明不得进入 manifest 强校验');
+assert.ok(!portableRequiredFilesBlock[1].includes("'使用说明.txt'"), '可编辑使用说明不得阻断便携版启动');
 assert.match(
   portablePrecheck,
   /if \(\$Portable\)[\s\S]*?\$env:CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER = '1'/,
@@ -318,7 +324,7 @@ try {
   assert.doesNotMatch(outputEnv, /```/, '成品 .env.local 不得保留 Markdown 围栏');
   assert.match(outputEnv, /CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1/, '去围栏不得改写环境变量');
 
-  // manifest：schema、11 项关键文件、size/sha256 与实际一致、不含密钥哨兵值
+  // manifest：仅含运行必需文件，size/sha256 与实际一致，不含密钥哨兵值
   const manifestRaw = fs.readFileSync(path.join(output, 'portable-manifest.json'), 'utf8');
   const manifest = JSON.parse(manifestRaw);
   assert.equal(manifest.schemaVersion, 1);
@@ -328,6 +334,7 @@ try {
   assert.equal(typeof manifest.sourceCommit, 'string');
   assert.ok(Array.isArray(manifest.files), 'manifest.files 必须是数组');
   const byPath = new Map(manifest.files.map((f) => [f.path, f]));
+  assert.ok(!byPath.has('使用说明.txt'), '可编辑使用说明不得进入 manifest 强校验');
   for (const key of [
     'node-runtime/node.exe',
     'node_modules/.bin/electron.cmd',
