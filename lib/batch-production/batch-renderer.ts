@@ -21,17 +21,10 @@ import { defaultTextStyle } from '../media-core/cover-domain.ts';
 import { textStyleToSvgElements } from '../media-core/cover-title-svg.ts';
 import type { TextStyle } from '../media-core/cover-types.ts';
 import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
+import { resolveCoverContractHash } from './cover-contract.ts';
+import { BATCH_OUTPUT_PRESETS, type BatchOutputPreset } from './output-presets.ts';
 
-export const BATCH_OUTPUT_PRESETS = {
-  '3:4': { width: 1080, height: 1440 },
-  '3x4': { width: 1080, height: 1440 },
-  '9:16': { width: 1080, height: 1920 },
-  '9x16': { width: 1080, height: 1920 },
-  '16:9': { width: 1920, height: 1080 },
-  '16x9': { width: 1920, height: 1080 },
-} as const;
-
-export type BatchOutputPreset = keyof typeof BATCH_OUTPUT_PRESETS;
+export { BATCH_OUTPUT_PRESETS, type BatchOutputPreset } from './output-presets.ts';
 export type BatchRenderAudioMode = 'narration' | 'silent_placeholder';
 
 export interface BatchRenderClipInput {
@@ -249,6 +242,59 @@ export async function discardBatchRenderResult(result: BatchRenderResult): Promi
   await fsp.rmdir(jobDir).catch(() => undefined);
 }
 
+export interface BatchCoverRenderInput {
+  db: Database.Database;
+  projectId: string;
+  batchId: string;
+  batchVersionId: string;
+  planId: string;
+  outputVersionId: string;
+  storageRoot?: string;
+  /** Data root used to resolve managed LUT relative paths; defaults to dataRoot(). */
+  dataRootPath?: string;
+  /** Internal unique render location; defaults to storage/batch-renders. */
+  renderRoot?: string;
+  signal?: AbortSignal;
+  onProgress?: (progress: BatchRenderProgress) => void;
+  /** Test-only output dimensions override; production defaults remain fixed. */
+  outputSize?: { width: number; height: number };
+}
+
+export interface BatchCoverRenderResult {
+  projectId: string;
+  batchId: string;
+  batchVersionId: string;
+  planId: string;
+  outputVersionId: string;
+  planSeq: number;
+  outputVersionNumber: number;
+  /** 本次封面渲染读取的 arrangement 编辑修订号。 */
+  editRevision: number;
+  /** 本次封面渲染读取的 arrangement.cover.timeUs;未设置时为默认时间。 */
+  coverTimeUs: number;
+  /** 冻结封面契约哈希。 */
+  coverContractHash: string;
+  coverAbsolutePath: string;
+  coverRelativePath: string;
+  coverChecksum: string;
+}
+
+/** Delete a completed cover candidate when the scheduler rejects its late result. */
+export async function discardBatchCoverRenderResult(result: BatchCoverRenderResult): Promise<void> {
+  const coverPath = path.resolve(result.coverAbsolutePath);
+  const jobDir = path.dirname(coverPath);
+  if (path.basename(coverPath) !== 'cover.jpg') throw error('拒绝清理非标准封面渲染候选路径');
+  try {
+    const stat = fs.lstatSync(jobDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw error('拒绝清理非目录封面候选');
+  } catch (caught) {
+    if ((caught as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw caught;
+  }
+  await fsp.unlink(coverPath).catch(() => undefined);
+  await fsp.rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+}
+
 interface NormalizedClip {
   clipId: string;
   assetId: string;
@@ -293,6 +339,8 @@ interface Snapshot {
   /** 未显式设置封面 timeUs 时，实际抽帧采用的原片起点。 */
   defaultCoverTimeUs: number;
   arrangement: BatchRenderArrangementInput;
+  /** 冻结输入原始 arrangementJson:封面契约哈希必须由它派生,不能读 live 行。 */
+  arrangementJson: string;
   versionDefaultsJson: Record<string, unknown>;
   clips: ResolvedClip[];
   coverClip: ResolvedClip;
@@ -541,6 +589,7 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
     projectId: input.projectId, batchId: input.batchId, batchVersionId: input.batchVersionId,
     planId: input.planId, outputVersionId: input.outputVersionId, planSeq: row.seq,
     outputVersionNumber: row.versionNumber, arrangement: normalized.arrangement,
+    arrangementJson: row.arrangementJson,
     editRevision: normalized.arrangement.editRevision ?? 0,
     coverTimeUs,
     defaultCoverTimeUs,
@@ -725,6 +774,33 @@ async function atomicRenameNoReplace(tempPath: string, finalPath: string): Promi
   await fsp.rename(tempPath, finalPath);
 }
 
+async function generateCoverFrameAndTitle(params: {
+  db: Database.Database;
+  planId: string;
+  coverClip: ResolvedClip;
+  coverTimeUs: number;
+  arrangementCover?: BatchRenderCoverInput;
+  outputSize: { width: number; height: number };
+  outputPath: string;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { db, planId, coverClip, coverTimeUs, arrangementCover, outputSize, outputPath, signal } = params;
+  if (coverTimeUs < coverClip.sourceStartUs || coverTimeUs >= coverClip.sourceEndUs) {
+    throw error('封面冻结时间点不在封面素材原片区间内');
+  }
+  const coverColorFragments = buildBatchRenderColorFilterFragments({
+    colorSnapshot: coverClip.colorSnapshot,
+    lutPath: coverClip.lutPath,
+  });
+  await runFfmpeg([
+    '-ss', (coverTimeUs / 1_000_000).toFixed(6), '-i', coverClip.sourcePath,
+    '-frames:v', '1', '-vf', [
+      'fps=24', 'setsar=1', ...coverColorFragments, 'format=yuv420p',
+    ].join(','), '-q:v', '2', '-f', 'image2', '-y', outputPath,
+  ], { signal });
+  await applyFrozenCoverTitleToFile(db, planId, outputPath, outputSize, arrangementCover);
+}
+
 /**
  * Render an immutable output version from original media only. This module
  * deliberately never queries proxy tables; proxy files cannot become formal
@@ -804,19 +880,16 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const cover = snapshot.arrangement.cover;
     const requestedCoverTime = cover?.timeUs ?? cover?.frameTimeUs ?? cover?.sourceTimeUs;
     const coverFrameTimeUs = requestedCoverTime == null ? snapshot.defaultCoverTimeUs : finiteInteger(requestedCoverTime, 'cover timeUs');
-    if (coverFrameTimeUs < first.sourceStartUs || coverFrameTimeUs >= first.sourceEndUs) throw error('封面冻结时间点不在封面素材原片区间内');
-    const coverColorFragments = buildBatchRenderColorFilterFragments({ colorSnapshot: first.colorSnapshot, lutPath: first.lutPath });
-    await runFfmpeg([
-      '-ss', (coverFrameTimeUs / 1_000_000).toFixed(6), '-i', first.sourcePath,
-      '-frames:v', '1', '-vf', [
-        // 保留原始帧,构图覆盖要在 sharp 中按原片尺寸统一缩放/裁切;
-        // 先居中 crop 会让水平/垂直位移无法取到原片边缘。
-        'fps=24', 'setsar=1', ...coverColorFragments, 'format=yuv420p',
-      ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
-    ], { signal });
-    // 冻结的封面标题设置随版本 defaultsJson 锁定:抽帧+色彩链之后合成主/副标题,
-    // 再校验与算指纹,保证导出指纹校验与工作区预览一致。片头用的就是这张成品。
-    await applyFrozenCoverTitleToFile(input.db, input.planId, coverTemp, outputSize, snapshot.arrangement.cover);
+    await generateCoverFrameAndTitle({
+      db: input.db,
+      planId: input.planId,
+      coverClip: first,
+      coverTimeUs: coverFrameTimeUs,
+      arrangementCover: cover,
+      outputSize,
+      outputPath: coverTemp,
+      signal,
+    });
     const audioInput = snapshot.clips.length;
     const bgm = await resolveBatchBgm(snapshot.arrangement, snapshot.versionDefaultsJson, resolvedStorageRoot, input.db);
     const args: string[] = [];
@@ -971,6 +1044,101 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
   }
 }
 
+/**
+ * Render only the cover for an output version. Does not spawn video encoding or require audio.
+ */
+export async function renderBatchOutputCover(input: BatchCoverRenderInput): Promise<BatchCoverRenderResult> {
+  const signal = input.signal ?? new AbortController().signal;
+  const report = (progress: BatchRenderProgress) => input.onProgress?.(progress);
+  report({ phase: 'preflight', completed: null, total: null, percent: null, description: '核验封面输入与原片谱系' });
+  assertSignal(signal);
+
+  const snapshot = await loadSnapshot({
+    db: input.db,
+    projectId: input.projectId,
+    batchId: input.batchId,
+    batchVersionId: input.batchVersionId,
+    planId: input.planId,
+    outputVersionId: input.outputVersionId,
+    storageRoot: input.storageRoot,
+    dataRootPath: input.dataRootPath,
+    renderRoot: input.renderRoot,
+    signal,
+  });
+
+  const normalizedPreset = normalizePreset(snapshot.arrangement.preset);
+  const outputSize = input.outputSize ?? BATCH_OUTPUT_PRESETS[normalizedPreset] ?? BATCH_OUTPUT_PRESETS['3:4'];
+
+  const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
+  const renderRoot = path.resolve(input.renderRoot ?? path.join(storageRoot, 'batch-renders'));
+  fs.mkdirSync(renderRoot, { recursive: true });
+  assertNoStorageSymlink(path.dirname(renderRoot), path.basename(renderRoot));
+
+  const safeOutputVersionId = input.outputVersionId.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 80) || 'output';
+  const jobDir = path.join(renderRoot, `${safeOutputVersionId}-cover-${crypto.randomUUID()}`);
+  fs.mkdirSync(jobDir, { recursive: true });
+
+  const coverTemp = path.join(jobDir, `.cover-${crypto.randomUUID()}.jpg.tmp`);
+  const coverFinal = path.join(jobDir, 'cover.jpg');
+
+  try {
+    report({ phase: 'cover', completed: null, total: null, percent: null, description: '生成冻结时间点封面' });
+    assertSignal(signal);
+
+    const first = snapshot.coverClip;
+    const cover = snapshot.arrangement.cover;
+    const requestedCoverTime = cover?.timeUs ?? cover?.frameTimeUs ?? cover?.sourceTimeUs;
+    const coverFrameTimeUs = requestedCoverTime == null ? snapshot.defaultCoverTimeUs : finiteInteger(requestedCoverTime, 'cover timeUs');
+
+    await generateCoverFrameAndTitle({
+      db: input.db,
+      planId: input.planId,
+      coverClip: first,
+      coverTimeUs: coverFrameTimeUs,
+      arrangementCover: cover,
+      outputSize,
+      outputPath: coverTemp,
+      signal,
+    });
+
+    report({ phase: 'verifying', completed: null, total: null, percent: null, description: '校验封面产物' });
+    assertSignal(signal);
+    const coverStat = fs.lstatSync(coverTemp);
+    if (coverStat.isSymbolicLink() || !coverStat.isFile() || coverStat.size <= 0) throw error('封面产物为空');
+    const coverChecksum = await computeFingerprintFromFile(coverTemp);
+    await atomicRenameNoReplace(coverTemp, coverFinal);
+
+    // 契约哈希只由渲染所依据的冻结 snapshot 派生:渲染期间同版本又编辑时,
+    // 不得把旧画面标成新契约哈希(rolling CAS 靠 requestKey 比对拦截)。
+    const coverContractHash = resolveCoverContractHash(input.db, input.outputVersionId, snapshot.arrangementJson);
+
+    report({ phase: 'ready', completed: 1, total: 1, percent: 1, description: '封面生成完成' });
+    return {
+      projectId: snapshot.projectId,
+      batchId: snapshot.batchId,
+      batchVersionId: snapshot.batchVersionId,
+      planId: snapshot.planId,
+      outputVersionId: snapshot.outputVersionId,
+      planSeq: snapshot.planSeq,
+      outputVersionNumber: snapshot.outputVersionNumber,
+      editRevision: snapshot.editRevision,
+      coverTimeUs: coverFrameTimeUs,
+      coverContractHash,
+      coverAbsolutePath: coverFinal,
+      coverRelativePath: toStorageRelativePath(storageRoot, coverFinal),
+      coverChecksum,
+    };
+  } catch (caught) {
+    await Promise.allSettled([fsp.unlink(coverTemp), fsp.unlink(coverFinal)]);
+    try {
+      const stat = fs.lstatSync(jobDir);
+      if (!stat.isSymbolicLink() && stat.isDirectory()) await fsp.rm(jobDir, { recursive: true, force: true });
+    } catch { /* best effort cleanup */ }
+    if (signal.aborted) throw error('任务已中止');
+    throw caught;
+  }
+}
+
 function resolveNarrationPath(input: BatchRenderNarrationInput, storageRoot: string): string {
   if ((input.absolutePath && input.relativePath) || (!input.absolutePath && !input.relativePath)) throw error('narration 必须提供唯一的本地路径');
   const storageRelative = input.relativePath?.replace(/^storage[\\/]/u, '');
@@ -982,161 +1150,6 @@ function resolveNarrationPath(input: BatchRenderNarrationInput, storageRoot: str
   if (stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0) throw error('narration 必须是非空普通文件且不能是符号链接');
   if (!Number.isSafeInteger(input.durationUs) || input.durationUs <= 0) throw error('narration durationUs 无效');
   return filePath;
-}
-
-export interface BatchCoverRegenerationInput {
-  db: Database.Database;
-  projectId: string;
-  batchId: string;
-  planId: string;
-  /** 封面抽帧时间点(微秒),必须落在封面取材 clip 的原片区间内 */
-  timeUs: number;
-  storageRoot?: string;
-  dataRootPath?: string;
-  signal?: AbortSignal;
-}
-
-export interface BatchCoverRegenerationResult {
-  planId: string;
-  outputVersionId: string;
-  timeUs: number;
-  coverRelativePath: string;
-  coverChecksum: string;
-}
-
-/**
- * 换封面(简化版,问题 6/8):改写当前成片版本 arrangement.cover.timeUs 后,
- * 仍然从原片(第一镜头或显式封面 clip)按新时间点重新抽帧,复用同一套冻结
- * 色彩管线。绝不从成片抽帧——成片不是 original-media,从成片取材会同时
- * 打破 original-media-only 不变量与正式导出预检。
- *
- * 产物原子覆盖既有候选封面文件,并把最新渲染尝试的 coverChecksum 同步
- * 更新,让工作区预览与正式导出的指纹校验保持一致;导出仍走 renderer 产物
- * 的封面相对路径,发布链路无需改动。
- */
-export async function regenerateBatchOutputCover(input: BatchCoverRegenerationInput): Promise<BatchCoverRegenerationResult> {
-  const { db, projectId, batchId, planId, timeUs } = input;
-  if (!Number.isSafeInteger(timeUs) || timeUs < 0) throw error('封面抽帧时间点必须是安全整数');
-  const signal = input.signal ?? new AbortController().signal;
-  const storageRoot = path.resolve(input.storageRoot ?? path.join(dataRoot(), 'storage'));
-  const dataRootPath = path.resolve(input.dataRootPath ?? dataRoot());
-
-  const lineage = db.prepare(`
-    SELECT p.batchVersionId, p.currentVersionId
-    FROM batch_output_plans p
-    JOIN batch_production_versions v ON v.id = p.batchVersionId
-    JOIN batch_productions b ON b.id = v.batchId
-    LEFT JOIN batch_output_versions o ON o.id = p.currentVersionId
-    WHERE p.id = ? AND b.id = ? AND b.projectId = ? AND b.deletedAt IS NULL
-  `).get(planId, batchId, projectId) as {
-    batchVersionId: string;
-    currentVersionId: string | null;
-  } | undefined;
-  if (!lineage) throw error('plan 不属于该批次');
-  if (!lineage.currentVersionId) throw error('当前成片版本还没有渲染候选,不能换封面');
-
-  // 解析并重新核验冻结谱系(原片完整指纹 + LUT),拿到封面取材 clip 与色彩快照。
-  const snapshot = await loadSnapshot({
-    db,
-    projectId,
-    batchId,
-    batchVersionId: lineage.batchVersionId,
-    planId,
-    outputVersionId: lineage.currentVersionId,
-    storageRoot,
-    dataRootPath,
-    signal,
-  });
-  const coverClip = snapshot.coverClip;
-  if (timeUs < coverClip.sourceStartUs || timeUs >= coverClip.sourceEndUs) {
-    throw error('封面冻结时间点不在封面素材原片区间内');
-  }
-
-  // 1. 就地改写 arrangement.cover.timeUs。这个历史兼容入口也必须沿用
-  // 片段编辑的鲜度契约：换封面会递增 revision 并清掉审核结论；旧候选
-  // 因而在新渲染完成前不能被再次审核/导出。
-  db.prepare(`
-    UPDATE batch_output_versions
-    SET arrangementJson = json_remove(
-      json_set(
-        arrangementJson,
-        '$.cover.timeUs', ?,
-        '$.editRevision', COALESCE(CAST(json_extract(arrangementJson, '$.editRevision') AS INTEGER), 0) + 1
-      ),
-      '$.review'
-    )
-    WHERE id = ?
-  `).run(timeUs, lineage.currentVersionId);
-
-  // 2. 定位最新成功渲染候选的封面产物(工作区预览与导出都从这里取材)。
-  const candidate = db.prepare(`
-    SELECT a.id AS attemptId, a.resultJson
-    FROM batch_tasks t
-    JOIN batch_task_attempts a ON a.taskId = t.id AND a.attemptNumber = t.attemptCount
-    WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-      AND t.targetKind = 'output_version' AND t.targetId = ? AND t.status = 'succeeded'
-      AND a.status = 'succeeded'
-    ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
-  `).get(projectId, batchId, lineage.currentVersionId) as {
-    attemptId: string;
-    resultJson: string | null;
-  } | undefined;
-  if (!candidate?.resultJson) throw error('当前成片版本没有可用的渲染候选');
-  const record = parseJson(candidate.resultJson, '渲染候选结果') as Record<string, unknown> | null;
-  const coverRelativePath = record && typeof record.coverRelativePath === 'string' ? record.coverRelativePath : '';
-  if (!coverRelativePath) throw error('渲染候选缺少封面产物路径');
-  let coverAbsolutePath: string;
-  try {
-    coverAbsolutePath = resolveStoragePath(storageRoot, coverRelativePath);
-    assertNoStorageSymlink(storageRoot, coverRelativePath);
-  } catch {
-    throw error('候选封面路径不安全');
-  }
-  const coverStat = fs.lstatSync(coverAbsolutePath);
-  if (coverStat.isSymbolicLink() || !coverStat.isFile()) throw error('候选封面文件缺失');
-
-  // 3. 从原片按新时间点抽帧,临时文件 + 原子覆盖候选封面。
-  const outputSize = BATCH_OUTPUT_PRESETS[coverClip.preset] ?? BATCH_OUTPUT_PRESETS['3:4'];
-  const coverTemp = `${coverAbsolutePath}.${crypto.randomUUID()}.tmp.jpg`;
-  try {
-    assertSignal(signal);
-    const colorFragments = buildBatchRenderColorFilterFragments({ colorSnapshot: coverClip.colorSnapshot, lutPath: coverClip.lutPath });
-    await runFfmpeg([
-      '-ss', (timeUs / 1_000_000).toFixed(6), '-i', coverClip.sourcePath,
-      '-frames:v', '1', '-vf', [
-        // 与正式渲染保持一致:先保留原始帧,再由封面合成路径处理画幅和构图。
-        'fps=24', 'setsar=1', ...colorFragments, 'format=yuv420p',
-      ].join(','), '-q:v', '2', '-f', 'image2', '-y', coverTemp,
-    ], { signal });
-    assertSignal(signal);
-    // 换封面抽帧后重放同一套冻结标题合成,保证"换封面不丢标题"。
-    await applyFrozenCoverTitleToFile(db, planId, coverTemp, outputSize);
-    const regeneratedStat = fs.lstatSync(coverTemp);
-    if (regeneratedStat.isSymbolicLink() || !regeneratedStat.isFile() || regeneratedStat.size <= 0) {
-      throw error('封面抽帧产物为空');
-    }
-    const coverChecksum = await computeFingerprintFromFile(coverTemp);
-    await fsp.rename(coverTemp, coverAbsolutePath);
-
-    // 4. 同步渲染尝试的封面指纹:导出发布时会按渲染结果里的 checksum 复核。
-    db.prepare(`
-      UPDATE batch_task_attempts
-      SET resultJson = json_set(resultJson, '$.coverChecksum', ?)
-      WHERE id = ?
-    `).run(coverChecksum, candidate.attemptId);
-
-    return {
-      planId,
-      outputVersionId: lineage.currentVersionId,
-      timeUs,
-      coverRelativePath,
-      coverChecksum,
-    };
-  } catch (caught) {
-    await fsp.unlink(coverTemp).catch(() => undefined);
-    if (signal.aborted) throw error('任务已中止');
-    throw caught;
-  }
 }
 
 export { normalizeArrangement as normalizeBatchRenderArrangement };

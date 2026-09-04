@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
 import { BatchDomainError } from './errors.ts';
+import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 
 export type BatchOutputMediaKind = 'video' | 'cover';
 export type BatchOutputMediaSource = 'candidate' | 'artifact';
@@ -43,16 +44,6 @@ function safeMediaPath(storageRoot: string, relativePath: string): string {
   return absolutePath;
 }
 
-/**
- * 视频与封面的配对键。命名合约里封面比视频多一个「-封面」后缀
- * (`成片-<编码>-<日期>-<序号>.mp4` / `...-封面.jpg`),所以去掉扩展名后
- * 还要去掉这个后缀,两者才归到同一个键。旧命名(视频封面同名不同扩展)
- * 不含该后缀,行为不变。
- */
-function mediaPairKey(relativePath: string): string {
-  return relativePath.replace(/\.[^./\\]+$/u, '').replace(/-封面$/u, '');
-}
-
 function parseCandidate(raw: string | null, expected: {
   projectId: string;
   batchId: string;
@@ -83,6 +74,34 @@ function parseCandidate(raw: string | null, expected: {
       videoRelativePath: value.videoRelativePath,
       coverRelativePath: value.coverRelativePath,
       productionReady: value.productionReady,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseCoverCandidate(raw: string | null, expected: {
+  projectId: string;
+  batchId: string;
+  batchVersionId: string;
+  planId: string;
+  outputVersionId: string;
+}): {
+  coverRelativePath: string;
+} | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      value.projectId !== expected.projectId
+      || value.batchId !== expected.batchId
+      || value.batchVersionId !== expected.batchVersionId
+      || value.planId !== expected.planId
+      || value.outputVersionId !== expected.outputVersionId
+      || typeof value.coverRelativePath !== 'string'
+    ) return null;
+    return {
+      coverRelativePath: value.coverRelativePath,
     };
   } catch {
     return null;
@@ -150,43 +169,81 @@ export function resolveBatchOutputMedia(
     // 传了 renderAttemptId:只解析该成功尝试,并校验它确实属于
     // project→batch→plan→outputVersion 谱系;不传则取"最近一次成功的尝试"。
     // 两种路径 resultJson 与身份必须来自同一 attempt 行。
-    const attempt = renderAttemptId
-      ? db.prepare(`
-          SELECT a.resultJson
-          FROM batch_task_attempts a
-          JOIN batch_tasks t ON t.id = a.taskId
-          WHERE a.id = ? AND a.status = 'succeeded'
-            AND t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-            AND t.targetKind = 'output_version' AND t.targetId = ?
-        `).get(renderAttemptId, projectId, batchId, targetVersionId) as { resultJson: string | null } | undefined
-      : db.prepare(`
-          SELECT a.resultJson
-          FROM batch_tasks t
-          JOIN batch_task_attempts a ON a.id = (
-            SELECT id FROM batch_task_attempts
-            WHERE taskId = t.id AND status = 'succeeded'
-            ORDER BY attemptNumber DESC LIMIT 1
-          )
-          WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
-            AND t.targetKind = 'output_version' AND t.targetId = ?
-          ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
-        `).get(projectId, batchId, targetVersionId) as { resultJson: string | null } | undefined;
-    if (!attempt) {
-      throw new BatchDomainError(
-        'not_found',
-        renderAttemptId ? '指定的渲染尝试不存在、非成功或不属于该成片' : '该成片版本没有可播放的渲染候选',
-      );
+    if (kind === 'cover') {
+      const coverAttempt = renderAttemptId
+        ? db.prepare(`
+            SELECT a.resultJson
+            FROM batch_task_attempts a
+            JOIN batch_tasks t ON t.id = a.taskId
+            WHERE a.id = ? AND a.status = 'succeeded'
+              AND t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+              AND t.targetKind = 'output_version_cover' AND t.targetId = ?
+          `).get(renderAttemptId, projectId, batchId, targetVersionId) as { resultJson: string | null } | undefined
+        : db.prepare(`
+            SELECT a.resultJson
+            FROM batch_tasks t
+            JOIN batch_task_attempts a ON a.id = (
+              SELECT id FROM batch_task_attempts
+              WHERE taskId = t.id AND status = 'succeeded'
+              ORDER BY attemptNumber DESC LIMIT 1
+            )
+            WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+              AND t.targetKind = 'output_version_cover' AND t.targetId = ?
+            ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
+          `).get(projectId, batchId, targetVersionId) as { resultJson: string | null } | undefined;
+
+      const coverCandidate = coverAttempt ? parseCoverCandidate(coverAttempt.resultJson, {
+        projectId,
+        batchId,
+        batchVersionId: plan.batchVersionId,
+        planId,
+        outputVersionId: targetVersionId,
+      }) : null;
+      if (coverCandidate) {
+        relativePath = coverCandidate.coverRelativePath;
+        productionReady = true;
+      }
     }
-    const candidate = parseCandidate(attempt.resultJson, {
-      projectId,
-      batchId,
-      batchVersionId: plan.batchVersionId,
-      planId,
-      outputVersionId: targetVersionId,
-    });
-    if (!candidate) throw new BatchDomainError('not_found', '该成片版本没有可播放的渲染候选');
-    relativePath = kind === 'video' ? candidate.videoRelativePath : candidate.coverRelativePath;
-    productionReady = candidate.productionReady;
+
+    if (!relativePath) {
+      const attempt = renderAttemptId
+        ? db.prepare(`
+            SELECT a.resultJson
+            FROM batch_task_attempts a
+            JOIN batch_tasks t ON t.id = a.taskId
+            WHERE a.id = ? AND a.status = 'succeeded'
+              AND t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+              AND t.targetKind = 'output_version' AND t.targetId = ?
+          `).get(renderAttemptId, projectId, batchId, targetVersionId) as { resultJson: string | null } | undefined
+        : db.prepare(`
+            SELECT a.resultJson
+            FROM batch_tasks t
+            JOIN batch_task_attempts a ON a.id = (
+              SELECT id FROM batch_task_attempts
+              WHERE taskId = t.id AND status = 'succeeded'
+              ORDER BY attemptNumber DESC LIMIT 1
+            )
+            WHERE t.projectId = ? AND t.batchId = ? AND t.workType = 'render'
+              AND t.targetKind = 'output_version' AND t.targetId = ?
+            ORDER BY t.createdAt DESC, t.id DESC LIMIT 1
+          `).get(projectId, batchId, targetVersionId) as { resultJson: string | null } | undefined;
+      if (!attempt) {
+        throw new BatchDomainError(
+          'not_found',
+          renderAttemptId ? '指定的渲染尝试不存在、非成功或不属于该成片' : (kind === 'video' ? '该成片版本没有可播放的视频' : '该成片版本没有封面'),
+        );
+      }
+      const candidate = parseCandidate(attempt.resultJson, {
+        projectId,
+        batchId,
+        batchVersionId: plan.batchVersionId,
+        planId,
+        outputVersionId: targetVersionId,
+      });
+      if (!candidate) throw new BatchDomainError('not_found', kind === 'video' ? '该成片版本没有可播放的视频' : '该成片版本没有封面');
+      relativePath = kind === 'video' ? candidate.videoRelativePath : candidate.coverRelativePath;
+      productionReady = candidate.productionReady;
+    }
   } else {
     // 传了 artifactId:只解析该已登记视频 artifact(及同导出对的封面),校验谱系;
     // 否则按指定版本查历史正式产物,再回落到当前指针。
@@ -245,7 +302,7 @@ export function resolveBatchOutputMedia(
           AND outputVersionId = ? AND kind = 'cover'
         ORDER BY createdAt DESC, id DESC
       `).all(projectId, batchId, planId, video.outputVersionId) as Array<{ relativePath: string }>;
-      const cover = covers.find(({ relativePath }) => mediaPairKey(relativePath) === mediaPairKey(video.relativePath));
+      const cover = covers.find(({ relativePath }) => batchArtifactPathsArePaired(video.relativePath, relativePath));
       if (!cover) throw new BatchDomainError('not_found', '该版本正式产物缺少配对封面');
       relativePath = cover.relativePath;
     }

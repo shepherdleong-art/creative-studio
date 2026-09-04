@@ -41,6 +41,11 @@ export function freezeBatchExportIdentity(
   projectId: string,
   batchVersionId: string,
 ): void {
+  // 旧库/测试夹具可能没有身份字段:任一缺列就按老批次语义直接跳过冻结,
+  // 发布端回退到解析当前身份(不该让生产冻结因缺列崩溃)。
+  const columns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
+  const requiredColumns = ['productCode', 'createdAt', 'storeCode', 'productSubmodel', 'productionType', 'editorName', 'namingDate'];
+  if (!requiredColumns.every((name) => columns.some((col) => col.name === name))) return;
   const project = db.prepare(`
     SELECT productCode, createdAt, storeCode, productSubmodel, productionType, editorName, namingDate
     FROM projects WHERE id = ?
@@ -278,7 +283,10 @@ function matchesCurrentInput(
   // 不参与"整体输入是否变化"的身份比对(否则批次开始后任何重新确认都会误判为新输入)。
   const storedDefaults = parseJsonOrRaw(version.defaultsJson) as Record<string, unknown> | null;
   const identityDefaults = storedDefaults && typeof storedDefaults === 'object' ? { ...storedDefaults } : storedDefaults;
-  if (identityDefaults && typeof identityDefaults === 'object') delete identityDefaults.batchMusicPool;
+  if (identityDefaults && typeof identityDefaults === 'object') {
+    delete identityDefaults.batchMusicPool;
+    delete identityDefaults[BATCH_EXPORT_IDENTITY_KEY];
+  }
   const inputIdentityDefaults = makeInputDefaultsForIdentity(identityDefaults, input.defaultsJson ?? {});
   if (canonicalJson(identityDefaults) !== canonicalJson(inputIdentityDefaults)) {
     return false;

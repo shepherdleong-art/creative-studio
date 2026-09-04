@@ -10,6 +10,7 @@ import type { BatchProductionStatus } from '@/lib/batch-production/versions';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import { splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
 import type { DesktopBridge } from '@/desktop/bridge-types';
 import {
   type AssetPrepareTaskView,
@@ -110,10 +111,16 @@ const EXPORT_SKIP_REASONS: Array<{ match: string; text: string }> = [
   { match: '重新渲染', text: '等待重新渲染完成' },
   { match: 'productionReady', text: '还没有配音' },
   { match: 'narration', text: '还没有配音' },
+  { match: '口播尚未就绪', text: '口播尚未就绪，请先到检查页确认配音' },
+  { match: '尚未审核通过', text: '尚未审核通过，请先到检查页点「通过」' },
   { match: '原片来源', text: '找不到原始素材文件' },
   { match: '内容指纹', text: '原始素材已被修改' },
   { match: 'LUT', text: '调色滤镜已丢失或被修改' },
   { match: '已存在', text: '成品文件已存在，不覆盖' },
+  { match: '整片渲染失败', text: '整片渲染失败，请点「重试导出」或回检查页修改' },
+  { match: '渲染期间成片内容已变化', text: '渲染期间内容被修改，请重新导出' },
+  { match: '成片已被调整过', text: '成片已被调整，请重新导出' },
+  { match: '封面已更换', text: '封面已更换，请重新导出' },
 ];
 
 function humanizeSkipReason(reason: string | undefined): string {
@@ -160,6 +167,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
 
   const [luts, setLuts] = useState<BatchLutRow[]>([]);
   const [lutImporting, setLutImporting] = useState(false);
+  const [managedImporting, setManagedImporting] = useState(false);
   const [proxyTasks, setProxyTasks] = useState<BatchTasksView['tasks']>([]);
   const [assetPrepareTasks, setAssetPrepareTasks] = useState<AssetPrepareTaskView[]>([]);
   const [analysisBusy, setAnalysisBusy] = useState<string | null>(null);
@@ -206,6 +214,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   // loadWorkspace 需要读当前选择做"失效移除"计算,又不希望它进 useCallback 依赖。
   const selectedPlanIdsRef = useRef<string[]>([]);
   useEffect(() => { selectedPlanIdsRef.current = selectedPlanIds; }, [selectedPlanIds]);
+  // 导出流程滞留同页的渲染条目:轮询到全部成功后自动再调一次导出接口完成发布。
+  const pendingAutoExportRef = useRef<string[]>([]);
+  const publishPlansRef = useRef<(planIds: string[]) => Promise<void>>(async () => undefined);
   const [phaseEBusy, setPhaseEBusy] = useState<'export' | 'control' | string | null>(null);
   const [activeStep, setActiveStep] = useState<0 | 1 | 2 | 3>(0);
   const [folderRelativePath, setFolderRelativePath] = useState<string | null>(null);
@@ -420,12 +431,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       if (view.cards.length > 0) {
         setOutputPlans(view.cards.map(({ planId, seq }) => ({ id: planId, seq })));
       }
-      // 画面/封面/BGM/字幕编辑会让当前成功候选立刻变 stale；即使用户在编辑
-      // 前已经勾选，也不能把这条旧候选带进下一次「通过」或正式导出。
-      // B4：被移除的既有选择必须按最新 card 状态列出失效原因，不能静默减少"已选"。
+      // 画面/封面/字幕/BGM 编辑会清审核;即使编辑前已经勾选,也不能把旧选择
+      // 静默带进下一次「通过」或正式导出。
+      // B4：被移除的既有选择必须按最新 card 状态列出失效原因,不能静默减少"已选"。
       const currentSelected = selectedPlanIdsRef.current;
-      const kept = currentSelected.filter((id) => view.cards.some(({ planId, publishable, renderStale }) => (
-        planId === id && publishable && !renderStale
+      const kept = currentSelected.filter((id) => view.cards.some(({ planId, reviewable }) => (
+        planId === id && reviewable
       )));
       setSelectedPlanIds(kept);
       const removed = currentSelected.filter((id) => !kept.includes(id));
@@ -439,13 +450,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               planId: id,
               seq: card.seq,
               title: card.scriptTitle || '未命名脚本',
-              reason: card.renderUncommitted
-                ? '修改后需要重新生成并重新审核'
-                : card.renderStale
-                  ? '修改后需要重新渲染并重新审核'
-                  : !card.publishable
-                    ? '缺少配音，暂时不能导出'
-                    : '已不再满足导出条件',
+              reason: '该成片已不再可编辑（批次停止或还没有候选版本）',
             };
           });
           return [...previous, ...fresh];
@@ -455,6 +460,27 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setWorkspace(null);
     }
   }, [projectId]);
+
+  // 同页会话内:渲染中的导出条目全部成功后自动再调一次导出接口完成发布。
+  // 关闭/刷新页面后服务端任务继续,但需要用户回到导出页再点一次「导出」。
+  useEffect(() => {
+    const pending = pendingAutoExportRef.current;
+    if (pending.length === 0 || phaseEBusy !== null || !workspace) return;
+    const cards = workspace.cards.filter((card) => pending.includes(card.planId));
+    if (cards.length === 0) {
+      pendingAutoExportRef.current = [];
+      return;
+    }
+    if (cards.some((card) => card.fullRenderTask?.status === 'failed')) {
+      pendingAutoExportRef.current = [];
+      setFeedback({ kind: 'error', message: '渲染失败，已停止自动导出；请点「重试导出」或回检查成片修改。' });
+      return;
+    }
+    if (cards.every((card) => card.fullRenderTask?.status === 'succeeded')) {
+      pendingAutoExportRef.current = [];
+      void publishPlansRef.current(pending);
+    }
+  }, [workspace, phaseEBusy]);
 
   const loadPreviewInfos = useCallback(async (batchId: string, versionId: string | null, assetIds: string[]) => {
     if (!versionId || assetIds.length === 0) {
@@ -605,16 +631,21 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const progressView = useMemo<BatchProgressView | null>(() => {
     // 语义匹配/口播排队期间，服务端批次状态还不是 running，但生产任务已经
     // 排队——此时也必须显示进度卡，否则开跑后只剩顶部横幅、下方一片空白。
-    const productionTaskCount = batchTasks.filter((task) => task.workType === 'narration' || task.workType === 'render' || task.workType === 'semantic_score').length;
+    const renderTaskGroups = splitBatchRenderTasks(batchTasks);
+    const coverRenders = renderTaskGroups.cover;
+    const fullRenders = renderTaskGroups.full;
+    const renders = [...coverRenders, ...fullRenders];
+    const productionTaskCount = batchTasks.filter((task) => task.workType === 'narration' || task.workType === 'semantic_score').length + renders.length;
     if (!['running', 'partially_completed', 'completed', 'failed'].includes(batchStatus) && productionTaskCount === 0) return null;
     const narration = batchTasks.filter((task) => task.workType === 'narration');
-    const renders = batchTasks.filter((task) => task.workType === 'render');
     const semantic = batchTasks.filter((task) => task.workType === 'semantic_score');
-    // 起点只算本次生产的任务(语义打分 + 口播 + 渲染),不包括第 1 步的素材分析/代理生成。
-    const productionTasks = batchTasks.filter((task) => task.workType === 'narration' || task.workType === 'render' || task.workType === 'semantic_score');
-    const renderSucceeded = renders.filter((task) => task.status === 'succeeded').length;
-    const renderFailed = renders.filter((task) => task.status === 'failed').length;
-    const renderActive = renders.filter((task) => task.status === 'running' || task.status === 'queued').length;
+    // 起点只算本次生产的任务(语义打分 + 口播 + 封面/整片),不包括第 1 步的素材分析/代理生成。
+    const productionTasks = [
+      ...batchTasks.filter((task) => task.workType === 'narration' || task.workType === 'semantic_score'),
+      ...renders,
+    ];
+    const coverSucceeded = coverRenders.filter((task) => task.status === 'succeeded').length;
+    const fullSucceeded = fullRenders.filter((task) => task.status === 'succeeded').length;
     const narrationSucceeded = narration.filter((task) => task.status === 'succeeded').length;
     const narrationFailed = narration.filter((task) => task.status === 'failed').length;
     const narrationActive = narration.filter((task) => task.status === 'running' || task.status === 'queued').length;
@@ -633,10 +664,14 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         task.attempts.map((attempt) => (attempt.finishedAt ? new Date(attempt.finishedAt).getTime() : 0))))
       : 0;
     const endMs = finished && finishedAtMs > 0 ? finishedAtMs : nowMs;
-    const totalRenders = renders.length;
+    // 没有正式导出任务时，整体进度以封面准备为准；一旦进入第 4 步，
+    // 进度切换到整片渲染。封面与整片任务只参与总进度，不再作为阶段行展示。
+    const progressRenders = fullRenders.length > 0 ? fullRenders : coverRenders;
+    const progressSucceeded = fullRenders.length > 0 ? fullSucceeded : coverSucceeded;
+    const progressTotal = progressRenders.length;
     const stage = (label: string, status: BatchProgressView['stages'][number]['status'], detail?: string, percent?: number) => ({ label, status, detail, percent });
     return {
-      overallPercent: totalRenders > 0 ? renderSucceeded / totalRenders : 0,
+      overallPercent: progressTotal > 0 ? progressSucceeded / progressTotal : 0,
       elapsedSec: startedAtMs ? Math.max(0, Math.floor((endMs - startedAtMs) / 1000)) : 0,
       finished,
       stages: [
@@ -664,17 +699,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             : allocationDone
               ? 'done'
               : 'running',
-        ),
-        stage(
-          '渲染成片',
-          renders.length === 0 ? 'waiting' : renderFailed > 0 ? 'failed' : renderActive > 0 ? 'running' : 'done',
-          totalRenders > 0 ? `${renderSucceeded}/${totalRenders}` : undefined,
-          totalRenders > 0 ? renderSucceeded / totalRenders : undefined,
-        ),
-        stage(
-          '生成封面',
-          totalRenders === 0 ? 'waiting' : renderSucceeded === totalRenders && renderFailed === 0 ? 'done' : 'running',
-          totalRenders > 0 ? `${renderSucceeded}/${totalRenders}` : undefined,
         ),
       ],
     };
@@ -1141,7 +1165,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         kind: result.allocationStatus === 'blocked' ? 'error' : 'success',
         message: result.allocationStatus === 'blocked'
           ? '自动配画面被阻塞，请查看成片卡片中的原因。'
-          : `已开跑，渲染进行中。进度可在本页查看，完成后可到「检查成片」确认并导出。`,
+          : '已开跑，自动配画面与封面生成中；整片渲染会在第 4 步导出时进行。进度可在本页查看。',
       });
       await loadBatchDetail(selectedBatchId);
       await loadWorkspace(selectedBatchId);
@@ -1209,6 +1233,34 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setFeedback({ kind: 'error', message: importError instanceof Error ? importError.message : 'LUT 导入失败' });
     } finally {
       setLutImporting(false);
+    }
+  }
+
+  async function importManagedFiles(files: File[]): Promise<void> {
+    if (files.length === 0) return;
+    setManagedImporting(true);
+    setFeedback(null);
+    try {
+      const form = new FormData();
+      for (const file of files) form.append('files', file, file.name);
+      const result = await readJson<{
+        assetIds: string[];
+        errors: Array<{ filename: string; message: string }>;
+      }>(await fetch(`/api/batch-production/assets/import?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        body: form,
+      }));
+      await reloadPreparation();
+      const imported = result.assetIds.length;
+      const failed = result.errors.length;
+      setFeedback({
+        kind: failed > 0 && imported === 0 ? 'error' : 'success',
+        message: `已导入 ${imported} 条自定义素材${failed > 0 ? `，失败 ${failed} 条：${result.errors.map(({ filename, message }) => `${filename}（${message}）`).join('；')}` : ''}`,
+      });
+    } catch (importError) {
+      setFeedback({ kind: 'error', message: importError instanceof Error ? importError.message : '自定义素材导入失败' });
+    } finally {
+      setManagedImporting(false);
     }
   }
 
@@ -1426,18 +1478,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
-  async function publishSelected(): Promise<void> {
-    // B4：raw selected = 当前勾选与 workspace 做归属匹配、但尚未按
-    // productionReady/publishable/approved/renderStale 过滤的原始选择。
-    // 只在这一层集合为空时前端拦截；其余全部交给服务端逐条复核（服务端是
-    // 最终事实源，能覆盖最后一次 workspace 读取与 POST 之间的竞态）。
-    const selectedCards = (workspace?.cards ?? []).filter((card) => selectedPlanIds.includes(card.planId));
-    const planIdsToPublish = [...new Set(selectedCards.map(({ planId }) => planId))];
-    if (!selectedBatchId || planIdsToPublish.length === 0) {
-      setFeedback({
-        kind: 'error',
-        message: '请先勾选要正式导出的成片。',
-      });
+  async function publishPlans(planIds: string[]): Promise<void> {
+    const uniquePlanIds = [...new Set(planIds)];
+    if (!selectedBatchId || uniquePlanIds.length === 0) {
+      setFeedback({ kind: 'error', message: '请先勾选要正式导出的成片。' });
       return;
     }
     setPhaseEBusy('export');
@@ -1446,14 +1490,23 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     try {
       const result = await readJson<{
         published: number;
+        alreadyPublished?: number;
+        pending: number;
+        failed: number;
         skipped: number;
-        items: Array<{ planId: string; status: 'published' | 'skipped'; reason?: string; videoRelativePath?: string }>;
+        items: Array<{
+          planId: string;
+          status: 'skipped' | 'render_queued' | 'rendering' | 'render_failed' | 'already_published' | 'published';
+          reason?: string;
+          taskId?: string;
+          videoRelativePath?: string;
+        }>;
       }>(await fetch(
         `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/exports?projectId=${encodeURIComponent(projectId)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planIds: planIdsToPublish }),
+          body: JSON.stringify({ planIds: uniquePlanIds }),
         },
       ));
       const cardsById = new Map((workspace?.cards ?? []).map((card) => [card.planId, card]));
@@ -1462,7 +1515,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         return { seq: card?.seq ?? null, title: card?.scriptTitle || '未命名脚本' };
       };
       const skipped = result.items
-        .filter(({ status }) => status === 'skipped')
+        .filter(({ status }) => status === 'skipped' || status === 'render_failed')
         .map(({ planId, reason }) => ({
           planId,
           ...describe(planId),
@@ -1470,9 +1523,24 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         }));
       const removed = selectionDropped;
       setExportResult({ published: result.published, skipped, removed });
+      // 幂等命中也是「已导出」:重复点导出与首次成功同反馈,而不是「已导出 0 条」。
+      const exportedTotal = result.published + (result.alreadyPublished ?? 0);
+      if (result.pending > 0) {
+        // 渲染中的条目滞留同一页面:轮询到全部成功后自动再调一次导出完成发布。
+        pendingAutoExportRef.current = [...new Set([
+          ...pendingAutoExportRef.current,
+          ...result.items
+            .filter(({ status }) => status === 'render_queued' || status === 'rendering')
+            .map(({ planId }) => planId),
+        ])];
+      } else {
+        pendingAutoExportRef.current = [];
+      }
       setFeedback({
-        kind: result.published > 0 ? 'success' : 'error',
-        message: `已导出 ${result.published} 条${result.skipped > 0 ? ` · 跳过 ${result.skipped} 条` : ''}${removed.length > 0 ? ` · 取消选择 ${removed.length} 条` : ''}`,
+        kind: exportedTotal > 0 ? 'success' : result.failed > 0 ? 'error' : result.pending > 0 ? 'success' : 'error',
+        message: result.pending > 0
+          ? `已开始渲染 ${result.pending} 条成片并跳过 ${result.skipped} 条，渲染完成后自动导出（关闭或刷新页面后需再点一次导出）。`
+          : `已导出 ${exportedTotal} 条${result.failed > 0 ? ` · 渲染失败 ${result.failed} 条` : ''}${result.skipped > 0 ? ` · 跳过 ${result.skipped} 条` : ''}${removed.length > 0 ? ` · 取消选择 ${removed.length} 条` : ''}`,
       });
       const exported = result.items.find(({ status }) => status === 'published');
       if (exported?.videoRelativePath) {
@@ -1481,11 +1549,41 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       } else {
         setFolderRelativePath(null);
       }
-      setSelectedPlanIds([]);
-      setSelectionDropped([]);
+      if (result.pending === 0 && result.failed === 0) {
+        setSelectedPlanIds([]);
+        setSelectionDropped([]);
+      }
       await loadWorkspace(selectedBatchId);
     } catch (publishError) {
+      pendingAutoExportRef.current = [];
       setFeedback({ kind: 'error', message: publishError instanceof Error ? publishError.message : '正式导出失败' });
+    } finally {
+      setPhaseEBusy(null);
+    }
+  }
+
+  async function publishSelected(): Promise<void> {
+    await publishPlans(selectedPlanIds);
+  }
+
+  useEffect(() => {
+    publishPlansRef.current = publishPlans;
+  });
+
+  async function retryExportRender(planId: string, taskId: string): Promise<void> {
+    setPhaseEBusy(`export:${taskId}`);
+    setFeedback(null);
+    try {
+      await readJson(await fetch(
+        `/api/batch-production/tasks/${encodeURIComponent(taskId)}/retry?projectId=${encodeURIComponent(projectId)}`,
+        { method: 'POST' },
+      ));
+      await loadWorkspace(selectedBatchId);
+      // 重新排队后直接为该计划再发起一次导出编排,让流程继续。
+      // 不用 selectedPlanIds:刷新页面后选择集为空,重试必须仍能完成发布。
+      await publishPlans([planId]);
+    } catch (retryError) {
+      setFeedback({ kind: 'error', message: retryError instanceof Error ? retryError.message : '重试导出失败' });
     } finally {
       setPhaseEBusy(null);
     }
@@ -1657,7 +1755,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     { label: '已选素材', value: Object.keys(selectedAssets).length },
     { label: '脚本份数', value: selectedScriptEntries.length },
     { label: '目标成片', value: plannedCount, accent: true },
-    { label: '已完成', value: workspace?.counts.publishable ?? 0 },
+    { label: '已完成', value: workspace?.counts.approved ?? 0 },
   ];
 
   const steps: MixcutStepDef[] = [
@@ -1854,6 +1952,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onCleanupProxies={(scope) => void cleanupProxies(scope)}
               onLutAction={(lutId, action) => void lutAction(lutId, action)}
               onImportLutFile={(file) => void importLutFile(file)}
+              onImportFiles={(files) => void importManagedFiles(files)}
               onResync={() => void load()}
               onPreviewAsset={openAssetPreview}
               onPreviewFrozenAsset={openPreparedAssetPreview}
@@ -1881,6 +1980,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               cleanupBusy={cleanupBusy}
               cacheUsage={cacheUsage}
               lutImporting={lutImporting}
+              managedImporting={managedImporting}
               phaseEBusy={phaseEBusy}
             />
           );
@@ -1989,7 +2089,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 ));
               }}
               onSelectAll={() => {
-                const selectable = (workspace?.cards ?? []).filter(({ publishable, renderStale }) => publishable && !renderStale);
+                const selectable = (workspace?.cards ?? []).filter(({ approvable }) => approvable);
                 const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
                 setSelectionDropped([]);
                 setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
@@ -2004,7 +2104,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               selectedBatchId={selectedBatchId}
               outputPreset={reviewOutputPreset}
               onOutputChanged={() => {
-                // 片段编辑就地改当前版本并重渲染:刷新 workspace,卡片进入渲染中。
+                // 编辑只保存;刷新 workspace 让封面/审核/导出状态即时更新。
                 if (selectedBatchId) void loadWorkspace(selectedBatchId);
               }}
               busy={busy}
@@ -2014,7 +2114,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         }
         return commonMain(
           <BatchStepExport
-            workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', exportDirName: '', counts: { total: 0, exportable: 0, publishable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
+            workspace={workspace ?? { batch: { id: selectedBatchId, name: '', status: 'draft', controlState: 'stopped', currentVersionId: null }, phase: 'prepare_materials', exportDirName: '', counts: { total: 0, reviewable: 0, approvable: 0, approved: 0, processing: 0, needsAttention: 0, failed: 0 }, cards: [], exclusions: [], allocationReport: null }}
             selectedPlanIds={selectedPlanIds}
             onTogglePlan={(planId, checked) => {
               setSelectionDropped([]);
@@ -2023,13 +2123,15 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               ));
             }}
             onSelectAll={() => {
-              const selectable = (workspace?.cards ?? []).filter(({ publishable, approved, renderStale }) => publishable && approved && !renderStale);
+              const selectable = (workspace?.cards ?? []).filter(({ exportEligible }) => exportEligible);
               const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
               setSelectionDropped([]);
               setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
             }}
             phaseEBusy={phaseEBusy}
             onPublish={() => void publishSelected()}
+            onRetryExport={(planId, taskId) => void retryExportRender(planId, taskId)}
+            onGoReview={() => setActiveStep(2)}
             onRevealFolder={() => void revealFolder()}
             revealAvailable={revealAvailable}
             revealBusy={revealBusy}

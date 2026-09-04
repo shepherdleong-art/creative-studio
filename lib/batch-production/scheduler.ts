@@ -442,7 +442,7 @@ export function retryTask(
     if (task.controlState === 'stopped') {
       throw new BatchDomainError('conflict', '已停止批次中的任务是终态,不能重试');
     }
-    if (task.status !== 'failed' && !(task.status === 'succeeded' && task.targetKind === 'output_version')) {
+    if (task.status !== 'failed' && !(task.status === 'succeeded' && (task.targetKind === 'output_version' || task.targetKind === 'output_version_cover'))) {
       throw new BatchDomainError('conflict', '任务不是失败状态,不能重试');
     }
     db.prepare(`

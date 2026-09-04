@@ -9,6 +9,10 @@ export interface BatchStepExportProps {
   onSelectAll: () => void;
   phaseEBusy: string | null;
   onPublish: () => void;
+  /** 渲染失败后的重试:重排队该计划任务并直接为该计划重新发起导出。 */
+  onRetryExport: (planId: string, taskId: string) => void;
+  /** 回到检查成片修改。 */
+  onGoReview: () => void;
   onRevealFolder: () => void;
   revealAvailable: boolean;
   revealBusy: boolean;
@@ -21,8 +25,10 @@ export interface BatchStepExportProps {
 }
 
 /**
- * 第 4 步 · 导出成片:多选可导出的成片 → 导出 → 显示成品文件夹路径与「打开文件夹」。
- * 无配音成片不可勾选;跳过原因按原因归类合并。
+ * 第 4 步 · 导出成片:多选可导出成片 → 导出 → 播放/下载当前正式成片。
+ * 播放器只绑定 currentFormalArtifact:第一次导出显示渲染进度;返工再导出时
+ * 旧正式成片继续可播,卡片叠加「当前修改尚未导出」;新成片发布成功后同一
+ * 卡片原位切换到新 artifact。
  */
 export default function BatchStepExport(props: BatchStepExportProps) {
   const {
@@ -32,6 +38,8 @@ export default function BatchStepExport(props: BatchStepExportProps) {
     onSelectAll,
     phaseEBusy,
     onPublish,
+    onRetryExport,
+    onGoReview,
     onRevealFolder,
     revealAvailable,
     revealBusy,
@@ -43,38 +51,27 @@ export default function BatchStepExport(props: BatchStepExportProps) {
   } = props;
   const { counts } = workspace;
   // 服务端硬门禁:productCode 参与导出文件名,为空则整批导出被拒。
-  // 提前在这里挡住并指路,避免用户点下去才看到一句错误。
   const productCodeMissing = !productCode.trim();
-  // folderRelativePath 只在本次会话导出成功后才有值;刷新后就没了。已经有正式
-  // 产物时按工作区返回的 exportDirName 回落,避免用户刷新一次就找不到文件在哪。
-  const hasPublished = workspace.cards.some(({ currentVideo }) => Boolean(currentVideo));
+  const hasPublished = workspace.cards.some(({ currentFormalArtifact }) => Boolean(currentFormalArtifact));
   const exportFolder = folderRelativePath
     ?? (hasPublished && workspace.exportDirName ? `storage/projects/${workspace.exportDirName}/成片` : null);
-  // 可导出 = 技术上可发布 && 已审核通过 && 成功候选与当前编辑修订号一致。
-  // renderStale 是服务端导出新鲜度门禁在工作区的镜像,旧候选仍可预览但不能勾选。
-  const selectable = workspace.cards.filter(({ publishable, approved, renderStale }) => publishable && approved && !renderStale);
+  const selectable = workspace.cards.filter(({ exportEligible }) => exportEligible);
   const allSelected = selectable.length > 0 && selectable.every(({ planId }) => selectedPlanIds.includes(planId));
   const selectedExportCount = selectable.filter(({ planId }) => selectedPlanIds.includes(planId)).length;
 
-  const awaitingReview = workspace.cards.filter(({ publishable, approved }) => publishable && !approved).length;
-  const awaitingRender = workspace.cards.filter(({ publishable, approved, renderStale }) => publishable && approved && renderStale).length;
-  const silentCount = workspace.cards.filter((card) => card.candidate?.audioMode === 'silent_placeholder').length;
-  const blockedReasons = [...new Set(
-    workspace.cards
-      .filter((card) => !card.publishable && card.candidate?.audioMode !== 'silent_placeholder')
-      .flatMap((card) => card.blockers),
-  )];
+  const awaitingReview = workspace.cards.filter(({ approvable, approved }) => approvable && !approved).length;
+  // 渲染/失败/已导出全部消费服务端 exportStatus,不再从前端自拼任务状态。
+  const renderFailedCount = workspace.cards.filter(({ exportStatus }) => exportStatus === 'failed').length;
+  const renderingCount = workspace.cards.filter(({ exportStatus }) => exportStatus === 'rendering').length;
+  const outdatedCount = workspace.cards.filter(({ formalOutdated }) => formalOutdated).length;
 
   const mediaUrl = (
     card: BatchWorkspaceView['cards'][number],
     kind: 'video' | 'cover',
-    source: 'candidate' | 'artifact',
-    generation: string | null,
+    artifactId: string,
     download = false,
   ) => {
-    const params = new URLSearchParams({ projectId, kind, source });
-    // 代际参数让同一 URL 固定指向一个成功渲染尝试/正式产物,不只当 cache-buster。
-    if (generation) params.set(source === 'artifact' ? 'artifactId' : 'renderAttemptId', generation);
+    const params = new URLSearchParams({ projectId, kind, source: 'artifact', artifactId });
     if (download) params.set('download', '1');
     return `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(card.planId)}/media?${params.toString()}`;
   };
@@ -86,7 +83,7 @@ export default function BatchStepExport(props: BatchStepExportProps) {
           <div>
             <h3 className="font-semibold text-ink">导出成片</h3>
             <p className="mt-1 text-sm text-ink-secondary">
-              合格成片 = 视频 + 封面，两个文件同名成对。导出前自动检查，缺配音等不满足条件的成片不可勾选。
+              正式成片在点「导出」时才渲染生成。修改后重新导出，同一张卡片会原位替换成新成片。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -108,40 +105,37 @@ export default function BatchStepExport(props: BatchStepExportProps) {
             <span className="ml-1">正式导出的文件名是「产品编码-日期-脚本-plan序号-版本」，缺了它服务端会拒绝整批导出。请回到项目信息补上产品编码后再来导出。</span>
           </div>
         )}
-        {counts.publishable === 0 && counts.total > 0 && (
-          <div className="w-full space-y-1 text-xs text-warn" role="status">
-            {silentCount > 0 && (
-              <p>{silentCount} 条成片的配音尚未完成或失败：请到「检查成片」确认配音状态，必要时重试配音。</p>
-            )}
-            {blockedReasons.length > 0 && (
-              <p>另有 {blockedReasons.length} 类阻塞原因：{blockedReasons.join('；')}</p>
-            )}
-          </div>
-        )}
         {awaitingReview > 0 && (
           <p className="w-full text-xs text-warn" role="status">
-            {awaitingReview} 条成片可发布但尚未审核：请到「检查成片」勾选后点「通过」，审核通过后才能导出。
+            {awaitingReview} 条成片可导出但尚未审核：请到「检查成片」勾选后点「通过」，审核通过后才能导出。
           </p>
         )}
-        {awaitingRender > 0 && (
+        {renderingCount > 0 && (
+          <p className="w-full text-xs text-accent" role="status">
+            {renderingCount} 条成片正在渲染完整视频，渲染完成后会自动继续发布；如果期间关闭或刷新了页面，重新进入后需要再点一次「导出」完成发布。
+          </p>
+        )}
+        {renderFailedCount > 0 && (
+          <p className="w-full text-xs text-fail" role="status">
+            {renderFailedCount} 条成片渲染失败：可在卡片上点「重试导出」，或回检查成片修改后再导出。
+          </p>
+        )}
+        {outdatedCount > 0 && (
           <p className="w-full text-xs text-warn" role="status">
-            {awaitingRender} 条成片的画面已调整或正在重新渲染：渲染完成后才可导出。
+            {outdatedCount} 条成片当前修改尚未导出：旧正式成片仍可播放和下载，重新导出后原位替换。
           </p>
         )}
         <div className="grid gap-3 sm:grid-cols-5">
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">全部</p><strong className="text-xl text-ink">{counts.total}</strong></div>
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">可导出</p><strong className="text-xl text-ok">{selectable.length}</strong></div>
-          <div className="tile p-3"><p className="text-xs text-ink-tertiary">处理中</p><strong className="text-xl text-accent">{counts.processing}</strong></div>
+          <div className="tile p-3"><p className="text-xs text-ink-tertiary">处理中</p><strong className="text-xl text-accent">{renderingCount}</strong></div>
           <div className="tile p-3"><p className="text-xs text-ink-tertiary">需处理</p><strong className="text-xl text-warn">{counts.needsAttention}</strong></div>
-          <div className="tile p-3"><p className="text-xs text-ink-tertiary">可重试失败</p><strong className="text-xl text-fail">{counts.failed}</strong></div>
+          <div className="tile p-3"><p className="text-xs text-ink-tertiary">渲染失败</p><strong className="text-xl text-fail">{renderFailedCount}</strong></div>
         </div>
         {exportFolder && (
           <div className="rounded-xl bg-ok/10 px-4 py-3 text-sm text-ink" role="status">
             <p className="font-medium text-ok">{folderRelativePath ? '已导出到成品文件夹' : '成品文件夹'}</p>
             <p className="mt-1 break-all text-xs text-ink-secondary">{exportFolder}</p>
-            {/* 「打开文件夹」要调用系统文件管理器,只有桌面安装版有这个权限,
-                服务端同样门禁。不可用时直接不渲染按钮,并指向卡片上的下载入口,
-                而不是留一个点了没反应的按钮。 */}
             {revealAvailable ? (
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <button
@@ -167,17 +161,11 @@ export default function BatchStepExport(props: BatchStepExportProps) {
 
       <div className="grid gap-4 lg:grid-cols-2">
         {workspace.cards.map((card) => {
-          const mediaSource = card.candidate ? 'candidate' : card.currentVideo ? 'artifact' : null;
-          const previewGeneration = mediaSource === 'candidate'
-            ? (card.candidate?.renderAttemptId ?? null)
-            : (card.currentVideo?.id ?? null);
-          const published = Boolean(card.currentVideo);
-          // 「下载最新预览」只对"新鲜且生产就绪"的候选开放:任务成功、非静音占位
-          // (card.publishable 即 workspace 派生的生产就绪位)、与当前编辑一致;
-          // queued/running/failed/stale 一律不冒充最新。
-          const latestFresh = card.task?.status === 'succeeded'
-            && card.publishable
-            && !card.renderStale;
+          const formal = card.currentFormalArtifact;
+          // 服务端统一判断的导出状态:frontend 不自行从任务表拼状态。
+          const exporting = card.exportStatus === 'rendering';
+          const exportFailed = card.exportStatus === 'failed';
+          const progress = card.fullRenderTask?.progress as { phase?: string; percent?: number | null; description?: string } | null;
           return (
             <article key={card.planId} data-testid="batch-export-card" className="tile space-y-3 p-4">
               <div className="flex items-start justify-between gap-3">
@@ -186,14 +174,8 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     type="checkbox"
                     aria-label={`选择成片 ${card.seq}`}
                     checked={selectedPlanIds.includes(card.planId)}
-                    disabled={!card.publishable || !card.approved || card.renderStale}
-                    title={!card.publishable
-                      ? '这条成片还没有配音，暂时无法导出'
-                      : card.renderStale
-                        ? card.renderUncommitted ? '修改还没提交重新渲染，请点卡片上的「重新生成」' : '修改已保存，等待重新渲染完成'
-                        : card.approved
-                          ? undefined
-                          : '这条成片尚未审核通过，请先到检查页点「通过」'}
+                    disabled={!card.exportEligible}
+                    title={card.exportEligible ? undefined : card.approved ? '这条成片口播或封面尚未就绪，暂时无法导出' : '这条成片尚未审核通过，请先到检查页点「通过」'}
                     onChange={(event) => onTogglePlan(card.planId, event.target.checked)}
                     className="mt-1 disabled:opacity-40"
                   />
@@ -202,63 +184,64 @@ export default function BatchStepExport(props: BatchStepExportProps) {
                     <strong className="mt-1 block truncate text-ink">{card.scriptTitle || '未命名脚本'}</strong>
                   </span>
                 </label>
-                <span className={`rounded-full px-2 py-1 text-[11px] ${card.publishable && card.renderStale ? 'bg-warn/20 text-warn' : card.publishable && card.approved ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
-                  {!card.publishable ? '不可导出' : card.renderUncommitted ? '待重新生成' : card.renderStale ? '等待重新渲染' : card.approved ? '可导出' : '待审核'}
+                <span className={`rounded-full px-2 py-1 text-[11px] ${exportFailed ? 'bg-fail/10 text-fail' : formal && card.exportStatus !== 'exported' && card.formalOutdated ? 'bg-warn/20 text-warn' : exporting ? 'bg-accent/10 text-accent' : card.exportStatus === 'exported' || formal ? 'bg-ok/10 text-ok' : card.status === 'needs_attention' ? 'bg-warn/20 text-warn' : 'bg-surface-subtle text-ink-tertiary'}`}>
+                  {exportFailed ? '渲染失败' : formal && card.exportStatus !== 'exported' && card.formalOutdated ? '修改未导出' : exporting ? '正在渲染成片' : card.exportStatus === 'exported' || formal ? '已导出' : card.approved ? '可导出' : '待审核'}
                 </span>
               </div>
-              {mediaSource && (
+              {formal && (
                 <video
-                  key={`${card.planId}-${card.versionId}-${previewGeneration}`}
+                  key={`${card.planId}-${formal.video.id}`}
                   controls
                   preload="metadata"
                   className="aspect-video w-full rounded-xl bg-black"
                   data-testid={`batch-export-preview-${card.planId}`}
                 >
-                  <source src={mediaUrl(card, 'video', mediaSource, previewGeneration)} type="video/mp4" />
+                  <source src={mediaUrl(card, 'video', formal.video.id)} type="video/mp4" />
                 </video>
               )}
-              {card.candidate?.audioMode === 'silent_placeholder' && (
-                <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">无配音样片 —— 仅供检查画面，不能导出。</p>
+              {formal && card.formalOutdated && (
+                <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn" role="status">
+                  当前修改尚未导出：正在播放的是上一版正式成片，重新导出后同一卡片会原位替换。
+                </p>
               )}
-              {(latestFresh || published) && (
-                <div className="space-y-2">
-                  {published && (
-                    <p className="text-xs text-ok">已导出过正式成片，重复导出会追加新文件、不会覆盖旧文件。</p>
-                  )}
-                  {card.task?.status === 'failed' && card.candidate && (
-                    <p className="text-xs text-fail" role="status">渲染失败，请点「重试渲染」；当前可播放的是上一次成功候选。</p>
-                  )}
-                  <div className="flex flex-wrap gap-2">
-                    {latestFresh && card.candidate && (
-                      <>
-                        <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'video', 'candidate', card.candidate.renderAttemptId, true)} download>
-                          下载最新预览视频
-                        </a>
-                        <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', 'candidate', card.candidate.renderAttemptId, true)} download>
-                          下载最新预览封面
-                        </a>
-                      </>
-                    )}
-                    {published && card.currentVideo && (
-                      <>
-                        <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'video', 'artifact', card.currentVideo.id, true)} download>
-                          下载上次正式版视频
-                        </a>
-                        {card.currentCover && (
-                          <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', 'artifact', card.currentCover.id, true)} download>
-                            下载上次正式版封面
-                          </a>
-                        )}
-                      </>
-                    )}
-                  </div>
+              {exporting && progress && (
+                <div className="text-xs text-ink-secondary">
+                  <p>{progress.description || '正在渲染完整成片'}{typeof progress.percent === 'number' ? ` · ${Math.round(progress.percent * 100)}%` : ''}</p>
+                  {typeof progress.percent === 'number' && <progress className="mt-1 w-full" max={1} value={progress.percent} />}
                 </div>
               )}
-              {(card.blockers.length > 0 || card.warnings.length > 0) && (
-                <ul className="space-y-1 text-xs text-warn">
-                  {card.blockers.map((message) => <li key={`b-${message}`}>无法继续：{message}</li>)}
-                  {card.warnings.map((message) => <li key={`w-${message}`}>提醒：{message}</li>)}
-                </ul>
+              {exportFailed && (
+                <p className="text-xs text-fail" role="status">
+                  渲染失败：{card.fullRenderTask?.errorMessage || '未知原因'}
+                </p>
+              )}
+              {formal && (
+                <div className="flex flex-wrap gap-2">
+                  <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'video', formal.video.id, true)} download>
+                    下载当前正式版视频
+                  </a>
+                  {formal.cover && (
+                    <a className="btn-secondary h-8 px-3 text-xs leading-8" href={mediaUrl(card, 'cover', formal.cover.id, true)} download>
+                      下载当前正式版封面
+                    </a>
+                  )}
+                </div>
+              )}
+              {exportFailed && (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="btn-secondary h-8 px-3 text-xs"
+                    disabled={phaseEBusy !== null || !card.fullRenderTask}
+                    onClick={() => card.fullRenderTask && onRetryExport(card.planId, card.fullRenderTask.id)}
+                  >重试导出</button>
+                  <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onGoReview}>回检查成片修改</button>
+                </div>
+              )}
+              {!formal && card.exportStatus === 'not_exported' && !card.exportEligible && (
+                <p className="text-xs text-ink-tertiary">
+                  {card.blockers.length > 0 ? card.blockers.join('；') : '先到检查成片通过审核后再来导出。'}
+                </p>
               )}
             </article>
           );

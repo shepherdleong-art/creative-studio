@@ -1,9 +1,12 @@
 import type Database from 'better-sqlite3';
 import type { BatchTaskExecutor } from './executors.ts';
 import {
+  discardBatchCoverRenderResult,
   discardBatchRenderResult,
+  renderBatchOutputCover,
   renderBatchOutputVersion,
   resolveBatchArrangementNarration,
+  type BatchCoverRenderInput,
   type BatchRenderInput,
   type BatchRenderNarrationInput,
 } from './batch-renderer.ts';
@@ -25,7 +28,7 @@ export interface BatchRenderExecutorOptions {
 
 /**
  * Adapter for the existing scheduler. The task target is always an
- * output_version; all lineage and source/LUT revalidation remains inside the
+ * output_version or output_version_cover; all lineage and source/LUT revalidation remains inside the
  * renderer module rather than being duplicated in the scheduler.
  */
 export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = {}): BatchTaskExecutor {
@@ -33,7 +36,9 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
     workTypes: ['render'],
     async execute(context) {
       const { db, claim, signal } = context;
-      if (claim.task.targetKind !== 'output_version') throw new Error('正式渲染任务目标必须是 output_version');
+      if (claim.task.targetKind !== 'output_version' && claim.task.targetKind !== 'output_version_cover') {
+        throw new Error('正式渲染任务目标必须是 output_version 或 output_version_cover');
+      }
       const task = db.prepare(`SELECT projectId, batchId FROM batch_tasks WHERE id = ?`).get(claim.task.id) as { projectId: string; batchId: string } | undefined;
       if (!task) throw new Error('正式渲染任务不存在');
       const lineage = db.prepare(`
@@ -44,6 +49,37 @@ export function createBatchRenderExecutor(options: BatchRenderExecutorOptions = 
         WHERE o.id = ? AND v.batchId = ?
       `).get(claim.task.targetId, task.batchId) as { batchVersionId: string; planId: string; outputVersionId: string } | undefined;
       if (!lineage) throw new Error('正式渲染目标不属于任务批次谱系');
+
+      if (claim.task.targetKind === 'output_version_cover') {
+        const coverInput: BatchCoverRenderInput = {
+          db,
+          projectId: task.projectId,
+          batchId: task.batchId,
+          batchVersionId: lineage.batchVersionId,
+          planId: lineage.planId,
+          outputVersionId: lineage.outputVersionId,
+          storageRoot: options.storageRoot,
+          dataRootPath: options.dataRootPath,
+          renderRoot: options.renderRoot,
+          signal,
+          onProgress: (progress) => context.reportProgress({
+            phase: progress.phase,
+            description: progress.description,
+            completed: progress.completed ?? undefined,
+            total: progress.total ?? undefined,
+            percent: progress.percent,
+          }),
+        };
+        const result = await renderBatchOutputCover(coverInput);
+        return {
+          resultJson: {
+            ...result,
+            coverAbsolutePath: undefined,
+          },
+          discard: () => discardBatchCoverRenderResult(result),
+        };
+      }
+
       const narration = options.resolveNarration
         ? await options.resolveNarration({
             db, projectId: task.projectId, batchId: task.batchId,
