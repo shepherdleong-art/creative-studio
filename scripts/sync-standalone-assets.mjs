@@ -55,6 +55,7 @@ const localOnlyRoots = [
   'docs',
   'installer',
   'litellm-config.yaml',
+  'node-runtime',
   'outputs',
   'python-runtime',
   'scripts',
@@ -64,7 +65,12 @@ for (const relativePath of localOnlyRoots) {
   rmSync(join(standaloneDir, relativePath), { recursive: true, force: true });
 }
 for (const entry of readdirSync(standaloneDir)) {
-  if (entry === '.env' || entry.startsWith('.env.')) {
+  if (
+    entry === '.env'
+    || entry.startsWith('.env.')
+    || entry === 'config.yaml'
+    || entry.startsWith('config.yaml.')
+  ) {
     rmSync(join(standaloneDir, entry), { recursive: true, force: true });
   }
 }
@@ -72,6 +78,11 @@ for (const entry of readdirSync(standaloneDir)) {
 for (const forbidden of [...localOnlyRoots, '.env.local']) {
   if (existsSync(join(standaloneDir, forbidden))) {
     throw new Error(`Standalone output contains forbidden path: ${forbidden}`);
+  }
+}
+for (const entry of readdirSync(standaloneDir)) {
+  if (entry.startsWith('.env') || entry.startsWith('config.yaml')) {
+    throw new Error(`Standalone output contains forbidden credential file: ${entry}`);
   }
 }
 

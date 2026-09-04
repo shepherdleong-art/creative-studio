@@ -4,24 +4,20 @@
   装配 Windows 免安装包（创意工作台 portable 分发目录）。
 .DESCRIPTION
   仅供维护者在本机仓库执行，终端用户不运行本脚本。
-  - 只从显式白名单装配：node-runtime、python-runtime、node_modules、
-    .next/standalone、dist-desktop、scripts、package.json、config.yaml、.env.local、
-    环境自检.cmd，以及 installer/windows 下的 portable 启动模板与使用说明。
-    除此之外的本机状态（.venv-litellm、data、storage、outputs、docs、.git、
-    .cache、dist 等）一律不进成品。
-  - 装配前先运行 python-runtime 只读验收与 payload 前置检查，任一缺失即失败。
-  - 在同盘临时目录完成装配并生成 portable-manifest.json，然后改名发布；
-    目标目录已存在时拒绝覆盖。
-  - config.yaml / .env.local 只复制，不读取、不打印；manifest 只记录相对路径、
-    大小与 SHA-256，不含密钥值。
+  - 正式运行时固定在 Windows x64 + Node 22 上执行 npm ci，再重建 Next standalone 与 Electron 桌面壳。
+  - 只从显式白名单装配 runtime、standalone、桌面壳、运行时脚本、公司配置、
+    启停/迁移入口、许可证、自检与使用说明；本机数据和开发脚本不进成品。
+  - config.yaml / .env.local 仅在本机做字段白名单和密钥泄漏扫描，绝不打印值。
+  - 在同盘临时目录完成装配、扫描与 manifest 生成后改名发布，拒绝覆盖旧目录。
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1 -OutputPath D:\release\创意工作台-0.4.0-免安装版
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1 -OutputPath D:\release\创意工作台-0.6.0-免安装版
 #>
 [CmdletBinding()]
 param(
-  # 成品输出目录（必须是尚不存在的新目录）
   [Parameter(Mandatory = $true)]
-  [string]$OutputPath
+  [string]$OutputPath,
+  # 仅供临时 fixture 测试；正式发布不得传此参数。
+  [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,36 +34,81 @@ Set-Location $Root
 
 $OutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
 if (Test-Path -LiteralPath $OutputPath) {
-  throw "目标目录已存在，拒绝覆盖：$OutputPath。免安装包每次发布必须装配到全新目录，再由人工复制到共享盘。"
+  throw "目标目录已存在，拒绝覆盖：$OutputPath。免安装包每次发布必须装配到全新目录。"
 }
 $outputParent = Split-Path -Parent $OutputPath
 if (-not (Test-Path -LiteralPath $outputParent)) {
   New-Item -ItemType Directory -Force -Path $outputParent | Out-Null
 }
-# 同盘临时目录：与目标同父目录，最后的改名发布是同盘原子移动
 $staging = Join-Path $outputParent ('.portable-staging-{0}' -f [guid]::NewGuid().ToString('N'))
+
+$packageMetadata = Get-Content -LiteralPath (Join-Path $Root 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$appVersion = [string]$packageMetadata.version
+$sourceCommit = 'unknown'
+try {
+  $sourceCommitCandidate = (& git.exe -C $Root rev-parse HEAD 2>$null | Select-Object -First 1)
+  if ($LASTEXITCODE -eq 0 -and $sourceCommitCandidate) { $sourceCommit = [string]$sourceCommitCandidate }
+} catch {}
+
+function Get-Sha256Hex([string]$FilePath) {
+  $stream = [System.IO.File]::OpenRead($FilePath)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
+function Get-NodeRuntimeInfo([string]$NodePath) {
+  $json = & $NodePath -p "JSON.stringify({node:process.versions.node,modules:process.versions.modules,platform:process.platform,arch:process.arch})"
+  if ($LASTEXITCODE -ne 0 -or -not $json) {
+    throw "无法读取 Node 运行时信息：$NodePath"
+  }
+  try {
+    return ($json | ConvertFrom-Json)
+  } catch {
+    throw "Node 运行时信息格式无效：$NodePath"
+  }
+}
 
 # ── 显式白名单（除此之外一律不进免安装包）──
 $whitelistDirs = @(
-  'node-runtime',        # 内置便携 Node 22（node-runtime\node.exe）
-  'python-runtime',      # 内置便携 Python 3.12.10 + LiteLLM 1.89.2
-  'node_modules',        # 含 Electron 二进制与预编译原生模块（better-sqlite3/sharp）
-  'dist-desktop'         # 桌面壳编译产物（main.js/preload.js 等）
+  'node-runtime',
+  'python-runtime',
+  'node_modules'
 )
 $whitelistFiles = @(
-  'package.json',        # Electron 以包根为 app 目录，必须携带
-  'config.yaml',         # 公司网关配置（含 Key）：只复制，绝不读取或打印
-  '.env.local',          # 腾讯云 COS 密钥：只复制，绝不读取或打印
+  'package.json',
+  'config.yaml',
+  '.env.local',
+  'LICENSE',
+  'stop-windows.cmd',
   '环境自检.cmd'
 )
-# installer 模板 → 成品根目录落点
+$runtimeScriptFiles = @(
+  'start-desktop-windows.ps1',
+  'start-stack.ps1',
+  'stop-stack.ps1',
+  'stop-windows.ps1',
+  'start-litellm-proxy.py',
+  'diagnose-local-env.mjs',
+  'migrate-portable-data.ps1',
+  'migrate-portable-data.mjs'
+)
+$desktopPayloadFiles = @(
+  'main.js',
+  'preload.js',
+  'service.js',
+  'ipc.js'
+)
 $templateMap = @(
   @{ Source = 'installer\windows\start-windows-portable.cmd'; Target = 'start-windows.cmd' },
+  @{ Source = 'installer\windows\迁移旧版数据.cmd';           Target = '迁移旧版数据.cmd' },
   @{ Source = 'installer\windows\使用说明-portable.txt';      Target = '使用说明.txt' }
 )
 
-# portable-manifest.json 关键文件清单：前 11 项与 scripts/start-desktop-windows.ps1
-# 的预检契约保持一致（缺失即判定包损坏），其余为启动/自检入口。
 $manifestKeyFiles = @(
   'node-runtime/node.exe',
   'node_modules/.bin/electron.cmd',
@@ -80,16 +121,25 @@ $manifestKeyFiles = @(
   'scripts/start-stack.ps1',
   'scripts/start-litellm-proxy.py',
   'config.yaml',
+  '.env.local',
   'dist-desktop/main.js',
+  'dist-desktop/preload.js',
+  'dist-desktop/service.js',
+  'dist-desktop/ipc.js',
   'package.json',
+  'LICENSE',
   'scripts/stop-stack.ps1',
+  'scripts/stop-windows.ps1',
+  'scripts/migrate-portable-data.ps1',
+  'scripts/migrate-portable-data.mjs',
   'scripts/diagnose-local-env.mjs',
   'start-windows.cmd',
+  'stop-windows.cmd',
+  '迁移旧版数据.cmd',
   '环境自检.cmd',
   '使用说明.txt'
 )
 
-# 成品中绝不允许出现的路径（本机数据、密钥缓存、开发/构建产物）
 $forbiddenInPayload = @(
   '.venv-litellm',
   'data',
@@ -104,21 +154,71 @@ $forbiddenInPayload = @(
 )
 
 try {
-  # ── 1/5 python-runtime 只读验收（版本/manifest/wheel 抽查/许可证）──
-  Write-Host '[1/5] 验收 python-runtime...'
+  # ── 1/8 干净依赖与 Node ABI 硬校验 ──
+  if (-not $SkipBuild) {
+    Write-Host '[1/8] 校验 Windows x64 / Node 22，并从 package-lock 干净安装依赖...'
+    $hostNode = (Get-Command node.exe -ErrorAction Stop).Source
+    $hostInfo = Get-NodeRuntimeInfo $hostNode
+    $hostMajor = ([string]$hostInfo.node).Split('.')[0]
+    if ($hostMajor -ne '22' -or $hostInfo.platform -ne 'win32' -or $hostInfo.arch -ne 'x64') {
+      throw "正式装配要求 Windows x64 + Node 22；当前为 $($hostInfo.platform)/$($hostInfo.arch) Node $($hostInfo.node)。"
+    }
+
+    & npm.cmd ci --include=dev
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci 失败，停止装配。' }
+
+    $electronBinary = Join-Path $Root 'node_modules\electron\dist\electron.exe'
+    if (-not (Test-Path -LiteralPath $electronBinary -PathType Leaf)) {
+      Write-Host 'npm ci 未下载 Electron runtime，执行官方安装脚本...'
+      & $hostNode (Join-Path $Root 'node_modules\electron\install.js')
+      if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $electronBinary -PathType Leaf)) {
+        throw 'Electron runtime 安装失败，停止装配。'
+      }
+    }
+
+    $bundledNode = Join-Path $Root 'node-runtime\node.exe'
+    if (-not (Test-Path -LiteralPath $bundledNode -PathType Leaf)) {
+      throw '缺少 node-runtime\node.exe，停止装配。'
+    }
+    $bundledInfo = Get-NodeRuntimeInfo $bundledNode
+    $bundledMajor = ([string]$bundledInfo.node).Split('.')[0]
+    if (
+      $bundledMajor -ne '22' -or
+      $bundledInfo.modules -ne '127' -or
+      $bundledInfo.platform -ne 'win32' -or
+      $bundledInfo.arch -ne 'x64'
+    ) {
+      throw "包内 Node 必须是 win32/x64 Node 22 ABI 127；当前为 $($bundledInfo.platform)/$($bundledInfo.arch) Node $($bundledInfo.node) ABI $($bundledInfo.modules)。"
+    }
+    & $bundledNode -e "const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.close(); require('sharp')"
+    if ($LASTEXITCODE -ne 0) {
+      throw '包内 Node 无法加载 npm ci 生成的 better-sqlite3/sharp 原生模块，停止装配。'
+    }
+  } else {
+    Write-Host '[1/8] fixture 模式：已显式跳过 npm ci、Node ABI 校验与构建。' -ForegroundColor Yellow
+  }
+
+  # ── 2/8 重新生成与当前源码一致的产物 ──
+  if (-not $SkipBuild) {
+    Write-Host '[2/8] 重新构建 Next standalone 与 Electron 桌面壳...'
+    & npm.cmd run build
+    if ($LASTEXITCODE -ne 0) { throw 'Next standalone 构建失败，停止装配。' }
+    & npm.cmd run build:desktop
+    if ($LASTEXITCODE -ne 0) { throw 'Electron 桌面壳编译失败，停止装配。' }
+  } else {
+    Write-Host '[2/8] fixture 模式：已显式跳过构建。' -ForegroundColor Yellow
+  }
+
+  # ── 3/8 python-runtime 只读验收 ──
+  Write-Host '[3/8] 验收 python-runtime...'
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'verify-python-runtime-windows.ps1')
   if ($LASTEXITCODE -ne 0) { throw 'python-runtime 验收失败，停止装配。' }
 
-  # ── 2/5 payload 前置检查：白名单来源与关键文件齐备 ──
-  Write-Host '[2/5] payload 前置检查...'
+  # ── 4/8 payload 前置检查 ──
+  Write-Host '[4/8] payload 前置检查...'
   $requiredSources = @(
     '.next\standalone',
-    'scripts',
-    'scripts\start-desktop-windows.ps1',
-    'scripts\start-stack.ps1',
-    'scripts\stop-stack.ps1',
-    'scripts\start-litellm-proxy.py',
-    'scripts\diagnose-local-env.mjs',
+    'scripts\verify-portable-payload.mjs',
     'node-runtime\node.exe',
     'python-runtime\python.exe',
     'python-runtime\runtime-manifest.json',
@@ -126,50 +226,75 @@ try {
     'node_modules\electron\dist\electron.exe',
     '.next\standalone\server.js',
     '.next\standalone\runtime\server-entry.js',
-    'dist-desktop\main.js'
-  ) + $whitelistDirs + $whitelistFiles + @($templateMap | ForEach-Object { $_.Source })
+    'dist-desktop\main.js',
+    'dist-desktop\preload.js',
+    'dist-desktop\service.js',
+    'dist-desktop\ipc.js'
+  ) + $whitelistDirs + $whitelistFiles + @($runtimeScriptFiles | ForEach-Object { "scripts\$_" }) + @($desktopPayloadFiles | ForEach-Object { "dist-desktop\$_" }) + @($templateMap | ForEach-Object { $_.Source })
   $missing = @($requiredSources | Sort-Object -Unique | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Root $_)) })
   if ($missing.Count -gt 0) {
     throw ("payload 前置检查失败，缺少以下来源：`r`n - " + ($missing -join "`r`n - "))
   }
 
-  # ── 3/5 白名单装配到同盘临时目录 ──
-  Write-Host "[3/5] 装配到临时目录：$staging"
+  # ── 5/8 白名单装配 ──
+  Write-Host "[5/8] 装配到临时目录：$staging"
   New-Item -ItemType Directory -Force -Path $staging | Out-Null
   foreach ($dir in $whitelistDirs) {
     Copy-Item -LiteralPath (Join-Path $Root $dir) -Destination (Join-Path $staging $dir) -Recurse -Force
   }
+  New-Item -ItemType Directory -Force -Path (Join-Path $staging 'dist-desktop') | Out-Null
+  foreach ($desktopFile in $desktopPayloadFiles) {
+    Copy-Item -LiteralPath (Join-Path $Root "dist-desktop\$desktopFile") -Destination (Join-Path $staging "dist-desktop\$desktopFile") -Force
+  }
   New-Item -ItemType Directory -Force -Path (Join-Path $staging '.next') | Out-Null
   Copy-Item -LiteralPath (Join-Path $Root '.next\standalone') -Destination (Join-Path $staging '.next\standalone') -Recurse -Force
-  Copy-Item -LiteralPath (Join-Path $Root 'scripts') -Destination (Join-Path $staging 'scripts') -Recurse -Force
+  New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts') | Out-Null
+  foreach ($scriptName in $runtimeScriptFiles) {
+    Copy-Item -LiteralPath (Join-Path $Root "scripts\$scriptName") -Destination (Join-Path $staging "scripts\$scriptName") -Force
+  }
   foreach ($file in $whitelistFiles) {
     Copy-Item -LiteralPath (Join-Path $Root $file) -Destination (Join-Path $staging $file) -Force
   }
+  # 当前开发密钥文件允许用 Markdown 围栏包住 dotenv 段。成品中只删除独占一行的
+  # ``` / ```env / ```dotenv 标记，其余每个字节均保留；全程不向控制台输出内容。
+  $stagedEnvPath = Join-Path $staging '.env.local'
+  $stagedEnvLines = [System.IO.File]::ReadAllLines($stagedEnvPath)
+  $normalizedEnvLines = @($stagedEnvLines | Where-Object { $_.Trim() -notmatch '^```(?:env|dotenv)?$' })
+  [System.IO.File]::WriteAllLines($stagedEnvPath, $normalizedEnvLines, [System.Text.UTF8Encoding]::new($false))
   foreach ($map in $templateMap) {
     Copy-Item -LiteralPath (Join-Path $Root $map.Source) -Destination (Join-Path $staging $map.Target) -Force
   }
 
-  # 装配后硬断言：成品不得夹带本机状态或开发产物
   foreach ($forbidden in $forbiddenInPayload) {
     if (Test-Path -LiteralPath (Join-Path $staging $forbidden)) {
       throw "装配结果包含禁止路径：$forbidden"
     }
   }
 
-  # ── 4/5 生成 portable-manifest.json（相对路径、大小、SHA-256；不含密钥值）──
-  Write-Host '[4/5] 生成 portable-manifest.json...'
+  # ── 6/8 递归敏感边界扫描 ──
+  Write-Host '[6/8] 扫描 payload 边界与敏感值泄漏...'
+  $validationNode = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
+  if (-not $validationNode) { $validationNode = Join-Path $Root 'node-runtime\node.exe' }
+  & $validationNode (Join-Path $ScriptDir 'verify-portable-payload.mjs') --payload $staging
+  if ($LASTEXITCODE -ne 0) { throw 'payload 安全扫描失败，停止发布。' }
+
+  # ── 7/8 生成 portable-manifest.json ──
+  Write-Host '[7/8] 生成 portable-manifest.json...'
   $files = foreach ($rel in $manifestKeyFiles) {
     $abs = Join-Path $staging ($rel -replace '/', '\')
     if (-not (Test-Path -LiteralPath $abs)) { throw "关键文件缺失，不发布：$rel" }
     [ordered]@{
       path   = $rel
       size   = (Get-Item -LiteralPath $abs).Length
-      sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $abs).Hash.ToLowerInvariant()
+      sha256 = Get-Sha256Hex $abs
     }
   }
   $manifest = [ordered]@{
     schemaVersion = 1
     mode          = 'windows-portable-v1'
+    appVersion    = $appVersion
+    builtAt       = [DateTime]::UtcNow.ToString('o')
+    sourceCommit  = $sourceCommit
     files         = @($files)
   }
   $manifestJson = ($manifest | ConvertTo-Json -Depth 4) + "`r`n"
@@ -179,13 +304,17 @@ try {
     (New-Object System.Text.UTF8Encoding $false)
   )
 
-  # ── 5/5 改名发布（同盘原子移动；目标已存在已在开头拒绝）──
+  # ── 8/8 同盘改名发布 ──
   Move-Item -LiteralPath $staging -Destination $OutputPath
-  Write-Host "[5/5] 免安装包已发布：$OutputPath" -ForegroundColor Green
-  Write-Host '后续：把该目录整体复制到共享盘新版本目录，再用 portable-manifest.json 复核关键文件完整性。'
+  Write-Host "[8/8] 免安装包已发布：$OutputPath" -ForegroundColor Green
+  Write-Host '主包不要启动；请只从复制出的 QA 目录验收。'
 } catch {
   if (Test-Path -LiteralPath $staging) {
-    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    $resolvedStaging = [System.IO.Path]::GetFullPath($staging)
+    $resolvedParent = [System.IO.Path]::GetFullPath($outputParent).TrimEnd('\') + '\'
+    if ($resolvedStaging.StartsWith($resolvedParent, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolvedStaging).StartsWith('.portable-staging-')) {
+      Remove-Item -LiteralPath $resolvedStaging -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
   Write-Host "装配失败：$_" -ForegroundColor Red
   exit 1

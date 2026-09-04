@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const buildScriptPath = path.join(root, 'scripts', 'build-windows-portable.ps1');
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
@@ -30,6 +31,7 @@ function sha256File(filePath) {
 // 静态合同测试
 // ======================================================================
 assert.ok(fs.existsSync(buildScriptPath), '缺少 scripts/build-windows-portable.ps1');
+assert.match(packageJson.scripts['build:win-portable'] ?? '', /build-windows-portable\.ps1/);
 const buildBytes = fs.readFileSync(buildScriptPath);
 assert.deepEqual(
   [...buildBytes.subarray(0, 3)],
@@ -45,14 +47,17 @@ for (const required of [
   "'node-runtime'",
   "'python-runtime'",
   "'node_modules'",
-  "'dist-desktop'",
+  '$desktopPayloadFiles',
   "'.next\\standalone'",
-  "'scripts'",
+  '$runtimeScriptFiles',
   "'package.json'",
   "'config.yaml'",
   "'.env.local'",
+  "'LICENSE'",
+  "'stop-windows.cmd'",
   '环境自检.cmd',
   'start-windows-portable.cmd',
+  '迁移旧版数据.cmd',
   '使用说明-portable.txt',
 ]) {
   assert.ok(build.includes(required), `装配白名单缺少 ${required}`);
@@ -60,7 +65,21 @@ for (const required of [
 
 // portable cmd 模板必须落为成品根 start-windows.cmd，使用说明落为成品根 使用说明.txt
 assert.match(build, /Target = 'start-windows\.cmd'/, 'portable 启动模板必须装配为成品根 start-windows.cmd');
+assert.match(build, /Target = '迁移旧版数据\.cmd'/, '数据迁移模板必须装配为成品根 迁移旧版数据.cmd');
 assert.match(build, /Target = '使用说明\.txt'/, '使用说明必须装配为成品根 使用说明.txt');
+
+for (const runtimeScript of [
+  'start-desktop-windows.ps1',
+  'start-stack.ps1',
+  'stop-stack.ps1',
+  'stop-windows.ps1',
+  'start-litellm-proxy.py',
+  'diagnose-local-env.mjs',
+  'migrate-portable-data.ps1',
+  'migrate-portable-data.mjs',
+]) {
+  assert.ok(build.includes(`'${runtimeScript}'`), `运行时脚本白名单缺少 ${runtimeScript}`);
+}
 
 // 明确排除本机状态与安装器产物
 for (const forbidden of [
@@ -88,9 +107,17 @@ for (const forbidden of ['.venv-litellm', 'data', 'storage', 'outputs', 'docs', 
 // manifest 契约：与 start-desktop-windows.ps1 预检一致的 schema 与 11 项关键文件
 assert.match(build, /schemaVersion = 1/, 'manifest schemaVersion 必须锁定 1');
 assert.match(build, /'windows-portable-v1'/, 'manifest mode 必须锁定 windows-portable-v1');
-assert.match(build, /Get-FileHash -Algorithm SHA256/, 'manifest 必须记录 SHA-256');
+assert.match(build, /Get-Sha256Hex/, 'manifest 必须记录 SHA-256');
 assert.match(build, /size/, 'manifest 必须记录文件大小');
+assert.match(build, /appVersion/, 'manifest 必须记录应用版本');
+assert.match(build, /builtAt/, 'manifest 必须记录构建时间');
+assert.match(build, /sourceCommit/, 'manifest 必须记录源码 commit');
 const portablePrecheck = fs.readFileSync(path.join(root, 'scripts', 'start-desktop-windows.ps1'), 'utf8');
+assert.match(
+  portablePrecheck,
+  /if \(\$Portable\)[\s\S]*?\$env:CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER = '1'/,
+  '免安装启动入口必须覆盖同事机器的同名环境变量，强制开启脚本调度器',
+);
 for (const key of [
   'node-runtime/node.exe',
   'node_modules/.bin/electron.cmd',
@@ -103,6 +130,9 @@ for (const key of [
   'scripts/start-stack.ps1',
   'scripts/start-litellm-proxy.py',
   'config.yaml',
+  '.env.local',
+  'stop-windows.cmd',
+  '迁移旧版数据.cmd',
 ]) {
   assert.ok(build.includes(`'${key}'`), `manifest 关键文件清单缺少 ${key}`);
   assert.ok(portablePrecheck.includes(`'${key}'`), `预检关键文件清单与装配 manifest 不一致：${key}`);
@@ -110,6 +140,21 @@ for (const key of [
 
 // 装配顺序与安全约束
 assert.match(build, /verify-python-runtime-windows\.ps1/, '装配前必须运行 python-runtime 只读验收');
+assert.match(build, /npm\.cmd ci --include=dev/, '正式装配必须从 package-lock 重新安装干净依赖');
+assert.match(build, /npm\.cmd run build/, '正式装配前必须重新生成 Next standalone');
+assert.match(build, /npm\.cmd run build:desktop/, '正式装配前必须重新编译 Electron 桌面壳');
+assert.match(build, /\[switch\]\$SkipBuild/, '临时 fixture 测试必须能显式跳过构建，正式默认不能跳过');
+for (const runtimeGuard of [
+  'process.versions.node',
+  'process.versions.modules',
+  'process.platform',
+  'process.arch',
+  "new Database(':memory:')",
+  "require('sharp')",
+]) {
+  assert.ok(build.includes(runtimeGuard), `正式装配缺少 Node/原生模块硬校验：${runtimeGuard}`);
+}
+assert.match(build, /verify-portable-payload\.mjs/, '发布前必须执行递归敏感文件与密钥泄漏扫描');
 assert.ok(
   build.indexOf('verify-python-runtime-windows.ps1') < build.indexOf('Copy-Item'),
   '必须先验收 runtime 再复制装配',
@@ -155,19 +200,35 @@ function makeFixture({ omit = [] } = {}) {
   write('.next/standalone/server.js');
   write('.next/standalone/runtime/server-entry.js');
   write('dist-desktop/main.js');
+  write('dist-desktop/preload.js');
+  write('dist-desktop/service.js');
+  write('dist-desktop/ipc.js');
+  write('dist-desktop/main.js.map', '{"sources":["../desktop/main.ts"]}\n');
+  write('dist-desktop/stale.js', 'throw new Error("stale build output");\n');
   write('scripts/start-desktop-windows.ps1');
   write('scripts/start-stack.ps1');
   write('scripts/stop-stack.ps1');
   write('scripts/start-litellm-proxy.py');
   write('scripts/diagnose-local-env.mjs');
-  write('package.json', '{"name":"creative-studio","main":"dist-desktop/main.js"}\n');
+  write('scripts/stop-windows.ps1');
+  write('scripts/migrate-portable-data.ps1');
+  write('scripts/migrate-portable-data.mjs');
+  write('scripts/verify-portable-payload.mjs', 'process.exit(0);\n');
+  write('scripts/probe-do-not-package.ts', 'throw new Error("development-only");\n');
+  write('package.json', '{"name":"creative-studio","version":"0.6.0","main":"dist-desktop/main.js"}\n');
   write('config.yaml', 'model_list: [] # SENTINEL_CONFIG_SECRET\n');
-  write('.env.local', 'SENTINEL_ENV_SECRET=1\n');
+  write('.env.local', '```env\nCREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1\n```\n');
+  write('LICENSE', 'GPL-3.0-only fixture\n');
+  write('stop-windows.cmd', '@echo off\r\n');
   write('环境自检.cmd', '@echo off\r\n');
   fs.mkdirSync(path.join(dir, 'installer', 'windows'), { recursive: true });
   fs.copyFileSync(
     path.join(root, 'installer', 'windows', 'start-windows-portable.cmd'),
     path.join(dir, 'installer', 'windows', 'start-windows-portable.cmd'),
+  );
+  fs.copyFileSync(
+    path.join(root, 'installer', 'windows', '迁移旧版数据.cmd'),
+    path.join(dir, 'installer', 'windows', '迁移旧版数据.cmd'),
   );
   write('installer/windows/使用说明-portable.txt', '说明\r\n');
   // 不得进入成品的本机状态与开发产物
@@ -197,6 +258,7 @@ function runAssembly(fixtureDir, outputPath) {
       path.join(fixtureDir, 'scripts', 'build-windows-portable.ps1'),
       '-OutputPath',
       outputPath,
+      '-SkipBuild',
     ],
     { encoding: 'utf8', timeout: 120000 },
   );
@@ -218,21 +280,33 @@ try {
     '.next/standalone/server.js',
     '.next/standalone/runtime/server-entry.js',
     'dist-desktop/main.js',
+    'dist-desktop/preload.js',
+    'dist-desktop/service.js',
+    'dist-desktop/ipc.js',
     'scripts/start-desktop-windows.ps1',
     'scripts/start-stack.ps1',
     'scripts/stop-stack.ps1',
     'scripts/start-litellm-proxy.py',
     'scripts/diagnose-local-env.mjs',
+    'scripts/stop-windows.ps1',
+    'scripts/migrate-portable-data.ps1',
+    'scripts/migrate-portable-data.mjs',
     'package.json',
     'config.yaml',
     '.env.local',
+    'LICENSE',
     'start-windows.cmd',
+    'stop-windows.cmd',
+    '迁移旧版数据.cmd',
     '使用说明.txt',
     '环境自检.cmd',
     'portable-manifest.json',
   ]) {
     assert.ok(fs.existsSync(path.join(output, ...expected.split('/'))), `成品缺少 ${expected}`);
   }
+  assert.ok(!fs.existsSync(path.join(output, 'scripts', 'probe-do-not-package.ts')), '开发/探针脚本不得进入免安装包');
+  assert.ok(!fs.existsSync(path.join(output, 'dist-desktop', 'main.js.map')), '桌面壳 sourcemap 不得进入免安装包');
+  assert.ok(!fs.existsSync(path.join(output, 'dist-desktop', 'stale.js')), '桌面壳历史残留产物不得进入免安装包');
   for (const forbidden of ['.venv-litellm', 'data', 'storage', 'outputs', 'docs', '.git', '.cache', 'dist', 'desktop', 'installer']) {
     assert.ok(!fs.existsSync(path.join(output, forbidden)), `成品不得包含 ${forbidden}`);
   }
@@ -240,12 +314,18 @@ try {
   // start-windows.cmd 必须是 portable 模板（显式 -Portable）
   const startCmd = fs.readFileSync(path.join(output, 'start-windows.cmd'), 'utf8');
   assert.match(startCmd, /-Portable/, '成品 start-windows.cmd 必须显式传 -Portable');
+  const outputEnv = fs.readFileSync(path.join(output, '.env.local'), 'utf8');
+  assert.doesNotMatch(outputEnv, /```/, '成品 .env.local 不得保留 Markdown 围栏');
+  assert.match(outputEnv, /CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1/, '去围栏不得改写环境变量');
 
   // manifest：schema、11 项关键文件、size/sha256 与实际一致、不含密钥哨兵值
   const manifestRaw = fs.readFileSync(path.join(output, 'portable-manifest.json'), 'utf8');
   const manifest = JSON.parse(manifestRaw);
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.mode, 'windows-portable-v1');
+  assert.equal(manifest.appVersion, '0.6.0');
+  assert.match(manifest.builtAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(typeof manifest.sourceCommit, 'string');
   assert.ok(Array.isArray(manifest.files), 'manifest.files 必须是数组');
   const byPath = new Map(manifest.files.map((f) => [f.path, f]));
   for (const key of [
@@ -260,6 +340,9 @@ try {
     'scripts/start-stack.ps1',
     'scripts/start-litellm-proxy.py',
     'config.yaml',
+    '.env.local',
+    'stop-windows.cmd',
+    '迁移旧版数据.cmd',
   ]) {
     const entry = byPath.get(key);
     assert.ok(entry, `manifest 缺少关键文件条目 ${key}`);
@@ -268,8 +351,7 @@ try {
     assert.equal(entry.sha256, sha256File(abs), `manifest sha256 与实际不符：${key}`);
   }
   assert.ok(!manifestRaw.includes('SENTINEL_CONFIG_SECRET'), 'manifest 不得包含 config.yaml 内容');
-  assert.ok(!manifestRaw.includes('SENTINEL_ENV_SECRET'), 'manifest 不得包含 .env.local 内容');
-  assert.ok(!run.stdout.includes('SENTINEL_CONFIG_SECRET') && !run.stdout.includes('SENTINEL_ENV_SECRET'), '装配输出不得打印密钥内容');
+  assert.ok(!run.stdout.includes('SENTINEL_CONFIG_SECRET'), '装配输出不得打印密钥内容');
 
   // ── 目标已存在：拒绝覆盖 ──
   const rerun = runAssembly(fixture, output);

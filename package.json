@@ -1,6 +1,6 @@
 {
   "name": "creative-studio",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "license": "GPL-3.0-only",
   "private": true,
   "main": "dist-desktop/main.js",
@@ -11,6 +11,7 @@
     "dev:desktop": "npm run build:desktop && electron .",
     "dev:win": "next dev --hostname 127.0.0.1",
     "build": "next build && node scripts/sync-standalone-assets.mjs",
+    "build:win-portable": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1",
     "build:win-installer": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-installer.ps1",
     "build:mac-installer": "bash scripts/build-mac-installer.sh",
     "icons": "node scripts/generate-app-icons.mjs",
@@ -42,6 +43,7 @@
     "electron": "^43.3.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
+    "js-yaml": "^4.2.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

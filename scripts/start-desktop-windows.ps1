@@ -19,6 +19,17 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Split-Path -Parent $ScriptDir
 Set-Location $Root
 
+function Get-Sha256Hex([string]$FilePath) {
+  $stream = [System.IO.File]::OpenRead($FilePath)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
 Write-Host '========================================'
 Write-Host '  批量图片编辑工作台 - Windows 桌面版'
 Write-Host '========================================'
@@ -47,16 +58,51 @@ if ($Portable) {
     'scripts/start-desktop-windows.ps1',
     'scripts/start-stack.ps1',
     'scripts/start-litellm-proxy.py',
-    'config.yaml'
+    'config.yaml',
+    '.env.local',
+    'dist-desktop/main.js',
+    'dist-desktop/preload.js',
+    'dist-desktop/service.js',
+    'dist-desktop/ipc.js',
+    'package.json',
+    'LICENSE',
+    'scripts/stop-stack.ps1',
+    'scripts/stop-windows.ps1',
+    'scripts/migrate-portable-data.ps1',
+    'scripts/migrate-portable-data.mjs',
+    'scripts/diagnose-local-env.mjs',
+    'start-windows.cmd',
+    'stop-windows.cmd',
+    '迁移旧版数据.cmd',
+    '环境自检.cmd',
+    '使用说明.txt'
   )
   do {
     if (-not (Test-Path $portableManifestFile)) { break }
     try { $pm = Get-Content $portableManifestFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { break }
-    if ([int]$pm.schemaVersion -ne 1 -or $pm.mode -ne 'windows-portable-v1' -or -not $pm.files) { break }
-    $manifestPaths = @($pm.files | ForEach-Object { [string]$_.path })
+    if (
+      [int]$pm.schemaVersion -ne 1 -or
+      $pm.mode -ne 'windows-portable-v1' -or
+      -not $pm.appVersion -or
+      -not $pm.builtAt -or
+      -not $pm.sourceCommit -or
+      -not $pm.files
+    ) { break }
+    try {
+      $packageVersion = [string](Get-Content (Join-Path $Root 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+    } catch { break }
+    if (-not $packageVersion -or [string]$pm.appVersion -ne $packageVersion) { break }
     $incomplete = $false
     foreach ($rel in $portableRequiredFiles) {
-      if ($manifestPaths -notcontains $rel -or -not (Test-Path (Join-Path $Root ($rel -replace '/', '\')))) {
+      $entry = @($pm.files | Where-Object { [string]$_.path -eq $rel } | Select-Object -First 1)
+      $absolutePath = Join-Path $Root ($rel -replace '/', '\')
+      if ($entry.Count -ne 1 -or -not (Test-Path -LiteralPath $absolutePath -PathType Leaf)) {
+        $incomplete = $true
+        break
+      }
+      $actualSize = (Get-Item -LiteralPath $absolutePath).Length
+      $actualHash = Get-Sha256Hex $absolutePath
+      if ([int64]$entry[0].size -ne $actualSize -or [string]$entry[0].sha256 -ne $actualHash) {
         $incomplete = $true
         break
       }
@@ -65,9 +111,15 @@ if ($Portable) {
     $portableManifestOk = $true
   } while ($false)
   if (-not $portableManifestOk) {
-    Write-Host '免安装包不完整，请重新复制（portable-manifest.json 缺失、无效或关键文件缺失）。公司网关组件将不可用，工作台其余功能继续启动。' -ForegroundColor Red
+    Write-Host '免安装包不完整，请重新复制（manifest 无效，或关键文件缺失/哈希不一致）。公司网关组件将不可用，工作台其余功能继续启动。' -ForegroundColor Red
     Write-Host ''
   }
+}
+
+# 免安装版属于已验收的固定发布配置。即使同事机器预先设置了同名环境变量，
+# 也必须由官方启动入口把脚本调度器钉住为开启；该进程环境会传给 Electron 与服务子进程。
+if ($Portable) {
+  $env:CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER = '1'
 }
 
 # 免安装包内置便携 Node（node-runtime\node.exe，v22.22.3 / ABI 127），与包内
@@ -100,7 +152,7 @@ if (($env:PATH -split ';') -notcontains $nodeDir) {
 if (Test-Path (Join-Path $Root 'node_modules\better-sqlite3')) {
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
-  & $nodeExe -e "require('better-sqlite3')" *> $null
+  & $nodeExe -e "const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.close()" *> $null
   $nativeOk = ($LASTEXITCODE -eq 0)
   $ErrorActionPreference = $prevEap
   if (-not $nativeOk) {

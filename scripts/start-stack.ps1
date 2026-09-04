@@ -19,6 +19,19 @@ $RunDir = Join-Path $Root 'storage\run'
 $stackFile = Join-Path $RunDir 'stack.json'
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
 
+# 某些双击/受限 PowerShell 环境不会自动加载文件哈希 cmdlet 所在模块。
+# 直接使用 .NET，保证便携入口的完整性校验不依赖主机模块状态。
+function Get-Sha256Hex([string]$FilePath) {
+  $stream = [System.IO.File]::OpenRead($FilePath)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
 $litellmExe = Join-Path $Root '.venv-litellm\Scripts\litellm.exe'
 $litellmRuntimeKind = 'venv-litellm'
 $litellmInterpreter = $litellmExe
@@ -58,7 +71,7 @@ if ($Portable) {
     foreach ($rel in @('python-runtime/python.exe', 'python-runtime/runtime-manifest.json')) {
       $entry = @($portableManifest.files | Where-Object { $_.path -eq $rel })[0]
       if (-not $entry) { $portableError = "portable-manifest.json 缺少关键文件条目 $rel"; break }
-      $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $Root ($rel -replace '/', '\'))).Hash.ToLowerInvariant()
+      $actual = Get-Sha256Hex (Join-Path $Root ($rel -replace '/', '\'))
       if ($actual -ne ([string]$entry.sha256).ToLowerInvariant()) {
         $portableError = "关键文件哈希不符：$rel"
         break

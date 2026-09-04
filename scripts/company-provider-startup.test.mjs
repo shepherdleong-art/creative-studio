@@ -11,6 +11,7 @@ const startWindows = fs.readFileSync(path.join(root, 'scripts', 'start-windows.p
 const startStack = fs.readFileSync(path.join(root, 'scripts', 'start-stack.ps1'), 'utf8');
 const startDesktop = fs.readFileSync(path.join(root, 'scripts', 'start-desktop-windows.ps1'), 'utf8');
 const stopStack = fs.readFileSync(path.join(root, 'scripts', 'stop-stack.ps1'), 'utf8');
+const stopWindows = fs.readFileSync(path.join(root, 'scripts', 'stop-windows.ps1'), 'utf8');
 const portableCmdPath = path.join(root, 'installer', 'windows', 'start-windows-portable.cmd');
 const configExample = fs.readFileSync(path.join(root, 'litellm-config.example.yaml'), 'utf8');
 const healthRoute = fs.readFileSync(path.join(root, 'app', 'api', 'company-provider', 'health', 'route.ts'), 'utf8');
@@ -150,6 +151,12 @@ test('portable-manifest.json 完整性校验：schema、windows-portable-v1 模�
   assert.match(startDesktop, /portable-manifest\.json/);
   assert.match(startDesktop, /windows-portable-v1/, '必须校验模式 windows-portable-v1');
   assert.match(startDesktop, /schemaVersion/, '必须校验 manifest schema 版本');
+  assert.match(startDesktop, /appVersion/, '必须校验 manifest 与 package.json 的版本一致');
+  assert.match(startDesktop, /builtAt/, '必须要求 manifest 带构建时间');
+  assert.match(startDesktop, /sourceCommit/, '必须要求 manifest 带源码 commit');
+  assert.match(startDesktop, /Get-Sha256Hex/, '必须校验每个关键文件的 SHA-256');
+  assert.match(startDesktop, /\.size/, '必须校验每个关键文件大小');
+  assert.match(startDesktop, /\.sha256/, '必须读取 manifest 中的 SHA-256');
   for (const key of [
     'node-runtime/node.exe',
     'python-runtime/python.exe',
@@ -160,6 +167,12 @@ test('portable-manifest.json 完整性校验：schema、windows-portable-v1 模�
     assert.ok(startDesktop.includes(`'${key}'`), `portable 关键文件清单缺少 ${key}`);
   }
   assert.match(startDesktop, /免安装包不完整，请重新复制/, 'manifest 缺失或损坏必须报告包损坏并提示重新复制');
+});
+
+test('start-stack 的便携 runtime 哈希校验不依赖 PowerShell 模块自动加载', () => {
+  assert.match(startStack, /function Get-Sha256Hex/, 'start-stack 必须提供纯 .NET SHA-256 helper');
+  assert.match(startStack, /Get-Sha256Hex \(Join-Path \$Root/, '便携 runtime 必须通过 helper 复算哈希');
+  assert.doesNotMatch(startStack, /Get-FileHash/, '双击启动环境可能无法自动加载 Get-FileHash，禁止依赖该 cmdlet');
 });
 
 test('免安装模式禁止联网修复：npm ci / Electron 下载 / Next 构建 / venv 重建 / pip 均被 -Portable 阻断', () => {
@@ -215,7 +228,7 @@ test('start-stack.ps1 免安装模式 runtime 优先、固定 loopback，损坏�
   assert.match(branch, /runtime-manifest\.json/, '必须校验 runtime-manifest.json');
   assert.match(branch, /'3\.12\.10'/, '必须校验 Python 3.12.10');
   assert.match(branch, /'1\.89\.2'/, '必须校验 LiteLLM 1.89.2');
-  assert.match(branch, /Get-FileHash/, '必须按 manifest 记录校验关键文件哈希');
+  assert.match(branch, /Get-Sha256Hex/, '必须按 manifest 记录校验关键文件哈希');
   assert.match(branch, /start-litellm-proxy\.py/, '必须经 start-litellm-proxy.py 入口启动');
   assert.match(branch, /'--host',\s*'127\.0\.0\.1'/, '免安装模式必须固定监听 127.0.0.1');
   assert.match(branch, /免安装包不完整，请重新复制/, 'runtime 缺失/损坏必须提示重新复制');
@@ -242,6 +255,8 @@ test('stack.json 记录运行时种类与实际解释器路径，且不包含密
 });
 
 test('stop-stack.ps1 按 stack.json PID 停止并校验可执行路径归属，不误杀未知端口进程', () => {
+  assert.match(stopStack, /appCmdPid/, 'app 停机必须优先使用当前根目录状态文件记录的 PID');
+  assert.doesNotMatch(stopStack, /\*windows-installer\*/, '不得按宽泛的安装目录名称强杀其他工作台实例');
   assert.match(stopStack, /litellmPid/, '必须优先按状态文件 PID 停止');
   assert.match(stopStack, /ExecutablePath/, '必须校验进程可执行路径');
   assert.match(stopStack, /python-runtime/, '允许路径必须包含本项目 python-runtime');
@@ -249,6 +264,18 @@ test('stop-stack.ps1 按 stack.json PID 停止并校验可执行路径归属，�
   const portFallback = stopStack.slice(stopStack.indexOf('Get-NetTCPConnection'));
   assert.match(portFallback, /Test-OwnedProcess|ExecutablePath/, '端口属主兜底必须过滤非本项目进程');
   assert.match(stopStack, /不属于本项目/, '遇到不属于本项目的进程必须明示跳过');
+});
+
+test('Windows 停止入口只对已确认归属的进程使用 taskkill /T /F 强杀整棵进程树', () => {
+  for (const [label, script] of [
+    ['stop-windows.ps1', stopWindows],
+    ['stop-stack.ps1', stopStack],
+  ]) {
+    assert.match(script, /taskkill\.exe\s+\/PID[^\r\n]*\/T\s+\/F/, `${label} 必须强杀受控进程树`);
+    assert.doesNotMatch(script, /Stop-Process\s+-Id/, `${label} 不得只杀父进程留下子进程`);
+    assert.match(script, /不属于本项目|不误杀未知进程/, `${label} 必须继续保护未知端口属主`);
+    assert.match(script, /OrdinalIgnoreCase/, `${label} 的目录归属判断必须忽略 Windows 路径大小写`);
+  }
 });
 
 test('start-windows.ps1 公司组件检测同时识别内置 runtime 与 venv', () => {

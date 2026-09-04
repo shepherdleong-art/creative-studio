@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import path from 'path';
 import fs from 'fs';
-import { dataRoot } from '@/lib/data-root';
+import { resolveStorageRelativePath, toStorageImageUrl } from '@/lib/storage-url';
 import { parseProjectInfoUpdate, ProjectInfoValidationError } from '@/lib/project-info';
 import {
   parseProductionIdentityUpdate,
@@ -41,13 +40,11 @@ export async function GET(
       `SELECT * FROM image_assets WHERE projectId = ? ORDER BY role, createdAt`
     ).all(id) as Array<Record<string, unknown>>).map((img) => {
       const filePath = img.path as string;
-      const storageRoot = path.resolve(path.join(dataRoot(), 'storage'));
-      const resolvedFile = path.resolve(filePath);
-      const relativePath = path.relative(storageRoot, resolvedFile).split(path.sep).join('/');
+      const relativePath = resolveStorageRelativePath(filePath)?.split(/[/\\]/).join('/') ?? '';
       return {
         ...img,
         relativePath,
-        imageUrl: `/api/images/${relativePath}`,
+        imageUrl: toStorageImageUrl(filePath),
       };
     });
 

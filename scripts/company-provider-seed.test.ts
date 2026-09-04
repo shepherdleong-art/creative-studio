@@ -29,6 +29,20 @@ try {
   const imageCount = db.prepare(`SELECT COUNT(*) AS c FROM providers WHERE id = 'company-gateway-image2-medium'`).get() as { c: number };
   assert.equal(imageCount.c, 1);
 
+  // 图片：七牛云 GPT Image 2 Medium 也必须在全新数据目录中开箱即用
+  const qiniuImage = db.prepare(`
+    SELECT * FROM providers WHERE id = 'company-gateway-qiniuyun-gpt-image-2-medium'
+  `).get() as Record<string, unknown>;
+  assert.equal(qiniuImage.type, 'gateway-task-image');
+  assert.equal(qiniuImage.baseUrl, COMPANY_LITELLM_BASE_URL);
+  assert.equal(qiniuImage.model, 'qiniuyun/gpt-image-2-medium');
+  assert.equal(qiniuImage.enabled, 1);
+  assert.ok(qiniuImage.apiKey);
+  const qiniuCount = db.prepare(`
+    SELECT COUNT(*) AS c FROM providers WHERE id = 'company-gateway-qiniuyun-gpt-image-2-medium'
+  `).get() as { c: number };
+  assert.equal(qiniuCount.c, 1);
+
   // 视频：公司可灵 3.0 / 公司即梦 Fast，均为 openai-video 且配置完整
   for (const [id, model] of [
     ['company-kling-3-0', 'kling-3.0'],
