@@ -32,11 +32,17 @@ $ownedPrefixes = @(
 function Test-OwnedProcess {
   param([int]$TargetPid)
   $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$TargetPid" -ErrorAction SilentlyContinue
-  if (-not $proc -or -not $proc.ExecutablePath) { return $false }
-  foreach ($prefix in $ownedPrefixes) {
-    if ($proc.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if (-not $proc) { return $false }
+  $exe = [string]$proc.ExecutablePath
+  if ($exe) {
+    foreach ($prefix in $ownedPrefixes) {
+      if ($exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
   }
-  return $false
+  # 解释器型孤儿(如系统 Python 承载本项目的 litellm.exe):可执行路径在项目外,
+  # 但命令行同时指向本项目目录且带 litellm 入口时,同样视为本项目所有。
+  $cmd = [string]$proc.CommandLine
+  return ($cmd -and $cmd.Contains($Root) -and $cmd -match 'litellm')
 }
 $litellmStopped = $false
 if ($stack -and $stack.litellmPid) {
