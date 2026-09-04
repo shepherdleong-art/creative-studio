@@ -112,4 +112,22 @@ export const CORE_DB_MIGRATIONS = [
     UNIQUE(exportDirName)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId)`,
+  // 修复 2026-09-03 生产身份 SQL 的历史错位:尺寸曾写进 projects.prompt,
+  // size 为空且 status/referenceGuidanceMode 分别变成 none/draft。只匹配该
+  // 组特征,把尺寸移回原列并清空不应展示的项目提示词;重复执行保持幂等。
+  `UPDATE projects
+   SET size = prompt, prompt = '', status = 'draft', referenceGuidanceMode = 'none'
+   WHERE size = ''
+     AND status = 'none'
+     AND referenceGuidanceMode = 'draft'
+     AND (prompt = 'auto' OR prompt GLOB '[0-9]*x[0-9]*')`,
+  // 受旧错位影响的项目可能已经在修复前通过「场景生成」继续创建了空尺寸任务；
+  // 让这些任务继承项目目标尺寸，避免队列跳过比例规整。只补齐空值，不覆盖已有任务快照。
+  `UPDATE jobs
+   SET size = (SELECT p.size FROM projects p WHERE p.id = jobs.projectId)
+   WHERE COALESCE(size, '') = ''
+     AND EXISTS (
+       SELECT 1 FROM projects p
+       WHERE p.id = jobs.projectId AND COALESCE(p.size, '') <> ''
+     )`,
 ];

@@ -5,6 +5,8 @@ import { pollGatewayTaskImage, downloadGatewayTaskImage, summarizeGatewayTaskRes
 import { describeGatewayDownloadFailure } from '@/lib/media-download-policy';
 import { writeLog } from '@/lib/logger';
 import { sanitizeFilenameBase, ensureUniqueFilename, getUsagePrefix } from '@/lib/output-filenames';
+import { normalizeGeneratedImageToSize, normalizeGeneratedImageToNativeRatio } from '@/lib/image-output-normalize';
+import { companyImageCapsForModel, companyImageDeliverySize } from '@/lib/company-gateway-size';
 import { recordImageJobUsage } from '@/lib/usage-async-jobs';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
@@ -27,7 +29,7 @@ export async function POST(
       FROM jobs j LEFT JOIN providers p ON j.providerId = p.id WHERE j.id = ?`).get(id) as {
       id: string; projectId: string; providerId: string; providerTaskId: string;
       model: string; prompt: string; inputImageId: string; referenceImageIds: string;
-      size: string; quality: string; status: string; attempt: number; usageSnapshotJson: string | null;
+      size: string; quality: string; status: string; attempt: number; revision?: number | null; usageSnapshotJson: string | null;
       baseUrl: string; apiKey: string; apiKeyEnv: string; type: string;
     } | undefined;
 
@@ -99,13 +101,20 @@ export async function POST(
               const { filePrefix, outputUsage } = getUsagePrefix(inputImage?.usage || '');
 
               const inputBase = inputImage?.filename ? sanitizeFilenameBase(inputImage.filename) : job.id.slice(0, 8);
-              const preferredOutputName = `${filePrefix}${inputBase}.png`;
+              const jobCompanyCaps = companyImageCapsForModel(job.model);
+              const normalizedImage = jobCompanyCaps?.nativeDelivery
+                ? await normalizeGeneratedImageToNativeRatio(imgBuffer, companyImageDeliverySize(job.size, jobCompanyCaps))
+                : await normalizeGeneratedImageToSize(imgBuffer, job.size);
+              const outputExt = normalizedImage.format === 'jpeg' ? '.jpg' : normalizedImage.format === 'webp' ? '.webp' : '.png';
+              const outputMimeType = outputExt === '.jpg' ? 'image/jpeg' : outputExt === '.webp' ? 'image/webp' : 'image/png';
+              const revSuffix = job.revision && job.revision > 0 ? `-r${job.revision}` : '';
+              const preferredOutputName = `${filePrefix}${inputBase}${revSuffix}${outputExt}`;
               const outputFilename = ensureUniqueFilename(outputsDir, preferredOutputName, job.id.slice(0, 6));
               const outputPath = path.join(outputsDir, outputFilename);
 
-              fs.writeFileSync(outputPath, imgBuffer);
+              fs.writeFileSync(outputPath, normalizedImage.imageBuffer);
               const outputImageId = uuidv4();
-              db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, createdAt) VALUES (?, ?, 'output', ?, ?, 'image/png', ?, datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath, outputUsage);
+              db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, mimeType, usage, width, height, createdAt) VALUES (?, ?, 'output', ?, ?, ?, ?, ?, ?, datetime('now'))`).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
 
               const finishedAt = new Date().toISOString();
               const completeResult = db.prepare(`UPDATE jobs SET status = 'succeeded', providerStatus = 'succeeded', remoteImageUrl = ?, outputImageId = ?, finishedAt = ?, latencyMs = ? WHERE id = ? AND status = 'running'`).run(pollResult.imageUrl, outputImageId, finishedAt, Date.now() - startedAt, job.id);

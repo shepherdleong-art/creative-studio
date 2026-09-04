@@ -8,18 +8,17 @@ import {
   getImageModelCapabilities,
 } from '@/lib/image-model-capabilities';
 import {
-  GPT_IMAGE_2_ASPECT_RATIOS,
   GPT_IMAGE_2_RESOLUTIONS,
   GPT_IMAGE_2_SIZE_MAP,
   resolveGptImage2Size,
 } from '@/lib/gpt-image-2-size-presets';
 import { companyImageCapsForModel } from '@/lib/company-gateway-size';
+import { getSupportedImageAspectRatios } from '@/lib/image-generation-settings';
 import {
   STORE_CODES,
   PRODUCTION_TYPES,
   buildProjectBaseName,
   formatShanghaiIdentityDate,
-  type ProductionIdentityFields,
 } from '@/lib/project-production-identity';
 
 interface Provider {
@@ -57,15 +56,26 @@ export default function NewProjectPage() {
   const [timeoutMs, setTimeoutMs] = useState(600000);
   const [concurrency, setConcurrency] = useState(3);
 
-  const size = useMemo(() => {
-    try { return resolveGptImage2Size(aspectRatio, resolution); }
-    catch { return ''; }
-  }, [aspectRatio, resolution]);
   const modelCapabilities = useMemo(() => getImageModelCapabilities(model), [model]);
   const supportsQuality = modelCapabilities.supportsQuality;
   // 原生像素交付的公司模型（qiniuyun/* 与 image2）只承诺档位与比例，标签不展示像素
   const companyCaps = useMemo(() => companyImageCapsForModel(model), [model]);
   const nativePixelUi = !!companyCaps?.nativeDelivery;
+  const aspectRatioOptions = useMemo(() => getSupportedImageAspectRatios(model), [model]);
+  const selectedAspectRatio = aspectRatioOptions.includes(aspectRatio)
+    ? aspectRatio
+    : (aspectRatioOptions.includes('1:1') ? '1:1' : aspectRatioOptions[0] || '1:1');
+  const availableResolutions = useMemo(
+    () => Object.keys(GPT_IMAGE_2_SIZE_MAP[selectedAspectRatio] || {}),
+    [selectedAspectRatio],
+  );
+  const selectedResolution = availableResolutions.includes(resolution)
+    ? resolution
+    : availableResolutions[0] || '1k';
+  const size = useMemo(() => {
+    try { return resolveGptImage2Size(selectedAspectRatio, selectedResolution); }
+    catch { return ''; }
+  }, [selectedAspectRatio, selectedResolution]);
 
   // ── Preprocessing ──
   const [preprocessEnabled, setPreprocessEnabled] = useState(true);
@@ -93,7 +103,7 @@ export default function NewProjectPage() {
           storeCode, productCode, productSubmodel: productSubmodel.trim(), productionType, editorName: editorName.trim(),
           workflowType: 'complex_product',
           providerId: provider.id, model, size, quality: effectiveQuality, timeoutMs,
-          aspectRatio, resolution,
+          aspectRatio: selectedAspectRatio, resolution: selectedResolution,
           concurrency,
           preprocessEnabled, targetMaxSide, jpegQuality,
         }),
@@ -127,16 +137,16 @@ export default function NewProjectPage() {
         </div>
         <div>
           <label className="label">画面比例</label>
-          <select value={aspectRatio} onChange={(e) => { setAspectRatio(e.target.value); const avail = Object.keys(GPT_IMAGE_2_SIZE_MAP[e.target.value] || {}); if (!avail.includes(resolution)) setResolution(avail[0] || '1k'); }} className={modelControlClass}>
-            {GPT_IMAGE_2_ASPECT_RATIOS.map((r) => (<option key={r} value={r}>{r}</option>))}
+          <select value={selectedAspectRatio} onChange={(e) => { setAspectRatio(e.target.value); const avail = Object.keys(GPT_IMAGE_2_SIZE_MAP[e.target.value] || {}); if (!avail.includes(resolution)) setResolution(avail[0] || '1k'); }} className={modelControlClass}>
+            {aspectRatioOptions.map((r) => (<option key={r} value={r}>{r}</option>))}
           </select>
         </div>
-        {aspectRatio !== 'auto' && (
+        {selectedAspectRatio !== 'auto' && (
         <div>
           <label className="label">清晰度</label>
-          <select value={resolution} onChange={(e) => setResolution(e.target.value)} className={modelControlClass}>
+          <select value={selectedResolution} onChange={(e) => setResolution(e.target.value)} className={modelControlClass}>
             {GPT_IMAGE_2_RESOLUTIONS.map((r) => {
-              const presetSize = GPT_IMAGE_2_SIZE_MAP[aspectRatio]?.[r];
+              const presetSize = GPT_IMAGE_2_SIZE_MAP[selectedAspectRatio]?.[r];
               // 原生像素交付的公司模型只承诺档位与比例，不展示具体像素
               const label = !presetSize ? `${r} — 不支持` : (nativePixelUi ? r : `${r} → ${presetSize}`);
               return <option key={r} value={r} disabled={!presetSize}>{label}</option>;

@@ -22,6 +22,7 @@ import {
   SceneReferenceRecord,
   SceneReferenceSummary,
 } from '@/lib/result-gallery-jobs';
+import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
 
 interface Project {
   id: string;
@@ -37,6 +38,7 @@ interface Project {
   currentExportIdentityId?: string | null;
   providerId: string;
   model: string;
+  size?: string;
   prompt: string;
   status: string;
   concurrency: number;
@@ -1058,6 +1060,9 @@ function SceneGenerationForm({
       <div className="mb-4">
         <h2 className="text-base font-semibold tracking-[-0.01em]">生成参数</h2>
         <p className="mt-1 text-sm text-ink-secondary">选中原始场景图 A 后，确认提示词和数量再开始生成。</p>
+        <p className="mt-1 text-xs text-ink-tertiary">
+          输出画幅：{getGptImage2AspectRatio(project.size) || '自定义'}{project.size ? ` · ${project.size}` : ''}（项目创建时锁定）
+        </p>
       </div>
       <div className="generation-form-grid">
         <div className="generation-main-stack">

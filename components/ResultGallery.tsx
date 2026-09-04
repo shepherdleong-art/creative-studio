@@ -10,6 +10,8 @@ import {
   getSelectableResultJobs,
   SceneReferenceSummary,
 } from '@/lib/result-gallery-jobs';
+import { getImageJobDisplayName } from '@/lib/image-job-display-name';
+import { getGptImage2AspectRatio } from '@/lib/gpt-image-2-size-presets';
 
 interface Job {
   id: string;
@@ -191,6 +193,7 @@ function GenerationContextPanel({
         <div className="space-y-1 text-ink-secondary">
           {providerName && <div>供应商: <span className="text-ink">{providerName}</span></div>}
           {job.model && <div>模型: <span className="text-ink">{job.model}</span></div>}
+          {job.size && <div>画幅: <span className="text-ink">{getGptImage2AspectRatio(job.size) || '自定义'}</span></div>}
           {job.size && <div>尺寸: <span className="text-ink">{job.size}</span></div>}
           {job.quality && <div>质量: <span className="text-ink">{job.quality}</span></div>}
           {job.revision != null && <div>版本: <span className="text-ink">r{job.revision}</span></div>}
@@ -308,7 +311,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
       .filter((j) => j.id !== selectedJob.id && j.outputImageId)
       .forEach((j) => {
         const asset = imageById.get(j.outputImageId!);
-        add(asset, `结果: ${j.inputFilename}`);
+        add(asset, `结果: ${getImageJobDisplayName(j)}`);
       });
 
     // Extra user uploads
@@ -435,6 +438,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                 const kind = getResultJobKind(job);
                 const isFailed = kind === 'failed';
                 const isSucceeded = kind === 'succeeded';
+                const displayName = getImageJobDisplayName(job);
                 const failedMessage =
                   job.status === 'succeeded'
                     ? '生成任务已成功，但输出文件或图片引用缺失'
@@ -459,7 +463,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                           <span className="line-clamp-3 text-center text-[10px] text-fail">{failedMessage}</span>
                         </div>
                       ) : isSucceeded ? (
-                        <img src={`/api/images/outputs/${job.outputFilename}`} alt={job.inputFilename} className="w-full h-full object-cover" />
+                        <img src={`/api/images/outputs/${job.outputFilename}`} alt={displayName} className="w-full h-full object-cover" />
                       ) : (
                         <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-surface-subtle p-3 text-center">
                           {kind === 'queued' ? (
@@ -496,7 +500,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
                       )}
                     </div>
                     <div className="p-2">
-                      <div className="truncate text-xs text-ink-secondary">{job.inputFilename}</div>
+                      <div className="truncate text-xs text-ink-secondary" title={displayName}>{displayName}</div>
                       {isFailed && job.errorMessage && (
                         <div className="mt-0.5 truncate text-[10px] text-fail" title={job.errorMessage}>{job.errorMessage}</div>
                       )}
@@ -705,7 +709,7 @@ export default function ResultGallery({ jobs, images, onRetry, onMark, onRegener
               <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 py-3"
                 onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center gap-3 min-w-0">
-                  <h3 className="font-medium text-sm truncate max-w-[320px] text-white/90">{selectedJob.inputFilename}</h3>
+                  <h3 className="font-medium text-sm truncate max-w-[320px] text-white/90" title={getImageJobDisplayName(selectedJob)}>{getImageJobDisplayName(selectedJob)}</h3>
                   <span className="text-xs text-white/50 shrink-0">{selectedIndex + 1} / {selectableJobs.length}</span>
                 </div>
                 <button onClick={() => { setSelectedJobId(null); setRegenOpen(false); }}

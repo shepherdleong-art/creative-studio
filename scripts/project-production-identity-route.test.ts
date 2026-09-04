@@ -161,7 +161,27 @@ function insertNewProject(db: Database.Database, row: { id: string; name: string
   assert.match(postSource, /parseProductionIdentityInput\(body\)/);
   assert.match(postSource, /formatShanghaiIdentityDate\(new Date\(\)\)/);
   assert.match(postSource, /resolveUniqueProjectBaseName/);
+  assert.match(postSource, /validateImageAspectRatio\(model, body\.aspectRatio\)/, '项目创建必须校验模型支持的图片比例');
+  assert.match(postSource, /resolveGptImage2Size\(body\.aspectRatio, body\.resolution \|\| '1k'\)/, '图片比例与清晰度必须解析成目标尺寸');
   assert.ok(!/body\.name\s*\|\|/.test(postSource), 'POST 不得把客户端 name 写入项目名');
+
+  // 回归：项目字段名和绑定参数必须保持同一列顺序。
+  // 旧代码把 resolvedSize 绑定到了 prompt，size 反而为空，项目详情因此出现
+  // 一个用户不想要的「1024x1024」提示词。
+  const projectInsertBlock = postSource.slice(
+    postSource.indexOf('INSERT INTO projects'),
+    postSource.indexOf('if (hasFullCreation)'),
+  );
+  assert.match(
+    projectInsertBlock,
+    /VALUES \(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\)/,
+    '项目创建必须用完整占位符，避免静态空值让绑定参数错位',
+  );
+  assert.match(
+    projectInsertBlock,
+    /\.run\(projectId, baseName, '', identity\.productCode, '', body\.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product'/,
+    'prompt 必须为空，resolvedSize 必须绑定到 size，项目状态必须是 draft',
+  );
 
   const patchSource = readFileSync(new URL('../app/api/projects/[id]/route.ts', import.meta.url), 'utf8');
   assert.match(patchSource, /parseProductionIdentityUpdate\(body\)/);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
+import { validateImageAspectRatio } from '@/lib/image-generation-settings';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { normalizeShotImageIds } from '@/lib/shot-set-domain';
@@ -117,7 +118,14 @@ export async function POST(request: NextRequest) {
     if (!provider.enabled) return NextResponse.json({ error: 'Provider is disabled' }, { status: 400 });
     if (!isRealApiKey(provider.apiKey)) return NextResponse.json({ error: 'Provider API key is not configured' }, { status: 400 });
 
-    // Resolve size
+    const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-image-2';
+
+    // Resolve size. The selected ratio is part of the generation contract; reject
+    // unsupported company-gateway ratios instead of silently snapping to another ratio.
+    if (typeof body.aspectRatio === 'string') {
+      const aspectRatioError = validateImageAspectRatio(model, body.aspectRatio);
+      if (aspectRatioError) return NextResponse.json({ error: aspectRatioError }, { status: 400 });
+    }
     let resolvedSize: string;
     if (body.aspectRatio) {
       try { resolvedSize = resolveGptImage2Size(body.aspectRatio, body.resolution || '1k'); }
@@ -129,7 +137,6 @@ export async function POST(request: NextRequest) {
     }
 
     const projectId = uuidv4();
-    const model = body.model || 'gpt-image-2';
     const quality = body.quality || 'medium';
     const timeoutMs = body.timeoutMs || 600000;
     const maxAttempts = body.maxAttempts || 2;
@@ -159,9 +166,8 @@ export async function POST(request: NextRequest) {
       // Create project shell：项目名由服务端按生产身份生成，旧 productName/productCategory 不写入。
       db.prepare(`
         INSERT INTO projects (id, name, productName, productCode, productCategory, providerId, model, prompt, negativePrompt, size, quality, concurrency, maxAttempts, status, referenceGuidanceMode, timeoutMs, workflowType, scenePrompt, shotPrompt, storeCode, productSubmodel, productionType, editorName, namingDate)
-        VALUES (?, ?, '', ?, '', ?, ?, ?, '', '', ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(projectId, baseName, identity.productCode,
-        body.providerId, model, resolvedSize, quality, concurrency, maxAttempts, 'none', timeoutMs, 'complex_product',
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(projectId, baseName, '', identity.productCode, '', body.providerId, model, '', '', resolvedSize, quality, concurrency, maxAttempts, 'draft', 'none', timeoutMs, 'complex_product',
         scenePrompt || defaultScenePrompt, shotPrompt || defaultShotPrompt,
         identity.storeCode, identity.productSubmodel, identity.productionType, identity.editorName, namingDate);
 
