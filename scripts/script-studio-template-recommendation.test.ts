@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { ensureScriptStudioSchemaReady } from '../lib/script-studio/schema.ts';
 import { getOrCreateCatalog, createCatalogRevision, getCatalogRevisionView } from '../lib/script-studio/catalogs.ts';
 import { resolveTemplateCatalogSource, recommendFromCatalog } from '../lib/script-studio/template-catalog.ts';
+import type { ScriptStudioPointType } from '../lib/script-studio/types.ts';
 
 function createBaseDatabase(root: string): Database.Database {
   const db = new Database(path.join(root, 'workbench.db'));
@@ -58,7 +59,7 @@ try {
   assert.equal(source.visualHooks.length, 3, 'draft_invalid 画面钩子不进入推荐池');
 
   // 1. 确定性：同一冻结输入重试得到同一推荐
-  const base = { count: 3, pointTypes: [] as string[], categoryMindsets: ['沙发'] as string[], primarySellingPoints: [] as string[] };
+  const base = { revisionId: revision.revisionId as string | null, count: 3, pointTypes: [] as ScriptStudioPointType[], categoryMindsets: ['沙发'] as string[], primarySellingPoints: [] as string[] };
   const first = recommendFromCatalog(source, { ...base });
   const second = recommendFromCatalog(source, { ...base });
   assert.equal(first.usedCatalog, true);
@@ -73,8 +74,9 @@ try {
 
   // 3. 品类心智命中提升对应框架：命中「多卖点/功能」心智时 03 优先
   const functional = recommendFromCatalog(source, {
+    revisionId: revision.revisionId,
     count: 1,
-    pointTypes: [] as string[],
+    pointTypes: [] as ScriptStudioPointType[],
     categoryMindsets: ['功能多卖点'] as string[],
     primarySellingPoints: [] as string[],
   });
@@ -82,6 +84,7 @@ try {
 
   // 3b. 证据卖点类型必须真实参与评分：场景型证据 → 场景需求框架 02 优先
   const scenarioBased = recommendFromCatalog(source, {
+    revisionId: revision.revisionId,
     count: 1,
     pointTypes: ['scenario'],
     categoryMindsets: [] as string[],
@@ -89,6 +92,7 @@ try {
   });
   assert.equal(scenarioBased.plans[0]!.framework!.stableKey, '02', '证据卖点类型命中时对应框架优先');
   const efficacyBased = recommendFromCatalog(source, {
+    revisionId: revision.revisionId,
     count: 1,
     pointTypes: ['efficacy'],
     categoryMindsets: [] as string[],
@@ -130,7 +134,7 @@ try {
 
   // 6. 无框架 → 回落
   const emptySource = resolveTemplateCatalogSource({ frameworks: [], copyHooks: [], visualHooks: [] });
-  const empty = recommendFromCatalog(emptySource, { ...base, count: 1 });
+  const empty = recommendFromCatalog(emptySource, { ...base, revisionId: null, count: 1 });
   assert.equal(empty.usedCatalog, false);
   assert.ok(empty.warning, '空目录应给出回落 warning');
 } finally {

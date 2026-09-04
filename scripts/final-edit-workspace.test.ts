@@ -1124,7 +1124,7 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
   const badClipId = baseTimeline.clips[0].id;
   const mediaRow = db.prepare(`SELECT mediaJson FROM final_edit_asset_analysis WHERE videoJobId=?`).get(baseTimeline.clips[0].videoJobId) as { mediaJson: string } | undefined;
   // 触碰坏 clip 本身（set_framing）才会抛错；M4 之后未触碰的坏 clip 只降级为 issue。
-  const runScenario = (mutateTimeline: (clips: typeof baseTimeline.clips) => void, mutateAnalysis?: () => void): FinalEditError => {
+  const runScenario = (mutateTimeline: (clips: typeof baseTimeline.clips) => void, mutateAnalysis?: () => void): InstanceType<typeof FinalEditError> => {
     const timeline = JSON.parse(baseRow.timelineJson) as typeof baseTimeline;
     // 对齐指纹到分析行当前值，确保唯一故障来自场景自身的 mutation
     // （早期测试改写过 v1.mp4，导致旧 clip 指纹过期）。
@@ -1148,7 +1148,7 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
     const durationUs = Number((JSON.parse(mediaRow?.mediaJson || '{}') as { durationUs?: number }).durationUs || 0);
     clips[0].sourceOutFrame = Math.floor(durationUs * 24 / 1_000_000) + 1;
   });
-  let durationMissingError!: FinalEditError;
+  let durationMissingError!: InstanceType<typeof FinalEditError>;
   {
     db.prepare(`UPDATE final_edit_asset_analysis SET mediaJson='{}' WHERE videoJobId=?`).run(baseTimeline.clips[0].videoJobId);
     durationMissingError = runScenario(() => undefined);

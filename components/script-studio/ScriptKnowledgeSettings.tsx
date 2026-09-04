@@ -135,10 +135,10 @@ export default function ScriptKnowledgeSettings() {
       const issues = body.report?.issues?.length ?? 0;
       const canActivate = body.report?.canActivate ?? true;
       const suffix = body.created === false ? '内容指纹相同，未产生新版本。' : canActivate ? '已导入并激活为新版本。' : `已导入（${issues} 条警告）。`;
-      setMessage({ kind, text: `导入完成，${suffix}`, success: true });
+      setMessage({ text: `导入完成，${suffix}`, success: true });
       await load();
     } catch (cause) {
-      setMessage({ kind, text: cause instanceof Error ? cause.message : String(cause), success: false });
+      setMessage({ text: cause instanceof Error ? cause.message : String(cause), success: false });
     } finally {
       setImporting(null);
     }

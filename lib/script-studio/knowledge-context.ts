@@ -135,6 +135,7 @@ export function resolveKnowledgeContext(
         visualHooks: view.visualHookTemplates,
       });
       const result = recommendFromCatalog(source, {
+        revisionId: templateRevisionId,
         count: input.requestedCount,
         pointTypes: input.pointTypes,
         categoryMindsets: strategy.categoryMindsets,
