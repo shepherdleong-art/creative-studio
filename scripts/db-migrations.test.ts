@@ -55,7 +55,7 @@ db.exec(`
     negativePrompt TEXT DEFAULT '',
     size TEXT NOT NULL DEFAULT '1024x1024',
     quality TEXT NOT NULL DEFAULT 'standard',
-    concurrency INTEGER NOT NULL DEFAULT 3,
+    concurrency INTEGER NOT NULL DEFAULT 10,
     videoConcurrency INTEGER NOT NULL DEFAULT 10,
     maxAttempts INTEGER NOT NULL DEFAULT 2,
     status TEXT NOT NULL DEFAULT 'draft'
