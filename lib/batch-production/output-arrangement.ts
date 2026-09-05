@@ -54,8 +54,10 @@ export interface BatchOutputPoolAssetView {
   durationSec: number | null;
   contentFingerprint: string;
   thumbnailUrl: string;
-  /** 代理预览地址（LUT 已烧入，色彩与正式渲染一致）。 */
+  /** 代理预览地址(代理解析路由;无匹配代理时回退原片)。 */
   previewUrl: string;
+  /** 冻结快照中的素材级 LUT 选择(无/已归档时可能为 null),实时预览叠加用。 */
+  lutId: string | null;
   /** 已被排除出本批次联合分配（不可用于替换/插入）。 */
   excluded: boolean;
   /** 本批次版本中，当前候选画面片段用到该素材的全部成片计划（去重）。 */
@@ -158,6 +160,8 @@ interface FrozenPoolAssetRow {
   contentFingerprint: string;
   mediaJson: string;
   analysisJson: string | null;
+  /** 冻结色彩快照(含素材卡 LUT 选择),实时预览按它叠加 LUT */
+  colorJson: string | null;
   excluded: number;
 }
 
@@ -490,7 +494,7 @@ export function getBatchOutputArrangementView(
 
   const poolRows = db.prepare(`
     SELECT pool.assetId, assets.contentFingerprint, assets.mediaJson,
-           analysis.analysisJson,
+           analysis.analysisJson, pool.colorJson,
            CASE WHEN e.id IS NULL THEN 0 ELSE 1 END AS excluded
     FROM batch_asset_pool_items pool
     JOIN batch_assets assets ON assets.id = pool.assetId
@@ -520,6 +524,10 @@ export function getBatchOutputArrangementView(
       contentFingerprint: row.contentFingerprint,
       thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion(row.contentFingerprint))}`,
       previewUrl: `/api/batch-production/preview/${encodedAssetId}?projectId=${encodedProjectId}&batchId=${encodedBatchId}&batchVersionId=${encodedBatchVersionId}`,
+      lutId: (() => {
+        const color = asRecord(parseJson(row.colorJson));
+        return typeof color?.lutId === 'string' && color.lutId.length > 0 ? color.lutId : null;
+      })(),
       excluded: row.excluded === 1,
       usedByPlanIds: [...(usageCounts?.keys() ?? [])].sort(),
       useCountByPlanId: Object.fromEntries(usageCounts ?? []),

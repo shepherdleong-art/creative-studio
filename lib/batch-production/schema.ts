@@ -1089,6 +1089,155 @@ export const BATCH_SCHEMA_MIGRATIONS: ReadonlyArray<BatchSchemaMigration> = [
         AND COALESCE(json_extract(arrangementJson, '$.narration.productionReady'), 0) <> 1;
     `,
   },
+  {
+    version: 25,
+    sql: `
+      -- 素材级代理(共识 2/13):代理归属素材、不绑批次;请求一律不带色彩快照
+      -- (色彩/LUT 是预览层实时效果,不再是代理身份的一部分)。
+      -- SQLite 不能 ALTER 列约束,以下两张表都走重建(新建-拷贝-换名):
+      -- 1. batch_proxy_requests:batchId/batchVersionId 改可空(外键保留),
+      --    原 UNIQUE(batchVersionId, assetId, proxyKey) 拆成两个部分唯一索引
+      --    (批次绑定语义不变;素材级请求按 projectId+assetId+proxyKey 幂等),
+      --    表级 CHECK 防 batchId/batchVersionId 半空。存量行原样搬迁
+      --    (旧行两个字段都非空,直接拷贝不违反任何约束)。
+      -- 2. batch_tasks:素材级 proxy_generate 任务没有所属批次,batchId 改可空。
+      --    重建顺序与 v14/v21/v23 相同:先让全部新子表引用新 tasks,再依次丢弃
+      --    旧子表与旧父表,最后改名到位。batch_tasks 的子表不止 attempts——
+      --    v17 的 batch_asset_analysis_requests.taskId 也是 ON DELETE CASCADE,
+      --    foreign_keys=ON 时 DROP 旧 batch_tasks 会隐式 DELETE 并级联清空该表,
+      --    必须一并重建(真实库中该表有存量,漏掉会造成数据丢失)。
+      CREATE TABLE batch_proxy_requests_v25 (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT,
+        batchVersionId TEXT,
+        assetId TEXT NOT NULL,
+        contentFingerprint TEXT NOT NULL,
+        colorJson TEXT NOT NULL,
+        profileVersion TEXT NOT NULL,
+        colorPipelineVersion TEXT NOT NULL,
+        proxyKey TEXT NOT NULL,
+        currentCacheItemId TEXT,
+        status TEXT NOT NULL DEFAULT 'requested'
+          CHECK(status IN ('requested', 'generating', 'ready', 'failed', 'cancelled')),
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        CHECK((batchId IS NULL) = (batchVersionId IS NULL)),
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchVersionId) REFERENCES batch_production_versions(id) ON DELETE CASCADE,
+        FOREIGN KEY(assetId) REFERENCES batch_assets(id) ON DELETE CASCADE,
+        FOREIGN KEY(currentCacheItemId) REFERENCES batch_proxy_cache_items(id) ON DELETE SET NULL
+      );
+      INSERT INTO batch_proxy_requests_v25
+        (id, projectId, batchId, batchVersionId, assetId, contentFingerprint, colorJson,
+         profileVersion, colorPipelineVersion, proxyKey, currentCacheItemId, status, createdAt, updatedAt)
+      SELECT id, projectId, batchId, batchVersionId, assetId, contentFingerprint, colorJson,
+             profileVersion, colorPipelineVersion, proxyKey, currentCacheItemId, status, createdAt, updatedAt
+      FROM batch_proxy_requests;
+      DROP TABLE batch_proxy_requests;
+      ALTER TABLE batch_proxy_requests_v25 RENAME TO batch_proxy_requests;
+      CREATE INDEX IF NOT EXISTS idx_batch_proxy_requests_version
+        ON batch_proxy_requests(batchVersionId, assetId);
+      CREATE INDEX IF NOT EXISTS idx_batch_proxy_requests_cache
+        ON batch_proxy_requests(currentCacheItemId);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_proxy_requests_version_identity
+        ON batch_proxy_requests(batchVersionId, assetId, proxyKey)
+        WHERE batchVersionId IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_proxy_requests_asset_identity
+        ON batch_proxy_requests(projectId, assetId, proxyKey)
+        WHERE batchVersionId IS NULL;
+
+      CREATE TABLE batch_tasks_v25 (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT,
+        workType TEXT NOT NULL CHECK(workType IN ('asset_prepare', 'render', 'proxy_generate', 'narration', 'semantic_score')),
+        targetKind TEXT NOT NULL,
+        targetId TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+        requestKey TEXT,
+        expectedState TEXT NOT NULL DEFAULT 'running' CHECK(expectedState IN ('running', 'paused', 'stopped')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        attemptCount INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_tasks_v25
+        (id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt)
+      SELECT id, projectId, batchId, workType, targetKind, targetId, status, requestKey, expectedState, progressJson, attemptCount, createdAt, updatedAt
+      FROM batch_tasks;
+
+      CREATE TABLE batch_task_attempts_v25 (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        attemptNumber INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        progressJson TEXT NOT NULL DEFAULT '{}',
+        resultJson TEXT,
+        errorCode TEXT,
+        errorMessage TEXT,
+        claimedBy TEXT,
+        leaseExpiresAt TEXT,
+        heartbeatAt TEXT,
+        adapterVersion TEXT,
+        remoteTaskId TEXT,
+        startedAt TEXT NOT NULL,
+        finishedAt TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(taskId, attemptNumber),
+        FOREIGN KEY(taskId) REFERENCES batch_tasks_v25(id) ON DELETE CASCADE
+      );
+      INSERT INTO batch_task_attempts_v25
+        (id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt)
+      SELECT id, taskId, attemptNumber, status, progressJson, resultJson, errorCode, errorMessage, claimedBy, leaseExpiresAt, heartbeatAt, adapterVersion, remoteTaskId, startedAt, finishedAt, createdAt
+      FROM batch_task_attempts;
+
+      CREATE TABLE batch_asset_analysis_requests_v25 (
+        taskId TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        batchId TEXT NOT NULL,
+        assetId TEXT NOT NULL,
+        contentFingerprint TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        analysisMode TEXT NOT NULL DEFAULT 'content'
+          CHECK(analysisMode IN ('content')),
+        createdAt TEXT NOT NULL,
+        -- v18 以 ALTER 追加,列序在 createdAt 之后;重建必须保持同样列序
+        executionScope TEXT NOT NULL DEFAULT 'external'
+          CHECK(executionScope IN ('external','company')),
+        FOREIGN KEY(taskId) REFERENCES batch_tasks_v25(id) ON DELETE CASCADE,
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(batchId) REFERENCES batch_productions(id) ON DELETE CASCADE,
+        FOREIGN KEY(assetId) REFERENCES batch_assets(id) ON DELETE RESTRICT
+      );
+      INSERT INTO batch_asset_analysis_requests_v25
+        (taskId, projectId, batchId, assetId, contentFingerprint, providerId, model, analysisMode, executionScope, createdAt)
+      SELECT taskId, projectId, batchId, assetId, contentFingerprint, providerId, model, analysisMode, executionScope, createdAt
+      FROM batch_asset_analysis_requests;
+
+      DROP TABLE batch_asset_analysis_requests;
+      DROP TABLE batch_task_attempts;
+      DROP TABLE batch_tasks;
+      ALTER TABLE batch_tasks_v25 RENAME TO batch_tasks;
+      ALTER TABLE batch_task_attempts_v25 RENAME TO batch_task_attempts;
+      ALTER TABLE batch_asset_analysis_requests_v25 RENAME TO batch_asset_analysis_requests;
+
+      CREATE INDEX IF NOT EXISTS idx_batch_tasks_batch
+        ON batch_tasks(batchId, status, createdAt);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_tasks_request_key
+        ON batch_tasks(requestKey) WHERE requestKey IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_batch_task_attempts_task
+        ON batch_task_attempts(taskId, attemptNumber);
+      CREATE INDEX IF NOT EXISTS idx_batch_asset_analysis_requests_asset
+        ON batch_asset_analysis_requests(projectId, assetId, createdAt);
+      CREATE INDEX IF NOT EXISTS idx_batch_asset_analysis_requests_batch
+        ON batch_asset_analysis_requests(batchId, createdAt);
+    `,
+  },
 ];
 
 export type BatchSchemaFailureCode =
@@ -1554,7 +1703,6 @@ function validateTaskTables(db: Database.Database): void {
   if (
     taskByName.get('id')?.pk !== 1
     || taskByName.get('projectId')?.notnull !== 1
-    || taskByName.get('batchId')?.notnull !== 1
     || taskByName.get('workType')?.notnull !== 1
     || taskByName.get('targetKind')?.notnull !== 1
     || taskByName.get('targetId')?.notnull !== 1
@@ -1563,6 +1711,9 @@ function validateTaskTables(db: Database.Database): void {
     || taskByName.get('updatedAt')?.notnull !== 1
   ) {
     throw new Error('生产任务表结构检查未通过');
+  }
+  if (taskByName.get('batchId') === undefined) {
+    throw new Error('生产任务表缺少 batchId 列');
   }
 
   const taskForeignKeys = db.prepare(`PRAGMA foreign_key_list(batch_tasks)`).all() as Array<{
@@ -1971,7 +2122,14 @@ function validateProxyRequestTables(db: Database.Database): void {
     pk: number;
   }>;
   const requestByName = new Map(requestColumns.map((column) => [column.name, column]));
+  // batchId/batchVersionId 的必填性在 v25 发生变化(改为可空),只在这里验证列存在;
+  // 可空性与 CHECK/部分唯一索引由 validateV25BatchBindings 在 v25 之后校验。
   for (const name of ['projectId', 'batchId', 'batchVersionId', 'assetId', 'contentFingerprint', 'colorJson', 'profileVersion', 'colorPipelineVersion', 'proxyKey', 'status', 'createdAt', 'updatedAt']) {
+    if (requestByName.get(name) === undefined) {
+      throw new Error(`代理请求表缺少列 ${name}`);
+    }
+  }
+  for (const name of ['projectId', 'assetId', 'contentFingerprint', 'colorJson', 'profileVersion', 'colorPipelineVersion', 'proxyKey', 'status', 'createdAt', 'updatedAt']) {
     if (requestByName.get(name)?.notnull !== 1) {
       throw new Error(`代理请求表缺少必填列 ${name}`);
     }
@@ -2039,6 +2197,19 @@ function validateProxyRequestTables(db: Database.Database): void {
     throw new Error('代理请求表存在跨批次、跨项目或不属于版本素材池的谱系');
   }
 
+  // 素材级请求(batchVersionId IS NULL):批次绑定必须两边都空(CHECK 兜底),
+  // 且素材必须属于该项目。
+  const invalidMaterialLineage = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM batch_proxy_requests r
+    JOIN batch_assets a ON a.id = r.assetId
+    WHERE r.batchVersionId IS NULL
+      AND (r.batchId IS NOT NULL OR a.projectId <> r.projectId)
+  `).get() as { n: number };
+  if (invalidMaterialLineage.n > 0) {
+    throw new Error('代理请求表存在半空批次绑定或素材级请求跨项目');
+  }
+
   const invalidTaskTargets = db.prepare(`
     SELECT COUNT(*) AS n
     FROM batch_tasks t
@@ -2049,7 +2220,7 @@ function validateProxyRequestTables(db: Database.Database): void {
           t.targetKind = 'proxy_request'
           AND r.id IS NOT NULL
           AND r.projectId = t.projectId
-          AND r.batchId = t.batchId
+          AND r.batchId IS t.batchId
         )
         OR (
           t.targetKind = 'legacy_proxy_cache'
@@ -2060,6 +2231,47 @@ function validateProxyRequestTables(db: Database.Database): void {
   `).get() as { n: number };
   if (invalidTaskTargets.n > 0) {
     throw new Error('代理任务存在跨批次或悬空的请求目标');
+  }
+}
+
+/**
+ * v25 放宽批次绑定后的结构断言:只会在 schema 版本 >= 25 时校验(见
+ * validateBatchSchemaUpTo / validateBatchSchema),v14–v24 的中间状态里
+ * batchId/batchVersionId 仍应是 NOT NULL,不能在这里一刀切。
+ */
+function validateV25BatchBindings(db: Database.Database): void {
+  const requestColumns = db.prepare(`PRAGMA table_info(batch_proxy_requests)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const requestByName = new Map(requestColumns.map((column) => [column.name, column]));
+  for (const name of ['batchId', 'batchVersionId']) {
+    if (requestByName.get(name)?.notnull === 1) {
+      throw new Error(`代理请求表 ${name} 必须可空(素材级代理不挂批次)`);
+    }
+  }
+  const requestTableSql = (db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'batch_proxy_requests'`).get() as {
+    sql: string;
+  }).sql;
+  if (!requestTableSql.includes('(batchId IS NULL) = (batchVersionId IS NULL)')) {
+    throw new Error('代理请求表半空批次绑定 CHECK 检查未通过');
+  }
+  const requestIndexes = db.prepare(`PRAGMA index_list(batch_proxy_requests)`).all() as Array<{
+    name: string;
+    unique: number;
+  }>;
+  if (!requestIndexes.some(({ name, unique }) => name === 'idx_batch_proxy_requests_version_identity' && unique === 1)) {
+    throw new Error('代理请求表批次版本部分唯一索引检查未通过');
+  }
+  if (!requestIndexes.some(({ name, unique }) => name === 'idx_batch_proxy_requests_asset_identity' && unique === 1)) {
+    throw new Error('代理请求表素材部分唯一索引检查未通过');
+  }
+  const taskColumns = db.prepare(`PRAGMA table_info(batch_tasks)`).all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  if (taskColumns.find((column) => column.name === 'batchId')?.notnull === 1) {
+    throw new Error('生产任务表 batchId 必须可空(素材级代理任务不挂批次)');
   }
 }
 
@@ -2335,12 +2547,16 @@ function validateBatchSchema(db: Database.Database): void {
   for (const validate of SCHEMA_VALIDATORS) {
     validate(db);
   }
+  validateV25BatchBindings(db);
   assertIntegrity(db);
 }
 
 function validateBatchSchemaUpTo(db: Database.Database, version: number): void {
   for (let index = 0; index < version && index < SCHEMA_VALIDATORS.length; index += 1) {
     SCHEMA_VALIDATORS[index]?.(db);
+  }
+  if (version >= 25) {
+    validateV25BatchBindings(db);
   }
   assertIntegrity(db);
 }

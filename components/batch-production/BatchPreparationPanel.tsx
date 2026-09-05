@@ -32,6 +32,9 @@ import BatchStepScripts, {
 import { defaultTextStyle, normalizeTextStyle } from '@/lib/media-core/cover-domain';
 import BatchStepReview, { type CardFilter } from './BatchStepReview';
 import BatchStepExport from './BatchStepExport';
+import { LutVideoPlayer } from './LutVideoPlayer';
+import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
+import { useProxyPlaybackPreference } from './proxy-playback-preference';
 
 interface ReadinessResponse {
   available: boolean;
@@ -55,7 +58,7 @@ interface BatchSnapshotResponse extends BatchSnapshotResult {
 }
 
 interface PreviewInfo {
-  kind: 'proxy' | 'original' | 'original_pending_lut' | 'unavailable';
+  kind: 'proxy' | 'original' | 'unavailable';
   originalOnline: boolean;
   warning?: string;
 }
@@ -68,6 +71,12 @@ interface PreviewAsset {
   id: string;
   title: string;
   url: string;
+  /** 代理解析路由地址(代理开关打开时用;切换/生成完成后重建) */
+  watchUrl: string;
+  /** 原片直连地址(代理开关关闭/解析失败回退时用) */
+  originalUrl: string;
+  /** 预览来源信息(低清预览片/原片/不可用),打开时异步读取 */
+  info?: PreviewInfo | null;
 }
 
 interface TtsProviderView {
@@ -207,6 +216,26 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
   const [cacheUsage, setCacheUsage] = useState<{ count: number; totalBytes: number } | null>(null);
   const [cleanupBusy, setCleanupBusy] = useState<'selected' | 'project' | null>(null);
   const [previewInfos, setPreviewInfos] = useState<Record<string, PreviewInfo>>({});
+  /** 素材级代理任务的轮询状态(key=assetId):素材卡按钮进度与播放器引导按钮的「生成中/失败」来源 */
+  const [assetProxyStates, setAssetProxyStates] = useState<Record<string, { taskId: string; status: string; progressJson?: unknown }>>({});
+  /** 代理请求 id → 素材 id(批次任务列表标签显示用;刷新后丢失回退默认文案) */
+  const [proxyTaskAssetIds, setProxyTaskAssetIds] = useState<Record<string, string>>({});
+  /** 面板卸载后停止素材级任务轮询 */
+  const panelMountedRef = useRef(true);
+  useEffect(() => {
+    panelMountedRef.current = true;
+    return () => { panelMountedRef.current = false; };
+  }, []);
+  /** 轮询循环是异步长跑,组件每次渲染都会重建闭包,读当前播放器状态要走 ref */
+  const previewAssetRef = useRef<PreviewAsset | null>(null);
+  useEffect(() => { previewAssetRef.current = previewAsset; }, [previewAsset]);
+  /** 代理/原片切换后恢复播放位置与播放/暂停状态 */
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewVideoStateRef = useRef<{ time: number; paused: boolean }>({ time: 0, paused: false });
+  const { proxyPlayback } = useProxyPlaybackPreference();
+  /** 轮询长跑闭包里读最新开关值 */
+  const proxyPlaybackRef = useRef(proxyPlayback);
+  useEffect(() => { proxyPlaybackRef.current = proxyPlayback; }, [proxyPlayback]);
   const [outputPreset, setOutputPreset] = useState<OutputPreset>('3:4');
   const [workspace, setWorkspace] = useState<BatchWorkspaceView | null>(null);
   const [cardFilter, setCardFilter] = useState<CardFilter>('all');
@@ -839,30 +868,43 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     };
   }, [previewAsset]);
 
+  /** 播放器解析路由 URL:有批次+版本走批次级(素材必须在该版本池),否则素材级模式——两条路径都经 resolvePreviewSource,不直连原片。 */
+  function watchPreviewUrl(assetId: string): string {
+    const base = `/api/batch-production/preview/${encodeURIComponent(assetId)}?projectId=${encodeURIComponent(projectId)}`;
+    if (selectedBatchId && currentVersionId) {
+      return `${base}&batchId=${encodeURIComponent(selectedBatchId)}&batchVersionId=${encodeURIComponent(currentVersionId)}`;
+    }
+    return base;
+  }
+
+  /** 素材网格预览:与冻结池同一条 preview/[assetId] 解析路由;解析失败(离线等)回退原片直连。 */
   function openAssetPreview(asset: PrepareAssetCardView): void {
-    if (!asset.previewUrl) return;
+    const watchUrl = watchPreviewUrl(asset.id);
+    const originalUrl = asset.previewUrl || '';
     setPreviewAsset({
       id: asset.id,
       title: asset.media.displayName || asset.media.filename || '视频素材',
-      url: asset.previewUrl,
+      url: proxyPlayback ? watchUrl : (originalUrl || watchUrl),
+      watchUrl,
+      originalUrl,
+      info: null,
     });
-  }
-
-  function previewUrl(assetId: string): string {
-    if (!selectedBatchId || !currentVersionId) return '';
-    return `/api/batch-production/preview/${encodeURIComponent(assetId)}?projectId=${encodeURIComponent(projectId)}`
-      + `&batchId=${encodeURIComponent(selectedBatchId)}&batchVersionId=${encodeURIComponent(currentVersionId)}`;
+    void refreshProxyPreviewInfo(asset.id);
   }
 
   function openPreparedAssetPreview(assetId: string): void {
     const asset = preparation?.assets.find((item) => item.id === assetId);
-    const url = previewUrl(assetId);
-    if (!asset || !url) return;
+    const watchUrl = watchPreviewUrl(assetId);
+    if (!asset || !watchUrl) return;
     setPreviewAsset({
       id: assetId,
       title: asset.media.displayName || asset.media.filename || '视频素材',
-      url,
+      url: proxyPlayback ? watchUrl : (asset.previewUrl || watchUrl),
+      watchUrl,
+      originalUrl: asset.previewUrl || '',
+      info: previewInfos[assetId] ?? null,
     });
+    void refreshProxyPreviewInfo(assetId);
   }
 
   async function analyzeAssets(assetIds: string[]): Promise<void> {
@@ -1053,25 +1095,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         throw new Error(`成片计划数量不一致：应有 ${result.totalPlans} 张，实际 ${result.planIds.length} 张`);
       }
       setInputConfirmed(true);
-      const lutAssetIds = assetSelections
-        .filter(({ colorSnapshot }) => colorSnapshot.lutId !== null)
-        .map(({ assetId }) => assetId);
       if (result.inputState === 'frozen') {
         await loadBatchDetail(selectedBatchId);
-        try {
-          const requestedCount = await submitProxyRequests(selectedBatchId, lutAssetIds);
-          setFeedback({
-            kind: 'success',
-            message: requestedCount > 0
-              ? `整体输入没有变化，继续使用已冻结版本；已为 ${requestedCount} 条启用 LUT 的素材请求匹配代理。`
-              : '整体输入没有变化，继续使用已冻结的批次版本。',
-          });
-        } catch (proxyError) {
-          setFeedback({
-            kind: 'error',
-            message: `整体输入已确认，但 LUT 代理请求失败：${proxyError instanceof Error ? proxyError.message : '未知错误'}`,
-          });
-        }
+        setFeedback({ kind: 'success', message: '整体输入没有变化，继续使用已冻结的批次版本。' });
         return;
       }
       setOutputPlans(result.planIds.map((id, index) => ({
@@ -1084,20 +1110,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       setBatches((current) => current.map((batch) => batch.id === selectedBatchId
         ? { ...batch, currentVersionId: result.batchVersionId, status: 'draft' }
         : batch));
-      try {
-        const requestedCount = await submitProxyRequests(selectedBatchId, lutAssetIds);
-        setFeedback({
-          kind: 'success',
-          message: requestedCount > 0
-            ? `已确认 ${result.totalPlans} 张成片计划，并为 ${requestedCount} 条启用 LUT 的素材请求匹配代理`
-            : `已确认 ${result.totalPlans} 张成片计划`,
-        });
-      } catch (proxyError) {
-        setFeedback({
-          kind: 'error',
-          message: `整体输入已确认，但 LUT 代理请求失败：${proxyError instanceof Error ? proxyError.message : '未知错误'}`,
-        });
-      }
+      // 共识 13:确认整体输入不再自动为 LUT 素材请求代理(代理与 LUT 正交,
+      // 只保留手动请求入口)。
+      setFeedback({ kind: 'success', message: `已确认 ${result.totalPlans} 张成片计划` });
     } catch (snapshotError) {
       setFeedback({ kind: 'error', message: snapshotError instanceof Error ? snapshotError.message : '批次输入确认失败' });
     } finally {
@@ -1183,7 +1198,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
 
   async function submitProxyRequests(batchId: string, assetIds: string[] | undefined): Promise<number> {
     if (assetIds && assetIds.length === 0) return 0;
-    const result = await readJson<{ requested: Array<{ assetId: string }> }>(await fetch(
+    const result = await readJson<{ requested: Array<{ assetId: string; requestId: string }> }>(await fetch(
       `/api/batch-production/batches/${encodeURIComponent(batchId)}/proxies?projectId=${encodeURIComponent(projectId)}`,
       {
         method: 'POST',
@@ -1191,17 +1206,26 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         body: JSON.stringify({ assetIds }),
       },
     ));
+    const mappings = Object.fromEntries(
+      result.requested
+        .filter((item) => item.assetId && item.requestId)
+        .map((item) => [item.requestId, item.assetId]),
+    );
+    if (Object.keys(mappings).length > 0) {
+      setProxyTaskAssetIds((current) => ({ ...current, ...mappings }));
+    }
     await loadTasks(batchId);
     return result.requested.length;
   }
 
+  /** 批次级批量请求(弹窗按钮):按当前批次版本素材池匹配。 */
   async function requestProxies(assetIds: string[] | undefined, busyMarker: string | null): Promise<void> {
-    if (!selectedBatchId || !hasConfirmedVersion) {
-      setFeedback({ kind: 'error', message: '请先确认整体输入，代理请求需要读取已确认的色彩快照。' });
+    if (!selectedBatchId) {
+      setFeedback({ kind: 'error', message: '请先创建或选择一个批次。' });
       return;
     }
-    if (!inputConfirmed) {
-      setFeedback({ kind: 'error', message: '整体输入已修改但尚未重新确认，不能请求代理；请先确认当前输入。' });
+    if (!hasConfirmedVersion) {
+      setFeedback({ kind: 'error', message: '请先确认整体输入建立批次版本；也可以在素材卡或预览播放器中直接生成代理（无需确认输入）。' });
       return;
     }
     if (busyMarker) setProxyBusyAssetId(busyMarker); else setProxyBatchBusy(true);
@@ -1214,6 +1238,114 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     } finally {
       setProxyBusyAssetId(null);
       setProxyBatchBusy(false);
+    }
+  }
+
+  /** 强制预览媒体换源:同一 URL 的内容会随代理就绪切换,追加 cache-bust 参数让 video 重新拉取。 */
+  function bustPreviewUrl(url: string): string {
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}v=${Date.now()}`;
+  }
+
+  /** 拉取单个素材的预览来源信息(优先批次级,无批次时素材级);批次级查询失败时回退素材级。 */
+  async function refreshProxyPreviewInfo(assetId: string): Promise<PreviewInfo | null> {
+    const batchMode = Boolean(selectedBatchId && currentVersionId);
+    const fetchInfo = async (params: URLSearchParams): Promise<PreviewInfo> => readJson<PreviewInfo>(await fetch(
+      `/api/batch-production/preview/${encodeURIComponent(assetId)}?${params.toString()}&previewInfo=1`,
+      { cache: 'no-store' },
+    ));
+    try {
+      const params = new URLSearchParams({ projectId });
+      if (selectedBatchId && currentVersionId) {
+        params.set('batchId', selectedBatchId);
+        params.set('batchVersionId', currentVersionId);
+      }
+      const info = await fetchInfo(params);
+      setPreviewInfos((current) => ({ ...current, [assetId]: info }));
+      setPreviewAsset((current) => current?.id === assetId ? { ...current, info } : current);
+      return info;
+    } catch {
+      if (!batchMode) return null;
+      // 素材不在该版本素材池时批次级查询 404,回退素材级查询——素材级代理(共识 2)
+      // 就是给这个入口服务的,返回的 kind 同样以服务器为准。
+      try {
+        const info = await fetchInfo(new URLSearchParams({ projectId }));
+        setPreviewInfos((current) => ({ ...current, [assetId]: info }));
+        setPreviewAsset((current) => current?.id === assetId ? { ...current, info } : current);
+        return info;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  /** 素材级代理任务轮询:终态刷新 previewInfo,成功时把打开中的播放器切到代理。 */
+  async function pollAssetProxyTask(assetId: string, taskId: string): Promise<void> {
+    while (panelMountedRef.current) {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      if (!panelMountedRef.current) return;
+      let task: { status: string; progressJson?: unknown };
+      try {
+        task = await readJson(await fetch(
+          `/api/batch-production/tasks/${encodeURIComponent(taskId)}?projectId=${encodeURIComponent(projectId)}`,
+          { cache: 'no-store' },
+        ));
+      } catch {
+        // 网络抖动不中断轮询,下一轮重试
+        continue;
+      }
+      setAssetProxyStates((current) => ({ ...current, [assetId]: { taskId, status: task.status, progressJson: task.progressJson } }));
+      if (task.status === 'succeeded') {
+        // info 以服务器为准(含原片离线标注);只有确认解析到代理才重建解析路由 URL,
+        // 否则保持当前源——绝不把原片/直连源硬编码成"代理已就绪"。
+        // 总开关关闭时保持当前源(关=全局播原片),只更新 info。
+        const info = await refreshProxyPreviewInfo(assetId);
+        if (!panelMountedRef.current) return;
+        if (previewAssetRef.current?.id === assetId && info?.kind === 'proxy' && proxyPlaybackRef.current) {
+          setPreviewAsset((current) => (
+            current ? { ...current, info, url: bustPreviewUrl(current.watchUrl || watchPreviewUrl(assetId)) } : current
+          ));
+        }
+        setFeedback({ kind: 'success', message: '低清代理已生成，预览将使用代理。' });
+        return;
+      }
+      if (task.status === 'failed' || task.status === 'cancelled') {
+        if (panelMountedRef.current) {
+          setFeedback({
+            kind: 'error',
+            message: task.status === 'cancelled'
+              ? '代理生成已取消，可再次点击生成。'
+              : '代理生成失败，可再次点击重试。',
+          });
+        }
+        return;
+      }
+    }
+  }
+
+  /** 素材级代理请求(共识 2:不要求批次存在或已确认),供素材卡按钮与播放器引导按钮调用。 */
+  async function requestAssetProxy(assetId: string): Promise<void> {
+    if (!panelMountedRef.current) return;
+    setProxyBusyAssetId(assetId);
+    setFeedback(null);
+    try {
+      const result = await readJson<{ requested: Array<{ taskId: string; requestId: string }> }>(await fetch(
+        `/api/batch-production/assets/${encodeURIComponent(assetId)}/proxies?projectId=${encodeURIComponent(projectId)}`,
+        { method: 'POST' },
+      ));
+      const requested = result.requested[0];
+      if (!requested) {
+        throw new Error('代理请求未返回任务');
+      }
+      if (requested.requestId) {
+        setProxyTaskAssetIds((current) => ({ ...current, [requested.requestId]: assetId }));
+      }
+      setAssetProxyStates((current) => ({ ...current, [assetId]: { taskId: requested.taskId, status: 'queued', progressJson: null } }));
+      void pollAssetProxyTask(assetId, requested.taskId);
+    } catch (requestError) {
+      setFeedback({ kind: 'error', message: requestError instanceof Error ? requestError.message : '代理请求失败' });
+    } finally {
+      setProxyBusyAssetId(null);
     }
   }
 
@@ -1659,9 +1791,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       if (!info.originalOnline) {
         badges.push({ text: '原片离线', tone: 'bg-fail/10 text-fail' });
       }
-    } else if (info.kind === 'original_pending_lut') {
-      badges.push({ text: '原片预览', tone: 'bg-warn/20 text-warn' });
-      badges.push({ text: 'LUT 代理未就绪', tone: 'bg-warn/20 text-warn' });
     } else {
       badges.push({ text: '原片预览', tone: 'bg-surface-subtle text-ink-secondary' });
     }
@@ -1947,6 +2076,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               onAnalyzeContent={(assetIds) => void analyzeAssets(assetIds)}
               onRetryAnalyze={(taskId) => void retryAssetAnalysis(taskId)}
               onRequestProxy={(assetIds, busyMarker) => void requestProxies(assetIds, busyMarker)}
+              onRequestAssetProxy={(assetId) => void requestAssetProxy(assetId)}
+              assetProxyStates={assetProxyStates}
+              proxyTasks={proxyTasks}
+              proxyTaskAssetIds={proxyTaskAssetIds}
               onProxyControl={(taskId, action) => void controlProxyTask(taskId, action)}
               onProxyRetry={(taskId) => void retryProxyTask(taskId)}
               onCleanupProxies={(scope) => void cleanupProxies(scope)}
@@ -1973,7 +2106,6 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               renderPreviewBadge={renderPreviewBadge}
               frozen={frozen}
               hasConfirmedVersion={hasConfirmedVersion}
-              inputConfirmed={inputConfirmed}
               workspace={workspace}
               proxyBusyAssetId={proxyBusyAssetId}
               proxyBatchBusy={proxyBatchBusy}
@@ -2158,23 +2290,117 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                   {previewAsset.title}
                 </h3>
               </div>
-              <button
-                ref={previewCloseButtonRef}
-                type="button"
-                className="btn-secondary text-xs"
-                aria-label="关闭素材预览"
-                onClick={() => setPreviewAsset(null)}
-              >关闭</button>
+              <div className="flex items-center gap-3">
+                <ProxyPlaybackToggle
+                  disabled={previewAsset.info?.kind !== 'proxy'}
+                  disabledHint="该素材还没有低清代理：生成后在代理与原片之间切换"
+                  onBeforeChange={(next) => {
+                    const video = previewVideoRef.current;
+                    if (video) previewVideoStateRef.current = { time: video.currentTime, paused: video.paused };
+                    setPreviewAsset((current) => {
+                      if (!current) return current;
+                      const nextUrl = next ? bustPreviewUrl(current.watchUrl) : (current.originalUrl || current.watchUrl);
+                      if (nextUrl === current.url) return current;
+                      return { ...current, url: nextUrl };
+                    });
+                  }}
+                />
+                <button
+                  ref={previewCloseButtonRef}
+                  type="button"
+                  className="btn-secondary text-xs"
+                  aria-label="关闭素材预览"
+                  onClick={() => setPreviewAsset(null)}
+                >关闭</button>
+              </div>
             </div>
-            <video
-              className="mt-4 aspect-video w-full rounded-xl bg-black"
-              controls
-              autoFocus
-              preload="metadata"
-              data-testid={`asset-preview-modal-${previewAsset.id}`}
-            >
-              <source src={previewAsset.url} />
-            </video>
+            {/* 素材卡 LUT 下拉的选择(会话内 selectedAssets)直接驱动实时叠加;换 LUT 即换纹理,不重载 video */}
+            {(() => {
+              const assetLutId = selectedAssets[previewAsset.id]?.lutId ?? null;
+              return (
+                <LutVideoPlayer
+                  key={previewAsset.url}
+                  src={previewAsset.url}
+                  ariaLabel={`素材预览：${previewAsset.title}`}
+                  className="mt-4 aspect-video w-full rounded-xl bg-black"
+                  videoRef={previewVideoRef}
+                  lut={assetLutId ? {
+                    lutId: assetLutId,
+                    url: `/api/batch-production/luts/${encodeURIComponent(assetLutId)}/file?projectId=${encodeURIComponent(projectId)}`,
+                  } : null}
+              onLoadedMetadata={(event) => {
+                // 代理/原片切换后恢复播放位置与播放/暂停状态
+                const state = previewVideoStateRef.current;
+                if (state.time > 0 && Number.isFinite(state.time)) {
+                  try {
+                    const duration = event.currentTarget.duration;
+                    event.currentTarget.currentTime = Number.isFinite(duration) && duration > 0 ? Math.min(state.time, duration) : state.time;
+                  } catch {
+                    // 媒体源切换瞬间 currentTime 可能不可写,忽略即可
+                  }
+                }
+                if (state.paused) event.currentTarget.pause();
+              }}
+              onError={() => {
+                // 预览路由失败(素材不在版本池等)时回退原片地址
+                if (previewAsset.originalUrl && previewAsset.url !== previewAsset.originalUrl) {
+                  setPreviewAsset((current) => (
+                    current ? { ...current, url: current.originalUrl } : current
+                  ));
+                }
+              }}
+              />
+              );
+            })()}
+            {(() => {
+              const assetProxyTask = assetProxyStates[previewAsset.id];
+              const generating = Boolean(assetProxyTask && (assetProxyTask.status === 'queued' || assetProxyTask.status === 'running'));
+              const proxyFailed = assetProxyTask?.status === 'failed' || assetProxyTask?.status === 'cancelled';
+              const previewKind = previewAsset.info?.kind;
+              if (previewKind === 'proxy') {
+                return (
+                  <p className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-ok/10 px-3 py-2 text-xs text-ok" role="status">
+                    <span>低清代理 · 已就绪</span>
+                    {previewAsset.info?.originalOnline === false && <span className="text-fail">原片离线，正式导出不可用</span>}
+                  </p>
+                );
+              }
+              if (generating) {
+                const progress = (assetProxyTask?.progressJson && typeof assetProxyTask.progressJson === 'object'
+                  ? assetProxyTask.progressJson
+                  : null) as { percent?: number | null; phase?: string } | null;
+                const percent = typeof progress?.percent === 'number' ? `${Math.round(progress.percent * 100)}%` : '';
+                return (
+                  <p className="mt-3 flex items-center gap-2 rounded-xl bg-accent/10 px-3 py-2 text-xs text-ink-secondary" role="status" aria-live="polite">
+                    <span className="inline-block h-3 w-3 animate-spin rounded-full border border-accent border-t-transparent" aria-hidden="true" />
+                    <span>{progress?.phase ? `${progress.phase}…` : '正在生成低清代理…'}</span>
+                    {percent && <span className="text-accent">{percent}</span>}
+                  </p>
+                );
+              }
+              if (proxyFailed) {
+                return (
+                  <p className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-fail/10 px-3 py-2 text-xs text-fail" role="alert">
+                    <span>{assetProxyTask?.status === 'cancelled' ? '代理生成已取消。' : '代理生成失败。'}</span>
+                    <button type="button" className="underline" onClick={() => void requestAssetProxy(previewAsset.id)}>重新生成</button>
+                  </p>
+                );
+              }
+              return (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs text-ink-secondary">
+                  <span>
+                    {previewKind === 'unavailable'
+                      ? '原片暂不可用，生成低清代理后仍可预览。'
+                      : '当前播放原片；生成低清代理后自动切换，拖动更流畅。'}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-primary h-8 px-3 text-xs"
+                    onClick={() => void requestAssetProxy(previewAsset.id)}
+                  >生成低清代理</button>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

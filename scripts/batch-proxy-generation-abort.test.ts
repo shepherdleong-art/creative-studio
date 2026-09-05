@@ -91,9 +91,7 @@ try {
   const { taskId, cacheItemId } = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
     assetId: asset,
     contentFingerprint,
-    colorSnapshot: { lutId: null },
     profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-    colorPipelineVersion: 'color-v1',
     now: () => new Date('2026-08-03T08:06:00.000Z'),
   });
 

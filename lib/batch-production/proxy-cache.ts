@@ -4,19 +4,10 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { dataRoot } from '../data-root.ts';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
-import { resolveColorSnapshot } from './lut-catalog.ts';
+import { COLOR_PIPELINE_VERSION, COLOR_SNAPSHOT_OFF } from './color-pipeline.ts';
 import { cancelTask } from './scheduler.ts';
 import { createBatchTask } from './tasks.ts';
-import { colorSnapshotIdentity, type ColorSnapshotV1, upgradeColorSnapshot } from './color-pipeline.ts';
 import { fingerprintHex, fingerprintsEqual } from './fingerprint.ts';
-import type { BatchColorSnapshot } from './versions.ts';
-
-/** 兼容类型:接受旧格式 {lutId} 或新格式完整 ColorSnapshotV1,内部自动升级 */
-export type ColorSnapshotInput = BatchColorSnapshot | ColorSnapshotV1;
-
-function toColorSnapshotV1(input: ColorSnapshotInput): ColorSnapshotV1 {
-  return upgradeColorSnapshot(input);
-}
 
 export type BatchProxyCacheStatus = 'pending' | 'ready' | 'failed';
 
@@ -43,8 +34,10 @@ export type BatchProxyRequestStatus = 'requested' | 'generating' | 'ready' | 'fa
 export interface BatchProxyRequestRow {
   id: string;
   projectId: string;
-  batchId: string;
-  batchVersionId: string;
+  /** 素材级代理请求不挂批次,为 null */
+  batchId: string | null;
+  /** 素材级代理请求不挂批次版本,为 null */
+  batchVersionId: string | null;
   assetId: string;
   contentFingerprint: string;
   colorJson: string;
@@ -63,10 +56,6 @@ export interface ComputeProxyKeyInput {
   contentFingerprint: string;
   /** 代理规格版本(分辨率/codec/pixel format/GOP 等一起归入一个版本号) */
   profileVersion: string;
-  /** 完整色彩快照(包含 LUT 指纹、色彩链版本、插值策略、SDR 合同) */
-  colorSnapshot: ColorSnapshotInput;
-  /** 色彩处理链实现版本(ColorPipeline 的版本号,不是 LUT 内容本身) */
-  colorPipelineVersion: string;
 }
 
 function nowIso(now?: () => Date): string {
@@ -74,19 +63,17 @@ function nowIso(now?: () => Date): string {
 }
 
 /**
- * 代理身份 = 项目与素材身份 + 原片完整内容指纹 + 代理规格版本 + 完整色彩快照(包括 LUT 指纹)。
- * 文件名、原路径和显示名称都不参与身份判断;任意一项变化都必须产生不同的 key,
- * 旧代理只会成为清理候选,不会被新请求误用。纯函数,不接触数据库或文件系统。
+ * 代理身份 = 素材身份 + 原片完整内容指纹 + 代理规格版本。
+ * 文件名、原路径、显示名称和色彩快照都不参与身份判断:色彩/LUT 是预览层
+ * 实时效果(共识 9/13),不属于代理身份,换 LUT 不重转码、不失效旧代理;
+ * 原片内容或代理规格变化才产生不同的 key,旧代理只会成为清理候选,
+ * 不会被新请求误用。纯函数,不接触数据库或文件系统。
  */
 export function computeProxyKey(input: ComputeProxyKeyInput): string {
-  const snapshot = toColorSnapshotV1(input.colorSnapshot);
-  const colorIdentity = colorSnapshotIdentity(snapshot);
   const canonical = JSON.stringify({
     assetId: input.assetId,
     contentFingerprint: input.contentFingerprint,
     profileVersion: input.profileVersion,
-    colorIdentity,
-    colorPipelineVersion: input.colorPipelineVersion,
   });
   return `${'sha256:'}${createHash('sha256').update(canonical).digest('hex')}`;
 }
@@ -116,7 +103,6 @@ function insertCacheItem(
     assetId: string;
     proxyKey: string;
     profileVersion: string;
-    colorSnapshot: ColorSnapshotInput;
     now?: () => Date;
   },
 ): BatchProxyCacheItemRow {
@@ -133,7 +119,7 @@ function insertCacheItem(
     projectId,
     input.assetId,
     input.profileVersion,
-    JSON.stringify(input.colorSnapshot),
+    JSON.stringify(COLOR_SNAPSHOT_OFF),
     relativePath,
     createdAt,
     createdAt,
@@ -153,7 +139,6 @@ export function getOrCreatePendingProxyCacheItem(
     assetId: string;
     proxyKey: string;
     profileVersion: string;
-    colorSnapshot: ColorSnapshotInput;
     now?: () => Date;
   },
 ): BatchProxyCacheItemRow {
@@ -177,29 +162,24 @@ export function isProxyRequestCacheAlive(db: Database.Database, requestId: strin
   return Boolean(row);
 }
 
-function getOrCreateProxyRequest(
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === 'SQLITE_CONSTRAINT_UNIQUE';
+}
+
+function insertProxyRequest(
   db: Database.Database,
   projectId: string,
-  batchId: string,
+  batchId: string | null,
   input: {
-    batchVersionId: string;
+    batchVersionId: string | null;
     assetId: string;
     contentFingerprint: string;
-    colorSnapshot: ColorSnapshotInput;
     profileVersion: string;
-    colorPipelineVersion: string;
     proxyKey: string;
     now?: () => Date;
   },
+  createdAt: string,
 ): BatchProxyRequestRow {
-  const createdAt = nowIso(input.now);
-  const existing = db.prepare(`
-    SELECT * FROM batch_proxy_requests
-    WHERE batchVersionId = ? AND assetId = ? AND proxyKey = ?
-  `).get(input.batchVersionId, input.assetId, input.proxyKey) as BatchProxyRequestRow | undefined;
-  if (existing) {
-    return existing;
-  }
   const id = randomUUID();
   db.prepare(`
     INSERT INTO batch_proxy_requests
@@ -213,9 +193,9 @@ function getOrCreateProxyRequest(
     input.batchVersionId,
     input.assetId,
     input.contentFingerprint,
-    JSON.stringify(input.colorSnapshot),
+    JSON.stringify(COLOR_SNAPSHOT_OFF),
     input.profileVersion,
-    input.colorPipelineVersion,
+    COLOR_PIPELINE_VERSION,
     input.proxyKey,
     createdAt,
     createdAt,
@@ -224,11 +204,67 @@ function getOrCreateProxyRequest(
 }
 
 /**
- * ProxyMediaCache 对外的主入口:为明确选择的素材与色彩快照请求(或恢复)一个代理任务。
+ * 取或建一个代理请求。代理请求一律不带色彩快照(共识 13):固定写入
+ * LUT 关闭的默认快照(COLOR_SNAPSHOT_OFF)。
+ *
+ * 素材级请求(批次参数为 null)的幂等完全交给部分唯一索引
+ * UNIQUE(projectId, assetId, proxyKey) WHERE batchVersionId IS NULL:
+ * 冲突即并发重复,捕获约束错误后返回现存请求,不做应用层先查后插
+ * (并发双击的 check-then-act 会产生重复行)。批次绑定请求维持既有
+ * SELECT-then-INSERT 语义,唯一性由部分唯一索引兜底。
+ */
+function getOrCreateProxyRequest(
+  db: Database.Database,
+  projectId: string,
+  batchId: string | null,
+  input: {
+    batchVersionId: string | null;
+    assetId: string;
+    contentFingerprint: string;
+    profileVersion: string;
+    proxyKey: string;
+    now?: () => Date;
+  },
+): BatchProxyRequestRow {
+  const createdAt = nowIso(input.now);
+  if (batchId === null) {
+    try {
+      return insertProxyRequest(db, projectId, null, { ...input, batchVersionId: null }, createdAt);
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+      const existing = db.prepare(`
+        SELECT * FROM batch_proxy_requests
+        WHERE batchVersionId IS NULL AND projectId = ? AND assetId = ? AND proxyKey = ?
+      `).get(projectId, input.assetId, input.proxyKey) as BatchProxyRequestRow | undefined;
+      if (existing) {
+        return existing;
+      }
+      throw error;
+    }
+  }
+  const existing = db.prepare(`
+    SELECT * FROM batch_proxy_requests
+    WHERE batchVersionId = ? AND assetId = ? AND proxyKey = ?
+  `).get(input.batchVersionId, input.assetId, input.proxyKey) as BatchProxyRequestRow | undefined;
+  if (existing) {
+    return existing;
+  }
+  return insertProxyRequest(db, projectId, batchId, input, createdAt);
+}
+
+/**
+ * ProxyMediaCache 对外的主入口:为明确选择的素材请求(或恢复)一个代理任务。
  * 一次调用原子完成"取或建请求 + 取或建 pending 缓存项 + 建立幂等任务"。
  *
+ * 代理请求不带色彩快照(共识 13):新请求固定写入 LUT 关闭的默认快照,
+ * 色彩/LUT 是预览层实时效果,不再是代理身份的一部分。
+ *
  * 生命周期:
- * - 请求是稳定身份(UNIQUE(batchVersionId, assetId, proxyKey)),清理后保留;
+ * - 批次绑定请求是稳定身份(UNIQUE(batchVersionId, assetId, proxyKey)),清理后保留;
+ * - 素材级请求(批次参数传 null)挂项目,幂等由
+ *   UNIQUE(projectId, assetId, proxyKey) WHERE batchVersionId IS NULL 保证;
  * - 清理把请求收敛为 cancelled 并删除/延后删除 cache;用户再次明确请求时,
  *   同一请求身份重新获得新 cache 引用与新任务(旧 succeeded/failed/cancelled
  *   任务不会被 requestKey 永久卡住,见 createBatchTask 的失效释放);
@@ -237,66 +273,70 @@ function getOrCreateProxyRequest(
 export function requestProxy(
   db: Database.Database,
   projectId: string,
-  batchId: string,
+  /** 批次绑定请求传批次 id;素材级请求传 null(素材属于该项目即可,不要求批次存在或已确认) */
+  batchId: string | null,
   input: {
     assetId: string;
     contentFingerprint: string;
-    colorSnapshot: ColorSnapshotInput;
     profileVersion: string;
-    colorPipelineVersion: string;
-    /** 代理归属的批次版本;缺省回退到批次当前版本(旧测试/旧调用兼容) */
+    /** 代理归属的批次版本;素材级请求不传 */
     batchVersionId?: string;
     now?: () => Date;
   },
 ): { taskId: string; requestId: string; cacheItemId: string; proxyKey: string } {
   return db.transaction(() => {
-    const batchVersionId = input.batchVersionId ?? (db.prepare(`
-      SELECT currentVersionId FROM batch_productions WHERE id = ?
-    `).get(batchId) as { currentVersionId: string | null } | undefined)?.currentVersionId ?? '';
-    if (!batchVersionId) {
-      throw new Error('代理请求必须归属于一个真实批次版本');
-    }
-    const lineage = db.prepare(`
-      SELECT assets.contentFingerprint AS contentFingerprint, pool.colorJson AS colorJson
-      FROM batch_production_versions version
-      JOIN batch_productions batch ON batch.id = version.batchId
-      JOIN batch_asset_pool_items pool ON pool.batchVersionId = version.id
-      JOIN batch_assets assets ON assets.id = pool.assetId
-      WHERE version.id = ? AND batch.id = ? AND batch.projectId = ?
-        AND batch.deletedAt IS NULL AND pool.assetId = ? AND assets.projectId = ?
-    `).get(batchVersionId, batchId, projectId, input.assetId, projectId) as {
-      contentFingerprint: string;
-      colorJson: string;
-    } | undefined;
-    if (!lineage) {
-      throw new Error('代理请求的素材不属于该批次版本素材池');
-    }
-    if (!fingerprintsEqual(input.contentFingerprint, lineage.contentFingerprint)) {
-      throw new Error('代理请求的原片指纹与项目素材身份不一致');
+    let batchVersionId: string | null;
+    if (batchId === null) {
+      batchVersionId = null;
+      const asset = db.prepare(`
+        SELECT projectId, contentFingerprint FROM batch_assets WHERE id = ?
+      `).get(input.assetId) as { projectId: string; contentFingerprint: string } | undefined;
+      if (!asset) {
+        throw new Error('代理请求的素材不存在');
+      }
+      if (asset.projectId !== projectId) {
+        throw new Error('代理请求的素材不属于该项目');
+      }
+      if (!fingerprintsEqual(input.contentFingerprint, asset.contentFingerprint)) {
+        throw new Error('代理请求的原片指纹与项目素材身份不一致');
+      }
+    } else {
+      batchVersionId = input.batchVersionId ?? (db.prepare(`
+        SELECT currentVersionId FROM batch_productions WHERE id = ?
+      `).get(batchId) as { currentVersionId: string | null } | undefined)?.currentVersionId ?? '';
+      if (!batchVersionId) {
+        throw new Error('代理请求必须归属于一个真实批次版本');
+      }
+      const lineage = db.prepare(`
+        SELECT assets.contentFingerprint AS contentFingerprint
+        FROM batch_production_versions version
+        JOIN batch_productions batch ON batch.id = version.batchId
+        JOIN batch_asset_pool_items pool ON pool.batchVersionId = version.id
+        JOIN batch_assets assets ON assets.id = pool.assetId
+        WHERE version.id = ? AND batch.id = ? AND batch.projectId = ?
+          AND batch.deletedAt IS NULL AND pool.assetId = ? AND assets.projectId = ?
+      `).get(batchVersionId, batchId, projectId, input.assetId, projectId) as {
+        contentFingerprint: string;
+      } | undefined;
+      if (!lineage) {
+        throw new Error('代理请求的素材不属于该批次版本素材池');
+      }
+      if (!fingerprintsEqual(input.contentFingerprint, lineage.contentFingerprint)) {
+        throw new Error('代理请求的原片指纹与项目素材身份不一致');
+      }
     }
 
-    // 服务端按项目内受管 LUT 构建完整色彩快照:调用方只提交 lutId 时,
-    // 指纹/色彩链版本/插值/SDR 合同在这里补齐;lutId 非空时指纹不可能为空。
-    const colorSnapshot = resolveColorSnapshot(db, projectId, input.colorSnapshot);
-    const frozenColorSnapshot = upgradeColorSnapshot(JSON.parse(lineage.colorJson));
-    if (JSON.stringify(colorSnapshotIdentity(colorSnapshot)) !== JSON.stringify(colorSnapshotIdentity(frozenColorSnapshot))) {
-      throw new Error('代理请求的色彩快照与批次版本冻结输入不一致');
-    }
     const proxyKey = computeProxyKey({
       assetId: input.assetId,
       contentFingerprint: input.contentFingerprint,
       profileVersion: input.profileVersion,
-      colorSnapshot,
-      colorPipelineVersion: input.colorPipelineVersion,
     });
 
     const request = getOrCreateProxyRequest(db, projectId, batchId, {
       batchVersionId,
       assetId: input.assetId,
       contentFingerprint: input.contentFingerprint,
-      colorSnapshot,
       profileVersion: input.profileVersion,
-      colorPipelineVersion: input.colorPipelineVersion,
       proxyKey,
       now: input.now,
     });
@@ -309,7 +349,6 @@ export function requestProxy(
       assetId: input.assetId,
       proxyKey,
       profileVersion: input.profileVersion,
-      colorSnapshot,
       now: input.now,
     });
 

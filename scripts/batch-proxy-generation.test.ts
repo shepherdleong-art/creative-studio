@@ -3,8 +3,8 @@
 // 真实 FFmpeg 端到端验证:合成源视频 -> 通过 ProxyMediaCache.requestProxy 建立
 // proxy_generate 任务 -> 调度器真实执行 proxy-executor -> 核验产物可解码、
 // 时长误差达标、分辨率确实被下采样、可拖动(seek 到中段可解出一帧)。
-// 同时验证 LUT 开启路径(真实 lut3d 小样本)不破坏编码链路,且与关闭 LUT 产生
-// 不同的 proxyKey 与不同的受管文件。
+// 同时验证键简化契约:换 LUT(共识 9,色彩不再是代理身份)不再使代理失效,
+// 不同批次版本复用同一份代理文件;原片指纹变化才会使代理失效。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -99,13 +99,11 @@ try {
   });
   batchFlowModule.startBatchProduction(db, 'project-1', batchId, () => new Date('2026-08-03T08:05:00.000Z'));
 
-  // --- 场景 1:关闭 LUT 的普通代理 ---
+  // --- 场景 1:普通代理 ---
   const requestOff = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
     assetId: asset,
     contentFingerprint,
-    colorSnapshot: { lutId: null },
     profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-    colorPipelineVersion: 'color-v1',
     batchVersionId: offSnapshot.batchVersionId,
     now: () => new Date('2026-08-03T08:06:00.000Z'),
   });
@@ -141,7 +139,7 @@ try {
   await runFfmpeg(['-ss', (sourceProbe.durationUs / 1_000_000 / 2).toFixed(2), '-i', proxyAbsolutePath, '-frames:v', '1', '-y', midSeekOutput]);
   assert.ok(fs.existsSync(midSeekOutput) && fs.statSync(midSeekOutput).size > 0, '代理必须支持从中段 seek 并解出画面(可拖动)');
 
-  // --- 场景 2:开启 LUT 的色彩代理必须产生不同的 proxyKey 和不同的受管文件,且依然可解码 ---
+  // --- 场景 2:换 LUT(新的冻结批次版本)不再使代理失效;原片指纹变化才失效 ---
   const cubeContent = [
     'LUT_3D_SIZE 2',
     '0.0 0.0 0.0', '1.0 0.0 0.0', '0.0 1.0 0.0', '1.0 1.0 0.0',
@@ -165,16 +163,25 @@ try {
     now: () => new Date('2026-08-03T08:07:30.000Z'),
   });
 
+  // 代理键不含色彩快照:启用 LUT 的新版本与关闭 LUT 的旧版本请求同一素材,
+  // 必须得到同一 proxyKey,并复用同一份 ready 代理文件,而不是重转码。
   const requestWithLut = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
     assetId: asset,
     contentFingerprint,
-    colorSnapshot: { lutId },
     profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-    colorPipelineVersion: 'color-v1',
     batchVersionId: lutSnapshot.batchVersionId,
     now: () => new Date('2026-08-03T08:08:00.000Z'),
   });
-  assert.notEqual(requestWithLut.proxyKey, requestOff.proxyKey, 'LUT 开启必须产生不同的 proxyKey');
+  assert.equal(requestWithLut.proxyKey, requestOff.proxyKey, '换 LUT 不得改变 proxyKey(色彩不是代理身份)');
+  assert.equal(requestWithLut.cacheItemId, requestOff.cacheItemId, '换 LUT 必须复用同一份 ready 代理,不重新编码');
+
+  // 原片指纹变了才失效:同素材不同原片指纹必须产生不同的 key
+  const changedFingerprintKey = proxyCacheModule.computeProxyKey({
+    assetId: asset,
+    contentFingerprint: `sha256:${'a'.repeat(64)}`,
+    profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
+  });
+  assert.notEqual(changedFingerprintKey, requestOff.proxyKey, '原片内容变化必须产生不同的 proxyKey');
 
   await runnerModule.runPendingOnce({
     db,
@@ -185,11 +192,11 @@ try {
     heartbeatMs: 500,
   });
   const lutItem = proxyCacheModule.getProxyCacheItem(db, 'project-1', requestWithLut.cacheItemId);
-  assert.equal(lutItem?.status, 'ready', `LUT 代理任务必须真正跑完并落成 ready(当前 ${lutItem?.status})`);
+  assert.equal(lutItem?.status, 'ready', `复用 ready 代理的新请求必须直接收敛为 ready(当前 ${lutItem?.status})`);
   const lutProxyAbsolutePath = proxyCacheModule.resolveControlledProxyPath(lutItem!.relativePath);
-  assert.notEqual(lutProxyAbsolutePath, proxyAbsolutePath, 'LUT 代理必须写入与关闭 LUT 不同的文件');
+  assert.equal(lutProxyAbsolutePath, proxyAbsolutePath, '换 LUT 不重转码:文件路径必须与场景 1 相同');
   const lutProxyProbe = await probeVideoMedia(lutProxyAbsolutePath);
-  assert.ok(!lutProxyProbe.errorMessage, `应用真实 lut3d 后代理仍必须可解码:${lutProxyProbe.errorMessage}`);
+  assert.ok(!lutProxyProbe.errorMessage, `复用的代理仍必须可解码:${lutProxyProbe.errorMessage}`);
 
   // --- 场景 3:竖屏源片同样能生成代理,时间从零开始,时长误差达标 ---
   const portraitSourcePath = path.join(workRoot, 'portrait-source.mp4');
@@ -226,9 +233,7 @@ try {
   const portraitRequest = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
     assetId: portraitAsset,
     contentFingerprint: portraitFingerprint,
-    colorSnapshot: { lutId: null },
     profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-    colorPipelineVersion: 'color-v1',
     batchVersionId: portraitSnapshot.batchVersionId,
     now: () => new Date('2026-08-03T08:09:20.000Z'),
   });

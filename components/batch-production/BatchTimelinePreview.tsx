@@ -19,7 +19,37 @@ import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
 import type { CoverFraming, TextStyle } from '@/lib/media-core/cover-types';
 import type { FrozenBatchCoverTitleConfig } from '@/lib/batch-production/cover-title';
 import BatchCoverDraftPreview, { type BatchCoverPreviewAsset } from './BatchCoverDraftPreview';
+import { createLutRenderer, loadCubeLutFromEndpoint, type LutRenderer, type ParsedCubeLut } from './lut-3d';
+import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
+import { useProxyPlaybackPreference } from './proxy-playback-preference';
 import styles from './batch-preview.module.css';
+
+/**
+ * 把离屏 GL canvas 伪装成 2D 合成管线可消费的帧源:
+ * paintDecodedVideoFrame 只读 videoWidth/videoHeight/readyState/seeking 并 drawImage,
+ * drawImage 原生接受 canvas 源;宽高与就绪状态铺到对象上即复用整条合成管线,不改它。
+ */
+function toPaintableSource(source: HTMLCanvasElement): HTMLVideoElement {
+  const paintSource = source as unknown as HTMLVideoElement & {
+    videoWidth: number;
+    videoHeight: number;
+    readyState: number;
+    seeking: boolean;
+  };
+  paintSource.videoWidth = source.width;
+  paintSource.videoHeight = source.height;
+  paintSource.readyState = 2;
+  paintSource.seeking = false;
+  return paintSource;
+}
+
+interface SlotLutState {
+  /** 该 slot 目标 LUT(来自 clip 素材的冻结快照选择) */
+  lutId: string | null;
+  /** lutId 匹配的解析结果;null 表示未就绪(加载中/无 LUT/失败直通) */
+  parsed: ParsedCubeLut | null;
+  error?: string | null;
+}
 
 const FPS = FINAL_EDIT_FPS;
 const INTRO_SEC = FINAL_EDIT_INTRO_FRAMES / FPS; // 20/24 秒片头封面静帧
@@ -35,8 +65,11 @@ export interface BatchTimelinePreviewClip {
 
 export interface BatchTimelinePreviewProps {
   clips: BatchTimelinePreviewClip[];
-  /** assetId → 代理预览地址（LUT 已烧入，色彩与正式渲染一致） */
-  assetsById: Record<string, { previewUrl: string }>;
+  /**
+   * assetId → 预览地址(代理解析路由,代理开关打开时使用);originalUrl 为原片直连(开关关闭时使用);
+   * lutId 为该素材冻结快照中的 LUT 选择(无则 null),lutUrl 为 .cube 只读端点(由调用方携带 projectId 构造)。
+   */
+  assetsById: Record<string, { previewUrl: string; originalUrl?: string; lutId?: string | null; lutUrl?: string }>;
   coverUrl: string | null;
   /** 提供时片头用客户端实时合成的封面草稿，不再等渲染产物（封面精调即改即看）。 */
   coverDraft?: {
@@ -161,6 +194,31 @@ export default function BatchTimelinePreview({
     [slotIndexA, slotIndexB, sortedClips],
   );
   const activeSlot = slotPlan.activeSlot;
+  // B1 总开关:开(默认)=优先代理解析(有代理播代理,无代理由解析路由回退原片);
+  // 关=全局播原片(核对画质场景)。只影响隐藏 video 的源,src 变化后 video 重载,
+  // synchronize 会在 loadedmetadata 时把 currentTime 拨回当前播放头并恢复播放状态。
+  const { proxyPlayback } = useProxyPlaybackPreference();
+  const clipSource = (clip: BatchTimelinePreviewClip | null): string | undefined => {
+    if (!clip) return undefined;
+    const media = assetsById[clip.assetId];
+    if (!media) return undefined;
+    return proxyPlayback ? media.previewUrl : media.originalUrl;
+  };
+  const videoASrc = clipSource(slotClips[0]);
+  const videoBSrc = clipSource(slotClips[1]);
+  // C3:每个 slot 的离屏 WebGL 渲染器与画布(仅在对应 clip 有 LUT 且解析成功时创建)
+  const slotRendererARef = useRef<LutRenderer | null>(null);
+  const slotRendererBRef = useRef<LutRenderer | null>(null);
+  const slotGlCanvasARef = useRef<HTMLCanvasElement | null>(null);
+  const slotGlCanvasBRef = useRef<HTMLCanvasElement | null>(null);
+  const [slotLuts, setSlotLuts] = useState<[SlotLutState, SlotLutState]>([
+    { lutId: null, parsed: null },
+    { lutId: null, parsed: null },
+  ]);
+  const [lutFpsHint, setLutFpsHint] = useState(false);
+  const webgl2Available = typeof WebGL2RenderingContext !== 'undefined';
+  const hasLutClips = slotClips.some((clip) => clip ? Boolean(assetsById[clip.assetId]?.lutId) : false);
+  const slotLutState = (slot: 0 | 1): SlotLutState => slotLuts[slot];
   const bodyTimeUs = Math.max(0, (playheadSec - INTRO_SEC) * 1_000_000);
   const activeCue = playheadSec >= INTRO_SEC
     ? subtitleCues.find((cue) => bodyTimeUs >= cue.startUs && bodyTimeUs < cue.endUs) ?? null
@@ -228,7 +286,16 @@ export default function BatchTimelinePreview({
 
   // 双 slot 同步:活跃 slot 按源区间期望时间播放,备用 slot 预停在自身入点。
   // seek 写入经 shouldIssueSeek 合流:在途 seek 期间只更新 seekTargetRef,不打断在途 seek。
+  // 代理/原片开关切换会让隐藏 video 换源(同一元素重载):旧源的 loadedmetadata 监听
+  // 已被消费且 lastStartedClipRef 守卫会短路同步,这里在源组合变化时重置守卫,
+  // 让换源后走完整的「seek 到播放头 + 恢复播放/暂停」路径。
+  const previousPreviewSourcesRef = useRef<{ a: string | undefined; b: string | undefined } | null>(null);
   useEffect(() => {
+    const previous = previousPreviewSourcesRef.current;
+    if (previous && (previous.a !== videoASrc || previous.b !== videoBSrc)) {
+      lastStartedClipRef.current = '';
+    }
+    previousPreviewSourcesRef.current = { a: videoASrc, b: videoBSrc };
     const videos = [videoARef.current, videoBRef.current] as const;
     const cleanups: Array<() => void> = [];
     videos.forEach((video, slot) => {
@@ -263,10 +330,91 @@ export default function BatchTimelinePreview({
       videoBRef.current?.pause();
     }
     return () => cleanups.forEach((cleanup) => cleanup());
-  }, [activeClip, activeSlot, bodyFrame, frozenVideoTail, playing, slotClips]);
+  }, [activeClip, activeSlot, bodyFrame, frozenVideoTail, playing, slotClips, videoASrc, videoBSrc]);
+
+  // C3:按 slot 当前 clip 的素材 LUT 加载/换纹理;无 LUT 的 slot 保持直通(不建 GL)。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const slot of [0, 1] as const) {
+        const clip = slotClips[slot];
+        const asset = clip ? assetsById[clip.assetId] : undefined;
+        const lutId = asset?.lutId ?? null;
+        const lutUrl = asset?.lutUrl ?? '';
+        if (!lutId || !lutUrl) {
+          setSlotLuts((prev) => (prev[slot].lutId === null && !prev[slot].error ? prev : {
+            ...prev,
+            [slot]: { ...prev[slot], lutId: null, parsed: null, error: null },
+          } as [SlotLutState, SlotLutState]));
+          continue;
+        }
+        try {
+          const parsed = await loadCubeLutFromEndpoint({ lutId, url: lutUrl });
+          if (cancelled) return;
+          setSlotLuts((prev) => (prev[slot].lutId === lutId && prev[slot].parsed === parsed ? prev : {
+            ...prev,
+            [slot]: { lutId, parsed, error: null },
+          } as [SlotLutState, SlotLutState]));
+        } catch (error) {
+          if (cancelled) return;
+          setSlotLuts((prev) => (prev[slot].lutId === lutId && prev[slot].error ? prev : {
+            ...prev,
+            [slot]: { lutId, parsed: null, error: error instanceof Error ? error.message : 'LUT 解析失败' },
+          } as [SlotLutState, SlotLutState]));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [slotClips, assetsById]);
+
+  // C3:slot 渲染器生命周期——有解析好的 LUT 时创建(离屏 canvas,零挂载),否则 dispose。
+  useEffect(() => {
+    for (const slot of [0, 1] as const) {
+      const rendererRef = slot === 0 ? slotRendererARef : slotRendererBRef;
+      const canvasRef = slot === 0 ? slotGlCanvasARef : slotGlCanvasBRef;
+      const clip = slotClips[slot];
+      const lutId = clip ? (assetsById[clip.assetId]?.lutId ?? null) : null;
+      const lutState = slotLuts[slot];
+      const ready = Boolean(webgl2Available && lutId && lutState.lutId === lutId && lutState.parsed);
+      if (!ready) {
+        rendererRef.current?.dispose();
+        rendererRef.current = null;
+        canvasRef.current = null;
+        continue;
+      }
+      if (!rendererRef.current) {
+        const canvas = document.createElement('canvas');
+        // createLutRenderer 在 shader 编译/链接失败时会 throw;
+        // GL 异常与该 slot 无 LUT 同路径降级(直通),不能让时间线崩溃。
+        let renderer: LutRenderer | null = null;
+        try {
+          renderer = createLutRenderer(canvas);
+        } catch {
+          renderer = null;
+        }
+        if (!renderer) {
+          canvasRef.current = null;
+          continue;
+        }
+        canvasRef.current = canvas;
+        rendererRef.current = renderer;
+      }
+      rendererRef.current.setLut(lutState.parsed!);
+    }
+    return () => {
+      slotRendererARef.current?.dispose();
+      slotRendererARef.current = null;
+      slotGlCanvasARef.current = null;
+      slotRendererBRef.current?.dispose();
+      slotRendererBRef.current = null;
+      slotGlCanvasBRef.current = null;
+    };
+  }, [slotClips, slotLuts, assetsById, webgl2Available]);
 
   // 帧上屏:优先 requestVideoFrameCallback——只在解码器提交新帧时画(24fps 源从 60Hz rAF 降到 24 次/秒),
   // 且暂停态 seek 完成时也会触发,拖动进度条画面能持续跟随。回退到 rAF 循环 + seeked/loadeddata 补帧。
+  // C3:每个 slot 的帧先过该 clip 素材 LUT(离屏 WebGL,复用 C1 渲染器)再进 2D 合成管线;
+  // 无 LUT 的 slot 直通 video 源(不创建 GL,零成本);所有 clip 无 LUT 时整体零 GL。
   useEffect(() => {
     const canvas = frameCanvasRef.current;
     const context = canvas?.getContext('2d');
@@ -274,10 +422,28 @@ export default function BatchTimelinePreview({
     let frame = 0;
     let videoFrameHandle = 0;
     let videoFrameActive = false;
+    let slowFrames = 0;
+    let lastPaintAt = 0;
     const paint = () => {
-      const video = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
-      if (activeClip && video) {
-        paintDecodedVideoFrame(context, canvas, video, outputPreset, { scale: 1, offsetX: 0, offsetY: 0 });
+      // 掉帧度量:持续 >48ms/帧 达 30 帧时提示一次(检测做简单的,不调参与自适应)
+      const now = performance.now();
+      if (lastPaintAt > 0) {
+        if (now - lastPaintAt > 48) slowFrames += 1;
+        else slowFrames = 0;
+        if (slowFrames >= 30) setLutFpsHint(true);
+      }
+      lastPaintAt = now;
+      const slotVideo = activeSlot === 0 ? videoARef.current : activeSlot === 1 ? videoBRef.current : null;
+      const slotRenderer = activeSlot === 0 ? slotRendererARef.current : activeSlot === 1 ? slotRendererBRef.current : null;
+      const slotGlCanvas = activeSlot === 0 ? slotGlCanvasARef.current : activeSlot === 1 ? slotGlCanvasBRef.current : null;
+      let source = slotVideo;
+      if (slotVideo && slotRenderer && slotGlCanvas) {
+        // 当前 slot 启用 LUT:先把当前帧画进离屏 GL canvas,2D 合成管线以 canvas 为帧源
+        slotRenderer.drawFrame(slotVideo);
+        source = toPaintableSource(slotGlCanvas);
+      }
+      if (activeClip && source) {
+        paintDecodedVideoFrame(context, canvas, source, outputPreset, { scale: 1, offsetX: 0, offsetY: 0 });
       } else {
         context.clearRect(0, 0, canvas.width, canvas.height);
       }
@@ -593,9 +759,6 @@ export default function BatchTimelinePreview({
     else if (playheadSec < INTRO_SEC) seek(INTRO_SEC);
   };
 
-  const videoASrc = slotClips[0] ? assetsById[slotClips[0].assetId]?.previewUrl : undefined;
-  const videoBSrc = slotClips[1] ? assetsById[slotClips[1].assetId]?.previewUrl : undefined;
-
   const renderControls = (overlay: boolean) => (
     <div className={overlay ? styles.fullscreenControls : 'flex flex-wrap items-center gap-2'}>
       <button
@@ -620,6 +783,7 @@ export default function BatchTimelinePreview({
         <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'cover' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'cover'} onClick={() => choosePreviewMode('cover')}>封面</button>
         <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'finished' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'finished'} onClick={() => choosePreviewMode('finished')}>成片</button>
       </div>
+      <ProxyPlaybackToggle />
       <button
         type="button"
         className={`btn-secondary h-8 shrink-0 px-2 text-[11px] ${showSafeArea ? 'border-accent text-accent' : ''}`}
@@ -703,6 +867,24 @@ export default function BatchTimelinePreview({
       {!isFullscreen && renderControls(false)}
       <audio ref={narrationRef} preload="auto" src={narrationUrl ?? undefined} />
       <audio ref={bgmRef} preload="auto" loop src={bgm?.fileUrl} />
+      {hasLutClips && !webgl2Available && (
+        <p className="text-[11px] text-warn" role="status">
+          当前设备不支持实时 LUT 预览（需要 WebGL2）；预览为实时近似效果，以正式导出成片为准。
+        </p>
+      )}
+      {hasLutClips && webgl2Available && slotLutState(0).error && !slotLutState(0).parsed && (
+        <p className="text-[11px] text-fail" role="alert">
+          LUT 解析失败：{slotLutState(0).error}（对应片段未叠加 LUT；预览为实时近似效果，以正式导出成片为准。）
+        </p>
+      )}
+      {hasLutClips && webgl2Available && slotLutState(1).error && !slotLutState(1).parsed && (
+        <p className="text-[11px] text-fail" role="alert">
+          LUT 解析失败：{slotLutState(1).error}（对应片段未叠加 LUT；预览为实时近似效果，以正式导出成片为准。）
+        </p>
+      )}
+      {lutFpsHint && (
+        <p className="text-[11px] text-warn" role="status">调色预览有明显掉帧，生成低清代理可获得更流畅的预览。</p>
+      )}
     </div>
   );
 }

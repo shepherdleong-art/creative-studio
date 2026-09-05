@@ -4,7 +4,8 @@
  * 覆盖(修复后契约):
  * 1. LUT 内容指纹统一:createManagedLut 归一化存入、跨前缀比较一致;
  * 2. 完整色彩快照:客户端只提交 lutId 时服务端补齐非空指纹(禁止空字符串绕过);
- * 3. proxyKey 必须包含 LUT 内容指纹(同一 lutId 不同内容 → 不同 key);
+ * 3. proxyKey 只含素材身份 + 原片指纹 + 代理规格版本(共识 9/13:色彩快照
+ *    不再是代理身份,换 LUT 不失效代理;原片指纹变化才产生不同 key);
  * 4. 代理任务 targetId 必须指向稳定请求,不允许指向可删除的 cache 行;
  * 5. 清理后旧 succeeded/failed 任务不能永久占用 requestKey;
  * 6. 导出预检使用统一指纹比较(裸 hex 与 sha256:hex 等价);
@@ -158,39 +159,44 @@ function createAssetOneVersion(db: Database.Database, batchId: string): string {
 }
 
 // ================================================================
-// 测试 3:computeProxyKey 包含 LUT 内容指纹
+// 测试 3:computeProxyKey 只含素材身份/原片指纹/代理规格版本,不含色彩
 // ================================================================
 
 {
-  // 同一 lutId,不同内容指纹 → 必须产生不同 proxyKey
-  const keyWithFingerprintA = origComputeProxyKey({
+  const baseKey = origComputeProxyKey({
     assetId: 'asset-1',
     contentFingerprint: `sha256:${'a'.repeat(64)}`,
     profileVersion: 'proxy-v1',
-    colorSnapshot: { lutId: 'lut-1', lutFingerprint: `sha256:${'a'.repeat(64)}` },
-    colorPipelineVersion: COLOR_PIPELINE_VERSION,
   });
-  const keyWithFingerprintB = origComputeProxyKey({
-    assetId: 'asset-1',
-    contentFingerprint: `sha256:${'a'.repeat(64)}`,
-    profileVersion: 'proxy-v1',
-    colorSnapshot: { lutId: 'lut-1', lutFingerprint: `sha256:${'b'.repeat(64)}` },
-    colorPipelineVersion: COLOR_PIPELINE_VERSION,
-  });
-  assert.notEqual(keyWithFingerprintA, keyWithFingerprintB, '同一 lutId 不同 LUT 内容必须产生不同 proxyKey');
+  assert.equal(
+    origComputeProxyKey({
+      assetId: 'asset-1',
+      contentFingerprint: `sha256:${'a'.repeat(64)}`,
+      profileVersion: 'proxy-v1',
+    }),
+    baseKey,
+    'computeProxyKey 必须是确定性的纯函数',
+  );
+  assert.notEqual(
+    origComputeProxyKey({
+      assetId: 'asset-1',
+      contentFingerprint: `sha256:${'b'.repeat(64)}`,
+      profileVersion: 'proxy-v1',
+    }),
+    baseKey,
+    '原片内容指纹变化必须产生不同 proxyKey',
+  );
+  assert.notEqual(
+    origComputeProxyKey({
+      assetId: 'asset-1',
+      contentFingerprint: `sha256:${'a'.repeat(64)}`,
+      profileVersion: 'proxy-v2',
+    }),
+    baseKey,
+    '代理规格版本变化必须产生不同 proxyKey',
+  );
 
-  // 旧格式 {lutId} 在纯函数路径(无数据库)只能升级出 unresolved 显式标记,
-  // 不允许与真实指纹快照产生相同 key——绝不能静默伪造指纹。
-  const keyFromLegacy = origComputeProxyKey({
-    assetId: 'asset-1',
-    contentFingerprint: `sha256:${'a'.repeat(64)}`,
-    profileVersion: 'proxy-v1',
-    colorSnapshot: { lutId: 'lut-1' },
-    colorPipelineVersion: COLOR_PIPELINE_VERSION,
-  });
-  assert.notEqual(keyFromLegacy, keyWithFingerprintA, '未解析的旧格式快照不得伪装成真实内容指纹的 key');
-
-  console.log('✓ 测试 3：proxyKey 包含 LUT 内容指纹');
+  console.log('✓ 测试 3：proxyKey 不含色彩/LUT 身份(换 LUT 不失效代理)');
 }
 
 // ================================================================

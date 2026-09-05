@@ -75,20 +75,19 @@ try {
     return absolute;
   }
 
-  // --- 场景 1:proxyKey 必须由原片指纹、profile、色彩快照和色彩链版本共同决定,
-  //             任一变化都必须形成不同的 key(旧代理不会被新请求误用)。
+  // --- 场景 1:proxyKey 由素材身份、原片指纹和代理规格版本共同决定(共识 2/13:
+  //             色彩快照/LUT 不再是代理身份,换 LUT 不产生不同 key;要不同 key
+  //             只有原片指纹或代理规格变化)。
   const baseInput = {
     assetId: assetP1,
     contentFingerprint: 'sha256:proxy-cache-p1',
     profileVersion: 'proxy-v1',
-    colorSnapshot: { lutId: null as string | null },
-    colorPipelineVersion: 'color-v1',
   };
   const keyOff = proxyCache.computeProxyKey(baseInput);
-  const keyWithLut = proxyCache.computeProxyKey({ ...baseInput, colorSnapshot: { lutId: 'lut-1' } });
   const keyNewProfile = proxyCache.computeProxyKey({ ...baseInput, profileVersion: 'proxy-v2' });
-  assert.notEqual(keyOff, keyWithLut, 'LUT 选择变化必须产生不同的 proxyKey');
+  const keyNewFingerprint = proxyCache.computeProxyKey({ ...baseInput, contentFingerprint: 'sha256:proxy-cache-p1-changed' });
   assert.notEqual(keyOff, keyNewProfile, '代理规格版本变化必须产生不同的 proxyKey');
+  assert.notEqual(keyOff, keyNewFingerprint, '原片指纹变化必须产生不同的 proxyKey');
 
   // --- 场景 2:清理必须拒绝越界/绝对路径,只删除受控代理根下的文件 ---
   const goodRelative = path.join('storage', 'cache', 'proxies', 'project-1', assetP1, `${keyOff}.mp4`);

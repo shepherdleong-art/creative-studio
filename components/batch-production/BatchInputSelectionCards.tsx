@@ -182,6 +182,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   onLutChange,
   onRequestProxy,
   proxyBusy,
+  proxyState,
   analysisTask,
   onAnalyzeContent,
   onRetryAnalyze,
@@ -198,8 +199,11 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   luts?: BatchLutRow[];
   lutId?: string | null;
   onLutChange?: (lutId: string | null) => void;
+  /** 素材卡代理按钮回调;不提供时不渲染按钮 */
   onRequestProxy?: () => void;
   proxyBusy?: boolean;
+  /** 低清代理状态:按钮文案按此切换(无代理/生成中+进度/已就绪/失败重试) */
+  proxyState?: { kind: 'none' | 'generating' | 'ready' | 'failed'; percent?: string };
   analysisTask?: AssetPrepareTaskView;
   onAnalyzeContent?: () => void;
   onRetryAnalyze?: () => void;
@@ -208,7 +212,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   relocatingSourceId?: string | null;
   analyzeBusy?: boolean;
   onPreview?: () => void;
-  /** 预览来源信息(低清预览片/原片/LUT 待生成警告等) */
+  /** 预览来源信息(低清预览片/原片/不可用等) */
   previewBadge?: React.ReactNode;
 }) {
   const displayName = asset.media.displayName || asset.media.filename || '视频素材';
@@ -231,6 +235,14 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
   const taskError = analysisTask?.attempts?.at(-1)?.errorMessage;
   const analysisLevel = asset.analysisLevel ?? (asset.currentAnalysisId ? 'technical' : 'none');
   const previewAvailable = Boolean(asset.status === 'online' && asset.previewUrl && onPreview);
+
+  function renderProxyButtonLabel(): string {
+    if (proxyBusy) return '请求中…';
+    if (proxyState?.kind === 'generating') return `生成中${proxyState.percent ? ` ${proxyState.percent}` : ''}…`;
+    if (proxyState?.kind === 'ready') return '已就绪';
+    if (proxyState?.kind === 'failed') return '重试生成';
+    return '生成低清代理';
+  }
 
   function renderAnalysisAction() {
     if (asset.status !== 'online') {
@@ -352,6 +364,14 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
             {asset.media.width && asset.media.height && <span>{asset.media.width}×{asset.media.height}</span>}
           </div>
           {previewBadge}
+          {onRequestProxy && asset.status === 'online' && (
+            <button
+              type="button"
+              className="btn-secondary mt-2 h-8 px-3 text-xs"
+              disabled={proxyBusy}
+              onClick={onRequestProxy}
+            >{renderProxyButtonLabel()}</button>
+          )}
           {renderAnalysisAction()}
           <div className="mt-4 space-y-2">
             {asset.sources.map((source) => (
@@ -379,14 +399,6 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
                   ))}
                 </select>
               </label>
-              {onRequestProxy && (
-                <button
-                  type="button"
-                  className="btn-secondary h-9 self-end px-3 text-xs"
-                  disabled={proxyBusy}
-                   onClick={onRequestProxy}
-                >{proxyBusy ? '请求中…' : '为当前素材生成代理'}</button>
-              )}
             </div>
           )}
         </div>

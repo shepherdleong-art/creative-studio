@@ -4,7 +4,6 @@ import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { resolvePreviewSource } from '@/lib/batch-production/preview';
 import { PROXY_PROFILE_VERSION } from '@/lib/batch-production/proxy-executor';
-import { COLOR_PIPELINE_VERSION, upgradeColorSnapshot } from '@/lib/batch-production/color-pipeline';
 import { acquireProxyReadLease, resolveControlledProxyPath } from '@/lib/batch-production/proxy-cache';
 import { projectAssetMimeType } from '@/lib/batch-production/project-asset-media';
 import { buildMediaEtag, projectAssetMediaResponse } from '@/lib/batch-production/project-asset-media-response';
@@ -16,8 +15,7 @@ export const dynamic = 'force-dynamic';
 /**
  * 预览来源解析 + 媒体服务合一的 route:
  * - 验证 projectId + batchId + batchVersionId + assetId.
- * - 素材必须属于该版本素材池.
- * - 色彩快照只从服务端批次版本读取,不接受任意 lutId(见 §7).
+ * - 素材必须属于该版本素材池(归属校验;色彩快照不再参与预览解析,共识 9/13).
  * - 代理读取全程持有读取租约(释放前清理不会删除正在被读取的文件).
  * - 不接受任意路径,只接受 assetId + 已核验的项目/批次/版本归属.
  */
@@ -26,9 +24,9 @@ export const dynamic = 'force-dynamic';
 const PREVIEW_MEDIA_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
 
 /**
- * 强 ETag:内容身份 = 来源种类 + 素材指纹 + 代理/色彩管线版本 + 色彩快照 + 文件 stat。
- * 代理 ready 的那一刻 source.kind/cacheItemId 变化 → ETag 变化,浏览器自动重新拉取;
- * 排在后面的代理工作不得把 ETag 简化成只依赖 contentFingerprint。
+ * 强 ETag:内容身份 = 来源种类 + 素材指纹 + 代理规格版本 + 文件 stat。
+ * 色彩/LUT 是预览层实时效果(共识 9),不参与视频源内容身份;
+ * 代理 ready 的那一刻 source.kind/cacheItemId 变化 → ETag 变化,浏览器自动重新拉取。
  */
 function previewMediaEtag(parts: string[], stat: fs.Stats): string {
   return buildMediaEtag([...parts, String(stat.size), String(stat.mtimeMs)]);
@@ -46,65 +44,79 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
   const batchId = request.nextUrl.searchParams.get('batchId');
   const batchVersionId = request.nextUrl.searchParams.get('batchVersionId');
 
-  if (!batchId || !batchVersionId) {
-    return NextResponse.json({
-      error: 'missing_params',
-      message: '缺少 batchId 或 batchVersionId 参数',
-    }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
-  }
-
   try {
     await assertBatchApiReady();
     const db = getDb();
 
-    // 验证批次存在且属于该项目
-    const batch = db.prepare(`
-      SELECT id FROM batch_productions WHERE id = ? AND projectId = ? AND deletedAt IS NULL
-    `).get(batchId, projectId) as { id: string } | undefined;
-    if (!batch) {
-      return NextResponse.json({
-        error: 'not_found',
-        message: '批次不存在或不属于该项目',
-      }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
-    }
+    // 两种模式(与素材卡/冻结池两个预览入口对应,解析逻辑同一条:
+    // resolvePreviewSource 代理 → 原片 → 不可用):
+    // - 批次级(带 batchId + batchVersionId):素材必须属于该版本素材池;
+    // - 素材级(都不带):只校验素材属于该项目,不要求批次存在或已确认——
+    //   素材级代理请求(共识 2)就是为这个入口服务的。
+    let contentFingerprint: string;
+    if (batchId !== null || batchVersionId !== null) {
+      if (!batchId || !batchVersionId) {
+        return NextResponse.json({
+          error: 'missing_params',
+          message: 'batchId 与 batchVersionId 必须同时提供',
+        }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
 
-    // 验证版本属于该批次
-    const version = db.prepare(`
-      SELECT id FROM batch_production_versions WHERE id = ? AND batchId = ?
-    `).get(batchVersionId, batchId) as { id: string } | undefined;
-    if (!version) {
-      return NextResponse.json({
-        error: 'not_found',
-        message: '批次版本不存在或不属于该批次',
-      }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
-    }
+      // 验证批次存在且属于该项目
+      const batch = db.prepare(`
+        SELECT id FROM batch_productions WHERE id = ? AND projectId = ? AND deletedAt IS NULL
+      `).get(batchId, projectId) as { id: string } | undefined;
+      if (!batch) {
+        return NextResponse.json({
+          error: 'not_found',
+          message: '批次不存在或不属于该项目',
+        }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
+      }
 
-    // 素材必须属于该版本素材池,色彩快照只从服务端读取
-    const poolItem = db.prepare(`
-      SELECT pool.colorJson, assets.contentFingerprint
-      FROM batch_asset_pool_items pool
-      JOIN batch_assets assets ON assets.id = pool.assetId
-      WHERE pool.batchVersionId = ? AND pool.assetId = ? AND assets.projectId = ?
-    `).get(batchVersionId, assetId, projectId) as {
-      colorJson: string;
-      contentFingerprint: string;
-    } | undefined;
-    if (!poolItem) {
-      return NextResponse.json({
-        error: 'not_found',
-        message: '素材不在该批次版本的素材池中',
-      }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
-    }
+      // 验证版本属于该批次
+      const version = db.prepare(`
+        SELECT id FROM batch_production_versions WHERE id = ? AND batchId = ?
+      `).get(batchVersionId, batchId) as { id: string } | undefined;
+      if (!version) {
+        return NextResponse.json({
+          error: 'not_found',
+          message: '批次版本不存在或不属于该批次',
+        }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
+      }
 
-    // 色彩快照从服务端批次版本读取,不接受任意 lutId
-    const colorSnapshot = upgradeColorSnapshot(JSON.parse(poolItem.colorJson));
+      // 素材必须属于该版本素材池
+      const poolItem = db.prepare(`
+        SELECT assets.contentFingerprint
+        FROM batch_asset_pool_items pool
+        JOIN batch_assets assets ON assets.id = pool.assetId
+        WHERE pool.batchVersionId = ? AND pool.assetId = ? AND assets.projectId = ?
+      `).get(batchVersionId, assetId, projectId) as {
+        contentFingerprint: string;
+      } | undefined;
+      if (!poolItem) {
+        return NextResponse.json({
+          error: 'not_found',
+          message: '素材不在该批次版本的素材池中',
+        }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
+      }
+      contentFingerprint = poolItem.contentFingerprint;
+    } else {
+      const asset = db.prepare(`
+        SELECT projectId, contentFingerprint FROM batch_assets WHERE id = ?
+      `).get(assetId) as { projectId: string; contentFingerprint: string } | undefined;
+      if (!asset || asset.projectId !== projectId) {
+        return NextResponse.json({
+          error: 'not_found',
+          message: '素材不存在或不属于该项目',
+        }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
+      }
+      contentFingerprint = asset.contentFingerprint;
+    }
 
     const source = resolvePreviewSource(db, projectId, {
       assetId,
-      contentFingerprint: poolItem.contentFingerprint,
-      colorSnapshot,
+      contentFingerprint,
       profileVersion: PROXY_PROFILE_VERSION,
-      colorPipelineVersion: COLOR_PIPELINE_VERSION,
     });
 
     // 预览信息模式:只返回来源描述,供 UI 渲染来源徽标/警告/离线提示,不提供媒体。
@@ -119,13 +131,6 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
       if (source.kind === 'original') {
         return NextResponse.json({ kind: 'original', originalOnline: true }, { headers: BATCH_NO_STORE_HEADERS });
       }
-      if (source.kind === 'original_pending_lut') {
-        return NextResponse.json({
-          kind: 'original_pending_lut',
-          originalOnline: true,
-          warning: source.warning,
-        }, { headers: BATCH_NO_STORE_HEADERS });
-      }
       return NextResponse.json({
         kind: 'unavailable',
         originalOnline: false,
@@ -139,7 +144,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
         message: source.reason,
       }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
     }
-    if (source.kind === 'original' || source.kind === 'original_pending_lut') {
+    if (source.kind === 'original') {
       if (!fs.existsSync(source.sourcePath)) {
         return NextResponse.json({
           error: 'preview_unavailable',
@@ -149,15 +154,10 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
       const stat = fs.statSync(source.sourcePath);
       const etagParts = [
         source.kind,
-        poolItem.contentFingerprint,
-        COLOR_PIPELINE_VERSION,
+        contentFingerprint,
         PROXY_PROFILE_VERSION,
-        poolItem.colorJson,
       ];
       const extraHeaders: Record<string, string> = { 'X-Preview-Kind': source.kind };
-      if (source.kind === 'original_pending_lut') {
-        extraHeaders['X-Preview-Warning'] = encodeURIComponent(source.warning);
-      }
       return projectAssetMediaResponse(
         request,
         source.sourcePath,
@@ -205,10 +205,8 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
           cacheControl: PREVIEW_MEDIA_CACHE_CONTROL,
           etag: buildMediaEtag([
             source.kind,
-            poolItem.contentFingerprint,
-            COLOR_PIPELINE_VERSION,
+            contentFingerprint,
             PROXY_PROFILE_VERSION,
-            poolItem.colorJson,
             source.cacheItemId,
             String(stat.size),
             String(stat.mtimeMs),

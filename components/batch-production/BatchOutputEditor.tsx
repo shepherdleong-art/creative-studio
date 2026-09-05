@@ -16,6 +16,9 @@ import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from './BatchCover
 import BatchTimeline from './BatchTimeline';
 import BatchTimelinePreview from './BatchTimelinePreview';
 import BatchTextStyleEditor from './BatchTextStyleEditor';
+import { LutVideoPlayer } from './LutVideoPlayer';
+import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
+import { useProxyPlaybackPreference } from './proxy-playback-preference';
 
 export interface BatchOutputEditorProps {
   projectId: string;
@@ -71,6 +74,12 @@ export default function BatchOutputEditor({
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
   const [previewMode, setPreviewMode] = useState<'output' | 'material'>('output');
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
+  /** B1 总开关:开(默认)=素材预览走代理解析,关=播原片(核对画质) */
+  const { proxyPlayback } = useProxyPlaybackPreference();
+  const materialVideoRef = useRef<HTMLVideoElement | null>(null);
+  const materialVideoStateRef = useRef<{ time: number; paused: boolean }>({ time: 0, paused: false });
+  /** 素材预览的代理解析状态(无代理素材时切换控件禁用并给引导);带 assetId 防切换串台 */
+  const [materialPreviewInfo, setMaterialPreviewInfo] = useState<{ assetId: string; kind: string; originalOnline: boolean } | null>(null);
   const [subtitleStyleDraft, setSubtitleStyleDraft] = useState<TextStyle | null>(null);
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const previewTabRefs = useRef<Record<'output' | 'material', HTMLButtonElement | null>>({ output: null, material: null });
@@ -128,13 +137,39 @@ export default function BatchOutputEditor({
   const poolAssets = useMemo(() => view?.poolAssets ?? [], [view]);
   const assetsById = useMemo(() => new Map(poolAssets.map((asset) => [asset.assetId, asset])), [poolAssets]);
   const previewAssetsById = useMemo(
-    () => Object.fromEntries(poolAssets.map((asset) => [asset.assetId, { previewUrl: asset.previewUrl }])),
-    [poolAssets],
+    () => Object.fromEntries(poolAssets.map((asset) => [asset.assetId, {
+      // 代理解析路由(批次级,B1 开关开启时使用);原片直连供开关关闭时使用
+      previewUrl: asset.previewUrl,
+      originalUrl: `/api/batch-production/assets/${encodeURIComponent(asset.assetId)}/preview?projectId=${encodeURIComponent(projectId)}`,
+      // C3:时间线逐片段 LUT(冻结快照选择);.cube 只读端点由这里携带 projectId 构造
+      lutId: asset.lutId,
+      lutUrl: asset.lutId
+        ? `/api/batch-production/luts/${encodeURIComponent(asset.lutId)}/file?projectId=${encodeURIComponent(projectId)}`
+        : undefined,
+    }])),
+    [poolAssets, projectId],
   );
   const selectedClip = clips.find((clip) => clip.clipId === selectedClipId) ?? null;
   const freeformClip = clips.find((clip) => clip.clipId === freeformClipId) ?? null;
   const pendingReplaceAsset = replaceCandidateId ? assetsById.get(replaceCandidateId) ?? null : null;
   const previewMaterial = previewAssetId ? assetsById.get(previewAssetId) ?? null : null;
+  // 素材预览的代理可用性:素材在版本池内,复用 previewUrl 上的批次参数查 previewInfo
+  useEffect(() => {
+    if (!previewMaterial) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`${previewMaterial.previewUrl}&previewInfo=1`, { cache: 'no-store' });
+        const body = await response.json().catch(() => ({})) as { kind?: string; originalOnline?: boolean };
+        if (!cancelled && response.ok) {
+          setMaterialPreviewInfo({ assetId: previewMaterial.assetId, kind: body.kind ?? 'unavailable', originalOnline: body.originalOnline ?? false });
+        }
+      } catch {
+        // 读取失败不阻塞预览;控件按"无代理"禁用
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [previewMaterial]);
 
   const usedHere = poolAssets.filter((asset) => asset.usedByPlanIds.includes(planId)).length;
   const coverHere = poolAssets.filter((asset) => asset.coverUsedByPlanIds.includes(planId)).length;
@@ -514,6 +549,16 @@ export default function BatchOutputEditor({
                   <span className="min-w-0 truncate text-[11px] text-ink-tertiary" title={previewMaterial?.displayName}>
                     {previewMode === 'material' ? (previewMaterial?.displayName ?? '请从左侧点击预览') : '实时合成预览'}
                   </span>
+                  {previewMode === 'material' && previewMaterial && (
+                    <ProxyPlaybackToggle
+                      disabled={materialPreviewInfo?.assetId !== previewMaterial.assetId || materialPreviewInfo?.kind !== 'proxy'}
+                      disabledHint="该素材还没有低清代理：生成后在代理与原片之间切换"
+                      onBeforeChange={() => {
+                        const video = materialVideoRef.current;
+                        if (video) materialVideoStateRef.current = { time: video.currentTime, paused: video.paused };
+                      }}
+                    />
+                  )}
                 </div>
                 <div
                   id="batch-preview-panel"
@@ -524,18 +569,33 @@ export default function BatchOutputEditor({
                   {previewMode === 'material' ? (
                     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-2 rounded-xl bg-ink/[.04] p-2" data-testid="batch-output-material-preview">
                       {previewMaterial?.previewUrl ? (
-                        <video
-                          key={'material-preview-' + previewMaterial.assetId}
-                          className="max-h-full max-w-full rounded-lg bg-black object-contain"
-                          controls
-                          muted
-                          playsInline
-                          preload="metadata"
+                        <LutVideoPlayer
+                          key={'material-preview-' + previewMaterial.assetId + '-' + (proxyPlayback ? 'proxy' : 'original')}
+                          src={proxyPlayback ? previewMaterial.previewUrl : `/api/batch-production/assets/${encodeURIComponent(previewMaterial.assetId)}/preview?projectId=${encodeURIComponent(projectId)}`}
                           poster={previewMaterial.thumbnailUrl}
-                          aria-label={'素材预览：' + previewMaterial.displayName}
-                        >
-                          <source src={previewMaterial.previewUrl} type="video/mp4" />
-                        </video>
+                          ariaLabel={'素材预览：' + previewMaterial.displayName}
+                          className="flex h-full min-h-0 items-center justify-center"
+                          videoRef={materialVideoRef}
+                          lut={previewMaterial.lutId ? {
+                            lutId: previewMaterial.lutId,
+                            url: `/api/batch-production/luts/${encodeURIComponent(previewMaterial.lutId)}/file?projectId=${encodeURIComponent(projectId)}`,
+                          } : null}
+                          onLoadedMetadata={(event) => {
+                            // 开关切换换源后恢复播放位置与播放/暂停状态
+                            const state = materialVideoStateRef.current;
+                            if (state.time > 0 && Number.isFinite(state.time)) {
+                              try {
+                                const duration = event.currentTarget.duration;
+                                event.currentTarget.currentTime = Number.isFinite(duration) && duration > 0
+                                  ? Math.min(state.time, duration)
+                                  : state.time;
+                              } catch {
+                                // 换源瞬间 currentTime 可能不可写,忽略即可
+                              }
+                            }
+                            if (state.paused) event.currentTarget.pause();
+                          }}
+                        />
                       ) : previewMaterial?.thumbnailUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={previewMaterial.thumbnailUrl} alt={previewMaterial.displayName} className="max-h-full max-w-full rounded-lg object-contain" />
