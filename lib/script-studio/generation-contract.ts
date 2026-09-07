@@ -11,8 +11,8 @@ import { ScriptStudioError } from './errors.ts';
 /** 脚本一次生成的最大并列方案数。 */
 export const SCRIPT_GENERATION_MAX_COUNT = 6;
 
-/** 前端「生成数量」下拉的稳定产品选项（是否补 4 属产品决策，不在本期范围）。 */
-export const SCRIPT_GENERATION_UI_OPTIONS = [1, 2, 3, 5, 6] as const;
+/** 前端「生成数量」下拉的稳定产品选项，1 到上限的连续整数。 */
+export const SCRIPT_GENERATION_UI_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
 
 /** 目标时长白名单（秒），route / runner / 再生成控件共用。 */
 export const SCRIPT_TARGET_DURATION_OPTIONS = [15, 20, 30, 45, 60] as const;

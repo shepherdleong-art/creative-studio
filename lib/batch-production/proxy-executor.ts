@@ -4,8 +4,6 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
-import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
-import { buildColorFilterFragments, COLOR_PIPELINE_VERSION, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
 import { resolveSourceFilePath } from './media-catalog.ts';
 import {
@@ -20,6 +18,9 @@ import type { BatchTaskExecutor } from './executors.ts';
  * 首个代理规格(profile 版本 proxy-v1,与 §5.4 要求对应)。参数不是永远不变的产品合同,
  * 变化必须推进 PROXY_PROFILE_VERSION——旧 proxyKey 会随之失效,不会被新参数悄悄复用。
  *
+ * - 滤镜链只有纯缩放 + 像素格式归一:scale=-2:min(720,ih),format=yuv420p。
+ *   不应用任何色彩/LUT filter(共识 9/13)——LUT 是预览层实时效果,由播放器
+ *   GPU 采样叠加;正式渲染才在冻结色彩快照下用 lut3d 烘焙。
  * - 分辨率:高度不超过 720(scale=-2:min(720,ih)),只下采样不放大,保持原始宽高比。
  * - codec/pixfmt:H.264 + yuv420p——安装包内置浏览器/Electron 都能稳定解码,兼容性优先。
  * - GOP:固定 50 帧、关闭场景切换自适应关键帧(-sc_threshold 0),换取规律可预测的拖动体验,
@@ -42,13 +43,6 @@ async function assertEnoughDiskSpaceForProxy(directory: string): Promise<void> {
     const availableMb = Math.floor(availableBytes / (1024 * 1024));
     throw new Error(`磁盘剩余空间不足(可用 ${availableMb}MB),已阻塞代理生成;请清理空间或代理缓存后重试`);
   }
-}
-
-function resolveManagedDataRootPath(relativePath: string): string {
-  const root = dataRoot();
-  const resolved = resolveStoragePath(root, relativePath);
-  assertNoStorageSymlink(root, relativePath);
-  return resolved;
 }
 
 // proxy executor 是重本地任务,默认单并发(§5.4):进程内一条 FIFO 互斥链,
@@ -145,52 +139,14 @@ function assertRequestPublishable(
 }
 
 /**
- * 重新核验冻结快照引用的受管 LUT 文件:
- * 1. 按 batch_luts 目录记录解析受管路径(拒绝越界/符号链接);
- * 2. 重新计算完整 SHA-256;
- * 3. 必须同时匹配冻结 snapshot.lutFingerprint 与 batch_luts.contentFingerprint。
- * 任一不匹配、文件缺失或路径非法都抛出明确错误,调用方收敛为失败状态且不留下临时文件。
- */
-async function verifyFrozenLutFile(
-  db: Parameters<BatchTaskExecutor['execute']>[0]['db'],
-  snapshot: ColorSnapshotV1,
-): Promise<string> {
-  const lut = db.prepare(`
-    SELECT relativePath, contentFingerprint FROM batch_luts WHERE id = ?
-  `).get(snapshot.lutId) as { relativePath: string; contentFingerprint: string } | undefined;
-  if (!lut) {
-    throw new Error('冻结快照引用的 LUT 记录不存在,无法生成色彩代理');
-  }
-  let absolutePath: string;
-  try {
-    absolutePath = resolveManagedDataRootPath(lut.relativePath);
-  } catch {
-    throw new Error('冻结快照引用的 LUT 受管路径非法,无法生成色彩代理');
-  }
-  if (!fs.existsSync(absolutePath)) {
-    throw new Error('冻结快照引用的 LUT 受管文件缺失,无法生成色彩代理');
-  }
-  const actual = await computeFingerprintFromFile(absolutePath);
-  if (
-    !snapshot.lutFingerprint
-    || snapshot.lutFingerprint.startsWith('unresolved:')
-    || !fingerprintsEqual(actual, snapshot.lutFingerprint)
-    || !fingerprintsEqual(actual, lut.contentFingerprint)
-  ) {
-    throw new Error('冻结快照引用的 LUT 文件内容与冻结指纹或目录记录不一致,无法生成色彩代理');
-  }
-  return absolutePath;
-}
-
-/**
  * 代理生成执行器(proxy_generate):任务的目标是稳定代理请求(batch_proxy_requests.id),
- * 通过请求的 currentCacheItemId 解析缓存项,在开始编码前重新核验原片来源和 LUT 文件
- * 内容指纹,然后从原片解码 -> 按需应用 LUT -> 缩放 -> 编码,写入受控代理缓存目录。
+ * 通过请求的 currentCacheItemId 解析缓存项,在开始编码前重新核验原片来源内容指纹,
+ * 然后从原片解码 -> 缩放 -> 编码(不应用任何色彩/LUT filter,共识 9/13),
+ * 写入受控代理缓存目录。
  *
  * 重新核验要求(§3):
  * - 遍历允许来源,重新计算完整 SHA-256,选择与请求冻结指纹一致的来源。
  * - 路径存在但内容被替换时必须失败,不能把新内容发布到旧 proxyKey。
- * - 应用 LUT 前重新核验受管 LUT 文件指纹;缺失或变化必须失败。
  * - 从准备临时文件到原子发布与 ready 数据库更新完成期间持有写租约;
  *   清理并发运行时只标记 pending-delete,不会一边写一边删。
  * - rename 前重新检查 AbortSignal、请求仍有效、cache 行仍存在且没有待删除。
@@ -286,7 +242,6 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
                 cacheItemId: liveCache.id,
                 fileSizeBytes: liveCache.fileSizeBytes,
                 profileVersion: PROXY_PROFILE_VERSION,
-                colorPipelineVersion: COLOR_PIPELINE_VERSION,
                 reused: true,
               },
             };
@@ -304,24 +259,8 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
         assertNotAborted(signal);
         await assertEnoughDiskSpaceForProxy(dataRoot());
 
-        // 色彩快照以持久化请求为准(与素材池冻结快照同源)
-        const colorSnapshot = upgradeColorSnapshot(JSON.parse(request.colorJson));
-        let verifiedLutAbsolutePath: string | null = null;
-        if (colorSnapshot.lutId !== null) {
-          context.reportProgress({ phase: 'verifying_lut', description: '重新核验 LUT 文件指纹', percent: null });
-          assertNotAborted(signal);
-          verifiedLutAbsolutePath = await verifyFrozenLutFile(db, colorSnapshot);
-        }
-        const colorFilters = buildColorFilterFragments({
-          colorSnapshot,
-          resolveLutAbsolutePath: (lutId) => {
-            if (!verifiedLutAbsolutePath) {
-              throw new Error(`LUT 未通过重新核验,不能用于生成色彩代理(${lutId})`);
-            }
-            return verifiedLutAbsolutePath;
-          },
-        });
-        const vf = ['scale=-2:min(720\\,ih)', ...colorFilters, 'format=yuv420p'].join(',');
+        // 纯低清滤镜链(共识 13):只缩放与像素格式归一,不应用任何色彩/LUT filter。
+        const vf = 'scale=-2:min(720\\,ih),format=yuv420p';
 
         context.reportProgress({ phase: 'probing', description: '探测原片时长', percent: null });
         assertNotAborted(signal);
@@ -414,7 +353,6 @@ export const proxyGenerateExecutor: BatchTaskExecutor = {
             cacheItemId: cacheItem.id,
             fileSizeBytes,
             profileVersion: PROXY_PROFILE_VERSION,
-            colorPipelineVersion: COLOR_PIPELINE_VERSION,
           },
         };
       } catch (error) {

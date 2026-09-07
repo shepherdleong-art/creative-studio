@@ -14,6 +14,7 @@ $Root = Split-Path -Parent $ScriptDir
 $runDir = Join-Path $Root 'storage\run'
 $serviceFile = Join-Path $runDir 'electron-service.json'
 $stackFile = Join-Path $runDir 'stack.json'
+$rootPrefix = $Root.TrimEnd('\') + '\'
 
 function Get-ListenerPids([int]$TargetPort) {
   @(Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue |
@@ -26,7 +27,10 @@ function Test-ProjectProcess([int]$TargetPid) {
   if (-not $proc) { return $false }
   $exe = [string]$proc.ExecutablePath
   $cmd = [string]$proc.CommandLine
-  return (($exe -and $exe.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) -or ($cmd -and $cmd.Contains($Root)))
+  return (
+    ($exe -and $exe.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+    ($cmd -and $cmd.IndexOf($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+  )
 }
 
 function Wait-PortReleased([int]$TargetPort, [int]$TimeoutSec) {
@@ -42,7 +46,7 @@ function Stop-PortOwners([int]$TargetPort, [string]$Label) {
   foreach ($ownerPid in (Get-ListenerPids $TargetPort)) {
     if (Test-ProjectProcess $ownerPid) {
       Write-Host "强制结束$Label进程 PID: $ownerPid"
-      Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+      & taskkill.exe /PID ([string]$ownerPid) /T /F 2>$null | Out-Null
     } else {
       Write-Host "端口 $TargetPort 的进程(PID $ownerPid)不属于本项目,跳过(不误杀)。" -ForegroundColor Yellow
     }
@@ -96,12 +100,12 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
   Where-Object {
     $exe = [string]$_.ExecutablePath
     $cmd = [string]$_.CommandLine
-    (($_.Name -eq 'electron.exe') -and $exe -and $exe.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) -or
-    ($cmd -and $cmd.Contains($Root) -and $cmd -match $appMarkers)
+    (($_.Name -eq 'electron.exe') -and $exe -and $exe.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+    ($cmd -and $cmd.IndexOf($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $cmd -match $appMarkers)
   } |
   ForEach-Object {
     Write-Host "清理残留进程 PID: $($_.ProcessId) ($($_.Name))"
-    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    & taskkill.exe /PID ([string]$_.ProcessId) /T /F 2>$null | Out-Null
   }
 if (Test-Path $serviceFile) { Remove-Item $serviceFile -Force -ErrorAction SilentlyContinue }
 

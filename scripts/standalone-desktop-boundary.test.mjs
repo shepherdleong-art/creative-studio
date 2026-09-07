@@ -39,6 +39,9 @@ try {
   writeFixture('.next/standalone/desktop/main.js');
   writeFixture('.next/standalone/dist-desktop/main.js');
   writeFixture('.next/standalone/python-runtime/python.exe');
+  writeFixture('.next/standalone/node-runtime/node.exe');
+  writeFixture('.next/standalone/config.yaml.backup-20260814-172847', 'api_key: leaked-secret\n');
+  writeFixture('.next/standalone/.env.release', 'LEAKED_SECRET=1\n');
   writeFixture('.next/standalone/app/api/desktop/health/route.js');
   writeFixture('.next/standalone/runtime/stale-entry.js');
 
@@ -49,7 +52,14 @@ try {
   );
   assert.equal(sync.status, 0, `standalone 资源同步失败：\n${sync.stderr}\n${sync.stdout}`);
 
-  for (const forbiddenRoot of ['desktop', 'dist-desktop', 'python-runtime']) {
+  for (const forbiddenRoot of [
+    'desktop',
+    'dist-desktop',
+    'python-runtime',
+    'node-runtime',
+    'config.yaml.backup-20260814-172847',
+    '.env.release',
+  ]) {
     assert.equal(
       existsSync(path.join(standalone, forbiddenRoot)),
       false,

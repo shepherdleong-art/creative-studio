@@ -224,6 +224,11 @@ export function createAnalyzeAssetExecutor(options: AnalyzeAssetExecutorOptions 
         signal,
         mediaLease,
       });
+      // 素材分析任务永远批次绑定(只有素材级 proxy_generate 允许没有批次),
+      // 这里不会走到 null,但类型上必须有防御,不用空串伪装。
+      if (!claim.task.batchId) {
+        throw new Error('素材分析任务必须属于一个批次');
+      }
       contentAnalysis = contentRequest.executionScope === 'company' && mediaTransport
         ? await withPreparedMediaLease(mediaTransport, {
             projectId,

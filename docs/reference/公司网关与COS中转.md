@@ -33,7 +33,7 @@ macOS 启动器只对 LiteLLM 子进程清除大小写两套 `HTTP_PROXY` / `HTT
 
 ## `seed.ts` — 公司供应商开箱即用补种
 
-- `seed.ts` — 启动时向 `video_providers` 等表写入内置供应商预设。公司供应商（图片 `image2-medium`、视频 `kling-3.0` / `doubao-seedance-2-0-fast-260128`、脚本 `GPT-5-6-Luna-Standard`）以 `http://127.0.0.1:4000` + 占位 Key 开箱即用补种（本机 LiteLLM 不校验调用方 Bearer，上游真实 Key 由 `config.yaml` 持有）；已有同模型手工配置时不重复补种，已有用户配置不被覆盖。
+- `seed.ts` — 启动时向 `providers` / `video_providers` / `script_providers` 写入内置供应商预设。公司供应商（图片 `image2-medium`、`qiniuyun/gpt-image-2-medium`，视频 `kling-3.0` / `doubao-seedance-2-0-fast-260128`，脚本 `GPT-5-6-Luna-Standard`）以 `http://127.0.0.1:4000` + 占位 Key 开箱即用补种（本机 LiteLLM 不校验调用方 Bearer，上游真实 Key 由 `config.yaml` 持有）；只按 canonical ID 补缺，手工同模型行可并存，已有 canonical 行的用户连接、模型与启用状态不被覆盖。豆包 TTS 由 final-edit schema 预置，真实 Key 从 `.env.local` 读取；0.6.0 免安装版的脚本调度器变量固定为 `CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1`。
 
 ## 红线（这几条同时留在 AGENTS.md）
 

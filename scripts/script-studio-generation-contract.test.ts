@@ -22,7 +22,7 @@ import type { LibraryRevisionView } from '../lib/script-studio/libraries.ts';
 
 // ---- 契约解析 ----
 assert.equal(SCRIPT_GENERATION_MAX_COUNT, 6);
-assert.deepEqual([...SCRIPT_GENERATION_UI_OPTIONS], [1, 2, 3, 5, 6]);
+assert.deepEqual([...SCRIPT_GENERATION_UI_OPTIONS], [1, 2, 3, 4, 5, 6]);
 assert.equal(parseScriptStudioRequestedCount(1), 1);
 assert.equal(parseScriptStudioRequestedCount(6), 6);
 assert.equal(parseScriptStudioRequestedCount('6'), 6, '数字字符串允许');

@@ -1,8 +1,13 @@
+.gitattributes text eol=lf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+*.iss text eol=crlf
 *.sh text eol=lf
 *.command text eol=lf
+*.mjs text eol=lf
 *.md text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf
 *.json text eol=lf
+*.py text eol=lf
+requirements-litellm-win-x64.lock.txt text eol=lf

@@ -50,8 +50,6 @@ try {
     assetId: asset,
     contentFingerprint: 'sha256:proxy-cache-domain',
     profileVersion: 'proxy-v1',
-    colorSnapshot: { lutId: null as string | null },
-    colorPipelineVersion: 'color-v1',
   };
   const key = computeProxyKey(keyInput);
   assert.equal(key, computeProxyKey(keyInput), 'computeProxyKey 必须是确定性的纯函数');
@@ -69,12 +67,12 @@ try {
 
   // --- 取或建:重复请求幂等返回同一行,不产生第二条 pending 记录 ---
   const first = getOrCreatePendingProxyCacheItem(db, 'project-1', {
-    assetId: asset, proxyKey: key, profileVersion: 'proxy-v1', colorSnapshot: { lutId: null },
+    assetId: asset, proxyKey: key, profileVersion: 'proxy-v1',
     now: () => new Date('2026-08-03T08:02:00.000Z'),
   });
   assert.equal(first.status, 'pending');
   const second = getOrCreatePendingProxyCacheItem(db, 'project-1', {
-    assetId: asset, proxyKey: key, profileVersion: 'proxy-v1', colorSnapshot: { lutId: null },
+    assetId: asset, proxyKey: key, profileVersion: 'proxy-v1',
     now: () => new Date('2026-08-03T08:03:00.000Z'),
   });
   assert.equal(second.id, first.id, '同一 proxyKey 重复请求必须复用同一缓存项,不产生重复行');

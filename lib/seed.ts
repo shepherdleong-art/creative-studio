@@ -101,28 +101,50 @@ export function seedProviders() {
   cleanPlaceholderKeys(db);
   ensurePackyImageProviders(db);
   ensureGptGeImageProvider(db);
-  ensureCompanyImageProvider(db);
+  ensureCompanyImageProviders(db);
 }
 
 /**
- * 公司图片供应商（image2-medium，经本机 LiteLLM）开箱即用补种。
+ * 公司图片供应商（经本机 LiteLLM）开箱即用补种。
  * 只在 canonical ID 缺失时插入；同模型的手工/公网配置仍可并存，且已有
  * canonical 行的用户配置不会被覆盖。
  */
-function ensureCompanyImageProvider(db: ReturnType<typeof getDb>) {
-  db.prepare(`
+function ensureCompanyImageProviders(db: ReturnType<typeof getDb>) {
+  const providers = [
+    {
+      id: 'company-gateway-image2-medium',
+      name: '公司网关 image2-medium',
+      model: 'image2-medium',
+      defaultCostPerImage: 1.05,
+    },
+    {
+      id: 'company-gateway-qiniuyun-gpt-image-2-medium',
+      name: '公司网关 七牛云 GPT Image 2 Medium',
+      model: 'qiniuyun/gpt-image-2-medium',
+      defaultCostPerImage: 0.5,
+    },
+  ];
+  const insert = db.prepare(`
     INSERT INTO providers
       (id, name, baseUrl, apiKeyEnv, apiKey, model, type, enabled, defaultCostPerImage)
     SELECT
-      'company-gateway-image2-medium', '公司网关 image2-medium', ?, 'COMPANY_API_KEY', ?, 'image2-medium', 'gateway-task-image', 1, 1.05
+      ?, ?, ?, 'COMPANY_API_KEY', ?, ?, 'gateway-task-image', 1, ?
     WHERE NOT EXISTS (
       SELECT 1 FROM providers
-      WHERE id = 'company-gateway-image2-medium'
+      WHERE id = ?
     )
-  `).run(
-    COMPANY_LITELLM_BASE_URL,
-    COMPANY_LITELLM_PLACEHOLDER_KEY
-  );
+  `);
+  for (const provider of providers) {
+    insert.run(
+      provider.id,
+      provider.name,
+      COMPANY_LITELLM_BASE_URL,
+      COMPANY_LITELLM_PLACEHOLDER_KEY,
+      provider.model,
+      provider.defaultCostPerImage,
+      provider.id,
+    );
+  }
 }
 
 function cleanPlaceholderKeys(db: ReturnType<typeof getDb>) {

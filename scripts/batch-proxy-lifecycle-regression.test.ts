@@ -2,7 +2,7 @@
 //
 // Phase D 修复回归(真实 FFmpeg):
 // b. 完整 LUT 快照:服务端按受管 LUT 构建,拒绝空指纹绕过;
-// c. LUT 文件被合法替换后 executor/preflight 都必须阻塞;
+// c. LUT 文件被合法替换后 preflight 必须阻塞(代理生成与 LUT 无关,共识 9/13);
 // d. cache 清理 → 用户再次明确请求 → 生成成功(清理不自动重建);
 // e. succeeded/failed/cancelled 历史任务不会卡住重建;
 // f. 生成写租约与 pending-delete 自动完成(释放租约即删除,不需要再点一次清理);
@@ -186,9 +186,7 @@ try {
     void sourcePath;
     const first = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:06:00.000Z'),
     });
@@ -221,9 +219,7 @@ try {
     const reused = proxyCacheModule.requestProxy(db, 'project-1', otherBatchId, {
       assetId,
       contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId: otherSnapshot.batchVersionId,
       now: () => new Date('2026-08-03T08:05:50.000Z'),
     });
@@ -278,9 +274,7 @@ try {
     // e + d. 用户再次明确请求:旧 succeeded 任务不卡 requestKey,新任务生成成功
     const second = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:07:00.000Z'),
     });
@@ -302,9 +296,7 @@ try {
     db.prepare(`DELETE FROM batch_proxy_cache_items WHERE id = ?`).run(second.cacheItemId);
     const rebuiltAfterDelete = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:09:00.000Z'),
     });
@@ -321,9 +313,7 @@ try {
     db.prepare(`DELETE FROM batch_proxy_cache_items WHERE id = ?`).run(rebuiltAfterDelete.cacheItemId);
     const queued = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:10:00.000Z'),
     });
@@ -331,9 +321,7 @@ try {
     await waitForTaskStatus(db, queued.taskId, 'cancelled');
     const afterCancel = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:11:00.000Z'),
     });
@@ -350,9 +338,7 @@ try {
     db.prepare(`UPDATE batch_tasks SET status = 'failed' WHERE id = ?`).run(afterCancel.taskId);
     const afterDeadCache = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:12:00.000Z'),
     });
@@ -374,9 +360,7 @@ try {
     const first = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId,
       contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:13:00.000Z'),
     });
@@ -396,9 +380,7 @@ try {
     const second = proxyCacheModule.requestProxy(db, 'project-1', otherBatchId, {
       assetId,
       contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId: otherSnapshot.batchVersionId,
       now: () => new Date('2026-08-03T08:13:30.000Z'),
     });
@@ -448,9 +430,7 @@ try {
     const request = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId,
       contentFingerprint: fingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:20:00.000Z'),
     });
@@ -492,9 +472,7 @@ try {
 
     const request = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: bigFingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:09:00.000Z'),
     });
@@ -543,9 +521,7 @@ try {
     // 清理后重新请求仍能再次生成成功
     const again = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: bigFingerprint,
-      colorSnapshot: { lutId: null },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId,
       now: () => new Date('2026-08-03T08:10:00.000Z'),
     });
@@ -584,12 +560,11 @@ try {
     // 合法替换:受管路径上的文件内容被换成另一份真实 .cube(目录记录未更新)
     fs.writeFileSync(lutAbsolutePath, cubeContent.replace('LUT_3D_SIZE 2', 'LUT_3D_SIZE 2\n# replaced'));
 
-    // executor 阻塞:请求色彩代理必须失败,且不留下临时文件
+    // 代理生成与 LUT 无关(共识 9/13):LUT 文件已被替换的素材仍能生成代理,
+    // 且不留下临时文件——LUT 校验责任转移给正式渲染前检(下方 preflight)。
     const request = proxyCacheModule.requestProxy(db, 'project-1', batchId, {
       assetId, contentFingerprint: fingerprint,
-      colorSnapshot: { lutId },
       profileVersion: proxyExecutorModule.PROXY_PROFILE_VERSION,
-      colorPipelineVersion: 'color-v1',
       batchVersionId: snapshot.batchVersionId,
       now: () => new Date('2026-08-03T08:14:00.000Z'),
     });
@@ -598,13 +573,11 @@ try {
       executors: [proxyExecutorModule.proxyGenerateExecutor],
       concurrency: 1, leaseDurationMs: 60_000, heartbeatMs: 500,
     });
-    await waitForTaskStatus(db, request.taskId, 'failed');
-    const failedCache = proxyCacheModule.getProxyCacheItem(db, 'project-1', request.cacheItemId);
-    assert.equal(failedCache?.status, 'failed', 'LUT 内容变化时代理任务必须进入明确失败状态');
-    const failedRequest = db.prepare(`SELECT status FROM batch_proxy_requests WHERE id = ?`).get(request.requestId) as { status: string };
-    assert.equal(failedRequest.status, 'failed', '请求必须同步进入失败状态');
-    const lutProxiesDir = path.dirname(proxyCacheModule.resolveControlledProxyPath(failedCache!.relativePath));
-    assert.deepEqual(listFilesUnder(lutProxiesDir), [], '失败路径不得留下任何临时文件');
+    await waitForTaskStatus(db, request.taskId, 'succeeded');
+    const readyCache = proxyCacheModule.getProxyCacheItem(db, 'project-1', request.cacheItemId);
+    assert.equal(readyCache?.status, 'ready', '代理请求不含色彩快照:LUT 文件变化不得阻塞代理生成');
+    const lutProxiesDir = path.dirname(proxyCacheModule.resolveControlledProxyPath(readyCache!.relativePath));
+    assert.deepEqual(listFilesUnder(lutProxiesDir).filter((file) => file.includes('.tmp-')), [], '代理生成路径不得留下临时文件');
 
     // export preflight 阻塞:实际文件指纹与冻结快照/目录记录不一致
     const preflight = await preflightModule.checkFormalExportPreflight(db, snapshot.batchVersionId);
@@ -626,8 +599,6 @@ try {
       assetId: 'asset-1',
       contentFingerprint: `sha256:${'a'.repeat(64)}`,
       profileVersion: 'proxy-v1',
-      colorSnapshot: { lutId: null },
-      colorPipelineVersion: 'color-v1',
     });
     assert.ok(key.startsWith('sha256:'), 'proxyKey 身份必须保留规范 sha256:hex 格式');
     const fileName = proxyCacheModule.proxyFileName(key);

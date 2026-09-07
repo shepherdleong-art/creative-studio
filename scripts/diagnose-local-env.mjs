@@ -22,13 +22,19 @@ console.log('运行本脚本的 Node:', process.version, '| ABI:', process.versi
 console.log('\n== 关键文件 ==');
 for (const f of [
   'start-windows.cmd',
+  'stop-windows.cmd',
+  '迁移旧版数据.cmd',
   'config.yaml',
   '.env.local',
+  'LICENSE',
   'node-runtime/node.exe',
   'python-runtime/python.exe',
   'python-runtime/runtime-manifest.json',
   'portable-manifest.json',
   'scripts/start-litellm-proxy.py',
+  'scripts/stop-windows.ps1',
+  'scripts/migrate-portable-data.ps1',
+  'scripts/migrate-portable-data.mjs',
   '.next/standalone/server.js',
   '.next/standalone/runtime/server-entry.js',
   'node_modules/.bin/electron.cmd',
@@ -57,13 +63,14 @@ if (Database && existsSync(join(root, 'data', 'workbench.db'))) {
     const db = new Database(join(root, 'data', 'workbench.db'), { readonly: true, fileMustExist: true });
     const show = (rows, label) => {
       for (const r of rows) {
-        console.log(`  [${label}] ${r.name} | 密钥: ${r.apiKey ? '已配置' : '空'} | 模型: ${r.model ?? r.defaultModel ?? '-'}`);
+        const route = r.baseUrl === 'http://127.0.0.1:4000' ? '本机 LiteLLM' : '其他/未配置';
+        console.log(`  [${label}] ${r.name} | 密钥: ${r.apiKey ? '已配置' : '空'} | 模型: ${r.model ?? r.defaultModel ?? '-'} | 路由: ${route}`);
       }
     };
-    show(db.prepare('SELECT name, apiKey, model FROM providers ORDER BY name').all(), '图片');
-    show(db.prepare('SELECT id AS name, apiKey, defaultModel FROM video_providers ORDER BY id').all(), '视频');
+    show(db.prepare('SELECT name, apiKey, model, baseUrl FROM providers ORDER BY name').all(), '图片');
+    show(db.prepare('SELECT id AS name, apiKey, defaultModel, baseUrl FROM video_providers ORDER BY id').all(), '视频');
     try {
-      show(db.prepare('SELECT id AS name, apiKey, NULL AS model FROM script_providers ORDER BY id').all(), '脚本');
+      show(db.prepare('SELECT id AS name, apiKey, model, baseUrl FROM script_providers ORDER BY id').all(), '脚本');
     } catch { /* 表结构差异可忽略 */ }
     const projects = db.prepare('SELECT COUNT(*) AS c FROM projects').get();
     console.log('  项目数:', projects.c);
@@ -76,6 +83,14 @@ if (Database && existsSync(join(root, 'data', 'workbench.db'))) {
 console.log('\n== 内置 Python 运行时（免安装包公司网关组件）==');
 const portableMode = existsSync(join(root, 'portable-manifest.json'));
 console.log('免安装包模式:', portableMode ? '是（检测到 portable-manifest.json）' : '否（源码开发目录）');
+if (portableMode) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, 'portable-manifest.json'), 'utf8').replace(/^﻿/, ''));
+    console.log(`portable manifest: v${manifest.appVersion ?? '未知'} | 构建 ${manifest.builtAt ?? '未知'} | commit ${manifest.sourceCommit ?? '未知'}`);
+  } catch {
+    console.log('portable manifest: 无法解析');
+  }
+}
 const pyExe = join(root, 'python-runtime', 'python.exe');
 if (!existsSync(pyExe)) {
   console.log('python-runtime\\python.exe: 缺失' + (portableMode ? '（免安装包不完整，请重新完整复制）' : '（源码目录可用 .venv-litellm 代替）'));

@@ -140,7 +140,7 @@ export async function POST(request: NextRequest) {
     const quality = body.quality || 'medium';
     const timeoutMs = body.timeoutMs || 600000;
     const maxAttempts = body.maxAttempts || 2;
-    const concurrency = body.concurrency || 3;
+    const concurrency = body.concurrency || 10;
 
     // ── Complex product workflow ──
     const sceneSeedImageId: string | undefined = body.sceneSeedImageId;

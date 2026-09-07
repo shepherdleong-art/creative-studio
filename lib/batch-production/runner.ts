@@ -216,7 +216,7 @@ async function executeOne(
       return;
     }
     const control = db.prepare(`
-      SELECT p.controlState, t.expectedState,
+      SELECT COALESCE(p.controlState, 'running') AS controlState, t.expectedState,
         CASE
           WHEN t.workType <> 'render' OR (t.targetKind <> 'output_version' AND t.targetKind <> 'output_version_cover') THEN 1
           WHEN EXISTS (
@@ -226,7 +226,7 @@ async function executeOne(
           ) THEN 1 ELSE 0
         END AS targetIsCurrent
       FROM batch_tasks t
-      JOIN batch_productions p ON p.id = t.batchId
+      LEFT JOIN batch_productions p ON p.id = t.batchId
       WHERE t.id = ?
     `).get(claim.task.id) as { controlState: string; expectedState: string; targetIsCurrent: number } | undefined;
     if (control?.targetIsCurrent === 0) {
@@ -259,7 +259,7 @@ async function executeOne(
     // 重分配刚切换 currentVersionId 时旧 render 仍提交迟到候选。
     db.transaction(() => {
       const completionState = db.prepare(`
-        SELECT t.expectedState, p.controlState,
+        SELECT t.expectedState, COALESCE(p.controlState, 'running') AS controlState,
           CASE
             WHEN t.workType <> 'render' OR (t.targetKind <> 'output_version' AND t.targetKind <> 'output_version_cover') THEN 1
             WHEN EXISTS (
@@ -269,7 +269,7 @@ async function executeOne(
             ) THEN 1 ELSE 0
           END AS targetIsCurrent
         FROM batch_tasks t
-        JOIN batch_productions p ON p.id = t.batchId
+        LEFT JOIN batch_productions p ON p.id = t.batchId
         WHERE t.id = ?
       `).get(claim.task.id) as { expectedState: string; controlState: string; targetIsCurrent: number } | undefined;
       if (completionState?.targetIsCurrent === 0) {

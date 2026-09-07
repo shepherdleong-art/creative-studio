@@ -54,7 +54,7 @@ export default function NewProjectPage() {
   const [resolution, setResolution] = useState('1k');
   const [quality, setQuality] = useState('medium');
   const [timeoutMs, setTimeoutMs] = useState(600000);
-  const [concurrency, setConcurrency] = useState(3);
+  const [concurrency, setConcurrency] = useState(10);
 
   const modelCapabilities = useMemo(() => getImageModelCapabilities(model), [model]);
   const supportsQuality = modelCapabilities.supportsQuality;

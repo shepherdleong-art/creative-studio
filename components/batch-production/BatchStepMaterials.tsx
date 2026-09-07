@@ -5,6 +5,7 @@ import type { DesktopBridge } from '@/desktop/bridge-types';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
+import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import {
   type AssetPrepareTaskView,
   BatchAssetSelectionCard,
@@ -45,6 +46,14 @@ export interface BatchStepMaterialsProps {
   onAnalyzeContent: (assetIds: string[]) => void;
   onRetryAnalyze: (taskId: string) => void;
   onRequestProxy: (assetIds: string[] | undefined, busyMarker: string | null) => void;
+  /** 素材级代理请求(不要求批次存在/已确认),供素材卡按钮与播放器引导按钮使用 */
+  onRequestAssetProxy: (assetId: string) => void;
+  /** 本会话内代理任务的状态(spec B2 素材卡按钮进度/失败态来源) */
+  assetProxyStates: Record<string, { taskId: string; status: string; progressJson?: unknown }>;
+  /** 批次级代理任务(弹窗任务列表只显示 proxy_generate,不再混入分析任务) */
+  proxyTasks: BatchTasksView['tasks'];
+  /** 请求行 id → 素材 id(标签显示用;会话外丢失时回退) */
+  proxyTaskAssetIds: Record<string, string>;
   onProxyControl: (taskId: string, action: 'pause' | 'resume' | 'cancel') => void;
   onProxyRetry: (taskId: string) => void;
   onCleanupProxies: (scope: 'selected' | 'project') => void;
@@ -61,7 +70,6 @@ export interface BatchStepMaterialsProps {
   renderPreviewBadge: (assetId: string) => React.ReactNode;
   frozen: boolean;
   hasConfirmedVersion: boolean;
-  inputConfirmed: boolean;
   workspace: BatchWorkspaceView | null;
   proxyBusyAssetId: string | null;
   proxyBatchBusy: boolean;
@@ -73,7 +81,7 @@ export interface BatchStepMaterialsProps {
 }
 
 interface PreviewInfoLike {
-  kind: 'proxy' | 'original' | 'original_pending_lut' | 'unavailable';
+  kind: 'proxy' | 'original' | 'unavailable';
   originalOnline: boolean;
   warning?: string;
 }
@@ -93,7 +101,6 @@ const TASK_PHASE_LABELS: Record<string, string> = {
   preflight: '环境检查',
   probing: '探测媒体',
   content_analyzing: '画面内容分析',
-  verifying_lut: '核验 LUT',
   encoding: '编码中',
   verifying: '核验产物',
   ready: '已就绪',
@@ -218,15 +225,18 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
     allSelectableAssetsSelected,
     selectedAssets,
     luts,
+    previewInfos,
     analysisBusy,
     assetPrepareTasks,
     analysisTaskByAsset,
+    assetProxyStates,
+    proxyTasks,
+    proxyTaskAssetIds,
     visionProviderId,
     visionProviderOptions,
     visionProviderMissing,
     frozen,
     hasConfirmedVersion,
-    inputConfirmed,
     workspace,
     proxyBusyAssetId,
     proxyBatchBusy,
@@ -245,8 +255,30 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
     [assetCards, renderPreviewBadge],
   );
 
-  const proxyButtonsDisabled = !hasConfirmedVersion || proxyBatchBusy;
-  const proxyButtonsBlockedByUnconfirmed = !inputConfirmed && hasConfirmedVersion;
+  // 素材卡代理按钮状态:生成中任务优先,其次失败态,再次已有代理(kind==='proxy'),
+  // 其余为「生成低清代理」;「原片指纹变化导致代理失配」时 previewInfo 不再是
+  // proxy,自然回到「生成低清代理」(不含 LUT,重新生成即覆盖键,共识 9/13)。
+  function assetProxyState(assetId: string): { kind: 'none' | 'generating' | 'ready' | 'failed'; percent?: string } {
+    const live = assetProxyStates[assetId];
+    if (live && (live.status === 'queued' || live.status === 'running')) {
+      const progress = (live.progressJson && typeof live.progressJson === 'object'
+        ? live.progressJson
+        : null) as { percent?: number | null } | null;
+      return {
+        kind: 'generating',
+        percent: typeof progress?.percent === 'number' ? `${Math.round(progress.percent * 100)}%` : undefined,
+      };
+    }
+    if (live && live.status === 'failed') {
+      return { kind: 'failed' };
+    }
+    if (previewInfos[assetId]?.kind === 'proxy') {
+      return { kind: 'ready' };
+    }
+    return { kind: 'none' };
+  }
+
+  const proxyButtonsDisabled = proxyBatchBusy;
 
   const onlineAssetCount = prep.assets.filter(({ status }) => status === 'online').length;
   const unanalyzedCount = onlineAssetCount - selectableAssets;
@@ -469,7 +501,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                     luts={luts}
                     lutId={selectedAssets[asset.id]?.lutId ?? null}
                     onLutChange={(lutId) => props.onLutChange(asset.id, lutId)}
-                    onRequestProxy={hasConfirmedVersion && inputConfirmed ? () => props.onRequestProxy([asset.id], asset.id) : undefined}
+                    onRequestProxy={() => props.onRequestAssetProxy(asset.id)}
+                    proxyState={assetProxyState(asset.id)}
                     proxyBusy={proxyBusyAssetId === asset.id}
                     analysisTask={analysisTask}
                     onAnalyzeContent={asset.analysisLevel !== 'content' && visionProviderId
@@ -519,7 +552,10 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
             <div className="space-y-4">
               <div className="tile space-y-3 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-sm font-medium text-ink">调色滤镜（LUT）</p>
+                  <div>
+                    <p className="text-sm font-medium text-ink">调色滤镜（LUT）</p>
+                    <p className="mt-0.5 text-[11px] text-ink-tertiary">预览为实时近似效果，以正式导出成片为准（正式渲染按冻结快照烘焙 LUT）。</p>
+                  </div>
                   <div className="flex items-center gap-2">
                     <input
                       ref={lutFileInputRef}
@@ -567,27 +603,28 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                   <button
                     type="button"
                     className="btn-secondary text-xs"
-                    disabled={proxyButtonsDisabled || proxyButtonsBlockedByUnconfirmed || Object.keys(selectedAssets).length === 0}
+                    disabled={proxyButtonsDisabled || Object.keys(selectedAssets).length === 0}
                     onClick={() => props.onRequestProxy(Object.keys(selectedAssets), null)}
                   >{proxyBatchBusy ? '请求中…' : '为选中素材生成低清预览片'}</button>
                   <button
                     type="button"
                     className="btn-secondary text-xs"
-                    disabled={proxyButtonsDisabled || proxyButtonsBlockedByUnconfirmed}
+                    disabled={proxyButtonsDisabled}
                     onClick={() => props.onRequestProxy(undefined, null)}
                   >为当前批次全部素材生成低清预览片</button>
                 </div>
-                {proxyButtonsBlockedByUnconfirmed && (
-                  <p className="text-xs text-warn">脚本、素材、分析版本或调色滤镜已修改，重新确认整体输入后预览片请求才会匹配新快照。</p>
-                )}
-                {!hasConfirmedVersion && <p className="text-xs text-ink-tertiary">先确认整体输入，预览片才能对应到已锁定的设置。</p>}
-                {assetPrepareTasks.length > 0 && (() => {
-                  const activeTasks = assetPrepareTasks.filter((task) => task.status === 'queued' || task.status === 'running' || task.status === 'failed');
-                  const finishedTasks = assetPrepareTasks.filter((task) => task.status === 'succeeded' || task.status === 'cancelled');
-                  const visibleTasks = showFinishedTasks ? assetPrepareTasks : activeTasks;
-                  const taskAssetLabel = (task: AssetPrepareTaskView): string => {
-                    const asset = prep.assets.find((item) => item.id === task.targetId);
-                    return asset?.media.displayName || asset?.media.filename || `素材 ${task.targetId.slice(0, 8)}`;
+                {!hasConfirmedVersion && <p className="text-xs text-ink-tertiary">批量请求按当前批次版本的素材池匹配；未确认输入时可在素材卡或预览播放器中单独生成（无需确认）。</p>}
+                {proxyTasks.length > 0 && (() => {
+                  const activeTasks = proxyTasks.filter((task) => task.status === 'queued' || task.status === 'running' || task.status === 'failed');
+                  const finishedTasks = proxyTasks.filter((task) => task.status === 'succeeded' || task.status === 'cancelled');
+                  const visibleTasks = showFinishedTasks ? proxyTasks : activeTasks;
+                  // 任务目标指向稳定代理请求(proxy_request),经 requestId→assetId
+                  // 映射显示素材名;会话外(刷新后)映射丢失时回退为「代理任务」。
+                  const taskAssetLabel = (task: BatchTasksView['tasks'][number]): string => {
+                    const assetId = proxyTaskAssetIds[task.targetId];
+                    if (!assetId) return `代理任务 ${task.targetId.slice(0, 8)}`;
+                    const asset = prep.assets.find((item) => item.id === assetId);
+                    return asset?.media.displayName || asset?.media.filename || `素材 ${assetId.slice(0, 8)}`;
                   };
                   return (
                     <div className="space-y-1.5">

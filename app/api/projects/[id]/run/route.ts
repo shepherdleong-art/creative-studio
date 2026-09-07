@@ -41,7 +41,7 @@ export async function POST(
           );
         }
 
-        const requestedConcurrency = body.concurrency || project.concurrency || 3;
+        const requestedConcurrency = body.concurrency || project.concurrency || 10;
         const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
           id?: string;
           name?: string;
@@ -94,7 +94,7 @@ export async function POST(
           );
         }
 
-        const requestedConcurrency = body.concurrency || project.concurrency || 3;
+        const requestedConcurrency = body.concurrency || project.concurrency || 10;
         const provider = db.prepare(`SELECT id, name, type, baseUrl FROM providers WHERE id = ?`).get(project.providerId) as {
           id?: string;
           name?: string;

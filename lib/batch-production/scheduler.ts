@@ -55,14 +55,18 @@ export function claimNextTask(
   const { workerId, leaseDurationMs = 5 * 60_000 } = options;
   const startedAt = nowIso(options.now);
   return db.transaction(() => {
+    // 素材级 proxy_generate 任务没有所属批次(batchId 为 NULL),不受批次
+    // 控制态约束,只要期望运行即可领取;其余任务仍必须挂到运行中的批次。
     const candidate = db.prepare(`
       SELECT t.id, t.batchId, t.projectId, t.workType, t.targetKind, t.targetId, t.attemptCount
       FROM batch_tasks t
-      JOIN batch_productions p ON p.id = t.batchId
+      LEFT JOIN batch_productions p ON p.id = t.batchId
       WHERE t.status = 'queued'
         AND t.expectedState = 'running'
-        AND p.controlState = 'running'
-        AND p.deletedAt IS NULL
+        AND (
+          (p.controlState = 'running' AND p.deletedAt IS NULL)
+          OR t.batchId IS NULL
+        )
         -- 渲染闸门:render 必须等口播。plan 的脚本快照还有未成功的 narration
         -- 任务(queued/running/failed)时,render 不可领取;cancelled 不挡
         -- (旧版本被取代时取消的口播任务不该继续挡新版本的渲染);
@@ -177,10 +181,10 @@ export function completeTaskAttempt(
   db.transaction(() => {
     const attempt = db.prepare(`
       SELECT a.taskId, a.status, a.claimedBy, a.leaseExpiresAt,
-             t.expectedState, p.controlState
+             t.expectedState, COALESCE(p.controlState, 'running') AS controlState
       FROM batch_task_attempts a
       JOIN batch_tasks t ON t.id = a.taskId
-      JOIN batch_productions p ON p.id = t.batchId
+      LEFT JOIN batch_productions p ON p.id = t.batchId
       WHERE a.id = ?
     `).get(attemptId) as {
       taskId: string;
@@ -343,8 +347,8 @@ export function settleInterruptedTask(
     // 旧尝试可能已被租约恢复并产生新尝试;此时不得再覆盖当前任务状态。
     if (interrupted.changes === 0) return;
     const batch = db.prepare(`
-      SELECT p.controlState, t.expectedState FROM batch_tasks t
-      JOIN batch_productions p ON p.id = t.batchId
+      SELECT COALESCE(p.controlState, 'running') AS controlState, t.expectedState FROM batch_tasks t
+      LEFT JOIN batch_productions p ON p.id = t.batchId
       WHERE t.id = ?
     `).get(attempt.taskId) as {
       controlState: BatchControlState;
@@ -387,9 +391,9 @@ function settleRecoveredTask(
   updatedAt: string,
 ): void {
   const task = db.prepare(`
-    SELECT t.expectedState, p.controlState
+    SELECT t.expectedState, COALESCE(p.controlState, 'running') AS controlState
     FROM batch_tasks t
-    JOIN batch_productions p ON p.id = t.batchId
+    LEFT JOIN batch_productions p ON p.id = t.batchId
     WHERE t.id = ?
   `).get(taskId) as {
     expectedState: BatchTaskExpectedState;
@@ -426,9 +430,9 @@ export function retryTask(
   const updatedAt = nowIso(now);
   db.transaction(() => {
     const task = db.prepare(`
-      SELECT t.status, t.targetKind, t.targetId, p.controlState
+      SELECT t.status, t.targetKind, t.targetId, COALESCE(p.controlState, 'running') AS controlState
       FROM batch_tasks t
-      JOIN batch_productions p ON p.id = t.batchId
+      LEFT JOIN batch_productions p ON p.id = t.batchId
       WHERE t.id = ? AND t.projectId = ?
     `).get(taskId, projectId) as {
       status: BatchTaskStatus;
@@ -595,10 +599,11 @@ export function resumeTask(
     if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
       throw new BatchDomainError('conflict', '任务已经是终态,不能继续');
     }
-    const batch = db.prepare(`SELECT controlState FROM batch_productions WHERE id = ?`).get(task.batchId) as {
+    // 素材级代理任务没有所属批次,不存在"批次已停止"约束
+    const batch = task.batchId ? db.prepare(`SELECT controlState FROM batch_productions WHERE id = ?`).get(task.batchId) as {
       controlState: BatchControlState;
-    };
-    if (batch.controlState === 'stopped') {
+    } : undefined;
+    if (batch?.controlState === 'stopped') {
       throw new BatchDomainError('conflict', '批次已经停止,不能继续单个任务');
     }
     db.prepare(`

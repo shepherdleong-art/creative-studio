@@ -3,7 +3,6 @@ import { getDb } from '@/lib/db';
 import { assertBatchApiReady } from '@/lib/batch-production/runtime-readiness';
 import { ensureBatchSchedulerStarted } from '@/lib/batch-production/bootstrap';
 import { PROXY_PROFILE_VERSION } from '@/lib/batch-production/proxy-executor';
-import { COLOR_PIPELINE_VERSION, upgradeColorSnapshot } from '@/lib/batch-production/color-pipeline';
 import { requestProxy } from '@/lib/batch-production/proxy-cache';
 import { BatchDomainError } from '@/lib/batch-production/errors';
 import {
@@ -17,14 +16,13 @@ export const dynamic = 'force-dynamic';
 
 interface PoolAssetRow {
   assetId: string;
-  colorJson: string;
   contentFingerprint: string;
 }
 
 /**
  * 为当前批次版本素材池中明确选择的素材(或省略 assetIds 时的整个池)请求代理。
- * 色彩快照永远从批次当前版本的素材池记录读取,不接受调用方传入——
- * 代理必须匹配已确认的色彩快照,不能被页面伪造成任意 LUT 组合。
+ * 代理请求一律不带色彩快照(共识 13):LUT 是预览层实时效果,固定写入
+ * LUT 关闭的默认快照;批次归属校验由 requestProxy 完成。
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: batchId } = await context.params;
@@ -65,7 +63,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const batchVersionId = batch.currentVersionId;
 
     const poolRows = db.prepare(`
-      SELECT pool.assetId AS assetId, pool.colorJson AS colorJson, assets.contentFingerprint AS contentFingerprint
+      SELECT pool.assetId AS assetId, assets.contentFingerprint AS contentFingerprint
       FROM batch_asset_pool_items pool
       JOIN batch_assets assets ON assets.id = pool.assetId
       WHERE pool.batchVersionId = ?
@@ -85,16 +83,13 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     }
 
     const results = targets.map((row) => {
-      const colorSnapshot = upgradeColorSnapshot(JSON.parse(row.colorJson));
-      const { taskId, cacheItemId, proxyKey } = requestProxy(db, projectId, batchId, {
+      const { taskId, requestId, cacheItemId, proxyKey } = requestProxy(db, projectId, batchId, {
         assetId: row.assetId,
         contentFingerprint: row.contentFingerprint,
-        colorSnapshot,
         profileVersion: PROXY_PROFILE_VERSION,
-        colorPipelineVersion: COLOR_PIPELINE_VERSION,
         batchVersionId,
       });
-      return { assetId: row.assetId, taskId, cacheItemId, proxyKey };
+      return { assetId: row.assetId, taskId, requestId, cacheItemId, proxyKey };
     });
 
     return NextResponse.json({ requested: results }, { headers: BATCH_NO_STORE_HEADERS });
