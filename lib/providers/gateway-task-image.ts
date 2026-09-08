@@ -34,8 +34,13 @@ export interface GatewayTaskImageRequest {
 export interface GatewayTaskSubmitResult {
   taskId?: string;
   immediateImageUrl?: string;
+  /** 每张入图实际使用的传输通道（与 images 顺序一致），供队列层记日志 */
+  imageTransports?: ImageTransport[];
   rawResponse: unknown;
 }
+
+/** 入图传输通道：内联 base64 / COS 预签名 URL / 本机 HTTP URL / 裸 data URL 兜底 */
+export type ImageTransport = 'inline-data-url' | 'cos-url' | 'local-url' | 'data-url';
 
 export interface GatewayTaskPollResult {
   status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'unknown';
@@ -116,9 +121,20 @@ function fileToDataUrl(filePath: string, mimeType: string): string {
  * 直接内联（保画面细节），>20MB 才压到 ≤6MB/4096px/q92 再内联；压缩失败
  * （如 gif 超限）返回 null，由调用方回退既有 COS/本机 URL 通道。
  * 阈值可用 CREATIVE_STUDIO_INLINE_RAW_MAX_BYTES / INLINE_TARGET_BYTES /
- * INLINE_TARGET_DIM / INLINE_TARGET_QUALITY 覆盖。
+ * INLINE_TARGET_DIM / INLINE_TARGET_QUALITY 覆盖；CREATIVE_STUDIO_QINIUYUN_INLINE=0
+ * 可整体关停内联（强制走 COS/URL），用于排查上游安全拦截与传输方式的关系。
  */
 const INLINE_DATAURL_MODEL = /^qiniuyun\//i;
+
+/**
+ * qiniuyun/* 内联通道的运行时开关：CREATIVE_STUDIO_QINIUYUN_INLINE=0 时跳过
+ * 内联，强制走 COS/本机 URL（用于排查上游安全系统拦截是否与传输方式相关）。
+ * 默认开启，保持 2026-08-21 实测验证过的现状。
+ */
+function isInlineDataUrlEnabled(model: string): boolean {
+  if (!INLINE_DATAURL_MODEL.test(model)) return false;
+  return (process.env.CREATIVE_STUDIO_QINIUYUN_INLINE || '1').trim() !== '0';
+}
 
 /** 实测接受 response_format=png 并返回无损 PNG 的公司下游（2026-08-21 真实任务验证） */
 const PNG_RESPONSE_FORMAT_MODEL = /^qiniuyun\//i;
@@ -149,11 +165,15 @@ async function toInlineDataUrl(filePath: string, mimeType: string): Promise<stri
  * COS 失败或未配置时回退 CREATIVE_STUDIO_PUBLIC_BASE_URL 本机 HTTP URL，最后退 data URL。
  * qiniuyun/* 模型例外：见 toInlineDataUrl 的免 COS 内联通道。
  */
-async function toGatewayImageRefAsync(filePath: string, mimeType: string, model: string): Promise<string> {
-  if (INLINE_DATAURL_MODEL.test(model)) {
+async function toGatewayImageRefAsync(
+  filePath: string,
+  mimeType: string,
+  model: string
+): Promise<{ url: string; transport: ImageTransport }> {
+  if (isInlineDataUrlEnabled(model)) {
     try {
       const inline = await toInlineDataUrl(filePath, mimeType);
-      if (inline) return inline;
+      if (inline) return { url: inline, transport: 'inline-data-url' };
     } catch (error) {
       console.warn('[gateway-task-image] 参考图内联失败，回退 URL 通道：', error instanceof Error ? error.message : error);
     }
@@ -161,12 +181,14 @@ async function toGatewayImageRefAsync(filePath: string, mimeType: string, model:
   if (isCosMediaConfigured()) {
     try {
       const cosUrl = await tryUploadToCosAndSign(filePath, mimeType);
-      if (cosUrl) return cosUrl;
+      if (cosUrl) return { url: cosUrl, transport: 'cos-url' };
     } catch (error) {
       console.warn('[cos-media] 参考图上传 COS 失败，回退本机 URL：', error instanceof Error ? error.message : error);
     }
   }
-  return resolvePublicImageUrl(filePath) ?? fileToDataUrl(filePath, mimeType);
+  const localUrl = resolvePublicImageUrl(filePath);
+  if (localUrl) return { url: localUrl, transport: 'local-url' };
+  return { url: fileToDataUrl(filePath, mimeType), transport: 'data-url' };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -201,11 +223,15 @@ export async function submitGatewayTaskImage(
 
   // 与 packy-images / openai-compatible 一致的图片顺序约定：待编辑底图在前（图1），参考图在后（图2-N）。
   // 项目默认提示词与存量项目提示词均按「图1=底图、图2=参考图」书写。
-  const imageUrls: string[] = [
-    await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType, request.model),
-  ];
+  const imageUrls: string[] = [];
+  const imageTransports: ImageTransport[] = [];
+  const pushRef = (r: { url: string; transport: ImageTransport }) => {
+    imageUrls.push(r.url);
+    imageTransports.push(r.transport);
+  };
+  pushRef(await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType, request.model));
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
-    imageUrls.push(
+    pushRef(
       await toGatewayImageRefAsync(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png', request.model)
     );
   }
@@ -263,11 +289,11 @@ export async function submitGatewayTaskImage(
 
     // 同步直接出图（少见，但网关允许 completed 立即返回）
     if (imageUrl && status === 'succeeded') {
-      return { taskId, immediateImageUrl: imageUrl, rawResponse: data };
+      return { taskId, immediateImageUrl: imageUrl, imageTransports, rawResponse: data };
     }
 
     if (taskId) {
-      return { taskId, rawResponse: data };
+      return { taskId, imageTransports, rawResponse: data };
     }
 
     throw new Error(`Gateway task 未返回任务 id：${sanitizeGatewayMediaDiagnostic(safeJson(data), apiKey)}`);
