@@ -30,7 +30,8 @@ import {
   startStage,
   updateTask,
 } from './tasks.ts';
-import { validateScriptContent } from './validation.ts';
+import { describeValidationIssues, validateScriptContent } from './validation.ts';
+import { findCrossProductConflict } from './page-identity.ts';
 import type { ScriptStudioScriptContent } from './types.ts';
 import { dedupeSellingPoints } from './dedupe.ts';
 
@@ -224,7 +225,9 @@ async function generateValidatedScript(
       targetDurationSec: context.targetDurationSec,
       previousScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
       signal: deps.signal,
-      validationFeedback: attempt > 1 ? validation?.issues : undefined,
+      validationFeedback: attempt > 1 && validation
+        ? describeValidationIssues(validation.issues, { searchTermsUsed: validation.titleEmbedding?.searchTermsUsed })
+        : undefined,
       ...(knowledgeContext ? { knowledgeContext } : {}),
     });
     generatedAttempts += generated.attempts;
@@ -270,7 +273,7 @@ async function generateValidatedScript(
     });
     if (validation.ok) return validation.content;
   }
-  throw new ScriptStudioError('invalid_input', `脚本未通过校验：${validation?.issues.slice(0, 3).join('；') || '未知原因'}`);
+  throw new ScriptStudioError('invalid_input', `脚本未通过校验：${validation ? describeValidationIssues(validation.issues, { searchTermsUsed: validation.titleEmbedding?.searchTermsUsed }).slice(0, 3).join('；') : '未知原因'}`);
 }
 
 export async function executeScriptStudioTask(
@@ -366,11 +369,16 @@ export async function executeScriptStudioTask(
       }, signal);
       const extracted = dedupeSellingPoints(extraction.sellingPoints);
       if (extracted.length === 0) throw new ScriptStudioError('invalid_input', '详情页中没有提取到可识别的卖点');
-      const productIdentities = new Set(
-        (extraction.pageIdentities || []).map((identity) => `${identity.productName}|${identity.category}|${identity.brand}`.trim()).filter(Boolean),
-      );
-      if (productIdentities.size > 1) {
-        throw new ScriptStudioError('invalid_input', '检测到疑似多个不同商品，请拆分处理后再生成');
+      // 跨商品保护：只把「商品名都识别出来且明显不同」当作冲突（判定细节见 page-identity.ts），
+      // 避免同一产品的多页详情图因逐页提取措辞差异被误判。
+      const conflict = findCrossProductConflict(extraction.pageIdentities || []);
+      if (conflict) {
+        const [first, second] = conflict;
+        throw new ScriptStudioError(
+          'invalid_input',
+          `检测到疑似多个不同商品（第 ${first.pageIndex + 1} 页识别为「${first.productName}」，`
+          + `第 ${second.pageIndex + 1} 页识别为「${second.productName}」），请确认所有详情页属于同一商品后再生成`,
+        );
       }
       finishStage(db, projectId, taskId, 'extract', 'succeeded', {
         productName: extraction.productName,

@@ -14,7 +14,10 @@ import {
 // 任何改变任务实际供应商/执行语义的修改都必须递增此版本，使旧闭包先停再换。
 // v7：runner 执行语义变更——卖点库修订在任务创建时冻结（不再执行时读当前版）、
 // 知识推荐真正按证据卖点类型评分并写入方向卖点包（详见任务快照/知识上下文改动）。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 7;
+// v8：标题埋词计数口径变更（有效词过滤 + 同词根包含去重）与校验反馈人话化。
+// v9：跨商品保护判定口径变更——只把「商品名都识别出来且明显不同」当作冲突，
+// 消除同一产品多页详情图逐页提取措辞差异造成的误阻断。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 9;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

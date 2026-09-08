@@ -5,7 +5,7 @@ import type { LibraryRevisionView } from './libraries.ts';
 import type { PlannedScript } from './planner.ts';
 import type { ScriptStudioCompleteJson } from './llm-contract.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
-import { embeddingRequirementText, checkTitleEmbedding, matchedSearchTerms } from './title-embedding.ts';
+import { embeddingRequirementText, checkTitleEmbedding, matchedSearchTerms, effectiveSearchTerms } from './title-embedding.ts';
 import type { FrozenKnowledgeContext } from './knowledge-context.ts';
 import type {
   ScriptStudioScriptContent,
@@ -401,7 +401,8 @@ export function buildDeterministicFallbackScript(
   const matched = strategy?.matchStatus === 'matched';
   const canonicalName = matched ? (strategy!.canonicalName || '') : '';
   const searchTerms = matched ? (strategy!.searchTerms || []) : [];
-  const usedSearchTerm = searchTerms[0] || '';
+  // 词表可能残留无语义项（如孤立 “#”），兜底只从有效词里取，保证落库内容自身能过埋词门禁。
+  const usedSearchTerm = effectiveSearchTerms(searchTerms)[0] || '';
   // 内部标题必须同时含统一名称与至少一个搜索词；统一名称已含搜索词时直接使用。
   const titleIncludesTerm = matchedSearchTerms(canonicalName, searchTerms).length > 0;
   const title = canonicalName

@@ -13,7 +13,7 @@ import {
   type ScriptGeneratorInput,
 } from '../lib/script-studio/generator.ts';
 import { validateScriptContent } from '../lib/script-studio/validation.ts';
-import { checkTitleEmbedding } from '../lib/script-studio/title-embedding.ts';
+import { checkTitleEmbedding, matchedSearchTerms } from '../lib/script-studio/title-embedding.ts';
 import { planScriptDirections } from '../lib/script-studio/planner.ts';
 import type { LibraryRevisionView } from '../lib/script-studio/libraries.ts';
 import type { FrozenKnowledgeContext } from '../lib/script-studio/knowledge-context.ts';
@@ -180,5 +180,38 @@ const embeddingResult = checkTitleEmbedding(
 );
 assert.equal(embeddingResult.ok, true);
 assert.deepEqual(new Set(embeddingResult.searchTermsUsed), new Set(['折叠沙发']), '记录实际命中（≤2 个）的搜索词');
+
+// 9. 脏词表回归（PC615 真实数据）：统一名称自身即命中 3 个子串词，门禁必须仍可通过
+// 词表含孤立「#」、与统一名称相同的词条、以及层层包含的词根（储物床 ⊂ 储物床推荐 ⊂ …）。
+const pc615Context = {
+  matchStatus: 'matched' as const,
+  canonicalName: '#林氏真皮储物床PC615',
+  searchTerms: [
+    '#林氏家居', '#', '#林氏家居床', '#林氏真皮储物床PC615',
+    '主卧床', '真皮床', '储物床', '高箱床', '小户型',
+    '储物床推荐', '储物床怎么挑',
+  ],
+};
+// 孤立「#」不具备检索语义，不计入埋词。
+assert.deepEqual(matchedSearchTerms('#林氏真皮储物床PC615', ['#']), [], '孤立的 # 不算命中搜索词');
+// 互相包含的命中只算一个概念：统一名称自身（最长）吸收「储物床」。
+assert.deepEqual(matchedSearchTerms('#林氏真皮储物床PC615', pc615Context.searchTerms), ['#林氏真皮储物床PC615']);
+// 仅含统一名称的标题/封面即可通过：「必须含统一名称」与「最多 2 个搜索词」不再互斥。
+const pc615Result = checkTitleEmbedding(pc615Context, '#林氏真皮储物床PC615', '#林氏真皮储物床PC615臻选好床');
+assert.equal(pc615Result.ok, true, `仅含统一名称必须通过：${pc615Result.issues.join(',')}`);
+// 统一名称 + 一个独立词根 = 2 个概念，仍通过；且「储物床推荐」吸收「储物床」不重复计数。
+const pc615Two = checkTitleEmbedding(pc615Context, '#林氏真皮储物床PC615｜主卧床推荐', '#林氏真皮储物床PC615储物床推荐');
+assert.equal(pc615Two.ok, true, `两个概念必须通过：${pc615Two.issues.join(',')}`);
+// 真正堆砌 3 个以上独立词根时依旧拦截。
+const pc615Stuffed = checkTitleEmbedding(pc615Context, '#林氏真皮储物床PC615主卧床高箱床小户型', '#林氏真皮储物床PC615');
+assert.equal(pc615Stuffed.ok, false);
+assert.ok(pc615Stuffed.issues.includes('title_embedding_title_too_many_search_terms'));
+// 词表清洗后为空（全是「#」这类残留）时只约束统一名称，不得让门禁永远无法通过。
+const degenerate = checkTitleEmbedding(
+  { matchStatus: 'matched', canonicalName: '某产品', searchTerms: ['#', '＃'] },
+  '某产品开箱',
+  '某产品臻选',
+);
+assert.equal(degenerate.ok, true, `无语义词表不得拦截：${degenerate.issues.join(',')}`);
 
 console.log('script-studio-knowledge-prompt tests passed');

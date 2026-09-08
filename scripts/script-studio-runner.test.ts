@@ -188,6 +188,68 @@ assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as {
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM script_studio_library_revisions`).get() as { n: number }).n, 1);
 assert.equal((db.prepare(`SELECT stage FROM script_studio_task_stages WHERE taskId=? AND status='succeeded'`).all(task.task.id) as Array<{ stage: string }>).length >= 7, true);
 
+// 同一产品的两张详情页：逐页提取的身份措辞不一致（真机样本：「PC615软床框架|软床|林氏家居」
+// 对「软床|床|」）不得再被跨商品保护误拦，任务必须走通。
+function makeVariantIdentityExtractor(pageIdentities: VisionExtractionResult['pageIdentities']): VisionExtractor {
+  return {
+    async extract(): Promise<VisionExtractionResult> {
+      const base = await visionExtractor.extract({ pages: [] });
+      return { ...base, pageIdentities };
+    },
+  };
+}
+const variantTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'variant-identity-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:03:10.000Z'));
+const variantResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: variantTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: 'PC615软床框架', category: '软床', brand: '林氏家居' },
+    { pageIndex: 1, productName: '软床', category: '床', brand: '' },
+  ]),
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:03:20.000Z'),
+});
+assert.equal(variantResult.status, 'succeeded', '同一产品多页身份措辞差异不得触发跨商品拦截');
+
+// 真混商品：两页识别出明显不同的商品名，仍必须拦截并报出各页识别结果。
+const conflictTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'conflict-identity-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:03:25.000Z'));
+const conflictResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: conflictTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: '林氏PC615真皮储物床', category: '软床', brand: '林氏家居' },
+    { pageIndex: 1, productName: '全友科技布沙发A100', category: '沙发', brand: '全友' },
+  ]),
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:03:26.000Z'),
+});
+assert.equal(conflictResult.status, 'failed', '真混商品仍必须被拦截');
+assert.equal(conflictResult.errorCode, 'invalid_input');
+assert.ok(conflictResult.errorMessage?.includes('第 1 页识别为「林氏PC615真皮储物床」'), '报错必须指出各页识别结果');
+assert.ok(conflictResult.errorMessage?.includes('第 2 页识别为「全友科技布沙发A100」'), '报错必须指出各页识别结果');
+
 // F1：requestedCount=6 的复用任务也能完成 6 次生成并落 succeededCount=6。
 const sixTask = createTask(db, {
   projectId: 'p1',
