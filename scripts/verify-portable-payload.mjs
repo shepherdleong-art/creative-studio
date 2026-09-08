@@ -204,7 +204,10 @@ function findForbiddenFiles(payloadRoot, errors) {
   }
 
   const desktopRoot = path.join(payloadRoot, 'dist-desktop');
-  const allowedDesktopFiles = new Set(['main.js', 'preload.js', 'service.js', 'ipc.js']);
+  const allowedDesktopFiles = new Set([
+    'main.js', 'preload.js', 'window.js', 'theme.js', 'ipc.js',
+    'service-spawn.js', 'service-ready.js', 'service-state.js', 'service-shutdown.js',
+  ]);
   if (fs.existsSync(desktopRoot)) {
     walk(desktopRoot, (absolute, entry) => {
       const relative = path.relative(desktopRoot, absolute).split(path.sep).join('/');

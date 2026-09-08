@@ -49,7 +49,7 @@ assert.match(icns, /writing ICNS container directly/);
 assert.match(icns, /chunk\.writeUInt32BE/);
 
 const build = read('scripts/build-mac-installer.sh');
-const desktopService = read('desktop/service.ts');
+const desktopService = read('desktop/service-spawn.ts');
 assert.match(build, /NODE_VERSION=22\.22\.3/);
 assert.match(build, /ARCH=darwin-arm64/);
 assert.match(build, /HOST_PLATFORM="\$\(node -p "process\.platform"\)"/);

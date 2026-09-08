@@ -93,6 +93,7 @@ function channelLiterals(source) {
 
 const production = sourceFiles(root);
 const main = read('desktop/main.ts');
+const windowSource = read('desktop/window.ts');
 const ipc = read('desktop/ipc.ts');
 const preload = read('desktop/preload.ts');
 const bridgeTypes = read('desktop/bridge-types.ts');
@@ -138,7 +139,7 @@ const browserWindows = production.flatMap((file) => {
   return [...source.matchAll(/\bnew\s+BrowserWindow\s*\(/g)].map((match) => ({ file, index: match.index }));
 });
 assert.equal(browserWindows.length, 1, '生产源码必须恰好创建一个 BrowserWindow');
-assert.equal(browserWindows[0].file.relativePath, path.join('desktop', 'main.ts'));
+assert.equal(browserWindows[0].file.relativePath, path.join('desktop', 'window.ts'));
 for (const file of production) {
   const source = fs.readFileSync(file.absolutePath, 'utf8');
   assert.doesNotMatch(
@@ -147,8 +148,8 @@ for (const file of production) {
     `${file.relativePath} 不得创建未套用安全基线的第二 webContents`,
   );
 }
-const windowBlock = braceBlock(main, 'new BrowserWindow', browserWindows[0].index);
-const preferences = braceBlock(main, 'webPreferences:', windowBlock.open);
+const windowBlock = braceBlock(windowSource, 'new BrowserWindow', browserWindows[0].index);
+const preferences = braceBlock(windowSource, 'webPreferences:', windowBlock.open);
 for (const [name, pattern] of [
   ['preload', /\bpreload\s*:/],
   ['nodeIntegration', /\bnodeIntegration\s*:\s*false\b/],
@@ -226,11 +227,11 @@ for (const property of ['protocol', 'hostname', 'port']) {
 assert.doesNotMatch(ipc, /\.startsWith\s*\(/, 'IPC sender URL 校验不得使用 startsWith');
 
 // E. Renderer navigation and window opening are deny-by-default.
-const navigation = braceBlock(main, "webContents.on('will-navigate'");
+const navigation = braceBlock(windowSource, "webContents.on('will-navigate'");
 assert.match(navigation.source, /\bsameOrigin\s*\(/);
 assert.match(navigation.source, /\bevent\.preventDefault\(\)/);
 assert.doesNotMatch(navigation.source, /\.startsWith\s*\(/);
-const windowOpenHandler = braceBlock(main, 'setWindowOpenHandler');
+const windowOpenHandler = braceBlock(windowSource, 'setWindowOpenHandler');
 assert.match(windowOpenHandler.source, /sameOrigin\(\s*details\.url\s*,\s*origin\s*\)/);
 assert.match(windowOpenHandler.source, /webContents\.downloadURL\(\s*details\.url\s*\)/);
 assert.match(windowOpenHandler.source, /action\s*:\s*['"]deny['"]/);
@@ -241,7 +242,8 @@ const lock = main.indexOf('app.requestSingleInstanceLock()');
 assert.notEqual(lock, -1);
 assert.match(main, /^const singleInstanceLock = app\.requestSingleInstanceLock\(\);$/m);
 assert.ok(lock < main.search(/\bstartService\s*\(/));
-assert.ok(lock < main.search(/\bnew\s+BrowserWindow\s*\(/));
+assert.ok(lock < main.indexOf('createWindow(', lock + 1));
+assert.doesNotMatch(windowSource, /requestSingleInstanceLock/);
 
 // G. The intentionally duplicated sandbox-safe channel literals stay equal to
 // the fixed public set in both ipc.ts and preload.ts.

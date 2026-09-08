@@ -104,8 +104,13 @@ $runtimeScriptFiles = @(
 $desktopPayloadFiles = @(
   'main.js',
   'preload.js',
-  'service.js',
-  'ipc.js'
+  'window.js',
+  'theme.js',
+  'ipc.js',
+  'service-spawn.js',
+  'service-ready.js',
+  'service-state.js',
+  'service-shutdown.js'
 )
 $templateMap = @(
   @{ Source = 'installer\windows\start-windows-portable.cmd'; Target = 'start-windows.cmd' },
@@ -128,8 +133,13 @@ $manifestKeyFiles = @(
   '.env.local',
   'dist-desktop/main.js',
   'dist-desktop/preload.js',
-  'dist-desktop/service.js',
+  'dist-desktop/window.js',
+  'dist-desktop/theme.js',
   'dist-desktop/ipc.js',
+  'dist-desktop/service-spawn.js',
+  'dist-desktop/service-ready.js',
+  'dist-desktop/service-state.js',
+  'dist-desktop/service-shutdown.js',
   'package.json',
   'LICENSE',
   'scripts/stop-stack.ps1',
@@ -232,11 +242,7 @@ try {
     'node_modules\.bin\electron.cmd',
     'node_modules\electron\dist\electron.exe',
     '.next\standalone\server.js',
-    '.next\standalone\runtime\server-entry.js',
-    'dist-desktop\main.js',
-    'dist-desktop\preload.js',
-    'dist-desktop\service.js',
-    'dist-desktop\ipc.js'
+    '.next\standalone\runtime\server-entry.js'
   ) + $whitelistDirs + $whitelistFiles + @($runtimeScriptFiles | ForEach-Object { "scripts\$_" }) + @($desktopPayloadFiles | ForEach-Object { "dist-desktop\$_" }) + @($templateMap | ForEach-Object { $_.Source })
   $missing = @($requiredSources | Sort-Object -Unique | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Root $_)) })
   if ($missing.Count -gt 0) {

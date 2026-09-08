@@ -15,7 +15,7 @@ for (const path of [
 }
 
 const build = read('scripts/build-win-installer.ps1').replaceAll('\r\n', '\n');
-const desktopService = read('desktop/service.ts');
+const desktopService = read('desktop/service-spawn.ts');
 const buildBytes = readFileSync('scripts/build-win-installer.ps1');
 const stopBytes = readFileSync('installer/windows/stop-installed.ps1');
 assert.deepEqual([...buildBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'PowerShell build script must remain UTF-8 with BOM');

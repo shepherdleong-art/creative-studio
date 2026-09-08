@@ -210,8 +210,13 @@ function makeFixture({ omit = [] } = {}) {
   write('.next/standalone/runtime/server-entry.js');
   write('dist-desktop/main.js');
   write('dist-desktop/preload.js');
-  write('dist-desktop/service.js');
+  write('dist-desktop/window.js');
+  write('dist-desktop/theme.js');
   write('dist-desktop/ipc.js');
+  write('dist-desktop/service-spawn.js');
+  write('dist-desktop/service-ready.js');
+  write('dist-desktop/service-state.js');
+  write('dist-desktop/service-shutdown.js');
   write('dist-desktop/main.js.map', '{"sources":["../desktop/main.ts"]}\n');
   write('dist-desktop/stale.js', 'throw new Error("stale build output");\n');
   write('scripts/start-desktop-windows.ps1');
@@ -294,8 +299,13 @@ try {
     '.next/standalone/runtime/server-entry.js',
     'dist-desktop/main.js',
     'dist-desktop/preload.js',
-    'dist-desktop/service.js',
+    'dist-desktop/window.js',
+    'dist-desktop/theme.js',
     'dist-desktop/ipc.js',
+    'dist-desktop/service-spawn.js',
+    'dist-desktop/service-ready.js',
+    'dist-desktop/service-state.js',
+    'dist-desktop/service-shutdown.js',
     'scripts/start-desktop-windows.ps1',
     'scripts/start-stack.ps1',
     'scripts/stop-stack.ps1',

@@ -1,8 +1,8 @@
 // scripts/runtime/desktop-service.mjs
 // 桌面版私有服务的 electron-service.json 校验与停机链共享工具。
 // 行为语义对齐：
-// - desktop/service.ts:107-132（状态文件结构）、:354-398（health instanceId 核身）、
-//   :414-488（优雅停机链：POST /api/shutdown → 轮询 → 归属校验后强杀）
+// - desktop/service-state.ts（状态文件结构）、desktop/service-ready.ts（health instanceId 核身）、
+//   desktop/service-shutdown.ts（优雅停机链：POST /api/shutdown → 轮询 → 归属校验后强杀）
 // - installer/windows/stop-installed.ps1:21-52 与 stop-desktop.command:28-61
 //   （origin 正则严格校验 127.0.0.1 + instanceId 格式 + health 核身，fail-closed）
 // 红线：origin 不合法绝不请求；instance 不匹配绝不杀进程；归属不明只报告。

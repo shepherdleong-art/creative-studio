@@ -58,7 +58,7 @@ test('停止脚本按可执行文件路径匹配回收残留进程，不按端�
 });
 
 test('服务意外退出会带着整个应用一起退出', () => {
-  const service = read('desktop/service.ts');
+  const service = read('desktop/service-spawn.ts');
   const main = read('desktop/main.ts');
 
   // 应用内的关闭按钮直接结束 Node 服务；外壳必须跟着退出，

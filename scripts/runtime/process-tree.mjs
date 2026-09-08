@@ -2,7 +2,7 @@
 // 进程归属与进程树销毁共享工具。行为语义对齐：
 // - scripts/stop-stack.ps1 的 Test-RootOwnedProcess / Test-OwnedProcess（CIM 命令行/可执行路径归属）
 // - stop-desktop.command 的 cwd 校验（lsof / macOS 无 /proc）
-// - desktop/service.ts 的停机树（Windows taskkill /T /F；unix 进程组 SIGTERM → 2s → SIGKILL）
+// - desktop/service-shutdown.ts 的停机树（Windows taskkill /T /F；unix 进程组 SIGTERM → 2s → SIGKILL）
 // 零新增依赖；只用 execFile + 参数数组，禁止字符串拼 shell。
 
 import { execFile } from 'node:child_process';
