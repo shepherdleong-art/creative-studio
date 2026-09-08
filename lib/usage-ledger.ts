@@ -160,6 +160,7 @@ const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
   'company-qiniuyun-gpt-image-2-medium': 'image',
   'company-kling-3-0': 'video',
   'company-seedance-fast': 'video',
+  'company-seedance-2-5': 'video',
   'company-gpt-5-6-luna': 'llm_text',
   'doubao-seed-tts-2': 'tts',
 };
@@ -169,6 +170,7 @@ const COMPONENT_KEYS_BY_CORE_MODEL: Readonly<Record<string, readonly string[]>> 
   'company-qiniuyun-gpt-image-2-medium': ['image'],
   'company-kling-3-0': ['second'],
   'company-seedance-fast': ['second'],
+  'company-seedance-2-5': ['second'],
   'company-gpt-5-6-luna': ['input_token', 'output_token', 'cached_input_token'],
   'doubao-seed-tts-2': ['character'],
 };
@@ -923,6 +925,7 @@ function runLegacyImageBackfill(db: Database.Database): LegacyBackfillResult {
 const LEGACY_VIDEO_BACKFILL_MODELS = {
   'kling-3.0': { coreModelKey: 'company-kling-3-0', pricing: CORE_USAGE_PRICING.kling },
   'doubao-seedance-2-0-fast-260128': { coreModelKey: 'company-seedance-fast', pricing: CORE_USAGE_PRICING.seedance },
+  'doubao-seedance-2-5-260628': { coreModelKey: 'company-seedance-2-5', pricing: CORE_USAGE_PRICING.seedance25 },
 } as const;
 
 /**
@@ -949,9 +952,9 @@ function queryLegacyVideoBackfill(db: Database.Database): { rows: LegacyVideoBac
         ON l.eventKey = 'video-job:' || j.id || ':succeeded'
       WHERE p.type = 'openai-video'
         AND p.defaultModel = j.model
-        AND j.model IN ('kling-3.0', 'doubao-seedance-2-0-fast-260128')
+        AND j.model IN ('kling-3.0', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628')
         AND (
-          p.id IN ('company-kling-3-0', 'company-seedance-2-0-fast')
+          p.id IN ('company-kling-3-0', 'company-seedance-2-0-fast', 'company-seedance-2-5')
           OR p.baseUrl LIKE 'http://127.0.0.1%'
           OR p.baseUrl LIKE 'https://127.0.0.1%'
           OR p.baseUrl LIKE 'http://localhost%'

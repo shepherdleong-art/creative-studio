@@ -327,9 +327,11 @@ export function seedVideoProviders() {
 }
 
 /**
- * 公司视频供应商（可灵 3.0 / 即梦 Seedance 2.0 Fast，经本机 LiteLLM）开箱即用补种。
+ * 公司视频供应商（可灵 3.0 / 即梦 Seedance 2.0 Fast / 即梦 Seedance 2.5，经本机
+ * LiteLLM）开箱即用补种。
  * 别名必须与 config.yaml 的 model_name 一致；尾帧 allowlist 见
- * lib/company-gateway-tail-frame.ts。只在 canonical ID 缺失时插入；同模型的手工/公网
+ * lib/company-gateway-tail-frame.ts（Seedance 2.5 尾帧未经真实任务核验，不在其列）。
+ * 只在 canonical ID 缺失时插入；同模型的手工/公网
  * 配置仍可并存，且已有 canonical 行的用户配置不会被覆盖。
  */
 function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
@@ -345,6 +347,12 @@ function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
       name: '公司即梦 Seedance 2.0 Fast',
       modelEnv: 'COMPANY_SEEDANCE_VIDEO_MODEL',
       defaultModel: 'doubao-seedance-2-0-fast-260128',
+    },
+    {
+      id: 'company-seedance-2-5',
+      name: '公司即梦 Seedance 2.5',
+      modelEnv: 'COMPANY_SEEDANCE_2_5_VIDEO_MODEL',
+      defaultModel: 'doubao-seedance-2-5-260628',
     },
   ];
 

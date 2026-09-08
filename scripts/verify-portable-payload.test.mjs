@@ -11,6 +11,7 @@ const fixtures = [];
 const modelAliases = [
   'doubao-seedance-2-0-260128',
   'doubao-seedance-2-0-fast-260128',
+  'doubao-seedance-2-5-260628',
   'doubao-seedream-5-0-image',
   'image2-high',
   'image2-medium',

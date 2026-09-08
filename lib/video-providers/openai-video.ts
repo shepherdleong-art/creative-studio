@@ -166,8 +166,15 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     // 公司尾帧合同（2026-08-17 免费字段探测 + 真实任务双重验证）：
     // - 可灵（company-gateway-kling）：images 只放首帧，尾帧走腾讯原生
     //   LastFrameUrl；images[1] 会被下游当参考图且比例落回 16:9 默认值。
-    // - 公司 Seedance（company-gateway-seedance）：images[1] 双图，
-    //   比例与末帧收束均已实测正确。
+    // - 公司 Seedance（company-gateway-seedance）：images[1] 双图。
+    //   2.0 fast 双图（2026-08-17 实测）：比例跟随图片、末帧收束正确。
+    //   2.5 双图（2026-09-08 两条实测）：未进官网首尾帧模式——无 size
+    //   时比例自选（3:4 图出 9:16 片）、落默认 720p；送 1080p size 后
+    //   正常接受（无 400）、出 1248x1664 锁 3:4，末帧构图≈尾帧图
+    //   （标注文字正确过渡），首帧仍重构——按「双参考图+提示词」处理。
+    // seedance 单图行为（2026-09-08 四条真实任务首帧比对，2.0 fast 与
+    // 2.5 相同）：上游按参考图模式生成——成片首帧是重构图，不锚定提交图；
+    // 真人脸按参考图规则审核（InputImageSensitiveContentDetected）。
     const tailProtocol = tailImageRef ? tailCapability?.protocol : undefined;
     const body: Record<string, unknown> = {
       model: request.model,
@@ -186,15 +193,19 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       body.shot_type = 'intelligence';
     }
 
-    // 公司网关要求 response_format=mp4，size 取文档白名单内的像素组合
+    // 公司网关可灵要求 response_format=mp4，size 取文档白名单内的像素组合
     // （按首帧图比例吸附，档位偏好 1K）。首帧尺寸读不出来时省略 size。
+    // response_format 只发给可灵：seedance 从未携带过该字段——2.5 的 1080p
+    // 真实任务（2026-09-08）未携带即成功，未核验的字段不发送。
     // 例外：可灵首尾帧模式（LastFrameUrl）下网关忽略 size、落回 16:9 默认值，
     // 比例必须改走 OutputConfig.AspectRatio（2026-08-17 实测合同）；
     // 网关透传的字段按腾讯原名 PascalCase，aspect_ratio 等 snake_case 变体
     // 会被 400 UnknownParameter 拒绝，禁止再猜字段。
     const companyCaps = companyVideoCapsForModel(request.model);
     if (companyCaps) {
-      body.response_format = 'mp4';
+      if (request.model.toLowerCase().startsWith('kling')) {
+        body.response_format = 'mp4';
+      }
       const sourceDims = await probeImageDimensions(request.sourceImagePath);
       if (tailProtocol === 'company-gateway-kling') {
         const aspectRatio = sourceDims
@@ -218,6 +229,13 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
           : null;
         if (snappedSize) body.size = snappedSize;
       }
+      // seedance 双图 size 策略按模型分：2.0 fast 无 caps 本就不送
+      // （2026-08-17 已核验合同，双图进真首尾帧、比例跟随图片）；
+      // 2.5 双图实测未进官网首尾帧强校验（2026-09-08：不送 size 落 720p
+      // 9:16 自选；送 1080p size 正常接受、锁 3:4 出 1248x1664），
+      // 按参考图模式对待、与单图一样送 size。
+      // 若日后网关补显式 role 使 2.5 触发真首尾帧，ratio 强校验
+      // （仅 adaptive）可能让带 size 的任务创建前 400，届时需复查本分支。
     }
 
     const controller = new AbortController();

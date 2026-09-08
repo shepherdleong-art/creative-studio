@@ -101,6 +101,7 @@
 - 图片：qiniuyun/gpt-image-2-medium
 - 视频：kling-3.0
 - 视频：doubao-seedance-2-0-fast-260128
+- 视频：doubao-seedance-2-5-260628
 - 脚本：GPT-5-6-Luna-Standard
 - 语音：豆包 seed-tts-2.0
 

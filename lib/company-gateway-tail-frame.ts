@@ -28,6 +28,12 @@ import type { TailFrameCapability, TailFrameProtocol } from './video-providers/t
  *   比例落回 16:9 默认值且末帧不收束——禁止用 images 双图表达可灵尾帧。
  * - 公司 Seedance（doubao-seedance-2-0(-fast)-260128）：images[1] 即尾帧，
  *   比例跟随图片，末帧收束，实测正确。
+ * - 公司 Seedance 2.5（doubao-seedance-2-5-260628，2026-09-08 加入并
+ *   同日两条真实任务复核）：双图任务按「双参考图+提示词」处理，不进
+ *   官网首尾帧像素锚定模式——不送 size 时比例自选（3:4 图出 9:16 片）、
+ *   落默认 720p；送 1080p size 后正常接受（无 400）、出 1248x1664 锁
+ *   3:4，末帧构图≈尾帧图（标注文字正确过渡），首帧仍是重构图。
+ *   像素级锚定需网关支持显式 role（first_frame/last_frame），待网关侧确认。
  * - 下游支持 SessionId 去重，但网关侧幂等键字段未核验，本轮不发送；
  *   providerTaskId 防重复与 submission_unknown 语义不变。
  *
@@ -41,6 +47,7 @@ const COMPANY_TAIL_FRAME_MODEL_PROTOCOLS: Record<string, TailFrameProtocol> = {
   'kling-3.0': 'company-gateway-kling',
   'doubao-seedance-2-0-260128': 'company-gateway-seedance',
   'doubao-seedance-2-0-fast-260128': 'company-gateway-seedance',
+  'doubao-seedance-2-5-260628': 'company-gateway-seedance',
 };
 
 export function companyGatewayTailFrameCapability(model: string): TailFrameCapability {

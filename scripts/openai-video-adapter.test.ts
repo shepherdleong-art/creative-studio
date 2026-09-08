@@ -237,6 +237,22 @@ try {
     'http://192.168.1.10:3000/api/images/sources/source.png',
   ]);
 
+  // Seedance 2.5：按官网 1080p 表送 size（源图 4:3 → 1664x1248），
+  // 但不送 response_format（未核验字段），也不开智能分镜
+  await openaiVideoAdapter.submit(
+    {
+      model: 'doubao-seedance-2-5-260628',
+      prompt: 'test 2.5',
+      sourceImagePath: imagePath,
+      sourceMimeType: 'image/png',
+      durationSec: 5,
+    },
+    'gateway-key',
+    'https://llm-gateway.example.com',
+  );
+  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds', 'size']);
+  assert.equal(capturedBody?.size, '1664x1248');
+
   // 配置 COS 后：即使没有任何公网基础地址，首帧图也走 COS 预签名 URL
   // （mock 对 HEAD 一律 200，视为对象已存在，跳过 PUT）
   delete process.env.CREATIVE_STUDIO_PUBLIC_BASE_URL;
@@ -275,6 +291,11 @@ try {
     supported: true, protocol: 'company-gateway-seedance',
   });
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('doubao-seedance-2-0-fast-260128'), {
+    supported: true, protocol: 'company-gateway-seedance',
+  });
+  // Seedance 2.5 尾帧（2026-09-08 开放）：官网文档支持首尾帧，与 2.0 同
+  // 网关 images[1] 协议；首帧 1080p 已实测，末帧收束待真实任务复核
+  assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('doubao-seedance-2-5-260628'), {
     supported: true, protocol: 'company-gateway-seedance',
   });
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('kling-2.5'), {
@@ -345,6 +366,27 @@ try {
   );
   assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds']);
   assert.equal((capturedBody?.images as string[]).length, 2);
+
+  // 公司 Seedance 2.5 尾帧（2026-09-08 开放+同日实测）：同 images[1] 双图
+  // 协议；双图任务实测未进官网首尾帧强校验（按参考图模式处理），size 与
+  // 单图一致按 1080p 官网像素表发送（源图 4:3 → 1664x1248），
+  // 不加 response_format / multi_shot / LastFrameUrl
+  await openaiVideoAdapter.submit(
+    {
+      model: 'doubao-seedance-2-5-260628',
+      prompt: 'test 2.5 tail',
+      sourceImagePath: imagePath,
+      sourceMimeType: 'image/png',
+      tailImagePath,
+      tailMimeType: 'image/png',
+      durationSec: 5,
+    },
+    'gateway-key',
+    'http://127.0.0.1:4000',
+  );
+  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds', 'size']);
+  assert.equal((capturedBody?.images as string[]).length, 2);
+  assert.equal(capturedBody?.size, '1664x1248');
 
   // tailImagePath / tailMimeType 必须成对出现
   await assert.rejects(
