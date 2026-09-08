@@ -999,9 +999,11 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         shotId: asset.shotId,
         filename: asset.filename || asset.videoJobId,
         displayName: asset.displayName || asset.filename || asset.videoJobId,
+        // previewUrl 只服务浏览器播放（下载/渲染走物理路径），统一带
+        // ?preview=1 走 H.264 预览衍生物——HEVC/10bit 原件浏览器放不动。
         previewUrl: externalId
-          ? `/api/projects/${String(group.projectId)}/final-edit/shot-sets/${String(group.shotSetId)}/external-assets/${externalId}/media`
-          : `/api/videos/${relative}`,
+          ? `/api/projects/${String(group.projectId)}/final-edit/shot-sets/${String(group.shotSetId)}/external-assets/${externalId}/media?preview=1`
+          : `/api/videos/${relative}?preview=1`,
         thumbnailUrl: externalId
           ? `/api/projects/${String(group.projectId)}/final-edit/shot-sets/${String(group.shotSetId)}/external-assets/${externalId}/thumbnail`
           : `/api/final-edit-groups/${groupId}/assets/${asset.videoJobId}/thumbnail`,

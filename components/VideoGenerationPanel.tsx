@@ -1244,7 +1244,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     if (!videoPreviewJobId) return null;
     const job = videoJobs.find((j) => j.id === videoPreviewJobId);
     if (!job?.filename) return null;
-    return `/api/videos/videos/${encodeURIComponent(job.filename)}`;
+    // ?preview=1：HEVC/10bit 原件浏览器放不动时改由 H.264 预览衍生物播放
+    return `/api/videos/videos/${encodeURIComponent(job.filename)}?preview=1`;
   })();
   const previewPosterUrl = videoPreviewJobId
     ? videoJobs.find((j) => j.id === videoPreviewJobId)?.posterImageUrl || null

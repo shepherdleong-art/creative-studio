@@ -436,6 +436,8 @@ try {
   assert.equal(oversizedRange.headers.get('content-range'), `bytes 0-${sourceSize - 1}/${sourceSize}`);
   assert.equal((await oversizedRange.arrayBuffer()).byteLength, sourceSize);
 
+  // 符号链接子测试：Windows 未开启开发者模式时 symlinkSync 会 EPERM，
+  // 此时跳过该子测试（与 workspace/material-import 测试的既有写法一致）。
   const symlinkPath = path.join(root, 'source-link.mp4');
   const symlinkTargetPath = path.join(root, 'symlink-target.mp4');
   await runFfmpeg([
@@ -443,21 +445,29 @@ try {
     '-pix_fmt', 'yuv420p', '-y', symlinkTargetPath,
   ]);
   const symlinkFingerprint = await mediaCatalog.computeFileSha256(symlinkTargetPath);
-  fs.symlinkSync(symlinkTargetPath, symlinkPath);
-  const symlinkAsset = assets.createAsset(db, {
-    projectId: 'project-1', sourceKind: 'linked',
-    locationJson: { kind: 'linked', absolutePath: symlinkPath },
-    contentFingerprint: `sha256:${symlinkFingerprint}`, mediaKind: 'video',
-  });
-  db.prepare(`
-    INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
-    VALUES ('symlink-source', ?, 'linked', ?, 'healthy', ?)
-  `).run(symlinkAsset, JSON.stringify({ kind: 'linked', absolutePath: symlinkPath }), new Date().toISOString());
-  await assert.rejects(
-    () => media.resolveVerifiedProjectAssetMedia(db, 'project-1', symlinkAsset),
-    /离线|符号链接/,
-    '符号链接原片必须拒绝',
-  );
+  let symlinkCreated = false;
+  try {
+    fs.symlinkSync(symlinkTargetPath, symlinkPath);
+    symlinkCreated = true;
+  } catch {
+    console.warn('跳过 symlink 越界安全子测试：当前环境无符号链接权限');
+  }
+  if (symlinkCreated) {
+    const symlinkAsset = assets.createAsset(db, {
+      projectId: 'project-1', sourceKind: 'linked',
+      locationJson: { kind: 'linked', absolutePath: symlinkPath },
+      contentFingerprint: `sha256:${symlinkFingerprint}`, mediaKind: 'video',
+    });
+    db.prepare(`
+      INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
+      VALUES ('symlink-source', ?, 'linked', ?, 'healthy', ?)
+    `).run(symlinkAsset, JSON.stringify({ kind: 'linked', absolutePath: symlinkPath }), new Date().toISOString());
+    await assert.rejects(
+      () => media.resolveVerifiedProjectAssetMedia(db, 'project-1', symlinkAsset),
+      /离线|符号链接/,
+      '符号链接原片必须拒绝',
+    );
+  }
 
   const managedSourcePath = path.join(root, 'managed-source.mp4');
   await runFfmpeg([
@@ -653,6 +663,10 @@ try {
   console.log('batch asset preparation tests passed');
 } finally {
   db.close();
+  // 用例经 CREATIVE_STUDIO_DATA_ROOT 间接打开的共享连接（provider 门禁等
+  // 内部 getDb()）也必须归还，否则 Windows 上 rmSync 会因句柄占用 EBUSY。
+  const { closeDb } = await import('../lib/db.ts');
+  closeDb();
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(dataRoot, { recursive: true, force: true });
 }

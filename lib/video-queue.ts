@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import { dataRoot } from './data-root.ts';
+import { ensureBrowserPreview } from './video-browser-preview.ts';
 import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { videoMultiShotFromStorage } from './video-multi-shot.ts';
@@ -447,6 +448,10 @@ async function runVideoJob(
         const videoFilename = `video-${job.id.slice(0, 8)}-${Date.now()}.mp4`;
         const videoPath = path.join(videosDir, videoFilename);
         fs.writeFileSync(videoPath, videoBuffer);
+
+        // HEVC/10bit 产物（如 Seedance 2.5 1080p）浏览器放不动：先就地生成
+        // H.264 预览衍生物再标记完成。内部已全兜底（失败回退原件），不会阻断任务。
+        await ensureBrowserPreview(videoPath);
 
         const finishedAt = new Date().toISOString();
         const completeResult = db.prepare(

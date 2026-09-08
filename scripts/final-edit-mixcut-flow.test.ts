@@ -48,7 +48,13 @@ db.exec(`
     model TEXT NOT NULL,
     productCode TEXT DEFAULT '',
     productName TEXT DEFAULT '',
-    productCategory TEXT DEFAULT ''
+    productCategory TEXT DEFAULT '',
+    storeCode TEXT DEFAULT '',
+    productSubmodel TEXT DEFAULT '',
+    productionType TEXT DEFAULT '',
+    editorName TEXT DEFAULT '',
+    namingDate TEXT DEFAULT '',
+    currentExportIdentityId TEXT
   );
 
   CREATE TABLE shot_sets (
@@ -467,7 +473,7 @@ assert.equal(realAsset.filename, 'video-real.mp4');
 // C5（D5）：Mixcut 素材名优先展示派生的友好名；filename 物理身份不变。
 assert.equal(realAsset.displayName, '01-LH122K3-B1-沙发-缓慢推近-V01.mp4', '旧任务 displayName 为 NULL 时必须按 shot 序号/来源图名/模板名/版次确定性派生');
 assert.equal(realAsset.thumbnailUrl, '/api/projects/project-a/final-edit/shot-sets/ss-a/module4-assets/video-real/thumbnail');
-assert.equal(realAsset.previewUrl, '/api/videos/final-edits/videos/video-real.mp4');
+assert.equal(realAsset.previewUrl, '/api/videos/final-edits/videos/video-real.mp4?preview=1');
 assert.equal(realAsset.summary, '真实视频分析摘要');
 assert.equal(realAsset.source, 'module4');
 
@@ -486,7 +492,10 @@ const persistedDb = new Database(':memory:');
 persistedDb.pragma('foreign_keys = ON');
 persistedDb.exec(`
   CREATE TABLE projects (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, createdAt TEXT NOT NULL, productCode TEXT DEFAULT ''
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, createdAt TEXT NOT NULL, productCode TEXT DEFAULT '',
+    productName TEXT DEFAULT '', productCategory TEXT DEFAULT '', storeCode TEXT DEFAULT '',
+    productSubmodel TEXT DEFAULT '', productionType TEXT DEFAULT '', editorName TEXT DEFAULT '',
+    namingDate TEXT DEFAULT '', currentExportIdentityId TEXT
   );
   CREATE TABLE shot_sets (
     id TEXT PRIMARY KEY, projectId TEXT NOT NULL, name TEXT NOT NULL

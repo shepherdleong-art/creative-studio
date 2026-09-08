@@ -436,7 +436,7 @@ const externalJob = await workspace.start({ projectId: 'p1', scriptDraftId: 'scr
 const externalGroup = workspace.load(externalJob.groupId);
 assert.equal(externalGroup.assets[0].videoJobId, 'external-asset-external-a');
 assert.equal(externalGroup.assets[0].source, 'external');
-assert.match(externalGroup.assets[0].previewUrl, /external-assets\/external-a\/media$/);
+assert.match(externalGroup.assets[0].previewUrl, /external-assets\/external-a\/media\?preview=1$/);
 assert.ok(externalGroup.variants[0].timeline.clips.every((clip) => clip.videoJobId === 'external-asset-external-a'), '外部素材 timeline 必须能由 group assets read model 解析');
 
 const externalARow = db.prepare(`SELECT relativePath FROM final_edit_external_assets WHERE id='external-a'`).get() as { relativePath: string };
