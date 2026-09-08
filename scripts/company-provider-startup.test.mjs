@@ -37,12 +37,13 @@ test('Windows 启动器把公司 sidecar 失败降级为警告并继续启动工
 });
 
 test('start-stack 在失败时清理本轮受控状态文件，避免残留 sidecar 状态', () => {
-  assert.match(startStack, /\$stackFile\s*=\s*Join-Path\s+\$RunDir\s+'stack\.json'/);
-  assert.match(startStack, /Remove-Item\s+\$stackFile[^\n]*-Force/);
-  assert.match(startStack, /catch\s*\{[\s\S]*?Remove-Item\s+\$stackFile/);
+  assert.match(startStack, /\$stackStateTool\s*=\s*Join-Path\s+\$Root\s+'scripts\\runtime\\stack-state\.mjs'/);
+  assert.match(startStack, /\$stackStateTool\s+clear\s+\$Root/, '状态清理必须委托 stack-state.mjs clear');
   const portCheckStart = startStack.indexOf('# ── 端口占用检查');
   const staleCleanupStart = startStack.indexOf('# 只有端口确认空闲后才清理陈旧状态');
   assert.ok(portCheckStart >= 0 && staleCleanupStart > portCheckStart, '不能在端口预检前丢失旧 sidecar 状态');
+  const catchBlock = startStack.slice(startStack.indexOf('} catch {', staleCleanupStart));
+  assert.match(catchBlock, /\$stackStateTool\s+clear\s+\$Root/, '失败清理必须委托 stack-state.mjs clear');
 });
 
 test('start-stack 只要求公司 sidecar 文件，不把 standalone app 当成 sidecar 前置条件', () => {
@@ -56,7 +57,7 @@ test('start-stack 只要求公司 sidecar 文件，不把 standalone app 当成 
   assert.match(requiredFilesBlock, /config\.yaml/);
   assert.doesNotMatch(
     requiredFilesBlock,
-    /\$nodeExe|standalone|\.cache\\windows-installer/,
+    /standalone|\.cache\\windows-installer/,
     'start-stack 不得再把 standalone app 当作 sidecar 前置条件（非 SkipApp 死分支已移除）',
   );
 });
@@ -266,27 +267,37 @@ test('stack.json 记录运行时种类与实际解释器路径，且不包含密
   assert.doesNotMatch(startStack, /started\.(?:apiKey|masterKey|secret)/i, 'stack.json 不得记录密钥');
 });
 
-test('stop-stack.ps1 按 stack.json PID 停止并校验可执行路径归属，不误杀未知端口进程', () => {
+test('stop-stack.ps1 按 stack.json PID 停止并委托共享工具校验归属，不误杀未知端口进程', () => {
   assert.match(stopStack, /appCmdPid/, 'app 停机必须优先使用当前根目录状态文件记录的 PID');
   assert.doesNotMatch(stopStack, /\*windows-installer\*/, '不得按宽泛的安装目录名称强杀其他工作台实例');
   assert.match(stopStack, /litellmPid/, '必须优先按状态文件 PID 停止');
-  assert.match(stopStack, /ExecutablePath/, '必须校验进程可执行路径');
-  assert.match(stopStack, /python-runtime/, '允许路径必须包含本项目 python-runtime');
-  assert.match(stopStack, /\.venv-litellm/, '允许路径必须包含本项目 .venv-litellm');
-  const portFallback = stopStack.slice(stopStack.indexOf('Get-NetTCPConnection'));
-  assert.match(portFallback, /Test-OwnedProcess|ExecutablePath/, '端口属主兜底必须过滤非本项目进程');
+  // 归属校验/强杀/端口探测/状态管理必须委托共享 Node 工具，不再内联 CIM/netstat 实现
+  assert.match(stopStack, /\$stackStateTool\s+read\s+\$Root/, '栈状态读取必须委托 stack-state.mjs read');
+  assert.match(stopStack, /\$stackStateTool\s+clear\s+\$Root/, '栈状态清理必须委托 stack-state.mjs clear');
+  assert.match(stopStack, /\$portsTool\s+listeners/, '端口探测必须委托 ports.mjs listeners');
+  assert.match(stopStack, /\$processTreeTool\s+check-owner/, '归属校验必须委托 process-tree.mjs check-owner');
+  assert.match(stopStack, /\$processTreeTool\s+kill-tree/, '强杀必须委托 process-tree.mjs kill-tree');
+  assert.doesNotMatch(
+    stopStack,
+    /Get-NetTCPConnection|Get-CimInstance|taskkill\.exe|OrdinalIgnoreCase/,
+    '不得保留内联端口探测/进程扫描/强杀实现',
+  );
+  const portFallback = stopStack.slice(stopStack.indexOf('$portsTool listeners'));
+  assert.match(portFallback, /check-owner/, '端口属主兜底必须经过归属校验');
   assert.match(stopStack, /不属于本项目/, '遇到不属于本项目的进程必须明示跳过');
 });
 
-test('Windows 停止入口只对已确认归属的进程使用 taskkill /T /F 强杀整棵进程树', () => {
+test('Windows 停止入口只对已确认归属的进程强杀整棵进程树（委托共享工具）', () => {
   for (const [label, script] of [
     ['stop-windows.ps1', stopWindows],
     ['stop-stack.ps1', stopStack],
   ]) {
-    assert.match(script, /taskkill\.exe\s+\/PID[^\r\n]*\/T\s+\/F/, `${label} 必须强杀受控进程树`);
+    assert.match(script, /\$processTreeTool\s+kill-tree/, `${label} 必须经共享工具强杀受控进程树`);
+    assert.match(script, /\$processTreeTool\s+check-owner/, `${label} 必须经共享工具校验进程归属`);
+    assert.match(script, /\$portsTool\s+listeners/, `${label} 端口探测必须委托 ports.mjs`);
+    assert.doesNotMatch(script, /Get-NetTCPConnection|taskkill\.exe/, `${label} 不得保留内联端口探测/强杀实现`);
     assert.doesNotMatch(script, /Stop-Process\s+-Id/, `${label} 不得只杀父进程留下子进程`);
     assert.match(script, /不属于本项目|不误杀未知进程/, `${label} 必须继续保护未知端口属主`);
-    assert.match(script, /OrdinalIgnoreCase/, `${label} 的目录归属判断必须忽略 Windows 路径大小写`);
   }
 });
 
@@ -303,6 +314,10 @@ function makePortableFixture(t, files = {}) {
   fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
   for (const name of ['start-desktop-windows.ps1', 'start-stack.ps1', 'stop-stack.ps1']) {
     fs.copyFileSync(path.join(root, 'scripts', name), path.join(dir, 'scripts', name));
+  }
+  fs.mkdirSync(path.join(dir, 'scripts', 'runtime'), { recursive: true });
+  for (const name of ['ports.mjs', 'process-tree.mjs', 'stack-state.mjs', 'desktop-service.mjs']) {
+    fs.copyFileSync(path.join(root, 'scripts', 'runtime', name), path.join(dir, 'scripts', 'runtime', name));
   }
   for (const [rel, content] of Object.entries(files)) {
     const target = path.join(dir, ...rel.split('/'));

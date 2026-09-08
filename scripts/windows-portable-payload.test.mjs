@@ -77,6 +77,10 @@ for (const runtimeScript of [
   'diagnose-local-env.mjs',
   'migrate-portable-data.ps1',
   'migrate-portable-data.mjs',
+  'runtime\\ports.mjs',
+  'runtime\\process-tree.mjs',
+  'runtime\\stack-state.mjs',
+  'runtime\\desktop-service.mjs',
 ]) {
   assert.ok(build.includes(`'${runtimeScript}'`), `运行时脚本白名单缺少 ${runtimeScript}`);
 }
@@ -135,6 +139,10 @@ for (const key of [
   'scripts/start-desktop-windows.ps1',
   'scripts/start-stack.ps1',
   'scripts/start-litellm-proxy.py',
+  'scripts/runtime/ports.mjs',
+  'scripts/runtime/process-tree.mjs',
+  'scripts/runtime/stack-state.mjs',
+  'scripts/runtime/desktop-service.mjs',
   'config.yaml',
   '.env.local',
   'stop-windows.cmd',
@@ -219,6 +227,10 @@ function makeFixture({ omit = [] } = {}) {
   write('scripts/stop-windows.ps1');
   write('scripts/migrate-portable-data.ps1');
   write('scripts/migrate-portable-data.mjs');
+  write('scripts/runtime/ports.mjs');
+  write('scripts/runtime/process-tree.mjs');
+  write('scripts/runtime/stack-state.mjs');
+  write('scripts/runtime/desktop-service.mjs');
   write('scripts/verify-portable-payload.mjs', 'process.exit(0);\n');
   write('scripts/probe-do-not-package.ts', 'throw new Error("development-only");\n');
   write('package.json', '{"name":"creative-studio","version":"0.6.0","main":"dist-desktop/main.js"}\n');
@@ -295,6 +307,10 @@ try {
     'scripts/start-litellm-proxy.py',
     'scripts/diagnose-local-env.mjs',
     'scripts/stop-windows.ps1',
+    'scripts/runtime/ports.mjs',
+    'scripts/runtime/process-tree.mjs',
+    'scripts/runtime/stack-state.mjs',
+    'scripts/runtime/desktop-service.mjs',
     'scripts/migrate-portable-data.ps1',
     'scripts/migrate-portable-data.mjs',
     'package.json',

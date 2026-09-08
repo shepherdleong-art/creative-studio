@@ -17,20 +17,20 @@ test('桌面版停止入口是可执行的双击脚本', () => {
   assert.doesNotMatch(read('stop-desktop.command'), /\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]/);
 });
 
-test('停止脚本先验证身份，再请求优雅关闭', () => {
+test('停止脚本把核身与停机链委托给共享 desktop-service 工具', () => {
   const stopDesktop = read('stop-desktop.command');
 
-  // origin 必须是 loopback，且端口经过范围校验。
-  assert.match(stopDesktop, /\^http:\\\/\\\/127\\\.0\\\.0\\\.1:/);
-  assert.match(stopDesktop, /port < 1 \|\| port > 65535/);
-  // 只有健康接口回报的 instanceId 与状态文件一致，才认定这个端口属于本应用。
-  assert.match(stopDesktop, /api\/desktop\/health/);
-  assert.match(stopDesktop, /verify_instance/);
-  // 优雅关闭必须排在任何强制手段之前。
-  const gracefulIndex = stopDesktop.indexOf('/api/shutdown');
-  const killIndex = stopDesktop.indexOf('kill -KILL');
-  assert.ok(gracefulIndex > 0, '缺少 /api/shutdown 优雅关闭请求');
-  assert.ok(killIndex > gracefulIndex, '强制终止必须排在优雅关闭之后');
+  // 每个候选数据根都调一次共享停机工具；origin 校验 / health 核身 /
+  // /api/shutdown 请求 / 超时后归属校验强杀全部在工具内实现（fail-closed）。
+  assert.match(stopDesktop, /scripts\/runtime\/desktop-service\.mjs/);
+  assert.match(stopDesktop, /desktop-service\.mjs" stop --root "\$data_root"/);
+  assert.match(stopDesktop, /stop_rc=\$\?/, '必须按工具的退出码区分结果/报告/失败');
+  // 优雅关闭必须排在一切强制手段之前：该契约由共享工具承接并在其单测中守护。
+  assert.doesNotMatch(stopDesktop, /api\/desktop\/health/);
+  assert.doesNotMatch(stopDesktop, /curl[^\n]*api\/shutdown/);
+  // 工具不可用时不得静默继续。
+  assert.match(stopDesktop, /未找到 Node\.js/);
+  assert.match(stopDesktop, /exit 1/);
 });
 
 test('停止脚本覆盖源码态与安装版两个数据根', () => {
@@ -42,13 +42,16 @@ test('停止脚本覆盖源码态与安装版两个数据根', () => {
   assert.match(stopDesktop, /scripts\/stop-litellm\.sh/);
 });
 
-test('停止脚本按可执行文件路径匹配，不按端口或进程名误杀', () => {
+test('停止脚本按可执行文件路径匹配回收残留进程，不按端口或进程名误杀', () => {
   const stopDesktop = read('stop-desktop.command');
 
   assert.match(stopDesktop, /\/Applications\/产品素材工作台\.app\/Contents\/MacOS\/CreativeStudio/);
   assert.match(stopDesktop, /node_modules\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron/);
+  // 发现用 pgrep（按精确路径），归属复核与终止委托给共享 process-tree 工具。
+  assert.match(stopDesktop, /pgrep -f/);
+  assert.match(stopDesktop, /process-tree\.mjs" check-owner/);
+  assert.match(stopDesktop, /process-tree\.mjs" kill-tree/);
   // 孤儿服务只按工作目录确属本项目 standalone 产物来回收。
-  assert.match(stopDesktop, /-d cwd/);
   assert.match(stopDesktop, /\.next\/standalone/);
   // 绝不按监听端口反查 PID 后直接结束进程。
   assert.doesNotMatch(stopDesktop, /lsof -ti/);

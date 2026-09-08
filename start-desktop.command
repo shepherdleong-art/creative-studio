@@ -66,7 +66,14 @@ if [ ! -x "$ELECTRON_BINARY" ]; then
 fi
 
 # 桌面版和网页版共用 data/workbench.db；同时运行会有并发写入风险。
-if lsof -ti :3000 > /dev/null 2>&1; then
+# 端口探测委托给共享 Node 工具 scripts/runtime/ports.mjs。
+RUNTIME_TOOLS="$PWD/scripts/runtime"
+PORT_PIDS="$("$CREATIVE_STUDIO_NODE" "$RUNTIME_TOOLS/ports.mjs" listeners 3000 2>/dev/null)" || {
+    echo "❌ 端口探测失败（共享工具不可用），无法继续启动。" >&2
+    read -p "按回车键退出..."
+    exit 1
+}
+if [ -n "$PORT_PIDS" ]; then
     echo "⚠️  检测到 3000 端口已被占用，网页版可能正在运行。"
     echo "   桌面版与网页版共用 data/workbench.db，同时运行有并发写入风险。"
     echo "   建议先双击 stop.command 停掉网页版。"

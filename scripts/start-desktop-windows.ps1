@@ -68,6 +68,10 @@ if ($Portable) {
     'LICENSE',
     'scripts/stop-stack.ps1',
     'scripts/stop-windows.ps1',
+    'scripts/runtime/ports.mjs',
+    'scripts/runtime/process-tree.mjs',
+    'scripts/runtime/stack-state.mjs',
+    'scripts/runtime/desktop-service.mjs',
     'scripts/migrate-portable-data.ps1',
     'scripts/migrate-portable-data.mjs',
     'scripts/diagnose-local-env.mjs',
@@ -206,8 +210,12 @@ if (-not (Test-Path $electronBinary)) {
 }
 
 # 桌面版和网页版共用 data/workbench.db；同时运行会有并发写入风险。
-$webListener = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($webListener) {
+$webListenerPids = @(& $nodeExe (Join-Path $ScriptDir 'runtime\ports.mjs') listeners 3000)
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "端口探测工具失败(退出码 $LASTEXITCODE): runtime\ports.mjs" -ForegroundColor Red
+  exit 1
+}
+if ($webListenerPids.Count -gt 0) {
   Write-Host '检测到 3000 端口已被占用，网页版可能正在运行。' -ForegroundColor Yellow
   Write-Host '桌面版与网页版共用 data/workbench.db，同时运行有并发写入风险。'
   $reply = Read-Host '仍要继续启动桌面版？(y/N)'

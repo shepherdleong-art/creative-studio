@@ -82,23 +82,21 @@ assert.match(iss, /scripts\\clear-user-data\.ps1/);
 assert.doesNotMatch(iss, /launcher\.cs|launcher\.vbs/);
 
 const stop = read('installer/windows/stop-installed.ps1');
-assert.match(stop, /Get-CimInstance Win32_Process/);
-assert.match(stop, /ExecutablePath/);
-assert.match(stop, /electron-service\.json/);
-assert.match(stop, /ConvertFrom-Json/);
-assert.match(stop, /ExpectedInstanceId/);
-assert.match(stop, /api\/desktop\/health/);
-assert.match(stop, /payload\.instanceId/);
-assert.match(stop, /Invoke-WebRequest -Method Post/);
-assert.match(stop, /\/api\/shutdown/);
-assert.match(stop, /127\\\.0\\\.0\\\.1/);
-assert.match(stop, /65535/);
-assert.match(stop, /-TimeoutSec 15/);
-assert.match(stop, /taskkill\.exe/);
-assert.match(stop, /\/T \/F/);
-assert.ok(stop.indexOf('/api/desktop/health') < stop.indexOf('/api/shutdown'), '必须先用 instanceId 健康检查确认服务身份');
-assert.ok(stop.indexOf('/api/shutdown') < stop.indexOf('taskkill.exe'), '优雅停机必须先于 taskkill 兜底');
-assert.doesNotMatch(stop, /Get-NetTCPConnection|LocalPort/);
+assert.match(stop, /runtime\\desktop-service\.mjs/, '停止脚本必须引用桌面服务共享停机工具');
+assert.match(stop, /\$desktopServiceTool\s+stop\s+--root\s+\$dataRoot/, '每受控数据根必须委托 desktop-service.mjs stop --root');
+assert.match(stop, /runtime\\process-tree\.mjs/, '壳进程兜底必须引用共享进程树工具');
+assert.match(stop, /\$processTreeTool\s+kill-tree/, '归属确认后的强杀必须经共享工具');
+assert.match(stop, /Get-CimInstance Win32_Process/, '壳进程必须按进程名匹配');
+assert.match(stop, /ExecutablePath/, '壳进程匹配必须校验可执行路径');
+assert.match(stop, /CREATIVE_STUDIO_DATA_ROOT/, '必须扫描受控数据根环境变量');
+assert.match(stop, /'CreativeStudio'/, '必须扫描 APPDATA 数据根');
+assert.ok(
+  stop.indexOf('$desktopServiceTool stop --root') < stop.indexOf('$processTreeTool kill-tree'),
+  '必须先委托优雅停机再兜底强杀',
+);
+assert.doesNotMatch(stop, /Get-NetTCPConnection|LocalPort/, '不得内联端口探测');
+assert.match(build, /scripts\\runtime\\desktop-service\.mjs/, '安装包必须装配共享桌面服务工具');
+assert.match(build, /scripts\\runtime\\process-tree\.mjs/, '安装包必须装配共享进程树工具');
 
 const clear = read('installer/windows/clear-user-data.ps1');
 assert.match(clear, /Join-Path \$DataRoot 'data'/);

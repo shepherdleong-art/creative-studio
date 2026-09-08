@@ -264,6 +264,10 @@ if ($runtimeNodeVersion -ne '22') {
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'scripts') | Out-Null
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-installed.ps1') -Destination (Join-Path $AppDir 'scripts\stop-installed.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\clear-user-data.ps1') -Destination (Join-Path $AppDir 'scripts\clear-user-data.ps1') -Force
+# 安装版停止脚本委托 scripts/runtime/*.mjs 共享工具,必须随包装配。
+New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'scripts\runtime') | Out-Null
+Copy-Item -LiteralPath (Join-Path $Root 'scripts\runtime\desktop-service.mjs') -Destination (Join-Path $AppDir 'scripts\runtime\desktop-service.mjs') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'scripts\runtime\process-tree.mjs') -Destination (Join-Path $AppDir 'scripts\runtime\process-tree.mjs') -Force
 
 if (-not (Test-Path $productExe)) {
   throw "Electron executable was not produced at $productExe"

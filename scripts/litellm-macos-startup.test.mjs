@@ -16,6 +16,11 @@ test('macOS 公司供应商运行环境只把 LiteLLM 绑定到 loopback', () =>
   assert.match(startLiteLlm, /http:\/\/127\.0\.0\.1:\$proxy_port\/health\/liveliness/);
   assert.match(startLiteLlm, /litellmPid/);
   assert.match(startLiteLlm, /stopScript/);
+  // stack.json 读写与端口探测委托给共享 Node 工具（scripts/runtime/）。
+  assert.match(startLiteLlm, /stack-state\.mjs" read/);
+  assert.match(startLiteLlm, /stack-state\.mjs" write/);
+  assert.match(startLiteLlm, /ports\.mjs" listeners/);
+  assert.match(startLiteLlm, /litellmPort/);
   assert.doesNotMatch(startLiteLlm, /apiKey|masterKey/);
 });
 
@@ -75,8 +80,22 @@ test('LiteLLM 日志和状态文件跟随自定义 CREATIVE_STUDIO_DATA_ROOT', (
   assert.match(startLiteLlm, /log_dir="\$data_root\/storage\/logs"/);
   assert.match(startLiteLlm, /run_dir="\$data_root\/storage\/run"/);
   assert.match(startLiteLlm, /stack_file="\$run_dir\/stack\.json"/);
+  // 委托调用的 dataRoot 与状态文件路径同源。
+  assert.match(startLiteLlm, /stack-state\.mjs" read "\$data_root"/);
+  assert.match(startLiteLlm, /stack-state\.mjs" write "\$data_root"/);
   assert.match(stopLiteLlm, /data_root="\$\{CREATIVE_STUDIO_DATA_ROOT:-\$project_root\}"/);
   assert.match(stopLiteLlm, /stack_file="\$data_root\/storage\/run\/stack\.json"/);
+});
+
+test('macOS 停止入口从共享工具读取并清理 stack.json', () => {
+  const stopLiteLlm = read('scripts/stop-litellm.sh');
+
+  assert.match(stopLiteLlm, /stack-state\.mjs" read/);
+  assert.match(stopLiteLlm, /stack-state\.mjs" clear/);
+  assert.match(stopLiteLlm, /litellmPid/);
+  // 只有可执行路径确属本项目 venv 的进程才允许结束，其余只报告。
+  assert.match(stopLiteLlm, /\*"\$project_root\/\.venv-litellm\/"\*litellm\*/);
+  assert.match(stopLiteLlm, /不属于本项目 LiteLLM/);
 });
 
 test('UI 关闭端点按平台执行受控的 PowerShell 或 shell 停止脚本', () => {

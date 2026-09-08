@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 # 非 -SkipApp 是已移除的 app 启动死分支（曾经硬编码 .cache 下私有 Node 拉起
 # standalone app，实际无人使用）；显式拒绝并引导调用方使用正确的启动入口。
@@ -22,8 +23,22 @@ if (-not $SkipApp) {
 $Root = Split-Path -Parent $PSScriptRoot
 $LogDir = Join-Path $Root 'storage\logs'
 $RunDir = Join-Path $Root 'storage\run'
-$stackFile = Join-Path $RunDir 'stack.json'
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
+
+# ── 共享端口/状态工具用 Node 执行:包内 node-runtime 优先,否则取 PATH(与 start-desktop-windows.ps1 一致)──
+$bundledNode = Join-Path $Root 'node-runtime\node.exe'
+if (Test-Path $bundledNode) {
+  $nodeExe = $bundledNode
+} else {
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $nodeCmd) {
+    Write-Host '未找到 Node.js,无法执行共享端口/状态工具。请安装 Node.js 22.x,或完整拷贝免安装包。' -ForegroundColor Red
+    exit 1
+  }
+  $nodeExe = $nodeCmd.Source
+}
+$portsTool = Join-Path $Root 'scripts\runtime\ports.mjs'
+$stackStateTool = Join-Path $Root 'scripts\runtime\stack-state.mjs'
 
 # 某些双击/受限 PowerShell 环境不会自动加载文件哈希 cmdlet 所在模块。
 # 直接使用 .NET，保证便携入口的完整性校验不依赖主机模块状态。
@@ -111,9 +126,14 @@ foreach ($f in $requiredFiles) {
 }
 
 # ── 已有受控 sidecar 且健康时直接复用（与 scripts/start-litellm.sh 语义一致）──
-if (Test-Path $stackFile) {
+$existingRaw = (& $nodeExe $stackStateTool read $Root) -join "`n"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "状态文件读取失败(退出码 $LASTEXITCODE): $stackStateTool" -ForegroundColor Red
+  exit 1
+}
+if ($existingRaw -and $existingRaw.Trim() -ne 'null') {
   try {
-    $existing = Get-Content $stackFile -Raw | ConvertFrom-Json
+    $existing = $existingRaw | ConvertFrom-Json
     $existingPid = [int]$existing.litellmPid
     $existingPort = [int]$existing.proxyPort
     if ($existingPid -gt 0 -and $existingPort -eq $ProxyPort -and
@@ -131,14 +151,23 @@ if (Test-Path $stackFile) {
 
 # ── 端口占用检查 ──
 foreach ($port in @($AppPort, $ProxyPort)) {
-  if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
+  $listenerPids = @(& $nodeExe $portsTool listeners $port)
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "端口探测失败(退出码 $LASTEXITCODE): $portsTool" -ForegroundColor Red
+    exit 1
+  }
+  if ($listenerPids.Count -gt 0) {
     Write-Host "端口 $port 已被占用。请先运行 一键停止.cmd（或 scripts\stop-stack.ps1）再启动。" -ForegroundColor Yellow
     exit 1
   }
 }
 
 # 只有端口确认空闲后才清理陈旧状态；若旧 sidecar 仍在运行，必须保留其停止依据。
-if (Test-Path $stackFile) { Remove-Item $stackFile -Force -ErrorAction SilentlyContinue }
+& $nodeExe $stackStateTool clear $Root
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "状态文件清理失败(退出码 $LASTEXITCODE): $stackStateTool" -ForegroundColor Red
+  exit 1
+}
 
 $started = @{}
 
@@ -188,7 +217,12 @@ try {
   $started.litellmInterpreter = $litellmInterpreter
   $started.stopScript = Join-Path $Root 'scripts\stop-stack.ps1'
   $started.startedAt = (Get-Date).ToString('s')
-  [System.IO.File]::WriteAllText($stackFile, ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
+  # 原子写(无 BOM)委托 stack-state.mjs:stdin 传 JSON,保留 litellmPid/proxyPort/appPort/
+  # litellmRuntime/litellmInterpreter/stopScript/startedAt 全部既有字段。
+  ($started | ConvertTo-Json) | & $nodeExe $stackStateTool write $Root
+  if ($LASTEXITCODE -ne 0) {
+    throw "stack.json 写入失败(退出码 $LASTEXITCODE): $stackStateTool"
+  }
   Write-Host "      公司网关组件就绪（代理 :$ProxyPort）"
   exit 0
 } catch {
@@ -197,6 +231,6 @@ try {
   if ($started.litellmPid) {
     Stop-Process -Id $started.litellmPid -Force -ErrorAction SilentlyContinue
   }
-  if (Test-Path $stackFile) { Remove-Item $stackFile -Force -ErrorAction SilentlyContinue }
+  & $nodeExe $stackStateTool clear $Root 2>$null
   exit 1
 }

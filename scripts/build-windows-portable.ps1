@@ -95,7 +95,11 @@ $runtimeScriptFiles = @(
   'start-litellm-proxy.py',
   'diagnose-local-env.mjs',
   'migrate-portable-data.ps1',
-  'migrate-portable-data.mjs'
+  'migrate-portable-data.mjs',
+  'runtime\ports.mjs',
+  'runtime\process-tree.mjs',
+  'runtime\stack-state.mjs',
+  'runtime\desktop-service.mjs'
 )
 $desktopPayloadFiles = @(
   'main.js',
@@ -130,6 +134,10 @@ $manifestKeyFiles = @(
   'LICENSE',
   'scripts/stop-stack.ps1',
   'scripts/stop-windows.ps1',
+  'scripts/runtime/ports.mjs',
+  'scripts/runtime/process-tree.mjs',
+  'scripts/runtime/stack-state.mjs',
+  'scripts/runtime/desktop-service.mjs',
   'scripts/migrate-portable-data.ps1',
   'scripts/migrate-portable-data.mjs',
   'scripts/diagnose-local-env.mjs',
@@ -248,6 +256,7 @@ try {
   New-Item -ItemType Directory -Force -Path (Join-Path $staging '.next') | Out-Null
   Copy-Item -LiteralPath (Join-Path $Root '.next\standalone') -Destination (Join-Path $staging '.next\standalone') -Recurse -Force
   New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts') | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts\runtime') | Out-Null
   foreach ($scriptName in $runtimeScriptFiles) {
     Copy-Item -LiteralPath (Join-Path $Root "scripts\$scriptName") -Destination (Join-Path $staging "scripts\$scriptName") -Force
   }

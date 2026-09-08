@@ -34,14 +34,14 @@ if ($nodeMajor -lt 20) {
   exit 1
 }
 
-$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($listener) {
-  $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+$listenerPids = @(& $node (Join-Path $ScriptDir 'runtime\ports.mjs') listeners $Port)
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "端口探测工具失败(退出码 $LASTEXITCODE): runtime\ports.mjs" -ForegroundColor Red
+  exit 1
+}
+if ($listenerPids.Count -gt 0) {
   Write-Host "端口 $Port 已被占用。" -ForegroundColor Yellow
-  if ($proc) {
-    Write-Host "PID: $($proc.ProcessId)"
-    Write-Host "CommandLine: $($proc.CommandLine)"
-  }
+  Write-Host "PID: $($listenerPids -join ', ')"
   Write-Host "如果这是本工作台，请先运行 stop-windows.cmd；如果要换端口，请运行："
   Write-Host '$env:BATCH_WORKBENCH_PORT=3001; .\start-windows.cmd'
   exit 1
