@@ -45,7 +45,7 @@ test('start-stack 在失败时清理本轮受控状态文件，避免残留 side
   assert.ok(portCheckStart >= 0 && staleCleanupStart > portCheckStart, '不能在端口预检前丢失旧 sidecar 状态');
 });
 
-test('-SkipApp 只要求公司 sidecar 文件，不把 standalone app 当成 sidecar 前置条件', () => {
+test('start-stack 只要求公司 sidecar 文件，不把 standalone app 当成 sidecar 前置条件', () => {
   const requiredFilesStart = startStack.indexOf('$requiredFiles =');
   const portCheckStart = startStack.indexOf('# ── 端口占用检查', requiredFilesStart);
   assert.ok(requiredFilesStart >= 0, '缺少必需文件列表');
@@ -54,9 +54,21 @@ test('-SkipApp 只要求公司 sidecar 文件，不把 standalone app 当成 sid
   assert.match(requiredFilesBlock, /\$litellmExe/);
   assert.doesNotMatch(requiredFilesBlock, /cloudflared/i);
   assert.match(requiredFilesBlock, /config\.yaml/);
-  assert.match(requiredFilesBlock, /if \(-not \$SkipApp\)/);
-  assert.match(requiredFilesBlock, /\$nodeExe/);
-  assert.match(requiredFilesBlock, /standalone.*server\.js/);
+  assert.doesNotMatch(
+    requiredFilesBlock,
+    /\$nodeExe|standalone|\.cache\\windows-installer/,
+    'start-stack 不得再把 standalone app 当作 sidecar 前置条件（非 SkipApp 死分支已移除）',
+  );
+});
+
+test('start-stack 不带 -SkipApp 必须显式拒绝并引导到正确的启动脚本', () => {
+  const guardStart = startStack.indexOf('if (-not $SkipApp) {');
+  assert.ok(guardStart >= 0, '缺少非 -SkipApp 显式拒绝守卫');
+  const guardBlock = startStack.slice(guardStart, guardStart + 400);
+  assert.match(guardBlock, /throw\s+['"]/, '非 -SkipApp 调用必须显式报错');
+  assert.match(guardBlock, /start-desktop-windows\.ps1/, '必须引导调用方使用 start-desktop-windows.ps1');
+  assert.doesNotMatch(startStack, /# ── 2\. 启动 app/, 'app 启动死分支已移除');
+  assert.doesNotMatch(startStack, /\.cache\\windows-installer/, '不得再硬编码 .cache 下私有 Node');
 });
 
 test('启动脚本健康检查只使用本机 LiteLLM，并且状态文件不含认证密钥', () => {
@@ -72,7 +84,7 @@ test('LiteLLM 启动参数明确绑定 loopback，不能回归到公网监听', 
   assert.doesNotMatch(startStack, /0\.0\.0\.0/);
 });
 
-test('LiteLLM 子进程启动前剥离六个代理变量，且只影响子进程（不清洗父 shell / Next）', () => {
+test('LiteLLM 子进程启动前剥离六个代理变量，且只影响子进程（恢复后不再剥离）', () => {
   const launchStart = startStack.indexOf('$env:LITELLM_LOCAL_MODEL_COST_MAP');
   const healthLoopStart = startStack.indexOf('$ok = $false', launchStart);
   assert.ok(launchStart >= 0 && healthLoopStart > launchStart, '缺少 LiteLLM 启动区块');
@@ -97,10 +109,10 @@ test('LiteLLM 子进程启动前剥离六个代理变量，且只影响子进程
   assert.ok(stripIdx > saveIdx, '必须先保存再剥离代理变量');
   assert.ok(spawnIdx > stripIdx, '代理变量剥离必须先于 LiteLLM 子进程启动');
   assert.ok(finallyIdx > spawnIdx && restoreIdx > finallyIdx, '恢复逻辑必须位于 finally 块，Start-Process 失败也不能弄丢调用方代理配置');
-  // 代理隔离只能作用于 LiteLLM 子进程；app（Next）仍按调用方环境继承
-  const appStart = startStack.indexOf('# ── 2. 启动 app');
-  assert.ok(appStart > launchStart, '缺少 app 启动区块');
-  assert.ok(!startStack.slice(appStart).includes(stripCall), '不得清洗 app 继承的代理变量');
+  // 剥离/恢复必须只包住 LiteLLM 子进程：恢复之后（含原 app 启动段，随死分支移除）
+  // 不得再出现剥离调用。
+  const afterRestore = startStack.slice(launchStart + restoreIdx + restoreCall.length);
+  assert.ok(!afterRestore.includes(stripCall), '恢复之后不得再次剥离代理变量');
 });
 
 test('公司健康 API 从 dataRoot 读取并明确禁止缓存', () => {

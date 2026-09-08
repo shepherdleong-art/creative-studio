@@ -1,8 +1,8 @@
 #!/bin/bash
-# 批量图片编辑工作台 — 关闭服务脚本
+# 产品素材工作台 — 关闭服务脚本
 # 双击此文件或在终端运行: bash stop.sh
 
-echo "🛑 正在关闭批量图片编辑工作台..."
+echo "🛑 正在关闭产品素材工作台..."
 
 # 查找并关闭 Next.js dev server 进程
 PIDS=$(lsof -ti :3000 2>/dev/null)

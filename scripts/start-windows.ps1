@@ -11,7 +11,7 @@ $Root = Split-Path -Parent $ScriptDir
 Set-Location $Root
 
 Write-Host '========================================'
-Write-Host '  批量图片编辑工作台 - Windows 启动器'
+Write-Host '  产品素材工作台 - Windows 启动器'
 Write-Host '========================================'
 Write-Host ''
 

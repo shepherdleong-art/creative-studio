@@ -31,7 +31,7 @@ function Get-Sha256Hex([string]$FilePath) {
 }
 
 Write-Host '========================================'
-Write-Host '  批量图片编辑工作台 - Windows 桌面版'
+Write-Host '  产品素材工作台 - Windows 桌面版'
 Write-Host '========================================'
 Write-Host ''
 

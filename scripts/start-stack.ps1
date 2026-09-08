@@ -1,4 +1,4 @@
-﻿# 一键启动：litellm 代理 + Creative Studio app
+﻿# 一键启动：公司网关 litellm 代理（只接受 -SkipApp；app 由调用方启动）
 # 停止用 scripts\stop-stack.ps1（或 一键停止.cmd）。
 # 代理仅监听 127.0.0.1；参考图公网交付走腾讯云 COS（CREATIVE_STUDIO_COS_*，见 lib/cos-media.ts）。
 param(
@@ -12,6 +12,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+
+# 非 -SkipApp 是已移除的 app 启动死分支（曾经硬编码 .cache 下私有 Node 拉起
+# standalone app，实际无人使用）；显式拒绝并引导调用方使用正确的启动入口。
+if (-not $SkipApp) {
+  throw 'start-stack.ps1 仅接受 -SkipApp（只启动公司网关 LiteLLM 代理）。启动 app 请改用 start-desktop-windows.ps1（桌面版）或 start-windows.ps1（网页版 dev server）。'
+}
 
 $Root = Split-Path -Parent $PSScriptRoot
 $LogDir = Join-Path $Root 'storage\logs'
@@ -99,20 +105,13 @@ if ($Portable) {
   $litellmInterpreter = $runtimePython
   $litellmArgs = @('scripts\start-litellm-proxy.py', '--config', 'config.yaml', '--host', '127.0.0.1', '--port', "$ProxyPort")
 }
-$nodeExe = Join-Path $Root '.cache\windows-installer\node-v22.22.3-win-x64\node.exe'
-$standaloneDir = Join-Path $Root '.next\standalone'
-
 $requiredFiles = @($litellmExe, (Join-Path $Root 'config.yaml'))
-if (-not $SkipApp) {
-  $requiredFiles += $nodeExe
-  $requiredFiles += (Join-Path $standaloneDir 'server.js')
-}
 foreach ($f in $requiredFiles) {
   if (-not (Test-Path $f)) { Write-Host "缺少文件: $f" -ForegroundColor Red; exit 1 }
 }
 
 # ── 已有受控 sidecar 且健康时直接复用（与 scripts/start-litellm.sh 语义一致）──
-if ($SkipApp -and (Test-Path $stackFile)) {
+if (Test-Path $stackFile) {
   try {
     $existing = Get-Content $stackFile -Raw | ConvertFrom-Json
     $existingPid = [int]$existing.litellmPid
@@ -145,7 +144,7 @@ $started = @{}
 
 try {
   # ── 1. litellm 代理 ──
-  Write-Host '[1/2] 启动 litellm 代理...'
+  Write-Host '[1/1] 启动 litellm 代理...'
   $env:PYTHONUTF8 = '1'
   # 离线加载模型价格表：避免启动时拉取 remote cost map 超时拖慢启动
   $env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
@@ -182,38 +181,7 @@ try {
   if (-not $ok) { throw "litellm 代理 60 秒内未就绪，查看 $LogDir\litellm.err.log" }
   Write-Host "      代理就绪: http://127.0.0.1:$ProxyPort"
 
-  # SkipApp 模式：只起代理，写好 stack.json 就退出（app 由调用方启动）
-  if ($SkipApp) {
-    $started.appPort = $AppPort
-    $started.proxyPort = $ProxyPort
-    $started.litellmRuntime = $litellmRuntimeKind
-    $started.litellmInterpreter = $litellmInterpreter
-    $started.stopScript = Join-Path $Root 'scripts\stop-stack.ps1'
-    $started.startedAt = (Get-Date).ToString('s')
-    [System.IO.File]::WriteAllText($stackFile, ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
-    Write-Host "      公司网关组件就绪（代理 :$ProxyPort）"
-    exit 0
-  }
-
-  # ── 2. 启动 app（环境变量随进程继承）──
-  Write-Host '[2/2] 启动 Creative Studio...'
-  $env:CREATIVE_STUDIO_DATA_ROOT = $Root
-  $appCmd = "`"$nodeExe`" server.js >> `"$LogDir\server.out.log`" 2>> `"$LogDir\server.err.log`""
-  $p = Start-Process cmd -ArgumentList '/c', "`"$appCmd`"" `
-    -WorkingDirectory $standaloneDir -WindowStyle Hidden -PassThru
-  $started.appCmdPid = $p.Id
-
-  $ok = $false
-  for ($i = 0; $i -lt 45; $i++) {
-    Start-Sleep -Seconds 2
-    try {
-      $r = Invoke-WebRequest -Uri "http://127.0.0.1:$AppPort/" -TimeoutSec 2 -UseBasicParsing
-      if ($r.StatusCode -eq 200) { $ok = $true; break }
-    } catch {}
-  }
-  if (-not $ok) { throw "app 90 秒内未就绪，查看 $LogDir\server.err.log" }
-
-  # ── 记录状态供停止脚本使用 ──
+  # 只起代理，写好 stack.json 就退出（app 由调用方启动）
   $started.appPort = $AppPort
   $started.proxyPort = $ProxyPort
   $started.litellmRuntime = $litellmRuntimeKind
@@ -221,19 +189,13 @@ try {
   $started.stopScript = Join-Path $Root 'scripts\stop-stack.ps1'
   $started.startedAt = (Get-Date).ToString('s')
   [System.IO.File]::WriteAllText($stackFile, ($started | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
-
-  Write-Host ''
-  Write-Host '========================================' -ForegroundColor Green
-  Write-Host '  全部就绪' -ForegroundColor Green
-  Write-Host "  工作台:   http://127.0.0.1:$AppPort"
-  Write-Host "  代理:     http://127.0.0.1:$ProxyPort"
-  Write-Host '  停止:     一键停止.cmd'
-  Write-Host '========================================' -ForegroundColor Green
+  Write-Host "      公司网关组件就绪（代理 :$ProxyPort）"
+  exit 0
 } catch {
   Write-Host "启动失败: $_" -ForegroundColor Red
   Write-Host '清理已启动的进程...'
-  foreach ($k in 'appCmdPid', 'litellmPid') {
-    if ($started[$k]) { Stop-Process -Id $started[$k] -Force -ErrorAction SilentlyContinue }
+  if ($started.litellmPid) {
+    Stop-Process -Id $started.litellmPid -Force -ErrorAction SilentlyContinue
   }
   if (Test-Path $stackFile) { Remove-Item $stackFile -Force -ErrorAction SilentlyContinue }
   exit 1
