@@ -142,7 +142,7 @@ Phase 1 不做 Node 单一实现，改为语言内收敛：PS 侧抽共享 `.psm
 | 阶段 | 状态 | 提交 | 备注 |
 |---|---|---|---|
 | Phase 0 | ✅ 完成 | 见 git log | 2026-09-08：start-installed.ps1 删除；start-stack.ps1 死分支移除+非 SkipApp 显式拒绝；旧产品名修正含 start.sh/stop.sh（README 引用、面向终端）；launcher.vbs / create-desktop-shortcut.ps1 属安装包剔除的历史/行为面文件，不动。既有环境性失败（与本次无关）：start-desktop/stop-desktop-command 契约测试的 Unix 可执行位断言在 Windows Checkout 恒失败；litellm-macos-startup 读本机 gitignored config.yaml 的断言失败 |
-| Phase 1 | 未开始 | | |
+| Phase 1 | ✅ 完成 | 3c843a9 + 4ba26b2 | 1a 共享工具+4 单测；1b Win/Mac 全部 delegate。补记：build-win-installer.ps1 必须随包装配 runtime 工具（已补，原文档遗漏）；desktop/service.ts 状态文件无 pid 字段 → desktop-service.mjs 的 killed 分支暂不可达，stop-windows.ps1 保留端口属主兜底强杀；stop.sh 仍内联 lsof（原 §二 漏计，实为 6 处），留 Phase 4 对齐 |
 | Phase 2 | 未开始 | | |
 | Phase 3 | 未开始 | | |
 | Phase 4 | 未开始 | | |
