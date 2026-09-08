@@ -60,9 +60,29 @@ assert.match(desktopService, /CREATIVE_STUDIO_DESKTOP: '1'/);
 assert.match(build, /node_modules\\ffmpeg-static\\ffmpeg\.exe/);
 assert.match(build, /node_modules\\ffprobe-static\\bin\\win32\\x64\\ffprobe\.exe/);
 assert.match(build, /dist-desktop.*-Include '\*\.map', '\*\.ts', '\*\.tsx'/s);
-for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.env.local', '.venv-litellm', 'python-runtime', 'config.yaml', 'litellm-config.yaml', '.git', '.claude', 'desktop']) {
-  assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
+// 禁入清单单一来源：安装脚本必须从 forbidden-paths.json 派生出三层清单，
+// 不得再硬编码重复清单（与 next.config.ts / build-mac-installer.sh 共用）。
+const forbiddenSpec = JSON.parse(read('scripts/packaging/forbidden-paths.json'));
+assert.equal(forbiddenSpec.version, 1, 'forbidden-paths.json schema version must be 1');
+assert.ok(/^[\x00-\x7F]*$/.test(read('scripts/packaging/forbidden-paths.json')), 'forbidden-paths.json 必须保持 ASCII-only（Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，非 ASCII 字节会破坏 ConvertFrom-Json）');
+for (const entry of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.env', '.env.*', '.claude', 'desktop', '.venv-litellm', 'config.yaml', 'litellm-config.yaml', 'python-runtime']) {
+  assert.ok(forbiddenSpec.core.includes(entry), `共享禁入清单缺少 ${entry}`);
 }
+const winPruneSpec = forbiddenSpec.consumers.windowsInstallerPrune;
+for (const extra of [
+  ...forbiddenSpec.consumers.installerPruneCommon.extra,
+  ...winPruneSpec.prunePayloadExtra,
+  ...winPruneSpec.pruneStandaloneExtra,
+  ...winPruneSpec.assertExtra,
+]) {
+  assert.ok(!forbiddenSpec.core.includes(extra), `windowsInstallerPrune 差集与 core 重叠：${extra}`);
+}
+assert.match(build, /Get-Content -LiteralPath \(Join-Path \$ScriptDir 'packaging\\forbidden-paths\.json'\) -Raw \| ConvertFrom-Json/, '安装脚本必须读取共享禁入清单 JSON');
+assert.match(build, /\$payloadPrunePaths = @\(\$ForbiddenPaths\.core\) \+ @\(\$ForbiddenPaths\.consumers\.installerPruneCommon\.extra\) \+ @\(\$ForbiddenPaths\.consumers\.windowsInstallerPrune\.prunePayloadExtra\)/, 'payload 根 prune 清单必须等于 core+installerPruneCommon+prunePayloadExtra');
+assert.match(build, /\$standalonePrunePaths = @\(\$ForbiddenPaths\.core\) \+ @\(\$ForbiddenPaths\.consumers\.windowsInstallerPrune\.pruneStandaloneExtra\)/, 'standalone 层 prune 清单必须等于 core+pruneStandaloneExtra');
+assert.match(build, /\$forbiddenAssertPaths = @\(\$ForbiddenPaths\.core\) \+ @\(\$ForbiddenPaths\.consumers\.windowsInstallerPrune\.assertExtra\)/, '最终断言清单必须等于 core+assertExtra');
+assert.doesNotMatch(build, /foreach \(\$relativePath in @\(\s*\r?\n\s*'data',/, '安装脚本不得再硬编码禁入清单数组');
+assert.doesNotMatch(build, /\$forbiddenPayload = @\(/, '安装脚本不得再硬编码最终断言数组');
 assert.doesNotMatch(build, /launcher\.cs|csc\.exe|Compile.*launcher/i, 'Windows packaging must not compile the legacy launcher');
 
 const launcher = read('installer/windows/launcher.cs');

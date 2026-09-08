@@ -173,7 +173,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示「是否已配置」，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
 - 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点不要打印请求头、密钥或完整鉴权串。
-- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/`；**改动打包逻辑时保留这些断言**。`python-runtime/` 只进 Windows 免安装包，不进 Git、Inno/DMG 安装包与 standalone。
+- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/`；**改动打包逻辑时保留这些断言**。禁入清单单一来源为 `scripts/packaging/forbidden-paths.json`（`next.config.ts`、`sync-standalone-assets.mjs`、`build-win-installer.ps1`、`build-mac-installer.sh` 及各自守护测试共用），改清单只改 JSON，且必须保持 ASCII-only（Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，非 ASCII 字节会破坏 `ConvertFrom-Json`）。`python-runtime/` 只进 Windows 免安装包，不进 Git、Inno/DMG 安装包与 standalone。
 - 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 
 ## 桌面打包与部署

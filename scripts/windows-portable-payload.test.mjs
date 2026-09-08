@@ -22,6 +22,11 @@ import { fileURLToPath } from 'node:url';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const buildScriptPath = path.join(root, 'scripts', 'build-windows-portable.ps1');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+// 免安装包是白名单制；其白名单明确排除的条目声明在共享禁入清单 JSON 的
+// portableWhitelistGuard.forbidden（config.yaml/.env.local/python-runtime/scripts 是允许例外）。
+const forbiddenSpec = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'packaging', 'forbidden-paths.json'), 'utf8'));
+assert.equal(forbiddenSpec.version, 1, 'forbidden-paths.json schema version must be 1');
+const portableForbidden = forbiddenSpec.consumers.portableWhitelistGuard.forbidden;
 
 function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
@@ -85,25 +90,15 @@ for (const runtimeScript of [
   assert.ok(build.includes(`'${runtimeScript}'`), `运行时脚本白名单缺少 ${runtimeScript}`);
 }
 
-// 明确排除本机状态与安装器产物
-for (const forbidden of [
-  "'.venv-litellm'",
-  "'data'",
-  "'storage'",
-  "'outputs'",
-  "'docs'",
-  "'.git'",
-  "'.cache'",
-  "'dist'",
-  "'installer'",
-]) {
-  assert.ok(build.includes(forbidden), `装配脚本必须显式排除 ${forbidden}`);
+// 明确排除本机状态与安装器产物（清单来自共享 forbidden-paths.json）
+for (const forbidden of portableForbidden) {
+  assert.ok(build.includes(`'${forbidden}'`), `装配脚本必须显式排除 ${forbidden}`);
 }
 // 白名单目录/文件清单本身不得夹带禁止项
 const dirsBlock = build.match(/\$whitelistDirs = @\(([\s\S]*?)\)\r?\n/);
 const filesBlock = build.match(/\$whitelistFiles = @\(([\s\S]*?)\)\r?\n/);
 assert.ok(dirsBlock && filesBlock, '必须存在显式白名单目录/文件清单');
-for (const forbidden of ['.venv-litellm', 'data', 'storage', 'outputs', 'docs', '.git', '.cache', 'dist', 'installer', 'desktop']) {
+for (const forbidden of portableForbidden) {
   assert.ok(!dirsBlock[1].includes(`'${forbidden}'`), `白名单目录不得包含 ${forbidden}`);
   assert.ok(!filesBlock[1].includes(`'${forbidden}'`), `白名单文件不得包含 ${forbidden}`);
 }
@@ -329,7 +324,7 @@ try {
   assert.ok(!fs.existsSync(path.join(output, 'scripts', 'probe-do-not-package.ts')), '开发/探针脚本不得进入免安装包');
   assert.ok(!fs.existsSync(path.join(output, 'dist-desktop', 'main.js.map')), '桌面壳 sourcemap 不得进入免安装包');
   assert.ok(!fs.existsSync(path.join(output, 'dist-desktop', 'stale.js')), '桌面壳历史残留产物不得进入免安装包');
-  for (const forbidden of ['.venv-litellm', 'data', 'storage', 'outputs', 'docs', '.git', '.cache', 'dist', 'desktop', 'installer']) {
+  for (const forbidden of portableForbidden) {
     assert.ok(!fs.existsSync(path.join(output, forbidden)), `成品不得包含 ${forbidden}`);
   }
 

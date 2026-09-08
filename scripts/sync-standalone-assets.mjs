@@ -1,8 +1,16 @@
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = process.cwd();
 const standaloneDir = join(root, '.next', 'standalone');
+
+const forbiddenPaths = JSON.parse(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), 'packaging', 'forbidden-paths.json'),
+    'utf8',
+  ),
+);
 
 function copyDirectory(source, destination) {
   if (!existsSync(source)) {
@@ -43,23 +51,11 @@ copyDirectory(join(root, 'node_modules', '@img'), join(standaloneDir, 'node_modu
 // Next output tracing can conservatively copy the project root when a route has
 // dynamic filesystem access. Strip local data, credentials and development
 // paths even if a stale standalone directory survived from an earlier build.
+// The forbidden list is shared with next.config.ts and both installer scripts
+// (scripts/packaging/forbidden-paths.json).
 const localOnlyRoots = [
-  '.cache',
-  'desktop',
-  'dist-desktop',
-  '.git',
-  '.venv-litellm',
-  'config.yaml',
-  'data',
-  'dist',
-  'docs',
-  'installer',
-  'litellm-config.yaml',
-  'node-runtime',
-  'outputs',
-  'python-runtime',
-  'scripts',
-  'storage',
+  ...forbiddenPaths.core,
+  ...forbiddenPaths.consumers.standaloneSyncPurge.extra,
 ];
 for (const relativePath of localOnlyRoots) {
   rmSync(join(standaloneDir, relativePath), { recursive: true, force: true });
