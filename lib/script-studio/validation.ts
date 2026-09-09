@@ -7,6 +7,7 @@ import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
 import type { LibraryRevisionView } from './libraries.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
 import { checkTitleEmbedding, type TitleEmbeddingCheck, type TitleEmbeddingContext } from './title-embedding.ts';
+import { checkScriptTitles, type ScriptTitleContext, type ScriptTitleIssue, type ScriptTitleSummary } from './title-policy.ts';
 import type { ScriptStudioScriptContent } from './types.ts';
 
 export interface ScriptValidationResult {
@@ -15,8 +16,9 @@ export interface ScriptValidationResult {
   content: ScriptStudioScriptContent;
   estimatedDurationSec: number;
   contentCharacterCount: number;
-  /** 启用埋词门禁时的判定明细（含实际命中的搜索词），用于人话化反馈。 */
+  /** 兼容字段：统计自然命中的搜索词，不再作为标题门禁。 */
   titleEmbedding?: TitleEmbeddingCheck;
+  titleIssues: ScriptTitleIssue[];
 }
 
 const DUPLICATE_THRESHOLD = 0.82;
@@ -49,8 +51,10 @@ export function validateScriptContent(
   input: ScriptStudioScriptContent,
   options: {
     libraryRevision: LibraryRevisionView;
-    siblingScripts?: Array<Pick<ScriptStudioScriptContent, 'fullScript'>>;
-    /** 冻结知识上下文的标题埋词约束；未提供或未匹配时不启用埋词门禁。 */
+    siblingScripts?: Array<Pick<ScriptStudioScriptContent, 'fullScript'> & ScriptTitleSummary>;
+    previousTitles?: ScriptTitleSummary[];
+    titleContext?: ScriptTitleContext;
+    /** 兼容旧调用方的搜索词统计上下文，不执行强制埋词。 */
     titleEmbeddingContext?: TitleEmbeddingContext;
   },
 ): ScriptValidationResult {
@@ -65,11 +69,12 @@ export function validateScriptContent(
   const fullScript = input.segments.map((segment) => segment.narration).join('\n').trim();
   const contentCharacterCount = countScriptContentCharacters(fullScript);
   const estimatedDurationSec = estimateNarrationDurationSec(contentCharacterCount);
-  if (!input.title.trim()) issues.push('title_required');
-  if (!input.coverTitleParts?.primary?.trim() || !input.coverTitleParts?.secondary?.trim()) {
-    issues.push('cover_title_required');
-  }
-  // 匹配知识库时启用标题埋词门禁：内部标题与封面标题组合各自满足统一名称+搜索词。
+  const titleIssues = checkScriptTitles(input, {
+    libraryRevision: options.libraryRevision,
+    context: options.titleContext,
+    previousTitles: [...(options.siblingScripts || []), ...(options.previousTitles || [])],
+  });
+  issues.push(...titleIssues.map((issue) => issue.code));
   let titleEmbedding: TitleEmbeddingCheck | undefined;
   if (options.titleEmbeddingContext) {
     titleEmbedding = checkTitleEmbedding(
@@ -124,6 +129,7 @@ export function validateScriptContent(
     content,
     estimatedDurationSec,
     contentCharacterCount,
+    titleIssues,
     ...(titleEmbedding ? { titleEmbedding } : {}),
   };
 }
@@ -136,26 +142,22 @@ export function validateScriptContent(
  */
 export function describeValidationIssues(
   issues: string[],
-  detail?: { searchTermsUsed?: string[] },
+  detail?: { searchTermsUsed?: string[]; titleIssues?: ScriptTitleIssue[] },
 ): string[] {
-  const used = (detail?.searchTermsUsed || []).filter(Boolean);
-  const usedText = used.length > 0 ? `（实际命中：${used.join('、')}）` : '';
   const staticMap: Record<string, string> = {
     title_required: '缺少内部标题',
     cover_title_required: '缺少封面主标题或副标题',
-    title_embedding_title_missing_name: '内部标题未包含知识库统一名称',
-    title_embedding_cover_missing_name: '封面主副标题合并后未包含知识库统一名称',
-    title_embedding_title_missing_search_term: '内部标题未包含知识库搜索词（需自然包含 1-2 个）',
-    title_embedding_cover_missing_search_term: '封面主副标题合并后未包含知识库搜索词（需自然包含 1-2 个）',
-    title_embedding_title_too_many_search_terms: `内部标题命中的搜索词超过 2 个${usedText}，请删减到 1-2 个并保留统一名称`,
-    title_embedding_cover_too_many_search_terms: `封面标题命中的搜索词超过 2 个${usedText}，请删减到 1-2 个并保留统一名称`,
+    duplicate_title: '脚本标题与同批或近期项目标题重复',
+    duplicate_cover_combo: '封面主副标题组合与同批或近期项目封面组合重复',
     duration_too_short: '口播字数不足，未达到目标时长',
     duration_too_long: '口播字数超出目标时长',
     duplicate_script: '与本次其他方案过于相似',
     selling_point_refs_required: '口播未引用任何已核验卖点',
     segments_required: '缺少口播分段',
   };
-  return issues.map((issue) => {
+  return [...new Set(issues)].map((issue) => {
+    const titleDetails = detail?.titleIssues?.filter((item) => item.code === issue);
+    if (titleDetails?.length) return titleDetails.map((item) => item.message).join("；");
     const mapped = staticMap[issue];
     if (mapped) return mapped;
     if (issue.startsWith('segment_empty:')) return '存在内容为空的分段';

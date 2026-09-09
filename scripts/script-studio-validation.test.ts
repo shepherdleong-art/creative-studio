@@ -109,4 +109,36 @@ const failedRefs = validateScriptContent(makeContent(['sp-failed-reopened']), { 
 assert.equal(failedRefs.ok, false);
 assert.ok(failedRefs.issues.some((issue) => issue.startsWith('unknown_selling_point:sp-failed-reopened')), '证据失败卖点即使被重新打开也不算合法引用');
 
+// 正文不同也必须单独检查标题和完整封面组合。
+const differentBody = { ...makeContent(['sp-ok']), fullScript: '另一段完全不同的正文' };
+const duplicateTitles = validateScriptContent(makeContent(['sp-ok']), {
+  libraryRevision: library,
+  siblingScripts: [differentBody],
+});
+assert.ok(duplicateTitles.issues.includes('duplicate_title'), '同标题不得因正文不同而通过');
+assert.ok(duplicateTitles.issues.includes('duplicate_cover_combo'), '封面主副标题组合必须独立去重');
+
+const samePrimaryDifferentSecondary = validateScriptContent({ ...makeContent(['sp-ok']), title: '方案甲篇', coverTitleParts: { primary: '舒适椅子', secondary: '靠背轻柔承托', source: 'model' } }, {
+  libraryRevision: library,
+  siblingScripts: [{ ...differentBody, title: '方案乙篇', coverTitleParts: { primary: '舒适椅子', secondary: '久坐不累' } }],
+});
+assert.equal(samePrimaryDifferentSecondary.issues.includes('duplicate_cover_combo'), false, '同商品展示名主标题配不同实质卖点应放行');
+
+const differentPrimarySameSecondary = validateScriptContent({ ...makeContent(['sp-ok']), title: '方案丙篇', coverTitleParts: { primary: '轻盈椅子', secondary: '久坐不累', source: 'model' } }, {
+  libraryRevision: library,
+  siblingScripts: [{ ...differentBody, title: '方案丁篇', coverTitleParts: { primary: '舒适椅子', secondary: '久坐不累' } }],
+});
+assert.equal(differentPrimarySameSecondary.issues.includes('duplicate_cover_combo'), false, '不同主标题配同副标题不等同于完整组合重复');
+
+const reorderedSecondary = validateScriptContent({ ...makeContent(['sp-ok']), title: '方案戊篇', coverTitleParts: { primary: '林氏摩卡沙发', secondary: '横厅高颜值隔断', source: 'model' } }, {
+  libraryRevision: library,
+  siblingScripts: [{ ...differentBody, title: '方案己篇', coverTitleParts: { primary: '林氏摩卡沙发', secondary: '横厅隔断高颜值' } }],
+});
+assert.ok(reorderedSecondary.issues.includes('duplicate_cover_combo'), '副标题词序调换也必须拦截');
+
+const modelOnly = validateScriptContent({ ...makeContent(['sp-ok']), title: 'BS001' }, {
+  libraryRevision: { ...library, productName: 'BS001' },
+});
+assert.equal(modelOnly.ok, false, '不得直接套用商品型号作为标题');
+
 console.log('script-studio-validation.test.ts: ok');

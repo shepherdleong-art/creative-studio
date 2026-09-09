@@ -187,6 +187,9 @@ export interface ScriptStudioScriptContent {
     normalizedModelKey: string | null;
     canonicalName: string | null;
     searchTermsUsed: string[];
+    /** 搜索词独立保留，旧版本可缺省，不参与封面强制条件。 */
+    searchTerms?: string[];
+    displayName?: string;
     sourceRows: Array<number | string>;
   };
   /** v4：推荐说明（框架/文案钩子/画面钩子）。 */

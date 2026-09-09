@@ -38,6 +38,8 @@ export interface FrozenTemplateContext {
 }
 
 export interface FrozenKnowledgeContext {
+  /** 新任务冻结查找商品的原始身份，旧快照继续使用 strategy.normalizedModelKey。 */
+  productIdentity?: { modelKey: string; submodel: string };
   strategy: FrozenStrategyContext;
   template: FrozenTemplateContext;
   recommendations: KnowledgePlanRecommendation[];
@@ -151,8 +153,10 @@ export function resolveKnowledgeContext(
     }
   }
 
+  const productIdentity = { modelKey: input.modelKey, submodel: input.submodel || '' };
   const fingerprint = createHash('sha256')
     .update(JSON.stringify({
+      productIdentity,
       strategy,
       template,
       recommendations,
@@ -160,11 +164,12 @@ export function resolveKnowledgeContext(
     }))
     .digest('hex');
 
-  return { strategy, template, recommendations, exclusions: input.exclusions, fingerprint };
+  return { productIdentity, strategy, template, recommendations, exclusions: input.exclusions, fingerprint };
 }
 
 export function serializeKnowledgeContext(context: FrozenKnowledgeContext): Record<string, unknown> {
   return {
+    ...(context.productIdentity ? { productIdentity: context.productIdentity } : {}),
     strategy: context.strategy,
     template: context.template,
     recommendations: context.recommendations,
@@ -185,7 +190,9 @@ export function parseKnowledgeContext(value: unknown): FrozenKnowledgeContext | 
   const exclusions = record.exclusions && typeof record.exclusions === 'object' && !Array.isArray(record.exclusions)
     ? record.exclusions as RecommendationExclusions
     : undefined;
+  const identity = record.productIdentity as FrozenKnowledgeContext['productIdentity'];
   return {
+    ...(identity && typeof identity.modelKey === 'string' && typeof identity.submodel === 'string' ? { productIdentity: identity } : {}),
     strategy,
     template,
     recommendations,

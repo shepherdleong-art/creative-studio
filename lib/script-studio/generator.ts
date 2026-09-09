@@ -5,7 +5,9 @@ import type { LibraryRevisionView } from './libraries.ts';
 import type { PlannedScript } from './planner.ts';
 import type { ScriptStudioCompleteJson } from './llm-contract.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
-import { embeddingRequirementText, checkTitleEmbedding, matchedSearchTerms, effectiveSearchTerms } from './title-embedding.ts';
+import { embeddingRequirementText, checkTitleEmbedding } from './title-embedding.ts';
+import { buildScriptTitleContext, scriptTitleRequirements, type ScriptTitleSummary, type ScriptTitleIssue } from './title-policy.ts';
+import { SCRIPT_TITLE_REPAIR_MAX_TOKENS } from './limits.ts';
 import type { FrozenKnowledgeContext } from './knowledge-context.ts';
 import type {
   ScriptStudioScriptContent,
@@ -23,10 +25,11 @@ export interface ScriptGeneratorInput {
   platform: string;
   creativeBrief: string;
   targetDurationSec: number;
-  previousScripts: Array<Pick<ScriptStudioScriptContent, 'fullScript'>>;
+  previousScripts: Array<Pick<ScriptStudioScriptContent, 'fullScript'> & ScriptTitleSummary>;
+  previousTitles?: ScriptTitleSummary[];
   signal?: AbortSignal;
   validationFeedback?: string[];
-  /** 任务创建时冻结的知识上下文；仅用于标题埋词与推荐说明，不扩大事实来源。 */
+  /** 任务创建时冻结的商品身份、搜索词与推荐说明，不扩大事实来源。 */
   knowledgeContext?: FrozenKnowledgeContext;
 }
 
@@ -50,7 +53,13 @@ export function briefCandidatePoints(input: ScriptGeneratorInput): SellingPointR
   return ordered;
 }
 
+export interface ScriptTitleRepairInput extends ScriptGeneratorInput {
+  content: ScriptStudioScriptContent;
+  titleIssues: ScriptTitleIssue[];
+}
+
 export interface ScriptGenerator {
+  repairTitles?(input: ScriptTitleRepairInput): Promise<unknown>;
   generate(input: ScriptGeneratorInput): Promise<{ content: ScriptStudioScriptContent; attempts: number }>;
 }
 
@@ -75,6 +84,7 @@ export function buildScriptPrompt(
 ): { systemPrompt: string; userPrompt: string } {
   const library = input.libraryRevision;
   const candidates = briefCandidatePoints(input);
+  const titleContext = buildScriptTitleContext(library, input.knowledgeContext);
   const requiredIds = new Set(input.brief.requiredPointIds);
   const budget = buildScriptDurationBudget(input.targetDurationSec);
   const requirements = [
@@ -82,6 +92,7 @@ export function buildScriptPrompt(
     '完整返回主标题、副标题、分段口播、画面意图与关键词',
     `口播总字数必须落在目标时长预算内（${budget.minContentCharacters}-${budget.maxContentCharacters} 字）`,
     '同一轮多条方案必须在开场、结构或卖点组合上明显不同',
+    ...scriptTitleRequirements(),
   ];
   const embeddingText = input.knowledgeContext
     ? embeddingRequirementText({
@@ -129,10 +140,14 @@ export function buildScriptPrompt(
     userPrompt: JSON.stringify({
       task: 'generate_project_script_v1',
       product: {
-        name: library.productName || '',
+        displayName: titleContext.displayName,
+        modelKeysForMatchingOnly: titleContext.modelKeys,
         category: library.category || '',
         brand: library.brand || '',
       },
+      searchContext: { terms: titleContext.searchTerms, usage: '独立搜索话题，不作为标题或事实证据' },
+      previousScripts: input.previousScripts,
+      previousTitles: input.previousTitles || [],
       audience: input.audience,
       tone: input.tone,
       platform: input.platform,
@@ -151,10 +166,10 @@ export function buildScriptPrompt(
       })),
       targetDurationSec: input.targetDurationSec,
       output: {
-        title: 'string；4-16 字方案名',
+        title: 'string；4-16 字，具体卖点或场景',
         coverTitleParts: {
-          primary: 'string；4-12 字，包含具体产品品类',
-          secondary: 'string；4-10 字，场景向往或购买理由',
+          primary: 'string；4-12 字，可用展示商品名称或本方案核心卖点',
+          secondary: 'string；4-10 字，本方案具体卖点、场景或购买理由',
         },
         direction: 'string；20 字以内的切入角度摘要',
         segments: [{
@@ -174,11 +189,36 @@ export function buildScriptPrompt(
   };
 }
 
+/** 只请求不合格标题，正文与证据作为只读上下文；响应由服务端字段白名单应用。 */
+export function buildScriptTitleRepairPrompt(input: ScriptTitleRepairInput): { systemPrompt: string; userPrompt: string } {
+  const referenced = new Set(input.content.segments.flatMap((segment) => segment.sellingPointIdRefs));
+  return {
+    systemPrompt: '你是电商短视频标题编辑。只返回包含待修复标题字段的 JSON 对象。正文、字幕、卖点引用和时长已经确定，禁止修改。',
+    userPrompt: JSON.stringify({
+      task: 'repair_project_script_titles_v1',
+      product: buildScriptTitleContext(input.libraryRevision, input.knowledgeContext),
+      direction: input.plan.angle,
+      audience: input.audience,
+      platform: input.platform,
+      tone: input.tone,
+      currentTitles: { title: input.content.title, coverTitleParts: input.content.coverTitleParts },
+      fieldsToRepair: [...new Set(input.titleIssues.map((issue) => issue.field))],
+      issues: input.titleIssues,
+      previousTitles: [...input.previousScripts.map(({ title, coverTitleParts }) => ({ title, coverTitleParts })), ...(input.previousTitles || [])],
+      readonlyFullScript: input.content.fullScript,
+      verifiedFacts: briefCandidatePoints(input).filter((point) => referenced.has(point.id))
+        .map((point) => ({ id: point.id, factText: point.factText, evidenceQuote: point.evidenceQuote })),
+      requirements: scriptTitleRequirements(),
+      output: { title: '仅在需要修复时返回', coverTitleParts: { primary: '仅在需要修复时返回', secondary: '仅在需要修复时返回' } },
+    }),
+  };
+}
+
 function parseCoverParts(raw: Record<string, unknown>): { primary: string; secondary: string } {
   const cover = asRecord(raw.coverTitleParts);
   const primary = asString(cover.primary);
   const secondary = asString(cover.secondary);
-  if (!primary || !secondary) throw new Error('generated_script_cover_title_invalid');
+  // 标题缺失交给标题修复，不为此重新生成已合格的正文。
   return { primary, secondary };
 }
 
@@ -261,7 +301,7 @@ export function normalizeGeneratedScript(
   const recommendation = input.plan.recommendation;
   return {
     version: 4,
-    title: asString(record.title) || `${input.libraryRevision.productName || '产品'}口播方案`,
+    title: asString(record.title),
     coverTitleParts: {
       ...coverTitleParts,
       source: 'model',
@@ -293,6 +333,8 @@ export function normalizeGeneratedScript(
           strategyRevisionId: strategy!.strategyCatalogRevisionId,
           normalizedModelKey: strategy!.normalizedModelKey,
           canonicalName: strategy!.canonicalName,
+          displayName: buildScriptTitleContext(input.libraryRevision, knowledgeContext).displayName,
+          searchTerms: buildScriptTitleContext(input.libraryRevision, knowledgeContext).searchTerms,
           searchTermsUsed: embedding?.searchTermsUsed ?? [],
           sourceRows: strategy!.sourceRows ?? [],
         }
@@ -336,6 +378,10 @@ export function createScriptGenerator(
   options: { maxTokens?: number } = {},
 ): ScriptGenerator {
   return {
+    async repairTitles(input) {
+      const prompt = buildScriptTitleRepairPrompt(input);
+      return completeJson({ ...prompt, temperature: 1, maxTokens: SCRIPT_TITLE_REPAIR_MAX_TOKENS, signal: input.signal });
+    },
     async generate(input) {
       // 方向编排不可绕过：缺少 brief 直接失败，不得回退完整卖点库。
       if (!input.brief) throw new Error('script_generation_direction_brief_required');
@@ -398,18 +444,10 @@ export function buildDeterministicFallbackScript(
   contentCharacterCount = countScriptContentCharacters(fullScript);
   const knowledgeContext = input.knowledgeContext;
   const strategy = knowledgeContext?.strategy;
-  const matched = strategy?.matchStatus === 'matched';
-  const canonicalName = matched ? (strategy!.canonicalName || '') : '';
-  const searchTerms = matched ? (strategy!.searchTerms || []) : [];
-  // 词表可能残留无语义项（如孤立 “#”），兜底只从有效词里取，保证落库内容自身能过埋词门禁。
-  const usedSearchTerm = effectiveSearchTerms(searchTerms)[0] || '';
-  // 内部标题必须同时含统一名称与至少一个搜索词；统一名称已含搜索词时直接使用。
-  const titleIncludesTerm = matchedSearchTerms(canonicalName, searchTerms).length > 0;
-  const title = canonicalName
-    ? (titleIncludesTerm ? canonicalName : `${canonicalName}｜${usedSearchTerm}`)
-    : `${input.libraryRevision.productName || '产品'}口播方案`;
-  const coverPrimary = canonicalName ? `${canonicalName}优选` : `${input.libraryRevision.category || '产品'}优选`;
-  const coverSecondary = usedSearchTerm || '真实细节更可信';
+  // 本地兜底也从当前方向与已核验卖点取标题，不拼接型号和搜索词。
+  const title = `${input.plan.angle.slice(0, 8)}${selectedPool[0]!.title.slice(0, 8)}`;
+  const coverPrimary = `${selectedPool[0]!.title}${input.plan.angle.slice(0, 4)}`.slice(0, 12);
+  const coverSecondary = '看看这些真实细节';
   const recommendation = input.plan.recommendation;
   return {
     version: 4,
@@ -449,7 +487,9 @@ export function buildDeterministicFallbackScript(
           strategyRevisionId: strategy!.strategyCatalogRevisionId,
           normalizedModelKey: strategy!.normalizedModelKey,
           canonicalName: strategy!.canonicalName,
-          searchTermsUsed: matched ? (usedSearchTerm ? [usedSearchTerm] : []) : [],
+          displayName: buildScriptTitleContext(input.libraryRevision, knowledgeContext).displayName,
+          searchTerms: buildScriptTitleContext(input.libraryRevision, knowledgeContext).searchTerms,
+          searchTermsUsed: [],
           sourceRows: strategy!.sourceRows ?? [],
         }
       : undefined,

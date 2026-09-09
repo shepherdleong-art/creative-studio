@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import {
+  comparePageIdentities,
   findCrossProductConflict,
   isSameProductName,
   normalizeIdentityField,
+  sharedNumberedSourceStem,
 } from '../lib/script-studio/page-identity.ts';
 
 // normalizeIdentityField：忽略大小写、空格与标点，只留字母数字。
@@ -34,6 +36,44 @@ assert.equal(isSameProductName('pc615床', 'pc669床'), false);
 const page = (pageIndex: number, productName: string, category = '', brand = '') => ({
   pageIndex, productName, category, brand,
 });
+
+// 真实两段详情页：产品名与品牌 + 品类泛称，不足以证明跨商品。
+assert.equal(findCrossProductConflict([
+  page(0, '摩卡沙发', '沙发', '林氏'),
+  page(1, '林氏沙发', '沙发', '林氏家居'),
+]), null);
+
+const splitSourcePages = [
+  { pageIndex: 0, filename: '20260909-203732.872-2.jpg' },
+  { pageIndex: 1, filename: '20260909-203732.872-14.jpg' },
+];
+assert.equal(sharedNumberedSourceStem(splitSourcePages[0]!.filename, splitSourcePages[1]!.filename), '20260909-203732.872');
+assert.equal(comparePageIdentities(
+  page(0, '摩卡沙发', '沙发', '林氏'),
+  page(1, '林氏沙发', '沙发', '林氏家居'),
+  { sourcePages: splitSourcePages },
+).verdict, 'unknown');
+// 同一编号主干可以解释名称差异，但不覆盖模型明确报告的不同型号。
+assert.ok(findCrossProductConflict([
+  page(0, 'PC615真皮床', '床', '林氏家居'),
+  page(1, 'PC669真皮床', '床', '林氏家居'),
+], { sourcePages: splitSourcePages }));
+assert.ok(findCrossProductConflict([
+  page(0, '摩卡沙发', '沙发', '林氏'),
+  page(1, '布艺沙发', '沙发', '全友'),
+], { sourcePages: splitSourcePages }), '明确不同品牌仍须拦截，不能被文件名覆盖');
+assert.ok(findCrossProductConflict([
+  page(0, '摩卡沙发', '沙发', '林氏家居'),
+  page(1, '黑森林沙发', '沙发', '林氏家居'),
+], { sourcePages: splitSourcePages }), '同主干也不能覆盖两个具体系列名称冲突');
+// 通用文件前缀和相同扩展名不构成分段身份。
+assert.equal(sharedNumberedSourceStem('image-1.jpg', 'image-2.jpg'), null);
+
+// 共同的品牌/描述不能盖过两个明确且不同的型号。
+assert.ok(findCrossProductConflict([
+  page(0, '林氏家居PC615真皮储物床', '床', '林氏家居'),
+  page(1, '林氏家居PC669真皮储物床', '床', '林氏家居'),
+]));
 
 // 同一产品两页：名称包含关系 + 品类/品牌措辞不一致 → 不冲突（本次线上误报场景）。
 assert.equal(findCrossProductConflict([

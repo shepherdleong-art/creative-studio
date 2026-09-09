@@ -17,7 +17,10 @@ import {
 // v8：标题埋词计数口径变更（有效词过滤 + 同词根包含去重）与校验反馈人话化。
 // v9：跨商品保护判定口径变更——只把「商品名都识别出来且明显不同」当作冲突，
 // 消除同一产品多页详情图逐页提取措辞差异造成的误阻断。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 9;
+// v10：型号/展示名称/搜索词分离，项目近期标题去重与仅标题有界修复。
+// v11：跨页身份判定结合来源集分段文件名与品牌/品类/型号证据，且提取失败保留诊断载荷。
+// v12：封面主副标题按完整组合去重，允许展示名称主标题复用，并拦截副标题词序调换。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 12;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 
