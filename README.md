@@ -127,7 +127,7 @@ LiteLLM 运行时有两种形态，不要混淆：
 start-windows.cmd
 ```
 
-启动脚本（`scripts/start-desktop-windows.ps1`）会检查 Node.js、安装依赖、（组件齐备时拉起公司网关代理）、缺少 standalone 产物时先执行生产构建，然后启动 Electron 桌面壳；壳内私有服务监听 `127.0.0.1` 随机端口，不占用 3000。代码更新后用 `start-windows.cmd -Rebuild` 强制重建。桌面版从应用菜单「退出」即可结束后台任务。
+启动脚本（`scripts/start-desktop-windows.ps1`）会检查 Node.js、安装依赖、（组件齐备时拉起公司网关代理）、缺少 standalone 产物时先执行生产构建，然后启动 Electron 桌面壳；壳内私有服务监听 `127.0.0.1` 随机端口，不占用 3000。启动时会自动比对构建戳（`.next/standalone/.build-stamp`）与源码改动，发现更新即自动重建（依赖清单变化会先 `npm ci`），`start-windows.cmd -Rebuild` 仍可强制重建。桌面版从应用菜单「退出」即可结束后台任务。
 
 如需网页版（dev server + 浏览器，默认 http://127.0.0.1:3000），运行：
 

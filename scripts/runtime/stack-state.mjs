@@ -131,7 +131,9 @@ function main() {
     return;
   }
   if (command === 'write') {
-    const text = fs.readFileSync(0, 'utf8');
+    // 剥离 BOM：PowerShell 管道按 $OutputEncoding 写 stdin，UTF8Encoding 默认构造带 BOM，
+    // JSON.parse 不接受 \uFEFF 前缀（与 readStackState 的 BOM 容忍对齐）。
+    const text = fs.readFileSync(0, 'utf8').replace(/^\uFEFF/, '');
     let parsed;
     try {
       parsed = JSON.parse(text);

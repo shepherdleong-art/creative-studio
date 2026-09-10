@@ -9,6 +9,8 @@ import path from 'path';
 import fs from 'fs';
 import { dataRoot } from './data-root.ts';
 import { ensureBrowserPreview } from './video-browser-preview.ts';
+import { resolveVideoJobDisplayNames } from './video-output-filenames.ts';
+import { writeVideoOutputFile } from './video-output-storage.ts';
 import { resolveVideoPollingTimeoutMs } from './video-polling-policy.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { videoMultiShotFromStorage } from './video-multi-shot.ts';
@@ -445,9 +447,8 @@ async function runVideoJob(
         const videosDir = path.join(dataRoot(), 'storage', 'videos');
         if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
-        const videoFilename = `video-${job.id.slice(0, 8)}-${Date.now()}.mp4`;
-        const videoPath = path.join(videosDir, videoFilename);
-        fs.writeFileSync(videoPath, videoBuffer);
+        const displayName = resolveVideoJobDisplayNames(db, [job.id]).get(job.id) || '未命名视频.mp4';
+        const { filename: videoFilename, videoPath } = writeVideoOutputFile(videosDir, displayName, videoBuffer);
 
         // HEVC/10bit 产物（如 Seedance 2.5 1080p）浏览器放不动：先就地生成
         // H.264 预览衍生物再标记完成。内部已全兜底（失败回退原件），不会阻断任务。

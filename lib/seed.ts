@@ -327,10 +327,10 @@ export function seedVideoProviders() {
 }
 
 /**
- * 公司视频供应商（可灵 3.0 / 即梦 Seedance 2.0 Fast / 即梦 Seedance 2.5，经本机
+ * 公司视频供应商（腾讯/七牛可灵 3.0 / 即梦 Seedance 2.0 Fast / 即梦 Seedance 2.5，经本机
  * LiteLLM）开箱即用补种。
  * 别名必须与 config.yaml 的 model_name 一致；尾帧 allowlist 见
- * lib/company-gateway-tail-frame.ts（Seedance 2.5 尾帧未经真实任务核验，不在其列）。
+ * lib/company-gateway-tail-frame.ts，各渠道协议与验证记录见 docs/reference/公司网关与COS中转.md。
  * 只在 canonical ID 缺失时插入；同模型的手工/公网
  * 配置仍可并存，且已有 canonical 行的用户配置不会被覆盖。
  */
@@ -341,6 +341,12 @@ function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
       name: '公司可灵 3.0',
       modelEnv: 'COMPANY_KLING_VIDEO_MODEL',
       defaultModel: 'kling-3.0',
+    },
+    {
+      id: 'company-qiniuyun-kling-3-0',
+      name: '公司七牛可灵 3.0',
+      modelEnv: 'COMPANY_QINIUYUN_KLING_VIDEO_MODEL',
+      defaultModel: 'qiniuyun/kling-3.0',
     },
     {
       id: 'company-seedance-2-0-fast',

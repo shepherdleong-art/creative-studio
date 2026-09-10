@@ -104,6 +104,9 @@ export function companyImageCapsForModel(model: string): CompanyModelCaps | null
 
 /** 返回视频模型在公司网关的能力约束；非公司视频模型返回 null */
 export function companyVideoCapsForModel(model: string): CompanyModelCaps | null {
+  // 七牛普通 v3：2026-09-10 公司通道实测 size=1024x1366 → 1244x1660，
+  // 不带 size 仅出 828x1108；固定 1K 名义档映射到上游 1080P，不套用腾讯尾帧字段。
+  if (model === 'qiniuyun/kling-3.0') return { tiers: ['1K'], ratios: ['3:4', '4:3', '16:9', '9:16'] };
   const m = model.toLowerCase();
   if (m.includes('kling') && m.includes('omni')) return KLING_OMNI_CAPS;
   // 文档只列了 Kling 3.0 系列的尺寸组合；其余 kling 型号按同一表做最大努力

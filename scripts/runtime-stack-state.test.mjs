@@ -98,6 +98,21 @@ assert.deepEqual(
 assert.equal(normalizeStackState(null), null, '非对象输入返回 null');
 assert.equal(normalizeStackState('text'), null);
 
+// CLI 回归：PowerShell 管道按 $OutputEncoding 写 stdin 可能带 UTF-8 BOM，write 必须容忍。
+{
+  const { spawnSync } = await import('node:child_process');
+  const toolPath = path.join(import.meta.dirname, 'runtime', 'stack-state.mjs');
+  const result = spawnSync(process.execPath, [toolPath, 'write', dir], {
+    input: '﻿{"litellmPid":123,"proxyPort":4000}',
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `带 BOM 的 stdin 写入应成功: ${result.stderr}`);
+  const written = readStackState(dir);
+  assert.equal(written.litellmPid, 123);
+  assert.equal(written.proxyPort, 4000);
+  clearStackState(dir);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 
 console.log('runtime stack-state test passed');

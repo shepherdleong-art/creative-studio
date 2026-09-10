@@ -18,6 +18,11 @@ assert.equal(companyImageCapsForModel('nano-banana-2.5'), null);
 
 assert.ok(companyVideoCapsForModel('kling-3.0'));
 assert.ok(companyVideoCapsForModel('kling-3.0-Omni'));
+const qiniuKlingCaps = companyVideoCapsForModel('qiniuyun/kling-3.0');
+assert.ok(qiniuKlingCaps);
+assert.equal(snapCompanyVideoSize(1728, 2304, qiniuKlingCaps), '1024x1366');
+assert.equal(snapCompanyVideoSize(768, 432, qiniuKlingCaps), '1820x1024');
+assert.equal(companyVideoCapsForModel('qiniuyun/kling-3.0-fast'), null);
 // seedance 省略 size（上游对 Kling 表尺寸 400），由网关按首帧默认处理
 assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-260128'), null);
 assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-fast-260128'), null);

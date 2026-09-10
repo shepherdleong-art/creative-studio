@@ -25,6 +25,13 @@ model_list:
       # extra_body:
       #   size: "2K"                        # 即梦的 2K 写法
 
+  # 公司七牛可灵 3.0：与现有公司模型使用同一公司网关地址和 Key，不能改为七牛直连。
+  - model_name: qiniuyun/kling-3.0
+    litellm_params:
+      model: openai/qiniuyun/kling-3.0
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
   # ── 聊天模型同理，例如 ──
   # - model_name: my-gpt
   #   litellm_params:

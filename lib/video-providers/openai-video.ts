@@ -61,6 +61,10 @@ function normalizeGatewayStatus(raw: string | undefined): PollVideoResult['statu
   if (!raw) return 'unknown';
   switch (raw.toLowerCase()) {
     case 'queued': return 'pending';
+    case 'initializing': return 'pending';
+    case 'in_progress':
+    case 'downloading':
+    case 'uploading':
     case 'processing': return 'processing';
     case 'completed': return 'succeeded';
     case 'failed':
@@ -112,6 +116,10 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
   ): Promise<SubmitVideoResult> {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos`;
+    const isQiniuKling = request.model === 'qiniuyun/kling-3.0';
+    if (isQiniuKling && (!Number.isInteger(request.durationSec) || request.durationSec < 3 || request.durationSec > 15)) {
+      throw new Error('七牛可灵 3.0 视频时长必须为 3–15 秒的整数');
+    }
 
     const hasTailImagePath = request.tailImagePath !== undefined;
     const hasTailMimeType = request.tailMimeType !== undefined;
@@ -122,6 +130,8 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     if (tailCapability && !tailCapability.supported) {
       throw new Error(`模型 ${request.model} 不支持首尾帧（不在公司网关尾帧已核验别名内），请移除尾帧图或更换模型`);
     }
+    // 新七牛渠道只经本机 LiteLLM + COS；单首帧也不得回退外部/本机图片 URL。
+    if (isQiniuKling && !hasTailImagePath) await assertCompanyTailFrameTransport(cleanBase);
 
     // 网关的 images 字段映射到上游首帧/参考图。上游（腾讯等）只接受可访问的真实 URL。
     // 优先上传腾讯云 COS 返回 24h 预签名 URL（配置 CREATIVE_STUDIO_COS_* 时）；
@@ -147,10 +157,12 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
           getCosVideoCompressOptions(),
         );
       } catch (error) {
+        if (isQiniuKling) throw new Error('七牛可灵首帧上传 COS 失败，任务未提交');
         console.warn('[cos-media] 首帧图上传 COS 失败，回退本机 URL：', error instanceof Error ? error.message : error);
       }
     }
     if (!imageRef) {
+      if (isQiniuKling) throw new Error('七牛可灵首帧上传 COS 未返回可用地址，任务未提交');
       const imageResolution = resolvePublicImageUrlWithSource(request.sourceImagePath);
       if (
         !imageResolution
@@ -185,12 +197,21 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     if (tailProtocol === 'company-gateway-kling') {
       body.LastFrameUrl = tailImageRef;
     }
+    if (tailProtocol === 'company-gateway-qiniuyun-kling') {
+      body.end_image_url = tailImageRef;
+    }
+    if (isQiniuKling) {
+      body.mode = 'pro';
+      body.generate_audio = true;
+      // 显式关闭需要保留 false；此渠道不使用与 prompt 互斥的 multi_prompt。
+      body.multi_shot = shouldInjectCompanyKlingMultiShot(request.model, request.multiShot);
+    }
 
     // 公司网关可灵 3.0 智能分镜：只接受精确模型名，且显式 false 必须关闭。
     // 网关协议里 multi_shot 是 JSON boolean（原生直连接口是字符串 "true"）。
     if (shouldInjectCompanyKlingMultiShot(request.model, request.multiShot)) {
       body.multi_shot = true;
-      body.shot_type = 'intelligence';
+      body.shot_type = isQiniuKling ? 'intelligent' : 'intelligence';
     }
 
     // 公司网关可灵要求 response_format=mp4，size 取文档白名单内的像素组合
@@ -207,6 +228,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         body.response_format = 'mp4';
       }
       const sourceDims = await probeImageDimensions(request.sourceImagePath);
+      if (isQiniuKling && !sourceDims) throw new Error('无法读取七牛可灵首帧尺寸，不能确定 1080P 输出比例，任务未提交');
       if (tailProtocol === 'company-gateway-kling') {
         const aspectRatio = sourceDims
           ? snapCompanyVideoAspectRatio(sourceDims.width, sourceDims.height, companyCaps)

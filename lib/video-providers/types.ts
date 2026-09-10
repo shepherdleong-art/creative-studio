@@ -1,6 +1,7 @@
 export type TailFrameProtocol =
   | 'ark-content-roles'
   | 'company-gateway-kling'
+  | 'company-gateway-qiniuyun-kling'
   | 'company-gateway-seedance';
 
 export interface TailFrameCapability {
@@ -17,7 +18,7 @@ export interface SubmitVideoRequest {
   tailImagePath?: string;
   tailMimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
   durationSec: number;
-  /** Company gateway Kling 3.0 intelligent storyboard; omitted for other jobs. */
+  /** Company Tencent/Qiniu Kling 3.0 intelligent storyboard; omitted for other jobs. */
   multiShot?: boolean;
 }
 

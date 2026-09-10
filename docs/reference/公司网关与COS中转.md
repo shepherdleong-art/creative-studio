@@ -37,6 +37,8 @@ macOS 启动器只对 LiteLLM 子进程清除大小写两套 `HTTP_PROXY` / `HTT
 
 ## 红线（这几条同时留在 AGENTS.md）
 
+七牛可灵 `qiniuyun/kling-3.0` 通过本机 LiteLLM + 公司 `/v1/videos`：`images[0]` 首帧、`end_image_url` 尾帧；Pro 默认配公司 1K 名义 `size`（3:4 实测 `1024x1366` → `1244x1660`），单提示词智能分镜用 `multi_shot=true` + `shot_type=intelligent`，关闭显式 false，不传 `multi_prompt`。精确分支与首尾帧/清晰度证据见 [2026-09-10 验证记录](../2026-09-10-七牛Kling-v3公司通道首尾帧验证.md)。
+
 - 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 - COS 密钥只在 `.env.local`，签名参数绝不进日志。
 - 公司尾帧必须走本机 LiteLLM + 两帧都用 COS 预签名 URL；任一 gate 或上传失败必须在 POST 前 fail closed。

@@ -25,23 +25,15 @@ const generateEnd = panel.indexOf('const handleOpenBulkDrawer', generateStart);
 assert.notEqual(generateStart, -1, '面板必须提供全部生成动作');
 assert.notEqual(generateEnd, -1, '全部生成动作必须有明确的结束边界');
 const generateBlock = panel.slice(generateStart, generateEnd);
-const confirmIndex = generateBlock.indexOf('bulkConfirmText');
-const fetchIndex = generateBlock.indexOf("video-jobs/batch");
-assert.notEqual(confirmIndex, -1, '批量提交前必须有确认关口');
-assert.notEqual(fetchIndex, -1, '批量生成必须调用现有按分镜 batch 接口');
-assert.ok(confirmIndex < fetchIndex, '确认关口必须出现在批量请求之前');
+assert.match(generateBlock, /video-jobs\/batch/);
+assert.doesNotMatch(generateBlock, /bulkConfirmText|BULK_CONFIRM_THRESHOLD/, '全部生成应单击提交');
+assert.match(generateBlock, /if \(failures.length === 0\) setBulkDrawerOpen\(false\)/, '提交成功后关闭弹窗');
 assert.doesNotMatch(
   generateBlock,
   /window\.confirm/,
   '批量确认不得用 window.confirm：同步原生弹窗会吞掉 mouseup，之后原生 select 下拉点不开，必须切走再切回应用才恢复',
 );
 assert.match(generateBlock, /setBulkStatus/);
-assert.match(generateBlock, /BULK_CONFIRM_THRESHOLD/);
-assert.match(
-  generateBlock,
-  /safeShots\.length >= BULK_CONFIRM_THRESHOLD[\s\S]*plan\.totalClips >= BULK_CONFIRM_THRESHOLD/,
-  '批量确认必须同时覆盖分镜少但提交条数多的情况',
-);
 assert.doesNotMatch(generateBlock, /\balert\s*\(/, '批量结果不得用 alert 短暂弹出');
 
 const toolbarStart = panel.indexOf('className="video-bulk-toolbar"');

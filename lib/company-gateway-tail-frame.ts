@@ -45,6 +45,8 @@ import type { TailFrameCapability, TailFrameProtocol } from './video-providers/t
 /** 卡 0 核验的精确模型别名 → 尾帧协议；禁止宽泛正则，新增别名需独立证据 */
 const COMPANY_TAIL_FRAME_MODEL_PROTOCOLS: Record<string, TailFrameProtocol> = {
   'kling-3.0': 'company-gateway-kling',
+  // 2026-09-10 真实任务：images[0] 首帧 + end_image_url 尾帧；见当日验证记录。
+  'qiniuyun/kling-3.0': 'company-gateway-qiniuyun-kling',
   'doubao-seedance-2-0-260128': 'company-gateway-seedance',
   'doubao-seedance-2-0-fast-260128': 'company-gateway-seedance',
   'doubao-seedance-2-5-260628': 'company-gateway-seedance',

@@ -1,6 +1,7 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeBuildStamp } from './runtime/build-stamp.mjs';
 
 const root = process.cwd();
 const standaloneDir = join(root, '.next', 'standalone');
@@ -81,5 +82,9 @@ for (const entry of readdirSync(standaloneDir)) {
     throw new Error(`Standalone output contains forbidden credential file: ${entry}`);
   }
 }
+
+// All payload checks passed: the build is complete, so stamp the newest source
+// mtime for the desktop launcher to compare against on the next start.
+writeBuildStamp(root, join(standaloneDir, '.build-stamp'));
 
 console.log('Standalone static assets synced.');

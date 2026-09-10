@@ -287,6 +287,12 @@ try {
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('kling-3.0'), {
     supported: true, protocol: 'company-gateway-kling',
   });
+  assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('qiniuyun/kling-3.0'), {
+    supported: true, protocol: 'company-gateway-qiniuyun-kling',
+  });
+  for (const unverified of ['qiniuyun/kling-3.0-Omni', 'qiniuyun/kling-3.0-fast', 'QINIUYUN/kling-3.0']) {
+    assert.equal(openaiVideoAdapter.tailFrameCapability?.(unverified).supported, false);
+  }
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('doubao-seedance-2-0-260128'), {
     supported: true, protocol: 'company-gateway-seedance',
   });
@@ -348,6 +354,50 @@ try {
   assert.deepEqual(capturedBody?.OutputConfig, { AspectRatio: '4:3', Resolution: '1080P', Duration: 5 });
   // aspect_ratio 探测被网关 400 拒绝（UnknownParameter，2026-08-17），不得再发送
   assert.equal(capturedBody?.aspect_ratio, undefined);
+
+  // 七牛公司渠道：首帧必须走 images，尾帧是 end_image_url，不得混入腾讯字段。
+  await openaiVideoAdapter.submit({
+    model: 'qiniuyun/kling-3.0', prompt: '从首帧过渡至尾帧',
+    sourceImagePath: imagePath, sourceMimeType: 'image/png',
+    tailImagePath, tailMimeType: 'image/png', durationSec: 5,
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.equal((capturedBody?.images as string[]).length, 1);
+  assert.match(String(capturedBody?.end_image_url), /^https:\/\/cos\.example\.com\//);
+  assert.match(String(capturedBody?.end_image_url), /q-signature=/);
+  assert.notEqual((capturedBody?.images as string[])[0], capturedBody?.end_image_url);
+  assert.equal(capturedBody?.LastFrameUrl, undefined);
+  assert.equal(capturedBody?.OutputConfig, undefined);
+  assert.equal(capturedBody?.image_list, undefined);
+  assert.equal(capturedBody?.start_image_url, undefined);
+  assert.equal(capturedBody?.mode, 'pro');
+  assert.equal(capturedBody?.size, '1366x1024');
+  assert.equal(capturedBody?.generate_audio, true);
+  assert.equal(capturedBody?.multi_shot, true);
+  assert.equal(capturedBody?.shot_type, 'intelligent');
+  assert.equal(capturedBody?.multi_prompt, undefined);
+  await openaiVideoAdapter.submit({
+    model: 'qiniuyun/kling-3.0', prompt: '单镜头',
+    sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec: 5, multiShot: false,
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.equal(capturedBody?.multi_shot, false);
+  assert.equal(capturedBody?.shot_type, undefined);
+  assert.equal(capturedBody?.end_image_url, undefined);
+  assert.equal(capturedBody?.size, '1366x1024');
+  for (const durationSec of [2, 16, 3.5]) {
+    capturedMethods.length = 0;
+    await assert.rejects(openaiVideoAdapter.submit({
+      model: 'qiniuyun/kling-3.0', prompt: 'invalid duration',
+      sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec,
+    }, 'gateway-key', 'http://127.0.0.1:4000'), /3–15/);
+    assert.equal(capturedMethods.length, 0, 'invalid duration must fail before upload or submission');
+  }
+  // 同一精确模型即使只有首帧，也必须遵守本机 LiteLLM 门禁。
+  capturedMethods.length = 0;
+  await assert.rejects(openaiVideoAdapter.submit({
+    model: 'qiniuyun/kling-3.0', prompt: 'test',
+    sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec: 5,
+  }, 'gateway-key', 'https://external.example.com'));
+  assert.equal(capturedMethods.includes('POST'), false);
 
   // 公司 Seedance Fast 尾帧（2026-08-17 实测合同）：images[1] 双图，
   // 且不加 response_format / size / multi_shot / LastFrameUrl
@@ -596,6 +646,15 @@ try {
   assertSecretFree(failedPoll.rawResponse);
   assert.equal((failedPoll.rawResponse as Record<string, unknown>).code, 'E_TASK');
   assert.equal((failedPoll.rawResponse as Record<string, unknown>).retry, false);
+  for (const [upstream, expected] of [
+    ['initializing', 'pending'], ['queued', 'pending'], ['in_progress', 'processing'],
+    ['downloading', 'processing'], ['uploading', 'processing'],
+  ]) {
+    globalThis.fetch = async () => new Response(JSON.stringify({id:'poll-id-without-model',status:upstream}));
+    const result = await openaiVideoAdapter.poll('original-submit-id', 'gateway-key', 'http://127.0.0.1:4000');
+    assert.equal(result.status, expected);
+    assert.equal(result.videoUrl, undefined);
+  }
 } finally {
   const { _setCompanyTailFrameRuntimeInspectorForTest: resetInspector } = await import('../lib/company-gateway-tail-frame.ts');
   resetInspector(null);

@@ -12,7 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-$OutputEncoding = [System.Text.UTF8Encoding]::new()
+$OutputEncoding = (New-Object System.Text.UTF8Encoding($false))
 
 # 非 -SkipApp 是已移除的 app 启动死分支（曾经硬编码 .cache 下私有 Node 拉起
 # standalone app，实际无人使用）；显式拒绝并引导调用方使用正确的启动入口。
