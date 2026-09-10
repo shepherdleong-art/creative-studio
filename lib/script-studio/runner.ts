@@ -1,14 +1,14 @@
 import type Database from 'better-sqlite3';
 import type { EvidenceReprobe } from './adapters/reprobe.ts';
 import type { VisionExtractor } from './adapters/vision-extract.ts';
-import { createScriptGenerator, extendScriptContentToDuration, type ScriptGenerator } from './generator.ts';
+import { createScriptGenerator, extendScriptContentToDuration, type ScriptGenerator, type ScriptGeneratorInput } from './generator.ts';
 import {
   createLibraryRevision,
   getCurrentLibraryRevision,
   getLibraryRevision,
   type LibraryRevisionView,
 } from './libraries.ts';
-import { addProjectScriptRevision, createProjectScript } from './scripts.ts';
+import { addProjectScriptRevision, createProjectScript, listRecentProjectScriptTitles } from './scripts.ts';
 import { ScriptStudioError } from './errors.ts';
 import {
   evidenceGateSummary,
@@ -30,7 +30,10 @@ import {
   startStage,
   updateTask,
 } from './tasks.ts';
-import { validateScriptContent } from './validation.ts';
+import { describeValidationIssues, validateScriptContent } from './validation.ts';
+import { applyScriptTitleRepair, buildScriptTitleContext, checkScriptTitles, type ScriptTitleSummary } from './title-policy.ts';
+import { checkTitleEmbedding } from './title-embedding.ts';
+import { comparePageIdentityPairs, findCrossProductConflict } from './page-identity.ts';
 import type { ScriptStudioScriptContent } from './types.ts';
 import { dedupeSellingPoints } from './dedupe.ts';
 
@@ -192,6 +195,58 @@ function sourceSetPageCount(
   }
 }
 
+function bodyValidationIssues(validation: ReturnType<typeof validateScriptContent>): string[] {
+  const titleCodes = new Set(validation.titleIssues.map((issue) => issue.code));
+  return validation.issues.filter((issue) => !titleCodes.has(issue));
+}
+
+function bodyValidationPassed(validation: ReturnType<typeof validateScriptContent>): boolean {
+  return bodyValidationIssues(validation).length === 0;
+}
+
+/** 每次修复都重新读取近期标题；最终检查和保存共用同步写事务，避免交错任务保存同名标题。 */
+async function repairTitlesAndSave<T>(
+  deps: ScriptStudioRunDeps,
+  initial: ScriptStudioScriptContent,
+  input: ScriptGeneratorInput,
+  excludeScriptId: string,
+  save: (content: ScriptStudioScriptContent) => T,
+): Promise<{ saved: T; content: ScriptStudioScriptContent }> {
+  let content = initial;
+  const context = buildScriptTitleContext(input.libraryRevision, input.knowledgeContext);
+  const maxAttempts = getScriptStudioLimits().titleRepairMaxAttempts;
+  for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
+    if (deps.signal?.aborted) throw new DOMException('标题修复已取消', 'AbortError');
+    const checked = deps.db.transaction(() => {
+      const previousTitles = listRecentProjectScriptTitles(deps.db, deps.projectId, { excludeScriptId, now: deps.now });
+      const issues = checkScriptTitles(content, {
+        libraryRevision: input.libraryRevision,
+        context,
+        previousTitles: [...input.previousScripts, ...previousTitles],
+      });
+      if (issues.length) return { issues, previousTitles };
+      if (content.knowledgeContext && input.knowledgeContext) {
+        content = { ...content, knowledgeContext: {
+          ...content.knowledgeContext,
+          displayName: context.displayName,
+          searchTerms: context.searchTerms,
+          searchTermsUsed: checkTitleEmbedding(input.knowledgeContext.strategy, content.title, `${content.coverTitleParts.primary}${content.coverTitleParts.secondary}`).searchTermsUsed,
+        } };
+      }
+      return { saved: save(content) };
+    }).immediate();
+    if ('saved' in checked) return { saved: checked.saved!, content };
+    if (attempt === maxAttempts || !deps.generator.repairTitles) {
+      throw new ScriptStudioError('invalid_input', `标题未通过校验（最多修复 ${maxAttempts} 次，本方案未保存）：${checked.issues.slice(0, 3).map((issue) => issue.message).join('；')}`);
+    }
+    const raw = await deps.generator.repairTitles({
+      ...input, content, previousTitles: checked.previousTitles, titleIssues: checked.issues,
+    });
+    content = applyScriptTitleRepair(content, raw, checked.issues);
+  }
+  throw new Error('unreachable_title_repair');
+}
+
 async function generateValidatedScript(
   deps: ScriptStudioRunDeps,
   library: LibraryRevisionView,
@@ -200,10 +255,11 @@ async function generateValidatedScript(
   context: { audience: string; tone: string; platform: string; targetDurationSec: number; creativeBrief: string },
   previousScripts: ScriptStudioScriptContent[],
   knowledgeContext: FrozenKnowledgeContext | null,
+  previousTitles: ScriptTitleSummary[] = [],
 ): Promise<ScriptStudioScriptContent> {
   let content: ScriptStudioScriptContent | undefined;
   let validation: ReturnType<typeof validateScriptContent> | undefined;
-  let generatedAttempts = 0;
+  const titleContext = buildScriptTitleContext(library, knowledgeContext);
   const titleEmbeddingContext = knowledgeContext
     ? {
         matchStatus: knowledgeContext.strategy.matchStatus,
@@ -222,30 +278,33 @@ async function generateValidatedScript(
       platform: context.platform,
       creativeBrief: context.creativeBrief,
       targetDurationSec: context.targetDurationSec,
-      previousScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+      previousScripts,
+      previousTitles,
       signal: deps.signal,
-      validationFeedback: attempt > 1 ? validation?.issues : undefined,
+      validationFeedback: attempt > 1 && validation
+        ? describeValidationIssues(bodyValidationIssues(validation))
+        : undefined,
       ...(knowledgeContext ? { knowledgeContext } : {}),
     });
-    generatedAttempts += generated.attempts;
     content = generated.content;
     validation = validateScriptContent(content, {
       libraryRevision: library,
-      siblingScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+      siblingScripts: previousScripts,
+      previousTitles,
+      titleContext,
       titleEmbeddingContext,
     });
-    if (validation.ok) return validation.content;
+    if (bodyValidationPassed(validation)) return validation.content;
     if (!validation.ok && validation.issues.includes('duration_too_short')) {
       content = extendScriptContentToDuration(content, library, brief);
       validation = validateScriptContent(content, {
         libraryRevision: library,
-        siblingScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+        siblingScripts: previousScripts,
+        previousTitles,
+        titleContext,
         titleEmbeddingContext,
       });
-      if (validation.ok) return validation.content;
-    }
-    if (attempt < 3) {
-      // 生成器在下一轮会看到当前内容，但不会重读详情页。
+      if (bodyValidationPassed(validation)) return validation.content;
     }
   }
   if (deps.fallbackOnInvalid && content) {
@@ -258,19 +317,22 @@ async function generateValidatedScript(
       platform: context.platform,
       creativeBrief: context.creativeBrief,
       targetDurationSec: context.targetDurationSec,
-      previousScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+      previousScripts,
+      previousTitles,
       signal: deps.signal,
       ...(knowledgeContext ? { knowledgeContext } : {}),
     });
     content = fallback.content;
     validation = validateScriptContent(content, {
       libraryRevision: library,
-      siblingScripts: previousScripts.map((item) => ({ fullScript: item.fullScript })),
+      siblingScripts: previousScripts,
+      previousTitles,
+      titleContext,
       titleEmbeddingContext,
     });
-    if (validation.ok) return validation.content;
+    if (bodyValidationPassed(validation)) return validation.content;
   }
-  throw new ScriptStudioError('invalid_input', `脚本未通过校验：${validation?.issues.slice(0, 3).join('；') || '未知原因'}`);
+  throw new ScriptStudioError('invalid_input', `脚本未通过校验：${validation ? describeValidationIssues(validation.issues, { titleIssues: validation.titleIssues }).slice(0, 3).join('；') : '未知原因'}`);
 }
 
 export async function executeScriptStudioTask(
@@ -366,20 +428,47 @@ export async function executeScriptStudioTask(
       }, signal);
       const extracted = dedupeSellingPoints(extraction.sellingPoints);
       if (extracted.length === 0) throw new ScriptStudioError('invalid_input', '详情页中没有提取到可识别的卖点');
-      const productIdentities = new Set(
-        (extraction.pageIdentities || []).map((identity) => `${identity.productName}|${identity.category}|${identity.brand}`.trim()).filter(Boolean),
-      );
-      if (productIdentities.size > 1) {
-        throw new ScriptStudioError('invalid_input', '检测到疑似多个不同商品，请拆分处理后再生成');
-      }
-      finishStage(db, projectId, taskId, 'extract', 'succeeded', {
+      // 跨商品保护：本地来源集已把页与项目绑定；原始文件名只作为同组分段的弱线索，
+      // 明确型号/品类/品牌冲突仍优先拦截，模型只识别出品牌/品类泛称时不臆判不同商品。
+      const sourcePages = tileResult!.pages.map((page) => ({
+        pageIndex: page.pageIndex,
+        filename: page.filename,
+      }));
+      const identityContext = {
+        brand: extraction.brand,
+        category: extraction.category,
+        sourcePages,
+      };
+      const pageIdentities = extraction.pageIdentities || [];
+      const identityComparisons = comparePageIdentityPairs(pageIdentities, identityContext);
+      const conflict = findCrossProductConflict(pageIdentities, identityContext);
+      const extractStagePayload = {
         productName: extraction.productName,
         category: extraction.category,
         brand: extraction.brand,
         candidateCount: extracted.length,
         requestCount: extraction.batchMetrics?.length ?? null,
         batchMetrics: extraction.batchMetrics ?? [],
-      }, null, now);
+        pageIdentities,
+        sourcePages,
+        identityComparisons,
+      };
+      if (conflict) {
+        const [first, second] = conflict;
+        finishStage(db, projectId, taskId, 'extract', 'failed', {
+          ...extractStagePayload,
+          conflict: {
+            pageIndexes: [first.pageIndex, second.pageIndex],
+            productNames: [first.productName, second.productName],
+          },
+        }, 'invalid_input', now);
+        throw new ScriptStudioError(
+          'invalid_input',
+          `检测到疑似多个不同商品（第 ${first.pageIndex + 1} 页识别为「${first.productName}」，`
+          + `第 ${second.pageIndex + 1} 页识别为「${second.productName}」），请确认所有详情页属于同一商品后再生成`,
+        );
+      }
+      finishStage(db, projectId, taskId, 'extract', 'succeeded', extractStagePayload, null, now);
 
       startStage(db, projectId, taskId, 'evidence_gate', now);
       await updateTask(db, projectId, taskId, { currentStage: 'evidence_gate' }, now);
@@ -490,6 +579,7 @@ export async function executeScriptStudioTask(
 
     startStage(db, projectId, taskId, 'generate', now);
     await updateTask(db, projectId, taskId, { currentStage: 'generate' }, now);
+    const recentTitles = listRecentProjectScriptTitles(db, projectId, { excludeScriptId: targetScriptId, now });
     const generationContext = {
       audience: plans.audience,
       tone: plans.tone,
@@ -520,6 +610,7 @@ export async function executeScriptStudioTask(
               generationContext,
               [],
               knowledgeContext,
+              recentTitles,
             ),
           };
         } catch (error) {
@@ -550,10 +641,11 @@ export async function executeScriptStudioTask(
           : undefined;
         const siblingValidation = validateScriptContent(content, {
           libraryRevision: libraryRevision!,
-          siblingScripts: createdScripts.map((item) => ({ fullScript: item.fullScript })),
+          siblingScripts: createdScripts,
+          titleContext: buildScriptTitleContext(libraryRevision!, knowledgeContext),
           titleEmbeddingContext,
         });
-        if (!siblingValidation.ok) {
+        if (!bodyValidationPassed(siblingValidation)) {
           content = await generateValidatedScript(
             deps,
             libraryRevision!,
@@ -562,12 +654,17 @@ export async function executeScriptStudioTask(
             generationContext,
             createdScripts,
             knowledgeContext,
+            recentTitles,
           );
         } else {
           content = siblingValidation.content;
         }
         const recommendationJson = recommendationForPlan(plan);
-        const created = targetScriptId
+        const finalized = await repairTitlesAndSave(deps, content, {
+          libraryRevision: libraryRevision!, plan, brief, ...generationContext,
+          previousScripts: createdScripts, signal,
+          ...(knowledgeContext ? { knowledgeContext } : {}),
+        }, targetScriptId, (content) => targetScriptId
           ? addProjectScriptRevision(db, projectId, targetScriptId, {
               origin: 'ai_regenerate',
               generationTaskId: taskId,
@@ -600,9 +697,10 @@ export async function executeScriptStudioTask(
               strategyEntryId: knowledgeContext?.strategy.strategyEntryId ?? '',
               templateCatalogRevisionId: knowledgeContext?.template.templateCatalogRevisionId ?? '',
               recommendationJson,
-            }, now);
-        scriptIds.push(created.id);
-        createdScripts.push(content);
+            }, now)
+        );
+        scriptIds.push(finalized.saved.id);
+        createdScripts.push(finalized.content);
       } catch (generationError) {
         // 中断/取消不是单条失败：直接上抛走任务级取消语义（queued 恢复或 cancelled）。
         if (deps.signal?.aborted || (generationError instanceof Error && generationError.name === 'AbortError')) throw generationError;
@@ -659,8 +757,10 @@ export async function executeScriptStudioTask(
       };
     }
     // 把中断时正在跑的阶段行补写成 failed，否则任务失败后过程页会一直显示「进行中」。
-    const runningStage = getTask(db, projectId, taskId)?.currentStage || '';
-    if (runningStage && runningStage !== 'failed') {
+    const failedTask = getTask(db, projectId, taskId);
+    const runningStage = failedTask?.currentStage || '';
+    const runningStageRow = failedTask?.stages.find((stage) => stage.stage === runningStage);
+    if (runningStage && runningStageRow?.status === 'running') {
       finishStage(db, projectId, taskId, runningStage, 'failed', {}, code, now);
     }
     await updateTask(db, projectId, taskId, {

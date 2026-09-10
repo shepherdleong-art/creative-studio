@@ -500,6 +500,9 @@ async function runJob(
         apiKey,
         provider.baseUrl
       );
+      if (submitResult.imageTransports?.length) {
+        logInfo(`图片传输方式: ${submitResult.imageTransports.map((t, i) => `图${i + 1}=${t}`).join(', ')}`);
+      }
 
       if (submitResult.immediateImageUrl) {
         const downloadResult = await downloadGatewayTaskImage(submitResult.immediateImageUrl, provider.baseUrl, apiKey);

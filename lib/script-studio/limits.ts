@@ -1,3 +1,5 @@
+export const SCRIPT_TITLE_REPAIR_MAX_TOKENS = 1200;
+
 export interface ScriptStudioLimits {
   maxImageWidth: number;
   baseTileHeight: number;
@@ -15,6 +17,9 @@ export interface ScriptStudioLimits {
   extractRequestTimeoutMs: number;
   extractMaxAttempts: number;
   generationConcurrency: number;
+  titleRepairMaxAttempts: number;
+  titleHistoryDays: number;
+  titleHistoryMaxRevisions: number;
   /** 目录导入 .xlsx 最大字节数（策略库/模板库共用）。 */
   maxCatalogImportBytes: number;
 }
@@ -53,6 +58,9 @@ export function getScriptStudioLimits(): ScriptStudioLimits {
     extractRequestTimeoutMs: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_EXTRACT_REQUEST_TIMEOUT_MS', 120_000),
     extractMaxAttempts: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_EXTRACT_MAX_ATTEMPTS', 2),
     generationConcurrency: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_GENERATION_CONCURRENCY', 2),
+    titleRepairMaxAttempts: 2,
+    titleHistoryDays: 30,
+    titleHistoryMaxRevisions: 100,
     maxCatalogImportBytes: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_MAX_CATALOG_IMPORT_BYTES', 32 * 1024 * 1024),
   };
 }

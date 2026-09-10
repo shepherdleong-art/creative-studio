@@ -98,7 +98,9 @@ function loadVideoAnalysisSummaries(db: Database.Database, videoJobIds: string[]
 
 function storagePreviewUrl(storageRoot: string, absolutePath: string): string {
   const relative = path.relative(path.resolve(storageRoot), absolutePath);
-  return `/api/videos/${relative.split(path.sep).filter(Boolean).map(encodeURIComponent).join('/')}`;
+  // ?preview=1：HEVC/10bit 原件浏览器放不动，播放统一走 H.264 预览衍生物
+  //（/api/videos 仅对 storage/videos 下的 mp4 懒生成，其余路径原样回源）。
+  return `/api/videos/${relative.split(path.sep).filter(Boolean).map(encodeURIComponent).join('/')}?preview=1`;
 }
 
 const MEDIA_PROBE_CONCURRENCY = 4;

@@ -54,6 +54,9 @@ const result = await tileSourceImages(db, 'p1', ['img-1'], {
     extractRequestTimeoutMs: 120_000,
     extractMaxAttempts: 2,
     generationConcurrency: 2,
+  titleRepairMaxAttempts: 2,
+  titleHistoryDays: 30,
+  titleHistoryMaxRevisions: 100,
     maxCatalogImportBytes: 32 * 1024 * 1024,
   },
 });
@@ -99,6 +102,9 @@ const tightLimits = {
   extractRequestTimeoutMs: 120_000,
   extractMaxAttempts: 2,
   generationConcurrency: 2,
+  titleRepairMaxAttempts: 2,
+  titleHistoryDays: 30,
+  titleHistoryMaxRevisions: 100,
   maxCatalogImportBytes: 32 * 1024 * 1024,
 };
 const bigResult = await tileSourceImages(db, 'p1', ['img-2'], { limits: tightLimits });

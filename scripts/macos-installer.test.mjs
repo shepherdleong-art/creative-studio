@@ -49,7 +49,7 @@ assert.match(icns, /writing ICNS container directly/);
 assert.match(icns, /chunk\.writeUInt32BE/);
 
 const build = read('scripts/build-mac-installer.sh');
-const desktopService = read('desktop/service.ts');
+const desktopService = read('desktop/service-spawn.ts');
 assert.match(build, /NODE_VERSION=22\.22\.3/);
 assert.match(build, /ARCH=darwin-arm64/);
 assert.match(build, /HOST_PLATFORM="\$\(node -p "process\.platform"\)"/);
@@ -104,9 +104,25 @@ assert.match(build, /osascript/);
 assert.match(build, /set background picture/);
 assert.match(build, /set icon size of viewOptions to 96/);
 assert.match(build, /hdiutil convert/);
-for (const forbidden of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', 'desktop', '.env.local', '.venv-litellm', 'config.yaml', 'litellm-config.yaml']) {
-  assert.match(build, new RegExp(forbidden.replace('.', '\\.')));
+// 禁入清单单一来源：安装脚本必须从 forbidden-paths.json 派生 prune/find/断言
+// 三组清单，不得再硬编码重复清单（与 next.config.ts / build-win-installer.ps1 共用）。
+const forbiddenSpec = JSON.parse(read('scripts/packaging/forbidden-paths.json'));
+assert.equal(forbiddenSpec.version, 1, 'forbidden-paths.json schema version must be 1');
+for (const entry of ['data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.env', '.env.*', '.claude', 'desktop', '.venv-litellm', 'config.yaml', 'litellm-config.yaml', 'python-runtime']) {
+  assert.ok(forbiddenSpec.core.includes(entry), `共享禁入清单缺少 ${entry}`);
 }
+for (const extra of [
+  ...forbiddenSpec.consumers.installerPruneCommon.extra,
+  ...forbiddenSpec.consumers.macInstallerPrune.pruneExtra,
+]) {
+  assert.ok(!forbiddenSpec.core.includes(extra), `macInstallerPrune 差集与 core 重叠：${extra}`);
+}
+assert.match(build, /FORBIDDEN_PATHS_SPEC="\$ROOT\/scripts\/packaging\/forbidden-paths\.json"/, 'macOS 安装脚本必须读取共享禁入清单 JSON');
+assert.match(build, /consumers\.installerPruneCommon\.extra/, 'PRUNE_RELATIVE_PATHS 必须包含 installerPruneCommon.extra');
+assert.match(build, /consumers\.macInstallerPrune\.pruneExtra/, 'PRUNE_RELATIVE_PATHS 必须包含 macInstallerPrune.pruneExtra');
+assert.match(build, /consumers\.macInstallerPrune\.findGlobs/, 'find 删除名单必须来自 macInstallerPrune.findGlobs');
+assert.match(build, /consumers\.macInstallerPrune\.assertGlobs/, '收尾断言名单必须来自 macInstallerPrune.assertGlobs');
+assert.doesNotMatch(build, /^PRUNE_RELATIVE_PATHS=\(\s*$/m, 'macOS 安装脚本不得再硬编码禁入清单数组');
 
 const dmgBackground = read('scripts/generate-dmg-background.mjs');
 assert.match(dmgBackground, /安装产品素材工作台/);

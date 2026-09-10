@@ -6,6 +6,7 @@ import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/scr
 import { getCurrentLibraryRevision } from '@/lib/script-studio/libraries';
 import { getProjectScript } from '@/lib/script-studio/scripts';
 import { createTask, getTaskByRequestKey } from '@/lib/script-studio/tasks';
+import { resolveKnowledgeContext, serializeKnowledgeContext } from '@/lib/script-studio/knowledge-context';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 import { resolveRuntimeProviders } from '@/lib/script-studio/runtime';
 
@@ -37,6 +38,13 @@ export async function POST(
       // 调度器不可用时仍保存 queued 任务，等待下次启动恢复。
     }
     const currentDuration = script.currentRevision?.targetDurationSec || 15;
+    const identity = db.prepare('SELECT productCode, productSubmodel FROM projects WHERE id = ?').get(projectId) as { productCode: string; productSubmodel: string };
+    const knowledgeContext = resolveKnowledgeContext(db, {
+      modelKey: identity.productCode || '',
+      submodel: identity.productSubmodel || '',
+      requestedCount: 1,
+      pointTypes: library.sellingPoints.filter((point) => point.usable && !point.disabledByUser && point.evidenceGate !== 'failed').map((point) => point.pointType),
+    });
     const created = createTask(db, {
       projectId,
       requestKey,
@@ -47,6 +55,7 @@ export async function POST(
         requestedCount: 1,
         creativeBrief: '',
         targetScriptId: scriptId,
+        knowledgeContext: serializeKnowledgeContext(knowledgeContext),
         providerId: providers.text.id,
         providerModel: providers.text.model,
       },

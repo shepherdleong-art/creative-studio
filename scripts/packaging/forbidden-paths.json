@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "fileEntries": [".env", ".env.*", "config.yaml", "litellm-config.yaml"],
+  "core": [
+    ".env",
+    ".env.*",
+    ".claude",
+    ".git",
+    ".venv-litellm",
+    "config.yaml",
+    "data",
+    "desktop",
+    "docs",
+    "installer",
+    "litellm-config.yaml",
+    "outputs",
+    "python-runtime",
+    "scripts",
+    "storage"
+  ],
+  "notes": "Single source of truth for packaging forbidden-path lists. fileEntries are file/pattern names (e.g. config.yaml, .env.*): next.config renders them as ./<path> instead of ./<path>/**/*; all other entries are treated as recursive directories. core is forbidden by every consumer; consumers.*.extra is the legal per-consumer difference. Keep this file ASCII-only: Windows PowerShell 5.1 reads BOM-less files with the ANSI codepage, and non-ASCII bytes would corrupt JSON.parse.",
+  "consumers": {
+    "nextStandaloneExcludes": {
+      "extra": [".cache", "dist", "dist-desktop", "runtime"],
+      "notes": "next.config.ts outputFileTracingExcludes['*']: core+extra rendered as ./<path>/**/* (fileEntries as ./<path>). runtime is special: Next tracing excludes runtime/ and sync-standalone-assets.mjs then explicitly copies runtime/server-entry.js in."
+    },
+    "standaloneSyncPurge": {
+      "extra": [".cache", "dist", "dist-desktop", "node-runtime"],
+      "notes": "sync-standalone-assets.mjs localOnlyRoots cleanup and assertions (core+extra); a separate dynamic scan additionally removes and asserts every .env* and config.yaml.* variant at the standalone root."
+    },
+    "installerPruneCommon": {
+      "extra": [
+        "requirements-litellm.txt",
+        ".next/cache",
+        ".next/dev",
+        "node_modules/.cache",
+        "tsconfig.tsbuildinfo",
+        "package-lock.json",
+        "eslint.config.mjs",
+        "postcss.config.mjs",
+        "video-panel-mockup.html",
+        "launcher.vbs"
+      ],
+      "notes": "Installer-only forbidden entries shared by the Windows and macOS installers, pruned and asserted at both the payload root and .next/standalone. The JSON uses forward slashes; scripts convert per platform."
+    },
+    "windowsInstallerPrune": {
+      "prunePayloadExtra": [
+        "create-desktop-shortcut.cmd",
+        "create-desktop-shortcut.ps1",
+        "start-windows.cmd",
+        "stop-windows.cmd",
+        "start.command",
+        "start-desktop.command",
+        "stop.command",
+        "stop-desktop.command",
+        "start.sh",
+        "stop.sh",
+        "launcher.html"
+      ],
+      "pruneStandaloneExtra": [],
+      "assertExtra": [".env.local"],
+      "notes": "build-win-installer.ps1 layers: payload-root prune = core + installerPruneCommon.extra + prunePayloadExtra; .next/standalone prune = core + pruneStandaloneExtra; final assertion = core + assertExtra (desktop is covered by core). The whole-payload .env* scan via Get-ChildItem -Filter is independent of this list."
+    },
+    "macInstallerPrune": {
+      "pruneExtra": ["WINDOWS.md"],
+      "findGlobs": [
+        ".env",
+        ".env.*",
+        "*.lock",
+        "start*.cmd",
+        "start*.ps1",
+        "start*.sh",
+        "start*.command",
+        "stop*.cmd",
+        "stop*.ps1",
+        "stop*.sh",
+        "stop*.command",
+        "create-desktop-shortcut.*",
+        "launcher.vbs",
+        "launcher.html"
+      ],
+      "assertGlobs": [
+        ".env",
+        ".env.*",
+        "start*.command",
+        "start*.sh",
+        "stop*.command",
+        "stop*.sh",
+        "launcher.*",
+        "create-desktop-shortcut.*"
+      ],
+      "notes": "build-mac-installer.sh: PRUNE_RELATIVE_PATHS = core + installerPruneCommon.extra + pruneExtra (pruned and asserted at both the payload root and .next/standalone); findGlobs is the find -name deletion list; assertGlobs is the final assertion list (.env.local is covered by .env.*)."
+    },
+    "portableWhitelistGuard": {
+      "forbidden": [".venv-litellm", "data", "storage", "outputs", "docs", ".git", ".cache", "dist", "installer", "desktop"],
+      "notes": "The portable build is whitelist-based (whitelist and forbidden lists are different things); this entry only drives windows-portable-payload.test.mjs assertions that the whitelists must not contain these items. config.yaml / .env.local / python-runtime / scripts are explicitly allowed exceptions of the portable build."
+    }
+  }
+}

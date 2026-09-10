@@ -31,7 +31,7 @@ function Get-Sha256Hex([string]$FilePath) {
 }
 
 Write-Host '========================================'
-Write-Host '  批量图片编辑工作台 - Windows 桌面版'
+Write-Host '  产品素材工作台 - Windows 桌面版'
 Write-Host '========================================'
 Write-Host ''
 
@@ -62,12 +62,21 @@ if ($Portable) {
     '.env.local',
     'dist-desktop/main.js',
     'dist-desktop/preload.js',
-    'dist-desktop/service.js',
+    'dist-desktop/window.js',
+    'dist-desktop/theme.js',
     'dist-desktop/ipc.js',
+    'dist-desktop/service-spawn.js',
+    'dist-desktop/service-ready.js',
+    'dist-desktop/service-state.js',
+    'dist-desktop/service-shutdown.js',
     'package.json',
     'LICENSE',
     'scripts/stop-stack.ps1',
     'scripts/stop-windows.ps1',
+    'scripts/runtime/ports.mjs',
+    'scripts/runtime/process-tree.mjs',
+    'scripts/runtime/stack-state.mjs',
+    'scripts/runtime/desktop-service.mjs',
     'scripts/migrate-portable-data.ps1',
     'scripts/migrate-portable-data.mjs',
     'scripts/diagnose-local-env.mjs',
@@ -206,8 +215,12 @@ if (-not (Test-Path $electronBinary)) {
 }
 
 # 桌面版和网页版共用 data/workbench.db；同时运行会有并发写入风险。
-$webListener = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($webListener) {
+$webListenerPids = @(& $nodeExe (Join-Path $ScriptDir 'runtime\ports.mjs') listeners 3000)
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "端口探测工具失败(退出码 $LASTEXITCODE): runtime\ports.mjs" -ForegroundColor Red
+  exit 1
+}
+if ($webListenerPids.Count -gt 0) {
   Write-Host '检测到 3000 端口已被占用，网页版可能正在运行。' -ForegroundColor Yellow
   Write-Host '桌面版与网页版共用 data/workbench.db，同时运行有并发写入风险。'
   $reply = Read-Host '仍要继续启动桌面版？(y/N)'
@@ -312,19 +325,55 @@ if ($hasStackComponents) {
 }
 
 # 桌面壳要求 production standalone 产物存在，dev server 的产物不适用。
+# 构建戳（.next/standalone/.build-stamp）由 npm run build 末尾写入；启动时与受监视
+# 源码的最新 mtime 比对，发现更新即自动重建——双击 start-windows.cmd 始终用上最新代码，
+# -Rebuild 保留为强制手段。免安装模式不参与构建，跳过戳比对。
 $standaloneServer = Join-Path $Root '.next\standalone\server.js'
 $standaloneEntry = Join-Path $Root '.next\standalone\runtime\server-entry.js'
-if ($Rebuild -or -not (Test-Path $standaloneServer) -or -not (Test-Path $standaloneEntry)) {
+$buildStampFile = Join-Path $Root '.next\standalone\.build-stamp'
+$buildStampUtil = Join-Path $ScriptDir 'runtime\build-stamp.mjs'
+$needBuild = $false
+$needDepsInstall = $false
+$buildReason = ''
+if ($Rebuild) {
+  $needBuild = $true
+  $buildReason = '手动指定 -Rebuild'
+} elseif (-not (Test-Path $standaloneServer) -or -not (Test-Path $standaloneEntry)) {
+  $needBuild = $true
+  $buildReason = '缺少 standalone 构建产物'
+} elseif (-not $Portable -and (Test-Path $buildStampUtil)) {
+  # 戳比对退出码：0 新鲜；1 源码更新或戳缺失；2 依赖清单更新（先 npm ci 再构建）。
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & $nodeExe $buildStampUtil 'check' $buildStampFile
+  $stampExitCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+  if ($stampExitCode -eq 2) {
+    $needBuild = $true
+    $needDepsInstall = $true
+    $buildReason = '检测到依赖清单更新'
+  } elseif ($stampExitCode -ne 0) {
+    $needBuild = $true
+    $buildReason = '检测到源码更新'
+  }
+}
+
+if ($needBuild) {
   if ($Portable) {
     Write-Host '免安装包缺少 standalone 构建产物，请重新完整复制免安装包；免安装模式不执行构建。' -ForegroundColor Red
     exit 1
   }
   Assert-NpmAvailable
-  if ($Rebuild) {
-    Write-Host '正在重新构建工作台（-Rebuild）...'
-  } else {
-    Write-Host '未找到 standalone 构建产物，正在首次构建（需要几分钟）...'
+  if ($needDepsInstall) {
+    Write-Host '依赖清单已更新，正在重新安装依赖（npm ci）...'
+    & npm.cmd ci
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host '依赖安装失败。请检查网络、npm registry 或杀毒软件拦截。' -ForegroundColor Red
+      exit $LASTEXITCODE
+    }
+    Write-Host ''
   }
+  Write-Host "正在重新构建工作台（$buildReason，需要几分钟）..."
   & npm.cmd run build
   if ($LASTEXITCODE -ne 0) {
     Write-Host '构建失败，请查看上方错误输出。' -ForegroundColor Red
@@ -332,7 +381,7 @@ if ($Rebuild -or -not (Test-Path $standaloneServer) -or -not (Test-Path $standal
   }
   Write-Host ''
 } else {
-  Write-Host "使用已有构建产物：.next\standalone\server.js（代码有更新时请运行 start-windows.cmd -Rebuild）"
+  Write-Host '构建产物与源码一致，跳过重建（强制重建可运行 start-windows.cmd -Rebuild）。'
   Write-Host ''
 }
 

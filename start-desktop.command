@@ -66,7 +66,14 @@ if [ ! -x "$ELECTRON_BINARY" ]; then
 fi
 
 # 桌面版和网页版共用 data/workbench.db；同时运行会有并发写入风险。
-if lsof -ti :3000 > /dev/null 2>&1; then
+# 端口探测委托给共享 Node 工具 scripts/runtime/ports.mjs。
+RUNTIME_TOOLS="$PWD/scripts/runtime"
+PORT_PIDS="$("$CREATIVE_STUDIO_NODE" "$RUNTIME_TOOLS/ports.mjs" listeners 3000 2>/dev/null)" || {
+    echo "❌ 端口探测失败（共享工具不可用），无法继续启动。" >&2
+    read -p "按回车键退出..."
+    exit 1
+}
+if [ -n "$PORT_PIDS" ]; then
     echo "⚠️  检测到 3000 端口已被占用，网页版可能正在运行。"
     echo "   桌面版与网页版共用 data/workbench.db，同时运行有并发写入风险。"
     echo "   建议先双击 stop.command 停掉网页版。"
@@ -99,14 +106,45 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # 桌面壳要求 production standalone 产物存在，dev server 的产物不适用。
+# 构建戳（.build-stamp）由 npm run build 末尾写入；启动时与受监视源码的最新
+# mtime 比对，发现更新即自动重建——双击即用上最新代码，--rebuild 保留为强制手段。
 STANDALONE_SERVER=".next/standalone/server.js"
 STANDALONE_ENTRY=".next/standalone/runtime/server-entry.js"
-if [ "$REBUILD" -eq 1 ] || [ ! -f "$STANDALONE_SERVER" ] || [ ! -f "$STANDALONE_ENTRY" ]; then
-    if [ "$REBUILD" -eq 1 ]; then
-        echo "🔁 正在重新构建工作台（--rebuild）..."
-    else
-        echo "🏗️  未找到 standalone 构建产物，正在首次构建（需要几分钟）..."
+STANDALONE_STAMP=".next/standalone/.build-stamp"
+NEED_BUILD=0
+NEED_DEPS_INSTALL=0
+BUILD_REASON=""
+if [ "$REBUILD" -eq 1 ]; then
+    NEED_BUILD=1
+    BUILD_REASON="手动指定 --rebuild"
+elif [ ! -f "$STANDALONE_SERVER" ] || [ ! -f "$STANDALONE_ENTRY" ]; then
+    NEED_BUILD=1
+    BUILD_REASON="缺少 standalone 构建产物"
+elif [ -f "$RUNTIME_TOOLS/build-stamp.mjs" ]; then
+    # 戳比对退出码：0 新鲜；1 源码更新或戳缺失；2 依赖清单更新（先装依赖再构建）。
+    "$CREATIVE_STUDIO_NODE" "$RUNTIME_TOOLS/build-stamp.mjs" check "$STANDALONE_STAMP"
+    STAMP_EXIT=$?
+    if [ "$STAMP_EXIT" -eq 2 ]; then
+        NEED_BUILD=1
+        NEED_DEPS_INSTALL=1
+        BUILD_REASON="检测到依赖清单更新"
+    elif [ "$STAMP_EXIT" -ne 0 ]; then
+        NEED_BUILD=1
+        BUILD_REASON="检测到源码更新"
     fi
+fi
+
+if [ "$NEED_BUILD" -eq 1 ]; then
+    if [ "$NEED_DEPS_INSTALL" -eq 1 ]; then
+        echo "📦 依赖清单已更新，正在重新安装依赖..."
+        if ! npm install; then
+            echo "❌ 依赖安装失败，请检查网络或 npm registry。" >&2
+            read -p "按回车键退出..."
+            exit 1
+        fi
+        echo ""
+    fi
+    echo "🏗️  正在重新构建工作台（${BUILD_REASON}，需要几分钟）..."
     if ! npm run build; then
         echo "❌ 构建失败，请查看上方错误输出。" >&2
         read -p "按回车键退出..."
@@ -114,9 +152,7 @@ if [ "$REBUILD" -eq 1 ] || [ ! -f "$STANDALONE_SERVER" ] || [ ! -f "$STANDALONE_
     fi
     echo ""
 else
-    # 变量名紧跟全角字符时必须用 ${} 界定，否则 bash 会把多字节字符并进变量名。
-    echo "📦 使用已有构建产物：${STANDALONE_SERVER}（$(date -r "$STANDALONE_SERVER" "+%Y-%m-%d %H:%M")）"
-    echo "   代码有更新时，请改用: bash start-desktop.command --rebuild"
+    echo "📦 构建产物与源码一致，跳过重建（强制重建：bash start-desktop.command --rebuild）"
     echo ""
 fi
 

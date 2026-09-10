@@ -6,7 +6,8 @@ import {
 import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
 import type { LibraryRevisionView } from './libraries.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
-import { checkTitleEmbedding, type TitleEmbeddingContext } from './title-embedding.ts';
+import { checkTitleEmbedding, type TitleEmbeddingCheck, type TitleEmbeddingContext } from './title-embedding.ts';
+import { checkScriptTitles, type ScriptTitleContext, type ScriptTitleIssue, type ScriptTitleSummary } from './title-policy.ts';
 import type { ScriptStudioScriptContent } from './types.ts';
 
 export interface ScriptValidationResult {
@@ -15,6 +16,9 @@ export interface ScriptValidationResult {
   content: ScriptStudioScriptContent;
   estimatedDurationSec: number;
   contentCharacterCount: number;
+  /** 兼容字段：统计自然命中的搜索词，不再作为标题门禁。 */
+  titleEmbedding?: TitleEmbeddingCheck;
+  titleIssues: ScriptTitleIssue[];
 }
 
 const DUPLICATE_THRESHOLD = 0.82;
@@ -47,8 +51,10 @@ export function validateScriptContent(
   input: ScriptStudioScriptContent,
   options: {
     libraryRevision: LibraryRevisionView;
-    siblingScripts?: Array<Pick<ScriptStudioScriptContent, 'fullScript'>>;
-    /** 冻结知识上下文的标题埋词约束；未提供或未匹配时不启用埋词门禁。 */
+    siblingScripts?: Array<Pick<ScriptStudioScriptContent, 'fullScript'> & ScriptTitleSummary>;
+    previousTitles?: ScriptTitleSummary[];
+    titleContext?: ScriptTitleContext;
+    /** 兼容旧调用方的搜索词统计上下文，不执行强制埋词。 */
     titleEmbeddingContext?: TitleEmbeddingContext;
   },
 ): ScriptValidationResult {
@@ -63,18 +69,20 @@ export function validateScriptContent(
   const fullScript = input.segments.map((segment) => segment.narration).join('\n').trim();
   const contentCharacterCount = countScriptContentCharacters(fullScript);
   const estimatedDurationSec = estimateNarrationDurationSec(contentCharacterCount);
-  if (!input.title.trim()) issues.push('title_required');
-  if (!input.coverTitleParts?.primary?.trim() || !input.coverTitleParts?.secondary?.trim()) {
-    issues.push('cover_title_required');
-  }
-  // 匹配知识库时启用标题埋词门禁：内部标题与封面标题组合各自满足统一名称+搜索词。
+  const titleIssues = checkScriptTitles(input, {
+    libraryRevision: options.libraryRevision,
+    context: options.titleContext,
+    previousTitles: [...(options.siblingScripts || []), ...(options.previousTitles || [])],
+  });
+  issues.push(...titleIssues.map((issue) => issue.code));
+  let titleEmbedding: TitleEmbeddingCheck | undefined;
   if (options.titleEmbeddingContext) {
-    const embedding = checkTitleEmbedding(
+    titleEmbedding = checkTitleEmbedding(
       options.titleEmbeddingContext,
       input.title,
       `${input.coverTitleParts?.primary ?? ''}${input.coverTitleParts?.secondary ?? ''}`,
     );
-    issues.push(...embedding.issues);
+    issues.push(...titleEmbedding.issues);
   }
   if (!input.segments.length) issues.push('segments_required');
   if (contentCharacterCount < budget.minContentCharacters) issues.push('duration_too_short');
@@ -121,7 +129,43 @@ export function validateScriptContent(
     content,
     estimatedDurationSec,
     contentCharacterCount,
+    titleIssues,
+    ...(titleEmbedding ? { titleEmbedding } : {}),
   };
+}
+
+/**
+ * 把内部校验码翻译成可执行的中文描述：
+ * - 重试时回喂给模型（原始错误码不说明哪个词被计数，模型无法修复）；
+ * - 全部失败时作为任务错误展示给用户。
+ * 未识别的码原样保留，不吞信息。
+ */
+export function describeValidationIssues(
+  issues: string[],
+  detail?: { searchTermsUsed?: string[]; titleIssues?: ScriptTitleIssue[] },
+): string[] {
+  const staticMap: Record<string, string> = {
+    title_required: '缺少内部标题',
+    cover_title_required: '缺少封面主标题或副标题',
+    duplicate_title: '脚本标题与同批或近期项目标题重复',
+    duplicate_cover_combo: '封面主副标题组合与同批或近期项目封面组合重复',
+    duration_too_short: '口播字数不足，未达到目标时长',
+    duration_too_long: '口播字数超出目标时长',
+    duplicate_script: '与本次其他方案过于相似',
+    selling_point_refs_required: '口播未引用任何已核验卖点',
+    segments_required: '缺少口播分段',
+  };
+  return [...new Set(issues)].map((issue) => {
+    const titleDetails = detail?.titleIssues?.filter((item) => item.code === issue);
+    if (titleDetails?.length) return titleDetails.map((item) => item.message).join("；");
+    const mapped = staticMap[issue];
+    if (mapped) return mapped;
+    if (issue.startsWith('segment_empty:')) return '存在内容为空的分段';
+    if (issue.startsWith('unknown_selling_point:')) return '引用了方向卖点包之外的卖点';
+    if (issue.startsWith('empty_visual_keyword:')) return '存在内容为空的画面关键词';
+    if (issue.startsWith('used_unusable_selling_point:')) return '使用了未通过证据核验的卖点';
+    return issue;
+  });
 }
 
 export function requiredDurationOptions(): Array<15 | 20 | 30 | 45 | 60> {

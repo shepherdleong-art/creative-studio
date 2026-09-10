@@ -38,6 +38,9 @@ const VIDEO_SIZE_TABLE: Record<string, Record<string, string>> = {
   '720P': { '3:4': '720x960', '4:3': '960x720', '16:9': '1280x720', '9:16': '720x1280' },
   '1K': { '3:4': '1024x1366', '4:3': '1366x1024', '16:9': '1820x1024', '9:16': '1024x1820' },
   '4K': { '3:4': '2160x2880', '4:3': '2880x2160', '16:9': '3840x2160', '9:16': '2160x3840' },
+  // 火山官网 Seedance 2.5 1080p 像素表（ ark 文档「输出视频格式」）；9:16 已经
+  // 2026-09-08 真实任务核验（成片 1080x1920，HEVC 10bit），其余格子按官网表录入
+  '1080P': { '16:9': '1920x1080', '4:3': '1664x1248', '1:1': '1440x1440', '3:4': '1248x1664', '9:16': '1080x1920', '21:9': '2206x946' },
 };
 
 const IMAGE_TIER_ORDER = ['1K', '2K', '3K', '4K'];
@@ -83,6 +86,11 @@ const KLING_OMNI_CAPS: CompanyModelCaps = {
   tiers: ['720P', '1K'],
   ratios: ['3:4', '4:3'],
 };
+// Seedance 2.5：固定 1080P（用户要求 2026-09-08），比例按首帧图吸附到官网 1080p 表
+const SEEDANCE_2_5_CAPS: CompanyModelCaps = {
+  tiers: ['1080P'],
+  ratios: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
+};
 
 /** 返回图片模型在公司网关的能力约束；非公司图片模型返回 null */
 export function companyImageCapsForModel(model: string): CompanyModelCaps | null {
@@ -96,14 +104,21 @@ export function companyImageCapsForModel(model: string): CompanyModelCaps | null
 
 /** 返回视频模型在公司网关的能力约束；非公司视频模型返回 null */
 export function companyVideoCapsForModel(model: string): CompanyModelCaps | null {
+  // 七牛普通 v3：2026-09-10 公司通道实测 size=1024x1366 → 1244x1660，
+  // 不带 size 仅出 828x1108；固定 1K 名义档映射到上游 1080P，不套用腾讯尾帧字段。
+  if (model === 'qiniuyun/kling-3.0') return { tiers: ['1K'], ratios: ['3:4', '4:3', '16:9', '9:16'] };
   const m = model.toLowerCase();
   if (m.includes('kling') && m.includes('omni')) return KLING_OMNI_CAPS;
   // 文档只列了 Kling 3.0 系列的尺寸组合；其余 kling 型号按同一表做最大努力
   // 吸附（代理侧 drop_params 会兜底未知参数）。
   if (m.startsWith('kling-')) return KLING_3_CAPS;
-  // doubao-seedance 未在文档尺寸表中，且实测（2026-08-12，seedance-2.0-fast
-  // r2v）套用 Kling 表会被上游 400 拒绝（resolution 不合法）；省略 size，
-  // 由网关/上游按首帧图默认处理。
+  // Seedance 2.5：网关接受火山官网 1080p 像素表（2026-09-08 真实任务核验 9:16
+  // 1080x1920，成片 HEVC 10bit；同日 2.0 fast 传 1080p 被创建前 400 拒绝——
+  // fast 官方最高 720p）。注意检查顺序必须先于下面的 doubao-seedance 通配。
+  if (m.startsWith('doubao-seedance-2-5')) return SEEDANCE_2_5_CAPS;
+  // 其余 doubao-seedance（2.0 / 2.0 fast）未在文档尺寸表中，且实测（2026-08-12，
+  // seedance-2.0-fast r2v）套用 Kling 表会被上游 400 拒绝（resolution 不合法）；
+  // 省略 size，由网关/上游按首帧图默认处理（720p / 比例随首帧）。
   if (m.startsWith('doubao-seedance')) return null;
   return null;
 }

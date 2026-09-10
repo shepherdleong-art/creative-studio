@@ -95,13 +95,22 @@ $runtimeScriptFiles = @(
   'start-litellm-proxy.py',
   'diagnose-local-env.mjs',
   'migrate-portable-data.ps1',
-  'migrate-portable-data.mjs'
+  'migrate-portable-data.mjs',
+  'runtime\ports.mjs',
+  'runtime\process-tree.mjs',
+  'runtime\stack-state.mjs',
+  'runtime\desktop-service.mjs'
 )
 $desktopPayloadFiles = @(
   'main.js',
   'preload.js',
-  'service.js',
-  'ipc.js'
+  'window.js',
+  'theme.js',
+  'ipc.js',
+  'service-spawn.js',
+  'service-ready.js',
+  'service-state.js',
+  'service-shutdown.js'
 )
 $templateMap = @(
   @{ Source = 'installer\windows\start-windows-portable.cmd'; Target = 'start-windows.cmd' },
@@ -124,12 +133,21 @@ $manifestKeyFiles = @(
   '.env.local',
   'dist-desktop/main.js',
   'dist-desktop/preload.js',
-  'dist-desktop/service.js',
+  'dist-desktop/window.js',
+  'dist-desktop/theme.js',
   'dist-desktop/ipc.js',
+  'dist-desktop/service-spawn.js',
+  'dist-desktop/service-ready.js',
+  'dist-desktop/service-state.js',
+  'dist-desktop/service-shutdown.js',
   'package.json',
   'LICENSE',
   'scripts/stop-stack.ps1',
   'scripts/stop-windows.ps1',
+  'scripts/runtime/ports.mjs',
+  'scripts/runtime/process-tree.mjs',
+  'scripts/runtime/stack-state.mjs',
+  'scripts/runtime/desktop-service.mjs',
   'scripts/migrate-portable-data.ps1',
   'scripts/migrate-portable-data.mjs',
   'scripts/diagnose-local-env.mjs',
@@ -224,11 +242,7 @@ try {
     'node_modules\.bin\electron.cmd',
     'node_modules\electron\dist\electron.exe',
     '.next\standalone\server.js',
-    '.next\standalone\runtime\server-entry.js',
-    'dist-desktop\main.js',
-    'dist-desktop\preload.js',
-    'dist-desktop\service.js',
-    'dist-desktop\ipc.js'
+    '.next\standalone\runtime\server-entry.js'
   ) + $whitelistDirs + $whitelistFiles + @($runtimeScriptFiles | ForEach-Object { "scripts\$_" }) + @($desktopPayloadFiles | ForEach-Object { "dist-desktop\$_" }) + @($templateMap | ForEach-Object { $_.Source })
   $missing = @($requiredSources | Sort-Object -Unique | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Root $_)) })
   if ($missing.Count -gt 0) {
@@ -248,6 +262,7 @@ try {
   New-Item -ItemType Directory -Force -Path (Join-Path $staging '.next') | Out-Null
   Copy-Item -LiteralPath (Join-Path $Root '.next\standalone') -Destination (Join-Path $staging '.next\standalone') -Recurse -Force
   New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts') | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts\runtime') | Out-Null
   foreach ($scriptName in $runtimeScriptFiles) {
     Copy-Item -LiteralPath (Join-Path $Root "scripts\$scriptName") -Destination (Join-Path $staging "scripts\$scriptName") -Force
   }

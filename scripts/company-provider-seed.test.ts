@@ -43,10 +43,12 @@ try {
   `).get() as { c: number };
   assert.equal(qiniuCount.c, 1);
 
-  // 视频：公司可灵 3.0 / 公司即梦 Fast，均为 openai-video 且配置完整
+  // 视频：公司可灵 3.0 / 公司即梦 Fast / 公司即梦 2.5，均为 openai-video 且配置完整
   for (const [id, model] of [
     ['company-kling-3-0', 'kling-3.0'],
+    ['company-qiniuyun-kling-3-0', 'qiniuyun/kling-3.0'],
     ['company-seedance-2-0-fast', 'doubao-seedance-2-0-fast-260128'],
+    ['company-seedance-2-5', 'doubao-seedance-2-5-260628'],
   ] as const) {
     const row = db.prepare(`SELECT * FROM video_providers WHERE id = ?`).get(id) as Record<string, unknown>;
     assert.equal(row.type, 'openai-video');

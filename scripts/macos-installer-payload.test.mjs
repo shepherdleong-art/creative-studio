@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const appPath = path.resolve(process.argv[2] || 'dist/macos/产品素材工作台.app');
 const dmgPath = path.resolve(process.argv[3] || 'dist/macos/产品素材工作台-0.3.0.dmg');
@@ -50,16 +51,16 @@ if (fs.existsSync(ffprobe)) {
 run('codesign', ['--verify', '--deep', '--strict', appPath]);
 run('hdiutil', ['verify', dmgPath]);
 
-// Kept in sync with PRUNE_RELATIVE_PATHS in scripts/build-mac-installer.sh and
-// the Windows installer's prune list. Both levels are checked because Next's
-// output tracing can copy the project root into .next/standalone.
-for (const forbidden of [
-  'data', 'storage', 'outputs', 'docs', 'scripts', 'installer', 'desktop',
-  '.git', '.claude', '.venv-litellm', 'python-runtime', 'config.yaml', 'litellm-config.yaml',
-  'requirements-litellm.txt', '.next/cache', '.next/dev', 'node_modules/.cache',
-  'tsconfig.tsbuildinfo', 'package-lock.json', 'eslint.config.mjs',
-  'postcss.config.mjs', 'video-panel-mockup.html', 'WINDOWS.md',
-]) {
+// 禁入清单与 build-mac-installer.sh 一致地从 shared forbidden-paths.json 派生
+// （core + installerPruneCommon.extra + macInstallerPrune.pruneExtra）。两层都
+// 检查是因为 Next 的输出追踪可能把项目根拷入 .next/standalone。
+const forbiddenSpec = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'packaging', 'forbidden-paths.json'), 'utf8'));
+const forbiddenRoots = [
+  ...forbiddenSpec.core,
+  ...forbiddenSpec.consumers.installerPruneCommon.extra,
+  ...forbiddenSpec.consumers.macInstallerPrune.pruneExtra,
+];
+for (const forbidden of forbiddenRoots) {
   assert.equal(fs.existsSync(path.join(payload, forbidden)), false, `payload contains forbidden root: ${forbidden}`);
   assert.equal(fs.existsSync(path.join(standalone, forbidden)), false, `standalone contains forbidden root: ${forbidden}`);
 }

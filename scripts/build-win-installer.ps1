@@ -58,6 +58,7 @@ function Resolve-InnoCompiler {
 
 function Remove-PayloadPath {
   param([string]$RelativePath)
+  $RelativePath = $RelativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
   $target = Join-Path $Payload $RelativePath
   $resolvedPayload = [System.IO.Path]::GetFullPath($Payload)
   $resolvedTarget = [System.IO.Path]::GetFullPath($target)
@@ -157,60 +158,22 @@ $jsonEncoding = [System.Text.UTF8Encoding]::new($false)
 )
 
 Write-Host 'Pruning local-only and development paths from Electron payload...'
-foreach ($relativePath in @(
-  'data',
-  'storage',
-  'outputs',
-  'installer',
-  'docs',
-  'scripts',
-  'desktop',
-  '.claude',
-  '.git',
-  '.venv-litellm',
-  'python-runtime',
-  'config.yaml',
-  'litellm-config.yaml',
-  'requirements-litellm.txt',
-  '.next\cache',
-  '.next\dev',
-  'node_modules\.cache',
-  'tsconfig.tsbuildinfo',
-  'package-lock.json',
-  'eslint.config.mjs',
-  'postcss.config.mjs',
-  'create-desktop-shortcut.cmd',
-  'create-desktop-shortcut.ps1',
-  'start-windows.cmd',
-  'stop-windows.cmd',
-  'start.command',
-  'start-desktop.command',
-  'stop.command',
-  'stop-desktop.command',
-  'start.sh',
-  'stop.sh',
-  'launcher.vbs',
-  'launcher.html',
-  'video-panel-mockup.html'
-)) {
+# 禁入清单单一来源：scripts/packaging/forbidden-paths.json（next.config.ts 与
+# build-mac-installer.sh 共用同一份）。Next 的输出追踪可能把整个项目根目录
+# 拷入 .next/standalone，因此三层清单在 payload 根与 standalone 层都要执行。
+$ForbiddenPaths = Get-Content -LiteralPath (Join-Path $ScriptDir 'packaging\forbidden-paths.json') -Raw | ConvertFrom-Json
+if ($ForbiddenPaths.version -ne 1) {
+  throw "Unsupported forbidden-paths.json schema version: $($ForbiddenPaths.version)"
+}
+$payloadPrunePaths = @($ForbiddenPaths.core) + @($ForbiddenPaths.consumers.installerPruneCommon.extra) + @($ForbiddenPaths.consumers.windowsInstallerPrune.prunePayloadExtra)
+$standalonePrunePaths = @($ForbiddenPaths.core) + @($ForbiddenPaths.consumers.windowsInstallerPrune.pruneStandaloneExtra)
+$forbiddenAssertPaths = @($ForbiddenPaths.core) + @($ForbiddenPaths.consumers.windowsInstallerPrune.assertExtra)
+
+foreach ($relativePath in $payloadPrunePaths) {
   Remove-PayloadPath -RelativePath $relativePath
 }
 
-foreach ($relativePath in @(
-  'data',
-  'storage',
-  'outputs',
-  'installer',
-  'docs',
-  'scripts',
-  'desktop',
-  '.claude',
-  '.git',
-  '.venv-litellm',
-  'python-runtime',
-  'config.yaml',
-  'litellm-config.yaml'
-)) {
+foreach ($relativePath in $standalonePrunePaths) {
   Remove-PayloadPath -RelativePath (Join-Path '.next\standalone' $relativePath)
 }
 Get-ChildItem -LiteralPath $Payload -Force -Recurse -Filter '.env*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
@@ -222,8 +185,7 @@ if (Get-ChildItem -LiteralPath (Join-Path $Payload 'dist-desktop') -Force -Recur
   throw "Installer payload contains desktop source or sourcemap files under $(Join-Path $Payload 'dist-desktop')."
 }
 
-$forbiddenPayload = @('data', 'storage', 'outputs', 'docs', 'scripts', 'installer', '.git', '.claude', '.env.local', '.venv-litellm', 'python-runtime', 'config.yaml', 'litellm-config.yaml')
-foreach ($relativePath in $forbiddenPayload) {
+foreach ($relativePath in $forbiddenAssertPaths) {
   $targets = @(
     Join-Path $Payload $relativePath
     Join-Path $Payload (Join-Path '.next\standalone' $relativePath)
@@ -233,12 +195,6 @@ foreach ($relativePath in $forbiddenPayload) {
       throw "Installer payload still contains forbidden local or development path: $target"
     }
   }
-}
-if (Test-Path (Join-Path $Payload 'desktop')) {
-  throw "Installer payload still contains desktop shell source: $(Join-Path $Payload 'desktop')"
-}
-if (Test-Path (Join-Path $Payload '.next\standalone\desktop')) {
-  throw "Standalone payload still contains desktop shell source: $(Join-Path $Payload '.next\standalone\desktop')"
 }
 
 $ffmpegBinaries = @(
@@ -264,6 +220,10 @@ if ($runtimeNodeVersion -ne '22') {
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'scripts') | Out-Null
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\stop-installed.ps1') -Destination (Join-Path $AppDir 'scripts\stop-installed.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'installer\windows\clear-user-data.ps1') -Destination (Join-Path $AppDir 'scripts\clear-user-data.ps1') -Force
+# 安装版停止脚本委托 scripts/runtime/*.mjs 共享工具,必须随包装配。
+New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'scripts\runtime') | Out-Null
+Copy-Item -LiteralPath (Join-Path $Root 'scripts\runtime\desktop-service.mjs') -Destination (Join-Path $AppDir 'scripts\runtime\desktop-service.mjs') -Force
+Copy-Item -LiteralPath (Join-Path $Root 'scripts\runtime\process-tree.mjs') -Destination (Join-Path $AppDir 'scripts\runtime\process-tree.mjs') -Force
 
 if (-not (Test-Path $productExe)) {
   throw "Electron executable was not produced at $productExe"

@@ -101,7 +101,6 @@ const FREE_HEAD_FRAME_DRAG_KEY = '__free-head-frame__';
 
 /** 首尾帧（带尾帧）运镜的默认提示词：空提示词时自动补这句，批量生成不再算它「未填写」。 */
 const TAIL_TRANSITION_DEFAULT_PROMPT = '从首帧丝滑转场到尾帧';
-const BULK_CONFIRM_THRESHOLD = 5;
 
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
@@ -141,15 +140,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [bulkProgress, setBulkProgress] = useState<{ submitted: number; total: number } | null>(null);
   const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
   const [bulkProviderId, setBulkProviderId] = useState('');
-  const [bulkDuration, setBulkDuration] = useState(5);
-  const [bulkConfirmText, setBulkConfirmText] = useState<string | null>(null);
-
-  // 运镜行被改过（draftRevision 递增）或抽屉开关变化后，批量提交的内联二次确认
-  // 自动失效，避免用户看着旧摘要确认提交。
-  useEffect(() => {
-    setBulkConfirmText(null);
-  }, [draftRevision, bulkDrawerOpen]);
-
+  const [bulkDuration, setBulkDuration] = useState('5');
   const selectVideoPreview = (jobId: string) => {
     previewSuppressedRef.current = false;
     setVideoPreviewJobId(jobId);
@@ -960,21 +951,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       return;
     }
 
-    // 不能用原生同步确认弹窗（confirm）：它会吞掉点击的 mouseup，之后页面里的
-    // 原生 <select> 下拉会点不开，要切到别的应用再切回来才恢复。改为抽屉内联
-    // 二次确认（第一次点击在底栏展示摘要，再点「确认提交」才真正提交）。
-    const requiresBulkConfirmation =
-      safeShots.length >= BULK_CONFIRM_THRESHOLD || plan.totalClips >= BULK_CONFIRM_THRESHOLD;
-    if (requiresBulkConfirmation && !bulkConfirmText) {
-      setBulkConfirmText(
-        `将为 ${plan.ready.length} 个分镜提交 ${plan.totalClips} 条视频；` +
-        `跳过 ${plan.skippedExisting.length} 个已有任务、${plan.skippedEmpty.length} 个未填写、` +
-        `${plan.blocked.length + plan.overflow.length} 个有问题。`,
-      );
-      return;
-    }
-    setBulkConfirmText(null);
-
     const submittedTailIds = new Set(
       plan.ready.flatMap((shot) => shot.rows.flatMap((row) => row.tailImageId ? [row.tailImageId] : [])),
     );
@@ -1023,6 +999,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         setBulkProgress({ submitted: processedClips, total: plan.totalClips });
         setBulkStatus(`批量提交中：已提交 ${processedClips}/${plan.totalClips}`);
       }
+      if (failures.length === 0) setBulkDrawerOpen(false);
       await refreshJobs();
       setBulkProgress(null);
       setBulkStatus(
@@ -1077,9 +1054,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, durationSec } : row));
   };
 
-  const applyBulkProvider = () => {
+  const applyBulkProvider = (providerId: string) => {
     if (creatingRef.current) return;
-    const providerId = bulkProviderId || preferredProvider?.id || configuredProviders[0]?.id || '';
+    setBulkProviderId(providerId);
     if (!providerId) {
       setBulkStatus('暂无可用的视频供应商。');
       return;
@@ -1090,10 +1067,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     setBulkStatus(`已将供应商应用到 ${safeShots.length} 个分镜。`);
   };
 
-  const applyBulkDuration = () => {
+  const applyBulkDuration = (raw: string) => {
     if (creatingRef.current) return;
-    const durationSec = Math.max(2, Math.min(15, Number(bulkDuration) || 5));
-    setBulkDuration(durationSec);
+    setBulkDuration(raw);
+    const durationSec = Number(raw);
+    // 允许清空和输入两位数，完整有效的时长才同步到所有分镜。
+    if (!Number.isFinite(durationSec) || durationSec < 2 || durationSec > 15) return;
     for (const shot of safeShots) {
       setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, durationSec })));
     }
@@ -1244,7 +1223,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     if (!videoPreviewJobId) return null;
     const job = videoJobs.find((j) => j.id === videoPreviewJobId);
     if (!job?.filename) return null;
-    return `/api/videos/videos/${encodeURIComponent(job.filename)}`;
+    // ?preview=1：HEVC/10bit 原件浏览器放不动时改由 H.264 预览衍生物播放
+    return `/api/videos/videos/${encodeURIComponent(job.filename)}?preview=1`;
   })();
   const previewPosterUrl = videoPreviewJobId
     ? videoJobs.find((j) => j.id === videoPreviewJobId)?.posterImageUrl || null
@@ -1747,7 +1727,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     id="bulk-provider"
                     className="input-field video-control"
                     value={bulkProviderId || preferredProvider?.id || ''}
-                    onChange={(event) => setBulkProviderId(event.target.value)}
+                    onChange={(event) => applyBulkProvider(event.target.value)}
                     disabled={creating || configuredProviders.length === 0}
                   >
                     {providers.length === 0 && <option value="">暂无供应商</option>}
@@ -1757,14 +1737,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="button"
-                    className="btn-secondary btn-sm"
-                    onClick={applyBulkProvider}
-                    disabled={creating || safeShots.length === 0 || configuredProviders.length === 0}
-                  >
-                    应用到全部
-                  </button>
                 </div>
               </div>
               <div className="video-bulk-global-control">
@@ -1777,18 +1749,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                     max={15}
                     className="input-field video-control text-center"
                     value={bulkDuration}
-                    onChange={(event) => setBulkDuration(Number(event.target.value))}
+                    onChange={(event) => applyBulkDuration(event.target.value)}
+                    onBlur={() => applyBulkDuration(String(Math.max(2, Math.min(15, Number(bulkDuration) || 5))))}
                     disabled={creating}
                   />
                   <span className="video-bulk-unit">秒</span>
-                  <button
-                    type="button"
-                    className="btn-secondary btn-sm"
-                    onClick={applyBulkDuration}
-                    disabled={creating || safeShots.length === 0}
-                  >
-                    应用到全部
-                  </button>
                 </div>
               </div>
             </div>
@@ -1895,9 +1860,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             </div>
 
             <div className="video-bulk-drawer-footer">
-              {bulkConfirmText && (
-                <span className="video-bulk-confirm-text">{bulkConfirmText}</span>
-              )}
               <button
                 type="button"
                 className="btn-secondary btn-sm"
@@ -1906,26 +1868,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               >
                 一键填充提示词
               </button>
-              {bulkConfirmText && (
-                <button
-                  type="button"
-                  className="btn-secondary btn-sm"
-                  onClick={() => {
-                    setBulkConfirmText(null);
-                    setBulkStatus('已取消批量生成，未提交新任务。');
-                  }}
-                  disabled={creating}
-                >
-                  取消
-                </button>
-              )}
               <button
                 type="button"
                 className="btn-primary btn-sm video-create-action"
                 onClick={() => void handleGenerateAll()}
                 disabled={creating || configuredProviders.length === 0 || safeShots.length === 0}
               >
-                {creating ? '批量生成中…' : bulkConfirmText ? '确认提交' : '全部生成'}
+                {creating ? '批量生成中…' : '全部生成'}
               </button>
             </div>
           </div>

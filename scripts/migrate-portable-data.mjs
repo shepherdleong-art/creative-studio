@@ -151,7 +151,7 @@ export async function migratePortableData({ oldRoot, newRoot }) {
     throw new Error('旧版目录中没有 data\\workbench.db，请重新选择旧版免安装版根目录。');
   }
   if (!directoryIsEmpty(destinationData) || !directoryIsEmpty(destinationStorage)) {
-    throw new Error('新版目录已有 data 或 storage 内容。为避免覆盖，请换一份从未启动过的 0.6.0 免安装包再迁移。');
+    throw new Error('新版目录已有 data 或 storage 内容。为避免覆盖，请换一份从未启动过的 0.6.1 免安装包再迁移。');
   }
 
   const startedAt = new Date();

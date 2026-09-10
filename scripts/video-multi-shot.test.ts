@@ -61,4 +61,12 @@ assert.equal(shouldInjectCompanyKlingMultiShot('kling-3.0', false), false);
 assert.equal(shouldInjectCompanyKlingMultiShot('kling-v3', undefined), false);
 assert.equal(shouldInjectCompanyKlingMultiShot('kling-3.0-Omni', undefined), false);
 
+assert.equal(isCompanyKlingMultiShotTarget('openai-video', 'qiniuyun/kling-3.0'), true);
+assert.equal(isCompanyKlingMultiShotTarget('kling', 'qiniuyun/kling-3.0'), false);
+assert.equal(isCompanyKlingMultiShotTarget('openai-video', 'qiniuyun/kling-3.0-Omni'), false);
+assert.equal(normalizeVideoMultiShotForStorage('openai-video', 'qiniuyun/kling-3.0', undefined), 1);
+assert.equal(normalizeVideoMultiShotForStorage('openai-video', 'qiniuyun/kling-3.0', false), 0);
+assert.equal(shouldInjectCompanyKlingMultiShot('qiniuyun/kling-3.0', true), true);
+assert.equal(shouldInjectCompanyKlingMultiShot('qiniuyun/kling-3.0', false), false);
+
 console.log('video multi-shot tests passed');

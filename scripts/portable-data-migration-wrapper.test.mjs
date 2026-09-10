@@ -39,7 +39,7 @@ assert.match(ps1, /--new-root/);
 
 const guide = fs.readFileSync(guidePath, 'utf8');
 assert.match(guide, /给 AI Agent 的迁移任务/, '使用说明必须提供可直接交给本机 Agent 的迁移任务');
-assert.match(guide, /公司共享盘 0\.6\.0 母版目录/, 'Agent 任务必须明确共享盘母版输入');
+assert.match(guide, /公司共享盘 0\.6\.1 母版目录/, 'Agent 任务必须明确共享盘母版输入');
 assert.match(guide, /本机旧版免安装目录/, 'Agent 任务必须明确旧版输入');
 assert.match(guide, /新版本机目录/, 'Agent 任务必须明确本机目标输入');
 assert.match(guide, /-OldRoot <旧版目录> -NewRoot <新版目录>/, 'Agent 任务必须调用受控迁移脚本');

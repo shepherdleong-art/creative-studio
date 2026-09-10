@@ -1,4 +1,27 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { NextConfig } from "next";
+
+interface ForbiddenPathsSpec {
+  version: number;
+  fileEntries: string[];
+  core: string[];
+  consumers: {
+    nextStandaloneExcludes: { extra: string[] };
+  };
+}
+
+const forbiddenPaths = JSON.parse(
+  readFileSync(join(process.cwd(), 'scripts', 'packaging', 'forbidden-paths.json'), 'utf8'),
+) as ForbiddenPathsSpec;
+
+const renderForbiddenPath = (entry: string) =>
+  forbiddenPaths.fileEntries.includes(entry) ? `./${entry}` : `./${entry}/**/*`;
+
+const nextStandaloneExcludes = [
+  ...forbiddenPaths.core.map(renderForbiddenPath),
+  ...forbiddenPaths.consumers.nextStandaloneExcludes.extra.map(renderForbiddenPath),
+];
 
 const nextConfig: NextConfig = {
   output: 'standalone',
@@ -9,26 +32,7 @@ const nextConfig: NextConfig = {
     ],
   },
   outputFileTracingExcludes: {
-    '*': [
-      './.cache/**/*',
-      './.env',
-      './.env.*',
-      './.git/**/*',
-      './.venv-litellm/**/*',
-      './config.yaml',
-      './data/**/*',
-      './desktop/**/*',
-      './dist/**/*',
-      './dist-desktop/**/*',
-      './docs/**/*',
-      './installer/**/*',
-      './litellm-config.yaml',
-      './outputs/**/*',
-      './python-runtime/**/*',
-      './runtime/**/*',
-      './scripts/**/*',
-      './storage/**/*',
-    ],
+    '*': nextStandaloneExcludes,
   },
   // The DevTools route indicator is an internal Next.js UI and is not localizable.
   // Hide it for this local workbench so users do not see English framework text.

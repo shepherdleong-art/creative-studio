@@ -13,6 +13,7 @@ const MODEL_KEYS: readonly CoreUsageModelKey[] = [
   'company-qiniuyun-gpt-image-2-medium',
   'company-kling-3-0',
   'company-seedance-fast',
+  'company-seedance-2-5',
   'company-gpt-5-6-luna',
   'doubao-seed-tts-2',
 ];
@@ -22,6 +23,7 @@ const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
   'company-qiniuyun-gpt-image-2-medium': 'qiniuyun/gpt-image-2-medium',
   'company-kling-3-0': 'kling-3.0',
   'company-seedance-fast': 'Seedance 2.0 Fast',
+  'company-seedance-2-5': 'Seedance 2.5',
   'company-gpt-5-6-luna': 'GPT-5-6-Luna-Standard',
   'doubao-seed-tts-2': 'seed-tts-2.0',
 };
@@ -31,6 +33,7 @@ const MODEL_COLORS: Record<CoreUsageModelKey, string> = {
   'company-qiniuyun-gpt-image-2-medium': '#06b6d4',
   'company-kling-3-0': '#8b5cf6',
   'company-seedance-fast': '#0f9d8a',
+  'company-seedance-2-5': '#16a34a',
   'company-gpt-5-6-luna': '#f59e0b',
   'doubao-seed-tts-2': '#e0528b',
 };

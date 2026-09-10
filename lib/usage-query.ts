@@ -10,6 +10,7 @@ export const CORE_USAGE_MODEL_KEYS: readonly CoreUsageModelKey[] = [
   'company-qiniuyun-gpt-image-2-medium',
   'company-kling-3-0',
   'company-seedance-fast',
+  'company-seedance-2-5',
   'company-gpt-5-6-luna',
   'doubao-seed-tts-2',
 ] as const;
@@ -295,6 +296,7 @@ function uncertainCount(db: Database.Database, filters: UsageQueryFilters): numb
           WHEN 'company-qiniuyun-gpt-image-2-medium' THEN 'image'
           WHEN 'company-kling-3-0' THEN 'video'
           WHEN 'company-seedance-fast' THEN 'video'
+          WHEN 'company-seedance-2-5' THEN 'video'
           WHEN 'company-gpt-5-6-luna' THEN 'llm_text'
           WHEN 'doubao-seed-tts-2' THEN 'tts'
           ELSE NULL

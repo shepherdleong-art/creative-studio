@@ -59,7 +59,7 @@ test('桌面版入口在缺少 standalone 产物时才构建，并支持 --rebui
 test('桌面版入口提醒与网页版共用数据库的并发风险', () => {
   const startDesktop = read('start-desktop.command');
 
-  assert.match(startDesktop, /lsof -ti :3000/);
+  assert.match(startDesktop, /ports\.mjs" listeners 3000/);
   assert.match(startDesktop, /data\/workbench\.db/);
   assert.match(startDesktop, /stop\.command/);
 });

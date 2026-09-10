@@ -42,11 +42,19 @@ const imagePath = path.join(root, 'detail.png');
 await sharp({ create: { width: 1200, height: 2400, channels: 3, background: '#fafafa' } }).png().toFile(imagePath);
 db.prepare(`
   INSERT INTO image_assets (id, projectId, role, filename, path, originalPath, mimeType, originalWidth, originalHeight)
-  VALUES ('img-1', 'p1', 'input', 'detail.png', ?, ?, 'image/png', 1200, 2400)
+  VALUES ('img-1', 'p1', 'input', '20260909-203732.872-2.jpg', ?, ?, 'image/png', 1200, 2400)
+`).run(imagePath, imagePath);
+db.prepare(`
+  INSERT INTO image_assets (id, projectId, role, filename, path, originalPath, mimeType, originalWidth, originalHeight)
+  VALUES ('img-2', 'p1', 'input', '20260909-203732.872-14.jpg', ?, ?, 'image/png', 1200, 2400)
 `).run(imagePath, imagePath);
 db.prepare(`
   INSERT INTO script_studio_source_sets (id, projectId, contentFingerprint, imageAssetIdsJson, createdAt)
   VALUES ('source-1', 'p1', 'fingerprint-1', '["img-1"]', '2026-08-31T00:01:00.000Z')
+`).run();
+db.prepare(`
+  INSERT INTO script_studio_source_sets (id, projectId, contentFingerprint, imageAssetIdsJson, createdAt)
+  VALUES ('source-2', 'p1', 'fingerprint-2', '["img-1","img-2"]', '2026-08-31T00:01:01.000Z')
 `).run();
 
 const visionExtractor: VisionExtractor = {
@@ -91,12 +99,22 @@ const reprobe: EvidenceReprobe = {
   },
 };
 
+let fixtureTitleIndex = 0;
+function fixtureContent(input: Parameters<ScriptGenerator['generate']>[0]) {
+  // 各无关测试用不同自然场景标题，避免复用同一项目时触发本次新增的近期标题门禁。
+  const locations = ['窗边', '客厅', '书房', '阳台', '午后', '周末', '下班', '晨间'];
+  const scenes = ['阅读时光', '放松片刻', '安静独处', '观影小憩', '亲友小聚', '喝茶闲谈', '听歌休闲', '随手布置'];
+  const index = fixtureTitleIndex++;
+  const title = `${locations[Math.floor(index / scenes.length) % locations.length]}${scenes[index % scenes.length]}`;
+  return { ...buildDeterministicFallbackScript(input), title, coverTitleParts: { primary: title, secondary: '看看这些真实细节', source: 'model' as const } };
+}
+
 function makeGenerator(failPlan?: number): ScriptGenerator {
   return {
     async generate(input) {
       if (failPlan === input.plan.index) throw new Error('fake generation failure');
       return {
-        content: buildDeterministicFallbackScript(input),
+        content: fixtureContent(input),
         attempts: 1,
       };
     },
@@ -125,7 +143,7 @@ const parallelGenerator: ScriptGenerator = {
       planIndex: input.plan.index,
       ids: [...(input.brief?.requiredPointIds || []), ...(input.brief?.optionalPointIds || [])],
     });
-    return { content: buildDeterministicFallbackScript(input), attempts: 1 };
+    return { content: fixtureContent(input), attempts: 1 };
   },
 };
 
@@ -187,6 +205,140 @@ assert.equal(finalTask.succeededCount, 2);
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n, 2);
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM script_studio_library_revisions`).get() as { n: number }).n, 1);
 assert.equal((db.prepare(`SELECT stage FROM script_studio_task_stages WHERE taskId=? AND status='succeeded'`).all(task.task.id) as Array<{ stage: string }>).length >= 7, true);
+
+// 同一产品的两张详情页：逐页提取的身份措辞不一致（真机样本：「PC615软床框架|软床|林氏家居」
+// 对「软床|床|」）不得再被跨商品保护误拦，任务必须走通。
+function makeVariantIdentityExtractor(pageIdentities: VisionExtractionResult['pageIdentities']): VisionExtractor {
+  return {
+    async extract(): Promise<VisionExtractionResult> {
+      const base = await visionExtractor.extract({ pages: [] });
+      return { ...base, pageIdentities };
+    },
+  };
+}
+const variantTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'variant-identity-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:03:10.000Z'));
+const variantResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: variantTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: 'PC615软床框架', category: '软床', brand: '林氏家居' },
+    { pageIndex: 1, productName: '软床', category: '床', brand: '' },
+  ]),
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:03:20.000Z'),
+});
+assert.equal(variantResult.status, 'succeeded', '同一产品多页身份措辞差异不得触发跨商品拦截');
+
+// 真实两段来源：文件名同主干、不同编号是同组分段弱证据；“摩卡沙发”/“林氏沙发”
+// 的品牌+品类泛称差异不得把已提取到的同一商品拦截。
+const splitVariantTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'split-variant-identity-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-2',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:03:21.000Z'));
+const splitVariantResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: splitVariantTask.task.id,
+  sourceSetId: 'source-2',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: '摩卡沙发', category: '沙发', brand: '林氏' },
+    { pageIndex: 1, productName: '林氏沙发', category: '沙发', brand: '林氏家居' },
+  ]),
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:03:22.000Z'),
+});
+assert.equal(splitVariantResult.status, 'succeeded', '真实同主干分段文件名与泛称身份不得误拦');
+
+// 同一文件主干不能覆盖两边都已识别出的具体系列；应在提取阶段拦截，且不写入新的卖点库/脚本。
+const libraryCountBeforeConcreteConflict = (db.prepare(`
+  SELECT COUNT(*) AS n FROM script_studio_library_revisions
+`).get() as { n: number }).n;
+const scriptCountBeforeConcreteConflict = (db.prepare(`
+  SELECT COUNT(*) AS n FROM project_scripts
+`).get() as { n: number }).n;
+const concreteConflictTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'concrete-identity-conflict-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-2',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:03:23.000Z'));
+const concreteConflictResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: concreteConflictTask.task.id,
+  sourceSetId: 'source-2',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: '摩卡沙发', category: '沙发', brand: '林氏家居' },
+    { pageIndex: 1, productName: '黑森林沙发', category: '沙发', brand: '林氏家居' },
+  ]),
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:03:24.000Z'),
+});
+assert.equal(concreteConflictResult.status, 'failed', '同主干的两个具体系列仍须拦截');
+assert.equal(concreteConflictResult.errorCode, 'invalid_input');
+assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM script_studio_library_revisions`).get() as { n: number }).n, libraryCountBeforeConcreteConflict);
+assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n, scriptCountBeforeConcreteConflict);
+
+// 真混商品：两页识别出明显不同的商品名，仍必须拦截并报出各页识别结果。
+const conflictTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'conflict-identity-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:03:25.000Z'));
+const conflictResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: conflictTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: '林氏PC615真皮储物床', category: '软床', brand: '林氏家居' },
+    { pageIndex: 1, productName: '全友科技布沙发A100', category: '沙发', brand: '全友' },
+  ]),
+  reprobe,
+  generator: makeGenerator(),
+  now: () => new Date('2026-08-31T00:03:26.000Z'),
+});
+assert.equal(conflictResult.status, 'failed', '真混商品仍必须被拦截');
+assert.equal(conflictResult.errorCode, 'invalid_input');
+assert.ok(conflictResult.errorMessage?.includes('第 1 页识别为「林氏PC615真皮储物床」'), '报错必须指出各页识别结果');
+assert.ok(conflictResult.errorMessage?.includes('第 2 页识别为「全友科技布沙发A100」'), '报错必须指出各页识别结果');
+const conflictStage = db.prepare(`
+  SELECT status, payloadJson FROM script_studio_task_stages WHERE taskId = ? AND stage = 'extract'
+`).get(conflictTask.task.id) as { status: string; payloadJson: string };
+const conflictPayload = JSON.parse(conflictStage.payloadJson) as {
+  candidateCount?: number;
+  pageIdentities?: unknown[];
+  identityComparisons?: Array<{ verdict: string }>;
+};
+assert.equal(conflictStage.status, 'failed');
+assert.equal(conflictPayload.candidateCount, 2, '跨商品拦截要保留已提取候选数');
+assert.equal(conflictPayload.pageIdentities?.length, 2, '跨商品拦截要保留逐页身份诊断');
+assert.equal(conflictPayload.identityComparisons?.some((item) => item.verdict === 'conflict'), true);
 
 // F1：requestedCount=6 的复用任务也能完成 6 次生成并落 succeededCount=6。
 const sixTask = createTask(db, {
