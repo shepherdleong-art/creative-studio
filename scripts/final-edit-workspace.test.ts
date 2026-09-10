@@ -871,6 +871,39 @@ db.prepare(`INSERT INTO final_edit_proposals (id, variantId, baseRevision, kind,
 const changedAfterProposal = workspace.apply({ scope: 'variant', variantId: duplicateCover.id, expectedRevision: duplicateCover.revision, type: 'set_bgm_gain', gainDb: -20 }).view as FinalEditVariantView;
 assert.throws(() => workspace.apply({ scope: 'variant', variantId: duplicateCover.id, expectedRevision: changedAfterProposal.revision, type: 'apply_proposal', proposalId: 'stale-proposal' }), (error: unknown) => error instanceof FinalEditError && error.code === 'proposal_stale');
 
+// 视频分割必须走真实 command、revision 和重新加载链路。
+{
+  const before = workspace.load(group.id);
+  const variant = before.variants.find((item) => item.timeline.clips.some((clip) => clip.timelineOutFrame - clip.timelineInFrame >= 24))!;
+  const clip = variant.timeline.clips.find((item) => item.timelineOutFrame - item.timelineInFrame >= 24)!;
+  const splitFrame = clip.timelineInFrame + 12;
+  const command = { scope: 'variant' as const, variantId: variant.id, expectedRevision: variant.revision, type: 'split_clip' as const, clipId: clip.id, splitFrame };
+  for (const invalid of [clip.timelineInFrame, clip.timelineInFrame + 11, clip.timelineOutFrame - 11, NaN, Infinity, splitFrame + 0.5]) {
+    assert.throws(() => workspace.apply({ ...command, splitFrame: invalid }), (error: unknown) => error instanceof FinalEditError && error.code === 'invalid_clip_split');
+  }
+  assert.throws(() => workspace.apply({ ...command, clipId: 'missing-clip' }), (error: unknown) => error instanceof FinalEditError && error.code === 'clip_not_found');
+  assert.equal(workspace.load(group.id).variants.find((item) => item.id === variant.id)!.revision, variant.revision, '非法分割不得写入 revision');
+  const after = workspace.apply(command).view as FinalEditVariantView;
+  assert.equal(after.revision, variant.revision + 1);
+  assert.equal(after.timeline.clips.length, variant.timeline.clips.length + 1);
+  const left = after.timeline.clips.find((item) => item.id === clip.id)!;
+  const right = after.timeline.clips.find((item) => !variant.timeline.clips.some((old) => old.id === item.id))!;
+  assert.deepEqual(left, { ...clip, sourceOutFrame: clip.sourceInFrame + 12, timelineOutFrame: splitFrame });
+  assert.deepEqual(right, { ...clip, id: right.id, sourceInFrame: clip.sourceInFrame + 12, timelineInFrame: splitFrame });
+  assert.notEqual(right.id, clip.id);
+  assert.equal(after.timeline.bodyFrames, variant.timeline.bodyFrames);
+  assert.deepEqual(after.timeline.clips.filter((item) => item.id !== left.id && item.id !== right.id), variant.timeline.clips.filter((item) => item.id !== clip.id));
+  const reloaded = workspace.load(group.id);
+  assert.deepEqual(reloaded.variants.find((item) => item.id === variant.id)!.timeline, after.timeline);
+  assert.deepEqual(reloaded.subtitleCues, before.subtitleCues);
+  assert.deepEqual(reloaded.script, before.script);
+  assert.deepEqual(after.bgm, variant.bgm);
+  assert.deepEqual(after.cover, variant.cover);
+  assert.throws(() => workspace.apply(command), (error: unknown) => error instanceof FinalEditError && error.code === 'revision_conflict');
+  // 恢复本测试的时间轴，避免后面的交换片段用例依赖分割后的段长。
+  db.prepare('UPDATE final_edit_variants SET timelineJson=? WHERE id=?').run(JSON.stringify(variant.timeline), variant.id);
+}
+
 const beforeManualCommands = workspace.load(group.id);
 const commandVariant = beforeManualCommands.variants.find((variant) => variant.id === first.id)!;
 assert.ok(commandVariant.timeline.clips.length >= 2);
@@ -1171,6 +1204,7 @@ assert.equal(await waitForFinalEditJobsIdle(100), 0, 'prepare 收尾后必须从
     assert.ok((error.details as { videoJobId?: string }).videoJobId, 'details 必须含 videoJobId');
   }
 }
+
 
 db.close();
 fs.rmSync(root, { recursive: true, force: true });

@@ -6,6 +6,7 @@ import { Icon } from '@/components/ui/Icon';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES, type FinalEditAssetView, type FinalEditVariantView, type SubtitleCue, type TimelineClip } from '@/lib/final-edit/types';
 import type { GroupCommandInput, VariantCommandInput } from '@/components/final-edit/command-types';
 import { planSubtitleCueSplit, type SubtitleCueSplitPlan } from '@/components/final-edit/subtitle-split';
+import { planVideoClipSplit } from '@/lib/final-edit/clip-split';
 import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
 import styles from './mixcut-content.module.css';
@@ -92,6 +93,7 @@ export function MixcutTimeline({
   const [viewportWidth, setViewportWidth] = useState(720);
   const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
   const [tool, setTool] = useState<TimelineTool>('select');
+  const [splitMessage, setSplitMessage] = useState('');
   const narrationPlaybackRatePendingRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const videoBodySec = variant.timeline.bodyFrames / FPS;
@@ -169,7 +171,7 @@ export function MixcutTimeline({
 
   return (
     <div className={styles.tlShell}>
-      <div className={styles.tlToolbar} role="toolbar" aria-label="字幕时间轴工具">
+      <div className={styles.tlToolbar} role="toolbar" aria-label="视频与字幕时间轴工具">
         <button
           type="button"
           aria-label="选择工具"
@@ -190,7 +192,7 @@ export function MixcutTimeline({
         >
           <Icon name="scissors" size={13} />分割
         </button>
-        <span className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? '点击字幕块上的目标位置即可切开，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字，右键删除'}</span>
+        <span role="status" className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? splitMessage || '点击视频或字幕块切开；视频两侧至少保留 0.5 秒，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字，右键删除'}</span>
       </div>
       <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined} data-tool={tool}>
       <div className={styles.tlLabels}>
@@ -225,6 +227,8 @@ export function MixcutTimeline({
                 bodyFrames={variant.timeline.bodyFrames}
                 pxPerSecond={pxPerSecond}
                 selected={clip.id === selectedClipId}
+                tool={tool}
+                onSplitMessage={setSplitMessage}
                 disabled={disabled}
                 onSelect={onSelectClip}
                 onCommand={onVariantCommand}
@@ -371,7 +375,7 @@ export function MixcutTimeline({
   );
 }
 
-function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, onSelect, onCommand, onTrimClip, onOpenContextMenu }: {
+function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, tool, onSplitMessage, onSelect, onCommand, onTrimClip, onOpenContextMenu }: {
   clip: TimelineClip;
   index: number;
   clips: TimelineClip[];
@@ -381,6 +385,8 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
   pxPerSecond: number;
   selected: boolean;
   disabled: boolean;
+  tool: TimelineTool;
+  onSplitMessage: (message: string) => void;
   onSelect: (clipId: string) => void;
   onCommand: (command: VariantCommandInput) => Promise<boolean>;
   onTrimClip: (clip: TimelineClip) => void;
@@ -389,12 +395,19 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
   const initial: ClipDraft = { sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame };
   const [draft, setDraft] = useState(initial);
   const [reorderIds, setReorderIds] = useState<string[] | null>(null);
+  const [splitFrame, setSplitFrame] = useState<number | null>(null);
+  const splitFromPointer = (clientX: number, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0) return null;
+    const frame = Math.round(clip.timelineInFrame + (clientX - rect.left) / rect.width * (clip.timelineOutFrame - clip.timelineInFrame));
+    return planVideoClipSplit(clip, frame)?.splitFrame ?? null;
+  };
   const left = (INTRO_FRAMES + draft.timelineInFrame) / FPS * pxPerSecond;
   const width = (draft.timelineOutFrame - draft.timelineInFrame) / FPS * pxPerSecond;
   const durationSec = (draft.timelineOutFrame - draft.timelineInFrame) / FPS;
 
   const begin = (mode: ClipDragMode, event: React.PointerEvent<HTMLElement>) => {
-    if (disabled) return;
+    if (disabled || tool !== 'select' || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     onSelect(clip.id);
@@ -441,7 +454,26 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
       data-reorder-active={reorderIds ? 'true' : undefined}
       className={`${styles.clip} ${selected ? styles.clipSel : ''}`}
       style={{ left, width, background: 'linear-gradient(135deg,#3a3d46,#22242b)' }}
-      onPointerDown={(event) => begin('move', event)}
+      onPointerMove={(event) => {
+        if (tool === 'split' && !disabled) {
+          const frame = splitFromPointer(event.clientX, event.currentTarget);
+          setSplitFrame(frame);
+          if (frame !== null) onSplitMessage('');
+        }
+      }}
+      onPointerLeave={() => setSplitFrame(null)}
+      onPointerDown={(event) => {
+        if (event.button !== 0 || disabled) return;
+        if (tool === 'select') { begin('move', event); return; }
+        event.preventDefault();
+        event.stopPropagation();
+        const frame = splitFromPointer(event.clientX, event.currentTarget);
+        if (frame === null) { onSplitMessage('分割后两侧视频均需至少保留 0.5 秒，请换一个分割点'); return; }
+        onSplitMessage('');
+        setSplitFrame(null);
+        onSelect(clip.id);
+        void onCommand({ type: 'split_clip', clipId: clip.id, splitFrame: frame });
+      }}
       onContextMenu={(event) => {
         if (disabled) return;
         event.preventDefault();
@@ -449,10 +481,11 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
         onSelect(clip.id);
         onOpenContextMenu(event.clientX, event.clientY);
       }}
-      onDoubleClick={() => !disabled && onTrimClip(clip)}
-      title="单击选中 · 拖拽排序 · 双击截取时段 · 右键更多操作"
+      onDoubleClick={() => !disabled && tool === 'select' && onTrimClip(clip)}
+      title={tool === 'split' ? '点击切开视频，两侧均需至少保留 0.5 秒' : '单击选中 · 拖拽排序 · 双击截取时段 · 右键更多操作'}
     >
       {thumbnailUrl && <img src={thumbnailUrl} alt="" draggable={false} />}
+      {tool === 'split' && splitFrame !== null && <i data-testid="mixcut-video-split-preview" className={styles.subtitleSplitPreview} style={{ left: `${(splitFrame - clip.timelineInFrame) / (clip.timelineOutFrame - clip.timelineInFrame) * 100}%` }} aria-hidden="true" />}
       <span className={styles.clipNo}>#{index + 1}</span>
       <span className={styles.clipCd}>{durationSec.toFixed(1)}s</span>
       <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪片段开头" onPointerDown={(event) => begin('start', event)} />

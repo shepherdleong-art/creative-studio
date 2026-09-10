@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { planVideoClipSplit } from '../lib/final-edit/clip-split.ts';
 import { alphaBoundsWidth, overlayMeasurementLimit } from '../lib/final-edit/overlay-measurement.ts';
 
 const transparentPixel = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
@@ -557,6 +558,21 @@ try {
         const body = request.postDataJSON();
         variantPatchBodies.push(body);
         const currentVariant = savedGroup.variants[0];
+        if (body.type === 'split_clip') {
+          assert.equal(body.expectedRevision, currentVariant.revision);
+          const clips = currentVariant.timeline.clips.flatMap((clip) => {
+            if (clip.id !== body.clipId) return [clip];
+            const plan = planVideoClipSplit(clip, body.splitFrame);
+            assert.ok(plan, 'UI 必须提交合法分割点');
+            return [
+              { ...clip, sourceOutFrame: plan.sourceSplitFrame, timelineOutFrame: plan.splitFrame },
+              { ...clip, id: `split-${variantPatchBodies.length}`, sourceInFrame: plan.sourceSplitFrame, timelineInFrame: plan.splitFrame },
+            ];
+          });
+          const nextVariant = { ...currentVariant, revision: currentVariant.revision + 1, timeline: { ...currentVariant.timeline, clips } };
+          savedGroup = { ...savedGroup, variants: [nextVariant] };
+          return json({ view: nextVariant });
+        }
         if (body.type === 'reorder_clips') {
           const byId = new Map(currentVariant.timeline.clips.map((clip) => [clip.id, clip]));
           let timelineFrame = 0;
@@ -734,6 +750,58 @@ try {
       window.queryLocalFonts = async () => (window.__e2eLocalFonts || []).map((family) => ({ family }));
     });
     const formalUrl = `${server.baseUrl}/projects/e2e-project?tab=final-edit`;
+    // 独立运行视频分割路径，避免被无关字体/导出流程的环境断言阻断：
+    // node scripts/final-edit-mixcut.playwright.test.mjs --video-split-only
+    if (process.argv.includes('--video-split-only')) {
+      savedGroup.variants[0].timeline.clips[1].sourceInFrame = 24;
+      savedGroup.variants[0].timeline.clips[1].sourceOutFrame = 144;
+      const originalGroup = structuredClone(savedGroup);
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.goto(formalUrl, { waitUntil: 'networkidle' });
+      await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /预览调整/ }).click();
+      const splitTool = page.getByRole('button', { name: '分割工具' });
+      await splitTool.click();
+      assert.equal(variantPatchBodies.length, 0, '选择工具本身不应分割');
+      const clip = page.locator('[data-clip-id="clip-b"]');
+      await clip.scrollIntoViewIfNeeded();
+      const box = await clip.boundingBox();
+      assert.ok(box);
+      await page.mouse.click(box.x + 2, box.y + box.height / 2);
+      await expectEventually(async () => (await page.getByTestId('mixcut-timeline-tool-hint').textContent()).includes('请换一个分割点'), '非法切点应显示可读提示');
+      assert.equal(variantPatchBodies.length, 0, '贴边点击只提示，不写入');
+      await clip.click({ button: 'right' });
+      await page.getByRole('menu', { name: '视频片段操作' }).waitFor();
+      assert.equal(variantPatchBodies.length, 0, '分割模式右键仍打开菜单');
+      await page.keyboard.press('Escape');
+      // 在播放头所在处切开，且横向滚动后仍按片段自身坐标换算。
+      await clip.scrollIntoViewIfNeeded();
+      const target = await clip.boundingBox();
+      const x = target.x + target.width / 2;
+      const y = target.y + target.height / 2;
+      const timelineBox = await page.getByTestId('mixcut-timeline-scroll').boundingBox();
+      await page.mouse.click(x, timelineBox.y + 10);
+      await page.mouse.move(x, y);
+      await page.getByTestId('mixcut-video-split-preview').waitFor();
+      await page.mouse.click(x, y);
+      await expectEventually(async () => await page.locator('[data-clip-id]').count() === 3, '点击视频必须切出两段');
+      assert.equal(variantPatchBodies.at(-1).type, 'split_clip');
+      assert.equal(variantPatchBodies.at(-1).splitFrame, 180, '切点必须扣除片头并保留正文偏移');
+      assert.deepEqual(savedGroup.variants[0].timeline.clips.slice(1).map((item) => [item.sourceInFrame, item.sourceOutFrame, item.timelineInFrame, item.timelineOutFrame]), [[24, 84, 120, 180], [84, 144, 180, 240]]);
+      assert.equal(await splitTool.getAttribute('aria-pressed'), 'true');
+      await clip.click();
+      await expectEventually(async () => await page.locator('[data-clip-id]').count() === 4, '分割模式应支持连续切开');
+      assert.equal(savedGroup.variants[0].timeline.bodyFrames, originalGroup.variants[0].timeline.bodyFrames);
+      assert.deepEqual(savedGroup.subtitleCues, originalGroup.subtitleCues);
+      assert.deepEqual(savedGroup.script, originalGroup.script);
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /预览调整/ }).click();
+      await expectEventually(async () => await page.locator('[data-clip-id]').count() === 4, '刷新后必须恢复分割结果');
+      // 原有字幕分割仍可用。
+      await page.getByRole('button', { name: '分割工具' }).click();
+      await page.locator('[data-cue-id="cue-a"]').click();
+      await expectEventually(async () => await page.locator('[data-cue-id]').count() === 3, '视频功能不得破坏字幕分割');
+      console.log('final-edit video split browser tests passed');
+    } else {
     await page.goto(formalUrl, { waitUntil: 'networkidle' });
     await page.getByRole('heading', { name: '确认本次混剪要用的素材' }).waitFor();
     await page.getByRole('heading', { name: '最近会话' }).waitFor();
@@ -1956,8 +2024,9 @@ try {
     await expectEventually(async () => (await updateHint.count()) === 0, '同步落库后必须用服务端返回的快照身份清除新版本提示');
     assert.equal(await scriptTextarea.inputValue(), '项目脚本第二版。', '无手改文案时同步必须直接采用新 revision 正文');
 
+    }
     await page.close();
-    console.log('final-edit mixcut formal page smoke tests passed');
+    if (!process.argv.includes('--video-split-only')) console.log('final-edit mixcut formal page smoke tests passed');
   } catch (error) {
     error.message = `${error.message}\nNext dev output:\n${server.output()}`;
     throw error;

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { planVideoClipSplit } from './clip-split.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -252,6 +253,7 @@ export interface EnsureMixcutDraftInput {
 }
 
 export type FinalEditCommand =
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'split_clip'; clipId: string; splitFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'delete_clip'; clipId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'move_clip'; clipId: string; timelineInFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'trim_clip'; clipId: string; sourceInFrame: number; sourceOutFrame: number; timelineInFrame: number; timelineOutFrame: number }
@@ -1815,6 +1817,17 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         timeline = state.timeline; bgm = state.bgm; cover = state.cover;
       }
       if (command.type === 'delete_clip') timeline.clips = timeline.clips.filter((clip) => clip.id !== command.clipId);
+      if (command.type === 'split_clip') {
+        const index = timeline.clips.findIndex((clip) => clip.id === command.clipId);
+        if (index < 0) throw new FinalEditError('clip_not_found', '视频片段不存在', 404);
+        const clip = timeline.clips[index];
+        const plan = planVideoClipSplit(clip, command.splitFrame);
+        if (!plan) throw new FinalEditError('invalid_clip_split', '请选择片段内部的分割点，两侧视频均需至少保留 0.5 秒');
+        timeline.clips.splice(index, 1,
+          { ...clip, sourceOutFrame: plan.sourceSplitFrame, timelineOutFrame: plan.splitFrame },
+          { ...clip, id: uuidv4(), sourceInFrame: plan.sourceSplitFrame, timelineInFrame: plan.splitFrame },
+        );
+      }
       if (command.type === 'swap_clips') {
         const ordered = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
         const leftIndex = ordered.findIndex((clip) => clip.id === command.leftClipId);
@@ -1940,6 +1953,10 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       // M4：定义「本次命令触碰的 clip 集合」。被触碰的 clip 必须合法（抛错）；
       // 未触碰的 clip 若因存量坏数据校验失败，降级为 blocking issue，不再锁死整条时间线。
       const touchedClipIds = new Set<string>();
+      if (command.type === 'split_clip') {
+        touchedClipIds.add(command.clipId);
+        for (const clip of timeline.clips) if (!clipIdsBeforeCommand.has(clip.id)) touchedClipIds.add(clip.id);
+      }
       if (command.type === 'delete_clip') {
         // 已移除的 clip 不在时间线里，不触碰任何现存 clip。
       } else if (command.type === 'move_clip' || command.type === 'trim_clip' || command.type === 'replace_clip' || command.type === 'bind_clip' || command.type === 'unbind_clip' || command.type === 'set_framing') {

@@ -373,7 +373,7 @@ export function probeVideoMedia(filePath: string): Promise<VideoMediaProbe> {
 }
 
 function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Promise<VideoMediaProbe> {
-  return new Promise((resolve) => {
+  return new Promise<VideoMediaProbe>((resolve) => {
     let stderrTail = '';
     let settled = false;
     const child = spawn(resolveFfmpegCandidatePath(), ['-hide_banner', '-i', filePath], { windowsHide: true });
@@ -424,7 +424,15 @@ function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string): Prom
         format: formatMatch?.[1]?.trim() || '',
       });
     });
-  });
+  }).catch((error: unknown) => ({
+    // spawn can throw synchronously (e.g. a truncated Windows executable).
+    // Always settle the caller's metadata request, including the fallback.
+    durationUs: 0,
+    width: 0,
+    height: 0,
+    fps: 0,
+    errorMessage: [ffprobeError, error instanceof Error ? error.message : String(error)].filter(Boolean).join('\n').slice(-1500),
+  }));
 }
 
 function parseFrameRateFraction(value: string | undefined): number {

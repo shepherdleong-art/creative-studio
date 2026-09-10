@@ -336,6 +336,10 @@
 .subclipSel { border-color: var(--blue); background: var(--blue-wash); color: var(--blue); font-weight: 500; }
 .subclipHandle { position: absolute; z-index: 3; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
 .tl[data-tool='split'] .subclip { cursor: crosshair; }
+.tl[data-tool='split'] .clip { cursor: crosshair; }
+.tl[data-tool='split'] .clipHandle { pointer-events: none; }
+.tl[data-tool='split'] .tlPlayhead { pointer-events: none; }
+.tl[data-tool='split'] .tlPlayhead::before { pointer-events: auto; }
 .subtitleSplitPreview { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; transform: translateX(-1px); background: var(--orange); box-shadow: 0 0 0 1px rgba(255,255,255,.72); pointer-events: none; }
 .wf { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; overflow: hidden; padding: 0 2px; pointer-events: none; }
 .wf span { flex-shrink: 0; width: 2.5px; border-radius: 2px; background: currentColor; opacity: .22; }
