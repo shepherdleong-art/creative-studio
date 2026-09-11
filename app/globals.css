@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* React Flow 官方样式必须跟在 Tailwind 之后（见执行任务书 P3），避免被 preflight 覆盖。 */
+@import "@xyflow/react/dist/style.css";
 
 /* ===== Creative Studio design tokens ===== */
 @theme {
@@ -972,4 +974,132 @@ html[data-theme='dark'] .video-multishot-toggle.is-on .video-multishot-toggle-tr
 @layer utilities {
   html[data-theme='dark'] .sc-play-btn { background: rgba(255, 255, 255, .16) !important; }
   html[data-theme='dark'] .sc-play-btn:hover:not(:disabled) { background: rgba(255, 255, 255, .22) !important; }
+}
+
+/* ===== 创作画布（P3）：节点、工具栏、抽屉与 React Flow 覆盖 =====
+ * 颜色全部走设计令牌；深色只补 React Flow 自带的白色底与边框。 */
+@layer components {
+  .sc-canvas-node {
+    border-radius: 14px;
+    border: 1px solid var(--color-hairline);
+    background: var(--color-surface);
+    padding: 10px 12px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+    color: var(--color-ink);
+  }
+  .sc-canvas-node-selected { border-color: var(--color-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent); }
+  .sc-canvas-input {
+    color: var(--color-ink);
+    border-radius: 6px;
+    padding: 2px 4px;
+  }
+  .sc-canvas-input:focus { background: var(--color-surface-subtle); }
+  .sc-canvas-select {
+    border-radius: 6px;
+    border: 1px solid var(--color-hairline);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-size: 11px;
+    padding: 2px 4px;
+  }
+  .sc-canvas-button {
+    border-radius: 999px;
+    border: 1px solid var(--color-hairline);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-size: 12px;
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  .sc-canvas-button:hover:not(:disabled) { background: var(--color-surface-hover); }
+  .sc-canvas-button:disabled { opacity: .45; cursor: default; }
+  .sc-canvas-button-primary { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+  .sc-canvas-icon-button {
+    width: 18px; height: 18px; line-height: 1;
+    border-radius: 4px; border: 1px solid transparent;
+    color: var(--color-ink-secondary); font-size: 12px; cursor: pointer;
+  }
+  .sc-canvas-icon-button:hover:not(:disabled) { background: var(--color-surface-subtle); }
+  .sc-canvas-icon-button:disabled { opacity: .35; cursor: default; }
+  .sc-canvas-toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--color-hairline);
+    background: var(--color-surface);
+  }
+  .sc-canvas-banner {
+    padding: 6px 12px;
+    font-size: 12px;
+    background: var(--color-surface-subtle);
+    color: var(--color-ink-secondary);
+    border-bottom: 1px solid var(--color-hairline-soft);
+  }
+  .sc-canvas-banner-warning { color: var(--color-warn); }
+  .sc-canvas-card {
+    border-radius: 12px;
+    border: 1px solid var(--color-hairline);
+    background: var(--color-surface);
+    padding: 10px 14px;
+    color: var(--color-ink);
+  }
+  .sc-canvas-drawer {
+    width: 300px; overflow-y: auto;
+    border-left: 1px solid var(--color-hairline);
+    background: var(--color-surface);
+    padding: 12px;
+    color: var(--color-ink);
+  }
+  .sc-canvas-task-row {
+    border-radius: 8px; padding: 6px 8px;
+    background: var(--color-surface-subtle);
+  }
+  .sc-canvas-menu {
+    position: absolute; z-index: 20;
+    border-radius: 10px; padding: 4px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+    display: flex; flex-direction: column; min-width: 120px;
+  }
+  .sc-canvas-menu-item {
+    text-align: left; font-size: 12px; padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    color: var(--color-ink);
+  }
+  .sc-canvas-menu-item:hover { background: var(--color-surface-hover); }
+  .sc-canvas-reference {
+    border-radius: 8px; padding: 6px;
+    background: var(--color-surface-subtle);
+  }
+  .sc-canvas-reference-detached { outline: 1px dashed var(--color-fail); }
+  .sc-canvas-mention { font-size: 11px; color: var(--color-ink-secondary); }
+  .sc-canvas-drag-handle {
+    color: var(--color-ink-tertiary);
+    font-size: 11px;
+    line-height: 1;
+    cursor: grab;
+    user-select: none;
+  }
+  .sc-canvas-drag-handle:active { cursor: grabbing; }
+  /* 默认手柄只有 6px，放大到 10px 更好点中 */
+  .sc-canvas-node .react-flow__handle {
+    width: 10px; height: 10px;
+    background: var(--color-surface);
+    border: 1.5px solid var(--color-accent);
+  }
+  .sc-canvas-edge-delete {
+    position: absolute; pointer-events: all;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--color-surface); color: var(--color-ink-secondary);
+    border: 1px solid var(--color-hairline);
+    font-size: 11px; line-height: 1; cursor: pointer;
+  }
+  .sc-canvas-edge-delete:hover { color: var(--color-fail); }
+}
+
+@layer utilities {
+  html[data-theme='dark'] .react-flow__controls-button {
+    background: var(--color-surface); border-bottom-color: var(--color-hairline); color: var(--color-ink);
+  }
+  html[data-theme='dark'] .react-flow__minimap { background: var(--color-surface); }
+  html[data-theme='dark'] .react-flow__attribution { background: transparent; }
 }

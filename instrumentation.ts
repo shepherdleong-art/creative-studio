@@ -43,4 +43,7 @@ export async function register(): Promise<void> {
   void startBatchSchedulerAfterReadiness();
   const { startScriptStudioSchedulerAfterReadiness } = await import('./lib/script-studio/bootstrap');
   void startScriptStudioSchedulerAfterReadiness();
+  // 创作画布：开关关闭时这里立即返回，不创建画布表、不启动画布 worker。
+  const { startCanvasAfterReadiness } = await import('./lib/creative-canvas/bootstrap');
+  void startCanvasAfterReadiness();
 }

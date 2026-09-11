@@ -5,7 +5,15 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import packageMetadata from '../../package.json' with { type: 'json' };
 
-export type SchemaUpgradeScope = 'batch-production' | 'video-provider-gateway' | 'script-studio';
+export type SchemaUpgradeScope = 'batch-production' | 'video-provider-gateway' | 'script-studio' | 'creative-canvas';
+
+/** 备份目录 slug；新增 scope 必须同时更新这里与 cleanupInterruptedSchemaUpgradeBackups 的匹配。 */
+export const SCOPE_SLUGS: Record<SchemaUpgradeScope, string> = {
+  'batch-production': 'batch',
+  'video-provider-gateway': 'video-gateway',
+  'script-studio': 'script-studio',
+  'creative-canvas': 'canvas',
+};
 
 export interface SchemaUpgradeBackupManifest {
   kind: 'schema-upgrade';
@@ -113,7 +121,7 @@ export async function createValidatedSchemaUpgradeBackup(params: {
   const sourcePath = mainDatabasePath(db);
   const timestamp = now.toISOString().replace(/[:.]/g, '-');
   const uniqueSuffix = randomUUID().slice(0, 8);
-  const scopeSlug = scope === 'batch-production' ? 'batch' : scope === 'video-provider-gateway' ? 'video-gateway' : 'script-studio';
+  const scopeSlug = SCOPE_SLUGS[scope];
   const directoryName = `pre-${scopeSlug}-v${targetVersion}-${timestamp}-${uniqueSuffix}`;
   const stagingDirectory = path.join(backupRoot, `.${directoryName}`);
   const publishedDirectory = path.join(backupRoot, directoryName);
@@ -185,7 +193,7 @@ export async function cleanupInterruptedSchemaUpgradeBackups(backupRoot: string)
   }
   const interrupted = entries.filter((entry) => (
     entry.isDirectory()
-    && /^\.pre-(?:batch|video-gateway|script-studio)-v\d+-/.test(entry.name)
+    && /^\.pre-(?:batch|video-gateway|script-studio|canvas)-v\d+-/.test(entry.name)
   ));
   for (const entry of interrupted) {
     await fsPromises.rm(path.join(backupRoot, entry.name), { recursive: true, force: true });

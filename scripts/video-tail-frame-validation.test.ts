@@ -103,6 +103,10 @@ assert.deepEqual(
   { supported: true, protocol: 'company-gateway-seedance' },
 );
 assert.deepEqual(
+  getVideoTailFrameCapability('openai-video', 'doubao-seedance-2-5-260628'),
+  { supported: true, protocol: 'company-gateway-seedance' },
+);
+assert.deepEqual(
   getVideoTailFrameCapability('openai-video', 'kling-3.0'),
   { supported: true, protocol: 'company-gateway-kling' },
 );

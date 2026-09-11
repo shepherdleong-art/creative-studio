@@ -33,11 +33,11 @@ test('停止脚本先验证身份，再请求优雅关闭', () => {
   assert.ok(killIndex > gracefulIndex, '强制终止必须排在优雅关闭之后');
 });
 
-test('停止脚本覆盖源码态与安装版两个数据根', () => {
+test('画布停止脚本只处理本项目数据根', () => {
   const stopDesktop = read('stop-desktop.command');
 
   assert.match(stopDesktop, /CREATIVE_STUDIO_DATA_ROOT/);
-  assert.match(stopDesktop, /Library\/Application Support\/CreativeStudio/);
+  assert.doesNotMatch(stopDesktop, /Library\/Application Support\/CreativeStudio/);
   assert.match(stopDesktop, /storage\/run\/electron-service\.json/);
   assert.match(stopDesktop, /scripts\/stop-litellm\.sh/);
 });
@@ -45,7 +45,7 @@ test('停止脚本覆盖源码态与安装版两个数据根', () => {
 test('停止脚本按可执行文件路径匹配，不按端口或进程名误杀', () => {
   const stopDesktop = read('stop-desktop.command');
 
-  assert.match(stopDesktop, /\/Applications\/产品素材工作台\.app\/Contents\/MacOS\/CreativeStudio/);
+  assert.doesNotMatch(stopDesktop, /\/Applications\/产品素材工作台\.app\/Contents\/MacOS\/CreativeStudio/);
   assert.match(stopDesktop, /node_modules\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron/);
   // 孤儿服务只按工作目录确属本项目 standalone 产物来回收。
   assert.match(stopDesktop, /-d cwd/);

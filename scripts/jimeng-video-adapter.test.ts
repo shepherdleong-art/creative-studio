@@ -142,6 +142,36 @@ try {
     ),
     /tail frame.*unsupported/i,
   );
+
+  // 多模态参考：三类素材按角色进 content，文本项在最前
+  const referenceResult = await jimengAdapter.submitReference?.(
+    {
+      model: 'doubao-seedance-2-0-260128',
+      prompt: '用参考视频的运镜，把参考图里的沙发放进画面',
+      references: [
+        { kind: 'image', url: 'https://cos.example.com/ref.png?sign=1', mimeType: 'image/png' },
+        { kind: 'video', url: 'https://cos.example.com/ref.mp4?sign=2', mimeType: 'video/mp4', durationSec: 4 },
+        { kind: 'audio', url: 'https://cos.example.com/ref.mp3?sign=3', mimeType: 'audio/mpeg', durationSec: 3 },
+      ],
+      durationSec: 8,
+      aspectRatio: '9:16',
+    },
+    'ark-key',
+    'https://ark.cn-beijing.volces.com/api/v3',
+  );
+
+  assert.equal(referenceResult?.providerTaskId, 'task-1');
+  assert.equal(capturedUrl, 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks');
+  assert.deepEqual(capturedBody?.content, [
+    { type: 'text', text: '用参考视频的运镜，把参考图里的沙发放进画面' },
+    { type: 'image_url', image_url: { url: 'https://cos.example.com/ref.png?sign=1' }, role: 'reference_image' },
+    { type: 'video_url', video_url: { url: 'https://cos.example.com/ref.mp4?sign=2' }, role: 'reference_video' },
+    { type: 'audio_url', audio_url: { url: 'https://cos.example.com/ref.mp3?sign=3' }, role: 'reference_audio' },
+  ]);
+  assert.equal(capturedBody?.ratio, '9:16');
+  assert.equal(capturedBody?.resolution, '1080p');
+  assert.equal(capturedBody?.duration, 8);
+  assert.equal('camera_fixed' in (capturedBody ?? {}), false, '2.0 系列不发送 camera_fixed');
 } finally {
   globalThis.fetch = originalFetch;
   fs.rmSync(tmpDir, { recursive: true, force: true });

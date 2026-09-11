@@ -9,6 +9,10 @@
 set -u
 
 cd "$(dirname "$0")"
+source scripts/canvas-profile.sh
+
+canvas_acquire
+trap canvas_release EXIT
 
 REBUILD=0
 for arg in "$@"; do
@@ -23,7 +27,7 @@ for arg in "$@"; do
 done
 
 echo "========================================"
-echo "   🖥️  产品素材工作台 · 桌面版"
+echo "   🖥️  Creative Studio Canvas · 开发版"
 echo "========================================"
 echo ""
 
@@ -66,15 +70,9 @@ if [ ! -x "$ELECTRON_BINARY" ]; then
 fi
 
 # 桌面版和网页版共用 data/workbench.db；同时运行会有并发写入风险。
-if lsof -ti :3000 > /dev/null 2>&1; then
-    echo "⚠️  检测到 3000 端口已被占用，网页版可能正在运行。"
-    echo "   桌面版与网页版共用 data/workbench.db，同时运行有并发写入风险。"
-    echo "   建议先双击 stop.command 停掉网页版。"
-    read -p "仍要继续启动桌面版？(y/N) " reply
-    case "$reply" in
-        y|Y) echo "" ;;
-        *) exit 1 ;;
-    esac
+if lsof -nP -iTCP:3100 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "画布网页端口 3100 已占用，请先停止画布网页版。" >&2
+    exit 1
 fi
 
 # 公司供应商运行环境是可选 sidecar；失败只禁用公司供应商，不阻塞工作台。
@@ -94,6 +92,7 @@ cleanup() {
     if [ "$STACK_STARTED" -eq 1 ]; then
         bash scripts/stop-litellm.sh
     fi
+    canvas_release
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM

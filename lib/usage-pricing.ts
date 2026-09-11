@@ -3,7 +3,7 @@
  *
  * The dashboard deliberately does not read a provider's editable cost fields.
  * A provider is eligible only when its complete runtime identity matches one
- * of the six entries below, and every amount is kept in integer micros.
+ * of the seven entries below, and every amount is kept in integer micros.
  */
 
 export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-v1';
@@ -22,6 +22,7 @@ export type CoreUsageModelKey =
   | 'company-qiniuyun-gpt-image-2-medium'
   | 'company-kling-3-0'
   | 'company-seedance-fast'
+  | 'company-seedance-2-5'
   | 'company-gpt-5-6-luna'
   | 'doubao-seed-tts-2';
 
@@ -129,6 +130,15 @@ const SEEDANCE_COMPONENT: CoreUsagePriceComponentV1 = {
   unitPriceMicros: 11_730_000,
   priceScale: 5,
 };
+// doubao-seedance-2-5-260628：默认出 1080p（2026-09-08 起），对齐火山官网刊例
+// （1080p 约 ¥3.75/秒 → ¥18.75/5 秒；2026-09-17 前限时 72 折约 ¥2.7/秒未计入）。
+// 公司网关实际账单可能有出入，待真实任务账单校准。
+const SEEDANCE_2_5_COMPONENT: CoreUsagePriceComponentV1 = {
+  key: 'second',
+  unit: 'second',
+  unitPriceMicros: 18_750_000,
+  priceScale: 5,
+};
 const GPT_COMPONENTS: readonly CoreUsagePriceComponentV1[] = [
   { key: 'input_token', unit: 'token', unitPriceMicros: 2_887_800, priceScale: 1_000_000 },
   { key: 'output_token', unit: 'token', unitPriceMicros: 12_995_200, priceScale: 1_000_000 },
@@ -171,6 +181,7 @@ export const CORE_USAGE_PRICING = Object.freeze({
   qiniuyunImage: Object.freeze({ unitPriceMicros: QINIUYUN_IMAGE_COMPONENT.unitPriceMicros, priceScale: QINIUYUN_IMAGE_COMPONENT.priceScale }),
   kling: Object.freeze({ unitPriceMicros: KLING_COMPONENT.unitPriceMicros, priceScale: KLING_COMPONENT.priceScale }),
   seedance: Object.freeze({ unitPriceMicros: SEEDANCE_COMPONENT.unitPriceMicros, priceScale: SEEDANCE_COMPONENT.priceScale }),
+  seedance25: Object.freeze({ unitPriceMicros: SEEDANCE_2_5_COMPONENT.unitPriceMicros, priceScale: SEEDANCE_2_5_COMPONENT.priceScale }),
   gptInput: Object.freeze({ unitPriceMicros: GPT_COMPONENTS[0].unitPriceMicros, priceScale: GPT_COMPONENTS[0].priceScale }),
   gptOutput: Object.freeze({ unitPriceMicros: GPT_COMPONENTS[1].unitPriceMicros, priceScale: GPT_COMPONENTS[1].priceScale }),
   gptCachedInput: Object.freeze({ unitPriceMicros: GPT_COMPONENTS[2].unitPriceMicros, priceScale: GPT_COMPONENTS[2].priceScale }),
@@ -341,6 +352,20 @@ export function resolveCoreUsagePlan(
       'video',
       'doubao-seedance-2-0-fast-260128',
       [SEEDANCE_COMPONENT],
+    );
+  }
+
+  if (matchesVideoIdentity(provider, {
+    canonicalProviderId: 'company-seedance-2-5',
+    providerType: 'openai-video',
+    configuredModel: 'doubao-seedance-2-5-260628',
+    requestModel: 'doubao-seedance-2-5-260628',
+  })) {
+    return createPlan(
+      'company-seedance-2-5',
+      'video',
+      'doubao-seedance-2-5-260628',
+      [SEEDANCE_2_5_COMPONENT],
     );
   }
 

@@ -3,6 +3,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { dataRoot } from './data-root.ts';
 import { closeDb } from './db.ts';
+import { getCanvasSchedulerController } from './creative-canvas/bootstrap.ts';
+import type { CanvasSchedulerController } from './creative-canvas/scheduler.ts';
 import {
   abortRunningFfmpegProcesses,
   waitForFfmpegIdle,
@@ -45,6 +47,7 @@ export interface GracefulShutdownDependencies {
   scriptStudioScheduler?: ScriptStudioSchedulerController | null;
   abortScriptStudioTasks?: () => number;
   waitForScriptStudioTasks?: (timeoutMs: number) => Promise<number>;
+  canvasScheduler?: CanvasSchedulerController | null;
   abortFfmpeg?: () => number;
   waitForFfmpeg?: (timeoutMs: number) => Promise<number>;
   closeDatabase?: () => void;
@@ -155,6 +158,19 @@ async function performGracefulShutdown(
     }
   }
 
+  // 创作画布：停止领取并 drain 在飞任务（scheduler.stop 内部会先中止 AbortSignal）。
+  const canvasScheduler = 'canvasScheduler' in dependencies
+    ? dependencies.canvasScheduler
+    : getCanvasSchedulerController();
+  let canvasSchedulerStop: Promise<void> | null = null;
+  if (canvasScheduler) {
+    try {
+      canvasSchedulerStop = Promise.resolve(canvasScheduler.stop());
+    } catch {
+      pendingTasks += 1;
+    }
+  }
+
   // 先让调度器停止领取，再广播到各执行层及其直接 FFmpeg 子进程。
   // 脚本生成管理器紧随停止领取：拒绝新任务并以 shutdown 原因取消运行中任务。
   let abortedScriptGenerationCount = 0;
@@ -195,6 +211,10 @@ async function performGracefulShutdown(
     pendingTasks += 1;
   }
   if (scriptStudioSchedulerStop && !(await waitForStep(scriptStudioSchedulerStop, remainingBudget()))) {
+    pendingTasks += 1;
+  }
+  // 画布排空必须在 SQLite 关闭之前完成：在飞任务还要写任务状态与产物。
+  if (canvasSchedulerStop && !(await waitForStep(canvasSchedulerStop, remainingBudget()))) {
     pendingTasks += 1;
   }
 

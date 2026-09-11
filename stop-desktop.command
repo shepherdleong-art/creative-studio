@@ -12,6 +12,7 @@ set -u
 cd "$(dirname "$0")"
 
 PROJECT_ROOT="$(pwd -P)"
+source "$PROJECT_ROOT/scripts/canvas-profile.sh"
 
 echo "🛑 正在停止产品素材工作台（桌面版）..."
 echo ""
@@ -21,8 +22,8 @@ DATA_ROOTS=()
 if [ -n "${CREATIVE_STUDIO_DATA_ROOT:-}" ]; then
     DATA_ROOTS+=("$CREATIVE_STUDIO_DATA_ROOT")
 fi
-DATA_ROOTS+=("$PROJECT_ROOT")
-DATA_ROOTS+=("$HOME/Library/Application Support/CreativeStudio")
+
+
 
 # 只读取本项目写出的状态文件，并校验 origin 必须是 loopback。
 read_service_state() {
@@ -73,6 +74,19 @@ for data_root in "${DATA_ROOTS[@]}"; do
     fi
     origin="${state%% *}"
     instance_id="${state##* }"
+
+    # 状态文件即使误从另一个目录复制，也必须验证实际监听进程归属。
+    port="${origin##*:}"
+    owned=0
+    for listener in $(node "$PROJECT_ROOT/scripts/runtime/ports.mjs" listeners "$port" 2>/dev/null); do
+        if node "$PROJECT_ROOT/scripts/runtime/process-tree.mjs" check-owner "$listener" "$PROJECT_ROOT" >/dev/null 2>&1; then
+            owned=1
+        fi
+    done
+    if [ "$owned" -ne 1 ]; then
+        echo "服务进程不属于画布目录，未发送关闭请求。"
+        continue
+    fi
 
     if ! verify_instance "$origin" "$instance_id"; then
         echo "ℹ️  $origin 上没有匹配的实例，清理陈旧状态文件。"
@@ -129,7 +143,7 @@ terminate_shell() {
     STOPPED_ANY=1
 }
 
-terminate_shell "/Applications/产品素材工作台.app/Contents/MacOS/CreativeStudio" "安装版外壳"
+
 terminate_shell "$PROJECT_ROOT/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" "源码版外壳"
 
 # 私有 Node 服务是 detached 的，外壳异常退出时它会成为孤儿。只回收
@@ -162,4 +176,4 @@ else
     echo "ℹ️  没有发现运行中的桌面版实例"
 fi
 echo ""
-read -p "按回车键关闭此窗口..."
+if [ -t 0 ]; then read -p "按回车键关闭此窗口..."; fi

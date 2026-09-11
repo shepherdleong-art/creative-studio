@@ -1,5 +1,6 @@
 #!/bin/bash
 set -u
+source "$(dirname "$0")/canvas-profile.sh"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 project_root="$(cd "$script_dir/.." && pwd)"

@@ -1,6 +1,7 @@
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { SchemaUpgradeScope } from './backup.ts';
 
 export type SchemaUpgradeAuditEvent =
   | 'started'
@@ -49,12 +50,19 @@ export interface SchemaUpgradeAuditRecord {
   version: 1;
   event: SchemaUpgradeAuditEvent;
   attemptId: string;
-  scope: 'batch-production' | 'video-provider-gateway' | 'script-studio';
+  scope: SchemaUpgradeScope;
   at: string;
   recoveredByAttemptId?: string;
   result?: SchemaUpgradeAuditResult;
   details?: SchemaUpgradeAuditDetails;
 }
+
+const AUDIT_SCOPES: ReadonlyArray<SchemaUpgradeScope> = [
+  'batch-production',
+  'video-provider-gateway',
+  'script-studio',
+  'creative-canvas',
+];
 
 function isAuditRecord(value: unknown): value is SchemaUpgradeAuditRecord {
   if (!value || typeof value !== 'object') return false;
@@ -63,7 +71,7 @@ function isAuditRecord(value: unknown): value is SchemaUpgradeAuditRecord {
     && typeof record.event === 'string'
     && typeof record.attemptId === 'string'
     && typeof record.at === 'string'
-    && (record.scope === 'batch-production' || record.scope === 'video-provider-gateway' || record.scope === 'script-studio');
+    && AUDIT_SCOPES.includes(record.scope as SchemaUpgradeScope);
 }
 
 export async function appendSchemaUpgradeAudit(

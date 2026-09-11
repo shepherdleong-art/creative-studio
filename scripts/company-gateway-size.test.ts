@@ -4,6 +4,7 @@ import {
   companyImageDeliverySize,
   companyVideoCapsForModel,
   snapCompanyImageSize,
+  snapCompanyVideoAspectRatio,
   snapCompanyVideoSize,
 } from '../lib/company-gateway-size.ts';
 
@@ -17,9 +18,24 @@ assert.equal(companyImageCapsForModel('nano-banana-2.5'), null);
 
 assert.ok(companyVideoCapsForModel('kling-3.0'));
 assert.ok(companyVideoCapsForModel('kling-3.0-Omni'));
+const qiniuKlingCaps = companyVideoCapsForModel('qiniuyun/kling-3.0');
+assert.ok(qiniuKlingCaps);
+assert.equal(snapCompanyVideoSize(1728, 2304, qiniuKlingCaps), '1024x1366');
+assert.equal(snapCompanyVideoSize(768, 432, qiniuKlingCaps), '1820x1024');
+assert.equal(companyVideoCapsForModel('qiniuyun/kling-3.0-fast'), null);
 // seedance 省略 size（上游对 Kling 表尺寸 400），由网关按首帧默认处理
 assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-260128'), null);
 assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-fast-260128'), null);
+// Seedance 2.5 固定 1080P（2026-09-08 真实任务核验），比例按首帧吸附官网表
+const seedance25Caps = companyVideoCapsForModel('doubao-seedance-2-5-260628');
+assert.ok(seedance25Caps);
+assert.deepEqual(seedance25Caps.tiers, ['1080P']);
+assert.equal(snapCompanyVideoSize(720, 1280, seedance25Caps), '1080x1920');
+assert.equal(snapCompanyVideoSize(1280, 720, seedance25Caps), '1920x1080');
+assert.equal(snapCompanyVideoSize(1024, 1366, seedance25Caps), '1248x1664');
+assert.equal(snapCompanyVideoSize(1000, 1000, seedance25Caps), '1440x1440');
+assert.equal(snapCompanyVideoAspectRatio(720, 1280, seedance25Caps), '9:16');
+assert.equal(snapCompanyVideoSize(0, 0, seedance25Caps), null);
 assert.equal(companyVideoCapsForModel('sora-2'), null);
 
 // ── 图片 size 吸附 ──

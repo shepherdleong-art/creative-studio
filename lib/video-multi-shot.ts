@@ -6,6 +6,11 @@
  */
 export const COMPANY_MULTI_SHOT_PROVIDER_TYPE = 'openai-video' as const;
 export const COMPANY_MULTI_SHOT_MODEL = 'kling-3.0' as const;
+export const COMPANY_QINIUYUN_MULTI_SHOT_MODEL = 'qiniuyun/kling-3.0' as const;
+
+function isManagedModel(model: unknown): boolean {
+  return model === COMPANY_MULTI_SHOT_MODEL || model === COMPANY_QINIUYUN_MULTI_SHOT_MODEL;
+}
 
 export type StoredVideoMultiShot = 0 | 1 | null;
 
@@ -14,7 +19,7 @@ export function isCompanyKlingMultiShotTarget(
   model: unknown,
 ): boolean {
   return providerType === COMPANY_MULTI_SHOT_PROVIDER_TYPE
-    && model === COMPANY_MULTI_SHOT_MODEL;
+    && isManagedModel(model);
 }
 
 /**
@@ -49,5 +54,5 @@ export function shouldInjectCompanyKlingMultiShot(
   model: unknown,
   multiShot: unknown,
 ): boolean {
-  return model === COMPANY_MULTI_SHOT_MODEL && multiShot !== false;
+  return isManagedModel(model) && multiShot !== false;
 }

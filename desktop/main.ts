@@ -11,6 +11,10 @@ import {
   type StartServiceOptions,
 } from './service';
 
+// 实验运行身份独立于产品归属；必须在申请单实例锁之前设置。
+app.setName('Creative Studio Canvas');
+app.setPath('userData', join(app.getPath('appData'), 'CreativeStudioCanvas'));
+app.setAppUserModelId('local.creative-studio.canvas');
 const singleInstanceLock = app.requestSingleInstanceLock();
 
 let mainWindow: BrowserWindow | null = null;
@@ -487,8 +491,7 @@ async function boot(): Promise<void> {
   // Keep packaged data in the documented stable user directory instead of
   // the install bundle or Electron's package-name-derived default.
   dataRoot =
-    process.env.CREATIVE_STUDIO_DATA_ROOT ??
-    (app.isPackaged ? join(app.getPath('appData'), 'CreativeStudio') : projectRoot);
+    (app.isPackaged ? join(app.getPath('appData'), 'CreativeStudioCanvas') : projectRoot);
   desktopSecret = randomBytes(32).toString('hex');
   const launchOptions: StartServiceOptions = {
     ...paths,

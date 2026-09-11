@@ -1,7 +1,10 @@
 import fs from 'fs';
 import type {
+  ReferenceVideoInput,
   VideoProviderAdapter,
   SubmitVideoRequest,
+  SubmitTextVideoRequest,
+  SubmitReferenceVideoRequest,
   SubmitVideoResult,
   PollVideoResult,
   TailFrameCapability,
@@ -74,6 +77,62 @@ const SUBMIT_TIMEOUT_MS = 120_000;
 const POLL_TIMEOUT_MS = 30_000;
 const JIMENG_2_LONG_VIDEO_MIN_POLLING_MS = 15 * 60_000;
 
+/**
+ * 方舟多模态参考的一项：图片／视频／音频各自一种 content 项类型，角色标明用途。
+ * 来源：方舟创建视频生成任务文档（角色名见 docs/2026-09-08-无限画布-公司模型接口核对.md §二）。
+ */
+function referenceContentItem(reference: ReferenceVideoInput): Record<string, unknown> {
+  switch (reference.kind) {
+    case 'image':
+      return { type: 'image_url', image_url: { url: reference.url }, role: 'reference_image' };
+    case 'video':
+      return { type: 'video_url', video_url: { url: reference.url }, role: 'reference_video' };
+    case 'audio':
+      return { type: 'audio_url', audio_url: { url: reference.url }, role: 'reference_audio' };
+  }
+}
+
+/** 三个提交入口共用的单次 POST：超时与外部中止信号都转成 AbortController。 */
+async function postGenerationTask(params: {
+  apiKey: string;
+  baseUrl: string;
+  body: Record<string, unknown>;
+  signal?: AbortSignal;
+  errorLabel: string;
+}): Promise<SubmitVideoResult> {
+  const cleanBase = params.baseUrl.replace(/\/$/, '');
+  const url = `${cleanBase}/contents/generations/tasks`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
+  const onAbort = () => controller.abort();
+  if (params.signal?.aborted) controller.abort();
+  else params.signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${params.apiKey}`,
+      },
+      body: JSON.stringify(params.body),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`${params.errorLabel} submit error ${res.status}: ${errorText.slice(0, 500)}`);
+    }
+
+    const data = (await res.json()) as ArkTaskResponse;
+    return { providerTaskId: data.id, rawResponse: data };
+  } finally {
+    clearTimeout(timer);
+    params.signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 export const jimengAdapter: VideoProviderAdapter = {
   tailFrameCapability(model) {
     return getTailFrameCapability(model);
@@ -92,9 +151,6 @@ export const jimengAdapter: VideoProviderAdapter = {
     baseUrl: string,
     signal?: AbortSignal
   ): Promise<SubmitVideoResult> {
-    const cleanBase = baseUrl.replace(/\/$/, '');
-    const url = `${cleanBase}/contents/generations/tasks`;
-
     const hasTailImagePath = request.tailImagePath !== undefined;
     const hasTailMimeType = request.tailMimeType !== undefined;
     if (hasTailImagePath !== hasTailMimeType) {
@@ -142,37 +198,83 @@ export const jimengAdapter: VideoProviderAdapter = {
     };
     if (!seedance2) body.camera_fixed = false;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
-    const onAbort = () => controller.abort();
-    signal?.addEventListener('abort', onAbort, { once: true });
+    return postGenerationTask({
+      apiKey,
+      baseUrl,
+      body,
+      ...(signal ? { signal } : {}),
+      errorLabel: 'Jimeng',
+    });
+  },
 
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+  /**
+   * 文生视频：方舟原生 content 只放文本项，**不塞占位首帧**；文本模式没有图可吸附，
+   * 比例取调用方显式值（默认 16:9），其余参数与图生视频保持一致。
+   */
+  async submitText(
+    request: SubmitTextVideoRequest,
+    apiKey: string,
+    baseUrl: string,
+    signal?: AbortSignal
+  ): Promise<SubmitVideoResult> {
+    const seedance2 = isSeedance2(request.model);
+    const body: Record<string, unknown> = {
+      model: request.model,
+      content: [{ type: 'text', text: normalizeJimengPrompt(request.prompt) }],
+      resolution: request.resolution ?? '1080p',
+      ratio: request.aspectRatio ?? '16:9',
+      duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),
+      watermark: false,
+      generate_audio: true,
+    };
+    if (!seedance2) body.camera_fixed = false;
 
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Jimeng submit error ${res.status}: ${errorText.slice(0, 500)}`);
-      }
+    return postGenerationTask({
+      apiKey,
+      baseUrl,
+      body,
+      ...(signal ? { signal } : {}),
+      errorLabel: 'Jimeng text-to-video',
+    });
+  },
 
-      const data = (await res.json()) as ArkTaskResponse;
+  /**
+   * 多模态参考：图片／视频／音频按调用方顺序进 content 数组，角色分别是
+   * `reference_image` / `reference_video` / `reference_audio`。
+   *
+   * 数量与组合约束（2.0 系列：0–9 图 + 0–3 视频 + 0–3 音频，音频必须搭配图片或视频）在画布能力表与
+   * external 适配器的 prepare 阶段校验；这里只负责把已经过校验的素材编成请求，避免两处规则漂移。
+   * 素材地址由 prepare 交付：图片可以是 data URL，视频／音频必须是公网 URL（COS 中转）。
+   */
+  async submitReference(
+    request: SubmitReferenceVideoRequest,
+    apiKey: string,
+    baseUrl: string,
+    signal?: AbortSignal
+  ): Promise<SubmitVideoResult> {
+    const seedance2 = isSeedance2(request.model);
+    const content: Array<Record<string, unknown>> = [
+      { type: 'text', text: normalizeJimengPrompt(request.prompt) },
+      ...request.references.map(referenceContentItem),
+    ];
+    const body: Record<string, unknown> = {
+      model: request.model,
+      content,
+      resolution: request.resolution ?? '1080p',
+      ratio: request.aspectRatio ?? '16:9',
+      duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),
+      watermark: false,
+      generate_audio: true,
+    };
+    if (!seedance2) body.camera_fixed = false;
 
-      return {
-        providerTaskId: data.id,
-        rawResponse: data,
-      };
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-    }
+    return postGenerationTask({
+      apiKey,
+      baseUrl,
+      body,
+      ...(signal ? { signal } : {}),
+      errorLabel: 'Jimeng reference-to-video',
+    });
   },
 
   async poll(

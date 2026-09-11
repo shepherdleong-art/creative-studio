@@ -25,11 +25,18 @@ export type SchemaUpgradeRecoveryCandidate = {
     }
 );
 
+const RECOVERY_SCOPES: ReadonlyArray<SchemaUpgradeScope> = [
+  'batch-production',
+  'video-provider-gateway',
+  'script-studio',
+  'creative-canvas',
+];
+
 function isManifest(value: unknown): value is SchemaUpgradeBackupManifest {
   if (!value || typeof value !== 'object') return false;
   const manifest = value as Partial<SchemaUpgradeBackupManifest>;
   return manifest.kind === 'schema-upgrade'
-    && (manifest.scope === 'batch-production' || manifest.scope === 'video-provider-gateway' || manifest.scope === 'script-studio')
+    && RECOVERY_SCOPES.includes(manifest.scope as SchemaUpgradeScope)
     && typeof manifest.applicationVersion === 'string'
     && typeof manifest.createdAt === 'string'
     && Array.isArray(manifest.sourceVersions)

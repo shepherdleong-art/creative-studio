@@ -82,6 +82,40 @@ assert.equal(calculateUsageCostMicros(seedancePlan, { second: 5 }), 11_730_000);
 assert.equal(calculateUsageCostMicros(seedancePlan, { second: 3 }), 7_038_000);
 assert.equal(calculateUsageCostMicros(seedancePlan, { second: 8 }), 18_768_000);
 
+// doubao-seedance-2-5-260628：默认 1080p，火山官网刊例 ¥18.75/5 秒（约 ¥3.75/秒）
+const seedance25Plan = mustPlan(snapshot({
+  providerTable: 'video_providers',
+  providerId: 'company-seedance-2-5',
+  providerType: 'openai-video',
+  configuredModel: 'doubao-seedance-2-5-260628',
+  requestModel: 'doubao-seedance-2-5-260628',
+}));
+assert.equal(seedance25Plan.coreModelKey, 'company-seedance-2-5');
+assert.equal(seedance25Plan.category, 'video');
+assert.deepEqual(seedance25Plan.priceComponents, [
+  { key: 'second', unit: 'second', unitPriceMicros: 18_750_000, priceScale: 5 },
+]);
+assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 5 }), 18_750_000);
+assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 3 }), 11_250_000);
+assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 8 }), 30_000_000);
+// 身份必须精确匹配：同 id 不同模型不给价
+assert.equal(resolveCoreUsagePlan(snapshot({
+  providerTable: 'video_providers',
+  providerId: 'company-seedance-2-5',
+  providerType: 'openai-video',
+  configuredModel: 'doubao-seedance-2-0-fast-260128',
+  requestModel: 'doubao-seedance-2-0-fast-260128',
+})), null);
+// 非 canonical id + 本机回环 baseUrl（手工公司网关行）同样计价
+assert.equal(mustPlan(snapshot({
+  providerTable: 'video_providers',
+  providerId: 'manual-company-seedance-2-5',
+  providerType: 'openai-video',
+  configuredModel: 'doubao-seedance-2-5-260628',
+  requestModel: 'doubao-seedance-2-5-260628',
+  baseUrl: 'http://127.0.0.1:4000',
+})).coreModelKey, 'company-seedance-2-5');
+
 const gptPlan = mustPlan(snapshot({
   providerTable: 'script_providers',
   providerId: 'gpt',
