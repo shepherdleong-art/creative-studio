@@ -11,6 +11,7 @@ import { createCanvas, listCanvasNodeStates, saveCanvasGraph } from '../lib/crea
 import { startCanvasRun } from '../lib/creative-canvas/runs.ts';
 import { createCanvasScheduler } from '../lib/creative-canvas/scheduler.ts';
 import { createCanvasFixtureAdapter } from '../lib/creative-canvas/adapters/fixture.ts';
+import type { CanvasTaskAdapter } from '../lib/creative-canvas/adapters/types.ts';
 import {
   CANVAS_DEFAULT_GLOBAL_TASK_LIMIT,
   canvasTaskSlotUsage,
@@ -18,6 +19,7 @@ import {
   findActiveTaskForCanvasNode,
   getCanvasTask,
   listCanvasTasks,
+  renewCanvasTaskLease,
 } from '../lib/creative-canvas/tasks.ts';
 import type { CanvasGraphEdge, CanvasGraphNode } from '../lib/creative-canvas/types.ts';
 
@@ -216,6 +218,25 @@ function save(
   // 结果都发布到了各自的节点
   const states = listCanvasNodeStates(db, canvasId);
   assert.equal(states.filter((state) => state.currentAssetId).length, 11);
+
+  // 重启恢复：全局名额已满时，过期的远端任务仍可接管原名额，不得被 globalLimit-held 卡死。
+  const recoveryTasks = listCanvasTasks(db, { canvasId }).slice(0, 10);
+  for (const [index, task] of recoveryTasks.entries()) {
+    db.prepare(`UPDATE creative_canvas_tasks
+      SET phase = 'polling', providerTaskId = ?, submissionState = 'accepted',
+          slotHeld = 1, leaseOwner = 'dead-worker', leaseUntil = '2020-01-01T00:00:00.000Z', fence = 3
+      WHERE id = ?`).run(`remote-recovery-${index}`, task.id);
+  }
+  const recovered = claimCanvasTasks({
+    db: db2,
+    workerId: 'recovery-worker',
+    globalLimit: CANVAS_DEFAULT_GLOBAL_TASK_LIMIT,
+    limit: 10,
+    now: () => new Date('2026-09-12T00:00:00.000Z'),
+  });
+  assert.equal(recovered.length, 10);
+  assert.equal(recovered.every(({ task }) => task.providerTaskId?.startsWith('remote-recovery-')), true);
+  assert.equal(recovered.every(({ task }) => task.slotHeld), true);
   env.dispose();
 }
 
@@ -506,6 +527,149 @@ function save(
   await scheduler.drain();
   assert.equal(adapter.submitCountForNode('g1'), 1);
   assert.equal(getCanvasTask(db, taskId)?.phase, 'uncertain');
+  env.dispose();
+}
+
+// --- 长任务续租：受控时钟推进 61 秒时，第二次 tick 不得接管在飞任务 --------
+
+{
+  const env = await freshDatabase('heartbeat');
+  const { db, storageRoot } = env;
+  const canvasId = createCanvas(db, { name: '长任务续租画布' }).id;
+  save(env, canvasId, [imageNode('heartbeat-node', IMAGE_CAP.key, '长任务')], [], 0);
+
+  let clock = new Date('2026-09-12T00:00:00.000Z');
+  let resolvePollStarted!: () => void;
+  const pollStarted = new Promise<void>((resolve) => { resolvePollStarted = resolve; });
+  let resolvePoll!: () => void;
+  const pollRelease = new Promise<void>((resolve) => { resolvePoll = resolve; });
+  const bytes = await sharp({
+    create: { width: 8, height: 8, channels: 3, background: '#228844' },
+  }).png().toBuffer();
+  const adapter: CanvasTaskAdapter = {
+    kind: 'heartbeat-test',
+    async prepare(): Promise<void> {},
+    async submit(): Promise<{ providerTaskId: string }> {
+      return { providerTaskId: 'heartbeat-remote' };
+    },
+    async poll(): Promise<{ status: 'succeeded' }> {
+      resolvePollStarted();
+      await pollRelease;
+      return { status: 'succeeded' };
+    },
+    async download(): Promise<{ bytes: Buffer; mimeType: string }> {
+      return { bytes, mimeType: 'image/png' };
+    },
+  };
+  const scheduler = createCanvasScheduler({
+    db,
+    workerId: 'heartbeat-worker',
+    adapter,
+    storageRoot,
+    leaseMs: 1_500,
+    pollIntervalMs: 0,
+    now: () => clock,
+    sleep: async () => {},
+  });
+  const started = startCanvasRun({
+    db,
+    request: { canvasId, mode: 'single', targetNodeId: 'heartbeat-node', requestKey: 'heartbeat-run' },
+  });
+  const taskId = started.tasks[0].id;
+  const firstTick = await scheduler.tick();
+  assert.equal(firstTick.claimed.length, 1);
+  const firstFence = getCanvasTask(db, taskId)?.fence;
+  assert.ok(firstFence !== undefined);
+  await pollStarted;
+
+  // 真正等待一次 heartbeat，让受控 now 写入新的 leaseUntil；不靠 sleep 模拟第二个调度器。
+  clock = new Date(clock.getTime() + 61_000);
+  await new Promise<void>((resolve) => setTimeout(resolve, 800));
+  const beforeSecondTick = getCanvasTask(db, taskId)!;
+  assert.equal(beforeSecondTick.fence, firstFence);
+  assert.equal(beforeSecondTick.leaseOwner, 'heartbeat-worker');
+  assert.equal(new Date(beforeSecondTick.leaseUntil as string).getTime(), clock.getTime() + 1_500);
+
+  const secondTick = await scheduler.tick();
+  assert.deepEqual(secondTick.claimed, [], '在飞任务第二次 tick 不得重复领取');
+  assert.equal(getCanvasTask(db, taskId)?.fence, firstFence, '续租后 fence 必须保持不变');
+  assert.equal(renewCanvasTaskLease(db, {
+    taskId,
+    fence: firstFence as number,
+    workerId: 'heartbeat-worker',
+    leaseMs: 1_500,
+    now: () => clock,
+  }), true, '当前 fence 与 owner 可以续租');
+  assert.equal(renewCanvasTaskLease(db, {
+    taskId,
+    fence: (firstFence as number) - 1,
+    workerId: 'heartbeat-worker',
+    leaseMs: 1_500,
+    now: () => clock,
+  }), false, '旧 fence 不得续租');
+
+  resolvePoll();
+  await scheduler.drain();
+  const finished = getCanvasTask(db, taskId)!;
+  assert.equal(finished.phase, 'succeeded');
+  assert.equal(finished.slotHeld, false, '任务成功后必须释放名额');
+  assert.equal(finished.leaseOwner, null);
+  assert.ok(finished.outputAssetId);
+  assert.equal(listCanvasNodeStates(db, canvasId).find((state) => state.nodeId === 'heartbeat-node')?.currentAssetId, finished.outputAssetId);
+  env.dispose();
+}
+
+// --- 模型名额接管：quota=1 时接管已有远端任务不重新计算名额 ---------------
+
+{
+  const env = await freshDatabase('quota-takeover');
+  const { db, db2 } = env;
+  const canvasId = createCanvas(db, { name: '模型名额接管画布' }).id;
+  save(env, canvasId, [
+    imageNode('quota-first', LIMITED_CAP.key, '已有远端任务'),
+    imageNode('quota-second', LIMITED_CAP.key, '排队任务'),
+  ], [], 0);
+  const first = startCanvasRun({
+    db,
+    request: { canvasId, mode: 'single', targetNodeId: 'quota-first', requestKey: 'quota-first-run' },
+  });
+  const second = startCanvasRun({
+    db,
+    request: { canvasId, mode: 'single', targetNodeId: 'quota-second', requestKey: 'quota-second-run' },
+  });
+  const firstClaim = claimCanvasTasks({
+    db,
+    workerId: 'quota-dead-worker',
+    limit: 1,
+    globalLimit: 1,
+    quotaLimits: { [LIMITED_CAP.key]: 1 },
+    now: () => new Date('2026-09-12T00:00:00.000Z'),
+  });
+  assert.equal(firstClaim.length, 1);
+  const firstFence = firstClaim[0].fence;
+  db.prepare(`
+    UPDATE creative_canvas_tasks
+       SET phase = 'polling', providerTaskId = ?, submissionState = 'accepted',
+           slotHeld = 1, leaseOwner = ?, leaseUntil = ?, fence = ?
+     WHERE id = ?
+  `).run('quota-remote', 'dead-worker', '2020-01-01T00:00:00.000Z', firstFence, first.tasks[0].id);
+
+  const takeover = claimCanvasTasks({
+    db: db2,
+    workerId: 'quota-recovery-worker',
+    limit: 2,
+    globalLimit: 1,
+    quotaLimits: { [LIMITED_CAP.key]: 1 },
+    now: () => new Date('2026-09-12T00:01:00.000Z'),
+  });
+  assert.equal(takeover.length, 1, 'quota=1 满额时只应接管已有远端任务');
+  assert.equal(takeover[0].task.id, first.tasks[0].id);
+  assert.equal(takeover[0].task.providerTaskId, 'quota-remote');
+  assert.equal(takeover[0].task.fence, firstFence + 1);
+  assert.equal(takeover[0].task.leaseOwner, 'quota-recovery-worker');
+  assert.equal(getCanvasTask(db, second.tasks[0].id)?.phase, 'queued');
+  assert.equal(getCanvasTask(db, second.tasks[0].id)?.slotHeld, false);
+  assert.equal(canvasTaskSlotUsage(db).held, 1, '接管不得新增第二个模型名额');
   env.dispose();
 }
 

@@ -295,17 +295,18 @@ console.log(`[${sampleId}] 图已保存 revision=${saved.canvas.graphRevision}�
         }
         : node
     ));
-    await api(`/api/canvas/${canvasId}`, {
+    const roleSaved = await api(`/api/canvas/${canvasId}`, {
       method: 'PATCH',
       body: JSON.stringify({ expectedGraphRevision: saved.canvas.graphRevision, graph }),
     });
+    saved.canvas.graphRevision = roleSaved.canvas.graphRevision;
     console.log(`[${sampleId}] 参考角色已写入：${[...rolesByNode.values()].join('、')}`);
   }
 }
 
 const run = await api(`/api/canvas/${canvasId}/runs`, {
   method: 'POST',
-  body: JSON.stringify({ mode: 'single', targetNodeId: 'g1', requestKey: `p7-${sampleId}-${Date.now()}` }),
+  body: JSON.stringify({ mode: 'single', targetNodeId: 'g1', expectedGraphRevision: saved.canvas.graphRevision, requestKey: `p7-${sampleId}-${Date.now()}` }),
 });
 const taskId = run.tasks[0].id;
 console.log(`[${sampleId}] 任务已创建 taskId=${taskId} 计划=${run.plan.tasks[0].capabilityKey}`);

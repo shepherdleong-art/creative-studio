@@ -245,6 +245,15 @@ export function createCanvasRun(
       };
     }
 
+    const currentCanvas = db.prepare(`SELECT graphRevision FROM creative_canvases WHERE id = ?`).get(plan.canvasId) as
+      | { graphRevision: number } | undefined;
+    if (!currentCanvas || Number(currentCanvas.graphRevision) !== plan.graphRevision) {
+      throw new CanvasError('conflict', '画布已在别处修改，请刷新后重新确认。', {
+        expectedGraphRevision: plan.graphRevision,
+        currentGraphRevision: currentCanvas ? Number(currentCanvas.graphRevision) : null,
+      });
+    }
+
     for (const taskPlan of plan.tasks) {
       const active = findActiveTaskForCanvasNode(db, plan.canvasId, taskPlan.nodeId);
       if (active) {
@@ -430,6 +439,8 @@ export interface ClaimCanvasTasksOptions {
   now?: () => Date;
   /** 每个 quotaKey 的并发上限；未列出的按全局上限。 */
   quotaLimits?: Record<string, number>;
+  /** 任务已由本进程在飞时不得再次领取（避免先改 fence 再跳过）。 */
+  skipTaskIds?: ReadonlySet<string>;
 }
 
 export interface ClaimedCanvasTask {
@@ -449,15 +460,16 @@ export function claimCanvasTasks(options: ClaimCanvasTasksOptions): ClaimedCanva
     globalLimit = CANVAS_DEFAULT_GLOBAL_TASK_LIMIT,
     leaseMs = CANVAS_DEFAULT_TASK_LEASE_MS,
     now = () => new Date(),
-    quotaLimits = {},
+    quotaLimits = {}, skipTaskIds = new Set<string>(),
   } = options;
 
   const execute = db.transaction((): ClaimedCanvasTask[] => {
     const held = Number((db.prepare(
       `SELECT COUNT(*) AS count FROM creative_canvas_tasks WHERE slotHeld = 1`,
     ).get() as { count: number }).count);
-    let remaining = Math.min(limit, globalLimit - held);
-    if (remaining <= 0) return [];
+    // 已有 providerTaskId 的过期任务接管原名额，不需要等待新的全局名额。
+    let remaining = Math.min(limit, Math.max(globalLimit - held, 0));
+    let budget = limit;
 
     const atIso = now().toISOString();
     const candidates = db.prepare(`
@@ -493,18 +505,24 @@ export function claimCanvasTasks(options: ClaimCanvasTasksOptions): ClaimedCanva
     `);
 
     for (const row of candidates) {
-      if (remaining <= 0) break;
+      if (budget <= 0) break;
       const task = rowToTask(row);
+      if (skipTaskIds.has(task.id)) continue;
       const quotaKey = task.quotaKey ?? '';
       const quotaLimit = quotaLimits[quotaKey] ?? globalLimit;
       const used = quotaUsage.get(quotaKey) ?? 0;
-      if (used >= quotaLimit) continue;
-      const info = task.providerTaskId
+      const takeoverCandidate = task.providerTaskId !== null && task.slotHeld;
+      const needsNewSlot = !takeoverCandidate;
+      if (needsNewSlot && (remaining <= 0 || used >= quotaLimit)) continue;
+      const info = takeoverCandidate
         ? takeover.run(workerId, leaseUntil, atIso, task.id, atIso)
-        : claim.run(workerId, leaseUntil, atIso, task.id);
+        : task.providerTaskId
+          ? db.prepare(`UPDATE creative_canvas_tasks SET slotHeld = 1, leaseOwner = ?, leaseUntil = ?, fence = fence + 1, updatedAt = ? WHERE id = ? AND providerTaskId IS NOT NULL AND phase IN ('polling','downloading') AND slotHeld = 0`).run(workerId, leaseUntil, atIso, task.id)
+          : claim.run(workerId, leaseUntil, atIso, task.id);
       if (info.changes !== 1) continue;
-      quotaUsage.set(quotaKey, used + 1);
-      remaining -= 1;
+      if (needsNewSlot) quotaUsage.set(quotaKey, used + 1);
+      budget -= 1;
+      if (needsNewSlot) remaining -= 1;
       const updated = requireCanvasTask(db, task.id);
       claimed.push({ task: updated, fence: updated.fence });
     }
@@ -608,6 +626,20 @@ export function releaseCanvasTaskLease(
   db.prepare(
     `UPDATE creative_canvas_tasks SET leaseOwner = NULL, leaseUntil = NULL, updatedAt = ? WHERE id = ?`,
   ).run((params.now ?? (() => new Date()))().toISOString(), params.taskId);
+}
+
+/** 租约续期与状态写入使用同一 fence，避免长时间供应商调用期间被安全接管。 */
+export function renewCanvasTaskLease(
+  db: Database.Database,
+  params: { taskId: string; fence: number; workerId: string; leaseMs: number; now?: () => Date },
+): boolean {
+  const now = (params.now ?? (() => new Date()))();
+  const until = new Date(now.getTime() + params.leaseMs).toISOString();
+  const info = db.prepare(`
+    UPDATE creative_canvas_tasks SET leaseUntil = ?, updatedAt = ?
+     WHERE id = ? AND fence = ? AND leaseOwner = ? AND slotHeld = 1
+  `).run(until, now.toISOString(), params.taskId, params.fence, params.workerId);
+  return info.changes === 1;
 }
 
 /** 服务端记录节点与任务的关联（发布检查使用 node_states.activeTaskId）。 */

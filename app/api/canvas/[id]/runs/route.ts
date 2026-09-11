@@ -22,6 +22,9 @@ export async function POST(
     const body = await readCanvasJson(request);
     const requestKey = String(body.requestKey ?? '').trim();
     if (!requestKey) throw new CanvasError('invalid_input', '缺少请求标识 requestKey。');
+    if (!Number.isInteger(body.expectedGraphRevision) || Number(body.expectedGraphRevision) < 0) {
+      throw new CanvasError('invalid_input', '缺少有效的图修订号 expectedGraphRevision。');
+    }
 
     const result = startCanvasRun({
       db: getDb(),
@@ -32,6 +35,7 @@ export async function POST(
         ...(body.startNodeId === undefined ? {} : { startNodeId: String(body.startNodeId) }),
         ...(body.reuseStart === undefined ? {} : { reuseStart: Boolean(body.reuseStart) }),
         requestKey,
+        expectedGraphRevision: Number(body.expectedGraphRevision),
       },
       ...(body.planFingerprint === undefined ? {} : { planFingerprint: String(body.planFingerprint) }),
     });

@@ -265,15 +265,29 @@ export interface RegisterCanvasResultAssetParams {
   mimeType: string;
   data: Buffer;
   now?: () => Date;
+  /**
+   * Optional task lease guard. When supplied, the result is committed only
+   * while this worker still owns the exact fence. A stale worker gets null
+   * and its private file is removed by this function.
+   */
+  guard?: { fence: number; workerId: string };
+  /** Synchronous database work committed together with the asset insert. */
+  commit?: (db: Database.Database, asset: CanvasAssetRecord) => void;
 }
 
 /**
  * 登记一次任务的正式产物。与素材导入不同，产物**不做内容去重**：
  * 每个任务只关联一个正式输出（数据库唯一索引），复用同一 assetId 会直接冲突。
  */
+export function registerCanvasResultAsset(
+  params: RegisterCanvasResultAssetParams & { guard: { fence: number; workerId: string } },
+): Promise<CanvasAssetRecord | null>;
+export function registerCanvasResultAsset(
+  params: RegisterCanvasResultAssetParams & { guard?: undefined },
+): Promise<CanvasAssetRecord>;
 export async function registerCanvasResultAsset(
   params: RegisterCanvasResultAssetParams,
-): Promise<CanvasAssetRecord> {
+): Promise<CanvasAssetRecord | null> {
   const { db, canvasId, storageRoot, taskId, mediaKind, mimeType, data, now = () => new Date() } = params;
   if (data.byteLength === 0) {
     throw new CanvasError('invalid_input', '生成结果为空文件。');
@@ -294,25 +308,50 @@ export async function registerCanvasResultAsset(
   await fsPromises.writeFile(temporaryPath, data, { flag: 'wx' });
   await fsPromises.rename(temporaryPath, absolutePath);
 
-  db.prepare(`
-    INSERT INTO creative_canvas_assets
-      (id, canvasId, mediaKind, relativePath, contentHash, mimeType, byteSize, width, height, durationSec, sourceTaskId, ready, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1, ?)
-  `).run(
-    assetId,
-    canvasId,
-    mediaKind,
-    relativePath,
-    createHash('sha256').update(data).digest('hex'),
-    mimeType,
-    data.byteLength,
-    dimensions.width,
-    dimensions.height,
-    taskId,
-    now().toISOString(),
-  );
+  const cleanupOwnFile = (): void => {
+    try { fs.unlinkSync(absolutePath); } catch { /* best effort cleanup of this private file */ }
+  };
 
-  return requireCanvasAsset(db, assetId);
+  try {
+    const commit = db.transaction((): CanvasAssetRecord | null => {
+      if (params.guard) {
+        const owned = db.prepare(`
+          SELECT 1
+            FROM creative_canvas_tasks
+           WHERE id = ? AND canvasId = ? AND fence = ? AND leaseOwner = ?
+        `).get(taskId, canvasId, params.guard.fence, params.guard.workerId);
+        if (!owned) return null;
+      }
+
+      db.prepare(`
+        INSERT INTO creative_canvas_assets
+          (id, canvasId, mediaKind, relativePath, contentHash, mimeType, byteSize, width, height, durationSec, sourceTaskId, ready, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1, ?)
+      `).run(
+        assetId,
+        canvasId,
+        mediaKind,
+        relativePath,
+        createHash('sha256').update(data).digest('hex'),
+        mimeType,
+        data.byteLength,
+        dimensions.width,
+        dimensions.height,
+        taskId,
+        now().toISOString(),
+      );
+
+      const asset = requireCanvasAsset(db, assetId);
+      params.commit?.(db, asset);
+      return asset;
+    });
+    const asset = commit.immediate();
+    if (!asset) cleanupOwnFile();
+    return asset;
+  } catch (error) {
+    cleanupOwnFile();
+    throw error;
+  }
 }
 
 export interface CanvasAssetReadResult {

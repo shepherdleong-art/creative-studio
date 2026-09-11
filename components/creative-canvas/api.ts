@@ -162,6 +162,9 @@ export const canvasApi = {
     `/api/canvas/${canvasId}`,
     { method: 'PATCH', body: JSON.stringify(body) },
   ),
+  saveViewport: (canvasId: string, viewport: CanvasViewport) => request<{ canvas: CanvasDto }>(
+    `/api/canvas/${canvasId}`, { method: 'PATCH', body: JSON.stringify({ viewport }) },
+  ),
   rename: (canvasId: string, name: string) => request<{ canvas: CanvasDto }>(`/api/canvas/${canvasId}`, {
     method: 'PATCH',
     body: JSON.stringify({ name }),

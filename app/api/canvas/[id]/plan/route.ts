@@ -19,6 +19,7 @@ function planRequestFromBody(canvasId: string, body: Record<string, unknown>) {
     ...(body.startNodeId === undefined ? {} : { startNodeId: String(body.startNodeId) }),
     ...(body.reuseStart === undefined ? {} : { reuseStart: Boolean(body.reuseStart) }),
     requestKey: body.requestKey === undefined ? '' : String(body.requestKey),
+    ...(body.expectedGraphRevision === undefined ? {} : { expectedGraphRevision: Number(body.expectedGraphRevision) }),
   };
 }
 

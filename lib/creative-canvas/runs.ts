@@ -44,7 +44,7 @@ export interface StartCanvasRunResult {
 
 function problemsError(problems: CanvasPlanProblem[]): CanvasError {
   const first = problems[0];
-  const conflictCodes = new Set(['node_busy']);
+  const conflictCodes = new Set(['node_busy', 'revision_conflict']);
   const capabilityCodes = new Set(['model_not_selected', 'capability_unknown', 'capability_input_invalid']);
   const code = first && conflictCodes.has(first.code) ? 'conflict'
     : first && capabilityCodes.has(first.code) ? 'capability_unavailable'

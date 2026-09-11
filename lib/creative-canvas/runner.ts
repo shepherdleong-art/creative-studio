@@ -18,6 +18,7 @@ import {
   canvasAssetAbsolutePath,
   canvasStorageRoot,
   registerCanvasResultAsset,
+  type CanvasAssetRecord,
 } from './assets.ts';
 import { CanvasAdapterError, type CanvasResolvedInput, type CanvasTaskAdapter, type CanvasTaskContext } from './adapters/types.ts';
 import { findGraphNode } from './graph.ts';
@@ -72,6 +73,11 @@ function resolveInputKind(
   sourceNodeId: string | null,
   fallbackAssetId: string | null,
 ): CanvasResolvedInput['kind'] {
+  if (fallbackAssetId) {
+    const asset = db.prepare(`SELECT mediaKind FROM creative_canvas_assets WHERE id = ?`).get(fallbackAssetId) as
+      | { mediaKind: string } | undefined;
+    if (asset?.mediaKind) return asset.mediaKind as CanvasResolvedInput['kind'];
+  }
   if (!sourceNodeId) {
     const asset = fallbackAssetId
       ? db.prepare(`SELECT mediaKind FROM creative_canvas_assets WHERE id = ?`).get(fallbackAssetId) as
@@ -173,6 +179,84 @@ function assetAbsolutePath(db: Database.Database, assetId: string, storageRoot: 
     ready: Number(row.ready) === 1,
     createdAt: String(row.createdAt),
   }, storageRoot);
+}
+
+function publishCanvasNodeResultInTransaction(
+  db: Database.Database,
+  params: { canvasId: string; nodeId: string; taskId: string; nodeEpoch: number; assetId: string; at: string },
+): boolean {
+  return publishCanvasNodeResult({
+    db,
+    canvasId: params.canvasId,
+    nodeId: params.nodeId,
+    taskId: params.taskId,
+    nodeEpoch: params.nodeEpoch,
+    assetId: params.assetId,
+    now: () => new Date(params.at),
+  }).published;
+}
+
+interface OwnedOutputCommitResult {
+  owned: boolean;
+  valid: boolean;
+  published: boolean;
+}
+
+/**
+ * Re-publish an output already recorded by a previous worker. The task guard,
+ * terminal task update, and node publication share one immediate transaction.
+ */
+function commitRecordedOutput(
+  db: Database.Database,
+  params: {
+    task: CanvasTaskRecord;
+    outputAssetId: string;
+    guard: { fence: number; workerId: string };
+    now: () => Date;
+  },
+): OwnedOutputCommitResult {
+  const commit = db.transaction((): OwnedOutputCommitResult => {
+    const owned = db.prepare(`
+      SELECT 1
+        FROM creative_canvas_tasks
+       WHERE id = ? AND canvasId = ? AND fence = ? AND leaseOwner = ?
+    `).get(params.task.id, params.task.canvasId, params.guard.fence, params.guard.workerId);
+    if (!owned) return { owned: false, valid: false, published: false };
+
+    const asset = db.prepare(`
+      SELECT 1
+        FROM creative_canvas_assets
+       WHERE id = ? AND canvasId = ? AND sourceTaskId = ? AND ready = 1
+    `).get(params.outputAssetId, params.task.canvasId, params.task.id);
+    if (!asset) return { owned: true, valid: false, published: false };
+
+    const at = params.now().toISOString();
+    const updated = db.prepare(`
+      UPDATE creative_canvas_tasks
+         SET phase = 'succeeded', submissionState = 'terminal', outputAssetId = ?,
+             errorCode = NULL, errorMessage = NULL, leaseOwner = NULL, leaseUntil = NULL,
+             slotHeld = 0, updatedAt = ?
+       WHERE id = ? AND canvasId = ? AND fence = ? AND leaseOwner = ?
+    `).run(
+      params.outputAssetId,
+      at,
+      params.task.id,
+      params.task.canvasId,
+      params.guard.fence,
+      params.guard.workerId,
+    );
+    if (updated.changes !== 1) return { owned: false, valid: false, published: false };
+    const published = publishCanvasNodeResultInTransaction(db, {
+      canvasId: params.task.canvasId,
+      nodeId: params.task.nodeId,
+      taskId: params.task.id,
+      nodeEpoch: params.task.nodeEpoch,
+      assetId: params.outputAssetId,
+      at,
+    });
+    return { owned: true, valid: true, published };
+  });
+  return commit.immediate();
 }
 
 export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<CanvasRunTaskOutcome> {
@@ -285,14 +369,16 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
     recordCanvasTaskUsage(db, { taskId });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const uncertain = error instanceof CanvasAdapterError && error.uncertain;
+    // 外部 fetch 的普通 TypeError（网络断开、连接重置等）无法证明 POST 未到达，必须保守待核查。
+    const uncertain = (error instanceof CanvasAdapterError && error.uncertain)
+      || error instanceof TypeError;
     const phase: CanvasTaskPhase = uncertain ? 'uncertain' : 'failed';
     updateCanvasTaskGuarded(db, {
       taskId,
       patch: {
         phase,
         submissionState: uncertain ? 'maybe_sent' : 'terminal',
-        errorCode: error instanceof CanvasAdapterError ? error.code : 'submit_failed',
+        errorCode: error instanceof CanvasAdapterError ? error.code : (uncertain ? 'submit_uncertain' : 'submit_failed'),
         errorMessage: message,
         leaseOwner: null,
         leaseUntil: null,
@@ -400,35 +486,17 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
   // 输出文件已经落盘、只是发布事务没走完：接管同一份文件，绝不重新下载或生成。
   const recordedOutput = getCanvasTask(db, taskId)?.outputAssetId ?? null;
   if (recordedOutput) {
-    updateCanvasTaskGuarded(db, {
-      taskId,
-      patch: {
+    const republished = commitRecordedOutput(db, { task, outputAssetId: recordedOutput, guard, now });
+    if (!republished.owned) return finish(getCanvasTask(db, taskId)?.phase ?? 'polling');
+    if (republished.valid) {
+      return {
+        taskId,
         phase: 'succeeded',
-        submissionState: 'terminal',
+        outputAssetId: recordedOutput,
+        published: republished.published,
         errorCode: null,
-        errorMessage: null,
-        leaseOwner: null,
-        leaseUntil: null,
-      },
-      guard,
-      now,
-    });
-    const republished = publishCanvasNodeResult({
-      db,
-      canvasId: task.canvasId,
-      nodeId: task.nodeId,
-      taskId,
-      nodeEpoch: task.nodeEpoch,
-      assetId: recordedOutput,
-      now,
-    });
-    return {
-      taskId,
-      phase: 'succeeded',
-      outputAssetId: recordedOutput,
-      published: republished.published,
-      errorCode: null,
-    };
+      };
+    }
   }
 
   updateCanvasTaskGuarded(db, {
@@ -459,9 +527,10 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
     return finish('download_failed');
   }
 
-  let assetId: string;
+  let asset: CanvasAssetRecord | null;
+  let published = false;
   try {
-    const asset = await registerCanvasResultAsset({
+    asset = await registerCanvasResultAsset({
       db,
       canvasId: task.canvasId,
       storageRoot,
@@ -470,8 +539,34 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
       mimeType: downloaded.mimeType,
       data: downloaded.bytes,
       now,
+      guard,
+      commit: (transactionDb, registeredAsset) => {
+        const at = now().toISOString();
+        const recorded = transactionDb.prepare(`
+          UPDATE creative_canvas_tasks
+             SET phase = 'succeeded', submissionState = 'terminal', outputAssetId = ?,
+                 errorCode = NULL, errorMessage = NULL, leaseOwner = NULL, leaseUntil = NULL,
+                 slotHeld = 0, updatedAt = ?
+           WHERE id = ? AND canvasId = ? AND fence = ? AND leaseOwner = ?
+        `).run(
+          registeredAsset.id,
+          at,
+          taskId,
+          task.canvasId,
+          guard.fence,
+          guard.workerId,
+        );
+        if (recorded.changes !== 1) throw new Error('任务已失去租约，拒绝登记生成结果。');
+        published = publishCanvasNodeResultInTransaction(transactionDb, {
+          canvasId: task.canvasId,
+          nodeId: task.nodeId,
+          taskId,
+          nodeEpoch: task.nodeEpoch,
+          assetId: registeredAsset.id,
+          at,
+        });
+      },
     });
-    assetId = asset.id;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     updateCanvasTaskGuarded(db, {
@@ -488,36 +583,18 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
     });
     return finish('download_failed');
   }
-
-  // 6. 登记输出 + 发布当前结果：只在节点仍存在、epoch 匹配且 activeTaskId 指向本任务时生效
-  updateCanvasTaskGuarded(db, {
-    taskId,
-    patch: {
-      phase: 'succeeded',
-      submissionState: 'terminal',
-      outputAssetId: assetId,
-      errorCode: null,
-      errorMessage: null,
-      leaseOwner: null,
-      leaseUntil: null,
-    },
-    guard,
-    now,
-  });
-  const published = publishCanvasNodeResult({
-    db,
-    canvasId: task.canvasId,
-    nodeId: task.nodeId,
-    taskId,
-    nodeEpoch: task.nodeEpoch,
-    assetId,
-    now,
-  });
+  // registerCanvasResultAsset atomically checked the guard, inserted the asset,
+  // completed the task, and attempted node publication. A stale worker only
+  // leaves its private file cleanup and cannot touch any database row.
+  if (!asset) {
+    const latest = getCanvasTask(db, taskId);
+    return finish(latest?.phase ?? 'polling');
+  }
   return {
     taskId,
     phase: 'succeeded',
-    outputAssetId: assetId,
-    published: published.published,
+    outputAssetId: asset.id,
+    published,
     errorCode: null,
   };
 }

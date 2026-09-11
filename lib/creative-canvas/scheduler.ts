@@ -17,6 +17,7 @@ import {
   CANVAS_DEFAULT_TASK_LEASE_MS,
   claimCanvasTasks,
   resolveCanvasTaskInputs,
+  renewCanvasTaskLease,
 } from './tasks.ts';
 
 export interface CanvasSchedulerOptions {
@@ -83,6 +84,7 @@ export function createCanvasScheduler(options: CanvasSchedulerOptions): CanvasSc
       globalLimit,
       leaseMs,
       now,
+      skipTaskIds: new Set(inFlight.keys()),
       ...(quotaLimits ? { quotaLimits } : {}),
     });
 
@@ -90,6 +92,14 @@ export function createCanvasScheduler(options: CanvasSchedulerOptions): CanvasSc
       if (inFlight.has(task.id)) continue;
       const aborter = new AbortController();
       runAborters.set(task.id, aborter);
+      const heartbeat = setInterval(() => {
+        try {
+          if (!renewCanvasTaskLease(db, { taskId: task.id, fence, workerId, leaseMs, now })) aborter.abort();
+        } catch {
+          aborter.abort();
+        }
+      }, Math.max(500, Math.floor(leaseMs / 3)));
+      heartbeat.unref?.();
       const run = runCanvasTask({
         db,
         taskId: task.id,
@@ -102,11 +112,13 @@ export function createCanvasScheduler(options: CanvasSchedulerOptions): CanvasSc
         signal: aborter.signal,
         ...(sleep ? { sleep } : {}),
       }).then((outcome) => {
+        clearInterval(heartbeat);
         inFlight.delete(task.id);
         runAborters.delete(task.id);
         onTaskSettled?.(outcome);
         return outcome;
       }, (error: unknown) => {
+        clearInterval(heartbeat);
         inFlight.delete(task.id);
         runAborters.delete(task.id);
         throw error;

@@ -29,8 +29,8 @@ import path from 'node:path';
 import { chromium } from '@playwright/test';
 import sharp from 'sharp';
 
-const SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'all'];
-const IMPLEMENTED_SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy'];
+const SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'all'];
+const IMPLEMENTED_SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression'];
 
 const suiteArgIndex = process.argv.indexOf('--suite');
 const suite = suiteArgIndex >= 0 ? process.argv[suiteArgIndex + 1] : 'all';
@@ -42,7 +42,7 @@ const requested = suite === 'all' ? SUITES.filter((name) => name !== 'all') : [s
 const unimplemented = requested.filter((name) => !IMPLEMENTED_SUITES.includes(name));
 if (unimplemented.length > 0) {
   console.error(`以下 suite 尚未实现，未执行（不视为通过）：${unimplemented.join('、')}`);
-  console.error('已实现：editor、execution（P3）、recovery（P5）、export、performance、legacy（P6）。');
+  console.error('已实现：editor、execution（P3）、recovery（P5）、export、performance、legacy（P6）、regression。');
   process.exit(2);
 }
 
@@ -165,6 +165,32 @@ async function startServer(extraEnv = {}) {
 // --- 页面辅助 ---------------------------------------------------------------
 
 const runPosts = [];
+const expectedHttpErrors = [];
+
+function expectHttpError(url, method, status = 409, errorCode = 'conflict') {
+  const expectation = {
+    url,
+    method,
+    status,
+    errorCode,
+    matches: 0,
+    bodyMatches: 0,
+    consoleAllowance: 0,
+  };
+  expectedHttpErrors.push(expectation);
+  return expectation;
+}
+
+async function assertExpectedHttpError(expectation, label) {
+  for (let attempt = 0; attempt < 40 && (expectation.matches < 1 || expectation.bodyMatches < 1); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(expectation.matches, 1, `${label} 应精确命中一次 ${expectation.method} ${expectation.url} ${expectation.status}`);
+  assert.equal(expectation.bodyMatches, 1, `${label} 响应应包含 error=${expectation.errorCode}`);
+  const index = expectedHttpErrors.indexOf(expectation);
+  if (index >= 0) expectedHttpErrors.splice(index, 1);
+}
+
 function trackRunRequests(page) {
   page.on('request', (request) => {
     if (request.method() === 'POST' && /\/api\/canvas\/[^/]+\/runs$/.test(new URL(request.url()).pathname)) {
@@ -309,6 +335,12 @@ async function fillPrompt(page, nodeId, text) {
   await page.locator(selector).blur();
 }
 
+async function fillTextPrompt(page, nodeId, text) {
+  const selector = `.react-flow__node[data-id="${nodeId}"] [data-testid="prompt-text"]`;
+  await page.fill(selector, text);
+  await page.locator(selector).blur();
+}
+
 async function nodeAttribute(page, nodeId, attribute) {
   const locator = page.locator(`.react-flow__node[data-id="${nodeId}"] [${attribute}]`).first();
   // 不等待：元素不存在时要立刻返回 null（调用方先用 waitForSelector 等结果出现）
@@ -320,6 +352,20 @@ async function surfaceBox(page) {
   const box = await page.locator('[data-testid="canvas-surface"]').boundingBox();
   assert.ok(box, '找不到画布区域');
   return box;
+}
+
+async function readViewportTransform(page) {
+  const style = await page.locator('.react-flow__viewport').getAttribute('style');
+  assert.ok(style, '找不到 React Flow 视口样式');
+  const match = style.match(/translate\(([-+\d.]+)px,\s*([-+\d.]+)px\)\s*scale\(([-+\d.]+)\)/);
+  assert.ok(match, `无法解析视口变换：${style}`);
+  return { x: Number(match[1]), y: Number(match[2]), zoom: Number(match[3]) };
+}
+
+function assertViewportClose(actual, expected, message) {
+  assert.ok(Math.abs(actual.x - expected.x) < 1, `${message} x=${actual.x} expected=${expected.x}`);
+  assert.ok(Math.abs(actual.y - expected.y) < 1, `${message} y=${actual.y} expected=${expected.y}`);
+  assert.ok(Math.abs(actual.zoom - expected.zoom) < 0.01, `${message} zoom=${actual.zoom} expected=${expected.zoom}`);
 }
 
 async function dropFileOnCanvas(page, filePath, fileName, point) {
@@ -822,6 +868,194 @@ async function exportSuite(page) {
 }
 
 /**
+ * review 回归：覆盖保存期间编辑、跨页面 revision、视口持久化，以及过期运行请求。
+ * 这些用例都走真实 standalone 服务与 Playwright 页面，不以源码匹配代替行为证据。
+ */
+async function regressionSuite(page) {
+  const pngPath = path.join(fixtureDir, '回归素材.png');
+  fs.writeFileSync(pngPath, await sharp({ create: { width: 40, height: 40, channels: 3, background: '#536d8a' } }).png().toBuffer());
+
+  // 1. 首次 PATCH 延迟超过 debounce，期间的新编辑必须触发补保存。
+  const delayedCanvasId = await createCanvas(page, '保存延迟回归');
+  const delayedPromptId = await addNode(page, 'prompt');
+  let delayedPatchSeen = false;
+  let releaseDelayedPatch;
+  const delayedPatch = new Promise((resolve) => { releaseDelayedPatch = resolve; });
+  const delayedRoute = new RegExp(`/api/canvas/${delayedCanvasId}$`);
+  await page.route(delayedRoute, async (route) => {
+    const request = route.request();
+    if (!delayedPatchSeen && request.method() === 'PATCH') {
+      let body = {};
+      try { body = JSON.parse(request.postData() ?? '{}'); } catch { body = {}; }
+      if (body.graph) {
+        delayedPatchSeen = true;
+        await delayedPatch;
+      }
+    }
+    await route.continue();
+  });
+  await fillTextPrompt(page, delayedPromptId, '第一版内容');
+  for (let attempt = 0; attempt < 30 && !delayedPatchSeen; attempt += 1) await page.waitForTimeout(100);
+  assert.equal(delayedPatchSeen, true, '应捕获到被延迟的首个图 PATCH');
+  await fillTextPrompt(page, delayedPromptId, '延迟期间的新内容');
+  releaseDelayedPatch();
+  await waitSaved(page);
+  await page.unroute(delayedRoute);
+  const delayedSaved = await page.evaluate(async ({ id, nodeId }) => {
+    const payload = await (await fetch(`/api/canvas/${id}`)).json();
+    return payload.canvas.graph.nodes.find((node) => node.id === nodeId)?.data?.text ?? null;
+  }, { id: delayedCanvasId, nodeId: delayedPromptId });
+  assert.equal(delayedSaved, '延迟期间的新内容', '延迟 PATCH 放行后服务端应保存最新内容');
+  await page.reload();
+  await page.waitForSelector('[data-testid="canvas-editor"]');
+  await page.waitForFunction(({ id, text }) => (
+    document.querySelector(`.react-flow__node[data-id="${id}"] [data-testid="prompt-text"]`)?.value === text
+  ), { id: delayedPromptId, text: '延迟期间的新内容' });
+
+  // 1.5. 分支预览后修改图定义，第一次确认只更新指纹与预览，不直接扩大任务范围。
+  const branchCanvasId = await createCanvas(page, '分支预览重验回归');
+  const branchMaterialId = await addMaterialWithImage(page, pngPath);
+  const branchImageId = await addNode(page, 'image-generation');
+  await selectModel(page, branchImageId, 'fixture-image-edit');
+  await fillPrompt(page, branchImageId, '分支预览样本');
+  await connect(page, branchMaterialId, branchImageId);
+  await waitSaved(page);
+  await page.click(`.react-flow__node[data-id="${branchImageId}"] [data-testid="run-branch"]`);
+  await page.waitForSelector('[data-testid="branch-preview"]');
+  const branchTasksBefore = await page.evaluate(async (id) => (await (await fetch(`/api/canvas/${id}`)).json()).canvas.tasks.length, branchCanvasId);
+  await page.click('[data-testid="add-prompt"]');
+  await waitSaved(page);
+  await page.click('[data-testid="confirm-branch"]');
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="status-message"]')?.textContent?.includes('再次确认启动'),
+    null,
+    { timeout: 15_000 },
+  );
+  const branchTasksAfter = await page.evaluate(async (id) => (await (await fetch(`/api/canvas/${id}`)).json()).canvas.tasks.length, branchCanvasId);
+  assert.equal(branchTasksAfter, branchTasksBefore, '分支预览变更后首次确认不得直接创建任务');
+
+  // 2. B 页面提交后，A 只收到运行投影轮询；A 的旧基准保存必须 409 且保留本地内容。
+  const concurrentCanvasId = await createCanvas(page, '跨页面 revision 回归');
+  const concurrentPromptId = await addNode(page, 'prompt');
+  await fillTextPrompt(page, concurrentPromptId, 'A 初始内容');
+  await waitSaved(page);
+  const pageB = await page.context().newPage();
+  try {
+    await pageB.goto(`${baseUrl}/canvas/${concurrentCanvasId}`);
+    await pageB.waitForSelector('[data-testid="canvas-editor"]');
+    await pageB.waitForFunction((id) => document.querySelector(`.react-flow__node[data-id="${id}"]`), concurrentPromptId);
+    await fillTextPrompt(pageB, concurrentPromptId, 'B 已提交内容');
+    await waitSaved(pageB);
+    await page.waitForTimeout(2_000);
+    const concurrentConflictExpectation = expectHttpError(
+      `${baseUrl}/api/canvas/${concurrentCanvasId}`,
+      'PATCH',
+    );
+    await fillTextPrompt(page, concurrentPromptId, 'A 本地草稿');
+    await page.waitForFunction(() => document.querySelector('[data-testid="save-state"]')?.textContent?.includes('保存冲突'), null, { timeout: 15_000 });
+    await assertExpectedHttpError(concurrentConflictExpectation, '跨页面过期保存');
+    assert.equal(
+      await page.inputValue(`.react-flow__node[data-id="${concurrentPromptId}"] [data-testid="prompt-text"]`),
+      'A 本地草稿',
+      '409 后 A 页面必须保留本地草稿',
+    );
+    const concurrentServer = await page.evaluate(async (id) => (await (await fetch(`/api/canvas/${id}`)).json()).canvas, concurrentCanvasId);
+    assert.equal(
+      concurrentServer.graph.nodes.find((node) => node.id === concurrentPromptId)?.data?.text,
+      'B 已提交内容',
+      'A 的过期图不得覆盖 B 的服务端内容',
+    );
+    await page.click('[data-testid="reload-canvas"]');
+    await page.waitForFunction(
+      ({ id, text }) => document.querySelector(`.react-flow__node[data-id="${id}"] [data-testid="prompt-text"]`)?.value === text,
+      { id: concurrentPromptId, text: 'B 已提交内容' },
+    );
+    await fillTextPrompt(page, concurrentPromptId, 'A 重新加载后内容');
+    await waitSaved(page);
+    const reloadedServer = await page.evaluate(async (id) => (await (await fetch(`/api/canvas/${id}`)).json()).canvas, concurrentCanvasId);
+    assert.equal(
+      reloadedServer.graph.nodes.find((node) => node.id === concurrentPromptId)?.data?.text,
+      'A 重新加载后内容',
+      '重新加载清除冲突后，新编辑应能再次保存',
+    );
+  } finally {
+    await pageB.close();
+  }
+
+  // 3. 缩放和平移后的实际 React Flow transform 要保存，并在刷新后恢复。
+  const viewportCanvasId = await createCanvas(page, '视口持久化回归');
+  await addNode(page, 'prompt');
+  await waitSaved(page);
+  const surface = await surfaceBox(page);
+  const center = { x: surface.x + surface.width / 2, y: surface.y + surface.height / 2 };
+  const viewportBefore = await readViewportTransform(page);
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.wheel(0, -480);
+  await page.waitForTimeout(250);
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(center.x + 120, center.y + 80, { steps: 8 });
+  await page.mouse.up({ button: 'middle' });
+  await page.waitForTimeout(1_000);
+  const viewportAfter = await readViewportTransform(page);
+  assert.notDeepEqual(viewportAfter, viewportBefore, '缩放／平移后 transform 应发生变化');
+  const viewportServer = await page.evaluate(async (id) => (await (await fetch(`/api/canvas/${id}`)).json()).canvas.viewport, viewportCanvasId);
+  assertViewportClose(viewportServer, viewportAfter, '服务端视口应与页面最终 transform 一致');
+  await page.reload();
+  await page.waitForSelector('[data-testid="canvas-editor"]');
+  await page.waitForFunction(({ x, y, zoom }) => {
+    const style = document.querySelector('.react-flow__viewport')?.getAttribute('style') ?? '';
+    const match = style.match(/translate\(([-+\d.]+)px,\s*([-+\d.]+)px\)\s*scale\(([-+\d.]+)\)/);
+    return Boolean(match)
+      && Math.abs(Number(match[1]) - x) < 1
+      && Math.abs(Number(match[2]) - y) < 1
+      && Math.abs(Number(match[3]) - zoom) < 0.01;
+  }, viewportServer, { timeout: 15_000 });
+
+  // 4. 过期 graph revision 启动必须 409，且事务不能创建任何任务。
+  const staleCanvasId = await createCanvas(page, '过期运行回归');
+  const staleMaterialId = await addMaterialWithImage(page, pngPath);
+  const staleImageId = await addNode(page, 'image-generation');
+  await selectModel(page, staleImageId, 'fixture-image-edit');
+  await fillPrompt(page, staleImageId, '过期修订样本');
+  await connect(page, staleMaterialId, staleImageId);
+  await waitSaved(page);
+  const staleState = await page.evaluate(async (id) => (await (await fetch(`/api/canvas/${id}`)).json()).canvas, staleCanvasId);
+  const staleRunExpectation = expectHttpError(
+    `${baseUrl}/api/canvas/${staleCanvasId}/runs`,
+    'POST',
+  );
+  const staleRun = await page.evaluate(async ({ id, targetNodeId, expectedGraphRevision }) => {
+    const response = await fetch(`/api/canvas/${id}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'single',
+        targetNodeId,
+        requestKey: `stale-${Date.now()}`,
+        expectedGraphRevision,
+      }),
+    });
+    return { status: response.status, body: await response.json() };
+  }, {
+    id: staleCanvasId,
+    targetNodeId: staleImageId,
+    expectedGraphRevision: Math.max(0, staleState.graphRevision - 1),
+  });
+  assert.equal(staleRun.status, 409, `过期运行应返回 409：${JSON.stringify(staleRun.body)}`);
+  await assertExpectedHttpError(staleRunExpectation, '过期运行启动');
+  const staleAfter = await page.evaluate(async (id) => (await (await fetch(`/api/canvas/${id}`)).json()).canvas, staleCanvasId);
+  assert.equal(staleAfter.tasks.length, staleState.tasks.length, '过期运行不得增加任务数');
+
+  return {
+    delayedSave: delayedSaved,
+    concurrentConflict: true,
+    viewport: viewportServer,
+    staleRunStatus: staleRun.status,
+  };
+}
+
+/**
  * T6 performance：50 个节点（≥20 个媒体节点）+ 全局 10 个 fixture 任务下，
  * 连续拖动、缩放、输入、保存与切换，记录机器／浏览器／素材信息与观察结果。
  */
@@ -878,12 +1112,19 @@ async function performanceSuite(page) {
 
   // 启动 10 个 fixture 任务
   const started = await page.evaluate(async ({ id }) => {
+    const current = await (await fetch(`/api/canvas/${id}`)).json();
+    const expectedGraphRevision = current.canvas.graphRevision;
     let count = 0;
     for (let index = 0; index < 10; index += 1) {
       const response = await fetch(`/api/canvas/${id}/runs`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: 'single', targetNodeId: `perf-g-${index}`, requestKey: `perf-${index}-${Date.now()}` }),
+        body: JSON.stringify({
+          mode: 'single',
+          targetNodeId: `perf-g-${index}`,
+          requestKey: `perf-${index}-${Date.now()}`,
+          expectedGraphRevision,
+        }),
       });
       if (response.ok) count += 1;
     }
@@ -1134,6 +1375,22 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
   page = await context.newPage();
   trackRunRequests(page);
+  page.on('response', (response) => {
+    const request = response.request();
+    const expectation = expectedHttpErrors.find((candidate) => (
+      candidate.url === response.url()
+      && candidate.method === request.method()
+      && candidate.status === response.status()
+    ));
+    if (!expectation) return;
+    expectation.matches += 1;
+    expectation.consoleAllowance += 1;
+    void response.json().then((payload) => {
+      if (payload && typeof payload === 'object' && payload.error === expectation.errorCode) {
+        expectation.bodyMatches += 1;
+      }
+    }).catch(() => undefined);
+  });
   const browserErrors = [];
   page.on('pageerror', (error) => browserErrors.push(String(error)));
   page.on('console', (message) => {
@@ -1142,6 +1399,13 @@ try {
     // 触发下载（window.location.href → 附件响应）会中止在途请求，
     // 浏览器把这类中止记为资源错误，属于下载流程的正常噪声。
     if (/ERR_INCOMPLETE_CHUNKED_ENCODING|net::ERR_ABORTED/.test(text)) return;
+    if (/\b409\b|Conflict/i.test(text)) {
+      const expectation = expectedHttpErrors.find((candidate) => candidate.consoleAllowance > 0);
+      if (expectation) {
+        expectation.consoleAllowance -= 1;
+        return;
+      }
+    }
     browserErrors.push(`console: ${text}`);
   });
 
@@ -1162,6 +1426,10 @@ try {
     if (name === 'legacy') {
       await startServer();
       evidence.legacy = await legacySuite(page);
+    }
+    if (name === 'regression') {
+      await startServer();
+      evidence.regression = await regressionSuite(page);
     }
     if (name === 'performance') {
       // 性能观察需要任务长时间在跑：把 fixture 放慢

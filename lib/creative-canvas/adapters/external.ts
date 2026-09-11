@@ -118,6 +118,37 @@ function syncImageTempPath(storageRoot: string, canvasId: string, taskId: string
   return path.join(storageRoot, 'canvas', canvasId, 'tmp', `${taskId}.img`);
 }
 
+function syncImageReceiptPath(storageRoot: string, canvasId: string, taskId: string): string {
+  return path.join(storageRoot, 'canvas', canvasId, 'tmp', `${taskId}.receipt.json`);
+}
+
+function writeAtomic(filePath: string, content: string | Buffer): void {
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporaryPath, content, { mode: 0o600 });
+  fs.renameSync(temporaryPath, filePath);
+}
+
+type SyncImageReceipt = { version: 1; kind: 'url'; url: string };
+
+function writeSyncImageUrlReceipt(storageRoot: string, canvasId: string, taskId: string, url: string): void {
+  const receiptPath = syncImageReceiptPath(storageRoot, canvasId, taskId);
+  fs.mkdirSync(path.dirname(receiptPath), { recursive: true, mode: 0o700 });
+  writeAtomic(receiptPath, JSON.stringify({ version: 1, kind: 'url', url } satisfies SyncImageReceipt));
+}
+
+function readSyncImageUrlReceipt(storageRoot: string, canvasId: string, taskId: string): string | null {
+  const receiptPath = syncImageReceiptPath(storageRoot, canvasId, taskId);
+  if (!fs.existsSync(receiptPath)) return null;
+  try {
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as Partial<SyncImageReceipt>;
+    return receipt.version === 1 && receipt.kind === 'url' && typeof receipt.url === 'string' && receipt.url
+      ? receipt.url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function candidateSizes(parameters: Record<string, string | number | boolean>): string {
   const ratio = String(parameters.aspectRatio ?? '1:1');
   const resolution = String(parameters.resolution ?? '1K').toLowerCase();
@@ -133,13 +164,28 @@ function imageInputsOf(context: CanvasTaskContext) {
   return context.inputs.filter((input) => input.kind === 'image');
 }
 
-async function decodeImageResponse(response: Response, fetchImpl: typeof fetch): Promise<Buffer> {
-  const text = await response.text();
+function linkedTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (!signal) return timeout;
+  return AbortSignal.any([signal, timeout]);
+}
+
+async function decodeImageResponse(response: Response, apiKey: string): Promise<Buffer | { url: string }> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    throw new CanvasAdapterError('submit', '外部图片网关响应读取中断，提交结果不明。', {
+      uncertain: true,
+      code: 'external_response_read_uncertain',
+    });
+  }
   if (!response.ok) {
+    const uncertain = response.status >= 500;
     throw new CanvasAdapterError(
       'submit',
-      `外部图片网关提交失败 ${response.status}：${sanitizeGatewayMediaDiagnostic(text, '').slice(0, 300)}`,
-      { code: 'external_submit_rejected' },
+      `外部图片网关提交失败 ${response.status}：${sanitizeGatewayMediaDiagnostic(text, apiKey).slice(0, 300)}`,
+      { uncertain, code: uncertain ? 'external_submit_uncertain' : 'external_submit_rejected' },
     );
   }
   let payload: { data?: Array<{ b64_json?: string; url?: string }>; error?: unknown };
@@ -153,18 +199,28 @@ async function decodeImageResponse(response: Response, fetchImpl: typeof fetch):
   }
   const item = payload.data?.[0];
   if (item?.b64_json) return Buffer.from(item.b64_json, 'base64');
-  if (item?.url) {
-    const downloaded = await fetchImpl(item.url, { signal: AbortSignal.timeout(120_000) });
-    if (!downloaded.ok) {
-      throw new CanvasAdapterError('submit', `外部图片产物下载失败 ${downloaded.status}。`, {
-        code: 'external_result_download_failed',
-      });
-    }
-    return Buffer.from(await downloaded.arrayBuffer());
-  }
+  if (item?.url) return { url: item.url };
   throw new CanvasAdapterError('submit', '外部图片网关没有返回图片内容，提交结果不明。', {
     uncertain: true,
     code: 'external_result_missing',
+  });
+}
+
+function isHttpClientRejection(error: unknown): boolean {
+  return /^(?:Jimeng(?: text-to-video| reference-to-video)?|Kling|Video gateway) submit error 4\d\d:/i
+    .test(error instanceof Error ? error.message : String(error));
+}
+
+function submitError(stage: 'submit', message: string, error: unknown, signal?: AbortSignal): CanvasAdapterError {
+  if (signal?.aborted && !isHttpClientRejection(error)) {
+    return new CanvasAdapterError(stage, '提交被中止，生成请求结果不明。', {
+      uncertain: true,
+      code: 'submit_uncertain',
+    });
+  }
+  return new CanvasAdapterError(stage, message, {
+    uncertain: !isHttpClientRejection(error),
+    code: isHttpClientRejection(error) ? 'external_submit_rejected' : 'external_submit_uncertain',
   });
 }
 
@@ -289,42 +345,60 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       const imageInputs = imageInputsOf(context);
 
       if (capability.mediaKind === 'image') {
+        if (signal?.aborted) {
+          throw new CanvasAdapterError('submit', '提交在生成请求前已中止，任务未提交。', { code: 'submit_aborted' });
+        }
         const size = candidateSizes(context.parameters);
         let response: Response;
-        if (imageInputs.length === 0) {
-          // 文生图：不伪造占位底图
-          response = await fetchImpl(`${route.baseUrl}/v1/images/generations`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
-            body: JSON.stringify({ model: capability.modelAlias, prompt: context.prompt, size, n: 1 }),
-            signal: AbortSignal.timeout(submitTimeoutMs),
-          });
-        } else {
-          // 图生图 + 多参考：图1 = 底图，其后按节点顺序追加参考图；提示词原样提交
-          const form = new FormData();
-          form.append('model', capability.modelAlias);
-          form.append('prompt', context.prompt);
-          form.append('size', size);
-          form.append('n', '1');
-          for (const [index, input] of imageInputs.entries()) {
-            const bytes = fs.readFileSync(input.absolutePath as string);
-            form.append(
-              'image',
-              new Blob([bytes], { type: input.mimeType ?? 'image/png' }),
-              `${index === 0 ? 'base' : `ref${index}`}-${path.basename(input.absolutePath as string)}`,
-            );
+        try {
+          if (imageInputs.length === 0) {
+            // 文生图：不伪造占位底图
+            response = await fetchImpl(`${route.baseUrl}/v1/images/generations`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${route.apiKey}` },
+              body: JSON.stringify({ model: capability.modelAlias, prompt: context.prompt, size, n: 1 }),
+              signal: linkedTimeoutSignal(signal, submitTimeoutMs),
+            });
+          } else {
+            // 图生图 + 多参考：图1 = 底图，其后按节点顺序追加参考图；提示词原样提交
+            const form = new FormData();
+            form.append('model', capability.modelAlias);
+            form.append('prompt', context.prompt);
+            form.append('size', size);
+            form.append('n', '1');
+            for (const [index, input] of imageInputs.entries()) {
+              const bytes = fs.readFileSync(input.absolutePath as string);
+              form.append(
+                'image',
+                new Blob([bytes], { type: input.mimeType ?? 'image/png' }),
+                `${index === 0 ? 'base' : `ref${index}`}-${path.basename(input.absolutePath as string)}`,
+              );
+            }
+            response = await fetchImpl(`${route.baseUrl}/v1/images/edits`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${route.apiKey}` },
+              body: form,
+              signal: linkedTimeoutSignal(signal, submitTimeoutMs),
+            });
           }
-          response = await fetchImpl(`${route.baseUrl}/v1/images/edits`, {
-            method: 'POST',
-            headers: { authorization: `Bearer ${route.apiKey}` },
-            body: form,
-            signal: AbortSignal.timeout(submitTimeoutMs),
+        } catch (error) {
+          throw submitError('submit', '外部图片网关提交请求失败，结果不明。', error, signal);
+        }
+        const result = await decodeImageResponse(response, route.apiKey);
+        try {
+          if (Buffer.isBuffer(result)) {
+            const tempPath = syncImageTempPath(storageRoot, context.task.canvasId, context.task.id);
+            fs.mkdirSync(path.dirname(tempPath), { recursive: true, mode: 0o700 });
+            writeAtomic(tempPath, result);
+          } else {
+            writeSyncImageUrlReceipt(storageRoot, context.task.canvasId, context.task.id, result.url);
+          }
+        } catch {
+          throw new CanvasAdapterError('submit', '外部图片同步结果持久化失败，提交结果不明。', {
+            uncertain: true,
+            code: 'external_result_persist_uncertain',
           });
         }
-        const buffer = await decodeImageResponse(response, fetchImpl);
-        const tempPath = syncImageTempPath(storageRoot, context.task.canvasId, context.task.id);
-        fs.mkdirSync(path.dirname(tempPath), { recursive: true });
-        fs.writeFileSync(tempPath, buffer);
         return { providerTaskId: `external-image:${context.task.id}` };
       }
 
@@ -344,12 +418,18 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             { code: 'text_to_video_unsupported' },
           );
         }
-        const submitted = await adapter.submitText({
-          model: capability.modelAlias,
-          prompt: context.prompt,
-          durationSec: Number(context.parameters.durationSec ?? 5),
-          ...(context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
-        }, route.apiKey, route.baseUrl, signal);
+        if (signal?.aborted) throw new CanvasAdapterError('submit', '提交在生成请求前已中止，任务未提交。', { code: 'submit_aborted' });
+        let submitted;
+        try {
+          submitted = await adapter.submitText({
+            model: capability.modelAlias,
+            prompt: context.prompt,
+            durationSec: Number(context.parameters.durationSec ?? 5),
+            ...(context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
+          }, route.apiKey, route.baseUrl, signal);
+        } catch (error) {
+          throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal);
+        }
         if (!submitted.providerTaskId) {
           throw new CanvasAdapterError('submit', '视频供应商没有返回任务 ID，提交结果不明。', {
             uncertain: true,
@@ -375,13 +455,19 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           mimeType: input.mimeType ?? 'application/octet-stream',
           durationSec: input.durationSec,
         }));
-        const submitted = await adapter.submitReference({
-          model: capability.modelAlias,
-          prompt: context.prompt,
-          references,
-          durationSec: Number(context.parameters.durationSec ?? 5),
-          ...(context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
-        }, route.apiKey, route.baseUrl, signal);
+        if (signal?.aborted) throw new CanvasAdapterError('submit', '提交在生成请求前已中止，任务未提交。', { code: 'submit_aborted' });
+        let submitted;
+        try {
+          submitted = await adapter.submitReference({
+            model: capability.modelAlias,
+            prompt: context.prompt,
+            references,
+            durationSec: Number(context.parameters.durationSec ?? 5),
+            ...(context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
+          }, route.apiKey, route.baseUrl, signal);
+        } catch (error) {
+          throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal);
+        }
         if (!submitted.providerTaskId) {
           throw new CanvasAdapterError('submit', '视频供应商没有返回任务 ID，提交结果不明。', {
             uncertain: true,
@@ -423,7 +509,13 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           }
           : {}),
       };
-      const submitted = await adapter.submit(request, route.apiKey, route.baseUrl, signal);
+      if (signal?.aborted) throw new CanvasAdapterError('submit', '提交在生成请求前已中止，任务未提交。', { code: 'submit_aborted' });
+      let submitted;
+      try {
+        submitted = await adapter.submit(request, route.apiKey, route.baseUrl, signal);
+      } catch (error) {
+        throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal);
+      }
       if (!submitted.providerTaskId) {
         throw new CanvasAdapterError('submit', '视频供应商没有返回任务 ID，提交结果不明。', {
           uncertain: true,
@@ -456,12 +548,44 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
     async download(context, signal) {
       if (context.providerTaskId.startsWith('external-image:')) {
         const tempPath = syncImageTempPath(storageRoot, context.task.canvasId, context.task.id);
-        if (!fs.existsSync(tempPath)) {
+        if (fs.existsSync(tempPath)) {
+          return { bytes: fs.readFileSync(tempPath), mimeType: 'image/png' };
+        }
+        const resultUrl = readSyncImageUrlReceipt(storageRoot, context.task.canvasId, context.task.id);
+        if (!resultUrl) {
           throw new CanvasAdapterError('download', '本地图片产物已不存在，请重新生成。', {
             code: 'external_result_file_missing',
           });
         }
-        return { bytes: fs.readFileSync(tempPath), mimeType: 'image/png' };
+        let response: Response;
+        try {
+          response = await fetchImpl(resultUrl, { signal: linkedTimeoutSignal(signal, 120_000) });
+        } catch {
+          throw new CanvasAdapterError('download', '外部图片产物下载请求失败。', {
+            code: 'external_result_download_failed',
+          });
+        }
+        if (!response.ok) {
+          throw new CanvasAdapterError('download', `外部图片产物下载失败 ${response.status}。`, {
+            code: 'external_result_download_failed',
+          });
+        }
+        let bytes: ArrayBuffer;
+        try {
+          bytes = await response.arrayBuffer();
+        } catch {
+          throw new CanvasAdapterError('download', '外部图片产物响应读取失败。', {
+            code: 'external_result_download_failed',
+          });
+        }
+        try {
+          writeAtomic(tempPath, Buffer.from(bytes));
+        } catch {
+          throw new CanvasAdapterError('download', '外部图片产物缓存失败。', {
+            code: 'external_result_cache_failed',
+          });
+        }
+        return { bytes: Buffer.from(bytes), mimeType: 'image/png' };
       }
       const route = routeFor(context);
       const adapter = getVideoAdapter(route.type);

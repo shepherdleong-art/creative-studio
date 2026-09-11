@@ -23,7 +23,7 @@ import {
   type NodeMouseHandler,
 } from '@xyflow/react';
 import { checkCanvasConnection, parseCanvasGraph } from '@/lib/creative-canvas/graph';
-import type { CanvasGraph, CanvasNodeKind } from '@/lib/creative-canvas/types';
+import type { CanvasGraph, CanvasNodeKind, CanvasViewport } from '@/lib/creative-canvas/types';
 import { canvasApi } from './api';
 import { CANVAS_EDGE_TYPES } from './CanvasEdge';
 import { CanvasTaskDrawer } from './CanvasTaskDrawer';
@@ -61,13 +61,33 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function EditorInner({ canvasId }: { canvasId: string }) {
   const controller = useCanvasEditor(canvasId);
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow();
+  const [initialViewport, setInitialViewport] = useState<{ x: number; y: number; zoom: number } | undefined>();
   const [capabilities, setCapabilities] = useState<CanvasModelCapabilityDto[]>([]);
   const [executor, setExecutor] = useState<string>('disabled');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [dropMenu, setDropMenu] = useState<{ fromNodeId: string; x: number; y: number } | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<CanvasEditorController>(controller);
+  const viewportRestoreRef = useRef(false);
+  const viewportInteractedRef = useRef(false);
+  const latestViewportRef = useRef<CanvasViewport | null>(null);
+  const viewportSaveVersionRef = useRef(0);
+  const viewportSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    void canvasApi.get(canvasId).then(({ canvas }) => setInitialViewport(canvas.viewport)).catch(() => undefined);
+  }, [canvasId]);
+
+  useEffect(() => {
+    if (!initialViewport || viewportInteractedRef.current || viewportRestoreRef.current) return undefined;
+    viewportRestoreRef.current = true;
+    latestViewportRef.current = initialViewport;
+    void setViewport(initialViewport, { duration: 0 }).finally(() => {
+      viewportRestoreRef.current = false;
+    });
+    return undefined;
+  }, [initialViewport, setViewport]);
+
   useEffect(() => {
     // 只在提交后更新，避免渲染期读写 ref
     controllerRef.current = controller;
@@ -84,6 +104,48 @@ function EditorInner({ canvasId }: { canvasId: string }) {
       }
     })();
   }, []);
+
+  const onMoveEnd = useCallback(() => {
+    if (viewportRestoreRef.current) return;
+    const viewport = getViewport();
+    latestViewportRef.current = viewport;
+    const version = ++viewportSaveVersionRef.current;
+    viewportSaveQueueRef.current = viewportSaveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        // 一次拖拽／缩放可能产生多个结束事件，只把队列中最新的视口写入服务端。
+        if (version !== viewportSaveVersionRef.current) return;
+        const latest = latestViewportRef.current;
+        if (!latest) return;
+        try {
+          await canvasApi.saveViewport(canvasId, latest);
+        } catch (error) {
+          if (version === viewportSaveVersionRef.current) {
+            controllerRef.current.showStatus(`视口自动保存失败：${error instanceof Error ? error.message : '请稍后重试。'}`);
+          }
+        }
+      });
+  }, [canvasId, getViewport]);
+
+  const onMoveStart = useCallback(() => {
+    if (!viewportRestoreRef.current) viewportInteractedRef.current = true;
+  }, []);
+
+  // 页面离开时把最近一次视口也尽力落盘；服务端视口更新不递增图修订号。
+  useEffect(() => {
+    const handler = () => {
+      if (viewportRestoreRef.current) return;
+      const viewport = latestViewportRef.current ?? getViewport();
+      void fetch(`/api/canvas/${canvasId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewport }),
+        keepalive: true,
+      });
+    };
+    window.addEventListener('pagehide', handler);
+    return () => window.removeEventListener('pagehide', handler);
+  }, [canvasId, getViewport]);
 
   const graph = useMemo<CanvasGraph>(() => {
     try {
@@ -385,7 +447,9 @@ function EditorInner({ canvasId }: { canvasId: string }) {
               multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
               selectionOnDrag
               panOnDrag={[1, 2]}
-              fitView
+              {...(initialViewport ? { defaultViewport: initialViewport } : {})}
+              onMoveStart={onMoveStart}
+              onMoveEnd={onMoveEnd}
               proOptions={{ hideAttribution: true }}
             >
               <Background gap={16} />

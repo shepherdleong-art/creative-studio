@@ -56,6 +56,7 @@ export interface CanvasFlowNodeData extends Record<string, unknown> {
 
 export type CanvasFlowNode = Node<CanvasFlowNodeData>;
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict' | 'disabled';
+type SaveOutcome = 'clean' | 'saved' | 'changed' | 'conflict' | 'error';
 
 export interface BranchPreview {
   plan: CanvasPlanDto;
@@ -226,6 +227,9 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   const revisionRef = useRef(0);
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
+  const savePromiseRef = useRef<Promise<SaveOutcome> | null>(null);
+  const editVersionRef = useRef(0);
+  const saveConflictRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCoalesceRef = useRef<{ key: string; at: number } | null>(null);
   const clipboardRef = useRef<{
@@ -271,12 +275,16 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   }, [pushHistorySnapshot]);
 
   const markDirty = useCallback(() => {
+    editVersionRef.current += 1;
     dirtyRef.current = true;
   }, []);
 
-  const performSave = useCallback(async (): Promise<boolean> => {
-    if (!dirtyRef.current || savingRef.current) return !dirtyRef.current;
+  const performSave = useCallback(async (): Promise<SaveOutcome> => {
+    if (!dirtyRef.current) return 'clean';
+    if (savingRef.current) return savePromiseRef.current ?? 'error';
     savingRef.current = true;
+    saveConflictRef.current = false;
+    const versionAtStart = editVersionRef.current;
     setSaveState('saving');
     const graph = buildCanvasGraph(nodesRef.current, edgesRef.current);
     try {
@@ -285,31 +293,46 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         graph,
       });
       revisionRef.current = result.canvas.graphRevision;
-      dirtyRef.current = false;
-      setSaveState('saved');
+      // 请求期间若有新编辑，旧响应不能清掉 dirty；补保存由这里串行触发。
+      const changedDuringSave = editVersionRef.current !== versionAtStart;
+      dirtyRef.current = changedDuringSave;
+      setSaveState(changedDuringSave ? 'saving' : 'saved');
       setStatusMessage(null);
       // 服务端会对账参考槽位；本地无需回写，保持用户正在编辑的内容不动。
-      return true;
+      return changedDuringSave ? 'changed' : 'saved';
     } catch (error) {
       if (error instanceof CanvasApiError && error.status === 409) {
+        saveConflictRef.current = true;
         setSaveState('conflict');
         setStatusMessage('画布已在别处被修改：本地草稿已保留，请重新加载后再保存。');
-        return false;
+        return 'conflict';
       }
       setSaveState('error');
       setStatusMessage(error instanceof Error ? error.message : '保存失败。');
-      return false;
+      return 'error';
     } finally {
       savingRef.current = false;
+      savePromiseRef.current = null;
     }
   }, [canvasId]);
+
+  const saveWithCoalescing = useCallback(async (): Promise<boolean> => {
+    while (dirtyRef.current && !saveConflictRef.current) {
+      const outcome = await (savePromiseRef.current ?? (savePromiseRef.current = performSave()));
+      if (outcome === 'changed') continue;
+      if (outcome === 'saved' || outcome === 'clean') return !dirtyRef.current;
+      // 冲突或网络／校验失败已由 performSave 展示错误；保留 dirty，等待新的用户动作。
+      return false;
+    }
+    return !dirtyRef.current && !saveConflictRef.current;
+  }, [performSave]);
 
   const scheduleSave = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      void performSave();
+      void saveWithCoalescing();
     }, SAVE_DEBOUNCE_MS);
-  }, [performSave]);
+  }, [saveWithCoalescing]);
 
   /**
    * 连线变化时本地同步做一次参考槽位对账，避免等服务端回写才显示参考列表。
@@ -342,10 +365,14 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       const { canvas } = await canvasApi.get(canvasId);
       revisionRef.current = canvas.graphRevision;
       dirtyRef.current = false;
+      saveConflictRef.current = false;
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
       setName(canvas.name);
       applyServerGraph(canvas.graph);
       runtime.update(canvas.nodeStates, canvas.tasks ?? []);
       setSaveState('saved');
+      setStatusMessage(null);
       setLoadState('ready');
     } catch (error) {
       setLoadState('error');
@@ -371,9 +398,8 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       try {
         const { canvas } = await canvasApi.get(canvasId);
         runtime.update(canvas.nodeStates, canvas.tasks ?? []);
-        if (!dirtyRef.current && !savingRef.current) {
-          revisionRef.current = canvas.graphRevision;
-        }
+        // 轮询只更新运行投影。若服务端图已在另一页面更新，保留本地图与其基准
+        // revision，让下一次本地保存明确收到 409，而不是用旧图夺取新 revision。
       } catch {
         // 轮询失败不打断编辑；下一轮继续。
       }
@@ -602,7 +628,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   const pasteClipboard = useCallback(async () => {
     const clipboard = clipboardRef.current;
     if (!clipboard) return;
-    const saved = await performSave();
+    const saved = await saveWithCoalescing();
     if (!saved) {
       setStatusMessage('有未保存的修改，暂时无法粘贴：请先处理保存冲突。');
       return;
@@ -635,7 +661,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : '粘贴失败。');
     }
-  }, [canvasId, performSave, pushHistory, runtime, setGraphState]);
+  }, [canvasId, saveWithCoalescing, pushHistory, runtime, setGraphState]);
 
   const restore = useCallback((snapshot: { nodes: CanvasFlowNode[]; edges: Edge[] }) => {
     setGraphState(cloneNodes(snapshot.nodes), cloneEdges(snapshot.edges));
@@ -670,13 +696,14 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   }, [currentSnapshot, future, restore]);
 
   const runNode = useCallback(async (nodeId: string) => {
-    const saved = await performSave();
+    const saved = await saveWithCoalescing();
     if (!saved) return;
     try {
       await canvasApi.run(canvasId, {
         mode: 'single',
         targetNodeId: nodeId,
         requestKey: `run-${crypto.randomUUID()}`,
+        expectedGraphRevision: revisionRef.current,
       });
       setStatusMessage('任务已提交，等待调度。');
       const { canvas } = await canvasApi.get(canvasId);
@@ -684,30 +711,48 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : '启动失败。');
     }
-  }, [canvasId, performSave, runtime]);
+  }, [canvasId, saveWithCoalescing, runtime]);
 
   const previewBranch = useCallback(async (startNodeId: string, reuseStart: boolean) => {
-    const saved = await performSave();
+    const saved = await saveWithCoalescing();
     if (!saved) return;
     try {
-      const { plan } = await canvasApi.plan(canvasId, { mode: 'branch', startNodeId, reuseStart });
+      const { plan } = await canvasApi.plan(canvasId, {
+        mode: 'branch', startNodeId, reuseStart, expectedGraphRevision: revisionRef.current,
+      });
       setBranchPreview({ plan, startNodeId, reuseStart });
       setStatusMessage(null);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : '分支预览失败。');
     }
-  }, [canvasId, performSave]);
+  }, [canvasId, saveWithCoalescing]);
 
   const confirmBranch = useCallback(async () => {
     const preview = branchPreview;
     if (!preview) return;
+    const saved = await saveWithCoalescing();
+    if (!saved) return;
     try {
+      // 预览与确认之间可能发生编辑。保存后重新计算计划，携带最新图修订与
+      // 指纹提交，避免按旧范围创建任务。
+      const { plan } = await canvasApi.plan(canvasId, {
+        mode: 'branch',
+        startNodeId: preview.startNodeId,
+        reuseStart: preview.reuseStart,
+        expectedGraphRevision: revisionRef.current,
+      });
+      setBranchPreview({ ...preview, plan });
+      if (plan.fingerprint !== preview.plan.fingerprint) {
+        setStatusMessage('画布内容已变化，分支预览已更新，请再次确认启动。');
+        return;
+      }
       await canvasApi.run(canvasId, {
         mode: 'branch',
         startNodeId: preview.startNodeId,
         reuseStart: preview.reuseStart,
         requestKey: `branch-${crypto.randomUUID()}`,
-        planFingerprint: preview.plan.fingerprint,
+        expectedGraphRevision: plan.graphRevision,
+        planFingerprint: plan.fingerprint,
       });
       setBranchPreview(null);
       setStatusMessage('分支已启动。');
@@ -716,7 +761,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : '分支启动失败。');
     }
-  }, [branchPreview, canvasId, runtime]);
+  }, [branchPreview, canvasId, runtime, saveWithCoalescing]);
 
   const cancelBranchPreview = useCallback(() => setBranchPreview(null), []);
 

@@ -49,7 +49,8 @@ export type CanvasPlanProblemCode =
   | 'mention_unresolved'
   | 'upstream_without_result_or_task'
   | 'external_input_missing'
-  | 'start_node_missing';
+  | 'start_node_missing'
+  | 'revision_conflict';
 
 export interface CanvasPlanProblem {
   code: CanvasPlanProblemCode;
@@ -118,6 +119,7 @@ export interface CanvasPlanRequest {
   /** branch：起点已有结果时是否复用（默认复用）。 */
   reuseStart?: boolean;
   requestKey: string;
+  expectedGraphRevision?: number;
 }
 
 export type CanvasPlanOutcome =
@@ -492,6 +494,9 @@ function runtimeFor(db: Database.Database, canvas: CanvasRecord) {
  */
 export function planCanvasRun(db: Database.Database, request: CanvasPlanRequest): CanvasPlanOutcome {
   const canvas = requireCanvas(db, request.canvasId);
+  if (request.expectedGraphRevision !== undefined && canvas.graphRevision !== request.expectedGraphRevision) {
+    return { ok: false, problems: [{ code: 'revision_conflict', message: '画布已在别处修改，请刷新后重试。' }] };
+  }
   const graph = canvas.graph;
   const runtime = runtimeFor(db, canvas);
   const problems: CanvasPlanProblem[] = [];
@@ -570,4 +575,3 @@ export function planCanvasRun(db: Database.Database, request: CanvasPlanRequest)
   };
   return { ok: true, plan: { ...base, requestKey: request.requestKey, fingerprint: canvasPlanFingerprint(base) } };
 }
-

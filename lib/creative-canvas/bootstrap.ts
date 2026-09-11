@@ -18,7 +18,7 @@ import type { CanvasReadiness } from './readiness.ts';
 import { createCanvasScheduler, type CanvasSchedulerController } from './scheduler.ts';
 
 // 任何改变任务实际执行语义的修改都必须递增此版本，使 HMR 下的旧闭包先停再换。
-const CANVAS_SCHEDULER_EXECUTOR_VERSION = 1;
+const CANVAS_SCHEDULER_EXECUTOR_VERSION = 2;
 const CANVAS_BOOTSTRAP_KEY = Symbol.for('creative-studio.creative-canvas-bootstrap');
 const CANVAS_SCHEDULER_KEY = Symbol.for('creative-studio.creative-canvas-scheduler');
 const CANVAS_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.creative-canvas-scheduler-version');
