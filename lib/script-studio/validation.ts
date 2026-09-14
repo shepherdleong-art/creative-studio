@@ -16,6 +16,11 @@ export interface ScriptValidationResult {
   content: ScriptStudioScriptContent;
   estimatedDurationSec: number;
   contentCharacterCount: number;
+  /**
+   * 软时长目标（方案 §2.3）：时长偏离预算只作提示（duration_too_short / duration_too_long），
+   * 不进入阻断性 issues，不能单独触发重试耗尽或保存失败；content.durationStatus 如实计算。
+   */
+  durationHints: string[];
   /** 兼容字段：统计自然命中的搜索词，不再作为标题门禁。 */
   titleEmbedding?: TitleEmbeddingCheck;
   titleIssues: ScriptTitleIssue[];
@@ -85,8 +90,10 @@ export function validateScriptContent(
     issues.push(...titleEmbedding.issues);
   }
   if (!input.segments.length) issues.push('segments_required');
-  if (contentCharacterCount < budget.minContentCharacters) issues.push('duration_too_short');
-  if (contentCharacterCount > budget.maxContentCharacters) issues.push('duration_too_long');
+  // 软时长目标：偏离预算只记提示，不阻断保存（如实反映在 content.durationStatus）。
+  const durationHints: string[] = [];
+  if (contentCharacterCount < budget.minContentCharacters) durationHints.push('duration_too_short');
+  if (contentCharacterCount > budget.maxContentCharacters) durationHints.push('duration_too_long');
   for (const segment of input.segments) {
     if (!segment.narration.trim()) issues.push(`segment_empty:${segment.id}`);
     for (const pointId of segment.sellingPointIdRefs || []) {
@@ -129,6 +136,7 @@ export function validateScriptContent(
     content,
     estimatedDurationSec,
     contentCharacterCount,
+    durationHints,
     titleIssues,
     ...(titleEmbedding ? { titleEmbedding } : {}),
   };
@@ -149,11 +157,13 @@ export function describeValidationIssues(
     cover_title_required: '缺少封面主标题或副标题',
     duplicate_title: '脚本标题与同批或近期项目标题重复',
     duplicate_cover_combo: '封面主副标题组合与同批或近期项目封面组合重复',
-    duration_too_short: '口播字数不足，未达到目标时长',
-    duration_too_long: '口播字数超出目标时长',
+    duration_too_short: '口播字数低于目标时长预算（仅提示，不阻止保存）',
+    duration_too_long: '口播字数超出目标时长预算（仅提示，可保存偏长候选）',
     duplicate_script: '与本次其他方案过于相似',
     selling_point_refs_required: '口播未引用任何已核验卖点',
     segments_required: '缺少口播分段',
+    ending_bare_selling_point: '结尾是孤立卖点标签，必须改为承接正文的 CTA 行动引导',
+    cta_ending_missing: '最后一句缺少行动引导（CTA），须以邀请了解/比较/挑选等具体行动收尾',
   };
   return [...new Set(issues)].map((issue) => {
     const titleDetails = detail?.titleIssues?.filter((item) => item.code === issue);

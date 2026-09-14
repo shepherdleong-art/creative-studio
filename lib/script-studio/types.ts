@@ -192,6 +192,11 @@ export interface ScriptStudioScriptContent {
     displayName?: string;
     sourceRows: Array<number | string>;
   };
+  /** 本次生成提供的已确认提炼表达版本（方案 §3.3）；来源库修订由 libraryRevisionId 冻结。 */
+  distilledContext?: {
+    ruleVersion: string;
+    pointIds: string[];
+  };
   /** v4：推荐说明（框架/文案钩子/画面钩子）。 */
   recommendation?: {
     framework: {

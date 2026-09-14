@@ -8,17 +8,20 @@ import {
 } from './generator.ts';
 import { createVisionClosedQuestionReprobe, type EvidenceReprobe } from './adapters/reprobe.ts';
 import { createVisionExtractor, type VisionExtractor } from './adapters/vision-extract.ts';
+import { createSellingPointDistiller, type SellingPointDistiller } from './distillation.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import {
   pinRuntimeProviderModel,
   selectScriptStudioRuntimeProviders,
   type ScriptStudioRuntimeProvider,
 } from './provider-selection.ts';
+import { createScriptRequestBudget } from './request-budget.ts';
 import {
   createScriptStudioRunDeps,
   type ScriptStudioRunDeps,
 } from './runner.ts';
 import { getTask, type TaskView } from './tasks.ts';
+import { parseScriptStudioRequestedCount } from './generation-contract.ts';
 
 export function resolveRuntimeProviders(requestedProviderId?: string | null): {
   vision: ScriptStudioRuntimeProvider;
@@ -50,6 +53,7 @@ export function createRuntimeDeps(
   visionExtractor: VisionExtractor;
   reprobe: EvidenceReprobe;
   generator: ScriptGenerator;
+  distiller: SellingPointDistiller;
 } {
   const inputSnapshot = JSON.parse(task.inputSnapshotJson || '{}') as Record<string, unknown>;
   const requestedProviderId = typeof inputSnapshot.providerId === 'string'
@@ -80,7 +84,27 @@ export function createRuntimeDeps(
   const generator = createScriptGenerator(
     providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-generate'),
     providers.text,
-    { maxTokens: getScriptStudioLimits().maxTokensPerPage },
+    {
+      maxTokens: limits.maxTokensPerPage,
+      // 请求预算（方案 §2.2）：每方案 8 次、标题修复 2 次、任务总额 requestedCount×8；
+      // 计数持久化，任务中断恢复时延续余额。
+      budget: createScriptRequestBudget({
+        db,
+        taskId,
+        requestedCount: (() => {
+          try {
+            return parseScriptStudioRequestedCount(inputSnapshot.requestedCount);
+          } catch {
+            return 1;
+          }
+        })(),
+      }),
+    },
+  );
+  const distiller = createSellingPointDistiller(
+    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-distill'),
+    providers.text,
+    { maxTokens: limits.maxTokensPerPage },
   );
   const runDeps = createScriptStudioRunDeps(db, {
     projectId,
@@ -91,10 +115,11 @@ export function createRuntimeDeps(
     visionExtractor,
     reprobe,
     generator,
+    distiller,
     signal: options.signal,
     fallbackOnInvalid: options.fallbackOnInvalid,
   });
-  return { runDeps, visionExtractor, reprobe, generator };
+  return { runDeps, visionExtractor, reprobe, generator, distiller };
 }
 
 export function loadTask(db: Database.Database, projectId: string, taskId: string): TaskView {

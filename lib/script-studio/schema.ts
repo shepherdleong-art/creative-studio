@@ -293,6 +293,57 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       ALTER TABLE project_script_revisions ADD COLUMN recommendationJson TEXT NOT NULL DEFAULT '{}';
     `,
   },
+  {
+    // 脚本文本/提炼请求预算计数（2026-09-14，方案 §2.2）：
+    // phase ∈ {'text','distill'}；scope 为 'task' / 'plan:N' / 'plan:N:title'。
+    // 任务中断恢复时延续计数，不重置余额。
+    version: 5,
+    sql: `
+      CREATE TABLE IF NOT EXISTS script_studio_task_request_usage (
+        taskId TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        usedCount INTEGER NOT NULL DEFAULT 0,
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY(taskId, phase, scope),
+        FOREIGN KEY(taskId) REFERENCES script_studio_tasks(id) ON DELETE CASCADE
+      );
+    `,
+  },
+  {
+    // 证据之上的卖点提炼层（2026-09-14，方案 §3）：派生购买理由/短句/标签，
+    // 绑定来源库修订与规则版本；reviewStatus 仅由用户显式确认升级为 approved。
+    // 旧卖点事实与历史脚本引用不受影响。
+    version: 6,
+    sql: `
+      CREATE TABLE IF NOT EXISTS script_studio_distilled_points (
+        id TEXT PRIMARY KEY,
+        projectId TEXT NOT NULL,
+        sourceLibraryRevisionId TEXT NOT NULL,
+        sourceFactIdsJson TEXT NOT NULL DEFAULT '[]',
+        ruleVersion TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        title TEXT NOT NULL,
+        benefitText TEXT NOT NULL,
+        shortCopy TEXT NOT NULL,
+        tagMax5 TEXT,
+        tagMax8 TEXT,
+        tagMax10 TEXT,
+        role TEXT NOT NULL CHECK(role IN ('core','supporting','spec','atmosphere')),
+        priority INTEGER NOT NULL DEFAULT 50,
+        scope TEXT NOT NULL DEFAULT '',
+        limitationsJson TEXT NOT NULL DEFAULT '[]',
+        reviewStatus TEXT NOT NULL CHECK(reviewStatus IN ('draft','approved','needs_review')),
+        fingerprint TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_ssdp_cache ON script_studio_distilled_points(projectId, fingerprint);
+      CREATE INDEX IF NOT EXISTS idx_ssdp_revision ON script_studio_distilled_points(projectId, sourceLibraryRevisionId, createdAt);
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =

@@ -58,6 +58,8 @@ const result = await tileSourceImages(db, 'p1', ['img-1'], {
   titleHistoryDays: 30,
   titleHistoryMaxRevisions: 100,
     maxCatalogImportBytes: 32 * 1024 * 1024,
+    scriptTextRequestsPerProposal: 8,
+    distillMaxRequestsPerTask: 4,
   },
 });
 assert.equal(result.pages.length, 1);
@@ -106,6 +108,8 @@ const tightLimits = {
   titleHistoryDays: 30,
   titleHistoryMaxRevisions: 100,
   maxCatalogImportBytes: 32 * 1024 * 1024,
+  scriptTextRequestsPerProposal: 8,
+  distillMaxRequestsPerTask: 4,
 };
 const bigResult = await tileSourceImages(db, 'p1', ['img-2'], { limits: tightLimits });
 assert.equal(bigResult.pages.length, 1);

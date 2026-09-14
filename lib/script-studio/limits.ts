@@ -22,6 +22,10 @@ export interface ScriptStudioLimits {
   titleHistoryMaxRevisions: number;
   /** 目录导入 .xlsx 最大字节数（策略库/模板库共用）。 */
   maxCatalogImportBytes: number;
+  /** 每条方案从首稿到保存的应用层文本 completeJson 调用上限（正文生成/重试/修复/审核/标题修复共用）。 */
+  scriptTextRequestsPerProposal: number;
+  /** 单任务卖点提炼阶段的应用层模型调用上限（独立于脚本文本预算，分别记录）。 */
+  distillMaxRequestsPerTask: number;
 }
 
 function readPositiveInt(name: string, fallback: number): number {
@@ -62,6 +66,10 @@ export function getScriptStudioLimits(): ScriptStudioLimits {
     titleHistoryDays: 30,
     titleHistoryMaxRevisions: 100,
     maxCatalogImportBytes: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_MAX_CATALOG_IMPORT_BYTES', 32 * 1024 * 1024),
+    // 请求预算（方案 §2.2）：每条方案 8 次文本 completeJson；标题修复仍最多 2 次（单独闸门）。
+    // 任务总额 = requestedCount × 每方案上限；视觉提取/证据复核/提炼阶段使用各自独立预算，不占此额度。
+    scriptTextRequestsPerProposal: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_TEXT_REQUESTS_PER_PROPOSAL', 8),
+    distillMaxRequestsPerTask: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_DISTILL_REQUESTS_PER_TASK', 4),
   };
 }
 

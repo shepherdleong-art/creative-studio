@@ -281,18 +281,32 @@ assert.equal(payload.sellingPoints.some((point) => point.id === 'p-failed-reopen
 assert.equal(payload.theme, '久坐也舒服', '主主题作为策划语境传给模型');
 
 const outsidePoint = points.find((point) => !briefIds.has(point.id) && point.usable === 1 && point.disabledByUser === 0 && point.evidenceGate !== 'failed')!;
+// 越界引用 fail closed（A9）：包外 / 证据失败 ID 不再被静默过滤后保留口播——
+// 「删除坏 ID」不能伪装合格，检测到即抛错，交由上层重试或修复。
+assert.throws(
+  () => normalizeGeneratedScript({
+    title: '测试方案',
+    coverTitleParts: { primary: '舒适椅子', secondary: '久坐不累' },
+    direction: '痛点切入',
+    segments: [
+      { narration: '这是一段口播内容。', sellingPointIdRefs: [targetBrief.requiredPointIds[0]!, outsidePoint.id, 'p-failed-reopened'], visualIntent: '', visualKeywords: [] },
+    ],
+  }, generatorInput),
+  /generated_script_out_of_package_ref/,
+  '卖点包外与证据失败的 ID 一律不得进入脚本引用（检测到越界引用必须失败）',
+);
 const normalized = normalizeGeneratedScript({
   title: '测试方案',
   coverTitleParts: { primary: '舒适椅子', secondary: '久坐不累' },
   direction: '痛点切入',
   segments: [
-    { narration: '这是一段口播内容。', sellingPointIdRefs: [targetBrief.requiredPointIds[0]!, outsidePoint.id, 'p-failed-reopened'], visualIntent: '', visualKeywords: [] },
+    { narration: '这是一段口播内容。', sellingPointIdRefs: [targetBrief.requiredPointIds[0]!], visualIntent: '', visualKeywords: [] },
   ],
 }, generatorInput);
 assert.deepEqual(
   normalized.segments[0]!.sellingPointIdRefs,
   [targetBrief.requiredPointIds[0]!],
-  '卖点包外与证据失败的 ID 一律不得进入脚本引用',
+  '包内合法引用照常归一化',
 );
 assert.equal(
   normalized.sellingPointUsage.every((usage) => briefIds.has(usage.sellingPointId)),

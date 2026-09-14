@@ -14,7 +14,8 @@ import {
   SCRIPT_STUDIO_SCHEDULER_KEY,
   type ScriptStudioSchedulerController,
 } from '../lib/script-studio/scheduler.ts';
-import { createScriptGenerator, buildDeterministicFallbackScript, type ScriptGenerator } from '../lib/script-studio/generator.ts';
+import { buildDeterministicFallbackScript } from './script-studio-fixture.ts';
+import type { ScriptGenerator } from '../lib/script-studio/generator.ts';
 import type { VisionExtractionResult, VisionExtractor } from '../lib/script-studio/adapters/vision-extract.ts';
 import type { EvidenceReprobe } from '../lib/script-studio/adapters/reprobe.ts';
 

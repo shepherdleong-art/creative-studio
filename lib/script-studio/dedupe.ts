@@ -29,6 +29,47 @@ function similarity(left: string, right: string): number {
   return (2 * intersection) / (a.size + b.size);
 }
 
+/**
+ * 规格冲突信号（方案 §1.4 / B1）：标题或事实文本高度相似时，仍须比较
+ * 数字（含小数）、颜色词与适用部位词；任一维度存在差异即视为不同事实，
+ * 不得合并——「同名、不同参数/颜色/部位」是修复前的明确回归输入。
+ */
+const COLOR_TERMS = [
+  '栗棕', '焦糖', '奶油', '摩卡', '原木', '胡桃', '米白', '米色', '奶白', '象牙',
+  '黑色', '白色', '灰色', '深灰', '浅灰', '棕色', '褐色', '红色', '橙色', '黄色',
+  '绿色', '蓝色', '紫色', '粉色', '金色', '银色', '咖色', '藏青', '卡其', '雾霾蓝', '燕麦',
+];
+const PART_TERMS = [
+  '靠背', '腰托', '扶手', '座包', '坐垫', '座垫', '头枕', '颈枕', '脚凳', '框架',
+  '内芯', '填充', '外罩', '外套', '面料', '接触面', '表层', '底部', '底盘', '腿部',
+  '门板', '抽屉', '层板', '背板', '侧板', '台面', '柜体', '椅背', '座深',
+];
+
+function extractDigits(value: string): string[] {
+  return (value.normalize('NFKC').match(/\d+(?:\.\d+)?/g) ?? []).sort();
+}
+
+function extractTerms(value: string, terms: string[]): string[] {
+  return [...new Set(terms.filter((term) => value.includes(term)))].sort();
+}
+
+function hasConflictingSpecSignals(
+  left: { title: string; factText: string },
+  right: { title: string; factText: string },
+): boolean {
+  const leftText = `${left.title} ${left.factText}`.normalize('NFKC');
+  const rightText = `${right.title} ${right.factText}`.normalize('NFKC');
+  // 数字多重集不同 → 参数冲突（60cm 座深与 65cm 不是同一事实）。
+  const leftDigits = extractDigits(leftText);
+  const rightDigits = extractDigits(rightText);
+  if (leftDigits.join(',') !== rightDigits.join(',')) return true;
+  // 颜色词集合不同 → 颜色冲突（栗棕与焦糖、有颜色与无颜色都不得互相覆盖）。
+  if (extractTerms(leftText, COLOR_TERMS).join(',') !== extractTerms(rightText, COLOR_TERMS).join(',')) return true;
+  // 适用部位词集合不同 → 部位冲突（靠背网布与坐垫网布保留区别）。
+  if (extractTerms(leftText, PART_TERMS).join(',') !== extractTerms(rightText, PART_TERMS).join(',')) return true;
+  return false;
+}
+
 export function isNearDuplicateSellingPoint(
   left: { title: string; factText: string },
   right: { title: string; factText: string },
@@ -36,14 +77,18 @@ export function isNearDuplicateSellingPoint(
 ): boolean {
   const leftTitle = normalizeForDedupe(left.title);
   const rightTitle = normalizeForDedupe(right.title);
-  if (leftTitle && rightTitle && similarity(leftTitle, rightTitle) >= threshold) return true;
+  if (leftTitle && rightTitle && similarity(leftTitle, rightTitle) >= threshold) {
+    return !hasConflictingSpecSignals(left, right);
+  }
   const leftFact = normalizeForDedupe(left.factText);
   const rightFact = normalizeForDedupe(right.factText);
   if (!leftFact || !rightFact) return false;
   const shorter = leftFact.length <= rightFact.length ? leftFact : rightFact;
   const longer = leftFact.length <= rightFact.length ? rightFact : leftFact;
-  if (shorter.length >= 4 && longer.includes(shorter)) return true;
-  return similarity(leftFact, rightFact) >= threshold;
+  if (shorter.length >= 4 && longer.includes(shorter)) {
+    return !hasConflictingSpecSignals(left, right);
+  }
+  return similarity(leftFact, rightFact) >= threshold && !hasConflictingSpecSignals(left, right);
 }
 
 const HIERARCHY_ROLE_STRENGTH: Record<ScriptStudioHierarchyRole, number> = {

@@ -175,6 +175,9 @@ export function createVisionExtractor(
                       'themeTitle 是该卖点所属信息区域的大标题原文（没有明确大标题时留空）；themeKey 是同一页内同一信息区域共享的稳定分组键（用大标题的简写拼音或英文短词，无法判断时留空）',
                       'hierarchyRole 标记该卖点在所属区域中的角色：primary=区域主卖点，supporting=支撑卖点，detail=补充细节；importance 是 1-100 的页内相对重要度，越大越重要',
                       '大标题只用于分组与排序；factText 与 evidenceQuote 仍必须来自图片中可逐字定位的事实',
+                      // 事实与营销措辞边界（方案 §3.4）：提取层只记录中性事实，
+                      // 营销表达与短句压缩交给提炼层，参数/部位/条件不得在原文证据中丢失。
+                      'factText 用中性事实句描述（是什么/有什么/参数多少），完整保留数字、适用部位、型号与颜色等限定条件；不要写成营销口号或压缩后的宣传短语，营销语气留给后续提炼与脚本层',
                     ],
                     output: {
                       productName: 'string',
@@ -256,7 +259,9 @@ export function createVisionExtractor(
         sellingPoints,
         providerId: provider.id,
         model: provider.model,
-        promptContractVersion: 3,
+        // v4：新增「事实与营销措辞边界」要求——factText 保持中性事实句，
+        // 完整保留数字/部位/型号/颜色限定条件，营销表达交给提炼层。
+        promptContractVersion: 4,
         pageIdentities,
         batchMetrics,
       };

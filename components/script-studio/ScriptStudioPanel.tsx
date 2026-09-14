@@ -57,6 +57,7 @@ interface ScriptView {
     contentJson: string;
     targetDurationSec: number;
     estimatedDurationSec: number | null;
+    validationJson?: string;
     templateId: string;
     templateVersion: number;
     templateRationale: string;
@@ -120,6 +121,7 @@ const STAGE_LABELS: Record<string, string> = {
   evidence_gate: '结构门禁与证据核验',
   save_library: '保存产品卖点库',
   load_library: '读取已有卖点库',
+  distill: '把已核验事实提炼为购买理由短句',
   plan: '规划创意方向与模板',
   generate: '生成脚本方案',
   validate: '执行时长、结构、事实和重复度检查',
@@ -133,6 +135,7 @@ const STAGE_KICKERS: Record<string, string> = {
   evidence_gate: '证据核验',
   save_library: '资产固化',
   load_library: '资产复用',
+  distill: '购买理由',
   plan: '创意规划',
   generate: '文案生成',
   validate: '完成检查',
@@ -146,6 +149,7 @@ const STAGE_COPY: Record<string, string> = {
   evidence_gate: '数字、材质、认证类卖点要逐条通过二次证据检查，未通过的不会写进脚本。',
   save_library: '把本次识别结果固定为产品资产，之后再生成一版或一组都直接复用、不再重新看图。',
   load_library: '直接读取已保存的卖点与证据，减少等待，也避免同一详情页每次识别结果不一致。',
+  distill: '在证据之上把事实归并成购买理由与推荐短句，未确认前只作展示，脚本仍使用原始事实。',
   plan: '结合时长、人群与创作要求，把每条脚本分配到不同的切入角度。',
   generate: '为每个方案匹配不同表达结构，并把选择结果与理由展示出来。',
   validate: '检查口播时长预算和方案之间的差异，通过后才能进入人工选择。',
@@ -153,8 +157,8 @@ const STAGE_COPY: Record<string, string> = {
 
 // 两种模式的完整阶段数，用于进度条；只按真实完成的阶段推进，不做虚假百分比。
 const MODE_STAGE_TOTAL: Record<string, number> = {
-  first_extraction: 8,
-  reuse: 5,
+  first_extraction: 9,
+  reuse: 6,
 };
 
 const ORIGIN_LABELS: Record<string, string> = {
@@ -954,8 +958,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     currentScripts.find(({ script }) => script.id === historyFor) || null
   ), [currentScripts, historyFor]);
 
-  // 过程页派生数据
-  const doneStageCount = task ? task.stages.filter((stage) => stage.status === 'succeeded').length : 0;
+  // 过程页派生数据（skipped 阶段——如未配置提炼器——也算走完，进度不悬空）。
+  const doneStageCount = task ? task.stages.filter((stage) => stage.status === 'succeeded' || stage.status === 'skipped').length : 0;
   const stageTotal = task ? (MODE_STAGE_TOTAL[task.mode] || Math.max(task.stages.length, 1)) : 1;
   const currentStageView = task
     ? ((taskRunning
@@ -1325,6 +1329,12 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                     ))}
                   </div>
                 </div>
+                <DistilledPointsSection
+                  projectId={projectId}
+                  revisionId={libraryRevision.id}
+                  factCount={libraryRevision.sellingPoints.length}
+                  factTitles={Object.fromEntries(libraryRevision.sellingPoints.map((point) => [point.id, `${point.title}：${point.factText}`]))}
+                />
                 {libraryOpen && (
                   <div className="mt-4">
                     <LibraryEditor
@@ -1417,11 +1427,22 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                           </div>
                         </div>
                         <div className="mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 rounded-[13px] border border-hairline px-3 py-2.5 text-[0.68rem] text-ink-secondary">
-                          {content.durationStatus === 'qualified'
-                            ? <span className="font-semibold text-ok">✓ 时长合格</span>
-                            : <span className="font-semibold text-warn">{content.durationStatus === 'too_short' ? '时长偏短' : '时长偏长'}</span>}
-                          <span>{content.targetDurationSec} 秒目标</span>
-                          {typeof content.estimatedNarrationDurationSec === 'number' && <span>预计 {content.estimatedNarrationDurationSec.toFixed(1)} 秒</span>}
+                          {/* 三类状态分开显示（方案 §4.1）：文案检查、目标时长、预计口播时长互不代表。 */}
+                          {(() => {
+                            const copyCheck = parseCopyCheck(revision?.validationJson);
+                            return copyCheck.endingStatus === 'passed'
+                              ? <span className="font-semibold text-ok">✓ 文案检查通过{copyCheck.semanticReview === 'unreviewed' ? '（语义未审核）' : ''}</span>
+                              : <span className="font-semibold text-ink-tertiary">文案检查未记录</span>;
+                          })()}
+                          <span>目标 {content.targetDurationSec} 秒</span>
+                          {typeof content.estimatedNarrationDurationSec === 'number' && (
+                            <span>
+                              预计口播 {content.estimatedNarrationDurationSec.toFixed(1)} 秒
+                              {content.durationStatus === 'too_long' && <span className="ml-1 font-semibold text-warn">偏长</span>}
+                              {content.durationStatus === 'too_short' && <span className="ml-1 font-semibold text-warn">偏短</span>}
+                              {content.durationStatus === 'qualified' && <span className="ml-1 text-ok">在预算内</span>}
+                            </span>
+                          )}
                           <span>{content.contentCharacterCount} 字</span>
                           <span>版本 V{revision?.revisionNumber || 1} · {ORIGIN_LABELS[revision?.origin || ''] || revision?.origin || '-'}</span>
                           <span className="font-semibold text-ok">当前版本自动用于后续流程</span>
@@ -1505,6 +1526,173 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               </div>
             </div>
           </aside>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 解析保存版本上的文案检查快照（方案 §4.1）：历史版本缺字段按未记录处理，不补成合格。 */
+function parseCopyCheck(validationJson?: string): { endingStatus?: string; semanticReview?: string } {
+  if (!validationJson) return {};
+  try {
+    const parsed = JSON.parse(validationJson) as { copyCheck?: { endingStatus?: string; semanticReview?: string } };
+    return parsed.copyCheck || {};
+  } catch {
+    return {};
+  }
+}
+
+interface DistilledPointView {
+  id: string;
+  title: string;
+  benefitText: string;
+  shortCopy: string;
+  tags: { max5: string | null; max8: string | null; max10: string | null };
+  role: 'core' | 'supporting' | 'spec' | 'atmosphere';
+  scope: string;
+  limitations: string[];
+  sourceFactIds: string[];
+  reviewStatus: 'draft' | 'approved' | 'needs_review';
+}
+
+const DISTILLED_ROLE_LABELS: Record<DistilledPointView['role'], string> = {
+  core: '核心购买理由',
+  supporting: '支撑理由',
+  spec: '规格参数',
+  atmosphere: '氛围观感',
+};
+const DISTILLED_STATUS_LABELS: Record<DistilledPointView['reviewStatus'], { label: string; className: string }> = {
+  draft: { label: '待确认', className: 'bg-surface-subtle text-ink-secondary' },
+  approved: { label: '已确认', className: 'bg-ok-tint text-ok' },
+  needs_review: { label: '待复核', className: 'bg-warn-tint text-warn' },
+};
+
+/**
+ * 提炼卖点区（方案 §3.4）：默认展示推荐短句、用户价值与角色；
+ * 原文事实与限定条件收进可展开的证据区。统计区分原始事实条数与归并后的主卖点数量。
+ */
+function DistilledPointsSection({
+  projectId,
+  revisionId,
+  factCount,
+  factTitles,
+}: {
+  projectId: string;
+  revisionId: string;
+  factCount: number;
+  factTitles: Record<string, string>;
+}) {
+  const [points, setPoints] = useState<DistilledPointView[] | null>(null);
+  const [expanded, setExpanded] = useState<string>('');
+  const [approving, setApproving] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/projects/${projectId}/script-studio/distilled-points?revisionId=${revisionId}`);
+      if (!response.ok) return;
+      const data = await response.json() as { points?: DistilledPointView[] };
+      setPoints(data.points || []);
+    } catch {
+      setPoints([]);
+    }
+  }, [projectId, revisionId]);
+
+  // 展开时按需拉取（点击事件内触发，不在 effect 里同步 setState）。
+  const toggleOpen = () => {
+    setOpen((current) => {
+      if (!current && points === null) void load();
+      return !current;
+    });
+  };
+
+  const approve = async (distilledPointId: string) => {
+    setApproving(distilledPointId);
+    try {
+      await fetch(`/api/projects/${projectId}/script-studio/distilled-points`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', distilledPointId }),
+      });
+      await load();
+    } finally {
+      setApproving('');
+    }
+  };
+
+  if (points === null) {
+    return (
+      <div className="mt-4 rounded-[14px] border border-hairline bg-surface-subtle p-3 text-[0.68rem] text-ink-tertiary">
+        提炼卖点（购买理由与推荐短句）会在生成任务后自动准备。
+      </div>
+    );
+  }
+  if (points.length === 0) {
+    return (
+      <div className="mt-4 rounded-[14px] border border-hairline bg-surface-subtle p-3 text-[0.68rem] text-ink-tertiary">
+        本轮没有可用的提炼卖点：提炼阶段可能被跳过或未通过证据校验，脚本生成仍使用原始事实。
+      </div>
+    );
+  }
+  const coreCount = points.filter((point) => point.role === 'core').length;
+  const approvedCount = points.filter((point) => point.reviewStatus === 'approved').length;
+  return (
+    <div className="mt-4 rounded-[16px] border border-hairline bg-surface-subtle p-3.5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold">提炼卖点 · 购买理由与推荐短句</h4>
+          <p className="mt-1 text-[0.68rem] text-ink-secondary">
+            原始事实 {factCount} 条 · 归并后 {points.length} 个主卖点（核心 {coreCount}） · 已确认 {approvedCount}。
+            短句来自已核验事实，确认后才会作为表达参考提供给脚本生成。
+          </p>
+        </div>
+        <button type="button" onClick={toggleOpen} className="btn-secondary btn-sm shrink-0">{open ? '收起' : '展开提炼卖点'}</button>
+      </div>
+      {open && (
+        <div className="mt-3 grid gap-2.5 md:grid-cols-2">
+          {points.map((point) => {
+            const status = DISTILLED_STATUS_LABELS[point.reviewStatus];
+            const isOpen = expanded === point.id;
+            return (
+              <div key={point.id} className="rounded-[14px] border border-hairline bg-surface p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold">{point.shortCopy}</div>
+                    <div className="mt-1 text-[0.65rem] leading-4 text-ink-secondary">{point.benefitText}</div>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[0.6rem] font-semibold ${status.className}`}>{status.label}</span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[0.6rem] text-ink-tertiary">
+                  <span className="rounded-full bg-surface-subtle px-2 py-0.5 font-semibold">{DISTILLED_ROLE_LABELS[point.role]}</span>
+                  {[point.tags.max5, point.tags.max8, point.tags.max10].filter(Boolean).map((tag) => (
+                    <span key={tag} className="rounded-full bg-surface-subtle px-2 py-0.5">{tag}</span>
+                  ))}
+                  {point.scope && <span className="rounded-full bg-surface-subtle px-2 py-0.5">范围：{point.scope}</span>}
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button type="button" onClick={() => setExpanded(isOpen ? '' : point.id)} className="text-[0.62rem] text-ink-tertiary underline underline-offset-2 hover:text-ink">
+                    {isOpen ? '收起证据' : '查看来源事实'}
+                  </button>
+                  {point.reviewStatus !== 'approved' && (
+                    <button type="button" onClick={() => void approve(point.id)} disabled={approving === point.id} className="btn-secondary btn-sm">
+                      {approving === point.id ? '确认中…' : '确认可用'}
+                    </button>
+                  )}
+                </div>
+                {isOpen && (
+                  <div className="mt-2 space-y-1 border-t border-hairline pt-2">
+                    {point.sourceFactIds.map((factId) => (
+                      <div key={factId} className="text-[0.62rem] leading-4 text-ink-secondary">· {factTitles[factId] || factId}</div>
+                    ))}
+                    {point.limitations.length > 0 && (
+                      <div className="text-[0.62rem] leading-4 text-warn">限定条件：{point.limitations.join('；')}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

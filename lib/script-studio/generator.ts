@@ -8,7 +8,11 @@ import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
 import { embeddingRequirementText, checkTitleEmbedding } from './title-embedding.ts';
 import { buildScriptTitleContext, scriptTitleRequirements, type ScriptTitleSummary, type ScriptTitleIssue } from './title-policy.ts';
 import { SCRIPT_TITLE_REPAIR_MAX_TOKENS } from './limits.ts';
+import type { ScriptRequestBudget, ScriptRequestPurpose } from './request-budget.ts';
+import { ctaEndingSceneFromStructure, scriptCtaRequirements } from './cta-policy.ts';
 import type { FrozenKnowledgeContext } from './knowledge-context.ts';
+import type { DistilledExpressionRef } from './distillation.ts';
+import { SELLING_POINT_DISTILL_RULE_VERSION } from './distillation.ts';
 import type {
   ScriptStudioScriptContent,
   ScriptStudioSegmentContent,
@@ -31,6 +35,11 @@ export interface ScriptGeneratorInput {
   validationFeedback?: string[];
   /** 任务创建时冻结的商品身份、搜索词与推荐说明，不扩大事实来源。 */
   knowledgeContext?: FrozenKnowledgeContext;
+  /**
+   * 已确认（approved）的提炼表达（方案 §3.4）：短句只是表达参考，不是新的事实来源；
+   * 口播事实仍须挂在 sellingPoints 引用上，范围与限定条件不得扩大。
+   */
+  distilledExpressions?: DistilledExpressionRef[];
 }
 
 /**
@@ -58,8 +67,17 @@ export interface ScriptTitleRepairInput extends ScriptGeneratorInput {
   titleIssues: ScriptTitleIssue[];
 }
 
+/** 受约束正文修复输入（方案 §2.1）：只修正文质量问题，标题/时长/知识来源保持冻结。 */
+export interface ScriptBodyRepairInput extends ScriptGeneratorInput {
+  content: ScriptStudioScriptContent;
+  /** 本地结尾质量检查给出的具体问题码（ending_bare_selling_point / cta_ending_missing）。 */
+  qualityIssues: string[];
+}
+
 export interface ScriptGenerator {
   repairTitles?(input: ScriptTitleRepairInput): Promise<unknown>;
+  /** 围绕既有段落与已选卖点改写正文，并以自然 CTA 收尾；响应只接收 segments 白名单字段。 */
+  repairScriptContent?(input: ScriptBodyRepairInput): Promise<unknown>;
   generate(input: ScriptGeneratorInput): Promise<{ content: ScriptStudioScriptContent; attempts: number }>;
 }
 
@@ -79,6 +97,11 @@ function stringArray(value: unknown): string[] {
   return asArray(value).map(asString).filter(Boolean);
 }
 
+/** 结尾场景来自（已适配的）框架结构；无框架时使用通用 CTA 规则。 */
+function endingSceneForPlan(plan: PlannedScript): string | null {
+  return ctaEndingSceneFromStructure(plan.recommendation?.framework?.structure);
+}
+
 export function buildScriptPrompt(
   input: ScriptGeneratorInput,
 ): { systemPrompt: string; userPrompt: string } {
@@ -87,11 +110,18 @@ export function buildScriptPrompt(
   const titleContext = buildScriptTitleContext(library, input.knowledgeContext);
   const requiredIds = new Set(input.brief.requiredPointIds);
   const budget = buildScriptDurationBudget(input.targetDurationSec);
+  // 已确认提炼表达（调用方按优先级排序）挂到对应候选上：短句是表达参考，不是新的事实来源（方案 §3.4）。
+  const expressions = input.distilledExpressions || [];
+  const expressionForPoint = (pointId: string): DistilledExpressionRef | undefined =>
+    expressions.find((ref) => ref.sourceFactIds.includes(pointId));
   const requirements = [
     '只能使用上面方向卖点包中的事实，priority=required 的卖点必须优先考虑；不得新增功效、数字、材质或认证',
+    'sellingPoints 中的 distilled 字段是已确认的提炼表达参考（短句/用户价值/范围/限定条件），可参考其措辞，但它不是新的事实来源；口播中的事实仍须挂在对应的 sellingPoints 引用上，范围与限定条件不得扩大',
     '完整返回主标题、副标题、分段口播、画面意图与关键词',
-    `口播总字数必须落在目标时长预算内（${budget.minContentCharacters}-${budget.maxContentCharacters} 字）`,
+    // 软时长目标（方案 §2.3）：字数预算仅作参考，完整表达与 CTA 优先，不再机械卡字数。
+    `口播围绕目标时长 ${input.targetDurationSec} 秒组织；字数预算 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字仅作参考，完整表达与 CTA 优先，可为一句完整 CTA 适当超出；不得为凑字数重复卖点或追加无关内容`,
     '同一轮多条方案必须在开场、结构或卖点组合上明显不同',
+    ...scriptCtaRequirements(endingSceneForPlan(input.plan)),
     ...scriptTitleRequirements(),
   ];
   const embeddingText = input.knowledgeContext
@@ -156,14 +186,26 @@ export function buildScriptPrompt(
       ...(input.brief?.themeTitle ? { theme: input.brief.themeTitle } : {}),
       template: templateBlock,
       ...(recommendationBlock ? { recommendation: recommendationBlock } : {}),
-      sellingPoints: candidates.map((point) => ({
-        id: point.id,
-        title: point.title,
-        factText: point.factText,
-        pointType: point.pointType,
-        evidenceQuote: point.evidenceQuote,
-        priority: requiredIds.has(point.id) ? 'required' : 'optional',
-      })),
+      sellingPoints: candidates.map((point) => {
+        const expression = expressionForPoint(point.id);
+        return {
+          id: point.id,
+          title: point.title,
+          factText: point.factText,
+          pointType: point.pointType,
+          evidenceQuote: point.evidenceQuote,
+          priority: requiredIds.has(point.id) ? 'required' : 'optional',
+          ...(expression ? {
+            distilled: {
+              shortCopy: expression.shortCopy,
+              benefitText: expression.benefitText,
+              scope: expression.scope,
+              limitations: expression.limitations,
+              usage: '表达参考，不是新的事实来源',
+            },
+          } : {}),
+        };
+      }),
       targetDurationSec: input.targetDurationSec,
       output: {
         title: 'string；4-16 字，具体卖点或场景',
@@ -173,8 +215,8 @@ export function buildScriptPrompt(
         },
         direction: 'string；20 字以内的切入角度摘要',
         segments: [{
-          narration: 'string；带自然标点的口播',
-          sellingPointIdRefs: ['string；只引用 sellingPoints.id'],
+          narration: 'string；带自然标点的口播；最后一段的最后一句必须是 CTA 行动引导',
+          sellingPointIdRefs: ['string；只引用 sellingPoints.id；纯行动引导的 CTA 段可返回空数组'],
           visualIntent: 'string；抽象画面意图',
           visualKeywords: ['string；具体可见画面关键词'],
         }],
@@ -214,6 +256,60 @@ export function buildScriptTitleRepairPrompt(input: ScriptTitleRepairInput): { s
   };
 }
 
+/**
+ * 受约束正文修复提示词（方案 §2.1）：
+ * 围绕既有段落与已选卖点改写，以自然 CTA 收尾；只为修复列出的质量问题，
+ * 不为补字强塞新颜色、材质、参数或认证，不把证据解释文本直接念给观众听。
+ */
+export function buildScriptBodyRepairPrompt(input: ScriptBodyRepairInput): { systemPrompt: string; userPrompt: string } {
+  const candidates = briefCandidatePoints(input);
+  const requiredIds = new Set(input.brief.requiredPointIds);
+  const budget = buildScriptDurationBudget(input.targetDurationSec);
+  const requirements = [
+    '只能围绕既有分段与方向卖点包内事实改写；不得新增未提供的功效、数字、材质或认证',
+    '保留原有分段中已合格的表达与卖点引用，只修复列出的质量问题；不要整篇重写',
+    ...scriptCtaRequirements(endingSceneForPlan(input.plan)),
+    `口播围绕目标时长 ${input.targetDurationSec} 秒组织（字数参考 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字）；完整表达与 CTA 优先，可为一句完整 CTA 适当超出，不得为凑字数重复卖点或追加无关内容`,
+    '只返回 segments 数组；标题、封面、时长与知识来源由服务端保持冻结，不得返回',
+  ];
+  return {
+    systemPrompt: '你是电商短视频口播编辑。只返回一个包含 segments 数组的 JSON 对象，不输出解释。不得修改标题与封面。',
+    userPrompt: JSON.stringify({
+      task: 'repair_project_script_body_v1',
+      direction: input.plan.angle,
+      ...(input.brief?.themeTitle ? { theme: input.brief.themeTitle } : {}),
+      audience: input.audience,
+      tone: input.tone,
+      platform: input.platform,
+      targetDurationSec: input.targetDurationSec,
+      qualityIssues: input.qualityIssues,
+      currentSegments: input.content.segments.map((segment) => ({
+        narration: segment.narration,
+        sellingPointIdRefs: segment.sellingPointIdRefs,
+        visualIntent: segment.visualIntent,
+        visualKeywords: segment.visualKeywords,
+      })),
+      fullScript: input.content.fullScript,
+      sellingPoints: candidates.map((point) => ({
+        id: point.id,
+        title: point.title,
+        factText: point.factText,
+        evidenceQuote: point.evidenceQuote,
+        priority: requiredIds.has(point.id) ? 'required' : 'optional',
+      })),
+      output: {
+        segments: [{
+          narration: 'string；带自然标点的口播；最后一段的最后一句必须是 CTA 行动引导',
+          sellingPointIdRefs: ['string；只引用 sellingPoints.id；纯行动引导的 CTA 段可返回空数组'],
+          visualIntent: 'string；抽象画面意图',
+          visualKeywords: ['string；具体可见画面关键词'],
+        }],
+      },
+      requirements,
+    }),
+  };
+}
+
 function parseCoverParts(raw: Record<string, unknown>): { primary: string; secondary: string } {
   const cover = asRecord(raw.coverTitleParts);
   const primary = asString(cover.primary);
@@ -234,13 +330,16 @@ function parseSegments(
     const narration = asString(segment.narration);
     if (!narration) throw new Error(`generated_script_segment_empty:${index + 1}`);
     const sellingPointIdRefs = stringArray(segment.sellingPointIdRefs || segment.sellingPointIds);
-    const validRefs = sellingPointIdRefs.filter((id) => usableIds.has(id));
+    // 越界引用（方向卖点包外 / 其他修订或项目的 ID）fail closed：不再静默过滤后保留口播文本，
+    // 「删除坏 ID」不能伪装合格——检测到即本轮失败，交由上层重试或修复（方案 §1.3 / A9）。
+    const outOfPackageRef = sellingPointIdRefs.find((id) => !usableIds.has(id));
+    if (outOfPackageRef) throw new Error(`generated_script_out_of_package_ref:${outOfPackageRef}`);
     segments.push({
       id: asString(segment.id) || `segment-${index + 1}`,
       narration,
       subtitle: normalizeAutomaticSubtitleText(narration),
-      sellingPointIdRefs: validRefs,
-      sellingPointRefs: validRefs.map((id) => fallback.find((point) => point.id === id)?.title || ''),
+      sellingPointIdRefs,
+      sellingPointRefs: sellingPointIdRefs.map((id) => fallback.find((point) => point.id === id)?.title || ''),
       visualIntent: asString(segment.visualIntent),
       visualKeywords: stringArray(segment.visualKeywords),
     });
@@ -275,7 +374,7 @@ export function normalizeGeneratedScript(
   input: ScriptGeneratorInput,
 ): ScriptStudioScriptContent {
   const record = asRecord(raw);
-  // 归一化只认当前卖点包内的 ID：模型返回包外 ID 一律不得进入脚本引用。
+  // 归一化只认当前卖点包内的 ID：模型返回包外 ID 一律不得进入脚本引用（检测到即抛错重试）。
   const usable = briefCandidatePoints(input);
   const usableIds = new Set(usable.map((point) => point.id));
   const coverTitleParts = parseCoverParts(record);
@@ -339,160 +438,13 @@ export function normalizeGeneratedScript(
           sourceRows: strategy!.sourceRows ?? [],
         }
       : undefined,
-    recommendation: recommendation
-      ? {
-          framework: recommendation.framework ? {
-            id: recommendation.framework.id,
-            stableKey: recommendation.framework.stableKey,
-            name: recommendation.framework.name,
-            structure: recommendation.framework.structure,
-            rationale: recommendation.framework.rationale,
-          } : null,
-          copyHook: recommendation.copyHook ? {
-            id: recommendation.copyHook.id,
-            stableKey: recommendation.copyHook.stableKey,
-            type: recommendation.copyHook.type,
-            subtype: recommendation.copyHook.subtype,
-            formula: recommendation.copyHook.formula,
-            example: recommendation.copyHook.example,
-            rationale: recommendation.copyHook.rationale,
-          } : null,
-          visualHook: recommendation.visualHook ? {
-            id: recommendation.visualHook.id,
-            stableKey: recommendation.visualHook.stableKey,
-            group: recommendation.visualHook.group,
-            name: recommendation.visualHook.name,
-            formula: recommendation.visualHook.formula,
-            guidance: recommendation.visualHook.guidance,
-            referenceAssetIds: recommendation.visualHook.referenceAssetIds,
-            rationale: recommendation.visualHook.rationale,
-          } : null,
-        }
-      : undefined,
-  };
-}
-
-export function createScriptGenerator(
-  completeJson: ScriptStudioCompleteJson,
-  provider: { id: string; model: string },
-  options: { maxTokens?: number } = {},
-): ScriptGenerator {
-  return {
-    async repairTitles(input) {
-      const prompt = buildScriptTitleRepairPrompt(input);
-      return completeJson({ ...prompt, temperature: 1, maxTokens: SCRIPT_TITLE_REPAIR_MAX_TOKENS, signal: input.signal });
-    },
-    async generate(input) {
-      // 方向编排不可绕过：缺少 brief 直接失败，不得回退完整卖点库。
-      if (!input.brief) throw new Error('script_generation_direction_brief_required');
-      const prompt = buildScriptPrompt(input);
-      let attempts = 0;
-      let raw: unknown;
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        attempts += 1;
-        raw = await completeJson({
-          systemPrompt: prompt.systemPrompt,
-          userPrompt: prompt.userPrompt,
-          temperature: 1,
-          maxTokens: options.maxTokens ?? 8000,
-          signal: input.signal,
-        });
-        try {
-          return { content: normalizeGeneratedScript(raw, input), attempts };
-        } catch {
-          if (input.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
-        }
-      }
-      throw new Error('script_generation_invalid_output');
-    },
-  };
-}
-
-export function buildDeterministicFallbackScript(
-  input: ScriptGeneratorInput,
-): ScriptStudioScriptContent {
-  const usable = briefCandidatePoints(input);
-  if (usable.length === 0) throw new Error('script_generation_no_candidate_points');
-  const budget = buildScriptDurationBudget(input.targetDurationSec);
-  const poolStart = input.plan.index > 1 && usable.length > 1 ? 1 : 0;
-  const selectedPool = usable.slice(poolStart, Math.max(poolStart + 1, Math.min(poolStart + 5, usable.length)));
-  const sentences: string[] = [];
-  let contentCharacterCount = 0;
-  let pointer = 0;
-  while (contentCharacterCount < budget.minContentCharacters && pointer < 30) {
-    const point = selectedPool[pointer % selectedPool.length]!;
-    const variationPrefix = input.plan.index > 1 ? `${input.plan.angle}：` : '';
-    let sentence = `${variationPrefix}${point.factText}。${point.title ? `${point.title}，` : ''}`;
-    if (countScriptContentCharacters([...sentences, sentence].join('\n')) > budget.maxContentCharacters) {
-      sentence = `${point.title || '值得信赖'}。`;
-    }
-    sentences.push(sentence);
-    contentCharacterCount = countScriptContentCharacters(sentences.join('\n'));
-    pointer += 1;
-  }
-  const selected = selectedPool;
-  const segments: ScriptStudioSegmentContent[] = sentences.map((sentence, index) => ({
-    id: `segment-${index + 1}`,
-    narration: sentence,
-    subtitle: normalizeAutomaticSubtitleText(sentence),
-    sellingPointIdRefs: [selectedPool[index % selectedPool.length]!.id],
-    sellingPointRefs: [selectedPool[index % selectedPool.length]!.title],
-    visualIntent: selectedPool[index % selectedPool.length]!.factText,
-    visualKeywords: selectedPool[index % selectedPool.length]!.title ? [selectedPool[index % selectedPool.length]!.title] : [],
-  }));
-  const fullScript = segments.map((segment) => segment.narration).join('\n');
-  contentCharacterCount = countScriptContentCharacters(fullScript);
-  const knowledgeContext = input.knowledgeContext;
-  const strategy = knowledgeContext?.strategy;
-  // 本地兜底也从当前方向与已核验卖点取标题，不拼接型号和搜索词。
-  const title = `${input.plan.angle.slice(0, 8)}${selectedPool[0]!.title.slice(0, 8)}`;
-  const coverPrimary = `${selectedPool[0]!.title}${input.plan.angle.slice(0, 4)}`.slice(0, 12);
-  const coverSecondary = '看看这些真实细节';
-  const recommendation = input.plan.recommendation;
-  return {
-    version: 4,
-    title,
-    coverTitleParts: {
-      primary: coverPrimary,
-      secondary: coverSecondary,
-      source: 'system_composed',
-    },
-    platform: input.platform,
-    tone: input.tone,
-    templateId: input.plan.templateId,
-    template: input.plan.templateName,
-    templateVersion: input.plan.templateVersion,
-    templateRationale: input.plan.rationale,
-    shotSetId: '',
-    targetDurationSec: input.targetDurationSec,
-    targetNarrationDurationSec: budget.targetNarrationSec,
-    contentCharacterCount,
-    estimatedNarrationDurationSec: estimateNarrationDurationSec(contentCharacterCount),
-    durationStatus: 'qualified',
-    direction: input.plan.angle,
-    creativeBrief: input.creativeBrief,
-    libraryRevisionId: input.libraryRevision.id,
-    sellingPointUsage: usable.map((point) => ({
-      sellingPointId: point.id,
-      title: point.title,
-      status: selected.some((item) => item.id === point.id) ? 'used' : 'omitted',
-      reason: selected.some((item) => item.id === point.id) ? '正文已引用' : '未写入正文',
-    })),
-    segments,
-    fullScript,
-    fullSubtitle: segments.map((segment) => segment.subtitle).join('\n'),
-    knowledgeContext: knowledgeContext
-      ? {
-          matchStatus: strategy!.matchStatus,
-          strategyRevisionId: strategy!.strategyCatalogRevisionId,
-          normalizedModelKey: strategy!.normalizedModelKey,
-          canonicalName: strategy!.canonicalName,
-          displayName: buildScriptTitleContext(input.libraryRevision, knowledgeContext).displayName,
-          searchTerms: buildScriptTitleContext(input.libraryRevision, knowledgeContext).searchTerms,
-          searchTermsUsed: [],
-          sourceRows: strategy!.sourceRows ?? [],
-        }
-      : undefined,
+    // 冻结本次生成提供的已确认提炼表达版本（方案 §3.3）：来源库修订由 libraryRevisionId 冻结。
+    ...(input.distilledExpressions?.length ? {
+      distilledContext: {
+        ruleVersion: SELLING_POINT_DISTILL_RULE_VERSION,
+        pointIds: input.distilledExpressions.map((ref) => ref.id),
+      },
+    } : {}),
     recommendation: recommendation
       ? {
           framework: recommendation.framework ? {
@@ -527,59 +479,27 @@ export function buildDeterministicFallbackScript(
 }
 
 /**
- * 真实模型偶尔返回时长不足的正文。这里只把卖点库中未使用的事实补成自然句，
- * 不新增任何虚构功效，随后仍会上交时长/结构/事实校验。
+ * 应用受约束正文修复（方案 §2.1 / A6）：
+ * 响应只接收 segments 的正文相关白名单字段；标题、封面、目标时长、方向、模板、
+ * 商品身份与知识来源快照保持冻结。全文、字幕、引用、卖点使用状态、字数与时长
+ * 全部由服务端重新计算。
  */
-export function extendScriptContentToDuration(
-  input: ScriptStudioScriptContent,
-  library: LibraryRevisionView,
-  brief: DirectionSellingPointBrief,
+export function applyScriptBodyRepair(
+  raw: unknown,
+  content: ScriptStudioScriptContent,
+  input: ScriptGeneratorInput,
 ): ScriptStudioScriptContent {
-  const budget = buildScriptDurationBudget(input.targetDurationSec);
-  const usedIds = new Set(input.segments.flatMap((segment) => segment.sellingPointIdRefs));
-  // 时长补齐同样只能从当前卖点包取事实，不能从完整库偷拿卖点；证据失败卖点一律排除。
-  const briefIds = new Set([...brief.requiredPointIds, ...brief.optionalPointIds]);
-  const usable = library.sellingPoints.filter((point) => briefIds.has(point.id) && isSellingPointEvidenceUsable(point));
-  const unused = usable.filter((point) => !usedIds.has(point.id));
-  const segments = [...input.segments];
-  let contentCharacterCount = countScriptContentCharacters(input.fullScript);
-  const pool = unused.length > 0 ? unused : usable;
-  if (pool.length === 0) return input;
-  let pointer = 0;
-  while (contentCharacterCount < budget.minContentCharacters && pointer < 30) {
-    const point = pool[pointer % pool.length]!;
-    const narrationCandidate = `${point.factText}。${point.title ? `${point.title}。` : ''}`;
-    const candidateCount = countScriptContentCharacters([...segments, {
-      id: `segment-${segments.length + 1}`,
-      narration: narrationCandidate,
-      subtitle: normalizeAutomaticSubtitleText(narrationCandidate),
-      sellingPointIdRefs: [point.id],
-      sellingPointRefs: [point.title],
-      visualIntent: point.factText,
-      visualKeywords: point.title ? [point.title] : [],
-    } satisfies ScriptStudioSegmentContent].map((segment) => segment.narration).join('\n'));
-    const narration = candidateCount > budget.maxContentCharacters ? `${point.title || '值得信赖'}。` : narrationCandidate;
-    const nextSegments = [...segments, {
-      id: `segment-${segments.length + 1}`,
-      narration,
-      subtitle: normalizeAutomaticSubtitleText(narration),
-      sellingPointIdRefs: [point.id],
-      sellingPointRefs: [point.title],
-      visualIntent: point.factText,
-      visualKeywords: point.title ? [point.title] : [],
-    } satisfies ScriptStudioSegmentContent];
-    const nextCount = countScriptContentCharacters(nextSegments.map((segment) => segment.narration).join('\n'));
-    if (nextCount > budget.maxContentCharacters) break;
-    segments.push(nextSegments[nextSegments.length - 1]!);
-    contentCharacterCount = nextCount;
-    usedIds.add(point.id);
-    pointer += 1;
-  }
+  const record = asRecord(raw);
+  const usable = briefCandidatePoints(input);
+  const usableIds = new Set(usable.map((point) => point.id));
+  const segments = parseSegments(record, usableIds, usable);
   const fullScript = segments.map((segment) => segment.narration).join('\n');
-  contentCharacterCount = countScriptContentCharacters(fullScript);
+  const contentCharacterCount = countScriptContentCharacters(fullScript);
+  const budget = buildScriptDurationBudget(input.targetDurationSec);
   const estimatedNarrationDurationSec = estimateNarrationDurationSec(contentCharacterCount);
+  const usedIds = new Set(segments.flatMap((segment) => segment.sellingPointIdRefs));
   return {
-    ...input,
+    ...content,
     segments,
     fullScript,
     fullSubtitle: segments.map((segment) => segment.subtitle).join('\n'),
@@ -589,7 +509,7 @@ export function extendScriptContentToDuration(
       ? 'too_short'
       : contentCharacterCount > budget.maxContentCharacters ? 'too_long' : 'qualified',
     sellingPointUsage: usable.map((point) => {
-      const existing = input.sellingPointUsage.find((usage) => usage.sellingPointId === point.id);
+      const existing = content.sellingPointUsage.find((usage) => usage.sellingPointId === point.id);
       const used = usedIds.has(point.id);
       return {
         sellingPointId: point.id,
@@ -598,5 +518,63 @@ export function extendScriptContentToDuration(
         reason: used ? (existing?.reason || '正文已引用') : (existing?.reason || '未写入正文'),
       };
     }),
+  };
+}
+
+export interface CreateScriptGeneratorOptions {
+  maxTokens?: number;
+  /** 调用前原子占用请求预算（方案 §2.2）；生产路径必传，测试替身可不传。 */
+  budget?: ScriptRequestBudget;
+}
+
+export function createScriptGenerator(
+  completeJson: ScriptStudioCompleteJson,
+  provider: { id: string; model: string },
+  options: CreateScriptGeneratorOptions = {},
+): ScriptGenerator {
+  const reserve = (input: { plan: { index: number } }, purpose: ScriptRequestPurpose): void => {
+    options.budget?.reserve({ planIndex: input.plan.index, purpose });
+  };
+  return {
+    async repairTitles(input) {
+      reserve(input, 'title_repair');
+      const prompt = buildScriptTitleRepairPrompt(input);
+      return completeJson({ ...prompt, temperature: 1, maxTokens: SCRIPT_TITLE_REPAIR_MAX_TOKENS, signal: input.signal });
+    },
+    async repairScriptContent(input) {
+      reserve(input, 'repair');
+      const prompt = buildScriptBodyRepairPrompt(input);
+      return completeJson({
+        systemPrompt: prompt.systemPrompt,
+        userPrompt: prompt.userPrompt,
+        temperature: 1,
+        maxTokens: options.maxTokens ?? 8000,
+        signal: input.signal,
+      });
+    },
+    async generate(input) {
+      // 方向编排不可绕过：缺少 brief 直接失败，不得回退完整卖点库。
+      if (!input.brief) throw new Error('script_generation_direction_brief_required');
+      const prompt = buildScriptPrompt(input);
+      let attempts = 0;
+      let raw: unknown;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        reserve(input, 'generate');
+        attempts += 1;
+        raw = await completeJson({
+          systemPrompt: prompt.systemPrompt,
+          userPrompt: prompt.userPrompt,
+          temperature: 1,
+          maxTokens: options.maxTokens ?? 8000,
+          signal: input.signal,
+        });
+        try {
+          return { content: normalizeGeneratedScript(raw, input), attempts };
+        } catch {
+          if (input.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+        }
+      }
+      throw new Error('script_generation_invalid_output');
+    },
   };
 }
