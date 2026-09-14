@@ -39,7 +39,12 @@ import { describeValidationIssues, validateScriptContent } from './validation.ts
 import { applyScriptTitleRepair, buildScriptTitleContext, checkScriptTitles, type ScriptTitleSummary } from './title-policy.ts';
 import { checkTitleEmbedding } from './title-embedding.ts';
 import { comparePageIdentityPairs, findCrossProductConflict } from './page-identity.ts';
-import { checkScriptEndingQuality, SCRIPT_CTA_POLICY_VERSION } from './cta-policy.ts';
+import {
+  checkScriptEndingQuality,
+  parseScriptEndingReview,
+  scriptReviewFingerprint,
+  SCRIPT_CTA_POLICY_VERSION,
+} from './cta-policy.ts';
 import { adaptPlanRecommendation } from './framework-adaptation.ts';
 import {
   countDistilledStatus,
@@ -223,18 +228,36 @@ function bodyValidationIssues(validation: ReturnType<typeof validateScriptConten
 }
 
 /**
- * 保存时的校验快照（方案 §4.1 三类状态）：
- * - 时长状态如实计算（qualified/too_short/too_long），偏长候选允许保存；
- * - 文案检查记录本地结尾检查结果（CTA / 孤立标签）与策略版本；
- * - 语义审核尚未执行时如实标注 unreviewed，不补成合格。
+ * 结尾语义审核结果（方案 §4.2 / 审查 R2）：passed 绑定正文指纹与来源修订；
+ * unreviewed 表示当前生成器不支持审核（如测试替身），如实记录不补成合格。
+ * 审核失败（failed）不进入保存路径——先修复重审，仍失败则该方案不保存。
  */
-function buildValidationJson(content: ScriptStudioScriptContent): Record<string, unknown> {
+export type EndingReviewOutcome =
+  | { status: 'passed'; fingerprint: string }
+  | { status: 'unreviewed' };
+
+interface GeneratedCandidate {
+  content: ScriptStudioScriptContent;
+  endingReview: EndingReviewOutcome;
+}
+
+/**
+ * 保存时的校验快照（方案 §4.1 三类状态 / 审查 R2）：
+ * - 时长状态如实计算（qualified/too_short/too_long），偏长候选允许保存；
+ * - 文案检查分别记录本地结尾检查与语义审核结果；未审核如实标注 unreviewed；
+ * - 审核指纹绑定正文与来源修订，保存前核对（正文变化则旧审核失效）。
+ */
+function buildValidationJson(content: ScriptStudioScriptContent, review: EndingReviewOutcome, libraryRevisionId: string): Record<string, unknown> {
+  // 保存前核对（A10）：标题修复不改正文，指纹应一致；不一致（正文被改）则旧审核失效。
+  const reviewPassed = review.status === 'passed'
+    && review.fingerprint === scriptReviewFingerprint(content.fullScript, libraryRevisionId);
   return {
     durationStatus: content.durationStatus,
     contentCharacterCount: content.contentCharacterCount,
     copyCheck: {
       endingStatus: 'passed',
-      semanticReview: 'unreviewed',
+      semanticReview: reviewPassed ? 'passed' : 'unreviewed',
+      ...(reviewPassed ? { reviewFingerprint: review.fingerprint } : {}),
       policyVersion: SCRIPT_CTA_POLICY_VERSION,
     },
   };
@@ -332,7 +355,7 @@ async function generateValidatedScript(
   knowledgeContext: FrozenKnowledgeContext | null,
   previousTitles: ScriptTitleSummary[] = [],
   distilledExpressions: DistilledExpressionRef[] = [],
-): Promise<ScriptStudioScriptContent> {
+): Promise<GeneratedCandidate> {
   let validation: ReturnType<typeof validateScriptContent> | undefined;
   let endingFeedback: string[] = [];
   const titleContext = buildScriptTitleContext(library, knowledgeContext);
@@ -366,32 +389,63 @@ async function generateValidatedScript(
     titleContext,
     titleEmbeddingContext,
   });
+  const fingerprintOf = (content: ScriptStudioScriptContent): string =>
+    scriptReviewFingerprint(content.fullScript, library.id);
   type AttemptOutcome =
-    | { status: 'passed'; content: ScriptStudioScriptContent }
+    | { status: 'passed'; content: ScriptStudioScriptContent; review: EndingReviewOutcome }
     | { status: 'body_failed' }
     | { status: 'ending_repair_failed'; feedback: string[] };
   const runAttempt = async (validationFeedback?: string[]): Promise<AttemptOutcome> => {
-    // 生成/网络错误直接上抛（沿用既有语义）；只有正文校验失败与修复失败走轮内处理。
+    // 生成/网络错误直接上抛（沿用既有语义）；只有正文校验失败、修复失败与审核失败走轮内处理。
     const generated = await deps.generator.generate({ ...baseInput, ...(validationFeedback ? { validationFeedback } : {}) });
     const attemptValidation = validateOnce(generated.content);
     if (!bodyValidationPassed(attemptValidation)) {
       validation = attemptValidation;
       return { status: 'body_failed' };
     }
-    // 正文机械校验通过后做本地结尾质量检查（CTA / 孤立标签）；
-    // 不合格进入受约束修复，修复失败交给下一轮重生成。
+    // 本地末句检查（孤立标签 / 渠道未确认 / 缺行动邀请）：不合格进入受约束修复。
     const ending = checkScriptEndingQuality(attemptValidation.content, candidates);
-    if (ending.issues.length === 0) return { status: 'passed', content: attemptValidation.content };
+    if (ending.issues.length > 0) {
+      try {
+        const repaired = await repairEndingAndRevalidate(
+          deps, baseInput, attemptValidation.content, ending.issues, validateOnce, candidates,
+        );
+        return await reviewCandidate(repaired);
+      } catch (error) {
+        if (deps.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+        if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
+        return { status: 'ending_repair_failed', feedback: [error instanceof Error ? error.message : String(error)] };
+      }
+    }
+    return await reviewCandidate(attemptValidation.content);
+  };
+  /** 有界语义审核（R2）：初筛通过后复核；失败先定向修复再复审一次，仍失败交下一轮重生成。 */
+  const reviewCandidate = async (candidate: ScriptStudioScriptContent): Promise<AttemptOutcome> => {
+    if (!deps.generator.reviewScriptContent) {
+      return { status: 'passed', content: candidate, review: { status: 'unreviewed' } };
+    }
+    let verdict;
+    try {
+      verdict = parseScriptEndingReview(await deps.generator.reviewScriptContent({ ...baseInput, content: candidate }));
+    } catch (error) {
+      if (deps.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
+      // 审核调用失败 fail closed：不能默认通过，按修复失败进入下一轮。
+      return { status: 'ending_repair_failed', feedback: [`语义审核调用失败：${error instanceof Error ? error.message : String(error)}`] };
+    }
+    if (verdict.pass) {
+      return { status: 'passed', content: candidate, review: { status: 'passed', fingerprint: fingerprintOf(candidate) } };
+    }
+    // 审核失败 → 携具体原因定向修复一次 → 复审一次。
     try {
       const repaired = await repairEndingAndRevalidate(
-        deps,
-        baseInput,
-        attemptValidation.content,
-        ending.issues,
-        validateOnce,
-        candidates,
+        deps, baseInput, candidate, verdict.issues, validateOnce, candidates,
       );
-      return { status: 'passed', content: repaired };
+      const reVerdict = parseScriptEndingReview(await deps.generator.reviewScriptContent({ ...baseInput, content: repaired }));
+      if (reVerdict.pass) {
+        return { status: 'passed', content: repaired, review: { status: 'passed', fingerprint: fingerprintOf(repaired) } };
+      }
+      return { status: 'ending_repair_failed', feedback: reVerdict.issues };
     } catch (error) {
       if (deps.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
       if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
@@ -405,12 +459,12 @@ async function generateValidatedScript(
       ...(attempt > 1 ? endingFeedback : []),
     ].slice(0, 5);
     const outcome = await runAttempt(feedback.length > 0 ? feedback : undefined);
-    if (outcome.status === 'passed') return outcome.content;
+    if (outcome.status === 'passed') return { content: outcome.content, endingReview: outcome.review };
     if (outcome.status === 'ending_repair_failed') endingFeedback = outcome.feedback;
   }
   if (deps.fallbackOnInvalid) {
     const outcome = await runAttempt(undefined);
-    if (outcome.status === 'passed') return outcome.content;
+    if (outcome.status === 'passed') return { content: outcome.content, endingReview: outcome.review };
     if (outcome.status === 'ending_repair_failed') endingFeedback = outcome.feedback;
   }
   const issues = validation
@@ -630,11 +684,15 @@ export async function executeScriptStudioTask(
           }, null, now);
         } else {
           try {
+            if (deps.signal?.aborted) throw new DOMException('卖点提炼已取消', 'AbortError');
             reserveDistillRequest(db, taskId, now ?? (() => new Date()));
             const rawDistill = await deps.distiller.distill({
               facts: usableFacts,
               productName: libraryRevision!.productName,
+              signal: deps.signal,
             });
+            // 模型返回后、持久化前再检查取消：停机/手动停止期间返回的结果不再落库（R5）。
+            if (deps.signal?.aborted) throw new DOMException('卖点提炼已取消', 'AbortError');
             const validatedDistill = parseAndValidateDistilledPoints(rawDistill, usableFacts);
             const savedDistill = saveDistilledPoints(db, {
               projectId,
@@ -742,7 +800,7 @@ export async function executeScriptStudioTask(
     // 各创意方向的首稿只读卖点库和自己的 plan，可以有界并行；
     // 按 plan 顺序落库前再做一次 sibling 校验，若相似才携已采用脚本定向重生成。
     // 这样不会为并行牺牲方案差异契约，同时避免正常情况下纯串行累加上游长尾。
-    const initialResults: Array<{ content?: ScriptStudioScriptContent; error?: unknown }> = new Array(plansWithRecommendations.length);
+    const initialResults: Array<{ candidate?: GeneratedCandidate; error?: unknown }> = new Array(plansWithRecommendations.length);
     let generationCursor = 0;
     const generateWorker = async (): Promise<void> => {
       while (generationCursor < plansWithRecommendations.length) {
@@ -754,7 +812,7 @@ export async function executeScriptStudioTask(
         if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
         try {
           initialResults[index] = {
-            content: await generateValidatedScript(
+            candidate: await generateValidatedScript(
               deps,
               libraryRevision!,
               plan,
@@ -784,7 +842,7 @@ export async function executeScriptStudioTask(
       try {
         const initial = initialResults[index]!;
         if (initial.error) throw initial.error;
-        let content = initial.content!;
+        let candidate: GeneratedCandidate = initial.candidate!;
         const titleEmbeddingContext = knowledgeContext
           ? {
               matchStatus: knowledgeContext.strategy.matchStatus,
@@ -792,14 +850,14 @@ export async function executeScriptStudioTask(
               searchTerms: knowledgeContext.strategy.searchTerms,
             }
           : undefined;
-        const siblingValidation = validateScriptContent(content, {
+        const siblingValidation = validateScriptContent(candidate.content, {
           libraryRevision: libraryRevision!,
           siblingScripts: createdScripts,
           titleContext: buildScriptTitleContext(libraryRevision!, knowledgeContext),
           titleEmbeddingContext,
         });
         if (!bodyValidationPassed(siblingValidation)) {
-          content = await generateValidatedScript(
+          candidate = await generateValidatedScript(
             deps,
             libraryRevision!,
             plan,
@@ -811,8 +869,9 @@ export async function executeScriptStudioTask(
             distilledExpressions,
           );
         } else {
-          content = siblingValidation.content;
+          candidate = { content: siblingValidation.content, endingReview: candidate.endingReview };
         }
+        const content = candidate.content;
         const recommendationJson = recommendationForPlan(plan);
         const finalized = await repairTitlesAndSave(deps, content, {
           libraryRevision: libraryRevision!, plan, brief, ...generationContext,
@@ -829,7 +888,7 @@ export async function executeScriptStudioTask(
               contentJson: content as unknown as Record<string, unknown>,
               targetDurationSec,
               estimatedDurationSec: content.estimatedNarrationDurationSec,
-              validationJson: buildValidationJson(content),
+              validationJson: buildValidationJson(content, candidate.endingReview, libraryRevision!.id),
               strategyCatalogRevisionId: knowledgeContext?.strategy.strategyCatalogRevisionId ?? '',
               strategyEntryId: knowledgeContext?.strategy.strategyEntryId ?? '',
               templateCatalogRevisionId: knowledgeContext?.template.templateCatalogRevisionId ?? '',
@@ -846,7 +905,7 @@ export async function executeScriptStudioTask(
               contentJson: content as unknown as Record<string, unknown>,
               targetDurationSec,
               estimatedDurationSec: content.estimatedNarrationDurationSec,
-              validationJson: buildValidationJson(content),
+              validationJson: buildValidationJson(content, candidate.endingReview, libraryRevision!.id),
               strategyCatalogRevisionId: knowledgeContext?.strategy.strategyCatalogRevisionId ?? '',
               strategyEntryId: knowledgeContext?.strategy.strategyEntryId ?? '',
               templateCatalogRevisionId: knowledgeContext?.template.templateCatalogRevisionId ?? '',

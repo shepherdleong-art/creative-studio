@@ -46,11 +46,17 @@ function generationInput(library: LibraryRevisionView): ScriptGeneratorInput {
 }
 
 function content(input: ScriptGeneratorInput, index = 0): ScriptStudioScriptContent {
-  const seeds = ['坐下之后，看看柔软扶手怎样包覆手臂，阅读听歌都能放松，日常休闲有个自在角落，靠背网布让家居多些层次。', '围绕窗边安排书桌与灯光，夜晚翻阅喜欢的杂志，周末约朋友喝茶聊天，把客厅变成温暖的交流场所，想找这样的角落，就从了解这款沙发开始。'];
+  // 正文与 CTA 分离构造：凑字数只动正文，末句 CTA 永远完整保留（结尾质量检查按末句判定）。
+  const bodies = [
+    '坐下之后，柔软扶手包覆手臂，阅读听歌都能放松，日常休闲有个自在角落，靠背网布让家居多些层次。',
+    '围绕窗边安排书桌与灯光，夜晚翻阅喜欢的杂志，周末约朋友喝茶聊天，把客厅变成温暖的交流场所。',
+  ];
+  const CTA = '想找这样的一张沙发，就从了解这款开始。';
   const budget = buildScriptDurationBudget(15);
-  let narration = seeds[index % seeds.length]!;
-  while (countScriptContentCharacters(narration) < budget.minContentCharacters) narration += seeds[index % seeds.length];
-  while (countScriptContentCharacters(narration) > budget.maxContentCharacters) narration = narration.slice(0, -1);
+  let body = bodies[index % bodies.length]!;
+  while (countScriptContentCharacters(body) + countScriptContentCharacters(CTA) < budget.minContentCharacters) body += bodies[index % bodies.length];
+  while (countScriptContentCharacters(body) + countScriptContentCharacters(CTA) > budget.maxContentCharacters) body = body.slice(0, -1);
+  const narration = `${body}${CTA}`;
   return normalizeGeneratedScript({ title: index ? '窗边阅读的惬意时光' : '柔软扶手里的休闲时光', coverTitleParts: { primary: '靠背轻透的秘密', secondary: '看看这些真实细节' }, segments: [{ narration, sellingPointIdRefs: input.brief.requiredPointIds, visualIntent: '客厅', visualKeywords: ['扶手'] }] }, input);
 }
 

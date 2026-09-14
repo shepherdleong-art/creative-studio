@@ -1330,6 +1330,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   </div>
                 </div>
                 <DistilledPointsSection
+                  key={libraryRevision.id}
                   projectId={projectId}
                   revisionId={libraryRevision.id}
                   factCount={libraryRevision.sellingPoints.length}
@@ -1427,12 +1428,21 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                           </div>
                         </div>
                         <div className="mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 rounded-[13px] border border-hairline px-3 py-2.5 text-[0.68rem] text-ink-secondary">
-                          {/* 三类状态分开显示（方案 §4.1）：文案检查、目标时长、预计口播时长互不代表。 */}
+                          {/* 三类状态分开显示（方案 §4.1 / 审查 R2）：结尾检查、语义审核、时长互不代表；未审核不显示整体文案合格。 */}
                           {(() => {
                             const copyCheck = parseCopyCheck(revision?.validationJson);
-                            return copyCheck.endingStatus === 'passed'
-                              ? <span className="font-semibold text-ok">✓ 文案检查通过{copyCheck.semanticReview === 'unreviewed' ? '（语义未审核）' : ''}</span>
-                              : <span className="font-semibold text-ink-tertiary">文案检查未记录</span>;
+                            return (
+                              <>
+                                {copyCheck.endingStatus === 'passed'
+                                  ? <span className="font-semibold text-ok">✓ 结尾检查通过</span>
+                                  : <span className="text-ink-tertiary">结尾检查未记录</span>}
+                                {copyCheck.semanticReview === 'passed'
+                                  ? <span className="font-semibold text-ok">✓ 语义审核通过</span>
+                                  : copyCheck.semanticReview === 'failed'
+                                    ? <span className="font-semibold text-warn">语义审核未通过</span>
+                                    : <span className="text-ink-tertiary">语义审核未执行</span>}
+                              </>
+                            );
                           })()}
                           <span>目标 {content.targetDurationSec} 秒</span>
                           {typeof content.estimatedNarrationDurationSec === 'number' && (
@@ -1532,11 +1542,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   );
 }
 
-/** 解析保存版本上的文案检查快照（方案 §4.1）：历史版本缺字段按未记录处理，不补成合格。 */
-function parseCopyCheck(validationJson?: string): { endingStatus?: string; semanticReview?: string } {
+/** 解析保存版本上的文案检查快照（方案 §4.1 / 审查 R2）：历史版本缺字段按未记录处理，不补成合格。 */
+function parseCopyCheck(validationJson?: string): { endingStatus?: string; semanticReview?: string; reviewFingerprint?: string } {
   if (!validationJson) return {};
   try {
-    const parsed = JSON.parse(validationJson) as { copyCheck?: { endingStatus?: string; semanticReview?: string } };
+    const parsed = JSON.parse(validationJson) as { copyCheck?: { endingStatus?: string; semanticReview?: string; reviewFingerprint?: string } };
     return parsed.copyCheck || {};
   } catch {
     return {};
@@ -1554,6 +1564,8 @@ interface DistilledPointView {
   limitations: string[];
   sourceFactIds: string[];
   reviewStatus: 'draft' | 'approved' | 'needs_review';
+  reviewIssues: string[];
+  editHistory: Array<{ shortCopy: string; benefitText: string; reviewStatus: string; editedAt: string }>;
 }
 
 const DISTILLED_ROLE_LABELS: Record<DistilledPointView['role'], string> = {
@@ -1569,8 +1581,9 @@ const DISTILLED_STATUS_LABELS: Record<DistilledPointView['reviewStatus'], { labe
 };
 
 /**
- * 提炼卖点区（方案 §3.4）：默认展示推荐短句、用户价值与角色；
- * 原文事实与限定条件收进可展开的证据区。统计区分原始事实条数与归并后的主卖点数量。
+ * 提炼卖点区（方案 §3.4 / 审查 R1）：挂载即自动加载（含空态也有展开入口，
+ * 不再依赖「先有数据才渲染按钮」）；父组件以 revisionId 作为 key 重挂载实现修订切换重置。
+ * 默认展示推荐短句、用户价值与角色；原文事实、限定条件与复核原因收进可展开的证据区。
  */
 function DistilledPointsSection({
   projectId,
@@ -1587,11 +1600,18 @@ function DistilledPointsSection({
   const [expanded, setExpanded] = useState<string>('');
   const [approving, setApproving] = useState('');
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<string>('');
+  const [draftShortCopy, setDraftShortCopy] = useState('');
+  const [draftBenefitText, setDraftBenefitText] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const response = await fetch(`/api/projects/${projectId}/script-studio/distilled-points?revisionId=${revisionId}`);
-      if (!response.ok) return;
+      if (!response.ok) {
+        setPoints([]);
+        return;
+      }
       const data = await response.json() as { points?: DistilledPointView[] };
       setPoints(data.points || []);
     } catch {
@@ -1599,13 +1619,13 @@ function DistilledPointsSection({
     }
   }, [projectId, revisionId]);
 
-  // 展开时按需拉取（点击事件内触发，不在 effect 里同步 setState）。
-  const toggleOpen = () => {
-    setOpen((current) => {
-      if (!current && points === null) void load();
-      return !current;
-    });
-  };
+  // 审查 R1：挂载即加载——与面板其余加载一致，经 setTimeout 异步触发，不在 effect 内同步 setState。
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [load]);
 
   const approve = async (distilledPointId: string) => {
     setApproving(distilledPointId);
@@ -1621,74 +1641,118 @@ function DistilledPointsSection({
     }
   };
 
-  if (points === null) {
-    return (
-      <div className="mt-4 rounded-[14px] border border-hairline bg-surface-subtle p-3 text-[0.68rem] text-ink-tertiary">
-        提炼卖点（购买理由与推荐短句）会在生成任务后自动准备。
-      </div>
-    );
-  }
-  if (points.length === 0) {
-    return (
-      <div className="mt-4 rounded-[14px] border border-hairline bg-surface-subtle p-3 text-[0.68rem] text-ink-tertiary">
-        本轮没有可用的提炼卖点：提炼阶段可能被跳过或未通过证据校验，脚本生成仍使用原始事实。
-      </div>
-    );
-  }
-  const coreCount = points.filter((point) => point.role === 'core').length;
-  const approvedCount = points.filter((point) => point.reviewStatus === 'approved').length;
+  const startEdit = (point: DistilledPointView) => {
+    setEditing(point.id);
+    setDraftShortCopy(point.shortCopy);
+    setDraftBenefitText(point.benefitText);
+  };
+
+  const saveEdit = async (distilledPointId: string) => {
+    setSavingEdit(true);
+    try {
+      await fetch(`/api/projects/${projectId}/script-studio/distilled-points`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'edit', distilledPointId, shortCopy: draftShortCopy, benefitText: draftBenefitText }),
+      });
+      setEditing('');
+      await load();
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const coreCount = (points || []).filter((point) => point.role === 'core').length;
+  const approvedCount = (points || []).filter((point) => point.reviewStatus === 'approved').length;
   return (
     <div className="mt-4 rounded-[16px] border border-hairline bg-surface-subtle p-3.5">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h4 className="text-sm font-semibold">提炼卖点 · 购买理由与推荐短句</h4>
           <p className="mt-1 text-[0.68rem] text-ink-secondary">
-            原始事实 {factCount} 条 · 归并后 {points.length} 个主卖点（核心 {coreCount}） · 已确认 {approvedCount}。
-            短句来自已核验事实，确认后才会作为表达参考提供给脚本生成。
+            {points === null
+              ? '正在读取提炼结果…'
+              : points.length === 0
+                ? '本轮没有可用的提炼卖点：提炼阶段可能被跳过或未通过证据校验，脚本生成仍使用原始事实。'
+                : `原始事实 ${factCount} 条 · 归并后 ${points.length} 个主卖点（核心 ${coreCount}） · 已确认 ${approvedCount}。短句来自已核验事实，确认后才会作为表达参考提供给脚本生成。`}
           </p>
         </div>
-        <button type="button" onClick={toggleOpen} className="btn-secondary btn-sm shrink-0">{open ? '收起' : '展开提炼卖点'}</button>
+        {points !== null && points.length > 0 && (
+          <button type="button" onClick={() => setOpen((current) => !current)} className="btn-secondary btn-sm shrink-0">{open ? '收起' : '展开提炼卖点'}</button>
+        )}
       </div>
-      {open && (
+      {open && points !== null && (
         <div className="mt-3 grid gap-2.5 md:grid-cols-2">
           {points.map((point) => {
             const status = DISTILLED_STATUS_LABELS[point.reviewStatus];
             const isOpen = expanded === point.id;
+            const isEditing = editing === point.id;
             return (
               <div key={point.id} className="rounded-[14px] border border-hairline bg-surface p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="text-xs font-semibold">{point.shortCopy}</div>
-                    <div className="mt-1 text-[0.65rem] leading-4 text-ink-secondary">{point.benefitText}</div>
-                  </div>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[0.6rem] font-semibold ${status.className}`}>{status.label}</span>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[0.6rem] text-ink-tertiary">
-                  <span className="rounded-full bg-surface-subtle px-2 py-0.5 font-semibold">{DISTILLED_ROLE_LABELS[point.role]}</span>
-                  {[point.tags.max5, point.tags.max8, point.tags.max10].filter(Boolean).map((tag) => (
-                    <span key={tag} className="rounded-full bg-surface-subtle px-2 py-0.5">{tag}</span>
-                  ))}
-                  {point.scope && <span className="rounded-full bg-surface-subtle px-2 py-0.5">范围：{point.scope}</span>}
-                </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <button type="button" onClick={() => setExpanded(isOpen ? '' : point.id)} className="text-[0.62rem] text-ink-tertiary underline underline-offset-2 hover:text-ink">
-                    {isOpen ? '收起证据' : '查看来源事实'}
-                  </button>
-                  {point.reviewStatus !== 'approved' && (
-                    <button type="button" onClick={() => void approve(point.id)} disabled={approving === point.id} className="btn-secondary btn-sm">
-                      {approving === point.id ? '确认中…' : '确认可用'}
-                    </button>
-                  )}
-                </div>
-                {isOpen && (
-                  <div className="mt-2 space-y-1 border-t border-hairline pt-2">
-                    {point.sourceFactIds.map((factId) => (
-                      <div key={factId} className="text-[0.62rem] leading-4 text-ink-secondary">· {factTitles[factId] || factId}</div>
-                    ))}
-                    {point.limitations.length > 0 && (
-                      <div className="text-[0.62rem] leading-4 text-warn">限定条件：{point.limitations.join('；')}</div>
+                    {isEditing ? (
+                      <div className="space-y-1.5">
+                        <input value={draftShortCopy} onChange={(event) => setDraftShortCopy(event.target.value)} className="input-field w-full text-xs" aria-label="编辑推荐短句" />
+                        <textarea value={draftBenefitText} onChange={(event) => setDraftBenefitText(event.target.value)} rows={2} className="input-field w-full text-[0.65rem]" aria-label="编辑用户价值" />
+                        <div className="flex items-center gap-1.5">
+                          <button type="button" onClick={() => void saveEdit(point.id)} disabled={savingEdit} className="btn-secondary btn-sm">{savingEdit ? '保存中…' : '保存（回到待确认）'}</button>
+                          <button type="button" onClick={() => setEditing('')} className="btn-secondary btn-sm">取消</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="text-xs font-semibold">{point.shortCopy}</div>
+                        <div className="mt-1 text-[0.65rem] leading-4 text-ink-secondary">{point.benefitText}</div>
+                      </>
                     )}
                   </div>
+                  {!isEditing && <span className={`shrink-0 rounded-full px-2 py-0.5 text-[0.6rem] font-semibold ${status.className}`}>{status.label}</span>}
+                </div>
+                {!isEditing && (
+                  <>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[0.6rem] text-ink-tertiary">
+                      <span className="rounded-full bg-surface-subtle px-2 py-0.5 font-semibold">{DISTILLED_ROLE_LABELS[point.role]}</span>
+                      {[point.tags.max5, point.tags.max8, point.tags.max10].filter(Boolean).map((tag) => (
+                        <span key={tag} className="rounded-full bg-surface-subtle px-2 py-0.5">{tag}</span>
+                      ))}
+                      {point.scope && <span className="rounded-full bg-surface-subtle px-2 py-0.5">范围：{point.scope}</span>}
+                    </div>
+                    {point.reviewStatus === 'needs_review' && point.reviewIssues.length > 0 && (
+                      <div className="mt-1.5 rounded-[10px] bg-warn-tint px-2 py-1.5 text-[0.62rem] leading-4 text-warn">
+                        待复核原因：{point.reviewIssues.join('；')}
+                      </div>
+                    )}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button type="button" onClick={() => setExpanded(isOpen ? '' : point.id)} className="text-[0.62rem] text-ink-tertiary underline underline-offset-2 hover:text-ink">
+                        {isOpen ? '收起证据' : '查看来源事实'}
+                      </button>
+                      {point.reviewStatus !== 'approved' && (
+                        <button type="button" onClick={() => void approve(point.id)} disabled={approving === point.id} className="btn-secondary btn-sm">
+                          {approving === point.id ? '确认中…' : '确认可用'}
+                        </button>
+                      )}
+                      <button type="button" onClick={() => startEdit(point)} className="text-[0.62rem] text-ink-tertiary underline underline-offset-2 hover:text-ink">
+                        编辑文案
+                      </button>
+                      {point.editHistory.length > 0 && <span className="text-[0.6rem] text-ink-tertiary">已人工编辑 {point.editHistory.length} 次</span>}
+                    </div>
+                    {isOpen && (
+                      <div className="mt-2 space-y-1 border-t border-hairline pt-2">
+                        {point.sourceFactIds.map((factId) => (
+                          <div key={factId} className="text-[0.62rem] leading-4 text-ink-secondary">· {factTitles[factId] || factId}</div>
+                        ))}
+                        {point.limitations.length > 0 && (
+                          <div className="text-[0.62rem] leading-4 text-warn">限定条件：{point.limitations.join('；')}</div>
+                        )}
+                        {point.editHistory.length > 0 && (
+                          <div className="text-[0.6rem] leading-4 text-ink-tertiary">
+                            编辑历史（最新在前）：{point.editHistory.map((entry) => entry.shortCopy).join(' ← ')}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );

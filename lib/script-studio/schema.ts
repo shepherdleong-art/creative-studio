@@ -344,6 +344,16 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       CREATE INDEX IF NOT EXISTS idx_ssdp_revision ON script_studio_distilled_points(projectId, sourceLibraryRevisionId, createdAt);
     `,
   },
+  {
+    // 提炼卖点补列（2026-09-14，审查 R3 返工）：
+    // - reviewIssuesJson：needs_review 的具体原因持久化，供 API/UI 展示；
+    // - editHistoryJson：手动编辑历史（追加版本），编辑后回到 draft。
+    version: 7,
+    sql: `
+      ALTER TABLE script_studio_distilled_points ADD COLUMN reviewIssuesJson TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE script_studio_distilled_points ADD COLUMN editHistoryJson TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =

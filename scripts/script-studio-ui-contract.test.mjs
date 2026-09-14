@@ -60,4 +60,16 @@ assertSchedulerRefreshesBeforeEnqueue(taskRoute, '首次生成');
 assertSchedulerRefreshesBeforeEnqueue(retryRoute, '失败补跑');
 assertSchedulerRefreshesBeforeEnqueue(regenerateRoute, '单条再生成');
 
+// 审查 R1（2026-09-14）：提炼卖点区必须有可达的首次加载入口——挂载即加载，
+// 且父组件按修订 key 重挂载实现切换重置；空态不得只有文案没有任何操作路径。
+assert.match(panel, /<DistilledPointsSection\s+key=\{libraryRevision\.id\}/, '提炼卖点区必须按修订 key 重挂载（切换修订重置并重新加载）');
+assert.match(panel, /const timer = window\.setTimeout\(\(\) => \{\s*\n\s*void load\(\);/, '提炼卖点区必须挂载即自动加载');
+// 审查 R2：三类状态分开显示——结尾检查与语义审核各自独立展示，未审核不得显示整体文案合格。
+assert.match(panel, /结尾检查通过/, '结尾检查状态必须独立展示');
+assert.match(panel, /语义审核通过/, '语义审核通过状态必须展示');
+assert.match(panel, /语义审核未执行/, '语义审核未执行必须如实展示，不得补成合格');
+// R3 补齐：复核原因与手动编辑入口必须可见。
+assert.match(panel, /待复核原因/, 'needs_review 的具体原因必须展示给用户');
+assert.match(panel, /action: 'edit'/, '提炼卖点必须支持手动编辑（回 draft）');
+
 console.log('script-studio UI contract tests passed');

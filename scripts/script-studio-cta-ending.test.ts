@@ -18,14 +18,17 @@ import { createTask, getTask } from '../lib/script-studio/tasks.ts';
 import { executeScriptStudioTask } from '../lib/script-studio/runner.ts';
 import {
   briefCandidatePoints,
+  buildScriptEndingReviewPrompt,
   buildScriptPrompt,
+  createScriptGenerator,
   normalizeGeneratedScript,
   type ScriptBodyRepairInput,
   type ScriptGenerator,
   type ScriptGeneratorInput,
 } from '../lib/script-studio/generator.ts';
-import { checkScriptEndingQuality } from '../lib/script-studio/cta-policy.ts';
+import { checkScriptEndingQuality, parseScriptEndingReview } from '../lib/script-studio/cta-policy.ts';
 import { adaptFrameworkStructureToDuration } from '../lib/script-studio/framework-adaptation.ts';
+import { createScriptRequestBudget } from '../lib/script-studio/request-budget.ts';
 import { serializeKnowledgeContext, type FrozenKnowledgeContext } from '../lib/script-studio/knowledge-context.ts';
 import type { KnowledgePlanRecommendation } from '../lib/script-studio/template-catalog.ts';
 import { buildScriptDurationBudget } from '../lib/script-duration-policy.ts';
@@ -49,11 +52,21 @@ assert.equal(endingOf(['正文一段。', '浓郁栗棕配色。']).bareSellingP
 assert.deepEqual(endingOf(['正文一段。', '把下班后的时间留给自己。']).issues, ['cta_ending_missing']);
 // 品牌口号/孤立颜色（无匹配标题时）同样缺少行动引导。
 assert.deepEqual(endingOf(['正文一段。', '高级灰配色。']).issues, ['cta_ending_missing']);
-// 合格 CTA 结尾示例（方案 §2.3 表格）：情感/功能/咨询/购买四类。
+// 审查 R2 反例 1：含「了解」但是陈述句，不构成行动邀请。
+assert.deepEqual(endingOf(['正文一段。', '这款沙发是我了解过的。']).issues, ['cta_ending_missing']);
+// 审查 R2 反例 2：CTA 后追加标签——末句是标签，同样拦截。
+assert.deepEqual(endingOf(['正文一段。', '先了解这款沙发。浓郁栗棕配色。']).issues, ['ending_bare_selling_point']);
+// 审查 R2 反例 3：未确认渠道/促销词默认拦截（方案 §2.3 使用条件未满足）。
+assert.deepEqual(endingOf(['正文一段。', '私信领取五折优惠。']).issues, ['cta_channel_unconfirmed']);
+assert.equal(endingOf(['正文一段。', '私信领取五折优惠。']).unconfirmedChannelTerm, '私信');
+// 方案 §2.3 表格示例：情感/功能两类默认可用（无渠道依赖）。
 assert.deepEqual(endingOf(['正文一段。', '想给下班后的自己留个放松的位置，就从这款沙发开始了解。']).issues, []);
 assert.deepEqual(endingOf(['正文一段。', '选沙发时，先看看这款的靠背和腰托，再选适合自己的坐靠支撑。']).issues, []);
-assert.deepEqual(endingOf(['正文一段。', '想看看哪款适合你家，私信告诉我客厅尺寸，一起挑一挑。']).issues, []);
-assert.deepEqual(endingOf(['正文一段。', '尺寸和配色都合适，就点商品链接看看这款。']).issues, []);
+// 咨询/购买两类依赖已确认渠道：默认（未确认）必须拦截。
+assert.deepEqual(endingOf(['正文一段。', '想看看哪款适合你家，私信告诉我客厅尺寸，一起挑一挑。']).issues, ['cta_channel_unconfirmed']);
+assert.deepEqual(endingOf(['正文一段。', '尺寸和配色都合适，就点商品链接看看这款。']).issues, ['cta_channel_unconfirmed']);
+// 末句提取：多句末段按最后一个句末标点切分（R2）。
+assert.deepEqual(endingOf(['先了解这款沙发。想比较这些细节是否适合你家。']).issues, []);
 
 // ── 单元：框架秒数适配（A7）────────────────────────────────────────
 const ctaFramework20s = ['场景进入（3s）', '需求发生（3s）', '产品介入（4s）', '场景使用（6s）', '理想生活 / CTA（4s）'];
@@ -140,9 +153,10 @@ function savedContent(): { content: ScriptStudioScriptContent; validation: Recor
   };
 }
 
-// ── A1/A3：模型直出孤立颜色尾句 → 受约束修复为 CTA 收尾，不再本地补字 ──
+// ── A1/A3：模型直出孤立颜色尾句 → 受约束修复为 CTA 收尾 + 语义审核通过后保存 ──
 {
   const captured: Captured = { generateInputs: [], repairInputs: [], primaryTitles: [] };
+  let reviewCalls = 0;
   const { result, taskId: taskIdA1 } = await runScenario({
     generator: {
       async generate(input) {
@@ -166,6 +180,14 @@ function savedContent(): { content: ScriptStudioScriptContent; validation: Recor
           segments: [...bodySegments(primary.id, primary.title), { narration: CTA_LINE, sellingPointIdRefs: [], visualIntent: '产品展示', visualKeywords: ['沙发'] }],
         };
       },
+      async reviewScriptContent(input) {
+        reviewCalls += 1;
+        // 审核提示词必须包含全部可用事实与完整正文（不只被引用的）。
+        const prompt = JSON.parse(buildScriptEndingReviewPrompt(input).userPrompt);
+        assert.equal(prompt.task, 'review_project_script_ending_v1');
+        assert.ok(prompt.fullScript.length > 0, '审核必须看到完整正文');
+        return { pass: true, issues: [], checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: true, noContentAfterCta: true } };
+      },
     },
   });
   assert.equal(result.status, 'succeeded', `孤立标签收尾经修复后必须能保存：${getTask(db, 'p1', taskIdA1)?.errorMessage || ''}`);
@@ -175,6 +197,7 @@ function savedContent(): { content: ScriptStudioScriptContent; validation: Recor
       || captured.repairInputs[0]!.qualityIssues.includes('cta_ending_missing'),
     '修复提示词必须携带具体结尾质量问题',
   );
+  assert.equal(reviewCalls, 1, '本地修复通过后必须执行一次语义审核（R2）');
   const { content, validation } = savedContent();
   assert.equal(content.segments.at(-1)!.narration, CTA_LINE, '最终末段必须是 CTA');
   assert.equal(content.fullScript.includes(`${captured.primaryTitles[0]}。`), false, '孤立标签不得保留在结尾');
@@ -183,11 +206,11 @@ function savedContent(): { content: ScriptStudioScriptContent; validation: Recor
   assert.ok(content.contentCharacterCount > budget.maxContentCharacters, '完整表达 + CTA 允许超过原字数上限');
   assert.equal(content.durationStatus, 'too_long', '偏长如实展示，不改报合格');
   assert.equal((validation as { durationStatus?: string }).durationStatus, 'too_long');
-  assert.deepEqual((validation as { copyCheck?: { endingStatus?: string; semanticReview?: string } }).copyCheck, {
-    endingStatus: 'passed',
-    semanticReview: 'unreviewed',
-    policyVersion: 'cta-ending-v1',
-  }, '文案检查状态如实记录：本地通过、语义未审核');
+  const copyCheck = (validation as { copyCheck?: { endingStatus?: string; semanticReview?: string; reviewFingerprint?: string; policyVersion?: string } }).copyCheck;
+  assert.equal(copyCheck?.endingStatus, 'passed');
+  assert.equal(copyCheck?.semanticReview, 'passed', '审核通过后语义状态记为 passed');
+  assert.match(copyCheck?.reviewFingerprint || '', /^[0-9a-f]{64}$/, '审核结果绑定正文指纹（R2）');
+  assert.equal(copyCheck?.policyVersion, 'cta-ending-v2');
 }
 
 // ── A2/A5：偏短但表达完整 → 不机械补字，如实保存偏短候选 ──────────────
@@ -318,7 +341,7 @@ const framework20s: KnowledgePlanRecommendation = {
   // prompt 贯通：结尾意图来自冻结框架（A11），不能仅靠 usedCatalog 判定。
   const prompt = buildScriptPrompt(captured.generateInputs[0]!);
   assert.ok(prompt.userPrompt.includes('结尾意图为「理想生活」'), 'prompt 必须携带框架结尾意图');
-  assert.ok(prompt.userPrompt.includes('不得虚构私信服务'), 'prompt 必须包含无渠道时的 CTA 约束');
+  assert.ok(prompt.userPrompt.includes('不得出现私信'), 'prompt 必须包含无渠道时的 CTA 约束');
   // 保存内容与 plan 快照展示同一有效结构；冻结知识上下文保留原目录结构供溯源。
   const { content } = savedContent();
   assert.deepEqual(content.recommendation!.framework!.structure, plan.recommendation!.framework!.structure, '脚本内容快照与 prompt 使用同一有效结构');
@@ -399,6 +422,161 @@ const framework20s: KnowledgePlanRecommendation = {
   assert.ok(content.segments.at(-1)!.narration.includes('了解'), '快照链路最终末句仍邀请行动');
 }
 
+// ── R2 反例回归：陈述式「了解」/ 未确认渠道 → 本地拦截并修复 ──────────
+{
+  const statements = ['这款沙发是我了解过的。', '私信领取五折优惠。'];
+  const expectedCodes = ['cta_ending_missing', 'cta_channel_unconfirmed'];
+  for (let index = 0; index < statements.length; index += 1) {
+    const captured: Captured = { generateInputs: [], repairInputs: [], primaryTitles: [] };
+    const { result, taskId } = await runScenario({
+      generator: {
+        async generate(input) {
+          captured.generateInputs.push(input);
+          const primary = briefCandidatePoints(input)[0]!;
+          return {
+            content: normalizeGeneratedScript({
+              title: index === 0 ? '了解过的沙发角落' : '私信优惠的收尾',
+              coverTitleParts: { primary: '腰托沙发', secondary: index === 0 ? '了解体验记录' : '优惠收尾体验' },
+              direction: '以真实情绪变化带动选择',
+              segments: [...bodySegments(primary.id, primary.title), { narration: statements[index]!, sellingPointIdRefs: [], visualIntent: '', visualKeywords: ['沙发'] }],
+            }, input),
+            attempts: 1,
+          };
+        },
+        async repairScriptContent(input) {
+          captured.repairInputs.push(input);
+          const primary = briefCandidatePoints(input)[0]!;
+          return {
+            segments: [...bodySegments(primary.id, primary.title), { narration: CTA_LINE, sellingPointIdRefs: [], visualIntent: '', visualKeywords: ['沙发'] }],
+          };
+        },
+        async reviewScriptContent() { return { pass: true, issues: [] }; },
+      },
+    });
+    assert.equal(result.status, 'succeeded', `审查反例 ${index + 1} 修复后必须能保存：${getTask(db, 'p1', taskId)?.errorMessage || ''}`);
+    assert.equal(captured.repairInputs.length, 1, `反例 ${index + 1} 必须触发一次修复`);
+    assert.ok(
+      captured.repairInputs[0]!.qualityIssues.includes(expectedCodes[index]!),
+      `反例 ${index + 1} 修复提示词必须携带 ${expectedCodes[index]}`,
+    );
+    const { content } = savedContent();
+    assert.equal(content.segments.at(-1)!.narration, CTA_LINE, `反例 ${index + 1} 最终以合格 CTA 收尾`);
+  }
+}
+
+// ── R2 语义审核：合法引用 ID 挡不住无证据功效，审核必须拦截并修复 ────
+{
+  const captured: Captured = { generateInputs: [], repairInputs: [], primaryTitles: [] };
+  let reviewCalls = 0;
+  const { result, taskId } = await runScenario({
+    generator: {
+      async generate(input) {
+        captured.generateInputs.push(input);
+        const primary = briefCandidatePoints(input)[0]!;
+        // 引用了合法事实 ID，但正文宣称「治好颈椎病」——本地机械校验拦不住（审查实测反例）。
+        return {
+          content: normalizeGeneratedScript({
+            title: '靠背支撑的真实体验',
+            coverTitleParts: { primary: '腰托沙发', secondary: '靠背支撑体验' },
+            direction: '先讲痛点再给证据',
+            segments: [
+              { narration: `115°${primary.title}饱满，还能治好颈椎病。`, sellingPointIdRefs: [primary.id], visualIntent: '', visualKeywords: ['靠背'] },
+              { narration: CTA_LINE, sellingPointIdRefs: [], visualIntent: '', visualKeywords: ['沙发'] },
+            ],
+          }, input),
+          attempts: 1,
+        };
+      },
+      async repairScriptContent(input) {
+        captured.repairInputs.push(input);
+        const primary = briefCandidatePoints(input)[0]!;
+        return {
+          segments: [
+            { narration: `115°${primary.title}饱满，侧靠也很贴身。`, sellingPointIdRefs: [primary.id], visualIntent: '', visualKeywords: ['靠背'] },
+            { narration: CTA_LINE, sellingPointIdRefs: [], visualIntent: '', visualKeywords: ['沙发'] },
+          ],
+        };
+      },
+      async reviewScriptContent() {
+        reviewCalls += 1;
+        if (reviewCalls === 1) {
+          return { pass: false, issues: ['正文宣称「治好颈椎病」，来源事实不支持该功效'], checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: false, noContentAfterCta: true } };
+        }
+        return { pass: true, issues: [] };
+      },
+    },
+  });
+  assert.equal(result.status, 'succeeded', `审核拒绝后修复重审必须能保存：${getTask(db, 'p1', taskId)?.errorMessage || ''}`);
+  assert.equal(reviewCalls, 2, '首审拒绝 → 修复 → 复审通过，共两次审核');
+  assert.equal(captured.repairInputs.length, 1, '审核失败触发一次定向修复');
+  assert.ok(
+    captured.repairInputs[0]!.qualityIssues.some((issue) => issue.includes('治好颈椎病')),
+    '修复提示词必须携带审核给出的具体原因',
+  );
+  const { content, validation } = savedContent();
+  assert.equal(content.fullScript.includes('治好颈椎病'), false, '无证据功效不得保留在保存版本');
+  const copyCheck = (validation as { copyCheck?: { semanticReview?: string } }).copyCheck;
+  assert.equal(copyCheck?.semanticReview, 'passed', '复审通过后语义状态为 passed');
+}
+
+// ── R2 fail closed：审核始终不通过 → 修复重审仍失败 → 预算耗尽后方案失败 ──
+{
+  const scriptCountBefore = (db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n;
+  const taskId = createTask(db, {
+    projectId: 'p1',
+    requestKey: 'cta-review-always-fail',
+    mode: 'reuse',
+    libraryRevisionId: library.id,
+    requestedCount: 1,
+    inputSnapshot: { targetDurationSec: 15, requestedCount: 1 },
+  }, now).task.id;
+  const budget = createScriptRequestBudget({ db, taskId, requestedCount: 1, now });
+  const badBody = (primaryId: string) => ({
+    title: '审核始终失败的方案',
+    coverTitleParts: { primary: '腰托沙发', secondary: '审核失败验证' },
+    direction: '先讲痛点再给证据',
+    segments: [
+      { narration: '高靠背托住头颈，还能治好颈椎病。', sellingPointIdRefs: [primaryId], visualIntent: '', visualKeywords: ['靠背'] },
+      { narration: CTA_LINE, sellingPointIdRefs: [], visualIntent: '', visualKeywords: ['沙发'] },
+    ],
+  });
+  const generator = createScriptGenerator(async (request) => {
+    const task = JSON.parse(request.userPrompt).task as string;
+    const primary = library.sellingPoints[0]!;
+    if (task === 'generate_project_script_v1') return badBody(primary.id);
+    if (task === 'review_project_script_ending_v1') {
+      return { pass: false, issues: ['正文宣称「治好颈椎病」，来源事实不支持该功效'] };
+    }
+    return { segments: badBody(primary.id).segments };
+  }, { id: 'fake', model: 'fake' }, { budget });
+  const result = await executeScriptStudioTask({
+    db, projectId: 'p1', taskId, libraryRevisionId: library.id,
+    inputSnapshot: { targetDurationSec: 15, requestedCount: 1 },
+    generator, now,
+    visionExtractor: { async extract() { throw new Error('不得重新提取图片'); } },
+    reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('不得重新调用模型核验'); } },
+  });
+  assert.equal(result.status, 'failed', '审核始终不通过的方案必须失败');
+  assert.match(getTask(db, 'p1', taskId)?.errorMessage || '', /预算已耗尽/, '失败原因必须指向请求预算（审核+修复共用 8 次）');
+  assert.equal(budget.usedFor(1), 8, '方案级预算如实耗尽：2 轮 × (生成+审核+修复+复审)');
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n,
+    scriptCountBefore,
+    '审核未通过的版本不得保存',
+  );
+}
+
+// ── R2 单元：审核解析 fail closed ────────────────────────────────────
+assert.deepEqual(parseScriptEndingReview({ pass: true }), { pass: true, issues: [] });
+assert.equal(parseScriptEndingReview({}).pass, false, '缺 pass 字段视为不通过');
+assert.equal(parseScriptEndingReview('garbage').pass, false, '非对象响应视为不通过');
+assert.equal(parseScriptEndingReview({ pass: false }).issues.length, 1, 'pass=false 无原因时给出兜底原因');
+assert.deepEqual(
+  parseScriptEndingReview({ pass: false, issues: ['渠道未确认'] }).issues,
+  ['渠道未确认'],
+  '审核原因透传给修复提示词',
+);
+
 db.close();
 fs.rmSync(root, { recursive: true, force: true });
-console.log('script-studio-cta-ending.test.ts: ok (A1-A5, A7, A11)');
+console.log('script-studio-cta-ending.test.ts: ok (A1-A5, A7, A11, R2 ending check + semantic review)');

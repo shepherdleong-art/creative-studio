@@ -22,9 +22,11 @@ import {
   approveDistilledPoint,
   buildDistillationPrompt,
   countDistilledStatus,
+  createSellingPointDistiller,
   distillableFacts,
   distilledExpressionRefs,
   distillationFingerprint,
+  editDistilledPoint,
   findCachedDistilledPoints,
   listDistilledPointsForRevision,
   parseAndValidateDistilledPoints,
@@ -97,6 +99,42 @@ const scopeExpansion = parseAndValidateDistilledPoints({
 }, unitFacts);
 assert.equal(scopeExpansion.points[0]!.reviewStatus, 'needs_review', '「框架质保」扩大为「整件质保」不得自动通过');
 assert.ok(scopeExpansion.points[0]!.reviewIssues.some((issue) => issue.includes('范围被扩大')));
+
+// 审查 R3：展示标签不得绕过事实核验——「终身质保」「整件质保99年」必须进 needs_review。
+const tagBypass = parseAndValidateDistilledPoints({
+  distilledPoints: [{
+    title: '质保承诺', benefitText: '框架结构有长期质保', shortCopy: '框架质保用得更安心',
+    tags: { max5: '终身质保', max8: '整件质保99年', max10: null },
+    role: 'core', priority: 70, scope: '框架', limitations: ['仅框架结构'],
+    sourceFactIds: ['f-frame'],
+  }],
+}, unitFacts);
+assert.equal(tagBypass.points[0]!.reviewStatus, 'needs_review', '标签绕过核验的反例必须拦截（R3）');
+assert.ok(tagBypass.points[0]!.reviewIssues.some((issue) => issue.includes('范围被扩大：终身')), '「终身质保」标签命中范围扩大');
+assert.ok(tagBypass.points[0]!.reviewIssues.some((issue) => issue.includes('数字未受来源支持：99')), '「99年」标签命中数字落地');
+
+// 审查 R3：限定条件丢失——来源「框架质保」，短句/标签写成「质保20年」不得自动通过。
+const qualifierLoss = parseAndValidateDistilledPoints({
+  distilledPoints: [{
+    title: '质保年限', benefitText: '质保 20 年更放心', shortCopy: '质保 20 年用得安心',
+    tags: { max5: null, max8: null, max10: null },
+    role: 'core', priority: 70, scope: '', limitations: [],
+    sourceFactIds: ['f-frame'],
+  }],
+}, unitFacts);
+assert.equal(qualifierLoss.points[0]!.reviewStatus, 'needs_review', '丢掉「框架」限定的质保短句不得自动通过（R3）');
+assert.ok(qualifierLoss.points[0]!.reviewIssues.some((issue) => issue.includes('限定条件丢失')), '必须指出限定条件丢失');
+
+// R3 反向：输出保留了来源限定词（提到质保且含「框架」）→ 不触发限定丢失。
+const qualifierKept = parseAndValidateDistilledPoints({
+  distilledPoints: [{
+    title: '框架质保', benefitText: '框架结构质保 20 年', shortCopy: '框架质保 20 年更安心',
+    tags: { max5: '框架质保', max8: null, max10: null },
+    role: 'core', priority: 70, scope: '框架', limitations: [],
+    sourceFactIds: ['f-frame'],
+  }],
+}, unitFacts);
+assert.equal(qualifierKept.points[0]!.reviewStatus, 'draft', '保留限定词的提炼正常进入待确认');
 
 const materialSwap = parseAndValidateDistilledPoints({
   distilledPoints: [{
@@ -361,6 +399,139 @@ function distillStageRow(taskId: string): { status: string; payloadJson: string 
   }
 }
 
+// ── 审查 R4：多事实归并表达只在全部来源都属于方向包时进入 prompt ──────
+{
+  const f1 = library.sellingPoints[0]!;
+  const f2 = library.sellingPoints[1]!;
+  const basePlan = { index: 1, templateId: 'pain_point', templateName: '直击痛点', templateVersion: 1, angle: '先讲痛点再给证据', direction: 'pain_point', rationale: '测试' };
+  const audience = '家居人群';
+  const platform = '通用';
+  const tone = '自然';
+  const targetDurationSec = 15;
+  const crossFactExpression = [{
+    id: 'expr-f1-f2',
+    sourceFactIds: [f1.id, f2.id],
+    shortCopy: '高靠背搭配腰托支撑',
+    benefitText: '靠背与腰托一起托住身体',
+    scope: '',
+    limitations: [],
+  }];
+  // 方向包只有 f1：表达来自 f1+f2 → 不得进入提示词，也不得冻结进 distilledContext。
+  const partialInput: ScriptGeneratorInput = {
+    libraryRevision: library,
+    plan: basePlan,
+    brief: { planIndex: 1, templateId: 'pain_point', themeKey: 't', themeTitle: '躺靠支撑', requiredPointIds: [f1.id], optionalPointIds: [], candidateCount: 1, degraded: false, rationale: '测试' },
+    audience, tone, platform, creativeBrief: '', targetDurationSec, previousScripts: [],
+    distilledExpressions: crossFactExpression,
+  };
+  const partialPrompt = buildScriptPrompt(partialInput);
+  assert.equal(partialPrompt.userPrompt.includes('高靠背搭配腰托支撑'), false, '部分来源在方向包外的表达不得进入提示词（R4）');
+  const partialNormalized = normalizeGeneratedScript({
+    title: '部分来源表达边界',
+    coverTitleParts: { primary: '腰托沙发', secondary: '表达边界验证' },
+    direction: '先讲痛点再给证据',
+    segments: [{ narration: '高靠背托住头颈。', sellingPointIdRefs: [f1.id], visualIntent: '', visualKeywords: ['靠背'] }],
+  }, partialInput);
+  assert.equal(partialNormalized.distilledContext, undefined, '未实际使用的表达不得冻结进内容快照（R4）');
+  // 方向包含 f1+f2：表达进入提示词，且附带完整来源事实 ID。
+  const fullInput: ScriptGeneratorInput = {
+    ...partialInput,
+    brief: { ...partialInput.brief, requiredPointIds: [f1.id, f2.id], candidateCount: 2 },
+  };
+  const fullPrompt = buildScriptPrompt(fullInput);
+  assert.ok(fullPrompt.userPrompt.includes('高靠背搭配腰托支撑'), '全部来源都在方向包内时表达进入提示词');
+  const distilledField = JSON.parse(fullPrompt.userPrompt).sellingPoints.find(
+    (point: { distilled?: { sourceFactIds?: string[] } }) => point.distilled,
+  )?.distilled as { sourceFactIds?: string[] };
+  assert.deepEqual(distilledField.sourceFactIds, [f1.id, f2.id], 'distilled 字段必须附带全部来源事实 ID（R4）');
+  const fullNormalized = normalizeGeneratedScript({
+    title: '完整来源表达边界',
+    coverTitleParts: { primary: '腰托沙发', secondary: '完整来源验证' },
+    direction: '先讲痛点再给证据',
+    segments: [{ narration: '高靠背托住头颈，腰托贴合腰背。', sellingPointIdRefs: [f1.id, f2.id], visualIntent: '', visualKeywords: ['靠背'] }],
+  }, fullInput);
+  assert.deepEqual(fullNormalized.distilledContext?.pointIds, ['expr-f1-f2'], '实际使用的表达集合被冻结');
+}
+
+// ── 审查 R5：提炼请求贯通 AbortSignal ────────────────────────────────
+{
+  let providerCalled = false;
+  let providerReceivedSignal: AbortSignal | undefined;
+  const distiller = createSellingPointDistiller(async (request) => {
+    providerCalled = true;
+    providerReceivedSignal = request.signal;
+    return { distilledPoints: [] };
+  }, { id: 'fake-text', model: 'model-signal' });
+  const controller = new AbortController();
+  controller.abort();
+  await distiller.distill({ facts: distillableFacts(library), productName: '休闲沙发', signal: controller.signal });
+  assert.equal(providerCalled, true, '提炼器必须把请求发给供应商适配层');
+  assert.equal(providerReceivedSignal, controller.signal, '取消信号必须贯通到 completeJson（R5）');
+}
+
+// ── 审查补齐：手动编辑派生文案 → 回到 draft，编辑历史保留旧值 ────────
+{
+  const fingerprintEdit = distillationFingerprint({
+    projectId: 'p1', sourceLibraryRevisionId: library.id,
+    ruleVersion: SELLING_POINT_DISTILL_RULE_VERSION, providerId: 'fake-text', model: 'model-edit',
+  });
+  const savedEdit = saveDistilledPoints(db, {
+    projectId: 'p1', sourceLibraryRevisionId: library.id,
+    providerId: 'fake-text', model: 'model-edit', fingerprint: fingerprintEdit,
+    points: parseAndValidateDistilledPoints({
+      distilledPoints: [{
+        title: '躺靠支撑', benefitText: '高靠背让躺靠更放松', shortCopy: '往这张沙发一躺就放松',
+        tags: { max5: '躺靠放松', max8: null, max10: null },
+        role: 'core', priority: 80, scope: '', limitations: [], sourceFactIds: [library.sellingPoints[0]!.id],
+      }],
+    }, distillableFacts(library)).points,
+  }, now);
+  const point = savedEdit[0]!;
+  assert.equal(point.reviewIssues.length, 0);
+  assert.equal(point.editHistory.length, 0);
+  // 先确认再编辑：编辑后回到 draft，旧值进编辑历史。
+  approveDistilledPoint(db, 'p1', point.id, now);
+  const edited = editDistilledPoint(db, 'p1', point.id, { shortCopy: '下班回家就想往这躺' }, now);
+  assert.equal(edited?.shortCopy, '下班回家就想往这躺');
+  assert.equal(edited?.reviewStatus, 'draft', '手动编辑后回到 draft，不保留旧批准（方案 §3.3）');
+  assert.equal(edited?.editHistory.length, 1, '旧值追加进编辑历史');
+  assert.equal(edited?.editHistory[0]!.shortCopy, '往这张沙发一躺就放松', '模型原始短句保留在历史中');
+  // 空编辑被拒绝；跨项目编辑被拒绝。
+  assert.equal(editDistilledPoint(db, 'p1', point.id, { shortCopy: '  ' }, now), null, '空编辑不得生效');
+  assert.equal(editDistilledPoint(db, 'p2', point.id, { shortCopy: '跨项目' }, now), null, '跨项目不得编辑');
+  // 编辑后再确认 → approved；按指纹整批读取后编辑历史仍在。
+  approveDistilledPoint(db, 'p1', point.id, now);
+  const reloaded = findCachedDistilledPoints(db, 'p1', fingerprintEdit)
+    .find((row) => row.shortCopy === '下班回家就想往这躺');
+  assert.equal(reloaded?.reviewStatus, 'approved');
+  assert.equal(reloaded?.editHistory.length, 1, '往返读取后编辑历史仍在');
+}
+
+// ── 审查补齐：needs_review 原因（reviewIssues）持久化往返 ────────────
+{
+  const fingerprintIssues = distillationFingerprint({
+    projectId: 'p1', sourceLibraryRevisionId: library.id,
+    ruleVersion: SELLING_POINT_DISTILL_RULE_VERSION, providerId: 'fake-text', model: 'model-issues',
+  });
+  const savedIssues = saveDistilledPoints(db, {
+    projectId: 'p1', sourceLibraryRevisionId: library.id,
+    providerId: 'fake-text', model: 'model-issues', fingerprint: fingerprintIssues,
+    points: parseAndValidateDistilledPoints({
+      distilledPoints: [{
+        title: '终身质保', benefitText: '终身质保更放心', shortCopy: '终身质保用得安心',
+        tags: {}, role: 'core', priority: 70, scope: '', limitations: [],
+        sourceFactIds: [library.sellingPoints[0]!.id],
+      }],
+    }, distillableFacts(library)).points,
+  }, now);
+  assert.equal(savedIssues[0]!.reviewStatus, 'needs_review');
+  const reloadedIssues = findCachedDistilledPoints(db, 'p1', fingerprintIssues)[0]!;
+  assert.ok(
+    reloadedIssues.reviewIssues.some((issue) => issue.includes('范围被扩大：终身')),
+    '复核原因持久化并可在读取时拿到（R3）',
+  );
+}
+
 db.close();
 fs.rmSync(root, { recursive: true, force: true });
-console.log('script-studio-distillation.test.ts: ok (B1-B9)');
+console.log('script-studio-distillation.test.ts: ok (B1-B9, R3, R4, R5, edit)');

@@ -1,70 +1,120 @@
 /**
- * CTA 结尾策略（方案 §2.3 / A4，用户补充要求）：
- * - 脚本生成器须理解 CTA（Call to Action，行动引导），新生成脚本默认以承接正文的 CTA 结尾；
- * - 完整表达与 CTA 优先于机械卡字数；
+ * CTA 结尾策略（方案 §2.3 / §4.2，审查 R2 返工 2026-09-14）：
+ * - 本地末句检查只做确定性拦截（fail closed）：末句提取、孤立标签、行动邀请初筛、
+ *   渠道默认未确认、CTA 后不得追加内容；关键词命中不等于合格 CTA；
+ * - 本地初筛通过后必须再经有界语义审核（模型）确认行动邀请、主题承接、渠道、
+ *   事实支持与 CTA 后无附加内容；审核结果绑定正文指纹与来源修订；
  * - 单纯的情绪收束、产品标签（如「浓郁栗棕配色。」）或品牌口号不算 CTA；
- * - 没有已确认渠道时用「了解这款 / 比较这些细节」等可执行引导，不得虚构私信、链接、到店或优惠。
+ * - 没有已确认渠道时只允许「了解这款 / 比较这些细节」等可执行引导，
+ *   不得虚构私信、链接、下单、领取优惠、到店试坐或库存紧张。
  */
+import { createHash } from 'node:crypto';
 import type { SellingPointRecord, ScriptStudioScriptContent } from './types.ts';
 
-export const SCRIPT_CTA_POLICY_VERSION = 'cta-ending-v1';
+export const SCRIPT_CTA_POLICY_VERSION = 'cta-ending-v2';
 
-/** 行动引导指示词：最后一句口播命中其一才算疑似 CTA（不是关键词命中即合格，只做风险初筛）。 */
-const CTA_ACTION_PATTERN = /(了解|看看|瞧瞧|试试|试一试|咨询|私信|点[一击]?[击开]|商品链接|链接|下单|购买|入手|逛[一逛]?|挑选|挑一挑|选[一选购]?|比较|对比|关注|收藏|留言|评论区|问[一问]?|去找|去选|去挑)/;
+/**
+ * 渠道/促销词（默认全部未确认）：任务输入没有渠道确认字段前，
+ * 出现任一即拦截——「私信领取五折优惠」这类未确认渠道的 CTA 不能通过。
+ */
+const UNCONFIRMED_CHANNEL_PATTERN = /(私信|商品链接|链接|下单|购买|入手|拍下|加购|领取|优惠|折扣|秒杀|到店|试坐|直播间|库存|限时|客服电话|客服咨询)/;
+
+/**
+ * 行动邀请结构（比关键词命中严格）：必须构成「邀请观众做某事」的句式。
+ * 「这款沙发是我了解过的。」含「了解」但是陈述句，不命中任何结构。
+ */
+const INVITATION_FRAMES: RegExp[] = [
+  /(?:想|要)[^。！？!?，,;；]{0,10}(?:了解|看看|试试|比较|挑选|咨询|去挑|去选)/,
+  /就[从在][^。！？!?，,;；]{0,12}(?:开始|了解|看看)/,
+  /(?:了解|看看|瞧瞧|试试|比较|挑选|咨询)[^。！？!?，,;；]{0,8}[这那哪]/,
+  /点开[^。！？!?]{0,8}(?:看看|了解)/,
+  /告诉(?:我|我们)/,
+  /一起(?:挑|选|看看)/,
+];
 
 function normalizeForEndingCheck(value: string): string {
   return value.normalize('NFKC').replace(/[\s\p{P}]+/gu, '').toLowerCase();
 }
 
+/** 提取真正的最后一句：按句末标点切分，取最后一个非空句；无标点时整段为一句。 */
+export function lastSentenceOf(narration: string): string {
+  const sentences = narration
+    .split(/[。！？!?]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return sentences.at(-1) || narration.trim();
+}
+
+function isActionInvitation(sentence: string): boolean {
+  return INVITATION_FRAMES.some((frame) => frame.test(sentence));
+}
+
 export interface ScriptEndingQualityResult {
-  /** 阻断性质量问题码（须修复后才能保存）：ending_bare_selling_point / cta_ending_missing。 */
+  /** 阻断性质量问题码：ending_bare_selling_point / cta_ending_missing / cta_channel_unconfirmed。 */
   issues: string[];
-  /** 末句 narration（去空白标点）正好等于某个候选卖点标题，或为其短截断。 */
+  /** 末句（去空白标点）正好等于某个候选卖点标题。 */
   bareSellingPointId?: string;
+  /** 命中的未确认渠道词（诊断用）。 */
+  unconfirmedChannelTerm?: string;
+}
+
+export interface EndingCheckOptions {
+  /**
+   * 已确认的渠道（默认无）：在任务输入提供渠道确认前，私信/链接/下单/优惠等
+   * 一律视为未确认（方案 §2.3 表格的使用条件）。
+   */
+  confirmedChannels?: string[];
 }
 
 /**
- * 本地结尾质量检查（确定性部分，方案 §4.2）：
- * 1. 末段与某个候选卖点标题完全一致（含句号差异）→ 孤立标签收尾，必须修复；
- * 2. 末句缺少任何行动引导迹象 → 疑似缺 CTA，进入受约束修复；
- *    纯情绪收束（如「把下班后的时间留给自己」）同样命中此项——这正是设计意图。
- * 注意：这只是风险信号与确定性拦截，不是语义审核；关键词命中也不等于合格 CTA。
+ * 本地末句质量检查（确定性部分，方案 §4.2 / 审查 R2）：
+ * 1. 末句与某个候选卖点标题一致 → 孤立标签收尾；
+ * 2. 末句含未确认渠道/促销词 → cta_channel_unconfirmed；
+ * 3. 末句不构成行动邀请（含「CTA 后又追加标签」——此时末句是标签不是邀请）→ cta_ending_missing。
+ * 通过本地检查不等于文案合格：仍须经语义审核（runner 中组合）。
  */
 export function checkScriptEndingQuality(
   content: Pick<ScriptStudioScriptContent, 'segments'>,
   candidates: Array<Pick<SellingPointRecord, 'id' | 'title'>>,
+  options: EndingCheckOptions = {},
 ): ScriptEndingQualityResult {
-  const issues: string[] = [];
   const lastSegment = content.segments.at(-1);
-  if (!lastSegment) return { issues };
+  if (!lastSegment) return { issues: [] };
   const lastNarration = lastSegment.narration.trim();
-  const normalizedLast = normalizeForEndingCheck(lastNarration);
-  // 「浓郁栗棕配色。」这类孤立标签：与候选卖点标题一致即拦截（风险信号，非禁止所有短结尾）。
+  const lastSentence = lastSentenceOf(lastNarration);
+  if (!lastSentence) return { issues: [] };
+  const normalizedLast = normalizeForEndingCheck(lastSentence);
+  // 「浓郁栗棕配色。」式孤立标签：末句与候选卖点标题一致即拦截。
   for (const candidate of candidates) {
     const normalizedTitle = normalizeForEndingCheck(candidate.title || '');
-    if (!normalizedTitle || !normalizedLast) continue;
-    if (normalizedLast === normalizedTitle) {
-      issues.push('ending_bare_selling_point');
-      return { issues, bareSellingPointId: candidate.id };
+    if (normalizedTitle && normalizedLast === normalizedTitle) {
+      return { issues: ['ending_bare_selling_point'], bareSellingPointId: candidate.id };
     }
   }
-  if (!CTA_ACTION_PATTERN.test(lastNarration)) {
-    issues.push('cta_ending_missing');
+  // 渠道默认未确认：私信/链接/下单/领取优惠/到店等一律拦截，除非渠道被显式确认。
+  const channelMatch = UNCONFIRMED_CHANNEL_PATTERN.exec(lastSentence);
+  if (channelMatch && !(options.confirmedChannels || []).some((channel) => channel && lastSentence.includes(channel))) {
+    return { issues: ['cta_channel_unconfirmed'], unconfirmedChannelTerm: channelMatch[0] };
   }
-  return { issues, ...(issues.length ? {} : {}) };
+  // 末句必须构成行动邀请：「先了解这款沙发。浓郁栗棕配色。」的末句是标签，同样在此拦截。
+  if (!isActionInvitation(lastSentence)) {
+    return { issues: ['cta_ending_missing'] };
+  }
+  return { issues: [] };
 }
 
 /**
- * 生成/修复提示词中的 CTA 要求（方案 §2.3）。
+ * 生成/修复提示词中的 CTA 要求（方案 §2.3 / R2）。
  * endingScene 来自任务冻结的知识库框架末段（如「理想生活 / CTA」→「理想生活」）；
  * 缺少框架或未匹配模板时使用通用 CTA 规则。
  */
 export function scriptCtaRequirements(endingScene: string | null): string[] {
   const requirements = [
-    '最后一句口播必须是简洁、具体的 CTA（行动引导）：承接本条脚本的场景或购买理由，明确告诉观众接下来可以做什么（如了解这款、比较这些细节、按需求挑选、私信咨询、点商品链接）',
+    '最后一句口播必须是简洁、具体的 CTA（行动引导）：承接本条脚本的场景或购买理由，明确邀请观众接下来做什么（如了解这款、比较这些细节、按需求挑选）',
+    'CTA 必须是邀请句式（想了解这款…/就从这款开始了解/点开看看这些…），不能只是陈述（如「这款沙发是我了解过的」）或纯情绪收束（如「把下班后的时间留给自己」）',
     'CTA 反例（不合格）：「把下班后的时间留给自己」（纯情绪收束，没有行动引导）；「浓郁栗棕配色。」（孤立产品标签）；品牌口号或价格暗示',
-    'CTA 之后不得再追加任何卖点、规格、材质或颜色标签',
-    '没有已确认的渠道时，使用「了解这款 / 比较这些细节」等可执行的引导；不得虚构私信服务、商品链接、到店试坐、领取优惠、库存紧张或限时折扣',
+    '当前没有已确认的咨询/购买渠道：不得出现私信、商品链接、下单、领取优惠、折扣、到店试坐、库存紧张等渠道或促销表述；只使用「了解这款 / 比较这些细节」等可执行引导',
+    'CTA 必须是全文最后一句，其后不得再追加任何卖点、规格、材质或颜色标签',
   ];
   if (endingScene) {
     requirements.push(`本方案知识库框架的结尾意图为「${endingScene}」：最后一句须承接该场景并邀请行动，不得丢掉结尾意图或替换成无关口号`);
@@ -79,4 +129,38 @@ export function ctaEndingSceneFromStructure(structure: string[] | undefined | nu
   if (!/cta/i.test(last)) return null;
   const scene = last.replace(/[（(].*[）)]/g, '').replace(/\/?\s*cta\s*$/i, '').trim();
   return scene || null;
+}
+
+// ── 语义审核（有界，方案 §4.2 / 审查 R2）─────────────────────────────
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+    : [];
+}
+
+export interface ScriptEndingReviewVerdict {
+  pass: boolean;
+  issues: string[];
+}
+
+/**
+ * 解析语义审核响应：fail closed——非对象、缺 pass 字段或 pass=false 一律不通过；
+ * 审核出错/超时不能默认通过（方案 §4.2）。
+ */
+export function parseScriptEndingReview(raw: unknown): ScriptEndingReviewVerdict {
+  const record = asRecord(raw);
+  const pass = record.pass === true;
+  if (pass) return { pass: true, issues: [] };
+  const issues = asStringArray(record.issues).slice(0, 5);
+  return { pass: false, issues: issues.length ? issues : ['语义审核未通过（模型未给出具体原因）'] };
+}
+
+/** 审核绑定指纹：正文全文 + 来源库修订；正文变化（标题修复除外）后旧审核失效。 */
+export function scriptReviewFingerprint(fullScript: string, libraryRevisionId: string): string {
+  return createHash('sha256').update(fullScript).update('\n').update(libraryRevisionId).digest('hex');
 }

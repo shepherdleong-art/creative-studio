@@ -37,6 +37,10 @@ export interface DistilledSellingPointRecord {
   scope: string;
   limitations: string[];
   reviewStatus: DistilledReviewStatus;
+  /** needs_review 的具体原因（审查返工：持久化并展示给用户，不再只留在内存）。 */
+  reviewIssues: string[];
+  /** 手动编辑历史（追加版本，最新在前）；编辑后回到 draft。 */
+  editHistory: Array<{ shortCopy: string; benefitText: string; reviewStatus: string; editedAt: string }>;
   fingerprint: string;
   createdAt: string;
   updatedAt: string;
@@ -109,7 +113,7 @@ export function buildDistillationPrompt(input: {
   };
 }
 
-// ── 本地校验：声明落地、范围保护、标签字数、合并冲突 ──────────────────
+// ── 本地校验：声明落地、范围保护、标签字数、限定条件丢失、合并冲突 ──────
 
 /** 范围扩大词：来源没有却出现在提炼结果里 → 不得自动通过（B5）。 */
 const SCOPE_EXPANSION_TERMS = ['整件', '全件', '整体', '全部商品', '终身', '永久'];
@@ -119,6 +123,17 @@ const CLAIM_TERMS = [
   '婴幼儿级', '抗菌', '抑菌', '防螨', '防霉', '防水', '阻燃', '防猫抓', '耐抓',
   '防滑', '耐磨', '抗皱', '认证', '专利', '零甲醛', '无甲醛', 'e0级', 'enf级',
 ];
+/**
+ * 范围限定词（审查 R3）：来源事实带限定词（如「框架质保」的「框架」）而提炼输出
+ * 提到相关承诺（质保/材质/功效）却丢掉全部限定词 → 限定条件丢失，不得自动通过。
+ */
+const QUALIFIER_TERMS = [
+  '框架', '接触面', '靠背', '腰托', '扶手', '座包', '坐垫', '座垫', '头枕', '颈枕',
+  '脚凳', '内芯', '填充', '外罩', '外套', '面料', '底部', '底盘', '腿部', '门板',
+  '抽屉', '层板', '背板', '侧板', '台面', '柜体', '椅背', '座框', '弹簧', '五金',
+];
+/** 触发限定词检查的承诺词：输出提到质保/材质/功效等承诺时才要求保留来源限定。 */
+const COMMITMENT_PATTERN = /(质保|保修|包换|材质|牛皮|实木|乳胶|记忆棉|羽绒|鹅毛|鹅绒|抗菌|防螨|防水|阻燃|防猫抓|耐折|耐磨|防滑|承重|认证|甲醛)/;
 const TAG_LIMITS = { max5: 5, max8: 8, max10: 10 } as const;
 
 function normalizeText(value: string): string {
@@ -204,14 +219,23 @@ export function parseAndValidateDistilledPoints(
     if (seenShortCopy.has(dedupeKey)) continue;
     seenShortCopy.add(dedupeKey);
 
+    // 标签先按字符上限归一（超限置 null，不截断），再与正文字段一起参与核验（R3）。
+    const tags = {
+      max5: fitTag((value.tags as Record<string, unknown> | undefined)?.max5, TAG_LIMITS.max5),
+      max8: fitTag((value.tags as Record<string, unknown> | undefined)?.max8, TAG_LIMITS.max8),
+      max10: fitTag((value.tags as Record<string, unknown> | undefined)?.max10, TAG_LIMITS.max10),
+    };
     const sourceTexts = sourceFactIds.map((id) => {
       const fact = factById.get(id)!;
       return `${fact.title} ${fact.factText} ${fact.evidenceQuote}`;
     });
     const sourceJoined = normalizeText(sourceTexts.join(' '));
-    const outputText = `${title} ${benefitText} ${shortCopy}`;
+    // 审查 R3：可独立展示的标签与正文字段一样参与事实核验——
+    // 「终身质保」「整件质保99年」这类标签不得绕过数字/承诺/范围检查。
+    const tagTexts = [tags.max5, tags.max8, tags.max10].filter(Boolean).join(' ');
+    const outputText = `${title} ${benefitText} ${shortCopy} ${tagTexts} ${asString(value.scope)}`;
     const reviewIssues: string[] = [];
-    // 数字落地（B7）：提炼文本中的数字必须出现在来源事实里。
+    // 数字落地（B7）：提炼文本（含标签）中的数字必须出现在来源事实里。
     const outputDigits = digitsOf(normalizeText(outputText));
     const sourceDigitSet = new Set(digitsOf(sourceJoined));
     const unsupportedDigits = outputDigits.filter((digit) => !sourceDigitSet.has(digit));
@@ -224,8 +248,17 @@ export function parseAndValidateDistilledPoints(
     }
     // 范围扩大（B5）：整件/终身等范围词来源没有 → 不得自动通过。
     for (const term of SCOPE_EXPANSION_TERMS) {
-      if ((outputText + asString(value.scope)).includes(term) && !sourceJoined.includes(term)) {
+      if (outputText.includes(term) && !sourceJoined.includes(term)) {
         reviewIssues.push(`范围被扩大：${term}`);
+      }
+    }
+    // 限定条件丢失（R3）：来源带范围限定词、输出提到相关承诺却丢掉全部限定 → 不得自动通过。
+    // 例：「框架质保20年」的短句/标签写成「质保20年」，不得默认 scope 字段能补救。
+    const sourceQualifiers = QUALIFIER_TERMS.filter((term) => sourceTexts.join(' ').includes(term));
+    if (sourceQualifiers.length > 0 && COMMITMENT_PATTERN.test(outputText)) {
+      const retained = sourceQualifiers.filter((term) => outputText.includes(term));
+      if (retained.length === 0) {
+        reviewIssues.push(`限定条件丢失：来源限定「${sourceQualifiers.join('、')}」在短句/标签中全部缺失`);
       }
     }
     // 合并冲突（B1）：同名但数字不同的来源事实不得被合并成一条购买理由。
@@ -247,11 +280,7 @@ export function parseAndValidateDistilledPoints(
       title,
       benefitText,
       shortCopy,
-      tags: {
-        max5: fitTag((value.tags as Record<string, unknown> | undefined)?.max5, TAG_LIMITS.max5),
-        max8: fitTag((value.tags as Record<string, unknown> | undefined)?.max8, TAG_LIMITS.max8),
-        max10: fitTag((value.tags as Record<string, unknown> | undefined)?.max10, TAG_LIMITS.max10),
-      },
+      tags,
       role,
       priority: Number.isFinite(Number(value.priority)) ? Math.max(0, Math.min(100, Math.round(Number(value.priority)))) : 50,
       scope: asString(value.scope),
@@ -306,6 +335,8 @@ function rowToRecord(row: Record<string, unknown>): DistilledSellingPointRecord 
     scope: String(row.scope || ''),
     limitations: JSON.parse(String(row.limitationsJson || '[]')) as string[],
     reviewStatus: String(row.reviewStatus) as DistilledReviewStatus,
+    reviewIssues: JSON.parse(String(row.reviewIssuesJson || '[]')) as string[],
+    editHistory: JSON.parse(String(row.editHistoryJson || '[]')) as DistilledSellingPointRecord['editHistory'],
     fingerprint: String(row.fingerprint),
     createdAt: String(row.createdAt),
     updatedAt: String(row.updatedAt),
@@ -344,6 +375,8 @@ export function saveDistilledPoints(
     scope: point.scope,
     limitationsJson: JSON.stringify(point.limitations),
     reviewStatus: point.reviewStatus,
+    reviewIssuesJson: JSON.stringify(point.reviewIssues),
+    editHistoryJson: '[]',
     fingerprint: input.fingerprint,
     createdAt,
     updatedAt: createdAt,
@@ -352,8 +385,8 @@ export function saveDistilledPoints(
     INSERT INTO script_studio_distilled_points
       (id, projectId, sourceLibraryRevisionId, sourceFactIdsJson, ruleVersion, providerId, model,
        title, benefitText, shortCopy, tagMax5, tagMax8, tagMax10, role, priority, scope,
-       limitationsJson, reviewStatus, fingerprint, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       limitationsJson, reviewStatus, reviewIssuesJson, editHistoryJson, fingerprint, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   db.transaction(() => {
     for (const record of records) {
@@ -363,12 +396,56 @@ export function saveDistilledPoints(
         record.title, record.benefitText, record.shortCopy,
         record.tagMax5, record.tagMax8, record.tagMax10,
         record.role, record.priority, record.scope,
-        record.limitationsJson, record.reviewStatus, record.fingerprint,
+        record.limitationsJson, record.reviewStatus, record.reviewIssuesJson, record.editHistoryJson,
+        record.fingerprint,
         record.createdAt, record.updatedAt,
       );
     }
   }).immediate();
   return records.map((record) => rowToRecord(record as unknown as Record<string, unknown>));
+}
+
+/**
+ * 手动编辑派生文案（方案 §3.3 / 审查补齐）：旧值追加进编辑历史（不丢失模型原始结果），
+ * 应用新值后回到 draft——人工修改不保留旧批准，需重新显式确认。
+ */
+export function editDistilledPoint(
+  db: Database.Database,
+  projectId: string,
+  distilledPointId: string,
+  input: { shortCopy?: string; benefitText?: string },
+  now: () => Date,
+): DistilledSellingPointRecord | null {
+  const row = db.prepare(`
+    SELECT * FROM script_studio_distilled_points WHERE id = ? AND projectId = ?
+  `).get(distilledPointId, projectId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const shortCopy = typeof input.shortCopy === 'string' && input.shortCopy.trim() ? input.shortCopy.trim() : undefined;
+  const benefitText = typeof input.benefitText === 'string' && input.benefitText.trim() ? input.benefitText.trim() : undefined;
+  if (!shortCopy && !benefitText) return null;
+  const current = rowToRecord(row);
+  const editedAt = now().toISOString();
+  const historyEntry = {
+    shortCopy: current.shortCopy,
+    benefitText: current.benefitText,
+    reviewStatus: current.reviewStatus,
+    editedAt,
+  };
+  db.prepare(`
+    UPDATE script_studio_distilled_points
+    SET shortCopy = ?, benefitText = ?, reviewStatus = 'draft',
+        editHistoryJson = ?, updatedAt = ?
+    WHERE id = ? AND projectId = ?
+  `).run(
+    shortCopy ?? current.shortCopy,
+    benefitText ?? current.benefitText,
+    JSON.stringify([historyEntry, ...current.editHistory].slice(0, 20)),
+    editedAt,
+    distilledPointId,
+    projectId,
+  );
+  const updated = db.prepare(`SELECT * FROM script_studio_distilled_points WHERE id = ?`).get(distilledPointId) as Record<string, unknown>;
+  return rowToRecord(updated);
 }
 
 /** 缓存命中：同一项目 + 同一指纹的整批结果；复用不提升确认状态（B9）。 */
@@ -447,7 +524,8 @@ export function countDistilledStatus(points: DistilledSellingPointRecord[]): {
 export interface SellingPointDistiller {
   readonly providerId: string;
   readonly model: string;
-  distill(input: { facts: DistillableFact[]; productName: string }): Promise<unknown>;
+  /** signal 贯通到 completeJson（审查 R5）：用户停止/停机时提炼请求一并取消。 */
+  distill(input: { facts: DistillableFact[]; productName: string; signal?: AbortSignal }): Promise<unknown>;
 }
 
 export function createSellingPointDistiller(
@@ -465,6 +543,7 @@ export function createSellingPointDistiller(
         userPrompt: prompt.userPrompt,
         temperature: 1,
         maxTokens: options.maxTokens ?? 8000,
+        signal: input.signal,
       });
     },
   };

@@ -163,7 +163,8 @@ export function describeValidationIssues(
     selling_point_refs_required: '口播未引用任何已核验卖点',
     segments_required: '缺少口播分段',
     ending_bare_selling_point: '结尾是孤立卖点标签，必须改为承接正文的 CTA 行动引导',
-    cta_ending_missing: '最后一句缺少行动引导（CTA），须以邀请了解/比较/挑选等具体行动收尾',
+    cta_ending_missing: '最后一句缺少行动邀请（CTA），须以邀请了解/比较/挑选等具体行动收尾',
+    cta_channel_unconfirmed: '最后一句使用了未确认的渠道或促销表述（私信/链接/下单/优惠等），只允许了解/比较等通用引导',
   };
   return [...new Set(issues)].map((issue) => {
     const titleDetails = detail?.titleIssues?.filter((item) => item.code === issue);

@@ -62,6 +62,20 @@ export function briefCandidatePoints(input: ScriptGeneratorInput): SellingPointR
   return ordered;
 }
 
+/**
+ * 提炼表达的生成边界（审查 R4 / 方案 §3.4）：只有全部来源事实都在当前方向卖点包内的
+ * 派生表达才允许进入提示词——「表达来自 f1+f2 而包内只有 f1」会把包外信息
+ * （如另一条事实的材质）带进 prompt，且模型可以只引用 f1 复述整句，包外 ID 拒绝规则拦不住。
+ * 生成提示词与内容快照（distilledContext）共用本函数，冻结的是实际使用的表达集合。
+ */
+export function eligibleDistilledExpressions(input: ScriptGeneratorInput): DistilledExpressionRef[] {
+  const candidateIds = new Set(briefCandidatePoints(input).map((point) => point.id));
+  if (candidateIds.size === 0) return [];
+  return (input.distilledExpressions || []).filter(
+    (ref) => ref.sourceFactIds.length > 0 && ref.sourceFactIds.every((id) => candidateIds.has(id)),
+  );
+}
+
 export interface ScriptTitleRepairInput extends ScriptGeneratorInput {
   content: ScriptStudioScriptContent;
   titleIssues: ScriptTitleIssue[];
@@ -70,14 +84,24 @@ export interface ScriptTitleRepairInput extends ScriptGeneratorInput {
 /** 受约束正文修复输入（方案 §2.1）：只修正文质量问题，标题/时长/知识来源保持冻结。 */
 export interface ScriptBodyRepairInput extends ScriptGeneratorInput {
   content: ScriptStudioScriptContent;
-  /** 本地结尾质量检查给出的具体问题码（ending_bare_selling_point / cta_ending_missing）。 */
+  /** 本地结尾质量检查或语义审核给出的具体问题（中文描述）。 */
   qualityIssues: string[];
+}
+
+/** 语义审核输入（方案 §4.2 / 审查 R2）：只读复核，不改写任何内容。 */
+export interface ScriptEndingReviewInput extends ScriptGeneratorInput {
+  content: ScriptStudioScriptContent;
 }
 
 export interface ScriptGenerator {
   repairTitles?(input: ScriptTitleRepairInput): Promise<unknown>;
   /** 围绕既有段落与已选卖点改写正文，并以自然 CTA 收尾；响应只接收 segments 白名单字段。 */
   repairScriptContent?(input: ScriptBodyRepairInput): Promise<unknown>;
+  /**
+   * 有界语义审核（方案 §4.2 / 审查 R2）：本地末句初筛通过后复核行动邀请、主题承接、
+   * 渠道、事实支持与 CTA 后无附加内容；fail closed——未通过/不可解析不能默认合格。
+   */
+  reviewScriptContent?(input: ScriptEndingReviewInput): Promise<unknown>;
   generate(input: ScriptGeneratorInput): Promise<{ content: ScriptStudioScriptContent; attempts: number }>;
 }
 
@@ -110,8 +134,9 @@ export function buildScriptPrompt(
   const titleContext = buildScriptTitleContext(library, input.knowledgeContext);
   const requiredIds = new Set(input.brief.requiredPointIds);
   const budget = buildScriptDurationBudget(input.targetDurationSec);
-  // 已确认提炼表达（调用方按优先级排序）挂到对应候选上：短句是表达参考，不是新的事实来源（方案 §3.4）。
-  const expressions = input.distilledExpressions || [];
+  // 已确认提炼表达（R4）：只有全部来源事实都在当前方向包内的表达才进入提示词，
+  // 且附带完整来源事实 ID——模型能看到该表达的全部支持事实与证据边界。
+  const expressions = eligibleDistilledExpressions(input);
   const expressionForPoint = (pointId: string): DistilledExpressionRef | undefined =>
     expressions.find((ref) => ref.sourceFactIds.includes(pointId));
   const requirements = [
@@ -201,7 +226,8 @@ export function buildScriptPrompt(
               benefitText: expression.benefitText,
               scope: expression.scope,
               limitations: expression.limitations,
-              usage: '表达参考，不是新的事实来源',
+              sourceFactIds: expression.sourceFactIds,
+              usage: '表达参考，不是新的事实来源；sourceFactIds 是该表达的全部来源事实',
             },
           } : {}),
         };
@@ -252,6 +278,47 @@ export function buildScriptTitleRepairPrompt(input: ScriptTitleRepairInput): { s
         .map((point) => ({ id: point.id, factText: point.factText, evidenceQuote: point.evidenceQuote })),
       requirements: scriptTitleRequirements(),
       output: { title: '仅在需要修复时返回', coverTitleParts: { primary: '仅在需要修复时返回', secondary: '仅在需要修复时返回' } },
+    }),
+  };
+}
+
+/**
+ * 语义审核提示词（方案 §4.2 / 审查 R2）：只读复核，不改写内容。
+ * 覆盖本地初筛拦不住的问题：陈述式「了解」、渠道虚构、无证据功效、CTA 后追加内容、主题断裂。
+ */
+export function buildScriptEndingReviewPrompt(input: ScriptEndingReviewInput): { systemPrompt: string; userPrompt: string } {
+  // 提供方向包内全部可用事实（不只被引用的）：审核要判断「正文表述是否受支持」，
+  // 需要知道完整的事实边界，而不是只看已引用的。
+  const verifiedFacts = briefCandidatePoints(input)
+    .map((point) => ({ id: point.id, factText: point.factText, evidenceQuote: point.evidenceQuote }));
+  return {
+    systemPrompt: '你是电商短视频口播审核员。只返回一个 JSON 对象（pass + issues + checks），不输出解释，不改正文。',
+    userPrompt: JSON.stringify({
+      task: 'review_project_script_ending_v1',
+      direction: input.plan.angle,
+      ...(input.brief?.themeTitle ? { theme: input.brief.themeTitle } : {}),
+      fullScript: input.content.fullScript,
+      segments: input.content.segments.map((segment) => ({
+        narration: segment.narration,
+        sellingPointIdRefs: segment.sellingPointIdRefs,
+      })),
+      verifiedFacts,
+      requirements: [
+        '逐项检查并给出 checks：actionInvitation（最后一句是否为明确的行动邀请，陈述句或纯情绪收束不算）、followsContext（CTA 是否承接正文的使用场景或购买理由，主题是否突然变化）、channelAppropriate（当前没有已确认渠道：私信/链接/下单/领取优惠/到店/库存紧张等一律不通过）、factsSupported（正文中的参数、材质、功效、认证表述是否受 verifiedFacts 支持，无支持即不通过）、noContentAfterCta（CTA 之后是否又罗列卖点/规格/颜色）',
+        '任何一项不通过则 pass=false，并在 issues 中给出具体中文原因（指出哪个词/哪一句不受支持）',
+        '只依据 verifiedFacts 判断事实支持，不要凭常识脑补产品能力',
+      ],
+      output: {
+        pass: 'boolean',
+        issues: ['string；pass=false 时必填，具体原因'],
+        checks: {
+          actionInvitation: 'boolean',
+          followsContext: 'boolean',
+          channelAppropriate: 'boolean',
+          factsSupported: 'boolean',
+          noContentAfterCta: 'boolean',
+        },
+      },
     }),
   };
 }
@@ -438,11 +505,12 @@ export function normalizeGeneratedScript(
           sourceRows: strategy!.sourceRows ?? [],
         }
       : undefined,
-    // 冻结本次生成提供的已确认提炼表达版本（方案 §3.3）：来源库修订由 libraryRevisionId 冻结。
-    ...(input.distilledExpressions?.length ? {
+    // 冻结本次生成实际使用的已确认提炼表达（R4）：与提示词同一 eligible 过滤结果，
+    // 来源库修订由 libraryRevisionId 冻结；部分来源在方向包外的表达不进入快照。
+    ...(eligibleDistilledExpressions(input).length ? {
       distilledContext: {
         ruleVersion: SELLING_POINT_DISTILL_RULE_VERSION,
-        pointIds: input.distilledExpressions.map((ref) => ref.id),
+        pointIds: eligibleDistilledExpressions(input).map((ref) => ref.id),
       },
     } : {}),
     recommendation: recommendation
@@ -549,6 +617,17 @@ export function createScriptGenerator(
         userPrompt: prompt.userPrompt,
         temperature: 1,
         maxTokens: options.maxTokens ?? 8000,
+        signal: input.signal,
+      });
+    },
+    async reviewScriptContent(input) {
+      reserve(input, 'review');
+      const prompt = buildScriptEndingReviewPrompt(input);
+      return completeJson({
+        systemPrompt: prompt.systemPrompt,
+        userPrompt: prompt.userPrompt,
+        temperature: 1,
+        maxTokens: SCRIPT_TITLE_REPAIR_MAX_TOKENS,
         signal: input.signal,
       });
     },
