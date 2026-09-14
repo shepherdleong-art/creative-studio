@@ -159,6 +159,7 @@ const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
   'company-image2-medium': 'image',
   'company-qiniuyun-gpt-image-2-medium': 'image',
   'company-kling-3-0': 'video',
+  'company-qiniuyun-kling-3-0': 'video',
   'company-seedance-fast': 'video',
   'company-seedance-2-5': 'video',
   'company-gpt-5-6-luna': 'llm_text',
@@ -169,6 +170,7 @@ const COMPONENT_KEYS_BY_CORE_MODEL: Readonly<Record<string, readonly string[]>> 
   'company-image2-medium': ['image'],
   'company-qiniuyun-gpt-image-2-medium': ['image'],
   'company-kling-3-0': ['second'],
+  'company-qiniuyun-kling-3-0': ['second'],
   'company-seedance-fast': ['second'],
   'company-seedance-2-5': ['second'],
   'company-gpt-5-6-luna': ['input_token', 'output_token', 'cached_input_token'],
@@ -924,13 +926,16 @@ function runLegacyImageBackfill(db: Database.Database): LegacyBackfillResult {
 
 const LEGACY_VIDEO_BACKFILL_MODELS = {
   'kling-3.0': { coreModelKey: 'company-kling-3-0', pricing: CORE_USAGE_PRICING.kling },
+  'qiniuyun/kling-3.0': { coreModelKey: 'company-qiniuyun-kling-3-0', pricing: CORE_USAGE_PRICING.qiniuyunKling },
   'doubao-seedance-2-0-fast-260128': { coreModelKey: 'company-seedance-fast', pricing: CORE_USAGE_PRICING.seedance },
   'doubao-seedance-2-5-260628': { coreModelKey: 'company-seedance-2-5', pricing: CORE_USAGE_PRICING.seedance25 },
 } as const;
 
 /**
  * 一次性视频回填：身份门禁放宽前，走公司网关但 providerId 非 canonical 的
- * 存量成功任务没有冻结快照。video_jobs 没有 estimatedCost 列，金额按固定价
+ * 存量成功任务没有冻结快照；2026-09-10 接入的七牛可灵 qiniuyun/kling-3.0 当时
+ * 未注册计价计划，同样没有快照（回填范围因此从 v1 升到 v2 重扫，已入账任务靠
+ * eventKey 去重，幂等）。video_jobs 没有 estimatedCost 列，金额按固定价
  * durationSec ÷ 5 × 单价 线性折算，与实时记账的计价规则一致。
  */
 function queryLegacyVideoBackfill(db: Database.Database): { rows: LegacyVideoBackfillRow[]; failed: boolean } {
@@ -952,9 +957,9 @@ function queryLegacyVideoBackfill(db: Database.Database): { rows: LegacyVideoBac
         ON l.eventKey = 'video-job:' || j.id || ':succeeded'
       WHERE p.type = 'openai-video'
         AND p.defaultModel = j.model
-        AND j.model IN ('kling-3.0', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628')
+        AND j.model IN ('kling-3.0', 'qiniuyun/kling-3.0', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628')
         AND (
-          p.id IN ('company-kling-3-0', 'company-seedance-2-0-fast', 'company-seedance-2-5')
+          p.id IN ('company-kling-3-0', 'company-qiniuyun-kling-3-0', 'company-seedance-2-0-fast', 'company-seedance-2-5')
           OR p.baseUrl LIKE 'http://127.0.0.1%'
           OR p.baseUrl LIKE 'https://127.0.0.1%'
           OR p.baseUrl LIKE 'http://localhost%'
@@ -1005,7 +1010,7 @@ function legacyVideoLedgerFields(row: LegacyVideoBackfillRow): ReturnType<typeof
     priceScale: config.pricing.priceScale,
     unitPriceMicros: config.pricing.unitPriceMicros,
     costMicros: calculateComponentCostMicros(durationSec, component),
-    detailJson: JSON.stringify({ source: 'video-backfill-v1', durationSec }),
+    detailJson: JSON.stringify({ source: 'video-backfill-v2', durationSec }),
     projectId: row.projectId,
     refType: 'video-job',
     refId: row.id,
@@ -1019,7 +1024,7 @@ function runLegacyVideoBackfill(db: Database.Database): LegacyBackfillResult {
   };
   if (!tableExists(db, 'usage_backfill_state')) return { ...empty, ok: false };
   try {
-    const marker = db.prepare(`SELECT 1 AS present FROM usage_backfill_state WHERE marker = ?`).get('video-backfill-v1') as { present?: number } | undefined;
+    const marker = db.prepare(`SELECT 1 AS present FROM usage_backfill_state WHERE marker = ?`).get('video-backfill-v2') as { present?: number } | undefined;
     if (marker?.present === 1) return { ...empty, markerPresent: true };
   } catch {
     console.error('[usage-ledger] legacy video backfill marker read failed; usage accounting skipped');
@@ -1039,7 +1044,7 @@ function runLegacyVideoBackfill(db: Database.Database): LegacyBackfillResult {
       db.prepare(`
         INSERT OR IGNORE INTO usage_backfill_state (marker, completedAt)
         VALUES (?, ?)
-      `).run('video-backfill-v1', new Date().toISOString());
+      `).run('video-backfill-v2', new Date().toISOString());
     })();
     return { ok: true, candidates, inserted, markerPresent: true, markerWritten: true };
   } catch {

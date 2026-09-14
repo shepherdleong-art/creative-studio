@@ -9,6 +9,7 @@ export const CORE_USAGE_MODEL_KEYS: readonly CoreUsageModelKey[] = [
   'company-image2-medium',
   'company-qiniuyun-gpt-image-2-medium',
   'company-kling-3-0',
+  'company-qiniuyun-kling-3-0',
   'company-seedance-fast',
   'company-seedance-2-5',
   'company-gpt-5-6-luna',
@@ -295,6 +296,7 @@ function uncertainCount(db: Database.Database, filters: UsageQueryFilters): numb
           WHEN 'company-image2-medium' THEN 'image'
           WHEN 'company-qiniuyun-gpt-image-2-medium' THEN 'image'
           WHEN 'company-kling-3-0' THEN 'video'
+          WHEN 'company-qiniuyun-kling-3-0' THEN 'video'
           WHEN 'company-seedance-fast' THEN 'video'
           WHEN 'company-seedance-2-5' THEN 'video'
           WHEN 'company-gpt-5-6-luna' THEN 'llm_text'

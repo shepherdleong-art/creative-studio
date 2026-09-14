@@ -3,7 +3,7 @@
  *
  * The dashboard deliberately does not read a provider's editable cost fields.
  * A provider is eligible only when its complete runtime identity matches one
- * of the seven entries below, and every amount is kept in integer micros.
+ * of the eight entries below, and every amount is kept in integer micros.
  */
 
 export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-v1';
@@ -21,6 +21,7 @@ export type CoreUsageModelKey =
   | 'company-image2-medium'
   | 'company-qiniuyun-gpt-image-2-medium'
   | 'company-kling-3-0'
+  | 'company-qiniuyun-kling-3-0'
   | 'company-seedance-fast'
   | 'company-seedance-2-5'
   | 'company-gpt-5-6-luna'
@@ -124,6 +125,13 @@ const KLING_COMPONENT: CoreUsagePriceComponentV1 = {
   unitPriceMicros: 2_990_000,
   priceScale: 5,
 };
+// qiniuyun/kling-3.0：2026-09-14 与用户确认的公司结算价 ¥2.72/5 秒（约 ¥0.544/秒）
+const QINIUYUN_KLING_COMPONENT: CoreUsagePriceComponentV1 = {
+  key: 'second',
+  unit: 'second',
+  unitPriceMicros: 2_720_000,
+  priceScale: 5,
+};
 const SEEDANCE_COMPONENT: CoreUsagePriceComponentV1 = {
   key: 'second',
   unit: 'second',
@@ -180,6 +188,7 @@ export const CORE_USAGE_PRICING = Object.freeze({
   image: Object.freeze({ unitPriceMicros: IMAGE_COMPONENT.unitPriceMicros, priceScale: IMAGE_COMPONENT.priceScale }),
   qiniuyunImage: Object.freeze({ unitPriceMicros: QINIUYUN_IMAGE_COMPONENT.unitPriceMicros, priceScale: QINIUYUN_IMAGE_COMPONENT.priceScale }),
   kling: Object.freeze({ unitPriceMicros: KLING_COMPONENT.unitPriceMicros, priceScale: KLING_COMPONENT.priceScale }),
+  qiniuyunKling: Object.freeze({ unitPriceMicros: QINIUYUN_KLING_COMPONENT.unitPriceMicros, priceScale: QINIUYUN_KLING_COMPONENT.priceScale }),
   seedance: Object.freeze({ unitPriceMicros: SEEDANCE_COMPONENT.unitPriceMicros, priceScale: SEEDANCE_COMPONENT.priceScale }),
   seedance25: Object.freeze({ unitPriceMicros: SEEDANCE_2_5_COMPONENT.unitPriceMicros, priceScale: SEEDANCE_2_5_COMPONENT.priceScale }),
   gptInput: Object.freeze({ unitPriceMicros: GPT_COMPONENTS[0].unitPriceMicros, priceScale: GPT_COMPONENTS[0].priceScale }),
@@ -339,6 +348,20 @@ export function resolveCoreUsagePlan(
     requestModel: 'kling-3.0',
   })) {
     return createPlan('company-kling-3-0', 'video', 'kling-3.0', [KLING_COMPONENT]);
+  }
+
+  if (matchesVideoIdentity(provider, {
+    canonicalProviderId: 'company-qiniuyun-kling-3-0',
+    providerType: 'openai-video',
+    configuredModel: 'qiniuyun/kling-3.0',
+    requestModel: 'qiniuyun/kling-3.0',
+  })) {
+    return createPlan(
+      'company-qiniuyun-kling-3-0',
+      'video',
+      'qiniuyun/kling-3.0',
+      [QINIUYUN_KLING_COMPONENT],
+    );
   }
 
   if (matchesVideoIdentity(provider, {
