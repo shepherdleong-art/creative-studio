@@ -1565,7 +1565,7 @@ interface DistilledPointView {
   sourceFactIds: string[];
   reviewStatus: 'draft' | 'approved' | 'needs_review';
   reviewIssues: string[];
-  editHistory: Array<{ shortCopy: string; benefitText: string; reviewStatus: string; editedAt: string }>;
+  editHistory: Array<{ previousVersionId?: string; shortCopy: string; benefitText: string; reviewStatus: string; editedAt: string }>;
 }
 
 const DISTILLED_ROLE_LABELS: Record<DistilledPointView['role'], string> = {

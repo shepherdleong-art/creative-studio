@@ -306,6 +306,7 @@ export function buildScriptEndingReviewPrompt(input: ScriptEndingReviewInput): {
       requirements: [
         '逐项检查并给出 checks：actionInvitation（最后一句是否为明确的行动邀请，陈述句或纯情绪收束不算）、followsContext（CTA 是否承接正文的使用场景或购买理由，主题是否突然变化）、channelAppropriate（当前没有已确认渠道：私信/链接/下单/领取优惠/到店/库存紧张等一律不通过）、factsSupported（正文中的参数、材质、功效、认证表述是否受 verifiedFacts 支持，无支持即不通过）、noContentAfterCta（CTA 之后是否又罗列卖点/规格/颜色）',
         '任何一项不通过则 pass=false，并在 issues 中给出具体中文原因（指出哪个词/哪一句不受支持）',
+        'pass 与 checks 必须一致：pass=true 时五项 checks 必须全部为 true 且 issues 为空数组；任何一项为 false 时 pass 必须为 false（自相矛盾的响应会被服务端整体拒绝）',
         '只依据 verifiedFacts 判断事实支持，不要凭常识脑补产品能力',
       ],
       output: {

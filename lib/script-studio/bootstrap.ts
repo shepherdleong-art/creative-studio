@@ -22,7 +22,9 @@ import {
 // v12：封面主副标题按完整组合去重，允许展示名称主标题复用，并拦截副标题词序调换。
 // v13：移除「标签补字」本地兜底（extendScriptContentToDuration），改为受约束正文修复；
 //      时长改为软目标（不再因字数阻断保存），新增 CTA 结尾检查、请求预算计数与框架秒数适配。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 13;
+// v14：新增结尾语义审核（reviewScriptContent，严格解析子检查）、提炼阶段取消信号贯通、
+//      提炼卖点不可变编辑版本链与逐字段限定核验（规则版本 distill-rules-v2）。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 14;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

@@ -28,6 +28,7 @@ import {
   distillationFingerprint,
   editDistilledPoint,
   findCachedDistilledPoints,
+  getDistilledPointById,
   listDistilledPointsForRevision,
   parseAndValidateDistilledPoints,
   saveDistilledPoints,
@@ -112,6 +113,8 @@ const tagBypass = parseAndValidateDistilledPoints({
 assert.equal(tagBypass.points[0]!.reviewStatus, 'needs_review', '标签绕过核验的反例必须拦截（R3）');
 assert.ok(tagBypass.points[0]!.reviewIssues.some((issue) => issue.includes('范围被扩大：终身')), '「终身质保」标签命中范围扩大');
 assert.ok(tagBypass.points[0]!.reviewIssues.some((issue) => issue.includes('数字未受来源支持：99')), '「99年」标签命中数字落地');
+assert.equal(tagBypass.points[0]!.tags.max5, null, '丢限定的「终身质保」标签置空（P2）');
+assert.equal(tagBypass.points[0]!.tags.max8, null, '丢限定的「整件质保99年」标签置空（P2）');
 
 // 审查 R3：限定条件丢失——来源「框架质保」，短句/标签写成「质保20年」不得自动通过。
 const qualifierLoss = parseAndValidateDistilledPoints({
@@ -135,6 +138,37 @@ const qualifierKept = parseAndValidateDistilledPoints({
   }],
 }, unitFacts);
 assert.equal(qualifierKept.points[0]!.reviewStatus, 'draft', '保留限定词的提炼正常进入待确认');
+
+// 复审 P2：限定条件逐字段核验——其他字段（title/benefitText）保留「框架」不能代替短句/标签自身保留。
+const perFieldQualifier = parseAndValidateDistilledPoints({
+  distilledPoints: [{
+    title: '框架质保',                    // 保留「框架」
+    benefitText: '框架结构质保 20 年',    // 保留「框架」
+    shortCopy: '质保 20 年用得安心',      // 丢限定 → 待复核
+    tags: { max5: '20年质保', max8: '框架质保', max10: null },
+    role: 'core', priority: 70, scope: '', limitations: [],
+    sourceFactIds: ['f-frame'],
+  }],
+}, unitFacts);
+assert.equal(perFieldQualifier.points[0]!.reviewStatus, 'needs_review', '其他字段保留限定不能让丢限定的短句通过（P2）');
+assert.equal(perFieldQualifier.points[0]!.tags.max5, null, '丢限定的标签必须置空（P2）');
+assert.equal(perFieldQualifier.points[0]!.tags.max8, '框架质保', '保留限定的标签不受影响');
+assert.ok(
+  perFieldQualifier.points[0]!.reviewIssues.some((issue) => issue.includes('短句「质保 20 年用得安心」未保留来源限定「框架」')),
+  '必须指出具体丢限定的短句',
+);
+
+// 复审 P2：仅 scope 保留限定同样不能代替短句/标签。
+const scopeOnlyQualifier = parseAndValidateDistilledPoints({
+  distilledPoints: [{
+    title: '质保承诺', benefitText: '长期质保更放心', shortCopy: '质保 20 年用得安心',
+    tags: { max5: '20年质保', max8: null, max10: null },
+    role: 'core', priority: 70, scope: '框架', limitations: [],
+    sourceFactIds: ['f-frame'],
+  }],
+}, unitFacts);
+assert.equal(scopeOnlyQualifier.points[0]!.reviewStatus, 'needs_review', '仅 scope 保留限定不能让短句/标签通过（P2）');
+assert.equal(scopeOnlyQualifier.points[0]!.tags.max5, null, 'scope 里的限定不能救回标签（P2）');
 
 const materialSwap = parseAndValidateDistilledPoints({
   distilledPoints: [{
@@ -226,6 +260,13 @@ assert.equal(findCachedDistilledPoints(db, 'p1', distillationFingerprint({
   projectId: 'p1', sourceLibraryRevisionId: library.id,
   ruleVersion: SELLING_POINT_DISTILL_RULE_VERSION, providerId: 'fake-text', model: 'model-b',
 })).length, 0, '模型身份不同不得复用缓存');
+
+// 复审 P2：规则版本升级后，旧规则（v1）的缓存指纹不被新任务命中——
+// 指纹含规则版本，v2 任务必然 miss 并按新规则重新提炼；旧 v1 行原样保留、不被覆盖。
+assert.equal(findCachedDistilledPoints(db, 'p1', distillationFingerprint({
+  projectId: 'p1', sourceLibraryRevisionId: library.id,
+  ruleVersion: 'distill-rules-v1', providerId: 'fake-text', model: 'model-a',
+})).length, 0, '旧规则版本的缓存指纹不被新任务命中（P2）');
 
 // 复用不提升确认状态：缓存命中后仍是 draft。
 assert.equal(cachedA.every((point) => point.reviewStatus === 'draft'), true, '复用不提升确认状态');
@@ -469,7 +510,7 @@ function distillStageRow(taskId: string): { status: string; payloadJson: string 
   assert.equal(providerReceivedSignal, controller.signal, '取消信号必须贯通到 completeJson（R5）');
 }
 
-// ── 审查补齐：手动编辑派生文案 → 回到 draft，编辑历史保留旧值 ────────
+// ── 复审 P1：手动编辑产生不可变新版本，旧版本内容与确认状态保留 ──────
 {
   const fingerprintEdit = distillationFingerprint({
     projectId: 'p1', sourceLibraryRevisionId: library.id,
@@ -486,25 +527,55 @@ function distillStageRow(taskId: string): { status: string; payloadJson: string 
       }],
     }, distillableFacts(library)).points,
   }, now);
-  const point = savedEdit[0]!;
-  assert.equal(point.reviewIssues.length, 0);
-  assert.equal(point.editHistory.length, 0);
-  // 先确认再编辑：编辑后回到 draft，旧值进编辑历史。
-  approveDistilledPoint(db, 'p1', point.id, now);
-  const edited = editDistilledPoint(db, 'p1', point.id, { shortCopy: '下班回家就想往这躺' }, now);
-  assert.equal(edited?.shortCopy, '下班回家就想往这躺');
-  assert.equal(edited?.reviewStatus, 'draft', '手动编辑后回到 draft，不保留旧批准（方案 §3.3）');
-  assert.equal(edited?.editHistory.length, 1, '旧值追加进编辑历史');
-  assert.equal(edited?.editHistory[0]!.shortCopy, '往这张沙发一躺就放松', '模型原始短句保留在历史中');
-  // 空编辑被拒绝；跨项目编辑被拒绝。
-  assert.equal(editDistilledPoint(db, 'p1', point.id, { shortCopy: '  ' }, now), null, '空编辑不得生效');
-  assert.equal(editDistilledPoint(db, 'p2', point.id, { shortCopy: '跨项目' }, now), null, '跨项目不得编辑');
-  // 编辑后再确认 → approved；按指纹整批读取后编辑历史仍在。
-  approveDistilledPoint(db, 'p1', point.id, now);
-  const reloaded = findCachedDistilledPoints(db, 'p1', fingerprintEdit)
-    .find((row) => row.shortCopy === '下班回家就想往这躺');
-  assert.equal(reloaded?.reviewStatus, 'approved');
-  assert.equal(reloaded?.editHistory.length, 1, '往返读取后编辑历史仍在');
+  const original = savedEdit[0]!;
+  assert.equal(original.reviewIssues.length, 0);
+  assert.equal(original.editHistory.length, 0);
+  assert.equal(original.supersededById, null);
+  // 先确认再编辑：编辑产生新版本行（新 ID），旧版本不可变。
+  approveDistilledPoint(db, 'p1', original.id, now);
+  const edited = editDistilledPoint(db, 'p1', original.id, { shortCopy: '下班回家就想往这躺' }, now);
+  assert.ok(edited, '编辑必须返回新版本');
+  assert.notEqual(edited!.id, original.id, '每次编辑产生可寻址的新版本 ID（P1）');
+  assert.equal(edited!.shortCopy, '下班回家就想往这躺');
+  assert.equal(edited!.reviewStatus, 'draft', '新版本回到 draft，不继承旧批准（方案 §3.3）');
+  assert.equal(edited!.editHistory.length, 1, '旧值追加进编辑历史');
+  assert.equal(edited!.editHistory[0]!.previousVersionId, original.id, '历史条目可寻址到上一版本行');
+  assert.equal(edited!.editHistory[0]!.shortCopy, '往这张沙发一躺就放松', '模型原始短句保留在历史中');
+  // 旧版本行不可变：ID 仍解析到原内容与确认状态——脚本冻结的 pointIds 不受编辑影响。
+  const frozenVersion = getDistilledPointById(db, 'p1', original.id);
+  assert.equal(frozenVersion?.shortCopy, '往这张沙发一躺就放松', '旧版本内容不被覆盖（P1）');
+  assert.equal(frozenVersion?.reviewStatus, 'approved', '旧版本确认状态保留（P1）');
+  assert.equal(frozenVersion?.supersededById, edited!.id, '旧行仅标记被取代');
+  // 缓存/当前指针与冻结引用分开：只返回新草稿。
+  const cachedAfterEdit = findCachedDistilledPoints(db, 'p1', fingerprintEdit);
+  assert.equal(cachedAfterEdit.length, 1);
+  assert.equal(cachedAfterEdit[0]!.id, edited!.id, '当前列表指向新版本（P1）');
+  // 已被取代的版本不可再编辑/确认；空编辑与跨项目编辑被拒绝。
+  assert.equal(editDistilledPoint(db, 'p1', original.id, { shortCopy: '再次编辑旧版本' }, now), null, '已取代版本不可编辑（P1）');
+  assert.equal(approveDistilledPoint(db, 'p1', original.id, now), null, '已取代版本不可确认（P1）');
+  assert.equal(editDistilledPoint(db, 'p1', edited!.id, { shortCopy: '  ' }, now), null, '空编辑不得生效');
+  assert.equal(editDistilledPoint(db, 'p2', edited!.id, { shortCopy: '跨项目' }, now), null, '跨项目不得编辑');
+  // 复审反例：连续编辑 22 次 → 24 行全部保留，原始内容不消失（旧行不会只剩 1 行 + 20 条截断历史）。
+  let latest = edited!;
+  for (let i = 0; i < 22; i += 1) {
+    const next = editDistilledPoint(db, 'p1', latest.id, { shortCopy: `第${i + 1}次编辑后的短句` }, now);
+    assert.ok(next, `第 ${i + 1} 次编辑必须产生新版本`);
+    latest = next!;
+  }
+  const rowCount = (db.prepare(`
+    SELECT COUNT(*) AS n FROM script_studio_distilled_points WHERE fingerprint = ?
+  `).get(fingerprintEdit) as { n: number }).n;
+  assert.equal(rowCount, 1 + 1 + 22, '模型原版 + 首次编辑 + 22 次编辑 = 24 行全保留（P1 复审反例）');
+  const originalAfterManyEdits = getDistilledPointById(db, 'p1', original.id);
+  assert.equal(originalAfterManyEdits?.shortCopy, '往这张沙发一躺就放松', '多次编辑后原始内容仍在（P1）');
+  assert.equal(originalAfterManyEdits?.reviewStatus, 'approved', '原始确认状态仍在（P1）');
+  // 当前指针指向最新版本；确认后缓存读取到 approved。
+  const currentPointer = findCachedDistilledPoints(db, 'p1', fingerprintEdit);
+  assert.equal(currentPointer.length, 1);
+  assert.equal(currentPointer[0]!.id, latest.id, '当前指针指向最新版本');
+  approveDistilledPoint(db, 'p1', latest.id, now);
+  const current = findCachedDistilledPoints(db, 'p1', fingerprintEdit)[0]!;
+  assert.equal(current.reviewStatus, 'approved', '新版本确认后成为当前已确认版本');
 }
 
 // ── 审查补齐：needs_review 原因（reviewIssues）持久化往返 ────────────

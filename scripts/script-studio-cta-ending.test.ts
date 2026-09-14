@@ -119,6 +119,13 @@ function bodySegments(primaryId: string, primaryTitle: string) {
 }
 const CTA_LINE = '想给下班后的自己留个放松的位置，就从这款沙发开始了解。';
 
+/** 合格语义审核响应：五项 checks 齐全且 true、无失败原因（复审 S2 契约）。 */
+const PASS_REVIEW = {
+  pass: true,
+  issues: [],
+  checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: true, noContentAfterCta: true },
+};
+
 let taskSeq = 0;
 async function runScenario(options: {
   knowledge?: FrozenKnowledgeContext | null;
@@ -186,7 +193,8 @@ function savedContent(): { content: ScriptStudioScriptContent; validation: Recor
         const prompt = JSON.parse(buildScriptEndingReviewPrompt(input).userPrompt);
         assert.equal(prompt.task, 'review_project_script_ending_v1');
         assert.ok(prompt.fullScript.length > 0, '审核必须看到完整正文');
-        return { pass: true, issues: [], checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: true, noContentAfterCta: true } };
+        assert.ok(prompt.requirements.some((item: string) => item.includes('pass 与 checks 必须一致')), '提示词必须要求 pass 与 checks 一致（S2）');
+        return PASS_REVIEW;
       },
     },
   });
@@ -450,7 +458,7 @@ const framework20s: KnowledgePlanRecommendation = {
             segments: [...bodySegments(primary.id, primary.title), { narration: CTA_LINE, sellingPointIdRefs: [], visualIntent: '', visualKeywords: ['沙发'] }],
           };
         },
-        async reviewScriptContent() { return { pass: true, issues: [] }; },
+        async reviewScriptContent() { return PASS_REVIEW; },
       },
     });
     assert.equal(result.status, 'succeeded', `审查反例 ${index + 1} 修复后必须能保存：${getTask(db, 'p1', taskId)?.errorMessage || ''}`);
@@ -464,7 +472,7 @@ const framework20s: KnowledgePlanRecommendation = {
   }
 }
 
-// ── R2 语义审核：合法引用 ID 挡不住无证据功效，审核必须拦截并修复 ────
+// ── R2/S2 语义审核：矛盾响应（pass=true 但子检查失败）必须整体拒绝并修复 ──
 {
   const captured: Captured = { generateInputs: [], repairInputs: [], primaryTitles: [] };
   let reviewCalls = 0;
@@ -500,14 +508,15 @@ const framework20s: KnowledgePlanRecommendation = {
       async reviewScriptContent() {
         reviewCalls += 1;
         if (reviewCalls === 1) {
-          return { pass: false, issues: ['正文宣称「治好颈椎病」，来源事实不支持该功效'], checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: false, noContentAfterCta: true } };
+          // 复审 S2 反例：顶层 pass=true 自相矛盾（factsSupported=false 且自带失败原因）。
+          return { pass: true, issues: ['正文宣称「治好颈椎病」，来源事实不支持该功效'], checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: false, noContentAfterCta: true } };
         }
-        return { pass: true, issues: [] };
+        return PASS_REVIEW;
       },
     },
   });
   assert.equal(result.status, 'succeeded', `审核拒绝后修复重审必须能保存：${getTask(db, 'p1', taskId)?.errorMessage || ''}`);
-  assert.equal(reviewCalls, 2, '首审拒绝 → 修复 → 复审通过，共两次审核');
+  assert.equal(reviewCalls, 2, '矛盾响应被拒 → 修复 → 复审通过，共两次审核');
   assert.equal(captured.repairInputs.length, 1, '审核失败触发一次定向修复');
   assert.ok(
     captured.repairInputs[0]!.qualityIssues.some((issue) => issue.includes('治好颈椎病')),
@@ -566,15 +575,22 @@ const framework20s: KnowledgePlanRecommendation = {
   );
 }
 
-// ── R2 单元：审核解析 fail closed ────────────────────────────────────
-assert.deepEqual(parseScriptEndingReview({ pass: true }), { pass: true, issues: [] });
-assert.equal(parseScriptEndingReview({}).pass, false, '缺 pass 字段视为不通过');
-assert.equal(parseScriptEndingReview('garbage').pass, false, '非对象响应视为不通过');
-assert.equal(parseScriptEndingReview({ pass: false }).issues.length, 1, 'pass=false 无原因时给出兜底原因');
+// ── R2/S2 单元：审核解析 fail closed + 顶层判定与子检查一致性 ─────────
+assert.deepEqual(parseScriptEndingReview(PASS_REVIEW), { pass: true, issues: [] }, '五项检查齐全且为 true 时通过');
+assert.equal(parseScriptEndingReview({ pass: true }).pass, false, '缺 checks 字段视为不通过（S2）');
+assert.equal(parseScriptEndingReview({ pass: true, issues: [], checks: { ...PASS_REVIEW.checks, factsSupported: false } }).pass, false, '顶层 pass=true 但子检查为 false 必须拒绝（S2 复审反例）');
 assert.deepEqual(
-  parseScriptEndingReview({ pass: false, issues: ['渠道未确认'] }).issues,
+  parseScriptEndingReview({ pass: true, issues: ['治好颈椎病没有证据'], checks: { ...PASS_REVIEW.checks, factsSupported: false } }).issues,
+  ['治好颈椎病没有证据', '子检查未通过：factsSupported'],
+  '矛盾响应的失败原因与失败子检查都要进入修复提示词',
+);
+assert.equal(parseScriptEndingReview({ pass: true, issues: ['渠道未确认'], checks: PASS_REVIEW.checks }).pass, false, '自带失败原因时不得通过');
+assert.equal(parseScriptEndingReview('garbage').pass, false, '非对象响应视为不通过');
+assert.equal(parseScriptEndingReview({ pass: false }).issues.length, 5, 'pass=false 无原因时给出全部失败子检查');
+assert.deepEqual(
+  parseScriptEndingReview({ pass: false, issues: ['渠道未确认'], checks: PASS_REVIEW.checks }).issues,
   ['渠道未确认'],
-  '审核原因透传给修复提示词',
+  '子检查齐全时审核原因原样透传给修复提示词',
 );
 
 db.close();

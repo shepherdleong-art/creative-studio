@@ -148,16 +148,36 @@ export interface ScriptEndingReviewVerdict {
   issues: string[];
 }
 
+/** 语义审核的必需子检查（提示词与解析共用同一清单）。 */
+export const SCRIPT_ENDING_REQUIRED_CHECKS = [
+  'actionInvitation',
+  'followsContext',
+  'channelAppropriate',
+  'factsSupported',
+  'noContentAfterCta',
+] as const;
+
 /**
- * 解析语义审核响应：fail closed——非对象、缺 pass 字段或 pass=false 一律不通过；
- * 审核出错/超时不能默认通过（方案 §4.2）。
+ * 解析语义审核响应（复审 S2 严格化）：fail closed——
+ * - 五项必需子检查必须齐全且全部为布尔 true；
+ * - 顶层 pass=true 与子检查/失败原因必须一致：任何子检查缺失或 false、或响应自带
+ *   失败原因（issues 非空）时，一律拒绝通过（模型结构化输出自相矛盾不能变成通过状态）；
+ * - 非对象、缺字段同样不通过；审核出错/超时不能默认通过（方案 §4.2 / A10）。
  */
 export function parseScriptEndingReview(raw: unknown): ScriptEndingReviewVerdict {
   const record = asRecord(raw);
-  const pass = record.pass === true;
-  if (pass) return { pass: true, issues: [] };
-  const issues = asStringArray(record.issues).slice(0, 5);
-  return { pass: false, issues: issues.length ? issues : ['语义审核未通过（模型未给出具体原因）'] };
+  const checks = asRecord(record.checks);
+  const issues = asStringArray(record.issues);
+  const failedChecks = SCRIPT_ENDING_REQUIRED_CHECKS.filter((key) => checks[key] !== true);
+  if (record.pass === true && failedChecks.length === 0 && issues.length === 0) {
+    return { pass: true, issues: [] };
+  }
+  const reasons = [
+    ...issues,
+    ...failedChecks.map((key) => `子检查未通过：${key}`),
+  ];
+  if (!reasons.length) reasons.push('语义审核未通过（模型未给出具体原因）');
+  return { pass: false, issues: reasons.slice(0, 5) };
 }
 
 /** 审核绑定指纹：正文全文 + 来源库修订；正文变化（标题修复除外）后旧审核失效。 */

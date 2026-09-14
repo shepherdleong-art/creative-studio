@@ -15,7 +15,12 @@ import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
 import type { SellingPointRecord } from './types.ts';
 import type { ScriptStudioCompleteJson } from './llm-contract.ts';
 
-export const SELLING_POINT_DISTILL_RULE_VERSION = 'distill-rules-v1';
+/**
+ * 提炼规则版本（复审 P2 返工升至 v2）：v2 = 短句/用户价值/每个标签逐字段核验范围限定。
+ * 规则版本参与缓存指纹：升级后旧 v1 批次不被新任务命中（重新按新规则提炼），
+ * 旧行原样保留、不被覆盖；已确认的人工内容不因此静默失效。
+ */
+export const SELLING_POINT_DISTILL_RULE_VERSION = 'distill-rules-v2';
 
 export type DistilledPointRole = 'core' | 'supporting' | 'spec' | 'atmosphere';
 export type DistilledReviewStatus = 'draft' | 'approved' | 'needs_review';
@@ -39,8 +44,16 @@ export interface DistilledSellingPointRecord {
   reviewStatus: DistilledReviewStatus;
   /** needs_review 的具体原因（审查返工：持久化并展示给用户，不再只留在内存）。 */
   reviewIssues: string[];
-  /** 手动编辑历史（追加版本，最新在前）；编辑后回到 draft。 */
-  editHistory: Array<{ shortCopy: string; benefitText: string; reviewStatus: string; editedAt: string }>;
+  /**
+   * 手动编辑历史（最新在前，展示用；真实版本由不可变行承担——复审 P1）。
+   * previousVersionId 指向上一版本的行 ID，可稳定寻址。
+   */
+  editHistory: Array<{ previousVersionId?: string; shortCopy: string; benefitText: string; reviewStatus: string; editedAt: string }>;
+  /**
+   * 版本链（复审 P1）：编辑产生新版本行，旧行仅标记 supersededById（内容与确认状态不变）。
+   * 非空表示该版本已被取代；脚本冻结的 pointIds 永远解析到生成时的行内容。
+   */
+  supersededById: string | null;
   fingerprint: string;
   createdAt: string;
   updatedAt: string;
@@ -252,13 +265,23 @@ export function parseAndValidateDistilledPoints(
         reviewIssues.push(`范围被扩大：${term}`);
       }
     }
-    // 限定条件丢失（R3）：来源带范围限定词、输出提到相关承诺却丢掉全部限定 → 不得自动通过。
-    // 例：「框架质保20年」的短句/标签写成「质保20年」，不得默认 scope 字段能补救。
+    // 限定条件逐字段核验（复审 P2）：可独立展示的短句/用户价值/每个标签各自保留来源限定，
+    // 其他字段（title/scope/其他标签）保留限定不能代替；标签无法在字数内安全表达时置 null（§3.2）。
     const sourceQualifiers = QUALIFIER_TERMS.filter((term) => sourceTexts.join(' ').includes(term));
-    if (sourceQualifiers.length > 0 && COMMITMENT_PATTERN.test(outputText)) {
-      const retained = sourceQualifiers.filter((term) => outputText.includes(term));
-      if (retained.length === 0) {
-        reviewIssues.push(`限定条件丢失：来源限定「${sourceQualifiers.join('、')}」在短句/标签中全部缺失`);
+    if (sourceQualifiers.length > 0) {
+      const retainsQualifier = (text: string): boolean => sourceQualifiers.some((term) => text.includes(term));
+      const qualifierLabel = sourceQualifiers.join('、');
+      for (const [label, text] of [['短句', shortCopy], ['用户价值', benefitText]] as const) {
+        if (COMMITMENT_PATTERN.test(text) && !retainsQualifier(text)) {
+          reviewIssues.push(`限定条件丢失：${label}「${text}」未保留来源限定「${qualifierLabel}」`);
+        }
+      }
+      for (const key of ['max5', 'max8', 'max10'] as const) {
+        const tag = tags[key];
+        if (tag && COMMITMENT_PATTERN.test(tag) && !retainsQualifier(tag)) {
+          tags[key] = null;
+          reviewIssues.push(`限定条件丢失：标签「${tag}」无法在字数内保留来源限定「${qualifierLabel}」，已置空`);
+        }
       }
     }
     // 合并冲突（B1）：同名但数字不同的来源事实不得被合并成一条购买理由。
@@ -337,6 +360,7 @@ function rowToRecord(row: Record<string, unknown>): DistilledSellingPointRecord 
     reviewStatus: String(row.reviewStatus) as DistilledReviewStatus,
     reviewIssues: JSON.parse(String(row.reviewIssuesJson || '[]')) as string[],
     editHistory: JSON.parse(String(row.editHistoryJson || '[]')) as DistilledSellingPointRecord['editHistory'],
+    supersededById: row.supersededById ? String(row.supersededById) : null,
     fingerprint: String(row.fingerprint),
     createdAt: String(row.createdAt),
     updatedAt: String(row.updatedAt),
@@ -385,8 +409,8 @@ export function saveDistilledPoints(
     INSERT INTO script_studio_distilled_points
       (id, projectId, sourceLibraryRevisionId, sourceFactIdsJson, ruleVersion, providerId, model,
        title, benefitText, shortCopy, tagMax5, tagMax8, tagMax10, role, priority, scope,
-       limitationsJson, reviewStatus, reviewIssuesJson, editHistoryJson, fingerprint, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       limitationsJson, reviewStatus, reviewIssuesJson, editHistoryJson, fingerprint, createdAt, updatedAt, supersededById)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `);
   db.transaction(() => {
     for (const record of records) {
@@ -406,8 +430,12 @@ export function saveDistilledPoints(
 }
 
 /**
- * 手动编辑派生文案（方案 §3.3 / 审查补齐）：旧值追加进编辑历史（不丢失模型原始结果），
- * 应用新值后回到 draft——人工修改不保留旧批准，需重新显式确认。
+ * 手动编辑派生文案（方案 §3.3 / 复审 P1 不可变版本链）：
+ * - 每次编辑插入一条**新版本行**（新 ID、回 draft），旧行仅标记 supersededById——
+ *   内容与确认状态原样保留，历史脚本冻结的 pointIds 永远解析到生成时的版本；
+ * - 缓存/当前列表（findCachedDistilledPoints / listDistilledPointsForRevision）只返回
+ *   未被取代的当前版本，与脚本冻结引用分开；
+ * - 只能编辑当前版本；已被取代的历史版本不可再编辑或确认。
  */
 export function editDistilledPoint(
   db: Database.Database,
@@ -417,7 +445,8 @@ export function editDistilledPoint(
   now: () => Date,
 ): DistilledSellingPointRecord | null {
   const row = db.prepare(`
-    SELECT * FROM script_studio_distilled_points WHERE id = ? AND projectId = ?
+    SELECT * FROM script_studio_distilled_points
+    WHERE id = ? AND projectId = ? AND supersededById IS NULL
   `).get(distilledPointId, projectId) as Record<string, unknown> | undefined;
   if (!row) return null;
   const shortCopy = typeof input.shortCopy === 'string' && input.shortCopy.trim() ? input.shortCopy.trim() : undefined;
@@ -425,30 +454,69 @@ export function editDistilledPoint(
   if (!shortCopy && !benefitText) return null;
   const current = rowToRecord(row);
   const editedAt = now().toISOString();
+  const newId = randomUUID();
   const historyEntry = {
+    previousVersionId: current.id,
     shortCopy: current.shortCopy,
     benefitText: current.benefitText,
     reviewStatus: current.reviewStatus,
     editedAt,
   };
-  db.prepare(`
-    UPDATE script_studio_distilled_points
-    SET shortCopy = ?, benefitText = ?, reviewStatus = 'draft',
-        editHistoryJson = ?, updatedAt = ?
-    WHERE id = ? AND projectId = ?
-  `).run(
-    shortCopy ?? current.shortCopy,
-    benefitText ?? current.benefitText,
-    JSON.stringify([historyEntry, ...current.editHistory].slice(0, 20)),
-    editedAt,
-    distilledPointId,
-    projectId,
-  );
-  const updated = db.prepare(`SELECT * FROM script_studio_distilled_points WHERE id = ?`).get(distilledPointId) as Record<string, unknown>;
-  return rowToRecord(updated);
+  const apply = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO script_studio_distilled_points
+        (id, projectId, sourceLibraryRevisionId, sourceFactIdsJson, ruleVersion, providerId, model,
+         title, benefitText, shortCopy, tagMax5, tagMax8, tagMax10, role, priority, scope,
+         limitationsJson, reviewStatus, reviewIssuesJson, editHistoryJson, fingerprint, createdAt, updatedAt, supersededById)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    `).run(
+      newId,
+      current.projectId,
+      current.sourceLibraryRevisionId,
+      JSON.stringify(current.sourceFactIds),
+      current.ruleVersion,
+      current.providerId,
+      current.model,
+      current.title,
+      benefitText ?? current.benefitText,
+      shortCopy ?? current.shortCopy,
+      current.tags.max5,
+      current.tags.max8,
+      current.tags.max10,
+      current.role,
+      current.priority,
+      current.scope,
+      JSON.stringify(current.limitations),
+      'draft',
+      '[]',
+      JSON.stringify([historyEntry, ...current.editHistory].slice(0, 20)),
+      current.fingerprint,
+      editedAt,
+      editedAt,
+    );
+    db.prepare(`
+      UPDATE script_studio_distilled_points
+      SET supersededById = ?, updatedAt = ?
+      WHERE id = ? AND projectId = ?
+    `).run(newId, editedAt, distilledPointId, projectId);
+  });
+  apply.immediate();
+  return getDistilledPointById(db, projectId, newId);
 }
 
-/** 缓存命中：同一项目 + 同一指纹的整批结果；复用不提升确认状态（B9）。 */
+/** 按版本 ID 解析提炼卖点（含已被取代的历史版本）：脚本冻结的 pointIds 永远解析到生成时的内容（复审 P1）。 */
+export function getDistilledPointById(
+  db: Database.Database,
+  projectId: string,
+  distilledPointId: string,
+): DistilledSellingPointRecord | null {
+  const row = db.prepare(`
+    SELECT * FROM script_studio_distilled_points WHERE id = ? AND projectId = ?
+  `).get(distilledPointId, projectId) as Record<string, unknown> | undefined;
+  return row ? rowToRecord(row) : null;
+}
+
+/** 缓存命中：同一项目 + 同一指纹的**当前版本**整批结果；复用不提升确认状态（B9 / 复审 P1）。 */
 export function findCachedDistilledPoints(
   db: Database.Database,
   projectId: string,
@@ -456,13 +524,13 @@ export function findCachedDistilledPoints(
 ): DistilledSellingPointRecord[] {
   const rows = db.prepare(`
     SELECT * FROM script_studio_distilled_points
-    WHERE projectId = ? AND fingerprint = ?
+    WHERE projectId = ? AND fingerprint = ? AND supersededById IS NULL
     ORDER BY priority DESC, rowid
   `).all(projectId, fingerprint) as Array<Record<string, unknown>>;
   return rows.map(rowToRecord);
 }
 
-/** 某来源修订最新一批提炼结果（同指纹整批）。 */
+/** 某来源修订最新一批提炼结果（同指纹整批，仅当前版本——复审 P1）。 */
 export function listDistilledPointsForRevision(
   db: Database.Database,
   projectId: string,
@@ -470,7 +538,7 @@ export function listDistilledPointsForRevision(
 ): DistilledSellingPointRecord[] {
   const latest = db.prepare(`
     SELECT fingerprint FROM script_studio_distilled_points
-    WHERE projectId = ? AND sourceLibraryRevisionId = ?
+    WHERE projectId = ? AND sourceLibraryRevisionId = ? AND supersededById IS NULL
     ORDER BY createdAt DESC, rowid DESC LIMIT 1
   `).get(projectId, sourceLibraryRevisionId) as { fingerprint: string } | undefined;
   if (!latest) return [];
@@ -486,7 +554,7 @@ export function listApprovedDistilledPoints(
     .filter((point) => point.reviewStatus === 'approved');
 }
 
-/** 用户显式确认：draft/needs_review → approved（B8）。 */
+/** 用户显式确认：当前版本的 draft/needs_review → approved（B8）；已被取代的历史版本不可确认（复审 P1）。 */
 export function approveDistilledPoint(
   db: Database.Database,
   projectId: string,
@@ -496,7 +564,7 @@ export function approveDistilledPoint(
   const result = db.prepare(`
     UPDATE script_studio_distilled_points
     SET reviewStatus = 'approved', updatedAt = ?
-    WHERE id = ? AND projectId = ?
+    WHERE id = ? AND projectId = ? AND supersededById IS NULL
   `).run(now().toISOString(), distilledPointId, projectId);
   if (result.changes !== 1) return null;
   const row = db.prepare(`SELECT * FROM script_studio_distilled_points WHERE id = ?`).get(distilledPointId) as Record<string, unknown>;

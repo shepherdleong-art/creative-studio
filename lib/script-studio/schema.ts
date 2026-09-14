@@ -354,6 +354,15 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       ALTER TABLE script_studio_distilled_points ADD COLUMN editHistoryJson TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    // 提炼卖点版本链（2026-09-14，复审 P1 返工）：
+    // supersededById 非空表示该行已被新版本取代——旧行内容与确认状态不可变，
+    // 脚本冻结的 pointIds 永远解析到生成时的版本；缓存/当前列表只返回未取代行。
+    version: 8,
+    sql: `
+      ALTER TABLE script_studio_distilled_points ADD COLUMN supersededById TEXT;
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =
