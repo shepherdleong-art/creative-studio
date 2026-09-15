@@ -62,9 +62,20 @@ assert.equal(endingOf(['正文一段。', '私信领取五折优惠。']).unconf
 // 方案 §2.3 表格示例：情感/功能两类默认可用（无渠道依赖）。
 assert.deepEqual(endingOf(['正文一段。', '想给下班后的自己留个放松的位置，就从这款沙发开始了解。']).issues, []);
 assert.deepEqual(endingOf(['正文一段。', '选沙发时，先看看这款的靠背和腰托，再选适合自己的坐靠支撑。']).issues, []);
-// 咨询/购买两类依赖已确认渠道：默认（未确认）必须拦截。
+// 私信仍属未确认渠道：默认必须拦截。
 assert.deepEqual(endingOf(['正文一段。', '想看看哪款适合你家，私信告诉我客厅尺寸，一起挑一挑。']).issues, ['cta_channel_unconfirmed']);
-assert.deepEqual(endingOf(['正文一段。', '尺寸和配色都合适，就点商品链接看看这款。']).issues, ['cta_channel_unconfirmed']);
+// v3：「链接」是默认确认渠道，点链接看看是合法落版。
+assert.deepEqual(endingOf(['正文一段。', '尺寸和配色都合适，就点商品链接看看这款。']).issues, []);
+// v3 链接落版标准句式（用户确认的四类引导语）全部放行。
+assert.deepEqual(endingOf(['正文一段。', '快点击下方链接订购吧！']).issues, []);
+assert.deepEqual(endingOf(['正文一段。', '快点击下方链接看看吧！']).issues, []);
+assert.deepEqual(endingOf(['正文一段。', '点击下方链接，把它带回家！']).issues, []);
+assert.deepEqual(endingOf(['正文一段。', '还等什么，点击链接带它回家！']).issues, []);
+// v3：交易动词无「链接」锚定仍属虚构渠道行动，拦截。
+assert.deepEqual(endingOf(['正文一段。', '喜欢就快下单吧。']).issues, ['cta_channel_unconfirmed']);
+assert.equal(endingOf(['正文一段。', '喜欢就快下单吧。']).unconfirmedChannelTerm, '下单');
+// v3：促销承诺词即使带链接也仍拦截（未确认促销）。
+assert.deepEqual(endingOf(['正文一段。', '点击下方链接领取五折优惠。']).issues, ['cta_channel_unconfirmed']);
 // 末句提取：多句末段按最后一个句末标点切分（R2）。
 assert.deepEqual(endingOf(['先了解这款沙发。想比较这些细节是否适合你家。']).issues, []);
 
@@ -119,11 +130,11 @@ function bodySegments(primaryId: string, primaryTitle: string) {
 }
 const CTA_LINE = '想给下班后的自己留个放松的位置，就从这款沙发开始了解。';
 
-/** 合格语义审核响应：五项 checks 齐全且 true、无失败原因（复审 S2 契约）。 */
+/** 合格语义审核响应：四项 checks 齐全且 true、无失败原因（复审 S2 契约，v3 移除渠道子检查）。 */
 const PASS_REVIEW = {
   pass: true,
   issues: [],
-  checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: true, noContentAfterCta: true },
+  checks: { actionInvitation: true, followsContext: true, factsSupported: true, noContentAfterCta: true },
 };
 
 let taskSeq = 0;
@@ -218,7 +229,7 @@ function savedContent(): { content: ScriptStudioScriptContent; validation: Recor
   assert.equal(copyCheck?.endingStatus, 'passed');
   assert.equal(copyCheck?.semanticReview, 'passed', '审核通过后语义状态记为 passed');
   assert.match(copyCheck?.reviewFingerprint || '', /^[0-9a-f]{64}$/, '审核结果绑定正文指纹（R2）');
-  assert.equal(copyCheck?.policyVersion, 'cta-ending-v2');
+  assert.equal(copyCheck?.policyVersion, 'cta-ending-v3');
 }
 
 // ── A2/A5：偏短但表达完整 → 不机械补字，如实保存偏短候选 ──────────────
@@ -348,7 +359,8 @@ const framework20s: KnowledgePlanRecommendation = {
   // prompt 贯通：结尾意图来自冻结框架（A11），不能仅靠 usedCatalog 判定。
   const prompt = buildScriptPrompt(captured.generateInputs[0]!);
   assert.ok(prompt.userPrompt.includes('结尾意图为「理想生活」'), 'prompt 必须携带框架结尾意图');
-  assert.ok(prompt.userPrompt.includes('不得出现私信'), 'prompt 必须包含无渠道时的 CTA 约束');
+  assert.ok(prompt.userPrompt.includes('点击下方链接'), 'prompt 必须携带链接落版引导示例');
+  assert.ok(prompt.userPrompt.includes('不得出现：私信'), 'prompt 必须包含未确认促销/渠道约束');
   // 保存内容与 plan 快照展示同一有效结构；冻结知识上下文保留原目录结构供溯源。
   const { content } = savedContent();
   assert.deepEqual(content.recommendation!.framework!.structure, plan.recommendation!.framework!.structure, '脚本内容快照与 prompt 使用同一有效结构');
@@ -508,7 +520,7 @@ const framework20s: KnowledgePlanRecommendation = {
         reviewCalls += 1;
         if (reviewCalls === 1) {
           // 复审 S2 反例：顶层 pass=true 自相矛盾（factsSupported=false 且自带失败原因）。
-          return { pass: true, issues: ['正文宣称「治好颈椎病」，来源事实不支持该功效'], checks: { actionInvitation: true, followsContext: true, channelAppropriate: true, factsSupported: false, noContentAfterCta: true } };
+          return { pass: true, issues: ['正文宣称「治好颈椎病」，来源事实不支持该功效'], checks: { actionInvitation: true, followsContext: true, factsSupported: false, noContentAfterCta: true } };
         }
         return PASS_REVIEW;
       },
@@ -575,7 +587,7 @@ const framework20s: KnowledgePlanRecommendation = {
 }
 
 // ── R2/S2 单元：审核解析 fail closed + 顶层判定与子检查一致性 ─────────
-assert.deepEqual(parseScriptEndingReview(PASS_REVIEW), { pass: true, issues: [] }, '五项检查齐全且为 true 时通过');
+assert.deepEqual(parseScriptEndingReview(PASS_REVIEW), { pass: true, issues: [] }, '四项检查齐全且为 true 时通过');
 assert.equal(parseScriptEndingReview({ pass: true }).pass, false, '缺 checks 字段视为不通过（S2）');
 assert.equal(parseScriptEndingReview({ pass: true, issues: [], checks: { ...PASS_REVIEW.checks, factsSupported: false } }).pass, false, '顶层 pass=true 但子检查为 false 必须拒绝（S2 复审反例）');
 assert.deepEqual(
@@ -585,7 +597,7 @@ assert.deepEqual(
 );
 assert.equal(parseScriptEndingReview({ pass: true, issues: ['渠道未确认'], checks: PASS_REVIEW.checks }).pass, false, '自带失败原因时不得通过');
 assert.equal(parseScriptEndingReview('garbage').pass, false, '非对象响应视为不通过');
-assert.equal(parseScriptEndingReview({ pass: false }).issues.length, 5, 'pass=false 无原因时给出全部失败子检查');
+assert.equal(parseScriptEndingReview({ pass: false }).issues.length, 4, 'pass=false 无原因时给出全部失败子检查');
 assert.deepEqual(
   parseScriptEndingReview({ pass: false, issues: ['渠道未确认'], checks: PASS_REVIEW.checks }).issues,
   ['渠道未确认'],
