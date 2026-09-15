@@ -26,7 +26,9 @@ import {
 //      提炼卖点不可变编辑版本链与逐字段限定核验（规则版本 distill-rules-v2）。
 // v15：合格方案逐条保存、按方向恢复；审核修复失败不再整篇重写循环。
 // v16：默认直接使用提取事实，取消额外提炼；多页提取共享并发队列。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 16;
+// v17：CTA 链接落版合法化（cta-ending-v3）+ 受众画像进 plan 阶段（audience-profile-v1，
+//      模型分析/本地降级、画像绑定方向并参与卖点编排排序，失败不阻塞任务）。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 17;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

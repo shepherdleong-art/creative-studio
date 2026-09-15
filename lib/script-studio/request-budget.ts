@@ -144,3 +144,23 @@ export function reserveDistillRequest(
 export function distillRequestUsed(db: Database.Database, taskId: string): number {
   return readUsed(db, taskId, 'distill', 'task');
 }
+
+/** 受众画像分析预算：独立计数（phase=plan_analysis），失败降级不占用脚本文本额度。 */
+export function reservePlanAnalysisRequest(
+  db: Database.Database,
+  taskId: string,
+  now: () => Date = () => new Date(),
+): void {
+  const limits = getScriptStudioLimits();
+  const reserve = db.transaction(() => {
+    const used = readUsed(db, taskId, 'plan_analysis', 'task');
+    if (used >= limits.planAnalysisMaxRequestsPerTask) {
+      throw new ScriptStudioError(
+        'request_budget_exhausted',
+        `本任务的受众画像分析请求已达上限（${limits.planAnalysisMaxRequestsPerTask} 次），本轮使用降级画像`,
+      );
+    }
+    incrementUsed(db, taskId, 'plan_analysis', 'task', now().toISOString());
+  });
+  reserve.immediate();
+}

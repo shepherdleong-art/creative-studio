@@ -58,7 +58,18 @@ import {
   type DistilledExpressionRef,
   type SellingPointDistiller,
 } from './distillation.ts';
-import { reserveDistillRequest } from './request-budget.ts';
+import { reserveDistillRequest, reservePlanAnalysisRequest } from './request-budget.ts';
+import {
+  AUDIENCE_PROFILE_VERSION,
+  audienceProfileFingerprint,
+  audienceProfileSummary,
+  deriveFallbackAudienceProfile,
+  parseAudienceProfile,
+  readAudienceProfileFromStagePayload,
+  serializeAudienceProfile,
+  type AudienceProfileResult,
+  type AudienceSegmentProfile,
+} from './audience-profile.ts';
 import type { ScriptStudioScriptContent } from './types.ts';
 import { dedupeSellingPoints } from './dedupe.ts';
 
@@ -98,6 +109,19 @@ function parseRequestedCount(input: Record<string, unknown>): number {
 
 function parseCreativeBrief(input: Record<string, unknown>): string {
   return typeof input.creativeBrief === 'string' ? input.creativeBrief.trim().slice(0, 2000) : '';
+}
+
+/** 读取任务某阶段的既有 payload（不存在或非法 JSON 时返回空对象）。 */
+function readStagePayload(db: Database.Database, taskId: string, stage: string): Record<string, unknown> {
+  const row = db.prepare(`SELECT payloadJson FROM script_studio_task_stages WHERE taskId = ? AND stage = ?`)
+    .get(taskId, stage) as { payloadJson: string } | undefined;
+  if (!row) return {};
+  try {
+    const parsed = JSON.parse(row.payloadJson) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 /** 把冻结知识上下文压缩进 plan stage payload（不含完整推荐数组，避免重复冗余）。 */
@@ -350,7 +374,7 @@ async function generateValidatedScript(
   library: LibraryRevisionView,
   plan: ReturnType<typeof planScriptDirections>['plans'][number],
   brief: DirectionSellingPointBrief,
-  context: { audience: string; tone: string; platform: string; targetDurationSec: number; creativeBrief: string },
+  context: { audience: string; tone: string; platform: string; targetDurationSec: number; creativeBrief: string; audienceSegment?: AudienceSegmentProfile },
   previousScripts: ScriptStudioScriptContent[],
   knowledgeContext: FrozenKnowledgeContext | null,
   previousTitles: ScriptTitleSummary[] = [],
@@ -371,6 +395,7 @@ async function generateValidatedScript(
     plan,
     brief,
     audience: context.audience,
+    ...(context.audienceSegment ? { audienceSegment: context.audienceSegment } : {}),
     tone: context.tone,
     platform: context.platform,
     creativeBrief: context.creativeBrief,
@@ -741,6 +766,64 @@ export async function executeScriptStudioTask(
       ? applyKnowledgeRecommendations(plans.plans, knowledgeContext.recommendations)
       : plans.plans
     ).map((plan) => adaptPlanRecommendation(plan, targetDurationSec));
+    // 受众画像（audience-profile-v1）：既有快照指纹匹配直接复用；否则模型分析一次；
+    // 调用/解析/预算失败降级为本地推导画像，不阻塞脚本生成。
+    const audienceFingerprint = audienceProfileFingerprint({
+      libraryRevisionId: libraryRevision!.id,
+      plans: plansWithRecommendations,
+      creativeBrief,
+      targetDurationSec,
+    });
+    const fallbackAudienceProfile = (reason: string) => deriveFallbackAudienceProfile({
+      libraryRevision: libraryRevision!,
+      plans: plansWithRecommendations,
+      creativeBrief,
+      targetDurationSec,
+      audienceLabel: plans.audience,
+      reason,
+    });
+    let audienceProfile: AudienceProfileResult | null =
+      readAudienceProfileFromStagePayload(readStagePayload(db, taskId, 'plan'), audienceFingerprint);
+    if (!audienceProfile) {
+      if (!deps.generator.analyzeAudienceProfile) {
+        audienceProfile = fallbackAudienceProfile('生成器不支持受众画像分析');
+      } else {
+        try {
+          reservePlanAnalysisRequest(db, taskId, now);
+          const rawProfile = await deps.generator.analyzeAudienceProfile({
+            libraryRevision: libraryRevision!,
+            plans: plansWithRecommendations,
+            creativeBrief,
+            targetDurationSec,
+            signal: deps.signal,
+          });
+          if (deps.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+          const parsed = parseAudienceProfile(rawProfile, {
+            plans: plansWithRecommendations,
+            sellingPointIds: libraryRevision!.sellingPoints.map((point) => point.id),
+          });
+          audienceProfile = parsed
+            ? {
+                version: AUDIENCE_PROFILE_VERSION,
+                summary: audienceProfileSummary(parsed.primary),
+                primary: parsed.primary,
+                perPlan: parsed.perPlan,
+                degraded: false,
+                fingerprint: audienceFingerprint,
+              }
+            : fallbackAudienceProfile('画像响应缺少主画像或结构非法');
+        } catch (profileError) {
+          if (deps.signal?.aborted || (profileError instanceof Error && profileError.name === 'AbortError')) throw profileError;
+          audienceProfile = fallbackAudienceProfile(profileError instanceof Error ? profileError.message : String(profileError));
+        }
+      }
+    }
+    // 画像只作排序信号与 prompt 上下文，不扩大事实来源。
+    const audienceSignals = new Map(audienceProfile.perPlan.map((segment) => [segment.planIndex, {
+      relatedSellingPointIds: segment.relatedSellingPointIds,
+      keywords: [segment.segment, segment.scenario, ...segment.pains, ...segment.decisionDrivers],
+    }]));
+    const audienceSegmentByPlan = new Map(audienceProfile.perPlan.map((segment) => [segment.planIndex, segment]));
     // 本地确定性编排：一次为本轮全部方向准备卖点包，首稿与相似度重试都复用这份包。
     // 首次提取可同时校验页码与切片范围；历史复用不重读图片，但仍从来源集恢复页数，
     // 对非法格式和页码越界做本地 fail-closed 重验。
@@ -763,6 +846,7 @@ export async function executeScriptStudioTask(
             differentiators: knowledgeContext.strategy.differentiators,
           }
         : undefined,
+      audienceSignals,
     });
     const briefByPlanIndex = new Map(briefs.map((brief) => [brief.planIndex, brief]));
     const briefSnapshots = briefs.map((brief) => ({
@@ -783,6 +867,7 @@ export async function executeScriptStudioTask(
         audience: plans.audience,
         tone: plans.tone,
         platform: plans.platform,
+        audienceProfile: serializeAudienceProfile(audienceProfile),
         plans: plansWithRecommendations,
         briefs: briefSnapshots,
         knowledgeContext: knowledgeContext ? serializeKnowledgeForStage(knowledgeContext) : null,
@@ -793,6 +878,7 @@ export async function executeScriptStudioTask(
       audience: plans.audience,
       tone: plans.tone,
       platform: plans.platform,
+      audienceProfile: serializeAudienceProfile(audienceProfile),
       plans: plansWithRecommendations,
       briefs: briefSnapshots,
       knowledgeContext: knowledgeContext ? serializeKnowledgeForStage(knowledgeContext) : null,
@@ -853,7 +939,7 @@ export async function executeScriptStudioTask(
             libraryRevision!,
             plan,
             brief,
-            generationContext,
+            { ...generationContext, audienceSegment: audienceSegmentByPlan.get(plan.index) },
             createdScripts,
             knowledgeContext,
             recentTitles,
@@ -866,6 +952,7 @@ export async function executeScriptStudioTask(
         const recommendationJson = recommendationForPlan(plan);
         const finalized = await repairTitlesAndSave(deps, content, {
           libraryRevision: libraryRevision!, plan, brief, ...generationContext,
+          ...(audienceSegmentByPlan.has(plan.index) ? { audienceSegment: audienceSegmentByPlan.get(plan.index) } : {}),
           previousScripts: createdScripts, signal,
           ...(knowledgeContext ? { knowledgeContext } : {}),
         }, targetScriptId, (content) => targetScriptId
@@ -928,7 +1015,8 @@ export async function executeScriptStudioTask(
         let initial: InitialResult;
         try {
           initial = { candidate: await generateValidatedScript(
-            deps, libraryRevision!, plan, brief, generationContext,
+            deps, libraryRevision!, plan, brief,
+            { ...generationContext, audienceSegment: audienceSegmentByPlan.get(plan.index) },
             [...createdScripts], knowledgeContext, recentTitles, distilledExpressions,
           ) };
         } catch (error) {

@@ -10,6 +10,8 @@ import { buildScriptTitleContext, scriptTitleRequirements, type ScriptTitleSumma
 import { SCRIPT_TITLE_REPAIR_MAX_TOKENS } from './limits.ts';
 import type { ScriptRequestBudget, ScriptRequestPurpose } from './request-budget.ts';
 import { ctaEndingSceneFromStructure, scriptCtaRequirements } from './cta-policy.ts';
+import type { AudienceAnalysisInput, AudienceSegmentProfile } from './audience-profile.ts';
+import { buildAudienceAnalysisPrompt } from './audience-profile.ts';
 import type { FrozenKnowledgeContext } from './knowledge-context.ts';
 import type { DistilledExpressionRef } from './distillation.ts';
 import { SELLING_POINT_DISTILL_RULE_VERSION } from './distillation.ts';
@@ -25,6 +27,8 @@ export interface ScriptGeneratorInput {
   /** 当前方向的本地编排卖点包；Script Studio 正式流程必须提供，模型只能看到包内候选。 */
   brief: DirectionSellingPointBrief;
   audience: string;
+  /** 当前方向绑定的细分受众画像（audience-profile-v1）：有画像时 prompt 携带结构化人群/场景/痛点。 */
+  audienceSegment?: AudienceSegmentProfile;
   tone: string;
   platform: string;
   creativeBrief: string;
@@ -102,6 +106,11 @@ export interface ScriptGenerator {
    * 渠道、事实支持与 CTA 后无附加内容；fail closed——未通过/不可解析不能默认合格。
    */
   reviewScriptContent?(input: ScriptEndingReviewInput): Promise<unknown>;
+  /**
+   * 受众画像分析（audience-profile-v1）：plan 阶段一次轻量调用，输出主画像 + 每方向细分切口。
+   * 缺省时 runner 直接使用本地降级画像，不阻塞脚本生成。
+   */
+  analyzeAudienceProfile?(input: AudienceAnalysisInput): Promise<unknown>;
   generate(input: ScriptGeneratorInput): Promise<{ content: ScriptStudioScriptContent; attempts: number }>;
 }
 
@@ -147,6 +156,11 @@ export function buildScriptPrompt(
     // 软时长目标（方案 §2.3）：字数预算仅作参考，完整表达与 CTA 优先，不再机械卡字数。
     `口播围绕目标时长 ${input.targetDurationSec} 秒组织；字数预算 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字仅作参考，完整表达与 CTA 优先，可为一句完整 CTA 适当超出；不得为凑字数重复卖点或追加无关内容`,
     '同一轮多条方案必须在开场、结构或卖点组合上明显不同',
+    ...(input.audienceSegment ? [
+      '口播必须说给 audienceProfile 里的人听：开场先落在画像的 scenario 或 pains 上再引出卖点；至少一个分段只讲场景或痛点、不引用任何卖点，禁止从头到尾逐条念卖点',
+      '每个被引用的卖点都必须能对应到画像的某个痛点或决策驱动；与画像无关的卖点宁可不写',
+      '不得使用 audienceProfile.rejections 中的表述',
+    ] : []),
     ...scriptCtaRequirements(endingSceneForPlan(input.plan)),
     ...scriptTitleRequirements(),
   ];
@@ -205,6 +219,15 @@ export function buildScriptPrompt(
       previousScripts: input.previousScripts,
       previousTitles: input.previousTitles || [],
       audience: input.audience,
+      ...(input.audienceSegment ? {
+        audienceProfile: {
+          segment: input.audienceSegment.segment,
+          scenario: input.audienceSegment.scenario,
+          pains: input.audienceSegment.pains,
+          decisionDrivers: input.audienceSegment.decisionDrivers,
+          rejections: input.audienceSegment.rejections,
+        },
+      } : {}),
       tone: input.tone,
       platform: input.platform,
       creativeBrief: input.creativeBrief,
@@ -631,6 +654,17 @@ export function createScriptGenerator(
         userPrompt: prompt.userPrompt,
         temperature: 1,
         maxTokens: SCRIPT_TITLE_REPAIR_MAX_TOKENS,
+        signal: input.signal,
+      });
+    },
+    async analyzeAudienceProfile(input) {
+      // 预算由 runner 在 plan 阶段统一占用（plan_analysis 独立阶段额度），这里只发请求。
+      const prompt = buildAudienceAnalysisPrompt(input);
+      return completeJson({
+        systemPrompt: prompt.systemPrompt,
+        userPrompt: prompt.userPrompt,
+        temperature: 1,
+        maxTokens: 2400,
         signal: input.signal,
       });
     },

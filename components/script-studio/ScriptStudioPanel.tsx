@@ -244,7 +244,13 @@ function stageMessage(stage: StageView): string {
       return `复用卖点库 V${payload.revisionNumber ?? '-'}，跳过详情页识别`;
     case 'plan': {
       const planCount = Array.isArray(payload.plans) ? payload.plans.length : null;
-      return `${asText(payload.audience) ? `受众：${asText(payload.audience)} · ` : ''}${asText(payload.tone) ? `风格：${asText(payload.tone)} · ` : ''}规划 ${planCount ?? '-'} 个创意方向`;
+      const profile = payload.audienceProfile && typeof payload.audienceProfile === 'object'
+        ? payload.audienceProfile as { summary?: unknown; degraded?: unknown }
+        : null;
+      const audienceText = profile && asText(profile.summary)
+        ? `受众画像：${asText(profile.summary)}${profile.degraded === true ? '（本地推导）' : ''}`
+        : (asText(payload.audience) ? `受众：${asText(payload.audience)}` : '');
+      return `${audienceText ? `${audienceText} · ` : ''}${asText(payload.tone) ? `风格：${asText(payload.tone)} · ` : ''}规划 ${planCount ?? '-'} 个创意方向`;
     }
     case 'generate': {
       const errors = Array.isArray(payload.errors) ? payload.errors.filter((item) => asText(item)).length : 0;

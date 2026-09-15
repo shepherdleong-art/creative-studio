@@ -148,9 +148,15 @@ function makeBudgetTask(requestedCount: number): string {
     const taskId = makeBudgetTask(1);
     const budget = createScriptRequestBudget({ db, taskId, requestedCount: 1, now });
     let completeCalls = 0;
+    let planAnalysisCalls = 0;
     const generator = createScriptGenerator(async (request) => {
-      completeCalls += 1;
       const task = JSON.parse(request.userPrompt).task as string;
+      if (task === 'analyze_audience_profile_v1') {
+        // 受众画像走 plan_analysis 独立阶段额度，不占脚本文本预算；返回不可用响应走降级画像。
+        planAnalysisCalls += 1;
+        return null;
+      }
+      completeCalls += 1;
       const primary = library.sellingPoints[0]!;
       if (task === 'generate_project_script_v1') {
         // 一直返回孤立标签收尾：正文机械校验可通过，但结尾质量不合格。
@@ -181,6 +187,7 @@ function makeBudgetTask(requestedCount: number): string {
     });
     assert.equal(result.status, 'failed', '预算耗尽后方案必须失败');
     assert.equal(completeCalls, 1, '只发起首稿请求，修复预留被拒后不得发起调用');
+    assert.equal(planAnalysisCalls, 1, '受众画像分析走独立阶段额度，只调用一次且不占文本预算');
     const task = getTask(db, 'p1', taskId)!;
     assert.match(task.errorMessage || '', /预算已耗尽/, '失败原因必须指向请求预算');
     assert.equal(

@@ -26,6 +26,8 @@ export interface ScriptStudioLimits {
   scriptTextRequestsPerProposal: number;
   /** 单任务卖点提炼阶段的应用层模型调用上限（独立于脚本文本预算，分别记录）。 */
   distillMaxRequestsPerTask: number;
+  /** 单任务受众画像分析调用上限（独立阶段预算，默认 2：一次主调用 + 一次重试）。 */
+  planAnalysisMaxRequestsPerTask: number;
 }
 
 function readPositiveInt(name: string, fallback: number): number {
@@ -70,6 +72,7 @@ export function getScriptStudioLimits(): ScriptStudioLimits {
     // 任务总额 = requestedCount × 每方案上限；视觉提取/证据复核/提炼阶段使用各自独立预算，不占此额度。
     scriptTextRequestsPerProposal: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_TEXT_REQUESTS_PER_PROPOSAL', 8),
     distillMaxRequestsPerTask: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_DISTILL_REQUESTS_PER_TASK', 4),
+    planAnalysisMaxRequestsPerTask: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_PLAN_ANALYSIS_REQUESTS_PER_TASK', 2),
   };
 }
 
