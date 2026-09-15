@@ -69,6 +69,33 @@ assert.ok(findCrossProductConflict([
 // 通用文件前缀和相同扩展名不构成分段身份。
 assert.equal(sharedNumberedSourceStem('image-1.jpg', 'image-2.jpg'), null);
 
+// 商品详情的括号分段：颜色描述、组合名及主干中列出的功能款属于同一系列。
+const seriesPages = [1, 2].map((number, pageIndex) => ({
+  pageIndex, filename: `PS515-A组合-商品详情1200-双色沙发+PS513-A(${number}).jpg`,
+}));
+const seriesContext = { sourcePages: seriesPages };
+assert.equal(comparePageIdentities(
+  page(0, '双色沙发', '沙发', 'Oxhide'), page(1, 'PS515-A组合', '沙发', 'Oxhide'), seriesContext,
+).reason, 'shared_detail_series_source');
+assert.equal(findCrossProductConflict([
+  page(0, 'PS515-A沙发'), page(1, 'PS513-A沙发'),
+], seriesContext), null);
+assert.equal(findCrossProductConflict([
+  page(0, 'PS515-A沙发'), page(1, 'PS515-B沙发'),
+]), null, '同基础型号的配置款不应误判为不同商品');
+assert.ok(findCrossProductConflict([
+  page(0, 'PS515-A沙发'), page(1, 'PS999-A沙发'),
+], seriesContext), '未在系列文件名中出现的不同型号仍拦截');
+assert.ok(findCrossProductConflict([
+  page(0, '双色沙发', '沙发', 'Oxhide'), page(1, 'PS515-A沙发', '沙发', '其他品牌'),
+], seriesContext));
+assert.ok(findCrossProductConflict([
+  page(0, 'PS515-A沙发'), page(1, 'PS513-A餐桌'),
+], seriesContext));
+assert.equal(sharedNumberedSourceStem('image(1).jpg', 'image(2).jpg'), null);
+assert.equal(sharedNumberedSourceStem(seriesPages[0]!.filename, seriesPages[0]!.filename), null);
+assert.equal(sharedNumberedSourceStem('商品详情PS515-A（1）.tif', '商品详情PS515-A（2）.tif'), '商品详情ps515-a');
+
 // 共同的品牌/描述不能盖过两个明确且不同的型号。
 assert.ok(findCrossProductConflict([
   page(0, '林氏家居PC615真皮储物床', '床', '林氏家居'),

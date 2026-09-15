@@ -579,8 +579,8 @@ export async function executeScriptStudioTask(
       }, signal);
       const extracted = dedupeSellingPoints(extraction.sellingPoints);
       if (extracted.length === 0) throw new ScriptStudioError('invalid_input', '详情页中没有提取到可识别的卖点');
-      // 跨商品保护：本地来源集已把页与项目绑定；原始文件名只作为同组分段的弱线索，
-      // 明确型号/品类/品牌冲突仍优先拦截，模型只识别出品牌/品类泛称时不臆判不同商品。
+      // 本地来源集已把页与项目绑定；详情文件完整主干可辅助识别系列/组合，
+      // 不用文件名推断项目归属，不同品牌/大类及无系列依据的不同型号仍拦截。
       const sourcePages = tileResult!.pages.map((page) => ({
         pageIndex: page.pageIndex,
         filename: page.filename,

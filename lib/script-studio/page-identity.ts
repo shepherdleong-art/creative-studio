@@ -28,12 +28,12 @@ export interface PageIdentityComparison {
 
 function numberedSource(filename: string): { stem: string; number: number } | null {
   const basename = filename.normalize('NFKC').toLowerCase().split(/[\\/]/).at(-1) || '';
-  const match = /^(.*)[-_](\d{1,6})\.(?:jpe?g|png|webp|avif|heic)$/.exec(basename);
+  const match = /^(.*?)(?:[-_](\d{1,6})|\((\d{1,6})\))\.(?:jpe?g|png|webp|avif|heic|tiff?)$/.exec(basename);
   if (!match) return null;
   const stem = match[1]!;
   // 排除 image-1、截图-2、IMG_0001-2 等通用短前缀；长时间戳仍只算辅助线索。
   if (normalizeIdentityField(stem).length < 8 || /^(?:img|image|photo|screenshot|截图|图片)[-_ ]?\d*$/.test(stem)) return null;
-  return { stem, number: Number(match[2]) };
+  return { stem, number: Number(match[2] || match[3]) };
 }
 
 export function sharedNumberedSourceStem(left: string, right: string): string | null {
@@ -96,9 +96,16 @@ export function comparePageIdentities(
   if (!nameA || !nameB) return result('unknown', 'missing_product_name');
   const modelsA = modelTokens(a.productName);
   const modelsB = modelTokens(b.productName);
+  // 商品详情文件的完整共同主干可说明系列/组合关系；时间戳和通用编号不能。
+  const sourceModels = modelTokens(sharedSourceStem || '');
+  const hasSeriesSource = Boolean(sharedSourceStem && /详情/.test(sharedSourceStem) && sourceModels.length);
+  const modelsCoveredBySource = hasSeriesSource && [...modelsA, ...modelsB].every((model) =>
+    sourceModels.some((source) => source.base === model.base
+      && (!model.variant || source.variant === model.variant)));
   const sharedModel = modelsA.some((left) => modelsB.some((right) => left.base === right.base
     && (!left.variant || !right.variant || left.variant === right.variant)));
-  if (modelsA.length && modelsB.length && !sharedModel) return result('conflict', 'different_explicit_models');
+  const sharedModelFamily = modelsA.some((left) => modelsB.some((right) => left.base === right.base));
+  if (modelsA.length && modelsB.length && !sharedModelFamily && !modelsCoveredBySource) return result('conflict', 'different_explicit_models');
   if (nameA === nameB) return result('same', 'same_product_name');
   const kindsA = productKinds(nameA);
   const kindsB = productKinds(nameB);
@@ -109,6 +116,8 @@ export function comparePageIdentities(
     return result('conflict', 'different_explicit_brands');
   }
   if (sharedModel) return result('same', 'shared_explicit_model');
+  if (sharedModelFamily) return result('same', 'shared_model_family');
+  if (modelsCoveredBySource) return result('same', 'shared_detail_series_source');
   const brands = [...new Set([...brandsA, ...brandsB, ...brandNames(context.brand || '')])];
   const specificA = specificName(withoutBrand(nameA, brands), normalizeIdentityField(a.category || context.category || ''));
   const specificB = specificName(withoutBrand(nameB, brands), normalizeIdentityField(b.category || context.category || ''));

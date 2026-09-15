@@ -312,6 +312,30 @@ assert.equal(concreteConflictResult.errorCode, 'invalid_input');
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM script_studio_library_revisions`).get() as { n: number }).n, libraryCountBeforeConcreteConflict);
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n, scriptCountBeforeConcreteConflict);
 
+// 用户的实际文件名与逐页身份：必须经过提取、证据检查并成功生成。
+for (const [index, id] of ['img-1', 'img-2'].entries()) {
+  db.prepare('UPDATE image_assets SET filename = ? WHERE id = ?').run(
+    `PS515-A组合-商品详情1200-双色沙发+PS513-A(${index + 1}).jpg`, id,
+  );
+}
+const seriesTask = createTask(db, {
+  projectId: 'p1', requestKey: 'series-detail-identity', mode: 'first_extraction',
+  sourceSetId: 'source-2', requestedCount: 1,
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+});
+const seriesResult = await executeScriptStudioTask({
+  db, projectId: 'p1', taskId: seriesTask.task.id, sourceSetId: 'source-2',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: '双色沙发', category: '沙发', brand: 'Oxhide' },
+    { pageIndex: 1, productName: 'PS515-A组合', category: '沙发', brand: 'Oxhide' },
+  ]),
+  reprobe, generator: makeGenerator(),
+});
+assert.equal(seriesResult.status, 'succeeded', '同系列详情页不得因颜色名和组合名差异失败');
+db.prepare('UPDATE image_assets SET filename = ? WHERE id = ?').run('20260909-203732.872-2.jpg', 'img-1');
+db.prepare('UPDATE image_assets SET filename = ? WHERE id = ?').run('20260909-203732.872-14.jpg', 'img-2');
+
 // 真混商品：两页识别出明显不同的商品名，仍必须拦截并报出各页识别结果。
 const conflictTask = createTask(db, {
   projectId: 'p1',

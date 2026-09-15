@@ -142,6 +142,7 @@ export function buildScriptPrompt(
   const requirements = [
     '只能使用上面方向卖点包中的事实，priority=required 的卖点必须优先考虑；不得新增功效、数字、材质或认证',
     'sellingPoints 中的 distilled 字段是已确认的提炼表达参考（短句/用户价值/范围/限定条件），可参考其措辞，但它不是新的事实来源；口播中的事实仍须挂在对应的 sellingPoints 引用上，范围与限定条件不得扩大',
+    '同系列卖点中的型号、颜色、配置及功能适用限定必须保留，不得把某款专属功能说成全系列标配，也不得把互斥配置拼成同一款商品',
     '完整返回主标题、副标题、分段口播、画面意图与关键词',
     // 软时长目标（方案 §2.3）：字数预算仅作参考，完整表达与 CTA 优先，不再机械卡字数。
     `口播围绕目标时长 ${input.targetDurationSec} 秒组织；字数预算 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字仅作参考，完整表达与 CTA 优先，可为一句完整 CTA 适当超出；不得为凑字数重复卖点或追加无关内容`,
