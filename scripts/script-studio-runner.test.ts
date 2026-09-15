@@ -163,6 +163,17 @@ const result = await executeScriptStudioTask(runDeps);
 assert.equal(result.status, 'succeeded');
 assert.equal(result.succeededCount, 2);
 assert.equal(result.scriptIds.length, 2);
+// 已保存首轮资产与方案后重入：不得再次识图、核验或生成。
+const replayed = await executeScriptStudioTask({
+  ...runDeps,
+  visionExtractor: { async extract() { throw new Error('恢复不得重新识图'); } },
+  reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('恢复不得重新核验'); } },
+  generator: { async generate() { throw new Error('恢复不得重做已保存方案'); } },
+});
+assert.equal(replayed.status, 'succeeded');
+assert.deepEqual(replayed.scriptIds, result.scriptIds);
+assert.equal((db.prepare('SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?').get(task.task.id) as { n: number }).n, 2);
+
 assert.equal(maxGenerationInFlight, 2, '多条初稿应有界并行生成，避免纯串行累加供应商长尾');
 // plan 阶段快照必须记录本轮全部方向卖点包：主题、必选/可选卖点 ID、候选数量与编排理由。
 const planStageRow = db.prepare(`
@@ -545,6 +556,7 @@ manualEditLibraryRevision(db, 'p1', currentBeforeLock.sellingPoints.map((point) 
   usable: false,
   disabledByUser: true,
 })), { now: () => new Date('2026-08-31T00:14:00.000Z') });
+assert.throws(() => manualEditLibraryRevision(db, 'p1', [], { baseRevisionId: currentBeforeLock.id }), /卖点列表已更新/, '旧版选择不能覆盖新版卖点库');
 const lockedRevisionId = getCurrentLibraryRevision(db, 'p1')!.id;
 const scriptCountBefore = (db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n;
 const insufficientTask = createTask(db, {
@@ -582,6 +594,58 @@ assert.equal(
 );
 
 // 复用历史卖点库时 runner 必须把来源页数传给本地结构重验，不能让 pageIndex=999 继续生成。
+// 快方案必须在慢方案仍运行时落库；中断恢复不重做已保存方向。
+{
+  const inputSnapshot = { targetDurationSec: 15, requestedCount: 2 };
+  const streamingTask = createTask(db, {
+    projectId: 'p1', requestKey: 'stream-ready-before-slow', mode: 'reuse',
+    libraryRevisionId: currentBeforeLock.id, requestedCount: 2, inputSnapshot,
+  }).task;
+  updateTask(db, 'p1', streamingTask.id, { status: 'running' });
+  const controller = new AbortController();
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
+  const streamingDeps: ScriptStudioRunDeps = {
+    db, projectId: 'p1', taskId: streamingTask.id, inputSnapshot,
+    libraryRevisionId: currentBeforeLock.id, visionExtractor, reprobe,
+    signal: controller.signal,
+    generator: {
+      async generate(input) {
+        if (input.plan.index === 1) {
+          await slow;
+          throw new DOMException('stopped slow proposal', 'AbortError');
+        }
+        return { content: fixtureContent(input), attempts: 1 };
+      },
+    },
+  };
+  const running = executeScriptStudioTask(streamingDeps);
+  const savedCount = () => (db.prepare(
+    'SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?',
+  ).get(streamingTask.id) as { n: number }).n;
+  const deadline = Date.now() + 500;
+  while (savedCount() === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  const savedWhileSlow = savedCount();
+  const liveCount = getTask(db, 'p1', streamingTask.id)!.succeededCount;
+  controller.abort();
+  releaseSlow();
+  await running;
+  assert.equal(savedWhileSlow, 1, '快方案应在慢方案未完成时保存，不能等待整组 Promise.all');
+  assert.equal(liveCount, 1, '运行中成功数应立即更新，供前端加载结果');
+  const resumedPlans: number[] = [];
+  const resumed = await executeScriptStudioTask({
+    ...streamingDeps, signal: undefined,
+    generator: { async generate(input) {
+      resumedPlans.push(input.plan.index);
+      throw new Error('missing proposal still fails');
+    } },
+  });
+  assert.deepEqual(resumedPlans, [1], '恢复时只执行尚未保存的方向');
+  assert.equal(resumed.succeededCount, 1);
+  assert.equal(resumed.status, 'partial');
+  assert.equal(savedCount(), 1, '恢复不能产生重复版本');
+}
+
 const invalidHistoricalRevision = createLibraryRevision(db, {
   projectId: 'p1',
   sourceSetId: 'source-1',

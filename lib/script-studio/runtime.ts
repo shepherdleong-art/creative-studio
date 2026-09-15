@@ -8,7 +8,6 @@ import {
 } from './generator.ts';
 import { createVisionClosedQuestionReprobe, type EvidenceReprobe } from './adapters/reprobe.ts';
 import { createVisionExtractor, type VisionExtractor } from './adapters/vision-extract.ts';
-import { createSellingPointDistiller, type SellingPointDistiller } from './distillation.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import {
   pinRuntimeProviderModel,
@@ -53,7 +52,6 @@ export function createRuntimeDeps(
   visionExtractor: VisionExtractor;
   reprobe: EvidenceReprobe;
   generator: ScriptGenerator;
-  distiller: SellingPointDistiller;
 } {
   const inputSnapshot = JSON.parse(task.inputSnapshotJson || '{}') as Record<string, unknown>;
   const requestedProviderId = typeof inputSnapshot.providerId === 'string'
@@ -101,11 +99,6 @@ export function createRuntimeDeps(
       }),
     },
   );
-  const distiller = createSellingPointDistiller(
-    providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-distill'),
-    providers.text,
-    { maxTokens: limits.maxTokensPerPage },
-  );
   const runDeps = createScriptStudioRunDeps(db, {
     projectId,
     taskId,
@@ -115,11 +108,10 @@ export function createRuntimeDeps(
     visionExtractor,
     reprobe,
     generator,
-    distiller,
     signal: options.signal,
     fallbackOnInvalid: options.fallbackOnInvalid,
   });
-  return { runDeps, visionExtractor, reprobe, generator, distiller };
+  return { runDeps, visionExtractor, reprobe, generator };
 }
 
 export function loadTask(db: Database.Database, projectId: string, taskId: string): TaskView {

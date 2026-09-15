@@ -24,7 +24,9 @@ import {
 //      时长改为软目标（不再因字数阻断保存），新增 CTA 结尾检查、请求预算计数与框架秒数适配。
 // v14：新增结尾语义审核（reviewScriptContent，严格解析子检查）、提炼阶段取消信号贯通、
 //      提炼卖点不可变编辑版本链与逐字段限定核验（规则版本 distill-rules-v2）。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 14;
+// v15：合格方案逐条保存、按方向恢复；审核修复失败不再整篇重写循环。
+// v16：默认直接使用提取事实，取消额外提炼；多页提取共享并发队列。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 16;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

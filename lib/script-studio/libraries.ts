@@ -215,10 +215,13 @@ export function manualEditLibraryRevision(
     factText?: string;
     title?: string;
   }>,
-  options: { now?: () => Date } = {},
+  options: { now?: () => Date; baseRevisionId?: string } = {},
 ): LibraryRevisionView {
   const current = getCurrentLibraryRevision(db, projectId);
   if (!current) throw new ScriptStudioError('not_found', '当前项目没有可编辑的卖点库');
+  if (options.baseRevisionId && options.baseRevisionId !== current.id) {
+    throw new ScriptStudioError('conflict', '卖点列表已更新，请刷新后重新选择');
+  }
   const byId = new Map(current.sellingPoints.map((point) => [point.id, point]));
   const nextPoints = current.sellingPoints.map((point) => {
     const edit = edits.find((item) => item.sellingPointId === point.id);

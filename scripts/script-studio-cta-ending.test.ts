@@ -293,12 +293,11 @@ function savedContent(): { content: ScriptStudioScriptContent; validation: Recor
       },
     },
   });
-  assert.equal(result.status, 'succeeded', 'CTA 后追加标签的修复被拒后，重生成合格方案必须能保存');
+  assert.equal(result.status, 'failed', 'CTA 后追加标签的修复被拒后必须失败关闭');
   assert.equal(captured.repairInputs.length, 1, '纯情绪收束触发修复');
   assert.ok(captured.repairInputs[0]!.qualityIssues.includes('cta_ending_missing'), '纯情绪收束识别为缺少 CTA');
-  assert.equal(captured.generateInputs.length, 2, '修复被拒后进入下一轮重生成');
-  const { content } = savedContent();
-  assert.equal(content.segments.at(-1)!.narration, CTA_LINE, '最终以 CTA 收尾，其后无标签');
+  assert.equal(captured.generateInputs.length, 1, '修复被拒后不重复整篇生成');
+  assert.equal(result.scriptIds.length, 0, '不合格方案不得保存');
 }
 
 // ── A7/A11(a)：策略未匹配但模板已使用，20 秒 CTA 框架冻结进 15 秒任务 ──
@@ -566,8 +565,8 @@ const framework20s: KnowledgePlanRecommendation = {
     reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('不得重新调用模型核验'); } },
   });
   assert.equal(result.status, 'failed', '审核始终不通过的方案必须失败');
-  assert.match(getTask(db, 'p1', taskId)?.errorMessage || '', /预算已耗尽/, '失败原因必须指向请求预算（审核+修复共用 8 次）');
-  assert.equal(budget.usedFor(1), 8, '方案级预算如实耗尽：2 轮 × (生成+审核+修复+复审)');
+  assert.match(getTask(db, 'p1', taskId)?.errorMessage || '', /治好颈椎病/, '保留实际审核原因');
+  assert.equal(budget.usedFor(1), 4, '一次生成、审核、修复、复审后终止失败方案，不能整篇重写再循环');
   assert.equal(
     (db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n,
     scriptCountBefore,

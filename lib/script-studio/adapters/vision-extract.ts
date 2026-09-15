@@ -130,7 +130,7 @@ export function createVisionExtractor(
       const pageIdentities: Array<{ pageIndex: number; productName: string; category: string; brand: string }> = [];
       const sellingPoints: LibrarySellingPointInput[] = [];
       const batchMetrics: VisionExtractionBatchMetric[] = [];
-      for (const page of input.pages) {
+      const pageBatches = input.pages.map((page) => {
         const batches: Array<{ start: number; tiles: Array<{ mimeType: string; imageBase64: string }> }> = [];
         for (let start = 0; start < page.tiles.length; start += batchSize) {
           batches.push({ start, tiles: page.tiles.slice(start, start + batchSize) });
@@ -138,13 +138,18 @@ export function createVisionExtractor(
         if (batches.length === 0) batches.push({ start: 0, tiles: [] });
         const batchRecords: Array<Record<string, unknown> | undefined> = new Array(batches.length);
         const batchMetricRecords: Array<VisionExtractionBatchMetric | undefined> = new Array(batches.length);
-        let cursor = 0;
-        const worker = async (): Promise<void> => {
-          while (cursor < batches.length) {
+        return { page, batches, batchRecords, batchMetricRecords };
+      });
+      // 所有页面共享同一个有界队列；某页长尾不会挡住后续页的空闲槽。
+      const work = pageBatches.flatMap((state) => state.batches.map((batch, index) => ({ state, batch, index })));
+      let cursor = 0;
+      let failed = false;
+      const worker = async (): Promise<void> => {
+        try {
+          while (!failed && cursor < work.length) {
             if (signal?.aborted) throw new DOMException('视觉提取已取消', 'AbortError');
-            const index = cursor;
-            cursor += 1;
-            const batch = batches[index]!;
+            const { state, batch, index } = work[cursor++]!;
+            const { page, batchRecords, batchMetricRecords } = state;
             // 单批失败（网关抖动/模型偶发非 JSON）重试一次。75s/3 次的提前重试
             // 在同图真机实验中从 144s 回退到 175s，因此保留供应商 120s 阈值。
             let lastError: unknown;
@@ -224,8 +229,15 @@ export function createVisionExtractor(
               );
             }
           }
-        };
-        await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
+        } catch (error) {
+          failed = true; // 不再派发新批；已发出的请求排空后才结束提取阶段。
+          throw error;
+        }
+      };
+      const workers = await Promise.allSettled(Array.from({ length: Math.min(concurrency, work.length) }, () => worker()));
+      const rejected = workers.find((result) => result.status === 'rejected');
+      if (rejected?.status === 'rejected') throw rejected.reason;
+      for (const { page, batchRecords, batchMetricRecords } of pageBatches) {
         batchMetrics.push(...batchMetricRecords.filter((metric): metric is VisionExtractionBatchMetric => Boolean(metric)));
         // 按批序合并：身份信息取首个非空，卖点保持页内自上而下顺序。
         let pageProductName = '';

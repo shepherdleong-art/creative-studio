@@ -69,33 +69,33 @@ function buildReprobeBatches(
     : 1;
   const maxImages = Math.max(1, Math.floor(deps.maxImagesPerBatch));
   const batches: ReprobeBatch[] = [];
-  let batch: ReprobeBatch = { items: [], tiles: [] };
-  let tileIndexByKey = new Map<string, number>();
-
-  const flush = () => {
-    if (batch.items.length > 0) batches.push(batch);
-    batch = { items: [], tiles: [] };
-    tileIndexByKey = new Map<string, number>();
-  };
-
+  const indexes: Array<Map<string, number>> = [];
   for (const index of queue) {
     const point = input[index]!;
     const claim = point.evidenceQuote?.trim() || point.factText.trim();
-    const pointTiles = deps.evidenceTiles?.(point) || [];
-    // 调用方即使返回超额图片，门禁自身仍负责最后一道硬封顶；不能把资源契约寄托在 runner 守约上。
-    const uniquePointTiles = [...new Map(pointTiles.map((tile) => [evidenceTileKey(tile), tile])).values()]
+    // 每条主张的图片仍独立、去重且封顶；合批不能给它增加其他主张的证据。
+    const pointTiles = [...new Map((deps.evidenceTiles?.(point) || []).map((tile) => [evidenceTileKey(tile), tile])).entries()]
       .slice(0, maxImages);
-    const unseenCount = uniquePointTiles.reduce(
-      (count, tile) => count + (tileIndexByKey.has(evidenceTileKey(tile)) ? 0 : 1),
-      0,
-    );
-    if (batch.items.length > 0 && (batch.items.length >= maxClaims || batch.tiles.length + unseenCount > maxImages)) {
-      flush();
+    let chosen = -1;
+    let fewestNewImages = Infinity;
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i]!;
+      if (batch.items.length >= maxClaims) continue;
+      const unseen = pointTiles.filter(([key]) => !indexes[i]!.has(key)).length;
+      if (batch.tiles.length + unseen <= maxImages && unseen < fewestNewImages) {
+        chosen = i;
+        fewestNewImages = unseen;
+      }
     }
-
+    if (chosen < 0) {
+      chosen = batches.length;
+      batches.push({ items: [], tiles: [] });
+      indexes.push(new Map());
+    }
+    const batch = batches[chosen]!;
+    const tileIndexByKey = indexes[chosen]!;
     const imageIndexes: number[] = [];
-    for (const tile of uniquePointTiles) {
-      const key = evidenceTileKey(tile);
+    for (const [key, tile] of pointTiles) {
       let imageIndex = tileIndexByKey.get(key);
       if (imageIndex === undefined) {
         batch.tiles.push(tile);
@@ -106,7 +106,6 @@ function buildReprobeBatches(
     }
     batch.items.push({ index, claim, imageIndexes });
   }
-  flush();
   return batches;
 }
 

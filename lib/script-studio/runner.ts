@@ -410,7 +410,7 @@ async function generateValidatedScript(
         const repaired = await repairEndingAndRevalidate(
           deps, baseInput, attemptValidation.content, ending.issues, validateOnce, candidates,
         );
-        return await reviewCandidate(repaired);
+        return await reviewCandidate(repaired, false);
       } catch (error) {
         if (deps.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
         if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
@@ -419,8 +419,8 @@ async function generateValidatedScript(
     }
     return await reviewCandidate(attemptValidation.content);
   };
-  /** 有界语义审核（R2）：初筛通过后复核；失败先定向修复再复审一次，仍失败交下一轮重生成。 */
-  const reviewCandidate = async (candidate: ScriptStudioScriptContent): Promise<AttemptOutcome> => {
+  /** 有界语义审核：初筛通过后复核；失败先定向修复再复审一次，仍失败结束该方案。 */
+  const reviewCandidate = async (candidate: ScriptStudioScriptContent, allowRepair = true): Promise<AttemptOutcome> => {
     if (!deps.generator.reviewScriptContent) {
       return { status: 'passed', content: candidate, review: { status: 'unreviewed' } };
     }
@@ -436,6 +436,7 @@ async function generateValidatedScript(
     if (verdict.pass) {
       return { status: 'passed', content: candidate, review: { status: 'passed', fingerprint: fingerprintOf(candidate) } };
     }
+    if (!allowRepair) return { status: 'ending_repair_failed', feedback: verdict.issues };
     // 审核失败 → 携具体原因定向修复一次 → 复审一次。
     try {
       const repaired = await repairEndingAndRevalidate(
@@ -460,9 +461,12 @@ async function generateValidatedScript(
     ].slice(0, 5);
     const outcome = await runAttempt(feedback.length > 0 ? feedback : undefined);
     if (outcome.status === 'passed') return { content: outcome.content, endingReview: outcome.review };
-    if (outcome.status === 'ending_repair_failed') endingFeedback = outcome.feedback;
+    if (outcome.status === 'ending_repair_failed') {
+      endingFeedback = outcome.feedback;
+      break; // 修复/复审失败保留原因，不能整篇重写后重复同一审核链。
+    }
   }
-  if (deps.fallbackOnInvalid) {
+  if (deps.fallbackOnInvalid && endingFeedback.length === 0) {
     const outcome = await runAttempt(undefined);
     if (outcome.status === 'passed') return { content: outcome.content, endingReview: outcome.review };
     if (outcome.status === 'ending_repair_failed') endingFeedback = outcome.feedback;
@@ -503,7 +507,13 @@ export async function executeScriptStudioTask(
     throw error;
   }
 
-  const firstExtraction = task.mode === 'first_extraction';
+  // 已保存的首次提取结果属于本任务；恢复时继续使用同一修订，避免重读图与引用漂移。
+  const savedLibraryStage = task.stages.find((stage) => stage.stage === 'save_library' && stage.status === 'succeeded');
+  const savedLibraryId = savedLibraryStage
+    ? stagePayload(JSON.parse(savedLibraryStage.payloadJson)).libraryRevisionId
+    : undefined;
+  const recoveredLibrary = typeof savedLibraryId === 'string' ? getLibraryRevision(db, projectId, savedLibraryId) : undefined;
+  const firstExtraction = task.mode === 'first_extraction' && !recoveredLibrary;
   const isReuse = task.mode === 'reuse';
   const scriptIds: string[] = [];
   const createdScripts: ScriptStudioScriptContent[] = [];
@@ -537,12 +547,12 @@ export async function executeScriptStudioTask(
         degraded: tileResult.degraded,
         maxImagesPerRequest: tileResult.maxImagesPerRequest,
       }, null, now);
-    } else if (isReuse) {
+    } else if (isReuse || recoveredLibrary) {
       startStage(db, projectId, taskId, 'load_library', now);
       await updateTask(db, projectId, taskId, { currentStage: 'load_library' }, now);
-      libraryRevision = deps.libraryRevisionId
+      libraryRevision = recoveredLibrary ?? (deps.libraryRevisionId
         ? getLibraryRevision(db, projectId, deps.libraryRevisionId)
-        : undefined;
+        : undefined);
       if (!libraryRevision) libraryRevision = getCurrentLibraryRevision(db, projectId);
       if (!libraryRevision) throw new ScriptStudioError('not_found', '当前项目没有可复用的卖点库');
       finishStage(db, projectId, taskId, 'load_library', 'succeeded', {
@@ -658,10 +668,11 @@ export async function executeScriptStudioTask(
     // 卖点提炼层（方案 §3）：把通过核验的事实全局归并为购买理由短句与标签。
     // 结果绑定来源修订/规则版本/模型身份；缓存命中不重复请求；提炼失败只降级跳过，
     // 不阻断脚本生成（正文继续使用原有可用事实）。
-    startStage(db, projectId, taskId, 'distill', now);
-    await updateTask(db, projectId, taskId, { currentStage: 'distill' }, now);
     let distilledExpressions: DistilledExpressionRef[] = [];
-    {
+    // 默认链路直接使用可用事实。保留显式注入能力以读取/验证历史派生结果。
+    if (deps.distiller) {
+      startStage(db, projectId, taskId, 'distill', now);
+      await updateTask(db, projectId, taskId, { currentStage: 'distill' }, now);
       const usableFacts = distillableFacts(libraryRevision!);
       if (!deps.distiller || usableFacts.length === 0) {
         finishStage(db, projectId, taskId, 'distill', 'skipped', {
@@ -797,50 +808,30 @@ export async function executeScriptStudioTask(
       targetDurationSec,
       creativeBrief,
     };
-    // 各创意方向的首稿只读卖点库和自己的 plan，可以有界并行；
-    // 按 plan 顺序落库前再做一次 sibling 校验，若相似才携已采用脚本定向重生成。
-    // 这样不会为并行牺牲方案差异契约，同时避免正常情况下纯串行累加上游长尾。
-    const initialResults: Array<{ candidate?: GeneratedCandidate; error?: unknown }> = new Array(plansWithRecommendations.length);
-    let generationCursor = 0;
-    const generateWorker = async (): Promise<void> => {
-      while (generationCursor < plansWithRecommendations.length) {
-        if (deps.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
-        const index = generationCursor;
-        generationCursor += 1;
-        const plan = plansWithRecommendations[index]!;
-        const brief = briefByPlanIndex.get(plan.index);
-        if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
-        try {
-          initialResults[index] = {
-            candidate: await generateValidatedScript(
-              deps,
-              libraryRevision!,
-              plan,
-              brief,
-              generationContext,
-              [],
-              knowledgeContext,
-              recentTitles,
-              distilledExpressions,
-            ),
-          };
-        } catch (error) {
-          initialResults[index] = { error };
-        }
-      }
-    };
-    const generationConcurrency = Math.max(
-      1,
-      Math.min(plansWithRecommendations.length, getScriptStudioLimits().generationConcurrency),
-    );
-    await Promise.all(Array.from({ length: generationConcurrency }, () => generateWorker()));
-
-    for (let index = 0; index < plansWithRecommendations.length; index += 1) {
+    // 保存的方案身份与版本同事务写入 validationJson；即使保存后立即停机也不会重复生成。
+    const completedPlans = new Set<number>();
+    const savedRevisions = db.prepare(`
+      SELECT r.scriptId, r.contentJson, r.validationJson FROM project_script_revisions r
+      JOIN project_scripts s ON s.id = r.scriptId
+      WHERE s.projectId = ? AND r.generationTaskId = ? AND r.libraryRevisionId = ?
+      ORDER BY r.rowid
+    `).all(projectId, taskId, libraryRevision!.id) as Array<{ scriptId: string; contentJson: string; validationJson: string }>;
+    for (const saved of savedRevisions) {
+      const planIndex = (JSON.parse(saved.validationJson) as { generationPlanIndex?: number }).generationPlanIndex;
+      if (!planIndex || completedPlans.has(planIndex) || !plansWithRecommendations.some((plan) => plan.index === planIndex)) continue;
+      completedPlans.add(planIndex);
+      scriptIds.push(saved.scriptId);
+      createdScripts.push(JSON.parse(saved.contentJson) as ScriptStudioScriptContent);
+    }
+    await updateTask(db, projectId, taskId, { succeededCount: scriptIds.length, failedCount: 0 }, now);
+    type InitialResult = { candidate?: GeneratedCandidate; error?: unknown };
+    // 按完成顺序串行完成兄弟方案校验、标题修复与保存，异步修复期间不允许另一方案抢先保存。
+    const finalizeProposal = async (index: number, initial: InitialResult): Promise<void> => {
       const plan = plansWithRecommendations[index]!;
       const brief = briefByPlanIndex.get(plan.index);
       if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
       try {
-        const initial = initialResults[index]!;
+        if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
         if (initial.error) throw initial.error;
         let candidate: GeneratedCandidate = initial.candidate!;
         const titleEmbeddingContext = knowledgeContext
@@ -888,7 +879,7 @@ export async function executeScriptStudioTask(
               contentJson: content as unknown as Record<string, unknown>,
               targetDurationSec,
               estimatedDurationSec: content.estimatedNarrationDurationSec,
-              validationJson: buildValidationJson(content, candidate.endingReview, libraryRevision!.id),
+              validationJson: { ...buildValidationJson(content, candidate.endingReview, libraryRevision!.id), generationPlanIndex: plan.index },
               strategyCatalogRevisionId: knowledgeContext?.strategy.strategyCatalogRevisionId ?? '',
               strategyEntryId: knowledgeContext?.strategy.strategyEntryId ?? '',
               templateCatalogRevisionId: knowledgeContext?.template.templateCatalogRevisionId ?? '',
@@ -905,7 +896,7 @@ export async function executeScriptStudioTask(
               contentJson: content as unknown as Record<string, unknown>,
               targetDurationSec,
               estimatedDurationSec: content.estimatedNarrationDurationSec,
-              validationJson: buildValidationJson(content, candidate.endingReview, libraryRevision!.id),
+              validationJson: { ...buildValidationJson(content, candidate.endingReview, libraryRevision!.id), generationPlanIndex: plan.index },
               strategyCatalogRevisionId: knowledgeContext?.strategy.strategyCatalogRevisionId ?? '',
               strategyEntryId: knowledgeContext?.strategy.strategyEntryId ?? '',
               templateCatalogRevisionId: knowledgeContext?.template.templateCatalogRevisionId ?? '',
@@ -920,7 +911,39 @@ export async function executeScriptStudioTask(
         // 单条失败不阻断其余方案；部分成功由任务结束时的计数表达。
         generationErrors.push(generationError instanceof Error ? generationError.message : String(generationError));
       }
-    }
+      await updateTask(db, projectId, taskId, {
+        succeededCount: scriptIds.length, failedCount: generationErrors.length,
+      }, now);
+    };
+    let finalization = Promise.resolve();
+    let generationCursor = 0;
+    const generateWorker = async (): Promise<void> => {
+      while (generationCursor < plansWithRecommendations.length) {
+        if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+        const index = generationCursor++;
+        const plan = plansWithRecommendations[index]!;
+        if (completedPlans.has(plan.index)) continue;
+        const brief = briefByPlanIndex.get(plan.index);
+        if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
+        let initial: InitialResult;
+        try {
+          initial = { candidate: await generateValidatedScript(
+            deps, libraryRevision!, plan, brief, generationContext,
+            [...createdScripts], knowledgeContext, recentTitles, distilledExpressions,
+          ) };
+        } catch (error) {
+          initial = { error };
+        }
+        const finished = finalization.then(() => finalizeProposal(index, initial));
+        // 后续 worker 可继续排队；中断由各 worker 上报，并在全部排空后统一处理。
+        finalization = finished.catch(() => {});
+        await finished;
+      }
+    };
+    const generationConcurrency = Math.max(1, Math.min(plansWithRecommendations.length, getScriptStudioLimits().generationConcurrency));
+    const workers = await Promise.allSettled(Array.from({ length: generationConcurrency }, () => generateWorker()));
+    const rejected = workers.find((result) => result.status === 'rejected');
+    if (rejected?.status === 'rejected') throw rejected.reason;
     finishStage(db, projectId, taskId, 'generate', scriptIds.length > 0 ? 'succeeded' : 'failed', {
       generated: scriptIds.length,
       requested: requestedCount,
@@ -931,6 +954,7 @@ export async function executeScriptStudioTask(
     finishStage(db, projectId, taskId, 'validate', scriptIds.length > 0 ? 'succeeded' : 'failed', {
       passed: scriptIds.length,
       failed: Math.max(0, requestedCount - scriptIds.length),
+      errors: generationErrors.slice(0, 5),
     }, scriptIds.length === 0 ? 'script_generation_failed' : null, now);
     const status = scriptIds.length >= requestedCount ? 'succeeded' : scriptIds.length > 0 ? 'partial' : 'failed';
     await updateTask(db, projectId, taskId, {

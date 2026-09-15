@@ -366,7 +366,7 @@ function stageArtifact(stage: StageView | undefined, task: ScriptStudioTaskSnaps
         title: running ? '正在做完成检查' : `${payload.passed ?? 0} 条脚本通过基础校验`,
         items: [
           { label: '时长检查', title: `${payload.passed ?? '-'} 条符合目标预算`, copy: `目标 ${task.inputSnapshot.targetDurationSec ?? '-'} 秒` },
-          { label: '差异检查', title: Number(payload.failed) > 0 ? `${payload.failed} 条未通过` : '方案之间保持区分', copy: '切入角度、模板和开场均需不同' },
+          { label: '生成结果', title: Number(payload.failed) > 0 ? `${payload.failed} 条生成或校验失败` : '全部方案通过校验', copy: Number(payload.failed) > 0 ? '具体原因见下方失败说明，已保存方案可以使用' : '已检查事实引用、正文与方案差异' },
         ],
       };
     default:
@@ -472,13 +472,23 @@ export default function ScriptStudioPanel({ projectId }: Props) {
 
   const startPolling = useCallback((taskId: string) => {
     if (taskPollRef.current) clearInterval(taskPollRef.current);
+    let loadedCount = 0;
+    let polling = false;
     taskPollRef.current = setInterval(async () => {
+      if (polling) return;
+      polling = true;
       try {
         const response = await fetch(`/api/projects/${projectId}/script-studio/tasks/${taskId}`, { cache: 'no-store' });
         const data = await response.json().catch(() => ({}));
         const next = data.task as ScriptStudioTaskSnapshot | undefined;
         if (!next) return;
         setTask(next);
+        if (next.succeededCount > loadedCount) {
+          await loadScripts();
+          await loadLibrary();
+          if (loadedCount === 0) setStep(3);
+          loadedCount = next.succeededCount;
+        }
         if (['succeeded', 'partial'].includes(next.status)) {
           setStep(3);
           if (taskPollRef.current) clearInterval(taskPollRef.current);
@@ -488,12 +498,14 @@ export default function ScriptStudioPanel({ projectId }: Props) {
           setError(next.errorMessage || '生成失败');
           if (taskPollRef.current) clearInterval(taskPollRef.current);
         } else if (next.status === 'cancelled') {
-          setNotice('任务已停止；返回素材后可重新开始');
+          setNotice('任务已停止；已保存的脚本仍可使用');
           window.setTimeout(() => setNotice(''), 3000);
           if (taskPollRef.current) clearInterval(taskPollRef.current);
         }
       } catch {
         // 网络抖动时继续轮询，不打断任务。
+      } finally {
+        polling = false;
       }
     }, 1200);
   }, [projectId, loadScripts, loadLibrary]);
@@ -535,7 +547,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   // 过程页总已用时长的秒级走表；任务终态后停止。
   const taskRunning = Boolean(task && ['queued', 'running'].includes(task.status));
   useEffect(() => {
-    if (step !== 2 || !taskRunning) return;
+    if ((step !== 2 && step !== 3) || !taskRunning) return;
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [step, taskRunning]);
@@ -1182,7 +1194,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   {taskRunning
                     ? '你可以离开当前区域，生成过程会继续保留；长详情页首次提取通常需要几分钟。'
                     : task.status === 'cancelled'
-                      ? '任务已手动停止，未生成结果；返回素材后可重新开始。'
+                      ? '任务已手动停止；已保存的脚本仍可使用。'
                       : '中间结果已保留；继续再生成时会复用产品卖点库。'}
                 </p>
                 {asText(task.inputSnapshot.providerModel) && (
@@ -1283,13 +1295,34 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               <div className="rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm">{task.errorMessage || '生成失败，请返回检查素材后重试'}</div>
             )}
             {task.status === 'cancelled' && (
-              <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4 text-sm text-ink-secondary">任务已手动停止，未写入任何结果；返回素材后可重新开始。</div>
+              <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4 text-sm text-ink-secondary">任务已手动停止；已保存的脚本仍可使用，未完成方案可稍后重新生成。</div>
             )}
           </div>
         )}
 
         {step === 3 && (
           <div className="space-y-5">
+            {taskRunning && task && (
+              <div className="flex items-center justify-between gap-3 rounded-[18px] border border-hairline bg-surface-subtle p-4" role="status">
+                <div>
+                  <p className="text-sm font-semibold">已保存 {task.succeededCount} / {task.requestedCount} 条，其他方案仍在生成</p>
+                  <p className="mt-1 text-xs text-ink-secondary">可以先查看、复制已完成的脚本。已用时 {formatClock(totalElapsed)}</p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <button type="button" onClick={() => setStep(2)} className="btn-secondary btn-sm">查看生成进度</button>
+                  <button type="button" onClick={() => void cancelTask()} className="btn-secondary btn-sm text-fail">停止任务</button>
+                </div>
+              </div>
+            )}
+            {task?.status === 'cancelled' && <p className="text-sm text-ink-secondary">任务已停止，已保存的脚本仍可使用。</p>}
+            {task && ['partial', 'failed'].includes(task.status) && (
+              <div className="rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm">
+                <p className="font-semibold">{task.failedCount} 条生成或校验失败，已保存方案可以使用</p>
+                {(task.stages.find((stage) => stage.stage === 'generate')?.payload.errors as string[] | undefined)?.map((message, index) => (
+                  <p key={index} className="mt-1 break-words text-xs">{message}</p>
+                ))}
+              </div>
+            )}
             {libraryRevision && (
               <section className="rounded-[18px] border border-hairline p-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
@@ -1298,11 +1331,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                       <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-ok-tint text-xs text-ok">✓</span>
                       产品卖点库
                     </h3>
-                    <p className="mt-1 text-xs text-ink-secondary">从详情页提取并去重后的结构化资产。之后生成新脚本时直接复用，也可以继续补充详情页更新。</p>
+                    <p className="mt-1 text-xs text-ink-secondary">AI 提取后默认使用通过核验的卖点，无需逐条确认。你可以随时选择保留或排除，调整后用于下一次生成。</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <span className="rounded-full bg-ok-tint px-2.5 py-1 text-[0.68rem] font-semibold text-ok">✓ 已保存 · 可无限复用</span>
-                    <button type="button" onClick={() => setLibraryOpen((current) => !current)} className="btn-secondary btn-sm">{libraryOpen ? '收起编辑' : '回看/编辑'}</button>
+                    <button type="button" onClick={() => setLibraryOpen((current) => !current)} className="btn-secondary btn-sm">{libraryOpen ? '收起选择' : '选择 / 排除卖点'}</button>
                   </div>
                 </div>
                 <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
@@ -1329,16 +1362,10 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                     ))}
                   </div>
                 </div>
-                <DistilledPointsSection
-                  key={libraryRevision.id}
-                  projectId={projectId}
-                  revisionId={libraryRevision.id}
-                  factCount={libraryRevision.sellingPoints.length}
-                  factTitles={Object.fromEntries(libraryRevision.sellingPoints.map((point) => [point.id, `${point.title}：${point.factText}`]))}
-                />
                 {libraryOpen && (
                   <div className="mt-4">
                     <LibraryEditor
+                      key={libraryRevision.id}
                       projectId={projectId}
                       revision={libraryRevision}
                       onSaved={() => { setLibraryOpen(false); void loadLibrary(); }}
@@ -1371,7 +1398,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                     {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                   </select>
                 </label>
-                <button type="button" onClick={regenerateGroup} disabled={submitting} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : '再生成一组'}</button>
+                <button type="button" onClick={regenerateGroup} disabled={submitting || taskRunning} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : '再生成一组'}</button>
                 {(task?.status === 'partial' || task?.status === 'failed') && (
                   <button type="button" onClick={() => void retryTask()} className="btn-secondary btn-sm">补跑缺失条目</button>
                 )}
@@ -1410,8 +1437,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                       <div className="flex flex-none flex-wrap justify-end gap-1.5">
                         <button type="button" onClick={() => toggleCollapsed(script.id)} className="btn-secondary btn-sm">{collapsed ? '完整脚本' : '收起脚本'}</button>
                         <button type="button" onClick={() => void copyScript(content?.fullScript || '')} className="btn-secondary btn-sm">复制</button>
-                        <button type="button" onClick={() => void switchRecommendation(script, content)} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>
-                        <button type="button" onClick={() => void regenerateOne(script.id)} className="btn-secondary btn-sm">再生成一版</button>
+                        <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>
+                        <button type="button" onClick={() => void regenerateOne(script.id)} disabled={taskRunning} className="btn-secondary btn-sm">再生成一版</button>
                         <button type="button" onClick={() => void loadHistory(script.id)} className="btn-secondary btn-sm">版本历史</button>
                       </div>
                     </div>
@@ -1553,216 +1580,6 @@ function parseCopyCheck(validationJson?: string): { endingStatus?: string; seman
   }
 }
 
-interface DistilledPointView {
-  id: string;
-  title: string;
-  benefitText: string;
-  shortCopy: string;
-  tags: { max5: string | null; max8: string | null; max10: string | null };
-  role: 'core' | 'supporting' | 'spec' | 'atmosphere';
-  scope: string;
-  limitations: string[];
-  sourceFactIds: string[];
-  reviewStatus: 'draft' | 'approved' | 'needs_review';
-  reviewIssues: string[];
-  editHistory: Array<{ previousVersionId?: string; shortCopy: string; benefitText: string; reviewStatus: string; editedAt: string }>;
-}
-
-const DISTILLED_ROLE_LABELS: Record<DistilledPointView['role'], string> = {
-  core: '核心购买理由',
-  supporting: '支撑理由',
-  spec: '规格参数',
-  atmosphere: '氛围观感',
-};
-const DISTILLED_STATUS_LABELS: Record<DistilledPointView['reviewStatus'], { label: string; className: string }> = {
-  draft: { label: '待确认', className: 'bg-surface-subtle text-ink-secondary' },
-  approved: { label: '已确认', className: 'bg-ok-tint text-ok' },
-  needs_review: { label: '待复核', className: 'bg-warn-tint text-warn' },
-};
-
-/**
- * 提炼卖点区（方案 §3.4 / 审查 R1）：挂载即自动加载（含空态也有展开入口，
- * 不再依赖「先有数据才渲染按钮」）；父组件以 revisionId 作为 key 重挂载实现修订切换重置。
- * 默认展示推荐短句、用户价值与角色；原文事实、限定条件与复核原因收进可展开的证据区。
- */
-function DistilledPointsSection({
-  projectId,
-  revisionId,
-  factCount,
-  factTitles,
-}: {
-  projectId: string;
-  revisionId: string;
-  factCount: number;
-  factTitles: Record<string, string>;
-}) {
-  const [points, setPoints] = useState<DistilledPointView[] | null>(null);
-  const [expanded, setExpanded] = useState<string>('');
-  const [approving, setApproving] = useState('');
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<string>('');
-  const [draftShortCopy, setDraftShortCopy] = useState('');
-  const [draftBenefitText, setDraftBenefitText] = useState('');
-  const [savingEdit, setSavingEdit] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/projects/${projectId}/script-studio/distilled-points?revisionId=${revisionId}`);
-      if (!response.ok) {
-        setPoints([]);
-        return;
-      }
-      const data = await response.json() as { points?: DistilledPointView[] };
-      setPoints(data.points || []);
-    } catch {
-      setPoints([]);
-    }
-  }, [projectId, revisionId]);
-
-  // 审查 R1：挂载即加载——与面板其余加载一致，经 setTimeout 异步触发，不在 effect 内同步 setState。
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void load();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [load]);
-
-  const approve = async (distilledPointId: string) => {
-    setApproving(distilledPointId);
-    try {
-      await fetch(`/api/projects/${projectId}/script-studio/distilled-points`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'approve', distilledPointId }),
-      });
-      await load();
-    } finally {
-      setApproving('');
-    }
-  };
-
-  const startEdit = (point: DistilledPointView) => {
-    setEditing(point.id);
-    setDraftShortCopy(point.shortCopy);
-    setDraftBenefitText(point.benefitText);
-  };
-
-  const saveEdit = async (distilledPointId: string) => {
-    setSavingEdit(true);
-    try {
-      await fetch(`/api/projects/${projectId}/script-studio/distilled-points`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'edit', distilledPointId, shortCopy: draftShortCopy, benefitText: draftBenefitText }),
-      });
-      setEditing('');
-      await load();
-    } finally {
-      setSavingEdit(false);
-    }
-  };
-
-  const coreCount = (points || []).filter((point) => point.role === 'core').length;
-  const approvedCount = (points || []).filter((point) => point.reviewStatus === 'approved').length;
-  return (
-    <div className="mt-4 rounded-[16px] border border-hairline bg-surface-subtle p-3.5">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h4 className="text-sm font-semibold">提炼卖点 · 购买理由与推荐短句</h4>
-          <p className="mt-1 text-[0.68rem] text-ink-secondary">
-            {points === null
-              ? '正在读取提炼结果…'
-              : points.length === 0
-                ? '本轮没有可用的提炼卖点：提炼阶段可能被跳过或未通过证据校验，脚本生成仍使用原始事实。'
-                : `原始事实 ${factCount} 条 · 归并后 ${points.length} 个主卖点（核心 ${coreCount}） · 已确认 ${approvedCount}。短句来自已核验事实，确认后才会作为表达参考提供给脚本生成。`}
-          </p>
-        </div>
-        {points !== null && points.length > 0 && (
-          <button type="button" onClick={() => setOpen((current) => !current)} className="btn-secondary btn-sm shrink-0">{open ? '收起' : '展开提炼卖点'}</button>
-        )}
-      </div>
-      {open && points !== null && (
-        <div className="mt-3 grid gap-2.5 md:grid-cols-2">
-          {points.map((point) => {
-            const status = DISTILLED_STATUS_LABELS[point.reviewStatus];
-            const isOpen = expanded === point.id;
-            const isEditing = editing === point.id;
-            return (
-              <div key={point.id} className="rounded-[14px] border border-hairline bg-surface p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    {isEditing ? (
-                      <div className="space-y-1.5">
-                        <input value={draftShortCopy} onChange={(event) => setDraftShortCopy(event.target.value)} className="input-field w-full text-xs" aria-label="编辑推荐短句" />
-                        <textarea value={draftBenefitText} onChange={(event) => setDraftBenefitText(event.target.value)} rows={2} className="input-field w-full text-[0.65rem]" aria-label="编辑用户价值" />
-                        <div className="flex items-center gap-1.5">
-                          <button type="button" onClick={() => void saveEdit(point.id)} disabled={savingEdit} className="btn-secondary btn-sm">{savingEdit ? '保存中…' : '保存（回到待确认）'}</button>
-                          <button type="button" onClick={() => setEditing('')} className="btn-secondary btn-sm">取消</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="text-xs font-semibold">{point.shortCopy}</div>
-                        <div className="mt-1 text-[0.65rem] leading-4 text-ink-secondary">{point.benefitText}</div>
-                      </>
-                    )}
-                  </div>
-                  {!isEditing && <span className={`shrink-0 rounded-full px-2 py-0.5 text-[0.6rem] font-semibold ${status.className}`}>{status.label}</span>}
-                </div>
-                {!isEditing && (
-                  <>
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[0.6rem] text-ink-tertiary">
-                      <span className="rounded-full bg-surface-subtle px-2 py-0.5 font-semibold">{DISTILLED_ROLE_LABELS[point.role]}</span>
-                      {[point.tags.max5, point.tags.max8, point.tags.max10].filter(Boolean).map((tag) => (
-                        <span key={tag} className="rounded-full bg-surface-subtle px-2 py-0.5">{tag}</span>
-                      ))}
-                      {point.scope && <span className="rounded-full bg-surface-subtle px-2 py-0.5">范围：{point.scope}</span>}
-                    </div>
-                    {point.reviewStatus === 'needs_review' && point.reviewIssues.length > 0 && (
-                      <div className="mt-1.5 rounded-[10px] bg-warn-tint px-2 py-1.5 text-[0.62rem] leading-4 text-warn">
-                        待复核原因：{point.reviewIssues.join('；')}
-                      </div>
-                    )}
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <button type="button" onClick={() => setExpanded(isOpen ? '' : point.id)} className="text-[0.62rem] text-ink-tertiary underline underline-offset-2 hover:text-ink">
-                        {isOpen ? '收起证据' : '查看来源事实'}
-                      </button>
-                      {point.reviewStatus !== 'approved' && (
-                        <button type="button" onClick={() => void approve(point.id)} disabled={approving === point.id} className="btn-secondary btn-sm">
-                          {approving === point.id ? '确认中…' : '确认可用'}
-                        </button>
-                      )}
-                      <button type="button" onClick={() => startEdit(point)} className="text-[0.62rem] text-ink-tertiary underline underline-offset-2 hover:text-ink">
-                        编辑文案
-                      </button>
-                      {point.editHistory.length > 0 && <span className="text-[0.6rem] text-ink-tertiary">已人工编辑 {point.editHistory.length} 次</span>}
-                    </div>
-                    {isOpen && (
-                      <div className="mt-2 space-y-1 border-t border-hairline pt-2">
-                        {point.sourceFactIds.map((factId) => (
-                          <div key={factId} className="text-[0.62rem] leading-4 text-ink-secondary">· {factTitles[factId] || factId}</div>
-                        ))}
-                        {point.limitations.length > 0 && (
-                          <div className="text-[0.62rem] leading-4 text-warn">限定条件：{point.limitations.join('；')}</div>
-                        )}
-                        {point.editHistory.length > 0 && (
-                          <div className="text-[0.6rem] leading-4 text-ink-tertiary">
-                            编辑历史（最新在前）：{point.editHistory.map((entry) => entry.shortCopy).join(' ← ')}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function LibraryEditor({
   projectId,
   revision,
@@ -1773,18 +1590,24 @@ function LibraryEditor({
   onSaved: () => void;
 }) {
   const [edits, setEdits] = useState<Array<{ sellingPointId: string; usable?: boolean; disabledByUser?: boolean }>>(
-    revision.sellingPoints.map((point) => ({ sellingPointId: point.id, usable: point.usable === 1 && point.disabledByUser !== 1 })),
+    revision.sellingPoints.map((point) => ({ sellingPointId: point.id, usable: point.evidenceGate !== 'failed' && point.usable === 1 && point.disabledByUser !== 1, disabledByUser: point.disabledByUser === 1 })),
   );
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const save = async () => {
     setSaving(true);
+    setSaveError('');
     try {
       const response = await fetch(`/api/projects/${projectId}/script-studio/library`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ edits }),
+        body: JSON.stringify({ edits, baseRevisionId: revision.id }),
       });
-      if (response.ok) onSaved();
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || '保存选择失败');
+      onSaved();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '保存选择失败，请重试');
     } finally {
       setSaving(false);
     }
@@ -1793,21 +1616,24 @@ function LibraryEditor({
     <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h4 className="text-base font-semibold">卖点库回看 / 编辑</h4>
+          <h4 className="text-base font-semibold">选择保留的卖点</h4>
           <p className="mt-1 text-xs text-ink-secondary">V{revision.revisionNumber} · {revision.productName || '未识别商品'} · {revision.category || ''}</p>
         </div>
-        <button type="button" onClick={() => void save()} disabled={saving} className="btn-primary btn-sm">{saving ? '保存中…' : '保存为新修订'}</button>
+        <button type="button" onClick={() => void save()} disabled={saving} className="btn-primary btn-sm">{saving ? '保存中…' : '保存选择'}</button>
       </div>
+      <p className="mb-3 text-xs text-ink-secondary">默认勾选可用卖点；取消勾选即可排除，之后也能重新保留。不会修改已生成的脚本或正在运行的任务。</p>
+      {saveError && <p className="mb-3 text-sm text-fail" role="alert">{saveError}</p>}
       <div className="space-y-2">
         {revision.sellingPoints.map((point) => (
           <label key={point.id} className="flex items-start gap-3 rounded-[14px] border border-hairline bg-surface p-3 text-sm">
             <input
               type="checkbox"
               checked={point.evidenceGate !== 'failed' && (edits.find((edit) => edit.sellingPointId === point.id)?.usable ?? point.usable === 1)}
-              disabled={point.evidenceGate === 'failed'}
+              aria-label={`保留卖点：${point.title}`}
+              disabled={saving || point.evidenceGate === 'failed'}
               onChange={(event) => {
                 setEdits((current) => current.map((edit) => (
-                  edit.sellingPointId === point.id ? { ...edit, usable: event.target.checked } : edit
+                  edit.sellingPointId === point.id ? { ...edit, usable: event.target.checked, disabledByUser: !event.target.checked } : edit
                 )));
               }}
             />

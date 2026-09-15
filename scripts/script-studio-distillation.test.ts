@@ -378,8 +378,7 @@ function distillStageRow(taskId: string): { status: string; payloadJson: string 
 {
   const taskId = await runGenerationTask({});
   const stage = distillStageRow(taskId);
-  assert.equal(stage.status, 'skipped');
-  assert.equal(JSON.parse(stage.payloadJson).reason, 'no_distiller');
+  assert.equal(stage, undefined, '默认直用已核验事实，不创建额外提炼阶段');
 }
 
 // 场景 2：正常提炼 → 阶段成功，draft 保存；尚未确认 → 生成提示词不含提炼表达。

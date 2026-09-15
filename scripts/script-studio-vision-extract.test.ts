@@ -220,4 +220,33 @@ assert.deepEqual(
   '跨批次同页同标题必须原样保留，归并由本地 canonical themeKey 完成',
 );
 
+
+// 跨页共享并发池：第一页慢响应不能挡住第二页，结果仍按页序合并。
+{
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let secondStarted = false;
+  let active = 0;
+  let peak = 0;
+  const multiPage = createVisionExtractor(async (request) => {
+    const { page } = JSON.parse(request.userPrompt) as { page: { pageIndex: number } };
+    active++; peak = Math.max(peak, active);
+    if (page.pageIndex === 0) await firstHeld;
+    else secondStarted = true;
+    active--;
+    return { productName: `商品${page.pageIndex}`, sellingPoints: [{
+      title: `页面${page.pageIndex}`, factText: '黑色外观', evidenceQuote: '黑色外观', pointType: 'appearance', tileRefs: ['tile_1'],
+    }] };
+  }, { id: 'fake', model: 'fake' }, { concurrency: 2 });
+  const running = multiPage.extract({ pages: [makePage(1), { ...makePage(1), pageIndex: 1 }] });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const startedBeforeRelease = secondStarted;
+  releaseFirst();
+  const output = await running;
+  assert.equal(startedBeforeRelease, true, '第一页未结束时第二页应利用空闲并发槽');
+  assert.equal(peak, 2, '跨页合计不能扩大并发上限');
+  assert.deepEqual(output.pageIdentities?.map((page) => page.pageIndex), [0, 1]);
+  assert.deepEqual(output.sellingPoints.map((point) => point.sourcePageIndex), [0, 1]);
+}
+
 console.log('script-studio-vision-extract.test.ts: ok');

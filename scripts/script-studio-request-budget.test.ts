@@ -25,7 +25,6 @@ import {
 import { createScriptRequestBudget } from '../lib/script-studio/request-budget.ts';
 import { getScriptStudioLimits } from '../lib/script-studio/limits.ts';
 import { ScriptStudioError } from '../lib/script-studio/errors.ts';
-import type { ScriptStudioScriptContent } from '../lib/script-studio/types.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'script-studio-request-budget-'));
 const now = () => new Date('2026-09-14T10:00:00.000Z');
@@ -143,9 +142,8 @@ function makeBudgetTask(requestedCount: number): string {
 
 // ── 集成：预算耗尽后不发新请求、不保存失败方案（A8）────────────────
 {
-  // 用环境变量把每方案上限降到 3，压缩复现路径：生成(1) + 修复(2) + 重生成(3) 后，
-  // 第二次修复的预留被拒 → 方案失败，任务不再发起第 4 次请求。
-  process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_TEXT_REQUESTS_PER_PROPOSAL = '3';
+  // 上限降到 1：首稿消耗余额，下一次修复在调用前被拒绝。
+  process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_TEXT_REQUESTS_PER_PROPOSAL = '1';
   try {
     const taskId = makeBudgetTask(1);
     const budget = createScriptRequestBudget({ db, taskId, requestedCount: 1, now });
@@ -182,7 +180,7 @@ function makeBudgetTask(requestedCount: number): string {
       reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('不得重新调用模型核验'); } },
     });
     assert.equal(result.status, 'failed', '预算耗尽后方案必须失败');
-    assert.equal(completeCalls, 3, `只发起 3 次请求（生成1+修复2？实际 ${completeCalls}），第 4 次预留被拒不发`);
+    assert.equal(completeCalls, 1, '只发起首稿请求，修复预留被拒后不得发起调用');
     const task = getTask(db, 'p1', taskId)!;
     assert.match(task.errorMessage || '', /预算已耗尽/, '失败原因必须指向请求预算');
     assert.equal(
@@ -190,14 +188,14 @@ function makeBudgetTask(requestedCount: number): string {
       0,
       '预算耗尽的失败方案不得保存',
     );
-    assert.equal(budget.usedFor(1), 3, '方案级计数如实记录 3 次');
-    assert.equal(budget.taskTextUsed(), 3, '任务级计数如实记录 3 次');
+    assert.equal(budget.usedFor(1), 1, '方案级计数如实记录 1 次');
+    assert.equal(budget.taskTextUsed(), 1, '任务级计数如实记录 1 次');
   } finally {
     delete process.env.CREATIVE_STUDIO_SCRIPT_STUDIO_TEXT_REQUESTS_PER_PROPOSAL;
   }
 }
 
-// ── 集成（A9）：修复响应包外 ID → 该次修复失败，重生成后保存干净方案 ──
+// ── 集成（A9）：修复响应包外 ID → 失败关闭，不循环整篇重写 ──
 {
   const taskId = makeBudgetTask(1);
   let generateCalls = 0;
@@ -243,18 +241,11 @@ function makeBudgetTask(requestedCount: number): string {
     visionExtractor: { async extract() { throw new Error('不得重新提取图片'); } },
     reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('不得重新调用模型核验'); } },
   });
-  assert.equal(result.status, 'succeeded', '包外引用修复失败后，重生成合格方案必须能保存');
+  assert.equal(result.status, 'failed', '包外引用修复失败后不得保存或自动整篇重写');
   assert.equal(repairCalls, 1, '携带包外 ID 的修复只被调用一次');
-  assert.equal(generateCalls, 2, '修复被拒后进入下一轮重生成');
-  const saved = db.prepare(`SELECT contentJson FROM project_script_revisions ORDER BY rowid DESC LIMIT 1`).get() as { contentJson: string };
-  const content = JSON.parse(saved.contentJson) as ScriptStudioScriptContent;
-  const briefIds = new Set(library.sellingPoints.map((point) => point.id));
-  for (const segment of content.segments) {
-    for (const ref of segment.sellingPointIdRefs) {
-      assert.equal(briefIds.has(ref), true, `保存方案的引用必须在卖点包内（${ref}）`);
-    }
-  }
-  assert.equal(content.fullScript.includes('foreign-point-id'), false);
+  assert.equal(generateCalls, 1, '修复失败应保留原因交给补跑');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?').get(taskId) as { n: number }).n, 0);
+
 }
 
 // ScriptStudioError 语义守卫：预算错误使用专用错误码，任务级处理不会伪装成其他失败。
