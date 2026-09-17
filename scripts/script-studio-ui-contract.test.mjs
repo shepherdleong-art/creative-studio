@@ -69,4 +69,15 @@ assert.match(panel, /disabledByUser: !event.target.checked/, '排除与重新保
 assert.match(panel, /结尾检查通过/, '结尾检查状态必须独立展示');
 assert.match(panel, /语义审核通过/, '语义审核通过状态必须展示');
 assert.match(panel, /语义审核未执行/, '语义审核未执行必须如实展示，不得补成合格');
+
+// 2026-09-17 爆文模板改写（迁移方案 A03/A14）：模式入口、勾选数量语义与诚实展示。
+assert.match(panel, /爆文模板改写/, '生产模式必须提供爆文模板改写入口');
+assert.match(panel, /TemplateRewritePicker/, '必须挂载模板勾选组件');
+assert.match(panel, /templateEntryIds/, '创建任务必须提交勾选的模板条目');
+assert.match(panel, /写作估算 ≈ \{targetDurationSec \* 6\} 中文字\/条（±15%，不代表实际配音时长）/, '字数估算必须明示不代表实测配音时长');
+assert.match(panel, /结构：\{meta\.structureOrigin === 'fallback' \? '默认（表格未提供）' : '模板表格'\}/, '缺失结构必须如实标默认，不得显示成已精细分析');
+assert.match(panel, /未生成修改说明。/, '修改说明缺失必须如实展示，不得伪造');
+assert.match(panel, /模型自述，非证据审核/, '修改说明必须标注为模型自述而非证据审核');
+assert.match(panel, /这只是文字差异对照，不是原创率或合规证明/, '文字差异不得显示为原创率');
+assert.doesNotMatch(panel, /原创率\s*[:：]|原创率\s*\d|爆款概率|转化率\s*[:：]/, '不得杜撰原创率/爆款概率/转化率指标');
 console.log('script-studio UI contract tests passed');

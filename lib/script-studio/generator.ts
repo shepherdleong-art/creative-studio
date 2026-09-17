@@ -2,6 +2,7 @@ import { buildPainPlanningPrompt, PAIN_PATHS, PAIN_REVIEW_CHECKS, painWritingReq
 import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
 import { buildScriptDurationBudget, countScriptContentCharacters, estimateNarrationDurationSec } from '../script-duration-policy.ts';
 import type { DirectionSellingPointBrief } from './direction-briefs.ts';
+import { ScriptStudioError } from './errors.ts';
 import type { LibraryRevisionView } from './libraries.ts';
 import type { PlannedScript } from './planner.ts';
 import type { ScriptStudioCompleteJson } from './llm-contract.ts';
@@ -16,6 +17,29 @@ import { buildAudienceAnalysisPrompt } from './audience-profile.ts';
 import type { FrozenKnowledgeContext } from './knowledge-context.ts';
 import type { DistilledExpressionRef } from './distillation.ts';
 import { SELLING_POINT_DISTILL_RULE_VERSION } from './distillation.ts';
+import {
+  buildDraftRequest,
+  buildEnsureNoteRequest,
+  buildFilterRequest,
+  buildHumanizeRequest,
+  buildSmoothCheckRequest,
+  buildStyleAnalysisRequest,
+  charBoundsForTarget,
+  detectTemplateStyle,
+  extractScriptNote,
+  findResidualRuns,
+  parseDraftResponse,
+  parseFilterKeep,
+  parsePolishedText,
+  parseSegmentedText,
+  parseStyleAnalysis,
+  scriptCnLen,
+  styleGuideFromAnalysis,
+  TEMPLATE_REWRITE_VERSION,
+  TPL_STYLE_PRESETS,
+  targetCharsForDuration,
+  type TemplateStyleAnalysis,
+} from './template-rewrite.ts';
 import type {
   ScriptStudioScriptContent,
   ScriptStudioSegmentContent,
@@ -87,6 +111,42 @@ export interface ScriptTitleRepairInput extends ScriptGeneratorInput {
   titleIssues: ScriptTitleIssue[];
 }
 
+// ---------------------------------------------------------------------------
+// 爆文模板改写（迁移方案 §4）：单模板完整链路的输入/中间态/结果。
+// 中间态（筛选/风格/修改说明）由 runner 持久化到 generate 阶段 payload，
+// 恢复后已完成子阶段不重新收费；风格缓存由 runner 读写（generator 不持有 db）。
+// ---------------------------------------------------------------------------
+
+export interface TemplateRewriteResumeState {
+  /** 筛选后的冻结白名单（卖点 ID）；后续改写/修复只用这组。 */
+  whitelistPointIds?: string[];
+  filterDegraded?: string;
+  stylePresetKey?: string;
+  stylePresetName?: string;
+  /** undefined=未分析；null=分析失败降级；对象=成功结果（可写缓存）。 */
+  styleAnalysis?: TemplateStyleAnalysis | null;
+  styleDegraded?: string;
+  /** 修改说明（首稿 note 优先；缺失时有余额才补生成）。 */
+  note?: string;
+}
+
+export interface TemplateRewriteRunInput {
+  plan: PlannedScript;
+  libraryRevision: LibraryRevisionView;
+  /** 合格卖点（证据有效 ∧ 用户保留 ∧ 详解 verified），由 runner 过滤。 */
+  eligiblePoints: SellingPointRecord[];
+  targetDurationSec: number;
+  previousTitles: ScriptTitleSummary[];
+  resumeState?: TemplateRewriteResumeState;
+  onStateChange?: (state: TemplateRewriteResumeState) => void;
+  signal?: AbortSignal;
+}
+
+export interface TemplateRewriteRunResult {
+  content: ScriptStudioScriptContent;
+  state: TemplateRewriteResumeState;
+}
+
 /** 受约束正文修复输入（方案 §2.1）：只修正文质量问题，标题/时长/知识来源保持冻结。 */
 export interface ScriptBodyRepairInput extends ScriptGeneratorInput {
   content: ScriptStudioScriptContent;
@@ -114,6 +174,8 @@ export interface ScriptGenerator {
    * 缺省时 runner 直接使用本地降级画像，不阻塞脚本生成。
    */
   analyzeAudienceProfile?(input: AudienceAnalysisInput): Promise<unknown>;
+  /** 爆文模板改写：单模板完整链路（筛选→风格→首稿→修正→润色→终检→说明）。 */
+  runTemplateRewrite?(input: TemplateRewriteRunInput): Promise<TemplateRewriteRunResult>;
   generate(input: ScriptGeneratorInput): Promise<{ content: ScriptStudioScriptContent; attempts: number }>;
 }
 
@@ -698,6 +760,370 @@ export function createScriptGenerator(
         maxTokens: 2400,
         signal: input.signal,
       });
+    },
+    // ------------------------------------------------------------------
+    // 爆文模板改写（迁移方案 §4.4）：筛选 → 风格 → 首稿 → 字数修正 → 去 AI 味 →
+    // 朗读检查 → 终检 → 残留检查 → 修改说明。与源码的三处有意差异：
+    // 字数修正带当前稿件、修正保留 TPL_GEN_HINT 原约束、终检修正用冻结白名单。
+    // ------------------------------------------------------------------
+    async runTemplateRewrite(input) {
+      const template = input.plan.templateRewrite;
+      if (!template) throw new Error('template_rewrite_plan_template_required');
+      if (!input.eligiblePoints.length) throw new Error('template_rewrite_eligible_points_required');
+      const signal = input.signal;
+      const assertNotAborted = (error: unknown): void => {
+        if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      };
+      const state: TemplateRewriteResumeState = { ...(input.resumeState ?? {}) };
+      const emit = (): void => input.onStateChange?.({ ...state });
+      const eligible = input.eligiblePoints;
+      const reserve = (purpose: ScriptRequestPurpose): void => {
+        options.budget?.reserve({ planIndex: input.plan.index, purpose });
+      };
+      const formatSellingPoint = (point: SellingPointRecord): string =>
+        point.detailText && point.detailText !== point.title ? `${point.title}（${point.detailText}）` : point.title;
+
+      // 1. 按模板筛选卖点（迁移 filterTplSellingPoints；稳定组 ID；降级保留全部合格卖点）
+      if (!state.whitelistPointIds?.length) {
+        const allIds = eligible.map((point) => point.id);
+        if (eligible.length < 2) {
+          state.whitelistPointIds = allIds;
+          state.filterDegraded = '';
+        } else if (template.refText.trim().length < 20) {
+          state.whitelistPointIds = allIds;
+          state.filterDegraded = '参考文案过短，按源规则跳过筛选，使用全部合格卖点';
+        } else {
+          try {
+            reserve('filter');
+            const candidates = eligible.map((point, index) => ({ id: String(index + 1), text: formatSellingPoint(point) }));
+            const raw = await completeJson({
+              ...buildFilterRequest({ refSnippet: template.refText.slice(0, 600), candidates }),
+              temperature: 1,
+              signal,
+            });
+            const keep = parseFilterKeep(raw, candidates.map((candidate) => candidate.id));
+            if (!keep || keep.length === 0) {
+              state.whitelistPointIds = allIds;
+              state.filterDegraded = '筛选无有效结果，保留全部合格卖点';
+            } else {
+              state.whitelistPointIds = keep.map((id) => eligible[Number(id) - 1]!.id);
+              state.filterDegraded = '';
+            }
+          } catch (error) {
+            assertNotAborted(error);
+            state.whitelistPointIds = allIds;
+            state.filterDegraded = `筛选失败，保留全部合格卖点：${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+        emit();
+      }
+      const whitelist = state.whitelistPointIds!;
+      const whitelistPoints = eligible.filter((point) => whitelist.includes(point.id));
+      if (!whitelistPoints.length) throw new Error('template_rewrite_whitelist_empty');
+      const spTexts = whitelistPoints.map(formatSellingPoint);
+
+      // 2. 文风预设（本地检测）+ 参考全文风格分析（缓存/降级，迁移 analyzeStyle）
+      const presetKey = detectTemplateStyle({
+        title: template.title,
+        name: template.name,
+        refText: template.refText,
+        structSummary: template.structure,
+        subCategory: template.subCategory,
+        category: template.category,
+      });
+      const preset = TPL_STYLE_PRESETS[presetKey];
+      state.stylePresetKey = presetKey;
+      state.stylePresetName = preset.name;
+      if (state.styleAnalysis === undefined) {
+        if (template.refText.trim().length < 20) {
+          state.styleAnalysis = null;
+          state.styleDegraded = '参考文案过短，按源规则跳过风格分析，使用文风预设';
+        } else {
+          try {
+            reserve('style');
+            const raw = await completeJson({ ...buildStyleAnalysisRequest(template.refText), temperature: 1, signal });
+            const analysis = parseStyleAnalysis(raw);
+            state.styleAnalysis = analysis;
+            state.styleDegraded = analysis ? '' : '风格分析结果非法，使用文风预设继续';
+          } catch (error) {
+            assertNotAborted(error);
+            state.styleAnalysis = null;
+            state.styleDegraded = `风格分析失败，使用文风预设继续：${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+        emit();
+      }
+      const styleGuide = styleGuideFromAnalysis(state.styleAnalysis ?? null, template.refText);
+
+      // 3. 首稿（≤2 次尝试；refs 越界/结构非法本轮失败重试）
+      const targetChars = targetCharsForDuration(input.targetDurationSec);
+      const { min, max } = charBoundsForTarget(targetChars);
+      const draftBase = {
+        sellingPointTexts: spTexts,
+        refText: template.refText,
+        structure: template.structure,
+        styleGuide,
+        stylePresetGuide: preset.guide,
+        stylePresetNeg: preset.neg,
+        targetChars,
+        previousTitles: input.previousTitles.map((item) => item.title || '').filter(Boolean),
+      };
+      type Draft = {
+        title: string;
+        segments: Array<{ label: string; text: string; pointIds: string[] }>;
+        note: string;
+      };
+      const toDraft = (parsed: NonNullable<ReturnType<typeof parseDraftResponse>>): Draft => ({
+        title: parsed.title,
+        segments: parsed.segments.map((seg) => ({
+          label: seg.label,
+          text: seg.text,
+          pointIds: seg.refs.map((ref) => {
+            const point = whitelistPoints[Number(ref) - 1];
+            if (!point) throw new Error(`generated_script_out_of_package_ref:${ref}`);
+            return point.id;
+          }),
+        })),
+        note: parsed.note,
+      });
+      const draftTextOf = (draft: Draft): string =>
+        `标题：${draft.title}\n` + draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n');
+      const requestDraft = async (purpose: ScriptRequestPurpose, extra: { fixHint?: string; currentDraft?: string }): Promise<Draft> => {
+        reserve(purpose);
+        const raw = await completeJson({
+          ...buildDraftRequest({ ...draftBase, ...extra }),
+          temperature: 1,
+          maxTokens: 3000,
+          signal,
+        });
+        const parsed = parseDraftResponse(raw);
+        if (!parsed) throw new Error('template_rewrite_draft_invalid_output');
+        return toDraft(parsed);
+      };
+      let draft: Draft | undefined;
+      let lastDraftError: unknown;
+      for (let attempt = 1; attempt <= 2 && !draft; attempt += 1) {
+        try {
+          draft = await requestDraft('generate', {});
+        } catch (error) {
+          assertNotAborted(error);
+          if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
+          lastDraftError = error;
+        }
+      }
+      if (!draft) throw lastDraftError instanceof Error ? lastDraftError : new Error('template_rewrite_draft_failed');
+
+      const warnings: Array<{ code: string; message: string }> = [];
+      const cnOf = (value: Draft): number => scriptCnLen(value.title, value.segments.map((seg) => ({ narration: seg.text })));
+      const fixHintFor = (n: number): string =>
+        '当前约' + n + '字，目标约' + targetChars + '字（范围 ' + min + '~' + max + ' 字），请' + (n > max ? '精简' : '扩写')
+        + '到目标范围。只调整篇幅，保留全部卖点和【段名】结构，不要新增或删减卖点。';
+      // 字数修正（首稿后 / 终检后各最多 1 次；带当前稿与原约束；预算不足跳过并如实记录）
+      const fixLengthIfNeeded = async (current: Draft): Promise<Draft> => {
+        const n = cnOf(current);
+        if (n >= min && n <= max) return current;
+        try {
+          return await requestDraft('repair', { fixHint: fixHintFor(n), currentDraft: draftTextOf(current) });
+        } catch (error) {
+          assertNotAborted(error);
+          warnings.push({
+            code: 'template_length_fix_skipped',
+            message: `字数 ${n} 超出目标 ${targetChars}（±15%），字数修正未生效：${error instanceof Error ? error.message : String(error)}`,
+          });
+          return current;
+        }
+      };
+      draft = await fixLengthIfNeeded(draft);
+
+      // 4. 去 AI 味（可选润色；失败/预算不足保留上一有效稿并记录降级；守卫：段结构不变才接受）
+      let humanizeDegraded = '';
+      try {
+        reserve('polish');
+        const raw = await completeJson({
+          ...buildHumanizeRequest(draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n')),
+          temperature: 1,
+          signal,
+        });
+        const text = parsePolishedText(raw);
+        if (text) {
+          const reparsed = parseSegmentedText(text);
+          const noted = extractScriptNote(reparsed.segments);
+          if (noted.segments.length === draft.segments.length) {
+            draft = {
+              title: draft.title,
+              segments: noted.segments.map((seg, index) => ({ label: seg.label, text: seg.text, pointIds: draft!.segments[index]!.pointIds })),
+              note: [draft.note, noted.note].filter(Boolean).join('\n'),
+            };
+          } else {
+            humanizeDegraded = '去 AI 味改变了段落结构，保留原稿';
+          }
+        } else {
+          humanizeDegraded = '去 AI 味返回格式非法，保留原稿';
+        }
+      } catch (error) {
+        assertNotAborted(error);
+        humanizeDegraded = `去 AI 味未生效，保留原稿：${error instanceof Error ? error.message : String(error)}`;
+      }
+
+      // 5. 朗读流畅检查（可选润色；源码守卫：总长度变化 >300 字丢弃）
+      let smoothDegraded = '';
+      try {
+        reserve('polish');
+        const raw = await completeJson({
+          ...buildSmoothCheckRequest(draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n')),
+          temperature: 1,
+          signal,
+        });
+        const text = parsePolishedText(raw);
+        if (text) {
+          const reparsed = parseSegmentedText(text);
+          const noted = extractScriptNote(reparsed.segments);
+          const oldLen = draft.segments.reduce((sum, seg) => sum + seg.text.length, 0);
+          const newLen = noted.segments.reduce((sum, seg) => sum + seg.text.length, 0);
+          if (noted.segments.length === draft.segments.length && Math.abs(newLen - oldLen) <= 300) {
+            draft = {
+              title: draft.title,
+              segments: noted.segments.map((seg, index) => ({ label: seg.label, text: seg.text, pointIds: draft!.segments[index]!.pointIds })),
+              note: [draft.note, noted.note].filter(Boolean).join('\n'),
+            };
+          } else {
+            smoothDegraded = '朗读检查改动过大，保留原稿';
+          }
+        } else {
+          smoothDegraded = '朗读检查返回格式非法，保留原稿';
+        }
+      } catch (error) {
+        assertNotAborted(error);
+        smoothDegraded = `朗读检查未生效，保留原稿：${error instanceof Error ? error.message : String(error)}`;
+      }
+
+      // 6. 终检字数（润色可能微调篇幅；超限再修一次，仍用冻结白名单与原约束）
+      draft = await fixLengthIfNeeded(draft);
+
+      // 7. 参考产品信息残留检查（必需校验）：连续成句照抄 → 定向修复；仍残留/无余额则本模板失败
+      const residualRuns = findResidualRuns(template.refText, draft.segments.map((seg) => seg.text).join('\n'));
+      if (residualRuns.length > 0) {
+        const fixed = await requestDraft('repair', {
+          fixHint: `正文中「${residualRuns[0]!.slice(0, 30)}」等句子与参考文案逐字相同（参考产品信息残留），必须改写成本家产品说法，不得照抄参考成句。`,
+          currentDraft: draftTextOf(draft),
+        });
+        const stillResidual = findResidualRuns(template.refText, fixed.segments.map((seg) => seg.text).join('\n'));
+        if (stillResidual.length > 0) {
+          throw new Error(`template_rewrite_residual_reference_text:${stillResidual[0]!.slice(0, 20)}`);
+        }
+        draft = fixed;
+      }
+
+      // 8. 修改说明：首稿/修复稿 note 优先；缺失且预算有余才补生成（迁移 ensureTplNote）
+      let note = state.note ?? draft.note ?? '';
+      let noteMissing = false;
+      if (!note) {
+        try {
+          reserve('note');
+          const raw = await completeJson({
+            ...buildEnsureNoteRequest({
+              refText: template.refText,
+              body: draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n'),
+              sellingPointText: spTexts.join('\n'),
+            }),
+            temperature: 1,
+            signal,
+          });
+          const record = asRecord(raw);
+          note = (typeof record.note === 'string' ? record.note : '').trim().replace(/^【?修改说明】?[：:]?\s*/, '').trim();
+        } catch (error) {
+          assertNotAborted(error);
+        }
+        if (note) {
+          state.note = note;
+          emit();
+        } else {
+          noteMissing = true;
+        }
+      } else if (state.note === undefined) {
+        state.note = note;
+        emit();
+      }
+
+      // 9. 组装脚本内容（下游 reader 契约：version 4 + segments 非空；修改说明不进 segments）
+      const segments: ScriptStudioSegmentContent[] = draft.segments.map((seg, index) => ({
+        id: `segment-${index + 1}`,
+        narration: seg.text,
+        subtitle: normalizeAutomaticSubtitleText(seg.text),
+        sellingPointIdRefs: seg.pointIds,
+        sellingPointRefs: seg.pointIds.map((id) => whitelistPoints.find((point) => point.id === id)?.title || ''),
+        visualIntent: '',
+        visualKeywords: [],
+      }));
+      const usedIds = new Set(segments.flatMap((segment) => segment.sellingPointIdRefs));
+      const fullScript = segments.map((segment) => segment.narration).join('\n');
+      const contentCharacterCount = countScriptContentCharacters(fullScript);
+      const budget = buildScriptDurationBudget(input.targetDurationSec);
+      const estimatedNarrationDurationSec = estimateNarrationDurationSec(contentCharacterCount);
+      const displayName = buildScriptTitleContext(input.libraryRevision, null).displayName;
+      const content: ScriptStudioScriptContent = {
+        version: 4,
+        productionMode: 'template_rewrite',
+        templateRewrite: {
+          version: TEMPLATE_REWRITE_VERSION,
+          entryId: template.entryId,
+          revisionId: template.revisionId,
+          sourceTemplateId: template.sourceTemplateId,
+          templateName: template.name,
+          templateTitle: template.title,
+          category: template.category,
+          subCategory: template.subCategory,
+          refText: template.refText,
+          structure: template.structure,
+          structureOrigin: template.structureOrigin,
+          contentHash: template.contentHash,
+          stylePresetKey: state.stylePresetKey ?? presetKey,
+          stylePresetName: state.stylePresetName ?? preset.name,
+          styleAnalysis: (state.styleAnalysis ?? null) as Record<string, unknown> | null,
+          styleDegraded: state.styleDegraded ?? '',
+          whitelistPointIds: whitelist,
+          filterDegraded: state.filterDegraded ?? '',
+          targetChars,
+          note,
+          noteMissing,
+          humanizeDegraded,
+          smoothDegraded,
+        },
+        title: draft.title,
+        coverTitleParts: {
+          primary: displayName.slice(0, 12) || '产品',
+          secondary: '',
+          source: 'system_split',
+        },
+        platform: '淘宝逛逛',
+        tone: state.stylePresetName ?? preset.name,
+        templateId: `viral:${template.sourceTemplateId}`,
+        template: template.name || template.title || template.sourceTemplateId,
+        templateVersion: 1,
+        templateRationale: template.name || template.title,
+        shotSetId: '',
+        targetDurationSec: input.targetDurationSec,
+        targetNarrationDurationSec: budget.targetNarrationSec,
+        contentCharacterCount,
+        estimatedNarrationDurationSec,
+        durationStatus: contentCharacterCount < budget.minContentCharacters
+          ? 'too_short'
+          : contentCharacterCount > budget.maxContentCharacters ? 'too_long' : 'qualified',
+        direction: '爆文模板改写',
+        creativeBrief: '',
+        libraryRevisionId: input.libraryRevision.id,
+        sellingPointUsage: whitelistPoints.map((point) => ({
+          sellingPointId: point.id,
+          title: point.title,
+          status: usedIds.has(point.id) ? 'used' as const : 'omitted' as const,
+          reason: usedIds.has(point.id) ? '正文已引用' : '未写入正文',
+        })),
+        segments,
+        fullScript,
+        fullSubtitle: segments.map((segment) => segment.subtitle).join('\n'),
+        ...(warnings.length ? { warnings } : {}),
+      };
+      return { content, state };
     },
     async generate(input) {
       // 方向编排不可绕过：缺少 brief 直接失败，不得回退完整卖点库。

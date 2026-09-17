@@ -363,6 +363,80 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       ALTER TABLE script_studio_distilled_points ADD COLUMN supersededById TEXT;
     `,
   },
+  {
+    // 爆文模板库（2026-09-17，爆文模板改写模式）：独立于 catalogs 体系的三表——
+    // catalogs.kind 有 CHECK 约束，新增导入类型若改 CHECK 需重建表；独立表不动既有契约。
+    // 库级修订整体快照（指纹幂等），条目内容字段不可变、可用状态可人工调整；
+    // 历史任务通过 inputSnapshot 冻结的模板全文引用旧版内容，不受后续导入影响。
+    // style_cache：文风分析缓存，键 = 模板内容哈希 + 实际模型 + 提示词版本，只存完整成功结果。
+    version: 9,
+    sql: `
+      CREATE TABLE IF NOT EXISTS script_studio_viral_tpl_libraries (
+        id TEXT PRIMARY KEY,
+        currentRevisionId TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS script_studio_viral_tpl_revisions (
+        id TEXT PRIMARY KEY,
+        libraryId TEXT NOT NULL,
+        revisionNumber INTEGER NOT NULL,
+        sourceFilename TEXT NOT NULL,
+        sourceSha256 TEXT NOT NULL,
+        importReportJson TEXT NOT NULL DEFAULT '{}',
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY(libraryId) REFERENCES script_studio_viral_tpl_libraries(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssvtr_number ON script_studio_viral_tpl_revisions(libraryId, revisionNumber);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ssvtr_sha ON script_studio_viral_tpl_revisions(libraryId, sourceSha256);
+      CREATE TABLE IF NOT EXISTS script_studio_viral_tpl_entries (
+        id TEXT PRIMARY KEY,
+        revisionId TEXT NOT NULL,
+        sourceTemplateId TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT '',
+        subCategory TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        refText TEXT NOT NULL,
+        structureRaw TEXT NOT NULL DEFAULT '',
+        structureSummary TEXT NOT NULL DEFAULT '',
+        structure TEXT NOT NULL DEFAULT '',
+        structureOrigin TEXT NOT NULL DEFAULT 'fallback',
+        rawColumnsJson TEXT NOT NULL DEFAULT '{}',
+        sourceSheet TEXT NOT NULL DEFAULT '',
+        sourceRow INTEGER NOT NULL DEFAULT 0,
+        sourceFileSha256 TEXT NOT NULL DEFAULT '',
+        contentHash TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'usable',
+        statusReason TEXT NOT NULL DEFAULT '',
+        statusUpdatedBy TEXT NOT NULL DEFAULT 'import',
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY(revisionId) REFERENCES script_studio_viral_tpl_revisions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_ssvte_revision ON script_studio_viral_tpl_entries(revisionId);
+      CREATE INDEX IF NOT EXISTS idx_ssvte_source ON script_studio_viral_tpl_entries(sourceTemplateId);
+      CREATE INDEX IF NOT EXISTS idx_ssvte_status ON script_studio_viral_tpl_entries(revisionId, status);
+      CREATE TABLE IF NOT EXISTS script_studio_viral_tpl_style_cache (
+        contentHash TEXT NOT NULL,
+        model TEXT NOT NULL,
+        promptVersion TEXT NOT NULL,
+        analysisJson TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        PRIMARY KEY (contentHash, model, promptVersion)
+      );
+    `,
+  },
+  {
+    // 卖点「详解」（2026-09-17，爆文模板改写模式）：detailText 是同次视觉提取输出的
+    // 多句解释（创作语境，不是新事实来源）；detailStatus 本地确定性判定——
+    // missing（无详解）/ verified（详解中的数字与高风险词均能在 factText+evidenceQuote
+    // 中找到依据）/ unverified（否则，该卖点在模板改写模式下暂不可用并显示原因）。
+    version: 10,
+    sql: `
+      ALTER TABLE script_studio_selling_points ADD COLUMN detailText TEXT NOT NULL DEFAULT '';
+      ALTER TABLE script_studio_selling_points ADD COLUMN detailStatus TEXT NOT NULL DEFAULT 'missing';
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =
@@ -471,6 +545,10 @@ function assertTablesExist(db: Database.Database): void {
     'script_studio_copy_hook_templates',
     'script_studio_visual_hook_templates',
     'script_studio_template_assets',
+    'script_studio_viral_tpl_libraries',
+    'script_studio_viral_tpl_revisions',
+    'script_studio_viral_tpl_entries',
+    'script_studio_viral_tpl_style_cache',
   ];
   for (const table of tables) {
     const row = db.prepare(

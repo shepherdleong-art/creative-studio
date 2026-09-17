@@ -4,6 +4,8 @@ import { ScriptStudioError } from '@/lib/script-studio/errors';
 import { assertScriptStudioApiReady, errorResponse } from '@/lib/script-studio/http';
 import { getTask, createTask } from '@/lib/script-studio/tasks';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
+import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
+import type { FrozenViralTemplateSpec } from '@/lib/script-studio/types';
 import { createHash } from 'node:crypto';
 
 export const runtime = 'nodejs';
@@ -24,13 +26,22 @@ export async function POST(
     }
     const parentInput = JSON.parse(parent.inputSnapshotJson || '{}') as Record<string, unknown>;
     const isPain = parentInput.productionMode === 'pain_solving_15s';
+    const isTemplateRewrite = parentInput.productionMode === 'template_rewrite';
     const planStage = parent.stages.find((stage) => stage.stage === 'plan' && stage.status === 'succeeded');
     const planPayload = JSON.parse(planStage?.payloadJson || '{}') as { painPlanning?: { opportunities?: unknown[] } };
     const completed = db.prepare('SELECT validationJson FROM project_script_revisions WHERE generationTaskId = ?').all(taskId) as Array<{ validationJson: string }>;
     const completedIndexes = new Set(completed.map((row) => (JSON.parse(row.validationJson) as { generationPlanIndex?: number }).generationPlanIndex));
     const remaining = isPain ? planPayload.painPlanning?.opportunities?.filter((_, index) => !completedIndexes.has(index + 1)) : undefined;
     if (remaining?.length === 0) throw new ScriptStudioError('conflict', '内容机会已处理完毕，机会不足不属于生成失败');
-    const requestedCount = remaining?.length ?? Math.max(1, parent.requestedCount - parent.succeededCount);
+    // 模板改写补跑：模板计划过滤为未完成模板并重算指纹（数量与模板数一致的契约不变）。
+    let retryTemplatePlan: { templates: FrozenViralTemplateSpec[]; fingerprint: string } | undefined;
+    if (isTemplateRewrite) {
+      const parentPlan = parentInput.templatePlan as { templates?: FrozenViralTemplateSpec[] } | undefined;
+      const remainingTemplates = (parentPlan?.templates ?? []).filter((_, index) => !completedIndexes.has(index + 1));
+      if (remainingTemplates.length === 0) throw new ScriptStudioError('conflict', '模板已全部处理完毕，没有需要补跑的模板');
+      retryTemplatePlan = { templates: remainingTemplates, fingerprint: templatePlanFingerprint(remainingTemplates) };
+    }
+    const requestedCount = remaining?.length ?? retryTemplatePlan?.templates.length ?? Math.max(1, parent.requestedCount - parent.succeededCount);
     const requestKey = `retry:${taskId}:${createHash('sha256').update(`${projectId}|${taskId}|${requestedCount}`).digest('hex')}`;
     const existingRetry = db.prepare(`
       SELECT id FROM script_studio_tasks WHERE projectId = ? AND requestKey = ? AND parentTaskId = ?
@@ -64,6 +75,7 @@ export async function POST(
       libraryRevisionId: savedLibraryRevisionId || parent.libraryRevisionId,
       inputSnapshot: {
         ...parentInput,
+        ...(retryTemplatePlan ? { templatePlan: retryTemplatePlan } : {}),
         ...(remaining ? { painRetryOpportunities: remaining, painPriorOpportunities: [
           ...(Array.isArray(parentInput.painPriorOpportunities) ? parentInput.painPriorOpportunities : []),
           ...(planPayload.painPlanning?.opportunities?.filter((_, index) => completedIndexes.has(index + 1)) ?? []),

@@ -28,7 +28,11 @@ import {
 // v16：默认直接使用提取事实，取消额外提炼；多页提取共享并发队列。
 // v17：CTA 链接落版合法化（cta-ending-v3）+ 受众画像进 plan 阶段（audience-profile-v1，
 //      模型分析/本地降级、画像绑定方向并参与卖点编排排序，失败不阻塞任务）。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 18;
+// v18：痛点解决型 15 秒模式（pain_solving_15s）：内容机会规划、三子路径、
+//      机会不足不凑数（shortageCount 不计失败）。
+// v19：爆文模板改写模式（template_rewrite）：模板全文快照进任务身份、按模板筛选白名单、
+//      文风预设/风格分析、改写与后处理链（字数修正带当前稿、残留校验、修改说明）。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 19;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

@@ -33,6 +33,7 @@ import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles, type TileSetR
 import {
   finishStage,
   getTask,
+  mergeStagePayload,
   startStage,
   updateTask,
 } from './tasks.ts';
@@ -40,6 +41,17 @@ import { describeValidationIssues, validateScriptContent } from './validation.ts
 import { applyScriptTitleRepair, buildScriptTitleContext, checkScriptTitles, type ScriptTitleSummary } from './title-policy.ts';
 import { checkTitleEmbedding } from './title-embedding.ts';
 import { comparePageIdentityPairs, findCrossProductConflict } from './page-identity.ts';
+import {
+  parseFrozenTemplatePlan,
+  TEMPLATE_REWRITE_VERSION,
+  templatePlanFingerprint,
+} from './template-rewrite.ts';
+import {
+  readViralTemplateStyleCache,
+  writeViralTemplateStyleCache,
+} from './viral-templates.ts';
+import type { TemplateRewriteResumeState } from './generator.ts';
+import type { FrozenViralTemplateSpec, SellingPointRecord } from './types.ts';
 import {
   checkScriptEndingQuality,
   parseScriptEndingReview,
@@ -273,6 +285,18 @@ interface GeneratedCandidate {
  * - 审核指纹绑定正文与来源修订，保存前核对（正文变化则旧审核失效）。
  */
 function buildValidationJson(content: ScriptStudioScriptContent, review: EndingReviewOutcome, libraryRevisionId: string): Record<string, unknown> {
+  // 模板改写模式无 CTA 强制与语义审核（源项目没有该阶段）：如实标注 not_required。
+  if (content.templateRewrite) {
+    return {
+      durationStatus: content.durationStatus,
+      contentCharacterCount: content.contentCharacterCount,
+      copyCheck: {
+        endingStatus: 'not_required',
+        semanticReview: 'not_required',
+        policyVersion: TEMPLATE_REWRITE_VERSION,
+      },
+    };
+  }
   // 保存前核对（A10）：标题修复不改正文，指纹应一致；不一致（正文被改）则旧审核失效。
   const reviewPassed = review.status === 'passed'
     && review.fingerprint === scriptReviewFingerprint(content.fullScript, libraryRevisionId);
@@ -316,6 +340,8 @@ async function repairTitlesAndSave<T>(
         libraryRevision: input.libraryRevision,
         context,
         previousTitles: [...input.previousScripts, ...previousTitles],
+        // 模板改写只有单标题语义，封面字段不检查；其他模式保持三字段。
+        ...(content.templateRewrite ? { fields: ['title' as const] } : {}),
       });
       if (issues.length) return { issues, previousTitles };
       if (content.knowledgeContext && input.knowledgeContext) {
@@ -527,10 +553,12 @@ export async function executeScriptStudioTask(
   const task = getTask(db, projectId, taskId);
   if (!task) throw new ScriptStudioError('not_found', '任务不存在');
   const input = deps.inputSnapshot;
-  let productionMode: 'standard' | 'pain_solving_15s';
+  let productionMode: 'standard' | 'pain_solving_15s' | 'template_rewrite';
   let targetDurationSec: number;
   let requestedCount: number;
   let creativeBrief: string;
+  // 爆文模板改写：任务创建时冻结的模板全文快照（含选择顺序）。
+  let frozenTemplates: FrozenViralTemplateSpec[] = [];
   // 知识/模板目录推荐在创建任务时冻结在 inputSnapshot；runner 只读快照，
   // 设置页切换当前目录版本不改变运行中任务。
   const knowledgeContext = parseKnowledgeContext(input.knowledgeContext);
@@ -539,6 +567,15 @@ export async function executeScriptStudioTask(
     productionMode = parseScriptProductionMode(input.productionMode, targetDurationSec);
     requestedCount = parseRequestedCount(input);
     creativeBrief = parseCreativeBrief(input);
+    if (productionMode === 'template_rewrite') {
+      frozenTemplates = parseFrozenTemplatePlan(input.templatePlan);
+      if (frozenTemplates.length === 0) {
+        throw new ScriptStudioError('invalid_input', '爆文模板改写需要至少 1 个可用模板');
+      }
+      if (frozenTemplates.length !== requestedCount) {
+        throw new ScriptStudioError('invalid_input', '生成数量必须与选中模板数一致（每个模板生成一条）');
+      }
+    }
   } catch (error) {
     await updateTask(db, projectId, taskId, {
       status: 'failed',
@@ -787,7 +824,45 @@ export async function executeScriptStudioTask(
     let briefs: DirectionSellingPointBrief[];
     let priorPainOpportunities: NonNullable<ScriptStudioScriptContent['painSolving']>[] = [];
     let painPlanning: (ReturnType<typeof parsePainPlanning> & { fingerprint: string }) | null = null;
-    if (productionMode === 'pain_solving_15s') {
+    // 爆文模板改写：合格卖点 = 证据有效 ∧ 用户保留 ∧ 结构重验通过 ∧ 详解 verified。
+    let templateEligiblePoints: SellingPointRecord[] = [];
+    if (productionMode === 'template_rewrite') {
+      templateEligiblePoints = libraryRevision!.sellingPoints.filter((point) =>
+        isSellingPointEvidenceUsable(point)
+        && storedEvidenceIsStructurallyUsable(point, evidenceBounds)
+        && point.detailStatus === 'verified');
+      if (!templateEligiblePoints.length) {
+        throw new ScriptStudioError(
+          'evidence_insufficient',
+          '没有带有效详解的合格卖点：爆文模板改写需要含详解且通过证据校验的卖点。旧卖点库缺少详解时，请重新从详情页提取，或在卖点库中编辑补充详解',
+        );
+      }
+      plansWithRecommendations = frozenTemplates.map((spec, index) => ({
+        index: index + 1,
+        templateId: `viral:${spec.sourceTemplateId}`,
+        templateName: spec.name || spec.title || spec.sourceTemplateId,
+        templateVersion: 1,
+        rationale: spec.name || spec.title ? `爆文模板「${spec.name || spec.title}」` : '爆文模板改写',
+        direction: 'template_rewrite',
+        angle: '',
+        templateRewrite: spec,
+      }));
+      plans = { plans: plansWithRecommendations, audience: '', tone: '自然口语', platform: '淘宝逛逛' };
+      // 合成卖点包：初始为全部合格卖点；模板筛选完成后由 worker 更新为本模板白名单。
+      // 包装语义与方向卖点包一致（模型只能看到包内候选），但不走方向轮换/配额编排。
+      briefs = plansWithRecommendations.map((plan) => ({
+        planIndex: plan.index,
+        templateId: plan.templateId,
+        themeKey: '',
+        themeTitle: plan.templateName,
+        requiredPointIds: templateEligiblePoints.map((point) => point.id),
+        optionalPointIds: [],
+        candidateCount: templateEligiblePoints.length,
+        degraded: false,
+        rationale: '爆文模板筛选白名单（初始为全部合格卖点）',
+      }));
+      audienceSegmentByPlan = new Map();
+    } else if (productionMode === 'pain_solving_15s') {
       const eligibleLibrary = { ...libraryRevision!, sellingPoints: libraryRevision!.sellingPoints.filter((point) =>
         isSellingPointEvidenceUsable(point) && storedEvidenceIsStructurallyUsable(point, evidenceBounds)) };
       if (!eligibleLibrary.sellingPoints.length) throw new ScriptStudioError('evidence_insufficient', '没有可用于内容机会分析的已核验事实');
@@ -925,13 +1000,41 @@ export async function executeScriptStudioTask(
       }, 'evidence_insufficient', now);
       throw new ScriptStudioError('evidence_insufficient', '可用证据不足：卖点库中没有通过证据门禁且可用的卖点，请先在卖点库中补充或恢复可用卖点');
     }
+    // 模板改写的 plan 阶段快照只记模板摘要：完整参考文案已冻结在任务 inputSnapshot，
+    // 阶段 payload 不重复存全文；模板身份（内容哈希+结构来源）保留供追溯。
+    const planStagePlans: unknown = productionMode === 'template_rewrite'
+      ? plansWithRecommendations.map((plan) => ({
+          index: plan.index,
+          templateId: plan.templateId,
+          templateName: plan.templateName,
+          rationale: plan.rationale,
+          direction: plan.direction,
+          templateRewrite: {
+            entryId: plan.templateRewrite!.entryId,
+            revisionId: plan.templateRewrite!.revisionId,
+            sourceTemplateId: plan.templateRewrite!.sourceTemplateId,
+            name: plan.templateRewrite!.name,
+            title: plan.templateRewrite!.title,
+            category: plan.templateRewrite!.category,
+            subCategory: plan.templateRewrite!.subCategory,
+            structure: plan.templateRewrite!.structure,
+            structureOrigin: plan.templateRewrite!.structureOrigin,
+            contentHash: plan.templateRewrite!.contentHash,
+            refTextLength: plan.templateRewrite!.refText.length,
+          },
+        }))
+      : plansWithRecommendations;
     finishStage(db, projectId, taskId, 'plan', 'succeeded', {
       audience: plans.audience,
       tone: plans.tone,
       platform: plans.platform,
       audienceProfile: audienceProfile ? serializeAudienceProfile(audienceProfile) : null,
-      plans: plansWithRecommendations,
+      plans: planStagePlans,
       briefs: briefSnapshots,
+      ...(productionMode === 'template_rewrite' ? {
+        templateEligiblePointIds: templateEligiblePoints.map((point) => point.id),
+        templatePlanFingerprint: templatePlanFingerprint(frozenTemplates),
+      } : {}),
       ...(painPlanning ? { painPlanning, opportunityCount: plansWithRecommendations.length, shortageCount: requestedCount - plansWithRecommendations.length } : {}),
       knowledgeContext: knowledgeContext ? serializeKnowledgeForStage(knowledgeContext) : null,
     }, null, now);
@@ -963,6 +1066,91 @@ export async function executeScriptStudioTask(
     }
     await updateTask(db, projectId, taskId, { succeededCount: scriptIds.length, failedCount: 0 }, now);
     type InitialResult = { candidate?: GeneratedCandidate; error?: unknown };
+    // ------------------------------------------------------------------
+    // 爆文模板改写：恢复每模板中间态（筛选/风格/修改说明），指纹不匹配的旧状态作废；
+    // 风格分析缓存命中直接复用（键=模板内容哈希+实际模型+提示词版本），不重新收费。
+    // ------------------------------------------------------------------
+    const templateStates: Record<number, TemplateRewriteResumeState> = {};
+    if (productionMode === 'template_rewrite') {
+      const generatePayload = readStagePayload(db, taskId, 'generate');
+      const planFingerprintValue = templatePlanFingerprint(frozenTemplates);
+      const storedStates = generatePayload.templatePlanFingerprint === planFingerprintValue
+        ? stagePayload(generatePayload.templateStates)
+        : {};
+      const providerModel = typeof input.providerModel === 'string' ? input.providerModel : '';
+      for (const plan of plansWithRecommendations) {
+        const spec = plan.templateRewrite!;
+        const stored = stagePayload(storedStates[String(plan.index)]) as TemplateRewriteResumeState;
+        const state: TemplateRewriteResumeState = { ...stored };
+        if (state.styleAnalysis === undefined && providerModel) {
+          const cached = readViralTemplateStyleCache(db, spec.contentHash, providerModel, TEMPLATE_REWRITE_VERSION);
+          if (cached) {
+            try {
+              state.styleAnalysis = JSON.parse(cached.analysisJson) as TemplateRewriteResumeState['styleAnalysis'];
+              state.styleDegraded = '';
+            } catch {
+              // 缓存损坏按未命中处理，正常走分析（不会额外收费于已完成的筛选阶段）。
+            }
+          }
+        }
+        templateStates[plan.index] = state;
+        // 恢复时同步把筛选白名单回灌进卖点包（标题修复与校验边界使用同一白名单）。
+        if (state.whitelistPointIds?.length) {
+          const brief = briefByPlanIndex.get(plan.index);
+          if (brief) {
+            brief.requiredPointIds = state.whitelistPointIds;
+            brief.candidateCount = state.whitelistPointIds.length;
+          }
+        }
+      }
+    }
+    const runTemplateInitial = async (plan: (typeof plansWithRecommendations)[number]): Promise<InitialResult> => {
+      const spec = plan.templateRewrite!;
+      if (!deps.generator.runTemplateRewrite) {
+        return { error: new ScriptStudioError('invalid_input', '当前生成器不支持爆文模板改写') };
+      }
+      try {
+        if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+        const result = await deps.generator.runTemplateRewrite({
+          plan,
+          libraryRevision: libraryRevision!,
+          eligiblePoints: templateEligiblePoints,
+          targetDurationSec,
+          previousTitles: [...createdScripts, ...recentTitles],
+          resumeState: templateStates[plan.index],
+          onStateChange: (next) => {
+            templateStates[plan.index] = next;
+            mergeStagePayload(deps.db, projectId, taskId, 'generate', {
+              templatePlanFingerprint: templatePlanFingerprint(frozenTemplates),
+              templateStates: Object.fromEntries(Object.entries(templateStates).map(([key, value]) => [String(key), value])),
+            }, now);
+            if (next.whitelistPointIds?.length) {
+              const brief = briefByPlanIndex.get(plan.index);
+              if (brief) {
+                brief.requiredPointIds = next.whitelistPointIds;
+                brief.candidateCount = next.whitelistPointIds.length;
+              }
+            }
+            // 风格缓存只写完整成功结果（降级/null 不写），键含模板内容哈希+模型+提示词版本。
+            if (next.styleAnalysis) {
+              const providerModel = typeof input.providerModel === 'string' ? input.providerModel : '';
+              if (providerModel) {
+                writeViralTemplateStyleCache(deps.db, {
+                  contentHash: spec.contentHash,
+                  model: providerModel,
+                  promptVersion: TEMPLATE_REWRITE_VERSION,
+                  analysisJson: JSON.stringify(next.styleAnalysis),
+                }, now);
+              }
+            }
+          },
+          signal,
+        });
+        return { candidate: { content: result.content, endingReview: { status: 'unreviewed' } } };
+      } catch (error) {
+        return { error };
+      }
+    };
     // 按完成顺序串行完成兄弟方案校验、标题修复与保存，异步修复期间不允许另一方案抢先保存。
     const finalizeProposal = async (index: number, initial: InitialResult): Promise<void> => {
       const plan = plansWithRecommendations[index]!;
@@ -986,6 +1174,14 @@ export async function executeScriptStudioTask(
           titleEmbeddingContext,
         });
         if (!bodyValidationPassed(siblingValidation)) {
+          // 模板改写没有方向重试链（源项目无 validationFeedback 循环）：
+          // 白名单/零引用/相似度等校验失败即该模板失败，记录具体原因，其他模板继续。
+          if (productionMode === 'template_rewrite') {
+            throw new ScriptStudioError(
+              'invalid_input',
+              `脚本未通过校验：${describeValidationIssues(bodyValidationIssues(siblingValidation), { titleIssues: siblingValidation.titleIssues }).slice(0, 3).join('；')}`,
+            );
+          }
           candidate = await generateValidatedScript(
             deps,
             libraryRevision!,
@@ -1068,12 +1264,14 @@ export async function executeScriptStudioTask(
         if (!brief) throw new ScriptStudioError('invalid_input', `缺少方案 ${plan.index} 的方向卖点包`);
         let initial: InitialResult;
         try {
-          initial = { candidate: await generateValidatedScript(
-            deps, libraryRevision!, plan, brief,
-            { ...generationContext, audienceSegment: audienceSegmentByPlan.get(plan.index) },
-            [...createdScripts], knowledgeContext, recentTitles, distilledExpressions,
-            [...priorPainOpportunities, ...(painPlanning?.opportunities.filter((_, index) => index + 1 !== plan.index) ?? [])],
-          ) };
+          initial = productionMode === 'template_rewrite'
+            ? await runTemplateInitial(plan)
+            : { candidate: await generateValidatedScript(
+                deps, libraryRevision!, plan, brief,
+                { ...generationContext, audienceSegment: audienceSegmentByPlan.get(plan.index) },
+                [...createdScripts], knowledgeContext, recentTitles, distilledExpressions,
+                [...priorPainOpportunities, ...(painPlanning?.opportunities.filter((_, index) => index + 1 !== plan.index) ?? [])],
+              ) };
         } catch (error) {
           initial = { error };
         }

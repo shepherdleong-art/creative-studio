@@ -12,7 +12,9 @@ import type Database from 'better-sqlite3';
 import { ScriptStudioError } from './errors.ts';
 import { getScriptStudioLimits } from './limits.ts';
 
-export type ScriptRequestPurpose = 'generate' | 'repair' | 'review' | 'fallback' | 'title_repair' | 'distill';
+export type ScriptRequestPurpose = 'generate' | 'repair' | 'review' | 'fallback' | 'title_repair' | 'distill'
+  /** 爆文模板改写的筛选 / 风格分析 / 可选润色 / 修改说明补生成（共享方案余额，仅占位标签）。 */
+  | 'filter' | 'style' | 'polish' | 'note';
 
 export interface ScriptRequestBudgetScope {
   planIndex: number;

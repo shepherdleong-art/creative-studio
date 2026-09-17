@@ -78,6 +78,10 @@ const expectedTables = [
   'script_studio_task_stages',
   'script_studio_task_request_usage',
   'script_studio_distilled_points',
+  'script_studio_viral_tpl_libraries',
+  'script_studio_viral_tpl_revisions',
+  'script_studio_viral_tpl_entries',
+  'script_studio_viral_tpl_style_cache',
   'project_scripts',
   'project_script_revisions',
 ];
@@ -262,14 +266,17 @@ const legacyMigration = await ensureScriptStudioSchemaReady({
   now: () => new Date('2026-08-31T00:07:00.000Z'),
 });
 assert.equal(legacyMigration.state, 'ready');
-assert.deepEqual(legacyMigration.state === 'ready' ? legacyMigration.appliedVersions : [], [2, 3, 4, 5, 6, 7, 8], '老库只追加新版本，不改写已发布的 v1');
+assert.deepEqual(legacyMigration.state === 'ready' ? legacyMigration.appliedVersions : [], [2, 3, 4, 5, 6, 7, 8, 9, 10], '老库只追加新版本，不改写已发布的 v1');
 const legacyPoint = legacyDb.prepare(`SELECT * FROM script_studio_selling_points WHERE id = 'legacy-point'`).get() as {
   themeKey: string; themeTitle: string; hierarchyRole: string; importance: number; evidenceRefsJson: string;
+  detailText: string; detailStatus: string;
 };
 assert.equal(legacyPoint.themeKey, 'p0:老卖点', 'v3 迁移把老 themeKey 规范化为页码+标题');
 assert.equal(legacyPoint.themeTitle, '老卖点', '迁移后老数据 themeTitle 回退为卖点标题');
 assert.equal(legacyPoint.hierarchyRole, 'supporting');
 assert.equal(legacyPoint.importance, 50);
+assert.equal(legacyPoint.detailText, '', 'v10 迁移后老卖点无详解');
+assert.equal(legacyPoint.detailStatus, 'missing', 'v10 迁移后老卖点详解状态为 missing（旧库缺详解有明确处理，不冒充已迁移）');
 assert.deepEqual(
   JSON.parse(legacyPoint.evidenceRefsJson),
   [{ pageIndex: 0, tileRef: 'tile_2' }],

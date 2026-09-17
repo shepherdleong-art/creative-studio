@@ -60,6 +60,7 @@ export async function POST(
         disabledByUser: typeof value.disabledByUser === 'boolean' ? value.disabledByUser : undefined,
         factText: typeof value.factText === 'string' ? value.factText : undefined,
         title: typeof value.title === 'string' ? value.title : undefined,
+        detailText: typeof value.detailText === 'string' ? value.detailText : undefined,
       };
     }) : [];
     if (edits.length === 0) throw new ScriptStudioError('invalid_input', '至少需要修改一条卖点');

@@ -11,6 +11,8 @@ import {
   SCRIPT_GENERATION_UI_OPTIONS,
   SCRIPT_TARGET_DURATION_OPTIONS,
 } from '@/lib/script-studio/generation-contract';
+import TemplateRewritePicker from './TemplateRewritePicker';
+import { diffMarkWords } from '@/lib/script-studio/diff-mark';
 
 interface Props {
   projectId: string;
@@ -93,6 +95,8 @@ interface LibraryRevisionViewLite {
     evidenceGate: string;
     riskLevel?: string;
     evidenceRefsJson?: string;
+    detailText?: string;
+    detailStatus?: 'missing' | 'verified' | 'unverified';
   }>;
 }
 
@@ -409,6 +413,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [regenerateMode, setRegenerateMode] = useState<ScriptProductionMode>('standard');
   const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [requestedCount, setRequestedCount] = useState(3);
+  /** 爆文模板改写：勾选的模板条目 ID（选择顺序即生成顺序；数量=勾选数）。 */
+  const [templateEntryIds, setTemplateEntryIds] = useState<string[]>([]);
   /** 「再生成一组」本次专用参数:与第 1 页表单不共享隐式状态,切换结果组时按 inputSnapshot 初始化一次。 */
   const [regenerateDuration, setRegenerateDuration] = useState(15);
   const [regenerateCount, setRegenerateCount] = useState(3);
@@ -616,6 +622,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     productionMode?: ScriptProductionMode;
     providerId: string;
     requestKey?: string;
+    templateEntryIds?: string[];
   }): Promise<boolean> => {
     if (!request.providerId) {
       setError('请先选择一个已配置且支持图片读取的脚本模型');
@@ -636,6 +643,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
           productionMode: request.productionMode,
           providerId: request.providerId,
           ...(request.requestKey ? { requestKey: request.requestKey } : {}),
+          ...(request.templateEntryIds?.length ? { templateEntryIds: request.templateEntryIds } : {}),
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -683,15 +691,22 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       setError('请先上传至少一张详情页图片，或先准备好可复用的卖点库');
       return;
     }
+    if (productionMode === 'template_rewrite' && templateEntryIds.length === 0) {
+      setError('爆文模板改写需要先勾选 1-6 个模板');
+      return;
+    }
+    const effectiveCount = productionMode === 'template_rewrite' ? templateEntryIds.length : requestedCount;
+    const templateIds = productionMode === 'template_rewrite' ? templateEntryIds : undefined;
     if (assets.length === 0 && libraryReady) {
       await startTask({
         sourceSetId: null,
         libraryRevisionId: null,
         targetDurationSec,
-        requestedCount,
+        requestedCount: effectiveCount,
         creativeBrief,
         productionMode,
         providerId,
+        ...(templateIds ? { templateEntryIds: templateIds } : {}),
       });
       return;
     }
@@ -709,12 +724,13 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       sourceSetId: data.sourceSetId as string,
       libraryRevisionId: null,
       targetDurationSec,
-      requestedCount,
+      requestedCount: effectiveCount,
       creativeBrief,
       productionMode,
       providerId,
+      ...(templateIds ? { templateEntryIds: templateIds } : {}),
     });
-  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask]);
+  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask, templateEntryIds]);
 
   const switchRevision = useCallback(async (scriptId: string, revisionId: string) => {
     await fetch(`/api/projects/${projectId}/script-studio/scripts/${scriptId}/current`, {
@@ -1158,27 +1174,53 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 }} className="input-field">
                   <option value="standard">多方向生成</option>
                   <option value="pain_solving_15s">痛点解决型 · 15秒</option>
+                  <option value="template_rewrite">爆文模板改写</option>
                 </select>
                 {productionMode === 'pain_solving_15s' && <p className="mt-1.5 text-xs text-ink-tertiary">先筛选有依据的内容机会，再生成脚本；机会不足时少产，不凑数量。</p>}
+                {productionMode === 'template_rewrite' && <p className="mt-1.5 text-xs text-ink-tertiary">推荐并勾选爆文模板，每个模板按参考文风改写成一条本家脚本。</p>}
               </div>
               <div>
                 <label className="label">目标时长</label>
                 <select disabled={productionMode === 'pain_solving_15s'} value={targetDurationSec} onChange={(event) => setTargetDurationSec(Number(event.target.value))} className="input-field">
                   {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                 </select>
+                {productionMode === 'template_rewrite' && (
+                  <p className="mt-1.5 text-xs text-ink-tertiary">写作估算 ≈ {targetDurationSec * 6} 中文字/条（±15%，不代表实际配音时长）</p>
+                )}
               </div>
+              {productionMode === 'template_rewrite' ? (
+              <div>
+                <label className="label">生成数量</label>
+                <div className="flex h-9 items-center text-sm text-ink-secondary">{templateEntryIds.length > 0 ? `${templateEntryIds.length} 条（等于已勾选数量）` : '由已勾选数量决定'}</div>
+              </div>
+              ) : (
               <div>
                 <label className="label">生成数量</label>
                 <select value={requestedCount} onChange={(event) => setRequestedCount(Number(event.target.value))} className="input-field">
                   {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count} 条并列方案</option>)}
                 </select>
               </div>
+              )}
               <div>
                 <label className="label">已添加图片</label>
                 <div className="flex h-9 items-center text-sm text-ink-secondary">{assets.length} 张</div>
               </div>
             </section>
 
+            {productionMode === 'template_rewrite' && (
+              <section className="rounded-[18px] border border-hairline p-4">
+                <label className="label">选择爆文模板（1-6 个，每个模板生成 1 条）</label>
+                <TemplateRewritePicker
+                  projectId={projectId}
+                  libraryRevisionId={libraryRevisionId}
+                  selectedIds={templateEntryIds}
+                  onChange={setTemplateEntryIds}
+                  disabled={submitting}
+                />
+              </section>
+            )}
+
+            {productionMode !== 'template_rewrite' && (
             <div>
               <label className="label">创作要求（可选）</label>
               <textarea
@@ -1189,16 +1231,17 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 className="input-field"
               />
             </div>
+            )}
 
             <div className="flex items-center justify-between gap-4 border-t border-hairline pt-4">
               <p className="text-xs text-ink-tertiary">✓ 卖点首次提取后固定保存；以后再生成脚本直接复用，不重复识图。</p>
               <button
                 type="button"
                 onClick={() => void handleAnalyze()}
-                disabled={submitting || uploading || !providerId || (assets.length === 0 && !libraryReady)}
+                disabled={submitting || uploading || !providerId || (assets.length === 0 && !libraryReady) || (productionMode === 'template_rewrite' && templateEntryIds.length === 0)}
                 className="btn-primary"
               >
-                {submitting ? '正在创建任务…' : '分析并生成脚本'}
+                {submitting ? '正在创建任务…' : productionMode === 'template_rewrite' ? `按 ${templateEntryIds.length || '选'} 个模板生成脚本` : '分析并生成脚本'}
               </button>
             </div>
           </div>
@@ -1396,6 +1439,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                         </div>
                         <div className="mt-1.5 text-xs font-semibold">{point.title}</div>
                         <div className="mt-1 line-clamp-2 text-[0.65rem] leading-4 text-ink-tertiary">{point.factText}</div>
+                        {point.detailText?.trim() ? (
+                          <div className="mt-1 line-clamp-2 text-[0.65rem] leading-4 text-ink-secondary" title={point.detailText}>详解：{point.detailText}</div>
+                        ) : (
+                          <div className="mt-1 text-[0.65rem] leading-4 text-warn">无详解（模板改写不可用）</div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1492,6 +1540,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                             </div>
                           </details>}
                           {content?.recommendation && <RecommendationBlock recommendation={content.recommendation} />}
+                          {content?.templateRewrite && <TemplateRewriteBlock content={content} />}
                         </div>
                       </div>
                       <div className="flex flex-none flex-wrap justify-end gap-1.5">
@@ -1640,6 +1689,84 @@ function parseCopyCheck(validationJson?: string): { endingStatus?: string; seman
   }
 }
 
+/**
+ * 爆文模板改写结果块（迁移方案 §3.1.6 / §4.4）：
+ * 来源模板、文风、结构来源、写作字数估算、降级标记、修改说明与原文对照（文字差异）。
+ * 字数是写作估算（秒×6），不代表实际配音时长；文字差异不宣称原创率。
+ */
+function TemplateRewriteBlock({ content }: { content: ScriptStudioScriptContent }) {
+  const meta = content.templateRewrite!;
+  const [showCompare, setShowCompare] = useState(false);
+  const degraded = [
+    meta.filterDegraded,
+    meta.styleDegraded,
+    meta.humanizeDegraded,
+    meta.smoothDegraded,
+  ].filter((item) => item && item.trim());
+  return (
+    <div className="mt-2 space-y-2 rounded-[14px] bg-surface-subtle p-3 text-xs text-ink-secondary">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="font-semibold text-ink">爆文模板：{meta.templateName || meta.templateTitle}</span>
+        {meta.category && <span>{meta.category}{meta.subCategory ? ` · ${meta.subCategory}` : ''}</span>}
+        {meta.stylePresetName && <span>文风：{meta.stylePresetName}</span>}
+        <span title={meta.structureOrigin === 'fallback' ? '表格未提供结构，使用默认结构' : '结构来自模板表格'}>
+          结构：{meta.structureOrigin === 'fallback' ? '默认（表格未提供）' : '模板表格'}
+        </span>
+        <span title="写作字数估算（秒×6，±15%），不代表实际配音时长">写作目标 ≈{meta.targetChars} 中文字</span>
+      </div>
+      {degraded.length > 0 && (
+        <div className="space-y-0.5">
+          {degraded.map((item, index) => (
+            <p key={index} className="text-warn">降级：{item}</p>
+          ))}
+        </div>
+      )}
+      <div>
+        <p className="font-semibold text-ink-tertiary">修改说明（模型自述，非证据审核）</p>
+        {meta.noteMissing || !meta.note ? (
+          <p className="mt-0.5 text-ink-tertiary">未生成修改说明。</p>
+        ) : (
+          <p className="mt-0.5 whitespace-pre-wrap leading-5">{meta.note}</p>
+        )}
+      </div>
+      <div>
+        <button type="button" className="text-accent" onClick={() => setShowCompare((current) => !current)}>
+          {showCompare ? '收起原文对照' : '对比参考文案（文字差异）'}
+        </button>
+        {showCompare && <TemplateDiffView refText={meta.refText} generated={content.fullScript} />}
+      </div>
+    </div>
+  );
+}
+
+/** 原文对照：橙色=参考文案被替换的词，红色=生成的新词；仅为文字差异，不代表原创率。 */
+function TemplateDiffView({ refText, generated }: { refText: string; generated: string }) {
+  const marks = diffMarkWords(refText, generated);
+  const refWords = marks.filter((mark) => mark.del || !mark.diff);
+  const genWords = marks.filter((mark) => !mark.del);
+  return (
+    <div className="mt-2">
+      <p className="text-[0.65rem] leading-4 text-ink-tertiary">
+        橙色 = 参考文案中被替换掉的词 ｜ 红色 = 生成文案的新词（未标色 = 两边相同）。这只是文字差异对照，不是原创率或合规证明。
+      </p>
+      <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+        <div className="max-h-36 overflow-y-auto rounded-[10px] border border-hairline bg-surface p-2.5 leading-6">
+          <p className="mb-1 text-[0.65rem] font-semibold text-ink-tertiary">参考文案</p>
+          {refWords.map((mark, index) => (
+            <span key={index} className={mark.diff ? 'rounded bg-warn-tint px-0.5' : undefined}>{mark.w}</span>
+          ))}
+        </div>
+        <div className="max-h-36 overflow-y-auto rounded-[10px] border border-hairline bg-surface p-2.5 leading-6">
+          <p className="mb-1 text-[0.65rem] font-semibold text-ink-tertiary">生成文案</p>
+          {genWords.map((mark, index) => (
+            <span key={index} className={mark.diff ? 'rounded bg-fail/10 px-0.5' : undefined}>{mark.w}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LibraryEditor({
   projectId,
   revision,
@@ -1649,11 +1776,13 @@ function LibraryEditor({
   revision: LibraryRevisionViewLite;
   onSaved: () => void;
 }) {
-  const [edits, setEdits] = useState<Array<{ sellingPointId: string; usable?: boolean; disabledByUser?: boolean }>>(
+  const [edits, setEdits] = useState<Array<{ sellingPointId: string; usable?: boolean; disabledByUser?: boolean; detailText?: string }>>(
     revision.sellingPoints.map((point) => ({ sellingPointId: point.id, usable: point.evidenceGate !== 'failed' && point.usable === 1 && point.disabledByUser !== 1, disabledByUser: point.disabledByUser === 1 })),
   );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [detailEditingFor, setDetailEditingFor] = useState('');
+  const [detailDraft, setDetailDraft] = useState('');
   const save = async () => {
     setSaving(true);
     setSaveError('');
@@ -1672,6 +1801,18 @@ function LibraryEditor({
       setSaving(false);
     }
   };
+  const detailStatusLabel = (point: (typeof revision.sellingPoints)[number]): { text: string; className: string } => {
+    const edited = edits.find((edit) => edit.sellingPointId === point.id);
+    const detailText = edited?.detailText ?? point.detailText ?? '';
+    if (!detailText.trim()) return { text: '无详解（爆文模板改写模式不可用，可编辑补充）', className: 'text-warn' };
+    const status = point.detailStatus ?? 'missing';
+    if (edited?.detailText !== undefined && edited.detailText !== (point.detailText ?? '')) {
+      return { text: '详解已修改，保存后重新校验', className: 'text-accent' };
+    }
+    if (status === 'verified') return { text: '详解可用', className: 'text-ok' };
+    if (status === 'unverified') return { text: '详解含未获支持的数值/材质/功效，爆文模板改写暂不可用', className: 'text-warn' };
+    return { text: '无详解（爆文模板改写模式不可用，可编辑补充）', className: 'text-warn' };
+  };
   return (
     <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4">
       <div className="mb-3 flex items-center justify-between">
@@ -1681,11 +1822,16 @@ function LibraryEditor({
         </div>
         <button type="button" onClick={() => void save()} disabled={saving} className="btn-primary btn-sm">{saving ? '保存中…' : '保存选择'}</button>
       </div>
-      <p className="mb-3 text-xs text-ink-secondary">默认勾选可用卖点；取消勾选即可排除，之后也能重新保留。不会修改已生成的脚本或正在运行的任务。</p>
+      <p className="mb-3 text-xs text-ink-secondary">默认勾选可用卖点；取消勾选即可排除，之后也能重新保留。「详解」供爆文模板改写模式使用，编辑后与选择一起保存为新修订，不会修改已生成的脚本或正在运行的任务。</p>
       {saveError && <p className="mb-3 text-sm text-fail" role="alert">{saveError}</p>}
       <div className="space-y-2">
-        {revision.sellingPoints.map((point) => (
-          <label key={point.id} className="flex items-start gap-3 rounded-[14px] border border-hairline bg-surface p-3 text-sm">
+        {revision.sellingPoints.map((point) => {
+          const detailStatus = detailStatusLabel(point);
+          const editedDetail = edits.find((edit) => edit.sellingPointId === point.id)?.detailText;
+          const currentDetail = editedDetail ?? point.detailText ?? '';
+          return (
+          <div key={point.id} className="rounded-[14px] border border-hairline bg-surface p-3 text-sm">
+          <label className="flex items-start gap-3">
             <input
               type="checkbox"
               checked={point.evidenceGate !== 'failed' && (edits.find((edit) => edit.sellingPointId === point.id)?.usable ?? point.usable === 1)}
@@ -1697,7 +1843,7 @@ function LibraryEditor({
                 )));
               }}
             />
-            <span className="min-w-0">
+            <span className="min-w-0 flex-1">
               <span className="font-medium">{point.title}</span>
               <span className="ml-2 text-xs text-ink-tertiary">{point.evidenceGate === 'passed' ? '已通过二次证据检查' : point.evidenceGate === 'skipped' ? '低风险' : '未通过核验，不可用'}</span>
               <span className="mt-1 block text-xs text-ink-secondary">{point.factText}</span>
@@ -1706,7 +1852,56 @@ function LibraryEditor({
               )}
             </span>
           </label>
-        ))}
+          <div className="mt-2 rounded-[10px] bg-surface-subtle p-2.5 pl-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <span className="text-[0.65rem] font-semibold text-ink-tertiary">详解（爆文模板改写用）</span>
+                <span className={`ml-2 text-[0.65rem] ${detailStatus.className}`}>{detailStatus.text}</span>
+                {currentDetail.trim() ? (
+                  <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-ink-secondary">{currentDetail}</p>
+                ) : (
+                  <p className="mt-1 text-xs text-ink-tertiary">本次提取未输出详解。</p>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn-secondary btn-sm shrink-0"
+                disabled={saving || point.evidenceGate === 'failed'}
+                onClick={() => { setDetailEditingFor(point.id); setDetailDraft(currentDetail); }}
+              >
+                编辑详解
+              </button>
+            </div>
+            {detailEditingFor === point.id && (
+              <div className="mt-2 space-y-2">
+                <textarea
+                  value={detailDraft}
+                  onChange={(event) => setDetailDraft(event.target.value)}
+                  rows={3}
+                  className="input-field text-xs"
+                  placeholder="例如：层板可调 → 可根据物品高度调整收纳。详解中的数字、材质、功效必须在事实或证据中有依据，否则保存后仍不可用。"
+                />
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-secondary btn-sm" onClick={() => setDetailEditingFor('')}>取消</button>
+                  <button
+                    type="button"
+                    className="btn-primary btn-sm"
+                    onClick={() => {
+                      setEdits((current) => current.map((edit) => (
+                        edit.sellingPointId === point.id ? { ...edit, detailText: detailDraft } : edit
+                      )));
+                      setDetailEditingFor('');
+                    }}
+                  >
+                    应用（待保存）
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          </div>
+          );
+        })}
       </div>
     </div>
   );

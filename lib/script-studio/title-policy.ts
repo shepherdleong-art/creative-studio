@@ -151,9 +151,19 @@ const FACT_CLAIMS = /\d+(?:\.\d+)?(?:%|年|天|秒|倍|厘米|毫米|cm|mm|kg|�
 
 export function checkScriptTitles(
   content: ScriptStudioScriptContent,
-  options: { libraryRevision: LibraryRevisionView; context?: ScriptTitleContext; previousTitles?: ScriptTitleSummary[] },
+  options: {
+    libraryRevision: LibraryRevisionView;
+    context?: ScriptTitleContext;
+    previousTitles?: ScriptTitleSummary[];
+    /**
+     * 参与检查的字段（默认全部三个）。爆文模板改写只有单标题语义，
+     * 传 ['title'] 跳过封面主/副标题检查；其他模式不得用此参数放宽。
+     */
+    fields?: ScriptTitleField[];
+  },
 ): ScriptTitleIssue[] {
   const issues: ScriptTitleIssue[] = [];
+  const fields = options.fields ?? (Object.keys(SCRIPT_TITLE_LENGTHS) as ScriptTitleField[]);
   const context = options.context || buildScriptTitleContext(options.libraryRevision);
   const referencedIds = new Set(content.segments.flatMap((segment) => segment.sellingPointIdRefs || []));
   const facts = options.libraryRevision.sellingPoints
@@ -161,7 +171,7 @@ export function checkScriptTitles(
     .map((point) => `${point.factText} ${point.evidenceQuote || ''}`);
   const evidence = [...facts, options.libraryRevision.brand || ''].join(' ').normalize('NFKC').replace(/\s+/g, '').toLowerCase();
   const bareNames = [context.displayName, options.libraryRevision.productName || ''].map(normalizeScriptTitle).filter(Boolean);
-  for (const field of Object.keys(SCRIPT_TITLE_LENGTHS) as ScriptTitleField[]) {
+  for (const field of fields) {
     const value = titleFieldValue(content, field).trim();
     const label = FIELD_LABELS[field];
     const add = (code: string, message: string, conflictingText?: string) => issues.push({ code, field, message, ...(conflictingText ? { conflictingText } : {}) });
@@ -186,7 +196,10 @@ export function checkScriptTitles(
     const conflict = options.previousTitles?.find((previous) => areScriptTitlesDuplicate(value, titleFieldValue(previous, field)));
     if (conflict) add('duplicate_title', `${label}与已用标题「${titleFieldValue(conflict, field)}」重复或过于相似，请换一个实质不同的切入点，不能只换编号`, titleFieldValue(conflict, field));
   }
-  const coverConflict = options.previousTitles?.find((previous) => areCoverTitlePairsDuplicate(content, previous));
+  const checkCover = fields.includes('coverTitleParts.primary') || fields.includes('coverTitleParts.secondary');
+  const coverConflict = checkCover
+    ? options.previousTitles?.find((previous) => areCoverTitlePairsDuplicate(content, previous))
+    : undefined;
   if (coverConflict) {
     issues.push({
       code: 'duplicate_cover_combo',

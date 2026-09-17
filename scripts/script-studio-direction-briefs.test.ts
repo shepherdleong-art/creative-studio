@@ -31,6 +31,8 @@ function makePoint(overrides: Partial<SellingPointRecord> & { id: string; seq: n
     themeTitle: '',
     hierarchyRole: 'supporting',
     importance: 50,
+    detailText: '',
+    detailStatus: 'missing',
     ...overrides,
   };
 }

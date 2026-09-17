@@ -85,11 +85,13 @@ assert.deepEqual(
   '每条证据引用从解析起就带 pageIndex + tileRef 配对',
 );
 assert.equal(result.productName, '测试商品');
-assert.equal(result.promptContractVersion,  4);
-// 提取合约 v4：提示词要求模型返回主题与层级字段，且 factText 保持中性事实句（事实与营销措辞边界）。
+assert.equal(result.promptContractVersion,  5);
+// 提取合约 v4/v5：提示词要求模型返回主题与层级字段，factText 保持中性事实句（事实与营销措辞边界），
+// 并同批输出 detail 详解（详解高风险内容须有据）。
 assert.equal(calls.every((call) => call.userPrompt.includes('themeKey') && call.userPrompt.includes('hierarchyRole') && call.userPrompt.includes('importance')), true, '提取提示词必须要求主题与层级字段');
 assert.equal(calls.every((call) => call.userPrompt.includes('大标题只用于分组与排序')), true, '大标题不得被当作证据豁免');
 assert.equal(calls.every((call) => call.userPrompt.includes('中性事实句')), true, '提取提示词必须划定事实与营销措辞边界');
+assert.equal(calls.every((call) => call.userPrompt.includes('detail')), true, '提取提示词必须要求同批输出详解');
 assert.deepEqual(
   result.sellingPoints.map((point) => [point.themeKey, point.themeTitle, point.hierarchyRole, point.importance]),
   [['', '', 'supporting', 50], ['', '', 'supporting', 50], ['', '', 'supporting', 50], ['', '', 'supporting', 50]],
@@ -193,7 +195,7 @@ const themedExtractor = createVisionExtractor(async () => ({
   ],
 }), { id: 'fake', model: 'fake' }, { tileBatchSize: 50, concurrency: 1 });
 const themedResult = await themedExtractor.extract({ pages: [makePage(3)] });
-assert.equal(themedResult.promptContractVersion, 4);
+assert.equal(themedResult.promptContractVersion, 5);
 assert.deepEqual(
   themedResult.sellingPoints.map((point) => [point.themeKey, point.themeTitle, point.hierarchyRole, point.importance]),
   [['comfort', '久坐也舒服', 'primary', 90], ['x', '某区域', 'supporting', 100], ['x', '某区域', 'supporting', 50]],

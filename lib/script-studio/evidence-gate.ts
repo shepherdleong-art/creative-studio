@@ -1,14 +1,15 @@
 import type { EvidenceReprobe, EvidenceTile } from './adapters/reprobe.ts';
 import type { LibrarySellingPointInput } from './libraries.ts';
 import { getScriptStudioLimits } from './limits.ts';
-import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
+import {
+  ABSOLUTE_WORDS,
+  CERT_WORDS,
+  EFFICACY_WORDS,
+  MATERIAL_WORDS,
+  normalizeEvidenceRefs,
+} from './selling-point-normalize.ts';
 import { parseTileRefIndex } from './tiling.ts';
-import type { ScriptStudioEvidenceGate, ScriptStudioPointType } from './types.ts';
 
-const MATERIAL_WORDS = /\b(?:真皮|实木|棉麻|铝合金|不锈钢|岩板|金属|玻璃|陶瓷|尼龙|橡胶|钛|碳纤维|食品级|环保材质)\b/u;
-const CERT_WORDS = /\b(?:认证|证书|国标|标准|检测报告|专利|质检|CE|RoHS|FDA|CCC|ISO)\b/u;
-const EFFICACY_WORDS = /\b(?:有效|显著|改善|解决|提升|降低|修复|抑菌|防水|防污|耐磨|抗压|承重|保鲜|省电|节能)\b/u;
-const ABSOLUTE_WORDS = /\b(?:最|第一|唯一|绝对|百分百|100%|永久|彻底|全能|顶级|最强)\b/u;
 const PROMOTION_WORDS = /\b(?:促销|限时|优惠|赠品|折扣|秒杀|包邮|券|满减|特价|销量|热卖|爆款|好评|回购|立减|拼团)\b/u;
 const PRICE_PATTERN = /(?:¥|￥|\b\d+(?:\.\d+)?\s*(?:元|块|折|%|％)\b)/u;
 

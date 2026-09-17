@@ -148,6 +148,8 @@ export function dedupeSellingPoints(
       themeTitle: existing.themeTitle || point.themeTitle || '',
       hierarchyRole: strongerHierarchyRole(existing.hierarchyRole, point.hierarchyRole),
       importance: Math.max(existing.importance ?? 50, point.importance ?? 50),
+      // 详解取首个非空（合并后入库时仍会按合并的 factText/evidenceQuote 重算 detailStatus）。
+      detailText: existing.detailText || point.detailText || '',
     };
   }
   return result;

@@ -10,8 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
+  parseScriptProductionMode,
   parseScriptStudioRequestedCount,
   parseScriptStudioTargetDuration,
+  parseTemplateRewriteEntryIds,
   SCRIPT_GENERATION_MAX_COUNT,
   SCRIPT_GENERATION_UI_OPTIONS,
 } from '../lib/script-studio/generation-contract.ts';
@@ -37,6 +39,25 @@ assert.throws(() => parseScriptStudioRequestedCount(undefined), /1-6/);
 assert.equal(parseScriptStudioTargetDuration(15), 15);
 assert.equal(parseScriptStudioTargetDuration(60), 60);
 assert.throws(() => parseScriptStudioTargetDuration(18), /15、20、30、45 或 60/);
+
+// ---- 生产模式契约（爆文模板改写）----
+assert.equal(parseScriptProductionMode(undefined, 20), 'standard');
+assert.equal(parseScriptProductionMode('standard', 20), 'standard');
+assert.equal(parseScriptProductionMode('pain_solving_15s', 15), 'pain_solving_15s');
+assert.throws(() => parseScriptProductionMode('pain_solving_15s', 20), /仅支持15秒/);
+assert.equal(parseScriptProductionMode('template_rewrite', 20), 'template_rewrite');
+assert.equal(parseScriptProductionMode('template_rewrite', 15), 'template_rewrite', '模板改写时长走共享白名单，不限 15 秒');
+assert.equal(parseScriptProductionMode('template_rewrite', 60), 'template_rewrite');
+assert.throws(() => parseScriptProductionMode('audience_analysis', 20), /不支持的脚本生产模式/);
+
+// ---- 模板选择校验（A03）：0、7、重复、数量矛盾一律拒绝；1–6 可提交 ----
+assert.throws(() => parseTemplateRewriteEntryIds([], 1), /勾选 1-6 个模板/, '0 个模板被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c', 'd', 'e', 'f', 'g'], 7), /最多选择 6 个模板/, '7 个模板被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'a'], 2), /重复/, '重复模板被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b'], 3), /与选中模板数一致/, '数量与模板数矛盾被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c'], 2), /与选中模板数一致/, '反向矛盾同样被拒绝');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a'], 1), ['a'], '1 个可用模板可提交');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a', 'b', 'c', 'd', 'e', 'f'], 6), ['a', 'b', 'c', 'd', 'e', 'f'], '6 个可用模板可提交且保持选择顺序');
 
 // ---- planner 6 个不同方向 ----
 const revision = {

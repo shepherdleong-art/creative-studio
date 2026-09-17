@@ -17,8 +17,11 @@ import {
   getTask,
   listRecentTasks,
 } from '@/lib/script-studio/tasks';
-import { parseScriptProductionMode, parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from '@/lib/script-studio/generation-contract';
+import { parseScriptProductionMode, parseScriptStudioRequestedCount, parseScriptStudioTargetDuration, parseTemplateRewriteEntryIds } from '@/lib/script-studio/generation-contract';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
+import { getViralTemplateEntriesByIds } from '@/lib/script-studio/viral-templates';
+import { templatePlanFingerprint } from '@/lib/script-studio/template-rewrite';
+import type { FrozenViralTemplateSpec } from '@/lib/script-studio/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -91,6 +94,34 @@ export async function POST(
     const explicitRequestKey = typeof body.requestKey === 'string' ? body.requestKey.trim() : '';
     // 「换一个框架/钩子」：排除当前组合后重新冻结知识上下文（方案 §2.7）。
     const exclusions = parseRecommendationExclusions(body.exclusions);
+    // 爆文模板改写：客户端只提交模板条目 ID（选择顺序即生成顺序），
+    // 服务端读取条目构造冻结全文快照——不信任客户端提交的全文，也保证身份一致。
+    let templatePlan: { templates: FrozenViralTemplateSpec[]; fingerprint: string } | undefined;
+    if (productionMode === 'template_rewrite') {
+      const entryIds = parseTemplateRewriteEntryIds(body.templateEntryIds, requestedCount);
+      const entries = getViralTemplateEntriesByIds(db, entryIds);
+      if (entries.length !== entryIds.length) {
+        throw new ScriptStudioError('not_found', '部分模板不存在或已被移除，请刷新模板列表');
+      }
+      const unusable = entries.filter((entry) => entry.status !== 'usable');
+      if (unusable.length > 0) {
+        throw new ScriptStudioError('invalid_input', `模板「${unusable[0]!.name || unusable[0]!.sourceTemplateId}」不可用（${unusable[0]!.statusReason || unusable[0]!.status}），请调整后重试`);
+      }
+      const templates: FrozenViralTemplateSpec[] = entries.map((entry) => ({
+        entryId: entry.id,
+        revisionId: entry.revisionId,
+        sourceTemplateId: entry.sourceTemplateId,
+        name: entry.name,
+        title: entry.title,
+        category: entry.category,
+        subCategory: entry.subCategory,
+        refText: entry.refText,
+        structure: entry.structure,
+        structureOrigin: entry.structureOrigin,
+        contentHash: entry.contentHash,
+      }));
+      templatePlan = { templates, fingerprint: templatePlanFingerprint(templates) };
+    }
     const projectRow = db.prepare(`SELECT productCode, productSubmodel FROM projects WHERE id = ?`)
       .get(projectId) as { productCode: string; productSubmodel: string } | undefined;
     const modelKey = projectRow?.productCode ?? '';
@@ -119,6 +150,7 @@ export async function POST(
       providerId,
       explicitRequestKey,
       knowledgeContext: serializeKnowledgeContext(knowledgeContext),
+      ...(templatePlan ? { templatePlan } : {}),
     }, resolveRuntimeProviders);
     if (decision.existing) {
       return NextResponse.json({

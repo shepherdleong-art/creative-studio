@@ -5,6 +5,8 @@ import { parseScriptStudioRequestedCount } from './generation-contract.ts';
 
 export interface PlannedScript {
   painSolving?: import('./types.ts').PainSolvingOpportunity;
+  /** 爆文模板改写：该方案对应的冻结模板全文快照（template_rewrite 模式必有）。 */
+  templateRewrite?: import('./types.ts').FrozenViralTemplateSpec;
   index: number;
   templateId: string;
   templateName: string;
