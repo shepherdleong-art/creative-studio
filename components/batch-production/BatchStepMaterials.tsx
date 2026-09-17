@@ -44,6 +44,7 @@ export interface BatchStepMaterialsProps {
   onToggleAsset: (assetId: string) => void;
   onLutChange: (assetId: string, lutId: string | null) => void;
   onAnalyzeContent: (assetIds: string[]) => void;
+  onExtractFilenames: (assetIds: string[]) => void;
   onRetryAnalyze: (taskId: string) => void;
   onRequestProxy: (assetIds: string[] | undefined, busyMarker: string | null) => void;
   /** 素材级代理请求(不要求批次存在/已确认),供素材卡按钮与播放器引导按钮使用 */
@@ -248,6 +249,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
   } = props;
 
   const contentAnalysisCandidates = (prep.assets ?? []).filter(({ status, analysisLevel }) => status === 'online' && analysisLevel !== 'content');
+  const filenameCandidates = contentAnalysisCandidates.filter((asset) => asset.sources.some((source) => source.sourceKind !== 'module4'));
 
   // 徽标按素材缓存:轮询重渲染期间引用保持稳定,配合 memo 卡片避免整卡重渲染
   const previewBadges = useMemo(
@@ -320,7 +322,7 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
               <p className="mt-1 text-xs text-ink-tertiary">勾选进入本批次的素材；未完成分析的素材不可勾选，请先发起分析。</p>
             )}
             {!frozen && (
-              <p className="mt-1 text-xs text-ink-tertiary">内容分析完成后，确认脚本输入时会自动进行语义匹配打分。</p>
+              <p className="mt-1 text-xs text-ink-tertiary">文件名已写明内容时，可点击“提取文件名描述”跳过 AI 画面识别。提取后整条视频按一个镜头匹配，后续文字语义匹配仍可能产生调用费用。</p>
             )}
             {!frozen && analysisActive > 0 && (
               <div className="mt-2">
@@ -392,6 +394,13 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 disabled={managedImporting || linkedImportBusy !== null}
                 onClick={() => mediaFileInputRef.current?.click()}
               >{managedImporting ? '导入中…' : '自定义导入素材'}</button>
+              <button
+                type="button"
+                className="btn-secondary"
+                title="为尚无内容分析的外部素材提取文件名，全程本地处理，不调用视觉模型"
+                disabled={filenameCandidates.length === 0 || analysisBusy !== null || managedImporting || linkedImportBusy !== null || analysisActive > 0}
+                onClick={() => props.onExtractFilenames(filenameCandidates.map((asset) => asset.id))}
+              >{analysisBusy === '__filename__' ? '正在提取文件名…' : `提取文件名描述（${filenameCandidates.length}）`}</button>
               {desktopAvailable && (
                 <>
                   <button
@@ -491,7 +500,8 @@ export default function BatchStepMaterials(props: BatchStepMaterialsProps) {
                 const analysisTask = analysisTaskByAsset.get(asset.id);
                 const assetAnalysisBusy = analysisBusy === asset.id
                   || analysisBusy === analysisTask?.id
-                  || analysisBusy === '__all__';
+                  || analysisBusy === '__all__'
+                  || analysisBusy === '__filename__';
                 return (
                   <BatchAssetSelectionCard
                     key={asset.id}

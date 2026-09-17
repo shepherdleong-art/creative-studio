@@ -17,7 +17,7 @@ import {
   getTask,
   listRecentTasks,
 } from '@/lib/script-studio/tasks';
-import { parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from '@/lib/script-studio/generation-contract';
+import { parseScriptProductionMode, parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from '@/lib/script-studio/generation-contract';
 import { toTaskSnapshot } from '@/lib/script-studio/snapshot';
 
 export const runtime = 'nodejs';
@@ -58,6 +58,7 @@ export async function POST(
     const project = db.prepare(`SELECT id FROM projects WHERE id = ?`).get(projectId);
     if (!project) throw new ScriptStudioError('not_found', '项目不存在');
     const targetDurationSec = parseScriptStudioTargetDuration(body.targetDurationSec);
+    const productionMode = parseScriptProductionMode(body.productionMode, targetDurationSec);
     const requestedCount = parseScriptStudioRequestedCount(body.requestedCount);
     const sourceSetId = typeof body.sourceSetId === 'string' ? body.sourceSetId : null;
     let libraryRevisionId = typeof body.libraryRevisionId === 'string' ? body.libraryRevisionId : null;
@@ -111,6 +112,7 @@ export async function POST(
       sourceSetId,
       libraryRevisionId,
       targetDurationSec,
+      productionMode,
       requestedCount,
       creativeBrief,
       targetScriptId,

@@ -7,6 +7,7 @@ import type {
   ScriptStudioTaskSnapshot,
 } from '@/lib/script-studio/types';
 import {
+  type ScriptProductionMode,
   SCRIPT_GENERATION_UI_OPTIONS,
   SCRIPT_TARGET_DURATION_OPTIONS,
 } from '@/lib/script-studio/generation-contract';
@@ -349,7 +350,7 @@ function stageArtifact(stage: StageView | undefined, task: ScriptStudioTaskSnaps
       const plans = Array.isArray(payload.plans) ? payload.plans as Array<Record<string, unknown>> : [];
       return {
         ...base,
-        title: running ? '正在拆分创意方向' : `已拆出 ${plans.length || task.requestedCount} 个方向`,
+        title: running ? '正在拆分创意方向' : `已拆出 ${plans.length} 个方向`,
         items: plans.slice(0, 2).map((plan, index) => ({
           label: `方案 ${index + 1}`,
           title: asText(plan.direction) || asText(plan.templateId) || `方向 ${index + 1}`,
@@ -404,6 +405,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [libraryRevisionId, setLibraryRevisionId] = useState('');
   const [scripts, setScripts] = useState<ScriptView[]>([]);
   const [task, setTask] = useState<ScriptStudioTaskSnapshot | null>(null);
+  const [productionMode, setProductionMode] = useState<ScriptProductionMode>('standard');
+  const [regenerateMode, setRegenerateMode] = useState<ScriptProductionMode>('standard');
   const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [requestedCount, setRequestedCount] = useState(3);
   /** 「再生成一组」本次专用参数:与第 1 页表单不共享隐式状态,切换结果组时按 inputSnapshot 初始化一次。 */
@@ -610,6 +613,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     targetDurationSec: number;
     requestedCount: number;
     creativeBrief: string;
+    productionMode?: ScriptProductionMode;
     providerId: string;
     requestKey?: string;
   }): Promise<boolean> => {
@@ -629,6 +633,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
           targetDurationSec: request.targetDurationSec,
           requestedCount: request.requestedCount,
           creativeBrief: request.creativeBrief,
+          productionMode: request.productionMode,
           providerId: request.providerId,
           ...(request.requestKey ? { requestKey: request.requestKey } : {}),
         }),
@@ -662,6 +667,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     const duration = typeof snapshot.targetDurationSec === 'number' ? snapshot.targetDurationSec : 15;
     // 延迟到宏任务执行,避免 effect 内同步 setState 触发级联渲染。
     const timer = window.setTimeout(() => {
+      setRegenerateMode(snapshot.productionMode === 'pain_solving_15s' ? 'pain_solving_15s' : 'standard');
       if (Number.isInteger(count) && count >= 1 && count <= 6) setRegenerateCount(count);
       if (SCRIPT_TARGET_DURATION_OPTIONS.includes(duration as (typeof SCRIPT_TARGET_DURATION_OPTIONS)[number])) setRegenerateDuration(duration);
     }, 0);
@@ -684,6 +690,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
         targetDurationSec,
         requestedCount,
         creativeBrief,
+        productionMode,
         providerId,
       });
       return;
@@ -704,9 +711,10 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       targetDurationSec,
       requestedCount,
       creativeBrief,
+      productionMode,
       providerId,
     });
-  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, providerId, startTask]);
+  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask]);
 
   const switchRevision = useCallback(async (scriptId: string, revisionId: string) => {
     await fetch(`/api/projects/${projectId}/script-studio/scripts/${scriptId}/current`, {
@@ -899,7 +907,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
         body: {
           sourceSetId: null,
           libraryRevisionId,
-          targetDurationSec: regenerateDuration,
+          productionMode: regenerateMode,
+          targetDurationSec: regenerateMode === 'pain_solving_15s' ? 15 : regenerateDuration,
           requestedCount: regenerateCount,
           creativeBrief,
           providerId,
@@ -909,7 +918,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       setRegeneratePending(true);
     }
     void runRegenerateAction(pendingRegenerationRef.current);
-  }, [libraryRevisionId, regenerateDuration, regenerateCount, creativeBrief, providerId, runRegenerateAction]);
+  }, [libraryRevisionId, regenerateMode, regenerateDuration, regenerateCount, creativeBrief, providerId, runRegenerateAction]);
 
   const cancelTask = useCallback(async () => {
     if (!task || !['queued', 'running'].includes(task.status)) return;
@@ -1141,8 +1150,20 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 </p>
               </div>
               <div>
+                <label className="label" htmlFor="script-production-mode">生产模式</label>
+                <select id="script-production-mode" value={productionMode} onChange={(event) => {
+                  const mode = event.target.value as ScriptProductionMode;
+                  setProductionMode(mode);
+                  if (mode === 'pain_solving_15s') setTargetDurationSec(15);
+                }} className="input-field">
+                  <option value="standard">多方向生成</option>
+                  <option value="pain_solving_15s">痛点解决型 · 15秒</option>
+                </select>
+                {productionMode === 'pain_solving_15s' && <p className="mt-1.5 text-xs text-ink-tertiary">先筛选有依据的内容机会，再生成脚本；机会不足时少产，不凑数量。</p>}
+              </div>
+              <div>
                 <label className="label">目标时长</label>
-                <select value={targetDurationSec} onChange={(event) => setTargetDurationSec(Number(event.target.value))} className="input-field">
+                <select disabled={productionMode === 'pain_solving_15s'} value={targetDurationSec} onChange={(event) => setTargetDurationSec(Number(event.target.value))} className="input-field">
                   {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                 </select>
               </div>
@@ -1320,10 +1341,21 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 </div>
               </div>
             )}
+            {task?.inputSnapshot.productionMode === 'pain_solving_15s' && task.stages.some((stage) => stage.stage === 'plan' && stage.status === 'succeeded') && (
+              <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4 text-sm text-ink-secondary">
+                {(() => {
+                  const payload = task.stages.find((stage) => stage.stage === 'plan')!.payload;
+                  const planning = payload.painPlanning as { shortageReason?: string } | undefined;
+                  return <><p>目标 {task.requestedCount} 条，找到 {Number(payload.opportunityCount ?? 0)} 个内容机会，已保存 {task.succeededCount} 条。</p>
+                    {Number(payload.shortageCount) > 0 && <p className="mt-1">{planning?.shortageReason || '有依据的内容机会不足，未凑数生成。'} 这部分不计为生成失败。</p>}</>;
+                })()}
+              </div>
+            )}
             {task?.status === 'cancelled' && <p className="text-sm text-ink-secondary">任务已停止，已保存的脚本仍可使用。</p>}
             {task && ['partial', 'failed'].includes(task.status) && (
               <div className="rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm">
-                <p className="font-semibold">{task.failedCount} 条生成或校验失败，已保存方案可以使用</p>
+                <p className="font-semibold">{task.failedCount > 0 ? `${task.failedCount} 条生成或校验失败，已保存方案可以使用` : "任务未完成，已保存方案可以使用"}</p>
+                {task.errorMessage && <p className="mt-1 break-words text-xs">{task.errorMessage}</p>}
                 {(task.stages.find((stage) => stage.stage === 'generate')?.payload.errors as string[] | undefined)?.map((message, index) => (
                   <p key={index} className="mt-1 break-words text-xs">{message}</p>
                 ))}
@@ -1381,7 +1413,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               </section>
             )}
 
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold">脚本方案</h3>
                 <p className="mt-1 text-sm text-ink-secondary">
@@ -1389,18 +1421,29 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   {task?.status === 'partial' && ` 本次有 ${task.failedCount} 条未通过，可使用补跑。`}
                 </p>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 {libraryRevisionId && <span className="text-xs text-ok">✓ 再生成只复用卖点库，不重新识图</span>}
+                <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
+                  模式
+                  <select aria-label="再生成模式" value={regenerateMode} onChange={(event) => {
+                    const mode = event.target.value as ScriptProductionMode;
+                    setRegenerateMode(mode);
+                    if (mode === 'pain_solving_15s') setRegenerateDuration(15);
+                  }} className="input-field h-8 w-[180px] px-1.5 py-0 text-xs">
+                    <option value="standard">多方向生成</option>
+                    <option value="pain_solving_15s">痛点解决型 · 15秒</option>
+                  </select>
+                </label>
                 {/* F2：再生成一组可单独指定本次条数/秒数（不与第 1 页表单共享隐式状态）。 */}
-                <label className="flex items-center gap-1 text-xs text-ink-secondary">
+                <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
                   条数
-                  <select value={regenerateCount} onChange={(event) => setRegenerateCount(Number(event.target.value))} className="input-field h-8 w-[68px] px-1.5 text-xs" aria-label="再生成条数">
+                  <select value={regenerateCount} onChange={(event) => setRegenerateCount(Number(event.target.value))} className="input-field h-8 w-[68px] px-1.5 py-0 text-xs" aria-label="再生成条数">
                     {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count}</option>)}
                   </select>
                 </label>
-                <label className="flex items-center gap-1 text-xs text-ink-secondary">
+                <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
                   时长
-                  <select value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 text-xs" aria-label="再生成时长">
+                  <select disabled={regenerateMode === 'pain_solving_15s'} value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 py-0 text-xs" aria-label="再生成时长">
                     {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                   </select>
                 </label>
@@ -1437,13 +1480,24 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                             模板选择理由：{content?.templateRationale || revision?.templateRationale || '按切入点自动匹配'}
                           </div>
                           {content?.knowledgeContext && <KnowledgeBadge knowledgeContext={content.knowledgeContext} />}
+                          {content?.painSolving && <details className="mt-2 text-xs text-ink-secondary">
+                            <summary className="cursor-pointer">查看内容策划依据 · {{ direct: '直接解决', diagnosis: '原因诊断', dilemma: '两难解决' }[content.painSolving.path]}</summary>
+                            <div className="mt-2 space-y-1 rounded-lg bg-surface-subtle p-3">
+                              <p>人群与场景：{content.painSolving.audience} · {content.painSolving.scenario}</p>
+                              <p>核心问题：{content.painSolving.problem}</p>
+                              <p>主卖点：{content.painSolving.main.label}{content.painSolving.support ? `；辅助卖点：${content.painSolving.support.label}` : ''}</p>
+                              <p>内容命题：{content.painSolving.proposition}</p>
+                              <p>匹配依据：{content.painSolving.matchReason}</p>
+                              <p>时长为口播估算，成片以实际配音为准。</p>
+                            </div>
+                          </details>}
                           {content?.recommendation && <RecommendationBlock recommendation={content.recommendation} />}
                         </div>
                       </div>
                       <div className="flex flex-none flex-wrap justify-end gap-1.5">
                         <button type="button" onClick={() => toggleCollapsed(script.id)} className="btn-secondary btn-sm">{collapsed ? '完整脚本' : '收起脚本'}</button>
                         <button type="button" onClick={() => void copyScript(content?.fullScript || '')} className="btn-secondary btn-sm">复制</button>
-                        <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>
+                        {!content?.painSolving && <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>}
                         <button type="button" onClick={() => void regenerateOne(script.id)} disabled={taskRunning} className="btn-secondary btn-sm">再生成一版</button>
                         <button type="button" onClick={() => void loadHistory(script.id)} className="btn-secondary btn-sm">版本历史</button>
                       </div>

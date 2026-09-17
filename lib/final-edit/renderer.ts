@@ -10,6 +10,7 @@ import { coverFramingGeometry } from './cover-framing.ts';
 import type { ReservedProjectExportTarget } from './export-naming.ts';
 import type { ExportIdentity } from './types.ts';
 import { normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
+import { audioCutFilter, videoPlaybackRate } from './clip-edit.ts';
 
 export interface FinalEditRenderSnapshot {
   groupRevision: number;
@@ -39,18 +40,18 @@ async function fileSha256(filePath: string): Promise<string> {
   });
 }
 
-export function clipFilter(index: number, preset: OutputPresetId, framing: FinalEditVariantView['timeline']['clips'][number]['framing']): string {
+export function clipFilter(index: number, preset: OutputPresetId, framing: FinalEditVariantView['timeline']['clips'][number]['framing'], playbackRate = 1): string {
   const { width, height } = OUTPUT_PRESETS[preset];
-  const scale = Math.max(1, Math.min(3, framing.scale));
+  const scale = Math.max(0.25, Math.min(3, framing.scale));
   const offsetX = Math.max(-1, Math.min(1, framing.offsetX));
   const offsetY = Math.max(-1, Math.min(1, framing.offsetY));
   if (preset === '16x9') {
-    return `[${index}:v]fps=24,setsar=1,split=2[bg${index}][fg${index}];` +
+    return `[${index}:v]setpts=(PTS-STARTPTS)/${playbackRate},fps=24,setsar=1,split=2[bg${index}][fg${index}];` +
       `[bg${index}]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=24:2[blur${index}];` +
       `[fg${index}]scale=${width}:${height}:force_original_aspect_ratio=decrease,scale=iw*${scale.toFixed(4)}:ih*${scale.toFixed(4)}[front${index}];` +
-      `[blur${index}][front${index}]overlay='(W-w)/2+${offsetX.toFixed(4)}*abs(W-w)/2':'(H-h)/2+${offsetY.toFixed(4)}*abs(H-h)/2',setsar=1,format=yuv420p[v${index}]`;
+      `[blur${index}][front${index}]overlay='(W-w)/2+${offsetX.toFixed(4)}*W/2':'(H-h)/2+${offsetY.toFixed(4)}*H/2',setsar=1,format=yuv420p[v${index}]`;
   }
-  return `[${index}:v]fps=24,scale=${width}:${height}:force_original_aspect_ratio=increase,scale=iw*${scale.toFixed(4)}:ih*${scale.toFixed(4)},crop=${width}:${height}:'(iw-${width})/2+${offsetX.toFixed(4)}*(iw-${width})/2':'(ih-${height})/2+${offsetY.toFixed(4)}*(ih-${height})/2',setsar=1,format=yuv420p[v${index}]`;
+  return `[${index}:v]setpts=(PTS-STARTPTS)/${playbackRate},fps=24,scale=${width}:${height}:force_original_aspect_ratio=increase,scale=iw*${scale.toFixed(4)}:ih*${scale.toFixed(4)},pad=iw+${width * 2}:ih+${height * 2}:(ow-iw)/2:(oh-ih)/2:black,crop=${width}:${height}:'(iw-${width})/2-${offsetX.toFixed(4)}*${width}/2':'(ih-${height})/2-${offsetY.toFixed(4)}*${height}/2',setsar=1,format=yuv420p[v${index}]`;
 }
 
 export function subtitleOverlayEnableExpression(startSec: number, endSec: number): string {
@@ -116,7 +117,6 @@ export async function renderFinalEditSnapshot(input: {
   await sharp(coverPng).jpeg({ quality: 92 }).toFile(coverJpg);
 
   const clips = [...snapshot.variant.timeline.clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame);
-  if (clips.length === 0) throw new Error('时间轴没有视频片段');
   const args: string[] = ['-loop', '1', '-framerate', '24', '-i', coverPng];
   for (const clip of clips) {
     const source = sourceById.get(clip.videoJobId);
@@ -139,8 +139,24 @@ export async function renderFinalEditSnapshot(input: {
 
   const filters: string[] = [];
   filters.push(`[0:v]trim=duration=${(FINAL_EDIT_INTRO_DURATION_US / 1_000_000).toFixed(6)},setpts=PTS-STARTPTS,scale=${output.width}:${output.height},fps=24,format=yuv420p[intro]`);
-  clips.forEach((clip, index) => filters.push(clipFilter(index + 1, preset, clip.framing)));
-  filters.push(`${clips.map((_, index) => `[v${index + 1}]`).join('')}concat=n=${clips.length}:v=1:a=0[body]`);
+  const bodyParts: string[] = [];
+  let cursor = 0;
+  const addGap = (frames: number) => {
+    if (frames <= 0) return;
+    const label = `gap${bodyParts.length}`;
+    filters.push(`color=c=black:s=${output.width}x${output.height}:r=24:d=${(frames / 24).toFixed(6)},trim=end_frame=${frames},setsar=1[${label}]`);
+    bodyParts.push(`[${label}]`);
+  };
+  clips.forEach((clip, index) => {
+    addGap(clip.timelineInFrame - cursor);
+    filters.push(clipFilter(index + 1, preset, clip.framing, videoPlaybackRate(clip)));
+    const frames = clip.timelineOutFrame - clip.timelineInFrame;
+    filters.push(`[v${index + 1}]tpad=stop_mode=clone:stop_duration=${(frames / 24).toFixed(6)},trim=end_frame=${frames},setpts=PTS-STARTPTS[part${index}]`);
+    bodyParts.push(`[part${index}]`);
+    cursor = clip.timelineOutFrame;
+  });
+  addGap(Math.max(1, snapshot.variant.timeline.bodyFrames) - cursor);
+  filters.push(`${bodyParts.join('')}concat=n=${bodyParts.length}:v=1:a=0[body]`);
   filters.push(`[intro][body]concat=n=2:v=1:a=0[basepre]`);
   // 当前口播音轨放慢后，视频轨用最后一帧补足到新的有效时长；加速时最终 -t 直接裁短。
   // stop_duration 取完整 body 时长，可同时覆盖 matcher 的小缺口和最大 0.5x 的延长量。
@@ -156,7 +172,7 @@ export async function renderFinalEditSnapshot(input: {
   const narrationTempo = Math.abs(narrationPlaybackRate - 1) < 1e-8 ? '' : `atempo=${narrationPlaybackRate.toFixed(4)},`;
   // 不上 loudnorm:单遍动态模式会给音频流附加异常时间基准,下游 adelay
   // 插入的片头静音会被吞掉,造成音画不同步(2026-08-12 实测复现)。
-  filters.push(`[${narrationInput}:a]${narrationTempo}aresample=48000,volume=${narrationGainDb.toFixed(1)}dB,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
+  filters.push(`[${narrationInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(snapshot.variant.timeline.audio?.narration)}${narrationTempo}aresample=48000,volume=${narrationGainDb.toFixed(1)}dB,atrim=duration=${bodySec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`);
   if (snapshot.bgm && bgmInput != null) {
     const fadeInDuration = Math.min(Math.max(0, snapshot.bgm.fadeInSec), bodySec);
     const fadeOutDuration = Math.min(Math.max(0, snapshot.bgm.fadeOutSec), bodySec);
@@ -165,7 +181,7 @@ export async function renderFinalEditSnapshot(input: {
       fadeInDuration > 0 ? `afade=t=in:st=0:d=${fadeInDuration.toFixed(6)}` : '',
       fadeOutDuration > 0 ? `afade=t=out:st=${fadeStart.toFixed(6)}:d=${fadeOutDuration.toFixed(6)}` : '',
     ].filter(Boolean).join(',');
-    filters.push(`[${bgmInput}:a]aresample=48000,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+    filters.push(`[${bgmInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(snapshot.variant.timeline.audio?.bgm)}aresample=48000,volume=${snapshot.bgm.gainDb}dB,atrim=duration=${bodySec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
     filters.push(`[narration][music]amix=inputs=2:duration=longest:dropout_transition=0[bodyaudio]`);
   } else {
     filters.push('[narration]anull[bodyaudio]');

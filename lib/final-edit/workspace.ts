@@ -4,6 +4,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { defaultTextStyle, normalizeTextStyle, splitCoverTitle, timelineGaps } from './domain.ts';
+import { changeVideoPlaybackRate, editAudioClip } from './clip-edit.ts';
 import { calculateOverlapScore } from './overlap.ts';
 import { listReadyFinalEditBgmTracks, scanFinalEditBgm } from './bgm.ts';
 import { parseCoverKey, resolveCoverCandidateFile } from './cover-candidates.ts';
@@ -253,6 +254,9 @@ export interface EnsureMixcutDraftInput {
 
 export type FinalEditCommand =
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'delete_clip'; clipId: string }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'set_clip_playback_rate'; clipId: string; playbackRate: number }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'split_audio_clip'; track: 'narration' | 'bgm'; clipId: string; atUs: number }
+  | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'delete_audio_clip'; track: 'narration' | 'bgm'; clipId: string }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'move_clip'; clipId: string; timelineInFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'trim_clip'; clipId: string; sourceInFrame: number; sourceOutFrame: number; timelineInFrame: number; timelineOutFrame: number }
   | { scope: 'variant'; variantId: string; expectedRevision: number; type: 'replace_clip'; clipId: string; videoJobId: string; sourceFingerprint: string; sourceInFrame: number; sourceOutFrame: number }
@@ -691,7 +695,7 @@ function clipSourceFailure(
 function issueList(timeline: VideoTimeline, coverKey: string | null, narrationReady: boolean, extraIssues: FinalEditIssue[] = []): FinalEditIssue[] {
   const issues: FinalEditIssue[] = [];
   for (const gap of timelineGaps(timeline.bodyFrames, timeline.clips)) {
-    issues.push({ code: 'timeline_gap', severity: 'blocking', message: `正文 ${gap.startFrame}–${gap.endFrame} 帧缺少画面` });
+    issues.push({ code: 'timeline_gap', severity: timeline.allowGaps ? 'warning' : 'blocking', message: `正文 ${gap.startFrame}–${gap.endFrame} 帧为空位${timeline.allowGaps ? '，导出保留黑场' : '，缺少画面'}` });
   }
   const sorted = [...timeline.clips].sort((a, b) => a.timelineInFrame - b.timelineInFrame);
   for (let index = 1; index < sorted.length; index += 1) {
@@ -1814,7 +1818,18 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (!state) throw new FinalEditError('revision_invalid', '历史版本数据损坏');
         timeline = state.timeline; bgm = state.bgm; cover = state.cover;
       }
-      if (command.type === 'delete_clip') timeline.clips = timeline.clips.filter((clip) => clip.id !== command.clipId);
+      if (command.type === 'delete_clip') {
+        timeline.clips = timeline.clips.filter((clip) => clip.id !== command.clipId);
+        timeline.allowGaps = true;
+      }
+      if (command.type === 'set_clip_playback_rate') changeVideoPlaybackRate(timeline, command.clipId, command.playbackRate);
+      if (command.type === 'split_audio_clip' || command.type === 'delete_audio_clip') {
+        const group = db.prepare('SELECT narrationDurationUs, narrationConfigJson FROM final_edit_groups WHERE id=?').get(String(row.groupId)) as { narrationDurationUs: number; narrationConfigJson: string };
+        const rate = parseJson<{ playbackRate?: number }>(group.narrationConfigJson, {}).playbackRate ?? 1;
+        const durationUs = group.narrationDurationUs / (command.track === 'narration' ? 1 : rate);
+        if (command.track === 'bgm' && !bgm.trackId) throw new FinalEditError('bgm_not_found', '请先添加背景音乐');
+        editAudioClip(timeline, command.track, durationUs, command.clipId, command.type === 'split_audio_clip' ? command.atUs : undefined);
+      }
       if (command.type === 'swap_clips') {
         const ordered = [...timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame);
         const leftIndex = ordered.findIndex((clip) => clip.id === command.leftClipId);
@@ -1872,6 +1887,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (command.type === 'trim_clip') {
           clip.sourceInFrame = Math.round(command.sourceInFrame); clip.sourceOutFrame = Math.round(command.sourceOutFrame);
           clip.timelineInFrame = Math.round(command.timelineInFrame); clip.timelineOutFrame = Math.round(command.timelineOutFrame);
+          timeline.allowGaps = true;
         }
         if (command.type === 'replace_clip') {
           const source = editableVideoSource(db, storageRoot, String(row.groupId), command.videoJobId);
@@ -1935,14 +1951,15 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
         if (!clip) throw new FinalEditError('clip_not_found', '视频片段不存在', 404);
         if (command.type === 'unbind_clip') clip.boundSegmentId = null;
         if (command.type === 'bind_clip') clip.boundSegmentId = command.segmentId;
-        if (command.type === 'set_framing') clip.framing = { scale: Math.max(1, Math.min(3, command.scale)), offsetX: Math.max(-1, Math.min(1, command.offsetX)), offsetY: Math.max(-1, Math.min(1, command.offsetY)) };
+        if (command.type === 'set_framing' && ![command.scale, command.offsetX, command.offsetY].every(Number.isFinite)) throw new FinalEditError('invalid_framing', '画面参数无效');
+        if (command.type === 'set_framing') clip.framing = { scale: Math.max(0.25, Math.min(3, command.scale)), offsetX: Math.max(-1, Math.min(1, command.offsetX)), offsetY: Math.max(-1, Math.min(1, command.offsetY)) };
       }
       // M4：定义「本次命令触碰的 clip 集合」。被触碰的 clip 必须合法（抛错）；
       // 未触碰的 clip 若因存量坏数据校验失败，降级为 blocking issue，不再锁死整条时间线。
       const touchedClipIds = new Set<string>();
       if (command.type === 'delete_clip') {
         // 已移除的 clip 不在时间线里，不触碰任何现存 clip。
-      } else if (command.type === 'move_clip' || command.type === 'trim_clip' || command.type === 'replace_clip' || command.type === 'bind_clip' || command.type === 'unbind_clip' || command.type === 'set_framing') {
+      } else if (command.type === 'move_clip' || command.type === 'trim_clip' || command.type === 'replace_clip' || command.type === 'bind_clip' || command.type === 'unbind_clip' || command.type === 'set_framing' || command.type === 'set_clip_playback_rate') {
         touchedClipIds.add(command.clipId);
       } else if (command.type === 'insert_clip') {
         for (const clip of timeline.clips) if (!clipIdsBeforeCommand.has(clip.id)) touchedClipIds.add(clip.id);
@@ -1955,7 +1972,7 @@ export function createFinalEditWorkspace(deps: FinalEditWorkspaceDependencies): 
       const blockedIssues: FinalEditIssue[] = [];
       for (const clip of timeline.clips) {
         const touched = touchedClipIds.has(clip.id);
-        if (clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame - clip.sourceInFrame < FINAL_EDIT_MIN_CLIP_FRAMES) {
+        if (![clip.timelineInFrame, clip.timelineOutFrame, clip.sourceInFrame, clip.sourceOutFrame].every(Number.isSafeInteger) || clip.timelineInFrame < 0 || clip.timelineOutFrame > timeline.bodyFrames || clip.timelineOutFrame - clip.timelineInFrame < FINAL_EDIT_MIN_CLIP_FRAMES || clip.sourceInFrame < 0 || clip.sourceOutFrame <= clip.sourceInFrame) {
           const details = { clipId: clip.id, videoJobId: clip.videoJobId, reason: 'structural_invalid', sourceInFrame: clip.sourceInFrame, sourceOutFrame: clip.sourceOutFrame, timelineInFrame: clip.timelineInFrame, timelineOutFrame: clip.timelineOutFrame, bodyFrames: timeline.bodyFrames };
           if (touched) throw new FinalEditError('source_out_of_range', '片段时间范围无效或短于 0.5 秒', 400, details);
           blockedIssues.push({ code: 'structural_invalid', severity: 'blocking', message: `片段「${clipDisplayName(db, String(row.groupId), clip.videoJobId)}」的片段时间范围无效或短于 0.5 秒`, targetId: clip.id });

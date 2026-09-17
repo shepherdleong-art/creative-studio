@@ -37,6 +37,10 @@ try {
   page.on('pageerror', (error) => pageErrors.push(error.message));
   const startedAt = new Date(Date.now() - 20_000).toISOString();
   let state = { status: 'running', succeededCount: 0, failedCount: 0 };
+  let painMode = false;
+  let submitted;
+  const painOpportunity = { version: 'pain-solving-v1', path: 'direct', audience: '靠坐看剧的人', scenario: '晚上看剧', problem: '头颈缺少承托',
+    main: { label: '高靠背承托', factIds: ['point-1'] }, support: null, proposition: '靠坐看剧时高靠背承托头颈', matchReason: '高靠背事实对应承托需求' };
   let polls = 0;
   let distillRequests = 0;
   let savedSelection;
@@ -47,9 +51,9 @@ try {
   ] };
   const snapshot = () => ({
     id: 'task-fixture', projectId: 'p1', requestedCount: 3, mode: 'reuse',
-    ...state, currentStage: 'generate', inputSnapshot: { targetDurationSec: 15, requestedCount: 3, providerModel: 'fixture' },
+    ...state, currentStage: 'generate', inputSnapshot: { targetDurationSec: 15, requestedCount: 3, providerModel: 'fixture', ...(painMode ? { productionMode: 'pain_solving_15s' } : {}) },
     startedAt, updatedAt: startedAt, createdAt: startedAt,
-    stages: [{ stage: 'generate', status: state.status === 'running' ? 'running' : 'succeeded',
+    stages: [...(painMode ? [{ stage: 'plan', status: 'succeeded', payload: { opportunityCount: 1, shortageCount: 2, painPlanning: { shortageReason: '只有一个有依据的内容机会' } } }] : []), { stage: 'generate', status: state.status === 'running' ? 'running' : 'succeeded',
       startedAt, finishedAt: state.status === 'running' ? null : new Date().toISOString(),
       payload: { generated: state.succeededCount, requested: 3, errors: state.status === 'partial' ? ['Gemini 返回了无效 JSON。'] : [] } }],
   });
@@ -58,7 +62,7 @@ try {
     createdAt: startedAt, updatedAt: startedAt,
     currentRevision: {
       id: `revision-${index}`, revisionNumber: 1, origin: 'ai_generate', createdAt: startedAt,
-      contentJson: JSON.stringify({ title: `已完成的脚本${index}`, fullScript: '沙发托住疲惫的身体，想了解这款就看看这些细节。',
+      contentJson: JSON.stringify({ ...(painMode ? { productionMode: 'pain_solving_15s', painSolving: painOpportunity } : {}), title: `已完成的脚本${index}`, fullScript: '沙发托住疲惫的身体，想了解这款就看看这些细节。',
         fullSubtitle: '', segments: [], sellingPointUsage: [], targetDurationSec: 15, contentCharacterCount: 28,
         estimatedNarrationDurationSec: 8, durationStatus: 'too_short', template: '场景种草' }),
       validationJson: '{}', targetDurationSec: 15,
@@ -75,7 +79,12 @@ try {
       state = { ...state, status: 'cancelled' }; body = { task: snapshot() };
     } else if (pathname.endsWith('/script-studio/tasks/task-fixture')) {
       polls++; body = { task: snapshot() };
-    } else if (pathname.endsWith('/script-studio/tasks')) body = { tasks: [snapshot()] };
+    } else if (pathname.endsWith('/script-studio/tasks')) {
+      if (route.request().method() === 'POST') {
+        submitted = route.request().postDataJSON();
+        body = { task: snapshot(), schedulerEnabled: false };
+      } else body = { tasks: [snapshot()] };
+    }
     else if (pathname.endsWith('/script-studio/scripts')) body = { scripts: Array.from({ length: state.succeededCount }, (_, i) => script(i + 1)) };
     else if (pathname.endsWith('/script-studio/library')) {
       if (route.request().method() === 'POST') {
@@ -89,7 +98,8 @@ try {
         body = { revision: library };
       } else body = { current: library };
     } else if (pathname.endsWith('/script-studio/distilled-points')) { distillRequests++; body = { points: [] }; }
-    else if (pathname === '/api/providers' || pathname === '/api/providers/script') body = { providers: [] };
+    else if (pathname === '/api/providers/script') body = [{ id: 'fixture-provider', name: '测试模型', model: 'fixture', configured: true, supportsVision: true, executionScope: 'external' }];
+    else if (pathname === '/api/providers') body = { providers: [] };
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
   });
   await page.goto(`${baseUrl}/projects/p1?tab=script`);
@@ -126,8 +136,35 @@ try {
   await expect(page.getByRole('button', { name: '选择 / 排除卖点', exact: true })).toBeVisible();
   assert.equal(savedSelection.edits.find((edit) => edit.sellingPointId === 'point-1').disabledByUser, false);
   assert.equal(distillRequests, 0, '默认页面不再请求第二份提炼列表');
+  painMode = true;
+  state = { status: 'succeeded', succeededCount: 1, failedCount: 0 };
+  await page.reload();
+  await expect(page.getByText('目标 3 条，找到 1 个内容机会，已保存 1 条。')).toBeVisible();
+  await expect(page.getByText(/这部分不计为生成失败/)).toBeVisible();
+  await expect(page.getByRole('button', { name: '补跑缺失条目', exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('再生成模式')).toHaveValue('pain_solving_15s');
+  await expect(page.getByLabel('再生成时长')).toBeDisabled();
+  await page.getByText('查看内容策划依据 · 直接解决').click();
+  await expect(page.getByText('核心问题：头颈缺少承托')).toBeVisible();
+  await expect(page.getByRole('button', { name: '换一个框架/钩子', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '再生成一组', exact: true }).click();
+  await expect.poll(() => submitted?.productionMode).toBe('pain_solving_15s');
+  assert.equal(submitted.targetDurationSec, 15);
+  assert.match(submitted.requestKey, /^regenerate-group:/);
+  await page.reload();
+  await page.getByRole('button', { name: '返回第 1 页', exact: true }).click();
+  await page.getByLabel('生产模式', { exact: true }).selectOption('pain_solving_15s');
+  await expect(page.getByText('先筛选有依据的内容机会，再生成脚本；机会不足时少产，不凑数量。')).toBeVisible();
+  await page.screenshot({ path: path.resolve('outputs/script-pain-mode-form.png'), fullPage: true });
+  submitted = undefined;
+  await page.getByRole('button', { name: '分析并生成脚本', exact: true }).click();
+  await expect.poll(() => submitted?.productionMode).toBe('pain_solving_15s');
+  assert.equal(submitted.targetDurationSec, 15);
+  await page.reload();
+  await page.getByText('查看内容策划依据 · 直接解决').click();
+  await page.screenshot({ path: path.resolve('outputs/script-pain-mode-results.png'), fullPage: true });
   assert.deepEqual(pageErrors, [], '页面不应出现运行时异常');
-  console.log('script-studio-progress.playwright.test.mjs: ok (early results, continued polling, cancellation, actual error)');
+  console.log('script-studio-progress.playwright.test.mjs: ok (early results, continued polling, cancellation, actual error, pain mode submit/regeneration/shortage/details)');
 } finally {
   await browser?.close();
   const exited = new Promise((resolve) => server.once('exit', resolve));

@@ -836,26 +836,14 @@ try {
   );
   console.log('✓ 12. 口播音频解析(有/无口播)');
 
-  // 13. trim_variable 变长后 ripple:后续片段依次后延,首尾相接
+  // Extending into an occupied neighbour must fail without changing either clip.
   resetPlan0Arrangement();
-  const longer = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
-    type: 'trim_variable', clipId: 'clip-1', sourceStartUs: 500_000, sourceEndUs: 3_500_000,
-  });
-  assert.equal(longer.changed, true);
-  assert.equal(longer.visualChanged, true);
-  assert.equal(longer.editRevision, 1);
-  assert.ok(longer.warnings.some((warning) => warning.includes('画面总长比口播长 1.0 秒')), '变长后必须给出长出的后果提示');
-  const longerClips = currentArrangement(plans[0]).clips as Array<Record<string, unknown>>;
-  assert.deepEqual(
-    longerClips.map((clip) => [clip.clipId, clip.timelineStartUs, clip.timelineEndUs]),
-    [
-      ['clip-1', 0, 3_000_000],
-      ['clip-2', 3_000_000, 5_000_000],
-    ],
-    '变长修剪后必须 ripple 且时间线连续',
-  );
-  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).visualDurationUs, 5_000_000);
-  console.log('✓ 13. trim_variable 变长 + ripple + 时长 warning');
+  const beforeExtension = currentArrangement(plans[0]);
+  assertDomainError(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+    type: 'trim_variable', clipId: 'clip-1', sourceStartUs: 1_000_000, sourceEndUs: 4_000_000,
+  }), 'invalid_input', /相邻片段/);
+  assert.deepEqual(currentArrangement(plans[0]), beforeExtension);
+  console.log('✓ 13. trim_variable 不得覆盖后续片段');
 
   // 14. trim_variable 缩短成功;越素材时长/短于 0.5s 拒绝
   resetPlan0Arrangement();
@@ -864,13 +852,13 @@ try {
   });
   assert.equal(shorter.changed, true);
   assert.equal(shorter.visualChanged, true);
-  assert.ok(shorter.warnings.some((warning) => warning.includes('画面总长比口播短 1.5 秒')), '缩短后必须给出画面短于口播的提示');
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).visualDurationUs, 4_000_000, '修剪不得移动后续片段');
   const shorterClips = currentArrangement(plans[0]).clips as Array<Record<string, unknown>>;
   assert.deepEqual(
     shorterClips.map((clip) => [clip.clipId, clip.timelineStartUs, clip.timelineEndUs]),
     [
-      ['clip-1', 0, 500_000],
-      ['clip-2', 500_000, 2_500_000],
+      ['clip-1', 1_000_000, 1_500_000],
+      ['clip-2', 2_000_000, 4_000_000],
     ],
   );
   resetPlan0Arrangement();
@@ -893,7 +881,7 @@ try {
   }).changed, false, '变长修剪无变化必须幂等短路');
   console.log('✓ 14. trim_variable 缩短/越界/最短长度/幂等');
 
-  // 15. delete ripple 提前,只剩一条拒绝
+  // 15. delete 保留空位,只剩一条拒绝
   resetPlan0Arrangement();
   const deleted = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
     type: 'delete', clipId: 'clip-2',
@@ -909,7 +897,70 @@ try {
     'invalid_input',
     /至少保留一条片段/,
   );
-  console.log('✓ 15. delete ripple / 只剩一条拒绝');
+  console.log('✓ 15. delete 保留空位 / 只剩一条拒绝');
+
+  resetPlan0Arrangement();
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'delete', clipId: 'clip-1' });
+  const gapView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(gapView.clips[0].timelineStartUs, 2_000_000, '删除首片段必须留出前方空位');
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_narration_gain', gainDb: -3 });
+  assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips[0].timelineStartUs, 2_000_000, '修改音量不得再压紧空位');
+
+  const beforeMove = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips[0];
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'move_clip', clipId: beforeMove.clipId, startUs: 750_000 });
+  const moved = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips[0];
+  assert.equal(moved.timelineStartUs, 750_000);
+  assert.equal(moved.timelineEndUs, 2_750_000);
+  assert.equal(moved.sourceStartUs, beforeMove.sourceStartUs);
+  assert.equal(moved.sourceEndUs, beforeMove.sourceEndUs);
+  resetPlan0Arrangement();
+  const originalPositions = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips;
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'move_clip', clipId: 'clip-1', startUs: 2_000_000 });
+  const reordered = getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips;
+  assert.deepEqual(reordered.map((clip) => clip.clipId), ['clip-2', 'clip-1']);
+  for (const clip of reordered) {
+    const original = originalPositions.find((item) => item.clipId === clip.clipId)!;
+    assert.equal(clip.sourceStartUs, original.sourceStartUs);
+    assert.equal(clip.sourceEndUs, original.sourceEndUs);
+  }
+
+  // 自动分配保留微秒边界：2.735 秒取整到视频帧会变成 2.75 秒，恢复原速误撞下一段。
+  resetPlan0Arrangement();
+  const exactArrangement = currentArrangement(plans[0]);
+  const exactClips = exactArrangement.clips as Array<Record<string, unknown>>;
+  exactClips[0].sourceStartUs = 1_871_617;
+  exactClips[0].sourceEndUs = 4_606_617;
+  exactClips[0].timelineEndUs = 2_735_000;
+  exactClips[1].timelineStartUs = 2_735_000;
+  db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify(exactArrangement), outputVersionId);
+  for (const rate of [1.5, 1, 2, 1, 1.5, 1]) {
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_clip_playback_rate', clipId: 'clip-1', playbackRate: rate });
+    const restored = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+    assert.equal(restored.clips[0].timelineEndUs, Math.round(2_735_000 / rate));
+    assert.equal(restored.clips[1].timelineStartUs, 2_735_000);
+    assert.equal(restored.clips[0].sourceEndUs, 4_606_617);
+  }
+  assertDomainError(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_clip_playback_rate', clipId: 'clip-1', playbackRate: 0.5 }), 'invalid_input', /空位不足/);
+
+  resetPlan0Arrangement();
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_clip_playback_rate', clipId: 'clip-1', playbackRate: 2 });
+  const spedView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(spedView.clips[0].timelineEndUs, 1_000_000);
+  assert.equal(spedView.clips[1].timelineStartUs, 2_000_000);
+  assert.equal(spedView.clips[0].playbackRate, 2);
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'split', clipId: 'clip-1', offsetUs: 500_000 });
+  const spedSplit = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(spedSplit.clips[0].sourceEndUs, 2_000_000, '倍速后的源分割点必须按速率换算');
+  assert.equal(spedSplit.clips[1].timelineStartUs, 500_000);
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'set_clip_framing', clipId: 'clip-1', framing: { scale: 0.5, offsetX: 0.3, offsetY: -0.2 } });
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).clips[0].framing, { scale: 0.5, offsetX: 0.3, offsetY: -0.2 });
+  const audioSplit = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'split_audio_clip', track: 'narration', clipId: 'narration-full', atUs: 1_000_000 });
+  assert.equal(audioSplit.visualChanged, false);
+  applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'delete_audio_clip', track: 'narration', clipId: 'narration-full' });
+  const cutView = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+  assert.equal(cutView.audio?.narration?.[0].startUs, 1_000_000);
+  assert.equal(cutView.narration.durationUs, 4_000_000);
+  assert.equal(cutView.clips[2].timelineStartUs, 2_000_000);
 
   // 16. insert 到最前/中间/末尾;非池/已排除/素材与显式窗口不足最短长度拒绝
   resetPlan0Arrangement();

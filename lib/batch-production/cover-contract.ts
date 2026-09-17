@@ -33,6 +33,8 @@ export interface CoverContractInput {
 export interface FullRenderContractInput {
   outputVersionId: string;
   editRevision: number;
+  audio?: unknown;
+  preserveGaps?: boolean;
   adapterVersion: string;
   preset: string;
   outputWidth: number;
@@ -45,6 +47,7 @@ export interface FullRenderContractInput {
     sourceEndUs: number;
     timelineStartUs: number;
     timelineEndUs: number;
+    framing?: unknown;
   }>;
   narration: {
     relativePath?: string;
@@ -232,6 +235,7 @@ export function resolveFullRenderContract(
     sourceEndUs: Number(c.sourceEndUs || 0),
     timelineStartUs: Number(c.timelineStartUs ?? c.timelineInUs ?? 0),
     timelineEndUs: Number(c.timelineEndUs ?? c.timelineOutUs ?? 0),
+    ...(c.framing ? { framing: c.framing } : {}),
   })).sort((a, b) => a.timelineStartUs - b.timelineStartUs || a.clipId.localeCompare(b.clipId));
 
   const narrationRaw = arrangement.narration && typeof arrangement.narration === 'object' && !Array.isArray(arrangement.narration)
@@ -271,6 +275,8 @@ export function resolveFullRenderContract(
     outputVersionId: row.outputVersionId,
     editRevision,
     adapterVersion: BATCH_FULL_RENDER_ADAPTER_VERSION,
+    ...(arrangement.audio ? { audio: arrangement.audio } : {}),
+    ...(arrangement.preserveGaps === true ? { preserveGaps: true } : {}),
     preset,
     outputWidth: outputSize.width,
     outputHeight: outputSize.height,

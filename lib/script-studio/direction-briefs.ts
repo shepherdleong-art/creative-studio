@@ -212,7 +212,7 @@ function audienceScoreOf(
   return score + Math.min(2, keywordHits);
 }
 
-function storedEvidenceIsStructurallyUsable(
+export function storedEvidenceIsStructurallyUsable(
   point: SellingPointRecord,
   bounds: NonNullable<PlanDirectionBriefsInput['evidenceBounds']>,
 ): boolean {

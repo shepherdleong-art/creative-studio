@@ -45,7 +45,7 @@ try {
   $NewRoot = Resolve-Directory $NewRoot
   $PackageRoot = Resolve-Directory $PackageRoot
   if (-not $NewRoot.Equals($PackageRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw '迁移目标必须是本脚本所在的 0.6.1 免安装版目录。'
+    throw '迁移目标必须是本脚本所在的 0.6.2 免安装版目录。'
   }
 
   if (-not $OldRoot) {
@@ -72,7 +72,7 @@ try {
   }
 
   Write-Host '========================================'
-  Write-Host '  Creative Studio 旧版数据迁移到 0.6.1'
+  Write-Host '  Creative Studio 旧版数据迁移到 0.6.2'
   Write-Host '========================================'
   Write-Host "旧版目录：$OldRoot"
   Write-Host "新版目录：$NewRoot"
@@ -87,10 +87,10 @@ try {
   $nodeExe = Join-Path $NewRoot 'node-runtime\node.exe'
   $migrationScript = Join-Path $ScriptDir 'migrate-portable-data.mjs'
   if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf)) {
-    throw '免安装包缺少 node-runtime\node.exe，请重新完整复制 0.6.1 免安装包。'
+    throw '免安装包缺少 node-runtime\node.exe，请重新完整复制 0.6.2 免安装包。'
   }
   if (-not (Test-Path -LiteralPath $migrationScript -PathType Leaf)) {
-    throw '免安装包缺少 scripts\migrate-portable-data.mjs，请重新完整复制 0.6.1 免安装包。'
+    throw '免安装包缺少 scripts\migrate-portable-data.mjs，请重新完整复制 0.6.2 免安装包。'
   }
 
   Write-Host '[3/3] 备份数据库、复制业务素材并修复媒体路径...'
@@ -98,7 +98,7 @@ try {
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   Write-Host ''
-  Write-Host '迁移验收通过。现在可以双击 start-windows.cmd 启动 0.6.1。' -ForegroundColor Green
+  Write-Host '迁移验收通过。现在可以双击 start-windows.cmd 启动 0.6.2。' -ForegroundColor Green
   exit 0
 } catch {
   Write-Host ''

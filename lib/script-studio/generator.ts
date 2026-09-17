@@ -1,3 +1,4 @@
+import { buildPainPlanningPrompt, PAIN_PATHS, PAIN_REVIEW_CHECKS, painWritingRequirements, type PainPlanningInput } from './pain-solving.ts';
 import { normalizeAutomaticSubtitleText } from '../subtitle-display.ts';
 import { buildScriptDurationBudget, countScriptContentCharacters, estimateNarrationDurationSec } from '../script-duration-policy.ts';
 import type { DirectionSellingPointBrief } from './direction-briefs.ts';
@@ -7,7 +8,7 @@ import type { ScriptStudioCompleteJson } from './llm-contract.ts';
 import { isSellingPointEvidenceUsable } from './selling-point-normalize.ts';
 import { embeddingRequirementText, checkTitleEmbedding } from './title-embedding.ts';
 import { buildScriptTitleContext, scriptTitleRequirements, type ScriptTitleSummary, type ScriptTitleIssue } from './title-policy.ts';
-import { SCRIPT_TITLE_REPAIR_MAX_TOKENS } from './limits.ts';
+import { PAIN_PLANNING_MAX_TOKENS, SCRIPT_TITLE_REPAIR_MAX_TOKENS } from './limits.ts';
 import type { ScriptRequestBudget, ScriptRequestPurpose } from './request-budget.ts';
 import { ctaEndingSceneFromStructure, scriptCtaRequirements } from './cta-policy.ts';
 import type { AudienceAnalysisInput, AudienceSegmentProfile } from './audience-profile.ts';
@@ -35,6 +36,7 @@ export interface ScriptGeneratorInput {
   targetDurationSec: number;
   previousScripts: Array<Pick<ScriptStudioScriptContent, 'fullScript'> & ScriptTitleSummary>;
   previousTitles?: ScriptTitleSummary[];
+  peerPainOpportunities?: import('./types.ts').PainSolvingOpportunity[];
   signal?: AbortSignal;
   validationFeedback?: string[];
   /** 任务创建时冻结的商品身份、搜索词与推荐说明，不扩大事实来源。 */
@@ -98,6 +100,7 @@ export interface ScriptEndingReviewInput extends ScriptGeneratorInput {
 }
 
 export interface ScriptGenerator {
+  planPainOpportunities?(input: PainPlanningInput): Promise<unknown>;
   repairTitles?(input: ScriptTitleRepairInput): Promise<unknown>;
   /** 围绕既有段落与已选卖点改写正文，并以自然 CTA 收尾；响应只接收 segments 白名单字段。 */
   repairScriptContent?(input: ScriptBodyRepairInput): Promise<unknown>;
@@ -154,14 +157,14 @@ export function buildScriptPrompt(
     '同系列卖点中的型号、颜色、配置及功能适用限定必须保留，不得把某款专属功能说成全系列标配，也不得把互斥配置拼成同一款商品',
     '完整返回主标题、副标题、分段口播、画面意图与关键词',
     // 软时长目标（方案 §2.3）：字数预算仅作参考，完整表达与 CTA 优先，不再机械卡字数。
-    `口播围绕目标时长 ${input.targetDurationSec} 秒组织；字数预算 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字仅作参考，完整表达与 CTA 优先，可为一句完整 CTA 适当超出；不得为凑字数重复卖点或追加无关内容`,
+    input.plan.painSolving ? '15秒口播目标55–70字，结果式结尾，不为补字添加卖点。' : `口播围绕目标时长 ${input.targetDurationSec} 秒组织；字数预算 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字仅作参考，完整表达与 CTA 优先，可为一句完整 CTA 适当超出；不得为凑字数重复卖点或追加无关内容`,
     '同一轮多条方案必须在开场、结构或卖点组合上明显不同',
     ...(input.audienceSegment ? [
       '口播必须说给 audienceProfile 里的人听：开场先落在画像的 scenario 或 pains 上再引出卖点；至少一个分段只讲场景或痛点、不引用任何卖点，禁止从头到尾逐条念卖点',
       '每个被引用的卖点都必须能对应到画像的某个痛点或决策驱动；与画像无关的卖点宁可不写',
       '不得使用 audienceProfile.rejections 中的表述',
     ] : []),
-    ...scriptCtaRequirements(endingSceneForPlan(input.plan)),
+    ...(input.plan.painSolving ? painWritingRequirements(input.plan.painSolving) : scriptCtaRequirements(endingSceneForPlan(input.plan))),
     ...scriptTitleRequirements(),
   ];
   const embeddingText = input.knowledgeContext
@@ -232,6 +235,7 @@ export function buildScriptPrompt(
       platform: input.platform,
       creativeBrief: input.creativeBrief,
       direction: input.plan.angle,
+      ...(input.plan.painSolving ? { painSolving: input.plan.painSolving, beats: PAIN_PATHS[input.plan.painSolving.path].beats } : {}),
       ...(input.brief?.themeTitle ? { theme: input.brief.themeTitle } : {}),
       template: templateBlock,
       ...(recommendationBlock ? { recommendation: recommendationBlock } : {}),
@@ -265,8 +269,8 @@ export function buildScriptPrompt(
         },
         direction: 'string；20 字以内的切入角度摘要',
         segments: [{
-          narration: 'string；带自然标点的口播；最后一段的最后一句必须是 CTA 行动引导',
-          sellingPointIdRefs: ['string；只引用 sellingPoints.id；纯行动引导的 CTA 段可返回空数组'],
+          narration: input.plan.painSolving ? 'string；自然口播，以使用结果或购买判断收尾' : 'string；带自然标点的口播；最后一段的最后一句必须是 CTA 行动引导',
+          sellingPointIdRefs: [input.plan.painSolving ? '只引用 sellingPoints.id；纯场景段可为空' : 'string；只引用 sellingPoints.id；纯行动引导的 CTA 段可返回空数组'],
           visualIntent: 'string；抽象画面意图',
           visualKeywords: ['string；具体可见画面关键词'],
         }],
@@ -290,6 +294,7 @@ export function buildScriptTitleRepairPrompt(input: ScriptTitleRepairInput): { s
       task: 'repair_project_script_titles_v1',
       product: buildScriptTitleContext(input.libraryRevision, input.knowledgeContext),
       direction: input.plan.angle,
+      ...(input.plan.painSolving ? { painSolving: input.plan.painSolving, beats: PAIN_PATHS[input.plan.painSolving.path].beats } : {}),
       audience: input.audience,
       platform: input.platform,
       tone: input.tone,
@@ -312,6 +317,26 @@ export function buildScriptTitleRepairPrompt(input: ScriptTitleRepairInput): { s
  * 渠道虚构由本地确定性检查拦截，不在审核范围（v3）。
  */
 export function buildScriptEndingReviewPrompt(input: ScriptEndingReviewInput): { systemPrompt: string; userPrompt: string } {
+  if (input.plan.painSolving) return {
+    systemPrompt: '你是痛点解决型短视频审核员。只依据已核验事实审阅，不能把策划假设当事实。只返回 JSON，不改写。',
+    userPrompt: JSON.stringify({
+      task: 'review_pain_solving_v1',
+      opportunity: input.plan.painSolving,
+      peerOpportunities: input.peerPainOpportunities ?? [],
+      content: { title: input.content.title, coverTitleParts: input.content.coverTitleParts, segments: input.content.segments },
+      verifiedFacts: briefCandidatePoints(input).map((p) => ({ id: p.id, factText: p.factText, evidenceQuote: p.evidenceQuote })),
+      requirements: [
+        'factsSupported：所有正文、作用、利益与原因解释均有 verifiedFacts 支持；引用 ID 不等于功效已证明，不能从材料推导失眠改善等效果。',
+        'singleProblem：全文只解决命题的一个核心问题。audienceFit：人群通过具体场景或需求影响内容，非硬塞标签。productAnchor：至少有一个来自本产品的具体特征，不要求竞品绝不具备。',
+        'focusedSellingPoints：只讲一个主卖点和最多一个辅助卖点，不把多个独立功能打包伪装一个。closedLoop：按对应子路径推进，结尾以使用结果或购买判断回应开头，禁止强转化；两难必须真实、两种利益都有依据；原因诊断不能断言病因。',
+        'naturalLanguage：自然分享购买判断，无主播腔、参数堆砌、万能话术或虚构亲测。',
+        'batchDiversity：与每个 peerOpportunities 比较，核心痛点、主卖点、子路径至少两项实质不同；同义改写不算不同。',
+        'titleAligned：有效标题与正文同一内容命题；缺失或长度不合规的标题由后续标题修复处理，不因格式拒绝正文。',
+        '每项 checks 必须为布尔值。只有全部通过且 issues 为空数组才可 pass=true；失败给出具体语句和中文原因。',
+      ],
+      output: { pass: 'boolean', issues: ['具体中文原因'], checks: Object.fromEntries(PAIN_REVIEW_CHECKS.map((name) => [name, 'boolean'])) },
+    }),
+  };
   // 提供方向包内全部可用事实（不只被引用的）：审核要判断「正文表述是否受支持」，
   // 需要知道完整的事实边界，而不是只看已引用的。
   const verifiedFacts = briefCandidatePoints(input)
@@ -361,8 +386,8 @@ export function buildScriptBodyRepairPrompt(input: ScriptBodyRepairInput): { sys
   const requirements = [
     '只能围绕既有分段与方向卖点包内事实改写；不得新增未提供的功效、数字、材质或认证',
     '保留原有分段中已合格的表达与卖点引用，只修复列出的质量问题；不要整篇重写',
-    ...scriptCtaRequirements(endingSceneForPlan(input.plan)),
-    `口播围绕目标时长 ${input.targetDurationSec} 秒组织（字数参考 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字）；完整表达与 CTA 优先，可为一句完整 CTA 适当超出，不得为凑字数重复卖点或追加无关内容`,
+    ...(input.plan.painSolving ? painWritingRequirements(input.plan.painSolving) : scriptCtaRequirements(endingSceneForPlan(input.plan))),
+    input.plan.painSolving ? '15秒口播目标55–70字，结果式结尾，不为补字添加卖点。' : `口播围绕目标时长 ${input.targetDurationSec} 秒组织（字数参考 ${budget.minContentCharacters}-${budget.maxContentCharacters} 字）；完整表达与 CTA 优先，可为一句完整 CTA 适当超出，不得为凑字数重复卖点或追加无关内容`,
     '只返回 segments 数组；标题、封面、时长与知识来源由服务端保持冻结，不得返回',
   ];
   return {
@@ -370,6 +395,7 @@ export function buildScriptBodyRepairPrompt(input: ScriptBodyRepairInput): { sys
     userPrompt: JSON.stringify({
       task: 'repair_project_script_body_v1',
       direction: input.plan.angle,
+      ...(input.plan.painSolving ? { painSolving: input.plan.painSolving, beats: PAIN_PATHS[input.plan.painSolving.path].beats } : {}),
       ...(input.brief?.themeTitle ? { theme: input.brief.themeTitle } : {}),
       audience: input.audience,
       tone: input.tone,
@@ -392,8 +418,8 @@ export function buildScriptBodyRepairPrompt(input: ScriptBodyRepairInput): { sys
       })),
       output: {
         segments: [{
-          narration: 'string；带自然标点的口播；最后一段的最后一句必须是 CTA 行动引导',
-          sellingPointIdRefs: ['string；只引用 sellingPoints.id；纯行动引导的 CTA 段可返回空数组'],
+          narration: input.plan.painSolving ? 'string；自然口播，以使用结果或购买判断收尾' : 'string；带自然标点的口播；最后一段的最后一句必须是 CTA 行动引导',
+          sellingPointIdRefs: [input.plan.painSolving ? '只引用 sellingPoints.id；纯场景段可为空' : 'string；只引用 sellingPoints.id；纯行动引导的 CTA 段可返回空数组'],
           visualIntent: 'string；抽象画面意图',
           visualKeywords: ['string；具体可见画面关键词'],
         }],
@@ -493,6 +519,7 @@ export function normalizeGeneratedScript(
   const recommendation = input.plan.recommendation;
   return {
     version: 4,
+    ...(input.plan.painSolving ? { productionMode: 'pain_solving_15s' as const, painSolving: input.plan.painSolving } : {}),
     title: asString(record.title),
     coverTitleParts: {
       ...coverTitleParts,
@@ -656,6 +683,10 @@ export function createScriptGenerator(
         maxTokens: SCRIPT_TITLE_REPAIR_MAX_TOKENS,
         signal: input.signal,
       });
+    },
+    async planPainOpportunities(input) {
+      return completeJson({ ...buildPainPlanningPrompt(input), temperature: 1,
+        maxTokens: options.maxTokens ?? PAIN_PLANNING_MAX_TOKENS, signal: input.signal });
     },
     async analyzeAudienceProfile(input) {
       // 预算由 runner 在 plan 阶段统一占用（plan_analysis 独立阶段额度），这里只发请求。

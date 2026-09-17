@@ -1,3 +1,4 @@
+import { painContentIssues } from './pain-solving.ts';
 import {
   buildScriptDurationBudget,
   countScriptContentCharacters,
@@ -63,7 +64,7 @@ export function validateScriptContent(
     titleEmbeddingContext?: TitleEmbeddingContext;
   },
 ): ScriptValidationResult {
-  const issues: string[] = [];
+  const issues: string[] = painContentIssues(input);
   // 引用白名单与生成边界一致 fail closed：证据失败卖点即使被重新打开也不算可用。
   const usableIds = new Set(
     options.libraryRevision.sellingPoints

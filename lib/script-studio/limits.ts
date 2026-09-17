@@ -1,3 +1,9 @@
+/** 痛点内容机会解析和请求的资源上限。 */
+export const PAIN_PLANNING_CANDIDATE_LIMIT = 12;
+export const PAIN_FACTS_PER_ROLE_LIMIT = 4;
+export const PAIN_TEXT_FIELD_LIMIT = 400;
+export const PAIN_PLANNING_MAX_TOKENS = 8000;
+
 export const SCRIPT_TITLE_REPAIR_MAX_TOKENS = 1200;
 
 export interface ScriptStudioLimits {

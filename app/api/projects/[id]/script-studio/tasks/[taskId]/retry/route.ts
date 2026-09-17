@@ -22,7 +22,15 @@ export async function POST(
     if (parent.status !== 'partial' && parent.status !== 'failed') {
       throw new ScriptStudioError('conflict', '只有部分成功或失败任务可以补跑');
     }
-    const requestedCount = Math.max(1, parent.requestedCount - parent.succeededCount);
+    const parentInput = JSON.parse(parent.inputSnapshotJson || '{}') as Record<string, unknown>;
+    const isPain = parentInput.productionMode === 'pain_solving_15s';
+    const planStage = parent.stages.find((stage) => stage.stage === 'plan' && stage.status === 'succeeded');
+    const planPayload = JSON.parse(planStage?.payloadJson || '{}') as { painPlanning?: { opportunities?: unknown[] } };
+    const completed = db.prepare('SELECT validationJson FROM project_script_revisions WHERE generationTaskId = ?').all(taskId) as Array<{ validationJson: string }>;
+    const completedIndexes = new Set(completed.map((row) => (JSON.parse(row.validationJson) as { generationPlanIndex?: number }).generationPlanIndex));
+    const remaining = isPain ? planPayload.painPlanning?.opportunities?.filter((_, index) => !completedIndexes.has(index + 1)) : undefined;
+    if (remaining?.length === 0) throw new ScriptStudioError('conflict', '内容机会已处理完毕，机会不足不属于生成失败');
+    const requestedCount = remaining?.length ?? Math.max(1, parent.requestedCount - parent.succeededCount);
     const requestKey = `retry:${taskId}:${createHash('sha256').update(`${projectId}|${taskId}|${requestedCount}`).digest('hex')}`;
     const existingRetry = db.prepare(`
       SELECT id FROM script_studio_tasks WHERE projectId = ? AND requestKey = ? AND parentTaskId = ?
@@ -55,7 +63,11 @@ export async function POST(
       sourceSetId: parent.sourceSetId,
       libraryRevisionId: savedLibraryRevisionId || parent.libraryRevisionId,
       inputSnapshot: {
-        ...JSON.parse(parent.inputSnapshotJson || '{}'),
+        ...parentInput,
+        ...(remaining ? { painRetryOpportunities: remaining, painPriorOpportunities: [
+          ...(Array.isArray(parentInput.painPriorOpportunities) ? parentInput.painPriorOpportunities : []),
+          ...(planPayload.painPlanning?.opportunities?.filter((_, index) => completedIndexes.has(index + 1)) ?? []),
+        ] } : {}),
         parentTaskId: taskId,
         requestedCount,
       },

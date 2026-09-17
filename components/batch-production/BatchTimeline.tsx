@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AudioBlock } from '@/components/mixcut/MixcutTimeline';
+import { planClipPosition, type PositionedClip } from '@/lib/media-core/clip-position';
+import { audioClips, type AudioEdits } from '@/lib/media-core/audio-edit';
 import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
 import { timelineAbsoluteFrameFromPointer, timelineContentWidthPx } from '@/components/final-edit/timeline-edit';
@@ -14,20 +17,20 @@ const INTRO_FRAMES = FINAL_EDIT_INTRO_FRAMES; // 20
 const INTRO_SEC = INTRO_FRAMES / FPS; // 片头封面静帧秒数
 const PX_PER_SECOND = 60; // 与 MixcutTimeline 固定缩放一致
 const MIN_FRAMES = 12; // 0.5s 最短片段
-const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持一致
 
 const usToFrame = (us: number) => Math.round((us / 1_000_000) * FPS);
 const frameToUs = (frame: number) => Math.round((frame / FPS) * 1_000_000);
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
 
 type TimelineTool = 'select' | 'split';
-type TrimDragMode = 'start' | 'end' | 'slip';
+type TrimDragMode = 'start' | 'end' | 'move';
 
-/** 拖拽中的本地修剪预览（帧），用于镜像服务端 ripple 的显示布局。 */
+/** 拖拽中的本地修剪预览（帧），仅改变当前片段的显示边界。 */
 interface ClipTrimDraft {
   clipId: string;
   sourceIn: number;
   sourceOut: number;
+  positions?: PositionedClip[];
 }
 
 interface ClipContextMenuState {
@@ -44,32 +47,7 @@ interface SubtitleContextMenuState {
   y: number;
 }
 
-type TimelineContextMenuState = ClipContextMenuState | SubtitleContextMenuState;
-
-// 伪波形组件：原样复制自 components/mixcut/MixcutTimeline.tsx（那边没有 export）。
-function Waveform({ tone, seed, playedWidthPx }: { tone: 'tts' | 'bgm'; seed: number; playedWidthPx: number }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const update = () => setCount(Math.floor(element.offsetWidth / WAVEFORM_BAR_PITCH_PX));
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  const bars = useMemo(() => Array.from({ length: Math.max(0, count) }, (_, index) => {
-    const raw = Math.sin(index * 127.1 + seed * 311.7) * 43758.5453;
-    return 18 + (raw - Math.floor(raw)) * 74;
-  }), [count, seed]);
-  const playedCount = Math.round(Math.max(0, playedWidthPx) / WAVEFORM_BAR_PITCH_PX);
-  return (
-    <div ref={ref} className={`${styles.wf} ${tone === 'tts' ? styles.wfTts : styles.wfBgm}`} aria-hidden="true">
-      {bars.map((height, index) => <span key={index} style={{ height: `${height}%` }} data-played={index < playedCount || undefined} />)}
-    </div>
-  );
-}
+type TimelineContextMenuState = ClipContextMenuState | SubtitleContextMenuState | { kind: 'audio'; track: 'narration' | 'bgm'; clipId: string; x: number; y: number };
 
 export interface BatchTimelineProps {
   /** 必须是对 fetched view 的稳定引用（如 useMemo([view])）；draft 实时预览靠 draftState.clips === clips 引用比较失效，每次 render 新建数组会让拖拽预览静默失效。 */
@@ -77,6 +55,10 @@ export interface BatchTimelineProps {
   assets: BatchOutputPoolAssetView[]; // 取 thumbnailUrl/displayName/durationSec
   subtitleCues: BatchOutputSubtitleCueView[];
   narrationDurationUs: number | null;
+  preserveGaps?: boolean;
+  audio?: AudioEdits;
+  musicLabel?: string | null;
+  onMediaEdit: (edit: Record<string, unknown>) => Promise<boolean>;
   playheadSec: number; // 含片头绝对时间
   selectedClipId: string | null;
   selectedSubtitleCueId: string | null;
@@ -93,7 +75,7 @@ export interface BatchTimelineProps {
 }
 
 /**
- * 批量「检查成片」时间轴：画面轨（选中/拖边缘变长修剪/拖中段等长平移/分割/右键菜单）
+ * 批量「检查成片」时间轴：画面轨（选中/拖边缘变长修剪/拖中段移动或排序/分割/右键菜单）
  * + 字幕轨（文字编辑/拖动/拖边/分割/删除）+口播对照轨。交互范式对齐
  * components/mixcut/MixcutTimeline.tsx。
  * 时间坐标：clips 与 subtitleCues 是正文（片头后）相对时间，playheadSec 是含片头绝对时间。
@@ -103,6 +85,7 @@ export default function BatchTimeline({
   assets,
   subtitleCues,
   narrationDurationUs,
+  preserveGaps, audio, musicLabel, onMediaEdit,
   playheadSec,
   selectedClipId,
   selectedSubtitleCueId,
@@ -217,26 +200,20 @@ export default function BatchTimeline({
     target.addEventListener('pointercancel', cancel, { once: true });
   };
 
-  // 拖拽预览镜像服务端 ripple：draft 存在时显示布局从 0 起首尾相接重新累计
-  const clipLayout = useMemo(() => {
-    const entries = clips.map((clip) => {
-      const timelineInFrame = usToFrame(clip.timelineStartUs);
-      const timelineOutFrame = usToFrame(clip.timelineEndUs);
-      const sourceIn = usToFrame(clip.sourceStartUs);
-      const sourceOut = usToFrame(clip.sourceEndUs);
-      const activeDraft = draft?.clipId === clip.clipId ? draft : null;
-      const durFrames = activeDraft ? activeDraft.sourceOut - activeDraft.sourceIn : timelineOutFrame - timelineInFrame;
-      return { clip, timelineInFrame, sourceIn, sourceOut, durFrames };
-    });
-    const laidOut: Array<(typeof entries)[number] & { displayInFrame: number }> = [];
-    let cursorFrames = 0;
-    for (const entry of entries) {
-      const displayInFrame = draft ? cursorFrames : entry.timelineInFrame;
-      cursorFrames = displayInFrame + entry.durFrames;
-      laidOut.push({ ...entry, displayInFrame });
-    }
-    return laidOut;
-  }, [clips, draft]);
+  // 拖到空位只移动当前素材；跨过其他片段时预览排序后的全部位置。
+  const clipLayout = useMemo(() => clips.map((clip) => {
+    const timelineInFrame = usToFrame(clip.timelineStartUs);
+    const timelineOutFrame = usToFrame(clip.timelineEndUs);
+    const sourceIn = usToFrame(clip.sourceStartUs);
+    const sourceOut = usToFrame(clip.sourceEndUs);
+    const activeDraft = draft?.clipId === clip.clipId ? draft : null;
+    const position = draft?.positions?.find((item) => item.id === clip.clipId);
+    const rate = clip.playbackRate ?? 1;
+    const slip = activeDraft && activeDraft.sourceOut - activeDraft.sourceIn === sourceOut - sourceIn;
+    const displayInFrame = position ? usToFrame(position.startUs) : activeDraft && !slip ? timelineInFrame + Math.round((activeDraft.sourceIn - sourceIn) / rate) : timelineInFrame;
+    const durFrames = position ? usToFrame(position.endUs) - usToFrame(position.startUs) : activeDraft ? Math.round((activeDraft.sourceOut - activeDraft.sourceIn) / rate) : timelineOutFrame - timelineInFrame;
+    return { clip, timelineInFrame, sourceIn, sourceOut, durFrames, displayInFrame };
+  }), [clips, draft]);
 
   const toolButtonsDisabled = disabled || clips.length === 0;
 
@@ -263,7 +240,7 @@ export default function BatchTimeline({
         >
           <Icon name="scissors" size={13} />分割
         </button>
-        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击片段或字幕上的目标位置切开' : '画面：拖边缘修剪、拖中段平移；字幕：拖动/拖边/双击改字；右键删除'}</span>
+        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击视频、音频或字幕上的目标位置切开，右键删除' : '选中视频，在右侧调整倍速和画面；音频用分割工具裁切；删除保留空位'}</span>
       </div>
       <section className={styles.tl} aria-label="成片时间轴" data-testid="batch-output-timeline" data-tool={effectiveTool}>
         <div className={styles.tlLabels}>
@@ -271,6 +248,7 @@ export default function BatchTimeline({
           <div className={styles.tlLab} style={{ height: 64 }}>视频</div>
           <div className={styles.tlLab} style={{ height: 28 }}>字幕</div>
           <div className={styles.tlLab} style={{ height: 60 }}>口播</div>
+          {musicLabel && <div className={styles.tlLab} style={{ height: 30 }}>音乐</div>}
         </div>
         <div ref={scrollRef} className={styles.tlScroll} data-testid="batch-output-timeline-scroll">
           <div
@@ -296,6 +274,9 @@ export default function BatchTimeline({
                   <BatchClipBlock
                     key={entry.clip.clipId}
                     clip={entry.clip}
+                    clips={clips}
+                    bodyEndUs={Math.max(clips.at(-1)?.timelineEndUs ?? 0, narrationDurationUs ?? 0)}
+                    onMove={(clipId, startUs) => onMediaEdit({ type: 'move_clip', clipId, startUs })}
                     index={index}
                     timelineInFrame={entry.timelineInFrame}
                     displayInFrame={entry.displayInFrame}
@@ -318,12 +299,12 @@ export default function BatchTimeline({
                       kind: 'clip',
                       clipId,
                       x: Math.max(8, Math.min(clientX, window.innerWidth - 184)),
-                      y: Math.max(8, Math.min(clientY, window.innerHeight - 96)),
+                      y: Math.max(8, Math.min(clientY, window.innerHeight - 300)),
                     })}
                   />
                 );
               })}
-              {narrationFrames != null && narrationFrames > visualFrames && (
+              {!preserveGaps && narrationFrames != null && narrationFrames > visualFrames && (
                 <div
                   className={styles.videoFreezeTail}
                   style={{ left: (INTRO_SEC + visualFrames / FPS) * pxPerSecond, width: ((narrationFrames - visualFrames) / FPS) * pxPerSecond }}
@@ -367,15 +348,19 @@ export default function BatchTimeline({
               data-track="narration"
               style={{ height: 60, borderBottom: 'none' }}
             >
-              {narrationDurationUs != null ? (
-                <>
-                  <Waveform tone="tts" seed={3} playedWidthPx={playheadPx} />
-                  <span className={styles.wfLabel} style={{ left: introPx + 8 }}>口播（锁定）· {(narrationDurationUs / 1e6).toFixed(1)}s</span>
-                </>
-              ) : (
-                <span className={styles.wfLabel} style={{ left: introPx + 8 }}>无口播配音</span>
-              )}
+              {narrationDurationUs != null ? audioClips({ audio }, 'narration', narrationDurationUs).map((clip) => <AudioBlock
+                key={clip.id} clip={clip} track="narration" playbackRate={1} bodySec={narrationDurationUs / 1e6} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={effectiveTool} disabled={disabled}
+                label="口播" onSeek={onSeek} onCommand={onMediaEdit}
+                onOpenContextMenu={(x, y) => setContextMenu({ kind: 'audio', track: 'narration', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 184)), y: Math.max(8, Math.min(y, window.innerHeight - 86)) })}
+              />) : <span className={styles.wfLabel} style={{ left: introPx + 8 }}>无口播配音</span>}
             </div>
+            {musicLabel && <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm">
+              {audioClips({ audio }, 'bgm', narrationDurationUs ?? bodyFrames / FPS * 1e6).map((clip) => <AudioBlock
+                key={clip.id} clip={clip} track="bgm" playbackRate={1} bodySec={(narrationDurationUs ?? bodyFrames / FPS * 1e6) / 1e6} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={effectiveTool} disabled={disabled}
+                label={musicLabel} onSeek={onSeek} onCommand={onMediaEdit}
+                onOpenContextMenu={(x, y) => setContextMenu({ kind: 'audio', track: 'bgm', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 184)), y: Math.max(8, Math.min(y, window.innerHeight - 86)) })}
+              />)}
+            </div>}
             <button
               type="button"
               aria-label="拖动播放头"
@@ -389,7 +374,7 @@ export default function BatchTimeline({
           <div className={styles.timelineContextLayer} onPointerDown={closeContextMenu}>
             <div
               role="menu"
-              aria-label={contextMenu.kind === 'clip' ? '片段操作' : '字幕操作'}
+              aria-label={contextMenu.kind === 'clip' ? '片段操作' : contextMenu.kind === 'audio' ? '音频片段操作' : '字幕操作'}
               className={styles.timelineContextMenu}
               style={{ left: contextMenu.x, top: contextMenu.y }}
               onPointerDown={(event) => event.stopPropagation()}
@@ -417,8 +402,10 @@ export default function BatchTimeline({
                       setContextMenu(null);
                       onDeleteClip(clipId);
                     }}
-                  >删除片段</button>
+                  >删除片段（保留空位）</button>
                 </>
+              ) : contextMenu.kind === 'audio' ? (
+                <button type="button" role="menuitem" className={styles.timelineContextDanger} disabled={disabled} onClick={() => { void onMediaEdit({ type: 'delete_audio_clip', track: contextMenu.track, clipId: contextMenu.clipId }); setContextMenu(null); }}>删除音频片段</button>
               ) : (
                 <button
                   type="button"
@@ -443,6 +430,9 @@ export default function BatchTimeline({
 
 function BatchClipBlock({
   clip,
+  clips,
+  bodyEndUs,
+  onMove,
   index,
   timelineInFrame,
   displayInFrame,
@@ -464,6 +454,9 @@ function BatchClipBlock({
   onOpenContextMenu,
 }: {
   clip: BatchOutputClipView;
+  clips: BatchOutputClipView[];
+  bodyEndUs: number;
+  onMove: (clipId: string, startUs: number) => Promise<boolean>;
   index: number;
   timelineInFrame: number;
   displayInFrame: number;
@@ -508,17 +501,23 @@ function BatchClipBlock({
     target.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     let latest = { sourceIn, sourceOut };
+    let requestedStartUs = clip.timelineStartUs;
     let changed = false;
     const move = (pointer: PointerEvent) => {
-      const deltaFrames = Math.round(((pointer.clientX - startX) / pxPerSecond) * FPS);
+      const timelineDelta = Math.round(((pointer.clientX - startX) / pxPerSecond) * FPS);
+      if (mode === 'move') {
+        requestedStartUs = Math.max(0, clip.timelineStartUs + frameToUs(timelineDelta));
+        const positions = planClipPosition(clips.map((item) => ({ id: item.clipId, startUs: item.timelineStartUs, endUs: item.timelineEndUs })), clip.clipId, requestedStartUs, bodyEndUs);
+        changed = positions.some((position) => { const original = clips.find((item) => item.clipId === position.id)!; return position.startUs !== original.timelineStartUs; });
+        onDraftChange({ clipId: clip.clipId, sourceIn, sourceOut, positions });
+        return;
+      }
+      const deltaFrames = Math.round(timelineDelta * (clip.playbackRate ?? 1));
       changed = changed || deltaFrames !== 0;
       if (mode === 'start') {
-        latest = { sourceIn: clamp(sourceIn + deltaFrames, 0, sourceOut - MIN_FRAMES), sourceOut };
+        latest = { sourceIn: clamp(sourceIn + deltaFrames, 0, sourceOut - Math.ceil(MIN_FRAMES * (clip.playbackRate ?? 1))), sourceOut };
       } else if (mode === 'end') {
-        latest = { sourceIn, sourceOut: clamp(sourceOut + deltaFrames, sourceIn + MIN_FRAMES, sourceTotalFrames) };
-      } else {
-        const shift = clamp(deltaFrames, -sourceIn, sourceTotalFrames - sourceOut);
-        latest = { sourceIn: sourceIn + shift, sourceOut: sourceOut + shift };
+        latest = { sourceIn, sourceOut: clamp(sourceOut + deltaFrames, sourceIn + Math.ceil(MIN_FRAMES * (clip.playbackRate ?? 1)), sourceTotalFrames) };
       }
       onDraftChange({ clipId: clip.clipId, sourceIn: latest.sourceIn, sourceOut: latest.sourceOut });
     };
@@ -531,7 +530,9 @@ function BatchClipBlock({
         onDraftChange(null);
         return;
       }
-      const accepted = await onTrimVariable(clip.clipId, frameToUs(latest.sourceIn), frameToUs(latest.sourceOut));
+      const accepted = mode === 'move'
+        ? await onMove(clip.clipId, requestedStartUs)
+        : await onTrimVariable(clip.clipId, frameToUs(latest.sourceIn), frameToUs(latest.sourceOut));
       if (!accepted) onDraftChange(null);
     };
     const cancel = (pointer: PointerEvent) => {
@@ -564,7 +565,7 @@ function BatchClipBlock({
           void onSplit(clip.clipId, frameToUs(offsetFrames));
           return;
         }
-        begin('slip', event);
+        begin('move', event);
       }}
       onPointerMove={(event) => {
         if (tool === 'split') setSplitOffsetFrames(splitOffsetFromPointer(event.clientX));
@@ -581,7 +582,7 @@ function BatchClipBlock({
         onSelect(clip.clipId);
         if (!disabled) onOpenFineTrim(clip.clipId);
       }}
-      title="单击选中 · 拖边缘变长修剪 · 拖中段等长平移 · 双击精细修剪 · 右键更多"
+      title="单击选中 · 拖边缘变长修剪 · 拖中段移动或排序 · 双击精细修剪 · 右键更多"
     >
       {tool === 'split' && splitOffsetFrames !== null && (
         <i
@@ -595,7 +596,7 @@ function BatchClipBlock({
         <img src={thumbnailUrl} alt="" draggable={false} />
       )}
       <span className={styles.clipNo}>#{index + 1}</span>
-      <span className={styles.clipCd}>{durationSec.toFixed(1)}s</span>
+      <span className={styles.clipCd}>{durationSec.toFixed(1)}s · {(clip.playbackRate ?? 1).toFixed(2)}x</span>
       <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="修剪片段开头" onPointerDown={tool === 'select' ? (event) => begin('start', event) : undefined} />
       <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="修剪片段结尾" onPointerDown={tool === 'select' ? (event) => begin('end', event) : undefined} />
     </article>

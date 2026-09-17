@@ -10,7 +10,7 @@ import {
   type BatchTaskStatus,
 } from './tasks.ts';
 
-/** 素材分析能力级别：technical 为本地媒体参数，content 为视觉模型语义结果。 */
+/** 素材分析能力级别：technical 为本地媒体参数，content 为可匹配的内容描述（视觉或文件名）。 */
 export type AssetAnalysisLevel = 'none' | 'technical' | 'content';
 
 export interface CurrentAssetAnalysis {
@@ -20,6 +20,8 @@ export interface CurrentAssetAnalysis {
   analysisJson: unknown;
   providerId: string;
   model: string;
+  analysisSource?: 'filename';
+  filenameDescription?: string;
 }
 
 export interface QueueAssetPreparationOptions {
@@ -90,6 +92,9 @@ export function getCurrentAssetAnalysis(
     analysisJson: parsed,
     providerId: row.providerId ?? '',
     model: row.model ?? '',
+    ...(declared === 'content' && (parsed as Record<string, unknown>).analyzer === 'filename'
+      ? { analysisSource: 'filename' as const, filenameDescription: String((parsed as Record<string, unknown>).summary ?? '') }
+      : {}),
   };
 }
 

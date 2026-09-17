@@ -146,7 +146,26 @@ export interface ScriptStudioSegmentContent {
   visualKeywords: string[];
 }
 
+export interface PainSolvingOpportunity {
+  version: 'pain-solving-v1';
+  audience: string;
+  scenario: string;
+  problem: string;
+  benefit: string;
+  mechanism: string;
+  main: { label: string; factIds: string[] };
+  support: { label: string; factIds: string[] } | null;
+  path: 'direct' | 'diagnosis' | 'dilemma';
+  possibleCause: string;
+  concern: string;
+  proposition: string;
+  matchReason: string;
+  scores: { painIntensity: number; factMatch: number; sceneClarity: number };
+}
+
 export interface ScriptStudioScriptContent {
+  productionMode?: 'pain_solving_15s';
+  painSolving?: PainSolvingOpportunity;
   /** v3 为历史内容（无知识上下文）；v4 增加知识匹配状态与推荐说明，向后兼容读取。 */
   version: 3 | 4;
   title: string;

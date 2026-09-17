@@ -3,6 +3,7 @@
  *
  * 运行方式（与 batch-preparation-workspace.playwright.test.mjs 相同）：
  *   npm run build && node scripts/batch-bgm-source-switch.playwright.test.mjs
+ *   M7_BROWSER_DEV=1 使用源码开发服务；M7_MEDIA_EDIT_ONLY=1 运行新增剪辑操作回归。
  *
  * 与源码匹配测试不同，本文件用真实 standalone 服务 + 真实媒体文件（ffmpeg 生成）
  * 驱动「检查成片 → 调整片段」编辑器，在播放中切换 BGM 曲目并断言 <audio> 的
@@ -48,7 +49,7 @@ async function reservePort() {
 }
 
 async function waitForServer(url, child) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     if (child.exitCode !== null) throw new Error(`生产服务提前退出，exit=${child.exitCode}`);
     try {
       const response = await fetch(`${url}/api/batch-production/readiness`);
@@ -58,7 +59,7 @@ async function waitForServer(url, child) {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('生产服务未在 6 秒内就绪');
+  throw new Error('测试服务未在 60 秒内就绪');
 }
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-bgm-switch-'));
@@ -68,14 +69,15 @@ const serverOutput = [];
 // lib 函数（createAsset/addAssetToPool 等）按 dataRoot() 解析 storage 路径，
 // 测试进程与 server 必须共享同一数据根。
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
-const server = spawn(process.execPath, [standaloneServer], {
+const useDevServer = process.env.M7_MEDIA_EDIT_ONLY === '1' || process.env.M7_BROWSER_DEV === '1';
+const server = spawn(process.execPath, useDevServer ? [path.resolve('node_modules/next/dist/bin/next'), 'dev', '--hostname', '127.0.0.1', '--port', String(port)] : [standaloneServer], {
   cwd: process.cwd(),
   env: {
     ...process.env,
     CREATIVE_STUDIO_DATA_ROOT: dataRoot,
     HOSTNAME: '127.0.0.1',
     PORT: String(port),
-    NODE_ENV: 'production',
+    NODE_ENV: useDevServer ? 'development' : 'production',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -290,6 +292,9 @@ try {
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   page.setDefaultTimeout(10_000);
   page.on('pageerror', (error) => pageErrors.push(String(error)));
+  page.on('response', async (response) => {
+    if (response.url().includes('/arrangement?') && !response.ok()) serverOutput.push(`Arrangement HTTP ${response.status()}: ${(await response.text().catch(() => '')).slice(0, 1200)}\n`);
+  });
 
   await page.goto(`${baseUrl}/projects/${projectId}?tab=final-edit`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('tab', { name: '批量生产', exact: true }).click();
@@ -297,10 +302,94 @@ try {
   // 直达「检查成片」：fixture 已是冻结批次 + 当前成片版本。
   await page.getByRole('button', { name: /检查成片/ }).click();
   await page.getByTestId('batch-output-card').first().waitFor();
-  await page.getByRole('button', { name: '预览成片 1' }).click();
-  await page.getByRole('button', { name: '调整片段' }).waitFor();
-  await page.getByRole('button', { name: '调整片段' }).click();
+  await page.getByRole('button', { name: /^编辑成片 1 / }).click();
 
+  if (process.env.M7_MEDIA_EDIT_ONLY === '1') {
+    const arrangementUrl = `${baseUrl}/api/batch-production/batches/${batchId}/outputs/${planId}/arrangement?projectId=${projectId}`;
+    const readArrangement = () => fetch(arrangementUrl).then((response) => response.json());
+    const waitForArrangement = async (check) => {
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const view = await readArrangement();
+        if (check(view)) return view;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.fail('编辑未持久化');
+    };
+    const clip = page.locator('[data-clip-id="clip-1"]');
+    await clip.click();
+    const speed = page.getByRole('slider', { name: '视频倍速拉条', exact: true });
+    await speed.fill('1.5');
+    await speed.press('Tab');
+    await waitForArrangement((view) => view.clips[0].playbackRate === 1.5);
+    await page.getByRole('button', { name: '恢复原速（1×）', exact: true }).click();
+    await waitForArrangement((view) => view.clips[0].playbackRate === 1 && view.clips[0].timelineEndUs === 15_000_000);
+    await speed.fill('2');
+    await speed.dispatchEvent('pointerup');
+    let view = await waitForArrangement((view) => view.clips[0].playbackRate === 2);
+    assert.equal(view.clips[0].timelineEndUs, 7_500_000);
+    const assertVideoPanels = async () => {
+      assert.equal(await page.getByRole('slider', { name: '视频倍速拉条', exact: true }).count(), 1, '选中素材后倍速面板只能有一个');
+      assert.equal(await page.getByRole('slider', { name: '画面缩放', exact: true }).count(), 1, '画面面板只能有一个');
+    };
+    const dragClip = async (locator, deltaX) => {
+        await page.waitForFunction(() => document.querySelector('input[aria-label="视频倍速拉条"]')?.disabled === false);
+      const box = await locator.boundingBox(); assert.ok(box);
+      const x = box.x + box.width / 2, y = box.y + box.height / 2;
+      await page.mouse.move(x, y); await page.mouse.down();
+      await page.mouse.move(x + deltaX, y, { steps: 12 }); await page.mouse.up();
+    };
+    await dragClip(clip, 90);
+    view = await waitForArrangement((view) => view.clips[0].timelineStartUs === 1_500_000);
+    assert.equal(view.clips[0].sourceStartUs, 0);
+    assert.equal(view.clips[0].sourceEndUs, 15_000_000, '移动不能改源截取范围');
+    await dragClip(clip, -90);
+    await waitForArrangement((view) => view.clips[0].timelineStartUs === 0);
+    await assertVideoPanels();
+    const scale = page.getByRole('slider', { name: '画面缩放', exact: true });
+    await scale.fill('0.5'); await scale.press('ArrowRight');
+    await waitForArrangement((view) => view.clips[0].framing.scale < 1);
+    const horizontal = page.getByRole('slider', { name: '水平位移', exact: true });
+    await horizontal.fill('0.5'); await horizontal.press('ArrowRight');
+    await waitForArrangement((view) => view.clips[0].framing.offsetX > 0);
+    fs.mkdirSync(path.resolve('outputs/playwright'), { recursive: true });
+    await page.screenshot({ path: path.resolve('outputs/playwright/batch-video-speed-sidebar.png') });
+    await page.getByRole('button', { name: '分割工具', exact: true }).click();
+    await page.locator('[data-track="narration"] [data-audio-clip-id]').first().click({ position: { x: 100, y: 10 } });
+    await waitForArrangement((view) => view.audio?.narration?.length === 2);
+    await page.locator('[data-track="narration"] [data-audio-clip-id]').first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '删除音频片段', exact: true }).click();
+    view = await waitForArrangement((view) => view.audio?.narration?.length === 1);
+    assert.ok(view.audio.narration[0].startUs > 0);
+    await clip.click({ position: { x: 120, y: 20 } });
+    view = await waitForArrangement((view) => view.clips.length === 2);
+    const laterStart = view.clips[1].timelineStartUs;
+    await page.getByRole('button', { name: '选择工具', exact: true }).click();
+    const secondId = view.clips[1].clipId;
+    const second = page.locator(`[data-clip-id="${secondId}"]`);
+    for (let i = 0; i < 4; i++) {
+      await second.click(); await assertVideoPanels();
+      await clip.click(); await assertVideoPanels();
+    }
+    await dragClip(clip, 240);
+    view = await waitForArrangement((view) => view.clips[0].clipId === secondId);
+    await assertVideoPanels();
+    await dragClip(clip, -330);
+    view = await waitForArrangement((view) => view.clips[0].clipId === 'clip-1');
+    assert.equal(view.clips[1].timelineStartUs, laterStart);
+
+    await clip.click({ button: 'right' });
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('menuitem', { name: '删除片段（保留空位）', exact: true }).click();
+    view = await waitForArrangement((view) => view.clips.length === 1);
+    assert.equal(view.clips[0].timelineStartUs, laterStart);
+    await page.getByRole('button', { name: '关闭成片编辑器' }).click();
+    await page.getByRole('button', { name: /^编辑成片 1 / }).click();
+    await page.locator('[data-track="narration"] [data-audio-clip-id]').first().waitFor();
+    assert.equal(await page.locator('[data-track="narration"] [data-audio-clip-id]').count(), 1);
+    fs.mkdirSync(path.resolve('outputs/playwright'), { recursive: true });
+    await page.screenshot({ path: path.resolve('outputs/playwright/batch-media-edit.png') });
+    console.log('batch media editing browser checks passed');
+  } else {
   const playButton = page.getByRole('button', { name: '播放', exact: true });
   await playButton.waitFor();
   await playButton.click();
@@ -333,9 +422,10 @@ try {
   await bgmSelect.selectOption('bgm-switch-track-a');
   await waitForBgmState(page, { trackId: 'bgm-switch-track-a', playing: true, minCurrentTime: 0.2 });
   const stateAfterFirstSwitch = await readBgmState();
+  const playheadAfterFirstSwitch = await readPlayhead();
   assert.ok(
-    Math.abs(stateAfterFirstSwitch.currentTime - (playheadBeforeSwitch - INTRO_SEC)) < 1.5,
-    `新 BGM 应从正文偏移 ${playheadBeforeSwitch - INTRO_SEC}s 附近续播，实际 ${stateAfterFirstSwitch.currentTime}s`,
+    Math.abs(stateAfterFirstSwitch.currentTime - (playheadAfterFirstSwitch - INTRO_SEC)) < 1.5,
+    `新 BGM 应跟随加载完成时的正文偏移 ${playheadAfterFirstSwitch - INTRO_SEC}s 续播，实际 ${stateAfterFirstSwitch.currentTime}s`,
   );
   assert.ok(await readPlayhead() > INTRO_SEC, '切换 BGM 不得重置画面播放头');
 
@@ -361,6 +451,7 @@ try {
   const playheadAfterResume = await readPlayhead();
   assert.ok(playheadAfterResume > INTRO_SEC, '再次选曲不得重置画面播放头');
 
+  }
   assert.equal(pageErrors.length, 0, `页面不得有未捕获异常：${pageErrors.join('\n')}`);
   console.log('batch BGM source switch Playwright tests passed');
 } catch (error) {

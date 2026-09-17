@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { getDb } from '@/lib/db';
 import { ScriptStudioError } from '@/lib/script-studio/errors';
 import { assertScriptStudioApiReady, errorResponse, jsonOrNull } from '@/lib/script-studio/http';
-import { getCurrentLibraryRevision } from '@/lib/script-studio/libraries';
+import type { ScriptStudioScriptContent } from '@/lib/script-studio/types';
+import { getLibraryRevision, getCurrentLibraryRevision } from '@/lib/script-studio/libraries';
 import { getProjectScript } from '@/lib/script-studio/scripts';
 import { createTask, getTaskByRequestKey } from '@/lib/script-studio/tasks';
 import { resolveKnowledgeContext, serializeKnowledgeContext } from '@/lib/script-studio/knowledge-context';
@@ -23,12 +24,16 @@ export async function POST(
     const db = getDb();
     const script = getProjectScript(db, projectId, scriptId);
     if (!script) throw new ScriptStudioError('not_found', '项目脚本不存在');
-    const library = getCurrentLibraryRevision(db, projectId);
+    const priorContent = JSON.parse(script.currentRevision?.contentJson || '{}') as Partial<ScriptStudioScriptContent>;
+    const pain = priorContent.productionMode === 'pain_solving_15s' ? priorContent.painSolving : undefined;
+    const library = pain && script.currentRevision?.libraryRevisionId
+      ? getLibraryRevision(db, projectId, script.currentRevision.libraryRevisionId)
+      : getCurrentLibraryRevision(db, projectId);
     if (!library) throw new ScriptStudioError('not_found', '当前项目没有可复用的卖点库');
     const body = await jsonOrNull(request) ?? {};
     const requestedProviderId = typeof body.providerId === 'string' ? body.providerId.trim() : '';
     const providers = resolveRuntimeProviders(requestedProviderId);
-    const requestKey = `regenerate:${scriptId}:${createHash('sha256').update(`${projectId}|${library.id}|${providers.text.id}|${providers.text.model}`).digest('hex')}`;
+    const requestKey = `regenerate:${scriptId}:${createHash('sha256').update(`${projectId}|${library.id}|${providers.text.id}|${providers.text.model}${pain ? `|${script.currentRevisionId}|pain_solving_15s` : ''}`).digest('hex')}`;
     const existing = getTaskByRequestKey(db, projectId, requestKey);
     if (existing) return NextResponse.json({ task: toTaskSnapshot(existing), created: false }, { status: 202 });
     const { ensureScriptStudioSchedulerStarted } = await import('@/lib/script-studio/bootstrap');
@@ -53,7 +58,8 @@ export async function POST(
       inputSnapshot: {
         targetDurationSec: currentDuration,
         requestedCount: 1,
-        creativeBrief: '',
+        creativeBrief: pain ? priorContent.creativeBrief || '' : '',
+        ...(pain ? { productionMode: 'pain_solving_15s', painRetryOpportunities: [pain] } : {}),
         targetScriptId: scriptId,
         knowledgeContext: serializeKnowledgeContext(knowledgeContext),
         providerId: providers.text.id,

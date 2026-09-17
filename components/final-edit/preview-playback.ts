@@ -22,8 +22,8 @@ export function getVideoSlotPlan(activeClipIndex: number, clipCount: number): Vi
   return { activeSlot: 1, clipIndexes: [inRange(activeClipIndex + 1), inRange(activeClipIndex)] };
 }
 
-export function expectedVideoTimeSec(sourceInFrame: number, timelineInFrame: number, bodyFrame: number, fps: number): number {
-  return sourceInFrame / fps + Math.max(0, bodyFrame - timelineInFrame) / fps;
+export function expectedVideoTimeSec(sourceInFrame: number, timelineInFrame: number, bodyFrame: number, fps: number, playbackRate = 1): number {
+  return sourceInFrame / fps + Math.max(0, bodyFrame - timelineInFrame) / fps * playbackRate;
 }
 
 /**
@@ -96,8 +96,8 @@ function fittedRect(canvas: HTMLCanvasElement, video: HTMLVideoElement, mode: 'c
   const width = video.videoWidth * fit;
   const height = video.videoHeight * fit;
   return {
-    x: (canvas.width - width) / 2 + framing.offsetX * Math.abs(canvas.width - width) / 2,
-    y: (canvas.height - height) / 2 + framing.offsetY * Math.abs(canvas.height - height) / 2,
+    x: (canvas.width - width) / 2 + framing.offsetX * canvas.width / 2,
+    y: (canvas.height - height) / 2 + framing.offsetY * canvas.height / 2,
     width,
     height,
   };
@@ -113,15 +113,16 @@ export function paintDecodedVideoFrame(
   video: HTMLVideoElement,
   preset: OutputPresetId,
   framing: PreviewFraming,
+  fit?: 'cover',
 ): boolean {
   if (video.readyState < 2 || video.seeking || !video.videoWidth || !video.videoHeight) return false;
 
   context.save();
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = '#111827';
+  context.fillStyle = '#000000';
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  if (preset === '16x9') {
+  if (preset === '16x9' && fit !== 'cover') {
     const background = fittedRect(canvas, video, 'cover', { scale: 1.08, offsetX: 0, offsetY: 0 });
     context.save();
     context.filter = 'blur(32px)';

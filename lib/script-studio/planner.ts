@@ -4,6 +4,7 @@ import type { KnowledgePlanRecommendation } from './template-catalog.ts';
 import { parseScriptStudioRequestedCount } from './generation-contract.ts';
 
 export interface PlannedScript {
+  painSolving?: import('./types.ts').PainSolvingOpportunity;
   index: number;
   templateId: string;
   templateName: string;

@@ -15,6 +15,8 @@ import { MixcutTimeline } from './MixcutTimeline';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
 import { NarrationGainControl } from './NarrationGainControl';
 import { TrimEditor } from './TrimEditor';
+import { VideoPlaybackRateControl } from '@/components/mixcut/VideoPlaybackRateControl';
+import { ClipFramingControl } from './ClipFramingControl';
 import { CoverEditorDrawer } from './CoverEditorDrawer';
 import { preloadSystemFonts } from '@/components/system-fonts';
 import { BgmCard, type BgmImportUiResult } from './BgmCard';
@@ -616,7 +618,11 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
             playheadSec={effectivePlayheadSec}
             disabled={busy}
             onSeek={seek}
-            onSelectClip={setSelectedClipId}
+            onSelectClip={(clipId) => {
+              setSelectedClipId(clipId);
+              const clip = variant.timeline.clips.find((item) => item.id === clipId);
+              if (clip) { setPreviewMode('output'); seek((20 + clip.timelineInFrame) / FPS); }
+            }}
             onSelectCue={setSelectedCueId}
             onVariantCommand={(command) => applyVariant(command)}
             onGroupCommand={applyGroup}
@@ -636,6 +642,17 @@ export function PreviewStep({ group, active, onGroupChange, onExport, onRepColla
       <aside className={styles.rightCol}>
         <button type="button" className={styles.collapseBtn} title="隐藏面板" onClick={() => onRgtCollapse(true)}>›</button>
         <button type="button" className={styles.expandBtn} title="展开面板" onClick={() => onRgtCollapse(false)}>‹</button>
+
+        {selectedClip && <VideoPlaybackRateControl key={`speed:${selectedClip.id}`} value={selectedClip.playbackRate ?? 1} disabled={busy}
+          onCommit={(playbackRate) => applyVariant({ type: 'set_clip_playback_rate', clipId: selectedClip.id, playbackRate })} />}
+
+        {selectedClip && <ClipFramingControl key={`framing:${selectedClip.id}`} clip={selectedClip} disabled={busy}
+          onPreview={(framing) => {
+            const current = groupRef.current;
+            publishGroup({ ...current, variants: current.variants.map((item) => item.id === variant.id ? { ...item, timeline: { ...item.timeline, clips: item.timeline.clips.map((clip) => clip.id === selectedClip.id ? { ...clip, framing } : clip) } } : item) });
+          }}
+          onCommit={(framing) => void applyVariant({ type: 'set_framing', clipId: selectedClip.id, ...framing })}
+        />}
 
         <section className={styles.rcard}>
           <h4><Icon name="text" size={15} />字幕样式</h4>

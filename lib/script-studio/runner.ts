@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { PAIN_SOLVING_VERSION, painPlanningFingerprint, parsePainPlanning, painPlan, painBrief, parsePainReview } from './pain-solving.ts';
 import type { EvidenceReprobe } from './adapters/reprobe.ts';
 import type { VisionExtractor } from './adapters/vision-extract.ts';
 import {
@@ -21,12 +22,12 @@ import {
   usableSellingPoints,
   type EvidenceGateResult,
 } from './evidence-gate.ts';
-import { planDirectionBriefs, type DirectionSellingPointBrief } from './direction-briefs.ts';
-import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
+import { storedEvidenceIsStructurallyUsable, planDirectionBriefs, type DirectionSellingPointBrief } from './direction-briefs.ts';
+import { isSellingPointEvidenceUsable, normalizeEvidenceRefs } from './selling-point-normalize.ts';
 import { applyKnowledgeRecommendations, planScriptDirections } from './planner.ts';
 import { parseKnowledgeContext, type FrozenKnowledgeContext } from './knowledge-context.ts';
 import { getScriptStudioLimits } from './limits.ts';
-import { parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from './generation-contract.ts';
+import { parseScriptProductionMode, parseScriptStudioRequestedCount, parseScriptStudioTargetDuration } from './generation-contract.ts';
 import { isScriptStudioTaskCancelRequested } from './scheduler.ts';
 import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles, type TileSetResult } from './tiling.ts';
 import {
@@ -282,9 +283,14 @@ function buildValidationJson(content: ScriptStudioScriptContent, review: EndingR
       endingStatus: 'passed',
       semanticReview: reviewPassed ? 'passed' : 'unreviewed',
       ...(reviewPassed ? { reviewFingerprint: review.fingerprint } : {}),
-      policyVersion: SCRIPT_CTA_POLICY_VERSION,
+      policyVersion: content.painSolving ? PAIN_SOLVING_VERSION : SCRIPT_CTA_POLICY_VERSION,
     },
   };
+}
+
+function checkProductionEnding(content: ScriptStudioScriptContent, candidates: ReturnType<typeof briefCandidatePoints>) {
+  const result = checkScriptEndingQuality(content, candidates);
+  return content.painSolving ? { ...result, issues: result.issues.filter((issue) => issue !== 'cta_ending_missing') } : result;
 }
 
 function bodyValidationPassed(validation: ReturnType<typeof validateScriptContent>): boolean {
@@ -330,6 +336,11 @@ async function repairTitlesAndSave<T>(
       ...input, content, previousTitles: checked.previousTitles, titleIssues: checked.issues,
     });
     content = applyScriptTitleRepair(content, raw, checked.issues);
+    if (input.plan.painSolving) {
+      if (!deps.generator.reviewScriptContent) throw new ScriptStudioError('invalid_input', '痛点脚本标题修复后需要语义审核');
+      const verdict = parsePainReview(await deps.generator.reviewScriptContent({ ...input, content }));
+      if (!verdict.pass) throw new ScriptStudioError('invalid_input', `标题修复后未通过内容命题审核：${verdict.issues.join('；')}`);
+    }
   }
   throw new Error('unreachable_title_repair');
 }
@@ -362,7 +373,7 @@ async function repairEndingAndRevalidate(
       `正文修复后未通过校验：${describeValidationIssues(bodyValidationIssues(validation), { titleIssues: validation.titleIssues }).slice(0, 3).join('；')}`,
     );
   }
-  const ending = checkScriptEndingQuality(validation.content, candidates);
+  const ending = checkProductionEnding(validation.content, candidates);
   if (ending.issues.length > 0) {
     throw new ScriptStudioError('invalid_input', `正文修复后结尾仍不合格：${describeValidationIssues(ending.issues).join('；')}`);
   }
@@ -379,6 +390,7 @@ async function generateValidatedScript(
   knowledgeContext: FrozenKnowledgeContext | null,
   previousTitles: ScriptTitleSummary[] = [],
   distilledExpressions: DistilledExpressionRef[] = [],
+  peerPainOpportunities: NonNullable<ScriptStudioScriptContent['painSolving']>[] = [],
 ): Promise<GeneratedCandidate> {
   let validation: ReturnType<typeof validateScriptContent> | undefined;
   let endingFeedback: string[] = [];
@@ -402,6 +414,7 @@ async function generateValidatedScript(
     targetDurationSec: context.targetDurationSec,
     previousScripts,
     previousTitles,
+    peerPainOpportunities,
     signal: deps.signal,
     ...(knowledgeContext ? { knowledgeContext } : {}),
     ...(distilledExpressions.length ? { distilledExpressions } : {}),
@@ -414,6 +427,7 @@ async function generateValidatedScript(
     titleContext,
     titleEmbeddingContext,
   });
+  const parseReview = plan.painSolving ? parsePainReview : parseScriptEndingReview;
   const fingerprintOf = (content: ScriptStudioScriptContent): string =>
     scriptReviewFingerprint(content.fullScript, library.id);
   type AttemptOutcome =
@@ -423,13 +437,13 @@ async function generateValidatedScript(
   const runAttempt = async (validationFeedback?: string[]): Promise<AttemptOutcome> => {
     // 生成/网络错误直接上抛（沿用既有语义）；只有正文校验失败、修复失败与审核失败走轮内处理。
     const generated = await deps.generator.generate({ ...baseInput, ...(validationFeedback ? { validationFeedback } : {}) });
-    const attemptValidation = validateOnce(generated.content);
+    const attemptValidation = validateOnce(plan.painSolving ? { ...generated.content, productionMode: 'pain_solving_15s', painSolving: plan.painSolving } : generated.content);
     if (!bodyValidationPassed(attemptValidation)) {
       validation = attemptValidation;
       return { status: 'body_failed' };
     }
     // 本地末句检查（孤立标签 / 渠道未确认 / 缺行动邀请）：不合格进入受约束修复。
-    const ending = checkScriptEndingQuality(attemptValidation.content, candidates);
+    const ending = checkProductionEnding(attemptValidation.content, candidates);
     if (ending.issues.length > 0) {
       try {
         const repaired = await repairEndingAndRevalidate(
@@ -447,11 +461,12 @@ async function generateValidatedScript(
   /** 有界语义审核：初筛通过后复核；失败先定向修复再复审一次，仍失败结束该方案。 */
   const reviewCandidate = async (candidate: ScriptStudioScriptContent, allowRepair = true): Promise<AttemptOutcome> => {
     if (!deps.generator.reviewScriptContent) {
+      if (plan.painSolving) throw new ScriptStudioError('invalid_input', '痛点解决型需要语义审核，当前生成器不支持');
       return { status: 'passed', content: candidate, review: { status: 'unreviewed' } };
     }
     let verdict;
     try {
-      verdict = parseScriptEndingReview(await deps.generator.reviewScriptContent({ ...baseInput, content: candidate }));
+      verdict = parseReview(await deps.generator.reviewScriptContent({ ...baseInput, content: candidate }));
     } catch (error) {
       if (deps.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
       if (error instanceof ScriptStudioError && error.code === 'request_budget_exhausted') throw error;
@@ -467,7 +482,7 @@ async function generateValidatedScript(
       const repaired = await repairEndingAndRevalidate(
         deps, baseInput, candidate, verdict.issues, validateOnce, candidates,
       );
-      const reVerdict = parseScriptEndingReview(await deps.generator.reviewScriptContent({ ...baseInput, content: repaired }));
+      const reVerdict = parseReview(await deps.generator.reviewScriptContent({ ...baseInput, content: repaired }));
       if (reVerdict.pass) {
         return { status: 'passed', content: repaired, review: { status: 'passed', fingerprint: fingerprintOf(repaired) } };
       }
@@ -512,6 +527,7 @@ export async function executeScriptStudioTask(
   const task = getTask(db, projectId, taskId);
   if (!task) throw new ScriptStudioError('not_found', '任务不存在');
   const input = deps.inputSnapshot;
+  let productionMode: 'standard' | 'pain_solving_15s';
   let targetDurationSec: number;
   let requestedCount: number;
   let creativeBrief: string;
@@ -520,6 +536,7 @@ export async function executeScriptStudioTask(
   const knowledgeContext = parseKnowledgeContext(input.knowledgeContext);
   try {
     targetDurationSec = parseTargetDuration(input);
+    productionMode = parseScriptProductionMode(input.productionMode, targetDurationSec);
     requestedCount = parseRequestedCount(input);
     creativeBrief = parseCreativeBrief(input);
   } catch (error) {
@@ -540,6 +557,7 @@ export async function executeScriptStudioTask(
   const recoveredLibrary = typeof savedLibraryId === 'string' ? getLibraryRevision(db, projectId, savedLibraryId) : undefined;
   const firstExtraction = task.mode === 'first_extraction' && !recoveredLibrary;
   const isReuse = task.mode === 'reuse';
+  let plannedCount = productionMode === 'pain_solving_15s' ? 0 : requestedCount;
   const scriptIds: string[] = [];
   const createdScripts: ScriptStudioScriptContent[] = [];
   const generationErrors: string[] = [];
@@ -759,95 +777,128 @@ export async function executeScriptStudioTask(
 
     startStage(db, projectId, taskId, 'plan', now);
     await updateTask(db, projectId, taskId, { currentStage: 'plan' }, now);
-    const plans = planScriptDirections(libraryRevision!, requestedCount, creativeBrief);
-    // 框架适配（方案 §4.3 / A7）：知识框架的固定秒数与目标时长冲突时转为相对节奏，保留 CTA 结尾意图。
-    // prompt、plan 阶段快照与脚本内容快照共用同一有效结构；原目录结构保留在冻结知识上下文快照中供溯源。
-    const plansWithRecommendations = (knowledgeContext
-      ? applyKnowledgeRecommendations(plans.plans, knowledgeContext.recommendations)
-      : plans.plans
-    ).map((plan) => adaptPlanRecommendation(plan, targetDurationSec));
-    // 受众画像（audience-profile-v1）：既有快照指纹匹配直接复用；否则模型分析一次；
-    // 调用/解析/预算失败降级为本地推导画像，不阻塞脚本生成。
-    const audienceFingerprint = audienceProfileFingerprint({
-      libraryRevisionId: libraryRevision!.id,
-      plans: plansWithRecommendations,
-      creativeBrief,
-      targetDurationSec,
-    });
-    const fallbackAudienceProfile = (reason: string) => deriveFallbackAudienceProfile({
-      libraryRevision: libraryRevision!,
-      plans: plansWithRecommendations,
-      creativeBrief,
-      targetDurationSec,
-      audienceLabel: plans.audience,
-      reason,
-    });
-    let audienceProfile: AudienceProfileResult | null =
-      readAudienceProfileFromStagePayload(readStagePayload(db, taskId, 'plan'), audienceFingerprint);
-    if (!audienceProfile) {
-      if (!deps.generator.analyzeAudienceProfile) {
-        audienceProfile = fallbackAudienceProfile('生成器不支持受众画像分析');
+    const evidenceBounds = tileResult
+      ? { pageCount: tileResult.pages.length, pageTileCounts: tileResult.pages.map((page) => page.tiles.length) }
+      : { pageCount: sourceSetPageCount(db, projectId, libraryRevision!.sourceSetId) };
+    let plans: ReturnType<typeof planScriptDirections>;
+    let plansWithRecommendations: ReturnType<typeof planScriptDirections>['plans'];
+    let audienceProfile: AudienceProfileResult | null = null;
+    let audienceSegmentByPlan = new Map<number, AudienceSegmentProfile>();
+    let briefs: DirectionSellingPointBrief[];
+    let priorPainOpportunities: NonNullable<ScriptStudioScriptContent['painSolving']>[] = [];
+    let painPlanning: (ReturnType<typeof parsePainPlanning> & { fingerprint: string }) | null = null;
+    if (productionMode === 'pain_solving_15s') {
+      const eligibleLibrary = { ...libraryRevision!, sellingPoints: libraryRevision!.sellingPoints.filter((point) =>
+        isSellingPointEvidenceUsable(point) && storedEvidenceIsStructurallyUsable(point, evidenceBounds)) };
+      if (!eligibleLibrary.sellingPoints.length) throw new ScriptStudioError('evidence_insufficient', '没有可用于内容机会分析的已核验事实');
+      const planningInput = { libraryRevision: eligibleLibrary, requestedCount, creativeBrief, signal };
+      const fingerprint = painPlanningFingerprint(planningInput);
+      if (Array.isArray(input.painPriorOpportunities)) {
+        priorPainOpportunities = input.painPriorOpportunities.flatMap((opportunity) =>
+          parsePainPlanning({ opportunities: [opportunity] }, { ...planningInput, requestedCount: 1 }).opportunities);
+      }
+      const frozen = stagePayload(readStagePayload(db, taskId, 'plan').painPlanning);
+      if (Array.isArray(input.painRetryOpportunities)) {
+        painPlanning = { ...parsePainPlanning({ opportunities: input.painRetryOpportunities }, planningInput), fingerprint };
+      } else if (frozen.fingerprint === fingerprint) {
+        painPlanning = { ...parsePainPlanning(frozen, planningInput), fingerprint };
       } else {
-        try {
-          reservePlanAnalysisRequest(db, taskId, now);
-          const rawProfile = await deps.generator.analyzeAudienceProfile({
-            libraryRevision: libraryRevision!,
-            plans: plansWithRecommendations,
-            creativeBrief,
-            targetDurationSec,
-            signal: deps.signal,
-          });
-          if (deps.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
-          const parsed = parseAudienceProfile(rawProfile, {
-            plans: plansWithRecommendations,
-            sellingPointIds: libraryRevision!.sellingPoints.map((point) => point.id),
-          });
-          audienceProfile = parsed
-            ? {
-                version: AUDIENCE_PROFILE_VERSION,
-                summary: audienceProfileSummary(parsed.primary),
-                primary: parsed.primary,
-                perPlan: parsed.perPlan,
-                degraded: false,
-                fingerprint: audienceFingerprint,
-              }
-            : fallbackAudienceProfile('画像响应缺少主画像或结构非法');
-        } catch (profileError) {
-          if (deps.signal?.aborted || (profileError instanceof Error && profileError.name === 'AbortError')) throw profileError;
-          audienceProfile = fallbackAudienceProfile(profileError instanceof Error ? profileError.message : String(profileError));
+        if (!deps.generator.planPainOpportunities) throw new ScriptStudioError('invalid_input', '当前生成器不支持痛点内容机会分析');
+        reservePlanAnalysisRequest(db, taskId, now);
+        const raw = await deps.generator.planPainOpportunities(planningInput);
+        if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+        painPlanning = { ...parsePainPlanning(raw, planningInput), fingerprint };
+      }
+      plansWithRecommendations = painPlanning.opportunities.map((opportunity, index) => painPlan(opportunity, index + 1));
+      plans = { plans: plansWithRecommendations, audience: painPlanning.opportunities[0]?.audience ?? '', tone: '自然可信', platform: '淘宝逛逛' };
+      briefs = painPlanning.opportunities.map((opportunity, index) => painBrief(opportunity, index + 1));
+      audienceSegmentByPlan = new Map(painPlanning.opportunities.map((o, index) => [index + 1, {
+        segment: o.audience, scenario: o.scenario, pains: [o.problem], decisionDrivers: [o.benefit], rejections: ['夸大功效', '虚构亲测'],
+      }]));
+    } else {
+      plans = planScriptDirections(libraryRevision!, requestedCount, creativeBrief);
+      // 框架适配（方案 §4.3 / A7）：知识框架的固定秒数与目标时长冲突时转为相对节奏，保留 CTA 结尾意图。
+      // prompt、plan 阶段快照与脚本内容快照共用同一有效结构；原目录结构保留在冻结知识上下文快照中供溯源。
+      plansWithRecommendations = (knowledgeContext
+        ? applyKnowledgeRecommendations(plans.plans, knowledgeContext.recommendations)
+        : plans.plans
+      ).map((plan) => adaptPlanRecommendation(plan, targetDurationSec));
+      // 受众画像（audience-profile-v1）：既有快照指纹匹配直接复用；否则模型分析一次；
+      // 调用/解析/预算失败降级为本地推导画像，不阻塞脚本生成。
+      const audienceFingerprint = audienceProfileFingerprint({
+        libraryRevisionId: libraryRevision!.id,
+        plans: plansWithRecommendations,
+        creativeBrief,
+        targetDurationSec,
+      });
+      const fallbackAudienceProfile = (reason: string) => deriveFallbackAudienceProfile({
+        libraryRevision: libraryRevision!,
+        plans: plansWithRecommendations,
+        creativeBrief,
+        targetDurationSec,
+        audienceLabel: plans.audience,
+        reason,
+      });
+      audienceProfile =
+        readAudienceProfileFromStagePayload(readStagePayload(db, taskId, 'plan'), audienceFingerprint);
+      if (!audienceProfile) {
+        if (!deps.generator.analyzeAudienceProfile) {
+          audienceProfile = fallbackAudienceProfile('生成器不支持受众画像分析');
+        } else {
+          try {
+            reservePlanAnalysisRequest(db, taskId, now);
+            const rawProfile = await deps.generator.analyzeAudienceProfile({
+              libraryRevision: libraryRevision!,
+              plans: plansWithRecommendations,
+              creativeBrief,
+              targetDurationSec,
+              signal: deps.signal,
+            });
+            if (deps.signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+            const parsed = parseAudienceProfile(rawProfile, {
+              plans: plansWithRecommendations,
+              sellingPointIds: libraryRevision!.sellingPoints.map((point) => point.id),
+            });
+            audienceProfile = parsed
+              ? {
+                  version: AUDIENCE_PROFILE_VERSION,
+                  summary: audienceProfileSummary(parsed.primary),
+                  primary: parsed.primary,
+                  perPlan: parsed.perPlan,
+                  degraded: false,
+                  fingerprint: audienceFingerprint,
+                }
+              : fallbackAudienceProfile('画像响应缺少主画像或结构非法');
+          } catch (profileError) {
+            if (deps.signal?.aborted || (profileError instanceof Error && profileError.name === 'AbortError')) throw profileError;
+            audienceProfile = fallbackAudienceProfile(profileError instanceof Error ? profileError.message : String(profileError));
+          }
         }
       }
+      // 画像只作排序信号与 prompt 上下文，不扩大事实来源。
+      const audienceSignals = new Map(audienceProfile.perPlan.map((segment) => [segment.planIndex, {
+        relatedSellingPointIds: segment.relatedSellingPointIds,
+        keywords: [segment.segment, segment.scenario, ...segment.pains, ...segment.decisionDrivers],
+      }]));
+      audienceSegmentByPlan = new Map(audienceProfile.perPlan.map((segment) => [segment.planIndex, segment]));
+      // 本地确定性编排：一次为本轮全部方向准备卖点包，首稿与相似度重试都复用这份包。
+      // 首次提取可同时校验页码与切片范围；历史复用不重读图片，但仍从来源集恢复页数，
+      // 对非法格式和页码越界做本地 fail-closed 重验。
+      briefs = planDirectionBriefs({
+        sellingPoints: libraryRevision!.sellingPoints,
+        plans: plansWithRecommendations,
+        targetDurationSec,
+        evidenceBounds,
+        strategyRanking: knowledgeContext?.strategy.matchStatus === 'matched'
+          ? {
+              primarySellingPoints: knowledgeContext.strategy.primarySellingPoints,
+              differentiators: knowledgeContext.strategy.differentiators,
+            }
+          : undefined,
+        audienceSignals,
+      });
     }
-    // 画像只作排序信号与 prompt 上下文，不扩大事实来源。
-    const audienceSignals = new Map(audienceProfile.perPlan.map((segment) => [segment.planIndex, {
-      relatedSellingPointIds: segment.relatedSellingPointIds,
-      keywords: [segment.segment, segment.scenario, ...segment.pains, ...segment.decisionDrivers],
-    }]));
-    const audienceSegmentByPlan = new Map(audienceProfile.perPlan.map((segment) => [segment.planIndex, segment]));
-    // 本地确定性编排：一次为本轮全部方向准备卖点包，首稿与相似度重试都复用这份包。
-    // 首次提取可同时校验页码与切片范围；历史复用不重读图片，但仍从来源集恢复页数，
-    // 对非法格式和页码越界做本地 fail-closed 重验。
-    const evidenceBounds = tileResult
-      ? {
-          pageCount: tileResult.pages.length,
-          pageTileCounts: tileResult.pages.map((page) => page.tiles.length),
-        }
-      : {
-          pageCount: sourceSetPageCount(db, projectId, libraryRevision!.sourceSetId),
-        };
-    const briefs = planDirectionBriefs({
-      sellingPoints: libraryRevision!.sellingPoints,
-      plans: plansWithRecommendations,
-      targetDurationSec,
-      evidenceBounds,
-      strategyRanking: knowledgeContext?.strategy.matchStatus === 'matched'
-        ? {
-            primarySellingPoints: knowledgeContext.strategy.primarySellingPoints,
-            differentiators: knowledgeContext.strategy.differentiators,
-          }
-        : undefined,
-      audienceSignals,
-    });
+    plannedCount = plansWithRecommendations.length;
     const briefByPlanIndex = new Map(briefs.map((brief) => [brief.planIndex, brief]));
     const briefSnapshots = briefs.map((brief) => ({
       planIndex: brief.planIndex,
@@ -862,12 +913,12 @@ export async function executeScriptStudioTask(
     }));
     // 证据边界 fail closed：全部方向都没有通过证据门槛的候选时，任务明确失败，
     // 不得产出零引用脚本。首次生成与复用生成共用这一收口。
-    if (briefs.every((brief) => brief.candidateCount === 0)) {
+    if (!painPlanning && briefs.every((brief) => brief.candidateCount === 0)) {
       finishStage(db, projectId, taskId, 'plan', 'failed', {
         audience: plans.audience,
         tone: plans.tone,
         platform: plans.platform,
-        audienceProfile: serializeAudienceProfile(audienceProfile),
+        audienceProfile: audienceProfile ? serializeAudienceProfile(audienceProfile) : null,
         plans: plansWithRecommendations,
         briefs: briefSnapshots,
         knowledgeContext: knowledgeContext ? serializeKnowledgeForStage(knowledgeContext) : null,
@@ -878,9 +929,10 @@ export async function executeScriptStudioTask(
       audience: plans.audience,
       tone: plans.tone,
       platform: plans.platform,
-      audienceProfile: serializeAudienceProfile(audienceProfile),
+      audienceProfile: audienceProfile ? serializeAudienceProfile(audienceProfile) : null,
       plans: plansWithRecommendations,
       briefs: briefSnapshots,
+      ...(painPlanning ? { painPlanning, opportunityCount: plansWithRecommendations.length, shortageCount: requestedCount - plansWithRecommendations.length } : {}),
       knowledgeContext: knowledgeContext ? serializeKnowledgeForStage(knowledgeContext) : null,
     }, null, now);
 
@@ -944,6 +996,7 @@ export async function executeScriptStudioTask(
             knowledgeContext,
             recentTitles,
             distilledExpressions,
+            [...priorPainOpportunities, ...(painPlanning?.opportunities.filter((_, index) => index + 1 !== plan.index) ?? [])],
           );
         } else {
           candidate = { content: siblingValidation.content, endingReview: candidate.endingReview };
@@ -954,6 +1007,7 @@ export async function executeScriptStudioTask(
           libraryRevision: libraryRevision!, plan, brief, ...generationContext,
           ...(audienceSegmentByPlan.has(plan.index) ? { audienceSegment: audienceSegmentByPlan.get(plan.index) } : {}),
           previousScripts: createdScripts, signal,
+          peerPainOpportunities: [...priorPainOpportunities, ...(painPlanning?.opportunities.filter((_, index) => index + 1 !== plan.index) ?? [])],
           ...(knowledgeContext ? { knowledgeContext } : {}),
         }, targetScriptId, (content) => targetScriptId
           ? addProjectScriptRevision(db, projectId, targetScriptId, {
@@ -1018,6 +1072,7 @@ export async function executeScriptStudioTask(
             deps, libraryRevision!, plan, brief,
             { ...generationContext, audienceSegment: audienceSegmentByPlan.get(plan.index) },
             [...createdScripts], knowledgeContext, recentTitles, distilledExpressions,
+            [...priorPainOpportunities, ...(painPlanning?.opportunities.filter((_, index) => index + 1 !== plan.index) ?? [])],
           ) };
         } catch (error) {
           initial = { error };
@@ -1032,31 +1087,31 @@ export async function executeScriptStudioTask(
     const workers = await Promise.allSettled(Array.from({ length: generationConcurrency }, () => generateWorker()));
     const rejected = workers.find((result) => result.status === 'rejected');
     if (rejected?.status === 'rejected') throw rejected.reason;
-    finishStage(db, projectId, taskId, 'generate', scriptIds.length > 0 ? 'succeeded' : 'failed', {
+    finishStage(db, projectId, taskId, 'generate', scriptIds.length > 0 || plansWithRecommendations.length === 0 ? 'succeeded' : 'failed', {
       generated: scriptIds.length,
       requested: requestedCount,
       initialConcurrency: generationConcurrency,
       errors: generationErrors.slice(0, 5),
-    }, scriptIds.length === 0 ? generationErrors[0] || 'script_generation_failed' : null, now);
+    }, scriptIds.length === 0 && plansWithRecommendations.length > 0 ? generationErrors[0] || 'script_generation_failed' : null, now);
 
-    finishStage(db, projectId, taskId, 'validate', scriptIds.length > 0 ? 'succeeded' : 'failed', {
+    finishStage(db, projectId, taskId, 'validate', scriptIds.length > 0 || plansWithRecommendations.length === 0 ? 'succeeded' : 'failed', {
       passed: scriptIds.length,
-      failed: Math.max(0, requestedCount - scriptIds.length),
+      failed: Math.max(0, plansWithRecommendations.length - scriptIds.length),
       errors: generationErrors.slice(0, 5),
-    }, scriptIds.length === 0 ? 'script_generation_failed' : null, now);
-    const status = scriptIds.length >= requestedCount ? 'succeeded' : scriptIds.length > 0 ? 'partial' : 'failed';
+    }, scriptIds.length === 0 && plansWithRecommendations.length > 0 ? 'script_generation_failed' : null, now);
+    const status = scriptIds.length >= plansWithRecommendations.length ? 'succeeded' : scriptIds.length > 0 ? 'partial' : 'failed';
     await updateTask(db, projectId, taskId, {
       status,
       currentStage: status === 'failed' ? 'validate' : 'generate',
       errorCode: status === 'failed' ? 'script_generation_failed' : null,
       errorMessage: status === 'failed' ? (generationErrors[0] || '脚本生成失败') : null,
       succeededCount: scriptIds.length,
-      failedCount: Math.max(0, requestedCount - scriptIds.length),
+      failedCount: Math.max(0, plansWithRecommendations.length - scriptIds.length),
     }, now);
     return {
       status,
       succeededCount: scriptIds.length,
-      failedCount: Math.max(0, requestedCount - scriptIds.length),
+      failedCount: Math.max(0, plansWithRecommendations.length - scriptIds.length),
       scriptIds,
     };
   } catch (error) {
@@ -1075,7 +1130,7 @@ export async function executeScriptStudioTask(
       return {
         status: 'failed',
         succeededCount: scriptIds.length,
-        failedCount: Math.max(0, requestedCount - scriptIds.length),
+        failedCount: Math.max(0, plannedCount - scriptIds.length),
         scriptIds,
         errorCode: cancelled ? 'cancelled' : 'aborted',
         errorMessage: message,
@@ -1094,12 +1149,12 @@ export async function executeScriptStudioTask(
       errorCode: code,
       errorMessage: message,
       succeededCount: scriptIds.length,
-      failedCount: Math.max(0, requestedCount - scriptIds.length),
+      failedCount: Math.max(0, plannedCount - scriptIds.length),
     }, now);
     return {
       status: 'failed',
       succeededCount: scriptIds.length,
-      failedCount: Math.max(0, requestedCount - scriptIds.length),
+      failedCount: Math.max(0, plannedCount - scriptIds.length),
       scriptIds,
       errorCode: code,
       errorMessage: message,

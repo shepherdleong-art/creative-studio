@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { drawFramedImage } from '@/lib/final-edit/cover-framing';
+import { audioAudibleAt, videoPlaybackRate } from '@/lib/final-edit/clip-edit';
 import { OUTPUT_PRESETS, type FinalEditAssetView, type FinalEditGroupView, type FinalEditVariantView } from '@/lib/final-edit/types';
 import type { StyleTarget } from './FinalEditInspector';
 import { expectedVideoTimeSec, getVideoSlotPlan, paintDecodedVideoFrame, previewAudioLevelsAtTime, shouldIssueSeek } from './preview-playback';
@@ -83,7 +84,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
   const totalSec = INTRO_SEC + bodyDurationSec;
   const rawBodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
   const sortedClips = useMemo(() => [...variant.timeline.clips].sort((left, right) => left.timelineInFrame - right.timelineInFrame), [variant.timeline.clips]);
-  const frozenVideoTail = rawBodyFrame >= variant.timeline.bodyFrames && sortedClips.length > 0;
+  const frozenVideoTail = rawBodyFrame >= variant.timeline.bodyFrames && sortedClips.length > 0 && sortedClips[sortedClips.length - 1].timelineOutFrame === variant.timeline.bodyFrames;
   const bodyFrame = frozenVideoTail
     ? Math.max(0, sortedClips[sortedClips.length - 1].timelineOutFrame - 1)
     : rawBodyFrame;
@@ -131,9 +132,10 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       fadeInSec: variant.bgm.fadeInSec,
       fadeOutSec: variant.bgm.fadeOutSec,
     });
-    graph.narrationGain.gain.setValueAtTime(levels.narrationGain, graph.context.currentTime);
-    graph.bgmGain.gain.setValueAtTime(levels.bgmGain, graph.context.currentTime);
-  }, [bodyDurationSec, bgmGainDb, narrationGainDb, variant.bgm.fadeInSec, variant.bgm.fadeOutSec]);
+    const bodyUs = (timeSec - INTRO_SEC) * 1_000_000;
+    graph.narrationGain.gain.setValueAtTime(audioAudibleAt(variant.timeline.audio?.narration, bodyUs * narrationPlaybackRate) ? levels.narrationGain : 0, graph.context.currentTime);
+    graph.bgmGain.gain.setValueAtTime(audioAudibleAt(variant.timeline.audio?.bgm, bodyUs) ? levels.bgmGain : 0, graph.context.currentTime);
+  }, [bodyDurationSec, bgmGainDb, narrationGainDb, narrationPlaybackRate, variant.bgm.fadeInSec, variant.bgm.fadeOutSec, variant.timeline.audio]);
 
   useEffect(() => {
     setAudioLevels(playheadSecRef.current);
@@ -249,9 +251,10 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
       const clip = slotClips[slot];
       if (!video || !clip) return;
       const expected = slot === activeSlot
-        ? expectedVideoTimeSec(clip.sourceInFrame, clip.timelineInFrame, bodyFrame, FPS)
+        ? Math.min((clip.sourceOutFrame - 1) / FPS, expectedVideoTimeSec(clip.sourceInFrame, clip.timelineInFrame, bodyFrame, FPS, videoPlaybackRate(clip)))
         : clip.sourceInFrame / FPS;
       const synchronize = () => {
+        video.playbackRate = videoPlaybackRate(clip);
         seekTargetRef.current[slot] = expected;
         if (slot !== activeSlot) {
           video.pause();
@@ -525,7 +528,7 @@ export function FinalEditPreview({ group, variant, assets, selectedAsset, playhe
           <video ref={videoARef} src={videoAAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
           <video ref={videoBRef} src={videoBAsset?.previewUrl} className={`${styles.previewMedia} ${styles.previewInactive}`} muted playsInline preload="auto" aria-hidden="true" />
           <canvas ref={foregroundCanvasRef} width={previewSize.width} height={previewSize.height} className={`${styles.previewMedia} ${showSelectedMaterial || playheadSec < INTRO_SEC || !activeAsset ? styles.previewInactive : ''}`} />
-          {!showSelectedMaterial && playheadSec >= INTRO_SEC && !activeAsset && <div className={styles.previewGap}><strong>这里没有画面</strong><small>把左侧素材拖到视频轨，或使用 AI 补齐缺口</small></div>}
+          {!showSelectedMaterial && playheadSec >= INTRO_SEC && !activeAsset && <div className={styles.previewGap} style={{ background: 'black' }} aria-label="视频空位" />}
           <canvas ref={canvasRef} className={`${styles.previewCanvas} ${canDragText ? styles.draggableOverlay : ''}`} onPointerDown={beginTextDrag} />
           {showSafeArea && <div className={styles.previewSafeArea} aria-label="4% 预览安全区" />}
           <span className={styles.previewBadge}>{showSelectedMaterial ? '选中素材' : '成片时间线'}</span>

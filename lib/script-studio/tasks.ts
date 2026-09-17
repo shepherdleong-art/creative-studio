@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { ScriptStudioError } from './errors.ts';
-import { parseScriptStudioRequestedCount } from './generation-contract.ts';
+import { parseScriptProductionMode, parseScriptStudioRequestedCount } from './generation-contract.ts';
 import type {
   ScriptStudioTaskRecord,
   ScriptStudioTaskStageRecord,
@@ -27,6 +27,7 @@ export interface ScriptStudioTaskRequestIdentity {
   targetDurationSec: number;
   requestedCount: number;
   creativeBrief?: string;
+  productionMode?: 'standard' | 'pain_solving_15s';
   providerId: string;
   providerModel: string;
   /** 冻结知识上下文指纹：不同策略/模板版本得到不同 key，不能误复用旧任务。 */
@@ -50,6 +51,7 @@ export function createScriptStudioTaskRequestKey(input: ScriptStudioTaskRequestI
       input.providerId,
       input.providerModel,
       input.knowledgeFingerprint || '',
+      ...(input.productionMode === 'pain_solving_15s' ? [input.productionMode] : []),
     ].join('|'))
     .digest('hex');
 }
@@ -192,6 +194,7 @@ export interface TaskRequestParams {
   targetDurationSec: number;
   requestedCount: number;
   creativeBrief: string;
+  productionMode?: 'standard' | 'pain_solving_15s';
   targetScriptId?: string;
   providerId: string;
   /** 显式幂等键（「再生成一组」的 action key）；缺省时按参数派生。 */
@@ -222,10 +225,12 @@ export function decideTaskRequest(
   input: TaskRequestParams,
   resolveProviders: (providerId: string) => { vision: { id: string; model: string } },
 ): TaskRequestDecision {
+  const productionMode = parseScriptProductionMode(input.productionMode, input.targetDurationSec);
   const buildSnapshot = (pv: { id: string; model: string }, knowledgeContext?: Record<string, unknown>): Record<string, unknown> => ({
     targetDurationSec: input.targetDurationSec,
     requestedCount: input.requestedCount,
     creativeBrief: input.creativeBrief,
+    ...(productionMode === 'pain_solving_15s' ? { productionMode } : {}),
     providerId: pv.id,
     providerModel: pv.model,
     ...(input.targetScriptId ? { targetScriptId: input.targetScriptId } : {}),
@@ -282,6 +287,7 @@ export function decideTaskRequest(
     targetDurationSec: input.targetDurationSec,
     requestedCount: input.requestedCount,
     creativeBrief: input.creativeBrief,
+    ...(productionMode === 'pain_solving_15s' ? { productionMode } : {}),
     providerId: providers.vision.id,
     providerModel: providers.vision.model,
     knowledgeFingerprint,

@@ -37,3 +37,11 @@ export function parseScriptStudioTargetDuration(value: unknown): number {
   }
   return num;
 }
+
+export type ScriptProductionMode = 'standard' | 'pain_solving_15s';
+export function parseScriptProductionMode(value: unknown, duration: number): ScriptProductionMode {
+  if (value === undefined || value === 'standard') return 'standard';
+  if (value !== 'pain_solving_15s') throw new ScriptStudioError('invalid_input', '不支持的脚本生产模式');
+  if (duration !== 15) throw new ScriptStudioError('invalid_input', '痛点解决型目前仅支持15秒');
+  return value;
+}

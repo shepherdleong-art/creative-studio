@@ -28,7 +28,7 @@ import {
 // v16：默认直接使用提取事实，取消额外提炼；多页提取共享并发队列。
 // v17：CTA 链接落版合法化（cta-ending-v3）+ 受众画像进 plan 阶段（audience-profile-v1，
 //      模型分析/本地降级、画像绑定方向并参与卖点编排排序，失败不阻塞任务）。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 17;
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 18;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 
