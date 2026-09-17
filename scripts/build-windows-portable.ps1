@@ -16,6 +16,8 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$OutputPath,
+  # 可选：只导出该数据根的自定义运镜模板，不复制数据库、项目或供应商配置。
+  [string]$MotionTemplatesSourceRoot,
   # 仅供临时 fixture 测试；正式发布不得传此参数。
   [switch]$SkipBuild
 )
@@ -285,6 +287,13 @@ try {
   [System.IO.File]::WriteAllLines($stagedEnvPath, $normalizedEnvLines, [System.Text.UTF8Encoding]::new($false))
   foreach ($map in $templateMap) {
     Copy-Item -LiteralPath (Join-Path $Root $map.Source) -Destination (Join-Path $staging $map.Target) -Force
+  }
+
+  if ($MotionTemplatesSourceRoot) {
+    $presetNode = (Get-Command node.exe -ErrorAction Stop).Source
+    & $presetNode (Join-Path $ScriptDir 'export-motion-template-presets.mjs') --source-root $MotionTemplatesSourceRoot --output $staging
+    if ($LASTEXITCODE -ne 0) { throw '自定义运镜模板导出失败，停止发布。' }
+    $manifestKeyFiles += @('motion-template-presets.json', 'scripts/import-motion-template-presets.mjs', '导入自定义运镜模板.cmd')
   }
 
   foreach ($forbidden in $forbiddenInPayload) {
