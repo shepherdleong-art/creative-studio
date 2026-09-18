@@ -62,7 +62,7 @@ fs.mkdirSync(path.join(root, 'backups'), { recursive: true });
 const db = createDb(root);
 const migration = await ensureScriptStudioSchemaReady({ db, backupRoot: path.join(root, 'backups'), now: () => new Date('2026-09-17T00:00:00.000Z') });
 assert.equal(migration.state, 'ready');
-assert.equal(migration.targetVersion, 10);
+assert.equal(migration.targetVersion, 11);
 for (const table of ['script_studio_viral_tpl_libraries', 'script_studio_viral_tpl_revisions', 'script_studio_viral_tpl_entries', 'script_studio_viral_tpl_style_cache']) {
   assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(table), `缺少 ${table}`);
 }

@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 
 /**
- * 爆文模板勾选（迁移方案 §3.1.4）：
+ * 爆文模板勾选（迁移方案 §3.1.4 + 2026-09-17 流程修正）：
  * - 系统按卖点库本地推荐（同类目优先 + 关键词命中），展示真实命中原因；
  * - 用户能看标题、参考全文、类目，勾选 1–6 个；可搜索其他可用模板；
- * - 不自动替用户提交生成；勾选数量即生成数量（每个模板一条）。
+ * - 每个模板可选生成 1 条或多条变体，全部模板合计不超过 6 条；
+ * - 不自动替用户提交生成；对外 selectedIds 为展开数组（同一 id 重复 = 该模板条数）。
  */
 
 export interface ViralTemplateEntryView {
@@ -154,23 +155,56 @@ export default function TemplateRewritePicker({
     }
   };
 
+  /** 调整某个模板的生成条数：保持该模板在生成顺序中的首个位置，总量不超过 6 条。 */
+  const setCount = (id: string, nextCount: number) => {
+    if (disabled) return;
+    const othersTotal = selectedIds.filter((item) => item !== id).length;
+    if (nextCount < 1 || othersTotal + nextCount > 6) return;
+    const next: string[] = [];
+    let placed = false;
+    for (const item of selectedIds) {
+      if (item !== id) {
+        next.push(item);
+        continue;
+      }
+      if (!placed) {
+        for (let index = 0; index < nextCount; index++) next.push(id);
+        placed = true;
+      }
+    }
+    onChange(next);
+  };
+
   const recommendedIds = useMemo(() => new Set(recommendations.map((item) => item.entry.id)), [recommendations]);
-  const selectedEntries = useMemo(() => {
+  /** 已勾选按模板分组（首个出现位置 = 生成顺序），count 为该模板生成条数。 */
+  const selectedGroups = useMemo(() => {
     const all = [...recommendations.map((item) => item.entry), ...(searchResults ?? [])];
-    return selectedIds
-      .map((id) => all.find((entry) => entry.id === id))
-      .filter((entry): entry is ViralTemplateEntryView => Boolean(entry));
+    const groups: Array<{ entry: ViralTemplateEntryView; count: number }> = [];
+    for (const id of selectedIds) {
+      const existing = groups.find((group) => group.entry.id === id);
+      if (existing) {
+        existing.count += 1;
+        continue;
+      }
+      const entry = all.find((item) => item.id === id);
+      if (entry) groups.push({ entry, count: 1 });
+    }
+    return groups;
   }, [selectedIds, recommendations, searchResults]);
 
   if (!libraryRevisionId) {
-    return <p className="rounded-[14px] bg-surface-subtle p-4 text-sm text-ink-tertiary">需要先有卖点库（从详情页提取或复用已有），才能推荐匹配的爆文模板。</p>;
+    return (
+      <p className="rounded-[14px] bg-surface-subtle p-4 text-sm text-ink-tertiary">
+        还没有卖点库。确认已添加详情页后，点击下方「分析详情页，提取卖点」；建库完成后，这里会推荐匹配的爆文模板。
+      </p>
+    );
   }
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-ink-secondary">
-          已选 <strong className={selectedIds.length > 0 ? 'text-accent' : ''}>{selectedIds.length}</strong> / 6 个模板，每个生成 1 条脚本
+          已选 <strong className={selectedGroups.length > 0 ? 'text-accent' : ''}>{selectedGroups.length}</strong> 个模板 · 共 <strong className={selectedIds.length > 0 ? 'text-accent' : ''}>{selectedIds.length}</strong> / 6 条（同一模板多条生成不同变体）
         </p>
         <label className="flex items-center gap-1.5 text-xs text-ink-secondary">
           <input type="checkbox" checked={expandBeyond} onChange={(event) => setExpandBeyond(event.target.checked)} disabled={disabled} />
@@ -178,16 +212,39 @@ export default function TemplateRewritePicker({
         </label>
       </div>
 
-      {selectedEntries.length > 0 && (
+      {selectedGroups.length > 0 && (
         <div className="space-y-2">
           <p className="text-[0.7rem] font-semibold text-ink-tertiary">已勾选（按生成顺序）</p>
-          {selectedEntries.map((entry, index) => (
-            <div key={entry.id} className="flex items-center justify-between gap-2 rounded-[12px] border border-accent/40 bg-accent/[0.04] px-3 py-2 text-sm">
+          {selectedGroups.map((group, index) => (
+            <div key={group.entry.id} className="flex items-center justify-between gap-2 rounded-[12px] border border-accent/40 bg-accent/[0.04] px-3 py-2 text-sm">
               <span className="min-w-0 truncate">
                 <span className="mr-2 text-[0.65rem] font-bold text-accent">{index + 1}.</span>
-                {entry.name || entry.title}
+                {group.entry.name || group.entry.title}
               </span>
-              <button type="button" className="shrink-0 text-xs text-ink-tertiary hover:text-fail" disabled={disabled} onClick={() => toggle(entry.id)}>移除</button>
+              <span className="flex shrink-0 items-center gap-1.5">
+                <span className="flex items-center rounded-full border border-hairline bg-surface">
+                  <button
+                    type="button"
+                    className="flex h-6 w-6 items-center justify-center text-ink-secondary disabled:opacity-35"
+                    disabled={disabled || group.count <= 1}
+                    onClick={() => setCount(group.entry.id, group.count - 1)}
+                    aria-label={`减少「${group.entry.name || group.entry.title}」条数`}
+                  >
+                    −
+                  </button>
+                  <span className="min-w-7 text-center text-xs font-semibold tabular-nums" aria-label={`「${group.entry.name || group.entry.title}」生成条数`}>{group.count} 条</span>
+                  <button
+                    type="button"
+                    className="flex h-6 w-6 items-center justify-center text-ink-secondary disabled:opacity-35"
+                    disabled={disabled || selectedIds.length >= 6}
+                    onClick={() => setCount(group.entry.id, group.count + 1)}
+                    aria-label={`增加「${group.entry.name || group.entry.title}」条数`}
+                  >
+                    +
+                  </button>
+                </span>
+                <button type="button" className="text-xs text-ink-tertiary hover:text-fail" disabled={disabled} onClick={() => toggle(group.entry.id)}>移除</button>
+              </span>
             </div>
           ))}
         </div>
@@ -200,7 +257,9 @@ export default function TemplateRewritePicker({
         <>
           {recommendations.length === 0 ? (
             <p className="rounded-[14px] bg-surface-subtle p-4 text-sm text-ink-tertiary">
-              当前卖点库与模板库没有匹配项{usableCount > 0 ? `（库内共 ${usableCount} 个可用模板）` : ''}。可用搜索查找其他模板，或勾选「类目不足时扩大搜索」。
+              {usableCount === 0
+                ? '爆文模板库还是空的：请先到「设置 → 脚本知识与模板 → 爆文模板库」导入 .xlsx。'
+                : `当前卖点库与模板库没有匹配项（库内共 ${usableCount} 个可用模板）。可用搜索查找其他模板，或勾选「类目不足时扩大搜索」。`}
             </p>
           ) : (
             <div className="space-y-2">

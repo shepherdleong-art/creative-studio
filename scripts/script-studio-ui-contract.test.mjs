@@ -8,6 +8,8 @@ const retryRoute = fs.readFileSync(new URL('../app/api/projects/[id]/script-stud
 const regenerateRoute = fs.readFileSync(new URL('../app/api/projects/[id]/script-studio/scripts/[scriptId]/regenerate/route.ts', import.meta.url), 'utf8');
 const runtime = fs.readFileSync(new URL('../lib/script-studio/runtime.ts', import.meta.url), 'utf8');
 const tasksModule = fs.readFileSync(new URL('../lib/script-studio/tasks.ts', import.meta.url), 'utf8');
+const templatePicker = fs.readFileSync(new URL('../components/script-studio/TemplateRewritePicker.tsx', import.meta.url), 'utf8');
+const viralSettings = fs.readFileSync(new URL('../components/script-studio/ViralTemplateSettings.tsx', import.meta.url), 'utf8');
 
 function assertSchedulerRefreshesBeforeEnqueue(source, label) {
   const ensureAt = source.indexOf('await ensureScriptStudioSchedulerStarted()');
@@ -80,4 +82,32 @@ assert.match(panel, /未生成修改说明。/, '修改说明缺失必须如实�
 assert.match(panel, /模型自述，非证据审核/, '修改说明必须标注为模型自述而非证据审核');
 assert.match(panel, /这只是文字差异对照，不是原创率或合规证明/, '文字差异不得显示为原创率');
 assert.doesNotMatch(panel, /原创率\s*[:：]|原创率\s*\d|爆款概率|转化率\s*[:：]/, '不得杜撰原创率/爆款概率/转化率指标');
+
+// 2026-09-17 流程修正 v2（用户反馈）：爆文模板改写三步流转——
+// 第 1 步分析建库（extractOnly 前置任务）→ 第 2 步挑选模板（每模板可选多条变体）→ 第 3 步卖点+脚本。
+assert.match(panel, /分析详情页，提取卖点/, '无卖点库时必须提供一键提取卖点入口');
+assert.match(panel, /extractOnly: true/, '一键提取必须向服务端提交 extractOnly 标记');
+assert.match(panel, /卖点库已建好，请在下方挑选爆文模板并选择每个模板生成几条/, '建库完成后必须引导到第 2 步挑选模板');
+assert.match(panel, /仅提取卖点建库，不生成脚本/, '过程页阶段必须如实标注仅提取、不生成');
+assert.match(panel, /extractOnlyTask \? 6/, '仅提取任务包含事实组织，共 6 个阶段');
+assert.match(panel, /下一步：挑选爆文模板/, '已有卖点库时第 1 步必须直达第 2 步挑选模板');
+assert.match(panel, /第 2 步挑选爆文模板时决定/, '第 1 步不得再内嵌勾选区，生成数量由第 2 步决定');
+assert.match(panel, /共 \$\{templateEntryIds\.length\} 条/, '第 2 步提交按钮必须明示模板数与总条数');
+assert.match(panel, /每个模板可选生成 1 条或多条变体/, '必须如实说明同一模板可生成多条变体');
+assert.match(templatePicker, /增加「/, '每个已选模板必须能增加生成条数');
+assert.match(templatePicker, /同一模板多条生成不同变体/, '勾选计数必须如实说明变体语义');
+assert.match(taskRoute, /body\.extractOnly === true/, 'route 必须解析 extractOnly 标记');
+assert.match(taskRoute, /仅提取卖点库需要先上传详情页图片/, 'route 必须校验仅提取任务带详情页来源集');
+assert.match(templatePicker, /还没有卖点库。确认已添加详情页后，点击下方「分析详情页，提取卖点」/, '无卖点库必须给出下一步操作指引');
+assert.match(templatePicker, /爆文模板库还是空的：请先到「设置 → 脚本知识与模板 → 爆文模板库」导入/, '模板库未导入时必须指引到设置页');
+assert.doesNotMatch(templatePicker, /需要先有卖点库（从详情页提取或复用已有）/, '旧的无指引死胡同提示必须移除');
+assert.match(viralSettings, /强尼精选爆文文案/, '爆文模板库必须标注为强尼精选');
+assert.doesNotMatch(viralSettings, /同事整理/, '不得再出现同事整理字样');
+
+// 2026-09-18 用户要求交付完整「核心卖点＋详解」，核验后的事实需全局组织。
+assert.match(panel, /organize: '整理核心卖点与详解'/);
+assert.match(panel, /first_extraction: 10/);
+assert.match(panel, /查看支撑事实与来源/);
+assert.match(panel, /个有效卖点 · V/, '计数按组织后的有效卖点统计');
+assert.match(panel, /无详解（模板改写不可用）/, '缺详解小点必须如实标注模板改写不可用');
 console.log('script-studio UI contract tests passed');

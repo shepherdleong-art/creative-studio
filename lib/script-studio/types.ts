@@ -63,7 +63,7 @@ export interface SellingPointRecord {
   themeTitle: string;
   hierarchyRole: ScriptStudioHierarchyRole;
   importance: number;
-  /** 同次视觉提取输出的多句详解（创作语境，不是新事实来源）；空串表示无详解。 */
+  /** 卖点的完整详解；v6 由核验后全局组织生成，支撑事实保留在 factText/证据中。 */
   detailText: string;
   detailStatus: ScriptStudioDetailStatus;
 }

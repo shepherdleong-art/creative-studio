@@ -85,6 +85,7 @@ import {
 } from './audience-profile.ts';
 import type { ScriptStudioScriptContent } from './types.ts';
 import { dedupeSellingPoints } from './dedupe.ts';
+import { SELLING_POINT_ORGANIZATION_VERSION, type SellingPointOrganizer } from './selling-point-organizer.ts';
 
 export interface ScriptStudioRunDeps {
   db: Database.Database;
@@ -98,6 +99,7 @@ export interface ScriptStudioRunDeps {
   generator: ScriptGenerator;
   /** 卖点提炼器（方案 §3）：缺省时跳过提炼阶段，不阻断脚本生成。 */
   distiller?: SellingPointDistiller;
+  sellingPointOrganizer?: SellingPointOrganizer;
   signal?: AbortSignal;
   now?: () => Date;
   fallbackOnInvalid?: boolean;
@@ -594,6 +596,8 @@ export async function executeScriptStudioTask(
   const recoveredLibrary = typeof savedLibraryId === 'string' ? getLibraryRevision(db, projectId, savedLibraryId) : undefined;
   const firstExtraction = task.mode === 'first_extraction' && !recoveredLibrary;
   const isReuse = task.mode === 'reuse';
+  // 仅提取卖点库（爆文模板改写前置）：保存卖点库后即成功，不进入提炼/规划/生成。
+  const extractOnly = input.extractOnly === true;
   let plannedCount = productionMode === 'pain_solving_15s' ? 0 : requestedCount;
   const scriptIds: string[] = [];
   const createdScripts: ScriptStudioScriptContent[] = [];
@@ -610,6 +614,7 @@ export async function executeScriptStudioTask(
       targetDurationSec,
       requestedCount,
       mode: task.mode,
+      ...(extractOnly ? { extractOnly: true } : {}),
     }, null, now);
 
     if (firstExtraction) {
@@ -720,6 +725,18 @@ export async function executeScriptStudioTask(
       }
       finishStage(db, projectId, taskId, 'evidence_gate', 'succeeded', evidenceGateSummary(evidenceResult.points, evidenceResult), null, now);
 
+      // 事实核验后全局组织「核心卖点＋详解」，避免切片批次把参数拆成平级卖点。
+      // 不静默回退碎片库；整理失败保留具体错误，用户可以重试。
+      let organizedPoints = evidenceResult.points;
+      if (deps.sellingPointOrganizer) {
+        startStage(db, projectId, taskId, 'organize', now);
+        await updateTask(db, projectId, taskId, { currentStage: 'organize' }, now);
+        organizedPoints = await deps.sellingPointOrganizer.organize(evidenceResult.points, signal);
+        finishStage(db, projectId, taskId, 'organize', 'succeeded', {
+          factCount: usableSellingPoints(evidenceResult.points).length,
+          sellingPointCount: usableSellingPoints(organizedPoints).length,
+        }, null, now);
+      }
       startStage(db, projectId, taskId, 'save_library', now);
       await updateTask(db, projectId, taskId, { currentStage: 'save_library' }, now);
       libraryRevision = createLibraryRevision(db, {
@@ -733,9 +750,9 @@ export async function executeScriptStudioTask(
         brand: extraction.brand,
         extractProviderId: extraction.providerId,
         extractModel: extraction.model,
-        promptContractVersion: extraction.promptContractVersion,
+        promptContractVersion: deps.sellingPointOrganizer ? SELLING_POINT_ORGANIZATION_VERSION : extraction.promptContractVersion,
         origin: 'extraction',
-        sellingPoints: evidenceResult.points,
+        sellingPoints: organizedPoints,
       }, now);
       finishStage(db, projectId, taskId, 'save_library', 'succeeded', {
         libraryRevisionId: libraryRevision.id,
@@ -743,6 +760,22 @@ export async function executeScriptStudioTask(
       }, null, now);
     } else {
       // reuse 模式没有 extraction/evidence 阶段，阶段列表按复用定义展示。
+    }
+
+    // 仅提取卖点库（爆文模板改写前置）：卖点库落库即任务完成，不产出脚本。
+    if (extractOnly && libraryRevision) {
+      await updateTask(db, projectId, taskId, {
+        status: 'succeeded',
+        currentStage: 'save_library',
+        succeededCount: 0,
+        failedCount: 0,
+      }, now);
+      return {
+        status: 'succeeded',
+        succeededCount: 0,
+        failedCount: 0,
+        scriptIds,
+      };
     }
 
     // 卖点提炼层（方案 §3）：把通过核验的事实全局归并为购买理由短句与标签。
@@ -1372,6 +1405,7 @@ export function createScriptStudioRunDeps(
     reprobe: EvidenceReprobe;
     generator: ScriptGenerator;
     distiller?: SellingPointDistiller;
+    sellingPointOrganizer?: SellingPointOrganizer;
     signal?: AbortSignal;
     now?: () => Date;
     fallbackOnInvalid?: boolean;
@@ -1388,6 +1422,7 @@ export function createScriptStudioRunDeps(
     reprobe: options.reprobe,
     generator: options.generator,
     distiller: options.distiller,
+    sellingPointOrganizer: options.sellingPointOrganizer,
     signal: options.signal,
     now: options.now,
     fallbackOnInvalid: options.fallbackOnInvalid,

@@ -32,7 +32,10 @@ import {
 //      机会不足不凑数（shortageCount 不计失败）。
 // v19：爆文模板改写模式（template_rewrite）：模板全文快照进任务身份、按模板筛选白名单、
 //      文风预设/风格分析、改写与后处理链（字数修正带当前稿、残留校验、修改说明）。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 19;
+// v20：移除卖点主题归纳（aggregate 阶段与大点持久化）——对齐源项目「标题＋详解」平铺小点形态，
+//      迁移方案 A04 明确排除独立卖点归纳模型调用。
+// v21：核验后全局组织卖点＋详解，运行时与展示、脚本输入使用同一份完整卖点。
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 21;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

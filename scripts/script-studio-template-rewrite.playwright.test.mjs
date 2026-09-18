@@ -144,7 +144,7 @@ try {
       if (method === 'POST') {
         submitted = route.request().postDataJSON();
         body = { task: taskSnapshot(), created: true, schedulerEnabled: false };
-      } else body = { tasks: [] };
+      } else body = { tasks: ['queued', 'running'].includes(state.status) ? [taskSnapshot()] : [] };
     }
     else if (pathname.endsWith('/script-studio/scripts')) body = { scripts: Array.from({ length: state.succeededCount }, (_, i) => script(i + 1)) };
     else if (pathname.endsWith('/script-studio/library')) {
@@ -180,31 +180,39 @@ try {
   assert.equal(importConfirmed, true, '确认后才真正落库');
   await expect(page.getByText(/380 个模板（可用 376 · 占位 3 · 待检查 1）/)).toBeVisible();
 
-  // ---------------- 2. 项目页：推荐勾选 → 提交数量语义 ----------------
+  // ---------------- 2. 项目页：第 1 步直达第 2 步 → 推荐勾选+条数 → 提交数量语义 ----------------
   await page.goto(`${baseUrl}/projects/p1?tab=script`);
   await page.getByLabel('生产模式', { exact: true }).selectOption('template_rewrite');
-  await expect(page.getByText('推荐并勾选爆文模板，每个模板按参考文风改写成一条本家脚本。')).toBeVisible();
+  await expect(page.getByText('先提取卖点建库，再在第 2 步挑选爆文模板，按参考文风改写成一条本家脚本。')).toBeVisible();
   await expect(page.getByText(/写作估算 ≈ 90 中文字\/条/)).toBeVisible(); // 默认 15 秒
+  await expect(page.getByText('第 2 步挑选爆文模板时决定')).toBeVisible();
+  // 第 1 步不再内嵌勾选区
+  await expect(page.getByRole('checkbox', { name: '选择模板：小户型餐桌爆款' })).toHaveCount(0);
+  // 已有卖点库：第 1 步直达第 2 步挑选模板
+  await page.getByRole('button', { name: '下一步：挑选爆文模板', exact: true }).click();
   await expect(page.getByText('推荐模板（按卖点库本地匹配，原因如实展示）')).toBeVisible({ timeout: 8000 });
   await expect(page.getByText('命中卖点关键词：伸缩、桌面').first()).toBeVisible();
   // 参考全文预览
   await page.getByRole('button', { name: '查看参考全文' }).first().click();
   await expect(page.getByText(/这是小户型餐桌爆款的参考文案/).first()).toBeVisible();
-  // 勾选 2 个模板（数量 = 勾选数）
+  // 勾选 2 个模板
   await page.getByRole('checkbox', { name: '选择模板：小户型餐桌爆款' }).check();
   await page.getByRole('checkbox', { name: '选择模板：岩板餐桌测评' }).check();
-  await expect(page.getByText('2 / 6 个模板，每个生成 1 条脚本')).toBeVisible();
+  await expect(page.getByText(/已选 2 个模板 · 共 2 \/ 6 条/)).toBeVisible();
+  // 同一模板可加条数生成变体：「小户型餐桌爆款」调到 2 条
+  await page.getByRole('button', { name: '增加「小户型餐桌爆款」条数' }).click();
+  await expect(page.getByText(/已选 2 个模板 · 共 3 \/ 6 条/)).toBeVisible();
   // 搜索入口
   await page.getByPlaceholder('搜索模板名称 / 标题 / 参考文案 / 类目').fill('实木床');
   await page.getByRole('button', { name: '搜索', exact: true }).click();
   await expect(page.getByText('搜索结果（1）')).toBeVisible();
   await expect(page.getByText('实木床爆款').first()).toBeVisible();
   await page.getByText('返回推荐').click();
-  // 提交：templateEntryIds 与 requestedCount 一致
-  await page.getByRole('button', { name: '按 2 个模板生成脚本', exact: true }).click();
+  // 提交：templateEntryIds 按条数展开（同一模板重复）且 requestedCount 等于总条数
+  await page.getByRole('button', { name: '按 2 个模板生成脚本（共 3 条）', exact: true }).click();
   await expect.poll(() => submitted?.productionMode).toBe('template_rewrite');
-  assert.deepEqual(submitted.templateEntryIds, ['e1', 'e2'], '模板按勾选顺序提交');
-  assert.equal(submitted.requestedCount, 2, '生成数量等于勾选模板数');
+  assert.deepEqual(submitted.templateEntryIds, ['e1', 'e1', 'e2'], '同一模板按所选条数重复展开提交');
+  assert.equal(submitted.requestedCount, 3, '生成数量等于全部模板条数之和');
   assert.equal(submitted.targetDurationSec, 15);
 
   // ---------------- 3. 结果对照与诚实展示 ----------------

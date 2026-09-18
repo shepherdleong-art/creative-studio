@@ -35,6 +35,8 @@ export interface ScriptStudioTaskRequestIdentity {
   knowledgeFingerprint?: string;
   /** 爆文模板改写：冻结模板计划的指纹（内容+顺序），不同计划得到不同 key。 */
   templatePlanFingerprint?: string;
+  /** 仅提取卖点库（爆文模板改写前置）：与完整生成任务区分身份，不互相命中。 */
+  extractOnly?: boolean;
 }
 
 /**
@@ -56,6 +58,7 @@ export function createScriptStudioTaskRequestKey(input: ScriptStudioTaskRequestI
       input.knowledgeFingerprint || '',
       ...(input.productionMode && input.productionMode !== 'standard' ? [input.productionMode] : []),
       ...(input.templatePlanFingerprint ? [input.templatePlanFingerprint] : []),
+      ...(input.extractOnly ? ['extract_only'] : []),
     ].join('|'))
     .digest('hex');
 }
@@ -213,6 +216,11 @@ export interface TaskRequestParams {
    * 客户端只提交条目 ID，全文以服务端读取为准。
    */
   templatePlan?: { templates: FrozenViralTemplateSpec[]; fingerprint: string };
+  /**
+   * 仅提取卖点库（爆文模板改写前置）：任务在保存卖点库后即成功，不规划/生成脚本。
+   * 冻结进快照参与身份比较；runner 只读快照。
+   */
+  extractOnly?: boolean;
 }
 
 export interface TaskRequestDecision {
@@ -239,6 +247,7 @@ export function decideTaskRequest(
     pv: { id: string; model: string },
     knowledgeContext?: Record<string, unknown>,
     templatePlan?: { templates: FrozenViralTemplateSpec[]; fingerprint: string },
+    extractOnly?: boolean,
   ): Record<string, unknown> => ({
     targetDurationSec: input.targetDurationSec,
     requestedCount: input.requestedCount,
@@ -252,6 +261,7 @@ export function decideTaskRequest(
     ...(productionMode === 'template_rewrite' && templatePlan
       ? { templatePlan: { templates: templatePlan.templates, fingerprint: templatePlan.fingerprint } }
       : {}),
+    ...(extractOnly ? { extractOnly: true } : {}),
   });
   const knowledgeFingerprint = input.knowledgeContext
     && typeof input.knowledgeContext.fingerprint === 'string'
@@ -282,6 +292,7 @@ export function decideTaskRequest(
         storedProvider,
         stored.knowledgeContext as Record<string, unknown> | undefined,
         stored.templatePlan as { templates: FrozenViralTemplateSpec[]; fingerprint: string } | undefined,
+        stored.extractOnly === true,
       ),
     });
     if (!taskIdentitiesMatch(taskStoredIdentity(existing), candidateIdentity)) {
@@ -296,7 +307,7 @@ export function decideTaskRequest(
     if (existing) return { requestKey: explicitKey, existing: reuseIfMatches(existing, explicitKey), snapshot: null };
     // 显式 key 未命中：需要创建，此刻才解析当前供应商。
     const providers = resolveProviders(input.providerId);
-    return { requestKey: explicitKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext, input.templatePlan) };
+    return { requestKey: explicitKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext, input.templatePlan, input.extractOnly === true) };
   }
   // 派生 key：解析当前供应商构造 key（key 含 providerId/model 与知识指纹），再查既有任务。
   const providers = resolveProviders(input.providerId);
@@ -313,10 +324,11 @@ export function decideTaskRequest(
     providerModel: providers.vision.model,
     knowledgeFingerprint,
     ...(input.templatePlan ? { templatePlanFingerprint: input.templatePlan.fingerprint } : {}),
+    ...(input.extractOnly ? { extractOnly: true } : {}),
   });
   const existing = getTaskByRequestKey(db, input.projectId, requestKey);
   if (existing) return { requestKey, existing: reuseIfMatches(existing, requestKey), snapshot: null };
-  return { requestKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext, input.templatePlan) };
+  return { requestKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext, input.templatePlan, input.extractOnly === true) };
 }
 
 export function getTask(

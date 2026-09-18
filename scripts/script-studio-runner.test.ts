@@ -18,6 +18,7 @@ import { buildDeterministicFallbackScript } from './script-studio-fixture.ts';
 import type { ScriptGenerator } from '../lib/script-studio/generator.ts';
 import type { VisionExtractionResult, VisionExtractor } from '../lib/script-studio/adapters/vision-extract.ts';
 import type { EvidenceReprobe } from '../lib/script-studio/adapters/reprobe.ts';
+import { createSellingPointOrganizer } from '../lib/script-studio/selling-point-organizer.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-script-studio-runner-'));
 const db = new Database(path.join(root, 'workbench.db'));
@@ -715,6 +716,63 @@ assert.equal(
   'evidence_insufficient',
   '历史页码越界卖点必须在复用 plan 阶段失败关闭',
 );
+
+// 仅提取卖点库（爆文模板改写前置）：保存卖点库后任务即成功，不规划、不生成脚本。
+const extractOnlyTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'extract-only-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '', extractOnly: true },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:20:00.000Z'));
+const extractOnlyResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: extractOnlyTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '', extractOnly: true },
+  visionExtractor,
+  reprobe,
+  generator: { async generate() { throw new Error('仅提取任务不得生成脚本'); } },
+  sellingPointOrganizer: createSellingPointOrganizer(async (request) => {
+    const facts = JSON.parse(request.userPrompt).facts as Array<{ id: string; factText: string }>;
+    return { sellingPoints: [{ title: '组合卖点', detail: facts.map((fact) => fact.factText).join('；'), factIds: facts.map((fact) => fact.id) }] };
+  }),
+  now: () => new Date('2026-08-31T00:21:00.000Z'),
+});
+assert.equal(extractOnlyResult.status, 'succeeded');
+assert.equal(extractOnlyResult.scriptIds.length, 0, '仅提取任务不得产出脚本');
+assert.equal(getTask(db, 'p1', extractOnlyTask.task.id)!.status, 'succeeded');
+assert.deepEqual(
+  (db.prepare('SELECT stage FROM script_studio_task_stages WHERE taskId = ? ORDER BY seq').all(extractOnlyTask.task.id) as Array<{ stage: string }>).map((row) => row.stage),
+  ['input_check', 'read_pages', 'extract', 'evidence_gate', 'organize', 'save_library'],
+  '仅提取任务必须停在保存卖点库',
+);
+assert.equal(getCurrentLibraryRevision(db, 'p1')!.sellingPoints[0].title, '组合卖点', '整理结果必须成为实际保存并用于后续生成的卖点');
+assert.equal(
+  (db.prepare('SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?').get(extractOnlyTask.task.id) as { n: number }).n,
+  0,
+  '仅提取任务不得创建任何脚本文本',
+);
+const extractOnlyInputCheck = JSON.parse((db.prepare(`
+  SELECT payloadJson FROM script_studio_task_stages WHERE taskId = ? AND stage = 'input_check'
+`).get(extractOnlyTask.task.id) as { payloadJson: string }).payloadJson) as { extractOnly?: boolean };
+assert.equal(extractOnlyInputCheck.extractOnly, true, 'input_check 阶段必须如实标记仅提取');
+// 恢复重入：卖点库已保存，直接成功，不重新识图/核验/生成。
+const extractOnlyReplay = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: extractOnlyTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '', extractOnly: true },
+  visionExtractor: { async extract() { throw new Error('恢复不得重新识图'); } },
+  reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('恢复不得重新核验'); } },
+  generator: { async generate() { throw new Error('恢复不得生成脚本'); } },
+  now: () => new Date('2026-08-31T00:22:00.000Z'),
+});
+assert.equal(extractOnlyReplay.status, 'succeeded');
+assert.equal(extractOnlyReplay.scriptIds.length, 0);
 
 db.close();
 console.log('script-studio-runner.test.ts: ok');

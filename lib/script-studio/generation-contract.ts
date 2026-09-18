@@ -51,7 +51,8 @@ export function parseScriptProductionMode(value: unknown, duration: number): Scr
 }
 
 /**
- * 爆文模板改写的模板选择校验（A03）：1–上限个、不重复、数量与生成数量一致。
+ * 爆文模板改写的模板选择校验（A03）：展开后 1–上限条、数量与生成数量一致。
+ * 同一模板可重复出现，重复次数即该模板的生成条数（同一爆文结构产多条变体供挑选）。
  * 纯形状校验，不查库；条目存在性与可用状态由路由在库层校验。
  */
 export function parseTemplateRewriteEntryIds(value: unknown, requestedCount: number): string[] {
@@ -60,13 +61,10 @@ export function parseTemplateRewriteEntryIds(value: unknown, requestedCount: num
     : [];
   if (entryIds.length === 0) throw new ScriptStudioError('invalid_input', '爆文模板改写需要勾选 1-6 个模板');
   if (entryIds.length > SCRIPT_GENERATION_MAX_COUNT) {
-    throw new ScriptStudioError('invalid_input', `一次最多选择 ${SCRIPT_GENERATION_MAX_COUNT} 个模板`);
-  }
-  if (new Set(entryIds).size !== entryIds.length) {
-    throw new ScriptStudioError('invalid_input', '模板选择重复，请检查勾选');
+    throw new ScriptStudioError('invalid_input', `一次最多生成 ${SCRIPT_GENERATION_MAX_COUNT} 条（同一模板可重复多条）`);
   }
   if (entryIds.length !== requestedCount) {
-    throw new ScriptStudioError('invalid_input', '生成数量必须与选中模板数一致（每个模板生成一条）');
+    throw new ScriptStudioError('invalid_input', '生成数量必须与模板条数一致（每个模板按所选条数生成）');
   }
   return entryIds;
 }

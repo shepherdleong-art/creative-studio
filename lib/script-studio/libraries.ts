@@ -40,7 +40,7 @@ export interface LibrarySellingPointInput {
   hierarchyRole?: ScriptStudioHierarchyRole;
   importance?: number;
   evidenceRefs?: SellingPointEvidenceRef[];
-  /** 同次视觉提取输出的多句详解；detailStatus 一律由入库时本地重算，不接受外部传入。 */
+  /** 视觉提取或核验后全局组织的完整详解；detailStatus 一律由入库时本地重算。 */
   detailText?: string;
 }
 

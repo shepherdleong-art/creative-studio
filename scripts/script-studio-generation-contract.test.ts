@@ -50,14 +50,15 @@ assert.equal(parseScriptProductionMode('template_rewrite', 15), 'template_rewrit
 assert.equal(parseScriptProductionMode('template_rewrite', 60), 'template_rewrite');
 assert.throws(() => parseScriptProductionMode('audience_analysis', 20), /不支持的脚本生产模式/);
 
-// ---- 模板选择校验（A03）：0、7、重复、数量矛盾一律拒绝；1–6 可提交 ----
+// ---- 模板选择校验（A03）：0、超上限、数量矛盾一律拒绝；同一模板可重复多条 ----
 assert.throws(() => parseTemplateRewriteEntryIds([], 1), /勾选 1-6 个模板/, '0 个模板被拒绝');
-assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c', 'd', 'e', 'f', 'g'], 7), /最多选择 6 个模板/, '7 个模板被拒绝');
-assert.throws(() => parseTemplateRewriteEntryIds(['a', 'a'], 2), /重复/, '重复模板被拒绝');
-assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b'], 3), /与选中模板数一致/, '数量与模板数矛盾被拒绝');
-assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c'], 2), /与选中模板数一致/, '反向矛盾同样被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c', 'd', 'e', 'f', 'g'], 7), /最多生成 6 条/, '展开后超 6 条被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b'], 3), /与模板条数一致/, '数量与模板条数矛盾被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c'], 2), /与模板条数一致/, '反向矛盾同样被拒绝');
 assert.deepEqual(parseTemplateRewriteEntryIds(['a'], 1), ['a'], '1 个可用模板可提交');
 assert.deepEqual(parseTemplateRewriteEntryIds(['a', 'b', 'c', 'd', 'e', 'f'], 6), ['a', 'b', 'c', 'd', 'e', 'f'], '6 个可用模板可提交且保持选择顺序');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a', 'a'], 2), ['a', 'a'], '同一模板重复 2 次 = 该模板生成 2 条');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a', 'a', 'b', 'b', 'b', 'c'], 6), ['a', 'a', 'b', 'b', 'b', 'c'], '多模板混合重复保持顺序');
 
 // ---- planner 6 个不同方向 ----
 const revision = {

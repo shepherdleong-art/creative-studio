@@ -8,6 +8,7 @@ import {
 } from './generator.ts';
 import { createVisionClosedQuestionReprobe, type EvidenceReprobe } from './adapters/reprobe.ts';
 import { createVisionExtractor, type VisionExtractor } from './adapters/vision-extract.ts';
+import { createSellingPointOrganizer } from './selling-point-organizer.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import {
   pinRuntimeProviderModel,
@@ -108,6 +109,9 @@ export function createRuntimeDeps(
     visionExtractor,
     reprobe,
     generator,
+    sellingPointOrganizer: createSellingPointOrganizer(
+      providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-organize'),
+    ),
     signal: options.signal,
     fallbackOnInvalid: options.fallbackOnInvalid,
   });

@@ -66,8 +66,13 @@ export async function POST(
     const sourceSetId = typeof body.sourceSetId === 'string' ? body.sourceSetId : null;
     let libraryRevisionId = typeof body.libraryRevisionId === 'string' ? body.libraryRevisionId : null;
     const providerId = typeof body.providerId === 'string' ? body.providerId.trim() : '';
+    // 仅提取卖点库（爆文模板改写前置）：只跑到保存卖点库，必须带详情页来源集。
+    const extractOnly = body.extractOnly === true;
     if (sourceSetId && !getSourceSet(db, projectId, sourceSetId)) {
       throw new ScriptStudioError('not_found', '详情页来源集不存在或不属于当前项目');
+    }
+    if (extractOnly && !sourceSetId) {
+      throw new ScriptStudioError('invalid_input', '仅提取卖点库需要先上传详情页图片');
     }
     let mode: 'first_extraction' | 'reuse';
     if (libraryRevisionId) {
@@ -151,6 +156,7 @@ export async function POST(
       explicitRequestKey,
       knowledgeContext: serializeKnowledgeContext(knowledgeContext),
       ...(templatePlan ? { templatePlan } : {}),
+      ...(extractOnly ? { extractOnly: true } : {}),
     }, resolveRuntimeProviders);
     if (decision.existing) {
       return NextResponse.json({

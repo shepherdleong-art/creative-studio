@@ -62,7 +62,7 @@ function withoutBrand(name: string, brands: string[]): string {
 }
 
 const CATEGORY_WORDS = /沙发床|沙发|软床|床框架|床架|床|餐边柜|电视柜|衣柜|书柜|柜子|餐桌|书桌|办公桌|桌子|茶几|边几|餐椅|椅子|凳子/g;
-const GENERIC_WORDS = /家用|现代|简约|复古|多功能|电动|真皮|实木|布艺|科技布|棉麻|软包|储物|组合|单人|双人|三人|四人|框架|系列|款式|产品|商品|详情|细节|展示/g;
+const GENERIC_WORDS = /家用|现代|简约|复古|多功能|电动|气动|升降|折叠|真皮|实木|布艺|科技布|棉麻|软包|储物|组合|单人|双人|三人|四人|框架|系列|款式|产品|商品|详情|细节|展示/g;
 
 function specificName(name: string, category: string): string {
   if (category && name === category) return '';
@@ -113,6 +113,12 @@ export function comparePageIdentities(
   const brandsA = brandNames(a.brand || context.brand || '');
   const brandsB = brandNames(b.brand || context.brand || '');
   if (brandsA.length > 0 && brandsB.length > 0 && !brandsA.some((brand) => brandsB.includes(brand))) {
+    // 同一套详情文件（同主干含系列型号）里，逐页品牌识别常把角标/代工/slogan 误读为品牌；
+    // 两边都没有明确型号时，品牌字段不足以证明跨商品，降级为不确定。
+    // 时间戳主干、通用编号或任一边识别出明确型号时，不同品牌仍按冲突拦截。
+    if (hasSeriesSource && modelsA.length === 0 && modelsB.length === 0) {
+      return result('unknown', 'brand_mismatch_within_shared_detail_series');
+    }
     return result('conflict', 'different_explicit_brands');
   }
   if (sharedModel) return result('same', 'shared_explicit_model');

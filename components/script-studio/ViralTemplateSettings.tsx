@@ -150,7 +150,7 @@ export default function ViralTemplateSettings() {
             )}
           </div>
           <p className="text-xs text-ink-tertiary">
-            同事整理的爆文文案（种草爆文库，按类目）。用于「爆文模板改写」模式：推荐模板 → 勾选 → 按模板改写成自己家脚本。
+            强尼精选爆文文案（种草爆文库，按类目）。用于「爆文模板改写」模式：推荐模板 → 勾选 → 按模板改写成自己家脚本。
           </p>
         </div>
         <button

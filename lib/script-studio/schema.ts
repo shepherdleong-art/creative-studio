@@ -437,6 +437,28 @@ export const SCRIPT_STUDIO_MIGRATIONS: ReadonlyArray<ScriptStudioMigration> = [
       ALTER TABLE script_studio_selling_points ADD COLUMN detailStatus TEXT NOT NULL DEFAULT 'missing';
     `,
   },
+  {
+    // 卖点主题「大点」表（2026-09-17 首次加入）。该归纳层已移除（对齐源项目平铺小点形态，
+    // 迁移方案 A04 排除独立卖点归纳模型调用），本表不再写入；迁移条目保留——已应用 v11 的
+    // 数据库若找不到此版本号会被 validateMigrationHistory 判为 schema_too_new 而禁用功能。
+    version: 11,
+    sql: `
+      CREATE TABLE IF NOT EXISTS script_studio_selling_point_themes (
+        id TEXT PRIMARY KEY,
+        revisionId TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        themeKey TEXT NOT NULL,
+        title TEXT NOT NULL,
+        detailText TEXT NOT NULL DEFAULT '',
+        detailStatus TEXT NOT NULL DEFAULT 'missing',
+        memberSeqsJson TEXT NOT NULL DEFAULT '[]',
+        aggregation TEXT NOT NULL DEFAULT 'local_fallback',
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY(revisionId) REFERENCES script_studio_library_revisions(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sspt_revision ON script_studio_selling_point_themes(revisionId, seq);
+    `,
+  },
 ];
 
 export type ScriptStudioSchemaFailureCode =

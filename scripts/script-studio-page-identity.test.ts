@@ -136,4 +136,34 @@ assert.equal(conflict[1].pageIndex, 2);
 // 空列表 → 不冲突。
 assert.equal(findCrossProductConflict([]), null);
 
+// 真实误拦（2026-09-17 PC673-A组合四件套）：同一套详情页的逐页品牌识别噪声（角标/文字误读为
+// 「苏世博」）不能证明跨商品——两边都无明确型号且主干含系列型号时，品牌冲突降级为不确定。
+const pc673Pages = [1, 2].map((number, pageIndex) => ({
+  pageIndex, filename: `PC673-A组合-商品详情1200-四件套-GIF(${number}).jpg`,
+}));
+assert.equal(comparePageIdentities(
+  page(0, '气动床', '床', '苏世博'), page(1, '云翼半青皮软床', '软床', '林氏家居'),
+  { sourcePages: pc673Pages },
+).reason, 'brand_mismatch_within_shared_detail_series');
+assert.equal(findCrossProductConflict([
+  page(0, '气动床', '床', '苏世博'), page(1, '云翼半青皮软床', '软床', '林氏家居'),
+], { sourcePages: pc673Pages }), null);
+// 功能款型泛称（气动/升降/折叠）与「电动/储物」同类，不构成具体商品名：
+// 无来源证据时判「泛称/信息不全」而不是按不同具体名拦截。
+assert.equal(comparePageIdentities(
+  page(0, '气动床', '床', '林氏家居'), page(1, '云翼半青皮软床', '软床', '林氏家居'),
+).reason, 'generic_or_incomplete_name');
+assert.notEqual(comparePageIdentities(
+  page(0, '气动床', '床', '林氏家居'), page(1, '云翼半青皮软床', '软床', '林氏家居'),
+  { sourcePages: pc673Pages },
+).verdict, 'conflict');
+// 保护：无系列证据（时间戳主干）时，不同品牌仍拦截。
+assert.ok(findCrossProductConflict([
+  page(0, '气动床', '床', '苏世博'), page(1, '云翼半青皮软床', '软床', '林氏家居'),
+], { sourcePages: splitSourcePages }), '无系列依据时不同品牌仍须拦截');
+// 保护：任一边识别出明确型号时，不同品牌仍拦截。
+assert.ok(findCrossProductConflict([
+  page(0, '气动床', '床', '苏世博'), page(1, 'PC673软床', '软床', '林氏家居'),
+], { sourcePages: pc673Pages }), '另一边识别出明确型号时不同品牌仍须拦截');
+
 console.log('script-studio-page-identity.test.ts: ok');

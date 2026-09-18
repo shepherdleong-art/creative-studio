@@ -22,6 +22,9 @@ export interface ScriptStudioLimits {
   extractConcurrency: number;
   extractRequestTimeoutMs: number;
   extractMaxAttempts: number;
+  organizeMaxAttempts: number;
+  organizeMaxTokens: number;
+  organizeRequestTimeoutMs: number;
   generationConcurrency: number;
   titleRepairMaxAttempts: number;
   titleHistoryDays: number;
@@ -69,6 +72,9 @@ export function getScriptStudioLimits(): ScriptStudioLimits {
     // 75s/3 次的提前重试真机使提取从 144s 回退到 175s；保留供应商 120s 阈值与一次重试。
     extractRequestTimeoutMs: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_EXTRACT_REQUEST_TIMEOUT_MS', 120_000),
     extractMaxAttempts: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_EXTRACT_MAX_ATTEMPTS', 2),
+    organizeMaxAttempts: Math.min(2, readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_ORGANIZE_MAX_ATTEMPTS', 2)),
+    organizeMaxTokens: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_ORGANIZE_MAX_TOKENS', 8000),
+    organizeRequestTimeoutMs: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_ORGANIZE_TIMEOUT_MS', 120_000),
     generationConcurrency: readPositiveInt('CREATIVE_STUDIO_SCRIPT_STUDIO_GENERATION_CONCURRENCY', 2),
     titleRepairMaxAttempts: 2,
     titleHistoryDays: 30,
