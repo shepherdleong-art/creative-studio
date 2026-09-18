@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import sharp from 'sharp';
+import { DIRECT_VISION } from './direct-vision-contract.ts';
 import { ScriptStudioError } from './errors.ts';
 import { getScriptStudioLimits, logLimitHit, type ScriptStudioLimits } from './limits.ts';
 import {
@@ -9,7 +10,7 @@ import {
 } from './source-sets.ts';
 
 export interface ScriptStudioTile {
-  mimeType: 'image/jpeg';
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
   imageBase64: string;
   pageIndex: number;
   tileIndex: number;
@@ -68,7 +69,7 @@ export async function tileSourceImages(
   db: Database.Database,
   projectId: string,
   imageAssetIds: string[],
-  options: { limits?: ScriptStudioLimits; signal?: AbortSignal } = {},
+  options: { limits?: ScriptStudioLimits; signal?: AbortSignal; directVision?: boolean } = {},
 ): Promise<TileSetResult> {
   const limits = options.limits ?? getScriptStudioLimits();
   if (options.signal?.aborted) throw new DOMException('图片读取已取消', 'AbortError');
@@ -77,7 +78,7 @@ export async function tileSourceImages(
   const pages: TilePageResult[] = [];
   for (let pageIndex = 0; pageIndex < rows.length; pageIndex += 1) {
     const row = rows[pageIndex]!;
-    pages.push(await tileSinglePage(row, pageIndex, limits));
+    pages.push(await tileSinglePage(row, pageIndex, limits, options.directVision));
     if (options.signal?.aborted) throw new DOMException('图片读取已取消', 'AbortError');
   }
   const totalTiles = pages.reduce((sum, page) => sum + page.tiles.length, 0);
@@ -113,6 +114,7 @@ async function tileSinglePage(
   row: SourceSetImageRow,
   pageIndex: number,
   limits: ScriptStudioLimits,
+  directVision = false,
 ): Promise<TilePageResult> {
   const filePath = row.originalPath || row.path;
   if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
@@ -124,6 +126,26 @@ async function tileSinglePage(
   const sourceHeight = Number(metadata.height) || Number(row.originalHeight) || 0;
   if (!sourceWidth || !sourceHeight) {
     throw new ScriptStudioError('invalid_input', `无法读取详情页图片尺寸：${row.filename}`);
+  }
+  if (directVision) {
+    if ((metadata.pages ?? 1) > 1 || (metadata.orientation ?? 1) !== 1) {
+      throw new ScriptStudioError('invalid_input', `请先将图片转为方向正常的静态图片：${row.filename}`);
+    }
+    const mimeType = ({ jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' } as const)[metadata.format as 'jpeg' | 'png' | 'webp'];
+    if (mimeType && sourceWidth <= DIRECT_VISION.maxWidth && sourceHeight <= DIRECT_VISION.tileHeight
+      && fs.statSync(filePath).size <= DIRECT_VISION.preserveMaxBytes) {
+      return {
+        pageIndex, imageAssetId: row.id, filename: row.filename, sourceWidth, sourceHeight, degraded: false,
+        tiles: [{ mimeType, imageBase64: fs.readFileSync(filePath).toString('base64'), pageIndex, tileIndex: 0, width: sourceWidth, height: sourceHeight }],
+      };
+    }
+    limits = {
+      ...limits,
+      maxImageWidth: Math.max(1, Math.min(DIRECT_VISION.maxWidth, Math.floor(Math.sqrt(DIRECT_VISION.pagePixels * sourceWidth / sourceHeight)))),
+      baseTileHeight: DIRECT_VISION.tileHeight,
+      verticalOverlapRatio: DIRECT_VISION.overlap / DIRECT_VISION.tileHeight,
+      jpegQuality: DIRECT_VISION.jpegQuality,
+    };
   }
   const { tileHeight, degraded } = tileHeightForCount(sourceWidth, sourceHeight, limits);
   const resizeWidth = Math.max(1, Math.min(limits.maxImageWidth, sourceWidth));
@@ -147,12 +169,16 @@ async function tileSinglePage(
     fit: 'inside',
     withoutEnlargement: true,
   });
+  // 普通长图只缩放/编码整页一次；clone().toBuffer() 放在切片循环内会
+  // 为每张切片重新执行整页管线。保持原编码格式，保证切片像素与旧流程一致。
+  // 超限长图仍走逐条带管线，不在内存中物化整页。
+  const resizedBuffer = base ? await (directVision ? base.jpeg({ quality: limits.jpegQuality }) : base).toBuffer() : null;
   const tiles: ScriptStudioTile[] = [];
   for (let tileIndex = 0; tileIndex < tileHeightCount; tileIndex += 1) {
     const top = Math.min(Math.max(0, tileIndex * step), Math.max(0, resizeHeight - tileHeight));
     const height = Math.min(tileHeight, resizeHeight - top);
-    const buffer = base
-      ? await sharp(await base.clone().toBuffer())
+    const buffer = resizedBuffer
+      ? await sharp(resizedBuffer)
         .extract({ left: 0, top, width: resizeWidth, height })
         .jpeg({ quality: limits.jpegQuality })
         .toBuffer()

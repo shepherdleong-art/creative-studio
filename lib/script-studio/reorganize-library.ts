@@ -34,7 +34,7 @@ export async function reorganizeLibrary(
       projectId, sourceSetId: current.sourceSetId, sourceFingerprint: current.sourceFingerprint,
       productName: current.productName, category: current.category, brand: current.brand,
       extractProviderId: options.providerId, extractModel: options.model,
-      promptContractVersion: SELLING_POINT_ORGANIZATION_VERSION, origin: 'manual_edit', sellingPoints: organized,
+      promptContractVersion: Math.max(current.promptContractVersion, SELLING_POINT_ORGANIZATION_VERSION), origin: 'manual_edit', sellingPoints: organized,
     });
   }).immediate();
 }

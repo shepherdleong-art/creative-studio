@@ -12,6 +12,7 @@ import {
   SCRIPT_TARGET_DURATION_OPTIONS,
 } from '@/lib/script-studio/generation-contract';
 import TemplateRewritePicker from './TemplateRewritePicker';
+import SellingPointEvidence from './SellingPointEvidence';
 import { diffMarkWords } from '@/lib/script-studio/diff-mark';
 
 interface Props {
@@ -124,7 +125,7 @@ const STAGE_LABELS: Record<string, string> = {
   input_check: '整理输入与资源检查',
   read_pages: '读取详情页图片',
   extract: '提取、归并并筛选卖点',
-  evidence_gate: '结构门禁与证据核验',
+  evidence_gate: '检查卖点与来源',
   organize: '整理核心卖点与详解',
   save_library: '保存产品卖点库',
   load_library: '读取已有卖点库',
@@ -139,7 +140,7 @@ const STAGE_KICKERS: Record<string, string> = {
   input_check: '准备任务',
   read_pages: '视觉读取',
   extract: '卖点提炼',
-  evidence_gate: '证据核验',
+  evidence_gate: '卖点检查',
   organize: '卖点组织',
   save_library: '资产固化',
   load_library: '资产复用',
@@ -152,9 +153,9 @@ const STAGE_KICKERS: Record<string, string> = {
 // 每个阶段的一句固定说明（原型 copy），真实数字放产物小卡。
 const STAGE_COPY: Record<string, string> = {
   input_check: '检查图片数量、目标时长和创作要求，随后开始读取详情页。',
-  read_pages: '长图会拆成可读区域并自动压缩，不需要你手动处理。',
+  read_pages: '合适尺寸的裁切图直接读取，长详情页自动分段处理。',
   extract: '识别商品名称、结构与规格文案；相同意思会合并，没有图片证据的表达不会当作事实。',
-  evidence_gate: '数字、材质、认证类卖点要逐条通过二次证据检查，未通过的不会写进脚本。',
+  evidence_gate: '检查信息完整性与来源位置，排除促销内容。有疑问时可展开来源图手动核对。',
   organize: '把相关结构、参数和使用意义组织成完整卖点，保留各项事实与适用条件。',
   save_library: '把本次识别结果固定为产品资产，之后再生成一版或一组都直接复用、不再重新看图。',
   load_library: '直接读取已保存的卖点与证据，减少等待，也避免同一详情页每次识别结果不一致。',
@@ -226,9 +227,9 @@ function stageMessage(stage: StageView): string {
   const payload = stage.payload || {};
   if (stage.status === 'running') {
     const runningHints: Record<string, string> = {
-      read_pages: '正在压缩长图并切分为可读区域',
+      read_pages: '正在读取图片，长图会自动分段',
       extract: '正在识别图片中的商品信息与卖点文案',
-      evidence_gate: '正在对数字、材质、认证类卖点逐条做二次证据检查',
+      evidence_gate: '正在检查卖点内容和来源位置',
       organize: '正在把参数、结构和使用意义组织成完整卖点',
       generate: '正在按创意方向撰写口播脚本',
       validate: '正在检查时长与方案差异',
@@ -248,6 +249,7 @@ function stageMessage(stage: StageView): string {
       return `${product ? `识别商品：${product}；` : ''}归并后得到候选卖点 ${payload.candidateCount ?? 0} 条`;
     }
     case 'evidence_gate':
+      if (payload.manualReview === true) return `候选 ${payload.total ?? 0} 条：可用 ${payload.usable ?? 0} 条，排除 ${payload.failed ?? 0} 条 · 来源复核按需手动进行`;
       return `候选 ${payload.total ?? 0} 条：可用 ${payload.usable ?? 0} 条，排除 ${payload.failed ?? 0} 条，其中 ${payload.highRiskVerified ?? 0} 条高风险卖点通过二次证据检查`;
     case 'save_library':
       return `卖点库已保存为 V${payload.revisionNumber ?? '-'}，后续生成直接复用`;
@@ -334,10 +336,12 @@ function stageArtifact(stage: StageView | undefined, task: ScriptStudioTaskSnaps
     case 'evidence_gate':
       return {
         ...base,
-        title: running ? '正在做二次证据检查' : `${payload.usable ?? 0} 条卖点可用`,
+        title: running ? '正在检查卖点与来源' : `${payload.usable ?? 0} 条卖点可用`,
         items: [
           { label: '可用卖点', title: `${payload.usable ?? '-'} / ${payload.total ?? '-'} 条`, copy: '促销与未通过核验的不会写入脚本' },
-          { label: '高风险核验', title: `${payload.highRiskVerified ?? 0} 条通过二次证据检查`, copy: '数字、材质、认证类逐条核验' },
+          payload.manualReview === true
+            ? { label: '来源复核', title: '按需手动核对', copy: '可展开卖点来源图检查小字、数值与配置' }
+            : { label: '高风险核验', title: `${payload.highRiskVerified ?? 0} 条通过二次证据检查`, copy: '数字、材质、认证类逐条核验' },
         ],
       };
     case 'save_library':
@@ -413,6 +417,11 @@ function activityLines(stages: StageView[]): Array<{ time: string; text: string 
 export default function ScriptStudioPanel({ projectId }: Props) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [sourceMode, setSourceMode] = useState<'upload' | 'directory'>('upload');
+  const [directoryPath, setDirectoryPath] = useState('');
+  const [importedDirectory, setImportedDirectory] = useState('');
+  const analyzeInFlight = useRef(false);
+  const pendingDirectory = sourceMode === 'directory' && (!importedDirectory || directoryPath.trim() !== importedDirectory);
   const [libraryReady, setLibraryReady] = useState(false);
   const [libraryRevisionId, setLibraryRevisionId] = useState('');
   const [scripts, setScripts] = useState<ScriptView[]>([]);
@@ -640,6 +649,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
           }))
         : [];
       setAssets((current) => [...current, ...uploaded]);
+      setImportedDirectory('');
+      setLibraryReady(false);
       setError('');
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : '上传失败');
@@ -650,8 +661,10 @@ export default function ScriptStudioPanel({ projectId }: Props) {
 
   const deleteAsset = useCallback(async (assetId: string) => {
     try {
-      await fetch(`/api/images/${assetId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/images/${assetId}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('删除失败');
       setAssets((current) => current.filter((asset) => asset.id !== assetId));
+      setLibraryReady(false);
     } catch {
       setError('删除图片失败，请稍后重试');
     }
@@ -731,12 +744,36 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   }, [task]);
 
   const handleAnalyze = useCallback(async () => {
+    if (analyzeInFlight.current) return;
+    analyzeInFlight.current = true;
+    try {
+    setError('');
     if (!providerId) {
       setError('请先选择一个已配置且支持图片读取的脚本模型');
       return;
     }
+    let analysisAssets = assets;
+    let reuseLibrary = libraryReady;
+    if (pendingDirectory) {
+      if (!directoryPath.trim()) { setError('请填写裁切图文件夹路径'); return; }
+      setUploading(true);
+      const response = await fetch(`/api/projects/${projectId}/script-studio/import-directory`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directoryPath }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || '读取文件夹失败');
+      analysisAssets = data.files as Asset[];
+      // 文件夹作为本次完整输入，避免与上一次详情页重复或混入其他产品。
+      setAssets(analysisAssets);
+      setImportedDirectory(directoryPath.trim());
+      setLibraryReady(false);
+      reuseLibrary = false;
+      setNotice(`已按文件名顺序导入 ${analysisAssets.length} 张图片，正在创建分析任务`);
+      setUploading(false);
+    }
     if (productionMode === 'template_rewrite') {
-      if (libraryReady) {
+      if (reuseLibrary) {
         // 第 2 步提交：复用当前卖点库，按勾选爆文模板（同一模板可多条变体）生成。
         if (templateEntryIds.length === 0) {
           setError('爆文模板改写需要先勾选爆文模板并选择生成条数');
@@ -755,14 +792,14 @@ export default function ScriptStudioPanel({ projectId }: Props) {
         return;
       }
       // 第 1 步提交：还没有卖点库时先只跑提取建库，完成后进入第 2 步挑选爆文模板。
-      if (assets.length === 0) {
+      if (analysisAssets.length === 0) {
         setError('请先上传至少一张详情页图片');
         return;
       }
       const extractResponse = await fetch(`/api/projects/${projectId}/script-studio/source-sets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageAssetIds: assets.map((asset) => asset.id) }),
+        body: JSON.stringify({ imageAssetIds: analysisAssets.map((asset) => asset.id) }),
       });
       const extractData = await extractResponse.json().catch(() => ({}));
       if (!extractResponse.ok) {
@@ -781,11 +818,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       });
       return;
     }
-    if (assets.length === 0 && !libraryReady) {
+    if (analysisAssets.length === 0 && !reuseLibrary) {
       setError('请先上传至少一张详情页图片，或先准备好可复用的卖点库');
       return;
     }
-    if (assets.length === 0 && libraryReady) {
+    if (analysisAssets.length === 0 && reuseLibrary) {
       await startTask({
         sourceSetId: null,
         libraryRevisionId: null,
@@ -800,7 +837,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     const response = await fetch(`/api/projects/${projectId}/script-studio/source-sets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageAssetIds: assets.map((asset) => asset.id) }),
+      body: JSON.stringify({ imageAssetIds: analysisAssets.map((asset) => asset.id) }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -816,7 +853,13 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       productionMode,
       providerId,
     });
-  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask, templateEntryIds]);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '分析提交失败，请重试');
+    } finally {
+      setUploading(false);
+      analyzeInFlight.current = false;
+    }
+  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask, templateEntryIds, pendingDirectory, directoryPath]);
 
   const switchRevision = useCallback(async (scriptId: string, revisionId: string) => {
     await fetch(`/api/projects/${projectId}/script-studio/scripts/${scriptId}/current`, {
@@ -1157,6 +1200,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                           <summary className="cursor-pointer">查看支撑事实与来源</summary>
                           <p className="mt-2 whitespace-pre-line leading-6">{point.factText}</p>
                           <p className="mt-2">{parseEvidenceRefsDisplay(point.evidenceRefsJson)}</p>
+                          <SellingPointEvidence projectId={projectId} revisionId={libraryRevision.id} pointId={point.id} />
                         </details>
                       </article>
                     ))}
@@ -1227,7 +1271,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               onDrop={(event) => {
                 event.preventDefault();
                 setDragOver(false);
-                if (!uploading) void upload(event.dataTransfer.files);
+                if (!uploading && !taskRunning && sourceMode === 'upload') void upload(event.dataTransfer.files);
               }}
             >
               <input
@@ -1246,13 +1290,26 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   <h3 className="text-base font-semibold">提供素材</h3>
                   <p className="mt-1 text-sm text-ink-secondary">可以一次性放入一张或多张同一商品详情页。</p>
                 </div>
-                {assets.length > 0 && (
+                {assets.length > 0 && sourceMode === 'upload' && (
                   <button type="button" className="btn-primary btn-sm" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
                     {uploading ? '正在上传…' : '继续添加'}
                   </button>
                 )}
               </div>
-              {assets.length === 0 ? (
+              <div className="mb-4 flex gap-2" role="group" aria-label="素材来源">
+                <button type="button" disabled={uploading || submitting || taskRunning} aria-pressed={sourceMode === 'upload'} className={sourceMode === 'upload' ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'} onClick={() => setSourceMode('upload')}>上传详情页图片</button>
+                <button type="button" disabled={uploading || submitting || taskRunning} aria-pressed={sourceMode === 'directory'} className={sourceMode === 'directory' ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'} onClick={() => setSourceMode('directory')}>裁切图文件夹</button>
+              </div>
+              {sourceMode === 'directory' && (
+                <div className="mb-4 space-y-2">
+                  <label className="label" htmlFor="script-image-directory">裁切图文件夹路径</label>
+                  <input id="script-image-directory" className="input-field" value={directoryPath} disabled={uploading || submitting || taskRunning}
+                    onChange={(event) => setDirectoryPath(event.target.value)} placeholder="例如 Q:\\产品资料库\\某产品\\裁切图" />
+                  <p className="text-xs leading-5 text-ink-tertiary">粘贴本机或网络盘文件夹路径后，点击下方分析。按文件名顺序读取当前文件夹的 JPG / PNG / WebP，最多 200 张，不含子文件夹。请确保属于同一商品。</p>
+                  <p className="text-xs text-ink-secondary">{uploading ? '正在读取并导入图片…' : pendingDirectory ? '本次将使用这个文件夹的图片重新分析。' : importedDirectory ? `已导入 ${assets.length} 张图片` : '合适尺寸的裁切图直接识别，长图自动分段。'}</p>
+                </div>
+              )}
+              {assets.length === 0 && sourceMode === 'upload' ? (
                 <button
                   data-testid="script-studio-upload-dropzone"
                   type="button"
@@ -1276,7 +1333,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                     支持 PNG / JPEG / WebP；长详情页会在本地分析时自动压缩和分条处理
                   </span>
                 </button>
-              ) : (
+              ) : assets.length > 0 && !pendingDirectory ? (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                   {assets.map((asset) => (
                     <div key={asset.id} className="group relative rounded-[14px] border border-hairline bg-surface p-2">
@@ -1296,8 +1353,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                     </div>
                   ))}
                 </div>
-              )}
-              {libraryReady && (
+              ) : null}
+              {libraryReady && !pendingDirectory && (
                 <p className="mt-3 text-xs text-ok">当前项目已有可复用卖点库，未上传新素材时也可直接生成。</p>
               )}
             </section>
@@ -1321,7 +1378,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 </select>
                 <p className="mt-1.5 text-xs leading-5 text-ink-tertiary">
                   {selectedProvider
-                    ? `本次识图、卖点核验和脚本生成统一使用 ${selectedProvider.model}（${selectedProvider.executionScope === 'company' ? '需要公司内网，并经本机 LiteLLM' : '外部直连'}）`
+                    ? `本次识图、卖点整理和脚本生成统一使用 ${selectedProvider.model}（${selectedProvider.executionScope === 'company' ? '需要公司内网，并经本机 LiteLLM' : '外部直连'}）`
                     : '请先在设置中配置一个支持图片读取的脚本模型'}
                 </p>
               </div>
@@ -1385,19 +1442,19 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               <button
                 type="button"
                 onClick={() => {
-                  if (productionMode === 'template_rewrite' && libraryReady) {
+                  if (productionMode === 'template_rewrite' && libraryReady && !pendingDirectory) {
                     setStep(2);
                     return;
                   }
                   void handleAnalyze();
                 }}
-                disabled={submitting || uploading || !providerId || (assets.length === 0 && !libraryReady)}
+                disabled={submitting || uploading || taskRunning || !providerId || (pendingDirectory ? !directoryPath.trim() : assets.length === 0 && !libraryReady)}
                 className="btn-primary"
               >
-                {submitting
+                {uploading && sourceMode === 'directory' ? '正在导入图片…' : submitting
                   ? '正在创建任务…'
                   : productionMode === 'template_rewrite'
-                    ? (libraryReady ? '下一步：挑选爆文模板' : '分析详情页，提取卖点')
+                    ? (libraryReady && !pendingDirectory ? '下一步：挑选爆文模板' : '分析图片，提取卖点')
                     : '分析并生成脚本'}
               </button>
             </div>
@@ -1981,7 +2038,7 @@ function LibraryEditor({
             />
             <span className="min-w-0 flex-1">
               <span className="font-medium">{point.title}</span>
-              <span className="ml-2 text-xs text-ink-tertiary">{point.evidenceGate === 'passed' ? '已通过二次证据检查' : point.evidenceGate === 'skipped' ? '低风险' : '未通过核验，不可用'}</span>
+              <span className="ml-2 text-xs text-ink-tertiary">{point.evidenceGate === 'passed' ? '已通过二次证据检查' : point.evidenceGate === 'skipped' ? 'AI 识图 · 未复核' : '未通过检查，不可用'}</span>
               <span className="mt-1 block text-xs text-ink-secondary">{point.factText}</span>
               {parseEvidenceRefsDisplay(point.evidenceRefsJson) && (
                 <span className="mt-0.5 block text-[0.65rem] text-ink-tertiary">证据定位：{parseEvidenceRefsDisplay(point.evidenceRefsJson)}</span>

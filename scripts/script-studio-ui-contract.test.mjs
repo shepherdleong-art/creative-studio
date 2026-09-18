@@ -85,7 +85,7 @@ assert.doesNotMatch(panel, /原创率\s*[:：]|原创率\s*\d|爆款概率|转�
 
 // 2026-09-17 流程修正 v2（用户反馈）：爆文模板改写三步流转——
 // 第 1 步分析建库（extractOnly 前置任务）→ 第 2 步挑选模板（每模板可选多条变体）→ 第 3 步卖点+脚本。
-assert.match(panel, /分析详情页，提取卖点/, '无卖点库时必须提供一键提取卖点入口');
+assert.match(panel, /分析图片，提取卖点/, '无卖点库时必须提供一键提取卖点入口');
 assert.match(panel, /extractOnly: true/, '一键提取必须向服务端提交 extractOnly 标记');
 assert.match(panel, /卖点库已建好，请在下方挑选爆文模板并选择每个模板生成几条/, '建库完成后必须引导到第 2 步挑选模板');
 assert.match(panel, /仅提取卖点建库，不生成脚本/, '过程页阶段必须如实标注仅提取、不生成');

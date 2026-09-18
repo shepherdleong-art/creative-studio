@@ -14,6 +14,7 @@ const PROMOTION_WORDS = /\b(?:促销|限时|优惠|赠品|折扣|秒杀|包邮|�
 const PRICE_PATTERN = /(?:¥|￥|\b\d+(?:\.\d+)?\s*(?:元|块|折|%|％)\b)/u;
 
 export interface EvidenceGateResult {
+  manualReview?: boolean;
   points: LibrarySellingPointInput[];
   excludedPromotion: number;
   excludedHighRiskUnverified: number;
@@ -24,6 +25,8 @@ export interface EvidenceGateResult {
 }
 
 export interface EvidenceGateDeps {
+  /** 用户选择按需人工核对；仍执行结构、来源范围与促销排除，不冒充二次核验。 */
+  manualReview?: boolean;
   reprobe?: EvidenceReprobe;
   evidenceTiles?: (point: LibrarySellingPointInput) => EvidenceTile[];
   signal?: AbortSignal;
@@ -184,6 +187,7 @@ export async function runEvidenceGate(
   let excludedStructural = 0;
   let verifiedHighRisk = 0;
   let reprobeRequestCount = 0;
+  let highRiskCandidateCount = 0;
 
   // 第一遍同步判定：结构门禁与促销排除不需要模型调用，只有高风险卖点进入二次核验队列。
   const reprobeQueue: number[] = [];
@@ -200,7 +204,8 @@ export async function runEvidenceGate(
       points[index] = { ...point, evidenceGate: 'failed', usable: false, riskLevel };
       return;
     }
-    if (riskLevel === 'high') {
+    if (riskLevel === 'high') highRiskCandidateCount += 1;
+    if (riskLevel === 'high' && !deps.manualReview) {
       reprobeQueue.push(index);
       return;
     }
@@ -271,8 +276,9 @@ export async function runEvidenceGate(
     excludedHighRiskUnverified,
     excludedStructural,
     verifiedHighRisk,
-    highRiskCandidateCount: reprobeQueue.length,
+    highRiskCandidateCount,
     reprobeRequestCount,
+    ...(deps.manualReview ? { manualReview: true } : {}),
   };
 }
 
@@ -282,7 +288,7 @@ export function usableSellingPoints(points: LibrarySellingPointInput[]): Library
 
 export function evidenceGateSummary(
   points: LibrarySellingPointInput[],
-  result?: Pick<EvidenceGateResult, 'highRiskCandidateCount' | 'reprobeRequestCount'>,
+  result?: Pick<EvidenceGateResult, 'highRiskCandidateCount' | 'reprobeRequestCount' | 'manualReview'>,
 ): Record<string, unknown> {
   const summary: Record<string, unknown> = {
     total: points.length,
@@ -291,6 +297,7 @@ export function evidenceGateSummary(
     highRiskVerified: points.filter((point) => point.riskLevel === 'high' && point.evidenceGate === 'passed').length,
   };
   if (result) {
+    if (result.manualReview) summary.manualReview = true;
     summary.highRiskCandidates = result.highRiskCandidateCount;
     summary.reprobeRequests = result.reprobeRequestCount;
   }

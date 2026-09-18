@@ -86,9 +86,6 @@ export function validateScriptContent(
     libraryRevision: options.libraryRevision,
     context: options.titleContext,
     previousTitles: [...(options.siblingScripts || []), ...(options.previousTitles || [])],
-    // 模板改写只有单标题语义（源项目无封面主/副标题），封面检查不适用于该模式；
-    // 其他模式不传 fields，保持既有三字段检查。
-    ...(templateRewrite ? { fields: ['title' as const] } : {}),
   });
   issues.push(...titleIssues.map((issue) => issue.code));
   let titleEmbedding: TitleEmbeddingCheck | undefined;

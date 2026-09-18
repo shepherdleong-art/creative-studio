@@ -155,10 +155,7 @@ export function checkScriptTitles(
     libraryRevision: LibraryRevisionView;
     context?: ScriptTitleContext;
     previousTitles?: ScriptTitleSummary[];
-    /**
-     * 参与检查的字段（默认全部三个）。爆文模板改写只有单标题语义，
-     * 传 ['title'] 跳过封面主/副标题检查；其他模式不得用此参数放宽。
-     */
+    /** 参与检查的字段（默认全部三个）；正式生成流程检查全部标题。 */
     fields?: ScriptTitleField[];
   },
 ): ScriptTitleIssue[] {
@@ -182,7 +179,8 @@ export function checkScriptTitles(
     if (value.normalize('NFKC').includes('#')) add('title_hashtag', `${label}不要使用话题符号，搜索话题单独保留`);
     const model = context.modelKeys.find((key) => modelPattern(key).test(value.normalize('NFKC')));
     if (model) add('title_contains_model', `${label}含商品型号「${model}」，请改为具体卖点或场景`);
-    if (field === 'title' && bareNames.includes(normalizeScriptTitle(value))) {
+    if ((field === 'title' || (content.templateRewrite && field === 'coverTitleParts.primary'))
+      && bareNames.includes(normalizeScriptTitle(value))) {
       add('title_bare_product_name', `${label}直接套用了商品名称，请写出本方案的具体卖点或场景`);
     }
     for (const claim of new Set(value.normalize('NFKC').match(FACT_CLAIMS) || [])) {
@@ -229,10 +227,14 @@ export function applyScriptTitleRepair(
   return next;
 }
 
-export function scriptTitleRequirements(): string[] {
+export function scriptTitleRequirements(options: { requireCoverHook?: boolean } = {}): string[] {
   return [
-    '脚本标题要表达本方案的具体卖点或场景，不能只写商品名；封面主标题可以使用商品展示名，封面副标题要表达本方案的具体卖点或场景；不要使用型号、话题符号或用序号区分重复标题',
-    '封面主标题与副标题按完整组合去重；商品展示名主标题可以复用，但相同或近似的完整组合（包括副标题词序调换）必须改写副标题；实质不同的主标题配同副标题可以复用',
+    options.requireCoverHook
+      ? '脚本标题要表达本方案的具体卖点或场景；封面主标题提炼同一方案的人群、痛点或场景钩子，不能只写商品名或零部件名；副标题补充正文有依据的具体卖点或使用收益，两行形成完整意思，避免重复；不要使用型号、话题符号或方案序号'
+      : '脚本标题要表达本方案的具体卖点或场景，不能只写商品名；封面主标题可以使用商品展示名，封面副标题要表达本方案的具体卖点或场景；不要使用型号、话题符号或用序号区分重复标题',
+    options.requireCoverHook
+      ? '封面主标题与副标题按完整组合去重；相同或近似的完整组合（包括副标题词序调换）必须改写副标题，切入点应与本方案正文一致'
+      : '封面主标题与副标题按完整组合去重；商品展示名主标题可以复用，但相同或近似的完整组合（包括副标题词序调换）必须改写副标题；实质不同的主标题配同副标题可以复用',
     '脚本标题 4-16 字，封面主标题 4-12 字，封面副标题 4-10 字（含标点，不计空白）',
     '标题的数字、材质、认证、功效与绝对化用语必须有本方案引用的卖点事实支持；展示名称、搜索词及创作要求都不是事实证据',
     '搜索话题保留在独立知识上下文，不强制写入脚本标题或封面',

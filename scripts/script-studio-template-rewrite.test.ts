@@ -15,6 +15,7 @@ import type { VisionExtractionResult, VisionExtractor } from '../lib/script-stud
 import type { EvidenceReprobe } from '../lib/script-studio/adapters/reprobe.ts';
 import type { FrozenViralTemplateSpec, ScriptStudioScriptContent } from '../lib/script-studio/types.ts';
 import { charBoundsForTarget, scriptCnLen, templatePlanFingerprint } from '../lib/script-studio/template-rewrite.ts';
+import { validateScriptContent } from '../lib/script-studio/validation.ts';
 
 /**
  * 爆文模板改写模式全链行为测试（迁移方案 §7：A04–A12、A14）。
@@ -148,6 +149,8 @@ interface FakeLlm {
 
 interface FakeLlmOptions {
   draftTitle?: () => string;
+  draftCover?: { primary: string; secondary: string } | null;
+  titleRepairResult?: unknown;
   draftSegments?: () => Array<{ label: string; text: string; refs: string[] }>;
   draftNote?: string;
   filterKeep?: unknown;
@@ -187,6 +190,8 @@ function makeFakeLlm(options: FakeLlmOptions = {}): FakeLlm {
       draftIndex += 1;
       return {
         title: options.draftTitle ? options.draftTitle() : '窗边餐桌真香款',
+        coverTitleParts: options.draftCover === undefined
+          ? { primary: '小户型聚餐有招', secondary: '桌面拉开坐六人' } : options.draftCover,
         note: options.draftNote !== undefined ? options.draftNote : '把参考里的沙发换成了餐桌，痛点精简为 1 个',
         segments: options.draftSegments
           ? options.draftSegments()
@@ -213,7 +218,11 @@ function makeFakeLlm(options: FakeLlmOptions = {}): FakeLlm {
     }
     if (system.includes('标题编辑')) {
       state.titleRepairCount += 1;
-      return { title: '修复后餐桌新标题' };
+      return options.titleRepairResult ?? {
+        title: '修复后餐桌新标题',
+        coverTitleParts: { primary: '朋友来家吃顿饭', secondary: '热锅放上岩板桌' },
+        segments: [], fullScript: '错误修改正文',
+      };
     }
     throw new Error(`未路由的 completeJson 请求：${system.slice(0, 40)}`);
   };
@@ -326,6 +335,8 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   const firstDraft = draftCalls[0]!;
   assert.ok(firstDraft.userPrompt.includes(LONG_REF.slice(-60)), '首稿收到完整参考全文（非截断）');
   assert.ok(firstDraft.userPrompt.includes('痛点精简'), '首稿含 TPL_GEN_HINT 原约束');
+  assert.ok(firstDraft.userPrompt.includes('"coverTitleParts"'), '首稿要求同时生成主副标题');
+  assert.ok(firstDraft.userPrompt.includes('不能只写商品名或零部件名'), '封面主标题要求具体钩子');
   assert.ok(firstDraft.userPrompt.includes('【风格要求——照这个来】'), '首稿含风格分析要求');
   assert.ok(firstDraft.userPrompt.includes('伸缩桌面（平时四人位不占地，朋友来了拉出来秒变六人位。）'), '首稿含完整组详解');
   assert.ok(!firstDraft.userPrompt.includes('方向轮换') && !firstDraft.userPrompt.includes('必须行动号召'), '新模式不混入旧模式策略');
@@ -336,6 +347,11 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   const first = contents.find((c) => c.templateRewrite?.sourceTemplateId === 'tpl-long')!;
   assert.equal(first.productionMode, 'template_rewrite');
   assert.equal(first.version, 4);
+  assert.deepEqual(
+    { primary: first.coverTitleParts.primary, secondary: first.coverTitleParts.secondary },
+    { primary: '小户型聚餐有招', secondary: '桌面拉开坐六人' },
+    '模板改写应保留生成的封面钩子和卖点，不能覆盖成商品名加空副标题',
+  );
   const meta = first.templateRewrite!;
   assert.equal(meta.whitelistPointIds.length, 2, '白名单为筛选后的两个 verified 卖点');
   assert.equal(meta.targetChars, 120, '20 秒目标 120 中文字');
@@ -616,7 +632,8 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   // 恢复：失败模板变为可成功；成功模板零新请求。
   // 注意预算语义：第一次运行的失败请求也计入方案余额（筛选1+风格1+首稿2失败=4），
   // 恢复时正文用不同文本池且标题不冲突，避免必需的标题修复占用剩余余额。
-  const llm2 = makeFakeLlm({ initialDraftIndex: 1, draftTitle: () => '岩板餐桌也好香' });
+  const llm2 = makeFakeLlm({ initialDraftIndex: 1, draftTitle: () => '岩板餐桌也好香',
+    draftCover: { primary: '朋友来家吃顿饭', secondary: '热锅放上岩板桌' } });
   const second = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm2, 2));
   if (second.status !== 'succeeded') {
     const stages = getTask(db, 'p1', taskId)!.stages.map((s) => `${s.stage}:${s.status}:${s.payloadJson.slice(0, 400)}`);
@@ -646,8 +663,45 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   assert.equal(llm.titleRepairCount, 1, '标题冲突触发一次标题修复');
   const saved = savedRewriteContents(db).find((c) => c.templateRewrite?.sourceTemplateId === 'tpl-s9')!;
   assert.equal(saved.title, '修复后餐桌新标题', '只替换标题字段');
+  assert.equal(saved.coverTitleParts.primary, '小户型聚餐有招', '封面组合重复只修副标题，保留合格主标题');
+  assert.equal(saved.coverTitleParts.secondary, '热锅放上岩板桌', '封面组合重复也触发修复');
   assert.ok(saved.fullScript.includes(SEG_OK_1.slice(0, 10)), '标题修复不改正文');
   assert.equal(saved.templateRewrite!.note.includes('沙发'), true, '标题修复不丢修改说明');
+  db.close();
+}
+
+// S10：模型漏返封面或仅返回商品名时，真实 runner 必须修复，且保持方案名和正文。
+for (const draftCover of [null, { primary: '林氏伸缩岩板餐桌', secondary: '' }]) {
+  const { db } = await freshEnv('cover-repair');
+  const library = await seedLibrary(db);
+  const taskId = createRewriteTask(db, library.id, [makeTemplate()], 'cover-repair');
+  const llm = makeFakeLlm({ draftCover });
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
+  assert.equal(result.status, 'succeeded', result.errorMessage ?? '封面缺失应修复');
+  assert.equal(llm.titleRepairCount, 1);
+  const saved = savedRewriteContents(db)[0]!;
+  assert.equal(saved.title, '窗边餐桌真香款', '封面修复不得改动合格方案名');
+  assert.equal(saved.coverTitleParts.primary, '朋友来家吃顿饭');
+  assert.equal(saved.coverTitleParts.secondary, '热锅放上岩板桌');
+  assert.equal(saved.fullScript, `${SEG_OK_1}\n${SEG_OK_2}`, '封面修复不得改正文');
+  assert.ok(saved.segments.every((seg) => seg.sellingPointIdRefs.length > 0));
+  const missing = validateScriptContent({ ...saved, coverTitleParts: { ...saved.coverTitleParts, secondary: '' } }, { libraryRevision: library });
+  assert.ok(missing.titleIssues.some((issue) => issue.code === 'cover_title_required'), '模板模式正常校验也不能跳过封面');
+  const unsupported = validateScriptContent({ ...saved, coverTitleParts: { ...saved.coverTitleParts, secondary: '承重五百公斤' } }, { libraryRevision: library });
+  assert.ok(unsupported.titleIssues.some((issue) => issue.code === 'title_unsupported_fact'), '封面事实必须受已引用事实约束');
+  db.close();
+}
+
+// S11：修复仍缺封面时有界失败，不得把商品名/空副标题作为合格结果保存。
+{
+  const { db } = await freshEnv('cover-failed');
+  const library = await seedLibrary(db);
+  const taskId = createRewriteTask(db, library.id, [makeTemplate()], 'cover-failed');
+  const llm = makeFakeLlm({ draftCover: null, titleRepairResult: { title: '无关标题修改' } });
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
+  assert.equal(result.status, 'failed');
+  assert.equal(llm.titleRepairCount, 2, '封面最多修复两次');
+  assert.equal(savedRewriteContents(db).length, 0);
   db.close();
 }
 

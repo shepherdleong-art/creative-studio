@@ -7,7 +7,8 @@ import {
   type ScriptGenerator,
 } from './generator.ts';
 import { createVisionClosedQuestionReprobe, type EvidenceReprobe } from './adapters/reprobe.ts';
-import { createVisionExtractor, type VisionExtractor } from './adapters/vision-extract.ts';
+import type { VisionExtractor } from './adapters/vision-extract.ts';
+import { createDirectVisionExtractor } from './adapters/direct-vision.ts';
 import { createSellingPointOrganizer } from './selling-point-organizer.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import {
@@ -66,16 +67,9 @@ export function createRuntimeDeps(
   const projectId = task.projectId;
   const taskId = task.id;
   const limits = getScriptStudioLimits();
-  const visionExtractor = createVisionExtractor(
+  const visionExtractor = createDirectVisionExtractor(
     providerCompleteJson(providers.vision.id, providers.vision.model, projectId, taskId, 'script-studio-vision'),
     providers.vision,
-    {
-      maxTokens: limits.maxTokensPerPage,
-      tileBatchSize: limits.extractTileBatchSize,
-      concurrency: limits.extractConcurrency,
-      requestTimeoutMs: limits.extractRequestTimeoutMs,
-      maxAttempts: limits.extractMaxAttempts,
-    },
   );
   const reprobe = createVisionClosedQuestionReprobe(
     providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-reprobe'),
@@ -107,6 +101,7 @@ export function createRuntimeDeps(
     libraryRevisionId: task.libraryRevisionId,
     inputSnapshot,
     visionExtractor,
+    directVision: true,
     reprobe,
     generator,
     sellingPointOrganizer: createSellingPointOrganizer(

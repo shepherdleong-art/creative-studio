@@ -774,5 +774,38 @@ const extractOnlyReplay = await executeScriptStudioTask({
 assert.equal(extractOnlyReplay.status, 'succeeded');
 assert.equal(extractOnlyReplay.scriptIds.length, 0);
 
+// C 方案：单次提取同时交付详解，核对按需；多批才额外做全局组织。
+for (const batches of [1, 2]) {
+  let organizes = 0;
+  let reprobes = 0;
+  const inputSnapshot = { targetDurationSec: 15, requestedCount: 1, extractOnly: true };
+  const directTask = createTask(db, { projectId: 'p1', requestKey: `direct-${batches}`, mode: 'first_extraction', sourceSetId: 'source-1', inputSnapshot, requestedCount: 1 });
+  const result = await executeScriptStudioTask({
+    db, projectId: 'p1', taskId: directTask.task.id, sourceSetId: 'source-1', inputSnapshot, directVision: true,
+    visionExtractor: { async extract(input) {
+      assert.equal(input.pages[0]!.tiles.length, 1, '小图不应再切成多张');
+      return { productName: '测试床', category: '床', brand: '', providerId: 'luna', model: 'test', promptContractVersion: 7,
+        batchMetrics: Array.from({ length: batches }, (_, i) => ({ pageIndex: 0, start: i, end: i + 1, imageCount: 1, attempts: 1, elapsedMs: 10, attemptElapsedMs: [10] })),
+        sellingPoints: [{ title: '15cm 高脚', factText: '床脚高度15cm，方便清洁', detailText: '床脚高度15cm，方便清洁', evidenceQuote: '床脚高度15cm', pointType: 'spec', sourcePageIndex: 0, tileRefs: ['tile_1'] }],
+      };
+    } },
+    reprobe: { kind: 'vision_closed_question', async verify() { reprobes++; return { quote: null }; } },
+    generator: { async generate() { throw new Error('仅提取不得生成'); } },
+    sellingPointOrganizer: { async organize(points) { organizes++; return points; } },
+  });
+  assert.equal(result.status, 'succeeded', result.errorMessage);
+  assert.equal(reprobes, 0);
+  assert.equal(organizes, batches === 1 ? 0 : 1);
+  const library = getCurrentLibraryRevision(db, 'p1')!;
+  assert.equal(library.promptContractVersion, 7, '组织后保留 C 方案坐标版本');
+  assert.equal(library.sellingPoints[0]!.evidenceGate, 'skipped');
+  assert.equal(library.sellingPoints[0]!.detailStatus, 'verified');
+  const { loadSellingPointEvidenceImages } = await import('../lib/script-studio/evidence-images.ts');
+  const evidence = await loadSellingPointEvidenceImages(db, 'p1', library.id, library.sellingPoints[0]!.id);
+  assert.ok(evidence.images[0]!.imageUrl.startsWith('data:image/png;base64,'));
+  assert.deepEqual(Buffer.from(evidence.images[0]!.imageUrl.split(',')[1]!, 'base64'), fs.readFileSync(imagePath));
+  await assert.rejects(() => loadSellingPointEvidenceImages(db, 'other-project', library.id, library.sellingPoints[0]!.id), /不属于当前项目/);
+}
+
 db.close();
 console.log('script-studio-runner.test.ts: ok');

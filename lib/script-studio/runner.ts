@@ -95,6 +95,7 @@ export interface ScriptStudioRunDeps {
   libraryRevisionId?: string | null;
   inputSnapshot: Record<string, unknown>;
   visionExtractor: VisionExtractor;
+  directVision?: boolean;
   reprobe: EvidenceReprobe;
   generator: ScriptGenerator;
   /** 卖点提炼器（方案 §3）：缺省时跳过提炼阶段，不阻断脚本生成。 */
@@ -342,8 +343,6 @@ async function repairTitlesAndSave<T>(
         libraryRevision: input.libraryRevision,
         context,
         previousTitles: [...input.previousScripts, ...previousTitles],
-        // 模板改写只有单标题语义，封面字段不检查；其他模式保持三字段。
-        ...(content.templateRewrite ? { fields: ['title' as const] } : {}),
       });
       if (issues.length) return { issues, previousTitles };
       if (content.knowledgeContext && input.knowledgeContext) {
@@ -625,7 +624,7 @@ export async function executeScriptStudioTask(
         SELECT imageAssetIdsJson FROM script_studio_source_sets WHERE id = ? AND projectId = ?
       `).get(deps.sourceSetId, projectId) as { imageAssetIdsJson: string } | undefined)?.imageAssetIdsJson;
       if (!imageAssetIds) throw new ScriptStudioError('not_found', '详情页来源集不存在');
-      tileResult = await tileSourceImages(db, projectId, JSON.parse(imageAssetIds) as string[], { signal });
+      tileResult = await tileSourceImages(db, projectId, JSON.parse(imageAssetIds) as string[], { signal, directVision: deps.directVision });
       finishStage(db, projectId, taskId, 'read_pages', 'succeeded', {
         imageCount: tileResult.pages.length,
         totalTiles: tileResult.totalTiles,
@@ -710,6 +709,7 @@ export async function executeScriptStudioTask(
       await updateTask(db, projectId, taskId, { currentStage: 'evidence_gate' }, now);
       const evidenceLimits = getScriptStudioLimits();
       evidenceResult = await runEvidenceGate(extracted, {
+        manualReview: deps.directVision,
         reprobe: deps.reprobe,
         evidenceTiles: (point) => tileResult ? evidenceTilesForPoint(point, tileResult, evidenceLimits.reprobeMaxImagesPerBatch) : [],
         signal,
@@ -728,13 +728,21 @@ export async function executeScriptStudioTask(
       // 事实核验后全局组织「核心卖点＋详解」，避免切片批次把参数拆成平级卖点。
       // 不静默回退碎片库；整理失败保留具体错误，用户可以重试。
       let organizedPoints = evidenceResult.points;
-      if (deps.sellingPointOrganizer) {
+      const needsOrganization = !deps.directVision || (extraction.batchMetrics?.length ?? 1) > 1;
+      if (deps.sellingPointOrganizer && needsOrganization) {
         startStage(db, projectId, taskId, 'organize', now);
         await updateTask(db, projectId, taskId, { currentStage: 'organize' }, now);
         organizedPoints = await deps.sellingPointOrganizer.organize(evidenceResult.points, signal);
         finishStage(db, projectId, taskId, 'organize', 'succeeded', {
           factCount: usableSellingPoints(evidenceResult.points).length,
           sellingPointCount: usableSellingPoints(organizedPoints).length,
+        }, null, now);
+      } else if (deps.directVision) {
+        startStage(db, projectId, taskId, 'organize', now);
+        finishStage(db, projectId, taskId, 'organize', 'skipped', {
+          factCount: usableSellingPoints(evidenceResult.points).length,
+          sellingPointCount: usableSellingPoints(organizedPoints).length,
+          reason: '已在同一次识图中整理卖点与详解',
         }, null, now);
       }
       startStage(db, projectId, taskId, 'save_library', now);
@@ -750,7 +758,7 @@ export async function executeScriptStudioTask(
         brand: extraction.brand,
         extractProviderId: extraction.providerId,
         extractModel: extraction.model,
-        promptContractVersion: deps.sellingPointOrganizer ? SELLING_POINT_ORGANIZATION_VERSION : extraction.promptContractVersion,
+        promptContractVersion: Math.max(extraction.promptContractVersion, deps.sellingPointOrganizer ? SELLING_POINT_ORGANIZATION_VERSION : 0),
         origin: 'extraction',
         sellingPoints: organizedPoints,
       }, now);
@@ -1402,6 +1410,7 @@ export function createScriptStudioRunDeps(
     libraryRevisionId?: string | null;
     inputSnapshot: Record<string, unknown>;
     visionExtractor: VisionExtractor;
+    directVision?: boolean;
     reprobe: EvidenceReprobe;
     generator: ScriptGenerator;
     distiller?: SellingPointDistiller;
@@ -1419,6 +1428,7 @@ export function createScriptStudioRunDeps(
     libraryRevisionId: options.libraryRevisionId,
     inputSnapshot: options.inputSnapshot,
     visionExtractor: options.visionExtractor,
+    directVision: options.directVision,
     reprobe: options.reprobe,
     generator: options.generator,
     distiller: options.distiller,

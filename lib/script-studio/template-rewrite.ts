@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { FrozenViralTemplateSpec } from './types.ts';
+import { scriptTitleRequirements } from './title-policy.ts';
 
 /**
  * 爆文模板改写模式（迁移方案 §4）：从外部项目 index.html 迁移的提示词与本地纯函数。
@@ -252,7 +253,7 @@ export function buildDraftRequest(input: TemplateDraftPromptInput): { systemProm
   const structSec = input.structure ? '\n\n用【段名】标注段落\n结构：' + input.structure : '';
   const refSection = '\n\n【参考文案——请逐句对照模仿】\n' + input.refText;
   const systemPrompt = '你是带货文案改写专家。参考文案只是"骨架"：你要借鉴它的语气、节奏、开头钩子和结构，但内容必须围绕我给你的【产品卖点】重新组织——把参考里讲它家产品的话，全部换成讲我家的产品（参数/材质/功能/场景/人群都要换成本家卖点对应的说法）。禁止直接照抄参考文案的成句，改动要明显但读起来自然、口语化。广告法要守。';
-  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"标题（16字内，仿参考标题风格）","note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；正文每段一个【段名】；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（按中文字数统计，不含标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + input.styleGuide + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT;
+  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"方案标题（4-16字，仿参考标题风格）","coverTitleParts":{"primary":"封面主标题（4-12字，人群/痛点/场景钩子）","secondary":"封面副标题（4-10字，具体卖点/收益）"},"note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；正文每段一个【段名】；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（仅计方案标题和正文的中文字数，不含封面主副标题与标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + input.styleGuide + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT + '\n\n【标题要求】\n' + scriptTitleRequirements({ requireCoverHook: true }).join('\n');
   return { systemPrompt, userPrompt, maxTokens: 3000 };
 }
 
@@ -295,6 +296,7 @@ export function buildEnsureNoteRequest(input: { refText: string; body: string; s
 
 export interface TemplateDraftParsed {
   title: string;
+  coverTitleParts: { primary: string; secondary: string };
   segments: Array<{ label: string; text: string; refs: string[] }>;
   note: string;
 }
@@ -396,7 +398,17 @@ export function parseDraftResponse(raw: unknown): TemplateDraftParsed | null {
   if (!cleaned.segments.length) return null;
   const note = [typeof record.note === 'string' ? record.note.trim() : '', cleaned.note].filter(Boolean).join('\n').trim();
   const title = (typeof record.title === 'string' ? record.title : '').trim().replace(/[《》""'「」]/g, '').trim();
-  return { title, segments: cleaned.segments, note };
+  const cover = record.coverTitleParts && typeof record.coverTitleParts === 'object'
+    ? record.coverTitleParts as Record<string, unknown> : {};
+  return {
+    title,
+    coverTitleParts: {
+      primary: typeof cover.primary === 'string' ? cover.primary.trim() : '',
+      secondary: typeof cover.secondary === 'string' ? cover.secondary.trim() : '',
+    },
+    segments: cleaned.segments,
+    note,
+  };
 }
 
 /** humanize/smooth 的 JSON 包装文本解析（迁移源码的重解析与「大改动丢弃」守卫）。 */

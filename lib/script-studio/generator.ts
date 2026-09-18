@@ -368,7 +368,7 @@ export function buildScriptTitleRepairPrompt(input: ScriptTitleRepairInput): { s
       readonlyFullScript: input.content.fullScript,
       verifiedFacts: briefCandidatePoints(input).filter((point) => referenced.has(point.id))
         .map((point) => ({ id: point.id, factText: point.factText, evidenceQuote: point.evidenceQuote })),
-      requirements: scriptTitleRequirements(),
+      requirements: scriptTitleRequirements({ requireCoverHook: Boolean(input.content.templateRewrite) }),
       output: { title: '仅在需要修复时返回', coverTitleParts: { primary: '仅在需要修复时返回', secondary: '仅在需要修复时返回' } },
     }),
   };
@@ -872,11 +872,13 @@ export function createScriptGenerator(
       };
       type Draft = {
         title: string;
+        coverTitleParts: { primary: string; secondary: string };
         segments: Array<{ label: string; text: string; pointIds: string[] }>;
         note: string;
       };
       const toDraft = (parsed: NonNullable<ReturnType<typeof parseDraftResponse>>): Draft => ({
         title: parsed.title,
+        coverTitleParts: parsed.coverTitleParts,
         segments: parsed.segments.map((seg) => ({
           label: seg.label,
           text: seg.text,
@@ -889,7 +891,7 @@ export function createScriptGenerator(
         note: parsed.note,
       });
       const draftTextOf = (draft: Draft): string =>
-        `标题：${draft.title}\n` + draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n');
+        `标题：${draft.title}\n封面主标题：${draft.coverTitleParts.primary}\n封面副标题：${draft.coverTitleParts.secondary}\n` + draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n');
       const requestDraft = async (purpose: ScriptRequestPurpose, extra: { fixHint?: string; currentDraft?: string }): Promise<Draft> => {
         reserve(purpose);
         const raw = await completeJson({
@@ -952,7 +954,7 @@ export function createScriptGenerator(
           const noted = extractScriptNote(reparsed.segments);
           if (noted.segments.length === draft.segments.length) {
             draft = {
-              title: draft.title,
+              ...draft,
               segments: noted.segments.map((seg, index) => ({ label: seg.label, text: seg.text, pointIds: draft!.segments[index]!.pointIds })),
               note: [draft.note, noted.note].filter(Boolean).join('\n'),
             };
@@ -984,7 +986,7 @@ export function createScriptGenerator(
           const newLen = noted.segments.reduce((sum, seg) => sum + seg.text.length, 0);
           if (noted.segments.length === draft.segments.length && Math.abs(newLen - oldLen) <= 300) {
             draft = {
-              title: draft.title,
+              ...draft,
               segments: noted.segments.map((seg, index) => ({ label: seg.label, text: seg.text, pointIds: draft!.segments[index]!.pointIds })),
               note: [draft.note, noted.note].filter(Boolean).join('\n'),
             };
@@ -1062,7 +1064,6 @@ export function createScriptGenerator(
       const contentCharacterCount = countScriptContentCharacters(fullScript);
       const budget = buildScriptDurationBudget(input.targetDurationSec);
       const estimatedNarrationDurationSec = estimateNarrationDurationSec(contentCharacterCount);
-      const displayName = buildScriptTitleContext(input.libraryRevision, null).displayName;
       const content: ScriptStudioScriptContent = {
         version: 4,
         productionMode: 'template_rewrite',
@@ -1093,9 +1094,8 @@ export function createScriptGenerator(
         },
         title: draft.title,
         coverTitleParts: {
-          primary: displayName.slice(0, 12) || '产品',
-          secondary: '',
-          source: 'system_split',
+          ...draft.coverTitleParts,
+          source: 'model',
         },
         platform: '淘宝逛逛',
         tone: state.stylePresetName ?? preset.name,

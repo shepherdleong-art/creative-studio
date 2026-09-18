@@ -118,6 +118,7 @@ export async function completeJson<T>(input: {
   timeoutMs?: number;
   signal?: AbortSignal;
   images?: Array<{ mimeType: string; imageBase64: string }>;
+  preserveImageBytes?: boolean;
   usageContext?: LlmUsageContextInput;
   onTextDelta?: (accumulated: string) => void;
   onReasoningDelta?: (accumulated: string) => void;
@@ -136,7 +137,7 @@ export async function completeJson<T>(input: {
     });
     if (input.images?.length) {
       images = await Promise.all(input.images.map(async (image) => {
-        const imageUrl = await tryUploadBufferToCosAndSign(Buffer.from(image.imageBase64, 'base64'), image.mimeType);
+        const imageUrl = await tryUploadBufferToCosAndSign(Buffer.from(image.imageBase64, 'base64'), image.mimeType, input.preserveImageBytes ? { compress: false } : undefined);
         if (!imageUrl) {
           throw new Error('公司供应商的视觉媒体传输未配置：请在 .env.local 配置 CREATIVE_STUDIO_COS_SECRET_ID / CREATIVE_STUDIO_COS_SECRET_KEY / CREATIVE_STUDIO_COS_DOMAIN 后重启');
         }
