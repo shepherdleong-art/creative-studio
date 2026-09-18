@@ -17,8 +17,8 @@ interface TemplateRow {
  * 改一条模板。
  *
  * 内置模板由 seed 维护、每次启动都会被写回官方措辞，所以界面上是只读的——
- * 想改先「复制一份」。唯一的例外是 inRandomPool：它不在 seed 的 upsert 列里，
- * 用户对内置模板的入池选择能安全地存活到下次播种，因此允许单独改。
+ * 想改先「复制一份」。唯一的例外是 inRandomPool：seed 只在 INSERT 时给初始值、
+ * 不在 upsert 的更新列里，用户对内置模板的入池选择能安全地存活到下次播种，因此允许单独改。
  */
 export async function PATCH(
   request: NextRequest,

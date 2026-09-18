@@ -428,12 +428,15 @@ export function seedScriptProviders() {
 export function seedMotionTemplates() {
   const db = getDb();
 
-  // 池子里现在清一色是运镜，category 恒为 camera_motion，不再逐条声明。
+  // category 恒为 camera_motion（随机填充与面板都按它过滤），不再逐条声明。
+  // inRandomPool 缺省入池；个别模板（如开头的场景变身）语义特殊，显式关池，
+  // 只在 INSERT 时给初始值——DO UPDATE 不碰它，用户后续手动开关不会被播种重置。
   const templates: Array<{
     id: string;
     name: string;
     description: string;
     prompt: string;
+    inRandomPool?: boolean;
   }> = [
     // ── 以下 10 条直接对齐视频模型自带的运镜词表 ──────────────────────
     // 用模型训练过的词（推进 / 拉远 / 右摇 / 上摇…），比自造措辞可靠得多。
@@ -507,6 +510,39 @@ export function seedMotionTemplates() {
       description: '右摇的反向，用来错开重复感。',
       prompt: '以当前图片为首帧，镜头左摇，机位固定不动，只让镜头原地向左转动，不做任何平移。保持产品结构、材质、比例、颜色稳定，不要添加文字，不要产生畸变。',
     },
+
+    // ── 开头用的场景变身（用户自定义转内置，2026-09-18）───────────────
+    // 不是运镜：整段描述场景从空到首帧的变化，开头一格用。默认不进随机池，
+    // 避免批量填充把每个镜头都洗成装修/变身画面。文案按用户定稿原样收录，
+    // 不套「以当前图片为首帧 / 不要添加文字」的运镜安全壳。
+    {
+      id: 'carton-explosion',
+      name: '纸箱爆炸',
+      description: '开头用',
+      prompt: '空无一物的场景里放着一个纸箱，纸箱突然炸开，家具和软装飞出来，很快将场景布置好，变成首帧图的样子。',
+      inRandomPool: false,
+    },
+    {
+      id: 'bare-shell-renovation',
+      name: '毛坯房变身',
+      description: '开头用',
+      prompt: '延时摄影，原本空旷的毛坯房空间里几个工人忙碌装修，很快将家具和软装布置好，变成首帧图的样子。',
+      inRandomPool: false,
+    },
+    {
+      id: 'giant-hand-place',
+      name: '手放家居',
+      description: '开头用',
+      prompt: '一只大手将家具放入空白的空间里，其他家具和软装自然飞入空间，最后布置成首帧图的模样。',
+      inRandomPool: false,
+    },
+    {
+      id: 'magic-growth',
+      name: '自然生长',
+      description: '开头用',
+      prompt: '原本空白的场景里，家具和软装自然生长出来，像魔法一样，最终变成首帧图的样子。',
+      inRandomPool: false,
+    },
   ];
 
   // 逐行幂等写入（而非空表才种子），让老库也能拿到后续新增的模板。
@@ -514,9 +550,11 @@ export function seedMotionTemplates() {
   // 是同一个镜头动作（六条里有两条是推进），老库必须能拿到修正后的文案，否则
   // 批量填充洗出来的画面还是三分之一在推镜头。DO UPDATE 上的 WHERE 保证只改
   // 内置行，用户自建模板（isBuiltin = 0）永远不会被种子覆盖。
+  // inRandomPool 只随 INSERT 给初始值，不进 DO UPDATE——用户在面板里的手动
+  // 开关（含内置行）不会被播种重置。
   const upsert = db.prepare(
-    `INSERT INTO video_prompt_templates (id, name, description, prompt, category, isBuiltin)
-     VALUES (@id, @name, @description, @prompt, 'camera_motion', 1)
+    `INSERT INTO video_prompt_templates (id, name, description, prompt, category, isBuiltin, inRandomPool)
+     VALUES (@id, @name, @description, @prompt, 'camera_motion', 1, @inRandomPool)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        description = excluded.description,
@@ -558,6 +596,7 @@ export function seedMotionTemplates() {
         name: t.name,
         description: t.description,
         prompt: t.prompt,
+        inRandomPool: t.inRandomPool === false ? 0 : 1,
       });
     }
     for (const id of retiredBuiltinIds) retire.run(id, id);
