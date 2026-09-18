@@ -116,19 +116,39 @@ export const TPL_STYLE_PRESETS: Record<TemplateStylePresetKey, TemplateStylePres
   expert: {
     name: '🧪 专家测评（3C/家电/母婴）',
     role: '你是品类工程师/评测专家，结论先行、数据支撑。',
-    guide: '\n\n【文风：专家测评】\n- 开头结论先行（"先说结论：…"）\n- 卖点必须有参数或实测支撑\n- 允许给出"适合人群/不适合人群"的客观边界\n- 逼单弱化，强调"值不值"',
+    guide: '\n\n【文风：专家测评】\n- 开头结论先行（"先说结论：…"）\n- 卖点必须有参数或实测支撑\n- 允许给出"适合人群/不适合人群"的客观边界\n- 逼单弱化，客观收尾（如"适合的人可以试试""按需挑选"）；禁止把"值不值"这类元描述写进文案',
     neg: '\n\n【文风禁止】无依据对比、恐吓式营销、虚假参数',
   },
 };
 
 /** 合规护栏（迁移 TPL_NEG_HINT）：生成环节注入的负面提示词。 */
-export const TPL_NEG_HINT = '\n\n【负面提示词·必须遵守】\n- 禁用极限词/绝对化承诺：最好、最佳、第一、唯一、顶级、极致、100%、零风险、根治、永久、绝对有效等\n- 禁用虚假紧迫：仅此一天、最后一天、限时抢购、错过不再有、秒杀\n- 禁用伪科学/无依据的"专家说"表述\n- 禁用AI套话：总而言之、综上所述、值得拥有、不容错过（空喊式）\n- 每段只讲一个卖点，严禁重复或注水';
+export const TPL_NEG_HINT = '\n\n【负面提示词·必须遵守】\n- 禁用极限词/绝对化承诺：最好、最佳、第一、唯一、顶级、极致、100%、零风险、根治、永久、绝对有效等\n- 禁用虚假紧迫：仅此一天、最后一天、限时抢购、错过不再有、秒杀\n- 禁用伪科学/无依据的"专家说"表述\n- 禁用AI套话：总而言之、综上所述、值得拥有、不容错过（空喊式）\n- 禁止把型号/货号编码念进口播（如 BC551-B、CD137A 这类字母数字组合）：用「这款 / 这款产品的…」或卖点描述指代\n- 禁止详情页免责声明进正文：仅供参考、以实际为准、以实物为准、具体以实际SKU为准、数据有偏差等\n- 每段只讲一个卖点，严禁重复或注水';
 
 /** 生成附加约束（迁移 TPL_GEN_HINT）：痛点精简、结构顺序、人群场景全替换、修改说明要求。 */
 export const TPL_GEN_HINT = '。痛点精简：全篇只保留1~2个痛点（选最扎心的），严禁罗列堆砌多个痛点；整体段落顺序严格参考模板结构；产品卖点和用户群体全部替换为本家信息——卖点用我给出的，目标人群按卖点对应人群设定，参考文案里出现的人群、场景、参数一律换成本家的。文末单独用【修改说明】开头另起一段，简要说明相对参考模板改了哪些地方（替换的卖点、更换的用户群体、痛点精简情况）；【修改说明】不计入正文字数统计，正文中不要出现【修改说明】。';
 
 /** 结构 fallback（源码默认）：模板没有结构字段时保留原文并使用该默认。 */
 export const TPL_FALLBACK_STRUCTURE = '钩子>痛点>卖点>逼单';
+
+// ---------------------------------------------------------------------------
+// 卖点文本净化：详情页免责声明（仅供参考/以实际为准/以实际SKU 等）不是口播素材，
+// 进 prompt 前整句剥除，避免模型把免责口径当成卖点念进正文。
+// ---------------------------------------------------------------------------
+
+const SP_DISCLAIMER_CLAUSE = /仅供参考|以实际(?:为准|情况|收货|体验|SKU)|以实物为准|具体以实际|具体以实物/i;
+
+/** 卖点「标题（详解）」中剥离免责声明子句：按句读切分，命中免责口径的子句整句删除。 */
+export function sanitizeSellingPointText(text: string): string {
+  const parts = String(text || '').split(/([，。；、,.;!?！？])/);
+  const kept: string[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const clause = parts[i]!;
+    const delimiter = parts[i + 1] ?? '';
+    if (clause && SP_DISCLAIMER_CLAUSE.test(clause)) continue;
+    kept.push(clause + delimiter);
+  }
+  return kept.join('').replace(/[，。；、,.;\s]+$/, '').trim();
+}
 
 // ---------------------------------------------------------------------------
 // 风格分析（迁移 analyzeStyle）
@@ -168,6 +188,12 @@ export function parseStyleAnalysis(raw: unknown): TemplateStyleAnalysis | null {
   return Object.keys(result).length > 0 ? result : null;
 }
 
+/** 参考文案结尾摘录（末 1-2 句）：结尾模仿铁律与结尾修复提示共用的锚点。 */
+export function refClosingExcerpt(refText: string, max = 80): string {
+  const sentences = String(refText || '').split(/[。！？!?\n]/).map((x) => x.trim()).filter((x) => x.length > 2);
+  return sentences.slice(-2).join('。').slice(0, max);
+}
+
 /** 风格要求段（迁移 genScriptViaDoubao 的 styleGuide 拼接，含「开头3秒铁律」）。 */
 export function styleGuideFromAnalysis(analysis: TemplateStyleAnalysis | null, refText: string): string {
   if (!analysis) {
@@ -184,6 +210,10 @@ export function styleGuideFromAnalysis(analysis: TemplateStyleAnalysis | null, r
   const opening = refText.split(/[。！？!?\n]/).map((x) => x.trim()).filter((x) => x.length > 2).slice(0, 2).join('。');
   if (opening) {
     guide += '【开头3秒铁律】参考文案的开头是："' + opening.slice(0, 80) + '"。你的开头前两句话必须模仿它的句式、语气和钩子节奏——先立钩子再引出产品，禁止铺垫和客套。\n';
+  }
+  const closing = refClosingExcerpt(refText);
+  if (closing) {
+    guide += '【结尾模仿铁律】参考文案的结尾是："' + closing + '"。你的结尾必须模仿它的句式、语气和收束节奏——结尾段不得省略，行动引导要换成本家卖点说法，不得照抄原句。\n';
   }
   return guide;
 }
@@ -236,6 +266,8 @@ export interface TemplateDraftPromptInput {
   stylePresetNeg: string;
   targetChars: number;
   previousTitles: string[];
+  /** 同一模板已生成变体（标题+正文摘录）：本稿的钩子/开头/结尾必须与其明显不同。 */
+  previousVariants?: string[];
   /** 字数修正：带当前字数与目标；为空表示首稿。 */
   fixHint?: string;
   /** 字数/残留修正时的当前稿件（源缺陷修复：修正请求必须带当前稿）。 */
@@ -250,10 +282,15 @@ export function buildDraftRequest(input: TemplateDraftPromptInput): { systemProm
     ? '\n\n【当前稿件——在它的基础上修正，保留合格内容与【段名】结构】\n' + input.currentDraft
     : '';
   const prevSec = input.previousTitles.length ? '\n\n已生成标题（请避开）：' + input.previousTitles.join(' / ') : '';
+  const variantSec = input.previousVariants?.length
+    ? '\n\n【同模板已生成变体——必须明显不同】\n'
+      + input.previousVariants.map((text, index) => `变体${index + 1}：\n${text}`).join('\n\n')
+      + '\n上面是同一参考文案已经改出来的版本。你的钩子、开头两句、卖点组织顺序、措辞和结尾句式都必须换一套写法，不得复述上面变体的成句（卖点仍然只从【产品卖点】里选）。'
+    : '';
   const structSec = input.structure ? '\n\n用【段名】标注段落\n结构：' + input.structure : '';
   const refSection = '\n\n【参考文案——请逐句对照模仿】\n' + input.refText;
   const systemPrompt = '你是带货文案改写专家。参考文案只是"骨架"：你要借鉴它的语气、节奏、开头钩子和结构，但内容必须围绕我给你的【产品卖点】重新组织——把参考里讲它家产品的话，全部换成讲我家的产品（参数/材质/功能/场景/人群都要换成本家卖点对应的说法）。禁止直接照抄参考文案的成句，改动要明显但读起来自然、口语化。广告法要守。';
-  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"方案标题（4-16字，仿参考标题风格）","coverTitleParts":{"primary":"封面主标题（4-12字，人群/痛点/场景钩子）","secondary":"封面副标题（4-10字，具体卖点/收益）"},"note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；正文每段一个【段名】；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（仅计方案标题和正文的中文字数，不含封面主副标题与标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + input.styleGuide + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT + '\n\n【标题要求】\n' + scriptTitleRequirements({ requireCoverHook: true }).join('\n');
+  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"方案标题（4-16字，仿参考标题风格）","coverTitleParts":{"primary":"封面主标题（4-12字，人群/痛点/场景钩子）","secondary":"封面副标题（4-10字，具体卖点/收益）"},"note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；正文每段一个【段名】；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（仅计方案标题和正文的中文字数，不含封面主副标题与标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + variantSec + input.styleGuide + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT + '\n\n【标题要求】\n' + scriptTitleRequirements({ requireCoverHook: true }).join('\n');
   return { systemPrompt, userPrompt, maxTokens: 3000 };
 }
 
@@ -265,7 +302,7 @@ export function buildDraftRequest(input: TemplateDraftPromptInput): { systemProm
 export function buildHumanizeRequest(text: string): { systemPrompt: string; userPrompt: string; maxTokens: number } {
   return {
     systemPrompt: '你是改写文案的。把AI写的东西改成真人说话的样子。',
-    userPrompt: '把这段话改得更像真人说的：\n\n1. 每句话开头别重复——别连着用"它""这款""而且"开头\n2. 打破AI最爱的套路："不仅...而且..."换掉、"让您..."改成"让你..."、"带来...体验"直接说具体感受\n3. 长句子（超过15字）拆短\n4. 加1-2个语气词（嗯、真的、说实话），别加太多\n5. 去掉无意义的夸装词（极致、非凡、前所未有的）\n6. 结尾别用"赶紧""马上""现在就"—换成自然收尾\n\n保留所有产品卖点，总字数必须与原文一致（上下浮动不超过5字），不得扩写，不得新增重复内容。\n\n输出格式：只返回 JSON 对象 {"text":"改写后的完整文案（保留【段名】分段）"}。\n\n原文：\n' + text,
+    userPrompt: '把这段话改得更像真人说的：\n\n1. 每句话开头别重复——别连着用"它""这款""而且"开头\n2. 打破AI最爱的套路："不仅...而且..."换掉、"让您..."改成"让你..."、"带来...体验"直接说具体感受\n3. 长句子（超过15字）拆短\n4. 加1-2个语气词（嗯、真的、说实话），别加太多\n5. 去掉无意义的夸装词（极致、非凡、前所未有的）\n6. 结尾别用"赶紧""马上""现在就"—换成自然收尾，但结尾的行动引导（CTA）必须保留，不得整句删掉\n\n保留所有产品卖点和结尾的行动引导，总字数必须与原文一致（上下浮动不超过5字），不得扩写，不得新增重复内容。\n\n输出格式：只返回 JSON 对象 {"text":"改写后的完整文案（保留【段名】分段）"}。\n\n原文：\n' + text,
     maxTokens: 2000,
   };
 }
@@ -420,11 +457,27 @@ export function parsePolishedText(raw: unknown): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// 结尾缺失检查：爆文模板以逼单/CTA 收尾；末段段名或末句都不像结尾时判定缺失，
+// 由调用方定向修复一次（源链路没有 CTA 阶段，这里只做轻量本地判定）。
+// ---------------------------------------------------------------------------
+
+const ENDING_LABEL_PATTERN = /逼单|催单|促单|结尾|收尾|CTA|cta|引导|号召|行动|福利|购买|下单|上车|转化/;
+const ENDING_INVITATION_PATTERN = /链接|点[击下]|了解|看看|试试|挑选|比较|咨询|下单|拍下|入手|带回家|冲|上车/;
+
+/** 末段既不是结尾段名、末句也不构成行动引导时，判定结尾缺失。 */
+export function templateEndingMissing(segments: Array<{ label: string; text: string }>): boolean {
+  const last = segments.at(-1);
+  if (!last) return true;
+  if (ENDING_LABEL_PATTERN.test(last.label || '')) return false;
+  const lastSentence = String(last.text || '').split(/[。！？!?]+/).map((s) => s.trim()).filter(Boolean).at(-1) || '';
+  return !ENDING_INVITATION_PATTERN.test(lastSentence);
+}
+
+// ---------------------------------------------------------------------------
 // 参考产品信息残留检查（迁移方案 §4.4 终检）：正文与参考文案不得有连续成句照抄。
 // ---------------------------------------------------------------------------
 
 export const RESIDUAL_RUN_MIN = 12;
-
 /** 生成文本中与参考文案连续相同 ≥12 个中文字片段（疑似参考产品信息残留/逐句照抄）。 */
 export function findResidualRuns(refText: string, generatedText: string, minRun: number = RESIDUAL_RUN_MIN): string[] {
   const normalize = (value: string) => String(value || '').replace(/[^一-鿿]/g, '');

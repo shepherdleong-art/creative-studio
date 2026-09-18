@@ -149,7 +149,7 @@ interface FakeLlm {
 
 interface FakeLlmOptions {
   draftTitle?: () => string;
-  draftCover?: { primary: string; secondary: string } | null;
+  draftCover?: { primary: string; secondary: string } | null | (() => { primary: string; secondary: string } | null);
   titleRepairResult?: unknown;
   draftSegments?: () => Array<{ label: string; text: string; refs: string[] }>;
   draftNote?: string;
@@ -191,7 +191,8 @@ function makeFakeLlm(options: FakeLlmOptions = {}): FakeLlm {
       return {
         title: options.draftTitle ? options.draftTitle() : '窗边餐桌真香款',
         coverTitleParts: options.draftCover === undefined
-          ? { primary: '小户型聚餐有招', secondary: '桌面拉开坐六人' } : options.draftCover,
+          ? { primary: '小户型聚餐有招', secondary: '桌面拉开坐六人' }
+          : (typeof options.draftCover === 'function' ? options.draftCover() : options.draftCover),
         note: options.draftNote !== undefined ? options.draftNote : '把参考里的沙发换成了餐桌，痛点精简为 1 个',
         segments: options.draftSegments
           ? options.draftSegments()
@@ -338,7 +339,7 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   assert.ok(firstDraft.userPrompt.includes('"coverTitleParts"'), '首稿要求同时生成主副标题');
   assert.ok(firstDraft.userPrompt.includes('不能只写商品名或零部件名'), '封面主标题要求具体钩子');
   assert.ok(firstDraft.userPrompt.includes('【风格要求——照这个来】'), '首稿含风格分析要求');
-  assert.ok(firstDraft.userPrompt.includes('伸缩桌面（平时四人位不占地，朋友来了拉出来秒变六人位。）'), '首稿含完整组详解');
+  assert.ok(firstDraft.userPrompt.includes('伸缩桌面（平时四人位不占地，朋友来了拉出来秒变六人位）'), '首稿含完整组详解（免责/尾部标点净化后）');
   assert.ok(!firstDraft.userPrompt.includes('方向轮换') && !firstDraft.userPrompt.includes('必须行动号召'), '新模式不混入旧模式策略');
 
   // A12/A14：内容与元数据落库；说明不进口播；下游可读。
@@ -484,15 +485,15 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   const llm = makeFakeLlm({
     draftSegments: () => {
       draftN += 1;
-      // 首稿字数落在区间内（避免先走字数修复），且含参考原文残留句。
+      // 首稿字数落在区间内（避免先走字数修复），且含参考原文残留句；末段带逼单段名避免触发结尾修复。
       return draftN === 1
         ? [
             { label: '钩子', text: residualSentence + SEG_OK_1, refs: ['1'] },
-            { label: '卖点', text: SEG_OK_2, refs: ['2'] },
+            { label: '逼单', text: SEG_OK_2, refs: ['2'] },
           ]
         : [
             { label: '钩子', text: SEG_OK_1, refs: ['1'] },
-            { label: '卖点', text: SEG_OK_2, refs: ['2'] },
+            { label: '逼单', text: SEG_OK_2, refs: ['2'] },
           ];
     },
   });
@@ -513,7 +514,7 @@ async function freshEnv(name: string): Promise<{ db: Database.Database; root: st
   const llm = makeFakeLlm({
     draftSegments: () => [
       { label: '钩子', text: residualSentence + SEG_OK_1, refs: ['1'] },
-      { label: '卖点', text: SEG_OK_2, refs: ['2'] },
+      { label: '逼单', text: SEG_OK_2, refs: ['2'] },
     ],
   });
   const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
@@ -702,6 +703,84 @@ for (const draftCover of [null, { primary: '林氏伸缩岩板餐桌', secondary
   assert.equal(result.status, 'failed');
   assert.equal(llm.titleRepairCount, 2, '封面最多修复两次');
   assert.equal(savedRewriteContents(db).length, 0);
+  db.close();
+}
+
+// ---------------------------------------------------------------------------
+// S12：结尾缺失定向修复（2026-09-18 质量修复）：缺结尾段 → 带参考末句修复一次后保存
+// ---------------------------------------------------------------------------
+{
+  const { db } = await freshEnv('s12');
+  const library = await seedLibrary(db);
+  const templates = [makeTemplate({ entryId: 'e1', sourceTemplateId: 'tpl-s12', contentHash: 'h-s12' })];
+  const taskId = createRewriteTask(db, library.id, templates, 'tpl-task-s12');
+  let draftN = 0;
+  const llm = makeFakeLlm({
+    draftSegments: () => {
+      draftN += 1;
+      return draftN === 1
+        ? [
+            { label: '钩子', text: SEG_OK_1, refs: ['1'] },
+            { label: '卖点', text: SEG_OK_2, refs: ['2'] },
+          ]
+        : [
+            { label: '钩子', text: SEG_OK_1, refs: ['1'] },
+            { label: '逼单', text: SEG_OK_2, refs: ['2'] },
+          ];
+    },
+  });
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
+  assert.equal(result.status, 'succeeded', `结尾修复后应成功：${result.errorMessage ?? ''}`);
+  const endingRepairs = llm.calls.filter((call) => call.systemPrompt?.includes('带货文案改写专家') && call.userPrompt.includes('缺少结尾段'));
+  assert.equal(endingRepairs.length, 1, '缺结尾触发一次定向修复');
+  assert.ok(endingRepairs[0]!.userPrompt.includes('真心推荐'), '结尾修复带参考文案末句锚点');
+  assert.ok(endingRepairs[0]!.userPrompt.includes('【当前稿件'), '结尾修复带当前稿');
+  const saved = savedRewriteContents(db)[0]!;
+  assert.ok(saved.segments.at(-1)!.narration.includes(SEG_OK_2.slice(0, 8)), '修复后的结尾段落库');
+  db.close();
+}
+
+// ---------------------------------------------------------------------------
+// S13：同模板多条变体差异化（2026-09-18 质量修复）：
+// 同 entryId 变体串行生成，第二稿 prompt 必须带第一稿正文做差异化。
+// ---------------------------------------------------------------------------
+{
+  const { db } = await freshEnv('s13');
+  const library = await seedLibrary(db);
+  const shared = makeTemplate({ entryId: 'entry-shared', sourceTemplateId: 'tpl-shared', contentHash: 'h-shared' });
+  const taskId = createRewriteTask(db, library.id, [shared, { ...shared }], 'tpl-task-s13');
+  // 标题/封面避开数字（无据数字会触发 title_unsupported_fact），保证两变体互不冲突。
+  const titlePool = ['窗边餐桌真香款', '岩板餐桌也好香'];
+  const coverPool = [
+    { primary: '朋友聚餐有妙招', secondary: '拉开桌面坐六人' },
+    { primary: '小户型也有办法', secondary: '岩板台面好打理' },
+  ];
+  let draftN = 0;
+  const llm = makeFakeLlm({
+    draftTitle: () => titlePool[draftN % titlePool.length]!,
+    draftCover: () => coverPool[draftN % coverPool.length]!,
+    draftSegments: () => {
+      const [hook, cta] = DRAFT_TEXT_POOL[draftN % DRAFT_TEXT_POOL.length]!;
+      draftN += 1;
+      return [
+        { label: '钩子', text: hook, refs: ['1'] },
+        { label: '逼单', text: cta, refs: ['2'] },
+      ];
+    },
+  });
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 2));
+  if (result.status !== 'succeeded') {
+    const stages = getTask(db, 'p1', taskId)!.stages.map((s) => `${s.stage}:${s.status}:${s.errorCode ?? ''}:${s.payloadJson.slice(0, 400)}`);
+    console.error('S13 stages:\n' + stages.join('\n'));
+  }
+  assert.equal(result.status, 'succeeded', `同模板两条应成功：${result.errorMessage ?? ''}`);
+  assert.equal(result.succeededCount, 2);
+  const draftCalls = llm.calls.filter((call) => call.systemPrompt?.includes('带货文案改写专家'));
+  assert.equal(draftCalls.length, 2, '两个变体各一次首稿（无修复干扰）');
+  assert.ok(!draftCalls[0]!.userPrompt.includes('同模板已生成变体'), '第一稿不带差异化段');
+  assert.ok(draftCalls[1]!.userPrompt.includes('同模板已生成变体'), '第二稿带差异化段');
+  assert.ok(draftCalls[1]!.userPrompt.includes('窗边餐桌真香款'), '第二稿收到第一稿标题');
+  assert.ok(draftCalls[1]!.userPrompt.includes(DRAFT_TEXT_POOL[0]![0].slice(0, 10)), '第二稿收到第一稿正文摘录');
   db.close();
 }
 

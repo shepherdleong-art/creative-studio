@@ -1145,52 +1145,75 @@ export async function executeScriptStudioTask(
         }
       }
     }
+    // 同一模板的多条变体串行生成：后一条拿到前一条正文做差异化（并行会让差异化信号失效）。
+    // 恢复场景先把已保存的同模板脚本灌入差异化上下文。
+    const templateVariantChains = new Map<string, Promise<InitialResult>>();
+    const templateVariantTexts = new Map<string, string[]>();
+    if (productionMode === 'template_rewrite') {
+      for (const created of createdScripts) {
+        const entryId = created.templateRewrite?.entryId;
+        if (!entryId) continue;
+        const list = templateVariantTexts.get(entryId) ?? [];
+        list.push(`标题：${created.title}\n${(created.fullScript || '').slice(0, 500)}`);
+        templateVariantTexts.set(entryId, list);
+      }
+    }
     const runTemplateInitial = async (plan: (typeof plansWithRecommendations)[number]): Promise<InitialResult> => {
       const spec = plan.templateRewrite!;
       if (!deps.generator.runTemplateRewrite) {
         return { error: new ScriptStudioError('invalid_input', '当前生成器不支持爆文模板改写') };
       }
-      try {
-        if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
-        const result = await deps.generator.runTemplateRewrite({
-          plan,
-          libraryRevision: libraryRevision!,
-          eligiblePoints: templateEligiblePoints,
-          targetDurationSec,
-          previousTitles: [...createdScripts, ...recentTitles],
-          resumeState: templateStates[plan.index],
-          onStateChange: (next) => {
-            templateStates[plan.index] = next;
-            mergeStagePayload(deps.db, projectId, taskId, 'generate', {
-              templatePlanFingerprint: templatePlanFingerprint(frozenTemplates),
-              templateStates: Object.fromEntries(Object.entries(templateStates).map(([key, value]) => [String(key), value])),
-            }, now);
-            if (next.whitelistPointIds?.length) {
-              const brief = briefByPlanIndex.get(plan.index);
-              if (brief) {
-                brief.requiredPointIds = next.whitelistPointIds;
-                brief.candidateCount = next.whitelistPointIds.length;
+      const entryId = spec.entryId;
+      const queued = templateVariantChains.get(entryId) ?? Promise.resolve({} as InitialResult);
+      const run = queued.then(async (): Promise<InitialResult> => {
+        try {
+          if (signal?.aborted) throw new DOMException('脚本生成已取消', 'AbortError');
+          const result = await deps.generator.runTemplateRewrite!({
+            plan,
+            libraryRevision: libraryRevision!,
+            eligiblePoints: templateEligiblePoints,
+            targetDurationSec,
+            previousTitles: [...createdScripts, ...recentTitles],
+            siblingVariantTexts: templateVariantTexts.get(entryId) ?? [],
+            resumeState: templateStates[plan.index],
+            onStateChange: (next) => {
+              templateStates[plan.index] = next;
+              mergeStagePayload(deps.db, projectId, taskId, 'generate', {
+                templatePlanFingerprint: templatePlanFingerprint(frozenTemplates),
+                templateStates: Object.fromEntries(Object.entries(templateStates).map(([key, value]) => [String(key), value])),
+              }, now);
+              if (next.whitelistPointIds?.length) {
+                const brief = briefByPlanIndex.get(plan.index);
+                if (brief) {
+                  brief.requiredPointIds = next.whitelistPointIds;
+                  brief.candidateCount = next.whitelistPointIds.length;
+                }
               }
-            }
-            // 风格缓存只写完整成功结果（降级/null 不写），键含模板内容哈希+模型+提示词版本。
-            if (next.styleAnalysis) {
-              const providerModel = typeof input.providerModel === 'string' ? input.providerModel : '';
-              if (providerModel) {
-                writeViralTemplateStyleCache(deps.db, {
-                  contentHash: spec.contentHash,
-                  model: providerModel,
-                  promptVersion: TEMPLATE_REWRITE_VERSION,
-                  analysisJson: JSON.stringify(next.styleAnalysis),
-                }, now);
+              // 风格缓存只写完整成功结果（降级/null 不写），键含模板内容哈希+模型+提示词版本。
+              if (next.styleAnalysis) {
+                const providerModel = typeof input.providerModel === 'string' ? input.providerModel : '';
+                if (providerModel) {
+                  writeViralTemplateStyleCache(deps.db, {
+                    contentHash: spec.contentHash,
+                    model: providerModel,
+                    promptVersion: TEMPLATE_REWRITE_VERSION,
+                    analysisJson: JSON.stringify(next.styleAnalysis),
+                  }, now);
+                }
               }
-            }
-          },
-          signal,
-        });
-        return { candidate: { content: result.content, endingReview: { status: 'unreviewed' } } };
-      } catch (error) {
-        return { error };
-      }
+            },
+            signal,
+          });
+          const variants = templateVariantTexts.get(entryId) ?? [];
+          variants.push(`标题：${result.content.title}\n${(result.content.fullScript || '').slice(0, 500)}`);
+          templateVariantTexts.set(entryId, variants);
+          return { candidate: { content: result.content, endingReview: { status: 'unreviewed' } } };
+        } catch (error) {
+          return { error };
+        }
+      });
+      templateVariantChains.set(entryId, run);
+      return run;
     };
     // 按完成顺序串行完成兄弟方案校验、标题修复与保存，异步修复期间不允许另一方案抢先保存。
     const finalizeProposal = async (index: number, initial: InitialResult): Promise<void> => {

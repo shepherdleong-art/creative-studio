@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  buildDraftRequest,
   buildFilterRequest,
   charBoundsForTarget,
   cnLen,
@@ -11,10 +12,14 @@ import {
   parseFilterKeep,
   parseSegmentedText,
   parseStyleAnalysis,
+  refClosingExcerpt,
+  sanitizeSellingPointText,
   scriptCnLen,
   styleGuideFromAnalysis,
   targetCharsForDuration,
+  templateEndingMissing,
   TPL_FALLBACK_STRUCTURE,
+  TPL_NEG_HINT,
   TPL_STYLE_PRESETS,
 } from '../lib/script-studio/template-rewrite.ts';
 
@@ -116,5 +121,60 @@ const marks = diffMarkWords('这款沙发，真好看', '这款餐桌，真实�
 assert.ok(marks.some((m) => m.del && m.w === '这款沙发'), '参考被替换的词标记删除');
 assert.ok(marks.some((m) => m.diff && !m.del && m.w === '这款餐桌'), '生成新词标记差异');
 assert.ok(marks.some((m) => !m.diff && m.w === '，'), '相同词不标色');
+
+// ---- 卖点文本净化：详情页免责声明整句剥除 ----
+assert.equal(
+  sanitizeSellingPointText('床体经真人实测，承重超过1000斤；不同人体重有所偏差，数据仅供参考，以实际为准。'),
+  '床体经真人实测，承重超过1000斤；不同人体重有所偏差',
+  '免责尾巴子句剥除',
+);
+assert.equal(
+  sanitizeSellingPointText('BC551-B款1.8m规格展示使用加宽实木排骨架，页面标注可承重2000斤；BC551-A款数据有差异，具体以实物为准。'),
+  'BC551-B款1.8m规格展示使用加宽实木排骨架，页面标注可承重2000斤；BC551-A款数据有差异',
+  '以实物为准剥除',
+);
+assert.equal(sanitizeSellingPointText('伸缩设计四人变六人'), '伸缩设计四人变六人', '无免责内容原样保留');
+assert.equal(sanitizeSellingPointText(''), '');
+
+// ---- 负面提示词与文风预设：禁型号/禁免责口径；专家测评不写「值不值」元描述 ----
+assert.ok(TPL_NEG_HINT.includes('型号/货号编码') && TPL_NEG_HINT.includes('以实际为准'), '负面提示词含型号与免责声明禁令');
+assert.ok(!TPL_STYLE_PRESETS.expert.guide.includes('强调"值不值"'), '专家测评不再用字面「值不值」元描述');
+assert.ok(TPL_STYLE_PRESETS.expert.guide.includes('值不值'), '专家测评保留禁止写「值不值」的说明');
+
+// ---- 结尾模仿铁律（2026-09-18 质量修复）：风格要求锚定参考文案末句 ----
+assert.equal(refClosingExcerpt('第一句钩子。第二句展开。最后一句逼单！'), '第二句展开。最后一句逼单');
+const guideWithClosing = styleGuideFromAnalysis({ 说话感觉: '像朋友聊天' }, '开头钩子。中间卖点。点下方链接带回家！');
+assert.ok(guideWithClosing.includes('结尾模仿铁律') && guideWithClosing.includes('点下方链接带回家'), '结尾铁律含参考末句');
+
+// ---- 结尾缺失检查 ----
+assert.equal(templateEndingMissing([{ label: '卖点', text: '收纳空间很大。' }]), true, '末句无行动引导判缺失');
+assert.equal(templateEndingMissing([{ label: '逼单', text: '还等什么。' }]), false, '结尾段名直接判有结尾');
+assert.equal(templateEndingMissing([{ label: '卖点', text: '收纳空间很大。点下方链接看看吧' }]), false, '末句行动引导判有结尾');
+assert.equal(templateEndingMissing([]), true, '空稿判缺失');
+
+// ---- 首稿请求：同模板变体差异化约束（2026-09-18 质量修复）----
+const draftReq = buildDraftRequest({
+  sellingPointTexts: ['卖点甲（详解甲）'],
+  refText: '参考文案全文',
+  structure: '钩子>卖点>逼单',
+  styleGuide: '',
+  stylePresetGuide: '',
+  stylePresetNeg: '',
+  targetChars: 90,
+  previousTitles: ['旧标题'],
+  previousVariants: ['标题：旧变体\n旧变体正文内容'],
+});
+assert.ok(draftReq.userPrompt.includes('同模板已生成变体') && draftReq.userPrompt.includes('旧变体正文内容'), '变体差异化约束进 prompt');
+const draftReqNoVariant = buildDraftRequest({
+  sellingPointTexts: ['卖点甲（详解甲）'],
+  refText: '参考文案全文',
+  structure: '',
+  styleGuide: '',
+  stylePresetGuide: '',
+  stylePresetNeg: '',
+  targetChars: 90,
+  previousTitles: [],
+});
+assert.ok(!draftReqNoVariant.userPrompt.includes('同模板已生成变体'), '无变体时不加差异化段');
 
 console.log('script-studio-template-rewrite-unit tests passed');

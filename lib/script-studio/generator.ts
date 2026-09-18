@@ -33,8 +33,11 @@ import {
   parsePolishedText,
   parseSegmentedText,
   parseStyleAnalysis,
+  refClosingExcerpt,
+  sanitizeSellingPointText,
   scriptCnLen,
   styleGuideFromAnalysis,
+  templateEndingMissing,
   TEMPLATE_REWRITE_VERSION,
   TPL_STYLE_PRESETS,
   targetCharsForDuration,
@@ -137,6 +140,8 @@ export interface TemplateRewriteRunInput {
   eligiblePoints: SellingPointRecord[];
   targetDurationSec: number;
   previousTitles: ScriptTitleSummary[];
+  /** 同一模板已生成变体（标题+正文摘录）：生成同模板多条时由 runner 串行收集，用于差异化。 */
+  siblingVariantTexts?: string[];
   resumeState?: TemplateRewriteResumeState;
   onStateChange?: (state: TemplateRewriteResumeState) => void;
   signal?: AbortSignal;
@@ -782,8 +787,12 @@ export function createScriptGenerator(
       const reserve = (purpose: ScriptRequestPurpose): void => {
         options.budget?.reserve({ planIndex: input.plan.index, purpose });
       };
-      const formatSellingPoint = (point: SellingPointRecord): string =>
-        point.detailText && point.detailText !== point.title ? `${point.title}（${point.detailText}）` : point.title;
+      const formatSellingPoint = (point: SellingPointRecord): string => {
+        // 免责口径（仅供参考/以实际为准等）不是口播素材，进 prompt 前剥除（sanitizeSellingPointText）。
+        const title = sanitizeSellingPointText(point.title);
+        const detail = sanitizeSellingPointText(point.detailText || '');
+        return detail && detail !== title ? `${title}（${detail}）` : title;
+      };
 
       // 1. 按模板筛选卖点（迁移 filterTplSellingPoints；稳定组 ID；降级保留全部合格卖点）
       if (!state.whitelistPointIds?.length) {
@@ -869,6 +878,7 @@ export function createScriptGenerator(
         stylePresetNeg: preset.neg,
         targetChars,
         previousTitles: input.previousTitles.map((item) => item.title || '').filter(Boolean),
+        previousVariants: input.siblingVariantTexts ?? [],
       };
       type Draft = {
         title: string;
@@ -1003,6 +1013,28 @@ export function createScriptGenerator(
 
       // 6. 终检字数（润色可能微调篇幅；超限再修一次，仍用冻结白名单与原约束）
       draft = await fixLengthIfNeeded(draft);
+
+      // 6.5 结尾检查：爆文模板以逼单/CTA 收尾，缺失时定向修复一次（预算不足或仍缺失记降级，不阻断）。
+      if (templateEndingMissing(draft.segments)) {
+        const closing = refClosingExcerpt(template.refText);
+        try {
+          const fixed = await requestDraft('repair', {
+            fixHint: '当前稿件缺少结尾段（没有行动引导收尾）。参考文案的结尾是："' + closing + '"——请补一个模仿它句式、语气和收束节奏的结尾（换成本家卖点说法，不得照抄原句），保留现有段落与【段名】结构，其他段落不要改动。',
+            currentDraft: draftTextOf(draft),
+          });
+          if (!templateEndingMissing(fixed.segments)) {
+            draft = fixed;
+          } else {
+            warnings.push({ code: 'template_ending_still_missing', message: '缺少行动引导结尾，结尾修复后仍缺失，保留当前稿件' });
+          }
+        } catch (error) {
+          assertNotAborted(error);
+          warnings.push({
+            code: 'template_ending_fix_skipped',
+            message: `缺少行动引导结尾，结尾修复未生效：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
 
       // 7. 参考产品信息残留检查（必需校验）：连续成句照抄 → 定向修复；仍残留/无余额则本模板失败
       const residualRuns = findResidualRuns(template.refText, draft.segments.map((seg) => seg.text).join('\n'));
