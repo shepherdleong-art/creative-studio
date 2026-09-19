@@ -8,7 +8,31 @@ import { scriptTitleRequirements } from './title-policy.ts';
  * 响应解析、文字差异（LCS）、残留检查。除注明「适配」处外，提示词均为源项目原文迁移。
  */
 
-export const TEMPLATE_REWRITE_VERSION = 'template-rewrite-v1';
+export const TEMPLATE_REWRITE_VERSION = 'template-rewrite-v2';
+
+// Gemini 等推理模型的 max_tokens 包括推理 token；短 JSON 也不能只留 300/500。
+export const TEMPLATE_REWRITE_MAX_TOKENS = 8192;
+
+/** 顺序敏感的正文比较；标题换名或少量替换词不能算不同脚本。 */
+export function templateVariantsTooSimilar(left: string, right: string): boolean {
+  const normalize = (text: string) => text.replace(/^标题[：:][^\n]*\n/, '')
+    .replace(/【[^】]*】/g, '').normalize('NFKC').replace(/[\s\p{P}]+/gu, '').toLowerCase();
+  const a = normalize(left);
+  const b = normalize(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 14 && b.length >= 14 && a.slice(0, 14) === b.slice(0, 14)) return true;
+  const row = new Uint32Array(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = 0;
+    for (let j = 1; j <= b.length; j++) {
+      const previous = row[j]!;
+      row[j] = a[i - 1] === b[j - 1] ? diagonal + 1 : Math.max(row[j]!, row[j - 1]!);
+      diagonal = previous;
+    }
+  }
+  return row[b.length]! / Math.min(a.length, b.length) >= 0.72;
+}
 
 /** 口播语速（字/秒）：口播时长 → 目标字数换算基准（源码 TPL_DUR_WPS=6）。 */
 export const TPL_DUR_WPS = 6;
@@ -167,7 +191,7 @@ export function buildStyleAnalysisRequest(refText: string): { systemPrompt: stri
   return {
     systemPrompt: '你是个天天刷带货视频的人，一眼就能看出文案是啥风格。分析别人文案的风格特点，输出干净JSON。',
     userPrompt: '看看这个带货文案，告诉我：\n\n1. 这人说话是什么感觉？（像朋友聊天 / 像专家讲课 / 像柜姐推销 / 像自己用过在分享）\n2. 他最爱用什么词开头？（给3-5个例子）\n3. 句子是长的还是短的？\n4. 他用了什么套路吸引人继续看？\n5. 结尾怎么收的？\n6. 有没有什么词他绝对不用？（比如文案里从没出现过"家人们""绝绝子"这种，列2-3个）\n\n输出严格JSON格式：{"说话感觉":"","开头词":[],"句长":"短句多"或"长短混合"或"长句多","钩子套路":"","结尾方式":"","禁用词":[]}\n\n文案：\n' + refText,
-    maxTokens: 500,
+    maxTokens: TEMPLATE_REWRITE_MAX_TOKENS,
   };
 }
 
@@ -196,10 +220,9 @@ export function refClosingExcerpt(refText: string, max = 80): string {
 
 /** 风格要求段（迁移 genScriptViaDoubao 的 styleGuide 拼接，含「开头3秒铁律」）。 */
 export function styleGuideFromAnalysis(analysis: TemplateStyleAnalysis | null, refText: string): string {
-  if (!analysis) {
-    return '\n\n⚠️ 请模仿参考文案的语气节奏与结构，但用我的卖点重写内容，避免逐句照抄。\n';
-  }
-  let guide = '\n\n【风格要求——照这个来】\n';
+  let guide = analysis ? '\n\n【风格要求——照这个来】\n'
+    : '\n\n请模仿参考文案的语气节奏与结构，但用我的卖点重写内容，避免逐句照抄。\n';
+  analysis ??= {};
   if (analysis['说话感觉']) guide += '- 说话感觉：' + analysis['说话感觉'] + '\n';
   if (analysis['句长']) guide += '- 句长：' + analysis['句长'] + '\n';
   if (analysis['开头词']?.length) guide += '- 多用这些开头：' + analysis['开头词'].join('、') + '\n';
@@ -232,7 +255,7 @@ export function buildFilterRequest(input: { refSnippet: string; candidates: Temp
   return {
     systemPrompt: '你是电商短视频文案卖点甄别助手，负责把用户卖点中与参考爆款同类的部分筛出来。',
     userPrompt: '下面【参考文案】是一个已爆款带货视频的文案，它卖的产品有自己明确的核心卖点和人群。下面【候选卖点】是你要推广的本家产品的卖点列表。\n\n请判断：候选卖点中，哪些与参考文案所卖产品属于同一品类方向、或能对上参考产品的核心卖点/目标人群/使用场景（同类可比、能直接"替换"参考产品讲）？只保留这类卖点。\n\n【参考文案】\n' + input.refSnippet + '\n\n【候选卖点】\n' + input.candidates.map((c) => c.id + '. ' + c.text).join('\n') + '\n\n输出严格JSON格式：{"keep":[编号]}（keep放你要保留的候选卖点编号，按原始顺序，只保留同类/相近的；都不相近则输出{"keep":[]}）。不要输出任何其他文字。',
-    maxTokens: 300,
+    maxTokens: TEMPLATE_REWRITE_MAX_TOKENS,
   };
 }
 
@@ -268,6 +291,8 @@ export interface TemplateDraftPromptInput {
   previousTitles: string[];
   /** 同一模板已生成变体（标题+正文摘录）：本稿的钩子/开头/结尾必须与其明显不同。 */
   previousVariants?: string[];
+  /** 本变体的主卖点编号，其他卖点只作为必要支撑。 */
+  focusPointNumber?: number;
   /** 字数修正：带当前字数与目标；为空表示首稿。 */
   fixHint?: string;
   /** 字数/残留修正时的当前稿件（源缺陷修复：修正请求必须带当前稿）。 */
@@ -287,11 +312,12 @@ export function buildDraftRequest(input: TemplateDraftPromptInput): { systemProm
       + input.previousVariants.map((text, index) => `变体${index + 1}：\n${text}`).join('\n\n')
       + '\n上面是同一参考文案已经改出来的版本。你的钩子、开头两句、卖点组织顺序、措辞和结尾句式都必须换一套写法，不得复述上面变体的成句（卖点仍然只从【产品卖点】里选）。'
     : '';
+  const focusSec = input.focusPointNumber ? `\n\n【本条创作主线】优先围绕卖点 ${input.focusPointNumber} 写一个具体的生活事件，其他卖点仅作支撑，不要罗列全部卖点。主副标题都围绕这一个主线。` : '';
   const structSec = input.structure ? '\n\n用【段名】标注段落\n结构：' + input.structure : '';
   const refSection = '\n\n【参考文案——请逐句对照模仿】\n' + input.refText;
-  const systemPrompt = '你是带货文案改写专家。参考文案只是"骨架"：你要借鉴它的语气、节奏、开头钩子和结构，但内容必须围绕我给你的【产品卖点】重新组织——把参考里讲它家产品的话，全部换成讲我家的产品（参数/材质/功能/场景/人群都要换成本家卖点对应的说法）。禁止直接照抄参考文案的成句，改动要明显但读起来自然、口语化。广告法要守。';
-  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"方案标题（4-16字，仿参考标题风格）","coverTitleParts":{"primary":"封面主标题（4-12字，人群/痛点/场景钩子）","secondary":"封面副标题（4-10字，具体卖点/收益）"},"note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；正文每段一个【段名】；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（仅计方案标题和正文的中文字数，不含封面主副标题与标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + variantSec + input.styleGuide + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT + '\n\n【标题要求】\n' + scriptTitleRequirements({ requireCoverHook: true }).join('\n');
-  return { systemPrompt, userPrompt, maxTokens: 3000 };
+  const systemPrompt = '你是带货文案改写专家。参考文案只是"骨架"：你要借鉴它的语气、节奏、开头钩子和结构，原文是故事就保留故事、是选购指南就保留选购指南，不要统一改成腰酸背痛的痛点套路；内容必须围绕我给你的【产品卖点】重新组织——把参考里讲它家产品的话，全部换成讲我家的产品（参数/材质/功能/场景/人群都要换成本家卖点对应的说法）。禁止直接照抄参考文案的成句，改动要明显但读起来自然、口语化。广告法要守。';
+  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"方案标题（4-16字，仿参考标题风格）","coverTitleParts":{"primary":"封面主标题（4-12字，人群/痛点/场景钩子）","secondary":"封面副标题（4-10字，具体卖点/收益）"},"note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；正文每段一个【段名】；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（仅计方案标题和正文的中文字数，不含封面主副标题与标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + focusSec + variantSec + input.styleGuide + '\n原文风格优先于文风预设；同模板多条保留钩子类型，但具体事件、主讲卖点和句子必须不同。' + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT + '\n\n【标题要求】\n' + scriptTitleRequirements({ requireCoverHook: true }).join('\n');
+  return { systemPrompt, userPrompt, maxTokens: TEMPLATE_REWRITE_MAX_TOKENS };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,15 +329,17 @@ export function buildHumanizeRequest(text: string): { systemPrompt: string; user
   return {
     systemPrompt: '你是改写文案的。把AI写的东西改成真人说话的样子。',
     userPrompt: '把这段话改得更像真人说的：\n\n1. 每句话开头别重复——别连着用"它""这款""而且"开头\n2. 打破AI最爱的套路："不仅...而且..."换掉、"让您..."改成"让你..."、"带来...体验"直接说具体感受\n3. 长句子（超过15字）拆短\n4. 加1-2个语气词（嗯、真的、说实话），别加太多\n5. 去掉无意义的夸装词（极致、非凡、前所未有的）\n6. 结尾别用"赶紧""马上""现在就"—换成自然收尾，但结尾的行动引导（CTA）必须保留，不得整句删掉\n\n保留所有产品卖点和结尾的行动引导，总字数必须与原文一致（上下浮动不超过5字），不得扩写，不得新增重复内容。\n\n输出格式：只返回 JSON 对象 {"text":"改写后的完整文案（保留【段名】分段）"}。\n\n原文：\n' + text,
-    maxTokens: 2000,
+    maxTokens: TEMPLATE_REWRITE_MAX_TOKENS,
   };
 }
 
-export function buildSmoothCheckRequest(full: string): { systemPrompt: string; userPrompt: string; maxTokens: number } {
+export function buildSmoothCheckRequest(full: string, cover?: { primary: string; secondary: string }): { systemPrompt: string; userPrompt: string; maxTokens: number } {
+  const coverCheck = cover ? '\n\n同时核对封面两行是否围绕同一个问题：' + JSON.stringify(cover)
+    + '\n主标题保持原样。副标题只能直接回答主标题，不得堆砌无关卖点；主标题讲腰颈酸，副标题就讲支撑，不要追加可机洗等无关信息。只用本文已出现且有依据的信息，4-10字，保持口语自然。额外返回 coverSecondary 字符串（已合格就原样返回）。' : '';
   return {
     systemPrompt: '你是带货口播文案审校，专门检查文案"读出来顺不顺"。',
-    userPrompt: '请把下面文案**出声朗读一遍**，找出读起来拗口、磕绊、书面化、断句不顺的地方，做最小修改让口播更顺畅自然（例如：长句拆成短句、把"以便/从而/因此/从而"这类书面词换成口语说法、调整别扭的语序）。要求：\n1) 保留【】分段标签和内容意思，不增删卖点\n2) 每段内容与原文一致，总字数接近原文（±20字内）\n3) 如果整篇读起来已经顺畅，就原样返回，不要改\n\n输出格式：只返回 JSON 对象 {"text":"检查后的完整文案（保留【段名】分段）"}。\n\n文案：\n' + full,
-    maxTokens: 2500,
+    userPrompt: '请把下面文案**出声朗读一遍**，找出读起来拗口、磕绊、书面化、断句不顺的地方，做最小修改让口播更顺畅自然（例如：长句拆成短句、把"以便/从而/因此/从而"这类书面词换成口语说法、调整别扭的语序）。要求：\n1) 保留【】分段标签和内容意思，不增删卖点\n2) 每段内容与原文一致，总字数接近原文（±20字内）\n3) 如果整篇读起来已经顺畅，就原样返回，不要改\n\n输出格式：只返回 JSON 对象 {"text":"检查后的完整文案（保留【段名】分段）"}。' + coverCheck + '\n\n文案：\n' + full,
+    maxTokens: TEMPLATE_REWRITE_MAX_TOKENS,
   };
 }
 
@@ -323,7 +351,7 @@ export function buildEnsureNoteRequest(input: { refText: string; body: string; s
   return {
     systemPrompt: '你是文案修改说明的记录员。',
     userPrompt: '请对比「参考模板文案」与「最终生成文案」，输出一段【修改说明】（3-5句话，不要标题前缀）：1) 替换了哪些产品卖点/参数；2) 目标用户群体换成了什么人群；3) 痛点精简到几个、分别是什么；4) 保留了参考模板的什么结构。\n\n输出格式：只返回 JSON 对象 {"note":"修改说明内容"}。\n\n参考模板文案：\n' + (input.refText || '（无）') + '\n\n最终生成文案：\n' + input.body + '\n\n用户产品卖点：\n' + input.sellingPointText,
-    maxTokens: 600,
+    maxTokens: TEMPLATE_REWRITE_MAX_TOKENS,
   };
 }
 

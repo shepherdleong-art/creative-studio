@@ -50,7 +50,7 @@ assert.match(panel, /regenerateDuration/, '再生成一组可单独指定本次�
 assert.match(panel, /regenerateCount/, '再生成一组可单独指定本次条数');
 assert.match(panel, /保存为新版本/, '人工编辑必须保存为新版本');
 assert.doesNotMatch(panel, /采用版本|取消采用|进入智能混剪/, '结果页不得出现采用/取消采用/强制进入混剪');
-assert.doesNotMatch(panel, /分镜组|手填卖点|选模板/, '第三步不得再并排展示旧分镜、手填卖点和模板入口');
+assert.doesNotMatch(panel, /分镜组|手填卖点|>选模板</, '第三步不得再并排展示旧分镜、手填卖点和旧模板入口；爆文模板再生成是当前流程');
 assert.match(page, /ScriptStudioPanel/, '项目工作台必须挂载新流程');
 assert.doesNotMatch(page, /activeTab === 'script'.*ScriptPanel/, '旧 ScriptPanel 不得再作为主入口挂载');
 assert.match(taskRoute, /decideTaskRequest\(/, '任务创建必须走共享幂等决策');

@@ -784,4 +784,49 @@ for (const draftCover of [null, { primary: '林氏伸缩岩板餐桌', secondary
   db.close();
 }
 
+// 重复首稿必须触发有界改写，修后仍重复不得保存第二条。
+for (const stubborn of [false, true]) {
+  const { db } = await freshEnv(`s14-${stubborn}`);
+  const library = await seedLibrary(db);
+  const shared = makeTemplate();
+  const taskId = createRewriteTask(db, library.id, [shared, { ...shared }], `s14-${stubborn}`);
+  let draftN = 0;
+  const llm = makeFakeLlm({
+    draftTitle: () => draftN === 0 ? '窗边餐桌真香款' : '岩板餐桌也好香',
+    draftCover: () => draftN === 0
+      ? { primary: '朋友聚餐有妙招', secondary: '拉开桌面坐六人' }
+      : { primary: '小户型也有办法', secondary: '岩板台面好打理' },
+    draftSegments: () => {
+      const textIndex = stubborn || draftN < 2 ? 0 : 1;
+      draftN++;
+      return [{ label: '钩子', text: DRAFT_TEXT_POOL[textIndex]![0], refs: ['1'] },
+        { label: '逼单', text: DRAFT_TEXT_POOL[textIndex]![1], refs: ['2'] }];
+    },
+  });
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 2));
+  assert.equal(result.succeededCount, stubborn ? 1 : 2, '重复稿只在修正后保存');
+  assert.equal(draftN, 3, '第二条只允许一次差异化修复');
+  assert.ok(llm.calls.some(c => c.userPrompt.includes('当前正文与同模板已有变体过于相似')));
+  assert.ok(llm.calls.filter(c => c.systemPrompt.includes('带货文案改写专家'))[1]!.userPrompt.includes('优先围绕卖点 2'));
+  db.close();
+}
+
+// 口播审校可修副标题，只允许它承接主标题，其他标题字段不能被响应覆盖。
+{
+  const { db } = await freshEnv('s15');
+  const library = await seedLibrary(db);
+  const taskId = createRewriteTask(db, library.id, [makeTemplate()], 's15');
+  const llm = makeFakeLlm({
+    draftSegments: () => [{ label: '钩子', text: SEG_OK_1, refs: ['1'] }, { label: '逼单', text: SEG_OK_2, refs: ['2'] }],
+    smoothResult: { text: `【钩子】${SEG_OK_1}\n【逼单】${SEG_OK_2}`, coverSecondary: '伸缩桌面好聚餐', title: '不要改标题', coverTitleParts: { primary: '不要改主标题' } },
+  });
+  const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
+  assert.equal(result.succeededCount, 1);
+  const [content] = savedRewriteContents(db);
+  assert.equal(content!.title, '窗边餐桌真香款');
+  assert.equal(content!.coverTitleParts.primary, '小户型聚餐有招');
+  assert.equal(content!.coverTitleParts.secondary, '伸缩桌面好聚餐');
+  db.close();
+}
+
 console.log('script-studio-template-rewrite tests passed');

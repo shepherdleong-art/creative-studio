@@ -736,12 +736,52 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     const duration = typeof snapshot.targetDurationSec === 'number' ? snapshot.targetDurationSec : 15;
     // 延迟到宏任务执行,避免 effect 内同步 setState 触发级联渲染。
     const timer = window.setTimeout(() => {
-      setRegenerateMode(snapshot.productionMode === 'pain_solving_15s' ? 'pain_solving_15s' : 'standard');
+      setRegenerateMode(snapshot.productionMode === 'template_rewrite' ? 'template_rewrite' : snapshot.productionMode === 'pain_solving_15s' ? 'pain_solving_15s' : 'standard');
       if (Number.isInteger(count) && count >= 1 && count <= 6) setRegenerateCount(count);
       if (SCRIPT_TARGET_DURATION_OPTIONS.includes(duration as (typeof SCRIPT_TARGET_DURATION_OPTIONS)[number])) setRegenerateDuration(duration);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [task]);
+
+  /** 发送不可变的再生成 action。202 明确成功或 4xx 明确拒绝后清 action；5xx/断连保留供重试。 */
+  const runRegenerateAction = useCallback(async (action: { requestKey: string; body: Record<string, unknown> }) => {
+    if (inFlightRegenerationRef.current) return;
+    inFlightRegenerationRef.current = true;
+    setSubmitting(true);
+    setError('');
+    try {
+      const response = await fetch(`/api/projects/${projectId}/script-studio/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action.body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && response.status === 202) {
+        const nextTask = data.task as ScriptStudioTaskSnapshot;
+        setTask(nextTask);
+        setStep(2);
+        setNotice(data.schedulerEnabled ? '' : '任务已创建；真实供应商调用尚未授权，需启用调度器后执行');
+        startPolling(nextTask.id);
+        pendingRegenerationRef.current = null;
+        setRegeneratePending(false);
+        return;
+      }
+      if (response.status >= 400 && response.status < 500) {
+        // 明确不可重试的业务拒绝（例如参数型 4xx）：清理 action。
+        setError(data.message || data.error || `HTTP ${response.status}`);
+        pendingRegenerationRef.current = null;
+        setRegeneratePending(false);
+        return;
+      }
+      // 5xx / 未知结果：保留 action，按钮呈现「重试本次提交」，不得从最新表单重建 body。
+      setError(data.message || data.error || `提交失败（${response.status}），可点击「重试本次提交」`);
+    } catch (err) {
+      setError(`提交失败：${String(err)}，可点击「重试本次提交」`);
+    } finally {
+      inFlightRegenerationRef.current = false;
+      setSubmitting(false);
+    }
+  }, [projectId, startPolling]);
 
   const handleAnalyze = useCallback(async () => {
     if (analyzeInFlight.current) return;
@@ -775,20 +815,26 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     if (productionMode === 'template_rewrite') {
       if (reuseLibrary) {
         // 第 2 步提交：复用当前卖点库，按勾选爆文模板（同一模板可多条变体）生成。
-        if (templateEntryIds.length === 0) {
+        if (!pendingRegenerationRef.current && templateEntryIds.length === 0) {
           setError('爆文模板改写需要先勾选爆文模板并选择生成条数');
           return;
         }
-        await startTask({
-          sourceSetId: null,
-          libraryRevisionId: null,
-          targetDurationSec,
-          requestedCount: templateEntryIds.length,
-          creativeBrief,
-          productionMode,
-          providerId,
-          templateEntryIds,
-        });
+        if (!pendingRegenerationRef.current) {
+          const requestKey = `regenerate-group:${crypto.randomUUID()}`;
+          pendingRegenerationRef.current = { requestKey, body: {
+            sourceSetId: null,
+            libraryRevisionId,
+            targetDurationSec,
+            requestedCount: templateEntryIds.length,
+            creativeBrief,
+            productionMode,
+            providerId,
+            templateEntryIds: [...templateEntryIds],
+            requestKey,
+          } };
+          setRegeneratePending(true);
+        }
+        await runRegenerateAction(pendingRegenerationRef.current);
         return;
       }
       // 第 1 步提交：还没有卖点库时先只跑提取建库，完成后进入第 2 步挑选爆文模板。
@@ -859,7 +905,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       setUploading(false);
       analyzeInFlight.current = false;
     }
-  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask, templateEntryIds, pendingDirectory, directoryPath]);
+  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask, runRegenerateAction, libraryRevisionId, templateEntryIds, pendingDirectory, directoryPath]);
 
   const switchRevision = useCallback(async (scriptId: string, revisionId: string) => {
     await fetch(`/api/projects/${projectId}/script-studio/scripts/${scriptId}/current`, {
@@ -994,52 +1040,18 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     }
   }, [projectId, task, startPolling]);
 
-  /** 发送不可变的再生成 action。202 明确成功或 4xx 明确拒绝后清 action；5xx/断连保留供重试。 */
-  const runRegenerateAction = useCallback(async (action: { requestKey: string; body: Record<string, unknown> }) => {
-    if (inFlightRegenerationRef.current) return;
-    inFlightRegenerationRef.current = true;
-    setSubmitting(true);
-    setError('');
-    try {
-      const response = await fetch(`/api/projects/${projectId}/script-studio/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(action.body),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && response.status === 202) {
-        const nextTask = data.task as ScriptStudioTaskSnapshot;
-        setTask(nextTask);
-        setStep(2);
-        setNotice(data.schedulerEnabled ? '' : '任务已创建；真实供应商调用尚未授权，需启用调度器后执行');
-        startPolling(nextTask.id);
-        pendingRegenerationRef.current = null;
-        setRegeneratePending(false);
-        return;
-      }
-      if (response.status >= 400 && response.status < 500) {
-        // 明确不可重试的业务拒绝（例如参数型 4xx）：清理 action。
-        setError(data.message || data.error || `HTTP ${response.status}`);
-        pendingRegenerationRef.current = null;
-        setRegeneratePending(false);
-        return;
-      }
-      // 5xx / 未知结果：保留 action，按钮呈现「重试本次提交」，不得从最新表单重建 body。
-      setError(data.message || data.error || `提交失败（${response.status}），可点击「重试本次提交」`);
-    } catch (err) {
-      setError(`提交失败：${String(err)}，可点击「重试本次提交」`);
-    } finally {
-      inFlightRegenerationRef.current = false;
-      setSubmitting(false);
-    }
-  }, [projectId, startPolling]);
-
   const regenerateGroup = useCallback(() => {
     if (!libraryRevisionId) {
       setError('当前项目没有可复用的卖点库');
       return;
     }
     if (inFlightRegenerationRef.current) return;
+    if (!pendingRegenerationRef.current && regenerateMode === 'template_rewrite') {
+      setProductionMode('template_rewrite');
+      setTargetDurationSec(regenerateDuration);
+      setStep(2);
+      return;
+    }
     if (!providerId) {
       setError('请先选择一个已配置且支持图片读取的脚本模型');
       return;
@@ -1482,10 +1494,10 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               <button
                 type="button"
                 onClick={() => void handleAnalyze()}
-                disabled={submitting || organizingLibrary || !providerId || templateEntryIds.length === 0}
+                disabled={submitting || organizingLibrary || !providerId || (!regeneratePending && templateEntryIds.length === 0)}
                 className="btn-primary"
               >
-                {submitting ? '正在创建任务…' : `按 ${new Set(templateEntryIds).size} 个模板生成脚本（共 ${templateEntryIds.length} 条）`}
+                {submitting ? '正在创建任务…' : regeneratePending ? '重试本次提交' : `按 ${new Set(templateEntryIds).size} 个模板生成脚本（共 ${templateEntryIds.length} 条）`}
               </button>
             </div>
           </div>
@@ -1673,22 +1685,23 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   }} className="input-field h-8 w-[180px] px-1.5 py-0 text-xs">
                     <option value="standard">多方向生成</option>
                     <option value="pain_solving_15s">痛点解决型 · 15秒</option>
+                    <option value="template_rewrite">爆文模板改写</option>
                   </select>
                 </label>
                 {/* F2：再生成一组可单独指定本次条数/秒数（不与第 1 页表单共享隐式状态）。 */}
-                <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
+                {regenerateMode !== 'template_rewrite' && <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
                   条数
                   <select value={regenerateCount} onChange={(event) => setRegenerateCount(Number(event.target.value))} className="input-field h-8 w-[68px] px-1.5 py-0 text-xs" aria-label="再生成条数">
                     {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count}</option>)}
                   </select>
-                </label>
+                </label>}
                 <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
                   时长
                   <select disabled={regenerateMode === 'pain_solving_15s'} value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 py-0 text-xs" aria-label="再生成时长">
                     {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                   </select>
                 </label>
-                <button type="button" onClick={regenerateGroup} disabled={submitting || taskRunning || organizingLibrary} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : '再生成一组'}</button>
+                <button type="button" onClick={regenerateGroup} disabled={submitting || taskRunning || organizingLibrary} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : regenerateMode === 'template_rewrite' ? '挑选模板再生成' : '再生成一组'}</button>
                 {(task?.status === 'partial' || task?.status === 'failed') && (
                   <button type="button" onClick={() => void retryTask()} className="btn-secondary btn-sm">补跑缺失条目</button>
                 )}

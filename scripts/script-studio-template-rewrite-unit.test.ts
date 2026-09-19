@@ -18,6 +18,7 @@ import {
   styleGuideFromAnalysis,
   targetCharsForDuration,
   templateEndingMissing,
+  templateVariantsTooSimilar,
   TPL_FALLBACK_STRUCTURE,
   TPL_NEG_HINT,
   TPL_STYLE_PRESETS,
@@ -64,6 +65,10 @@ assert.equal(parseStyleAnalysis('不是对象'), null);
 const guide = styleGuideFromAnalysis({ 说话感觉: '像朋友聊天', 开头词: ['姐妹们'] }, '第一句钩子。第二句展开。后面内容。');
 assert.ok(guide.includes('说话感觉') && guide.includes('开头3秒铁律'), '风格要求含分析与开头铁律');
 assert.ok(styleGuideFromAnalysis(null, '参考').includes('避免逐句照抄'), '无分析时用通用模仿要求');
+assert.ok(styleGuideFromAnalysis(null, '闺蜜来家里就不走了。来挑你喜欢的颜色！').includes('开头3秒铁律'), '风格降级不能丢掉原文开头锚点');
+assert.ok(styleGuideFromAnalysis(null, '闺蜜来家里就不走了。来挑你喜欢的颜色！').includes('结尾模仿铁律'), '风格降级不能丢掉原文结尾锚点');
+assert.ok(templateVariantsTooSimilar('闺蜜来我家就赖在沙发上不走。双层高靠包托住脖子和腰，躺着追剧很舒服。', '标题：换个标题\n姐妹来我家就赖在沙发上不走。双层高靠包托住腰和脖子，躺着看剧很舒服。'), '近似换词不能冒充不同变体');
+assert.ok(!templateVariantsTooSimilar('下班累得不行，往高靠包上一靠，腰窝和脖子都有了支撑。', '孩子把果汁洒在沙发上，拉开拉链拆下布套，丢进洗衣机就好。'), '同一产品的不同事件和主卖点可以通过');
 
 // ---- 筛选解析（迁移 filterTplSellingPoints keep 语义）----
 const filterReq = buildFilterRequest({ refSnippet: '参考前六百字', candidates: [{ id: '1', text: '卖点甲（详解甲）' }, { id: '2', text: '卖点乙（详解乙）' }] });

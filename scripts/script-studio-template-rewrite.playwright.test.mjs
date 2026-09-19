@@ -161,7 +161,7 @@ try {
     }
     else if (pathname === '/api/providers/script') body = [{ id: 'fixture-provider', name: '测试模型', model: 'fixture', configured: true, supportsVision: true, executionScope: 'external' }];
     else if (pathname === '/api/providers') body = { providers: [] };
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    await route.fulfill({ status: pathname.endsWith('/script-studio/tasks') && method === 'POST' ? 202 : 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 
   // ---------------- 1. 设置页：导入预览 → 确认保存 ----------------
@@ -214,6 +214,8 @@ try {
   assert.deepEqual(submitted.templateEntryIds, ['e1', 'e1', 'e2'], '同一模板按所选条数重复展开提交');
   assert.equal(submitted.requestedCount, 3, '生成数量等于全部模板条数之和');
   assert.equal(submitted.targetDurationSec, 15);
+  const firstRequestKey = submitted.requestKey;
+  assert.match(firstRequestKey, /^regenerate-group:/);
 
   // ---------------- 3. 结果对照与诚实展示 ----------------
   await expect(page.getByText('爆文模板：小户型餐桌爆款').first()).toBeVisible({ timeout: 8000 });
@@ -229,8 +231,11 @@ try {
   await expect(page.getByText('这只是文字差异对照，不是原创率或合规证明。')).toBeVisible();
   await expect(page.getByText('参考文案', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('生成文案', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '再生成模式', exact: true })).toHaveValue('template_rewrite');
 
   // ---------------- 4. 详解编辑 ----------------
+  const expand = page.getByRole('button', { name: '展开卖点', exact: true });
+  if (await expand.isVisible()) await expand.click();
   await page.getByRole('button', { name: '选择 / 排除卖点', exact: true }).click();
   await expect(page.getByText('详解可用').first()).toBeVisible();
   await expect(page.getByText('无详解（爆文模板改写模式不可用，可编辑补充）').first()).toBeVisible();
@@ -242,6 +247,18 @@ try {
   await expect(page.getByRole('button', { name: '选择 / 排除卖点', exact: true })).toBeVisible();
   const detailEdit = savedSelection.edits.find((edit) => edit.sellingPointId === 'point-2');
   assert.equal(detailEdit.detailText, '台面为岩板，热锅直接上桌不怕烫', '详解编辑随选择一起提交');
+
+  // 结果页再次生成仍能挑模板，数量由模板份数决定，复用最新卖点修订。
+  await expect(page.getByRole('combobox', { name: '再生成模式', exact: true })).toHaveValue('template_rewrite');
+  await page.getByRole('combobox', { name: '再生成时长', exact: true }).selectOption('30');
+  await page.getByRole('button', { name: '挑选模板再生成', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '挑选爆文模板', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '按 2 个模板生成脚本（共 3 条）', exact: true }).click();
+  await expect.poll(() => submitted?.targetDurationSec).toBe(30);
+  assert.equal(submitted.libraryRevisionId, 'library-2');
+  assert.deepEqual(submitted.templateEntryIds, ['e1', 'e1', 'e2']);
+  assert.equal(submitted.requestedCount, 3);
+  assert.notEqual(submitted.requestKey, firstRequestKey, '再次生成必须创建新任务，不能命中旧组');
 
   // ---------------- 5. 部分完成 / 停止 ----------------
   state = { status: 'running', succeededCount: 1, failedCount: 0 };

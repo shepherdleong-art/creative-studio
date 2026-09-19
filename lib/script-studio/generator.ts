@@ -24,6 +24,8 @@ import {
   buildHumanizeRequest,
   buildSmoothCheckRequest,
   buildStyleAnalysisRequest,
+  TEMPLATE_REWRITE_MAX_TOKENS,
+  templateVariantsTooSimilar,
   charBoundsForTarget,
   detectTemplateStyle,
   extractScriptNote,
@@ -729,7 +731,7 @@ export function createScriptGenerator(
     async repairTitles(input) {
       reserve(input, 'title_repair');
       const prompt = buildScriptTitleRepairPrompt(input);
-      return completeJson({ ...prompt, temperature: 1, maxTokens: SCRIPT_TITLE_REPAIR_MAX_TOKENS, signal: input.signal });
+      return completeJson({ ...prompt, temperature: 1, maxTokens: input.content.templateRewrite ? TEMPLATE_REWRITE_MAX_TOKENS : SCRIPT_TITLE_REPAIR_MAX_TOKENS, signal: input.signal });
     },
     async repairScriptContent(input) {
       reserve(input, 'repair');
@@ -879,6 +881,7 @@ export function createScriptGenerator(
         targetChars,
         previousTitles: input.previousTitles.map((item) => item.title || '').filter(Boolean),
         previousVariants: input.siblingVariantTexts ?? [],
+        focusPointNumber: ((input.siblingVariantTexts?.length ?? 0) % whitelistPoints.length) + 1,
       };
       type Draft = {
         title: string;
@@ -907,7 +910,7 @@ export function createScriptGenerator(
         const raw = await completeJson({
           ...buildDraftRequest({ ...draftBase, ...extra }),
           temperature: 1,
-          maxTokens: 3000,
+          maxTokens: TEMPLATE_REWRITE_MAX_TOKENS,
           signal,
         });
         const parsed = parseDraftResponse(raw);
@@ -984,10 +987,14 @@ export function createScriptGenerator(
       try {
         reserve('polish');
         const raw = await completeJson({
-          ...buildSmoothCheckRequest(draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n')),
+          ...buildSmoothCheckRequest(draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n'), draft.coverTitleParts),
           temperature: 1,
           signal,
         });
+        const coverSecondary = asRecord(raw).coverSecondary;
+        if (typeof coverSecondary === 'string' && coverSecondary.trim()) {
+          draft.coverTitleParts = { ...draft.coverTitleParts, secondary: coverSecondary.trim() };
+        }
         const text = parsePolishedText(raw);
         if (text) {
           const reparsed = parseSegmentedText(text);
@@ -1048,6 +1055,21 @@ export function createScriptGenerator(
           throw new Error(`template_rewrite_residual_reference_text:${stillResidual[0]!.slice(0, 20)}`);
         }
         draft = fixed;
+      }
+
+      // 最终稿再判重：润色也可能把不同首稿改回相同套路。共享原预算，最多修一次。
+      const duplicateVariant = (value: Draft) => (input.siblingVariantTexts ?? []).some(
+        previous => templateVariantsTooSimilar(value.segments.map(seg => seg.text).join('\n'), previous),
+      );
+      if (duplicateVariant(draft)) {
+        draft = await requestDraft('repair', {
+          fixHint: '当前正文与同模板已有变体过于相似。必须换一个具体事件和主要卖点，重写开头两句、卖点展开和结尾，不能只换标题或几个同义词。保留参考的文风与结构，以及冻结卖点白名单。',
+          currentDraft: draftTextOf(draft),
+        });
+        if (duplicateVariant(draft)) throw new Error('template_rewrite_duplicate_variant:与同模板已有脚本过于相似，改写后仍重复');
+        if (findResidualRuns(template.refText, draft.segments.map(seg => seg.text).join('\n')).length) {
+          throw new Error('template_rewrite_residual_reference_text:差异化修复后仍照抄参考成句');
+        }
       }
 
       // 8. 修改说明：首稿/修复稿 note 优先；缺失且预算有余才补生成（迁移 ensureTplNote）

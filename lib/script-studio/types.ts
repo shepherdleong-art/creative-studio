@@ -186,7 +186,7 @@ export interface FrozenViralTemplateSpec {
 
 /** 爆文模板改写脚本的来源与处理快照（content.templateRewrite，迁移方案 §3.2）。 */
 export interface TemplateRewriteScriptMeta {
-  version: 'template-rewrite-v1';
+  version: 'template-rewrite-v1' | 'template-rewrite-v2';
   entryId: string;
   revisionId: string;
   sourceTemplateId: string;
