@@ -24,6 +24,8 @@ export interface Module4SourceLocation {
   kind: 'module4';
   videoJobId: string;
   shotSetId: string;
+  /** 分镜位身份(同源互斥键);自由素材无 shot,旧数据无此字段,均为 null */
+  shotId: string | null;
   /** 相对 storageRoot 的受控产物路径(与 video_jobs.localVideoPath 一致) */
   relativePath: string;
 }
@@ -199,6 +201,7 @@ function parseSourceLocation(sourceKind: BatchAssetSourceKind, locationJson: str
       kind: 'module4',
       videoJobId: stringField(raw.videoJobId) ?? '',
       shotSetId: stringField(raw.shotSetId) ?? '',
+      shotId: stringField(raw.shotId),
       relativePath: stringField(raw.relativePath) ?? '',
     };
   }
@@ -287,6 +290,7 @@ interface Module4VideoJobRow {
   id: string;
   projectId: string;
   shotSetId: string | null;
+  shotId: string | null;
   status: string;
   localVideoPath: string | null;
   filename: string | null;
@@ -303,7 +307,7 @@ export async function registerModule4Video(
   input: { videoJobId: string },
 ): Promise<{ assetId: string; projectId: string }> {
   const row = db.prepare(`
-    SELECT id, projectId, shotSetId, status, localVideoPath, filename
+    SELECT id, projectId, shotSetId, shotId, status, localVideoPath, filename
     FROM video_jobs WHERE id = ?
   `).get(input.videoJobId) as Module4VideoJobRow | undefined;
   if (!row) {
@@ -369,6 +373,7 @@ export async function registerModule4Video(
     kind: 'module4',
     videoJobId: row.id,
     shotSetId: row.shotSetId,
+    shotId: row.shotId ?? null,
     relativePath: toStorageRelativePath(storageRootOf(), absolutePath),
   };
   const assetId = resolveAssetId(db, row.projectId, 'module4', location, fingerprint, {
@@ -511,6 +516,33 @@ export function resolveModule4AssetDisplayNames(
   for (const [videoJobId, displayName] of displayNames) {
     const assetId = assetIdByVideoJobId.get(videoJobId);
     if (assetId) result.set(assetId, displayName);
+  }
+  return result;
+}
+
+/**
+ * 批量素材的同源键（shotId）：按 module4 来源反查素材所属分镜位。
+ * 只做读取；linked/managed 来源与自由素材（无 shot）不出现在结果里，
+ * 调用方据此把素材归到 `shot:<shotId>` 同源组，缺失时回落素材自身一组。
+ */
+export function resolveModule4AssetShotIds(
+  db: Database.Database,
+  assetIds: Array<string>,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  const ids = [...new Set(assetIds.filter((id) => typeof id === 'string' && id))];
+  if (ids.length === 0) return result;
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT assetId, locationJson FROM batch_asset_sources
+    WHERE sourceKind = 'module4' AND assetId IN (${placeholders})
+    ORDER BY createdAt, id
+  `).all(...ids) as Array<{ assetId: string; locationJson: string }>;
+  for (const row of rows) {
+    if (result.has(row.assetId)) continue;
+    const location = parseSourceLocation('module4', row.locationJson);
+    if (location.kind !== 'module4' || !location.shotId) continue;
+    result.set(row.assetId, location.shotId);
   }
   return result;
 }

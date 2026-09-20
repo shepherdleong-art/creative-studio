@@ -8,7 +8,7 @@ import { scriptTitleRequirements } from './title-policy.ts';
  * 响应解析、文字差异（LCS）、残留检查。除注明「适配」处外，提示词均为源项目原文迁移。
  */
 
-export const TEMPLATE_REWRITE_VERSION = 'template-rewrite-v2';
+export const TEMPLATE_REWRITE_VERSION = 'template-rewrite-v3';
 
 // Gemini 等推理模型的 max_tokens 包括推理 token；短 JSON 也不能只留 300/500。
 export const TEMPLATE_REWRITE_MAX_TOKENS = 8192;
@@ -313,10 +313,10 @@ export function buildDraftRequest(input: TemplateDraftPromptInput): { systemProm
       + '\n上面是同一参考文案已经改出来的版本。你的钩子、开头两句、卖点组织顺序、措辞和结尾句式都必须换一套写法，不得复述上面变体的成句（卖点仍然只从【产品卖点】里选）。'
     : '';
   const focusSec = input.focusPointNumber ? `\n\n【本条创作主线】优先围绕卖点 ${input.focusPointNumber} 写一个具体的生活事件，其他卖点仅作支撑，不要罗列全部卖点。主副标题都围绕这一个主线。` : '';
-  const structSec = input.structure ? '\n\n用【段名】标注段落\n结构：' + input.structure : '';
+  const structSec = input.structure ? '\n\n用 segments 的 label 字段标注纯段名（不带括号）\n结构：' + input.structure : '';
   const refSection = '\n\n【参考文案——请逐句对照模仿】\n' + input.refText;
   const systemPrompt = '你是带货文案改写专家。参考文案只是"骨架"：你要借鉴它的语气、节奏、开头钩子和结构，原文是故事就保留故事、是选购指南就保留选购指南，不要统一改成腰酸背痛的痛点套路；内容必须围绕我给你的【产品卖点】重新组织——把参考里讲它家产品的话，全部换成讲我家的产品（参数/材质/功能/场景/人群都要换成本家卖点对应的说法）。禁止直接照抄参考文案的成句，改动要明显但读起来自然、口语化。广告法要守。';
-  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"方案标题（4-16字，仿参考标题风格）","coverTitleParts":{"primary":"封面主标题（4-12字，人群/痛点/场景钩子）","secondary":"封面副标题（4-10字，具体卖点/收益）"},"note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；正文每段一个【段名】；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（仅计方案标题和正文的中文字数，不含封面主副标题与标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + focusSec + variantSec + input.styleGuide + '\n原文风格优先于文风预设；同模板多条保留钩子类型，但具体事件、主讲卖点和句子必须不同。' + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT + '\n\n【标题要求】\n' + scriptTitleRequirements({ requireCoverHook: true }).join('\n');
+  const userPrompt = '借鉴下面的参考文案（作为语气/节奏/结构参考），用我给出的【产品卖点】重新写本家产品文案：参考文案里的产品名、材质、尺寸、价格、场景、人群等凡是它家产品专属的信息，一律替换成我卖点里的本家信息；意思要换着说、句子要重写，避免与参考文案逐字相同。\n\n输出格式（必须严格遵守）：只返回一个 JSON 对象 {"title":"方案标题（4-16字，仿参考标题风格）","coverTitleParts":{"primary":"封面主标题（4-12字，人群/痛点/场景钩子）","secondary":"封面副标题（4-10字，具体卖点/收益）"},"note":"修改说明","segments":[{"label":"段名","text":"正文","refs":["1"]}]}；label 只填纯段名，不带【】；text 只填口播正文，不重复段名标签；refs 填该段实际用到的【产品卖点】编号（至少一段要有引用，不引用卖点的段填 []）。\n全篇总字数必须约' + input.targetChars + '字（仅计方案标题和正文的中文字数，不含封面主副标题与标点符号；合格范围 ' + min + '~' + max + ' 字），写完自己数一遍，超了精简、少了补足；每段只讲一个卖点，严禁重复；不要在正文输出字数统计之类的注释；note 写【修改说明】内容（相对参考模板改了哪些地方），没有可说明的留空字符串' + fixSec + TPL_GEN_HINT + draftSec + '\n\n我的产品卖点：\n' + sp + structSec + refSection + focusSec + variantSec + input.styleGuide + '\n原文风格优先于文风预设；同模板多条保留钩子类型，但具体事件、主讲卖点和句子必须不同。' + prevSec + '\n\n不碰广告法违禁词。' + input.stylePresetGuide + (input.stylePresetNeg || '') + TPL_NEG_HINT + '\n\n【标题要求】\n' + scriptTitleRequirements({ requireCoverHook: true }).join('\n');
   return { systemPrompt, userPrompt, maxTokens: TEMPLATE_REWRITE_MAX_TOKENS };
 }
 
@@ -421,7 +421,8 @@ export function parseSegmentedText(text: string): { title: string; segments: Arr
   let currentLabel = '文案';
   let currentText = '';
   for (const line of bodyText.split('\n').filter((l) => l.trim())) {
-    const m = line.match(/^【(.+?)】/);
+    // 模型偶尔返回嵌套括号；一次吃完整个标签，不能把外层 】 留进口播。
+    const m = line.match(/^\s*(?:【\s*)+([^【】]+?)(?:\s*】)+/);
     if (m) {
       if (currentText) {
         const t = currentText.trim();
@@ -429,7 +430,7 @@ export function parseSegmentedText(text: string): { title: string; segments: Arr
         currentText = '';
       }
       currentLabel = m[1]!.trim();
-      currentText = line.replace(/^【.+?】/, '').trim() + '\n';
+      currentText = line.slice(m[0].length).trim() + '\n';
     } else if (/^标题[：:]\s*\S/.test(line.trim()) || /^正文[：:]?\s*$/.test(line.trim())) {
       continue;
     } else {
@@ -452,7 +453,10 @@ export function parseDraftResponse(raw: unknown): TemplateDraftParsed | null {
   const segments: Array<{ label: string; text: string; refs: string[] }> = [];
   for (const item of rawSegments) {
     const seg = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {};
-    const label = typeof seg.label === 'string' ? seg.label.trim() : '';
+    // label 是纯段名，后续润色请求会统一加【】；先剥除模型自带的外层括号。
+    const label = typeof seg.label === 'string'
+      ? seg.label.trim().replace(/^(?:【\s*)+|(?:\s*】)+$/g, '').trim()
+      : '';
     const text = typeof seg.text === 'string' ? seg.text.trim() : (typeof seg.narration === 'string' ? (seg.narration as string).trim() : '');
     const refs = (Array.isArray(seg.refs) ? seg.refs : (Array.isArray(seg.sellingPointIds) ? seg.sellingPointIds : []))
       .map((value) => String(value ?? '').trim()).filter(Boolean);

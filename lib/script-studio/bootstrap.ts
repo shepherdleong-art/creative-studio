@@ -37,7 +37,7 @@ import {
 // v21：核验后全局组织卖点＋详解，运行时与展示、脚本输入使用同一份完整卖点。
 // v22：模板改写生成并保留封面主副标题，接入三字段校验和定向标题修复。
 // v23：普通长图切片复用一次整页缩放结果，避免每张切片重复缩放/编码整页。
-const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 25;
+const SCRIPT_STUDIO_SCHEDULER_EXECUTOR_VERSION = 26;
 const SCRIPT_STUDIO_SCHEDULER_VERSION_KEY = Symbol.for('creative-studio.script-studio-scheduler-version');
 const SCRIPT_STUDIO_SCHEDULER_START_KEY = Symbol.for('creative-studio.script-studio-scheduler-start');
 

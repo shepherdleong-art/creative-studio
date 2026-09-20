@@ -37,7 +37,7 @@ db.exec(`
     inputSnapshot TEXT NOT NULL, outputJson TEXT NOT NULL, createdAt TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE video_jobs (
-    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, sourceImageId TEXT NOT NULL,
+    id TEXT PRIMARY KEY, projectId TEXT NOT NULL, shotSetId TEXT, shotId TEXT, sourceImageId TEXT NOT NULL,
     providerId TEXT NOT NULL, model TEXT NOT NULL, prompt TEXT NOT NULL,
     durationSec INTEGER NOT NULL DEFAULT 5, status TEXT NOT NULL DEFAULT 'pending',
     localVideoPath TEXT, filename TEXT, createdAt TEXT NOT NULL DEFAULT (datetime('now'))

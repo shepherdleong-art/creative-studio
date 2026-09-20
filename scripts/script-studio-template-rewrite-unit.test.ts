@@ -114,6 +114,25 @@ assert.equal(segmented.title, '分段标题');
 assert.equal(segmented.segments.length, 2);
 assert.equal(segmented.segments[0]!.text, '第一句\n第二句');
 
+// 段名自带括号时，经过 JSON 首稿 → 润色文本 → 重解析，不能污染口播。
+for (const label of ['钩子', '【钩子】', ' 【【钩子】】 ']) {
+  const draft = parseDraftResponse({ segments: [{ label, text: '我跟你说，绘本终于有地儿了。', refs: ['1'] }] })!;
+  const polished = parseSegmentedText(draft.segments.map((seg) => `【${seg.label}】${seg.text}`).join('\n'));
+  assert.equal(polished.segments[0]!.text, '我跟你说，绘本终于有地儿了。', `段名 ${label} 不得残留右括号`);
+  assert.equal(draft.segments[0]!.label, '钩子');
+  assert.deepEqual(draft.segments[0]!.refs, ['1']);
+}
+assert.deepEqual(
+  parseSegmentedText('  【【钩子】】我跟你说。\n 【 【卖点】 】可以放【绘本】和玩具。').segments,
+  [{ label: '钩子', text: '我跟你说。' }, { label: '卖点', text: '可以放【绘本】和玩具。' }],
+  '润色返回嵌套段名时完整解析标签，保留正文中的括号',
+);
+assert.equal(parseSegmentedText('【卖点】【绘本】也能放。').segments[0]!.text, '【绘本】也能放。');
+assert.equal(parseDraftResponse({ segments: [
+  { label: '【钩子】', text: '正文里保留【绘本】。' },
+  { label: '【修改说明】', text: '换成了书柜' },
+] })!.note, '换成了书柜', '规范化后的修改说明仍正确提取');
+
 // ---- 残留检查（A07）：连续相同 ≥12 中文字 ----
 const ref = '这款意式极简沙发真的太好看了吧放在客厅特别有氛围感';
 assert.deepEqual(findResidualRuns(ref, '完全不一样的话'), []);

@@ -829,4 +829,32 @@ for (const stubborn of [false, true]) {
   db.close();
 }
 
+// 段名括号不得经首稿/去 AI 味/朗读检查流入口播、字幕或持久化正文。
+for (const stage of ['draft', 'humanize', 'smooth']) {
+  const { db } = await freshEnv(`brackets-${stage}`);
+  try {
+    const library = await seedLibrary(db);
+    const taskId = createRewriteTask(db, library.id, [makeTemplate()], `brackets-${stage}`);
+    const nestedText = `【【钩子】】${SEG_OK_1}\n【【逼单】】${SEG_OK_2}`;
+    const llm = makeFakeLlm({
+      draftSegments: () => [
+        { label: stage === 'draft' ? '【钩子】' : '钩子', text: SEG_OK_1, refs: ['1'] },
+        { label: stage === 'draft' ? '【逼单】' : '逼单', text: SEG_OK_2, refs: ['2'] },
+      ],
+      ...(stage === 'humanize' ? { humanizeResult: { text: nestedText } } : {}),
+      ...(stage === 'smooth' ? { smoothResult: { text: nestedText } } : {}),
+    });
+    const result = await executeScriptStudioTask(makeTaskDeps(db, taskId, llm, 1));
+    assert.equal(result.succeededCount, 1);
+    const [content] = savedRewriteContents(db);
+    assert.equal(content!.fullScript, `${SEG_OK_1}\n${SEG_OK_2}`, `${stage} 的嵌套标签不能污染保存正文`);
+    assert.deepEqual(content!.segments.map(s => s.narration), [SEG_OK_1, SEG_OK_2]);
+    assert.ok(content!.segments.every(s => !/[【】]/.test(s.subtitle)));
+    assert.equal(content!.templateRewrite!.humanizeDegraded, '');
+    assert.equal(content!.templateRewrite!.smoothDegraded, '');
+  } finally {
+    db.close();
+  }
+}
+
 console.log('script-studio-template-rewrite tests passed');

@@ -14,7 +14,7 @@ import { BATCH_NARRATION_SCHEMA_VERSION } from './narration.ts';
  * 不同历史快照上渐进迁移。
  */
 
-export const BATCH_ALLOCATION_RULE_VERSION = 'batch-allocation-v1';
+export const BATCH_ALLOCATION_RULE_VERSION = 'batch-allocation-v2';
 export const BATCH_ALLOCATION_SCHEMA_VERSION = 'batch-arrangement-v1';
 
 /**
@@ -23,6 +23,16 @@ export const BATCH_ALLOCATION_SCHEMA_VERSION = 'batch-arrangement-v1';
  * 候选被同等惩罚、相对排序不变,自然回退复用,不会卡死。
  */
 const REALLOCATION_AVOID_PENALTY = 150;
+
+/**
+ * 同源素材(同一分镜位的不同版次,如 V01/V02)进入同一条成片的软互斥惩罚。
+ * 量级与 REALLOCATION_AVOID_PENALTY 相同:有非同组替代时同源素材必然让位;
+ * 池子耗尽时相对排序不变、自然回退并显式 warning(same-shot-reused)。
+ * 只罚「同组不同素材」——同一素材复用不同窗口仍走 reuseCount 轻罚,
+ * stitch 兜底把一条长素材切成多 chunk 的设计行为不受影响。
+ * v1 → v2:新增本惩罚(ruleVersion 是分配 run 幂等键之一,旧 run 不复用)。
+ */
+const SAME_SHOT_GROUP_PENALTY = 150;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -49,6 +59,8 @@ export interface AllocationAssetInput {
   id?: string;
   analysisId?: string;
   contentFingerprint?: string;
+  /** 同源互斥键:module4 素材的分镜位身份;空值时回落素材自身一组(行为同旧规则)。 */
+  shotId?: string | null;
   durationUs?: number;
   analysisJson?: unknown;
   analysis?: unknown;
@@ -299,6 +311,8 @@ interface NormalizedAsset {
   assetId: string;
   analysisId: string;
   fingerprint: string;
+  /** 同源组键:`shot:<shotId>` 或回落 `asset:<assetId>`;同一条成片内同组不同素材受软互斥惩罚。 */
+  groupKey: string;
   durationUs: number;
   scenes: NormalizedScene[];
   coverFrameTimesUs: number[];
@@ -483,10 +497,13 @@ function normalizeAsset(rawAsset: AllocationAssetInput): NormalizedAsset {
   if (!normalizedScenes.length && durationUs > 0) {
     normalizedScenes.push({ startUs: 0, endUs: durationUs, qualityScore: 0.5, labels: [], index: 0 });
   }
+  const assetId = nonEmptyString(rawAsset.assetId ?? rawAsset.id);
+  const shotId = nonEmptyString(rawAsset.shotId);
   return {
-    assetId: nonEmptyString(rawAsset.assetId ?? rawAsset.id),
+    assetId,
     analysisId: nonEmptyString(rawAsset.analysisId, ''),
     fingerprint: nonEmptyString(rawAsset.contentFingerprint, ''),
+    groupKey: shotId ? `shot:${shotId}` : `asset:${assetId}`,
     durationUs,
     scenes: normalizedScenes
       .map((scene, index) => ({ ...scene, endUs: Math.min(scene.endUs, durationUs), index }))
@@ -724,6 +741,38 @@ function intervalOverlaps(interval: { assetId: string; startUs: number; endUs: n
   return used.filter((entry) => entry.assetId === interval.assetId && overlapLength(interval.startUs, interval.endUs, entry.startUs, entry.endUs) > 0);
 }
 
+/**
+ * 本成片已用的同源组与素材集合(同源软互斥的判定来源)。
+ * 按 planId 过滤:跨成片不互斥(N 份成片自然消化不同版次);单条重分配时
+ * 历史版本占用以目标 planId 登记,天然纳入同组避让(换一批连同源兄弟一起换)。
+ */
+function usedShotGroupsInPlan(
+  usedIntervals: UsedInterval[],
+  planId: string,
+  assetById: Map<string, NormalizedAsset>,
+): { usedGroupKeys: Set<string>; usedAssetIds: Set<string> } {
+  const usedGroupKeys = new Set<string>();
+  const usedAssetIds = new Set<string>();
+  for (const entry of usedIntervals) {
+    if (entry.planId !== planId) continue;
+    usedAssetIds.add(entry.assetId);
+    const groupKey = assetById.get(entry.assetId)?.groupKey;
+    if (groupKey) usedGroupKeys.add(groupKey);
+  }
+  return { usedGroupKeys, usedAssetIds };
+}
+
+/** 同组不同素材才受重罚;同一素材复用不同窗口仍只走 reuseCount 轻罚。 */
+function sameShotGroupPenalty(
+  asset: NormalizedAsset,
+  usedGroupKeys: Set<string>,
+  usedAssetIds: Set<string>,
+): number {
+  return usedGroupKeys.has(asset.groupKey) && !usedAssetIds.has(asset.assetId)
+    ? SAME_SHOT_GROUP_PENALTY
+    : 0;
+}
+
 /** 场景范围内未被已用区间占用的空闲子区间(按起点升序)。 */
 function freeSubIntervals(scene: NormalizedScene, used: UsedInterval[]): Array<[number, number]> {
   const free: Array<[number, number]> = [];
@@ -886,11 +935,15 @@ function stitchSegment(
   warnings: string[],
 ): void {
   const durationUs = Math.max(1, segment.endUs - segment.startUs);
+  const stitchAssetById = new Map(normalized.assets.map((asset) => [asset.assetId, asset]));
   let filledUs = 0;
   let part = 0;
   let overlapFallbackUsed = false;
+  let sameShotFallbackUsed = false;
   while (filledUs < durationUs) {
     const remainingUs = durationUs - filledUs;
+    // 每轮重建:上一 chunk 已登记占用,同源组集合随之收紧。
+    const { usedGroupKeys, usedAssetIds } = usedShotGroupsInPlan(usedIntervals, plan.planId, stitchAssetById);
     const candidates: StitchCandidate[] = [];
     for (const ignoreUsed of [false, true]) {
       if (ignoreUsed && overlapFallbackUsed) continue;
@@ -913,7 +966,7 @@ function stitchSegment(
               scene,
               startUs: subStartUs,
               lengthUs,
-              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0),
+              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
               tie: stableHash(`${normalized.seed}:${plan.planId}:${segment.id}:${asset.assetId}:${scene.index}:part:${part}`),
             });
           }
@@ -927,6 +980,7 @@ function stitchSegment(
     if (!candidates.length) break;
     candidates.sort((a, b) => b.score - a.score || b.lengthUs - a.lengthUs || a.tie - b.tie || a.asset.assetId.localeCompare(b.asset.assetId) || a.startUs - b.startUs);
     const chunk = candidates[0]!;
+    if (sameShotGroupPenalty(chunk.asset, usedGroupKeys, usedAssetIds)) sameShotFallbackUsed = true;
     part += 1;
     const clip: AllocationClip = {
       clipId: `${plan.planId}:clip:${segment.id}:part:${part}`,
@@ -949,6 +1003,7 @@ function stitchSegment(
     filledUs += chunk.lengthUs;
   }
   if (overlapFallbackUsed) warnings.push(`source-overlap:${segment.id}`);
+  if (sameShotFallbackUsed) warnings.push(`same-shot-reused:${segment.id}`);
   if (filledUs >= durationUs) warnings.push(`stitched-segment:${segment.id}`);
 }
 
@@ -1141,6 +1196,8 @@ function assignOne(
     }
 
     const candidates: Array<{ asset: NormalizedAsset; scene: NormalizedScene; startUs: number; endUs: number; score: number; overlap: number; sameOpening: boolean; tie: number }> = [];
+    // 每个单元重建:上一单元选中已登记占用,同源组集合随之收紧。
+    const { usedGroupKeys, usedAssetIds } = usedShotGroupsInPlan(usedIntervals, plan.planId, assetById);
     for (const asset of availableAssets) {
       for (const scene of asset.scenes) {
         if (scene.endUs - scene.startUs < durationUs || asset.durationUs < durationUs) continue;
@@ -1160,7 +1217,7 @@ function assignOne(
             scene,
             startUs,
             endUs,
-            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0),
+            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
             overlap,
             sameOpening,
             tie: stableHash(`${normalized.seed}:${plan.planId}:${unit.unitId}:${asset.assetId}:${scene.index}:${startUs}`),
@@ -1195,6 +1252,7 @@ function assignOne(
     if (avoided) warnings.push(`previous-version-reused:${unit.unitId}`);
     if (semantic < 0.35) warnings.push(`semantic-degraded:${unit.unitId}`);
     if (candidate.sameOpening) warnings.push(`opening-reused:${unit.unitId}`);
+    if (sameShotGroupPenalty(candidate.asset, usedGroupKeys, usedAssetIds)) warnings.push(`same-shot-reused:${unit.unitId}`);
     const clip: AllocationClip = {
       clipId: `${plan.planId}:clip:${unit.unitId}`,
       segmentId: unit.unitId,
