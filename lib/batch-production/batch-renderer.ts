@@ -11,6 +11,7 @@ import { probeDurationSec, probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { writeLog } from '../logger.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
 import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
+import { runExportVideo } from '../media-core/export-video-encoder.ts';
 import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
 import { applyFrozenCoverTitleToFile } from './cover-title.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
@@ -1007,12 +1008,12 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         : `渲染静音视觉候选与 ${subtitleCues.length} 条预计字幕`,
     });
     assertSignal(signal);
-    await runFfmpeg([
+    await runExportVideo([
       ...args,
       '-filter_complex', filters.join(';'),
       '-map', '[vout]', '-map', '[aout]',
       '-t', totalDurationSec.toFixed(6), '-r', '24',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-ar', '48000', '-ac', '2',
       '-movflags', '+faststart', '-progress', 'pipe:1', '-f', 'mp4', '-y', videoTemp,
     ], {

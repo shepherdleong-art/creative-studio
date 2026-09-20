@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { runFfmpeg, probeDurationSec } from '../ffmpeg.ts';
+import { probeDurationSec } from '../ffmpeg.ts';
+import { runExportVideo } from '../media-core/export-video-encoder.ts';
 import { FINAL_EDIT_INTRO_DURATION_US, OUTPUT_PRESETS, type FinalEditVariantView, type OutputPresetId, type SubtitleCue, type TextStyle } from './types.ts';
 import { resolveStoragePath } from './storage-path.ts';
 import { resolveImportedExternalAssetVideoPath } from './material-import.ts';
@@ -192,7 +193,7 @@ export async function renderFinalEditSnapshot(input: {
   const tempVideo = path.join(jobDir, 'final.mp4.tmp');
   const finalVideo = path.join(jobDir, 'final.mp4');
   assertNotAborted(input.signal);
-  await runFfmpeg([...args, '-filter_complex_script', filterFile, '-map', `[${currentVideo}]`, '-map', '[audio]', '-t', totalSec.toFixed(6), '-r', '24', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-movflags', '+faststart', '-f', 'mp4', '-progress', 'pipe:1', '-y', tempVideo], {
+  await runExportVideo([...args, '-filter_complex_script', filterFile, '-map', `[${currentVideo}]`, '-map', '[audio]', '-t', totalSec.toFixed(6), '-r', '24', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-movflags', '+faststart', '-f', 'mp4', '-progress', 'pipe:1', '-y', tempVideo], {
     timeoutMs: 30 * 60_000,
     onProgressSec: (outTimeSec) => input.onProgress?.(Math.max(0, Math.min(1, outTimeSec / totalSec))),
     signal: input.signal,
