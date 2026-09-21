@@ -4,6 +4,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
 import MotionTemplateSettings from '@/components/MotionTemplateSettings';
+import VideoDurationInput from '@/components/VideoDurationInput';
+import { clampVideoDuration, videoDurationRange } from '@/lib/video-duration';
 import CompanyProviderRuntimeStatus from '@/components/company-provider/CompanyProviderRuntimeStatus';
 import ScriptKnowledgeSettings from '@/components/script-studio/ScriptKnowledgeSettings';
 import {
@@ -601,7 +603,9 @@ function ProviderForm({
       </Field>
 
       <Field label={category === 'video' ? '默认模型' : '模型名'}>
-        <input value={form.model} onChange={(e) => onChange({ ...form, model: e.target.value })} className="input-field" placeholder="gpt-4o / kling-v3" />
+        <input value={form.model} onChange={(e) => onChange({ ...form, model: e.target.value,
+          ...(category === 'video' ? { defaultDurationSec: clampVideoDuration(form.defaultDurationSec, videoDurationRange(e.target.value)) } : {}),
+        })} className="input-field" placeholder="gpt-4o / kling-v3" />
       </Field>
 
       {isVideoKling ? (
@@ -634,8 +638,8 @@ function ProviderForm({
       )}
 
       {category === 'video' && (
-        <Field label="默认时长 (秒)">
-          <input type="number" min="2" max="15" value={form.defaultDurationSec} onChange={(e) => onChange({ ...form, defaultDurationSec: Number(e.target.value) || 5 })} className="input-field" />
+        <Field label={`默认时长（${videoDurationRange(form.model).min}–${videoDurationRange(form.model).max} 秒）`}>
+          <VideoDurationInput range={videoDurationRange(form.model)} value={form.defaultDurationSec} onChange={(value) => onChange({ ...form, defaultDurationSec: value })} className="input-field" />
         </Field>
       )}
 

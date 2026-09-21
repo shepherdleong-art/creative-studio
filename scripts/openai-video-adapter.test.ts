@@ -253,6 +253,26 @@ try {
     assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds', 'size']);
   }
 
+  // 各模型有效秒数必须原样进入网关，2.5 的 30 秒不得被截为 15 秒。
+  for (const [model, min, max] of [
+    ['doubao-seedance-2-5-260628', 4, 30],
+    ['doubao-seedance-2-0-260128', 4, 15],
+    ['doubao-seedance-2-0-fast-260128', 4, 15],
+    ['kling-3.0', 3, 15],
+  ] as const) {
+    for (const durationSec of [min, max]) {
+      await openaiVideoAdapter.submit({ model, prompt: 'duration boundary', sourceImagePath: imagePath,
+        sourceMimeType: 'image/png', durationSec }, 'gateway-key', 'http://127.0.0.1:4000');
+      assert.equal(capturedBody?.seconds, String(durationSec));
+    }
+    const before = capturedMethods.length;
+    for (const durationSec of [min - 1, max + 1, 4.5]) {
+      await assert.rejects(openaiVideoAdapter.submit({ model, prompt: 'invalid duration', sourceImagePath: imagePath,
+        sourceMimeType: 'image/png', durationSec }, 'gateway-key', 'http://127.0.0.1:4000'), /视频时长/);
+    }
+    assert.equal(capturedMethods.length, before, 'Invalid duration must fail before network I/O');
+  }
+
   // Seedance 2.5：按官网 1080p 表送 size（源图 4:3 → 1664x1248），
   // 但不送 response_format（未核验字段），也不开智能分镜
   await openaiVideoAdapter.submit(

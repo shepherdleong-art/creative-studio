@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
 import { getDb } from '@/lib/db';
 import { resolveVideoProviderRuntimeConfig } from '@/lib/video-auth';
 import { getVideoProviderGatewayReadiness } from '@/lib/video-provider-schema-runtime';
@@ -78,6 +79,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const id = uuidv4();
     const type = body.type || 'jimeng';
+    const durationSec = parseVideoDuration(body.defaultDurationSec);
+    const durationError = videoDurationError(body.defaultModel || '', durationSec);
+    if (durationError) return NextResponse.json({ error: durationError }, { status: 400 });
     if (type === 'openai-video') {
       const readiness = await getVideoProviderGatewayReadiness();
       if (!readiness.available) {
@@ -99,7 +103,7 @@ export async function POST(request: Request) {
       type,
       body.defaultModel || '',
       body.enabled === false ? 0 : 1,
-      Number(body.defaultDurationSec || 5),
+      durationSec,
       body.baseUrl || '',
       type === 'kling' ? '' : (body.apiKey || ''),
       type === 'kling' ? (body.accessKey || '') : '',

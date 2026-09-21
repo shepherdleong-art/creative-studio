@@ -5,6 +5,8 @@ import { createPortal } from 'react-dom';
 import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
+import VideoDurationInput from '@/components/VideoDurationInput';
+import { clampVideoDuration, sharedVideoDurationRange, videoDurationError, videoDurationRange } from '@/lib/video-duration';
 import { Icon } from '@/components/ui/Icon';
 import {
   collectVideoMotionTailImageIds,
@@ -140,7 +142,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [bulkProgress, setBulkProgress] = useState<{ submitted: number; total: number } | null>(null);
   const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
   const [bulkProviderId, setBulkProviderId] = useState('');
-  const [bulkDuration, setBulkDuration] = useState('5');
+  const [bulkDuration, setBulkDuration] = useState(5);
   const selectVideoPreview = (jobId: string) => {
     previewSuppressedRef.current = false;
     setVideoPreviewJobId(jobId);
@@ -165,6 +167,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     providers.find((provider) => provider.id === getRowProviderId(row))?.tailFrameCapability;
   const getRowMultiShotCapability = (row: { providerId: string }): VideoProvider['multiShotCapability'] =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.multiShotCapability;
+  const getRowModel = (row: { providerId: string }): string =>
+    providers.find((provider) => provider.id === getRowProviderId(row))?.defaultModel || '';
+  const getRowDurationRange = (row: { providerId: string }) => videoDurationRange(getRowModel(row));
+  const getRowIssue = (row: VideoMotionRow) =>
+    getVideoMotionRowIssue(row, getRowTailCapability(row)) || videoDurationError(getRowModel(row), row.durationSec);
+  const withRowProvider = (row: VideoMotionRow, providerId: string): VideoMotionRow => ({
+    ...row, providerId, durationSec: clampVideoDuration(row.durationSec, getRowDurationRange({ providerId })),
+  });
 
   const makeEmptyRow = (): VideoMotionRow => createVideoMotionRow(crypto.randomUUID(), defaultDuration);
 
@@ -645,7 +655,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     replaceActiveMotionRows(result.rows);
   };
   const updateRowProvider = (rowKey: string, providerId: string) => {
-    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, providerId }));
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => withRowProvider(row, providerId));
     replaceActiveMotionRows(result.rows);
   };
   const updateRowMultiShot = (rowKey: string, multiShot: boolean) => {
@@ -654,8 +664,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
   const updateRowDuration = (rowKey: string, raw: number) => {
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
-      const v = Number.isFinite(raw) && raw > 0 ? raw : 5;
-      return { ...r, durationSec: Math.max(2, Math.min(15, v)) };
+      return { ...r, durationSec: clampVideoDuration(raw, getRowDurationRange(r)) };
     });
     replaceActiveMotionRows(result.rows);
   };
@@ -839,9 +848,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   };
 
   const handleCreateVideos = async (shotId: string) => {
-    const blockedRow = motionRows.find((row) => getVideoMotionRowIssue(row, getRowTailCapability(row)));
+    const blockedRow = motionRows.find((row) => getRowIssue(row));
     if (blockedRow) {
-      alert(getVideoMotionRowIssue(blockedRow, getRowTailCapability(blockedRow)));
+      alert(getRowIssue(blockedRow));
       return;
     }
     const items = motionRows
@@ -934,7 +943,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       safeShots.map((shot) => ({ shotId: shot.id, rows: getShotRows(shot.id) })),
       {
         shotsWithExistingJobs,
-        rowIssue: (row) => getVideoMotionRowIssue(row, getRowTailCapability(row)),
+        rowIssue: (row) => getRowIssue(row),
       },
     );
 
@@ -1048,10 +1057,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const updateBulkRowDuration = (shotId: string, rowKey: string, raw: number) => {
     if (creatingRef.current) return;
-    const value = Number.isFinite(raw) && raw > 0 ? raw : 5;
-    const durationSec = Math.max(2, Math.min(15, value));
     const rows = getShotRows(shotId);
-    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, durationSec } : row));
+    setShotRows(shotId, rows.map((row) => row.key === rowKey
+      ? { ...row, durationSec: clampVideoDuration(raw, getRowDurationRange(row)) } : row));
   };
 
   const applyBulkProvider = (providerId: string) => {
@@ -1062,17 +1070,17 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       return;
     }
     for (const shot of safeShots) {
-      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, providerId })));
+      setShotRows(shot.id, getShotRows(shot.id).map((row) => withRowProvider(row, providerId)));
     }
+    setBulkDuration((value) => clampVideoDuration(value, getRowDurationRange({ providerId })));
     setBulkStatus(`已将供应商应用到 ${safeShots.length} 个分镜。`);
   };
 
-  const applyBulkDuration = (raw: string) => {
+  const bulkDurationRange = sharedVideoDurationRange(safeShots.flatMap((shot) => getShotRows(shot.id).map(getRowModel)));
+  const applyBulkDuration = (durationSec: number) => {
     if (creatingRef.current) return;
-    setBulkDuration(raw);
-    const durationSec = Number(raw);
-    // 允许清空和输入两位数，完整有效的时长才同步到所有分镜。
-    if (!Number.isFinite(durationSec) || durationSec < 2 || durationSec > 15) return;
+    if (!Number.isInteger(durationSec) || durationSec < bulkDurationRange.min || durationSec > bulkDurationRange.max) return;
+    setBulkDuration(durationSec);
     for (const shot of safeShots) {
       setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, durationSec })));
     }
@@ -1580,12 +1588,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         <option value="">模板（可选）</option>
                         {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                       </select>
-                      <input
-                        type="number" min={2} max={15}
+                      <VideoDurationInput
+                        range={getRowDurationRange(row)}
                         value={row.durationSec}
-                        onChange={(e) => updateRowDuration(row.key, Number(e.target.value))}
+                        onChange={(value) => updateRowDuration(row.key, value)}
                         className="input-field video-control text-center"
-                        title="秒数"
                         disabled={creating}
                       />
                       {multiShotCapability?.supported === true && (
@@ -1648,7 +1655,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   disabled={creating
                     || configuredProviders.length === 0
                     || motionRows.every((r) => !r.prompt.trim())
-                    || motionRows.some((r) => Boolean(getVideoMotionRowIssue(r, getRowTailCapability(r))))}
+                    || motionRows.some((r) => Boolean(getRowIssue(r)))}
                   className="btn-primary btn-sm w-full video-create-action"
                 >
                   {creating
@@ -1740,17 +1747,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                 </div>
               </div>
               <div className="video-bulk-global-control">
-                <label htmlFor="bulk-duration">时长</label>
+                <label htmlFor="bulk-duration">统一时长（{bulkDurationRange.min}–{bulkDurationRange.max} 秒）</label>
                 <div className="video-bulk-global-control-row">
-                  <input
+                  <VideoDurationInput
                     id="bulk-duration"
-                    type="number"
-                    min={2}
-                    max={15}
+                    range={bulkDurationRange}
                     className="input-field video-control text-center"
                     value={bulkDuration}
-                    onChange={(event) => applyBulkDuration(event.target.value)}
-                    onBlur={() => applyBulkDuration(String(Math.max(2, Math.min(15, Number(bulkDuration) || 5))))}
+                    onChange={applyBulkDuration}
                     disabled={creating}
                   />
                   <span className="video-bulk-unit">秒</span>
@@ -1804,7 +1808,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
                     <div className="video-bulk-shot-rows">
                       {rows.map((row, rowIndex) => {
-                        const rowIssue = getVideoMotionRowIssue(row, getRowTailCapability(row));
+                        const rowIssue = getRowIssue(row);
                         const isAutoTransition = Boolean(row.tailImageId)
                           && row.prompt.trim() === TAIL_TRANSITION_DEFAULT_PROMPT;
                         const manualLocked = !isAutoTransition
@@ -1831,14 +1835,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               rows={2}
                               disabled={creating}
                             />
-                            <input
-                              type="number"
-                              min={2}
-                              max={15}
+                            <VideoDurationInput
+                              range={getRowDurationRange(row)}
                               className="input-field video-control video-bulk-duration"
                               value={row.durationSec}
-                              onChange={(event) => updateBulkRowDuration(shot.id, row.key, Number(event.target.value))}
-                              title="秒数"
+                              onChange={(value) => updateBulkRowDuration(shot.id, row.key, value)}
                               disabled={creating}
                             />
                             <div className="video-bulk-row-status" aria-label="运镜状态">

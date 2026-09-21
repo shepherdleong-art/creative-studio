@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { videoDurationError } from '../video-duration.ts';
 import type {
   VideoProviderAdapter,
   SubmitVideoRequest,
@@ -80,7 +81,7 @@ export const jimengAdapter: VideoProviderAdapter = {
   },
 
   minimumPollingTimeoutMs(request) {
-    if (isSeedance2(request.model) && request.durationSec === 15) {
+    if (isSeedance2(request.model) && request.durationSec >= 15) {
       return JIMENG_2_LONG_VIDEO_MIN_POLLING_MS;
     }
     return undefined;
@@ -111,6 +112,10 @@ export const jimengAdapter: VideoProviderAdapter = {
     console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
 
     const seedance2 = isSeedance2(request.model);
+    if (seedance2) {
+      const durationError = videoDurationError(request.model, request.durationSec);
+      if (durationError) throw new Error(durationError);
+    }
     const content: Array<Record<string, unknown>> = [
       {
         type: 'text',
@@ -136,7 +141,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       content,
       resolution: '1080p',
       ratio: 'adaptive',
-      duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),
+      duration: seedance2 ? request.durationSec : normalizeJimengDuration(request.durationSec),
       watermark: false,
       generate_audio: true,
     };

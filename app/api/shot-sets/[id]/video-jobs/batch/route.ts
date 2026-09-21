@@ -5,6 +5,7 @@ import { runVideoQueue, getVideoQueueStatus, DEFAULT_VIDEO_CONCURRENCY, DEFAULT_
 import { getVideoProviderConfigState } from '@/lib/video-auth';
 import { validateVideoTailFrameAsset, validateVideoTailFrameBatchDrafts } from '@/lib/video-tail-frame';
 import { normalizeVideoMultiShotForStorage } from '@/lib/video-multi-shot';
+import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
 import { countVideoJobsForShot, planVideoJobDisplayName } from '@/lib/video-output-filenames';
 
 const MAX_ITEMS = 10;
@@ -40,7 +41,7 @@ export async function POST(
         prompt: (obj.prompt as string)?.trim() || '',
         templateId: (obj.templateId as string) || null,
         providerId: (obj.providerId as string) || '',
-        durationSec: (() => { const v = Number(obj.durationSec); const sec = (Number.isFinite(v) && v > 0) ? v : 5; return Math.max(2, Math.min(15, sec)); })(),
+        durationSec: parseVideoDuration(obj.durationSec),
         tailImageId: typeof obj.tailImageId === 'string' && obj.tailImageId.trim()
           ? obj.tailImageId.trim()
           : null,
@@ -81,6 +82,10 @@ export async function POST(
       }
       const model = (prov.defaultModel || '').trim();
       providerCache.set(pid, { model, type: prov.type });
+    }
+    for (const [index, item] of items.entries()) {
+      const error = videoDurationError(providerCache.get(item.providerId)!.model, item.durationSec);
+      if (error) return NextResponse.json({ error: `第 ${index + 1} 条运镜：${error}` }, { status: 400 });
     }
 
     // Get project ID from shot set

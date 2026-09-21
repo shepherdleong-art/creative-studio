@@ -142,6 +142,18 @@ try {
     ),
     /tail frame.*unsupported/i,
   );
+  await jimengAdapter.submit({ model: 'doubao-seedance-2-5-260628', prompt: '30 seconds',
+    sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec: 30 },
+    'ark-key', 'https://ark.cn-beijing.volces.com/api/v3');
+  assert.equal(capturedBody?.duration, 30);
+  assert.equal(jimengAdapter.minimumPollingTimeoutMs?.({ model: 'doubao-seedance-2-5-260628', durationSec: 30 }), 15 * 60_000);
+  const beforeInvalid = capturedMethods.length;
+  for (const model of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128']) {
+    await assert.rejects(jimengAdapter.submit({ model, prompt: 'invalid 30 seconds',
+      sourceImagePath: imagePath, sourceMimeType: 'image/png', durationSec: 30 },
+      'ark-key', 'https://ark.cn-beijing.volces.com/api/v3'), /视频时长/);
+  }
+  assert.equal(capturedMethods.length, beforeInvalid);
 } finally {
   globalThis.fetch = originalFetch;
   fs.rmSync(tmpDir, { recursive: true, force: true });

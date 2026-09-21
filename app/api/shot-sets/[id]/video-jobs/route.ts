@@ -6,6 +6,7 @@ import { toStorageImageUrl } from '@/lib/storage-url';
 import { getVideoProviderConfigState } from '@/lib/video-auth';
 import { validateVideoTailFrameAsset } from '@/lib/video-tail-frame';
 import { normalizeVideoMultiShotForStorage } from '@/lib/video-multi-shot';
+import { parseVideoDuration, videoDurationError } from '@/lib/video-duration';
 import { countVideoJobsForShot, planVideoJobDisplayName, resolveVideoJobDisplayNames } from '@/lib/video-output-filenames';
 
 export async function POST(
@@ -21,7 +22,7 @@ export async function POST(
     const providerId = body.providerId as string;
     const templateId = (body.templateId as string) || null;
     const prompt = (body.prompt as string)?.trim();
-    const durationSec = Number(body.durationSec) || 5;
+    const durationSec = parseVideoDuration(body.durationSec);
     const tailImageId = typeof body.tailImageId === 'string' && body.tailImageId.trim()
       ? body.tailImageId.trim()
       : null;
@@ -29,7 +30,6 @@ export async function POST(
     if (!shotId) return NextResponse.json({ error: 'shotId is required' }, { status: 400 });
     if (!providerId) return NextResponse.json({ error: 'providerId is required' }, { status: 400 });
     if (!prompt) return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
-    if (durationSec < 2 || durationSec > 15) return NextResponse.json({ error: 'duration must be 2-15 seconds' }, { status: 400 });
 
     // Validate shot belongs to this shot set
     const shot = db.prepare(`SELECT * FROM shots WHERE id = ? AND shotSetId = ?`).get(shotId, shotSetId) as {
@@ -50,6 +50,8 @@ export async function POST(
       );
     }
     const model = (provider.defaultModel || '').trim();
+    const durationError = videoDurationError(model, durationSec);
+    if (durationError) return NextResponse.json({ error: durationError }, { status: 400 });
 
     // Use latest generated image, fallback to source image
     const sourceImageId = shot.latestGeneratedImageId || shot.sourceImageId;

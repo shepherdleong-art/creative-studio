@@ -16,6 +16,7 @@ import {
   uploadCompanyTailFrameImages,
 } from '../company-gateway-tail-frame.ts';
 import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
+import { videoDurationError } from '../video-duration.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -117,9 +118,8 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos`;
     const isQiniuKling = request.model === 'qiniuyun/kling-3.0';
-    if (isQiniuKling && (!Number.isInteger(request.durationSec) || request.durationSec < 3 || request.durationSec > 15)) {
-      throw new Error('七牛可灵 3.0 视频时长必须为 3–15 秒的整数');
-    }
+    const durationError = videoDurationError(request.model, request.durationSec);
+    if (durationError) throw new Error(durationError);
 
     const hasTailImagePath = request.tailImagePath !== undefined;
     const hasTailMimeType = request.tailMimeType !== undefined;
