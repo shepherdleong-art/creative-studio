@@ -1,5 +1,5 @@
 /**
- * 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发）的
+ * 公司模型网关（地址由本地代理配置提供，经 LiteLLM 转发）的
  * size 白名单与吸附逻辑。
  *
  * 网关只接受《小林生影_AIGC模型调用文档》第 6 节列出的「宽x高」组合；
