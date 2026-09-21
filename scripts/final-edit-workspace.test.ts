@@ -640,7 +640,7 @@ const deleteResult = workspace.apply({
   scope: 'variant', variantId: first.id, expectedRevision: first.revision,
   type: 'delete_clip', clipId: first.timeline.clips[0].id,
 });
-assert.ok((deleteResult.view as FinalEditVariantView).issues.some((issue) => issue.code === 'timeline_gap' && issue.severity === 'blocking'));
+assert.ok((deleteResult.view as FinalEditVariantView).issues.some((issue) => issue.code === 'timeline_gap' && issue.severity === 'warning'));
 
 assert.throws(() => workspace.apply({
   scope: 'variant', variantId: first.id, expectedRevision: first.revision,
@@ -649,7 +649,7 @@ assert.throws(() => workspace.apply({
 
 await assert.rejects(
   workspace.enqueueRender({ groupId: group.id, variantId: first.id, expectedGroupRevision: group.revision, expectedVariantRevision: deleteResult.view.revision, overlayBundleId: 'missing' }),
-  (error: unknown) => error instanceof FinalEditError && error.code === 'timeline_gap',
+  (error: unknown) => error instanceof FinalEditError && error.code === 'overlay_bundle_stale',
 );
 
 const restored = workspace.apply({ scope: 'variant', variantId: first.id, expectedRevision: deleteResult.view.revision, type: 'restore_revision', revision: 0 });

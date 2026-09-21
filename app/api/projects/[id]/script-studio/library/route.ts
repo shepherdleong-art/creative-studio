@@ -51,6 +51,7 @@ export async function POST(
     await assertScriptStudioApiReady();
     const { id: projectId } = await params;
     const body = await jsonOrNull(request);
+    const baseRevisionId = typeof body?.baseRevisionId === 'string' ? body.baseRevisionId : undefined;
     const edits = Array.isArray(body?.edits) ? body!.edits.map((item) => {
       const value = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       return {
@@ -59,10 +60,11 @@ export async function POST(
         disabledByUser: typeof value.disabledByUser === 'boolean' ? value.disabledByUser : undefined,
         factText: typeof value.factText === 'string' ? value.factText : undefined,
         title: typeof value.title === 'string' ? value.title : undefined,
+        detailText: typeof value.detailText === 'string' ? value.detailText : undefined,
       };
     }) : [];
     if (edits.length === 0) throw new ScriptStudioError('invalid_input', '至少需要修改一条卖点');
-    const revision = manualEditLibraryRevision(getDb(), projectId, edits);
+    const revision = manualEditLibraryRevision(getDb(), projectId, edits, { baseRevisionId });
     return NextResponse.json({ revision }, { status: 201 });
   } catch (error) {
     const result = errorResponse(error);

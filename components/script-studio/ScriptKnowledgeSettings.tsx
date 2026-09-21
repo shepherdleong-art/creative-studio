@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import ViralTemplateSettings from './ViralTemplateSettings';
 
 /**
  * 设置页「脚本知识与模板」区块（方案 §6.4）：
@@ -305,6 +306,7 @@ export default function ScriptKnowledgeSettings() {
         </div>
       )}
       {catalogs.map((catalog) => renderCatalog(catalog))}
+      <ViralTemplateSettings />
       <div className="flex gap-2 rounded-[18px] bg-surface-subtle p-4 text-sm text-ink-secondary">
         <Icon name="lock" size={16} className="mt-0.5 shrink-0 text-ink-tertiary" />
         <p>

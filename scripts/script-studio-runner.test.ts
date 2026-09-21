@@ -14,9 +14,11 @@ import {
   SCRIPT_STUDIO_SCHEDULER_KEY,
   type ScriptStudioSchedulerController,
 } from '../lib/script-studio/scheduler.ts';
-import { createScriptGenerator, buildDeterministicFallbackScript, type ScriptGenerator } from '../lib/script-studio/generator.ts';
+import { buildDeterministicFallbackScript } from './script-studio-fixture.ts';
+import type { ScriptGenerator } from '../lib/script-studio/generator.ts';
 import type { VisionExtractionResult, VisionExtractor } from '../lib/script-studio/adapters/vision-extract.ts';
 import type { EvidenceReprobe } from '../lib/script-studio/adapters/reprobe.ts';
+import { createSellingPointOrganizer } from '../lib/script-studio/selling-point-organizer.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-script-studio-runner-'));
 const db = new Database(path.join(root, 'workbench.db'));
@@ -162,6 +164,17 @@ const result = await executeScriptStudioTask(runDeps);
 assert.equal(result.status, 'succeeded');
 assert.equal(result.succeededCount, 2);
 assert.equal(result.scriptIds.length, 2);
+// 已保存首轮资产与方案后重入：不得再次识图、核验或生成。
+const replayed = await executeScriptStudioTask({
+  ...runDeps,
+  visionExtractor: { async extract() { throw new Error('恢复不得重新识图'); } },
+  reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('恢复不得重新核验'); } },
+  generator: { async generate() { throw new Error('恢复不得重做已保存方案'); } },
+});
+assert.equal(replayed.status, 'succeeded');
+assert.deepEqual(replayed.scriptIds, result.scriptIds);
+assert.equal((db.prepare('SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?').get(task.task.id) as { n: number }).n, 2);
+
 assert.equal(maxGenerationInFlight, 2, '多条初稿应有界并行生成，避免纯串行累加供应商长尾');
 // plan 阶段快照必须记录本轮全部方向卖点包：主题、必选/可选卖点 ID、候选数量与编排理由。
 const planStageRow = db.prepare(`
@@ -299,6 +312,30 @@ assert.equal(concreteConflictResult.status, 'failed', '同主干的两个具体�
 assert.equal(concreteConflictResult.errorCode, 'invalid_input');
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM script_studio_library_revisions`).get() as { n: number }).n, libraryCountBeforeConcreteConflict);
 assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n, scriptCountBeforeConcreteConflict);
+
+// 用户的实际文件名与逐页身份：必须经过提取、证据检查并成功生成。
+for (const [index, id] of ['img-1', 'img-2'].entries()) {
+  db.prepare('UPDATE image_assets SET filename = ? WHERE id = ?').run(
+    `PS515-A组合-商品详情1200-双色沙发+PS513-A(${index + 1}).jpg`, id,
+  );
+}
+const seriesTask = createTask(db, {
+  projectId: 'p1', requestKey: 'series-detail-identity', mode: 'first_extraction',
+  sourceSetId: 'source-2', requestedCount: 1,
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+});
+const seriesResult = await executeScriptStudioTask({
+  db, projectId: 'p1', taskId: seriesTask.task.id, sourceSetId: 'source-2',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '' },
+  visionExtractor: makeVariantIdentityExtractor([
+    { pageIndex: 0, productName: '双色沙发', category: '沙发', brand: 'Oxhide' },
+    { pageIndex: 1, productName: 'PS515-A组合', category: '沙发', brand: 'Oxhide' },
+  ]),
+  reprobe, generator: makeGenerator(),
+});
+assert.equal(seriesResult.status, 'succeeded', '同系列详情页不得因颜色名和组合名差异失败');
+db.prepare('UPDATE image_assets SET filename = ? WHERE id = ?').run('20260909-203732.872-2.jpg', 'img-1');
+db.prepare('UPDATE image_assets SET filename = ? WHERE id = ?').run('20260909-203732.872-14.jpg', 'img-2');
 
 // 真混商品：两页识别出明显不同的商品名，仍必须拦截并报出各页识别结果。
 const conflictTask = createTask(db, {
@@ -544,6 +581,7 @@ manualEditLibraryRevision(db, 'p1', currentBeforeLock.sellingPoints.map((point) 
   usable: false,
   disabledByUser: true,
 })), { now: () => new Date('2026-08-31T00:14:00.000Z') });
+assert.throws(() => manualEditLibraryRevision(db, 'p1', [], { baseRevisionId: currentBeforeLock.id }), /卖点列表已更新/, '旧版选择不能覆盖新版卖点库');
 const lockedRevisionId = getCurrentLibraryRevision(db, 'p1')!.id;
 const scriptCountBefore = (db.prepare(`SELECT COUNT(*) AS n FROM project_scripts`).get() as { n: number }).n;
 const insufficientTask = createTask(db, {
@@ -581,6 +619,58 @@ assert.equal(
 );
 
 // 复用历史卖点库时 runner 必须把来源页数传给本地结构重验，不能让 pageIndex=999 继续生成。
+// 快方案必须在慢方案仍运行时落库；中断恢复不重做已保存方向。
+{
+  const inputSnapshot = { targetDurationSec: 15, requestedCount: 2 };
+  const streamingTask = createTask(db, {
+    projectId: 'p1', requestKey: 'stream-ready-before-slow', mode: 'reuse',
+    libraryRevisionId: currentBeforeLock.id, requestedCount: 2, inputSnapshot,
+  }).task;
+  updateTask(db, 'p1', streamingTask.id, { status: 'running' });
+  const controller = new AbortController();
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
+  const streamingDeps: ScriptStudioRunDeps = {
+    db, projectId: 'p1', taskId: streamingTask.id, inputSnapshot,
+    libraryRevisionId: currentBeforeLock.id, visionExtractor, reprobe,
+    signal: controller.signal,
+    generator: {
+      async generate(input) {
+        if (input.plan.index === 1) {
+          await slow;
+          throw new DOMException('stopped slow proposal', 'AbortError');
+        }
+        return { content: fixtureContent(input), attempts: 1 };
+      },
+    },
+  };
+  const running = executeScriptStudioTask(streamingDeps);
+  const savedCount = () => (db.prepare(
+    'SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?',
+  ).get(streamingTask.id) as { n: number }).n;
+  const deadline = Date.now() + 500;
+  while (savedCount() === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  const savedWhileSlow = savedCount();
+  const liveCount = getTask(db, 'p1', streamingTask.id)!.succeededCount;
+  controller.abort();
+  releaseSlow();
+  await running;
+  assert.equal(savedWhileSlow, 1, '快方案应在慢方案未完成时保存，不能等待整组 Promise.all');
+  assert.equal(liveCount, 1, '运行中成功数应立即更新，供前端加载结果');
+  const resumedPlans: number[] = [];
+  const resumed = await executeScriptStudioTask({
+    ...streamingDeps, signal: undefined,
+    generator: { async generate(input) {
+      resumedPlans.push(input.plan.index);
+      throw new Error('missing proposal still fails');
+    } },
+  });
+  assert.deepEqual(resumedPlans, [1], '恢复时只执行尚未保存的方向');
+  assert.equal(resumed.succeededCount, 1);
+  assert.equal(resumed.status, 'partial');
+  assert.equal(savedCount(), 1, '恢复不能产生重复版本');
+}
+
 const invalidHistoricalRevision = createLibraryRevision(db, {
   projectId: 'p1',
   sourceSetId: 'source-1',
@@ -626,6 +716,96 @@ assert.equal(
   'evidence_insufficient',
   '历史页码越界卖点必须在复用 plan 阶段失败关闭',
 );
+
+// 仅提取卖点库（爆文模板改写前置）：保存卖点库后任务即成功，不规划、不生成脚本。
+const extractOnlyTask = createTask(db, {
+  projectId: 'p1',
+  requestKey: 'extract-only-request-1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '', extractOnly: true },
+  requestedCount: 1,
+}, () => new Date('2026-08-31T00:20:00.000Z'));
+const extractOnlyResult = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: extractOnlyTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '', extractOnly: true },
+  visionExtractor,
+  reprobe,
+  generator: { async generate() { throw new Error('仅提取任务不得生成脚本'); } },
+  sellingPointOrganizer: createSellingPointOrganizer(async (request) => {
+    const facts = JSON.parse(request.userPrompt).facts as Array<{ id: string; factText: string }>;
+    return { sellingPoints: [{ title: '组合卖点', detail: facts.map((fact) => fact.factText).join('；'), factIds: facts.map((fact) => fact.id) }] };
+  }),
+  now: () => new Date('2026-08-31T00:21:00.000Z'),
+});
+assert.equal(extractOnlyResult.status, 'succeeded');
+assert.equal(extractOnlyResult.scriptIds.length, 0, '仅提取任务不得产出脚本');
+assert.equal(getTask(db, 'p1', extractOnlyTask.task.id)!.status, 'succeeded');
+assert.deepEqual(
+  (db.prepare('SELECT stage FROM script_studio_task_stages WHERE taskId = ? ORDER BY seq').all(extractOnlyTask.task.id) as Array<{ stage: string }>).map((row) => row.stage),
+  ['input_check', 'read_pages', 'extract', 'evidence_gate', 'organize', 'save_library'],
+  '仅提取任务必须停在保存卖点库',
+);
+assert.equal(getCurrentLibraryRevision(db, 'p1')!.sellingPoints[0].title, '组合卖点', '整理结果必须成为实际保存并用于后续生成的卖点');
+assert.equal(
+  (db.prepare('SELECT COUNT(*) AS n FROM project_script_revisions WHERE generationTaskId = ?').get(extractOnlyTask.task.id) as { n: number }).n,
+  0,
+  '仅提取任务不得创建任何脚本文本',
+);
+const extractOnlyInputCheck = JSON.parse((db.prepare(`
+  SELECT payloadJson FROM script_studio_task_stages WHERE taskId = ? AND stage = 'input_check'
+`).get(extractOnlyTask.task.id) as { payloadJson: string }).payloadJson) as { extractOnly?: boolean };
+assert.equal(extractOnlyInputCheck.extractOnly, true, 'input_check 阶段必须如实标记仅提取');
+// 恢复重入：卖点库已保存，直接成功，不重新识图/核验/生成。
+const extractOnlyReplay = await executeScriptStudioTask({
+  db,
+  projectId: 'p1',
+  taskId: extractOnlyTask.task.id,
+  sourceSetId: 'source-1',
+  inputSnapshot: { targetDurationSec: 15, requestedCount: 1, creativeBrief: '', extractOnly: true },
+  visionExtractor: { async extract() { throw new Error('恢复不得重新识图'); } },
+  reprobe: { kind: 'vision_closed_question', async verify() { throw new Error('恢复不得重新核验'); } },
+  generator: { async generate() { throw new Error('恢复不得生成脚本'); } },
+  now: () => new Date('2026-08-31T00:22:00.000Z'),
+});
+assert.equal(extractOnlyReplay.status, 'succeeded');
+assert.equal(extractOnlyReplay.scriptIds.length, 0);
+
+// C 方案：单次提取同时交付详解，核对按需；多批才额外做全局组织。
+for (const batches of [1, 2]) {
+  let organizes = 0;
+  let reprobes = 0;
+  const inputSnapshot = { targetDurationSec: 15, requestedCount: 1, extractOnly: true };
+  const directTask = createTask(db, { projectId: 'p1', requestKey: `direct-${batches}`, mode: 'first_extraction', sourceSetId: 'source-1', inputSnapshot, requestedCount: 1 });
+  const result = await executeScriptStudioTask({
+    db, projectId: 'p1', taskId: directTask.task.id, sourceSetId: 'source-1', inputSnapshot, directVision: true,
+    visionExtractor: { async extract(input) {
+      assert.equal(input.pages[0]!.tiles.length, 1, '小图不应再切成多张');
+      return { productName: '测试床', category: '床', brand: '', providerId: 'luna', model: 'test', promptContractVersion: 7,
+        batchMetrics: Array.from({ length: batches }, (_, i) => ({ pageIndex: 0, start: i, end: i + 1, imageCount: 1, attempts: 1, elapsedMs: 10, attemptElapsedMs: [10] })),
+        sellingPoints: [{ title: '15cm 高脚', factText: '床脚高度15cm，方便清洁', detailText: '床脚高度15cm，方便清洁', evidenceQuote: '床脚高度15cm', pointType: 'spec', sourcePageIndex: 0, tileRefs: ['tile_1'] }],
+      };
+    } },
+    reprobe: { kind: 'vision_closed_question', async verify() { reprobes++; return { quote: null }; } },
+    generator: { async generate() { throw new Error('仅提取不得生成'); } },
+    sellingPointOrganizer: { async organize(points) { organizes++; return points; } },
+  });
+  assert.equal(result.status, 'succeeded', result.errorMessage);
+  assert.equal(reprobes, 0);
+  assert.equal(organizes, batches === 1 ? 0 : 1);
+  const library = getCurrentLibraryRevision(db, 'p1')!;
+  assert.equal(library.promptContractVersion, 7, '组织后保留 C 方案坐标版本');
+  assert.equal(library.sellingPoints[0]!.evidenceGate, 'skipped');
+  assert.equal(library.sellingPoints[0]!.detailStatus, 'verified');
+  const { loadSellingPointEvidenceImages } = await import('../lib/script-studio/evidence-images.ts');
+  const evidence = await loadSellingPointEvidenceImages(db, 'p1', library.id, library.sellingPoints[0]!.id);
+  assert.ok(evidence.images[0]!.imageUrl.startsWith('data:image/png;base64,'));
+  assert.deepEqual(Buffer.from(evidence.images[0]!.imageUrl.split(',')[1]!, 'base64'), fs.readFileSync(imagePath));
+  await assert.rejects(() => loadSellingPointEvidenceImages(db, 'other-project', library.id, library.sellingPoints[0]!.id), /不属于当前项目/);
+}
 
 db.close();
 console.log('script-studio-runner.test.ts: ok');

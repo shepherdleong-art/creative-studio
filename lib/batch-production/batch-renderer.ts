@@ -1,3 +1,5 @@
+import { audioCutFilter, parseAudioEdits, type AudioEdits, type AudioClip } from '../media-core/audio-edit.ts';
+import type { CoverFraming } from '../media-core/cover-types.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -9,6 +11,7 @@ import { probeDurationSec, probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { writeLog } from '../logger.ts';
 import { assertNoStorageSymlink, resolveStoragePath, toStorageRelativePath } from '../media-core/storage-path.ts';
 import { FINAL_EDIT_INTRO_DURATION_US } from '../media-core/render-contract.ts';
+import { runExportVideo } from '../media-core/export-video-encoder.ts';
 import { buildColorFilterFragments, upgradeColorSnapshot, type ColorSnapshotV1 } from './color-pipeline.ts';
 import { applyFrozenCoverTitleToFile } from './cover-title.ts';
 import { computeFingerprintFromFile, fingerprintsEqual } from './fingerprint.ts';
@@ -42,6 +45,7 @@ export interface BatchRenderClipInput {
   preset?: string;
   fps?: number;
   contentFingerprint?: string;
+  framing?: CoverFraming;
 }
 
 export interface BatchRenderCoverInput {
@@ -57,6 +61,8 @@ export interface BatchRenderArrangementInput {
   clips: BatchRenderClipInput[];
   /** 就地片段编辑的修订号;旧 arrangement 缺省即 0。 */
   editRevision?: number;
+  preserveGaps?: boolean;
+  audio?: AudioEdits;
   preset?: string;
   fps?: number;
   targetDurationUs?: number;
@@ -305,6 +311,7 @@ interface NormalizedClip {
   preset: BatchOutputPreset;
   fps: 24;
   contentFingerprint?: string;
+  framing?: CoverFraming;
 }
 
 interface ResolvedClip extends NormalizedClip {
@@ -417,17 +424,19 @@ function normalizeArrangement(raw: unknown): { arrangement: BatchRenderArrangeme
     return {
       clipId: clipId.trim(), assetId: clip.assetId, sourceStartUs, sourceEndUs,
       timelineStartUs: timeline.startUs, timelineEndUs: timeline.endUs,
+      framing: clip.framing,
       preset, fps: 24 as const, contentFingerprint: typeof clip.contentFingerprint === 'string' ? clip.contentFingerprint : undefined,
     };
   }).sort((a, b) => a.timelineStartUs - b.timelineStartUs || a.clipId.localeCompare(b.clipId));
-  if (clips[0].timelineStartUs !== 0) throw error('timeline 必须从 0 开始');
+  if (clips[0].timelineStartUs !== 0 && obj.preserveGaps !== true) throw error('timeline 必须从 0 开始');
   for (let index = 1; index < clips.length; index += 1) {
-    if (clips[index].timelineStartUs !== clips[index - 1].timelineEndUs) throw error('timeline clips 必须连续,不能出现缺口或重叠');
+    if (clips[index].timelineStartUs < clips[index - 1].timelineEndUs || (obj.preserveGaps !== true && clips[index].timelineStartUs !== clips[index - 1].timelineEndUs)) throw error('timeline clips 不能重叠，自动编排不能出现缺口');
   }
   const arrangement: BatchRenderArrangementInput = {
     ...(obj as unknown as BatchRenderArrangementInput),
     clips: obj.clips as BatchRenderClipInput[],
     editRevision,
+    audio: parseAudioEdits(obj.audio),
     preset: rootPreset ?? clips[0].preset,
     fps: 24,
   };
@@ -700,16 +709,24 @@ function clipFilter(inputIndex: number, clip: ResolvedClip, width: number, heigh
   // 2s timeline must use PTS*2 (and a 2s source compressed to 1s uses *0.5).
   const timeScale = timelineDurationSec / sourceDurationSec;
   const colorFragments = buildBatchRenderColorFilterFragments({ colorSnapshot: clip.colorSnapshot, lutPath: clip.lutPath });
+  const framing = clip.framing ?? { scale: 1, offsetX: 0, offsetY: 0 };
+  if (![framing.scale, framing.offsetX, framing.offsetY].every(Number.isFinite)) throw error('画面参数无效');
+  const scale = Math.max(0.25, Math.min(3, framing.scale));
   const filters = [
     `trim=duration=${sourceDurationSec.toFixed(6)}`,
     'setpts=PTS-STARTPTS',
     Math.abs(timeScale - 1) > 1e-7 ? `setpts=PTS*${timeScale.toFixed(8)}` : '',
     'fps=24',
     `scale=${width}:${height}:force_original_aspect_ratio=increase`,
-    `crop=${width}:${height}`,
+    `scale=iw*${scale.toFixed(4)}:ih*${scale.toFixed(4)}`,
+    `pad=iw+${width * 2}:ih+${height * 2}:(ow-iw)/2:(oh-ih)/2:black`,
+    `crop=${width}:${height}:'(iw-${width})/2-${Math.max(-1, Math.min(1, framing.offsetX)).toFixed(4)}*${width}/2':'(ih-${height})/2-${Math.max(-1, Math.min(1, framing.offsetY)).toFixed(4)}*${height}/2'`,
     'setsar=1',
     ...colorFragments,
     'format=yuv420p',
+    `tpad=stop_mode=clone:stop_duration=${timelineDurationSec.toFixed(6)}`,
+    `trim=end_frame=${Math.round(timelineDurationSec * 24)}`,
+    'setpts=PTS-STARTPTS',
   ].filter(Boolean);
   return `[${inputIndex}:v]${filters.join(',')}[clip${inputIndex}]`;
 }
@@ -725,8 +742,8 @@ export function buildBatchRenderColorFilterFragments(input: { colorSnapshot: Col
   });
 }
 
-function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderAudioMode, narrationGainDb = NARRATION_GAIN_DB_DEFAULT): string {
-  const source = `[${audioInput}:a]aresample=48000`;
+function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderAudioMode, narrationGainDb = NARRATION_GAIN_DB_DEFAULT, cuts?: AudioClip[]): string {
+  const source = `[${audioInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(cuts)}aresample=48000`;
   if (mode === 'narration') return `${source},volume=${normalizeNarrationGainDb(narrationGainDb).toFixed(1)}dB,atrim=duration=${durationSec.toFixed(6)},apad,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`;
   return `${source},anullsrc=channel_layout=stereo:sample_rate=48000`; // replaced by caller for silent lavfi input
 }
@@ -916,7 +933,23 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const coverInput = subtitleStartInput + subtitlePaths.length;
     args.push('-loop', '1', '-framerate', '24', '-i', coverTemp);
     const filters = snapshot.clips.map((clip, index) => clipFilter(index, clip, outputSize.width, outputSize.height, (clip.timelineEndUs - clip.timelineStartUs) / 1_000_000));
-    filters.push(`${snapshot.clips.map((_, index) => `[clip${index}]`).join('')}concat=n=${snapshot.clips.length}:v=1:a=0[vconcat]`);
+    const parts: string[] = [];
+    let cursorUs = 0;
+    snapshot.clips.forEach((clip, index) => {
+      const gapFrames = Math.round((clip.timelineStartUs - cursorUs) / 1e6 * 24);
+      if (gapFrames > 0) {
+        filters.push(`color=c=black:s=${outputSize.width}x${outputSize.height}:r=24:d=${(gapFrames / 24).toFixed(6)},trim=end_frame=${gapFrames},setsar=1[gap${index}]`);
+        parts.push(`[gap${index}]`);
+      }
+      parts.push(`[clip${index}]`);
+      cursorUs = clip.timelineEndUs;
+    });
+    if (snapshot.arrangement.preserveGaps && cursorUs < targetDurationUs) {
+      const tailFrames = Math.ceil((targetDurationUs - cursorUs) / 1e6 * 24);
+      filters.push(`color=c=black:s=${outputSize.width}x${outputSize.height}:r=24:d=${(tailFrames / 24).toFixed(6)},trim=end_frame=${tailFrames},setsar=1[tailgap]`);
+      parts.push('[tailgap]');
+    }
+    filters.push(`${parts.join('')}concat=n=${parts.length}:v=1:a=0[vconcat]`);
     // 回归探针:画面与口播对齐后,下面的 tpad/trim 应是 no-op;偏差超过
     // 0.15 秒说明"声画又各走各的"了,记 warning 供排查,不阻塞渲染。
     const visualDurationSec = visualDurationUs / 1_000_000;
@@ -927,7 +960,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         message: `渲染对齐偏差过大:画面 ${visualDurationSec.toFixed(3)}s vs 口播 ${bodyDurationSec.toFixed(3)}s（偏差 ${Math.abs(bodyDurationSec - visualDurationSec).toFixed(3)}s）batch=${input.batchId} plan=${input.planId} outputVersion=${input.outputVersionId}`,
       });
     }
-    if (bodyDurationSec > visualDurationSec + 1e-6) filters.push(`[vconcat]tpad=stop_mode=clone:stop_duration=${(bodyDurationSec - visualDurationSec).toFixed(6)},trim=duration=${bodyDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbody]`);
+    if (!snapshot.arrangement.preserveGaps && bodyDurationSec > visualDurationSec + 1e-6) filters.push(`[vconcat]fps=24,tpad=stop_mode=clone:stop_duration=${(bodyDurationSec - visualDurationSec).toFixed(6)},trim=duration=${bodyDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbody]`);
     else filters.push(`[vconcat]trim=duration=${bodyDurationSec.toFixed(6)},setpts=PTS-STARTPTS[vbody]`);
     // 片头静帧接在正文之前。setsar=1 与 clipFilter 一致,否则 concat 会因
     // SAR 不一致失败。
@@ -944,7 +977,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     });
     filters.push(`[${currentVideoLabel}]null[vout]`);
     const voiceLabel = narrationPath ? 'narration' : 'silence';
-    if (narrationPath) filters.push(audioFilter(audioInput, bodyDurationSec, 'narration', narrationGainDb));
+    if (narrationPath) filters.push(audioFilter(audioInput, bodyDurationSec, 'narration', narrationGainDb, snapshot.arrangement.audio?.narration));
     else filters.push(`[${audioInput}:a]aresample=48000,apad,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[silence]`);
     if (bgm && bgmInput != null) {
       // 混音链:响度归一化 → 增益 → 裁到正文时长 → 淡入淡出 → 与口播 amix。
@@ -960,7 +993,7 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       // 不上 loudnorm:单遍动态模式会给音频流附加异常时间基准,下游 adelay
       // 插入的片头静音会被吞掉,造成音画不同步(2026-08-12 实测复现)。
       // 音乐电平由 volume 增益与淡入淡出控制。
-      filters.push(`[${bgmInput}:a]aresample=48000,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      filters.push(`[${bgmInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(snapshot.arrangement.audio?.bgm)}aresample=48000,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
       filters.push(`[${voiceLabel}][music]amix=inputs=2:duration=longest:dropout_transition=0,apad,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[abody]`);
     } else {
       filters.push(`[${voiceLabel}]anull[abody]`);
@@ -975,12 +1008,12 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
         : `渲染静音视觉候选与 ${subtitleCues.length} 条预计字幕`,
     });
     assertSignal(signal);
-    await runFfmpeg([
+    await runExportVideo([
       ...args,
       '-filter_complex', filters.join(';'),
       '-map', '[vout]', '-map', '[aout]',
       '-t', totalDurationSec.toFixed(6), '-r', '24',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-ar', '48000', '-ac', '2',
       '-movflags', '+faststart', '-progress', 'pipe:1', '-f', 'mp4', '-y', videoTemp,
     ], {

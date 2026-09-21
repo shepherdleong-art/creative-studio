@@ -24,6 +24,8 @@ export interface Module4SourceLocation {
   kind: 'module4';
   videoJobId: string;
   shotSetId: string;
+  /** 分镜位身份(同源互斥键);自由素材无 shot,旧数据无此字段,均为 null */
+  shotId: string | null;
   /** 相对 storageRoot 的受控产物路径(与 video_jobs.localVideoPath 一致) */
   relativePath: string;
 }
@@ -199,6 +201,7 @@ function parseSourceLocation(sourceKind: BatchAssetSourceKind, locationJson: str
       kind: 'module4',
       videoJobId: stringField(raw.videoJobId) ?? '',
       shotSetId: stringField(raw.shotSetId) ?? '',
+      shotId: stringField(raw.shotId),
       relativePath: stringField(raw.relativePath) ?? '',
     };
   }
@@ -287,6 +290,7 @@ interface Module4VideoJobRow {
   id: string;
   projectId: string;
   shotSetId: string | null;
+  shotId: string | null;
   status: string;
   localVideoPath: string | null;
   filename: string | null;
@@ -303,7 +307,7 @@ export async function registerModule4Video(
   input: { videoJobId: string },
 ): Promise<{ assetId: string; projectId: string }> {
   const row = db.prepare(`
-    SELECT id, projectId, shotSetId, status, localVideoPath, filename
+    SELECT id, projectId, shotSetId, shotId, status, localVideoPath, filename
     FROM video_jobs WHERE id = ?
   `).get(input.videoJobId) as Module4VideoJobRow | undefined;
   if (!row) {
@@ -369,6 +373,7 @@ export async function registerModule4Video(
     kind: 'module4',
     videoJobId: row.id,
     shotSetId: row.shotSetId,
+    shotId: row.shotId ?? null,
     relativePath: toStorageRelativePath(storageRootOf(), absolutePath),
   };
   const assetId = resolveAssetId(db, row.projectId, 'module4', location, fingerprint, {
@@ -511,6 +516,78 @@ export function resolveModule4AssetDisplayNames(
   for (const [videoJobId, displayName] of displayNames) {
     const assetId = assetIdByVideoJobId.get(videoJobId);
     if (assetId) result.set(assetId, displayName);
+  }
+  return result;
+}
+
+/**
+ * 批量素材的同源键（shotId）：按 module4 来源反查素材所属分镜位。
+ * 只做读取；linked/managed 来源与自由素材（无 shot）不出现在结果里，
+ * 调用方据此把素材归到 `shot:<shotId>` 同源组，缺失时回落素材自身一组。
+ *
+ * 以 video_jobs 权威表为准，而不是 locationJson 里的 shotId 快照：
+ * 升级前登记的旧来源行没有 shotId 快照，但 videoJobId 始终在，
+ * 反查权威表让存量素材无需重新登记即可获得同源键。
+ */
+export function resolveModule4AssetShotIds(
+  db: Database.Database,
+  assetIds: Array<string>,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  const ids = [...new Set(assetIds.filter((id) => typeof id === 'string' && id))];
+  if (ids.length === 0) return result;
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT assetId, locationJson FROM batch_asset_sources
+    WHERE sourceKind = 'module4' AND assetId IN (${placeholders})
+    ORDER BY createdAt, id
+  `).all(...ids) as Array<{ assetId: string; locationJson: string }>;
+  const videoJobIdByAssetId = new Map<string, string>();
+  for (const row of rows) {
+    if (videoJobIdByAssetId.has(row.assetId)) continue;
+    const location = parseSourceLocation('module4', row.locationJson);
+    if (location.kind !== 'module4' || !location.videoJobId) continue;
+    videoJobIdByAssetId.set(row.assetId, location.videoJobId);
+  }
+  const videoJobIds = [...new Set(videoJobIdByAssetId.values())];
+  if (videoJobIds.length === 0) return result;
+  const jobPlaceholders = videoJobIds.map(() => '?').join(', ');
+  const jobRows = db.prepare(`
+    SELECT id, shotId FROM video_jobs WHERE id IN (${jobPlaceholders})
+  `).all(...videoJobIds) as Array<{ id: string; shotId: string | null }>;
+  const shotIdByVideoJobId = new Map(
+    jobRows.filter((row) => row.shotId).map((row) => [row.id, row.shotId as string]),
+  );
+  for (const [assetId, videoJobId] of videoJobIdByAssetId) {
+    const shotId = shotIdByVideoJobId.get(videoJobId);
+    if (shotId) result.set(assetId, shotId);
+  }
+  return result;
+}
+
+/**
+ * 分镜组是一次生成的容器，跨组的 shotId 不同也可能来自同一张原图。
+ * 以 shots.sourceImageId 归组（不是 video_jobs.sourceImageId 的生成候选图）；
+ * 来源分镜已删除时保留 shot 级避让，自由素材与外部素材仍各自独立。
+ */
+export function resolveModule4AssetGroupKeys(
+  db: Database.Database,
+  assetIds: string[],
+): Map<string, string> {
+  const shotIds = resolveModule4AssetShotIds(db, assetIds);
+  const result = new Map([...shotIds].map(([assetId, shotId]) => [assetId, `shot:${shotId}`]));
+  if (shotIds.size === 0) return result;
+  const ids = [...new Set(shotIds.values())];
+  const rows = db.prepare(`
+    SELECT s.id, s.sourceImageId, ss.projectId FROM shots s
+    JOIN shot_sets ss ON ss.id = s.shotSetId
+    WHERE s.id IN (${ids.map(() => '?').join(', ')})
+  `).all(...ids) as Array<{ id: string; sourceImageId: string | null; projectId: string }>;
+  const keyByShotId = new Map(rows.filter((row) => row.sourceImageId)
+    .map((row) => [row.id, `image:${row.projectId}:${row.sourceImageId}`]));
+  for (const [assetId, shotId] of shotIds) {
+    const key = keyByShotId.get(shotId);
+    if (key) result.set(assetId, key);
   }
   return result;
 }

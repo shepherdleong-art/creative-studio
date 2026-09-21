@@ -16,6 +16,8 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$OutputPath,
+  # 可选：只导出该数据根的自定义运镜模板，不复制数据库、项目或供应商配置。
+  [string]$MotionTemplatesSourceRoot,
   # 仅供临时 fixture 测试；正式发布不得传此参数。
   [switch]$SkipBuild
 )
@@ -71,6 +73,14 @@ function Get-NodeRuntimeInfo([string]$NodePath) {
   } catch {
     throw "Node 运行时信息格式无效：$NodePath"
   }
+}
+
+# 运行时包含数万小文件；并行复制缩短装配时间，不做镜像删除或覆盖既有发布目录。
+function Copy-PayloadDirectory([string]$SourcePath, [string]$DestinationPath) {
+  & robocopy.exe $SourcePath $DestinationPath /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
+  $copyExitCode = $LASTEXITCODE
+  # Robocopy 的 0–7 表示成功或无需复制，8 及以上才是失败。
+  if ($copyExitCode -ge 8) { throw "目录复制失败（Robocopy $copyExitCode）：$SourcePath" }
 }
 
 # ── 显式白名单（除此之外一律不进免安装包）──
@@ -253,14 +263,14 @@ try {
   Write-Host "[5/8] 装配到临时目录：$staging"
   New-Item -ItemType Directory -Force -Path $staging | Out-Null
   foreach ($dir in $whitelistDirs) {
-    Copy-Item -LiteralPath (Join-Path $Root $dir) -Destination (Join-Path $staging $dir) -Recurse -Force
+    Copy-PayloadDirectory (Join-Path $Root $dir) (Join-Path $staging $dir)
   }
   New-Item -ItemType Directory -Force -Path (Join-Path $staging 'dist-desktop') | Out-Null
   foreach ($desktopFile in $desktopPayloadFiles) {
     Copy-Item -LiteralPath (Join-Path $Root "dist-desktop\$desktopFile") -Destination (Join-Path $staging "dist-desktop\$desktopFile") -Force
   }
   New-Item -ItemType Directory -Force -Path (Join-Path $staging '.next') | Out-Null
-  Copy-Item -LiteralPath (Join-Path $Root '.next\standalone') -Destination (Join-Path $staging '.next\standalone') -Recurse -Force
+  Copy-PayloadDirectory (Join-Path $Root '.next\standalone') (Join-Path $staging '.next\standalone')
   New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts') | Out-Null
   New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts\runtime') | Out-Null
   foreach ($scriptName in $runtimeScriptFiles) {
@@ -277,6 +287,13 @@ try {
   [System.IO.File]::WriteAllLines($stagedEnvPath, $normalizedEnvLines, [System.Text.UTF8Encoding]::new($false))
   foreach ($map in $templateMap) {
     Copy-Item -LiteralPath (Join-Path $Root $map.Source) -Destination (Join-Path $staging $map.Target) -Force
+  }
+
+  if ($MotionTemplatesSourceRoot) {
+    $presetNode = (Get-Command node.exe -ErrorAction Stop).Source
+    & $presetNode (Join-Path $ScriptDir 'export-motion-template-presets.mjs') --source-root $MotionTemplatesSourceRoot --output $staging
+    if ($LASTEXITCODE -ne 0) { throw '自定义运镜模板导出失败，停止发布。' }
+    $manifestKeyFiles += @('motion-template-presets.json', 'scripts/import-motion-template-presets.mjs', '导入自定义运镜模板.cmd')
   }
 
   foreach ($forbidden in $forbiddenInPayload) {

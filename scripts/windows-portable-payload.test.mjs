@@ -265,7 +265,7 @@ function makeFixture({ omit = [] } = {}) {
   return dir;
 }
 
-function runAssembly(fixtureDir, outputPath) {
+function runAssembly(fixtureDir, outputPath, extraArgs = []) {
   return spawnSync(
     'powershell.exe',
     [
@@ -277,17 +277,36 @@ function runAssembly(fixtureDir, outputPath) {
       '-OutputPath',
       outputPath,
       '-SkipBuild',
+      ...extraArgs,
     ],
     { encoding: 'utf8', timeout: 120000 },
   );
 }
 
 try {
+  // 可选模板分发必须进入真实装配与 manifest；默认不导出本机数据。
+  const presetFixture = makeFixture();
+  fs.writeFileSync(path.join(presetFixture, 'scripts/export-motion-template-presets.mjs'), `
+    import fs from 'node:fs'; import path from 'node:path';
+    const output = process.argv[process.argv.indexOf('--output') + 1];
+    for (const name of ['motion-template-presets.json', 'scripts/import-motion-template-presets.mjs', '导入自定义运镜模板.cmd', '自定义运镜模板说明.txt']) {
+      fs.writeFileSync(path.join(output, name), 'fixture preset');
+    }
+  `);
+  const presetOutput = path.join(presetFixture, 'out', '含模板');
+  const presetRun = runAssembly(presetFixture, presetOutput, ['-MotionTemplatesSourceRoot', presetFixture]);
+  assert.equal(presetRun.status, 0, `${presetRun.stdout}\n${presetRun.stderr}`);
+  const presetManifest = JSON.parse(fs.readFileSync(path.join(presetOutput, 'portable-manifest.json'), 'utf8'));
+  for (const name of ['motion-template-presets.json', 'scripts/import-motion-template-presets.mjs', '导入自定义运镜模板.cmd']) {
+    assert.equal(presetManifest.files.find(file => file.path === name)?.sha256, sha256File(path.join(presetOutput, name)));
+  }
+  assert.ok(!presetManifest.files.some(file => file.path === '自定义运镜模板说明.txt'));
   // ── 正常装配 ──
   const fixture = makeFixture();
   const output = path.join(fixture, 'out', '创意工作台-免安装版');
   const run = runAssembly(fixture, output);
   assert.equal(run.status, 0, `装配失败：\n${run.stdout}\n${run.stderr}`);
+  assert.ok(!fs.existsSync(path.join(output, 'motion-template-presets.json')));
 
   for (const expected of [
     'node-runtime/node.exe',

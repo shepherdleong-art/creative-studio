@@ -8,7 +8,7 @@ import styles from '../mixcut/mixcut-content.module.css';
 const FPS = FINAL_EDIT_FPS;
 const PX_PER_SEC = 90;
 const MIN_DURATION_US = 500_000;
-const MIN_WIDTH_PX = (MIN_DURATION_US / 1_000_000) * PX_PER_SEC;
+
 
 function formatSec(sec: number): string {
   return `${Math.floor(sec / 60)}:${(sec % 60).toFixed(1).padStart(4, '0')}`;
@@ -55,6 +55,8 @@ export default function BatchClipTrimEditor({
   onSplitCommit,
   onClose,
 }: BatchClipTrimEditorProps) {
+  const minSourceDurationUs = MIN_DURATION_US * (clip.playbackRate ?? 1);
+  const minWidthPx = minSourceDurationUs / 1e6 * PX_PER_SEC;
   const sourceSec = Math.max(0.1, (asset?.durationSec ?? 0) || clip.sourceEndUs / 1_000_000);
   const sourceDurationUs = Math.round(sourceSec * 1_000_000);
   const contentWidth = sourceSec * PX_PER_SEC;
@@ -74,11 +76,11 @@ export default function BatchClipTrimEditor({
   const frames = useMemo(() => Array.from({ length: Math.max(1, Math.ceil(contentWidth / 45)) }), [contentWidth]);
   const leftPx = usToPx(leftUs);
   const rightPx = usToPx(rightUs);
-  const windowWidthPx = Math.max(MIN_WIDTH_PX, rightPx - leftPx);
-  const safeSplitUs = clampUs(splitUs, leftUs + MIN_DURATION_US, rightUs - MIN_DURATION_US);
+  const windowWidthPx = Math.max(minWidthPx, rightPx - leftPx);
+  const safeSplitUs = clampUs(splitUs, leftUs + minSourceDurationUs, rightUs - minSourceDurationUs);
   const splitPx = usToPx(safeSplitUs);
   const splitInWindowPx = splitPx - leftPx;
-  const splitValid = safeSplitUs - leftUs >= MIN_DURATION_US && rightUs - safeSplitUs >= MIN_DURATION_US;
+  const splitValid = safeSplitUs - leftUs >= minSourceDurationUs && rightUs - safeSplitUs >= minSourceDurationUs;
 
   const beginDrag = (kind: 'left' | 'right' | 'move' | 'split') => (event: React.PointerEvent<HTMLDivElement>) => {
     if (disabled || saving) return;
@@ -100,10 +102,10 @@ export default function BatchClipTrimEditor({
     const handleMove = (event: PointerEvent) => {
       const deltaUs = pxToUs(event.clientX - drag.startX);
       if (drag.kind === 'left') {
-        const next = clampUs(drag.startLeftUs + deltaUs, 0, drag.startRightUs - MIN_DURATION_US);
+        const next = clampUs(drag.startLeftUs + deltaUs, 0, drag.startRightUs - minSourceDurationUs);
         setLeftUs(next);
       } else if (drag.kind === 'right') {
-        const next = clampUs(drag.startRightUs + deltaUs, drag.startLeftUs + MIN_DURATION_US, sourceDurationUs);
+        const next = clampUs(drag.startRightUs + deltaUs, drag.startLeftUs + minSourceDurationUs, sourceDurationUs);
         setRightUs(next);
       } else if (drag.kind === 'move') {
         const shift = clampUs(deltaUs, -drag.startLeftUs, sourceDurationUs - drag.startRightUs);
@@ -112,8 +114,8 @@ export default function BatchClipTrimEditor({
       } else {
         const next = clampUs(
           drag.startSplitUs + deltaUs,
-          drag.startLeftUs + MIN_DURATION_US,
-          drag.startRightUs - MIN_DURATION_US,
+          drag.startLeftUs + minSourceDurationUs,
+          drag.startRightUs - minSourceDurationUs,
         );
         setSplitUs(next);
       }
@@ -137,7 +139,7 @@ export default function BatchClipTrimEditor({
   };
 
   const commitSplit = async (): Promise<void> => {
-    const offsetUs = frameToUs(usToFrame(safeSplitUs - clip.sourceStartUs));
+    const offsetUs = frameToUs(usToFrame((safeSplitUs - clip.sourceStartUs) / (clip.playbackRate ?? 1)));
     setSaving(true);
     const accepted = await onSplitCommit(offsetUs);
     setSaving(false);
@@ -159,7 +161,7 @@ export default function BatchClipTrimEditor({
         <button
           type="button"
           className={`${styles.btn} ${styles.primary}`}
-          disabled={disabled || saving || rightUs - leftUs < MIN_DURATION_US}
+          disabled={disabled || saving || rightUs - leftUs < minSourceDurationUs}
           onClick={() => void commitTrim()}
         >{saving ? '应用中…' : '完成修剪'}</button>
       </div>

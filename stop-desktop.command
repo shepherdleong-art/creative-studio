@@ -82,14 +82,14 @@ for data_root in "${DATA_ROOTS[@]}"; do
                     echo "⚠️  状态文件无法识别，跳过：$data_root/storage/run/electron-service.json"
                     ;;
                 *)
-                    echo "❌ 共享停机工具执行失败（退出码 $stop_rc）：$stop_output" >&2
+                    echo "❌ 共享停机工具执行失败（退出码 ${stop_rc}）：$stop_output" >&2
                     read -p "按回车键关闭此窗口..."
                     exit 1
                     ;;
             esac
             ;;
         *)
-            echo "❌ 共享停机工具执行失败（退出码 $stop_rc）：$stop_output" >&2
+            echo "❌ 共享停机工具执行失败（退出码 ${stop_rc}）：$stop_output" >&2
             read -p "按回车键关闭此窗口..."
             exit 1
             ;;

@@ -114,5 +114,38 @@ const slowResult = await renderFinalEditSnapshot({
 });
 assert.ok(Math.abs(slowResult.durationSec - (4 + 20 / 24)) < 1 / 24 + 0.02, '0.5x 成片总时长必须按当前音轨的有效时长延长，不能截断慢速口播');
 
+
+// Real pixels/audio must keep leading, internal and trailing gaps after 2x speed.
+const colorSource = path.join(storage, 'videos', 'color-source.mp4');
+await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:s=320x240:r=24:d=1', '-f', 'lavfi', '-i', 'color=blue:s=320x240:r=24:d=1', '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[v]', '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', colorSource]);
+const colorFingerprint = crypto.createHash('sha256').update(fs.readFileSync(colorSource)).digest('hex');
+const edited = structuredClone(snapshot);
+edited.sources = [{ videoJobId: 'video-1', relativePath: 'videos/color-source.mp4', fingerprint: colorFingerprint }];
+edited.variant.timeline.allowGaps = true;
+edited.variant.timeline.clips = [{ ...edited.variant.timeline.clips[0], sourceFingerprint: colorFingerprint, playbackRate: 2, timelineInFrame: 12, timelineOutFrame: 36, framing: { scale: 0.5, offsetX: 0.5, offsetY: 0 } }];
+edited.variant.timeline.audio = { narration: [{ id: 'voice', startUs: 500_000, endUs: 1_500_000 }], bgm: [{ id: 'music', startUs: 500_000, endUs: 1_500_000 }] };
+const cutResult = await renderFinalEditSnapshot({ jobId: 'job-cut-speed', storageRoot: storage, snapshot: edited });
+const cutVideo = path.join(storage, cutResult.videoRelativePath);
+const cutSamples = await decodeMonoPcm(cutVideo, path.join(root, 'cut.pcm'));
+const intro = 20 / 24;
+assert.ok(pcmRms(cutSamples, intro + 0.1, intro + 0.35) < 30, '被裁掉的开头音频应静音');
+assert.ok(pcmRms(cutSamples, intro + 0.7, intro + 1.3) > 500, '保留音频可听');
+assert.ok(pcmRms(cutSamples, intro + 1.65, intro + 1.9) < 30, '被裁掉的末尾音频应静音');
+const frameAt = async (bodySec: number) => {
+  const file = path.join(root, `frame-${bodySec}.png`);
+  await runFfmpeg(['-ss', String(intro + bodySec), '-i', cutVideo, '-frames:v', '1', '-y', file]);
+  return sharp(file).raw().toBuffer({ resolveWithObject: true });
+};
+for (const time of [0.25, 1.75]) {
+  const frame = await frameAt(time);
+  assert.ok(frame.data.reduce((sum, value) => sum + value, 0) / frame.data.length < 3, '空位必须输出黑场，不能把后片段顶上来');
+}
+for (const [time, channel] of [[0.7, 0], [1.2, 2]]) {
+  const { data, info } = await frameAt(time);
+  const center = (Math.floor(info.height / 2) * info.width + Math.floor(info.width * 0.75)) * info.channels;
+  assert.ok(data[center + channel] > 220, '2x 后的源画面时间与位移必须正确');
+  assert.ok(data[(Math.floor(info.height / 2) * info.width + 10) * info.channels] < 5, '缩小并右移后左边应留黑');
+}
+
 fs.rmSync(root, { recursive: true, force: true });
 console.log('final-edit real render test passed');

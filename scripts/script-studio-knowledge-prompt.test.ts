@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {
   buildScriptPrompt,
   normalizeGeneratedScript,
-  buildDeterministicFallbackScript,
   type ScriptGeneratorInput,
 } from '../lib/script-studio/generator.ts';
+import { buildDeterministicFallbackScript } from './script-studio-fixture.ts';
 import { validateScriptContent } from '../lib/script-studio/validation.ts';
 import { checkTitleEmbedding, matchedSearchTerms } from '../lib/script-studio/title-embedding.ts';
 import { planScriptDirections } from '../lib/script-studio/planner.ts';

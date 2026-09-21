@@ -495,7 +495,7 @@ function insertVideoProvider(db: Database.Database, input: {
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'image-job:image-public:%'`).get(), { count: 0 });
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'image-job:image-mismatched-model:%'`).get(), { count: 0 });
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger WHERE eventKey LIKE 'image-job:image-failed:%'`).get(), { count: 0 });
-  assert.deepEqual(db.prepare(`SELECT marker FROM usage_backfill_state ORDER BY marker`).all(), [{ marker: 'image-backfill-v1' }, { marker: 'video-backfill-v1' }]);
+  assert.deepEqual(db.prepare(`SELECT marker FROM usage_backfill_state ORDER BY marker`).all(), [{ marker: 'image-backfill-v1' }, { marker: 'video-backfill-v2' }]);
   const second = reconcileUsageLedger(db);
   assert.equal(second.backfilled, 0);
   assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 2 });
@@ -509,6 +509,7 @@ function insertVideoProvider(db: Database.Database, input: {
   setupCoreTables(db);
   insertVideoProvider(db, { id: 'kling-2-5', name: 'kling-3.0' });
   insertVideoProvider(db, { id: 'jimeng-2-0', name: '即梦', defaultModel: 'doubao-seedance-2-0-fast-260128' });
+  insertVideoProvider(db, { id: 'company-qiniuyun-kling-3-0', name: '公司七牛可灵 3.0', defaultModel: 'qiniuyun/kling-3.0' });
   insertVideoProvider(db, { id: 'public-kling', name: '直连可灵', baseUrl: 'https://api.klingai.com' });
   const liveGatewaySnapshot = snapshot({
     providerTable: 'video_providers',
@@ -522,6 +523,7 @@ function insertVideoProvider(db: Database.Database, input: {
   insertVideoJob(db, { id: 'video-legacy-kling', providerId: 'kling-2-5', durationSec: 5 });
   insertVideoJob(db, { id: 'video-legacy-kling-7s', providerId: 'kling-2-5', durationSec: 7 });
   insertVideoJob(db, { id: 'video-legacy-seedance', providerId: 'jimeng-2-0', model: 'doubao-seedance-2-0-fast-260128', durationSec: 5 });
+  insertVideoJob(db, { id: 'video-legacy-qiniuyun-kling', providerId: 'company-qiniuyun-kling-3-0', model: 'qiniuyun/kling-3.0', durationSec: 5 });
   insertVideoJob(db, { id: 'video-legacy-public', providerId: 'public-kling', durationSec: 5 });
   insertVideoJob(db, { id: 'video-legacy-failed', providerId: 'kling-2-5', status: 'failed' });
   insertVideoJob(db, { id: 'video-legacy-live', providerId: 'kling-2-5', snapshot: liveGatewaySnapshot });
@@ -544,8 +546,20 @@ function insertVideoProvider(db: Database.Database, input: {
     coreModelKey: 'company-seedance-fast',
     costMicros: 11_730_000,
   });
+  // 七牛可灵存量任务按 ¥2.72/5 秒回填，与腾讯可灵分开计价
+  assert.deepEqual(db.prepare(`SELECT coreModelKey, pricingVersion, quantity, callCount, unit, unitPriceMicros, priceScale, costMicros, createdAt FROM usage_ledger WHERE eventKey='video-job:video-legacy-qiniuyun-kling:succeeded'`).get(), {
+    coreModelKey: 'company-qiniuyun-kling-3-0',
+    pricingVersion: CORE_USAGE_PRICING_VERSION,
+    quantity: 5,
+    callCount: 1,
+    unit: 'second',
+    unitPriceMicros: 2_720_000,
+    priceScale: 5,
+    costMicros: 2_720_000,
+    createdAt: '2026-08-18T01:02:03.000Z',
+  });
   assert.deepEqual(JSON.parse((db.prepare(`SELECT detailJson FROM usage_ledger WHERE eventKey='video-job:video-legacy-kling:succeeded'`).get() as { detailJson: string }).detailJson), {
-    source: 'video-backfill-v1',
+    source: 'video-backfill-v2',
     durationSec: 5,
   });
   // 直连公网与失败任务不回填；带快照的任务由 replay 入账而不是 backfill
@@ -556,11 +570,11 @@ function insertVideoProvider(db: Database.Database, input: {
     taskType: 'video-job',
     priceComponents: [{ key: 'second', unit: 'second', quantity: 5, unitPriceMicros: 2_990_000, priceScale: 5, componentCostMicros: 2_990_000 }],
   });
-  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 4 });
-  assert.deepEqual(db.prepare(`SELECT marker FROM usage_backfill_state ORDER BY marker`).all(), [{ marker: 'image-backfill-v1' }, { marker: 'video-backfill-v1' }]);
+  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 5 });
+  assert.deepEqual(db.prepare(`SELECT marker FROM usage_backfill_state ORDER BY marker`).all(), [{ marker: 'image-backfill-v1' }, { marker: 'video-backfill-v2' }]);
   const second = reconcileUsageLedger(db);
   assert.equal(second.recorded, 0);
-  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 4 });
+  assert.deepEqual(db.prepare(`SELECT COUNT(*) AS count FROM usage_ledger`).get(), { count: 5 });
   db.close();
 }
 

@@ -6,7 +6,8 @@ export type ScriptStudioErrorCode =
   | 'provider_unavailable'
   | 'resource_limit'
   | 'evidence_failed'
-  | 'evidence_insufficient';
+  | 'evidence_insufficient'
+  | 'request_budget_exhausted';
 
 export class ScriptStudioError extends Error {
   readonly code: ScriptStudioErrorCode;

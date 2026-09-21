@@ -169,7 +169,7 @@ assert.match(timeline, /无 BGM/, '时间轴无 BGM 时必须显示空状态');
 assert.match(previewStep, /warningIssues/, '预览必须持续展示服务端返回的时长 override warning');
 assert.match(
   timeline,
-  /variant\.bgm\.trackId && bgmTrackName \? \([\s\S]{0,180}<Waveform tone="bgm"/,
+  /variant\.bgm\.trackId && bgmTrackName \? audioClips[\s\S]{0,220}<AudioBlock/,
   '只有真正选择 BGM 时才能渲染 BGM 波形',
 );
 assert.match(previewStep, /<MixcutTimeline/, '正式第三步必须挂载可操作 Mixcut 时间轴');

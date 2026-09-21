@@ -28,12 +28,12 @@ export interface PageIdentityComparison {
 
 function numberedSource(filename: string): { stem: string; number: number } | null {
   const basename = filename.normalize('NFKC').toLowerCase().split(/[\\/]/).at(-1) || '';
-  const match = /^(.*)[-_](\d{1,6})\.(?:jpe?g|png|webp|avif|heic)$/.exec(basename);
+  const match = /^(.*?)(?:[-_](\d{1,6})|\((\d{1,6})\))\.(?:jpe?g|png|webp|avif|heic|tiff?)$/.exec(basename);
   if (!match) return null;
   const stem = match[1]!;
   // 排除 image-1、截图-2、IMG_0001-2 等通用短前缀；长时间戳仍只算辅助线索。
   if (normalizeIdentityField(stem).length < 8 || /^(?:img|image|photo|screenshot|截图|图片)[-_ ]?\d*$/.test(stem)) return null;
-  return { stem, number: Number(match[2]) };
+  return { stem, number: Number(match[2] || match[3]) };
 }
 
 export function sharedNumberedSourceStem(left: string, right: string): string | null {
@@ -62,7 +62,7 @@ function withoutBrand(name: string, brands: string[]): string {
 }
 
 const CATEGORY_WORDS = /沙发床|沙发|软床|床框架|床架|床|餐边柜|电视柜|衣柜|书柜|柜子|餐桌|书桌|办公桌|桌子|茶几|边几|餐椅|椅子|凳子/g;
-const GENERIC_WORDS = /家用|现代|简约|复古|多功能|电动|真皮|实木|布艺|科技布|棉麻|软包|储物|组合|单人|双人|三人|四人|框架|系列|款式|产品|商品|详情|细节|展示/g;
+const GENERIC_WORDS = /家用|现代|简约|复古|多功能|电动|气动|升降|折叠|真皮|实木|布艺|科技布|棉麻|软包|储物|组合|单人|双人|三人|四人|框架|系列|款式|产品|商品|详情|细节|展示/g;
 
 function specificName(name: string, category: string): string {
   if (category && name === category) return '';
@@ -96,9 +96,16 @@ export function comparePageIdentities(
   if (!nameA || !nameB) return result('unknown', 'missing_product_name');
   const modelsA = modelTokens(a.productName);
   const modelsB = modelTokens(b.productName);
+  // 商品详情文件的完整共同主干可说明系列/组合关系；时间戳和通用编号不能。
+  const sourceModels = modelTokens(sharedSourceStem || '');
+  const hasSeriesSource = Boolean(sharedSourceStem && /详情/.test(sharedSourceStem) && sourceModels.length);
+  const modelsCoveredBySource = hasSeriesSource && [...modelsA, ...modelsB].every((model) =>
+    sourceModels.some((source) => source.base === model.base
+      && (!model.variant || source.variant === model.variant)));
   const sharedModel = modelsA.some((left) => modelsB.some((right) => left.base === right.base
     && (!left.variant || !right.variant || left.variant === right.variant)));
-  if (modelsA.length && modelsB.length && !sharedModel) return result('conflict', 'different_explicit_models');
+  const sharedModelFamily = modelsA.some((left) => modelsB.some((right) => left.base === right.base));
+  if (modelsA.length && modelsB.length && !sharedModelFamily && !modelsCoveredBySource) return result('conflict', 'different_explicit_models');
   if (nameA === nameB) return result('same', 'same_product_name');
   const kindsA = productKinds(nameA);
   const kindsB = productKinds(nameB);
@@ -106,9 +113,17 @@ export function comparePageIdentities(
   const brandsA = brandNames(a.brand || context.brand || '');
   const brandsB = brandNames(b.brand || context.brand || '');
   if (brandsA.length > 0 && brandsB.length > 0 && !brandsA.some((brand) => brandsB.includes(brand))) {
+    // 同一套详情文件（同主干含系列型号）里，逐页品牌识别常把角标/代工/slogan 误读为品牌；
+    // 两边都没有明确型号时，品牌字段不足以证明跨商品，降级为不确定。
+    // 时间戳主干、通用编号或任一边识别出明确型号时，不同品牌仍按冲突拦截。
+    if (hasSeriesSource && modelsA.length === 0 && modelsB.length === 0) {
+      return result('unknown', 'brand_mismatch_within_shared_detail_series');
+    }
     return result('conflict', 'different_explicit_brands');
   }
   if (sharedModel) return result('same', 'shared_explicit_model');
+  if (sharedModelFamily) return result('same', 'shared_model_family');
+  if (modelsCoveredBySource) return result('same', 'shared_detail_series_source');
   const brands = [...new Set([...brandsA, ...brandsB, ...brandNames(context.brand || '')])];
   const specificA = specificName(withoutBrand(nameA, brands), normalizeIdentityField(a.category || context.category || ''));
   const specificB = specificName(withoutBrand(nameB, brands), normalizeIdentityField(b.category || context.category || ''));

@@ -1,5 +1,5 @@
 #define MyAppName "产品素材工作台"
-#define MyAppVersion "0.6.1"
+#define MyAppVersion "0.6.2"
 #define MyAppPublisher "Creative Studio"
 #define MyAppExeName "产品素材工作台"
 

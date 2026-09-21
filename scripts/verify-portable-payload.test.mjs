@@ -17,6 +17,7 @@ const modelAliases = [
   'image2-medium',
   'image2-low',
   'qiniuyun/gpt-image-2-medium',
+  'qiniuyun/kling-3.0',
   'nano-banana-2.5',
   'nano-banana-3.0',
   'nano-banana-3.1',

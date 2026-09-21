@@ -7,9 +7,13 @@ import type {
   ScriptStudioTaskSnapshot,
 } from '@/lib/script-studio/types';
 import {
+  type ScriptProductionMode,
   SCRIPT_GENERATION_UI_OPTIONS,
   SCRIPT_TARGET_DURATION_OPTIONS,
 } from '@/lib/script-studio/generation-contract';
+import TemplateRewritePicker from './TemplateRewritePicker';
+import SellingPointEvidence from './SellingPointEvidence';
+import { diffMarkWords } from '@/lib/script-studio/diff-mark';
 
 interface Props {
   projectId: string;
@@ -57,6 +61,7 @@ interface ScriptView {
     contentJson: string;
     targetDurationSec: number;
     estimatedDurationSec: number | null;
+    validationJson?: string;
     templateId: string;
     templateVersion: number;
     templateRationale: string;
@@ -84,6 +89,7 @@ interface LibraryRevisionViewLite {
   createdAt?: string;
   sellingPoints: Array<{
     id: string;
+    seq: number;
     title: string;
     factText: string;
     usable: number;
@@ -91,6 +97,8 @@ interface LibraryRevisionViewLite {
     evidenceGate: string;
     riskLevel?: string;
     evidenceRefsJson?: string;
+    detailText?: string;
+    detailStatus?: 'missing' | 'verified' | 'unverified';
   }>;
 }
 
@@ -117,9 +125,11 @@ const STAGE_LABELS: Record<string, string> = {
   input_check: '整理输入与资源检查',
   read_pages: '读取详情页图片',
   extract: '提取、归并并筛选卖点',
-  evidence_gate: '结构门禁与证据核验',
+  evidence_gate: '检查卖点与来源',
+  organize: '整理核心卖点与详解',
   save_library: '保存产品卖点库',
   load_library: '读取已有卖点库',
+  distill: '把已核验事实提炼为购买理由短句',
   plan: '规划创意方向与模板',
   generate: '生成脚本方案',
   validate: '执行时长、结构、事实和重复度检查',
@@ -130,9 +140,11 @@ const STAGE_KICKERS: Record<string, string> = {
   input_check: '准备任务',
   read_pages: '视觉读取',
   extract: '卖点提炼',
-  evidence_gate: '证据核验',
+  evidence_gate: '卖点检查',
+  organize: '卖点组织',
   save_library: '资产固化',
   load_library: '资产复用',
+  distill: '购买理由',
   plan: '创意规划',
   generate: '文案生成',
   validate: '完成检查',
@@ -141,11 +153,13 @@ const STAGE_KICKERS: Record<string, string> = {
 // 每个阶段的一句固定说明（原型 copy），真实数字放产物小卡。
 const STAGE_COPY: Record<string, string> = {
   input_check: '检查图片数量、目标时长和创作要求，随后开始读取详情页。',
-  read_pages: '长图会拆成可读区域并自动压缩，不需要你手动处理。',
+  read_pages: '合适尺寸的裁切图直接读取，长详情页自动分段处理。',
   extract: '识别商品名称、结构与规格文案；相同意思会合并，没有图片证据的表达不会当作事实。',
-  evidence_gate: '数字、材质、认证类卖点要逐条通过二次证据检查，未通过的不会写进脚本。',
+  evidence_gate: '检查信息完整性与来源位置，排除促销内容。有疑问时可展开来源图手动核对。',
+  organize: '把相关结构、参数和使用意义组织成完整卖点，保留各项事实与适用条件。',
   save_library: '把本次识别结果固定为产品资产，之后再生成一版或一组都直接复用、不再重新看图。',
   load_library: '直接读取已保存的卖点与证据，减少等待，也避免同一详情页每次识别结果不一致。',
+  distill: '在证据之上把事实归并成购买理由与推荐短句，未确认前只作展示，脚本仍使用原始事实。',
   plan: '结合时长、人群与创作要求，把每条脚本分配到不同的切入角度。',
   generate: '为每个方案匹配不同表达结构，并把选择结果与理由展示出来。',
   validate: '检查口播时长预算和方案之间的差异，通过后才能进入人工选择。',
@@ -153,8 +167,8 @@ const STAGE_COPY: Record<string, string> = {
 
 // 两种模式的完整阶段数，用于进度条；只按真实完成的阶段推进，不做虚假百分比。
 const MODE_STAGE_TOTAL: Record<string, number> = {
-  first_extraction: 8,
-  reuse: 5,
+  first_extraction: 10,
+  reuse: 6,
 };
 
 const ORIGIN_LABELS: Record<string, string> = {
@@ -213,9 +227,10 @@ function stageMessage(stage: StageView): string {
   const payload = stage.payload || {};
   if (stage.status === 'running') {
     const runningHints: Record<string, string> = {
-      read_pages: '正在压缩长图并切分为可读区域',
+      read_pages: '正在读取图片，长图会自动分段',
       extract: '正在识别图片中的商品信息与卖点文案',
-      evidence_gate: '正在对数字、材质、认证类卖点逐条做二次证据检查',
+      evidence_gate: '正在检查卖点内容和来源位置',
+      organize: '正在把参数、结构和使用意义组织成完整卖点',
       generate: '正在按创意方向撰写口播脚本',
       validate: '正在检查时长与方案差异',
     };
@@ -224,6 +239,7 @@ function stageMessage(stage: StageView): string {
   switch (stage.stage) {
     case 'input_check': {
       const mode = asText(payload.mode) === 'reuse' ? '复用已有卖点库' : '首次提取卖点';
+      if (payload.extractOnly === true) return `仅提取卖点建库，不生成脚本 · 目标 ${payload.targetDurationSec ?? '-'} 秒 · ${mode}`;
       return `目标 ${payload.targetDurationSec ?? '-'} 秒 · 生成 ${payload.requestedCount ?? '-'} 条 · ${mode}`;
     }
     case 'read_pages':
@@ -233,14 +249,23 @@ function stageMessage(stage: StageView): string {
       return `${product ? `识别商品：${product}；` : ''}归并后得到候选卖点 ${payload.candidateCount ?? 0} 条`;
     }
     case 'evidence_gate':
+      if (payload.manualReview === true) return `候选 ${payload.total ?? 0} 条：可用 ${payload.usable ?? 0} 条，排除 ${payload.failed ?? 0} 条 · 来源复核按需手动进行`;
       return `候选 ${payload.total ?? 0} 条：可用 ${payload.usable ?? 0} 条，排除 ${payload.failed ?? 0} 条，其中 ${payload.highRiskVerified ?? 0} 条高风险卖点通过二次证据检查`;
     case 'save_library':
       return `卖点库已保存为 V${payload.revisionNumber ?? '-'}，后续生成直接复用`;
+    case 'organize':
+      return `已将 ${payload.factCount ?? 0} 条支撑事实整理为 ${payload.sellingPointCount ?? 0} 条核心卖点与详解`;
     case 'load_library':
       return `复用卖点库 V${payload.revisionNumber ?? '-'}，跳过详情页识别`;
     case 'plan': {
       const planCount = Array.isArray(payload.plans) ? payload.plans.length : null;
-      return `${asText(payload.audience) ? `受众：${asText(payload.audience)} · ` : ''}${asText(payload.tone) ? `风格：${asText(payload.tone)} · ` : ''}规划 ${planCount ?? '-'} 个创意方向`;
+      const profile = payload.audienceProfile && typeof payload.audienceProfile === 'object'
+        ? payload.audienceProfile as { summary?: unknown; degraded?: unknown }
+        : null;
+      const audienceText = profile && asText(profile.summary)
+        ? `受众画像：${asText(profile.summary)}${profile.degraded === true ? '（本地推导）' : ''}`
+        : (asText(payload.audience) ? `受众：${asText(payload.audience)}` : '');
+      return `${audienceText ? `${audienceText} · ` : ''}${asText(payload.tone) ? `风格：${asText(payload.tone)} · ` : ''}规划 ${planCount ?? '-'} 个创意方向`;
     }
     case 'generate': {
       const errors = Array.isArray(payload.errors) ? payload.errors.filter((item) => asText(item)).length : 0;
@@ -311,10 +336,12 @@ function stageArtifact(stage: StageView | undefined, task: ScriptStudioTaskSnaps
     case 'evidence_gate':
       return {
         ...base,
-        title: running ? '正在做二次证据检查' : `${payload.usable ?? 0} 条卖点可用`,
+        title: running ? '正在检查卖点与来源' : `${payload.usable ?? 0} 条卖点可用`,
         items: [
           { label: '可用卖点', title: `${payload.usable ?? '-'} / ${payload.total ?? '-'} 条`, copy: '促销与未通过核验的不会写入脚本' },
-          { label: '高风险核验', title: `${payload.highRiskVerified ?? 0} 条通过二次证据检查`, copy: '数字、材质、认证类逐条核验' },
+          payload.manualReview === true
+            ? { label: '来源复核', title: '按需手动核对', copy: '可展开卖点来源图检查小字、数值与配置' }
+            : { label: '高风险核验', title: `${payload.highRiskVerified ?? 0} 条通过二次证据检查`, copy: '数字、材质、认证类逐条核验' },
         ],
       };
     case 'save_library':
@@ -339,7 +366,7 @@ function stageArtifact(stage: StageView | undefined, task: ScriptStudioTaskSnaps
       const plans = Array.isArray(payload.plans) ? payload.plans as Array<Record<string, unknown>> : [];
       return {
         ...base,
-        title: running ? '正在拆分创意方向' : `已拆出 ${plans.length || task.requestedCount} 个方向`,
+        title: running ? '正在拆分创意方向' : `已拆出 ${plans.length} 个方向`,
         items: plans.slice(0, 2).map((plan, index) => ({
           label: `方案 ${index + 1}`,
           title: asText(plan.direction) || asText(plan.templateId) || `方向 ${index + 1}`,
@@ -362,7 +389,7 @@ function stageArtifact(stage: StageView | undefined, task: ScriptStudioTaskSnaps
         title: running ? '正在做完成检查' : `${payload.passed ?? 0} 条脚本通过基础校验`,
         items: [
           { label: '时长检查', title: `${payload.passed ?? '-'} 条符合目标预算`, copy: `目标 ${task.inputSnapshot.targetDurationSec ?? '-'} 秒` },
-          { label: '差异检查', title: Number(payload.failed) > 0 ? `${payload.failed} 条未通过` : '方案之间保持区分', copy: '切入角度、模板和开场均需不同' },
+          { label: '生成结果', title: Number(payload.failed) > 0 ? `${payload.failed} 条生成或校验失败` : '全部方案通过校验', copy: Number(payload.failed) > 0 ? '具体原因见下方失败说明，已保存方案可以使用' : '已检查事实引用、正文与方案差异' },
         ],
       };
     default:
@@ -390,12 +417,21 @@ function activityLines(stages: StageView[]): Array<{ time: string; text: string 
 export default function ScriptStudioPanel({ projectId }: Props) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [sourceMode, setSourceMode] = useState<'upload' | 'directory'>('upload');
+  const [directoryPath, setDirectoryPath] = useState('');
+  const [importedDirectory, setImportedDirectory] = useState('');
+  const analyzeInFlight = useRef(false);
+  const pendingDirectory = sourceMode === 'directory' && (!importedDirectory || directoryPath.trim() !== importedDirectory);
   const [libraryReady, setLibraryReady] = useState(false);
   const [libraryRevisionId, setLibraryRevisionId] = useState('');
   const [scripts, setScripts] = useState<ScriptView[]>([]);
   const [task, setTask] = useState<ScriptStudioTaskSnapshot | null>(null);
+  const [productionMode, setProductionMode] = useState<ScriptProductionMode>('standard');
+  const [regenerateMode, setRegenerateMode] = useState<ScriptProductionMode>('standard');
   const [targetDurationSec, setTargetDurationSec] = useState(15);
   const [requestedCount, setRequestedCount] = useState(3);
+  /** 爆文模板改写：勾选的模板条目 ID（选择顺序即生成顺序；数量=勾选数）。 */
+  const [templateEntryIds, setTemplateEntryIds] = useState<string[]>([]);
   /** 「再生成一组」本次专用参数:与第 1 页表单不共享隐式状态,切换结果组时按 inputSnapshot 初始化一次。 */
   const [regenerateDuration, setRegenerateDuration] = useState(15);
   const [regenerateCount, setRegenerateCount] = useState(3);
@@ -417,6 +453,9 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const [historyFor, setHistoryFor] = useState('');
   const [historyRevisions, setHistoryRevisions] = useState<RevisionView[]>([]);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryExpanded, setLibraryExpanded] = useState(false);
+  const [organizingLibrary, setOrganizingLibrary] = useState(false);
+  const organizeInFlight = useRef(false);
   const [libraryRevision, setLibraryRevision] = useState<LibraryRevisionViewLite | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -466,30 +505,74 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     setLibraryRevision(data.current || null);
   }, [projectId]);
 
+  const organizeLibrary = async () => {
+    if (!libraryRevision || organizeInFlight.current) return;
+    organizeInFlight.current = true;
+    setOrganizingLibrary(true);
+    setError('');
+    setNotice('正在把相关细节整理成完整的卖点＋详解，完成后保存为新版本…');
+    try {
+      const response = await fetch(`/api/projects/${projectId}/script-studio/library/organize`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseRevisionId: libraryRevision.id, providerId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || '整理未完成，请刷新卖点库后重试');
+      await loadLibrary();
+      setLibraryOpen(false);
+      setNotice('已保存整理后的卖点＋详解。下一次生成使用新版本，已有脚本保持原版本。');
+    } catch (error) {
+      setNotice('');
+      setError(error instanceof Error ? error.message : '卖点整理失败');
+      await loadLibrary();
+    } finally {
+      organizeInFlight.current = false;
+      setOrganizingLibrary(false);
+    }
+  };
+
   const startPolling = useCallback((taskId: string) => {
     if (taskPollRef.current) clearInterval(taskPollRef.current);
+    let loadedCount = 0;
+    let polling = false;
     taskPollRef.current = setInterval(async () => {
+      if (polling) return;
+      polling = true;
       try {
         const response = await fetch(`/api/projects/${projectId}/script-studio/tasks/${taskId}`, { cache: 'no-store' });
         const data = await response.json().catch(() => ({}));
         const next = data.task as ScriptStudioTaskSnapshot | undefined;
         if (!next) return;
         setTask(next);
+        if (next.succeededCount > loadedCount) {
+          await loadScripts();
+          await loadLibrary();
+          if (loadedCount === 0) setStep(3);
+          loadedCount = next.succeededCount;
+        }
         if (['succeeded', 'partial'].includes(next.status)) {
-          setStep(3);
           if (taskPollRef.current) clearInterval(taskPollRef.current);
           await loadScripts();
           await loadLibrary();
+          if (next.inputSnapshot?.extractOnly === true) {
+            // 仅提取卖点库的前置任务：建库后进入第 2 步挑选爆文模板。
+            setStep(2);
+            setNotice('卖点库已建好，请在下方挑选爆文模板并选择每个模板生成几条');
+          } else {
+            setStep(3);
+          }
         } else if (next.status === 'failed') {
           setError(next.errorMessage || '生成失败');
           if (taskPollRef.current) clearInterval(taskPollRef.current);
         } else if (next.status === 'cancelled') {
-          setNotice('任务已停止；返回素材后可重新开始');
+          setNotice('任务已停止；已保存的脚本仍可使用');
           window.setTimeout(() => setNotice(''), 3000);
           if (taskPollRef.current) clearInterval(taskPollRef.current);
         }
       } catch {
         // 网络抖动时继续轮询，不打断任务。
+      } finally {
+        polling = false;
       }
     }, 1200);
   }, [projectId, loadScripts, loadLibrary]);
@@ -503,6 +586,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       setStep(2);
       startPolling(latest.id);
     } else if (latest && ['succeeded', 'partial'].includes(latest.status)) {
+      // 仅提取卖点库的前置任务完成后不占用结果页；第 1 步表单已可直接勾选爆文模板。
+      if (latest.inputSnapshot?.extractOnly === true) return;
       setTask(latest);
       setStep(3);
     } else if (latest?.status === 'failed') {
@@ -531,7 +616,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   // 过程页总已用时长的秒级走表；任务终态后停止。
   const taskRunning = Boolean(task && ['queued', 'running'].includes(task.status));
   useEffect(() => {
-    if (step !== 2 || !taskRunning) return;
+    if ((step !== 2 && step !== 3) || !taskRunning) return;
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [step, taskRunning]);
@@ -564,6 +649,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
           }))
         : [];
       setAssets((current) => [...current, ...uploaded]);
+      setImportedDirectory('');
+      setLibraryReady(false);
       setError('');
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : '上传失败');
@@ -574,8 +661,10 @@ export default function ScriptStudioPanel({ projectId }: Props) {
 
   const deleteAsset = useCallback(async (assetId: string) => {
     try {
-      await fetch(`/api/images/${assetId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/images/${assetId}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('删除失败');
       setAssets((current) => current.filter((asset) => asset.id !== assetId));
+      setLibraryReady(false);
     } catch {
       setError('删除图片失败，请稍后重试');
     }
@@ -588,8 +677,12 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     targetDurationSec: number;
     requestedCount: number;
     creativeBrief: string;
+    productionMode?: ScriptProductionMode;
     providerId: string;
     requestKey?: string;
+    templateEntryIds?: string[];
+    /** 仅提取卖点库（爆文模板改写前置）：任务在保存卖点库后即完成，不生成脚本。 */
+    extractOnly?: boolean;
   }): Promise<boolean> => {
     if (!request.providerId) {
       setError('请先选择一个已配置且支持图片读取的脚本模型');
@@ -607,8 +700,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
           targetDurationSec: request.targetDurationSec,
           requestedCount: request.requestedCount,
           creativeBrief: request.creativeBrief,
+          productionMode: request.productionMode,
           providerId: request.providerId,
           ...(request.requestKey ? { requestKey: request.requestKey } : {}),
+          ...(request.templateEntryIds?.length ? { templateEntryIds: request.templateEntryIds } : {}),
+          ...(request.extractOnly ? { extractOnly: true } : {}),
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -640,28 +736,146 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     const duration = typeof snapshot.targetDurationSec === 'number' ? snapshot.targetDurationSec : 15;
     // 延迟到宏任务执行,避免 effect 内同步 setState 触发级联渲染。
     const timer = window.setTimeout(() => {
+      setRegenerateMode(snapshot.productionMode === 'template_rewrite' ? 'template_rewrite' : snapshot.productionMode === 'pain_solving_15s' ? 'pain_solving_15s' : 'standard');
       if (Number.isInteger(count) && count >= 1 && count <= 6) setRegenerateCount(count);
       if (SCRIPT_TARGET_DURATION_OPTIONS.includes(duration as (typeof SCRIPT_TARGET_DURATION_OPTIONS)[number])) setRegenerateDuration(duration);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [task]);
 
+  /** 发送不可变的再生成 action。202 明确成功或 4xx 明确拒绝后清 action；5xx/断连保留供重试。 */
+  const runRegenerateAction = useCallback(async (action: { requestKey: string; body: Record<string, unknown> }) => {
+    if (inFlightRegenerationRef.current) return;
+    inFlightRegenerationRef.current = true;
+    setSubmitting(true);
+    setError('');
+    try {
+      const response = await fetch(`/api/projects/${projectId}/script-studio/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action.body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && response.status === 202) {
+        const nextTask = data.task as ScriptStudioTaskSnapshot;
+        setTask(nextTask);
+        setStep(2);
+        setNotice(data.schedulerEnabled ? '' : '任务已创建；真实供应商调用尚未授权，需启用调度器后执行');
+        startPolling(nextTask.id);
+        pendingRegenerationRef.current = null;
+        setRegeneratePending(false);
+        return;
+      }
+      if (response.status >= 400 && response.status < 500) {
+        // 明确不可重试的业务拒绝（例如参数型 4xx）：清理 action。
+        setError(data.message || data.error || `HTTP ${response.status}`);
+        pendingRegenerationRef.current = null;
+        setRegeneratePending(false);
+        return;
+      }
+      // 5xx / 未知结果：保留 action，按钮呈现「重试本次提交」，不得从最新表单重建 body。
+      setError(data.message || data.error || `提交失败（${response.status}），可点击「重试本次提交」`);
+    } catch (err) {
+      setError(`提交失败：${String(err)}，可点击「重试本次提交」`);
+    } finally {
+      inFlightRegenerationRef.current = false;
+      setSubmitting(false);
+    }
+  }, [projectId, startPolling]);
+
   const handleAnalyze = useCallback(async () => {
+    if (analyzeInFlight.current) return;
+    analyzeInFlight.current = true;
+    try {
+    setError('');
     if (!providerId) {
       setError('请先选择一个已配置且支持图片读取的脚本模型');
       return;
     }
-    if (assets.length === 0 && !libraryReady) {
+    let analysisAssets = assets;
+    let reuseLibrary = libraryReady;
+    if (pendingDirectory) {
+      if (!directoryPath.trim()) { setError('请填写裁切图文件夹路径'); return; }
+      setUploading(true);
+      const response = await fetch(`/api/projects/${projectId}/script-studio/import-directory`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directoryPath }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || '读取文件夹失败');
+      analysisAssets = data.files as Asset[];
+      // 文件夹作为本次完整输入，避免与上一次详情页重复或混入其他产品。
+      setAssets(analysisAssets);
+      setImportedDirectory(directoryPath.trim());
+      setLibraryReady(false);
+      reuseLibrary = false;
+      setNotice(`已按文件名顺序导入 ${analysisAssets.length} 张图片，正在创建分析任务`);
+      setUploading(false);
+    }
+    if (productionMode === 'template_rewrite') {
+      if (reuseLibrary) {
+        // 第 2 步提交：复用当前卖点库，按勾选爆文模板（同一模板可多条变体）生成。
+        if (!pendingRegenerationRef.current && templateEntryIds.length === 0) {
+          setError('爆文模板改写需要先勾选爆文模板并选择生成条数');
+          return;
+        }
+        if (!pendingRegenerationRef.current) {
+          const requestKey = `regenerate-group:${crypto.randomUUID()}`;
+          pendingRegenerationRef.current = { requestKey, body: {
+            sourceSetId: null,
+            libraryRevisionId,
+            targetDurationSec,
+            requestedCount: templateEntryIds.length,
+            creativeBrief,
+            productionMode,
+            providerId,
+            templateEntryIds: [...templateEntryIds],
+            requestKey,
+          } };
+          setRegeneratePending(true);
+        }
+        await runRegenerateAction(pendingRegenerationRef.current);
+        return;
+      }
+      // 第 1 步提交：还没有卖点库时先只跑提取建库，完成后进入第 2 步挑选爆文模板。
+      if (analysisAssets.length === 0) {
+        setError('请先上传至少一张详情页图片');
+        return;
+      }
+      const extractResponse = await fetch(`/api/projects/${projectId}/script-studio/source-sets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageAssetIds: analysisAssets.map((asset) => asset.id) }),
+      });
+      const extractData = await extractResponse.json().catch(() => ({}));
+      if (!extractResponse.ok) {
+        setError(extractData.message || extractData.error || '创建详情页来源失败');
+        return;
+      }
+      await startTask({
+        sourceSetId: extractData.sourceSetId as string,
+        libraryRevisionId: null,
+        targetDurationSec,
+        requestedCount: 1,
+        creativeBrief,
+        productionMode: 'standard',
+        providerId,
+        extractOnly: true,
+      });
+      return;
+    }
+    if (analysisAssets.length === 0 && !reuseLibrary) {
       setError('请先上传至少一张详情页图片，或先准备好可复用的卖点库');
       return;
     }
-    if (assets.length === 0 && libraryReady) {
+    if (analysisAssets.length === 0 && reuseLibrary) {
       await startTask({
         sourceSetId: null,
         libraryRevisionId: null,
         targetDurationSec,
         requestedCount,
         creativeBrief,
+        productionMode,
         providerId,
       });
       return;
@@ -669,7 +883,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     const response = await fetch(`/api/projects/${projectId}/script-studio/source-sets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageAssetIds: assets.map((asset) => asset.id) }),
+      body: JSON.stringify({ imageAssetIds: analysisAssets.map((asset) => asset.id) }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -682,9 +896,16 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       targetDurationSec,
       requestedCount,
       creativeBrief,
+      productionMode,
       providerId,
     });
-  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, providerId, startTask]);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '分析提交失败，请重试');
+    } finally {
+      setUploading(false);
+      analyzeInFlight.current = false;
+    }
+  }, [assets, libraryReady, projectId, targetDurationSec, requestedCount, creativeBrief, productionMode, providerId, startTask, runRegenerateAction, libraryRevisionId, templateEntryIds, pendingDirectory, directoryPath]);
 
   const switchRevision = useCallback(async (scriptId: string, revisionId: string) => {
     await fetch(`/api/projects/${projectId}/script-studio/scripts/${scriptId}/current`, {
@@ -819,52 +1040,18 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     }
   }, [projectId, task, startPolling]);
 
-  /** 发送不可变的再生成 action。202 明确成功或 4xx 明确拒绝后清 action；5xx/断连保留供重试。 */
-  const runRegenerateAction = useCallback(async (action: { requestKey: string; body: Record<string, unknown> }) => {
-    if (inFlightRegenerationRef.current) return;
-    inFlightRegenerationRef.current = true;
-    setSubmitting(true);
-    setError('');
-    try {
-      const response = await fetch(`/api/projects/${projectId}/script-studio/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(action.body),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && response.status === 202) {
-        const nextTask = data.task as ScriptStudioTaskSnapshot;
-        setTask(nextTask);
-        setStep(2);
-        setNotice(data.schedulerEnabled ? '' : '任务已创建；真实供应商调用尚未授权，需启用调度器后执行');
-        startPolling(nextTask.id);
-        pendingRegenerationRef.current = null;
-        setRegeneratePending(false);
-        return;
-      }
-      if (response.status >= 400 && response.status < 500) {
-        // 明确不可重试的业务拒绝（例如参数型 4xx）：清理 action。
-        setError(data.message || data.error || `HTTP ${response.status}`);
-        pendingRegenerationRef.current = null;
-        setRegeneratePending(false);
-        return;
-      }
-      // 5xx / 未知结果：保留 action，按钮呈现「重试本次提交」，不得从最新表单重建 body。
-      setError(data.message || data.error || `提交失败（${response.status}），可点击「重试本次提交」`);
-    } catch (err) {
-      setError(`提交失败：${String(err)}，可点击「重试本次提交」`);
-    } finally {
-      inFlightRegenerationRef.current = false;
-      setSubmitting(false);
-    }
-  }, [projectId, startPolling]);
-
   const regenerateGroup = useCallback(() => {
     if (!libraryRevisionId) {
       setError('当前项目没有可复用的卖点库');
       return;
     }
     if (inFlightRegenerationRef.current) return;
+    if (!pendingRegenerationRef.current && regenerateMode === 'template_rewrite') {
+      setProductionMode('template_rewrite');
+      setTargetDurationSec(regenerateDuration);
+      setStep(2);
+      return;
+    }
     if (!providerId) {
       setError('请先选择一个已配置且支持图片读取的脚本模型');
       return;
@@ -877,7 +1064,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
         body: {
           sourceSetId: null,
           libraryRevisionId,
-          targetDurationSec: regenerateDuration,
+          productionMode: regenerateMode,
+          targetDurationSec: regenerateMode === 'pain_solving_15s' ? 15 : regenerateDuration,
           requestedCount: regenerateCount,
           creativeBrief,
           providerId,
@@ -887,7 +1075,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
       setRegeneratePending(true);
     }
     void runRegenerateAction(pendingRegenerationRef.current);
-  }, [libraryRevisionId, regenerateDuration, regenerateCount, creativeBrief, providerId, runRegenerateAction]);
+  }, [libraryRevisionId, regenerateMode, regenerateDuration, regenerateCount, creativeBrief, providerId, runRegenerateAction]);
 
   const cancelTask = useCallback(async () => {
     if (!task || !['queued', 'running'].includes(task.status)) return;
@@ -911,10 +1099,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   }, [projectId, task]);
 
   const stepTo = useCallback((next: 1 | 2 | 3) => {
-    if (next === 2 && !task && !submitting) return;
+    // 爆文模板改写的第 2 步是挑选爆文模板：卖点库就绪即可进入，不要求已有任务。
+    if (next === 2 && !task && !submitting && !(productionMode === 'template_rewrite' && libraryReady)) return;
     if (next === 3 && !scripts.length) return;
     setStep(next);
-  }, [task, submitting, scripts.length]);
+  }, [task, submitting, scripts.length, productionMode, libraryReady]);
 
   const currentScripts = useMemo(() => scripts.map((script) => {
     const revision = script.currentRevision;
@@ -954,9 +1143,11 @@ export default function ScriptStudioPanel({ projectId }: Props) {
     currentScripts.find(({ script }) => script.id === historyFor) || null
   ), [currentScripts, historyFor]);
 
-  // 过程页派生数据
-  const doneStageCount = task ? task.stages.filter((stage) => stage.status === 'succeeded').length : 0;
-  const stageTotal = task ? (MODE_STAGE_TOTAL[task.mode] || Math.max(task.stages.length, 1)) : 1;
+  // 过程页派生数据（skipped 阶段——如未配置提炼器——也算走完，进度不悬空）。
+  const doneStageCount = task ? task.stages.filter((stage) => stage.status === 'succeeded' || stage.status === 'skipped').length : 0;
+  // 仅提取卖点库的前置任务包含核验与组织，在保存后完成，共 6 个阶段。
+  const extractOnlyTask = task?.inputSnapshot?.extractOnly === true;
+  const stageTotal = task ? (extractOnlyTask ? 6 : (MODE_STAGE_TOTAL[task.mode] || Math.max(task.stages.length, 1))) : 1;
   const currentStageView = task
     ? ((taskRunning
         ? task.stages.find((stage) => stage.status === 'running')
@@ -968,6 +1159,78 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   const lastFinished = task ? [...task.stages].reverse().find((stage) => stage.finishedAt)?.finishedAt : null;
   const taskEnd = taskRunning ? null : (lastFinished || task?.updatedAt || null);
   const totalElapsed = task ? elapsedSeconds(taskStart, taskEnd, nowMs) : 0;
+
+  const libraryPanel = libraryRevision && (
+              <section className="rounded-[18px] border border-hairline p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="flex items-center gap-2 text-base font-semibold">
+                      <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-ok-tint text-xs text-ok">✓</span>
+                      产品卖点库
+                    </h3>
+                    <p className="mt-1 text-xs text-ink-secondary">{usablePoints.length} 个有效卖点 · V{libraryRevision.revisionNumber} · 已保存</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm shrink-0"
+                    aria-expanded={libraryExpanded}
+                    aria-controls={`selling-point-library-${projectId}`}
+                    onClick={() => setLibraryExpanded((current) => !current)}
+                  >
+                    {libraryExpanded ? '收起卖点' : '展开卖点'}
+                  </button>
+                </div>
+                <div id={`selling-point-library-${projectId}`} hidden={!libraryExpanded}>
+                  <p className="mt-3 text-xs text-ink-secondary">每条卖点包含完整详解，相关参数与使用意义一起呈现。展开可查看支撑事实，也可选择保留或排除。</p>
+                  <div className="my-3 flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-ok-tint px-2.5 py-1 text-[0.68rem] font-semibold text-ok">✓ 已保存 · 可无限复用</span>
+                    <button type="button" onClick={() => void organizeLibrary()} disabled={organizingLibrary || taskRunning || !providerId} className="btn-secondary btn-sm">{organizingLibrary ? '正在整理卖点…' : '重新整理卖点'}</button>
+                    <button type="button" disabled={organizingLibrary} onClick={() => setLibraryOpen((current) => !current)} className="btn-secondary btn-sm">{libraryOpen ? '收起选择' : '选择 / 排除卖点'}</button>
+                  </div>
+                <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
+                  <div className="rounded-[14px] border border-hairline bg-surface-subtle p-3.5">
+                    <div className="text-sm font-semibold">{libraryRevision.productName || '未识别商品'}</div>
+                    <div className="mt-1 text-[0.68rem] leading-4 text-ink-tertiary">
+                      {[libraryRevision.brand, libraryRevision.category].map((item) => item?.trim()).filter(Boolean).join(' · ') || '详情页素材'}
+                      <br />
+                      {usablePoints.length} 个有效卖点 · V{libraryRevision.revisionNumber}
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    {usablePoints.map((point, index) => (
+                      <article key={point.id} className="rounded-[14px] border border-hairline bg-surface-subtle p-4" aria-label={`卖点 ${index + 1}：${point.title}`}>
+                        <div className="flex items-start gap-2.5">
+                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent">{index + 1}</span>
+                          <h4 className="text-sm font-semibold leading-5">{point.title}</h4>
+                        </div>
+                        {point.detailText?.trim() ? (
+                          <p className="mt-2 whitespace-pre-line pl-[30px] text-sm leading-7 text-ink-secondary">{point.detailText}</p>
+                        ) : (
+                          <p className="mt-2 pl-[30px] text-xs text-warn">无详解（模板改写不可用）</p>
+                        )}
+                        <details className="mt-3 pl-[30px] text-xs text-ink-tertiary">
+                          <summary className="cursor-pointer">查看支撑事实与来源</summary>
+                          <p className="mt-2 whitespace-pre-line leading-6">{point.factText}</p>
+                          <p className="mt-2">{parseEvidenceRefsDisplay(point.evidenceRefsJson)}</p>
+                          <SellingPointEvidence projectId={projectId} revisionId={libraryRevision.id} pointId={point.id} />
+                        </details>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+                {libraryOpen && !organizingLibrary && (
+                  <div className="mt-4">
+                    <LibraryEditor
+                      key={libraryRevision.id}
+                      projectId={projectId}
+                      revision={libraryRevision}
+                      onSaved={() => { setLibraryOpen(false); void loadLibrary(); }}
+                    />
+                  </div>
+                )}
+                </div>
+              </section>
+            );
 
   return (
     <div className="card">
@@ -984,8 +1247,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 <button
                   type="button"
                   onClick={() => stepTo(item)}
-                  disabled={item === 2 && !task && !submitting || item === 3 && scripts.length === 0}
-                  title={item === 1 ? '第 1 页：提供素材' : item === 2 ? '第 2 页：AI 分析与生成' : '第 3 页：选择脚本方案'}
+                  disabled={(item === 2 && !task && !submitting && !(productionMode === 'template_rewrite' && libraryReady)) || (item === 3 && scripts.length === 0)}
+                  title={item === 1 ? '第 1 页：提供素材' : item === 2 ? (productionMode === 'template_rewrite' ? '第 2 页：挑选爆文模板' : '第 2 页：AI 分析与生成') : '第 3 页：选择脚本方案'}
                   className={`flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[0.7rem] font-semibold ${
                     step === item ? 'bg-accent text-white' : item <= step ? 'bg-ok text-white' : 'bg-surface-subtle text-ink-tertiary'
                   }`}
@@ -1020,7 +1283,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               onDrop={(event) => {
                 event.preventDefault();
                 setDragOver(false);
-                if (!uploading) void upload(event.dataTransfer.files);
+                if (!uploading && !taskRunning && sourceMode === 'upload') void upload(event.dataTransfer.files);
               }}
             >
               <input
@@ -1039,13 +1302,26 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   <h3 className="text-base font-semibold">提供素材</h3>
                   <p className="mt-1 text-sm text-ink-secondary">可以一次性放入一张或多张同一商品详情页。</p>
                 </div>
-                {assets.length > 0 && (
+                {assets.length > 0 && sourceMode === 'upload' && (
                   <button type="button" className="btn-primary btn-sm" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
                     {uploading ? '正在上传…' : '继续添加'}
                   </button>
                 )}
               </div>
-              {assets.length === 0 ? (
+              <div className="mb-4 flex gap-2" role="group" aria-label="素材来源">
+                <button type="button" disabled={uploading || submitting || taskRunning} aria-pressed={sourceMode === 'upload'} className={sourceMode === 'upload' ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'} onClick={() => setSourceMode('upload')}>上传详情页图片</button>
+                <button type="button" disabled={uploading || submitting || taskRunning} aria-pressed={sourceMode === 'directory'} className={sourceMode === 'directory' ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'} onClick={() => setSourceMode('directory')}>裁切图文件夹</button>
+              </div>
+              {sourceMode === 'directory' && (
+                <div className="mb-4 space-y-2">
+                  <label className="label" htmlFor="script-image-directory">裁切图文件夹路径</label>
+                  <input id="script-image-directory" className="input-field" value={directoryPath} disabled={uploading || submitting || taskRunning}
+                    onChange={(event) => setDirectoryPath(event.target.value)} placeholder="例如 Q:\\产品资料库\\某产品\\裁切图" />
+                  <p className="text-xs leading-5 text-ink-tertiary">粘贴本机或网络盘文件夹路径后，点击下方分析。按文件名顺序读取当前文件夹的 JPG / PNG / WebP，最多 200 张，不含子文件夹。请确保属于同一商品。</p>
+                  <p className="text-xs text-ink-secondary">{uploading ? '正在读取并导入图片…' : pendingDirectory ? '本次将使用这个文件夹的图片重新分析。' : importedDirectory ? `已导入 ${assets.length} 张图片` : '合适尺寸的裁切图直接识别，长图自动分段。'}</p>
+                </div>
+              )}
+              {assets.length === 0 && sourceMode === 'upload' ? (
                 <button
                   data-testid="script-studio-upload-dropzone"
                   type="button"
@@ -1069,7 +1345,7 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                     支持 PNG / JPEG / WebP；长详情页会在本地分析时自动压缩和分条处理
                   </span>
                 </button>
-              ) : (
+              ) : assets.length > 0 && !pendingDirectory ? (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                   {assets.map((asset) => (
                     <div key={asset.id} className="group relative rounded-[14px] border border-hairline bg-surface p-2">
@@ -1089,8 +1365,8 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                     </div>
                   ))}
                 </div>
-              )}
-              {libraryReady && (
+              ) : null}
+              {libraryReady && !pendingDirectory && (
                 <p className="mt-3 text-xs text-ok">当前项目已有可复用卖点库，未上传新素材时也可直接生成。</p>
               )}
             </section>
@@ -1114,28 +1390,53 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 </select>
                 <p className="mt-1.5 text-xs leading-5 text-ink-tertiary">
                   {selectedProvider
-                    ? `本次识图、卖点核验和脚本生成统一使用 ${selectedProvider.model}（${selectedProvider.executionScope === 'company' ? '需要公司内网，并经本机 LiteLLM' : '外部直连'}）`
+                    ? `本次识图、卖点整理和脚本生成统一使用 ${selectedProvider.model}（${selectedProvider.executionScope === 'company' ? '需要公司内网，并经本机 LiteLLM' : '外部直连'}）`
                     : '请先在设置中配置一个支持图片读取的脚本模型'}
                 </p>
               </div>
               <div>
+                <label className="label" htmlFor="script-production-mode">生产模式</label>
+                <select id="script-production-mode" value={productionMode} onChange={(event) => {
+                  const mode = event.target.value as ScriptProductionMode;
+                  setProductionMode(mode);
+                  if (mode === 'pain_solving_15s') setTargetDurationSec(15);
+                }} className="input-field">
+                  <option value="standard">多方向生成</option>
+                  <option value="pain_solving_15s">痛点解决型 · 15秒</option>
+                  <option value="template_rewrite">爆文模板改写</option>
+                </select>
+                {productionMode === 'pain_solving_15s' && <p className="mt-1.5 text-xs text-ink-tertiary">先筛选有依据的内容机会，再生成脚本；机会不足时少产，不凑数量。</p>}
+                {productionMode === 'template_rewrite' && <p className="mt-1.5 text-xs text-ink-tertiary">先提取卖点建库，再在第 2 步挑选爆文模板，按参考文风改写成一条本家脚本。</p>}
+              </div>
+              <div>
                 <label className="label">目标时长</label>
-                <select value={targetDurationSec} onChange={(event) => setTargetDurationSec(Number(event.target.value))} className="input-field">
+                <select disabled={productionMode === 'pain_solving_15s'} value={targetDurationSec} onChange={(event) => setTargetDurationSec(Number(event.target.value))} className="input-field">
                   {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                 </select>
+                {productionMode === 'template_rewrite' && (
+                  <p className="mt-1.5 text-xs text-ink-tertiary">写作估算 ≈ {targetDurationSec * 6} 中文字/条（±15%，不代表实际配音时长）</p>
+                )}
               </div>
+              {productionMode === 'template_rewrite' ? (
+              <div>
+                <label className="label">生成数量</label>
+                <div className="flex h-9 items-center text-sm text-ink-secondary">第 2 步挑选爆文模板时决定</div>
+              </div>
+              ) : (
               <div>
                 <label className="label">生成数量</label>
                 <select value={requestedCount} onChange={(event) => setRequestedCount(Number(event.target.value))} className="input-field">
                   {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count} 条并列方案</option>)}
                 </select>
               </div>
+              )}
               <div>
                 <label className="label">已添加图片</label>
                 <div className="flex h-9 items-center text-sm text-ink-secondary">{assets.length} 张</div>
               </div>
             </section>
 
+            {productionMode !== 'template_rewrite' && (
             <div>
               <label className="label">创作要求（可选）</label>
               <textarea
@@ -1146,40 +1447,85 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                 className="input-field"
               />
             </div>
+            )}
 
             <div className="flex items-center justify-between gap-4 border-t border-hairline pt-4">
               <p className="text-xs text-ink-tertiary">✓ 卖点首次提取后固定保存；以后再生成脚本直接复用，不重复识图。</p>
               <button
                 type="button"
-                onClick={() => void handleAnalyze()}
-                disabled={submitting || uploading || !providerId || (assets.length === 0 && !libraryReady)}
+                onClick={() => {
+                  if (productionMode === 'template_rewrite' && libraryReady && !pendingDirectory) {
+                    setStep(2);
+                    return;
+                  }
+                  void handleAnalyze();
+                }}
+                disabled={submitting || uploading || taskRunning || !providerId || (pendingDirectory ? !directoryPath.trim() : assets.length === 0 && !libraryReady)}
                 className="btn-primary"
               >
-                {submitting ? '正在创建任务…' : '分析并生成脚本'}
+                {uploading && sourceMode === 'directory' ? '正在导入图片…' : submitting
+                  ? '正在创建任务…'
+                  : productionMode === 'template_rewrite'
+                    ? (libraryReady && !pendingDirectory ? '下一步：挑选爆文模板' : '分析图片，提取卖点')
+                    : '分析并生成脚本'}
               </button>
             </div>
           </div>
         )}
 
-        {step === 2 && task && (
+        {step === 2 && productionMode === 'template_rewrite' && libraryReady && !taskRunning && task?.status !== 'failed' && (
+          <div className="space-y-5">
+            {libraryPanel}
+            <section className="rounded-[18px] border border-hairline p-4">
+              <div className="mb-3">
+                <h3 className="text-base font-semibold">挑选爆文模板</h3>
+                <p className="mt-1 text-sm text-ink-secondary">卖点库已就绪。勾选 1-6 个模板，每个模板可选生成 1 条或多条变体，合计不超过 6 条。</p>
+              </div>
+              <TemplateRewritePicker
+                projectId={projectId}
+                libraryRevisionId={libraryRevisionId}
+                selectedIds={templateEntryIds}
+                onChange={setTemplateEntryIds}
+                disabled={submitting}
+              />
+            </section>
+            <div className="flex items-center justify-between gap-4 border-t border-hairline pt-4">
+              <button type="button" onClick={() => setStep(1)} className="btn-secondary">返回素材</button>
+              <button
+                type="button"
+                onClick={() => void handleAnalyze()}
+                disabled={submitting || organizingLibrary || !providerId || (!regeneratePending && templateEntryIds.length === 0)}
+                className="btn-primary"
+              >
+                {submitting ? '正在创建任务…' : regeneratePending ? '重试本次提交' : `按 ${new Set(templateEntryIds).size} 个模板生成脚本（共 ${templateEntryIds.length} 条）`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && !(productionMode === 'template_rewrite' && libraryReady && !taskRunning && task?.status !== 'failed') && task && (
           <div className="space-y-5">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-base font-semibold">
                   {taskRunning
-                    ? (task.mode === 'reuse' ? 'AI 正在生成新一组脚本' : 'AI 正在处理这组任务')
+                    ? (extractOnlyTask ? 'AI 正在提取详情页卖点' : task.mode === 'reuse' ? 'AI 正在生成新一组脚本' : 'AI 正在处理这组任务')
                     : task.status === 'failed'
                       ? '任务未通过'
                       : task.status === 'cancelled'
                         ? '任务已停止'
-                        : '本组脚本已生成'}
+                        : extractOnlyTask
+                          ? '卖点提取完成'
+                          : '本组脚本已生成'}
                 </h3>
                 <p className="mt-1 text-sm text-ink-secondary">
                   {taskRunning
                     ? '你可以离开当前区域，生成过程会继续保留；长详情页首次提取通常需要几分钟。'
                     : task.status === 'cancelled'
-                      ? '任务已手动停止，未生成结果；返回素材后可重新开始。'
-                      : '中间结果已保留；继续再生成时会复用产品卖点库。'}
+                      ? '任务已手动停止；已保存的脚本仍可使用。'
+                      : extractOnlyTask
+                        ? '卖点库已保存。选择「爆文模板改写」生产模式，即可在本页挑选爆文模板并生成脚本。'
+                        : '中间结果已保留；继续再生成时会复用产品卖点库。'}
                 </p>
                 {asText(task.inputSnapshot.providerModel) && (
                   <p className="mt-1 text-xs text-ink-tertiary">本次模型：{asText(task.inputSnapshot.providerModel)}</p>
@@ -1279,65 +1625,48 @@ export default function ScriptStudioPanel({ projectId }: Props) {
               <div className="rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm">{task.errorMessage || '生成失败，请返回检查素材后重试'}</div>
             )}
             {task.status === 'cancelled' && (
-              <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4 text-sm text-ink-secondary">任务已手动停止，未写入任何结果；返回素材后可重新开始。</div>
+              <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4 text-sm text-ink-secondary">任务已手动停止；已保存的脚本仍可使用，未完成方案可稍后重新生成。</div>
             )}
           </div>
         )}
 
         {step === 3 && (
           <div className="space-y-5">
-            {libraryRevision && (
-              <section className="rounded-[18px] border border-hairline p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="flex items-center gap-2 text-base font-semibold">
-                      <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-ok-tint text-xs text-ok">✓</span>
-                      产品卖点库
-                    </h3>
-                    <p className="mt-1 text-xs text-ink-secondary">从详情页提取并去重后的结构化资产。之后生成新脚本时直接复用，也可以继续补充详情页更新。</p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <span className="rounded-full bg-ok-tint px-2.5 py-1 text-[0.68rem] font-semibold text-ok">✓ 已保存 · 可无限复用</span>
-                    <button type="button" onClick={() => setLibraryOpen((current) => !current)} className="btn-secondary btn-sm">{libraryOpen ? '收起编辑' : '回看/编辑'}</button>
-                  </div>
+            {taskRunning && task && (
+              <div className="flex items-center justify-between gap-3 rounded-[18px] border border-hairline bg-surface-subtle p-4" role="status">
+                <div>
+                  <p className="text-sm font-semibold">已保存 {task.succeededCount} / {task.requestedCount} 条，其他方案仍在生成</p>
+                  <p className="mt-1 text-xs text-ink-secondary">可以先查看、复制已完成的脚本。已用时 {formatClock(totalElapsed)}</p>
                 </div>
-                <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
-                  <div className="rounded-[14px] border border-hairline bg-surface-subtle p-3.5">
-                    <div className="text-sm font-semibold">{libraryRevision.productName || '未识别商品'}</div>
-                    <div className="mt-1 text-[0.68rem] leading-4 text-ink-tertiary">
-                      {[libraryRevision.brand, libraryRevision.category].map((item) => item?.trim()).filter(Boolean).join(' · ') || '详情页素材'}
-                      <br />
-                      {usablePoints.length} 个有效卖点 · V{libraryRevision.revisionNumber}
-                    </div>
-                  </div>
-                  <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-                    {usablePoints.slice(0, 9).map((point, index) => (
-                      <div key={point.id} className="rounded-[14px] border border-hairline bg-surface p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[0.65rem] font-bold text-accent">SP-{String(index + 1).padStart(2, '0')}</span>
-                          <span className={`text-[0.6rem] ${point.evidenceGate === 'passed' ? 'text-ok' : 'text-ink-tertiary'}`}>
-                            {point.evidenceGate === 'passed' ? '已通过二次证据检查' : '低风险'}
-                          </span>
-                        </div>
-                        <div className="mt-1.5 text-xs font-semibold">{point.title}</div>
-                        <div className="mt-1 line-clamp-2 text-[0.65rem] leading-4 text-ink-tertiary">{point.factText}</div>
-                      </div>
-                    ))}
-                  </div>
+                <div className="flex shrink-0 gap-2">
+                  <button type="button" onClick={() => setStep(2)} className="btn-secondary btn-sm">查看生成进度</button>
+                  <button type="button" onClick={() => void cancelTask()} className="btn-secondary btn-sm text-fail">停止任务</button>
                 </div>
-                {libraryOpen && (
-                  <div className="mt-4">
-                    <LibraryEditor
-                      projectId={projectId}
-                      revision={libraryRevision}
-                      onSaved={() => { setLibraryOpen(false); void loadLibrary(); }}
-                    />
-                  </div>
-                )}
-              </section>
+              </div>
             )}
+            {task?.inputSnapshot.productionMode === 'pain_solving_15s' && task.stages.some((stage) => stage.stage === 'plan' && stage.status === 'succeeded') && (
+              <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4 text-sm text-ink-secondary">
+                {(() => {
+                  const payload = task.stages.find((stage) => stage.stage === 'plan')!.payload;
+                  const planning = payload.painPlanning as { shortageReason?: string } | undefined;
+                  return <><p>目标 {task.requestedCount} 条，找到 {Number(payload.opportunityCount ?? 0)} 个内容机会，已保存 {task.succeededCount} 条。</p>
+                    {Number(payload.shortageCount) > 0 && <p className="mt-1">{planning?.shortageReason || '有依据的内容机会不足，未凑数生成。'} 这部分不计为生成失败。</p>}</>;
+                })()}
+              </div>
+            )}
+            {task?.status === 'cancelled' && <p className="text-sm text-ink-secondary">任务已停止，已保存的脚本仍可使用。</p>}
+            {task && ['partial', 'failed'].includes(task.status) && (
+              <div className="rounded-[18px] border border-warn/30 bg-warn-tint p-4 text-sm">
+                <p className="font-semibold">{task.failedCount > 0 ? `${task.failedCount} 条生成或校验失败，已保存方案可以使用` : "任务未完成，已保存方案可以使用"}</p>
+                {task.errorMessage && <p className="mt-1 break-words text-xs">{task.errorMessage}</p>}
+                {(task.stages.find((stage) => stage.stage === 'generate')?.payload.errors as string[] | undefined)?.map((message, index) => (
+                  <p key={index} className="mt-1 break-words text-xs">{message}</p>
+                ))}
+              </div>
+            )}
+            {libraryPanel}
 
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold">脚本方案</h3>
                 <p className="mt-1 text-sm text-ink-secondary">
@@ -1345,22 +1674,34 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                   {task?.status === 'partial' && ` 本次有 ${task.failedCount} 条未通过，可使用补跑。`}
                 </p>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 {libraryRevisionId && <span className="text-xs text-ok">✓ 再生成只复用卖点库，不重新识图</span>}
-                {/* F2：再生成一组可单独指定本次条数/秒数（不与第 1 页表单共享隐式状态）。 */}
-                <label className="flex items-center gap-1 text-xs text-ink-secondary">
-                  条数
-                  <select value={regenerateCount} onChange={(event) => setRegenerateCount(Number(event.target.value))} className="input-field h-8 w-[68px] px-1.5 text-xs" aria-label="再生成条数">
-                    {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count}</option>)}
+                <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
+                  模式
+                  <select aria-label="再生成模式" value={regenerateMode} onChange={(event) => {
+                    const mode = event.target.value as ScriptProductionMode;
+                    setRegenerateMode(mode);
+                    if (mode === 'pain_solving_15s') setRegenerateDuration(15);
+                  }} className="input-field h-8 w-[180px] px-1.5 py-0 text-xs">
+                    <option value="standard">多方向生成</option>
+                    <option value="pain_solving_15s">痛点解决型 · 15秒</option>
+                    <option value="template_rewrite">爆文模板改写</option>
                   </select>
                 </label>
-                <label className="flex items-center gap-1 text-xs text-ink-secondary">
+                {/* F2：再生成一组可单独指定本次条数/秒数（不与第 1 页表单共享隐式状态）。 */}
+                {regenerateMode !== 'template_rewrite' && <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
+                  条数
+                  <select value={regenerateCount} onChange={(event) => setRegenerateCount(Number(event.target.value))} className="input-field h-8 w-[68px] px-1.5 py-0 text-xs" aria-label="再生成条数">
+                    {SCRIPT_GENERATION_UI_OPTIONS.map((count) => <option key={count} value={count}>{count}</option>)}
+                  </select>
+                </label>}
+                <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-ink-secondary">
                   时长
-                  <select value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 text-xs" aria-label="再生成时长">
+                  <select disabled={regenerateMode === 'pain_solving_15s'} value={regenerateDuration} onChange={(event) => setRegenerateDuration(Number(event.target.value))} className="input-field h-8 w-[84px] px-1.5 py-0 text-xs" aria-label="再生成时长">
                     {SCRIPT_TARGET_DURATION_OPTIONS.map((duration) => <option key={duration} value={duration}>{durationLabel(duration)}</option>)}
                   </select>
                 </label>
-                <button type="button" onClick={regenerateGroup} disabled={submitting} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : '再生成一组'}</button>
+                <button type="button" onClick={regenerateGroup} disabled={submitting || taskRunning || organizingLibrary} className="btn-secondary btn-sm">{regeneratePending ? '重试本次提交' : regenerateMode === 'template_rewrite' ? '挑选模板再生成' : '再生成一组'}</button>
                 {(task?.status === 'partial' || task?.status === 'failed') && (
                   <button type="button" onClick={() => void retryTask()} className="btn-secondary btn-sm">补跑缺失条目</button>
                 )}
@@ -1393,14 +1734,26 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                             模板选择理由：{content?.templateRationale || revision?.templateRationale || '按切入点自动匹配'}
                           </div>
                           {content?.knowledgeContext && <KnowledgeBadge knowledgeContext={content.knowledgeContext} />}
+                          {content?.painSolving && <details className="mt-2 text-xs text-ink-secondary">
+                            <summary className="cursor-pointer">查看内容策划依据 · {{ direct: '直接解决', diagnosis: '原因诊断', dilemma: '两难解决' }[content.painSolving.path]}</summary>
+                            <div className="mt-2 space-y-1 rounded-lg bg-surface-subtle p-3">
+                              <p>人群与场景：{content.painSolving.audience} · {content.painSolving.scenario}</p>
+                              <p>核心问题：{content.painSolving.problem}</p>
+                              <p>主卖点：{content.painSolving.main.label}{content.painSolving.support ? `；辅助卖点：${content.painSolving.support.label}` : ''}</p>
+                              <p>内容命题：{content.painSolving.proposition}</p>
+                              <p>匹配依据：{content.painSolving.matchReason}</p>
+                              <p>时长为口播估算，成片以实际配音为准。</p>
+                            </div>
+                          </details>}
                           {content?.recommendation && <RecommendationBlock recommendation={content.recommendation} />}
+                          {content?.templateRewrite && <TemplateRewriteBlock content={content} />}
                         </div>
                       </div>
                       <div className="flex flex-none flex-wrap justify-end gap-1.5">
                         <button type="button" onClick={() => toggleCollapsed(script.id)} className="btn-secondary btn-sm">{collapsed ? '完整脚本' : '收起脚本'}</button>
                         <button type="button" onClick={() => void copyScript(content?.fullScript || '')} className="btn-secondary btn-sm">复制</button>
-                        <button type="button" onClick={() => void switchRecommendation(script, content)} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>
-                        <button type="button" onClick={() => void regenerateOne(script.id)} className="btn-secondary btn-sm">再生成一版</button>
+                        {!content?.painSolving && <button type="button" onClick={() => void switchRecommendation(script, content)} disabled={taskRunning} className="btn-secondary btn-sm" title="排除当前框架/钩子组合后重新推荐">换一个框架/钩子</button>}
+                        <button type="button" onClick={() => void regenerateOne(script.id)} disabled={taskRunning} className="btn-secondary btn-sm">再生成一版</button>
                         <button type="button" onClick={() => void loadHistory(script.id)} className="btn-secondary btn-sm">版本历史</button>
                       </div>
                     </div>
@@ -1417,11 +1770,31 @@ export default function ScriptStudioPanel({ projectId }: Props) {
                           </div>
                         </div>
                         <div className="mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 rounded-[13px] border border-hairline px-3 py-2.5 text-[0.68rem] text-ink-secondary">
-                          {content.durationStatus === 'qualified'
-                            ? <span className="font-semibold text-ok">✓ 时长合格</span>
-                            : <span className="font-semibold text-warn">{content.durationStatus === 'too_short' ? '时长偏短' : '时长偏长'}</span>}
-                          <span>{content.targetDurationSec} 秒目标</span>
-                          {typeof content.estimatedNarrationDurationSec === 'number' && <span>预计 {content.estimatedNarrationDurationSec.toFixed(1)} 秒</span>}
+                          {/* 三类状态分开显示（方案 §4.1 / 审查 R2）：结尾检查、语义审核、时长互不代表；未审核不显示整体文案合格。 */}
+                          {(() => {
+                            const copyCheck = parseCopyCheck(revision?.validationJson);
+                            return (
+                              <>
+                                {copyCheck.endingStatus === 'passed'
+                                  ? <span className="font-semibold text-ok">✓ 结尾检查通过</span>
+                                  : <span className="text-ink-tertiary">结尾检查未记录</span>}
+                                {copyCheck.semanticReview === 'passed'
+                                  ? <span className="font-semibold text-ok">✓ 语义审核通过</span>
+                                  : copyCheck.semanticReview === 'failed'
+                                    ? <span className="font-semibold text-warn">语义审核未通过</span>
+                                    : <span className="text-ink-tertiary">语义审核未执行</span>}
+                              </>
+                            );
+                          })()}
+                          <span>目标 {content.targetDurationSec} 秒</span>
+                          {typeof content.estimatedNarrationDurationSec === 'number' && (
+                            <span>
+                              预计口播 {content.estimatedNarrationDurationSec.toFixed(1)} 秒
+                              {content.durationStatus === 'too_long' && <span className="ml-1 font-semibold text-warn">偏长</span>}
+                              {content.durationStatus === 'too_short' && <span className="ml-1 font-semibold text-warn">偏短</span>}
+                              {content.durationStatus === 'qualified' && <span className="ml-1 text-ok">在预算内</span>}
+                            </span>
+                          )}
                           <span>{content.contentCharacterCount} 字</span>
                           <span>版本 V{revision?.revisionNumber || 1} · {ORIGIN_LABELS[revision?.origin || ''] || revision?.origin || '-'}</span>
                           <span className="font-semibold text-ok">当前版本自动用于后续流程</span>
@@ -1511,6 +1884,95 @@ export default function ScriptStudioPanel({ projectId }: Props) {
   );
 }
 
+/** 解析保存版本上的文案检查快照（方案 §4.1 / 审查 R2）：历史版本缺字段按未记录处理，不补成合格。 */
+function parseCopyCheck(validationJson?: string): { endingStatus?: string; semanticReview?: string; reviewFingerprint?: string } {
+  if (!validationJson) return {};
+  try {
+    const parsed = JSON.parse(validationJson) as { copyCheck?: { endingStatus?: string; semanticReview?: string; reviewFingerprint?: string } };
+    return parsed.copyCheck || {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 爆文模板改写结果块（迁移方案 §3.1.6 / §4.4）：
+ * 来源模板、文风、结构来源、写作字数估算、降级标记、修改说明与原文对照（文字差异）。
+ * 字数是写作估算（秒×6），不代表实际配音时长；文字差异不宣称原创率。
+ */
+function TemplateRewriteBlock({ content }: { content: ScriptStudioScriptContent }) {
+  const meta = content.templateRewrite!;
+  const [showCompare, setShowCompare] = useState(false);
+  const degraded = [
+    meta.filterDegraded,
+    meta.styleDegraded,
+    meta.humanizeDegraded,
+    meta.smoothDegraded,
+  ].filter((item) => item && item.trim());
+  return (
+    <div className="mt-2 space-y-2 rounded-[14px] bg-surface-subtle p-3 text-xs text-ink-secondary">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="font-semibold text-ink">爆文模板：{meta.templateName || meta.templateTitle}</span>
+        {meta.category && <span>{meta.category}{meta.subCategory ? ` · ${meta.subCategory}` : ''}</span>}
+        {meta.stylePresetName && <span>文风：{meta.stylePresetName}</span>}
+        <span title={meta.structureOrigin === 'fallback' ? '表格未提供结构，使用默认结构' : '结构来自模板表格'}>
+          结构：{meta.structureOrigin === 'fallback' ? '默认（表格未提供）' : '模板表格'}
+        </span>
+        <span title="写作字数估算（秒×6，±15%），不代表实际配音时长">写作目标 ≈{meta.targetChars} 中文字</span>
+      </div>
+      {degraded.length > 0 && (
+        <div className="space-y-0.5">
+          {degraded.map((item, index) => (
+            <p key={index} className="text-warn">降级：{item}</p>
+          ))}
+        </div>
+      )}
+      <div>
+        <p className="font-semibold text-ink-tertiary">修改说明（模型自述，非证据审核）</p>
+        {meta.noteMissing || !meta.note ? (
+          <p className="mt-0.5 text-ink-tertiary">未生成修改说明。</p>
+        ) : (
+          <p className="mt-0.5 whitespace-pre-wrap leading-5">{meta.note}</p>
+        )}
+      </div>
+      <div>
+        <button type="button" className="text-accent" onClick={() => setShowCompare((current) => !current)}>
+          {showCompare ? '收起原文对照' : '对比参考文案（文字差异）'}
+        </button>
+        {showCompare && <TemplateDiffView refText={meta.refText} generated={content.fullScript} />}
+      </div>
+    </div>
+  );
+}
+
+/** 原文对照：橙色=参考文案被替换的词，红色=生成的新词；仅为文字差异，不代表原创率。 */
+function TemplateDiffView({ refText, generated }: { refText: string; generated: string }) {
+  const marks = diffMarkWords(refText, generated);
+  const refWords = marks.filter((mark) => mark.del || !mark.diff);
+  const genWords = marks.filter((mark) => !mark.del);
+  return (
+    <div className="mt-2">
+      <p className="text-[0.65rem] leading-4 text-ink-tertiary">
+        橙色 = 参考文案中被替换掉的词 ｜ 红色 = 生成文案的新词（未标色 = 两边相同）。这只是文字差异对照，不是原创率或合规证明。
+      </p>
+      <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+        <div className="max-h-36 overflow-y-auto rounded-[10px] border border-hairline bg-surface p-2.5 leading-6">
+          <p className="mb-1 text-[0.65rem] font-semibold text-ink-tertiary">参考文案</p>
+          {refWords.map((mark, index) => (
+            <span key={index} className={mark.diff ? 'rounded bg-warn-tint px-0.5' : undefined}>{mark.w}</span>
+          ))}
+        </div>
+        <div className="max-h-36 overflow-y-auto rounded-[10px] border border-hairline bg-surface p-2.5 leading-6">
+          <p className="mb-1 text-[0.65rem] font-semibold text-ink-tertiary">生成文案</p>
+          {genWords.map((mark, index) => (
+            <span key={index} className={mark.diff ? 'rounded bg-fail/10 px-0.5' : undefined}>{mark.w}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LibraryEditor({
   projectId,
   revision,
@@ -1520,55 +1982,132 @@ function LibraryEditor({
   revision: LibraryRevisionViewLite;
   onSaved: () => void;
 }) {
-  const [edits, setEdits] = useState<Array<{ sellingPointId: string; usable?: boolean; disabledByUser?: boolean }>>(
-    revision.sellingPoints.map((point) => ({ sellingPointId: point.id, usable: point.usable === 1 && point.disabledByUser !== 1 })),
+  const [edits, setEdits] = useState<Array<{ sellingPointId: string; usable?: boolean; disabledByUser?: boolean; detailText?: string }>>(
+    revision.sellingPoints.map((point) => ({ sellingPointId: point.id, usable: point.evidenceGate !== 'failed' && point.usable === 1 && point.disabledByUser !== 1, disabledByUser: point.disabledByUser === 1 })),
   );
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [detailEditingFor, setDetailEditingFor] = useState('');
+  const [detailDraft, setDetailDraft] = useState('');
   const save = async () => {
     setSaving(true);
+    setSaveError('');
     try {
       const response = await fetch(`/api/projects/${projectId}/script-studio/library`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ edits }),
+        body: JSON.stringify({ edits, baseRevisionId: revision.id }),
       });
-      if (response.ok) onSaved();
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || data.error || '保存选择失败');
+      onSaved();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '保存选择失败，请重试');
     } finally {
       setSaving(false);
     }
+  };
+  const detailStatusLabel = (point: (typeof revision.sellingPoints)[number]): { text: string; className: string } => {
+    const edited = edits.find((edit) => edit.sellingPointId === point.id);
+    const detailText = edited?.detailText ?? point.detailText ?? '';
+    if (!detailText.trim()) return { text: '无详解（爆文模板改写模式不可用，可编辑补充）', className: 'text-warn' };
+    const status = point.detailStatus ?? 'missing';
+    if (edited?.detailText !== undefined && edited.detailText !== (point.detailText ?? '')) {
+      return { text: '详解已修改，保存后重新校验', className: 'text-accent' };
+    }
+    if (status === 'verified') return { text: '详解可用', className: 'text-ok' };
+    if (status === 'unverified') return { text: '详解含未获支持的数值/材质/功效，爆文模板改写暂不可用', className: 'text-warn' };
+    return { text: '无详解（爆文模板改写模式不可用，可编辑补充）', className: 'text-warn' };
   };
   return (
     <div className="rounded-[18px] border border-hairline bg-surface-subtle p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h4 className="text-base font-semibold">卖点库回看 / 编辑</h4>
+          <h4 className="text-base font-semibold">选择保留的卖点</h4>
           <p className="mt-1 text-xs text-ink-secondary">V{revision.revisionNumber} · {revision.productName || '未识别商品'} · {revision.category || ''}</p>
         </div>
-        <button type="button" onClick={() => void save()} disabled={saving} className="btn-primary btn-sm">{saving ? '保存中…' : '保存为新修订'}</button>
+        <button type="button" onClick={() => void save()} disabled={saving} className="btn-primary btn-sm">{saving ? '保存中…' : '保存选择'}</button>
       </div>
+      <p className="mb-3 text-xs text-ink-secondary">默认勾选可用卖点；取消勾选即可排除，之后也能重新保留。「详解」供爆文模板改写模式使用，编辑后与选择一起保存为新修订，不会修改已生成的脚本或正在运行的任务。</p>
+      {saveError && <p className="mb-3 text-sm text-fail" role="alert">{saveError}</p>}
       <div className="space-y-2">
-        {revision.sellingPoints.map((point) => (
-          <label key={point.id} className="flex items-start gap-3 rounded-[14px] border border-hairline bg-surface p-3 text-sm">
+        {revision.sellingPoints.map((point) => {
+          const detailStatus = detailStatusLabel(point);
+          const editedDetail = edits.find((edit) => edit.sellingPointId === point.id)?.detailText;
+          const currentDetail = editedDetail ?? point.detailText ?? '';
+          return (
+          <div key={point.id} className="rounded-[14px] border border-hairline bg-surface p-3 text-sm">
+          <label className="flex items-start gap-3">
             <input
               type="checkbox"
               checked={point.evidenceGate !== 'failed' && (edits.find((edit) => edit.sellingPointId === point.id)?.usable ?? point.usable === 1)}
-              disabled={point.evidenceGate === 'failed'}
+              aria-label={`保留卖点：${point.title}`}
+              disabled={saving || point.evidenceGate === 'failed'}
               onChange={(event) => {
                 setEdits((current) => current.map((edit) => (
-                  edit.sellingPointId === point.id ? { ...edit, usable: event.target.checked } : edit
+                  edit.sellingPointId === point.id ? { ...edit, usable: event.target.checked, disabledByUser: !event.target.checked } : edit
                 )));
               }}
             />
-            <span className="min-w-0">
+            <span className="min-w-0 flex-1">
               <span className="font-medium">{point.title}</span>
-              <span className="ml-2 text-xs text-ink-tertiary">{point.evidenceGate === 'passed' ? '已通过二次证据检查' : point.evidenceGate === 'skipped' ? '低风险' : '未通过核验，不可用'}</span>
+              <span className="ml-2 text-xs text-ink-tertiary">{point.evidenceGate === 'passed' ? '已通过二次证据检查' : point.evidenceGate === 'skipped' ? 'AI 识图 · 未复核' : '未通过检查，不可用'}</span>
               <span className="mt-1 block text-xs text-ink-secondary">{point.factText}</span>
               {parseEvidenceRefsDisplay(point.evidenceRefsJson) && (
                 <span className="mt-0.5 block text-[0.65rem] text-ink-tertiary">证据定位：{parseEvidenceRefsDisplay(point.evidenceRefsJson)}</span>
               )}
             </span>
           </label>
-        ))}
+          <div className="mt-2 rounded-[10px] bg-surface-subtle p-2.5 pl-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <span className="text-[0.65rem] font-semibold text-ink-tertiary">详解（爆文模板改写用）</span>
+                <span className={`ml-2 text-[0.65rem] ${detailStatus.className}`}>{detailStatus.text}</span>
+                {currentDetail.trim() ? (
+                  <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-ink-secondary">{currentDetail}</p>
+                ) : (
+                  <p className="mt-1 text-xs text-ink-tertiary">本次提取未输出详解。</p>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn-secondary btn-sm shrink-0"
+                disabled={saving || point.evidenceGate === 'failed'}
+                onClick={() => { setDetailEditingFor(point.id); setDetailDraft(currentDetail); }}
+              >
+                编辑详解
+              </button>
+            </div>
+            {detailEditingFor === point.id && (
+              <div className="mt-2 space-y-2">
+                <textarea
+                  value={detailDraft}
+                  onChange={(event) => setDetailDraft(event.target.value)}
+                  rows={3}
+                  className="input-field text-xs"
+                  placeholder="例如：层板可调 → 可根据物品高度调整收纳。详解中的数字、材质、功效必须在事实或证据中有依据，否则保存后仍不可用。"
+                />
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-secondary btn-sm" onClick={() => setDetailEditingFor('')}>取消</button>
+                  <button
+                    type="button"
+                    className="btn-primary btn-sm"
+                    onClick={() => {
+                      setEdits((current) => current.map((edit) => (
+                        edit.sellingPointId === point.id ? { ...edit, detailText: detailDraft } : edit
+                      )));
+                      setDetailEditingFor('');
+                    }}
+                  >
+                    应用（待保存）
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          </div>
+          );
+        })}
       </div>
     </div>
   );

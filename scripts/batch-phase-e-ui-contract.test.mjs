@@ -148,7 +148,8 @@ assert.match(batchTimeline, /batch-output-timeline/);
 assert.match(batchTimeline, /planSubtitleCueSplit/);
 assert.match(batchTimeline, /末帧延长/);
 assert.match(batchTimeline, /超出裁掉/);
-assert.match(batchTimeline, /口播（锁定）/);
+assert.match(batchTimeline, /audioClips\(\{ audio \}, 'narration'/);
+assert.match(batchTimeline, /delete_audio_clip/);
 assert.match(batchTimeline, /data-tool/);
 assert.ok(
   (batchTimeline.match(/addEventListener\('pointercancel'/g) ?? []).length >= 3,

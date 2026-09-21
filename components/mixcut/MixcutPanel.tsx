@@ -44,7 +44,7 @@ const STEPS: MixcutStepDef[] = [
   { label: '导出渲染', hint: '写回项目成片目录', icon: 'download', enabled: true },
 ];
 
-interface VisionProviderView { id: string; configured: boolean; supportsVision?: boolean }
+interface VisionProviderView { id: string; name: string; model: string; configured: boolean; supportsVision?: boolean }
 interface MixcutDraftRef { id: string; shotSetId: string; revision: number }
 interface MixcutPanelProps {
   projectId: string;
@@ -54,6 +54,11 @@ interface MixcutPanelProps {
 }
 
 const MANUAL_SCRIPT_ID = '__manual__';
+const VISION_PROVIDER_STORAGE_KEY = 'creative-studio-mixcut-vision-provider';
+
+function readSavedVisionProviderId(): string {
+  try { return window.localStorage.getItem(VISION_PROVIDER_STORAGE_KEY) || ''; } catch { return ''; }
+}
 
 function isLegacyDurationReviewJob<T extends Pick<MixcutPrepareJobView, 'status' | 'phase'>>(
   job: T | null | undefined,
@@ -97,6 +102,7 @@ export default function MixcutPanel({
   const [ttsProviderId, setTtsProviderId] = useState('');
   const [voice, setVoice] = useState('');
   const [speed, setSpeed] = useState(1);
+  const [visionProviders, setVisionProviders] = useState<VisionProviderView[]>([]);
   const [visionProviderId, setVisionProviderId] = useState('');
   const [outputPreset, setOutputPreset] = useState<OutputPresetId>('3x4');
   const [activeJob, setActiveJob] = useState<MixcutPrepareJobView | null>(null);
@@ -141,7 +147,7 @@ export default function MixcutPanel({
         await fetch(`/api/projects/${projectId}/final-edit/context${query}`, { signal: controller.signal }),
       );
       if (requestRef.current?.sequence !== sequence) return;
-      const [external, groupsResult, providersResult, visionProviders] = await Promise.all([
+      const [external, groupsResult, providersResult, visionProviderList] = await Promise.all([
         next.currentShotSetId
           ? readJson<{ assets: FinalEditExternalAssetView[] }>(
             await fetch(`/api/projects/${projectId}/final-edit/shot-sets/${encodeURIComponent(next.currentShotSetId)}/external-assets`, { signal: controller.signal }),
@@ -158,7 +164,10 @@ export default function MixcutPanel({
       const configuredTts = providersResult.find((provider) => provider.configured) ?? providersResult[0] ?? null;
       setTtsProviderId(configuredTts?.id ?? '');
       setVoice(configuredTts?.voices[0]?.id ?? '');
-      setVisionProviderId(visionProviders.find((provider) => provider.configured && provider.supportsVision)?.id ?? '');
+      setVisionProviders(visionProviderList);
+      const usableVision = visionProviderList.filter((provider) => provider.configured && provider.supportsVision);
+      const savedVisionId = readSavedVisionProviderId();
+      setVisionProviderId((usableVision.find((provider) => provider.id === savedVisionId) ?? usableVision[0])?.id ?? '');
       if (next.currentShotSetId) {
         const currentShotSetId = next.currentShotSetId;
         setExternalByShotSet((current) => ({ ...current, [currentShotSetId]: external.assets }));
@@ -629,6 +638,12 @@ export default function MixcutPanel({
     markPersistenceDirty();
   };
 
+  const changeVisionProvider = (providerId: string) => {
+    setVisionProviderId(providerId);
+    try { window.localStorage.setItem(VISION_PROVIDER_STORAGE_KEY, providerId); } catch { /* localStorage 不可用时仅本次会话生效 */ }
+    markPersistenceDirty();
+  };
+
   const previewVoice = async () => {
     if (!ttsProviderId || !voice) return;
     setPreviewingVoice(true);
@@ -911,6 +926,9 @@ export default function MixcutPanel({
                     onSpeedChange={(nextSpeed) => { setSpeed(nextSpeed); markPersistenceDirty(); }}
                     onPreviewVoice={() => void previewVoice()}
                     previewingVoice={previewingVoice}
+                    visionProviders={visionProviders}
+                    visionProviderId={visionProviderId}
+                    onVisionProviderChange={changeVisionProvider}
                     selectedMaterialCount={selectedIds.length}
                     job={activeJob}
                     elapsedSec={elapsedSec}

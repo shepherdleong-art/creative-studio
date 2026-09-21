@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const expectedVersion = '0.6.1';
+const expectedVersion = '0.6.2';
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
 const installer = fs.readFileSync(path.join(root, 'installer', 'windows', 'CreativeStudio.iss'), 'utf8');
@@ -13,8 +13,8 @@ const portableGuide = fs.readFileSync(path.join(root, 'installer', 'windows', '�
 assert.equal(packageJson.version, expectedVersion);
 assert.equal(packageLock.version, expectedVersion);
 assert.equal(packageLock.packages[''].version, expectedVersion);
-assert.match(installer, /#define MyAppVersion "0\.6\.1"/);
-assert.match(portableGuide, /创意工作台-0\.6\.1-免安装版/);
+assert.match(installer, /#define MyAppVersion "0\.6\.2"/);
+assert.match(portableGuide, /创意工作台-0\.6\.2-免安装版/);
 assert.doesNotMatch(portableGuide, /创意工作台-0\.6\.0-免安装版/);
 assert.match(portableGuide, /迁移旧版数据\.cmd/);
 assert.match(portableGuide, /stop-windows\.cmd/);

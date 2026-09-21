@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { ScriptStudioError } from './errors.ts';
-import { parseScriptStudioRequestedCount } from './generation-contract.ts';
+import { parseScriptProductionMode, parseScriptStudioRequestedCount } from './generation-contract.ts';
 import type {
+  FrozenViralTemplateSpec,
   ScriptStudioTaskRecord,
   ScriptStudioTaskStageRecord,
   ScriptStudioTaskStatus,
@@ -27,10 +28,15 @@ export interface ScriptStudioTaskRequestIdentity {
   targetDurationSec: number;
   requestedCount: number;
   creativeBrief?: string;
+  productionMode?: 'standard' | 'pain_solving_15s' | 'template_rewrite';
   providerId: string;
   providerModel: string;
   /** 冻结知识上下文指纹：不同策略/模板版本得到不同 key，不能误复用旧任务。 */
   knowledgeFingerprint?: string;
+  /** 爆文模板改写：冻结模板计划的指纹（内容+顺序），不同计划得到不同 key。 */
+  templatePlanFingerprint?: string;
+  /** 仅提取卖点库（爆文模板改写前置）：与完整生成任务区分身份，不互相命中。 */
+  extractOnly?: boolean;
 }
 
 /**
@@ -50,6 +56,9 @@ export function createScriptStudioTaskRequestKey(input: ScriptStudioTaskRequestI
       input.providerId,
       input.providerModel,
       input.knowledgeFingerprint || '',
+      ...(input.productionMode && input.productionMode !== 'standard' ? [input.productionMode] : []),
+      ...(input.templatePlanFingerprint ? [input.templatePlanFingerprint] : []),
+      ...(input.extractOnly ? ['extract_only'] : []),
     ].join('|'))
     .digest('hex');
 }
@@ -192,6 +201,7 @@ export interface TaskRequestParams {
   targetDurationSec: number;
   requestedCount: number;
   creativeBrief: string;
+  productionMode?: 'standard' | 'pain_solving_15s' | 'template_rewrite';
   targetScriptId?: string;
   providerId: string;
   /** 显式幂等键（「再生成一组」的 action key）；缺省时按参数派生。 */
@@ -201,6 +211,16 @@ export interface TaskRequestParams {
    * runner 只读快照；其 fingerprint 参与派生 requestKey。
    */
   knowledgeContext?: Record<string, unknown>;
+  /**
+   * 爆文模板改写：服务端从模板条目构造的冻结全文快照（含选择顺序）。
+   * 客户端只提交条目 ID，全文以服务端读取为准。
+   */
+  templatePlan?: { templates: FrozenViralTemplateSpec[]; fingerprint: string };
+  /**
+   * 仅提取卖点库（爆文模板改写前置）：任务在保存卖点库后即成功，不规划/生成脚本。
+   * 冻结进快照参与身份比较；runner 只读快照。
+   */
+  extractOnly?: boolean;
 }
 
 export interface TaskRequestDecision {
@@ -222,14 +242,26 @@ export function decideTaskRequest(
   input: TaskRequestParams,
   resolveProviders: (providerId: string) => { vision: { id: string; model: string } },
 ): TaskRequestDecision {
-  const buildSnapshot = (pv: { id: string; model: string }, knowledgeContext?: Record<string, unknown>): Record<string, unknown> => ({
+  const productionMode = parseScriptProductionMode(input.productionMode, input.targetDurationSec);
+  const buildSnapshot = (
+    pv: { id: string; model: string },
+    knowledgeContext?: Record<string, unknown>,
+    templatePlan?: { templates: FrozenViralTemplateSpec[]; fingerprint: string },
+    extractOnly?: boolean,
+  ): Record<string, unknown> => ({
     targetDurationSec: input.targetDurationSec,
     requestedCount: input.requestedCount,
     creativeBrief: input.creativeBrief,
+    ...(productionMode !== 'standard' ? { productionMode } : {}),
     providerId: pv.id,
     providerModel: pv.model,
     ...(input.targetScriptId ? { targetScriptId: input.targetScriptId } : {}),
     ...(knowledgeContext ? { knowledgeContext } : {}),
+    // 爆文模板改写：模板全文快照（含选择顺序）冻结进任务身份，库更新不影响运行中任务。
+    ...(productionMode === 'template_rewrite' && templatePlan
+      ? { templatePlan: { templates: templatePlan.templates, fingerprint: templatePlan.fingerprint } }
+      : {}),
+    ...(extractOnly ? { extractOnly: true } : {}),
   });
   const knowledgeFingerprint = input.knowledgeContext
     && typeof input.knowledgeContext.fingerprint === 'string'
@@ -254,9 +286,14 @@ export function decideTaskRequest(
       libraryRevisionId: input.libraryRevisionId ?? null,
       requestedCount: input.requestedCount,
       parentTaskId: existing.parentTaskId,
-      // 重放身份一律用已冻结快照里的知识上下文（provider 同理）：
-      // 目录/卖点库切换后重试同一次动作不得按当前状态重算而误判冲突。
-      inputSnapshot: buildSnapshot(storedProvider, stored.knowledgeContext as Record<string, unknown> | undefined),
+      // 重放身份一律用已冻结快照里的知识上下文与模板计划（provider 同理）：
+      // 目录/模板库/卖点库切换后重试同一次动作不得按当前状态重算而误判冲突。
+      inputSnapshot: buildSnapshot(
+        storedProvider,
+        stored.knowledgeContext as Record<string, unknown> | undefined,
+        stored.templatePlan as { templates: FrozenViralTemplateSpec[]; fingerprint: string } | undefined,
+        stored.extractOnly === true,
+      ),
     });
     if (!taskIdentitiesMatch(taskStoredIdentity(existing), candidateIdentity)) {
       throw new ScriptStudioError('conflict', '同一 requestKey 已对应不同请求内容，不能复用');
@@ -270,7 +307,7 @@ export function decideTaskRequest(
     if (existing) return { requestKey: explicitKey, existing: reuseIfMatches(existing, explicitKey), snapshot: null };
     // 显式 key 未命中：需要创建，此刻才解析当前供应商。
     const providers = resolveProviders(input.providerId);
-    return { requestKey: explicitKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext) };
+    return { requestKey: explicitKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext, input.templatePlan, input.extractOnly === true) };
   }
   // 派生 key：解析当前供应商构造 key（key 含 providerId/model 与知识指纹），再查既有任务。
   const providers = resolveProviders(input.providerId);
@@ -282,13 +319,16 @@ export function decideTaskRequest(
     targetDurationSec: input.targetDurationSec,
     requestedCount: input.requestedCount,
     creativeBrief: input.creativeBrief,
+    ...(productionMode !== 'standard' ? { productionMode } : {}),
     providerId: providers.vision.id,
     providerModel: providers.vision.model,
     knowledgeFingerprint,
+    ...(input.templatePlan ? { templatePlanFingerprint: input.templatePlan.fingerprint } : {}),
+    ...(input.extractOnly ? { extractOnly: true } : {}),
   });
   const existing = getTaskByRequestKey(db, input.projectId, requestKey);
   if (existing) return { requestKey, existing: reuseIfMatches(existing, requestKey), snapshot: null };
-  return { requestKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext) };
+  return { requestKey, existing: null, snapshot: buildSnapshot(providers.vision, input.knowledgeContext, input.templatePlan, input.extractOnly === true) };
 }
 
 export function getTask(
@@ -447,6 +487,35 @@ export function finishStage(
     SET status = ?, payloadJson = ?, finishedAt = ?, errorCode = ?
     WHERE taskId = ? AND stage = ?
   `).run(status, JSON.stringify(payload), finishedAt, errorCode || null, taskId, stage);
+}
+
+/**
+ * 浅合并写入运行中阶段的 payload（阶段不结束）：模板改写模式把每个模板的
+ * 筛选/风格等中间结果持久化进 generate 阶段，中断恢复后已完成子阶段不重新收费。
+ * 顶层键逐个覆盖；其他键保持原值。阶段不存在时先创建（保持 running 语义由 startStage 负责）。
+ */
+export function mergeStagePayload(
+  db: Database.Database,
+  projectId: string,
+  taskId: string,
+  stage: string,
+  patch: Record<string, unknown>,
+  now?: () => Date,
+): void {
+  ensureStage(db, projectId, taskId, stage, now);
+  const row = db.prepare(`
+    SELECT payloadJson FROM script_studio_task_stages WHERE taskId = ? AND stage = ?
+  `).get(taskId, stage) as { payloadJson: string } | undefined;
+  let current: Record<string, unknown> = {};
+  try {
+    const parsed = row ? JSON.parse(row.payloadJson) as unknown : {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) current = parsed as Record<string, unknown>;
+  } catch {
+    current = {};
+  }
+  db.prepare(`
+    UPDATE script_studio_task_stages SET payloadJson = ? WHERE taskId = ? AND stage = ?
+  `).run(JSON.stringify({ ...current, ...patch }), taskId, stage);
 }
 
 export function reorderStages(

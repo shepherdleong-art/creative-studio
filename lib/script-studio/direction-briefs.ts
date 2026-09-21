@@ -40,6 +40,11 @@ export interface PlanDirectionBriefsInput {
    * 不扩大正文事实来源（策略原文不得进入候选白名单）。
    */
   strategyRanking?: { primarySellingPoints: string[]; differentiators: string[] };
+  /**
+   * 受众画像信号（audience-profile-v1）：按 planIndex 给出模型点选的相关卖点 ID 与画像关键词。
+   * 只作排序信号，不扩大事实来源；降级画像同样提供（来自方向必选卖点与主题词）。
+   */
+  audienceSignals?: Map<number, { relatedSellingPointIds: string[]; keywords: string[] }>;
 }
 
 const HIERARCHY_ROLE_SCORE: Record<ScriptStudioHierarchyRole, number> = {
@@ -145,6 +150,7 @@ interface ScoredPoint {
   importance: number;
   evidenceScore: number;
   strategyScore: number;
+  audienceScore: number;
 }
 
 function typeScoreOf(point: SellingPointRecord, templateId: string): number {
@@ -186,7 +192,27 @@ function strategyScoreOf(
   return hits;
 }
 
-function storedEvidenceIsStructurallyUsable(
+/**
+ * 受众相关性信号：模型点选 ID 命中记 2 分；画像关键词（场景/痛点/人群词，≥2 字）
+ * 与卖点标题/事实/主题命中每条记 1 分、封顶 2 分。总分 0-4，只影响排序不进事实来源。
+ */
+function audienceScoreOf(
+  point: SellingPointRecord,
+  signal: { relatedSellingPointIds: string[]; keywords: string[] },
+): number {
+  const score = signal.relatedSellingPointIds.includes(point.id) ? 2 : 0;
+  const haystacks = [point.title, point.factText, point.themeTitle].map(normalizeStrategyText);
+  let keywordHits = 0;
+  for (const keyword of signal.keywords) {
+    const needle = normalizeStrategyText(keyword);
+    if (needle.length < 2) continue;
+    if (haystacks.some((haystack) => haystack && haystack.includes(needle))) keywordHits += 1;
+    if (keywordHits >= 2) break;
+  }
+  return score + Math.min(2, keywordHits);
+}
+
+export function storedEvidenceIsStructurallyUsable(
   point: SellingPointRecord,
   bounds: NonNullable<PlanDirectionBriefsInput['evidenceBounds']>,
 ): boolean {
@@ -200,15 +226,16 @@ function storedEvidenceIsStructurallyUsable(
 }
 
 /**
- * 评分优先级：方向类型匹配 > 本轮重复惩罚 > 主主题连贯 > 策略卖点排序 > 主题角色 >
- * 提取重要度 > 证据状态。策略只对证据门禁白名单内的卖点做排序取舍，不扩来源。
- * 同分按 seq/id 回退，保证确定性。
+ * 评分优先级：方向类型匹配 > 本轮重复惩罚 > 主主题连贯 > 策略卖点排序 > 受众相关性 >
+ * 主题角色 > 提取重要度 > 证据状态。策略与受众画像只对证据门禁白名单内的卖点做排序
+ * 取舍，不扩来源。同分按 seq/id 回退，保证确定性。
  */
 function compareScored(left: ScoredPoint, right: ScoredPoint): number {
   return (right.typeScore - left.typeScore)
     || (left.repeatScore - right.repeatScore)
     || (right.themeBonus - left.themeBonus)
     || (right.strategyScore - left.strategyScore)
+    || (right.audienceScore - left.audienceScore)
     || (right.roleScore - left.roleScore)
     || (right.importance - left.importance)
     || (right.evidenceScore - left.evidenceScore)
@@ -233,6 +260,7 @@ export function planDirectionBriefs(input: PlanDirectionBriefsInput): DirectionS
   const typeUsage = new Map<string, number>();
 
   return input.plans.map((plan) => {
+    const audienceSignal = input.audienceSignals?.get(plan.index);
     const score = (mainTheme: string): ScoredPoint[] => eligible.map((point) => ({
       point,
       typeScore: typeScoreOf(point, plan.templateId),
@@ -242,6 +270,7 @@ export function planDirectionBriefs(input: PlanDirectionBriefsInput): DirectionS
       importance: point.importance,
       evidenceScore: evidenceScoreOf(point),
       strategyScore: input.strategyRanking ? strategyScoreOf(point, input.strategyRanking) : 0,
+      audienceScore: audienceSignal ? audienceScoreOf(point, audienceSignal) : 0,
     })).sort(compareScored);
 
     // 先按无主主题加分排出头部确定主主题；feature_showcase 要保持跨主题，不做主题加分。

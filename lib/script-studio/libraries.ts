@@ -5,6 +5,7 @@ import {
 } from './errors.ts';
 import {
   canonicalThemeKey,
+  computeDetailStatus,
   evidenceRefsOfRecord,
   normalizeEvidenceRefs,
   normalizeHierarchyRole,
@@ -39,6 +40,8 @@ export interface LibrarySellingPointInput {
   hierarchyRole?: ScriptStudioHierarchyRole;
   importance?: number;
   evidenceRefs?: SellingPointEvidenceRef[];
+  /** 视觉提取或核验后全局组织的完整详解；detailStatus 一律由入库时本地重算。 */
+  detailText?: string;
 }
 
 export interface CreateLibraryRevisionInput {
@@ -145,8 +148,8 @@ export function createLibraryRevision(
         INSERT INTO script_studio_selling_points
           (id, revisionId, seq, title, factText, pointType, evidenceQuote, sourcePageIndex,
            tileRefsJson, modelConfidence, riskLevel, evidenceGate, usable, disabledByUser,
-           themeKey, themeTitle, hierarchyRole, importance, evidenceRefsJson)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           themeKey, themeTitle, hierarchyRole, importance, evidenceRefsJson, detailText, detailStatus)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         randomUUID(),
         id,
@@ -167,6 +170,8 @@ export function createLibraryRevision(
         normalizeHierarchyRole(point.hierarchyRole),
         normalizeImportance(point.importance),
         JSON.stringify(evidenceRefs),
+        (point.detailText ?? '').trim(),
+        computeDetailStatus({ detailText: point.detailText, factText: point.factText, evidenceQuote: point.evidenceQuote }),
       );
     });
     db.prepare(`
@@ -214,11 +219,15 @@ export function manualEditLibraryRevision(
     disabledByUser?: boolean;
     factText?: string;
     title?: string;
+    detailText?: string;
   }>,
-  options: { now?: () => Date } = {},
+  options: { now?: () => Date; baseRevisionId?: string } = {},
 ): LibraryRevisionView {
   const current = getCurrentLibraryRevision(db, projectId);
   if (!current) throw new ScriptStudioError('not_found', '当前项目没有可编辑的卖点库');
+  if (options.baseRevisionId && options.baseRevisionId !== current.id) {
+    throw new ScriptStudioError('conflict', '卖点列表已更新，请刷新后重新选择');
+  }
   const byId = new Map(current.sellingPoints.map((point) => [point.id, point]));
   const nextPoints = current.sellingPoints.map((point) => {
     const edit = edits.find((item) => item.sellingPointId === point.id);
@@ -228,6 +237,7 @@ export function manualEditLibraryRevision(
       ...target,
       title: typeof edit.title === 'string' ? edit.title : target.title,
       factText: typeof edit.factText === 'string' ? edit.factText : target.factText,
+      detailText: typeof edit.detailText === 'string' ? edit.detailText : target.detailText,
       usable: typeof edit.usable === 'boolean' ? (edit.usable ? 1 : 0) : target.usable,
       disabledByUser: typeof edit.disabledByUser === 'boolean' ? (edit.disabledByUser ? 1 : 0) : target.disabledByUser,
     };
@@ -260,6 +270,8 @@ export function manualEditLibraryRevision(
       hierarchyRole: point.hierarchyRole,
       importance: point.importance,
       evidenceRefs: evidenceRefsOfRecord(point),
+      // 详解随编辑传递：编辑后的详解在入库时重新做 detailStatus 校验（新增事实同样受约束）。
+      detailText: point.detailText,
     })),
   }, options.now);
 }

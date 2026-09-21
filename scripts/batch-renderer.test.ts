@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import sharp from 'sharp';
 import Database from 'better-sqlite3';
 
 import { ensureBatchSchemaReady } from '../lib/batch-production/schema.ts';
@@ -17,6 +18,7 @@ import {
   renderBatchOutputVersion,
 } from '../lib/batch-production/batch-renderer.ts';
 
+const testDatabases: Database.Database[] = [];
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-batch-renderer-'));
 const dataRoot = path.join(root, 'data-root');
 const storageRoot = path.join(dataRoot, 'storage');
@@ -61,6 +63,7 @@ async function meanVolumeDb(filePath: string, startSec: number, durationSec: num
 
 async function setupDatabase(videoPath: string, arrangement: unknown): Promise<{ db: Database.Database; ids: Record<string, string> }> {
   const db = new Database(path.join(root, `render-${randomUUID()}.db`));
+  testDatabases.push(db);
   db.pragma('foreign_keys = ON');
   insertProject(db);
   await ensureBatchSchemaReady({
@@ -294,6 +297,32 @@ async function run(): Promise<void> {
     `-40dB 口播渲染必须显著低于 0dB: loud=${loudNarrationMean}dB, quiet=${quietNarrationMean}dB`,
   );
 
+
+  const cutArrangement = {
+    ...loudNarrationArrangement,
+    preserveGaps: true,
+    subtitle: { cues: [] },
+    clips: [{ ...arrangement.clips[0], sourceEndUs: 1_000_000, timeline: { startUs: 250_000, endUs: 750_000 }, playbackRate: 2, framing: { scale: 0.5, offsetX: 0.5, offsetY: 0 } }],
+    audio: { narration: [{ id: 'retained', startUs: 400_000, endUs: 800_000 }] },
+  };
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify(cutArrangement), ids.outputVersionId);
+  const cutResult = await renderBatchOutputVersion({
+    db, projectId: 'project-1', batchId: ids.batchId, batchVersionId: ids.batchVersionId,
+    planId: ids.planId, outputVersionId: ids.outputVersionId, storageRoot, dataRootPath: dataRoot, renderRoot,
+    outputSize: { width: 240, height: 320 },
+    narration: { absolutePath: narrationPath, fingerprint: narrationFingerprint, durationUs: 1_200_000 },
+  });
+  const introSec = FINAL_EDIT_INTRO_DURATION_US / 1e6;
+  const silenceMean = await meanVolumeDb(cutResult.videoAbsolutePath, introSec + 0.1, 0.15);
+  const retainedMean = await meanVolumeDb(cutResult.videoAbsolutePath, introSec + 0.5, 0.2);
+  assert.ok(silenceMean < retainedMean - 30, '批量裁切后的音频空位必须静音');
+  for (const bodyTime of [0.125, 1]) {
+    const framePath = path.join(root, `batch-gap-${bodyTime}.png`);
+    await runFfmpeg(['-ss', String(introSec + bodyTime), '-i', cutResult.videoAbsolutePath, '-frames:v', '1', '-y', framePath]);
+    const pixels = await sharp(framePath).raw().toBuffer();
+    assert.ok(pixels.reduce((sum, value) => sum + value, 0) / pixels.length < 3, '批量剪辑前后空位必须是真实黑场');
+  }
+
   // 人工字幕覆盖必须优先于本次口播自动对齐;非人工的旧/损坏槽位不能阻塞
   // narration 重试后的自动字幕渲染。
   db.prepare(`UPDATE batch_production_versions SET defaultsJson = ? WHERE id = ?`).run(JSON.stringify({
@@ -411,4 +440,7 @@ async function run(): Promise<void> {
   console.log('batch-renderer tests passed');
 }
 
-run().finally(() => fs.rmSync(root, { recursive: true, force: true }));
+run().finally(() => {
+  for (const db of testDatabases) if (db.open) db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});

@@ -15,6 +15,7 @@ import {
 } from '@/lib/project-production-identity';
 import { hasExportIdentity, createExportIdentity, activateNewExportIdentity } from '@/lib/project-export-identity';
 import { sortProjectJobsByCreation, type ProjectJobOrderRow } from '@/lib/project-job-order';
+import { deleteProjectRecords } from '@/lib/project-delete';
 
 export async function GET(
   _request: NextRequest,
@@ -86,29 +87,8 @@ export async function DELETE(
     const { id } = await params;
     const db = getDb();
 
-    const assetRows = db.prepare(`
-      SELECT id, path, originalPath, processedPath
-      FROM image_assets
-      WHERE projectId = ?
-    `).all(id) as Array<{
-      id: string;
-      path: string;
-      originalPath: string | null;
-      processedPath: string | null;
-    }>;
-
-    const deleteProject = db.transaction(() => {
-      const result = db.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
-      if (result.changes !== 1) return result.changes;
-      if (assetRows.length > 0) {
-        const deleteAsset = db.prepare(`DELETE FROM image_assets WHERE id = ?`);
-        for (const asset of assetRows) deleteAsset.run(asset.id);
-      }
-      return result.changes;
-    });
-
-    const deletedCount = deleteProject();
-    if (deletedCount !== 1) {
+    const assetRows = deleteProjectRecords(db, id);
+    if (assetRows === null) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 

@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { ensureScriptStudioSchemaReady } from '../lib/script-studio/schema.ts';
 import { parseTileRefIndex, tileSourceImages, selectEvidenceTiles } from '../lib/script-studio/tiling.ts';
 import { createOrFindSourceSet } from '../lib/script-studio/source-sets.ts';
+import { getScriptStudioLimits } from '../lib/script-studio/limits.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-studio-script-studio-tiling-'));
 const db = new Database(path.join(root, 'workbench.db'));
@@ -53,11 +54,17 @@ const result = await tileSourceImages(db, 'p1', ['img-1'], {
     extractConcurrency: 3,
     extractRequestTimeoutMs: 120_000,
     extractMaxAttempts: 2,
+    organizeMaxAttempts: 2,
+    organizeMaxTokens: 8000,
+    organizeRequestTimeoutMs: 120_000,
     generationConcurrency: 2,
   titleRepairMaxAttempts: 2,
   titleHistoryDays: 30,
   titleHistoryMaxRevisions: 100,
     maxCatalogImportBytes: 32 * 1024 * 1024,
+    scriptTextRequestsPerProposal: 8,
+    distillMaxRequestsPerTask: 4,
+    planAnalysisMaxRequestsPerTask: 2,
   },
 });
 assert.equal(result.pages.length, 1);
@@ -101,11 +108,17 @@ const tightLimits = {
   extractConcurrency: 3,
   extractRequestTimeoutMs: 120_000,
   extractMaxAttempts: 2,
+  organizeMaxAttempts: 2,
+  organizeMaxTokens: 8000,
+  organizeRequestTimeoutMs: 120_000,
   generationConcurrency: 2,
   titleRepairMaxAttempts: 2,
   titleHistoryDays: 30,
   titleHistoryMaxRevisions: 100,
   maxCatalogImportBytes: 32 * 1024 * 1024,
+  scriptTextRequestsPerProposal: 8,
+  distillMaxRequestsPerTask: 4,
+  planAnalysisMaxRequestsPerTask: 2,
 };
 const bigResult = await tileSourceImages(db, 'p1', ['img-2'], { limits: tightLimits });
 assert.equal(bigResult.pages.length, 1);
@@ -120,6 +133,47 @@ const sourceSet = createOrFindSourceSet(db, 'p1', ['img-2'], { limits: tightLimi
 assert.equal(sourceSet.resourceReport.overResourceLimit, false, '超限图片不应再阻断来源集创建');
 assert.ok(sourceSet.resourceReport.messages.length >= 1, '超限时应给出自动压缩提示');
 assert.ok(sourceSet.sourceSetId.length > 0);
+
+// 复用整页缩放结果后，带重叠的首/中/尾片以及不同页面的内容必须与原流程一致。
+const patternedIds: string[] = [];
+const patternedPaths: string[] = [];
+for (let pageIndex = 0; pageIndex < 2; pageIndex += 1) {
+  const width = 180;
+  const height = 1500;
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 3;
+      pixels[offset] = (y + pageIndex * 73) % 256;
+      pixels[offset + 1] = (x * 3) % 256;
+      pixels[offset + 2] = Math.floor(y / 20) % 2 ? 255 : 0;
+    }
+  }
+  const filePath = path.join(root, `pattern-${pageIndex}.jpg`);
+  await sharp(pixels, { raw: { width, height, channels: 3 } }).jpeg().toFile(filePath);
+  const id = `pattern-${pageIndex}`;
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path, originalPath, mimeType, originalWidth, originalHeight)
+    VALUES (?, 'p1', 'input', ?, ?, ?, 'image/jpeg', ?, ?)`).run(id, path.basename(filePath), filePath, filePath, width, height);
+  patternedIds.push(id);
+  patternedPaths.push(filePath);
+}
+const patternLimits = { ...getScriptStudioLimits(), maxImageWidth: 120, baseTileHeight: 256 };
+const patterned = await tileSourceImages(db, 'p1', patternedIds, { limits: patternLimits });
+assert.equal(patterned.pages.length, 2);
+for (const page of patterned.pages) {
+  const height = 1000;
+  const step = 256 - Math.round(256 * patternLimits.verticalOverlapRatio);
+  assert.equal(page.tiles.length, Math.ceil((height - (256 - step)) / step));
+  for (const tile of page.tiles) {
+    const top = Math.min(tile.tileIndex * step, height - 256);
+    const originalWholePage = await sharp(patternedPaths[page.pageIndex]!).resize({
+      width: 120, height, fit: 'inside', withoutEnlargement: true,
+    }).toBuffer();
+    const reference = await sharp(originalWholePage).extract({ left: 0, top, width: 120, height: 256 })
+      .jpeg({ quality: patternLimits.jpegQuality }).toBuffer();
+    assert.equal(tile.imageBase64, reference.toString('base64'), `第 ${page.pageIndex} 页第 ${tile.tileIndex} 片须逐字节一致`);
+  }
+}
 
 db.close();
 console.log('script-studio-tiling.test.ts: ok');

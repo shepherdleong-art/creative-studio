@@ -1,3 +1,5 @@
+import { painContentIssues } from './pain-solving.ts';
+import { charBoundsForTarget, scriptCnLen } from './template-rewrite.ts';
 import {
   buildScriptDurationBudget,
   countScriptContentCharacters,
@@ -16,6 +18,11 @@ export interface ScriptValidationResult {
   content: ScriptStudioScriptContent;
   estimatedDurationSec: number;
   contentCharacterCount: number;
+  /**
+   * 软时长目标（方案 §2.3）：时长偏离预算只作提示（duration_too_short / duration_too_long），
+   * 不进入阻断性 issues，不能单独触发重试耗尽或保存失败；content.durationStatus 如实计算。
+   */
+  durationHints: string[];
   /** 兼容字段：统计自然命中的搜索词，不再作为标题门禁。 */
   titleEmbedding?: TitleEmbeddingCheck;
   titleIssues: ScriptTitleIssue[];
@@ -58,13 +65,19 @@ export function validateScriptContent(
     titleEmbeddingContext?: TitleEmbeddingContext;
   },
 ): ScriptValidationResult {
-  const issues: string[] = [];
-  // 引用白名单与生成边界一致 fail closed：证据失败卖点即使被重新打开也不算可用。
-  const usableIds = new Set(
+  const issues: string[] = painContentIssues(input);
+  const templateRewrite = input.templateRewrite;
+  // 引用白名单与生成边界一致 fail closed：
+  // - 标准/痛点模式：库修订中通过证据门禁的全部可用卖点；
+  // - 模板改写：本模板冻结筛选白名单 ∩ 证据仍有效（筛选降级也守白名单，不扩回全库）。
+  const evidenceUsableIds = new Set(
     options.libraryRevision.sellingPoints
       .filter(isSellingPointEvidenceUsable)
       .map((point) => point.id),
   );
+  const usableIds = templateRewrite
+    ? new Set(templateRewrite.whitelistPointIds.filter((id) => evidenceUsableIds.has(id)))
+    : evidenceUsableIds;
   const budget = buildScriptDurationBudget(input.targetDurationSec);
   const fullScript = input.segments.map((segment) => segment.narration).join('\n').trim();
   const contentCharacterCount = countScriptContentCharacters(fullScript);
@@ -85,8 +98,18 @@ export function validateScriptContent(
     issues.push(...titleEmbedding.issues);
   }
   if (!input.segments.length) issues.push('segments_required');
-  if (contentCharacterCount < budget.minContentCharacters) issues.push('duration_too_short');
-  if (contentCharacterCount > budget.maxContentCharacters) issues.push('duration_too_long');
+  // 软时长目标：偏离预算只记提示，不阻断保存（如实反映在 content.durationStatus）。
+  // 模板改写按迁移口径（标题+正文中文字数 = 秒×6，±15%）；其他模式保持 TTS 估算口径。
+  const durationHints: string[] = [];
+  if (templateRewrite) {
+    const cnCount = scriptCnLen(input.title, input.segments.map((segment) => ({ narration: segment.narration })));
+    const bounds = charBoundsForTarget(templateRewrite.targetChars);
+    if (cnCount < bounds.min) durationHints.push('template_chars_too_short');
+    if (cnCount > bounds.max) durationHints.push('template_chars_too_long');
+  } else {
+    if (contentCharacterCount < budget.minContentCharacters) durationHints.push('duration_too_short');
+    if (contentCharacterCount > budget.maxContentCharacters) durationHints.push('duration_too_long');
+  }
   for (const segment of input.segments) {
     if (!segment.narration.trim()) issues.push(`segment_empty:${segment.id}`);
     for (const pointId of segment.sellingPointIdRefs || []) {
@@ -129,6 +152,7 @@ export function validateScriptContent(
     content,
     estimatedDurationSec,
     contentCharacterCount,
+    durationHints,
     titleIssues,
     ...(titleEmbedding ? { titleEmbedding } : {}),
   };
@@ -149,11 +173,16 @@ export function describeValidationIssues(
     cover_title_required: '缺少封面主标题或副标题',
     duplicate_title: '脚本标题与同批或近期项目标题重复',
     duplicate_cover_combo: '封面主副标题组合与同批或近期项目封面组合重复',
-    duration_too_short: '口播字数不足，未达到目标时长',
-    duration_too_long: '口播字数超出目标时长',
+    duration_too_short: '口播字数低于目标时长预算（仅提示，不阻止保存）',
+    duration_too_long: '口播字数超出目标时长预算（仅提示，可保存偏长候选）',
+    template_chars_too_short: '中文字数低于写作目标（秒×6 的 -15%，仅提示，不阻止保存）',
+    template_chars_too_long: '中文字数超出写作目标（秒×6 的 +15%，仅提示，可保存偏长候选）',
     duplicate_script: '与本次其他方案过于相似',
     selling_point_refs_required: '口播未引用任何已核验卖点',
     segments_required: '缺少口播分段',
+    ending_bare_selling_point: '结尾是孤立卖点标签，必须改为承接正文的 CTA 行动引导',
+    cta_ending_missing: '最后一句缺少行动邀请（CTA），须以邀请了解/比较/挑选等具体行动收尾',
+    cta_channel_unconfirmed: '最后一句使用了未确认的渠道或促销表述（私信/链接/下单/优惠等），只允许了解/比较等通用引导',
   };
   return [...new Set(issues)].map((issue) => {
     const titleDetails = detail?.titleIssues?.filter((item) => item.code === issue);

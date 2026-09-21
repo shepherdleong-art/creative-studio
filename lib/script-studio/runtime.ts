@@ -7,18 +7,22 @@ import {
   type ScriptGenerator,
 } from './generator.ts';
 import { createVisionClosedQuestionReprobe, type EvidenceReprobe } from './adapters/reprobe.ts';
-import { createVisionExtractor, type VisionExtractor } from './adapters/vision-extract.ts';
+import type { VisionExtractor } from './adapters/vision-extract.ts';
+import { createDirectVisionExtractor } from './adapters/direct-vision.ts';
+import { createSellingPointOrganizer } from './selling-point-organizer.ts';
 import { getScriptStudioLimits } from './limits.ts';
 import {
   pinRuntimeProviderModel,
   selectScriptStudioRuntimeProviders,
   type ScriptStudioRuntimeProvider,
 } from './provider-selection.ts';
+import { createScriptRequestBudget } from './request-budget.ts';
 import {
   createScriptStudioRunDeps,
   type ScriptStudioRunDeps,
 } from './runner.ts';
 import { getTask, type TaskView } from './tasks.ts';
+import { parseScriptStudioRequestedCount } from './generation-contract.ts';
 
 export function resolveRuntimeProviders(requestedProviderId?: string | null): {
   vision: ScriptStudioRuntimeProvider;
@@ -63,16 +67,9 @@ export function createRuntimeDeps(
   const projectId = task.projectId;
   const taskId = task.id;
   const limits = getScriptStudioLimits();
-  const visionExtractor = createVisionExtractor(
+  const visionExtractor = createDirectVisionExtractor(
     providerCompleteJson(providers.vision.id, providers.vision.model, projectId, taskId, 'script-studio-vision'),
     providers.vision,
-    {
-      maxTokens: limits.maxTokensPerPage,
-      tileBatchSize: limits.extractTileBatchSize,
-      concurrency: limits.extractConcurrency,
-      requestTimeoutMs: limits.extractRequestTimeoutMs,
-      maxAttempts: limits.extractMaxAttempts,
-    },
   );
   const reprobe = createVisionClosedQuestionReprobe(
     providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-reprobe'),
@@ -80,7 +77,22 @@ export function createRuntimeDeps(
   const generator = createScriptGenerator(
     providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-generate'),
     providers.text,
-    { maxTokens: getScriptStudioLimits().maxTokensPerPage },
+    {
+      maxTokens: limits.maxTokensPerPage,
+      // 请求预算（方案 §2.2）：每方案 8 次、标题修复 2 次、任务总额 requestedCount×8；
+      // 计数持久化，任务中断恢复时延续余额。
+      budget: createScriptRequestBudget({
+        db,
+        taskId,
+        requestedCount: (() => {
+          try {
+            return parseScriptStudioRequestedCount(inputSnapshot.requestedCount);
+          } catch {
+            return 1;
+          }
+        })(),
+      }),
+    },
   );
   const runDeps = createScriptStudioRunDeps(db, {
     projectId,
@@ -89,8 +101,12 @@ export function createRuntimeDeps(
     libraryRevisionId: task.libraryRevisionId,
     inputSnapshot,
     visionExtractor,
+    directVision: true,
     reprobe,
     generator,
+    sellingPointOrganizer: createSellingPointOrganizer(
+      providerCompleteJson(providers.text.id, providers.text.model, projectId, taskId, 'script-studio-organize'),
+    ),
     signal: options.signal,
     fallbackOnInvalid: options.fallbackOnInvalid,
   });

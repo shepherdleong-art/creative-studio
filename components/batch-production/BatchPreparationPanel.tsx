@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import MixcutShell, { type MixcutStepDef } from '@/components/mixcut/MixcutShell';
 import shellStyles from '@/components/mixcut/mixcut-shell.module.css';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
+import type { FilenameAnalysisResult } from '@/lib/batch-production/filename-analysis';
 import type { BatchSnapshotDetail, BatchSnapshotResult } from '@/lib/batch-production/batch-flow';
 import type { BatchProductionStatus } from '@/lib/batch-production/versions';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
@@ -775,6 +776,8 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           assets: current.assets.map((asset) => {
             const patch = byId.get(asset.id);
             if (!patch) return asset;
+            // 项目级文件名提取在任务队列之外完成，旧任务的历史结果不能覆盖它。
+            if (asset.analysisSource === 'filename') return asset;
             return {
               ...asset,
               currentAnalysisId: patch.analysisId,
@@ -905,6 +908,42 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       info: previewInfos[assetId] ?? null,
     });
     void refreshProxyPreviewInfo(assetId);
+  }
+
+  async function extractFilenames(assetIds: string[]): Promise<void> {
+    setAnalysisBusy('__filename__');
+    setFeedback(null);
+    try {
+      const result = await readJson<FilenameAnalysisResult>(await fetch(
+        `/api/batch-production/assets/filename-description?projectId=${encodeURIComponent(projectId)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assetIds }) },
+      ));
+      const byId = new Map(result.items.map((item) => [item.assetId, item]));
+      setPreparation((current) => current ? {
+        ...current,
+        assets: current.assets.map((asset) => {
+          const item = byId.get(asset.id);
+          return item ? { ...asset, currentAnalysisId: item.analysisId, analysisLevel: 'content', analysisSource: 'filename', filenameDescription: item.description } : asset;
+        }),
+      } : current);
+      // 已勾选的技术分析素材必须改用新描述版本，否则确认输入仍会冻结旧版本。
+      setSelectedAssets((current) => Object.fromEntries(Object.entries(current).map(([id, selection]) => [
+        id, byId.has(id) ? { ...selection, analysisId: byId.get(id)!.analysisId } : selection,
+      ])));
+      if (result.items.length) setInputConfirmed(false);
+      const failures = result.errors.map(({ assetId, message }) => {
+        const asset = preparation?.assets.find((entry) => entry.id === assetId);
+        return `${asset?.media.displayName || asset?.media.filename || '素材'}：${message}`;
+      });
+      setFeedback({
+        kind: result.errors.length ? 'error' : 'success',
+        message: `已提取 ${result.items.length} 条文件名描述，未调用画面识别。${failures.length ? `未提取 ${failures.length} 条：${failures.join('；')}` : '可勾选素材继续匹配与剪辑。'}`,
+      });
+    } catch (error) {
+      setFeedback({ kind: 'error', message: error instanceof Error ? error.message : '文件名描述提取失败' });
+    } finally {
+      setAnalysisBusy(null);
+    }
   }
 
   async function analyzeAssets(assetIds: string[]): Promise<void> {
@@ -2074,6 +2113,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 ));
               }}
               onAnalyzeContent={(assetIds) => void analyzeAssets(assetIds)}
+              onExtractFilenames={(assetIds) => void extractFilenames(assetIds)}
               onRetryAnalyze={(taskId) => void retryAssetAnalysis(taskId)}
               onRequestProxy={(assetIds, busyMarker) => void requestProxies(assetIds, busyMarker)}
               onRequestAssetProxy={(assetId) => void requestAssetProxy(assetId)}

@@ -1,3 +1,4 @@
+import { changeVideoPlaybackRate, editAudioClip } from '../lib/final-edit/clip-edit.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -570,6 +571,23 @@ try {
             ];
           });
           const nextVariant = { ...currentVariant, revision: currentVariant.revision + 1, timeline: { ...currentVariant.timeline, clips } };
+        }
+        if (['set_clip_playback_rate', 'set_framing', 'split_audio_clip', 'delete_audio_clip'].includes(body.type)) {
+          const nextVariant = structuredClone(currentVariant);
+          nextVariant.revision += 1;
+          if (body.type === 'set_clip_playback_rate') changeVideoPlaybackRate(nextVariant.timeline, body.clipId, body.playbackRate);
+          if (body.type === 'set_framing') nextVariant.timeline.clips.find((clip) => clip.id === body.clipId).framing = { scale: body.scale, offsetX: body.offsetX, offsetY: body.offsetY };
+          if (body.type === 'split_audio_clip' || body.type === 'delete_audio_clip') editAudioClip(nextVariant.timeline, body.track, savedGroup.narrationDurationUs, body.clipId, body.type === 'split_audio_clip' ? body.atUs : undefined);
+          savedGroup = { ...savedGroup, variants: [nextVariant] };
+          return json({ view: nextVariant });
+        }
+        if (body.type === 'move_clip') {
+          const nextVariant = structuredClone(currentVariant);
+          nextVariant.revision += 1;
+          const moving = nextVariant.timeline.clips.find((clip) => clip.id === body.clipId);
+          const duration = moving.timelineOutFrame - moving.timelineInFrame;
+          moving.timelineInFrame = body.timelineInFrame;
+          moving.timelineOutFrame = body.timelineInFrame + duration;
           savedGroup = { ...savedGroup, variants: [nextVariant] };
           return json({ view: nextVariant });
         }
@@ -827,6 +845,64 @@ try {
     await initialStepNav.getByRole('button', { name: /预览调整/ }).click();
     await page.locator('[data-track="video"]').waitFor();
 
+    if (process.env.M7_MEDIA_EDIT_ONLY === '1') {
+      const clip = page.locator('[data-clip-id="clip-a"]');
+      await clip.click();
+      const speed = page.getByRole('slider', { name: '视频倍速拉条', exact: true });
+      await speed.fill('1.5');
+      await speed.press('Tab');
+      await expectEventually(() => savedGroup.variants[0].timeline.clips[0].playbackRate === 1.5, '右侧滑杆倍速必须保存');
+      await page.getByRole('button', { name: '恢复原速（1×）', exact: true }).click();
+      await expectEventually(() => savedGroup.variants[0].timeline.clips[0].playbackRate === 1, '必须能恢复原速');
+      assert.equal(savedGroup.variants[0].timeline.clips[0].timelineOutFrame, 120);
+      await speed.fill('2');
+      await speed.dispatchEvent('pointerup');
+      await expectEventually(() => savedGroup.variants[0].timeline.clips[0].playbackRate === 2, '松手必须保存');
+      assert.equal(savedGroup.variants[0].timeline.clips[1].timelineInFrame, 120);
+      for (let i = 0; i < 4; i++) {
+        await page.locator('[data-clip-id="clip-b"]').click();
+        assert.equal(await speed.count(), 1, '切换片段不得复制倍速面板');
+        await clip.click();
+        assert.equal(await speed.count(), 1, '切回片段也只能有一个倍速面板');
+        assert.equal(await page.getByRole('slider', { name: '画面缩放', exact: true }).count(), 1);
+      }
+      const dragClip = async (deltaX) => {
+        await page.waitForFunction(() => document.querySelector('input[aria-label="视频倍速拉条"]')?.disabled === false);
+        const box = await clip.boundingBox(); assert.ok(box);
+        const x = box.x + box.width / 2, y = box.y + box.height / 2;
+        await page.mouse.move(x, y); await page.mouse.down();
+        await page.mouse.move(x + deltaX, y, { steps: 10 }); await page.mouse.up();
+      };
+      await dragClip(60);
+      await expectEventually(() => savedGroup.variants[0].timeline.clips[0].timelineInFrame === 24, '调速后必须可拖动素材到空位');
+      await dragClip(-60);
+      await expectEventually(() => savedGroup.variants[0].timeline.clips[0].timelineInFrame === 0, '必须可拖回原位');
+      const scale = page.getByRole('slider', { name: '画面缩放', exact: true });
+      await scale.fill('0.5');
+      await scale.press('ArrowRight');
+      await expectEventually(() => savedGroup.variants[0].timeline.clips[0].framing.scale < 1, '缩放滑杆必须保存');
+      const horizontal = page.getByRole('slider', { name: '水平位移', exact: true });
+      await horizontal.fill('0.5');
+      await horizontal.press('ArrowRight');
+      await expectEventually(() => savedGroup.variants[0].timeline.clips[0].framing.offsetX > 0, '位移滑杆必须保存');
+      await page.getByRole('button', { name: '分割工具', exact: true }).click();
+      const audio = page.locator('[data-track="narration"] [data-audio-clip-id]').first();
+      await audio.click({ position: { x: 100, y: 10 } });
+      await expectEventually(async () => await page.locator('[data-track="narration"] [data-audio-clip-id]').count() === 2, '点击音频必须切成两段');
+      await page.locator('[data-track="narration"] [data-audio-clip-id]').first().click({ button: 'right' });
+      await page.getByRole('button', { name: '删除音频片段（保留空位）', exact: true }).click();
+      await expectEventually(async () => await page.locator('[data-track="narration"] [data-audio-clip-id]').count() === 1, '删除音频必须留空');
+      assert.ok(savedGroup.variants[0].timeline.audio.narration[0].startUs > 0);
+      await page.getByRole('button', { name: '选择工具', exact: true }).click();
+      await clip.click({ button: 'right' });
+      await page.getByRole('menuitem', { name: '删除片段（保留空位）', exact: true }).click();
+      await clip.waitFor({ state: 'detached' });
+      assert.equal(savedGroup.variants[0].timeline.clips[0].timelineInFrame, 120);
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.getByRole('navigation', { name: '智能混剪步骤' }).getByRole('button', { name: /预览/ }).click();
+      await expectEventually(async () => await page.locator('[data-track="narration"] [data-audio-clip-id]').count() === 1, '重载后恢复裁切');
+      console.log('mixcut media editing browser checks passed');
+    } else {
     assert.equal(await page.locator('[data-track]').count(), 4, '正式页面必须挂载四条真实轨道');
     assert.deepEqual(
       await page.locator('section[aria-label="智能混剪时间轴"] > div:first-child > div').allTextContents(),
@@ -2024,6 +2100,7 @@ try {
     await expectEventually(async () => (await updateHint.count()) === 0, '同步落库后必须用服务端返回的快照身份清除新版本提示');
     assert.equal(await scriptTextarea.inputValue(), '项目脚本第二版。', '无手改文案时同步必须直接采用新 revision 正文');
 
+    }
     }
     await page.close();
     if (!process.argv.includes('--video-split-only')) console.log('final-edit mixcut formal page smoke tests passed');

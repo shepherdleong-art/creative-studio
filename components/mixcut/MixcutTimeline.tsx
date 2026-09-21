@@ -8,6 +8,8 @@ import type { GroupCommandInput, VariantCommandInput } from '@/components/final-
 import { planSubtitleCueSplit, type SubtitleCueSplitPlan } from '@/components/final-edit/subtitle-split';
 import { planVideoClipSplit } from '@/lib/final-edit/clip-split';
 import { constrainClipDrag, planClipReorder, timelineAbsoluteFrameFromPointer, timelineContentWidthPx, type ClipDragMode, type ClipDraft } from '@/components/final-edit/timeline-edit';
+import { audioClips, videoPlaybackRate } from '@/lib/final-edit/clip-edit';
+import type { AudioClip, AudioTrackKind } from '@/lib/final-edit/types';
 import { NarrationPlaybackRateControl } from './NarrationPlaybackRateControl';
 import styles from './mixcut-content.module.css';
 
@@ -20,7 +22,8 @@ const WAVEFORM_BAR_PITCH_PX = 4.5; // 2.5px 柱宽 + 2px 间距，与 CSS 保持
 type TimelineContextMenu =
   | { kind: 'video'; clipId: string; x: number; y: number }
   | { kind: 'subtitle'; cueId: string; x: number; y: number }
-  | { kind: 'narration'; x: number; y: number };
+  | { kind: 'narration'; clipId?: string; x: number; y: number }
+  | { kind: 'bgm'; clipId: string; x: number; y: number };
 
 type TimelineTool = 'select' | 'split';
 
@@ -171,7 +174,7 @@ export function MixcutTimeline({
 
   return (
     <div className={styles.tlShell}>
-      <div className={styles.tlToolbar} role="toolbar" aria-label="视频与字幕时间轴工具">
+      <div className={styles.tlToolbar} role="toolbar" aria-label="时间轴工具">
         <button
           type="button"
           aria-label="选择工具"
@@ -192,7 +195,7 @@ export function MixcutTimeline({
         >
           <Icon name="scissors" size={13} />分割
         </button>
-        <span role="status" className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? splitMessage || '点击视频或字幕块切开；视频两侧至少保留 0.5 秒，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字，右键删除'}</span>
+        <span role="status" className={styles.tlToolHint} data-testid="mixcut-timeline-tool-hint">{tool === 'split' ? splitMessage || '点击视频、音频或字幕的目标位置切开；视频两侧至少保留 0.5 秒，右键删除' : '拖动字幕块移动，拖两侧修剪，双击改字；选中视频可在右侧调整倍速和画面，音频用分割工具裁切，右键删除'}</span>
       </div>
       <section className={styles.tl} aria-label="智能混剪时间轴" aria-busy={disabled} data-mutations-disabled={disabled || undefined} data-tool={tool}>
       <div className={styles.tlLabels}>
@@ -241,7 +244,7 @@ export function MixcutTimeline({
                 })}
               />
             ))}
-            {bodySec > videoBodySec && (
+            {bodySec > videoBodySec && orderedClips.at(-1)?.timelineOutFrame === variant.timeline.bodyFrames && (
               <div
                 className={styles.videoFreezeTail}
                 style={{ left: (INTRO_FRAMES / FPS + videoBodySec) * pxPerSecond, width: (bodySec - videoBodySec) * pxPerSecond }}
@@ -290,18 +293,18 @@ export function MixcutTimeline({
               });
             }}
           >
-            <Waveform tone="tts" seed={3} playedWidthPx={playheadPx} />
-            <span className={styles.wfLabel} style={{ left: introPx + 8 }}>锁定口播 · {narrationPlaybackRate.toFixed(1)}x · {narrationDurationSec.toFixed(1)}s</span>
+            {audioClips(variant.timeline, 'narration', narrationDurationSec * narrationPlaybackRate * 1e6).map((clip) => (
+              <AudioBlock key={clip.id} clip={clip} track="narration" playbackRate={narrationPlaybackRate} bodySec={bodySec} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={tool} disabled={disabled}
+                label={`口播 · ${narrationPlaybackRate.toFixed(1)}x`} onSeek={onSeek} onCommand={onVariantCommand}
+                onOpenContextMenu={(x, y) => setContextMenu({ kind: 'narration', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 356)), y: Math.max(8, Math.min(y, window.innerHeight - 300)) })} />
+            ))}
           </div>
           <div className={`${styles.tlTrack} ${styles.tlTrackAudio}`} data-track="bgm" style={{ borderBottom: 'none' }}>
-            {variant.bgm.trackId && bgmTrackName ? (
-              <>
-                <Waveform tone="bgm" seed={7} playedWidthPx={playheadPx} />
-                <span className={styles.wfLabel} style={{ left: introPx + 8 }}>{`${bgmTrackName} · ${variant.bgm.gainDb} dB · 淡入 ${variant.bgm.fadeInSec}s · 淡出 ${variant.bgm.fadeOutSec}s`}</span>
-              </>
-            ) : (
-              <span className={styles.wfLabel} style={{ left: introPx + 8 }}>无 BGM</span>
-            )}
+            {variant.bgm.trackId && bgmTrackName ? audioClips(variant.timeline, 'bgm', bodySec * 1e6).map((clip) => (
+              <AudioBlock key={clip.id} clip={clip} track="bgm" playbackRate={1} bodySec={bodySec} pxPerSecond={pxPerSecond} playheadPx={playheadPx} tool={tool} disabled={disabled}
+                label={`${bgmTrackName} · ${variant.bgm.gainDb} dB`} onSeek={onSeek} onCommand={onVariantCommand}
+                onOpenContextMenu={(x, y) => setContextMenu({ kind: 'bgm', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 184)), y: Math.max(8, Math.min(y, window.innerHeight - 86)) })} />
+            )) : <span className={styles.wfLabel} style={{ left: introPx + 8 }}>无 BGM</span>}
           </div>
           <button
             type="button"
@@ -319,12 +322,13 @@ export function MixcutTimeline({
             aria-label={contextMenu.kind === 'video'
               ? '视频片段操作'
               : contextMenu.kind === 'subtitle' ? '字幕操作'
-                : '口播音频变速'}
+                : contextMenu.kind === 'bgm' ? '背景音乐片段操作' : '口播音频变速'}
             className={`${styles.timelineContextMenu} ${contextMenu.kind === 'narration' ? styles.timelineSpeedMenu : ''}`}
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onPointerDown={(event) => event.stopPropagation()}
           >
             {contextMenu.kind === 'video' ? (
+              <>
               <button
                 type="button"
                 role="menuitem"
@@ -337,7 +341,8 @@ export function MixcutTimeline({
                     if (accepted && selectedClipId === clipId) onSelectClip('');
                   });
                 }}
-              >删除片段</button>
+              >删除片段（保留空位）</button>
+              </>
             ) : contextMenu.kind === 'subtitle' ? (
               <button
                 type="button"
@@ -352,8 +357,11 @@ export function MixcutTimeline({
                   });
                 }}
               >删除字幕</button>
+            ) : contextMenu.kind === 'bgm' ? (
+              <button type="button" role="menuitem" className={styles.timelineContextDanger} disabled={disabled} onClick={() => { void onVariantCommand({ type: 'delete_audio_clip', track: 'bgm', clipId: contextMenu.clipId }); setContextMenu(null); }}>删除音频片段</button>
             ) : (
               <>
+                {contextMenu.clipId && <button type="button" className={styles.timelineContextDanger} disabled={disabled} onClick={() => { void onVariantCommand({ type: 'delete_audio_clip', track: 'narration', clipId: contextMenu.clipId! }); setContextMenu(null); }}>删除音频片段（保留空位）</button>}
                 <div className={styles.timelineContextTitle}>调整音频倍速</div>
                 <div className={styles.timelineSpeedHint} id="mixcut-narration-speed-help">拖动后立即作用于当前音轨，松手自动保存。</div>
                 <NarrationPlaybackRateControl
@@ -373,6 +381,32 @@ export function MixcutTimeline({
       </section>
     </div>
   );
+}
+
+export function AudioBlock({ clip, track, playbackRate, bodySec, pxPerSecond, playheadPx, tool, disabled, label, onSeek, onCommand, onOpenContextMenu }: {
+  clip: AudioClip; track: AudioTrackKind; playbackRate: number; bodySec: number; pxPerSecond: number; playheadPx: number;
+  tool: TimelineTool; disabled: boolean; label: string; onSeek: (seconds: number) => void;
+  onCommand: (command: VariantCommandInput) => Promise<boolean>;
+  onOpenContextMenu: (x: number, y: number) => void;
+}) {
+  const startSec = clip.startUs / 1e6 / playbackRate;
+  const endSec = Math.min(bodySec, clip.endUs / 1e6 / playbackRate);
+  const left = (INTRO_FRAMES / FPS + startSec) * pxPerSecond;
+  if (endSec <= startSec) return null;
+  return <button type="button" className={styles.audioClip} data-audio-clip-id={clip.id} aria-label={`${label}音频片段`} disabled={disabled}
+    style={{ left, width: (endSec - startSec) * pxPerSecond }}
+    onPointerDown={(event) => event.stopPropagation()}
+    onClick={(event) => {
+      event.stopPropagation();
+      const offsetSec = Math.max(0, event.clientX - event.currentTarget.getBoundingClientRect().left) / pxPerSecond;
+      if (tool === 'split') void onCommand({ type: 'split_audio_clip', track, clipId: clip.id, atUs: Math.round(clip.startUs + offsetSec * playbackRate * 1e6) });
+      else onSeek(INTRO_FRAMES / FPS + startSec + offsetSec);
+    }}
+    onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!disabled) onOpenContextMenu(event.clientX, event.clientY); }}
+    title="分割工具点击裁切 · 右键删除音频片段">
+    <Waveform tone={track === 'narration' ? 'tts' : 'bgm'} seed={track === 'narration' ? 3 : 7} playedWidthPx={playheadPx - left} />
+    <span className={styles.wfLabel} style={{ left: 8 }}>{label}</span>
+  </button>;
 }
 
 function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames, pxPerSecond, selected, disabled, tool, onSplitMessage, onSelect, onCommand, onTrimClip, onOpenContextMenu }: {
@@ -487,7 +521,7 @@ function VideoBlock({ clip, index, clips, sourceFrames, thumbnailUrl, bodyFrames
       {thumbnailUrl && <img src={thumbnailUrl} alt="" draggable={false} />}
       {tool === 'split' && splitFrame !== null && <i data-testid="mixcut-video-split-preview" className={styles.subtitleSplitPreview} style={{ left: `${(splitFrame - clip.timelineInFrame) / (clip.timelineOutFrame - clip.timelineInFrame) * 100}%` }} aria-hidden="true" />}
       <span className={styles.clipNo}>#{index + 1}</span>
-      <span className={styles.clipCd}>{durationSec.toFixed(1)}s</span>
+      <span className={styles.clipCd}>{durationSec.toFixed(1)}s · {videoPlaybackRate(clip)}x</span>
       <i className={`${styles.clipHandle} ${styles.clipHandleL}`} aria-label="裁剪片段开头" onPointerDown={(event) => begin('start', event)} />
       <i className={`${styles.clipHandle} ${styles.clipHandleR}`} aria-label="裁剪片段结尾" onPointerDown={(event) => begin('end', event)} />
     </article>

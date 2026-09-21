@@ -1,3 +1,5 @@
+import { planClipPosition } from '../media-core/clip-position.ts';
+import { editAudioClip, parseAudioEdits, type AudioEdits, type AudioTrackKind } from '../media-core/audio-edit.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { resolveBatchBgmParams, resolveBatchBgmParamsForArrangement } from './batch-renderer.ts';
@@ -24,7 +26,7 @@ import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
  * （画面变了必须重新审核，与正式发布门禁对齐）；editRevision 进渲染
  * requestKey（见 phase-e.ts），保证 createBatchTask 幂等去重不会吞掉重渲染。
  *
- * 变长修剪/删除/插入都执行 ripple（依次首尾相接）；分割是纯结构操作，
+ * 变长修剪/删除保留空位，插入优先填空位、不足时顺延；分割是纯结构操作，
  * 总长不变，不递增 editRevision、不清 review、不触发重渲染。
  */
 
@@ -46,6 +48,8 @@ export interface BatchOutputClipView {
   timelineStartUs: number;
   timelineEndUs: number;
   locked: boolean;
+  playbackRate?: number;
+  framing?: CoverFraming;
 }
 
 export interface BatchOutputPoolAssetView {
@@ -93,6 +97,8 @@ export interface BatchOutputClipEditView {
   editRevision: number;
   /** 当前片段的真实画面结尾时间（last clip timelineEndUs）。 */
   visualDurationUs: number;
+  preserveGaps?: boolean;
+  audio?: AudioEdits;
   clips: BatchOutputClipView[];
   narration: { audioRelativePath: string | null; durationUs: number | null; gainDb: number };
   subtitleCues: BatchOutputSubtitleCueView[];
@@ -113,10 +119,15 @@ export interface BatchOutputClipEditView {
 }
 
 export type BatchOutputClipEdit =
+  | { type: 'move_clip'; clipId: string; startUs: number }
   | { type: 'trim'; clipId: string; sourceStartUs: number; sourceEndUs: number }
   | { type: 'replace'; clipId: string; assetId: string }
   | { type: 'trim_variable'; clipId: string; sourceStartUs: number; sourceEndUs: number }
   | { type: 'delete'; clipId: string }
+  | { type: 'set_clip_playback_rate'; clipId: string; playbackRate: number }
+  | { type: 'set_clip_framing'; clipId: string; framing: CoverFraming }
+  | { type: 'split_audio_clip'; track: AudioTrackKind; clipId: string; atUs: number }
+  | { type: 'delete_audio_clip'; track: AudioTrackKind; clipId: string }
   | { type: 'insert'; afterClipId: string | null; assetId: string; durationUs?: number }
   | { type: 'split'; clipId: string; offsetUs: number }
   | { type: 'set_cover'; assetId: string; timeUs: number; framing?: CoverFraming | null; title?: unknown }
@@ -343,6 +354,8 @@ function clipViewFromRecord(record: Record<string, unknown>): BatchOutputClipVie
     timelineStartUs: Math.round(timelineStartUs),
     timelineEndUs: Math.round(timelineEndUs),
     locked: record.locked === true,
+    playbackRate: finiteNumber(record.playbackRate) ?? (sourceEndUs - sourceStartUs) / (timelineEndUs - timelineStartUs),
+    framing: asRecord(record.framing) as unknown as CoverFraming || { scale: 1, offsetX: 0, offsetY: 0 },
   };
 }
 
@@ -367,17 +380,6 @@ function sameClipRange(record: Record<string, unknown>, startUs: number, endUs: 
   return current !== null && current.startUs === startUs && current.endUs === endUs;
 }
 
-function rippleClips(clips: Array<Record<string, unknown>>): void {
-  let cursorUs = 0;
-  for (const record of clips) {
-    const range = clipRangeOf(record);
-    if (!range) throw new BatchDomainError('conflict', '片段区间数据损坏,不能编辑');
-    record.timelineStartUs = cursorUs;
-    record.timelineEndUs = cursorUs + (range.endUs - range.startUs);
-    cursorUs = Number(record.timelineEndUs);
-  }
-}
-
 function visualDurationUs(clips: Array<Record<string, unknown>>): number {
   const last = clips.at(-1);
   const value = last ? finiteNumber(last.timelineEndUs) : null;
@@ -399,7 +401,7 @@ function buildEditWarnings(
     if (diffUs > 1_000) {
       warnings.push(`画面总长比口播长 ${(diffUs / 1_000_000).toFixed(1)} 秒，超出部分渲染时会被裁掉`);
     } else if (diffUs < -1_000) {
-      warnings.push(`画面总长比口播短 ${(Math.abs(diffUs) / 1_000_000).toFixed(1)} 秒，结尾将定格最后一帧补齐`);
+      warnings.push(`画面总长比口播短 ${(Math.abs(diffUs) / 1_000_000).toFixed(1)} 秒，结尾将${arrangement.preserveGaps ? '保留黑场空位' : '定格最后一帧补齐'}`);
     }
   }
   return warnings;
@@ -567,6 +569,8 @@ export function getBatchOutputArrangementView(
     editRevision: readEditRevision(arrangement),
     visualDurationUs: clips.at(-1)?.timelineEndUs ?? 0,
     clips,
+    preserveGaps: arrangement?.preserveGaps === true,
+    audio: parseAudioEdits(arrangement?.audio),
     narration,
     subtitleCues,
     subtitleOverride: hasManualSubtitleOverride(arrangement),
@@ -594,8 +598,8 @@ export function getBatchOutputArrangementView(
  * 应用一次片段级编辑（整读-改-整写 arrangementJson 的单事务）。
  *
  * - trim/replace：保留上一迭代的等长语义；
- * - trim_variable：变长修剪，ripple 平移后续片段；
- * - delete：删除后 ripple（至少保留一条片段）；
+ * - trim_variable：变长修剪，保留后续片段位置；
+ * - delete：删除后保留空位（至少保留一条片段）；
  * - insert：从冻结池插入默认 3s（或显式窗口）片段，ripple；
  * - split：把一段切成源连续的 two pieces，总长不变，不触发重渲染。
  */
@@ -610,6 +614,9 @@ export function applyBatchOutputClipEdit(
     throw new BatchDomainError('invalid_input', '不支持的片段编辑类型');
   }
   switch (edit.type) {
+    case 'move_clip':
+      if (!nonEmptyString(edit.clipId) || !Number.isSafeInteger(edit.startUs) || edit.startUs < 0) throw new BatchDomainError('invalid_input', '移动片段需要有效的片段 ID 和时间位置');
+      break;
     case 'trim':
     case 'trim_variable':
       if (!nonEmptyString(edit.clipId)) {
@@ -625,6 +632,18 @@ export function applyBatchOutputClipEdit(
     case 'replace':
       if (!nonEmptyString(edit.clipId)) throw new BatchDomainError('invalid_input', '缺少片段 ID');
       if (!nonEmptyString(edit.assetId)) throw new BatchDomainError('invalid_input', '缺少替换素材 ID');
+      break;
+    case 'set_clip_playback_rate':
+      if (!Number.isFinite(edit.playbackRate) || edit.playbackRate < 0.25 || edit.playbackRate > 4) throw new BatchDomainError('invalid_input', '视频倍速须在 0.25–4 倍之间');
+      if (!nonEmptyString(edit.clipId)) throw new BatchDomainError('invalid_input', '缺少片段 ID');
+      break;
+    case 'set_clip_framing':
+      if (!edit.framing || ![edit.framing.scale, edit.framing.offsetX, edit.framing.offsetY].every(Number.isFinite)) throw new BatchDomainError('invalid_input', '画面参数无效');
+      break;
+    case 'split_audio_clip':
+      if (!Number.isSafeInteger(edit.atUs)) throw new BatchDomainError('invalid_input', '音频裁切点无效');
+      break;
+    case 'delete_audio_clip':
       break;
     case 'delete':
       if (!nonEmptyString(edit.clipId)) throw new BatchDomainError('invalid_input', '缺少片段 ID');
@@ -759,7 +778,21 @@ export function applyBatchOutputClipEdit(
     let splitChanged = false;
     let deleted = false;
 
-    if (edit.type === 'trim' || edit.type === 'trim_variable') {
+    if (edit.type === 'move_clip') {
+      if (clipIndex(edit.clipId) < 0) throw new BatchDomainError('not_found', '片段不存在');
+      const positions = clips.map((clip) => ({ id: String(clip.clipId), startUs: Number(clip.timelineStartUs), endUs: Number(clip.timelineEndUs) }));
+      const bodyEndUs = Math.max(visualDurationUs(clips), finiteNumber(asRecord(arrangement.narration)?.durationUs) ?? 0);
+      const planned = planClipPosition(positions, edit.clipId, edit.startUs, bodyEndUs);
+      if (planned.every((item) => positions.some((original) => original.id === item.id && original.startUs === item.startUs && original.endUs === item.endUs))) return unchanged;
+      for (const position of planned) {
+        const clip = clips[clipIndex(position.id)];
+        clip.timelineStartUs = position.startUs;
+        clip.timelineEndUs = position.endUs;
+      }
+      clips.sort((a, b) => Number(a.timelineStartUs) - Number(b.timelineStartUs));
+      arrangement.preserveGaps = true;
+      visualChanged = true;
+    } else if (edit.type === 'trim' || edit.type === 'trim_variable') {
       const index = clipIndex(edit.clipId);
       if (index < 0) throw new BatchDomainError('not_found', '片段不存在');
       const clip = clips[index];
@@ -792,14 +825,52 @@ export function applyBatchOutputClipEdit(
         const durationUs = poolAssetDurationUs(poolRow);
         if (durationUs === null) throw new BatchDomainError('invalid_input', '素材缺少时长信息,无法校验截取区间');
         if (normalizedEndUs > durationUs) throw new BatchDomainError('invalid_input', '截取区间超出素材时长');
-        if (normalizedEndUs - normalizedStartUs < MIN_CLIP_DURATION_US) {
+        const rate = finiteNumber(clip.playbackRate) ?? sourceLengthUs / (Number(clip.timelineEndUs) - Number(clip.timelineStartUs));
+        if ((normalizedEndUs - normalizedStartUs) / rate < MIN_CLIP_DURATION_US) {
           throw new BatchDomainError('invalid_input', '修剪后片段长度不能短于 0.5 秒');
         }
         if (sameClipRange(clip, normalizedStartUs, normalizedEndUs)) return unchanged;
+        const slip = normalizedEndUs - normalizedStartUs === sourceLengthUs;
+        const nextStart = slip ? Number(clip.timelineStartUs) : frameAlignUs(Number(clip.timelineStartUs) + (normalizedStartUs - current.startUs) / rate);
+        const nextEnd = frameAlignUs(nextStart + (normalizedEndUs - normalizedStartUs) / rate);
+        if (nextStart < (index > 0 ? Number(clips[index - 1].timelineEndUs) : 0) || nextEnd > (index + 1 < clips.length ? Number(clips[index + 1].timelineStartUs) : Infinity)) throw new BatchDomainError('invalid_input', '修剪超出当前空位，不能覆盖相邻片段');
+        clip.timelineStartUs = nextStart;
+        clip.timelineEndUs = nextEnd;
         clip.sourceStartUs = normalizedStartUs;
         clip.sourceEndUs = normalizedEndUs;
+        arrangement.preserveGaps = true;
         visualChanged = true;
       }
+    } else if (edit.type === 'set_clip_playback_rate' || edit.type === 'set_clip_framing') {
+      const index = clipIndex(edit.clipId);
+      if (index < 0) throw new BatchDomainError('not_found', '片段不存在');
+      const clip = clips[index];
+      if (edit.type === 'set_clip_framing') {
+        const framing = { scale: Math.max(0.25, Math.min(3, edit.framing.scale)), offsetX: Math.max(-1, Math.min(1, edit.framing.offsetX)), offsetY: Math.max(-1, Math.min(1, edit.framing.offsetY)) };
+        if (JSON.stringify(clip.framing) === JSON.stringify(framing)) return unchanged;
+        clip.framing = framing;
+      } else {
+        // 自动分配的相邻边界可能不在整帧上；在微秒域变速，渲染时再统一采样到帧。
+        // 否则 2.735 秒恢复 1 倍会被取整到 2.75 秒，误判覆盖下一片段。
+        const duration = Math.round((Number(clip.sourceEndUs) - Number(clip.sourceStartUs)) / edit.playbackRate);
+        if (duration < MIN_CLIP_DURATION_US) throw new BatchDomainError('invalid_input', '变速后片段不能短于 0.5 秒');
+        const end = Number(clip.timelineStartUs) + duration;
+        if (index + 1 < clips.length && end > Number(clips[index + 1].timelineStartUs)) throw new BatchDomainError('invalid_input', '变速后空位不足，请先缩短当前片段');
+        if (clip.playbackRate === edit.playbackRate) return unchanged;
+        clip.playbackRate = edit.playbackRate;
+        clip.timelineEndUs = end;
+        arrangement.preserveGaps = true;
+      }
+      visualChanged = true;
+    } else if (edit.type === 'split_audio_clip' || edit.type === 'delete_audio_clip') {
+      if (edit.track === 'bgm' && !nonEmptyString(asRecord(arrangement.music)?.trackId)) throw new BatchDomainError('invalid_input', '请先添加背景音乐');
+      const duration = finiteNumber(asRecord(arrangement.narration)?.durationUs) ?? visualDurationUs(clips);
+      const state = { audio: parseAudioEdits(arrangement.audio) };
+      try { editAudioClip(state, edit.track, duration, edit.clipId, edit.type === 'split_audio_clip' ? edit.atUs : undefined); }
+      catch (error) { throw new BatchDomainError('invalid_input', error instanceof Error ? error.message : '音频裁切失败'); }
+      arrangement.audio = state.audio;
+      if (edit.type === 'split_audio_clip') splitChanged = true;
+      else visualChanged = true;
     } else if (edit.type === 'replace') {
       const index = clipIndex(edit.clipId);
       if (index < 0) throw new BatchDomainError('not_found', '片段不存在');
@@ -825,6 +896,7 @@ export function applyBatchOutputClipEdit(
       if (index < 0) throw new BatchDomainError('not_found', '片段不存在');
       if (clips.length <= 1) throw new BatchDomainError('invalid_input', '至少保留一条片段');
       clips.splice(index, 1);
+      arrangement.preserveGaps = true;
       deleted = true;
       visualChanged = true;
     } else if (edit.type === 'insert') {
@@ -847,7 +919,11 @@ export function applyBatchOutputClipEdit(
       if (insertDurationUs < MIN_CLIP_DURATION_US) {
         throw new BatchDomainError('invalid_input', '插入素材时长不足最短片段长度');
       }
-      clips.splice(position, 0, manualClipRecord(targetAssetId, target.contentFingerprint, insertDurationUs, 'manual_insert'));
+      const insertStart = afterIndex >= 0 ? Number(clips[afterIndex].timelineEndUs) : 0;
+      const nextStart = position < clips.length ? Number(clips[position].timelineStartUs) : insertStart + insertDurationUs;
+      const shift = Math.max(0, insertStart + insertDurationUs - nextStart);
+      for (const following of clips.slice(position)) { following.timelineStartUs = Number(following.timelineStartUs) + shift; following.timelineEndUs = Number(following.timelineEndUs) + shift; }
+      clips.splice(position, 0, { ...manualClipRecord(targetAssetId, target.contentFingerprint, insertDurationUs, 'manual_insert'), timelineStartUs: insertStart, timelineEndUs: insertStart + insertDurationUs });
       visualChanged = true;
     } else if (edit.type === 'split') {
       const index = clipIndex(edit.clipId);
@@ -857,20 +933,22 @@ export function applyBatchOutputClipEdit(
       if (!current) throw new BatchDomainError('conflict', '片段区间数据损坏,不能编辑');
       const sourceLengthUs = current.endUs - current.startUs;
       const offsetUs = frameAlignUs(edit.offsetUs);
-      if (offsetUs < MIN_CLIP_DURATION_US || sourceLengthUs - offsetUs < MIN_CLIP_DURATION_US) {
+      const rate = finiteNumber(clip.playbackRate) ?? sourceLengthUs / (Number(clip.timelineEndUs) - Number(clip.timelineStartUs));
+      const sourceOffsetUs = frameAlignUs(offsetUs * rate);
+      if (offsetUs < MIN_CLIP_DURATION_US || Number(clip.timelineEndUs) - Number(clip.timelineStartUs) - offsetUs < MIN_CLIP_DURATION_US) {
         throw new BatchDomainError('invalid_input', '分割点两侧都必须至少 0.5 秒');
       }
       const timelineStartUs = finiteNumber(clip.timelineStartUs) ?? 0;
       const timelineEndUs = finiteNumber(clip.timelineEndUs) ?? timelineStartUs + sourceLengthUs;
       const first = { ...clip };
-      first.sourceEndUs = current.startUs + offsetUs;
+      first.sourceEndUs = current.startUs + sourceOffsetUs;
       first.timelineEndUs = timelineStartUs + offsetUs;
       const second = {
         ...clip,
         clipId: `manual:${randomUUID()}`,
         segmentId: '',
         sourceSegmentId: '',
-        sourceStartUs: current.startUs + offsetUs,
+        sourceStartUs: current.startUs + sourceOffsetUs,
         sourceEndUs: current.endUs,
         timelineStartUs: timelineStartUs + offsetUs,
         timelineEndUs,
@@ -1099,7 +1177,6 @@ export function applyBatchOutputClipEdit(
     }
 
     if (visualChanged) {
-      rippleClips(clips);
       arrangement.clips = clips;
       const nextEditRevision = editRevision + 1;
       arrangement.editRevision = nextEditRevision;

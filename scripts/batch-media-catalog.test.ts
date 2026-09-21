@@ -33,6 +33,7 @@ function createLegacyDatabase(root: string, name: string): Database.Database {
       id TEXT PRIMARY KEY,
       projectId TEXT NOT NULL,
       shotSetId TEXT,
+      shotId TEXT,
       sourceImageId TEXT NOT NULL,
       providerId TEXT NOT NULL,
       model TEXT NOT NULL,
@@ -69,11 +70,12 @@ function insertVideoJob(
   localVideoPath: string | null,
   filename = 'clip.mp4',
   durationSec = 5,
+  shotId: string | null = null,
 ): void {
   db.prepare(`
-    INSERT INTO video_jobs (id, projectId, shotSetId, sourceImageId, providerId, model, prompt, durationSec, status, localVideoPath, filename)
-    VALUES (?, ?, ?, 'img-1', 'provider-1', 'model-a', 'prompt', ?, ?, ?, ?)
-  `).run(id, projectId, shotSetId, durationSec, status, localVideoPath, filename);
+    INSERT INTO video_jobs (id, projectId, shotSetId, shotId, sourceImageId, providerId, model, prompt, durationSec, status, localVideoPath, filename)
+    VALUES (?, ?, ?, ?, 'img-1', 'provider-1', 'model-a', 'prompt', ?, ?, ?, ?)
+  `).run(id, projectId, shotSetId, shotId, durationSec, status, localVideoPath, filename);
 }
 
 function writeVideo(dir: string, name: string, content: string): string {
@@ -119,7 +121,7 @@ try {
   // --- 模块 4 产物文件(放在 dataRoot()/storage 受控目录) ---
   const storageVideos = path.join(mediaCatalog.storageRootOf(), 'videos');
   const module4File = writeVideo(storageVideos, 'module4-a.mp4', 'module4-content-a');
-  insertVideoJob(db, 'video-job-1', 'project-1', 'ss-1', 'succeeded', 'videos/module4-a.mp4', 'module4-a.mp4', 30);
+  insertVideoJob(db, 'video-job-1', 'project-1', 'ss-1', 'succeeded', 'videos/module4-a.mp4', 'module4-a.mp4', 30, 'shot-1');
 
   // --- 测试 7:module4 拒绝场景 ---
   // 不存在的任务
@@ -196,6 +198,36 @@ try {
   // 正常登记
   const first = await mediaCatalog.registerModule4Video(db, { videoJobId: 'video-job-1' });
   assert.equal(first.projectId, 'project-1');
+
+  // 同源互斥键:module4 来源必须记录分镜位身份,供分配器按 shot 归组
+  const firstModule4Source = mediaCatalog.listAssetSources(db, first.assetId)
+    .find(({ sourceKind }) => sourceKind === 'module4');
+  assert.equal(firstModule4Source?.locationJson.kind, 'module4');
+  if (firstModule4Source?.locationJson.kind === 'module4') {
+    assert.equal(firstModule4Source.locationJson.shotId, 'shot-1', 'module4 来源必须记录分镜位身份');
+  }
+  assert.equal(
+    mediaCatalog.resolveModule4AssetShotIds(db, [first.assetId]).get(first.assetId),
+    'shot-1',
+    '同源键必须可按素材反查;无 module4 来源的素材不得出现在结果里',
+  );
+  assert.equal(mediaCatalog.resolveModule4AssetShotIds(db, ['asset-without-source']).size, 0);
+
+  // 存量兼容:旧来源行的 locationJson 没有 shotId 快照时,
+  // 反查必须走 video_jobs 权威表,不要求重新登记升级快照
+  const legacySnapshot = JSON.stringify({
+    kind: 'module4',
+    videoJobId: 'video-job-1',
+    shotSetId: 'ss-1',
+    relativePath: 'videos/module4-a.mp4',
+  });
+  db.prepare(`UPDATE batch_asset_sources SET locationJson = ? WHERE assetId = ? AND sourceKind = 'module4'`)
+    .run(legacySnapshot, first.assetId);
+  assert.equal(
+    mediaCatalog.resolveModule4AssetShotIds(db, [first.assetId]).get(first.assetId),
+    'shot-1',
+    '旧格式来源行(无 shotId 快照)也必须经 videoJobId 反查出同源键',
+  );
 
   db.prepare(`UPDATE video_jobs SET rejectedAt = '2026-08-02T08:01:00.000Z', rejectReason = '测试剔除' WHERE id = 'video-job-1'`).run();
   assert.equal(mediaCatalog.isBatchAssetEligible(db, first.assetId), false, '只有已剔除模块 4 来源的素材不得进入新批次');

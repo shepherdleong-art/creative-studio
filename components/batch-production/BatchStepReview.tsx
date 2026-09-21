@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import BatchOutputEditor from './BatchOutputEditor';
@@ -25,6 +26,32 @@ const BATCH_WARNING_TEXTS: Array<{ code: string; text: string; prefix: boolean }
 export function humanizeBatchWarning(warning: string): string {
   const hit = BATCH_WARNING_TEXTS.find(({ code, prefix }) => (prefix ? warning.startsWith(code) : warning === code));
   return hit ? hit.text : warning;
+}
+
+function WarningSummary({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null;
+  const grouped = new Map<string, number>();
+  for (const warning of warnings) {
+    const message = humanizeBatchWarning(warning);
+    grouped.set(message, (grouped.get(message) ?? 0) + 1);
+  }
+  return (
+    <details className="group/warnings min-w-0 shrink-0 text-xs text-warn">
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-md py-1 outline-none focus-visible:ring-2 focus-visible:ring-accent [&::-webkit-details-marker]:hidden">
+        <span className="transition-transform group-open/warnings:rotate-90"><Icon name="chevron-right" size={12} /></span>
+        <span>提醒 · {warnings.length} 条</span>
+        <span className="text-ink-tertiary group-open/warnings:hidden">展开</span>
+        <span className="hidden text-ink-tertiary group-open/warnings:inline">收起</span>
+      </summary>
+      <ul className="mt-1 max-h-28 space-y-1 overflow-y-auto rounded-lg bg-surface-subtle px-3 py-2 leading-5">
+        {[...grouped].map(([message, count]) => (
+          <li key={message} className="break-words">
+            {message}{count > 1 && <span className="ml-2 whitespace-nowrap text-ink-tertiary">×{count}</span>}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
 }
 
 export interface BatchStepReviewProps {
@@ -288,14 +315,14 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                   {typeof progress.percent === 'number' && <progress className="mt-1 w-full" max={1} value={progress.percent} />}
                 </div>
               )}
-              {(card.blockers.length > 0 || card.warnings.length > 0 || card.coverTask?.errorMessage || card.fullRenderTask?.errorMessage) && (
+              {(card.blockers.length > 0 || card.coverTask?.errorMessage || card.fullRenderTask?.errorMessage) && (
                 <ul className="space-y-1 text-xs text-warn">
                   {card.blockers.map((message) => <li key={`b-${message}`}>无法继续：{humanizeBatchWarning(message)}</li>)}
-                  {card.warnings.map((message) => <li key={`w-${message}`}>提醒：{humanizeBatchWarning(message)}</li>)}
                   {card.coverTask?.errorMessage && <li>封面任务失败：{card.coverTask.errorMessage}</li>}
                   {card.fullRenderTask?.errorMessage && <li>渲染任务失败：{card.fullRenderTask.errorMessage}</li>}
                 </ul>
               )}
+              <WarningSummary warnings={card.warnings} />
               <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-2">
                 <span className="text-[11px] text-ink-tertiary">{card.nextAction}</span>
                 <span className="flex flex-wrap gap-2">
@@ -357,13 +384,13 @@ export default function BatchStepReview(props: BatchStepReviewProps) {
                 >关闭</button>
               </span>
             </div>
-            {(modalCard.blockers.length > 0 || modalCard.warnings.length > 0 || modalCard.coverTask?.errorMessage) && (
+            {(modalCard.blockers.length > 0 || modalCard.coverTask?.errorMessage) && (
               <ul className="shrink-0 space-y-1 text-xs text-warn">
                 {modalCard.blockers.map((message) => <li key={`b-${message}`}>无法继续：{humanizeBatchWarning(message)}</li>)}
-                {modalCard.warnings.map((message) => <li key={`w-${message}`}>提醒：{humanizeBatchWarning(message)}</li>)}
                 {modalCard.coverTask?.errorMessage && <li>封面任务失败：{modalCard.coverTask.errorMessage}</li>}
               </ul>
             )}
+            <WarningSummary key={modalCard.planId} warnings={modalCard.warnings} />
             <div className="min-h-0 flex-1 overflow-hidden" data-testid="batch-output-editor-layout">
               <BatchOutputEditor
                 projectId={props.projectId}

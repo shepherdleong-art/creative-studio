@@ -2,6 +2,8 @@ export type ScriptStudioPointType = 'appearance' | 'structure' | 'scenario' | 's
 export type ScriptStudioEvidenceGate = 'passed' | 'failed' | 'skipped';
 export type ScriptStudioRiskLevel = 'low' | 'high';
 export type ScriptStudioHierarchyRole = 'primary' | 'supporting' | 'detail';
+/** 卖点详解可用性：missing 无详解；verified 详解高风险内容有据；unverified 含未获支持内容。 */
+export type ScriptStudioDetailStatus = 'missing' | 'verified' | 'unverified';
 
 /** 证据定位的最小单元：每条引用自带页码与切片编号，跨页合并后不丢配对关系。 */
 export interface SellingPointEvidenceRef {
@@ -61,6 +63,9 @@ export interface SellingPointRecord {
   themeTitle: string;
   hierarchyRole: ScriptStudioHierarchyRole;
   importance: number;
+  /** 卖点的完整详解；v6 由核验后全局组织生成，支撑事实保留在 factText/证据中。 */
+  detailText: string;
+  detailStatus: ScriptStudioDetailStatus;
 }
 
 export type ProjectScriptOrigin = 'ai_generate' | 'ai_regenerate' | 'manual_edit';
@@ -146,7 +151,76 @@ export interface ScriptStudioSegmentContent {
   visualKeywords: string[];
 }
 
+export interface PainSolvingOpportunity {
+  version: 'pain-solving-v1';
+  audience: string;
+  scenario: string;
+  problem: string;
+  benefit: string;
+  mechanism: string;
+  main: { label: string; factIds: string[] };
+  support: { label: string; factIds: string[] } | null;
+  path: 'direct' | 'diagnosis' | 'dilemma';
+  possibleCause: string;
+  concern: string;
+  proposition: string;
+  matchReason: string;
+  scores: { painIntensity: number; factMatch: number; sceneClarity: number };
+}
+
+/** 爆文模板改写模式：任务创建时冻结进 inputSnapshot.templatePlan 的模板全文快照。 */
+export interface FrozenViralTemplateSpec {
+  entryId: string;
+  revisionId: string;
+  sourceTemplateId: string;
+  name: string;
+  title: string;
+  category: string;
+  subCategory: string;
+  /** 完整参考文案快照（筛选与改写、对照展示都以它为准，不读当前库）。 */
+  refText: string;
+  structure: string;
+  structureOrigin: 'source' | 'fallback';
+  contentHash: string;
+}
+
+/** 爆文模板改写脚本的来源与处理快照（content.templateRewrite，迁移方案 §3.2）。 */
+export interface TemplateRewriteScriptMeta {
+  version: 'template-rewrite-v1' | 'template-rewrite-v2' | 'template-rewrite-v3';
+  entryId: string;
+  revisionId: string;
+  sourceTemplateId: string;
+  templateName: string;
+  templateTitle: string;
+  category: string;
+  subCategory: string;
+  /** 完整参考文案快照：原文对照与文字差异展示用。 */
+  refText: string;
+  structure: string;
+  structureOrigin: 'source' | 'fallback';
+  /** 模板内容哈希（导入时计算）：再生成一版据此重建冻结计划。 */
+  contentHash: string;
+  stylePresetKey: string;
+  stylePresetName: string;
+  /** 参考全文风格分析结果；分析失败/跳过为 null，styleDegraded 记录降级原因。 */
+  styleAnalysis: Record<string, unknown> | null;
+  styleDegraded: string;
+  /** 本模板冻结卖点白名单（筛选后）；后续改写/修复只使用这组 ID。 */
+  whitelistPointIds: string[];
+  filterDegraded: string;
+  /** 目标中文字数（秒 × 6，写作估算口径，不代表实测 TTS 时长）。 */
+  targetChars: number;
+  /** 修改说明（模型自述，不是证据审核报告）；缺失为 '' 且 noteMissing=true。 */
+  note: string;
+  noteMissing: boolean;
+  humanizeDegraded: string;
+  smoothDegraded: string;
+}
+
 export interface ScriptStudioScriptContent {
+  productionMode?: 'pain_solving_15s' | 'template_rewrite';
+  painSolving?: PainSolvingOpportunity;
+  templateRewrite?: TemplateRewriteScriptMeta;
   /** v3 为历史内容（无知识上下文）；v4 增加知识匹配状态与推荐说明，向后兼容读取。 */
   version: 3 | 4;
   title: string;
@@ -191,6 +265,11 @@ export interface ScriptStudioScriptContent {
     searchTerms?: string[];
     displayName?: string;
     sourceRows: Array<number | string>;
+  };
+  /** 本次生成提供的已确认提炼表达版本（方案 §3.3）；来源库修订由 libraryRevisionId 冻结。 */
+  distilledContext?: {
+    ruleVersion: string;
+    pointIds: string[];
   };
   /** v4：推荐说明（框架/文案钩子/画面钩子）。 */
   recommendation?: {

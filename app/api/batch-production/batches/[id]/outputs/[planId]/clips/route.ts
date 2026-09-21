@@ -63,12 +63,37 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       framing?: unknown;
       title?: unknown;
       style?: unknown;
+      playbackRate?: unknown;
+      track?: unknown;
+      atUs?: unknown;
     };
     const clipId = typeof body.clipId === 'string' ? body.clipId.trim() : '';
 
     let edit: BatchOutputClipEdit;
 
-    if (body.type === 'trim' || body.type === 'trim_variable') {
+    if (body.type === 'move_clip') {
+      if (!clipId || typeof body.startUs !== 'number' || !Number.isSafeInteger(body.startUs) || body.startUs < 0) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '移动片段需要有效的片段 ID 和时间位置' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: body.type, clipId, startUs: body.startUs };
+    } else if (body.type === 'set_clip_playback_rate') {
+      if (!clipId || typeof body.playbackRate !== 'number' || !Number.isFinite(body.playbackRate)) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '视频倍速需要片段 ID 和有效倍速' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: body.type, clipId, playbackRate: body.playbackRate };
+    } else if (body.type === 'set_clip_framing') {
+      if (!clipId || !body.framing || typeof body.framing !== 'object' || Array.isArray(body.framing)) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '画面调整需要片段 ID 和有效画面参数' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: body.type, clipId, framing: body.framing as CoverFraming };
+    } else if (body.type === 'split_audio_clip' || body.type === 'delete_audio_clip') {
+      if (!clipId || (body.track !== 'narration' && body.track !== 'bgm') || (body.type === 'split_audio_clip' && (typeof body.atUs !== 'number' || !Number.isSafeInteger(body.atUs)))) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '音频裁切需要有效音轨、片段 ID 和裁切位置' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = body.type === 'split_audio_clip'
+        ? { type: body.type, track: body.track, clipId, atUs: body.atUs as number }
+        : { type: body.type, track: body.track, clipId };
+    } else if (body.type === 'trim' || body.type === 'trim_variable') {
       if (!clipId) {
         return NextResponse.json({
           error: 'invalid_clip_edit',
