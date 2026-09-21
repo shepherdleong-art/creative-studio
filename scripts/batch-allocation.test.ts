@@ -310,4 +310,41 @@ assert.ok(
   '跨成片不触发同源告警',
 );
 
+// 跨成片使用过替代素材，不代表本片素材耗尽；不能为了全批区间不重叠而选同源版次。
+const occupiedAlternativeInput: FrozenBatchInput = {
+  ...sameShotInput,
+  assets: sameShotInput.assets!.map((asset) => ({
+    ...asset, durationUs: 2_000_000,
+    analysisJson: { durationUs: 2_000_000, usableRanges: [{ startUs: 0, endUs: 2_000_000, qualityScore: 1 }] },
+  })),
+};
+const occupiedAlternative = reallocateOutput(occupiedAlternativeInput, { outputs: [{
+  planId: 'other-plan', arrangement: { clips: [{
+    clipId: 'other-clip', assetId: 'other', contentFingerprint: 'sha256:other',
+    sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+  }] },
+}] }, 'plan-shot-1', '跨片复用测试', []);
+assert.deepEqual(occupiedAlternative.outputs.find(o => o.planId === 'plan-shot-1')!.arrangement.clips.map(c => c.assetId),
+  ['v01', 'other'], '其他成片用过替代素材，也应优先避免本片出现同源版本');
+
+const occupiedStitch = reallocateOutput({ ...occupiedAlternativeInput, plans: [{
+  planId: 'plan-shot-1', segments: [{ id: 'long', text: '需要两个素材拼接的长句', startUs: 0, endUs: 4_000_000,
+    semanticScores: { v01: 0.95, v02: 0.9, other: 0.6 } }],
+}] }, { outputs: [{ planId: 'other-plan', arrangement: { clips: [{
+  clipId: 'other-clip', assetId: 'other', contentFingerprint: 'sha256:other',
+  sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+}] } }] }, 'plan-shot-1', '拼接跨片复用测试', []);
+assert.deepEqual(occupiedStitch.outputs.find(o => o.planId === 'plan-shot-1')!.arrangement.clips.map(c => c.assetId),
+  ['v01', 'other'], '拼接兜底同样优先避免本片同源重复');
+
+const oldClips = ['v01', 'v02', 'other'].map((assetId, index) => ({
+  clipId: `old-${assetId}`, segmentId: index === 0 ? 's1' : `old-${index}`, locked: index === 0, assetId, contentFingerprint: `sha256:${assetId}`,
+  sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: index * 2_000_000, timelineEndUs: (index + 1) * 2_000_000,
+}));
+const historyWithSiblings = reallocateOutput({ ...occupiedAlternativeInput, locks: [{
+  planId: 'plan-shot-1', segmentId: 's1', assetId: 'v01', sourceStartUs: 0, sourceEndUs: 2_000_000,
+}] }, { outputs: [{ planId: 'plan-shot-1', arrangement: { clips: oldClips } }] }, 'plan-shot-1', '历史重复修复');
+assert.deepEqual(historyWithSiblings.outputs[0]!.arrangement.clips.map(c => c.assetId), ['v01', 'other'],
+  '历史版本用过同源兄弟，不能让兄弟在当前成片中获得同源互斥豁免');
+
 console.log('batch allocation tests passed');

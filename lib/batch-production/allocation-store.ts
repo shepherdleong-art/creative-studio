@@ -21,7 +21,7 @@ import {
   readBatchSemanticMatrix,
   type BatchSemanticMatrixRecord,
 } from './semantic-match.ts';
-import { resolveModule4AssetShotIds } from './media-catalog.ts';
+import { resolveModule4AssetGroupKeys } from './media-catalog.ts';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -300,8 +300,8 @@ function buildFrozenInput(
     }
     return semanticMatrixCache.get(scriptKey);
   };
-  // 同源互斥键:module4 素材按分镜位归组(无 shotId 的素材回落自身一组,行为同旧规则)。
-  const shotIdByAssetId = resolveModule4AssetShotIds(db, poolRows.map((row) => row.assetId));
+  // 同一原始分镜图跨组生成的新分镜也归为同源，缺失来源时回落素材自身。
+  const groupKeyByAssetId = resolveModule4AssetGroupKeys(db, poolRows.map((row) => row.assetId));
   const input: FrozenBatchInput = {
     projectId,
     batchId: owner.batchId,
@@ -365,7 +365,7 @@ function buildFrozenInput(
       assetId: row.assetId,
       analysisId: row.analysisId,
       contentFingerprint: row.contentFingerprint,
-      shotId: shotIdByAssetId.get(row.assetId) ?? null,
+      sourceGroupKey: groupKeyByAssetId.get(row.assetId) ?? null,
       analysisJson: parseJson(row.analysisJson),
       durationUs: numberFrom(
         asRecord(parseJson(row.analysisJson)).durationUs

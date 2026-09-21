@@ -566,6 +566,33 @@ export function resolveModule4AssetShotIds(
 }
 
 /**
+ * 分镜组是一次生成的容器，跨组的 shotId 不同也可能来自同一张原图。
+ * 以 shots.sourceImageId 归组（不是 video_jobs.sourceImageId 的生成候选图）；
+ * 来源分镜已删除时保留 shot 级避让，自由素材与外部素材仍各自独立。
+ */
+export function resolveModule4AssetGroupKeys(
+  db: Database.Database,
+  assetIds: string[],
+): Map<string, string> {
+  const shotIds = resolveModule4AssetShotIds(db, assetIds);
+  const result = new Map([...shotIds].map(([assetId, shotId]) => [assetId, `shot:${shotId}`]));
+  if (shotIds.size === 0) return result;
+  const ids = [...new Set(shotIds.values())];
+  const rows = db.prepare(`
+    SELECT s.id, s.sourceImageId, ss.projectId FROM shots s
+    JOIN shot_sets ss ON ss.id = s.shotSetId
+    WHERE s.id IN (${ids.map(() => '?').join(', ')})
+  `).all(...ids) as Array<{ id: string; sourceImageId: string | null; projectId: string }>;
+  const keyByShotId = new Map(rows.filter((row) => row.sourceImageId)
+    .map((row) => [row.id, `image:${row.projectId}:${row.sourceImageId}`]));
+  for (const [assetId, shotId] of shotIds) {
+    const key = keyByShotId.get(shotId);
+    if (key) result.set(assetId, key);
+  }
+  return result;
+}
+
+/**
  * A historical batch asset remains in the database and keeps its files, but a
  * rejected module-4 source must not enter a new batch or be returned as a
  * current input. If the same content has a managed/linked source, that source
