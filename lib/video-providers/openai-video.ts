@@ -251,8 +251,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
           : null;
         if (snappedSize) body.size = snappedSize;
       }
-      // seedance 双图 size 策略按模型分：2.0 fast 无 caps 本就不送
-      // （2026-08-17 已核验合同，双图进真首尾帧、比例跟随图片）；
+      // Seedance 单双图均按方舟像素表送 size：2.0 标准版 / 2.5 为 1080p，Fast 为 720p。
       // 2.5 双图实测未进官网首尾帧强校验（2026-09-08：不送 size 落 720p
       // 9:16 自选；送 1080p size 正常接受、锁 3:4 出 1248x1664），
       // 按参考图模式对待、与单图一样送 size。

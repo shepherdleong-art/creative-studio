@@ -23,9 +23,19 @@ assert.ok(qiniuKlingCaps);
 assert.equal(snapCompanyVideoSize(1728, 2304, qiniuKlingCaps), '1024x1366');
 assert.equal(snapCompanyVideoSize(768, 432, qiniuKlingCaps), '1820x1024');
 assert.equal(companyVideoCapsForModel('qiniuyun/kling-3.0-fast'), null);
-// seedance 省略 size（上游对 Kling 表尺寸 400），由网关按首帧默认处理
-assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-260128'), null);
-assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-fast-260128'), null);
+// 2.0 标准版固定 1080p；Fast 固定 720p，均使用方舟而非可灵的像素表。
+for (const [model, tier, sizes] of [
+  ['doubao-seedance-2-0-260128', '1080P', ['1920x1080', '1664x1248', '1440x1440', '1248x1664', '1080x1920', '2206x946']],
+  ['doubao-seedance-2-0-fast-260128', '720P', ['1280x720', '1112x834', '960x960', '834x1112', '720x1280', '1470x630']],
+] as const) {
+  const caps = companyVideoCapsForModel(model);
+  assert.ok(caps);
+  assert.deepEqual(caps.tiers, [tier]);
+  const ratios = [[16, 9], [4, 3], [1, 1], [3, 4], [9, 16], [21, 9]];
+  ratios.forEach(([w, h], i) => assert.equal(snapCompanyVideoSize(w * 100, h * 100, caps), sizes[i]));
+}
+assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-mini-260128'), null);
+assert.equal(companyVideoCapsForModel('doubao-seedance-2-0-future'), null);
 // Seedance 2.5 固定 1080P（2026-09-08 真实任务核验），比例按首帧吸附官网表
 const seedance25Caps = companyVideoCapsForModel('doubao-seedance-2-5-260628');
 assert.ok(seedance25Caps);

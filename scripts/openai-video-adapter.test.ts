@@ -231,11 +231,27 @@ try {
   );
   assert.equal(capturedMethods.length, fetchCountBeforeConfiguredPrivateSubmit + 1);
   assert.equal(capturedUrl, 'https://llm-gateway.example.com/v1/videos');
-  // seedance 同属公司网关，但省略 response_format 与 size（上游对 Kling 表尺寸 400），也不开智能分镜
-  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds']);
+  // Seedance 2.0 标准版显式请求 1080p；不发送 response_format，也不开智能分镜。
+  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds', 'size']);
+  assert.equal(capturedBody?.size, '1664x1248');
   assert.deepEqual(capturedBody?.images, [
     'http://192.168.1.10:3000/api/images/sources/source.png',
   ]);
+
+  // 用户的 3:4 输入：标准版 1080p、Fast 720p，不随输入像素大小降档。
+  const portraitPath = path.join(storageDir, 'portrait.png');
+  await sharp({ create: { width: 300, height: 400, channels: 3, background: '#336699' } }).png().toFile(portraitPath);
+  for (const [model, size] of [
+    ['doubao-seedance-2-0-260128', '1248x1664'],
+    ['doubao-seedance-2-0-fast-260128', '834x1112'],
+  ]) {
+    await openaiVideoAdapter.submit({
+      model, prompt: 'portrait resolution', sourceImagePath: portraitPath,
+      sourceMimeType: 'image/png', durationSec: 5,
+    }, 'gateway-key', 'http://127.0.0.1:4000');
+    assert.equal(capturedBody?.size, size);
+    assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds', 'size']);
+  }
 
   // Seedance 2.5：按官网 1080p 表送 size（源图 4:3 → 1664x1248），
   // 但不送 response_format（未核验字段），也不开智能分镜
@@ -399,8 +415,7 @@ try {
   }, 'gateway-key', 'https://external.example.com'));
   assert.equal(capturedMethods.includes('POST'), false);
 
-  // 公司 Seedance Fast 尾帧（2026-08-17 实测合同）：images[1] 双图，
-  // 且不加 response_format / size / multi_shot / LastFrameUrl
+  // 公司 Seedance Fast 尾帧：images[1] 双图，显式锁定方舟 720p。
   await openaiVideoAdapter.submit(
     {
       model: 'doubao-seedance-2-0-fast-260128',
@@ -414,7 +429,17 @@ try {
     'gateway-key',
     'http://127.0.0.1:4000',
   );
-  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds']);
+  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds', 'size']);
+  assert.equal(capturedBody?.size, '1112x834');
+  assert.equal((capturedBody?.images as string[]).length, 2);
+
+  await openaiVideoAdapter.submit({
+    model: 'doubao-seedance-2-0-260128', prompt: 'test 2.0 tail',
+    sourceImagePath: imagePath, sourceMimeType: 'image/png',
+    tailImagePath, tailMimeType: 'image/png', durationSec: 5,
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.deepEqual(Object.keys(capturedBody || {}).sort(), ['images', 'model', 'prompt', 'seconds', 'size']);
+  assert.equal(capturedBody?.size, '1664x1248');
   assert.equal((capturedBody?.images as string[]).length, 2);
 
   // 公司 Seedance 2.5 尾帧（2026-09-08 开放+同日实测）：同 images[1] 双图

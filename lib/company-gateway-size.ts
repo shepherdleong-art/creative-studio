@@ -14,6 +14,8 @@ import { GPT_IMAGE_2_SIZE_MAP } from './gpt-image-2-size-presets.ts';
 export interface CompanyModelCaps {
   tiers: string[];
   ratios: string[];
+  /** 固定视频档位的模型专用像素表，避免套用其他供应商同名档位的尺寸。 */
+  videoSizes?: Record<string, string>;
   /** 矩阵中单独坏掉的格子（'档位:比例'）；吸附命中坏格时优先在同档位找能居中裁切覆盖目标框的跨比例好格（真分辨率裁切映射），没有可裁格才同比例就近换档 */
   exclude?: string[];
   /**
@@ -91,6 +93,15 @@ const SEEDANCE_2_5_CAPS: CompanyModelCaps = {
   tiers: ['1080P'],
   ratios: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
 };
+// 方舟 720p 像素表与公司可灵的 720P 表不同；Fast 显式锁定 720p。
+const SEEDANCE_2_0_FAST_CAPS: CompanyModelCaps = {
+  tiers: ['720P'],
+  ratios: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'],
+  videoSizes: {
+    '16:9': '1280x720', '4:3': '1112x834', '1:1': '960x960',
+    '3:4': '834x1112', '9:16': '720x1280', '21:9': '1470x630',
+  },
+};
 
 /** 返回图片模型在公司网关的能力约束；非公司图片模型返回 null */
 export function companyImageCapsForModel(model: string): CompanyModelCaps | null {
@@ -116,9 +127,10 @@ export function companyVideoCapsForModel(model: string): CompanyModelCaps | null
   // 1080x1920，成片 HEVC 10bit；同日 2.0 fast 传 1080p 被创建前 400 拒绝——
   // fast 官方最高 720p）。注意检查顺序必须先于下面的 doubao-seedance 通配。
   if (m.startsWith('doubao-seedance-2-5')) return SEEDANCE_2_5_CAPS;
-  // 其余 doubao-seedance（2.0 / 2.0 fast）未在文档尺寸表中，且实测（2026-08-12，
-  // seedance-2.0-fast r2v）套用 Kling 表会被上游 400 拒绝（resolution 不合法）；
-  // 省略 size，由网关/上游按首帧图默认处理（720p / 比例随首帧）。
+  // 2.0 标准版与 2.5 共用方舟 1080p 表；Fast 仅支持到 720p，不能前缀混配。
+  if (m === 'doubao-seedance-2-0-260128') return SEEDANCE_2_5_CAPS;
+  if (m === 'doubao-seedance-2-0-fast-260128') return SEEDANCE_2_0_FAST_CAPS;
+  // 未配置的 Seedance 型号保留上游默认值。
   if (m.startsWith('doubao-seedance')) return null;
   return null;
 }
@@ -285,5 +297,5 @@ export function snapCompanyVideoSize(width: number, height: number, caps: Compan
   if (!(width > 0) || !(height > 0)) return null;
   const ratio = nearestRatio(width, height, caps.ratios);
   const tier = VIDEO_TIER_PREFERENCE.find((t) => caps.tiers.includes(t)) ?? caps.tiers[0];
-  return VIDEO_SIZE_TABLE[tier]?.[ratio] ?? null;
+  return caps.videoSizes?.[ratio] ?? VIDEO_SIZE_TABLE[tier]?.[ratio] ?? null;
 }
