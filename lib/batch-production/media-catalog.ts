@@ -524,6 +524,10 @@ export function resolveModule4AssetDisplayNames(
  * 批量素材的同源键（shotId）：按 module4 来源反查素材所属分镜位。
  * 只做读取；linked/managed 来源与自由素材（无 shot）不出现在结果里，
  * 调用方据此把素材归到 `shot:<shotId>` 同源组，缺失时回落素材自身一组。
+ *
+ * 以 video_jobs 权威表为准，而不是 locationJson 里的 shotId 快照：
+ * 升级前登记的旧来源行没有 shotId 快照，但 videoJobId 始终在，
+ * 反查权威表让存量素材无需重新登记即可获得同源键。
  */
 export function resolveModule4AssetShotIds(
   db: Database.Database,
@@ -538,11 +542,25 @@ export function resolveModule4AssetShotIds(
     WHERE sourceKind = 'module4' AND assetId IN (${placeholders})
     ORDER BY createdAt, id
   `).all(...ids) as Array<{ assetId: string; locationJson: string }>;
+  const videoJobIdByAssetId = new Map<string, string>();
   for (const row of rows) {
-    if (result.has(row.assetId)) continue;
+    if (videoJobIdByAssetId.has(row.assetId)) continue;
     const location = parseSourceLocation('module4', row.locationJson);
-    if (location.kind !== 'module4' || !location.shotId) continue;
-    result.set(row.assetId, location.shotId);
+    if (location.kind !== 'module4' || !location.videoJobId) continue;
+    videoJobIdByAssetId.set(row.assetId, location.videoJobId);
+  }
+  const videoJobIds = [...new Set(videoJobIdByAssetId.values())];
+  if (videoJobIds.length === 0) return result;
+  const jobPlaceholders = videoJobIds.map(() => '?').join(', ');
+  const jobRows = db.prepare(`
+    SELECT id, shotId FROM video_jobs WHERE id IN (${jobPlaceholders})
+  `).all(...videoJobIds) as Array<{ id: string; shotId: string | null }>;
+  const shotIdByVideoJobId = new Map(
+    jobRows.filter((row) => row.shotId).map((row) => [row.id, row.shotId as string]),
+  );
+  for (const [assetId, videoJobId] of videoJobIdByAssetId) {
+    const shotId = shotIdByVideoJobId.get(videoJobId);
+    if (shotId) result.set(assetId, shotId);
   }
   return result;
 }

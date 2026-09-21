@@ -213,6 +213,22 @@ try {
   );
   assert.equal(mediaCatalog.resolveModule4AssetShotIds(db, ['asset-without-source']).size, 0);
 
+  // 存量兼容:旧来源行的 locationJson 没有 shotId 快照时,
+  // 反查必须走 video_jobs 权威表,不要求重新登记升级快照
+  const legacySnapshot = JSON.stringify({
+    kind: 'module4',
+    videoJobId: 'video-job-1',
+    shotSetId: 'ss-1',
+    relativePath: 'videos/module4-a.mp4',
+  });
+  db.prepare(`UPDATE batch_asset_sources SET locationJson = ? WHERE assetId = ? AND sourceKind = 'module4'`)
+    .run(legacySnapshot, first.assetId);
+  assert.equal(
+    mediaCatalog.resolveModule4AssetShotIds(db, [first.assetId]).get(first.assetId),
+    'shot-1',
+    '旧格式来源行(无 shotId 快照)也必须经 videoJobId 反查出同源键',
+  );
+
   db.prepare(`UPDATE video_jobs SET rejectedAt = '2026-08-02T08:01:00.000Z', rejectReason = '测试剔除' WHERE id = 'video-job-1'`).run();
   assert.equal(mediaCatalog.isBatchAssetEligible(db, first.assetId), false, '只有已剔除模块 4 来源的素材不得进入新批次');
   await assert.rejects(
