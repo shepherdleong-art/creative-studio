@@ -1,5 +1,7 @@
 # macOS 代理与 LiteLLM 共存：Agent 部署任务书
 
+> 本文中的 `gateway.example.com` 为示例域名；执行命令或配置代理前，请替换为管理员提供的实际网关地址。
+
 > 用途：把本文件发送到公司 Mac，并让当地的编码 Agent 在 Creative Studio 源码目录执行。
 > 目标：Codex/OpenAI 保持走代理；Creative Studio 通过本机 LiteLLM 直连公司网关；Clash Verge 开启 TUN 时仍能解析并直连公司内网。
 
@@ -192,7 +194,7 @@ git diff --check -- scripts/start-litellm.sh scripts/litellm-macos-startup.test.
 先用 macOS 原生解析器确认公司域名在当前公司网络/VPN下可解析：
 
 ```bash
-dscacheutil -q host -a name llm-gateway-idc.linshimuye.com
+dscacheutil -q host -a name gateway.example.com
 scutil --dns
 ```
 
@@ -226,7 +228,7 @@ CLASH_ROOT="$clash_root" ruby -ryaml -e 'x=YAML.load_file(File.join(ENV.fetch("C
 
 ```yaml
 prepend:
-  - 'DOMAIN,llm-gateway-idc.linshimuye.com,DIRECT'
+  - 'DOMAIN,gateway.example.com,DIRECT'
   - 'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve'
   - 'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve'
   - 'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve'
@@ -241,7 +243,7 @@ prepend:
 ```yaml
 dns:
   nameserver-policy:
-    'llm-gateway-idc.linshimuye.com':
+    'gateway.example.com':
       - <公司DNS-1>
       - <公司DNS-2>
 ```
@@ -256,14 +258,14 @@ dns:
 
 - 公司域名 DIRECT 为第 1 条。
 - 三个私网网段 DIRECT 紧随其后。
-- `dns.nameserver-policy.llm-gateway-idc.linshimuye.com` 等于现场识别的公司 DNS。
+- `dns.nameserver-policy.gateway.example.com` 等于现场识别的公司 DNS。
 - 保持用户原始 TUN 开关状态；此阶段不为了验证擅自切换 TUN。
 
 Clash Verge Rev 当前通常把生成配置写到 `clash-verge.yaml`。重新激活后可做只读检查；若该版本路径不同，使用 UI 的“查看运行时订阅”完成同样核对：
 
 ```bash
 runtime_config="$clash_root/clash-verge.yaml"
-RUNTIME_CONFIG="$runtime_config" ruby -ryaml -e 'x=YAML.safe_load(File.read(ENV.fetch("RUNTIME_CONFIG")), aliases: true) || {}; wanted=[["DOMAIN","llm-gateway-idc.linshimuye.com","DIRECT"],["IP-CIDR","10.0.0.0/8","DIRECT","no-resolve"],["IP-CIDR","172.16.0.0/12","DIRECT","no-resolve"],["IP-CIDR","192.168.0.0/16","DIRECT","no-resolve"]]; actual=Array(x["rules"]).first(4).map { |r| r.to_s.split(",") }; abort("top DIRECT rules mismatch") unless actual == wanted; policy=(x.dig("dns","nameserver-policy") || {})["llm-gateway-idc.linshimuye.com"]; abort("company DNS policy missing") if Array(policy).empty?; puts "top_direct_rules=4 company_dns_policy=present"'
+RUNTIME_CONFIG="$runtime_config" ruby -ryaml -e 'x=YAML.safe_load(File.read(ENV.fetch("RUNTIME_CONFIG")), aliases: true) || {}; wanted=[["DOMAIN","gateway.example.com","DIRECT"],["IP-CIDR","10.0.0.0/8","DIRECT","no-resolve"],["IP-CIDR","172.16.0.0/12","DIRECT","no-resolve"],["IP-CIDR","192.168.0.0/16","DIRECT","no-resolve"]]; actual=Array(x["rules"]).first(4).map { |r| r.to_s.split(",") }; abort("top DIRECT rules mismatch") unless actual == wanted; policy=(x.dig("dns","nameserver-policy") || {})["gateway.example.com"]; abort("company DNS policy missing") if Array(policy).empty?; puts "top_direct_rules=4 company_dns_policy=present"'
 ```
 
 完成标准：重新激活成功，运行时配置同时包含四条最高优先级 DIRECT 和精确域名 DNS 策略。若用户切换另一份订阅，需要给新订阅重新绑定相同 Rules/Merge 扩展。

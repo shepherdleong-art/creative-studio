@@ -23,7 +23,7 @@ import sharp from 'sharp';
  *   CREATIVE_STUDIO_COS_SECRET_ID   必填，子账号 SecretId
  *   CREATIVE_STUDIO_COS_SECRET_KEY  必填，子账号 SecretKey
  *   CREATIVE_STUDIO_COS_DOMAIN      必填，自定义域名或默认端点（不带协议），
- *                                   如 chanzhong-1314313902.linshimuye.com
+ *                                   如 assets.example.com（示例域名，使用时替换）
  *   CREATIVE_STUDIO_COS_SIGN_HOST   可选，签名用的 host。CDN 自定义域名回源会
  *                                   把 Host 改写成源站默认端点时，设为该端点
  *                                   （如 <bucket>.cos.ap-guangzhou.myqcloud.com）；

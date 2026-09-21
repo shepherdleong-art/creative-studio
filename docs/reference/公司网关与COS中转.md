@@ -1,5 +1,7 @@
 # 公司模型网关与 COS 中转 参考
 
+> 本文中的 `gateway.example.com` 为示例域名；执行命令或配置代理前，请替换为管理员提供的实际网关地址。
+
 > 从 `AGENTS.md` 下沉的实现细节。**动公司网关、尺寸吸附、参考图交付、尾帧或 COS 相关代码前读这里。**
 > 本文里的像素组合、字节阈值、探测日期都是拿真任务跑出来的实测结论，不是推断——修改前先确认是否重新实测过。
 
@@ -13,7 +15,7 @@ macOS 启动器只对 LiteLLM 子进程清除大小写两套 `HTTP_PROXY` / `HTT
 
 ## `company-gateway-size.ts` — size 白名单、吸附与裁切映射
 
-- `company-gateway-size.ts` — 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并（仅可灵）补 `response_format`（qiniuyun/* 实测收 `png` 并回无损 PNG——2K 3:4 约 2.8MB，而 jpeg 仅 ~300KB 压缩发糊，2026-08-21 真实任务验证；image2/seedream 维持历史 `jpeg`）；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。视频侧：可灵走 §6.2 像素表（档位偏好 1K）；**Seedance 2.5 固定按火山官网 1080p 像素表送 size**（2026-09-08 真实任务核验 9:16 `1080x1920`，成片 HEVC 10bit；`response_format` 对 seedance 不发送——从未核验过）；**Seedance 2.0 fast 官方最高 720p**（同日实测传 1080p 创建前 400「resolution ... not valid for doubao-seedance-2-0-fast in r2v」），与其余 doubao-seedance 一样省略 size 走上游默认。`qiniuyun/gpt-image-2-medium`（2026-08-21 逐格真实任务探测）放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}，并经 `CompanyModelCaps.exclude` 单格排除 4K 3:4：1K 档被网关映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，均不满足上游「宽高 16 整除」被拒；3K 档与 3:2/2:3/21:9 提交即拒。命中排除格时优先「裁切映射」——同档位找能居中裁切覆盖目标框的跨比例好格（4K 3:4 → 4K 9:16 的 2160x3840，交付端 normalize 裁回 3:4 名义格 2160x2880，真 4K 级画质），没有可裁格才同比例就近换档。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
+- `company-gateway-size.ts` — 公司模型网关（gateway.example.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并（仅可灵）补 `response_format`（qiniuyun/* 实测收 `png` 并回无损 PNG——2K 3:4 约 2.8MB，而 jpeg 仅 ~300KB 压缩发糊，2026-08-21 真实任务验证；image2/seedream 维持历史 `jpeg`）；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。视频侧：可灵走 §6.2 像素表（档位偏好 1K）；**Seedance 2.5 固定按火山官网 1080p 像素表送 size**（2026-09-08 真实任务核验 9:16 `1080x1920`，成片 HEVC 10bit；`response_format` 对 seedance 不发送——从未核验过）；**Seedance 2.0 fast 官方最高 720p**（同日实测传 1080p 创建前 400「resolution ... not valid for doubao-seedance-2-0-fast in r2v」），与其余 doubao-seedance 一样省略 size 走上游默认。`qiniuyun/gpt-image-2-medium`（2026-08-21 逐格真实任务探测）放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}，并经 `CompanyModelCaps.exclude` 单格排除 4K 3:4：1K 档被网关映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，均不满足上游「宽高 16 整除」被拒；3K 档与 3:2/2:3/21:9 提交即拒。命中排除格时优先「裁切映射」——同档位找能居中裁切覆盖目标框的跨比例好格（4K 3:4 → 4K 9:16 的 2160x3840，交付端 normalize 裁回 3:4 名义格 2160x2880，真 4K 级画质），没有可裁格才同比例就近换档。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
 
 ## `cos-media.ts` — 腾讯云 COS 参考图中转
 

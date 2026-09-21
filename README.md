@@ -72,11 +72,13 @@ $env:BATCH_WORKBENCH_PORT=3001; .\start-windows.cmd
 
 在仓库根目录新建 `.env.local`（已被 `.gitignore` 排除，绝不提交）：
 
+以下为配置模板；域名、存储桶名、APPID 和地域请使用你自己的值，勿将实际部署信息或密钥写入公开文档。
+
 ```dotenv
 CREATIVE_STUDIO_COS_SECRET_ID=<腾讯云 COS 子账号 SecretId>
 CREATIVE_STUDIO_COS_SECRET_KEY=<腾讯云 COS 子账号 SecretKey>
-CREATIVE_STUDIO_COS_DOMAIN=<COS 域名，不带协议，如 chanzhong-1314313902.linshimuye.com>
-CREATIVE_STUDIO_COS_SIGN_HOST=<CDN 回源改写 Host 时填源站端点，如 chanzhong-1314313902.cos.ap-guangzhou.myqcloud.com；否则与 DOMAIN 相同即可>
+CREATIVE_STUDIO_COS_DOMAIN=<你的 COS 域名，不带协议；自定义域名示例：assets.example.com>
+CREATIVE_STUDIO_COS_SIGN_HOST=<CDN 回源改写 Host 时填你的 COS 源站端点；格式：存储桶名-APPID.cos.REGION.myqcloud.com；否则与 DOMAIN 相同即可>
 CREATIVE_STUDIO_COS_PREFIX=ref-images/
 CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
 ```
@@ -90,7 +92,7 @@ CREATIVE_STUDIO_COS_URL_TTL_SEC=86400
 
 ## 公司网关联动（可选，macOS / Windows 源码运行）
 
-适用：模型走公司统一网关（`llm-gateway-idc.linshimuye.com`），经本地 LiteLLM 代理转发。
+适用：模型走你所在组织的统一网关（地址由管理员提供），经本地 LiteLLM 代理转发。
 
 LiteLLM 运行时有两种形态，不要混淆：
 
