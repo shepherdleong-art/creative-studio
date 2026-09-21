@@ -16,6 +16,10 @@
   /* accent */
   --color-accent: #0071e3;
   --color-accent-hover: #0077ed;
+  --color-accent-foreground: #ffffff;
+  /* 实心按钮使用较深蓝色，深浅主题下都保持白字清晰。 */
+  --color-accent-solid: #0071e3;
+  --color-accent-solid-hover: #0068d1;
   /* status: text + tint */
   --color-run: #0071e3;   --color-run-tint: #e8f1ff;
   --color-ok: #1b8e4d;    --color-ok-tint: #e7f7ee;

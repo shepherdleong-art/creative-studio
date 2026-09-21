@@ -1,7 +1,7 @@
 'use client';
 
 import { audioAudibleAt, type AudioEdits } from '@/lib/media-core/audio-edit';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react';
 import {
   expectedVideoTimeSec,
   getVideoSlotPlan,
@@ -66,7 +66,12 @@ export interface BatchTimelinePreviewClip {
   framing?: CoverFraming;
 }
 
+export interface BatchTimelinePreviewHandle {
+  togglePlayback: () => void;
+}
+
 export interface BatchTimelinePreviewProps {
+  playbackRef?: Ref<BatchTimelinePreviewHandle>;
   clips: BatchTimelinePreviewClip[];
   narrationDurationUs?: number | null;
   preserveGaps?: boolean;
@@ -132,6 +137,7 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number): void {
  * 字幕顶层 SVG、口播片头结束后起播、BGM 音量包络;但不依赖 final-edit 的路由与类型。
  */
 export default function BatchTimelinePreview({
+  playbackRef,
   clips,
   narrationDurationUs, preserveGaps, audio,
   assetsById,
@@ -754,6 +760,8 @@ export default function BatchTimelinePreview({
     drivePlayhead(clamped);
   };
 
+  useImperativeHandle(playbackRef, () => ({ togglePlayback }));
+
   useEffect(() => {
     const sync = () => setIsFullscreen(document.fullscreenElement === fullscreenRef.current);
     document.addEventListener('fullscreenchange', sync);
@@ -781,6 +789,8 @@ export default function BatchTimelinePreview({
         type="button"
         className="btn-primary h-8 w-8 shrink-0 rounded-full text-xs"
         aria-label={playing ? '暂停' : '播放'}
+        aria-keyshortcuts="Space"
+        title="播放/暂停（空格）"
         disabled={!active || sortedClips.length === 0}
         onClick={togglePlayback}
       >{playing ? 'Ⅱ' : '▶'}</button>

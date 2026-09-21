@@ -12,11 +12,10 @@ import type {
   BatchOutputClipEditView,
 } from '@/lib/batch-production/output-arrangement';
 import { resolveBgmDraftAfterViewLoad, type BatchBgmDraft } from './bgm-draft';
-import BatchClipTrimEditor from './BatchClipTrimEditor';
 import BatchCoverDraftPreview from './BatchCoverDraftPreview';
 import BatchCoverEditorDrawer, { type BatchCoverEditorDraft } from './BatchCoverEditorDrawer';
 import BatchTimeline from './BatchTimeline';
-import BatchTimelinePreview from './BatchTimelinePreview';
+import BatchTimelinePreview, { type BatchTimelinePreviewHandle } from './BatchTimelinePreview';
 import BatchTextStyleEditor from './BatchTextStyleEditor';
 import { LutVideoPlayer } from './LutVideoPlayer';
 import { ProxyPlaybackToggle } from './ProxyPlaybackToggle';
@@ -64,7 +63,10 @@ export default function BatchOutputEditor({
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
   const [playheadSec, setPlayheadSec] = useState(0);
-  const [freeformClipId, setFreeformClipId] = useState<string | null>(null);
+  const [rippleTrim, setRippleTrim] = useState(false);
+  const [timelineTool, setTimelineTool] = useState<'select' | 'split'>('select');
+  const editorRef = useRef<HTMLDivElement>(null);
+  const playbackRef = useRef<BatchTimelinePreviewHandle>(null);
   const [replaceCandidateId, setReplaceCandidateId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [editFeedback, setEditFeedback] = useState<EditFeedback | null>(null);
@@ -122,7 +124,6 @@ export default function BatchOutputEditor({
       setSelectedClipId(null);
       setSelectedSubtitleCueId(null);
       setPlayheadSec(0);
-      setFreeformClipId(null);
       setReplaceCandidateId(null);
       setEditFeedback(null);
       setReviewCleared(false);
@@ -152,7 +153,6 @@ export default function BatchOutputEditor({
     [poolAssets, projectId],
   );
   const selectedClip = clips.find((clip) => clip.clipId === selectedClipId) ?? null;
-  const freeformClip = clips.find((clip) => clip.clipId === freeformClipId) ?? null;
   const pendingReplaceAsset = replaceCandidateId ? assetsById.get(replaceCandidateId) ?? null : null;
   const previewMaterial = previewAssetId ? assetsById.get(previewAssetId) ?? null : null;
   // 素材预览的代理可用性:素材在版本池内,复用 previewUrl 上的批次参数查 previewInfo
@@ -179,6 +179,34 @@ export default function BatchOutputEditor({
   const visualSec = (view?.visualDurationUs ?? 0) / 1_000_000;
   const narrationSec = view?.narration.durationUs != null ? view.narration.durationUs / 1_000_000 : null;
   const editLocked = !view?.editable || renderBusy || submitting;
+  useEffect(() => {
+    if (!active || !view || coverEditorOpen) return;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      const root = editorRef.current;
+      if (!(target instanceof HTMLElement) || !root) return;
+      const scope = root.closest('[role="dialog"]') ?? root;
+      if (!scope.contains(target) || target.isContentEditable || target.closest('input, textarea, select, [role="textbox"], [role="combobox"], [role="slider"], [role="menu"]')) return;
+      const dialog = target.closest('[role="dialog"], [role="alertdialog"]');
+      if (dialog && dialog !== scope) return;
+      const key = event.key.toLowerCase();
+      if (key !== ' ' && key !== 'c' && key !== 'v') return;
+      event.preventDefault(); // 同时阻止空格滚动页面、再次激活当前聚焦按钮。
+      if (event.repeat) return;
+      if (key === ' ') {
+        if (previewMode === 'material') {
+          const video = materialVideoRef.current;
+          if (video?.paused) void video.play().catch(() => undefined);
+          else video?.pause();
+        } else playbackRef.current?.togglePlayback();
+      } else if (!editLocked && clips.length > 0) {
+        setTimelineTool(key === 'c' ? 'split' : 'select');
+      }
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [active, view, coverEditorOpen, previewMode, editLocked, clips.length]);
   const syncedNarrationGain = view?.narration.gainDb;
   // BGM 草稿同步决策（纯函数，见 bgm-draft.ts）：换 plan 或服务端真值变化才对齐；
   // 其他编辑命令触发的静默 loadView(true) 一律保留未应用的草稿。
@@ -259,23 +287,6 @@ export default function BatchOutputEditor({
       setSubmitting(false);
     }
   }
-
-
-  const handleVariableTrimCommit = async (sourceStartUs: number, sourceEndUs: number): Promise<boolean> => {
-    if (!freeformClip) return false;
-    return submitEdit({
-      type: 'trim_variable',
-      clipId: freeformClip.clipId,
-      sourceStartUs,
-      sourceEndUs,
-    });
-  };
-
-  const handleSplitCommit = async (offsetUs: number): Promise<boolean> => {
-    if (!freeformClip) return false;
-    return submitEdit({ type: 'split', clipId: freeformClip.clipId, offsetUs });
-  };
-
   const confirmReplace = async (): Promise<void> => {
     if (!selectedClip || !pendingReplaceAsset) return;
     const accepted = await submitEdit({ type: 'replace', clipId: selectedClip.clipId, assetId: pendingReplaceAsset.assetId });
@@ -383,7 +394,7 @@ export default function BatchOutputEditor({
   const canResetSubtitleStyle = view.subtitleStyleOverride || subtitleStyleChanged;
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col gap-3" data-testid={`batch-output-editor-${planId}`}>
+    <div ref={editorRef} className="flex h-full min-h-0 min-w-0 flex-col gap-3" data-testid={`batch-output-editor-${planId}`}>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline pb-2">
         <span className="text-sm font-semibold text-ink">预览调整</span>
         <span className="rounded-full bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-secondary">{clips.length} 个片段</span>
@@ -608,6 +619,7 @@ export default function BatchOutputEditor({
                     </div>
                   ) : (
                     <BatchTimelinePreview
+                      playbackRef={playbackRef}
                       clips={clips}
                       narrationDurationUs={view.narration.durationUs}
                       preserveGaps={view.preserveGaps}
@@ -632,6 +644,10 @@ export default function BatchOutputEditor({
             </section>
             <section className="flex-none rounded-xl bg-surface p-3" data-testid="batch-output-timeline-pane">
               <BatchTimeline
+                rippleTrim={rippleTrim}
+                onRippleTrimChange={setRippleTrim}
+                tool={timelineTool}
+                onToolChange={setTimelineTool}
                 clips={clips}
                 assets={poolAssets}
                 subtitleCues={view.subtitleCues}
@@ -648,24 +664,12 @@ export default function BatchOutputEditor({
                 onSelectClip={(clipId) => { setSelectedClipId(clipId); const clip = clips.find((item) => item.clipId === clipId); if (clip) { setPlayheadSec(20 / 24 + clip.timelineStartUs / 1e6); setPreviewMode('output'); } }}
                 onSelectSubtitleCue={setSelectedSubtitleCueId}
                 onTrimVariable={async (clipId, sourceStartUs, sourceEndUs) =>
-                  submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs })}
+                  submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs, ripple: rippleTrim })}
                 onSplit={async (clipId, offsetUs) => submitEdit({ type: 'split', clipId, offsetUs })}
-                onOpenFineTrim={(clipId) => { setSelectedClipId(clipId); setFreeformClipId(clipId); }}
                 onDeleteClip={(clipId) => void confirmDelete(clipId)}
                 onSubtitleEdit={submitEdit}
                 onDeleteSubtitleCue={confirmDeleteSubtitle}
               />
-              {freeformClip && (
-                <BatchClipTrimEditor
-                  key={freeformClip.clipId}
-                  clip={freeformClip}
-                  asset={assetsById.get(freeformClip.assetId) ?? null}
-                  disabled={editLocked}
-                  onTrimCommit={handleVariableTrimCommit}
-                  onSplitCommit={handleSplitCommit}
-                  onClose={() => setFreeformClipId(null)}
-                />
-              )}
             </section>
           </div>
         </main>

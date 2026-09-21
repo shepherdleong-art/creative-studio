@@ -44,6 +44,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       clipId?: unknown;
       sourceStartUs?: unknown;
       sourceEndUs?: unknown;
+      ripple?: unknown;
       assetId?: unknown;
       afterClipId?: unknown;
       durationUs?: unknown;
@@ -109,7 +110,12 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
           message: '截取区间必须是安全整数(微秒)',
         }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
       }
-      edit = { type: body.type, clipId, sourceStartUs: body.sourceStartUs, sourceEndUs: body.sourceEndUs };
+      if (body.ripple !== undefined && typeof body.ripple !== 'boolean') {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '联动修剪参数无效' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = body.type === 'trim_variable'
+        ? { type: body.type, clipId, sourceStartUs: body.sourceStartUs, sourceEndUs: body.sourceEndUs, ripple: body.ripple === true }
+        : { type: body.type, clipId, sourceStartUs: body.sourceStartUs, sourceEndUs: body.sourceEndUs };
     } else if (body.type === 'replace') {
       const assetId = typeof body.assetId === 'string' ? body.assetId.trim() : '';
       if (!clipId || !assetId) {

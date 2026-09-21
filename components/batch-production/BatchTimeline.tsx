@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AudioBlock } from '@/components/mixcut/MixcutTimeline';
 import { planClipPosition, type PositionedClip } from '@/lib/media-core/clip-position';
+import { clipTrimBounds, clipTrimRate, planClipTrim, snapTimelineTime } from '@/lib/media-core/clip-trim';
 import { audioClips, type AudioEdits } from '@/lib/media-core/audio-edit';
 import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
@@ -31,6 +32,7 @@ interface ClipTrimDraft {
   sourceIn: number;
   sourceOut: number;
   positions?: PositionedClip[];
+  snappedUs?: number | null;
 }
 
 interface ClipContextMenuState {
@@ -63,12 +65,15 @@ export interface BatchTimelineProps {
   selectedClipId: string | null;
   selectedSubtitleCueId: string | null;
   disabled: boolean; // 只禁用变更手势，不禁用 seek/选中
+  rippleTrim: boolean;
+  onRippleTrimChange: (enabled: boolean) => void;
+  tool: TimelineTool;
+  onToolChange: (tool: TimelineTool) => void;
   onSeek: (sec: number) => void;
   onSelectClip: (clipId: string | null) => void;
   onSelectSubtitleCue: (cueId: string | null) => void;
   onTrimVariable: (clipId: string, sourceStartUs: number, sourceEndUs: number) => Promise<boolean>;
   onSplit: (clipId: string, offsetUs: number) => Promise<boolean>;
-  onOpenFineTrim: (clipId: string) => void;
   onDeleteClip: (clipId: string) => void;
   onSubtitleEdit: (edit: Record<string, unknown>) => Promise<boolean>;
   onDeleteSubtitleCue: (cueId: string) => void;
@@ -90,26 +95,26 @@ export default function BatchTimeline({
   selectedClipId,
   selectedSubtitleCueId,
   disabled,
+  rippleTrim, onRippleTrimChange, tool, onToolChange,
   onSeek,
   onSelectClip,
   onSelectSubtitleCue,
   onTrimVariable,
   onSplit,
-  onOpenFineTrim,
   onDeleteClip,
   onSubtitleEdit,
   onDeleteSubtitleCue,
 }: BatchTimelineProps) {
   const pxPerSecond = PX_PER_SECOND;
   const [viewportWidth, setViewportWidth] = useState(720);
-  const [tool, setTool] = useState<TimelineTool>('select');
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [contextMenu, setContextMenu] = useState<TimelineContextMenuState | null>(null);
   // 修剪预览锚定到产生它时的 clips 数组：clips 刷新后 draft 自动失效，无需 effect 清理
   const [draftState, setDraftState] = useState<{ clips: BatchOutputClipView[]; value: ClipTrimDraft } | null>(null);
   const draft = draftState && draftState.clips === clips ? draftState.value : null;
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const visualFrames = usToFrame(clips.at(-1)?.timelineEndUs ?? 0);
+  const visualFrames = usToFrame(draft?.positions?.at(-1)?.endUs ?? clips.at(-1)?.timelineEndUs ?? 0);
   const narrationFrames = narrationDurationUs != null ? usToFrame(narrationDurationUs) : null;
   const bodyFrames = Math.max(visualFrames, narrationFrames ?? 0);
   const subtitleBodyFrames = narrationFrames ?? visualFrames;
@@ -226,7 +231,9 @@ export default function BatchTimeline({
           aria-pressed={effectiveTool === 'select'}
           className={[styles.tlToolButton, effectiveTool === 'select' ? styles.tlToolButtonActive : ''].filter(Boolean).join(' ')}
           disabled={toolButtonsDisabled}
-          onClick={() => setTool('select')}
+          aria-keyshortcuts="V"
+          title="选择工具（V）"
+          onClick={() => onToolChange('select')}
         >
           <Icon name="check-circle" size={13} />选择
         </button>
@@ -236,11 +243,15 @@ export default function BatchTimeline({
           aria-pressed={effectiveTool === 'split'}
           className={[styles.tlToolButton, effectiveTool === 'split' ? styles.tlToolButtonActive : ''].filter(Boolean).join(' ')}
           disabled={toolButtonsDisabled}
-          onClick={() => setTool('split')}
+          aria-keyshortcuts="C"
+          title="分割工具（C）"
+          onClick={() => onToolChange('split')}
         >
           <Icon name="scissors" size={13} />分割
         </button>
-        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击视频、音频或字幕上的目标位置切开，右键删除' : '选中视频，在右侧调整倍速和画面；音频用分割工具裁切；删除保留空位'}</span>
+        <button type="button" className={`${styles.tlToolButton} ${snapEnabled ? styles.tlToolButtonActive : ''}`} aria-pressed={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)}>磁吸</button>
+        <button type="button" className={`${styles.tlToolButton} ${rippleTrim ? styles.tlToolButtonActive : ''}`} aria-pressed={rippleTrim} disabled={disabled} onClick={() => onRippleTrimChange(!rippleTrim)}>联动修剪</button>
+        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击目标位置分割；V 选择 · 空格播放/暂停' : `${rippleTrim ? '修剪后画面自动接上，口播字幕不动' : '修剪保留原位置'}；空格播放/暂停 · C 分割 · V 选择 · Alt 暂停磁吸`}</span>
       </div>
       <section className={styles.tl} aria-label="成片时间轴" data-testid="batch-output-timeline" data-tool={effectiveTool}>
         <div className={styles.tlLabels}>
@@ -267,9 +278,6 @@ export default function BatchTimeline({
             <div className={`${styles.tlTrack} ${styles.tlTrackVideo}`} data-track="video">
               {clipLayout.map((entry, index) => {
                 const asset = assetById.get(entry.clip.assetId);
-                const sourceTotalFrames = asset?.durationSec != null
-                  ? Math.floor(asset.durationSec * FPS)
-                  : usToFrame(entry.clip.sourceEndUs);
                 return (
                   <BatchClipBlock
                     key={entry.clip.clipId}
@@ -283,7 +291,10 @@ export default function BatchTimeline({
                     durFrames={entry.durFrames}
                     sourceIn={entry.sourceIn}
                     sourceOut={entry.sourceOut}
-                    sourceTotalFrames={sourceTotalFrames}
+                    sourceDurationUs={asset?.durationSec != null ? Math.round(asset.durationSec * 1e6) : entry.clip.sourceEndUs}
+                    rippleTrim={rippleTrim}
+                    snapEnabled={snapEnabled}
+                    playheadUs={Math.round((playheadSec - INTRO_SEC) * 1e6)}
                     thumbnailUrl={asset?.thumbnailUrl || undefined}
                     pxPerSecond={pxPerSecond}
                     selected={entry.clip.clipId === selectedClipId}
@@ -294,7 +305,6 @@ export default function BatchTimeline({
                     onDraftChange={(value) => setDraftState(value ? { clips, value } : null)}
                     onTrimVariable={onTrimVariable}
                     onSplit={onSplit}
-                    onOpenFineTrim={onOpenFineTrim}
                     onOpenContextMenu={(clipId, clientX, clientY) => setContextMenu({
                       kind: 'clip',
                       clipId,
@@ -361,6 +371,7 @@ export default function BatchTimeline({
                 onOpenContextMenu={(x, y) => setContextMenu({ kind: 'audio', track: 'bgm', clipId: clip.id, x: Math.max(8, Math.min(x, window.innerWidth - 184)), y: Math.max(8, Math.min(y, window.innerHeight - 86)) })}
               />)}
             </div>}
+            {draft?.snappedUs != null && <div aria-hidden="true" data-testid="batch-timeline-snap-guide" style={{ position: 'absolute', top: 0, bottom: 0, left: (INTRO_SEC + draft.snappedUs / 1e6) * pxPerSecond, borderLeft: '2px solid var(--color-accent)', pointerEvents: 'none', zIndex: 8 }} />}
             <button
               type="button"
               aria-label="拖动播放头"
@@ -381,16 +392,6 @@ export default function BatchTimeline({
             >
               {contextMenu.kind === 'clip' ? (
                 <>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={disabled}
-                    onClick={() => {
-                      const clipId = contextMenu.clipId;
-                      setContextMenu(null);
-                      onOpenFineTrim(clipId);
-                    }}
-                  >精细修剪…</button>
                   <button
                     type="button"
                     role="menuitem"
@@ -439,7 +440,7 @@ function BatchClipBlock({
   durFrames,
   sourceIn,
   sourceOut,
-  sourceTotalFrames,
+  sourceDurationUs, rippleTrim, snapEnabled, playheadUs,
   thumbnailUrl,
   pxPerSecond,
   selected,
@@ -450,7 +451,6 @@ function BatchClipBlock({
   onDraftChange,
   onTrimVariable,
   onSplit,
-  onOpenFineTrim,
   onOpenContextMenu,
 }: {
   clip: BatchOutputClipView;
@@ -463,7 +463,10 @@ function BatchClipBlock({
   durFrames: number;
   sourceIn: number;
   sourceOut: number;
-  sourceTotalFrames: number;
+  sourceDurationUs: number;
+  rippleTrim: boolean;
+  snapEnabled: boolean;
+  playheadUs: number;
   thumbnailUrl?: string;
   pxPerSecond: number;
   selected: boolean;
@@ -474,7 +477,6 @@ function BatchClipBlock({
   onDraftChange: (draft: ClipTrimDraft | null) => void;
   onTrimVariable: (clipId: string, sourceStartUs: number, sourceEndUs: number) => Promise<boolean>;
   onSplit: (clipId: string, offsetUs: number) => Promise<boolean>;
-  onOpenFineTrim: (clipId: string) => void;
   onOpenContextMenu: (clipId: string, clientX: number, clientY: number) => void;
 }) {
   const [splitOffsetFrames, setSplitOffsetFrames] = useState<number | null>(null);
@@ -500,28 +502,59 @@ function BatchClipBlock({
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
     const startX = event.clientX;
-    let latest = { sourceIn, sourceOut };
+    let latest = { sourceStartUs: clip.sourceStartUs, sourceEndUs: clip.sourceEndUs };
     let requestedStartUs = clip.timelineStartUs;
     let changed = false;
+    const scroll = target.closest('[data-testid="batch-output-timeline-scroll"]');
+    const initialScrollLeft = scroll?.scrollLeft ?? 0;
+    const rate = clipTrimRate(clip);
+    const bounds = clipTrimBounds(clips, clip, sourceDurationUs, rippleTrim);
+    const snapTargets = [0, bodyEndUs, playheadUs, ...clips.filter((item) => item.clipId !== clip.clipId).flatMap((item) => [item.timelineStartUs, item.timelineEndUs])].filter((time) => time >= 0);
     const move = (pointer: PointerEvent) => {
-      const timelineDelta = Math.round(((pointer.clientX - startX) / pxPerSecond) * FPS);
-      if (mode === 'move') {
-        requestedStartUs = Math.max(0, clip.timelineStartUs + frameToUs(timelineDelta));
-        const positions = planClipPosition(clips.map((item) => ({ id: item.clipId, startUs: item.timelineStartUs, endUs: item.timelineEndUs })), clip.clipId, requestedStartUs, bodyEndUs);
-        changed = positions.some((position) => { const original = clips.find((item) => item.clipId === position.id)!; return position.startUs !== original.timelineStartUs; });
-        onDraftChange({ clipId: clip.clipId, sourceIn, sourceOut, positions });
+      const timelineDelta = Math.round(((pointer.clientX - startX + (scroll?.scrollLeft ?? 0) - initialScrollLeft) / pxPerSecond) * FPS);
+      if (timelineDelta === 0) {
+        latest = { sourceStartUs: clip.sourceStartUs, sourceEndUs: clip.sourceEndUs };
+        requestedStartUs = clip.timelineStartUs;
+        changed = false;
+        onDraftChange(null);
         return;
       }
-      const deltaFrames = Math.round(timelineDelta * (clip.playbackRate ?? 1));
-      changed = changed || deltaFrames !== 0;
-      if (mode === 'start') {
-        latest = { sourceIn: clamp(sourceIn + deltaFrames, 0, sourceOut - Math.ceil(MIN_FRAMES * (clip.playbackRate ?? 1))), sourceOut };
-      } else if (mode === 'end') {
-        latest = { sourceIn, sourceOut: clamp(sourceOut + deltaFrames, sourceIn + Math.ceil(MIN_FRAMES * (clip.playbackRate ?? 1)), sourceTotalFrames) };
+      if (mode === 'move') {
+        requestedStartUs = Math.max(0, clip.timelineStartUs + frameToUs(timelineDelta));
+        const durationUs = clip.timelineEndUs - clip.timelineStartUs;
+        const targets = snapTargets.flatMap((time) => [time, time - durationUs]).filter((time) => time >= 0 && time <= bodyEndUs - durationUs);
+        const snapped = snapTimelineTime(requestedStartUs, targets, pxPerSecond, snapEnabled && !pointer.altKey);
+        requestedStartUs = snapped.timeUs;
+        const positions = planClipPosition(clips.map((item) => ({ id: item.clipId, startUs: item.timelineStartUs, endUs: item.timelineEndUs })), clip.clipId, requestedStartUs, bodyEndUs);
+        changed = positions.some((position) => { const original = clips.find((item) => item.clipId === position.id)!; return position.startUs !== original.timelineStartUs; });
+        const moved = positions.find((item) => item.id === clip.clipId)!;
+        const snappedUs = snapped.snappedUs == null ? null : snapTargets.find((time) => time === moved.startUs || time === moved.endUs) ?? null;
+        onDraftChange({ clipId: clip.clipId, sourceIn, sourceOut, positions, snappedUs });
+        return;
       }
-      onDraftChange({ clipId: clip.clipId, sourceIn: latest.sourceIn, sourceOut: latest.sourceOut });
+      const deltaUs = Math.round(frameToUs(timelineDelta) * rate);
+      // 吸附在时间轴域计算，回写精确源时间；未拖动的边界不做帧取整。
+      const edgeUs = mode === 'start' ? clip.timelineStartUs : clip.timelineEndUs;
+      const minimumUs = mode === 'start' ? bounds.minimumStartUs : clip.sourceStartUs + bounds.minimumDurationUs;
+      const maximumUs = mode === 'start' ? clip.sourceEndUs - bounds.minimumDurationUs : bounds.maximumEndUs;
+      const sourceEdgeUs = mode === 'start' ? clip.sourceStartUs : clip.sourceEndUs;
+      const legalTargets = snapTargets.filter((time) => {
+        const source = sourceEdgeUs + Math.round((time - edgeUs) * rate);
+        return source >= minimumUs && source <= maximumUs;
+      });
+      const snapped = snapTimelineTime(edgeUs + frameToUs(timelineDelta), legalTargets, pxPerSecond, snapEnabled && !pointer.altKey);
+      const sourceUs = clamp(snapped.snappedUs == null ? sourceEdgeUs + deltaUs : sourceEdgeUs + Math.round((snapped.timeUs - edgeUs) * rate), minimumUs, maximumUs);
+      if (mode === 'start') {
+        latest = { sourceStartUs: sourceUs, sourceEndUs: clip.sourceEndUs };
+      } else if (mode === 'end') {
+        latest = { sourceStartUs: clip.sourceStartUs, sourceEndUs: sourceUs };
+      }
+      changed = latest.sourceStartUs !== clip.sourceStartUs || latest.sourceEndUs !== clip.sourceEndUs;
+      const positions = planClipTrim(clips, clip.clipId, latest.sourceStartUs, latest.sourceEndUs, rippleTrim);
+      onDraftChange({ clipId: clip.clipId, sourceIn: usToFrame(latest.sourceStartUs), sourceOut: usToFrame(latest.sourceEndUs), positions, snappedUs: rippleTrim && mode === 'start' ? null : snapped.snappedUs });
     };
     const up = async (pointer: PointerEvent) => {
+      move(pointer);
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
       target.removeEventListener('pointercancel', cancel);
@@ -530,10 +563,12 @@ function BatchClipBlock({
         onDraftChange(null);
         return;
       }
-      const accepted = mode === 'move'
-        ? await onMove(clip.clipId, requestedStartUs)
-        : await onTrimVariable(clip.clipId, frameToUs(latest.sourceIn), frameToUs(latest.sourceOut));
-      if (!accepted) onDraftChange(null);
+      try {
+        if (mode === 'move') await onMove(clip.clipId, requestedStartUs);
+        else await onTrimVariable(clip.clipId, latest.sourceStartUs, latest.sourceEndUs);
+      } finally {
+        onDraftChange(null);
+      }
     };
     const cancel = (pointer: PointerEvent) => {
       target.removeEventListener('pointermove', move);
@@ -578,11 +613,7 @@ function BatchClipBlock({
         onSelect(clip.clipId);
         onOpenContextMenu(clip.clipId, event.clientX, event.clientY);
       }}
-      onDoubleClick={() => {
-        onSelect(clip.clipId);
-        if (!disabled) onOpenFineTrim(clip.clipId);
-      }}
-      title="单击选中 · 拖边缘变长修剪 · 拖中段移动或排序 · 双击精细修剪 · 右键更多"
+      title="单击选中 · 拖边缘变长修剪 · 拖中段移动或排序 · 右键更多"
     >
       {tool === 'split' && splitOffsetFrames !== null && (
         <i

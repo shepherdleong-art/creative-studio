@@ -4,6 +4,7 @@
  * 运行方式（与 batch-preparation-workspace.playwright.test.mjs 相同）：
  *   npm run build && node scripts/batch-bgm-source-switch.playwright.test.mjs
  *   M7_BROWSER_DEV=1 使用源码开发服务；M7_MEDIA_EDIT_ONLY=1 运行新增剪辑操作回归。
+ *   M7_BROWSER_DIRECT_EDITS=1 仅用于开发服务路由异常时的 UI+真实领域层回归，不覆盖 HTTP 路由。
  *
  * 与源码匹配测试不同，本文件用真实 standalone 服务 + 真实媒体文件（ffmpeg 生成）
  * 驱动「检查成片 → 调整片段」编辑器，在播放中切换 BGM 曲目并断言 <audio> 的
@@ -28,6 +29,7 @@ import { createBatchTask } from '../lib/batch-production/tasks.ts';
 import { createOutputPlansForSnapshot, createOutputVersion } from '../lib/batch-production/plans.ts';
 import { addAssetToPool, createBatchProduction, createBatchProductionVersion } from '../lib/batch-production/versions.ts';
 import { runFfmpeg } from '../lib/ffmpeg.ts';
+import { applyBatchOutputClipEdit, getBatchOutputArrangementView } from '../lib/batch-production/output-arrangement.ts';
 
 const standaloneServer = path.join(process.cwd(), '.next', 'standalone', 'server.js');
 assert.ok(fs.existsSync(standaloneServer), '请先运行 npm run build，再执行 BGM 换源浏览器验收');
@@ -128,6 +130,7 @@ async function waitForBgmState(page, { trackId, playing, minCurrentTime }) {
 
 let browser;
 let page;
+let directEditDb;
 const pageErrors = [];
 try {
   await waitForServer(baseUrl, server);
@@ -290,7 +293,23 @@ try {
     args: ['--autoplay-policy=no-user-gesture-required'],
   });
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-  page.setDefaultTimeout(10_000);
+  page.setDefaultTimeout(useDevServer ? 30_000 : 10_000);
+  page.setDefaultNavigationTimeout(useDevServer ? 60_000 : 10_000);
+  if (process.env.M7_BROWSER_DIRECT_EDITS === '1' && process.env.M7_MEDIA_EDIT_ONLY === '1') {
+    directEditDb = new Database(path.join(dataRoot, 'data', 'workbench.db'));
+    directEditDb.pragma('foreign_keys = ON');
+    await page.route(`**/outputs/${planId}/arrangement?*`, async (route) => {
+      await route.fulfill({ json: getBatchOutputArrangementView(directEditDb, projectId, batchId, planId) });
+    });
+    await page.route(`**/outputs/${planId}/clips?*`, async (route) => {
+      try {
+        const result = applyBatchOutputClipEdit(directEditDb, projectId, batchId, planId, route.request().postDataJSON());
+        await route.fulfill({ json: result });
+      } catch (error) {
+        await route.fulfill({ status: 400, json: { message: error.message } });
+      }
+    });
+  }
   page.on('pageerror', (error) => pageErrors.push(String(error)));
   page.on('response', async (response) => {
     if (response.url().includes('/arrangement?') && !response.ok()) serverOutput.push(`Arrangement HTTP ${response.status()}: ${(await response.text().catch(() => '')).slice(0, 1200)}\n`);
@@ -306,7 +325,7 @@ try {
 
   if (process.env.M7_MEDIA_EDIT_ONLY === '1') {
     const arrangementUrl = `${baseUrl}/api/batch-production/batches/${batchId}/outputs/${planId}/arrangement?projectId=${projectId}`;
-    const readArrangement = () => fetch(arrangementUrl).then((response) => response.json());
+    const readArrangement = async () => directEditDb ? getBatchOutputArrangementView(directEditDb, projectId, batchId, planId) : fetch(arrangementUrl).then((response) => response.json());
     const waitForArrangement = async (check) => {
       for (let attempt = 0; attempt < 80; attempt += 1) {
         const view = await readArrangement();
@@ -317,6 +336,87 @@ try {
     };
     const clip = page.locator('[data-clip-id="clip-1"]');
     await clip.click();
+    await clip.dblclick();
+    assert.equal(await page.getByRole('button', { name: '完成修剪', exact: true }).count(), 0, '双击不再打开独立修剪面板');
+    await clip.click({ button: 'right' });
+    assert.equal(await page.getByRole('menu', { name: '片段操作' }).count(), 1);
+    assert.equal(await page.getByRole('menuitem', { name: /精细修剪/ }).count(), 0, '右键菜单不再提供精细修剪');
+    assert.equal(await page.getByRole('menuitem', { name: '删除片段（保留空位）', exact: true }).count(), 1);
+    await page.getByRole('menu', { name: '片段操作' }).locator('..').click({ position: { x: 2, y: 2 } });
+    const selectTool = page.getByRole('button', { name: '选择工具', exact: true });
+    const splitTool = page.getByRole('button', { name: '分割工具', exact: true });
+    assert.equal(await page.getByRole('button', { name: '联动修剪', exact: true }).getAttribute('aria-pressed'), 'false', '联动修剪默认关闭');
+    await selectTool.focus();
+    await page.keyboard.press('c');
+    assert.equal(await splitTool.getAttribute('aria-pressed'), 'true', 'C 切换分割工具');
+    assert.equal((await readArrangement()).clips.length, 1, '快捷键只切换工具，不直接切开素材');
+    await page.keyboard.press('v');
+    assert.equal(await selectTool.getAttribute('aria-pressed'), 'true', 'V 切换选择工具');
+    await page.keyboard.press('Control+c');
+    assert.equal(await selectTool.getAttribute('aria-pressed'), 'true', '不抢占复制快捷键');
+    await page.keyboard.press('Space');
+    await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
+    await page.keyboard.press('Space');
+    await page.getByRole('button', { name: '播放', exact: true }).waitFor();
+    await page.keyboard.down('Space');
+    await page.keyboard.down('Space'); // 按住重复事件不得切回暂停。
+    await page.keyboard.up('Space');
+    await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
+    await page.keyboard.press('Space');
+    await page.getByRole('button', { name: '播放', exact: true }).waitFor();
+    const editorInput = page.getByTestId(`batch-output-editor-${planId}`).locator('input[type="number"]').first();
+    await editorInput.focus();
+    await page.keyboard.press('c');
+    await page.keyboard.press('Space');
+    assert.equal(await selectTool.getAttribute('aria-pressed'), 'true', '输入框中 C 不切换工具');
+    assert.equal(await page.getByRole('button', { name: '播放', exact: true }).count(), 1, '输入框中空格不播放');
+    await splitTool.click();
+    await editorInput.focus();
+    await page.keyboard.press('v');
+    assert.equal(await splitTool.getAttribute('aria-pressed'), 'true', '输入框中 V 不切换工具');
+    await selectTool.click();
+    console.log('batch keyboard checks: Space/C/V, input focus, modifiers and repeats passed');
+    fs.mkdirSync(path.resolve('outputs/playwright'), { recursive: true });
+    const buttonAppearance = async (button) => button.evaluate(async (element) => {
+      await Promise.all(element.getAnimations().map((animation) => animation.finished));
+      const style = getComputedStyle(element);
+      const luminance = (color) => {
+        const rgb = color.match(/[\d.]+/g).slice(0, 3).map(Number).map((n) => n / 255).map((n) => n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4);
+        return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+      };
+      const foreground = luminance(style.color), background = luminance(style.backgroundColor);
+      return { background: style.backgroundColor, color: style.color, contrast: (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05), outline: style.outlineStyle };
+    });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((theme) => document.documentElement.dataset.theme = theme, theme);
+      await page.mouse.move(0, 0);
+      const enabled = await buttonAppearance(selectTool);
+      const inactive = await buttonAppearance(splitTool);
+      await selectTool.hover();
+      const enabledHover = await buttonAppearance(selectTool);
+      await splitTool.hover();
+      const inactiveHover = await buttonAppearance(splitTool);
+      console.log(`toolbar ${theme}: ${JSON.stringify({ enabled, inactive, enabledHover, inactiveHover })}`);
+      for (const [state, appearance] of Object.entries({ enabled, inactive, enabledHover, inactiveHover })) {
+        assert.ok(appearance.contrast >= 4.5, `${theme}/${state} 小字号按钮文字对比度不足：${appearance.contrast}`);
+      }
+      await page.mouse.move(0, 0);
+      await buttonAppearance(selectTool);
+      await buttonAppearance(splitTool);
+      await page.getByRole('toolbar', { name: '成片时间轴工具' }).screenshot({ path: path.resolve(`outputs/playwright/batch-toolbar-${theme}.png`) });
+      await selectTool.focus();
+      await page.keyboard.press('Tab');
+      assert.equal(await splitTool.evaluate((element) => element.matches(':focus-visible')), true);
+      assert.equal((await buttonAppearance(splitTool)).outline, 'solid', `${theme} 键盘焦点需要可见轮廓`);
+      await page.getByRole('toolbar', { name: '成片时间轴工具' }).screenshot({ path: path.resolve(`outputs/playwright/batch-toolbar-${theme}-focus.png`) });
+      const enabledColor = await selectTool.evaluate((element) => getComputedStyle(element).backgroundColor);
+      const disabledColor = await splitTool.evaluate((element) => getComputedStyle(element).backgroundColor);
+      assert.notEqual(enabledColor, disabledColor, `${theme} 模式工具开关必须有不同底色`);
+      assert.notEqual(enabledColor, 'rgba(0, 0, 0, 0)', '选中工具不能被桌面壳重置为透明');
+    }
+    await page.evaluate(() => document.documentElement.dataset.theme = 'light');
+    fs.mkdirSync(path.resolve('outputs/playwright'), { recursive: true });
+    await page.getByRole('toolbar', { name: '成片时间轴工具' }).screenshot({ path: path.resolve('outputs/playwright/batch-toolbar-shortcuts.png') });
     const speed = page.getByRole('slider', { name: '视频倍速拉条', exact: true });
     await speed.fill('1.5');
     await speed.press('Tab');
@@ -376,6 +476,46 @@ try {
     await dragClip(clip, -330);
     view = await waitForArrangement((view) => view.clips[0].clipId === 'clip-1');
     assert.equal(view.clips[1].timelineStartUs, laterStart);
+
+    // 两段相邻画面：左右手柄联动修剪、贴边磁吸、禁止重叠与精确保存。
+    const dragHandle = async (edge, dx, checkSnap = false) => {
+      await page.waitForFunction(() => document.querySelector('input[aria-label="视频倍速拉条"]')?.disabled === false);
+      const handle = clip.locator(`[aria-label="修剪片段${edge === 'start' ? '开头' : '结尾'}"]`);
+      const box = await handle.boundingBox(); assert.ok(box);
+      const x = box.x + box.width / 2, y = box.y + box.height / 2;
+      await page.mouse.move(x, y); await page.mouse.down();
+      await page.mouse.move(x + dx, y, { steps: 12 });
+      if (checkSnap) await page.getByTestId('batch-timeline-snap-guide').waitFor();
+      await page.mouse.up();
+    };
+    assert.equal(await page.getByRole('button', { name: '磁吸', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByRole('button', { name: '联动修剪', exact: true }).getAttribute('aria-pressed'), 'false');
+    await page.getByRole('button', { name: '联动修剪', exact: true }).click();
+    await dragHandle('end', 60);
+    view = await waitForArrangement((view) => view.clips[1].timelineStartUs === laterStart + 1_000_000);
+    assert.equal(view.clips[0].timelineEndUs, view.clips[1].timelineStartUs);
+    assert.equal(view.preserveGaps, false);
+    await dragHandle('end', -60);
+    await waitForArrangement((view) => view.clips[1].timelineStartUs === laterStart);
+    await dragHandle('start', 30);
+    view = await waitForArrangement((view) => view.clips[1].timelineStartUs === laterStart - 500_000);
+    assert.equal(view.clips[0].timelineStartUs, 0);
+    assert.equal(view.clips[0].timelineEndUs, view.clips[1].timelineStartUs);
+    await dragHandle('start', -30);
+    await waitForArrangement((view) => view.clips[1].timelineStartUs === laterStart);
+
+    await page.getByRole('button', { name: '联动修剪', exact: true }).click();
+    await dragHandle('end', -30);
+    view = await waitForArrangement((view) => view.clips[0].timelineEndUs === laterStart - 500_000);
+    assert.equal(view.clips[1].timelineStartUs, laterStart);
+    await dragHandle('end', 28, true); // 距离接点约 2px，应精确吸附。
+    await waitForArrangement((view) => view.clips[0].timelineEndUs === laterStart);
+    const beforeOvershoot = await readArrangement();
+    await dragHandle('end', 90);
+    assert.equal((await readArrangement()).editRevision, beforeOvershoot.editRevision, '顶到邻片边界不应提交非法修剪');
+    await page.getByRole('button', { name: '联动修剪', exact: true }).click();
+    assert.equal(await page.getByText('修剪超出当前空位，不能覆盖相邻片段', { exact: true }).count(), 0);
+    console.log('batch trim browser checks: both handles, ripple, snap guide and overlap clamp passed');
 
     await clip.click({ button: 'right' });
     page.once('dialog', (dialog) => dialog.accept());
@@ -464,6 +604,7 @@ try {
   throw error;
 } finally {
   await browser?.close();
+  directEditDb?.close();
   try {
     await fetch(`${baseUrl}/api/shutdown`, { method: 'POST' });
   } catch {

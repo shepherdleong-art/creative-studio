@@ -304,6 +304,12 @@
 .tlToolButton:hover:not(:disabled) { border-color: rgba(0, 113, 227, .35); color: var(--blue); }
 .tlToolButton:disabled { cursor: not-allowed; opacity: .48; }
 .tlToolButtonActive { border-color: rgba(0, 113, 227, .48); background: var(--blue-wash); color: var(--blue); font-weight: 600; }
+/* 工具栏状态必须高于桌面壳 .shell button 的背景/文字重置。 */
+.tlToolbar .tlToolButton { border: .5px solid var(--color-hairline); background: var(--color-surface); color: var(--color-ink-secondary); }
+.tlToolbar .tlToolButton:hover:not(:disabled) { background: var(--color-surface-hover); border-color: var(--color-accent); color: var(--color-ink); }
+.tlToolbar .tlToolButton[aria-pressed='true'] { background: var(--color-accent-solid); border-color: var(--color-accent-solid); color: var(--color-accent-foreground); }
+.tlToolbar .tlToolButton[aria-pressed='true']:hover:not(:disabled) { background: var(--color-accent-solid-hover); border-color: var(--color-accent-solid-hover); color: var(--color-accent-foreground); }
+.tlToolbar .tlToolButton:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .tlToolHint { min-width: 160px; flex: 1 1 240px; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, .035); color: var(--faint); font-size: 11px; line-height: 1.45; }
 .tl { display: flex; flex-shrink: 0; overflow: hidden; border: .5px solid var(--line); border-radius: 12px; background: var(--bg); }
 .tlLabels { display: flex; width: 48px; flex-shrink: 0; flex-direction: column; border-right: .5px solid var(--line); background: #fafafc; }

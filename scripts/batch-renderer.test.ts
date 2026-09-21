@@ -323,6 +323,24 @@ async function run(): Promise<void> {
     assert.ok(pixels.reduce((sum, value) => sum + value, 0) / pixels.length < 3, '批量剪辑前后空位必须是真实黑场');
   }
 
+  // 联动修剪后的连续画面较口播短：正式输出必须延长末帧，不插入黑尾。
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?`).run(JSON.stringify({
+    ...loudNarrationArrangement, preserveGaps: false, subtitle: { source: 'manual', cues: [] },
+    clips: [{ ...arrangement.clips[0], sourceEndUs: 500_000, timeline: { startUs: 0, endUs: 500_000 } }],
+  }), ids.outputVersionId);
+  const rippleResult = await renderBatchOutputVersion({
+    db, projectId: 'project-1', batchId: ids.batchId, batchVersionId: ids.batchVersionId,
+    planId: ids.planId, outputVersionId: ids.outputVersionId, storageRoot, dataRootPath: dataRoot, renderRoot,
+    outputSize: { width: 240, height: 320 },
+    narration: { absolutePath: narrationPath, fingerprint: narrationFingerprint, durationUs: 1_200_000 },
+  });
+  for (const bodyTime of [0.125, 0.55, 1.1]) {
+    const framePath = path.join(root, `batch-ripple-${bodyTime}.png`);
+    await runFfmpeg(['-ss', String(introSec + bodyTime), '-i', rippleResult.videoAbsolutePath, '-frames:v', '1', '-y', framePath]);
+    const pixels = await sharp(framePath).raw().toBuffer();
+    assert.ok(pixels.reduce((sum, value) => sum + value, 0) / pixels.length > 15, '联动修剪后正文与末帧延长不得黑场');
+  }
+
   // 人工字幕覆盖必须优先于本次口播自动对齐;非人工的旧/损坏槽位不能阻塞
   // narration 重试后的自动字幕渲染。
   db.prepare(`UPDATE batch_production_versions SET defaultsJson = ? WHERE id = ?`).run(JSON.stringify({

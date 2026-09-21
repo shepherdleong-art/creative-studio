@@ -13,6 +13,7 @@ import { hasBatchSubtitleStyleOverride, loadFrozenSubtitleStyle, resolveBatchSub
 import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
 import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-core/audio-gain.ts';
 import { cleanFraming } from '../media-core/cover-title-presets.ts';
+import { planClipTrim } from '../media-core/clip-trim.ts';
 import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
 import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
 
@@ -26,7 +27,7 @@ import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
  * （画面变了必须重新审核，与正式发布门禁对齐）；editRevision 进渲染
  * requestKey（见 phase-e.ts），保证 createBatchTask 幂等去重不会吞掉重渲染。
  *
- * 变长修剪/删除保留空位，插入优先填空位、不足时顺延；分割是纯结构操作，
+ * 变长修剪支持联动后续画面；关闭联动及删除保留空位，插入优先填空位、不足时顺延；分割是纯结构操作，
  * 总长不变，不递增 editRevision、不清 review、不触发重渲染。
  */
 
@@ -122,7 +123,7 @@ export type BatchOutputClipEdit =
   | { type: 'move_clip'; clipId: string; startUs: number }
   | { type: 'trim'; clipId: string; sourceStartUs: number; sourceEndUs: number }
   | { type: 'replace'; clipId: string; assetId: string }
-  | { type: 'trim_variable'; clipId: string; sourceStartUs: number; sourceEndUs: number }
+  | { type: 'trim_variable'; clipId: string; sourceStartUs: number; sourceEndUs: number; ripple?: boolean }
   | { type: 'delete'; clipId: string }
   | { type: 'set_clip_playback_rate'; clipId: string; playbackRate: number }
   | { type: 'set_clip_framing'; clipId: string; framing: CoverFraming }
@@ -598,7 +599,7 @@ export function getBatchOutputArrangementView(
  * 应用一次片段级编辑（整读-改-整写 arrangementJson 的单事务）。
  *
  * - trim/replace：保留上一迭代的等长语义；
- * - trim_variable：变长修剪，保留后续片段位置；
+ * - trim_variable：变长修剪，ripple 为 true 时顺移后续画面，否则保留位置；
  * - delete：删除后保留空位（至少保留一条片段）；
  * - insert：从冻结池插入默认 3s（或显式窗口）片段，ripple；
  * - split：把一段切成源连续的 two pieces，总长不变，不触发重渲染。
@@ -817,8 +818,8 @@ export function applyBatchOutputClipEdit(
         clip.sourceEndUs = normalizedEndUs;
         visualChanged = true;
       } else {
-        const normalizedStartUs = frameAlignUs(edit.sourceStartUs);
-        const normalizedEndUs = frameAlignUs(edit.sourceEndUs);
+        const normalizedStartUs = edit.sourceStartUs;
+        const normalizedEndUs = edit.sourceEndUs;
         if (normalizedEndUs <= normalizedStartUs) throw new BatchDomainError('invalid_input', '截取区间无效');
         const poolRow = readFrozenPoolAsset(db, lineage.batchVersionId, String(clip.assetId));
         if (!poolRow) throw new BatchDomainError('conflict', '片段素材不在本批次冻结素材池中,无法校验截取区间');
@@ -830,15 +831,22 @@ export function applyBatchOutputClipEdit(
           throw new BatchDomainError('invalid_input', '修剪后片段长度不能短于 0.5 秒');
         }
         if (sameClipRange(clip, normalizedStartUs, normalizedEndUs)) return unchanged;
-        const slip = normalizedEndUs - normalizedStartUs === sourceLengthUs;
-        const nextStart = slip ? Number(clip.timelineStartUs) : frameAlignUs(Number(clip.timelineStartUs) + (normalizedStartUs - current.startUs) / rate);
-        const nextEnd = frameAlignUs(nextStart + (normalizedEndUs - normalizedStartUs) / rate);
-        if (nextStart < (index > 0 ? Number(clips[index - 1].timelineEndUs) : 0) || nextEnd > (index + 1 < clips.length ? Number(clips[index + 1].timelineStartUs) : Infinity)) throw new BatchDomainError('invalid_input', '修剪超出当前空位，不能覆盖相邻片段');
-        clip.timelineStartUs = nextStart;
-        clip.timelineEndUs = nextEnd;
+        const positions = planClipTrim(clips.map((item) => ({
+          clipId: String(item.clipId), sourceStartUs: Number(item.sourceStartUs), sourceEndUs: Number(item.sourceEndUs),
+          timelineStartUs: Number(item.timelineStartUs), timelineEndUs: Number(item.timelineEndUs), playbackRate: finiteNumber(item.playbackRate) ?? undefined,
+        })), edit.clipId, normalizedStartUs, normalizedEndUs, edit.ripple === true);
+        const position = positions[index];
+        if (position.startUs < (positions[index - 1]?.endUs ?? 0) || position.endUs > (positions[index + 1]?.startUs ?? Infinity)) throw new BatchDomainError('invalid_input', '修剪超出当前空位，不能覆盖相邻片段');
+        for (let i = 0; i < clips.length; i++) {
+          clips[i].timelineStartUs = positions[i].startUs;
+          clips[i].timelineEndUs = positions[i].endUs;
+        }
         clip.sourceStartUs = normalizedStartUs;
         clip.sourceEndUs = normalizedEndUs;
-        arrangement.preserveGaps = true;
+        // 连续画面使用末帧延长补齐口播；已有的显式空位仍然保留。
+        arrangement.preserveGaps = edit.ripple === true
+          ? positions.some((item, i) => item.startUs > (positions[i - 1]?.endUs ?? 0))
+          : true;
         visualChanged = true;
       }
     } else if (edit.type === 'set_clip_playback_rate' || edit.type === 'set_clip_framing') {
