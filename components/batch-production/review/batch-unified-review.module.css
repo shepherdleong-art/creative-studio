@@ -1,0 +1,980 @@
+.zoomControl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  color: var(--color-ink-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.zoomSlider {
+  width: 112px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.zoomSlider:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.reviewContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+.reviewHeader {
+  position: sticky;
+  left: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reviewWorkbench {
+  position: relative;
+  display: grid;
+  flex: 1;
+  min-height: 694px;
+  min-width: 880px;
+  width: 100%;
+  overflow: hidden;
+  gap: 8px;
+  padding: 8px;
+  background: var(--color-surface-subtle);
+}
+
+/* Splitters */
+.splitter {
+  position: absolute;
+  z-index: 20;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.splitterCol {
+  top: 8px;
+  width: 8px;
+  cursor: col-resize;
+}
+
+.splitterCol::before {
+  content: "";
+  position: absolute;
+  width: 2px;
+  height: 32px;
+  background: var(--color-hairline);
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.splitterCol:hover::before,
+.splitterCol:focus-visible::before,
+.splitterDragging::before {
+  background: var(--color-accent);
+  width: 3px;
+  height: 100%;
+}
+
+.splitterRow {
+  left: 8px;
+  height: 8px;
+  cursor: row-resize;
+}
+
+.splitterRow::before {
+  content: "";
+  position: absolute;
+  height: 2px;
+  width: 42px;
+  background: var(--color-hairline);
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.splitterRow:hover::before,
+.splitterRow:focus-visible::before,
+.splitterDragging::before {
+  background: var(--color-accent);
+  height: 3px;
+  width: 100%;
+}
+
+/* Dock cards */
+.dock {
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-tile, 14px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dockHead {
+  height: 40px;
+  min-height: 40px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-hairline);
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.dockHead h3 { white-space: nowrap; }
+.dockHead button { flex-shrink: 0; white-space: nowrap; }
+
+/* Pool Dock */
+.poolGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(156px, 100%), 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+}
+
+.poolCard {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-control, 10px);
+  overflow: hidden;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.poolCard:hover {
+  border-color: var(--color-accent);
+}
+
+.poolPoster {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background: var(--color-surface-subtle);
+  overflow: hidden;
+  cursor: ew-resize;
+  isolation: isolate;
+}
+
+.poolPoster img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.poolPosterVideo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s;
+}
+
+.poolPosterHover .poolPosterVideo {
+  opacity: 1;
+}
+
+.poolPosterScrubBar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.4);
+  z-index: 5;
+}
+
+.poolPosterScrubProgress {
+  height: 100%;
+  background: var(--color-accent);
+  box-shadow: 0 0 4px var(--color-accent);
+}
+
+.poolPosterTimeTag {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 4px;
+  border-radius: 4px;
+  z-index: 5;
+}
+
+.poolCardBody {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.poolCardActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-hairline);
+}
+
+.poolCardButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--color-surface-subtle);
+  color: var(--color-ink-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.poolCardButton:hover { color: var(--color-accent); }
+.poolCardButton[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+  color: var(--color-accent);
+}
+.poolCardButton:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.poolPlayIcon { font-size: 9px; flex-shrink: 0; }
+.poolFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  border-top: 1px solid var(--color-hairline);
+  padding: 8px 12px;
+}
+.poolFooter button { white-space: nowrap; flex-shrink: 0; }
+
+/* Preview Dock */
+.previewStageArea {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-media-background);
+  overflow: hidden;
+  padding: 8px;
+}
+
+.previewScreen {
+  height: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.previewBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.previewBar > div { min-width: 0; font-size: 10px; }
+
+/* Inspector Dock */
+.inspectorTabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-hairline);
+  padding: 0 8px;
+  background: var(--color-surface-subtle);
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.inspectorTabBtn {
+  flex: 1;
+  padding: 8px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  border-bottom: 2px solid transparent;
+  color: var(--color-ink-secondary);
+  transition: all 0.15s;
+}
+
+.inspectorTabBtn:hover {
+  color: var(--color-ink);
+}
+
+.inspectorTabActive {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+  background: var(--color-surface);
+}
+
+.inspectorScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* Timeline Panel */
+.timelineToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* v14 筛选页签:全部 / 待检查 / 已确认 / 区间重复 */
+.filterTab {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 7px;
+  color: var(--color-ink-secondary);
+  transition: all 0.15s;
+}
+
+.filterTab:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-subtle);
+}
+
+.filterTabActive {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  font-weight: 600;
+}
+
+/* v14 编辑工具条(筛选条下方第二行) */
+.editToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* 工具分组整组换行；组内横向滚动，不把中文按钮压成竖排。 */
+.editToolbar > div { max-width: 100%; }
+.editToolbar button,
+.timelineToolbar button { flex-shrink: 0; white-space: nowrap; }
+.editToolbar button { padding-inline: 8px; font-size: 11px; }
+.timelineToolbar button { padding-inline: 6px; font-size: 11px; }
+.editToolbar svg { flex-shrink: 0; }
+
+.reviewContainer :global(button[aria-pressed='true']) {
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+  color: var(--color-accent);
+}
+
+/* v14 底部图例 */
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  color: var(--color-ink-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.legendSwatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 5px;
+  background: #aacac0;
+}
+
+.legendStripe {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 5px;
+  background: repeating-linear-gradient(135deg, #ce8d37 0, #ce8d37 2px, #f7d9a7 2px, #f7d9a7 4px);
+}
+
+/* 主体移动草稿:拖动中的即时反馈,松手才持久化 */
+.blockMoving {
+  opacity: 0.85;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  z-index: 7;
+  cursor: grabbing !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+/* 区间重复筛选:无重复片段仅调暗,行与数据不变 */
+.clipDim {
+  opacity: 0.35;
+}
+
+/* 间隙插入落点激活态 */
+.insertZoneActive {
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  outline: 2px solid var(--color-accent);
+  border-radius: 3px;
+}
+
+.focusbar {
+  padding: 6px 12px;
+  background: var(--color-surface-subtle);
+  border-bottom: 1px solid var(--color-hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--color-ink-secondary);
+  flex-shrink: 0;
+  min-height: 32px;
+  gap: 8px;
+}
+
+.focusbar > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.timelineScroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  scrollbar-gutter: stable;
+  /* 为粘性标尺(32px)与底部图例留净空:scrollIntoView 不会把行尾按钮藏到它们下面 */
+  scroll-padding-top: 36px;
+  scroll-padding-bottom: 8px;
+}
+
+.timelineInner {
+  position: relative;
+  min-width: 800px;
+}
+
+/* Ruler */
+.rulerRow {
+  display: grid;
+  grid-template-columns: 220px 64px minmax(0, 1fr);
+  height: 32px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-hairline);
+  font-size: 10px;
+  color: var(--color-ink-tertiary);
+}
+
+.rulerLabel {
+  position: sticky;
+  left: 0;
+  z-index: 11;
+  background: var(--color-surface);
+  padding: 8px 12px;
+  font-weight: 600;
+  border-right: 1px solid var(--color-hairline);
+}
+
+.rulerCoverLabel {
+  text-align: center;
+  padding: 8px 4px;
+  background: var(--color-surface-subtle);
+  border-right: 1px dashed var(--color-hairline);
+}
+
+.rulerTrack {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rulerTick {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  color: var(--color-ink-tertiary);
+  pointer-events: none;
+}
+
+.rulerTick::after {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 6px;
+  background: var(--color-hairline);
+  margin: 2px auto 0;
+}
+
+/* Film Row */
+.filmRow {
+  display: grid;
+  grid-template-columns: 220px 64px minmax(0, 1fr);
+  min-height: 216px;
+  height: 216px;
+  border-bottom: 1px solid var(--color-hairline);
+  position: relative;
+  background: var(--color-surface);
+}
+
+.filmRowEditing {
+  background: color-mix(in srgb, var(--color-accent) 4%, transparent);
+}
+
+.filmRowEditing .filmInfo {
+  box-shadow: inset 3px 0 var(--color-accent);
+}
+
+.filmRowHidden {
+  opacity: 0.55;
+}
+
+.filmInfo {
+  position: sticky;
+  left: 0;
+  z-index: 8;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-hairline);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.filmCoverCell {
+  padding: 10px 6px;
+  background: var(--color-surface-subtle);
+  border-right: 1px dashed var(--color-hairline);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.filmCoverThumb {
+  width: 48px;
+  height: 64px;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  background: #000;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.filmCoverThumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.filmTrackArea {
+  position: relative;
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Tracks */
+.trackSubtitle {
+  height: 22px;
+  position: relative;
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  border-radius: 4px;
+}
+
+.subtitleChip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 4px;
+  background: #f1eef8;
+  color: #55447c;
+  border: 1px solid #e5e0ef;
+  font-size: 10px;
+  padding: 2px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.subtitleChipSelected {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent);
+  z-index: 2;
+}
+
+.trackVideo {
+  height: 52px;
+  position: relative;
+  background: var(--color-surface-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.clipBlock {
+  position: absolute;
+  top: 0;
+  height: 52px;
+  border-radius: 5px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  cursor: grab;
+  user-select: none;
+  transition: box-shadow 0.15s;
+}
+
+.clipBlockSelected {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  z-index: 5;
+}
+
+/* Repeat Highlight: PRD T-03 */
+.clipRepeat {
+  outline: 2px solid #eb9a32;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 4px #eb9a3222;
+}
+
+.clipRepeatBadge {
+  position: absolute;
+  right: 6px;
+  top: 4px;
+  background: #fff1d8;
+  color: #99570f;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 500;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* Overlapping source interval diagonal stripe */
+.clipOverlap {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: repeating-linear-gradient(135deg, #ce8d37 0, #ce8d37 3px, #f7d9a7 3px, #f7d9a7 6px);
+  pointer-events: none;
+}
+
+.trimHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 6;
+  cursor: ew-resize;
+  background: var(--color-accent);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.trimHandleLeft {
+  left: 0;
+  border-radius: 4px 0 0 4px;
+}
+
+.trimHandleRight {
+  right: 0;
+  border-radius: 0 4px 4px 0;
+}
+
+.clipBlock:hover .trimHandle,
+.clipBlockSelected .trimHandle,
+.subtitleChip:hover .trimHandle,
+.subtitleChipSelected .trimHandle,
+.audioBlock:hover .trimHandle,
+.audioSelected .trimHandle {
+  opacity: 1;
+}
+
+.trimHandle::after {
+  content: "";
+  position: absolute;
+  top: 35%;
+  height: 30%;
+  width: 2px;
+  left: 4px;
+  background: #fff;
+  border-radius: 1px;
+}
+
+/* Audio Tracks */
+.trackAudio {
+  height: 44px;
+  position: relative;
+  background: var(--color-surface-subtle);
+  border-radius: 4px;
+}
+
+.audioBlock {
+  position: absolute;
+  top: 0;
+  height: 44px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 10px;
+  border: 1px solid transparent;
+  cursor: grab;
+  user-select: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.audioLabel {
+  position: absolute;
+  top: 3px;
+  left: 8px;
+  right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 12px;
+  pointer-events: none;
+}
+
+.audioTts {
+  color: #276879;
+  background: #e4f1f5;
+  border-color: #c0dfe8;
+}
+
+.audioBgm {
+  color: #42794f;
+  background: #edf4e8;
+  border-color: #cbdcbe;
+}
+
+.audioEmpty {
+  border-style: dashed;
+  background: transparent;
+  color: var(--color-ink-tertiary);
+  cursor: pointer;
+  width: 100%;
+}
+
+.audioSelected {
+  outline: 2px solid var(--color-accent);
+  z-index: 3;
+}
+
+/* Global Playhead */
+.globalPlayhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-accent);
+  z-index: 15;
+  pointer-events: none;
+}
+
+.globalPlayheadHandle {
+  position: absolute;
+  top: 0;
+  left: -5px;
+  width: 11px;
+  height: 14px;
+  border-radius: 2px 2px 0 0;
+  background: var(--color-accent);
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.playheadTimeTag {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Snap line */
+.snapLine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #0785f7;
+  z-index: 16;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(7, 133, 247, 0.2);
+}
+
+.snapLineTag {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 9px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Drag drop zones */
+.insertZone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.appendZone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  min-width: 36px;
+  border: 1px dashed var(--color-hairline);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--color-ink-tertiary);
+  opacity: 0.7;
+}
+
+.dropTargetActive {
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent) !important;
+  outline: 2px solid var(--color-accent) !important;
+}
+
+/* Dark mode overrides */
+:global(html[data-theme='dark']) .dock {
+  background: #1c1c1e;
+  border-color: #2c2c2e;
+}
+
+:global(html[data-theme='dark']) .reviewWorkbench {
+  background: #121214;
+}
+
+:global(html[data-theme='dark']) .filmRow {
+  background: #1c1c1e;
+  border-color: #2c2c2e;
+}
+
+:global(html[data-theme='dark']) .filmInfo {
+  background: #1c1c1e;
+  border-color: #2c2c2e;
+}
+
+:global(html[data-theme='dark']) .rulerRow {
+  background: #1c1c1e;
+  border-color: #2c2c2e;
+}
+
+:global(html[data-theme='dark']) .rulerLabel {
+  background: #1c1c1e;
+  border-color: #2c2c2e;
+}
+
+:global(html[data-theme='dark']) .clipBlock {
+  background: #252528;
+  border-color: #38383a;
+}
+
+:global(html[data-theme='dark']) .audioTts {
+  background: rgba(39, 104, 121, 0.25);
+  border-color: rgba(108, 171, 191, 0.4);
+  color: #79cadc;
+}
+
+:global(html[data-theme='dark']) .audioBgm {
+  background: rgba(66, 121, 79, 0.25);
+  border-color: rgba(136, 175, 112, 0.4);
+  color: #92d89f;
+}
+
+:global(html[data-theme='dark']) .clipRepeatBadge {
+  background: #472c08;
+  color: #f7b463;
+}
+
+.subtitleChip .trimHandle { width: 6px; touch-action: none; }
+.subtitleChip .trimHandle::after { left: 2px; width: 2px; }

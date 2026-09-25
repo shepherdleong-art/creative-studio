@@ -385,8 +385,10 @@ export function AudioBlock({ clip, track, playbackRate, bodySec, pxPerSecond, pl
   onCommand: (command: VariantCommandInput) => Promise<boolean>;
   onOpenContextMenu: (x: number, y: number) => void;
 }) {
-  const startSec = clip.startUs / 1e6 / playbackRate;
-  const endSec = Math.min(bodySec, clip.endUs / 1e6 / playbackRate);
+  const clipStartUs = clip.timelineStartUs ?? clip.startUs ?? 0;
+  const clipEndUs = clip.timelineEndUs ?? clip.endUs ?? 0;
+  const startSec = clipStartUs / 1e6 / playbackRate;
+  const endSec = Math.min(bodySec, clipEndUs / 1e6 / playbackRate);
   const left = (INTRO_FRAMES / FPS + startSec) * pxPerSecond;
   if (endSec <= startSec) return null;
   return <button type="button" className={styles.audioClip} data-audio-clip-id={clip.id} aria-label={`${label}音频片段`} disabled={disabled}
@@ -395,7 +397,7 @@ export function AudioBlock({ clip, track, playbackRate, bodySec, pxPerSecond, pl
     onClick={(event) => {
       event.stopPropagation();
       const offsetSec = Math.max(0, event.clientX - event.currentTarget.getBoundingClientRect().left) / pxPerSecond;
-      if (tool === 'split') void onCommand({ type: 'split_audio_clip', track, clipId: clip.id, atUs: Math.round(clip.startUs + offsetSec * playbackRate * 1e6) });
+      if (tool === 'split') void onCommand({ type: 'split_audio_clip', track, clipId: clip.id, atUs: Math.round(clipStartUs + offsetSec * playbackRate * 1e6) });
       else onSeek(INTRO_FRAMES / FPS + startSec + offsetSec);
     }}
     onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!disabled) onOpenContextMenu(event.clientX, event.clientY); }}

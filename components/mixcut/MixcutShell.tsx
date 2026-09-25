@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import styles from './mixcut-shell.module.css';
 
@@ -37,10 +37,16 @@ export interface MixcutShellProps {
   dataAttributes?: Record<string, string>;
   /** 布局记忆的 localStorage key(单条模式沿用 mixcut-layout-v2) */
   layoutStorageKey?: string;
+  /** 所有步骤使用固定的顶部导航与全宽工作区，避免切换时布局跳动。 */
+  stepsInTopbar?: boolean;
   /** 步骤条的无障碍标签 */
   stepsAriaLabel?: string;
   /** 覆盖层(对话框等),渲染在 shell 根元素内、body 之后 */
   children?: ReactNode;
+  /** 进入该步骤时自动收起左辅栏(用户可再展开);统一审片等同屏工作台需要全宽 */
+  collapseSidebarOnStep?: number;
+  /** 进入该步骤时定位到工作区并按视口定高；小窗口保留最小可操作高度，允许页面滚动。 */
+  fitViewportOnStep?: number;
 }
 
 /**
@@ -61,7 +67,10 @@ export default function MixcutShell({
   dataAttributes,
   layoutStorageKey = 'mixcut-layout-v2',
   stepsAriaLabel = '创作步骤',
+  stepsInTopbar = false,
   children,
+  collapseSidebarOnStep,
+  fitViewportOnStep,
 }: MixcutShellProps) {
   const [navOff, setNavOff] = useState(false);
   const [colOffA, setColOffA] = useState(false);
@@ -90,6 +99,47 @@ export default function MixcutShell({
     try { localStorage.setItem(layoutStorageKey, JSON.stringify({ navOff, colOffA, repOff, rgtOff, repW, rgtW })); } catch { /* 隐私模式等场景忽略 */ }
   }, [navOff, colOffA, repOff, rgtOff, repW, rgtW, layoutStorageKey]);
 
+  // 同屏工作台步骤(如批量统一审片)进入时自动收起左辅栏让出全宽;
+  // 不写入布局记忆,离开步骤后恢复;用户在该步点 › 可临时展开。
+  const [autoExpandOverride, setAutoExpandOverride] = useState(false);
+  // 渲染期随步骤切换重置覆盖标记(避免 effect 级联渲染)。
+  const [prevStep, setPrevStep] = useState(activeStep);
+  if (activeStep !== prevStep) {
+    setPrevStep(activeStep);
+    if (activeStep !== collapseSidebarOnStep) setAutoExpandOverride(false);
+  }
+  const effectiveColOffA = colOffA || (collapseSidebarOnStep !== undefined && activeStep === collapseSidebarOnStep && !autoExpandOverride);
+
+  // 顶部导航模式的四个步骤使用同一工作区高度与滚动锚点。
+  const fitViewport = stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const [viewportFitH, setViewportFitH] = useState<number | null>(null);
+  useEffect(() => {
+    if (!fitViewport) return;
+    const measure = () => {
+      const el = shellRef.current;
+      if (!el) return;
+      // 审片是独立工作区。进入时滚到工作区，而不是扣除整个项目头后压缩内部轨道。
+      // 小视口保留可用最小高度，允许页面滚动，不裁掉编辑操作。
+      setViewportFitH(Math.max(860, Math.round(window.innerHeight - 72)));
+    };
+    const raf = window.requestAnimationFrame(() => {
+      measure();
+      shellRef.current?.scrollIntoView({ block: 'start' });
+    });
+    window.addEventListener('resize', measure);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+    };
+  }, [activeStep, fitViewport]);
+  useEffect(() => {
+    if (fitViewport) return;
+    // 离开同屏步骤后恢复 CSS 高度;渲染期置空会触发级联渲染告警,故放在独立 effect。
+    const raf = window.requestAnimationFrame(() => setViewportFitH(null));
+    return () => window.cancelAnimationFrame(raf);
+  }, [activeStep, fitViewport]);
+
   // 预览双栏拖拽调宽:宽度由 JS 写入 --repw/--rgtw(不与 class 折叠机制混用)
   const beginResize = (side: 'rep' | 'rgt') => (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -112,7 +162,7 @@ export default function MixcutShell({
   const bodyClass = [
     styles.body,
     previewActive ? styles.bodyPreview : '',
-    colOffA ? styles.colOffA : '',
+    effectiveColOffA ? styles.colOffA : '',
     navOff ? styles.navOff : '',
   ].filter(Boolean).join(' ');
   const bodyAttrs: Record<string, string> = {
@@ -121,10 +171,55 @@ export default function MixcutShell({
     'data-rgt-off': rgtOff ? '1' : '0',
   };
 
+  const topSteps = stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep);
+  const stepNavigation = (
+    <nav className={styles.stepNav} aria-label={stepsAriaLabel}>
+      <div className={styles.navRow}>
+        <p className={styles.eyebrow}>创作步骤</p>
+        <button type="button" className={styles.navToggle} title={navOff ? '展开步骤条' : '收起步骤条'} onClick={() => setNavOff((value) => !value)}>{navOff ? '›' : '‹'}</button>
+      </div>
+      {steps.map((step, index) => (
+        <button
+          type="button"
+          key={step.label}
+          className={`${styles.snav} ${index === activeStep ? styles.snavOn : ''} ${index < activeStep ? styles.snavDone : ''}`}
+          disabled={step.enabled === false || Boolean(stepDisabled?.(index, step))}
+          onClick={() => onStepSelect(index)}
+          aria-label={step.label}
+          title={step.label}
+          aria-current={index === activeStep ? 'step' : undefined}
+        >
+          <span className={styles.snavBar} />
+          <span className={styles.snavIco}><Icon name={index < activeStep ? 'check-circle' : step.icon} size={16} /></span>
+          <span className={styles.snavTx}><span className={styles.snavLb}>{step.label}</span><span className={styles.snavHint}>{step.hint}</span></span>
+        </button>
+      ))}
+      <p className={styles.stepNavFoot}><Icon name="lock" size={12} /><span>本地保存</span></p>
+    </nav>
+  );
+
   return (
-    <div className={styles.shell} data-active-step={activeStep} {...dataAttributes}>
+    <div
+      ref={shellRef}
+      className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''}`}
+      data-active-step={activeStep}
+      style={viewportFitH != null ? { height: viewportFitH, maxHeight: viewportFitH } : undefined}
+      {...dataAttributes}
+    >
       <header className={styles.topbar}>
         {topbarLeft}
+        {topSteps && stepNavigation}
+        {topSteps && (
+          <button
+            type="button"
+            className={styles.overviewToggle}
+            aria-expanded={!effectiveColOffA}
+            onClick={() => {
+              setColOffA(!effectiveColOffA);
+              setAutoExpandOverride(effectiveColOffA);
+            }}
+          >批次概览</button>
+        )}
         {topbarRight && <div className={styles.topbarRight}>{topbarRight}</div>}
       </header>
       <div
@@ -132,31 +227,11 @@ export default function MixcutShell({
         style={{ '--repw': `${repOff ? 36 : repW}px`, '--rgtw': `${rgtOff ? 36 : rgtW}px` } as React.CSSProperties}
         {...bodyAttrs}
       >
-        <nav className={styles.stepNav} aria-label={stepsAriaLabel}>
-          <div className={styles.navRow}>
-            <p className={styles.eyebrow}>创作步骤</p>
-            <button type="button" className={styles.navToggle} title={navOff ? '展开步骤条' : '收起步骤条'} onClick={() => setNavOff((value) => !value)}>{navOff ? '›' : '‹'}</button>
-          </div>
-          {steps.map((step, index) => (
-            <button
-              type="button"
-              key={step.label}
-              className={`${styles.snav} ${index === activeStep ? styles.snavOn : ''} ${index < activeStep ? styles.snavDone : ''}`}
-              disabled={step.enabled === false || Boolean(stepDisabled?.(index, step))}
-              onClick={() => onStepSelect(index)}
-              aria-label={navOff ? step.label : undefined}
-            >
-              <span className={styles.snavBar} />
-              <span className={styles.snavIco}><Icon name={index < activeStep ? 'check-circle' : step.icon} size={16} /></span>
-              <span className={styles.snavTx}><span className={styles.snavLb}>{step.label}</span><span className={styles.snavHint}>{step.hint}</span></span>
-            </button>
-          ))}
-          <p className={styles.stepNavFoot}><Icon name="lock" size={12} /><span>本地保存</span></p>
-        </nav>
+        {!topSteps && stepNavigation}
 
         <div className={styles.sideCol}>
           <button type="button" className={styles.collapseBtn} title="隐藏辅栏" onClick={() => setColOffA(true)}>‹</button>
-          <button type="button" className={styles.expandBtn} title="展开辅栏" onClick={() => setColOffA(false)}>›</button>
+          <button type="button" className={styles.expandBtn} title="展开辅栏" onClick={() => { setColOffA(false); setAutoExpandOverride(true); }}>›</button>
           {sidebar}
         </div>
 

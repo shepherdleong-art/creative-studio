@@ -1134,6 +1134,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         throw new Error(`成片计划数量不一致：应有 ${result.totalPlans} 张，实际 ${result.planIds.length} 张`);
       }
       setInputConfirmed(true);
+      // 确认后立即刷新 workspace:统一审片第 3 步按 workspace.cards 渲染全部成片,
+      // 不刷新会停留在确认前的空卡片视图,只能等任务轮询碰运气补上。
+      await loadWorkspace(selectedBatchId);
       if (result.inputState === 'frozen') {
         await loadBatchDetail(selectedBatchId);
         setFeedback({ kind: 'success', message: '整体输入没有变化，继续使用已冻结的批次版本。' });
@@ -1575,9 +1578,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
-  async function reviewSelected(decision: 'approved' | 'rework' | 'cancelled'): Promise<void> {
+  async function reviewPlans(planIds: string[], decision: 'approved' | 'rework' | 'cancelled'): Promise<void> {
     if (!selectedBatchId) return;
-    if (selectedPlanIds.length === 0) {
+    if (planIds.length === 0) {
       setFeedback({ kind: 'error', message: '请先选择要操作的成片。' });
       return;
     }
@@ -1589,12 +1592,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planIds: selectedPlanIds, decision }),
+          body: JSON.stringify({ planIds, decision }),
         },
       ));
       if (decision === 'rework') {
         // 返工联动:逐条换一批画面;新版本没有 review 字段,天然回到未审核态。
-        for (const planId of selectedPlanIds) {
+        for (const planId of planIds) {
           await readJson(await fetch(
             `/api/batch-production/batches/${encodeURIComponent(selectedBatchId)}/outputs/${encodeURIComponent(planId)}/reallocate?projectId=${encodeURIComponent(projectId)}`,
             {
@@ -1611,11 +1614,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         kind: 'success',
         message: decision === 'approved'
           ? reviewResult.pendingRender
-            ? `已通过 ${selectedPlanIds.length} 条成片，渲染中，完成后才可导出。`
-            : `已通过 ${selectedPlanIds.length} 条成片，可以正式导出。`
+            ? `已通过 ${planIds.length} 条成片，渲染中，完成后才可导出。`
+            : `已通过 ${planIds.length} 条成片，可以正式导出。`
           : decision === 'rework'
-            ? `已返工 ${selectedPlanIds.length} 条成片并换一批画面，新候选需要重新审核。`
-            : `已撤销 ${selectedPlanIds.length} 条成片的审核。`,
+            ? `已返工 ${planIds.length} 条成片并换一批画面，新候选需要重新审核。`
+            : `已撤销 ${planIds.length} 条成片的审核。`,
       });
     } catch (reviewError) {
       setFeedback({ kind: 'error', message: reviewError instanceof Error ? reviewError.message : '审核操作失败' });
@@ -1949,6 +1952,9 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
         || (index === 3 && (!workspace || workspace.cards.length === 0))
       )}
       stepsAriaLabel="批量生产步骤"
+      collapseSidebarOnStep={2}
+      stepsInTopbar
+      dataAttributes={{ 'data-batch': '1' }}
       topbarLeft={(
         <div className="flex min-w-0 flex-1 items-center gap-3 px-1">
           <strong className="truncate text-ink">{currentBatch?.name ?? '未选择批次'}</strong>
@@ -2061,10 +2067,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 column,而各步根节点是 min-h-0 flex-1,会被压缩到容器高度、
                 内容溢出并盖住后面的兄弟节点(表现为卡片叠在一起)。 */}
             {progressView && activeStep > 1 && (
-              <div className="mb-4">
+              <div className="mb-2 shrink-0">
                 <BatchProductionProgressCard
                   progress={progressView}
-                  variant="compact"
+                  variant={activeStep === 2 ? 'inline' : 'compact'}
                   controlState={workspace?.batch.controlState}
                   controlBusy={phaseEBusy !== null}
                   onControl={(action) => void controlBatch(action)}
@@ -2266,12 +2272,12 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 setSelectionDropped([]);
                 setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
               }}
-              onReview={(decision) => void reviewSelected(decision)}
+              onReview={(decision) => void reviewPlans(selectedPlanIds, decision)}
+              onReviewPlans={(planIds, decision) => void reviewPlans(planIds, decision)}
               phaseEBusy={phaseEBusy}
               onRetryRender={(taskId) => void retryRenderTask(taskId)}
               onRetryNarration={(taskId) => void retryNarrationTask(taskId)}
               onReallocate={(planId) => void reallocateOutput(planId)}
-              onControlBatch={(action) => void controlBatch(action)}
               projectId={projectId}
               selectedBatchId={selectedBatchId}
               outputPreset={reviewOutputPreset}

@@ -776,11 +776,12 @@ export default function BatchTimelinePreview({
   };
 
   const renderControls = (overlay: boolean) => (
-    <div className={overlay ? styles.fullscreenControls : 'flex flex-wrap items-center gap-2'}>
+    <div className={overlay ? styles.fullscreenControls : compact ? styles.compactControls : 'flex flex-wrap items-center gap-2'}>
       <button
         type="button"
         className="btn-primary h-8 w-8 shrink-0 rounded-full text-xs"
         aria-label={playing ? '暂停' : '播放'}
+        data-toggle-play
         disabled={!active || sortedClips.length === 0}
         onClick={togglePlayback}
       >{playing ? 'Ⅱ' : '▶'}</button>
@@ -795,6 +796,7 @@ export default function BatchTimelinePreview({
         value={Math.min(playheadSec, totalSec)}
         onChange={(event) => seek(Number(event.target.value))}
       />
+      <div className={compact && !overlay ? styles.compactOptions : 'contents'}>
       <div className="flex shrink-0 items-center gap-1 rounded-lg bg-surface-subtle p-1" role="group" aria-label="预览内容切换">
         <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'cover' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'cover'} onClick={() => choosePreviewMode('cover')}>封面</button>
         <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'finished' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'finished'} onClick={() => choosePreviewMode('finished')}>成片</button>
@@ -814,27 +816,22 @@ export default function BatchTimelinePreview({
         title={isFullscreen ? '退出全屏' : '全屏'}
         onClick={toggleFullscreen}
       >{isFullscreen ? '退出全屏' : '全屏'}</button>
+      </div>
     </div>
   );
 
   return (
-    <div className={compact ? 'flex h-full min-h-0 flex-col gap-2' : 'space-y-2'} aria-label="成片实时预览">
+    <div className={compact ? styles.compactPlayer : 'space-y-2'} aria-label="成片实时预览">
       <div
         ref={fullscreenRef}
-        className={`${compact ? 'flex min-h-0 flex-1 items-center justify-center overflow-hidden' : 'flex justify-center'} ${styles.fullscreenShell}`}
+        className={`${compact ? styles.compactViewport : 'flex justify-center'} ${styles.fullscreenShell}`}
         style={{ '--batch-preview-ratio': size.width / size.height } as CSSProperties}
       >
         <div
           ref={stageRef}
           className={`${styles.stage} relative overflow-hidden rounded-xl bg-black`}
           style={compact
-            ? {
-              aspectRatio: `${size.width} / ${size.height}`,
-              width: size.width >= size.height ? '100%' : 'auto',
-              height: size.width >= size.height ? 'auto' : '100%',
-              maxWidth: '100%',
-              maxHeight: '100%',
-            }
+            ? undefined
             : size.width >= size.height
               ? { aspectRatio: `${size.width} / ${size.height}`, width: '100%' }
               : { aspectRatio: `${size.width} / ${size.height}`, height: 'min(52vh, 560px)' }}

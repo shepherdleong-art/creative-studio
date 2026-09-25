@@ -70,6 +70,8 @@ export interface AllocationAssetInput {
   usableRanges?: AllocationRangeInput[] | Array<[number, number]>;
   coverFrameTimesUs?: number[];
   colorSnapshot?: unknown;
+  role?: 'opening' | 'body';
+  mediaJson?: unknown;
   excluded?: boolean;
 }
 
@@ -320,6 +322,7 @@ interface NormalizedAsset {
   coverFrameTimesUs: number[];
   analysisFallback: boolean;
   colorSnapshot: unknown;
+  role: 'opening' | 'body';
 }
 
 interface NormalizedSegment {
@@ -517,6 +520,10 @@ function normalizeAsset(rawAsset: AllocationAssetInput): NormalizedAsset {
       .filter((value, index, values) => values.indexOf(value) === index),
     analysisFallback,
     colorSnapshot: colorIdentity(rawAsset.colorSnapshot ?? raw.colorSnapshot),
+    role: (() => {
+      const media = asRecord(parseJson(rawAsset.mediaJson));
+      return rawAsset.role === 'opening' || media?.role === 'opening' ? 'opening' : 'body';
+    })(),
   };
 }
 
@@ -965,13 +972,15 @@ function stitchSegment(
             const semantic = semanticScore(segment, asset, scene);
             const hook = segmentIndex === 0 && part === 0 ? hookScore(segment, asset, scene) : 0;
             const sameOpening = segmentIndex === 0 && part === 0 && usedOpeningAssets.has(asset.assetId);
+            const openingBonus = segmentIndex === 0 && part === 0 && asset.role === 'opening' ? 50 : 0;
+            const openingPenalty = segmentIndex > 0 && asset.role === 'opening' ? 20 : 0;
             const reuseCount = usedIntervals.filter((entry) => entry.assetId === asset.assetId).length;
             scopedCandidates.push({
               asset,
               scene,
               startUs: subStartUs,
               lengthUs,
-              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
+              score: semantic * 100 + hook * 8 + scene.qualityScore * 2 + openingBonus - openingPenalty - reuseCount * 3 - overlap / Math.max(1, remainingUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
               tie: stableHash(`${normalized.seed}:${plan.planId}:${segment.id}:${asset.assetId}:${scene.index}:part:${part}`),
             });
           }
@@ -1223,13 +1232,15 @@ function assignOne(
           const semantic = semanticScore(segment, asset, scene);
           const hook = segmentIndex === 0 ? hookScore(segment, asset, scene) : 0;
           const sameOpening = segmentIndex === 0 && usedOpeningAssets.has(asset.assetId);
+          const openingBonus = segmentIndex === 0 && asset.role === 'opening' ? 50 : 0;
+          const openingPenalty = segmentIndex > 0 && asset.role === 'opening' ? 20 : 0;
           const reuseCount = usedIntervals.filter((entry) => entry.assetId === asset.assetId).length;
           candidates.push({
             asset,
             scene,
             startUs,
             endUs,
-            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
+            score: semantic * 100 + hook * 8 + scene.qualityScore * 2 + openingBonus - openingPenalty - reuseCount * 3 - overlap / Math.max(1, durationUs) * 30 - (sameOpening ? 20 : 0) - (normalized.avoidAssetIds.has(asset.assetId) ? REALLOCATION_AVOID_PENALTY : 0) - sameShotGroupPenalty(asset, usedGroupKeys, usedAssetIds),
             overlap,
             sameOpening,
             tie: stableHash(`${normalized.seed}:${plan.planId}:${unit.unitId}:${asset.assetId}:${scene.index}:${startUs}`),

@@ -1,4 +1,4 @@
-import { audioCutFilter, parseAudioEdits, type AudioEdits, type AudioClip } from '../media-core/audio-edit.ts';
+import { audioCutFilter, parseAudioEdits, isAudioClipsMoved, normalizeAudioClip, type AudioEdits, type AudioClip } from '../media-core/audio-edit.ts';
 import type { CoverFraming } from '../media-core/cover-types.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -540,10 +540,14 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
       const asset = input.db.prepare(`SELECT projectId, contentFingerprint FROM batch_assets WHERE id = ? AND projectId = ?`).get(clip.assetId, input.projectId) as { projectId: string; contentFingerprint: string } | undefined;
       if (!asset) throw error(`素材 ${clip.assetId} 不属于当前项目`);
       const pool = input.db.prepare(`SELECT colorJson FROM batch_asset_pool_items WHERE batchVersionId = ? AND assetId = ?`).get(input.batchVersionId, clip.assetId) as { colorJson: string } | undefined;
-      if (!pool) throw error(`素材 ${clip.assetId} 不在冻结素材池中`);
+      let poolColorJson = pool?.colorJson;
+      if (!poolColorJson) {
+        const analysis = input.db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(clip.assetId) as { colorJson: string } | undefined;
+        poolColorJson = analysis?.colorJson ?? '{"lutId":null}';
+      }
       if (clip.contentFingerprint && !fingerprintsEqual(clip.contentFingerprint, asset.contentFingerprint)) throw error(`素材 ${clip.assetId} 的冻结指纹与 arrangement 不一致`);
       const source = await resolveOriginalSource(input.db, input.projectId, clip.assetId, asset.contentFingerprint);
-      const colorSnapshot = upgradeColorSnapshot(parseJson(pool.colorJson, 'colorJson'));
+      const colorSnapshot = upgradeColorSnapshot(parseJson(poolColorJson, 'colorJson'));
       const lutPath = await resolveFrozenLut(input.db, input.projectId, colorSnapshot, dataRootPath);
       resolved = { ...clip, sourcePath: source.sourcePath, assetFingerprint: asset.contentFingerprint, sourceDurationUs: source.probe.durationUs, colorSnapshot, lutPath };
       byAsset.set(clip.assetId, resolved);
@@ -582,10 +586,15 @@ async function loadSnapshot(input: BatchRenderInput): Promise<Snapshot> {
   }
   if (!coverClip) {
     const coverAsset = input.db.prepare(`SELECT projectId, contentFingerprint FROM batch_assets WHERE id = ? AND projectId = ?`).get(coverAssetId, input.projectId) as { projectId: string; contentFingerprint: string } | undefined;
+    if (!coverAsset) throw error(`封面素材 ${coverAssetId} 不属于当前项目`);
     const coverPool = input.db.prepare(`SELECT colorJson FROM batch_asset_pool_items WHERE batchVersionId = ? AND assetId = ?`).get(input.batchVersionId, coverAssetId) as { colorJson: string } | undefined;
-    if (!coverAsset || !coverPool) throw error(`封面素材 ${coverAssetId} 不在冻结素材池中`);
+    let coverColorJson = coverPool?.colorJson;
+    if (!coverColorJson) {
+      const analysis = input.db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(coverAssetId) as { colorJson: string } | undefined;
+      coverColorJson = analysis?.colorJson ?? '{"lutId":null}';
+    }
     const coverSource = await resolveOriginalSource(input.db, input.projectId, coverAssetId, coverAsset.contentFingerprint);
-    const colorSnapshot = upgradeColorSnapshot(parseJson(coverPool.colorJson, 'colorJson'));
+    const colorSnapshot = upgradeColorSnapshot(parseJson(coverColorJson, 'colorJson'));
     const lutPath = await resolveFrozenLut(input.db, input.projectId, colorSnapshot, dataRootPath);
     coverClip = {
       clipId: `cover:${coverAssetId}`, assetId: coverAssetId, sourceStartUs: 0, sourceEndUs: coverSource.probe.durationUs,
@@ -743,6 +752,20 @@ export function buildBatchRenderColorFilterFragments(input: { colorSnapshot: Col
 }
 
 function audioFilter(audioInput: number, durationSec: number, mode: BatchRenderAudioMode, narrationGainDb = NARRATION_GAIN_DB_DEFAULT, cuts?: AudioClip[]): string {
+  if (cuts && cuts.length === 0) {
+    return `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`;
+  }
+  if (cuts && isAudioClipsMoved(cuts)) {
+    const segments = cuts.map((clip, i) => {
+      const c = normalizeAudioClip(clip);
+      const sStart = (c.sourceStartUs / 1e6).toFixed(6);
+      const sEnd = (c.sourceEndUs / 1e6).toFixed(6);
+      const delayMs = (c.timelineStartUs / 1000).toFixed(3);
+      return `[${audioInput}:a]atrim=start=${sStart}:end=${sEnd},asetpts=PTS-STARTPTS,adelay=${delayMs}|${delayMs},apad,atrim=duration=${durationSec.toFixed(6)}[nseg${i}]`;
+    });
+    const segLabels = cuts.map((_, i) => `[nseg${i}]`).join('');
+    return `${segments.join(';')};${segLabels}amix=inputs=${cuts.length}:duration=longest:dropout_transition=0,aresample=48000,volume=${normalizeNarrationGainDb(narrationGainDb).toFixed(1)}dB,atrim=duration=${durationSec.toFixed(6)},apad,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`;
+  }
   const source = `[${audioInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(cuts)}aresample=48000`;
   if (mode === 'narration') return `${source},volume=${normalizeNarrationGainDb(narrationGainDb).toFixed(1)}dB,atrim=duration=${durationSec.toFixed(6)},apad,atrim=duration=${durationSec.toFixed(6)},asetpts=PTS-STARTPTS[narration]`;
   return `${source},anullsrc=channel_layout=stereo:sample_rate=48000`; // replaced by caller for silent lavfi input
@@ -993,7 +1016,22 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
       // 不上 loudnorm:单遍动态模式会给音频流附加异常时间基准,下游 adelay
       // 插入的片头静音会被吞掉,造成音画不同步(2026-08-12 实测复现)。
       // 音乐电平由 volume 增益与淡入淡出控制。
-      filters.push(`[${bgmInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(snapshot.arrangement.audio?.bgm)}aresample=48000,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      if (snapshot.arrangement.audio?.bgm && snapshot.arrangement.audio.bgm.length === 0) {
+        filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[music]`);
+      } else if (snapshot.arrangement.audio?.bgm && isAudioClipsMoved(snapshot.arrangement.audio.bgm)) {
+        const bgmCuts = snapshot.arrangement.audio.bgm;
+        for (const [i, clip] of bgmCuts.entries()) {
+          const c = normalizeAudioClip(clip);
+          const sStart = (c.sourceStartUs / 1e6).toFixed(6);
+          const sEnd = (c.sourceEndUs / 1e6).toFixed(6);
+          const delayMs = (c.timelineStartUs / 1000).toFixed(3);
+          filters.push(`[${bgmInput}:a]atrim=start=${sStart}:end=${sEnd},asetpts=PTS-STARTPTS,adelay=${delayMs}|${delayMs},apad,atrim=duration=${bodyDurationSec.toFixed(6)}[bseg${i}]`);
+        }
+        const bLabels = bgmCuts.map((_, i) => `[bseg${i}]`).join('');
+        filters.push(`${bLabels}amix=inputs=${bgmCuts.length}:duration=longest:dropout_transition=0,aresample=48000,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      } else {
+        filters.push(`[${bgmInput}:a]asetpts=PTS-STARTPTS,${audioCutFilter(snapshot.arrangement.audio?.bgm)}aresample=48000,volume=${bgmParams.gainDb.toFixed(1)}dB,atrim=duration=${bodyDurationSec.toFixed(6)},${fades ? `${fades},` : ''}asetpts=PTS-STARTPTS[music]`);
+      }
       filters.push(`[${voiceLabel}][music]amix=inputs=2:duration=longest:dropout_transition=0,apad,atrim=duration=${bodyDurationSec.toFixed(6)},asetpts=PTS-STARTPTS[abody]`);
     } else {
       filters.push(`[${voiceLabel}]anull[abody]`);

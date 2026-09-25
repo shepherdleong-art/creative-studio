@@ -16,6 +16,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { videoTrimRange } from '../components/batch-production/review/video-trim.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -844,6 +845,61 @@ try {
   }), 'invalid_input', /相邻片段/);
   assert.deepEqual(currentArrangement(plans[0]), beforeExtension);
   console.log('✓ 13. trim_variable 不得覆盖后续片段');
+
+  // Regression: UI outward drags stop at the neighbour; inward drags still save.
+  {
+    const view = () => getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
+    const trim = (clipId: string, edge: 'start' | 'end', atUs: number) => {
+      const current = view();
+      const clip = current.clips.find(c => c.clipId === clipId)!;
+      const range = videoTrimRange(clip, current.clips, edge, atUs, 8_000_000);
+      return applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+        type: 'trim_variable', clipId, sourceStartUs: range.sourceStartUs, sourceEndUs: range.sourceEndUs,
+      });
+    };
+    assert.equal(trim('clip-1', 'end', 3_000_000).changed, false, 'neighbour blocks extension without an error');
+    assert.equal(trim('clip-1', 'end', 1_000_000).changed, true);
+    assert.equal(view().clips[0].timelineEndUs, 1_000_000);
+    assert.equal(trim('clip-1', 'end', 9_000_000).changed, true);
+    assert.equal(view().clips[0].timelineEndUs, 2_000_000, 'expands into gap, stops at neighbour');
+    assert.equal(trim('clip-2', 'start', 0).changed, false, 'left neighbour also blocks extension');
+    assert.equal(trim('clip-2', 'start', 3_000_000).changed, true);
+    assert.equal(view().clips[1].timelineStartUs, 3_000_000);
+    assert.equal(trim('clip-2', 'start', 0).changed, true);
+    assert.equal(view().clips[1].timelineStartUs, 2_000_000);
+    assert.equal(trim('clip-1', 'end', 0).changed, true);
+    assert.equal(view().clips[0].timelineEndUs, 500_000, 'minimum duration is enforced before sending');
+    const partialFrameClip = { clipId: 'partial', sourceStartUs: 3_883_667, sourceEndUs: 5_040_000, timelineStartUs: 1_291_667, timelineEndUs: 2_448_000, playbackRate: 1 };
+    const partial = videoTrimRange(partialFrameClip, [partialFrameClip], 'start', 1_625_000, 5_040_000);
+    assert.ok(partial.timelineStartUs > partialFrameClip.timelineStartUs, 'a non-frame-aligned asset end must not disable the start handle');
+    assert.ok(partial.sourceEndUs <= 5_040_000);
+    assert.deepEqual(videoTrimRange(partialFrameClip, [partialFrameClip], 'end', 9_000_000, null), {
+      sourceStartUs: partialFrameClip.sourceStartUs, sourceEndUs: partialFrameClip.sourceEndUs,
+      timelineStartUs: partialFrameClip.timelineStartUs, timelineEndUs: partialFrameClip.timelineEndUs,
+    }, 'unknown duration must not invent extra source footage');
+
+    // Real command validation at fractional rates and non-frame-aligned source offsets.
+    for (const rate of [0.5, 0.75, 1.25, 1.5, 2]) {
+      for (const edge of ['start', 'end'] as const) {
+        for (const requestedUs of [-1_000_000, 0, 600_000, 1_250_000, 2_000_000, 4_000_000]) {
+          resetPlan0Arrangement();
+          const arrangement = currentArrangement(plans[0]);
+          const clips = arrangement.clips as Array<Record<string, unknown>>;
+          clips[0].sourceStartUs = 1_010_333;
+          clips[0].sourceEndUs = 1_010_333 + 2_000_000 * rate;
+          clips[0].playbackRate = rate;
+          db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = (SELECT currentVersionId FROM batch_output_plans WHERE id = ?)').run(JSON.stringify(arrangement), plans[0]);
+          trim('clip-1', edge, requestedUs); // Must never throw a validation error.
+          const after = view();
+          assert.ok(after.clips[0].timelineStartUs >= 0);
+          assert.ok(after.clips[0].timelineEndUs <= after.clips[1].timelineStartUs);
+          assert.equal(after.clips[1].timelineStartUs, 2_000_000);
+          assert.equal(after.clips[1].timelineEndUs, 4_000_000);
+        }
+      }
+    }
+    console.log('✓ UI video trim planning accepted on both edges, gaps and fractional playback rates');
+  }
 
   // 14. trim_variable 缩短成功;越素材时长/短于 0.5s 拒绝
   resetPlan0Arrangement();

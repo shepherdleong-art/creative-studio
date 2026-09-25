@@ -125,16 +125,37 @@ export async function checkFormalExportPreflight(
     FROM batch_asset_pool_items pool
     WHERE pool.batchVersionId = ?
   `).all(batchVersionId) as PoolItemForPreflight[];
+
   const requestedAssetIds = options.assetIds
     ? new Set(options.assetIds.filter((assetId) => typeof assetId === 'string' && assetId.trim()))
     : null;
+
+  if (requestedAssetIds) {
+    for (const assetId of requestedAssetIds) {
+      if (!allPoolItems.some((item) => item.assetId === assetId)) {
+        const extra = db.prepare(`
+          SELECT assets.id AS assetId,
+                 '{"lutId":null}' AS colorJson,
+                 assets.contentFingerprint
+          FROM batch_assets assets
+          JOIN batch_production_versions v ON v.id = ?
+          JOIN batch_productions b ON b.id = v.batchId AND b.projectId = assets.projectId
+          WHERE assets.id = ? AND assets.status = 'online'
+        `).get(batchVersionId, assetId) as PoolItemForPreflight | undefined;
+        if (extra) {
+          allPoolItems.push(extra);
+        }
+      }
+    }
+  }
+
   const poolItems = requestedAssetIds
     ? allPoolItems.filter(({ assetId }) => requestedAssetIds.has(assetId))
     : allPoolItems;
   if (requestedAssetIds && poolItems.length !== requestedAssetIds.size) {
     return {
       ready: false,
-      blockers: [{ assetId: '', code: 'source_offline', message: '成片安排引用了不属于该冻结素材池的原片' }],
+      blockers: [{ assetId: '', code: 'source_offline', message: '成片安排引用了不属于该冻结素材池或项目可用素材的原片' }],
     };
   }
 

@@ -56,6 +56,15 @@
   min-height: 560px;
   max-height: none;
 }
+/* 批量统一审片(检查成片)是同屏工作台,必须整屏可见;
+ * 单条预览步的超高规则会让页面整体滚动、时间轴底部被挤出视口。
+ * 精确高度由 MixcutShell 的 fitViewportOnStep 按视口实测,这里只是首帧兜底。 */
+.shell[data-active-step='2'][data-batch='1'] {
+  height: calc(100dvh - 72px);
+  min-height: 860px;
+  max-height: none;
+  scroll-margin-top: 60px;
+}
 /* 按钮重置(仅服务单条模式的 CSS Module 按钮)。批量生产面板使用全局 btn-primary/btn-secondary/btn-danger,
  * 会被 .shell button 的重置命中而丢掉背景与边框(历史回归),这里按全局工具类的同值显式恢复。
  * 注意:不能用 :not([class*="btn-"]) 改重置 —— 那会把优先级抬到 (0,2,1),
@@ -226,7 +235,67 @@
 
 @media (max-width: 1120px) {
   .body { grid-template-columns: var(--navw, 190px) 244px minmax(0, 1fr); }
+  .colOffA { grid-template-columns: var(--navw, 190px) 36px minmax(0, 1fr); }
   .bodyPreview { grid-template-columns: var(--navw, 190px) var(--repw, 200px) 6px minmax(0, 1fr) 6px var(--rgtw, 280px); }
+}
+
+/* 批量四步固定在同一顶栏，保持工作区宽高与导航位置一致。 */
+.topStepsShell {
+  height: calc(100dvh - 72px);
+  min-height: 860px;
+  max-height: none;
+  scroll-margin-top: 60px;
+  width: calc(100vw - 32px);
+  margin-left: calc((100% - (100vw - 32px)) / 2);
+}
+.topStepsShell .topbar { gap: 16px; }
+.topStepsShell .topbar > div:first-child { flex: 0 1 240px; }
+.topStepsShell .topbar > div:first-child > span { flex-shrink: 0; white-space: nowrap; }
+.topStepsShell .topbarRight { margin-left: auto; flex-shrink: 0; }
+.topStepsShell .stepNav {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  overflow-x: auto;
+}
+.topStepsShell .stepNav .snav {
+  width: auto;
+  flex-shrink: 0;
+  gap: 6px;
+  padding: 5px 10px;
+}
+.topStepsShell .stepNav .snavIco { width: 26px; height: 26px; }
+.topStepsShell .stepNav .snavTx { display: flex; }
+.topStepsShell .stepNav .snavBar,
+.topStepsShell .stepNav .snavHint,
+.topStepsShell .navRow,
+.topStepsShell .stepNavFoot { display: none; }
+.topStepsShell .stepNav .snavOn { background: var(--blue-wash); box-shadow: none; }
+.topStepsShell .overviewToggle {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 8px;
+  color: var(--sub);
+  font-size: 12px;
+}
+.topStepsShell .overviewToggle:hover,
+.topStepsShell .overviewToggle[aria-expanded='true'] { background: var(--color-surface-subtle); color: var(--ink); }
+.topStepsShell .body { grid-template-columns: 280px minmax(0, 1fr); }
+.topStepsShell .body.colOffA { grid-template-columns: minmax(0, 1fr); }
+.topStepsShell .colOffA .sideCol { display: none; }
+.topStepsShell .mainCol { padding-left: 12px; }
+@media (max-width: 1120px) {
+  .topStepsShell .topbar { gap: 8px; padding-inline: 12px; }
+  .topStepsShell .topbar > div:first-child { flex-basis: 160px; }
+  .topStepsShell .stepNav .snav { padding-inline: 6px; }
+  .topStepsShell .stepNav .snavLb { font-size: 12px; }
+}
+@media (max-width: 800px) {
+  .topStepsShell .topbar { height: auto; min-height: 56px; flex-wrap: wrap; padding-block: 8px; }
+  .topStepsShell .stepNav { order: 1; width: 100%; }
 }
 
 /* ===== 夜间模式覆盖：重定义局部变量 + 补丁硬编码浅色值 ===== */
