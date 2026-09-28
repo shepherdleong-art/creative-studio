@@ -46,6 +46,18 @@ test('桌面版入口锁定私有 Node 运行时并硬断言 Electron 二进制'
   assert.match(startDesktop, /Electron 运行时安装失败/);
 });
 
+test('快启脚本在 PATH 无 node 时探测常见安装位置', () => {
+  // 托管 Node(workbuddy 等)常不在双击启动 shell 的 PATH 里;current 是内容为
+  // 版本号的指针文件,升级后版本目录会变,探测必须跟随指针而不是写死版本号。
+  for (const entry of ['start-desktop.command', 'start.command', 'stop.command', 'stop-desktop.command']) {
+    const script = read(entry);
+    assert.match(script, /locate_node\(\)/, `${entry} 必须包含 Node 探测 fallback`);
+    assert.match(script, /\.workbuddy\/binaries\/node\/versions/, `${entry} 必须探测 workbuddy 托管 Node`);
+    assert.match(script, /cat "\$wb_root\/current"/, `${entry} 必须跟随 current 指针而非写死版本号`);
+    assert.match(script, /opt\/homebrew\/bin\/node/, `${entry} 必须探测 Homebrew 安装位置`);
+  }
+});
+
 test('桌面版入口在缺少 standalone 产物时才构建，并支持 --rebuild', () => {
   const startDesktop = read('start-desktop.command');
 

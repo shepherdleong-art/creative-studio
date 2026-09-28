@@ -27,13 +27,38 @@ echo "   🖥️  产品素材工作台 · 桌面版"
 echo "========================================"
 echo ""
 
-# Check if node is installed
-if ! command -v node &> /dev/null; then
+# Node 定位:PATH 优先;双击启动的 shell 未必继承开发终端的 PATH(托管 Node
+# 常装在非标准位置),探测 Homebrew / workbuddy(跟随 current 指针,升级后
+# 版本目录会变,不写死版本号)等常见位置,找到后把其 bin 目录前置到 PATH。
+locate_node() {
+    if command -v node >/dev/null 2>&1; then command -v node; return 0; fi
+    local candidate wb_root wb_version
+    for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+        if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+    wb_root="$HOME/.workbuddy/binaries/node/versions"
+    if [ -f "$wb_root/current" ]; then
+        wb_version="$(cat "$wb_root/current" 2>/dev/null)"
+        if [ -n "$wb_version" ] && [ -x "$wb_root/$wb_version/bin/node" ]; then
+            printf '%s\n' "$wb_root/$wb_version/bin/node"; return 0
+        fi
+    fi
+    for candidate in "$wb_root"/*/bin/node; do
+        if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+    return 1
+}
+
+NODE_BIN="$(locate_node)" || {
     echo "❌ 未找到 Node.js，请先安装: https://nodejs.org"
     echo "   (推荐安装 LTS 版本)"
     read -p "按回车键退出..."
     exit 1
-fi
+}
+case ":$PATH:" in
+    *":$(dirname "$NODE_BIN"):"*) ;;
+    *) export PATH="$(dirname "$NODE_BIN"):$PATH" ;;
+esac
 
 # 显式指定私有 Node 服务使用的运行时：桌面壳在非打包态会逐个扫 PATH 找 node，
 # 双击启动的 login shell 里 PATH 未必与开发终端一致，这里锁定当前这一个。
