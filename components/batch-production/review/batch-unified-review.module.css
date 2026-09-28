@@ -427,7 +427,7 @@
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 8px 16px;
+  padding: 3px 12px;
   border-top: 1px solid var(--color-hairline);
   background: var(--color-surface);
   color: var(--color-ink-tertiary);

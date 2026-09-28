@@ -288,6 +288,10 @@
 .topStepsShell .colOffA .sideCol { display: none; }
 .topStepsShell .mainCol { padding-left: 12px; }
 /* 检查成片：外层交给页面滚动，导航和提示可滚出视野，四区独占一屏。 */
+:global(body > main):has(.pageScrollShell) {
+  /* 根布局的 py-10 会在整个工作台下方留下 40px；底边由工作台自身留白。 */
+  padding-bottom: 0;
+}
 .shell.pageScrollShell[data-active-step] {
   height: auto;
   min-height: 0;
