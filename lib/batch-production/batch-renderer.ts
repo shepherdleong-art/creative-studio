@@ -959,7 +959,9 @@ export async function renderBatchOutputVersion(first: BatchRenderInput | Databas
     const parts: string[] = [];
     let cursorUs = 0;
     snapshot.clips.forEach((clip, index) => {
-      const gapFrames = Math.round((clip.timelineStartUs - cursorUs) / 1e6 * 24);
+      // 次帧级空隙(<1 输出帧)不物化成黑帧:多为修剪边缘帧对齐与非整帧邻界之间的
+      // 取整残渣,直接相接(画面最多提前半帧,不可察觉);真实空位仍按整帧数播黑场。
+      const gapFrames = Math.floor((clip.timelineStartUs - cursorUs) / 1e6 * 24);
       if (gapFrames > 0) {
         filters.push(`color=c=black:s=${outputSize.width}x${outputSize.height}:r=24:d=${(gapFrames / 24).toFixed(6)},trim=end_frame=${gapFrames},setsar=1[gap${index}]`);
         parts.push(`[gap${index}]`);

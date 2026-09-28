@@ -47,6 +47,8 @@ export interface MixcutShellProps {
   collapseSidebarOnStep?: number;
   /** 进入该步骤时定位到工作区并按视口定高；小窗口保留最小可操作高度，允许页面滚动。 */
   fitViewportOnStep?: number;
+  /** 此步骤随页面滚动；内部工作区自行使用视口高度，顶部信息不挤占编辑空间。 */
+  pageScrollOnStep?: number;
 }
 
 /**
@@ -71,6 +73,7 @@ export default function MixcutShell({
   children,
   collapseSidebarOnStep,
   fitViewportOnStep,
+  pageScrollOnStep,
 }: MixcutShellProps) {
   const [navOff, setNavOff] = useState(false);
   const [colOffA, setColOffA] = useState(false);
@@ -111,21 +114,24 @@ export default function MixcutShell({
   const effectiveColOffA = colOffA || (collapseSidebarOnStep !== undefined && activeStep === collapseSidebarOnStep && !autoExpandOverride);
 
   // 顶部导航模式的四个步骤使用同一工作区高度与滚动锚点。
-  const fitViewport = stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep);
+  const pageScroll = activeStep === pageScrollOnStep;
+  const fitViewport = !pageScroll && (stepsInTopbar || (fitViewportOnStep !== undefined && activeStep === fitViewportOnStep));
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [viewportFitH, setViewportFitH] = useState<number | null>(null);
   useEffect(() => {
     if (!fitViewport) return;
+    // 审片是独立工作区。进入时滚到工作区，再按实际落点实测高度——顶部全局头/
+    // 滚动余量是多少就扣多少，底部固定留 12px 呼吸位，不在窗口底部留死白边。
+    // 小视口保留可用最小高度，允许页面滚动，不裁掉编辑操作。
     const measure = () => {
       const el = shellRef.current;
       if (!el) return;
-      // 审片是独立工作区。进入时滚到工作区，而不是扣除整个项目头后压缩内部轨道。
-      // 小视口保留可用最小高度，允许页面滚动，不裁掉编辑操作。
-      setViewportFitH(Math.max(860, Math.round(window.innerHeight - 72)));
+      const top = Math.max(0, el.getBoundingClientRect().top);
+      setViewportFitH(Math.max(860, Math.round(window.innerHeight - top - 12)));
     };
     const raf = window.requestAnimationFrame(() => {
-      measure();
       shellRef.current?.scrollIntoView({ block: 'start' });
+      measure();
     });
     window.addEventListener('resize', measure);
     return () => {
@@ -201,9 +207,9 @@ export default function MixcutShell({
   return (
     <div
       ref={shellRef}
-      className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''}`}
+      className={`${styles.shell} ${topSteps ? styles.topStepsShell : ''} ${pageScroll ? styles.pageScrollShell : ''}`}
       data-active-step={activeStep}
-      style={viewportFitH != null ? { height: viewportFitH, maxHeight: viewportFitH } : undefined}
+      style={fitViewport && viewportFitH != null ? { height: viewportFitH, maxHeight: viewportFitH } : undefined}
       {...dataAttributes}
     >
       <header className={styles.topbar}>

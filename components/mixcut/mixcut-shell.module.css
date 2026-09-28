@@ -287,6 +287,16 @@
 .topStepsShell .body.colOffA { grid-template-columns: minmax(0, 1fr); }
 .topStepsShell .colOffA .sideCol { display: none; }
 .topStepsShell .mainCol { padding-left: 12px; }
+/* 检查成片：外层交给页面滚动，导航和提示可滚出视野，四区独占一屏。 */
+.shell.pageScrollShell[data-active-step] {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+}
+.pageScrollShell .topbar { border-radius: 18px 18px 0 0; }
+.pageScrollShell .mainCol { overflow: visible; padding-bottom: 0; }
+.pageScrollShell .mainCol > * { flex-shrink: 0; }
 @media (max-width: 1120px) {
   .topStepsShell .topbar { gap: 8px; padding-inline: 12px; }
   .topStepsShell .topbar > div:first-child { flex-basis: 160px; }

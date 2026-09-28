@@ -62,7 +62,7 @@ export default function BatchUnifiedExportDialog({
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/exports`, {
+      const response = await fetch(`/api/batch-production/batches/${encodeURIComponent(batchId)}/exports?projectId=${encodeURIComponent(projectId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId, planIds: selectedPlanIds }),

@@ -198,7 +198,7 @@ export default function BatchReviewPoolDock({
               >
                 {asset.thumbnailUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={asset.thumbnailUrl} alt={asset.displayName} loading="lazy" />
+                  <img src={asset.thumbnailUrl} alt={asset.displayName} loading="lazy" draggable={false} />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-[10px] text-ink-tertiary">
                     无封面

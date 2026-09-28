@@ -131,7 +131,7 @@ export type BatchOutputClipEdit =
   | { type: 'delete_audio_clip'; track: AudioTrackKind; clipId: string }
   | { type: 'trim_audio_clip'; track: AudioTrackKind; clipId: string; sourceStartUs: number; sourceEndUs: number; timelineStartUs?: number; timelineEndUs?: number }
   | { type: 'move_audio_clip'; track: AudioTrackKind; clipId: string; timelineStartUs: number }
-  | { type: 'insert'; afterClipId: string | null; assetId: string; durationUs?: number }
+  | { type: 'insert'; afterClipId: string | null; assetId: string; durationUs?: number; timelineStartUs?: number }
   | { type: 'split'; clipId: string; offsetUs: number }
   | { type: 'set_cover'; assetId: string; timeUs: number; framing?: CoverFraming | null; title?: unknown }
   | { type: 'set_music_track'; trackId: string | null }
@@ -830,6 +830,9 @@ export function applyBatchOutputClipEdit(
       if (edit.durationUs !== undefined && (!Number.isSafeInteger(edit.durationUs) || edit.durationUs <= 0)) {
         throw new BatchDomainError('invalid_input', '插入时长必须是正整数(微秒)');
       }
+      if (edit.timelineStartUs !== undefined && (!Number.isSafeInteger(edit.timelineStartUs) || edit.timelineStartUs < 0)) {
+        throw new BatchDomainError('invalid_input', '插入时间轴位置必须是非负安全整数(微秒)');
+      }
       break;
     case 'split':
       if (!nonEmptyString(edit.clipId)) throw new BatchDomainError('invalid_input', '缺少片段 ID');
@@ -1133,11 +1136,16 @@ export function applyBatchOutputClipEdit(
       if (insertDurationUs < MIN_CLIP_DURATION_US) {
         throw new BatchDomainError('invalid_input', '插入素材时长不足最短片段长度');
       }
-      const insertStart = afterIndex >= 0 ? Number(clips[afterIndex].timelineEndUs) : 0;
+      const previousEnd = afterIndex >= 0 ? Number(clips[afterIndex].timelineEndUs) : 0;
+      const insertStart = edit.timelineStartUs === undefined ? previousEnd : frameAlignUs(edit.timelineStartUs);
+      if (insertStart < previousEnd || (position < clips.length && insertStart > Number(clips[position].timelineStartUs))) {
+        throw new BatchDomainError('invalid_input', '插入位置必须位于指定片段后的空白区间');
+      }
       const nextStart = position < clips.length ? Number(clips[position].timelineStartUs) : insertStart + insertDurationUs;
       const shift = Math.max(0, insertStart + insertDurationUs - nextStart);
       for (const following of clips.slice(position)) { following.timelineStartUs = Number(following.timelineStartUs) + shift; following.timelineEndUs = Number(following.timelineEndUs) + shift; }
       clips.splice(position, 0, { ...manualClipRecord(targetAssetId, target.contentFingerprint, insertDurationUs, 'manual_insert'), timelineStartUs: insertStart, timelineEndUs: insertStart + insertDurationUs });
+      if (insertStart > previousEnd) arrangement.preserveGaps = true;
       visualChanged = true;
     } else if (edit.type === 'split') {
       const index = clipIndex(edit.clipId);

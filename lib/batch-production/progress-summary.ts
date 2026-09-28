@@ -1,4 +1,4 @@
-import type { BatchTaskTargetKind, BatchTaskWorkType } from './tasks.ts';
+import type { BatchTaskTargetKind, BatchTaskWorkType, BatchTaskView } from './tasks.ts';
 
 export interface BatchRenderTaskLike {
   workType: BatchTaskWorkType;
@@ -27,4 +27,22 @@ export function splitBatchRenderTasks<T extends BatchRenderTaskLike>(
     else if (task.targetKind === 'output_version') full.push(task);
   }
   return { cover, full };
+}
+
+/** 实际整片渲染区间的并集：排除准备、审片、排队和重试之间的空闲。 */
+export function batchExportElapsedSec(tasks: readonly BatchTaskView[], nowMs: number): number {
+  const intervals = splitBatchRenderTasks(tasks).full.flatMap(task => task.attempts.flatMap(attempt => {
+    const start = Date.parse(attempt.startedAt);
+    const end = attempt.finishedAt
+      ? Date.parse(attempt.finishedAt)
+      : attempt.status === 'running' && task.status === 'running' ? nowMs : NaN;
+    return Number.isFinite(start) && Number.isFinite(end) && end > start ? [{ start, end }] : [];
+  })).sort((a, b) => a.start - b.start);
+  let elapsedMs = 0;
+  let previousEnd = -Infinity;
+  for (const { start, end } of intervals) {
+    elapsedMs += Math.max(0, end - Math.max(start, previousEnd));
+    previousEnd = Math.max(previousEnd, end);
+  }
+  return Math.floor(elapsedMs / 1000);
 }

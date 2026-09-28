@@ -11,6 +11,7 @@ import BatchReviewSubtitleChip from './BatchReviewSubtitleChip';
 import AudioWaveform from '@/components/audio/AudioWaveform';
 import { subtitleSplitEdit } from './subtitle-edit';
 import { videoTrimRange, type VideoTrimRange } from './video-trim';
+import { materialDropInGap } from './material-drop';
 
 const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
 const FRAME_US = Math.round(1_000_000 / FINAL_EDIT_FPS);
@@ -127,7 +128,18 @@ export default function BatchReviewTimelineDock({
     type: 'replace' | 'insert' | 'append';
     clipId?: string;
     afterClipId?: string | null;
+    timelineStartUs?: number;
   } | null>(null);
+
+  useEffect(() => {
+    const clear = () => setDropTarget(null);
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear);
+    };
+  }, []);
 
   // 视频/音频主体移动的会话草稿:拖动中即时反馈,松手只持久化一次,Esc 取消不落数据。
   const [moveDraft, setMoveDraft] = useState<{
@@ -754,20 +766,26 @@ export default function BatchReviewTimelineDock({
 
   // Drag and Drop Material Handling
   const handleDragOver = (e: React.DragEvent, target: typeof dropTarget) => {
+    e.stopPropagation();
+    if (!e.dataTransfer.types.includes('application/json') || !films.find(f => f.planId === target?.planId)?.arrangement?.editable) {
+      setDropTarget(null);
+      return;
+    }
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     setDropTarget(target);
   };
 
-  const handleDrop = async (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent, target = dropTarget) => {
     e.preventDefault();
-    if (!dropTarget) return;
+    e.stopPropagation();
+    setDropTarget(null);
+    if (!target || !films.find(f => f.planId === target.planId)?.arrangement?.editable) return;
     const json = e.dataTransfer.getData('application/json');
     if (!json) return;
     try {
       const item: MaterialDragItem = JSON.parse(json);
-      const target = dropTarget;
-      setDropTarget(null);
+      if (!poolAssetsById.has(item.assetId)) return;
 
       if (target.type === 'replace' && target.clipId) {
         await onMediaEdit(target.planId, {
@@ -775,21 +793,16 @@ export default function BatchReviewTimelineDock({
           clipId: target.clipId,
           assetId: item.assetId,
         });
-      } else if (target.type === 'insert') {
-        await onMediaEdit(target.planId, {
-          type: 'insert',
-          assetId: item.assetId,
-          afterClipId: target.afterClipId ?? null,
-          durationUs: 3_000_000,
-        });
-      } else if (target.type === 'append') {
+      } else {
         const film = films.find((f) => f.planId === target.planId);
-        const lastClip = film?.arrangement?.clips.at(-1);
         await onMediaEdit(target.planId, {
           type: 'insert',
           assetId: item.assetId,
-          afterClipId: lastClip?.clipId ?? null,
+          afterClipId: target.type === 'append' && target.timelineStartUs === undefined
+            ? film?.arrangement?.clips.at(-1)?.clipId ?? null
+            : target.afterClipId ?? null,
           durationUs: 3_000_000,
+          ...(target.timelineStartUs !== undefined ? { timelineStartUs: target.timelineStartUs } : {}),
         });
       }
       await onRefreshFilm(target.planId);
@@ -1326,11 +1339,6 @@ export default function BatchReviewTimelineDock({
                 {/* 3. Track Area */}
                 <div
                   className={styles.filmTrackArea}
-                  onDragOver={(e) => {
-                    // Check if dropping on empty track space -> append
-                    handleDragOver(e, { planId: film.planId, type: 'append' });
-                  }}
-                  onDrop={handleDrop}
                 >
                   {/* Track 1: Subtitles */}
                   <div className={styles.trackSubtitle}>
@@ -1360,7 +1368,20 @@ export default function BatchReviewTimelineDock({
                   </div>
 
                   {/* Track 2: Video Clips */}
-                  <div className={styles.trackVideo}>
+                  <div
+                    className={styles.trackVideo}
+                    onDragOver={(e) => {
+                      const target = materialDropInGap(clips, e.clientX - e.currentTarget.getBoundingClientRect().left, zoom);
+                      handleDragOver(e, target ? { planId: film.planId, ...target } : null);
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
+                    }}
+                    onDrop={(e) => {
+                      const target = materialDropInGap(clips, e.clientX - e.currentTarget.getBoundingClientRect().left, zoom);
+                      void handleDrop(e, target ? { planId: film.planId, ...target } : null);
+                    }}
+                  >
                     {clips.map((clip, idx) => {
                       const isDraftClip = moveDraft?.kind === 'clip' && moveDraft.planId === film.planId && moveDraft.clipId === clip.clipId;
                       const range = trimDraft?.planId === film.planId && trimDraft.clipId === clip.clipId ? trimDraft : clip;
@@ -1426,7 +1447,7 @@ export default function BatchReviewTimelineDock({
                                 handleDragOver(e, { planId: film.planId, type: 'replace', clipId: clip.clipId });
                               }
                             }}
-                            onDrop={handleDrop}
+                            onDrop={(e) => void handleDrop(e)}
                           >
                             {/* Trim left edge handle */}
                             <div
@@ -1477,7 +1498,7 @@ export default function BatchReviewTimelineDock({
                     {/* Append zone at the end */}
                     <div
                       className={`${styles.appendZone} ${
-                        dropTarget?.planId === film.planId && dropTarget.type === 'append' ? styles.dropTargetActive : ''
+                        dropTarget?.planId === film.planId && dropTarget.type === 'append' && dropTarget.timelineStartUs === undefined ? styles.dropTargetActive : ''
                       }`}
                       style={{
                         left: (clips.at(-1)?.timelineEndUs ?? 0) / 1e6 * zoom,
@@ -1487,10 +1508,18 @@ export default function BatchReviewTimelineDock({
                         e.stopPropagation();
                         handleDragOver(e, { planId: film.planId, type: 'append' });
                       }}
-                      onDrop={handleDrop}
+                      onDrop={(e) => void handleDrop(e)}
                     >
                       +追加
                     </div>
+                    {dropTarget?.planId === film.planId && dropTarget.timelineStartUs !== undefined && (
+                      <div
+                        className={styles.materialDropMarker}
+                        style={{ left: dropTarget.timelineStartUs / 1e6 * zoom }}
+                      >
+                        <span>成片 {film.seq} · {dropTarget.type === 'append' ? '追加' : '插入'} · {(dropTarget.timelineStartUs / 1e6).toFixed(2)} 秒</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Track 3: Narration TTS Audio */}

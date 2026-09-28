@@ -22,6 +22,8 @@ export interface BatchReviewPreviewDockProps {
   playheadSec: number;
   onSeek: (sec: number) => void;
   onToggleReview?: (planId: string, currentApproved: boolean) => void;
+  reviewBusy?: boolean;
+  reviewError?: string | null;
   poolAssets: BatchOutputPoolAssetView[];
 }
 
@@ -35,6 +37,8 @@ export default function BatchReviewPreviewDock({
   playheadSec,
   onSeek,
   onToggleReview,
+  reviewBusy = false,
+  reviewError,
   poolAssets,
 }: BatchReviewPreviewDockProps) {
   const { proxyPlayback } = useProxyPlaybackPreference();
@@ -161,13 +165,16 @@ export default function BatchReviewPreviewDock({
                 : 'btn-primary'
             }`}
             onClick={() => onToggleReview(previewFilm.planId, previewFilm.approved)}
+            disabled={reviewBusy}
+            aria-busy={reviewBusy}
           >
-            {previewFilm.approved ? '✓ 已确认 · 点击撤销' : '确认这条'}
+            {reviewBusy ? '正在保存…' : previewFilm.approved ? '✓ 已确认 · 点击撤销' : '确认这条'}
           </button>
         )}
         </div>
       </div>
 
+      {reviewError && <p role="alert" className="shrink-0 bg-fail/10 px-3 py-2 text-xs text-fail">{reviewError}</p>}
       <div className={styles.previewStageArea}>
         {previewAsset ? (
           <div className="flex h-full w-full flex-col items-center justify-center p-2">

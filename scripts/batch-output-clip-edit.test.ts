@@ -17,6 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { videoTrimRange } from '../components/batch-production/review/video-trim.ts';
+import { materialDropInGap } from '../components/batch-production/review/material-drop.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1100,6 +1101,49 @@ try {
     /插入位置片段不存在/,
   );
   console.log('✓ 16. insert 三位置连续性/默认窗口/非法素材拒绝');
+
+  // 从空白轨道落点到正式保存：中间/片头/片尾、缩放、顺延与隔离。
+  const otherPlanBeforeDrop = currentArrangement(plans[1]);
+  for (const [afterClipId, dropSec, durationUs, expected] of [
+    ['clip-1', 3, 1_000_000, [[0, 2_000_000], [3_000_000, 4_000_000], [6_000_000, 8_000_000]]],
+    ['clip-1', 5, 3_000_000, [[0, 2_000_000], [5_000_000, 8_000_000], [8_000_000, 10_000_000]]],
+    [null, 1, 1_000_000, [[1_000_000, 2_000_000], [2_000_000, 4_000_000], [6_000_000, 8_000_000]]],
+    ['clip-2', 9, 1_000_000, [[0, 2_000_000], [6_000_000, 8_000_000], [9_000_000, 10_000_000]]],
+  ] as const) {
+    resetPlan0Arrangement();
+    const before = currentArrangement(plans[0]);
+    const gapClips = [
+      makeClip('clip-1', 'segment-1', assetA, 1_000_000, 3_000_000, afterClipId === null ? 2_000_000 : 0, afterClipId === null ? 4_000_000 : 2_000_000),
+      makeClip('clip-2', 'segment-2', assetB, 0, 2_000_000, 6_000_000, 8_000_000),
+    ];
+    db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify({ ...before, clips: gapClips }), outputVersionId);
+    for (const zoom of [30, 60, 120]) {
+      const target = materialDropInGap(gapClips, dropSec * zoom, zoom);
+      assert.equal(target?.afterClipId, afterClipId);
+      assert.equal(target?.timelineStartUs, dropSec * 1e6);
+    }
+    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+      type: 'insert', afterClipId, assetId: assetC, timelineStartUs: dropSec * 1e6, durationUs,
+    });
+    const saved = currentArrangement(plans[0]);
+    assert.deepEqual((saved.clips as Array<Record<string, unknown>>).map(c => [c.timelineStartUs, c.timelineEndUs]), expected);
+    for (const field of ['subtitle', 'narration', 'audio', 'music']) assert.deepEqual(saved[field], before[field]);
+    assert.equal(saved.preserveGaps, true);
+    assert.equal(saved.editRevision, 1);
+    assert.deepEqual(currentArrangement(plans[1]), otherPlanBeforeDrop);
+  }
+  resetPlan0Arrangement();
+  for (const timelineStartUs of [-1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1, 1_000_000, 3_000_000]) {
+    const before = currentArrangement(plans[0]);
+    assertDomainError(() => applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
+      type: 'insert', afterClipId: 'clip-1', assetId: assetC, timelineStartUs,
+    }), 'invalid_input', /插入/);
+    assert.deepEqual(currentArrangement(plans[0]), before, '非法落点不应写入安排');
+  }
+  assert.equal(materialDropInGap([{ clipId: 'c', timelineStartUs: 0, timelineEndUs: 2_000_000 }], 60, 60), null);
+  assert.deepEqual(materialDropInGap([], 0, 60), { type: 'append', afterClipId: null, timelineStartUs: 0 });
+  assert.equal(materialDropInGap([], 61, 60)?.timelineStartUs, 1_000_000, '落点按24fps取整');
+  console.log('✓ 16b. 空白落点插入/缩放/仅顺延必要视频/音轨与其他成片隔离/非法位置拒绝');
 
   // 17. split 源连续、时间线连续、总长不变、后续不动;不递增 revision/不清 review/不重做封面
   resetPlan0Arrangement();

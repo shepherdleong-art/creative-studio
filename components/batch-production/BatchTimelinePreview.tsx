@@ -3,6 +3,7 @@
 import { audioAudibleAt, type AudioEdits } from '@/lib/media-core/audio-edit';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
+  activeClipIndexAtBodyFrame,
   expectedVideoTimeSec,
   getVideoSlotPlan,
   paintDecodedVideoFrame,
@@ -187,7 +188,7 @@ export default function BatchTimelinePreview({
   const activeClipIndex = playheadSec >= INTRO_SEC
     ? frozenVideoTail
       ? sortedClips.length - 1
-      : sortedClips.findIndex((clip) => bodyFrame >= usToFrame(clip.timelineStartUs) && bodyFrame < usToFrame(clip.timelineEndUs))
+      : activeClipIndexAtBodyFrame(sortedClips, bodyFrame, FPS)
     : -1;
   const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
   const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);

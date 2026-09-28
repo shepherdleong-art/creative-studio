@@ -11,7 +11,7 @@ import type { BatchProductionStatus } from '@/lib/batch-production/versions';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
-import { splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
+import { batchExportElapsedSec, splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
 import type { DesktopBridge } from '@/desktop/bridge-types';
 import {
   type AssetPrepareTaskView,
@@ -1578,11 +1578,11 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     }
   }
 
-  async function reviewPlans(planIds: string[], decision: 'approved' | 'rework' | 'cancelled'): Promise<void> {
-    if (!selectedBatchId) return;
+  async function reviewPlans(planIds: string[], decision: 'approved' | 'rework' | 'cancelled'): Promise<boolean> {
+    if (!selectedBatchId) return false;
     if (planIds.length === 0) {
       setFeedback({ kind: 'error', message: '请先选择要操作的成片。' });
-      return;
+      return false;
     }
     setPhaseEBusy(`review:${decision}`);
     setFeedback(null);
@@ -1620,8 +1620,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
             ? `已返工 ${planIds.length} 条成片并换一批画面，新候选需要重新审核。`
             : `已撤销 ${planIds.length} 条成片的审核。`,
       });
+      return true;
     } catch (reviewError) {
       setFeedback({ kind: 'error', message: reviewError instanceof Error ? reviewError.message : '审核操作失败' });
+      return false;
     } finally {
       setPhaseEBusy(null);
     }
@@ -1953,6 +1955,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
       )}
       stepsAriaLabel="批量生产步骤"
       collapseSidebarOnStep={2}
+      pageScrollOnStep={2}
       stepsInTopbar
       dataAttributes={{ 'data-batch': '1' }}
       topbarLeft={(
@@ -2018,8 +2021,16 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
               <div
                 role={feedback.kind === 'error' ? 'alert' : 'status'}
                 aria-live="polite"
-                className={`mb-2 rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
-              >{feedback.message}</div>
+                className={`mb-2 flex items-start gap-2 rounded-xl px-4 py-3 text-sm ${feedback.kind === 'error' ? 'bg-fail/10 text-fail' : 'bg-ok/10 text-ok'}`}
+              >
+                <span className="min-w-0 flex-1">{feedback.message}</span>
+                <button
+                  type="button"
+                  aria-label="关闭提示"
+                  className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
+                  onClick={() => setFeedback(null)}
+                ><Icon name="close" size={14} /></button>
+              </div>
             )}
             {/* B4：选中项失效列表——编辑后 workspace 刷新移除的既有选择,常驻可见,不静默消失。 */}
             {selectionDropped.length > 0 && (
@@ -2058,25 +2069,46 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 )}
               </div>
             )}
-            {/* 第 3、4 步:紧凑进度条置顶,保证“做的时候看得见”。
+            {/* 第 3 步显示生产进度；第 4 步单独统计导出用时。
                 脚本步(activeStep === 1)不置顶——「开始」按钮在该步内容栈底部,
                 进度卡置顶会落在用户视线之外(实测:点完按钮看不到它,等滚上去
                 语义打分已经跑完)。那一步的完整进度卡由 BatchStepScripts 渲染在
                 自己的内容栈末尾,点开跑后由 scrollToProgressRef 滚进视野。
+                检查成片步在批次全部完成且无失败后收起进度条——顶栏批次徽章仍
+                显示「已完成」,把纵向空间留给预览与时间轴;部分失败时保留作告警。
                 注意:不要在 {content} 之后再挂同级节点——.mainCol 是 flex
                 column,而各步根节点是 min-h-0 flex-1,会被压缩到容器高度、
                 内容溢出并盖住后面的兄弟节点(表现为卡片叠在一起)。 */}
-            {progressView && activeStep > 1 && (
+            {progressView && activeStep === 2
+              && !(progressView.finished && !progressView.stages.some((stage) => stage.status === 'failed'))
+              && (
               <div className="mb-2 shrink-0">
                 <BatchProductionProgressCard
                   progress={progressView}
-                  variant={activeStep === 2 ? 'inline' : 'compact'}
+                  variant="inline"
                   controlState={workspace?.batch.controlState}
                   controlBusy={phaseEBusy !== null}
                   onControl={(action) => void controlBatch(action)}
                 />
               </div>
             )}
+            {activeStep === 3 && (() => {
+              const elapsedSec = batchExportElapsedSec(batchTasks, nowMs);
+              const cards = workspace?.cards ?? [];
+              const rendering = cards.some(card => card.exportStatus === 'rendering');
+              const failed = cards.some(card => card.exportStatus === 'failed');
+              const exported = cards.some(card => card.exportStatus === 'exported');
+              const status = rendering ? '导出中' : failed ? '导出失败' : exported ? '已完成' : '尚未导出';
+              return (
+                <section className="card mb-2 shrink-0 p-4" aria-label="导出用时">
+                  <h3 className="text-sm font-semibold text-ink">导出用时</h3>
+                  <p className="mt-1 text-xs text-ink-secondary">
+                    {status} · 累计 {Math.floor(elapsedSec / 60)} 分 {elapsedSec % 60} 秒
+                  </p>
+                  <p className="mt-1 text-xs text-ink-tertiary">仅统计实际导出时间，不含准备与审片等待。</p>
+                </section>
+              );
+            })()}
             {content}
           </main>
         );
@@ -2273,7 +2305,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
                 setSelectedPlanIds(allSelected ? [] : selectable.map(({ planId }) => planId));
               }}
               onReview={(decision) => void reviewPlans(selectedPlanIds, decision)}
-              onReviewPlans={(planIds, decision) => void reviewPlans(planIds, decision)}
+              onReviewPlans={reviewPlans}
               phaseEBusy={phaseEBusy}
               onRetryRender={(taskId) => void retryRenderTask(taskId)}
               onRetryNarration={(taskId) => void retryNarrationTask(taskId)}

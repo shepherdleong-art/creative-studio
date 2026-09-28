@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Icon } from '@/components/ui/Icon';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
 import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
 import { audioClips } from '@/lib/media-core/audio-edit';
@@ -11,7 +10,6 @@ import BatchReviewPoolDock from './BatchReviewPoolDock';
 import BatchReviewPreviewDock from './BatchReviewPreviewDock';
 import BatchReviewInspectorDock from './BatchReviewInspectorDock';
 import BatchReviewTimelineDock from './BatchReviewTimelineDock';
-import BatchUnifiedExportDialog from './BatchUnifiedExportDialog';
 import type { InspectorTab, SelectionTarget, TimelineTool, UnifiedFilmState } from './types';
 import styles from './batch-unified-review.module.css';
 import { subtitleSplitEdit } from './subtitle-edit';
@@ -58,7 +56,7 @@ export interface BatchUnifiedReviewWorkspaceProps {
   onSelectAll: () => void;
   onReview: (decision: 'approved' | 'rework' | 'cancelled') => void;
   /** 按明确成片集合审核;预览区「确认这条」只作用于正在预览的那一条。 */
-  onReviewPlans: (planIds: string[], decision: 'approved' | 'rework' | 'cancelled') => void;
+  onReviewPlans: (planIds: string[], decision: 'approved' | 'rework' | 'cancelled') => Promise<boolean>;
   onReallocate: (planId: string) => void;
   onRetryNarration: (taskId: string) => void;
   onRetryRender: (taskId: string) => void;
@@ -131,13 +129,13 @@ export default function BatchUnifiedReviewWorkspace({
   const [focusedAssetId, setFocusedAssetId] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<BatchOutputPoolAssetView | null>(null);
 
-  // Export dialog
-  const [exportOpen, setExportOpen] = useState(false);
-
   // Arrangements cache: planId -> BatchOutputClipEditView
   const [arrangements, setArrangements] = useState<Record<string, BatchOutputClipEditView>>({});
   // Eye visibility map: planId -> boolean (default true)
   const [eyeMap, setEyeMap] = useState<Record<string, boolean>>({});
+  const reviewPendingRef = useRef(false);
+  const [reviewPending, setReviewPending] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   // Undo / Redo history:撤销/重做把快照整包回放到后端(restore_arrangement),
   // 由后端走正式修订/冲突门禁——前端本地状态不再作为"已保存"的事实来源。
@@ -331,6 +329,9 @@ export default function BatchUnifiedReviewWorkspace({
     });
   }, [workspace.cards, arrangements, eyeMap]);
 
+  const latestFilmsRef = useRef(films);
+  useEffect(() => { latestFilmsRef.current = films; }, [films]);
+
   // Preview film: the FIRST film in `films` where visible === true
   const previewFilm = useMemo(() => {
     return films.find((f) => f.visible) ?? null;
@@ -348,6 +349,33 @@ export default function BatchUnifiedReviewWorkspace({
       [planId]: !(curr[planId] ?? true),
     }));
   }, []);
+
+  const handleToggleReview = async (planId: string, currentApproved: boolean) => {
+    if (reviewPendingRef.current || phaseEBusy !== null) return;
+    reviewPendingRef.current = true;
+    setReviewPending(true);
+    setReviewError(null);
+    try {
+      const saved = await onReviewPlans([planId], currentApproved ? 'cancelled' : 'approved');
+      if (!saved) {
+        setReviewError('审核未保存，请查看页面上方提示后重试。');
+        return;
+      }
+      if (currentApproved) return;
+      // 只在本次单条确认成功后推进；不改变多选导出集合或其他行的眼睛。
+      setEyeMap((current) => ({ ...current, [planId]: false }));
+      const nextFilm = latestFilmsRef.current.find((film) => film.planId !== planId && film.visible);
+      setSelectedPlanId(nextFilm?.planId ?? planId);
+      setSelection(null);
+      setPreviewAsset(null);
+      setPlayheadSec(0);
+    } catch {
+      setReviewError('审核未保存，请重试。');
+    } finally {
+      reviewPendingRef.current = false;
+      setReviewPending(false);
+    }
+  };
 
   // Splitter pointer drag handlers
   const handleSplitterPointerDown = (type: 'left' | 'right' | 'top', e: React.PointerEvent) => {
@@ -545,7 +573,7 @@ export default function BatchUnifiedReviewWorkspace({
 
   return (
     <div className={styles.reviewContainer}>
-      {/* Top Header — v14:标题/操作说明 + 已确认 + 统一导出入口 */}
+      {/* 导出统一在第 4 步进行；检查页只保留审核数量。 */}
       <header className={styles.reviewHeader}>
         <div className="flex min-w-0 items-baseline gap-3">
           <h2 className="shrink-0 text-base font-semibold text-ink">批量剪辑 · 统一审片</h2>
@@ -561,14 +589,6 @@ export default function BatchUnifiedReviewWorkspace({
             <span>/ {films.length}</span>
           </div>
 
-          <button
-            type="button"
-            className="btn-primary h-8 px-3.5 text-xs flex items-center gap-1.5 shadow-sm"
-            onClick={() => setExportOpen(true)}
-          >
-            <span>统一导出 {approvedCount} 条</span>
-            <Icon name="chevron-right" size={12} />
-          </button>
         </div>
       </header>
 
@@ -607,10 +627,9 @@ export default function BatchUnifiedReviewWorkspace({
             playheadSec={playheadSec}
             onSeek={setPlayheadSec}
             poolAssets={poolAssets}
-            onToggleReview={(planId, currentApproved) => {
-              // 「确认这条」只作用于正在预览的这一条成片,与多选集合无关。
-              onReviewPlans([planId], currentApproved ? 'cancelled' : 'approved');
-            }}
+            onToggleReview={handleToggleReview}
+            reviewBusy={reviewPending || phaseEBusy !== null}
+            reviewError={reviewError}
           />
         </div>
 
@@ -743,17 +762,6 @@ export default function BatchUnifiedReviewWorkspace({
         />
       </div>
 
-      {/* Export Dialog */}
-      <BatchUnifiedExportDialog
-        open={exportOpen}
-        onClose={() => setExportOpen(false)}
-        films={films}
-        projectId={projectId}
-        batchId={batchId}
-        onExportStarted={() => {
-          onOutputChanged?.();
-        }}
-      />
     </div>
   );
 }

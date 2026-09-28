@@ -35,7 +35,7 @@ export interface BatchStepReviewProps {
   onSelectAll: () => void;
   onReview: (decision: 'approved' | 'rework' | 'cancelled') => void;
   /** 按明确成片集合审核(预览区「确认这条」只作用于正在预览的那一条) */
-  onReviewPlans: (planIds: string[], decision: 'approved' | 'rework' | 'cancelled') => void;
+  onReviewPlans: (planIds: string[], decision: 'approved' | 'rework' | 'cancelled') => Promise<boolean>;
   phaseEBusy: string | null;
   onRetryRender: (taskId: string) => void;
   onRetryNarration: (taskId: string) => void;
@@ -56,8 +56,9 @@ export interface BatchStepReviewProps {
  */
 export default function BatchStepReview(props: BatchStepReviewProps) {
   return (
-    <div className="flex w-full min-h-0 flex-1 overflow-hidden" data-testid="batch-unified-review-screen">
+    <div className="flex w-full min-h-0 flex-none" data-testid="batch-unified-review-screen">
       <BatchUnifiedReviewWorkspace
+        key={props.selectedBatchId}
         projectId={props.projectId}
         batchId={props.selectedBatchId}
         workspace={props.workspace}

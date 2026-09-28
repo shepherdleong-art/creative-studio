@@ -27,6 +27,23 @@ export function expectedVideoTimeSec(sourceInFrame: number, timelineInFrame: num
 }
 
 /**
+ * 定位某个正文帧应显示哪条片段。批量时间轴的边界以微秒存储且不一定整帧对齐:
+ * 修剪后的边缘会吸附到输出帧网格,而自动分配的相邻边界可能差零点几帧,
+ * 中间留下次帧级空隙。两侧都用四舍五入会让夹在中间的帧无片段可播(被涂黑),
+ * 因此起始侧向下取整、让后续片段前探覆盖——次帧级空隙不会物化成黑帧,
+ * 与渲染器 gapFrames 的 floor 语义一致;真实空位(≥1 帧)仍返回 -1 播黑场。
+ */
+export function activeClipIndexAtBodyFrame<T extends { timelineStartUs: number; timelineEndUs: number }>(
+  clips: T[],
+  bodyFrame: number,
+  fps: number,
+): number {
+  return clips.findIndex((clip) =>
+    bodyFrame >= Math.floor((clip.timelineStartUs / 1_000_000) * fps)
+    && bodyFrame < Math.round((clip.timelineEndUs / 1_000_000) * fps));
+}
+
+/**
  * Seek coalescing: while a seek is still in flight we never write currentTime
  * again — the pending target is remembered by the caller and re-applied from a
  * persistent `seeked` listener. This keeps `seeked` fireable even when the

@@ -56,6 +56,12 @@ export default function AssetUploadGrid({
   const filteredAssets = normalizedQuery
     ? assets.filter((asset) => asset.filename.toLowerCase().includes(normalizedQuery))
     : assets;
+  const unselectedAssets = filteredAssets.filter((asset) => !selectedIds.includes(asset.id));
+
+  const selectAll = () => {
+    const remaining = Math.max(0, maxSelection - selectedIds.length);
+    onSelectionChange([...selectedIds, ...unselectedAssets.slice(0, remaining).map((asset) => asset.id)]);
+  };
 
   const toggle = (id: string) => {
     if (maxSelection === 1) {
@@ -121,7 +127,7 @@ export default function AssetUploadGrid({
                 已上传 {assets.length} 张{normalizedQuery ? `，筛选出 ${filteredAssets.length} 张` : ''}，{selectionLabel}
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {assets.length > 0 && (
                 <div className="relative w-full sm:w-56">
                   <Icon
@@ -153,6 +159,17 @@ export default function AssetUploadGrid({
               {selectedIds.length > 0 && (
                 <button type="button" onClick={() => onSelectionChange([])} className="btn-secondary btn-sm text-xs whitespace-nowrap">
                   清空选择
+                </button>
+              )}
+              {maxSelection > 1 && assets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={selectAll}
+                  disabled={unselectedAssets.length === 0 || selectedIds.length >= maxSelection || deletingId !== null}
+                  title={`保留已选顺序，按当前列表顺序补选，最多 ${maxSelection} 张`}
+                  className="btn-secondary btn-sm text-xs whitespace-nowrap"
+                >
+                  {normalizedQuery ? '全选筛选结果' : '全选图片'}
                 </button>
               )}
             </div>
