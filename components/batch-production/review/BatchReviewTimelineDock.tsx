@@ -12,6 +12,7 @@ import AudioWaveform from '@/components/audio/AudioWaveform';
 import { subtitleSplitEdit } from './subtitle-edit';
 import { videoTrimRange, type VideoTrimRange } from './video-trim';
 import { materialDropInGap } from './material-drop';
+import { buildVideoUsage } from './video-usage';
 
 const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
 const FRAME_US = Math.round(1_000_000 / FINAL_EDIT_FPS);
@@ -188,33 +189,8 @@ export default function BatchReviewTimelineDock({
   const approvedCount = useMemo(() => films.filter((f) => f.approved).length, [films]);
   const approvableCount = useMemo(() => films.filter((f) => f.approvable).length, [films]);
 
-  // 区间重复:跨成片取用同一素材且源区间相交的片段集合(筛选激活时调暗其余片段)。
-  const overlapClipIds = useMemo(() => {
-    if (rowFilter !== 'overlap') return null;
-    const byAsset = new Map<string, Array<{ planId: string; clipId: string; s: number; e: number }>>();
-    for (const film of films) {
-      for (const c of film.arrangement?.clips ?? []) {
-        const list = byAsset.get(c.assetId) ?? [];
-        list.push({ planId: film.planId, clipId: c.clipId, s: c.sourceStartUs, e: c.sourceEndUs });
-        byAsset.set(c.assetId, list);
-      }
-    }
-    const set = new Set<string>();
-    for (const list of byAsset.values()) {
-      for (let i = 0; i < list.length; i++) {
-        for (let j = i + 1; j < list.length; j++) {
-          const a = list[i];
-          const b = list[j];
-          if (a.planId === b.planId) continue;
-          if (Math.min(a.e, b.e) > Math.max(a.s, b.s)) {
-            set.add(a.clipId);
-            set.add(b.clipId);
-          }
-        }
-      }
-    }
-    return set;
-  }, [films, rowFilter]);
+  // 常驻复用/区间检查，含同一成片内的多段使用，与选中和定位状态无关。
+  const videoUsage = useMemo(() => buildVideoUsage(films), [films]);
 
   // Compute repeat statistics for the focused or selected clip's asset(全批次,含筛选隐藏行)
   const activeAssetId = useMemo(() => {
@@ -354,7 +330,10 @@ export default function BatchReviewTimelineDock({
     e.stopPropagation();
     const arrangement = film.arrangement;
     const clip = arrangement?.clips.find(c => c.clipId === clipId);
-    if (!clip || !arrangement?.editable || tool !== 'select') return;
+    if (!clip) return;
+    onSelectFilm(film.planId);
+    onSelectTarget({ planId: film.planId, kind: 'clip', clipId });
+    if (!arrangement?.editable || tool !== 'select') return;
     cancelTrimRef.current?.();
     const asset = poolAssetsById.get(clip.assetId);
     const durationUs = asset?.durationSec ? Math.round(asset.durationSec * 1e6) : null;
@@ -419,6 +398,9 @@ export default function BatchReviewTimelineDock({
     e.stopPropagation();
     const clip = film.arrangement?.clips.find((c) => c.clipId === clipId);
     if (!clip) return;
+    e.preventDefault();
+    onSelectFilm(film.planId);
+    onSelectTarget({ planId: film.planId, kind: 'clip', clipId });
 
     const originStartSec = clip.timelineStartUs / 1e6;
     const startX = e.clientX;
@@ -764,6 +746,20 @@ export default function BatchReviewTimelineDock({
     selection && (selection.kind === 'clip' || selection.kind === 'subtitle' || selection.kind === 'audio')
   );
 
+  const selectedVideoClip = selection?.kind === 'clip'
+    ? films.find(f => f.planId === selection.planId)?.arrangement?.clips.find(c => c.clipId === selection.clipId)
+    : null;
+  const focusSelectedClip = () => {
+    if (!selectedVideoClip) return;
+    setZoom(180);
+    requestAnimationFrame(() => {
+      const scroll = scrollRef.current;
+      if (!scroll) return;
+      const centerSec = (selectedVideoClip.timelineStartUs + selectedVideoClip.timelineEndUs) / 2e6;
+      scroll.scrollLeft = Math.max(0, centerSec * 180 - Math.max(0, scroll.clientWidth - 284) / 2);
+    });
+  };
+
   // Drag and Drop Material Handling
   const handleDragOver = (e: React.DragEvent, target: typeof dropTarget) => {
     e.stopPropagation();
@@ -923,6 +919,7 @@ export default function BatchReviewTimelineDock({
               type="button"
               className={`${styles.filterTab} shrink-0 whitespace-nowrap ${rowFilter === id ? styles.filterTabActive : ''}`}
               aria-pressed={rowFilter === id}
+              title={id === 'overlap' ? '检查同一素材的多段使用（含分割）及源区间重叠' : undefined}
               onClick={() => onRowFilterChange(id)}
             >
               {label}
@@ -1010,6 +1007,15 @@ export default function BatchReviewTimelineDock({
           >
             删除
           </button>
+          <button
+            type="button"
+            className="btn-secondary h-7 px-2 text-xs disabled:opacity-30"
+            disabled={!selectedVideoClip}
+            onClick={focusSelectedClip}
+            title="放大时间轴并定位选中片段，便于修剪短片段"
+          >
+            放大片段
+          </button>
           <div className="mx-1 h-4 w-px bg-hairline" />
           <button
             type="button"
@@ -1081,6 +1087,12 @@ export default function BatchReviewTimelineDock({
 
       {/* 3. Focusbar with Repeat Highlight Message (PRD T-03) */}
       <div className={styles.focusbar}>
+        {videoUsage.repeatedClipCount > 0 && (
+          <p role="status" className="text-xs text-warn">
+            重复检查：{videoUsage.repeatedAssetCount} 个素材被用于 {videoUsage.repeatedClipCount} 个片段
+            {videoUsage.overlapClipCount > 0 ? `，其中 ${videoUsage.overlapClipCount} 个片段存在源区间重叠（斜纹）` : '，源区间未重叠'}。
+          </p>
+        )}
         {repeatStats ? (
           <div className="flex items-center gap-2 text-xs text-ink">
             <span className="inline-flex h-2 w-2 rounded-full bg-[#eb9a32]" />
@@ -1224,6 +1236,10 @@ export default function BatchReviewTimelineDock({
                       <span className="text-warn text-[9px]">已修改未导出</span>
                     )}
                   </div>
+
+                  {!!film.sourceWarnings?.length && (
+                    <p className="mt-1 text-[10px] text-warn" role="status">{film.sourceWarnings.join('；')}</p>
+                  )}
 
                   {/* 重试入口在上(时间轴区域较矮时也能直接点到),失败明细在下。
                       对齐旧卡片:重试配音 / 重试封面 / 换一批画面。 */}
@@ -1386,31 +1402,13 @@ export default function BatchReviewTimelineDock({
                       const isDraftClip = moveDraft?.kind === 'clip' && moveDraft.planId === film.planId && moveDraft.clipId === clip.clipId;
                       const range = trimDraft?.planId === film.planId && trimDraft.clipId === clip.clipId ? trimDraft : clip;
                       const startSec = isDraftClip ? moveDraft.startSec : range.timelineStartUs / 1e6;
-                      const widthPx = Math.max(16, (range.timelineEndUs - range.timelineStartUs) / 1e6 * zoom);
-                      const isSelected = selection?.kind === 'clip' && selection.clipId === clip.clipId;
-                      const isRepeat = activeAssetId != null && clip.assetId === activeAssetId && !isSelected;
-                      const isDimmedByOverlapFilter = overlapClipIds != null && !overlapClipIds.has(clip.clipId);
+                      const widthPx = Math.max(1, (range.timelineEndUs - range.timelineStartUs) / 1e6 * zoom);
+                      const isSelected = selection?.kind === 'clip' && selection.planId === film.planId && selection.clipId === clip.clipId;
+                      const usage = videoUsage.byPlan.get(film.planId)?.get(clip.clipId);
+                      const isRepeat = (usage?.totalUses ?? 0) > 1;
+                      const isDimmedByOverlapFilter = rowFilter === 'overlap' && !isRepeat;
                       const asset = poolAssetsById.get(clip.assetId);
-
-                      // Check source overlap with other clips using same asset in other films
-                      let hasOverlap = false;
-                      if (isRepeat) {
-                        for (const otherFilm of films) {
-                          if (otherFilm.planId === film.planId) continue;
-                          const otherClips = otherFilm.arrangement?.clips ?? [];
-                          for (const oc of otherClips) {
-                            if (oc.assetId === clip.assetId) {
-                              const overlapStart = Math.max(clip.sourceStartUs, oc.sourceStartUs);
-                              const overlapEnd = Math.min(clip.sourceEndUs, oc.sourceEndUs);
-                              if (overlapEnd > overlapStart) {
-                                hasOverlap = true;
-                                break;
-                              }
-                            }
-                          }
-                          if (hasOverlap) break;
-                        }
-                      }
+                      const hasOverlap = usage?.hasOverlap ?? false;
 
                       const isDropTarget = dropTarget?.planId === film.planId && dropTarget.clipId === clip.clipId;
 
@@ -1428,7 +1426,7 @@ export default function BatchReviewTimelineDock({
                           />
                           <div
                             className={`${styles.clipBlock} ${isSelected ? styles.clipBlockSelected : ''} ${
-                              isRepeat ? styles.clipRepeat : ''
+                              isRepeat && !isSelected && (activeAssetId === null || activeAssetId === clip.assetId) ? styles.clipRepeat : ''
                             } ${isDropTarget ? styles.dropTargetActive : ''} ${isDraftClip ? styles.blockMoving : ''} ${
                               isDimmedByOverlapFilter ? styles.clipDim : ''
                             }`}
@@ -1462,6 +1460,7 @@ export default function BatchReviewTimelineDock({
                               <img
                                 src={asset.thumbnailUrl}
                                 alt=""
+                                draggable={false}
                                 className="h-full w-10 shrink-0 object-cover opacity-75"
                               />
                             )}
@@ -1476,9 +1475,11 @@ export default function BatchReviewTimelineDock({
                               </span>
                             </div>
 
-                            {/* Repeat badge if matching (PRD T-03) */}
+                            {/* 复用提示常驻，选择片段后仍保留；真正重叠另用斜纹区分。 */}
                             {isRepeat && (
-                              <span className={styles.clipRepeatBadge}>同一素材</span>
+                              <span className={styles.clipRepeatBadge} title={`本片 ${usage?.usesInFilm} 段，${usage?.filmCount} 条成片共 ${usage?.totalUses} 段${hasOverlap ? '；源区间重叠' : '；源区间未重叠'}`}>
+                                {hasOverlap ? '区间重叠' : '同一素材'} ×{usage?.totalUses}
+                              </span>
                             )}
 
                             {/* Overlap diagonal stripe */}

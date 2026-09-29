@@ -175,6 +175,9 @@ export default function BatchReviewPreviewDock({
       </div>
 
       {reviewError && <p role="alert" className="shrink-0 bg-fail/10 px-3 py-2 text-xs text-fail">{reviewError}</p>}
+      {!previewAsset && !!previewFilm?.sourceWarnings?.length && (
+        <p role="status" className="shrink-0 bg-warn/10 px-3 py-2 text-xs text-warn">{previewFilm.sourceWarnings.join('；')}</p>
+      )}
       <div className={styles.previewStageArea}>
         {previewAsset ? (
           <div className="flex h-full w-full flex-col items-center justify-center p-2">

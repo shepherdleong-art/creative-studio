@@ -260,6 +260,31 @@ try {
   assert.equal(blockedReallocationView.cards.find(({ planId }) => planId === 'plan1')?.status, 'needs_attention', '阻塞重分配必须覆盖旧 completed 展示并保留旧产物');
   assert.deepEqual(blockedReallocationView.cards.find(({ planId }) => planId === 'plan1')?.blockers, ['locked-conflict:segment-1']);
   assert.throws(() => getBatchWorkspace(db, 'p2', 'b1'), /不存在/);
+  db.exec(`
+    CREATE TABLE shot_sets (id TEXT, projectId TEXT);
+    CREATE TABLE shots (id TEXT, shotSetId TEXT, sourceImageId TEXT);
+    CREATE TABLE video_jobs (id TEXT, shotId TEXT);
+    INSERT INTO shot_sets VALUES ('set-a', 'p1'), ('set-b', 'p1');
+    INSERT INTO shots VALUES ('shot-a', 'set-a', 'original'), ('shot-b', 'set-b', 'original');
+    INSERT INTO video_jobs VALUES ('job-a', 'shot-a'), ('job-b', 'shot-b');
+  `);
+  for (const [id, assetId, jobId] of [['source-a', 'timeline-asset', 'job-a'], ['source-b', 'outside-pool-asset', 'job-b']]) {
+    db.prepare(`INSERT INTO batch_asset_sources (id,assetId,sourceKind,locationJson,health,createdAt)
+      VALUES (?,?,'module4',?,'healthy',?)`).run(id, assetId, JSON.stringify({ videoJobId: jobId }), now);
+  }
+  db.prepare(`UPDATE batch_production_versions SET currentAllocationRunId = NULL WHERE id = 'bv1'`).run();
+  const sourceConflictArrangement = JSON.parse(originalOv1ArrangementJson);
+  sourceConflictArrangement.clips.push({ ...sourceConflictArrangement.clips[0], clipId: 'same-source', assetId: 'outside-pool-asset', timelineStartUs: 2_000_000, timelineEndUs: 4_000_000 });
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(JSON.stringify(sourceConflictArrangement));
+  const sourceConflictCard = getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!;
+  assert.equal(sourceConflictCard.approved, true, '同源提醒不影响既有审核');
+  assert.equal(sourceConflictCard.approvable, true, '同源提醒不影响确认');
+  assert.equal(sourceConflictCard.exportEligible, true, '同源提醒不阻止导出');
+  assert.ok(sourceConflictCard.sourceWarnings?.some(message => message.includes('同源图')));
+  assert.equal(sourceConflictCard.blockers.length, 0);
+  db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(originalOv1ArrangementJson);
+  assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!.sourceWarnings?.length, 0,
+    '冲突解除后，实时检查不保留过期警告');
   db.close();
   console.log('batch workspace aggregation tests passed');
 } finally {

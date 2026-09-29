@@ -752,6 +752,18 @@
   border-radius: 0 4px 4px 0;
 }
 
+/* 短视频的左右手柄各至多占四分之一，保留中间区域用于选中/移动。 */
+.clipBlock > .trimHandle {
+  width: min(10px, 25%);
+  touch-action: none;
+}
+
+.clipBlock > .trimHandle::after {
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 50%;
+}
+
 .clipBlock:hover .trimHandle,
 .clipBlockSelected .trimHandle,
 .subtitleChip:hover .trimHandle,

@@ -1,5 +1,29 @@
 import type { BatchTaskTargetKind, BatchTaskWorkType, BatchTaskView } from './tasks.ts';
 
+/** 计划卡在确认输入时就存在；只有分配结果或实际成片版本才能证明已配画面。 */
+export function batchAllocationProgress(
+  tasks: readonly Pick<BatchTaskView, 'workType' | 'status'>[],
+  workspace: { allocationReport: unknown; cards: readonly { versionId: string | null }[] } | null,
+): { status: 'waiting' | 'running' | 'done' | 'failed'; detail?: string } {
+  const active = (workType: BatchTaskWorkType) => tasks.some(task => (
+    task.workType === workType && (task.status === 'queued' || task.status === 'running')
+  ));
+  if (active('semantic_score')) return { status: 'waiting', detail: '等待画面语义匹配完成' };
+  if (active('narration')) return { status: 'waiting', detail: '等待口播完成' };
+  const report = workspace?.allocationReport;
+  if (report && typeof report === 'object' && 'status' in report && report.status === 'blocked') {
+    return { status: 'failed', detail: '素材不足或分配受阻，请查看成片提示' };
+  }
+  if (report != null || (workspace && workspace.cards.length > 0 && workspace.cards.every(card => card.versionId))) {
+    return { status: 'done' };
+  }
+  if (!tasks.some(task => task.workType === 'narration')) {
+    return { status: 'waiting', detail: '等待口播完成' };
+  }
+  // 口播失败仍允许后端继续分配静音预览；失败归口播阶段展示。
+  return { status: 'running' };
+}
+
 export interface BatchRenderTaskLike {
   workType: BatchTaskWorkType;
   targetKind: BatchTaskTargetKind;

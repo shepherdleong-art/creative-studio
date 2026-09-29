@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { batchExportElapsedSec, splitBatchRenderTasks } from '../lib/batch-production/progress-summary.ts';
+import { batchAllocationProgress, batchExportElapsedSec, splitBatchRenderTasks } from '../lib/batch-production/progress-summary.ts';
 import type { BatchTaskView } from '../lib/batch-production/tasks.ts';
 
 const groups = splitBatchRenderTasks([
@@ -39,5 +39,27 @@ assert.equal(batchExportElapsedSec([queued], 9999_000), 0, '排队尚未渲染�
 const broken = task(600, 610);
 broken.attempts[0].finishedAt = 'invalid';
 assert.equal(batchExportElapsedSec([broken], 9999_000), 0, '损坏时间不传播 NaN');
+
+const planned = { allocationReport: null, cards: [{ versionId: null }, { versionId: null }] };
+const speaking = [{ workType: 'narration', status: 'running' }] as const;
+const spoken = [{ workType: 'narration', status: 'succeeded' }] as const;
+assert.deepEqual(batchAllocationProgress(speaking, planned), {
+  status: 'waiting', detail: '等待口播完成',
+}, '截图回归：已有两张计划卡但口播未齐，配画面不得提前完成');
+assert.equal(batchAllocationProgress([], planned).status, 'waiting', '任务尚未拉到时不把空计划当成片');
+assert.equal(batchAllocationProgress(spoken, planned).status, 'running', '口播完成但分配结果未到时继续显示处理中');
+const allocated = { allocationReport: { status: 'ready' }, cards: [{ versionId: 'v1' }] };
+assert.equal(batchAllocationProgress(speaking, allocated).status, 'waiting', '已有旧结果也必须等待本轮口播');
+assert.equal(batchAllocationProgress([{ workType: 'semantic_score', status: 'queued' }], allocated).status,
+  'waiting', '语义任务排队时不得显示配画面完成');
+assert.equal(batchAllocationProgress(spoken, allocated).status, 'done', '真正分配完成后展示完成');
+assert.equal(batchAllocationProgress(spoken, { ...allocated, allocationReport: null }).status,
+  'done', '兼容存在实际版本而无报告的历史成片');
+assert.equal(batchAllocationProgress(spoken, { allocationReport: null, cards: [{ versionId: 'v1' }, { versionId: null }] }).status,
+  'running', '仅部分计划有版本不能代表全部完成');
+assert.equal(batchAllocationProgress(spoken, { ...allocated, allocationReport: { status: 'blocked' } }).status,
+  'failed', '分配受阻不得因为报告存在就标记完成');
+assert.equal(batchAllocationProgress([{ workType: 'narration', status: 'failed' }], planned).status,
+  'running', '口播失败后的静音预览分配仍可推进');
 
 console.log('batch progress summary tests passed');

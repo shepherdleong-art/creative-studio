@@ -11,7 +11,7 @@ import type { BatchProductionStatus } from '@/lib/batch-production/versions';
 import type { BatchLutRow } from '@/lib/batch-production/lut-catalog';
 import type { BatchTasksView } from '@/lib/batch-production/tasks';
 import type { BatchWorkspaceView } from '@/lib/batch-production/batch-workspace';
-import { batchExportElapsedSec, splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
+import { batchAllocationProgress, batchExportElapsedSec, splitBatchRenderTasks } from '@/lib/batch-production/progress-summary';
 import type { DesktopBridge } from '@/desktop/bridge-types';
 import {
   type AssetPrepareTaskView,
@@ -682,7 +682,7 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
     const semanticSucceeded = semantic.filter((task) => task.status === 'succeeded').length;
     const semanticFailed = semantic.filter((task) => task.status === 'failed').length;
     const semanticActive = semantic.filter((task) => task.status === 'running' || task.status === 'queued').length;
-    const allocationDone = workspace?.allocationReport != null || (workspace?.cards.length ?? 0) > 0;
+    const allocationProgress = batchAllocationProgress(batchTasks, workspace);
     const startedAtMs = productionTasks.length > 0
       ? Math.min(...productionTasks.map((task) => new Date(task.createdAt).getTime()))
       : null;
@@ -718,17 +718,10 @@ export default function BatchPreparationPanel({ projectId }: BatchPreparationPan
           narration.length > 0 ? `${narrationSucceeded}/${narration.length}` : undefined,
           narration.length > 0 ? narrationSucceeded / narration.length : undefined,
         ),
-        // 自动配画面不能以"工作区里存在分配报告"为准——那可能是确认输入时
-        // 遗留的旧结果。本轮有语义任务时，等语义任务结束(成功或失败)再看分配状态;
-        // 语义失败不再传染本阶段——开跑流程会走关键词兜底继续分配,失败由
-        // 「匹配画面语义」阶段自己如实展示。
         stage(
           '自动配画面',
-          semantic.length > 0 && semanticActive > 0
-            ? 'waiting'
-            : allocationDone
-              ? 'done'
-              : 'running',
+          allocationProgress.status,
+          allocationProgress.detail,
         ),
       ],
     };

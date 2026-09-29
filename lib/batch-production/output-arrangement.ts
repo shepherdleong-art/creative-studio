@@ -1,4 +1,5 @@
 import { planClipPosition } from '../media-core/clip-position.ts';
+import { resolveVideoTrimRange } from '../media-core/video-trim-range.ts';
 import { editAudioClip, parseAudioEdits, trimAudioClip, moveAudioClip, type AudioEdits, type AudioTrackKind } from '../media-core/audio-edit.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -15,6 +16,7 @@ import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-co
 import { cleanFraming } from '../media-core/cover-title-presets.ts';
 import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
 import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
+import { batchSourceWarnings } from './source-conflicts.ts';
 
 /**
  * 检查成片的片段级编辑（等长 trim / replace、变长修剪、删除、插入、分割）
@@ -117,6 +119,7 @@ export interface BatchOutputClipEditView {
   batchMusicDefaults: { gainDb: number; fadeInSec: number; fadeOutSec: number };
   musicLibrary: BatchOutputMusicTrackView[];
   poolAssets: BatchOutputPoolAssetView[];
+  sourceWarnings?: string[];
 }
 
 export type BatchOutputClipEdit =
@@ -723,6 +726,7 @@ export function getBatchOutputArrangementView(
     outputVersionId: lineage.currentVersionId,
     versionNumber: lineage.versionNumber,
     editable: Boolean(lineage.currentVersionId) && lineage.inputState === 'frozen' && lineage.controlState !== 'stopped',
+    sourceWarnings: batchSourceWarnings(db, arrangement),
     editRevision: readEditRevision(arrangement),
     visualDurationUs: clips.at(-1)?.timelineEndUs ?? 0,
     clips,
@@ -1005,22 +1009,23 @@ export function applyBatchOutputClipEdit(
         clip.sourceEndUs = normalizedEndUs;
         visualChanged = true;
       } else {
-        const normalizedStartUs = frameAlignUs(edit.sourceStartUs);
-        const normalizedEndUs = frameAlignUs(edit.sourceEndUs);
+        const rate = finiteNumber(clip.playbackRate) ?? sourceLengthUs / (Number(clip.timelineEndUs) - Number(clip.timelineStartUs));
+        const range = resolveVideoTrimRange({
+          sourceStartUs: current.startUs, sourceEndUs: current.endUs,
+          timelineStartUs: Number(clip.timelineStartUs), timelineEndUs: Number(clip.timelineEndUs),
+        }, edit.sourceStartUs, edit.sourceEndUs, rate);
+        const { sourceStartUs: normalizedStartUs, sourceEndUs: normalizedEndUs,
+          timelineStartUs: nextStart, timelineEndUs: nextEnd } = range;
         if (normalizedEndUs <= normalizedStartUs) throw new BatchDomainError('invalid_input', '截取区间无效');
         const poolRow = readAvailableEditingAsset(db, projectId, lineage.batchVersionId, String(clip.assetId));
         if (!poolRow) throw new BatchDomainError('conflict', '片段素材不在本批次冻结素材池或项目可用素材中,无法校验截取区间');
         const durationUs = poolAssetDurationUs(poolRow);
         if (durationUs === null) throw new BatchDomainError('invalid_input', '素材缺少时长信息,无法校验截取区间');
         if (normalizedEndUs > durationUs) throw new BatchDomainError('invalid_input', '截取区间超出素材时长');
-        const rate = finiteNumber(clip.playbackRate) ?? sourceLengthUs / (Number(clip.timelineEndUs) - Number(clip.timelineStartUs));
-        if ((normalizedEndUs - normalizedStartUs) / rate < MIN_CLIP_DURATION_US) {
+        if ((normalizedEndUs - normalizedStartUs) / rate < MIN_CLIP_DURATION_US || nextEnd - nextStart < MIN_CLIP_DURATION_US) {
           throw new BatchDomainError('invalid_input', '修剪后片段长度不能短于 0.5 秒');
         }
         if (sameClipRange(clip, normalizedStartUs, normalizedEndUs)) return unchanged;
-        const slip = normalizedEndUs - normalizedStartUs === sourceLengthUs;
-        const nextStart = slip ? Number(clip.timelineStartUs) : frameAlignUs(Number(clip.timelineStartUs) + (normalizedStartUs - current.startUs) / rate);
-        const nextEnd = frameAlignUs(nextStart + (normalizedEndUs - normalizedStartUs) / rate);
         if (nextStart < (index > 0 ? Number(clips[index - 1].timelineEndUs) : 0) || nextEnd > (index + 1 < clips.length ? Number(clips[index + 1].timelineStartUs) : Infinity)) throw new BatchDomainError('invalid_input', '修剪超出当前空位，不能覆盖相邻片段');
         clip.timelineStartUs = nextStart;
         clip.timelineEndUs = nextEnd;
@@ -1624,7 +1629,7 @@ export function applyBatchOutputClipEdit(
 
       // 封面是独立的冻结素材抽帧决定,范围是封面素材整段原片;
       // 时间线片段窗口变化不应把合法的封面时间点重置到第一片段。
-      const warnings = buildEditWarnings(clips, arrangement, deleted);
+      const warnings = [...buildEditWarnings(clips, arrangement, deleted), ...batchSourceWarnings(db, arrangement)];
       db.prepare(`
         UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?
       `).run(JSON.stringify(arrangement), outputVersionId);

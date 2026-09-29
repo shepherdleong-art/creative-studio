@@ -20,6 +20,7 @@ export interface UnifiedFilmState {
   arrangement: BatchOutputClipEditView | null;
   visible: boolean;
   warnings: string[];
+  sourceWarnings?: string[];
   blockers: string[];
   /** 口播任务(失败时可重试配音);来自 workspace 卡片视图。 */
   narrationTask: BatchWorkspaceView['cards'][number]['narrationTask'];

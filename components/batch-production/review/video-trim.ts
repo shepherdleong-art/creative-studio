@@ -1,4 +1,5 @@
 import { FINAL_EDIT_FPS } from '../../../lib/media-core/render-contract.ts';
+import { resolveVideoTrimRange } from '../../../lib/media-core/video-trim-range.ts';
 
 type Clip = {
   clipId: string;
@@ -11,7 +12,6 @@ type Clip = {
 export type VideoTrimRange = Pick<Clip, 'sourceStartUs' | 'sourceEndUs' | 'timelineStartUs' | 'timelineEndUs'>;
 const toFrame = (us: number) => us * FINAL_EDIT_FPS / 1e6;
 const fromFrame = (frame: number) => Math.round(frame * 1e6 / FINAL_EDIT_FPS);
-const align = (us: number) => fromFrame(Math.round(toFrame(us)));
 
 /** Plan the same source-frame/timeline rounding used by trim_variable before sending it. */
 export function videoTrimRange(clip: Clip, clips: Clip[], edge: 'start' | 'end', requestedTimelineUs: number, assetDurationUs: number | null): VideoTrimRange {
@@ -24,8 +24,8 @@ export function videoTrimRange(clip: Clip, clips: Clip[], edge: 'start' | 'end',
   const nextStart = ordered[index + 1]?.timelineStartUs ?? Infinity;
   const rate = clip.playbackRate ?? (clip.sourceEndUs - clip.sourceStartUs) / (clip.timelineEndUs - clip.timelineStartUs);
   if (!(rate > 0)) return original;
-  const start = align(clip.sourceStartUs);
-  const end = Math.min(align(clip.sourceEndUs), fromFrame(Math.floor(toFrame(assetDurationUs))));
+  const start = clip.sourceStartUs;
+  const end = clip.sourceEndUs;
   const origin = edge === 'start' ? clip.timelineStartUs : clip.timelineEndUs;
   const sourceOrigin = edge === 'start' ? clip.sourceStartUs : clip.sourceEndUs;
   const min = edge === 'start' ? Math.max(0, clip.sourceStartUs + (previousEnd - clip.timelineStartUs) * rate) : start + 500_000 * rate;
@@ -40,12 +40,9 @@ export function videoTrimRange(clip: Clip, clips: Clip[], edge: 'start' | 'end',
     const sourceStartUs = edge === 'start' ? fromFrame(sourceFrame) : start;
     const sourceEndUs = edge === 'end' ? fromFrame(sourceFrame) : end;
     if (sourceStartUs === clip.sourceStartUs && sourceEndUs === clip.sourceEndUs) return original;
-    const length = sourceEndUs - sourceStartUs;
-    const slip = length === clip.sourceEndUs - clip.sourceStartUs;
-    const timelineStartUs = slip ? clip.timelineStartUs : align(clip.timelineStartUs + (sourceStartUs - clip.sourceStartUs) / rate);
-    const timelineEndUs = align(timelineStartUs + length / rate);
-    if (length / rate < 500_000 || sourceStartUs < 0 || sourceEndUs > assetDurationUs || timelineStartUs < previousEnd || timelineEndUs > nextStart) return null;
-    return { sourceStartUs, sourceEndUs, timelineStartUs, timelineEndUs };
+    const result = resolveVideoTrimRange(clip, sourceStartUs, sourceEndUs, rate);
+    if ((result.sourceEndUs - result.sourceStartUs) / rate < 500_000 || result.timelineEndUs - result.timelineStartUs < 500_000 || result.sourceStartUs < 0 || result.sourceEndUs > assetDurationUs || result.timelineStartUs < previousEnd || result.timelineEndUs > nextStart) return null;
+    return result;
   };
   // Fractional playback rates can put double-rounded endpoints one frame outside
   // a gap. Try nearby source frames, then safely retain the existing range.
