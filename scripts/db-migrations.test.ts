@@ -139,8 +139,10 @@ assert.ok(
   ),
   'the workflow default trigger must remain in the append-only core migration stream',
 );
+const publishedMigrations = CORE_DB_MIGRATIONS.slice(0, CORE_DB_MIGRATIONS.findIndex((sql) => sql.includes("CREATE TABLE IF NOT EXISTS font_favorites")));
+assert.ok(publishedMigrations.length > 0);
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-1),
+  publishedMigrations.at(-1),
   `UPDATE jobs
    SET size = (SELECT p.size FROM projects p WHERE p.id = jobs.projectId)
    WHERE COALESCE(size, '') = ''
@@ -151,7 +153,7 @@ assert.equal(
   'the repaired project size must be copied to empty scene-job snapshots',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-2),
+  publishedMigrations.at(-2),
   `UPDATE projects
    SET size = prompt, prompt = '', status = 'draft', referenceGuidanceMode = 'none'
    WHERE size = ''
@@ -161,12 +163,12 @@ assert.equal(
   'the production identity insert regression must be repaired by an appended migration',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-3),
+  publishedMigrations.at(-3),
   `CREATE INDEX IF NOT EXISTS idx_project_export_identities_project ON project_export_identities(projectId)`,
   'new core migrations must be appended without rewriting published entries',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-4),
+  publishedMigrations.at(-4),
   `CREATE TABLE IF NOT EXISTS project_export_identities (
     id TEXT PRIMARY KEY,
     projectId TEXT NOT NULL,
@@ -182,67 +184,67 @@ assert.equal(
   'the export identities table must follow the production identity columns',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-5),
+  publishedMigrations.at(-5),
   `ALTER TABLE projects ADD COLUMN currentExportIdentityId TEXT`,
   'the currentExportIdentityId column must precede the export identities table',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-6),
+  publishedMigrations.at(-6),
   `ALTER TABLE projects ADD COLUMN namingDate TEXT NOT NULL DEFAULT ''`,
   'the production identity namingDate migration must precede the export identities table',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-7),
+  publishedMigrations.at(-7),
   `ALTER TABLE projects ADD COLUMN editorName TEXT NOT NULL DEFAULT ''`,
   'the editorName column must precede namingDate',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-8),
+  publishedMigrations.at(-8),
   `ALTER TABLE projects ADD COLUMN productionType TEXT NOT NULL DEFAULT ''`,
   'the productionType column must precede editorName',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-9),
+  publishedMigrations.at(-9),
   `ALTER TABLE projects ADD COLUMN productSubmodel TEXT NOT NULL DEFAULT ''`,
   'the productSubmodel column must precede productionType',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-10),
+  publishedMigrations.at(-10),
   `ALTER TABLE projects ADD COLUMN storeCode TEXT NOT NULL DEFAULT ''`,
   'the storeCode column must be the first production identity column',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-11),
+  publishedMigrations.at(-11),
   `ALTER TABLE video_jobs ADD COLUMN displayName TEXT`,
   'the previously published tail migration must keep its position',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-12),
+  publishedMigrations.at(-12),
   `ALTER TABLE jobs ADD COLUMN creationIndex INTEGER NOT NULL DEFAULT 0`,
   'the C4 creation-index migration must keep its position before the C5 tail',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-13),
+  publishedMigrations.at(-13),
   `ALTER TABLE jobs ADD COLUMN createdAt TEXT`,
   'the scene-job creation timestamp migration must precede its index migration',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-14),
+  publishedMigrations.at(-14),
   `ALTER TABLE video_jobs ADD COLUMN rejectReason TEXT`,
   'the previous rejection migration must keep its position',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-15),
+  publishedMigrations.at(-15),
   `ALTER TABLE video_jobs ADD COLUMN rejectedAt TEXT`,
   'the previous rejection migration must keep its position',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-16),
+  publishedMigrations.at(-16),
   `ALTER TABLE projects ADD COLUMN lastOpenedAt TEXT`,
   'the last-opened migration must remain before the rejection migrations',
 );
 assert.equal(
-  CORE_DB_MIGRATIONS.at(-17),
+  publishedMigrations.at(-17),
   `ALTER TABLE script_drafts ADD COLUMN generationDurationMs INTEGER`,
   'the previously published tail migration must keep its position',
 );
