@@ -26,6 +26,10 @@ import type { TailFrameCapability, TailFrameProtocol } from './video-providers/t
  *   原样透传腾讯，Duration=10 真实任务产出 10.042s 生效）。
  *   images[1] 会被下游当参考图（Reference），
  *   比例落回 16:9 默认值且末帧不收束——禁止用 images 双图表达可灵尾帧。
+ * - Kling 2.5（2026-09-29 腾讯文档确认）：支持首尾帧且要求 1080P，
+ *   复用上述腾讯原生协议；2.5 公司链路末帧收束尚未做真实任务验证。
+ *   https://cloud.tencent.com/document/product/1823/135742
+ *   https://cloud.tencent.com/document/api/266/126239
  * - 公司 Seedance（doubao-seedance-2-0(-fast)-260128）：images[1] 即尾帧，
  *   比例跟随图片，末帧收束，实测正确。
  * - 公司 Seedance 2.5（doubao-seedance-2-5-260628，2026-09-08 加入并
@@ -42,8 +46,9 @@ import type { TailFrameCapability, TailFrameProtocol } from './video-providers/t
  * POST /v1/videos 前失败关闭。
  */
 
-/** 卡 0 核验的精确模型别名 → 尾帧协议；禁止宽泛正则，新增别名需独立证据 */
+/** 有文档或实测依据的精确模型别名 → 尾帧协议；禁止宽泛正则，证据范围见上。 */
 const COMPANY_TAIL_FRAME_MODEL_PROTOCOLS: Record<string, TailFrameProtocol> = {
+  'kling-2.5': 'company-gateway-kling',
   'kling-3.0': 'company-gateway-kling',
   // 2026-09-10 真实任务：images[0] 首帧 + end_image_url 尾帧；见当日验证记录。
   'qiniuyun/kling-3.0': 'company-gateway-qiniuyun-kling',

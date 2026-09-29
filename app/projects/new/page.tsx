@@ -8,12 +8,11 @@ import {
   getImageModelCapabilities,
 } from '@/lib/image-model-capabilities';
 import {
-  GPT_IMAGE_2_RESOLUTIONS,
   GPT_IMAGE_2_SIZE_MAP,
   resolveGptImage2Size,
 } from '@/lib/gpt-image-2-size-presets';
 import { companyImageCapsForModel } from '@/lib/company-gateway-size';
-import { getSupportedImageAspectRatios } from '@/lib/image-generation-settings';
+import { getSupportedImageAspectRatios, getSupportedImageResolutions } from '@/lib/image-generation-settings';
 import {
   STORE_CODES,
   PRODUCTION_TYPES,
@@ -66,8 +65,8 @@ export default function NewProjectPage() {
     ? aspectRatio
     : (aspectRatioOptions.includes('1:1') ? '1:1' : aspectRatioOptions[0] || '1:1');
   const availableResolutions = useMemo(
-    () => Object.keys(GPT_IMAGE_2_SIZE_MAP[selectedAspectRatio] || {}),
-    [selectedAspectRatio],
+    () => getSupportedImageResolutions(model, selectedAspectRatio),
+    [model, selectedAspectRatio],
   );
   const selectedResolution = availableResolutions.includes(resolution)
     ? resolution
@@ -137,7 +136,7 @@ export default function NewProjectPage() {
         </div>
         <div>
           <label className="label">画面比例</label>
-          <select value={selectedAspectRatio} onChange={(e) => { setAspectRatio(e.target.value); const avail = Object.keys(GPT_IMAGE_2_SIZE_MAP[e.target.value] || {}); if (!avail.includes(resolution)) setResolution(avail[0] || '1k'); }} className={modelControlClass}>
+          <select value={selectedAspectRatio} onChange={(e) => { setAspectRatio(e.target.value); const avail = getSupportedImageResolutions(model, e.target.value); if (!avail.includes(resolution)) setResolution(avail[0] || '1k'); }} className={modelControlClass}>
             {aspectRatioOptions.map((r) => (<option key={r} value={r}>{r}</option>))}
           </select>
         </div>
@@ -145,7 +144,7 @@ export default function NewProjectPage() {
         <div>
           <label className="label">清晰度</label>
           <select value={selectedResolution} onChange={(e) => setResolution(e.target.value)} className={modelControlClass}>
-            {GPT_IMAGE_2_RESOLUTIONS.map((r) => {
+            {availableResolutions.map((r) => {
               const presetSize = GPT_IMAGE_2_SIZE_MAP[selectedAspectRatio]?.[r];
               // 原生像素交付的公司模型只承诺档位与比例，不展示具体像素
               const label = !presetSize ? `${r} — 不支持` : (nativePixelUi ? r : `${r} → ${presetSize}`);

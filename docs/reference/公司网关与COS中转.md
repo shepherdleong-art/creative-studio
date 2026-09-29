@@ -13,6 +13,10 @@ macOS 启动器只对 LiteLLM 子进程清除大小写两套 `HTTP_PROXY` / `HTT
 
 ## `company-gateway-size.ts` — size 白名单、吸附与裁切映射
 
+Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默认 600 秒（2026-09-29 修正）；上文脚本调用的 110/120 秒约定不适用于这个同步生图分支。调整代理时须同时核对该模型的 `litellm_params.timeout`，避免较短代理超时截断长耗时生图。
+
+2026-09-29 新增：Kling 2.5 单首帧与首尾帧均显式 `OutputConfig.Resolution=1080P`；首尾帧按腾讯文档开放精确别名，首帧 `images[0]`、尾帧 `LastFrameUrl`，两帧必须经 COS（公司链路末帧收束未新增实测）；Nano Banana 3.0/3.1 走腾讯原生 `OutputConfig` 的 1K/2K/4K；Seedream 5.0 Pro 走同步 `/v1/images/generations`，`size` 必须传 `1K`/`2K` 档位并在提示词指定画幅（具体像素在公司链路实测落默认 2K）。三款图片均采用原生像素交付。官方文档、支持范围与实测记录见 [公司模型接入与验证](../2026-09-29-公司模型接入与验证.md)。下文旧 seedream 规则不适用于精确别名 `doubao-seedream-5-0-pro-image`。
+
 - `company-gateway-size.ts` — 公司模型网关（llm-gateway-idc.linshimuye.com，经本地 LiteLLM 代理转发，代理配置在 `config.yaml`）的 size 白名单与吸附逻辑；`gateway-task-image` / `openai-video` 适配器仅对公司模型把请求 size 吸附到文档允许的像素组合并（仅可灵）补 `response_format`（qiniuyun/* 实测收 `png` 并回无损 PNG——2K 3:4 约 2.8MB，而 jpeg 仅 ~300KB 压缩发糊，2026-08-21 真实任务验证；image2/seedream 维持历史 `jpeg`）；网关完成态常不带产物 URL，两个适配器都会回退用**提交时返回的原始任务 id** 拼 `/v1/videos/<id>/content` 下载（轮询响应里的 id 可能丢 model_id，拼地址不要用它）。视频侧：可灵走 §6.2 像素表（档位偏好 1K）；**Seedance 2.5 固定按火山官网 1080p 像素表送 size**（2026-09-08 真实任务核验 9:16 `1080x1920`，成片 HEVC 10bit；`response_format` 对 seedance 不发送——从未核验过）；**Seedance 2.0 fast 官方最高 720p**（同日实测传 1080p 创建前 400「resolution ... not valid for doubao-seedance-2-0-fast in r2v」），与其余 doubao-seedance 一样省略 size 走上游默认。`qiniuyun/gpt-image-2-medium`（2026-08-21 逐格真实任务探测）放行 2K×{1:1,3:4,4:3,16:9,9:16} + 4K×{1:1,4:3,16:9,9:16}，并经 `CompanyModelCaps.exclude` 单格排除 4K 3:4：1K 档被网关映射成 1080 类视频制式尺寸、4K 3:4 映射成 2160x2878，均不满足上游「宽高 16 整除」被拒；3K 档与 3:2/2:3/21:9 提交即拒。命中排除格时优先「裁切映射」——同档位找能居中裁切覆盖目标框的跨比例好格（4K 3:4 → 4K 9:16 的 2160x3840，交付端 normalize 裁回 3:4 名义格 2160x2880，真 4K 级画质），没有可裁格才同比例就近换档。开启 `nativeDelivery` 的公司模型（目前 qiniuyun/* 与 image2-*，均逐格实测过）按网关原生像素交付：`queue.ts` 的规整目标用 `companyImageDeliverySize`（名义格子比例）只裁齐比例、绝不缩放——同比例白赚网关额外像素（image2 2K 3:4 实返 1920x2560），比例略偏的裁齐（1K 3:4 → 1024x1366）；新建项目页清晰度选项对这类模型只展示 1K/2K/4K 档位与比例，不展示具体像素。
 
 ## `cos-media.ts` — 腾讯云 COS 参考图中转

@@ -123,6 +123,24 @@ function ensureCompanyImageProviders(db: ReturnType<typeof getDb>) {
       model: 'qiniuyun/gpt-image-2-medium',
       defaultCostPerImage: 0.5,
     },
+    {
+      id: 'company-gateway-seedream-5-0-pro',
+      name: '公司 Seedream 5.0 Pro',
+      model: 'doubao-seedream-5-0-pro-image',
+      defaultCostPerImage: null,
+    },
+    {
+      id: 'company-gateway-nano-banana-pro',
+      name: '公司 Nano Banana Pro',
+      model: 'nano-banana-3.0',
+      defaultCostPerImage: null,
+    },
+    {
+      id: 'company-gateway-nano-banana-2',
+      name: '公司 Nano Banana 2',
+      model: 'nano-banana-3.1',
+      defaultCostPerImage: null,
+    },
   ];
   const insert = db.prepare(`
     INSERT INTO providers
@@ -336,6 +354,12 @@ export function seedVideoProviders() {
  */
 function ensureCompanyVideoProviders(db: ReturnType<typeof getDb>) {
   const companyProviders = [
+    {
+      id: 'company-kling-2-5',
+      name: '公司可灵 2.5 · 1080p',
+      modelEnv: 'COMPANY_KLING_2_5_VIDEO_MODEL',
+      defaultModel: 'kling-2.5',
+    },
     {
       id: 'company-kling-3-0',
       name: '公司可灵 3.0',

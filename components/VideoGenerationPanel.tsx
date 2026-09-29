@@ -6,6 +6,7 @@ import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
 import { Icon } from '@/components/ui/Icon';
+import { videoDurationOptions, normalizeVideoDraftDuration } from '@/lib/video-duration';
 import {
   collectVideoMotionTailImageIds,
   createVideoMotionRow,
@@ -163,6 +164,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       : preferredProvider?.id || '';
   const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability | undefined =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.tailFrameCapability;
+  const getRowDurationOptions = (row: { providerId: string }) => {
+    const provider = providers.find((item) => item.id === getRowProviderId(row));
+    return videoDurationOptions(provider?.type || '', provider?.defaultModel || '');
+  };
+  const getRowDuration = (row: VideoMotionRow, value = row.durationSec) =>
+    normalizeVideoDraftDuration(value, getRowDurationOptions(row));
   const getRowMultiShotCapability = (row: { providerId: string }): VideoProvider['multiShotCapability'] =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.multiShotCapability;
 
@@ -645,7 +652,9 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     replaceActiveMotionRows(result.rows);
   };
   const updateRowProvider = (rowKey: string, providerId: string) => {
-    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, providerId }));
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({
+      ...row, providerId, durationSec: getRowDuration({ ...row, providerId }),
+    }));
     replaceActiveMotionRows(result.rows);
   };
   const updateRowMultiShot = (rowKey: string, multiShot: boolean) => {
@@ -655,7 +664,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const updateRowDuration = (rowKey: string, raw: number) => {
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
       const v = Number.isFinite(raw) && raw > 0 ? raw : 5;
-      return { ...r, durationSec: Math.max(2, Math.min(15, v)) };
+      return { ...r, durationSec: getRowDuration(r, v) };
     });
     replaceActiveMotionRows(result.rows);
   };
@@ -849,7 +858,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         prompt: r.prompt.trim(),
         templateId: r.templateId || null,
         providerId: getRowProviderId(r),
-        durationSec: r.durationSec,
+        durationSec: getRowDuration(r),
         tailImageId: r.tailImageId,
         ...(getRowMultiShotCapability(r)?.supported === true ? { multiShot: r.multiShot } : {}),
       }))
@@ -969,7 +978,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           prompt: row.prompt.trim(),
           templateId: row.templateId || null,
           providerId: getRowProviderId(row),
-          durationSec: row.durationSec,
+          durationSec: getRowDuration(row),
           tailImageId: row.tailImageId,
           ...(getRowMultiShotCapability(row)?.supported === true ? { multiShot: row.multiShot } : {}),
         }));
@@ -1049,9 +1058,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const updateBulkRowDuration = (shotId: string, rowKey: string, raw: number) => {
     if (creatingRef.current) return;
     const value = Number.isFinite(raw) && raw > 0 ? raw : 5;
-    const durationSec = Math.max(2, Math.min(15, value));
     const rows = getShotRows(shotId);
-    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, durationSec } : row));
+    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, durationSec: getRowDuration(row, value) } : row));
   };
 
   const applyBulkProvider = (providerId: string) => {
@@ -1062,19 +1070,26 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       return;
     }
     for (const shot of safeShots) {
-      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, providerId })));
+      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({
+        ...row, providerId, durationSec: getRowDuration({ ...row, providerId }),
+      })));
     }
     setBulkStatus(`已将供应商应用到 ${safeShots.length} 个分镜。`);
+  };
+
+  const getBulkDurationOptions = () => {
+    const rows = safeShots.flatMap((shot) => getShotRows(shot.id));
+    const options = getRowDurationOptions({ providerId: bulkProviderId });
+    return options.filter((duration) => rows.every((row) => getRowDurationOptions(row).includes(duration)));
   };
 
   const applyBulkDuration = (raw: string) => {
     if (creatingRef.current) return;
     setBulkDuration(raw);
     const durationSec = Number(raw);
-    // 允许清空和输入两位数，完整有效的时长才同步到所有分镜。
-    if (!Number.isFinite(durationSec) || durationSec < 2 || durationSec > 15) return;
+    if (!getBulkDurationOptions().includes(durationSec)) return;
     for (const shot of safeShots) {
-      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, durationSec })));
+      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, durationSec: getRowDuration(row, durationSec) })));
     }
     setBulkStatus(`已将时长 ${durationSec} 秒应用到 ${safeShots.length} 个分镜。`);
   };
@@ -1580,14 +1595,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         <option value="">模板（可选）</option>
                         {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                       </select>
-                      <input
-                        type="number" min={2} max={15}
-                        value={row.durationSec}
+                      <select
+                        value={getRowDuration(row)}
                         onChange={(e) => updateRowDuration(row.key, Number(e.target.value))}
                         className="input-field video-control text-center"
                         title="秒数"
                         disabled={creating}
-                      />
+                      >
+                        {getRowDurationOptions(row).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+                      </select>
                       {multiShotCapability?.supported === true && (
                         <button
                           type="button"
@@ -1742,17 +1758,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               <div className="video-bulk-global-control">
                 <label htmlFor="bulk-duration">时长</label>
                 <div className="video-bulk-global-control-row">
-                  <input
+                  <select
                     id="bulk-duration"
-                    type="number"
-                    min={2}
-                    max={15}
                     className="input-field video-control text-center"
-                    value={bulkDuration}
+                    value={normalizeVideoDraftDuration(Number(bulkDuration), getBulkDurationOptions())}
                     onChange={(event) => applyBulkDuration(event.target.value)}
-                    onBlur={() => applyBulkDuration(String(Math.max(2, Math.min(15, Number(bulkDuration) || 5))))}
                     disabled={creating}
-                  />
+                  >
+                    {getBulkDurationOptions().map((seconds) => <option key={seconds} value={seconds}>{seconds}</option>)}
+                  </select>
                   <span className="video-bulk-unit">秒</span>
                 </div>
               </div>
@@ -1831,16 +1845,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               rows={2}
                               disabled={creating}
                             />
-                            <input
-                              type="number"
-                              min={2}
-                              max={15}
+                            <select
                               className="input-field video-control video-bulk-duration"
-                              value={row.durationSec}
+                              value={getRowDuration(row)}
                               onChange={(event) => updateBulkRowDuration(shot.id, row.key, Number(event.target.value))}
                               title="秒数"
                               disabled={creating}
-                            />
+                            >
+                              {getRowDurationOptions(row).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+                            </select>
                             <div className="video-bulk-row-status" aria-label="运镜状态">
                               {row.tailImageId && <span className="video-bulk-badge is-tail">带尾帧</span>}
                               {isAutoTransition && <span className="video-bulk-badge is-tail">转场提示词</span>}

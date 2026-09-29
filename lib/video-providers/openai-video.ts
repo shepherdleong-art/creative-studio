@@ -16,6 +16,7 @@ import {
   uploadCompanyTailFrameImages,
 } from '../company-gateway-tail-frame.ts';
 import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
+import { videoDurationError } from '../video-duration.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
 
 /**
@@ -117,6 +118,11 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     const cleanBase = baseUrl.replace(/\/$/, '');
     const url = `${cleanBase}/v1/videos`;
     const isQiniuKling = request.model === 'qiniuyun/kling-3.0';
+    const isCompanyKling25 = request.model === 'kling-2.5';
+    if (isCompanyKling25) {
+      const durationError = videoDurationError('openai-video', request.model, request.durationSec);
+      if (durationError) throw new Error(durationError);
+    }
     if (isQiniuKling && (!Number.isInteger(request.durationSec) || request.durationSec < 3 || request.durationSec > 15)) {
       throw new Error('七牛可灵 3.0 视频时长必须为 3–15 秒的整数');
     }
@@ -239,10 +245,10 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
         // （2026-08-18 实测落缺省 5s），而 OutputConfig 字段会原样透传给腾讯
         // （腾讯 Kling Duration 3-15，默认 5）；同日首尾帧真实任务验证
         // Duration=10 产出 10.042s 生效。
-        const outputConfig: Record<string, unknown> = { Duration: request.durationSec };
+        // Kling 2.5 首尾帧要求 1080P；即使尺寸探测失败，也不能落回默认 720P。
+        const outputConfig: Record<string, unknown> = { Duration: request.durationSec, Resolution: '1080P' };
         if (aspectRatio) {
           outputConfig.AspectRatio = aspectRatio;
-          outputConfig.Resolution = '1080P';
         }
         body.OutputConfig = outputConfig;
       } else {
@@ -250,6 +256,10 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
           ? snapCompanyVideoSize(sourceDims.width, sourceDims.height, companyCaps)
           : null;
         if (snappedSize) body.size = snappedSize;
+        if (isCompanyKling25) {
+          // VOD 默认为 720P，不能只凭 size 假定是 1080P；单首帧也显式送原生参数。
+          body.OutputConfig = { Resolution: '1080P', Duration: request.durationSec };
+        }
       }
       // seedance 双图 size 策略按模型分：2.0 fast 无 caps 本就不送
       // （2026-08-17 已核验合同，双图进真首尾帧、比例跟随图片）；

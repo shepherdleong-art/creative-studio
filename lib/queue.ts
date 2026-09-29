@@ -484,7 +484,7 @@ async function runJob(
           return;
         }
       }
-      logInfo('提交任务到网关（异步任务协议）...');
+      logInfo('提交图片生成请求到网关...');
       const submitResult = await submitGatewayTaskImage(
         {
           model: job.model,
@@ -498,7 +498,8 @@ async function runJob(
           referenceGuidanceMode: (job.referenceGuidanceMode || 'preserve_subject') as 'preserve_subject' | 'none',
         },
         apiKey,
-        provider.baseUrl
+        provider.baseUrl,
+        { onProgress: logInfo, timeoutMs, signal: reqAbort.signal },
       );
       if (submitResult.imageTransports?.length) {
         logInfo(`图片传输方式: ${submitResult.imageTransports.map((t, i) => `图${i + 1}=${t}`).join(', ')}`);
