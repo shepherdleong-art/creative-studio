@@ -1353,10 +1353,11 @@ try {
   db.exec(`
     CREATE TABLE shot_sets (id TEXT PRIMARY KEY, projectId TEXT);
     CREATE TABLE shots (id TEXT PRIMARY KEY, shotSetId TEXT, sourceImageId TEXT);
-    CREATE TABLE video_jobs (id TEXT PRIMARY KEY, shotId TEXT);
+    CREATE TABLE video_jobs (id TEXT PRIMARY KEY, shotId TEXT, shotSetId TEXT, sourceImageId TEXT,
+      templateId TEXT, displayName TEXT DEFAULT '测试视频', createdAt TEXT);
     INSERT INTO shot_sets VALUES ('source-set-1', 'project-1'), ('source-set-2', 'project-1');
     INSERT INTO shots VALUES ('source-shot-a', 'source-set-1', 'original-image'), ('source-shot-c', 'source-set-2', 'original-image');
-    INSERT INTO video_jobs VALUES ('source-job-a', 'source-shot-a'), ('source-job-c', 'source-shot-c');
+    INSERT INTO video_jobs (id, shotId) VALUES ('source-job-a', 'source-shot-a'), ('source-job-c', 'source-shot-c');
   `);
   for (const [assetId, jobId] of [[assetA, 'source-job-a'], [assetC, 'source-job-c']]) {
     db.prepare(`INSERT INTO batch_asset_sources (id, assetId, sourceKind, locationJson, health, createdAt)
@@ -1371,6 +1372,7 @@ try {
     const result = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], edit);
     assert.equal(result.changed, true);
     assert.ok(result.warnings.some(message => message.includes('同源图')));
+    assert.deepEqual(new Set(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds), new Set([assetA, assetC]));
   }
   resetPlan0Arrangement();
   // 更换本片唯一使用的版本是合法的。
@@ -1378,6 +1380,7 @@ try {
   assert.equal(batchSourceWarnings(db, currentArrangement(plans[0])).length, 0);
   applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'split', clipId: 'clip-1', offsetUs: 1_000_000 });
   assert.equal(batchSourceWarnings(db, currentArrangement(plans[0])).length, 0, '同一视频分割不误报');
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds, []);
 
   resetPlan0Arrangement();
   const legacyConflict = currentArrangement(plans[0]);
@@ -1389,10 +1392,12 @@ try {
   assert.equal(readBatchPlanReview(db, projectId, batchId, plans[0]).decision, 'approved', '有提醒仍允许确认');
   applyBatchOutputClipEdit(db, projectId, batchId, plans[0], { type: 'replace', clipId: 'clip-2', assetId: assetB });
   assert.equal(batchSourceWarnings(db, currentArrangement(plans[0])).length, 0, '替换后即时清除同源提醒');
+  assert.deepEqual(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds, []);
   const restoreResult = applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
     type: 'restore_arrangement', snapshot: { clips: legacyConflict.clips },
   });
   assert.ok(restoreResult.warnings.some(message => message.includes('同源图')), '允许撤销恢复同源片段，并重新提醒');
+  assert.deepEqual(new Set(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds), new Set([assetA, assetC]));
   console.log('✓ 21. 同源提醒：替换/插入/撤销成功仍提醒，分割不误报，允许确认');
 
   console.log('batch output clip edit tests passed');

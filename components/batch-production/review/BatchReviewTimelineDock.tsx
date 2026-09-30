@@ -919,7 +919,7 @@ export default function BatchReviewTimelineDock({
               type="button"
               className={`${styles.filterTab} shrink-0 whitespace-nowrap ${rowFilter === id ? styles.filterTabActive : ''}`}
               aria-pressed={rowFilter === id}
-              title={id === 'overlap' ? '检查同一素材的多段使用（含分割）及源区间重叠' : undefined}
+              title={id === 'overlap' ? '检查同一素材的多段使用（含分割）、源区间重叠及同片同源图视频' : undefined}
               onClick={() => onRowFilterChange(id)}
             >
               {label}
@@ -1091,6 +1091,11 @@ export default function BatchReviewTimelineDock({
           <p role="status" className="text-xs text-warn">
             重复检查：{videoUsage.repeatedAssetCount} 个素材被用于 {videoUsage.repeatedClipCount} 个片段
             {videoUsage.overlapClipCount > 0 ? `，其中 ${videoUsage.overlapClipCount} 个片段存在源区间重叠（斜纹）` : '，源区间未重叠'}。
+          </p>
+        )}
+        {videoUsage.sourceConflictClipCount > 0 && (
+          <p className="text-xs text-warn" role="status">
+            同源图检查：{videoUsage.sourceConflictFilmCount} 条成片中的 {videoUsage.sourceConflictClipCount} 个片段使用了同源图生成的不同视频（橙色高亮）。
           </p>
         )}
         {repeatStats ? (
@@ -1406,7 +1411,8 @@ export default function BatchReviewTimelineDock({
                       const isSelected = selection?.kind === 'clip' && selection.planId === film.planId && selection.clipId === clip.clipId;
                       const usage = videoUsage.byPlan.get(film.planId)?.get(clip.clipId);
                       const isRepeat = (usage?.totalUses ?? 0) > 1;
-                      const isDimmedByOverlapFilter = rowFilter === 'overlap' && !isRepeat;
+                      const hasSourceConflict = usage?.hasSourceConflict ?? false;
+                      const isDimmedByOverlapFilter = rowFilter === 'overlap' && !isRepeat && !hasSourceConflict;
                       const asset = poolAssetsById.get(clip.assetId);
                       const hasOverlap = usage?.hasOverlap ?? false;
 
@@ -1427,7 +1433,7 @@ export default function BatchReviewTimelineDock({
                           <div
                             className={`${styles.clipBlock} ${isSelected ? styles.clipBlockSelected : ''} ${
                               isRepeat && !isSelected && (activeAssetId === null || activeAssetId === clip.assetId) ? styles.clipRepeat : ''
-                            } ${isDropTarget ? styles.dropTargetActive : ''} ${isDraftClip ? styles.blockMoving : ''} ${
+                            } ${hasSourceConflict ? styles.clipSourceConflict : ''} ${isDropTarget ? styles.dropTargetActive : ''} ${isDraftClip ? styles.blockMoving : ''} ${
                               isDimmedByOverlapFilter ? styles.clipDim : ''
                             }`}
                             style={{
@@ -1483,6 +1489,11 @@ export default function BatchReviewTimelineDock({
                             )}
 
                             {/* Overlap diagonal stripe */}
+                            {hasSourceConflict && (
+                              <span className={styles.clipSourceBadge} title="本条成片包含同源图生成的不同视频，建议更换画面；仍可确认和导出">
+                                同源图
+                              </span>
+                            )}
                             {hasOverlap && <div className={styles.clipOverlap} />}
 
                             {/* Trim right edge handle */}

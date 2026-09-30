@@ -21,6 +21,7 @@ export interface UnifiedFilmState {
   visible: boolean;
   warnings: string[];
   sourceWarnings?: string[];
+  sourceConflictAssetIds?: string[];
   blockers: string[];
   /** 口播任务(失败时可重试配音);来自 workspace 卡片视图。 */
   narrationTask: BatchWorkspaceView['cards'][number]['narrationTask'];

@@ -321,6 +321,7 @@ export default function BatchUnifiedReviewWorkspace({
         visible: eyeMap[card.planId] ?? true,
         warnings: card.warnings,
         sourceWarnings: arrangement?.sourceWarnings ?? card.sourceWarnings,
+        sourceConflictAssetIds: arrangement?.sourceConflictAssetIds ?? card.sourceConflictAssetIds,
         blockers: card.blockers,
         narrationTask: card.narrationTask,
         coverTask: card.coverTask,

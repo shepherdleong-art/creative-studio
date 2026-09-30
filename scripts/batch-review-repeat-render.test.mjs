@@ -61,6 +61,23 @@ try {
   assert.equal((selected.match(/区间重叠 ×2/g) ?? []).length, 2, '选中片段自身也保留提醒和斜纹');
   const single = render([film([splitClips[0]])]);
   assert.doesNotMatch(single, /同一素材 ×|区间重叠 ×|重复检查：/);
+  const sourceFilm = { ...film([
+    clip('first', 'v1', 0, 2_000_000, 0), clip('second', 'v2', 0, 2_000_000, 2_000_000),
+    clip('third', 'unrelated', 0, 2_000_000, 4_000_000),
+  ]), sourceConflictAssetIds: ['v1', 'v2'] };
+  for (const extra of [{}, { rowFilter: 'overlap' }, {
+    rowFilter: 'overlap', focusedAssetId: 'unrelated', selectedPlanId: 'one',
+    selection: { kind: 'clip', planId: 'one', clipId: 'first' },
+  }]) {
+    const markup = render([sourceFilm], extra);
+    assert.equal((markup.match(/class="[^"]*clipSourceConflict/g) ?? []).length, 2, '同源的两个不同视频都高亮，定位其他素材或选中时仍保留');
+    assert.equal((markup.match(/>同源图<\/span>/g) ?? []).length, 2);
+    assert.match(markup, /同源图检查：1 条成片中的 2 个片段/);
+    assert.doesNotMatch(markup, /class="clipOverlap"/, '同源不同视频不能误画为源区间重叠');
+    assert.equal((markup.match(/clipDim/g) ?? []).length, extra.rowFilter === 'overlap' ? 1 : 0, '重复筛选仅调暗无关素材');
+  }
+  const sourceCleared = render([{ ...sourceFilm, arrangement: { ...sourceFilm.arrangement, sourceConflictAssetIds: [] } }]);
+  assert.doesNotMatch(sourceCleared, /clipSourceConflict|同源图检查：/, '局部编辑解除同源后清除高亮');
   console.log('batch review repeat rendering tests passed');
 } finally {
   Module._resolveFilename = originalResolve;

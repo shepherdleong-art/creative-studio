@@ -21,10 +21,15 @@ export function batchSourceConflicts(db: Database.Database, arrangement: unknown
   return [...groups.values()].filter(assets => assets.length > 1);
 }
 
-export function batchSourceWarnings(db: Database.Database, arrangement: unknown): string[] {
+export function batchSourceReview(db: Database.Database, arrangement: unknown) {
+  const sourceConflictAssetIds = [...new Set(batchSourceConflicts(db, arrangement).flat())];
   const result: string[] = [];
-  if (batchSourceConflicts(db, arrangement).length) {
+  if (sourceConflictAssetIds.length) {
     result.push('本条成片含同源图生成的不同视频，运镜不同但表达可能重复，建议更换画面；仍可确认和导出');
   }
-  return result;
+  return { sourceWarnings: result, sourceConflictAssetIds };
+}
+
+export function batchSourceWarnings(db: Database.Database, arrangement: unknown): string[] {
+  return batchSourceReview(db, arrangement).sourceWarnings;
 }

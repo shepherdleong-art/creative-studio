@@ -7,7 +7,8 @@ interface UsageClip {
 
 interface UsageFilm {
   planId: string;
-  arrangement: { clips: UsageClip[] } | null;
+  sourceConflictAssetIds?: string[];
+  arrangement: { clips: UsageClip[]; sourceConflictAssetIds?: string[] } | null;
 }
 
 export interface ClipVideoUsage {
@@ -15,14 +16,17 @@ export interface ClipVideoUsage {
   filmCount: number;
   usesInFilm: number;
   hasOverlap: boolean;
+  hasSourceConflict: boolean;
 }
 
 /** 全批次当前视频片段的复用统计；不依赖选择、筛选、眼睛或组件是否挂载。 */
 export function buildVideoUsage(films: UsageFilm[]) {
   const byAsset = new Map<string, Array<UsageClip & { planId: string }>>();
   const byPlan = new Map<string, Map<string, ClipVideoUsage>>();
+  const sourceConflictsByPlan = new Map<string, Set<string>>();
   for (const film of films) {
     byPlan.set(film.planId, new Map());
+    sourceConflictsByPlan.set(film.planId, new Set(film.arrangement?.sourceConflictAssetIds ?? film.sourceConflictAssetIds ?? []));
     for (const clip of film.arrangement?.clips ?? []) {
       const list = byAsset.get(clip.assetId) ?? [];
       list.push({ ...clip, planId: film.planId });
@@ -32,6 +36,8 @@ export function buildVideoUsage(films: UsageFilm[]) {
   let repeatedAssetCount = 0;
   let repeatedClipCount = 0;
   let overlapClipCount = 0;
+  let sourceConflictClipCount = 0;
+  const sourceConflictPlans = new Set<string>();
   for (const list of byAsset.values()) {
     if (list.length > 1) {
       repeatedAssetCount++;
@@ -54,13 +60,19 @@ export function buildVideoUsage(films: UsageFilm[]) {
     }
     overlapClipCount += overlapping.size;
     for (const clip of list) {
+      const hasSourceConflict = sourceConflictsByPlan.get(clip.planId)!.has(clip.assetId);
+      if (hasSourceConflict) {
+        sourceConflictClipCount++;
+        sourceConflictPlans.add(clip.planId);
+      }
       byPlan.get(clip.planId)!.set(clip.clipId, {
         totalUses: list.length,
         filmCount: usesByPlan.size,
         usesInFilm: usesByPlan.get(clip.planId)!,
         hasOverlap: overlapping.has(clip),
+        hasSourceConflict,
       });
     }
   }
-  return { byPlan, repeatedAssetCount, repeatedClipCount, overlapClipCount };
+  return { byPlan, repeatedAssetCount, repeatedClipCount, overlapClipCount, sourceConflictClipCount, sourceConflictFilmCount: sourceConflictPlans.size };
 }

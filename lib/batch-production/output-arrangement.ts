@@ -16,7 +16,7 @@ import { NARRATION_GAIN_DB_DEFAULT, normalizeNarrationGainDb } from '../media-co
 import { cleanFraming } from '../media-core/cover-title-presets.ts';
 import type { CoverFraming, TextStyle } from '../media-core/cover-types.ts';
 import { resolveModule4AssetDisplayNames } from './media-catalog.ts';
-import { batchSourceWarnings } from './source-conflicts.ts';
+import { batchSourceReview, batchSourceWarnings } from './source-conflicts.ts';
 
 /**
  * 检查成片的片段级编辑（等长 trim / replace、变长修剪、删除、插入、分割）
@@ -120,6 +120,7 @@ export interface BatchOutputClipEditView {
   musicLibrary: BatchOutputMusicTrackView[];
   poolAssets: BatchOutputPoolAssetView[];
   sourceWarnings?: string[];
+  sourceConflictAssetIds?: string[];
 }
 
 export type BatchOutputClipEdit =
@@ -726,7 +727,7 @@ export function getBatchOutputArrangementView(
     outputVersionId: lineage.currentVersionId,
     versionNumber: lineage.versionNumber,
     editable: Boolean(lineage.currentVersionId) && lineage.inputState === 'frozen' && lineage.controlState !== 'stopped',
-    sourceWarnings: batchSourceWarnings(db, arrangement),
+    ...batchSourceReview(db, arrangement),
     editRevision: readEditRevision(arrangement),
     visualDurationUs: clips.at(-1)?.timelineEndUs ?? 0,
     clips,

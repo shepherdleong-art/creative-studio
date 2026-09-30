@@ -32,3 +32,19 @@ const replaced = buildVideoUsage([{ planId: 'one', arrangement: { clips: [clip('
 assert.equal(replaced.repeatedClipCount, 0, '替换后重新计算素材身份');
 assert.equal(buildVideoUsage([splitFilm]).repeatedClipCount, 2, '撤销恢复片段后标记恢复');
 console.log('batch review video usage tests passed');
+
+const sourceFilm = {
+  planId: 'source', visible: false,
+  sourceConflictAssetIds: ['v1', 'v2'],
+  arrangement: { clips: [clip('a', 'v1', 0, 2), clip('b', 'v2', 0, 2), clip('c', 'unrelated', 0, 2)] },
+};
+const source = buildVideoUsage([sourceFilm, { planId: 'other', arrangement: { clips: [clip('a', 'v1', 2, 4)] } }]);
+assert.equal(source.sourceConflictClipCount, 2, '隐藏行参与同源统计');
+assert.equal(source.sourceConflictFilmCount, 1);
+assert.equal(source.byPlan.get('source')?.get('b')?.hasSourceConflict, true);
+assert.equal(source.byPlan.get('source')?.get('c')?.hasSourceConflict, false);
+assert.equal(source.byPlan.get('other')?.get('a')?.hasSourceConflict, false, '跨成片使用不能传播同源告警');
+const clearedSource = buildVideoUsage([{ ...sourceFilm, arrangement: { ...sourceFilm.arrangement, sourceConflictAssetIds: [] } }]);
+assert.equal(clearedSource.sourceConflictClipCount, 0, '局部编辑后的空结果优先于旧卡片告警');
+assert.equal(buildVideoUsage([sourceFilm]).sourceConflictClipCount, 2, '撤销恢复同源告警');
+console.log('batch review source highlighting tests passed');

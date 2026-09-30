@@ -281,8 +281,10 @@ try {
   assert.equal(sourceConflictCard.approvable, true, '同源提醒不影响确认');
   assert.equal(sourceConflictCard.exportEligible, true, '同源提醒不阻止导出');
   assert.ok(sourceConflictCard.sourceWarnings?.some(message => message.includes('同源图')));
+  assert.deepEqual(new Set(sourceConflictCard.sourceConflictAssetIds), new Set(['timeline-asset', 'outside-pool-asset']));
   assert.equal(sourceConflictCard.blockers.length, 0);
   db.prepare(`UPDATE batch_output_versions SET arrangementJson = ? WHERE id = 'ov1'`).run(originalOv1ArrangementJson);
+  assert.deepEqual(getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!.sourceConflictAssetIds, []);
   assert.equal(getBatchWorkspace(db, 'p1', 'b1').cards.find(card => card.planId === 'plan1')!.sourceWarnings?.length, 0,
     '冲突解除后，实时检查不保留过期警告');
   db.close();
