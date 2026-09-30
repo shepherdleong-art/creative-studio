@@ -537,12 +537,12 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
             <input value={newName} onChange={(e) => setNewName(e.target.value)} className="input-field text-sm" placeholder="例如: 卧室场景分镜 1-6" />
           </div>
           <div>
-            <label className="label">{`选择分镜图（1-${MAX_SHOTS_PER_SET} 张，顺序无所谓）`}</label>
+            <label className="label">{`选择分镜图（按顺序选择 1-${MAX_SHOTS_PER_SET} 张，第 1 张为开场产品全景图）`}</label>
             <div className="grid grid-cols-5 sm:grid-cols-6 gap-2 mt-1">
               {images.filter((img) => img.role === 'input' && img.usage === 'shot_source').map((img) => (
                 <div key={img.id} onClick={() => toggleImage(img.id)}
                   className={`relative rounded border-2 cursor-pointer overflow-hidden ${
-                    selectedImageIds.includes(img.id) ? 'border-accent' : 'border-hairline hover:border-accent/40'
+                    selectedImageIds[0] === img.id ? 'border-warn ring-2 ring-warn/40' : selectedImageIds.includes(img.id) ? 'border-accent' : 'border-hairline hover:border-accent/40'
                   }`}>
                   <div className="aspect-square bg-surface-subtle">
                     {img.imageUrl && <img src={img.imageUrl} alt={img.filename} className="w-full h-full object-cover" />}
@@ -552,10 +552,13 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                       {selectedImageIds.indexOf(img.id) + 1}
                     </div>
                   )}
+                  {selectedImageIds[0] === img.id && (
+                    <span className="absolute inset-x-0 bottom-0 bg-warn-tint px-1 py-1 text-center text-[10px] font-semibold text-warn">开场图</span>
+                  )}
                 </div>
               ))}
             </div>
-            <p className="mt-1 text-[10px] text-ink-tertiary">已选 {selectedImageIds.length}/{MAX_SHOTS_PER_SET} 张，顺序由脚本决定，这里随便点</p>
+            <p className="mt-1 text-[10px] text-ink-tertiary">已选 {selectedImageIds.length}/{MAX_SHOTS_PER_SET} 张，请先选择用于视频开头的产品全景图。</p>
           </div>
           <div className="flex gap-2">
             <button onClick={handleCreate} disabled={!newName.trim() || selectedImageIds.length === 0 || saving}
@@ -628,8 +631,15 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
                     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-3">
                       {setShots.map((shot, idx) => (
                         <div key={shot.id} onClick={() => openPreview(set.id, idx)}
-                          className="cursor-pointer overflow-hidden rounded border border-hairline bg-surface transition hover:border-accent/40 hover:shadow-[0_8px_28px_rgba(0,0,0,.08)]">
-                          <div className="px-3 pt-2 text-xs text-ink-tertiary">分镜 {shot.indexNum}</div>
+                          className={`cursor-pointer overflow-hidden rounded border bg-surface transition hover:shadow-[0_8px_28px_rgba(0,0,0,.08)] ${shot.indexNum === 1 ? 'border-warn ring-2 ring-warn/40' : 'border-hairline hover:border-accent/40'}`}>
+                          <div className="flex flex-wrap items-center gap-2 px-3 pt-2 text-xs text-ink-tertiary">
+                            <span>分镜 {shot.indexNum}</span>
+                            {shot.indexNum === 1 && (
+                              <span className="rounded-md bg-warn-tint px-2 py-1 font-medium text-warn" title="这张产品全景图将用于视频开头">
+                                开场 · 产品全景图
+                              </span>
+                            )}
+                          </div>
                           <div className="grid grid-cols-2 gap-px">
                             <div>
                               <div className="text-center text-[10px] text-ink-tertiary">原图</div>
@@ -690,6 +700,7 @@ export default function ShotSetPanel({ projectId, providers = [], images, jobs, 
               <div className="flex shrink-0 items-center justify-between border-b border-white/10 p-4">
                 <div className="flex items-center gap-3">
                   <h3 className="text-sm font-medium text-ink">分镜 {shot.indexNum}</h3>
+                  {shot.indexNum === 1 && <span className="rounded-md bg-warn-tint px-2 py-1 text-xs font-medium text-warn">开场 · 产品全景图</span>}
                   <span className="text-xs text-ink-tertiary">{previewIndex + 1} / {previewShots.length}</span>
                   {generating && <span className="text-xs text-accent">生成中…</span>}
                 </div>

@@ -152,16 +152,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
   const configuredProviders = providers.filter((provider) => provider.configured !== false);
 
-  // Effective provider id for a row: fall back to a preferred provider
-  // when the row was created before providers had loaded.
+  // 未选供应商的草稿继承批量选择；明确选过但已不可用的供应商不得静默换成其他模型。
   // 偏好可灵（kling）：团队的主力视频模型，避免每次手动切换。
   const preferredProvider = configuredProviders.find((provider) =>
     /kling/i.test(provider.defaultModel ?? '') || /kling/i.test(provider.name ?? ''),
   ) ?? configuredProviders[0];
   const getRowProviderId = (row: { providerId: string }): string =>
-    (row.providerId && configuredProviders.some((provider) => provider.id === row.providerId))
-      ? row.providerId
-      : preferredProvider?.id || '';
+    row.providerId || bulkProviderId || preferredProvider?.id || '';
   const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability | undefined =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.tailFrameCapability;
   const getRowDurationOptions = (row: { providerId: string }) => {
@@ -173,7 +170,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const getRowMultiShotCapability = (row: { providerId: string }): VideoProvider['multiShotCapability'] =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.multiShotCapability;
 
-  const makeEmptyRow = (): VideoMotionRow => createVideoMotionRow(crypto.randomUUID(), defaultDuration);
+  const makeEmptyRow = (): VideoMotionRow => {
+    const row = createVideoMotionRow(crypto.randomUUID(), defaultDuration);
+    row.providerId = getRowProviderId(row);
+    row.durationSec = getRowDuration(row);
+    return row;
+  };
 
   const replaceSelectedShot = (shotId: string | null) => {
     selectedShotRef.current = shotId;
@@ -439,6 +441,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return drafts;
   };
 
+  // 顶部展示实际草稿使用的供应商，而不是上一次批量操作留下的选择。
+  const getBulkProviderId = () => {
+    const ids = new Set(safeShots.flatMap((shot) => getShotRows(shot.id).map(getRowProviderId)));
+    if (ids.size > 1) return '__mixed__';
+    return ids.values().next().value || getRowProviderId({ providerId: '' });
+  };
+
   /** 带尾帧但提示词为空的行，自动补上首尾帧转场提示词（用户再手改的内容不动）。 */
   const autoFillTailTransitionPrompts = () => {
     for (const shot of safeShots) {
@@ -635,18 +644,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
   const updateRowPrompt = (rowKey: string, value: string) => {
-    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, prompt: value }));
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, prompt: value, templateId: '' }));
     replaceActiveMotionRows(result.rows);
   };
   const updateRowTemplate = (rowKey: string, templateId: string) => {
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
-      const oldTmpl = r.templateId ? templates.find((t) => t.id === r.templateId) : null;
       const newTmpl = templates.find((t) => t.id === templateId);
-      // Update prompt when: prompt is empty (first selection), or the current
-      // prompt matches the old template exactly (auto-filled, not user-edited).
-      // Preserve prompts that the user has manually written.
-      const isAutoFilled = !r.prompt.trim() || (oldTmpl ? r.prompt.trim() === oldTmpl.prompt.trim() : false);
-      const nextPrompt = (isAutoFilled && newTmpl) ? newTmpl.prompt : r.prompt;
+      // 显式选择预设时应用原文；切回自定义保留文本。一键填充仍保护手写内容。
+      const nextPrompt = newTmpl ? newTmpl.prompt : r.prompt;
       return { ...r, templateId, prompt: nextPrompt };
     });
     replaceActiveMotionRows(result.rows);
@@ -960,6 +965,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       return;
     }
 
+    if (plan.ready.some((shot) => shot.rows.some((row) =>
+      !configuredProviders.some((provider) => provider.id === getRowProviderId(row)),
+    ))) {
+      setBulkStatus('所选视频供应商已不可用，请重新选择后生成；不会自动切换模型。');
+      return;
+    }
+
     const submittedTailIds = new Set(
       plan.ready.flatMap((shot) => shot.rows.flatMap((row) => row.tailImageId ? [row.tailImageId] : [])),
     );
@@ -1035,7 +1047,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const updateBulkRowPrompt = (shotId: string, rowKey: string, prompt: string) => {
     if (creatingRef.current) return;
     const rows = getShotRows(shotId);
-    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, prompt } : row));
+    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, prompt, templateId: '' } : row));
   };
 
   const updateBulkRowTemplate = (shotId: string, rowKey: string, templateId: string) => {
@@ -1043,14 +1055,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     const rows = getShotRows(shotId);
     setShotRows(shotId, rows.map((row) => {
       if (row.key !== rowKey) return row;
-      const oldTemplate = row.templateId ? templates.find((template) => template.id === row.templateId) : null;
       const newTemplate = templates.find((template) => template.id === templateId);
-      const isAutoFilled = !row.prompt.trim()
-        || (oldTemplate ? row.prompt.trim() === oldTemplate.prompt.trim() : false);
       return {
         ...row,
         templateId,
-        prompt: isAutoFilled && newTemplate ? newTemplate.prompt : row.prompt,
+        prompt: newTemplate ? newTemplate.prompt : row.prompt,
       };
     }));
   };
@@ -1064,13 +1073,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const applyBulkProvider = (providerId: string) => {
     if (creatingRef.current) return;
-    setBulkProviderId(providerId);
-    if (!providerId) {
-      setBulkStatus('暂无可用的视频供应商。');
+    if (!configuredProviders.some((provider) => provider.id === providerId)) {
+      setBulkStatus('所选视频供应商不可用，请重新选择。');
       return;
     }
-    for (const shot of safeShots) {
-      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({
+    setBulkProviderId(providerId);
+    for (const shot of materializeAllDrafts()) {
+      setShotRows(shot.shotId, shot.rows.map((row) => ({
         ...row, providerId, durationSec: getRowDuration({ ...row, providerId }),
       })));
     }
@@ -1079,7 +1088,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
 
   const getBulkDurationOptions = () => {
     const rows = safeShots.flatMap((shot) => getShotRows(shot.id));
-    const options = getRowDurationOptions({ providerId: bulkProviderId });
+    const options = getRowDurationOptions(rows[0] || { providerId: bulkProviderId });
     return options.filter((duration) => rows.every((row) => getRowDurationOptions(row).includes(duration)));
   };
 
@@ -1592,7 +1601,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         className="input-field video-control"
                         disabled={creating}
                       >
-                        <option value="">模板（可选）</option>
+                        <option value="">自定义</option>
                         {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                       </select>
                       <select
@@ -1742,10 +1751,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   <select
                     id="bulk-provider"
                     className="input-field video-control"
-                    value={bulkProviderId || preferredProvider?.id || ''}
+                    value={getBulkProviderId()}
                     onChange={(event) => applyBulkProvider(event.target.value)}
                     disabled={creating || configuredProviders.length === 0}
                   >
+                    {getBulkProviderId() === '__mixed__' && <option value="__mixed__" disabled>多个供应商（选择后统一应用）</option>}
+                    {getBulkProviderId() !== '__mixed__' && getBulkProviderId() && !providers.some((provider) => provider.id === getBulkProviderId()) && (
+                      <option value={getBulkProviderId()} disabled>所选供应商已不可用，请重新选择</option>
+                    )}
                     {providers.length === 0 && <option value="">暂无供应商</option>}
                     {providers.map((provider) => (
                       <option key={provider.id} value={provider.id} disabled={provider.configured === false}>
@@ -1832,7 +1845,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               onChange={(event) => updateBulkRowTemplate(shot.id, row.key, event.target.value)}
                               disabled={creating}
                             >
-                              <option value="">模板（可选）</option>
+                              <option value="">自定义</option>
                               {templates.map((template) => (
                                 <option key={template.id} value={template.id}>{template.name}</option>
                               ))}
