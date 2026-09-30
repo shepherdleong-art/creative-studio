@@ -78,6 +78,28 @@ try {
   }
   const sourceCleared = render([{ ...sourceFilm, arrangement: { ...sourceFilm.arrangement, sourceConflictAssetIds: [] } }]);
   assert.doesNotMatch(sourceCleared, /clipSourceConflict|同源图检查：/, '局部编辑解除同源后清除高亮');
+  const distinctGroups = render([
+    film([clip('a1', 'asset-a', 0, 2_000_000, 0), clip('b1', 'asset-b', 0, 2_000_000, 2_000_000)]),
+    { ...film([clip('b2', 'asset-b', 2_000_000, 4_000_000, 0), clip('a2', 'asset-a', 2_000_000, 4_000_000, 2_000_000)]), planId: 'two' },
+  ], { focusedAssetId: 'asset-a', rowFilter: 'overlap', selectedPlanId: 'one', selection: { kind: 'clip', planId: 'one', clipId: 'a1' } });
+  assert.equal((distinctGroups.match(/class="usageGroupLabel">A<\/b>/g) ?? []).length, 2);
+  assert.equal((distinctGroups.match(/class="usageGroupLabel">B<\/b>/g) ?? []).length, 2);
+  assert.equal((distinctGroups.match(/class="[^"]*clipRepeat /g) ?? []).length, 4, '定位 A 不会撤掉 B 的色块，选中 A 也保留');
+  assert.match(distinctGroups, /--usage-color:var\(--color-review-1\)/);
+  assert.match(distinctGroups, /--usage-color:var\(--color-review-2\)/);
+  const sourceGrouped = render([{ ...sourceFilm, sourceConflictGroups: [{ key: 'original-image', assetIds: ['v1', 'v2'] }] }]);
+  assert.equal((sourceGrouped.match(/class="usageGroupLabel">S1<\/b>/g) ?? []).length, 2);
+  // 色号由运行时身份决定，Tailwind 不可把没有静态 utility 引用的浅色令牌裁掉。
+  const globalCss = fs.readFileSync('app/globals.css', 'utf8').replace('@import "tailwindcss";', '@import "tailwindcss" source(none);');
+  const compiled = await require('postcss')([require('@tailwindcss/postcss')()]).process(globalCss, { from: path.resolve('app/globals.css') });
+  const rootTokens = new Set();
+  compiled.root.walkRules(rule => {
+    if (rule.selector.includes(':root')) rule.walkDecls(decl => rootTokens.add(decl.prop));
+  });
+  for (let i = 1; i <= 8; i++) {
+    assert.ok(rootTokens.has(`--color-review-${i}`), '动态分组颜色必须保留到编译后的全局样式');
+    assert.ok(rootTokens.has(`--color-review-${i}-tint`));
+  }
   console.log('batch review repeat rendering tests passed');
 } finally {
   Module._resolveFilename = originalResolve;

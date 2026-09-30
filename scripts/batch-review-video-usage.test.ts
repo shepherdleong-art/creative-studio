@@ -48,3 +48,33 @@ const clearedSource = buildVideoUsage([{ ...sourceFilm, arrangement: { ...source
 assert.equal(clearedSource.sourceConflictClipCount, 0, '局部编辑后的空结果优先于旧卡片告警');
 assert.equal(buildVideoUsage([sourceFilm]).sourceConflictClipCount, 2, '撤销恢复同源告警');
 console.log('batch review source highlighting tests passed');
+
+const groupedFilms = [
+  { planId: 'one', arrangement: { clips: [clip('a', 'video-a', 0, 2), clip('b', 'video-b', 0, 2)] } },
+  { planId: 'two', visible: false, arrangement: { clips: [clip('b2', 'video-b', 3, 5), clip('a2', 'video-a', 3, 5)] } },
+];
+const grouped = buildVideoUsage(groupedFilms);
+const aGroup = grouped.byPlan.get('one')!.get('a')!.repeatGroup!;
+const bGroup = grouped.byPlan.get('one')!.get('b')!.repeatGroup!;
+assert.deepEqual(aGroup, grouped.byPlan.get('two')!.get('a2')!.repeatGroup, '跨片同素材同色同编号');
+assert.notEqual(aGroup.colorIndex, bGroup.colorIndex, '不同素材分配不同色块');
+assert.notEqual(aGroup.label, bGroup.label);
+assert.deepEqual(buildVideoUsage([...groupedFilms].reverse()).repeatGroups, grouped.repeatGroups, '行顺序不改变颜色编号');
+const many = buildVideoUsage([{ planId: 'many', arrangement: { clips: Array.from({ length: 28 }, (_, i) => [
+  clip(`${i}-a`, `v${String(i).padStart(2, '0')}`, 0, 2), clip(`${i}-b`, `v${String(i).padStart(2, '0')}`, 2, 4),
+]).flat() } }]);
+assert.equal(new Set([...many.repeatGroups.values()].map(g => g.label)).size, 28, '超出色盘时仍有唯一编号');
+assert.equal(many.repeatGroups.get('v26')!.label, 'AA');
+
+const sourceGroupsFilm = { planId: 'sources', arrangement: {
+  clips: ['v1', 'v2', 'v3', 'v4'].map(id => clip(id, id, 0, 2)),
+  sourceConflictGroups: [{ key: 'image:project:a', assetIds: ['v1', 'v2'] }, { key: 'image:project:b', assetIds: ['v3', 'v4'] }],
+} };
+const sources = buildVideoUsage([sourceGroupsFilm]);
+const sourceUsage = sources.byPlan.get('sources')!;
+assert.deepEqual(sourceUsage.get('v1')!.sourceGroup, sourceUsage.get('v2')!.sourceGroup);
+assert.notEqual(sourceUsage.get('v1')!.sourceGroup!.colorIndex, sourceUsage.get('v3')!.sourceGroup!.colorIndex, '两组同源素材不混成一组');
+assert.equal(sourceUsage.get('v1')!.repeatGroup, undefined, '同源视频不合并素材身份');
+assert.equal(sourceUsage.get('v1')!.sourceGroup!.label, 'S1');
+assert.equal(buildVideoUsage([{ ...sourceGroupsFilm, arrangement: { ...sourceGroupsFilm.arrangement, sourceConflictGroups: [] } }]).sourceConflictClipCount, 0);
+console.log('repeat and source group color identity tests passed');

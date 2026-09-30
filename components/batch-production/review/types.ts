@@ -22,6 +22,7 @@ export interface UnifiedFilmState {
   warnings: string[];
   sourceWarnings?: string[];
   sourceConflictAssetIds?: string[];
+  sourceConflictGroups?: BatchOutputClipEditView['sourceConflictGroups'];
   blockers: string[];
   /** 口播任务(失败时可重试配音);来自 workspace 卡片视图。 */
   narrationTask: BatchWorkspaceView['cards'][number]['narrationTask'];

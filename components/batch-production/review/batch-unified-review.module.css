@@ -700,18 +700,21 @@
 }
 
 /* Repeat Highlight: PRD T-03 */
-.clipRepeat {
-  outline: 2px solid #eb9a32;
-  outline-offset: 1px;
-  box-shadow: 0 0 0 4px #eb9a3222;
+.clipRepeat,
+.clipSourceConflict,
+:global(html[data-theme='dark']) .clipBlock.clipRepeat,
+:global(html[data-theme='dark']) .clipBlock.clipSourceConflict {
+  border: 2px solid var(--usage-color, var(--color-warn));
+  background: var(--usage-tint, var(--color-warn-tint));
+  box-shadow: inset 0 0 0 1px var(--usage-color, var(--color-warn));
 }
 
 .clipRepeatBadge {
   position: absolute;
   right: 6px;
   top: 4px;
-  background: #fff1d8;
-  color: #99570f;
+  background: var(--usage-tint, var(--color-warn-tint));
+  color: var(--usage-color, var(--color-warn));
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 9px;
@@ -720,28 +723,39 @@
   z-index: 4;
 }
 
-/* 同源提醒独立于当前选择/素材定位，选中时仍保留蓝色外框。 */
-.clipSourceConflict,
-:global(html[data-theme='dark']) .clipBlock.clipSourceConflict {
-  border: 2px solid var(--color-warn);
-  background: var(--color-warn-tint);
-  box-shadow: inset 0 0 0 1px var(--color-warn);
-}
-
 .clipSourceBadge {
   position: absolute;
   right: 6px;
   bottom: 5px;
   padding: 1px 4px;
   border-radius: 3px;
-  background: var(--color-warn-tint);
-  color: var(--color-warn);
+  background: var(--usage-tint, var(--color-warn-tint));
+  color: var(--usage-color, var(--color-warn));
   font-size: 9px;
   font-weight: 600;
   white-space: nowrap;
   pointer-events: none;
   z-index: 4;
 }
+
+.clipRepeatBadge, .clipSourceBadge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: calc(100% - 12px);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.usageGroupLabel, .focusGroup {
+  flex-shrink: 0;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--usage-color, var(--color-warn));
+  color: var(--color-surface);
+}
+
+.usageDetail { overflow: hidden; text-overflow: ellipsis; }
 
 /* Overlapping source interval diagonal stripe */
 .clipOverlap {
@@ -750,7 +764,7 @@
   left: 0;
   right: 0;
   height: 4px;
-  background: repeating-linear-gradient(135deg, #ce8d37 0, #ce8d37 3px, #f7d9a7 3px, #f7d9a7 6px);
+  background: repeating-linear-gradient(135deg, var(--usage-color) 0, var(--usage-color) 3px, var(--usage-tint) 3px, var(--usage-tint) 6px);
   pointer-events: none;
 }
 
@@ -1030,11 +1044,6 @@
   background: rgba(66, 121, 79, 0.25);
   border-color: rgba(136, 175, 112, 0.4);
   color: #92d89f;
-}
-
-:global(html[data-theme='dark']) .clipRepeatBadge {
-  background: #472c08;
-  color: #f7b463;
 }
 
 .subtitleChip .trimHandle { width: 6px; touch-action: none; }

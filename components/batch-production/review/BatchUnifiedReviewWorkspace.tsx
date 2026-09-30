@@ -322,6 +322,7 @@ export default function BatchUnifiedReviewWorkspace({
         warnings: card.warnings,
         sourceWarnings: arrangement?.sourceWarnings ?? card.sourceWarnings,
         sourceConflictAssetIds: arrangement?.sourceConflictAssetIds ?? card.sourceConflictAssetIds,
+        sourceConflictGroups: arrangement ? arrangement.sourceConflictGroups : card.sourceConflictGroups,
         blockers: card.blockers,
         narrationTask: card.narrationTask,
         coverTask: card.coverTask,

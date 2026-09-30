@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { BatchOutputClipEditView, BatchOutputPoolAssetView } from '@/lib/batch-production/output-arrangement';
 import { audioClips } from '@/lib/media-core/audio-edit';
@@ -12,7 +12,14 @@ import AudioWaveform from '@/components/audio/AudioWaveform';
 import { subtitleSplitEdit } from './subtitle-edit';
 import { videoTrimRange, type VideoTrimRange } from './video-trim';
 import { materialDropInGap } from './material-drop';
-import { buildVideoUsage } from './video-usage';
+import { buildVideoUsage, type ReviewUsageGroup } from './video-usage';
+
+function groupStyle(group?: ReviewUsageGroup): CSSProperties {
+  return group ? {
+    '--usage-color': `var(--color-review-${group.colorIndex})`,
+    '--usage-tint': `var(--color-review-${group.colorIndex}-tint)`,
+  } as CSSProperties : {};
+}
 
 const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
 const FRAME_US = Math.round(1_000_000 / FINAL_EDIT_FPS);
@@ -1095,12 +1102,14 @@ export default function BatchReviewTimelineDock({
         )}
         {videoUsage.sourceConflictClipCount > 0 && (
           <p className="text-xs text-warn" role="status">
-            同源图检查：{videoUsage.sourceConflictFilmCount} 条成片中的 {videoUsage.sourceConflictClipCount} 个片段使用了同源图生成的不同视频（橙色高亮）。
+            同源图检查：{videoUsage.sourceConflictFilmCount} 条成片中的 {videoUsage.sourceConflictClipCount} 个片段使用了同源图生成的不同视频（同组同色、同编号）。
           </p>
         )}
         {repeatStats ? (
           <div className="flex items-center gap-2 text-xs text-ink">
-            <span className="inline-flex h-2 w-2 rounded-full bg-[#eb9a32]" />
+            <span className={styles.focusGroup} style={groupStyle(videoUsage.repeatGroups.get(activeAssetId!))}>
+              {videoUsage.repeatGroups.get(activeAssetId!)?.label ?? '定位'}
+            </span>
             <span>
               已定位素材：<strong className="text-ink">{repeatStats.displayName}</strong> · 在{' '}
               <strong className="text-[#99570f]">{repeatStats.filmCount}</strong> 条成片中被使用{' '}
@@ -1415,6 +1424,7 @@ export default function BatchReviewTimelineDock({
                       const isDimmedByOverlapFilter = rowFilter === 'overlap' && !isRepeat && !hasSourceConflict;
                       const asset = poolAssetsById.get(clip.assetId);
                       const hasOverlap = usage?.hasOverlap ?? false;
+                      const displayGroup = usage?.repeatGroup ?? usage?.sourceGroup;
 
                       const isDropTarget = dropTarget?.planId === film.planId && dropTarget.clipId === clip.clipId;
 
@@ -1432,14 +1442,19 @@ export default function BatchReviewTimelineDock({
                           />
                           <div
                             className={`${styles.clipBlock} ${isSelected ? styles.clipBlockSelected : ''} ${
-                              isRepeat && !isSelected && (activeAssetId === null || activeAssetId === clip.assetId) ? styles.clipRepeat : ''
+                              isRepeat ? styles.clipRepeat : ''
                             } ${hasSourceConflict ? styles.clipSourceConflict : ''} ${isDropTarget ? styles.dropTargetActive : ''} ${isDraftClip ? styles.blockMoving : ''} ${
                               isDimmedByOverlapFilter ? styles.clipDim : ''
                             }`}
                             style={{
                               left: startSec * zoom,
                               width: widthPx,
+                              ...groupStyle(displayGroup),
                             }}
+                            title={[
+                              usage?.repeatGroup ? `素材 ${usage.repeatGroup.label}：同编号、同色的片段使用同一视频` : '',
+                              usage?.sourceGroup ? `同源图 ${usage.sourceGroup.label}：同编号的片段来自同一原图` : '',
+                            ].filter(Boolean).join('；') || undefined}
                             onPointerDown={(e) => beginClipBodyPointer(e, film, clip.clipId)}
                             onDragOver={(e) => {
                               e.stopPropagation();
@@ -1484,14 +1499,16 @@ export default function BatchReviewTimelineDock({
                             {/* 复用提示常驻，选择片段后仍保留；真正重叠另用斜纹区分。 */}
                             {isRepeat && (
                               <span className={styles.clipRepeatBadge} title={`本片 ${usage?.usesInFilm} 段，${usage?.filmCount} 条成片共 ${usage?.totalUses} 段${hasOverlap ? '；源区间重叠' : '；源区间未重叠'}`}>
-                                {hasOverlap ? '区间重叠' : '同一素材'} ×{usage?.totalUses}
+                                <b className={styles.usageGroupLabel}>{usage?.repeatGroup?.label}</b>
+                                <span className={styles.usageDetail}>{hasOverlap ? '区间重叠' : '同一素材'} ×{usage?.totalUses}</span>
                               </span>
                             )}
 
                             {/* Overlap diagonal stripe */}
                             {hasSourceConflict && (
-                              <span className={styles.clipSourceBadge} title="本条成片包含同源图生成的不同视频，建议更换画面；仍可确认和导出">
-                                同源图
+                              <span className={styles.clipSourceBadge} style={groupStyle(usage?.sourceGroup)} title="本条成片包含同源图生成的不同视频，建议更换画面；仍可确认和导出">
+                                {usage?.sourceGroup && <b className={styles.usageGroupLabel}>{usage.sourceGroup.label}</b>}
+                                <span className={styles.usageDetail}>同源图</span>
                               </span>
                             )}
                             {hasOverlap && <div className={styles.clipOverlap} />}
@@ -1581,7 +1598,7 @@ export default function BatchReviewTimelineDock({
 
       {/* 6. Legend (v14) */}
       <div className={styles.legend}>
-        <span><i className={styles.legendSwatch} />同色 = 同一素材</span>
+        <span><i className={styles.legendSwatch} />A/B… 同一素材 · S1/S2… 同源图；按颜色和编号找对应</span>
         <span><i className={styles.legendStripe} />源区间重叠</span>
         <span>字幕 → 视频 → 口播 TTS → BGM</span>
         <span>主视频秒尺 · 封面独立，不计复用</span>

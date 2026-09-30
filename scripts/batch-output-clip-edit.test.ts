@@ -1373,6 +1373,7 @@ try {
     assert.equal(result.changed, true);
     assert.ok(result.warnings.some(message => message.includes('同源图')));
     assert.deepEqual(new Set(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictAssetIds), new Set([assetA, assetC]));
+    assert.equal(getBatchOutputArrangementView(db, projectId, batchId, plans[0]).sourceConflictGroups?.[0].key, 'image:project-1:original-image');
   }
   resetPlan0Arrangement();
   // 更换本片唯一使用的版本是合法的。
