@@ -3,7 +3,6 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 
 import {
-  confirmQuitAndShutdown,
   createWindow,
   type DesktopWindowHost,
 } from './window';
@@ -14,6 +13,7 @@ import {
   type DesktopService,
   type StartServiceOptions,
 } from './service-spawn';
+import { CHANNELS } from './ipc';
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -70,9 +70,6 @@ async function boot(): Promise<void> {
     desktopSecret,
     dataRoot,
     isQuitRequested: () => explicitQuitRequested,
-    cancelQuitRequest: () => {
-      explicitQuitRequested = false;
-    },
     setIpcHandlerRemover: (remover) => {
       removeIpcHandlers = remover;
     },
@@ -122,16 +119,22 @@ if (!singleInstanceLock) {
   });
 
   app.on('before-quit', (event) => {
-    explicitQuitRequested = true;
-    if (!shutdownPromise) {
-      event.preventDefault();
-      void confirmQuitAndShutdown(windowHost, mainWindow, shutdown);
+    event.preventDefault();
+    if (explicitQuitRequested || shutdownPromise) return;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      // The X and menu Quit open the same in-page dialog as the power button.
+      // Only its confirmation sends /api/shutdown; cancellation leaves the
+      // service and IPC handlers untouched.
+      focusMainWindow();
+      mainWindow.webContents.send(CHANNELS.quitRequested);
+    } else {
+      explicitQuitRequested = true;
+      void shutdown();
     }
   });
 
   app.on('window-all-closed', () => {
-    // Closing the only window is a hide operation on both supported platforms.
-    // The service remains alive until the user explicitly chooses Quit.
+    app.quit();
   });
 
   app.on('activate', () => {

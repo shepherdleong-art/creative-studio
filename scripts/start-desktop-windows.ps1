@@ -418,7 +418,7 @@ Write-Host '正在启动桌面版...'
 Write-Host ''
 Write-Host '使用说明:'
 Write-Host '  1. 服务只监听 127.0.0.1 的随机端口，不会暴露到公网'
-Write-Host '  2. 关闭窗口只是隐藏，请从应用菜单选择「退出」结束后台任务'
+Write-Host '  2. 点击桌面窗口的 X 后确认退出，会停止工作台和 LiteLLM；需要后台运行请最小化'
 Write-Host '  3. 直接关闭此窗口也会触发桌面版优雅退出'
 Write-Host ''
 

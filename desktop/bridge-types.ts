@@ -8,6 +8,7 @@ export interface DesktopBridge {
   relocateLinkedSource(assetId: string, sourceId: string): Promise<{ relocated: boolean }>;
   openFolder(relativePath: string): Promise<{ opened: boolean; message?: string }>;
   setThemePreference(preference: ThemePreference): Promise<void>;
+  onQuitRequested(callback: () => void): () => void;
 }
 
 declare global {
