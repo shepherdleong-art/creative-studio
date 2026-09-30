@@ -221,7 +221,7 @@ export default function NewProjectPage() {
   return (
     <div className="max-w-3xl mx-auto">
       <h1 className="text-3xl font-semibold tracking-[-0.02em] mb-8">
-        新建复杂结构产品项目
+        新建项目
       </h1>
 
       <form onSubmit={handleSubmitComplex} className="space-y-10">
