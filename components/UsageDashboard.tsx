@@ -1,6 +1,8 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState, type PointerEvent } from 'react';
+import { addUsageDays, usagePresetRange, USAGE_DATE_PRESETS, type UsageDatePreset } from '@/lib/usage-date-range';
+import { BILLING_MODEL_PRICES } from '@/lib/usage-pricing';
 import type { CoreUsageCategory, CoreUsageModelKey } from '@/lib/usage-pricing';
 import type {
   UsageDashboardResult,
@@ -9,6 +11,7 @@ import type {
 } from '@/lib/usage-query';
 
 const MODEL_KEYS: readonly CoreUsageModelKey[] = [
+  ...BILLING_MODEL_PRICES.filter((entry) => entry.key !== 'company-gpt-5-6-luna').map((entry) => entry.key),
   'company-image2-medium',
   'company-qiniuyun-gpt-image-2-medium',
   'company-kling-3-0',
@@ -20,6 +23,12 @@ const MODEL_KEYS: readonly CoreUsageModelKey[] = [
 ];
 
 const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
+  'company-seedream-5-0-pro': 'doubao-seedream-5-0-pro-image',
+  'company-nano-banana-3-0': 'nano-banana-3.0',
+  'company-nano-banana-3-1': 'nano-banana-3.1',
+  'company-kling-2-5': 'kling-2.5',
+  'company-seedance-2-0': 'Seedance 2.0',
+
   'company-image2-medium': 'image2-medium',
   'company-qiniuyun-gpt-image-2-medium': 'qiniuyun/gpt-image-2-medium',
   'company-kling-3-0': 'kling-3.0',
@@ -31,6 +40,12 @@ const MODEL_LABELS: Record<CoreUsageModelKey, string> = {
 };
 
 const MODEL_COLORS: Record<CoreUsageModelKey, string> = {
+  'company-seedream-5-0-pro': 'var(--color-accent)',
+  'company-nano-banana-3-0': 'var(--color-ink-secondary)',
+  'company-nano-banana-3-1': 'var(--color-ink-tertiary)',
+  'company-kling-2-5': 'var(--color-accent)',
+  'company-seedance-2-0': 'var(--color-ink-tertiary)',
+
   'company-image2-medium': '#0071e3',
   'company-qiniuyun-gpt-image-2-medium': '#06b6d4',
   'company-kling-3-0': '#8b5cf6',
@@ -62,33 +77,15 @@ type UsageFilters = {
 
 type RequestError = Error & { status?: number };
 
-function dateInputValue(date: Date): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
-function addDate(dateOnly: string, days: number): string {
-  const value = new Date(`${dateOnly}T00:00:00Z`);
-  value.setUTCDate(value.getUTCDate() + days);
-  return value.toISOString().slice(0, 10);
-}
-
 function initialFilters(): UsageFilters {
-  const today = dateInputValue(new Date());
-  return { from: addDate(today, -29), to: today, coreModelKey: '', category: '' };
+  return { ...usagePresetRange('today'), coreModelKey: '', category: '' };
 }
 
 function buildQuery(filters: UsageFilters, page: number): string {
   const params = new URLSearchParams();
   if (filters.from) params.set('from', filters.from);
   // The UI's end date is inclusive; the API uses [from, to).
-  if (filters.to) params.set('to', addDate(filters.to, 1));
+  if (filters.to) params.set('to', addUsageDays(filters.to, 1));
   if (filters.coreModelKey) params.set('coreModelKey', filters.coreModelKey);
   if (filters.category) params.set('category', filters.category);
   params.set('page', String(page));
@@ -172,6 +169,7 @@ function tokenBreakdown(record: UsageRecord): {
 }
 
 function TrendChart({ trend }: { trend: UsageDashboardResult['trend'] }) {
+  const [hover, setHover] = useState<{ index: number; model: CoreUsageModelKey } | null>(null);
   const width = 900;
   const height = 260;
   const padding = { top: 18, right: 18, bottom: 34, left: 58 };
@@ -184,11 +182,34 @@ function TrendChart({ trend }: { trend: UsageDashboardResult['trend'] }) {
   const hasData = trend.some((point) => point.totalCostMicros > 0);
   const xFor = (index: number) => padding.left + (trend.length <= 1 ? 0 : index / (trend.length - 1)) * plotWidth;
   const yFor = (value: number) => padding.top + plotHeight - (Math.max(0, value) / maximum) * plotHeight;
+  const activeModels = MODEL_KEYS.filter((key) => trend.some((point) => point.costByModel[key] > 0));
+  const hoveredPoint = hover ? trend[hover.index] : undefined;
+  const inspectPoint = (event: PointerEvent<SVGSVGElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX - bounds.left) / bounds.width * width;
+    const y = (event.clientY - bounds.top) / bounds.height * height;
+    if (x < padding.left || x > width - padding.right || y < padding.top || y > height - padding.bottom || !activeModels.length) {
+      setHover(null);
+      return;
+    }
+    const position = (x - padding.left) / plotWidth * (trend.length - 1);
+    const left = Math.floor(position);
+    const right = Math.min(trend.length - 1, left + 1);
+    // Compare against each actual line segment, including between daily points.
+    const closest = activeModels.reduce((best, model) => {
+      const value = (trend[left].costByModel[model] || 0) * (1 - (position - left))
+        + (trend[right].costByModel[model] || 0) * (position - left);
+      const distance = Math.abs(yFor(value) - y);
+      return distance < best.distance ? { model, distance } : best;
+    }, { model: activeModels[0], distance: Infinity });
+    setHover({ index: Math.round(position), model: closest.model });
+  };
 
   return (
-    <div>
+    <div className="relative">
       <div className="overflow-x-auto">
-        <svg viewBox={`0 0 ${width} ${height}`} className="h-auto min-w-[620px] w-full" role="img" aria-label="近 30 天多模型消耗趋势">
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-auto min-w-[620px] w-full" role="img" aria-label="近 30 天多模型消耗趋势"
+          onPointerMove={inspectPoint} onPointerLeave={() => setHover(null)} onPointerCancel={() => setHover(null)}>
           <line x1={padding.left} x2={width - padding.right} y1={padding.top + plotHeight} y2={padding.top + plotHeight} stroke="currentColor" className="text-hairline" />
           <line x1={padding.left} x2={padding.left} y1={padding.top} y2={padding.top + plotHeight} stroke="currentColor" className="text-hairline" />
           <text x={padding.left - 8} y={padding.top + 4} textAnchor="end" className="fill-ink-tertiary text-[11px]">{formatYuan(maximum)}</text>
@@ -208,21 +229,43 @@ function TrendChart({ trend }: { trend: UsageDashboardResult['trend'] }) {
                 fill="none"
                 stroke={MODEL_COLORS[key]}
                 strokeWidth="3"
+                opacity={hover && hover.model !== key ? 0.3 : 1}
                 strokeLinejoin="round"
                 strokeLinecap="round"
                 points={values.map((value, index) => `${xFor(index)},${yFor(value)}`).join(' ')}
               />
             );
           })}
+          {hover && hoveredPoint && <g pointerEvents="none">
+            <line x1={xFor(hover.index)} x2={xFor(hover.index)} y1={padding.top} y2={padding.top + plotHeight} stroke="currentColor" strokeDasharray="4 4" className="text-ink-tertiary" />
+            <circle cx={xFor(hover.index)} cy={yFor(hoveredPoint.costByModel[hover.model] || 0)} r="5" fill={MODEL_COLORS[hover.model]} stroke="var(--color-surface)" strokeWidth="2" />
+          </g>}
           {!hasData && <text x={width / 2} y={height / 2} textAnchor="middle" className="fill-ink-tertiary text-sm">近 30 天暂无消耗记录</text>}
         </svg>
       </div>
+      {hover && hoveredPoint && <div role="tooltip" className="pointer-events-none absolute top-2 z-10 max-w-[min(20rem,calc(100%_-_1rem))] rounded-xl border border-hairline bg-surface px-4 py-3 text-sm shadow-lg"
+        style={hover.index < trend.length / 2 ? { right: 8 } : { left: 8 }}>
+        <p className="text-xs text-ink-tertiary">{hoveredPoint.date}</p>
+        <p className="mt-1 break-words font-medium text-ink">{MODEL_LABELS[hover.model]}</p>
+        <p className="mt-1 font-semibold text-ink">{formatYuan(hoveredPoint.costByModel[hover.model] || 0)}</p>
+      </div>}
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink-secondary">
         {MODEL_KEYS.map((key) => (
-          <span key={key} className="inline-flex items-center gap-1.5">
+          <button type="button" key={key} className="inline-flex items-center gap-1.5 rounded text-left focus-visible:outline-2 focus-visible:outline-accent"
+            aria-label={`查看 ${MODEL_LABELS[key]} 每日消耗`}
+            onPointerEnter={() => setHover({ index: hover?.index ?? Math.max(0, trend.length - 1), model: key })}
+            onPointerLeave={() => setHover(null)}
+            onFocus={() => setHover({ index: Math.max(0, trend.length - 1), model: key })}
+            onBlur={() => setHover(null)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setHover(null);
+              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+              event.preventDefault();
+              setHover({ index: Math.min(trend.length - 1, Math.max(0, (hover?.index ?? trend.length - 1) + (event.key === 'ArrowLeft' ? -1 : 1))), model: key });
+            }}>
             <span className="h-2 w-2 rounded-full" style={{ backgroundColor: MODEL_COLORS[key] }} />
             {MODEL_LABELS[key]}
-          </span>
+          </button>
         ))}
       </div>
     </div>
@@ -237,6 +280,30 @@ function PeriodCard({ label, costMicros }: { label: string; costMicros: number }
       <p className="mt-1 text-xs text-ink-tertiary">固定核心模型预估</p>
     </div>
   );
+}
+
+function RecordsPagination({ page, totalPages, loading, onPage }: {
+  page: number; totalPages: number; loading: boolean; onPage: (page: number) => void;
+}) {
+  const [target, setTarget] = useState(String(page));
+  return <nav aria-label="调用流水分页" className="mt-5 flex flex-wrap items-center justify-between gap-3 text-sm">
+    <button type="button" className="btn-secondary btn-sm" disabled={loading || page <= 1} onClick={() => onPage(page - 1)}>上一页</button>
+    <div className="flex flex-wrap items-center justify-center gap-3">
+      <span className="text-xs text-ink-tertiary" aria-live="polite">第 {page} / {totalPages} 页</span>
+      <form className="flex items-center gap-2" onSubmit={(event) => {
+        event.preventDefault();
+        const next = Number(target);
+        if (!loading && Number.isInteger(next) && next >= 1 && next <= totalPages) onPage(next);
+      }}>
+        <label className="flex items-center gap-2 whitespace-nowrap text-xs text-ink-secondary">跳至
+          <input aria-label="跳转页码" type="number" min={1} max={totalPages} step={1} required value={target}
+            disabled={loading} onChange={(event) => setTarget(event.target.value)} className="input-field" style={{ width: '5rem' }} />页
+        </label>
+        <button type="submit" disabled={loading} className="btn-secondary btn-sm">跳转</button>
+      </form>
+    </div>
+    <button type="button" className="btn-secondary btn-sm" disabled={loading || page >= totalPages} onClick={() => onPage(page + 1)}>下一页</button>
+  </nav>;
 }
 
 function RecordsTable({ records, expanded, onToggle }: {
@@ -304,6 +371,7 @@ function RecordsTable({ records, expanded, onToggle }: {
 
 export default function UsageDashboard() {
   const [filters, setFilters] = useState<UsageFilters>(initialFilters);
+  const [datePreset, setDatePreset] = useState<UsageDatePreset | 'custom'>('today');
   const [page, setPage] = useState(1);
   const [dashboard, setDashboard] = useState<UsageDashboardResult | null>(null);
   const [records, setRecords] = useState<UsageRecordsResult | null>(null);
@@ -324,6 +392,7 @@ export default function UsageDashboard() {
       fetchJson<UsageDashboardResult>(`/api/usage?${query}`, controller.signal),
       fetchJson<UsageRecordsResult>(`/api/usage/records?${query}`, controller.signal),
     ]).then(([nextDashboard, nextRecords]) => {
+      if (controller.signal.aborted) return;
       setDashboard(nextDashboard);
       setRecords(nextRecords);
       setExpanded(new Set());
@@ -338,7 +407,14 @@ export default function UsageDashboard() {
 
   const updateFilter = (key: keyof UsageFilters, value: string) => {
     setPage(1);
+    if (key === 'from' || key === 'to') setDatePreset('custom');
     setFilters((current) => ({ ...current, [key]: value }));
+  };
+
+  const selectDatePreset = (preset: UsageDatePreset) => {
+    setDatePreset(preset);
+    setPage(1);
+    setFilters((current) => ({ ...current, ...usagePresetRange(preset) }));
   };
 
   const hasEmptyDashboard = dashboard && dashboard.models.length === 0 && dashboard.totals.callCount === 0;
@@ -351,15 +427,23 @@ export default function UsageDashboard() {
           <h1 className="mt-1 text-3xl font-semibold tracking-[-0.03em]">消耗</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">固定核心模型的本地用量汇总、趋势与调用流水。</p>
         </div>
-        <p className="max-w-md rounded-xl border border-accent/20 bg-accent-tint/10 px-3 py-2 text-xs leading-5 text-ink-secondary">仅统计固定核心模型；预估消耗由后台固定单价与记录用量计算，非上游真实账单。</p>
+        <p className="max-w-md rounded-xl border border-accent/20 bg-accent-tint/10 px-3 py-2 text-xs leading-5 text-ink-secondary">仅统计已接入模型的本地调用，非上游真实账单。2026-09-29 账单均价：图片按张、视频按 5 秒折算、文本模型按次估算；历史记录保留原价。</p>
       </div>
 
-      <div className="card grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="card space-y-4 p-4">
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="日期快捷范围">
+          {USAGE_DATE_PRESETS.map((preset) => <button type="button" key={preset.key} aria-pressed={datePreset === preset.key}
+            onClick={() => selectDatePreset(preset.key)} className={`btn-sm ${datePreset === preset.key ? 'btn-primary' : 'btn-secondary'}`}>
+            {preset.label}
+          </button>)}
+          <span className="ml-1 text-xs text-ink-tertiary">{datePreset === 'custom' ? '自定义日期' : '也可选择自定义日期'}</span>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <label className="text-xs text-ink-secondary">开始日期
-          <input type="date" value={filters.from} onChange={(event) => updateFilter('from', event.target.value)} className="input-field mt-1" />
+          <input type="date" value={filters.from} max={filters.to || undefined} onChange={(event) => updateFilter('from', event.target.value)} className="input-field mt-1" />
         </label>
         <label className="text-xs text-ink-secondary">结束日期（含）
-          <input type="date" value={filters.to} onChange={(event) => updateFilter('to', event.target.value)} className="input-field mt-1" />
+          <input type="date" value={filters.to} min={filters.from || undefined} onChange={(event) => updateFilter('to', event.target.value)} className="input-field mt-1" />
         </label>
         <label className="text-xs text-ink-secondary">模型
           <select value={filters.coreModelKey} onChange={(event) => updateFilter('coreModelKey', event.target.value)} className="input-field mt-1">
@@ -373,6 +457,7 @@ export default function UsageDashboard() {
             {(Object.keys(CATEGORY_LABELS) as CoreUsageCategory[]).map((category) => <option key={category} value={category}>{CATEGORY_LABELS[category]}</option>)}
           </select>
         </label>
+        </div>
       </div>
 
       {loading && !dashboard ? (
@@ -400,14 +485,14 @@ export default function UsageDashboard() {
           </section>
 
           <section className="card p-5">
-            <div><h2 className="text-lg font-semibold">近 30 天</h2><p className="mt-1 text-xs text-ink-tertiary">按模型查看每日固定价格预估</p></div>
-            <div className="mt-5"><TrendChart trend={dashboard.trend} /></div>
+            <div><h2 className="text-lg font-semibold">近 30 天</h2><p className="mt-1 text-xs text-ink-tertiary">按模型查看每日固定价格预估 · 悬浮曲线查看日期、模型和金额；聚焦图例后可用左右键切换日期</p></div>
+            <div className="mt-5"><TrendChart key={query} trend={dashboard.trend} /></div>
           </section>
 
           <section className="card p-5">
             <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold">调用流水</h2><p className="mt-1 text-xs text-ink-tertiary">按时间倒序，金额均为人民币展示值</p></div><p className="text-xs text-ink-tertiary">共 {records.total} 条</p></div>
             <div className="mt-4"><RecordsTable records={records} expanded={expanded} onToggle={(id) => setExpanded((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} /></div>
-            {records.totalPages > 1 && <div className="mt-5 flex items-center justify-between text-sm"><button type="button" className="btn-secondary btn-sm" disabled={records.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>上一页</button><span className="text-xs text-ink-tertiary">第 {records.page} / {records.totalPages} 页</span><button type="button" className="btn-secondary btn-sm" disabled={records.page >= records.totalPages} onClick={() => setPage((current) => current + 1)}>下一页</button></div>}
+            {records.totalPages > 1 && <RecordsPagination key={`${records.page}-${records.totalPages}`} page={records.page} totalPages={records.totalPages} loading={loading} onPage={setPage} />}
           </section>
 
           {hasEmptyDashboard && <p className="text-center text-sm text-ink-tertiary">当前范围没有固定核心模型记录，可调整日期后重试。</p>}

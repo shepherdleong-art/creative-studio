@@ -34,7 +34,7 @@ assert.match(dashboard, /minimumFractionDigits:\s*2/, 'RMB formatting must keep 
 assert.match(dashboard, /maximumFractionDigits:\s*6/, 'RMB formatting must preserve micro-costs up to six decimals');
 
 assert.doesNotMatch(settings, /usageTrackingEnabled|计入消耗看板/, 'settings must not expose a tracking switch');
-assert.match(settings, /company-gateway-image2-medium/, 'settings must recognize the fixed-price company image provider');
+assert.match(settings, /resolveCoreUsagePlan/, 'settings must use the shared fixed-price registry');
 assert.match(settings, /doubao-seed-tts-2/, 'settings must recognize fixed-price Doubao TTS');
 assert.match(settings, /providerId/, 'provider edit form must know which stable provider is being edited');
 assert.match(settings, /固定单价由后台计算/, 'core cards must explain that price is backend-managed');
@@ -55,8 +55,8 @@ assert.match(ttsIdentityHelper, /model/, 'Doubao fixed-price UI must inspect eff
 assert.match(imageUpdate, /isFixedImageIdentity/, 'image update API must gate manual prices by the complete image identity');
 assert.match(imageUpdate, /effectiveType/, 'image update API must evaluate the effective provider type');
 assert.match(imageUpdate, /effectiveModel/, 'image update API must evaluate the effective provider model');
-assert.match(imageUpdate, /effectiveType\s*===\s*['"]gateway-task-image['"]/, 'image update API must require the canonical image adapter');
-assert.match(imageUpdate, /effectiveModel\s*===\s*['"]image2-medium['"]/, 'image update API must require the canonical image model');
+assert.match(imageUpdate, /providerType: effectiveType/, 'image update API must pass the effective adapter to the registry');
+assert.match(imageUpdate, /configuredModel: effectiveModel, requestModel: effectiveModel/, 'image update API must pass the effective model to the registry');
 assert.match(scriptUpdate, /id\s*!==\s*['"]gpt['"]/, 'non-core GPT providers must keep the legacy editable cost field');
 assert.match(scriptUpdate, /effectiveExecutionScope/, 'script update must use the request/current effective execution scope');
 assert.match(scriptUpdate, /effectiveApiStyle/, 'script update must use the request/current effective API style');

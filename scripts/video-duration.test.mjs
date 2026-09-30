@@ -13,11 +13,29 @@ for (const model of ['kling-3.0', 'kling-2.5-fast', 'KLING-2.5']) {
   assert.ok(duration.videoDurationOptions('openai-video', model).includes(15));
 }
 assert.ok(duration.videoDurationOptions('kling', 'kling-2.5').includes(15), '限制只绑定已核对的公司通道');
+const kling3Models = ['kling-3.0', 'qiniuyun/kling-3.0'];
+for (const model of kling3Models) {
+  const choices = duration.videoDurationOptions('openai-video', model);
+  assert.deepEqual(choices, Array.from({ length: 13 }, (_, index) => index + 3));
+  assert.equal(duration.normalizeVideoDraftDuration(2, choices), 3);
+  assert.equal(duration.normalizeVideoDraftDuration(5, choices), 5);
+}
+assert.equal(duration.isGatewayKling3Model('openai-video', 'kling-3.0-unknown'), false);
+assert.equal(duration.isGatewayKling3Model('kling', 'kling-3.0'), false);
+const seedanceModels = ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628'];
+for (const model of seedanceModels) {
+  const choices = duration.videoDurationOptions('openai-video', model);
+  assert.deepEqual(choices, Array.from({ length: 12 }, (_, index) => index + 4));
+  assert.equal(duration.normalizeVideoDraftDuration(2, choices), 4);
+  assert.equal(duration.normalizeVideoDraftDuration(5, choices), 5);
+}
 
 const writes = [];
 const providers = {
   p25: { id: 'p25', type: 'openai-video', defaultModel: 'kling-2.5' },
   p30: { id: 'p30', type: 'openai-video', defaultModel: 'kling-3.0' },
+  ...Object.fromEntries(kling3Models.map((model) => [model, { id: model, type: 'openai-video', defaultModel: model }])),
+  ...Object.fromEntries(seedanceModels.map((model) => [model, { id: model, type: 'openai-video', defaultModel: model }])),
 };
 const db = {
   prepare: sql => ({
@@ -77,6 +95,22 @@ for (const durationSec of [5, 10]) {
 }
 await submit(single, { shotId: 'shot', providerId: 'p30', prompt: 'test', durationSec: 15 }, 200, 1);
 await submit(batch, { shotId: 'shot', items: [{ providerId: 'p30', prompt: 'test', durationSec: 15 }] }, 200, 1);
+for (const providerId of seedanceModels) {
+  for (const durationSec of [2, 3, 4, 5, 15, 16, 4.5]) {
+    const valid = Number.isInteger(durationSec) && durationSec >= 4 && durationSec <= 15;
+    const item = { providerId, prompt: 'test', durationSec };
+    await submit(single, { shotId: 'shot', ...item }, valid ? 200 : 400, valid ? 1 : 0);
+    await submit(batch, { shotId: 'shot', items: [{ ...item, durationSec: 5 }, item] }, valid ? 200 : 400, valid ? 2 : 0);
+  }
+}
+for (const providerId of kling3Models) {
+  for (const durationSec of [2, 3, 5, 15, 16, 3.5]) {
+    const valid = Number.isInteger(durationSec) && durationSec >= 3 && durationSec <= 15;
+    const item = { providerId, prompt: 'test', durationSec };
+    await submit(single, { shotId: 'shot', ...item }, valid ? 200 : 400, valid ? 1 : 0);
+    await submit(batch, { shotId: 'shot', items: [{ ...item, durationSec: 5 }, item] }, valid ? 200 : 400, valid ? 2 : 0);
+  }
+}
 
 const panel = fs.readFileSync('components/VideoGenerationPanel.tsx', 'utf8');
 assert.equal((panel.match(/getRowDurationOptions\(row\)\.map/g) || []).length, 2, '单条/批量行都要使用模型时长选项');

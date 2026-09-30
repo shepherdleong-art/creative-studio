@@ -31,11 +31,11 @@ assert.equal(imagePlan.coreModelKey, 'company-image2-medium');
 assert.equal(imagePlan.category, 'image');
 assert.equal(imagePlan.pricingVersion, CORE_USAGE_PRICING_VERSION);
 assert.deepEqual(imagePlan.priceComponents, [
-  { key: 'image', unit: 'image', unitPriceMicros: 1_050_000, priceScale: 1 },
+  { key: 'image', unit: 'image', unitPriceMicros: 1_580_000, priceScale: 1 },
 ]);
-assert.equal(calculateUsageCostMicros(imagePlan, { image: 1 }), 1_050_000);
+assert.equal(calculateUsageCostMicros(imagePlan, { image: 1 }), 1_580_000);
 
-// qiniuyun/gpt-image-2-medium：粗略估算 ¥0.5/张（2026-08-21 与用户确认，真实定价待公布）
+// qiniuyun/gpt-image-2-medium：账单均价 ¥0.25/张（2026-09-30）
 const qiniuyunPlan = mustPlan(snapshot({
   providerId: 'company-gateway-qiniuyun-gpt-image-2-medium',
   configuredModel: 'qiniuyun/gpt-image-2-medium',
@@ -45,9 +45,9 @@ assert.equal(qiniuyunPlan.coreModelKey, 'company-qiniuyun-gpt-image-2-medium');
 assert.equal(qiniuyunPlan.category, 'image');
 assert.equal(qiniuyunPlan.pricingVersion, CORE_USAGE_PRICING_VERSION);
 assert.deepEqual(qiniuyunPlan.priceComponents, [
-  { key: 'image', unit: 'image', unitPriceMicros: 500_000, priceScale: 1 },
+  { key: 'image', unit: 'image', unitPriceMicros: 250_000, priceScale: 1 },
 ]);
-assert.equal(calculateUsageCostMicros(qiniuyunPlan, { image: 1 }), 500_000);
+assert.equal(calculateUsageCostMicros(qiniuyunPlan, { image: 1 }), 250_000);
 // 身份必须精确匹配：同 id 不同模型不给价
 assert.equal(resolveCoreUsagePlan(snapshot({
   providerId: 'company-gateway-qiniuyun-gpt-image-2-medium',
@@ -70,7 +70,7 @@ assert.equal(calculateUsageCostMicros(klingPlan, { second: 5 }), 2_990_000);
 assert.equal(calculateUsageCostMicros(klingPlan, { second: 1 }), 598_000);
 assert.equal(calculateUsageCostMicros(klingPlan, { second: 7 }), 4_186_000);
 
-// qiniuyun/kling-3.0：公司结算价 ¥2.72/5 秒（2026-09-14 与用户确认）
+// qiniuyun/kling-3.0：账单均价 ¥3.00/5 秒（2026-09-30）
 const qiniuyunKlingPlan = mustPlan(snapshot({
   providerTable: 'video_providers',
   providerId: 'company-qiniuyun-kling-3-0',
@@ -81,11 +81,11 @@ const qiniuyunKlingPlan = mustPlan(snapshot({
 assert.equal(qiniuyunKlingPlan.coreModelKey, 'company-qiniuyun-kling-3-0');
 assert.equal(qiniuyunKlingPlan.category, 'video');
 assert.deepEqual(qiniuyunKlingPlan.priceComponents, [
-  { key: 'second', unit: 'second', unitPriceMicros: 2_720_000, priceScale: 5 },
+  { key: 'second', unit: 'second', unitPriceMicros: 3_000_000, priceScale: 5 },
 ]);
-assert.equal(calculateUsageCostMicros(qiniuyunKlingPlan, { second: 5 }), 2_720_000);
-assert.equal(calculateUsageCostMicros(qiniuyunKlingPlan, { second: 1 }), 544_000);
-assert.equal(calculateUsageCostMicros(qiniuyunKlingPlan, { second: 7 }), 3_808_000);
+assert.equal(calculateUsageCostMicros(qiniuyunKlingPlan, { second: 5 }), 3_000_000);
+assert.equal(calculateUsageCostMicros(qiniuyunKlingPlan, { second: 1 }), 600_000);
+assert.equal(calculateUsageCostMicros(qiniuyunKlingPlan, { second: 7 }), 4_200_000);
 // 手工公司网关行（非 canonical id + 回环 baseUrl）同样计价
 assert.equal(mustPlan(snapshot({
   providerTable: 'video_providers',
@@ -108,7 +108,7 @@ assert.equal(calculateUsageCostMicros(seedancePlan, { second: 5 }), 11_730_000);
 assert.equal(calculateUsageCostMicros(seedancePlan, { second: 3 }), 7_038_000);
 assert.equal(calculateUsageCostMicros(seedancePlan, { second: 8 }), 18_768_000);
 
-// doubao-seedance-2-5-260628：默认 1080p，火山官网刊例 ¥18.75/5 秒（约 ¥3.75/秒）
+// doubao-seedance-2-5-260628：账单均价 ¥9.45/5 秒（2026-09-30）
 const seedance25Plan = mustPlan(snapshot({
   providerTable: 'video_providers',
   providerId: 'company-seedance-2-5',
@@ -119,11 +119,11 @@ const seedance25Plan = mustPlan(snapshot({
 assert.equal(seedance25Plan.coreModelKey, 'company-seedance-2-5');
 assert.equal(seedance25Plan.category, 'video');
 assert.deepEqual(seedance25Plan.priceComponents, [
-  { key: 'second', unit: 'second', unitPriceMicros: 18_750_000, priceScale: 5 },
+  { key: 'second', unit: 'second', unitPriceMicros: 9_450_000, priceScale: 5 },
 ]);
-assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 5 }), 18_750_000);
-assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 3 }), 11_250_000);
-assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 8 }), 30_000_000);
+assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 5 }), 9_450_000);
+assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 3 }), 5_670_000);
+assert.equal(calculateUsageCostMicros(seedance25Plan, { second: 8 }), 15_120_000);
 // 身份必须精确匹配：同 id 不同模型不给价
 assert.equal(resolveCoreUsagePlan(snapshot({
   providerTable: 'video_providers',
@@ -152,30 +152,16 @@ const gptPlan = mustPlan(snapshot({
   requestModel: 'GPT-5-6-Luna-Standard',
 }));
 assert.equal(gptPlan.coreModelKey, 'company-gpt-5-6-luna');
-assert.equal(gptPlan.unitPriceMicros, 0);
+assert.equal(gptPlan.unitPriceMicros, 20_000);
 assert.equal(gptPlan.priceScale, 1);
-assert.deepEqual(gptPlan.priceComponents, [
-  { key: 'input_token', unit: 'token', unitPriceMicros: 2_887_800, priceScale: 1_000_000 },
-  { key: 'output_token', unit: 'token', unitPriceMicros: 12_995_200, priceScale: 1_000_000 },
-  { key: 'cached_input_token', unit: 'token', unitPriceMicros: 288_780, priceScale: 1_000_000 },
-]);
+assert.deepEqual(gptPlan.priceComponents, [{ key: 'request', unit: 'request', unitPriceMicros: 20_000, priceScale: 1 }]);
 const normalizedGpt = normalizeGptTokenUsage({ promptTokens: 1_000_003, completionTokens: 3, cachedTokens: 3 });
 assert.deepEqual(normalizedGpt, {
   uncachedInputTokens: 1_000_000,
   cachedReadTokens: 3,
   outputTokens: 3,
 });
-assert.equal(
-  calculateUsageCostMicros(gptPlan, normalizedGpt),
-  2_887_800 + 1 + 39,
-  'GPT rounds each component before summing and never uses its 0/1 top-level price',
-);
-const roundedGpt = calculateUsageCostMicros(gptPlan, {
-  uncachedInputTokens: 1,
-  cachedReadTokens: 1,
-  outputTokens: 1,
-});
-assert.equal(roundedGpt, 16, 'each one-token GPT component rounds independently');
+assert.equal(calculateUsageCostMicros(gptPlan, { request: 1 }), 20_000);
 
 const ttsPlan = mustPlan(snapshot({
   providerTable: 'final_edit_tts_providers',
@@ -261,7 +247,7 @@ const videoGatewayNegativeCases: Array<Partial<CoreUsageProviderSnapshot>> = [
   // baseUrl 不是合法 URL
   { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-3.0', requestModel: 'kling-3.0', baseUrl: 'not a url' },
   // 回环 baseUrl 但模型不符
-  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-2.5', requestModel: 'kling-2.5', baseUrl: 'http://127.0.0.1:4000' },
+  { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-2.5-unknown', requestModel: 'kling-2.5-unknown', baseUrl: 'http://127.0.0.1:4000' },
   // 回环 baseUrl 但请求模型与配置模型不一致
   { providerTable: 'video_providers', providerId: 'kling-2-5', providerType: 'openai-video', configuredModel: 'kling-3.0', requestModel: 'kling-3.0-pro', baseUrl: 'http://127.0.0.1:4000' },
   // 非 http(s) 协议的回环地址不算网关
@@ -303,5 +289,24 @@ assert.deepEqual(snapshotValue, {
   refType: 'job',
   refId: 'job-1',
 });
+
+// New models use the supplied bill averages; video amounts scale from five seconds.
+for (const [id, model, category, price] of [
+  ['company-gateway-seedream-5-0-pro', 'doubao-seedream-5-0-pro-image', 'image', 610_000],
+  ['company-gateway-nano-banana-pro', 'nano-banana-3.0', 'image', 1_270_000],
+  ['company-gateway-nano-banana-2', 'nano-banana-3.1', 'image', 820_000],
+  ['company-kling-2-5', 'kling-2.5', 'video', 1_510_000],
+  ['company-seedance-2-0', 'doubao-seedance-2-0-260128', 'video', 2_520_000],
+] as const) {
+  const provider = snapshot({ providerId: id, configuredModel: model, requestModel: model,
+    providerTable: category === 'image' ? 'providers' : category === 'video' ? 'video_providers' : 'script_providers',
+    providerType: category === 'image' ? 'gateway-task-image' : category === 'video' ? 'openai-video' : 'openai-compatible',
+    executionScope: 'company', apiStyle: 'openai-compatible', baseUrl: 'http://127.0.0.1:4000' });
+  const plan = mustPlan(provider);
+  assert.equal(calculateUsageCostMicros(plan, category === 'video' ? 5 : 1), price, model);
+  assert.equal(calculateUsageCostMicros(plan, category === 'video' ? 10 : 2), price * 2, model);
+  assert.equal(resolveCoreUsagePlan({ ...provider, requestModel: `${model}-unknown` }), null);
+  assert.equal(resolveCoreUsagePlan({ ...provider, providerId: 'external-copy', baseUrl: 'https://public.example' }), null);
+}
 
 console.log('usage-pricing tests passed');

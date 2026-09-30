@@ -1,3 +1,5 @@
+import { parseUsageSnapshot } from './usage-ledger.ts';
+import { calculateUsageCostMicros } from './usage-pricing.ts';
 import { getDb } from './db';
 import { editImage as editImageOpenAI, EditImageRequest } from './providers/openai-compatible';
 import { submitGeekAITask, pollGeekAITask, downloadGeekAIImage, summarizeGeekAIResponse } from './providers/geekai-json';
@@ -766,7 +768,10 @@ async function runJob(
     ).run(outputImageId, job.projectId, outputFilename, outputPath, outputMimeType, outputUsage, normalizedImage.width, normalizedImage.height);
 
     const finishedAt = new Date().toISOString();
-    const estimatedCost = calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
+    const frozenPrice = parseUsageSnapshot(usageSnapshot);
+    const estimatedCost = frozenPrice.ok
+      ? calculateUsageCostMicros(frozenPrice.parsed.snapshot.priceComponents, attempt) / 1_000_000
+      : calculateEstimatedCost(provider.defaultCostPerImage, attempt - 1);
 
     // ── Atomic completion: only mark succeeded if still running ──
     const completeResult = db.prepare(

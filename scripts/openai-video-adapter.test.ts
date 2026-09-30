@@ -85,6 +85,31 @@ try {
   };
   globalThis.fetch = mockFetch;
 
+  for (const model of ['kling-3.0', 'qiniuyun/kling-3.0']) {
+    for (const durationSec of [2, 16, 3.5, NaN]) {
+      for (const tail of [false, true]) {
+        const before = capturedMethods.length;
+        await assert.rejects(openaiVideoAdapter.submit({
+          model, prompt: 'invalid duration', sourceImagePath: imagePath,
+          sourceMimeType: 'image/png', durationSec,
+          ...(tail ? { tailImagePath, tailMimeType: 'image/png' as const } : {}),
+        }, 'gateway-key', 'http://127.0.0.1:4000'), /3–15 秒/);
+        assert.equal(capturedMethods.length, before, '非法可灵 3.0 时长必须在上传和提交前拒绝');
+      }
+    }
+  }
+
+  for (const model of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628']) {
+    for (const durationSec of [2, 3, 16, 4.5]) {
+      const before = capturedMethods.length;
+      await assert.rejects(openaiVideoAdapter.submit({
+        model, prompt: 'invalid duration', sourceImagePath: imagePath,
+        sourceMimeType: 'image/png', durationSec,
+      }, 'gateway-key', 'http://127.0.0.1:4000'), /4–15 秒/);
+      assert.equal(capturedMethods.length, before, '非法 Seedance 时长不得产生上传或生成请求');
+    }
+  }
+
   for (const durationSec of [2, 7, 11, 15, 10.5, NaN]) {
     for (const tail of [false, true]) {
       const before = capturedMethods.length;
