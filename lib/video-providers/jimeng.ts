@@ -30,10 +30,30 @@ function isSeedance2(model: string): boolean {
   return /seedance-2[-.]/.test(model);
 }
 
-const SEEDANCE_2_TAIL_FRAME_MODEL = 'doubao-seedance-2-0-260128';
+/** 2.5 系列（doubao-seedance-2-5-*）：单段最长 30 秒，全模态参考需显式引导子任务类型。 */
+function isSeedance25(model: string): boolean {
+  return /seedance-2-5[-.]/.test(model);
+}
+
+/** 各代模型的单段时长上限：2.5 → 30s，其余 2.x → 15s，更早的即梦 → 12s。 */
+function maxJimengDurationSec(model: string): number {
+  if (isSeedance25(model)) return 30;
+  if (isSeedance2(model)) return 15;
+  return 12;
+}
+
+/**
+ * 尾帧按精确模型 allowlist 声明（红线：不许放宽成前缀匹配）。
+ * 2.5 官方教程：首尾帧生视频严格通过 content.role = first_frame/last_frame 控制，
+ * ratio 必须为 adaptive——本适配器图生视频路径本就固定 adaptive，合同一致。
+ */
+const SEEDANCE_2_TAIL_FRAME_MODELS: ReadonlyArray<string> = [
+  'doubao-seedance-2-0-260128',
+  'doubao-seedance-2-5-260628',
+];
 
 function getTailFrameCapability(model: string): TailFrameCapability {
-  if (model === SEEDANCE_2_TAIL_FRAME_MODEL) {
+  if (SEEDANCE_2_TAIL_FRAME_MODELS.includes(model)) {
     return {
       supported: true,
       protocol: 'ark-content-roles',
@@ -139,7 +159,7 @@ export const jimengAdapter: VideoProviderAdapter = {
   },
 
   minimumPollingTimeoutMs(request) {
-    if (isSeedance2(request.model) && request.durationSec === 15) {
+    if (isSeedance2(request.model) && request.durationSec >= 15) {
       return JIMENG_2_LONG_VIDEO_MIN_POLLING_MS;
     }
     return undefined;
@@ -192,7 +212,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       content,
       resolution: '1080p',
       ratio: 'adaptive',
-      duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),
+      duration: normalizeJimengDuration(request.durationSec, maxJimengDurationSec(request.model)),
       watermark: false,
       generate_audio: true,
     };
@@ -223,7 +243,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       content: [{ type: 'text', text: normalizeJimengPrompt(request.prompt) }],
       resolution: request.resolution ?? '1080p',
       ratio: request.aspectRatio ?? '16:9',
-      duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),
+      duration: normalizeJimengDuration(request.durationSec, maxJimengDurationSec(request.model)),
       watermark: false,
       generate_audio: true,
     };
@@ -253,6 +273,7 @@ export const jimengAdapter: VideoProviderAdapter = {
     signal?: AbortSignal
   ): Promise<SubmitVideoResult> {
     const seedance2 = isSeedance2(request.model);
+    const seedance25 = isSeedance25(request.model);
     const content: Array<Record<string, unknown>> = [
       { type: 'text', text: normalizeJimengPrompt(request.prompt) },
       ...request.references.map(referenceContentItem),
@@ -262,11 +283,19 @@ export const jimengAdapter: VideoProviderAdapter = {
       content,
       resolution: request.resolution ?? '1080p',
       ratio: request.aspectRatio ?? '16:9',
-      duration: normalizeJimengDuration(request.durationSec, seedance2 ? 15 : 12),
+      // 编辑子任务的锁定时长 -1 只被 2.5 透传；其余模型仍按代际上限钳制
+      duration: seedance25 && request.durationSec === -1
+        ? -1
+        : normalizeJimengDuration(request.durationSec, maxJimengDurationSec(request.model)),
       watermark: false,
       generate_audio: true,
     };
     if (!seedance2) body.camera_fixed = false;
+    if (seedance25) {
+      // 2.5 全模态参考按提示词意图判定子任务（参考／编辑／延长），编辑与延长会锁定 ratio／duration；
+      // 画布按节点模式显式引导子任务类型，把参数冲突前置为同步报错（方舟官方教程推荐做法）。
+      body.omni_reference_task_type = request.omniReferenceTaskType ?? 'reference';
+    }
 
     return postGenerationTask({
       apiKey,

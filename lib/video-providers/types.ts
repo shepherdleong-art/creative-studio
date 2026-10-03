@@ -57,10 +57,13 @@ export interface SubmitReferenceVideoRequest {
   model: string;
   prompt: string;
   references: ReadonlyArray<ReferenceVideoInput>;
+  /** durationSec: -1 仅用于 Seedance 2.5 编辑子任务的锁定时长（透传不钳制）。 */
   durationSec: number;
   /** 参考模式没有首帧可吸附，比例由调用方显式给出。 */
   aspectRatio?: string;
   resolution?: string;
+  /** 方舟 2.5 全模态参考子任务显式引导；仅 2.5 系列发送，缺省按 reference。 */
+  omniReferenceTaskType?: 'reference' | 'edit' | 'extend';
 }
 
 export interface SubmitVideoResult {

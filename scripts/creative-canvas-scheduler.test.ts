@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { ensureCreativeCanvasSchemaReady } from '../lib/creative-canvas/schema.ts';
 import { clearCanvasCapabilities, registerCanvasCapability, type CanvasModelCapability } from '../lib/creative-canvas/capabilities.ts';
 import { canvasStorageRoot, importCanvasAsset } from '../lib/creative-canvas/assets.ts';
-import { createCanvas, listCanvasNodeStates, saveCanvasGraph } from '../lib/creative-canvas/repository.ts';
+import { createCanvas, listCanvasNodeCandidates, listCanvasNodeStates, saveCanvasGraph } from '../lib/creative-canvas/repository.ts';
 import { startCanvasRun } from '../lib/creative-canvas/runs.ts';
 import { createCanvasScheduler } from '../lib/creative-canvas/scheduler.ts';
 import { createCanvasFixtureAdapter } from '../lib/creative-canvas/adapters/fixture.ts';
@@ -670,6 +670,77 @@ function save(
   assert.equal(getCanvasTask(db, second.tasks[0].id)?.phase, 'queued');
   assert.equal(getCanvasTask(db, second.tasks[0].id)?.slotHeld, false);
   assert.equal(canvasTaskSlotUsage(db).held, 1, '接管不得新增第二个模型名额');
+  env.dispose();
+}
+
+// --- v2 并发多变体：同节点 4 变体全部领取、独立 fence、独立发布 ---------------
+
+{
+  const env = await freshDatabase('variants');
+  const { db, storageRoot } = env;
+  const canvasId = createCanvas(db, { name: '多变体画布' }).id;
+  save(env, canvasId, [imageNode('vg1', IMAGE_CAP.key, '多变体提示词')], [], 0);
+
+  const adapter = createCanvasFixtureAdapter({ defaultScript: { delayMs: 5 } });
+  const scheduler = createCanvasScheduler({
+    db,
+    workerId: 'variant-worker',
+    adapter,
+    storageRoot,
+    pollIntervalMs: 1,
+  });
+
+  const started = startCanvasRun({
+    db,
+    request: { canvasId, mode: 'single', targetNodeId: 'vg1', variantCount: 4, requestKey: 'variant-run' },
+  });
+  assert.equal(started.tasks.length, 4);
+  assert.equal(new Set(started.tasks.map((task) => task.id)).size, 4, '多变体必须是独立任务行');
+
+  // 同节点 4 个变体全部领取：v1 的「每节点单活跃任务」约束不得残留
+  const tick = await scheduler.tick();
+  assert.equal(tick.claimed.length, 4);
+  assert.equal(new Set(tick.claimed).size, 4);
+  const claimedTasks = tick.claimed.map((taskId) => getCanvasTask(db, taskId));
+  assert.equal(claimedTasks.every((task) => task?.nodeId === 'vg1'), true);
+  // 每个变体独立 fence（fence 是行级计数器：各自领取时独立 0→1，不共享节点计数）
+  const fences = claimedTasks.map((task) => task?.fence);
+  assert.deepEqual(fences, [1, 1, 1, 1], '每个变体领取后 fence 应各自独立从 0 递增到 1');
+  assert.equal(canvasTaskSlotUsage(db).held, 4);
+
+  await scheduler.drain();
+  const finished = listCanvasTasks(db, { canvasId });
+  assert.equal(finished.length, 4);
+  assert.equal(finished.every((task) => task.phase === 'succeeded'), true);
+  assert.equal(adapter.submitCountForNode('vg1'), 4, '每个变体独立提交一次');
+  assert.equal(canvasTaskSlotUsage(db).held, 0);
+
+  // 全部变体完成后 activeTaskId 清空、名额释放
+  const state = listCanvasNodeStates(db, canvasId).find((row) => row.nodeId === 'vg1');
+  assert.ok(state);
+  assert.equal(state.activeTaskId, null);
+  // 主结果是最后完成者：必属于 4 个变体产物之一
+  const outputs = finished.flatMap((task) => (task.outputAssetId ? [task.outputAssetId] : []));
+  assert.equal(outputs.length, 4, '4 个变体都应有产物');
+  assert.ok(outputs.includes(state.currentAssetId ?? ''), '主结果必属于 4 个变体产物之一');
+
+  // 候选投影：4 个变体产物全部出现在该节点的候选列表里
+  const candidates = listCanvasNodeCandidates(db, canvasId);
+  assert.equal(candidates.length, 4);
+  assert.equal(new Set(candidates.map((candidate) => candidate.assetId)).size, 4);
+  assert.equal(candidates.every((candidate) => outputs.includes(candidate.assetId)), true);
+
+  // 追加 2 个变体：不重新领取已终态任务，只提交新增
+  const appended = startCanvasRun({
+    db,
+    request: { canvasId, mode: 'single', targetNodeId: 'vg1', variantCount: 2, requestKey: 'variant-append' },
+  });
+  assert.equal(appended.tasks.length, 2);
+  const appendTick = await scheduler.tick();
+  assert.equal(appendTick.claimed.length, 2);
+  await scheduler.drain();
+  assert.equal(adapter.submitCountForNode('vg1'), 6);
+  assert.equal(listCanvasNodeCandidates(db, canvasId).length, 6);
   env.dispose();
 }
 

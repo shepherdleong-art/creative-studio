@@ -184,6 +184,24 @@ export const CREATIVE_CANVAS_MIGRATIONS: ReadonlyArray<CanvasMigration> = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      -- 并发多变体（LibTV 式一次生成 N 个候选）：
+      -- 1) 放开「同一节点至多一个未结束任务」。发布门禁由 node_states.nodeEpoch
+      --    独自承担（见 repository.publishCanvasNodeResult）；currentAssetId 语义变为
+      --    「最后完成者胜」。若未来需要恢复单任务约束，必须先清理多出的活跃任务
+      --    再重建该唯一索引（加法迁移不可逆的部分仅此一处）。
+      DROP INDEX IF EXISTS idx_cct_node_active;
+
+      -- 2) 变体编号：同一次 run 内从 0 递增；branch 与历史任务恒为 0。
+      ALTER TABLE creative_canvas_tasks ADD COLUMN variantIndex INTEGER NOT NULL DEFAULT 0;
+
+      -- 3) 候选投影：按节点列出成功任务（repository.listCanvasNodeCandidates 消费）。
+      CREATE INDEX IF NOT EXISTS idx_cct_node_results
+        ON creative_canvas_tasks(canvasId, nodeId, phase, createdAt);
+    `,
+  },
 ];
 
 export type CanvasSchemaFailureCode =
@@ -331,6 +349,16 @@ export async function ensureCreativeCanvasSchemaReady(
   }
 
   const appliedSet = new Set(appliedVersions);
+  // 已有升级记录但核心表缺失：结构不一致，不做迁移尝试（避免对残缺库执行 DDL）
+  if (appliedVersions.length > 0 && !canvasTablesPresent(db)) {
+    return {
+      state: 'compatibility_only',
+      code: 'schema_history_invalid',
+      message: 'creative-canvas 的数据结构与升级记录不一致，旧功能仍可继续使用。',
+      appliedVersions: [],
+      targetVersion,
+    };
+  }
   const pendingMigrations = CREATIVE_CANVAS_MIGRATIONS.filter(({ version }) => !appliedSet.has(version));
   if (pendingMigrations.length === 0) {
     try {

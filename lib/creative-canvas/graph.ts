@@ -21,6 +21,7 @@ import {
   type CanvasGraphNode,
   type CanvasMaterialNode,
   type CanvasMediaKind,
+  type CanvasNodeSize,
   type CanvasParameterValue,
   type CanvasPoint,
   type CanvasPromptNode,
@@ -28,6 +29,7 @@ import {
   type CanvasReferenceSlot,
   type CanvasReferenceSourceKind,
 } from './types.ts';
+import { inputKindsOf, outputKindOf } from './node-kinds.ts';
 
 export type CanvasGraphErrorCode =
   | 'invalid_graph'
@@ -117,6 +119,17 @@ function parsePosition(value: unknown, path: string): CanvasPoint {
     fail('invalid_node', `${path} 的位置必须是有限数值。`);
   }
   return { x, y };
+}
+
+function parseSize(value: unknown, path: string): CanvasNodeSize | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) fail('invalid_node', `${path} 必须是对象。`);
+  assertKnownKeys(value, ['width'], path);
+  const { width } = value;
+  if (typeof width !== 'number' || !Number.isFinite(width) || width < 120 || width > 2000) {
+    fail('invalid_node', `${path}.width 必须是 120–2000 的有限数值。`);
+  }
+  return { width };
 }
 
 function parseParameters(value: unknown, path: string): Record<string, CanvasParameterValue> {
@@ -226,10 +239,11 @@ function parseNode(value: unknown, index: number): CanvasGraphNode {
   const path = `nodes[${index}]`;
   if (!isPlainObject(value)) fail('invalid_node', `${path} 必须是对象。`);
   assertNoRuntimeFields(value, path);
-  assertKnownKeys(value, ['id', 'kind', 'position', 'data'], path);
-  const { id, kind, position, data } = value;
+  assertKnownKeys(value, ['id', 'kind', 'position', 'size', 'data'], path);
+  const { id, kind, position, size, data } = value;
   if (typeof id !== 'string' || id.length === 0) fail('invalid_node', `${path}.id 必须是非空字符串。`);
   const parsedPosition = parsePosition(position, path);
+  const parsedSize = parseSize(size, `${path}.size`);
   if (!isPlainObject(data)) fail('invalid_node', `${path}.data 必须是对象。`);
   assertNoRuntimeFields(data, `${path}.data`);
 
@@ -247,6 +261,7 @@ function parseNode(value: unknown, index: number): CanvasGraphNode {
       id,
       kind: 'material',
       position: parsedPosition,
+      ...(parsedSize ? { size: parsedSize } : {}),
       data: {
         title,
         assetId: (assetId as string | null) ?? null,
@@ -261,7 +276,13 @@ function parseNode(value: unknown, index: number): CanvasGraphNode {
     const { title, text } = data;
     if (typeof title !== 'string') fail('invalid_node', `${path}.data.title 必须是字符串。`);
     if (typeof text !== 'string') fail('invalid_node', `${path}.data.text 必须是字符串。`);
-    const node: CanvasPromptNode = { id, kind: 'prompt', position: parsedPosition, data: { title, text } };
+    const node: CanvasPromptNode = {
+      id,
+      kind: 'prompt',
+      position: parsedPosition,
+      ...(parsedSize ? { size: parsedSize } : {}),
+      data: { title, text },
+    };
     return node;
   }
 
@@ -270,6 +291,7 @@ function parseNode(value: unknown, index: number): CanvasGraphNode {
       id,
       kind,
       position: parsedPosition,
+      ...(parsedSize ? { size: parsedSize } : {}),
       data: parseGenerationData(data, `${path}.data`),
     };
     return node;
@@ -358,6 +380,8 @@ function assertConnectionsCompatible(graph: CanvasGraph): void {
     const source = byId.get(edge.source);
     const target = byId.get(edge.target);
     if (!source || !target) continue;
+    // 溯源连线（生成 → 素材）例外：只记录结果出处，不参与端口类型匹配
+    if (isGenerationNode(source) && target.kind === 'material') continue;
     if (!isGenerationNode(target)) {
       fail('target_not_generation', `连线 ${edge.id} 的目标不是生成节点。`);
     }
@@ -387,17 +411,13 @@ export function outgoingEdges(graph: CanvasGraph, nodeId: string): CanvasGraphEd
   return graph.edges.filter((edge) => edge.source === nodeId);
 }
 
-/** 节点输出端口类型：素材节点输出自身媒体类型，提示词节点输出文本，生成节点输出结果媒体。 */
+/** 节点输出端口类型：规则唯一事实源在 node-kinds.ts 注册表，这里保留导出兼容既有调用方。 */
 export function nodeOutputKind(node: CanvasGraphNode): CanvasMediaKind | 'text' {
-  if (node.kind === 'material') return node.data.mediaKind;
-  if (node.kind === 'prompt') return 'text';
-  return node.kind === 'image-generation' ? 'image' : 'video';
+  return outputKindOf(node);
 }
 
 export function nodeInputKinds(node: CanvasGraphNode): ReadonlyArray<CanvasMediaKind | 'text'> | null {
-  if (node.kind === 'image-generation') return ['image', 'text'];
-  if (node.kind === 'video-generation') return ['image', 'video', 'audio', 'text'];
-  return null;
+  return inputKindsOf(node);
 }
 
 export type CanvasConnectionRejectionCode =
@@ -412,6 +432,13 @@ export type CanvasConnectionCheck =
   | { ok: true }
   | { ok: false; code: CanvasConnectionRejectionCode; message: string };
 
+/** 溯源连线：生成节点 → 素材节点。只记录结果出处（结果物化），不产生参考槽位、不参与计划。 */
+export function isProvenanceEdge(graph: CanvasGraph, edge: Pick<CanvasGraphEdge, 'source' | 'target'>): boolean {
+  const source = findGraphNode(graph, edge.source);
+  const target = findGraphNode(graph, edge.target);
+  return Boolean(source && target && isGenerationNode(source) && target.kind === 'material');
+}
+
 export function checkCanvasConnection(graph: CanvasGraph, edge: CanvasGraphEdge): CanvasConnectionCheck {
   const source = findGraphNode(graph, edge.source);
   const target = findGraphNode(graph, edge.target);
@@ -421,20 +448,23 @@ export function checkCanvasConnection(graph: CanvasGraph, edge: CanvasGraphEdge)
   if (edge.source === edge.target) {
     return { ok: false, code: 'self_loop', message: '节点不能连接到自己。' };
   }
-  if (!isGenerationNode(target)) {
+  const provenance = isGenerationNode(source) && target.kind === 'material';
+  if (!isGenerationNode(target) && !provenance) {
     return { ok: false, code: 'target_not_generation', message: '只有生成节点接受输入。' };
   }
   if (graph.edges.some((existing) => existing.source === edge.source && existing.target === edge.target)) {
     return { ok: false, code: 'duplicate_connection', message: '这两个节点已经连接。' };
   }
-  const accepted = nodeInputKinds(target);
-  const output = nodeOutputKind(source);
-  if (!accepted || !accepted.includes(output)) {
-    return {
-      ok: false,
-      code: 'incompatible_connection',
-      message: `${source.kind === 'material' ? '该素材' : '该节点'}的输出不能连接到${target.kind === 'image-generation' ? '图片' : '视频'}生成节点。`,
-    };
+  if (!provenance) {
+    const accepted = nodeInputKinds(target);
+    const output = nodeOutputKind(source);
+    if (!accepted || !accepted.includes(output)) {
+      return {
+        ok: false,
+        code: 'incompatible_connection',
+        message: `${source.kind === 'material' ? '该素材' : '该节点'}的输出不能连接到${target.kind === 'image-generation' ? '图片' : '视频'}生成节点。`,
+      };
+    }
   }
   const withEdge: CanvasGraph = { ...graph, edges: [...graph.edges, edge] };
   const cycle = findCycle(withEdge);
@@ -502,8 +532,8 @@ export function appendNode(graph: CanvasGraph, node: CanvasGraphNode): CanvasGra
 }
 
 /**
- * 删除节点的编辑定义与关联连线。不删除任务身份，也不动其他节点的参考槽位——
- * 其他节点指向它的槽位会因为连线消失而变成失效引用。
+ * 删除节点的编辑定义与关联连线。不删除任务身份；其他节点指向它的参考槽位
+ * 会因为连线消失而随对账一并移除。
  */
 export function removeNode(graph: CanvasGraph, nodeId: string): CanvasGraph {
   requireGraphNode(graph, nodeId);
@@ -523,15 +553,17 @@ export function cloneCanvasGraph(graph: CanvasGraph): CanvasGraph {
 }
 
 export function cloneNode(node: CanvasGraphNode): CanvasGraphNode {
+  const size = node.size ? { size: { ...node.size } } : {};
   if (node.kind === 'material') {
-    return { ...node, position: { ...node.position }, data: { ...node.data } };
+    return { ...node, position: { ...node.position }, ...size, data: { ...node.data } };
   }
   if (node.kind === 'prompt') {
-    return { ...node, position: { ...node.position }, data: { ...node.data } };
+    return { ...node, position: { ...node.position }, ...size, data: { ...node.data } };
   }
   return {
     ...node,
     position: { ...node.position },
+    ...size,
     data: {
       ...node.data,
       parameters: { ...node.data.parameters },
@@ -569,7 +601,7 @@ export function defaultReferenceRoleFor(node: CanvasGraphNode): CanvasReferenceR
   return defaultRoleFor(node);
 }
 
-/** 生成节点上已失效的参考槽位：声明了来源，但连线已经不存在。 */
+/** 生成节点上来源已断开的参考槽位（对账会移除它们；仅用于识别未对账的旧图）。 */
 export function detachedReferenceSlots(
   graph: CanvasGraph,
   node: CanvasGenerationNode,
@@ -579,19 +611,23 @@ export function detachedReferenceSlots(
 }
 
 /**
- * 参考槽位对账：为新增连线补槽位（新编号只增不减），保留已断开的槽位作为失效引用，
- * 不改动既有槽位的编号与顺序，也不因为某条连线消失而重新编号。
+ * 参考槽位对账：为新增连线补槽位，并移除来源连线已断开的槽位。
+ * 保留槽位的编号与顺序不变；编号游标只增不减，@参考N 不会被回收给别的素材，
+ * 重连同一来源会分配新编号，提示词里的旧 @参考N 按「不存在」显式报错。
  */
 export function reconcileCanvasGraph(graph: CanvasGraph): CanvasGraph {
   let changed = false;
   const nodes = graph.nodes.map((node) => {
     if (!isGenerationNode(node)) return node;
-    const sources = incomingEdges(graph, node.id)
+    const inEdges = incomingEdges(graph, node.id);
+    const connected = new Set(inEdges.map((edge) => edge.source));
+    const sources = inEdges
       .map((edge) => findGraphNode(graph, edge.source))
       .filter((source): source is CanvasGraphNode => Boolean(source));
     const known = new Set(node.data.references.map((slot) => slot.sourceNodeId));
     const missing = sources.filter((source) => !known.has(source.id));
-    if (missing.length === 0) return node;
+    const kept = node.data.references.filter((slot) => connected.has(slot.sourceNodeId));
+    if (missing.length === 0 && kept.length === node.data.references.length) return node;
     changed = true;
     let counter = node.data.referenceLabelCounter;
     const appended = missing.map((source) => {
@@ -607,7 +643,7 @@ export function reconcileCanvasGraph(graph: CanvasGraph): CanvasGraph {
     });
     const data: CanvasGenerationNodeData = {
       ...node.data,
-      references: [...node.data.references, ...appended],
+      references: [...kept, ...appended],
       referenceLabelCounter: counter,
     };
     return { ...node, data } as CanvasGenerationNode;
@@ -628,10 +664,8 @@ export function collectMentionedLabels(text: string): number[] {
 
 export interface CanvasMentionResolution {
   mentioned: CanvasReferenceSlot[];
-  /** 提示词提到但节点里不存在的编号。 */
+  /** 提示词提到但节点里不存在的编号（含连线断开后被对账移除的槽位）。 */
   unknownLabels: number[];
-  /** 提示词提到但连线已经断开的参考。 */
-  detachedRefIds: string[];
   /** 同一次生成里被提及的槽位（可能重复），用于计划指纹。 */
   mentionRefIds: string[];
 }
@@ -643,10 +677,8 @@ export function resolveCanvasMentions(
 ): CanvasMentionResolution {
   const labels = collectMentionedLabels(text);
   const byLabel = new Map(node.data.references.map((slot) => [slot.label, slot]));
-  const detached = new Set(detachedReferenceSlots(graph, node).map((slot) => slot.refId));
   const mentioned: CanvasReferenceSlot[] = [];
   const unknownLabels: number[] = [];
-  const detachedRefIds = new Set<string>();
   const mentionRefIds: string[] = [];
   for (const label of labels) {
     const slot = byLabel.get(label);
@@ -656,12 +688,10 @@ export function resolveCanvasMentions(
     }
     mentioned.push(slot);
     mentionRefIds.push(slot.refId);
-    if (detached.has(slot.refId)) detachedRefIds.add(slot.refId);
   }
   return {
     mentioned,
     unknownLabels: [...new Set(unknownLabels)],
-    detachedRefIds: [...detachedRefIds],
     mentionRefIds,
   };
 }

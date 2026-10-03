@@ -12,6 +12,8 @@ export interface CanvasCapabilityParameterDto {
   min?: number;
   max?: number;
   default?: string | number | boolean;
+  /** 该参数只允许出现在列出的模式里；未列出时对所有模式可用。 */
+  modes?: CanvasGenerationMode[];
 }
 
 export interface CanvasModelCapabilityDto {
@@ -25,6 +27,9 @@ export interface CanvasModelCapabilityDto {
   evidence: 'verified' | 'mapped' | 'candidate';
   evidenceNote: string;
   providerKind: 'company' | 'external';
+  /** 按模型覆盖的界面模式名／模式提示（缺省用节点内全局文案）。 */
+  modeLabels?: Partial<Record<CanvasGenerationMode, string>>;
+  modeHints?: Partial<Record<CanvasGenerationMode, string>>;
 }
 
 export interface CanvasNodeContextValue {

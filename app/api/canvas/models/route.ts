@@ -22,6 +22,8 @@ export async function GET() {
         evidence: capability.evidence,
         evidenceNote: capability.evidenceNote,
         providerKind: capability.providerKind,
+        ...(capability.modeLabels ? { modeLabels: capability.modeLabels } : {}),
+        ...(capability.modeHints ? { modeHints: capability.modeHints } : {}),
       })),
       executor: config.executor,
     });

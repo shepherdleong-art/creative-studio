@@ -216,10 +216,14 @@ async function waitForResult(page, nodeId, mediaKind = 'image', timeout = 30_000
   await page.evaluate(() => {
     document.querySelector('[data-testid="fit-view"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
-  await page.waitForSelector(
-    `.react-flow__node[data-id="${nodeId}"] [data-testid="canvas-result-${mediaKind}"]`,
-    { timeout },
-  );
+  // 结果大图已不在生成节点内：等物化素材节点把这份产物渲染出来
+  const assetId = await nodeAttribute(page, nodeId, 'data-canvas-result');
+  if (assetId) {
+    await page.waitForSelector(
+      `.react-flow__node:has([data-node-kind="material"]) ${mediaKind === 'video' ? 'video' : 'img'}[src*="${assetId}"]`,
+      { timeout },
+    );
+  }
 }
 
 async function selectNode(page, nodeId) {
@@ -519,20 +523,17 @@ async function editorSuite(page) {
     imageNodeId,
   );
 
-  // 7. 断线 → 失效引用 → 提及失效阻止提交
+  // 7. 断线 → 槽位移除 → 提及未知编号给出提示
   await page.locator(`.react-flow__node[data-id="${imageNodeId}"] [data-testid="detach-ref-1"]`).click();
-  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-reference="1"][data-detached="true"]`);
+  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-reference="1"]`, { state: 'detached' });
   await fillPrompt(page, imageNodeId, '把 @参考1 放到客厅');
-  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-testid="mention-detached"]`);
+  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-testid="mention-unknown"]`);
   await waitSaved(page);
   assert.equal(runPosts.length, 0);
 
-  // 8. 重新连接 → 失效恢复
+  // 8. 重新连接 → 分配新编号，旧编号不回收（@参考N 不会悄悄改指向）
   await connect(page, materialA, imageNodeId);
-  await page.waitForFunction(
-    (id) => document.querySelector(`.react-flow__node[data-id="${id}"] [data-reference="1"]`)?.getAttribute('data-detached') === 'false',
-    imageNodeId,
-  );
+  await page.waitForSelector(`.react-flow__node[data-id="${imageNodeId}"] [data-reference="3"]`);
 
   // 9. 连线上的 × 只解除引用：节点与结果保留
   const edgeCountBefore = await page.locator('.react-flow__edge').count();
@@ -614,6 +615,60 @@ async function editorSuite(page) {
   await page.waitForSelector('[data-testid="canvas-editor"]');
   await page.waitForFunction((count) => document.querySelectorAll('.react-flow__node').length === count, nodesBefore + 2);
   void dragCanvasId;
+
+  // 13.6 IME 组合输入：拼音组合过程不能被提前提交成字母
+  // （回归：受控值经 StoreUpdater 被动 effect 回传滞后一拍，组合期间 React 受控恢复
+  // 会用旧值回写 DOM，每敲一键拼音就被固化；组合守卫要求组合结束才提交）
+  const imeCanvasId = await createCanvas(page, 'IME 组合输入');
+  const imePromptId = await addNode(page, 'prompt');
+  const imeGenId = await addNode(page, 'image-generation');
+  const cdp = await page.context().newCDPSession(page);
+  /** 用 CDP 模拟真实输入法：逐键更新组合文本，最后提交候选。 */
+  const imeInput = async (selector, committedText) => {
+    await page.click(selector);
+    for (const step of ['n', 'ni', 'nih', 'niha', 'nihao']) {
+      await cdp.send('Input.imeSetComposition', { text: step, selectionStart: step.length, selectionEnd: step.length });
+      await page.waitForTimeout(40);
+    }
+    await cdp.send('Input.insertText', { text: committedText });
+    await page.waitForTimeout(80);
+  };
+  await imeInput(`.react-flow__node[data-id="${imePromptId}"] [data-testid="prompt-text"]`, '你好');
+  assert.equal(
+    await page.locator(`.react-flow__node[data-id="${imePromptId}"] [data-testid="prompt-text"]`).inputValue(),
+    '你好',
+    '提示词文本域：IME 组合不应被拆成字母',
+  );
+  await imeInput(`.react-flow__node[data-id="${imePromptId}"] [data-testid="node-title"]`, '名称');
+  assert.equal(
+    await page.locator(`.react-flow__node[data-id="${imePromptId}"] [data-testid="node-title"]`).inputValue(),
+    '提示词名称',
+    '节点标题：IME 组合不应被拆成字母',
+  );
+  await imeInput(`.react-flow__node[data-id="${imeGenId}"] [data-testid="generation-prompt"]`, '你好世界');
+  assert.equal(
+    await page.locator(`.react-flow__node[data-id="${imeGenId}"] [data-testid="generation-prompt"]`).inputValue(),
+    '你好世界',
+    '生成节点提示词：IME 组合不应被拆成字母',
+  );
+  // 提交发生在 compositionend：保存后服务端图里必须是完整中文，而不是拼音残片
+  await waitSaved(page);
+  const savedIme = await page.evaluate(async ({ canvasId, promptId, genId }) => {
+    const payload = await (await fetch(`/api/canvas/${canvasId}`)).json();
+    const nodes = payload.canvas.graph.nodes;
+    return {
+      text: nodes.find((node) => node.id === promptId)?.data?.text ?? null,
+      title: nodes.find((node) => node.id === promptId)?.data?.title ?? null,
+      prompt: nodes.find((node) => node.id === genId)?.data?.prompt ?? null,
+    };
+  }, { canvasId: imeCanvasId, promptId: imePromptId, genId: imeGenId });
+  assert.deepEqual(savedIme, { text: '你好', title: '提示词名称', prompt: '你好世界' },
+    `IME 提交后的持久化内容不对：${JSON.stringify(savedIme)}`);
+
+  // 回到主画布继续后面的断言
+  await page.goto(`${baseUrl}/canvas/${evidenceCanvasId}`);
+  await page.waitForSelector('[data-testid="canvas-editor"]');
+  await page.waitForFunction((count) => document.querySelectorAll('.react-flow__node').length === count, nodesBefore + 2);
 
   // 14. 没有历史版本入口
   const bodyText = await page.locator('body').innerText();
@@ -723,6 +778,57 @@ async function executionSuite(page) {
   await waitForResult(page, imageId, 'image', 20_000);
   assert.equal(await nodeAttribute(page, imageId, 'data-canvas-result'), secondResult);
 
+  // v2 并发多变体：×4 提交、运行中连击追加、候选列表与本地预览切换
+  // 运行中节点随轮询持续重渲染，Playwright click 会等不到稳定，统一用 DOM 事件点击
+  const domClick = async (selector) => {
+    await page.evaluate((sel) => {
+      document.querySelector(sel)?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }, selector);
+  };
+  await domClick(`.react-flow__node[data-id="${imageId}"] [data-testid="variant-count"] button[aria-label="生成 4 个变体"]`);
+  await domClick(`.react-flow__node[data-id="${imageId}"] [data-testid="run-node"]`);
+  // 4 个变体并行运行：按钮变「追加变体」，徽章行显示 4 个变体
+  await page.waitForFunction(
+    (id) => document.querySelector(`.react-flow__node[data-id="${id}"] [data-testid="run-node"]`)?.textContent?.includes('追加变体'),
+    imageId,
+    { timeout: 15_000 },
+  );
+  await page.waitForFunction(
+    (id) => document.querySelectorAll(`.react-flow__node[data-id="${id}"] [data-testid="variant-status-row"] span`).length === 4,
+    imageId,
+    { timeout: 15_000 },
+  );
+  // 运行中连击 run-node：v1 语义会报 node_busy，v2 应追加成功（不报错）
+  runPosts.length = 0;
+  await domClick(`.react-flow__node[data-id="${imageId}"] [data-testid="run-node"]`);
+  await page.waitForFunction(
+    (id) => !document.querySelector(`.react-flow__node[data-id="${id}"] [data-canvas-status]`),
+    imageId,
+    { timeout: 60_000 },
+  );
+  assert.equal(runPosts.length, 1, `运行中连击应成功追加一次运行请求：${runPosts.join(',')}`);
+
+  // 多变体全部物化：图片历史 2 次（首次 + 再生成）+ 本次 4 + 追加 4 = 10 个产物，
+  // 另有视频节点的 1 个产物也会飞出，共 11 个物化素材节点 + 1 个手动上传 = 12 个
+  await page.waitForFunction(
+    () => document.querySelectorAll('.react-flow__node:has([data-node-kind="material"])').length === 12,
+    null,
+    { timeout: 30_000 },
+  );
+  const mainBefore = await nodeAttribute(page, imageId, 'data-canvas-result');
+  assert.ok(mainBefore);
+
+  // 刷新后物化节点与主结果都在
+  await page.reload();
+  await page.waitForSelector('[data-testid="canvas-editor"]');
+  await waitForResult(page, imageId, 'image', 20_000);
+  assert.equal(await nodeAttribute(page, imageId, 'data-canvas-result'), mainBefore);
+  await page.waitForFunction(
+    () => document.querySelectorAll('.react-flow__node:has([data-node-kind="material"])').length === 12,
+    null,
+    { timeout: 15_000 },
+  );
+
   // 三态主题：切到深色与浅色后画布都仍然可用
   async function chooseTheme(label) {
     await page.click('button[aria-label="外观设置"]');
@@ -771,7 +877,7 @@ async function recoverySuite(page) {
     1,
     '下载失败必须提供补下载入口',
   );
-  assert.equal(await page.locator(`.react-flow__node[data-id="${imageId}"] [data-testid="canvas-result-image"]`).count(), 0);
+  assert.equal(await page.locator(`.react-flow__node[data-id="${imageId}"] [data-canvas-result]`).count(), 0);
   assert.equal(runPosts.length, 1, '失败与重试都不应新增生成请求');
 
   await page.click(`.react-flow__node[data-id="${imageId}"] [data-testid="retry-download"]`);
@@ -806,9 +912,10 @@ async function exportSuite(page) {
   await page.click(`.react-flow__node[data-id="${imageId}"] [data-testid="run-node"]`);
   await waitForResult(page, imageId, 'image');
 
-  // 单个成品下载：链接指向 ?download=1，响应带 attachment 与真实成品字节
+  // 单个成品下载：物化素材节点上的链接指向 ?download=1，响应带 attachment 与真实成品字节
+  const resultAssetId = await nodeAttribute(page, imageId, 'data-canvas-result');
   const downloadHref = await page.getAttribute(
-    `.react-flow__node[data-id="${imageId}"] [data-testid="download-result"]`,
+    `[data-testid="download-material"][href*="${resultAssetId}"]`,
     'href',
   );
   assert.ok(downloadHref?.includes('?download=1'), `下载链接应指向成品：${downloadHref}`);
@@ -829,11 +936,12 @@ async function exportSuite(page) {
   assert.deepEqual(single.head, [0x89, 0x50, 0x4e, 0x47], '下载的应是真实 PNG 成品');
   assert.ok(single.size > 0);
 
-  // 图片放大：点击打开、点击关闭
-  await page.click(`.react-flow__node[data-id="${imageId}"] [data-testid="canvas-result-image"]`);
-  await page.waitForSelector('[data-testid="result-lightbox"]');
-  await page.click('[data-testid="result-lightbox"]');
-  await page.waitForSelector('[data-testid="result-lightbox"]', { state: 'detached' });
+  // 图片放大：物化素材节点上点击打开、点击关闭
+  const zoomAssetId = await nodeAttribute(page, imageId, 'data-canvas-result');
+  await page.click(`.react-flow__node:has([data-node-kind="material"]) img[src*="${zoomAssetId}"]`);
+  await page.waitForSelector('[data-testid="material-lightbox"]');
+  await page.click('[data-testid="material-lightbox"]');
+  await page.waitForSelector('[data-testid="material-lightbox"]', { state: 'detached' });
 
   // 框选打包：选中节点 → 打包选中 → 拿到 ZIP
   await selectNode(page, imageId);
@@ -1110,7 +1218,8 @@ async function performanceSuite(page) {
   assert.equal(built.status, 200, `性能样本铺设失败：${built.message}`);
   assert.equal(built.nodeCount, 50, `应有 50 个节点，实际 ${built.nodeCount}`);
 
-  // 启动 10 个 fixture 任务
+  // 启动 10 个 fixture 任务（v2 多变体压测：前 5 个节点 ×4、后 5 个 ×1 = 25 个任务，
+  // 让长跑交互期间持续存在候选投影轮询与候选缩略图渲染开销）
   const started = await page.evaluate(async ({ id }) => {
     const current = await (await fetch(`/api/canvas/${id}`)).json();
     const expectedGraphRevision = current.canvas.graphRevision;
@@ -1122,6 +1231,7 @@ async function performanceSuite(page) {
         body: JSON.stringify({
           mode: 'single',
           targetNodeId: `perf-g-${index}`,
+          ...(index < 5 ? { variantCount: 4 } : {}),
           requestKey: `perf-${index}-${Date.now()}`,
           expectedGraphRevision,
         }),
@@ -1130,18 +1240,19 @@ async function performanceSuite(page) {
     }
     return count;
   }, { id: canvasId });
-  assert.equal(started, 10, '应能启动 10 个任务');
+  assert.equal(started, 10, '应能启动 10 个运行请求');
 
   await page.reload();
   await page.waitForSelector('[data-testid="canvas-editor"]');
-  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node').length === 50, null, { timeout: 30_000 });
+  // 结果自动物化会在任务完成后追加素材节点：节点数只会从 50 往上涨
+  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node').length >= 50, null, { timeout: 30_000 });
 
   const specs = await page.evaluate(() => ({
     userAgent: navigator.userAgent,
     hardwareConcurrency: navigator.hardwareConcurrency,
     deviceMemory: navigator.deviceMemory ?? null,
     viewport: { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio },
-    mediaNodes: document.querySelectorAll('[data-testid="canvas-result-image"], [data-testid="canvas-result-video"], [data-node-kind="material"]').length,
+    mediaNodes: document.querySelectorAll('[data-node-kind="material"] img, [data-node-kind="material"] video').length,
   }));
 
   // 长时间交互：拖动、缩放、持续输入、保存、切换
@@ -1297,6 +1408,39 @@ async function performanceSuite(page) {
     { timeout: 20_000 },
   );
 
+  // v2 多变体：25 个任务全部完成（前 5 节点各 4 候选 + 后 5 节点各 1，约 3 批慢任务）。
+  // 注意在 Node 侧轮询 API：waitForFunction 的 raf 轮询里发 fetch 会形成请求风暴，
+  // 把浏览器连接池打满、页面自己的 1.5s 轮询饿死，UI 就跟不上了。
+  let candidatesReady = false;
+  const candidatesDeadline = Date.now() + 300_000;
+  let lastProgressLog = 0;
+  while (Date.now() < candidatesDeadline) {
+    try {
+      const current = await (await fetch(`${baseUrl}/api/canvas/${canvasId}`)).json();
+      const count = (current.canvas?.nodeCandidates ?? []).length;
+      if (count >= 25) {
+        candidatesReady = true;
+        break;
+      }
+      if (Date.now() - lastProgressLog > 30_000) {
+        lastProgressLog = Date.now();
+        const phases = {};
+        for (const task of current.canvas?.tasks ?? []) phases[task.phase] = (phases[task.phase] ?? 0) + 1;
+        console.log(`[perf] 候选进度 ${count}/25，任务阶段 ${JSON.stringify(phases)}`);
+      }
+    } catch (error) {
+      console.log(`[perf] 候选轮询失败：${String(error).slice(0, 160)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  assert.equal(candidatesReady, true, '25 个任务未在时限内产出候选投影');
+  // 产物物化：25 个初始素材节点之外，至少 5 个结果已飞出素材节点
+  await page.waitForFunction(
+    () => document.querySelectorAll('.react-flow__node:has([data-node-kind="material"])').length >= 30,
+    null,
+    { timeout: 20_000 },
+  );
+
   const sortedRounds = [...rounds].sort((left, right) => left - right);
   const maxRoundMs = sortedRounds[sortedRounds.length - 1] ?? 0;
   // 长时间停顿必须让套件失败：否则「跑完了」会被误读成「性能没问题」。
@@ -1308,6 +1452,7 @@ async function performanceSuite(page) {
     canvasId,
     perfSeconds,
     specs,
+    variantTasks: 25,
     rounds: rounds.length,
     medianRoundMs: sortedRounds[Math.floor(sortedRounds.length / 2)],
     maxRoundMs,

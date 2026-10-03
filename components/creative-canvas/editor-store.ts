@@ -1,12 +1,16 @@
 'use client';
 
 /**
- * 画布编辑器状态机（P3）。
+ * 画布编辑器状态机（P3）——编排层。
  *
  * 职责边界（技术约定 C3／C7）：
  * - 编辑定义（graphJson）由客户端持有并自动保存，服务端按 expectedGraphRevision 做乐观并发；
  * - 运行投影（当前结果／任务阶段）只从服务端读取，不写进节点 data，也不会覆盖正在编辑的草稿；
  * - 任务轮询只更新运行态订阅，不重建整张画布、不夺输入焦点。
+ *
+ * 拆分结构：保存管线（editor/save-pipeline）、历史栈（editor/history）、
+ * 剪贴板（editor/clipboard）、Flow↔Graph 映射（editor/graph-mapping）。
+ * 公开的 CanvasEditorController 接口保持稳定：节点组件与浏览器验收依赖它。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,6 +25,7 @@ import {
   type XYPosition,
 } from '@xyflow/react';
 import { checkCanvasConnection, reconcileCanvasGraph } from '@/lib/creative-canvas/graph';
+import { nodeKindSpec } from '@/lib/creative-canvas/node-kinds';
 import type {
   CanvasGenerationMode,
   CanvasGraph,
@@ -36,10 +41,28 @@ import {
   CanvasApiError,
   canvasApi,
   type CanvasAssetDto,
+  type CanvasDto,
+  type CanvasNodeCandidateDto,
   type CanvasPlanDto,
   type CanvasTaskDto,
 } from './api';
+import { useCanvasToasts } from './canvas-toasts';
+import { canvasErrorText } from './error-copy';
 import { CanvasRuntimeStore } from './runtime-store';
+import { useCanvasClipboard } from './editor/clipboard';
+import { useCanvasHistory, type CanvasHistorySnapshot } from './editor/history';
+import { findOpenPosition } from './placement';
+import {
+  buildCanvasGraph,
+  CANVAS_EDGE_MARKER_END,
+  cloneEdges,
+  cloneNodes,
+  toFlowEdge,
+  toFlowNode,
+  toGraphEdge,
+  toGraphNode,
+} from './editor/graph-mapping';
+import { useCanvasSavePipeline } from './editor/save-pipeline';
 
 export interface CanvasFlowNodeData extends Record<string, unknown> {
   title: string;
@@ -56,7 +79,6 @@ export interface CanvasFlowNodeData extends Record<string, unknown> {
 
 export type CanvasFlowNode = Node<CanvasFlowNodeData>;
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict' | 'disabled';
-type SaveOutcome = 'clean' | 'saved' | 'changed' | 'conflict' | 'error';
 
 export interface BranchPreview {
   plan: CanvasPlanDto;
@@ -70,7 +92,6 @@ export interface CanvasEditorController {
   nodes: CanvasFlowNode[];
   edges: Edge[];
   saveState: SaveState;
-  statusMessage: string | null;
   branchPreview: BranchPreview | null;
   runtime: CanvasRuntimeStore;
   canUndo: boolean;
@@ -80,6 +101,7 @@ export interface CanvasEditorController {
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
   onNodeDragStart: () => void;
+  onNodeResizeStart: () => void;
   onSelectionChange: (nodeIds: string[]) => void;
   addNode: (kind: CanvasNodeKind, position: XYPosition, options?: { connectFrom?: string }) => Promise<string | null>;
   uploadMaterial: (file: File, position: XYPosition) => Promise<void>;
@@ -88,13 +110,18 @@ export interface CanvasEditorController {
   deleteSelection: () => void;
   deleteEdge: (edgeId: string) => void;
   disconnectReference: (nodeId: string, refId: string) => void;
+  /**
+   * 建立来源节点 → 生成节点的参考连线（@ 自动补全选中时用），返回分配到的引用编号。
+   * 已存在连线时不重复建边、直接返回既有编号；其余校验失败 toast 并返回 null。
+   */
+  connectReference: (targetNodeId: string, sourceNodeId: string) => number | null;
   moveReference: (nodeId: string, refId: string, direction: -1 | 1) => void;
   updateReference: (nodeId: string, refId: string, patch: Partial<Pick<CanvasReferenceSlot, 'role' | 'note'>>) => void;
   copySelection: () => void;
   pasteClipboard: () => Promise<void>;
   undo: () => void;
   redo: () => void;
-  runNode: (nodeId: string) => Promise<void>;
+  runNode: (nodeId: string, options?: { variantCount?: number }) => Promise<void>;
   previewBranch: (startNodeId: string, reuseStart: boolean) => Promise<void>;
   confirmBranch: () => Promise<void>;
   cancelBranchPreview: () => void;
@@ -107,137 +134,32 @@ export interface CanvasEditorController {
   historyDepth: { past: number; future: number };
 }
 
-const SAVE_DEBOUNCE_MS = 600;
 const POLL_INTERVAL_MS = 1_500;
-const HISTORY_LIMIT = 100;
 
-function cloneNodes(nodes: CanvasFlowNode[]): CanvasFlowNode[] {
-  return nodes.map((node) => ({ ...node, position: { ...node.position }, data: { ...node.data } }));
-}
-
-function cloneEdges(edges: Edge[]): Edge[] {
-  return edges.map((edge) => ({ ...edge }));
-}
-
-function toFlowNode(node: CanvasGraphNode): CanvasFlowNode {
-  if (node.kind === 'material') {
-    return {
-      id: node.id,
-      type: 'material',
-      position: { ...node.position },
-      data: { title: node.data.title, assetId: node.data.assetId, mediaKind: node.data.mediaKind },
-    };
-  }
-  if (node.kind === 'prompt') {
-    return {
-      id: node.id,
-      type: 'prompt',
-      position: { ...node.position },
-      data: { title: node.data.title, text: node.data.text },
-    };
-  }
-  return {
-    id: node.id,
-    type: node.kind,
-    position: { ...node.position },
-    data: {
-      title: node.data.title,
-      modelKey: node.data.modelKey,
-      generationMode: node.data.generationMode,
-      prompt: node.data.prompt,
-      parameters: { ...node.data.parameters },
-      references: node.data.references.map((slot) => ({ ...slot })),
-      referenceLabelCounter: node.data.referenceLabelCounter,
-    },
-  };
-}
-
-/** 提交给服务端的节点只包含编辑定义；运行投影字段不会出现在这里。 */
-function toGraphNode(node: CanvasFlowNode): CanvasGraphNode {
-  if (node.type === 'material') {
-    return {
-      id: node.id,
-      kind: 'material',
-      position: { x: node.position.x, y: node.position.y },
-      data: {
-        title: String(node.data.title ?? ''),
-        assetId: (node.data.assetId as string | null) ?? null,
-        mediaKind: (node.data.mediaKind as CanvasMediaKind) ?? 'image',
-      },
-    };
-  }
-  if (node.type === 'prompt') {
-    return {
-      id: node.id,
-      kind: 'prompt',
-      position: { x: node.position.x, y: node.position.y },
-      data: { title: String(node.data.title ?? ''), text: String(node.data.text ?? '') },
-    };
-  }
-  return {
-    id: node.id,
-    kind: node.type === 'video-generation' ? 'video-generation' : 'image-generation',
-    position: { x: node.position.x, y: node.position.y },
-    data: {
-      title: String(node.data.title ?? ''),
-      modelKey: (node.data.modelKey as string | null) ?? null,
-      generationMode: (node.data.generationMode as CanvasGenerationMode) ?? 'image-to-image',
-      prompt: String(node.data.prompt ?? ''),
-      parameters: { ...(node.data.parameters ?? {}) },
-      references: (node.data.references ?? []).map((slot) => ({ ...slot })),
-      referenceLabelCounter: Number(node.data.referenceLabelCounter ?? 0),
-    },
-  };
-}
-
-function toGraphEdge(edge: Edge): CanvasGraphEdge {
-  return {
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
-    ...(edge.targetHandle ? { targetHandle: edge.targetHandle } : {}),
-  };
-}
-
-export function buildCanvasGraph(nodes: CanvasFlowNode[], edges: Edge[]): CanvasGraph {
-  return {
-    schemaVersion: 1,
-    nodes: nodes.map(toGraphNode),
-    edges: edges.map(toGraphEdge),
-  };
-}
+/**
+ * 只影响展示、不参与参考槽位对账与端口类型判定的 data 字段。
+ * updateNodeData 的补丁全部落在该集合内时走快速路径：跳过全图
+ * reconcile（逐键打字不再全图解析重建节点 data，输入卡顿的根因）。
+ * 结构变化（连线增删）仍走 commit 全路径；最终一致性由服务端保存时
+ * 无条件执行的 reconcileCanvasGraph 兜底。
+ */
+const FAST_PATH_DATA_KEYS = new Set(['title', 'text', 'prompt', 'modelKey', 'generationMode', 'parameters']);
 
 export function useCanvasEditor(canvasId: string): CanvasEditorController {
   const runtime = useMemo(() => new CanvasRuntimeStore(), []);
+  const toasts = useCanvasToasts();
   const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [name, setName] = useState('');
-  const [saveState, setSaveState] = useState<SaveState>('idle');
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [branchPreview, setBranchPreview] = useState<BranchPreview | null>(null);
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [selection, setSelection] = useState<string[]>([]);
-  const [hasClipboard, setHasClipboard] = useState(false);
-  const [past, setPast] = useState<Array<{ nodes: CanvasFlowNode[]; edges: Edge[] }>>([]);
-  const [future, setFuture] = useState<Array<{ nodes: CanvasFlowNode[]; edges: Edge[] }>>([]);
 
   const nodesRef = useRef<CanvasFlowNode[]>([]);
   const edgesRef = useRef<Edge[]>([]);
-  const revisionRef = useRef(0);
-  const dirtyRef = useRef(false);
-  const savingRef = useRef(false);
-  const savePromiseRef = useRef<Promise<SaveOutcome> | null>(null);
-  const editVersionRef = useRef(0);
-  const saveConflictRef = useRef(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastCoalesceRef = useRef<{ key: string; at: number } | null>(null);
-  const clipboardRef = useRef<{
-    nodes: CanvasGraphNode[];
-    edges: CanvasGraphEdge[];
-    resultAssetIds: Record<string, string | null>;
-  } | null>(null);
-  const dragSnapshotRef = useRef<{ nodes: CanvasFlowNode[]; edges: Edge[] } | null>(null);
+  const dragSnapshotRef = useRef<CanvasHistorySnapshot | null>(null);
+  /** 已自动物化过的产物 assetId；null = 尚未完成首次投影建档。 */
+  const flownAssetIdsRef = useRef<Set<string> | null>(null);
 
   const setGraphState = useCallback((nextNodes: CanvasFlowNode[], nextEdges: Edge[]) => {
     nodesRef.current = nextNodes;
@@ -246,97 +168,48 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     setEdges(nextEdges);
   }, []);
 
+  const pipeline = useCanvasSavePipeline({ canvasId, nodesRef, edgesRef });
+  const { markDirty, scheduleSave, saveWithCoalescing, revisionRef, setSaveState, resetBaseline } = pipeline;
+
+  const restore = useCallback((snapshot: CanvasHistorySnapshot) => {
+    setGraphState(cloneNodes(snapshot.nodes), cloneEdges(snapshot.edges));
+    markDirty();
+    scheduleSave();
+  }, [markDirty, scheduleSave, setGraphState]);
+
+  const currentSnapshot = useCallback((): CanvasHistorySnapshot => ({
+    nodes: nodesRef.current,
+    edges: edgesRef.current,
+  }), []);
+
+  const history = useCanvasHistory({ currentSnapshot, restore });
+  const { pushHistory, pushHistorySnapshot } = history;
+
+  const clipboard = useCanvasClipboard({
+    canvasId,
+    nodesRef,
+    edgesRef,
+    revisionRef,
+    runtime,
+    setGraphState,
+    pushHistory,
+    saveWithCoalescing,
+    onPasted: (revision) => {
+      // 粘贴后的图与服务器完全一致（服务端幂等接口已落库）
+      resetBaseline(revision);
+      setSaveState('saved');
+    },
+  });
+  const { copySelection, pasteClipboard } = clipboard;
+
   const applyServerGraph = useCallback((graph: CanvasGraph) => {
     const reconciled = reconcileCanvasGraph(graph);
-    setGraphState(reconciled.nodes.map(toFlowNode), reconciled.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      type: 'canvas',
-      ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
-      ...(edge.targetHandle ? { targetHandle: edge.targetHandle } : {}),
-    })));
+    setGraphState(reconciled.nodes.map(toFlowNode), reconciled.edges.map(toFlowEdge));
   }, [setGraphState]);
-
-  const pushHistorySnapshot = useCallback((snapshot: { nodes: CanvasFlowNode[]; edges: Edge[] }) => {
-    setPast((entries) => [...entries.slice(-(HISTORY_LIMIT - 1)), snapshot]);
-    setFuture([]);
-  }, []);
-
-  const pushHistory = useCallback((coalesceKey?: string) => {
-    const now = Date.now();
-    const last = lastCoalesceRef.current;
-    if (coalesceKey && last && last.key === coalesceKey && now - last.at < 1_200) {
-      lastCoalesceRef.current = { key: coalesceKey, at: now };
-      return;
-    }
-    lastCoalesceRef.current = coalesceKey ? { key: coalesceKey, at: now } : null;
-    pushHistorySnapshot({ nodes: cloneNodes(nodesRef.current), edges: cloneEdges(edgesRef.current) });
-  }, [pushHistorySnapshot]);
-
-  const markDirty = useCallback(() => {
-    editVersionRef.current += 1;
-    dirtyRef.current = true;
-  }, []);
-
-  const performSave = useCallback(async (): Promise<SaveOutcome> => {
-    if (!dirtyRef.current) return 'clean';
-    if (savingRef.current) return savePromiseRef.current ?? 'error';
-    savingRef.current = true;
-    saveConflictRef.current = false;
-    const versionAtStart = editVersionRef.current;
-    setSaveState('saving');
-    const graph = buildCanvasGraph(nodesRef.current, edgesRef.current);
-    try {
-      const result = await canvasApi.saveGraph(canvasId, {
-        expectedGraphRevision: revisionRef.current,
-        graph,
-      });
-      revisionRef.current = result.canvas.graphRevision;
-      // 请求期间若有新编辑，旧响应不能清掉 dirty；补保存由这里串行触发。
-      const changedDuringSave = editVersionRef.current !== versionAtStart;
-      dirtyRef.current = changedDuringSave;
-      setSaveState(changedDuringSave ? 'saving' : 'saved');
-      setStatusMessage(null);
-      // 服务端会对账参考槽位；本地无需回写，保持用户正在编辑的内容不动。
-      return changedDuringSave ? 'changed' : 'saved';
-    } catch (error) {
-      if (error instanceof CanvasApiError && error.status === 409) {
-        saveConflictRef.current = true;
-        setSaveState('conflict');
-        setStatusMessage('画布已在别处被修改：本地草稿已保留，请重新加载后再保存。');
-        return 'conflict';
-      }
-      setSaveState('error');
-      setStatusMessage(error instanceof Error ? error.message : '保存失败。');
-      return 'error';
-    } finally {
-      savingRef.current = false;
-      savePromiseRef.current = null;
-    }
-  }, [canvasId]);
-
-  const saveWithCoalescing = useCallback(async (): Promise<boolean> => {
-    while (dirtyRef.current && !saveConflictRef.current) {
-      const outcome = await (savePromiseRef.current ?? (savePromiseRef.current = performSave()));
-      if (outcome === 'changed') continue;
-      if (outcome === 'saved' || outcome === 'clean') return !dirtyRef.current;
-      // 冲突或网络／校验失败已由 performSave 展示错误；保留 dirty，等待新的用户动作。
-      return false;
-    }
-    return !dirtyRef.current && !saveConflictRef.current;
-  }, [performSave]);
-
-  const scheduleSave = useCallback(() => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      void saveWithCoalescing();
-    }, SAVE_DEBOUNCE_MS);
-  }, [saveWithCoalescing]);
 
   /**
    * 连线变化时本地同步做一次参考槽位对账，避免等服务端回写才显示参考列表。
-   * 规则与服务端 reconcileCanvasGraph 完全一致：只补新槽位，断开时保留槽位（成为失效引用）。
+   * 规则与服务端 reconcileCanvasGraph 完全一致：补新槽位、移除来源已断开的槽位。
    */
   const reconcileFlowNodes = useCallback((nextNodes: CanvasFlowNode[], nextEdges: Edge[]): CanvasFlowNode[] => {
     try {
@@ -360,30 +233,77 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     scheduleSave();
   }, [markDirty, pushHistory, reconcileFlowNodes, scheduleSave, setGraphState]);
 
+  /**
+   * 结果自动物化：新发布的产物在源节点右侧飞出素材节点并带来源连线（溯源连线）。
+   * 快照语义：assetId 钉死，上游之后重跑不跟随；要新结果就等下一次飞出。
+   */
+  const materializeResults = useCallback((candidates: CanvasNodeCandidateDto[]) => {
+    const nextNodes = [...nodesRef.current];
+    const nextEdges = [...edgesRef.current];
+    for (const candidate of candidates) {
+      const source = nextNodes.find((node) => node.id === candidate.nodeId);
+      if (!source) continue; // 源节点在任务完成前已被删除
+      const id = `n-${crypto.randomUUID()}`;
+      const sourceTitle = String(source.data.title ?? '').trim();
+      const desired = {
+        x: source.position.x + (source.measured?.width ?? 300) + 80,
+        y: source.position.y,
+      };
+      nextNodes.push({
+        id,
+        type: 'material',
+        position: findOpenPosition(desired, nextNodes, 'material'),
+        data: {
+          title: sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
+          assetId: candidate.assetId,
+          mediaKind: source.type === 'video-generation' ? 'video' : 'image',
+        },
+      });
+      nextEdges.push({
+        id: `e-${crypto.randomUUID()}`,
+        source: source.id,
+        target: id,
+        type: 'canvas',
+        markerEnd: CANVAS_EDGE_MARKER_END,
+      });
+    }
+    commit(nextNodes, nextEdges);
+  }, [commit]);
+
+  const updateRuntimeFromCanvas = useCallback((canvas: CanvasDto) => {
+    runtime.update(canvas.nodeStates, canvas.tasks ?? [], canvas.nodeCandidates ?? []);
+    const candidates = canvas.nodeCandidates ?? [];
+    if (flownAssetIdsRef.current === null) {
+      // 首次投影只建档：打开画布前的旧结果不补飞，否则每次进画布都刷屏
+      flownAssetIdsRef.current = new Set(candidates.map((candidate) => candidate.assetId));
+      return;
+    }
+    const known = flownAssetIdsRef.current;
+    const fresh = candidates.filter((candidate) => !known.has(candidate.assetId));
+    if (fresh.length === 0) return;
+    for (const candidate of fresh) known.add(candidate.assetId);
+    materializeResults(fresh);
+  }, [runtime, materializeResults]);
+
   const load = useCallback(async () => {
     try {
       const { canvas } = await canvasApi.get(canvasId);
-      revisionRef.current = canvas.graphRevision;
-      dirtyRef.current = false;
-      saveConflictRef.current = false;
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
+      resetBaseline(canvas.graphRevision);
       setName(canvas.name);
       applyServerGraph(canvas.graph);
-      runtime.update(canvas.nodeStates, canvas.tasks ?? []);
+      updateRuntimeFromCanvas(canvas);
       setSaveState('saved');
-      setStatusMessage(null);
       setLoadState('ready');
     } catch (error) {
       setLoadState('error');
       if (error instanceof CanvasApiError && error.status === 503) {
         setSaveState('disabled');
-        setStatusMessage(error.message);
+        toasts.push('error', canvasErrorText(error));
       } else {
-        setStatusMessage(error instanceof Error ? error.message : '加载失败。');
+        toasts.push('error', `画布加载失败：${canvasErrorText(error)}`);
       }
     }
-  }, [applyServerGraph, canvasId, runtime]);
+  }, [applyServerGraph, canvasId, resetBaseline, runtime, setSaveState, toasts]);
 
   useEffect(() => {
     // load() 的 setState 都发生在 await 之后，这里不是同步级联渲染。
@@ -397,7 +317,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     const timer = setInterval(async () => {
       try {
         const { canvas } = await canvasApi.get(canvasId);
-        runtime.update(canvas.nodeStates, canvas.tasks ?? []);
+        updateRuntimeFromCanvas(canvas);
         // 轮询只更新运行投影。若服务端图已在另一页面更新，保留本地图与其基准
         // revision，让下一次本地保存明确收到 409，而不是用旧图夺取新 revision。
       } catch {
@@ -407,34 +327,20 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     return () => clearInterval(timer);
   }, [canvasId, loadState, runtime]);
 
-  // 离开页面时尽力保存未落盘的编辑
-  useEffect(() => {
-    const handler = () => {
-      if (!dirtyRef.current) return;
-      const graph = buildCanvasGraph(nodesRef.current, edgesRef.current);
-      void fetch(`/api/canvas/${canvasId}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ expectedGraphRevision: revisionRef.current, graph }),
-        keepalive: true,
-      });
-    };
-    window.addEventListener('pagehide', handler);
-    return () => window.removeEventListener('pagehide', handler);
-  }, [canvasId]);
-
   const onNodesChange = useCallback((changes: NodeChange<CanvasFlowNode>[]) => {
     const dragging = changes.some((change) => change.type === 'position' && change.dragging === true);
     const dragEnded = changes.some((change) => change.type === 'position' && change.dragging === false);
-    if (dragEnded && dragSnapshotRef.current) {
-      // 撤销要回到拖拽前的位置，而不是已经拖完的位置
+    const resizing = changes.some((change) => change.type === 'dimensions' && change.resizing === true);
+    const resizeEnded = changes.some((change) => change.type === 'dimensions' && change.resizing === false);
+    // 拖拽与缩放共用同一份「操作前」快照：撤销要回到操作前，而不是操作后的中间态
+    if ((dragEnded || resizeEnded) && dragSnapshotRef.current) {
       pushHistorySnapshot(dragSnapshotRef.current);
       dragSnapshotRef.current = null;
     }
     const next = applyNodeChanges(changes, nodesRef.current);
     nodesRef.current = next;
     setNodes(next);
-    if (dragging || dragEnded) {
+    if (dragging || dragEnded || resizing || resizeEnded) {
       markDirty();
       scheduleSave();
     }
@@ -450,25 +356,19 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     dragSnapshotRef.current = { nodes: cloneNodes(nodesRef.current), edges: cloneEdges(edgesRef.current) };
   }, []);
 
+  /** 右缘缩放开始：与节点拖拽同一套路由，缩放结束在 onNodesChange 里入历史栈。 */
+  const onNodeResizeStart = useCallback(() => {
+    dragSnapshotRef.current = { nodes: cloneNodes(nodesRef.current), edges: cloneEdges(edgesRef.current) };
+  }, []);
+
   const addNode = useCallback(async (
     kind: CanvasNodeKind,
     position: XYPosition,
     options?: { connectFrom?: string },
   ): Promise<string | null> => {
     const id = `n-${crypto.randomUUID()}`;
-    const data: CanvasFlowNodeData = kind === 'material'
-      ? { title: '素材', assetId: null, mediaKind: 'image' }
-      : kind === 'prompt'
-        ? { title: '提示词', text: '' }
-        : {
-          title: kind === 'image-generation' ? '图片生成' : '视频生成',
-          modelKey: null,
-          generationMode: kind === 'image-generation' ? 'image-to-image' : 'image-to-video',
-          prompt: '',
-          parameters: {},
-          references: [],
-          referenceLabelCounter: 0,
-        };
+    // 默认 data 来自注册表（node-kinds.ts 单一事实源）
+    const data = nodeKindSpec(kind).defaultData() as CanvasFlowNodeData;
     const node: CanvasFlowNode = { id, type: kind, position, data };
     let nextEdges = edgesRef.current;
     if (options?.connectFrom) {
@@ -484,14 +384,20 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         candidate,
       );
       if (!check.ok) {
-        setStatusMessage(check.message);
+        toasts.push('error', check.message);
         return null;
       }
-      nextEdges = [...edgesRef.current, { id: edgeId, source: options.connectFrom, target: id, type: 'canvas' }];
+      nextEdges = [...edgesRef.current, {
+        id: edgeId,
+        source: options.connectFrom,
+        target: id,
+        type: 'canvas',
+        markerEnd: CANVAS_EDGE_MARKER_END,
+      }];
     }
     commit([...nodesRef.current, node], nextEdges);
     return id;
-  }, [commit]);
+  }, [commit, toasts]);
 
   const uploadIntoNode = useCallback(async (nodeId: string, file: File) => {
     try {
@@ -510,11 +416,10 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
           : node
       ));
       commit(next, edgesRef.current);
-      setStatusMessage(null);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '素材导入失败。');
+      toasts.push('error', `素材导入失败：${canvasErrorText(error)}`);
     }
-  }, [canvasId, commit]);
+  }, [canvasId, commit, toasts]);
 
   const uploadMaterial = useCallback(async (file: File, position: XYPosition) => {
     const nodeId = await addNode('material', position);
@@ -530,22 +435,22 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       edge,
     );
     if (!check.ok) {
-      setStatusMessage(check.message);
+      toasts.push('error', check.message);
       return;
     }
-    setStatusMessage(null);
     commit(nodesRef.current, [...edgesRef.current, {
       ...edge,
       type: 'canvas',
+      markerEnd: CANVAS_EDGE_MARKER_END,
       sourceHandle: connection.sourceHandle ?? undefined,
       targetHandle: connection.targetHandle ?? undefined,
     }]);
-  }, [commit]);
+  }, [commit, toasts]);
 
   const deleteEdgesInternal = useCallback((edgeIds: string[]) => {
     const removing = new Set(edgeIds);
     const nextEdges = edgesRef.current.filter((edge) => !removing.has(edge.id));
-    // 只解除引用：节点与当前结果保留，生成节点上的参考槽位变成失效引用
+    // 节点与当前结果保留；生成节点上失去来源的参考槽位随对账移除
     commit(nodesRef.current, nextEdges);
   }, [commit]);
 
@@ -570,8 +475,16 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     const next = nodesRef.current.map((node) => (
       node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node
     ));
+    // 快速路径：纯文本/参数字段跳过全图 reconcile，避免逐键输入全图解析
+    if (Object.keys(patch).every((key) => FAST_PATH_DATA_KEYS.has(key))) {
+      pushHistory(options?.coalesce);
+      setGraphState(next, edgesRef.current);
+      markDirty();
+      scheduleSave();
+      return;
+    }
     commit(next, edgesRef.current, options);
-  }, [commit]);
+  }, [commit, markDirty, pushHistory, scheduleSave, setGraphState]);
 
   const disconnectReference = useCallback((nodeId: string, refId: string) => {
     const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
@@ -580,6 +493,30 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     const nextEdges = edgesRef.current.filter((edge) => !(edge.target === nodeId && edge.source === slot.sourceNodeId));
     commit(nodesRef.current, nextEdges);
   }, [commit]);
+
+  const connectReference = useCallback((targetNodeId: string, sourceNodeId: string): number | null => {
+    const edge = { id: `e-${crypto.randomUUID()}`, source: sourceNodeId, target: targetNodeId };
+    const check = checkCanvasConnection(
+      { schemaVersion: 1, nodes: nodesRef.current.map(toGraphNode), edges: edgesRef.current.map(toGraphEdge) },
+      edge,
+    );
+    if (!check.ok && check.code !== 'duplicate_connection') {
+      toasts.push('error', check.message);
+      return null;
+    }
+    if (check.ok) {
+      commit(nodesRef.current, [...edgesRef.current, {
+        ...edge,
+        type: 'canvas',
+        markerEnd: CANVAS_EDGE_MARKER_END,
+      }]);
+    }
+    // commit 同步完成 reconcile，槽位（含编号）已经落在节点 data 上
+    const slot = nodesRef.current
+      .find((candidate) => candidate.id === targetNodeId)
+      ?.data.references?.find((candidate) => candidate.sourceNodeId === sourceNodeId);
+    return slot?.label ?? null;
+  }, [commit, toasts]);
 
   const moveReference = useCallback((nodeId: string, refId: string, direction: -1 | 1) => {
     const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
@@ -606,96 +543,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     }, { coalesce: `ref:${nodeId}:${refId}` });
   }, [updateNodeData]);
 
-  const copySelection = useCallback(() => {
-    const selected = nodesRef.current.filter((node) => node.selected);
-    if (selected.length === 0) return;
-    const selectedIds = new Set(selected.map((node) => node.id));
-    const graph = buildCanvasGraph(nodesRef.current, edgesRef.current);
-    const internalEdges = graph.edges.filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target));
-    const resultAssetIds: Record<string, string | null> = {};
-    for (const node of selected) {
-      resultAssetIds[node.id] = runtime.get(node.id)?.currentAssetId ?? null;
-    }
-    clipboardRef.current = {
-      nodes: graph.nodes.filter((node) => selectedIds.has(node.id)),
-      edges: internalEdges,
-      resultAssetIds,
-    };
-    setHasClipboard(true);
-    setStatusMessage(`已复制 ${selected.length} 个节点`);
-  }, [runtime]);
-
-  const pasteClipboard = useCallback(async () => {
-    const clipboard = clipboardRef.current;
-    if (!clipboard) return;
-    const saved = await saveWithCoalescing();
-    if (!saved) {
-      setStatusMessage('有未保存的修改，暂时无法粘贴：请先处理保存冲突。');
-      return;
-    }
-    try {
-      const { copy } = await canvasApi.copy(canvasId, {
-        sourceCanvasId: canvasId,
-        snapshotKey: `paste-${crypto.randomUUID()}`,
-        nodes: clipboard.nodes,
-        edges: clipboard.edges,
-        resultAssetIds: clipboard.resultAssetIds,
-        expectedGraphRevision: revisionRef.current,
-      });
-      revisionRef.current = copy.graphRevision;
-      const appendedNodes = copy.nodes.map(toFlowNode).map((node) => ({ ...node, selected: true }));
-      const deselected = nodesRef.current.map((node) => ({ ...node, selected: false }));
-      const appendedEdges = copy.edges.map((edge) => ({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        type: 'canvas' as const,
-      }));
-      pushHistory();
-      setGraphState([...deselected, ...appendedNodes], [...edgesRef.current, ...appendedEdges]);
-      dirtyRef.current = false;
-      setSaveState('saved');
-      setStatusMessage(`已粘贴 ${appendedNodes.length} 个节点`);
-      const { canvas } = await canvasApi.get(canvasId);
-      runtime.update(canvas.nodeStates, canvas.tasks ?? []);
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '粘贴失败。');
-    }
-  }, [canvasId, saveWithCoalescing, pushHistory, runtime, setGraphState]);
-
-  const restore = useCallback((snapshot: { nodes: CanvasFlowNode[]; edges: Edge[] }) => {
-    setGraphState(cloneNodes(snapshot.nodes), cloneEdges(snapshot.edges));
-    markDirty();
-    scheduleSave();
-  }, [markDirty, scheduleSave, setGraphState]);
-
-  // 注意：状态更新函数必须是纯的，restore 这类副作用要放在 updater 之外执行。
-  const currentSnapshot = useCallback(() => ({
-    nodes: cloneNodes(nodesRef.current),
-    edges: cloneEdges(edgesRef.current),
-  }), []);
-
-  const undo = useCallback(() => {
-    const entry = past.at(-1);
-    if (!entry) return;
-    // 快照必须在调用 setState 之前取：updater 是延迟执行的，
-    // 在 updater 里取会拿到 restore 之后的状态。
-    const snapshot = currentSnapshot();
-    setPast((entries) => entries.slice(0, -1));
-    setFuture((pending) => [...pending, snapshot]);
-    restore(entry);
-  }, [currentSnapshot, past, restore]);
-
-  const redo = useCallback(() => {
-    const entry = future.at(-1);
-    if (!entry) return;
-    const snapshot = currentSnapshot();
-    setFuture((entries) => entries.slice(0, -1));
-    setPast((pending) => [...pending.slice(-(HISTORY_LIMIT - 1)), snapshot]);
-    restore(entry);
-  }, [currentSnapshot, future, restore]);
-
-  const runNode = useCallback(async (nodeId: string) => {
+  const runNode = useCallback(async (nodeId: string, options?: { variantCount?: number }) => {
     const saved = await saveWithCoalescing();
     if (!saved) return;
     try {
@@ -704,14 +552,15 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         targetNodeId: nodeId,
         requestKey: `run-${crypto.randomUUID()}`,
         expectedGraphRevision: revisionRef.current,
+        ...(options?.variantCount && options.variantCount > 1 ? { variantCount: options.variantCount } : {}),
       });
-      setStatusMessage('任务已提交，等待调度。');
+      toasts.push('success', '任务已提交，等待调度。');
       const { canvas } = await canvasApi.get(canvasId);
-      runtime.update(canvas.nodeStates, canvas.tasks ?? []);
+      updateRuntimeFromCanvas(canvas);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '启动失败。');
+      toasts.push('error', `启动失败：${canvasErrorText(error)}`);
     }
-  }, [canvasId, saveWithCoalescing, runtime]);
+  }, [canvasId, revisionRef, saveWithCoalescing, toasts, updateRuntimeFromCanvas]);
 
   const previewBranch = useCallback(async (startNodeId: string, reuseStart: boolean) => {
     const saved = await saveWithCoalescing();
@@ -721,11 +570,10 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         mode: 'branch', startNodeId, reuseStart, expectedGraphRevision: revisionRef.current,
       });
       setBranchPreview({ plan, startNodeId, reuseStart });
-      setStatusMessage(null);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '分支预览失败。');
+      toasts.push('error', `分支预览失败：${canvasErrorText(error)}`);
     }
-  }, [canvasId, saveWithCoalescing]);
+  }, [canvasId, revisionRef, saveWithCoalescing, toasts]);
 
   const confirmBranch = useCallback(async () => {
     const preview = branchPreview;
@@ -743,7 +591,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       });
       setBranchPreview({ ...preview, plan });
       if (plan.fingerprint !== preview.plan.fingerprint) {
-        setStatusMessage('画布内容已变化，分支预览已更新，请再次确认启动。');
+        toasts.push('info', '画布内容已变化，分支预览已更新，请再次确认启动。');
         return;
       }
       await canvasApi.run(canvasId, {
@@ -755,39 +603,42 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         planFingerprint: plan.fingerprint,
       });
       setBranchPreview(null);
-      setStatusMessage('分支已启动。');
+      toasts.push('success', '分支已启动。');
       const { canvas } = await canvasApi.get(canvasId);
-      runtime.update(canvas.nodeStates, canvas.tasks ?? []);
+      updateRuntimeFromCanvas(canvas);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '分支启动失败。');
+      toasts.push('error', `分支启动失败：${canvasErrorText(error)}`);
     }
-  }, [branchPreview, canvasId, runtime, saveWithCoalescing]);
+  }, [branchPreview, canvasId, revisionRef, saveWithCoalescing, toasts, updateRuntimeFromCanvas]);
 
   const cancelBranchPreview = useCallback(() => setBranchPreview(null), []);
 
   const onSelectionChange = useCallback((nodeIds: string[]) => {
-    setSelection(nodeIds);
+    // 内容去重：React Flow 的 SelectionListener 效应依赖回调身份，内联回调每次渲染都换新，
+    // 若这里无条件下发新数组会形成「渲染→效应→setState→渲染」死循环，路由过渡被永久饿死。
+    setSelection((previous) => (
+      previous.length === nodeIds.length && previous.every((id, index) => id === nodeIds[index])
+        ? previous
+        : nodeIds
+    ));
   }, []);
-
-  const canUndo = past.length > 0;
-  const canRedo = future.length > 0;
 
   return {
     canvasId,
     name,
     nodes,
     edges,
-    saveState,
-    statusMessage,
+    saveState: pipeline.saveState,
     branchPreview,
     runtime,
-    canUndo,
-    canRedo,
+    canUndo: history.canUndo,
+    canRedo: history.canRedo,
     loadState,
     onNodesChange,
     onEdgesChange,
     onConnect,
     onNodeDragStart,
+    onNodeResizeStart,
     onSelectionChange,
     addNode,
     uploadMaterial,
@@ -796,22 +647,25 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     deleteSelection,
     deleteEdge: (edgeId: string) => deleteEdgesInternal([edgeId]),
     disconnectReference,
+    connectReference,
     moveReference,
     updateReference,
     copySelection,
     pasteClipboard,
-    undo,
-    redo,
+    undo: history.undo,
+    redo: history.redo,
     runNode,
     previewBranch,
     confirmBranch,
     cancelBranchPreview,
     reload: load,
-    showStatus: setStatusMessage,
+    showStatus: toasts.showStatus,
     selection,
-    hasClipboard,
-    historyDepth: { past: past.length, future: future.length },
+    hasClipboard: clipboard.hasClipboard,
+    historyDepth: history.historyDepth,
   };
 }
 
+// 既有 import 路径兼容（CanvasEditor.tsx / 子模块 / 测试从这里取）
+export { buildCanvasGraph, toFlowNode, toGraphNode, toGraphEdge };
 export type { CanvasAssetDto, CanvasTaskDto, CanvasPlanDto, CanvasViewport };

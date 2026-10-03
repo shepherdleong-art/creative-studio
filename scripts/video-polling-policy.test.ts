@@ -18,6 +18,16 @@ assert.equal(
 
 assert.equal(
   resolveVideoPollingTimeoutMs({
+    requestedTimeoutMs: fiveMinutes,
+    adapter: jimengAdapter,
+    request: { model: 'doubao-seedance-2-5-260628', durationSec: 30 },
+  }),
+  fifteenMinutes,
+  '即梦 2.5 的 30 秒长视频同样按 15 分钟下限轮询',
+);
+
+assert.equal(
+  resolveVideoPollingTimeoutMs({
     requestedTimeoutMs: 20 * 60_000,
     adapter: jimengAdapter,
     request: { model: 'doubao-seedance-2-0-260128', durationSec: 15 },

@@ -661,7 +661,7 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
     VALUES ('jimeng-2-0', '即梦直连（测试）', 'jimeng', '', '', '', 'doubao-seedance-2-0-260128', 1, 5, ?, 'ark-key', '', '')
   `).run(baseUrl);
   const registered = registerExternalCanvasCapabilities(db, (capability) => registerCanvasCapability(capability));
-  assert.deepEqual(registered, ['external-jimeng-seedance-2-0'], '真实能力表按「行 + 启用 + Key」注册');
+  assert.deepEqual(registered, ['external-jimeng-seedance-2-0', 'external-jimeng-seedance-2-5'], '真实能力表按「行 + 启用 + Key」注册');
   const jimengKey = 'external-jimeng-seedance-2-0';
 
   const audioAsset = await makeAudioAsset('参考音频.wav', 3);
@@ -726,9 +726,9 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
     ]);
   }
 
-  // 10.3 图生视频 + 尾帧：两张图都必须带角色，尾帧不再被静默丢掉
+  // 10.3 图生视频 + 尾帧：两张图按参考顺序推断首帧／尾帧，尾帧不再被静默丢掉
   {
-    const saved = save([
+    save([
       material('f-first', firstFrameAsset),
       material('f-last', lastFrameAsset),
       videoNode('v-tail', jimengKey, { durationSec: 5 }),
@@ -736,14 +736,6 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
       { id: 'e1', source: 'f-first', target: 'v-tail' },
       { id: 'e2', source: 'f-last', target: 'v-tail' },
     ]);
-    const graph = saved.graph;
-    const node = graph.nodes.find((candidate) => candidate.id === 'v-tail');
-    assert.ok(node && node.kind === 'video-generation');
-    node.data.references = node.data.references.map((slot) => ({
-      ...slot,
-      role: slot.sourceNodeId === 'f-last' ? 'last-frame' : 'first-frame',
-    }));
-    saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: saved.graphRevision, graph });
 
     const result = await runOnce('v-tail');
     assert.equal(result.posts, 1, `首尾帧应恰好一次 POST：${result.errorCode}/${result.errorMessage}`);
@@ -761,10 +753,9 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
     assert.equal(body.ratio, 'adaptive', '图生视频仍按首帧吸附比例');
   }
 
-  // 10.4 两张图却没有尾帧角色：在 POST 前失败，不静默丢掉第二张
+  // 10.4 帧角色跟随参考列表顺序：↑↓ 排序即调换首尾帧（界面不再手标用途）
   {
-    const before = postCount();
-    save([
+    const saved = save([
       material('d-a', firstFrameAsset),
       material('d-b', lastFrameAsset),
       videoNode('v-ambiguous', jimengKey, { durationSec: 5 }),
@@ -772,11 +763,25 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
       { id: 'e1', source: 'd-a', target: 'v-ambiguous' },
       { id: 'e2', source: 'd-b', target: 'v-ambiguous' },
     ]);
+    // 调换参考顺序：d-b 在前 → d-b 成为首帧
+    const graph = saved.graph;
+    const node = graph.nodes.find((candidate) => candidate.id === 'v-ambiguous');
+    assert.ok(node && node.kind === 'video-generation');
+    node.data.references = [...node.data.references].reverse();
+    saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: saved.graphRevision, graph });
+
     const result = await runOnce('v-ambiguous');
-    assert.equal(result.posts, 0, '歧义组合不得发出生成 POST');
-    assert.equal(postCount(), before);
-    assert.equal(result.phase, 'failed');
-    assert.equal(result.errorCode, 'last_frame_role_required');
+    assert.equal(result.posts, 1, `顺序推断首尾帧应恰好一次 POST：${result.errorCode}/${result.errorMessage}`);
+    const taskRow = db.prepare(
+      `SELECT id FROM creative_canvas_tasks WHERE canvasId = ? AND nodeId = 'v-ambiguous' ORDER BY createdAt DESC LIMIT 1`,
+    ).get(canvas.id) as { id: string };
+    const inputRows = db.prepare(
+      `SELECT sourceNodeId, role FROM creative_canvas_task_inputs WHERE taskId = ? ORDER BY orderIndex`,
+    ).all(taskRow.id) as Array<{ sourceNodeId: string; role: string }>;
+    assert.deepEqual(inputRows, [
+      { sourceNodeId: 'd-b', role: 'first-frame' },
+      { sourceNodeId: 'd-a', role: 'last-frame' },
+    ], '参考列表顺序即首帧→尾帧顺序');
   }
 
   // 10.5 参考音频过短：prepare 阶段 fail closed
@@ -814,17 +819,17 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
     assert.equal(postCount(), before, '非法组合 POST 必须为零');
   }
 
-  // 10.7 模式互斥：首帧合同不接受「场景」这类参考用途，参考模式也不接受首帧角色
+  // 10.7 模式互斥：参考模式不接受首帧角色（首帧合同只属于图生视频）
   {
     const before = postCount();
     const saved = save([
       material('x-img', firstFrameAsset),
-      videoNode('v-mode', jimengKey, { durationSec: 5 }),
+      videoNode('v-mode', jimengKey, { durationSec: 5, aspectRatio: '16:9' }, 'reference-to-video'),
     ], [{ id: 'e1', source: 'x-img', target: 'v-mode' }]);
     const graph = saved.graph;
     const node = graph.nodes.find((candidate) => candidate.id === 'v-mode');
     assert.ok(node && node.kind === 'video-generation');
-    node.data.references = node.data.references.map((slot) => ({ ...slot, role: 'scene' as const }));
+    node.data.references = node.data.references.map((slot) => ({ ...slot, role: 'first-frame' as const }));
     saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: saved.graphRevision, graph });
     assert.throws(
       () => startCanvasRun({
@@ -834,6 +839,211 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
       (error: unknown) => (error as { code?: string }).code === 'capability_unavailable',
     );
     assert.equal(postCount(), before);
+  }
+
+  // 10.8 Seedance 2.5：30 秒时长透传、参考子任务显式引导、参考素材单段上限放宽到 30 秒
+  {
+    const jimeng25Key = 'external-jimeng-seedance-2-5';
+    // 20 秒参考音频：2.0 的 15 秒单段上限会拒，2.5 的 30 秒上限放行
+    const longAudioAsset = await makeAudioAsset('长参考音频.wav', 20);
+
+    save([
+      material('r25-img', extraRefAsset),
+      material('r25-aud', longAudioAsset, 'audio'),
+      videoNode('v-ref25', jimeng25Key, { durationSec: 20, aspectRatio: '21:9' }, 'reference-to-video'),
+    ], [
+      { id: 'e1', source: 'r25-img', target: 'v-ref25' },
+      { id: 'e2', source: 'r25-aud', target: 'v-ref25' },
+    ]);
+    const reference = await runOnce('v-ref25');
+    assert.equal(reference.posts, 1, `2.5 参考生成应恰好一次 POST：${reference.errorCode}/${reference.errorMessage}`);
+    assert.ok(reference.body);
+    assert.equal(reference.body.model, 'doubao-seedance-2-5-260628');
+    assert.equal(reference.body.duration, 20, '2.5 单段上限 30 秒，20 秒原样透传');
+    assert.equal(reference.body.ratio, '21:9');
+    assert.equal(reference.body.omni_reference_task_type, 'reference', '2.5 全模态参考显式引导为纯参考子任务');
+    assert.equal(reference.body.camera_fixed, undefined, '2.5 属 2.x 家族，不送 camera_fixed');
+
+    // 首尾帧：与 2.0 同一 content-role 合同，ratio 锁 adaptive，30 秒不被 2.0 的 15 秒钳住
+    save([
+      material('f25-first', firstFrameAsset),
+      material('f25-last', lastFrameAsset),
+      videoNode('v-tail25', jimeng25Key, { durationSec: 30 }),
+    ], [
+      { id: 'e1', source: 'f25-first', target: 'v-tail25' },
+      { id: 'e2', source: 'f25-last', target: 'v-tail25' },
+    ]);
+    const tail = await runOnce('v-tail25');
+    assert.equal(tail.posts, 1, `2.5 首尾帧应恰好一次 POST：${tail.errorCode}/${tail.errorMessage}`);
+    assert.ok(tail.body);
+    const tailContent = tail.body.content as Array<Record<string, unknown>>;
+    assert.equal(tailContent.length, 3, '文本 + 首帧 + 尾帧');
+    assert.equal(tailContent[1].role, 'first_frame');
+    assert.equal(tailContent[2].role, 'last_frame');
+    assert.equal(tail.body.ratio, 'adaptive', '2.5 首尾帧锁定 adaptive');
+    assert.equal(tail.body.duration, 30, '2.5 时长上限 30 秒');
+  }
+
+  // 10.9 全能参考合并入口：只接 1 段参考视频（旧「至少 1 图」规则会拒，合并后合法）
+  {
+    const jimeng25Key = 'external-jimeng-seedance-2-5';
+    save([
+      material('r9-vid', videoRefAsset, 'video'),
+      videoNode('v-omni', jimeng25Key, { durationSec: 6, aspectRatio: '16:9' }, 'reference-to-video'),
+    ], [{ id: 'e1', source: 'r9-vid', target: 'v-omni' }]);
+    const result = await runOnce('v-omni');
+    assert.equal(result.posts, 1, `全能参考仅视频应恰好一次 POST：${result.errorCode}/${result.errorMessage}`);
+    assert.ok(result.body);
+    assert.equal(result.body.omni_reference_task_type, 'reference');
+    assert.equal(result.body.ratio, '16:9', '全能参考比例取节点参数');
+    assert.equal(result.body.duration, 6);
+  }
+
+  // 10.10 全能参考零媒体：跨类型至少 1 份素材（minMediaInputs），计划校验拦下
+  {
+    const before = postCount();
+    save([videoNode('v-empty', 'external-jimeng-seedance-2-5', { durationSec: 5 }, 'reference-to-video')], []);
+    assert.throws(
+      () => startCanvasRun({
+        db,
+        request: { canvasId: canvas.id, mode: 'single', targetNodeId: 'v-empty', requestKey: `req-${crypto.randomUUID()}` },
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'capability_unavailable',
+    );
+    assert.equal(postCount(), before, '零媒体参考不得发出 POST');
+  }
+
+  // 10.11 智能多帧：≥2 张关键帧图走多模态参考；1 图或接入视频都在计划校验拦下
+  {
+    const jimeng25Key = 'external-jimeng-seedance-2-5';
+    save([
+      material('mf-a', firstFrameAsset),
+      material('mf-b', extraRefAsset),
+      videoNode('v-frames', jimeng25Key, { durationSec: 8, aspectRatio: '4:3' }, 'frames-to-video'),
+    ], [
+      { id: 'e1', source: 'mf-a', target: 'v-frames' },
+      { id: 'e2', source: 'mf-b', target: 'v-frames' },
+    ]);
+    const result = await runOnce('v-frames');
+    assert.equal(result.posts, 1, `智能多帧应恰好一次 POST：${result.errorCode}/${result.errorMessage}`);
+    assert.ok(result.body);
+    assert.equal(result.body.omni_reference_task_type, 'reference', '智能多帧是纯参考子任务');
+    assert.equal(result.body.ratio, '4:3', '智能多帧比例取节点参数');
+    assert.equal(result.body.duration, 8);
+    const frameContent = result.body.content as Array<Record<string, unknown>>;
+    assert.equal(frameContent.length, 3, '文本 + 两张关键帧图');
+    assert.ok(frameContent.every((item, index) => index === 0 || item.role === 'reference_image'), '关键帧按 reference_image 进 content');
+
+    const beforeSingle = postCount();
+    save([
+      material('mf-c', firstFrameAsset),
+      videoNode('v-frames-one', jimeng25Key, { durationSec: 5 }, 'frames-to-video'),
+    ], [{ id: 'e1', source: 'mf-c', target: 'v-frames-one' }]);
+    assert.throws(
+      () => startCanvasRun({
+        db,
+        request: { canvasId: canvas.id, mode: 'single', targetNodeId: 'v-frames-one', requestKey: `req-${crypto.randomUUID()}` },
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'capability_unavailable',
+      '智能多帧只有 1 张图时必须拦下（至少 2 张关键帧）',
+    );
+    assert.equal(postCount(), beforeSingle);
+
+    const beforeVideo = postCount();
+    save([
+      material('mf-v', videoRefAsset, 'video'),
+      material('mf-i', firstFrameAsset),
+      videoNode('v-frames-vid', jimeng25Key, { durationSec: 5 }, 'frames-to-video'),
+    ], [
+      { id: 'e1', source: 'mf-v', target: 'v-frames-vid' },
+      { id: 'e2', source: 'mf-i', target: 'v-frames-vid' },
+    ]);
+    assert.throws(
+      () => startCanvasRun({
+        db,
+        request: { canvasId: canvas.id, mode: 'single', targetNodeId: 'v-frames-vid', requestKey: `req-${crypto.randomUUID()}` },
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'capability_unavailable',
+      '智能多帧不接受视频输入',
+    );
+    assert.equal(postCount(), beforeVideo);
+  }
+
+  // 10.12 智能编辑：omni=edit、ratio 锁 adaptive、duration 锁 -1；残留越界参数不进计划；关键词与 4 秒下限前置
+  {
+    const jimeng25Key = 'external-jimeng-seedance-2-5';
+    const saved = save([
+      material('ed-vid', videoRefAsset, 'video'),
+      material('ed-img', extraRefAsset),
+      // 故意残留 aspectRatio/durationSec：edit 模式都不接受，planner 应静默丢弃
+      videoNode('v-edit', jimeng25Key, { durationSec: 12, aspectRatio: '9:16' }, 'video-edit'),
+    ], [
+      { id: 'e1', source: 'ed-vid', target: 'v-edit' },
+      { id: 'e2', source: 'ed-img', target: 'v-edit' },
+    ]);
+    const graph = saved.graph;
+    const editNode = graph.nodes.find((candidate) => candidate.id === 'v-edit');
+    assert.ok(editNode && editNode.kind === 'video-generation');
+    editNode.data.prompt = '把参考1里的沙发替换成参考图的款式';
+    saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: saved.graphRevision, graph });
+
+    const result = await runOnce('v-edit');
+    assert.equal(result.posts, 1, `智能编辑应恰好一次 POST：${result.errorCode}/${result.errorMessage}`);
+    assert.ok(result.body);
+    assert.equal(result.body.omni_reference_task_type, 'edit');
+    assert.equal(result.body.ratio, 'adaptive', '编辑子任务比例锁 adaptive（残留 9:16 不得生效）');
+    assert.equal(result.body.duration, -1, '编辑子任务时长锁 -1（残留 12 不得生效）');
+
+    // 缺编辑关键词：prepare 前置拦下
+    const beforeKeyword = postCount();
+    save([
+      material('ed2-vid', videoRefAsset, 'video'),
+      videoNode('v-edit-kw', jimeng25Key, {}, 'video-edit'),
+    ], [{ id: 'e1', source: 'ed2-vid', target: 'v-edit-kw' }]);
+    const keywordResult = await runOnce('v-edit-kw');
+    assert.equal(keywordResult.posts, 0, '缺编辑关键词不得发出 POST');
+    assert.equal(postCount(), beforeKeyword);
+    assert.equal(keywordResult.errorCode, 'prompt_keyword_missing');
+
+    // 参考视频短于 4 秒：编辑子任务的硬性下限
+    const shortVideoAsset = await makeAsset('3秒视频.mp4', 'video');
+    db.prepare(`UPDATE creative_canvas_assets SET durationSec = 3 WHERE id = ?`).run(shortVideoAsset);
+    const beforeShort = postCount();
+    const savedShort = save([
+      material('ed3-vid', shortVideoAsset, 'video'),
+      videoNode('v-edit-short', jimeng25Key, {}, 'video-edit'),
+    ], [{ id: 'e1', source: 'ed3-vid', target: 'v-edit-short' }]);
+    const shortGraph = savedShort.graph;
+    const shortNode = shortGraph.nodes.find((candidate) => candidate.id === 'v-edit-short');
+    assert.ok(shortNode && shortNode.kind === 'video-generation');
+    shortNode.data.prompt = '删除参考1里的路人';
+    saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: savedShort.graphRevision, graph: shortGraph });
+    const shortResult = await runOnce('v-edit-short');
+    assert.equal(shortResult.posts, 0, '3 秒参考视频不得发出 POST');
+    assert.equal(postCount(), beforeShort);
+    assert.equal(shortResult.errorCode, 'reference_combination_invalid');
+    assert.match(String(shortResult.errorMessage), /短于 4s/);
+  }
+
+  // 10.13 超长视频：omni=extend、ratio 锁 adaptive、显式时长透传
+  {
+    const jimeng25Key = 'external-jimeng-seedance-2-5';
+    const saved = save([
+      material('ex-vid', videoRefAsset, 'video'),
+      videoNode('v-extend', jimeng25Key, { durationSec: 12 }, 'video-extend'),
+    ], [{ id: 'e1', source: 'ex-vid', target: 'v-extend' }]);
+    const graph = saved.graph;
+    const extendNode = graph.nodes.find((candidate) => candidate.id === 'v-extend');
+    assert.ok(extendNode && extendNode.kind === 'video-generation');
+    extendNode.data.prompt = '向后延长 @参考1，镜头继续向前推进';
+    saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: saved.graphRevision, graph });
+
+    const result = await runOnce('v-extend');
+    assert.equal(result.posts, 1, `超长视频应恰好一次 POST：${result.errorCode}/${result.errorMessage}`);
+    assert.ok(result.body);
+    assert.equal(result.body.omni_reference_task_type, 'extend');
+    assert.equal(result.body.ratio, 'adaptive', '延长子任务比例锁 adaptive');
+    assert.equal(result.body.duration, 12, '延长子任务时长取节点参数');
   }
 }
 

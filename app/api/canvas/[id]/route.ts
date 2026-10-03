@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
 import {
+  listCanvasNodeCandidates,
   listCanvasNodeStates,
   renameCanvas,
   requireCanvas,
@@ -44,9 +45,12 @@ function canvasView(canvasId: string) {
       errorCode: task.errorCode,
       errorMessage: task.errorMessage,
       cancelRequestedAt: task.cancelRequestedAt,
+      variantIndex: task.variantIndex,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
     })),
+    // 候选投影（v2）：每节点最近的成功任务与输出，前端候选列表消费
+    nodeCandidates: listCanvasNodeCandidates(getDb(), canvasId),
   };
 }
 

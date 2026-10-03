@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
 import type { CanvasPlanMode } from '@/lib/creative-canvas/planner';
 import { startCanvasRun } from '@/lib/creative-canvas/runs';
+import { normalizeVariantCount } from '@/lib/creative-canvas/planner';
 import {
   assertCanvasApiReady,
   canvasJsonError,
@@ -34,6 +35,10 @@ export async function POST(
         ...(body.targetNodeId === undefined ? {} : { targetNodeId: String(body.targetNodeId) }),
         ...(body.startNodeId === undefined ? {} : { startNodeId: String(body.startNodeId) }),
         ...(body.reuseStart === undefined ? {} : { reuseStart: Boolean(body.reuseStart) }),
+        // 变体数量：仅 single 接受 1/2/4；branch 强制 1
+        ...((body.mode !== 'single' || body.variantCount === undefined)
+          ? {}
+          : { variantCount: normalizeVariantCount(Number(body.variantCount)) }),
         requestKey,
         expectedGraphRevision: Number(body.expectedGraphRevision),
       },

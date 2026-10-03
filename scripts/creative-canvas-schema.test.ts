@@ -46,8 +46,9 @@ const tablesAfterMigration = [
   const db = createDatabase();
   const first = await ensureCreativeCanvasSchemaReady({ db, backupRoot });
   assert.equal(first.state, 'ready');
-  assert.deepEqual(first.appliedVersions, [1]);
-  assert.equal(first.targetVersion, 1);
+  // v2（并发多变体）：全新库一次性应用 v1+v2
+  assert.deepEqual(first.appliedVersions, [1, 2]);
+  assert.equal(first.targetVersion, 2);
   assert.equal(typeof first.backupDirectory, 'string');
   assert.equal(first.backupManifest?.scope, 'creative-canvas');
   assert.equal(first.backupManifest?.integrityCheck, 'ok');
@@ -57,22 +58,32 @@ const tablesAfterMigration = [
     assert.ok(row, `缺少表 ${table}`);
   }
   assert.equal(canvasTablesPresent(db), true);
-  assert.deepEqual(readCanvasAppliedVersions(db), [1]);
+  assert.deepEqual(readCanvasAppliedVersions(db), [1, 2]);
+
+  // v2 结构断言：variantIndex 列存在；单任务唯一索引已放开
+  const variantColumn = db.prepare(
+    `SELECT 1 FROM pragma_table_info('creative_canvas_tasks') WHERE name = 'variantIndex'`,
+  ).get();
+  assert.ok(variantColumn, 'creative_canvas_tasks 缺少 variantIndex 列');
+  const activeIndex = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_cct_node_active'`,
+  ).get();
+  assert.equal(activeIndex, undefined, 'v2 应已删除 idx_cct_node_active 唯一索引');
 
   // 备份目录名带 canvas slug，能被恢复候选读回并验证通过
   const candidates = await listSchemaUpgradeRecoveryCandidates({ backupRoot, scope: 'creative-canvas' });
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].verification, 'verified');
-  assert.equal(candidates[0].targetVersion, 1);
-  assert.match(candidates[0].backupId, /^pre-canvas-v1-/);
-  assert.equal(path.basename(String(first.backupDirectory)).startsWith('pre-canvas-v1-'), true);
+  assert.equal(candidates[0].targetVersion, 2);
+  assert.match(candidates[0].backupId, /^pre-canvas-v2-/);
+  assert.equal(path.basename(String(first.backupDirectory)).startsWith('pre-canvas-v2-'), true);
 
   // 审计由共享 gate 写入：走 readiness 的升级要留下完整记录
   const gatedDb = createDatabase('gated.db');
   const readiness = await checkCanvasReadiness({ db: gatedDb, backupRoot, lockDatabasePath, auditFilePath });
   assert.equal(readiness.available, true);
   assert.equal(readiness.available === true && readiness.schemaState, 'ready');
-  assert.deepEqual(readiness.appliedVersions, [1]);
+  assert.deepEqual(readiness.appliedVersions, [1, 2]);
 
   const audit = await readSchemaUpgradeAudit(auditFilePath);
   const canvasRecords = audit.filter((record) => record.scope === 'creative-canvas');
@@ -89,10 +100,32 @@ const tablesAfterMigration = [
   // 重复运行：current，不再新增升级记录，也不再产生备份
   const second = await ensureCreativeCanvasSchemaReady({ db, backupRoot });
   assert.equal(second.state, 'current');
-  assert.deepEqual(second.appliedVersions, [1]);
+  assert.deepEqual(second.appliedVersions, [1, 2]);
   const backupsAfterSecondRun = fs.readdirSync(backupRoot).filter((name) => !name.startsWith('.'));
   assert.equal(backupsAfterSecondRun.length, 2);
 
+  db.close();
+}
+
+// --- v1 → v2 增量升级：已发布 v1 的库安全补上 v2 --------------------------------
+
+{
+  const db = createDatabase('upgrade-from-v1.db');
+  // 先手工应用 v1（模拟 v1 时代的库），再走 readiness 升到 v2
+  db.exec(CREATIVE_CANVAS_MIGRATIONS[0].sql);
+  db.exec(`CREATE TABLE IF NOT EXISTS creative_canvas_schema_migrations (
+    version INTEGER PRIMARY KEY,
+    appliedAt TEXT NOT NULL
+  )`);
+  db.prepare(`INSERT INTO creative_canvas_schema_migrations (version, appliedAt) VALUES (1, ?)`).run('now');
+  const upgraded = await ensureCreativeCanvasSchemaReady({ db, backupRoot: path.join(root, 'data', 'backups', 'schema-upgrades-v1to2') });
+  assert.equal(upgraded.state, 'ready');
+  assert.deepEqual(upgraded.appliedVersions, [2]);
+  assert.deepEqual(readCanvasAppliedVersions(db), [1, 2]);
+  const variantColumn = db.prepare(
+    `SELECT 1 FROM pragma_table_info('creative_canvas_tasks') WHERE name = 'variantIndex'`,
+  ).get();
+  assert.ok(variantColumn, '增量升级后应存在 variantIndex 列');
   db.close();
 }
 
@@ -154,8 +187,8 @@ const tablesAfterMigration = [
     'script-studio': 'script-studio',
     'creative-canvas': 'canvas',
   });
-  assert.equal(CREATIVE_CANVAS_MIGRATIONS.length, 1);
-  assert.deepEqual(CREATIVE_CANVAS_MIGRATIONS.map((migration) => migration.version), [1]);
+  assert.equal(CREATIVE_CANVAS_MIGRATIONS.length, 2);
+  assert.deepEqual(CREATIVE_CANVAS_MIGRATIONS.map((migration) => migration.version), [1, 2]);
 
   // 旧 scope 在同库上仍能独立升级，且画布表不影响它
   const db = createDatabase('legacy-scope.db');

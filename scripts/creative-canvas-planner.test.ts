@@ -92,7 +92,7 @@ function imageNode(id: string, modelKey: string | null, prompt = ''): CanvasGrap
   };
 }
 
-function videoNode(id: string, modelKey: string | null, prompt = ''): CanvasGraphNode {
+function videoNode(id: string, modelKey: string | null, prompt = ''): Extract<CanvasGraphNode, { kind: 'video-generation' }> {
   return {
     id,
     kind: 'video-generation',
@@ -280,10 +280,10 @@ let revision = 0;
   assert.equal(unknownModel.problems[0].code, 'capability_unknown');
 }
 
-// --- 失效引用与未知提及 -------------------------------------------------------
+// --- 断开的引用与未知提及 -------------------------------------------------------
 
 {
-  // img1 依赖 m1；断开后提示词仍然提到 @参考1 → 阻止提交
+  // img1 依赖 m1；断开后槽位随对账移除，提示词仍然提到 @参考1 → 按未知提及阻止提交
   const saved = save({
     nodes: [
       material('m1', 'image', assetA),
@@ -298,11 +298,11 @@ let revision = 0;
   }, revision);
   revision = saved.graphRevision;
 
-  const detached = save({
+  const disconnected = save({
     nodes: saved.graph.nodes,
     edges: [{ id: 'e2', source: 'm2', target: 'img2' }],
   }, revision);
-  revision = detached.graphRevision;
+  revision = disconnected.graphRevision;
 
   const outcome = planCanvasRun(db, {
     canvasId: canvas.id,
@@ -312,16 +312,16 @@ let revision = 0;
   });
   assert.equal(outcome.ok, false);
   assert.ok(!outcome.ok);
-  assert.equal(outcome.problems[0].code, 'detached_reference_mentioned');
+  assert.equal(outcome.problems[0].code, 'mention_unresolved');
 
-  // 不提及断开参考时可以正常计划（失效引用不参与提交）
+  // 不提及被移除的编号时可以正常计划（断开的输入不参与提交）
   const withoutMention = save({
-    nodes: detached.graph.nodes.map((node) => (
+    nodes: disconnected.graph.nodes.map((node) => (
       node.id === 'img1' && node.kind === 'image-generation'
         ? { ...node, data: { ...node.data, prompt: '把画面调亮' } }
         : node
     )),
-    edges: detached.graph.edges,
+    edges: disconnected.graph.edges,
   }, revision);
   revision = withoutMention.graphRevision;
   const ok = planCanvasRun(db, {
@@ -353,6 +353,29 @@ let revision = 0;
   assert.equal(unknownMention.ok, false);
   assert.ok(!unknownMention.ok);
   assert.equal(unknownMention.problems[0].code, 'mention_unresolved');
+}
+
+// --- 溯源连线不作为分支范围的数据流桥 --------------------------------------------
+
+{
+  // a 的物化结果 out 又作为素材喂给 b：从 a 出发的可达生成节点不应经溯源连线把 b 卷进来
+  const bridgeGraph: CanvasGraph = {
+    schemaVersion: 1,
+    nodes: [
+      material('m1', 'image', assetA),
+      imageNode('a', IMAGE_CAP.key, '甲'),
+      material('out', 'image', assetB),
+      imageNode('b', IMAGE_CAP.key, '乙'),
+    ],
+    edges: [
+      { id: 'e1', source: 'm1', target: 'a' },
+      { id: 'e2', source: 'a', target: 'out' },
+      { id: 'e3', source: 'out', target: 'b' },
+    ],
+  };
+  assert.deepEqual(reachableGenerationNodes(bridgeGraph, 'a').map((node) => node.id), ['a']);
+  // 数据流方向不受影响：从 out（素材视角不可作起点，但从 b 回溯上游仍可看到 out）
+  assert.deepEqual(reachableGenerationNodes(bridgeGraph, 'b').map((node) => node.id), ['b']);
 }
 
 // --- 上游当前结果 / 等待绑定任务 / 都没有 --------------------------------------
@@ -705,15 +728,14 @@ function publishResultFor(canvasId: string, nodeId: string, assetId: string): vo
     (error: unknown) => (error as { code?: string }).code === 'conflict',
   );
 
-  // 不同 key 抢同一节点 → 冲突，不产生第二个任务
-  assert.throws(
-    () => startCanvasRun({
-      db,
-      request: { ...request, requestKey: 'other-key' },
-    }),
-    (error: unknown) => (error as { code?: string }).code === 'conflict',
-  );
-  assert.equal(listCanvasTasks(db, { canvasId: idempotentCanvas }).length, 1);
+  // 不同 key 再提交同一节点（v2 并发多变体）→ 追加第二个任务，不再冲突
+  const appended = startCanvasRun({
+    db,
+    request: { ...request, requestKey: 'other-key' },
+  });
+  assert.equal(appended.idempotentReplay, false);
+  assert.equal(appended.tasks.length, 1);
+  assert.equal(listCanvasTasks(db, { canvasId: idempotentCanvas }).length, 2);
 
   // 预览指纹过期（图在预览与确认之间变了）→ 冲突，并带回可重新确认的新计划
   const staleRequest = {
@@ -782,6 +804,199 @@ function publishResultFor(canvasId: string, nodeId: string, assetId: string): vo
   ).get(copyCanvasId, newNodeId) as { currentAssetId: string; activeTaskId: string | null };
   assert.equal(copiedState.currentAssetId, copyAsset);
   assert.equal(copiedState.activeTaskId, null);
+}
+
+// --- v2 并发多变体：variantCount / 指纹区分 / 上限 / branch 拒绝 ----------------
+
+{
+  const variantCanvas = createCanvas(db, { name: '多变体' });
+  const savedV = saveCanvasGraph({
+    db,
+    canvasId: variantCanvas.id,
+    expectedGraphRevision: 0,
+    graph: {
+      schemaVersion: 1,
+      nodes: [imageNode('g1', IMAGE_CAP.key, '多变体提示词')],
+      edges: [],
+    },
+  });
+  const variantRevision = savedV.graphRevision;
+
+  // 1) variantCount=4：计划含 4 份任务、指纹与 1 份不同
+  const plan4 = planCanvasRun(db, {
+    canvasId: variantCanvas.id,
+    mode: 'single',
+    targetNodeId: 'g1',
+    variantCount: 4,
+    requestKey: 'variant-plan-4',
+  });
+  assert.equal(plan4.ok, true);
+  assert.ok(plan4.ok);
+  assert.equal(plan4.plan.tasks.length, 4);
+  const plan1 = planCanvasRun(db, {
+    canvasId: variantCanvas.id,
+    mode: 'single',
+    targetNodeId: 'g1',
+    requestKey: 'variant-plan-1',
+  });
+  assert.equal(plan1.ok, true);
+  assert.ok(plan1.ok);
+  assert.equal(plan1.plan.tasks.length, 1);
+  assert.notEqual(plan4.plan.fingerprint, plan1.plan.fingerprint, '变体数不同，指纹必须不同');
+
+  // 2) 非法 variantCount 归一为 1
+  const planWeird = planCanvasRun(db, {
+    canvasId: variantCanvas.id,
+    mode: 'single',
+    targetNodeId: 'g1',
+    variantCount: 3,
+    requestKey: 'variant-plan-3',
+  });
+  assert.equal(planWeird.ok, true);
+  assert.ok(planWeird.ok);
+  assert.equal(planWeird.plan.tasks.length, 1, '非法变体数应归一为 1');
+
+  // 3) 提交 4 变体：落库 4 行任务、variantIndex 0..3
+  const run4 = startCanvasRun({
+    db,
+    request: {
+      canvasId: variantCanvas.id,
+      mode: 'single',
+      targetNodeId: 'g1',
+      variantCount: 4,
+      requestKey: 'variant-run-4',
+      expectedGraphRevision: variantRevision,
+    },
+  });
+  assert.equal(run4.tasks.length, 4);
+  assert.deepEqual(
+    run4.tasks.map((task) => task.variantIndex).sort((a, b) => a - b),
+    [0, 1, 2, 3],
+  );
+  // node_states.activeTaskId 指向最后创建的变体
+  const stateV = db.prepare(
+    `SELECT activeTaskId FROM creative_canvas_node_states WHERE canvasId = ? AND nodeId = 'g1'`,
+  ).get(variantCanvas.id) as { activeTaskId: string | null };
+  assert.equal(stateV.activeTaskId, run4.tasks.at(-1)?.id);
+
+  // 4) 有活跃任务时 single 仍可追加（追加变体），branch 拒绝
+  const appendMore = startCanvasRun({
+    db,
+    request: {
+      canvasId: variantCanvas.id,
+      mode: 'single',
+      targetNodeId: 'g1',
+      variantCount: 2,
+      requestKey: 'variant-run-append',
+      expectedGraphRevision: variantRevision,
+    },
+  });
+  assert.equal(appendMore.tasks.length, 2, 'single 有活跃任务时应允许追加变体');
+
+  // 5) 变体上限（8）：4+2=6 活跃，再提交 4 → node_variant_limit
+  assert.throws(
+    () => startCanvasRun({
+      db,
+      request: {
+        canvasId: variantCanvas.id,
+        mode: 'single',
+        targetNodeId: 'g1',
+        variantCount: 4,
+        requestKey: 'variant-run-over-limit',
+        expectedGraphRevision: variantRevision,
+      },
+    }),
+    (error: unknown) => (error as { code?: string }).code === 'node_variant_limit',
+  );
+  assert.equal(listCanvasTasks(db, { canvasId: variantCanvas.id }).length, 6, '超限提交不应落库');
+}
+
+// --- 模式切换后的残留参数：当前模式不接受的已知参数静默丢弃，未知 key 仍报错 ------------------
+
+{
+  registerCanvasCapability({
+    key: 'fixture-video-mode-params',
+    displayName: '模式参数测试视频模型',
+    providerKind: 'external',
+    providerIdentity: 'fixture-provider',
+    modelAlias: 'fixture/video-mode-params',
+    mediaKind: 'video',
+    modes: ['text-to-video', 'image-to-video'],
+    inputs: [
+      { kind: 'image', roles: ['first-frame', 'subject', 'reference'], min: 0, max: 2 },
+      { kind: 'text', roles: ['reference'], min: 0, max: 1 },
+    ],
+    parameters: [
+      { key: 'durationSec', label: '时长', type: 'integer', min: 3, max: 15, default: 5 },
+      { key: 'aspectRatio', label: '比例', type: 'enum', options: ['16:9', '9:16'], default: '16:9', modes: ['text-to-video'] },
+    ],
+    cancellation: false,
+    evidence: 'candidate',
+    evidenceNote: '本地 fixture 能力，只用于测试模式参数过滤。',
+  });
+
+  // 文生视频下 aspectRatio 合法
+  const textMode = save({
+    nodes: [{
+      ...videoNode('v-modes', 'fixture-video-mode-params'),
+      data: {
+        ...videoNode('v-modes', 'fixture-video-mode-params').data,
+        generationMode: 'text-to-video' as const,
+        parameters: { durationSec: 6, aspectRatio: '9:16' },
+      },
+    }],
+    edges: [],
+  }, revision);
+  revision = textMode.graphRevision;
+  const textPlan = planCanvasRun(db, {
+    canvasId: canvas.id,
+    mode: 'single',
+    targetNodeId: 'v-modes',
+    requestKey: 'req-mode-params-text',
+  });
+  assert.equal(textPlan.ok, true);
+  assert.ok(textPlan.ok);
+  assert.deepEqual(textPlan.plan.tasks[0].parameters, { durationSec: 6, aspectRatio: '9:16' });
+
+  // 切到图生视频：aspectRatio 不被该模式接受 → 静默丢弃，计划照常成功；未知 key 仍报错
+  const imageMode = save({
+    nodes: textMode.graph.nodes.map((node) => (
+      node.id === 'v-modes' && node.kind === 'video-generation'
+        ? { ...node, data: { ...node.data, generationMode: 'image-to-video' as const } }
+        : node
+    )),
+    edges: [],
+  }, revision);
+  revision = imageMode.graphRevision;
+  const imagePlan = planCanvasRun(db, {
+    canvasId: canvas.id,
+    mode: 'single',
+    targetNodeId: 'v-modes',
+    requestKey: 'req-mode-params-image',
+  });
+  assert.equal(imagePlan.ok, true, '残留的越界已知参数不得炸计划');
+  assert.ok(imagePlan.ok);
+  assert.deepEqual(imagePlan.plan.tasks[0].parameters, { durationSec: 6 }, 'aspectRatio 被静默丢弃，durationSec 保留');
+
+  const unknownParam = save({
+    nodes: imageMode.graph.nodes.map((node) => (
+      node.id === 'v-modes' && node.kind === 'video-generation'
+        ? { ...node, data: { ...node.data, parameters: { ...node.data.parameters, bogusParam: 1 } } }
+        : node
+    )),
+    edges: [],
+  }, revision);
+  revision = unknownParam.graphRevision;
+  const bogusPlan = planCanvasRun(db, {
+    canvasId: canvas.id,
+    mode: 'single',
+    targetNodeId: 'v-modes',
+    requestKey: 'req-mode-params-bogus',
+  });
+  assert.equal(bogusPlan.ok, false, '未知参数必须继续报错');
+  assert.ok(!bogusPlan.ok);
+  assert.equal(bogusPlan.problems[0].code, 'capability_input_invalid');
+  assert.match(bogusPlan.problems[0].message, /bogusParam/);
 }
 
 db.close();

@@ -22,7 +22,13 @@ export type CanvasGenerationMode =
   /** 以参考视频为主的生成（方舟多模态参考，至少 1 段参考视频）。 */
   | 'video-to-video'
   /** 以参考图／参考音频为主的生成（方舟多模态参考，至少 1 张参考图）。 */
-  | 'reference-to-video';
+  | 'reference-to-video'
+  /** 智能多帧（方舟关键帧参考生视频）：多张 reference_image，≥2 张图。 */
+  | 'frames-to-video'
+  /** 智能编辑（方舟 omni 子任务 edit）：ratio 锁 adaptive、duration 锁 -1，需参考视频。 */
+  | 'video-edit'
+  /** 超长视频（方舟 omni 子任务 extend）：ratio 锁 adaptive，需参考视频。 */
+  | 'video-extend';
 
 export const CANVAS_GENERATION_MODES: ReadonlyArray<CanvasGenerationMode> = [
   'text-to-image',
@@ -31,6 +37,9 @@ export const CANVAS_GENERATION_MODES: ReadonlyArray<CanvasGenerationMode> = [
   'image-to-video',
   'video-to-video',
   'reference-to-video',
+  'frames-to-video',
+  'video-edit',
+  'video-extend',
 ];
 
 export type CanvasReferenceRole =
@@ -74,10 +83,16 @@ export interface CanvasViewport {
 
 export const DEFAULT_CANVAS_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
 
+/** 节点自定义尺寸（用户拖拽右缘改宽；缺省按节点类型默认宽度）。 */
+export interface CanvasNodeSize {
+  width: number;
+}
+
 /**
  * 生成节点内的一份参考。refId 与 label 在节点内稳定：
  * 排序只改变数组顺序（提交顺序），不会把提示词里的 @参考N 悄悄指向另一份参考。
- * 连接断开时槽位保留（成为失效引用），由 detachReason 之外的图结构判定。
+ * 连线断开时槽位随对账移除；编号游标只增不减，重连会拿到新编号，
+ * 提示词里的旧 @参考N 按「不存在」显式报错，绝不回收指向别的素材。
  */
 export interface CanvasReferenceSlot {
   refId: string;
@@ -115,6 +130,8 @@ export interface CanvasGraphNodeBase {
   id: string;
   kind: CanvasNodeKind;
   position: CanvasPoint;
+  /** 用户拖拽调整过的节点宽度；未调整时不写该字段。 */
+  size?: CanvasNodeSize;
 }
 
 export interface CanvasMaterialNode extends CanvasGraphNodeBase {

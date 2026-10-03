@@ -131,6 +131,24 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
 }
 
 {
+  // 新增模式枚举（智能多帧／智能编辑／超长视频）可正常反序列化
+  const parsed = parseCanvasGraph(graph([
+    videoNode('v-frames', { generationMode: 'frames-to-video' }),
+    videoNode('v-edit', { generationMode: 'video-edit' }),
+    videoNode('v-extend', { generationMode: 'video-extend' }),
+  ]));
+  assert.equal(parsed.nodes.length, 3);
+}
+
+{
+  const bad = JSON.parse(JSON.stringify(graph([videoNode('v1')])));
+  bad.nodes[0].data.generationMode = 'hollywood-to-video';
+  assert.throws(() => parseCanvasGraph(bad), (error: unknown) => (
+    error instanceof CanvasGraphError && error.code === 'invalid_node'
+  ));
+}
+
+{
   const bad = graph([material('m1'), material('m1')]);
   assert.throws(() => parseCanvasGraph(bad), (error: unknown) => (
     error instanceof CanvasGraphError && error.code === 'duplicate_node_id'
@@ -245,17 +263,16 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   const refs = generationNode(current, 'g1').data.references;
   assert.deepEqual(refs.map((slot) => slot.label), [1, 2]);
 
-  // 断开第一条：槽位保留，变成失效引用，编号不重排
+  // 断开第一条：槽位随对账移除，保留槽位的编号与顺序不变
   current = removeEdge(current, 'e1');
   const afterDetach = generationNode(current, 'g1').data.references;
-  assert.deepEqual(afterDetach.map((slot) => slot.label), [1, 2]);
-  const detached = detachedReferenceSlots(current, generationNode(current, 'g1'));
-  assert.deepEqual(detached.map((slot) => slot.refId), ['ref-m1']);
+  assert.deepEqual(afterDetach.map((slot) => slot.label), [2]);
+  assert.deepEqual(detachedReferenceSlots(current, generationNode(current, 'g1')), []);
 
-  // 重新连上：复用原槽位编号，不新分配
+  // 重新连上：分配新编号，不复用已移除的旧编号（避免 @参考N 悄悄改指向）
   current = appendEdge(current, edge('e3', 'm1', 'g1'));
   const afterReconnect = generationNode(current, 'g1').data.references;
-  assert.deepEqual(afterReconnect.map((slot) => slot.label), [1, 2]);
+  assert.deepEqual(afterReconnect.map((slot) => slot.label), [2, 3]);
   assert.equal(afterReconnect.length, 2);
 
   // 重复连接被拒绝，不会凭空多出一个参考槽位
@@ -265,14 +282,14 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   );
   assert.equal(generationNode(current, 'g1').data.references.length, 2);
 
-  // 新增第三份参考：编号继续往后，不回收已断开的编号
+  // 新增第四份参考：编号继续往后，不回收已移除的编号
   current = appendNode(current, material('m3'));
   current = appendEdge(current, edge('e5', 'm3', 'g1'));
   assert.deepEqual(
     generationNode(current, 'g1').data.references.map((slot) => slot.label),
-    [1, 2, 3],
+    [2, 3, 4],
   );
-  assert.equal(generationNode(current, 'g1').data.referenceLabelCounter, 3);
+  assert.equal(generationNode(current, 'g1').data.referenceLabelCounter, 4);
 }
 
 {
@@ -283,8 +300,38 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   assert.equal(slot.role, 'reference');
 }
 
-// --- 提示词提及 -------------------------------------------------------------
+// --- 溯源连线（生成 → 素材） ---------------------------------------------------
 
+{
+  let current = graph([material('m1'), imageNode('g1')]);
+  // 允许：生成节点 → 素材节点；素材节点不会因此产生参考槽位
+  const ok = checkCanvasConnection(current, edge('e1', 'g1', 'm1'));
+  assert.equal(ok.ok, true);
+  current = appendEdge(current, edge('e1', 'g1', 'm1'));
+  assert.equal(current.edges.length, 1);
+  assert.equal(generationNode(current, 'g1').data.references.length, 0);
+
+  // 拒绝：提示词 → 素材、素材 → 素材
+  const withPrompt = appendNode(current, promptNode('p1'));
+  const promptToMaterial = checkCanvasConnection(withPrompt, edge('e2', 'p1', 'm1'));
+  assert.equal(promptToMaterial.ok, false);
+  assert.equal(promptToMaterial.ok === false && promptToMaterial.code, 'target_not_generation');
+  const withM2 = appendNode(current, material('m2'));
+  const materialToMaterial = checkCanvasConnection(withM2, edge('e3', 'm1', 'm2'));
+  assert.equal(materialToMaterial.ok, false);
+
+  // 拒绝：在已有溯源连线后补 素材 → 生成 的输入连线会构成环
+  assert.throws(
+    () => appendEdge(current, edge('e4', 'm1', 'g1')),
+    (error: unknown) => error instanceof CanvasGraphError && error.code === 'cycle',
+  );
+
+  // 服务端解析同样接受溯源连线
+  const parsed = parseCanvasGraph(JSON.parse(JSON.stringify(current)));
+  assert.equal(parsed.edges.length, 1);
+}
+
+// --- 提示词提及 -------------------------------------------------------------
 {
   let current = graph([material('m1'), material('m2'), imageNode('g1')]);
   current = appendEdge(current, edge('e1', 'm1', 'g1'));
@@ -294,17 +341,17 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   const resolved = resolveCanvasMentions(current, node, '把 @参考1 的沙发放到 @参考2 的场景里');
   assert.deepEqual(resolved.mentioned.map((slot) => slot.label), [1, 2]);
   assert.deepEqual(resolved.unknownLabels, []);
-  assert.deepEqual(resolved.detachedRefIds, []);
 
   const unknown = resolveCanvasMentions(current, node, '参考 @参考9');
   assert.deepEqual(unknown.unknownLabels, [9]);
   assert.deepEqual(unknown.mentioned, []);
 
-  const detachedGraph = removeEdge(current, 'e1');
-  const detachedNode = generationNode(detachedGraph, 'g1');
-  const withDetached = resolveCanvasMentions(detachedGraph, detachedNode, '用 @参考1 和 @参考2');
-  assert.deepEqual(withDetached.mentioned.map((slot) => slot.label), [1, 2]);
-  assert.deepEqual(withDetached.detachedRefIds, ['ref-m1']);
+  // 断开后槽位移除，提示词里的旧编号按「不存在」报告
+  const prunedGraph = removeEdge(current, 'e1');
+  const prunedNode = generationNode(prunedGraph, 'g1');
+  const afterPrune = resolveCanvasMentions(prunedGraph, prunedNode, '用 @参考1 和 @参考2');
+  assert.deepEqual(afterPrune.mentioned.map((slot) => slot.label), [2]);
+  assert.deepEqual(afterPrune.unknownLabels, [1]);
 
   // 排序改变提交顺序但不改变编号指向
   const reordered = generationNode(current, 'g1');
@@ -325,9 +372,31 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   const removed = removeNode(current, 'm1');
   assert.equal(removed.nodes.length, 2);
   assert.equal(removed.edges.length, 1);
-  // 另一节点的槽位保留 → 变成失效引用
-  const detached = detachedReferenceSlots(removed, generationNode(removed, 'g1'));
-  assert.deepEqual(detached.map((slot) => slot.sourceNodeId), ['m1']);
+  // 指向被删节点的槽位随对账移除
+  assert.deepEqual(generationNode(removed, 'g1').data.references.map((slot) => slot.label), [2]);
+}
+
+// --- 节点尺寸（自定义宽度） -----------------------------------------------------
+
+{
+  const parsed = parseCanvasGraph({
+    schemaVersion: 1,
+    nodes: [
+      { id: 'm1', kind: 'material', position: { x: 0, y: 0 }, size: { width: 320 }, data: { title: 'm', assetId: null, mediaKind: 'image' } },
+      { id: 'p1', kind: 'prompt', position: { x: 0, y: 0 }, data: { title: 'p', text: '' } },
+    ],
+    edges: [],
+  });
+  assert.equal(parsed.nodes[0].size?.width, 320);
+  assert.equal(parsed.nodes[1].size, undefined, '未调整宽度的节点不写 size');
+
+  for (const bad of [40, 99999, Number.NaN]) {
+    assert.throws(() => parseCanvasGraph({
+      schemaVersion: 1,
+      nodes: [{ id: 'm1', kind: 'material', position: { x: 0, y: 0 }, size: { width: bad }, data: { title: 'm', assetId: null, mediaKind: 'image' } }],
+      edges: [],
+    }), (error: unknown) => error instanceof CanvasGraphError && error.code === 'invalid_node');
+  }
 }
 
 // --- 复制 -------------------------------------------------------------------

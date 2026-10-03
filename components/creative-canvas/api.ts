@@ -7,10 +7,31 @@ import type {
   CanvasGraphEdge,
   CanvasGraphNode,
   CanvasMediaKind,
+  CanvasNodeKind,
   CanvasNodeRunProjection,
   CanvasTaskPhase,
   CanvasViewport,
 } from '@/lib/creative-canvas/types';
+
+export interface CanvasPreviewNodeDto {
+  id: string;
+  kind: CanvasNodeKind;
+  x: number;
+  y: number;
+  width: number | null;
+  assetId: string | null;
+  mediaKind: CanvasMediaKind | null;
+}
+
+export interface CanvasPreviewEdgeDto {
+  source: string;
+  target: string;
+}
+
+export interface CanvasPreviewDto {
+  nodes: CanvasPreviewNodeDto[];
+  edges: CanvasPreviewEdgeDto[];
+}
 
 export interface CanvasSummaryDto {
   id: string;
@@ -19,6 +40,7 @@ export interface CanvasSummaryDto {
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
+  preview: CanvasPreviewDto;
 }
 
 export interface CanvasTaskDto {
@@ -35,8 +57,18 @@ export interface CanvasTaskDto {
   errorCode: string | null;
   errorMessage: string | null;
   cancelRequestedAt: string | null;
+  variantIndex: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 节点候选投影（v2）：该节点一次成功任务及其输出。 */
+export interface CanvasNodeCandidateDto {
+  nodeId: string;
+  taskId: string;
+  assetId: string;
+  variantIndex: number;
+  createdAt: string;
 }
 
 export interface CanvasAssetDto {
@@ -62,6 +94,7 @@ export interface CanvasDto {
   updatedAt: string;
   nodeStates: CanvasNodeRunProjection[];
   tasks: CanvasTaskDto[];
+  nodeCandidates: CanvasNodeCandidateDto[];
 }
 
 export interface PlanInputDto {
@@ -198,6 +231,16 @@ export const canvasApi = {
     const suffix = params.toString();
     return request<{ tasks: CanvasTaskDto[] }>(`/api/canvas/tasks${suffix ? `?${suffix}` : ''}`);
   },
+  /** 任务操作统一入口：停止／继续／核查／补下载。 */
+  taskAction: (
+    taskId: string,
+    action: 'cancel' | 'resume' | 'reconcile' | 'download-retry',
+    body?: unknown,
+  ) => request<Record<string, unknown>>(`/api/canvas/tasks/${taskId}/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }),
   models: () => request<{ models: unknown[]; executor: string }>('/api/canvas/models'),
 };
 

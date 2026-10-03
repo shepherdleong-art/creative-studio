@@ -326,6 +326,13 @@ const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, b
   const { getDb } = await import('../lib/db.ts');
   const { setCanvasNodeActiveTask, publishCanvasNodeResult, listCanvasNodeStates } = await import('../lib/creative-canvas/repository.ts');
   const db = getDb();
+  // v2 发布门禁：任务行必须真实存在（succeeded + 输出资产匹配）
+  db.prepare(`
+    INSERT INTO creative_canvas_tasks
+      (id, runId, canvasId, nodeId, nodeEpoch, mediaKind, phase, providerSnapshot, parameterSnapshot,
+       submissionState, slotHeld, fence, pollCount, outputAssetId, variantIndex, createdAt, updatedAt)
+    VALUES ('task-1', NULL, ?, 'g1', 1, 'image', 'succeeded', '{}', '{}', 'terminal', 0, 0, 0, ?, 0, ?, ?)
+  `).run(canvasId, assetId, new Date().toISOString(), new Date().toISOString());
   setCanvasNodeActiveTask(db, { canvasId, nodeId: imageNodeId, taskId: 'task-1' });
   const published = publishCanvasNodeResult({
     db,
@@ -486,9 +493,9 @@ const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, b
   // 删除保留身份记录（tombstone），并递增 epoch 让旧任务失去发布权
   assert.equal(tombstoned?.deleted, true);
   assert.equal(tombstoned?.nodeEpoch, 2);
-  // 生成节点的参考槽位保留，成为失效引用
+  // 生成节点上指向被删素材的参考槽位随对账移除
   const generationNode = saved.graph.nodes.find((node) => node.id === imageNodeId) as { data: { references: unknown[] } };
-  assert.equal(generationNode.data.references.length, 1);
+  assert.equal(generationNode.data.references.length, 0);
 
   // 撤销删除：恢复编辑定义，但不恢复旧运行状态，也不重置 epoch
   const restored = saveCanvasGraph({

@@ -9,7 +9,8 @@ export type CanvasErrorCode =
   | 'canvas_unavailable'
   | 'runtime_unavailable'
   | 'capability_unavailable'
-  | 'submission_uncertain';
+  | 'submission_uncertain'
+  | 'node_variant_limit';
 
 export class CanvasError extends Error {
   readonly code: CanvasErrorCode;
@@ -34,6 +35,7 @@ export function canvasErrorStatus(code: CanvasErrorCode): number {
     case 'conflict':
     case 'capability_unavailable':
     case 'submission_uncertain':
+    case 'node_variant_limit':
       return 409;
     case 'canvas_disabled':
     case 'canvas_unavailable':

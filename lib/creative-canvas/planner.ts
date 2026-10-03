@@ -118,6 +118,8 @@ export interface CanvasPlanRequest {
   startNodeId?: string;
   /** branch：起点已有结果时是否复用（默认复用）。 */
   reuseStart?: boolean;
+  /** single：一次生成的变体数量（1/2/4，默认 1）；branch 恒为 1。 */
+  variantCount?: number;
   requestKey: string;
   expectedGraphRevision?: number;
 }
@@ -157,7 +159,13 @@ export function canvasPlanRequestHash(request: CanvasPlanRequest): string {
     targetNodeId: request.mode === 'single' ? request.targetNodeId ?? null : null,
     startNodeId: request.mode === 'branch' ? request.startNodeId ?? null : null,
     reuseStart: request.mode === 'branch' ? request.reuseStart !== false : null,
+    variantCount: request.mode === 'single' ? normalizeVariantCount(request.variantCount) : null,
   })).digest('hex');
+}
+
+/** 变体数量合法值：1/2/4（UI 分段控件口径）。 */
+export function normalizeVariantCount(value: number | undefined): number {
+  return value === 2 || value === 4 ? value : 1;
 }
 
 /** 从起点出发、沿连线可达的生成节点（拓扑序：上游在前）。 */
@@ -174,7 +182,11 @@ export function reachableGenerationNodes(graph: CanvasGraph, startNodeId: string
     if (!node) return;
     if (isGenerationNode(node)) ordered.push(node);
     for (const edge of graph.edges) {
-      if (edge.source === nodeId) walk(edge.target);
+      if (edge.source !== nodeId) continue;
+      // 溯源连线（生成 → 素材）只记录出处，是计划意义上的死端：
+      // 不能借它走到素材自己的下游，否则分支会错误地把「旧快照的消费者」卷进来
+      if (findGraphNode(graph, edge.target)?.kind === 'material') continue;
+      walk(edge.target);
     }
   };
   walk(startNodeId);
@@ -397,7 +409,9 @@ function buildTaskPlan(
     return null;
   }
   const activeTask = context.activeTaskOf(node.id);
-  if (activeTask) {
+  // 并发多变体：single 模式允许同节点多任务并存（数量护栏在 createCanvasRun），
+  // branch 语义是整链重跑，仍拒绝混入并发任务。
+  if (activeTask && context.mode === 'branch') {
     context.problems.push({
       code: 'node_busy',
       nodeId: node.id,
@@ -432,6 +446,27 @@ function buildTaskPlan(
     }
   }
 
+  // 图生视频的帧角色按图片接入顺序推断：第一张为首帧，其余为尾帧（能力表上限 2 张，
+  // 超出由能力校验报错）。界面不再手标用途后，两图场景仍能命中严格首尾帧合同。
+  if (node.data.generationMode === 'image-to-video') {
+    let frameIndex = 0;
+    for (const input of inputs) {
+      if (input.kind === 'text' || inputKindOfInput(context, input) !== 'image') continue;
+      input.role = frameIndex === 0 ? 'first-frame' : 'last-frame';
+      frameIndex += 1;
+    }
+  }
+
+  // 切换模式后残留的「当前模式不接受的已知参数」静默丢弃（如文生切图生后残留的 aspectRatio）；
+  // 未知 key 保留，交给 validateCapabilityInputs 继续报 parameter_not_supported，不吞真实合同违例。
+  const declaredParameters = new Map(capability.parameters.map((parameter) => [parameter.key, parameter]));
+  const effectiveParameters: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(node.data.parameters ?? {})) {
+    const declared = declaredParameters.get(key);
+    if (declared?.modes && !declared.modes.includes(node.data.generationMode)) continue;
+    effectiveParameters[key] = value;
+  }
+
   const capabilityProblems = validateCapabilityInputs({
     capability,
     mode: node.data.generationMode,
@@ -440,7 +475,7 @@ function buildTaskPlan(
       role: input.role,
       refId: input.refId,
     })),
-    parameters: node.data.parameters,
+    parameters: effectiveParameters,
   });
   for (const problem of capabilityProblems) {
     context.problems.push({
@@ -466,7 +501,7 @@ function buildTaskPlan(
     modelAlias: capability.modelAlias,
     generationMode: node.data.generationMode,
     prompt: promptParts.join('\n\n'),
-    parameters: { ...node.data.parameters },
+    parameters: { ...effectiveParameters },
     inputs,
   };
 }
@@ -524,11 +559,15 @@ export function planCanvasRun(db: Database.Database, request: CanvasPlanRequest)
     const planScope = new Set([node.id]);
     const task = buildTaskPlan(context, node, planScope, new Map());
     if (problems.length > 0 || !task) return { ok: false, problems };
+    // 变体复制：N 份内容一致的计划任务（指纹对 [t,t] 与 [t] 天然区分），
+    // createCanvasRun 按 variantIndex 逐行落库，行间输入独立。
+    const variantCount = normalizeVariantCount(request.variantCount);
+    const tasks = Array.from({ length: variantCount }, () => task);
     const base = {
       canvasId: canvas.id,
       mode: 'single' as const,
       graphRevision: canvas.graphRevision,
-      tasks: [task],
+      tasks,
       reused: [] as CanvasPlanReuse[],
       scope: [node.id],
     };

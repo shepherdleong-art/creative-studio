@@ -39,17 +39,39 @@ export interface ExternalCanvasAdapterOptions {
   submitTimeoutMs?: number;
 }
 
-/** 多模态参考的两个入口：素材按角色进方舟 content 数组，不走首帧合同。 */
-const REFERENCE_MODES: ReadonlyArray<CanvasGenerationMode> = ['video-to-video', 'reference-to-video'];
+/** 多模态参考的入口：全能参考／智能多帧／智能编辑／超长视频（及 2.0 的两个参考模式），素材按角色进方舟 content 数组，不走首帧合同。 */
+const REFERENCE_MODES: ReadonlyArray<CanvasGenerationMode> = [
+  'video-to-video',
+  'reference-to-video',
+  'frames-to-video',
+  'video-edit',
+  'video-extend',
+];
 
 /** 方舟 2.0 系列的参考素材约束：视频／音频每段 2–15 秒，各类总时长不超过 15 秒。 */
 const ARK_REFERENCE_SEGMENT_MIN_SEC = 2;
 const ARK_REFERENCE_KIND_TOTAL_MAX_SEC = 15;
+/** 方舟 2.5 系列：官方建议单个参考素材 4–30 秒；参考数量上限由能力表控制，不再设分类总时长。 */
+const ARK_2_5_REFERENCE_SEGMENT_MAX_SEC = 30;
 /** ffprobe 对「2 秒」素材可能报 1.98，留一点余量，避免把合规素材判成过短。 */
 const REFERENCE_DURATION_TOLERANCE_SEC = 0.25;
 
 function isReferenceMode(mode: CanvasGenerationMode): boolean {
   return REFERENCE_MODES.includes(mode);
+}
+
+/** 参考素材的时长约束按模型代际区分（2.0 与 2.5 的单段上限不同）。 */
+function referenceDurationLimits(modelAlias: string): { segmentMaxSec: number; kindTotalMaxSec: number | null } {
+  if (/seedance-2-5[-.]/.test(modelAlias)) {
+    return { segmentMaxSec: ARK_2_5_REFERENCE_SEGMENT_MAX_SEC, kindTotalMaxSec: null };
+  }
+  return { segmentMaxSec: ARK_REFERENCE_KIND_TOTAL_MAX_SEC, kindTotalMaxSec: ARK_REFERENCE_KIND_TOTAL_MAX_SEC };
+}
+
+/** 参考视频单段下限：2.5 编辑子任务官方硬性要求 4 秒，其余模式维持 2 秒（官方对延长仅为建议）。 */
+function referenceVideoSegmentMinSec(modelAlias: string, mode: CanvasGenerationMode): number {
+  if (mode === 'video-edit' && /seedance-2-5[-.]/.test(modelAlias)) return 4;
+  return ARK_REFERENCE_SEGMENT_MIN_SEC;
 }
 
 function inputRuleFor(
@@ -63,36 +85,62 @@ function inputRuleFor(
   return candidates.find((rule) => rule.roles.includes(input.role)) ?? null;
 }
 
-/** 参考素材组合校验（方舟规则）：音频必须与图或视频同时出现；分段与分类总时长有上限。 */
-function referenceCombinationProblems(inputs: CanvasResolvedInput[]): string[] {
+/** 参考素材组合校验（方舟规则）：音频必须与图或视频同时出现；分段与分类总时长有上限（按模型代际与模式）。 */
+function referenceCombinationProblems(
+  inputs: CanvasResolvedInput[],
+  modelAlias: string,
+  mode: CanvasGenerationMode,
+): string[] {
   const problems: string[] = [];
+  const limits = referenceDurationLimits(modelAlias);
+  const videoSegmentMinSec = referenceVideoSegmentMinSec(modelAlias, mode);
   const videos = inputs.filter((input) => input.kind === 'video');
   const audios = inputs.filter((input) => input.kind === 'audio');
   const hasVisual = inputs.some((input) => input.kind === 'image' || input.kind === 'video');
   if (audios.length > 0 && !hasVisual) {
     problems.push('参考音频必须与参考图或参考视频同时出现');
   }
-  const groups: Array<{ label: string; items: CanvasResolvedInput[] }> = [
-    { label: '视频', items: videos },
-    { label: '音频', items: audios },
+  const groups: Array<{ label: string; items: CanvasResolvedInput[]; segmentMinSec: number }> = [
+    { label: '视频', items: videos, segmentMinSec: videoSegmentMinSec },
+    { label: '音频', items: audios, segmentMinSec: ARK_REFERENCE_SEGMENT_MIN_SEC },
   ];
   for (const group of groups) {
     for (const input of group.items) {
       const duration = input.durationSec;
       if (duration === null) continue;
-      if (duration + REFERENCE_DURATION_TOLERANCE_SEC < ARK_REFERENCE_SEGMENT_MIN_SEC) {
-        problems.push(`参考${group.label} @${input.refId} 时长 ${duration.toFixed(1)}s 短于 ${ARK_REFERENCE_SEGMENT_MIN_SEC}s 下限`);
+      if (duration + REFERENCE_DURATION_TOLERANCE_SEC < group.segmentMinSec) {
+        problems.push(`参考${group.label} @${input.refId} 时长 ${duration.toFixed(1)}s 短于 ${group.segmentMinSec}s 下限`);
       }
-      if (duration > ARK_REFERENCE_KIND_TOTAL_MAX_SEC) {
-        problems.push(`参考${group.label} @${input.refId} 时长 ${duration.toFixed(1)}s 超过 ${ARK_REFERENCE_KIND_TOTAL_MAX_SEC}s 上限`);
+      if (duration > limits.segmentMaxSec) {
+        problems.push(`参考${group.label} @${input.refId} 时长 ${duration.toFixed(1)}s 超过 ${limits.segmentMaxSec}s 上限`);
       }
     }
+    if (limits.kindTotalMaxSec === null) continue;
     const total = group.items.reduce((sum, input) => sum + (input.durationSec ?? 0), 0);
-    if (total > ARK_REFERENCE_KIND_TOTAL_MAX_SEC + REFERENCE_DURATION_TOLERANCE_SEC) {
-      problems.push(`参考${group.label}总时长 ${total.toFixed(1)}s 超过 ${ARK_REFERENCE_KIND_TOTAL_MAX_SEC}s 上限`);
+    if (total > limits.kindTotalMaxSec + REFERENCE_DURATION_TOLERANCE_SEC) {
+      problems.push(`参考${group.label}总时长 ${total.toFixed(1)}s 超过 ${limits.kindTotalMaxSec}s 上限`);
     }
   }
   return problems;
+}
+
+/** 方舟 2.5 omni 子任务的提示词意图前置校验：配置与子任务不一致会在上游异步失败，这里提前拦下。 */
+const OMNI_PROMPT_KEYWORDS: Record<string, { pattern: RegExp; examples: string }> = {
+  'video-edit': {
+    pattern: /编辑|修改|替换|改成|改為|删除|删掉|去掉|移除|增加|添加|加上|换上|edit|remove|delete|replace|add|change/i,
+    examples: '替换／删除／增加／修改',
+  },
+  'video-extend': {
+    pattern: /延长|延续|续写|向前|向后|extend|continue/i,
+    examples: '向前延长／向后延长／续写',
+  },
+};
+
+function omniPromptProblems(prompt: string, mode: CanvasGenerationMode): string[] {
+  const rule = OMNI_PROMPT_KEYWORDS[mode];
+  if (!rule) return [];
+  if (rule.pattern.test(prompt)) return [];
+  return [`提示词需包含至少一个${rule.examples}类关键词，模型才能按预期子任务执行`];
 }
 
 /** 参考输入按节点顺序（orderIndex）进请求，@参考N 与提示词的对应关系不随数组顺序漂移。 */
@@ -328,12 +376,20 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       }
 
       if (referenceMode) {
-        const problems = referenceCombinationProblems(mediaInputs);
+        const problems = referenceCombinationProblems(mediaInputs, context.modelAlias, context.generationMode);
         if (problems.length > 0) {
           throw new CanvasAdapterError(
             'prepare',
             `参考素材组合不合法：${problems.join('；')}，任务未提交。`,
             { code: 'reference_combination_invalid' },
+          );
+        }
+        const promptProblems = omniPromptProblems(context.prompt, context.generationMode);
+        if (promptProblems.length > 0) {
+          throw new CanvasAdapterError(
+            'prepare',
+            `${promptProblems.join('；')}，任务未提交。`,
+            { code: 'prompt_keyword_missing' },
           );
         }
       }
@@ -439,7 +495,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
         return { providerTaskId: submitted.providerTaskId };
       }
 
-      // 视频生视频／带参考生成：多模态参考合同，素材按角色进 content 数组
+      // 全能参考／智能多帧／智能编辑／超长视频：多模态参考合同，素材按角色进 content 数组
       if (isReferenceMode(context.generationMode)) {
         if (!adapter.submitReference) {
           throw new CanvasAdapterError(
@@ -455,6 +511,13 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           mimeType: input.mimeType ?? 'application/octet-stream',
           durationSec: input.durationSec,
         }));
+        // 方舟 2.5 omni 子任务映射：编辑锁 ratio=adaptive＋duration=-1，延长锁 ratio=adaptive（2.0 由适配器门掉不发送）
+        const omniReferenceTaskType = context.generationMode === 'video-edit'
+          ? 'edit' as const
+          : context.generationMode === 'video-extend'
+            ? 'extend' as const
+            : 'reference' as const;
+        const locksAdaptiveRatio = context.generationMode === 'video-edit' || context.generationMode === 'video-extend';
         if (signal?.aborted) throw new CanvasAdapterError('submit', '提交在生成请求前已中止，任务未提交。', { code: 'submit_aborted' });
         let submitted;
         try {
@@ -462,8 +525,11 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             model: capability.modelAlias,
             prompt: context.prompt,
             references,
-            durationSec: Number(context.parameters.durationSec ?? 5),
-            ...(context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
+            durationSec: context.generationMode === 'video-edit' ? -1 : Number(context.parameters.durationSec ?? 5),
+            ...(locksAdaptiveRatio
+              ? { aspectRatio: 'adaptive' }
+              : context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
+            omniReferenceTaskType,
           }, route.apiKey, route.baseUrl, signal);
         } catch (error) {
           throw submitError('submit', '外部视频提交请求失败，结果不明。', error, signal);

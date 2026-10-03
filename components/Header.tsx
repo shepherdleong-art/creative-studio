@@ -2,6 +2,7 @@
 
 import { useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
 import ThemeToggle from '@/components/ThemeToggle';
 
@@ -12,7 +13,9 @@ const subscribeToDesktopShell = () => () => {};
 const readDesktopShell = () => Boolean((window as { desktopBridge?: unknown }).desktopBridge);
 const readDesktopShellOnServer = () => false;
 
-export default function Header() {
+export default function Header({ canvasEnabled = false }: { canvasEnabled?: boolean }) {
+  const pathname = usePathname();
+  const onCanvas = pathname === '/canvas' || pathname.startsWith('/canvas/');
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   // In the shell, stopping the service also takes the application down, so the
@@ -43,6 +46,13 @@ export default function Header() {
       </Link>
       <nav className="ml-auto flex items-center gap-4">
         <Link href="/" className="text-ink-secondary transition-colors hover:text-ink">项目</Link>
+        {canvasEnabled && (
+          <Link
+            href="/canvas"
+            aria-current={onCanvas ? 'page' : undefined}
+            className={`whitespace-nowrap transition-colors hover:text-ink ${onCanvas ? 'font-medium text-accent' : 'text-ink-secondary'}`}
+          >创作画布</Link>
+        )}
         <Link href="/usage" className="text-ink-secondary transition-colors hover:text-ink">消耗</Link>
         <Link href="/settings" className="text-ink-secondary transition-colors hover:text-ink">供应商</Link>
         <Link href="/projects/new" className="btn-primary btn-sm">

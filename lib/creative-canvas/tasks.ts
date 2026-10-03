@@ -59,9 +59,14 @@ export interface CanvasTaskRecord {
   errorMessage: string | null;
   lastPolledAt: string | null;
   pollCount: number;
+  /** 同一次 run 内的变体编号（single 从 0 递增；branch 恒为 0）。 */
+  variantIndex: number;
   createdAt: string;
   updatedAt: string;
 }
+
+/** single 模式下单个节点允许的并发任务上限（已有活跃 + 本次变体）。 */
+export const MAX_NODE_VARIANTS = 8;
 
 export interface CanvasTaskInputRecord {
   id: string;
@@ -104,6 +109,7 @@ function rowToTask(row: Record<string, unknown>): CanvasTaskRecord {
       : String(row.cancelRequestedAt),
     outputAssetId: row.outputAssetId === null || row.outputAssetId === undefined ? null : String(row.outputAssetId),
     errorCode: row.errorCode === null || row.errorCode === undefined ? null : String(row.errorCode),
+    variantIndex: Number(row.variantIndex ?? 0),
     errorMessage: row.errorMessage === null || row.errorMessage === undefined ? null : String(row.errorMessage),
     lastPolledAt: row.lastPolledAt === null || row.lastPolledAt === undefined ? null : String(row.lastPolledAt),
     pollCount: Number(row.pollCount ?? 0),
@@ -257,10 +263,32 @@ export function createCanvasRun(
     for (const taskPlan of plan.tasks) {
       const active = findActiveTaskForCanvasNode(db, plan.canvasId, taskPlan.nodeId);
       if (active) {
-        throw new CanvasError('conflict', `节点 ${taskPlan.nodeId} 已有正在进行的任务。`, {
-          nodeId: taskPlan.nodeId,
-          activeTaskId: active.id,
-        });
+        // branch 语义是整链重跑，拒绝混入并发任务；single 允许多变体并存，
+        // 数量护栏在下方按节点总量检查。
+        if (plan.mode === 'branch') {
+          throw new CanvasError('conflict', `节点 ${taskPlan.nodeId} 已有正在进行的任务。`, {
+            nodeId: taskPlan.nodeId,
+            activeTaskId: active.id,
+          });
+        }
+      }
+    }
+    if (plan.mode === 'single') {
+      // 单节点并发变体上限：已有活跃任务 + 本次变体数不得超过 MAX_NODE_VARIANTS
+      const nodeIds = new Set(plan.tasks.map((taskPlan) => taskPlan.nodeId));
+      for (const nodeId of nodeIds) {
+        const variantCount = plan.tasks.filter((taskPlan) => taskPlan.nodeId === nodeId).length;
+        const activeCount = db.prepare(
+          `SELECT COUNT(*) AS count FROM creative_canvas_tasks
+           WHERE canvasId = ? AND nodeId = ? AND phase NOT IN ('succeeded','failed','blocked','cancelled')`,
+        ).get(plan.canvasId, nodeId) as { count: number };
+        if (Number(activeCount.count) + variantCount > MAX_NODE_VARIANTS) {
+          throw new CanvasError('node_variant_limit',
+            `该节点的并发任务数已达上限（${MAX_NODE_VARIANTS}）：请等部分任务完成后再追加变体。`, {
+              nodeId,
+              limit: MAX_NODE_VARIANTS,
+            });
+        }
       }
     }
 
@@ -272,17 +300,23 @@ export function createCanvasRun(
     `).run(runId, plan.canvasId, plan.requestKey, requestHash, plan.mode, JSON.stringify(plan), at, at);
 
     const taskIdByNode = new Map<string, string>();
+    // 与 plan.tasks 顺序一致的 taskId（single 多变体同 nodeId，不能只用 Map）
+    const taskIds: string[] = [];
     const insertTask = db.prepare(`
       INSERT INTO creative_canvas_tasks
         (id, runId, canvasId, nodeId, nodeEpoch, mediaKind, phase, providerSnapshot, parameterSnapshot,
          providerTaskId, submissionState, slotHeld, quotaKey, leaseOwner, leaseUntil, fence,
-         cancelRequestedAt, outputAssetId, errorCode, errorMessage, lastPolledAt, pollCount, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'not_sent', 0, ?, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, ?, ?)
+         cancelRequestedAt, outputAssetId, errorCode, errorMessage, lastPolledAt, pollCount,
+         variantIndex, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'not_sent', 0, ?, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, ?, ?, ?)
     `);
 
     const created: CanvasTaskRecord[] = [];
-    for (const taskPlan of plan.tasks) {
+    plan.tasks.forEach((taskPlan, planIndex) => {
       const taskId = randomUUID();
+      taskIds.push(taskId);
+      // 覆盖式记录：同节点多变体时 activeTaskId 绑定最后创建的变体；
+      // branch 模式每节点一任务，上游解析（taskIdByNode.get）不受覆盖影响。
       taskIdByNode.set(taskPlan.nodeId, taskId);
       // 等待上游的任务不占名额；输入全部就绪的直接排队
       const waitsForUpstream = taskPlan.inputs.some(
@@ -308,19 +342,21 @@ export function createCanvasRun(
           parameters: taskPlan.parameters,
         }),
         taskPlan.capabilityKey,
+        // 变体编号：branch（每节点一任务）与历史任务恒为 0
+        plan.mode === 'single' ? planIndex : 0,
         at,
         at,
       );
       created.push(requireCanvasTask(db, taskId));
-    }
+    });
 
     const insertInput = db.prepare(`
       INSERT INTO creative_canvas_task_inputs
         (id, taskId, refId, orderIndex, role, note, sourceNodeId, assetId, upstreamTaskId, textContent, resolvedAssetId, createdAt)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
     `);
-    for (const taskPlan of plan.tasks) {
-      const taskId = taskIdByNode.get(taskPlan.nodeId) as string;
+    plan.tasks.forEach((taskPlan, planIndex) => {
+      const taskId = taskIds[planIndex];
       for (const input of taskPlan.inputs) {
         // 计划内的上游解析成本次运行的任务；单点绑定则沿用已存在的任务身份
         const upstreamTaskId = input.upstreamNodeId
@@ -340,7 +376,7 @@ export function createCanvasRun(
           at,
         );
       }
-    }
+    });
 
     const bindActive = db.prepare(
       `UPDATE creative_canvas_node_states SET activeTaskId = ?, updatedAt = ? WHERE canvasId = ? AND nodeId = ?`,

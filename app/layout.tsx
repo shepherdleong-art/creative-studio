@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import { connection } from "next/server";
 import Header from "@/components/Header";
+import { canvasFeatureEnabled } from "@/lib/creative-canvas/config";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -22,6 +24,12 @@ export const metadata: Metadata = {
 // data-theme，避免夜间模式首帧白闪。与 components/ThemeToggle.tsx 用同一份 key。
 const themeInitScript = `(function(){try{var p=localStorage.getItem('creative-studio-theme');var d=p==='light'||p==='dark'?p:(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=d;}catch(e){}})();`;
 
+async function RuntimeHeader() {
+  // Read the server's runtime flag so standalone builds can enable the entry at launch.
+  await connection();
+  return <Header canvasEnabled={canvasFeatureEnabled()} />;
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -29,7 +37,9 @@ export default function RootLayout({
     <html lang="zh-CN" className="h-full antialiased" suppressHydrationWarning>
       <body className="min-h-full flex flex-col bg-surface text-ink">
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
-        <Header />
+        <Suspense fallback={<Header />}>
+          <RuntimeHeader />
+        </Suspense>
         <main className="flex-1 w-full max-w-[980px] mx-auto px-6 py-10">
           <Suspense fallback={
             <div className="flex items-center justify-center py-20">

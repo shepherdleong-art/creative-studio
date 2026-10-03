@@ -20,6 +20,8 @@ import {
 import {
   DEFAULT_CANVAS_VIEWPORT,
   type CanvasGraph,
+  type CanvasMediaKind,
+  type CanvasNodeKind,
   type CanvasNodeRunProjection,
   type CanvasViewport,
 } from './types.ts';
@@ -41,6 +43,31 @@ export interface CanvasSummary {
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
+  /** 列表卡片封面用的轻量布局投影（节点位置/种类/素材 + 连线），不含运行态。 */
+  preview: CanvasPreview;
+}
+
+export interface CanvasPreviewNode {
+  id: string;
+  kind: CanvasNodeKind;
+  x: number;
+  y: number;
+  /** 用户调整过的宽度；未调整为 null（前端按种类取默认）。 */
+  width: number | null;
+  /** 仅素材节点且有已导入素材时非空。 */
+  assetId: string | null;
+  /** 仅素材节点有意义。 */
+  mediaKind: CanvasMediaKind | null;
+}
+
+export interface CanvasPreviewEdge {
+  source: string;
+  target: string;
+}
+
+export interface CanvasPreview {
+  nodes: CanvasPreviewNode[];
+  edges: CanvasPreviewEdge[];
 }
 
 export interface CanvasSaveResult {
@@ -113,6 +140,18 @@ export function listCanvases(db: Database.Database): CanvasSummary[] {
       nodeCount: graph.nodes.length,
       createdAt: String(row.createdAt),
       updatedAt: String(row.updatedAt),
+      preview: {
+        nodes: graph.nodes.map((node) => ({
+          id: node.id,
+          kind: node.kind,
+          x: node.position.x,
+          y: node.position.y,
+          width: node.size?.width ?? null,
+          assetId: node.kind === 'material' ? node.data.assetId : null,
+          mediaKind: node.kind === 'material' ? node.data.mediaKind : null,
+        })),
+        edges: graph.edges.map((edge) => ({ source: edge.source, target: edge.target })),
+      },
     };
   });
 }
@@ -320,11 +359,12 @@ export interface PublishNodeResultParams {
 
 export type PublishNodeResultOutcome =
   | { published: true }
-  | { published: false; reason: 'node_deleted' | 'epoch_mismatch' | 'not_active_task' | 'node_missing' };
+  | { published: false; reason: 'node_deleted' | 'epoch_mismatch' | 'node_missing' };
 
 /**
- * 发布任务产物到节点当前结果。只有节点仍存在、epoch 匹配且 activeTaskId 指向本任务时
- * 才更新 currentAssetId——迟到的旧任务不能覆盖节点。
+ * 发布任务产物到节点当前结果。发布门禁（v2）：节点存在、未被删除、
+ * nodeEpoch 匹配（唯一防迟到发布的红线），且任务确实属于该节点并成功
+ * 产出该资产。多变体并存时最后完成者成为 currentAssetId 主结果。
  */
 export function publishCanvasNodeResult(params: PublishNodeResultParams): PublishNodeResultOutcome {
   const { db, canvasId, nodeId, taskId, nodeEpoch, assetId } = params;
@@ -334,14 +374,59 @@ export function publishCanvasNodeResult(params: PublishNodeResultParams): Publis
   ).get(canvasId, nodeId) as Record<string, unknown> | undefined;
   if (!row) return { published: false, reason: 'node_missing' };
   if (row.deletedAt !== null && row.deletedAt !== undefined) return { published: false, reason: 'node_deleted' };
+  // 并发多变体（v2）：nodeEpoch 是唯一发布门禁——epoch 相等即节点未被删除重建，
+  // 该任务对该节点仍合法；多个变体并存时「最后完成者成为主结果」是产品语义。
   if (Number(row.nodeEpoch) !== nodeEpoch) return { published: false, reason: 'epoch_mismatch' };
-  if (row.activeTaskId !== taskId) return { published: false, reason: 'not_active_task' };
+  // 防御性断言：任务确实属于该节点、同 epoch 且已成功产出该资产
+  const taskRow = db.prepare(
+    `SELECT 1 FROM creative_canvas_tasks
+      WHERE id = ? AND canvasId = ? AND nodeId = ? AND nodeEpoch = ? AND outputAssetId = ?`,
+  ).get(taskId, canvasId, nodeId, nodeEpoch, assetId);
+  if (!taskRow) return { published: false, reason: 'epoch_mismatch' };
   db.prepare(`
     UPDATE creative_canvas_node_states
-       SET currentAssetId = ?, resultTaskId = ?, activeTaskId = NULL, updatedAt = ?
+       SET currentAssetId = ?, resultTaskId = ?,
+           activeTaskId = CASE WHEN activeTaskId = ? THEN NULL ELSE activeTaskId END,
+           updatedAt = ?
      WHERE canvasId = ? AND nodeId = ?
-  `).run(assetId, taskId, at, canvasId, nodeId);
+  `).run(assetId, taskId, taskId, at, canvasId, nodeId);
   return { published: true };
+}
+
+/**
+ * 节点候选投影（v2）：按节点列出成功任务及其输出资产，供前端候选列表。
+ * 每节点取最近 12 条（时间倒序），走 idx_cct_node_results 索引。
+ */
+export interface CanvasNodeCandidate {
+  nodeId: string;
+  taskId: string;
+  assetId: string;
+  variantIndex: number;
+  createdAt: string;
+}
+
+export function listCanvasNodeCandidates(db: Database.Database, canvasId: string): CanvasNodeCandidate[] {
+  const rows = db.prepare(
+    `SELECT nodeId, id AS taskId, outputAssetId, variantIndex, createdAt
+       FROM creative_canvas_tasks
+      WHERE canvasId = ? AND phase = 'succeeded' AND outputAssetId IS NOT NULL
+      ORDER BY nodeId, createdAt DESC`,
+  ).all(canvasId) as Array<Record<string, unknown>>;
+  const perNode = new Map<string, CanvasNodeCandidate[]>();
+  for (const row of rows) {
+    const nodeId = String(row.nodeId);
+    const bucket = perNode.get(nodeId) ?? [];
+    if (bucket.length >= 12) continue;
+    bucket.push({
+      nodeId,
+      taskId: String(row.taskId),
+      assetId: String(row.outputAssetId),
+      variantIndex: Number(row.variantIndex ?? 0),
+      createdAt: String(row.createdAt),
+    });
+    perNode.set(nodeId, bucket);
+  }
+  return [...perNode.values()].flat();
 }
 
 export function cloneCanvasRecordGraph(canvas: CanvasRecord): CanvasGraph {

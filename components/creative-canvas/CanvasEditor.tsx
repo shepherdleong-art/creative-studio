@@ -13,23 +13,35 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
   type Connection,
+  type Edge,
   type FinalConnectionState,
+  type NodeChange,
   type NodeMouseHandler,
+  type XYPosition,
 } from '@xyflow/react';
-import { checkCanvasConnection, parseCanvasGraph } from '@/lib/creative-canvas/graph';
+import { parseCanvasGraph } from '@/lib/creative-canvas/graph';
+import { CANVAS_NODE_KIND_SPECS, canConnectKindTo } from '@/lib/creative-canvas/node-kinds';
 import type { CanvasGraph, CanvasNodeKind, CanvasViewport } from '@/lib/creative-canvas/types';
 import { canvasApi } from './api';
 import { CANVAS_EDGE_TYPES } from './CanvasEdge';
 import { CanvasTaskDrawer } from './CanvasTaskDrawer';
-import { buildCanvasGraph, useCanvasEditor, type CanvasEditorController } from './editor-store';
+import { buildCanvasGraph, useCanvasEditor, type CanvasEditorController, type CanvasFlowNode } from './editor-store';
 import { CanvasNodeContext, type CanvasModelCapabilityDto } from './node-context';
 import { GenerationNode, MaterialNode, PromptNode } from './nodes';
+import { findOpenPosition } from './placement';
+import { CanvasToastProvider, useCanvasToasts } from './canvas-toasts';
+import { canvasErrorText } from './error-copy';
+import { ContextMenu, type ContextMenuItem } from './context-menu';
+
+/** 模型证据等级排序权重：verified > mapped > candidate。 */
+const EVIDENCE_RANK: Record<string, number> = { verified: 3, mapped: 2, candidate: 1 };
 
 const NODE_TYPES = {
   material: MaterialNode,
@@ -37,13 +49,6 @@ const NODE_TYPES = {
   'image-generation': GenerationNode,
   'video-generation': GenerationNode,
 };
-
-const NODE_LABELS: Array<{ kind: CanvasNodeKind; label: string }> = [
-  { kind: 'material', label: '素材' },
-  { kind: 'prompt', label: '提示词' },
-  { kind: 'image-generation', label: '图片生成' },
-  { kind: 'video-generation', label: '视频生成' },
-];
 
 const SAVE_LABELS: Record<string, string> = {
   idle: '未修改',
@@ -61,12 +66,34 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function EditorInner({ canvasId }: { canvasId: string }) {
   const controller = useCanvasEditor(canvasId);
+  const toasts = useCanvasToasts();
   const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow();
   const [initialViewport, setInitialViewport] = useState<{ x: number; y: number; zoom: number } | undefined>();
   const [capabilities, setCapabilities] = useState<CanvasModelCapabilityDto[]>([]);
   const [executor, setExecutor] = useState<string>('disabled');
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [dropMenu, setDropMenu] = useState<{ fromNodeId: string; x: number; y: number } | null>(null);
+  const [dropMenu, setDropMenu] = useState<{
+    fromNodeId: string;
+    /** 屏幕坐标：screenToFlowPosition 需要（旧实现误传相对坐标导致落点偏移）。 */
+    clientX: number;
+    clientY: number;
+    /** 相对 wrapper 的坐标：菜单定位需要。 */
+    localX: number;
+    localY: number;
+  } | null>(null);
+  // 右键上下文菜单（pane／node／edge 三态）
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  // 拉线菜单：Esc 之外，点击菜单外任意处也要能取消（与右键菜单同一手势）
+  const dropMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!dropMenu) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && dropMenuRef.current?.contains(event.target)) return;
+      setDropMenu(null);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, [dropMenu]);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<CanvasEditorController>(controller);
   const viewportRestoreRef = useRef(false);
@@ -121,11 +148,11 @@ function EditorInner({ canvasId }: { canvasId: string }) {
           await canvasApi.saveViewport(canvasId, latest);
         } catch (error) {
           if (version === viewportSaveVersionRef.current) {
-            controllerRef.current.showStatus(`视口自动保存失败：${error instanceof Error ? error.message : '请稍后重试。'}`);
+            toasts.push('error', `视口自动保存失败：${error instanceof Error ? error.message : '请稍后重试。'}`);
           }
         }
       });
-  }, [canvasId, getViewport]);
+  }, [canvasId, getViewport, toasts]);
 
   const onMoveStart = useCallback(() => {
     if (!viewportRestoreRef.current) viewportInteractedRef.current = true;
@@ -163,13 +190,6 @@ function EditorInner({ canvasId }: { canvasId: string }) {
     return controller.runtime.get(sourceNodeId)?.currentAssetId ?? null;
   }, [controller.nodes, controller.runtime]);
 
-  const contextValue = useMemo(() => ({
-    controller,
-    capabilities,
-    graph,
-    resolveSourceAssetId,
-  }), [capabilities, controller, graph, resolveSourceAssetId]);
-
   const onConnect = useCallback((connection: Connection) => {
     controllerRef.current.onConnect(connection);
   }, []);
@@ -181,29 +201,114 @@ function EditorInner({ canvasId }: { canvasId: string }) {
     const point = 'changedTouches' in event
       ? { x: event.changedTouches[0].clientX, y: event.changedTouches[0].clientY }
       : { x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
-    // 菜单挂在 wrapper 内，坐标要换算成相对 wrapper 的位置
+    // 菜单挂在 wrapper 内用相对坐标定位；创建节点时另需屏幕坐标换算 flow 坐标
     const bounds = wrapperRef.current?.getBoundingClientRect();
-    setDropMenu({ fromNodeId, x: point.x - (bounds?.left ?? 0), y: point.y - (bounds?.top ?? 0) });
+    setContextMenu(null);
+    setDropMenu({
+      fromNodeId,
+      clientX: point.x,
+      clientY: point.y,
+      localX: point.x - (bounds?.left ?? 0),
+      localY: point.y - (bounds?.top ?? 0),
+    });
   }, []);
+
+  /** 该 mediaKind 下证据等级最高的模型（verified > mapped > candidate）。 */
+  const bestModelKey = useCallback((kind: CanvasNodeKind): string | null => {
+    const mediaKind = kind === 'video-generation' ? 'video' : 'image';
+    const available = capabilities
+      .filter((capability) => capability.mediaKind === mediaKind)
+      .sort((a, b) => (EVIDENCE_RANK[b.evidence] ?? 0) - (EVIDENCE_RANK[a.evidence] ?? 0));
+    return available[0]?.key ?? null;
+  }, [capabilities]);
+
+  /** 创建节点：生成节点自动选中证据等级最高的模型（用户仍可更换）。 */
+  const addNodeWithDefaults = useCallback(async (
+    kind: CanvasNodeKind,
+    position: XYPosition,
+    options?: { connectFrom?: string },
+  ): Promise<string | null> => {
+    const id = await controllerRef.current.addNode(kind, position, options);
+    if (id && (kind === 'image-generation' || kind === 'video-generation')) {
+      const modelKey = bestModelKey(kind);
+      if (modelKey) controllerRef.current.updateNodeData(id, { modelKey });
+    }
+    return id;
+  }, [bestModelKey]);
 
   const createFromMenu = useCallback(async (kind: CanvasNodeKind) => {
     const menu = dropMenu;
     if (!menu) return;
     setDropMenu(null);
-    const position = screenToFlowPosition({ x: menu.x, y: menu.y });
-    await controllerRef.current.addNode(kind, position, { connectFrom: menu.fromNodeId });
-  }, [dropMenu, screenToFlowPosition]);
+    const position = screenToFlowPosition({ x: menu.clientX, y: menu.clientY });
+    await addNodeWithDefaults(kind, position, { connectFrom: menu.fromNodeId });
+  }, [addNodeWithDefaults, dropMenu, screenToFlowPosition]);
+
+  /** 生成节点的当前结果可物化为独立素材节点（大图展示、可再连线、可替换）。 */
+  const dropMenuResultAssetId = useMemo(() => {
+    if (!dropMenu) return null;
+    const source = controller.nodes.find((node) => node.id === dropMenu.fromNodeId);
+    if (!source || (source.type !== 'image-generation' && source.type !== 'video-generation')) return null;
+    return controller.runtime.get(dropMenu.fromNodeId)?.currentAssetId ?? null;
+  }, [dropMenu, controller.nodes, controller.runtime]);
+
+  const materializeResult = useCallback(async () => {
+    const menu = dropMenu;
+    if (!menu) return;
+    const source = controllerRef.current.nodes.find((node) => node.id === menu.fromNodeId);
+    const assetId = resolveSourceAssetId(menu.fromNodeId);
+    setDropMenu(null);
+    if (!source || !assetId) return;
+    const position = findOpenPosition(
+      screenToFlowPosition({ x: menu.clientX, y: menu.clientY }),
+      controllerRef.current.nodes,
+      'material',
+    );
+    const id = await controllerRef.current.addNode('material', position);
+    if (!id) return;
+    const sourceTitle = String(source.data.title ?? '').trim();
+    controllerRef.current.updateNodeData(id, {
+      assetId,
+      mediaKind: source.type === 'video-generation' ? 'video' : 'image',
+      title: sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
+    });
+  }, [dropMenu, resolveSourceAssetId, screenToFlowPosition]);
+
+  // 防误触：点击后按钮不留键盘焦点，空格/回车不会把「生成」再触发一次白烧额度
+  useEffect(() => {
+    const blur = (event: PointerEvent) => {
+      const button = event.target instanceof Element ? event.target.closest('button') : null;
+      if (button) button.blur();
+    };
+    window.addEventListener('pointerup', blur);
+    return () => window.removeEventListener('pointerup', blur);
+  }, []);
 
   // 键盘快捷键：焦点在文本框时全部让位给正常编辑
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setDropMenu(null);
+        setContextMenu(null);
         controllerRef.current.cancelBranchPreview();
+        controllerRef.current.onNodesChange(
+          controllerRef.current.nodes
+            .filter((node) => node.selected)
+            .map((node): NodeChange<CanvasFlowNode> => ({ type: 'select', id: node.id, selected: false })),
+        );
         return;
       }
       if (isEditableTarget(event.target)) return;
       const meta = event.metaKey || event.ctrlKey;
+      if (meta && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        controllerRef.current.onNodesChange(
+          controllerRef.current.nodes.map((node): NodeChange<CanvasFlowNode> => (
+            { type: 'select', id: node.id, selected: true }
+          )),
+        );
+        return;
+      }
       if (meta && event.key.toLowerCase() === 'c') {
         event.preventDefault();
         controllerRef.current.copySelection();
@@ -263,7 +368,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
       .filter((node) => node.type === 'image-generation' || node.type === 'video-generation')
       .map((node) => node.id);
     if (selected.length === 0) {
-      controllerRef.current.showStatus('请先选中至少一个有结果的生成节点。');
+      toasts.push('info', '请先选中至少一个有结果的生成节点。');
       return;
     }
     setExporting(true);
@@ -278,21 +383,19 @@ function EditorInner({ canvasId }: { canvasId: string }) {
         message?: string;
       };
       if (!response.ok || !payload.export?.downloadUrl) {
-        controllerRef.current.showStatus(
-          `导出失败（${response.status}）：${payload.message ?? '服务端未返回下载入口'}`,
-        );
+        toasts.push('error', `导出失败（${response.status}）：${payload.message ?? '服务端未返回下载入口'}`);
         return;
       }
       const itemCount = payload.export.manifest?.items?.length ?? 0;
       const skipped = payload.export.manifest?.skipped?.length ?? 0;
-      controllerRef.current.showStatus(`已打包 ${itemCount} 个结果${skipped > 0 ? `，跳过 ${skipped} 个不可导出节点` : ''}，开始下载。`);
+      toasts.push('success', `已打包 ${itemCount} 个结果${skipped > 0 ? `，跳过 ${skipped} 个不可导出节点` : ''}，开始下载。`);
       window.location.href = payload.export.downloadUrl;
     } catch (error) {
-      controllerRef.current.showStatus(`导出请求失败：${error instanceof Error ? error.message : String(error)}`);
+      toasts.push('error', `导出请求失败：${canvasErrorText(error)}`);
     } finally {
       setExporting(false);
     }
-  }, [canvasId]);
+  }, [canvasId, toasts]);
 
   const fitAll = useCallback(() => {
     void fitView({ padding: 0.12, maxZoom: 1, duration: 200 });
@@ -300,27 +403,118 @@ function EditorInner({ canvasId }: { canvasId: string }) {
 
   const addAtCenter = useCallback(async (kind: CanvasNodeKind) => {
     const bounds = wrapperRef.current?.getBoundingClientRect();
-    // 新节点落在当前可见区域的左上角按网格排布，避免叠在一起或跑到视口外
-    const base = screenToFlowPosition({
-      x: (bounds?.left ?? 0) + 48,
-      y: (bounds?.top ?? 0) + 48,
+    // 新节点落在当前视口中心附近的空位（碰撞避让）；不再强制 fitView 打断用户视口
+    const center = screenToFlowPosition({
+      x: (bounds?.left ?? 0) + (bounds?.width ?? 0) / 2,
+      y: (bounds?.top ?? 0) + (bounds?.height ?? 0) / 2,
     });
-    const index = controllerRef.current.nodes.length;
-    const position = {
-      x: base.x + (index % 2) * 340,
-      y: base.y + Math.floor(index / 2) * 320,
-    };
-    await controllerRef.current.addNode(kind, position);
-    fitAll();
-  }, [fitAll, screenToFlowPosition]);
+    const position = findOpenPosition(center, controllerRef.current.nodes, kind);
+    await addNodeWithDefaults(kind, position);
+  }, [addNodeWithDefaults, screenToFlowPosition]);
 
   const onNodeClick: NodeMouseHandler = useCallback(() => {
     setDropMenu(null);
+    setContextMenu(null);
   }, []);
+
+  /**
+   * 选择变化回传必须保持回调身份稳定：React Flow 的 SelectionListener 效应把回调列进依赖，
+   * 内联箭头每次渲染都换新会让效应反复重触（editor-store 侧另有内容去重兜底），
+   * 历史上这套组合形成「渲染→效应→setState→渲染」死循环，把路由过渡永久饿死。
+   */
+  const onFlowSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: CanvasFlowNode[] }) => {
+    controllerRef.current.onSelectionChange(selectedNodes.map((node) => node.id));
+  }, []);
+
+  /** 右键空白：此处添加节点／粘贴／适配视图。创建坐标必须用屏幕坐标换算。 */
+  const onPaneContextMenu = useCallback((event: React.MouseEvent | MouseEvent) => {
+    event.preventDefault();
+    const point = { x: event.clientX, y: event.clientY };
+    const bounds = wrapperRef.current?.getBoundingClientRect();
+    const flowPosition = screenToFlowPosition(point);
+    setDropMenu(null);
+    setContextMenu({
+      x: point.x - (bounds?.left ?? 0),
+      y: point.y - (bounds?.top ?? 0),
+      items: [
+        ...CANVAS_NODE_KIND_SPECS.map((spec) => ({
+          label: `添加${spec.label}`,
+          onClick: () => {
+            const position = findOpenPosition(flowPosition, controllerRef.current.nodes, spec.kind);
+            void addNodeWithDefaults(spec.kind, position);
+          },
+        })),
+        {
+          label: '粘贴',
+          disabled: !controllerRef.current.hasClipboard,
+          onClick: () => { void controllerRef.current.pasteClipboard(); },
+        },
+        { label: '适配视图', onClick: fitAll },
+      ],
+    });
+  }, [addNodeWithDefaults, fitAll, screenToFlowPosition]);
+
+  /** 右键节点：独占选中该节点后提供复制／再制／删除（生成节点另有运行分支）。 */
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: CanvasFlowNode) => {
+    event.preventDefault();
+    controllerRef.current.onNodesChange(
+      controllerRef.current.nodes.map((candidate): NodeChange<CanvasFlowNode> => (
+        { type: 'select', id: candidate.id, selected: candidate.id === node.id }
+      )),
+    );
+    const bounds = wrapperRef.current?.getBoundingClientRect();
+    setDropMenu(null);
+    const isGeneration = node.type === 'image-generation' || node.type === 'video-generation';
+    setContextMenu({
+      x: event.clientX - (bounds?.left ?? 0),
+      y: event.clientY - (bounds?.top ?? 0),
+      items: [
+        { label: '复制', testId: 'context-copy', onClick: () => controllerRef.current.copySelection() },
+        {
+          label: '再制',
+          testId: 'context-duplicate',
+          onClick: () => {
+            controllerRef.current.copySelection();
+            void controllerRef.current.pasteClipboard();
+          },
+        },
+        ...(isGeneration ? [{
+          label: '运行分支',
+          testId: 'context-run-branch',
+          onClick: () => { void controllerRef.current.previewBranch(node.id, true); },
+        }] : []),
+        { label: '删除', danger: true, testId: 'context-delete', onClick: () => controllerRef.current.deleteSelection() },
+      ],
+    });
+  }, []);
+
+  /** 右键连线：删除连线（对应参考槽位随对账一并移除）。 */
+  const onEdgeContextMenu = useCallback((event: React.MouseEvent, edge: Edge) => {
+    event.preventDefault();
+    const bounds = wrapperRef.current?.getBoundingClientRect();
+    setDropMenu(null);
+    setContextMenu({
+      x: event.clientX - (bounds?.left ?? 0),
+      y: event.clientY - (bounds?.top ?? 0),
+      items: [{
+        label: '删除连线',
+        danger: true,
+        testId: 'context-delete-edge',
+        onClick: () => controllerRef.current.deleteEdge(edge.id),
+      }],
+    });
+  }, []);
+
+  const contextValue = useMemo(() => ({
+    controller,
+    capabilities,
+    graph,
+    resolveSourceAssetId,
+  }), [capabilities, controller, graph, resolveSourceAssetId]);
 
   return (
     <CanvasNodeContext.Provider value={contextValue}>
-      <div className="flex h-dvh w-full flex-col bg-surface" data-testid="canvas-editor">
+      <div className="flex min-h-0 w-full flex-1 flex-col bg-surface" data-testid="canvas-editor">
         <header className="sc-canvas-toolbar">
           <Link className="sc-canvas-button" href="/canvas">← 画布列表</Link>
           <span className="text-[13px] font-semibold" data-testid="canvas-name">{controller.name || '创作画布'}</span>
@@ -332,15 +526,15 @@ function EditorInner({ canvasId }: { canvasId: string }) {
             {SAVE_LABELS[controller.saveState] ?? controller.saveState}
           </span>
           <div className="ml-auto flex items-center gap-2">
-            {NODE_LABELS.map((entry) => (
+            {CANVAS_NODE_KIND_SPECS.map((spec) => (
               <button
-                key={entry.kind}
+                key={spec.kind}
                 type="button"
-                className="sc-canvas-button"
-                data-testid={`add-${entry.kind}`}
-                onClick={() => { void addAtCenter(entry.kind); }}
+                className="nodrag sc-canvas-button"
+                data-testid={`add-${spec.kind}`}
+                onClick={() => { void addAtCenter(spec.kind); }}
               >
-                + {entry.label}
+                + {spec.label}
               </button>
             ))}
             <button type="button" className="sc-canvas-button" data-testid="fit-view" onClick={fitAll}>
@@ -399,13 +593,23 @@ function EditorInner({ canvasId }: { canvasId: string }) {
         {controller.saveState === 'conflict' ? (
           <div className="sc-canvas-banner sc-canvas-banner-warning" data-testid="save-conflict">
             画布已在别处被修改，本地草稿已保留。
-            <button type="button" className="sc-canvas-button ml-2" data-testid="reload-canvas" onClick={() => { void controller.reload(); }}>
+            <button type="button" className="nodrag sc-canvas-button ml-2" data-testid="reload-canvas" onClick={() => { void controller.reload(); }}>
               重新加载
             </button>
+            <button
+              type="button"
+              className="nodrag sc-canvas-button ml-2"
+              data-testid="copy-draft-json"
+              onClick={() => {
+                const graph = buildCanvasGraph(controllerRef.current.nodes, controllerRef.current.edges);
+                void navigator.clipboard.writeText(JSON.stringify(graph, null, 2))
+                  .then(() => toasts.push('success', '本地草稿已复制到剪贴板。'))
+                  .catch(() => toasts.push('error', '复制失败：浏览器未授权剪贴板。'));
+              }}
+            >
+              复制本地草稿 JSON
+            </button>
           </div>
-        ) : null}
-        {controller.statusMessage ? (
-          <div className="sc-canvas-banner" data-testid="status-message">{controller.statusMessage}</div>
         ) : null}
 
         {controller.branchPreview ? (
@@ -441,40 +645,67 @@ function EditorInner({ canvasId }: { canvasId: string }) {
               onConnect={onConnect}
               onConnectEnd={onConnectEnd}
               onNodeDragStart={controller.onNodeDragStart}
-              onSelectionChange={({ nodes }) => controller.onSelectionChange(nodes.map((node) => node.id))}
+              onSelectionChange={onFlowSelectionChange}
               onNodeClick={onNodeClick}
+              onPaneContextMenu={onPaneContextMenu}
+              onNodeContextMenu={onNodeContextMenu}
+              onEdgeContextMenu={onEdgeContextMenu}
               deleteKeyCode={null}
               multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
+              selectionKeyCode={null}
               selectionOnDrag
-              panOnDrag={[1, 2]}
+              panOnDrag={[1]}
+              zoomOnScroll
+              panOnScroll={false}
+              zoomOnPinch
+              zoomOnDoubleClick={false}
               {...(initialViewport ? { defaultViewport: initialViewport } : {})}
               onMoveStart={onMoveStart}
               onMoveEnd={onMoveEnd}
               proOptions={{ hideAttribution: true }}
             >
-              <Background gap={16} />
+              <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--color-canvas-grid-dot)" />
               <Controls showInteractive={false} />
               <MiniMap pannable zoomable />
             </ReactFlow>
 
             {dropMenu ? (
               <div
+                ref={dropMenuRef}
                 className="sc-canvas-menu"
-                style={{ left: dropMenu.x, top: dropMenu.y }}
+                style={{ left: dropMenu.localX, top: dropMenu.localY }}
                 data-testid="connection-menu"
               >
-                {NODE_LABELS.filter((entry) => canConnectKind(graph, dropMenu.fromNodeId, entry.kind)).map((entry) => (
+                {CANVAS_NODE_KIND_SPECS.filter((spec) => canConnectKindTo(graph, dropMenu.fromNodeId, spec.kind)).map((spec) => (
                   <button
-                    key={entry.kind}
+                    key={spec.kind}
                     type="button"
-                    className="sc-canvas-menu-item"
-                    data-testid={`menu-${entry.kind}`}
-                    onClick={() => { void createFromMenu(entry.kind); }}
+                    className="nodrag sc-canvas-menu-item"
+                    data-testid={`menu-${spec.kind}`}
+                    onClick={() => { void createFromMenu(spec.kind); }}
                   >
-                    {entry.label}
+                    {spec.label}
                   </button>
                 ))}
+                {dropMenuResultAssetId ? (
+                  <button
+                    type="button"
+                    className="nodrag sc-canvas-menu-item"
+                    data-testid="menu-material-from-result"
+                    onClick={() => { void materializeResult(); }}
+                  >
+                    素材（当前结果）
+                  </button>
+                ) : null}
               </div>
+            ) : null}
+            {contextMenu ? (
+              <ContextMenu
+                x={contextMenu.x}
+                y={contextMenu.y}
+                items={contextMenu.items}
+                onClose={() => setContextMenu(null)}
+              />
             ) : null}
           </div>
 
@@ -487,38 +718,12 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   );
 }
 
-function canConnectKind(graph: CanvasGraph, fromNodeId: string, kind: CanvasNodeKind): boolean {
-  const edge = { id: 'probe', source: fromNodeId, target: 'probe-target' };
-  const source = graph.nodes.find((node) => node.id === fromNodeId);
-  const probeNode = {
-    id: 'probe-target',
-    kind,
-    position: { x: 0, y: 0 },
-    data: probeDataFor(kind),
-  } as unknown as CanvasGraph['nodes'][number];
-  const probeGraph: CanvasGraph = { ...graph, nodes: [...graph.nodes, probeNode] };
-  if (!source) return true;
-  return checkCanvasConnection(probeGraph, edge).ok;
-}
-
-function probeDataFor(kind: CanvasNodeKind) {
-  if (kind === 'material') return { title: '', assetId: null, mediaKind: 'image' };
-  if (kind === 'prompt') return { title: '', text: '' };
-  return {
-    title: '',
-    modelKey: null,
-    generationMode: kind === 'image-generation' ? 'image-to-image' : 'image-to-video',
-    prompt: '',
-    parameters: {},
-    references: [],
-    referenceLabelCounter: 0,
-  };
-}
-
 export function CanvasEditor({ canvasId }: { canvasId: string }) {
   return (
     <ReactFlowProvider>
-      <EditorInner canvasId={canvasId} />
+      <CanvasToastProvider>
+        <EditorInner canvasId={canvasId} />
+      </CanvasToastProvider>
     </ReactFlowProvider>
   );
 }

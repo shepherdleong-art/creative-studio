@@ -37,6 +37,10 @@ try {
     supported: true,
     protocol: 'ark-content-roles',
   });
+  assert.deepEqual(jimengAdapter.tailFrameCapability?.('doubao-seedance-2-5-260628'), {
+    supported: true,
+    protocol: 'ark-content-roles',
+  });
   assert.deepEqual(jimengAdapter.tailFrameCapability?.('doubao-seedance-2-0-260128-fast'), {
     supported: false,
     reason: 'unsupported_model',
@@ -172,6 +176,91 @@ try {
   assert.equal(capturedBody?.resolution, '1080p');
   assert.equal(capturedBody?.duration, 8);
   assert.equal('camera_fixed' in (capturedBody ?? {}), false, '2.0 系列不发送 camera_fixed');
+  assert.equal('omni_reference_task_type' in (capturedBody ?? {}), false, '2.0 不认识 omni_reference_task_type，不得发送');
+
+  // 2.5 参考生成：时长上限 30 秒（20 秒原样透传），显式引导为纯参考子任务
+  const reference25Result = await jimengAdapter.submitReference?.(
+    {
+      model: 'doubao-seedance-2-5-260628',
+      prompt: '用参考视频的运镜，把参考图里的沙发放进画面',
+      references: [
+        { kind: 'image', url: 'https://cos.example.com/ref.png?sign=1', mimeType: 'image/png' },
+        { kind: 'video', url: 'https://cos.example.com/ref.mp4?sign=2', mimeType: 'video/mp4', durationSec: 20 },
+      ],
+      durationSec: 20,
+      aspectRatio: '21:9',
+    },
+    'ark-key',
+    'https://ark.cn-beijing.volces.com/api/v3',
+  );
+
+  assert.equal(reference25Result?.providerTaskId, 'task-1');
+  assert.equal(capturedBody?.model, 'doubao-seedance-2-5-260628');
+  assert.equal(capturedBody?.duration, 20, '2.5 的 20 秒时长原样透传，不被 2.0 的 15 秒钳住');
+  assert.equal(capturedBody?.ratio, '21:9');
+  assert.equal(capturedBody?.omni_reference_task_type, 'reference', '2.5 全模态参考显式引导为纯参考子任务');
+  assert.equal('camera_fixed' in (capturedBody ?? {}), false, '2.5 同属 2.x 家族，不发送 camera_fixed');
+
+  // 2.5 智能编辑：omni=edit、duration=-1 透传不钳制、ratio=adaptive
+  const edit25Result = await jimengAdapter.submitReference?.(
+    {
+      model: 'doubao-seedance-2-5-260628',
+      prompt: '把 @视频1 里的沙 发替换成参考图里的款式',
+      references: [
+        { kind: 'video', url: 'https://cos.example.com/src.mp4?sign=1', mimeType: 'video/mp4', durationSec: 8 },
+        { kind: 'image', url: 'https://cos.example.com/sofa.png?sign=2', mimeType: 'image/png' },
+      ],
+      durationSec: -1,
+      aspectRatio: 'adaptive',
+      omniReferenceTaskType: 'edit',
+    },
+    'ark-key',
+    'https://ark.cn-beijing.volces.com/api/v3',
+  );
+
+  assert.equal(edit25Result?.providerTaskId, 'task-1');
+  assert.equal(capturedBody?.omni_reference_task_type, 'edit', '智能编辑显式引导为 edit 子任务');
+  assert.equal(capturedBody?.duration, -1, '编辑子任务锁定时长 -1，原样透传不被钳制');
+  assert.equal(capturedBody?.ratio, 'adaptive', '编辑子任务比例锁 adaptive');
+
+  // 2.5 超长视频：omni=extend、duration 显式透传
+  const extend25Result = await jimengAdapter.submitReference?.(
+    {
+      model: 'doubao-seedance-2-5-260628',
+      prompt: '向后延长 @视频1，镜头继续向前推进',
+      references: [
+        { kind: 'video', url: 'https://cos.example.com/src.mp4?sign=1', mimeType: 'video/mp4', durationSec: 6 },
+      ],
+      durationSec: 12,
+      aspectRatio: 'adaptive',
+      omniReferenceTaskType: 'extend',
+    },
+    'ark-key',
+    'https://ark.cn-beijing.volces.com/api/v3',
+  );
+
+  assert.equal(extend25Result?.providerTaskId, 'task-1');
+  assert.equal(capturedBody?.omni_reference_task_type, 'extend', '超长视频显式引导为 extend 子任务');
+  assert.equal(capturedBody?.duration, 12, '延长子任务的显式时长原样透传');
+  assert.equal(capturedBody?.ratio, 'adaptive', '延长子任务比例锁 adaptive');
+
+  // 2.0 即使调用方给了 omniReferenceTaskType 也绝不发送（2.0 不认识该字段）
+  await jimengAdapter.submitReference?.(
+    {
+      model: 'doubao-seedance-2-0-260128',
+      prompt: '用参考视频的运镜',
+      references: [
+        { kind: 'video', url: 'https://cos.example.com/ref.mp4?sign=2', mimeType: 'video/mp4', durationSec: 4 },
+      ],
+      durationSec: 5,
+      aspectRatio: '16:9',
+      omniReferenceTaskType: 'edit',
+    },
+    'ark-key',
+    'https://ark.cn-beijing.volces.com/api/v3',
+  );
+  assert.equal('omni_reference_task_type' in (capturedBody ?? {}), false, '2.0 绝不发送 omni_reference_task_type');
+  assert.equal(capturedBody?.duration, 5, '2.0 的时长仍按 2.0 上限钳制');
 } finally {
   globalThis.fetch = originalFetch;
   fs.rmSync(tmpDir, { recursive: true, force: true });

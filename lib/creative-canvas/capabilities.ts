@@ -42,7 +42,7 @@ export interface CanvasInputRule {
   mimeTypes?: ReadonlyArray<string>;
   /** 模型级更严的单文件字节上限。 */
   maxBytes?: number;
-  /** 模型级更严的时长上限（秒）；null 表示该模型不限制时长。 */
+  /** 模型级时长上限（秒）：覆盖交付层默认值（可严可宽，需有官方依据）；null 表示该模型不限制时长。 */
   maxDurationSec?: number | null;
 }
 
@@ -63,6 +63,12 @@ export interface CanvasModelCapability {
   evidence: CanvasCapabilityEvidence;
   /** 证据来源或未验证边界说明；界面与执行记录引用这一行。 */
   evidenceNote: string;
+  /** 跨类型最小素材数：当前模式下非 text 输入合计至少 N 份（单规则 min 表达不了「图/视频/音频混搭 ≥1」）。 */
+  mediaInputMinimums?: ReadonlyArray<{ modes: ReadonlyArray<CanvasGenerationMode>; min: number }>;
+  /** 按模型覆盖界面模式名（缺省用全局文案）。 */
+  modeLabels?: Partial<Record<CanvasGenerationMode, string>>;
+  /** 按模型覆盖界面模式提示（缺省用全局提示）。 */
+  modeHints?: Partial<Record<CanvasGenerationMode, string>>;
 }
 
 export interface CanvasCapabilityInputRef {
@@ -173,6 +179,7 @@ export function validateCapabilityInputs(params: {
   }
 
   const matchedRules = new Map<CanvasInputRule, number>();
+  let matchedMediaCount = 0;
   for (const ref of refs) {
     const rule = ruleFor(capability, ref, mode);
     if (!rule) {
@@ -190,6 +197,7 @@ export function validateCapabilityInputs(params: {
       continue;
     }
     matchedRules.set(rule, (matchedRules.get(rule) ?? 0) + 1);
+    if (normalizeInputKind(ref.kind) !== 'text') matchedMediaCount += 1;
   }
 
   for (const rule of capability.inputs) {
@@ -204,6 +212,17 @@ export function validateCapabilityInputs(params: {
       problems.push({
         code: 'input_count_above_maximum',
         message: `${capability.displayName} 最多接受 ${rule.max} 份${rule.kind === 'text' ? '文本' : '媒体'}输入。`,
+      });
+    }
+  }
+
+  // 跨类型最小素材数（「图／视频／音频混搭至少 1 份」这类约束，单规则 min 表达不了）
+  for (const minimum of capability.mediaInputMinimums ?? []) {
+    if (!minimum.modes.includes(mode)) continue;
+    if (matchedMediaCount < minimum.min) {
+      problems.push({
+        code: 'input_count_below_minimum',
+        message: `${capability.displayName} 至少需要 ${minimum.min} 份参考素材（图／视频／音频可混搭）。`,
       });
     }
   }
