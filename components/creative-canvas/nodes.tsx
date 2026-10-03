@@ -22,6 +22,7 @@ import type { CanvasFlowNode, CanvasEditorController } from './editor-store';
 import { useNodeRuntime } from './runtime-store';
 import { CanvasNodeContext } from './node-context';
 import { useNodeTextField } from './use-node-text-field';
+import { DraftActions } from './DraftActions';
 import { AssetLightbox } from './AssetLightbox';
 import { pauseAllMediaExcept, registerMedia, unregisterMedia } from './media-registry';
 
@@ -399,6 +400,7 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
           </a>
         ) : null}
       </div>
+      {mediaKind === 'video' && assetId ? <DraftActions assetId={assetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
       <input
         ref={inputRef}
         type="file"
@@ -566,6 +568,7 @@ export const GenerationNode = memo(function GenerationNode({
   const mediaKind = type === 'video-generation' ? 'video' : 'image';
   const available = capabilities.filter((capability) => capability.mediaKind === mediaKind);
   const capability = available.find((candidate) => candidate.key === data.modelKey) ?? null;
+  const [modelChangeNote, setModelChangeNote] = useState('');
 
   const references = useMemo(() => data.references ?? [], [data.references]);
   const mentionIssues = useMemo(() => {
@@ -692,7 +695,7 @@ export const GenerationNode = memo(function GenerationNode({
     }
   }, [mention, filteredMentionOptions, activeMentionIndex, pickMention, setMention, setMentionIndex]);
 
-  const modeOptions = capability?.modes ?? (mediaKind === 'video'
+  const modeOptions = capability?.modes.filter((mode) => !capability.legacyModes?.includes(mode) || mode === data.generationMode) ?? (mediaKind === 'video'
     ? ['text-to-video', 'image-to-video']
     : ['text-to-image', 'image-to-image']);
   const currentMode = (data.generationMode ?? modeOptions[0]) as CanvasGenerationMode;
@@ -722,7 +725,42 @@ export const GenerationNode = memo(function GenerationNode({
         className="nodrag sc-canvas-select w-full"
         value={data.modelKey ?? ''}
         data-testid="model-select"
-        onChange={(event) => controller.updateNodeData(id, { modelKey: event.target.value || null })}
+        onChange={(event) => {
+          const next = available.find((candidate) => candidate.key === event.target.value);
+          const parameters: Record<string, string | number | boolean> = {};
+          const changes: string[] = [];
+          for (const parameter of next?.parameters ?? []) {
+            const old = data.parameters?.[parameter.key];
+            if (old === undefined) continue;
+            const invalid = (parameter.options && !parameter.options.includes(String(old)))
+              || (typeof old === 'number' && !parameter.specialValues?.includes(old) && ((parameter.min !== undefined && old < parameter.min) || (parameter.max !== undefined && old > parameter.max)));
+            if (invalid) {
+              if (parameter.default !== undefined) parameters[parameter.key] = parameter.default;
+              const label = parameter.default === 'gateway-default' ? '网关默认（待验证）' : String(parameter.default ?? '默认');
+              changes.push(`${parameter.label}调整为 ${label}`);
+            }
+            else parameters[parameter.key] = old;
+          }
+          if (!data.modelKey && next?.parameters.some((parameter) => parameter.key === 'withAudio')) parameters.withAudio = true;
+          if (data.parameters?.generationStage === 'draft' && next && !next.parameters.some((parameter) => parameter.key === 'generationStage')) {
+            const resolution = next.parameters.find((parameter) => parameter.key === 'resolution');
+            const previous = String(data.parameters.directResolution ?? '');
+            if (resolution) parameters.resolution = resolution.options?.includes(previous) ? previous : resolution.default ?? '1080p';
+            changes.push('当前模型不支持样片，已切换为直接生成');
+          }
+          let generationMode = data.generationMode;
+          if (next && !next.modes.includes(currentMode) && data.parameters?.generationStage !== 'final-from-draft') {
+            generationMode = next.modes.find((mode) => !next.legacyModes?.includes(mode));
+            if (generationMode) changes.push(`模式调整为 ${next.modeLabels?.[generationMode] ?? MODE_LABELS[generationMode] ?? generationMode}，请检查参考素材`);
+          }
+          // A bound final retains its source so a channel switch cannot silently become an ordinary generation.
+          if (data.parameters?.generationStage === 'final-from-draft') {
+            parameters.generationStage = 'final-from-draft'; parameters.draftAssetId = String(data.parameters.draftAssetId ?? '');
+            changes.push('固定样片只可在原模型和渠道转正式');
+          }
+          setModelChangeNote(changes.join('；'));
+          controller.updateNodeData(id, { modelKey: event.target.value || null, parameters, generationMode });
+        }}
       >
         <option value="">未选择</option>
         {available.map((candidate) => (
@@ -733,6 +771,7 @@ export const GenerationNode = memo(function GenerationNode({
         ))}
       </select>
 
+      {modelChangeNote ? <div role="status" className="mt-1 text-[11px] text-ink-secondary">{modelChangeNote}</div> : null}
       {capability ? (
         <div className="mt-1 text-[10px] text-ink-tertiary" data-testid="capability-evidence">
           {capability.evidence === 'verified'
@@ -743,11 +782,30 @@ export const GenerationNode = memo(function GenerationNode({
         </div>
       ) : null}
 
+      {capability?.parameters.some((parameter) => parameter.key === 'generationStage') ? <>
+        <label className="mt-2 block text-[11px] text-ink-secondary">生成阶段</label>
+        <select className="nodrag sc-canvas-select w-full" aria-label="生成阶段" value={String(data.parameters?.generationStage ?? 'direct')}
+          onChange={(event) => {
+            const previous = data.parameters?.generationStage ?? 'direct';
+            const next = event.target.value;
+            const parameters: Record<string, string | number | boolean> = { ...(data.parameters ?? {}), generationStage: next };
+            if (previous === 'direct') parameters.directResolution = String(data.parameters?.resolution ?? '1080p');
+            parameters.resolution = next === 'draft' ? '480p' : String(data.parameters?.directResolution ?? '1080p');
+            delete parameters.draftAssetId;
+            controller.updateNodeData(id, { parameters });
+          }}>
+          <option value="direct">直接生成正式视频</option><option value="draft">先生成样片 · 480p</option>
+          {data.parameters?.generationStage === 'final-from-draft' ? <option value="final-from-draft">基于选中样片转正式 · 1080p</option> : null}
+        </select>
+        {data.parameters?.generationStage === 'final-from-draft' ? <DraftActions bound assetId={String(data.parameters.draftAssetId ?? '')} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
+      </> : null}
+      {runtime?.currentAssetId ? <DraftActions assetId={runtime.currentAssetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
       <label className="mt-2 block text-[11px] text-ink-secondary">模式</label>
       <select
         className="nodrag sc-canvas-select w-full"
         value={currentMode}
         data-testid="mode-select"
+        disabled={data.parameters?.generationStage === 'final-from-draft'}
         onChange={(event) => {
           const nextMode = event.target.value as CanvasGenerationMode;
           // 切模式时清掉新模式不接受的参数键（界面同步隐藏，残留值也不进计划）
@@ -770,6 +828,13 @@ export const GenerationNode = memo(function GenerationNode({
         ))}
       </select>
 
+      {capability?.legacyModes?.includes(currentMode) ? (
+        <button type="button" className="nodrag sc-canvas-button mt-1" onClick={(event) => {
+          event.currentTarget.blur();
+          controller.updateNodeData(id, { generationMode: 'reference-to-video' });
+        }}>转换为全能参考（保留素材与提示词）</button>
+      ) : null}
+
       {modeHint ? (
         <div className="mt-1 text-[10px] text-ink-tertiary" data-testid="mode-hint">
           {modeHint}
@@ -779,6 +844,8 @@ export const GenerationNode = memo(function GenerationNode({
       {capability && capability.parameters.length > 0 ? (
         <div className="mt-2 space-y-1">
           {capability.parameters
+            .filter((parameter) => !['generationStage', 'draftAssetId', 'directResolution'].includes(parameter.key))
+            .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', 'outputFormat', 'watermark', 'returnLastFrame'].includes(parameter.key))
             .filter((parameter) => !parameter.modes || parameter.modes.includes(currentMode))
             .map((parameter) => (
             <div key={parameter.key} className="flex items-center gap-2">
@@ -786,15 +853,26 @@ export const GenerationNode = memo(function GenerationNode({
               {parameter.type === 'enum' ? (
                 <select
                   className="nodrag sc-canvas-select flex-1"
-                  value={String(data.parameters?.[parameter.key] ?? parameter.default ?? '')}
+                  disabled={parameter.key === 'resolution' && ['draft', 'final-from-draft'].includes(String(data.parameters?.generationStage))}
+                  value={String(parameter.key === 'resolution' && data.parameters?.generationStage === 'draft' ? '480p' : data.parameters?.[parameter.key] ?? parameter.default ?? '')}
                   aria-label={parameter.label}
                   onChange={(event) => controller.updateNodeData(id, {
                     parameters: { ...(data.parameters ?? {}), [parameter.key]: event.target.value },
                   })}
                 >
                   {(parameter.options ?? []).map((option) => (
-                    <option key={option} value={option}>{option}</option>
+                    <option key={option} value={option}>{option === 'gateway-default' ? '网关默认（待验证）' : option === 'adaptive' ? '自动' : option === '4k' ? '4K' : option}</option>
                   ))}
+                </select>
+              ) : parameter.specialValues?.includes(-1) ? (
+                <select className="nodrag sc-canvas-select flex-1" aria-label={parameter.label}
+                  value={Number(data.parameters?.[parameter.key] ?? parameter.default ?? 5)}
+                  onChange={(event) => controller.updateNodeData(id, {
+                    parameters: { ...(data.parameters ?? {}), [parameter.key]: Number(event.target.value) },
+                  })}>
+                  <option value={-1}>自动</option>
+                  {Array.from({ length: (parameter.max ?? 15) - (parameter.min ?? 4) + 1 }, (_, index) => (parameter.min ?? 4) + index)
+                    .map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
                 </select>
               ) : parameter.type === 'boolean' ? (
                 <input
@@ -846,6 +924,7 @@ export const GenerationNode = memo(function GenerationNode({
       <div className="relative">
         <textarea
           ref={promptRef}
+          disabled={data.parameters?.generationStage === 'final-from-draft'}
           className="nodrag sc-canvas-input mt-2 h-20 w-full resize-none bg-transparent text-[12px] outline-none"
           placeholder="提示词，输入 @ 选择素材"
           {...promptIme}

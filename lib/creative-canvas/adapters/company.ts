@@ -1,3 +1,4 @@
+import { videoDurationError, isGatewaySeedance2Model } from '../../video-duration.ts';
 /**
  * 公司执行器的画布适配器（技术约定 C6）。
  *
@@ -20,6 +21,7 @@ import {
   COMPANY_CANVAS_QINIUYUN_KLING_CAPABILITY,
   companyCanvasModelRequiresCos,
   companyCanvasSupportsTailFrame,
+  companySeedanceResolutionOptions,
 } from './company-capabilities.ts';
 import { resolveCompanyCanvasRoute, type CanvasProviderRoute } from './company-providers.ts';
 import { precheckCanvasDeliveryMedia, type CanvasMediaDeliverer } from './media-delivery.ts';
@@ -296,6 +298,13 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         const isSeedance = companyModel && capability.modelAlias.startsWith('doubao-seedance');
         const companyCaps = companyModel ? companyVideoCapsForModel(capability.modelAlias) : null;
         const durationSec = Number(context.parameters.durationSec ?? 5);
+        if (isGatewaySeedance2Model('openai-video', capability.modelAlias)) {
+          const problem = videoDurationError('openai-video', capability.modelAlias, durationSec);
+          if (problem) throw new CanvasAdapterError('prepare', problem, { code: 'invalid_duration' });
+          const resolutions = companySeedanceResolutionOptions(capability.modelAlias);
+          if (context.parameters.resolution !== undefined && !resolutions.includes(String(context.parameters.resolution))) throw new CanvasAdapterError('prepare', '公司渠道尚未验证该分辨率', { code: 'invalid_resolution' });
+        }
+
         if (!Number.isInteger(durationSec)) {
           throw new CanvasAdapterError('submit', '视频时长必须是整数秒，任务未提交。', { code: 'invalid_duration' });
         }

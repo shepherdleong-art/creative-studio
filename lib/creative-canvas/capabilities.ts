@@ -22,6 +22,7 @@ export interface CanvasCapabilityParameter {
   label: string;
   type: CanvasCapabilityParameterType;
   options?: ReadonlyArray<string>;
+  specialValues?: ReadonlyArray<number>;
   min?: number;
   max?: number;
   default?: string | number | boolean;
@@ -57,6 +58,7 @@ export interface CanvasModelCapability {
   modelAlias: string;
   mediaKind: Exclude<CanvasMediaKind, 'audio'>;
   modes: ReadonlyArray<CanvasGenerationMode>;
+  legacyModes?: ReadonlyArray<CanvasGenerationMode>;
   inputs: ReadonlyArray<CanvasInputRule>;
   parameters: ReadonlyArray<CanvasCapabilityParameter>;
   cancellation: boolean;
@@ -64,7 +66,7 @@ export interface CanvasModelCapability {
   /** 证据来源或未验证边界说明；界面与执行记录引用这一行。 */
   evidenceNote: string;
   /** 跨类型最小素材数：当前模式下非 text 输入合计至少 N 份（单规则 min 表达不了「图/视频/音频混搭 ≥1」）。 */
-  mediaInputMinimums?: ReadonlyArray<{ modes: ReadonlyArray<CanvasGenerationMode>; min: number }>;
+  mediaInputMinimums?: ReadonlyArray<{ modes: ReadonlyArray<CanvasGenerationMode>; min: number; kinds?: ReadonlyArray<'image' | 'video' | 'audio'> }>;
   /** 按模型覆盖界面模式名（缺省用全局文案）。 */
   modeLabels?: Partial<Record<CanvasGenerationMode, string>>;
   /** 按模型覆盖界面模式提示（缺省用全局提示）。 */
@@ -219,7 +221,8 @@ export function validateCapabilityInputs(params: {
   // 跨类型最小素材数（「图／视频／音频混搭至少 1 份」这类约束，单规则 min 表达不了）
   for (const minimum of capability.mediaInputMinimums ?? []) {
     if (!minimum.modes.includes(mode)) continue;
-    if (matchedMediaCount < minimum.min) {
+    const count = minimum.kinds ? refs.filter((ref) => minimum.kinds!.includes(ref.kind as 'image' | 'video' | 'audio')).length : matchedMediaCount;
+    if (count < minimum.min) {
       problems.push({
         code: 'input_count_below_minimum',
         message: `${capability.displayName} 至少需要 ${minimum.min} 份参考素材（图／视频／音频可混搭）。`,
@@ -268,7 +271,7 @@ export function validateCapabilityInputs(params: {
           parameterKey: key,
         });
       }
-      if (parameter.type === 'boolean' && typeof value !== 'boolean') {
+      if ((parameter.type === 'string' && typeof value !== 'string') || (parameter.type === 'boolean' && typeof value !== 'boolean')) {
         problems.push({
           code: 'parameter_value_invalid',
           message: `参数 ${key} 需要布尔值。`,
@@ -277,6 +280,7 @@ export function validateCapabilityInputs(params: {
       }
       if (
         typeof value === 'number'
+        && !parameter.specialValues?.includes(value)
         && ((parameter.min !== undefined && value < parameter.min)
           || (parameter.max !== undefined && value > parameter.max))
       ) {

@@ -1,3 +1,6 @@
+import { assertDraftSourceMatches, canvasVideoMetadataForAsset, generationStage, requireCanvasDraftSource, sanitizeVideoMetadata } from '../video-metadata.ts';
+import { precheckSeedanceMedia } from './seedance-media.ts';
+import { SEEDANCE_25, SeedanceRequestError } from '../../video-providers/seedance-contract.ts';
 /**
  * 外部（非公司）供应商的画布适配器。
  *
@@ -12,6 +15,7 @@
  */
 
 import fs from 'node:fs';
+import sharp from 'sharp';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { resolveGptImage2Size } from '../../gpt-image-2-size-presets.ts';
@@ -51,7 +55,7 @@ const REFERENCE_MODES: ReadonlyArray<CanvasGenerationMode> = [
 /** 方舟 2.0 系列的参考素材约束：视频／音频每段 2–15 秒，各类总时长不超过 15 秒。 */
 const ARK_REFERENCE_SEGMENT_MIN_SEC = 2;
 const ARK_REFERENCE_KIND_TOTAL_MAX_SEC = 15;
-/** 方舟 2.5 系列：官方建议单个参考素材 4–30 秒；参考数量上限由能力表控制，不再设分类总时长。 */
+/** 方舟 2.5 系列：单段通常 2–30 秒，编辑视频 4–30 秒，各类总时长不超过 30 秒。 */
 const ARK_2_5_REFERENCE_SEGMENT_MAX_SEC = 30;
 /** ffprobe 对「2 秒」素材可能报 1.98，留一点余量，避免把合规素材判成过短。 */
 const REFERENCE_DURATION_TOLERANCE_SEC = 0.25;
@@ -63,7 +67,7 @@ function isReferenceMode(mode: CanvasGenerationMode): boolean {
 /** 参考素材的时长约束按模型代际区分（2.0 与 2.5 的单段上限不同）。 */
 function referenceDurationLimits(modelAlias: string): { segmentMaxSec: number; kindTotalMaxSec: number | null } {
   if (/seedance-2-5[-.]/.test(modelAlias)) {
-    return { segmentMaxSec: ARK_2_5_REFERENCE_SEGMENT_MAX_SEC, kindTotalMaxSec: null };
+    return { segmentMaxSec: ARK_2_5_REFERENCE_SEGMENT_MAX_SEC, kindTotalMaxSec: ARK_2_5_REFERENCE_SEGMENT_MAX_SEC };
   }
   return { segmentMaxSec: ARK_REFERENCE_KIND_TOTAL_MAX_SEC, kindTotalMaxSec: ARK_REFERENCE_KIND_TOTAL_MAX_SEC };
 }
@@ -86,8 +90,9 @@ function inputRuleFor(
 }
 
 /** 参考素材组合校验（方舟规则）：音频必须与图或视频同时出现；分段与分类总时长有上限（按模型代际与模式）。 */
-function referenceCombinationProblems(
-  inputs: CanvasResolvedInput[],
+type ReferenceDurationInput = Pick<CanvasResolvedInput, 'kind' | 'durationSec' | 'refId'>;
+export function referenceCombinationProblems(
+  inputs: ReadonlyArray<ReferenceDurationInput>,
   modelAlias: string,
   mode: CanvasGenerationMode,
 ): string[] {
@@ -97,17 +102,20 @@ function referenceCombinationProblems(
   const videos = inputs.filter((input) => input.kind === 'video');
   const audios = inputs.filter((input) => input.kind === 'audio');
   const hasVisual = inputs.some((input) => input.kind === 'image' || input.kind === 'video');
-  if (audios.length > 0 && !hasVisual) {
+  if (audios.length > 0 && !hasVisual && modelAlias !== SEEDANCE_25) {
     problems.push('参考音频必须与参考图或参考视频同时出现');
   }
-  const groups: Array<{ label: string; items: CanvasResolvedInput[]; segmentMinSec: number }> = [
+  const groups: Array<{ label: string; items: ReferenceDurationInput[]; segmentMinSec: number }> = [
     { label: '视频', items: videos, segmentMinSec: videoSegmentMinSec },
     { label: '音频', items: audios, segmentMinSec: ARK_REFERENCE_SEGMENT_MIN_SEC },
   ];
   for (const group of groups) {
     for (const input of group.items) {
       const duration = input.durationSec;
-      if (duration === null) continue;
+      if (duration === null || !Number.isFinite(duration) || duration <= 0) {
+        problems.push(`参考${group.label} @${input.refId} 缺少有效时长，必须先完成媒体探测`);
+        continue;
+      }
       if (duration + REFERENCE_DURATION_TOLERANCE_SEC < group.segmentMinSec) {
         problems.push(`参考${group.label} @${input.refId} 时长 ${duration.toFixed(1)}s 短于 ${group.segmentMinSec}s 下限`);
       }
@@ -127,11 +135,11 @@ function referenceCombinationProblems(
 /** 方舟 2.5 omni 子任务的提示词意图前置校验：配置与子任务不一致会在上游异步失败，这里提前拦下。 */
 const OMNI_PROMPT_KEYWORDS: Record<string, { pattern: RegExp; examples: string }> = {
   'video-edit': {
-    pattern: /编辑|修改|替换|改成|改為|删除|删掉|去掉|移除|增加|添加|加上|换上|edit|remove|delete|replace|add|change/i,
+    pattern: /编辑|修改|替换|改成|改為|改为|换成|变成|删除|删掉|去掉|去除|抹除|清除|移除|增加|添加|加上|换上|edit|remove|delete|replace|add|change/i,
     examples: '替换／删除／增加／修改',
   },
   'video-extend': {
-    pattern: /延长|延续|续写|向前|向后|extend|continue/i,
+    pattern: /延长|延续|续写|向前|向后|继续|接着|续接|补全|过渡|extend|continue/i,
     examples: '向前延长／向后延长／续写',
   },
 };
@@ -255,11 +263,12 @@ async function decodeImageResponse(response: Response, apiKey: string): Promise<
 }
 
 function isHttpClientRejection(error: unknown): boolean {
-  return /^(?:Jimeng(?: text-to-video| reference-to-video)?|Kling|Video gateway) submit error 4\d\d:/i
+  return /^(?:Jimeng(?: text-to-video| reference-to-video| final-from-draft)?|Kling|Video gateway) submit error 4\d\d:/i
     .test(error instanceof Error ? error.message : String(error));
 }
 
 function submitError(stage: 'submit', message: string, error: unknown, signal?: AbortSignal): CanvasAdapterError {
+  if (error instanceof SeedanceRequestError) return new CanvasAdapterError('prepare', error.message, { code: 'seedance_request_invalid' });
   if (signal?.aborted && !isHttpClientRejection(error)) {
     return new CanvasAdapterError(stage, '提交被中止，生成请求结果不明。', {
       uncertain: true,
@@ -298,6 +307,14 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
     kind: 'external',
 
     async prepare(context, signal) {
+      if (generationStage(context.parameters) === 'final-from-draft') {
+        try {
+          const source = requireCanvasDraftSource(db, context.task.canvasId, String(context.parameters.draftAssetId ?? ''));
+          assertDraftSourceMatches(source, context.modelAlias, context.providerIdentity);
+        } catch (error) { throw new CanvasAdapterError('prepare', (error as Error).message, { code: 'draft_source_invalid' }); }
+        return;
+      }
+
       const capability = capabilityFor(context.capabilityKey);
       routeFor(context);
       const referenceMode = isReferenceMode(context.generationMode);
@@ -317,6 +334,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             code: 'input_file_missing',
           });
         }
+        if (context.mediaKind === 'video') await precheckSeedanceMedia(input, context.modelAlias);
         const problems = precheckCanvasDeliveryMedia({
           kind: input.kind as 'image' | 'video' | 'audio',
           mimeType: input.mimeType,
@@ -384,7 +402,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
             { code: 'reference_combination_invalid' },
           );
         }
-        const promptProblems = omniPromptProblems(context.prompt, context.generationMode);
+        const promptProblems = context.modelAlias === SEEDANCE_25 ? omniPromptProblems(context.prompt, context.generationMode) : [];
         if (promptProblems.length > 0) {
           throw new CanvasAdapterError(
             'prepare',
@@ -399,6 +417,31 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       const capability = capabilityFor(context.capabilityKey);
       const route = routeFor(context);
       const imageInputs = imageInputsOf(context);
+      if (generationStage(context.parameters) === 'final-from-draft') {
+        const adapter = getVideoAdapter(route.type);
+        if (!adapter?.submitFinal) throw new CanvasAdapterError('prepare', '该渠道未验证样片转正式', { code: 'draft_channel_unverified' });
+        let source;
+        try {
+          source = requireCanvasDraftSource(db, context.task.canvasId, String(context.parameters.draftAssetId ?? ''));
+          assertDraftSourceMatches(source, context.modelAlias, context.providerIdentity);
+          // Revalidate remote availability using the current credentials/route immediately before POST.
+          const remote = await adapter.poll(source.providerTaskId, route.apiKey, route.baseUrl, signal);
+          const raw = remote.rawResponse as { model?: string; draft?: boolean; created_at?: number };
+          if (remote.status !== 'succeeded' || raw.model !== source.model || raw.draft !== true
+            || Number(raw.created_at) * 1000 !== Date.parse(source.remoteCreatedAt)) throw new Error('供应商样片身份或状态无法确认，请重新生成样片');
+          assertDraftSourceMatches({ ...source, expired: Date.parse(source.expiresAt) <= Date.now() }, context.modelAlias, context.providerIdentity);
+        } catch (error) { throw new CanvasAdapterError('prepare', sanitizeGatewayMediaDiagnostic((error as Error).message, route.apiKey), { code: 'draft_source_invalid' }); }
+        try {
+          const submitted = await adapter.submitFinal({
+            model: source.model, draftTaskId: source.providerTaskId,
+            outputFormat: context.parameters.outputFormat === 'mov' ? 'mov' : 'mp4',
+            watermark: context.parameters.watermark === true, returnLastFrame: context.parameters.returnLastFrame === true,
+          }, route.apiKey, route.baseUrl, signal);
+          if (!submitted.providerTaskId) throw new CanvasAdapterError('submit', '供应商未返回任务 ID', { uncertain: true });
+          return { providerTaskId: submitted.providerTaskId };
+        } catch (error) { throw submitError('submit', '样片转正式提交失败，结果不明。', error, signal); }
+      }
+
 
       if (capability.mediaKind === 'image') {
         if (signal?.aborted) {
@@ -479,6 +522,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
         try {
           submitted = await adapter.submitText({
             model: capability.modelAlias,
+            ...videoOutputOptions(context),
             prompt: context.prompt,
             durationSec: Number(context.parameters.durationSec ?? 5),
             ...(context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
@@ -517,15 +561,16 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           : context.generationMode === 'video-extend'
             ? 'extend' as const
             : 'reference' as const;
-        const locksAdaptiveRatio = context.generationMode === 'video-edit' || context.generationMode === 'video-extend';
+        const locksAdaptiveRatio = context.modelAlias === SEEDANCE_25 && (context.generationMode === 'video-edit' || context.generationMode === 'video-extend');
         if (signal?.aborted) throw new CanvasAdapterError('submit', '提交在生成请求前已中止，任务未提交。', { code: 'submit_aborted' });
         let submitted;
         try {
           submitted = await adapter.submitReference({
             model: capability.modelAlias,
+            ...videoOutputOptions(context),
             prompt: context.prompt,
             references,
-            durationSec: context.generationMode === 'video-edit' ? -1 : Number(context.parameters.durationSec ?? 5),
+            durationSec: context.modelAlias === SEEDANCE_25 && context.generationMode === 'video-edit' ? -1 : Number(context.parameters.durationSec ?? 5),
             ...(locksAdaptiveRatio
               ? { aspectRatio: 'adaptive' }
               : context.parameters.aspectRatio ? { aspectRatio: String(context.parameters.aspectRatio) } : {}),
@@ -564,6 +609,7 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
       }
       const request: SubmitVideoRequest = {
         model: capability.modelAlias,
+        ...videoOutputOptions(context),
         prompt: context.prompt,
         sourceImagePath: firstFrame.absolutePath,
         sourceMimeType: firstFrame.mimeType as SubmitVideoRequest['sourceMimeType'],
@@ -674,7 +720,34 @@ export function createExternalCanvasAdapter(options: ExternalCanvasAdapterOption
           { code: 'external_download_failed' },
         );
       }
-      return { bytes: downloaded.buffer, mimeType: 'video/mp4' };
+      let tailFrame: { bytes: Buffer; mimeType: string } | undefined;
+      const tailUrl = (polled.rawResponse as { content?: { last_frame_url?: string } } | null)?.content?.last_frame_url;
+      if (context.parameters.returnLastFrame === true && tailUrl) {
+        const tail = await downloadGatewayMedia(tailUrl, route.baseUrl, route.apiKey);
+        if (!tail.ok) throw new CanvasAdapterError('download', '返回尾帧下载失败，可重试下载', { code: 'tail_download_failed' });
+        const format = (await sharp(tail.buffer).metadata()).format;
+        tailFrame = { bytes: tail.buffer, mimeType: format === 'png' ? 'image/png' : format === 'webp' ? 'image/webp' : 'image/jpeg' };
+      }
+      const outputFormat = (polled.rawResponse as { output_format?: string } | null)?.output_format ?? context.parameters.outputFormat;
+      const brand = downloaded.buffer.subarray(8, 12).toString('latin1');
+      const mimeType = brand === 'qt  ' ? 'video/quicktime' : ['isom', 'iso2', 'mp41', 'mp42', 'avc1'].includes(brand) ? 'video/mp4' : outputFormat === 'mov' ? 'video/quicktime' : 'video/mp4';
+      const videoMetadata = sanitizeVideoMetadata(polled.rawResponse, context.parameters, context.modelAlias);
+      videoMetadata.outputFormat = mimeType === 'video/quicktime' ? 'mov' : 'mp4';
+      videoMetadata.referenceVideoDurationSec = generationStage(context.parameters) === 'final-from-draft'
+        ? canvasVideoMetadataForAsset(db, String(context.parameters.draftAssetId ?? ''))?.referenceVideoDurationSec
+        : context.inputs.filter((input) => input.kind === 'video').reduce((sum, input) => sum + (input.durationSec ?? 0), 0);
+      return { bytes: downloaded.buffer, mimeType, videoMetadata, tailFrame };
     },
+  };
+}
+
+function videoOutputOptions(context: CanvasTaskContext) {
+  return {
+    resolution: generationStage(context.parameters) === 'draft' ? '480p' : String(context.parameters.resolution ?? '1080p'),
+    ...(generationStage(context.parameters) === 'draft' ? { draft: true } : {}),
+    generateAudio: Boolean(context.parameters.withAudio ?? true),
+    ...(context.parameters.outputFormat ? { outputFormat: context.parameters.outputFormat as 'mp4' | 'mov' } : {}),
+    watermark: Boolean(context.parameters.watermark ?? false),
+    returnLastFrame: Boolean(context.parameters.returnLastFrame ?? false),
   };
 }

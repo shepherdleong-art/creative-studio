@@ -202,6 +202,16 @@ export const CREATIVE_CANVAS_MIGRATIONS: ReadonlyArray<CanvasMigration> = [
         ON creative_canvas_tasks(canvasId, nodeId, phase, createdAt);
     `,
   },
+  {
+    version: 3,
+    sql: `CREATE TABLE creative_canvas_rate_limits (bucket TEXT PRIMARY KEY, nextAt INTEGER NOT NULL);
+      ALTER TABLE creative_canvas_assets ADD COLUMN videoCodec TEXT;
+      ALTER TABLE creative_canvas_assets ADD COLUMN pixelFormat TEXT;
+      CREATE TABLE creative_canvas_video_metadata (
+      taskId TEXT PRIMARY KEY REFERENCES creative_canvas_tasks(id) ON DELETE CASCADE,
+      metadataJson TEXT NOT NULL
+    );`,
+  },
 ];
 
 export type CanvasSchemaFailureCode =

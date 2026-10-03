@@ -1,3 +1,4 @@
+import { assertDraftSourceMatches, generationStage, requireCanvasDraftSource } from './video-metadata.ts';
 /**
  * 计划器（技术约定 C3，PRD 6.2／7.3）。
  *
@@ -180,6 +181,7 @@ export function reachableGenerationNodes(graph: CanvasGraph, startNodeId: string
     visited.add(nodeId);
     const node = findGraphNode(graph, nodeId);
     if (!node) return;
+    if (isGenerationNode(node) && generationStage(node.data.parameters ?? {}) === 'final-from-draft') return;
     if (isGenerationNode(node)) ordered.push(node);
     for (const edge of graph.edges) {
       if (edge.source !== nodeId) continue;
@@ -432,6 +434,29 @@ function buildTaskPlan(
     return null;
   }
 
+  const stage = generationStage(node.data.parameters ?? {});
+  if (stage === 'final-from-draft') {
+    try {
+      if (!capability.parameters.some((parameter) => parameter.key === 'generationStage')) throw new Error('该渠道不支持样片转正式');
+      const source = requireCanvasDraftSource(context.db, context.canvas.id, String(node.data.parameters.draftAssetId ?? ''));
+      assertDraftSourceMatches(source, capability.modelAlias, capability.providerIdentity);
+      const allowed = new Set(['generationStage', 'draftAssetId', 'resolution', 'outputFormat', 'watermark', 'returnLastFrame']);
+      const known = new Set(capability.parameters.map((parameter) => parameter.key));
+      for (const key of Object.keys(node.data.parameters)) if (!known.has(key)) throw new Error(`不接受参数 ${key}`);
+      const parameters = Object.fromEntries(Object.entries(node.data.parameters).filter(([key]) => allowed.has(key)));
+      parameters.resolution = '1080p';
+      // Only output options are mutable; inputs and all reused fields come from the selected draft.
+      const issues = validateCapabilityInputs({ capability: { ...capability, inputs: [], mediaInputMinimums: [] }, mode: node.data.generationMode, refs: [], parameters });
+      if (issues.length) throw new Error(issues.map((issue) => issue.message).join('；'));
+      return { nodeId: node.id, nodeEpoch: state.nodeEpoch, mediaKind: 'video', capabilityKey: capability.key,
+        providerIdentity: capability.providerIdentity, modelAlias: capability.modelAlias, generationMode: node.data.generationMode,
+        prompt: '', parameters, inputs: [] };
+    } catch (error) {
+      context.problems.push({ code: 'capability_input_invalid', nodeId: node.id, message: (error as Error).message });
+      return null;
+    }
+  }
+
   const mentioned = collectMentions(context, node, node.data.prompt);
   const connected = new Set(incomingEdges(context.graph, node.id).map((edge) => edge.source));
   const slots = node.data.references.filter((slot) => connected.has(slot.sourceNodeId));
@@ -467,6 +492,12 @@ function buildTaskPlan(
     effectiveParameters[key] = value;
   }
 
+  if (capability.providerIdentity === 'jimeng-2-0') {
+    for (const parameter of capability.parameters) {
+      if ((!parameter.modes || parameter.modes.includes(node.data.generationMode)) && effectiveParameters[parameter.key] === undefined && parameter.default !== undefined) effectiveParameters[parameter.key] = parameter.default;
+    }
+  }
+  if (stage === 'draft' && capability.parameters.some((parameter) => parameter.key === 'generationStage')) effectiveParameters.resolution = '480p';
   const capabilityProblems = validateCapabilityInputs({
     capability,
     mode: node.data.generationMode,
@@ -484,6 +515,14 @@ function buildTaskPlan(
       ...(problem.refId ? { refId: problem.refId } : {}),
       message: problem.message,
     });
+  }
+
+  if (capability.providerIdentity === 'jimeng-2-0') {
+    if (node.data.generationMode === 'image-to-video') effectiveParameters.aspectRatio = 'adaptive';
+    if (capability.modelAlias === 'doubao-seedance-2-5-260628') {
+      if (node.data.generationMode === 'video-edit') effectiveParameters.durationSec = -1;
+      if (node.data.generationMode === 'video-edit' || node.data.generationMode === 'video-extend') effectiveParameters.aspectRatio = 'adaptive';
+    }
   }
 
   const promptParts = [

@@ -52,6 +52,15 @@ try {
   // 原件不受影响
   assert.equal((await probeVideoMedia(hevcPath)).videoCodec, 'hevc');
 
+  // MOV + PCM requires an MP4/AAC browser copy even when video itself is H.264/yuv420p.
+  const movPath = path.join(tmp, 'original.mov');
+  await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'color=blue:size=320x240:rate=24:duration=1', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le', '-shortest', movPath], { timeoutMs: 60_000 });
+  const original = fs.readFileSync(movPath);
+  const movPreview = await ensureBrowserPreview(movPath);
+  assert.equal(movPreview, browserPreviewPath(movPath));
+  assert.equal((await probeVideoMedia(movPreview)).audioCodec, 'aac');
+  assert.deepEqual(fs.readFileSync(movPath), original, 'MOV original must remain byte-for-byte unchanged');
+
   console.log('video-browser-preview tests passed');
 } finally {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 临时目录留待系统清理 */ }

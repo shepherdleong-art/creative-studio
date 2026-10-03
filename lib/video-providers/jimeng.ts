@@ -1,3 +1,4 @@
+import { assertArkRequestSize, seedanceFinalBody, seedanceContract, seedanceOutputFields } from './seedance-contract.ts';
 import fs from 'fs';
 import type {
   ReferenceVideoInput,
@@ -23,6 +24,7 @@ function normalizeJimengPrompt(prompt: string): string {
 }
 
 function normalizeJimengDuration(durationSec: number, maxSec = 12): number {
+  if (durationSec === -1 && maxSec >= 15) return -1;
   return Math.max(4, Math.min(maxSec, Number(durationSec) || 5));
 }
 
@@ -123,6 +125,7 @@ async function postGenerationTask(params: {
   const cleanBase = params.baseUrl.replace(/\/$/, '');
   const url = `${cleanBase}/contents/generations/tasks`;
 
+  const serialized = assertArkRequestSize(params.body);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
   const onAbort = () => controller.abort();
@@ -136,7 +139,7 @@ async function postGenerationTask(params: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${params.apiKey}`,
       },
-      body: JSON.stringify(params.body),
+      body: serialized,
       signal: controller.signal,
     });
 
@@ -154,6 +157,9 @@ async function postGenerationTask(params: {
 }
 
 export const jimengAdapter: VideoProviderAdapter = {
+  async submitFinal(request, apiKey, baseUrl, signal) {
+    return postGenerationTask({ apiKey, baseUrl, signal, body: seedanceFinalBody(request), errorLabel: 'Jimeng final-from-draft' });
+  },
   tailFrameCapability(model) {
     return getTailFrameCapability(model);
   },
@@ -195,7 +201,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       {
         type: 'image_url',
         image_url: { url: imageDataUrl },
-        ...(hasTailImagePath ? { role: 'first_frame' } : {}),
+        ...(hasTailImagePath || seedanceContract(request.model) ? { role: 'first_frame' } : {}),
       },
     ];
     if (hasTailImagePath) {
@@ -210,11 +216,9 @@ export const jimengAdapter: VideoProviderAdapter = {
     const body: Record<string, unknown> = {
       model: request.model,
       content,
-      resolution: '1080p',
+      ...seedanceOutputFields(request.model, request),
       ratio: 'adaptive',
       duration: normalizeJimengDuration(request.durationSec, maxJimengDurationSec(request.model)),
-      watermark: false,
-      generate_audio: true,
     };
     if (!seedance2) body.camera_fixed = false;
 
@@ -241,11 +245,9 @@ export const jimengAdapter: VideoProviderAdapter = {
     const body: Record<string, unknown> = {
       model: request.model,
       content: [{ type: 'text', text: normalizeJimengPrompt(request.prompt) }],
-      resolution: request.resolution ?? '1080p',
+      ...seedanceOutputFields(request.model, request),
       ratio: request.aspectRatio ?? '16:9',
       duration: normalizeJimengDuration(request.durationSec, maxJimengDurationSec(request.model)),
-      watermark: false,
-      generate_audio: true,
     };
     if (!seedance2) body.camera_fixed = false;
 
@@ -281,14 +283,12 @@ export const jimengAdapter: VideoProviderAdapter = {
     const body: Record<string, unknown> = {
       model: request.model,
       content,
-      resolution: request.resolution ?? '1080p',
+      ...seedanceOutputFields(request.model, request),
       ratio: request.aspectRatio ?? '16:9',
-      // 编辑子任务的锁定时长 -1 只被 2.5 透传；其余模型仍按代际上限钳制
+      // 自动时长支持两代，旧非 Seedance 调用保持原归一行为
       duration: seedance25 && request.durationSec === -1
         ? -1
         : normalizeJimengDuration(request.durationSec, maxJimengDurationSec(request.model)),
-      watermark: false,
-      generate_audio: true,
     };
     if (!seedance2) body.camera_fixed = false;
     if (seedance25) {

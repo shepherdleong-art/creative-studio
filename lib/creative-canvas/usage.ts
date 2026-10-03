@@ -77,6 +77,9 @@ function recordCanvasTaskUsageUnsafe(
     return { ok: true, inserted: false, priced: false, reason: 'provider_snapshot_missing' };
   }
 
+  // Direct Ark has no company billing basis; never resolve it by the same model alias.
+  if (!providerIdentity.startsWith('company-')) return { ok: true, inserted: false, priced: false, reason: 'pricing_unavailable' };
+
   const table: CoreUsageProviderSnapshot['providerTable'] = task.mediaKind === 'video' ? 'video_providers' : 'providers';
   const row = db.prepare(
     table === 'video_providers'
@@ -108,10 +111,14 @@ function recordCanvasTaskUsageUnsafe(
       ? snapshotFields.parameters
       : JSON.stringify(snapshotFields.parameters ?? {}),
   );
-  const durationSec = Number(nodeParameters.durationSec ?? 0);
-  const quantity = task.mediaKind === 'video' && Number.isFinite(durationSec) && durationSec > 0
-    ? durationSec
-    : 1;
+  if (nodeParameters.generationStage === 'draft' || nodeParameters.generationStage === 'final-from-draft') return { ok: true, inserted: false, priced: false, reason: 'stage_pricing_unavailable' };
+  let durationSec = Number(nodeParameters.durationSec ?? 0);
+  if (task.mediaKind === 'video' && durationSec <= 0) {
+    const output = task.outputAssetId ? db.prepare('SELECT durationSec FROM creative_canvas_assets WHERE id = ?').get(task.outputAssetId) as { durationSec: number | null } | undefined : undefined;
+    durationSec = Number(output?.durationSec ?? 0);
+    if (!(durationSec > 0)) return { ok: true, inserted: false, priced: true, reason: 'duration_pending' };
+  }
+  const quantity = task.mediaKind === 'video' ? durationSec : 1;
 
   const snapshot = createCoreUsageSnapshot(identity, plan, {
     startedAt: task.createdAt,

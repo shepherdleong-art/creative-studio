@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { dataRoot } from '@/lib/data-root';
 import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
-import { canvasStorageRoot, readCanvasAsset } from '@/lib/creative-canvas/assets';
+import { canvasStorageRoot, readCanvasAsset, readCanvasAssetPreview } from '@/lib/creative-canvas/assets';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 
 export const runtime = 'nodejs';
@@ -15,7 +15,8 @@ export async function GET(
   try {
     await assertCanvasApiReady();
     const { assetId } = await params;
-    const result = readCanvasAsset({
+    const download = new URL(request.url).searchParams.get('download') === '1';
+    const result = await (download ? readCanvasAsset : readCanvasAssetPreview)({
       db: getDb(),
       storageRoot: canvasStorageRoot(dataRoot()),
       assetId,

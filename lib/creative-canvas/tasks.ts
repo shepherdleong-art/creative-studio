@@ -341,7 +341,7 @@ export function createCanvasRun(
           prompt: taskPlan.prompt,
           parameters: taskPlan.parameters,
         }),
-        taskPlan.capabilityKey,
+        taskPlan.capabilityKey === 'external-jimeng-seedance-2-0' && taskPlan.parameters.resolution === '4k' ? 'seedance20-4k' : taskPlan.capabilityKey,
         // 变体编号：branch（每节点一任务）与历史任务恒为 0
         plan.mode === 'single' ? planIndex : 0,
         at,
@@ -545,17 +545,23 @@ export function claimCanvasTasks(options: ClaimCanvasTasksOptions): ClaimedCanva
       const task = rowToTask(row);
       if (skipTaskIds.has(task.id)) continue;
       const quotaKey = task.quotaKey ?? '';
-      const quotaLimit = quotaLimits[quotaKey] ?? globalLimit;
+      const quotaLimit = quotaKey === 'seedance20-4k' ? 1 : quotaLimits[quotaKey] ?? globalLimit;
       const used = quotaUsage.get(quotaKey) ?? 0;
       const takeoverCandidate = task.providerTaskId !== null && task.slotHeld;
       const needsNewSlot = !takeoverCandidate;
       if (needsNewSlot && (remaining <= 0 || used >= quotaLimit)) continue;
+      if (!task.providerTaskId && quotaKey === 'seedance20-4k') {
+        const gate = db.prepare('SELECT nextAt FROM creative_canvas_rate_limits WHERE bucket = ?').get(quotaKey) as { nextAt: number } | undefined;
+        if (gate && gate.nextAt > at.getTime()) continue;
+      }
+
       const info = takeoverCandidate
         ? takeover.run(workerId, leaseUntil, atIso, task.id, atIso)
         : task.providerTaskId
           ? db.prepare(`UPDATE creative_canvas_tasks SET slotHeld = 1, leaseOwner = ?, leaseUntil = ?, fence = fence + 1, updatedAt = ? WHERE id = ? AND providerTaskId IS NOT NULL AND phase IN ('polling','downloading') AND slotHeld = 0`).run(workerId, leaseUntil, atIso, task.id)
           : claim.run(workerId, leaseUntil, atIso, task.id);
       if (info.changes !== 1) continue;
+      if (!task.providerTaskId && quotaKey === 'seedance20-4k') db.prepare('INSERT INTO creative_canvas_rate_limits (bucket, nextAt) VALUES (?, ?) ON CONFLICT(bucket) DO UPDATE SET nextAt = excluded.nextAt').run(quotaKey, at.getTime() + 4000);
       if (needsNewSlot) quotaUsage.set(quotaKey, used + 1);
       budget -= 1;
       if (needsNewSlot) remaining -= 1;
@@ -620,11 +626,20 @@ export function updateCanvasTaskGuarded(
   if (patch.leaseOwner !== undefined) assign('leaseOwner', 'leaseOwner', patch.leaseOwner);
   if (patch.leaseUntil !== undefined) assign('leaseUntil', 'leaseUntil', patch.leaseUntil);
 
-  const info = db.prepare(`
-    UPDATE creative_canvas_tasks SET ${sets.join(', ')}
-     WHERE id = @taskId AND fence = @fence AND leaseOwner = @workerId
-  `).run(values);
-  return info.changes === 1;
+  const update = () => {
+    const info = db.prepare(`
+      UPDATE creative_canvas_tasks SET ${sets.join(', ')}
+       WHERE id = @taskId AND fence = @fence AND leaseOwner = @workerId
+    `).run(values);
+    if (info.changes === 1 && patch.phase === 'submitting') {
+      // Preparation may be slow: start the spacing window again at the actual POST intent.
+      db.prepare(`UPDATE creative_canvas_rate_limits SET nextAt = MAX(nextAt, ?)
+        WHERE bucket = 'seedance20-4k' AND EXISTS (SELECT 1 FROM creative_canvas_tasks WHERE id = ? AND quotaKey = 'seedance20-4k')`)
+        .run(Date.parse(at) + 4000, taskId);
+    }
+    return info.changes === 1;
+  };
+  return patch.phase === 'submitting' ? db.transaction(update).immediate() : update();
 }
 
 /**

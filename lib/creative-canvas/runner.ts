@@ -1,3 +1,4 @@
+import { recordCanvasVideoMetadata } from './video-metadata.ts';
 /**
  * 任务执行器（技术约定 C4／C5）。
  *
@@ -18,6 +19,7 @@ import {
   canvasAssetAbsolutePath,
   canvasStorageRoot,
   registerCanvasResultAsset,
+  importCanvasAsset,
   type CanvasAssetRecord,
 } from './assets.ts';
 import { CanvasAdapterError, type CanvasResolvedInput, type CanvasTaskAdapter, type CanvasTaskContext } from './adapters/types.ts';
@@ -530,6 +532,11 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
   let asset: CanvasAssetRecord | null;
   let published = false;
   try {
+    if (downloaded.tailFrame && downloaded.videoMetadata) {
+      const tail = await importCanvasAsset({ db, canvasId: task.canvasId, storageRoot, filename: `返回尾帧.${downloaded.tailFrame.mimeType === 'image/png' ? 'png' : downloaded.tailFrame.mimeType === 'image/webp' ? 'webp' : 'jpg'}`,
+        mimeType: downloaded.tailFrame.mimeType, data: downloaded.tailFrame.bytes, now });
+      downloaded.videoMetadata.tailAssetId = tail.id;
+    }
     asset = await registerCanvasResultAsset({
       db,
       canvasId: task.canvasId,
@@ -557,6 +564,7 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
           guard.workerId,
         );
         if (recorded.changes !== 1) throw new Error('任务已失去租约，拒绝登记生成结果。');
+        if (downloaded.videoMetadata) recordCanvasVideoMetadata(transactionDb, taskId, downloaded.videoMetadata);
         published = publishCanvasNodeResultInTransaction(transactionDb, {
           canvasId: task.canvasId,
           nodeId: task.nodeId,
@@ -567,6 +575,7 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
         });
       },
     });
+    recordCanvasTaskUsage(db, { taskId });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     updateCanvasTaskGuarded(db, {

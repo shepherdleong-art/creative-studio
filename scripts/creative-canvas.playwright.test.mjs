@@ -28,9 +28,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import sharp from 'sharp';
+import { runFfmpeg } from '../lib/ffmpeg.ts';
+import { directSeedanceCapability } from '../lib/creative-canvas/adapters/seedance-capabilities.ts';
+import { SEEDANCE_20, SEEDANCE_25 } from '../lib/video-providers/seedance-contract.ts';
 
-const SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'all'];
-const IMPLEMENTED_SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression'];
+const SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'all'];
+const IMPLEMENTED_SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance'];
 
 const suiteArgIndex = process.argv.indexOf('--suite');
 const suite = suiteArgIndex >= 0 ? process.argv[suiteArgIndex + 1] : 'all';
@@ -455,6 +458,60 @@ async function moveNode(page, nodeId, point) {
 }
 
 // --- 用例 -------------------------------------------------------------------
+
+async function seedanceSuite(page) {
+  // UI-only capabilities over the fixture server. No generation API is exercised here.
+  await page.route('**/api/canvas/models', async (route) => {
+    const response = await route.fetch();
+    const value = await response.json();
+    await route.fulfill({ response, json: { ...value, models: [...value.models, directSeedanceCapability(SEEDANCE_20), directSeedanceCapability(SEEDANCE_25)] } });
+  });
+  await createCanvas(page, 'Seedance 参数验收');
+  const id = await addNode(page, 'video-generation');
+  await selectModel(page, id, 'external-jimeng-seedance-2-5');
+  const node = page.locator(`.react-flow__node[data-id="${id}"]`);
+  assert.equal(await node.getByLabel('生成声音', { exact: true }).isChecked(), true);
+  const modes = await node.locator('[data-testid="mode-select"] option').allTextContents();
+  assert.equal(modes.length, 6);
+  assert.ok(modes.includes('全能参考') && modes.includes('视频延长'));
+  await node.getByLabel('分辨率', { exact: true }).selectOption('720p');
+  await node.getByLabel('生成阶段', { exact: true }).selectOption('draft');
+  assert.equal(await node.getByLabel('分辨率', { exact: true }).inputValue(), '480p');
+  assert.equal(await node.getByLabel('分辨率', { exact: true }).isDisabled(), true);
+  await node.getByLabel('生成阶段', { exact: true }).selectOption('direct');
+  assert.equal(await node.getByLabel('分辨率', { exact: true }).inputValue(), '720p');
+  await node.getByLabel('生成阶段', { exact: true }).selectOption('draft');
+  await selectModel(page, id, 'external-jimeng-seedance-2-0');
+  assert.equal(await node.getByLabel('分辨率', { exact: true }).inputValue(), '720p');
+  assert.equal(await node.getByLabel('生成阶段', { exact: true }).count(), 0);
+  assert.match(await node.locator('[role="status"]').textContent(), /已切换为直接生成/);
+  await node.getByLabel('分辨率', { exact: true }).selectOption('4k');
+  await selectModel(page, id, 'external-jimeng-seedance-2-5');
+  assert.equal(await node.getByLabel('分辨率', { exact: true }).inputValue(), '1080p');
+  assert.match(await node.locator('[role="status"]').textContent(), /1080p/);
+  assert.equal(runPosts.length, 0);
+  await waitSaved(page);
+  const movPath = path.join(fixtureDir, '播放验证.mov');
+  await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'color=blue:size=640x640:rate=24:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le', '-shortest', movPath], { timeoutMs: 60_000 });
+  const materialId = await addNode(page, 'material');
+  const material = page.locator(`.react-flow__node[data-id="${materialId}"]`);
+  await material.locator('[data-testid="material-file-input"]').setInputFiles(movPath);
+  const video = material.locator('video');
+  await video.waitFor();
+  await video.evaluate(async (element) => { element.muted = true; await element.play(); });
+  await page.waitForFunction((id) => { const video = document.querySelector(`.react-flow__node[data-id="${id}"] video`); return video?.readyState >= 2 && video.currentTime > 0.1; }, materialId);
+  await video.evaluate((element) => element.pause());
+  const download = await page.request.get(new URL(await material.locator('[data-testid="download-material"]').getAttribute('href'), baseUrl).href);
+  assert.match(download.headers()['content-type'], /video\/quicktime/);
+  assert.deepEqual(await download.body(), fs.readFileSync(movPath), '下载必须保留 MOV 原件字节');
+  await waitSaved(page);
+  await page.click('[data-testid="fit-view"]');
+  const screenshot = path.join(repoRoot, 'outputs', 'canvas-validation', '2026-10-03-local-final', 'seedance-ui.png');
+  fs.mkdirSync(path.dirname(screenshot), { recursive: true });
+  await page.screenshot({ path: screenshot });
+  await page.unroute('**/api/canvas/models');
+  return { sixModes: true, newAudioEnabled: true, draftResolutionLocked: true, directPreferenceRestored: true, modelSwitchExplained: true, movPlaybackProgress: true, originalMovDownloadPreserved: true, generationRequests: 0, screenshot };
+}
 
 async function editorSuite(page) {
   const pngA = path.join(fixtureDir, '沙发A.png');
@@ -1557,6 +1614,7 @@ try {
   const evidence = {};
   for (const name of requested) {
     runPosts.length = 0;
+    if (name === 'seedance') evidence.seedance = await seedanceSuite(page);
     if (name === 'editor') evidence.editor = await editorSuite(page);
     if (name === 'execution') evidence.execution = await executionSuite(page);
     if (name === 'recovery') {

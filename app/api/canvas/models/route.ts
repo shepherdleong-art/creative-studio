@@ -16,6 +16,7 @@ export async function GET() {
         displayName: capability.displayName,
         mediaKind: capability.mediaKind,
         modes: capability.modes,
+        legacyModes: capability.legacyModes,
         inputs: capability.inputs,
         parameters: capability.parameters,
         cancellation: capability.cancellation,

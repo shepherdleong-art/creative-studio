@@ -47,8 +47,8 @@ const tablesAfterMigration = [
   const first = await ensureCreativeCanvasSchemaReady({ db, backupRoot });
   assert.equal(first.state, 'ready');
   // v2（并发多变体）：全新库一次性应用 v1+v2
-  assert.deepEqual(first.appliedVersions, [1, 2]);
-  assert.equal(first.targetVersion, 2);
+  assert.deepEqual(first.appliedVersions, [1, 2, 3]);
+  assert.equal(first.targetVersion, 3);
   assert.equal(typeof first.backupDirectory, 'string');
   assert.equal(first.backupManifest?.scope, 'creative-canvas');
   assert.equal(first.backupManifest?.integrityCheck, 'ok');
@@ -58,7 +58,7 @@ const tablesAfterMigration = [
     assert.ok(row, `缺少表 ${table}`);
   }
   assert.equal(canvasTablesPresent(db), true);
-  assert.deepEqual(readCanvasAppliedVersions(db), [1, 2]);
+  assert.deepEqual(readCanvasAppliedVersions(db), [1, 2, 3]);
 
   // v2 结构断言：variantIndex 列存在；单任务唯一索引已放开
   const variantColumn = db.prepare(
@@ -74,16 +74,16 @@ const tablesAfterMigration = [
   const candidates = await listSchemaUpgradeRecoveryCandidates({ backupRoot, scope: 'creative-canvas' });
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].verification, 'verified');
-  assert.equal(candidates[0].targetVersion, 2);
-  assert.match(candidates[0].backupId, /^pre-canvas-v2-/);
-  assert.equal(path.basename(String(first.backupDirectory)).startsWith('pre-canvas-v2-'), true);
+  assert.equal(candidates[0].targetVersion, 3);
+  assert.match(candidates[0].backupId, /^pre-canvas-v3-/);
+  assert.equal(path.basename(String(first.backupDirectory)).startsWith('pre-canvas-v3-'), true);
 
   // 审计由共享 gate 写入：走 readiness 的升级要留下完整记录
   const gatedDb = createDatabase('gated.db');
   const readiness = await checkCanvasReadiness({ db: gatedDb, backupRoot, lockDatabasePath, auditFilePath });
   assert.equal(readiness.available, true);
   assert.equal(readiness.available === true && readiness.schemaState, 'ready');
-  assert.deepEqual(readiness.appliedVersions, [1, 2]);
+  assert.deepEqual(readiness.appliedVersions, [1, 2, 3]);
 
   const audit = await readSchemaUpgradeAudit(auditFilePath);
   const canvasRecords = audit.filter((record) => record.scope === 'creative-canvas');
@@ -100,7 +100,7 @@ const tablesAfterMigration = [
   // 重复运行：current，不再新增升级记录，也不再产生备份
   const second = await ensureCreativeCanvasSchemaReady({ db, backupRoot });
   assert.equal(second.state, 'current');
-  assert.deepEqual(second.appliedVersions, [1, 2]);
+  assert.deepEqual(second.appliedVersions, [1, 2, 3]);
   const backupsAfterSecondRun = fs.readdirSync(backupRoot).filter((name) => !name.startsWith('.'));
   assert.equal(backupsAfterSecondRun.length, 2);
 
@@ -120,8 +120,8 @@ const tablesAfterMigration = [
   db.prepare(`INSERT INTO creative_canvas_schema_migrations (version, appliedAt) VALUES (1, ?)`).run('now');
   const upgraded = await ensureCreativeCanvasSchemaReady({ db, backupRoot: path.join(root, 'data', 'backups', 'schema-upgrades-v1to2') });
   assert.equal(upgraded.state, 'ready');
-  assert.deepEqual(upgraded.appliedVersions, [2]);
-  assert.deepEqual(readCanvasAppliedVersions(db), [1, 2]);
+  assert.deepEqual(upgraded.appliedVersions, [2, 3]);
+  assert.deepEqual(readCanvasAppliedVersions(db), [1, 2, 3]);
   const variantColumn = db.prepare(
     `SELECT 1 FROM pragma_table_info('creative_canvas_tasks') WHERE name = 'variantIndex'`,
   ).get();
@@ -187,8 +187,8 @@ const tablesAfterMigration = [
     'script-studio': 'script-studio',
     'creative-canvas': 'canvas',
   });
-  assert.equal(CREATIVE_CANVAS_MIGRATIONS.length, 2);
-  assert.deepEqual(CREATIVE_CANVAS_MIGRATIONS.map((migration) => migration.version), [1, 2]);
+  assert.equal(CREATIVE_CANVAS_MIGRATIONS.length, 3);
+  assert.deepEqual(CREATIVE_CANVAS_MIGRATIONS.map((migration) => migration.version), [1, 2, 3]);
 
   // 旧 scope 在同库上仍能独立升级，且画布表不影响它
   const db = createDatabase('legacy-scope.db');

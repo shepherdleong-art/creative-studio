@@ -1,3 +1,6 @@
+import { planCanvasRun } from '../lib/creative-canvas/planner.ts';
+import { requireCanvasDraftSource } from '../lib/creative-canvas/video-metadata.ts';
+import { runFfmpeg } from '../lib/ffmpeg.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -86,6 +89,8 @@ const resultMp4 = Buffer.concat([
   Buffer.alloc(128, 5),
 ]);
 
+let rejectFinal = false;
+const arkResponses = new Map<string, Record<string, unknown>>();
 const server = http.createServer((request, response) => {
   const chunks: Buffer[] = [];
   request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -110,16 +115,20 @@ const server = http.createServer((request, response) => {
     }
     // 方舟直连：文生／图生视频的任务创建与查询
     if (request.method === 'POST' && request.url === '/contents/generations/tasks') {
+      if (rejectFinal && JSON.parse(body).content?.[0]?.type === 'draft_task') { response.writeHead(400, { 'content-type': 'application/json' }); response.end('{"error":"invalid draft"}'); return; }
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ id: 'ark-task-1' }));
+      const id = `ark-task-${arkResponses.size + 1}`;
+      arkResponses.set(id, { ...JSON.parse(body), created_at: Math.floor(Date.now() / 1000) });
+      response.end(JSON.stringify({ id }));
       return;
     }
     if (request.method === 'GET' && /^\/contents\/generations\/tasks\/[^/]+$/.test(request.url ?? '')) {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({
-        id: 'ark-task-1',
+        id: request.url!.split('/').at(-1),
+        ...arkResponses.get(request.url!.split('/').at(-1)!),
         status: 'succeeded',
-        content: { video_url: `http://127.0.0.1:${port}/files/result` },
+        content: { video_url: `http://127.0.0.1:${port}/files/result`, last_frame_url: `http://127.0.0.1:${port}/files/tail` },
       }));
       return;
     }
@@ -132,6 +141,7 @@ const server = http.createServer((request, response) => {
       }));
       return;
     }
+    if (request.method === 'GET' && request.url === '/files/tail') { response.writeHead(200, { 'content-type': 'image/png' }); response.end(resultPng); return; }
     if (request.method === 'GET' && request.url === '/files/result') {
       const isImage = (request.headers.authorization ?? '').includes('image-key');
       response.writeHead(200, { 'content-type': isImage ? 'image/png' : 'video/mp4' });
@@ -192,16 +202,21 @@ const canvas = createCanvas(db, { name: '公司通道请求捕获' });
 async function makeAsset(name: string, kind: 'image' | 'video' = 'image'): Promise<string> {
   // 每份素材内容不同：内容哈希去重会把完全相同的文件合并成同一资产
   const seed = [...name].reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  const data = kind === 'image'
+  let data = kind === 'image'
     ? await sharp({
       create: {
-        width: 24,
-        height: 32,
+        width: 480,
+        height: 640,
         channels: 3,
         background: { r: seed % 200, g: (seed * 3) % 200, b: (seed * 7) % 200 },
       },
     }).png().toBuffer()
     : Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom', 'latin1'), Buffer.alloc(64, seed % 251)]);
+  if (kind === 'video') {
+    const sample = path.join(root, `video-fixture-${seed}.mp4`);
+    await runFfmpeg(['-y', '-f', 'lavfi', '-i', `color=c=0x${seed.toString(16).padStart(6,'0').slice(-6)}:s=640x640:r=24`, '-t', '4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', sample]);
+    data = fs.readFileSync(sample);
+  }
   const asset = await importCanvasAsset({
     db,
     canvasId: canvas.id,
@@ -1045,6 +1060,87 @@ async function makeAudioAsset(name: string, seconds: number): Promise<string> {
     assert.equal(result.body.ratio, 'adaptive', '延长子任务比例锁 adaptive');
     assert.equal(result.body.duration, 12, '延长子任务时长取节点参数');
   }
+
+  // Draft request matrix: all six modes keep their own input contract and add draft + 480p.
+  for (const mode of ['text-to-video', 'reference-to-video', 'image-to-video', 'frames-to-video', 'video-edit', 'video-extend'] as const) {
+    const node = videoNode(`draft-${mode}`, 'external-jimeng-seedance-2-5', { generationStage: 'draft', resolution: '1080p', durationSec: -1, withAudio: false }, mode);
+    assert.ok(node.kind === 'video-generation');
+    node.data.prompt = mode === 'video-edit' ? '修改视频里的背景' : mode === 'video-extend' ? '向后延长视频' : '蓝色立方体缓慢旋转';
+    const sources = mode === 'text-to-video' ? [] : mode === 'video-edit' || mode === 'video-extend' ? [material('source-video', videoRefAsset, 'video')] : mode === 'frames-to-video' ? [material('source-first', firstFrameAsset), material('source-last', lastFrameAsset)] : [material('source-first', firstFrameAsset)];
+    save([...sources, node], sources.map((source, index) => ({ id: `e-${index}`, source: source.id, target: node.id })));
+    const result = await runOnce(node.id);
+    assert.equal(result.phase, 'succeeded', `${mode}: ${result.errorMessage}`);
+    assert.equal(result.posts, 1); assert.equal(result.body?.draft, true); assert.equal(result.body?.resolution, '480p');
+    assert.equal(result.body?.generate_audio, false); assert.equal(result.body?.duration, -1);
+  }
+}
+
+// Draft -> fixed source -> final: production planner, persistence and runner, local HTTP only.
+{
+  const key = 'external-jimeng-seedance-2-5';
+  save([videoNode('draft-source', key, { generationStage: 'draft', durationSec: -1, resolution: '1080p', withAudio: false, returnLastFrame: true }, 'text-to-video')], []);
+  const draft = await runOnce('draft-source');
+  assert.equal(draft.phase, 'succeeded', draft.errorMessage ?? '');
+  assert.equal(draft.body?.draft, true);
+  assert.equal(draft.body?.resolution, '480p');
+  assert.equal(draft.body?.duration, -1);
+  assert.equal(draft.body?.generate_audio, false);
+  const task = listCanvasTasks(db, { canvasId: canvas.id }).find((task) => task.nodeId === 'draft-source')!;
+  const source = requireCanvasDraftSource(db, canvas.id, task.outputAssetId!);
+  assert.equal(source.providerTaskId, task.providerTaskId);
+  const metadata = JSON.parse((db.prepare('SELECT metadataJson FROM creative_canvas_video_metadata WHERE taskId = ?').get(task.id) as { metadataJson: string }).metadataJson);
+  assert.ok(metadata.tailAssetId, '返回尾帧必须保存为关联素材');
+  const rerun = await runOnce('draft-source');
+  assert.equal(rerun.phase, 'succeeded');
+  assert.equal(requireCanvasDraftSource(db, canvas.id, source.assetId).providerTaskId, source.providerTaskId, '上游重跑不得替换已选样片 A');
+  const final = videoNode('final', key, { generationStage: 'final-from-draft', draftAssetId: source.assetId, resolution: '480p', durationSec: 7, withAudio: true, aspectRatio: '9:16', outputFormat: 'mov', watermark: true }, 'text-to-video');
+  save([final], []);
+  const branch = planCanvasRun(db, { canvasId: canvas.id, mode: 'branch', startNodeId: 'final', requestKey: 'skip-final' });
+  assert.ok(branch.ok);
+  assert.equal(branch.plan.tasks.length, 0, '分支运行不能自动消耗正式转化');
+  const converted = await runOnce('final');
+  assert.equal(converted.phase, 'succeeded', converted.errorMessage ?? '');
+  assert.deepEqual(converted.body, { model: 'doubao-seedance-2-5-260628', content: [{ type: 'draft_task', draft_task: { id: source.providerTaskId } }], resolution: '1080p', output_format: 'mov', watermark: true, return_last_frame: false });
+  rejectFinal = true;
+  const rejected = await runOnce('final');
+  assert.equal(rejected.posts, 1);
+  assert.equal(rejected.phase, 'failed', '明确的 Final 400 是拒绝，不是结果不明');
+  rejectFinal = false;
+  // Restart/lease takeover for both stages: an accepted remote ID resumes without another POST.
+  for (const stage of ['draft', 'final-from-draft'] as const) {
+    const nodeId = `restart-${stage}`;
+    save([videoNode(nodeId, key, stage === 'draft' ? { generationStage: 'draft', durationSec: 4 } : { generationStage: stage, draftAssetId: source.assetId }, 'text-to-video')], []);
+    const run = startCanvasRun({ db, request: { canvasId: canvas.id, mode: 'single', targetNodeId: nodeId, requestKey: nodeId } });
+    const firstClaim = claimCanvasTasks({ db, workerId: 'before-restart', limit: 1 })[0];
+    assert.equal(firstClaim.task.id, run.tasks[0].id);
+    const before = captured.filter((r) => r.method === 'POST').length;
+    await runCanvasTask({ db, taskId: firstClaim.task.id, adapter: companyAdapter(), workerId: 'before-restart', fence: firstClaim.fence, storageRoot, maxPollAttempts: 0 });
+    assert.equal(captured.filter((r) => r.method === 'POST').length, before + 1);
+    assert.ok(getCanvasTask(db, firstClaim.task.id)?.providerTaskId);
+    db.prepare('UPDATE creative_canvas_tasks SET leaseOwner = NULL, leaseUntil = NULL WHERE id = ?').run(firstClaim.task.id);
+    if (stage === 'final-from-draft') db.prepare('UPDATE creative_canvas_video_metadata SET metadataJson = ? WHERE taskId = ?').run(JSON.stringify({ ...metadata, expiresAt: new Date(Date.now() - 1).toISOString() }), task.id);
+    const resumed = claimCanvasTasks({ db, workerId: 'after-restart', limit: 1 })[0];
+    assert.equal(resumed.task.id, firstClaim.task.id);
+    const result = await runCanvasTask({ db, taskId: resumed.task.id, adapter: companyAdapter(), workerId: 'after-restart', fence: resumed.fence, storageRoot, pollIntervalMs: 1 });
+    assert.equal(result.phase, 'succeeded', '已提交的正式任务不因原样片到期停止恢复');
+    assert.equal(captured.filter((r) => r.method === 'POST').length, before + 1);
+    db.prepare('UPDATE creative_canvas_video_metadata SET metadataJson = ? WHERE taskId = ?').run(JSON.stringify(metadata), task.id);
+  }
+  save([final], []);
+  // Failure before POST: cross-canvas source and expiry cannot be bypassed by ordinary client parameters.
+  assert.throws(() => requireCanvasDraftSource(db, 'another-canvas', source.assetId), /来源不可用/);
+  const queued = startCanvasRun({ db, request: { canvasId: canvas.id, mode: 'single', targetNodeId: 'final', requestKey: 'expire-while-queued' } });
+  metadata.expiresAt = new Date(Date.now() - 1).toISOString();
+  db.prepare('UPDATE creative_canvas_video_metadata SET metadataJson = ? WHERE taskId = ?').run(JSON.stringify(metadata), task.id);
+  const beforeExpiredPost = captured.filter((entry) => entry.method === 'POST').length;
+  const claim = claimCanvasTasks({ db, workerId: 'expired-worker', limit: 1 })[0];
+  assert.equal(claim.task.id, queued.tasks[0].id);
+  const expiredRun = await runCanvasTask({ db, taskId: claim.task.id, adapter: companyAdapter(), workerId: 'expired-worker', fence: claim.fence, storageRoot, pollIntervalMs: 1 });
+  assert.equal(expiredRun.phase, 'failed');
+  assert.equal(captured.filter((entry) => entry.method === 'POST').length, beforeExpiredPost);
+  const expired = planCanvasRun(db, { canvasId: canvas.id, mode: 'single', targetNodeId: 'final', requestKey: 'expired' });
+  assert.equal(expired.ok, false);
+  if (!expired.ok) assert.match(expired.problems[0].message, /7 天/);
 }
 
 server.close();

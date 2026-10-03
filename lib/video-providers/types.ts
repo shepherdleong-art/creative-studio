@@ -1,3 +1,5 @@
+import type { SeedanceOutputOptions } from './seedance-contract.ts';
+
 export type TailFrameProtocol =
   | 'ark-content-roles'
   | 'company-gateway-kling'
@@ -10,7 +12,7 @@ export interface TailFrameCapability {
   reason?: 'unsupported_model' | 'contract_unverified';
 }
 
-export interface SubmitVideoRequest {
+export interface SubmitVideoRequest extends SeedanceOutputOptions {
   model: string;
   prompt: string;
   sourceImagePath: string;
@@ -26,13 +28,12 @@ export interface SubmitVideoRequest {
  * 文生视频的显式合同：**没有首帧**，比例必须自己给（模型支持 adaptive 时可省略）。
  * 与旧的「首帧必填」合同并存，避免把 `sourceImagePath` 悄悄变成可选后到处容忍 undefined。
  */
-export interface SubmitTextVideoRequest {
+export interface SubmitTextVideoRequest extends SeedanceOutputOptions {
   model: string;
   prompt: string;
   durationSec: number;
   /** 文本模式没有首帧可吸附，比例由调用方显式给出。 */
   aspectRatio?: string;
-  resolution?: string;
 }
 
 /**
@@ -53,15 +54,14 @@ export interface ReferenceVideoInput {
  * 多模态参考的显式合同：**没有首帧**，参考素材按调用方顺序原样进入 content 数组。
  * 与首帧合同并存，避免把 `sourceImagePath` 变成可选后到处容忍 undefined。
  */
-export interface SubmitReferenceVideoRequest {
+export interface SubmitReferenceVideoRequest extends SeedanceOutputOptions {
   model: string;
   prompt: string;
   references: ReadonlyArray<ReferenceVideoInput>;
-  /** durationSec: -1 仅用于 Seedance 2.5 编辑子任务的锁定时长（透传不钳制）。 */
+  /** durationSec: -1 表示支持型号的自动时长；2.5 编辑固定为 -1。 */
   durationSec: number;
   /** 参考模式没有首帧可吸附，比例由调用方显式给出。 */
   aspectRatio?: string;
-  resolution?: string;
   /** 方舟 2.5 全模态参考子任务显式引导；仅 2.5 系列发送，缺省按 reference。 */
   omniReferenceTaskType?: 'reference' | 'edit' | 'extend';
 }
@@ -79,7 +79,16 @@ export interface PollVideoResult {
   rawResponse: unknown;
 }
 
+export interface SubmitFinalVideoRequest {
+  model: string;
+  draftTaskId: string;
+  outputFormat?: 'mp4' | 'mov';
+  watermark?: boolean;
+  returnLastFrame?: boolean;
+}
+
 export interface VideoProviderAdapter {
+  submitFinal?(request: SubmitFinalVideoRequest, apiKey: string, baseUrl: string, signal?: AbortSignal): Promise<SubmitVideoResult>;
   minimumPollingTimeoutMs?(request: Pick<SubmitVideoRequest, 'model' | 'durationSec'>): number | undefined;
   tailFrameCapability?(model: string): TailFrameCapability;
   submit(request: SubmitVideoRequest, apiKey: string, baseUrl: string, signal?: AbortSignal): Promise<SubmitVideoResult>;

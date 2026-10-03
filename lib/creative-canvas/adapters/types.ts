@@ -7,6 +7,7 @@
  * - poll／download 使用已保存的远端任务身份，地址缺失时仍能按原始 ID 恢复。
  */
 
+import type { CanvasVideoMetadata } from '../video-metadata.ts';
 import type { CanvasTaskInputRecord, CanvasTaskRecord } from '../tasks.ts';
 import type { CanvasGenerationMode, CanvasReferenceRole } from '../types.ts';
 
@@ -71,6 +72,8 @@ export type CanvasPollOutcome =
   | { status: 'failed'; code?: string; message: string };
 
 export interface CanvasDownloadOutcome {
+  videoMetadata?: CanvasVideoMetadata;
+  tailFrame?: { bytes: Buffer; mimeType: string };
   bytes: Buffer;
   mimeType: string;
   filename?: string;

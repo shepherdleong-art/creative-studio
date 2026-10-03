@@ -1,3 +1,4 @@
+import { canvasVideoMetadataForAsset, type CanvasVideoMetadata } from './video-metadata.ts';
 /**
  * 画布导出（技术约定 C8）。
  *
@@ -20,6 +21,8 @@ import { getCanvasNodeState, requireCanvas } from './repository.ts';
 import { findGraphNode } from './graph.ts';
 
 export interface CanvasExportManifestItem {
+  videoMetadata?: CanvasVideoMetadata;
+  outputProbe?: { width: number | null; height: number | null; durationSec: number | null; videoCodec: string | null; pixelFormat: string | null };
   nodeId: string;
   nodeTitle: string;
   assetId: string;
@@ -178,6 +181,7 @@ export async function createCanvasExport(params: CreateCanvasExportParams): Prom
       filename: uniqueCanvasExportFilename(desired, usedNames),
       byteSize: fs.statSync(absolutePath).size,
       sha256: await sha256File(absolutePath),
+      ...(asset.mediaKind === 'video' ? { videoMetadata: canvasVideoMetadataForAsset(db, assetId) ?? undefined, outputProbe: { width: asset.width, height: asset.height, durationSec: asset.durationSec, videoCodec: asset.videoCodec ?? null, pixelFormat: asset.pixelFormat ?? null } } : {}),
     });
   }
 

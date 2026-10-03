@@ -9,6 +9,7 @@ export interface CanvasCapabilityParameterDto {
   label: string;
   type: 'enum' | 'integer' | 'number' | 'boolean' | 'string';
   options?: string[];
+  specialValues?: number[];
   min?: number;
   max?: number;
   default?: string | number | boolean;
@@ -21,6 +22,7 @@ export interface CanvasModelCapabilityDto {
   displayName: string;
   mediaKind: Exclude<CanvasMediaKind, 'audio'>;
   modes: CanvasGenerationMode[];
+  legacyModes?: CanvasGenerationMode[];
   inputs: Array<{ kind: CanvasMediaKind | 'text'; roles: CanvasReferenceRole[]; min: number; max: number }>;
   parameters: CanvasCapabilityParameterDto[];
   cancellation: boolean;

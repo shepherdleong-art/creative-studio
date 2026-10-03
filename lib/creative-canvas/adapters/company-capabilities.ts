@@ -12,6 +12,9 @@
  * 画布侧只做输入语义与请求映射，不重写已验证字段。
  */
 
+import { companyVideoCapsForModel } from '../../company-gateway-size.ts';
+import { companyGatewayTailFrameCapability } from '../../company-gateway-tail-frame.ts';
+import { videoDurationOptions } from '../../video-duration.ts';
 import type { CanvasModelCapability } from '../capabilities.ts';
 
 /**
@@ -113,9 +116,10 @@ export const COMPANY_CANVAS_SEEDANCE_2_5_CAPABILITY: CanvasModelCapability = {
     { kind: 'text', roles: ['reference'], min: 0, max: 1 },
   ],
   parameters: [
-    { key: 'durationSec', label: '时长（秒）', type: 'integer', min: 4, max: 15, default: 5 },
+    { key: 'resolution', label: '分辨率（公司已验证档位）', type: 'enum', options: companySeedanceResolutionOptions('doubao-seedance-2-5-260628'), default: companySeedanceResolutionOptions('doubao-seedance-2-5-260628')[0] },
+    { key: 'durationSec', label: '时长（秒）', type: 'integer', min: Math.min(...videoDurationOptions('openai-video', 'doubao-seedance-2-5-260628')), max: Math.max(...videoDurationOptions('openai-video', 'doubao-seedance-2-5-260628')), default: 5 },
     // 纯文本模式没有首帧可吸附，必须显式给比例才能确定输出像素
-    { key: 'aspectRatio', label: '比例', type: 'enum', options: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'], default: '16:9' },
+    { key: 'aspectRatio', label: '比例', type: 'enum', options: companyVideoCapsForModel('doubao-seedance-2-5-260628')!.ratios, default: '16:9' },
     { key: 'withAudio', label: '生成声音', type: 'boolean', default: false },
   ],
   cancellation: false,
@@ -139,7 +143,8 @@ export const COMPANY_CANVAS_SEEDANCE_2_0_FAST_CAPABILITY: CanvasModelCapability 
     { kind: 'text', roles: ['reference'], min: 0, max: 1 },
   ],
   parameters: [
-    { key: 'durationSec', label: '时长（秒）', type: 'integer', min: 4, max: 15, default: 5 },
+    { key: 'resolution', label: '分辨率（网关默认待验证）', type: 'enum', options: companySeedanceResolutionOptions('doubao-seedance-2-0-fast-260128'), default: companySeedanceResolutionOptions('doubao-seedance-2-0-fast-260128')[0] },
+    { key: 'durationSec', label: '时长（秒）', type: 'integer', min: Math.min(...videoDurationOptions('openai-video', 'doubao-seedance-2-0-fast-260128')), max: Math.max(...videoDurationOptions('openai-video', 'doubao-seedance-2-0-fast-260128')), default: 5 },
   ],
   cancellation: false,
   evidence: 'mapped',
@@ -177,6 +182,14 @@ export const COMPANY_CANVAS_CAPABILITIES: ReadonlyArray<CanvasModelCapability> =
   COMPANY_CANVAS_KLING_3_0_CAPABILITY,
 ];
 
+/** Existing company route and billing evidence do not prove the Canvas creation contract. Not registered. */
+export const COMPANY_CANVAS_SEEDANCE_2_0_CANDIDATE: CanvasModelCapability = {
+  ...COMPANY_CANVAS_SEEDANCE_2_0_FAST_CAPABILITY,
+  key: 'company-seedance-2-0', displayName: '公司即梦 Seedance 2.0（待验证）',
+  providerIdentity: 'company-seedance-2-0', modelAlias: 'doubao-seedance-2-0-260128',
+  evidence: 'candidate', evidenceNote: '公司路由和历史账单已存在；画布字段与输出档位待受控探测，尚未注册。',
+};
+
 /** 必须走 COS 预签名交付的公司模型（缺 COS 时 fail closed，不回退本机 URL）。 */
 export function companyCanvasModelRequiresCos(modelAlias: string): boolean {
   return modelAlias.startsWith('qiniuyun/');
@@ -184,11 +197,10 @@ export function companyCanvasModelRequiresCos(modelAlias: string): boolean {
 
 /** 公司尾帧协议按精确别名判定（与 company-gateway-tail-frame 的 allowlist 保持一致）。 */
 export function companyCanvasSupportsTailFrame(modelAlias: string): boolean {
-  return [
-    'kling-3.0',
-    'qiniuyun/kling-3.0',
-    'doubao-seedance-2-0-260128',
-    'doubao-seedance-2-0-fast-260128',
-    'doubao-seedance-2-5-260628',
-  ].includes(modelAlias);
+  return companyGatewayTailFrameCapability(modelAlias).supported;
+}
+
+/** A missing size contract remains visibly unknown, never a claimed 720p request. */
+export function companySeedanceResolutionOptions(modelAlias: string): string[] {
+  return companyVideoCapsForModel(modelAlias)?.tiers.map((tier) => tier.toLowerCase()) ?? ['gateway-default'];
 }

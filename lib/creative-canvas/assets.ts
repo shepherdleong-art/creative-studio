@@ -1,3 +1,4 @@
+import { ensureBrowserPreview } from '../video-browser-preview.ts';
 /**
  * 画布素材导入与媒体读取（技术约定 C2／C7）。
  *
@@ -13,7 +14,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import sharp from 'sharp';
 import { assertNoStorageSymlink, resolveStoragePath } from '../media-core/storage-path.ts';
-import { probeDurationSec } from '../ffmpeg.ts';
+import { probeVideoMedia, probeDurationSec } from '../ffmpeg.ts';
 import { CanvasError } from './errors.ts';
 import type { CanvasMediaKind } from './types.ts';
 
@@ -29,6 +30,8 @@ export interface CanvasAssetRecord {
   height: number | null;
   durationSec: number | null;
   sourceTaskId: string | null;
+  videoCodec?: string | null;
+  pixelFormat?: string | null;
   ready: boolean;
   createdAt: string;
 }
@@ -46,6 +49,7 @@ const EXTENSION_MEDIA_KIND: Record<string, CanvasMediaKind> = {
   jpeg: 'image',
   webp: 'image',
   gif: 'image',
+  bmp: 'image', tiff: 'image', tif: 'image', heic: 'image', heif: 'image',
   mp4: 'video',
   mov: 'video',
   webm: 'video',
@@ -62,6 +66,7 @@ const MIME_MEDIA_KIND: Record<string, CanvasMediaKind> = {
   'image/jpeg': 'image',
   'image/webp': 'image',
   'image/gif': 'image',
+  'image/bmp': 'image', 'image/tiff': 'image', 'image/heic': 'image', 'image/heif': 'image',
   'video/mp4': 'video',
   'video/quicktime': 'video',
   'video/webm': 'video',
@@ -79,6 +84,7 @@ export const CANVAS_MIME_BY_EXTENSION: Record<string, string> = {
   jpeg: 'image/jpeg',
   webp: 'image/webp',
   gif: 'image/gif',
+  bmp: 'image/bmp', tiff: 'image/tiff', tif: 'image/tiff', heic: 'image/heic', heif: 'image/heif',
   mp4: 'video/mp4',
   mov: 'video/quicktime',
   webm: 'video/webm',
@@ -115,12 +121,21 @@ function assertContentLooksValid(kind: CanvasMediaKind, extension: string, data:
   }
 }
 
-async function probeImage(data: Buffer): Promise<{ width: number | null; height: number | null }> {
+async function probeImage(data: Buffer, storageRoot: string): Promise<{ width: number | null; height: number | null }> {
   try {
     const metadata = await sharp(data).metadata();
     return { width: metadata.width ?? null, height: metadata.height ?? null };
   } catch {
-    throw new CanvasError('invalid_input', '图片无法解码，已拒绝导入。');
+    // BMP and some HEIF decoders are absent from sharp builds. Probe the original with shared FFmpeg.
+    const directory = resolveStoragePath(storageRoot, 'canvas-image-probe');
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, `${randomUUID()}.img`);
+    try {
+      await fsPromises.writeFile(file, data, { flag: 'wx' });
+      const probe = await probeVideoMedia(file);
+      if (probe.width > 0 && probe.height > 0) return { width: probe.width, height: probe.height };
+    } finally { await fsPromises.rm(file, { force: true }); }
+    throw new CanvasError('invalid_input', '本机无法解码这张图片，请转换为 PNG/JPEG 后导入。');
   }
 }
 
@@ -133,6 +148,8 @@ function rowToAsset(row: Record<string, unknown>): CanvasAssetRecord {
     contentHash: String(row.contentHash),
     mimeType: String(row.mimeType),
     byteSize: Number(row.byteSize),
+    videoCodec: row.videoCodec ? String(row.videoCodec) : null,
+    pixelFormat: row.pixelFormat ? String(row.pixelFormat) : null,
     width: row.width === null || row.width === undefined ? null : Number(row.width),
     height: row.height === null || row.height === undefined ? null : Number(row.height),
     durationSec: row.durationSec === null || row.durationSec === undefined ? null : Number(row.durationSec),
@@ -202,7 +219,7 @@ export async function importCanvasAsset(params: ImportCanvasAssetParams): Promis
   ).get(canvasId, contentHash) as Record<string, unknown> | undefined;
   if (existing) return rowToAsset(existing);
 
-  const dimensions = mediaKind === 'image' ? await probeImage(data) : { width: null, height: null };
+  const dimensions = mediaKind === 'image' ? await probeImage(data, storageRoot) : { width: null, height: null };
   const assetId = randomUUID();
   const assetDirectory = canvasAssetDirectory(canvasId);
   const relativePath = path.posix.join(assetDirectory, `${assetId}.${extension}`);
@@ -215,7 +232,7 @@ export async function importCanvasAsset(params: ImportCanvasAssetParams): Promis
   await fsPromises.rename(temporaryPath, absolutePath);
 
   const createdAt = now().toISOString();
-  // 视频／音频尽力探测时长：探测失败不阻塞导入，交付前的时长检查会按「未知」放行。
+  // 视频／音频尽力探测时长：探测失败不阻塞导入，Seedance 交付前会重新探测，仍未知则拒绝提交。
   const durationSec = mediaKind === 'image' ? null : await probeDurationSafe(absolutePath);
   db.prepare(`
     INSERT INTO creative_canvas_assets
@@ -292,10 +309,10 @@ export async function registerCanvasResultAsset(
   if (data.byteLength === 0) {
     throw new CanvasError('invalid_input', '生成结果为空文件。');
   }
-  const dimensions = mediaKind === 'image' ? await probeImage(data) : { width: null, height: null };
+  const dimensions = mediaKind === 'image' ? await probeImage(data, storageRoot) : { width: null, height: null };
   const extension = mediaKind === 'image'
     ? (mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png')
-    : 'mp4';
+    : mimeType === 'video/quicktime' ? 'mov' : 'mp4';
 
   const assetId = randomUUID();
   const resultDirectory = canvasResultDirectory(canvasId);
@@ -313,6 +330,7 @@ export async function registerCanvasResultAsset(
   };
 
   try {
+    const videoProbe = mediaKind === 'video' ? await probeVideoMedia(absolutePath) : null;
     const commit = db.transaction((): CanvasAssetRecord | null => {
       if (params.guard) {
         const owned = db.prepare(`
@@ -341,6 +359,8 @@ export async function registerCanvasResultAsset(
         now().toISOString(),
       );
 
+      if (videoProbe) db.prepare(`UPDATE creative_canvas_assets SET width = ?, height = ?, durationSec = ?, videoCodec = ?, pixelFormat = ? WHERE id = ?`)
+        .run(videoProbe.width || null, videoProbe.height || null, videoProbe.durationUs > 0 ? videoProbe.durationUs / 1_000_000 : null, videoProbe.videoCodec || null, videoProbe.pixelFormat || null, assetId);
       const asset = requireCanvasAsset(db, assetId);
       params.commit?.(db, asset);
       return asset;
@@ -403,9 +423,13 @@ export function readCanvasAsset(params: {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     throw new CanvasError('not_found', '素材文件缺失。');
   }
+  return readAssetFile(filePath, asset.mimeType, rangeHeader);
+}
+
+function readAssetFile(filePath: string, mimeType: string, rangeHeader?: string | null): CanvasAssetReadResult {
   const size = fs.statSync(filePath).size;
   const baseHeaders: Record<string, string> = {
-    'Content-Type': asset.mimeType,
+    'Content-Type': mimeType,
     'Cache-Control': 'private, max-age=3600',
     'Accept-Ranges': 'bytes',
   };
@@ -445,4 +469,14 @@ export function readCanvasAsset(params: {
     start: 0,
     end: size - 1,
   };
+}
+
+/** Preview only; persisted assets, downloads and exports always retain the original file. */
+export async function readCanvasAssetPreview(params: Parameters<typeof readCanvasAsset>[0]): Promise<CanvasAssetReadResult> {
+  const asset = requireCanvasAsset(params.db, params.assetId, params.canvasId);
+  if (asset.mediaKind !== 'video') return readCanvasAsset(params);
+  const originalPath = canvasAssetAbsolutePath(asset, params.storageRoot);
+  if (!fs.existsSync(originalPath) || !fs.statSync(originalPath).isFile()) throw new CanvasError('not_found', '素材文件缺失。');
+  const previewPath = await ensureBrowserPreview(originalPath);
+  return readAssetFile(previewPath, previewPath === originalPath ? asset.mimeType : 'video/mp4', params.rangeHeader);
 }
