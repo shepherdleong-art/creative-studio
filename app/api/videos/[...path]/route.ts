@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { dataRoot } from '@/lib/data-root';
+import { ensureBrowserPreview } from '@/lib/video-browser-preview';
 
 export async function GET(
   request: NextRequest,
@@ -27,6 +28,18 @@ export async function GET(
     return NextResponse.json({ error: 'Unsupported video format' }, { status: 400 });
   }
 
+  // 浏览器播放入口（?preview=1）：HEVC/10bit 原件浏览器放不动，换成（必要时
+  // 懒生成的）H.264 预览衍生物；不带参数的 GET 始终给原件，下载链路不受影响。
+  // 衍生物只对 storage/videos/ 下的 mp4 生成（视频生成任务的落盘目录）。
+  let served = resolved;
+  if (
+    request.nextUrl.searchParams.get('preview') === '1'
+    && ext === '.mp4'
+    && resolved.startsWith(path.join(storageRoot, 'videos') + path.sep)
+  ) {
+    served = await ensureBrowserPreview(resolved);
+  }
+
   const mimeMap: Record<string, string> = {
     '.mp4': 'video/mp4',
     '.mov': 'video/quicktime',
@@ -34,7 +47,7 @@ export async function GET(
   };
   const mimeType = mimeMap[ext] || 'video/mp4';
 
-  const stat = fs.statSync(resolved);
+  const stat = fs.statSync(served);
   const fileSize = stat.size;
 
   // ── Range request support (required for <video> playback) ──
@@ -70,7 +83,7 @@ export async function GET(
 
     const chunkSize = end - start + 1;
     const buffer = Buffer.alloc(Math.min(chunkSize, fileSize - start));
-    const fd = fs.openSync(resolved, 'r');
+    const fd = fs.openSync(served, 'r');
     try {
       fs.readSync(fd, buffer, 0, buffer.length, start);
     } finally {
@@ -90,7 +103,7 @@ export async function GET(
   }
 
   // ── Full file response (for download) ──
-  const buffer = fs.readFileSync(resolved);
+  const buffer = fs.readFileSync(served);
   return new NextResponse(buffer, {
     headers: {
       'Content-Type': mimeType,

@@ -86,4 +86,34 @@ assert.equal(distinct.length, 2);
 assert.equal(distinct[0]!.themeKey, 't-1');
 assert.equal(distinct[1]!.themeKey, 't-2');
 
+// B1 回归：相同事实不同说法（同一参数、表述有详略）仍归并。
+const sameFactDifferentPhrasing = dedupeSellingPoints([
+  { title: '座深尺寸', factText: '座深 60cm', pointType: 'spec', evidenceQuote: '座深 60cm', sourcePageIndex: 0, tileRefs: ['tile_1'] },
+  { title: '座深尺寸宽敞', factText: '座深 60cm，落座宽松', pointType: 'spec', evidenceQuote: '座深60厘米，宽松落座', sourcePageIndex: 1, tileRefs: ['tile_2'] },
+]);
+assert.equal(sameFactDifferentPhrasing.length, 1, '同一参数的两种说法必须归并');
+
+// B1 回归：同名但数字/型号不同 → 保留区别，不相互覆盖。
+const differentNumbers = dedupeSellingPoints([
+  { title: '座深尺寸', factText: '标准款座深 60cm', pointType: 'spec', evidenceQuote: '座深 60cm', sourcePageIndex: 0, tileRefs: ['tile_1'] },
+  { title: '座深尺寸加大', factText: '加大款座深 65cm', pointType: 'spec', evidenceQuote: '座深 65cm', sourcePageIndex: 1, tileRefs: ['tile_2'] },
+]);
+assert.equal(differentNumbers.length, 2, '同名不同数字（60cm vs 65cm）不得合并');
+assert.equal(differentNumbers[0]!.factText, '标准款座深 60cm', '首条事实主描述不被后者覆盖');
+assert.equal(differentNumbers[1]!.factText, '加大款座深 65cm', '更具体参数保留在自己的主描述中');
+
+// B1 回归：同名但颜色不同 → 保留区别。
+const differentColors = dedupeSellingPoints([
+  { title: '栗棕配色', factText: '这款配色为栗棕', pointType: 'appearance', evidenceQuote: '栗棕', sourcePageIndex: 0, tileRefs: ['tile_1'] },
+  { title: '栗棕配色款', factText: '另一款配色为焦糖棕', pointType: 'appearance', evidenceQuote: '焦糖棕', sourcePageIndex: 1, tileRefs: ['tile_2'] },
+]);
+assert.equal(differentColors.length, 2, '同名不同颜色（栗棕 vs 焦糖）不得合并');
+
+// B1 回归：同名但适用部位不同 → 保留区别。
+const differentParts = dedupeSellingPoints([
+  { title: '透气网布', factText: '靠背采用透气网布', pointType: 'material', evidenceQuote: '靠背网布', sourcePageIndex: 0, tileRefs: ['tile_1'] },
+  { title: '透气网布设计', factText: '坐垫采用透气网布', pointType: 'material', evidenceQuote: '坐垫网布', sourcePageIndex: 1, tileRefs: ['tile_2'] },
+]);
+assert.equal(differentParts.length, 2, '同名不同部位（靠背 vs 坐垫）不得合并');
+
 console.log('script-studio-dedupe.test.ts: ok');

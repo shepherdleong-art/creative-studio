@@ -1,6 +1,7 @@
 #!/bin/bash
 set -eu
 source "$(dirname "$0")/canvas-profile.sh"
+canvas_require_node
 cd "$CANVAS_ROOT"
 if lsof -nP -iTCP:3100 -sTCP:LISTEN >/dev/null 2>&1; then
     echo "画布端口 3100 已占用，未启动或打开其他实例。" >&2

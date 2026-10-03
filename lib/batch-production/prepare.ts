@@ -65,8 +65,10 @@ export interface PrepareAssetView {
   mediaKind: BatchAssetMediaKind;
   /** 快照时必须提交的真实素材分析版本；为空时 UI 不得允许选择。 */
   currentAnalysisId: string | null;
-  /** 当前分析能力级别；当前本地实现只会产生 technical。 */
+  /** 当前描述是否可用于匹配；文件名描述另行标记来源。 */
   analysisLevel: AssetAnalysisLevel;
+  analysisSource?: 'filename';
+  filenameDescription?: string;
   /** 由项目素材 id 稳定派生的安全媒体访问地址。 */
   thumbnailUrl: string;
   previewUrl: string;
@@ -187,6 +189,8 @@ export async function prepareBatchProductionInputs(
           mediaKind: row.mediaKind,
           currentAnalysisId: current?.status === 'ready' ? current.id : null,
           analysisLevel: current?.status === 'ready' ? current.analysisLevel : 'none',
+          analysisSource: current?.status === 'ready' ? current.analysisSource : undefined,
+          filenameDescription: current?.status === 'ready' ? current.filenameDescription : undefined,
           thumbnailUrl: `/api/batch-production/assets/${encodedAssetId}/thumbnail?projectId=${encodedProjectId}&v=${encodeURIComponent(fingerprintVersion)}`,
           previewUrl: `/api/batch-production/assets/${encodedAssetId}/preview?projectId=${encodedProjectId}`,
           media: media.displayName || !module4DisplayName ? media : { ...media, displayName: module4DisplayName },

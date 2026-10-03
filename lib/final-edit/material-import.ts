@@ -296,7 +296,8 @@ function assetView(storageRoot: string, row: ExternalAssetRow): FinalEditExterna
     height: Number(row.height) || 0,
     status,
     errorMessage,
-    previewUrl: `/api/projects/${encodeURIComponent(row.projectId)}/final-edit/shot-sets/${encodeURIComponent(row.shotSetId)}/external-assets/${encodeURIComponent(row.id)}/media`,
+    // ?preview=1：播放走 H.264 预览衍生物（HEVC/10bit 原件浏览器放不动）
+    previewUrl: `/api/projects/${encodeURIComponent(row.projectId)}/final-edit/shot-sets/${encodeURIComponent(row.shotSetId)}/external-assets/${encodeURIComponent(row.id)}/media?preview=1`,
     thumbnailUrl: row.thumbnailRelativePath
       ? `/api/projects/${encodeURIComponent(row.projectId)}/final-edit/shot-sets/${encodeURIComponent(row.shotSetId)}/external-assets/${encodeURIComponent(row.id)}/thumbnail`
       : null,

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { ScriptStudioError } from './errors.ts';
+import { getScriptStudioLimits } from './limits.ts';
+import type { ScriptTitleSummary } from './title-policy.ts';
 import type {
   ProjectScriptOrigin,
   ProjectScriptRecord,
@@ -31,6 +33,39 @@ export interface ProjectScriptWithRevision extends ProjectScriptRecord {
 
 function nowIso(now?: () => Date): string {
   return (now ?? (() => new Date()))().toISOString();
+}
+
+/** 同项目最近 30 天、最多 100 个版本；排除单条再生成自身的全部版本，不读取当前目录。 */
+export function listRecentProjectScriptTitles(
+  db: Database.Database,
+  projectId: string,
+  options: { excludeScriptId?: string; now?: () => Date } = {},
+): ScriptTitleSummary[] {
+  const limits = getScriptStudioLimits();
+  const until = (options.now || (() => new Date()))();
+  const since = new Date(until.getTime() - limits.titleHistoryDays * 86_400_000).toISOString();
+  const rows = db.prepare(`
+    SELECT r.scriptId, r.id AS revisionId, r.contentJson
+    FROM project_scripts s JOIN project_script_revisions r ON r.scriptId = s.id
+    WHERE s.projectId = ? AND s.id != ? AND r.createdAt >= ? AND r.createdAt <= ?
+    ORDER BY r.createdAt DESC, r.id DESC LIMIT ?
+  `).all(projectId, options.excludeScriptId || '', since, until.toISOString(), limits.titleHistoryMaxRevisions) as Array<{
+    scriptId: string; revisionId: string; contentJson: string;
+  }>;
+  return rows.flatMap((row) => {
+    try {
+      const content = JSON.parse(row.contentJson);
+      return [{
+        scriptId: row.scriptId,
+        revisionId: row.revisionId,
+        title: typeof content?.title === 'string' ? content.title : '',
+        coverTitleParts: {
+          primary: typeof content?.coverTitleParts?.primary === 'string' ? content.coverTitleParts.primary : '',
+          secondary: typeof content?.coverTitleParts?.secondary === 'string' ? content.coverTitleParts.secondary : '',
+        },
+      }];
+    } catch { return []; }
+  });
 }
 
 function insertRevision(

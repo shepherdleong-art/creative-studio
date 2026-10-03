@@ -256,10 +256,10 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
     if (asset.currentAnalysisId) {
       return (
         <div className="mt-3 space-y-2 rounded-xl bg-ok/10 px-3 py-2 text-xs text-ink-secondary" role="status">
-          <p className="font-medium text-ok">{analysisLevel === 'content' ? '内容分析可用' : '可参与分配，建议补内容分析'}</p>
+          <p className="font-medium text-ok">{asset.analysisSource === 'filename' ? '文件名描述可用于匹配' : analysisLevel === 'content' ? '内容分析可用' : '可参与分配，建议补内容分析'}</p>
           {analysisLevel !== 'content' && (
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p>当前只有媒体参数；内容分析后才能按画面语义分配。</p>
+              <p>当前只有媒体参数；提取文件名描述或补充内容分析后，可按内容匹配。</p>
               {onAnalyzeContent && (
                 <button type="button" className="text-accent underline" disabled={analyzeBusy} onClick={onAnalyzeContent}>
                   {analyzeBusy ? '分析中…' : '补充内容分析'}
@@ -356,7 +356,7 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
               <h3 className="mt-1 font-semibold text-ink">{displayName}</h3>
             </div>
             <span className={`rounded-full px-2 py-1 text-[11px] ${selectable ? 'bg-ok/10 text-ok' : 'bg-fail/10 text-fail'}`}>
-              {asset.status === 'online' ? (analysisLevel === 'content' ? '内容分析可用' : '未内容分析') : asset.status === 'archived' ? '已归档' : '离线'}
+              {asset.status === 'online' ? (asset.analysisSource === 'filename' ? '文件名描述可用' : analysisLevel === 'content' ? '内容分析可用' : '未内容分析') : asset.status === 'archived' ? '已归档' : '离线'}
             </span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-xs text-ink-secondary">
@@ -364,6 +364,11 @@ export const BatchAssetSelectionCard = memo(function BatchAssetSelectionCard({
             {asset.media.width && asset.media.height && <span>{asset.media.width}×{asset.media.height}</span>}
           </div>
           {previewBadge}
+          {asset.analysisSource === 'filename' && (
+            <p className="mt-2 rounded-xl bg-surface-subtle px-3 py-2 text-xs leading-5 text-ink-secondary" title={asset.filenameDescription}>
+              文件名描述 · 已跳过画面识别<br />{asset.filenameDescription}
+            </p>
+          )}
           {onRequestProxy && asset.status === 'online' && (
             <button
               type="button"

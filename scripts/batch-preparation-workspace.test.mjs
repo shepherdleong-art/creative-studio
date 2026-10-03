@@ -32,10 +32,14 @@ assert.match(exportStep, /导出成片/);
 assert.match(preparation, /detail\.scriptSnapshots/);
 assert.match(preparation, /inputState === 'frozen'/);
 assert.match(preparation, /result\.inputState === 'frozen'/);
-// 问题 4:单一分析入口 —— 只有「内容分析」按钮,基础分析入口已删除
+// 基础分析入口已删除；外部素材可显式选择本地文件名描述。
 assert.doesNotMatch(materials, /基础分析/);
 assert.match(materials, /内容分析（/);
 assert.match(materials, /内容分析模型/);
+assert.match(materials, /提取文件名描述（/);
+assert.match(materials, /onExtractFilenames\(filenameCandidates\.map/);
+assert.match(preparation, /assets\/filename-description\?projectId=/);
+assert.match(selectionCards, /文件名描述可用/);
 assert.match(materials, /一键全选/);
 assert.match(materials, /取消全选/);
 assert.match(preparation, /selectableAssetCards/);

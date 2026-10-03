@@ -1,4 +1,4 @@
-import type { ScriptStudioHierarchyRole, SellingPointEvidenceRef } from './types.ts';
+import type { ScriptStudioDetailStatus, ScriptStudioHierarchyRole, SellingPointEvidenceRef } from './types.ts';
 
 /**
  * 卖点字段的共享规范化领域函数。vision-extract（模型响应解析）与 libraries（持久化）
@@ -128,4 +128,40 @@ export function isSellingPointEvidenceUsable(point: {
   evidenceGate: string;
 }): boolean {
   return point.usable === 1 && point.disabledByUser === 0 && point.evidenceGate !== 'failed';
+}
+
+// ---------------------------------------------------------------------------
+// 高风险词表（材质/认证/功效/绝对化）：evidence-gate 的风险分级与 detailStatus
+// 判定共用同一份，唯一权威位置在这里，避免两份词表漂移。
+// ---------------------------------------------------------------------------
+export const MATERIAL_WORDS = /\b(?:真皮|实木|棉麻|铝合金|不锈钢|岩板|金属|玻璃|陶瓷|尼龙|橡胶|钛|碳纤维|食品级|环保材质)\b/u;
+export const CERT_WORDS = /\b(?:认证|证书|国标|标准|检测报告|专利|质检|CE|RoHS|FDA|CCC|ISO)\b/u;
+export const EFFICACY_WORDS = /\b(?:有效|显著|改善|解决|提升|降低|修复|抑菌|防水|防污|耐磨|抗压|承重|保鲜|省电|节能)\b/u;
+export const ABSOLUTE_WORDS = /\b(?:最|第一|唯一|绝对|百分百|100%|永久|彻底|全能|顶级|最强)\b/u;
+
+const DETAIL_NUMBER = /\d+(?:\.\d+)?/g;
+const DETAIL_HIGH_RISK_WORDS = /真皮|实木|棉麻|铝合金|不锈钢|岩板|金属|玻璃|陶瓷|尼龙|橡胶|钛|碳纤维|食品级|环保材质|认证|证书|国标|检测报告|专利|质检|CE|RoHS|FDA|CCC|ISO|有效|显著|改善|解决|提升|降低|修复|抑菌|防水|防污|耐磨|抗压|承重|保鲜|省电|节能/g;
+
+/**
+ * 详解可用性判定（爆文模板改写迁移方案 §4.1，本地确定性，不发起模型请求）：
+ * - missing：无详解文本；
+ * - verified：详解中的数字与材质/认证/功效词均能在 factText + evidenceQuote 中找到依据；
+ * - unverified：否则——详解含有未获支持的高风险内容，整组在模板改写模式下暂不可用。
+ * 该检查不能证明详解所有语义均真实（确定性限制），只拦截明确越界的高风险内容。
+ */
+export function computeDetailStatus(input: {
+  detailText?: string;
+  factText?: string;
+  evidenceQuote?: string;
+}): ScriptStudioDetailStatus {
+  const detail = (input.detailText ?? '').trim();
+  if (!detail) return 'missing';
+  const basis = `${input.factText ?? ''}\n${input.evidenceQuote ?? ''}`;
+  for (const match of detail.matchAll(DETAIL_NUMBER)) {
+    if (!basis.includes(match[0])) return 'unverified';
+  }
+  for (const match of detail.matchAll(DETAIL_HIGH_RISK_WORDS)) {
+    if (!basis.includes(match[0])) return 'unverified';
+  }
+  return 'verified';
 }

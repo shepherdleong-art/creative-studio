@@ -1,3 +1,4 @@
+import { resolveCoreUsagePlan } from '@/lib/usage-pricing';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { isPlaceholderValue } from '@/lib/video-auth';
@@ -77,9 +78,8 @@ export async function PUT(
     }
     const effectiveType = typeof body.type === 'string' ? body.type.trim() : String(provider.type || '').trim();
     const effectiveModel = typeof body.model === 'string' ? body.model.trim() : String(provider.model || '').trim();
-    const isFixedImageIdentity = id === 'company-gateway-image2-medium'
-      && effectiveType === 'gateway-task-image'
-      && effectiveModel === 'image2-medium';
+    const isFixedImageIdentity = resolveCoreUsagePlan({ providerTable: 'providers', providerId: id,
+      providerName: '', providerType: effectiveType, configuredModel: effectiveModel, requestModel: effectiveModel }) !== null;
     if (body.defaultCostPerImage !== undefined && !isFixedImageIdentity) {
       updates.push('defaultCostPerImage = ?');
       values.push(body.defaultCostPerImage);

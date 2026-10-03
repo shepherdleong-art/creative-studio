@@ -47,6 +47,18 @@
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
 
+@theme static {
+  /* 时间线重复分组：色块 + 编号共同标识，浅深主题共用语义。 */
+  --color-review-1: #1866b5; --color-review-1-tint: #e5effb;
+  --color-review-2: #8050b6; --color-review-2-tint: #f0e8fa;
+  --color-review-3: #16806c; --color-review-3-tint: #e1f3ed;
+  --color-review-4: #b55819; --color-review-4-tint: #fbeadf;
+  --color-review-5: #b53e77; --color-review-5-tint: #f9e4ef;
+  --color-review-6: #267c93; --color-review-6-tint: #e0f1f7;
+  --color-review-7: #777817; --color-review-7-tint: #f1f2d8;
+  --color-review-8: #a75042; --color-review-8-tint: #f8e6e2;
+}
+
 /* ===== Base ===== */
 /* 显式声明浅色为默认外观：系统深色 + 应用浅色时，原生控件（select 弹层、滚动条、
    日期控件）不会被 UA 按 'normal' 解析成深色。深色由 html[data-theme='dark'] 覆盖。 */
@@ -782,6 +794,14 @@ body {
  * 令牌覆盖放在 @layer 之外：非分层规则天然压过 @theme 生成的 :root 与
  * @layer utilities 里的组件类，不需要拼特异性。浅色即默认值，无需显式作用域。 */
 html[data-theme='dark'] {
+  --color-review-1: #80b9fa; --color-review-1-tint: #203650;
+  --color-review-2: #c2a0f1; --color-review-2-tint: #39294e;
+  --color-review-3: #6cd3b6; --color-review-3-tint: #1d3d35;
+  --color-review-4: #f0b079; --color-review-4-tint: #493222;
+  --color-review-5: #ef98c0; --color-review-5-tint: #472b3b;
+  --color-review-6: #80cdde; --color-review-6-tint: #223c48;
+  --color-review-7: #cdcf79; --color-review-7-tint: #3b3d21;
+  --color-review-8: #efa699; --color-review-8-tint: #472f2b;
   color-scheme: dark;
   /* surfaces：不用纯黑，深灰底长看更柔和 */
   --color-surface: #161617;

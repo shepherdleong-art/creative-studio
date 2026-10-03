@@ -1,18 +1,20 @@
 import type { EvidenceReprobe, EvidenceTile } from './adapters/reprobe.ts';
 import type { LibrarySellingPointInput } from './libraries.ts';
 import { getScriptStudioLimits } from './limits.ts';
-import { normalizeEvidenceRefs } from './selling-point-normalize.ts';
+import {
+  ABSOLUTE_WORDS,
+  CERT_WORDS,
+  EFFICACY_WORDS,
+  MATERIAL_WORDS,
+  normalizeEvidenceRefs,
+} from './selling-point-normalize.ts';
 import { parseTileRefIndex } from './tiling.ts';
-import type { ScriptStudioEvidenceGate, ScriptStudioPointType } from './types.ts';
 
-const MATERIAL_WORDS = /\b(?:真皮|实木|棉麻|铝合金|不锈钢|岩板|金属|玻璃|陶瓷|尼龙|橡胶|钛|碳纤维|食品级|环保材质)\b/u;
-const CERT_WORDS = /\b(?:认证|证书|国标|标准|检测报告|专利|质检|CE|RoHS|FDA|CCC|ISO)\b/u;
-const EFFICACY_WORDS = /\b(?:有效|显著|改善|解决|提升|降低|修复|抑菌|防水|防污|耐磨|抗压|承重|保鲜|省电|节能)\b/u;
-const ABSOLUTE_WORDS = /\b(?:最|第一|唯一|绝对|百分百|100%|永久|彻底|全能|顶级|最强)\b/u;
 const PROMOTION_WORDS = /\b(?:促销|限时|优惠|赠品|折扣|秒杀|包邮|券|满减|特价|销量|热卖|爆款|好评|回购|立减|拼团)\b/u;
 const PRICE_PATTERN = /(?:¥|￥|\b\d+(?:\.\d+)?\s*(?:元|块|折|%|％)\b)/u;
 
 export interface EvidenceGateResult {
+  manualReview?: boolean;
   points: LibrarySellingPointInput[];
   excludedPromotion: number;
   excludedHighRiskUnverified: number;
@@ -23,6 +25,8 @@ export interface EvidenceGateResult {
 }
 
 export interface EvidenceGateDeps {
+  /** 用户选择按需人工核对；仍执行结构、来源范围与促销排除，不冒充二次核验。 */
+  manualReview?: boolean;
   reprobe?: EvidenceReprobe;
   evidenceTiles?: (point: LibrarySellingPointInput) => EvidenceTile[];
   signal?: AbortSignal;
@@ -69,33 +73,33 @@ function buildReprobeBatches(
     : 1;
   const maxImages = Math.max(1, Math.floor(deps.maxImagesPerBatch));
   const batches: ReprobeBatch[] = [];
-  let batch: ReprobeBatch = { items: [], tiles: [] };
-  let tileIndexByKey = new Map<string, number>();
-
-  const flush = () => {
-    if (batch.items.length > 0) batches.push(batch);
-    batch = { items: [], tiles: [] };
-    tileIndexByKey = new Map<string, number>();
-  };
-
+  const indexes: Array<Map<string, number>> = [];
   for (const index of queue) {
     const point = input[index]!;
     const claim = point.evidenceQuote?.trim() || point.factText.trim();
-    const pointTiles = deps.evidenceTiles?.(point) || [];
-    // 调用方即使返回超额图片，门禁自身仍负责最后一道硬封顶；不能把资源契约寄托在 runner 守约上。
-    const uniquePointTiles = [...new Map(pointTiles.map((tile) => [evidenceTileKey(tile), tile])).values()]
+    // 每条主张的图片仍独立、去重且封顶；合批不能给它增加其他主张的证据。
+    const pointTiles = [...new Map((deps.evidenceTiles?.(point) || []).map((tile) => [evidenceTileKey(tile), tile])).entries()]
       .slice(0, maxImages);
-    const unseenCount = uniquePointTiles.reduce(
-      (count, tile) => count + (tileIndexByKey.has(evidenceTileKey(tile)) ? 0 : 1),
-      0,
-    );
-    if (batch.items.length > 0 && (batch.items.length >= maxClaims || batch.tiles.length + unseenCount > maxImages)) {
-      flush();
+    let chosen = -1;
+    let fewestNewImages = Infinity;
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i]!;
+      if (batch.items.length >= maxClaims) continue;
+      const unseen = pointTiles.filter(([key]) => !indexes[i]!.has(key)).length;
+      if (batch.tiles.length + unseen <= maxImages && unseen < fewestNewImages) {
+        chosen = i;
+        fewestNewImages = unseen;
+      }
     }
-
+    if (chosen < 0) {
+      chosen = batches.length;
+      batches.push({ items: [], tiles: [] });
+      indexes.push(new Map());
+    }
+    const batch = batches[chosen]!;
+    const tileIndexByKey = indexes[chosen]!;
     const imageIndexes: number[] = [];
-    for (const tile of uniquePointTiles) {
-      const key = evidenceTileKey(tile);
+    for (const [key, tile] of pointTiles) {
       let imageIndex = tileIndexByKey.get(key);
       if (imageIndex === undefined) {
         batch.tiles.push(tile);
@@ -106,7 +110,6 @@ function buildReprobeBatches(
     }
     batch.items.push({ index, claim, imageIndexes });
   }
-  flush();
   return batches;
 }
 
@@ -184,6 +187,7 @@ export async function runEvidenceGate(
   let excludedStructural = 0;
   let verifiedHighRisk = 0;
   let reprobeRequestCount = 0;
+  let highRiskCandidateCount = 0;
 
   // 第一遍同步判定：结构门禁与促销排除不需要模型调用，只有高风险卖点进入二次核验队列。
   const reprobeQueue: number[] = [];
@@ -200,7 +204,8 @@ export async function runEvidenceGate(
       points[index] = { ...point, evidenceGate: 'failed', usable: false, riskLevel };
       return;
     }
-    if (riskLevel === 'high') {
+    if (riskLevel === 'high') highRiskCandidateCount += 1;
+    if (riskLevel === 'high' && !deps.manualReview) {
       reprobeQueue.push(index);
       return;
     }
@@ -271,8 +276,9 @@ export async function runEvidenceGate(
     excludedHighRiskUnverified,
     excludedStructural,
     verifiedHighRisk,
-    highRiskCandidateCount: reprobeQueue.length,
+    highRiskCandidateCount,
     reprobeRequestCount,
+    ...(deps.manualReview ? { manualReview: true } : {}),
   };
 }
 
@@ -282,7 +288,7 @@ export function usableSellingPoints(points: LibrarySellingPointInput[]): Library
 
 export function evidenceGateSummary(
   points: LibrarySellingPointInput[],
-  result?: Pick<EvidenceGateResult, 'highRiskCandidateCount' | 'reprobeRequestCount'>,
+  result?: Pick<EvidenceGateResult, 'highRiskCandidateCount' | 'reprobeRequestCount' | 'manualReview'>,
 ): Record<string, unknown> {
   const summary: Record<string, unknown> = {
     total: points.length,
@@ -291,6 +297,7 @@ export function evidenceGateSummary(
     highRiskVerified: points.filter((point) => point.riskLevel === 'high' && point.evidenceGate === 'passed').length,
   };
   if (result) {
+    if (result.manualReview) summary.manualReview = true;
     summary.highRiskCandidates = result.highRiskCandidateCount;
     summary.reprobeRequests = result.reprobeRequestCount;
   }

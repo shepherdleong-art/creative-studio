@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { batchSourceReview, type BatchSourceConflictGroup } from './source-conflicts.ts';
 import { batchArtifactPathsArePaired } from './artifact-pair.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
 import { getCurrentExportDirName } from '../project-export-identity.ts';
@@ -110,6 +111,10 @@ export interface BatchOutputCardView {
   subtitleOverride: boolean;
   coverRange: BatchCoverRangeView | null;
   warnings: string[];
+  /** 当前画面实时同源提醒，只提示，不影响审核与导出资格。 */
+  sourceWarnings?: string[];
+  sourceConflictAssetIds?: string[];
+  sourceConflictGroups?: BatchSourceConflictGroup[];
   blockers: string[];
   /** 当前正式成片(视频 + 配对封面);未发布过为 null。 */
   currentFormalArtifact: BatchFormalArtifactView | null;
@@ -548,11 +553,13 @@ export function getBatchWorkspace(
 
   const cards = plans.map((plan): BatchOutputCardView => {
     const arrangement = parseJson(plan.arrangementJson);
+    const { sourceWarnings, sourceConflictAssetIds, sourceConflictGroups } = batchSourceReview(db, arrangement);
     const latestAllocationOutput = allocationOutput(allocationReport, plan.id);
     const latestArrangement = latestAllocationOutput && typeof latestAllocationOutput === 'object' && !Array.isArray(latestAllocationOutput)
       ? (latestAllocationOutput as Record<string, unknown>).arrangement
       : null;
     const warnings = [...new Set([
+      ...sourceWarnings,
       ...diagnosticMessages(arrangement, 'warnings'),
       ...diagnosticMessages(latestAllocationOutput, 'warnings'),
       ...diagnosticMessages(latestArrangement, 'warnings'),
@@ -725,6 +732,9 @@ export function getBatchWorkspace(
       subtitleOverride: arrangementHasManualSubtitleOverride(arrangement),
       coverRange,
       warnings,
+      sourceWarnings,
+      sourceConflictAssetIds,
+      sourceConflictGroups,
       blockers: effectiveBlockers,
       currentFormalArtifact: currentVideo
         ? { video: currentVideo, cover: currentCover }

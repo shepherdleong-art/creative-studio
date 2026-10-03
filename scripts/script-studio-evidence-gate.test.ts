@@ -258,4 +258,34 @@ const aborted = await runEvidenceGate([point()], { reprobe: verifiedReprobe, sig
 assert.equal(aborted.points[0]?.evidenceGate, 'failed');
 assert.equal(aborted.excludedHighRiskUnverified, 1);
 
+
+// 非相邻卖点引用同组图片时仍可合批，逐条证据范围和最终顺序保持不变。
+{
+  const groupedPoints = ['A', 'B', 'A', 'B'].map((group, index) => point({
+    title: `${group}-${index}`, evidenceQuote: `经过 ${index + 50} 道工序`,
+  }));
+  let calls = 0;
+  const grouped = await runEvidenceGate(groupedPoints, {
+    evidenceTiles: (item) => Array.from({ length: 6 }, (_, i) => ({ mimeType: 'image/jpeg', imageBase64: `${item.title![0]}-${i}` })),
+    batchSize: 4, maxImagesPerBatch: 6, concurrency: 2,
+    reprobe: {
+      kind: 'vision_closed_question',
+      async verify() { throw new Error('must batch'); },
+      async verifyMany(input) {
+        calls++;
+        assert.ok(input.tiles.length <= 6);
+        assert.ok(input.claims.length <= 4);
+        for (const claim of input.claims) {
+          const group = groupedPoints[Number(claim.id)]!.title![0];
+          assert.ok(claim.imageIndexes.every((index) => input.tiles[index - 1]!.imageBase64.startsWith(group)));
+        }
+        return { results: input.claims.map((claim) => ({ id: claim.id, quote: claim.claim })) };
+      },
+    },
+  });
+  assert.equal(calls, 2, '相同证据图应复用现有批，不因输入交错发起 4 次请求');
+  assert.equal(grouped.verifiedHighRisk, 4);
+  assert.deepEqual(grouped.points.map((point) => point.title), groupedPoints.map((point) => point.title));
+}
+
 console.log('script-studio-evidence-gate.test.ts: ok');

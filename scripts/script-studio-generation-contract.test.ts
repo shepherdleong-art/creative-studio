@@ -10,8 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
+  parseScriptProductionMode,
   parseScriptStudioRequestedCount,
   parseScriptStudioTargetDuration,
+  parseTemplateRewriteEntryIds,
   SCRIPT_GENERATION_MAX_COUNT,
   SCRIPT_GENERATION_UI_OPTIONS,
 } from '../lib/script-studio/generation-contract.ts';
@@ -37,6 +39,26 @@ assert.throws(() => parseScriptStudioRequestedCount(undefined), /1-6/);
 assert.equal(parseScriptStudioTargetDuration(15), 15);
 assert.equal(parseScriptStudioTargetDuration(60), 60);
 assert.throws(() => parseScriptStudioTargetDuration(18), /15、20、30、45 或 60/);
+
+// ---- 生产模式契约（爆文模板改写）----
+assert.equal(parseScriptProductionMode(undefined, 20), 'standard');
+assert.equal(parseScriptProductionMode('standard', 20), 'standard');
+assert.equal(parseScriptProductionMode('pain_solving_15s', 15), 'pain_solving_15s');
+assert.throws(() => parseScriptProductionMode('pain_solving_15s', 20), /仅支持15秒/);
+assert.equal(parseScriptProductionMode('template_rewrite', 20), 'template_rewrite');
+assert.equal(parseScriptProductionMode('template_rewrite', 15), 'template_rewrite', '模板改写时长走共享白名单，不限 15 秒');
+assert.equal(parseScriptProductionMode('template_rewrite', 60), 'template_rewrite');
+assert.throws(() => parseScriptProductionMode('audience_analysis', 20), /不支持的脚本生产模式/);
+
+// ---- 模板选择校验（A03）：0、超上限、数量矛盾一律拒绝；同一模板可重复多条 ----
+assert.throws(() => parseTemplateRewriteEntryIds([], 1), /勾选 1-6 个模板/, '0 个模板被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c', 'd', 'e', 'f', 'g'], 7), /最多生成 6 条/, '展开后超 6 条被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b'], 3), /与模板条数一致/, '数量与模板条数矛盾被拒绝');
+assert.throws(() => parseTemplateRewriteEntryIds(['a', 'b', 'c'], 2), /与模板条数一致/, '反向矛盾同样被拒绝');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a'], 1), ['a'], '1 个可用模板可提交');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a', 'b', 'c', 'd', 'e', 'f'], 6), ['a', 'b', 'c', 'd', 'e', 'f'], '6 个可用模板可提交且保持选择顺序');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a', 'a'], 2), ['a', 'a'], '同一模板重复 2 次 = 该模板生成 2 条');
+assert.deepEqual(parseTemplateRewriteEntryIds(['a', 'a', 'b', 'b', 'b', 'c'], 6), ['a', 'a', 'b', 'b', 'b', 'c'], '多模板混合重复保持顺序');
 
 // ---- planner 6 个不同方向 ----
 const revision = {

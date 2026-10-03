@@ -161,6 +161,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - **路径**：所有本地文件路径基于 `dataRoot()`。
 - **TypeScript**：strict 模式；路径别名 `@/*` 指向仓库根。ESLint 用 Next.js 官方 flat config，无额外自定义规则。
 - **UI**：界面文案为中文；视觉风格为 Apple 官网式精致极简（见 `docs/2026-06-12-session-summary.md`）。
+- **批量统一审片改造**：修改统一工作台、轨道编辑或开场归库前，先读 [确认版 PRD](docs/superpowers/specs/2026-09-25-批量统一审片-PRD.md) 与 [执行文档](docs/superpowers/plans/2026-09-25-批量统一审片-执行文档.md)，按冻结 v14 和逐项验收执行。
 - **外观主题**：全局三态（浅色/深色/跟随系统）由 `html[data-theme="dark"]` 驱动——暗色令牌与组件覆盖集中在 `app/globals.css` 末尾，mixcut 两个 CSS module 各自带暗色覆盖块；偏好存 `localStorage["creative-studio-theme"]`，水合前初始化脚本在 `app/layout.tsx`，切换按钮是 `components/ThemeToggle.tsx`。新增 UI 颜色一律走设计令牌，不要新增硬编码浅色值（深色覆盖只补丁存量）。
 - **文档**：常驻架构参考放 `docs/reference/`；设计、评审、会话记录放 `docs/`，文件名带日期前缀（`YYYY-MM-DD-主题.md`）；较大功能的规格与计划放 `docs/superpowers/{specs,plans}/`——**这个目录名是历史沿革，与当前使用的任何 skill 无关**，新文档照旧往里放，不要按名字另起炉灶。
 - **关闭端点**：`POST /api/shutdown` 先 await `gracefulShutdown`（各步骤有界超时）再延迟 100ms `process.exit(0)`，供安装版启停脚本调用；不要在开发流程里误触。SIGTERM/SIGINT 也走同一入口。
@@ -179,7 +180,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 - 供应商 API Key 存本地 SQLite（`providers.apiKey` 等列），前端只显示「是否已配置」，不回显明文——保持这个约束。
 - `data/`、`storage/`、`outputs/`、`dist/` 是本机运行数据，gitignored，也不要打进安装包。
 - 日志会脱敏 API Key（`lib/logger.ts`）；新增日志点不要打印请求头、密钥或完整鉴权串。
-- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/`；**改动打包逻辑时保留这些断言**。`python-runtime/` 只进 Windows 免安装包，不进 Git、Inno/DMG 安装包与 standalone。
+- 安装包构建脚本会裁剪并断言负载中不含 `data/`、`storage/`、`outputs/`、`docs/`、`scripts/`、`.git/`、`.env*`、`config.yaml`、`.venv-litellm/`、`python-runtime/`；**改动打包逻辑时保留这些断言**。禁入清单单一来源为 `scripts/packaging/forbidden-paths.json`（`next.config.ts`、`sync-standalone-assets.mjs`、`build-win-installer.ps1`、`build-mac-installer.sh` 及各自守护测试共用），改清单只改 JSON，且必须保持 ASCII-only（Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，非 ASCII 字节会破坏 `ConvertFrom-Json`）。`python-runtime/` 只进 Windows 免安装包，不进 Git、Inno/DMG 安装包与 standalone。
 - 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 
 ## 桌面打包与部署

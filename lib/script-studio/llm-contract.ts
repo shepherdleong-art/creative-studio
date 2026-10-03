@@ -12,6 +12,8 @@ export interface ScriptStudioCompleteJsonRequest {
   timeoutMs?: number;
   signal?: AbortSignal;
   images?: Array<{ mimeType: string; imageBase64: string }>;
+  /** 图片已按识图预算处理，COS 交付时保持原始字节。 */
+  preserveImageBytes?: boolean;
   onTextDelta?: (accumulated: string) => void;
   onReasoningDelta?: (accumulated: string) => void;
 }

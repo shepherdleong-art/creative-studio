@@ -39,11 +39,26 @@ test('桌面版入口启动 Electron 而不是 dev server', () => {
 test('桌面版入口锁定私有 Node 运行时并硬断言 Electron 二进制', () => {
   const startDesktop = read('start-desktop.command');
 
-  assert.match(startDesktop, /CREATIVE_STUDIO_NODE="\$\(command -v node\)"/);
-  assert.match(startDesktop, /export CREATIVE_STUDIO_NODE/);
+  assert.match(startDesktop, /canvas_require_node/);
+  assert.match(read('scripts/canvas-profile.sh'), /export CREATIVE_STUDIO_NODE="\$canvas_node"/);
   assert.match(startDesktop, /node_modules\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron/);
   assert.match(startDesktop, /install\.js/);
   assert.match(startDesktop, /Electron 运行时安装失败/);
+});
+
+test('快启脚本在 PATH 无 node 时探测常见安装位置', () => {
+  // 托管 Node(workbuddy 等)常不在双击启动 shell 的 PATH 里;current 是内容为
+  // 版本号的指针文件,升级后版本目录会变,探测必须跟随指针而不是写死版本号。
+  const profile = read('scripts/canvas-profile.sh');
+  assert.match(profile, /locate_node\(\)/);
+  assert.match(profile, /\.workbuddy\/binaries\/node\/versions/);
+  assert.match(profile, /cat "\$wb_root\/current"/);
+  assert.match(profile, /opt\/homebrew\/bin\/node/);
+  for (const entry of ['start-desktop.command', 'scripts/canvas-dev.sh', 'stop.command', 'stop-desktop.command']) {
+    assert.match(read(entry), /canvas-profile\.sh/);
+    assert.match(read(entry), /canvas_require_node/);
+  }
+  assert.match(read('start.command'), /scripts\/canvas-dev\.sh/);
 });
 
 test('桌面版入口在缺少 standalone 产物时才构建，并支持 --rebuild', () => {
@@ -59,7 +74,7 @@ test('桌面版入口在缺少 standalone 产物时才构建，并支持 --rebui
 test('桌面版入口提醒与网页版共用数据库的并发风险', () => {
   const startDesktop = read('start-desktop.command');
 
-  assert.match(startDesktop, /lsof -nP -iTCP:3100/);
+  assert.match(startDesktop, /ports\.mjs" listeners 3100/);
   assert.match(startDesktop, /data\/workbench\.db/);
   assert.match(startDesktop, /exit 1/);
 });

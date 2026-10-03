@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { VideoPlaybackRateControl } from '@/components/mixcut/VideoPlaybackRateControl';
+import { ClipFramingControl } from '@/components/mixcut/ClipFramingControl';
 import { Icon } from '@/components/ui/Icon';
 import type { OutputPresetId } from '@/lib/final-edit/types';
 import type { TextStyle } from '@/lib/media-core/cover-types';
@@ -304,7 +306,7 @@ export default function BatchOutputEditor({
     const target = clips.find((clip) => clip.clipId === targetClipId);
     if (!target || clips.length === 1) return;
     const accepted = window.confirm(
-      '删除后后续片段会自动前移，口播仍按原时间播放，需要注意声画对位。确定删除这段吗？',
+      '删除后会保留空位，后续片段和音频位置不变。确定删除这段吗？',
     );
     if (!accepted) return;
     const result = await submitEdit({ type: 'delete', clipId: target.clipId });
@@ -607,6 +609,9 @@ export default function BatchOutputEditor({
                   ) : (
                     <BatchTimelinePreview
                       clips={clips}
+                      narrationDurationUs={view.narration.durationUs}
+                      preserveGaps={view.preserveGaps}
+                      audio={view.audio}
                       assetsById={previewAssetsById}
                       coverUrl={coverUrl}
                       coverDraft={{ asset: coverAsset, timeUs: view.coverTimeUs, title: view.coverTitle, framing: view.coverFraming }}
@@ -631,12 +636,16 @@ export default function BatchOutputEditor({
                 assets={poolAssets}
                 subtitleCues={view.subtitleCues}
                 narrationDurationUs={view.narration.durationUs}
+                preserveGaps={view.preserveGaps}
+                audio={view.audio}
+                musicLabel={view.musicLibrary.find((track) => track.id === view.music.trackId)?.filename ?? null}
+                onMediaEdit={submitEdit}
                 playheadSec={playheadSec}
                 selectedClipId={selectedClipId}
                 selectedSubtitleCueId={selectedSubtitleCueId}
                 disabled={editLocked}
                 onSeek={setPlayheadSec}
-                onSelectClip={setSelectedClipId}
+                onSelectClip={(clipId) => { setSelectedClipId(clipId); const clip = clips.find((item) => item.clipId === clipId); if (clip) { setPlayheadSec(20 / 24 + clip.timelineStartUs / 1e6); setPreviewMode('output'); } }}
                 onSelectSubtitleCue={setSelectedSubtitleCueId}
                 onTrimVariable={async (clipId, sourceStartUs, sourceEndUs) =>
                   submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs })}
@@ -662,6 +671,13 @@ export default function BatchOutputEditor({
         </main>
 
         <aside className="min-h-0 min-w-0 space-y-3 overflow-y-auto pr-1" data-testid="batch-output-settings-scroll-area" aria-label="成片设置">
+          {selectedClip && <VideoPlaybackRateControl key={`speed:${selectedClip.clipId}`} value={selectedClip.playbackRate ?? 1} disabled={editLocked}
+            onCommit={(playbackRate) => submitEdit({ type: 'set_clip_playback_rate', clipId: selectedClip.clipId, playbackRate })} />}
+
+          {selectedClip && <ClipFramingControl key={`framing:${selectedClip.clipId}`} clip={{ framing: selectedClip.framing ?? { scale: 1, offsetX: 0, offsetY: 0 } }} disabled={editLocked}
+            onPreview={(framing) => setView((current) => current ? { ...current, clips: current.clips.map((clip) => clip.clipId === selectedClip.clipId ? { ...clip, framing } : clip) } : current)}
+            onCommit={(framing) => void submitEdit({ type: 'set_clip_framing', clipId: selectedClip.clipId, framing })} />}
+
           <div className="tile space-y-3 p-3" aria-label="字幕样式">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-semibold text-ink">字幕样式</p>

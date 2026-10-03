@@ -11,6 +11,7 @@ export const CHANNELS = {
   openFolder: 'desktop:open-folder',
   linkedImportProgress: 'desktop:linked-import-progress',
   setThemePreference: 'desktop:set-theme-preference',
+  quitRequested: 'desktop:quit-requested',
 } as const;
 
 export type DesktopPlatform = Awaited<ReturnType<DesktopBridge['platform']>>;

@@ -1,4 +1,28 @@
-import type { BatchTaskTargetKind, BatchTaskWorkType } from './tasks.ts';
+import type { BatchTaskTargetKind, BatchTaskWorkType, BatchTaskView } from './tasks.ts';
+
+/** 计划卡在确认输入时就存在；只有分配结果或实际成片版本才能证明已配画面。 */
+export function batchAllocationProgress(
+  tasks: readonly Pick<BatchTaskView, 'workType' | 'status'>[],
+  workspace: { allocationReport: unknown; cards: readonly { versionId: string | null }[] } | null,
+): { status: 'waiting' | 'running' | 'done' | 'failed'; detail?: string } {
+  const active = (workType: BatchTaskWorkType) => tasks.some(task => (
+    task.workType === workType && (task.status === 'queued' || task.status === 'running')
+  ));
+  if (active('semantic_score')) return { status: 'waiting', detail: '等待画面语义匹配完成' };
+  if (active('narration')) return { status: 'waiting', detail: '等待口播完成' };
+  const report = workspace?.allocationReport;
+  if (report && typeof report === 'object' && 'status' in report && report.status === 'blocked') {
+    return { status: 'failed', detail: '素材不足或分配受阻，请查看成片提示' };
+  }
+  if (report != null || (workspace && workspace.cards.length > 0 && workspace.cards.every(card => card.versionId))) {
+    return { status: 'done' };
+  }
+  if (!tasks.some(task => task.workType === 'narration')) {
+    return { status: 'waiting', detail: '等待口播完成' };
+  }
+  // 口播失败仍允许后端继续分配静音预览；失败归口播阶段展示。
+  return { status: 'running' };
+}
 
 export interface BatchRenderTaskLike {
   workType: BatchTaskWorkType;
@@ -27,4 +51,22 @@ export function splitBatchRenderTasks<T extends BatchRenderTaskLike>(
     else if (task.targetKind === 'output_version') full.push(task);
   }
   return { cover, full };
+}
+
+/** 实际整片渲染区间的并集：排除准备、审片、排队和重试之间的空闲。 */
+export function batchExportElapsedSec(tasks: readonly BatchTaskView[], nowMs: number): number {
+  const intervals = splitBatchRenderTasks(tasks).full.flatMap(task => task.attempts.flatMap(attempt => {
+    const start = Date.parse(attempt.startedAt);
+    const end = attempt.finishedAt
+      ? Date.parse(attempt.finishedAt)
+      : attempt.status === 'running' && task.status === 'running' ? nowMs : NaN;
+    return Number.isFinite(start) && Number.isFinite(end) && end > start ? [{ start, end }] : [];
+  })).sort((a, b) => a.start - b.start);
+  let elapsedMs = 0;
+  let previousEnd = -Infinity;
+  for (const { start, end } of intervals) {
+    elapsedMs += Math.max(0, end - Math.max(start, previousEnd));
+    previousEnd = Math.max(previousEnd, end);
+  }
+  return Math.floor(elapsedMs / 1000);
 }

@@ -14,6 +14,8 @@ export interface TimelineClip {
   sourceFingerprint: string;
   sourceInFrame: number;
   sourceOutFrame: number;
+  /** Missing in older drafts means normal speed. */
+  playbackRate?: number;
   timelineInFrame: number;
   timelineOutFrame: number;
   boundSegmentId: string | null;
@@ -26,7 +28,13 @@ export interface VideoTimeline {
   introFrames: 20;
   bodyFrames: number;
   clips: TimelineClip[];
+  /** Explicit editing may leave black gaps without blocking export. */
+  allowGaps?: boolean;
+  audio?: Partial<Record<AudioTrackKind, AudioClip[]>>;
 }
+
+import type { AudioClip, AudioTrackKind } from '../media-core/audio-edit.ts';
+export type { AudioClip, AudioTrackKind } from '../media-core/audio-edit.ts';
 
 export interface SubtitleCue {
   id: string;

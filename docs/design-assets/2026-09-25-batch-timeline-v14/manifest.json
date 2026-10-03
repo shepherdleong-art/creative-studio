@@ -1,0 +1,35 @@
+{
+  "baseline": "batch-timeline-v14",
+  "date": "2026-09-25",
+  "status": "用户已确认的 HTML 交互基线；非生产实现",
+  "source": "outputs/batch-timeline-prototype/index.html",
+  "htmlSha256": "2c5aa7a97260ace99e7672ae499b7c5e49533e2b52b69e98ca27a3112f5c7932",
+  "archiveSha256": "02a11ee4847b4b4e977ded9cc45d230b94b1c127b7c35f241334f285a85ac807",
+  "htmlBytes": 6186647,
+  "archiveBytes": 3256907,
+  "repositoryHead": "4d844f1b3064ccf3e48ceb30d4aa08f164ec9777",
+  "repositoryBranch": "feat/video-bulk-prompt",
+  "fixtures": {
+    "films": 6,
+    "openingAssets": 4,
+    "bodyAssets": 8,
+    "media": "illustrated silent MP4",
+    "audio": "illustrative waveforms; no real audio"
+  },
+  "runtimeLimits": [
+    "imports and edits are memory-only",
+    "opening folder and generated-asset ingestion are illustrative",
+    "export downloads a review JSON manifest, not rendered video",
+    "font catalogue is a fixture; original property components are bundled"
+  ],
+  "captures": {
+    "overview.png": "v14 默认工作台",
+    "repeat-highlight.png": "视频片段选中；扩大时间轴查看其他成片的重复素材，普通素材保持可见",
+    "audio-edit.png": "v14 已有交互：口播与 BGM 分割后的示例状态"
+  },
+  "captureSha256": {
+    "overview.png": "018d8a6305482cab75804dae6403dd5c5e121929a4e6f9f125bfe6dc65c141ad",
+    "repeat-highlight.png": "066cf82f2154b61308a9a06dec5a00b5fe918f8f66971569154ba4d767d15e12",
+    "audio-edit.png": "5e3998903bfccb19137fe345e3b79f0f0749d274628d1422c53759fd5e360aad"
+  }
+}

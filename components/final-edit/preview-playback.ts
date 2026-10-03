@@ -22,8 +22,25 @@ export function getVideoSlotPlan(activeClipIndex: number, clipCount: number): Vi
   return { activeSlot: 1, clipIndexes: [inRange(activeClipIndex + 1), inRange(activeClipIndex)] };
 }
 
-export function expectedVideoTimeSec(sourceInFrame: number, timelineInFrame: number, bodyFrame: number, fps: number): number {
-  return sourceInFrame / fps + Math.max(0, bodyFrame - timelineInFrame) / fps;
+export function expectedVideoTimeSec(sourceInFrame: number, timelineInFrame: number, bodyFrame: number, fps: number, playbackRate = 1): number {
+  return sourceInFrame / fps + Math.max(0, bodyFrame - timelineInFrame) / fps * playbackRate;
+}
+
+/**
+ * 定位某个正文帧应显示哪条片段。批量时间轴的边界以微秒存储且不一定整帧对齐:
+ * 修剪后的边缘会吸附到输出帧网格,而自动分配的相邻边界可能差零点几帧,
+ * 中间留下次帧级空隙。两侧都用四舍五入会让夹在中间的帧无片段可播(被涂黑),
+ * 因此起始侧向下取整、让后续片段前探覆盖——次帧级空隙不会物化成黑帧,
+ * 与渲染器 gapFrames 的 floor 语义一致;真实空位(≥1 帧)仍返回 -1 播黑场。
+ */
+export function activeClipIndexAtBodyFrame<T extends { timelineStartUs: number; timelineEndUs: number }>(
+  clips: T[],
+  bodyFrame: number,
+  fps: number,
+): number {
+  return clips.findIndex((clip) =>
+    bodyFrame >= Math.floor((clip.timelineStartUs / 1_000_000) * fps)
+    && bodyFrame < Math.round((clip.timelineEndUs / 1_000_000) * fps));
 }
 
 /**
@@ -96,8 +113,8 @@ function fittedRect(canvas: HTMLCanvasElement, video: HTMLVideoElement, mode: 'c
   const width = video.videoWidth * fit;
   const height = video.videoHeight * fit;
   return {
-    x: (canvas.width - width) / 2 + framing.offsetX * Math.abs(canvas.width - width) / 2,
-    y: (canvas.height - height) / 2 + framing.offsetY * Math.abs(canvas.height - height) / 2,
+    x: (canvas.width - width) / 2 + framing.offsetX * canvas.width / 2,
+    y: (canvas.height - height) / 2 + framing.offsetY * canvas.height / 2,
     width,
     height,
   };
@@ -113,15 +130,16 @@ export function paintDecodedVideoFrame(
   video: HTMLVideoElement,
   preset: OutputPresetId,
   framing: PreviewFraming,
+  fit?: 'cover',
 ): boolean {
   if (video.readyState < 2 || video.seeking || !video.videoWidth || !video.videoHeight) return false;
 
   context.save();
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = '#111827';
+  context.fillStyle = '#000000';
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  if (preset === '16x9') {
+  if (preset === '16x9' && fit !== 'cover') {
     const background = fittedRect(canvas, video, 'cover', { scale: 1.08, offsetX: 0, offsetY: 0 });
     context.save();
     context.filter = 'blur(32px)';

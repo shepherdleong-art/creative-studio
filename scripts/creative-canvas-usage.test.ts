@@ -186,6 +186,13 @@ let seedanceTaskId = '';
     `UPDATE creative_canvas_tasks SET submissionState = 'accepted', providerTaskId = 'remote-1' WHERE id = ?`,
   ).run(taskId);
 
+  // 主项目已为七牛可灵补充价格；未知型号才是未计价用例。
+  const unpriced = JSON.parse(getCanvasTask(db, taskId)!.providerSnapshot);
+  unpriced.providerIdentity = 'fixture-unpriced-provider';
+  unpriced.modelAlias = 'fixture/unpriced-video';
+  db.prepare('UPDATE creative_canvas_tasks SET providerSnapshot = ? WHERE id = ?')
+    .run(JSON.stringify(unpriced), taskId);
+
   const result = recordCanvasTaskUsage(db, { taskId });
   assert.equal(result.priced, false, '没有价格依据的模型必须按未计价返回');
   assert.equal(result.reason, 'pricing_unavailable');

@@ -5,8 +5,8 @@
  * （示例：`01-LH122K3-B1-沙发-缓慢推近-V01.mp4`）。
  *
  * 红线：
- * - 展示名与物理身份分离：物理文件名（`video-<jobId>-<时间戳>.mp4`）与
- *   `video_jobs.localVideoPath` 永不变更，播放 URL 继续使用物理 `filename`；
+ * - 新成片落盘使用此展示名（同名时追加序号），之后播放 URL 使用实际 `filename`；
+ *   旧文件整理需同步引用，不能仅修改展示名或直接重命名磁盘文件；
  * - 名称不包含供应商、不包含绝对路径、不超过 {@link MAX_VIDEO_DISPLAY_NAME_LENGTH}；
  * - 新任务在创建事务内持久化 `displayName`；旧行（`displayName IS NULL/''`）
  *   读取时用同一套 helper 按 shot 序号、来源图名、模板名与 (createdAt, id)

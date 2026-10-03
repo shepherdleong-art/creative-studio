@@ -1,7 +1,9 @@
 'use client';
 
+import { audioAudibleAt, type AudioEdits } from '@/lib/media-core/audio-edit';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
+  activeClipIndexAtBodyFrame,
   expectedVideoTimeSec,
   getVideoSlotPlan,
   paintDecodedVideoFrame,
@@ -61,10 +63,15 @@ export interface BatchTimelinePreviewClip {
   sourceEndUs: number;
   timelineStartUs: number;
   timelineEndUs: number;
+  playbackRate?: number;
+  framing?: CoverFraming;
 }
 
 export interface BatchTimelinePreviewProps {
   clips: BatchTimelinePreviewClip[];
+  narrationDurationUs?: number | null;
+  preserveGaps?: boolean;
+  audio?: AudioEdits;
   /**
    * assetId → 预览地址(代理解析路由,代理开关打开时使用);originalUrl 为原片直连(开关关闭时使用);
    * lutId 为该素材冻结快照中的 LUT 选择(无则 null),lutUrl 为 .cube 只读端点(由调用方携带 projectId 构造)。
@@ -127,6 +134,7 @@ function seekMedia(element: HTMLMediaElement | null, timeSec: number): void {
  */
 export default function BatchTimelinePreview({
   clips,
+  narrationDurationUs, preserveGaps, audio,
   assetsById,
   coverUrl,
   coverDraft,
@@ -142,7 +150,7 @@ export default function BatchTimelinePreview({
   compact = false,
 }: BatchTimelinePreviewProps) {
   const sortedClips = useMemo(() => [...clips].sort((a, b) => a.timelineStartUs - b.timelineStartUs), [clips]);
-  const bodyDurationSec = (sortedClips.at(-1)?.timelineEndUs ?? 0) / 1_000_000;
+  const bodyDurationSec = (narrationDurationUs ?? sortedClips.at(-1)?.timelineEndUs ?? 0) / 1_000_000;
   const totalSec = INTRO_SEC + bodyDurationSec;
   const size = OUTPUT_PRESETS[outputPreset];
 
@@ -175,12 +183,12 @@ export default function BatchTimelinePreview({
 
   const bodyFrames = Math.max(0, usToFrame(sortedClips.at(-1)?.timelineEndUs ?? 0));
   const rawBodyFrame = Math.max(0, Math.floor((playheadSec - INTRO_SEC) * FPS));
-  const frozenVideoTail = rawBodyFrame >= bodyFrames && sortedClips.length > 0;
+  const frozenVideoTail = !preserveGaps && rawBodyFrame >= bodyFrames && sortedClips.length > 0;
   const bodyFrame = frozenVideoTail ? Math.max(0, bodyFrames - 1) : rawBodyFrame;
   const activeClipIndex = playheadSec >= INTRO_SEC
     ? frozenVideoTail
       ? sortedClips.length - 1
-      : sortedClips.findIndex((clip) => bodyFrame >= usToFrame(clip.timelineStartUs) && bodyFrame < usToFrame(clip.timelineEndUs))
+      : activeClipIndexAtBodyFrame(sortedClips, bodyFrame, FPS)
     : -1;
   const activeClip = activeClipIndex >= 0 ? sortedClips[activeClipIndex] : null;
   const slotPlan = getVideoSlotPlan(activeClipIndex, sortedClips.length);
@@ -303,9 +311,10 @@ export default function BatchTimelinePreview({
       if (!video || !clip) return;
       const sourceInFrame = usToFrame(clip.sourceStartUs);
       const expected = slot === activeSlot
-        ? expectedVideoTimeSec(sourceInFrame, usToFrame(clip.timelineStartUs), bodyFrame, FPS)
+        ? Math.min((clip.sourceEndUs / 1e6) - 1 / FPS, expectedVideoTimeSec(sourceInFrame, usToFrame(clip.timelineStartUs), bodyFrame, FPS, clip.playbackRate ?? (clip.sourceEndUs - clip.sourceStartUs) / (clip.timelineEndUs - clip.timelineStartUs)))
         : sourceInFrame / FPS;
       const synchronize = () => {
+        video.playbackRate = clip.playbackRate ?? (clip.sourceEndUs - clip.sourceStartUs) / (clip.timelineEndUs - clip.timelineStartUs);
         seekTargetRef.current[slot] = expected;
         if (slot !== activeSlot || frozenVideoTail || !playing) {
           video.pause();
@@ -443,9 +452,10 @@ export default function BatchTimelinePreview({
         source = toPaintableSource(slotGlCanvas);
       }
       if (activeClip && source) {
-        paintDecodedVideoFrame(context, canvas, source, outputPreset, { scale: 1, offsetX: 0, offsetY: 0 });
+        paintDecodedVideoFrame(context, canvas, source, outputPreset, activeClip.framing ?? { scale: 1, offsetX: 0, offsetY: 0 }, 'cover');
       } else {
-        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = 'black';
+        context.fillRect(0, 0, canvas.width, canvas.height);
       }
     };
     const loop = () => { paint(); frame = requestAnimationFrame(loop); };
@@ -473,6 +483,11 @@ export default function BatchTimelinePreview({
   }, [activeClip, activeSlot, bodyFrame, outputPreset, playing]);
 
   // 播放时钟:performance.now() 推进播放头,同时驱动口播/BGM 音量包络。
+  const audioLevels = useCallback((input: Parameters<typeof previewAudioLevelsAtTime>[0]) => {
+    const levels = previewAudioLevelsAtTime(input);
+    const timeUs = (input.playheadSec - INTRO_SEC) * 1e6;
+    return { narrationGain: audioAudibleAt(audio?.narration, timeUs) ? levels.narrationGain : 0, bgmGain: audioAudibleAt(audio?.bgm, timeUs) ? levels.bgmGain : 0 };
+  }, [audio]);
   const bgmGainDb = bgm?.gainDb ?? 0;
   const bgmFadeInSec = bgm?.fadeInSec ?? 0;
   const bgmFadeOutSec = bgm?.fadeOutSec ?? 0;
@@ -485,7 +500,7 @@ export default function BatchTimelinePreview({
         stopPlayback();
         return;
       }
-      const levels = previewAudioLevelsAtTime({
+      const levels = audioLevels({
         playheadSec: next,
         introSec: INTRO_SEC,
         bodyDurationSec,
@@ -510,7 +525,7 @@ export default function BatchTimelinePreview({
     };
     animationRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationRef.current);
-  }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, drivePlayhead, narrationGainDb, narrationUrl, playing, setNarrationOutputGain, stopPlayback, totalSec]);
+  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, drivePlayhead, narrationGainDb, narrationUrl, playing, setNarrationOutputGain, stopPlayback, totalSec]);
 
   useEffect(() => {
     if (active) return;
@@ -535,7 +550,7 @@ export default function BatchTimelinePreview({
     if (audioStartTimerRef.current) window.clearTimeout(audioStartTimerRef.current);
     audioStartTimerRef.current = 0;
     if (!playingRef.current) return;
-    const levels = previewAudioLevelsAtTime({
+    const levels = audioLevels({
       playheadSec: startAt,
       introSec: INTRO_SEC,
       bodyDurationSec,
@@ -568,7 +583,7 @@ export default function BatchTimelinePreview({
         const currentNarration = narrationRef.current;
         if (currentNarration && narrationUrl) {
           seekMedia(currentNarration, 0);
-          const bodyLevels = previewAudioLevelsAtTime({
+          const bodyLevels = audioLevels({
             playheadSec: INTRO_SEC,
             introSec: INTRO_SEC,
             bodyDurationSec,
@@ -583,7 +598,7 @@ export default function BatchTimelinePreview({
         if (currentBgm && bgm) {
           const currentLoopDuration = Number.isFinite(currentBgm.duration) && currentBgm.duration > 0 ? currentBgm.duration : bodyDurationSec;
           seekMedia(currentBgm, 0 % Math.max(0.1, currentLoopDuration));
-          currentBgm.volume = previewAudioLevelsAtTime({
+          currentBgm.volume = audioLevels({
             playheadSec: INTRO_SEC,
             introSec: INTRO_SEC,
             bodyDurationSec,
@@ -595,7 +610,7 @@ export default function BatchTimelinePreview({
         }
       }, (INTRO_SEC - startAt) * 1000);
     }
-  }, [bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, narrationGainDb, narrationUrl, setNarrationOutputGain]);
+  }, [audioLevels, bgm, bgmFadeInSec, bgmFadeOutSec, bgmGainDb, bodyDurationSec, narrationGainDb, narrationUrl, setNarrationOutputGain]);
 
   /** 暂停态音频 seek debounce:拖动每格都 seek 口播/BGM 是无用功(暂停的音频不发声),~120ms 内只做最后一次。 */
   const pausedAudioSeekTimerRef = useRef(0);
@@ -620,8 +635,10 @@ export default function BatchTimelinePreview({
   // 不吃 effect 闭包里的快照（换 src 后加载期间播放头/增益可能已变化）。
   // 渲染期写 ref 是 React 编译器红线，因此在每次渲染后的 effect 中同步。
   const bgmLevelsInputRef = useRef({ bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec });
+  const audioLevelsRef = useRef(audioLevels);
   useEffect(() => {
     bgmLevelsInputRef.current = { bodyDurationSec, narrationGainDb, gainDb: bgmGainDb, fadeInSec: bgmFadeInSec, fadeOutSec: bgmFadeOutSec };
+    audioLevelsRef.current = audioLevels;
   });
   useEffect(() => {
     const element = bgmRef.current;
@@ -646,7 +663,7 @@ export default function BatchTimelinePreview({
       const loopDuration = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : levels.bodyDurationSec;
       seekMedia(element, bodyOffset % Math.max(0.1, loopDuration));
       if (playingRef.current) {
-        element.volume = previewAudioLevelsAtTime({
+        element.volume = audioLevelsRef.current({
           playheadSec: currentSec,
           introSec: INTRO_SEC,
           bodyDurationSec: levels.bodyDurationSec,
@@ -760,11 +777,12 @@ export default function BatchTimelinePreview({
   };
 
   const renderControls = (overlay: boolean) => (
-    <div className={overlay ? styles.fullscreenControls : 'flex flex-wrap items-center gap-2'}>
+    <div className={overlay ? styles.fullscreenControls : compact ? styles.compactControls : 'flex flex-wrap items-center gap-2'}>
       <button
         type="button"
         className="btn-primary h-8 w-8 shrink-0 rounded-full text-xs"
         aria-label={playing ? '暂停' : '播放'}
+        data-toggle-play
         disabled={!active || sortedClips.length === 0}
         onClick={togglePlayback}
       >{playing ? 'Ⅱ' : '▶'}</button>
@@ -779,6 +797,7 @@ export default function BatchTimelinePreview({
         value={Math.min(playheadSec, totalSec)}
         onChange={(event) => seek(Number(event.target.value))}
       />
+      <div className={compact && !overlay ? styles.compactOptions : 'contents'}>
       <div className="flex shrink-0 items-center gap-1 rounded-lg bg-surface-subtle p-1" role="group" aria-label="预览内容切换">
         <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'cover' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'cover'} onClick={() => choosePreviewMode('cover')}>封面</button>
         <button type="button" className={`rounded-md px-2 py-1 text-[11px] ${previewMode === 'finished' ? 'bg-surface text-ink shadow-sm' : 'text-ink-secondary'}`} aria-pressed={previewMode === 'finished'} onClick={() => choosePreviewMode('finished')}>成片</button>
@@ -798,27 +817,22 @@ export default function BatchTimelinePreview({
         title={isFullscreen ? '退出全屏' : '全屏'}
         onClick={toggleFullscreen}
       >{isFullscreen ? '退出全屏' : '全屏'}</button>
+      </div>
     </div>
   );
 
   return (
-    <div className={compact ? 'flex h-full min-h-0 flex-col gap-2' : 'space-y-2'} aria-label="成片实时预览">
+    <div className={compact ? styles.compactPlayer : 'space-y-2'} aria-label="成片实时预览">
       <div
         ref={fullscreenRef}
-        className={`${compact ? 'flex min-h-0 flex-1 items-center justify-center overflow-hidden' : 'flex justify-center'} ${styles.fullscreenShell}`}
+        className={`${compact ? styles.compactViewport : 'flex justify-center'} ${styles.fullscreenShell}`}
         style={{ '--batch-preview-ratio': size.width / size.height } as CSSProperties}
       >
         <div
           ref={stageRef}
           className={`${styles.stage} relative overflow-hidden rounded-xl bg-black`}
           style={compact
-            ? {
-              aspectRatio: `${size.width} / ${size.height}`,
-              width: size.width >= size.height ? '100%' : 'auto',
-              height: size.width >= size.height ? 'auto' : '100%',
-              maxWidth: '100%',
-              maxHeight: '100%',
-            }
+            ? undefined
             : size.width >= size.height
               ? { aspectRatio: `${size.width} / ${size.height}`, width: '100%' }
               : { aspectRatio: `${size.width} / ${size.height}`, height: 'min(52vh, 560px)' }}

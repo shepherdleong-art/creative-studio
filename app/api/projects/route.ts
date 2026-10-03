@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveGptImage2Size, isValidGptImage2Size } from '@/lib/gpt-image-2-size-presets';
-import { validateImageAspectRatio } from '@/lib/image-generation-settings';
+import { validateImageAspectRatio, validateImageResolution } from '@/lib/image-generation-settings';
 import { isPlaceholderValue } from '@/lib/video-auth';
 import { toStorageImageUrl } from '@/lib/storage-url';
 import { normalizeShotImageIds } from '@/lib/shot-set-domain';
@@ -128,6 +128,8 @@ export async function POST(request: NextRequest) {
     }
     let resolvedSize: string;
     if (body.aspectRatio) {
+      const resolutionError = validateImageResolution(model, body.aspectRatio, body.resolution || '1k');
+      if (resolutionError) return NextResponse.json({ error: resolutionError }, { status: 400 });
       try { resolvedSize = resolveGptImage2Size(body.aspectRatio, body.resolution || '1k'); }
       catch (err) { return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 }); }
     } else if (body.size && isValidGptImage2Size(body.size)) {

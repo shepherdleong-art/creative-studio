@@ -16,11 +16,13 @@ const ALLOWED_ENV_NAMES = [
 const REQUIRED_MODEL_ALIASES = [
   'doubao-seedance-2-0-260128',
   'doubao-seedance-2-0-fast-260128',
+  'doubao-seedance-2-5-260628',
   'doubao-seedream-5-0-image',
   'image2-high',
   'image2-medium',
   'image2-low',
   'qiniuyun/gpt-image-2-medium',
+  'qiniuyun/kling-3.0',
   'nano-banana-2.5',
   'nano-banana-3.0',
   'nano-banana-3.1',
@@ -203,7 +205,10 @@ function findForbiddenFiles(payloadRoot, errors) {
   }
 
   const desktopRoot = path.join(payloadRoot, 'dist-desktop');
-  const allowedDesktopFiles = new Set(['main.js', 'preload.js', 'service.js', 'ipc.js']);
+  const allowedDesktopFiles = new Set([
+    'main.js', 'preload.js', 'window.js', 'theme.js', 'ipc.js',
+    'service-spawn.js', 'service-ready.js', 'service-state.js', 'service-shutdown.js',
+  ]);
   if (fs.existsSync(desktopRoot)) {
     walk(desktopRoot, (absolute, entry) => {
       const relative = path.relative(desktopRoot, absolute).split(path.sep).join('/');

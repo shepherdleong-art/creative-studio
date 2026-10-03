@@ -23,6 +23,14 @@ export interface MixcutTtsProviderView {
   voices: Array<{ id: string; label: string }>;
 }
 
+export interface MixcutVisionProviderView {
+  id: string;
+  name: string;
+  model: string;
+  configured: boolean;
+  supportsVision?: boolean;
+}
+
 export interface MixcutPrepareJobView {
   id: string;
   groupId: string;
@@ -113,6 +121,9 @@ export function CreationStep({
   onSpeedChange,
   onPreviewVoice,
   previewingVoice,
+  visionProviders,
+  visionProviderId,
+  onVisionProviderChange,
   selectedMaterialCount,
   job,
   elapsedSec,
@@ -147,6 +158,9 @@ export function CreationStep({
   onSpeedChange: (speed: number) => void;
   onPreviewVoice: () => void;
   previewingVoice: boolean;
+  visionProviders: MixcutVisionProviderView[];
+  visionProviderId: string;
+  onVisionProviderChange: (providerId: string) => void;
   selectedMaterialCount: number;
   job: MixcutPrepareJobView | null;
   elapsedSec: number;
@@ -174,6 +188,9 @@ export function CreationStep({
   );
   const estimatedNarrationSec = estimateNarrationDurationSec(charCount) / Math.max(0.5, speed);
   const overSuggestedCharacters = charCount > durationBudget.maxContentCharacters;
+  const visionOptions = visionProviders.filter((item) => item.supportsVision);
+  const activeVisionProvider = visionOptions.find((item) => item.id === visionProviderId) ?? null;
+  const hasUsableVisionProvider = visionOptions.some((item) => item.configured);
   const busy = submitting || Boolean(job && ['queued', 'running', 'needs_input'].includes(job.status));
   const progress = Math.max(0, Math.min(1, Number(job?.progress) || 0));
 
@@ -261,6 +278,23 @@ export function CreationStep({
             {(provider?.voices.length ?? 0) > 6 && !voiceQuery && <button type="button" className={styles.linkBtn} onClick={() => setShowAllVoices((value) => !value)}>{showAllVoices ? '收起音色' : `查看全部 ${provider?.voices.length} 个音色`}</button>}
             <span className={styles.flowHint}>当前选中：{selectedVoice ? selectedVoice.label : '未选择'}</span>
           </div>
+        </section>
+
+        {/* 素材分析模型卡 */}
+        <section className={styles.card}>
+          <div className={styles.cardHead}>
+            <div>
+              <div className={styles.cardTitle}><Icon name="cpu" size={16} />素材分析模型</div>
+              <div className={styles.cardSub}>逐帧理解视频内容并做语义评分，决定自动匹配效果（密钥{activeVisionProvider?.configured ? '已配置' : '未配置'}）</div>
+            </div>
+            <select style={{ minWidth: 200 }} value={visionProviderId} onChange={(event) => onVisionProviderChange(event.target.value)} disabled={busy} aria-label="素材分析模型">
+              {!visionProviderId && <option value="" disabled>请选择分析模型</option>}
+              {visionOptions.map((item) => <option key={item.id} value={item.id} disabled={!item.configured}>{item.name} · {item.model}{item.configured ? '' : '（未配置）'}</option>)}
+            </select>
+          </div>
+          {!hasUsableVisionProvider && (
+            <div className={styles.warningNotice}>没有已配置且支持图像理解的脚本供应商，请先到「设置」页配置。</div>
+          )}
         </section>
 
         {/* CTA 区 */}

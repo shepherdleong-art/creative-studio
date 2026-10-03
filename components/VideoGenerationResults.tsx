@@ -122,7 +122,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onRetry, 
                     <Image src={job.posterImageUrl} alt="视频缩略图" fill sizes="300px" className="object-cover" />
                   ) : (
                     <video
-                      src={job.filename ? `/api/videos/videos/${encodeURIComponent(job.filename)}` : undefined}
+                      src={job.filename ? `/api/videos/videos/${encodeURIComponent(job.filename)}?preview=1` : undefined}
                       preload="metadata"
                       muted
                       className="w-full h-full object-cover"

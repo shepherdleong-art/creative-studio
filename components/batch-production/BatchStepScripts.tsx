@@ -1430,7 +1430,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                             )}
                           </div>
                         </div>
-                        <p className="mt-2 line-clamp-2 whitespace-pre-wrap text-sm leading-6 text-ink-secondary">{script.bodyText}</p>
+                        <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-ink-secondary">{script.bodyText}</p>
                         <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-surface-subtle px-3 py-2 text-sm text-ink-secondary">
                           <span>生成份数</span>
                           <input

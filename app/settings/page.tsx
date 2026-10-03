@@ -1,5 +1,6 @@
 'use client';
 
+import { resolveCoreUsagePlan } from '@/lib/usage-pricing';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import ProxyCacheSettingsSection from '@/components/batch-production/ProxyCacheSettingsSection';
@@ -76,7 +77,6 @@ type ProviderFormState = {
 };
 
 const KEY_PLACEHOLDER = '••••••••';
-const FIXED_IMAGE_PROVIDER_ID = 'company-gateway-image2-medium';
 const FIXED_GPT_PROVIDER_ID = 'gpt';
 const FIXED_GPT_MODEL = 'GPT-5-6-Luna-Standard';
 const FIXED_TTS_PROVIDER_ID = 'doubao-seed-tts-2';
@@ -86,9 +86,8 @@ function isFixedImageProvider(
   type: string,
   model: string,
 ): boolean {
-  return providerId === FIXED_IMAGE_PROVIDER_ID
-    && type.trim() === 'gateway-task-image'
-    && model.trim() === 'image2-medium';
+  return resolveCoreUsagePlan({ providerTable: 'providers', providerId: providerId ?? '',
+    providerName: '', providerType: type, configuredModel: model, requestModel: model }) !== null;
 }
 
 function isFixedCompanyLuna(

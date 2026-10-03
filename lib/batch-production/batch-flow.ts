@@ -16,7 +16,7 @@ import {
 import { colorSnapshotIdentity, upgradeColorSnapshot } from './color-pipeline.ts';
 import { defaultTextStyle, normalizeTextStyle } from '../media-core/cover-domain.ts';
 import { isBatchAssetEligible } from './media-catalog.ts';
-import { getCurrentExportIdentity } from '../project-export-identity.ts';
+import { getCurrentExportIdentity, resolveProspectiveExportName } from '../project-export-identity.ts';
 import { deriveProjectNamingDate, readProductionIdentityFields, type ProjectProductionIdentity } from '../project-production-identity.ts';
 import { resolveProjectExportDirName } from '../project-export-dir.ts';
 
@@ -34,7 +34,8 @@ export interface FrozenBatchExportIdentity {
 /**
  * 批次 start 是输入冻结点：把当时的导出身份一并冻结进版本 defaultsJson。
  * 之后口播/渲染/正式发布不再读「当前」项目字段，项目身份后续切换不影响本批次目录与命名。
- * 生产身份不完整时仍冻结目录名（旧命名公式回退），身份字段留空供发布端判断。
+ * 已有冻结身份时沿用其名字；身份完整但尚未正式导出时按首次导出公式只读预判
+ * （不落库、不建修订）；生产身份不完整时仍冻结目录名（旧命名公式回退），身份字段留空供发布端判断。
  */
 export function freezeBatchExportIdentity(
   db: Database.Database,
@@ -59,9 +60,23 @@ export function freezeBatchExportIdentity(
   const namingDate = deriveProjectNamingDate({ namingDate: project.namingDate ?? '', createdAt: project.createdAt });
   const complete = Boolean(identityFields.storeCode && identityFields.productCode && identityFields.productionType && identityFields.editorName);
   const current = getCurrentExportIdentity(db, projectId);
+  let baseName = current?.baseName ?? null;
+  let exportDirName: string;
+  if (current) {
+    exportDirName = current.exportDirName;
+  } else if (complete && /^\d{8}$/.test(namingDate)) {
+    // 身份完整但尚无冻结身份(从未正式导出):按首次正式导出将使用的公式预判名字,
+    // 不得回落旧「型号-日期」目录名——否则发布时目录沿用旧名,且只有创建身份的那次
+    // 发布调用能用新文件名,同批其余成片全部回退「成片-」旧名(2026-09-10 事故)。
+    const prospective = resolveProspectiveExportName(db, projectId, { ...identityFields, namingDate });
+    baseName = prospective.baseName;
+    exportDirName = prospective.exportDirName;
+  } else {
+    exportDirName = resolveProjectExportDirName(db, projectId);
+  }
   const frozen: FrozenBatchExportIdentity = {
-    baseName: current?.baseName ?? null,
-    exportDirName: current?.exportDirName ?? resolveProjectExportDirName(db, projectId),
+    baseName,
+    exportDirName,
     productCode: identityFields.productCode,
     taskDate: namingDate,
     identity: complete ? { ...identityFields, namingDate } : null,

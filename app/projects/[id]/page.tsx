@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
+import FurniturePromptControls from '@/components/FurniturePromptControls';
 import ResultGallery, { RegeneratePayload } from '@/components/ResultGallery';
 import ShotSetPanel from '@/components/ShotSetPanel';
 import ImagePickerGrid, { ImagePickerItem } from '@/components/ImagePickerGrid';
@@ -677,6 +678,7 @@ export default function ProjectDetailPage() {
                 {sceneRefs.length === 0 && <p className="mt-1 text-xs text-fail">当前项目没有可用的场景参考图，请先在「场景参考图」面板中创建。</p>}
               </div>
               <div>
+                <FurniturePromptControls prompt={applyScenePrompt} onChange={setApplyScenePrompt} />
                 <label className="label generation-label">提示词模板</label>
                 <textarea value={applyScenePrompt} onChange={(e) => setApplyScenePrompt(e.target.value)} rows={4} className="input-field generation-control generation-textarea apply-scene-textarea" />
                 <p className="generation-helper">每张分镜图会作为图1（底图），场景参考图作为图2（参考图）</p>
@@ -1067,6 +1069,7 @@ function SceneGenerationForm({
       <div className="generation-form-grid">
         <div className="generation-main-stack">
           <div>
+            <FurniturePromptControls prompt={prompt} onChange={setPrompt} />
             <label className="label generation-label">场景提示词</label>
             <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} className="input-field generation-control generation-textarea" />
           </div>
@@ -1204,6 +1207,7 @@ function StoryboardWorkspace({
         </div>
         {editingShotPrompt ? (
           <div className="space-y-2">
+            <FurniturePromptControls prompt={shotPromptDraft} onChange={setShotPromptDraft} />
             <textarea value={shotPromptDraft} onChange={(e) => setShotPromptDraft(e.target.value)} rows={6} className="input-field font-mono text-xs" />
             <div className="flex gap-2">
               <button onClick={onSaveShotPrompt} className="btn-primary btn-sm">保存</button>

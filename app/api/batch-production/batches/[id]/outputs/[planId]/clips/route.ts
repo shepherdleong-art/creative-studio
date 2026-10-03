@@ -63,12 +63,68 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       framing?: unknown;
       title?: unknown;
       style?: unknown;
+      playbackRate?: unknown;
+      track?: unknown;
+      atUs?: unknown;
+      timelineStartUs?: unknown;
+      timelineEndUs?: unknown;
+      /** restore_arrangement:撤销/重做回放的整包快照与期望修订号。 */
+      snapshot?: unknown;
+      expectedEditRevision?: unknown;
     };
     const clipId = typeof body.clipId === 'string' ? body.clipId.trim() : '';
 
     let edit: BatchOutputClipEdit;
 
-    if (body.type === 'trim' || body.type === 'trim_variable') {
+    if (body.type === 'move_clip') {
+      if (!clipId || typeof body.startUs !== 'number' || !Number.isSafeInteger(body.startUs) || body.startUs < 0) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '移动片段需要有效的片段 ID 和时间位置' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: body.type, clipId, startUs: body.startUs };
+    } else if (body.type === 'set_clip_playback_rate') {
+      if (!clipId || typeof body.playbackRate !== 'number' || !Number.isFinite(body.playbackRate)) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '视频倍速需要片段 ID 和有效倍速' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: body.type, clipId, playbackRate: body.playbackRate };
+    } else if (body.type === 'set_clip_framing') {
+      if (!clipId || !body.framing || typeof body.framing !== 'object' || Array.isArray(body.framing)) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '画面调整需要片段 ID 和有效画面参数' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = { type: body.type, clipId, framing: body.framing as CoverFraming };
+    } else if (body.type === 'split_audio_clip' || body.type === 'delete_audio_clip') {
+      if (!clipId || (body.track !== 'narration' && body.track !== 'bgm') || (body.type === 'split_audio_clip' && (typeof body.atUs !== 'number' || !Number.isSafeInteger(body.atUs)))) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '音频裁切需要有效音轨、片段 ID 和裁切位置' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = body.type === 'split_audio_clip'
+        ? { type: body.type, track: body.track, clipId, atUs: body.atUs as number }
+        : { type: body.type, track: body.track, clipId };
+    } else if (body.type === 'trim_audio_clip') {
+      if (!clipId || (body.track !== 'narration' && body.track !== 'bgm')
+        || typeof body.sourceStartUs !== 'number' || !Number.isSafeInteger(body.sourceStartUs)
+        || typeof body.sourceEndUs !== 'number' || !Number.isSafeInteger(body.sourceEndUs)) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '音频修剪需要有效音轨、片段 ID 和安全整数源区间' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = {
+        type: 'trim_audio_clip',
+        track: body.track,
+        clipId,
+        sourceStartUs: body.sourceStartUs,
+        sourceEndUs: body.sourceEndUs,
+        ...(typeof body.timelineStartUs === 'number' && Number.isSafeInteger(body.timelineStartUs) ? { timelineStartUs: body.timelineStartUs } : {}),
+        ...(typeof body.timelineEndUs === 'number' && Number.isSafeInteger(body.timelineEndUs) ? { timelineEndUs: body.timelineEndUs } : {}),
+      };
+    } else if (body.type === 'move_audio_clip') {
+      if (!clipId || (body.track !== 'narration' && body.track !== 'bgm')
+        || typeof body.timelineStartUs !== 'number' || !Number.isSafeInteger(body.timelineStartUs)) {
+        return NextResponse.json({ error: 'invalid_clip_edit', message: '音频移动需要有效音轨、片段 ID 和安全整数目标时间' }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      edit = {
+        type: 'move_audio_clip',
+        track: body.track,
+        clipId,
+        timelineStartUs: body.timelineStartUs,
+      };
+    } else if (body.type === 'trim' || body.type === 'trim_variable') {
       if (!clipId) {
         return NextResponse.json({
           error: 'invalid_clip_edit',
@@ -270,10 +326,27 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       edit = { type: 'delete_subtitle_cue', cueId };
     } else if (body.type === 'restore_automatic_subtitles') {
       edit = { type: 'restore_automatic_subtitles' };
+    } else if (body.type === 'restore_arrangement') {
+      // 撤销/重做回放:整包恢复编辑前后快照;expectedEditRevision 用于冲突门禁。
+      if (!body.snapshot || typeof body.snapshot !== 'object' || Array.isArray(body.snapshot)) {
+        return NextResponse.json({
+          error: 'invalid_clip_edit',
+          message: '恢复快照无效',
+        }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
+      }
+      const expectedEditRevision = typeof body.expectedEditRevision === 'number'
+        && Number.isSafeInteger(body.expectedEditRevision) && body.expectedEditRevision >= 0
+        ? body.expectedEditRevision
+        : undefined;
+      edit = {
+        type: 'restore_arrangement',
+        snapshot: body.snapshot,
+        ...(expectedEditRevision === undefined ? {} : { expectedEditRevision }),
+      };
     } else {
       return NextResponse.json({
         error: 'invalid_clip_edit',
-        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_music/set_narration_gain/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles)',
+        message: '编辑需要 type(trim/replace/trim_variable/delete/insert/split/set_cover/set_music_track/set_music_params/set_music/set_narration_gain/set_subtitle_style/set_subtitle_cue_text/move_subtitle_cue/trim_subtitle_cue/split_subtitle_cue/delete_subtitle_cue/restore_automatic_subtitles/split_audio_clip/delete_audio_clip/trim_audio_clip/move_audio_clip/move_clip/set_clip_playback_rate/set_clip_framing)',
       }, { status: 400, headers: BATCH_NO_STORE_HEADERS });
     }
 

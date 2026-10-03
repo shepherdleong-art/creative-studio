@@ -23,6 +23,8 @@ export interface CompanyModelCaps {
    *（1K 3:4 实返 1024x1376 → 1024x1366）。缺省 false：仍规整到 job.size。
    */
   nativeDelivery?: boolean;
+  /** 同步方舟图片接口使用官方像素表，不经过异步网关的名义尺寸映射。 */
+  imageSizeTable?: Record<string, Record<string, string>>;
 }
 
 /** 文档 §6.1 图片模型尺寸表：档位 → 比例 → 宽x高 */
@@ -78,6 +80,22 @@ const SEEDREAM_PRO_CAPS: CompanyModelCaps = {
   tiers: ['1K', '2K'],
   ratios: ['1:1', '3:4', '4:3', '16:9', '9:16', '3:2', '2:3', '21:9'],
 };
+// 方舟 images/generations 官方像素范围及常用尺寸；UI 延续标准 1K/2K 档。
+// https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh
+const SEEDREAM_5_PRO_CAPS: CompanyModelCaps = {
+  ...SEEDREAM_PRO_CAPS,
+  nativeDelivery: true,
+  imageSizeTable: {
+    '1K': { '1:1': '1024x1024', '3:4': '864x1152', '4:3': '1152x864', '16:9': '1280x720', '9:16': '720x1280', '3:2': '1248x832', '2:3': '832x1248', '21:9': '1512x648' },
+    '2K': { '1:1': '2048x2048', '3:4': '1728x2304', '4:3': '2304x1728', '16:9': '2848x1600', '9:16': '1600x2848', '3:2': '2496x1664', '2:3': '1664x2496', '21:9': '3136x1344' },
+  },
+};
+// 腾讯 VOD GG 3.0/3.1 均支持 1K/2K/4K。画幅取官方与公司 size 表的交集。
+const NANO_BANANA_CAPS: CompanyModelCaps = {
+  tiers: ['1K', '2K', '4K'],
+  ratios: ['1:1', '3:4', '4:3', '16:9', '9:16', '3:2', '2:3', '21:9'],
+  nativeDelivery: true,
+};
 const KLING_3_CAPS: CompanyModelCaps = {
   tiers: ['720P', '1K', '4K'],
   ratios: ['3:4', '4:3', '16:9', '9:16'],
@@ -94,6 +112,8 @@ const SEEDANCE_2_5_CAPS: CompanyModelCaps = {
 
 /** 返回图片模型在公司网关的能力约束；非公司图片模型返回 null */
 export function companyImageCapsForModel(model: string): CompanyModelCaps | null {
+  if (model === 'doubao-seedream-5-0-pro-image') return SEEDREAM_5_PRO_CAPS;
+  if (model === 'nano-banana-3.0' || model === 'nano-banana-3.1') return NANO_BANANA_CAPS;
   const m = model.toLowerCase();
   if (m.startsWith('qiniuyun/gpt-image-2')) return QINIUYUN_GPT_IMAGE_2_CAPS;
   if (m.startsWith('image2-')) return IMAGE2_CAPS;
@@ -104,6 +124,8 @@ export function companyImageCapsForModel(model: string): CompanyModelCaps | null
 
 /** 返回视频模型在公司网关的能力约束；非公司视频模型返回 null */
 export function companyVideoCapsForModel(model: string): CompanyModelCaps | null {
+  // 腾讯原生 OutputConfig.Resolution 显式锁 1080P，size 保留公司网关 1K 名义值。
+  if (model === 'kling-2.5') return { tiers: ['1K'], ratios: ['3:4', '4:3', '16:9', '9:16'] };
   // 七牛普通 v3：2026-09-10 公司通道实测 size=1024x1366 → 1244x1660，
   // 不带 size 仅出 828x1108；固定 1K 名义档映射到上游 1080P，不套用腾讯尾帧字段。
   if (model === 'qiniuyun/kling-3.0') return { tiers: ['1K'], ratios: ['3:4', '4:3', '16:9', '9:16'] };
@@ -194,6 +216,7 @@ function clampTier(tier: string, allowed: string[], order: string[]): string {
  * size 无法解析（如 'auto'）时默认 1:1，档位取 2K（不允许则就近钳制）。
  */
 function snapCompanyImageCell(size: string | null | undefined, caps: CompanyModelCaps): { tier: string; ratio: string } {
+  const table = caps.imageSizeTable ?? IMAGE_SIZE_TABLE;
   const parsed = parseSize(size);
   const ratio = parsed
     ? nearestRatio(parsed.width, parsed.height, caps.ratios)
@@ -208,7 +231,7 @@ function snapCompanyImageCell(size: string | null | undefined, caps: CompanyMode
     tier = caps.tiers[0];
     let bestDist = Number.POSITIVE_INFINITY;
     for (const candidate of caps.tiers) {
-      const dist = Math.abs(sizePixels(IMAGE_SIZE_TABLE[candidate][ratio]) - target);
+      const dist = Math.abs(sizePixels(table[candidate][ratio]) - target);
       if (dist < bestDist) {
         tier = candidate;
         bestDist = dist;
@@ -230,7 +253,13 @@ function snapCompanyImageCell(size: string | null | undefined, caps: CompanyMode
  */
 export function companyImageDeliverySize(size: string | null | undefined, caps: CompanyModelCaps): string {
   const cell = snapCompanyImageCell(size, caps);
-  return IMAGE_SIZE_TABLE[cell.tier][cell.ratio];
+  return (caps.imageSizeTable ?? IMAGE_SIZE_TABLE)[cell.tier][cell.ratio];
+}
+
+/** 腾讯原生档位/画幅，避免把公司名义像素误当成原生输出像素。 */
+export function companyImageOutputConfig(size: string | null | undefined, caps: CompanyModelCaps) {
+  const cell = snapCompanyImageCell(size, caps);
+  return { Resolution: cell.tier, AspectRatio: cell.ratio };
 }
 
 /**
@@ -238,6 +267,7 @@ export function companyImageDeliverySize(size: string | null | undefined, caps: 
  * size 无法解析（如 'auto'）时默认 1:1，档位取 2K（不允许则就近钳制）。
  */
 export function snapCompanyImageSize(size: string | null | undefined, caps: CompanyModelCaps): string {
+  if (caps.imageSizeTable) return companyImageDeliverySize(size, caps);
   const cell = snapCompanyImageCell(size, caps);
   const { ratio } = cell;
   let { tier } = cell;

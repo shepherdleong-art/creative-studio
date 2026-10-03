@@ -107,6 +107,9 @@ const dashboard = queryUsageDashboard(db, {
   from: periods.today.from,
   to: periods.today.to,
 });
+const defaultDashboard = queryUsageDashboard(db, { now: new Date('2026-08-18T01:23:45.000Z') });
+assert.deepEqual(defaultDashboard.range, periods.today, 'without date filters, the dashboard defaults to today');
+assert.deepEqual(defaultDashboard.totals, dashboard.totals);
 assert.deepEqual(dashboard.periodTotals, {
   todayCostMicros: 4_040_010,
   weekCostMicros: 4_040_510,

@@ -308,6 +308,10 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
     assert.equal(finalStatus, 'succeeded', '轮询失败掉出窗口后必须自动续跑,直至取回结果');
     assert.ok(pollCalls >= 3, `预期发生多轮续跑轮询,实际 ${pollCalls} 次`);
     assert.ok(videoJobAttempt('autoresume-job') >= 2, '续跑后尝试次数大于 1');
+    const savedVideo = db.prepare('SELECT filename, localVideoPath FROM video_jobs WHERE id = ?').get('autoresume-job') as { filename: string; localVideoPath: string };
+    assert.doesNotMatch(savedVideo.filename, /^video-autores/);
+    assert.equal(path.basename(savedVideo.localVideoPath), savedVideo.filename);
+    assert.equal(fs.readFileSync(savedVideo.localVideoPath, 'utf8'), 'fake-video-bytes');
   } finally {
     globalThis.fetch = originalFetch;
     queueModule.cancelVideoQueue('project-autoresume');
@@ -373,4 +377,5 @@ assert.equal(queueModule.providerConcurrencyLimit('jimeng'), null, '未列出的
 
 console.log('video queue resume tests passed');
 
+db.close();
 fs.rmSync(externalDataRoot, { recursive: true, force: true });

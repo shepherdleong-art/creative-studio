@@ -436,7 +436,7 @@ const externalJob = await workspace.start({ projectId: 'p1', scriptDraftId: 'scr
 const externalGroup = workspace.load(externalJob.groupId);
 assert.equal(externalGroup.assets[0].videoJobId, 'external-asset-external-a');
 assert.equal(externalGroup.assets[0].source, 'external');
-assert.match(externalGroup.assets[0].previewUrl, /external-assets\/external-a\/media$/);
+assert.match(externalGroup.assets[0].previewUrl, /external-assets\/external-a\/media\?preview=1$/);
 assert.ok(externalGroup.variants[0].timeline.clips.every((clip) => clip.videoJobId === 'external-asset-external-a'), '外部素材 timeline 必须能由 group assets read model 解析');
 
 const externalARow = db.prepare(`SELECT relativePath FROM final_edit_external_assets WHERE id='external-a'`).get() as { relativePath: string };
@@ -640,7 +640,7 @@ const deleteResult = workspace.apply({
   scope: 'variant', variantId: first.id, expectedRevision: first.revision,
   type: 'delete_clip', clipId: first.timeline.clips[0].id,
 });
-assert.ok((deleteResult.view as FinalEditVariantView).issues.some((issue) => issue.code === 'timeline_gap' && issue.severity === 'blocking'));
+assert.ok((deleteResult.view as FinalEditVariantView).issues.some((issue) => issue.code === 'timeline_gap' && issue.severity === 'warning'));
 
 assert.throws(() => workspace.apply({
   scope: 'variant', variantId: first.id, expectedRevision: first.revision,
@@ -649,7 +649,7 @@ assert.throws(() => workspace.apply({
 
 await assert.rejects(
   workspace.enqueueRender({ groupId: group.id, variantId: first.id, expectedGroupRevision: group.revision, expectedVariantRevision: deleteResult.view.revision, overlayBundleId: 'missing' }),
-  (error: unknown) => error instanceof FinalEditError && error.code === 'timeline_gap',
+  (error: unknown) => error instanceof FinalEditError && error.code === 'overlay_bundle_stale',
 );
 
 const restored = workspace.apply({ scope: 'variant', variantId: first.id, expectedRevision: deleteResult.view.revision, type: 'restore_revision', revision: 0 });

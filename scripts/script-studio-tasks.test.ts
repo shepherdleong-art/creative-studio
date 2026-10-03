@@ -271,6 +271,53 @@ assert.equal(g5DerivedCalls, 1, '派生 key 必须解析供应商一次');
 assert.equal(g5Derived.existing, null, '新参数不应命中旧任务');
 assert.ok(g5Derived.snapshot && g5Derived.snapshot.providerId === 'vision-e2e', '创建快照必须冻结供应商');
 
+// extractOnly（爆文模板改写前置的仅提取任务）参与派生 key 与创建快照：
+// 同一来源集的「仅提取」与「完整生成」不得互相命中，重放身份以冻结快照为准。
+const g5FullRun = decideTaskRequest(db, {
+  projectId: 'p1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-g5',
+  targetDurationSec: 30,
+  requestedCount: 6,
+  creativeBrief: 'g5-derived',
+  providerId: 'vision-e2e',
+}, (providerId) => ({ vision: { id: providerId, model: 'model-e2e' } }));
+const g5ExtractOnly = decideTaskRequest(db, {
+  projectId: 'p1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-g5',
+  targetDurationSec: 30,
+  requestedCount: 6,
+  creativeBrief: 'g5-derived',
+  providerId: 'vision-e2e',
+  extractOnly: true,
+}, (providerId) => ({ vision: { id: providerId, model: 'model-e2e' } }));
+assert.notEqual(g5ExtractOnly.requestKey, g5FullRun.requestKey, '仅提取与完整生成必须派生不同 requestKey');
+assert.equal(g5ExtractOnly.snapshot?.extractOnly, true, '仅提取标记必须冻结进创建快照');
+assert.equal(g5FullRun.snapshot?.extractOnly, undefined, '完整生成快照不得带仅提取标记');
+const g5ExtractOnlyCreated = createTask(db, {
+  projectId: 'p1',
+  requestKey: g5ExtractOnly.requestKey,
+  mode: 'first_extraction',
+  sourceSetId: 'source-g5',
+  inputSnapshot: g5ExtractOnly.snapshot!,
+  requestedCount: 6,
+});
+assert.equal(g5ExtractOnlyCreated.created, true);
+// 派生 key 的重放需要先解析供应商才能算出 key（G5：只有显式 key 重放跳过解析）。
+const g5ExtractOnlyReplay = decideTaskRequest(db, {
+  projectId: 'p1',
+  mode: 'first_extraction',
+  sourceSetId: 'source-g5',
+  targetDurationSec: 30,
+  requestedCount: 6,
+  creativeBrief: 'g5-derived',
+  providerId: 'vision-e2e',
+  extractOnly: true,
+}, (providerId) => ({ vision: { id: providerId, model: 'model-e2e' } }));
+assert.equal(g5ExtractOnlyReplay.existing?.id, g5ExtractOnlyCreated.task.id, '同参数仅提取重放必须命中既有任务');
+assert.equal(g5ExtractOnlyReplay.snapshot, null, '重放路径不产生创建快照');
+
 // 最近任务列表（刷新后恢复运行中任务）：按创建时间倒序，limit 生效。
 const recent = listRecentTasks(db, 'p1', 2);
 assert.equal(recent.length, 2, 'listRecentTasks 受 limit 约束');

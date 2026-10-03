@@ -28,7 +28,7 @@ try {
  await stop();
  assert.throws(()=>process.kill(owned.pid,0),'owned port owner must stop');
  const {stdout}=await exec('bash',['-c','source "$1"; printf "%s|%s|%s" "$PORT" "$CREATIVE_STUDIO_LITELLM_PORT" "$CREATIVE_STUDIO_DATA_ROOT"','bash',path.join(root,'scripts/canvas-profile.sh')],{env:{...process.env,CREATIVE_STUDIO_DATA_ROOT:foreignRoot,PORT:'3000'}});
- assert.equal(stdout,`3100|4100|${root}`);
+ assert.equal(stdout,`3100|4100|${fs.realpathSync(root)}`);
  console.log('Canvas isolation: foreign listener survives, owned listener stops, inherited original data root overridden.');
 } finally {
  for(const child of children) if(child.exitCode===null) child.kill();

@@ -56,6 +56,12 @@ export default function AssetUploadGrid({
   const filteredAssets = normalizedQuery
     ? assets.filter((asset) => asset.filename.toLowerCase().includes(normalizedQuery))
     : assets;
+  const unselectedAssets = filteredAssets.filter((asset) => !selectedIds.includes(asset.id));
+
+  const selectAll = () => {
+    const remaining = Math.max(0, maxSelection - selectedIds.length);
+    onSelectionChange([...selectedIds, ...unselectedAssets.slice(0, remaining).map((asset) => asset.id)]);
+  };
 
   const toggle = (id: string) => {
     if (maxSelection === 1) {
@@ -120,8 +126,13 @@ export default function AssetUploadGrid({
               <p className="mt-1 text-xs text-ink-secondary">
                 已上传 {assets.length} 张{normalizedQuery ? `，筛选出 ${filteredAssets.length} 张` : ''}，{selectionLabel}
               </p>
+              {usage === 'shot_source' && (
+                <p className="mt-2 text-xs font-medium text-warn">
+                  第 1 张将用于视频开头，请先选择产品全景图。
+                </p>
+              )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {assets.length > 0 && (
                 <div className="relative w-full sm:w-56">
                   <Icon
@@ -155,6 +166,17 @@ export default function AssetUploadGrid({
                   清空选择
                 </button>
               )}
+              {maxSelection > 1 && assets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={selectAll}
+                  disabled={unselectedAssets.length === 0 || selectedIds.length >= maxSelection || deletingId !== null}
+                  title={`保留已选顺序，按当前列表顺序补选，最多 ${maxSelection} 张`}
+                  className="btn-secondary btn-sm text-xs whitespace-nowrap"
+                >
+                  {normalizedQuery ? '全选筛选结果' : '全选图片'}
+                </button>
+              )}
             </div>
           </div>
 
@@ -172,6 +194,7 @@ export default function AssetUploadGrid({
                 {filteredAssets.map((asset) => {
                 const selectedIndex = selectedIds.indexOf(asset.id);
                 const selected = selectedIndex >= 0;
+                const isOpening = usage === 'shot_source' && selectedIndex === 0;
                 const isDeleting = deletingId === asset.id;
                 return (
                   <div
@@ -180,6 +203,8 @@ export default function AssetUploadGrid({
                   >
                     <button
                       type="button"
+                      aria-pressed={selected}
+                      aria-label={`${asset.filename}${isOpening ? '，开场产品全景图，将用于视频开头' : selected ? `，第 ${selectedIndex + 1} 张` : ''}`}
                       onClick={() => toggle(asset.id)}
                       onMouseEnter={(event) => {
                         if (!asset.imageUrl) return;
@@ -188,7 +213,7 @@ export default function AssetUploadGrid({
                       }}
                       onMouseLeave={() => setPreview(null)}
                       className={`w-full rounded-[18px] border p-2 text-left transition ${
-                        selected ? 'border-accent bg-surface shadow-sm ring-2 ring-accent/20' : 'border-transparent bg-surface-subtle hover:border-accent/30 hover:bg-surface hover:shadow-sm'
+                        isOpening ? 'border-warn bg-warn-tint shadow-sm ring-2 ring-warn/40' : selected ? 'border-accent bg-surface shadow-sm ring-2 ring-accent/20' : 'border-transparent bg-surface-subtle hover:border-accent/30 hover:bg-surface hover:shadow-sm'
                       }`}
                     >
                       <div className="relative aspect-[4/3] overflow-hidden rounded-[14px] bg-surface">
@@ -201,8 +226,13 @@ export default function AssetUploadGrid({
                           {USAGE_LABELS[asset.usage || usage] || '素材'}
                         </span>
                         {selected && (
-                          <span className="absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-accent px-2 text-xs font-semibold text-white shadow-sm">
+                          <span className={`absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-xs font-semibold shadow-sm ${isOpening ? 'bg-warn-tint text-warn ring-1 ring-warn/40' : 'bg-accent text-white'}`}>
                             {maxSelection === 1 ? '选中' : selectedIndex + 1}
+                          </span>
+                        )}
+                        {isOpening && (
+                          <span className="absolute inset-x-0 bottom-0 bg-warn-tint px-1 py-1.5 text-center text-[11px] font-semibold text-warn">
+                            开场 · 产品全景图
                           </span>
                         )}
                       </div>

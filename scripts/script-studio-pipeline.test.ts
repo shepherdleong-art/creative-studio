@@ -9,7 +9,8 @@ import { syncProjectScripts } from '../lib/batch-production/script-catalog.ts';
 import { listReadableProjectScripts } from '../lib/media-core/project-script-reader.ts';
 import { createTask, getTask } from '../lib/script-studio/tasks.ts';
 import { executeScriptStudioTask, parseTileRefIndex } from '../lib/script-studio/runner.ts';
-import { buildDeterministicFallbackScript, type ScriptGenerator } from '../lib/script-studio/generator.ts';
+import { buildDeterministicFallbackScript } from './script-studio-fixture.ts';
+import type { ScriptGenerator } from '../lib/script-studio/generator.ts';
 import type { VisionExtractionResult, VisionExtractor } from '../lib/script-studio/adapters/vision-extract.ts';
 import type { EvidenceReprobe } from '../lib/script-studio/adapters/reprobe.ts';
 

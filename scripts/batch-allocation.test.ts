@@ -227,4 +227,146 @@ assert.deepEqual(
 const historyCovers = [historyFirstTarget, historySecondTarget, historyThirdTarget].map((output) => output.arrangement.cover.assetId);
 assert.equal(new Set(historyCovers).size, 3, '换一批画面时封面同样逐次避开历史封面素材');
 
+// ── 同源素材互斥(v2):同一分镜位的版次不得结伴进同一条成片 ──
+const sameShotInput: FrozenBatchInput = {
+  projectId: 'project-shot',
+  batchId: 'batch-shot',
+  batchVersionId: 'version-shot',
+  ruleVersion: 'rules-v2',
+  seed: 'seed-shot',
+  fps: 24,
+  preset: 'vertical-1080x1920',
+  targetDurationUs: 4_000_000,
+  plans: [
+    {
+      planId: 'plan-shot-1',
+      scriptSnapshotId: 'script-shot',
+      title: '同源互斥',
+      segments: [
+        { id: 's1', text: '开场', startUs: 0, endUs: 2_000_000, semanticScores: { 'v01': 0.95, 'v02': 0.9, 'other': 0.6 } },
+        { id: 's2', text: '细节', startUs: 2_000_000, endUs: 4_000_000, semanticScores: { 'v02': 0.95, 'v01': 0.9, 'other': 0.6 } },
+      ],
+      musicTrackIds: ['music-1'],
+    },
+  ],
+  assets: [
+    { assetId: 'v01', contentFingerprint: 'sha256:v01', shotId: 'shot-1', durationUs: 2_000_000, analysisJson: { durationUs: 2_000_000, usableRanges: [{ startUs: 0, endUs: 2_000_000, qualityScore: 1 }], coverFrameTimesUs: [500_000] } },
+    { assetId: 'v02', contentFingerprint: 'sha256:v02', shotId: 'shot-1', durationUs: 2_000_000, analysisJson: { durationUs: 2_000_000, usableRanges: [{ startUs: 0, endUs: 2_000_000, qualityScore: 1 }], coverFrameTimesUs: [600_000] } },
+    { assetId: 'other', contentFingerprint: 'sha256:other', shotId: 'shot-2', durationUs: 8_000_000, analysisJson: { durationUs: 8_000_000, usableRanges: [{ startUs: 0, endUs: 8_000_000, qualityScore: 1 }], coverFrameTimesUs: [700_000] } },
+  ],
+};
+const sameShotResult = allocateBatch(sameShotInput);
+assert.deepEqual(
+  sameShotResult.outputs[0]!.arrangement.clips.map((clip) => clip.assetId),
+  ['v01', 'other'],
+  '池中有非同组替代时,同源版次不得结伴进同一条成片',
+);
+assert.ok(
+  !sameShotResult.outputs[0]!.warnings.some((warning) => warning.startsWith('same-shot-reused')),
+  '有替代时不应出现同源回退告警',
+);
+
+// 自动排片不再回退到同源的另一个视频，也不能循环相同窗口凑时长。
+const sameShotOnly = allocateBatch({ ...sameShotInput, assets: sameShotInput.assets!.filter((asset) => asset.assetId !== 'other') });
+assert.deepEqual(
+  sameShotOnly.outputs[0]!.arrangement.clips.map((clip) => clip.assetId),
+  ['v01'],
+  '素材耗尽时也不自动放入同源视频',
+);
+assert.ok(
+  sameShotOnly.outputs[0]!.status === 'blocked',
+  '无法自动排满时明确报告素材不足',
+);
+
+const sameSourceStitch = allocateBatch({ ...sameShotInput,
+  assets: sameShotInput.assets!.filter((asset) => asset.assetId !== 'other'),
+  plans: [{ planId: 'plan-shot-1', segments: [{ id: 'long', text: '长句', startUs: 0, endUs: 4_000_000 }] }],
+});
+assert.equal(new Set(sameSourceStitch.outputs[0]!.arrangement.clips.map(c => c.assetId)).size, 1,
+  '长句拼接也不能自动放入不同同源视频');
+assert.equal(sameSourceStitch.outputs[0]!.status, 'blocked');
+
+const futureLock = allocateBatch({ ...sameShotInput, locks: [
+  { planId: 'plan-shot-1', segmentId: 's2', assetId: 'v02', sourceStartUs: 0, sourceEndUs: 2_000_000 },
+] });
+assert.ok(!futureLock.outputs[0]!.arrangement.clips.some(c => c.assetId === 'v01'),
+  '前面自动排入的镜头必须避开后面已锁定的视频的同源兄弟');
+assert.ok(futureLock.outputs[0]!.arrangement.clips.some(c => c.locked && c.assetId === 'v02'));
+
+const manualSameSourceLocks = allocateBatch({ ...sameShotInput, locks: [
+  { planId: 'plan-shot-1', segmentId: 's1', assetId: 'v01', sourceStartUs: 0, sourceEndUs: 2_000_000 },
+  { planId: 'plan-shot-1', segmentId: 's2', assetId: 'v02', sourceStartUs: 0, sourceEndUs: 2_000_000 },
+] });
+assert.deepEqual(manualSameSourceLocks.outputs[0]!.arrangement.clips.map(c => c.assetId), ['v01', 'v02'],
+  '手动明确锁定的同源镜头保留，不能静默改写人工选择');
+
+// 同一素材复用不同窗口不受重罚(与 stitch 同素材多 chunk 同规则)
+const singleAsset = allocateBatch({
+  ...sameShotInput,
+  assets: [{ assetId: 'long', contentFingerprint: 'sha256:long', shotId: 'shot-1', durationUs: 8_000_000, analysisJson: { durationUs: 8_000_000, usableRanges: [{ startUs: 0, endUs: 8_000_000, qualityScore: 1 }], coverFrameTimesUs: [500_000] } }],
+});
+const singleClips = singleAsset.outputs[0]!.arrangement.clips;
+assert.ok(singleClips.every((clip) => clip.assetId === 'long'), '同一素材不同窗口仍可复用');
+assert.ok(
+  singleClips[0]!.sourceEndUs <= singleClips[1]!.sourceStartUs || singleClips[1]!.sourceEndUs <= singleClips[0]!.sourceStartUs,
+  '复用窗口不得重叠',
+);
+assert.ok(
+  !singleAsset.outputs[0]!.warnings.some((warning) => warning.startsWith('same-shot-reused')),
+  '同素材复用不触发同源告警',
+);
+
+// 跨成片不互斥:N 份经重叠/复用惩罚自然错开版次
+const crossPlan = allocateBatch({
+  ...sameShotInput,
+  assets: sameShotInput.assets!.filter((asset) => asset.assetId !== 'other'),
+  plans: [
+    { planId: 'plan-x', scriptSnapshotId: 'script-shot', title: '成片一', segments: [{ id: 'x1', text: '开场', startUs: 0, endUs: 2_000_000, semanticScores: { 'v01': 0.95, 'v02': 0.9 } }], musicTrackIds: ['music-1'] },
+    { planId: 'plan-y', scriptSnapshotId: 'script-shot', title: '成片二', segments: [{ id: 'y1', text: '开场', startUs: 0, endUs: 2_000_000, semanticScores: { 'v01': 0.95, 'v02': 0.9 } }], musicTrackIds: ['music-1'] },
+  ],
+});
+const crossAssets = crossPlan.outputs.map((output) => output.arrangement.clips[0]!.assetId);
+assert.notEqual(crossAssets[0], crossAssets[1], '跨成片经重叠/复用惩罚自然错开版次');
+assert.ok(
+  crossPlan.outputs.every((output) => !output.warnings.some((warning) => warning.startsWith('same-shot-reused'))),
+  '跨成片不触发同源告警',
+);
+
+// 跨成片使用过替代素材，不代表本片素材耗尽；不能为了全批区间不重叠而选同源版次。
+const occupiedAlternativeInput: FrozenBatchInput = {
+  ...sameShotInput,
+  assets: sameShotInput.assets!.map((asset) => ({
+    ...asset, durationUs: 2_000_000,
+    analysisJson: { durationUs: 2_000_000, usableRanges: [{ startUs: 0, endUs: 2_000_000, qualityScore: 1 }] },
+  })),
+};
+const occupiedAlternative = reallocateOutput(occupiedAlternativeInput, { outputs: [{
+  planId: 'other-plan', arrangement: { clips: [{
+    clipId: 'other-clip', assetId: 'other', contentFingerprint: 'sha256:other',
+    sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+  }] },
+}] }, 'plan-shot-1', '跨片复用测试', []);
+assert.deepEqual(occupiedAlternative.outputs.find(o => o.planId === 'plan-shot-1')!.arrangement.clips.map(c => c.assetId),
+  ['v01', 'other'], '其他成片用过替代素材，也应优先避免本片出现同源版本');
+
+const occupiedStitch = reallocateOutput({ ...occupiedAlternativeInput, plans: [{
+  planId: 'plan-shot-1', segments: [{ id: 'long', text: '需要两个素材拼接的长句', startUs: 0, endUs: 4_000_000,
+    semanticScores: { v01: 0.95, v02: 0.9, other: 0.6 } }],
+}] }, { outputs: [{ planId: 'other-plan', arrangement: { clips: [{
+  clipId: 'other-clip', assetId: 'other', contentFingerprint: 'sha256:other',
+  sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: 0, timelineEndUs: 2_000_000,
+}] } }] }, 'plan-shot-1', '拼接跨片复用测试', []);
+assert.deepEqual(occupiedStitch.outputs.find(o => o.planId === 'plan-shot-1')!.arrangement.clips.map(c => c.assetId),
+  ['v01', 'other'], '拼接兜底同样优先避免本片同源重复');
+
+const oldClips = ['v01', 'v02', 'other'].map((assetId, index) => ({
+  clipId: `old-${assetId}`, segmentId: index === 0 ? 's1' : `old-${index}`, locked: index === 0, assetId, contentFingerprint: `sha256:${assetId}`,
+  sourceStartUs: 0, sourceEndUs: 2_000_000, timelineStartUs: index * 2_000_000, timelineEndUs: (index + 1) * 2_000_000,
+}));
+const historyWithSiblings = reallocateOutput({ ...occupiedAlternativeInput, locks: [{
+  planId: 'plan-shot-1', segmentId: 's1', assetId: 'v01', sourceStartUs: 0, sourceEndUs: 2_000_000,
+}] }, { outputs: [{ planId: 'plan-shot-1', arrangement: { clips: oldClips } }] }, 'plan-shot-1', '历史重复修复');
+assert.deepEqual(historyWithSiblings.outputs[0]!.arrangement.clips.map(c => c.assetId), ['v01', 'other'],
+  '历史版本用过同源兄弟，不能让兄弟在当前成片中获得同源互斥豁免');
+
 console.log('batch allocation tests passed');

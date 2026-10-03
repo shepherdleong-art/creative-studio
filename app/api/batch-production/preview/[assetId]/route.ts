@@ -7,6 +7,7 @@ import { PROXY_PROFILE_VERSION } from '@/lib/batch-production/proxy-executor';
 import { acquireProxyReadLease, resolveControlledProxyPath } from '@/lib/batch-production/proxy-cache';
 import { projectAssetMimeType } from '@/lib/batch-production/project-asset-media';
 import { buildMediaEtag, projectAssetMediaResponse } from '@/lib/batch-production/project-asset-media-response';
+import { ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { BATCH_NO_STORE_HEADERS, batchProjectIdFromRequest } from '../../batches/response';
 
 export const runtime = 'nodejs';
@@ -151,17 +152,26 @@ export async function GET(request: NextRequest, context: { params: Promise<{ ass
           message: '原片文件当前不可读',
         }, { status: 404, headers: BATCH_NO_STORE_HEADERS });
       }
-      const stat = fs.statSync(source.sourcePath);
+      // 原片可能是 HEVC/10bit（Seedance 2.5 1080p），浏览器放不动：视频统一
+      // 换（必要时懒生成的）H.264 预览衍生物，内容身份随切到衍生物（etag 加
+      // 区分标记，衍生物就绪后浏览器自动重拉）；代理分支不受影响。
+      const originalMime = projectAssetMimeType(source.sourcePath);
+      const served = originalMime.startsWith('video/')
+        ? await ensureBrowserPreview(source.sourcePath)
+        : source.sourcePath;
+      const stat = fs.statSync(served);
       const etagParts = [
         source.kind,
         contentFingerprint,
         PROXY_PROFILE_VERSION,
+        served === source.sourcePath ? 'original-bytes' : 'h264-preview',
       ];
       const extraHeaders: Record<string, string> = { 'X-Preview-Kind': source.kind };
+      if (served !== source.sourcePath) extraHeaders['X-Preview-Transcoded'] = 'h264';
       return projectAssetMediaResponse(
         request,
-        source.sourcePath,
-        projectAssetMimeType(source.sourcePath),
+        served,
+        served === source.sourcePath ? originalMime : 'video/mp4',
         extraHeaders,
         undefined,
         {

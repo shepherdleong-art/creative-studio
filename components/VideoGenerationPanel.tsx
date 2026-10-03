@@ -6,6 +6,7 @@ import HoverZoomImage from '@/components/HoverZoomImage';
 import VideoGenerationPreview from '@/components/VideoGenerationPreview';
 import VideoGenerationResults from '@/components/VideoGenerationResults';
 import { Icon } from '@/components/ui/Icon';
+import { videoDurationOptions, normalizeVideoDraftDuration } from '@/lib/video-duration';
 import {
   collectVideoMotionTailImageIds,
   createVideoMotionRow,
@@ -101,7 +102,6 @@ const FREE_HEAD_FRAME_DRAG_KEY = '__free-head-frame__';
 
 /** 首尾帧（带尾帧）运镜的默认提示词：空提示词时自动补这句，批量生成不再算它「未填写」。 */
 const TAIL_TRANSITION_DEFAULT_PROMPT = '从首帧丝滑转场到尾帧';
-const BULK_CONFIRM_THRESHOLD = 5;
 
 export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Props) {
   const [providers, setProviders] = useState<VideoProvider[]>([]);
@@ -141,15 +141,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const [bulkProgress, setBulkProgress] = useState<{ submitted: number; total: number } | null>(null);
   const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
   const [bulkProviderId, setBulkProviderId] = useState('');
-  const [bulkDuration, setBulkDuration] = useState(5);
-  const [bulkConfirmText, setBulkConfirmText] = useState<string | null>(null);
-
-  // 运镜行被改过（draftRevision 递增）或抽屉开关变化后，批量提交的内联二次确认
-  // 自动失效，避免用户看着旧摘要确认提交。
-  useEffect(() => {
-    setBulkConfirmText(null);
-  }, [draftRevision, bulkDrawerOpen]);
-
+  const [bulkDuration, setBulkDuration] = useState('5');
   const selectVideoPreview = (jobId: string) => {
     previewSuppressedRef.current = false;
     setVideoPreviewJobId(jobId);
@@ -160,22 +152,30 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const storageKey = `creative-studio:video-shot-set:${projectId}`;
   const configuredProviders = providers.filter((provider) => provider.configured !== false);
 
-  // Effective provider id for a row: fall back to a preferred provider
-  // when the row was created before providers had loaded.
+  // 未选供应商的草稿继承批量选择；明确选过但已不可用的供应商不得静默换成其他模型。
   // 偏好可灵（kling）：团队的主力视频模型，避免每次手动切换。
   const preferredProvider = configuredProviders.find((provider) =>
     /kling/i.test(provider.defaultModel ?? '') || /kling/i.test(provider.name ?? ''),
   ) ?? configuredProviders[0];
   const getRowProviderId = (row: { providerId: string }): string =>
-    (row.providerId && configuredProviders.some((provider) => provider.id === row.providerId))
-      ? row.providerId
-      : preferredProvider?.id || '';
+    row.providerId || bulkProviderId || preferredProvider?.id || '';
   const getRowTailCapability = (row: { providerId: string }): VideoTailFrameCapability | undefined =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.tailFrameCapability;
+  const getRowDurationOptions = (row: { providerId: string }) => {
+    const provider = providers.find((item) => item.id === getRowProviderId(row));
+    return videoDurationOptions(provider?.type || '', provider?.defaultModel || '');
+  };
+  const getRowDuration = (row: VideoMotionRow, value = row.durationSec) =>
+    normalizeVideoDraftDuration(value, getRowDurationOptions(row));
   const getRowMultiShotCapability = (row: { providerId: string }): VideoProvider['multiShotCapability'] =>
     providers.find((provider) => provider.id === getRowProviderId(row))?.multiShotCapability;
 
-  const makeEmptyRow = (): VideoMotionRow => createVideoMotionRow(crypto.randomUUID(), defaultDuration);
+  const makeEmptyRow = (): VideoMotionRow => {
+    const row = createVideoMotionRow(crypto.randomUUID(), defaultDuration);
+    row.providerId = getRowProviderId(row);
+    row.durationSec = getRowDuration(row);
+    return row;
+  };
 
   const replaceSelectedShot = (shotId: string | null) => {
     selectedShotRef.current = shotId;
@@ -441,6 +441,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     return drafts;
   };
 
+  // 顶部展示实际草稿使用的供应商，而不是上一次批量操作留下的选择。
+  const getBulkProviderId = () => {
+    const ids = new Set(safeShots.flatMap((shot) => getShotRows(shot.id).map(getRowProviderId)));
+    if (ids.size > 1) return '__mixed__';
+    return ids.values().next().value || getRowProviderId({ providerId: '' });
+  };
+
   /** 带尾帧但提示词为空的行，自动补上首尾帧转场提示词（用户再手改的内容不动）。 */
   const autoFillTailTransitionPrompts = () => {
     for (const shot of safeShots) {
@@ -637,24 +644,22 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     }
   };
   const updateRowPrompt = (rowKey: string, value: string) => {
-    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, prompt: value }));
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, prompt: value, templateId: '' }));
     replaceActiveMotionRows(result.rows);
   };
   const updateRowTemplate = (rowKey: string, templateId: string) => {
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
-      const oldTmpl = r.templateId ? templates.find((t) => t.id === r.templateId) : null;
       const newTmpl = templates.find((t) => t.id === templateId);
-      // Update prompt when: prompt is empty (first selection), or the current
-      // prompt matches the old template exactly (auto-filled, not user-edited).
-      // Preserve prompts that the user has manually written.
-      const isAutoFilled = !r.prompt.trim() || (oldTmpl ? r.prompt.trim() === oldTmpl.prompt.trim() : false);
-      const nextPrompt = (isAutoFilled && newTmpl) ? newTmpl.prompt : r.prompt;
+      // 显式选择预设时应用原文；切回自定义保留文本。一键填充仍保护手写内容。
+      const nextPrompt = newTmpl ? newTmpl.prompt : r.prompt;
       return { ...r, templateId, prompt: nextPrompt };
     });
     replaceActiveMotionRows(result.rows);
   };
   const updateRowProvider = (rowKey: string, providerId: string) => {
-    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({ ...row, providerId }));
+    const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (row) => ({
+      ...row, providerId, durationSec: getRowDuration({ ...row, providerId }),
+    }));
     replaceActiveMotionRows(result.rows);
   };
   const updateRowMultiShot = (rowKey: string, multiShot: boolean) => {
@@ -664,7 +669,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const updateRowDuration = (rowKey: string, raw: number) => {
     const result = updateVideoMotionRowByKey(motionRowsRef.current, rowKey, (r) => {
       const v = Number.isFinite(raw) && raw > 0 ? raw : 5;
-      return { ...r, durationSec: Math.max(2, Math.min(15, v)) };
+      return { ...r, durationSec: getRowDuration(r, v) };
     });
     replaceActiveMotionRows(result.rows);
   };
@@ -858,7 +863,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         prompt: r.prompt.trim(),
         templateId: r.templateId || null,
         providerId: getRowProviderId(r),
-        durationSec: r.durationSec,
+        durationSec: getRowDuration(r),
         tailImageId: r.tailImageId,
         ...(getRowMultiShotCapability(r)?.supported === true ? { multiShot: r.multiShot } : {}),
       }))
@@ -960,20 +965,12 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
       return;
     }
 
-    // 不能用原生同步确认弹窗（confirm）：它会吞掉点击的 mouseup，之后页面里的
-    // 原生 <select> 下拉会点不开，要切到别的应用再切回来才恢复。改为抽屉内联
-    // 二次确认（第一次点击在底栏展示摘要，再点「确认提交」才真正提交）。
-    const requiresBulkConfirmation =
-      safeShots.length >= BULK_CONFIRM_THRESHOLD || plan.totalClips >= BULK_CONFIRM_THRESHOLD;
-    if (requiresBulkConfirmation && !bulkConfirmText) {
-      setBulkConfirmText(
-        `将为 ${plan.ready.length} 个分镜提交 ${plan.totalClips} 条视频；` +
-        `跳过 ${plan.skippedExisting.length} 个已有任务、${plan.skippedEmpty.length} 个未填写、` +
-        `${plan.blocked.length + plan.overflow.length} 个有问题。`,
-      );
+    if (plan.ready.some((shot) => shot.rows.some((row) =>
+      !configuredProviders.some((provider) => provider.id === getRowProviderId(row)),
+    ))) {
+      setBulkStatus('所选视频供应商已不可用，请重新选择后生成；不会自动切换模型。');
       return;
     }
-    setBulkConfirmText(null);
 
     const submittedTailIds = new Set(
       plan.ready.flatMap((shot) => shot.rows.flatMap((row) => row.tailImageId ? [row.tailImageId] : [])),
@@ -993,7 +990,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
           prompt: row.prompt.trim(),
           templateId: row.templateId || null,
           providerId: getRowProviderId(row),
-          durationSec: row.durationSec,
+          durationSec: getRowDuration(row),
           tailImageId: row.tailImageId,
           ...(getRowMultiShotCapability(row)?.supported === true ? { multiShot: row.multiShot } : {}),
         }));
@@ -1023,6 +1020,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
         setBulkProgress({ submitted: processedClips, total: plan.totalClips });
         setBulkStatus(`批量提交中：已提交 ${processedClips}/${plan.totalClips}`);
       }
+      if (failures.length === 0) setBulkDrawerOpen(false);
       await refreshJobs();
       setBulkProgress(null);
       setBulkStatus(
@@ -1049,7 +1047,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const updateBulkRowPrompt = (shotId: string, rowKey: string, prompt: string) => {
     if (creatingRef.current) return;
     const rows = getShotRows(shotId);
-    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, prompt } : row));
+    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, prompt, templateId: '' } : row));
   };
 
   const updateBulkRowTemplate = (shotId: string, rowKey: string, templateId: string) => {
@@ -1057,14 +1055,11 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     const rows = getShotRows(shotId);
     setShotRows(shotId, rows.map((row) => {
       if (row.key !== rowKey) return row;
-      const oldTemplate = row.templateId ? templates.find((template) => template.id === row.templateId) : null;
       const newTemplate = templates.find((template) => template.id === templateId);
-      const isAutoFilled = !row.prompt.trim()
-        || (oldTemplate ? row.prompt.trim() === oldTemplate.prompt.trim() : false);
       return {
         ...row,
         templateId,
-        prompt: isAutoFilled && newTemplate ? newTemplate.prompt : row.prompt,
+        prompt: newTemplate ? newTemplate.prompt : row.prompt,
       };
     }));
   };
@@ -1072,30 +1067,38 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
   const updateBulkRowDuration = (shotId: string, rowKey: string, raw: number) => {
     if (creatingRef.current) return;
     const value = Number.isFinite(raw) && raw > 0 ? raw : 5;
-    const durationSec = Math.max(2, Math.min(15, value));
     const rows = getShotRows(shotId);
-    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, durationSec } : row));
+    setShotRows(shotId, rows.map((row) => row.key === rowKey ? { ...row, durationSec: getRowDuration(row, value) } : row));
   };
 
-  const applyBulkProvider = () => {
+  const applyBulkProvider = (providerId: string) => {
     if (creatingRef.current) return;
-    const providerId = bulkProviderId || preferredProvider?.id || configuredProviders[0]?.id || '';
-    if (!providerId) {
-      setBulkStatus('暂无可用的视频供应商。');
+    if (!configuredProviders.some((provider) => provider.id === providerId)) {
+      setBulkStatus('所选视频供应商不可用，请重新选择。');
       return;
     }
-    for (const shot of safeShots) {
-      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, providerId })));
+    setBulkProviderId(providerId);
+    for (const shot of materializeAllDrafts()) {
+      setShotRows(shot.shotId, shot.rows.map((row) => ({
+        ...row, providerId, durationSec: getRowDuration({ ...row, providerId }),
+      })));
     }
     setBulkStatus(`已将供应商应用到 ${safeShots.length} 个分镜。`);
   };
 
-  const applyBulkDuration = () => {
+  const getBulkDurationOptions = () => {
+    const rows = safeShots.flatMap((shot) => getShotRows(shot.id));
+    const options = getRowDurationOptions(rows[0] || { providerId: bulkProviderId });
+    return options.filter((duration) => rows.every((row) => getRowDurationOptions(row).includes(duration)));
+  };
+
+  const applyBulkDuration = (raw: string) => {
     if (creatingRef.current) return;
-    const durationSec = Math.max(2, Math.min(15, Number(bulkDuration) || 5));
-    setBulkDuration(durationSec);
+    setBulkDuration(raw);
+    const durationSec = Number(raw);
+    if (!getBulkDurationOptions().includes(durationSec)) return;
     for (const shot of safeShots) {
-      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, durationSec })));
+      setShotRows(shot.id, getShotRows(shot.id).map((row) => ({ ...row, durationSec: getRowDuration(row, durationSec) })));
     }
     setBulkStatus(`已将时长 ${durationSec} 秒应用到 ${safeShots.length} 个分镜。`);
   };
@@ -1244,7 +1247,8 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
     if (!videoPreviewJobId) return null;
     const job = videoJobs.find((j) => j.id === videoPreviewJobId);
     if (!job?.filename) return null;
-    return `/api/videos/videos/${encodeURIComponent(job.filename)}`;
+    // ?preview=1：HEVC/10bit 原件浏览器放不动时改由 H.264 预览衍生物播放
+    return `/api/videos/videos/${encodeURIComponent(job.filename)}?preview=1`;
   })();
   const previewPosterUrl = videoPreviewJobId
     ? videoJobs.find((j) => j.id === videoPreviewJobId)?.posterImageUrl || null
@@ -1597,17 +1601,18 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                         className="input-field video-control"
                         disabled={creating}
                       >
-                        <option value="">模板（可选）</option>
+                        <option value="">自定义</option>
                         {templates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                       </select>
-                      <input
-                        type="number" min={2} max={15}
-                        value={row.durationSec}
+                      <select
+                        value={getRowDuration(row)}
                         onChange={(e) => updateRowDuration(row.key, Number(e.target.value))}
                         className="input-field video-control text-center"
                         title="秒数"
                         disabled={creating}
-                      />
+                      >
+                        {getRowDurationOptions(row).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+                      </select>
                       {multiShotCapability?.supported === true && (
                         <button
                           type="button"
@@ -1746,10 +1751,14 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                   <select
                     id="bulk-provider"
                     className="input-field video-control"
-                    value={bulkProviderId || preferredProvider?.id || ''}
-                    onChange={(event) => setBulkProviderId(event.target.value)}
+                    value={getBulkProviderId()}
+                    onChange={(event) => applyBulkProvider(event.target.value)}
                     disabled={creating || configuredProviders.length === 0}
                   >
+                    {getBulkProviderId() === '__mixed__' && <option value="__mixed__" disabled>多个供应商（选择后统一应用）</option>}
+                    {getBulkProviderId() !== '__mixed__' && getBulkProviderId() && !providers.some((provider) => provider.id === getBulkProviderId()) && (
+                      <option value={getBulkProviderId()} disabled>所选供应商已不可用，请重新选择</option>
+                    )}
                     {providers.length === 0 && <option value="">暂无供应商</option>}
                     {providers.map((provider) => (
                       <option key={provider.id} value={provider.id} disabled={provider.configured === false}>
@@ -1757,38 +1766,21 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="button"
-                    className="btn-secondary btn-sm"
-                    onClick={applyBulkProvider}
-                    disabled={creating || safeShots.length === 0 || configuredProviders.length === 0}
-                  >
-                    应用到全部
-                  </button>
                 </div>
               </div>
               <div className="video-bulk-global-control">
                 <label htmlFor="bulk-duration">时长</label>
                 <div className="video-bulk-global-control-row">
-                  <input
+                  <select
                     id="bulk-duration"
-                    type="number"
-                    min={2}
-                    max={15}
                     className="input-field video-control text-center"
-                    value={bulkDuration}
-                    onChange={(event) => setBulkDuration(Number(event.target.value))}
+                    value={normalizeVideoDraftDuration(Number(bulkDuration), getBulkDurationOptions())}
+                    onChange={(event) => applyBulkDuration(event.target.value)}
                     disabled={creating}
-                  />
-                  <span className="video-bulk-unit">秒</span>
-                  <button
-                    type="button"
-                    className="btn-secondary btn-sm"
-                    onClick={applyBulkDuration}
-                    disabled={creating || safeShots.length === 0}
                   >
-                    应用到全部
-                  </button>
+                    {getBulkDurationOptions().map((seconds) => <option key={seconds} value={seconds}>{seconds}</option>)}
+                  </select>
+                  <span className="video-bulk-unit">秒</span>
                 </div>
               </div>
             </div>
@@ -1853,7 +1845,7 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               onChange={(event) => updateBulkRowTemplate(shot.id, row.key, event.target.value)}
                               disabled={creating}
                             >
-                              <option value="">模板（可选）</option>
+                              <option value="">自定义</option>
                               {templates.map((template) => (
                                 <option key={template.id} value={template.id}>{template.name}</option>
                               ))}
@@ -1866,16 +1858,15 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
                               rows={2}
                               disabled={creating}
                             />
-                            <input
-                              type="number"
-                              min={2}
-                              max={15}
+                            <select
                               className="input-field video-control video-bulk-duration"
-                              value={row.durationSec}
+                              value={getRowDuration(row)}
                               onChange={(event) => updateBulkRowDuration(shot.id, row.key, Number(event.target.value))}
                               title="秒数"
                               disabled={creating}
-                            />
+                            >
+                              {getRowDurationOptions(row).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+                            </select>
                             <div className="video-bulk-row-status" aria-label="运镜状态">
                               {row.tailImageId && <span className="video-bulk-badge is-tail">带尾帧</span>}
                               {isAutoTransition && <span className="video-bulk-badge is-tail">转场提示词</span>}
@@ -1895,9 +1886,6 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
             </div>
 
             <div className="video-bulk-drawer-footer">
-              {bulkConfirmText && (
-                <span className="video-bulk-confirm-text">{bulkConfirmText}</span>
-              )}
               <button
                 type="button"
                 className="btn-secondary btn-sm"
@@ -1906,26 +1894,13 @@ export default function VideoGenerationPanel({ projectId, shotSetId, shots }: Pr
               >
                 一键填充提示词
               </button>
-              {bulkConfirmText && (
-                <button
-                  type="button"
-                  className="btn-secondary btn-sm"
-                  onClick={() => {
-                    setBulkConfirmText(null);
-                    setBulkStatus('已取消批量生成，未提交新任务。');
-                  }}
-                  disabled={creating}
-                >
-                  取消
-                </button>
-              )}
               <button
                 type="button"
                 className="btn-primary btn-sm video-create-action"
                 onClick={() => void handleGenerateAll()}
                 disabled={creating || configuredProviders.length === 0 || safeShots.length === 0}
               >
-                {creating ? '批量生成中…' : bulkConfirmText ? '确认提交' : '全部生成'}
+                {creating ? '批量生成中…' : '全部生成'}
               </button>
             </div>
           </div>

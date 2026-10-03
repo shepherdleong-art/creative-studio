@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { resolvePublicImageUrl } from '../local-image-url.ts';
 import { isCosMediaConfigured, tryUploadToCosAndSign, compressImageToBudget } from '../cos-media.ts';
-import { companyImageCapsForModel, snapCompanyImageSize } from '../company-gateway-size.ts';
+import { companyImageCapsForModel, snapCompanyImageSize, companyImageOutputConfig } from '../company-gateway-size.ts';
 import {
   normalizeGatewayResultUrl,
   downloadGatewayMedia,
@@ -34,8 +34,13 @@ export interface GatewayTaskImageRequest {
 export interface GatewayTaskSubmitResult {
   taskId?: string;
   immediateImageUrl?: string;
+  /** 每张入图实际使用的传输通道（与 images 顺序一致），供队列层记日志 */
+  imageTransports?: ImageTransport[];
   rawResponse: unknown;
 }
+
+/** 入图传输通道：内联 base64 / COS 预签名 URL / 本机 HTTP URL / 裸 data URL 兜底 */
+export type ImageTransport = 'inline-data-url' | 'cos-url' | 'local-url' | 'data-url';
 
 export interface GatewayTaskPollResult {
   status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'unknown';
@@ -116,9 +121,20 @@ function fileToDataUrl(filePath: string, mimeType: string): string {
  * 直接内联（保画面细节），>20MB 才压到 ≤6MB/4096px/q92 再内联；压缩失败
  * （如 gif 超限）返回 null，由调用方回退既有 COS/本机 URL 通道。
  * 阈值可用 CREATIVE_STUDIO_INLINE_RAW_MAX_BYTES / INLINE_TARGET_BYTES /
- * INLINE_TARGET_DIM / INLINE_TARGET_QUALITY 覆盖。
+ * INLINE_TARGET_DIM / INLINE_TARGET_QUALITY 覆盖；CREATIVE_STUDIO_QINIUYUN_INLINE=0
+ * 可整体关停内联（强制走 COS/URL），用于排查上游安全拦截与传输方式的关系。
  */
 const INLINE_DATAURL_MODEL = /^qiniuyun\//i;
+
+/**
+ * qiniuyun/* 内联通道的运行时开关：CREATIVE_STUDIO_QINIUYUN_INLINE=0 时跳过
+ * 内联，强制走 COS/本机 URL（用于排查上游安全系统拦截是否与传输方式相关）。
+ * 默认开启，保持 2026-08-21 实测验证过的现状。
+ */
+function isInlineDataUrlEnabled(model: string): boolean {
+  if (!INLINE_DATAURL_MODEL.test(model)) return false;
+  return (process.env.CREATIVE_STUDIO_QINIUYUN_INLINE || '1').trim() !== '0';
+}
 
 /** 实测接受 response_format=png 并返回无损 PNG 的公司下游（2026-08-21 真实任务验证） */
 const PNG_RESPONSE_FORMAT_MODEL = /^qiniuyun\//i;
@@ -149,11 +165,15 @@ async function toInlineDataUrl(filePath: string, mimeType: string): Promise<stri
  * COS 失败或未配置时回退 CREATIVE_STUDIO_PUBLIC_BASE_URL 本机 HTTP URL，最后退 data URL。
  * qiniuyun/* 模型例外：见 toInlineDataUrl 的免 COS 内联通道。
  */
-async function toGatewayImageRefAsync(filePath: string, mimeType: string, model: string): Promise<string> {
-  if (INLINE_DATAURL_MODEL.test(model)) {
+async function toGatewayImageRefAsync(
+  filePath: string,
+  mimeType: string,
+  model: string
+): Promise<{ url: string; transport: ImageTransport }> {
+  if (isInlineDataUrlEnabled(model)) {
     try {
       const inline = await toInlineDataUrl(filePath, mimeType);
-      if (inline) return inline;
+      if (inline) return { url: inline, transport: 'inline-data-url' };
     } catch (error) {
       console.warn('[gateway-task-image] 参考图内联失败，回退 URL 通道：', error instanceof Error ? error.message : error);
     }
@@ -161,12 +181,14 @@ async function toGatewayImageRefAsync(filePath: string, mimeType: string, model:
   if (isCosMediaConfigured()) {
     try {
       const cosUrl = await tryUploadToCosAndSign(filePath, mimeType);
-      if (cosUrl) return cosUrl;
+      if (cosUrl) return { url: cosUrl, transport: 'cos-url' };
     } catch (error) {
       console.warn('[cos-media] 参考图上传 COS 失败，回退本机 URL：', error instanceof Error ? error.message : error);
     }
   }
-  return resolvePublicImageUrl(filePath) ?? fileToDataUrl(filePath, mimeType);
+  const localUrl = resolvePublicImageUrl(filePath);
+  if (localUrl) return { url: localUrl, transport: 'local-url' };
+  return { url: fileToDataUrl(filePath, mimeType), transport: 'data-url' };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -181,7 +203,8 @@ function withTimeoutSignal(
   const timer = setTimeout(() => controller.abort(new DOMException('Timeout', 'TimeoutError')), ms);
 
   const onAbort = () => controller.abort();
-  parent?.addEventListener('abort', onAbort, { once: true });
+  if (parent?.aborted) onAbort();
+  else parent?.addEventListener('abort', onAbort, { once: true });
 
   return {
     signal: controller.signal,
@@ -195,19 +218,35 @@ function withTimeoutSignal(
 export async function submitGatewayTaskImage(
   request: GatewayTaskImageRequest,
   apiKey: string,
-  baseUrl: string
+  baseUrl: string,
+  options: { onProgress?: (message: string) => void; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<GatewayTaskSubmitResult> {
   const cleanBase = baseUrl.replace(/\/$/, '');
+  const isSeedreamPro = request.model === 'doubao-seedream-5-0-pro-image';
+  const isNanoBanana = request.model === 'nano-banana-3.0' || request.model === 'nano-banana-3.1';
+  if ((isSeedreamPro || isNanoBanana) && request.referenceImagePaths.length + 1 > 14) {
+    throw new Error('该模型最多支持 14 张输入图片（含待编辑底图），请减少参考图');
+  }
+  if (isNanoBanana && !isCosMediaConfigured()) {
+    throw new Error('公司 Nano Banana 参考图需要配置 CREATIVE_STUDIO_COS_* 公网中转');
+  }
 
   // 与 packy-images / openai-compatible 一致的图片顺序约定：待编辑底图在前（图1），参考图在后（图2-N）。
   // 项目默认提示词与存量项目提示词均按「图1=底图、图2=参考图」书写。
-  const imageUrls: string[] = [
-    await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType, request.model),
-  ];
+  const imageUrls: string[] = [];
+  const imageTransports: ImageTransport[] = [];
+  const pushRef = (r: { url: string; transport: ImageTransport }) => {
+    imageUrls.push(r.url);
+    imageTransports.push(r.transport);
+  };
+  pushRef(await toGatewayImageRefAsync(request.inputImagePath, request.inputMimeType, request.model));
   for (let i = 0; i < request.referenceImagePaths.length; i++) {
-    imageUrls.push(
+    pushRef(
       await toGatewayImageRefAsync(request.referenceImagePaths[i], request.referenceMimeTypes[i] || 'image/png', request.model)
     );
+  }
+  if (isNanoBanana && imageTransports.some(t => t !== 'cos-url')) {
+    throw new Error('公司 Nano Banana 参考图上传 COS 失败，任务未提交');
   }
 
   let prompt = request.prompt;
@@ -216,6 +255,51 @@ export async function submitGatewayTaskImage(
   if (shouldUseSubjectGuidance) {
     const refRange = request.referenceImagePaths.length === 1 ? '图2' : `图2-${request.referenceImagePaths.length + 1}`;
     prompt = `图1是需要编辑的原图，${refRange}是风格/场景参考图。保持图1的产品主体、比例、材质不变，参考后面的图片调整场景、光线和布置。\n${request.prompt}`;
+  }
+
+  // 公司 Seedream 5.0 Pro 下游为方舟同步 JSON 图片接口：image（单数）接收
+  // 按顺序排列的底图和参考图。沿用 immediateImageUrl 合同，不改队列或轮询逻辑。
+  if (isSeedreamPro) {
+    const caps = companyImageCapsForModel(request.model)!;
+    const output = companyImageOutputConfig(request.size, caps);
+    // 同步生图等待完整生成结果，应沿用项目超时；未提供时默认 10 分钟。
+    const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs! > 0
+      ? options.timeoutMs! : 600_000;
+    const requestTimeout = withTimeoutSignal(options.signal, timeoutMs);
+    const startedAt = Date.now();
+    const elapsedSeconds = () => Math.round((Date.now() - startedAt) / 1000);
+    const reportWaiting = () => options.onProgress?.(`Seedream 5.0 Pro 等待生成响应（已等待 ${elapsedSeconds()} 秒，超时上限 ${Math.round(timeoutMs / 1000)} 秒）`);
+    reportWaiting();
+    // 同步接口没有远端任务 ID；这里只记录本地等待时间，不额外提交或伪造轮询。
+    const progressTimer = options.onProgress ? setInterval(reportWaiting, 5000) : undefined;
+    try {
+      // 方舟推荐档位 + 提示词宽高比。公司链路传具体像素会回落到默认 2K，
+      // 2026-09-29 实测 size=1K 才能正确得到 1K 产物。
+      const response = await fetch(`${cleanBase}/v1/images/generations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: request.model,
+          prompt: `${prompt}\n输出画幅为${output.AspectRatio}，清晰度为${output.Resolution}。`, image: imageUrls,
+          size: output.Resolution, n: 1, response_format: 'url' }),
+        signal: requestTimeout.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Seedream 图片生成失败 ${response.status}: ${sanitizeGatewayMediaDiagnostic(await response.text(), apiKey).slice(0, 500)}`);
+      }
+      const data = await response.json() as { data?: Array<{ url?: string; error?: { message?: string } }>; error?: { message?: string }; usage?: unknown };
+      const immediateImageUrl = normalizeGatewayResultUrl(data.data?.[0]?.url, cleanBase);
+      if (!immediateImageUrl) {
+        throw new Error(`Seedream 未返回图片 URL: ${sanitizeGatewayMediaDiagnostic(data.error?.message || data.data?.[0]?.error?.message || '响应缺少 data[0].url', apiKey)}`);
+      }
+      options.onProgress?.(`Seedream 5.0 Pro 生成响应已返回（耗时 ${elapsedSeconds()} 秒），开始下载图片`);
+      return { immediateImageUrl, imageTransports, rawResponse: { status: 'completed', usage: data.usage } };
+    } catch (error) {
+      options.onProgress?.(`Seedream 5.0 Pro 请求异常结束（已等待 ${elapsedSeconds()} 秒）`);
+      throw error;
+    } finally {
+      clearInterval(progressTimer);
+      requestTimeout.cleanup();
+    }
   }
 
   const body: Record<string, unknown> = {
@@ -231,6 +315,7 @@ export async function submitGatewayTaskImage(
   if (companyCaps) {
     body.size = snapCompanyImageSize(request.size, companyCaps);
     body.response_format = PNG_RESPONSE_FORMAT_MODEL.test(request.model) ? 'png' : 'jpeg';
+    if (isNanoBanana) body.OutputConfig = companyImageOutputConfig(request.size, companyCaps);
   } else if (request.size) {
     body.size = request.size;
   }
@@ -263,11 +348,11 @@ export async function submitGatewayTaskImage(
 
     // 同步直接出图（少见，但网关允许 completed 立即返回）
     if (imageUrl && status === 'succeeded') {
-      return { taskId, immediateImageUrl: imageUrl, rawResponse: data };
+      return { taskId, immediateImageUrl: imageUrl, imageTransports, rawResponse: data };
     }
 
     if (taskId) {
-      return { taskId, rawResponse: data };
+      return { taskId, imageTransports, rawResponse: data };
     }
 
     throw new Error(`Gateway task 未返回任务 id：${sanitizeGatewayMediaDiagnostic(safeJson(data), apiKey)}`);

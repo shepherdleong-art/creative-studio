@@ -125,6 +125,48 @@ try {
   assert.equal(reasonerBodies.length, 3, '已记忆的模型不应再次触发 400 重试');
   assert.equal(reasonerBodies[2].temperature, 1, '已记忆的模型必须固定 temperature=1');
 
+  // 两条业务链共用此适配器：保留可识别的拒绝原因，但不泄漏上游回显的内容。
+  const sensitiveEcho = 'private-prompt Bearer secret https://example.test/image?q-signature=private-signature';
+  for (const sample of [
+    { body: JSON.stringify({ error: { code: 'context_length_exceeded', message: sensitiveEcho } }), hint: '上下文长度超限', images: undefined },
+    { body: JSON.stringify({ error: { message: `litellm.BadRequestError: OpenAIException - Error while downloading image. ${sensitiveEcho}` } }), hint: '图片读取失败', images: [{ mimeType: 'image/jpeg', imageUrl: 'https://example.test/image' }] },
+    { body: JSON.stringify({ error: { code: 'rate_limit_exceeded', message: sensitiveEcho } }), hint: '上游限流', images: undefined },
+    { body: JSON.stringify({ error: { code: 'insufficient_quota', message: sensitiveEcho } }), hint: '上游额度不足', images: undefined },
+    { body: JSON.stringify({ error: { code: 'content_policy_violation', message: sensitiveEcho } }), hint: '上游内容审核拒绝', images: undefined },
+    { body: JSON.stringify({ error: { code: 'model_not_found', message: sensitiveEcho } }), hint: '模型不存在', images: undefined },
+    { body: JSON.stringify({ error: { code: 'invalid_api_key', message: sensitiveEcho } }), hint: '上游鉴权失败', images: undefined },
+    { body: JSON.stringify({ error: { message: `Request timed out. ${sensitiveEcho}` } }), hint: '上游请求超时', images: undefined },
+    { body: JSON.stringify({ error: { message: `Unsupported parameter: 'max_tokens'. ${sensitiveEcho}` } }), hint: '不支持的参数：max_tokens', images: undefined },
+    { body: JSON.stringify({ error: { code: 'unsupported_parameter', param: 'private-parameter', message: sensitiveEcho } }), hint: '请求参数或参数值不受支持', images: undefined },
+    { body: JSON.stringify({ error: { code: 'private-secret-code', message: sensitiveEcho } }), hint: '上游未提供可安全识别的原因', images: undefined },
+    { body: `<html>${sensitiveEcho}</html>`, hint: '上游未提供可安全识别的原因', images: undefined },
+  ]) {
+    let calls = 0;
+    globalThis.fetch = async () => { calls += 1; return new Response(sample.body, { status: 400 }); };
+    await assert.rejects(chatCompletion(config, {
+      systemPrompt: 'private-prompt', userPrompt: 'user', images: sample.images,
+    }, lunaRuntime), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.ok(error.message.includes(sample.hint), `缺少错误诊断：${sample.hint}`);
+      assert.match(error.message, /HTTP 400/);
+      assert.doesNotMatch(error.message, /private-|Bearer|https:\/\//, '错误会落库，不得包含上游原文');
+      return true;
+    });
+    assert.equal(calls, 1, '诊断不能为任意 400 增加重试');
+  }
+
+  let fallbackCalls = 0;
+  globalThis.fetch = async () => {
+    fallbackCalls += 1;
+    return new Response(fallbackCalls === 1
+      ? "Unsupported value: 'temperature' does not support 0.7."
+      : JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 });
+  };
+  await assert.rejects(chatCompletion(config, {
+    systemPrompt: 'system', userPrompt: 'user',
+  }, { ...runtime, model: 'fallback-diagnostic' }), /上下文长度超限/, '重试失败应显示最后一次响应的原因');
+  assert.equal(fallbackCalls, 2);
+
   const invalidJson = `not-json:${'x'.repeat(220)}:tail-marker`;
   assert.throws(
     () => parseJsonResponse(invalidJson, '测试供应商'),

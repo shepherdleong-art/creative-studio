@@ -1,4 +1,5 @@
 import { FINAL_EDIT_MIN_CLIP_FRAMES, type TimelineClip } from '../../lib/final-edit/types.ts';
+import { videoPlaybackRate } from '../../lib/final-edit/clip-edit.ts';
 
 export type ClipDragMode = 'move' | 'start' | 'end';
 
@@ -86,6 +87,7 @@ export function constrainClipDrag({ clip, clips, bodyFrames, sourceFrames, mode,
   const index = ordered.findIndex((item) => item.id === clip.id);
   const previous = index > 0 ? ordered[index - 1] : null;
   const next = index >= 0 && index < ordered.length - 1 ? ordered[index + 1] : null;
+  const rate = videoPlaybackRate(clip);
 
   if (mode === 'move') {
     const duration = initial.timelineOutFrame - initial.timelineInFrame;
@@ -97,18 +99,18 @@ export function constrainClipDrag({ clip, clips, bodyFrames, sourceFrames, mode,
   }
 
   if (mode === 'start') {
-    const minimumDelta = Math.max((previous?.timelineOutFrame ?? 0) - initial.timelineInFrame, -initial.sourceInFrame);
+    const minimumDelta = Math.max((previous?.timelineOutFrame ?? 0) - initial.timelineInFrame, -Math.floor(initial.sourceInFrame / rate));
     const maximumDelta = initial.timelineOutFrame - initial.timelineInFrame - FINAL_EDIT_MIN_CLIP_FRAMES;
     const delta = clamp(deltaFrames, minimumDelta, maximumDelta);
-    return { ...initial, sourceInFrame: initial.sourceInFrame + delta, timelineInFrame: initial.timelineInFrame + delta };
+    return { ...initial, sourceInFrame: initial.sourceInFrame + Math.round(delta * rate), timelineInFrame: initial.timelineInFrame + delta };
   }
 
   const safeSourceFrames = Math.max(initial.sourceOutFrame, sourceFrames);
   const minimumDelta = -(initial.timelineOutFrame - initial.timelineInFrame - FINAL_EDIT_MIN_CLIP_FRAMES);
   const maximumDelta = Math.min(
     (next?.timelineInFrame ?? bodyFrames) - initial.timelineOutFrame,
-    safeSourceFrames - initial.sourceOutFrame,
+    Math.floor((safeSourceFrames - initial.sourceOutFrame) / rate),
   );
   const delta = clamp(deltaFrames, minimumDelta, maximumDelta);
-  return { ...initial, sourceOutFrame: initial.sourceOutFrame + delta, timelineOutFrame: initial.timelineOutFrame + delta };
+  return { ...initial, sourceOutFrame: initial.sourceOutFrame + Math.round(delta * rate), timelineOutFrame: initial.timelineOutFrame + delta };
 }

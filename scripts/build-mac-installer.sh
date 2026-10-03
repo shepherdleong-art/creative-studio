@@ -182,85 +182,48 @@ node -e "const fs=require('node:fs'); const target=process.argv[1]; const versio
   "$PAYLOAD/package.json" "$VERSION"
 
 echo "Pruning local-only and development paths..."
-# Kept in sync with the Windows installer's prune list. Next's output tracing
-# can copy the whole project root into .next/standalone, so every entry has to
-# be pruned at both levels — pruning only the payload root used to leave build
-# caches and dev configs behind inside the standalone directory.
-PRUNE_RELATIVE_PATHS=(
-  data
-  storage
-  outputs
-  installer
-  docs
-  scripts
-  desktop
-  .git
-  .claude
-  .venv-litellm
-  python-runtime
-  config.yaml
-  litellm-config.yaml
-  requirements-litellm.txt
-  .next/cache
-  .next/dev
-  node_modules/.cache
-  tsconfig.tsbuildinfo
-  package-lock.json
-  eslint.config.mjs
-  postcss.config.mjs
-  video-panel-mockup.html
-  launcher.vbs
-  WINDOWS.md
-)
+# The prune list comes from scripts/packaging/forbidden-paths.json, shared with
+# next.config.ts and the Windows installer. Next's output tracing can copy the
+# whole project root into .next/standalone, so every entry has to be pruned at
+# both levels — pruning only the payload root used to leave build caches and
+# dev configs behind inside the standalone directory.
+FORBIDDEN_PATHS_SPEC="$ROOT/scripts/packaging/forbidden-paths.json"
+PRUNE_RELATIVE_PATHS="$(node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));if(s.version!==1)throw new Error('Unsupported forbidden-paths.json schema version: '+s.version);process.stdout.write([...s.core,...s.consumers.installerPruneCommon.extra,...s.consumers.macInstallerPrune.pruneExtra].join('\n'))" "$FORBIDDEN_PATHS_SPEC")"
+[ -n "$PRUNE_RELATIVE_PATHS" ]
+FIND_GLOBS="$(node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(s.consumers.macInstallerPrune.findGlobs.join('\n'))" "$FORBIDDEN_PATHS_SPEC")"
+[ -n "$FIND_GLOBS" ]
+ASSERT_GLOBS="$(node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(s.consumers.macInstallerPrune.assertGlobs.join('\n'))" "$FORBIDDEN_PATHS_SPEC")"
+[ -n "$ASSERT_GLOBS" ]
 
 # The standalone build is copied under .next/standalone so desktop/main.ts can
 # use it as the service cwd. The second pass keeps that guard independent of
 # Next's tracing cleanup in case a stale standalone directory is reused.
-for relative in "${PRUNE_RELATIVE_PATHS[@]}"; do
+while IFS= read -r relative; do
   remove_payload_path "$relative"
   remove_payload_path ".next/standalone/$relative"
-done
+done <<< "$PRUNE_RELATIVE_PATHS"
 
 # The start*/stop* globs must not require a hyphen: start.command, start.sh,
 # stop.command and stop.sh are source-run entry points that are meaningless in
 # an installed app. The legacy launcher and shortcut helpers are documented as
 # historical/dev resources that are not packaged.
-find "$PAYLOAD" \( \
-  -name '.env' -o \
-  -name '.env.*' -o \
-  -name '*.lock' -o \
-  -name 'start*.cmd' -o \
-  -name 'start*.ps1' -o \
-  -name 'start*.sh' -o \
-  -name 'start*.command' -o \
-  -name 'stop*.cmd' -o \
-  -name 'stop*.ps1' -o \
-  -name 'stop*.sh' -o \
-  -name 'stop*.command' -o \
-  -name 'create-desktop-shortcut.*' -o \
-  -name 'launcher.vbs' -o \
-  -name 'launcher.html' \
-\) -exec rm -rf {} +
+while IFS= read -r pattern; do
+  find "$PAYLOAD" -name "$pattern" -exec rm -rf {} +
+done <<< "$FIND_GLOBS"
 
-for pattern in 'start*.command' 'start*.sh' 'stop*.command' 'stop*.sh' 'launcher.*' 'create-desktop-shortcut.*'; do
+while IFS= read -r pattern; do
   if find "$PAYLOAD" -name "$pattern" -print -quit | grep -q .; then
-    echo "Installer payload still contains a source-run launcher: $pattern" >&2
+    echo "Installer payload still contains a forbidden pattern: $pattern" >&2
     exit 1
   fi
-done
+done <<< "$ASSERT_GLOBS"
 
-for forbidden in "${PRUNE_RELATIVE_PATHS[@]}"; do
+while IFS= read -r forbidden; do
   if [ -e "$PAYLOAD/$forbidden" ] || [ -e "$STANDALONE_PAYLOAD/$forbidden" ]; then
     echo "Installer payload still contains forbidden local or development path: $forbidden" >&2
     exit 1
   fi
-done
-for forbidden in .env.local .env .env.*; do
-  if find "$PAYLOAD" -name "$forbidden" -print -quit | grep -q .; then
-    echo "Installer payload still contains forbidden environment path: $forbidden" >&2
-    exit 1
-  fi
-done
+done <<< "$PRUNE_RELATIVE_PATHS"
 
 find "$PAYLOAD/dist-desktop" -type f \( -name '*.map' -o -name '*.ts' -o -name '*.tsx' \) -delete
 if find "$PAYLOAD/dist-desktop" -type f \( -name '*.map' -o -name '*.ts' -o -name '*.tsx' \) -print -quit | grep -q .; then

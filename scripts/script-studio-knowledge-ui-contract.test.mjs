@@ -74,9 +74,8 @@ assert.doesNotMatch(panel, /bg-fail.*未匹配产品策略|未匹配产品策略
 assert.match(knowledgeContextModule, /resolveKnowledgeContext/, '必须提供知识上下文解析');
 assert.match(knowledgeContextModule, /matchStrategyEntry/, '知识解析必须走型号匹配');
 assert.match(knowledgeContextModule, /fingerprint/, '知识上下文必须携带指纹');
-assert.match(titleEmbeddingModule, /checkTitleEmbedding/, '必须提供标题埋词校验');
-assert.match(titleEmbeddingModule, /至少 1 个|1-2 个|too_many_search_terms/, '埋词约束必须覆盖 1-2 个搜索词');
-assert.match(generatorModule, /embeddingRequirementText/, '生成 prompt 必须注入埋词约束');
+assert.match(titleEmbeddingModule, /checkTitleEmbedding/, '保留历史搜索词统计入口');
+assert.match(generatorModule, /embeddingRequirementText/, '生成 prompt 说明搜索词的独立用途');
 assert.match(generatorModule, /recommendation/, '生成 prompt 必须注入推荐说明');
 
 console.log('script-studio knowledge UI contract tests passed');

@@ -7,6 +7,19 @@
 
 model_list:
   # ── 示例 1：OpenAI 兼容协议的图片模型（多数中转网关都是这个形态）──
+  - model_name: doubao-seedance-2-5-260628
+    litellm_params:
+      model: openai/doubao-seedance-2-5-260628
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
+  # ── 聊天模型同理，例如 ──
+  # - model_name: my-gpt
+  #   litellm_params:
+  #     model: openai/gpt-4o
+  #     api_base: https://your-gateway.com/v1
+  #     api_key: sk-xxxx
+
   - model_name: image-2                    # ← 应用侧统一调用的名字
     litellm_params:
       model: openai/image-2                # ← 网关上的真实模型名；openai/ 前缀 = Chat/Images 兼容协议
@@ -32,14 +45,32 @@ model_list:
       api_base: https://your-company-gateway.com/v1
       api_key: your-company-key
 
-  # 公司 Seedance 2.5：复用公司网关，默认输出 1080p。
-  - model_name: doubao-seedance-2-5-260628
+  # ── 聊天模型同理，例如 ──
+  # 新增公司模型仍使用公司 Key，由网关转接 VOD / 方舟，不用云厂商密钥替换。
+  - model_name: kling-2.5
     litellm_params:
-      model: openai/doubao-seedance-2-5-260628
+      model: openai/kling-2.5
       api_base: https://your-company-gateway.com/v1
       api_key: your-company-key
 
-  # ── 聊天模型同理，例如 ──
+  - model_name: doubao-seedream-5-0-pro-image
+    litellm_params:
+      model: openai/doubao-seedream-5-0-pro-image
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
+  - model_name: nano-banana-3.0
+    litellm_params:
+      model: openai/nano-banana-3.0
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
+  - model_name: nano-banana-3.1
+    litellm_params:
+      model: openai/nano-banana-3.1
+      api_base: https://your-company-gateway.com/v1
+      api_key: your-company-key
+
   # - model_name: my-gpt
   #   litellm_params:
   #     model: openai/gpt-4o

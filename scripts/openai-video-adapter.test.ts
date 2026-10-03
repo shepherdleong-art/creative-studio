@@ -85,6 +85,43 @@ try {
   };
   globalThis.fetch = mockFetch;
 
+  for (const model of ['kling-3.0', 'qiniuyun/kling-3.0']) {
+    for (const durationSec of [2, 16, 3.5, NaN]) {
+      for (const tail of [false, true]) {
+        const before = capturedMethods.length;
+        await assert.rejects(openaiVideoAdapter.submit({
+          model, prompt: 'invalid duration', sourceImagePath: imagePath,
+          sourceMimeType: 'image/png', durationSec,
+          ...(tail ? { tailImagePath, tailMimeType: 'image/png' as const } : {}),
+        }, 'gateway-key', 'http://127.0.0.1:4000'), /3–15 秒/);
+        assert.equal(capturedMethods.length, before, '非法可灵 3.0 时长必须在上传和提交前拒绝');
+      }
+    }
+  }
+
+  for (const model of ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628']) {
+    for (const durationSec of [2, 3, 16, 4.5]) {
+      const before = capturedMethods.length;
+      await assert.rejects(openaiVideoAdapter.submit({
+        model, prompt: 'invalid duration', sourceImagePath: imagePath,
+        sourceMimeType: 'image/png', durationSec,
+      }, 'gateway-key', 'http://127.0.0.1:4000'), /4–15 秒/);
+      assert.equal(capturedMethods.length, before, '非法 Seedance 时长不得产生上传或生成请求');
+    }
+  }
+
+  for (const durationSec of [2, 7, 11, 15, 10.5, NaN]) {
+    for (const tail of [false, true]) {
+      const before = capturedMethods.length;
+      await assert.rejects(openaiVideoAdapter.submit({
+        model: 'kling-2.5', prompt: 'invalid duration', sourceImagePath: imagePath,
+        sourceMimeType: 'image/png', durationSec,
+        ...(tail ? { tailImagePath, tailMimeType: 'image/png' as const } : {}),
+      }, 'gateway-key', 'http://127.0.0.1:4000'), /仅支持 5 秒或 10 秒/);
+      assert.equal(capturedMethods.length, before, '非法时长必须在 COS 上传和供应商提交之前拒绝');
+    }
+  }
+
   const result = await openaiVideoAdapter.submit(
     {
       model: 'kling-3.0',
@@ -116,6 +153,15 @@ try {
   ]);
 
   // Kling 3.0 Omni 不支持智能分镜：不传 multi_shot / shot_type（公司文档 §5.1）
+  await openaiVideoAdapter.submit({
+    model: 'kling-2.5', prompt: '1080p probe', sourceImagePath: imagePath,
+    sourceMimeType: 'image/png', durationSec: 5,
+  }, 'gateway-key', 'https://llm-gateway.example.com');
+  assert.deepEqual(capturedBody?.OutputConfig, { Resolution: '1080P', Duration: 5 });
+  assert.equal(capturedBody?.size, '1366x1024');
+  assert.equal(capturedBody?.multi_shot, undefined);
+  assert.ok(!('LastFrameUrl' in (capturedBody || {})));
+
   await openaiVideoAdapter.submit(
     {
       model: 'kling-3.0-Omni',
@@ -283,7 +329,7 @@ try {
   process.env.CREATIVE_STUDIO_PUBLIC_BASE_URL = 'http://192.168.1.10:3000';
 
   // ── 公司尾帧（D9 硬门禁：回环 LiteLLM + COS 预签名 URL，禁止公网回退）──
-  // 能力合同：只有卡 0 核验的精确别名开放，其余一律 contract_unverified
+  // 能力合同：只有有文档或实测依据的精确别名开放，其余一律 contract_unverified
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('kling-3.0'), {
     supported: true, protocol: 'company-gateway-kling',
   });
@@ -305,8 +351,11 @@ try {
     supported: true, protocol: 'company-gateway-seedance',
   });
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('kling-2.5'), {
-    supported: false, reason: 'contract_unverified',
+    supported: true, protocol: 'company-gateway-kling',
   });
+  for (const model of ['kling-2.5-fast', 'kling-2.5-turbo', 'KLING-2.5', 'qiniuyun/kling-2.5']) {
+    assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.(model), { supported: false, reason: 'contract_unverified' });
+  }
   assert.deepEqual(openaiVideoAdapter.tailFrameCapability?.('kling-3.0-Omni'), {
     supported: false, reason: 'contract_unverified',
   });
@@ -354,6 +403,48 @@ try {
   assert.deepEqual(capturedBody?.OutputConfig, { AspectRatio: '4:3', Resolution: '1080P', Duration: 5 });
   // aspect_ratio 探测被网关 400 拒绝（UnknownParameter，2026-08-17），不得再发送
   assert.equal(capturedBody?.aspect_ratio, undefined);
+
+  // Kling 2.5 首尾帧：腾讯要求 1080P；5/10 秒均显式透传，不能误用双参考图。
+  for (const durationSec of [5, 10]) {
+    await openaiVideoAdapter.submit({
+      model: 'kling-2.5', prompt: '从首帧过渡到尾帧',
+      sourceImagePath: imagePath, sourceMimeType: 'image/png',
+      tailImagePath, tailMimeType: 'image/png', durationSec,
+    }, 'gateway-key', 'http://127.0.0.1:4000');
+    assert.equal(capturedUrl, 'http://127.0.0.1:4000/v1/videos');
+    assert.equal(capturedBody?.model, 'kling-2.5');
+    assert.deepEqual(capturedBody?.images, klingTailImages, '首帧必须独占 images，且与已核对的首帧一致');
+    assert.equal(capturedBody?.LastFrameUrl, klingLastFrameUrl, '尾帧必须走腾讯原生字段');
+    assert.deepEqual(capturedBody?.OutputConfig, { AspectRatio: '4:3', Resolution: '1080P', Duration: durationSec });
+    assert.equal(capturedBody?.seconds, String(durationSec));
+    assert.equal(capturedBody?.size, undefined);
+    assert.equal(capturedBody?.multi_shot, undefined);
+    assert.equal(capturedBody?.shot_type, undefined);
+  }
+
+  // 尺寸探测失败也必须显式要求 1080P，不得落到腾讯不支持首尾帧的默认档位。
+  await openaiVideoAdapter.submit({
+    model: 'kling-2.5', prompt: 'test', sourceImagePath: outsideImagePath, sourceMimeType: 'image/png',
+    tailImagePath, tailMimeType: 'image/png', durationSec: 5,
+  }, 'gateway-key', 'http://127.0.0.1:4000');
+  assert.deepEqual(capturedBody?.OutputConfig, { Resolution: '1080P', Duration: 5 });
+
+  const kling25TailRequest = {
+    model: 'kling-2.5', prompt: 'test', sourceImagePath: imagePath, sourceMimeType: 'image/png',
+    tailImagePath, tailMimeType: 'image/png', durationSec: 5,
+  } as const;
+  const beforeKling25Gate = capturedMethods.length;
+  await assert.rejects(openaiVideoAdapter.submit(kling25TailRequest, 'gateway-key', 'https://external.example.com'), /LiteLLM/);
+  const cosSecret = process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+  try {
+    delete process.env.CREATIVE_STUDIO_COS_SECRET_KEY;
+    _resetCosMediaCacheForTest();
+    await assert.rejects(openaiVideoAdapter.submit(kling25TailRequest, 'gateway-key', 'http://127.0.0.1:4000'), /CREATIVE_STUDIO_COS/);
+  } finally {
+    process.env.CREATIVE_STUDIO_COS_SECRET_KEY = cosSecret;
+    _resetCosMediaCacheForTest();
+  }
+  assert.equal(capturedMethods.length, beforeKling25Gate, 'Kling 2.5 尾帧同样必须在门禁失败时禁止提交');
 
   // 七牛公司渠道：首帧必须走 images，尾帧是 end_image_url，不得混入腾讯字段。
   await openaiVideoAdapter.submit({
@@ -460,7 +551,7 @@ try {
   await assert.rejects(
     openaiVideoAdapter.submit(
       {
-        model: 'kling-2.5',
+        model: 'kling-2.5-fast',
         prompt: 'test',
         sourceImagePath: imagePath,
         sourceMimeType: 'image/png',

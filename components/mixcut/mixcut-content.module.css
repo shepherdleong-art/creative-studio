@@ -343,6 +343,13 @@
 .wfTts { color: var(--blue); }
 .wfBgm { color: #7d7d85; }
 .tlTrackNarration { cursor: context-menu; }
+.tlTrack .audioClip { position: absolute; top: 2px; bottom: 2px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--ink); cursor: pointer; }
+.audioClip:focus-visible { outline: 2px solid var(--blue); }
+.tl[data-tool='split'] .audioClip { cursor: crosshair; }
+.audioClip .wfLabel { pointer-events: none; white-space: nowrap; }
+.framingControl { display: grid; gap: 8px; margin: 12px 0; color: var(--sub); font-size: 12px; }
+.framingControl > span { display: flex; justify-content: space-between; }
+.framingControl input { width: 100%; accent-color: var(--blue); }
 .wfLabel { position: absolute; z-index: 1; top: 50%; left: 8px; transform: translateY(-50%); padding: 1px 7px; border-radius: 99px; background: rgba(255, 255, 255, .85); color: var(--sub); font-size: 10px; font-weight: 500; }
 /* 播放头必须挂在 .tlInner 下:mixcut-shell 的 .shell button 重置(0,1,1)会压过单类
    选择器(0,1,0),把按钮自身的 background/cursor 洗掉、只剩 ::before 抓手点可见。

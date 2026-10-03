@@ -188,6 +188,23 @@ export function getCurrentExportDirName(db: Database.Database, projectId: string
 }
 
 /**
+ * 「如果现在就冻结身份，名字会是什么」的只读预判：与 createExportIdentity 同一公式
+ * 与唯一消解，但不落库、不创建修订。批次 start 冻结快照用它保证与首次正式导出一致
+ * （身份修订仍只在首次正式导出时创建）。
+ */
+export function resolveProspectiveExportName(
+  db: Database.Database,
+  projectId: string,
+  identity: ProjectProductionIdentity,
+): { baseName: string; exportDirName: string } {
+  const base = buildProjectBaseName(identity);
+  assertSafeIdentityName(base);
+  const uniqueName = resolveUniqueBaseAndDir(db, base, projectId);
+  assertSafeIdentityName(uniqueName);
+  return { baseName: uniqueName, exportDirName: uniqueName };
+}
+
+/**
  * 首次正式导出时冻结当前生产身份；已冻结则复用当前身份，绝不重复创建修订。
  * 调用方必须保证 `identity` 字段完整（历史项目走「补齐项目信息」后再进入导出）。
  */

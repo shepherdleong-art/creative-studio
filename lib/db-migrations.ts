@@ -130,4 +130,11 @@ export const CORE_DB_MIGRATIONS = [
        SELECT 1 FROM projects p
        WHERE p.id = jobs.projectId AND COALESCE(p.size, '') <> ''
      )`,
+  // 本机工作台字体收藏，独立于项目/批次；取消收藏保留墓碑，防止旧浏览器缓存重新导入。
+  `CREATE TABLE IF NOT EXISTS font_favorites (
+    identity TEXT PRIMARY KEY,
+    family TEXT NOT NULL,
+    favorite INTEGER NOT NULL CHECK(favorite IN (0, 1)),
+    updatedAt INTEGER NOT NULL
+  )`,
 ];

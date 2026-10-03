@@ -33,6 +33,8 @@ export interface CoverContractInput {
 export interface FullRenderContractInput {
   outputVersionId: string;
   editRevision: number;
+  audio?: unknown;
+  preserveGaps?: boolean;
   adapterVersion: string;
   preset: string;
   outputWidth: number;
@@ -45,6 +47,7 @@ export interface FullRenderContractInput {
     sourceEndUs: number;
     timelineStartUs: number;
     timelineEndUs: number;
+    framing?: unknown;
   }>;
   narration: {
     relativePath?: string;
@@ -157,9 +160,13 @@ export function resolveCoverContract(
   if (!asset) throw new Error(`素材 ${assetId} 不存在`);
 
   const poolItem = db.prepare(`SELECT colorJson FROM batch_asset_pool_items WHERE batchVersionId = ? AND assetId = ?`).get(row.batchVersionId, assetId) as { colorJson: string } | undefined;
-  if (!poolItem) throw new Error(`素材 ${assetId} 不在批次版本素材池中`);
+  let colorJsonStr = poolItem?.colorJson;
+  if (!colorJsonStr) {
+    const analysis = db.prepare(`SELECT colorJson FROM batch_asset_analysis WHERE assetId = ? ORDER BY createdAt DESC LIMIT 1`).get(assetId) as { colorJson: string } | undefined;
+    colorJsonStr = analysis?.colorJson ?? '{"lutId":null}';
+  }
 
-  const colorSnapshot = upgradeColorSnapshot(JSON.parse(poolItem.colorJson));
+  const colorSnapshot = upgradeColorSnapshot(JSON.parse(colorJsonStr));
   const lutFingerprint = colorSnapshot.lutFingerprint ?? null;
 
   const frozenTitleConfig = loadFrozenCoverTitleConfig(db, row.planId);
@@ -232,6 +239,7 @@ export function resolveFullRenderContract(
     sourceEndUs: Number(c.sourceEndUs || 0),
     timelineStartUs: Number(c.timelineStartUs ?? c.timelineInUs ?? 0),
     timelineEndUs: Number(c.timelineEndUs ?? c.timelineOutUs ?? 0),
+    ...(c.framing ? { framing: c.framing } : {}),
   })).sort((a, b) => a.timelineStartUs - b.timelineStartUs || a.clipId.localeCompare(b.clipId));
 
   const narrationRaw = arrangement.narration && typeof arrangement.narration === 'object' && !Array.isArray(arrangement.narration)
@@ -271,6 +279,8 @@ export function resolveFullRenderContract(
     outputVersionId: row.outputVersionId,
     editRevision,
     adapterVersion: BATCH_FULL_RENDER_ADAPTER_VERSION,
+    ...(arrangement.audio ? { audio: arrangement.audio } : {}),
+    ...(arrangement.preserveGaps === true ? { preserveGaps: true } : {}),
     preset,
     outputWidth: outputSize.width,
     outputHeight: outputSize.height,

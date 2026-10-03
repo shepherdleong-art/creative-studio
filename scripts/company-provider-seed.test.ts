@@ -44,7 +44,24 @@ try {
   assert.equal(qiniuCount.c, 1);
 
   // 视频：公司可灵 3.0 / 公司即梦 Fast / 公司即梦 2.5，均为 openai-video 且配置完整
+  for (const [id, model, name] of [
+    ['company-gateway-seedream-5-0-pro', 'doubao-seedream-5-0-pro-image', '公司 Seedream 5.0 Pro'],
+    ['company-gateway-nano-banana-pro', 'nano-banana-3.0', '公司 Nano Banana Pro'],
+    ['company-gateway-nano-banana-2', 'nano-banana-3.1', '公司 Nano Banana 2'],
+  ]) {
+    const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
+    assert.equal(row.model, model);
+    assert.equal(row.name, name);
+    assert.equal(row.baseUrl, COMPANY_LITELLM_BASE_URL);
+    assert.equal(row.type, 'gateway-task-image');
+    assert.equal(row.enabled, 1);
+    db.prepare('UPDATE providers SET enabled = 0, name = ? WHERE id = ?').run('用户自定义', id);
+    seedProviders();
+    const preserved = db.prepare('SELECT name, enabled FROM providers WHERE id = ?').get(id);
+    assert.deepEqual(preserved, { name: '用户自定义', enabled: 0 });
+  }
   for (const [id, model] of [
+    ['company-kling-2-5', 'kling-2.5'],
     ['company-kling-3-0', 'kling-3.0'],
     ['company-qiniuyun-kling-3-0', 'qiniuyun/kling-3.0'],
     ['company-seedance-2-0-fast', 'doubao-seedance-2-0-fast-260128'],

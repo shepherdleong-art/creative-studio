@@ -1,3 +1,4 @@
+import { BILLING_MODEL_PRICES } from './usage-pricing.ts';
 import type Database from 'better-sqlite3';
 
 import type { CoreUsageCategory, CoreUsageModelKey } from './usage-pricing.ts';
@@ -6,9 +7,11 @@ const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const CORE_USAGE_MODEL_KEYS: readonly CoreUsageModelKey[] = [
+  ...BILLING_MODEL_PRICES.filter((entry) => entry.key !== 'company-gpt-5-6-luna').map((entry) => entry.key),
   'company-image2-medium',
   'company-qiniuyun-gpt-image-2-medium',
   'company-kling-3-0',
+  'company-qiniuyun-kling-3-0',
   'company-seedance-fast',
   'company-seedance-2-5',
   'company-gpt-5-6-luna',
@@ -292,9 +295,11 @@ function uncertainCount(db: Database.Database, filters: UsageQueryFilters): numb
       COALESCE(
         CASE WHEN json_valid(usageJson) THEN json_extract(usageJson, '$.category') ELSE NULL END,
         CASE CASE WHEN json_valid(snapshotJson) THEN json_extract(snapshotJson, '$.coreModelKey') ELSE NULL END
+          ${BILLING_MODEL_PRICES.map((entry) => `WHEN '${entry.key}' THEN '${entry.category}'`).join('\n')}
           WHEN 'company-image2-medium' THEN 'image'
           WHEN 'company-qiniuyun-gpt-image-2-medium' THEN 'image'
           WHEN 'company-kling-3-0' THEN 'video'
+          WHEN 'company-qiniuyun-kling-3-0' THEN 'video'
           WHEN 'company-seedance-fast' THEN 'video'
           WHEN 'company-seedance-2-5' THEN 'video'
           WHEN 'company-gpt-5-6-luna' THEN 'llm_text'
@@ -324,8 +329,8 @@ export function queryUsageDashboard(
   const now = input.now ?? new Date();
   const periods = getShanghaiUsagePeriods(now);
   const filters: UsageQueryFilters = {
-    from: input.from ?? periods.month.from,
-    to: input.to ?? periods.month.to,
+    from: input.from ?? periods.today.from,
+    to: input.to ?? periods.today.to,
     coreModelKey: input.coreModelKey,
     category: input.category,
   };

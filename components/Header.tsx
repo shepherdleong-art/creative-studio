@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
@@ -25,6 +25,10 @@ export default function Header({ canvasEnabled = false }: { canvasEnabled?: bool
     readDesktopShell,
     readDesktopShellOnServer,
   );
+
+  useEffect(() => window.desktopBridge?.onQuitRequested?.(() => {
+    setShowStopConfirm(true);
+  }), []);
 
   const handleStop = async () => {
     setStopping(true);

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
+  BILLING_MODEL_PRICES,
+  createCoreUsageSnapshot,
   calculateComponentCostMicros,
   calculateUsageCostMicros,
   CORE_USAGE_PRICING,
@@ -156,9 +158,11 @@ interface LegacyVideoBackfillRow {
 }
 
 const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
+  ...Object.fromEntries(BILLING_MODEL_PRICES.map((entry) => [entry.key, entry.category])),
   'company-image2-medium': 'image',
   'company-qiniuyun-gpt-image-2-medium': 'image',
   'company-kling-3-0': 'video',
+  'company-qiniuyun-kling-3-0': 'video',
   'company-seedance-fast': 'video',
   'company-seedance-2-5': 'video',
   'company-gpt-5-6-luna': 'llm_text',
@@ -166,9 +170,11 @@ const CORE_CATEGORIES: Readonly<Record<string, CoreUsageCategory>> = {
 };
 
 const COMPONENT_KEYS_BY_CORE_MODEL: Readonly<Record<string, readonly string[]>> = {
+  ...Object.fromEntries(BILLING_MODEL_PRICES.map((entry) => [entry.key, [entry.category === 'image' ? 'image' : entry.category === 'video' ? 'second' : 'request']])),
   'company-image2-medium': ['image'],
   'company-qiniuyun-gpt-image-2-medium': ['image'],
   'company-kling-3-0': ['second'],
+  'company-qiniuyun-kling-3-0': ['second'],
   'company-seedance-fast': ['second'],
   'company-seedance-2-5': ['second'],
   'company-gpt-5-6-luna': ['input_token', 'output_token', 'cached_input_token'],
@@ -176,6 +182,7 @@ const COMPONENT_KEYS_BY_CORE_MODEL: Readonly<Record<string, readonly string[]>> 
 };
 
 const COMPONENT_UNITS_BY_KEY: Readonly<Record<string, string>> = {
+  request: 'request',
   image: 'image',
   second: 'second',
   input_token: 'token',
@@ -304,7 +311,8 @@ export function parseUsageSnapshot(value: unknown): { ok: true; parsed: ParsedSn
     return { ok: false, error: 'usage snapshot is missing required fields' };
   }
   const category = CORE_CATEGORIES[coreModelKey];
-  const expectedKeys = COMPONENT_KEYS_BY_CORE_MODEL[coreModelKey];
+  const expectedKeys = coreModelKey === 'company-gpt-5-6-luna' && components.length === 1
+    ? ['request'] : COMPONENT_KEYS_BY_CORE_MODEL[coreModelKey];
   if (!category || !expectedKeys || components.length !== expectedKeys.length) {
     return { ok: false, error: 'usage snapshot core model is unsupported' };
   }
@@ -414,7 +422,7 @@ function usageLedgerFields(
   const { snapshot: usageSnapshot, category: snapshotCategory } = parsed;
   const components = usageSnapshot.priceComponents;
   const componentDetails = components.map((component, index) => {
-    const quantity = quantityForComponent(measurement.quantity, component, index);
+    const quantity = component.key === 'request' ? measurement.callCount : quantityForComponent(measurement.quantity, component, index);
     const componentCost = calculateUsageCostMicros([component], quantity);
     return {
       key: component.key,
@@ -427,7 +435,7 @@ function usageLedgerFields(
   });
   const quantity = componentDetails.reduce((sum, component) => sum + component.quantity, 0);
   const costMicros = componentDetails.reduce((sum, component) => sum + component.componentCostMicros, 0);
-  const isGpt = usageSnapshot.coreModelKey === 'company-gpt-5-6-luna';
+  const isGpt = components.length > 1;
   const detailJson = JSON.stringify({
     ...measurement.detail,
     priceComponents: componentDetails,
@@ -924,13 +932,16 @@ function runLegacyImageBackfill(db: Database.Database): LegacyBackfillResult {
 
 const LEGACY_VIDEO_BACKFILL_MODELS = {
   'kling-3.0': { coreModelKey: 'company-kling-3-0', pricing: CORE_USAGE_PRICING.kling },
+  'qiniuyun/kling-3.0': { coreModelKey: 'company-qiniuyun-kling-3-0', pricing: CORE_USAGE_PRICING.qiniuyunKling },
   'doubao-seedance-2-0-fast-260128': { coreModelKey: 'company-seedance-fast', pricing: CORE_USAGE_PRICING.seedance },
   'doubao-seedance-2-5-260628': { coreModelKey: 'company-seedance-2-5', pricing: CORE_USAGE_PRICING.seedance25 },
 } as const;
 
 /**
  * 一次性视频回填：身份门禁放宽前，走公司网关但 providerId 非 canonical 的
- * 存量成功任务没有冻结快照。video_jobs 没有 estimatedCost 列，金额按固定价
+ * 存量成功任务没有冻结快照；2026-09-10 接入的七牛可灵 qiniuyun/kling-3.0 当时
+ * 未注册计价计划，同样没有快照（回填范围因此从 v1 升到 v2 重扫，已入账任务靠
+ * eventKey 去重，幂等）。video_jobs 没有 estimatedCost 列，金额按固定价
  * durationSec ÷ 5 × 单价 线性折算，与实时记账的计价规则一致。
  */
 function queryLegacyVideoBackfill(db: Database.Database): { rows: LegacyVideoBackfillRow[]; failed: boolean } {
@@ -952,9 +963,9 @@ function queryLegacyVideoBackfill(db: Database.Database): { rows: LegacyVideoBac
         ON l.eventKey = 'video-job:' || j.id || ':succeeded'
       WHERE p.type = 'openai-video'
         AND p.defaultModel = j.model
-        AND j.model IN ('kling-3.0', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628')
+        AND j.model IN ('kling-3.0', 'qiniuyun/kling-3.0', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628')
         AND (
-          p.id IN ('company-kling-3-0', 'company-seedance-2-0-fast', 'company-seedance-2-5')
+          p.id IN ('company-kling-3-0', 'company-qiniuyun-kling-3-0', 'company-seedance-2-0-fast', 'company-seedance-2-5')
           OR p.baseUrl LIKE 'http://127.0.0.1%'
           OR p.baseUrl LIKE 'https://127.0.0.1%'
           OR p.baseUrl LIKE 'http://localhost%'
@@ -1005,7 +1016,7 @@ function legacyVideoLedgerFields(row: LegacyVideoBackfillRow): ReturnType<typeof
     priceScale: config.pricing.priceScale,
     unitPriceMicros: config.pricing.unitPriceMicros,
     costMicros: calculateComponentCostMicros(durationSec, component),
-    detailJson: JSON.stringify({ source: 'video-backfill-v1', durationSec }),
+    detailJson: JSON.stringify({ source: 'video-backfill-v2', durationSec }),
     projectId: row.projectId,
     refType: 'video-job',
     refId: row.id,
@@ -1019,7 +1030,7 @@ function runLegacyVideoBackfill(db: Database.Database): LegacyBackfillResult {
   };
   if (!tableExists(db, 'usage_backfill_state')) return { ...empty, ok: false };
   try {
-    const marker = db.prepare(`SELECT 1 AS present FROM usage_backfill_state WHERE marker = ?`).get('video-backfill-v1') as { present?: number } | undefined;
+    const marker = db.prepare(`SELECT 1 AS present FROM usage_backfill_state WHERE marker = ?`).get('video-backfill-v2') as { present?: number } | undefined;
     if (marker?.present === 1) return { ...empty, markerPresent: true };
   } catch {
     console.error('[usage-ledger] legacy video backfill marker read failed; usage accounting skipped');
@@ -1039,12 +1050,70 @@ function runLegacyVideoBackfill(db: Database.Database): LegacyBackfillResult {
       db.prepare(`
         INSERT OR IGNORE INTO usage_backfill_state (marker, completedAt)
         VALUES (?, ?)
-      `).run('video-backfill-v1', new Date().toISOString());
+      `).run('video-backfill-v2', new Date().toISOString());
     })();
     return { ok: true, candidates, inserted, markerPresent: true, markerWritten: true };
   } catch {
     console.error('[usage-ledger] legacy video backfill failed; usage accounting skipped');
     return { ok: false, candidates, inserted: 0, markerPresent: false, markerWritten: false };
+  }
+}
+
+/** Missing successful tasks are estimated with the newly supplied prices.
+ * Never overwrite a frozen snapshot or a ledger row; event keys make repeats safe.
+ * Scan on reconciliation so tasks still running during the upgrade are included later.
+ */
+function backfillNewBillingModels(db: Database.Database): { ok: boolean; inserted: number } {
+  let inserted = 0;
+  try {
+    db.transaction(() => {
+      for (const kind of ['image', 'video'] as const) {
+        const table = kind === 'image' ? 'jobs' : 'video_jobs';
+        const providerTable = kind === 'image' ? 'providers' : 'video_providers';
+        const modelColumn = kind === 'image' ? 'model' : 'defaultModel';
+        const quantityColumn = kind === 'image' ? 'attempt' : 'durationSec';
+        if (!tableExists(db, table) || !tableExists(db, providerTable)
+          || !requiredColumnsExist(db, table, ['usageSnapshotJson', quantityColumn])
+          || !requiredColumnsExist(db, providerTable, [modelColumn])) continue;
+        const entries = BILLING_MODEL_PRICES.filter((entry) => entry.category === kind);
+        const baseUrl = requiredColumnsExist(db, providerTable, ['baseUrl']) ? 'p.baseUrl' : "''";
+        const rows = db.prepare(`
+          SELECT j.id, j.projectId, j.model, j.${quantityColumn} AS quantity,
+                 j.finishedAt, j.startedAt, p.id AS providerId, p.name AS providerName,
+                 p.type AS providerType, p.${modelColumn} AS configuredModel, ${baseUrl} AS baseUrl
+          FROM ${table} j JOIN ${providerTable} p ON p.id = j.providerId
+          LEFT JOIN usage_ledger l ON l.eventKey = ? || j.id || ':succeeded'
+          WHERE j.status = 'succeeded' AND j.model IN (${entries.map(() => '?').join(',')})
+            AND (j.usageSnapshotJson IS NULL OR TRIM(j.usageSnapshotJson) = '')
+            AND l.eventKey IS NULL
+        `).all(`${kind}-job:`, ...entries.map((entry) => entry.model)) as Array<{
+          id: string; projectId: string | null; model: string; quantity: number | null;
+          finishedAt: string | null; startedAt: string | null; providerId: string;
+          providerName: string; providerType: string; configuredModel: string; baseUrl: string;
+        }>;
+        for (const row of rows) {
+          const provider: CoreUsageSnapshotV1['provider'] = { providerTable, providerId: row.providerId, providerName: row.providerName,
+            providerType: row.providerType, configuredModel: row.configuredModel,
+            requestModel: row.model, baseUrl: row.baseUrl };
+          const plan = resolveCoreUsagePlan(provider);
+          if (!plan) continue;
+          if (kind === 'video' && (!Number.isFinite(row.quantity) || Number(row.quantity) <= 0)) continue;
+          const quantity = kind === 'image' ? positiveAttempt(row.quantity) : Number(row.quantity);
+          const createdAt = preferredLedgerTimestamp(row.finishedAt, row.startedAt);
+          const snapshot = createCoreUsageSnapshot(provider, plan, { startedAt: createdAt,
+            projectId: row.projectId ?? undefined, refType: kind === 'image' ? 'job' : 'video-job', refId: row.id });
+          const result = recordUsage(db, { eventKey: `${kind}-job:${row.id}:succeeded`, snapshot,
+            usage: { quantity, callCount: kind === 'image' ? quantity : 1,
+              detail: { source: 'billing-model-backfill-2026-09-30', estimated: true } }, createdAt });
+          if (!result.ok) throw new Error('billing backfill write failed');
+          if (result.inserted) inserted += 1;
+        }
+      }
+    })();
+    return { ok: true, inserted };
+  } catch {
+    console.error('[usage-ledger] billing model backfill failed; retry on reconciliation');
+    return { ok: false, inserted: 0 };
   }
 }
 
@@ -1104,6 +1173,9 @@ export function reconcileUsageLedger(db: Database.Database, currentOwner = USAGE
   const videoBackfill = runLegacyVideoBackfill(db);
   if (!videoBackfill.ok) failed += 1;
   recorded += videoBackfill.inserted;
+  const billingBackfill = backfillNewBillingModels(db);
+  recorded += billingBackfill.inserted;
+  if (!billingBackfill.ok) failed += 1;
   const uncertain = recoveredResult.uncertain + drainedResult.uncertain;
   return {
     ok: failed === 0,
