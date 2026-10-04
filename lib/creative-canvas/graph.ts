@@ -124,12 +124,15 @@ function parsePosition(value: unknown, path: string): CanvasPoint {
 function parseSize(value: unknown, path: string): CanvasNodeSize | undefined {
   if (value === undefined) return undefined;
   if (!isPlainObject(value)) fail('invalid_node', `${path} 必须是对象。`);
-  assertKnownKeys(value, ['width'], path);
-  const { width } = value;
+  assertKnownKeys(value, ['width', 'height'], path);
+  const { width, height } = value;
   if (typeof width !== 'number' || !Number.isFinite(width) || width < 120 || width > 2000) {
     fail('invalid_node', `${path}.width 必须是 120–2000 的有限数值。`);
   }
-  return { width };
+  if (height !== undefined && (typeof height !== 'number' || !Number.isFinite(height) || height < 120 || height > 2000)) {
+    fail('invalid_node', `${path}.height 必须是 120–2000 的有限数值。`);
+  }
+  return { width, ...(height !== undefined ? { height: height as number } : {}) };
 }
 
 function parseParameters(value: unknown, path: string): Record<string, CanvasParameterValue> {

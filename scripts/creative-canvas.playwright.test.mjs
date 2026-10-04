@@ -32,8 +32,8 @@ import { runFfmpeg } from '../lib/ffmpeg.ts';
 import { directSeedanceCapability } from '../lib/creative-canvas/adapters/seedance-capabilities.ts';
 import { SEEDANCE_20, SEEDANCE_25 } from '../lib/video-providers/seedance-contract.ts';
 
-const SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'all'];
-const IMPLEMENTED_SUITES = ['editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance'];
+const SUITES = ['interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance', 'all'];
+const IMPLEMENTED_SUITES = ['interaction', 'editor', 'execution', 'recovery', 'export', 'performance', 'legacy', 'regression', 'seedance'];
 
 const suiteArgIndex = process.argv.indexOf('--suite');
 const suite = suiteArgIndex >= 0 ? process.argv[suiteArgIndex + 1] : 'all';
@@ -459,6 +459,186 @@ async function moveNode(page, nodeId, point) {
 
 // --- 用例 -------------------------------------------------------------------
 
+async function interactionSuite(page) {
+  // Capability-only fixture for switching to a taller parameter form; never submit a task.
+  await page.route('**/api/canvas/models', async (route) => {
+    const response = await route.fetch();
+    const value = await response.json();
+    await route.fulfill({ response, json: { ...value, models: [...value.models, directSeedanceCapability(SEEDANCE_25)] } });
+  });
+  const assertActionsVisible = async (node) => {
+    const bounds = await node.evaluate((element) => {
+      const card = element.querySelector('.sc-canvas-node').getBoundingClientRect();
+      const wrapper = element.getBoundingClientRect();
+      const body = element.querySelector('.sc-canvas-node-body').getBoundingClientRect();
+      const action = element.querySelector('[data-testid="run-node"]').getBoundingClientRect();
+      return { card: card.toJSON(), wrapper: wrapper.toJSON(), body: body.toJSON(), action: action.toJSON() };
+    });
+    for (const area of [bounds.card, bounds.wrapper, bounds.body]) {
+      assert.ok(bounds.action.top >= area.top && bounds.action.bottom <= area.bottom + 1,
+        `缩小后生成按钮必须直接可见，不能依赖滚动：${JSON.stringify(bounds)}`);
+    }
+  };
+  const results = [];
+  for (const kind of ['prompt', 'image-generation', 'video-generation']) {
+    const canvasId = await createCanvas(page, `滚动与拉伸-${kind}`);
+    const id = await addNode(page, kind);
+    const node = page.locator(`.react-flow__node[data-id="${id}"]`);
+    if (kind !== 'prompt') await selectModel(page, id, kind === 'image-generation' ? 'fixture-image-edit' : 'fixture-video');
+    await page.click('[data-testid="fit-view"]');
+    await page.waitForTimeout(300);
+    const input = node.locator('textarea');
+    await input.fill(Array.from({ length: 80 }, (_, index) => `第 ${index + 1} 行：查看完整提示词内容`).join('\n'));
+    await input.blur();
+    await input.evaluate((element) => { element.scrollTop = 0; });
+    const viewport = await readViewportTransform(page);
+    await input.hover();
+    await page.mouse.wheel(0, 150);
+    await page.waitForTimeout(300);
+    assert.ok(await input.evaluate((element) => element.scrollTop > 0), '双指滚动必须滚动文字');
+    assertViewportClose(await readViewportTransform(page), viewport, '文字滚动不得缩放或平移画布');
+    for (const end of [true, false]) {
+      await input.evaluate((element, end) => { element.scrollTop = end ? element.scrollHeight : 0; }, end);
+      await page.mouse.wheel(0, end ? 400 : -400);
+      await page.waitForTimeout(250);
+      assertViewportClose(await readViewportTransform(page), viewport, '滚到文字边界也不得误缩放');
+    }
+    // Select by the header, then use actual pointer drags (not synthetic dimensions).
+    await node.locator('[data-testid="node-drag-handle"]').click();
+    const before = await node.boundingBox();
+    const textBefore = await input.boundingBox();
+    const corner = await node.locator('.react-flow__resize-control.bottom.right.handle').boundingBox();
+    assert.ok(corner);
+    await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(corner.x + corner.width / 2 + 90, corner.y + corner.height / 2 + 110, { steps: 12 });
+    await page.mouse.up();
+    const after = await node.boundingBox();
+    const textAfter = await input.boundingBox();
+    assert.ok(after.width > before.width + 60 && after.height > before.height + 80, '四角必须同时改变宽高');
+    assert.ok(textAfter.height > textBefore.height + 70, '增加的高度必须用于展示提示词');
+    // Bottom edge adjusts height without changing width.
+    const bottom = await node.locator('.react-flow__resize-control.bottom.line').boundingBox();
+    await page.mouse.move(bottom.x + bottom.width / 2, bottom.y + bottom.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(bottom.x + bottom.width / 2, bottom.y + bottom.height / 2 + 45, { steps: 8 });
+    await page.mouse.up();
+    const taller = await node.boundingBox();
+    assert.ok(taller.height > after.height + 30);
+    assert.ok(Math.abs(taller.width - after.width) < 2);
+    await page.click('[data-testid="undo"]');
+    const undone = await node.boundingBox();
+    assert.ok(Math.abs(undone.height - after.height) < 2, '撤销恢复上一次高度');
+    await page.click('[data-testid="redo"]');
+    const redone = await node.boundingBox();
+    assert.ok(Math.abs(redone.height - taller.height) < 2, '重做恢复拉伸高度');
+    await waitSaved(page);
+    const graph = (await (await page.request.get(`${baseUrl}/api/canvas/${canvasId}`)).json()).canvas.graph;
+    const saved = graph.nodes.find((node) => node.id === id).size;
+    assert.ok(saved?.height > 120);
+    await page.reload();
+    await node.waitFor();
+    const restored = await node.boundingBox();
+    assert.ok(Math.abs(restored.height - taller.height) < 2 && Math.abs(restored.width - taller.width) < 2, '刷新后恢复宽高');
+    // Canvas background still accepts wheel zoom.
+    const surface = await surfaceBox(page);
+    const beforeZoom = await readViewportTransform(page);
+    await page.mouse.move(surface.x + 20, surface.y + 20);
+    await page.mouse.wheel(0, -120);
+    await page.waitForTimeout(300);
+    assert.notEqual((await readViewportTransform(page)).zoom, beforeZoom.zoom);
+    // Shrinking a configured node must leave its actions directly visible.
+    await page.click('[data-testid="fit-view"]');
+    await page.waitForTimeout(300);
+    await node.locator('[data-testid="node-drag-handle"]').click();
+    const shrink = await node.locator('.react-flow__resize-control.bottom.line').boundingBox();
+    await page.mouse.move(shrink.x + shrink.width / 2, shrink.y + shrink.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(shrink.x + shrink.width / 2, shrink.y - 600, { steps: 12 });
+    await page.mouse.up();
+    if (kind !== 'prompt') {
+      await assertActionsVisible(node);
+      if (kind === 'video-generation') {
+        await selectModel(page, id, 'external-jimeng-seedance-2-5');
+        await page.waitForTimeout(100);
+        await assertActionsVisible(node);
+      }
+      await waitSaved(page);
+      await page.reload();
+      await node.locator('[data-testid="run-node"]').waitFor();
+      const restoredModel = kind === 'video-generation' ? 'external-jimeng-seedance-2-5' : 'fixture-image-edit';
+      await node.locator(`[data-testid="model-select"] option[value="${restoredModel}"]`).waitFor({ state: 'attached' });
+      await assertActionsVisible(node);
+      await page.click('[data-testid="fit-view"]');
+      await page.waitForTimeout(350);
+      const screenshot = path.join(repoRoot, 'outputs', 'canvas-validation', `minimum-height-${kind}.png`);
+      await page.screenshot({ path: screenshot });
+    }
+    results.push({ kind, saved });
+  }
+  // Material cards saved by the earlier free-height implementation must recover automatically.
+  const portrait = path.join(fixtureDir, 'portrait.png');
+  const landscape = path.join(fixtureDir, 'landscape.png');
+  fs.writeFileSync(portrait, await sharp({ create: { width: 300, height: 400, channels: 3, background: '#8a6f4e' } }).png().toBuffer());
+  fs.writeFileSync(landscape, await sharp({ create: { width: 400, height: 300, channels: 3, background: '#4e6f8a' } }).png().toBuffer());
+  const materialCanvasId = await createCanvas(page, '素材卡片高度回归');
+  const materialId = await addMaterialWithImage(page, portrait);
+  await waitSaved(page);
+  const current = (await (await page.request.get(`${baseUrl}/api/canvas/${materialCanvasId}`)).json()).canvas;
+  current.graph.nodes[0].size = { width: 320, height: 1100 };
+  current.graph.nodes[0].data.title = 'RQ5A-A1组合-普通床-LH163B1-超长素材标题';
+  const patched = await page.request.patch(`${baseUrl}/api/canvas/${materialCanvasId}`, {
+    data: { expectedGraphRevision: current.graphRevision, graph: current.graph },
+  });
+  assert.equal(patched.status(), 200);
+  await page.reload();
+  const material = page.locator(`.react-flow__node[data-id="${materialId}"]`);
+  await material.locator('img').waitFor();
+  await page.click('[data-testid="fit-view"]');
+  await page.waitForTimeout(350);
+  const assertMaterialFits = async () => {
+    const metrics = await material.evaluate((node) => {
+      const card = node.getBoundingClientRect();
+      const button = node.querySelector('[data-testid="material-upload"]').getBoundingClientRect();
+      const img = node.querySelector('img');
+      return { gap: (card.bottom - button.bottom) / card.width, renderedRatio: img.clientHeight / img.clientWidth, mediaRatio: img.naturalHeight / img.naturalWidth };
+    });
+    assert.ok(metrics.gap < 0.08, `素材按钮下方不应有大块空白：${JSON.stringify(metrics)}`);
+    assert.ok(Math.abs(metrics.renderedRatio - metrics.mediaRatio) < 0.02, '素材必须保持原始比例');
+  };
+  await assertMaterialFits();
+  await material.locator('[data-testid="node-drag-handle"]').click();
+  const beforeScale = await material.boundingBox();
+  const bottom = await material.locator('.react-flow__resize-control.bottom.line').boundingBox();
+  await page.mouse.move(bottom.x + bottom.width / 2, bottom.y + bottom.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bottom.x + bottom.width / 2, bottom.y + bottom.height / 2 + 70, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  assert.ok((await material.boundingBox()).width > beforeScale.width + 20, '竖向拖动素材边缘应带动等比缩放');
+  await assertMaterialFits();
+  await material.locator('[data-testid="material-file-input"]').setInputFiles(landscape);
+  await page.waitForFunction((id) => {
+    const img = document.querySelector(`.react-flow__node[data-id="${id}"] img`);
+    return img?.naturalWidth === 400 && img?.naturalHeight === 300;
+  }, materialId);
+  await assertMaterialFits();
+  await waitSaved(page);
+  const materialSaved = (await (await page.request.get(`${baseUrl}/api/canvas/${materialCanvasId}`)).json()).canvas.graph.nodes[0];
+  assert.equal(materialSaved.size?.height, undefined, '素材保存不得重新写入固定高度');
+  await page.reload();
+  await material.locator('img').waitFor();
+  await page.waitForFunction((id) => document.querySelector(`.react-flow__node[data-id="${id}"] img`)?.naturalWidth === 400, materialId);
+  await assertMaterialFits();
+  assert.equal(runPosts.length, 0, '交互操作不得提交生成请求');
+  await page.click('[data-testid="fit-view"]');
+  await page.waitForTimeout(350);
+  const screenshot = path.join(repoRoot, 'outputs', 'canvas-validation', 'interaction.png');
+  await page.screenshot({ path: screenshot });
+  await page.unroute('**/api/canvas/models');
+  return { results, scrollIsolated: true, edgeScrollIsolated: true, promptGrows: true, reloadPreservesSize: true, screenshot };
+}
+
 async function seedanceSuite(page) {
   // UI-only capabilities over the fixture server. No generation API is exercised here.
   await page.route('**/api/canvas/models', async (route) => {
@@ -696,12 +876,28 @@ async function editorSuite(page) {
     '你好',
     '提示词文本域：IME 组合不应被拆成字母',
   );
-  await imeInput(`.react-flow__node[data-id="${imePromptId}"] [data-testid="node-title"]`, '名称');
+  const imeTitle = page.locator(`.react-flow__node[data-id="${imePromptId}"] [data-testid="node-title"]`);
+  await imeTitle.click();
+  await imeTitle.dblclick();
+  assert.equal(await page.locator('[data-testid="node-title-input"]').count(), 0, '单击或双击标题不得进入重命名');
+  await imeTitle.click({ button: 'right' });
+  await page.click('[data-testid="context-rename"]');
+  const titleInput = page.locator('[data-testid="node-title-input"]');
+  // Rename selects the existing title; explicitly move the caret to test appending Chinese.
+  await titleInput.press('ArrowRight');
+  await imeInput('[data-testid="node-title-input"]', '名称');
   assert.equal(
-    await page.locator(`.react-flow__node[data-id="${imePromptId}"] [data-testid="node-title"]`).inputValue(),
+    await titleInput.inputValue(),
     '提示词名称',
     '节点标题：IME 组合不应被拆成字母',
   );
+  await titleInput.press('Enter');
+  assert.equal(await imeTitle.textContent(), '提示词名称');
+  await imeTitle.click({ button: 'right' });
+  await page.click('[data-testid="context-rename"]');
+  await titleInput.fill('不应保存的名称');
+  await titleInput.press('Escape');
+  assert.equal(await imeTitle.textContent(), '提示词名称', 'Esc 取消不得保存草稿');
   await imeInput(`.react-flow__node[data-id="${imeGenId}"] [data-testid="generation-prompt"]`, '你好世界');
   assert.equal(
     await page.locator(`.react-flow__node[data-id="${imeGenId}"] [data-testid="generation-prompt"]`).inputValue(),
@@ -1177,6 +1373,34 @@ async function regressionSuite(page) {
       && Math.abs(Number(match[3]) - zoom) < 0.01;
   }, viewportServer, { timeout: 15_000 });
 
+  // 小地图点击定位保留缩放，右键隐藏不弹出画布菜单，并可再次打开。
+  const minimap = page.locator('.react-flow__minimap-svg');
+  const destination = await minimap.evaluate((svg) => {
+    const box = svg.getBoundingClientRect();
+    const point = svg.createSVGPoint();
+    point.x = box.left + box.width * 0.8;
+    point.y = box.top + box.height * 0.2;
+    const flow = point.matrixTransform(svg.getScreenCTM().inverse());
+    return { clientX: point.x, clientY: point.y, x: flow.x, y: flow.y };
+  });
+  const miniZoomBefore = (await readViewportTransform(page)).zoom;
+  await page.mouse.click(destination.clientX, destination.clientY);
+  await page.waitForTimeout(400);
+  const located = await readViewportTransform(page);
+  const flowBox = await page.locator('.react-flow').boundingBox();
+  assert.ok(Math.abs((flowBox.width / 2 - located.x) / located.zoom - destination.x) < 2, '小地图点击应定位到对应横坐标');
+  assert.ok(Math.abs((flowBox.height / 2 - located.y) / located.zoom - destination.y) < 2, '小地图点击应定位到对应纵坐标');
+  assert.equal(located.zoom, miniZoomBefore, '点击小地图保持当前缩放');
+  await page.waitForTimeout(750);
+  const miniSaved = (await (await page.request.get(`${baseUrl}/api/canvas/${viewportCanvasId}`)).json()).canvas.viewport;
+  assertViewportClose(miniSaved, located, '小地图跳转后的视口应保存');
+  await minimap.click({ button: 'right' });
+  assert.equal(await minimap.count(), 0, '右键隐藏小地图');
+  assert.equal(await page.locator('[data-testid="context-menu"]').count(), 0, '小地图右键不应弹出画布菜单');
+  await page.click('[data-testid="show-minimap"]');
+  assert.equal(await minimap.count(), 1, '隐藏后可重新显示小地图');
+  assertViewportClose(await readViewportTransform(page), located, '隐藏和显示不得改变视口');
+
   // 4. 过期 graph revision 启动必须 409，且事务不能创建任何任务。
   const staleCanvasId = await createCanvas(page, '过期运行回归');
   const staleMaterialId = await addMaterialWithImage(page, pngPath);
@@ -1614,6 +1838,7 @@ try {
   const evidence = {};
   for (const name of requested) {
     runPosts.length = 0;
+    if (name === 'interaction') evidence.interaction = await interactionSuite(page);
     if (name === 'seedance') evidence.seedance = await seedanceSuite(page);
     if (name === 'editor') evidence.editor = await editorSuite(page);
     if (name === 'execution') evidence.execution = await executionSuite(page);

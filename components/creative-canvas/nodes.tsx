@@ -50,10 +50,10 @@ function DragHandle() {
   );
 }
 
-/** 节点拖拽改宽（对标主流节点画布，选中时显示）：四角手柄 + 右缘拖条，宽度持久化在 size.width。 */
+/** 节点自由调整宽高：四角双轴拉伸，右缘改宽、底缘改高；尺寸随图保存。 */
 const RESIZE_CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
 
-function WidthResizeHandle({ kind, selected }: { kind: CanvasNodeKind; selected?: boolean }) {
+function NodeSizeControls({ kind, selected }: { kind: CanvasNodeKind; selected?: boolean }) {
   const controller = useController();
   if (!selected) return null;
   const minWidth = nodeKindSpec(kind).defaultWidth;
@@ -64,7 +64,9 @@ function WidthResizeHandle({ kind, selected }: { kind: CanvasNodeKind; selected?
           key={position}
           position={position}
           variant={ResizeControlVariant.Handle}
-          resizeDirection="horizontal"
+          keepAspectRatio={kind === 'material'}
+          minHeight={120}
+          maxHeight={2000}
           minWidth={minWidth}
           maxWidth={720}
           onResizeStart={controller.onNodeResizeStart}
@@ -80,6 +82,18 @@ function WidthResizeHandle({ kind, selected }: { kind: CanvasNodeKind; selected?
         onResizeStart={controller.onNodeResizeStart}
         /* 拖条整体放在节点外侧（left:100% 起向外），加宽热区也不遮挡节点内按钮 */
         style={{ border: 'none', width: 10, transform: 'translate(0, 0)', cursor: 'ew-resize' }}
+      />
+      <NodeResizeControl
+        position="bottom"
+        variant={ResizeControlVariant.Line}
+        resizeDirection={kind === 'material' ? undefined : 'vertical'}
+        keepAspectRatio={kind === 'material'}
+        minWidth={minWidth}
+        maxWidth={720}
+        minHeight={120}
+        maxHeight={2000}
+        onResizeStart={controller.onNodeResizeStart}
+        style={{ border: 'none', height: 10, transform: 'translate(0, 0)', cursor: 'ns-resize' }}
       />
     </>
   );
@@ -126,20 +140,59 @@ function KindIcon({ iconKey }: { iconKey: 'material' | 'prompt' | 'image' | 'vid
   );
 }
 
-function TitleInput({ nodeId, value, placeholder }: { nodeId: string; value: string; placeholder: string }) {
-  const controller = useController();
-  const { field: ime } = useNodeTextField(value, useCallback(
-    (next) => controller.updateNodeData(nodeId, { title: next }, { coalesce: `title:${nodeId}` }),
-    [controller, nodeId],
-  ));
+function TitleEditor({ value, placeholder, onSave, onCancel }: {
+  value: string;
+  placeholder: string;
+  onSave: (title: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const { field: ime } = useNodeTextField(draft, setDraft);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelled = useRef(false);
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
   return (
     <input
-      className="nodrag sc-canvas-input w-full bg-transparent text-[13px] font-medium outline-none"
+      ref={inputRef}
+      className="nodrag sc-canvas-input min-w-0 w-full bg-transparent text-[13px] font-medium outline-none"
       {...ime}
       placeholder={placeholder}
-      data-testid="node-title"
+      aria-label="节点名称"
+      data-testid="node-title-input"
+      onBlur={(event) => {
+        ime.onBlur();
+        if (!cancelled.current) onSave(event.currentTarget.value.trim() || value);
+      }}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        // macOS 输入法确认候选时可能已清除 isComposing，229 仍表示组合按键。
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          event.currentTarget.blur();
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          cancelled.current = true;
+          onCancel();
+        }
+      }}
     />
   );
+}
+
+function NodeTitle({ nodeId, value, placeholder }: { nodeId: string; value: string; placeholder: string }) {
+  const context = useContext(CanvasNodeContext);
+  if (!context) throw new Error('画布节点必须在 CanvasNodeContext 内使用');
+  if (context.renamingNodeId === nodeId) {
+    return <TitleEditor value={value} placeholder={placeholder} onCancel={context.finishRenaming} onSave={(title) => {
+      if (title !== value) context.controller.updateNodeData(nodeId, { title });
+      context.finishRenaming();
+    }} />;
+  }
+  return <span className="sc-canvas-input min-w-0 w-full select-none truncate text-[13px] font-medium" title={value || placeholder} data-testid="node-title">{value || placeholder}</span>;
 }
 
 const STATUS_TEXT: Record<string, string> = {
@@ -343,75 +396,77 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
       data-node-kind="material"
       data-node-position={`${Math.round(positionAbsoluteX)},${Math.round(positionAbsoluteY)}`}
     >
-      <WidthResizeHandle kind="material" selected={selected} />
-      <div className="flex items-center justify-between gap-2">
-        <DragHandle />
-        <KindIcon iconKey="material" />
-        <TitleInput nodeId={id} value={String(data.title ?? '')} placeholder="素材名称" />
-        {assetId ? (
-          <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-ink-tertiary">
-            {mediaKind === 'image' ? '图片' : mediaKind === 'video' ? '视频' : '音频'}
-          </span>
-        ) : null}
-      </div>
-      <div className="mt-2">
-        {assetId ? (
-          mediaKind === 'image' ? (
-            <img
-              src={canvasAssetUrl(assetId)}
-              alt="素材"
-              className="nodrag block w-full cursor-zoom-in rounded-lg"
-              data-testid="material-image"
-              onClick={() => setZoomed(true)}
-            />
-          ) : mediaKind === 'video' ? (
-            <RegisteredVideo
-              nodeId={id}
-              src={canvasAssetUrl(assetId)}
-              className="nodrag block w-full rounded-lg"
-            />
+      <NodeSizeControls kind="material" selected={selected} />
+      <div className="sc-canvas-node-body nowheel">
+        <div className="flex items-center justify-between gap-2">
+          <DragHandle />
+          <KindIcon iconKey="material" />
+          <NodeTitle nodeId={id} value={String(data.title ?? '')} placeholder="素材名称" />
+          {assetId ? (
+            <span className="shrink-0 whitespace-nowrap rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-ink-tertiary">
+              {mediaKind === 'image' ? '图片' : mediaKind === 'video' ? '视频' : '音频'}
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-2">
+          {assetId ? (
+            mediaKind === 'image' ? (
+              <img
+                src={canvasAssetUrl(assetId)}
+                alt="素材"
+                className="nodrag block w-full cursor-zoom-in rounded-lg"
+                data-testid="material-image"
+                onClick={() => setZoomed(true)}
+              />
+            ) : mediaKind === 'video' ? (
+              <RegisteredVideo
+                nodeId={id}
+                src={canvasAssetUrl(assetId)}
+                className="nodrag block w-full rounded-lg"
+              />
+            ) : (
+              <audio src={canvasAssetUrl(assetId)} controls className="nodrag block w-full" />
+            )
           ) : (
-            <audio src={canvasAssetUrl(assetId)} controls className="nodrag block w-full" />
-          )
-        ) : (
-          <div className="flex h-20 items-center justify-center rounded-lg bg-surface-subtle px-2 text-center text-[11px] text-ink-tertiary">
-            尚未导入素材（图片 / 视频 / 音频）
-          </div>
-        )}
-      </div>
-      <div className="mt-2 flex gap-2">
-        <button
-          type="button"
-          className="nodrag sc-canvas-button flex-1"
-          disabled={busy}
-          onClick={() => inputRef.current?.click()}
-          data-testid="material-upload"
-        >
-          {busy ? '导入中…' : assetId ? '替换素材' : '选择本地文件'}
-        </button>
-        {assetId ? (
-          <a
-            className="nodrag sc-canvas-button"
-            href={`${canvasAssetUrl(assetId)}?download=1`}
-            data-testid="download-material"
-            download
+            <div className="flex h-20 items-center justify-center rounded-lg bg-surface-subtle px-2 text-center text-[11px] text-ink-tertiary">
+              尚未导入素材（图片 / 视频 / 音频）
+            </div>
+          )}
+        </div>
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            className="nodrag sc-canvas-button flex-1"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+            data-testid="material-upload"
           >
-            下载
-          </a>
-        ) : null}
+            {busy ? '导入中…' : assetId ? '替换素材' : '选择本地文件'}
+          </button>
+          {assetId ? (
+            <a
+              className="nodrag sc-canvas-button"
+              href={`${canvasAssetUrl(assetId)}?download=1`}
+              data-testid="download-material"
+              download
+            >
+              下载
+            </a>
+          ) : null}
+        </div>
+        {mediaKind === 'video' && assetId ? <DraftActions assetId={assetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*,video/*,audio/*"
+          className="hidden"
+          data-testid="material-file-input"
+          onChange={(event) => {
+            void onPick(event.target.files?.[0]);
+            event.target.value = '';
+          }}
+        />
       </div>
-      {mediaKind === 'video' && assetId ? <DraftActions assetId={assetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*,video/*,audio/*"
-        className="hidden"
-        data-testid="material-file-input"
-        onChange={(event) => {
-          void onPick(event.target.files?.[0]);
-          event.target.value = '';
-        }}
-      />
       <Handle type="source" position={Position.Right} />
       {/* 溯源连线的入口：生成节点物化结果时自动连到这里；素材节点本身不产生参考槽位 */}
       <Handle type="target" position={Position.Left} />
@@ -439,18 +494,20 @@ export const PromptNode = memo(function PromptNode({ id, data, selected, positio
       data-node-kind="prompt"
       data-node-position={`${Math.round(positionAbsoluteX)},${Math.round(positionAbsoluteY)}`}
     >
-      <WidthResizeHandle kind="prompt" selected={selected} />
-      <div className="flex items-center gap-2">
-        <DragHandle />
-        <KindIcon iconKey="prompt" />
-        <TitleInput nodeId={id} value={String(data.title ?? '')} placeholder="提示词名称" />
+      <NodeSizeControls kind="prompt" selected={selected} />
+      <div className="sc-canvas-node-body nowheel">
+        <div className="flex items-center gap-2">
+          <DragHandle />
+          <KindIcon iconKey="prompt" />
+          <NodeTitle nodeId={id} value={String(data.title ?? '')} placeholder="提示词名称" />
+        </div>
+        <textarea
+          className="nodrag nowheel sc-canvas-prompt-area sc-canvas-prompt-text sc-canvas-input w-full resize-none bg-transparent text-[12px] outline-none"
+          {...ime}
+          placeholder="可复用的文本"
+          data-testid="prompt-text"
+        />
       </div>
-      <textarea
-        className="nodrag sc-canvas-input mt-2 h-20 w-full resize-none bg-transparent text-[12px] outline-none"
-        {...ime}
-        placeholder="可复用的文本"
-        data-testid="prompt-text"
-      />
       <Handle type="source" position={Position.Right} />
     </div>
   );
@@ -712,330 +769,332 @@ export const GenerationNode = memo(function GenerationNode({
       data-node-position={`${Math.round(positionAbsoluteX)},${Math.round(positionAbsoluteY)}`}
       {...(runtime?.currentAssetId ? { 'data-canvas-result': runtime.currentAssetId } : {})}
     >
-      <WidthResizeHandle kind={mediaKind === 'video' ? 'video-generation' : 'image-generation'} selected={selected} />
+      <NodeSizeControls kind={mediaKind === 'video' ? 'video-generation' : 'image-generation'} selected={selected} />
       <Handle type="target" position={Position.Left} />
-      <div className="flex items-center gap-2">
-        <DragHandle />
-        <KindIcon iconKey={mediaKind === 'video' ? 'video' : 'image'} />
-        <TitleInput nodeId={id} value={String(data.title ?? '')} placeholder="节点名称" />
-      </div>
+      <div className="sc-canvas-node-body nowheel">
+        <div className="flex items-center gap-2">
+          <DragHandle />
+          <KindIcon iconKey={mediaKind === 'video' ? 'video' : 'image'} />
+          <NodeTitle nodeId={id} value={String(data.title ?? '')} placeholder="节点名称" />
+        </div>
 
-      <label className="mt-2 block text-[11px] text-ink-secondary">模型</label>
-      <select
-        className="nodrag sc-canvas-select w-full"
-        value={data.modelKey ?? ''}
-        data-testid="model-select"
-        onChange={(event) => {
-          const next = available.find((candidate) => candidate.key === event.target.value);
-          const parameters: Record<string, string | number | boolean> = {};
-          const changes: string[] = [];
-          for (const parameter of next?.parameters ?? []) {
-            const old = data.parameters?.[parameter.key];
-            if (old === undefined) continue;
-            const invalid = (parameter.options && !parameter.options.includes(String(old)))
-              || (typeof old === 'number' && !parameter.specialValues?.includes(old) && ((parameter.min !== undefined && old < parameter.min) || (parameter.max !== undefined && old > parameter.max)));
-            if (invalid) {
-              if (parameter.default !== undefined) parameters[parameter.key] = parameter.default;
-              const label = parameter.default === 'gateway-default' ? '网关默认（待验证）' : String(parameter.default ?? '默认');
-              changes.push(`${parameter.label}调整为 ${label}`);
+        <label className="mt-2 block text-[11px] text-ink-secondary">模型</label>
+        <select
+          className="nodrag sc-canvas-select w-full"
+          value={data.modelKey ?? ''}
+          data-testid="model-select"
+          onChange={(event) => {
+            const next = available.find((candidate) => candidate.key === event.target.value);
+            const parameters: Record<string, string | number | boolean> = {};
+            const changes: string[] = [];
+            for (const parameter of next?.parameters ?? []) {
+              const old = data.parameters?.[parameter.key];
+              if (old === undefined) continue;
+              const invalid = (parameter.options && !parameter.options.includes(String(old)))
+                || (typeof old === 'number' && !parameter.specialValues?.includes(old) && ((parameter.min !== undefined && old < parameter.min) || (parameter.max !== undefined && old > parameter.max)));
+              if (invalid) {
+                if (parameter.default !== undefined) parameters[parameter.key] = parameter.default;
+                const label = parameter.default === 'gateway-default' ? '网关默认（待验证）' : String(parameter.default ?? '默认');
+                changes.push(`${parameter.label}调整为 ${label}`);
+              }
+              else parameters[parameter.key] = old;
             }
-            else parameters[parameter.key] = old;
-          }
-          if (!data.modelKey && next?.parameters.some((parameter) => parameter.key === 'withAudio')) parameters.withAudio = true;
-          if (data.parameters?.generationStage === 'draft' && next && !next.parameters.some((parameter) => parameter.key === 'generationStage')) {
-            const resolution = next.parameters.find((parameter) => parameter.key === 'resolution');
-            const previous = String(data.parameters.directResolution ?? '');
-            if (resolution) parameters.resolution = resolution.options?.includes(previous) ? previous : resolution.default ?? '1080p';
-            changes.push('当前模型不支持样片，已切换为直接生成');
-          }
-          let generationMode = data.generationMode;
-          if (next && !next.modes.includes(currentMode) && data.parameters?.generationStage !== 'final-from-draft') {
-            generationMode = next.modes.find((mode) => !next.legacyModes?.includes(mode));
-            if (generationMode) changes.push(`模式调整为 ${next.modeLabels?.[generationMode] ?? MODE_LABELS[generationMode] ?? generationMode}，请检查参考素材`);
-          }
-          // A bound final retains its source so a channel switch cannot silently become an ordinary generation.
-          if (data.parameters?.generationStage === 'final-from-draft') {
-            parameters.generationStage = 'final-from-draft'; parameters.draftAssetId = String(data.parameters.draftAssetId ?? '');
-            changes.push('固定样片只可在原模型和渠道转正式');
-          }
-          setModelChangeNote(changes.join('；'));
-          controller.updateNodeData(id, { modelKey: event.target.value || null, parameters, generationMode });
-        }}
-      >
-        <option value="">未选择</option>
-        {available.map((candidate) => (
-          <option key={candidate.key} value={candidate.key}>
-            {candidate.displayName}
-            {candidate.evidence === 'verified' ? ' · 已验证' : candidate.evidence === 'mapped' ? ' · 已映射' : ''}
-          </option>
-        ))}
-      </select>
-
-      {modelChangeNote ? <div role="status" className="mt-1 text-[11px] text-ink-secondary">{modelChangeNote}</div> : null}
-      {capability ? (
-        <div className="mt-1 text-[10px] text-ink-tertiary" data-testid="capability-evidence">
-          {capability.evidence === 'verified'
-            ? '能力状态：已通过真实链路验证'
-            : capability.evidence === 'mapped'
-              ? '能力状态：请求映射已验证，画布真实样例待补'
-              : '能力状态：仅平台资料，公司转发未核对'}
-        </div>
-      ) : null}
-
-      {capability?.parameters.some((parameter) => parameter.key === 'generationStage') ? <>
-        <label className="mt-2 block text-[11px] text-ink-secondary">生成阶段</label>
-        <select className="nodrag sc-canvas-select w-full" aria-label="生成阶段" value={String(data.parameters?.generationStage ?? 'direct')}
-          onChange={(event) => {
-            const previous = data.parameters?.generationStage ?? 'direct';
-            const next = event.target.value;
-            const parameters: Record<string, string | number | boolean> = { ...(data.parameters ?? {}), generationStage: next };
-            if (previous === 'direct') parameters.directResolution = String(data.parameters?.resolution ?? '1080p');
-            parameters.resolution = next === 'draft' ? '480p' : String(data.parameters?.directResolution ?? '1080p');
-            delete parameters.draftAssetId;
-            controller.updateNodeData(id, { parameters });
-          }}>
-          <option value="direct">直接生成正式视频</option><option value="draft">先生成样片 · 480p</option>
-          {data.parameters?.generationStage === 'final-from-draft' ? <option value="final-from-draft">基于选中样片转正式 · 1080p</option> : null}
-        </select>
-        {data.parameters?.generationStage === 'final-from-draft' ? <DraftActions bound assetId={String(data.parameters.draftAssetId ?? '')} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
-      </> : null}
-      {runtime?.currentAssetId ? <DraftActions assetId={runtime.currentAssetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
-      <label className="mt-2 block text-[11px] text-ink-secondary">模式</label>
-      <select
-        className="nodrag sc-canvas-select w-full"
-        value={currentMode}
-        data-testid="mode-select"
-        disabled={data.parameters?.generationStage === 'final-from-draft'}
-        onChange={(event) => {
-          const nextMode = event.target.value as CanvasGenerationMode;
-          // 切模式时清掉新模式不接受的参数键（界面同步隐藏，残留值也不进计划）
-          const remainingParameters = Object.fromEntries(
-            Object.entries(data.parameters ?? {}).filter(([key]) => {
-              const declared = capability?.parameters.find((parameter) => parameter.key === key);
-              return !declared?.modes || declared.modes.includes(nextMode);
-            }),
-          );
-          controller.updateNodeData(id, {
-            generationMode: nextMode,
-            parameters: remainingParameters,
-          });
-        }}
-      >
-        {(modeOptions as string[]).map((mode) => (
-          <option key={mode} value={mode}>
-            {capability?.modeLabels?.[mode as CanvasGenerationMode] ?? MODE_LABELS[mode] ?? mode}
-          </option>
-        ))}
-      </select>
-
-      {capability?.legacyModes?.includes(currentMode) ? (
-        <button type="button" className="nodrag sc-canvas-button mt-1" onClick={(event) => {
-          event.currentTarget.blur();
-          controller.updateNodeData(id, { generationMode: 'reference-to-video' });
-        }}>转换为全能参考（保留素材与提示词）</button>
-      ) : null}
-
-      {modeHint ? (
-        <div className="mt-1 text-[10px] text-ink-tertiary" data-testid="mode-hint">
-          {modeHint}
-        </div>
-      ) : null}
-
-      {capability && capability.parameters.length > 0 ? (
-        <div className="mt-2 space-y-1">
-          {capability.parameters
-            .filter((parameter) => !['generationStage', 'draftAssetId', 'directResolution'].includes(parameter.key))
-            .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', 'outputFormat', 'watermark', 'returnLastFrame'].includes(parameter.key))
-            .filter((parameter) => !parameter.modes || parameter.modes.includes(currentMode))
-            .map((parameter) => (
-            <div key={parameter.key} className="flex items-center gap-2">
-              <span className="text-[11px] text-ink-secondary">{parameter.label}</span>
-              {parameter.type === 'enum' ? (
-                <select
-                  className="nodrag sc-canvas-select flex-1"
-                  disabled={parameter.key === 'resolution' && ['draft', 'final-from-draft'].includes(String(data.parameters?.generationStage))}
-                  value={String(parameter.key === 'resolution' && data.parameters?.generationStage === 'draft' ? '480p' : data.parameters?.[parameter.key] ?? parameter.default ?? '')}
-                  aria-label={parameter.label}
-                  onChange={(event) => controller.updateNodeData(id, {
-                    parameters: { ...(data.parameters ?? {}), [parameter.key]: event.target.value },
-                  })}
-                >
-                  {(parameter.options ?? []).map((option) => (
-                    <option key={option} value={option}>{option === 'gateway-default' ? '网关默认（待验证）' : option === 'adaptive' ? '自动' : option === '4k' ? '4K' : option}</option>
-                  ))}
-                </select>
-              ) : parameter.specialValues?.includes(-1) ? (
-                <select className="nodrag sc-canvas-select flex-1" aria-label={parameter.label}
-                  value={Number(data.parameters?.[parameter.key] ?? parameter.default ?? 5)}
-                  onChange={(event) => controller.updateNodeData(id, {
-                    parameters: { ...(data.parameters ?? {}), [parameter.key]: Number(event.target.value) },
-                  })}>
-                  <option value={-1}>自动</option>
-                  {Array.from({ length: (parameter.max ?? 15) - (parameter.min ?? 4) + 1 }, (_, index) => (parameter.min ?? 4) + index)
-                    .map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
-                </select>
-              ) : parameter.type === 'boolean' ? (
-                <input
-                  type="checkbox"
-                  aria-label={parameter.label}
-                  checked={Boolean(data.parameters?.[parameter.key] ?? parameter.default ?? false)}
-                  onChange={(event) => controller.updateNodeData(id, {
-                    parameters: { ...(data.parameters ?? {}), [parameter.key]: event.target.checked },
-                  })}
-                />
-              ) : (
-                <input
-                  className="nodrag sc-canvas-input flex-1 bg-transparent text-[11px] outline-none"
-                  type="number"
-                  aria-label={parameter.label}
-                  min={parameter.min}
-                  max={parameter.max}
-                  step={parameter.type === 'integer' ? 1 : 'any'}
-                  value={Number(data.parameters?.[parameter.key] ?? parameter.default ?? 0)}
-                  /* 输入中只夹上限（不打断多位数录入），失焦再夹下限、取整并兜底默认值 */
-                  onChange={(event) => {
-                    const raw = Number(event.target.value);
-                    if (!Number.isFinite(raw)) return;
-                    const value = parameter.max !== undefined ? Math.min(parameter.max, raw) : raw;
-                    controller.updateNodeData(id, {
-                      parameters: { ...(data.parameters ?? {}), [parameter.key]: value },
-                    }, { coalesce: `param:${id}:${parameter.key}` });
-                  }}
-                  onBlur={(event) => {
-                    const fallback = Number(parameter.default ?? parameter.min ?? 0);
-                    const raw = event.target.value.trim() === '' ? fallback : Number(event.target.value);
-                    let value = Number.isFinite(raw) ? raw : fallback;
-                    if (parameter.min !== undefined) value = Math.max(parameter.min, value);
-                    if (parameter.max !== undefined) value = Math.min(parameter.max, value);
-                    if (parameter.type === 'integer') value = Math.round(value);
-                    if (value !== Number(data.parameters?.[parameter.key] ?? parameter.default ?? 0)) {
-                      controller.updateNodeData(id, {
-                        parameters: { ...(data.parameters ?? {}), [parameter.key]: value },
-                      });
-                    }
-                  }}
-                />
-              )}
-            </div>
+            if (!data.modelKey && next?.parameters.some((parameter) => parameter.key === 'withAudio')) parameters.withAudio = true;
+            if (data.parameters?.generationStage === 'draft' && next && !next.parameters.some((parameter) => parameter.key === 'generationStage')) {
+              const resolution = next.parameters.find((parameter) => parameter.key === 'resolution');
+              const previous = String(data.parameters.directResolution ?? '');
+              if (resolution) parameters.resolution = resolution.options?.includes(previous) ? previous : resolution.default ?? '1080p';
+              changes.push('当前模型不支持样片，已切换为直接生成');
+            }
+            let generationMode = data.generationMode;
+            if (next && !next.modes.includes(currentMode) && data.parameters?.generationStage !== 'final-from-draft') {
+              generationMode = next.modes.find((mode) => !next.legacyModes?.includes(mode));
+              if (generationMode) changes.push(`模式调整为 ${next.modeLabels?.[generationMode] ?? MODE_LABELS[generationMode] ?? generationMode}，请检查参考素材`);
+            }
+            // A bound final retains its source so a channel switch cannot silently become an ordinary generation.
+            if (data.parameters?.generationStage === 'final-from-draft') {
+              parameters.generationStage = 'final-from-draft'; parameters.draftAssetId = String(data.parameters.draftAssetId ?? '');
+              changes.push('固定样片只可在原模型和渠道转正式');
+            }
+            setModelChangeNote(changes.join('；'));
+            controller.updateNodeData(id, { modelKey: event.target.value || null, parameters, generationMode });
+          }}
+        >
+          <option value="">未选择</option>
+          {available.map((candidate) => (
+            <option key={candidate.key} value={candidate.key}>
+              {candidate.displayName}
+              {candidate.evidence === 'verified' ? ' · 已验证' : candidate.evidence === 'mapped' ? ' · 已映射' : ''}
+            </option>
           ))}
-        </div>
-      ) : null}
+        </select>
 
-      <div className="relative">
-        <textarea
-          ref={promptRef}
-          disabled={data.parameters?.generationStage === 'final-from-draft'}
-          className="nodrag sc-canvas-input mt-2 h-20 w-full resize-none bg-transparent text-[12px] outline-none"
-          placeholder="提示词，输入 @ 选择素材"
-          {...promptIme}
-          onChange={(event) => {
-            promptIme.onChange(event);
-            if (!(event.nativeEvent as InputEvent).isComposing) syncMentionFromDom();
-          }}
-          onCompositionEnd={(event) => {
-            promptIme.onCompositionEnd(event);
-            syncMentionFromDom();
-          }}
-          onSelect={syncMentionFromDom}
-          onKeyDown={onPromptKeyDown}
-          onBlur={() => {
-            promptIme.onBlur();
-            setMention(null);
-          }}
-          data-testid="generation-prompt"
-        />
-        {mention ? (
-          <div className="sc-canvas-mention-menu nodrag" data-testid="mention-menu">
-            {filteredMentionOptions.length === 0 ? (
-              <div className="sc-canvas-mention-empty">还没有已连线的素材，先从素材节点拉线到本节点</div>
-            ) : (
-              filteredMentionOptions.map((option, index) => (
-                <button
-                  key={option.nodeId}
-                  type="button"
-                  className={`sc-canvas-mention-option ${index === activeMentionIndex ? 'sc-canvas-mention-option-active' : ''}`}
-                  data-testid={`mention-option-${option.nodeId}`}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    pickMention(option);
-                  }}
-                  onMouseEnter={() => setMentionIndex(index)}
-                >
-                  {option.assetId && option.mediaKind === 'image' ? (
-                    <img src={canvasAssetUrl(option.assetId)} alt="" className="sc-canvas-mention-thumb" />
-                  ) : option.assetId && option.mediaKind === 'video' ? (
-                    <video src={canvasAssetUrl(option.assetId)} muted playsInline preload="metadata" className="sc-canvas-mention-thumb" />
-                  ) : (
-                    <span className="sc-canvas-mention-thumb sc-canvas-mention-thumb-text">
-                      {option.kindLabel}
-                    </span>
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{option.title}</span>
-                  {option.label !== null ? (
-                    <span className="sc-canvas-mention">@参考{option.label}</span>
-                  ) : (
-                    <span className="sc-canvas-mention-kind">{option.kindLabel}</span>
-                  )}
-                </button>
-              ))
-            )}
+        {modelChangeNote ? <div role="status" className="mt-1 text-[11px] text-ink-secondary">{modelChangeNote}</div> : null}
+        {capability ? (
+          <div className="mt-1 text-[10px] text-ink-tertiary" data-testid="capability-evidence">
+            {capability.evidence === 'verified'
+              ? '能力状态：已通过真实链路验证'
+              : capability.evidence === 'mapped'
+                ? '能力状态：请求映射已验证，画布真实样例待补'
+                : '能力状态：仅平台资料，公司转发未核对'}
           </div>
         ) : null}
-      </div>
 
-      {references.length > 0 ? (
-        <div className="mt-2 space-y-1" data-testid="reference-list">
-          {references.map((slot, index) => (
-            <ReferenceRow
-              key={slot.refId}
-              nodeId={id}
-              slot={slot}
-              index={index}
-              total={references.length}
-              assetId={resolveSourceAssetId(slot.sourceNodeId)}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      {mentionIssues.unknownLabels.length > 0 ? (
-        <div className="mt-2 text-[11px] text-[var(--color-fail)]" data-testid="mention-unknown">
-          提示词提到的 @参考{mentionIssues.unknownLabels.join('、@参考')} 不存在
-        </div>
-      ) : null}
-
-      <div className="mt-3 flex items-center gap-2">
-        <div className="nodrag flex items-center rounded-full border border-[var(--color-hairline)]" data-testid="variant-count">
-          {([1, 2, 4] as const).map((count) => (
-            <button
-              key={count}
-              type="button"
-              className={`sc-canvas-variant-option ${variantCount === count ? 'sc-canvas-variant-option-active' : ''}`}
-              aria-label={`生成 ${count} 个变体`}
-              aria-pressed={variantCount === count}
-              onClick={() => setVariantCount(count)}
-            >
-              ×{count}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          className="nodrag sc-canvas-button sc-canvas-button-primary flex-1"
-          data-testid="run-node"
-          title={activePhase
-            ? `已有 ${activeCount} 个任务进行中（${STATUS_TEXT[activePhase] ?? activePhase}），新变体将并行排队。`
-            : undefined}
-          onClick={onRun}
+        {capability?.parameters.some((parameter) => parameter.key === 'generationStage') ? <>
+          <label className="mt-2 block text-[11px] text-ink-secondary">生成阶段</label>
+          <select className="nodrag sc-canvas-select w-full" aria-label="生成阶段" value={String(data.parameters?.generationStage ?? 'direct')}
+            onChange={(event) => {
+              const previous = data.parameters?.generationStage ?? 'direct';
+              const next = event.target.value;
+              const parameters: Record<string, string | number | boolean> = { ...(data.parameters ?? {}), generationStage: next };
+              if (previous === 'direct') parameters.directResolution = String(data.parameters?.resolution ?? '1080p');
+              parameters.resolution = next === 'draft' ? '480p' : String(data.parameters?.directResolution ?? '1080p');
+              delete parameters.draftAssetId;
+              controller.updateNodeData(id, { parameters });
+            }}>
+            <option value="direct">直接生成正式视频</option><option value="draft">先生成样片 · 480p</option>
+            {data.parameters?.generationStage === 'final-from-draft' ? <option value="final-from-draft">基于选中样片转正式 · 1080p</option> : null}
+          </select>
+          {data.parameters?.generationStage === 'final-from-draft' ? <DraftActions bound assetId={String(data.parameters.draftAssetId ?? '')} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
+        </> : null}
+        {runtime?.currentAssetId ? <DraftActions assetId={runtime.currentAssetId} controller={controller} position={{ x: positionAbsoluteX + 340, y: positionAbsoluteY }} /> : null}
+        <label className="mt-2 block text-[11px] text-ink-secondary">模式</label>
+        <select
+          className="nodrag sc-canvas-select w-full"
+          value={currentMode}
+          data-testid="mode-select"
+          disabled={data.parameters?.generationStage === 'final-from-draft'}
+          onChange={(event) => {
+            const nextMode = event.target.value as CanvasGenerationMode;
+            // 切模式时清掉新模式不接受的参数键（界面同步隐藏，残留值也不进计划）
+            const remainingParameters = Object.fromEntries(
+              Object.entries(data.parameters ?? {}).filter(([key]) => {
+                const declared = capability?.parameters.find((parameter) => parameter.key === key);
+                return !declared?.modes || declared.modes.includes(nextMode);
+              }),
+            );
+            controller.updateNodeData(id, {
+              generationMode: nextMode,
+              parameters: remainingParameters,
+            });
+          }}
         >
-          {runLabel}
-        </button>
-        <button type="button" className="nodrag sc-canvas-button" data-testid="run-branch" onClick={onBranch}>
-          运行分支
-        </button>
-      </div>
+          {(modeOptions as string[]).map((mode) => (
+            <option key={mode} value={mode}>
+              {capability?.modeLabels?.[mode as CanvasGenerationMode] ?? MODE_LABELS[mode] ?? mode}
+            </option>
+          ))}
+        </select>
 
-      <NodeStatus nodeId={id} />
+        {capability?.legacyModes?.includes(currentMode) ? (
+          <button type="button" className="nodrag sc-canvas-button mt-1" onClick={(event) => {
+            event.currentTarget.blur();
+            controller.updateNodeData(id, { generationMode: 'reference-to-video' });
+          }}>转换为全能参考（保留素材与提示词）</button>
+        ) : null}
+
+        {modeHint ? (
+          <div className="mt-1 text-[10px] text-ink-tertiary" data-testid="mode-hint">
+            {modeHint}
+          </div>
+        ) : null}
+
+        {capability && capability.parameters.length > 0 ? (
+          <div className="mt-2 space-y-1">
+            {capability.parameters
+              .filter((parameter) => !['generationStage', 'draftAssetId', 'directResolution'].includes(parameter.key))
+              .filter((parameter) => data.parameters?.generationStage !== 'final-from-draft' || ['resolution', 'outputFormat', 'watermark', 'returnLastFrame'].includes(parameter.key))
+              .filter((parameter) => !parameter.modes || parameter.modes.includes(currentMode))
+              .map((parameter) => (
+              <div key={parameter.key} className="flex items-center gap-2">
+                <span className="text-[11px] text-ink-secondary">{parameter.label}</span>
+                {parameter.type === 'enum' ? (
+                  <select
+                    className="nodrag sc-canvas-select flex-1"
+                    disabled={parameter.key === 'resolution' && ['draft', 'final-from-draft'].includes(String(data.parameters?.generationStage))}
+                    value={String(parameter.key === 'resolution' && data.parameters?.generationStage === 'draft' ? '480p' : data.parameters?.[parameter.key] ?? parameter.default ?? '')}
+                    aria-label={parameter.label}
+                    onChange={(event) => controller.updateNodeData(id, {
+                      parameters: { ...(data.parameters ?? {}), [parameter.key]: event.target.value },
+                    })}
+                  >
+                    {(parameter.options ?? []).map((option) => (
+                      <option key={option} value={option}>{option === 'gateway-default' ? '网关默认（待验证）' : option === 'adaptive' ? '自动' : option === '4k' ? '4K' : option}</option>
+                    ))}
+                  </select>
+                ) : parameter.specialValues?.includes(-1) ? (
+                  <select className="nodrag sc-canvas-select flex-1" aria-label={parameter.label}
+                    value={Number(data.parameters?.[parameter.key] ?? parameter.default ?? 5)}
+                    onChange={(event) => controller.updateNodeData(id, {
+                      parameters: { ...(data.parameters ?? {}), [parameter.key]: Number(event.target.value) },
+                    })}>
+                    <option value={-1}>自动</option>
+                    {Array.from({ length: (parameter.max ?? 15) - (parameter.min ?? 4) + 1 }, (_, index) => (parameter.min ?? 4) + index)
+                      .map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+                  </select>
+                ) : parameter.type === 'boolean' ? (
+                  <input
+                    type="checkbox"
+                    aria-label={parameter.label}
+                    checked={Boolean(data.parameters?.[parameter.key] ?? parameter.default ?? false)}
+                    onChange={(event) => controller.updateNodeData(id, {
+                      parameters: { ...(data.parameters ?? {}), [parameter.key]: event.target.checked },
+                    })}
+                  />
+                ) : (
+                  <input
+                    className="nodrag sc-canvas-input flex-1 bg-transparent text-[11px] outline-none"
+                    type="number"
+                    aria-label={parameter.label}
+                    min={parameter.min}
+                    max={parameter.max}
+                    step={parameter.type === 'integer' ? 1 : 'any'}
+                    value={Number(data.parameters?.[parameter.key] ?? parameter.default ?? 0)}
+                    /* 输入中只夹上限（不打断多位数录入），失焦再夹下限、取整并兜底默认值 */
+                    onChange={(event) => {
+                      const raw = Number(event.target.value);
+                      if (!Number.isFinite(raw)) return;
+                      const value = parameter.max !== undefined ? Math.min(parameter.max, raw) : raw;
+                      controller.updateNodeData(id, {
+                        parameters: { ...(data.parameters ?? {}), [parameter.key]: value },
+                      }, { coalesce: `param:${id}:${parameter.key}` });
+                    }}
+                    onBlur={(event) => {
+                      const fallback = Number(parameter.default ?? parameter.min ?? 0);
+                      const raw = event.target.value.trim() === '' ? fallback : Number(event.target.value);
+                      let value = Number.isFinite(raw) ? raw : fallback;
+                      if (parameter.min !== undefined) value = Math.max(parameter.min, value);
+                      if (parameter.max !== undefined) value = Math.min(parameter.max, value);
+                      if (parameter.type === 'integer') value = Math.round(value);
+                      if (value !== Number(data.parameters?.[parameter.key] ?? parameter.default ?? 0)) {
+                        controller.updateNodeData(id, {
+                          parameters: { ...(data.parameters ?? {}), [parameter.key]: value },
+                        });
+                      }
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="sc-canvas-prompt-area relative">
+          <textarea
+            ref={promptRef}
+            disabled={data.parameters?.generationStage === 'final-from-draft'}
+            className="nodrag nowheel sc-canvas-prompt-text sc-canvas-input w-full resize-none bg-transparent text-[12px] outline-none"
+            placeholder="提示词，输入 @ 选择素材"
+            {...promptIme}
+            onChange={(event) => {
+              promptIme.onChange(event);
+              if (!(event.nativeEvent as InputEvent).isComposing) syncMentionFromDom();
+            }}
+            onCompositionEnd={(event) => {
+              promptIme.onCompositionEnd(event);
+              syncMentionFromDom();
+            }}
+            onSelect={syncMentionFromDom}
+            onKeyDown={onPromptKeyDown}
+            onBlur={() => {
+              promptIme.onBlur();
+              setMention(null);
+            }}
+            data-testid="generation-prompt"
+          />
+          {mention ? (
+            <div className="sc-canvas-mention-menu nodrag" data-testid="mention-menu">
+              {filteredMentionOptions.length === 0 ? (
+                <div className="sc-canvas-mention-empty">还没有已连线的素材，先从素材节点拉线到本节点</div>
+              ) : (
+                filteredMentionOptions.map((option, index) => (
+                  <button
+                    key={option.nodeId}
+                    type="button"
+                    className={`sc-canvas-mention-option ${index === activeMentionIndex ? 'sc-canvas-mention-option-active' : ''}`}
+                    data-testid={`mention-option-${option.nodeId}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      pickMention(option);
+                    }}
+                    onMouseEnter={() => setMentionIndex(index)}
+                  >
+                    {option.assetId && option.mediaKind === 'image' ? (
+                      <img src={canvasAssetUrl(option.assetId)} alt="" className="sc-canvas-mention-thumb" />
+                    ) : option.assetId && option.mediaKind === 'video' ? (
+                      <video src={canvasAssetUrl(option.assetId)} muted playsInline preload="metadata" className="sc-canvas-mention-thumb" />
+                    ) : (
+                      <span className="sc-canvas-mention-thumb sc-canvas-mention-thumb-text">
+                        {option.kindLabel}
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{option.title}</span>
+                    {option.label !== null ? (
+                      <span className="sc-canvas-mention">@参考{option.label}</span>
+                    ) : (
+                      <span className="sc-canvas-mention-kind">{option.kindLabel}</span>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        {references.length > 0 ? (
+          <div className="mt-2 space-y-1" data-testid="reference-list">
+            {references.map((slot, index) => (
+              <ReferenceRow
+                key={slot.refId}
+                nodeId={id}
+                slot={slot}
+                index={index}
+                total={references.length}
+                assetId={resolveSourceAssetId(slot.sourceNodeId)}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {mentionIssues.unknownLabels.length > 0 ? (
+          <div className="mt-2 text-[11px] text-[var(--color-fail)]" data-testid="mention-unknown">
+            提示词提到的 @参考{mentionIssues.unknownLabels.join('、@参考')} 不存在
+          </div>
+        ) : null}
+
+        <div className="mt-3 flex items-center gap-2">
+          <div className="nodrag flex items-center rounded-full border border-[var(--color-hairline)]" data-testid="variant-count">
+            {([1, 2, 4] as const).map((count) => (
+              <button
+                key={count}
+                type="button"
+                className={`sc-canvas-variant-option ${variantCount === count ? 'sc-canvas-variant-option-active' : ''}`}
+                aria-label={`生成 ${count} 个变体`}
+                aria-pressed={variantCount === count}
+                onClick={() => setVariantCount(count)}
+              >
+                ×{count}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="nodrag sc-canvas-button sc-canvas-button-primary flex-1"
+            data-testid="run-node"
+            title={activePhase
+              ? `已有 ${activeCount} 个任务进行中（${STATUS_TEXT[activePhase] ?? activePhase}），新变体将并行排队。`
+              : undefined}
+            onClick={onRun}
+          >
+            {runLabel}
+          </button>
+          <button type="button" className="nodrag sc-canvas-button" data-testid="run-branch" onClick={onBranch}>
+            运行分支
+          </button>
+        </div>
+
+        <NodeStatus nodeId={id} />
+      </div>
       <Handle type="source" position={Position.Right} />
     </div>
   );

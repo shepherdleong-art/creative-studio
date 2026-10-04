@@ -337,7 +337,15 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       pushHistorySnapshot(dragSnapshotRef.current);
       dragSnapshotRef.current = null;
     }
-    const next = applyNodeChanges(changes, nodesRef.current);
+    // Material resize gestures scale width; its rendered media determines the height.
+    // Do not freeze a measured/dragged height into the wrapper and leave blank space.
+    const sizeChanges = changes.map((change) => (
+      change.type === 'dimensions' && change.setAttributes
+      && nodesRef.current.some((node) => node.id === change.id && node.type === 'material')
+        ? { ...change, setAttributes: 'width' as const }
+        : change
+    ));
+    const next = applyNodeChanges(sizeChanges, nodesRef.current);
     nodesRef.current = next;
     setNodes(next);
     if (dragging || dragEnded || resizing || resizeEnded) {

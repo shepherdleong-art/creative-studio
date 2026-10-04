@@ -16,6 +16,7 @@ import {
   BackgroundVariant,
   Controls,
   MiniMap,
+  Panel,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
@@ -67,11 +68,12 @@ function isEditableTarget(target: EventTarget | null): boolean {
 function EditorInner({ canvasId }: { canvasId: string }) {
   const controller = useCanvasEditor(canvasId);
   const toasts = useCanvasToasts();
-  const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow();
+  const { screenToFlowPosition, fitView, getViewport, setViewport, setCenter } = useReactFlow();
   const [initialViewport, setInitialViewport] = useState<{ x: number; y: number; zoom: number } | undefined>();
   const [capabilities, setCapabilities] = useState<CanvasModelCapabilityDto[]>([]);
   const [executor, setExecutor] = useState<string>('disabled');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [miniMapVisible, setMiniMapVisible] = useState(true);
   const [dropMenu, setDropMenu] = useState<{
     fromNodeId: string;
     /** 屏幕坐标：screenToFlowPosition 需要（旧实现误传相对坐标导致落点偏移）。 */
@@ -83,6 +85,8 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   } | null>(null);
   // 右键上下文菜单（pane／node／edge 三态）
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
+  const finishRenaming = useCallback(() => setRenamingNodeId(null), []);
   // 拉线菜单：Esc 之外，点击菜单外任意处也要能取消（与右键菜单同一手势）
   const dropMenuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -454,7 +458,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
     });
   }, [addNodeWithDefaults, fitAll, screenToFlowPosition]);
 
-  /** 右键节点：独占选中该节点后提供复制／再制／删除（生成节点另有运行分支）。 */
+  /** 右键节点：独占选中后提供重命名／复制／再制／删除（生成节点另有运行分支）。 */
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: CanvasFlowNode) => {
     event.preventDefault();
     controllerRef.current.onNodesChange(
@@ -469,6 +473,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
       x: event.clientX - (bounds?.left ?? 0),
       y: event.clientY - (bounds?.top ?? 0),
       items: [
+        { label: '重命名', testId: 'context-rename', onClick: () => setRenamingNodeId(node.id) },
         { label: '复制', testId: 'context-copy', onClick: () => controllerRef.current.copySelection() },
         {
           label: '再制',
@@ -507,10 +512,12 @@ function EditorInner({ canvasId }: { canvasId: string }) {
 
   const contextValue = useMemo(() => ({
     controller,
+    renamingNodeId,
+    finishRenaming,
     capabilities,
     graph,
     resolveSourceAssetId,
-  }), [capabilities, controller, graph, resolveSourceAssetId]);
+  }), [capabilities, controller, graph, resolveSourceAssetId, renamingNodeId, finishRenaming]);
 
   return (
     <CanvasNodeContext.Provider value={contextValue}>
@@ -666,7 +673,42 @@ function EditorInner({ canvasId }: { canvasId: string }) {
             >
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--color-canvas-grid-dot)" />
               <Controls showInteractive={false} />
-              <MiniMap pannable zoomable />
+              {miniMapVisible ? (
+                <div
+                  className="contents"
+                  title="点击定位 · 拖动平移 · 右键隐藏"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setMiniMapVisible(false);
+                    setContextMenu(null);
+                    setDropMenu(null);
+                  }}
+                >
+                  <MiniMap
+                    pannable
+                    zoomable
+                    ariaLabel="画布小地图，点击定位，右键隐藏"
+                    onClick={(_event, position) => {
+                      void setCenter(position.x, position.y, { zoom: getViewport().zoom, duration: 180 });
+                    }}
+                  />
+                </div>
+              ) : (
+                <Panel position="bottom-right">
+                  <button
+                    type="button"
+                    className="nodrag sc-canvas-button bg-surface"
+                    data-testid="show-minimap"
+                    onClick={(event) => {
+                      event.currentTarget.blur();
+                      setMiniMapVisible(true);
+                    }}
+                  >
+                    显示小地图
+                  </button>
+                </Panel>
+              )}
             </ReactFlow>
 
             {dropMenu ? (

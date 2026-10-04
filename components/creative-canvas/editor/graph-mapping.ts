@@ -15,6 +15,7 @@ import type {
   CanvasGraphNode,
   CanvasMediaKind,
   CanvasNodeKind,
+  CanvasNodeSize,
 } from '@/lib/creative-canvas/types';
 import type { CanvasFlowNode, CanvasFlowNodeData } from '../editor-store';
 
@@ -37,9 +38,14 @@ function flowNodeWidth(node: CanvasFlowNode): number | undefined {
   return Math.round(width);
 }
 
-function nodeSizePatch(kind: CanvasNodeKind, width: number | undefined): { size: { width: number } } | Record<string, never> {
-  // 与默认宽度一致时不写 size，保持图定义干净
-  return width !== undefined && width !== nodeKindSpec(kind).defaultWidth ? { size: { width } } : {};
+function nodeSizePatch(kind: CanvasNodeKind, node: CanvasFlowNode): { size: CanvasNodeSize } | Record<string, never> {
+  const width = flowNodeWidth(node) ?? nodeKindSpec(kind).defaultWidth;
+  // measured.height is automatic content measurement, not a user-selected size.
+  const rawHeight = kind === 'material' ? undefined : node.height ?? node.style?.height;
+  const height = typeof rawHeight === 'number' && Number.isFinite(rawHeight) ? Math.round(rawHeight) : undefined;
+  return height !== undefined || width !== nodeKindSpec(kind).defaultWidth
+    ? { size: { width, ...(height !== undefined ? { height } : {}) } }
+    : {};
 }
 
 export function cloneEdges(edges: Edge[]): Edge[] {
@@ -47,7 +53,11 @@ export function cloneEdges(edges: Edge[]): Edge[] {
 }
 
 export function toFlowNode(node: CanvasGraphNode): CanvasFlowNode {
-  const style = { width: node.size?.width ?? nodeKindSpec(node.kind).defaultWidth };
+  const style = {
+    width: node.size?.width ?? nodeKindSpec(node.kind).defaultWidth,
+    // Material content follows its media aspect ratio, including graphs saved with a stale height.
+    ...(node.kind !== 'material' && node.size?.height !== undefined ? { height: node.size.height } : {}),
+  };
   if (node.kind === 'material') {
     return {
       id: node.id,
@@ -90,7 +100,7 @@ export function toGraphNode(node: CanvasFlowNode): CanvasGraphNode {
       id: node.id,
       kind: 'material',
       position: { x: node.position.x, y: node.position.y },
-      ...nodeSizePatch('material', flowNodeWidth(node)),
+      ...nodeSizePatch('material', node),
       data: {
         title: String(node.data.title ?? ''),
         assetId: (node.data.assetId as string | null) ?? null,
@@ -103,7 +113,7 @@ export function toGraphNode(node: CanvasFlowNode): CanvasGraphNode {
       id: node.id,
       kind: 'prompt',
       position: { x: node.position.x, y: node.position.y },
-      ...nodeSizePatch('prompt', flowNodeWidth(node)),
+      ...nodeSizePatch('prompt', node),
       data: { title: String(node.data.title ?? ''), text: String(node.data.text ?? '') },
     };
   }
@@ -112,7 +122,7 @@ export function toGraphNode(node: CanvasFlowNode): CanvasGraphNode {
     id: node.id,
     kind,
     position: { x: node.position.x, y: node.position.y },
-    ...nodeSizePatch(kind, flowNodeWidth(node)),
+    ...nodeSizePatch(kind, node),
     data: {
       title: String(node.data.title ?? ''),
       modelKey: (node.data.modelKey as string | null) ?? null,

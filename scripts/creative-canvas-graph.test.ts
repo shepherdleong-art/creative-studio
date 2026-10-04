@@ -376,7 +376,7 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
   assert.deepEqual(generationNode(removed, 'g1').data.references.map((slot) => slot.label), [2]);
 }
 
-// --- 节点尺寸（自定义宽度） -----------------------------------------------------
+// --- 节点尺寸（自定义宽高） -----------------------------------------------------
 
 {
   const parsed = parseCanvasGraph({
@@ -396,6 +396,18 @@ function generationNode(graphValue: CanvasGraph, id: string): CanvasGenerationNo
       nodes: [{ id: 'm1', kind: 'material', position: { x: 0, y: 0 }, size: { width: bad }, data: { title: 'm', assetId: null, mediaKind: 'image' } }],
       edges: [],
     }), (error: unknown) => error instanceof CanvasGraphError && error.code === 'invalid_node');
+  }
+}
+
+{
+  const sized = (height: unknown) => ({
+    schemaVersion: 1,
+    nodes: [{ id: 'p1', kind: 'prompt', position: { x: 0, y: 0 }, size: { width: 320, height }, data: { title: 'p', text: '' } }],
+    edges: [],
+  });
+  assert.deepEqual(parseCanvasGraph(sized(480)).nodes[0].size, { width: 320, height: 480 });
+  for (const bad of [0, 119, 2001, Number.NaN, Number.POSITIVE_INFINITY, '480', null]) {
+    assert.throws(() => parseCanvasGraph(sized(bad)), (error: unknown) => error instanceof CanvasGraphError && error.code === 'invalid_node');
   }
 }
 

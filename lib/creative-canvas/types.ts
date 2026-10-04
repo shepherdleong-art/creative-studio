@@ -83,9 +83,10 @@ export interface CanvasViewport {
 
 export const DEFAULT_CANVAS_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
 
-/** 节点自定义尺寸（用户拖拽右缘改宽；缺省按节点类型默认宽度）。 */
+/** 节点自定义尺寸（缺省宽度按节点类型；缺省高度由内容撑开）。 */
 export interface CanvasNodeSize {
   width: number;
+  height?: number;
 }
 
 /**

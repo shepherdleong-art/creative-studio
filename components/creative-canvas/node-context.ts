@@ -36,6 +36,8 @@ export interface CanvasModelCapabilityDto {
 
 export interface CanvasNodeContextValue {
   controller: CanvasEditorController;
+  renamingNodeId: string | null;
+  finishRenaming: () => void;
   capabilities: CanvasModelCapabilityDto[];
   /** 当前本地图（含未保存草稿）的解析结果，用于连线与提及校验。 */
   graph: CanvasGraph;
