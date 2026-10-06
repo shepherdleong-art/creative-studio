@@ -66,7 +66,11 @@ next-env.d.ts
 /.claude/
 /.agents/
 /.omo/
+/.trae/
 /skills-lock.json
+
+# local design tool workspace (generated mockups/validation artifacts)
+/batch-timeline-unified.design/
 
 # git worktrees for isolated feature work
 /.worktrees/
