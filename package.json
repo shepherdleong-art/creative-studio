@@ -20,6 +20,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@xyflow/react": "12.11.6",
     "archiver": "^8.0.0",
     "better-sqlite3": "^12.10.0",
     "exceljs": "^4.4.0",

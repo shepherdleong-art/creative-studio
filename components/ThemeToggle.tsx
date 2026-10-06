@@ -61,8 +61,24 @@ export default function ThemeToggle() {
   const pref = useSyncExternalStore(subscribePreference, readPreference, readPreferenceOnServer);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const isFirstCommit = useRef(true);
 
   useEffect(() => {
+    if (isFirstCommit.current) {
+      isFirstCommit.current = false;
+      // 水合首个提交的 pref 固定是服务端快照 'system'。本地存了显式 light/dark 时，
+      // 水合前脚本已把 html[data-theme] 设对；这里若再按 'system' 应用会把它覆盖掉
+      // （深浅闪烁，极端情况下停在错误主题且重选无效），跳过并交给紧随其后的
+      // 偏好修正提交去应用。
+      if (pref === 'system') {
+        try {
+          const stored = localStorage.getItem(STORAGE_KEY);
+          if (stored === 'light' || stored === 'dark') return;
+        } catch {
+          // 读取失败按正常流程应用
+        }
+      }
+    }
     applyPreference(pref);
     // 桌面壳：原生控件（select 弹出列表、右键菜单）主题由主进程 nativeTheme 决定，
     // 不吃页面 CSS 的 color-scheme，偏好变化时同步过去；浏览器环境无 bridge，忽略即可。

@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 // Bearer（上游真实 Key 由包内 config.yaml 持有），所以种子里的 apiKey 只需非空
 // 且不被占位清理识别——不能含 'example.com' / 'your-'（见 video-auth.ts）。
 // 这两项只在新库首次播种时写入；已有库的用户配置不会被覆盖。
-export const COMPANY_LITELLM_BASE_URL = 'http://127.0.0.1:4000';
+export const COMPANY_LITELLM_BASE_URL = `http://127.0.0.1:${process.env.CREATIVE_STUDIO_LITELLM_PORT || '4000'}`;
 const COMPANY_LITELLM_PLACEHOLDER_KEY = 'litellm-local-passthrough';
 
 export function seedProviders() {

@@ -1,8 +1,12 @@
+import { assertArkRequestSize, seedanceFinalBody, seedanceContract, seedanceOutputFields } from './seedance-contract.ts';
 import fs from 'fs';
 import { videoDurationError } from '../video-duration.ts';
 import type {
+  ReferenceVideoInput,
   VideoProviderAdapter,
   SubmitVideoRequest,
+  SubmitTextVideoRequest,
+  SubmitReferenceVideoRequest,
   SubmitVideoResult,
   PollVideoResult,
   TailFrameCapability,
@@ -28,10 +32,41 @@ function isSeedance2(model: string): boolean {
   return /seedance-2[-.]/.test(model);
 }
 
-const SEEDANCE_2_TAIL_FRAME_MODEL = 'doubao-seedance-2-0-260128';
+/** 2.5 系列（doubao-seedance-2-5-*）：单段最长 30 秒，全模态参考需显式引导子任务类型。 */
+function isSeedance25(model: string): boolean {
+  return /seedance-2-5[-.]/.test(model);
+}
+
+/** 旧项目使用整数秒；画布精确型号另支持 -1 自动时长。其余非法值拒绝，不截断。 */
+function jimengDuration(model: string, durationSec: number): number {
+  const contract = seedanceContract(model);
+  if (contract && durationSec === -1) return -1;
+  if (contract) {
+    if (!Number.isInteger(durationSec) || durationSec < 4 || durationSec > contract.maxDuration) {
+      throw new Error(`视频时长须为 4–${contract.maxDuration} 秒的整数，或 -1 自动时长`);
+    }
+    return durationSec;
+  }
+  if (isSeedance2(model)) {
+    const problem = videoDurationError('jimeng', model, durationSec);
+    if (problem) throw new Error(problem);
+    return durationSec;
+  }
+  return normalizeJimengDuration(durationSec);
+}
+
+/**
+ * 尾帧按精确模型 allowlist 声明（红线：不许放宽成前缀匹配）。
+ * 2.5 官方教程：首尾帧生视频严格通过 content.role = first_frame/last_frame 控制，
+ * ratio 必须为 adaptive——本适配器图生视频路径本就固定 adaptive，合同一致。
+ */
+const SEEDANCE_2_TAIL_FRAME_MODELS: ReadonlyArray<string> = [
+  'doubao-seedance-2-0-260128',
+  'doubao-seedance-2-5-260628',
+];
 
 function getTailFrameCapability(model: string): TailFrameCapability {
-  if (model === SEEDANCE_2_TAIL_FRAME_MODEL) {
+  if (SEEDANCE_2_TAIL_FRAME_MODELS.includes(model)) {
     return {
       supported: true,
       protocol: 'ark-content-roles',
@@ -75,7 +110,67 @@ const SUBMIT_TIMEOUT_MS = 120_000;
 const POLL_TIMEOUT_MS = 30_000;
 const JIMENG_2_LONG_VIDEO_MIN_POLLING_MS = 15 * 60_000;
 
+/**
+ * 方舟多模态参考的一项：图片／视频／音频各自一种 content 项类型，角色标明用途。
+ * 来源：方舟创建视频生成任务文档（角色名见 docs/2026-09-08-无限画布-公司模型接口核对.md §二）。
+ */
+function referenceContentItem(reference: ReferenceVideoInput): Record<string, unknown> {
+  switch (reference.kind) {
+    case 'image':
+      return { type: 'image_url', image_url: { url: reference.url }, role: 'reference_image' };
+    case 'video':
+      return { type: 'video_url', video_url: { url: reference.url }, role: 'reference_video' };
+    case 'audio':
+      return { type: 'audio_url', audio_url: { url: reference.url }, role: 'reference_audio' };
+  }
+}
+
+/** 三个提交入口共用的单次 POST：超时与外部中止信号都转成 AbortController。 */
+async function postGenerationTask(params: {
+  apiKey: string;
+  baseUrl: string;
+  body: Record<string, unknown>;
+  signal?: AbortSignal;
+  errorLabel: string;
+}): Promise<SubmitVideoResult> {
+  const cleanBase = params.baseUrl.replace(/\/$/, '');
+  const url = `${cleanBase}/contents/generations/tasks`;
+
+  const serialized = assertArkRequestSize(params.body);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
+  const onAbort = () => controller.abort();
+  if (params.signal?.aborted) controller.abort();
+  else params.signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${params.apiKey}`,
+      },
+      body: serialized,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`${params.errorLabel} submit error ${res.status}: ${errorText.slice(0, 500)}`);
+    }
+
+    const data = (await res.json()) as ArkTaskResponse;
+    return { providerTaskId: data.id, rawResponse: data };
+  } finally {
+    clearTimeout(timer);
+    params.signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 export const jimengAdapter: VideoProviderAdapter = {
+  async submitFinal(request, apiKey, baseUrl, signal) {
+    return postGenerationTask({ apiKey, baseUrl, signal, body: seedanceFinalBody(request), errorLabel: 'Jimeng final-from-draft' });
+  },
   tailFrameCapability(model) {
     return getTailFrameCapability(model);
   },
@@ -93,9 +188,6 @@ export const jimengAdapter: VideoProviderAdapter = {
     baseUrl: string,
     signal?: AbortSignal
   ): Promise<SubmitVideoResult> {
-    const cleanBase = baseUrl.replace(/\/$/, '');
-    const url = `${cleanBase}/contents/generations/tasks`;
-
     const hasTailImagePath = request.tailImagePath !== undefined;
     const hasTailMimeType = request.tailMimeType !== undefined;
     if (hasTailImagePath !== hasTailMimeType) {
@@ -105,6 +197,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       throw new Error(`Jimeng tail frame unsupported for model ${request.model}`);
     }
 
+    const duration = jimengDuration(request.model, request.durationSec);
     const imageDataUrl = fileToBase64DataUrl(request.sourceImagePath, request.sourceMimeType);
 
     // Seedance accepts public HTTPS/TOS/asset URLs. We use a data URL here because
@@ -112,10 +205,6 @@ export const jimengAdapter: VideoProviderAdapter = {
     console.warn('[Jimeng] Using Base64 data URL for source image. Seedance docs recommend public HTTPS URLs. If this fails, serve images publicly.');
 
     const seedance2 = isSeedance2(request.model);
-    if (seedance2) {
-      const durationError = videoDurationError('jimeng', request.model, request.durationSec);
-      if (durationError) throw new Error(durationError);
-    }
     const content: Array<Record<string, unknown>> = [
       {
         type: 'text',
@@ -124,7 +213,7 @@ export const jimengAdapter: VideoProviderAdapter = {
       {
         type: 'image_url',
         image_url: { url: imageDataUrl },
-        ...(hasTailImagePath ? { role: 'first_frame' } : {}),
+        ...(hasTailImagePath || seedanceContract(request.model) ? { role: 'first_frame' } : {}),
       },
     ];
     if (hasTailImagePath) {
@@ -139,45 +228,92 @@ export const jimengAdapter: VideoProviderAdapter = {
     const body: Record<string, unknown> = {
       model: request.model,
       content,
-      resolution: '1080p',
+      ...seedanceOutputFields(request.model, request),
       ratio: 'adaptive',
-      duration: seedance2 ? request.durationSec : normalizeJimengDuration(request.durationSec),
-      watermark: false,
-      generate_audio: true,
+      duration,
     };
     if (!seedance2) body.camera_fixed = false;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
-    const onAbort = () => controller.abort();
-    signal?.addEventListener('abort', onAbort, { once: true });
+    return postGenerationTask({
+      apiKey,
+      baseUrl,
+      body,
+      ...(signal ? { signal } : {}),
+      errorLabel: 'Jimeng',
+    });
+  },
 
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+  /**
+   * 文生视频：方舟原生 content 只放文本项，**不塞占位首帧**；文本模式没有图可吸附，
+   * 比例取调用方显式值（默认 16:9），其余参数与图生视频保持一致。
+   */
+  async submitText(
+    request: SubmitTextVideoRequest,
+    apiKey: string,
+    baseUrl: string,
+    signal?: AbortSignal
+  ): Promise<SubmitVideoResult> {
+    const seedance2 = isSeedance2(request.model);
+    const body: Record<string, unknown> = {
+      model: request.model,
+      content: [{ type: 'text', text: normalizeJimengPrompt(request.prompt) }],
+      ...seedanceOutputFields(request.model, request),
+      ratio: request.aspectRatio ?? '16:9',
+      duration: jimengDuration(request.model, request.durationSec),
+    };
+    if (!seedance2) body.camera_fixed = false;
 
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Jimeng submit error ${res.status}: ${errorText.slice(0, 500)}`);
-      }
+    return postGenerationTask({
+      apiKey,
+      baseUrl,
+      body,
+      ...(signal ? { signal } : {}),
+      errorLabel: 'Jimeng text-to-video',
+    });
+  },
 
-      const data = (await res.json()) as ArkTaskResponse;
-
-      return {
-        providerTaskId: data.id,
-        rawResponse: data,
-      };
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
+  /**
+   * 多模态参考：图片／视频／音频按调用方顺序进 content 数组，角色分别是
+   * `reference_image` / `reference_video` / `reference_audio`。
+   *
+   * 数量与组合约束（2.0 系列：0–9 图 + 0–3 视频 + 0–3 音频，音频必须搭配图片或视频）在画布能力表与
+   * external 适配器的 prepare 阶段校验；这里只负责把已经过校验的素材编成请求，避免两处规则漂移。
+   * 素材地址由 prepare 交付：图片可以是 data URL，视频／音频必须是公网 URL（COS 中转）。
+   */
+  async submitReference(
+    request: SubmitReferenceVideoRequest,
+    apiKey: string,
+    baseUrl: string,
+    signal?: AbortSignal
+  ): Promise<SubmitVideoResult> {
+    const seedance2 = isSeedance2(request.model);
+    const seedance25 = isSeedance25(request.model);
+    const content: Array<Record<string, unknown>> = [
+      { type: 'text', text: normalizeJimengPrompt(request.prompt) },
+      ...request.references.map(referenceContentItem),
+    ];
+    const body: Record<string, unknown> = {
+      model: request.model,
+      content,
+      ...seedanceOutputFields(request.model, request),
+      ratio: request.aspectRatio ?? '16:9',
+      // 自动时长支持两代，旧非 Seedance 调用保持原归一行为
+      duration: jimengDuration(request.model, request.durationSec),
+    };
+    if (!seedance2) body.camera_fixed = false;
+    if (seedance25) {
+      // 2.5 全模态参考按提示词意图判定子任务（参考／编辑／延长），编辑与延长会锁定 ratio／duration；
+      // 画布按节点模式显式引导子任务类型，把参数冲突前置为同步报错（方舟官方教程推荐做法）。
+      body.omni_reference_task_type = request.omniReferenceTaskType ?? 'reference';
     }
+
+    return postGenerationTask({
+      apiKey,
+      baseUrl,
+      body,
+      ...(signal ? { signal } : {}),
+      errorLabel: 'Jimeng reference-to-video',
+    });
   },
 
   async poll(

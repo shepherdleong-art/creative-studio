@@ -95,6 +95,7 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 | `docs/reference/供应商与队列.md` | 新增/修改图片、脚本、视频供应商适配器 |
 | `docs/reference/打包与桌面运行.md` | 改打包脚本、快启脚本、Electron 桌面壳 |
 | `docs/reference/详情页智能脚本生成.md` | 改 `lib/script-studio/` 任何东西 |
+| `docs/reference/创作画布.md` | 改 `lib/creative-canvas/`、`app/api/canvas/`、`components/creative-canvas/`、`app/canvas/` 任何东西 |
 
 ### `lib/` 核心模块
 
@@ -111,6 +112,11 @@ types/                  第三方包的类型补丁（ffprobe-static.d.ts）
 **详情页智能脚本生成** — 细节见 `docs/reference/详情页智能脚本生成.md`
 
 - `script-studio/` — 独立的详情页智能脚本 Module，自带 `{version, sql}` 迁移流和共享 readiness gate；调度器默认关闭，真机执行需显式设置 `CREATIVE_STUDIO_SCRIPT_STUDIO_ENABLE_SCHEDULER=1`。只从 `media-core/` 导入，绝不从 `final-edit/` 导入。
+
+**创作画布** — 细节见 `docs/reference/创作画布.md`
+
+- `creative-canvas/` — 独立画布模块：纯图定义与能力表、自己的迁移流与共享升级 gate、计划器与持久化调度器（全局默认 10 名额）、执行器与恢复、素材与产物、ZIP 导出、用量包装。红线：不写旧 `jobs`／`video_jobs`／`projects`／`shot_sets`，只从 `media-core/` 方向取共享能力，绝不从 `final-edit/` 导入；开关关闭时不建表、不起 worker。
+- 页面与接口：`app/canvas/`（列表与编辑器）、`app/api/canvas/`（画布、素材、计划、运行、任务、导出、模型能力）；前端组件在 `components/creative-canvas/`，React Flow 样式在 `app/globals.css` 的 Tailwind 导入之后。
 
 **供应商与队列** — 细节见 `docs/reference/供应商与队列.md`
 

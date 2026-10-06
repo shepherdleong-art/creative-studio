@@ -47,7 +47,8 @@ async function doEnsureBrowserPreview(videoPath: string): Promise<string> {
     const probe = await probeVideoMedia(videoPath);
     const codec = (probe.videoCodec || '').toLowerCase();
     const pixelFormat = (probe.pixelFormat || '').toLowerCase();
-    if (isBrowserPlayable(codec, pixelFormat)) return videoPath;
+    const safeAudio = !probe.hasAudio || ['aac', 'mp3'].includes(probe.audioCodec ?? '');
+    if (isBrowserPlayable(codec, pixelFormat) && safeAudio && path.extname(videoPath).toLowerCase() !== '.mov') return videoPath;
     // 探测失败（损坏/截断的文件）不折腾转码，直接回退原件
     if (!probe.width || !probe.height) return videoPath;
 
