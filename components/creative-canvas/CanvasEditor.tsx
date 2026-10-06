@@ -672,8 +672,8 @@ function EditorInner({ canvasId }: { canvasId: string }) {
               selectionKeyCode={null}
               selectionOnDrag
               panOnDrag={[1]}
-              zoomOnScroll
-              panOnScroll={false}
+              zoomOnScroll={false}
+              panOnScroll
               zoomOnPinch
               zoomOnDoubleClick={false}
               {...(initialViewport ? { defaultViewport: initialViewport } : {})}

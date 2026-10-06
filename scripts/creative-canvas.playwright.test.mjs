@@ -542,13 +542,25 @@ async function interactionSuite(page) {
     await node.waitFor();
     const restored = await node.boundingBox();
     assert.ok(Math.abs(restored.height - taller.height) < 2 && Math.abs(restored.width - taller.width) < 2, '刷新后恢复宽高');
-    // Canvas background still accepts wheel zoom.
+    // Trackpad scrolling pans in both axes without changing zoom.
     const surface = await surfaceBox(page);
-    const beforeZoom = await readViewportTransform(page);
+    const beforePan = await readViewportTransform(page);
     await page.mouse.move(surface.x + 20, surface.y + 20);
-    await page.mouse.wheel(0, -120);
+    await page.mouse.wheel(80, 120);
     await page.waitForTimeout(300);
-    assert.notEqual((await readViewportTransform(page)).zoom, beforeZoom.zoom);
+    const afterPan = await readViewportTransform(page);
+    assert.ok(afterPan.x < beforePan.x && afterPan.y < beforePan.y, '双指滑动应沿横纵两个方向平移');
+    assert.equal(afterPan.zoom, beforePan.zoom, '双指滑动不应缩放');
+    // Chromium exposes trackpad pinch as a Ctrl-modified wheel event.
+    const beforeZoom = await readViewportTransform(page);
+    await page.keyboard.down('Control');
+    try {
+      await page.mouse.wheel(0, 60);
+    } finally {
+      await page.keyboard.up('Control');
+    }
+    await page.waitForTimeout(300);
+    assert.ok((await readViewportTransform(page)).zoom < beforeZoom.zoom, '双指捏合应继续缩放');
     // Shrinking a configured node must leave its actions directly visible.
     await page.click('[data-testid="fit-view"]');
     await page.waitForTimeout(300);
@@ -1385,8 +1397,16 @@ async function regressionSuite(page) {
   const surface = await surfaceBox(page);
   const center = { x: surface.x + surface.width / 2, y: surface.y + surface.height / 2 };
   const viewportBefore = await readViewportTransform(page);
-  await page.mouse.move(center.x, center.y);
-  await page.mouse.wheel(0, -480);
+  await page.mouse.move(surface.x + 20, surface.y + 20);
+  await page.keyboard.down('Control');
+  try {
+    await page.mouse.wheel(0, 60);
+  } finally {
+    await page.keyboard.up('Control');
+  }
+  await page.waitForTimeout(250);
+  assert.ok((await readViewportTransform(page)).zoom < viewportBefore.zoom, '捏合应实际改变缩放比例');
+  await page.mouse.wheel(80, 120);
   await page.waitForTimeout(250);
   await page.mouse.move(center.x, center.y);
   await page.mouse.down({ button: 'middle' });
