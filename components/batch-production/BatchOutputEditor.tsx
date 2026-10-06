@@ -63,7 +63,6 @@ export default function BatchOutputEditor({
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
   const [playheadSec, setPlayheadSec] = useState(0);
-  const [rippleTrim, setRippleTrim] = useState(false);
   const [timelineTool, setTimelineTool] = useState<'select' | 'split'>('select');
   const editorRef = useRef<HTMLDivElement>(null);
   const playbackRef = useRef<BatchTimelinePreviewHandle>(null);
@@ -644,8 +643,6 @@ export default function BatchOutputEditor({
             </section>
             <section className="flex-none rounded-xl bg-surface p-3" data-testid="batch-output-timeline-pane">
               <BatchTimeline
-                rippleTrim={rippleTrim}
-                onRippleTrimChange={setRippleTrim}
                 tool={timelineTool}
                 onToolChange={setTimelineTool}
                 clips={clips}
@@ -664,7 +661,7 @@ export default function BatchOutputEditor({
                 onSelectClip={(clipId) => { setSelectedClipId(clipId); const clip = clips.find((item) => item.clipId === clipId); if (clip) { setPlayheadSec(20 / 24 + clip.timelineStartUs / 1e6); setPreviewMode('output'); } }}
                 onSelectSubtitleCue={setSelectedSubtitleCueId}
                 onTrimVariable={async (clipId, sourceStartUs, sourceEndUs) =>
-                  submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs, ripple: rippleTrim })}
+                  submitEdit({ type: 'trim_variable', clipId, sourceStartUs, sourceEndUs })}
                 onSplit={async (clipId, offsetUs) => submitEdit({ type: 'split', clipId, offsetUs })}
                 onDeleteClip={(clipId) => void confirmDelete(clipId)}
                 onSubtitleEdit={submitEdit}

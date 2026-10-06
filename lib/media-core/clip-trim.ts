@@ -14,29 +14,26 @@ export function clipTrimRate(clip: TrimmableClip): number {
 }
 
 /** Keep untouched boundaries exact. Allocated clips need not start on a video frame. */
-export function planClipTrim(clips: TrimmableClip[], clipId: string, sourceStartUs: number, sourceEndUs: number, ripple: boolean): PositionedClip[] {
+export function planClipTrim(clips: TrimmableClip[], clipId: string, sourceStartUs: number, sourceEndUs: number): PositionedClip[] {
   const index = clips.findIndex((clip) => clip.clipId === clipId);
   if (index < 0) return clips.map((clip) => ({ id: clip.clipId, startUs: clip.timelineStartUs, endUs: clip.timelineEndUs }));
   const clip = clips[index];
   const rate = clipTrimRate(clip);
   const slip = sourceEndUs - sourceStartUs === clip.sourceEndUs - clip.sourceStartUs;
-  const startUs = ripple || slip ? clip.timelineStartUs : clip.timelineStartUs + Math.round((sourceStartUs - clip.sourceStartUs) / rate);
-  const endUs = slip ? clip.timelineEndUs : ripple
-    ? startUs + Math.round((sourceEndUs - sourceStartUs) / rate)
-    : clip.timelineEndUs + Math.round((sourceEndUs - clip.sourceEndUs) / rate);
-  const shift = ripple ? endUs - clip.timelineEndUs : 0;
+  const startUs = slip ? clip.timelineStartUs : clip.timelineStartUs + Math.round((sourceStartUs - clip.sourceStartUs) / rate);
+  const endUs = slip ? clip.timelineEndUs : clip.timelineEndUs + Math.round((sourceEndUs - clip.sourceEndUs) / rate);
   return clips.map((item, i) => i === index ? { id: item.clipId, startUs, endUs } : {
-    id: item.clipId, startUs: item.timelineStartUs + (i > index ? shift : 0), endUs: item.timelineEndUs + (i > index ? shift : 0),
+    id: item.clipId, startUs: item.timelineStartUs, endUs: item.timelineEndUs,
   });
 }
 
 /** Limits for the handle being dragged, expressed in source microseconds. */
-export function clipTrimBounds(clips: TrimmableClip[], clip: TrimmableClip, sourceDurationUs: number, ripple: boolean) {
+export function clipTrimBounds(clips: TrimmableClip[], clip: TrimmableClip, sourceDurationUs: number) {
   const index = clips.findIndex((item) => item.clipId === clip.clipId);
   const rate = clipTrimRate(clip);
   return {
-    minimumStartUs: ripple ? 0 : Math.max(0, Math.ceil(clip.sourceStartUs + ((clips[index - 1]?.timelineEndUs ?? 0) - clip.timelineStartUs) * rate)),
-    maximumEndUs: ripple ? sourceDurationUs : Math.min(sourceDurationUs, Math.floor(clip.sourceEndUs + ((clips[index + 1]?.timelineStartUs ?? Infinity) - clip.timelineEndUs) * rate)),
+    minimumStartUs: Math.max(0, Math.ceil(clip.sourceStartUs + ((clips[index - 1]?.timelineEndUs ?? 0) - clip.timelineStartUs) * rate)),
+    maximumEndUs: Math.min(sourceDurationUs, Math.floor(clip.sourceEndUs + ((clips[index + 1]?.timelineStartUs ?? Infinity) - clip.timelineEndUs) * rate)),
     minimumDurationUs: Math.ceil(500_000 * rate),
   };
 }

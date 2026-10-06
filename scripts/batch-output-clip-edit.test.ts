@@ -852,34 +852,7 @@ try {
   const fractionalResult = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
   assert.equal(fractionalResult.clips[0].timelineEndUs, 2_735_000);
   assert.equal(fractionalResult.clips[0].sourceEndUs, 4_606_617);
-
-  // 联动修剪保持正文起点、只移动后续画面；保留口播/字幕及素材窗口。
-  for (const rate of [0.25, 1, 1.5, 2, 4]) {
-    resetPlan0Arrangement();
-    const input = currentArrangement(plans[0]);
-    const inputClips = input.clips as Array<Record<string, unknown>>;
-    Object.assign(inputClips[0], { sourceStartUs: 1_000_003, sourceEndUs: 1_000_003 + 1_500_000 * rate, timelineEndUs: 1_500_000, playbackRate: rate });
-    inputClips[1].timelineStartUs = 1_500_000;
-    db.prepare('UPDATE batch_output_versions SET arrangementJson = ? WHERE id = ?').run(JSON.stringify(input), outputVersionId);
-    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
-      type: 'trim_variable', clipId: 'clip-1', sourceStartUs: 1_000_003 + 500_000 * rate, sourceEndUs: 1_000_003 + 1_500_000 * rate, ripple: true,
-    });
-    const trimmed = currentArrangement(plans[0]);
-    const trimmedClips = trimmed.clips as Array<Record<string, unknown>>;
-    assert.deepEqual(trimmedClips.map((clip) => [clip.timelineStartUs, clip.timelineEndUs]), [[0, 1_000_000], [1_000_000, 3_500_000]]);
-    assert.equal(trimmed.preserveGaps, false, '连续画面保留末帧补齐口播，不能变黑');
-    assert.deepEqual(trimmed.narration, input.narration);
-    assert.deepEqual(trimmed.subtitle, input.subtitle);
-    assert.equal(trimmedClips[1].sourceStartUs, inputClips[1].sourceStartUs);
-    assert.equal(trimmedClips[1].sourceEndUs, inputClips[1].sourceEndUs);
-    // 拉长也联动后续画面，不能覆盖或拒绝。
-    applyBatchOutputClipEdit(db, projectId, batchId, plans[0], {
-      type: 'trim_variable', clipId: 'clip-1', sourceStartUs: 1_000_003, sourceEndUs: 1_000_003 + 1_500_000 * rate, ripple: true,
-    });
-    const restored = getBatchOutputArrangementView(db, projectId, batchId, plans[0]);
-    assert.deepEqual(restored.clips.map((clip) => [clip.timelineStartUs, clip.timelineEndUs]), [[0, 1_500_000], [1_500_000, 4_000_000]]);
-  }
-  console.log('✓ 微秒边界修剪与 0.25–4 倍速联动修剪，无意外空位');
+  console.log('✓ 微秒边界修剪：未拖动端点不被帧取整推入相邻片段');
 
   // Extending into an occupied neighbour must fail without changing either clip.
   resetPlan0Arrangement();

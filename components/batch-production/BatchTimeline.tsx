@@ -65,8 +65,6 @@ export interface BatchTimelineProps {
   selectedClipId: string | null;
   selectedSubtitleCueId: string | null;
   disabled: boolean; // 只禁用变更手势，不禁用 seek/选中
-  rippleTrim: boolean;
-  onRippleTrimChange: (enabled: boolean) => void;
   tool: TimelineTool;
   onToolChange: (tool: TimelineTool) => void;
   onSeek: (sec: number) => void;
@@ -95,7 +93,7 @@ export default function BatchTimeline({
   selectedClipId,
   selectedSubtitleCueId,
   disabled,
-  rippleTrim, onRippleTrimChange, tool, onToolChange,
+  tool, onToolChange,
   onSeek,
   onSelectClip,
   onSelectSubtitleCue,
@@ -250,8 +248,7 @@ export default function BatchTimeline({
           <Icon name="scissors" size={13} />分割
         </button>
         <button type="button" className={`${styles.tlToolButton} ${snapEnabled ? styles.tlToolButtonActive : ''}`} aria-pressed={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)}>磁吸</button>
-        <button type="button" className={`${styles.tlToolButton} ${rippleTrim ? styles.tlToolButtonActive : ''}`} aria-pressed={rippleTrim} disabled={disabled} onClick={() => onRippleTrimChange(!rippleTrim)}>联动修剪</button>
-        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击目标位置分割；V 选择 · 空格播放/暂停' : `${rippleTrim ? '修剪后画面自动接上，口播字幕不动' : '修剪保留原位置'}；空格播放/暂停 · C 分割 · V 选择 · Alt 暂停磁吸`}</span>
+        <span className={styles.tlToolHint}>{effectiveTool === 'split' ? '点击目标位置分割；V 选择 · 空格播放/暂停' : '修剪保留原位置；空格播放/暂停 · C 分割 · V 选择 · Alt 暂停磁吸'}</span>
       </div>
       <section className={styles.tl} aria-label="成片时间轴" data-testid="batch-output-timeline" data-tool={effectiveTool}>
         <div className={styles.tlLabels}>
@@ -292,7 +289,6 @@ export default function BatchTimeline({
                     sourceIn={entry.sourceIn}
                     sourceOut={entry.sourceOut}
                     sourceDurationUs={asset?.durationSec != null ? Math.round(asset.durationSec * 1e6) : entry.clip.sourceEndUs}
-                    rippleTrim={rippleTrim}
                     snapEnabled={snapEnabled}
                     playheadUs={Math.round((playheadSec - INTRO_SEC) * 1e6)}
                     thumbnailUrl={asset?.thumbnailUrl || undefined}
@@ -440,7 +436,7 @@ function BatchClipBlock({
   durFrames,
   sourceIn,
   sourceOut,
-  sourceDurationUs, rippleTrim, snapEnabled, playheadUs,
+  sourceDurationUs, snapEnabled, playheadUs,
   thumbnailUrl,
   pxPerSecond,
   selected,
@@ -464,7 +460,6 @@ function BatchClipBlock({
   sourceIn: number;
   sourceOut: number;
   sourceDurationUs: number;
-  rippleTrim: boolean;
   snapEnabled: boolean;
   playheadUs: number;
   thumbnailUrl?: string;
@@ -508,7 +503,7 @@ function BatchClipBlock({
     const scroll = target.closest('[data-testid="batch-output-timeline-scroll"]');
     const initialScrollLeft = scroll?.scrollLeft ?? 0;
     const rate = clipTrimRate(clip);
-    const bounds = clipTrimBounds(clips, clip, sourceDurationUs, rippleTrim);
+    const bounds = clipTrimBounds(clips, clip, sourceDurationUs);
     const snapTargets = [0, bodyEndUs, playheadUs, ...clips.filter((item) => item.clipId !== clip.clipId).flatMap((item) => [item.timelineStartUs, item.timelineEndUs])].filter((time) => time >= 0);
     const move = (pointer: PointerEvent) => {
       const timelineDelta = Math.round(((pointer.clientX - startX + (scroll?.scrollLeft ?? 0) - initialScrollLeft) / pxPerSecond) * FPS);
@@ -550,8 +545,8 @@ function BatchClipBlock({
         latest = { sourceStartUs: clip.sourceStartUs, sourceEndUs: sourceUs };
       }
       changed = latest.sourceStartUs !== clip.sourceStartUs || latest.sourceEndUs !== clip.sourceEndUs;
-      const positions = planClipTrim(clips, clip.clipId, latest.sourceStartUs, latest.sourceEndUs, rippleTrim);
-      onDraftChange({ clipId: clip.clipId, sourceIn: usToFrame(latest.sourceStartUs), sourceOut: usToFrame(latest.sourceEndUs), positions, snappedUs: rippleTrim && mode === 'start' ? null : snapped.snappedUs });
+      const positions = planClipTrim(clips, clip.clipId, latest.sourceStartUs, latest.sourceEndUs);
+      onDraftChange({ clipId: clip.clipId, sourceIn: usToFrame(latest.sourceStartUs), sourceOut: usToFrame(latest.sourceEndUs), positions, snappedUs: snapped.snappedUs });
     };
     const up = async (pointer: PointerEvent) => {
       move(pointer);
