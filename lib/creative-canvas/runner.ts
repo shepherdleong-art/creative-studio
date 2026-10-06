@@ -1,3 +1,4 @@
+import { recordCanvasTaskLog } from './logs.ts';
 import { recordCanvasVideoMetadata } from './video-metadata.ts';
 /**
  * 任务执行器（技术约定 C4／C5）。
@@ -256,6 +257,7 @@ function commitRecordedOutput(
       assetId: params.outputAssetId,
       at,
     });
+    recordCanvasTaskLog(db, getCanvasTask(db, params.task.id)!, params.task);
     return { owned: true, valid: true, published };
   });
   return commit.immediate();
@@ -564,6 +566,7 @@ export async function runCanvasTask(options: RunCanvasTaskOptions): Promise<Canv
           guard.workerId,
         );
         if (recorded.changes !== 1) throw new Error('任务已失去租约，拒绝登记生成结果。');
+        recordCanvasTaskLog(transactionDb, getCanvasTask(transactionDb, taskId)!, task);
         if (downloaded.videoMetadata) recordCanvasVideoMetadata(transactionDb, taskId, downloaded.videoMetadata);
         published = publishCanvasNodeResultInTransaction(transactionDb, {
           canvasId: task.canvasId,

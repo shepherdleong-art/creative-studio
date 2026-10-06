@@ -1,3 +1,4 @@
+import { recordCanvasTaskLog } from './logs.ts';
 /**
  * 运行与任务的持久化（技术约定 C2／C3／C4）。
  *
@@ -347,7 +348,9 @@ export function createCanvasRun(
         at,
         at,
       );
-      created.push(requireCanvasTask(db, taskId));
+      const createdTask = requireCanvasTask(db, taskId);
+      recordCanvasTaskLog(db, createdTask);
+      created.push(createdTask);
     });
 
     const insertInput = db.prepare(`
@@ -451,6 +454,7 @@ export function resolveCanvasTaskInputs(
         db.prepare(
           `UPDATE creative_canvas_node_states SET activeTaskId = NULL, updatedAt = ? WHERE canvasId = ? AND nodeId = ? AND activeTaskId = ?`,
         ).run(at, task.canvasId, task.nodeId, task.id);
+        recordCanvasTaskLog(db, requireCanvasTask(db, task.id), task);
         blocked.push(task.id);
         continue;
       }
@@ -458,6 +462,7 @@ export function resolveCanvasTaskInputs(
         db.prepare(
           `UPDATE creative_canvas_tasks SET phase = 'queued', updatedAt = ? WHERE id = ?`,
         ).run(at, task.id);
+        recordCanvasTaskLog(db, requireCanvasTask(db, task.id), task);
         promoted.push(task.id);
       }
     }
@@ -566,6 +571,7 @@ export function claimCanvasTasks(options: ClaimCanvasTasksOptions): ClaimedCanva
       budget -= 1;
       if (needsNewSlot) remaining -= 1;
       const updated = requireCanvasTask(db, task.id);
+      recordCanvasTaskLog(db, updated, task);
       claimed.push({ task: updated, fence: updated.fence });
     }
     return claimed;
@@ -627,6 +633,7 @@ export function updateCanvasTaskGuarded(
   if (patch.leaseUntil !== undefined) assign('leaseUntil', 'leaseUntil', patch.leaseUntil);
 
   const update = () => {
+    const before = getCanvasTask(db, taskId);
     const info = db.prepare(`
       UPDATE creative_canvas_tasks SET ${sets.join(', ')}
        WHERE id = @taskId AND fence = @fence AND leaseOwner = @workerId
@@ -637,6 +644,7 @@ export function updateCanvasTaskGuarded(
         WHERE bucket = 'seedance20-4k' AND EXISTS (SELECT 1 FROM creative_canvas_tasks WHERE id = ? AND quotaKey = 'seedance20-4k')`)
         .run(Date.parse(at) + 4000, taskId);
     }
+    if (info.changes === 1 && before) recordCanvasTaskLog(db, requireCanvasTask(db, taskId), before);
     return info.changes === 1;
   };
   return patch.phase === 'submitting' ? db.transaction(update).immediate() : update();
@@ -666,7 +674,9 @@ export function updateCanvasTaskUnGuarded(
   }
   if (sets.length === 0) return false;
   values.push(taskId);
+  const before = getCanvasTask(db, taskId);
   const info = db.prepare(`UPDATE creative_canvas_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  if (info.changes === 1 && before) recordCanvasTaskLog(db, requireCanvasTask(db, taskId), before);
   return info.changes === 1;
 }
 

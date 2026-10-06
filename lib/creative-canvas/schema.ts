@@ -212,6 +212,20 @@ export const CREATIVE_CANVAS_MIGRATIONS: ReadonlyArray<CanvasMigration> = [
       metadataJson TEXT NOT NULL
     );`,
   },
+  {
+    version: 4,
+    sql: `CREATE TABLE creative_canvas_logs (
+      id TEXT PRIMARY KEY,
+      canvasId TEXT NOT NULL REFERENCES creative_canvases(id) ON DELETE CASCADE,
+      jobId TEXT REFERENCES creative_canvas_tasks(id) ON DELETE CASCADE,
+      level TEXT NOT NULL,
+      message TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL
+    );
+    CREATE INDEX idx_ccl_canvas ON creative_canvas_logs(canvasId, createdAt);
+    CREATE INDEX idx_ccl_task ON creative_canvas_logs(jobId, createdAt);`,
+  },
 ];
 
 export type CanvasSchemaFailureCode =
@@ -250,6 +264,7 @@ export interface EnsureCanvasSchemaOptions {
 const MIGRATION_TABLE = 'creative_canvas_schema_migrations';
 
 const CANVAS_TABLES = [
+  'creative_canvas_logs',
   'creative_canvases',
   'creative_canvas_assets',
   'creative_canvas_node_states',

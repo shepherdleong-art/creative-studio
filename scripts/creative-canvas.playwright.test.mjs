@@ -1142,7 +1142,40 @@ async function recoverySuite(page) {
   await page.reload();
   await page.waitForSelector('[data-testid="canvas-editor"]');
   await waitForResult(page, imageId, 'image', 20_000);
-  return { canvasId: new URL(page.url()).pathname.split('/').pop() };
+  const canvasId = new URL(page.url()).pathname.split('/').pop();
+  const logsResponse = await fetch(`${baseUrl}/api/canvas/${canvasId}/logs`);
+  assert.equal(logsResponse.headers.get('cache-control'), 'no-store');
+  const logs = await logsResponse.json();
+  for (const text of ['进入队列', '准备素材', '向供应商提交', '查询生成进度', '产物下载失败', '生成完成']) {
+    assert.ok(logs.some((log) => log.message.includes(text)), `缺少阶段日志：${text}`);
+  }
+  const taskId = logs.find((log) => log.level === 'error').jobId;
+  await page.keyboard.press('ControlOrMeta+a');
+  assert.ok(await page.locator('.react-flow__node.selected').count() > 0);
+  const nodesBeforeLogReview = await page.locator('.react-flow__node').count();
+  await page.click('[data-testid="toggle-logs"]');
+  const drawer = page.getByRole('dialog', { name: '运行日志' });
+  await drawer.getByText('生成完成', { exact: false }).waitFor();
+  await page.keyboard.press('Delete');
+  assert.equal(await page.locator('.react-flow__node').count(), nodesBeforeLogReview, '日志查看时不响应画布删除快捷键');
+  assert.ok(await drawer.getByText('产物下载失败', { exact: false }).count() > 0, '恢复后仍能查看原失败');
+  await drawer.getByRole('button', { name: /^ERROR/ }).click();
+  assert.equal(await drawer.getByText('生成完成', { exact: false }).count(), 0);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await drawer.getByTitle('复制错误日志', { exact: true }).click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  assert.match(copied, /产物下载失败/);
+  assert.ok(!copied.includes('生成完成'));
+  await drawer.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.click('[data-testid="toggle-tasks"]');
+  await page.click(`[data-testid="task-logs-${taskId}"]`);
+  await drawer.getByText('生成完成', { exact: false }).waitFor();
+  await page.screenshot({ path: '/tmp/canvas-task-logs.png' });
+  await drawer.getByRole('button', { name: '关闭', exact: true }).click();
+  const otherCanvasId = await createCanvas(page, '日志隔离验证');
+  const scoped = await (await fetch(`${baseUrl}/api/canvas/${otherCanvasId}/logs?jobId=${taskId}`)).json();
+  assert.deepEqual(scoped, [], '单任务查询保持画布隔离');
+  return { canvasId, taskId, logCount: logs.length, logCopy: true, scopeIsolation: true };
 }
 
 /**

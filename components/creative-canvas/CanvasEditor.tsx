@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import LogDrawer from '@/components/LogDrawer';
 import {
   Background,
   BackgroundVariant,
@@ -72,6 +73,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   const [initialViewport, setInitialViewport] = useState<{ x: number; y: number; zoom: number } | undefined>();
   const [capabilities, setCapabilities] = useState<CanvasModelCapabilityDto[]>([]);
   const [executor, setExecutor] = useState<string>('disabled');
+  const [logTarget, setLogTarget] = useState<{ canvasId: string; jobId?: string } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [miniMapVisible, setMiniMapVisible] = useState(true);
   const [dropMenu, setDropMenu] = useState<{
@@ -291,6 +293,10 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   // 键盘快捷键：焦点在文本框时全部让位给正常编辑
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (logTarget) {
+        if (event.key === 'Escape') setLogTarget(null);
+        return;
+      }
       if (event.key === 'Escape') {
         setDropMenu(null);
         setContextMenu(null);
@@ -342,7 +348,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [logTarget]);
 
   const onDrop = useCallback(async (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -584,6 +590,10 @@ function EditorInner({ canvasId }: { canvasId: string }) {
             >
               任务
             </button>
+            <button type="button" className="sc-canvas-button" data-testid="toggle-logs"
+              onClick={(event) => { event.currentTarget.blur(); setLogTarget({ canvasId }); }}>
+              运行日志
+            </button>
           </div>
         </header>
 
@@ -752,10 +762,13 @@ function EditorInner({ canvasId }: { canvasId: string }) {
           </div>
 
           {drawerOpen ? (
-            <CanvasTaskDrawer canvasId={canvasId} knownNodeIds={knownNodeIds} onLocate={onLocate} />
+            <CanvasTaskDrawer canvasId={canvasId} knownNodeIds={knownNodeIds} onLocate={onLocate} onShowLogs={(task) => setLogTarget({ canvasId: task.canvasId, jobId: task.id })} />
           ) : null}
         </div>
       </div>
+      <LogDrawer open={logTarget !== null} logsUrl={logTarget ? `/api/canvas/${logTarget.canvasId}/logs` : undefined}
+        jobId={logTarget?.jobId} autoRefresh onClose={() => setLogTarget(null)}
+        description={logTarget?.jobId ? `任务 ${logTarget.jobId} · 最近 300 条日志` : '当前画布 · 最近 300 条日志，可筛选和复制错误'} />
     </CanvasNodeContext.Provider>
   );
 }

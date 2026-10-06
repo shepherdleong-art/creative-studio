@@ -88,11 +88,13 @@ export function CanvasTaskDrawer({
   canvasId,
   knownNodeIds,
   onLocate,
+  onShowLogs,
 }: {
   canvasId: string;
   /** 当前画布图里仍然存在的节点；不在其中的任务说明节点已被删除。 */
   knownNodeIds: ReadonlySet<string>;
   onLocate: (nodeId: string) => void;
+  onShowLogs: (task: CanvasTaskDto) => void;
 }) {
   const [tasks, setTasks] = useState<CanvasTaskDto[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -175,6 +177,8 @@ export function CanvasTaskDrawer({
                     ) : null}
                   </button>
                 </div>
+                <button type="button" className="mt-1 text-xs link-accent" data-testid={`task-logs-${task.id}`}
+                  onClick={(event) => { event.currentTarget.blur(); onShowLogs(task); }}>查看日志</button>
               </li>
             );
           })}

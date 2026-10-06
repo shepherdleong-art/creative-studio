@@ -1,3 +1,5 @@
+import { writeCanvasLog } from '@/lib/creative-canvas/logs';
+import { requireCanvas } from '@/lib/creative-canvas/repository';
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
@@ -17,9 +19,12 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  let logCanvasId: string | undefined;
   try {
     await assertCanvasApiReady();
     const { id } = await params;
+    requireCanvas(getDb(), id);
+    logCanvasId = id;
     const body = await readCanvasJson(request);
     const requestKey = String(body.requestKey ?? '').trim();
     if (!requestKey) throw new CanvasError('invalid_input', '缺少请求标识 requestKey。');
@@ -63,6 +68,8 @@ export async function POST(
       })),
     });
   } catch (error) {
+    if (logCanvasId) writeCanvasLog(getDb(), { canvasId: logCanvasId, level: 'error',
+      message: `启动任务失败 · ${error instanceof CanvasError ? error.code + ' · ' : ''}${error instanceof Error ? error.message : String(error)}` });
     return canvasJsonError(error);
   }
 }

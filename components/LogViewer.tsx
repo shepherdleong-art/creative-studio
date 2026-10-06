@@ -13,11 +13,16 @@ interface LogEntry {
 }
 
 interface Props {
-  projectId: string;
+  projectId?: string;
+  logsUrl?: string; // 画布等独立模块复用查看器，保留原项目默认地址
   jobId?: string; // If provided, show only this job's logs
   autoRefresh?: boolean;
   refreshMs?: number;
   fill?: boolean; // When true, fill parent height instead of capping at max-h-96
+}
+
+function logDate(value: string): Date {
+  return new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : value + 'Z');
 }
 
 const LEVEL_LABELS: Record<string, string> = {
@@ -27,9 +32,10 @@ const LEVEL_LABELS: Record<string, string> = {
   debug: 'DEBUG',
 };
 
-export default function LogViewer({ projectId, jobId, autoRefresh = false, refreshMs = 1000, fill = false }: Props) {
+export default function LogViewer({ projectId, logsUrl, jobId, autoRefresh = false, refreshMs = 1000, fill = false }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const containerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -39,15 +45,17 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
       const params = new URLSearchParams();
       if (jobId) params.set('jobId', jobId);
       params.set('limit', '300');
-      const res = await fetch(`/api/projects/${projectId}/logs?${params}`, {
+      const res = await fetch(`${logsUrl ?? `/api/projects/${projectId}/logs`}?${params}`, {
         cache: 'no-store',
       });
       const data = await res.json();
-      if (Array.isArray(data)) setLogs(data);
+      if (!res.ok || !Array.isArray(data)) throw new Error(data.message || data.error || '加载日志失败');
+      setLogs(data);
+      setError(null);
     } catch (err) {
-      console.error('加载日志失败:', err);
+      setError(err instanceof Error ? err.message : '加载日志失败');
     }
-  }, [projectId, jobId]);
+  }, [projectId, logsUrl, jobId]);
 
   // Initial load. `loading` starts true (useState); we clear it here inside a
   // nested async fn (same pattern as the other panels) so loadLogs() never
@@ -85,7 +93,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
     const text = entries
       .map(
         (l) =>
-          `[${new Date(l.createdAt + 'Z').toISOString()}] [${l.level.toUpperCase()}] [${l.jobId ? l.jobId.slice(0, 8) : 'queue'}] ${l.message}`
+          `[${logDate(l.createdAt).toISOString()}] [${l.level.toUpperCase()}] [${l.jobId ? l.jobId.slice(0, 8) : 'queue'}] ${l.message}`
       )
       .join('\n');
     try {
@@ -171,6 +179,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
         </div>
       </div>
 
+      {error && <p role="alert" className="mb-2 text-xs text-fail">{error}</p>}
       {/* Log list */}
       {filteredLogs.length === 0 ? (
         <div className={`text-center text-sm text-ink-tertiary ${fill ? 'flex flex-1 items-center justify-center' : 'py-6'}`}>
@@ -191,7 +200,7 @@ export default function LogViewer({ projectId, jobId, autoRefresh = false, refre
                   }`}
                 >
                   <td className="py-1 px-2 text-gray-500 whitespace-nowrap w-1">
-                    {new Date(log.createdAt + 'Z').toLocaleTimeString('zh-CN', {
+                    {logDate(log.createdAt).toLocaleTimeString('zh-CN', {
                       hour: '2-digit',
                       minute: '2-digit',
                       second: '2-digit',
